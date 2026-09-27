@@ -560,7 +560,8 @@ public static class Engine_LevelLights
 				instance.HasMeta(Engine_PropStreamer.RecordMeta) &&
 				hosts.Contains((uint)instance.GetMeta(Engine_PropStreamer.RecordMeta).AsInt64()))
 			{
-				instance.Layers = LampHostLayerMask;
+				// The reflected bit stays: a lamp is part of the world the water shows.
+				instance.Layers = LampHostLayerMask | Refii.Level.Engine_ReflectionLayer.Mask;
 			}
 		}
 	}
@@ -847,7 +848,7 @@ public static class Engine_LevelLights
 		node.ShadowEnabled = false;
 		node.ShadowOpacity = 0.0f;
 		node.SetMeta(AuthoredShadowMeta, light.CastShadows);
-		node.ShadowCasterMask = CasterMaskOf(light.CastShadows);
+		node.ShadowCasterMask = Refii.Level.Engine_ReflectionLayer.CasterMask(CasterMaskOf(light.CastShadows));
 		ApplyShadowTuning(node);
 
 		// A fixture never moves: the GI bakes it into a cascade when the cascade refreshes, where a

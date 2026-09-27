@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Refii.Assets;
 using Refii.Core;
@@ -605,10 +606,13 @@ public partial class LevelViewer : Node3D
 		// The terrain's own AABB is the answer, and it is the one node whose top is ground rather
 		// than roof. Falling back to the merged box's top keeps a region with no terrain framed
 		// from above rather than from inside it.
-		float ground = region.GetNodeOrNull<MeshInstance3D>(
-				Refii.Level.Engine_LevelScene.TerrainNodeName) is { Mesh: not null } terrain
-			? (terrain.GlobalTransform * terrain.Mesh.GetAabb()).End.Y
-			: bounds.End.Y;
+		List<MeshInstance3D> terrainChunks = Refii.Level.Engine_LevelScene.TerrainChunksOf(region);
+		float ground = bounds.End.Y;
+		for (int i = 0; i < terrainChunks.Count; i++)
+		{
+			float top = (terrainChunks[i].GlobalTransform * terrainChunks[i].Mesh.GetAabb()).End.Y;
+			ground = i == 0 ? top : Mathf.Max(ground, top);
+		}
 
 		_target = new Vector3(centre.X, ground + 2.0f, centre.Z);
 		_distance = 45.0f;
@@ -759,8 +763,9 @@ public partial class LevelViewer : Node3D
 			return;
 		}
 
-		if (_region.GetNodeOrNull<MeshInstance3D>(Refii.Level.Engine_LevelScene.TerrainNodeName)
-				is not { MaterialOverride: ShaderMaterial splat } ||
+		List<MeshInstance3D> terrainChunks = Refii.Level.Engine_LevelScene.TerrainChunksOf(_region);
+		if (terrainChunks.Count == 0 ||
+			terrainChunks[0] is not { MaterialOverride: ShaderMaterial splat } ||
 			splat.GetShaderParameter("lightmap").As<Texture2D>() is not { } lightmap)
 		{
 			GD.Print("[level-viewer] the terrain carries no lightmap");

@@ -1468,6 +1468,19 @@ public partial class GameDebugServer : Node
 					Refii.Entities.Engine_BodyVariants.Enabled = bodyVariantLever.ValueKind == JsonValueKind.True;
 				}
 
+				// The guest's reflection contract (Engine_ReflectionLayer): false makes the mirrors see
+				// everything but the water again, cascades included, as before. Caster masks never
+				// change; only what the mirror cameras see.
+				if (root.TryGetProperty("reflectContract", out JsonElement reflectLever) &&
+					(reflectLever.ValueKind == JsonValueKind.True || reflectLever.ValueKind == JsonValueKind.False))
+				{
+					Refii.Level.Engine_ReflectionLayer.FollowGuest = reflectLever.ValueKind == JsonValueKind.True;
+					foreach (Node found in GetTree().Root.FindChildren("*", "Engine_WaterReflection", true, false))
+					{
+						(found as Refii.Level.Engine_WaterReflection)?.ApplyCullMask();
+					}
+				}
+
 				if (root.TryGetProperty("propShadow", out JsonElement propShadowLever) &&
 					(propShadowLever.ValueKind == JsonValueKind.True || propShadowLever.ValueKind == JsonValueKind.False))
 				{
@@ -1731,6 +1744,7 @@ public partial class GameDebugServer : Node
 					["bodyVariantsBuilt"] = Refii.Entities.Engine_BodyVariants.Built,
 					["bodyVariantSurfacesRemoved"] = Refii.Entities.Engine_BodyVariants.SurfacesRemoved,
 					["propShadow"] = Refii.Level.Engine_PropShadow.Enabled,
+					["reflectContract"] = Refii.Level.Engine_ReflectionLayer.FollowGuest,
 					["propShadowBatches"] = Refii.Level.Engine_PropShadow.Batches,
 					["propShadowSurfacesMerged"] = Refii.Level.Engine_PropShadow.SurfacesMerged,
 					["shadowProxies"] = Refii.Entities.Engine_ShadowProxy.Active,
@@ -1870,6 +1884,12 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "cloth":
+			{
+				// Every live cloth body: what it stands in for, its cost and its state.
+				return Ok(Refii.Physics.Engine_ClothBody.Describe());
+			}
+
 			case "twins":
 			{
 				// The live entities and the static twins of one model family, with the hide
@@ -1990,20 +2010,22 @@ public partial class GameDebugServer : Node
 				// visible/shadow split says whether shadow passes are the multiplier.
 				SampleStatedClock();
 				Viewport? viewport = GetViewport();
-				Rid viewportRid = viewport?.GetViewportRid() ?? default;
 				double renderCpuMs = 0, renderGpuMs = 0;
 				double visibleCalls = 0, shadowCalls = 0, visiblePrims = 0, shadowPrims = 0, visibleObjects = 0, shadowObjects = 0;
 				if (viewport is not null)
 				{
-					RenderingServer.ViewportSetMeasureRenderTime(viewportRid, true);
-					renderCpuMs = RenderingServer.ViewportGetMeasuredRenderTimeCpu(viewportRid);
-					renderGpuMs = RenderingServer.ViewportGetMeasuredRenderTimeGpu(viewportRid);
-					visibleCalls = RenderingServer.ViewportGetRenderInfo(viewportRid, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.DrawCallsInFrame);
-					shadowCalls = RenderingServer.ViewportGetRenderInfo(viewportRid, RenderingServer.ViewportRenderInfoType.Shadow, RenderingServer.ViewportRenderInfo.DrawCallsInFrame);
-					visiblePrims = RenderingServer.ViewportGetRenderInfo(viewportRid, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.PrimitivesInFrame);
-					shadowPrims = RenderingServer.ViewportGetRenderInfo(viewportRid, RenderingServer.ViewportRenderInfoType.Shadow, RenderingServer.ViewportRenderInfo.PrimitivesInFrame);
-					visibleObjects = RenderingServer.ViewportGetRenderInfo(viewportRid, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.ObjectsInFrame);
-					shadowObjects = RenderingServer.ViewportGetRenderInfo(viewportRid, RenderingServer.ViewportRenderInfoType.Shadow, RenderingServer.ViewportRenderInfo.ObjectsInFrame);
+					// The render thread's published sample (Engine_RenderStats): a server getter
+					// here would block this thread on the whole render queue. The first ask of a
+					// viewport answers zeros; the sample lands a frame later.
+					Refii.Core.Engine_RenderStats.Sample render = Refii.Core.Engine_RenderStats.Of(viewport);
+					renderCpuMs = render.CpuMs;
+					renderGpuMs = render.GpuMs;
+					visibleCalls = render.VisibleCalls;
+					shadowCalls = render.ShadowCalls;
+					visiblePrims = render.VisiblePrims;
+					shadowPrims = render.ShadowPrims;
+					visibleObjects = render.VisibleObjects;
+					shadowObjects = render.ShadowObjects;
 				}
 
 				// EVERY viewport, because the process total is far more than the main one draws.
@@ -2015,20 +2037,19 @@ public partial class GameDebugServer : Node
 						continue;
 					}
 
-					Rid rid = sub.GetViewportRid();
-					RenderingServer.ViewportSetMeasureRenderTime(rid, true);
+					Refii.Core.Engine_RenderStats.Sample subRender = Refii.Core.Engine_RenderStats.Of(sub);
 					viewports.Add(new Dictionary<string, object?>
 					{
 						["path"] = sub.GetPath().ToString(),
 						["size"] = $"{sub.Size.X}x{sub.Size.Y}",
 						["update"] = sub.RenderTargetUpdateMode.ToString(),
 						["own3d"] = sub.OwnWorld3D,
-						["cpuMs"] = RenderingServer.ViewportGetMeasuredRenderTimeCpu(rid),
-						["gpuMs"] = RenderingServer.ViewportGetMeasuredRenderTimeGpu(rid),
-						["visibleCalls"] = RenderingServer.ViewportGetRenderInfo(rid, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.DrawCallsInFrame),
-						["visiblePrims"] = RenderingServer.ViewportGetRenderInfo(rid, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.PrimitivesInFrame),
-						["shadowCalls"] = RenderingServer.ViewportGetRenderInfo(rid, RenderingServer.ViewportRenderInfoType.Shadow, RenderingServer.ViewportRenderInfo.DrawCallsInFrame),
-						["shadowPrims"] = RenderingServer.ViewportGetRenderInfo(rid, RenderingServer.ViewportRenderInfoType.Shadow, RenderingServer.ViewportRenderInfo.PrimitivesInFrame),
+						["cpuMs"] = subRender.CpuMs,
+						["gpuMs"] = subRender.GpuMs,
+						["visibleCalls"] = subRender.VisibleCalls,
+						["visiblePrims"] = subRender.VisiblePrims,
+						["shadowCalls"] = subRender.ShadowCalls,
+						["shadowPrims"] = subRender.ShadowPrims,
 					});
 				}
 
@@ -2156,6 +2177,9 @@ public partial class GameDebugServer : Node
 					["refreshHz"] = DisplayServer.ScreenGetRefreshRate(
 						DisplayServer.WindowGetCurrentScreen((int)DisplayServer.MainWindowId)),
 					["frameSetupCpuMs"] = RenderingServer.GetFrameSetupTimeCpu(),
+					// NaN on the first ask after a restart; JSON has no spelling for it.
+					["renderThreadBusy"] = Refii.Core.Engine_RenderStats.RenderThreadBusy() is var busy &&
+						double.IsFinite(busy) ? busy : null,
 					["viewports"] = viewports,
 					["renderCpuMs"] = renderCpuMs,
 					["renderGpuMs"] = renderGpuMs,

@@ -16,32 +16,8 @@ public partial class Engine_BnkEntityLoader : ResourceFormatLoader
         path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase) &&
         path.EndsWith(Engine_EntityIndex.Extension, StringComparison.OrdinalIgnoreCase);
 
-    private static void AttachCloth(Engine_EntityInstance node, Engine_EntityResource resource)
-    {
-        var clothed = new System.Collections.Generic.List<string>();
-
-        foreach (string path in resource.ModelPaths)
-        {
-            if (Refii.Physics.Engine_PhysicsIndex.HasCloth(path))
-            {
-                clothed.Add(path);
-            }
-        }
-
-        if (clothed.Count == 0)
-        {
-            return;
-        }
-
-        var body = new Refii.Physics.Engine_ClothBody
-        {
-            Name = Refii.Physics.Engine_ClothBody.NodeName,
-        };
-
-        body.SetModelPaths(clothed);
-        node.AddChild(body);
-        body.Owner = node;
-    }
+    private static void AttachCloth(Engine_EntityInstance node, Engine_EntityResource resource) =>
+        Refii.Physics.Engine_ClothBody.Attach(node, node.Mesh, resource.ModelPaths);
 
     private static Refii.Hero.Engine_HeroInstance NewHeroInstance(
         string virtualPath, Engine_EntityResource resource)

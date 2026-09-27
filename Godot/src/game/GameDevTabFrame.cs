@@ -36,33 +36,32 @@ public partial class GameDevTabFrame : GameDevTab
 
 	public override void Tick(double delta)
 	{
-		Rid viewport = GameViewport;
+		Viewport viewport = GameViewportNode;
 		if (!_measuring)
 		{
-			RenderingServer.ViewportSetMeasureRenderTime(viewport, true);
+			Engine_RenderStats.Track(viewport);
 			_measuring = true;
 		}
 
+		// The render thread's published sample: a server getter here, every frame, would
+		// serialise the two threads (Engine_RenderStats).
+		Engine_RenderStats.Sample render = Engine_RenderStats.Of(viewport);
 		_graph.Push(
 			(float)(delta * 1000.0),
 			(float)Engine_FramePhases.Last("process_total"),
-			(float)(RenderingServer.ViewportGetMeasuredRenderTimeCpu(viewport) +
-				RenderingServer.GetFrameSetupTimeCpu()),
-			(float)RenderingServer.ViewportGetMeasuredRenderTimeGpu(viewport));
+			(float)(render.CpuMs + RenderingServer.GetFrameSetupTimeCpu()),
+			(float)render.GpuMs);
 	}
 
 	public override void Refresh()
 	{
-		Rid viewport = GameViewport;
+		Engine_RenderStats.Sample render = Engine_RenderStats.Of(GameViewportNode);
 		(double frameMs, double framePeak) = Engine_FramePhases.Get("frame_total");
 		(double mainMs, double mainPeak) = Engine_FramePhases.Get("process_total");
 		(double waitMs, _) = Engine_FramePhases.Get("draw");
 		(double entitiesMs, _) = Engine_FramePhases.Get("ent.loop");
-		double renderCpu = RenderingServer.ViewportGetMeasuredRenderTimeCpu(viewport) +
-			RenderingServer.GetFrameSetupTimeCpu();
-		double gpu = RenderingServer.ViewportGetMeasuredRenderTimeGpu(viewport);
-		double Info(RenderingServer.ViewportRenderInfoType type, RenderingServer.ViewportRenderInfo info) =>
-			RenderingServer.ViewportGetRenderInfo(viewport, type, info);
+		double renderCpu = render.CpuMs + RenderingServer.GetFrameSetupTimeCpu();
+		double gpu = render.GpuMs;
 
 		string bound = gpu >= renderCpu && gpu >= mainMs
 			? "GPU-bound"
@@ -77,10 +76,8 @@ public partial class GameDevTabFrame : GameDevTab
 		_text.Append($"{Engine.GetFramesPerSecond(),4:0} fps    frame {frameMs,6:0.00} ms (peak {framePeak:0.0})    {bound}\n");
 		_text.Append($"main   {mainMs,6:0.00} ms (peak {mainPeak:0.0})   entities {entitiesMs:0.00}   waiting on render {waitMs:0.00}\n");
 		_text.Append($"render cpu {renderCpu,6:0.00} ms   gpu {gpu,6:0.00} ms   budget 8.33 ms (1440p @ 120)\n");
-		_text.Append($"draws  visible {Info(RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.DrawCallsInFrame),6:0}   " +
-			$"shadow {Info(RenderingServer.ViewportRenderInfoType.Shadow, RenderingServer.ViewportRenderInfo.DrawCallsInFrame),6:0}   " +
-			$"objects {Info(RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.ObjectsInFrame):0}   " +
-			$"prims {Info(RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.PrimitivesInFrame) / 1e6:0.0} M");
+		_text.Append($"draws  visible {render.VisibleCalls,6}   shadow {render.ShadowCalls,6}   " +
+			$"objects {render.VisibleObjects}   prims {render.VisiblePrims / 1e6:0.0} M");
 		_numbers.Text = _text.ToString();
 
 		_text.Clear();

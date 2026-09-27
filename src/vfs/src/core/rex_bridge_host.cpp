@@ -93,6 +93,14 @@ std::atomic<uint64_t> g_last_seen_real{0};
 std::atomic<uint64_t> g_fast_reads{0};
 std::atomic<uint64_t> g_locked_reads{0};
 
+/// A real-clock slice on this thread: while set, driven-mode reads answer the virtual tick
+/// plus the real time elapsed since the slice began, so a guest loop that runs "until now +
+/// N ms" on `mftb` gets N ms of real time. The guest's Lua GC driver (`sub_821956A0`) is that
+/// loop: with the clock frozen between grants its 2 ms deadline was unreachable and it marked
+/// and swept until the host's next frame. Thread-local, POD, never set from a signal handler.
+thread_local bool t_real_slice = false;
+thread_local uint64_t t_real_slice_base = 0;
+
 /// High-frequency steps a second — `dbl_83319668`, raised from the image's 15.0 to 30.0 during
 /// `Game_InitDatabases` (0x82310900); the image bytes are not this number.
 constexpr uint64_t kGuestHfStepsPerSecond = 30u;
@@ -212,11 +220,31 @@ extern "C" void refii_bridge_rex_advance_time_base(uint32_t steps) {
   g_granted_steps.fetch_add(steps, std::memory_order_relaxed);
 }
 
+extern "C" void refii_bridge_rex_time_base_real_slice(int on) {
+  if (on != 0) {
+    t_real_slice_base = ::rex::chrono::Clock::QueryGuestTickCount();
+    t_real_slice = true;
+  } else {
+    t_real_slice = false;
+  }
+}
+
 extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
   const uint64_t real = ::rex::chrono::Clock::QueryGuestTickCount();
   const int mode = g_time_base_mode.load(std::memory_order_relaxed);
   if (mode == static_cast<int>(TimeBaseMode::Off)) {
     return real;
+  }
+
+  // Inside a real-clock slice the virtual tick runs at the real rate for this thread only.
+  // Never past the value the next grant would produce in practice (a slice is milliseconds,
+  // a step is 33), and the reads after the slice fall back to the frozen tick, which the
+  // guest loop's owed-step arithmetic never sees mid-slice.
+  if (mode == static_cast<int>(TimeBaseMode::Driven) && t_real_slice) {
+    const uint64_t current = g_virtual_ticks.load(std::memory_order_relaxed);
+    if (current != 0u) {
+      return current + (real > t_real_slice_base ? real - t_real_slice_base : 0u);
+    }
   }
 
   const uint64_t step = HfStepTicks();

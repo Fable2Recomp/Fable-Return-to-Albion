@@ -18,6 +18,14 @@ public static class Engine_GuestFrame
 	/// <summary>Host frames that found no new guest frame; reported, not used.</summary>
 	public static long Unchanged { get; private set; }
 
+	/// <summary>
+	/// A new guest frame, and one of every two: the cadence for what follows the guest at half
+	/// its rate — the shadow skeletons of every rig but the principals. Two guest frames make a
+	/// game tick, so this is one sub-step of each tick; a host frame that spans several guest
+	/// frames (under 30 fps) sees whichever parity landed, which is still one in two on average.
+	/// </summary>
+	public static bool HalfRate { get; private set; } = true;
+
 	public static void Publish(uint frame)
 	{
 		Changed = frame == 0u || frame != Frame;
@@ -26,6 +34,7 @@ public static class Engine_GuestFrame
 			++Unchanged;
 		}
 
+		HalfRate = Changed && (frame & 1u) == 0u;
 		Frame = frame;
 	}
 }

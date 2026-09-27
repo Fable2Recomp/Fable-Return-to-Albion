@@ -5,17 +5,40 @@ using Refii.Models;
 
 namespace Refii.Physics;
 
+/// <summary>
+/// One cloth block joined to the mesh it replaces part of: the source surfaces the guest would
+/// have drawn from the record's own buffer (hidden while the cloth draws), the material that
+/// surface carried, and which skeleton bone each of the block's bone ids means.
+/// </summary>
 public sealed class ClothPiece
 {
     public ClothAsset Asset { get; init; } = new();
 
-    public int[] ClothVertexOf { get; init; } = Array.Empty<int>();
+    /// <summary>Source surfaces built from the cloth record's buffer, by index bit.</summary>
+    public UInt128 HiddenSurfaces { get; init; }
+
+    /// <summary>The material of the record's largest surface, which the cloth draws with.</summary>
+    public Material? Material { get; init; }
+
+    /// <summary>
+    /// Per cloth bone id, the bone of the mesh's own table — identity for a single model; the
+    /// composite's union index for a part, matched by name the way the composite remapped the
+    /// part's blend indices. -1 where the id names no bone.
+    /// </summary>
+    public int[] BoneRemap { get; init; } = Array.Empty<int>();
 
     public string ModelPath { get; init; } = string.Empty;
-
-    public int DrivenVertices { get; init; }
 }
 
+/// <summary>
+/// Finds the cloth blocks behind a drawn mesh. The guest draws a cloth record from the block's
+/// OWN vertex set, index list and UVs, never from the record's buffer — that buffer is only
+/// what draws when the cloth is out of range — so the join is not vertex to vertex. It is
+/// surface to record: a model's mesh maps each render vertex to the buffer vertex it came
+/// from, and the record's buffer range names the surfaces the cloth stands in for. A
+/// composite records where each part's surfaces landed, so a part's surfaces are lifted by
+/// that table.
+/// </summary>
 public static class Engine_ClothPieces
 {
     private static readonly object CacheLock = new();
@@ -47,25 +70,18 @@ public static class Engine_ClothPieces
         }
 
         if (!mesh.HasMeta(Engine_MdlComposite.PartPathsMeta) ||
-            !mesh.HasMeta(Engine_MdlComposite.PartSpansMeta))
+            !mesh.HasMeta(Engine_MdlComposite.SurfacePartsMeta))
         {
             return pieces;
         }
 
         string[] partPaths = mesh.GetMeta(Engine_MdlComposite.PartPathsMeta).AsStringArray();
-        int[] spans = mesh.GetMeta(Engine_MdlComposite.PartSpansMeta).AsInt32Array();
-        int total = TotalVertices(mesh);
+        int[] surfaceParts = mesh.GetMeta(Engine_MdlComposite.SurfacePartsMeta).AsInt32Array();
+        Dictionary<string, int>? unionBones = UnionBoneIndex(mesh);
 
-        for (int i = 0; i < partPaths.Length && (i * 2) + 1 < spans.Length; i++)
+        for (int i = 0; i < partPaths.Length; i++)
         {
             string path = partPaths[i];
-            int start = spans[i * 2];
-            int count = spans[(i * 2) + 1];
-
-            if (count <= 0 || start < 0 || start + count > total)
-            {
-                continue;
-            }
 
             bool wanted = false;
             foreach (string requested in modelPaths)
@@ -82,30 +98,23 @@ public static class Engine_ClothPieces
                 continue;
             }
 
+            int[]? remap = RemapForPart(part, unionBones);
+
             foreach (ClothPiece piece in For(path, part))
             {
-                if (piece.ClothVertexOf.Length != count)
+                UInt128 lifted = LiftSurfaces(piece.HiddenSurfaces, i, surfaceParts);
+                if (lifted == UInt128.Zero)
                 {
                     continue;
-                }
-
-                var lifted = new int[total];
-                for (int v = 0; v < total; v++)
-                {
-                    lifted[v] = -1;
-                }
-
-                for (int v = 0; v < count; v++)
-                {
-                    lifted[start + v] = piece.ClothVertexOf[v];
                 }
 
                 pieces.Add(new ClothPiece
                 {
                     Asset = piece.Asset,
-                    ClothVertexOf = lifted,
+                    HiddenSurfaces = lifted,
+                    Material = piece.Material,
+                    BoneRemap = remap is null ? piece.BoneRemap : Compose(piece.BoneRemap, remap),
                     ModelPath = path,
-                    DrivenVertices = piece.DrivenVertices,
                 });
             }
         }
@@ -113,15 +122,86 @@ public static class Engine_ClothPieces
         return pieces;
     }
 
-    public static int TotalVertices(ArrayMesh mesh)
+    /// <summary>
+    /// The part's k-th surface is the composite's j-th surface with <c>surfaceParts[j] == part</c>,
+    /// counting in order — the composite adds a part's surfaces in the part's order.
+    /// </summary>
+    private static UInt128 LiftSurfaces(UInt128 partMask, int part, int[] surfaceParts)
     {
-        int total = 0;
-        for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+        UInt128 lifted = UInt128.Zero;
+        int k = 0;
+        for (int j = 0; j < surfaceParts.Length && j < 128; j++)
         {
-            total += Refii.Models.Engine_MdlSurfaceArrays.VertexCount(mesh, surface);
+            if (surfaceParts[j] != part)
+            {
+                continue;
+            }
+
+            if (k < 128 && (partMask & (UInt128.One << k)) != UInt128.Zero)
+            {
+                lifted |= UInt128.One << j;
+            }
+
+            k++;
         }
 
-        return total;
+        return lifted;
+    }
+
+    /// <summary>The composite's bone name → union index, or null when it carries no rig.</summary>
+    private static Dictionary<string, int>? UnionBoneIndex(ArrayMesh composite)
+    {
+        if (!composite.HasMeta(Engine_MdlMesh.BoneNamesMeta))
+        {
+            return null;
+        }
+
+        string[] names = composite.GetMeta(Engine_MdlMesh.BoneNamesMeta).AsStringArray();
+        var index = new Dictionary<string, int>(names.Length);
+        for (int b = 0; b < names.Length; b++)
+        {
+            index.TryAdd(names[b], b);
+        }
+
+        return index;
+    }
+
+    /// <summary>
+    /// The part's bone table → the union, by name, as <c>Engine_MdlComposite.Absorb</c> did for
+    /// its blend indices. A part with no rig had its indices collapsed to bone 0 there; the same
+    /// here, so the cloth at least rides the root with the geometry.
+    /// </summary>
+    private static int[]? RemapForPart(ArrayMesh part, Dictionary<string, int>? union)
+    {
+        if (union is null)
+        {
+            return null;
+        }
+
+        if (Engine_MdlRig.TryFrom(part) is not { } table)
+        {
+            return new[] { 0 };
+        }
+
+        var remap = new int[table.BoneCount];
+        for (int b = 0; b < table.BoneCount; b++)
+        {
+            remap[b] = union.TryGetValue(table.Names[b], out int at) ? at : 0;
+        }
+
+        return remap;
+    }
+
+    private static int[] Compose(int[] inner, int[] outer)
+    {
+        var composed = new int[inner.Length];
+        for (int b = 0; b < inner.Length; b++)
+        {
+            int local = inner[b];
+            composed[b] = local < 0 ? -1 : local < outer.Length ? outer[local] : 0;
+        }
+
+        return composed;
     }
 
     public static IReadOnlyList<ClothPiece> For(string modelPath, ArrayMesh mesh)
@@ -156,24 +236,21 @@ public static class Engine_ClothPieces
         byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(modelPath);
         if (bytes is null ||
             !Engine_MdlData.TryParseInfo(bytes, modelPath, out MdlInfo info, out _) ||
-            info.ClothBlocks.Count == 0)
-        {
-            return pieces;
-        }
-
-        if (!mesh.HasMeta(Engine_MdlMesh.SourceVertexMapMeta))
+            info.ClothBlocks.Count == 0 ||
+            !mesh.HasMeta(Engine_MdlMesh.SourceVertexMapMeta))
         {
             return pieces;
         }
 
         int[] map = mesh.GetMeta(Engine_MdlMesh.SourceVertexMapMeta).AsInt32Array();
-        if (map.Length == 0)
+        int surfaceCount = mesh.GetSurfaceCount();
+        var surfaceBase = new int[surfaceCount + 1];
+        for (int s = 0; s < surfaceCount; s++)
         {
-            return pieces;
+            surfaceBase[s + 1] = surfaceBase[s] + Engine_MdlSurfaceArrays.VertexCount(mesh, s);
         }
 
-        Vector3[] positions = VertexPositions(mesh);
-        if (positions.Length != map.Length)
+        if (map.Length != surfaceBase[surfaceCount])
         {
             return pieces;
         }
@@ -186,57 +263,57 @@ public static class Engine_ClothPieces
             running += (int)buffer.VertexCount;
         }
 
+        int[] identity = IdentityRemap(mesh);
         int skipped = 0;
 
         foreach (MdlClothBlock block in info.ClothBlocks)
         {
             int record = (int)block.RecordIndex;
-            if (record < 0 || record >= bases.Count)
+            if (record < 0 || record >= bases.Count || bases[record].Count == 0)
             {
                 skipped++;
                 continue;
             }
 
             (uint count, int start) = bases[record];
-            if (count != block.SimVertexCount || count == 0)
-            {
-                skipped++;
-                continue;
-            }
 
-            var clothVertexOf = new int[map.Length];
-            var bind = new PhysVec4[count];
-            var seeded = new bool[count];
-            int driven = 0;
-
-            for (int v = 0; v < map.Length; v++)
+            // The surfaces the record's buffer feeds, and the material of the largest.
+            UInt128 hidden = UInt128.Zero;
+            Material? material = null;
+            int best = 0;
+            for (int s = 0; s < surfaceCount && s < 128; s++)
             {
-                int local = map[v] - start;
-                if (local < 0 || local >= (int)count)
+                int hits = 0;
+                for (int v = surfaceBase[s]; v < surfaceBase[s + 1]; v++)
                 {
-                    clothVertexOf[v] = -1;
+                    int local = map[v] - start;
+                    if (local >= 0 && local < (int)count)
+                    {
+                        hits++;
+                    }
+                }
+
+                if (hits == 0)
+                {
                     continue;
                 }
 
-                clothVertexOf[v] = local;
-                driven++;
-
-                if (!seeded[local])
+                hidden |= UInt128.One << s;
+                if (hits > best)
                 {
-                    seeded[local] = true;
-                    Vector3 p = positions[v];
-                    bind[local] = new PhysVec4(p.X, p.Y, p.Z, 1.0f);
+                    best = hits;
+                    material = mesh.SurfaceGetMaterial(s);
                 }
             }
 
-            if (driven == 0)
+            if (hidden == UInt128.Zero)
             {
                 skipped++;
                 continue;
             }
 
-            ClothAsset? asset = Engine_ClothBuilder.Build(bytes, block, modelPath, bind);
-            if (asset is null || !asset.Simulates)
+            ClothAsset? asset = Engine_ClothBuilder.Build(bytes, block, modelPath);
+            if (asset is null || !asset.Simulates || asset.Indices.Length < 3)
             {
                 skipped++;
                 continue;
@@ -245,34 +322,34 @@ public static class Engine_ClothPieces
             pieces.Add(new ClothPiece
             {
                 Asset = asset,
-                ClothVertexOf = clothVertexOf,
+                HiddenSurfaces = hidden,
+                Material = material,
+                BoneRemap = identity,
                 ModelPath = modelPath,
-                DrivenVertices = driven,
             });
         }
 
         if (pieces.Count != 0 || skipped != 0)
         {
-            GD.Print($"[cloth] {Leaf(modelPath)}: {pieces.Count} piece(s) driving the mesh" +
+            GD.Print($"[cloth] {Leaf(modelPath)}: {pieces.Count} piece(s) standing in for the mesh" +
                 (skipped != 0
-                    ? $", {skipped} block(s) skipped — the buffer holds a different vertex " +
-                      "count than the block simulates"
+                    ? $", {skipped} block(s) skipped — no surface of the mesh comes from the record's buffer"
                     : string.Empty));
         }
 
         return pieces;
     }
 
-    public static Vector3[] VertexPositions(ArrayMesh mesh)
+    private static int[] IdentityRemap(ArrayMesh mesh)
     {
-        var all = new List<Vector3>();
-        for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+        int bones = Engine_MdlRig.TryFrom(mesh) is { } rig ? rig.BoneCount : 0;
+        var remap = new int[bones];
+        for (int b = 0; b < bones; b++)
         {
-            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(mesh, surface);
-            all.AddRange(arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array());
+            remap[b] = b;
         }
 
-        return all.ToArray();
+        return remap;
     }
 
     private static string Leaf(string path)

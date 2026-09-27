@@ -155,10 +155,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     public override void _Process(double delta)
     {
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("skyenvironmentnode");
+        long lap = System.Diagnostics.Stopwatch.GetTimestamp();
         if (Current == this)
         {
             Refii.Lighting.Engine_GiRefresh.Tick(Environment, GetViewport()?.GetCamera3D(), delta);
         }
+
+        Refii.Core.Engine_FramePhases.Lap("sky.gi", ref lap);
 
         if (Lighting is null && _attempts <= MountAttempts)
         {
@@ -174,10 +177,15 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         FollowGuestClock();
+        Refii.Core.Engine_FramePhases.Lap("sky.clock", ref lap);
         Engine_LevelBakedLighting.PumpRefresh(RelightBudgetMs);
+        Refii.Core.Engine_FramePhases.Lap("sky.relight", ref lap);
         TickPainted((float)delta);
+        Refii.Core.Engine_FramePhases.Lap("sky.painted", ref lap);
         TrackBodies();
+        Refii.Core.Engine_FramePhases.Lap("sky.bodies", ref lap);
         AnimateSky((float)delta);
+        Refii.Core.Engine_FramePhases.Lap("sky.anim", ref lap);
         if (Engine_PostFxParams.SunSourcesRequested)
         {
             Engine_PostFxSunSources.Ensure(this);
@@ -185,6 +193,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         PublishPostFx();
         SyncEditorCompositor();
+        Refii.Core.Engine_FramePhases.Lap("sky.postfx", ref lap);
     }
 
     /// <summary>

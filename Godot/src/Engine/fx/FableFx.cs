@@ -54,10 +54,14 @@ public partial class FableFx : Node3D
     private bool _emitAddNull = true;
     private bool _emitDispActive;
     private bool _emitAddActive;
-    private MeshInstance3D? _dispSurface;
+    private Engine_FxLayerInstance? _dispInstance;
     private ArrayMesh? _dispMesh;
-    private MeshInstance3D? _addSurface;
+    private Engine_FxLayerInstance? _addInstance;
     private ArrayMesh? _addMesh;
+
+    /// <summary>Displacement mesh effects: instances in the displacement layer's world, by path;
+    /// the node in <see cref="_meshNodes"/> is kept for its MultiMesh and never enters the tree.</summary>
+    private readonly Dictionary<string, Engine_FxLayerInstance> _meshInstances = new();
     private bool _built;
     private string _builtName = string.Empty;
 
@@ -198,6 +202,7 @@ public partial class FableFx : Node3D
 
     public override void _Ready()
     {
+        SetNotifyTransform(true);
         EnsureBuilt();
 
         // Godot turns processing on in NOTIFICATION_READY, after _EnterTree and before this
@@ -207,7 +212,106 @@ public partial class FableFx : Node3D
 
     public override void _EnterTree() => Engine_FxDriver.Register(this);
 
-    public override void _ExitTree() => Engine_FxDriver.Unregister(this);
+    public override void _ExitTree()
+    {
+        Engine_FxDriver.Unregister(this);
+        FreeLayerInstances();
+    }
+
+    /// <summary>
+    /// The layer instances follow this node's world transform and visibility, which the scene
+    /// tree no longer propagates to them.
+    /// </summary>
+    public override void _Notification(int what)
+    {
+        if (!IsInsideTree())
+        {
+            return;  // a node leaving or not yet in the tree has no world transform to give
+        }
+
+        if (what == NotificationTransformChanged)
+        {
+            Transform3D world = GlobalTransform;
+            _addInstance?.SetTransform(world);
+            _dispInstance?.SetTransform(world);
+            foreach (Engine_FxLayerInstance instance in _meshInstances.Values)
+            {
+                instance.SetTransform(world);
+            }
+        }
+        else if (what == NotificationVisibilityChanged)
+        {
+            bool visible = IsVisibleInTree();
+            _addInstance?.SetVisible(visible);
+            _dispInstance?.SetVisible(visible);
+            foreach (Engine_FxLayerInstance instance in _meshInstances.Values)
+            {
+                instance.SetVisible(visible);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates the layer instances whose layer world exists now. The layer nodes are added
+    /// deferred, so the first Step after the meshes are built may find no scenario yet and
+    /// tries again next frame; an instance made here starts at this node's transform.
+    /// </summary>
+    private void EnsureLayerInstances()
+    {
+        if (!IsInsideTree())
+        {
+            return;
+        }
+
+        Transform3D world = GlobalTransform;
+        bool visible = IsVisibleInTree();
+        if (_addMesh is not null && _addInstance is null &&
+            Engine_FxLayerInstance.Create(_addMesh.GetRid(), Engine_FxAdditiveLayer.Scenario,
+                Engine_FxAdditiveLayer.LayerMask, 1f, world, visible) is { } add)
+        {
+            _addInstance = add;
+            _axesPublished = false;  // a new surface has never been told where the camera is
+        }
+
+        if (_dispMesh is not null && _dispInstance is null &&
+            Engine_FxLayerInstance.Create(_dispMesh.GetRid(), Engine_FxDisplacement.Scenario,
+                Engine_FxDisplacement.LayerMask, 1f, world, visible) is { } disp)
+        {
+            _dispInstance = disp;
+            _axesPublished = false;
+        }
+
+        foreach ((string path, MultiMeshInstance3D node) in _meshNodes)
+        {
+            if (node.Layers != Engine_FxDisplacement.LayerMask || _meshInstances.ContainsKey(path) ||
+                node.Multimesh is not MultiMesh multi)
+            {
+                continue;
+            }
+
+            Engine_FxLayerInstance? instance = Engine_FxLayerInstance.Create(multi.GetRid(),
+                Engine_FxDisplacement.Scenario, Engine_FxDisplacement.LayerMask, 1f, world, visible,
+                node.MaterialOverride?.GetRid() ?? default);
+            if (instance is not null)
+            {
+                _meshInstances[path] = instance;
+            }
+        }
+    }
+
+    private void FreeLayerInstances()
+    {
+        _addInstance?.Free();
+        _addInstance = null;
+        _dispInstance?.Free();
+        _dispInstance = null;
+        foreach (Engine_FxLayerInstance instance in _meshInstances.Values)
+        {
+            instance.Free();
+        }
+
+        _meshInstances.Clear();
+    }
 
     /// <summary>
     /// Self-stepping, taken only while no <see cref="Engine_FxDriver"/> is in the tree (the
@@ -335,6 +439,7 @@ public partial class FableFx : Node3D
             return;
         }
 
+        EnsureLayerInstances();
         Transform3D local = GlobalTransform.AffineInverse() * camera.GlobalTransform;
         Vector3 cameraPos = local.Origin;
         Vector3 cameraRight = local.Basis.X.Normalized();
@@ -388,7 +493,10 @@ public partial class FableFx : Node3D
                 }
 
                 _meshNodes[path] = node;
-                AddChild(node);
+                if (!data.Displacement)
+                {
+                    AddChild(node);
+                }
             }
 
             if (node.Multimesh is not MultiMesh multi)
@@ -592,16 +700,16 @@ public partial class FableFx : Node3D
             _surface.SetInstanceShaderParameter(CamUpParam, up);
         }
 
-        if (_addSurface is not null && IsInstanceValid(_addSurface))
+        if (_addInstance is not null)
         {
-            _addSurface.SetInstanceShaderParameter(CamRightParam, right);
-            _addSurface.SetInstanceShaderParameter(CamUpParam, up);
+            _addInstance.SetShaderParameter(CamRightParam, right);
+            _addInstance.SetShaderParameter(CamUpParam, up);
         }
 
-        if (_dispSurface is not null && IsInstanceValid(_dispSurface))
+        if (_dispInstance is not null)
         {
-            _dispSurface.SetInstanceShaderParameter(CamRightParam, right);
-            _dispSurface.SetInstanceShaderParameter(CamUpParam, up);
+            _dispInstance.SetShaderParameter(CamRightParam, right);
+            _dispInstance.SetShaderParameter(CamUpParam, up);
         }
     }
 
@@ -659,6 +767,12 @@ public partial class FableFx : Node3D
             node.QueueFree();
         }
 
+        foreach (Engine_FxLayerInstance instance in _meshInstances.Values)
+        {
+            instance.Free();
+        }
+
+        _meshInstances.Clear();
         _meshNodes.Clear();
         _meshData.Clear();
 
@@ -698,35 +812,18 @@ public partial class FableFx : Node3D
             _axesPublished = false;  // a new surface has never been told where the camera is
         }
 
-        if (_addSurface is null && _system.HasAdditive)
+        // The additive and displacement surfaces live in the layers' own worlds as server
+        // instances (Engine_FxLayerInstance), created by EnsureLayerInstances once the layer
+        // node — added deferred — has a world.
+        if (_addMesh is null && _system.HasAdditive)
         {
             _addMesh = new ArrayMesh();
-            _addSurface = new MeshInstance3D
-            {
-                Name = "FxAdditive",
-                Mesh = _addMesh,
-                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                ExtraCullMargin = 1f,
-                Layers = Engine_FxAdditiveLayer.LayerMask,
-            };
-            AddChild(_addSurface);
-            _axesPublished = false;  // a new surface has never been told where the camera is
             Engine_FxAdditiveLayer.Ensure(this);
         }
 
-        if (_dispSurface is null && _system.HasDisplacement)
+        if (_dispMesh is null && _system.HasDisplacement)
         {
             _dispMesh = new ArrayMesh();
-            _dispSurface = new MeshInstance3D
-            {
-                Name = "FxDisplacement",
-                Mesh = _dispMesh,
-                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                ExtraCullMargin = 1f,
-                Layers = Engine_FxDisplacement.LayerMask,
-            };
-            AddChild(_dispSurface);
-            _axesPublished = false;  // a new surface has never been told where the camera is
             Engine_FxDisplacement.Ensure(this);
         }
 

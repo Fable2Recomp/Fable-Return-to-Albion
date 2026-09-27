@@ -21,6 +21,17 @@ def metrics(_args):
     return ask({"op": "metrics"})
 
 
+@tool(
+    "refii_cloth",
+    "Every live cloth body — the entity node it hangs under, the model, vertices, the "
+    "distance fade weight, relaxation iterations and residual, whether it sleeps, and its "
+    "solve and upload cost — with the totals per frame. The main-thread share of the cloth "
+    "is the upload figure; the solve runs on worker threads.",
+)
+def cloth(_args):
+    return ask({"op": "cloth"}, timeout=15.0)
+
+
 def _motion_summary(rows):
     """Frame-to-frame motion of a drawn-position trace: what a viewer sees as judder.
 
@@ -117,6 +128,8 @@ _RENDER_LEVERS = {
     "propShadow": {"type": "boolean",
                    "description": "Prop batches cast through a merged cast-only twin; false hands each batch its own "
                                   "shadow back at once. Single-node props are not switched by it."},
+    "reflectContract": {"type": "boolean",
+        "description": "The mirrors follow the guest's reflection contract (terrain, props, sky; no entities, no sun cascades); false reflects everything but the water, cascades included."},
     "shadowProxy": {"type": "boolean",
                     "description": "Characters cast through one merged cast-only mesh; false hands each body its "
                                    "own shadow back within a reconcile pass (watch shadowProxies fall to 0)."},

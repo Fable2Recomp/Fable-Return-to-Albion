@@ -26,20 +26,17 @@ public partial class GameDevTabGpu : GameDevTab
 
 	public override void Refresh()
 	{
-		Rid viewport = GameViewport;
-		double Info(RenderingServer.ViewportRenderInfoType type, RenderingServer.ViewportRenderInfo info) =>
-			RenderingServer.ViewportGetRenderInfo(viewport, type, info);
-		const RenderingServer.ViewportRenderInfoType Visible = RenderingServer.ViewportRenderInfoType.Visible;
-		const RenderingServer.ViewportRenderInfoType Shadow = RenderingServer.ViewportRenderInfoType.Shadow;
+		// The render thread's published sample (Engine_RenderStats): no server getter here.
+		Engine_RenderStats.Sample render = Engine_RenderStats.Of(GameViewportNode);
 
 		double mb = 1048576.0;
 		Dictionary<string, object?> report = Engine_GpuPasses.Report();
 		_summary.Text =
-			$"gpu {RenderingServer.ViewportGetMeasuredRenderTimeGpu(viewport):0.00} ms   " +
+			$"gpu {render.GpuMs:0.00} ms   " +
 			$"passes total {Engine_GpuPasses.LastTotalMs:0.00} ms   adapter {RenderingServer.GetVideoAdapterName()}\n" +
 			$"              draws      prims (M)   objects\n" +
-			$"visible  {Info(Visible, RenderingServer.ViewportRenderInfo.DrawCallsInFrame),9:0}  {Info(Visible, RenderingServer.ViewportRenderInfo.PrimitivesInFrame) / 1e6,10:0.00}  {Info(Visible, RenderingServer.ViewportRenderInfo.ObjectsInFrame),8:0}\n" +
-			$"shadow   {Info(Shadow, RenderingServer.ViewportRenderInfo.DrawCallsInFrame),9:0}  {Info(Shadow, RenderingServer.ViewportRenderInfo.PrimitivesInFrame) / 1e6,10:0.00}  {Info(Shadow, RenderingServer.ViewportRenderInfo.ObjectsInFrame),8:0}\n" +
+			$"visible  {render.VisibleCalls,9}  {render.VisiblePrims / 1e6,10:0.00}  {render.VisibleObjects,8}\n" +
+			$"shadow   {render.ShadowCalls,9}  {render.ShadowPrims / 1e6,10:0.00}  {render.ShadowObjects,8}\n" +
 			$"vram  total {Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / mb:0} MB   " +
 			$"textures {Performance.GetMonitor(Performance.Monitor.RenderTextureMemUsed) / mb:0} MB   " +
 			$"buffers {Performance.GetMonitor(Performance.Monitor.RenderBufferMemUsed) / mb:0} MB" +

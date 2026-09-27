@@ -57,6 +57,12 @@ public partial class Engine_FxAdditiveLayer : Node
 
     public static Engine_FxAdditiveLayer? Current => _current;
 
+    /// <summary>The layer world's scenario for its instances; invalid until the layer is up.</summary>
+    public static Rid Scenario =>
+        _current is not null && GodotObject.IsInstanceValid(_current) && _current._viewport is not null
+            ? _current._viewport.World3D.Scenario
+            : default;
+
     /// <summary>Whether the viewport texture resolved for the post chain.</summary>
     public bool Usable => _usable;
 
@@ -127,7 +133,10 @@ public partial class Engine_FxAdditiveLayer : Node
             UseDebanding = false,
             UseHdr2D = true,
             PositionalShadowAtlasSize = 0,
-            World3D = _host!.World3D,
+            // ITS OWN WORLD. The layer's surfaces are rendering-server instances in this world
+            // (Engine_FxLayerInstance), so the main scene's index never holds them and this
+            // viewport culls only them; the scene depth arrives through the depth-capture global.
+            World3D = new World3D(),
         };
         Gain = Math.Clamp(
             Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), GainSettingKey, 1f),

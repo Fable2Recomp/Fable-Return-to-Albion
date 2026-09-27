@@ -24,6 +24,14 @@ public static class Engine_HeroBodyMorph
 
     public static bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Set on every mesh this class blends. The guest builds a morphed model by copying its
+    /// records without the cloth definition (<c>sub_82B25C10</c>/<c>sub_82B2A730</c> never
+    /// store record+64, the ctors zero it), so a morphed model gets NO cloth proxies and
+    /// draws its garments GPU-skinned; the cloth body reads this and stays away.
+    /// </summary>
+    public const string MorphedMeta = "mdl_morphed";
+
     public static readonly Transform3D ZUpToYUp = new(
         new Basis(
             new Vector3(1.0f, 0.0f, 0.0f),
@@ -153,6 +161,7 @@ public static class Engine_HeroBodyMorph
         }
 
         var result = new ArrayMesh();
+        result.SetMeta(MorphedMeta, true);
         bool moved = false;
 
         for (int s = 0; s < source.GetSurfaceCount(); s++)

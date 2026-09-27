@@ -300,8 +300,24 @@ public sealed class MdlInfo
     public List<MdlMorphTarget> MorphTargets { get; } = new();
 }
 
+/// <summary>
+/// One mesh record's cloth block, as the guest's <c>sub_82B36E50</c> parses it. Offsets are into
+/// the model's bytes. The block carries the sim mesh's own vertex set (<see cref="SimVertexCount"/>
+/// vertices, its own u16 index list and UVs), the distance-constraint edges, the skin driver, the
+/// four collider tables with their bone indices, the weld pairs and the seven per-item parameters.
+/// </summary>
 public sealed class MdlClothBlock
 {
+    public const int SphereRecordSize = 32;
+
+    public const int PlaneRecordSize = 52;
+
+    public const int CapsuleRecordSize = 56;
+
+    public const int BoxRecordSize = 148;
+
+    public const int WeldRecordSize = 8;
+
     public uint RecordIndex { get; set; }
 
     public uint MeshIndex { get; set; }
@@ -310,7 +326,16 @@ public sealed class MdlClothBlock
 
     public int BlockSize { get; set; }
 
+    /// <summary>The first header word; stored by the guest at Data+16 and never read.</summary>
+    public uint Unknown16 { get; set; }
+
     public uint SimVertexCount { get; set; }
+
+    /// <summary>First vertex the solver integrates and collides (Data+28).</summary>
+    public int SimBegin { get; set; }
+
+    /// <summary>End (exclusive) of the integrated range (Data+32); the vertex count before file version 36.</summary>
+    public int SimEnd { get; set; }
 
     public uint TriangleCount { get; set; }
 
@@ -320,19 +345,41 @@ public sealed class MdlClothBlock
 
     public uint BonesPerVertex { get; set; }
 
-    public uint DistConstraints { get; set; }
+    public uint SphereCount { get; set; }
 
-    public uint BendConstraintsA { get; set; }
+    public uint PlaneCount { get; set; }
 
-    public uint BendConstraintsB { get; set; }
+    public uint CapsuleCount { get; set; }
 
-    public uint VolConstraints { get; set; }
+    public uint BoxCount { get; set; }
 
-    public uint LinkConstraints { get; set; }
+    public uint WeldCount { get; set; }
 
+    /// <summary>
+    /// Data+244..+264: attribute scale, an unread 25.0, damping, wind strength, gravity
+    /// strength, inertia. See <see cref="Refii.Physics.ClothAsset"/> for the runtime meaning.
+    /// </summary>
     public float[] SimParams { get; set; } = new float[6];
 
+    /// <summary>Data+268: enables the root-motion follow together with <see cref="FollowByte1"/>.</summary>
+    public byte FollowByte0 { get; set; }
+
+    /// <summary>Data+269: the follow keeps the rotation of the root delta; clear, the pass is a no-op.</summary>
+    public byte FollowByte1 { get; set; }
+
     public int RestPosOffset { get; set; }
+
+    /// <summary>Per sim vertex float2 UV (Data+136); the guest's tangent build reads it.</summary>
+    public int UvOffset { get; set; }
+
+    /// <summary>Per sim vertex 4 bytes bound as GPU vertex stream 1 (Data+164); never read on the CPU.</summary>
+    public int StreamOneOffset { get; set; }
+
+    /// <summary>Per sim vertex float4 added to the recomputed tangent (Data+120).</summary>
+    public int TangentWOffset { get; set; }
+
+    /// <summary>Per sim vertex 4 bytes written into the render position's w (Data+304).</summary>
+    public int PositionWOffset { get; set; }
 
     public int IndexListOffset { get; set; }
 
@@ -345,6 +392,19 @@ public sealed class MdlClothBlock
     public int EdgePairOffset { get; set; }
 
     public int EdgeParamOffset { get; set; }
+
+    public int SphereOffset { get; set; }
+
+    public int PlaneOffset { get; set; }
+
+    public int CapsuleOffset { get; set; }
+
+    public int BoxOffset { get; set; }
+
+    public int WeldOffset { get; set; }
+
+    /// <summary>The sim vertex set in the mesh's own vertex format (Data+272), nv * 16 * sh4 bytes.</summary>
+    public int RawVertexOffset { get; set; }
 
     public uint BoneVertexCount { get; set; }
 }

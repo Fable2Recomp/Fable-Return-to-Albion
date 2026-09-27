@@ -31,7 +31,8 @@ internal static class Engine_MdlMerge
             MaterialKey(geo.Material),
             geo.HasTangents ? "|t" : "|-",
             geo.HasBones ? "|b" : "|-",
-            "|", geo.Region);
+            "|", geo.Region,
+            geo.ClothRecord >= 0 ? "|cloth" + geo.ClothRecord : string.Empty);
 
     internal static List<MdlGeometry> ByMaterial(List<MdlGeometry> geometry)
     {
@@ -92,6 +93,7 @@ internal static class Engine_MdlMerge
         {
             Name = first.Name,
             Region = first.Region,
+            ClothRecord = first.ClothRecord,
             Material = first.Material,
             Positions = new float[vertices * 3],
             Normals = new float[vertices * 3],

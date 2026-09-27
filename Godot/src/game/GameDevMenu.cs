@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Godot;
+using Refii.Core;
 
 namespace Refii.Game;
 
@@ -193,7 +194,7 @@ public abstract partial class GameDevTab : VBoxContainer
 	/// The game's viewport — the root, where the world draws. A tab's own
 	/// <see cref="Node.GetViewport"/> is the menu's embedded window, which draws only the menu.
 	/// </summary>
-	protected Rid GameViewport => GetTree().Root.GetViewportRid();
+	protected Viewport GameViewportNode => GetTree().Root;
 
 	/// <summary>Every frame the menu is open, whichever tab shows — for sampled history.</summary>
 	public virtual void Tick(double delta)

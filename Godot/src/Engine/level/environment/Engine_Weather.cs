@@ -21,6 +21,13 @@ public static class Engine_Weather
     /// </summary>
     public const float WeatherGate = 0.05f;
 
+    /// <summary>
+    /// The level's wind as a world-space velocity — the direction the rain and the plants
+    /// take, times the theme's strength — which is what the guest hands its cloth
+    /// (<c>sub_821D1FD8</c>: level+0xD38 direction × level+0xD44 speed). Set with the level.
+    /// </summary>
+    public static Vector3 WindWorld { get; set; } = Vector3.Zero;
+
     public static MeshInstance3D? Build(WeatherTheme theme, float windAzimuth, float windStrength)
     {
         float rainDensity = Math.Clamp(

@@ -7,12 +7,109 @@ namespace Refii.Level;
 
 public static class Engine_LevelMesh
 {
+    /// <summary>
+    /// Cells per side of a terrain chunk: 64 cells = 32 m. Godot culls per instance, so as one
+    /// mesh the whole heightfield is drawn by every pass whose frustum touches its box — the
+    /// pre-pass, the opaque pass, each sun cascade and each mirror; as chunks each pass draws
+    /// the chunks it sees. The chunks share the grid's border vertices and the one splat material.
+    /// </summary>
+    public const int ChunkCells = 64;
+
     public static ArrayMesh ToArrayMesh(TerrainMesh terrain, string surfaceName)
     {
         int count = terrain.VertexCount;
+        var vertexIds = new int[count];
+        for (int v = 0; v < count; v++)
+        {
+            vertexIds[v] = v;
+        }
+
+        var mesh = new ArrayMesh();
+        AddSurface(mesh, terrain, vertexIds, terrain.Indices, surfaceName);
+        return mesh;
+    }
+
+    /// <summary>
+    /// The grid as <see cref="ChunkCells"/>-cell chunks, row-major, each a mesh of its own with
+    /// the surface named after the chunk. A grid smaller than one chunk is one chunk.
+    /// </summary>
+    public static List<ArrayMesh> ToChunkMeshes(TerrainMesh terrain, string name)
+    {
+        var chunks = new List<ArrayMesh>();
+        int w = terrain.Width;
+        int h = terrain.Height;
+        if (w < 2 || h < 2)
+        {
+            return chunks;
+        }
+
+        int columns = Math.Max(1, (w - 1 + ChunkCells - 1) / ChunkCells);
+        int rows = Math.Max(1, (h - 1 + ChunkCells - 1) / ChunkCells);
+        var local = new int[(long)w * h];
+        for (int cy = 0; cy < rows; cy++)
+        {
+            int y0 = cy * ChunkCells;
+            int y1 = Math.Min(h - 1, y0 + ChunkCells);
+            for (int cx = 0; cx < columns; cx++)
+            {
+                int x0 = cx * ChunkCells;
+                int x1 = Math.Min(w - 1, x0 + ChunkCells);
+                int chunkW = x1 - x0 + 1;
+                int chunkH = y1 - y0 + 1;
+                var vertexIds = new int[chunkW * chunkH];
+                int n = 0;
+                for (int y = y0; y <= y1; y++)
+                {
+                    for (int x = x0; x <= x1; x++)
+                    {
+                        int id = (y * w) + x;
+                        local[id] = n;
+                        vertexIds[n++] = id;
+                    }
+                }
+
+                var indices = new int[(chunkW - 1) * (chunkH - 1) * 6];
+                int k = 0;
+                for (int y = y0; y < y1; y++)
+                {
+                    for (int x = x0; x < x1; x++)
+                    {
+                        // The grid's winding (Engine_GhfTerrain.BuildMesh): clockwise from above
+                        // under the region's mirrored root.
+                        int i00 = local[(y * w) + x];
+                        int i10 = local[(y * w) + x + 1];
+                        int i01 = local[((y + 1) * w) + x];
+                        int i11 = local[((y + 1) * w) + x + 1];
+                        indices[k++] = i00;
+                        indices[k++] = i01;
+                        indices[k++] = i10;
+                        indices[k++] = i10;
+                        indices[k++] = i01;
+                        indices[k++] = i11;
+                    }
+                }
+
+                var mesh = new ArrayMesh();
+                AddSurface(mesh, terrain, vertexIds, indices, $"{name}[{cx},{cy}]");
+                chunks.Add(mesh);
+            }
+        }
+
+        return chunks;
+    }
+
+    /// <summary>
+    /// One surface from the grid vertices <paramref name="vertexIds"/> name, indexed by
+    /// <paramref name="indices"/> into that list.
+    /// </summary>
+    private static void AddSurface(
+        ArrayMesh mesh, TerrainMesh terrain, int[] vertexIds, int[] indices, string surfaceName)
+    {
+        int count = vertexIds.Length;
         var vertices = new Vector3[count];
         var normals = new Vector3[count];
         var uvs = new Vector2[count];
+        var tangents = new float[count * 4];
 
         // THE TANGENT FRAME, WITHOUT WHICH THE NORMAL MAPS DO NOTHING. The splat shader writes
         // NORMAL_MAP, and Godot applies that through TANGENT and BINORMAL — with no tangent
@@ -27,20 +124,20 @@ public static class Engine_LevelMesh
         // ground V is ALSO negated (v = -worldY), so the invariant is "+sample.y tilts toward
         // +v". Our v runs along +Z with B along +Z — the same invariant, mirrored consistently
         // with the co-sampled diffuse. The broken combination is v and B disagreeing.
-        var tangents = new float[count * 4];
-
-        for (int v = 0; v < count; v++)
+        for (int n = 0; n < count; n++)
         {
-            vertices[v] = new Vector3(
+            int v = vertexIds[n];
+            vertices[n] = new Vector3(
                 terrain.Positions[(v * 3) + 0],
                 terrain.Positions[(v * 3) + 1],
                 terrain.Positions[(v * 3) + 2]);
+
             var normal = new Vector3(
                 terrain.Normals[(v * 3) + 0],
                 terrain.Normals[(v * 3) + 1],
                 terrain.Normals[(v * 3) + 2]);
-            normals[v] = normal;
-            uvs[v] = new Vector2(terrain.Uvs[(v * 2) + 0], terrain.Uvs[(v * 2) + 1]);
+            normals[n] = normal;
+            uvs[n] = new Vector2(terrain.Uvs[(v * 2) + 0], terrain.Uvs[(v * 2) + 1]);
 
             // GRAM-SCHMIDT PER VERTEX, exactly the guest's own construction (blob 0173 builds
             // T = Gram-Schmidt(+X) against the vertex normal). A constant (1, 0, 0) is NOT
@@ -51,10 +148,10 @@ public static class Engine_LevelMesh
             // ground's NdotL for every light in the game.
             Vector3 tangent = new Vector3(1f, 0f, 0f) - (normal * normal.X);
             tangent = tangent.LengthSquared() > 1e-8f ? tangent.Normalized() : new Vector3(1f, 0f, 0f);
-            tangents[(v * 4) + 0] = tangent.X;
-            tangents[(v * 4) + 1] = tangent.Y;
-            tangents[(v * 4) + 2] = tangent.Z;
-            tangents[(v * 4) + 3] = -1f;
+            tangents[(n * 4) + 0] = tangent.X;
+            tangents[(n * 4) + 1] = tangent.Y;
+            tangents[(n * 4) + 2] = tangent.Z;
+            tangents[(n * 4) + 3] = -1f;
         }
 
         var arrays = new Godot.Collections.Array();
@@ -63,12 +160,9 @@ public static class Engine_LevelMesh
         arrays[(int)Mesh.ArrayType.Normal] = normals;
         arrays[(int)Mesh.ArrayType.Tangent] = tangents;
         arrays[(int)Mesh.ArrayType.TexUV] = uvs;
-        arrays[(int)Mesh.ArrayType.Index] = terrain.Indices;
-
-        var mesh = new ArrayMesh();
+        arrays[(int)Mesh.ArrayType.Index] = indices;
         mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-        mesh.SurfaceSetName(0, surfaceName);
-        return mesh;
+        mesh.SurfaceSetName(mesh.GetSurfaceCount() - 1, surfaceName);
     }
 }
 
@@ -77,6 +171,26 @@ public static class Engine_LevelScene
     public const string TerrainNodeName = "Terrain";
 
     public const string AdjacentNodeName = "AdjacentTerrain";
+
+    /// <summary>The chunk instances of the region's terrain, in grid order; empty without one.</summary>
+    public static List<MeshInstance3D> TerrainChunksOf(Node region)
+    {
+        var chunks = new List<MeshInstance3D>();
+        if (region.GetNodeOrNull<Node3D>(TerrainNodeName) is not { } container)
+        {
+            return chunks;
+        }
+
+        foreach (Node child in container.GetChildren())
+        {
+            if (child is MeshInstance3D { Mesh: not null } chunk)
+            {
+                chunks.Add(chunk);
+            }
+        }
+
+        return chunks;
+    }
 
     public const string WaterNodeName = "Water";
 
@@ -335,17 +449,35 @@ public static class Engine_LevelScene
 
         string meshPath = Engine_BnkTerrainLoader.PathPrefix + heightfieldPath;
         Func<string, byte[]?>? terrainRead = source;
-        (ArrayMesh? Mesh, Material? Material,
-            List<(string Path, string Name, ArrayMesh Mesh, Material? Material)> VistaBuilt)
+        (List<ArrayMesh> Chunks, Material? Material,
+            List<(string Path, string Name, List<ArrayMesh> Chunks, Material? Material)> VistaBuilt)
             TerrainWork()
         {
-            var mesh = ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh");
+            // The same decode and grid the `game://` loader builds for the browser, cut into
+            // chunks for the scene (Engine_LevelMesh.ChunkCells). A read that fails leaves no
+            // chunks and the build reports the path.
+            var chunks = new List<ArrayMesh>();
+            string ghfError = terrainRead is null ? "no reader" : "not in any bank";
+            if (terrainRead?.Invoke(heightfieldPath) is { } ghfBytes &&
+                Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
+            {
+                chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), "Terrain");
+            }
+            else if (terrainRead is null &&
+                ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh") is { } whole)
+            {
+                chunks.Add(whole);
+            }
+            else
+            {
+                GD.Print($"[level] {level}: heightfield {heightfieldPath} did not decode ({ghfError})");
+            }
 
             Material? material = level.MainEhfPath.Length != 0
                 ? LoadTerrainMaterial(level.MainEhfPath)
                 : null;
 
-            var vistaBuilt = new List<(string Path, string Name, ArrayMesh Mesh, Material? Material)>();
+            var vistaBuilt = new List<(string Path, string Name, List<ArrayMesh> Chunks, Material? Material)>();
             List<(string Path, TerrainMesh Mesh)> vistas = BuildAdjacent(level, terrainRead);
             for (int i = 0; i < vistas.Count; i++)
             {
@@ -359,10 +491,10 @@ public static class Engine_LevelScene
                     (vistaMaterial is null ? "NO splat material" : "splat material") + ")");
 
                 vistaBuilt.Add(
-                    (vistaPath, name, Engine_LevelMesh.ToArrayMesh(vistaMesh, name), vistaMaterial));
+                    (vistaPath, name, Engine_LevelMesh.ToChunkMeshes(vistaMesh, name), vistaMaterial));
             }
 
-            return (mesh, material, vistaBuilt);
+            return (chunks, material, vistaBuilt);
         }
 
         var terrainTask =
@@ -532,6 +664,13 @@ public static class Engine_LevelScene
                 ? new Vector2(MathF.Cos(windAzimuth), MathF.Sin(windAzimuth))
                 : Vector2.Zero;
 
+            // The cloth takes the full vector: the guest's is direction × speed in its Z-up
+            // world, so the azimuth lies in its XY plane and is turned into ours here.
+            Engine_Weather.WindWorld = weather.HasWind
+                ? Refii.Models.Engine_GmdSkeleton.ZUpToYUp *
+                  (new Vector3(MathF.Cos(windAzimuth), MathF.Sin(windAzimuth), 0f) * windStrength)
+                : Vector3.Zero;
+
             MeshInstance3D? precipitation =
                 Engine_Weather.Build(weather, windAzimuth, windStrength);
             if (precipitation is not null)
@@ -648,68 +787,77 @@ public static class Engine_LevelScene
 
         Mark("rest");
 
-        (ArrayMesh? terrainMesh, Material? terrainMaterial,
-            List<(string Path, string Name, ArrayMesh Mesh, Material? Material)> vistaBuilt) =
+        (List<ArrayMesh> terrainChunks, Material? terrainMaterial,
+            List<(string Path, string Name, List<ArrayMesh> Chunks, Material? Material)> vistaBuilt) =
             terrainTask is not null ? terrainTask.GetAwaiter().GetResult() : TerrainWork();
 
-        if (terrainMesh is null)
+        if (terrainChunks.Count == 0)
         {
             root.QueueFree();
             error = $"terrain mesh did not load from {meshPath}";
             return null;
         }
 
-        var terrainNode = new MeshInstance3D
+        // A terrain is a container of chunk instances sharing one splat material: the chunks
+        // are what the passes cull, the container is what the editor and the lightmap binding
+        // address (TerrainChunksOf).
+        List<MeshInstance3D> AddTerrain(string name, List<ArrayMesh> chunks, Material? material)
         {
-            Name = TerrainNodeName,
-            Mesh = terrainMesh,
-        };
-
-        if (terrainMaterial is not null)
-        {
-            terrainNode.MaterialOverride = terrainMaterial;
-        }
-
-        root.AddChild(terrainNode);
-        terrainNode.Owner = root;
-
-        var vistaNodes = new List<(string Path, MeshInstance3D Node)>();
-        foreach ((string vistaPath, string vistaName, ArrayMesh vistaMesh, Material? vistaMaterial)
-                 in vistaBuilt)
-        {
-            var vistaNode = new MeshInstance3D
+            var container = new Node3D { Name = name };
+            root.AddChild(container);
+            container.Owner = root;
+            var nodes = new List<MeshInstance3D>(chunks.Count);
+            for (int i = 0; i < chunks.Count; i++)
             {
-                Name = vistaName,
-                Mesh = vistaMesh,
-            };
+                var chunk = new MeshInstance3D
+                {
+                    Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
+                    Name = $"{name}{i}",
+                    Mesh = chunks[i],
+                };
+                if (material is not null)
+                {
+                    chunk.MaterialOverride = material;
+                }
 
-            if (vistaMaterial is not null)
-            {
-                vistaNode.MaterialOverride = vistaMaterial;
+                container.AddChild(chunk);
+                chunk.Owner = root;
+                nodes.Add(chunk);
             }
 
-            root.AddChild(vistaNode);
-            vistaNode.Owner = root;
-            vistaNodes.Add((vistaPath, vistaNode));
+            return nodes;
+        }
+
+        List<MeshInstance3D> terrainNodes = AddTerrain(TerrainNodeName, terrainChunks, terrainMaterial);
+        var allTerrainNodes = new List<MeshInstance3D>(terrainNodes);
+        var surfaces = new List<(string Path, MeshInstance3D Node)>
+        {
+            (level.MainEhfPath, terrainNodes[0]),
+        };
+        foreach ((string vistaPath, string vistaName, List<ArrayMesh> vistaChunks, Material? vistaMaterial)
+                 in vistaBuilt)
+        {
+            if (vistaChunks.Count == 0)
+            {
+                continue;
+            }
+
+            List<MeshInstance3D> vistaNodes = AddTerrain(vistaName, vistaChunks, vistaMaterial);
+            allTerrainNodes.AddRange(vistaNodes);
+            surfaces.Add((vistaPath, vistaNodes[0]));
         }
 
         if (bakedLightmaps is not null && source is not null)
         {
-            var surfaces = new List<(string Path, MeshInstance3D Node)>
-            {
-                (level.MainEhfPath, terrainNode),
-            };
-            surfaces.AddRange(vistaNodes);
-
+            // One node per terrain: the lightmap binds to the material every chunk shares.
             BindTerrainLightmaps(level, surfaces, bakedLightmaps, bakedGdbPath, source);
         }
 
         if (lightingFrame is not null)
         {
-            Engine_LevelBakedLighting.ApplyInstanceLighting(terrainNode, lightingFrame);
-            foreach ((string _, MeshInstance3D vistaNode) in vistaNodes)
+            foreach (MeshInstance3D chunk in allTerrainNodes)
             {
-                Engine_LevelBakedLighting.ApplyInstanceLighting(vistaNode, lightingFrame);
+                Engine_LevelBakedLighting.ApplyInstanceLighting(chunk, lightingFrame);
             }
         }
 

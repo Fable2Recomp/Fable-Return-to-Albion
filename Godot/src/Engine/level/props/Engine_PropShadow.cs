@@ -174,20 +174,79 @@ public static class Engine_PropShadow
 		Refii.Lighting.Engine_ShadowReach.Adopt(toTwin ? twin : batch);
 	}
 
-	/// <summary>Writes one copy's transform to the batch and to its cast-only twin.</summary>
+	/// <summary>
+	/// Writes one copy's transform to the batch, and to its cast-only twin at the guest's
+	/// half rate.
+	/// </summary>
+	/// <remarks>
+	/// A MultiMesh slot write has no equality check in the server: it marks the buffer dirty,
+	/// the instance updates, and every lamp paired with a CASTING instance redraws its map
+	/// (`_update_instance`: `can_cast_shadows` → `make_shadow_dirty`, count 2). The lit batch
+	/// does not cast once its twin does, so its slot can follow the guest every display frame
+	/// for free; the twin is the caster, and it takes the slot on the same frames the
+	/// villagers' shadow skeletons move (`Engine_GuestFrame.HalfRate`, 15 Hz), so a bobbing
+	/// barge or a swinging sign under a lamp costs the map two redraws in eight frames, not
+	/// eight. An unchanged transform is not written at all.
+	/// </remarks>
 	public static void SetInstanceTransform(MultiMesh batch, int instance, Transform3D transform)
 	{
+		Transform3D[]? stated = Stated.TryGetValue(batch, out Transform3D[]? recorded) &&
+			instance >= 0 && instance < recorded.Length
+			? recorded
+			: null;
+		if (stated is not null && stated[instance].IsEqualApprox(transform))
+		{
+			return;
+		}
+
 		batch.SetInstanceTransform(instance, transform);
-		if (Stated.TryGetValue(batch, out Transform3D[]? stated) &&
-			instance >= 0 && instance < stated.Length)
+		if (stated is not null)
 		{
 			stated[instance] = transform;
 		}
-		if (Twins.TryGetValue(batch, out MultiMesh? shadow) && instance < shadow.InstanceCount)
+
+		if (!Twins.TryGetValue(batch, out MultiMesh? shadow) || instance >= shadow.InstanceCount)
+		{
+			return;
+		}
+
+		if (stated is null || Refii.Core.Engine_GuestFrame.HalfRate)
 		{
 			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.ShadowTwin);
 			shadow.SetInstanceTransform(instance, transform);
+			Deferred.Remove((batch, instance));
 		}
+		else
+		{
+			Deferred.Add((batch, instance));
+		}
+	}
+
+	/// <summary>Twin slots whose batch moved on a frame the twin does not take.</summary>
+	private static readonly HashSet<(MultiMesh Batch, int Instance)> Deferred = new();
+
+	/// <summary>
+	/// Once per frame after the entities are placed: on a half-rate frame, the twins take every
+	/// slot that moved since the last one. A twin never reads its slot back from the server.
+	/// </summary>
+	public static void FlushDeferred()
+	{
+		if (Deferred.Count == 0 || !Refii.Core.Engine_GuestFrame.HalfRate)
+		{
+			return;
+		}
+
+		foreach ((MultiMesh batch, int instance) in Deferred)
+		{
+			if (Twins.TryGetValue(batch, out MultiMesh? shadow) && instance < shadow.InstanceCount &&
+				Stated.TryGetValue(batch, out Transform3D[]? stated) && instance < stated.Length)
+			{
+				Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.ShadowTwin);
+				shadow.SetInstanceTransform(instance, stated[instance]);
+			}
+		}
+
+		Deferred.Clear();
 	}
 
 	/// <summary>The batch's bounds grew; the twin is culled by the same box.</summary>

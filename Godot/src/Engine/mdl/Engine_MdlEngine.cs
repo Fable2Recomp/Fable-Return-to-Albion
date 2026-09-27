@@ -573,14 +573,28 @@ public static class Engine_MdlEngine
         return true;
     }
 
-    private static bool ReadClothBlock(MdlReader r, MdlInfo info, uint recIndex)
+    /// <summary>
+    /// The cloth block behind a mesh record (ext word == 1), laid out as the guest's
+    /// <c>sub_82B36E50</c> reads it. The five counted tables after the skin block are the
+    /// sphere, plane, capsule and box colliders and the weld pairs — not constraints — and the
+    /// six floats plus two bytes are the per-item simulation parameters. <c>simEnd</c> is only
+    /// present from file version 36 (<c>if (a4 &gt;= 36)</c> at the guest's read); older files
+    /// simulate to the vertex count. The trailing raw vertex block is <c>nv * 16 * sh4</c> bytes
+    /// and absent when the record's vertex stride word is zero.
+    /// </summary>
+    private static bool ReadClothBlock(MdlReader r, MdlInfo info, uint recIndex, uint sh4)
     {
         int start = r.Position;
 
-        if (!r.U32(out uint a16) || !r.U32(out uint u16c) || !r.U32(out uint nv) ||
-            !r.U32(out uint a28) || !r.U32(out uint a32) || !r.U32(out uint a24) ||
-            !r.U32(out uint n77)) return false;
-        if (nv > 1000000u || u16c > 4000000u || n77 > 4000000u) return false;
+        if (!r.U32(out uint unknown16) || !r.U32(out uint indexCount) || !r.U32(out uint nv) ||
+            !r.U32(out uint simBegin)) return false;
+
+        uint simEnd = nv;
+        if (info.Version >= 36 && !r.U32(out simEnd)) return false;
+
+        if (!r.U32(out uint triangleCount) || !r.U32(out uint edgeCount)) return false;
+        if (nv > 1000000u || indexCount > 4000000u || edgeCount > 4000000u) return false;
+        if (simBegin > nv || simEnd > nv) return false;
 
         if (!r.U32(out uint boneVtxCount) || !r.U32(out uint bonesPerVtx)) return false;
         if (boneVtxCount > 1000000u || bonesPerVtx > 64u) return false;
@@ -590,36 +604,50 @@ public static class Engine_MdlEngine
         int weightOff = r.Position;
         if (!r.Skip((int)(boneVtxCount * 16))) return false;
 
-        if (!r.U32(out uint nDist) || !r.U32(out uint nBendA) || !r.U32(out uint nBendB) ||
-            !r.U32(out uint nVol) || !r.U32(out uint nLink)) return false;
+        if (!r.U32(out uint nSpheres) || !r.U32(out uint nPlanes) || !r.U32(out uint nCapsules) ||
+            !r.U32(out uint nBoxes) || !r.U32(out uint nWelds)) return false;
+        if (nSpheres > 4096u || nPlanes > 4096u || nCapsules > 4096u || nBoxes > 4096u ||
+            nWelds > 1000000u) return false;
 
         var sp = new float[6];
         for (int k = 0; k < 6; k++)
             if (!r.F32(out sp[k])) return false;
-        if (!r.Skip(2)) return false;
+        if (!r.U8(out byte followByte0) || !r.U8(out byte followByte1)) return false;
 
         int restPosOff = r.Position;
         if (!r.Skip((int)(nv * 12))) return false;
+        int uvOff = r.Position;
         if (!r.Skip((int)(nv * 8))) return false;
+        int streamOneOff = r.Position;
         if (!r.Skip((int)(nv * 4))) return false;
+        int tangentWOff = r.Position;
         if (!r.Skip((int)(nv * 16))) return false;
+        int positionWOff = r.Position;
         if (!r.Skip((int)(nv * 4))) return false;
 
         int idxListOff = r.Position;
-        if (!r.Skip((int)(u16c * 2))) return false;
+        if (!r.Skip((int)(indexCount * 2))) return false;
         int edgePairOff = r.Position;
-        if (!r.Skip((int)(n77 * 4))) return false;
+        if (!r.Skip((int)(edgeCount * 4))) return false;
         int edgeParamOff = r.Position;
-        if (!r.Skip((int)(n77 * 16))) return false;
+        if (!r.Skip((int)(edgeCount * 16))) return false;
 
         int flagOff = r.Position;
-        if (!r.Skip((int)(nv * 1))) return false;
-        if (!r.Skip((int)(nDist * 32))) return false;
-        if (!r.Skip((int)(nBendA * 52))) return false;
-        if (!r.Skip((int)(nBendB * 56))) return false;
-        if (!r.Skip((int)(nVol * 148))) return false;
-        if (!r.Skip((int)(nLink * 8))) return false;
-        if (!r.Skip((int)(nv * 16))) return false;
+        if (!r.Skip((int)nv)) return false;
+
+        int sphereOff = r.Position;
+        if (!r.Skip((int)(nSpheres * MdlClothBlock.SphereRecordSize))) return false;
+        int planeOff = r.Position;
+        if (!r.Skip((int)(nPlanes * MdlClothBlock.PlaneRecordSize))) return false;
+        int capsuleOff = r.Position;
+        if (!r.Skip((int)(nCapsules * MdlClothBlock.CapsuleRecordSize))) return false;
+        int boxOff = r.Position;
+        if (!r.Skip((int)(nBoxes * MdlClothBlock.BoxRecordSize))) return false;
+        int weldOff = r.Position;
+        if (!r.Skip((int)(nWelds * MdlClothBlock.WeldRecordSize))) return false;
+
+        int rawVertexOff = r.Position;
+        if (!r.Skip((int)(nv * 16 * sh4))) return false;
 
         info.ClothBlocks.Add(new MdlClothBlock
         {
@@ -627,24 +655,39 @@ public static class Engine_MdlEngine
             MeshIndex = 0,
             BlockOffset = start,
             BlockSize = r.Position - start,
+            Unknown16 = unknown16,
             SimVertexCount = nv,
-            TriangleCount = a24,
-            IndexCount = u16c,
-            EdgeCount = n77,
+            SimBegin = (int)simBegin,
+            SimEnd = (int)simEnd,
+            TriangleCount = triangleCount,
+            IndexCount = indexCount,
+            EdgeCount = edgeCount,
             BonesPerVertex = bonesPerVtx,
-            DistConstraints = nDist,
-            BendConstraintsA = nBendA,
-            BendConstraintsB = nBendB,
-            VolConstraints = nVol,
-            LinkConstraints = nLink,
+            SphereCount = nSpheres,
+            PlaneCount = nPlanes,
+            CapsuleCount = nCapsules,
+            BoxCount = nBoxes,
+            WeldCount = nWelds,
             SimParams = sp,
+            FollowByte0 = followByte0,
+            FollowByte1 = followByte1,
             RestPosOffset = restPosOff,
+            UvOffset = uvOff,
+            StreamOneOffset = streamOneOff,
+            TangentWOffset = tangentWOff,
+            PositionWOffset = positionWOff,
             IndexListOffset = idxListOff,
             BoneIdOffset = boneIdOff,
             WeightOffset = weightOff,
             FlagOffset = flagOff,
             EdgePairOffset = edgePairOff,
             EdgeParamOffset = edgeParamOff,
+            SphereOffset = sphereOff,
+            PlaneOffset = planeOff,
+            CapsuleOffset = capsuleOff,
+            BoxOffset = boxOff,
+            WeldOffset = weldOff,
+            RawVertexOffset = rawVertexOff,
             BoneVertexCount = boneVtxCount,
         });
 
@@ -698,7 +741,7 @@ public static class Engine_MdlEngine
         if (!r.U32(out uint ext1)) return false;
         if (ext1 == 1)
         {
-            if (!ReadClothBlock(r, info, recIndex)) return false;
+            if (!ReadClothBlock(r, info, recIndex, sh4)) return false;
         }
         else if (ext1 != 0) return false;
 
@@ -788,7 +831,7 @@ public static class Engine_MdlEngine
         if (!r.U32(out uint ext1)) return false;
         if (ext1 == 1)
         {
-            if (!ReadClothBlock(r, info, recIndex)) return false;
+            if (!ReadClothBlock(r, info, recIndex, sh4)) return false;
         }
         else if (ext1 != 0) return false;
 

@@ -124,48 +124,9 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         }
     }
 
-    private void RefreshCloth()
-    {
-        var clothed = new List<string>();
-        if (_outfit is not null)
-        {
-            foreach (string path in _outfit.ModelPaths)
-            {
-                if (Refii.Physics.Engine_PhysicsIndex.HasCloth(path))
-                {
-                    clothed.Add(path);
-                }
-            }
-        }
-
-        var body = GetNodeOrNull<Refii.Physics.Engine_ClothBody>(
-            Refii.Physics.Engine_ClothBody.NodeName);
-
-        if (clothed.Count == 0)
-        {
-            if (body is not null)
-            {
-                RemoveChild(body);
-                body.QueueFree();
-            }
-
-            return;
-        }
-
-        if (body is null)
-        {
-            body = new Refii.Physics.Engine_ClothBody
-            {
-                Name = Refii.Physics.Engine_ClothBody.NodeName,
-            };
-
-            AddChild(body);
-            body.Owner = Owner ?? this;
-        }
-
-        body.SetModelPaths(clothed);
-        body.Bind();
-    }
+    private void RefreshCloth() =>
+        Refii.Physics.Engine_ClothBody.Attach(
+            this, Mesh, _outfit is not null ? _outfit.ModelPaths : System.Array.Empty<string>());
 
     private System.Collections.Generic.Dictionary<uint, List<TextureMorphEntry>>? _textureMorphs;
 

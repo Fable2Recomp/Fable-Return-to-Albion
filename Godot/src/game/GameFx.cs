@@ -467,8 +467,15 @@ public partial class GameFx : Node3D
                 ++WalkedPlacements;
             }
 
-            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-            node.Transform = Smoothed(key, placed);
+            // Written only when it moved: a node write propagates an instance update to every
+            // surface, light and mesh under the effect, and a standing effect's smoothed
+            // placement is the same transform every frame.
+            Transform3D smoothed = Smoothed(key, placed);
+            if (!node.Transform.IsEqualApprox(smoothed))
+            {
+                Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
+                node.Transform = smoothed;
+            }
             (float scale, float fade) = _emitterState.TryGetValue(key, out var state) ? state : (1f, 1f);
             node.Intensity = fx.Intensity * fade;
             node.LightFade = fade;

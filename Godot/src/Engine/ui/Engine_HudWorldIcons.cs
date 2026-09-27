@@ -626,6 +626,7 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			var icon = new MeshInstance3D
 			{
 				Name = "Icon",
+				CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
 				Position = new Vector3(slot.QuadOffset.X, slot.QuadOffset.Y, 0f),
 				Mesh = new QuadMesh
 				{
@@ -661,6 +662,7 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 		var label = new MeshInstance3D
 		{
 			Name = "Title",
+			CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
 			// A step in front of the icon: equal-depth alpha has no defined winner.
 			Position = new Vector3(slot.TitleOffset.X, slot.TitleOffset.Y, 1f),
 		};
@@ -672,6 +674,7 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			var opinion = new MeshInstance3D
 			{
 				Name = "Opinion",
+				CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
 				Position = new Vector3(slot.OpinionOffset.X, slot.OpinionOffset.Y, 1f),
 			};
 			node.AddChild(opinion);

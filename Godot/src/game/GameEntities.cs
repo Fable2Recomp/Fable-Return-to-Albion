@@ -203,6 +203,9 @@ public partial class GameEntities : Node3D
             return;
         }
 
+        // The guest frame that completes a game tick: the sub-step on which the guest poses its
+        // far rigs (FarRigPosesThisStep).
+        _tickCompletedThisWalk = feedTick != _feedTickApplied;
         _feedTickApplied = feedTick;
 
         // The walk kicked at frame start (GameWindow) is taken here; without one — the lever
@@ -236,6 +239,7 @@ public partial class GameEntities : Node3D
         int posedWritten = 0;
         int posedHalfRate = 0;
         long prologueTicks = 0;
+        long skipTicks = 0;
         long highlightTicks = 0;
         int pastPrologue = 0;
         long facingTicks = 0;
@@ -280,6 +284,7 @@ public partial class GameEntities : Node3D
         // divides into.
         _withModel = 0;
         _noMesh = 0;
+        _prologueSkipped = 0;
         _awaitingBuild = 0;
         _awaitingStub = 0;
         _awaitingCreate = 0;
@@ -315,6 +320,41 @@ public partial class GameEntities : Node3D
                 HeroPosition = ToGodot(entity.Position, entity.Rotation).Origin;
             }
 
+            // NOTHING TO DRAW, ALREADY KNOWN. Most entities are triggers, markers and
+            // sound emitters: no model hash, no composite parts, no mesh records. The two part
+            // resolvers below only re-read the guest on the reconcile cadence and answer from a
+            // cache between, so for such an entity the prologue was three dictionary lookups per
+            // guest frame to reach the same `continue`. The
+            // verdict is keyed on the entity's unique id (an address recycles) and lasts until the
+            // same cadence re-asks the guest, when it is confirmed or dropped.
+            if (entity.ModelHash == 0 &&
+                _nothingToDraw.TryGetValue(entity.Address, out ulong knownId) &&
+                knownId == entity.UniqueId &&
+                !Due(entity.Address, ReconcileTicks))
+            {
+                ++_prologueSkipped;
+                skipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
+                continue;
+            }
+
+            // STILL AND ADOPTED. Many entities are static props adopted into the level's
+            // batches: a hidden node here, a slot in a batch there. Unchanged (the walk compares
+            // every stated word, placement and look alike) and not due for a reconcile, the whole
+            // prologue below is lookups that end at the still-entity `continue`; the twin slot
+            // keeps the transform it has. The node stays owned (`_seen`) so Retire keeps it.
+            // The same for a still prop already promoted into an entity batch: hidden node, slot
+            // in a batch, nothing to re-apply while unchanged. A change of placement or look
+            // (both in `Changed`) takes the full path, which unbatches it.
+            if (!entity.Changed && !Due(entity.Address, ReconcileTicks) &&
+                (_adoptions.ContainsKey(entity.Address) || (_batches?.Contains(entity.Address) ?? false)))
+            {
+                _seen.Add(entity.Address);
+                ++_withModel;
+                ++_prologueSkipped;
+                skipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
+                continue;
+            }
+
             Mesh? mesh;
             if (entity.ModelHash == 0)
             {
@@ -338,15 +378,18 @@ public partial class GameEntities : Node3D
                     mesh = composite;
                     ++_withModel;
                     ++_composites;
+                    _nothingToDraw.Remove(entity.Address);
                 }
                 else if (ResolveMultiMesh(entity.Address) is { } multiple)
                 {
                     mesh = multiple;
                     ++_withModel;
                     ++_multiMesh;
+                    _nothingToDraw.Remove(entity.Address);
                 }
                 else
                 {
+                    _nothingToDraw[entity.Address] = entity.UniqueId;
                     continue;
                 }
             }
@@ -522,6 +565,13 @@ public partial class GameEntities : Node3D
                     Refii.Level.Engine_PropDrawRange.Apply(node);
                 }
 
+                // The cloth body goes on BEFORE the cluster pass: it hides the surfaces it
+                // draws through the same pass, which then presents the body once.
+                if (Refii.Physics.Engine_ClothBody.Attach(node, mesh, PartPathsOf(mesh)) is { } cloth)
+                {
+                    LightEntity(cloth);
+                }
+
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
             }
@@ -533,6 +583,7 @@ public partial class GameEntities : Node3D
                 Unbatch(entity.Address, node);
                 node.Mesh = mesh;
                 _nodeMesh[entity.Address] = mesh;
+                Refii.Physics.Engine_ClothBody.Attach(node, mesh, PartPathsOf(mesh));
                 LightEntity(node);
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
                 if (_unrigged.Contains(entity.Address))
@@ -863,6 +914,7 @@ public partial class GameEntities : Node3D
         }
 
         ApplyDrawn();
+        Refii.Level.Engine_PropShadow.FlushDeferred();
         // THE PLACE OF EVERY DRAWN ENTITY, read from the node AFTER attachment placement: a
         // door is a child attached to its building, and its stated position describes the
         // parent-relative body nobody draws; the node's world origin is where the mesh is.
@@ -902,7 +954,7 @@ public partial class GameEntities : Node3D
                 $"clip {clipTicks * toMs:0.00} facing {facingTicks * toMs:0.00} " +
                 $"extent {extentTicks * toMs:0.00} trace {traceTicks * toMs:0.00} " +
                 $"yaw {yawTicks * toMs:0.00} | " +
-                $"prologue {prologueTicks * toMs:0.00} (every entity) " +
+                $"prologue {prologueTicks * toMs:0.00} ({entities.Count - _prologueSkipped} walked) + {skipTicks * toMs:0.00} ({_prologueSkipped} skipped: nothing to draw, or still and adopted/batched) " +
                 $"highlight {highlightTicks * toMs:0.00}, {pastPrologue} past it");
         }
         Retire();
@@ -1143,7 +1195,7 @@ public partial class GameEntities : Node3D
                       (_poseYawSum / _poseYawSamples < 15f
                           ? "small, so the heading is NOT in the pose and any facing error is the entity rotation"
                           : "LARGE, so the pose carries the heading and composing the entity rotation on top double-counts it")) +
-                $"\n    culling box: stated on {_extentStated} rig(s), {_extentOverflow} of " +
+                $"\n    culling box: stated on {_extentStated} rig(s) ({_extentHeld} held), {_extentOverflow} of " +
                 "those had a live pose reaching OUTSIDE the mesh's own box" +
                 (_extentOverflow == 0
                     ? " — the bind box already covered them, so culling was not the vanishing"
@@ -1506,20 +1558,8 @@ public partial class GameEntities : Node3D
         return paths;
     }
 
-    private static string[] PartPathsOf(Mesh mesh)
-    {
-
-        if (mesh.HasMeta(Refii.Models.Engine_MdlComposite.PartPathsMeta))
-        {
-            return mesh.GetMeta(Refii.Models.Engine_MdlComposite.PartPathsMeta).AsStringArray();
-        }
-
-        string path = mesh.ResourcePath;
-        return path.StartsWith(Refii.Models.Engine_BnkMeshLoader.PathPrefix,
-            System.StringComparison.OrdinalIgnoreCase)
-            ? new[] { path[Refii.Models.Engine_BnkMeshLoader.PathPrefix.Length..] }
-            : System.Array.Empty<string>();
-    }
+    private static string[] PartPathsOf(Mesh mesh) =>
+        Refii.Models.Engine_MdlComposite.ModelPathsOf(mesh);
 
     private bool TryRig(uint address, MeshInstance3D node, Mesh mesh)
     {
@@ -2361,9 +2401,18 @@ public partial class GameEntities : Node3D
     /// time of day moves — the environment node's own refresh walks the region and these are
     /// not in it.
     /// </summary>
-    private static void LightEntity(GeometryInstance3D node) =>
+    private static void LightEntity(GeometryInstance3D node)
+    {
         Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
             node, Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting);
+
+        // The cloth draws beside its body and is lit as its body is.
+        if (Refii.Physics.Engine_ClothBody.Of(node) is { } cloth)
+        {
+            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
+                cloth, Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting);
+        }
+    }
 
     /// <summary>Probe-lit at the entity's current place: the region root is the sky node's
     /// parent, and the probe field is indexed in the region's own frame.</summary>
@@ -2377,6 +2426,10 @@ public partial class GameEntities : Node3D
 
         Vector3 local = root.GlobalTransform.AffineInverse() * node.GlobalPosition;
         Refii.Lighting.Engine_LevelBakedLighting.LightEntityAt(geometry, local, sky.Lighting);
+        if (Refii.Physics.Engine_ClothBody.Of(node) is { } cloth)
+        {
+            Refii.Lighting.Engine_LevelBakedLighting.LightEntityAt(cloth, local, sky.Lighting);
+        }
     }
 
     /// <summary>
@@ -2496,6 +2549,12 @@ public partial class GameEntities : Node3D
 
     /// <summary>Morph part lists per entity, re-read on the reconcile cadence.</summary>
     private readonly Dictionary<uint, uint[]> _compositeParts = new();
+
+    /// <summary>Entities with no model, no composite parts and no mesh records, by unique id. See the walk.</summary>
+    private readonly Dictionary<uint, ulong> _nothingToDraw = new();
+
+    /// <summary>Prologues answered from <see cref="_nothingToDraw"/> this walk.</summary>
+    private int _prologueSkipped;
 
     /// <summary>Entities the loop left alone because their statement had not moved; run total.</summary>
     public static long UnchangedSkipped => _unchangedSkippedTotal;
@@ -2900,18 +2959,43 @@ public partial class GameEntities : Node3D
             ++_extentOverflow;
         }
 
+        // HOLD THE BOX WHILE IT STILL BOUNDS THE POSE. Godot queues a full instance update on
+        // every custom-AABB write, changed or not, and on a caster that marks every paired
+        // light's shadow dirty — so a restate on the proxy re-rendered every lantern map the
+        // character stood in; spread over a crowd, that is a restate in every lamp's pool on
+        // nearly every display frame. The recomputed box
+        // differs by millimetres from the last one, so it is written only when the pose has
+        // grown out of the stated box or shrunk well inside it; the stated box carries a
+        // hysteresis margin so the next restates fit. A larger culling box costs nothing seen.
+        Aabb held = node.CustomAabb;
+        if (held.Size.Length() > 1e-3f && held.Encloses(box) && box.Volume >= held.Volume * ExtentShrinkAt)
+        {
+            ++_extentHeld;
+            return;
+        }
+
+        Aabb stated = box.Grow(ExtentHysteresis);
         ++_extentStated;
         Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.EntityExtent);
-        node.CustomAabb = box;
+        node.CustomAabb = stated;
 
         // The proxy too: without a stated box Godot rebuilds its bounds from the bones on every
         // guest-rate write and re-pairs it against every light it moves across.
         if (Refii.Entities.Engine_ShadowProxy.ProxyOf(node) is { } proxy)
         {
             Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.EntityExtent);
-            proxy.CustomAabb = box;
+            proxy.CustomAabb = stated;
         }
     }
+
+    /// <summary>Restates answered by the box already stated; see StateVisibleExtent.</summary>
+    private int _extentHeld;
+
+    /// <summary>Metres the stated box is grown past the pose, so a walk cycle stays inside it.</summary>
+    private const float ExtentHysteresis = 0.15f;
+
+    /// <summary>A pose box under this share of the stated box's volume restates it smaller.</summary>
+    private const float ExtentShrinkAt = 0.5f;
 
     /// <summary>
     /// How far the skin can hang off the bones. A bone is a point; the flesh around it is not,
@@ -3210,17 +3294,18 @@ public partial class GameEntities : Node3D
     /// </summary>
     /// <remarks>
     /// The guest's divider (0x8220D67C) skips the step whenever the animation LOD is not 3 and the
-    /// sub-step does not complete a tick, so a far rig lands on 15 Hz against a near rig's 30.
+    /// sub-step does not complete a tick, so a far rig lands on 15 Hz against a near rig's 30 —
+    /// and EVERY far rig on the same sub-step, the one that completes the tick.
     ///
-    /// The rate is the guest's; the phase is ours. The guest synchronises far rigs on tick
-    /// parity; mixing the rig's address in splits them into two interleaved halves so the cost
-    /// does not land on alternate frames.
+    /// The phase is the guest's as well as the rate, never spread by address: a shadow map
+    /// re-renders when any caster in its pool is written, and halves interleaved by address give
+    /// every lamp's pool a write on every guest frame. On the guest's phase a pool of far rigs is
+    /// written on alternate guest frames and its map re-renders at 15 Hz.
     /// </remarks>
-    private static bool FarRigPosesThisStep(uint address)
-    {
-        uint phase = address ^ (address >> 8) ^ (address >> 16);
-        return ((phase ^ Refii.Core.Engine_TickClock.GuestGameTick) & 1u) == 0u;
-    }
+    private bool FarRigPosesThisStep(uint address) => _tickCompletedThisWalk;
+
+    /// <summary>Whether this walk's guest frame completed a game tick; see FarRigPosesThisStep.</summary>
+    private bool _tickCompletedThisWalk = true;
 
     /// <summary>
     /// The guest's visibility gate for posing (`sub_822142E8`): in the frustum now, or seen

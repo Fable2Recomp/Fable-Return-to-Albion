@@ -110,6 +110,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/texture_parser.cpp
     ${REFII_VFS_ROOT}/src/hooks/boot_lifecycle.cpp
     ${REFII_VFS_ROOT}/src/hooks/crt_math.cpp
+    ${REFII_VFS_ROOT}/src/hooks/crt_memory.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
     ${REFII_VFS_ROOT}/src/hooks/display_box_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/reticule_hooks.cpp
@@ -120,6 +121,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/babel_text_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/guest_tick_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
+    ${REFII_VFS_ROOT}/src/hooks/lua_gc_slice.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/particle_transform.cpp
     ${REFII_VFS_ROOT}/src/hooks/spell_fx_lifetime.cpp

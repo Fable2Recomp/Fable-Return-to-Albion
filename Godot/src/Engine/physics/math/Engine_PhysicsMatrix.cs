@@ -1,3 +1,4 @@
+using System;
 using Godot;
 
 namespace Refii.Physics;
@@ -151,16 +152,49 @@ public static class Engine_PhysicsMatrix
         return PhysVec4.MaskXyz(acc);
     }
 
+    /// <summary>
+    /// The guest's matrix layout is ROW-VECTOR: a point transforms as <c>p' = p * M</c>, the
+    /// basis vectors are the first three rows and the translation is row 3. Every routine in
+    /// this file and the cloth solver is a port that assumes it. A Godot <see cref="Transform3D"/>
+    /// is column-vector (<c>p' = B * p + o</c>), so its basis COLUMNS become the rows here.
+    /// Building the rows from the basis rows instead gave the transpose, which for a rotation
+    /// is its inverse: gravity and wind were turned the wrong way on every rotated entity.
+    /// </summary>
     public static PhysMat4 FromTransform3D(Transform3D transform)
     {
         Basis basis = transform.Basis;
         Vector3 origin = transform.Origin;
 
         var m = default(PhysMat4);
-        m.R0 = new PhysVec4(basis.X.X, basis.Y.X, basis.Z.X, origin.X);
-        m.R1 = new PhysVec4(basis.X.Y, basis.Y.Y, basis.Z.Y, origin.Y);
-        m.R2 = new PhysVec4(basis.X.Z, basis.Y.Z, basis.Z.Z, origin.Z);
-        m.R3 = new PhysVec4(0.0f, 0.0f, 0.0f, 1.0f);
+        m.R0 = new PhysVec4(basis.X.X, basis.X.Y, basis.X.Z, 0.0f);
+        m.R1 = new PhysVec4(basis.Y.X, basis.Y.Y, basis.Y.Z, 0.0f);
+        m.R2 = new PhysVec4(basis.Z.X, basis.Z.Y, basis.Z.Z, 0.0f);
+        m.R3 = new PhysVec4(origin.X, origin.Y, origin.Z, 1.0f);
+        return m;
+    }
+
+    /// <summary>
+    /// The guest's 48-byte skinning entry for a bone: three float4 rows, each dotted with
+    /// <c>(x, y, z, 1)</c> to give one output lane (<c>sub_82B8EE48</c>). For a row-vector matrix
+    /// those are its first three COLUMNS.
+    /// </summary>
+    public static void SkinRows(in PhysMat4 m, out PhysVec4 row0, out PhysVec4 row1, out PhysVec4 row2)
+    {
+        Columns(m, out row0, out row1, out row2, out _);
+    }
+
+    /// <summary>
+    /// A 3x4 matrix as the cloth block stores it — three rows of four floats, the last column
+    /// the translation — turned into the row-vector 4x4 the runtime builds from it
+    /// (<c>sub_82A22148</c>: a 48-byte copy then a transpose, translation to row 3).
+    /// </summary>
+    public static PhysMat4 FromFile3x4(ReadOnlySpan<float> f)
+    {
+        var m = default(PhysMat4);
+        m.R0 = new PhysVec4(f[0], f[4], f[8], 0.0f);
+        m.R1 = new PhysVec4(f[1], f[5], f[9], 0.0f);
+        m.R2 = new PhysVec4(f[2], f[6], f[10], 0.0f);
+        m.R3 = new PhysVec4(f[3], f[7], f[11], 1.0f);
         return m;
     }
 }

@@ -455,8 +455,10 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 	{
 		Engine_FramePhases.MarkFrameStart();
 
-		// The finished frame's GPU pass table, when the engine captures one (`--gpu-profile`).
+		// The finished frame's GPU pass table, when the engine captures one (`--gpu-profile`),
+		// and every tracked viewport's render measurement — both read on the render thread.
 		Engine_GpuPasses.Sample();
+		Engine_RenderStats.SampleFrame();
 
 		double now = Godot.Time.GetTicksUsec();
 

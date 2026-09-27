@@ -95,6 +95,7 @@ public static class Engine_Clouds
 
             var node = new MeshInstance3D
             {
+                Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
                 Name = $"CloudLayer{index}",
                 Mesh = BuildQuad(layer.SizeX, layer.SizeY, layer.Height),
                 MaterialOverride = material,

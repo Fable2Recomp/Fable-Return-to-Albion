@@ -12,7 +12,7 @@ namespace Refii.Game;
 /// </summary>
 /// <remarks>
 /// Read only: the phases come from <see cref="Engine_FramePhases"/>, the render times from the
-/// viewport's own measurement (the same switch `refii_metrics` turns on), the passes from
+/// viewport's own measurement published by <see cref="Engine_RenderStats"/>, the passes from
 /// <see cref="Engine_GpuPasses"/>, the counts from Godot's `Performance` monitors. The text is
 /// rebuilt four times a second.
 ///
@@ -75,10 +75,10 @@ public partial class GamePerfOverlay : CanvasLayer
 			return;
 		}
 
-		Rid viewport = GetViewport().GetViewportRid();
+		Viewport viewport = GetViewport();
 		if (!_measuring)
 		{
-			RenderingServer.ViewportSetMeasureRenderTime(viewport, true);
+			Engine_RenderStats.Track(viewport);
 			_measuring = true;
 		}
 
@@ -92,15 +92,18 @@ public partial class GamePerfOverlay : CanvasLayer
 		_label.Text = Compose(viewport);
 	}
 
-	private string Compose(Rid viewport)
+	private string Compose(Viewport viewport)
 	{
 		(double frameMs, double framePeak) = Engine_FramePhases.Get("frame_total");
 		(double processMs, _) = Engine_FramePhases.Get("process_total");
 		(double waitMs, _) = Engine_FramePhases.Get("draw");
 		(double entitiesMs, _) = Engine_FramePhases.Get("ent.loop");
-		double renderCpu = RenderingServer.ViewportGetMeasuredRenderTimeCpu(viewport) +
-			RenderingServer.GetFrameSetupTimeCpu();
-		double renderGpu = RenderingServer.ViewportGetMeasuredRenderTimeGpu(viewport);
+
+		// Read off the render thread's published sample, never the server: a getter from here
+		// would block on the whole render queue (Engine_RenderStats).
+		Engine_RenderStats.Sample render = Engine_RenderStats.Of(viewport);
+		double renderCpu = render.CpuMs + RenderingServer.GetFrameSetupTimeCpu();
+		double renderGpu = render.GpuMs;
 
 		double fps = Engine.GetFramesPerSecond();
 		double drawCalls = Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);

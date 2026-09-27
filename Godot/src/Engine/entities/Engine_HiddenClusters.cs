@@ -28,6 +28,52 @@ public static class Engine_HiddenClusters
 	public static bool IsCollapsed(Material? material) =>
 		material is not null && ReferenceEquals(material, _collapsed);
 
+	/// <summary>The override that takes a surface away, for the cloth body to hide its own copies.</summary>
+	public static ShaderMaterial CollapsedMaterial => Collapsed;
+
+	/// <summary>
+	/// Per node, the source surfaces a cloth body draws instead (<see cref="Refii.Physics.Engine_ClothBody"/>).
+	/// They are hidden on the body exactly as a covered cluster is, so the variant leaves them
+	/// out and the collapse override covers them when the source is shown.
+	/// </summary>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MeshInstance3D, System.Runtime.CompilerServices.StrongBox<UInt128>> _clothSurfaces = new();
+
+	/// <summary>Sets, or with zero clears, the cloth-drawn surfaces of <paramref name="node"/> and re-presents it.</summary>
+	public static void SetClothSurfaces(MeshInstance3D node, UInt128 mask)
+	{
+		if (mask == UInt128.Zero)
+		{
+			_clothSurfaces.Remove(node);
+		}
+		else
+		{
+			_clothSurfaces.AddOrUpdate(node, new System.Runtime.CompilerServices.StrongBox<UInt128>(mask));
+		}
+
+		if (Engine_BodyVariants.SourceMesh(node) is not ArrayMesh source)
+		{
+			return;
+		}
+
+		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		{
+			state = new SurfaceState();
+			_collapsedSurfaces.Add(node, state);
+		}
+
+		Present(node, source, state);
+	}
+
+	/// <summary>The surfaces a cloth body draws for <paramref name="node"/>; zero when none.</summary>
+	public static UInt128 ClothMask(MeshInstance3D node) =>
+		_clothSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? mask)
+			? mask.Value
+			: UInt128.Zero;
+
+	/// <summary>The surfaces the clusters alone hide on <paramref name="node"/>, cloth aside.</summary>
+	public static UInt128 ClusterMask(MeshInstance3D node) =>
+		_collapsedSurfaces.TryGetValue(node, out SurfaceState? state) ? MaskOf(state) : UInt128.Zero;
+
 	private static ShaderMaterial Collapsed => _collapsed ??= new ShaderMaterial
 	{
 		Shader = new Shader
@@ -160,12 +206,13 @@ public static class Engine_HiddenClusters
 	/// </summary>
 	public static UInt128 CollapsedMask(MeshInstance3D node)
 	{
+		UInt128 cloth = ClothMask(node);
 		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
 		{
-			return UInt128.Zero;
+			return cloth;
 		}
 
-		return MaskOf(state);
+		return MaskOf(state) | cloth;
 	}
 
 	private sealed record PartTables(int[] SurfaceParts, uint[] PartHashes);
@@ -185,7 +232,7 @@ public static class Engine_HiddenClusters
 		}
 
 		string[] regions = Engine_MdlMesh.SurfaceRegions(mesh);
-		if (regions.Length == 0)
+		if (regions.Length == 0 && ClothMask(node) == UInt128.Zero)
 		{
 			return 0;
 		}
@@ -250,7 +297,7 @@ public static class Engine_HiddenClusters
 	/// </summary>
 	private static void Present(MeshInstance3D node, ArrayMesh? source, SurfaceState state)
 	{
-		UInt128 hidden = MaskOf(state);
+		UInt128 hidden = MaskOf(state) | ClothMask(node);
 		ArrayMesh? variant = source is null ? null : Engine_BodyVariants.For(source, hidden);
 		if (variant is not null)
 		{

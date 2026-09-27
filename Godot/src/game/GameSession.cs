@@ -273,6 +273,11 @@ public partial class GameSession : Node
 
 	private double _accumulated;
 
+	/// <summary>Seconds since the display's refresh rate was last read; the first frame reads it.</summary>
+	private double _refreshRateAge = double.MaxValue;
+
+	private const double RefreshRateSeconds = 1.0;
+
 	/// <summary>Set once the ORM sweep's worker has been started.</summary>
 	private bool _ormStarted;
 
@@ -390,6 +395,7 @@ public partial class GameSession : Node
 			return;
 		}
 
+		long lap = System.Diagnostics.Stopwatch.GetTimestamp();
 		_accumulated += delta;
 
 		double period = 1.0 / StepsPerSecond;
@@ -428,12 +434,19 @@ public partial class GameSession : Node
 
 			// The draw point's terms are the display's: `sub_82388380` sizes its draw time from
 			// the refresh rate and present interval (`XGetVideoMode`), never a measured frame
-			// time. Refreshed per frame because the window can move to another screen.
-			float hz = Godot.DisplayServer.ScreenGetRefreshRate(
-				Godot.DisplayServer.WindowGetCurrentScreen((int)Godot.DisplayServer.MainWindowId));
-			if (hz > 1.0f)
+			// time. Re-read once a second, because the window can move to another screen — not
+			// per frame: on X11 the query is XRRGetScreenResourcesCurrent plus a CRTC query per
+			// output, round trips to the X server on the main thread.
+			_refreshRateAge += delta;
+			if (_refreshRateAge >= RefreshRateSeconds)
 			{
-				Refii.Core.Engine_TickClock.RefreshHz = hz;
+				_refreshRateAge = 0.0;
+				float hz = Godot.DisplayServer.ScreenGetRefreshRate(
+					Godot.DisplayServer.WindowGetCurrentScreen((int)Godot.DisplayServer.MainWindowId));
+				if (hz > 1.0f)
+				{
+					Refii.Core.Engine_TickClock.RefreshHz = hz;
+				}
 			}
 
 			if (_guestTickBase == 0u)
@@ -469,6 +482,7 @@ public partial class GameSession : Node
 			}
 		}
 
+		Refii.Core.Engine_FramePhases.Lap("session.clock", ref lap);
 		if (steps > 0)
 		{
 			HostBridge.AdvanceTimeBase((uint)steps);
@@ -513,7 +527,9 @@ public partial class GameSession : Node
 		// during a loading screen or a level transition: the moment four workers are producing
 		// fastest was the moment nothing consumed them. Budgeted still, so a warm cache cannot
 		// trade a background cost for a visible hitch.
+		Refii.Core.Engine_FramePhases.Lap("session.steps", ref lap);
 		Engine_TexLibrary.Pump();
+		Refii.Core.Engine_FramePhases.Lap("session.tex", ref lap);
 
 		// THE PACE IT ACTUALLY GOT. The accumulator ASKS for StepsPerSecond; whether it gets it
 		// is a fact about how long a step costs, and nothing above can assert it. A guest that

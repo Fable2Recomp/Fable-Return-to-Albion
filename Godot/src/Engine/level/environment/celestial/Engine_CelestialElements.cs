@@ -544,6 +544,7 @@ public static class Engine_CelestialElements
 
         return new MeshInstance3D
         {
+            Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
             Name = name,
             Mesh = QuadMesh(name, u0, u1),
             MaterialOverride = material,
@@ -615,6 +616,7 @@ public static class Engine_CelestialElements
 
         return new MeshInstance3D
         {
+            Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
             Name = "Stars",
             Mesh = BuildMesh("Stars", vertices, uvs),
             MaterialOverride = material,

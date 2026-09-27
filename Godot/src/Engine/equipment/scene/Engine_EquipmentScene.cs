@@ -190,21 +190,10 @@ public static class Engine_EquipmentScene
 
     private static void AttachCloth(Engine_EquipmentInstance node, string modelPath)
     {
-        if (modelPath.Length == 0 ||
-            node.Mesh is null ||
-            !Refii.Physics.Engine_PhysicsIndex.HasCloth(modelPath))
+        if (modelPath.Length != 0)
         {
-            return;
+            Refii.Physics.Engine_ClothBody.Attach(node, node.Mesh, new[] { modelPath });
         }
-
-        var body = new Refii.Physics.Engine_ClothBody
-        {
-            Name = Refii.Physics.Engine_ClothBody.NodeName,
-        };
-
-        body.SetModelPaths(new[] { modelPath });
-        node.AddChild(body);
-        body.Owner = node;
     }
 
     private static string SanitiseNodeName(string name)

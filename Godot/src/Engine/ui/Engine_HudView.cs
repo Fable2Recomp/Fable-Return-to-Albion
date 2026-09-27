@@ -237,6 +237,7 @@ public sealed partial class Engine_HudView : Node3D
             }
 
             AddChild(node);
+            NoShadow(node);
             var built = new Built
             {
                 Piece = piece,
@@ -1957,4 +1958,22 @@ public sealed partial class Engine_HudView : Node3D
 
     /// <summary>Point size for HUD text, at the layout's reference height.</summary>
     public const int TextSize = 18;
+
+    /// <summary>
+    /// A HUD piece sits in the 3D scene ~150 m in front of the camera, inside the sun's far
+    /// cascade; left casting, its alpha-tested quads go into the shadow map every frame. Screen
+    /// elements throw no shadow.
+    /// </summary>
+    private static void NoShadow(Node node)
+    {
+        if (node is GeometryInstance3D geometry)
+        {
+            geometry.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            NoShadow(child);
+        }
+    }
 }

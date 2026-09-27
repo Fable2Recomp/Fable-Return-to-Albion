@@ -25,6 +25,23 @@ public static class Engine_MdlComposite
 
     public const string PartSpansMeta = "mdl_part_spans";
 
+    /// <summary>
+    /// The model paths behind a drawn mesh — every part of a composite, or the one model a
+    /// bank-loaded mesh came from. What the cloth, the attachments and the hides key on.
+    /// </summary>
+    public static string[] ModelPathsOf(Mesh mesh)
+    {
+        if (mesh.HasMeta(PartPathsMeta))
+        {
+            return mesh.GetMeta(PartPathsMeta).AsStringArray();
+        }
+
+        string path = mesh.ResourcePath;
+        return path.StartsWith(Engine_BnkMeshLoader.PathPrefix, System.StringComparison.OrdinalIgnoreCase)
+            ? new[] { path[Engine_BnkMeshLoader.PathPrefix.Length..] }
+            : System.Array.Empty<string>();
+    }
+
     /// <summary>The index into the part list each surface came from, in surface order.</summary>
     public const string SurfacePartsMeta = "mdl_surface_parts";
 

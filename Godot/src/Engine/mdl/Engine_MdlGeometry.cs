@@ -13,6 +13,14 @@ public sealed class MdlGeometry
     /// </summary>
     public string Region { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The record index when this geometry came from a buffer with a cloth block, else -1. The
+    /// guest draws such a record on its own — the cloth proxy replaces exactly that submesh
+    /// draw — so it is never merged with another record's geometry, or hiding it for the
+    /// cloth would take the neighbours with it (the whole coat for a coat's skirt).
+    /// </summary>
+    public int ClothRecord { get; set; } = -1;
+
     public float[] Positions { get; set; } = Array.Empty<float>();
 
     public float[] Normals { get; set; } = Array.Empty<float>();
@@ -79,9 +87,17 @@ public static class Engine_MdlGeometry
     private const int VertexStride = 28;
     private const int UvOffset = 20;
 
-    public static bool TryBuild(byte[] data, MdlInfo info, out List<MdlGeometry> geometry) =>
-        TryBuild(data, info.MeshBuffers, info.Meshes, info.HideRegions, info.Bones.Count,
-            out geometry);
+    public static bool TryBuild(byte[] data, MdlInfo info, out List<MdlGeometry> geometry)
+    {
+        var clothRecords = new HashSet<int>();
+        foreach (MdlClothBlock block in info.ClothBlocks)
+        {
+            clothRecords.Add((int)block.RecordIndex);
+        }
+
+        return TryBuild(data, info.MeshBuffers, info.Meshes, info.HideRegions, info.Bones.Count,
+            out geometry, clothRecords);
+    }
 
     /// <summary>
     /// One payload's buffers against that payload's own tables: LOD 0's through the public
@@ -89,9 +105,11 @@ public static class Engine_MdlGeometry
     /// </summary>
     internal static bool TryBuild(
         byte[] data, IReadOnlyList<MdlMeshBuffer> buffers, IReadOnlyList<MdlMesh> meshes,
-        IReadOnlyList<string> hideRegions, int boneCount, out List<MdlGeometry> geometry)
+        IReadOnlyList<string> hideRegions, int boneCount, out List<MdlGeometry> geometry,
+        IReadOnlySet<int>? clothRecords = null)
     {
         geometry = new List<MdlGeometry>();
+        int bufferIndex = -1;
 
         // Where this buffer's vertices start in the model's own numbering. It advances for EVERY
         // buffer including the ones we go on to skip, because the file's numbering does not care
@@ -100,6 +118,9 @@ public static class Engine_MdlGeometry
 
         foreach (MdlMeshBuffer mb in buffers)
         {
+            bufferIndex++;
+            int clothRecord = clothRecords is not null && clothRecords.Contains(bufferIndex) ? bufferIndex : -1;
+
             // A buffer over LOD 0's vertices numbers them as LOD 0 does.
             int bufferBase = mb.SharesLod0Vertices ? mb.SharedVertexBase : vertexBase;
             vertexBase += (int)mb.VertexCount;
@@ -146,7 +167,7 @@ public static class Engine_MdlGeometry
             if (mb.SubMeshes.Count > 1)
             {
                 AddSubMeshSurfaces(geometry, meshes, hideRegions, mb, positions, uvs, normals,
-                    tangents, boneIds, boneWeights, strip, bufferBase);
+                    tangents, boneIds, boneWeights, strip, bufferBase, clothRecord);
                 continue;
             }
 
@@ -211,6 +232,7 @@ public static class Engine_MdlGeometry
                 Material = ResolveMaterial(meshes, mb.MeshIndex, 0),
                 SourceVertices = Identity(bufferBase, (int)mb.VertexCount),
                 SharesLod0Vertices = mb.SharesLod0Vertices,
+                ClothRecord = clothRecord,
             };
 
             geometry.Add(geo);
@@ -456,7 +478,7 @@ public static class Engine_MdlGeometry
         IReadOnlyList<string> hideRegions, MdlMeshBuffer mb,
         float[] positions, float[] uvs, float[]? normals,
         float[]? tangents, int[]? boneIds, float[]? boneWeights, ushort[] strip,
-        int bufferBase)
+        int bufferBase, int clothRecord = -1)
     {
         for (int si = 0; si < mb.SubMeshes.Count; ++si)
         {
@@ -601,6 +623,7 @@ public static class Engine_MdlGeometry
                 BoneIds = subBoneIds ?? Array.Empty<int>(),
                 BoneWeights = subBoneWeights ?? Array.Empty<float>(),
                 Name = ResolveName(meshes, mb.MeshIndex, si),
+                ClothRecord = clothRecord,
                 Region = sub.RegionIndex < hideRegions.Count
                     ? hideRegions[(int)sub.RegionIndex]
                     : sub.RegionIndex == uint.MaxValue ? string.Empty : "#" + sub.RegionIndex,

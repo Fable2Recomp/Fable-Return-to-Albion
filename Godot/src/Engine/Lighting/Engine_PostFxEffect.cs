@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Godot.Collections;
 
@@ -1594,9 +1595,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
-        int written = 0;
-        long first = long.MaxValue;
-        long last = 0;
+        // The texture reads must happen on this thread, inside the frame; the conversion, the
+        // PNGs and the summary go to a worker, so an armed trap never holds the frame.
+        var frames = new List<(long Frame, byte[] Data)>(TrapRingDepth);
         for (int k = 0; k < TrapRingDepth; k++)
         {
             int slot = (_trapRingNext + k) % TrapRingDepth;
@@ -1606,37 +1607,51 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 continue;
             }
 
-            byte[] data = _rd!.TextureGetData(_trapRing[slot], 0);
-            var image = Godot.Image.CreateFromData(
-                _quarterSize.X, _quarterSize.Y, false, Godot.Image.Format.Rgbah, data);
-            image.Convert(Godot.Image.Format.Rgba8);
-            if (image.SavePng(System.IO.Path.Combine(dir, $"frame_{frame:D8}.png")) == Error.Ok)
+            frames.Add((frame, _rd!.TextureGetData(_trapRing[slot], 0)));
+        }
+
+        Vector2I quarter = _quarterSize;
+        Vector2I full = _fullSize;
+        float ratio = _trapRatio;
+        long dumpedAt = _frameIndex;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            int written = 0;
+            long first = long.MaxValue;
+            long last = 0;
+            foreach ((long frame, byte[] data) in frames)
             {
-                written++;
-                first = Math.Min(first, frame);
-                last = Math.Max(last, frame);
+                var image = Godot.Image.CreateFromData(
+                    quarter.X, quarter.Y, false, Godot.Image.Format.Rgbah, data);
+                image.Convert(Godot.Image.Format.Rgba8);
+                if (image.SavePng(System.IO.Path.Combine(dir, $"frame_{frame:D8}.png")) == Error.Ok)
+                {
+                    written++;
+                    first = Math.Min(first, frame);
+                    last = Math.Max(last, frame);
+                }
             }
-        }
 
-        string why = hitFrame >= 0
-            ? $"hit at reduce frame {hitFrame}: mean {hitPrev:0.####} -> {hitMean:0.####} " +
-              $"(x{(hitPrev > 0f ? hitMean / hitPrev : 0f):0.##}); look at frames " +
-              $"{hitFrame - 2} and {hitFrame - 1} first"
-            : "no hit recorded";
-        string summary = $"flicker trap ratio x{_trapRatio:0.##}, {(manual ? "on request" : "automatic")}; " +
-            $"{why}; {written} frame(s) {first}..{last} at {_quarterSize.X}x{_quarterSize.Y}, " +
-            $"internal {_fullSize.X}x{_fullSize.Y}, dumped at frame {_frameIndex}";
-        try
-        {
-            System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "trap.txt"), summary + "\n");
-        }
-        catch (Exception e)
-        {
-            GD.PrintErr($"[postfx] flicker trap: cannot write trap.txt: {e.Message}");
-        }
+            string why = hitFrame >= 0
+                ? $"hit at reduce frame {hitFrame}: mean {hitPrev:0.####} -> {hitMean:0.####} " +
+                  $"(x{(hitPrev > 0f ? hitMean / hitPrev : 0f):0.##}); look at frames " +
+                  $"{hitFrame - 2} and {hitFrame - 1} first"
+                : "no hit recorded";
+            string summary = $"flicker trap ratio x{ratio:0.##}, {(manual ? "on request" : "automatic")}; " +
+                $"{why}; {written} frame(s) {first}..{last} at {quarter.X}x{quarter.Y}, " +
+                $"internal {full.X}x{full.Y}, dumped at frame {dumpedAt}";
+            try
+            {
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "trap.txt"), summary + "\n");
+            }
+            catch (Exception e)
+            {
+                GD.PrintErr($"[postfx] flicker trap: cannot write trap.txt: {e.Message}");
+            }
 
-        _trapLastDump = dir;
-        GD.Print($"[postfx] {summary} -> {dir}");
+            _trapLastDump = dir;
+            GD.Print($"[postfx] {summary} -> {dir}");
+        });
     }
 
     private void Dispatch(Rid pipeline, Rid uniformSet, byte[]? push, int groupsX, int groupsY)

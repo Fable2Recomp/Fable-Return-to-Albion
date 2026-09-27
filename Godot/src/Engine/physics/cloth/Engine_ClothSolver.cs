@@ -1,7 +1,15 @@
 using System;
+using System.Numerics;
 
 namespace Refii.Physics;
 
+/// <summary>
+/// The guest's cloth step (<c>sub_82A94EE0</c>), pass for pass: LUT rebuild, root-motion
+/// follow, Verlet integration, skinning and skin-retention blend, then a relaxation loop of one
+/// distance-constraint pass and the four collider passes until the residual falls under 0.01 or
+/// 31 iterations, then the welds and the bounds. Every constant is the binary's; the comments
+/// name the guest function each pass is ported from.
+/// </summary>
 public static class Engine_ClothSolver
 {
     public const float DampRateHz = 30.0f;
@@ -16,37 +24,47 @@ public static class Engine_ClothSolver
     public const int ForceWeightEntries = 67;
     public const int BlendWeightEntries = 65;
 
-    private static readonly PhysVec4[] ForceWeight = new PhysVec4[ForceWeightEntries];
-
-    private static readonly PhysVec4[] BlendWeight = new PhysVec4[BlendWeightEntries];
-
-    private static float _cachedAttrScale;
-
-    private static float _cachedDt;
-
-    public static void UpdateTimeLuts(float dt, float attrScale)
+    /// <summary>
+    /// The guest keeps two global LUTs and rebuilds them whenever an item's dt or scale
+    /// differs from the last (<c>sub_82A94818</c>); ours live on the instance so bodies can
+    /// step on worker threads at once. A[k] = k * scale / 64 weights the forces;
+    /// B[k] = pow(k * scale / 64, dt) is the per-step retention against the skinned pose.
+    /// </summary>
+    public static void UpdateTimeLuts(ClothInstance inst, float dt, float attrScale)
     {
-        if (attrScale != _cachedAttrScale)
+        if (inst.ForceWeight.Length != ForceWeightEntries)
+        {
+            inst.ForceWeight = new PhysVec4[ForceWeightEntries];
+            inst.BlendWeight = new PhysVec4[BlendWeightEntries];
+            inst.LutScale = float.NaN;
+            inst.LutDt = float.NaN;
+        }
+
+        if (attrScale != inst.LutScale)
         {
             for (int k = 0; k < ForceWeightEntries; k++)
             {
-                ForceWeight[k] = PhysVec4.Splat(k * attrScale * Inv64);
+                inst.ForceWeight[k] = PhysVec4.Splat(k * attrScale * Inv64);
             }
         }
-        else if (dt == _cachedDt)
+        else if (dt == inst.LutDt)
         {
             return;
         }
 
         for (int k = 0; k < BlendWeightEntries; k++)
         {
-            BlendWeight[k] = PhysVec4.Splat(MathF.Pow(k * attrScale * Inv64, dt));
+            inst.BlendWeight[k] = PhysVec4.Splat(MathF.Pow(k * attrScale * Inv64, dt));
         }
 
-        _cachedAttrScale = attrScale;
-        _cachedDt = dt;
+        inst.LutScale = attrScale;
+        inst.LutDt = dt;
     }
 
+    /// <summary>
+    /// <c>sub_82A950B8</c>: one Gauss-Seidel pass over every edge. err = |b - a| - rest;
+    /// a += err * d̂ * wA * k; b -= err * d̂ * wB * k; returns 0.5 * max|err|.
+    /// </summary>
     public static float SolveConstraints(ClothInstance inst)
     {
         ClothAsset? asset = inst.Asset;
@@ -59,68 +77,60 @@ public static class Engine_ClothSolver
         ushort[] edges = asset.Edges;
         PhysVec4[] param = asset.EdgeParams;
         int edgeCount = Math.Min(asset.EdgeCount, param.Length);
-
-        PhysVec4 stiff = PhysVec4.One;
-        PhysVec4 maxErr = PhysVec4.Zero;
-
         if (edgeCount <= 0)
         {
             return 0.0f;
         }
 
+        float maxErr = 0.0f;
+        int count = pos.Length;
+
         for (int e = 0; e < edgeCount; e++)
         {
             int ia = edges[e * 2];
             int ib = edges[(e * 2) + 1];
-
-            if (ia >= pos.Length || ib >= pos.Length)
+            if (ia >= count || ib >= count)
             {
                 continue;
             }
 
-            PhysVec4 rest = PhysVec4.Splat(param[e].X);
-            PhysVec4 k = PhysVec4.Splat(param[e].Y);
-            PhysVec4 wA = PhysVec4.Splat(param[e].Z);
-            PhysVec4 wB = PhysVec4.Splat(param[e].W);
+            Vector4 p = param[e].V;
+            Vector4 a = pos[ia].V;
+            Vector4 b = pos[ib].V;
+            // Three lanes, as vmsum3fp128: the box pass leaves w = 0 in a position it moved.
+            Vector4 d = (b - a) * PhysVec4.XyzMask;
 
-            PhysVec4 a = pos[ia];
-            PhysVec4 b = pos[ib];
-            PhysVec4 d = PhysVec4.Sub(b, a);
+            float lenSq = Vector4.Dot(d, d);
+            if (lenSq <= DegenerateEps * DegenerateEps)
+            {
+                continue;
+            }
 
-            PhysVec4 lenSq = PhysVec4.MSum3(d, d);
-            PhysVec4 rlen0 = PhysVec4.RSqrtE(lenSq);
-            PhysVec4 len = PhysVec4.RecipE(rlen0);
-            PhysVec4 invLen = PhysVec4.RefineReciprocal(len, PhysVec4.RecipE(len));
+            float len = MathF.Sqrt(lenSq);
+            float err = len - p.X;
+            float absErr = MathF.Abs(err);
+            if (absErr > maxErr)
+            {
+                maxErr = absErr;
+            }
 
-            PhysVec4 err = PhysVec4.Sub(len, rest);
-            maxErr = PhysVec4.Max(maxErr, PhysVec4.Abs(err));
-
-            PhysVec4 corr = PhysVec4.Mul(
-                PhysVec4.Mul(PhysVec4.Mul(err, d), invLen), stiff);
-            PhysVec4 dA = PhysVec4.Mul(corr, wA);
-            PhysVec4 dB = PhysVec4.Mul(corr, wB);
-
-            pos[ia] = PhysVec4.MAdd(dA, a, k);
-            pos[ib] = PhysVec4.Sub(pos[ib], PhysVec4.Mul(dB, k));
+            Vector4 corr = d * (err / len);
+            pos[ia].V = a + (corr * (p.Z * p.Y));
+            pos[ib].V = b - (corr * (p.W * p.Y));
         }
 
-        return maxErr.X * 0.5f;
+        return maxErr * 0.5f;
     }
 
     public static void ApplyForces(ClothInstance inst)
     {
         ClothAsset? asset = inst.Asset;
-        if (asset is null)
+        if (asset is null || !asset.FollowRotation)
         {
             return;
         }
 
-        if (!inst.WindEnabled && !inst.AnchorEnabled)
-        {
-            return;
-        }
-
-        float force = inst.InertiaStrength;
+        float force = asset.Inertia;
         if (force <= 0.0f)
         {
             return;
@@ -137,11 +147,6 @@ public static class Engine_ClothSolver
         Engine_PhysicsMatrix.Lerp(ref delta, invCur, frameDelta, force);
 
         var row3 = new PhysVec4(0.0f, 0.0f, 0.0f, 1.0f);
-
-        if (!inst.WindEnabled)
-        {
-            Engine_PhysicsMatrix.LoadIdentityTranslation(ref delta, row3);
-        }
 
         int begin = asset.SimBegin;
         int end = asset.SimEnd;
@@ -171,7 +176,13 @@ public static class Engine_ClothSolver
         }
     }
 
-    public static void Integrate(ClothInstance inst, float dt, float damping)
+    /// <summary>
+    /// <c>sub_82A964C0</c>: Verlet over the sim range. new = cur + (collided ? 0 : vel * min(dt/prevDt, 2)
+    /// * decay + (wind * dt² * |n·ŵ| * windStrength + gravity * gravityStrength * dt²) * A[attr] * decay),
+    /// decay = pow(1 - damping, dt * 30); wind and gravity brought into the model's space by the
+    /// inverse of the current transform.
+    /// </summary>
+    public static void Integrate(ClothInstance inst, float dt)
     {
         ClothAsset? asset = inst.Asset;
         if (asset is null)
@@ -179,7 +190,7 @@ public static class Engine_ClothSolver
             return;
         }
 
-        float d = MathF.Pow(1.0f - damping, dt * DampRateHz);
+        float d = MathF.Pow(1.0f - asset.Damping, dt * DampRateHz);
         float dt2 = dt * dt;
 
         PhysVec4[] swapA = inst.PosPrev;
@@ -221,10 +232,10 @@ public static class Engine_ClothSolver
 
         PhysVec4 windTerm = PhysVec4.Mul(windLocal, PhysVec4.Splat(dt2));
         PhysVec4 gravTerm = PhysVec4.Mul(
-            PhysVec4.Mul(gravLocal, PhysVec4.Splat(inst.GravityStrength)), PhysVec4.Splat(dt2));
+            PhysVec4.Mul(gravLocal, PhysVec4.Splat(asset.GravityStrength)), PhysVec4.Splat(dt2));
         PhysVec4 velScale = PhysVec4.Mul(PhysVec4.Splat(ratio), PhysVec4.Splat(d));
         PhysVec4 dampSplat = PhysVec4.Splat(d);
-        PhysVec4 windStrength = PhysVec4.Splat(inst.WindStrength);
+        PhysVec4 windStrength = PhysVec4.Splat(asset.WindStrength);
         PhysVec4 homogeneousW = PhysVec4.One;
         PhysVec4 zero = PhysVec4.Zero;
 
@@ -232,23 +243,41 @@ public static class Engine_ClothSolver
         int begin = asset.SimBegin;
         int end = asset.SimEnd;
 
+        Vector4 windDirV = windDir.V;
+        Vector4 windTermV = windTerm.V;
+        Vector4 gravTermV = gravTerm.V;
+        float velScaleF = ratio * d;
+        float windStrengthF = asset.WindStrength;
+        PhysVec4[] normals = inst.VertexNormals;
+        PhysVec4[] flags = inst.CollidedFlags;
+        PhysVec4[] force = inst.ForceWeight;
+
+        float maxMoveSq = 0.0f;
         for (int i = begin; i < end && i < posNew.Length; i++)
         {
-            PhysVec4 vel = PhysVec4.Sub(posCur[i], posNew[i]);
-            PhysVec4 facing = PhysVec4.Abs(PhysVec4.MSum3(windDir, inst.VertexNormals[i]));
+            Vector4 cur = posCur[i].V;
+            Vector4 vel = cur - posNew[i].V;
+            maxMoveSq = MathF.Max(maxMoveSq, Vector4.Dot(vel, vel));
 
-            PhysVec4 accel = PhysVec4.MAdd(
-                PhysVec4.Mul(windTerm, facing), gravTerm, windStrength);
-            accel = PhysVec4.Mul(accel, ForceWeight[Weight(attr, i, ForceWeightEntries)]);
+            float facing = MathF.Abs(Vector4.Dot(windDirV, normals[i].V));
+            Vector4 accel = ((windTermV * (facing * windStrengthF)) + gravTermV) *
+                force[Weight(attr, i, ForceWeightEntries)].V;
 
-            PhysVec4 step = PhysVec4.MAdd(accel, PhysVec4.Mul(vel, velScale), dampSplat);
-            step = PhysVec4.Sel(step, zero, inst.CollidedFlags[i]);
+            Vector4 step = flags[i].V.X != 0.0f
+                ? Vector4.Zero
+                : (accel * d) + (vel * velScaleF);
 
-            posNew[i] = PhysVec4.KeepXyzTakeW(
-                PhysVec4.Add(posCur[i], step), homogeneousW);
+            Vector4 next = cur + step;
+            next.W = 1.0f;
+            posNew[i].V = next;
         }
+
+        inst.LastMoveSquared = maxMoveSq;
     }
 
+    /// <summary>
+    /// <c>sub_82B8EE48</c>: out_k = Σ_j w_j · dot4(bind, bone_j.row_k) for the three rows.
+    /// </summary>
     public static void SkinDriverPositions(
         ClothSkinDriver driver, PhysVec4[] output, PhysVec4[] bind, PhysVec4[] bones)
     {
@@ -257,49 +286,45 @@ public static class Engine_ClothSolver
             return;
         }
 
+        int stride = driver.IndexStride;
+        int lanes = Math.Min(4, stride);
+        byte[] ids = driver.BoneIndices;
+        PhysVec4[] weights = driver.Weights;
+
         for (int i = 0; i < driver.Count && i < bind.Length && i < output.Length; i++)
         {
-            PhysVec4 p = bind[i];
-            PhysVec4 w = i < driver.Weights.Length ? driver.Weights[i] : PhysVec4.Zero;
+            Vector4 p = bind[i].V;
+            Vector4 w = i < weights.Length ? weights[i].V : Vector4.Zero;
+            int indexBase = stride * i;
 
-            int indexBase = driver.IndexStride * i;
-
-            PhysVec4 acc0 = PhysVec4.Zero;
-            PhysVec4 acc1 = PhysVec4.Zero;
-            PhysVec4 acc2 = PhysVec4.Zero;
-
-            for (int b = 0; b < 4; b++)
+            float x = 0.0f;
+            float y = 0.0f;
+            float z = 0.0f;
+            for (int b = 0; b < lanes; b++)
             {
                 int slot = indexBase + b;
-                if (b >= driver.IndexStride || slot >= driver.BoneIndices.Length)
+                if (slot >= ids.Length)
                 {
                     break;
                 }
 
-                int bone = driver.BoneIndices[slot] * 3;
+                int bone = ids[slot] * 3;
                 if (bone + 2 >= bones.Length)
                 {
                     continue;
                 }
 
-                float lane = b switch
-                {
-                    0 => w.X,
-                    1 => w.Y,
-                    2 => w.Z,
-                    _ => w.W,
-                };
-
-                PhysVec4 wb = PhysVec4.Splat(lane);
-                acc0 = PhysVec4.Add(acc0, PhysVec4.Mul(PhysVec4.MSum4(p, bones[bone]), wb));
-                acc1 = PhysVec4.Add(acc1, PhysVec4.Mul(PhysVec4.MSum4(p, bones[bone + 1]), wb));
-                acc2 = PhysVec4.Add(acc2, PhysVec4.Mul(PhysVec4.MSum4(p, bones[bone + 2]), wb));
+                float wb = b switch { 0 => w.X, 1 => w.Y, 2 => w.Z, _ => w.W };
+                x += Vector4.Dot(p, bones[bone].V) * wb;
+                y += Vector4.Dot(p, bones[bone + 1].V) * wb;
+                z += Vector4.Dot(p, bones[bone + 2].V) * wb;
             }
 
-            output[i] = new PhysVec4(acc0.X, acc1.X, acc2.X, p.W);
+            output[i].V = new Vector4(x, y, z, p.W);
         }
     }
 
+    /// <summary><c>sub_82A962D8</c>: pos = skin + (pos - skin) * B[attr] over every vertex, w = 1.</summary>
     public static void BlendSkinnedTarget(ClothInstance inst, PhysVec4[] pos, PhysVec4[] skinTarget)
     {
         ClothAsset? asset = inst.Asset;
@@ -309,20 +334,22 @@ public static class Engine_ClothSolver
         }
 
         byte[] attr = asset.VertexAttr;
-        int vertexCount = asset.VertexCount;
-        PhysVec4 homogeneousW = PhysVec4.One;
+        PhysVec4[] blend = inst.BlendWeight;
+        int vertexCount = Math.Min(asset.VertexCount, Math.Min(pos.Length, skinTarget.Length));
 
-        for (int i = 0; i < vertexCount && i < pos.Length && i < skinTarget.Length; i++)
+        for (int i = 0; i < vertexCount; i++)
         {
-            PhysVec4 target = skinTarget[i];
-            PhysVec4 free = pos[i];
-            PhysVec4 weight = BlendWeight[Weight(attr, i, BlendWeightEntries)];
-
-            PhysVec4 blended = PhysVec4.MAdd(PhysVec4.Sub(free, target), target, weight);
-            pos[i] = PhysVec4.KeepXyzTakeW(blended, homogeneousW);
+            Vector4 target = skinTarget[i].V;
+            Vector4 blended = target + ((pos[i].V - target) * blend[Weight(attr, i, BlendWeightEntries)].V);
+            blended.W = 1.0f;
+            pos[i].V = blended;
         }
     }
 
+    /// <summary>
+    /// <c>sub_82A951F8</c>: a vertex inside a sphere is pushed to radius + 0.001 along its
+    /// offset and flagged; the flag is overwritten per sphere, as the guest's is.
+    /// </summary>
     public static void CollideSpheres(ClothInstance inst)
     {
         ClothAsset? asset = inst.Asset;
@@ -332,38 +359,32 @@ public static class Engine_ClothSolver
         }
 
         int begin = asset.SimBegin;
-        int end = asset.SimEnd;
-
-        PhysVec4 homogeneousW = PhysVec4.One;
+        int end = Math.Min(asset.SimEnd, inst.PosCur.Length);
         PhysVec4[] pos = inst.PosCur;
         PhysVec4[] flags = inst.CollidedFlags;
 
         for (int s = 0; s < inst.Spheres.Length; s++)
         {
-            SphereCollider sphere = inst.Spheres[s];
+            Vector4 center = inst.Spheres[s].Center.V * PhysVec4.XyzMask;
+            float radius = inst.Spheres[s].Radius;
+            float radiusSq = radius * radius;
+            float pushRadius = radius + CollisionSkin;
 
-            PhysVec4 center = sphere.Center;
-            PhysVec4 radius = PhysVec4.Splat(sphere.Radius);
-            PhysVec4 pushRadius = PhysVec4.Splat(sphere.Radius + CollisionSkin);
-
-            for (int i = begin; i < end && i < pos.Length; i++)
+            for (int i = begin; i < end; i++)
             {
-                PhysVec4 p = pos[i];
-                PhysVec4 d = PhysVec4.Sub(p, center);
+                Vector4 p = pos[i].V;
+                Vector4 d = (p - center) * PhysVec4.XyzMask;
+                float distSq = Vector4.Dot(d, d);
+                bool hit = radiusSq >= distSq;
+                flags[i].V = hit ? Vector4.One : Vector4.Zero;
+                if (!hit || distSq <= DegenerateEps * DegenerateEps)
+                {
+                    continue;
+                }
 
-                PhysVec4 distSq = PhysVec4.MSum3(d, d);
-                PhysVec4 rdist = PhysVec4.RSqrtE(distSq);
-                PhysVec4 dist = PhysVec4.RecipE(rdist);
-
-                PhysMask hit = PhysVec4.CmpGe(radius, dist);
-                flags[i] = PhysVec4.Sel(PhysVec4.Zero, PhysVec4.One, hit);
-
-                PhysVec4 invDist = PhysVec4.RefineReciprocal(dist, PhysVec4.RecipE(dist));
-                PhysVec4 pushed = PhysVec4.MAdd(
-                    d, center, PhysVec4.Mul(pushRadius, invDist));
-
-                PhysVec4 result = PhysVec4.Sel(p, pushed, hit);
-                pos[i] = PhysVec4.KeepXyzTakeW(result, homogeneousW);
+                Vector4 pushed = center + (d * (pushRadius / MathF.Sqrt(distSq)));
+                pushed.W = 1.0f;
+                pos[i].V = pushed;
             }
         }
     }
@@ -404,6 +425,11 @@ public static class Engine_ClothSolver
         }
     }
 
+    /// <summary>
+    /// <c>sub_82A95AC0</c>: a finite cylinder — t along the axis must lie in [0, 1] (tested, not
+    /// clamped: no end caps) and the vertex within the radius; pushed to radius + 0.001 from the
+    /// axis point and flagged.
+    /// </summary>
     public static void CollideCapsules(ClothInstance inst)
     {
         ClothAsset? asset = inst.Asset;
@@ -413,53 +439,44 @@ public static class Engine_ClothSolver
         }
 
         int begin = asset.SimBegin;
-        int end = asset.SimEnd;
-
-        PhysVec4 one = PhysVec4.One;
-        PhysVec4 zero = PhysVec4.Zero;
+        int end = Math.Min(asset.SimEnd, inst.PosCur.Length);
         PhysVec4[] pos = inst.PosCur;
         PhysVec4[] flags = inst.CollidedFlags;
 
         for (int c = 0; c < inst.Capsules.Length; c++)
         {
-            CapsuleCollider cap = inst.Capsules[c];
-
-            PhysVec4 p0 = cap.P0;
-            PhysVec4 axis = cap.Axis;
-
-            PhysVec4 axisLenSq = PhysVec4.MSum3(axis, axis);
-            PhysVec4 invAxisLen2 = PhysVec4.RefineReciprocal(
-                axisLenSq, PhysVec4.RecipE(axisLenSq));
-            PhysVec4 projector = PhysVec4.Mul(axis, invAxisLen2);
-
-            PhysVec4 radiusSq = PhysVec4.Splat(cap.Radius * cap.Radius);
-            PhysVec4 pushRadius = PhysVec4.Splat(cap.Radius + CollisionSkin);
-
-            for (int i = begin; i < end && i < pos.Length; i++)
+            Vector4 p0 = inst.Capsules[c].P0.V * PhysVec4.XyzMask;
+            Vector4 axis = inst.Capsules[c].Axis.V * PhysVec4.XyzMask;
+            float axisLenSq = Vector4.Dot(axis, axis);
+            if (axisLenSq <= DegenerateEps)
             {
-                PhysVec4 p = pos[i];
-                PhysVec4 rel = PhysVec4.Sub(p, p0);
+                continue;
+            }
 
-                PhysVec4 t = PhysVec4.MSum3(projector, rel);
-                PhysVec4 closest = PhysVec4.MAdd(axis, p0, t);
+            Vector4 projector = axis / axisLenSq;
+            float radius = inst.Capsules[c].Radius;
+            float radiusSq = radius * radius;
+            float pushRadius = radius + CollisionSkin;
 
-                PhysMask withinStart = PhysVec4.CmpGe(t, zero);
-                PhysMask withinEnd = PhysVec4.CmpGe(one, t);
-                PhysMask onSegment = PhysVec4.And(withinStart, withinEnd);
+            for (int i = begin; i < end; i++)
+            {
+                Vector4 p = pos[i].V;
+                Vector4 rel = (p - p0) * PhysVec4.XyzMask;
+                float t = Vector4.Dot(projector, rel);
+                bool onSegment = t >= 0.0f && t <= 1.0f;
+                Vector4 closest = p0 + (axis * t);
+                Vector4 d = (p - closest) * PhysVec4.XyzMask;
+                float distSq = onSegment ? Vector4.Dot(d, d) : 0.0f;
+                bool hit = onSegment && radiusSq >= distSq;
+                flags[i].V = hit ? Vector4.One : Vector4.Zero;
+                if (!hit || distSq <= DegenerateEps * DegenerateEps)
+                {
+                    continue;
+                }
 
-                PhysVec4 d = PhysVec4.Sub(p, closest);
-                PhysVec4 distSq = PhysVec4.MSum3(d, d);
-                PhysVec4 gated = PhysVec4.Sel(zero, distSq, onSegment);
-                PhysMask inRadius = PhysVec4.CmpGe(radiusSq, gated);
-                PhysMask hit = PhysVec4.And(onSegment, inRadius);
-
-                flags[i] = PhysVec4.Sel(zero, one, hit);
-
-                PhysVec4 dir = PhysVec4.Mul(d, PhysVec4.RSqrtE(distSq));
-                PhysVec4 pushed = PhysVec4.MAdd(dir, closest, pushRadius);
-
-                PhysVec4 result = PhysVec4.Sel(p, pushed, hit);
-                pos[i] = PhysVec4.KeepXyzTakeW(result, one);
+                Vector4 pushed = closest + (d * (pushRadius / MathF.Sqrt(distSq)));
+                pushed.W = 1.0f;
+                pos[i].V = pushed;
             }
         }
     }
@@ -605,6 +622,7 @@ public static class Engine_ClothSolver
         ComputeAabb(ref inst.BoundsMin, ref inst.BoundsMax, inst.PosCur, vertexCount);
     }
 
+    /// <summary>One step with <paramref name="dt"/> — the guest's substep, at most 50 ms.</summary>
     public static void SimulateInstance(ClothInstance inst, float dt)
     {
         ClothAsset? asset = inst.Asset;
@@ -613,18 +631,25 @@ public static class Engine_ClothSolver
             return;
         }
 
-        UpdateTimeLuts(dt, inst.AttrScale);
+        UpdateTimeLuts(inst, dt, asset.AttrScale);
 
         if (dt > 0.0f)
         {
             ApplyForces(inst);
-            Integrate(inst, dt, inst.Damping);
+            Integrate(inst, dt);
         }
 
+        // The skin table alone decides whether the retention blend runs (0x82a94f40). With no
+        // palette the target stays the rest pose, which is what the guest skins to as well
+        // when its palette is the identity.
         ClothSkinDriver? driver = asset.Driver;
         if (driver is not null && driver.IndexStride > 0)
         {
-            SkinDriverPositions(driver, inst.SkinTarget, asset.BindPos, inst.BoneMatrices);
+            if (inst.HasBones)
+            {
+                SkinDriverPositions(driver, inst.SkinTarget, asset.BindPos, inst.BoneMatrices);
+            }
+
             BlendSkinnedTarget(inst, inst.PosCur, inst.SkinTarget);
         }
 
@@ -668,6 +693,152 @@ public static class Engine_ClothSolver
         }
 
         Finalise(inst);
+    }
+
+    /// <summary>
+    /// <c>sub_822BA0B0</c>: face normals summed onto the vertices from the cloth's own triangle
+    /// list and normalised. The guest does it at copy-out; the next step's wind term reads it.
+    /// </summary>
+    public static void ComputeNormals(ClothInstance inst) => ComputeNormals(inst, inst.PosCur);
+
+    public static void ComputeNormals(ClothInstance inst, PhysVec4[] pos)
+    {
+        ClothAsset? asset = inst.Asset;
+        if (asset is null)
+        {
+            return;
+        }
+
+        PhysVec4[] normals = inst.VertexNormals;
+        ushort[] indices = asset.Indices;
+        Array.Clear(normals, 0, normals.Length);
+
+        int triangles = indices.Length - (indices.Length % 3);
+        for (int i = 0; i < triangles; i += 3)
+        {
+            int a = indices[i];
+            int b = indices[i + 1];
+            int c = indices[i + 2];
+            if (a >= pos.Length || b >= pos.Length || c >= pos.Length)
+            {
+                continue;
+            }
+
+            PhysVec4 face = PhysVec4.Cross3(
+                PhysVec4.Sub(pos[b], pos[a]), PhysVec4.Sub(pos[c], pos[a]));
+            normals[a] = PhysVec4.Add(normals[a], face);
+            normals[b] = PhysVec4.Add(normals[b], face);
+            normals[c] = PhysVec4.Add(normals[c], face);
+        }
+
+        for (int v = 0; v < normals.Length; v++)
+        {
+            PhysVec4 n = normals[v];
+            float lenSq = PhysVec4.MSum3(n, n).X;
+            normals[v] = lenSq > 1.0e-12f
+                ? PhysVec4.MaskXyz(PhysVec4.Mul(n, PhysVec4.Splat(1.0f / MathF.Sqrt(lenSq))))
+                : PhysVec4.Zero;
+        }
+    }
+
+    /// <summary>
+    /// The tangent basis the guest rebuilds beside the normals: per triangle from the UV
+    /// derivatives, summed per vertex, orthogonalised against the normal and normalised; the
+    /// handedness is the file's (<see cref="ClothAsset.TangentW"/>).
+    /// </summary>
+    public static void ComputeTangents(ClothInstance inst, PhysVec4[] pos)
+    {
+        ClothAsset? asset = inst.Asset;
+        if (asset is null)
+        {
+            return;
+        }
+
+        PhysVec4[] tangents = inst.Tangents;
+        PhysVec4[] normals = inst.VertexNormals;
+        float[] uv = asset.Uvs;
+        ushort[] indices = asset.Indices;
+        Array.Clear(tangents, 0, tangents.Length);
+
+        if (uv.Length < pos.Length * 2)
+        {
+            for (int v = 0; v < tangents.Length; v++)
+            {
+                tangents[v] = new PhysVec4(1.0f, 0.0f, 0.0f, 1.0f);
+            }
+
+            return;
+        }
+
+        int triangles = indices.Length - (indices.Length % 3);
+        for (int i = 0; i < triangles; i += 3)
+        {
+            int a = indices[i];
+            int b = indices[i + 1];
+            int c = indices[i + 2];
+            if (a >= pos.Length || b >= pos.Length || c >= pos.Length)
+            {
+                continue;
+            }
+
+            PhysVec4 e1 = PhysVec4.Sub(pos[b], pos[a]);
+            PhysVec4 e2 = PhysVec4.Sub(pos[c], pos[a]);
+            float du1 = uv[b * 2] - uv[a * 2];
+            float dv1 = uv[(b * 2) + 1] - uv[(a * 2) + 1];
+            float du2 = uv[c * 2] - uv[a * 2];
+            float dv2 = uv[(c * 2) + 1] - uv[(a * 2) + 1];
+            float det = (du1 * dv2) - (du2 * dv1);
+            if (MathF.Abs(det) < 1.0e-12f)
+            {
+                continue;
+            }
+
+            float r = 1.0f / det;
+            var t = new PhysVec4(
+                ((e1.X * dv2) - (e2.X * dv1)) * r,
+                ((e1.Y * dv2) - (e2.Y * dv1)) * r,
+                ((e1.Z * dv2) - (e2.Z * dv1)) * r,
+                0.0f);
+            tangents[a] = PhysVec4.Add(tangents[a], t);
+            tangents[b] = PhysVec4.Add(tangents[b], t);
+            tangents[c] = PhysVec4.Add(tangents[c], t);
+        }
+
+        for (int v = 0; v < tangents.Length; v++)
+        {
+            PhysVec4 t = tangents[v];
+            PhysVec4 n = v < normals.Length ? normals[v] : PhysVec4.Zero;
+            t = PhysVec4.Sub(t, PhysVec4.Mul(n, PhysVec4.Splat(PhysVec4.MSum3(n, t).X)));
+            float lenSq = PhysVec4.MSum3(t, t).X;
+            float w = v < asset.TangentW.Length ? asset.TangentW[v] : 1.0f;
+            tangents[v] = lenSq > 1.0e-12f
+                ? PhysVec4.KeepXyzTakeW(PhysVec4.Mul(t, PhysVec4.Splat(1.0f / MathF.Sqrt(lenSq))), PhysVec4.Splat(w))
+                : new PhysVec4(1.0f, 0.0f, 0.0f, w);
+        }
+    }
+
+    /// <summary>
+    /// The pose the guest copies to its vertex buffer (<c>sub_8229F0B8</c>): the simulated
+    /// positions, lerped toward the skinned ones by the distance fade when it is under 1.
+    /// </summary>
+    public static void DrawnPositions(ClothInstance inst, PhysVec4[] output)
+    {
+        PhysVec4[] sim = inst.PosCur;
+        PhysVec4[] skin = inst.SkinTarget;
+        float weight = inst.LodWeight;
+        int count = Math.Min(output.Length, sim.Length);
+
+        if (weight >= 1.0f || skin.Length < count)
+        {
+            Array.Copy(sim, output, count);
+            return;
+        }
+
+        PhysVec4 w = PhysVec4.Splat(weight);
+        for (int i = 0; i < count; i++)
+        {
+            output[i] = PhysVec4.MAdd(PhysVec4.Sub(sim[i], skin[i]), skin[i], w);
+        }
     }
 
     public static void TransformCollidersToWorld(ClothInstance inst)
@@ -735,24 +906,12 @@ public static class Engine_ClothSolver
     private static bool TryBonePose(ClothInstance inst, int boneIndex, out PhysMat4 pose)
     {
         pose = default;
-
-        if (boneIndex < 0)
+        if (boneIndex < 0 || boneIndex >= inst.BonePoses.Length)
         {
             return false;
         }
 
-        int bone = boneIndex;
-        if (boneIndex < inst.BoneRemap.Length)
-        {
-            bone = inst.BoneRemap[boneIndex];
-        }
-
-        if (bone < 0 || bone >= inst.BonePoses.Length)
-        {
-            return false;
-        }
-
-        pose = inst.BonePoses[bone];
+        pose = inst.BonePoses[boneIndex];
         return true;
     }
 

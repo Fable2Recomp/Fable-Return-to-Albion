@@ -27,6 +27,11 @@ int refii_bridge_rex_time_base_mode(void);
 /// Grants the guest `steps` high-frequency steps of time. Driven mode only.
 void refii_bridge_rex_advance_time_base(uint32_t steps);
 
+/// Driven mode, this thread only: while on, clock reads answer the virtual tick plus the real
+/// time since the slice began, so a guest loop bounded by "now + N ms" runs N real
+/// milliseconds instead of until the next grant. Off restores the frozen tick.
+void refii_bridge_rex_time_base_real_slice(int on);
+
 /// `capped` reads held back in paced mode, `granted` steps handed over in driven mode, and
 /// `watchdog` lapses where no grant arrived and time resumed on its own (the host is not
 /// stepping). The high 32 bits of each carry, respectively: dropped grants, the permille of

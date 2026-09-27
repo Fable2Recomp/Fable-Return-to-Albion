@@ -1129,6 +1129,9 @@ public static class HostBridge
 	/// <summary>Each address's stated words from the last walk, for <see cref="GuestEntity.Changed"/>.</summary>
 	private static readonly Dictionary<uint, (uint X, uint Y, uint Z, uint Qx, uint Qy, uint Qz, uint Qw, uint Model, uint Record)> _lastStated = new();
 
+	/// <summary>Each address's highlight and appearance words from the last walk, the other half of Changed.</summary>
+	private static readonly Dictionary<uint, (uint Highlight, uint A0, uint A1, uint A2, uint A3, uint A4, uint A5, uint A6, uint A7)> _lastStatedLook = new();
+
 	private static int _walksSinceStatedPrune;
 
 	/// <summary>Entities the last walk found changed, and the walk's size; reported.</summary>
@@ -1227,10 +1230,19 @@ public static class HostBridge
 			var stated = (_entityWords[at], _entityWords[at + 1], _entityWords[at + 2],
 				_entityWords[at + 3], _entityWords[at + 4], _entityWords[at + 5], _entityWords[at + 6],
 				_entityWords[at + 7], _entityWords[at + 11]);
-			bool changed = !_lastStated.TryGetValue(address, out var last) || !last.Equals(stated);
+
+			// The look words too — highlight and appearance — so a walk that skips an unchanged
+			// entity outright (GameEntities' still-adopted fast path) cannot miss a targeting
+			// outline or a fade that arrives without the placement moving.
+			var statedLook = (_entityWords[at + 20], _entityWords[at + 21], _entityWords[at + 22],
+				_entityWords[at + 23], _entityWords[at + 24], _entityWords[at + 25], _entityWords[at + 26],
+				_entityWords[at + 27], _entityWords[at + 28]);
+			bool changed = !_lastStated.TryGetValue(address, out var last) || !last.Equals(stated) ||
+				!_lastStatedLook.TryGetValue(address, out var lastLook) || !lastLook.Equals(statedLook);
 			if (changed)
 			{
 				_lastStated[address] = stated;
+				_lastStatedLook[address] = statedLook;
 				++walkChanged;
 			}
 
@@ -1290,6 +1302,7 @@ public static class HostBridge
 			foreach (uint address in gone)
 			{
 				_lastStated.Remove(address);
+				_lastStatedLook.Remove(address);
 			}
 		}
 		}

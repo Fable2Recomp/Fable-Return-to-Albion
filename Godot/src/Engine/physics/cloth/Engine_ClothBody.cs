@@ -1,235 +1,906 @@
+using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Godot;
-using Godot.Collections;
 
 namespace Refii.Physics;
 
+/// <summary>
+/// The cloth of one drawn entity: a child of the entity's mesh node that draws the cloth
+/// surfaces itself and steps them the way the guest's cloth proxy does, once per rendered frame.
+///
+/// The contract, all of it the guest's:
+/// - dt is the frame time clamped to 0.2 s and divided by ceil(dt * 20) — ONE step of at most
+///   50 ms per frame, never a loop (<c>sub_821E3180</c>; the substep count is computed and
+///   never iterated).
+/// - The owner's world matrix is the transform; a jump of more than one unit resets the cloth
+///   to the skinned pose (<c>sub_8218D9A0</c>).
+/// - The skin palette is the rig's pose times inverse bind, in the model's space, in the
+///   cloth block's own bone ids (<c>sub_8222E2B8</c>); colliders pose off the same bones.
+/// - Wind is the level's weather wind, direction times speed; gravity is world down.
+/// - Beyond MaxClothDistance, or out of the camera's view, nothing is simulated and the
+///   skinned pose is drawn; inside the last 15% of that distance the drawn pose is lerped
+///   between skinned and simulated (<c>sub_821E34B0</c>).
+/// - The cloth normals are rebuilt from the cloth's own triangle list after each step and are
+///   what the next step's wind term reads (<c>sub_822BA0B0</c>).
+///
+/// The guest solved on its own hardware thread while the render thread built the frame; here
+/// the solve runs as a task started at the end of one frame's process and collected at the
+/// start of the next, so a frame of latency buys the main thread back. What stays on the main
+/// thread is the rig read, the frustum test and one in-place vertex write per surface. A prop
+/// whose cloth has come to rest sleeps until its transform or the wind changes.
+///
+/// The parent's copies of the driven surfaces are hidden through <see cref="Refii.Entities.Engine_HiddenClusters"/>,
+/// which owns the surface hiding for the body; this node draws them instead.
+/// </summary>
 [Tool]
 [GlobalClass]
-public partial class Engine_ClothBody : Node3D
+public partial class Engine_ClothBody : MeshInstance3D
 {
     public const string NodeName = "ClothBody";
 
-    public const string ModelPathsMeta = "cloth_model_paths";
+    /// <summary>The guest's config default for "MaxClothDistance" (<c>flt_83317D74</c>).</summary>
+    public static float MaxClothDistance = 20.0f;
 
-    public const float FixedStep = 1.0f / 60.0f;
+    /// <summary><c>flt_8209D568</c>: the fade begins at this fraction of the distance.</summary>
+    public const float FadeStart = 0.85f;
 
-    public const float MaxStepBacklog = 0.25f;
+    /// <summary><c>flt_83317E84</c>: the frame dt is clamped here before stepping.</summary>
+    public const float FrameDtClamp = 0.2f;
+
+    /// <summary><c>flt_8209F1C8</c>: substeps per second the step is divided by.</summary>
+    public const float SubstepRate = 20.0f;
+
+    /// <summary>A root move of more than this, squared, resets the cloth to its skinned pose.</summary>
+    public const float TeleportResetDistanceSquared = 1.0f;
+
+    /// <summary>Beyond the distance the skinned pose is refreshed on this cadence, not every frame.</summary>
+    public const int FarRefreshFrames = 4;
+
+    /// <summary>A prop whose vertices all moved less than this, squared, for <see cref="SleepAfterSteps"/> steps sleeps.</summary>
+    public const float SleepMoveSquared = 1.0e-8f;
+
+    public const int SleepAfterSteps = 60;
+
+    /// <summary>A transform change larger than this wakes a sleeping prop.</summary>
+    public const float WakeMoveSquared = 1.0e-8f;
+
+    public static readonly PhysVec4 GravityDown = new(0.0f, -9.8f, 0.0f, 0.0f);
+
+    private static readonly List<WeakReference<Engine_ClothBody>> Registry = new();
+
+    private static long _solveTicks;
+
+    private static long _uploadTicks;
+
+    private static long _mainTicks;
+
+    private static int _stepped;
+
+    private static int _slept;
+
+    private static int _frames;
 
     private readonly List<ClothInstance> _instances = new();
 
     private readonly List<ClothPiece> _pieces = new();
 
+    private readonly List<PhysVec4[]> _drawn = new();
+
+    private readonly List<Transform3D[]> _inverseRest = new();
+
+    private readonly List<int[]> _usedBones = new();
+
     private ClothPatch? _patch;
 
-    private MeshInstance3D? _target;
+    private ArrayMesh? _source;
 
-    private float _accumulator;
+    private Skeleton3D? _skeleton;
 
-    private bool _bound;
+    private Task? _job;
 
-    public static readonly PhysVec4 GravityDown =
-        new(0.0f, ClothInstance.DefaultGravityZ, 0.0f, 0.0f);
+    private float _jobDt;
+
+    private bool _jobStepped;
+
+    private int _farFrames;
+
+    private bool _sleeping;
+
+    private PhysMat4 _sleptAt;
+
+    private Vector3 _sleptWind;
+
+    private UInt128 _appliedCollapse;
+
+    private long _lastSolveTicks;
+
+    private long _lastUploadTicks;
+
+    private Aabb _bounds;
 
     [Export]
     public bool Simulate { get; set; } = true;
-
-    [Export]
-    public float WindStrength { get; set; } = 1.0f;
-
-    [Export]
-    public Vector3 WindDirection { get; set; } = Vector3.Zero;
-
-    [Export]
-    public float GravityStrength { get; set; } = 1.0f;
-
-    [Export]
-    public float Damping { get; set; } = ClothInstance.DefaultDamping;
 
     public IReadOnlyList<ClothInstance> Instances => _instances;
 
     public int PieceCount => _instances.Count;
 
-    public override void _Ready()
+    public UInt128 DrivenMask => _patch?.DrivenMask ?? UInt128.Zero;
+
+    /// <summary>Whether the parent's mesh is one this body was bound to.</summary>
+    public bool Bound(Mesh? mesh) => _source is not null && ReferenceEquals(_source, mesh);
+
+    /// <summary>The body under <paramref name="node"/>, or null.</summary>
+    public static Engine_ClothBody? Of(Node node) =>
+        node.GetNodeOrNull<Engine_ClothBody>(NodeName);
+
+    /// <summary>
+    /// Gives <paramref name="node"/> a cloth body for <paramref name="mesh"/> when any of the
+    /// models behind it carries a cloth block that joins to the mesh; replaces one bound to a
+    /// different mesh; removes one when nothing joins. Returns the body or null. The parent's
+    /// driven surfaces are hidden here, synchronously, so a cluster pass that follows sees them.
+    /// </summary>
+    public static Engine_ClothBody? Attach(MeshInstance3D node, Mesh? mesh, IReadOnlyList<string> modelPaths)
     {
-        Bind();
-        SetPhysicsProcess(true);
-    }
-
-    public MeshInstance3D? Target()
-    {
-        if (_target is not null && GodotObject.IsInstanceValid(_target))
+        Engine_ClothBody? existing = Of(node);
+        if (existing is not null && existing.Bound(mesh))
         {
-            return _target;
+            return existing;
         }
 
-        _target = GetParent() as MeshInstance3D;
-        return _target;
-    }
+        Detach(node);
 
-    public void Bind()
-    {
-        if (_bound)
+        if (mesh is not ArrayMesh source)
         {
-            return;
+            return null;
         }
 
-        _bound = true;
-        _instances.Clear();
-        _pieces.Clear();
-        _patch = null;
-
-        MeshInstance3D? target = Target();
-        if (target?.Mesh is not ArrayMesh source)
+        // A morphed model carries no cloth definition in the guest (its record copies drop the
+        // pointer), so its garments draw GPU-skinned; the same here.
+        if (source.HasMeta(Refii.Hero.Engine_HeroBodyMorph.MorphedMeta))
         {
-            return;
+            return null;
         }
 
-        ClothPatch? patch = ClothPatch.Capture(source);
-        if (patch is null)
+        bool any = false;
+        foreach (string path in modelPaths)
         {
-            return;
-        }
-
-        {
-            foreach (ClothPiece piece in Engine_ClothPieces.ForMesh(
-                         ModelPaths(), source, Refii.Level.Engine_PropStreamer.Resolve))
+            if (Engine_PhysicsIndex.HasCloth(path))
             {
-                if (piece.ClothVertexOf.Length != patch.VertexCount)
-                {
-                    continue;
-                }
-
-                ClothInstance instance = ClothInstance.Create();
-                instance.GravityDirWorld = GravityDown;
-                instance.XformCur = Engine_PhysicsMatrix.FromTransform3D(GlobalTransform);
-                instance.XformPrev = instance.XformCur;
-                instance.Bind(piece.Asset);
-
-                patch.MarkDriven(piece.ClothVertexOf);
-                _pieces.Add(piece);
-                _instances.Add(instance);
+                any = true;
+                break;
             }
         }
 
-        if (_instances.Count == 0)
+        if (!any)
+        {
+            return null;
+        }
+
+        List<ClothPiece> pieces = Engine_ClothPieces.ForMesh(
+            modelPaths, source, Refii.Level.Engine_PropStreamer.Resolve);
+        if (pieces.Count == 0)
+        {
+            return null;
+        }
+
+        ClothPatch? patch = ClothPatch.Capture(pieces);
+        if (patch is null)
+        {
+            return null;
+        }
+
+        var body = new Engine_ClothBody
+        {
+            Name = NodeName,
+            Layers = node.Layers,
+            CastShadow = node.CastShadow,
+            GIMode = node.GIMode,
+        };
+
+        body.Bind(source, pieces, patch);
+        node.AddChild(body);
+        body.Owner = node.Owner ?? node;
+
+        Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(node, patch.DrivenMask);
+        return body;
+    }
+
+    public static void Detach(MeshInstance3D node)
+    {
+        Engine_ClothBody? body = Of(node);
+        if (body is null)
         {
             return;
         }
 
+        Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(node, UInt128.Zero);
+        body.Collect();
+        node.RemoveChild(body);
+        body.QueueFree();
+    }
+
+    private void Bind(ArrayMesh source, List<ClothPiece> pieces, ClothPatch patch)
+    {
+        _source = source;
         _patch = patch;
-        patch.RecomputeNormals();
-        patch.Rebuild();
-        target.Mesh = patch.Built;
+        _pieces.Clear();
+        _instances.Clear();
+        _drawn.Clear();
+        _inverseRest.Clear();
+        _usedBones.Clear();
 
-        GD.Print($"[physics] {Name}: {_instances.Count} cloth piece(s) bound, driving " +
-            $"{patch.DrivenSurfaceCount()} surface(s) of {patch.VertexCount} vertices");
+        foreach (ClothPiece piece in pieces)
+        {
+            ClothInstance instance = ClothInstance.Create();
+            instance.GravityDirWorld = GravityDown;
+            instance.Bind(piece.Asset);
+
+            _pieces.Add(piece);
+            _instances.Add(instance);
+            _drawn.Add(new PhysVec4[piece.Asset.VertexCount]);
+            _inverseRest.Add(Array.Empty<Transform3D>());
+            _usedBones.Add(UsedBones(piece.Asset));
+        }
+
+        Mesh = patch.Built;
+        PackAll();
+        _patch.Upload();
+        ApplyBounds();
+
+        GD.Print($"[physics] {source.ResourceName}: {_instances.Count} cloth piece(s) bound, " +
+            $"standing in for {PopCount(patch.DrivenMask)} body surface(s)");
     }
 
-    public void Publish()
+    /// <summary>The distinct bone ids a piece's driver and colliders name, so the palette reads only those.</summary>
+    private static int[] UsedBones(ClothAsset asset)
     {
-        if (_patch is null)
+        var used = new HashSet<int>();
+        if (asset.Driver is not null)
+        {
+            foreach (byte id in asset.Driver.BoneIndices)
+            {
+                used.Add(id);
+            }
+        }
+
+        foreach (SphereCollider c in asset.Spheres)
+        {
+            if (c.BoneIndex >= 0) used.Add(c.BoneIndex);
+        }
+
+        foreach (PlaneCollider c in asset.Planes)
+        {
+            if (c.BoneIndex >= 0) used.Add(c.BoneIndex);
+        }
+
+        foreach (CapsuleCollider c in asset.Capsules)
+        {
+            if (c.BoneIndex >= 0) used.Add(c.BoneIndex);
+        }
+
+        foreach (BoxCollider c in asset.Boxes)
+        {
+            if (c.BoneIndex >= 0) used.Add(c.BoneIndex);
+        }
+
+        var list = new List<int>(used);
+        list.Sort();
+        return list.ToArray();
+    }
+
+    private static bool _hooked;
+
+    public override void _Ready()
+    {
+        lock (Registry)
+        {
+            Registry.Add(new WeakReference<Engine_ClothBody>(this));
+            if (!_hooked)
+            {
+                // Every body's solve lands BEFORE the frame draws, the way the guest's render
+                // thread waited on its worker mid-frame. Collected a frame later, the pinned
+                // seam wore last frame's pose beside a top skinned with this frame's, and the
+                // skirt tore away from the coat whenever the hero moved.
+                _hooked = true;
+                RenderingServer.FramePreDraw += LandAll;
+            }
+        }
+
+        SetProcess(true);
+    }
+
+    private static void LandAll()
+    {
+        lock (Registry)
+        {
+            foreach (WeakReference<Engine_ClothBody> reference in Registry)
+            {
+                if (reference.TryGetTarget(out Engine_ClothBody? body) && GodotObject.IsInstanceValid(body))
+                {
+                    body.Land();
+                }
+            }
+        }
+    }
+
+    private static int _lagged;
+
+    /// <summary>
+    /// Writes a FINISHED solve to the surface; a solve still running is left to land on a later
+    /// frame, so a slow step costs a frame of cloth lag and never frame time. Main thread only.
+    /// </summary>
+    private void Land()
+    {
+        if (_job is null || _patch is null)
         {
             return;
         }
 
-        for (int i = 0; i < _pieces.Count && i < _instances.Count; i++)
+        if (!_job.IsCompleted)
         {
-            _patch.Apply(_pieces[i], _instances[i].PosCur);
+            System.Threading.Interlocked.Increment(ref _lagged);
+            return;
         }
 
-        _patch.RecomputeNormals();
-        _patch.Rebuild();
+        Collect();
+        long uploadFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+        _patch.Upload();
+        ApplyBounds();
+        SyncCollapse();
+        _lastUploadTicks = System.Diagnostics.Stopwatch.GetTimestamp() - uploadFrom;
+        System.Threading.Interlocked.Add(ref _uploadTicks, _lastUploadTicks);
     }
 
-    public string[] ModelPaths() =>
-        HasMeta(ModelPathsMeta)
-            ? GetMeta(ModelPathsMeta).AsStringArray()
-            : System.Array.Empty<string>();
-
-    public void SetModelPaths(IReadOnlyList<string> paths)
+    public override void _ExitTree()
     {
-        var stored = new Array<string>();
-        foreach (string path in paths)
+        Collect();
+        lock (Registry)
         {
-            stored.Add(path);
+            Registry.RemoveAll(r => !r.TryGetTarget(out Engine_ClothBody? b) || ReferenceEquals(b, this));
         }
-
-        SetMeta(ModelPathsMeta, stored);
-        _bound = false;
     }
 
-    public override void _PhysicsProcess(double delta)
+    /// <summary>Waits for a running solve; the body's state is then quiescent.</summary>
+    private void Collect()
     {
-        if (!Simulate || _instances.Count == 0)
+        if (_job is null)
         {
             return;
         }
 
-        _accumulator += (float)delta;
-        if (_accumulator > MaxStepBacklog)
+        try
         {
-            _accumulator = MaxStepBacklog;
+            _job.Wait();
+        }
+        catch (AggregateException e)
+        {
+            GD.PushError($"[physics] cloth solve failed: {e.InnerException?.Message}");
         }
 
-        PhysMat4 world = Engine_PhysicsMatrix.FromTransform3D(GlobalTransform);
+        _job = null;
+    }
 
-        bool stepped = false;
-        while (_accumulator >= FixedStep)
+    public override void _Process(double delta)
+    {
+        long mainFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        if (_patch is null || _instances.Count == 0 || GetParent() is not MeshInstance3D parent)
         {
-            _accumulator -= FixedStep;
-            Step(FixedStep, world);
-            stepped = true;
+            Collect();
+            return;
         }
 
-        if (stepped)
+        // A solve normally lands in LandAll before the draw; one still pending here (a frame
+        // that drew nothing) lands now. One still RUNNING owns this body's arrays: no new step
+        // until it is done.
+        Land();
+        if (_job is not null)
         {
-            Publish();
+            return;
+        }
+
+        if (!Bound(Refii.Entities.Engine_BodyVariants.SourceMesh(parent)))
+        {
+            // The entity changed model; the owner re-attaches on that path. Draw nothing stale.
+            Visible = false;
+            return;
+        }
+
+        Visible = parent.Visible;
+        if (!Visible)
+        {
+            return;
+        }
+
+        PhysMat4 world = Engine_PhysicsMatrix.FromTransform3D(parent.GlobalTransform);
+        Vector3 wind = Refii.Level.Engine_Weather.WindWorld;
+        EnsureSkeleton(parent);
+
+        if (_sleeping)
+        {
+            if (!Woken(world, wind))
+            {
+                System.Threading.Interlocked.Increment(ref _slept);
+                return;
+            }
+
+            _sleeping = false;
+        }
+
+        float weight = Simulate ? FadeWeight(parent) : 0.0f;
+        bool step = weight > 0.0f;
+
+        if (!step)
+        {
+            // The guest draws the GPU-skinned submesh instead; ours refreshes the skinned pose
+            // on a cadence so a far character still wears its coat in the right place.
+            if (++_farFrames < FarRefreshFrames)
+            {
+                return;
+            }
+
+            _farFrames = 0;
+        }
+
+        // dt = min(frame, 0.2) / max(1, ceil(dt * 20)), one step (sub_821E3180).
+        float dt = Math.Clamp((float)delta, 0.0f, FrameDtClamp);
+        float parts = MathF.Max(1.0f, MathF.Ceiling(dt * SubstepRate));
+        float subDt = dt / parts;
+
+        for (int i = 0; i < _instances.Count; i++)
+        {
+            ClothInstance inst = _instances[i];
+            inst.LodWeight = weight;
+            inst.WindDirWorld = PhysVec4.FromVector3(wind, 0.0f);
+            inst.XformPrev = inst.XformCur;
+            inst.XformCur = world;
+            FillPalette(i);
+        }
+
+        _jobDt = step ? subDt : 0.0f;
+        _jobStepped = step;
+        _job = Task.Run(Solve);
+        System.Threading.Interlocked.Increment(ref _stepped);
+        System.Threading.Interlocked.Add(ref _mainTicks, System.Diagnostics.Stopwatch.GetTimestamp() - mainFrom);
+    }
+
+    /// <summary>The whole step for every piece, on a worker: pure C# over this body's own arrays.</summary>
+    private void Solve()
+    {
+        long from = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool still = _jobStepped && _skeleton is null;
+
+        for (int i = 0; i < _instances.Count; i++)
+        {
+            ClothInstance inst = _instances[i];
+
+            PhysVec4 moved = PhysVec4.Sub(inst.XformCur.R3, inst.XformPrev.R3);
+            if (PhysVec4.MSum3(moved, moved).X > TeleportResetDistanceSquared)
+            {
+                inst.ResetToSkinned();
+            }
+
+            Engine_ClothSolver.TransformCollidersToWorld(inst);
+            Engine_ClothSolver.SimulateInstance(inst, _jobDt);
+
+            int collided = 0;
+            foreach (PhysVec4 flag in inst.CollidedFlags)
+            {
+                if (flag.X != 0.0f)
+                {
+                    collided++;
+                }
+            }
+
+            inst.CollidedVertices = collided;
+
+            PhysVec4[] drawn = _drawn[i];
+            Engine_ClothSolver.DrawnPositions(inst, drawn);
+            Engine_ClothSolver.ComputeNormals(inst, drawn);
+            Engine_ClothSolver.ComputeTangents(inst, drawn);
+            _patch!.Pack(i, drawn, inst.VertexNormals, inst.Tangents);
+
+            if (inst.LastMoveSquared < SleepMoveSquared)
+            {
+                inst.StillSteps++;
+            }
+            else
+            {
+                inst.StillSteps = 0;
+            }
+
+            still &= inst.StillSteps >= SleepAfterSteps;
+        }
+
+        if (still)
+        {
+            _sleeping = true;
+            _sleptAt = _instances[0].XformCur;
+            _sleptWind = new Vector3(_instances[0].WindDirWorld.X, _instances[0].WindDirWorld.Y, _instances[0].WindDirWorld.Z);
+        }
+
+        _lastSolveTicks = System.Diagnostics.Stopwatch.GetTimestamp() - from;
+        System.Threading.Interlocked.Add(ref _solveTicks, _lastSolveTicks);
+    }
+
+    private bool Woken(in PhysMat4 world, Vector3 wind)
+    {
+        if (wind.DistanceSquaredTo(_sleptWind) > WakeMoveSquared)
+        {
+            return true;
+        }
+
+        for (int row = 0; row < 4; row++)
+        {
+            PhysVec4 d = PhysVec4.Sub(world[row], _sleptAt[row]);
+            if (PhysVec4.MSum4(d, d).X > WakeMoveSquared)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void PackAll()
+    {
+        for (int i = 0; i < _instances.Count; i++)
+        {
+            ClothInstance inst = _instances[i];
+            PhysVec4[] drawn = _drawn[i];
+            Engine_ClothSolver.DrawnPositions(inst, drawn);
+            Engine_ClothSolver.ComputeNormals(inst, drawn);
+            Engine_ClothSolver.ComputeTangents(inst, drawn);
+            _patch!.Pack(i, drawn, inst.VertexNormals, inst.Tangents);
         }
     }
 
-    public void Step(float dt, in PhysMat4 world)
+    /// <summary>
+    /// An in-place vertex write does not move the mesh's bounds, so the instance's are set
+    /// from the solver's own AABB of every piece, in the model's space.
+    /// </summary>
+    private void ApplyBounds()
     {
-        foreach (ClothInstance instance in _instances)
+        bool any = false;
+        var min = Vector3.Zero;
+        var max = Vector3.Zero;
+        foreach (ClothInstance inst in _instances)
         {
-            instance.XformPrev = instance.XformCur;
-            instance.XformCur = world;
+            var lo = new Vector3(inst.BoundsMin.X, inst.BoundsMin.Y, inst.BoundsMin.Z);
+            var hi = new Vector3(inst.BoundsMax.X, inst.BoundsMax.Y, inst.BoundsMax.Z);
+            if (!lo.IsFinite() || !hi.IsFinite())
+            {
+                continue;
+            }
 
-            instance.Damping = Damping;
-            instance.WindStrength = WindStrength;
-            instance.GravityStrength = GravityStrength;
-            instance.WindDirWorld = PhysVec4.FromVector3(WindDirection, 0.0f);
-            instance.WindEnabled = WindDirection.LengthSquared() > 0.0f;
+            if (!any)
+            {
+                min = lo;
+                max = hi;
+                any = true;
+                continue;
+            }
 
-            Engine_ClothSolver.TransformCollidersToWorld(instance);
-            Engine_ClothSolver.SimulateInstance(instance, dt);
+            min = min.Min(lo);
+            max = max.Max(hi);
         }
+
+        if (!any)
+        {
+            return;
+        }
+
+        var bounds = new Aabb(min, (max - min).Max(new Vector3(0.01f, 0.01f, 0.01f)));
+        if (bounds != _bounds)
+        {
+            _bounds = bounds;
+            CustomAabb = bounds;
+        }
+    }
+
+    /// <summary><c>sub_821E34B0</c>: 0 beyond the distance or out of view, 1 inside 85% of it, a ramp between.</summary>
+    private float FadeWeight(MeshInstance3D parent)
+    {
+        Camera3D? camera = GetViewport()?.GetCamera3D();
+        if (camera is null)
+        {
+            return 1.0f;
+        }
+
+        float max = MaxClothDistance;
+        Vector3 origin = parent.GlobalPosition;
+        float distance = origin.DistanceTo(camera.GlobalPosition);
+        if (distance >= max)
+        {
+            return 0.0f;
+        }
+
+        if (!InView(camera, parent))
+        {
+            return 0.0f;
+        }
+
+        float start = max * FadeStart;
+        return distance <= start ? 1.0f : (max - distance) / (max - start);
+    }
+
+    /// <summary>The union of the pieces' bounding spheres against the camera's frustum.</summary>
+    private bool InView(Camera3D camera, MeshInstance3D parent)
+    {
+        Transform3D world = parent.GlobalTransform;
+        Basis view = camera.GlobalTransform.Basis;
+        foreach (ClothInstance inst in _instances)
+        {
+            PhysVec4 sphere = inst.BoundsSphere;
+            Vector3 center = world * new Vector3(sphere.X, sphere.Y, sphere.Z);
+            float radius = sphere.W * world.Basis.Scale.Length();
+            if (camera.IsPositionInFrustum(center) ||
+                camera.IsPositionInFrustum(center + (view.X * radius)) ||
+                camera.IsPositionInFrustum(center - (view.X * radius)) ||
+                camera.IsPositionInFrustum(center + (view.Y * radius)) ||
+                camera.IsPositionInFrustum(center - (view.Y * radius)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void EnsureSkeleton(MeshInstance3D parent)
+    {
+        Skeleton3D? skeleton = parent.Skeleton.IsEmpty
+            ? null
+            : parent.GetNodeOrNull<Skeleton3D>(parent.Skeleton);
+
+        if (ReferenceEquals(skeleton, _skeleton))
+        {
+            return;
+        }
+
+        _skeleton = skeleton;
+        for (int i = 0; i < _inverseRest.Count; i++)
+        {
+            _inverseRest[i] = Array.Empty<Transform3D>();
+        }
+    }
+
+    /// <summary>
+    /// The guest's palette (<c>sub_8222E2B8</c>): pose × inverse bind per bone, in the cloth's
+    /// bone ids. The bind is the skeleton's global rest, which is what the mesh's skin was made
+    /// from (<c>CreateSkinFromRestTransforms</c>), so the cloth and the body skin agree. Only
+    /// the bones the piece names are read from the rig.
+    /// </summary>
+    private void FillPalette(int index)
+    {
+        ClothInstance inst = _instances[index];
+        ClothPiece piece = _pieces[index];
+        Skeleton3D? skeleton = _skeleton;
+        int[] used = _usedBones[index];
+
+        if (skeleton is null || used.Length == 0)
+        {
+            inst.BoneMatrices = Array.Empty<PhysVec4>();
+            inst.BonePoses = Array.Empty<PhysMat4>();
+            return;
+        }
+
+        int bones = used[^1] + 1;
+        if (inst.BonePoses.Length != bones)
+        {
+            inst.BonePoses = new PhysMat4[bones];
+            inst.BoneMatrices = new PhysVec4[bones * 3];
+            for (int b = 0; b < bones; b++)
+            {
+                Engine_PhysicsMatrix.LoadIdentity(ref inst.BonePoses[b]);
+                Engine_PhysicsMatrix.SkinRows(
+                    inst.BonePoses[b], out inst.BoneMatrices[b * 3], out inst.BoneMatrices[(b * 3) + 1], out inst.BoneMatrices[(b * 3) + 2]);
+            }
+        }
+
+        Transform3D[] inverseRest = _inverseRest[index];
+        if (inverseRest.Length != bones)
+        {
+            inverseRest = new Transform3D[bones];
+            foreach (int b in used)
+            {
+                int bone = SkeletonBone(piece, b, skeleton);
+                inverseRest[b] = bone >= 0
+                    ? skeleton.GetBoneGlobalRest(bone).AffineInverse()
+                    : Transform3D.Identity;
+            }
+
+            _inverseRest[index] = inverseRest;
+        }
+
+        // Two matrices per bone, as the guest keeps them: the colliders pose off the bone's own
+        // model-space pose (owner+512, `sub_82A94A18`), their file values being bone-local; the
+        // skin rows are that pose times the inverse bind (owner+628, `sub_8222E2B8`). Feeding
+        // the skin matrix to the colliders put every capsule off its limb by the inverse rest.
+        foreach (int b in used)
+        {
+            int bone = SkeletonBone(piece, b, skeleton);
+            Transform3D pose = bone >= 0 ? skeleton.GetBoneGlobalPose(bone) : Transform3D.Identity;
+            Transform3D skin = bone >= 0 ? pose * inverseRest[b] : Transform3D.Identity;
+
+            inst.BonePoses[b] = Engine_PhysicsMatrix.FromTransform3D(pose);
+            Engine_PhysicsMatrix.SkinRows(
+                Engine_PhysicsMatrix.FromTransform3D(skin),
+                out inst.BoneMatrices[b * 3], out inst.BoneMatrices[(b * 3) + 1], out inst.BoneMatrices[(b * 3) + 2]);
+        }
+    }
+
+    private static int SkeletonBone(ClothPiece piece, int clothBone, Skeleton3D skeleton)
+    {
+        int[] remap = piece.BoneRemap;
+        int bone = clothBone < remap.Length ? remap[clothBone] : clothBone;
+        return bone >= 0 && bone < skeleton.GetBoneCount() ? bone : -1;
+    }
+
+    /// <summary>A piece whose surfaces a garment hides on the body is hidden here too.</summary>
+    private void SyncCollapse()
+    {
+        if (_patch is null || GetParent() is not MeshInstance3D parent)
+        {
+            return;
+        }
+
+        UInt128 collapsed = Refii.Entities.Engine_HiddenClusters.ClusterMask(parent);
+        if (collapsed == _appliedCollapse)
+        {
+            return;
+        }
+
+        for (int s = 0; s < _patch.SurfaceCount && s < _pieces.Count; s++)
+        {
+            UInt128 mine = _pieces[s].HiddenSurfaces;
+            bool hide = mine != UInt128.Zero && (collapsed & mine) == mine;
+            bool was = mine != UInt128.Zero && (_appliedCollapse & mine) == mine;
+            if (hide != was)
+            {
+                SetSurfaceOverrideMaterial(s, hide ? Refii.Entities.Engine_HiddenClusters.CollapsedMaterial : null);
+            }
+        }
+
+        _appliedCollapse = collapsed;
     }
 
     public void ResetToSkinned()
     {
+        Collect();
         foreach (ClothInstance instance in _instances)
         {
             instance.ResetToSkinned();
         }
 
-        _patch?.ResetToRest();
-        Publish();
+        PackAll();
+        _patch?.Upload();
+        ApplyBounds();
     }
 
-    public override Array<Dictionary> _GetPropertyList()
-    {
-        var list = new Array<Dictionary>();
+    private static int PopCount(UInt128 mask) =>
+        System.Numerics.BitOperations.PopCount((ulong)(mask & ulong.MaxValue)) +
+        System.Numerics.BitOperations.PopCount((ulong)(mask >> 64));
 
+    /// <summary>The live bodies and the run's cost totals, for the debug channel.</summary>
+    public static Dictionary<string, object?> Describe()
+    {
+        var bodies = new List<Dictionary<string, object?>>();
+        double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        int sleeping = 0;
+        int verts = 0;
+
+        lock (Registry)
+        {
+            foreach (WeakReference<Engine_ClothBody> reference in Registry)
+            {
+                if (!reference.TryGetTarget(out Engine_ClothBody? body) || !GodotObject.IsInstanceValid(body))
+                {
+                    continue;
+                }
+
+                int bodyVerts = 0;
+                int collided = 0;
+                int iterations = 0;
+                float residual = 0f;
+                float weight = 0f;
+                var models = new List<string>();
+                for (int i = 0; i < body._instances.Count; i++)
+                {
+                    ClothInstance inst = body._instances[i];
+                    bodyVerts += inst.PosCur.Length;
+                    collided += inst.CollidedVertices;
+                    iterations = Math.Max(iterations, inst.RelaxIterations);
+                    residual = Math.Max(residual, inst.Residual);
+                    weight = inst.LodWeight;
+                    string leaf = body._pieces[i].ModelPath;
+                    int slash = leaf.LastIndexOf('/');
+                    models.Add(slash < 0 ? leaf : leaf[(slash + 1)..]);
+                }
+
+                verts += bodyVerts;
+                if (body._sleeping)
+                {
+                    sleeping++;
+                }
+
+                bodies.Add(new Dictionary<string, object?>
+                {
+                    ["node"] = body.GetParent()?.Name.ToString() ?? string.Empty,
+                    ["models"] = models,
+                    ["pieces"] = body._instances.Count,
+                    ["vertices"] = bodyVerts,
+                    ["visible"] = body.Visible,
+                    ["rigged"] = body._skeleton is not null,
+                    ["weight"] = weight,
+                    ["iterations"] = iterations,
+                    ["residual"] = residual,
+                    ["collided"] = collided,
+                    ["sleeping"] = body._sleeping,
+                    ["solveMs"] = body._lastSolveTicks * toMs,
+                    ["uploadMs"] = body._lastUploadTicks * toMs,
+                    ["position"] = body.GlobalPosition.ToString(),
+                    ["aabb"] = body._bounds.ToString(),
+                });
+            }
+        }
+
+        int frames = Math.Max(1, Engine.GetFramesDrawn() - _frames);
+        var totals = new Dictionary<string, object?>
+        {
+            ["bodies"] = bodies.Count,
+            ["sleeping"] = sleeping,
+            ["vertices"] = verts,
+            ["framesSampled"] = frames,
+            ["solveMsPerFrame"] = _solveTicks * toMs / frames,
+            ["uploadMsPerFrame"] = _uploadTicks * toMs / frames,
+            ["mainPrepMsPerFrame"] = _mainTicks * toMs / frames,
+            ["stepsPerFrame"] = (double)_stepped / frames,
+            ["sleptPerFrame"] = (double)_slept / frames,
+            ["laggedPerFrame"] = (double)_lagged / frames,
+        };
+
+        _solveTicks = 0;
+        _uploadTicks = 0;
+        _mainTicks = 0;
+        _stepped = 0;
+        _slept = 0;
+        _lagged = 0;
+        _frames = Engine.GetFramesDrawn();
+
+        return new Dictionary<string, object?>
+        {
+            ["totals"] = totals,
+            ["bodies"] = bodies,
+        };
+    }
+
+    public override Godot.Collections.Array<Godot.Collections.Dictionary> _GetPropertyList()
+    {
+        var list = new Godot.Collections.Array<Godot.Collections.Dictionary>();
         if (_instances.Count == 0)
         {
             return list;
         }
 
-        Group(list, "Cloth");
+        list.Add(new Godot.Collections.Dictionary
+        {
+            { "name", "Cloth" },
+            { "type", (int)Variant.Type.Nil },
+            { "usage", (int)PropertyUsageFlags.Group },
+            { "hint_string", string.Empty },
+        });
+
         for (int i = 0; i < _instances.Count; i++)
         {
-            Row(list, "Piece " + (i + 1));
+            list.Add(new Godot.Collections.Dictionary
+            {
+                { "name", "Piece " + (i + 1) },
+                { "type", (int)Variant.Type.String },
+                { "usage", (int)(PropertyUsageFlags.Editor | PropertyUsageFlags.ReadOnly) },
+            });
         }
 
         return list;
@@ -238,8 +909,7 @@ public partial class Engine_ClothBody : Node3D
     public override Variant _Get(StringName property)
     {
         string name = property.ToString();
-
-        if (!name.StartsWith("Piece ", System.StringComparison.Ordinal) ||
+        if (!name.StartsWith("Piece ", StringComparison.Ordinal) ||
             !int.TryParse(name["Piece ".Length..], out int index) ||
             index < 1 || index > _instances.Count)
         {
@@ -253,25 +923,9 @@ public partial class Engine_ClothBody : Node3D
             return default;
         }
 
-        return $"{asset.VertexCount} verts, {asset.EdgeCount} constraints, " +
-            $"sim [{asset.SimBegin}..{asset.SimEnd}), " +
-            $"{instance.RelaxIterations} iter, residual {instance.Residual:0.####}";
+        return $"{asset.VertexCount} verts, {asset.EdgeCount} edges, sim [{asset.SimBegin}..{asset.SimEnd}), " +
+            $"{asset.Spheres.Length}s/{asset.Planes.Length}p/{asset.Capsules.Length}c/{asset.Boxes.Length}b " +
+            $"colliders, {asset.WeldCount} welds, {instance.RelaxIterations} iter, " +
+            $"residual {instance.Residual:0.####}, fade {instance.LodWeight:0.00}";
     }
-
-    private static void Group(Array<Dictionary> list, string name) =>
-        list.Add(new Dictionary
-        {
-            { "name", name },
-            { "type", (int)Variant.Type.Nil },
-            { "usage", (int)PropertyUsageFlags.Group },
-            { "hint_string", string.Empty },
-        });
-
-    private static void Row(Array<Dictionary> list, string name) =>
-        list.Add(new Dictionary
-        {
-            { "name", name },
-            { "type", (int)Variant.Type.String },
-            { "usage", (int)(PropertyUsageFlags.Editor | PropertyUsageFlags.ReadOnly) },
-        });
 }

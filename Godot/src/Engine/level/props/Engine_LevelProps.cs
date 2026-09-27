@@ -13,6 +13,17 @@ public sealed class PropBuildStats
     /// <summary>Level-file blocks whose model is a TreeMesh (`.mdl` byte 77 == 2).</summary>
     public int TreeBlocks { get; set; }
 
+    /// <summary>Fine cells with at most SparseCellMembers members folded into coarse cells, and the batches that saved.</summary>
+    public int SparseCellsFolded { get; set; }
+
+    public int SparseBatchesSaved { get; set; }
+
+    /// <summary>`.save` placements of TreeMesh models given the definition's L, F and D.</summary>
+    public int SaveTreesRanged { get; set; }
+
+    /// <summary>`.save` placements of TreeMesh models whose definition states no appearance.</summary>
+    public int SaveTreesUnstated { get; set; }
+
     /// <summary>Batches beyond one per cell because placements in the cell state different ranges.</summary>
     public int RangeSplitBatches { get; set; }
 
@@ -128,6 +139,8 @@ public sealed class PropBuildStats
         $"engine_level(blocks={EngineLevelBlocks} inst={EngineLevelInstances} " +
         $"unresolved={EngineLevelUnresolved} duptransform={EngineLevelDuplicate} " +
         $"type21={EngineLevelType21Blocks} trees={TreeBlocks} rangesplits={RangeSplitBatches}) " +
+        $"placedtrees(ranged={SaveTreesRanged} unstated={SaveTreesUnstated}) " +
+        $"sparsecells(folded={SparseCellsFolded} batchessaved={SparseBatchesSaved}) " +
         $"foliage(models={FoliageBlocks} inst={FoliageInstances} " +
         $"unresolved={FoliageUnresolved})" +
         (EngineLevelError.Length == 0 ? string.Empty : $" [{EngineLevelError}]");
@@ -147,6 +160,72 @@ public static class Engine_LevelProps
     /// culled less often and drawn by more passes. The draws were not the cost.
     /// </remarks>
     public const float BatchCellMetres = 32.0f;
+
+    /// <summary>
+    /// A cell with this many members or fewer is folded into the <see cref="SparseCellMetres"/>
+    /// cell around it. A MultiMesh is one draw in every pass that sees it and never merges
+    /// with another draw (`cant_repeat` for MULTIMESH in `_fill_render_list`), so a model
+    /// scattered one or two to a cell is a draw per cell in every pass. Dense cells keep the
+    /// 32 m grain; only the sparse ones coarsen, and their few copies cost the extra passes little.
+    /// </summary>
+    public const int SparseCellMembers = 2;
+
+    /// <summary>The coarse cell sparse members fold into: three fine cells a side.</summary>
+    public const float SparseCellMetres = BatchCellMetres * 3f;
+
+    /// <summary>
+    /// Folds every cell of <paramref name="cells"/> holding at most <see cref="SparseCellMembers"/>
+    /// members into the coarse cell around it, keyed so it never collides with a fine cell.
+    /// Trees keep their fine cells: their LOD and shadow ranges widen by the batch spread.
+    /// </summary>
+    private static void MergeSparseCells(
+        PropBlockBuild block,
+        Dictionary<(Vector3I Cell, StatedRange? Range), List<int>> cells,
+        PropBuildStats stats)
+    {
+        if (block.ModelClass == PropModelClass.Tree)
+        {
+            return;
+        }
+
+        var sparse = new List<(Vector3I Cell, StatedRange? Range)>();
+        foreach (KeyValuePair<(Vector3I Cell, StatedRange? Range), List<int>> cell in cells)
+        {
+            if (cell.Value.Count <= SparseCellMembers)
+            {
+                sparse.Add(cell.Key);
+            }
+        }
+
+        if (sparse.Count < 2)
+        {
+            return;
+        }
+
+        int before = cells.Count;
+        foreach ((Vector3I Cell, StatedRange? Range) key in sparse)
+        {
+            List<int> members = cells[key];
+            cells.Remove(key);
+            // The coarse key lives far outside any fine cell's index range.
+            var coarse = (new Vector3I(
+                Mathf.FloorToInt(key.Cell.X / 3f) + SparseCellKeyOffset,
+                Mathf.FloorToInt(key.Cell.Y / 3f) + SparseCellKeyOffset,
+                Mathf.FloorToInt(key.Cell.Z / 3f) + SparseCellKeyOffset), key.Range);
+            if (!cells.TryGetValue(coarse, out List<int>? merged))
+            {
+                cells[coarse] = merged = new List<int>();
+            }
+
+            merged.AddRange(members);
+        }
+
+        stats.SparseCellsFolded += sparse.Count;
+        stats.SparseBatchesSaved += before - cells.Count;
+    }
+
+    /// <summary>Added to a coarse cell's indices; fine cells never reach it (levels span ~1 km).</summary>
+    private const int SparseCellKeyOffset = 1 << 20;
 
     /// <summary>
     /// Widens a batch's bounds to hold one instance that was written after the streamer
@@ -520,15 +599,22 @@ public static class Engine_LevelProps
             string key = "prop|" + modelPath;
             if (!blocks.TryGetValue(key, out PropBlockBuild? block))
             {
-                block = new PropBlockBuild(modelPath, $"prop {NameOf(modelPath)}");
+                block = new PropBlockBuild(modelPath, $"prop {NameOf(modelPath)}")
+                {
+                    ModelClass = Engine_PropDrawRange.ClassOf(modelPath),
+                };
                 blocks[key] = block;
                 order.Add(key);
             }
 
+            StatedRange? placedRange = block.ModelClass == PropModelClass.Tree
+                ? StatePlacedTree(block, placement, view, supplementalViews, blocks, stats)
+                : null;
             block.AddInstance(
                 transform,
                 placement.Hash,
-                ((ulong)placement.ModelPathHash << 32) | placement.Hash);
+                ((ulong)placement.ModelPathHash << 32) | placement.Hash,
+                range: placedRange);
             stats.Instances++;
 
             bool clocktowerBasePrimary = NormalisePath(modelPath).Contains(
@@ -641,6 +727,7 @@ public static class Engine_LevelProps
 
             var single = new MeshInstance3D
             {
+                Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
                 Name = UniqueName(container, role == PropRole.Main ? block.Label : $"{block.Label} {role}"),
                 Transform = block.Instances[index],
             };
@@ -835,6 +922,7 @@ public static class Engine_LevelProps
             }
 
             stats.RangeSplitBatches += cells.Count - distinctCells.Count;
+            MergeSparseCells(block, cells, stats);
 
             foreach (KeyValuePair<(Vector3I Cell, StatedRange? Range), List<int>> celled in cells)
             foreach ((PropRole role, string rolePath) in block.Roles(celled.Key.Range))
@@ -942,6 +1030,7 @@ public static class Engine_LevelProps
                 string label = role == PropRole.Main ? block.Label : $"{block.Label} {role}";
                 var node = new MultiMeshInstance3D
                 {
+                    Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
                     Name = UniqueName(container, cells.Count == 1
                         ? label
                         : $"{label} [{at.X} {at.Y} {at.Z}]"),
@@ -1745,6 +1834,12 @@ public static class Engine_LevelProps
         /// <summary>A TreeMesh's cast-only `_shadow` model, resolved, or empty.</summary>
         public string ShadowModelPath { get; set; } = string.Empty;
 
+        /// <summary>Set once the first `.save` placement has stated this tree block's contract.</summary>
+        public bool PlacedTreeLogged { get; set; }
+
+        /// <summary>The LOD model came from the level's tree block for the same model, not the definition.</summary>
+        public bool PlacedTreeBorrowsLod { get; set; }
+
         public List<Transform3D> Instances { get; } = new();
 
         /// <summary>The distances the level file states for each instance; null where the source states none.</summary>
@@ -1885,6 +1980,112 @@ public static class Engine_LevelProps
 
             Engine_PropDrawRange.Stamp(node, stated, ModelClass, role, LodModelPath.Length != 0, spread);
         }
+    }
+
+    /// <summary>
+    /// The draw contract of a `.save` placement whose model is a TreeMesh. The guest picks the
+    /// tree class from the model file alone (`sub_82A443A0`: model+104 == 2), so an entity-placed
+    /// oak is drawn exactly as a level-block one — main model under L, LOD model to F, culled at
+    /// max(D, F) (`sub_82208310`) — with L = LodDistance and F = BillboardDistance off the
+    /// definition's appearance component (`sub_82A708E0` ← `sub_82572438`), D = MaxDrawDistance,
+    /// and the LOD and shadow models the StaticMeshComponent names; the shadow model casts within
+    /// F (`sub_822DAB20`). D is an entity's distance and takes the entity scale, as the live
+    /// entity's node does.
+    /// Null when no view carries the placement's appearance; the placement then keeps no range.
+    ///
+    /// A DEFINITION THAT NAMES NO LOD MODEL (the shipped trees state D 1024, F 64, L 0 and no
+    /// LodModel or ShadowModel) is, to the guest, the main model out to 0.75 F and a billboard
+    /// impostor from there to D (`sub_82208310` tiers 4 and 5, the distant-tree tables). There is
+    /// no impostor here; the level's own engine-level tree block for the same model names its
+    /// `_LOD1` and `_shadow` models, and those stand in: the main model to F, the LOD model from
+    /// 0.75 F to the cull. A definition that names its own LodModel keeps the guest's L exactly.
+    /// </summary>
+    private static StatedRange? StatePlacedTree(
+        PropBlockBuild block,
+        GdbPlacement placement,
+        GdbView view,
+        List<GdbView> supplementalViews,
+        Dictionary<string, PropBlockBuild> blocks,
+        PropBuildStats stats)
+    {
+        GdbDrawSettings? found = null;
+        foreach (uint record in new[] { placement.Hash, placement.ParentHash })
+        {
+            if (Engine_GdbDrawSettings.TryRead(view, record, out GdbDrawSettings stated))
+            {
+                found = stated;
+                break;
+            }
+            foreach (GdbView supplemental in supplementalViews)
+            {
+                if (Engine_GdbDrawSettings.TryRead(supplemental, record, out stated))
+                {
+                    found = stated;
+                    break;
+                }
+            }
+            if (found is not null)
+            {
+                break;
+            }
+        }
+        if (found is not { } d)
+        {
+            stats.SaveTreesUnstated++;
+            return null;
+        }
+        if (!block.PlacedTreeLogged)
+        {
+            block.PlacedTreeLogged = true;
+            string borrowed = string.Empty;
+            if (d.LodModelHash != 0)
+            {
+                block.LodModelPath = Engine_PropModelIndex.Resolve(d.LodModelHash, Array.Empty<string>())
+                    ?? string.Empty;
+            }
+            if (d.ShadowModelHash != 0)
+            {
+                block.ShadowModelPath = Engine_PropModelIndex.Resolve(d.ShadowModelHash, Array.Empty<string>())
+                    ?? string.Empty;
+            }
+            if (d.LodModelHash == 0)
+            {
+                foreach (PropBlockBuild other in blocks.Values)
+                {
+                    if (other.ModelClass == PropModelClass.Tree && other.LodModelPath.Length != 0 &&
+                        !ReferenceEquals(other, block) &&
+                        string.Equals(other.ModelPath, block.ModelPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        block.LodModelPath = other.LodModelPath;
+                        if (block.ShadowModelPath.Length == 0)
+                        {
+                            block.ShadowModelPath = other.ShadowModelPath;
+                        }
+                        block.PlacedTreeBorrowsLod = true;
+                        borrowed = $" (from {other.Label})";
+                        break;
+                    }
+                }
+            }
+            GD.Print($"[props] placed tree {NameOf(block.ModelPath)} ({placement.EntityName}): " +
+                $"D {d.MaxDrawDistance:0.#} F {d.BillboardDistance:0.#} L {d.LodDistance:0.#} " +
+                $"fade {d.FadeRangeFactor:0.###} | lod " +
+                (block.LodModelPath.Length != 0 ? NameOf(block.LodModelPath) + borrowed
+                    : d.LodModelHash != 0 ? $"UNRESOLVED {d.LodModelHash:X8}" : "none") +
+                " | shadow " +
+                (block.ShadowModelPath.Length != 0 ? NameOf(block.ShadowModelPath)
+                    : d.ShadowModelHash != 0 ? $"UNRESOLVED {d.ShadowModelHash:X8}" : "none"));
+        }
+        stats.SaveTreesRanged++;
+        // A borrowed LOD model stands in for the impostor: the main model to F, the LOD beyond.
+        float lod = block.PlacedTreeBorrowsLod && d.LodDistance <= 0f ? d.BillboardDistance : d.LodDistance;
+        return new StatedRange(
+            d.MaxDrawDistance * Engine_PropDrawRange.EntityDistanceScale,
+            d.FadeRangeFactor,
+            lod,
+            d.BillboardDistance,
+            d.FadeInDistance,
+            d.FadeInRangeFactor);
     }
 
     private static void AppendEngineLevelBlocks(

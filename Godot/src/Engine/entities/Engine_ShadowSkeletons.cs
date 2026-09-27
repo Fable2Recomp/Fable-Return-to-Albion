@@ -48,6 +48,15 @@ public static class Engine_ShadowSkeletons
 
 	private static readonly bool GuestRate = System.Environment.GetEnvironmentVariable("REFII_SHADOW_GUEST_RATE") != "0";
 
+	// HALF THE GUEST'S RATE, NOT THE GUEST'S RATE. A lantern map re-renders on any caster write
+	// in its pool, and at a crowded square every guest frame writes some villager near every
+	// lamp, so mirroring the shadows on every guest frame re-rendered all sixteen paraboloid
+	// passes at 30 Hz, a cost per pass, not per draw. Every non-principal shadow skeleton and
+	// proxy placement follows on
+	// Engine_GuestFrame.HalfRate, one guest frame in two: the shadows of villagers step at 15 Hz
+	// and lag their bodies by at most one guest frame; the bodies themselves keep their rate.
+	// Principals stay at display rate.
+
 	/// <summary>
 	/// Debug lever (`refii_render shadowPrincipal`): false puts the principals on the guest's rate
 	/// too, to measure what their every-frame shadow costs. The shipped value is true — the hero
@@ -164,7 +173,7 @@ public static class Engine_ShadowSkeletons
 	}
 
 	private static bool DueNow(Entry entry) =>
-		(entry.EveryFrame && PrincipalEveryFrame) || !GuestRate || Refii.Core.Engine_GuestFrame.Changed;
+		(entry.EveryFrame && PrincipalEveryFrame) || !GuestRate || Refii.Core.Engine_GuestFrame.HalfRate;
 
 	/// <summary>
 	/// Whether a writer of <paramref name="live"/> should mirror this frame's bones into the
@@ -186,7 +195,7 @@ public static class Engine_ShadowSkeletons
 			return true;
 		}
 
-		if (Refii.Core.Engine_GuestFrame.Changed)
+		if (Refii.Core.Engine_GuestFrame.HalfRate)
 		{
 			++GuestFrameWrites;
 			return true;
@@ -235,7 +244,7 @@ public static class Engine_ShadowSkeletons
 			return;
 		}
 
-		bool guestFrame = Refii.Core.Engine_GuestFrame.Changed || !GuestRate;
+		bool guestFrame = Refii.Core.Engine_GuestFrame.HalfRate || !GuestRate;
 		foreach (Entry entry in ByBody.Values)
 		{
 			if (!GodotObject.IsInstanceValid(entry.Body) || !GodotObject.IsInstanceValid(entry.Proxy))

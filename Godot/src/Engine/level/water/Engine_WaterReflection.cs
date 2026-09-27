@@ -26,6 +26,10 @@ public sealed partial class Engine_WaterReflection : Node
         public SubViewport Viewport = null!;
         public Camera3D Camera = null!;
         public float Height;
+
+        /// <summary>The eye the mirror was last rendered from, and when.</summary>
+        public Transform3D RenderedEye;
+        public int RenderedFrame = int.MinValue;
     }
 
     private readonly List<Body> _bodies = new();
@@ -48,6 +52,19 @@ public sealed partial class Engine_WaterReflection : Node
     /// <summary>Live levers: off, or one mirror every <see cref="Cadence"/> frames.</summary>
     public static bool Enabled = true;
     public static int Cadence = 4;
+
+    /// <summary>
+    /// A mirror holds its image while the eye stands still: the reflected world is the static
+    /// world and the sky (Engine_ReflectionLayer), so the same eye gives the same picture. It
+    /// re-renders when the eye moves or turns by more than these, or after HoldFrames regardless,
+    /// so cloud drift and lamp flicker in the reflection stay alive.
+    /// </summary>
+    private const float MoveMetres = 0.02f;
+    private const float TurnCosine = 0.9999985f;
+    public static int HoldFrames = 30;
+
+    /// <summary>Mirror renders skipped because the eye had not moved, for the debug channel.</summary>
+    public static long Held;
 
     /// <summary>
     /// Mounts one mirrored viewport per water body. `water` is the container `Engine_LevelScene`
@@ -102,9 +119,11 @@ public sealed partial class Engine_WaterReflection : Node
 
             var camera = new Camera3D
             {
-                // Everything EXCEPT the water. Without this each body renders itself into its own
-                // reflection, and every other body into it too.
-                CullMask = ~WaterLayer,
+                // ONLY THE REFLECTED LAYER (Engine_ReflectionLayer): terrain, vista, props, lamps,
+                // clouds and the celestial elements opt in; entities, FX, HUD sprites and the
+                // water itself never do, and no light's caster mask includes the bit, so a mirror
+                // renders no sun cascades. The A/B lever restores "everything except the water".
+                CullMask = Engine_ReflectionLayer.MirrorCullMask,
                 Near = view.Near,
 
                 // A 256-PIXEL MIRROR DOES NOT NEED THE HORIZON. Inheriting the main camera's
@@ -143,6 +162,18 @@ public sealed partial class Engine_WaterReflection : Node
         }
     }
 
+    /// <summary>Re-applies the mirror cameras' cull mask after the lever moved.</summary>
+    public void ApplyCullMask()
+    {
+        foreach (Body body in _bodies)
+        {
+            if (GodotObject.IsInstanceValid(body.Camera))
+            {
+                body.Camera.CullMask = Engine_ReflectionLayer.MirrorCullMask;
+            }
+        }
+    }
+
     public override void _Process(double delta)
     {
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("waterreflection");
@@ -175,7 +206,10 @@ public sealed partial class Engine_WaterReflection : Node
             }
 
             ++candidates;
-            chosen ??= body;
+            if (chosen is null && Stale(body, eye))
+            {
+                chosen = body;
+            }
         }
 
         _turn = candidates == 0 ? _turn : (_turn + 1) % _bodies.Count;
@@ -187,6 +221,27 @@ public sealed partial class Engine_WaterReflection : Node
         chosen.Camera.Fov = fov;
         chosen.Camera.GlobalTransform = Mirror(eye, chosen.Height);
         chosen.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
+        chosen.RenderedEye = eye;
+        chosen.RenderedFrame = _frame;
+    }
+
+    private bool Stale(Body body, in Transform3D eye)
+    {
+        if (_frame - body.RenderedFrame >= HoldFrames)
+        {
+            return true;
+        }
+
+        Transform3D last = body.RenderedEye;
+        bool moved = last.Origin.DistanceSquaredTo(eye.Origin) > MoveMetres * MoveMetres ||
+            last.Basis.Column2.Dot(eye.Basis.Column2) < TurnCosine ||
+            last.Basis.Column1.Dot(eye.Basis.Column1) < TurnCosine;
+        if (!moved)
+        {
+            ++Held;
+        }
+
+        return moved;
     }
 
     /// <summary>Whether a surface's world bounds touch the frustum and lie within reach.</summary>

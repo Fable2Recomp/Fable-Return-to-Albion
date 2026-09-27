@@ -96,6 +96,10 @@ public static class Engine_LevelLighting
 			// camera's distance rather than any geometry. The blend dithers across it.
 			DirectionalShadowBlendSplits = true,
 
+			// NO CASCADES IN A REFLECTION: the reflected bit never selects a caster, so a mirror
+			// camera, which sees only that bit, finds no casters (Engine_ReflectionLayer).
+			ShadowCasterMask = Refii.Level.Engine_ReflectionLayer.CasterMask(~0u),
+
 			// The normal bias is already in texels (Godot scales it by the shadow texel), so it
 			// holds for any map or reach. The constant bias is depth in world units: it only
 			// grows, for a map under 4096; scaling it down stripes sunlit ground at a grazing sun.
