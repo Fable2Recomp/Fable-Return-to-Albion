@@ -61,10 +61,15 @@ REXCVAR_DEFINE_BOOL(lua_force_loose_banks, false, "Lua",
 // exact are used, everything else falls through to the guest's own bytecode. Modding keeps
 // working, hand-written `override/` files are always honoured, and a bad reconstruction can no
 // longer quietly break the game.
-REXCVAR_DEFINE_BOOL(lua_use_mod_overrides, true, "Lua",
-                    "Prefer decompiled loose Lua files from the mod workspace before extracted "
-                    "source chunks. Files the workspace manifest does not mark exact are skipped "
-                    "in favour of the guest's own bytecode.")
+//
+// OFF since 2026-09-29: Lua is loaded through the one loader like every other bank entry. A mod
+// ships an edited script as TEXT at the script's own path (the editor's Lua view writes it
+// there), the mount overlays it, and the guest compiles the text itself. This flag only served
+// the retired launcher workspace; left in place for a hand-built `unpacked/` tree.
+REXCVAR_DEFINE_BOOL(lua_use_mod_overrides, false, "Lua",
+                    "Prefer decompiled loose Lua files from a hand-built mod workspace before the "
+                    "bank's own chunk. Off: the bank mount (and the mods it overlays) is the one "
+                    "loader for Lua.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(lua_trace_mod_overrides, false, "Lua",
@@ -834,7 +839,7 @@ bool LuaWorkspaceFileIsTrustworthy(const std::string& candidate) {
 
   // `copied` is a verbatim loose file and `decompiled` round-tripped exactly. Everything else —
   // `nonexact`, `aliased_nonexact`, `disassembled`, `invalid`, `budget_exceeded` — is a guess.
-  return entry->second == "decompiled" || entry->second == "copied" ||
+  return entry->second == "exact" || entry->second == "decompiled" || entry->second == "copied" ||
          entry->second == "aliased";
 }
 

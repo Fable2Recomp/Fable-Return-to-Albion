@@ -2003,7 +2003,11 @@ extern "C" {
 /// count and interpolates between counts.
 /// 156 adds RefiiHostGetEntityDrawRange — an entity's stated draw distance and fade factor off
 /// its renderable (component 3 +0x28 / +0x24), the D the guest fades it out by and cuts its shadow at.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 156; }
+/// 157 adds RefiiHostGetWeather — the four precipitation floats of the guest's BLENDED
+///     environment theme (T+0x480 SnowSize, +0x490 SnowFallSpeed, +0x4A0 RainSize, +0x4B0
+///     RainDensity), the record its own rain and snow draws gate on. Indoors the painted
+///     theme yields nothing and these collapse to zero, which is the only reason a room is dry.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 157; }
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -5572,6 +5576,110 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_
         // T+0x24 is the count inside the "StopTimeTracker" at T+0x1C, and `sub_82298460` gates
         // the whole advance on it being zero.
         *out_frozen = load_be32(timing + 0x24u) != 0 ? 1 : 0;
+    }
+
+    return 1;
+}
+
+/// The guest's live precipitation — the four theme floats its rain and snow draws read.
+///
+/// THE GUEST HAS NO INDOOR TEST. Both draws gate on ONE value against `flt_820992D8`
+/// (`3D 4C CC CD` = 0.05): snow on SnowSize (`0x821BDECC lvx128 v0, r6, 0x480` ...
+/// `0x821BDF00 fcmpu cr6, f29, f0` / `bgt`), rain on RainDensity (`0x82280420 lvx128 v0, r6,
+/// 0x4B0` ... `0x82280450 fcmpu cr6, f30, f0` / `ble` past the draw). No ceiling, portal,
+/// raycast or room flag takes part. A building is dry because the painted day set under the
+/// camera states no weather, the blend stack collapses and the record holds zeros — so a host
+/// that draws weather from the LEVEL's day set alone rains indoors, and the fix is to read the
+/// same blended record the guest reads.
+///
+/// The draws take a per-view render-thread copy of that record; the Lua native
+/// `Weather::GetRainDensity` (`sub_8260DE88`) reads the game-side original directly, and its
+/// chain is the one walked here:
+///
+///     8260de94  lwz  r11, dword_83496AB8   ; root
+///     8260de98  lwz  r8, 0xC(r11)
+///     8260de9c  lwz  r7, 0x58(r8)
+///     8260dea0  lwz  r6, 4(r7)             ; World — the same W RefiiHostGetTimeOfDay reaches
+///     8260dea4  lwz  r5, 0x50(r6)          ; environment theme manager
+///     8260dea8  lwz  r4, 0xC(r5)           ; T, the blended record
+///     8260deac  lvx128 v0, r4, 0x4B0       ; RainDensity.x
+///
+/// Theme values are float4 at a 16-byte stride with the value in .x; the descriptor order
+/// SnowSize, SnowFallSpeed, RainSize, RainDensity is slots 71..74, i.e. T+0x480, +0x490,
+/// +0x4A0, +0x4B0. The snow draw scales its sprite by the back-buffer width times +0x480
+/// (`0x821BED00`) and puts +0x490 in the z of its velocity constant beside the wind
+/// (`0x821BED50`), which is what fixes which of the two is the size.
+///
+/// Re-walked every call, never cached: the world subtree is torn down and rebuilt across a
+/// world re-init. Returns 0 with the outputs untouched while the chain is unbuilt or a value
+/// is not a sane float, so the caller keeps whatever it last had.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* out_snow_fall_speed,
+                                                   float* out_rain_size, float* out_rain_density) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
+
+    const uint32_t root = load_be32(0x83496AB8u);
+    if (root == 0) {
+        return 0;
+    }
+
+    const uint32_t x = load_be32(root + 0x0Cu);
+    if (x == 0) {
+        return 0;
+    }
+
+    const uint32_t y = load_be32(x + 0x58u);
+    if (y == 0) {
+        return 0;
+    }
+
+    const uint32_t world = load_be32(y + 0x04u);
+    if (world == 0) {
+        return 0;
+    }
+
+    const uint32_t theme_manager = load_be32(world + 0x50u);
+    if (theme_manager == 0) {
+        return 0;
+    }
+
+    const uint32_t blended = load_be32(theme_manager + 0x0Cu);
+    if (blended == 0) {
+        return 0;
+    }
+
+    float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    static constexpr uint32_t kSlots[4] = {0x480u, 0x490u, 0x4A0u, 0x4B0u};
+    for (int i = 0; i < 4; ++i) {
+        const uint32_t raw = load_be32(blended + kSlots[i]);
+        std::memcpy(&values[i], &raw, sizeof(values[i]));
+        // The theme evaluator lerps authored 0..1-ish values; anything else is a torn read or
+        // an unbuilt record, and is refused rather than turned into a blizzard.
+        if (!(values[i] >= 0.0f) || !(values[i] <= 100.0f)) {
+            return 0;
+        }
+    }
+
+    if (out_snow_size != nullptr) {
+        *out_snow_size = values[0];
+    }
+    if (out_snow_fall_speed != nullptr) {
+        *out_snow_fall_speed = values[1];
+    }
+    if (out_rain_size != nullptr) {
+        *out_rain_size = values[2];
+    }
+    if (out_rain_density != nullptr) {
+        *out_rain_density = values[3];
     }
 
     return 1;

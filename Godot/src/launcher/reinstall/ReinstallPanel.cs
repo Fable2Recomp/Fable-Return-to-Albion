@@ -16,12 +16,10 @@ public partial class ReinstallPanel : VBoxContainer
 	private Label _titleUpdateLabel = null!;
 	private Button _reinstall = null!;
 	private Button _unpackBanks = null!;
-	private Button _decompileLua = null!;
 	private Button _compileShaders = null!;
 	private Button _buildGameCode = null!;
 	private Button _buildAssets = null!;
 	private Label _unpackBanksStatus = null!;
-	private Label _decompileLuaStatus = null!;
 	private Label _compileShadersStatus = null!;
 	private Label _buildGameCodeStatus = null!;
 	private Label _operationLabel = null!;
@@ -35,7 +33,6 @@ public partial class ReinstallPanel : VBoxContainer
 
 	public event Action? ReinstallRequested;
 	public event Action? UnpackBanksRequested;
-	public event Action? DecompileLuaRequested;
 	public event Action? CompileShadersRequested;
 
 	/// <summary>
@@ -103,8 +100,6 @@ public partial class ReinstallPanel : VBoxContainer
 		_reinstall = AddAction("Reinstall Fable 2", () => ReinstallRequested?.Invoke());
 		_unpackBanks = AddTrackedAction("Unpack Game Banks",
 			() => UnpackBanksRequested?.Invoke(), out _unpackBanksStatus);
-		_decompileLua = AddTrackedAction("Unpack and Decompile Lua",
-			() => DecompileLuaRequested?.Invoke(), out _decompileLuaStatus);
 		_compileShaders = AddTrackedAction("Compile Shaders",
 			() => CompileShadersRequested?.Invoke(), out _compileShadersStatus);
 
@@ -273,7 +268,6 @@ public partial class ReinstallPanel : VBoxContainer
 
 		_reinstall.Disabled = !reinstallEnabled;
 		_unpackBanks.Disabled = !moddingEnabled;
-		_decompileLua.Disabled = !moddingEnabled;
 		_compileShaders.Disabled = !moddingEnabled;
 		_buildGameCode.Disabled = !reinstallEnabled;
 
@@ -284,7 +278,6 @@ public partial class ReinstallPanel : VBoxContainer
 
 		Installer.ReinstallStepStatus status = Installer.GetReinstallStepStatus();
 		SetStatus(_unpackBanksStatus, status.Banks);
-		SetStatus(_decompileLuaStatus, status.Lua);
 		SetStatus(_compileShadersStatus, status.Shaders);
 		SetStatus(_buildGameCodeStatus, !Recompile.GameCodeBuild.NeedsBuildCached(out _));
 	}

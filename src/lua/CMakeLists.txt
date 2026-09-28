@@ -100,208 +100,32 @@ set(REFII_LUA51_SOURCES
 # compiler's output.
 list(APPEND REFII_LUA_HOOK_SOURCES ${REFII_LUA51_SOURCES})
 
+set(REFII_LUADEC_SOURCES
+    ${REFII_LUA_ROOT}/src/tools/luadec/luadec_chunk.cpp
+    ${REFII_LUA_ROOT}/src/tools/luadec/luadec.cpp
+    ${REFII_LUA_ROOT}/src/tools/luadec/luadec_oracle.cpp
+)
+
+set(REFII_LUADEC_HEADERS
+    ${REFII_LUA_ROOT}/src/tools/luadec/luadec_chunk.h
+    ${REFII_LUA_ROOT}/src/tools/luadec/luadec.h
+    ${REFII_LUA_ROOT}/src/tools/luadec/luadec_oracle.h
+    ${REFII_LUA_ROOT}/src/tools/luadec/luac32_luaconf.h
+)
+
 set(REFII_LUA_DECOMPILER_WORKSPACE_SOURCES
     ${REFII_LUA_ROOT}/src/tools/crypto/sha256.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/branch_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/branch_loop_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/branch_preview_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/branch_structured_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/condition_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/conditional_block_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/control_flow_blocks.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/control_flow_graph.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/decompiler_file_io.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/jump_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/loop_block_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/lua51_analysis.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/lua_script_profile_policy.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/loop_condition_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/loop_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/loop_statement_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/native_first.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/native_first_readability_policy.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/output_placeholder_helpers.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/repair_progress_helpers.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/repair_state_keys.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_artifact_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_literal_seed_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_literal_seed_forward_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_localize_table_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_loop_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_loop_flow_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/exact_bytecode_parity_repair_pipeline.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/exact_instruction_microdiff.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/exact_seed_normalization.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/native_candidate_repair_pipeline.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/native_main_chunk_render_pipeline.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_placeholder_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_readability.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/reported_function_bytecode_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_receiver_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_cleanup_common_helpers.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_call_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_call_parser.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_call_fallback_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_condition_chain_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_current_state_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_expression_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_function_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_gameface_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_guard_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_nested_guard_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_nested_elseif_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_return_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_postprocess_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/shared_guard_cleanup_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/shared_cleanup_rules.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/shared_cleanup_rule_table_dispatch.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/shared_cleanup_output_apply.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/shared_cleanup_signal_helpers.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/shared_table_cleanup_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_structure_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_subclass_setlist_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_alias_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_builder_cluster_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_carry_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_literal_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_nested_index_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_outlier_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_placeholder_expand_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_qualified_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_setlist_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_temp_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_table_temp_placeholder_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_temporary_alias_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/top_level_replacement_state.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/validated_cleanup_pipeline.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/operation_build.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/operation_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/preview_fallback_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/preview_join_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/preview_operation_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/preview_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/render_state.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/bytecode_parity_repair_context.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/bytecode_parity_repair_parsing.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_condition_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_cleanup_profiles.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_else_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_local_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_shared_cleanup_orchestration.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_unhandled_if_cleanup.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/rendered_lua_text.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/statement_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/straight_line_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/testset_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/bytecode/lua_bytecode_oracles.cpp
-    ${REFII_LUA_ROOT}/src/tools/bytecode/lua_bytecode_repair_analysis.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_decompile_repair_context.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_decompiled_function_spans.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_function_suffix_and_groupmember_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_local_diff_exactifier.cpp
-    ${REFII_LUA_ROOT}/src/tools/native/lua_native_main_chunk_policy.cpp
-    ${REFII_LUA_ROOT}/src/tools/native/lua_native_render_tool_io.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/syntax/lua_ordered_syntax_repair_passes.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_quest_repair_stage_ops.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/syntax/lua_raw_invalid_structural_normalization.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/syntax/lua_raw_invalid_structural_prepass.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_reference_exact_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_reference_function_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_rendered_function_helpers.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/syntax/lua_syntax_generator_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/syntax/lua_syntax_state_loop_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_boundary_repair.cpp
-    ${REFII_LUA_ROOT}/src/tools/bytecode/lua_bytecode_parity_audit.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_owner_repair.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_quest_repair_stages.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_repair_cache.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_repeat_repair.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_repair_stages.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_repair_shared.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_tiny_main_repairs.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_top_level_repair.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_validated_output_repair.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/repair/lua_wait_repair.cpp
-    ${REFII_LUA_ROOT}/src/tools/decompiler/syntax/lua_syntax_repair_pipeline.cpp
     ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_manager.cpp
-    ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_camera_recovery.cpp
-    ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_exact_shape_recovery.cpp
     ${REFII_LUA_ROOT}/src/tools/workspace/lua_workspace_decompile_pipeline.cpp
-    ${REFII_LUA_ROOT}/src/tools/native/native_lua_chunk.cpp
-    ${REFII_LUA_ROOT}/src/tools/native/straight_line_native_render.cpp
-    ${REFII_LUA_ROOT}/src/tools/refii_lua_decompiler_main.cpp
 )
 
 set(REFII_LUA_DECOMPILER_PUBLIC_HEADERS
     ${REFII_LUA_ROOT}/include/tools/crypto/sha256.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/branch_loop_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/branch_preview_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/branch_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/branch_structured_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/condition_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/conditional_block_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/control_flow_blocks.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/control_flow_graph.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/decompiler_file_io.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/jump_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/loop_block_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/loop_condition_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/loop_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/loop_statement_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/lua51_analysis.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/lua_script_profile_policy.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/native_first.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/native_first_readability_policy.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/operation_build.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/operation_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/preview_fallback_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/preview_join_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/preview_operation_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/preview_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/render_state.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/bytecode_parity_repair_context.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/bytecode_parity_repair_parsing.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/bounded_normalization_pass_loop.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/bounded_reference_repair_loop.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/exact_bytecode_parity_repair_pipeline.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/exact_instruction_microdiff.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/exact_seed_normalization.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/native_candidate_repair_pipeline.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/native_main_chunk_render_pipeline.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/output_placeholder_helpers.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/repair_progress_helpers.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/repair_state_keys.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/rendered_readability.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/reported_function_bytecode_repairs.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/rendered_cleanup_common_helpers.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/rendered_call_parser.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/shared_guard_cleanup_repairs.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/shared_cleanup_rule_table_dispatch.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/shared_cleanup_rules.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/shared_cleanup_signal_helpers.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/shared_table_cleanup_repairs.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/top_level_replacement_state.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/validated_cleanup_pipeline.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/rendered/rendered_lua_text.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/statement_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/straight_line_render.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/testset_render.h
-    ${REFII_LUA_ROOT}/include/tools/bytecode/lua_bytecode_oracles.h
-    ${REFII_LUA_ROOT}/include/tools/bytecode/lua_bytecode_parity_audit.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/lua_decompiler_internal.h
-    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_camera_recovery.h
-    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_decompile_pipeline.h
-    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_exact_shape_recovery.h
-    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_text_repair.h
-    ${REFII_LUA_ROOT}/include/tools/native/native_lua_chunk.h
     ${REFII_LUA_ROOT}/include/tools/native/native_lua_decompiler.h
-    ${REFII_LUA_ROOT}/include/tools/decompiler/repair/lua_tiny_main_repairs.h
-    ${REFII_LUA_ROOT}/include/tools/native/straight_line_native_render.h
+    ${REFII_LUA_ROOT}/include/tools/workspace/lua_workspace_decompile_pipeline.h
 )
 
-file(GLOB REFII_LUA_DECOMPILER_PRIVATE_PARTS CONFIGURE_DEPENDS
-    ${REFII_LUA_ROOT}/src/tools/decompiler/rendered/pipelines/exact/*.h
-)
+set(REFII_LUA_DECOMPILER_PRIVATE_PARTS ${REFII_LUADEC_HEADERS})
 set_source_files_properties(
     ${REFII_LUA_DECOMPILER_PUBLIC_HEADERS}
     ${REFII_LUA_DECOMPILER_PRIVATE_PARTS}
@@ -384,30 +208,121 @@ endif()
 # The host-VM executor (src/core/host_lua_vm.cpp) embeds the vendored lua51.
 target_link_libraries(refii_lua PRIVATE refii_lua51)
 
+# luadec: the Lua 5.1 decompiler and its byte-exact oracle. The oracle
+# compiles the vendored Lua 5.1.2 (+ `continue`) as C++ inside a namespace
+# with the guest's 4-byte float lua_Number, so it can sit in one binary next
+# to the runtime's own Lua. Its one translation unit takes the vendored
+# sources' warnings as they are.
+add_library(refii_luadec_core STATIC
+    ${REFII_LUADEC_SOURCES}
+    ${REFII_LUADEC_HEADERS}
+)
+target_include_directories(refii_luadec_core
+    PUBLIC
+        ${REFII_LUA_ROOT}/src/tools/luadec
+    PRIVATE
+        ${REFII_LUA_ROOT}/thirdparty/lua512/src
+)
+if(WIN32)
+    target_compile_definitions(refii_luadec_core PRIVATE LUA_USE_WINDOWS)
+elseif(APPLE)
+    target_compile_definitions(refii_luadec_core PRIVATE LUA_USE_MACOSX)
+else()
+    target_compile_definitions(refii_luadec_core PRIVATE LUA_USE_LINUX)
+endif()
+if(MSVC)
+    set_source_files_properties(${REFII_LUA_ROOT}/src/tools/luadec/luadec_oracle.cpp
+        PROPERTIES COMPILE_OPTIONS "/w")
+else()
+    set_source_files_properties(${REFII_LUA_ROOT}/src/tools/luadec/luadec_oracle.cpp
+        PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+set_target_properties(refii_luadec_core PROPERTIES
+    OUTPUT_NAME refii_luadec_core
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    POSITION_INDEPENDENT_CODE ON
+    # Only the C ABI leaves the shared library; the namespaced Lua stays inside.
+    CXX_VISIBILITY_PRESET hidden
+)
+
+# The editor's decompiler: the Godot bank-mount plugin decompiles a script
+# bank entry on demand through this C ABI (Engine_LuaDecompiler.cs) and saves
+# an edited copy into the mod folder, where the mount overlays it like any
+# other file. Staged beside the other host libraries.
+add_library(refii_luadec SHARED
+    ${REFII_LUA_ROOT}/src/tools/luadec/luadec_c_api.cpp
+)
+target_link_libraries(refii_luadec PRIVATE refii_luadec_core)
+set_target_properties(refii_luadec PROPERTIES
+    OUTPUT_NAME refii_luadec
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+)
+if(REFII_STAGE_GODOT_BUILD AND DEFINED REFII_GODOT_BUILD_BIN_DIR)
+    add_custom_command(TARGET refii_luadec POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_GODOT_BUILD_BIN_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:refii_luadec>"
+            "${REFII_GODOT_BUILD_BIN_DIR}"
+        COMMENT "Staging refii_luadec for Godot"
+    )
+endif()
+
+if(REFII_BUILD_TOOLS)
+    # The oracle on its own: compile Lua text to a guest chunk, or verify a
+    # decompiled file against the chunk it came from.
+    add_executable(refii-luac32
+        ${REFII_LUA_ROOT}/src/tools/luadec/luac32_main.cpp
+    )
+    target_link_libraries(refii-luac32 PRIVATE refii_luadec_core)
+    set_target_properties(refii-luac32 PROPERTIES
+        OUTPUT_NAME refii-luac32
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY "${REFII_TOOL_OUTPUT_DIR}"
+    )
+    refii_stage_windows_runtime_dlls(refii-luac32)
+
+    # The decompiler on its own: one chunk to Lua text or a listing.
+    add_executable(refii-luadec
+        ${REFII_LUA_ROOT}/src/tools/luadec/luadec_main.cpp
+    )
+    target_link_libraries(refii-luadec PRIVATE refii_luadec_core)
+    set_target_properties(refii-luadec PROPERTIES
+        OUTPUT_NAME refii-luadec
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY "${REFII_TOOL_OUTPUT_DIR}"
+    )
+    refii_stage_windows_runtime_dlls(refii-luadec)
+endif()
+
 if(TARGET refii_bnk_extractor)
     add_library(refii_lua_decompiler_workspace STATIC
         ${REFII_LUA_DECOMPILER_WORKSPACE_SOURCES}
         ${REFII_LUA_DECOMPILER_PUBLIC_HEADERS}
-        ${REFII_LUA_DECOMPILER_PRIVATE_PARTS}
     )
     target_include_directories(refii_lua_decompiler_workspace
         PUBLIC
             ${REFII_LUA_ROOT}/include
-        PRIVATE
-            ${REFII_LUA51_INCLUDE_DIRS}
     )
     target_link_libraries(refii_lua_decompiler_workspace
         PUBLIC
             refii_bnk_extractor
-            refii_lua51
+        PRIVATE
+            refii_luadec_core
     )
     set_target_properties(refii_lua_decompiler_workspace PROPERTIES
         CXX_STANDARD 23
         CXX_STANDARD_REQUIRED ON
         ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
         # This static library is linked into refii_launcher_ops, which is SHARED.
-        # Without PIC the thread-local session cache emits an R_X86_64_TPOFF32
-        # relocation that a shared object cannot carry, and the link fails.
         POSITION_INDEPENDENT_CODE ON
     )
 
@@ -418,6 +333,7 @@ if(TARGET refii_bnk_extractor)
         target_link_libraries(refii-lua-decompiler
             PRIVATE
                 refii_lua_decompiler_workspace
+                refii_luadec_core
         )
         set_target_properties(refii-lua-decompiler PROPERTIES
             OUTPUT_NAME refii-lua-decompiler

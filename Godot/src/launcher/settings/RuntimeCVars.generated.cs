@@ -210,7 +210,7 @@ public static class RuntimeCVars
             new("vfs_mods_root", "VFS", RuntimeCVarType.String, "mods", "Assets-root mod folder containing installable loose-file mods. The default resolves to <assets_root>/mods.", null),
             new("vfs_enabled_mods", "VFS", RuntimeCVarType.String, "", "Optional semicolon-separated enabled mod folder names under vfs_mods_root; mods/enabled.txt is also read.", null),
             new("vfs_mod_roots", "VFS", RuntimeCVarType.String, "", "Developer override: semicolon-separated absolute or relative mod asset roots. Normal mod installs live under <assets_root>/mods.", null),
-            new("lua_use_mod_overrides", "Lua", RuntimeCVarType.Bool, "true", "Prefer decompiled loose Lua files from the mod workspace.", null),
+            new("lua_use_mod_overrides", "Lua", RuntimeCVarType.Bool, "false", "Prefer decompiled loose Lua files from a hand-built mod workspace before the bank's own chunk.", null),
             new("lua_trace_mod_overrides", "Lua", RuntimeCVarType.Bool, "false", "Log Lua workspace override matches and fallbacks.", null),
             new("lua_mod_workspace_root", "Lua", RuntimeCVarType.String, "", "Optional host Lua mod workspace root.", null),
         };

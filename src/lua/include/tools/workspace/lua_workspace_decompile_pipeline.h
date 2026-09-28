@@ -6,7 +6,9 @@
 
 namespace refii::lua::workspace {
 
-bool RunLuaWorkspaceDecompilePipeline(const LuaWorkspaceDecompileOptions& raw_options,
+// The decompile step of the workspace: luadec plus the in-process oracle over
+// every script in the luasource/ cache. DecompileLuaWorkspace forwards here.
+bool RunLuaWorkspaceDecompilePipeline(const LuaWorkspaceDecompileOptions& options,
                                       LuaWorkspaceDecompileSummary* summary,
                                       std::string* error);
 

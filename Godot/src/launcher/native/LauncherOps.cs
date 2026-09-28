@@ -8,16 +8,6 @@ using Godot;
 
 namespace Refii.Launcher.Native;
 
-public enum LuaVerifyStatus
-{
-	Ok = 0,
-	Modified = 1,
-	Missing = 2,
-	Extra = 3,
-	BaselineMissing = 4,
-	BaselineCorrupt = 5,
-}
-
 internal static class LauncherOpsNative
 {
 	private const string Library = "refii_launcher_ops";
@@ -54,54 +44,10 @@ internal static class LauncherOpsNative
 	internal static extern int refii_ops_error_message(IntPtr handle, byte[]? buffer, int capacity);
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern void refii_ops_rebuild_lua_workspace(IntPtr handle);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	internal static extern void refii_ops_extract_general_game_banks(IntPtr handle);
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	internal static extern void refii_ops_extract_game_shaders(IntPtr handle);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern void refii_ops_verify_lua_workspace(IntPtr handle);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern void refii_ops_reset_lua_workspace(IntPtr handle);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern void refii_ops_reset_lua_workspace_file(
-		IntPtr handle, [MarshalAs(UnmanagedType.LPUTF8Str)] string relativePath);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern int refii_ops_verify_lua_workspace_sync(
-		IntPtr handle, byte[]? buffer, int capacity);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern int refii_ops_verify_entry_count(IntPtr handle);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern int refii_ops_verify_entry_status(IntPtr handle, int index);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern int refii_ops_verify_entry_path(
-		IntPtr handle, int index, byte[]? buffer, int capacity);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern int refii_ops_verify_baseline_missing(IntPtr handle);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern int refii_ops_verify_baseline_corrupt(IntPtr handle);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	internal static extern int refii_ops_describe_verify_status(
-		int status, byte[]? buffer, int capacity);
-}
-
-public sealed class LuaVerifyEntry
-{
-	public string RelativePath = string.Empty;
-	public LuaVerifyStatus Status;
-	public string StatusText = string.Empty;
 }
 
 public sealed class LauncherOps : IDisposable
@@ -220,85 +166,9 @@ public sealed class LauncherOps : IDisposable
 	public string StatusHistory => Read(LauncherOpsNative.refii_ops_status_history);
 	public string ErrorMessage => Read(LauncherOpsNative.refii_ops_error_message);
 
-	public void RebuildLuaWorkspace() => LauncherOpsNative.refii_ops_rebuild_lua_workspace(_handle);
 	public void ExtractGameBanks() =>
 		LauncherOpsNative.refii_ops_extract_general_game_banks(_handle);
 	public void CompileShaders() => LauncherOpsNative.refii_ops_extract_game_shaders(_handle);
-	public void VerifyLuaWorkspace() => LauncherOpsNative.refii_ops_verify_lua_workspace(_handle);
-	public void ResetLuaWorkspace() => LauncherOpsNative.refii_ops_reset_lua_workspace(_handle);
-
-	public void ResetLuaWorkspaceFile(string relativePath) =>
-		LauncherOpsNative.refii_ops_reset_lua_workspace_file(_handle, relativePath);
-
-	public bool VerifyLuaWorkspaceSync(out string error)
-	{
-		if (_handle == IntPtr.Zero)
-		{
-			error = "launcher operations unavailable";
-			return false;
-		}
-
-		var buffer = new byte[4096];
-		bool ok =
-			LauncherOpsNative.refii_ops_verify_lua_workspace_sync(_handle, buffer, buffer.Length) != 0;
-		if (ok)
-		{
-			error = string.Empty;
-			return true;
-		}
-
-		int length = Array.IndexOf(buffer, (byte)0);
-		error = Encoding.UTF8.GetString(buffer, 0, length < 0 ? buffer.Length : length);
-		return false;
-	}
-
-	public int BaselineMissing => _handle == IntPtr.Zero
-		? 0
-		: LauncherOpsNative.refii_ops_verify_baseline_missing(_handle);
-
-	public int BaselineCorrupt => _handle == IntPtr.Zero
-		? 0
-		: LauncherOpsNative.refii_ops_verify_baseline_corrupt(_handle);
-
-	public LuaVerifyEntry[] GetVerifyEntries()
-	{
-		if (_handle == IntPtr.Zero)
-		{
-			return Array.Empty<LuaVerifyEntry>();
-		}
-
-		int count = LauncherOpsNative.refii_ops_verify_entry_count(_handle);
-		var entries = new LuaVerifyEntry[count];
-		for (int index = 0; index < count; index++)
-		{
-			int captured = index;
-			int status = LauncherOpsNative.refii_ops_verify_entry_status(_handle, captured);
-			entries[index] = new LuaVerifyEntry
-			{
-				RelativePath = Read(
-					(handle, buffer, capacity) =>
-						LauncherOpsNative.refii_ops_verify_entry_path(
-							handle, captured, buffer, capacity)),
-				Status = (LuaVerifyStatus)status,
-				StatusText = DescribeStatus(status),
-			};
-		}
-
-		return entries;
-	}
-
-	private static string DescribeStatus(int status)
-	{
-		int needed = LauncherOpsNative.refii_ops_describe_verify_status(status, null, 0);
-		if (needed <= 0)
-		{
-			return string.Empty;
-		}
-
-		var buffer = new byte[needed + 1];
-		LauncherOpsNative.refii_ops_describe_verify_status(status, buffer, buffer.Length);
-		return Encoding.UTF8.GetString(buffer, 0, needed);
-	}
 
 	public void Dispose()
 	{

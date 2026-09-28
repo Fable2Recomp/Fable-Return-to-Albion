@@ -932,6 +932,7 @@ foreach(_refii_origin_rpath_target
     refii_generated
     refii_bnk_extractor
     refii_lua
+    refii_luadec
     refii_vfs
     refii_renderer
     refii-shader-sbk

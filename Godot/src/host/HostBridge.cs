@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 156;
+	public const int ExpectedAbiVersion = 157;
 
 	private const int MessageCapacity = 512;
 
@@ -2919,6 +2919,42 @@ public static class HostBridge
 	/// atlas), or -1 when it could not be read.
 	/// </param>
 	public readonly record struct GuestClock(float Fraction, int DayCount, bool Frozen, int MoonPhase = -1);
+
+	/// <summary>
+	/// The guest's live precipitation: the four floats of its BLENDED environment theme that its
+	/// own rain and snow draws gate on (0.05 in both). Null until the world is built, and null
+	/// again while a value is not a sane float — hold what was last read in that case.
+	/// </summary>
+	public static GuestWeather? Weather()
+	{
+		try
+		{
+			if (!IsGuestUp)
+			{
+				return null;
+			}
+
+			if (RefiiHostGetWeather(out float snowSize, out float snowFallSpeed,
+				out float rainSize, out float rainDensity) == 0)
+			{
+				return null;
+			}
+
+			return new GuestWeather(snowSize, snowFallSpeed, rainSize, rainDensity);
+		}
+		catch (DllNotFoundException)
+		{
+			return null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>Blended theme slots T+0x480, +0x490, +0x4A0, +0x4B0 — see RefiiHostGetWeather.</summary>
+	public readonly record struct GuestWeather(
+		float SnowSize, float SnowFallSpeed, float RainSize, float RainDensity);
 
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
@@ -6752,6 +6788,10 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetTimeOfDay(
 		out float fraction, out int dayCount, out int frozen, out int moonPhase);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetWeather(
+		out float snowSize, out float snowFallSpeed, out float rainSize, out float rainDensity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(

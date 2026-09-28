@@ -4,7 +4,6 @@ using System.IO;
 using System.Threading;
 using Godot;
 using Refii.Launcher.Core;
-using Refii.Launcher.Lua;
 using Refii.Launcher.Native;
 using Refii.Launcher.Updates;
 
@@ -26,8 +25,7 @@ public partial class LauncherApp : Control
 	};
 	private static readonly string[] FileMenuItems =
 	{
-		"Set Install Folder", "Uninstall", "", "Verify Lua Workspace",
-		"Reset All Lua Files", "Reset Lua File...", "", "Show Announcements", "Show Debug Panel", "Close",
+		"Set Install Folder", "Uninstall", "", "Show Announcements", "Show Debug Panel", "Close",
 	};
 	private static readonly string[] AboutMenuItems =
 	{
@@ -1112,7 +1110,6 @@ public partial class LauncherApp : Control
 		_reinstallPanel.ReinstallRequested += StartInstallFlow;
 		_reinstallPanel.UnpackBanksRequested += () => StartOps(ops => ops.ExtractGameBanks());
 		_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
-		_reinstallPanel.DecompileLuaRequested += () => StartOps(ops => ops.RebuildLuaWorkspace());
 		_reinstallPanel.CompileShadersRequested += () => StartOps(ops => ops.CompileShaders());
 		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
 
@@ -1222,18 +1219,6 @@ public partial class LauncherApp : Control
 					? uninstallLog
 					: "No Fable 2 launcher-managed files to uninstall.");
 				RefreshState();
-				break;
-
-			case "Verify Lua Workspace":
-				StartOps(ops => ops.VerifyLuaWorkspace());
-				break;
-
-			case "Reset All Lua Files":
-				StartOps(ops => ops.ResetLuaWorkspace());
-				break;
-
-			case "Reset Lua File...":
-				ShowResetLuaFileDialog();
 				break;
 
 			case "Show Info Panel":
@@ -2142,49 +2127,6 @@ public partial class LauncherApp : Control
 
 		var dialog = new BuildSpeedDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle, heading);
 		dialog.Chosen += useAllCores => proceed(useAllCores);
-		AddChild(dialog);
-		AnimateIn(dialog);
-	}
-
-	private void ShowResetLuaFileDialog()
-	{
-		if (_ops is not null)
-		{
-			return;
-		}
-
-		if (!LauncherOps.Available)
-		{
-			Log("Launcher operations library is unavailable.");
-			return;
-		}
-
-		using LauncherOps? probe = LauncherOps.Create();
-		if (probe is null)
-		{
-			Log("Failed to create a launcher operations handle.");
-			return;
-		}
-
-		if (!probe.VerifyLuaWorkspaceSync(out string verifyError))
-		{
-			if (verifyError.Length != 0)
-			{
-				Log(verifyError);
-			}
-
-			return;
-		}
-
-		if (probe.BaselineMissing != 0 || probe.BaselineCorrupt != 0)
-		{
-			Log("Lua baseline is not ready for per-file reset.");
-			return;
-		}
-
-		var dialog = new ResetLuaFileDialog(
-			probe.GetVerifyEntries(), null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle);
-		dialog.ResetRequested += path => StartOps(ops => ops.ResetLuaWorkspaceFile(path));
 		AddChild(dialog);
 		AnimateIn(dialog);
 	}

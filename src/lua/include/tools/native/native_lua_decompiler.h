@@ -1,3 +1,6 @@
+// Public contract of the Lua workspace: script-bank export, decompilation
+// with byte-exact verification, baseline snapshot, drift verification and
+// reset. The launcher's Modding tab and refii-lua-decompiler drive it.
 #pragma once
 
 #include <cstddef>
@@ -17,43 +20,19 @@ struct LuaWorkspaceDecompileProgress {
     std::size_t worker_slot = 0;
     std::size_t worker_count = 0;
     std::size_t active_workers = 0;
-    std::size_t phase_completed_files = 0;
-    std::size_t phase_total_files = 0;
-    std::uint64_t active_elapsed_ms = 0;
-    std::uint64_t source_wall_time_budget_ms = 0;
-};
-
-enum class LuaWorkspacePipelineMode {
-    kLegacySinglePass,
-    kTwoPhaseExactFirst,
-};
-
-enum class LuaExactParityPolicy {
-    kCanonicalOnly,
-    kAlwaysForBytecode,
 };
 
 struct LuaWorkspaceDecompileOptions {
+    // The workspace root (usually <assets>/unpacked) or its luasource/ cache.
     std::filesystem::path workspace_root;
+    // Where the public Lua files go; defaults to the workspace root.
     std::filesystem::path output_root;
-    std::filesystem::path workspace_tool_path;
-    std::filesystem::path single_tool_path;
-    std::filesystem::path disassembly_output_root;
     // 0 selects an automatic worker count that keeps some cores free.
     std::size_t worker_count = 0;
     std::size_t progress_update_stride = 1;
-    unsigned int child_timeout_seconds = 2;
-    unsigned int native_render_timeout_seconds = 8;
-    std::uint64_t source_wall_time_budget_ms = 60000;
-    // Broad workspace runs default to materializing readable validated Lua
-    // without spending hours in the single-worker heavy exactifier.
-    // Set this above 0 only for focused heavy exactification passes.
-    std::size_t max_phase2_heavy_exactification_jobs = 0;
-    bool force_external_single_tool = false;
+    // A chunk that cannot be decompiled gets a placeholder at its public path
+    // (the runtime keeps loading the original) and its listing under _disasm/.
     bool write_disassembly_fallback = true;
-    LuaWorkspacePipelineMode pipeline_mode = LuaWorkspacePipelineMode::kTwoPhaseExactFirst;
-    LuaExactParityPolicy exact_parity_policy = LuaExactParityPolicy::kCanonicalOnly;
-    bool strict_exact_outputs = false;
     std::function<void(const LuaWorkspaceDecompileProgress&)> progress_callback;
 };
 
@@ -61,15 +40,15 @@ struct LuaWorkspaceDecompileSummary {
     std::filesystem::path workspace_root;
     std::filesystem::path output_root;
     std::filesystem::path manifest_path;
-    std::size_t total_files = 0;
-    std::size_t decompiled = 0;
-    std::size_t aliased = 0;
-    std::size_t nonexact = 0;
-    std::size_t aliased_nonexact = 0;
-    std::size_t disassembled = 0;
-    std::size_t invalid = 0;
-    std::size_t budget_exceeded = 0;
-    std::size_t copied = 0;
+    std::size_t total_files = 0;      // inputs considered
+    std::size_t decompiled = 0;       // outputs that recompile byte-for-byte
+    std::size_t aliased = 0;          // retail inputs served by their debug sibling's text
+    std::size_t nonexact = 0;         // outputs whose code matches but debug info does not
+    std::size_t aliased_nonexact = 0; // aliased inputs the shared text does not reproduce exactly
+    std::size_t disassembled = 0;     // inputs that could not be decompiled
+    std::size_t invalid = 0;          // inputs that are not readable chunks
+    std::size_t mismatched = 0;       // outputs whose code does not recompile to the original
+    std::size_t copied = 0;           // plaintext inputs copied as they are
     std::size_t skipped = 0;
 };
 
@@ -79,10 +58,6 @@ struct LuaWorkspaceBuildOptions {
     // 0 selects an automatic worker count that keeps some cores free.
     std::size_t worker_count = 0;
     std::size_t progress_update_stride = 1;
-    unsigned int child_timeout_seconds = 2;
-    unsigned int native_render_timeout_seconds = 8;
-    std::uint64_t source_wall_time_budget_ms = 60000;
-    std::size_t max_phase2_heavy_exactification_jobs = 0;
     bool write_disassembly_fallback = true;
     std::function<void(const LuaWorkspaceDecompileProgress&)> progress_callback;
 };
@@ -152,32 +127,6 @@ struct LuaWorkspaceResetSummary {
     std::size_t failed = 0;
 };
 
-struct LuaBytecodeParityAuditOptions {
-    std::filesystem::path workspace_root;
-    std::filesystem::path generated_root;
-    std::filesystem::path report_root;
-    std::filesystem::path single_tool_path;
-    std::filesystem::path oracle_unluac_path;
-    std::size_t progress_update_stride = 16;
-    unsigned int child_timeout_seconds = 2;
-    std::function<void(const LuaWorkspaceDecompileProgress&)> progress_callback;
-};
-
-struct LuaBytecodeParityAuditSummary {
-    std::filesystem::path workspace_root;
-    std::filesystem::path generated_root;
-    std::filesystem::path report_root;
-    std::filesystem::path parity_report_path;
-    std::filesystem::path summary_report_path;
-    std::size_t total_files = 0;
-    std::size_t exact_matches = 0;
-    std::size_t current_best = 0;
-    std::size_t unluac_best = 0;
-    std::size_t no_candidate_exact = 0;
-    std::size_t compile_or_parse_failures = 0;
-    std::size_t non_bytecode_sources = 0;
-};
-
 std::filesystem::path GetDefaultLuaDecompiledOutputRoot(const std::filesystem::path& workspace_root);
 std::filesystem::path GetDefaultLuaDecompileInputRoot(const std::filesystem::path& workspace_root);
 std::filesystem::path GetLuaWorkspacePath(const std::filesystem::path& game_install_root);
@@ -186,6 +135,8 @@ std::filesystem::path GetLuaWorkspaceBaselineRoot(const std::filesystem::path& w
 
 const char* DescribeLuaWorkspaceVerifyStatus(LuaWorkspaceVerifyStatus status);
 
+// Decompiles every script under the workspace's luasource/ cache into the
+// public workspace, verifying each output against the chunk it came from.
 bool DecompileLuaWorkspace(const LuaWorkspaceDecompileOptions& options,
                           LuaWorkspaceDecompileSummary* summary = nullptr,
                           std::string* error = nullptr);
@@ -201,9 +152,5 @@ bool VerifyLuaWorkspace(const LuaWorkspaceVerifyOptions& options,
 bool ResetLuaWorkspace(const LuaWorkspaceResetOptions& options,
                        LuaWorkspaceResetSummary* summary = nullptr,
                        std::string* error = nullptr);
-
-bool AuditLuaWorkspaceBytecodeParity(const LuaBytecodeParityAuditOptions& options,
-                                     LuaBytecodeParityAuditSummary* summary = nullptr,
-                                     std::string* error = nullptr);
 
 }  // namespace refii::lua

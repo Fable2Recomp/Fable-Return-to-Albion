@@ -28,33 +28,54 @@ public static class Engine_Weather
     /// </summary>
     public static Vector3 WindWorld { get; set; } = Vector3.Zero;
 
+    /// <summary>The remaster's mapping of rain density onto streaks; zero under the guest's gate.</summary>
+    public static int RainCount(float rainDensity, float rainSize)
+    {
+        if (rainSize <= WeatherGate || rainDensity <= WeatherGate)
+        {
+            return 0;
+        }
+
+        return Math.Clamp((int)(rainDensity * RainDensityToCount), 0, MaxRain);
+    }
+
+    /// <summary>A fixed field of flakes whenever the guest's gate passes; density is fall rate.</summary>
+    public static int SnowCount(float snowFallSpeed, float snowSize)
+    {
+        // THE GUEST'S OWN GATE, AND ITS ONLY ONE. Both draws test the blended theme value
+        // against flt_820992D8 — bytes `3D 4C CC CD`, exactly 0.05 — and skip the entire pass
+        // below it: snow on SnowSize at 0x821bdf00 (`fcmpu cr6, f29, f0` / `bgt` / `li r10, 0`
+        // / `beq` past the whole draw), rain on RainDensity at 0x82280450. There is NO ceiling
+        // test, no raycast, no portal, no room or interior flag anywhere on that path; the
+        // strings HasSky, IsInside and NoWeather are not in the image, and the engine's own
+        // "am I indoors" query has no caller on it. An interior is dry because its BLENDED
+        // theme states nothing — which is why the node follows the guest's blended record
+        // (`Engine_WeatherNode`) rather than the level's day set. Do not add an interior test
+        // here — carry the guest's threshold.
+        bool hasSnow = snowFallSpeed > WeatherGate && snowSize > WeatherGate;
+        return Math.Clamp(hasSnow ? (int)SnowBaseCount : 0, 0, MaxSnow);
+    }
+
+    /// <summary>
+    /// Builds the precipitation node. With a guest hosted the mesh holds full capacity for both
+    /// kinds and the node exists even when the level's own day set states no weather — a
+    /// painted set can bring snow to a level whose day set has none, and the blended record
+    /// the guest reads is what decides, per tick, in <see cref="Engine_WeatherNode"/>. In the
+    /// editor the level's values are all there is: the mesh is sized to them, and null means
+    /// none.
+    /// </summary>
     public static MeshInstance3D? Build(WeatherTheme theme, float windAzimuth, float windStrength)
     {
-        float rainDensity = Math.Clamp(
-            theme.HasRain ? theme.RainDensity : 0f, 0f, 1f);
+        float rainDensity = Math.Clamp(theme.HasRain ? theme.RainDensity : 0f, 0f, 1f);
         float rainSize = Math.Clamp(theme.HasRain ? theme.RainSize : 0f, 0f, 4f);
         float snowSpeed = Math.Clamp(theme.HasSnow ? theme.SnowFallSpeed : 0f, 0f, 6f);
         float snowSize = Math.Clamp(theme.HasSnow ? theme.SnowSize : 0f, 0f, 4f);
 
-        // THE GUEST'S OWN GATE, AND ITS ONLY ONE. Both draws test the blended theme value
-        // against flt_820992D8 — bytes `3D 4C CC CD`, exactly 0.05 — and skip the entire pass
-        // below it: snow at 0x821bdf00 (`fcmpu cr6, f29, f0` / `bgt` / `li r10, 0` / `beq`
-        // past the whole draw), rain at 0x82280450. There is NO ceiling test, no raycast, no
-        // portal, no room or interior flag anywhere on that path; the strings HasSky, IsInside
-        // and NoWeather are not in the image, and the engine's own "am I indoors" query has no
-        // caller on it. An interior is dry because its theme states nothing, not because the
-        // renderer checks. So do not add an interior test here — carry the guest's threshold.
-        bool hasSnow = snowSpeed > WeatherGate && snowSize > WeatherGate;
+        int rainCount = RainCount(rainDensity, rainSize);
+        int snowCount = SnowCount(snowSpeed, snowSize);
 
-        int rainCount = Math.Clamp((int)(rainDensity * RainDensityToCount), 0, MaxRain);
-        if (rainSize <= WeatherGate || rainDensity <= WeatherGate)
-        {
-            rainCount = 0;
-        }
-
-        int snowCount = Math.Clamp(hasSnow ? (int)SnowBaseCount : 0, 0, MaxSnow);
-
-        if (rainCount == 0 && snowCount == 0)
+        bool live = Refii.Host.HostBridge.TryGetAbiVersion() is not null;
+        if (!live && rainCount == 0 && snowCount == 0)
         {
             return null;
         }
@@ -66,36 +87,39 @@ public static class Engine_Weather
             return null;
         }
 
-        ArrayMesh mesh = BuildQuads(rainCount + snowCount);
+        int rainCapacity = live ? MaxRain : rainCount;
+        int snowCapacity = live ? MaxSnow : snowCount;
+        ArrayMesh mesh = BuildQuads(rainCapacity, snowCapacity);
 
         var material = new ShaderMaterial { Shader = shader };
 
         float strength = Math.Clamp(windStrength, 0f, 40f);
         material.SetShaderParameter("wind_vec", new Vector4(
             MathF.Cos(windAzimuth) * strength, 0f, MathF.Sin(windAzimuth) * strength, 0f));
-
-        material.SetShaderParameter("rain_p", new Vector4(
-            rainCount, MathF.Max(rainSize, 0.15f), 14.0f, 0.34f));
-
-        material.SetShaderParameter("snow_p", new Vector4(
-            snowCount, MathF.Max(snowSize, 0.15f), MathF.Max(snowSpeed, 0.15f), 1.0f));
-
         material.SetShaderParameter("area", new Vector4(30f, 24f, 22f, 18f));
 
-        GD.Print($"[weather] {rainCount} rain, {snowCount} snow particles");
-
-        return new MeshInstance3D
+        var node = new Engine_WeatherNode
         {
             Name = "Weather",
             Mesh = mesh,
-            MaterialOverride = material,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             ExtraCullMargin = 16384f,
+            RainCapacity = rainCapacity,
+            SnowCapacity = snowCapacity,
         };
+        node.Attach(material);
+        node.Apply(rainDensity, rainSize, snowSpeed, snowSize, "level day set");
+        return node;
     }
 
-    private static ArrayMesh BuildQuads(int particles)
+    /// <summary>
+    /// One quad per particle: rain first, then snow. UV2 carries (index within its kind,
+    /// kind) so the shader can draw the first N of each independently and the snow's seeds
+    /// do not shift as the rain count moves.
+    /// </summary>
+    private static ArrayMesh BuildQuads(int rain, int snow)
     {
+        int particles = rain + snow;
         int vertexCount = particles * 6;
 
         var vertices = new Vector3[vertexCount];
@@ -110,12 +134,14 @@ public static class Engine_Weather
 
         for (int p = 0; p < particles; p++)
         {
+            bool isRain = p < rain;
+            var id = new Vector2(isRain ? p : p - rain, isRain ? 0f : 1f);
             for (int c = 0; c < 6; c++)
             {
                 int v = (p * 6) + c;
                 vertices[v] = Vector3.Zero;
                 uvs[v] = corners[c];
-                ids[v] = new Vector2(p, 0f);
+                ids[v] = id;
             }
         }
 

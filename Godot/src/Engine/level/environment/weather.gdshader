@@ -13,7 +13,12 @@ float wx_hash(float n) {
 }
 
 void vertex() {
+	// UV2 = (index within its kind, kind): rain is kind 0, snow kind 1. The mesh holds
+	// full capacity; the first rain_p.x rain and snow_p.x snow quads are live and the rest
+	// collapse to a point, so the counts can follow the guest's blended theme per frame.
 	float pid = UV2.x;
+	bool is_rain = UV2.y < 0.5;
+	bool live = pid < (is_rain ? rain_p.x : snow_p.x);
 	vec2 uv = UV;
 
 	mat3 inv_model = mat3(inverse(MODEL_MATRIX));
@@ -23,7 +28,6 @@ void vertex() {
 	float tan_half_x = 1.0 / PROJECTION_MATRIX[0][0];
 
 	float t = TIME;
-	bool is_rain = pid < rain_p.x;
 	float seed = (pid * (is_rain ? 1.6180339 : 2.2360679)) + (is_rain ? 0.0 : 71.0);
 	float h1 = wx_hash(seed + 1.3);
 	float h2 = wx_hash(seed + 7.7);
@@ -73,8 +77,8 @@ void vertex() {
 		fade = clamp(1.5 - (length(to_cam) / R), 0.0, 1.0);
 	}
 
-	VERTEX = center + off;
-	v_meta = vec2(is_rain ? 0.0 : 1.0, fade);
+	VERTEX = live ? center + off : vec3(0.0);
+	v_meta = vec2(is_rain ? 0.0 : 1.0, live ? fade : 0.0);
 }
 
 void fragment() {

@@ -957,6 +957,12 @@ public partial class BnkMountPlugin : EditorPlugin
             return;
         }
 
+        if (virtualPath.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
+        {
+            ActivateLua(virtualPath);
+            return;
+        }
+
         if (virtualPath.EndsWith(
                 Refii.Fx.Engine_BnkFxLoader.Extension, StringComparison.OrdinalIgnoreCase))
         {
@@ -1819,6 +1825,23 @@ public partial class BnkMountPlugin : EditorPlugin
                 $"game://{level.HeightfieldPath}\n{level.HeightfieldSize:N0} bytes\n" +
                 (built ? $"built → {level.ScenePath}" : "double-click to build the .tscn"));
         }
+    }
+
+    /// <summary>
+    /// A script-bank entry opens in the Lua editor: decompiled on demand, edited, checked with
+    /// the game's compiler and saved into a mod at the same path. The mount then serves the
+    /// mod's text to the guest like any other overlaid file, so saving remounts.
+    /// </summary>
+    private void ActivateLua(string virtualPath)
+    {
+        if (_filesystem is null || !_filesystem.TryGetFile(virtualPath, out BnkFile file))
+        {
+            return;
+        }
+
+        var editor = new LuaScriptEditor(file, virtualPath, StartMount);
+        EditorInterface.Singleton.GetBaseControl().AddChild(editor);
+        editor.PopupCentered();
     }
 
     private void ActivateVideo(string resourcePath, string virtualPath)
