@@ -10,6 +10,8 @@ public static class Engine_BnkTextBankLoader
 {
     private static string _gameDirectory = string.Empty;
 
+    private static Func<string, byte[]?>? _resolver;
+
     private static TextBank? _bank;
 
     private static bool _tried;
@@ -17,6 +19,19 @@ public static class Engine_BnkTextBankLoader
     public static void SetGameDirectory(string directory)
     {
         _gameDirectory = directory ?? string.Empty;
+        Invalidate();
+    }
+
+    /// <summary>Binds a resolver for mounted text banks (including mod overlays).</summary>
+    public static void SetResolver(Func<string, byte[]?>? resolver)
+    {
+        _resolver = resolver;
+        Invalidate();
+    }
+
+    /// <summary>Forces reloading the text bank on next access.</summary>
+    public static void Invalidate()
+    {
         _bank = null;
         _tried = false;
     }
@@ -28,7 +43,7 @@ public static class Engine_BnkTextBankLoader
             if (!_tried)
             {
                 _tried = true;
-                _bank = LoadFromDisk();
+                _bank = LoadBank();
             }
 
             return _bank;
@@ -42,8 +57,41 @@ public static class Engine_BnkTextBankLoader
         return bank is not null && bank.TryLookup(tag, out text);
     }
 
-    private static TextBank? LoadFromDisk()
+    private static TextBank? LoadBank()
     {
+        // 1. Try reading from the mounted filesystem via the resolver:
+        if (_resolver is not null)
+        {
+            string[] probePaths = {
+                "language/en-uk/text/book.babel",
+                "data/language/en-uk/text/book.babel",
+                "language/text/book.babel",
+                "data/language/text/book.babel",
+            };
+
+            foreach (string path in probePaths)
+            {
+                byte[]? blob = _resolver(path);
+                if (blob is not null && blob.Length > 0)
+                {
+                    try
+                    {
+                        TextBank? bank = TextBank.FromBytes(blob);
+                        if (bank is not null)
+                        {
+                            GD.Print($"[babel] {bank.TagCount} text tag(s) loaded from mounted bank ({path})");
+                            return bank;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        GD.PushWarning($"[babel] failed reading mounted bank '{path}': {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        // 2. Fall back to reading shipped language files directly from disk:
         if (_gameDirectory.Length == 0)
         {
             return null;

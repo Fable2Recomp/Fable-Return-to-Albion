@@ -124,6 +124,12 @@ public sealed class ItemDetail
     /// <summary>Names of slotted augments and empty slots.</summary>
     public List<string> Augments { get; } = new();
 
+    /// <summary>Damage multiplier on WeaponComponent, 1.0f when absent.</summary>
+    public float DamageMultiplier { get; set; } = 1.0f;
+
+    /// <summary>Attack speed multiplier on WeaponComponent, 1.0f when absent.</summary>
+    public float AttackSpeedMultiplier { get; set; } = 1.0f;
+
     public List<KeyValuePair<string, string>> Stats { get; } = new();
 }
 
@@ -174,11 +180,18 @@ public static class Engine_ItemDetails
         0xFCF3EB86,
     };
 
-    private static readonly uint[] StatComponents =
+    public static readonly uint ShopItemComponentField =
+        Refii.Core.Engine_GameHash.Fnv1("ShopItemComponent");
+
+    public static readonly uint[] StatComponents =
     {
-        0x2C34431E,
+        WeaponComponent,               // 0x2C34431E
+        InventoryItemComponent,        // 0xC3318103
+        ShopItemComponentField,        // Fnv1("ShopItemComponent")
+        Augmentable,                   // 0x9DC93C5B
+        AppearanceModifierComponent,   // 0xD949A6F5
         0x0A644D42,
-        0xE21AB7A0,
+        0xE21AB7A0,                    // MoneyComponent
         0x6D04D9A2,
     };
 
@@ -187,6 +200,7 @@ public static class Engine_ItemDetails
         "GUIScreen", "Icon", "parent", "Component", "Tag",
         "Offset", "Rotation", "Translation", "Mesh", "Model",
         "Texture", "ScriptName", "SoundEvent", "Expression",
+        "BasePrice",
     };
 
     public static List<ItemDetail> Build(GdbMulti multi)
@@ -402,14 +416,44 @@ public static class Engine_ItemDetails
         {
             detail.WeaponComponent = weaponComponent;
 
-            if (multi.TryLookup(weaponComponent, out GdbCursor weapon) &&
-                multi.TryFindInherited(
+            if (multi.TryLookup(weaponComponent, out GdbCursor weapon))
+            {
+                if (multi.TryFindInherited(
                     weapon, WeaponType, -1, out _, out uint weaponType,
                     out GdbFieldType weaponTypeType) &&
-                IsIntType(weaponTypeType))
-            {
-                detail.WeaponType = unchecked((int)weaponType);
+                    IsIntType(weaponTypeType))
+                {
+                    detail.WeaponType = unchecked((int)weaponType);
+                }
+
+                if (multi.TryFindInherited(
+                    weapon, DamageMultiplierField, -1, out _, out uint rawDmg,
+                    out GdbFieldType dmgType) && dmgType == GdbFieldType.Float)
+                {
+                    detail.DamageMultiplier = BitConverter.Int32BitsToSingle(unchecked((int)rawDmg));
+                }
+
+                if (multi.TryFindInherited(
+                    weapon, AttackSpeedMultiplierField, -1, out _, out uint rawSpd,
+                    out GdbFieldType spdType) && spdType == GdbFieldType.Float)
+                {
+                    detail.AttackSpeedMultiplier = BitConverter.Int32BitsToSingle(unchecked((int)rawSpd));
+                }
             }
+        }
+
+        if (detail.DamageMultiplier == 1.0f &&
+            multi.TryFindInherited(owner, DamageMultiplierField, -1, out _, out uint rawDefDmg, out GdbFieldType defDmgType) &&
+            defDmgType == GdbFieldType.Float)
+        {
+            detail.DamageMultiplier = BitConverter.Int32BitsToSingle(unchecked((int)rawDefDmg));
+        }
+
+        if (detail.AttackSpeedMultiplier == 1.0f &&
+            multi.TryFindInherited(owner, AttackSpeedMultiplierField, -1, out _, out uint rawDefSpd, out GdbFieldType defSpdType) &&
+            defSpdType == GdbFieldType.Float)
+        {
+            detail.AttackSpeedMultiplier = BitConverter.Int32BitsToSingle(unchecked((int)rawDefSpd));
         }
 
         detail.NameTag = FindTag(multi, cursor, inventoryComponent, hasInventory, NameTag);
@@ -470,8 +514,7 @@ public static class Engine_ItemDetails
         return detail;
     }
 
-    private static readonly uint ShopItemComponentField =
-        Refii.Core.Engine_GameHash.Fnv1("ShopItemComponent");
+
 
     private static readonly uint BasePriceField = Refii.Core.Engine_GameHash.Fnv1("BasePrice");
 
@@ -484,6 +527,10 @@ public static class Engine_ItemDetails
     private static readonly uint PrimaryTypeField = Refii.Core.Engine_GameHash.Fnv1("PrimaryType");
 
     private static readonly uint SecondaryTypeField = Refii.Core.Engine_GameHash.Fnv1("SecondaryType");
+
+    private static readonly uint DamageMultiplierField = Refii.Core.Engine_GameHash.Fnv1("DamageMultiplier");
+
+    private static readonly uint AttackSpeedMultiplierField = Refii.Core.Engine_GameHash.Fnv1("AttackSpeedMultiplier");
 
     private static Dictionary<uint, uint>? _definitionByComponent;
 
@@ -1059,7 +1106,7 @@ public static class Engine_ItemDetails
             : value.ToString("0.#####", CultureInfo.InvariantCulture);
     }
 
-    private static bool IsStatField(string name)
+    public static bool IsStatField(string name)
     {
         foreach (string skip in NonStatFields)
         {

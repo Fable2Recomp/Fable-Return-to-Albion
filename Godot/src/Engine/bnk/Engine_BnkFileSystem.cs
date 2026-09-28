@@ -312,6 +312,29 @@ public sealed class BnkFileSystem : IDisposable
     }
 
     /// <summary>
+    /// Reads the unpatched original file bytes before any mod or virtual overlays were applied.
+    /// Walks the alternates chain to find the deepest original source file.
+    /// </summary>
+    public byte[]? ReadBaseBytes(string virtualPath)
+    {
+        string normalized = Normalize(virtualPath);
+        if (!TryGetFile(normalized, out BnkFile file))
+        {
+            return null;
+        }
+
+        BnkFile baseFile = file.Alternates.Count > 0 ? file.Alternates[^1] : file;
+        try
+        {
+            return baseFile.ReadAllBytes();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Adds a file the mount serves from memory rather than from disk.
     ///
     /// <paramref name="sourceMod"/> attributes it, so a table merged from several mods' rows is

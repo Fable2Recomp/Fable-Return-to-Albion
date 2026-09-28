@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using Godot;
 
 namespace Refii.Equipment;
@@ -11,10 +12,11 @@ public static class Engine_EquipmentScene
 
     public const string ItemKind = "Item";
 
-    public static PackedScene? ForItem(ItemEntry entry)
+    /// <summary>
+    /// Builds the list of inspector key-value pairs for an ItemDetail, reflecting current GDB and text values.
+    /// </summary>
+    public static List<KeyValuePair<string, string>> BuildRowsForDetail(ItemDetail detail)
     {
-        ItemDetail detail = entry.Detail;
-
         var rows = new List<KeyValuePair<string, string>>
         {
             new("Category ID", detail.Category.ToString()),
@@ -25,7 +27,7 @@ public static class Engine_EquipmentScene
             new("Icon", detail.IconTex),
         };
 
-        if (detail.WeaponComponent != 0)
+        if (detail.WeaponType != 0)
         {
             rows.Add(new KeyValuePair<string, string>(
                 "Weapon Type", Engine_WeaponKinds.DescribeType(detail.WeaponType)));
@@ -84,12 +86,17 @@ public static class Engine_EquipmentScene
         }
 
         rows.AddRange(detail.Stats);
+        return rows;
+    }
 
+    public static PackedScene? ForItem(ItemEntry entry)
+    {
+        var rows = BuildRowsForDetail(entry.Detail);
         return Build(
             entry.Name,
             ItemKind,
-            Engine_ItemCategories.LabelOf(detail.Category),
-            detail.RecordHash,
+            Engine_ItemCategories.LabelOf(entry.Detail.Category),
+            entry.Detail.RecordHash,
             entry.ModelPath,
             rows,
             "Category");
@@ -97,96 +104,25 @@ public static class Engine_EquipmentScene
 
     public static PackedScene? ForWeapon(WeaponEntry entry)
     {
-        ItemDetail detail = entry.Detail;
-
-        var rows = new List<KeyValuePair<string, string>>
-        {
-            new("Family", entry.Family),
-            new("Weapon Type", Engine_WeaponKinds.DescribeType(detail.WeaponType)),
-            new("Internal Name", detail.InternalName),
-            new("Name Tag", detail.NameTagName),
-            new("Description", Engine_ItemNames.DescriptionOf(detail)),
-            new("Icon", detail.IconTex),
-        };
-
-        if (detail.Rating > 0)
-        {
-            rows.Add(new KeyValuePair<string, string>(
-                "Tier / Rating", DescribeRating(detail.Rating)));
-        }
-
-        if (detail.BasePrice >= 0)
-        {
-            rows.Add(new KeyValuePair<string, string>(
-                "Base Price", $"{detail.BasePrice:N0} Gold"));
-        }
-        else if (detail.Money >= 0)
-        {
-            rows.Add(new KeyValuePair<string, string>("Base Value", $"{detail.Money:N0} Gold"));
-        }
-
-        if (detail.AugmentSlots > 0)
-        {
-            rows.Add(new KeyValuePair<string, string>(
-                "Augment Slots", detail.AugmentSlots.ToString()));
-        }
-
-        rows.AddRange(detail.Stats);
-
+        var rows = BuildRowsForDetail(entry.Detail);
+        rows.Insert(0, new KeyValuePair<string, string>("Family", entry.Family));
         return Build(
-            entry.Name, WeaponKind, entry.Family, detail.RecordHash, entry.ModelPath, rows);
+            entry.Name, WeaponKind, entry.Family, entry.Detail.RecordHash, entry.ModelPath, rows);
     }
 
     public static PackedScene? ForClothing(ClothingEntry entry, bool female)
     {
-        ItemDetail detail = entry.Detail;
-
-        var rows = new List<KeyValuePair<string, string>>
-        {
-            new("Worn By", entry.MaleOnly ? "Male only"
+        var rows = BuildRowsForDetail(entry.Detail);
+        rows.Insert(0, new KeyValuePair<string, string>(
+            "Worn By", entry.MaleOnly ? "Male only"
                 : entry.FemaleOnly ? "Female only"
-                : "Male and female"),
-            new("Internal Name", detail.InternalName),
-            new("Name Tag", detail.NameTagName),
-            new("Description", Engine_ItemNames.DescriptionOf(detail)),
-            new("Icon", detail.IconTex),
-        };
-
-        if (detail.BodyAreasCovered != 0)
-        {
-            rows.Add(new KeyValuePair<string, string>(
-                "Body Areas Covered", $"0x{detail.BodyAreasCovered:X}"));
-        }
-
-        if (detail.ClusterSortLayer != -100)
-        {
-            rows.Add(new KeyValuePair<string, string>(
-                "Cluster Sort Layer", detail.ClusterSortLayer.ToString()));
-        }
-
-        if (detail.Rating > 0)
-        {
-            rows.Add(new KeyValuePair<string, string>(
-                "Tier / Rating", DescribeRating(detail.Rating)));
-        }
-
-        if (detail.BasePrice >= 0)
-        {
-            rows.Add(new KeyValuePair<string, string>(
-                "Base Price", $"{detail.BasePrice:N0} Gold"));
-        }
-        else if (detail.Money >= 0)
-        {
-            rows.Add(new KeyValuePair<string, string>("Base Value", $"{detail.Money:N0} Gold"));
-        }
-
-        rows.AddRange(detail.Stats);
+                : "Male and female"));
 
         return Build(
             entry.Name,
             ClothingKind,
             Engine_ClothingSlots.LabelOf(entry.Slot),
-            detail.RecordHash,
+            entry.Detail.RecordHash,
             entry.ModelPathFor(female),
             rows);
     }

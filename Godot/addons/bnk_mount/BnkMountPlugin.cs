@@ -72,6 +72,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
     public override void _EnterTree()
     {
+        Instance = this;
         // BEFORE THE MOUNT, ON THIS THREAD, AND BOTH HALVES MATTER. Godot restores the last-open
         // scene the moment the editor comes up, and res://levels/pubgames/*.tscn is nothing but
         // game:// references. The rest of the loaders are registered by Inject() once the
@@ -121,6 +122,11 @@ public partial class BnkMountPlugin : EditorPlugin
         RemoveLoaders();
         Refii.FlashGames.Engine_SwfAssets.RemoveLoaders();
         RemoveContextMenu();
+
+        if (Instance == this)
+        {
+            Instance = null;
+        }
 
         if (_bridge is not null && GodotObject.IsInstanceValid(_bridge))
         {
@@ -317,6 +323,8 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             _filesystem = mounted;
+            Refii.Gdb.Engine_GameGdb.Invalidate();
+            Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
             _ = Refii.Equipment.Engine_WeaponIndex.Families;
             _videos = Refii.Video.Engine_VideoLibrary.Load(gameDirectory);
             _byFileName = null;
@@ -352,6 +360,16 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             return null;
         }
+    }
+
+    public byte[]? ResolveBaseBytes(string virtualPath)
+    {
+        if (_filesystem is null)
+        {
+            return null;
+        }
+
+        return _filesystem.ReadBaseBytes(virtualPath);
     }
 
     private string? HeightfieldForEhf(string ehfVirtualPath)
@@ -470,6 +488,8 @@ public partial class BnkMountPlugin : EditorPlugin
         // Engine_GameAssets so the editor and the running game answer the same, which is the
         // parity the comment in that file is about.
         Refii.Gdb.Engine_GameGdb.SetResolver(ResolveBytes);
+        Refii.Gdb.Engine_GameGdb.SetBaseResolver(ResolveBaseBytes);
+        Refii.Gdb.Engine_BnkTextBankLoader.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_WeaponIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_ClothingIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_ItemIndex.SetResolver(ResolveBytes);
@@ -742,6 +762,9 @@ public partial class BnkMountPlugin : EditorPlugin
 
         EnsureLoaders();
 
+        // Refresh placed scene instances now that virtual filesystem and GDB database are remounted:
+        EditorTools.EditorModValueService.RefreshSceneEquipment();
+
         Tree? tree = ResolveTree();
         TreeItem? root = tree?.GetRoot();
         if (tree is null || root is null)
@@ -927,6 +950,8 @@ public partial class BnkMountPlugin : EditorPlugin
     /// <summary>Reference to the currently right-clicked TreeItem.</summary>
     private TreeItem? _contextItem;
 
+    public static BnkMountPlugin? Instance { get; private set; }
+
     private const int MenuExportGlb = 100;
     private const int MenuExportPng = 101;
     private const int MenuExportPbr = 102;
@@ -934,6 +959,30 @@ public partial class BnkMountPlugin : EditorPlugin
     private const int MenuOpenModFolder = 104;
     private const int MenuChangeActiveMod = 105;
     private const int MenuReloadOverlays = 106;
+    private const int MenuEditItemValues = 107;
+
+    private Refii.Equipment.ItemDetail? _contextItemDetail;
+    private ModItemEditorDialog? _itemEditorDialog;
+
+    /// <summary>
+    /// Opens the visual item property editor dialog for the specified item.
+    /// </summary>
+    public void OpenModItemEditor(Refii.Equipment.ItemDetail detail)
+    {
+        SetupItemEditorDialog();
+        _itemEditorDialog?.OpenForItem(detail);
+    }
+
+    private void SetupItemEditorDialog()
+    {
+        if (_itemEditorDialog is not null && IsInstanceValid(_itemEditorDialog))
+        {
+            return;
+        }
+
+        _itemEditorDialog = new ModItemEditorDialog();
+        EditorInterface.Singleton.GetBaseControl().AddChild(_itemEditorDialog);
+    }
 
     /// <summary>
     /// Creates and registers the asset browser right-click context menu under the editor's base control.
@@ -966,6 +1015,12 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             _modNameDialog.QueueFree();
             _modNameDialog = null;
+        }
+
+        if (_itemEditorDialog is not null && IsInstanceValid(_itemEditorDialog))
+        {
+            _itemEditorDialog.QueueFree();
+            _itemEditorDialog = null;
         }
     }
 
@@ -1022,6 +1077,7 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         _contextItem = item;
+        _contextItemDetail = null;
         _contextVirtualPath = string.Empty;
         _contextModelPaths.Clear();
         _contextTexturePaths.Clear();
@@ -1049,6 +1105,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             if (Refii.Equipment.Engine_WeaponIndex.TryGet(_contextVirtualPath, out var wEntry))
             {
+                _contextItemDetail = wEntry.Detail;
                 if (!string.IsNullOrEmpty(wEntry.ModelPath))
                 {
                     _contextModelPaths.Add(wEntry.ModelPath);
@@ -1063,6 +1120,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             if (Refii.Equipment.Engine_ClothingIndex.TryGet(_contextVirtualPath, out var cEntry))
             {
+                _contextItemDetail = cEntry.Detail;
                 if (!string.IsNullOrEmpty(cEntry.MaleModelPath))
                 {
                     _contextModelPaths.Add(cEntry.MaleModelPath);
@@ -1081,6 +1139,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             if (Refii.Equipment.Engine_ItemIndex.TryGet(_contextVirtualPath, out var iEntry))
             {
+                _contextItemDetail = iEntry.Detail;
                 if (!string.IsNullOrEmpty(iEntry.ModelPath))
                 {
                     _contextModelPaths.Add(iEntry.ModelPath);
@@ -1159,6 +1218,12 @@ public partial class BnkMountPlugin : EditorPlugin
             _contextMenu.AddSeparator();
         }
 
+        if (_contextItemDetail is not null)
+        {
+            _contextMenu.AddItem($"✏️ Edit Properties in Mod [{activeMod}]...", MenuEditItemValues);
+            _contextMenu.AddSeparator();
+        }
+
         _contextMenu.AddItem($"Active Mod: {activeMod} (Change...)", MenuChangeActiveMod);
         _contextMenu.AddItem("Reload Mod Overlays", MenuReloadOverlays);
 
@@ -1178,6 +1243,14 @@ public partial class BnkMountPlugin : EditorPlugin
     {
         switch (id)
         {
+            case MenuEditItemValues:
+            {
+                if (_contextItemDetail is not null)
+                {
+                    OpenModItemEditor(_contextItemDetail);
+                }
+                break;
+            }
             case MenuExportGlb:
             {
                 string lastPath = string.Empty;
@@ -1315,11 +1388,16 @@ public partial class BnkMountPlugin : EditorPlugin
     }
 
     /// <summary>
-    /// Flushes runtime texture and material caches, and triggers an asynchronous remount of all mod overlays.
+    /// Flushes runtime texture, material, and equipment indices, and triggers an asynchronous remount of all mod overlays.
     /// </summary>
-    private void ReloadModOverlays()
+    public void ReloadModOverlays()
     {
         GD.Print("[bnk_mount] Reloading mod overlays...");
+        Refii.Gdb.Engine_GameGdb.Invalidate();
+        Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
+        Refii.Equipment.Engine_WeaponIndex.Invalidate();
+        Refii.Equipment.Engine_ItemIndex.Invalidate();
+        Refii.Equipment.Engine_ClothingIndex.Invalidate();
         Refii.Textures.Engine_TexLibrary.Clear();
         Refii.Models.Engine_MdlMaterial.ClearSharedCache();
         Refii.Level.Engine_PropStreamer.ClearCache();
