@@ -1125,6 +1125,12 @@ public partial class GameEntities : Node3D
             $"{_builtParts} — non-zero means the guest's DRAW path runs here and comp17+0x38 " +
             "is populated, which was NOT the assumption");
 
+        GD.Print($"[game-entities] morphs: {_compositesMorphed} composite(s) built with morph " +
+            $"targets (run total); the guest stated {HostBridge.PartMorphStatements} part(s) " +
+            $"with target records, {HostBridge.PartMorphsMorphed} of them morphed, and " +
+            $"{HostBridge.TextureLayerStatements} texture composite(s), " +
+            $"{Refii.Hero.Engine_HeroTextureMorph.CompositesBuilt} built here");
+
         GD.Print($"[game-entities] multi-mesh appearances: {_multiMesh} entity(s) drawn this " +
             $"frame from component 5, {_multiMeshParts} mesh record(s) stated — these used to " +
             "read as \"names no model\" and were drawn only by the region's static copy");
@@ -2359,6 +2365,8 @@ public partial class GameEntities : Node3D
             _movers.Remove(address);
             _written.Remove(address);
             _compositeParts.Remove(address);
+            _partMorphs.Remove(address);
+            _textureLayers.Remove(address);
             _meshParts.Remove(address);
             _nodeMesh.Remove(address);
             _relit.Remove(address);
@@ -2513,8 +2521,62 @@ public partial class GameEntities : Node3D
         }
 
         _builtParts += built;
-        return ComposeParts(parts);
+        return ComposeParts(parts, TextureLayersOf(address), PartMorphsOf(address));
     }
+
+    /// <summary>
+    /// The entity's morphed parts as the guest stated them (<c>sub_82A48B90</c>), re-read on the
+    /// reconcile cadence; the same array is handed back until the statement moves.
+    /// </summary>
+    private HostBridge.GuestPartMorph[] PartMorphsOf(uint address)
+    {
+        if (!Due(address, ReconcileTicks) &&
+            _partMorphs.TryGetValue(address, out (uint Generation, HostBridge.GuestPartMorph[] Parts) known))
+        {
+            return known.Parts;
+        }
+
+        HostBridge.GuestPartMorph[] parts = HostBridge.GetEntityPartMorphs(address, out uint generation);
+        if (_partMorphs.TryGetValue(address, out known) && known.Generation == generation &&
+            known.Parts.Length == parts.Length)
+        {
+            return known.Parts;
+        }
+
+        _partMorphs[address] = (generation, parts);
+        return parts;
+    }
+
+    private readonly Dictionary<uint, (uint Generation, HostBridge.GuestPartMorph[] Parts)> _partMorphs = new();
+
+    /// <summary>
+    /// The texture composites the guest states for the entity (<c>sub_825B38B0</c>), re-read on
+    /// the reconcile cadence; the same array is handed back until the statement moves.
+    /// </summary>
+    private HostBridge.GuestTextureComposite[] TextureLayersOf(uint address)
+    {
+        if (!Due(address, ReconcileTicks) &&
+            _textureLayers.TryGetValue(address, out (uint Generation, HostBridge.GuestTextureComposite[] Composites) known))
+        {
+            return known.Composites;
+        }
+
+        HostBridge.GuestTextureComposite[] composites =
+            HostBridge.GetEntityTextureLayers(address, out uint generation);
+        if (_textureLayers.TryGetValue(address, out known) && known.Generation == generation &&
+            known.Composites.Length == composites.Length)
+        {
+            return known.Composites;
+        }
+
+        _textureLayers[address] = (generation, composites);
+        return composites;
+    }
+
+    private readonly Dictionary<uint, (uint Generation, HostBridge.GuestTextureComposite[] Composites)> _textureLayers = new();
+
+    /// <summary>Composites built with at least one morphed part; run total.</summary>
+    private int _compositesMorphed;
 
     /// <summary>
     /// The assembled mesh for a multi-mesh appearance component (id 5), or null.
@@ -2686,12 +2748,50 @@ public partial class GameEntities : Node3D
     private readonly Dictionary<ulong, Mesh?> _composedBySignature = new();
 
     /// <summary>Resolves part hashes to paths and returns the cached assembly, queueing it once.</summary>
-    private Mesh? ComposeParts(uint[] parts)
+    private Mesh? ComposeParts(
+        uint[] parts, HostBridge.GuestTextureComposite[]? layers = null,
+        HostBridge.GuestPartMorph[]? stated = null)
     {
         ulong signature = 14695981039346656037UL;
         foreach (uint part in parts)
         {
             signature = (signature ^ part) * 1099511628211UL;
+        }
+
+        ulong statedHash = 14695981039346656037UL;
+        if (stated is not null)
+        {
+            foreach (HostBridge.GuestPartMorph morph in stated)
+            {
+                statedHash = (statedHash ^ morph.BaseModel) * 1099511628211UL;
+                foreach ((uint model, float weight) in morph.Targets)
+                {
+                    statedHash = (statedHash ^ model) * 1099511628211UL;
+                    statedHash = (statedHash ^ System.BitConverter.SingleToUInt32Bits(weight)) * 1099511628211UL;
+                }
+            }
+
+            signature = (signature ^ statedHash) * 1099511628211UL;
+        }
+
+        ulong layerHash = 14695981039346656037UL;
+        if (layers is not null)
+        {
+            foreach (HostBridge.GuestTextureComposite composite in layers)
+            {
+                layerHash = (layerHash ^ composite.Original ^ (composite.Overlay ? 1u : 0u)) * 1099511628211UL;
+                foreach (HostBridge.GuestTextureLayer layer in composite.Layers)
+                {
+                    layerHash = (layerHash ^ layer.Texture) * 1099511628211UL;
+                    layerHash = (layerHash ^ (uint)layer.Mode) * 1099511628211UL;
+                    layerHash = (layerHash ^ System.BitConverter.SingleToUInt32Bits(layer.Weight)) * 1099511628211UL;
+                    layerHash = (layerHash ^ (layer.HasTint ? layer.Tint : 0u)) * 1099511628211UL;
+                    layerHash = (layerHash ^ System.BitConverter.SingleToUInt32Bits(layer.Brightness)) * 1099511628211UL;
+                    layerHash = (layerHash ^ layer.Bump) * 1099511628211UL;
+                }
+            }
+
+            signature = (signature ^ layerHash) * 1099511628211UL;
         }
 
         if (_composedBySignature.TryGetValue(signature, out Mesh? known))
@@ -2720,8 +2820,39 @@ public partial class GameEntities : Node3D
             return null;
         }
 
-        string key = string.Join('|', paths);
-        if (_composed.TryGetValue(key, out Mesh? cached))
+        var key = new System.Text.StringBuilder(string.Join('|', paths));
+        if (layers is not null && layers.Length != 0)
+        {
+            key.Append("|t").Append(layerHash.ToString("x16"));
+        }
+
+        Dictionary<uint, List<(string Path, float Weight)>>? targets = null;
+        if (stated is not null && stated.Length != 0)
+        {
+            key.Append("|s").Append(statedHash.ToString("x16"));
+            targets = new Dictionary<uint, List<(string Path, float Weight)>>();
+            foreach (HostBridge.GuestPartMorph morph in stated)
+            {
+                var listed = new List<(string Path, float Weight)>(morph.Targets.Length);
+                foreach ((uint model, float weight) in morph.Targets)
+                {
+                    if (Refii.Level.Engine_PropModelIndex.Resolve(
+                            model, System.Array.Empty<string>()) is string target)
+                    {
+                        listed.Add((target, weight));
+                    }
+                    else
+                    {
+                        ++_compositePartsUnresolved;
+                    }
+                }
+
+                targets[morph.BaseModel] = listed;
+            }
+        }
+
+        string composedKey = key.ToString();
+        if (_composed.TryGetValue(composedKey, out Mesh? cached))
         {
             _composedBySignature[signature] = cached;
             return cached;
@@ -2730,12 +2861,41 @@ public partial class GameEntities : Node3D
         // Not built yet. Queue it and draw nothing this frame; the completion stores it and the
         // next frame is a cache hit.
         ++_awaitingBuild;
-        QueueCompositeBuild(key, paths, hashes);
+        QueueCompositeBuild(composedKey, paths, hashes, layers, targets);
         return null;
     }
 
+    /// <summary>
+    /// One part, blended with the targets the guest listed for it (<c>sub_82A48B90</c>).
+    /// </summary>
+    private static Mesh? LoadPart(string path, List<(string Path, float Weight)>? stated)
+    {
+        Mesh? part = ResourceLoader.Load<Mesh>(
+            Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh");
+
+        if (stated is null || part is not ArrayMesh own)
+        {
+            return part;
+        }
+
+        var listed = new List<(ArrayMesh Target, float Weight)>(stated.Count);
+        foreach ((string target, float weight) in stated)
+        {
+            if (ResourceLoader.Load<Mesh>(
+                    Refii.Models.Engine_BnkMeshLoader.PathPrefix + target, "Mesh") is ArrayMesh mesh)
+            {
+                listed.Add((mesh, weight));
+            }
+        }
+
+        return Refii.Hero.Engine_HeroMorph.Blend(own, listed);
+    }
+
     /// <summary>Builds one composite off this thread, once.</summary>
-    private void QueueCompositeBuild(string key, List<string> paths, List<long> hashes)
+    private void QueueCompositeBuild(
+        string key, List<string> paths, List<long> hashes,
+        HostBridge.GuestTextureComposite[]? layers,
+        Dictionary<uint, List<(string Path, float Weight)>>? targets)
     {
         // Already building, or the pipe is full and this retries next frame. NOT added to the
         // job set in the full case: leaving it out is what makes the retry possible.
@@ -2758,10 +2918,24 @@ public partial class GameEntities : Node3D
             {
                 assembled = Refii.Models.Engine_MdlComposite.Build(
                     paths,
-                    path => ResourceLoader.Load<Mesh>(
-                        Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh"),
+                    path =>
+                    {
+                        int at = paths.IndexOf(path);
+                        List<(string Path, float Weight)>? stated = null;
+                        if (targets is not null && at >= 0)
+                        {
+                            targets.TryGetValue((uint)hashes[at], out stated);
+                        }
+
+                        return LoadPart(path, stated);
+                    },
                     out resolved,
                     out missing);
+
+                if (assembled is not null && layers is not null && layers.Length != 0)
+                {
+                    Refii.Hero.Engine_HeroTextureMorph.ApplyTo(assembled, layers);
+                }
             }
             catch (System.Exception e)
             {
@@ -2800,6 +2974,11 @@ public partial class GameEntities : Node3D
                 // part index resolves to the guest's built record (Engine_HiddenClusters).
                 assembled?.SetMeta(Refii.Models.Engine_MdlComposite.PartHashesMeta, hashes.ToArray());
                 _composed[key] = assembled;
+                if (targets is not null)
+                {
+                    ++_compositesMorphed;
+                }
+
                 _compositePartsDrawn += resolved;
                 _compositePartsMissing += missing;
             });
@@ -3789,6 +3968,41 @@ public partial class GameEntities : Node3D
         }
 
         result["morph"] = morph;
+
+        // What the guest stated to its composite submit for this entity.
+        var partMorphs = new List<string>();
+        HostBridge.GuestPartMorph[] statedParts = HostBridge.GetEntityPartMorphs(address, out uint partGeneration);
+        foreach (HostBridge.GuestPartMorph part in statedParts)
+        {
+            var targets = new List<string>();
+            foreach ((uint model, float weight) in part.Targets)
+            {
+                targets.Add($"{model:X8}@{weight:0.000}");
+            }
+
+            partMorphs.Add($"{part.BaseModel:X8} <- {string.Join(' ', targets)}");
+        }
+
+        result["partMorphs"] = partMorphs;
+        result["partMorphGeneration"] = partGeneration;
+        result["partMorphStatements"] = HostBridge.PartMorphStatements;
+        result["partMorphsMorphed"] = HostBridge.PartMorphsMorphed;
+
+        var textureLayers = new List<string>();
+        foreach (HostBridge.GuestTextureComposite composite in HostBridge.GetEntityTextureLayers(address, out _))
+        {
+            var layers = new List<string>();
+            foreach (HostBridge.GuestTextureLayer layer in composite.Layers)
+            {
+                layers.Add($"{layer.Texture:X8} mode={layer.Mode} w={layer.Weight:0.000}" +
+                    (layer.HasTint ? $" tint={layer.Tint:X8} b={layer.Brightness:0.00}" : string.Empty) +
+                    $" '{Refii.Textures.Engine_TexPathIndex.Resolve(layer.Texture) ?? "?"}'");
+            }
+
+            textureLayers.Add($"{(composite.Overlay ? "OVERLAY " : string.Empty)}{composite.Original:X8} '{Refii.Textures.Engine_TexPathIndex.Resolve(composite.Original) ?? "?"}': {string.Join(" | ", layers)}");
+        }
+
+        result["textureLayers"] = textureLayers;
         List<HostBridge.GuestWornItem> worn = HostBridge.GetEntityWornItems(address);
         var wornLines = new List<string>();
         foreach (HostBridge.GuestWornItem item in worn)

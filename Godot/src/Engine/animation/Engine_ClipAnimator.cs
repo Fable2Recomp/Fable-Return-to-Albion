@@ -1439,12 +1439,20 @@ public sealed class Engine_ClipAnimator
 			System.Array.Fill(_morphOffset, Vector3.Zero);
 			System.Array.Fill(_morphScale, Vector3.One);
 			_hasMorph = false;
+			_morphHeight = HostBridge.GetBoneMorphHeight(_entity);
+			_morphHeightBone = -1;
 			foreach (HostBridge.GuestBoneMorph m in HostBridge.GetBoneMorph(_entity))
 			{
 				int model = m.Bone >= 0 && m.Bone < _guestToModel.Length ? _guestToModel[m.Bone] : -1;
 				if (model < 0 || model >= bones)
 				{
 					continue;
+				}
+
+				if (m.Bone == 1 && _morphHeight > 0f)
+				{
+					_morphHeightBone = model;
+					_hasMorph = true;
 				}
 
 				_morphOffset[model] = Engine_AnimSkeleton.ToYUp(m.Offset);
@@ -1468,7 +1476,13 @@ public sealed class Engine_ClipAnimator
 			int parent = _parents![b];
 			Vector3 parentScale = parent >= 0 ? _morphScale[parent] : Vector3.One;
 			Vector3 offset = _morphOffset[b];
-			if (parent >= 0 && offset != Vector3.Zero)
+			if (b == _morphHeightBone)
+			{
+				// Guest (t.x*h, t.y*h, t.z + off.z); its z is up, which is Y here.
+				Vector3 t = _finalPosition[b];
+				_finalPosition[b] = new Vector3(t.X * _morphHeight, t.Y + offset.Y, t.Z * _morphHeight);
+			}
+			else if (parent >= 0 && offset != Vector3.Zero)
 			{
 				_finalPosition[b] += offset / parentScale;
 			}
@@ -1480,6 +1494,11 @@ public sealed class Engine_ClipAnimator
 	}
 
 	private bool _morphWasApplied;
+
+	/// <summary>The record's height factor (rec+36) and the model bone it rewrites, -1 for none.</summary>
+	private float _morphHeight;
+
+	private int _morphHeightBone = -1;
 
 	private uint _entity;
 

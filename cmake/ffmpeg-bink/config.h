@@ -28,6 +28,15 @@
 #undef CONFIG_BINK_DECODER
 #define CONFIG_BINK_DECODER 1
 
+// Bink AUDIO, both transforms: the track's own flags pick one (0x1000 = DCT, which is what
+// every shipped movie uses; RDFT otherwise). dct.c, rdft.c and wma_freqs.c are already in
+// the SDK's audio subset, so binkaudio.c is the only source the root CMakeLists adds.
+#undef CONFIG_BINKAUDIO_DCT_DECODER
+#define CONFIG_BINKAUDIO_DCT_DECODER 1
+
+#undef CONFIG_BINKAUDIO_RDFT_DECODER
+#define CONFIG_BINKAUDIO_RDFT_DECODER 1
+
 #undef CONFIG_XMA1_DECODER
 #define CONFIG_XMA1_DECODER 1
 

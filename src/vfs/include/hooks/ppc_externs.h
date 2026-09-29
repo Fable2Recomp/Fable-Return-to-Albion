@@ -166,6 +166,7 @@ PPC_EXTERN_FUNC(__imp__sub_8230A8C8);
 
 PPC_EXTERN_FUNC(__imp__sub_82A41B48);
 PPC_EXTERN_FUNC(__imp__sub_82A41E30);
+PPC_EXTERN_FUNC(__imp__sub_82A41D88);
 PPC_EXTERN_FUNC(__imp__rex_lhRenderer_EndScene);
 PPC_EXTERN_FUNC(__imp__sub_82A1AC40);
 PPC_EXTERN_FUNC(__imp__sub_821C3C60);
@@ -191,6 +192,11 @@ PPC_EXTERN_FUNC(__imp__sub_82573318); // CECGraphicAppearance: every appearance 
 PPC_EXTERN_FUNC(__imp__sub_82572238); // CECGraphicAppearance: save/load of Alpha, TintColour, ...
 PPC_EXTERN_FUNC(__imp__sub_82571DF8); // CECGraphicAppearance: constructor
 PPC_EXTERN_FUNC(__imp__sub_82571FF0); // CECGraphicAppearance: destructor
+PPC_EXTERN_FUNC(__imp__sub_8220DE88); // CECGraphicAppearanceMorph: the composite submit
+PPC_EXTERN_FUNC(__imp__sub_8217FA50); // CECGraphicAppearanceMorph: rebuilds the part records
+PPC_EXTERN_FUNC(__imp__sub_825B38B0); // texture composite command: one original, its layers
+PPC_EXTERN_FUNC(__imp__sub_82A48B90); // morph descriptor constructor: a part and its weighted targets
+PPC_EXTERN_FUNC(__imp__sub_8222AAC8); // render command to one model handle; type 14 = overlays
 PPC_EXTERN_FUNC(__imp__sub_832325A8); // CParticleSystemEntityInstance: states the world position
 PPC_EXTERN_FUNC(__imp__sub_83231C40); // CParticleSystemEntityInstance: states the orientation
 PPC_EXTERN_FUNC(__imp__sub_825F81E0); // spell FX: create from <Spell>SpellParticleFXInfo.<slot>

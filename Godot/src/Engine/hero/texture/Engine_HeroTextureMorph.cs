@@ -14,13 +14,14 @@ public sealed class TextureMorphEntry
     public uint Layer { get; init; }
 
     public float Weight { get; init; }
+
+    public TextureMorphBlend Blend { get; init; }
 }
 
 public static class Engine_HeroTextureMorph
 {
-    public const float ReplaceThreshold = 0.5f;
-
-    public const float OverlayMinWeight = 0.05f;
+    /// <summary>Composites kept before the cache is dropped; a dragged slider makes one per value.</summary>
+    public const int CompositedLimit = 64;
 
     private sealed class DecodedTexture
     {
@@ -102,14 +103,405 @@ public static class Engine_HeroTextureMorph
         return built;
     }
 
-    public static Dictionary<uint, List<TextureMorphEntry>> Active(HeroMorphWeights weights)
+    /// <summary>
+    /// The live layers per original texture, in the guest's order: <c>Layer</c> ascending, then
+    /// the morph texture (<c>sub_825BE008</c>). Type 1 is always on, type 19 (scars) is not a
+    /// stat morph, and a weight at or below 1e-4 is dropped (<c>sub_8220DE88</c>, 0x8220EE6C).
+    /// </summary>
+    public static Dictionary<uint, List<TextureMorphEntry>> Active(HeroMorphStats stats) =>
+        Active(type => Engine_HeroMorphState.Weight(stats, type));
+
+    /// <summary>Composited textures built; run total.</summary>
+    public static long CompositesBuilt => System.Threading.Interlocked.Read(ref _compositesBuilt);
+
+    private static long _compositesBuilt;
+
+    /// <summary>
+    /// Replaces, on a private copy of each material, every texture the guest stated a composite
+    /// for (<c>sub_825B38B0</c>) — whichever slot holds it — and lays the overlays it stated
+    /// for the material's diffuse (<c>sub_8222AAC8</c>, command type 14) over diffuse and normal.
+    /// </summary>
+    public static void ApplyTo(
+        ArrayMesh mesh, IReadOnlyList<Refii.Host.HostBridge.GuestTextureComposite> composites)
+    {
+        if (composites.Count == 0)
+        {
+            return;
+        }
+
+        var byOriginal = new Dictionary<uint, Refii.Host.HostBridge.GuestTextureComposite>();
+        var overlays = new Dictionary<uint, Refii.Host.HostBridge.GuestTextureComposite>();
+        foreach (Refii.Host.HostBridge.GuestTextureComposite composite in composites)
+        {
+            (composite.Overlay ? overlays : byOriginal)[composite.Original] = composite;
+        }
+
+        const int DiffuseSlot = 0;
+        const int NormalSlot = 1;
+
+        for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+        {
+            if (mesh.SurfaceGetMaterial(s) is not ShaderMaterial material ||
+                !material.HasMeta(Refii.Models.Engine_MdlMaterial.TextureNamesMeta))
+            {
+                continue;
+            }
+
+            string[] names = material.GetMeta(
+                Refii.Models.Engine_MdlMaterial.TextureNamesMeta).AsStringArray();
+            ShaderMaterial? own = null;
+
+            Refii.Host.HostBridge.GuestTextureLayer[]? over = null;
+            if (names.Length > DiffuseSlot && names[DiffuseSlot].Length != 0 &&
+                overlays.TryGetValue(
+                    Engine_TexPathIndex.PathHash(names[DiffuseSlot]),
+                    out Refii.Host.HostBridge.GuestTextureComposite stated))
+            {
+                over = stated.Layers;
+            }
+
+            for (int slot = 0;
+                 slot < names.Length && slot < Refii.Models.Engine_MdlMaterial.TextureParameters.Length;
+                 slot++)
+            {
+                if (names[slot].Length == 0)
+                {
+                    continue;
+                }
+
+                uint original = Engine_TexPathIndex.PathHash(names[slot]);
+                byOriginal.TryGetValue(
+                    original, out Refii.Host.HostBridge.GuestTextureComposite composite);
+
+                Refii.Host.HostBridge.GuestTextureLayer[]? slotOver =
+                    slot == DiffuseSlot || slot == NormalSlot ? over : null;
+
+                if (Composite(original, composite.Layers, slotOver, slot == NormalSlot)
+                    is not Texture2D composited)
+                {
+                    continue;
+                }
+
+                own ??= (ShaderMaterial)material.Duplicate();
+                own.SetShaderParameter(
+                    Refii.Models.Engine_MdlMaterial.TextureParameters[slot], composited);
+            }
+
+            if (own is not null)
+            {
+                mesh.SurfaceSetMaterial(s, own);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The guest's composite: layer 0 opaque, then each layer over it by its blend mode with
+    /// the layer's alpha scaled by its weight (<c>sub_82A7EA28</c>); then the overlays, each
+    /// blended by its own diffuse's alpha times its weight. On the normal slot an overlay
+    /// contributes its bump, masked by that same diffuse alpha. Null when the result is the
+    /// original texture itself.
+    /// </summary>
+    public static Texture2D? Composite(
+        uint original,
+        Refii.Host.HostBridge.GuestTextureLayer[]? layers,
+        Refii.Host.HostBridge.GuestTextureLayer[]? overlays,
+        bool normalSlot)
+    {
+        layers ??= Array.Empty<Refii.Host.HostBridge.GuestTextureLayer>();
+        overlays ??= Array.Empty<Refii.Host.HostBridge.GuestTextureLayer>();
+
+        bool layered = layers.Length > 1 ||
+            (layers.Length == 1 && (layers[0].Texture != original || layers[0].HasTint));
+
+        bool overlaid = false;
+        foreach (Refii.Host.HostBridge.GuestTextureLayer overlay in overlays)
+        {
+            if (overlay.Weight > Engine_HeroMorph.WeightFloor &&
+                (normalSlot ? overlay.Bump != 0 : overlay.Texture != 0))
+            {
+                overlaid = true;
+            }
+        }
+
+        if (!layered && !overlaid)
+        {
+            return null;
+        }
+
+        var key = new System.Text.StringBuilder(normalSlot ? "N" : "L");
+        key.Append(original.ToString("x8"));
+        foreach (Refii.Host.HostBridge.GuestTextureLayer layer in layers)
+        {
+            AppendKey(key, layer);
+        }
+
+        key.Append('+');
+        foreach (Refii.Host.HostBridge.GuestTextureLayer overlay in overlays)
+        {
+            AppendKey(key, overlay);
+        }
+
+        string cacheKey = key.ToString();
+
+        lock (MorphLock)
+        {
+            if (Composited.TryGetValue(cacheKey, out ImageTexture? cached))
+            {
+                return cached;
+            }
+        }
+
+        string? basePath = Engine_TexPathIndex.Resolve(layers.Length != 0 ? layers[0].Texture : original);
+        DecodedTexture? source = basePath is null ? null : Decode(basePath);
+        if (source is null || !source.Ok)
+        {
+            return null;
+        }
+
+        int width = source.Width;
+        int height = source.Height;
+        byte[] output = (byte[])source.Rgba.Clone();
+
+        if (layers.Length != 0 && layers[0].HasTint)
+        {
+            var tint = new Colourise(layers[0].Tint, layers[0].Brightness);
+            for (int at = 0; at < output.Length; at += 4)
+            {
+                tint.Apply(output, at, output, at);
+            }
+        }
+
+        for (int i = 1; i < layers.Length; i++)
+        {
+            Refii.Host.HostBridge.GuestTextureLayer layer = layers[i];
+            string? path = Engine_TexPathIndex.Resolve(layer.Texture);
+            DecodedTexture? over = path is null ? null : Decode(path);
+            if (over is not null && over.Ok)
+            {
+                Blend(output, width, height, over, over, layer.Mode, layer.Weight,
+                    layer.HasTint ? new Colourise(layer.Tint, layer.Brightness) : null);
+            }
+        }
+
+        foreach (Refii.Host.HostBridge.GuestTextureLayer overlay in overlays)
+        {
+            if (overlay.Weight <= Engine_HeroMorph.WeightFloor)
+            {
+                continue;
+            }
+
+            string? maskPath = Engine_TexPathIndex.Resolve(overlay.Texture);
+            DecodedTexture? mask = maskPath is null ? null : Decode(maskPath);
+            if (mask is null || !mask.Ok)
+            {
+                continue;
+            }
+
+            DecodedTexture? colour = mask;
+            if (normalSlot)
+            {
+                string? bumpPath = Engine_TexPathIndex.Resolve(overlay.Bump);
+                colour = bumpPath is null ? null : Decode(bumpPath);
+            }
+
+            if (colour is not null && colour.Ok)
+            {
+                Blend(output, width, height, colour, mask, 1, overlay.Weight, null);
+            }
+        }
+
+        System.Threading.Interlocked.Increment(ref _compositesBuilt);
+        ImageTexture texture = ImageTexture.CreateFromImage(
+            Image.CreateFromData(width, height, false, Image.Format.Rgba8, output));
+
+        lock (MorphLock)
+        {
+            if (Composited.Count >= CompositedLimit)
+            {
+                Composited.Clear();
+            }
+
+            Composited[cacheKey] = texture;
+        }
+
+        return texture;
+    }
+
+    private static void AppendKey(
+        System.Text.StringBuilder key, Refii.Host.HostBridge.GuestTextureLayer layer) =>
+        key.Append(layer.Texture.ToString("x8")).Append(layer.Mode)
+            .Append(BitConverter.SingleToUInt32Bits(layer.Weight).ToString("x8"))
+            .Append(layer.HasTint ? layer.Tint.ToString("x8") : "-")
+            .Append(BitConverter.SingleToUInt32Bits(layer.Brightness).ToString("x8"))
+            .Append(layer.Bump.ToString("x8"));
+
+    /// <summary>One layer over the target: colour from one texture, coverage from another's alpha.</summary>
+    private static void Blend(
+        byte[] output, int width, int height, DecodedTexture colour, DecodedTexture coverage,
+        int mode, float weight, Colourise? tint)
+    {
+        var pixel = new byte[4];
+
+        for (int y = 0; y < height; y++)
+        {
+            int cy = colour.Height == height ? y : Math.Min(colour.Height - 1, y * colour.Height / height);
+            int my = coverage.Height == height ? y : Math.Min(coverage.Height - 1, y * coverage.Height / height);
+
+            for (int x = 0; x < width; x++)
+            {
+                int cx = colour.Width == width ? x : Math.Min(colour.Width - 1, x * colour.Width / width);
+                int mx = coverage.Width == width ? x : Math.Min(coverage.Width - 1, x * coverage.Width / width);
+
+                int src = ((cy * colour.Width) + cx) * 4;
+                int cover = ((my * coverage.Width) + mx) * 4;
+                int dst = ((y * width) + x) * 4;
+
+                float alpha = mode switch
+                {
+                    0 => 1.0f,
+                    3 => weight,
+                    _ => (coverage.Rgba[cover + 3] / 255.0f) * weight,
+                };
+
+                if (alpha <= 0.0f)
+                {
+                    continue;
+                }
+
+                byte[] from = colour.Rgba;
+                int fromAt = src;
+                if (tint is not null)
+                {
+                    tint.Apply(colour.Rgba, src, pixel, 0);
+                    from = pixel;
+                    fromAt = 0;
+                }
+
+                for (int k = 0; k < 3; k++)
+                {
+                    float value = mode == 2
+                        ? output[dst + k] + (from[fromAt + k] * alpha)
+                        : (output[dst + k] * (1.0f - alpha)) + (from[fromAt + k] * alpha);
+
+                    output[dst + k] = (byte)Math.Clamp(value + 0.5f, 0.0f, 255.0f);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The dye: the layer is reduced to intensity, tone-curved by Brightness, and mapped black
+    /// to the dye's hue to white with the pivot at the dye's own luminance. Constants as
+    /// <c>sub_82A7E288</c> computes them; the per-pixel arithmetic is the shipped
+    /// <c>texture_morph_colourise</c> pixel shader's.
+    /// </summary>
+    private sealed class Colourise
+    {
+        private static readonly byte[,] BrightnessRows =
+        {
+            { 0x00, 0x10, 0x40, 0x90, 0xFF },
+            { 0x00, 0x28, 0x60, 0xA8, 0xFF },
+            { 0x00, 0x40, 0x80, 0xC0, 0xFF },
+            { 0x00, 0x60, 0x9A, 0xCE, 0xFF },
+            { 0x00, 0x80, 0xB4, 0xDC, 0xFF },
+        };
+
+        private readonly float[] _colour = new float[3];
+        private readonly float _colourAlpha;
+        private readonly float[] _toIntensity = new float[3];
+        private readonly float _pivot;
+        private readonly float[] _curve = new float[5];
+
+        public Colourise(uint tint, float brightness)
+        {
+            int b = (int)((tint >> 24) & 0xFF);
+            int g = (int)((tint >> 16) & 0xFF);
+            int r = (int)((tint >> 8) & 0xFF);
+            int a = (int)(tint & 0xFF);
+
+            int max = Math.Max(r, Math.Max(g, b));
+            if (max == 0)
+            {
+                r = g = b = 1;
+                max = 1;
+            }
+
+            _colour[0] = r / (float)max;
+            _colour[1] = g / (float)max;
+            _colour[2] = b / (float)max;
+            _colourAlpha = a / 255.0f;
+
+            float wr = MathF.Pow(0.212671f, 0.4545f);
+            float wg = MathF.Pow(0.71516f, 0.4545f);
+            float wb = MathF.Pow(0.072169f, 0.4545f);
+            float sum = wr + wg + wb;
+            wr /= sum;
+            wg /= sum;
+            wb /= sum;
+
+            float scale = max / 255.0f;
+            _toIntensity[0] = wr * scale;
+            _toIntensity[1] = wg * scale;
+            _toIntensity[2] = wb * scale;
+            _pivot = (_colour[0] * wr) + (_colour[1] * wg) + (_colour[2] * wb);
+
+            float t = (Math.Clamp(brightness, -1.0f, 1.0f) + 1.0f) * 2.0f;
+            int row = Math.Min(4, (int)t);
+            int next = Math.Min(4, row + 1);
+            float f = t - row;
+            for (int i = 0; i < 5; i++)
+            {
+                _curve[i] = ((BrightnessRows[row, i] * (1.0f - f)) +
+                    (BrightnessRows[next, i] * f)) / 255.0f;
+            }
+        }
+
+        public void Apply(byte[] from, int fromAt, byte[] to, int toAt)
+        {
+            float tr = from[fromAt] / 255.0f;
+            float tg = from[fromAt + 1] / 255.0f;
+            float tb = from[fromAt + 2] / 255.0f;
+
+            float t = 4.0f * ((tr * _toIntensity[0]) + (tg * _toIntensity[1]) + (tb * _toIntensity[2]));
+            int i = Math.Clamp((int)t, 0, 3);
+            float f = Math.Clamp(t - i, 0.0f, 1.0f);
+            float curve = _curve[i] + ((_curve[i + 1] - _curve[i]) * f);
+
+            float lo = _pivot > 1e-5f ? MathF.Min(curve / _pivot, 1.0f) : 1.0f;
+            float hi = _pivot < 1.0f - 1e-5f
+                ? MathF.Max(curve - _pivot, 0.0f) / (1.0f - _pivot)
+                : 0.0f;
+
+            float texel0 = tr, texel1 = tg, texel2 = tb;
+            for (int k = 0; k < 3; k++)
+            {
+                float col = lo * _colour[k];
+                col += hi * (1.0f - col);
+                float texel = k == 0 ? texel0 : k == 1 ? texel1 : texel2;
+                float value = texel + ((col - texel) * _colourAlpha);
+                to[toAt + k] = (byte)Math.Clamp((value * 255.0f) + 0.5f, 0.0f, 255.0f);
+            }
+
+            to[toAt + 3] = from[fromAt + 3];
+        }
+    }
+
+    public static Dictionary<uint, List<TextureMorphEntry>> Active(Func<uint, float> weightOfType)
     {
         var active = new Dictionary<uint, List<TextureMorphEntry>>();
 
         foreach (TextureMorphPair pair in Pairs())
         {
-            float weight = Engine_HeroMorphState.TextureWeight(weights, pair.MorphType);
-            if (weight < OverlayMinWeight)
+            if (pair.MorphType == Engine_HeroMorphState.TypeScar)
+            {
+                continue;
+            }
+
+            float weight = pair.MorphType == Engine_HeroMorphState.TypeAlways
+                ? 1.0f
+                : weightOfType(pair.MorphType);
+
+            if (weight <= Engine_HeroMorph.WeightFloor)
             {
                 continue;
             }
@@ -125,6 +517,7 @@ public static class Engine_HeroTextureMorph
                 MorphHash = pair.MorphTextureHash,
                 Layer = pair.Layer,
                 Weight = weight,
+                Blend = pair.Blend,
             });
         }
 
@@ -133,16 +526,10 @@ public static class Engine_HeroTextureMorph
             list.Sort((a, b) =>
                 a.Layer != b.Layer
                     ? a.Layer.CompareTo(b.Layer)
-                    : a.Weight.CompareTo(b.Weight));
+                    : a.MorphHash.CompareTo(b.MorphHash));
         }
 
         return active;
-    }
-
-    public static int Quantize(float weight)
-    {
-        int step = (int)MathF.Floor((weight * 4.0f) + 0.5f);
-        return Math.Min(4, Math.Max(0, step));
     }
 
     public static Texture2D? Resolve(
@@ -160,7 +547,7 @@ public static class Engine_HeroTextureMorph
         }
 
         string baseName = textureName;
-        var overlays = new List<(string Path, int Quantized)>();
+        var layers = new List<(string Path, TextureMorphEntry Entry)>();
 
         foreach (TextureMorphEntry entry in entries)
         {
@@ -170,29 +557,16 @@ public static class Engine_HeroTextureMorph
                 continue;
             }
 
-            DecodedTexture decoded = Decode(target);
-            int quantized = Quantize(entry.Weight);
-
-            if (!decoded.Ok)
-            {
-                if (entry.Weight >= ReplaceThreshold)
-                {
-                    baseName = target;
-                    overlays.Clear();
-                }
-            }
-            else if (!decoded.HasAlpha && quantized >= 4)
+            if (entry.Blend == TextureMorphBlend.Swap)
             {
                 baseName = target;
-                overlays.Clear();
+                continue;
             }
-            else if (quantized >= 1)
-            {
-                overlays.Add((target, quantized));
-            }
+
+            layers.Add((target, entry));
         }
 
-        if (overlays.Count == 0 &&
+        if (layers.Count == 0 &&
             baseName.Equals(textureName, StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -200,12 +574,12 @@ public static class Engine_HeroTextureMorph
 
         var key = new System.Text.StringBuilder();
         key.Append(Engine_TexPathIndex.PathHash(baseName).ToString("x8"));
-        foreach ((string path, int quantized) in overlays)
+        foreach ((string path, TextureMorphEntry entry) in layers)
         {
             key.Append('_')
                 .Append(Engine_TexPathIndex.PathHash(path).ToString("x8"))
-                .Append('q')
-                .Append(quantized);
+                .Append(entry.Blend == TextureMorphBlend.Additive ? 'a' : 'o')
+                .Append(BitConverter.SingleToUInt32Bits(entry.Weight).ToString("x8"));
         }
 
         string cacheKey = key.ToString();
@@ -228,7 +602,7 @@ public static class Engine_HeroTextureMorph
         int height = source.Height;
         byte[] output = (byte[])source.Rgba.Clone();
 
-        foreach ((string path, int quantized) in overlays)
+        foreach ((string path, TextureMorphEntry entry) in layers)
         {
             DecodedTexture over = Decode(path);
             if (!over.Ok)
@@ -236,7 +610,7 @@ public static class Engine_HeroTextureMorph
                 continue;
             }
 
-            float amount = quantized * 0.25f;
+            bool additive = entry.Blend == TextureMorphBlend.Additive;
 
             for (int y = 0; y < height; y++)
             {
@@ -251,7 +625,7 @@ public static class Engine_HeroTextureMorph
                         : Math.Min(over.Width - 1, x * over.Width / width);
 
                     int src = ((sy * over.Width) + sx) * 4;
-                    float alpha = (over.Rgba[src + 3] / 255.0f) * amount;
+                    float alpha = (over.Rgba[src + 3] / 255.0f) * entry.Weight;
                     if (alpha <= 0.0f)
                     {
                         continue;
@@ -260,25 +634,29 @@ public static class Engine_HeroTextureMorph
                     int dst = ((y * width) + x) * 4;
                     for (int k = 0; k < 3; k++)
                     {
-                        output[dst + k] = (byte)(
-                            (output[dst + k] * (1.0f - alpha)) +
-                            (over.Rgba[src + k] * alpha) + 0.5f);
+                        float value = additive
+                            ? output[dst + k] + (over.Rgba[src + k] * alpha)
+                            : (output[dst + k] * (1.0f - alpha)) + (over.Rgba[src + k] * alpha);
+
+                        output[dst + k] = (byte)Math.Clamp(value + 0.5f, 0.0f, 255.0f);
                     }
                 }
             }
         }
 
+        System.Threading.Interlocked.Increment(ref _compositesBuilt);
         ImageTexture texture = ImageTexture.CreateFromImage(
             Image.CreateFromData(width, height, false, Image.Format.Rgba8, output));
 
         lock (MorphLock)
         {
+            if (Composited.Count >= CompositedLimit)
+            {
+                Composited.Clear();
+            }
+
             Composited[cacheKey] = texture;
         }
-
-        GD.Print(overlays.Count != 0
-            ? $"[morph] composited {overlays.Count} overlay(s) onto {baseName}"
-            : $"[morph] swapped {textureName} for {baseName}");
 
         return texture;
     }

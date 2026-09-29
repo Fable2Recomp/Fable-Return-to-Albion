@@ -66,11 +66,13 @@ public static class Engine_SkeletalMorphs
         _ => string.Empty,
     };
 
-    public static HeroMorphKind? VertexKindOf(SkeletalMorphKind kind) => kind switch
+    /// <summary>The MorphType whose weight drives each file.</summary>
+    public static uint TypeOf(SkeletalMorphKind kind) => kind switch
     {
-        SkeletalMorphKind.Fat => HeroMorphKind.Fat,
-        SkeletalMorphKind.Strong => HeroMorphKind.Strong,
-        _ => null,
+        SkeletalMorphKind.Fat => Engine_HeroMorphState.TypeFat,
+        SkeletalMorphKind.Strong => Engine_HeroMorphState.TypeStrength,
+        SkeletalMorphKind.Tall => Engine_HeroMorphState.TypeSkill,
+        _ => 0u,
     };
 
     public static List<MofBoneOffset> Offsets(SkeletalMorphKind kind, bool female)
@@ -152,14 +154,14 @@ public static class Engine_SkeletalMorphs
     }
 
     public static Dictionary<string, BoneMorphOffset> Accumulate(
-        HeroMorphWeights weights, bool female)
+        HeroMorphStats stats, bool female)
     {
         var accumulated = new Dictionary<string, BoneMorphOffset>(
             StringComparer.OrdinalIgnoreCase);
 
         foreach (SkeletalMorphKind kind in Enum.GetValues<SkeletalMorphKind>())
         {
-            float weight = Engine_HeroMorphState.SkeletalWeight(weights, kind);
+            float weight = Engine_HeroMorphState.Weight(stats, TypeOf(kind));
             if (weight <= WeightEpsilon)
             {
                 continue;
@@ -184,12 +186,4 @@ public static class Engine_SkeletalMorphs
 
         return accumulated;
     }
-
-    public static float WeightOf(HeroMorphWeights weights, SkeletalMorphKind kind) => kind switch
-    {
-        SkeletalMorphKind.Fat => weights.Fat,
-        SkeletalMorphKind.Strong => weights.Strong,
-        SkeletalMorphKind.Tall => weights.Tall,
-        _ => 0.0f,
-    };
 }

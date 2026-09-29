@@ -163,6 +163,112 @@ uint32_t RequestedBinkVideoName(char* out, uint32_t capacity) {
   return length;
 }
 
+// ---------------------------------------------------------------------------------
+// The movie's SOUND, as the guest states it
+// ---------------------------------------------------------------------------------
+//
+// Track selection is `BinkSetSoundTrack(count, ids)`, which the title's Bink build inlines:
+// its arguments exist only as Bink's own statics, written by the caller immediately before
+// the open — the cutscene player `sub_823C1658` stores `dword_834FC4C0 = 0`,
+// `dword_834FC4B8 = 2`, `dword_834FC4C4 = *(movie+12)` at 0x823C1990..0x823C1998 and ORs
+// BINKSNDTRACK (0x4000) into the open flags at 0x823C19A4. `BinkOpen` (`sub_832BB4B8`)
+// honours them only under that flag; without it 0x832BB4F8 resets them to one track, id 0.
+//
+// The voice id is chosen by `sub_823C0D90`: 1, or 2 for a gendered native when the hero's
+// gender component reads 1, then 3/4 in place of 1/2 when the current language is not
+// "en-uk" (0x823C1308..0x823C1350). Track 0 is the music and effects bed.
+//
+// Volumes arrive after the open through `sub_82A41D88(B, id, volume)`; Bink's own default
+// for a track nobody set is full.
+namespace {
+
+constexpr uint32_t kBinkSoundTrackFlag = 0x4000u;
+constexpr uint32_t kBinkTrackCount = 0x834FC4B8u;
+constexpr uint32_t kBinkTrackIds = 0x834FC4C0u;
+constexpr uint32_t kMaxStatedTracks = 8u;
+
+struct StatedBinkSound {
+  uint32_t player = 0;
+  uint32_t sound = 0;
+  uint32_t count = 0;
+  uint32_t ids[kMaxStatedTracks] = {};
+  float volumes[kMaxStatedTracks] = {};
+};
+
+std::mutex g_bink_sound_mutex;
+StatedBinkSound g_bink_sound;
+
+uint32_t ReadGuestU32(const uint8_t* base, uint32_t address) {
+  uint32_t value = 0;
+  std::memcpy(&value, base + address, sizeof(value));
+  return __builtin_bswap32(value);
+}
+
+}  // namespace
+
+extern "C" void refii_bridge_note_bink_sound(uint8_t* base, uint32_t player, uint32_t sound) {
+  if (base == nullptr || player == 0) {
+    return;
+  }
+
+  StatedBinkSound stated;
+  stated.player = player;
+  stated.sound = sound != 0 ? 1u : 0u;
+  stated.count = 1;
+  stated.ids[0] = 0;
+
+  if ((ReadGuestU32(base, player + 224u) & kBinkSoundTrackFlag) != 0) {
+    stated.count = std::min(ReadGuestU32(base, kBinkTrackCount), kMaxStatedTracks);
+    for (uint32_t i = 0; i < stated.count; ++i) {
+      stated.ids[i] = ReadGuestU32(base, kBinkTrackIds + (i * 4u));
+    }
+  }
+
+  for (uint32_t i = 0; i < stated.count; ++i) {
+    stated.volumes[i] = 1.0f;
+  }
+
+  REXLOG_INFO("Refii Bink sound stated: bink=0x{:08X} sound={} tracks={} ids={},{},{},{}",
+              player, stated.sound, stated.count, stated.ids[0], stated.ids[1], stated.ids[2],
+              stated.ids[3]);
+
+  std::lock_guard<std::mutex> lock(g_bink_sound_mutex);
+  g_bink_sound = stated;
+}
+
+extern "C" void refii_bridge_note_bink_volume(uint32_t player, uint32_t track_id, float volume) {
+  std::lock_guard<std::mutex> lock(g_bink_sound_mutex);
+  if (g_bink_sound.player != player) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < g_bink_sound.count; ++i) {
+    if (g_bink_sound.ids[i] == track_id) {
+      g_bink_sound.volumes[i] = std::clamp(volume, 0.0f, 1.0f);
+    }
+  }
+}
+
+uint32_t RequestedBinkSound(uint32_t* out_sound, uint32_t* out_ids, float* out_volumes,
+                            uint32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_bink_sound_mutex);
+  if (out_sound != nullptr) {
+    *out_sound = g_bink_sound.sound;
+  }
+
+  const uint32_t count = std::min(g_bink_sound.count, capacity);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (out_ids != nullptr) {
+      out_ids[i] = g_bink_sound.ids[i];
+    }
+    if (out_volumes != nullptr) {
+      out_volumes[i] = g_bink_sound.volumes[i];
+    }
+  }
+
+  return count;
+}
+
 /// Records the .bik the guest just handed to BinkOpen.
 ///
 /// The second argument to the movie-open call is NOT a file name — it is a pointer to the
@@ -560,9 +666,8 @@ extern "C" void refii_bridge_note_bink_movie_open(uint32_t player, uint8_t* base
     // +232, 1 standalone 228-byte object with none); +232 is only in bounds for the former.
     const uint8_t owner = base_for_open == nullptr ? 0xFFu : base_for_open[player + 223u];
     REXLOG_INFO("Refii Bink movie open: bink=0x{:08X} player=0x{:08X} frame_buffers=0x{:08X} "
-                "class(+224)=0x{:08X} owner(+223)={} sound(+222)={} at-open done(+221)={} skip(+232)={}",
+                "class(+224)=0x{:08X} owner(+223)={} at-open done(+221)={} skip(+232)={}",
                 player, player - 12u, player + 68u, open_flags, owner,
-                base_for_open == nullptr ? 0xFFu : base_for_open[player + 222u],
                 base_for_open == nullptr ? 0xFFu : base_for_open[player + 221u],
                 owner == 0u ? base_for_open[player + 232u] : 0xFFu);
   }

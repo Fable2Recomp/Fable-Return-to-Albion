@@ -15,6 +15,7 @@
 // plus a table of frame offsets — the layout below is taken from the SDK's own
 // libavformat/bink.c so it stays honest about what it is reproducing.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +32,8 @@ extern "C" {
 // codec_list.c does not list Bink, and avcodec_open2 takes an AVCodec outright, so there
 // is no reason to edit a pristine generated file.
 extern "C" const AVCodec ff_bink_decoder;
+extern "C" const AVCodec ff_binkaudio_dct_decoder;
+extern "C" const AVCodec ff_binkaudio_rdft_decoder;
 
 namespace {
 
@@ -38,6 +41,24 @@ uint32_t ReadLe32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
            ((uint32_t)p[3] << 24);
 }
+
+// Track flags, from the SDK's libavformat/bink.c.
+constexpr uint16_t kAudioStereo = 0x2000;
+constexpr uint16_t kAudioUseDct = 0x1000;
+
+/// One audio track as the container describes it, plus its decoder once selected.
+struct BinkAudioTrack {
+    uint32_t id = 0;
+    uint32_t sample_rate = 0;
+    uint16_t flags = 0;
+    bool selected = false;
+    float volume = 1.0f;
+
+    AVCodecContext* codec = nullptr;
+    std::vector<float> pending;  // interleaved stereo, decoded and not yet taken
+
+    int channels() const { return (flags & kAudioStereo) != 0 ? 2 : 1; }
+};
 
 /// One open movie: the container index plus a live decoder.
 struct BinkMovie {
@@ -50,6 +71,9 @@ struct BinkMovie {
     uint32_t fps_den = 0;
     uint32_t audio_tracks = 0;
     uint32_t next_frame = 0;
+    std::vector<BinkAudioTrack> tracks;  // in FILE order, which is the packet order
+    uint32_t audio_rate = 0;             // of the selected tracks; 0 when none
+    AVFrame* audio_frame = nullptr;
 
     AVCodecContext* codec = nullptr;
     AVFrame* frame = nullptr;
@@ -57,6 +81,14 @@ struct BinkMovie {
     std::string error;
 
     ~BinkMovie() {
+        for (BinkAudioTrack& track : tracks) {
+            if (track.codec != nullptr) {
+                avcodec_free_context(&track.codec);
+            }
+        }
+        if (audio_frame != nullptr) {
+            av_frame_free(&audio_frame);
+        }
         if (packet != nullptr) {
             av_packet_free(&packet);
         }
@@ -104,6 +136,21 @@ bool ParseHeader(BinkMovie& movie) {
     if (audio_tracks > 256) {
         movie.error = "implausible audio track count";
         return false;
+    }
+
+    if (d.size() < 44 + ((std::size_t)audio_tracks * 12)) {
+        movie.error = "truncated audio track table";
+        return false;
+    }
+
+    // Three passes, as the demuxer reads them: max decoded size, then rate + flags, then id.
+    movie.tracks.resize(audio_tracks);
+    for (uint32_t i = 0; i < audio_tracks; ++i) {
+        const uint8_t* rate = &d[44 + ((std::size_t)audio_tracks * 4) + ((std::size_t)i * 4)];
+        BinkAudioTrack& track = movie.tracks[i];
+        track.sample_rate = (uint32_t)rate[0] | ((uint32_t)rate[1] << 8);
+        track.flags = (uint16_t)((uint32_t)rate[2] | ((uint32_t)rate[3] << 8));
+        track.id = ReadLe32(&d[44 + ((std::size_t)audio_tracks * 8) + ((std::size_t)i * 4)]);
     }
 
     std::size_t cursor = 44 + ((std::size_t)audio_tracks * 12);
@@ -177,6 +224,77 @@ bool OpenCodec(BinkMovie& movie) {
     }
 
     return true;
+}
+
+bool OpenAudioCodec(const BinkMovie& movie, BinkAudioTrack& track) {
+    const AVCodec* codec = (track.flags & kAudioUseDct) != 0 ? &ff_binkaudio_dct_decoder
+                                                              : &ff_binkaudio_rdft_decoder;
+    track.codec = avcodec_alloc_context3(codec);
+    if (track.codec == nullptr) {
+        return false;
+    }
+
+    track.codec->sample_rate = (int)track.sample_rate;
+    track.codec->channels = track.channels();
+
+    // The file tag, as the demuxer hands it over: the decoder reads revision 'b' off byte 3.
+    track.codec->extradata = (uint8_t*)av_mallocz(4 + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (track.codec->extradata == nullptr) {
+        avcodec_free_context(&track.codec);
+        return false;
+    }
+    std::memcpy(track.codec->extradata, movie.data.data(), 4);
+    track.codec->extradata_size = 4;
+
+    if (avcodec_open2(track.codec, codec, nullptr) < 0) {
+        avcodec_free_context(&track.codec);
+        return false;
+    }
+
+    return true;
+}
+
+/// Decodes one track's packet for the current frame onto its pending queue, as stereo.
+void DecodeAudioPacket(BinkMovie& movie, BinkAudioTrack& track, const uint8_t* data,
+                       uint32_t size) {
+    // Four bytes are the packet's own sample count; anything shorter carries no audio.
+    if (track.codec == nullptr || size <= 4 || av_new_packet(movie.packet, (int)size) < 0) {
+        return;
+    }
+
+    std::memcpy(movie.packet->data, data, size);
+    const int sent = avcodec_send_packet(track.codec, movie.packet);
+    av_packet_unref(movie.packet);
+    if (sent < 0) {
+        return;
+    }
+
+    AVFrame* frame = movie.audio_frame;
+    while (avcodec_receive_frame(track.codec, frame) >= 0) {
+        const int channels = track.codec->channels;
+        const bool planar = track.codec->sample_fmt == AV_SAMPLE_FMT_FLTP;
+        const std::size_t at = track.pending.size();
+        track.pending.resize(at + ((std::size_t)frame->nb_samples * 2));
+        float* out = track.pending.data() + at;
+
+        for (int i = 0; i < frame->nb_samples; ++i) {
+            float left = 0.0f;
+            float right = 0.0f;
+            if (planar) {
+                left = ((const float*)frame->extended_data[0])[i];
+                right = channels > 1 ? ((const float*)frame->extended_data[1])[i] : left;
+            } else {
+                const float* samples = (const float*)frame->extended_data[0];
+                left = samples[(std::size_t)i * channels];
+                right = channels > 1 ? samples[((std::size_t)i * channels) + 1] : left;
+            }
+
+            out[(std::size_t)i * 2] = left;
+            out[((std::size_t)i * 2) + 1] = right;
+        }
+
+        av_frame_unref(frame);
+    }
 }
 
 }  // namespace
@@ -270,6 +388,11 @@ int RefiiBinkNextFrame(void* handle, unsigned char* out_y, int y_capacity,
             return 0;
         }
 
+        if (movie->tracks[track].selected) {
+            DecodeAudioPacket(*movie, movie->tracks[track],
+                              movie->data.data() + video_begin, audio_size);
+        }
+
         video_begin += audio_size;
     }
 
@@ -357,6 +480,140 @@ void RefiiBinkRewind(void* handle) {
     if (movie->codec != nullptr) {
         avcodec_flush_buffers(movie->codec);
     }
+
+    for (BinkAudioTrack& track : movie->tracks) {
+        track.pending.clear();
+        if (track.codec != nullptr) {
+            avcodec_flush_buffers(track.codec);
+        }
+    }
+}
+
+/// How many audio tracks the file carries.
+int RefiiBinkAudioTrackCount(void* handle) {
+    auto* movie = static_cast<BinkMovie*>(handle);
+    return movie == nullptr ? 0 : (int)movie->tracks.size();
+}
+
+/// One track by FILE index: its id, rate and channel count. Returns 0 out of range.
+int RefiiBinkAudioTrackInfo(void* handle, int index, int* out_id, int* out_rate,
+                            int* out_channels) {
+    auto* movie = static_cast<BinkMovie*>(handle);
+    if (movie == nullptr || index < 0 || (std::size_t)index >= movie->tracks.size()) {
+        return 0;
+    }
+
+    const BinkAudioTrack& track = movie->tracks[(std::size_t)index];
+    if (out_id != nullptr) *out_id = (int)track.id;
+    if (out_rate != nullptr) *out_rate = (int)track.sample_rate;
+    if (out_channels != nullptr) *out_channels = track.channels();
+    return 1;
+}
+
+/// Selects the tracks to decode, by track ID — BinkSetSoundTrack's contract, including its
+/// treatment of an id the file does not carry: dropped, not an error (BinkOpen's matching
+/// loop, 0x832BBF48). Replaces any earlier selection. Returns how many ids matched.
+///
+/// Every selected track must share one sample rate, since they are mixed into one stream;
+/// a track at a different rate from the first match is left out.
+int RefiiBinkSelectAudio(void* handle, const int* ids, int count) {
+    auto* movie = static_cast<BinkMovie*>(handle);
+    if (movie == nullptr) {
+        return 0;
+    }
+
+    for (BinkAudioTrack& track : movie->tracks) {
+        track.selected = false;
+        track.pending.clear();
+    }
+    movie->audio_rate = 0;
+
+    if (movie->audio_frame == nullptr) {
+        movie->audio_frame = av_frame_alloc();
+        if (movie->audio_frame == nullptr) {
+            return 0;
+        }
+    }
+
+    int matched = 0;
+    for (int i = 0; ids != nullptr && i < count; ++i) {
+        for (BinkAudioTrack& track : movie->tracks) {
+            if ((int)track.id != ids[i] || track.selected) {
+                continue;
+            }
+            if (movie->audio_rate != 0 && track.sample_rate != movie->audio_rate) {
+                continue;
+            }
+            if (track.codec == nullptr && !OpenAudioCodec(*movie, track)) {
+                continue;
+            }
+
+            track.selected = true;
+            movie->audio_rate = track.sample_rate;
+            ++matched;
+            break;
+        }
+    }
+
+    return matched;
+}
+
+/// Sample rate of the selected tracks, 0 when none is selected.
+int RefiiBinkAudioRate(void* handle) {
+    auto* movie = static_cast<BinkMovie*>(handle);
+    return movie == nullptr ? 0 : (int)movie->audio_rate;
+}
+
+/// Linear gain for one track by ID, applied when its samples are taken.
+void RefiiBinkSetAudioVolume(void* handle, int id, float volume) {
+    auto* movie = static_cast<BinkMovie*>(handle);
+    if (movie == nullptr) {
+        return;
+    }
+
+    for (BinkAudioTrack& track : movie->tracks) {
+        if ((int)track.id == id) {
+            track.volume = volume;
+        }
+    }
+}
+
+/// Takes the audio decoded so far: the selected tracks summed, as interleaved stereo float.
+/// Returns the number of stereo FRAMES written, at most `capacity_frames`; the rest stays
+/// queued. Audio is produced by RefiiBinkNextFrame, one video frame's worth per call.
+int RefiiBinkTakeAudio(void* handle, float* out, int capacity_frames) {
+    auto* movie = static_cast<BinkMovie*>(handle);
+    if (movie == nullptr || out == nullptr || capacity_frames <= 0) {
+        return 0;
+    }
+
+    // Only what EVERY selected track has: they decode in lockstep, so this is all of it.
+    std::size_t frames = (std::size_t)capacity_frames;
+    bool any = false;
+    for (const BinkAudioTrack& track : movie->tracks) {
+        if (track.selected) {
+            frames = std::min(frames, track.pending.size() / 2);
+            any = true;
+        }
+    }
+    if (!any || frames == 0) {
+        return 0;
+    }
+
+    std::memset(out, 0, frames * 2 * sizeof(float));
+    for (BinkAudioTrack& track : movie->tracks) {
+        if (!track.selected) {
+            continue;
+        }
+
+        for (std::size_t i = 0; i < frames * 2; ++i) {
+            out[i] += track.pending[i] * track.volume;
+        }
+        track.pending.erase(track.pending.begin(),
+                            track.pending.begin() + (std::ptrdiff_t)(frames * 2));
+    }
+
+    return (int)frames;
 }
 
 void RefiiBinkClose(void* handle) { delete static_cast<BinkMovie*>(handle); }

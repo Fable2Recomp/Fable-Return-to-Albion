@@ -121,6 +121,8 @@ void RequestedBinkVideo(uint32_t* out_address, uint32_t* out_size,
 uint32_t RequestedBinkVideoName(char* out, uint32_t capacity);
 uint32_t FinishCurrentBinkMovie(uint8_t* base);
 uint32_t BinkMovieState(uint8_t* base);
+uint32_t RequestedBinkSound(uint32_t* out_sound, uint32_t* out_ids, float* out_volumes,
+                            uint32_t capacity);
 uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
                            float* out_x1, float* out_y1);
 
@@ -155,6 +157,14 @@ uint32_t StatedHighlightFor(uint32_t component);
 bool StatedAppearanceFor(uint32_t component, uint32_t* out);
 uint64_t StatedAppearanceStatements();
 uint64_t StatedAppearanceDropped();
+// src/vfs/src/core/dye_state.cpp.
+uint32_t SampledDyeStates(uint32_t* out, uint32_t word_capacity);
+// src/vfs/src/core/part_morph_state.cpp.
+uint32_t StatedPartMorphs(uint32_t entity, uint32_t* out, uint32_t capacity,
+                          uint32_t* out_generation, uint64_t* out_statements);
+// src/vfs/src/core/texture_layer_state.cpp.
+uint32_t StatedTextureLayers(uint32_t entity, uint32_t* out, uint32_t capacity,
+                             uint32_t* out_generation, uint64_t* out_statements);
 
 // Defined in src/vfs/src/core/pubgame_state.cpp — the pub-game seam. The host posts what
 // Godot's game said and the pump replacement in the payload drains it on the guest's render
@@ -2007,7 +2017,52 @@ extern "C" {
 ///     environment theme (T+0x480 SnowSize, +0x490 SnowFallSpeed, +0x4A0 RainSize, +0x4B0
 ///     RainDensity), the record its own rain and snow draws gate on. Indoors the painted
 ///     theme yields nothing and these collapse to zero, which is the only reason a room is dry.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 157; }
+/// 158 adds RefiiHostGetMovieSound — the sound the guest states for the movie it opened: the
+///     opener's `sound` argument, the track ids of its `BinkSetSoundTrack`, and the volume it
+///     states for each through `sub_82A41D88`. The host plays those tracks from its own decode;
+///     the guest's copy is opened muted.
+/// 159 adds the character morph feeds, each taken where the guest states it inside
+///     `sub_8220DE88`: RefiiHostGetEntityPartMorphs — a part's morph targets and weights
+///     (`sub_82A48B90`); RefiiHostGetEntityTextureLayers — every texture composite
+///     (`sub_825B38B0`) and overlay (`sub_8222AAC8`, command type 14); and
+///     RefiiHostGetBoneMorphHeight — the morph record's bone-1 height factor.
+/// 160 adds dyeing: RefiiHostGetDyeStates — which garments are dyed — and the pump action
+///     `Inventory:dye:<dye>:<target>:<slot>`.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 160; }
+
+/// THE SHAPE, PER PART, as the guest states it to `sub_82A48B90`: per morphed part [model hash,
+/// count, then count x (target model hash, weight float bits)]; the part itself takes 1 - sum.
+/// A part that is not listed draws as its own model. `out_statements` low word counts every
+/// part submission seen (0 means the hook never ran), high word those that listed a target.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartMorphs(uint32_t entity, uint32_t* out_words,
+                                                            uint32_t word_capacity,
+                                                            uint32_t* out_generation,
+                                                            uint64_t* out_statements) {
+    return refii::vfs::StatedPartMorphs(entity, out_words, word_capacity, out_generation,
+                                        out_statements);
+}
+
+/// WHICH GARMENTS ARE DYED, by the guest's own test `sub_826CAFA8`, sampled on the GUI tick for
+/// what the hero wears and carries in categories 9..11 and 17..24. Two words per item: the
+/// item's record hash, then flags — bit 0 slot 1 dyed, bit 1 slot 2 dyed, bit 2 worn. A worn
+/// item is listed ahead of a carried one of the same record. Returns the item count.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDyeStates(uint32_t* out_words, uint32_t word_capacity) {
+    return refii::vfs::SampledDyeStates(out_words, word_capacity);
+}
+
+/// THE SKIN AND THE CLOTH. Per original texture the guest composites: [original texture id,
+/// layer count | kind << 16, then count x 7 words {texture id, blend mode, weight bits,
+/// has-tint, tint bytes B G R A, brightness bits, bump texture id}]. Kind 0 is a composite,
+/// layers in draw order with layer 0 the base; kind 1 is the overlay list (scars, mode-0
+/// morphs) the guest draws over the finished material. Covers replacement
+/// and skin-set textures, stat morphs, tattoos and dyes. Returns the words written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityTextureLayers(uint32_t entity, uint32_t* out_words,
+                                                               uint32_t word_capacity,
+                                                               uint32_t* out_generation,
+                                                               uint64_t* out_statements) {
+    return refii::vfs::StatedTextureLayers(entity, out_words, word_capacity, out_generation,
+                                           out_statements);
+}
 
 /// Answers one `GUI` predicate from the host, by name.
 ///
@@ -7810,6 +7865,34 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetBoneMorph(uint32_t entity, uint32_t* 
         ++written;
     }
     return written;
+}
+
+/// The morph record's height factor `h` (rec+36, float bits), 0 when there is none. With
+/// h > 0 the guest rewrites bone 1 as t = (t.x*h, t.y*h, t.z + off.z) and skips the parent-scale
+/// divide (`sub_822BF9B8`, 0x822bfa4c..0x822bfa9c). Written by `sub_82B7D9B0` for a model with
+/// a RetargetSkeletonFile, zero otherwise.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetBoneMorphHeight(uint32_t entity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr || entity < 0x10000u || entity >= 0xE0000000u) {
+        return 0u;
+    }
+    constexpr uint32_t kMeshId = 6u;
+    if (((GuestWordAt(base, entity + 0x24u) >> kMeshId) & 1u) == 0u) {
+        return 0u;
+    }
+    const uint32_t mesh = EntityComponent(base, entity, kMeshId);
+    if (mesh < 0x10000u || mesh >= 0xE0000000u) {
+        return 0u;
+    }
+    const uint32_t record = GuestWordAt(base, mesh + 152u);
+    if (record < 0x10000u || record >= 0xE0000000u) {
+        return 0u;
+    }
+    return GuestWordAt(base, record + 36u);
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_bytes, uint32_t capacity,
@@ -15021,6 +15104,17 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCameraPair(float* out) {
     }
 
     return 1;
+}
+
+/// The sound of the movie the guest last opened, as the guest stated it.
+///
+/// `out_sound` is the opener's `sound` argument: 0 is a movie the guest plays silent (the
+/// ability previews, `PlaySilentMovie`). `out_ids` are Bink track IDS, not file indices — an
+/// id the file does not carry is dropped, which is what Bink does with it. `out_volumes` are
+/// linear 0..1 and can change while the movie plays. Returns the track count written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMovieSound(uint32_t* out_sound, uint32_t* out_ids,
+                                                      float* out_volumes, uint32_t capacity) {
+    return refii::vfs::RequestedBinkSound(out_sound, out_ids, out_volumes, capacity);
 }
 
 /// Whether the guest still wants the movie the host is showing.

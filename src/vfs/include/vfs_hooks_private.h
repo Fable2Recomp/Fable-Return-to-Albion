@@ -152,6 +152,24 @@ uint32_t BinkFrameBuffersGuestAddress();
 inline void NoteBinkVideoRequested(uint8_t* base, uint32_t data_guest) {
   refii_bridge_note_bink_video_requested(base, data_guest);
 }
+
+/// The sound the guest states for the movie it is about to open: the opener's `sound`
+/// argument and the track ids of its `BinkSetSoundTrack`. Call BEFORE NoteBinkVideoRequested,
+/// so the request the host sees already carries its sound.
+inline void NoteBinkSound(uint8_t* base, uint32_t player, uint32_t sound) {
+  refii_bridge_note_bink_sound(base, player, sound);
+}
+
+/// The guest stated a track's volume (`sub_82A41D88`), linear 0..1.
+inline void NoteBinkVolume(uint32_t player, uint32_t track_id, float volume) {
+  refii_bridge_note_bink_volume(player, track_id, volume);
+}
+
+/// The sound stated for the last requested movie: whether it is audible, its track ids and
+/// each one's volume. Returns the track count written, at most `capacity`.
+uint32_t RequestedBinkSound(uint32_t* out_sound, uint32_t* out_ids, float* out_volumes,
+                            uint32_t capacity);
+
 void RequestedBinkVideo(uint32_t* out_address, uint32_t* out_size,
                         uint32_t* out_generation, uint32_t* out_swapped);
 
@@ -259,6 +277,21 @@ inline void NoteAppearance(uint32_t component, const uint32_t* words) {
 /// The renderable is being constructed or destroyed: whatever was stated for its address is
 /// not its own.
 inline void ForgetAppearance(uint32_t component) { refii_bridge_forget_appearance(component); }
+
+/// One part's morph targets as the guest just stated them; `pairs` per core/payload_bridge.h.
+inline void NotePartMorph(uint32_t entity, uint32_t base_model, const uint32_t* pairs,
+                          uint32_t count) {
+  refii_bridge_note_part_morph(entity, base_model, pairs, count);
+}
+
+/// The entity's texture composites are about to be restated.
+inline void BeginTextureLayers(uint32_t entity) { refii_bridge_begin_texture_layers(entity); }
+
+/// One original texture's layers as the guest just stated them; per core/payload_bridge.h.
+inline void NoteTextureLayers(uint32_t entity, uint32_t original, uint32_t kind,
+                              const uint32_t* layers, uint32_t count) {
+  refii_bridge_note_texture_layers(entity, original, kind, layers, count);
+}
 inline void GuestTickPumpNoteRan() { refii_bridge_guest_tick_pump_note_ran(); }
 
 /// Records a debug-call/debug-lua outcome where the host's RefiiHostGetDebugCallResult reads it.

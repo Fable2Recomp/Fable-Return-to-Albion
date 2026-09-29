@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 157;
+	public const int ExpectedAbiVersion = 160;
 
 	private const int MessageCapacity = 512;
 
@@ -510,6 +510,182 @@ public static class HostBridge
 		return result;
 	}
 
+	/// <summary>
+	/// The morph record's height factor, 0 when there is none: above 0 the guest scales bone 1's
+	/// horizontal translation by it and adds only the offset's vertical lane.
+	/// </summary>
+	public static float GetBoneMorphHeight(uint entity)
+	{
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0f;
+		}
+
+		try
+		{
+			float h = BitConverter.Int32BitsToSingle((int)RefiiHostGetBoneMorphHeight(entity));
+			return float.IsFinite(h) ? h : 0f;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0f;
+		}
+	}
+
+	/// <summary>One part's morph targets: the models the guest blends into it and their weights.</summary>
+	public readonly record struct GuestPartMorph(uint BaseModel, (uint Model, float Weight)[] Targets);
+
+	private static readonly uint[] _partMorphWords = new uint[24 * (2 + 8 * 2)];
+
+	/// <summary>Run total of part submissions the hook has seen; 0 means it never ran.</summary>
+	public static ulong PartMorphStatements { get; private set; }
+
+	/// <summary>Of those, the submissions that listed at least one morph target.</summary>
+	public static ulong PartMorphsMorphed { get; private set; }
+
+	/// <summary>
+	/// The entity's morphed parts as the guest stated them to <c>sub_82A48B90</c>; a part not
+	/// listed draws as its own model. <paramref name="generation"/> moves when the statement did.
+	/// </summary>
+	public static GuestPartMorph[] GetEntityPartMorphs(uint entity, out uint generation)
+	{
+		generation = 0;
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return System.Array.Empty<GuestPartMorph>();
+		}
+
+		uint[] words = _partMorphWords;
+		uint written;
+		try
+		{
+			written = RefiiHostGetEntityPartMorphs(
+				entity, words, (uint)words.Length, out generation, out ulong statements);
+			PartMorphStatements = statements & 0xFFFFFFFFUL;
+			PartMorphsMorphed = statements >> 32;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return System.Array.Empty<GuestPartMorph>();
+		}
+
+		if (written == 0)
+		{
+			return System.Array.Empty<GuestPartMorph>();
+		}
+
+		var parts = new List<GuestPartMorph>();
+		int at = 0;
+		while (at + 2 <= written)
+		{
+			uint model = words[at];
+			int count = (int)words[at + 1];
+			at += 2;
+			if (count <= 0 || at + count * 2 > written)
+			{
+				break;
+			}
+
+			var targets = new (uint, float)[count];
+			for (int i = 0; i < count; i++)
+			{
+				float weight = BitConverter.Int32BitsToSingle((int)words[at + i * 2 + 1]);
+				targets[i] = (words[at + i * 2], float.IsFinite(weight) ? weight : 0f);
+			}
+
+			at += count * 2;
+			parts.Add(new GuestPartMorph(model, targets));
+		}
+
+		return parts.ToArray();
+	}
+
+	/// <summary>
+	/// One layer of a texture composite. Mode: 0 opaque, 1 alpha, 2 additive, 3 blend-factor,
+	/// 4 masked. Tint is the guest's bytes B, G, R, A in memory order.
+	/// </summary>
+	public readonly record struct GuestTextureLayer(
+		uint Texture, int Mode, float Weight, bool HasTint, uint Tint, float Brightness, uint Bump = 0);
+
+	/// <summary>
+	/// An original texture and the layers the guest composites in its place, base first; or,
+	/// with <paramref name="Overlay"/>, the scars and mode-0 morphs it draws over the finished
+	/// material whose diffuse is that texture.
+	/// </summary>
+	public readonly record struct GuestTextureComposite(
+		uint Original, GuestTextureLayer[] Layers, bool Overlay = false);
+
+	private const int TextureLayerWords = 7;
+
+	private static readonly uint[] _textureLayerWords = new uint[40 * (2 + 8 * TextureLayerWords)];
+
+	/// <summary>Run total of composites the hook has seen stated; 0 means it never ran.</summary>
+	public static ulong TextureLayerStatements { get; private set; }
+
+	/// <summary>
+	/// Every texture composite the guest states for the entity (<c>sub_825B38B0</c>).
+	/// <paramref name="generation"/> moves when the statement did.
+	/// </summary>
+	public static GuestTextureComposite[] GetEntityTextureLayers(uint entity, out uint generation)
+	{
+		generation = 0;
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return System.Array.Empty<GuestTextureComposite>();
+		}
+
+		uint[] words = _textureLayerWords;
+		uint written;
+		try
+		{
+			written = RefiiHostGetEntityTextureLayers(
+				entity, words, (uint)words.Length, out generation, out ulong statements);
+			TextureLayerStatements = statements;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return System.Array.Empty<GuestTextureComposite>();
+		}
+
+		if (written == 0)
+		{
+			return System.Array.Empty<GuestTextureComposite>();
+		}
+
+		var composites = new List<GuestTextureComposite>();
+		int at = 0;
+		while (at + 2 <= written)
+		{
+			uint original = words[at];
+			int count = (int)(words[at + 1] & 0xFFFF);
+			bool overlay = (words[at + 1] >> 16) != 0;
+			at += 2;
+			if (count <= 0 || at + count * TextureLayerWords > written)
+			{
+				break;
+			}
+
+			var layers = new GuestTextureLayer[count];
+			for (int i = 0; i < count; i++)
+			{
+				int w = at + i * TextureLayerWords;
+				layers[i] = new GuestTextureLayer(
+					words[w],
+					(int)words[w + 1],
+					BitConverter.Int32BitsToSingle((int)words[w + 2]),
+					words[w + 3] != 0,
+					words[w + 4],
+					BitConverter.Int32BitsToSingle((int)words[w + 5]),
+					words[w + 6]);
+			}
+
+			at += count * TextureLayerWords;
+			composites.Add(new GuestTextureComposite(original, layers, overlay));
+		}
+
+		return composites.ToArray();
+	}
+
 	/// <summary>One bone's skeletal morph: a translation offset and a scale, guest bone index.</summary>
 	public readonly record struct GuestBoneMorph(int Bone, Vector3 Offset, Vector3 Scale);
 
@@ -827,6 +1003,18 @@ public static class HostBridge
 		var buffer = new byte[512];
 		uint length = RefiiHostGetRequestedVideoName(buffer, (uint)buffer.Length, out generation);
 		return length == 0 ? string.Empty : System.Text.Encoding.ASCII.GetString(buffer, 0, (int)length);
+	}
+
+	/// <summary>
+	/// The sound the guest states for the movie it last opened: whether it is audible (the
+	/// opener's `sound` argument), which Bink track IDS play (its `BinkSetSoundTrack`), and the
+	/// linear volume it states for each (`sub_82A41D88`), which can change during playback.
+	/// </summary>
+	public static bool GetMovieSound(uint[] ids, float[] volumes, out int count)
+	{
+		count = (int)RefiiHostGetMovieSound(
+			out uint sound, ids, volumes, (uint)Math.Min(ids.Length, volumes.Length));
+		return sound != 0;
 	}
 
 	/// <summary>
@@ -5821,6 +6009,43 @@ public static class HostBridge
 		return family;
 	}
 
+	/// <summary>One garment's dye state, by the guest's own test (<c>sub_826CAFA8</c>).</summary>
+	public readonly record struct DyeState(bool Slot1, bool Slot2, bool Worn);
+
+	private static readonly uint[] _dyeStateWords = new uint[160 * 2];
+
+	/// <summary>
+	/// Which of the hero's garments are dyed, keyed by item record. Sampled on the guest's GUI
+	/// tick, so it is current while a book is open; a record not listed has not been sampled.
+	/// </summary>
+	public static Dictionary<uint, DyeState> GetDyeStates()
+	{
+		var states = new Dictionary<uint, DyeState>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return states;
+		}
+
+		uint found;
+		try
+		{
+			found = RefiiHostGetDyeStates(_dyeStateWords, (uint)_dyeStateWords.Length);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return states;
+		}
+
+		for (uint i = 0; i < found && (i * 2) + 1 < _dyeStateWords.Length; ++i)
+		{
+			uint flags = _dyeStateWords[(i * 2) + 1];
+			states.TryAdd(_dyeStateWords[i * 2],
+				new DyeState((flags & 1u) != 0, (flags & 2u) != 0, (flags & 4u) != 0));
+		}
+
+		return states;
+	}
+
 	public static List<(uint RecordId, int Category)> GetWornItems()
 	{
 		var worn = new List<(uint, int)>();
@@ -6481,6 +6706,10 @@ public static class HostBridge
 	private static extern uint RefiiHostFinishMovie();
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetMovieSound(
+		out uint sound, [Out] uint[] ids, [Out] float[] volumes, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostMovieState();
 
 	[DllImport(Library)]
@@ -6627,6 +6856,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetWornItems(uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDyeStates([Out] uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetFamily([Out] byte[]? outNames, uint stride, uint capacity);
@@ -7606,6 +7838,17 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetTopBoxBody(
 		[Out] uint[] outWords, uint capacity, [Out] byte[] outText, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetBoneMorphHeight(uint entity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityTextureLayers(
+		uint entity, [Out] uint[] outWords, uint wordCapacity, out uint generation, out ulong statements);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityPartMorphs(
+		uint entity, [Out] uint[] outWords, uint wordCapacity, out uint generation, out ulong statements);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetBoneMorph(uint entity, [Out] uint[] outWords, uint wordCapacity);

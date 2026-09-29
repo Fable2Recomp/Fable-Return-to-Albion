@@ -212,10 +212,11 @@ if(TARGET libavcodec)
     target_sources(libavcodec PRIVATE
         "${_refii_ffmpeg_dir}/libavcodec/bink.c"
         "${_refii_ffmpeg_dir}/libavcodec/binkdsp.c"
+        "${_refii_ffmpeg_dir}/libavcodec/binkaudio.c"
         "${_refii_ffmpeg_dir}/libavcodec/blockdsp.c"
         "${_refii_ffmpeg_dir}/libavcodec/hpeldsp.c"
     )
-    message(STATUS "Refii: enabled the FFmpeg Bink video decoder")
+    message(STATUS "Refii: enabled the FFmpeg Bink video and audio decoders")
 endif()
 
 # Must come AFTER the block above: it links libavcodec, which only carries the Bink

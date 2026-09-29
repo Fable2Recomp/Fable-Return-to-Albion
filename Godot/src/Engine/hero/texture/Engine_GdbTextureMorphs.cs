@@ -6,8 +6,10 @@ namespace Refii.Hero;
 public readonly struct TextureMorphPair
 {
     public TextureMorphPair(
-        uint originalTextureHash, uint morphTextureHash, uint morphType, uint layer)
+        uint originalTextureHash, uint morphTextureHash, uint morphType, uint layer,
+        TextureMorphBlend blend)
     {
+        Blend = blend;
         OriginalTextureHash = originalTextureHash;
         MorphTextureHash = morphTextureHash;
         MorphType = morphType;
@@ -21,6 +23,19 @@ public readonly struct TextureMorphPair
     public uint MorphType { get; }
 
     public uint Layer { get; }
+
+    public TextureMorphBlend Blend { get; }
+}
+
+/// <summary>
+/// The guest's internal blend mode from GDB <c>BlendType</c> (<c>sub_825B7E58</c>): absent or 0
+/// is <see cref="Alpha"/>, 1 is <see cref="Additive"/>, anything else <see cref="Swap"/>.
+/// </summary>
+public enum TextureMorphBlend
+{
+    Swap = 0,
+    Alpha = 1,
+    Additive = 2,
 }
 
 public static class Engine_GdbTextureMorphs
@@ -30,6 +45,7 @@ public static class Engine_GdbTextureMorphs
     public const uint MorphTexture = 0x2F96241E;
     public const uint MorphType = 0x3BF01BE1;
     public const uint Layer = 0x717476D0;
+    public const uint BlendType = 0x646BEF62;
 
     public const int WalkDepth = 64;
 
@@ -151,7 +167,17 @@ public static class Engine_GdbTextureMorphs
             layer = layerValue;
         }
 
-        pair = new TextureMorphPair(original, morph, type, layer);
+        TextureMorphBlend blend = TextureMorphBlend.Alpha;
+        if (multi.TryFindInherited(
+                entry, BlendType, -1, out _, out uint blendValue,
+                out GdbFieldType blendType) && IsIntType(blendType))
+        {
+            blend = blendValue == 0 ? TextureMorphBlend.Alpha
+                : blendValue == 1 ? TextureMorphBlend.Additive
+                : TextureMorphBlend.Swap;
+        }
+
+        pair = new TextureMorphPair(original, morph, type, layer, blend);
         return true;
     }
 

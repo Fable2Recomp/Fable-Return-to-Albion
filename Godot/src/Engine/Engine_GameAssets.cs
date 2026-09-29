@@ -327,6 +327,7 @@ public partial class Engine_GameAssets : Node
 		Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
 		Refii.Textures.Engine_TexPathIndex.SetPathSource(EnumerateTexturePaths);
 		Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
+
 		Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
 		Refii.Entities.Engine_EntityIndex.SetResolver(ReadAllBytes);
 

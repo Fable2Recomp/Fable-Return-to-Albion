@@ -12,6 +12,7 @@ namespace Refii.Game;
 /// Plays the game's Bink videos: the guest states when and which (the movie-open hook reports
 /// the file it passed BinkOpen), Godot decodes with FFmpeg. Nothing here depends on the guest
 /// reaching its render path. YUV planes go to the GPU untouched; a shader converts them.
+/// The sound is the tracks the guest selects for its language and hero, from the same decode.
 /// </summary>
 public partial class GameVideo : Node
 {
@@ -74,6 +75,7 @@ public partial class GameVideo : Node
 		_decoder = null;
 		_view.Visible = false;
 		_backdrop.Visible = false;
+		StopSound();
 		++MoviesSkipped;
 
 		uint retired = HostBridge.FinishMovie();
@@ -144,6 +146,9 @@ public partial class GameVideo : Node
 		};
 		_view.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		layer.AddChild(_view);
+
+		_sound = new AudioStreamPlayer { Name = "VideoSound" };
+		AddChild(_sound);
 
 		// Second destination for the same planes and material: a UI element's rect instead of
 		// the screen. The SubViewport makes it a sampleable Texture2D.
@@ -451,6 +456,7 @@ public partial class GameVideo : Node
 		_decoder?.Dispose();
 		_decoder = null;
 		_view.Visible = false;
+		StopSound();
 
 		if (requested is null || requested.Length == 0)
 		{
@@ -465,6 +471,7 @@ public partial class GameVideo : Node
 		}
 
 		Allocate(_decoder);
+		StartSound();
 		_frameClock = 0.0;
 		_skipMouseArmed = false;
 		_skipAArmed = false;
@@ -481,7 +488,116 @@ public partial class GameVideo : Node
 		_decoder?.Dispose();
 		_decoder = null;
 		_view.Visible = false;
+		StopSound();
 		EmitSignal(SignalName.MovieFinished);
+	}
+
+	/// <summary>
+	/// The movie's sound: the tracks the guest states, decoded by the same decoder as the
+	/// picture and mixed by it, played through a generator at the tracks' own rate.
+	/// </summary>
+	private AudioStreamPlayer _sound = null!;
+	private AudioStreamGeneratorPlayback? _soundPlayback;
+	private Vector2[] _soundPush = Array.Empty<Vector2>();
+	private readonly float[] _soundPcm = new float[2 * 8192];
+	private readonly uint[] _trackIds = new uint[8];
+	private readonly int[] _trackSelect = new int[8];
+	private readonly float[] _trackVolumes = new float[8];
+
+	/// <summary>Generator capacity: a four-frame catch-up burst of a 25 fps movie, twice over.</summary>
+	private const float SoundBufferSeconds = 0.5f;
+
+	/// <summary>
+	/// Opens the sound of the movie just started, from what the guest stated at its open
+	/// (<see cref="HostBridge.GetMovieSound"/>). A movie the HOST chose has no guest open
+	/// behind it and plays silent, as the guest opens its own previews.
+	/// </summary>
+	private void StartSound()
+	{
+		StopSound();
+		if (_decoder is null || HasHostMovie || _decoder.AudioTrackCount == 0)
+		{
+			return;
+		}
+
+		bool audible = HostBridge.GetMovieSound(_trackIds, _trackVolumes, out int count);
+		if (!audible || count == 0)
+		{
+			GD.Print("[game-video] sound: the guest opened this movie silent");
+			return;
+		}
+
+		for (int i = 0; i < count; i++)
+		{
+			_trackSelect[i] = (int)_trackIds[i];
+		}
+
+		int matched = _decoder.SelectAudio(_trackSelect, count);
+		string stated = string.Join(",", _trackIds[..count]);
+		if (matched == 0 || _decoder.AudioRate == 0)
+		{
+			GD.PushWarning($"[game-video] sound: the guest stated track ids {stated} and the " +
+				$"file carries none of them ({_decoder.AudioTrackCount} tracks)");
+			return;
+		}
+
+		_sound.Stream = new AudioStreamGenerator
+		{
+			MixRate = _decoder.AudioRate,
+			BufferLength = SoundBufferSeconds,
+		};
+		_sound.Play();
+		_soundPlayback = _sound.GetStreamPlayback() as AudioStreamGeneratorPlayback;
+		GD.Print($"[game-video] sound: track ids {stated} stated, {matched} of {count} in the " +
+			$"file ({_decoder.AudioTrackCount} tracks), {_decoder.AudioRate} Hz");
+	}
+
+	/// <summary>Cuts the sound now. A movie that reaches its own end is left to play out.</summary>
+	private void StopSound()
+	{
+		_soundPlayback = null;
+		_sound.Stop();
+	}
+
+	/// <summary>
+	/// Moves decoded sound to the generator, as much as it has room for; the rest stays
+	/// queued in the decoder. Volumes are re-read every call because the guest restates them.
+	/// </summary>
+	private void PumpSound()
+	{
+		if (_decoder is null || _soundPlayback is null)
+		{
+			return;
+		}
+
+		HostBridge.GetMovieSound(_trackIds, _trackVolumes, out int count);
+		for (int i = 0; i < count; i++)
+		{
+			_decoder.SetAudioVolume((int)_trackIds[i], _trackVolumes[i]);
+		}
+
+		while (true)
+		{
+			int room = _soundPlayback.GetFramesAvailable();
+			int frames = room > 0 ? _decoder.TakeAudio(_soundPcm, room) : 0;
+			if (frames <= 0)
+			{
+				return;
+			}
+
+			// PushBuffer takes a whole array, so the scratch is sized to the push.
+			if (_soundPush.Length != frames)
+			{
+				_soundPush = new Vector2[frames];
+			}
+
+			for (int i = 0; i < frames; i++)
+			{
+				_soundPush[i] = new Vector2(_soundPcm[i * 2], _soundPcm[(i * 2) + 1]);
+			}
+
+			_soundPlayback.PushBuffer(_soundPush);
+		}
 	}
 
 	private void AdvanceVideo(double delta)
@@ -496,6 +612,7 @@ public partial class GameVideo : Node
 		_frameClock += delta;
 		if (_frameClock < _decoder.FrameSeconds)
 		{
+			PumpSound();
 			return;
 		}
 
@@ -529,6 +646,10 @@ public partial class GameVideo : Node
 
 			++decoded;
 		}
+
+		// Before any of the endings below disposes the decoder: the last frames' sound is
+		// still queued in it.
+		PumpSound();
 
 		// A pause past the catch-up cap must not leave debt that plays out as a fast-forward;
 		// dropping the remainder resynchronises to now, where the guest already is.

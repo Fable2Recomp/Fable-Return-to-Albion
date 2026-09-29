@@ -2001,7 +2001,150 @@ std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle);
 /// INTO THE HERO'S OWN INVENTORY, not a spawn — it cannot conjure an item the hero lacks.
 ///
 /// Runs on the pump, i.e. on the guest's tick thread, because everything below it does.
+/// `Inventory:dye:<dye record>:<target record>:<slot>` — the dye screen's own answer, without
+/// the screen. `sub_826D3108(screen16, slot)` is what a press runs (events 84/86/87/88 with slot
+/// 0, button 39 with slot 1) and it reads two item refs off the screen, the chosen dye at
+/// screen16+228 and the focused target at screen16+244. Its body is reproduced with the same
+/// calls, in the same order, on refs this builds:
+///
+///   sub_826CB120(_, target, slot)   the target's def has `DyeTextures` > `Layer1`/`Layer2`
+///                                   for that slot, else nothing happens      (0x826d3144)
+///   sub_826CAFA8(_, target, slot)   the slot is already dyed                 (0x826d3160)
+///     -> sub_826CAE08(_, target, slot)   scrub it: THE PRESS IS A TOGGLE     (0x826d317c)
+///     else sub_826CAB78(_, dye, target, slot)   r3 unused, r4 dye ref, r5 target ref,
+///                                   r6 slot, no float arguments (prologue 0x826cab88..90)
+///
+/// An item ref is 16 bytes {item, index, 0, 0} REGISTERED BY ITS ADDRESS on the item
+/// (`sub_82764D00(item, ref)`, released by `sub_82764DC0(item, ref)`), because the setter may
+/// split one unit off a stack and rebinds every registered ref to the new object
+/// (`sub_823A2040`). A WORN target is taken from component 15's applied list (+0x10..+0x14,
+/// 24-byte records: item +0, index +4), so the garment on the body is the one dyed; anything
+/// else is looked up in the inventory by record hash (`sub_824F1C90`). The dye is not consumed.
+bool DispatchDye(PPCContext& ctx, uint8_t* base, const std::string& arguments) {
+  unsigned long values[3] = {0ul, 0ul, 0ul};
+  const char* cursor = arguments.c_str();
+  for (unsigned long& value : values) {
+    char* end = nullptr;
+    value = std::strtoul(cursor, &end, 10);
+    if (end == cursor) {
+      REXLOG_INFO("Refii guest-tick pump: 'Inventory:dye:{}' is not dye:target:slot — dropped",
+                  arguments);
+      return true;
+    }
+    cursor = *end == ':' ? end + 1 : end;
+  }
+
+  const uint32_t dye_hash = static_cast<uint32_t>(values[0]);
+  const uint32_t target_hash = static_cast<uint32_t>(values[1]);
+  const uint32_t slot = values[2] != 0ul ? 1u : 0u;
+
+  const uint32_t hero = HeroEntity(base);
+  const uint32_t inventory = hero != 0u ? HeroComponent(base, hero, 13u) : 0u;
+  const uint32_t appearance = hero != 0u ? HeroComponent(base, hero, 15u) : 0u;
+  PPCFunc* find = FindGuestFunction(0x824F1C90u);
+  PPCFunc* retain = FindGuestFunction(0x82764D00u);
+  PPCFunc* release = FindGuestFunction(0x82764DC0u);
+  PPCFunc* has_layer = FindGuestFunction(0x826CB120u);
+  PPCFunc* is_dyed = FindGuestFunction(0x826CAFA8u);
+  PPCFunc* scrub = FindGuestFunction(0x826CAE08u);
+  PPCFunc* apply = FindGuestFunction(0x826CAB78u);
+  if (inventory == 0u || appearance == 0u || find == nullptr || retain == nullptr ||
+      release == nullptr || has_layer == nullptr || is_dyed == nullptr || scrub == nullptr ||
+      apply == nullptr) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:dye — no hero component 13/15, or the dye "
+                "calls are not callable here (hero 0x{:08X})", hero);
+    return true;
+  }
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t dye_ref = frame + 0x20u;
+  const uint32_t target_ref = frame + 0x40u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, dye_ref + (word * 4u), 0u);
+    StoreGuestU32(base, target_ref + (word * 4u), 0u);
+  }
+
+  const auto call = [&](PPCFunc* function, uint32_t r3, uint32_t r4, uint32_t r5,
+                        uint32_t r6) -> uint32_t {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = r3;
+    ctx.r4.u32 = r4;
+    ctx.r5.u32 = r5;
+    ctx.r6.u32 = r6;
+    function(ctx, base);
+    const uint32_t result = ctx.r3.u32;
+    ctx = saved;
+    return result;
+  };
+  const auto drop = [&](uint32_t ref) {
+    if (const uint32_t item = LoadGuestU32(base, ref); item != 0u) {
+      call(release, item, ref, 0u, 0u);
+    }
+  };
+
+  call(find, dye_ref, inventory, dye_hash, 0u);
+  if (LoadGuestU32(base, dye_ref) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:dye — dye 0x{:08X} is not in the hero's "
+                "inventory", dye_hash);
+    return true;
+  }
+
+  // The garment on the body first. Snapshot begin/end and re-read them: a push reallocates.
+  bool worn = false;
+  const uint32_t begin = LoadGuestU32(base, appearance + 0x10u);
+  const uint32_t end = LoadGuestU32(base, appearance + 0x14u);
+  if (LooksLikeGuestPointer(begin) && end >= begin && ((end - begin) % 24u) == 0u &&
+      (end - begin) <= 24u * 64u) {
+    for (uint32_t at = begin; at < end; at += 24u) {
+      const uint32_t item = LoadGuestU32(base, at);
+      if (LooksLikeGuestPointer(item) && LoadGuestU32(base, item + 4u) == target_hash &&
+          LoadGuestU32(base, appearance + 0x10u) == begin &&
+          LoadGuestU32(base, appearance + 0x14u) == end) {
+        StoreGuestU32(base, target_ref, item);
+        StoreGuestU32(base, target_ref + 4u, LoadGuestU32(base, at + 4u));
+        call(retain, item, target_ref, 0u, 0u);
+        worn = true;
+        break;
+      }
+    }
+  }
+  if (!worn) {
+    call(find, target_ref, inventory, target_hash, 0u);
+  }
+
+  if (LoadGuestU32(base, target_ref) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:dye — target 0x{:08X} is neither worn nor in "
+                "the hero's inventory", target_hash);
+    drop(dye_ref);
+    return true;
+  }
+
+  if ((call(has_layer, 0u, target_ref, slot, 0u) & 0xFFu) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:dye — target 0x{:08X} states no dye layer for "
+                "slot {} (sub_826CB120)", target_hash, slot + 1u);
+  } else if ((call(is_dyed, 0u, target_ref, slot, 0u) & 0xFFu) != 0u) {
+    call(scrub, 0u, target_ref, slot, 0u);
+    REXLOG_INFO("Refii guest-tick pump: Inventory:dye — slot {} of {} target 0x{:08X} was dyed; "
+                "scrubbed (sub_826CAE08)", slot + 1u, worn ? "worn" : "carried", target_hash);
+  } else {
+    call(apply, 0u, dye_ref, target_ref, slot);
+    REXLOG_INFO("Refii guest-tick pump: Inventory:dye — dyed slot {} of {} target 0x{:08X} with "
+                "0x{:08X} (sub_826CAB78)", slot + 1u, worn ? "worn" : "carried", target_hash,
+                dye_hash);
+  }
+
+  drop(target_ref);
+  drop(dye_ref);
+  return true;
+}
+
 bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  if (body.rfind("dye:", 0) == 0) {
+    return DispatchDye(ctx, base, body.substr(4));
+  }
+
   const std::size_t colon = body.rfind(':');
   if (colon == std::string::npos) {
     REXLOG_INFO("Refii guest-tick pump: 'Inventory:{}' is not op:hash — dropped", body);
@@ -2063,6 +2206,9 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     const PPCContext saved_unequip = ctx;
     ctx.r3.u32 = 0u;
     ctx.r4.u32 = static_cast<uint32_t>(hash);
+    // r5 is an entity that REPLACES the chosen player when non-zero (0x826cc44c `mr r31, r5`,
+    // 0x826cc4c4..cc `cmplwi r31, 0` / `mr r9, r31`); 0 takes the player.
+    ctx.r5.u32 = 0u;
     ctx.ctr.u32 = 0x826CC430u;
     unequip(ctx, base);
     ctx = saved_unequip;
@@ -5596,6 +5742,94 @@ void SampleQuests(uint8_t* base, uint32_t hero) {
   PublishQuests(entries, count);
 }
 
+/// Which of the hero's garments are dyed, by the guest's own test.
+///
+/// `sub_826CAFA8(_, itemRef, slot)` reads only `*itemRef` (the item) and the item's type-2
+/// component through `sub_823A1E18`, so the ref need not be registered. Worn items first
+/// (component 15, +0x10..+0x14, 24-byte records, item at +0), then the inventory (component 13:
+/// the list head at +16, node+0 next, node+8 the item — the walk `sub_824F1C90` makes). Record
+/// hash at item+4, category at item+16; only what the dye list offers is asked about —
+/// categories 9..11 and 17..24 (`sub_829B2168`).
+void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
+  const uint32_t hero = HeroEntity(base);
+  const uint32_t inventory = hero != 0u ? HeroComponent(base, hero, 13u) : 0u;
+  const uint32_t appearance = hero != 0u ? HeroComponent(base, hero, 15u) : 0u;
+  PPCFunc* is_dyed = FindGuestFunction(0x826CAFA8u);
+  if (inventory == 0u || is_dyed == nullptr) {
+    refii_bridge_note_dye_states(nullptr, 0u);
+    return;
+  }
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t ref = frame + 0x20u;
+
+  uint32_t words[kDyeStateItems * kDyeStateWords];
+  uint32_t count = 0u;
+
+  const auto offered = [](uint32_t category) {
+    return (category >= 9u && category <= 11u) || (category >= 17u && category <= 24u);
+  };
+  const auto note = [&](uint32_t item, bool worn) {
+    if (!LooksLikeGuestPointer(item) || count >= static_cast<uint32_t>(kDyeStateItems) ||
+        !offered(LoadGuestU32(base, item + 16u))) {
+      return;
+    }
+    const uint32_t record = LoadGuestU32(base, item + 4u);
+    for (uint32_t i = 0u; i < count; ++i) {
+      if (words[i * kDyeStateWords] == record) {
+        return;
+      }
+    }
+
+    uint32_t flags = worn ? 4u : 0u;
+    for (uint32_t slot = 0u; slot < 2u; ++slot) {
+      StoreGuestU32(base, ref, item);
+      StoreGuestU32(base, ref + 4u, 0u);
+      StoreGuestU32(base, ref + 8u, 0u);
+      StoreGuestU32(base, ref + 12u, 0u);
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = 0u;
+      ctx.r4.u32 = ref;
+      ctx.r5.u32 = slot;
+      is_dyed(ctx, base);
+      if ((ctx.r3.u32 & 0xFFu) != 0u) {
+        flags |= 1u << slot;
+      }
+    }
+    ctx = saved;
+
+    words[count * kDyeStateWords] = record;
+    words[count * kDyeStateWords + 1u] = flags;
+    ++count;
+  };
+
+  if (appearance != 0u) {
+    const uint32_t begin = LoadGuestU32(base, appearance + 0x10u);
+    const uint32_t end = LoadGuestU32(base, appearance + 0x14u);
+    if (LooksLikeGuestPointer(begin) && end >= begin && ((end - begin) % 24u) == 0u &&
+        (end - begin) <= 24u * 64u) {
+      for (uint32_t at = begin; at < end; at += 24u) {
+        note(LoadGuestU32(base, at), true);
+      }
+    }
+  }
+
+  const uint32_t head = LoadGuestU32(base, inventory + 16u);
+  if (LooksLikeGuestPointer(head)) {
+    uint32_t node = LoadGuestU32(base, head);
+    for (uint32_t steps = 0u; steps < 4096u && node != head && LooksLikeGuestPointer(node);
+         ++steps) {
+      note(LoadGuestU32(base, node + 8u), false);
+      node = LoadGuestU32(base, node);
+    }
+  }
+
+  ctx = saved;
+  refii_bridge_note_dye_states(words, count);
+}
+
 /// Which pause tabs the guest would offer, by calling its own predicate for tabs 2..8.
 ///
 /// `sub_826B83D0(unused, tab)` is what the guest's tab navigation runs; there is no availability
@@ -6877,6 +7111,7 @@ REX_EXTERN(sub_8229ABD8) {
     refii::vfs::SampleQuestTravel(ctx, base);
     refii::vfs::SampleShopPrice(ctx, base);
     refii::vfs::SamplePauseTabs(ctx, base);
+    refii::vfs::SampleDyeStates(ctx, base);
   }
 
   __imp__sub_8229ABD8(ctx, base);

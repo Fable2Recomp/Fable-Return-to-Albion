@@ -2061,8 +2061,14 @@ public partial class GameUi : Node
 			//
 			// Refresh on the PRESS, not the next sample: a host-owned fold changes the visible
 			// list immediately and the sampling path runs only a few times a second.
+			bool dyeHeld = Engine_UiDyeFlow.Active;
 			if (_screenMenu is { } pressed && pressed.Commit())
 			{
+				if (Engine_UiDyeFlow.Active != dyeHeld)
+				{
+					pressed.FollowDyeFlow();
+				}
+
 				_screenMenuView?.Refresh();
 				ReportMenuView(_screenMenuView);
 			}
@@ -2105,6 +2111,16 @@ public partial class GameUi : Node
 				_screenMenuView?.Refresh();
 				GD.Print($"[game-ui] screen {state.ScreenId}: B collapsed one level — " +
 					$"cursor {menu.Script.CurrentHighlightIdx}/{menu.Script.Visible.Count}");
+				return true;
+			}
+
+			// B at the top of the dye list puts the dye away and returns to the items; the
+			// guest's screen never left them.
+			if (Engine_UiDyeFlow.Active)
+			{
+				Engine_UiDyeFlow.End();
+				_screenMenu?.FollowDyeFlow();
+				_screenMenuView?.Refresh();
 				return true;
 			}
 

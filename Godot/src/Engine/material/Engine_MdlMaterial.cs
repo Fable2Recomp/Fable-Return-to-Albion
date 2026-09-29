@@ -437,6 +437,10 @@ public static class Engine_MdlMaterial
 
         // A solid surface shows one side; a card cut out by its alpha is seen from both.
         var result = new ShaderMaterial { Shader = albedoHasAlpha ? shader : SharedCulled() ?? shader };
+        result.SetMeta(TextureNamesMeta, new[]
+        {
+            material.Diffuse, material.Normal, material.Specular, material.SelfIllumination,
+        });
         if (albedo is not null)
         {
             result.SetShaderParameter("albedo_tex", albedo);
@@ -536,6 +540,17 @@ public static class Engine_MdlMaterial
 
         return result;
     }
+
+    /// <summary>
+    /// The texture names a material was built from, in <see cref="TextureParameters"/> order;
+    /// the guest replaces a texture by its name's hash in whichever slot holds it.
+    /// </summary>
+    public const string TextureNamesMeta = "mdl_texture_names";
+
+    public static readonly string[] TextureParameters =
+    {
+        "albedo_tex", "normal_tex", "specular_tex", "emission_tex",
+    };
 
     public static Func<string, TexSemantic, Texture2D?>? TextureOverride { get; set; }
 

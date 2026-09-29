@@ -1,80 +1,91 @@
 namespace Refii.Hero;
 
+/// <summary>
+/// The guest's one weight function, <c>sub_822DA028(CECMorph, MorphType)</c>, which serves
+/// vertex, skeletal, texture and particle morphs alike.
+/// </summary>
 public static class Engine_HeroMorphState
 {
+    /// <summary><c>flt_83319584</c>, script name SetMorphStrengthAtWhichFatCapped.</summary>
     public const float StrengthAtWhichFatCapped = 0.5f;
 
+    /// <summary><c>flt_83319588</c>, SetMorphFatCap.</summary>
     public const float FatCap = 0.5f;
 
+    /// <summary><c>flt_8331958C</c>, SetMorphSkillAtWhichStrengthCapped.</summary>
     public const float SkillAtWhichStrengthCapped = 0.6f;
 
+    /// <summary><c>flt_83319590</c>, SetMorphStrengthCap.</summary>
     public const float StrengthCap = 0.6f;
 
-    public static float TallWeight(HeroMorphWeights weights)
-    {
-        float lower = weights.Tall >= 0.0f ? weights.Tall : 0.0f;
-        return lower - 1.0f >= 0.0f ? 1.0f : lower;
-    }
+    /// <summary>Below this age every type weighs 0 (<c>sub_821C2A18</c> stage 0 or 1).</summary>
+    public const float AdultAge = 18.0f;
 
-    public static float StrongWeight(HeroMorphWeights weights)
+    public const uint TypeAlways = 1;
+    public const uint TypeFat = 4;
+    public const uint TypeStrength = 5;
+    public const uint TypeSkill = 6;
+    public const uint TypeScar = 19;
+
+    public static float Weight(HeroMorphStats stats, uint type)
     {
-        float value = weights.Strong;
-        if (value <= StrengthCap)
+        if (stats.Age < AdultAge)
         {
-            return value;
+            return 0.0f;
         }
 
-        return TallWeight(weights) <= SkillAtWhichStrengthCapped ? value : StrengthCap;
-    }
+        float m = stats.Morality;
+        float p = stats.Purity;
 
-    public static float FatWeight(HeroMorphWeights weights)
-    {
-        float value = weights.Fat;
-        if (value <= FatCap)
+        switch (type)
         {
-            return value;
+            case 1:
+                return 1.0f;
+            case 2:
+                return UpperHalf(stats.Tan);
+            case 3:
+                return stats.Tan < 0.5f ? (0.5f - stats.Tan) * 2.0f : 0.0f;
+            case 4:
+                return stats.Fat > FatCap && Weight(stats, 5) > StrengthAtWhichFatCapped
+                    ? FatCap
+                    : stats.Fat;
+            case 5:
+                return stats.Strength > StrengthCap && Weight(stats, 6) > SkillAtWhichStrengthCapped
+                    ? StrengthCap
+                    : stats.Strength;
+            case 6:
+                return System.Math.Clamp(stats.Skill + stats.Height, 0.0f, 1.0f);
+            case 7:
+                return stats.Will;
+            case 8:
+                return stats.Height;
+            case 9:
+                return UpperHalf(m);
+            case 10:
+                return m > 0.5f && p > 0.5f ? (p + m) - 1.0f : 0.0f;
+            case 12:
+                return m < 0.5f && p >= 0.5f ? (0.5f - m) * 2.0f : 0.0f;
+            case 14:
+                return m < 0.5f && p < 0.5f ? 1.0f - (p + m) : 0.0f;
+            case 15:
+                return p > 0.5f && m >= 0.5f ? (p - 0.5f) * 2.0f : 0.0f;
+            case 16:
+                return p < 0.5f && m >= 0.5f ? (0.5f - p) * 2.0f : 0.0f;
+            case 17:
+            {
+                int age = (int)stats.Age;
+                return age < 18 || age > 30 ? 0.0f : 1.0f - ((age - 18) * 0.083333336f);
+            }
+            case 18:
+            {
+                int age = (int)stats.Age;
+                return age < 30 ? 0.0f : age > 60 ? 1.0f : (age - 30) * 0.033333335f;
+            }
+            default:
+                return 0.0f;
         }
-
-        return StrongWeight(weights) <= StrengthAtWhichFatCapped ? value : FatCap;
     }
 
-    public static float VertexWeight(HeroMorphWeights weights, HeroMorphKind kind) => kind switch
-    {
-        HeroMorphKind.Strong => StrongWeight(weights),
-        HeroMorphKind.Fat => FatWeight(weights),
-        HeroMorphKind.Young => weights.Young,
-        HeroMorphKind.Old => weights.Old,
-        HeroMorphKind.GoodPure => weights.GoodPure,
-        HeroMorphKind.Impure => weights.Impure,
-        HeroMorphKind.EvilPure => weights.EvilPure,
-        HeroMorphKind.EvilImpure => weights.EvilImpure,
-        _ => 0.0f,
-    };
-
-    public static float SkeletalWeight(HeroMorphWeights weights, SkeletalMorphKind kind) =>
-        kind switch
-        {
-            SkeletalMorphKind.Fat => FatWeight(weights),
-            SkeletalMorphKind.Strong => StrongWeight(weights),
-            SkeletalMorphKind.Tall => TallWeight(weights),
-            _ => 0.0f,
-        };
-
-    public static float TextureWeight(HeroMorphWeights weights, uint morphType) => morphType switch
-    {
-        4 => FatWeight(weights),
-        5 => StrongWeight(weights),
-        6 => TallWeight(weights),
-        7 => weights.Will,
-        9 => weights.GoodPure,
-        10 => weights.GoodPure,
-        12 => weights.EvilPure,
-        13 => weights.EvilPure,
-        14 => weights.EvilImpure,
-        15 => weights.GoodPure,
-        16 => weights.Impure,
-        17 => weights.Young,
-        18 => weights.Old,
-        _ => 0.0f,
-    };
+    private static float UpperHalf(float value) =>
+        value > 0.5f ? (value - 0.5f) * 2.0f : 0.0f;
 }

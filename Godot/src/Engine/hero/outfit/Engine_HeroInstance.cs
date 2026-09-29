@@ -14,7 +14,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
     public const string BodyModelsMeta = "hero_body_models";
     public const string OutfitMeta = "hero_outfit";
     public const string OutfitOpenMeta = "hero_outfit_open";
-    public const string MorphMeta = "hero_morph";
+    public const string MorphMeta = "hero_morph_stats";
 
     public const string OpenSuffix = " Open";
 
@@ -22,7 +22,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
 
     private readonly System.Collections.Generic.HashSet<ClothingSlot> _open = new();
 
-    private readonly HeroMorphWeights _morphs = new();
+    private readonly HeroMorphStats _morphs = new();
 
     private readonly System.Collections.Generic.Dictionary<string, HeroMorphSet?> _morphSets =
         new(System.StringComparer.OrdinalIgnoreCase);
@@ -68,9 +68,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
             }
         }
 
-        _textureMorphs = _morphs.Any
-            ? Engine_HeroTextureMorph.Active(_morphs)
-            : new System.Collections.Generic.Dictionary<uint, List<TextureMorphEntry>>();
+        _textureMorphs = Engine_HeroTextureMorph.Active(_morphs);
 
         Refii.Models.Engine_MdlMaterial.TextureOverride = MorphTexture;
 
@@ -142,11 +140,6 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
 
     private ArrayMesh? Skeletal(ArrayMesh mesh)
     {
-        if (!_morphs.Any)
-        {
-            return null;
-        }
-
         _skeletal ??= Engine_SkeletalMorphs.Accumulate(_morphs, Female);
 
         if (_skeletal.Count == 0 ||
@@ -188,7 +181,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
     {
         HeroMorphSet? set = MorphSetFor(path);
 
-        return set is not null && _morphs.Any
+        return set is not null
             ? Engine_HeroMorph.Blend(path, set.Targets, _morphs, DecodePart)
             : DecodePart(path);
     }
@@ -200,9 +193,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
             return cached;
         }
 
-        HeroMorphSet? set = Engine_HeroMorphCatalog.KindOfPath(path) is null
-            ? Engine_HeroMorphCatalog.For(path, Female, Engine_PropStreamer.Resolve)
-            : null;
+        HeroMorphSet? set = Engine_HeroMorphCatalog.For(path);
 
         _morphSets[path] = set;
         return set;
@@ -227,7 +218,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         var stored = new Dictionary();
         foreach (HeroMorphSlider slider in Engine_HeroMorphSliders.All)
         {
-            stored[(int)slider.Kind] = _morphs[slider.Kind];
+            stored[(int)slider.Input] = _morphs[slider.Input];
         }
 
         SetMeta(MorphMeta, stored);
@@ -243,8 +234,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         Dictionary stored = GetMeta(MorphMeta).AsGodotDictionary();
         foreach (Variant key in stored.Keys)
         {
-            Engine_HeroMorphSliders.Set(
-                _morphs, (HeroMorphKind)key.AsInt32(), (float)stored[key].AsDouble());
+            _morphs[(HeroMorphInput)key.AsInt32()] = (float)stored[key].AsDouble();
         }
     }
 
@@ -332,7 +322,7 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
                     { "type", (int)Variant.Type.Float },
                     { "usage", (int)PropertyUsageFlags.Default },
                     { "hint", (int)PropertyHint.Range },
-                    { "hint_string", Engine_HeroMorphSliders.RangeHint },
+                    { "hint_string", slider.RangeHint },
                 });
             }
         }
@@ -398,9 +388,9 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
         LoadOpen();
         LoadMorphs();
 
-        if (Engine_HeroMorphSliders.TryFind(name, out HeroMorphKind morphKind))
+        if (Engine_HeroMorphSliders.TryFind(name, out HeroMorphSlider shown))
         {
-            return _morphs[morphKind];
+            return _morphs[shown.Input];
         }
 
         foreach (ClothingSlot slot in Engine_HeroWardrobe.SlotsFor(Female))
@@ -445,9 +435,9 @@ public partial class Engine_HeroInstance : Refii.Entities.Engine_EntityInstance
     {
         string name = property.ToString();
 
-        if (Engine_HeroMorphSliders.TryFind(name, out HeroMorphKind morphKind))
+        if (Engine_HeroMorphSliders.TryFind(name, out HeroMorphSlider moved))
         {
-            Engine_HeroMorphSliders.Set(_morphs, morphKind, (float)value.AsDouble());
+            Engine_HeroMorphSliders.Set(_morphs, moved, (float)value.AsDouble());
             Rebuild();
             return true;
         }

@@ -92,6 +92,33 @@ public sealed class Engine_BinkDecoder : IDisposable
 		}
 	}
 
+	/// <summary>How many audio tracks the file carries.</summary>
+	public int AudioTrackCount => RefiiBinkAudioTrackCount(_handle);
+
+	/// <summary>Sample rate of the selected tracks; 0 when none is selected.</summary>
+	public int AudioRate => RefiiBinkAudioRate(_handle);
+
+	/// <summary>The Bink id of the track at a file index, or -1 out of range.</summary>
+	public int AudioTrackId(int index) =>
+		RefiiBinkAudioTrackInfo(_handle, index, out int id, out _, out _) != 0 ? id : -1;
+
+	/// <summary>
+	/// Selects the tracks to decode by Bink track id, replacing any earlier selection. An id
+	/// the file does not carry is dropped, as Bink drops it. Returns how many matched.
+	/// </summary>
+	public int SelectAudio(int[] ids, int count) => RefiiBinkSelectAudio(_handle, ids, count);
+
+	/// <summary>Linear gain for one track, by id.</summary>
+	public void SetAudioVolume(int id, float volume) =>
+		RefiiBinkSetAudioVolume(_handle, id, volume);
+
+	/// <summary>
+	/// Takes the audio <see cref="NextFrame"/> has decoded: the selected tracks mixed, as
+	/// interleaved stereo. Returns stereo frames written; what did not fit stays queued.
+	/// </summary>
+	public int TakeAudio(float[] interleaved, int maxFrames) =>
+		RefiiBinkTakeAudio(_handle, interleaved, Math.Min(maxFrames, interleaved.Length / 2));
+
 	private const string Library = "refii_binkdecode";
 
 	[DllImport(Library)]
@@ -113,4 +140,24 @@ public sealed class Engine_BinkDecoder : IDisposable
 
 	[DllImport(Library)]
 	private static extern void RefiiBinkClose(IntPtr handle);
+
+	[DllImport(Library)]
+	private static extern int RefiiBinkAudioTrackCount(IntPtr handle);
+
+	[DllImport(Library)]
+	private static extern int RefiiBinkAudioTrackInfo(
+		IntPtr handle, int index, out int id, out int rate, out int channels);
+
+	[DllImport(Library)]
+	private static extern int RefiiBinkSelectAudio(IntPtr handle, int[] ids, int count);
+
+	[DllImport(Library)]
+	private static extern int RefiiBinkAudioRate(IntPtr handle);
+
+	[DllImport(Library)]
+	private static extern void RefiiBinkSetAudioVolume(IntPtr handle, int id, float volume);
+
+	[DllImport(Library)]
+	private static extern int RefiiBinkTakeAudio(
+		IntPtr handle, [Out] float[] interleaved, int capacityFrames);
 }

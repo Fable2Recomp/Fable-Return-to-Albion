@@ -183,6 +183,26 @@ public sealed class Engine_UiScreenMenu
 	///
 	/// A row here IS committable: see <see cref="Engine_UiMenuTemplate.BuildInto"/>.
 	/// </remarks>
+	/// <summary>
+	/// Shows the list the dye flow calls for, NOW: the dye list while a dye is held, the
+	/// screen's own list once it is put away. The sampled rebuild runs when the guest's screen
+	/// changes, and choosing a dye changes nothing of the guest's.
+	/// </summary>
+	public bool FollowDyeFlow()
+	{
+		string script = Engine_UiDyeFlow.Active ? Engine_UiDyeFlow.MenuScript : _boundScript;
+		if (script.Length == 0 || Engine_UiTemplates.Menu(script) is not { } template)
+		{
+			return false;
+		}
+
+		PopulationScript = script;
+		bool changed = RebuildFromTemplate(
+			template, _lastButtons ?? System.Array.Empty<Engine_ExpandableMenuItems.Button>());
+		GD.Print($"[screen-menu] the dye flow shows '{script}' — {Script.Visible.Count} row(s)");
+		return changed;
+	}
+
 	private bool RebuildFromTemplate(
 		Engine_UiMenuTemplate template,
 		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons)
@@ -652,6 +672,20 @@ public sealed class Engine_UiScreenMenu
 			}
 
 			PopulationScript = bound;
+		}
+
+		// A HELD DYE TURNS THE ITEMS SCREEN INTO THE DYE LIST, and leaving that screen puts the
+		// dye away — the guest's own state lives on the screen it leaves too.
+		if (Engine_UiDyeFlow.Active)
+		{
+			if (ScreenId == Engine_UiDyeFlow.ItemsScreen)
+			{
+				PopulationScript = Engine_UiDyeFlow.MenuScript;
+			}
+			else if (ScreenId != 0)
+			{
+				Engine_UiDyeFlow.End();
+			}
 		}
 
 		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons =

@@ -1,91 +1,63 @@
 using System;
-using System.Collections.Generic;
 
 namespace Refii.Hero;
 
 public readonly struct HeroMorphSlider
 {
-    public HeroMorphSlider(HeroMorphKind kind, string label)
+    public HeroMorphSlider(
+        HeroMorphInput input, string label, float minimum, float maximum, float step)
     {
-        Kind = kind;
+        Input = input;
         Label = label;
+        Minimum = minimum;
+        Maximum = maximum;
+        Step = step;
     }
 
-    public HeroMorphKind Kind { get; }
+    public HeroMorphInput Input { get; }
 
     public string Label { get; }
+
+    public float Minimum { get; }
+
+    public float Maximum { get; }
+
+    public float Step { get; }
+
+    public string RangeHint => FormattableString.Invariant($"{Minimum},{Maximum},{Step}");
 }
 
 public static class Engine_HeroMorphSliders
 {
-    public const float Minimum = 0.0f;
-
-    public const float Maximum = 1.0f;
-
-    public const string RangeHint = "0,1,0.01";
-
+    /// <summary>Ranges are the guest's clamps: percentages [0,1], Height [-1,1] (<c>sub_824D7A68</c>).</summary>
     public static readonly HeroMorphSlider[] All =
     {
-        new(HeroMorphKind.Strong, "Strong"),
-        new(HeroMorphKind.Fat, "Fat"),
-        new(HeroMorphKind.Tall, "Tall"),
-        new(HeroMorphKind.Will, "Will"),
-        new(HeroMorphKind.Young, "Young"),
-        new(HeroMorphKind.Old, "Old"),
-        new(HeroMorphKind.GoodPure, "Good Pure"),
-        new(HeroMorphKind.Impure, "Impure"),
-        new(HeroMorphKind.EvilPure, "Evil Pure"),
-        new(HeroMorphKind.EvilImpure, "Evil Corrupt"),
+        new(HeroMorphInput.Strength, "Strength", 0.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Skill, "Skill", 0.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Will, "Will", 0.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Fat, "Fat", 0.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Height, "Height", -1.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Tan, "Tan", 0.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Morality, "Morality", 0.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Purity, "Purity", 0.0f, 1.0f, 0.01f),
+        new(HeroMorphInput.Age, "Age", 0.0f, 100.0f, 1.0f),
     };
 
-    public static IEnumerable<HeroMorphSlider> Available(HeroMorphSet? set) => All;
-
-    public static IEnumerable<HeroMorphSlider> Available(HeroMorphSet? set, bool female) => All;
-
-    public static bool TryFind(string label, out HeroMorphKind kind)
+    public static bool TryFind(string label, out HeroMorphSlider slider)
     {
-        foreach (HeroMorphSlider slider in All)
+        foreach (HeroMorphSlider candidate in All)
         {
-            if (slider.Label.Equals(label, StringComparison.Ordinal))
+            if (candidate.Label.Equals(label, StringComparison.Ordinal))
             {
-                kind = slider.Kind;
+                slider = candidate;
                 return true;
             }
         }
 
-        kind = default;
+        slider = default;
         return false;
     }
 
-    public static string LabelOf(HeroMorphKind kind)
-    {
-        foreach (HeroMorphSlider slider in All)
-        {
-            if (slider.Kind == kind)
-            {
-                return slider.Label;
-            }
-        }
-
-        return kind.ToString();
-    }
-
-    public static void Set(HeroMorphWeights weights, HeroMorphKind kind, float value)
-    {
-        float clamped = value < Minimum ? Minimum : value > Maximum ? Maximum : value;
-
-        switch (kind)
-        {
-            case HeroMorphKind.Strong: weights.Strong = clamped; break;
-            case HeroMorphKind.Fat: weights.Fat = clamped; break;
-            case HeroMorphKind.Tall: weights.Tall = clamped; break;
-            case HeroMorphKind.Will: weights.Will = clamped; break;
-            case HeroMorphKind.Young: weights.Young = clamped; break;
-            case HeroMorphKind.Old: weights.Old = clamped; break;
-            case HeroMorphKind.GoodPure: weights.GoodPure = clamped; break;
-            case HeroMorphKind.Impure: weights.Impure = clamped; break;
-            case HeroMorphKind.EvilPure: weights.EvilPure = clamped; break;
-            case HeroMorphKind.EvilImpure: weights.EvilImpure = clamped; break;
-        }
-    }
+    public static void Set(HeroMorphStats stats, HeroMorphSlider slider, float value) =>
+        stats[slider.Input] = Math.Clamp(value, slider.Minimum, slider.Maximum);
 }

@@ -46,6 +46,8 @@ void refii_bridge_note_bink_movie_closed(uint32_t player);
 void refii_bridge_note_bink_movie_rect(uint32_t player, int32_t left, int32_t top, int32_t right,
                                        int32_t bottom);
 void refii_bridge_note_bink_video_requested(uint8_t* base, uint32_t data_guest);
+void refii_bridge_note_bink_sound(uint8_t* base, uint32_t player, uint32_t sound);
+void refii_bridge_note_bink_volume(uint32_t player, uint32_t track_id, float volume);
 
 // Guest tick pump. Wrappers: refii::vfs::GuestTickPump* in vfs_hooks_private.h.
 //
@@ -89,6 +91,43 @@ enum {
 };
 void refii_bridge_note_appearance(uint32_t component, const uint32_t* words);
 void refii_bridge_forget_appearance(uint32_t component);
+
+// Each character part's morph targets as the guest states them to `sub_82A48B90`: `pairs` is
+// `count` x {target model hash, weight float bits}; count 0 states the part unmorphed.
+// Wrapper: refii::vfs::NotePartMorph; table in src/core/part_morph_state.cpp.
+enum {
+  kPartMorphParts = 24,
+  kPartMorphTargets = 8,
+};
+void refii_bridge_note_part_morph(uint32_t entity, uint32_t base_model, const uint32_t* pairs,
+                                  uint32_t count);
+
+// Which of the hero's garments are dyed: the guest's own `sub_826CAFA8` per slot, sampled on
+// the GUI tick. kDyeStateWords words per item: 0 item record hash, 1 flags (bit 0 slot 1 dyed,
+// bit 1 slot 2 dyed, bit 2 the item is worn). Table in src/core/dye_state.cpp.
+enum {
+  kDyeStateWords = 2,
+  kDyeStateItems = 160,
+};
+void refii_bridge_note_dye_states(const uint32_t* words, uint32_t count);
+
+// Each character's texture work as the guest states it. Wrappers: refii::vfs::BeginTextureLayers
+// / NoteTextureLayers; table in src/core/texture_layer_state.cpp. A layer is kTextureLayerWords
+// words: 0 texture id, 1 blend mode (0 opaque, 1 alpha, 2 additive, 3 blend-factor, 4 masked),
+// 2 weight (float bits), 3 has-tint, 4 tint bytes B G R A (memory order), 5 brightness (float
+// bits), 6 bump texture id (overlays only).
+// `kind` 0 is a composite stated to `sub_825B38B0`, layer 0 the base. `kind` 1 is the OVERLAY
+// list sent as command type 14 through `sub_8222AAC8`: scars and blend-mode-0 morphs, drawn
+// over the finished material; texture id is the overlay's diffuse.
+// `begin` drops what the entity stated before.
+enum {
+  kTextureLayerWords = 7,
+  kTextureLayersPerTexture = 8,
+  kTextureLayerTextures = 40,
+};
+void refii_bridge_begin_texture_layers(uint32_t entity);
+void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32_t kind,
+                                      const uint32_t* layers, uint32_t count);
 
 // The pub-game seam. The host claims the guest's pub-game module and posts the fscommands
 // Godot's game issues; the pump replacement (src/hooks/pubgame_pump.cpp, on the guest's render

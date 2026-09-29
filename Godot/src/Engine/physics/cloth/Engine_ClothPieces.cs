@@ -20,6 +20,9 @@ public sealed class ClothPiece
     /// <summary>The material of the record's largest surface, which the cloth draws with.</summary>
     public Material? Material { get; init; }
 
+    /// <summary>The surface of the piece's own model <see cref="Material"/> was taken from, or -1.</summary>
+    public int MaterialSurface { get; init; } = -1;
+
     /// <summary>
     /// Per cloth bone id, the bone of the mesh's own table — identity for a single model; the
     /// composite's union index for a part, matched by name the way the composite remapped the
@@ -112,7 +115,8 @@ public static class Engine_ClothPieces
                 {
                     Asset = piece.Asset,
                     HiddenSurfaces = lifted,
-                    Material = piece.Material,
+                    Material = CompositeMaterial(piece, mesh, i, surfaceParts),
+                    MaterialSurface = piece.MaterialSurface,
                     BoneRemap = remap is null ? piece.BoneRemap : Compose(piece.BoneRemap, remap),
                     ModelPath = path,
                 });
@@ -120,6 +124,39 @@ public static class Engine_ClothPieces
         }
 
         return pieces;
+    }
+
+    /// <summary>
+    /// The material the COMPOSITE wears on the surface the piece took its own from. A
+    /// character's composite carries private copies where the guest stated texture layers — a
+    /// dye, a morph — and the piece's own is the part's shared, unlayered one.
+    /// </summary>
+    private static Material? CompositeMaterial(
+        ClothPiece piece, ArrayMesh composite, int partIndex, int[] surfaceParts)
+    {
+        int partSurface = piece.MaterialSurface;
+        if (partSurface < 0)
+        {
+            return piece.Material;
+        }
+
+        int seen = 0;
+        for (int j = 0; j < surfaceParts.Length && j < composite.GetSurfaceCount(); j++)
+        {
+            if (surfaceParts[j] != partIndex)
+            {
+                continue;
+            }
+
+            if (seen == partSurface)
+            {
+                return composite.SurfaceGetMaterial(j) ?? piece.Material;
+            }
+
+            seen++;
+        }
+
+        return piece.Material;
     }
 
     /// <summary>
@@ -280,6 +317,7 @@ public static class Engine_ClothPieces
             // The surfaces the record's buffer feeds, and the material of the largest.
             UInt128 hidden = UInt128.Zero;
             Material? material = null;
+            int materialSurface = -1;
             int best = 0;
             for (int s = 0; s < surfaceCount && s < 128; s++)
             {
@@ -303,6 +341,7 @@ public static class Engine_ClothPieces
                 {
                     best = hits;
                     material = mesh.SurfaceGetMaterial(s);
+                    materialSurface = s;
                 }
             }
 
@@ -324,6 +363,7 @@ public static class Engine_ClothPieces
                 Asset = asset,
                 HiddenSurfaces = hidden,
                 Material = material,
+                MaterialSurface = materialSurface,
                 BoneRemap = identity,
                 ModelPath = modelPath,
             });

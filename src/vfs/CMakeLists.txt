@@ -45,6 +45,11 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Each renderable's stated appearance (alpha, tint, scale, drawable): same rule, filled by
     # src/hooks/entity_appearance.cpp.
     ${REFII_VFS_ROOT}/src/core/entity_appearance_state.cpp
+    # Each character's texture composites, filled by src/hooks/texture_layers.cpp.
+    ${REFII_VFS_ROOT}/src/core/texture_layer_state.cpp
+    ${REFII_VFS_ROOT}/src/core/part_morph_state.cpp
+    # Which of the hero's garments are dyed, sampled from the guest's own test.
+    ${REFII_VFS_ROOT}/src/core/dye_state.cpp
     # The pub-game seam: the host posts Godot's fscommands, the pump replacement drains them.
     ${REFII_VFS_ROOT}/src/core/pubgame_state.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
@@ -127,6 +132,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/spell_fx_lifetime.cpp
     ${REFII_VFS_ROOT}/src/hooks/target_highlight.cpp
     ${REFII_VFS_ROOT}/src/hooks/entity_appearance.cpp
+    ${REFII_VFS_ROOT}/src/hooks/texture_layers.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp
     ${REFII_VFS_ROOT}/src/hooks/loading_resource_hashes.cpp

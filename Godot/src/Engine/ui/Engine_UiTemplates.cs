@@ -1176,6 +1176,48 @@ public static class Engine_UiTemplates
 		// TEMPLATE RECORD rather than a special case in the list builder, so any other row on any
 		// other guest menu can be dropped the same way — and put back, from
 		// `user://ui/templates.json`, without a rebuild.
+		// THE DYE LIST'S CHILDREN ARE THE HERO'S CLOTHES. The population table authors the seven
+		// category rows; `sub_829B2168` fills them from the inventory (categories 17..24, worn or
+		// not) and adds `Dye Hero Hair` with the hair, beard and moustache that are on.
+		if (_menus!.TryGetValue(Engine_UiDyeFlow.MenuScript, out Engine_UiMenuTemplate? dyes))
+		{
+			foreach (Engine_UiMenuEntry entry in dyes.Entries)
+			{
+				int category = entry.Name switch
+				{
+					"Hats" => Engine_UiInventorySource.Category.Hats,
+					"Coats" => Engine_UiInventorySource.Category.Coats,
+					"Shirts" => Engine_UiInventorySource.Category.Shirts,
+					"Gloves" => Engine_UiInventorySource.Category.Gloves,
+					"Pants" => Engine_UiInventorySource.Category.Pants,
+					"Shoes" => Engine_UiInventorySource.Category.Shoes,
+					"Accessories" => Engine_UiInventorySource.Category.Accessories,
+					_ => 0,
+				};
+
+				if (category != 0)
+				{
+					// Masks and the dog's collar share the row, as on the clothing screen.
+					entry.Source = $"{Engine_UiInventorySource.SourceName}:dye:{category}" +
+						(category == Engine_UiInventorySource.Category.Accessories
+							? $",{Engine_UiInventorySource.Category.Dog}"
+							: string.Empty);
+				}
+			}
+
+			dyes.Entries.Add(new Engine_UiMenuEntry
+			{
+				Name = "Dye Hero Hair",
+				Tag = CategoryTag + "DYE_HERO_HAIR",
+				Icon = @"Art\GUI\WheelIcons\icon_world_map.tga",
+				EventType = (int)Engine_UiMenuConstants.EventType.Submenu,
+				Source = $"{Engine_UiInventorySource.SourceName}:dye:" +
+					$"{Engine_UiInventorySource.Category.Hair}," +
+					$"{Engine_UiInventorySource.Category.Beard}," +
+					$"{Engine_UiInventorySource.Category.Moustache}",
+			});
+		}
+
 		if (_menus!.TryGetValue("LogbookMenu", out Engine_UiMenuTemplate? logbook))
 		{
 			foreach (Engine_UiMenuEntry entry in logbook.Entries)
@@ -1573,7 +1615,7 @@ public static class Engine_UiTemplates
 						Engine_UiInventorySource.Category.Trophies),
 					ItemCategory("Augmentations", CategoryTag + "AUGMENTATIONS", "use",
 						Engine_UiInventorySource.Category.Augmentations),
-					ItemCategory("Dyes", CategoryTag + "DYES", "use",
+					ItemCategory("Dyes", CategoryTag + "DYES", "dyeselect",
 						Engine_UiInventorySource.Category.Dyes),
 					ItemCategory("Furniture", CategoryTag + "FURNITURE", "use",
 						Engine_UiInventorySource.Category.Furniture),

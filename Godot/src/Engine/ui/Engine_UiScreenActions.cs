@@ -49,6 +49,18 @@ public static class Engine_UiScreenActions
 		if (action.StartsWith(Engine_UiInventorySource.InventoryAction,
 				System.StringComparison.Ordinal))
 		{
+			// A dye is CHOSEN, not used: the press opens the dye list and the simulation is
+			// untouched until a target is picked.
+			if (action.StartsWith(Engine_UiDyeFlow.SelectAction, System.StringComparison.Ordinal))
+			{
+				if (uint.TryParse(action[Engine_UiDyeFlow.SelectAction.Length..], out uint dye))
+				{
+					Engine_UiDyeFlow.Begin(dye);
+				}
+
+				return true;
+			}
+
 			// A joiner's weapon pick changes the record; the host equips it. The id is decimal.
 			const string equip = Engine_UiInventorySource.InventoryAction + "equip:";
 			if (Refii.Host.CoopSession.IsClient && action.StartsWith(equip, System.StringComparison.Ordinal) &&

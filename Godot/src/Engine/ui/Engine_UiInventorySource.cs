@@ -57,6 +57,11 @@ public static class Engine_UiInventorySource
 		public const int Potions = 6;
 		public const int Augmentations = 7;
 		public const int Dyes = 8;
+
+		/// <summary>`sub_829B2168` asks `sub_829B1FC0` for 9, 10 and 11 and names the rows Hair, Beard, Mustache.</summary>
+		public const int Hair = 9;
+		public const int Beard = 10;
+		public const int Moustache = 11;
 		public const int Furniture = 15;
 		public const int Books = 16;
 		public const int Hats = 17;
@@ -190,6 +195,11 @@ public static class Engine_UiInventorySource
 		// entry because it needs the row's own record hash, which only this knows.
 		string operation = SplitOperation(ref argument);
 		HashSet<int>? wanted = ParseCategories(argument);
+
+		if (operation == DyeOperation)
+		{
+			return DyeTargets(argument, wanted, records);
+		}
 
 		// GROUPED ONLY WHEN THE REQUEST SPANS MORE THAN ONE GROUP. A screen that authors its own
 		// category rows asks for one group each — `KeyItems` is eight category integers but a
@@ -467,6 +477,142 @@ public static class Engine_UiInventorySource
 			[Category.Shoes] = ("SHOES", 96, 0x18700u),
 			[Category.Accessories] = ("MASKS", 97, 0x18701u),
 		};
+
+	/// <summary>The dye list's operation: rows are what the held dye can go on.</summary>
+	public const string DyeOperation = "dye";
+
+	private static readonly uint AppearanceComponentField =
+		Engine_GameHash.Fnv1("AppearanceModifierComponent");
+	private static readonly uint DyeTexturesField = Engine_GameHash.Fnv1("DyeTextures");
+	private static readonly uint[] DyeLayerFields =
+	{
+		Engine_GameHash.Fnv1("Layer1"), Engine_GameHash.Fnv1("Layer2"),
+	};
+
+	/// <summary>
+	/// Whether the item takes a dye in this slot — the guest's own test `sub_826CB120`: its
+	/// def has `DyeTextures` and that names a `Layer1` (slot 0) or `Layer2` (slot 1). The guest
+	/// repeats the test before it dyes, so an unreadable database offers the row and leaves
+	/// the refusal to it.
+	/// </summary>
+	private static bool TakesDye(uint entity, int slot)
+	{
+		if (Globals is not { } globals)
+		{
+			return true;
+		}
+
+		return TryComponent(entity, AppearanceComponentField, out GdbCursor appearance) &&
+			globals.TryFindInherited(appearance, DyeTexturesField, (int)GdbFieldType.Reference,
+				out _, out uint textures, out _) &&
+			textures != 0u && globals.TryLookup(textures, out GdbCursor layers) &&
+			globals.TryFindInherited(layers, DyeLayerFields[slot], -1, out _, out uint layer, out _) &&
+			layer != 0u && layer != GdbHash.Null;
+	}
+
+	/// <summary>
+	/// THE DYE LIST. `sub_829B2168` offers every owned garment in categories 17..24, worn or
+	/// not, and the hair, beard and moustache only while they are on (`sub_829B1FC0`). A press
+	/// dyes slot 1 and the screen's second button dyes slot 2 (`sub_826D3108` with 0 and 1); a
+	/// row per slot states the same two choices in a list. The press is the guest's TOGGLE: a
+	/// slot that is already dyed is scrubbed (`sub_826CAFA8` -> `sub_826CAE08`), and the row
+	/// says which it will do.
+	/// </summary>
+	private static IReadOnlyList<Engine_UiMenuSources.Row> DyeTargets(
+		string argument,
+		HashSet<int>? wanted,
+		List<Refii.Host.HostBridge.InventoryRecord> records)
+	{
+		uint dye = Engine_UiDyeFlow.Dye;
+		if (dye == 0u || wanted is null)
+		{
+			return None;
+		}
+
+		var rows = new List<Engine_UiMenuSources.Row>();
+		var seen = new HashSet<uint>();
+		Dictionary<uint, Refii.Host.HostBridge.DyeState> dyed = Refii.Host.HostBridge.GetDyeStates();
+
+		void Offer(uint recordId, string tag, string text, string icon)
+		{
+			if (!seen.Add(recordId))
+			{
+				return;
+			}
+
+			for (int slot = 0; slot < 2; slot++)
+			{
+				if (!TakesDye(recordId, slot))
+				{
+					continue;
+				}
+
+				// The footer's own choice (`sub_829B5D68`): scrub when the slot is dyed.
+				bool scrubs = dyed.TryGetValue(recordId, out Refii.Host.HostBridge.DyeState state) &&
+					(slot == 0 ? state.Slot1 : state.Slot2);
+				string slotTag = $"GUI_SCREEN_DYE_{(scrubs ? "SCRUB" : "APPLY")}_{slot + 1}";
+				string slotText = Strings is { } book && book.TryGetString(slotTag, out string said) &&
+					said.Length != 0
+					? said
+					: slotTag;
+
+				rows.Add(new Engine_UiMenuSources.Row(
+					Name: $"{(tag.Length != 0 ? tag : $"Item:{recordId:X8}")}:dye{slot + 1}",
+					Label: $"{text} — {slotText}",
+					Icon: icon,
+					EventType: 0,
+					Id: recordId,
+					Rating: Engine_UiMenuConstants.EmptyRatingSlide,
+					Committable: false,
+					Ghosted: false,
+					Command: $"{InventoryAction}{DyeOperation}:{dye}:{recordId}:{slot}",
+					Group: string.Empty,
+					GroupTag: string.Empty,
+					IsHeader: false,
+					Emphasised: false,
+					Counted: slot == 0));
+			}
+		}
+
+		bool hair = wanted.Contains(Category.Hair) || wanted.Contains(Category.Beard) ||
+			wanted.Contains(Category.Moustache);
+		if (hair)
+		{
+			foreach ((uint recordId, int category) in Refii.Host.HostBridge.GetWornItems())
+			{
+				if (!wanted.Contains(category))
+				{
+					continue;
+				}
+
+				string tag = category == Category.Hair ? "INV_ITEM_HAIR"
+					: category == Category.Beard ? "INV_ITEM_HAIR_BEARD"
+					: "INV_ITEM_HAIR_MOUSTACHE";
+				string text = Strings is { } book && book.TryGetString(tag, out string said) &&
+					said.Length != 0
+					? said
+					: tag;
+				Offer(recordId, tag, text, NoneRowIcon);
+			}
+		}
+
+		foreach (Refii.Host.HostBridge.InventoryRecord record in records)
+		{
+			// `Category > 16 && Category <= 24` — the guest's own range test (0x829B2574).
+			if (!wanted.Contains(record.Category) ||
+				record.Category <= Category.Books || record.Category > Category.Dog ||
+				!Listable(record, asked: true))
+			{
+				continue;
+			}
+
+			string tag = NameTagOf(record);
+			Offer(record.RecordId, tag, LabelOf(record, tag), IconOf(record));
+		}
+
+		Say(DyeOperation + ":" + argument, $"{rows.Count} dye row(s) for dye 0x{dye:X8}");
+		return rows;
+	}
 
 	/// <summary>See <see cref="NoneRows"/>. Only the clothing screen states `wear`.</summary>
 	private static void AddNoneRows(

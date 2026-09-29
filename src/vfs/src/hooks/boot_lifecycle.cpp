@@ -1718,8 +1718,30 @@ REX_EXTERN(sub_82A41E30) {
       static_cast<int32_t>(refii::vfs::LoadGuestU32(base, rect + 12)));
 }
 
+// A TRACK'S VOLUME, as the guest states it. `sub_82A41D88(B, id, volume)` clamps f1 to 0..1
+// and calls `BinkSetVolume(*(B+64), id, volume * 32768)`; it does nothing when B+222 (the
+// sound byte) is clear (0x82A41DA4). The cutscene player states two after every open: track 0
+// at `movie+84` and the voice track at `movie+88` (0x823C1A20, 0x823C1A30).
+//
+// The arguments are taken BEFORE the call: the open hook below clears the sound byte, so the
+// original returns early and the guest's copy of the track stays silent.
+REX_EXTERN(sub_82A41D88) {
+  REX_FUNC_PROLOGUE();
+  refii::vfs::NoteBinkVolume(ctx.r3.u32, ctx.r4.u32, static_cast<float>(ctx.f1.f64));
+  __imp__sub_82A41D88(ctx, base);
+}
+
 REX_EXTERN(sub_82A41B48) {
   REX_FUNC_PROLOGUE();
+
+  // THE HOST PLAYS THE SOUND, from the same decode that produces the picture. The guest's
+  // `sound` argument (r5, stored at B+222 by `stb r5, 0xDE(r30)` 0x82A41B68) is recorded and
+  // then passed on as 0, which takes the opener's own mute branch — `BinkSetVolume(bink, id,
+  // 0)` for ids 0..4 at 0x82A41C48..0x82A41C88. The guest's voices still run, silent, so
+  // `BinkWait` keeps its audio clock. Without this the movie is heard twice, the guest's copy
+  // on the guest's own decode timing.
+  refii::vfs::NoteBinkSound(base, ctx.r3.u32, ctx.r5.u32 & 0xFFu);
+  ctx.r5.u64 = 0;
 
 
   // r4 is the file name handed to BinkOpen (`sub_832BB4B8(a2, *(a1 + 224))`). Capturing
