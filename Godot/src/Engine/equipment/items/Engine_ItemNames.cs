@@ -27,6 +27,31 @@ public static class Engine_ItemNames
             ? text
             : string.Empty;
 
+    /// <summary>
+    /// Returns the unpatched vanilla display name strictly from base game data, ignoring any active mod overlays.
+    /// </summary>
+    public static string VanillaDisplayNameOf(ItemDetail detail)
+    {
+        if (detail.NameTag != 0 &&
+            Engine_BnkTextBankLoader.TryLookupVanilla(detail.NameTag, out string localised) &&
+            localised.Length != 0 &&
+            !localised.Equals(Placeholder, StringComparison.Ordinal))
+        {
+            return localised;
+        }
+
+        return detail.Label;
+    }
+
+    /// <summary>
+    /// Returns the unpatched vanilla description strictly from base game data, ignoring any active mod overlays.
+    /// </summary>
+    public static string VanillaDescriptionOf(ItemDetail detail) =>
+        detail.DescTag != 0 &&
+        Engine_BnkTextBankLoader.TryLookupVanilla(detail.DescTag, out string text)
+            ? text
+            : string.Empty;
+
     public static string SearchTextOf(ItemDetail detail, bool female)
     {
         var text = new StringBuilder();

@@ -141,6 +141,15 @@ public static class RuntimeConfig
 
             foreach ((string key, string legacyDefault) in AssetRelativeRoots)
             {
+                // If the config carries a stale absolute path from another machine/drive/build folder
+                // that does not exist on disk, clear it so it can be re-resolved to the local install:
+                if (values.TryGetValue(key, out string? currentVal) &&
+                    Path.IsPathRooted(currentVal) &&
+                    !Directory.Exists(currentVal))
+                {
+                    values.Remove(key);
+                }
+
                 string relative = legacyDefault.Length > AssetsPrefix.Length
                     ? legacyDefault[(AssetsPrefix.Length + 1)..]
                     : string.Empty;
@@ -564,6 +573,20 @@ public static class RuntimeConfig
 
         if (Path.IsPathRooted(value))
         {
+            // If the absolute path does not exist, but local assets exist beside configPath, heal it:
+            if (!Directory.Exists(value))
+            {
+                string? configDir = Path.GetDirectoryName(configPath);
+                if (!string.IsNullOrEmpty(configDir))
+                {
+                    string localAssets = Path.Combine(configDir, "assets");
+                    if (Directory.Exists(localAssets))
+                    {
+                        return ToGeneric(LauncherPaths.Normalize(localAssets));
+                    }
+                }
+            }
+
             return ToGeneric(value);
         }
 

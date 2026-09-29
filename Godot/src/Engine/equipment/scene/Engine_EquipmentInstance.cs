@@ -131,6 +131,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
 
 	public void OpenModEditor()
 	{
+#if TOOLS
 		uint hash = 0;
 		string hashStr = Text(HashMeta);
 		if (hashStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
@@ -150,6 +151,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
 				}
 			}
 		}
+#endif
 	}
 
 	/// <summary>
@@ -196,6 +198,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
 
 		NotifyPropertyListChanged();
 
+#if TOOLS
 		if (Engine.IsEditorHint())
 		{
 			var selection = EditorInterface.Singleton?.GetSelection()?.GetSelectedNodes();
@@ -204,6 +207,7 @@ public partial class Engine_EquipmentInstance : MeshInstance3D
 				EditorInterface.Singleton?.InspectObject(this, string.Empty, true);
 			}
 		}
+#endif
 	}
 
 	public static Dictionary DetailRows(IEnumerable<KeyValuePair<string, string>> rows)

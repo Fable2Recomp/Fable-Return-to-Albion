@@ -80,6 +80,29 @@ public sealed class GdbMulti
         return hash != 0 && hash != GdbHash.Null && _index.TryGetValue(hash, out cursor);
     }
 
+    /// <summary>
+    /// Returns the index of the <see cref="GdbView"/> that owns the record with the given hash,
+    /// or −1 if the record is not found. The index corresponds to the position in
+    /// <see cref="Refii.Level.Engine_LevelProps.SupplementalGdbPaths"/> used to build this multi.
+    /// </summary>
+    public int ViewIndexOf(uint hash)
+    {
+        if (hash == 0 || hash == GdbHash.Null || !_index.TryGetValue(hash, out GdbCursor cursor))
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < _views.Count; i++)
+        {
+            if (ReferenceEquals(_views[i], cursor.View))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
     public bool TryFindInherited(
         GdbCursor start,
         uint fieldHash,

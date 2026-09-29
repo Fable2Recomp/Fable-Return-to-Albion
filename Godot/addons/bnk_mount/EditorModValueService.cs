@@ -116,6 +116,126 @@ public static class EditorModValueService
     private const string GlobalsCsvSubPath = "globals/globals.gdb.csv";
     private const string BabelCsvSubPath = "language/en-uk/text/book.babel.csv";
 
+    /// <summary>
+    /// The GDB database paths that the game mounts, mirroring
+    /// <see cref="Refii.Level.Engine_LevelProps.SupplementalGdbPaths"/>.
+    /// Each has a corresponding <c>.csv</c> overlay file.
+    /// </summary>
+    private static readonly string[] KnownGdbPaths =
+    {
+        "globals/globals.gdb",
+        "speechaction/speechaction.gdb",
+        "interactivecutscenes/interactivecutscenes.gdb",
+        "entity/entity.gdb",
+        "environmentthemes/environmentthemes.gdb",
+    };
+
+    /// <summary>
+    /// Determines which <c>.gdb.csv</c> sub-path a property's declaring record should be written to,
+    /// based on which GDB file actually contains that record.
+    /// Falls back to <c>globals/globals.gdb.csv</c> when the source file cannot be determined.
+    /// </summary>
+    /// <param name="multi">The merged multi-database to look up the record in.</param>
+    /// <param name="declaringHash">The hash of the record that locally declares the property.</param>
+    /// <returns>The relative CSV sub-path (e.g. <c>entity/entity.gdb.csv</c>).</returns>
+    private static string ResolveGdbCsvSubPath(GdbMulti multi, uint declaringHash)
+    {
+        int viewIndex = multi.ViewIndexOf(declaringHash);
+        if (viewIndex >= 0 && viewIndex < KnownGdbPaths.Length)
+        {
+            return KnownGdbPaths[viewIndex] + ".csv";
+        }
+
+        // Default to globals when the source file cannot be determined:
+        return GlobalsCsvSubPath;
+    }
+
+    /// <summary>
+    /// Resolves the absolute path to the active mod's <c>book.babel.csv</c> overlay file.
+    /// Checks for both <c>language/en-uk/text/book.babel.csv</c> and <c>data/language/en-uk/text/book.babel.csv</c>,
+    /// defaulting to the canonical relative path without <c>data/</c>.
+    /// </summary>
+    /// <param name="filesRoot">The active mod's <c>files/</c> directory root.</param>
+    public static string ResolveBabelCsvPath(string filesRoot)
+    {
+        string primary = Path.Combine(filesRoot, BabelCsvSubPath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(primary))
+        {
+            return primary;
+        }
+
+        string fallback = Path.Combine(filesRoot, ("data/" + BabelCsvSubPath).Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(fallback))
+        {
+            return fallback;
+        }
+
+        return primary;
+    }
+
+    /// <summary>
+    /// Checks whether a CSV row's key matches the target tag name or hash.
+    /// Supports exact tag names, optional <c>TEXT_</c> prefixes, hexadecimal hashes (<c>0x...</c>),
+    /// and raw FNV-1 hash comparisons.
+    /// </summary>
+    /// <param name="rowKey">The key authored in the CSV row.</param>
+    /// <param name="tagName">The item's name/description tag string (e.g. <c>INV_ITEM_WEAPON_PISTOL_CHILD_NAME</c>).</param>
+    /// <param name="tagHash">The FNV-1 hash or ID of the tag.</param>
+    /// <returns>True if the row key corresponds to the given tag or hash.</returns>
+    public static bool MatchesBabelKey(string rowKey, string tagName, uint tagHash)
+    {
+        if (string.IsNullOrWhiteSpace(rowKey))
+        {
+            return false;
+        }
+
+        string trimmedRow = rowKey.Trim();
+
+        // 1. Direct string tag matching (with or without 'TEXT_' prefix):
+        if (!string.IsNullOrEmpty(tagName))
+        {
+            if (trimmedRow.Equals(tagName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (tagName.StartsWith("TEXT_", StringComparison.OrdinalIgnoreCase) &&
+                trimmedRow.Equals(tagName[5..], StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!tagName.StartsWith("TEXT_", StringComparison.OrdinalIgnoreCase) &&
+                trimmedRow.Equals("TEXT_" + tagName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        // 2. Numerical / Hash matching (0x12345678 or FNV-1 hash of row string):
+        if (tagHash != 0)
+        {
+            if (trimmedRow.Equals($"0x{tagHash:X8}", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (trimmedRow.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                uint.TryParse(trimmedRow.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint parsed) &&
+                parsed == tagHash)
+            {
+                return true;
+            }
+
+            if (Engine_GameHash.Fnv1(trimmedRow) == tagHash)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // Standard component and property hashes:
     private static readonly uint BasePriceField = Engine_GameHash.Fnv1("BasePrice");
     private static readonly uint RatingField = Engine_GameHash.Fnv1("Rating");
@@ -347,8 +467,8 @@ public static class EditorModValueService
         }
 
         ItemDetail vanillaDetail = Engine_ItemDetails.BuildOne(baseMulti, detail.RecordHash) ?? detail;
-        values.VanillaDisplayName = Engine_ItemNames.DisplayNameOf(vanillaDetail);
-        values.VanillaDescription = Engine_ItemNames.DescriptionOf(vanillaDetail);
+        values.VanillaDisplayName = Engine_ItemNames.VanillaDisplayNameOf(vanillaDetail);
+        values.VanillaDescription = Engine_ItemNames.VanillaDescriptionOf(vanillaDetail);
         values.DisplayName = values.VanillaDisplayName;
         values.Description = values.VanillaDescription;
 
@@ -383,8 +503,8 @@ public static class EditorModValueService
             ? Engine_ItemDetails.BuildOne(Engine_GameGdb.BaseDatabase, detail.RecordHash) ?? detail
             : detail;
 
-        values.VanillaDisplayName = Engine_ItemNames.DisplayNameOf(vanillaDetail);
-        values.VanillaDescription = Engine_ItemNames.DescriptionOf(vanillaDetail);
+        values.VanillaDisplayName = Engine_ItemNames.VanillaDisplayNameOf(vanillaDetail);
+        values.VanillaDescription = Engine_ItemNames.VanillaDescriptionOf(vanillaDetail);
         values.DisplayName = Engine_ItemNames.DisplayNameOf(detail);
         values.Description = Engine_ItemNames.DescriptionOf(detail);
 
@@ -392,48 +512,54 @@ public static class EditorModValueService
         List<ModItemProperty> discovered = DiscoverProperties(detail, multi);
         values.Properties.AddRange(discovered);
 
-        // 3. Check for active mod GDB overrides in globals.gdb.csv:
-        string gdbCsvPath = Path.Combine(filesRoot, GlobalsCsvSubPath.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(gdbCsvPath))
+        // 3. Check for active mod GDB overrides across ALL known .gdb.csv files:
+        //    Properties may be spread across globals.gdb, entity.gdb, etc.
+        var rowMap = new Dictionary<(string Entry, string Property), string>();
+        foreach (string gdbPath in KnownGdbPaths)
         {
-            List<GdbOverlayRow> rows = GdbOverlay.ParseCsv(File.ReadAllText(gdbCsvPath), new List<string>());
-            var rowMap = new Dictionary<(string Entry, string Property), string>();
+            string csvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(csvPath))
+            {
+                continue;
+            }
+
+            List<GdbOverlayRow> rows = GdbOverlay.ParseCsv(File.ReadAllText(csvPath), new List<string>());
             foreach (GdbOverlayRow r in rows)
             {
                 rowMap[(r.Entry.Trim(), r.Property.Trim())] = r.Value.Trim();
             }
+        }
 
-            foreach (ModItemProperty prop in values.Properties)
+        foreach (ModItemProperty prop in values.Properties)
+        {
+            string hexUpper = $"0x{prop.DeclaringHash:X8}";
+            string hexLower = $"0x{prop.DeclaringHash:x8}";
+
+            if (rowMap.TryGetValue((hexUpper, prop.PropertyName), out string? val) ||
+                rowMap.TryGetValue((hexLower, prop.PropertyName), out val))
             {
-                string hexUpper = $"0x{prop.DeclaringHash:X8}";
-                string hexLower = $"0x{prop.DeclaringHash:x8}";
-
-                if (rowMap.TryGetValue((hexUpper, prop.PropertyName), out string? val) ||
-                    rowMap.TryGetValue((hexLower, prop.PropertyName), out val))
+                prop.CurrentValue = val;
+                prop.IsModified = !string.Equals(val, prop.VanillaValue, StringComparison.Ordinal);
+                if (prop.IsModified)
                 {
-                    prop.CurrentValue = val;
-                    prop.IsModified = !string.Equals(val, prop.VanillaValue, StringComparison.Ordinal);
-                    if (prop.IsModified)
-                    {
-                        values.HasModOverrides = true;
-                    }
+                    values.HasModOverrides = true;
                 }
             }
         }
 
         // 4. Check for active mod text overrides in book.babel.csv:
-        string babelCsvPath = Path.Combine(filesRoot, BabelCsvSubPath.Replace('/', Path.DirectorySeparatorChar));
+        string babelCsvPath = ResolveBabelCsvPath(filesRoot);
         if (File.Exists(babelCsvPath))
         {
             List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(File.ReadAllText(babelCsvPath), new List<string>());
             foreach (BabelOverlayRow row in rows)
             {
-                if (detail.NameTagName.Length > 0 && row.Key.Equals(detail.NameTagName, StringComparison.OrdinalIgnoreCase))
+                if (MatchesBabelKey(row.Key, detail.NameTagName, detail.NameTag))
                 {
                     values.DisplayName = row.Value;
                     values.HasModOverrides = true;
                 }
-                else if (detail.DescTagName.Length > 0 && row.Key.Equals(detail.DescTagName, StringComparison.OrdinalIgnoreCase))
+                else if (MatchesBabelKey(row.Key, detail.DescTagName, detail.DescTag))
                 {
                     values.Description = row.Value;
                     values.HasModOverrides = true;
@@ -459,89 +585,113 @@ public static class EditorModValueService
             return;
         }
 
-        // 1. UPDATE GDB PROPERTIES (globals/globals.gdb.csv)
-        string gdbCsvPath = Path.Combine(filesRoot, GlobalsCsvSubPath.Replace('/', Path.DirectorySeparatorChar));
-        string? gdbDir = Path.GetDirectoryName(gdbCsvPath);
-        if (!string.IsNullOrEmpty(gdbDir))
-        {
-            Directory.CreateDirectory(gdbDir);
-        }
-
-        var existingGdbRows = new List<GdbOverlayRow>();
-        if (File.Exists(gdbCsvPath))
-        {
-            existingGdbRows = GdbOverlay.ParseCsv(File.ReadAllText(gdbCsvPath), new List<string>());
-        }
-
-        var updates = new Dictionary<(string Entry, string Property), string>();
-        var removals = new HashSet<(string Entry, string Property)>();
+        // 1. UPDATE GDB PROPERTIES — routed to the correct per-database .gdb.csv file.
+        //    Properties are grouped by the GDB file that owns their declaring record, so
+        //    weapon stats in entity.gdb go to entity/entity.gdb.csv, pricing in globals.gdb
+        //    goes to globals/globals.gdb.csv, etc.
+        var propsByFile = new Dictionary<string, List<ModItemProperty>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (ModItemProperty prop in values.Properties)
         {
-            string hex = $"0x{prop.DeclaringHash:X8}";
-            var key = (hex, prop.PropertyName);
+            string csvSubPath = ResolveGdbCsvSubPath(multi, prop.DeclaringHash);
+            if (!propsByFile.TryGetValue(csvSubPath, out var list))
+            {
+                list = new List<ModItemProperty>();
+                propsByFile[csvSubPath] = list;
+            }
 
-            if (!string.Equals(prop.CurrentValue, prop.VanillaValue, StringComparison.Ordinal))
-            {
-                updates[key] = prop.CurrentValue;
-            }
-            else
-            {
-                removals.Add(key);
-            }
+            list.Add(prop);
         }
 
-        var mergedGdbRows = new List<(string Entry, string Property, string Value)>();
-        var updatedKeys = new HashSet<(string Entry, string Property)>();
-
-        foreach (GdbOverlayRow row in existingGdbRows)
+        // Process each target GDB CSV file independently:
+        foreach (var (csvSubPath, props) in propsByFile)
         {
-            var key = (row.Entry, row.Property);
-            if (removals.Contains(key))
+            string gdbCsvPath = Path.Combine(filesRoot, csvSubPath.Replace('/', Path.DirectorySeparatorChar));
+            string? gdbDir = Path.GetDirectoryName(gdbCsvPath);
+            if (!string.IsNullOrEmpty(gdbDir))
             {
-                continue;
+                Directory.CreateDirectory(gdbDir);
             }
 
-            if (updates.TryGetValue(key, out string? newVal))
-            {
-                mergedGdbRows.Add((row.Entry, row.Property, newVal));
-                updatedKeys.Add(key);
-            }
-            else
-            {
-                mergedGdbRows.Add((row.Entry, row.Property, row.Value));
-            }
-        }
-
-        foreach (var kvp in updates)
-        {
-            if (!updatedKeys.Contains(kvp.Key))
-            {
-                mergedGdbRows.Add((kvp.Key.Entry, kvp.Key.Property, kvp.Value));
-            }
-        }
-
-        if (mergedGdbRows.Count == 0)
-        {
+            var existingGdbRows = new List<GdbOverlayRow>();
             if (File.Exists(gdbCsvPath))
             {
-                try { File.Delete(gdbCsvPath); } catch { }
+                existingGdbRows = GdbOverlay.ParseCsv(File.ReadAllText(gdbCsvPath), new List<string>());
             }
-        }
-        else
-        {
-            var gdbSb = new StringBuilder();
-            gdbSb.AppendLine("# Refii GDB Property Overlays");
-            gdbSb.AppendLine("# entry,property,value");
-            foreach (var r in mergedGdbRows)
+
+            var updates = new Dictionary<(string Entry, string Property), string>();
+            var removals = new HashSet<(string Entry, string Property)>();
+
+            foreach (ModItemProperty prop in props)
             {
-                gdbSb.Append(r.Entry).Append(',').Append(r.Property).Append(',').AppendLine(EscapeCsv(r.Value));
+                string hex = $"0x{prop.DeclaringHash:X8}";
+                var key = (hex, prop.PropertyName);
+
+                if (!string.Equals(prop.CurrentValue, prop.VanillaValue, StringComparison.Ordinal))
+                {
+                    updates[key] = prop.CurrentValue;
+                }
+                else
+                {
+                    removals.Add(key);
+                }
             }
-            File.WriteAllText(gdbCsvPath, gdbSb.ToString(), Encoding.UTF8);
+
+            var mergedGdbRows = new List<(string Entry, string Property, string Value)>();
+            var updatedKeys = new HashSet<(string Entry, string Property)>();
+
+            foreach (GdbOverlayRow row in existingGdbRows)
+            {
+                var key = (row.Entry, row.Property);
+                if (removals.Contains(key))
+                {
+                    continue;
+                }
+
+                if (updates.TryGetValue(key, out string? newVal))
+                {
+                    mergedGdbRows.Add((row.Entry, row.Property, newVal));
+                    updatedKeys.Add(key);
+                }
+                else
+                {
+                    mergedGdbRows.Add((row.Entry, row.Property, row.Value));
+                }
+            }
+
+            foreach (var kvp in updates)
+            {
+                if (!updatedKeys.Contains(kvp.Key))
+                {
+                    mergedGdbRows.Add((kvp.Key.Entry, kvp.Key.Property, kvp.Value));
+                }
+            }
+
+            if (mergedGdbRows.Count == 0)
+            {
+                if (File.Exists(gdbCsvPath))
+                {
+                    try { File.Delete(gdbCsvPath); } catch { }
+                }
+            }
+            else
+            {
+                var gdbSb = new StringBuilder();
+                gdbSb.AppendLine("# Refii GDB Property Overlays");
+                gdbSb.AppendLine("# entry,property,value");
+                foreach (var r in mergedGdbRows)
+                {
+                    gdbSb.Append(r.Entry).Append(',').Append(r.Property).Append(',').AppendLine(EscapeCsv(r.Value));
+                }
+
+                File.WriteAllText(gdbCsvPath, gdbSb.ToString(), Encoding.UTF8);
+            }
+
+            GD.Print($"[mod_values] Wrote {mergedGdbRows.Count} row(s) to {csvSubPath}");
         }
 
         // 2. UPDATE BABEL TEXT (language/en-uk/text/book.babel.csv)
-        string babelCsvPath = Path.Combine(filesRoot, BabelCsvSubPath.Replace('/', Path.DirectorySeparatorChar));
+        string babelCsvPath = ResolveBabelCsvPath(filesRoot);
         string? babelDir = Path.GetDirectoryName(babelCsvPath);
         if (!string.IsNullOrEmpty(babelDir))
         {
@@ -554,60 +704,49 @@ public static class EditorModValueService
             existingBabelRows = BabelOverlay.ParseCsv(File.ReadAllText(babelCsvPath), new List<string>());
         }
 
-        var textUpdates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var textRemovals = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string nameKey = detail.NameTagName.Length > 0
+            ? detail.NameTagName
+            : (detail.NameTag != 0 ? $"0x{detail.NameTag:X8}" : string.Empty);
+        string descKey = detail.DescTagName.Length > 0
+            ? detail.DescTagName
+            : (detail.DescTag != 0 ? $"0x{detail.DescTag:X8}" : string.Empty);
 
-        if (detail.NameTagName.Length > 0)
-        {
-            if (!string.IsNullOrWhiteSpace(values.DisplayName) && values.DisplayName != values.VanillaDisplayName)
-            {
-                textUpdates[detail.NameTagName] = values.DisplayName.Trim();
-            }
-            else
-            {
-                textRemovals.Add(detail.NameTagName);
-            }
-        }
+        // Diagnostic: log the babel keys being used so key mismatches are visible:
+        GD.Print($"[mod_values] Babel keys — name: '{nameKey}' (tag=0x{detail.NameTag:X8}, tagName='{detail.NameTagName}'), " +
+                 $"desc: '{descKey}' (tag=0x{detail.DescTag:X8}, tagName='{detail.DescTagName}')");
 
-        if (detail.DescTagName.Length > 0)
-        {
-            if (!string.IsNullOrWhiteSpace(values.Description) && values.Description != values.VanillaDescription)
-            {
-                textUpdates[detail.DescTagName] = values.Description.Trim();
-            }
-            else
-            {
-                textRemovals.Add(detail.DescTagName);
-            }
-        }
-
+        string? existingNameVal = null;
+        string? existingDescVal = null;
         var mergedBabelRows = new List<(string Key, string Value)>();
-        var updatedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
         foreach (BabelOverlayRow row in existingBabelRows)
         {
-            if (textRemovals.Contains(row.Key))
+            if (nameKey.Length > 0 && MatchesBabelKey(row.Key, detail.NameTagName, detail.NameTag))
             {
+                existingNameVal = row.Value;
                 continue;
             }
 
-            if (textUpdates.TryGetValue(row.Key, out string? newVal))
+            if (descKey.Length > 0 && MatchesBabelKey(row.Key, detail.DescTagName, detail.DescTag))
             {
-                mergedBabelRows.Add((row.Key, newVal));
-                updatedTags.Add(row.Key);
+                existingDescVal = row.Value;
+                continue;
             }
-            else
-            {
-                mergedBabelRows.Add((row.Key, row.Value));
-            }
+
+            mergedBabelRows.Add((row.Key, row.Value));
         }
 
-        foreach (var kvp in textUpdates)
+        bool shouldSaveName = nameKey.Length > 0 && !string.IsNullOrWhiteSpace(values.DisplayName) &&
+            (values.DisplayName != values.VanillaDisplayName || existingNameVal != null);
+        if (shouldSaveName)
         {
-            if (!updatedTags.Contains(kvp.Key))
-            {
-                mergedBabelRows.Add((kvp.Key, kvp.Value));
-            }
+            mergedBabelRows.Add((nameKey, values.DisplayName.Trim()));
+        }
+
+        bool shouldSaveDesc = descKey.Length > 0 && !string.IsNullOrWhiteSpace(values.Description) &&
+            (values.Description != values.VanillaDescription || existingDescVal != null);
+        if (shouldSaveDesc)
+        {
+            mergedBabelRows.Add((descKey, values.Description.Trim()));
         }
 
         if (mergedBabelRows.Count == 0)
@@ -626,12 +765,14 @@ public static class EditorModValueService
             {
                 babelSb.Append(r.Key).Append(',').AppendLine(EscapeCsv(r.Value));
             }
+
             File.WriteAllText(babelCsvPath, babelSb.ToString(), Encoding.UTF8);
         }
 
         GD.Print($"[mod_values] Saved overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] to mod '{modName}'");
 
         // 3. HOT-RELOAD IN-MEMORY OVERLAYS AND REFRESH SCENE NODES
+        Engine_BnkTextBankLoader.Invalidate();
         BnkMountPlugin.Instance?.ReloadModOverlays();
         RefreshSceneEquipment();
     }
@@ -647,10 +788,15 @@ public static class EditorModValueService
         GdbMulti? multi = Engine_GameGdb.Database ?? Engine_GameGdb.BaseDatabase;
         var targets = CollectTargetEntries(multi, detail);
 
-        // Filter globals.gdb.csv:
-        string gdbCsvPath = Path.Combine(filesRoot, GlobalsCsvSubPath.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(gdbCsvPath))
+        // Filter ALL known .gdb.csv files — properties may be spread across multiple databases:
+        foreach (string gdbPath in KnownGdbPaths)
         {
+            string gdbCsvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(gdbCsvPath))
+            {
+                continue;
+            }
+
             List<GdbOverlayRow> rows = GdbOverlay.ParseCsv(File.ReadAllText(gdbCsvPath), new List<string>());
             var remaining = new List<GdbOverlayRow>();
             foreach (GdbOverlayRow row in rows)
@@ -669,7 +815,7 @@ public static class EditorModValueService
                 }
                 catch (Exception ex)
                 {
-                    GD.PushWarning($"[mod_values] Could not delete empty globals.gdb.csv: {ex.Message}");
+                    GD.PushWarning($"[mod_values] Could not delete empty {gdbPath}.csv: {ex.Message}");
                 }
             }
             else
@@ -681,20 +827,21 @@ public static class EditorModValueService
                 {
                     sb.Append(r.Entry).Append(',').Append(r.Property).Append(',').AppendLine(EscapeCsv(r.Value));
                 }
+
                 File.WriteAllText(gdbCsvPath, sb.ToString(), Encoding.UTF8);
             }
         }
 
         // Filter book.babel.csv:
-        string babelCsvPath = Path.Combine(filesRoot, BabelCsvSubPath.Replace('/', Path.DirectorySeparatorChar));
+        string babelCsvPath = ResolveBabelCsvPath(filesRoot);
         if (File.Exists(babelCsvPath))
         {
             List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(File.ReadAllText(babelCsvPath), new List<string>());
             var remaining = new List<BabelOverlayRow>();
             foreach (BabelOverlayRow row in rows)
             {
-                if (!row.Key.Equals(detail.NameTagName, StringComparison.OrdinalIgnoreCase) &&
-                    !row.Key.Equals(detail.DescTagName, StringComparison.OrdinalIgnoreCase))
+                if (!MatchesBabelKey(row.Key, detail.NameTagName, detail.NameTag) &&
+                    !MatchesBabelKey(row.Key, detail.DescTagName, detail.DescTag))
                 {
                     remaining.Add(row);
                 }
@@ -720,6 +867,7 @@ public static class EditorModValueService
                 {
                     babelSb.Append(r.Key).Append(',').AppendLine(EscapeCsv(r.Value));
                 }
+
                 File.WriteAllText(babelCsvPath, babelSb.ToString(), Encoding.UTF8);
             }
         }
@@ -727,6 +875,7 @@ public static class EditorModValueService
         GD.Print($"[mod_values] Reverted overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] in mod '{modName}'");
 
         // Hot-reload in-memory overlays and refresh scene nodes:
+        Engine_BnkTextBankLoader.Invalidate();
         BnkMountPlugin.Instance?.ReloadModOverlays();
         RefreshSceneEquipment();
     }

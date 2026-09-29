@@ -52,6 +52,18 @@ inline bool HostAssetSize(std::string_view path, uint32_t& out_size) {
   return refii_bridge_host_asset_size(path.data(), path.size(), &out_size) != 0;
 }
 
+/// Callback from Godot answering whether a given asset path is an explicit mod overlay or
+/// virtual asset rather than base game data.
+using HostAssetIsOverrideFn = int32_t (*)(const char* path, size_t length);
+
+/// Installs Godot's asset override query callback. Passing nullptr unregisters it.
+void SetHostAssetOverrideQuery(HostAssetIsOverrideFn query);
+
+/// Whether Godot serves an in-memory or modded override for this asset path.
+inline bool HostAssetIsOverride(std::string_view path) {
+  return refii_bridge_host_asset_is_override(path.data(), path.size()) != 0;
+}
+
 /// Godot's hash index: the guest names most resources by a 32-bit hash of the asset name.
 /// `out` receives the path; returns the length written, 0 for no such hash. A truncated
 /// answer is a miss, not a short string.

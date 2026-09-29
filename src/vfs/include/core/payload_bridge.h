@@ -223,6 +223,7 @@ int32_t refii_bridge_read_host_asset_prefix(const char* path, size_t length, uin
                                             uint8_t* out, uint32_t capacity,
                                             uint32_t* out_size);
 int32_t refii_bridge_host_asset_size(const char* path, size_t length, uint32_t* out_size);
+int32_t refii_bridge_host_asset_is_override(const char* path, size_t length);
 size_t refii_bridge_host_asset_name_for_hash(uint32_t hash, char* out, size_t capacity);
 
 //

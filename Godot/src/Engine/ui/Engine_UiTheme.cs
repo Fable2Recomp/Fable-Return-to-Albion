@@ -22,7 +22,7 @@ public sealed class Engine_UiTheme
 	public Engine_UiFontLibrary? Fonts { get; init; }
 
 	/// <summary>The localised string database a text tag resolves through.</summary>
-	public Engine_BabelDatabase? Strings { get; init; }
+	public Engine_BabelDatabase? Strings { get; set; }
 
 	/// <summary>
 	/// The canvas a sourced screen was authored on — the space a custom screen places itself in.

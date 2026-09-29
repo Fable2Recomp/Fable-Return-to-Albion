@@ -14,6 +14,9 @@ namespace {
 /// Atomic: installed from Godot's thread, called from the guest's.
 std::atomic<HostAssetReaderFn> g_reader{nullptr};
 
+/// Godot's asset override query; same threading as g_reader.
+std::atomic<HostAssetIsOverrideFn> g_is_override{nullptr};
+
 /// Godot's hash index; same threading as g_reader.
 std::atomic<HostAssetNameForHashFn> g_name_for_hash{nullptr};
 
@@ -101,8 +104,23 @@ void SetHostAssetNameResolver(HostAssetNameForHashFn resolver) {
   }
 }
 
+void SetHostAssetOverrideQuery(HostAssetIsOverrideFn query) {
+  g_is_override.store(query, std::memory_order_release);
+  REXLOG_INFO("Refii host assets: Godot's asset override query {} — mod virtual files {} take precedence",
+              query != nullptr ? "INSTALLED" : "withdrawn",
+              query != nullptr ? "now" : "no longer");
+}
+
 bool HostAssetReaderReady() {
   return g_reader.load(std::memory_order_acquire) != nullptr;
+}
+
+extern "C" int32_t refii_bridge_host_asset_is_override(const char* path, size_t length) {
+  const HostAssetIsOverrideFn query = g_is_override.load(std::memory_order_acquire);
+  if (query == nullptr || path == nullptr || length == 0u) {
+    return 0;
+  }
+  return query(path, length);
 }
 
 extern "C" int32_t refii_bridge_host_asset_size(const char* path, size_t length,

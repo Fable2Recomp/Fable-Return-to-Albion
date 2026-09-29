@@ -164,6 +164,17 @@ public static class Engine_SwfAssets
 
     public static void RemoveLoaders()
     {
+        // When running in headless mode (e.g. during project export / packaging) or when the engine
+        // is shutting down, Godot's core cleanup dismantles ResourceLoader before plugin _ExitTree runs.
+        // Calling RemoveResourceFormatLoader in this state asserts "Condition 'i >= loader_count' is true".
+        if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            _fontLoader = null;
+            _meshLoader = null;
+            _textureLoader = null;
+            return;
+        }
+
         if (_fontLoader is not null)
         {
             ResourceLoader.RemoveResourceFormatLoader(_fontLoader);

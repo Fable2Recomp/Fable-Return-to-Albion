@@ -178,9 +178,24 @@ public static class Engine_UiItemPage
 			return values;
 		}
 
-		string name = Babel(strings, detail.NameTagName);
-		values[ItemName] = name.Length != 0 ? name : row.StatedLabel ?? string.Empty;
-		values[ItemDescription] = Babel(strings, detail.DescTagName);
+		// Resolve name and description via Engine_ItemNames (same single source of truth as editor):
+		string name = Engine_ItemNames.DisplayNameOf(detail);
+		if (string.IsNullOrEmpty(name) || name == detail.Label)
+		{
+			string babelName = Babel(strings, detail.NameTagName);
+			if (!string.IsNullOrEmpty(babelName))
+			{
+				name = babelName;
+			}
+		}
+		values[ItemName] = !string.IsNullOrEmpty(name) ? name : (row.StatedLabel ?? string.Empty);
+
+		string desc = Engine_ItemNames.DescriptionOf(detail);
+		if (string.IsNullOrEmpty(desc))
+		{
+			desc = Babel(strings, detail.DescTagName);
+		}
+		values[ItemDescription] = desc;
 		values[ShopDescription] = values[ItemDescription];
 
 		// `Money` is -1 when unset, not 0 — only an unresolved value is blank. The prefix is the

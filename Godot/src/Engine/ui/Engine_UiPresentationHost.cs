@@ -73,6 +73,11 @@ public partial class Engine_UiPresentationHost : Node3D
 	public Engine_BabelDatabase? Strings { get; private set; }
 
 	/// <summary>
+	/// Raised whenever the localised string database is reloaded (e.g. after mod overlays mount).
+	/// </summary>
+	public event Action<Engine_BabelDatabase>? StringsChanged;
+
+	/// <summary>
 	/// The shipped look, for anything drawn alongside the presentation rather than out of it.
 	/// Re-catalogued on every <see cref="Show"/>, so its art comes from the presentation
 	/// currently up. Null until loading succeeds.
@@ -207,6 +212,14 @@ public partial class Engine_UiPresentationHost : Node3D
 
 	public override void _Ready()
 	{
+		// Subscribe to the asset mount completion signal so that modded text overlays
+		// (e.g. custom item names/descriptions in book.babel.csv) are applied reactively
+		// even if this presentation host was initialized before the asset worker finished.
+		if (Refii.Assets.Engine_GameAssets.Instance is { } assets)
+		{
+			assets.Mounted += _ => ReloadStrings();
+		}
+
 		// Streaming from the shipped banks is the real path; the extracted-tree branch below is
 		// a fallback for a checkout without the game data.
 		if (TryStartFromBanks())
@@ -347,28 +360,93 @@ public partial class Engine_UiPresentationHost : Node3D
 		foreach (string failure in Fonts.Failures)
 			GD.PushWarning($"[ui] font: {failure}");
 
-		string? textDir = Engine_UiFontLibrary.LanguageSubdirectory(
-			dataRoot, Engine_UiFontLibrary.DefaultCulture, "text");
-		string babel = textDir is null ? string.Empty : Path.Combine(textDir, "book.babel");
-		if (babel.Length == 0 || !File.Exists(babel))
-		{
-			GD.PushWarning($"[ui] no string database under {dataRoot}; tags will display raw");
-		}
-		else
-		{
-			try
-			{
-				Strings = Engine_BabelDatabase.Load(babel);
-			}
-			catch (Exception exception)
-			{
-				GD.PushWarning($"[ui] string database: {exception.Message}");
-			}
-		}
+		ReloadStrings(dataRoot);
 
 		// Built on every path out of here, including the two failures above: a theme with no
 		// string book still carries the fonts and the art.
 		Theme = new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
+	}
+
+	/// <summary>
+	/// Reloads the localised string database. Tries Godot's mounted asset filesystem first (which
+	/// includes mod row overlays, such as custom item names and descriptions from book.babel.csv)
+	/// before falling back to raw disk.
+	/// </summary>
+	public void ReloadStrings(string? dataRoot = null)
+	{
+		dataRoot = !string.IsNullOrEmpty(dataRoot) ? dataRoot : ResolveGameDataRoot();
+
+		// Query Godot's mounted asset filesystem first (which includes mod row overlays, such as
+		// custom item names and descriptions from book.babel.csv) before falling back to raw disk.
+		byte[]? mountBytes = null;
+		string mountedPathUsed = string.Empty;
+		if (Refii.Assets.Engine_GameAssets.Instance is { } assets)
+		{
+			string culture = Engine_UiFontLibrary.DefaultCulture;
+			string[] candidates = {
+				$"language/{culture}/text/book.babel",
+				$"data/language/{culture}/text/book.babel",
+				"language/text/book.babel",
+				"data/language/text/book.babel",
+			};
+
+			foreach (string candidate in candidates)
+			{
+				mountBytes = assets.ReadAllBytes(candidate);
+				if (mountBytes is { Length: > 0 })
+				{
+					mountedPathUsed = candidate;
+					break;
+				}
+			}
+		}
+
+		if (mountBytes is { Length: > 0 })
+		{
+			try
+			{
+				Strings = Engine_BabelDatabase.Parse(mountBytes);
+				if (Theme is not null)
+				{
+					Theme.Strings = Strings;
+				}
+				GD.Print($"[ui] Loaded string database via Engine_GameAssets mount ('{mountedPathUsed}', {mountBytes.Length} bytes, {Strings.Count} strings)");
+				StringsChanged?.Invoke(Strings);
+				return;
+			}
+			catch (Exception exception)
+			{
+				GD.PushWarning($"[ui] string database from mount failed: {exception.Message}");
+			}
+		}
+
+		if (Strings is null && !string.IsNullOrEmpty(dataRoot))
+		{
+			string? textDir = Engine_UiFontLibrary.LanguageSubdirectory(
+				dataRoot, Engine_UiFontLibrary.DefaultCulture, "text");
+			string babel = textDir is null ? string.Empty : Path.Combine(textDir, "book.babel");
+			if (babel.Length == 0 || !File.Exists(babel))
+			{
+				GD.PushWarning($"[ui] no string database under {dataRoot}; tags will display raw");
+			}
+			else
+			{
+				try
+				{
+					Strings = Engine_BabelDatabase.Load(babel);
+					if (Theme is not null)
+					{
+						Theme.Strings = Strings;
+					}
+					GD.Print($"[ui] Loaded fallback string database from raw disk ('{babel}', {Strings.Count} strings)");
+					StringsChanged?.Invoke(Strings);
+				}
+				catch (Exception exception)
+				{
+					GD.PushWarning($"[ui] string database: {exception.Message}");
+				}
+			}
+		}
 	}
 
 	/// <summary>

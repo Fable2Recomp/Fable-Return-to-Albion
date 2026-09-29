@@ -590,6 +590,26 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Hero.Engine_SkeletalMorphs.SetSource(null, null);
         Refii.Hero.Engine_HeroTextureMorph.SetResolver(null);
 
+        // When running in headless mode (e.g. project export / packaging) or when the engine
+        // is shutting down, Godot's core cleanup dismantles ResourceLoader before plugin _ExitTree runs.
+        if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            _weaponLoader = null;
+            _clothingLoader = null;
+            _itemLoader = null;
+            _entityLoader = null;
+            _fxLoader = null;
+            _textureLoader = null;
+            _meshLoader = null;
+            _audioLoader = null;
+            _gdbLoader = null;
+            _terrainLoader = null;
+            _albedoLoader = null;
+            _terrainMaterialLoader = null;
+            Refii.Textures.Engine_BnkTextureLoader.SetResolver(null);
+            return;
+        }
+
         if (_weaponLoader is not null)
         {
             ResourceLoader.RemoveResourceFormatLoader(_weaponLoader);
