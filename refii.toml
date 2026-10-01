@@ -29,25 +29,15 @@ update_data_root = ""
 cache_path = ""
 
 # Lua
-# Enable native Lua handler overrides.
-lua_use_native_handlers = false
-# Force loose-script mode for Lua workspace iteration.
-lua_force_loose_banks = false
 # Log script source paths at load time.
 lua_trace_script_loads = false
-# Log native Lua dispatch matches and fallbacks.
-lua_trace_native_handlers = false
 
 # VFS
 # VFS backend: refii for loose asset overrides, native for the original Fable 2 VFS.
 
 # Renderer
-# Renderer backend: plume for the Refii RHI path, xenia for the original Fable 2 renderer.
-renderer_backend = "xenia"
 
 # Renderer/Debug
-# Draw a Plume-native diagnostic triangle over the game output to validate swapchain and pipeline rendering.
-renderer_debug_test_triangle = false
 
 # UI/Window
 # Initial window width; 0 means default.
@@ -94,10 +84,6 @@ async_shader_compilation = true
 store_shaders = true
 # Swap post effect.
 swap_post_effect = "none"
-# GPU trace file prefix.
-trace_gpu_prefix = ""
-# Enable GPU trace streaming.
-trace_gpu_stream = false
 # Clear memory page state on startup.
 clear_memory_page_state = true
 # Enable host occlusion query handling.
@@ -198,8 +184,6 @@ guide_button = false
 hid_mappings_file = "gamecontrollerdb.txt"
 # Enable mouse and keyboard controller emulation.
 mnk_mode = false
-# Controller slot for mouse and keyboard.
-mnk_user_index = 0
 # Mouse sensitivity for right stick.
 mnk_sensitivity = 1.0
 
@@ -250,18 +234,12 @@ keybind_guide = ""
 # Audio
 # Mute audio output.
 audio_mute = false
-# Maximum buffered audio frames.
-audio_maxqframes = 8
 # Verbose FFmpeg output.
 ffmpeg_verbose = false
 
 # Kernel
 # Additional guest command line.
 cl = ""
-# Apply configured XEX patches before launch.
-xex_apply_patches = true
-# Log high-frequency kernel calls.
-log_high_frequency_kernel_calls = false
 # Enable debug monitor.
 kernel_debug_monitor = false
 # Enable cert monitor.
@@ -312,12 +290,8 @@ clock_no_scaling = false
 clock_source_raw = false
 
 # Perf
-# Performance counter CSV path.
-perf_log_csv = ""
 
 # crt
-# Enable rexcrt heap.
-rexcrt_heap_enable = false
 # rexcrt heap size in MB.
 rexcrt_heap_size_mb = 256
 
@@ -360,9 +334,3 @@ render_target_path_d3d12 = ""
 d3d12_tiled_shared_memory = true
 
 # Lua
-# Prefer decompiled loose Lua files from the mod workspace.
-lua_use_mod_overrides = true
-# Log Lua workspace override matches and fallbacks.
-lua_trace_mod_overrides = false
-# Optional host Lua mod workspace root.
-lua_mod_workspace_root = ""

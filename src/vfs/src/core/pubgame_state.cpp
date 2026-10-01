@@ -75,22 +75,17 @@ void PostPubGameCommand(uint32_t kind, const char* text, const double* numbers,
 
 /// What the pump has told the movie since the last call — see kPubGameEvent* in host_bridge.cpp.
 uint32_t TakePubGameEvents() { return g_events.exchange(0u, std::memory_order_acq_rel); }
-
-/// Posted and drained since boot, for the heartbeat.
-uint64_t PubGameCommandsPosted() { return g_posted.load(std::memory_order_relaxed); }
-uint64_t PubGameCommandsDrained() { return g_drained.load(std::memory_order_relaxed); }
-
 }  // namespace refii::vfs
 
 // --- The payload's side. C only; see core/payload_bridge.h. --------------------------------
 
 extern "C" {
-
 int32_t refii_bridge_pubgame_claimed(void) {
   return refii::vfs::g_claimed.load(std::memory_order_acquire);
 }
 
 int32_t refii_bridge_pubgame_take_command(uint32_t* kind, char* text, size_t text_capacity,
+
                                           double* numbers, int64_t* integers) {
   refii::vfs::PubGameCommand command;
   {
@@ -129,5 +124,4 @@ int32_t refii_bridge_pubgame_take_command(uint32_t* kind, char* text, size_t tex
 void refii_bridge_pubgame_note_event(uint32_t bits) {
   refii::vfs::g_events.fetch_or(bits, std::memory_order_acq_rel);
 }
-
 }  // extern "C"

@@ -122,22 +122,16 @@ uint32_t StatedTextureLayers(uint32_t entity, uint32_t* out, uint32_t capacity,
   }
   return written;
 }
-
-uint64_t StatedTextureLayersDropped() {
-  std::lock_guard<std::mutex> guard(g_lock);
-  return g_dropped;
-}
-
 }  // namespace refii::vfs
 
 extern "C" {
-
 void refii_bridge_begin_texture_layers(uint32_t entity) {
   using namespace refii::vfs;
   std::lock_guard<std::mutex> guard(g_lock);
   if (EntityLayers* record = Find(entity); record != nullptr && record->used != 0u) {
     record->used = 0u;
     ++record->generation;
+
   }
 }
 
@@ -190,5 +184,4 @@ void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32
   std::memcpy(texture->layers, layers, bytes);
   ++record->generation;
 }
-
 }  // extern "C"

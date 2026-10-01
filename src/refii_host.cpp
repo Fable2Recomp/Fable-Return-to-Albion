@@ -131,10 +131,6 @@ void ApplyPositionalArguments(
 
 std::function<void()> MakeShutdownCallback(rex::ui::WindowedApp& app) {
     return [&app]() {
-#if REFII_HAS_RENDERER_RUNTIME
-        refii::renderer::ShutdownRendererPresentPump();
-        refii::renderer::RequestPlumeBackendShutdown();
-#endif
         app.RequestExternalShutdown();
     };
 }
@@ -631,11 +627,11 @@ int RunEmbeddedOnPosix(std::vector<std::string> ownedArguments) {
     return result;
 }
 #endif
-
 }  // namespace
 
 namespace {
 std::filesystem::path g_refii_app_root;
+
 }  // namespace
 
 void RefiiSetAppRoot(const std::filesystem::path& root) { g_refii_app_root = root; }

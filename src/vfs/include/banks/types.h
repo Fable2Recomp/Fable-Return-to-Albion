@@ -51,11 +51,4 @@ struct RefiiSyntheticBankIteratorRecord {
   std::shared_ptr<RefiiSyntheticBankRecord> bank_record;
   uint32_t next_entry_index = 1;
 };
-
-struct CachedBankLooseAssetResolution {
-  bool found = false;
-  LooseAssetResolution resolution;
-  std::string candidate;
-};
-
 }  // namespace refii::vfs

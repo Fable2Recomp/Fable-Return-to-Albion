@@ -2,35 +2,6 @@
 
 namespace refii::vfs {
 inline namespace detail {
-
-std::shared_ptr<RefiiHostStreamRecord> FindRefiiHostStreamRecordOrInner(
-    uint8_t* base,
-    uint32_t stream_guest,
-    uint32_t* out_record_stream_guest = nullptr) {
-  if (const auto exact = FindRefiiHostStreamRecord(stream_guest)) {
-    if (out_record_stream_guest != nullptr) {
-      *out_record_stream_guest = stream_guest;
-    }
-    return exact;
-  }
-
-  if (base == nullptr || stream_guest < 0x10000 || stream_guest >= 0x90000000) {
-    return {};
-  }
-
-  for (uint32_t offset = 0; offset < 96; offset += sizeof(uint32_t)) {
-    const uint32_t inner_guest = LoadGuestU32(base, stream_guest + offset);
-    if (const auto inner = FindRefiiHostStreamRecord(inner_guest)) {
-      if (out_record_stream_guest != nullptr) {
-        *out_record_stream_guest = inner_guest;
-      }
-      return inner;
-    }
-  }
-
-  return {};
-}
-
 uint32_t ReadRefiiHostStreamToDestination(PPCContext& ctx,
                                           uint8_t* base,
                                           uint32_t stream_guest,
@@ -124,10 +95,6 @@ uint32_t NormalizeRefiiResourceStreamWrapper(uint8_t* base,
   }
 
   return 0;
-}
-
-bool IsRefiiResourceStreamWrapper(uint8_t* base, uint32_t wrapper_guest) {
-  return NormalizeRefiiResourceStreamWrapper(base, wrapper_guest) != 0;
 }
 
 bool EnsureRefiiResourceWrapperMaterialized(PPCContext& ctx,
@@ -372,17 +339,6 @@ int32_t GetRefiiResourceWrapperStatusNonBlocking(uint8_t* base,
   }
 
   if (const auto request = FindRefiiReadRequestRecord(inner_guest)) {
-    std::shared_future<void> async_read;
-    {
-      std::lock_guard<std::mutex> lock(request->mutex);
-      async_read = request->async_read;
-    }
-    if (async_read.valid() &&
-        async_read.wait_for(std::chrono::seconds(0)) ==
-            std::future_status::ready) {
-      async_read.wait();
-    }
-
     uint32_t requested = 0;
     uint32_t bytes = 0;
     uint32_t status_word = 0;
@@ -450,16 +406,6 @@ std::unordered_map<uint32_t, uint32_t>& RefiiTextureWrapperOwners() {
   return owners;
 }
 
-void RecordRefiiTextureWrapperOwner(uint32_t wrapper_guest,
-                                    uint32_t texture_guest) {
-  if (wrapper_guest == 0 || texture_guest == 0) {
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(RefiiTextureWrapperOwnerMutex());
-  RefiiTextureWrapperOwners()[wrapper_guest] = texture_guest;
-}
-
 void ForgetRefiiTextureWrapperOwner(uint32_t wrapper_guest) {
   if (wrapper_guest == 0) {
     return;
@@ -478,45 +424,6 @@ uint32_t FindRefiiTextureWrapperOwner(uint32_t wrapper_guest) {
   const auto& owners = RefiiTextureWrapperOwners();
   const auto iterator = owners.find(wrapper_guest);
   return iterator == owners.end() ? 0 : iterator->second;
-}
-
-std::mutex& TextureParserDescriptorTraceOwnerMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-std::unordered_map<uint32_t, TextureParserDescriptorTraceOwner>&
-TextureParserDescriptorTraceOwners() {
-  static std::unordered_map<uint32_t, TextureParserDescriptorTraceOwner> owners;
-  return owners;
-}
-
-void RecordTextureParserDescriptorTraceOwner(uint32_t descriptor_guest,
-                                             uint32_t texture_guest,
-                                             uint32_t wrapper_guest,
-                                             std::string_view provider) {
-  if (descriptor_guest == 0 || texture_guest == 0) {
-    return;
-  }
-
-  std::lock_guard<std::mutex> lock(TextureParserDescriptorTraceOwnerMutex());
-  TextureParserDescriptorTraceOwners()[descriptor_guest] = {
-      texture_guest, wrapper_guest, std::string(provider)};
-}
-
-std::optional<TextureParserDescriptorTraceOwner>
-FindTextureParserDescriptorTraceOwner(uint32_t descriptor_guest) {
-  if (descriptor_guest == 0) {
-    return std::nullopt;
-  }
-
-  std::lock_guard<std::mutex> lock(TextureParserDescriptorTraceOwnerMutex());
-  const auto& owners = TextureParserDescriptorTraceOwners();
-  const auto iterator = owners.find(descriptor_guest);
-  if (iterator == owners.end()) {
-    return std::nullopt;
-  }
-  return iterator->second;
 }
 
 bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
@@ -869,6 +776,5 @@ std::string FormatGuestWordsAtOffsetIfPointer(uint8_t* base,
   }
   return FormatGuestWordsIfPointer(base, guest + offset, word_count);
 }
-
 }  // namespace detail
 }  // namespace refii::vfs

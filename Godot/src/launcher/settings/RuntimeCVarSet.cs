@@ -15,10 +15,8 @@ namespace Refii.Launcher.Core;
 /// <c>ApplyTomlTable</c> on the native side flattens every table into <c>section_key</c> anyway,
 /// so a table buys nothing and changes the key the reader sees.
 ///
-/// The native runtime will log <c>Config: unknown cvar</c> once per key for these, because they
-/// are not in its registry. That does not happen in the Godot-hosted game — embedded, the guest
-/// looks for refii.toml beside the HOST binary, finds none, and never loads it — so the noise is
-/// limited to standalone native runs.
+/// The guest reads this same refii.toml (the host bridge states the app root), so it logs
+/// <c>Config: unknown cvar</c> once per key for these: they are not in its registry.
 /// </remarks>
 public static class RuntimeCVarsGodot
 {
@@ -132,6 +130,11 @@ public static class RuntimeCVarsGodot
                 + "one frame, so a faster display draws closer to the simulation. A fixed value "
                 + "below what the frame time allows makes motion hold and step instead of "
                 + "gliding; above 1.5 adds lag for nothing."),
+
+            new("rendering_driver", DisplayCategory, RuntimeCVarType.String, "vulkan",
+                "The graphics API Godot draws the game with. Windows offers Vulkan or Direct3D 12; "
+                + "everywhere else it is Vulkan. Takes effect at the next launch.",
+                "vulkan|Vulkan,d3d12|Direct3D 12"),
 
             new("render_thread", DisplayCategory, RuntimeCVarType.Bool, "true",
                 "Run Godot's renderer on its own thread, so the frame costs the longer of the "

@@ -24,17 +24,9 @@ bool IsRefiiNativeShapeSensitiveAsset(std::string_view asset_path) {
 }
 
 RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForName(
-    std::string_view asset_path,
-    uint32_t resource_hash,
-    bool prefer_resource_manager_texture_shape,
-    uint32_t caller_lr) {
+    std::string_view asset_path) {
   RefiiVfsOwnershipDecision decision;
   decision.normalized = NormalizeLooseAssetKey(asset_path);
-  MaybeRecordFirstRefiiPostFrontendConsumerAssetRequest(
-      "DecideRefiiVfsOwnershipForName",
-      decision.normalized,
-      resource_hash,
-      caller_lr);
 
   // The wrapper shape the resource manager uses — an extension classification, not a source.
   decision.native_shaped = IsRefiiNativeShapeSensitiveAsset(decision.normalized);
@@ -97,9 +89,7 @@ RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForName(
 }
 
 RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForHash(
-    uint32_t resource_hash,
-    bool prefer_resource_manager_texture_shape,
-    uint32_t caller_lr) {
+    uint32_t resource_hash) {
   RefiiVfsOwnershipDecision decision;
   if (resource_hash == 0) {
     decision.kind = RefiiVfsOwnershipKind::Unresolved;
@@ -116,8 +106,7 @@ RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForHash(
     return decision;
   }
 
-  decision = DecideRefiiVfsOwnershipForName(
-      name, resource_hash, prefer_resource_manager_texture_shape, caller_lr);
+  decision = DecideRefiiVfsOwnershipForName(name);
   if (decision.kind == RefiiVfsOwnershipKind::RefiiOwned) {
     decision.source = "godot_hash_index";
   }
@@ -572,7 +561,5 @@ void LogRefiiOwnedTextureResolution(std::string_view api,
                     source));
   }
 }
-
-
 }  // namespace detail
 }  // namespace refii::vfs

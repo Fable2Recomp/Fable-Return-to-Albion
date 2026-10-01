@@ -2,38 +2,6 @@
 
 namespace refii::vfs {
 inline namespace detail {
-
-std::mutex& RenderSharedStateMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-void LogLooseAssetCallSite(std::string_view api,
-                           const PPCContext& ctx,
-                           uint32_t out_guest,
-                           uint32_t manager_guest,
-                           uint32_t name_guest,
-                           uint32_t mode,
-                           std::string_view asset_path) {
-  if (!LooseAssetOverrideTracingEnabled() ||
-      !IsTraceInterestingAsset(asset_path)) {
-    return;
-  }
-
-  REXLOG_INFO("{} caller_lr=0x{:08X} caller_ctr=0x{:08X} sp=0x{:08X} "
-              "out=0x{:08X} manager=0x{:08X} name_obj=0x{:08X} mode={} "
-              "asset={}",
-              api,
-              ctx.lr,
-              ctx.ctr.u32,
-              ctx.r1.u32,
-              out_guest,
-              manager_guest,
-              name_guest,
-              mode,
-              asset_path);
-}
-
 std::unordered_map<uint32_t, LooseStreamRecord>& LooseStreamRecords() {
   static std::unordered_map<uint32_t, LooseStreamRecord> records;
   return records;
@@ -631,46 +599,6 @@ bool IsNativeGetCachedShapeRepairCandidate(std::string_view asset_path) {
   return IsGameFaceBinaryAssetKey(asset_path);
 }
 
-void LogLooseBufferedInit(uint8_t* base,
-                          const PPCContext& before_ctx,
-                          const PPCContext& after_ctx,
-                          uint32_t buffered_guest,
-                          uint32_t source_stream_guest,
-                          uint32_t arg5,
-                          uint32_t arg6) {
-  LooseStreamRecord record;
-  std::string match;
-  if (!FindLooseStreamRecord(base, source_stream_guest, &record, &match)) {
-    return;
-  }
-  const bool trace_startup_bik =
-      ShouldTraceStartupBikStreamShape(base, source_stream_guest, "Buffered_Init", 6);
-  if (!LooseAssetOverrideTracingEnabled() && !trace_startup_bik) {
-    return;
-  }
-
-  REXLOG_INFO("Loose stream buffered init caller_lr=0x{:08X} "
-              "caller_ctr=0x{:08X} buffered=0x{:08X} source=0x{:08X} "
-              "match={} r5=0x{:08X} r6=0x{:08X} result=0x{:08X} "
-              "expected_size={} path={} buffered_words={} source_words={} "
-              "generated_shape=prebuffer_if_r6_nonzero_source_slot16 "
-              "buffered_shape=[{}] source_shape=[{}]",
-              before_ctx.lr,
-              before_ctx.ctr.u32,
-              buffered_guest,
-              source_stream_guest,
-              match,
-              arg5,
-              arg6,
-              after_ctx.r3.u32,
-              record.expected_size,
-              record.path,
-              FormatGuestWords(base, buffered_guest, 16),
-              FormatGuestWords(base, source_stream_guest, 12),
-              FormatBikBufferedNativeShape(base, buffered_guest),
-              FormatBikPpcStreamSummary(base, source_stream_guest));
-}
-
 bool IsRefiiHostDiskStream(uint8_t* base, uint32_t stream_guest) {
   if (base == nullptr || stream_guest < 0x10000 || stream_guest >= 0x90000000) {
     return false;
@@ -678,34 +606,6 @@ bool IsRefiiHostDiskStream(uint8_t* base, uint32_t stream_guest) {
 
   return LoadGuestU32(base, stream_guest) == kRefiiDiskStreamVTable &&
          FindRefiiHostStreamRecord(stream_guest) != nullptr;
-}
-
-bool IsRefiiOwnedLhFileStream(uint8_t* base, uint32_t file_guest, int offset) {
-  if (base == nullptr || file_guest < 0x10000 || file_guest >= 0x90000000) {
-    return false;
-  }
-  return IsRefiiHostDiskStream(base, LoadGuestU32(base, file_guest + offset));
-}
-
-bool TryGetRefiiOwnedLhFileStreamSize(uint8_t* base,
-                                      uint32_t file_guest,
-                                      int offset,
-                                      uint32_t* out_size) {
-  if (base == nullptr || file_guest < 0x10000 || file_guest >= 0x90000000) {
-    return false;
-  }
-  const uint32_t stream_guest = LoadGuestU32(base, file_guest + offset);
-  if (!IsRefiiHostDiskStream(base, stream_guest)) {
-    return false;
-  }
-  const auto record = FindRefiiHostStreamRecord(stream_guest);
-  const uint64_t size = record != nullptr ? record->size
-                                          : LoadGuestU64(base, stream_guest + 16);
-  if (out_size != nullptr) {
-    *out_size = static_cast<uint32_t>(
-        std::min<uint64_t>(size, std::numeric_limits<uint32_t>::max()));
-  }
-  return true;
 }
 
 bool IsRefiiReadRequestObject(uint32_t request_guest) {
@@ -764,7 +664,6 @@ uint32_t RefiiReaderPageEntry(uint8_t* base,
   return reader_guest + 40 + (rotated & 0xFFFFFFE0u);
 }
 
-
 // Serves every read on this stream that was postponed for an unresolved destination.
 //
 // Called from the stream's destructor, which is the last moment the request can still be
@@ -802,6 +701,5 @@ void CompleteRefiiDeferredReadsForStream(PPCContext& ctx, uint8_t* base,
     PerformRefiiReadRequestNow(ctx, base, record, record_guest);
   }
 }
-
 }  // namespace detail
 }  // namespace refii::vfs

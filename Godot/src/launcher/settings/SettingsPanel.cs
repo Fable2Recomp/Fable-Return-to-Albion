@@ -211,7 +211,7 @@ public partial class SettingsPanel : VBoxContainer
 		name.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
 		name.SizeFlagsHorizontal = SizeFlags.Fill;
 		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-		name.TooltipText = definition.Description;
+		name.TooltipText = RuntimeSettingsModel.FormatDescription(definition);
 		grid.AddChild(name);
 
 		List<RuntimeCVarOption> options = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
@@ -238,6 +238,14 @@ public partial class SettingsPanel : VBoxContainer
 		string current = _model.Values.TryGetValue(definition.Name, out string? value)
 			? value
 			: definition.DefaultValue;
+
+		if (RuntimeSettingsModel.IsLockedRenderingDriver(definition))
+		{
+			OptionButton locked = BuildDropdown(definition, "vulkan", options);
+			locked.Disabled = true;
+			locked.TooltipText = "Direct3D 12 is available on Windows only.";
+			return locked;
+		}
 
 		// A setting with a stated list of values is a dropdown whatever its type: an Int that
 		// names its modes shows the names and writes the number.
@@ -300,14 +308,14 @@ public partial class SettingsPanel : VBoxContainer
 		}
 	}
 
-	private Control BuildDropdown(
+	private OptionButton BuildDropdown(
 		RuntimeCVarDefinition definition, string current, List<RuntimeCVarOption> options)
 	{
 		string display = current.Length == 0 ? definition.DefaultValue : current;
 
 		// FitToLongestItem OFF. It defaults ON, which makes the button's MINIMUM width its
-		// longest item: `renderer_renderdoc_capture_draw_target` alone asks for 186px, taking
-		// the panel's minimum to 446 against the 416 the drawer gives it. SettingsColumn grows
+		// longest item: one long option once asked for 186px, taking the panel's minimum to
+		// 446 against the 416 the drawer gives it. SettingsColumn grows
 		// in both directions, so the 30px overflow spilled 15px past each edge of the drawer and
 		// clipped the first character off every wrapped line. The editor column's width is the
 		// drawer's to decide, not the longest label's: a label too long for it ellipses here

@@ -12,20 +12,8 @@ struct PPCContext;
 
 namespace refii::vfs {
 inline namespace detail {
-
-struct TextureParserDescriptorTraceOwner {
-  uint32_t texture_guest = 0;
-  uint32_t wrapper_guest = 0;
-  std::string provider;
-};
-
-std::shared_ptr<RefiiHostStreamRecord> FindRefiiHostStreamRecordOrInner(
-    uint8_t* base,
-    uint32_t stream_guest,
-    uint32_t* out_record_stream_guest);
 uint32_t NormalizeRefiiResourceStreamWrapper(uint8_t* base,
                                              uint32_t wrapper_guest);
-bool IsRefiiResourceStreamWrapper(uint8_t* base, uint32_t wrapper_guest);
 bool EnsureRefiiResourceWrapperMaterialized(PPCContext& ctx,
                                             uint8_t* base,
                                             uint32_t wrapper_guest);
@@ -49,16 +37,8 @@ RefiiResourceWrapperView GetRefiiResourceWrapperView(PPCContext& ctx,
 std::string GetRefiiResourceWrapperProviderKey(uint8_t* base,
                                                uint32_t wrapper_guest,
                                                uint32_t source_stream_guest);
-void RecordRefiiTextureWrapperOwner(uint32_t wrapper_guest,
-                                    uint32_t texture_guest);
 void ForgetRefiiTextureWrapperOwner(uint32_t wrapper_guest);
 uint32_t FindRefiiTextureWrapperOwner(uint32_t wrapper_guest);
-void RecordTextureParserDescriptorTraceOwner(uint32_t descriptor_guest,
-                                             uint32_t texture_guest,
-                                             uint32_t wrapper_guest,
-                                             std::string_view provider);
-std::optional<TextureParserDescriptorTraceOwner>
-FindTextureParserDescriptorTraceOwner(uint32_t descriptor_guest);
 bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
     PPCContext& ctx,
     uint8_t* base,
@@ -73,6 +53,5 @@ std::string FormatGuestWordsAtOffsetIfPointer(uint8_t* base,
                                               uint32_t guest,
                                               uint32_t offset,
                                               uint32_t word_count);
-
 }  // namespace detail
 }  // namespace refii::vfs

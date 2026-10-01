@@ -92,7 +92,11 @@ public sealed class RuntimeSettingsModel
             bucket.Add(definition);
         }
 
-        return order.Select(category => (category, byCategory[category])).ToList();
+        // Developer switches go last, after everything a player tunes.
+        return order
+            .OrderBy(category => category == RuntimeCVarsGodot.DeveloperCategory ? 1 : 0)
+            .Select(category => (category, byCategory[category]))
+            .ToList();
     }
 
     private static string DisplayCategory(RuntimeCVarDefinition definition)
@@ -115,35 +119,79 @@ public sealed class RuntimeSettingsModel
             return true;
         }
 
-        string haystack = (definition.Name + " " + definition.Category + " " + definition.Description)
+        string haystack = (definition.Name + " " + FormatDisplayName(definition) + " "
+                + definition.Category + " " + definition.Description)
             .ToLowerInvariant();
         return haystack.Contains(filter, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The label a setting is shown under: its refii.toml key as words, so `max_fps` reads
+    /// "Max FPS". The key itself is unchanged and still what the file holds.
+    /// </summary>
     public static string FormatDisplayName(RuntimeCVarDefinition definition)
     {
-        string name = definition.Name;
-        switch (definition.Category)
+        string[] words = definition.Name.Split('_', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < words.Length; i++)
         {
-            case "UI/Window":
-                name = StripPrefix(name, "window");
-                break;
-            case "UI/Presenter":
-                name = StripPrefix(name, "host");
-                name = StripPrefix(name, "present");
-                break;
+            if (DisplayWords.TryGetValue(words[i], out string? spelled))
+            {
+                words[i] = spelled;
+            }
+            else if (i == 0)
+            {
+                words[i] = char.ToUpperInvariant(words[i][0]) + words[i][1..];
+            }
         }
 
-        return name;
+        return string.Join(' ', words);
     }
 
-    private static string StripPrefix(string name, string prefix)
+    /// <summary>
+    /// A setting's description with every other setting it names spelled the way the panel
+    /// labels it, so "Needs texture_orm_enabled" reads "Needs Texture ORM enabled".
+    /// </summary>
+    public static string FormatDescription(RuntimeCVarDefinition definition) =>
+        System.Text.RegularExpressions.Regex.Replace(
+            definition.Description,
+            @"`?\b[a-z0-9]+(?:_[a-z0-9]+)+\b`?",
+            match =>
+            {
+                string key = match.Value.Trim('`');
+                RuntimeCVarDefinition? named = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == key);
+                return named is null ? match.Value : FormatDisplayName(named);
+            });
+
+    /// <summary>Words in setting keys that are acronyms or names rather than plain English.</summary>
+    private static readonly Dictionary<string, string> DisplayWords = new(StringComparer.Ordinal)
     {
-        string withUnderscore = prefix + "_";
-        return name.StartsWith(withUnderscore, StringComparison.Ordinal) && name.Length > withUnderscore.Length
-            ? name[withUnderscore.Length..]
-            : name;
-    }
+        ["aa"] = "AA",
+        ["ao"] = "AO",
+        ["cl"] = "CL",
+        ["csv"] = "CSV",
+        ["fps"] = "FPS",
+        ["fsr"] = "FSR",
+        ["fx"] = "FX",
+        ["gc"] = "GC",
+        ["gi"] = "GI",
+        ["gpu"] = "GPU",
+        ["hdr"] = "HDR",
+        ["io"] = "IO",
+        ["lod"] = "LOD",
+        ["lua"] = "Lua",
+        ["mb"] = "MB",
+        ["ms"] = "ms",
+        ["msaa"] = "MSAA",
+        ["orm"] = "ORM",
+        ["postfx"] = "Post-FX",
+        ["renderdoc"] = "RenderDoc",
+        ["rexcrt"] = "RexCRT",
+        ["rexnet"] = "RexNet",
+        ["taa"] = "TAA",
+        ["vfs"] = "VFS",
+        ["vsync"] = "VSync",
+        ["xam"] = "XAM",
+    };
 
     /// <summary>
     /// The resolutions offered for each aspect ratio. Ordinary desktop sizes rather than a
@@ -185,6 +233,11 @@ public sealed class RuntimeSettingsModel
     public static List<RuntimeCVarOption> OptionsFor(
         RuntimeCVarDefinition definition, IReadOnlyDictionary<string, string> values)
     {
+        if (IsLockedRenderingDriver(definition))
+        {
+            return new List<RuntimeCVarOption> { new("vulkan", "Vulkan") };
+        }
+
         if (definition.Name != "display_resolution")
         {
             return ParseAllowedValues(definition.AllowedValues);
@@ -202,6 +255,13 @@ public sealed class RuntimeSettingsModel
             .Select(size => new RuntimeCVarOption(size, size))
             .ToList();
     }
+
+    /// <summary>
+    /// Direct3D 12 exists only on Windows, so elsewhere the driver is Vulkan and the dropdown
+    /// offers nothing else and cannot be changed.
+    /// </summary>
+    public static bool IsLockedRenderingDriver(RuntimeCVarDefinition definition) =>
+        definition.Name == "rendering_driver" && !OperatingSystem.IsWindows();
 
     /// <summary>
     /// Narrows a list to what the chosen monitor can actually show, and adds that monitor's own

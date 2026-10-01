@@ -6728,9 +6728,8 @@ std::atomic<uint32_t> g_finished_loading_screen{0};
 ///
 /// Nothing presents in this headless mode, so after an in-game level load the guest never runs
 /// the render tick that fades its loading screen out and releases the game thread; it sits at
-/// `fade=1 requested=0` with the loading music playing. The startup screen is finished by the
-/// frontend bridge (`TryFinishRefiiLoadingScreenOwnerFromCollapsedPipeline`); this is the same
-/// move for the in-game one, from the in-game tick (`sub_82276D10` -> the pump).
+/// `fade=1 requested=0` with the loading music playing. This runs from the in-game tick
+/// (`sub_82276D10` -> the pump).
 ///
 /// Gated on the game world being active so it can only touch an in-game screen. Sequence: keep
 /// the frame past the fade's ten-tick guard, drop the fade, request teardown, run the guest's
@@ -6974,38 +6973,6 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   }
 }
 
-/// Reads a NUL-terminated guest string through an LHString handle.
-///
-/// The handle is ONE DWORD holding the character pointer — `sub_8222CED0(&h, literal)` fills it
-/// and `sub_82370450` compares two of them with a plain `v8[0] == v7[0]`. Callers pass the
-/// ADDRESS of that dword, so this is two loads, not one.
-/// Reads a NUL-terminated guest string at an address, or empty when it is not text.
-///
-/// Tests for TEXT, not merely readable memory: a guest pointer read as characters is four
-/// non-zero bytes and looks like a string to a loop that only stops at NUL, so the bytes must
-/// be PRINTABLE — unprintables mean this was another pointer, not the string.
-std::string ReadGuestChars(uint8_t* base, uint32_t at) {
-  if (at < 0x10000u || at >= 0xC0000000u) {
-    return std::string();
-  }
-
-  std::string out;
-  for (uint32_t i = 0; i < 128u; ++i) {
-    const uint8_t c = LoadGuestU8(base, at + i);
-    if (c == 0) {
-      break;
-    }
-
-    if (c < 0x20u || c > 0x7Eu) {
-      return std::string();
-    }
-
-    out.push_back(static_cast<char>(c));
-  }
-
-  return out;
-}
-
 // `ReadGuestLhString` lives in core/guest_state.h — one implementation, shared with the
 // menu-chunk hooks that need the same handle chase.
 
@@ -7077,7 +7044,6 @@ void OnMenuSpawn(PPCContext& ctx, uint8_t* base, bool stack_rating) {
                                        static_cast<int32_t>(ctx.r9.u32), rating,
                                        label.c_str());
 }
-
 }  // namespace refii::vfs
 
 REX_EXTERN(sub_822C1BD0) {
@@ -7111,6 +7077,7 @@ REX_EXTERN(sub_8229ABD8) {
     refii::vfs::SampleQuestTravel(ctx, base);
     refii::vfs::SampleShopPrice(ctx, base);
     refii::vfs::SamplePauseTabs(ctx, base);
+
     refii::vfs::SampleDyeStates(ctx, base);
   }
 
@@ -7209,21 +7176,12 @@ REFII_MENU_BOUNDARY_HOOK(sub_826E1F70)
 #undef REFII_MENU_BOUNDARY_HOOK
 
 extern "C" {
-
 void RefiiCoopSetOwnHero(int on) {
   refii::vfs::g_coop_own_hero.store(on != 0, std::memory_order_relaxed);
 }
 
 int RefiiCoopGetOwnHero(void) {
   return refii::vfs::g_coop_own_hero.load(std::memory_order_relaxed) ? 1 : 0;
-}
-
-/// Player two's entity, for the hooks payload — see CoopPlayerTwoEntity.
-uint32_t RefiiCoopPlayerTwoEntity(uint8_t* base) { return refii::vfs::CoopPlayerTwoEntity(base); }
-
-/// A component by id off an entity, for the hooks payload — see EntityComponent.
-uint32_t RefiiCoopEntityComponent(uint8_t* base, uint32_t entity, uint32_t id) {
-  return refii::vfs::EntityComponent(base, entity, id);
 }
 
 /// Player two's weapon names for the hooks' table overrides; empty when none is set.
@@ -7234,5 +7192,4 @@ const char* RefiiCoopRangedName(void) { return refii::vfs::g_coop_ranged_name.c_
 void RefiiCoopRedress(void* ctx, uint8_t* base) {
   refii::vfs::CoopRedress(*static_cast<PPCContext*>(ctx), base);
 }
-
 }  // extern "C"

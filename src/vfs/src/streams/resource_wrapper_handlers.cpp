@@ -438,8 +438,7 @@ bool TryHandleRefiiHostDiskStreamRead(PPCContext& ctx,
     StoreGuestU32(base, request_guest + 8, 2);
   }
   ctx.r3.u32 = out_guest;
-  RecordRefiiStartupVideoReadQueued(
-      base, stream_guest, request_guest, requested_bytes);
+  RecordRefiiStartupVideoReadQueued(base, stream_guest, requested_bytes);
   if (ShouldLogLooseStreamOperation("RefiiHostStream_Read", stream_guest, 16)) {
     REXLOG_INFO("Refii host loose stream async read queued stream=0x{:08X} out=0x{:08X} "
                 "destination=0x{:08X} offset={} requested={} read={} "
@@ -560,24 +559,6 @@ bool TryHandleRefiiHostDiskStreamNoopSuccess(PPCContext& ctx,
                 ctx.r4.u32,
                 ctx.r5.u32,
                 ctx.lr);
-  }
-  return true;
-}
-
-bool TryHandleRefiiStreamReaderFlush(PPCContext& ctx,
-                                     uint8_t* base,
-                                     uint32_t reader_guest,
-                                     std::string_view api) {
-  if (!IsRefiiStreamReader(base, reader_guest)) {
-    return false;
-  }
-
-  ctx.r3.u32 = 1;
-  if (VfsVerboseIoTracingEnabled() &&
-      ShouldLogLooseStreamOperation(api, reader_guest, 8)) {
-    REXLOG_INFO("VFS trace {} refii reader flush success reader={}",
-                api,
-                DescribeGuestObject(base, reader_guest, 12, 12));
   }
   return true;
 }
@@ -710,22 +691,14 @@ bool EnsureRefiiReadRequestCompleted(PPCContext& ctx,
   // returns above and PerformRefiiReadRequestNow rechecks under the record's lock.
   PerformRefiiReadRequestNow(ctx, base, record, record_guest);
 
-  WaitForRefiiReadRequest(record);
-
   uint32_t read = 0;
   bool completed = false;
   bool attempted = false;
-  std::chrono::steady_clock::time_point queued_at{};
-  std::chrono::steady_clock::time_point started_at{};
-  std::chrono::steady_clock::time_point completed_at{};
   {
     std::lock_guard<std::mutex> lock(record->mutex);
     read = record->bytes_read;
     completed = record->completed;
     attempted = record->attempted;
-    queued_at = record->queued_at;
-    started_at = record->started_at;
-    completed_at = record->completed_at;
   }
 
   if (!attempted) {
@@ -752,27 +725,8 @@ bool EnsureRefiiReadRequestCompleted(PPCContext& ctx,
                 completed);
   }
   if (completed) {
-    const auto zero = std::chrono::steady_clock::time_point{};
-    const int64_t queue_wait_ms =
-        queued_at == zero || started_at == zero
-            ? -1
-            : std::chrono::duration_cast<std::chrono::milliseconds>(
-                  started_at - queued_at)
-                  .count();
-    const int64_t read_ms =
-        started_at == zero || completed_at == zero
-            ? -1
-            : std::chrono::duration_cast<std::chrono::milliseconds>(
-                  completed_at - started_at)
-                  .count();
     RecordRefiiStartupVideoReadComplete(
-        base,
-        record->stream_guest,
-        record->requested_bytes,
-        read,
-        queue_wait_ms,
-        read_ms);
-    MaybeLogRefiiStartupVideoShapeVerdict(base, record->stream_guest, "ready");
+        base, record->stream_guest, record->requested_bytes, read);
   }
   return completed;
 }
@@ -884,7 +838,6 @@ bool TryHandleRefiiReadRequestRelease(PPCContext& ctx,
   ctx.r3.u32 = ref_count;
 
   if (ref_count == 0) {
-    WaitForRefiiReadRequest(record);
     CloseRefiiReadRequestEvent(ctx, base, record_guest);
     EraseRefiiReadRequestRecord(record_guest);
     ReleaseRefiiReadRequestStreamReference(ctx, base, record->stream_guest);
@@ -920,7 +873,6 @@ bool RetireRefiiReadRequestAfterNativeRelease(PPCContext& ctx,
           ? LoadGuestU32(base, stream_guest + 4)
           : 0;
 
-  WaitForRefiiReadRequest(record);
   CloseRefiiReadRequestEvent(ctx, base, record_guest);
   EraseRefiiReadRequestRecord(record_guest);
   const ReleasedRefiiHostStreamReference released =
@@ -1141,10 +1093,6 @@ bool TryHandleRefiiResourceWrapperRelease(PPCContext& ctx,
       record_guest == 0 ? 0 : LoadGuestU32(base, record_guest + 8);
   const bool last_request_ref = request != nullptr && old_ref_count <= 1;
 
-  if (last_request_ref) {
-    WaitForRefiiReadRequest(request);
-  }
-
   if (last_request_ref && buffer_guest != 0 &&
       buffer_guest == request->buffer_guest) {
     CallLhFree(ctx, base, buffer_guest);
@@ -1206,16 +1154,6 @@ bool TryHandleRefiiReadRequestGetStatus(PPCContext& ctx,
   const auto record = FindRefiiReadRequestRecord(request_guest, &record_guest);
   if (record == nullptr) {
     return false;
-  }
-
-  std::shared_future<void> async_read;
-  {
-    std::lock_guard<std::mutex> lock(record->mutex);
-    async_read = record->async_read;
-  }
-  if (async_read.valid() &&
-      async_read.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-    async_read.wait();
   }
 
   uint32_t bytes_read = 0;
@@ -1451,192 +1389,5 @@ bool TryHandleRefiiReadRequestSmartPtrAssign(PPCContext& ctx,
 
   return true;
 }
-
-bool TryHandleRefiiHostCompositeStreamRead(PPCContext& ctx,
-                                           uint8_t* base,
-                                           uint32_t out_guest,
-                                           uint32_t stream_guest,
-                                           uint32_t buffer_guest,
-                                           uint64_t offset,
-                                           uint32_t requested_bytes) {
-  if (base == nullptr || out_guest == 0 || stream_guest < 0x10000 ||
-      stream_guest >= 0x90000000 || buffer_guest == 0) {
-    return false;
-  }
-
-  const uint32_t entries_begin = LoadGuestU32(base, stream_guest + 12);
-  const uint32_t entries_end = LoadGuestU32(base, stream_guest + 16);
-  const uint64_t total_size = LoadGuestU64(base, stream_guest + 24);
-  if (entries_begin == 0 || entries_end <= entries_begin ||
-      ((entries_end - entries_begin) % 16) != 0 ||
-      (entries_end - entries_begin) / 16 > 1024) {
-    return false;
-  }
-
-  const uint32_t entry_count = (entries_end - entries_begin) / 16;
-  for (uint32_t index = 0; index < entry_count; ++index) {
-    const uint32_t segment_guest = LoadGuestU32(base, entries_begin + index * 16);
-    if (!IsRefiiHostDiskStream(base, segment_guest)) {
-      return false;
-    }
-  }
-
-  if (static_cast<uint64_t>(requested_bytes) > total_size ||
-      offset > total_size - requested_bytes) {
-    StoreGuestU32(base, out_guest, 0);
-    ctx.r3.u32 = out_guest;
-    return true;
-  }
-
-  uint64_t segment_base = 0;
-  uint64_t read_cursor = offset;
-  uint32_t destination_guest = buffer_guest;
-  uint32_t remaining = requested_bytes;
-  for (uint32_t index = 0; index < entry_count && remaining != 0; ++index) {
-    const uint32_t entry_guest = entries_begin + index * 16;
-    const uint32_t segment_guest = LoadGuestU32(base, entry_guest);
-    const uint64_t segment_size = LoadGuestU64(base, entry_guest + 8);
-    if (read_cursor >= segment_base + segment_size) {
-      segment_base += segment_size;
-      continue;
-    }
-
-    const uint64_t segment_offset = read_cursor - segment_base;
-    const uint32_t to_read = static_cast<uint32_t>(
-        std::min<uint64_t>(segment_size - segment_offset, remaining));
-    const uint32_t read = ReadRefiiHostStreamBytes(
-        base, segment_guest, destination_guest, segment_offset, to_read);
-    if (read != to_read) {
-      return false;
-    }
-
-    destination_guest += to_read;
-    read_cursor += to_read;
-    remaining -= to_read;
-    segment_base += segment_size;
-  }
-
-  if (remaining != 0) {
-    return false;
-  }
-
-  const uint32_t request_guest = CreateCompletedReadRequest(
-      ctx,
-      base,
-      stream_guest,
-      buffer_guest,
-      offset,
-      requested_bytes,
-      requested_bytes);
-  if (request_guest == 0) {
-    return false;
-  }
-
-  StoreGuestU32(base, out_guest, request_guest);
-  ctx.r3.u32 = out_guest;
-  if (ShouldLogLooseStreamOperation("RefiiCompositeStream_Read",
-                                    stream_guest,
-                                    16)) {
-    REXLOG_INFO("Refii host loose composite read stream=0x{:08X} out=0x{:08X} "
-                "buffer=0x{:08X} offset={} requested={} segments={} "
-                "result_object=0x{:08X}",
-                stream_guest,
-                out_guest,
-                buffer_guest,
-                offset,
-                requested_bytes,
-                entry_count,
-                request_guest);
-  }
-  return true;
-}
-
-bool TryHandleRefiiHostCompositeStreamDirectRead(PPCContext& ctx,
-                                                 uint8_t* base,
-                                                 uint32_t stream_guest,
-                                                 uint32_t buffer_guest,
-                                                 uint64_t offset,
-                                                 uint32_t requested_bytes) {
-  if (base == nullptr || stream_guest < 0x10000 ||
-      stream_guest >= 0x90000000 || buffer_guest == 0) {
-    return false;
-  }
-
-  const uint32_t entries_begin = LoadGuestU32(base, stream_guest + 12);
-  const uint32_t entries_end = LoadGuestU32(base, stream_guest + 16);
-  const uint64_t total_size = LoadGuestU64(base, stream_guest + 24);
-  if (entries_begin == 0 || entries_end <= entries_begin ||
-      ((entries_end - entries_begin) % 16) != 0 ||
-      (entries_end - entries_begin) / 16 > 1024) {
-    return false;
-  }
-
-  const uint32_t entry_count = (entries_end - entries_begin) / 16;
-  for (uint32_t index = 0; index < entry_count; ++index) {
-    const uint32_t segment_guest = LoadGuestU32(base, entries_begin + index * 16);
-    if (!IsRefiiHostDiskStream(base, segment_guest)) {
-      return false;
-    }
-  }
-
-  if (static_cast<uint64_t>(requested_bytes) > total_size ||
-      offset > total_size - requested_bytes) {
-    ctx.r3.u32 = 0x80004005;
-    return true;
-  }
-
-  uint64_t segment_base = 0;
-  uint64_t read_cursor = offset;
-  uint32_t destination_guest = buffer_guest;
-  uint32_t remaining = requested_bytes;
-  bool ok = true;
-  for (uint32_t index = 0; index < entry_count && remaining != 0; ++index) {
-    const uint32_t entry_guest = entries_begin + index * 16;
-    const uint32_t segment_guest = LoadGuestU32(base, entry_guest);
-    const uint64_t segment_size = LoadGuestU64(base, entry_guest + 8);
-    if (read_cursor >= segment_base + segment_size) {
-      segment_base += segment_size;
-      continue;
-    }
-
-    const uint64_t segment_offset = read_cursor - segment_base;
-    const uint32_t to_read = static_cast<uint32_t>(
-        std::min<uint64_t>(segment_size - segment_offset, remaining));
-    const uint32_t read = ReadRefiiHostStreamBytes(
-        base, segment_guest, destination_guest, segment_offset, to_read);
-    if (read != to_read) {
-      ok = false;
-      break;
-    }
-
-    destination_guest += to_read;
-    read_cursor += to_read;
-    remaining -= to_read;
-    segment_base += segment_size;
-  }
-
-  if (remaining != 0) {
-    ok = false;
-  }
-
-  ctx.r3.u32 = ok ? 0 : 0x80004005;
-  if (ShouldLogLooseStreamOperation("RefiiCompositeStream_DirectRead",
-                                    stream_guest,
-                                    32)) {
-    REXLOG_INFO("Refii host loose composite direct read stream=0x{:08X} "
-                "buffer=0x{:08X} offset={} requested={} remaining={} "
-                "segments={} status=0x{:08X}",
-                stream_guest,
-                buffer_guest,
-                offset,
-                requested_bytes,
-                remaining,
-                entry_count,
-                ctx.r3.u32);
-  }
-  return true;
-}
-
-
 }  // namespace detail
 }  // namespace refii::vfs

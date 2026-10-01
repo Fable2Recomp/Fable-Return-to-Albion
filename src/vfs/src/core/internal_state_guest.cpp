@@ -17,22 +17,9 @@ void MaybeLogStartupLuaStreamCloseVerdict(uint32_t stream_guest,
 
 bool IsGameFaceBinaryAssetKey(std::string_view asset_path);
 
-
-thread_local int g_suppress_request_manager_hash_entry_loose_streams = 0;
-
 std::mutex g_refii_resource_wrapper_vtable_mutex;
 uint32_t g_refii_resource_wrapper_vtable = 0;
 uint32_t g_refii_resource_wrapper_interface_vtable = 0;
-thread_local uint32_t g_active_texture_parser_trace_descriptor = 0;
-
-thread_local ActiveTextureParserCdf8TraceContext
-    g_active_texture_parser_cdf8_trace;
-
-thread_local ActiveFrontendTextureConsumerTraceContext
-    g_active_frontend_texture_consumer_trace;
-
-const ActiveTextureParserCdf8TraceContext*
-ActiveTextureParserCdf8Trace();
 
 std::array<uint32_t, 4> ReadHostFileFirstWords(
     const std::filesystem::path& path);
@@ -52,33 +39,12 @@ bool MaybeAugmentRefiiSplitTextureWrapperPayloadView(
     uint32_t wrapper_guest,
     std::string_view api,
     RefiiResourceWrapperView* view);
-void RecordRefiiStartupVideoReadComplete(uint8_t* base,
-                                         uint32_t stream_guest,
-                                         uint32_t requested_bytes,
-                                         uint32_t completed_bytes,
-                                         int64_t queue_wait_ms = -1,
-                                         int64_t read_ms = -1);
 void RecordRefiiMainMenuBlockerEvent(std::string_view kind,
                                      std::string message);
-std::string FormatFrontendTextureConsumerTraceForLog(
-    const ActiveFrontendTextureConsumerTraceContext& trace);
-bool RecordRefiiFrontendTextureConsumerVerdict(
-    uint32_t lr,
-    uint32_t result,
-    const ActiveFrontendTextureConsumerTraceContext& consumer_trace,
-    bool texture_owned_but_unopened);
-std::string FormatRefiiLastVfsOperationForLog();
 std::string FormatRefiiMainMenuBlockerTraceForLog();
 std::string FormatRefiiPostVideoHandoffTraceForLog();
-std::string FormatRefiiLoadingScreenSequenceGlobals(uint8_t* base);
-std::string FormatKnownRequestManagerGuestsForLog(size_t max_count = 8);
-std::string FormatTargetedTextureHashTableAudit(uint8_t* base);
-size_t TargetedRequestManagerHashContributionCount();
 float RefiiGuestF32FromWord(uint32_t word);
 bool RefiiMainMenuTraceIsTextureOwnedButNotOpened();
-bool RefiiMainMenuTraceNeedsTexturePrime();
-bool RefiiMainMenuTraceNeedsFrontendHandoff();
-bool RefiiMainMenuTraceAllowsPostVideoReadyAdvance();
 bool RefiiStartupVideosPlaybackCriticalActive();
 void LogRefiiVfsChainVerdict(std::string_view chain_id,
                              uint32_t root_lr,
@@ -697,226 +663,6 @@ std::pair<uint32_t, uint32_t> EnsureRefiiResourceWrapperVTables(
   return {primary, interface_vtable};
 }
 
-bool CallGuestVTableSlot(PPCContext& source_ctx,
-                         uint8_t* base,
-                         uint32_t object_guest,
-                         uint32_t slot_offset,
-                         uint32_t arg4 = 0,
-                         uint32_t arg5 = 0,
-                         uint32_t arg6 = 0,
-                         uint32_t arg7 = 0,
-                         uint32_t synthetic_lr = 0) {
-  if (base == nullptr || object_guest == 0) {
-    return false;
-  }
-
-  const uint32_t vtable_guest = LoadGuestU32(base, object_guest);
-  const uint32_t function_guest = LoadGuestU32(base, vtable_guest + slot_offset);
-  PPCFunc* function = FindGuestFunction(function_guest);
-  if (function == nullptr) {
-    REXLOG_WARN("Refii guest vtable call failed object=0x{:08X} "
-                "vtable=0x{:08X} slot=0x{:X} function=0x{:08X}",
-                object_guest,
-                vtable_guest,
-                slot_offset,
-                function_guest);
-    return false;
-  }
-
-  PPCContext call_ctx = source_ctx;
-  call_ctx.r3.u32 = object_guest;
-  call_ctx.r4.u32 = arg4;
-  call_ctx.r5.u32 = arg5;
-  call_ctx.r6.u32 = arg6;
-  call_ctx.r7.u32 = arg7;
-  call_ctx.ctr.u32 = function_guest;
-  if (synthetic_lr != 0) {
-    call_ctx.lr = synthetic_lr;
-  }
-  function(call_ctx, base);
-  return true;
-}
-
-bool ApplyResourceAliasNameSideEffects(PPCContext& source_ctx,
-                                       uint8_t* base,
-                                       uint32_t owner_guest,
-                                       uint32_t resolved_name_guest,
-                                       uint32_t requested_hash) {
-  if (base == nullptr || owner_guest == 0 || resolved_name_guest == 0) {
-    return false;
-  }
-
-  const uint32_t hash_guest = CallLhMalloc(source_ctx, base, sizeof(uint32_t));
-  if (hash_guest == 0) {
-    return false;
-  }
-
-  StoreGuestU32(base, hash_guest, requested_hash);
-
-  PPCContext find_ctx = source_ctx;
-  find_ctx.r3.u32 = owner_guest;
-  find_ctx.r4.u32 = hash_guest;
-  find_ctx.lr = 0x8237476C;
-  sub_82374F70(find_ctx, base);
-
-  const uint32_t alias_table_entry_guest = find_ctx.r3.u32;
-  if (alias_table_entry_guest != 0) {
-    PPCContext append_ctx = source_ctx;
-    append_ctx.r3.u32 = alias_table_entry_guest;
-    append_ctx.r4.u32 = resolved_name_guest;
-    append_ctx.lr = 0x82374774;
-    sub_82374D78(append_ctx, base);
-  }
-
-  CallLhFree(source_ctx, base, hash_guest);
-  return alias_table_entry_guest != 0;
-}
-
-ResourceAliasValidationResult ValidateSyntheticResourceAliasAttach(
-    PPCContext& source_ctx,
-    uint8_t* base,
-    uint32_t owner_guest,
-    uint32_t requested_hash) {
-  ResourceAliasValidationResult result;
-  if (base == nullptr || owner_guest == 0) {
-    return result;
-  }
-
-  result.expected_container = owner_guest + 12;
-  result.expected_node = LoadGuestU32(base, owner_guest + 16);
-
-  const uint32_t key_guest = CallLhMalloc(source_ctx, base, sizeof(uint32_t));
-  const uint32_t out_guest = CallLhMalloc(source_ctx, base, 8);
-  if (key_guest == 0 || out_guest == 0) {
-    if (key_guest != 0) {
-      CallLhFree(source_ctx, base, key_guest);
-    }
-    if (out_guest != 0) {
-      CallLhFree(source_ctx, base, out_guest);
-    }
-    return result;
-  }
-
-  StoreGuestU32(base, key_guest, requested_hash);
-  StoreGuestU32(base, out_guest, 0);
-  StoreGuestU32(base, out_guest + 4, 0);
-
-  PPCContext validate_ctx = source_ctx;
-  validate_ctx.r3.u32 = out_guest;
-  validate_ctx.r4.u32 = result.expected_container;
-  validate_ctx.r5.u32 = key_guest;
-  validate_ctx.lr = 0x8237478C;
-  __imp__rex_lhMeshResource_Validate(validate_ctx, base);
-
-  result.ran = true;
-  result.result_container = LoadGuestU32(base, out_guest);
-  result.result_node = LoadGuestU32(base, out_guest + 4);
-  result.attach = result.result_container == result.expected_container &&
-                  result.result_node == result.expected_node;
-
-  CallLhFree(source_ctx, base, out_guest);
-  CallLhFree(source_ctx, base, key_guest);
-  return result;
-}
-
-bool ApplySyntheticResourceAliasAttach(PPCContext& source_ctx,
-                                       uint8_t* base,
-                                       uint32_t owner_guest,
-                                       uint32_t requested_name_guest) {
-  if (base == nullptr || owner_guest == 0 || requested_name_guest == 0) {
-    return false;
-  }
-
-  const uint32_t primary_resource = LoadGuestU32(base, owner_guest + 24);
-  if (primary_resource == 0 || LoadGuestU32(base, primary_resource) == 0) {
-    return false;
-  }
-
-  const uint32_t alias_guest = CallLhMalloc(source_ctx, base, 52);
-  if (alias_guest == 0) {
-    return false;
-  }
-  auto* alias_object = rex::memory::GuestPtr<uint8_t*>(base, alias_guest);
-  std::memset(alias_object, 0, 52);
-  StoreGuestU32(base, alias_guest + 0, kResourceAliasVTable);
-  StoreGuestU32(base, alias_guest + 4, 0);
-
-  PPCContext name_ctx = source_ctx;
-  name_ctx.r3.u32 = alias_guest + 8;
-  name_ctx.r4.u32 = requested_name_guest;
-  name_ctx.lr = 0x823747F8;
-  sub_822F2308(name_ctx, base);
-
-  StoreGuestU32(base, alias_guest + 44, primary_resource);
-  CallGuestVTableSlot(source_ctx,
-                      base,
-                      primary_resource,
-                      4,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0x82374810);
-  StoreGuestU32(base, alias_guest + 48, owner_guest);
-
-  CallGuestVTableSlot(source_ctx,
-                      base,
-                      alias_guest,
-                      4,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0x8237483C);
-
-  const uint32_t request_guest = CallLhMalloc(source_ctx, base, 32);
-  if (request_guest == 0) {
-    CallGuestVTableSlot(source_ctx,
-                        base,
-                        alias_guest,
-                        8,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0x8237489C);
-    return false;
-  }
-
-  auto* request_object = rex::memory::GuestPtr<uint8_t*>(base, request_guest);
-  std::memset(request_object, 0, 32);
-  StoreGuestU16(base, request_guest + 4, 0);
-  StoreGuestU32(base, request_guest + 20, 0);
-  StoreGuestU32(base, request_guest + 24, 7);
-
-  const bool attached = CallGuestVTableSlot(source_ctx,
-                                           base,
-                                           primary_resource,
-                                           36,
-                                           alias_guest,
-                                           request_guest,
-                                           2,
-                                           1,
-                                           0x82374878);
-
-  PPCContext destroy_request_ctx = source_ctx;
-  destroy_request_ctx.r3.u32 = request_guest;
-  destroy_request_ctx.lr = 0x82374880;
-  sub_822F22B8(destroy_request_ctx, base);
-  CallLhFree(source_ctx, base, request_guest);
-
-  CallGuestVTableSlot(source_ctx,
-                      base,
-                      alias_guest,
-                      8,
-                      0,
-                      0,
-                      0,
-                      0,
-                      0x8237489C);
-  return attached;
-}
-
 bool IsReadableAssetChar(char ch) {
   const unsigned char value = static_cast<unsigned char>(ch);
   return std::isalnum(value) || ch == '/' || ch == '\\' || ch == '.' ||
@@ -1170,78 +916,6 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
   return read_ascii_cstr(data_guest);
 }
 
-std::string ReadGuestWideCString(uint8_t* base,
-                                 uint32_t string_guest,
-                                 size_t max_chars) {
-  if (base == nullptr || string_guest < 0x10000u) {
-    return {};
-  }
-
-  std::vector<uint8_t> scratch(std::min<size_t>(max_chars, 4096) * 2u);
-  const size_t readable =
-      TryCopyGuestBytes(base, string_guest, scratch.data(), scratch.size());
-  std::string value;
-  value.reserve(std::min<size_t>(max_chars, 256));
-  for (size_t index = 0; index < max_chars; ++index) {
-    if (index * 2u + 1u >= readable) {
-      break;
-    }
-    const uint16_t code_unit =
-        static_cast<uint16_t>((uint16_t(scratch[index * 2u]) << 8) |
-                              uint16_t(scratch[index * 2u + 1u]));
-    if (code_unit == 0) {
-      break;
-    }
-    if (code_unit > 0x7F) {
-      return {};
-    }
-    const char ch = static_cast<char>(code_unit);
-    if (!IsReadableAssetChar(ch)) {
-      return {};
-    }
-    value.push_back(ch);
-  }
-  return value;
-}
-
-bool WriteGuestWideStringObject(uint8_t* base,
-                                uint32_t object_guest,
-                                uint32_t data_guest,
-                                std::string_view value) {
-  if (base == nullptr || object_guest == 0 || data_guest == 0 ||
-      value.size() > 2047) {
-    return false;
-  }
-
-  for (uint32_t offset = 0; offset < 32; offset += 4) {
-    StoreGuestU32(base, object_guest + offset, 0);
-  }
-
-  for (size_t index = 0; index < value.size(); ++index) {
-    const unsigned char ch = static_cast<unsigned char>(value[index]);
-    if (ch > 0x7F) {
-      return false;
-    }
-    StoreGuestU16(base,
-                  data_guest + static_cast<uint32_t>(index * 2),
-                  static_cast<uint16_t>(ch));
-  }
-  StoreGuestU16(base,
-                data_guest + static_cast<uint32_t>(value.size() * 2),
-                0);
-
-  StoreGuestU32(base, object_guest + 4, data_guest);
-  StoreGuestU32(base, object_guest + 20, static_cast<uint32_t>(value.size()));
-  StoreGuestU32(base, object_guest + 24, std::max<uint32_t>(
-                                      8, static_cast<uint32_t>(value.size())));
-  StoreGuestU32(base, object_guest + 28, 0);
-  return true;
-}
-
-bool IsOutputStreamSet(uint8_t* base, uint32_t out_guest) {
-  return base != nullptr && out_guest != 0 && LoadGuestU32(base, out_guest) != 0;
-}
-
 std::string FormatGuestWords(uint8_t* base, uint32_t guest, uint32_t word_count) {
   if (base == nullptr || guest == 0) {
     return {};
@@ -1287,18 +961,6 @@ std::string FormatGuestWords(uint8_t* base, uint32_t guest, uint32_t word_count)
     } else {
       stream << "<unmapped>";
     }
-  }
-  return stream.str();
-}
-
-std::string JoinStrings(const std::vector<std::string>& values,
-                        std::string_view separator) {
-  std::ostringstream stream;
-  for (size_t index = 0; index < values.size(); ++index) {
-    if (index != 0) {
-      stream << separator;
-    }
-    stream << values[index];
   }
   return stream.str();
 }
@@ -1476,13 +1138,6 @@ std::string DescribeGuestObject(uint8_t* base,
                      FormatGuestObjectVTable(base, object_guest, slot_count));
 }
 
-std::string ReadBankDebugName(uint8_t* base, uint32_t bank_guest) {
-  if (base == nullptr || bank_guest == 0) {
-    return {};
-  }
-  return ReadGuestWideStringObject(base, bank_guest + 8, 4096);
-}
-
 std::string ReadMaybeGuestString(uint8_t* base,
                                  uint32_t guest,
                                  uint32_t max_chars = 4096) {
@@ -1490,19 +1145,6 @@ std::string ReadMaybeGuestString(uint8_t* base,
     return {};
   }
   return ReadBestEffortGuestString(base, guest, max_chars);
-}
-
-std::string KnownGuiCommandForCallerLr(uint32_t lr) {
-  switch (lr) {
-  case 0x823DCCACu:
-    return "GUI:SetAsNotRunningInAnarkStudio()";
-  case 0x823DCD2Cu:
-    return "GUI:StoreScriptsDirectoryAndLoadAppropriateScripts()";
-  case 0x823DCD68u:
-    return "GUI:SetToDisplayInWidescreen()";
-  default:
-    return {};
-  }
 }
 
 bool IsTraceInterestingAsset(std::string_view asset_path) {
@@ -1557,45 +1199,6 @@ bool ShouldAllowOwnerlessSplitTextureWrapperCombine(std::string_view api,
 
 bool IsMainMenuTextureResourceHash(uint32_t resource_hash) {
   return resource_hash == 0x73BCB48Fu || resource_hash == 0xC5A8E73Cu;
-}
-
-bool IsBootFontResourceHash(uint32_t resource_hash) {
-  switch (resource_hash) {
-    case 0xD214633Eu: // language/fonts/couriernew_16.bft
-    case 0x989D3506u: // language/en-uk/fonts/gui_small.bft
-    case 0xC5616AFEu: // language/en-uk/fonts/gui_large.bft
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool ShouldTracePostVideoFontCaller(uint32_t lr) {
-  switch (lr) {
-    case 0x8287006Cu:
-    case 0x82870078u:
-    case 0x82870080u:
-    case 0x828716A8u:
-    case 0x828716B4u:
-    case 0x828716BCu:
-    case 0x82871760u:
-    case 0x8287176Cu:
-    case 0x82871774u:
-      return true;
-    default:
-      return false;
-  }
-}
-
-std::string_view MainMenuTextureNameForResourceHash(uint32_t resource_hash) {
-  switch (resource_hash) {
-    case 0x73BCB48Fu:
-      return "art/gui/frames/buttondetailmap.tex";
-    case 0xC5A8E73Cu:
-      return "art/gui/frames/framedetailmap.tex";
-    default:
-      return {};
-  }
 }
 
 void LogRefiiVfsChainVerdict(std::string_view chain_id,
@@ -1707,101 +1310,5 @@ bool ShouldLogFileApiPath(std::string_view api, std::string_view path) {
   }
   return VfsTracingEnabled() && ShouldLogVfsTraceOperation(api);
 }
-
-bool LooksLikeConcreteVfsFilePath(std::string_view asset_path) {
-  const std::string normalized = NormalizeLooseAssetKey(asset_path);
-  if (normalized.empty() || normalized.back() == '/') {
-    return false;
-  }
-
-  const size_t separator = normalized.find_last_of('/');
-  const std::string_view basename =
-      separator == std::string::npos
-          ? std::string_view(normalized)
-          : std::string_view(normalized).substr(separator + 1);
-  return basename.find('.') != std::string_view::npos;
-}
-
-bool ShouldTraceMeshResourceValidate(uint32_t link_register) {
-  if (!kTraceMeshModelAudioDiagnostics) {
-    return false;
-  }
-  switch (link_register) {
-    case 0x821F5CFC:
-    case 0x8237478C:
-    case 0x82B60988:
-    case 0x82B708A4:
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool IsSupportedDispatchHeaderType(uint8_t type) {
-  switch (type) {
-    case 0:
-    case 1:
-    case 2:
-    case 5:
-      return true;
-    default:
-      return false;
-  }
-}
-
-void SanitizeCriticalSectionBeforeEnter(uint8_t* base,
-                                        uint32_t critical_section_guest,
-                                        uint32_t link_register) {
-  if (base == nullptr || critical_section_guest < 0x10000 ||
-      critical_section_guest >= 0x90000000) {
-    return;
-  }
-
-  const uint8_t type = LoadGuestU8(base, critical_section_guest);
-  if (IsSupportedDispatchHeaderType(type)) {
-    return;
-  }
-
-  const uint8_t absolute = LoadGuestU8(base, critical_section_guest + 1);
-  const uint32_t signal_state = LoadGuestU32(base, critical_section_guest + 4);
-  const uint32_t lock_count = LoadGuestU32(base, critical_section_guest + 0x10);
-  const uint32_t recursion_count =
-      LoadGuestU32(base, critical_section_guest + 0x14);
-  const uint32_t owning_thread =
-      LoadGuestU32(base, critical_section_guest + 0x18);
-
-  // Some game-owned critical sections live in embedded data and may not pass
-  // through rexglue's initializer before contention. When the dispatcher type
-  // is invalid, the rest of the structure has also proven to be raw embedded
-  // bytes, so initialize the complete critical section before the first enter.
-  StoreGuestU8(base, critical_section_guest, 1);
-  StoreGuestU8(base,
-               critical_section_guest + 1,
-               absolute != 0 ? absolute : static_cast<uint8_t>(96));
-  StoreGuestU32(base, critical_section_guest + 4, 0);
-  StoreGuestU32(base, critical_section_guest + 0x10, 0xFFFFFFFF);
-  StoreGuestU32(base, critical_section_guest + 0x14, 0);
-  StoreGuestU32(base, critical_section_guest + 0x18, 0);
-
-  static std::atomic<uint64_t> sanitized_count{0};
-  const uint64_t count =
-      sanitized_count.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (VfsTracingEnabled() && (count <= 32 || (count & (count - 1)) == 0)) {
-    REXLOG_WARN("VFS trace sanitized embedded critical section "
-                "cs=0x{:08X} old_type={} old_absolute={} old_signal={} "
-                "lock_count=0x{:08X} recursion={} owner=0x{:08X} "
-                "lr=0x{:08X} count={}",
-                critical_section_guest,
-                type,
-                absolute,
-                signal_state,
-                lock_count,
-                recursion_count,
-                owning_thread,
-                link_register,
-                count);
-  }
-}
-
 }  // namespace detail
 }  // namespace refii::vfs

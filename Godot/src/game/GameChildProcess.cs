@@ -56,6 +56,16 @@ public static class GameChildProcess
 			arguments.Add("separate");
 		}
 
+		// The graphics API is fixed when the rendering device is created, so it rides the command
+		// line too. Direct3D 12 is Windows-only; everywhere else the driver is Vulkan whatever
+		// refii.toml says.
+		string driver = System.OperatingSystem.IsWindows()
+			&& Refii.Core.Engine_RefiiConfig.String(config, "rendering_driver", "vulkan") == "d3d12"
+				? "d3d12"
+				: "vulkan";
+		arguments.Add("--rendering-driver");
+		arguments.Add(driver);
+
 		// Godot's per-pass GPU timestamps (`RENDER_TIMESTAMP`) are captured only under
 		// `--gpu-profile`. The switch is not bound to script, so it rides the command line like
 		// the thread model. Read by Engine_GpuPasses.

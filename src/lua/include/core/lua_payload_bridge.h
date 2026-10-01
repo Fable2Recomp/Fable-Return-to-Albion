@@ -18,27 +18,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct PPCContext;
 namespace refii::lua {
 struct NativeScriptRequest;
 }
 
 extern "C" {
-
 int32_t refii_bridge_lua_native_script_load_tracing_enabled(void);
-int32_t refii_bridge_lua_native_mod_overrides_enabled(void);
-int32_t refii_bridge_lua_native_mod_override_tracing_enabled(void);
 
-/// Returns NativeDispatchResult as an int: 0 unhandled, 1 handled-success, 2 handled-failure.
-int32_t refii_bridge_lua_dispatch_native_script(
-    struct PPCContext* ppc, uint8_t* base, const refii::lua::NativeScriptRequest* request);
 
 size_t refii_bridge_lua_read_guest_lua_string_like(uint8_t* base, uint32_t guest_ptr,
                                                    size_t max_bytes, char* out, size_t capacity);
 size_t refii_bridge_lua_read_native_script_key(
     uint8_t* base, const refii::lua::NativeScriptRequest* request, char* out,
     size_t capacity);
-size_t refii_bridge_lua_resolve_mod_override_path(const char* script_key, size_t length,
-                                                  char* out, size_t capacity);
-
 }  // extern "C"

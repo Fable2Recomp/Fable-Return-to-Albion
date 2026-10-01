@@ -27,85 +27,10 @@ REXCVAR_DEFINE_BOOL(vfs_trace_vfs_verbose_io, false, "VFS",
                     "Log high-volume Refii VFS stream read/page operations.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(vfs_skip_startup_videos, false, "VFS",
-                    "Skip the non-interactive startup videos while using the Refii VFS.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_force_startup_video_sequence, false, "VFS",
-                    "Require the native startup videos to play in sequence before Refii VFS "
-                    "post-video handoff patches may run.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(vfs_startup_video_minimum_playback_ms, 0, "VFS",
-                     "Optional extra wall-clock startup-video playback floor "
-                     "before Refii VFS post-video handoff may continue when "
-                     "native finalizers are not observed. 0 uses the built-in "
-                     "observed playback gate.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 REXCVAR_DEFINE_STRING(vfs_loose_asset_root, "", "VFS",
                       "Optional host path to loose asset overrides. Defaults to "
                       "<assets_root>/unpacked.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_auto_press_start, false, "VFS",
-                    "Testing aid: emulate the player pressing Start once at "
-                    "the interactive title screen (drives the exact native "
-                    "press handler). Lets unattended runs advance into the "
-                    "main menu.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_frontend_synthetic_handoff, false, "VFS",
-                    "Enable the legacy synthetic post-video/post-loading "
-                    "frontend handoff machinery (texture descriptor "
-                    "synthesis, holder arming, wait collapsing). Off by "
-                    "default: the fabricated guest writes corrupted native "
-                    "GUI state (boot fault-loops); the native flow reaches "
-                    "the menu without them. Kept for diagnosis only.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_force_retail_update_mode, true, "VFS",
-                    "Report the retail (non-dev-kit) update-path mode to "
-                    "GameInit so bootstrap follows the packed-container "
-                    "resource path instead of the dev-roots path (the host "
-                    "filesystem otherwise looks like a dev kit and takes a "
-                    "boot path retail Fable 2 never used).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_native_bank_parse_probe, false, "VFS",
-                    "Diagnostic: run the native Bank_ParseHeader on the "
-                    "incoming stream for extracted banks and log the resulting "
-                    "entry-table shape, instead of building a synthetic bank.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_gdb_csv_overrides, true, "VFS",
-                    "Serve <name>.gdb.csv files found in loose asset roots in "
-                    "place of the binary .gdb game database: the CSV is "
-                    "compiled to .cache/gdb_compiled/ on demand and handed to "
-                    "the guest. Enabled by default for the Refii backend.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vfs_babel_csv_overrides, true, "VFS",
-                    "Serve <name>.babel.csv files found in loose asset roots "
-                    "in place of the binary .babel localized-text database: "
-                    "the CSV is compiled to .cache/babel_compiled/ on demand "
-                    "and handed to the guest. Enabled by default for the "
-                    "Refii backend.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-bool EqualsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
-  if (left.size() != right.size()) {
-    return false;
-  }
-  for (size_t i = 0; i < left.size(); ++i) {
-    const auto lhs = static_cast<unsigned char>(left[i]);
-    const auto rhs = static_cast<unsigned char>(right[i]);
-    if (std::tolower(lhs) != std::tolower(rhs)) {
-      return false;
-    }
-  }
-  return true;
-}
 
 // The backend/trace checks below run on every hooked guest call (hundreds of
 // thousands of times per second on the render thread). REXCVAR_GET on a
@@ -149,7 +74,6 @@ inline void EnsureVfsCvarCache() {
     InitializeVfsCvarCacheSlow();
   }
 }
-
 }  // namespace
 
 extern "C" int32_t refii_bridge_vfs_loose_asset_override_tracing_enabled() {
@@ -171,51 +95,9 @@ extern "C" int32_t refii_bridge_vfs_loose_gameface_binary_overrides_enabled() {
   return true;
 }
 
-extern "C" int32_t refii_bridge_vfs_loose_bank_entry_overrides_enabled() {
-  return true;
-}
-
-extern "C" int32_t refii_bridge_vfs_native_bank_parse_probe_enabled() {
-  return REXCVAR_GET(vfs_native_bank_parse_probe);
-}
-
-bool GdbCsvOverridesEnabled() {
-  return REXCVAR_GET(vfs_gdb_csv_overrides);
-}
-
-bool BabelCsvOverridesEnabled() {
-  return REXCVAR_GET(vfs_babel_csv_overrides);
-}
-
-extern "C" int32_t refii_bridge_vfs_auto_press_start_enabled() {
-  return REXCVAR_GET(vfs_auto_press_start);
-}
-
-extern "C" int32_t refii_bridge_vfs_frontend_synthetic_handoff_enabled() {
-  return REXCVAR_GET(vfs_frontend_synthetic_handoff);
-}
-
-extern "C" int32_t refii_bridge_vfs_force_retail_update_mode_enabled() {
-  return REXCVAR_GET(vfs_force_retail_update_mode);
-}
-
-extern "C" int32_t refii_bridge_vfs_skip_startup_videos_enabled() {
-  // The two backend terms that used to lead this are gone with the switch. They were both
-  // false in every shipped run, so this answered false regardless of the cvar; it still does,
-  // because `vfs_skip_startup_videos` itself defaults false.
-  return REXCVAR_GET(vfs_skip_startup_videos) &&
-         !REXCVAR_GET(vfs_force_startup_video_sequence);
-}
-
-extern "C" int32_t refii_bridge_vfs_startup_video_minimum_playback_ms() {
-  return std::max(0, REXCVAR_GET(vfs_startup_video_minimum_playback_ms));
-}
-
 inline namespace detail {
-
 std::string ConfiguredLooseAssetRoot() {
   return REXCVAR_GET(vfs_loose_asset_root);
 }
-
 }  // namespace detail
 }  // namespace refii::vfs

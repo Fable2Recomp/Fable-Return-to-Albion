@@ -1,13 +1,12 @@
 #pragma once
 
 #include <algorithm>
-#include <filesystem>
 #include <string>
 #include <string_view>
 
 namespace refii::lua {
-
 inline bool StartsWithLuaPathPrefix(std::string_view value, std::string_view prefix) {
+
     return value.substr(0, prefix.size()) == prefix;
 }
 
@@ -36,10 +35,4 @@ inline std::string CanonicalizeRetailLuaRelativeString(std::string_view value) {
 
     return normalized;
 }
-
-inline std::filesystem::path CanonicalizeRetailLuaRelativePath(
-    const std::filesystem::path& path) {
-    return std::filesystem::path(CanonicalizeRetailLuaRelativeString(path.generic_string()));
-}
-
 }  // namespace refii::lua

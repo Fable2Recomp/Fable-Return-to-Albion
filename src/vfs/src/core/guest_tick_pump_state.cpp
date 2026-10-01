@@ -647,14 +647,6 @@ void refii_bridge_menu_spawn_begin_for(uint32_t screen_id) {
   refii::vfs::g_menu_populating.store(true, std::memory_order_release);
 }
 
-/// The boundary hooks that cannot read a screen — the Lua-exec string match, and the front
-/// end, whose GUI object is not the in-game one. An unknown key is not a missing key: it
-/// says "this population belongs to no in-game screen", which is exactly what makes an
-/// in-game template reject it.
-void refii_bridge_menu_spawn_begin(void) {
-  refii_bridge_menu_spawn_begin_for(refii::vfs::kMenuScreenUnknown);
-}
-
 /// Clears the partial-population flag. Called once per guest tick.
 void refii_bridge_menu_settle(void) {
   refii::vfs::g_menu_populating.store(false, std::memory_order_release);
@@ -663,11 +655,6 @@ void refii_bridge_menu_settle(void) {
 /// True while a population is in flight and the captured rows are not yet whole.
 int32_t refii_bridge_menu_populating(void) {
   return refii::vfs::g_menu_populating.load(std::memory_order_acquire) ? 1 : 0;
-}
-
-void refii_bridge_menu_spawn_row(const char* name, const char* parent, uint32_t id,
-                                 int32_t event_type, int32_t rating) {
-  refii_bridge_menu_spawn_row_labelled(name, parent, id, event_type, rating, nullptr);
 }
 
 void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, uint32_t id,
@@ -783,5 +770,4 @@ void refii_bridge_guest_tick_pump_request_save_count(void) {
 uint32_t refii_bridge_resolve_in_game_loading_screen(uint8_t* base) {
   return refii::vfs::ResolveInGameLoadingScreen(base);
 }
-
 }  // extern "C"

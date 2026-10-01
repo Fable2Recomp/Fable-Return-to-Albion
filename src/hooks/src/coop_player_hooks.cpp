@@ -52,8 +52,6 @@ extern "C" REX_FUNC(__imp__sub_8222CED0);
 /// the host through the front-end action `CoopHeroBody:`, and the hooks already link that way
 /// round (`core/guest_state.h` below). 0 henchman, 1 their own hero.
 extern "C" int RefiiCoopGetOwnHero(void);
-extern "C" uint32_t RefiiCoopPlayerTwoEntity(uint8_t* base);
-extern "C" uint32_t RefiiCoopEntityComponent(uint8_t* base, uint32_t entity, uint32_t id);
 
 extern "C" REX_FUNC(__imp__sub_82365258);
 extern "C" REX_FUNC(__imp__sub_8233D090);
@@ -69,15 +67,15 @@ extern "C" REX_FUNC(__imp__sub_82315AD0);
 extern "C" REX_FUNC(__imp__rex_lhScene_UpdateHeightfield);
 
 namespace {
-
 constexpr uint32_t kAppPointer = 0x83496B08u;
 constexpr uint32_t kGameRoot = 0x83496AB8u;
+
 constexpr uint32_t kFirstHandler = 20u;
 constexpr uint32_t kSecondHandler = 24u;
 
-
 constexpr bool Plausible(uint32_t address) {
   return address >= 0x10000u && address < 0xC0000000u;
+
 }
 
 /// The co-op manager — `g_XrnmNetContext` (0x83497490) itself. `game+140` is only a counted
@@ -108,8 +106,8 @@ void ReportJoinState(uint8_t* base, const char* where) {
       LoadGuestU8(base, cm + 54u), LoadGuestU8(base, cm + 218u), LoadGuestU8(base, cm + 217u),
       LoadGuestU8(base, cm + 223u));
 }
-
 }  // namespace
+
 
 // THE CO-OP/GAME CHANNEL — the OTHER receive path, and the one we were blind to.
 //
@@ -362,9 +360,9 @@ REX_EXTERN(sub_82365258) {
 // view turns into def names and the kit carries as strings. A name is written to a scratch
 // frame for `sub_8222CED0`, exactly as the body override does.
 namespace {
-
 void AnswerWeaponName(PPCContext& ctx, uint8_t* base, const char* name) {
   const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+
   const uint32_t text = frame + 0x20u;
   const std::size_t length = std::strlen(name);
   for (std::size_t i = 0; i < length && i < 0x80u; ++i) {
@@ -379,8 +377,8 @@ void AnswerWeaponName(PPCContext& ctx, uint8_t* base, const char* name) {
   work.r5.u32 = 0xFFFFFFFFu;
   __imp__sub_8222CED0(work, base);
 }
-
 }  // namespace
+
 
 REX_EXTERN(sub_8233C640) {
   const char* name = RefiiCoopGetOwnHero() != 0 ? RefiiCoopMeleeName() : "";

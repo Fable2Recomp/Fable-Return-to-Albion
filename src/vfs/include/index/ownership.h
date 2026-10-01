@@ -37,13 +37,6 @@ bool IsRefiiTextureResolution(std::string_view request_name,
                               uint32_t resource_hash,
                               const LooseAssetResolution& resolution,
                               std::string_view candidate);
-bool ResolveRefiiOwnedTextureResolution(std::string_view api,
-                                        uint32_t resource_hash,
-                                        std::string_view request_name,
-                                        uint32_t caller_lr,
-                                        LooseAssetResolution* out_resolution,
-                                        std::string* out_candidate,
-                                        std::string* out_source);
 void LogRefiiOwnedTextureResolution(std::string_view api,
                                     uint32_t caller_lr,
                                     uint32_t resource_hash,
@@ -52,14 +45,8 @@ void LogRefiiOwnedTextureResolution(std::string_view api,
                                     std::string_view candidate,
                                     std::string_view source);
 RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForName(
-    std::string_view asset_path,
-    uint32_t resource_hash = 0,
-    bool prefer_resource_manager_texture_shape = false,
-    uint32_t caller_lr = 0);
-RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForHash(
-    uint32_t resource_hash,
-    bool prefer_resource_manager_texture_shape = false,
-    uint32_t caller_lr = 0);
+    std::string_view asset_path);
+RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForHash(uint32_t resource_hash);
 void LogRefiiVfsOwnershipDecision(std::string_view api,
                                   uint32_t caller_lr,
                                   std::string_view request_name,
@@ -72,6 +59,5 @@ bool TryRepairNativeShapedGetCachedOutput(
     std::string_view name,
     std::string_view reason,
     const RefiiVfsOwnershipDecision& ownership);
-
 }  // namespace detail
 }  // namespace refii::vfs

@@ -11,14 +11,10 @@ set(REFII_VFS_INCLUDE_DIRS
 )
 
 set(REFII_VFS_RUNTIME_SOURCES
-    ${REFII_VFS_ROOT}/src/loose_asset_runtime.cpp
     ${REFII_VFS_ROOT}/src/gdb/gdb_database.cpp
-    ${REFII_VFS_ROOT}/src/gdb/gdb_csv_override.cpp
     ${REFII_VFS_ROOT}/src/babel/babel_database.cpp
-    ${REFII_VFS_ROOT}/src/babel/babel_csv_override.cpp
     ${REFII_VFS_ROOT}/src/runtime/cvars.cpp
     ${REFII_VFS_ROOT}/src/runtime/path_resolution.cpp
-    ${REFII_VFS_ROOT}/src/runtime/replacement_paths.cpp
     # Bink video state shared by the guest hooks and the host bridge. Must live in
     # refii_vfs, which BOTH link, and not in the hook set: a copy in each library
     # means the hook writes one global and the bridge reads another.
@@ -83,7 +79,6 @@ set(REFII_VFS_HOOK_INTERNAL_SOURCES
     ${REFII_VFS_ROOT}/src/resources/texture_trace_formatting.cpp
     ${REFII_VFS_ROOT}/src/frontend/post_video_trace_state.cpp
     ${REFII_VFS_ROOT}/src/frontend/post_video_handoff_state.cpp
-    ${REFII_VFS_ROOT}/src/frontend/post_loading_requests.cpp
     ${REFII_VFS_ROOT}/src/resources/native_texture_parser_trace.cpp
     ${REFII_VFS_ROOT}/src/streams/resource_wrapper_handlers.cpp
     ${REFII_VFS_ROOT}/src/streams/resource_callbacks_and_lua_bridge.cpp
@@ -95,20 +90,11 @@ set(REFII_VFS_HOOK_INTERNAL_SOURCES
     ${REFII_VFS_ROOT}/src/index/runtime_alias_cache.cpp
     ${REFII_VFS_ROOT}/src/index/resource_hash_index.cpp
     ${REFII_VFS_ROOT}/src/index/concrete_asset_resolution.cpp
-    ${REFII_VFS_ROOT}/src/index/resource_hash_resolution.cpp
     ${REFII_VFS_ROOT}/src/index/ownership_decisions.cpp
     ${REFII_VFS_ROOT}/src/index/open_pipeline.cpp
     ${REFII_VFS_ROOT}/src/frontend/main_menu_trace.cpp
     ${REFII_VFS_ROOT}/src/frontend/loading_sequence_bridge.cpp
     ${REFII_VFS_ROOT}/src/frontend/startup_video_handoff_gates.cpp
-    ${REFII_VFS_ROOT}/src/frontend/texture_consumer_trace.cpp
-    ${REFII_VFS_ROOT}/src/frontend/texture_commit.cpp
-    ${REFII_VFS_ROOT}/src/frontend/synthetic_descriptors.cpp
-    ${REFII_VFS_ROOT}/src/frontend/collapsed_handoff.cpp
-    ${REFII_VFS_ROOT}/src/frontend/handoff_signals.cpp
-    ${REFII_VFS_ROOT}/src/frontend/post_gameface_primary_owner.cpp
-    ${REFII_VFS_ROOT}/src/frontend/post_gameface_package_prime.cpp
-    ${REFII_VFS_ROOT}/src/banks/hash_bank_runtime.cpp
 )
 
 set(REFII_VFS_PPC_HOOK_SOURCES
@@ -135,10 +121,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/texture_layers.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp
-    ${REFII_VFS_ROOT}/src/hooks/loading_resource_hashes.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_streams.cpp
-    ${REFII_VFS_ROOT}/src/hooks/banks.cpp
-    ${REFII_VFS_ROOT}/src/hooks/request_provider.cpp
     ${REFII_VFS_ROOT}/src/hooks/streams.cpp
     ${REFII_VFS_ROOT}/src/hooks/file_api.cpp
     # The guest's XAudio shims, mirrored so Godot can play each voice itself.
@@ -155,12 +138,8 @@ set(REFII_VFS_HOOK_PARTS
     ${REFII_VFS_ROOT}/include/banks/synthetic_bank_runtime.h
     ${REFII_VFS_ROOT}/include/core/guest_state.h
     ${REFII_VFS_ROOT}/include/frontend/loading_sequence.h
-    ${REFII_VFS_ROOT}/include/frontend/post_gameface.h
-    ${REFII_VFS_ROOT}/include/frontend/post_loading.h
     ${REFII_VFS_ROOT}/include/frontend/post_video.h
-    ${REFII_VFS_ROOT}/include/frontend/texture_handoff.h
     ${REFII_VFS_ROOT}/include/frontend/types.h
-    ${REFII_VFS_ROOT}/include/hooks/file_api_types.h
     ${REFII_VFS_ROOT}/include/index/asset_aliases.h
     ${REFII_VFS_ROOT}/include/index/concrete_asset_resolution.h
     ${REFII_VFS_ROOT}/include/index/ownership.h
@@ -169,9 +148,7 @@ set(REFII_VFS_HOOK_PARTS
     ${REFII_VFS_ROOT}/include/index/resource_hash_resolution.h
     ${REFII_VFS_ROOT}/include/index/runtime_alias_cache.h
     ${REFII_VFS_ROOT}/include/index/runtime_tables.h
-    ${REFII_VFS_ROOT}/include/index/types.h
     ${REFII_VFS_ROOT}/include/loose_asset_runtime_stats.h
-    ${REFII_VFS_ROOT}/include/runtime/replacement_paths.h
     ${REFII_VFS_ROOT}/include/resources/resource_wrappers.h
     ${REFII_VFS_ROOT}/include/resources/native_texture_parser_trace.h
     ${REFII_VFS_ROOT}/include/runtime/cvars.h
@@ -189,7 +166,6 @@ set(REFII_VFS_HOOK_PARTS
 set_source_files_properties(${REFII_VFS_HOOK_PARTS} PROPERTIES HEADER_FILE_ONLY TRUE)
 
 set(REFII_VFS_HOOK_SOURCES
-    ${REFII_VFS_ROOT}/src/hooks.cpp
     ${REFII_VFS_HOOK_INTERNAL_SOURCES}
     ${REFII_VFS_PPC_HOOK_SOURCES}
 )
@@ -204,7 +180,6 @@ target_include_directories(refii_vfs
 target_link_libraries(refii_vfs
     PUBLIC
         rex::runtime
-        refii_modding
 )
 
 # The gdb/babel CSV codecs need zlib (babel blocks are deflate streams). Reuse

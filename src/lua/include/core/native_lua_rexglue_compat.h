@@ -16,11 +16,6 @@ inline uint32_t PpcLoadU32(uint8_t* base, uint32_t guest_address) {
   return static_cast<uint32_t>(
       *rex::memory::GuestPtr<rex::be<uint32_t>*>(base, guest_address));
 }
-
-inline uint8_t* PpcGuestPtr(uint8_t* base, uint32_t guest_address) {
-  return rex::memory::GuestPtr<uint8_t*>(base, guest_address);
-}
-
 }  // namespace refii::lua
 
 #if !defined(REX_FUNC_PROLOGUE)

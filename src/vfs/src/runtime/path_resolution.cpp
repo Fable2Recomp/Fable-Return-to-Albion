@@ -1,6 +1,4 @@
 #include "loose_asset_hooks.h"
-#include "gdb/gdb_csv_override.h"
-#include "babel/babel_csv_override.h"
 #include "runtime/cvars.h"
 
 #include <algorithm>
@@ -16,11 +14,11 @@
 
 #include <rex/runtime.h>
 
-
 namespace refii::vfs {
 namespace {
 
 constexpr std::string_view kUnpackedWorkspaceFolder = "unpacked";
+
 
 bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
@@ -531,8 +529,8 @@ std::vector<std::filesystem::path> BuildLooseAssetSearchRoots() {
   AddUniqueRoot(&roots, GetLooseAssetRoot());
   return roots;
 }
-
 }  // namespace
+
 
 std::filesystem::path GetLooseAssetRootImpl() {
   std::filesystem::path root;
@@ -570,29 +568,6 @@ std::vector<std::filesystem::path> GetLooseAssetSearchRootsImpl() {
   return cached_roots;
 }
 
-std::string BuildLooseAssetOpenPath(const std::filesystem::path& loose_path) {
-  std::error_code error;
-  const std::filesystem::path game_root =
-      std::filesystem::weakly_canonical(GetDefaultGameRoot(), error);
-  const std::filesystem::path canonical_loose_path =
-      std::filesystem::weakly_canonical(loose_path, error);
-
-  if (!game_root.empty() && !canonical_loose_path.empty()) {
-    const std::filesystem::path relative =
-        canonical_loose_path.lexically_relative(game_root);
-    if (!relative.empty()) {
-      const auto first = relative.begin();
-      if (first == relative.end() || *first != "..") {
-        std::string virtual_path = "game:\\" + relative.generic_string();
-        std::replace(virtual_path.begin(), virtual_path.end(), '/', '\\');
-        return virtual_path;
-      }
-    }
-  }
-
-  return loose_path.lexically_normal().generic_string();
-}
-
 std::string NormalizeLooseAssetKeyImpl(std::string_view asset_path) {
   std::string key(asset_path);
   std::replace(key.begin(), key.end(), '\\', '/');
@@ -616,86 +591,6 @@ std::string NormalizeLooseAssetKeyImpl(std::string_view asset_path) {
   }
 
   return key;
-}
-
-std::filesystem::path ResolveLooseAssetOverridePath(std::string_view asset_path) {
-  LooseAssetResolution resolution;
-  if (ResolveLooseAssetOverride(asset_path, &resolution)) {
-    return resolution.host_path;
-  }
-  return {};
-}
-
-bool ResolveLooseAssetOverrideImpl(std::string_view asset_path,
-                               LooseAssetResolution* out_resolution) {
-  const std::vector<std::filesystem::path> roots = GetLooseAssetSearchRoots();
-  if (roots.empty()) {
-    return false;
-  }
-
-  const std::string normalized = NormalizeLooseAssetKey(asset_path);
-  if (IsNativeLooseAssetExcludedCandidate(normalized)) {
-    return false;
-  }
-
-  const std::vector<std::string> candidates = BuildLooseAssetCandidates(normalized);
-
-  for (const std::filesystem::path& root : roots) {
-    if (root.empty()) {
-      continue;
-    }
-    for (const std::string& candidate : candidates) {
-      if (IsNativeLooseAssetExcludedCandidate(candidate)) {
-        continue;
-      }
-      // A CSV-authored game database beats the binary .gdb in the same root;
-      // it is compiled on demand into the .cache area and served from there.
-      if (GdbCsvOverridesEnabled() && EndsWith(candidate, ".gdb")) {
-        CachedLooseAsset csv_asset;
-        std::filesystem::path compiled;
-        if (TryResolveCachedLooseAsset(root, candidate + ".csv", &csv_asset) &&
-            TryCompileGdbCsvOverride(csv_asset.host_path, candidate,
-                                     &compiled)) {
-          if (out_resolution != nullptr) {
-            out_resolution->host_path = compiled;
-            out_resolution->normalized_key = normalized;
-            out_resolution->provider_relative_path = candidate;
-          }
-          return true;
-        }
-      }
-      // A CSV-authored localized-text database likewise beats the binary
-      // .babel; it is compiled on demand and served from the cache.
-      if (BabelCsvOverridesEnabled() && EndsWith(candidate, ".babel")) {
-        CachedLooseAsset csv_asset;
-        std::filesystem::path compiled;
-        if (TryResolveCachedLooseAsset(root, candidate + ".csv", &csv_asset) &&
-            TryCompileBabelCsvOverride(csv_asset.host_path, candidate,
-                                       &compiled)) {
-          if (out_resolution != nullptr) {
-            out_resolution->host_path = compiled;
-            out_resolution->normalized_key = normalized;
-            out_resolution->provider_relative_path = candidate;
-          }
-          return true;
-        }
-      }
-      CachedLooseAsset asset;
-      if (!TryResolveCachedLooseAsset(root, candidate, &asset) ||
-          HasExtractedBankMirror(root, asset.relative_path)) {
-        continue;
-      }
-
-      if (out_resolution != nullptr) {
-        out_resolution->host_path = asset.host_path;
-        out_resolution->normalized_key = normalized;
-        out_resolution->provider_relative_path = asset.relative_path;
-      }
-      return true;
-    }
-  }
-
-  return false;
 }
 
 bool ShouldDeferLooseBankContainerImpl(std::string_view asset_path) {
@@ -728,7 +623,6 @@ bool ShouldDeferLooseBankContainerImpl(std::string_view asset_path) {
   return false;
 }
 
-
 // --- The payload/host C ABI ----------------------------------------------------------
 //
 // These are the entries the inline wrappers in loose_asset_hooks.h call. The C++
@@ -737,7 +631,6 @@ bool ShouldDeferLooseBankContainerImpl(std::string_view asset_path) {
 // allocated here is ever freed on the other side. See core/payload_bridge.h.
 
 namespace {
-
 size_t CopyOut(const std::string& value, char* out, size_t capacity) {
   if (out != nullptr && capacity > 0) {
     size_t take = value.size() < capacity ? value.size() : capacity;
@@ -745,7 +638,6 @@ size_t CopyOut(const std::string& value, char* out, size_t capacity) {
   }
   return value.size();
 }
-
 }  // namespace
 
 extern "C" size_t refii_bridge_vfs_loose_asset_root(char* out, size_t capacity) {
@@ -774,34 +666,4 @@ extern "C" int32_t refii_bridge_vfs_should_defer_loose_bank_container(const char
                                                                       size_t length) {
   return ShouldDeferLooseBankContainerImpl(std::string_view(path, length)) ? 1 : 0;
 }
-
-extern "C" int32_t refii_bridge_vfs_resolve_loose_asset_override(
-    const char* path, size_t length,
-    char* host_path, size_t host_path_capacity, size_t* out_host_path_length,
-    char* normalized_key, size_t normalized_key_capacity, size_t* out_normalized_key_length,
-    char* provider_relative, size_t provider_relative_capacity,
-    size_t* out_provider_relative_length) {
-  LooseAssetResolution resolution;
-  if (!ResolveLooseAssetOverrideImpl(std::string_view(path, length), &resolution)) {
-    return 0;
-  }
-
-  size_t host_length = CopyOut(resolution.host_path.string(), host_path, host_path_capacity);
-  size_t key_length =
-      CopyOut(resolution.normalized_key, normalized_key, normalized_key_capacity);
-  size_t relative_length = CopyOut(resolution.provider_relative_path, provider_relative,
-                                   provider_relative_capacity);
-
-  if (out_host_path_length != nullptr) {
-    *out_host_path_length = host_length;
-  }
-  if (out_normalized_key_length != nullptr) {
-    *out_normalized_key_length = key_length;
-  }
-  if (out_provider_relative_length != nullptr) {
-    *out_provider_relative_length = relative_length;
-  }
-  return 1;
-}
-
 }  // namespace refii::vfs

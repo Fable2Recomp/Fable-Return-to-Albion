@@ -23,10 +23,6 @@ std::filesystem::path ResolveBankManifestPath(
 std::shared_ptr<const BankManifestIndex> LoadCachedBankManifestIndex(
     const std::filesystem::path& manifest_root,
     std::filesystem::path* out_resolved_root);
-bool LookupCachedBankManifestEntry(const std::filesystem::path& manifest_root,
-                                   uint32_t offset,
-                                   uint32_t size,
-                                   BankManifestEntry* out_entry);
 bool LookupCachedBankManifestEntryByName(
     const std::filesystem::path& manifest_root,
     std::string_view entry_name,
@@ -49,17 +45,5 @@ bool FindSyntheticBankManifest(std::string_view bank_name,
 bool ResolveSyntheticBankManifestLooseAsset(std::string_view bank_name,
                                             LooseAssetResolution* out_resolution,
                                             std::string* out_candidate);
-bool LookupBankManifestEntryRecord(std::string_view bank_name,
-                                   uint32_t offset,
-                                   uint32_t size,
-                                   BankManifestEntry* out_entry);
-std::string LookupBankManifestEntry(std::string_view bank_name,
-                                    uint32_t offset,
-                                    uint32_t size);
-bool ResolveExactTypedBankManifestLooseAsset(
-    std::string_view bank_name,
-    LooseAssetResolution* out_resolution,
-    std::string* out_candidate);
-
 }  // namespace detail
 }  // namespace refii::vfs

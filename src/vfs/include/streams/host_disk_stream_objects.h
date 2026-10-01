@@ -45,10 +45,6 @@ bool TryOpenLooseAsset(PPCContext& ctx,
                        uint32_t mode,
                        const LooseAssetResolution& resolution,
                        std::string_view provider_relative_path);
-bool TryHandleRefiiHostDiskStreamGetSize(PPCContext& ctx,
-                                         uint8_t* base,
-                                         uint32_t stream_guest,
-                                         uint32_t out_guest);
 uint32_t ReadRefiiHostStreamBytes(uint8_t* base,
                                   uint32_t stream_guest,
                                   uint32_t buffer_guest,
@@ -66,13 +62,6 @@ uint32_t ReadRefiiHostStreamForReadRequest(
     const std::shared_ptr<RefiiReadRequestRecord>& record);
 
 bool IsRefiiHostDiskStream(uint8_t* base, uint32_t stream_guest);
-bool IsRefiiOwnedLhFileStream(uint8_t* base,
-                              uint32_t file_guest,
-                              int offset);
-bool TryGetRefiiOwnedLhFileStreamSize(uint8_t* base,
-                                      uint32_t file_guest,
-                                      int offset,
-                                      uint32_t* out_size);
 bool IsRefiiReadRequestObject(uint32_t request_guest);
 bool IsSupportedRefiiLooseOpenMode(uint32_t mode);
 bool IsCompositeStreamWithRefiiHostSegment(uint8_t* base,
@@ -81,6 +70,5 @@ bool IsRefiiStreamReader(uint8_t* base, uint32_t reader_guest);
 uint32_t RefiiReaderPageEntry(uint8_t* base,
                               uint32_t reader_guest,
                               uint32_t page_index);
-
 }  // namespace detail
 }  // namespace refii::vfs

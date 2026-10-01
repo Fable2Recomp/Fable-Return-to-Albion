@@ -7,7 +7,6 @@
 set(REFII_HOOK_SOURCES
     ${REFII_LUA_HOOK_SOURCES}
     ${REFII_VFS_HOOK_SOURCES}
-    ${REFII_RENDERER_HOOK_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/xstorage_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/unlock_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/coop_player_hooks.cpp
@@ -16,13 +15,11 @@ set(REFII_HOOK_SOURCES
 set(REFII_HOOK_INCLUDE_DIRS
     ${REFII_LUA_INCLUDE_DIRS}
     ${REFII_VFS_INCLUDE_DIRS}
-    ${REFII_RENDERER_INCLUDE_DIRS}
 )
 
 set(REFII_HOOK_LIBRARIES
     ${REFII_LUA_LIBRARIES}
     ${REFII_VFS_LIBRARIES}
-    ${REFII_RENDERER_LIBRARIES}
 )
 
 list(FILTER REFII_HOOK_SOURCES EXCLUDE REGEX "^$")
@@ -71,12 +68,6 @@ if(REFII_HOOK_SOURCES)
                 PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden"
             )
         endif()
-    endif()
-    if(REFII_RENDERER_LIBRARIES)
-        target_compile_definitions(refii_hooks
-            PRIVATE
-                REFII_VFS_HAS_RENDERER_RUNTIME=1
-        )
     endif()
 
     set(REFII_HOOK_OBJECTS

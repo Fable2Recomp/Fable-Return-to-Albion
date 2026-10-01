@@ -23,16 +23,8 @@ std::filesystem::path RefiiVfsRuntimeHashDirectory(
   return RefiiVfsRuntimeIndexDirectory(loose_root) / "hashes";
 }
 
-std::string RefiiVfsRuntimeShardName(uint8_t shard) {
-  return fmt::format("{:02x}.tsv", static_cast<unsigned>(shard));
-}
-
 std::string RefiiVfsRuntimeAliasShardName(uint16_t shard) {
   return fmt::format("{:03x}.tsv", static_cast<unsigned>(shard & 0x0FFFu));
-}
-
-uint8_t RefiiVfsRuntimeShardForHash(uint32_t hash) {
-  return static_cast<uint8_t>((hash >> 24) & 0xFFu);
 }
 
 uint16_t RefiiVfsRuntimeAliasShardForHash(uint32_t hash) {
@@ -44,13 +36,6 @@ std::filesystem::path RefiiVfsRuntimeAliasShardPath(
     uint16_t shard) {
   return RefiiVfsRuntimeAliasDirectory(loose_root) /
          RefiiVfsRuntimeAliasShardName(shard);
-}
-
-std::filesystem::path RefiiVfsRuntimeHashShardPath(
-    const std::filesystem::path& loose_root,
-    uint8_t shard) {
-  return RefiiVfsRuntimeHashDirectory(loose_root) /
-         RefiiVfsRuntimeShardName(shard);
 }
 
 struct RefiiVfsDatabasePresence {
@@ -97,10 +82,6 @@ bool RefiiVfsRuntimeAliasIndexExists(const std::filesystem::path& loose_root) {
   return GetRefiiVfsDatabasePresence(loose_root).alias_index;
 }
 
-bool RefiiVfsRuntimeHashIndexExists(const std::filesystem::path& loose_root) {
-  return GetRefiiVfsDatabasePresence(loose_root).hash_index;
-}
-
 bool RefiiVfsLegacyDatabaseExists(const std::filesystem::path& loose_root) {
   return GetRefiiVfsDatabasePresence(loose_root).legacy_database;
 }
@@ -134,15 +115,6 @@ struct RefiiVfsRuntimeCandidateTable {
   bool loaded = false;
 };
 
-struct RefiiVfsRuntimeHashShardCache {
-  std::string root_key;
-  std::unordered_set<uint8_t> loaded_shards;
-  std::unordered_map<uint32_t, std::vector<std::string>> candidates_by_hash;
-};
-
-std::optional<TargetedRequestManagerHashContribution>
-GetTargetedRequestManagerHashContribution(uint32_t resource_hash);
-
 std::mutex& RefiiVfsDatabaseAliasCandidateCacheMutex() {
   static std::mutex mutex;
   return mutex;
@@ -164,26 +136,6 @@ RefiiVfsRuntimeCandidateTable& RefiiVfsRuntimeCandidateTableInstance() {
   return table;
 }
 
-std::mutex& RefiiFindDirectoryIndexMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-RefiiFindDirectoryIndex& RefiiFindDirectoryIndexInstance() {
-  static RefiiFindDirectoryIndex index;
-  return index;
-}
-
-std::mutex& RefiiFindDirectoryParentCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-RefiiFindDirectoryParentCache& RefiiFindDirectoryParentCacheInstance() {
-  static RefiiFindDirectoryParentCache cache;
-  return cache;
-}
-
 std::mutex& RefiiVfsRuntimeAliasShardCacheMutex() {
   static std::mutex mutex;
   return mutex;
@@ -191,16 +143,6 @@ std::mutex& RefiiVfsRuntimeAliasShardCacheMutex() {
 
 RefiiVfsRuntimeAliasShardCache& RefiiVfsRuntimeAliasShardCacheInstance() {
   static RefiiVfsRuntimeAliasShardCache cache;
-  return cache;
-}
-
-std::mutex& RefiiVfsRuntimeHashShardCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-RefiiVfsRuntimeHashShardCache& RefiiVfsRuntimeHashShardCacheInstance() {
-  static RefiiVfsRuntimeHashShardCache cache;
   return cache;
 }
 
@@ -212,39 +154,6 @@ std::mutex& RefiiVfsRuntimeBankTableCacheMutex() {
 RefiiVfsRuntimeBankTableCache& RefiiVfsRuntimeBankTableCacheInstance() {
   static RefiiVfsRuntimeBankTableCache cache;
   return cache;
-}
-
-std::mutex& RefiiVfsRuntimeLuaTableCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-RefiiVfsRuntimeLuaTableCache& RefiiVfsRuntimeLuaTableCacheInstance() {
-  static RefiiVfsRuntimeLuaTableCache cache;
-  return cache;
-}
-
-std::mutex& RefiiVfsRuntimeHashOwnershipCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-RefiiVfsRuntimeHashOwnershipCache&
-RefiiVfsRuntimeHashOwnershipCacheInstance() {
-  static RefiiVfsRuntimeHashOwnershipCache cache;
-  return cache;
-}
-
-std::mutex& TargetedRequestManagerHashContributionMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-std::unordered_map<uint32_t, TargetedRequestManagerHashContribution>&
-TargetedRequestManagerHashContributions() {
-  static std::unordered_map<uint32_t, TargetedRequestManagerHashContribution>
-      contributions;
-  return contributions;
 }
 
 std::mutex& ResolvedSyntheticBankOpenAliasMutex() {
@@ -262,12 +171,6 @@ std::string& ResolvedSyntheticBankOpenAliasRootKey() {
   static std::string root_key;
   return root_key;
 }
-
-std::string& TargetedRequestManagerHashContributionRootKey() {
-  static std::string root_key;
-  return root_key;
-}
-
 
 bool ParseDecimalUint32(std::string_view text, uint32_t* out_value) {
   if (text.empty() || out_value == nullptr) {
@@ -293,34 +196,9 @@ std::filesystem::path RefiiVfsRuntimeCandidateTablePath(
   return RefiiVfsRuntimeIndexDirectory(loose_root) / "candidates.tsv";
 }
 
-std::filesystem::path RefiiVfsRuntimeDirectoryTablePath(
-    const std::filesystem::path& loose_root) {
-  return RefiiVfsRuntimeIndexDirectory(loose_root) / "directories.tsv";
-}
-
-std::filesystem::path RefiiVfsRuntimeDirectoryEntryTablePath(
-    const std::filesystem::path& loose_root) {
-  return RefiiVfsRuntimeIndexDirectory(loose_root) / "directory_entries.tsv";
-}
-
-std::filesystem::path RefiiVfsRuntimeDirectoryEntryBinaryPath(
-    const std::filesystem::path& loose_root) {
-  return RefiiVfsRuntimeIndexDirectory(loose_root) / "directory_entries.bin";
-}
-
 std::filesystem::path RefiiVfsRuntimeBankTablePath(
     const std::filesystem::path& loose_root) {
   return RefiiVfsRuntimeIndexDirectory(loose_root) / "banks.tsv";
-}
-
-std::filesystem::path RefiiVfsRuntimeLuaTablePath(
-    const std::filesystem::path& loose_root) {
-  return RefiiVfsRuntimeIndexDirectory(loose_root) / "lua.tsv";
-}
-
-std::filesystem::path RefiiVfsRuntimeHashOwnershipTablePath(
-    const std::filesystem::path& loose_root) {
-  return RefiiVfsRuntimeIndexDirectory(loose_root) / "hash_ownership.tsv";
 }
 
 std::vector<std::string> LoadRefiiVfsRuntimeCandidates(
@@ -585,36 +463,5 @@ std::vector<RefiiVfsRuntimeBankRecord> GetRefiiVfsRuntimeBankRecordsCached(
     return cache.records;
   }
 }
-
-bool ResolveExactTypedBankManifestLooseAsset(
-    std::string_view bank_name,
-    LooseAssetResolution* out_resolution,
-    std::string* out_candidate) {
-  std::string normalized_bank = NormalizeLooseAssetKey(bank_name);
-  const std::string mip0_redirect =
-      CanonicalizeMip0TextureHeaderRedirect(normalized_bank);
-  if (!mip0_redirect.empty()) {
-    normalized_bank = mip0_redirect;
-  }
-  std::filesystem::path manifest_root;
-  std::filesystem::path manifest_path;
-  if (normalized_bank.empty() ||
-      !LookupRefiiVfsTypedBankManifest(
-          normalized_bank, &manifest_root, &manifest_path)) {
-    return false;
-  }
-
-  if (out_resolution != nullptr) {
-    out_resolution->host_path = manifest_path.lexically_normal();
-    out_resolution->normalized_key = normalized_bank;
-    out_resolution->provider_relative_path = normalized_bank;
-  }
-  if (out_candidate != nullptr) {
-    *out_candidate = (manifest_root / "_manifest.tsv").generic_string();
-  }
-  return true;
-}
-
-
 }  // namespace detail
 }  // namespace refii::vfs

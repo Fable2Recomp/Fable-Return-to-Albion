@@ -1,31 +1,24 @@
 # Native Lua Module
 
 This module follows the same ReXGlue-oriented layout as `src/vfs`: public
-headers live under `include/`, host/runtime code lives under `src/core/`,
-decompiler tooling lives under `src/tools/`, and vendored Lua 5.1 stays isolated
-under `thirdparty/lua51/`.
+headers live under `include/`, host/runtime code lives under `src/core/`, and
+the decompiler lives under `src/tools/luadec/`.
 
 Layout:
-- `include/core/` contains runtime-facing native Lua bridge and hook contracts.
-- `include/tools/` contains public decompiler/tooling contracts.
-- `src/core/` contains host runtime helpers and strong PPC Lua hook sources.
+- `include/core/` contains the hook contract and the payload/host C ABI.
+- `src/core/` contains the script-load tracing hooks and the helpers that name
+  a guest script.
 - `src/tools/luadec/` contains the Lua 5.1 decompiler (`luadec_chunk`, `luadec`)
   and its byte-exact oracle (`luadec_oracle`), plus the `refii-luadec` and
   `refii-luac32` command lines.
-- `src/tools/workspace/` contains the Lua workspace: bank export, the decompile
-  step over the extracted scripts, baseline snapshot, verify and reset.
-- `thirdparty/lua51/` contains the bundled Lua 5.1 implementation the runtime
-  links.
 - `thirdparty/lua512/` contains Lua 5.1.2 with the game's `continue` statement,
   the compiler the shipped scripts were built with. The oracle compiles it as
-  C++ inside a namespace so it can sit next to the runtime's Lua in one binary.
+  C++ inside a namespace.
 
-`refii_lua` builds the native helper layer and runtime glue used by the PPC
-loader hooks.
+`refii_lua` builds the runtime helpers the hooks call.
 
-`refii_lua51` is the only bundled Lua implementation in this module. It comes
-from `thirdparty/lua51` and is used for tooling, validation, and bytecode-side
-diagnostics against the Lua 5.1 script format Fable 2 actually uses.
+The guest runs its own Lua: the shipped scripts and any a mod overlays through
+Godot's mount. Nothing native replaces or redirects a script.
 
 Lua hook sources are exported through `REFII_LUA_HOOK_SOURCES` and compiled by
 the unified `src/hooks` object target. That object target is linked into
@@ -39,53 +32,23 @@ decompile a script-bank entry on demand, checks an edit with the game's compiler
 text into the mod at the script's own path. The mount overlays it and the guest compiles the
 text itself, exactly as it does for the game's own loose scripts.
 
-`refii_lua_decompiler_workspace` is the batch form of the same decompiler, kept as developer
-tooling: script-bank export into `unpacked/luasource`, decompile into `unpacked/` with the
-oracle's verdict per file in `_manifest.tsv`, baseline snapshot under `unpacked/.baseline/`,
-drift verification, and per-file or full reset. Nothing in the launcher drives it any more.
-
-`refii-lua-decompiler` is the thin CLI wrapper around that same library path:
-`build <game-root>`, `<workspace>` (decompile only), `verify`, `reset-all`,
-`reset-file`, and `single <chunk>` for one file. The decompile step runs a
-file-worker pool; `--workers 0` (the default) keeps some cores free.
-
 Every decompiled file is verified in-process: the text is recompiled with the
 game's compiler conventions (5.1.2, 4-byte float numbers, stripped when the
 original was, `arg` compatibility when the original used it) and compared
-byte-for-byte with the chunk it came from. `_manifest.tsv` records the result
-per input: `exact`, `aliased` (a retail chunk reproduced by its debug
-counterpart's text), `copied` (plain text shipped as is), and the failure
-states `nonexact`, `aliased_nonexact`, `mismatch`, `disassembled`, `invalid`.
-All three script banks (gamescripts, gamescripts_r, guiscripts) decompile
-exact today.
+byte-for-byte with the chunk it came from. All three script banks
+(gamescripts, gamescripts_r, guiscripts) decompile exact today.
 
 `refii-luadec <chunk> [-o out.lua] [--dis] [--plain]` decompiles one chunk;
 `refii-luac32 --verify <orig.luac> <in.lua>` is the oracle on its own and
 prints `EXACT` or the first divergence. Stripped chunks get their local names
 and scopes by inference (`REFII_LUADEC_TRACE=1` traces every rule that fires).
 
-Current runtime CVars:
-- `lua_use_native_handlers`
-- `lua_trace_native_handlers`
-- `lua_trace_script_loads`
-- `lua_force_loose_banks`
-- `lua_use_mod_overrides`
-- `lua_trace_mod_overrides`
-- `lua_mod_workspace_root`
-
-Native handlers currently cover:
-- `data/scripts/Startup/startup.lua`
-- `data/scripts/Startup/audio.lua`
-
-Loose Lua override flow:
-- `lua_use_mod_overrides` now defaults to `true`, so the runtime will prefer host files from the extracted Lua workspace before the original banked guest loader runs unless you turn it off in `refii.toml`.
-- The default workspace root is `<assets_root>/unpacked`, which resolves to `assets/unpacked` for launcher installs.
-- Override lookup is case-insensitive and currently checks `override/` first, then the public Lua workspace paths such as `scripts/`, `scripts_r/`, `gamescripts/`, `gamescripts_r/`, and `guiscripts/`.
-- If a loose plaintext script fails guest compilation or execution, the hook now falls back to the original banked loader instead of hard-failing the load.
-- `lua_mod_workspace_root` can point the runtime at a different extracted workspace without recompiling.
+Runtime CVars:
+- `lua_trace_script_loads`: log each script the guest loads and executes, by
+  its recovered key.
 
 Loader contract:
-- Source of truth is the generated recomp/PPC in [generated/refii_recomp.25.cpp](/home/loreaxe/Fable%202/refii/generated/refii_recomp.25.cpp) plus the direct execute call site in [generated/refii_recomp.14.cpp](/home/loreaxe/Fable%202/refii/generated/refii_recomp.14.cpp).
+- Source of truth is the binary: the two functions below and their callers.
 - `sub_82451E40` is the load-path wrapper:
   - inputs: `r3=lua_state`, `r4=source`, `r5=chunk_name`
   - on success it resolves a chunk buffer and calls `sub_82451F18`
@@ -116,15 +79,7 @@ Loader contract:
   - `sub_82452180` is another setup helper:
     - it constructs a userdata/metatable-backed helper object
     - it stores that helper into Lua under a fixed engine-owned field name
-  - the recomp text does not recover the symbolic names of those registrations, but the call pattern is clear: both helpers mutate the guest Lua state before normal script execution and are part of the execution contract that loose overrides must respect
-- Hook invariants:
-  - loose override logic lives at the `sub_82451F18` seam
-  - the hook may replace only the staged payload in `r4/r5`
-  - the hook preserves `r3`, `r6`, and `r7` from the original call
-  - the hook does not inspect source text or guest Lua state to decide whether an override was "good enough"
-  - if a loose override fails, control falls back to the original guest loader/executor
-  - builtin native handlers remain separate from loose override redirection
-
+  - the recomp text does not recover the symbolic names of those registrations, but the call pattern is clear: both helpers mutate the guest Lua state before normal script execution
 Quest module execution contract:
 - Quest chunks loaded by `QuestSetupScript.lua` are side-effect chunks. The game cares that top-level execution completes successfully through `sub_82451F18`; it does not rely on hook-side semantic acceptance.
 - Successful quest bootstrap modules establish globals and tables during chunk execution. In practice this includes:
@@ -139,26 +94,8 @@ Quest module execution contract:
   - constructor registration, table initialization, and function assignment ordering must match the original bytecode/CFG shape closely enough for the guest execute seam to return `1`
 - Runtime hooks must not compensate for violations of this contract. If a quest chunk is syntax-valid but still returns `0` from `sub_82451F18`, the fix belongs in generic decompiler/bootstrap reconstruction, not in the hook.
 
-Tracing notes:
-- `lua_trace_script_loads=true` now prefers recovered script keys over raw guest pointers when a Lua chunk header or extracted workspace hash can identify the script.
-- `lua_trace_mod_overrides=true` is for generic seam tracing only: match, stage, invoke, return, nested activity, and guest fallback. Semantic acceptance stays outside the hook.
-- current generic execute tracing records:
-  - `stack_before` immediately before calling the original `sub_82451F18` seam
-  - `stack_after` immediately after it returns
-  - a `failure_boundary` line when `result=0`
-- deeper contract tracing now records, during loose overrides only:
-  - `load_internal_start` / `load_internal_return`
-  - `load_cpcall_start` / `load_cpcall_return` for the compile-side protected call inside `rex_lua_load_internal`
-  - `execute_cpcall_start` / `execute_cpcall_return` for the protected execution call issued by `sub_82451F18`
-  - `failure_top` when a protected call returns nonzero and the top stack value can be described safely
-- if the guest error object is already gone by `stack_after`, that means the useful boundary is deeper than the override seam. The next step in that case is deeper contract tracing around the protected-call/runtime layer, not new hook-side acceptance logic.
-
 Decompilation notes:
 - The output is the source: structure comes from the chunk's control flow, names and line layout from its debug sections, and the oracle proves the text recompiles to the same bytes. Nothing is patched up after the fact; a file that does not verify is reported, not repaired.
 - Runtime hooks are not allowed to compensate for decompiler bugs. Any Lua correctness fix lands in `luadec`, not as a script-specific runtime exception.
 - Retail paths under `gamescripts_r/` and `scripts_r/` canonicalise onto their `gamescripts/` and `scripts/` counterparts, so one readable file (written from the debug chunk, which carries the names) serves both banks and is verified against each chunk.
-- A chunk that cannot be decompiled gets a placeholder at its public path (the runtime and the baseline skip it) and its listing under `_disasm/`; `_manifest.tsv` records it as `disassembled`.
-- Public Lua workspace files preserve the same relative paths the game expects under `data/`, but rooted at `unpacked/` instead.
-- The launcher keeps extracted bytecode under `unpacked/luasource` so hash-based script-key recovery and parity work can still use the original chunks.
-- The launcher also snapshots the canonical public plaintext tree under `unpacked/.baseline/files/` and writes `unpacked/.baseline/_hashes.tsv` so modded files can be verified and reset without silently regenerating different source later.
-- Full reset uses that baseline as the source of truth and removes extra public `.lua` files that are not tracked there.
+- A mod ships an edited script as text at the script's own path; the guest compiles it.

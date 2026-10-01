@@ -2,47 +2,6 @@
 
 namespace refii::vfs {
 inline namespace detail {
-
-std::vector<std::string> BuildLuaVfsCarrierCandidates(
-    std::string_view asset_path) {
-  const std::string normalized = NormalizeLooseAssetKey(asset_path);
-  std::vector<std::string> candidates;
-  AddLuaVfsCarrierCandidate(candidates, normalized);
-  for (const std::string& candidate : BuildGameFaceRedirectCandidates(normalized)) {
-    AddLuaVfsCarrierCandidate(candidates, candidate);
-  }
-
-  if (StartsWith(normalized, "data/")) {
-    AddLuaVfsCarrierCandidate(candidates, normalized.substr(5));
-  }
-  if (StartsWith(normalized, "data/scripts/")) {
-    AddLuaVfsCarrierCandidate(
-        candidates,
-        "scripts/" +
-            std::string(normalized.substr(sizeof("data/scripts/") - 1)));
-  }
-  if (StartsWith(normalized, "data/scripts_r/")) {
-    const std::string tail =
-        std::string(normalized.substr(sizeof("data/scripts_r/") - 1));
-    AddLuaVfsCarrierCandidate(candidates, "scripts_r/" + tail);
-    AddLuaVfsCarrierCandidate(candidates, "scripts/" + tail);
-  }
-  if (StartsWith(normalized, "scripts_r/")) {
-    const std::string tail =
-        std::string(normalized.substr(sizeof("scripts_r/") - 1));
-    AddLuaVfsCarrierCandidate(candidates, "scripts_r/" + tail);
-    AddLuaVfsCarrierCandidate(candidates, "scripts/" + tail);
-  }
-  if (StartsWith(normalized, "gamescripts_r/scripts/")) {
-    const std::string tail =
-        std::string(normalized.substr(sizeof("gamescripts_r/scripts/") - 1));
-    AddLuaVfsCarrierCandidate(candidates, "gamescripts_r/scripts/" + tail);
-    AddLuaVfsCarrierCandidate(candidates, "gamescripts/scripts/" + tail);
-  }
-
-  return candidates;
-}
-
 bool IsDefaultExecutablePatchProbe(std::string_view normalized) {
   return normalized == "default.xexpp" ||
          normalized == "data/default.xexpp" ||
@@ -77,219 +36,6 @@ bool IsOptionalLocalizedDirectoryProbe(std::string_view normalized) {
          locale_tail == "speech" ||
          locale_tail == "lipsync" ||
          locale_tail == "videos";
-}
-
-bool ResolveGameFaceLuaCarrierAsset(std::string_view asset_path,
-                                    LooseAssetResolution* out_resolution,
-                                    std::string* out_candidate) {
-  if (!IsLuaScriptAssetKey(asset_path) || !IsGameFaceBoundaryPath(asset_path)) {
-    return false;
-  }
-
-  for (const std::string& candidate : BuildGameFaceRedirectCandidates(asset_path)) {
-    if (ResolveTypedLuaVfsAsset(candidate, true, out_resolution, out_candidate)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-bool ResolveLuaVfsCarrierAsset(std::string_view asset_path,
-                               LooseAssetResolution* out_resolution,
-                               std::string* out_candidate) {
-  if (!IsLuaScriptAssetKey(asset_path)) {
-    return false;
-  }
-
-  const std::filesystem::path loose_root = GetLooseAssetRoot();
-  if (loose_root.empty()) {
-    return false;
-  }
-
-  if (ResolveTypedLuaVfsAsset(asset_path, true, out_resolution, out_candidate)) {
-    return true;
-  }
-
-  const std::filesystem::path source_root = loose_root / "luasource";
-  std::error_code error;
-  if (!std::filesystem::is_directory(source_root, error)) {
-    return false;
-  }
-
-  for (const std::string& candidate :
-       BuildLuaVfsCarrierCandidates(asset_path)) {
-    const std::filesystem::path host_path =
-        ResolveCaseInsensitiveExistingPath(source_root, candidate);
-    error.clear();
-    if (!std::filesystem::is_regular_file(host_path, error)) {
-      continue;
-    }
-
-    if (out_resolution != nullptr) {
-      out_resolution->host_path = host_path.lexically_normal();
-      out_resolution->normalized_key = NormalizeLooseAssetKey(asset_path);
-      const std::filesystem::path relative =
-          host_path.lexically_relative(loose_root);
-      out_resolution->provider_relative_path =
-          (!relative.empty() && !relative.string().starts_with(".."))
-              ? relative.generic_string()
-          : (std::filesystem::path("luasource") / candidate).generic_string();
-    }
-    if (out_candidate != nullptr) {
-      *out_candidate = candidate;
-    }
-    return true;
-  }
-
-  return false;
-}
-
-bool ResolveExtractedLuaSourceAsset(std::string_view asset_path,
-                                    LooseAssetResolution* out_resolution,
-                                    std::string* out_candidate) {
-  if (!IsLuaScriptAssetKey(asset_path)) {
-    return false;
-  }
-
-  if (ResolveGameFaceLuaCarrierAsset(asset_path, out_resolution, out_candidate) ||
-      ResolveLuaVfsCarrierAsset(asset_path, out_resolution, out_candidate)) {
-    return true;
-  }
-
-  return false;
-}
-
-bool ResolveOriginalDataLuaAsset(std::string_view asset_path,
-                                 LooseAssetResolution* out_resolution,
-                                 std::string* out_candidate) {
-  if (!IsLuaScriptAssetKey(asset_path)) {
-    return false;
-  }
-
-  const std::filesystem::path loose_root = GetLooseAssetRoot();
-  if (loose_root.empty()) {
-    return false;
-  }
-
-  const std::filesystem::path assets_root = loose_root.parent_path();
-  if (assets_root.empty()) {
-    return false;
-  }
-
-  const std::filesystem::path game_root = assets_root / "game";
-  std::error_code error;
-  if (!std::filesystem::is_directory(game_root, error)) {
-    return false;
-  }
-
-  for (const std::string& candidate : BuildLuaVfsCarrierCandidates(asset_path)) {
-    std::filesystem::path relative_candidate = candidate;
-    const std::string normalized_candidate = NormalizeLooseAssetKey(candidate);
-    if (!StartsWith(normalized_candidate, "data/")) {
-      relative_candidate = std::filesystem::path("data") / normalized_candidate;
-    }
-
-    const std::filesystem::path host_path =
-        ResolveCaseInsensitiveExistingPath(game_root, relative_candidate);
-    error.clear();
-    if (!std::filesystem::is_regular_file(host_path, error)) {
-      continue;
-    }
-
-    if (out_resolution != nullptr) {
-      out_resolution->host_path = host_path.lexically_normal();
-      out_resolution->normalized_key = NormalizeLooseAssetKey(asset_path);
-      out_resolution->provider_relative_path =
-          host_path.lexically_relative(game_root).generic_string();
-    }
-    if (out_candidate != nullptr) {
-      *out_candidate = host_path.lexically_relative(game_root).generic_string();
-    }
-    return true;
-  }
-
-  return false;
-}
-
-bool ResolveOriginalGameDataAsset(std::string_view asset_path,
-                                  LooseAssetResolution* out_resolution,
-                                  std::string* out_candidate) {
-  const std::string normalized = NormalizeLooseAssetKey(asset_path);
-  if (normalized.empty() || IsLuaScriptAssetKey(normalized)) {
-    return false;
-  }
-
-  const std::filesystem::path loose_root = GetLooseAssetRoot();
-  if (loose_root.empty()) {
-    return false;
-  }
-
-  const std::filesystem::path assets_root = loose_root.parent_path();
-  if (assets_root.empty()) {
-    return false;
-  }
-
-  const std::filesystem::path game_root = assets_root / "game";
-  std::error_code error;
-  if (!std::filesystem::is_directory(game_root, error)) {
-    return false;
-  }
-
-  std::vector<std::string> candidates;
-  auto add_candidate = [&](std::string value) {
-    value = NormalizeLooseAssetKey(value);
-    if (!value.empty() &&
-        std::find(candidates.begin(), candidates.end(), value) ==
-            candidates.end()) {
-      candidates.push_back(std::move(value));
-    }
-  };
-
-  add_candidate(normalized);
-  if (!StartsWith(normalized, "data/")) {
-    add_candidate("data/" + normalized);
-  }
-
-  // The guest's patch-language layer opens patch_text paths even when the
-  // title update contains no replacement. Native VFS then resolves the base
-  // language carrier from text/. Keep direct disc-file ownership consistent
-  // with the synthetic VFS/hash candidate builder, which already applies the
-  // same alias.
-  constexpr std::string_view kPatchTextSegment = "/patch_text/";
-  const size_t patch_text = normalized.find(kPatchTextSegment);
-  if (patch_text != std::string::npos &&
-      patch_text + kPatchTextSegment.size() < normalized.size()) {
-    const std::string base_text =
-        normalized.substr(0, patch_text) + "/text/" +
-        normalized.substr(patch_text + kPatchTextSegment.size());
-    add_candidate(base_text);
-    if (!StartsWith(base_text, "data/")) {
-      add_candidate("data/" + base_text);
-    }
-  }
-
-  for (const std::string& candidate : candidates) {
-    const std::filesystem::path host_path =
-        ResolveCaseInsensitiveExistingPath(game_root, candidate);
-    error.clear();
-    if (!std::filesystem::is_regular_file(host_path, error)) {
-      continue;
-    }
-
-    if (out_resolution != nullptr) {
-      out_resolution->host_path = host_path.lexically_normal();
-      out_resolution->normalized_key = normalized;
-      out_resolution->provider_relative_path =
-          host_path.lexically_relative(game_root).generic_string();
-    }
-    if (out_candidate != nullptr) {
-      *out_candidate = host_path.lexically_relative(game_root).generic_string();
-    }
-    return true;
-  }
-
-  return false;
 }
 
 std::vector<std::string> LookupRefiiVfsDatabaseAliasCandidates(
@@ -451,16 +197,6 @@ bool ResolveExactGameFaceBinaryCarrierLooseAsset(
   return false;
 }
 
-bool IsNativeBootStreamAssetKey(std::string_view asset_path) {
-  const std::string normalized = NormalizeLooseAssetKey(asset_path);
-  return normalized == "gold_version.txt" ||
-         normalized == "data/gold_version.txt" ||
-         normalized == "build_version.txt" ||
-         normalized == "data/build_version.txt" ||
-         normalized == "episodic_exec.txt" ||
-         normalized == "data/episodic_exec.txt";
-}
-
 bool IsInternalLooseAssetKey(std::string_view asset_path) {
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
   return StartsWith(normalized, "luasource/") ||
@@ -537,34 +273,6 @@ bool IsOptionalSyntheticVfsProbe(std::string_view asset_path);
 bool LookupRefiiVfsTypedBankManifest(std::string_view bank_name,
                                      std::filesystem::path* out_manifest_root,
                                      std::filesystem::path* out_manifest_path);
-
-bool ShouldQueryVfsDatabaseAlias(std::string_view asset_path) {
-  const std::string normalized = NormalizeLooseAssetKey(asset_path);
-  if (normalized.empty()) {
-    return false;
-  }
-
-  if (IsOptionalSyntheticVfsProbe(normalized)) {
-    return false;
-  }
-  if (normalized.find(':') != std::string::npos) {
-    return false;
-  }
-  if (StartsWith(normalized, "update/") || StartsWith(normalized, "update:/")) {
-    return false;
-  }
-  if (StartsWith(normalized, "texture_morph_wildcard_")) {
-    return false;
-  }
-  if (StartsWith(normalized, "language_dlc/")) {
-    return false;
-  }
-  if (!GetLooseNativeAssetSkipReason(normalized).empty()) {
-    return false;
-  }
-
-  return true;
-}
 
 bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
@@ -725,80 +433,6 @@ bool IsKnownAbsentBootProbe(std::string_view asset_path) {
          StartsWith(normalized, "language_dlc/");
 }
 
-std::string BuildProviderRelativeAssetPath(std::string_view provider,
-                                           std::string_view name) {
-  if (name.empty()) {
-    return NormalizeLooseAssetKey(provider);
-  }
-
-  std::string normalized_name = NormalizeLooseAssetKey(name);
-  if (provider.empty() || normalized_name.find(':') != std::string::npos ||
-      StartsWith(normalized_name, "/")) {
-    return normalized_name;
-  }
-
-  std::string normalized_provider = NormalizeLooseAssetKey(provider);
-  if (normalized_provider.empty()) {
-    return normalized_name;
-  }
-  if (!normalized_provider.ends_with('/')) {
-    normalized_provider.push_back('/');
-  }
-  if (StartsWith(normalized_name, "data/") &&
-      normalized_provider.ends_with("data/")) {
-    normalized_name.erase(0, 5);
-  }
-  return NormalizeLooseAssetKey(normalized_provider + normalized_name);
-}
-
-std::vector<std::string> BuildProviderOpenAssetPathCandidates(
-    std::string_view provider,
-    std::string_view name) {
-  std::vector<std::string> candidates;
-
-  AddUnique(candidates, BuildProviderRelativeAssetPath(provider, name));
-
-  const std::string normalized_name = NormalizeLooseAssetKey(name);
-  AddUnique(candidates, normalized_name);
-
-  if (StartsWith(normalized_name, "data/")) {
-    AddUnique(candidates, std::string(normalized_name.substr(5)));
-  } else if (!normalized_name.empty() &&
-             normalized_name.find(':') == std::string::npos) {
-    AddUnique(candidates, "data/" + normalized_name);
-  }
-
-  return candidates;
-}
-
-bool IsKnownOptionalBankOpenMiss(uint8_t* base,
-                                 uint32_t provider_guest,
-                                 std::string_view bank_name,
-                                 std::string* out_asset_path) {
-  const std::string provider =
-      ReadGuestWideStringObject(base, provider_guest + 8, 4096);
-  const std::string normalized_bank = NormalizeLooseAssetKey(bank_name);
-  const std::string normalized_asset =
-      BuildProviderRelativeAssetPath(provider, bank_name);
-  if (out_asset_path != nullptr) {
-    *out_asset_path =
-        normalized_asset.empty() ? normalized_bank : normalized_asset;
-  }
-
-  if (normalized_bank.empty() ||
-      (!EndsWith(normalized_bank, ".bnk") &&
-       !EndsWith(normalized_asset, ".bnk"))) {
-    return false;
-  }
-  if (LookupRefiiVfsTypedBankManifest(normalized_asset, nullptr, nullptr) ||
-      LookupRefiiVfsTypedBankManifest(normalized_bank, nullptr, nullptr)) {
-    return false;
-  }
-
-  return IsOptionalSyntheticVfsProbe(normalized_asset) ||
-         IsOptionalSyntheticVfsProbe(normalized_bank);
-}
-
 bool ShouldSkipLooseNativeAsset(std::string_view asset_path,
                                 std::string_view context) {
   const std::string_view reason = GetLooseNativeAssetSkipReason(asset_path);
@@ -814,7 +448,5 @@ bool ShouldSkipLooseNativeAsset(std::string_view asset_path,
   }
   return true;
 }
-
-
 }  // namespace detail
 }  // namespace refii::vfs

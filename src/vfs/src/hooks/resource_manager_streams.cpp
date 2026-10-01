@@ -105,8 +105,6 @@ REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
               .mode = arg6,
               .resource_flags = arg9,
               .caller_lr = static_cast<uint32_t>(original_ctx.lr),
-              .prefer_resource_manager_texture_shape =
-                  shape == refii::vfs::RefiiVfsOpenShape::ResourceWrapper,
               .allow_optional_null_miss = true,
           },
           &open_result);
@@ -233,8 +231,6 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
             .manager_guest = resource_manager_guest,
             .mode = mode,
             .caller_lr = static_cast<uint32_t>(original_ctx.lr),
-            .prefer_resource_manager_texture_shape =
-                refii::vfs::IsTextureAssetCandidate(name),
             .allow_optional_null_miss = true,
         },
         &open_result);
@@ -244,10 +240,6 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
           refii::vfs::TryReadOutputPointer(base, out_guest);
       refii::vfs::RecordRefiiGetCachedHandoffEvent(
           name, original_ctx.lr, opened_stream_guest);
-      if (refii::vfs::IsGameFaceBinaryAssetKey(name)) {
-        refii::vfs::MaybeSignalRefiiPostGameFacePackageHandoff(
-            original_ctx, base, name, opened_stream_guest);
-      }
       if (refii::vfs::IsTextureAssetCandidate(name)) {
         refii::vfs::LogRefiiOwnedTextureStreamBuilt(
             base,
@@ -267,12 +259,6 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
     if (refii::vfs::IsHandledRefiiVfsOpenDisposition(
             open_result.disposition)) {
       refii::vfs::RecordRefiiGetCachedHandoffEvent(name, original_ctx.lr, 0);
-      if (open_result.disposition ==
-              refii::vfs::RefiiVfsOpenDisposition::OptionalNull &&
-          refii::vfs::IsGameFaceBinaryAssetKey(name)) {
-        refii::vfs::MaybeRecordRefiiPostGameFacePackageOptionalMiss(
-            original_ctx, base, name, "ResourceManager_GetCached");
-      }
       return;
     }
     if (open_result.disposition ==
@@ -282,14 +268,7 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
   }
 
   ctx = original_ctx;
-  const bool suppress_hash_entry_loose_stream = false;
-  if (suppress_hash_entry_loose_stream) {
-    ++refii::vfs::g_suppress_request_manager_hash_entry_loose_streams;
-  }
   __imp__rex_lhResourceManager_GetCached(ctx, base);
-  if (suppress_hash_entry_loose_stream) {
-    --refii::vfs::g_suppress_request_manager_hash_entry_loose_streams;
-  }
 
   const bool repaired_native_shape =
       refii::vfs::TryRepairNativeShapedGetCachedOutput(
@@ -305,10 +284,6 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
       out_guest != 0 ? refii::vfs::TryReadOutputPointer(base, out_guest) : 0;
   refii::vfs::RecordRefiiGetCachedHandoffEvent(
       name, original_ctx.lr, stream_guest);
-  if (stream_guest != 0 && refii::vfs::IsGameFaceBinaryAssetKey(name)) {
-    refii::vfs::MaybeSignalRefiiPostGameFacePackageHandoff(
-        original_ctx, base, name, stream_guest);
-  }
 
   if (refii::vfs::VfsTracingEnabled() && !direct_bypass_reason.empty()) {
     refii::vfs::MaybeLogStartupLuaGetCachedShapeVerdict(
@@ -344,41 +319,5 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
                 name,
                 refii::vfs::ToString(ownership.kind),
                 ownership.reason);
-  }
-}
-
-REX_EXTERN(rex_lhResourceManager_vtbl_FindStream) {
-  REX_FUNC_PROLOGUE();
-
-  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhResourceManager_vtbl_FindStream);
-
-
-  const PPCContext original_ctx = ctx;
-  const uint32_t resource_manager_guest = ctx.r3.u32;
-  const uint32_t name_guest = ctx.r4.u32;
-  const uint32_t out_guest = ctx.r5.u32;
-  const std::string name =
-      refii::vfs::ReadBestEffortGuestString(base, name_guest, 128);
-
-  __imp__rex_lhResourceManager_vtbl_FindStream(ctx, base);
-
-  if (refii::vfs::LooseAssetOverrideTracingEnabled() && !name.empty()) {
-    const uint32_t stream_guest =
-        out_guest != 0 ? refii::vfs::TryReadOutputPointer(base, out_guest) : 0;
-    REXLOG_INFO("ResourceManager vtbl FindStream caller_lr=0x{:08X} "
-                "caller_ctr=0x{:08X} manager=0x{:08X} name_obj=0x{:08X} "
-                "name={} out=0x{:08X} out_stream=0x{:08X} result=0x{:08X} "
-                "stream_words={} {}",
-                original_ctx.lr,
-                original_ctx.ctr.u32,
-                resource_manager_guest,
-                name_guest,
-                name,
-                out_guest,
-                stream_guest,
-                ctx.r3.u32,
-                refii::vfs::FormatGuestWords(base, stream_guest, 12),
-                refii::vfs::FormatGuestObjectVTable(
-                    base, stream_guest, 12));
   }
 }

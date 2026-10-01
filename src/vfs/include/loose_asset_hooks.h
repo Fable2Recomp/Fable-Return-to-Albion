@@ -29,27 +29,6 @@ inline bool VfsVerboseIoTracingEnabled() {
 inline bool LooseGameFaceBinaryOverridesEnabled() {
   return refii_bridge_vfs_loose_gameface_binary_overrides_enabled() != 0;
 }
-inline bool LooseBankEntryOverridesEnabled() {
-  return refii_bridge_vfs_loose_bank_entry_overrides_enabled() != 0;
-}
-inline bool NativeBankParseProbeEnabled() {
-  return refii_bridge_vfs_native_bank_parse_probe_enabled() != 0;
-}
-bool GdbCsvOverridesEnabled();
-bool BabelCsvOverridesEnabled();
-inline bool ForceRetailUpdateModeEnabled() {
-  return refii_bridge_vfs_force_retail_update_mode_enabled() != 0;
-}
-inline bool FrontendSyntheticHandoffEnabled() {
-  return refii_bridge_vfs_frontend_synthetic_handoff_enabled() != 0;
-}
-inline bool AutoPressStartEnabled() { return refii_bridge_vfs_auto_press_start_enabled() != 0; }
-inline bool SkipStartupVideosEnabled() {
-  return refii_bridge_vfs_skip_startup_videos_enabled() != 0;
-}
-inline int StartupVideoMinimumPlaybackMs() {
-  return static_cast<int>(refii_bridge_vfs_startup_video_minimum_playback_ms());
-}
 
 struct LooseAssetResolution {
   std::filesystem::path host_path;
@@ -78,52 +57,14 @@ inline std::vector<std::filesystem::path> GetLooseAssetSearchRoots() {
   return roots;
 }
 
-inline bool ResolveLooseAssetOverride(std::string_view asset_path,
-                                      LooseAssetResolution* out_resolution) {
-  // Measured first, then filled: three independent strings cannot share one grow-once
-  // attempt, and a resolution that half-fitted would be worse than one that did not.
-  size_t host_length = 0;
-  size_t key_length = 0;
-  size_t relative_length = 0;
-  if (refii_bridge_vfs_resolve_loose_asset_override(
-          asset_path.data(), asset_path.size(), nullptr, 0, &host_length, nullptr, 0,
-          &key_length, nullptr, 0, &relative_length) == 0) {
-    return false;
-  }
-
-  if (out_resolution == nullptr) {
-    return true;
-  }
-
-  std::string host(host_length, '\0');
-  std::string key(key_length, '\0');
-  std::string relative(relative_length, '\0');
-  if (refii_bridge_vfs_resolve_loose_asset_override(
-          asset_path.data(), asset_path.size(), host.data(), host.size(), &host_length,
-          key.data(), key.size(), &key_length, relative.data(), relative.size(),
-          &relative_length) == 0) {
-    return false;
-  }
-
-  out_resolution->host_path = std::filesystem::path(host);
-  out_resolution->normalized_key = std::move(key);
-  out_resolution->provider_relative_path = std::move(relative);
-  return true;
-}
-
 inline bool ShouldDeferLooseBankContainer(std::string_view asset_path) {
   return refii_bridge_vfs_should_defer_loose_bank_container(asset_path.data(),
                                                             asset_path.size()) != 0;
 }
-std::filesystem::path ResolveLooseAssetOverridePath(std::string_view asset_path);
-std::string BuildLooseAssetOpenPath(const std::filesystem::path& loose_path);
 inline std::string NormalizeLooseAssetKey(std::string_view asset_path) {
   return refii::bridge::TakeString([asset_path](char* out, size_t capacity) {
     return refii_bridge_vfs_normalize_loose_asset_key(asset_path.data(), asset_path.size(),
                                                       out, capacity);
   });
 }
-
-void TouchLooseAssetHooks();
-
 }  // namespace refii::vfs

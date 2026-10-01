@@ -142,15 +142,6 @@ endif()
 if(NOT REFII_SDL3_WINDOW_SUPPORTED)
     message(FATAL_ERROR "Refii now requires SDL3 window support on this platform")
 endif()
-if(DEFINED REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED AND
-   NOT DEFINED REFII_SDL3_WINDOW_ENABLED)
-    set(REFII_SDL3_WINDOW_ENABLED
-        "${REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED}"
-        CACHE BOOL
-        "Use SDL3 for the ReXGlue app window"
-        FORCE
-    )
-endif()
 option(
     REFII_SDL3_WINDOW_ENABLED
     "Use SDL3 for the ReXGlue app window"
@@ -159,23 +150,8 @@ option(
 if(NOT REFII_SDL3_WINDOW_ENABLED)
     message(FATAL_ERROR "Refii now requires REFII_SDL3_WINDOW_ENABLED=ON")
 endif()
-set(REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED
-    "${REFII_SDL3_WINDOW_ENABLED}"
-    CACHE BOOL
-    "Deprecated compatibility alias for REFII_SDL3_WINDOW_ENABLED"
-    FORCE
-)
-mark_as_advanced(REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED)
-cmake_dependent_option(
-    REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED
-    "Build Plume with the D3D12 Agility SDK"
-    OFF
-    WIN32
-    OFF
-)
 
 include(cmake/refii_rexglue.cmake)
-include(cmake/refii_vcpkg.cmake)
 include(cmake/refii_payload_sdk.cmake)
 include(cmake/refii_godot_export.cmake)
 include(cmake/refii_optimize_rexglue.cmake)
@@ -273,44 +249,10 @@ function(refii_stage_windows_runtime_dlls target_name)
     set_property(GLOBAL PROPERTY REFII_WINDOWS_RUNTIME_DLL_LAST_TARGET "${target_name}")
 endfunction()
 
-function(refii_stage_d3d12_agility_runtime target_name)
-    if(NOT WIN32 OR NOT TARGET "${target_name}")
-        return()
-    endif()
-
-    if(NOT REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED)
-        return()
-    endif()
-
-    if(NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DLL}" OR
-       NOT EXISTS "${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}" OR
-       NOT EXISTS "${REFII_D3D12_AGILITY_LAYERS_DLL}")
-        message(FATAL_ERROR
-            "D3D12 Agility SDK runtime DLLs are missing. Expected:\n"
-            "  ${REFII_D3D12_AGILITY_CORE_DLL}\n"
-            "  ${REFII_D3D12_AGILITY_CORE_DEBUG_DLL}\n"
-            "  ${REFII_D3D12_AGILITY_LAYERS_DLL}"
-        )
-    endif()
-
-    add_custom_command(TARGET "${target_name}" POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:${target_name}>/D3D12"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<IF:$<CONFIG:Debug>,${REFII_D3D12_AGILITY_CORE_DEBUG_DLL},${REFII_D3D12_AGILITY_CORE_DLL}>"
-            "$<TARGET_FILE_DIR:${target_name}>/D3D12/D3D12Core.dll"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${REFII_D3D12_AGILITY_LAYERS_DLL}"
-            "$<TARGET_FILE_DIR:${target_name}>/D3D12/d3d12SDKLayers.dll"
-        VERBATIM
-    )
-endfunction()
-
 option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
 option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/compilation pipeline tooling" ON)
 
 add_subdirectory(src/extractor)
-add_subdirectory(src/modding)
 if(REFII_BUILD_NATIVE_LUA)
     enable_language(C)
     add_subdirectory(src/lua)
@@ -600,7 +542,6 @@ unset(REFII_SHADER_DEFAULT_VALIDATION_TARGETS)
 # target list, not because anything in the build validates against it.
 
 set(REFII_VFS_LIBRARIES)
-set(REFII_RENDERER_LIBRARIES)
 set(REFII_HOOK_OBJECTS)
 
 # OFF: the Fable2AssetBrowser submodule is reference source, not part of the game build.
@@ -656,20 +597,6 @@ if(REFII_BUILD_VFS_HOOKS)
 endif()
 
 
-if(TARGET refii_vfs AND TARGET refii_renderer)
-    target_include_directories(refii_vfs
-        PRIVATE
-            ${REFII_RENDERER_INCLUDE_DIRS}
-    )
-    target_link_libraries(refii_vfs
-        PRIVATE
-            refii_renderer
-    )
-    target_compile_definitions(refii_vfs
-        PRIVATE
-            REFII_VFS_HAS_RENDERER_RUNTIME=1
-    )
-endif()
 
 if(REFII_BUILD_NATIVE_HOOKS)
     add_subdirectory(src/hooks)
@@ -754,7 +681,6 @@ target_link_libraries(refii_generated
     PRIVATE
         ${REFII_LUA_LIBRARIES}
         ${REFII_VFS_LIBRARIES}
-        ${REFII_RENDERER_LIBRARIES}
 )
 set_target_properties(refii_generated PROPERTIES
     OUTPUT_NAME refii_generated
@@ -842,7 +768,6 @@ target_include_directories(refii_host
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/generated
-        ${REFII_RENDERER_INCLUDE_DIRS}
 )
 if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
     target_include_directories(refii_host PUBLIC "${REFII_REXGLUE_SHADOW_DIR}/include")
@@ -851,11 +776,6 @@ target_include_directories(refii_host
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/achievement/include"
 )
-if(REFII_RENDERER_LIBRARIES)
-    target_compile_definitions(refii_host PUBLIC REFII_HAS_RENDERER_RUNTIME=1)
-else()
-    target_compile_definitions(refii_host PUBLIC REFII_HAS_RENDERER_RUNTIME=0)
-endif()
 target_compile_definitions(refii_host
     PUBLIC
         REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
@@ -867,7 +787,6 @@ target_link_libraries(refii_host
     PUBLIC
         refii_core
         refii_payload
-        ${REFII_RENDERER_LIBRARIES}
 )
 
 # ReXGlue v0.10's rex/ui/imgui_drawer.h includes rex/ui/style.h, which includes imgui.h — so
@@ -891,13 +810,6 @@ if(REFII_BUILD_HOST_BRIDGE)
     add_subdirectory(src/hostbridge)
 endif()
 
-# The renderer was the one host-side library that called guest functions by name, so it linked
-# the payload directly. It was retired 2026-08-18 (archive/renderer-*.zip) and the guard is kept
-# only so a restored src/renderer still links: everything in the shipping configuration reaches
-# the payload through refii_payload.
-if(TARGET refii_renderer AND TARGET refii_generated)
-    target_link_libraries(refii_renderer PUBLIC refii_generated)
-endif()
 
 # After every library the payload links: the staging target copies each one, and
 # `if(TARGET ...)` only sees targets that already exist.
@@ -935,7 +847,6 @@ foreach(_refii_origin_rpath_target
     refii_lua
     refii_luadec
     refii_vfs
-    refii_renderer
     refii-shader-sbk
     refii-shader-xenos-translator
     glfw

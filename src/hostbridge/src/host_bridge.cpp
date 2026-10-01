@@ -155,8 +155,6 @@ uint32_t StatedFxTransforms(uint32_t* out_words, uint32_t word_capacity);
 uint32_t StatedHighlightFor(uint32_t component);
 // src/vfs/src/core/entity_appearance_state.cpp — `out` takes kAppearanceWords words.
 bool StatedAppearanceFor(uint32_t component, uint32_t* out);
-uint64_t StatedAppearanceStatements();
-uint64_t StatedAppearanceDropped();
 // src/vfs/src/core/dye_state.cpp.
 uint32_t SampledDyeStates(uint32_t* out, uint32_t word_capacity);
 // src/vfs/src/core/part_morph_state.cpp.
@@ -196,9 +194,9 @@ uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* ou
 #include "gui/gui_element_state.h"
 
 namespace {
-
 /// Guest memory, or nullptr when there is no guest — the check `rex::system::kernel_memory`
 /// does not make. Its accessor is `kernel_state()->memory()` with no null test, so with no
+
 /// kernel state the arrow faults inside the accessor, before any `memory == nullptr` guard in
 /// this file can run. Every call in this file goes through here.
 inline rex::memory::Memory* SafeKernelMemory() {
@@ -206,9 +204,9 @@ inline rex::memory::Memory* SafeKernelMemory() {
     return state != nullptr ? state->memory() : nullptr;
 }
 
-
 // Copies into the caller's buffer and returns the length that WOULD have been written,
 // so a caller can size a buffer with a null probe. Mirrors the convention the launcher
+
 // ops ABI already uses.
 int WriteOut(const std::string& text, char* out, std::size_t capacity) {
     const int needed = static_cast<int>(text.size());
@@ -658,8 +656,8 @@ void SetEnvironmentValue(const char* name, const char* value) {
 /// dying process loses the last few kilobytes of both. Written with open/write only, from
 /// inside the signal handler, and closed before anything that could block.
 namespace crash {
-
 char g_path[4096] = {};
+
 
 /// Beside the guest log: `ReXApp::OnInitialize` logs to `exe_dir/logs`.
 void ResolvePath() {
@@ -781,8 +779,8 @@ void Report(const char* line, uintptr_t pc) {
     rex::FlushLogging();
     ::alarm(0);
 }
-
 }  // namespace crash
+
 
 /// The last-resort fault handler. The runtime's `ExceptionHandler` installs SIGSEGV/SIGILL over
 /// .NET's and simply RETURNS when nothing claims a fault, so the faulting instruction
@@ -795,9 +793,9 @@ void Report(const char* line, uintptr_t pc) {
 ///   - anywhere else: record it (a managed exception shows as pc in no module) and chain to
 ///     the handler .NET had installed, which dispatches a managed exception or re-raises.
 namespace fault {
-
 constexpr int kSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
 struct sigaction g_managed[NSIG] = {};
+
 struct sigaction g_runtime[NSIG] = {};
 bool g_managed_captured = false;
 std::atomic<bool> g_installed{false};
@@ -1007,9 +1005,9 @@ void Install() {
     REXLOG_INFO("Refii host: last-resort fault reporter installed; records go to {}",
                 crash::g_path);
 }
-
 }  // namespace fault
 #endif
+
 
 /// Installs the fault reporter once the guest is up. No-op on Windows, where the vectored
 /// handler below already reports faults.
@@ -1616,17 +1614,17 @@ std::vector<std::string> SplitArguments(const char* packed) {
     }
     return arguments;
 }
-
 }  // namespace
+
 
 #if defined(REXGLUE_ENABLE_REXNET)
 #include <rex/net/rexnet.h>
 #include <rex/net/rexnet_ffi.h>
 
 namespace {
-
 /// Appends one field, stripped of anything that could forge a delimiter.
 void Field(std::string& row, const std::string& value, char terminator) {
+
     for (unsigned char c : value) {
         row.push_back(c < 0x20 || c == 0x7F ? ' ' : static_cast<char>(c));
     }
@@ -1686,14 +1684,14 @@ uint32_t Emit(const std::string& text, char* out, uint32_t capacity) {
     out[text.size()] = '\0';
     return static_cast<uint32_t>(text.size());
 }
-
 }  // namespace
 #endif
 
-extern "C" {
 
+extern "C" {
 /// ABI version. Bump on any breaking change so a stale library is detected rather than
 /// crashing the editor.
+
 ///
 /// 4 adds RefiiHostSetControllerState / RefiiHostGetVibration.
 /// 5 adds RefiiHostGetVideoFrame.
@@ -2265,9 +2263,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetAbilitiesMode(void) {
     return -1;
 }
 
-
 /// The screen fade, as a colour the host can draw. Read-only: the guest starts the fade
 /// (`FadeScreenOut`/`In`/`OutToColour`) and advances it at 15 Hz in `sub_822C1FC0`
+
 /// (`t += (1/15)/duration`, clamped; `dbl_83319660` is 15.0), and `CmdLevelChange_Update` /
 /// `CmdLoadSaveGame_Update` both block on it, so writing `t` here would hang a level change.
 ///
@@ -2365,14 +2363,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetScreenFade(float* out_rgba, float* ou
     return fade;
 }
 
-
 // The hero and its components — shared by every proxy below. `extern "C++"` because
 // this file's exports live inside one big `extern "C"` block.
+
 extern "C++" {
 namespace {
-
 /// The player's hero ENTITY, or 0 when there is not one yet. One walk, shared by every proxy
 /// below; from `sub_826B83D0` / `sub_82264230`:
+
 ///
 ///   game = *(*(0x83496AB8) + 12); sess = *(game + 0x8C)
 ///   key  = (bytes sess+0x34 && sess+0x35) ? 1 : 2          -- the co-op slot choice
@@ -4629,9 +4627,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetVideoFrame(uint8_t* out_rgba, uint32_t cap
     const uint32_t current = load_be32(fb + 20) & 1u;
     const uint32_t frame = total_frames > 1 ? (current ^ 1u) : current;
 
-
     // A STRUCTURAL plausibility gate, not just a size clamp.
     //
+
     // The block is only meaningful while a movie is live. Once a logo finishes and the
     // player is reused the same memory reads as whatever came next, and a pure size
     // clamp happily accepts it: a run produced a correct 1280x720 frame and then
@@ -5287,9 +5285,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
 
     // The composed world matrix is read from `node + 0x20`; see the read site below.
 
-
     constexpr uint32_t kVectorBegin = 0x8349E490u;
     constexpr uint32_t kVectorEnd = 0x8349E494u;
+
     constexpr uint32_t kReservedRootName = 0x8349E678u;
 
     /// 20 words per node: instance pointer, name hash, flags, live-particle count, the world
@@ -9522,8 +9520,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostPoke(uint32_t addr, uint32_t value) {
 /// a breakpoint. Nothing stops; the record is best-effort racy and that is the deal.
 extern "C++" {
 namespace probe {
-
 constexpr int kSlots = 16;
+
 
 struct Slot {
     std::atomic<uint32_t> address{0};
@@ -9557,9 +9555,9 @@ constexpr std::array<PPCFunc*, kSlots> MakeThunks(std::integer_sequence<int, Is.
 }
 
 const std::array<PPCFunc*, kSlots> kThunks = MakeThunks(std::make_integer_sequence<int, kSlots>{});
-
 }  // namespace probe
 }  // extern "C++"
+
 
 /// Arms a probe on a guest function START address. Returns the slot, -1 when all 16 are used,
 /// -2 when the address has no dispatch entry (not a recompiled function start), -3 with no
@@ -12322,9 +12320,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTargetedQuery(uint32_t* out_words, ui
     return 12u;
 }
 
-
 /// Every live PULSER the in-game HUD is holding — registry 4, `PulserName` — as its PHASE.
 ///
+
 /// A pulser LOOPS the authored timeline: `sub_822C21E0` advances `rec+20` by `rec+24 · dt`
 /// (mode `rec+12`: 0 loop with wrap, 1 one-shot then 2 stopped) and applies
 /// `time = phase × 1000` to the element. The guest advances it; the host reads the phase at
@@ -12822,9 +12820,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
 // helpers return `LuaValue` and `std::string`, which warn under C linkage.
 extern "C++" {
 namespace {
-
 /// Vanilla Lua 5.1 type tags — the one thing both VMs agree on.
 constexpr uint32_t kLuaTNil = 0u;
+
 constexpr uint32_t kLuaTBoolean = 1u;
 constexpr uint32_t kLuaTNumber = 3u;
 constexpr uint32_t kLuaTString = 4u;
@@ -13080,9 +13078,9 @@ bool LuaMenuWaitingForInput(const uint8_t* base, uint32_t presentation, uint32_t
     if (out_count != nullptr) *out_count = count;
     return waiting;
 }
-
 }  // namespace
 }  // extern "C++"
+
 
 /// The live expandable-menu model, straight out of the presentation's Lua. What is read, and
 /// where it is stated:
@@ -13665,9 +13663,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
     return 1;
 }
 
-
 /// Where the front end got to — the fields that separate a title that never activated, one
 /// that activated into a tick that is gated off, and one ticking with nothing to show.
+
 ///
 /// Fills SIX words:
 ///
@@ -14205,8 +14203,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetUiTextureStats(uint32_t presentation, uint
 // the `char*`. Reading one level in gets a plausible-looking pointer that is not text.
 
 namespace {
-
 constexpr uint32_t kPubGameManager = 0x834C20B8u;
+
 
 constexpr uint32_t kPubGameNameOffset = 8u;
 constexpr uint32_t kPubGameVariationOffset = 12u;
@@ -14215,8 +14213,8 @@ constexpr uint32_t kPubGameProfileOffset = 124u;
 
 constexpr uint32_t kPubProfileGoldOffset = 0x108u;
 constexpr uint32_t kPubProfileDebtOffset = 0x130u;
-
 }  // namespace
+
 
 REFII_HOST_ABI_EXPORT int RefiiHostGetPubGame(uint32_t* out,
                                               char* name,
@@ -15323,9 +15321,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeldUids(uint32_t player, uint32_
 }
 
 namespace {
-
 /// The pad bound to player-map key 1 or 2, or 0xFFFFFFFF — `Player+0x28`, stored by the
 /// Player ctor `sub_82389938` (`stw r5, 0x28(r31)` at 0x8238998c) from the joining pad.
+
 uint32_t PlayerPadForKey(const uint8_t* base, uint32_t wanted) {
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
     const uint32_t game_root = GuestWordAt(base, 0x83496AB8u);
@@ -15346,8 +15344,8 @@ uint32_t PlayerPadForKey(const uint8_t* base, uint32_t wanted) {
     }
     return 0xFFFFFFFFu;
 }
-
 }  // namespace
+
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopSession(uint32_t* out_words, uint32_t capacity) {
     // [0] manager present, [1] session, [2] host, [3] client, [4] lost, [5] client joined,
@@ -16033,31 +16031,10 @@ REFII_HOST_ABI_EXPORT int RefiiHostStart(const char* game_directory, const char*
     // suppresses XAM UI dialogs. Setting it changed guest dialog behaviour as a silent
     // side effect of asking for no window.
     //
-    // The renderer backend is NOT set here. `--renderer_backend=plume` on the command
-    // line does not survive: SetupEnvironment loads refii.toml afterwards and the file's
-    // value wins, which is why the guest still came up on the Xenia-derived graphics
-    // system. Suppression is handled in SetupPresentation off the embedded flag instead,
-    // where nothing can override it later.
+    // REX_EMBED_HEADLESS is also what tells RefiiApp::OnPreSetup there is no guest GPU: without
+    // it the SDK defaults gpu_plugin to "xenos" and dlopens librexgpu-xenosd.so from beside
+    // the executable, which embedded is Godot's directory, and the boot fails.
     SetEnvironmentValue("REX_EMBED_HEADLESS", "1");
-
-    // No guest GPU at all.
-    //
-    // RefiiApp::OnPreSetup only reaches `config.graphics.reset()` when renderer_backend
-    // is exactly "plume". Anything else — including EMPTY — falls through, and on the
-    // netplay SDK that branch then defaults gpu_plugin to "xenos" and tries to dlopen
-    // librexgpu-xenosd.so from beside the executable. Embedded, "beside the executable"
-    // is Godot's directory, so it fails there and takes the boot with it.
-    //
-    // Set through the environment, not the command line: cvar::Init parses argv first
-    // but SetupEnvironment loads refii.toml afterwards and the file wins. The env is
-    // applied by ApplyEnvironment (REX_<CVAR_NAME>) and, embedded, no refii.toml is
-    // found beside the host binary to override it.
-    SetEnvironmentValue("REX_RENDERER_BACKEND", "plume");
-
-    // NOTE ON THE LUA WORKSPACE: `lua_use_mod_overrides` is on, but src/lua now filters the
-    // files it will actually use against the workspace's own `_manifest.tsv`, so only
-    // reconstructions the decompiler marked EXACT reach the guest. That gate is what makes the
-    // flag safe to leave on; nothing needs forcing from here.
 
     // Pass the game directory as an explicit flag, not just positionally.
     //
@@ -16550,7 +16527,6 @@ REFII_HOST_ABI_EXPORT int RefiiHostJoin(char* out, std::size_t capacity) {
     return 1;
 }
 
-
 // ---------------------------------------------------------------------------
 // RexNet — friends, invites and sessions, for the shell's own network screen.
 //
@@ -16565,7 +16541,6 @@ REFII_HOST_ABI_EXPORT int RefiiHostJoin(char* out, std::size_t capacity) {
 // carrying a tab or a newline would otherwise forge a record boundary. The field order is
 // stated at each export and mirrored by Refii.Host.NetBridge.
 
-
 /// Is RexNet up? Writes one record: `displayName \t peerId \t friendCode`.
 REFII_HOST_ABI_EXPORT uint32_t RefiiNetIdentity(char* out, uint32_t capacity) {
 #if defined(REXGLUE_ENABLE_REXNET)
@@ -16575,6 +16550,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetIdentity(char* out, uint32_t capacity) {
     }
 
     const RexNetPeerId& self = net->local_peer_id();
+
     const std::string name = net->display_name();
     char code[192] = {0};
     rexnet_friend_code(&self, name.empty() ? nullptr : name.c_str(), code, sizeof(code));
@@ -16589,6 +16565,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetIdentity(char* out, uint32_t capacity) {
     (void)capacity;
     return 0;
 #endif
+
 }
 
 /// One record per friend: `peerId \t name \t online \t titleId \t titleName \t hasSession
@@ -16942,5 +16919,4 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetCoopReceive(char* out, uint32_t capacity)
     return 0;
 #endif
 }
-
 }  // extern "C"

@@ -260,27 +260,6 @@ std::shared_ptr<const BankManifestIndex> LoadCachedBankManifestIndex(
   return iterator->second;
 }
 
-bool LookupCachedBankManifestEntry(const std::filesystem::path& manifest_root,
-                                   uint32_t offset,
-                                   uint32_t size,
-                                   BankManifestEntry* out_entry) {
-  const std::shared_ptr<const BankManifestIndex> index =
-      LoadCachedBankManifestIndex(manifest_root);
-  if (index == nullptr) {
-    return false;
-  }
-  const auto match =
-      index->by_offset_size.find(MakeBankManifestLookupKey(offset, size));
-  if (match == index->by_offset_size.end() ||
-      match->second >= index->entries.size()) {
-    return false;
-  }
-  if (out_entry != nullptr) {
-    *out_entry = index->entries[match->second];
-  }
-  return true;
-}
-
 bool LookupCachedBankManifestEntryByName(
     const std::filesystem::path& manifest_root,
     std::string_view entry_name,
@@ -480,41 +459,5 @@ bool ResolveSyntheticBankManifestLooseAsset(std::string_view bank_name,
   }
   return true;
 }
-
-bool LookupBankManifestEntryRecord(std::string_view bank_name,
-                                   uint32_t offset,
-                                   uint32_t size,
-                                   BankManifestEntry* out_entry) {
-  const std::string bank_root = BankNameToLooseRoot(bank_name);
-  if (bank_root.empty()) {
-    return false;
-  }
-
-  for (const std::filesystem::path& manifest_root :
-       BuildBankManifestRootCandidates(bank_root)) {
-    BankManifestEntry entry;
-    if (LookupCachedBankManifestEntry(
-            manifest_root, offset, size, &entry)) {
-      if (out_entry != nullptr) {
-        *out_entry = std::move(entry);
-      }
-      return true;
-    }
-  }
-
-  return false;
-}
-
-std::string LookupBankManifestEntry(std::string_view bank_name,
-                                    uint32_t offset,
-                                    uint32_t size) {
-  BankManifestEntry entry;
-  if (LookupBankManifestEntryRecord(bank_name, offset, size, &entry)) {
-    return entry.relative_path;
-  }
-  return {};
-}
-
-
 }  // namespace detail
 }  // namespace refii::vfs

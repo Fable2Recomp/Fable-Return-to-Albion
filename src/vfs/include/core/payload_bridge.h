@@ -138,13 +138,6 @@ int32_t refii_bridge_pubgame_take_command(uint32_t* kind, char* text, size_t tex
                                           double* numbers, int64_t* integers);
 void refii_bridge_pubgame_note_event(uint32_t bits);
 
-// Menu spawn capture: a row's identity goes into a Lua table the host cannot read, so it is
-// copied from `sub_826CE8D0`'s registers. `begin` runs on `DeleteAllSpawnedMenuItems`, rows
-// follow in spawn order; both on the guest tick thread, host reads under the action-queue lock.
-void refii_bridge_menu_spawn_begin(void);
-void refii_bridge_menu_spawn_row(const char* name, const char* parent, uint32_t id,
-                                 int32_t event_type, int32_t rating);
-
 // Keyed form. The capture is ONE list, so without a key a template sourced `capture:Root`
 // takes whatever was spawned last, whoever spawned it — the front end's rows once appeared on
 // the real-estate screen. `screen_id` is `manager+4` off the in-game GUI, read at the
@@ -205,13 +198,6 @@ int32_t refii_bridge_vfs_loose_asset_override_tracing_enabled(void);
 int32_t refii_bridge_vfs_tracing_enabled(void);
 int32_t refii_bridge_vfs_verbose_io_tracing_enabled(void);
 int32_t refii_bridge_vfs_loose_gameface_binary_overrides_enabled(void);
-int32_t refii_bridge_vfs_loose_bank_entry_overrides_enabled(void);
-int32_t refii_bridge_vfs_native_bank_parse_probe_enabled(void);
-int32_t refii_bridge_vfs_force_retail_update_mode_enabled(void);
-int32_t refii_bridge_vfs_frontend_synthetic_handoff_enabled(void);
-int32_t refii_bridge_vfs_auto_press_start_enabled(void);
-int32_t refii_bridge_vfs_skip_startup_videos_enabled(void);
-int32_t refii_bridge_vfs_startup_video_minimum_playback_ms(void);
 
 // STRINGS ARE WRITTEN INTO A CALLER BUFFER, never returned.
 //
@@ -229,25 +215,6 @@ uint32_t refii_bridge_vfs_loose_asset_search_root_count(void);
 size_t refii_bridge_vfs_loose_asset_search_root(uint32_t index, char* out, size_t capacity);
 
 int32_t refii_bridge_vfs_should_defer_loose_bank_container(const char* path, size_t length);
-
-// LooseAssetResolution flattened into its three strings. Each out_*_length receives the
-// needed length; pass capacity 0 to measure first.
-int32_t refii_bridge_vfs_resolve_loose_asset_override(
-    const char* path, size_t length,
-    char* host_path, size_t host_path_capacity, size_t* out_host_path_length,
-    char* normalized_key, size_t normalized_key_capacity, size_t* out_normalized_key_length,
-    char* provider_relative, size_t provider_relative_capacity,
-    size_t* out_provider_relative_length);
-
-// RefiiReplacementPathResolution: the same three strings, plus root_name and two flags.
-int32_t refii_bridge_vfs_resolve_refii_replacement_path(
-    const char* path, size_t length,
-    char* host_path, size_t host_path_capacity, size_t* out_host_path_length,
-    char* normalized_key, size_t normalized_key_capacity, size_t* out_normalized_key_length,
-    char* provider_relative, size_t provider_relative_capacity,
-    size_t* out_provider_relative_length,
-    char* root_name, size_t root_name_capacity, size_t* out_root_name_length,
-    int32_t* out_exists, int32_t* out_is_directory);
 
 //
 int32_t refii_bridge_read_host_asset(const char* path, size_t length,

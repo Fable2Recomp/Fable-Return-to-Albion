@@ -469,16 +469,11 @@ public static class GameCodeBuild
 				"-DCMAKE_CONFIGURATION_TYPES=RelWithDebInfo",
 				"-DREFII_WINDOWS_INSTALL_INPUTS_ONLY=ON",
 				"-DREFII_PACKAGE=OFF",
-				"-DREFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED=ON",
 			};
 			if (string.Equals(arch, "x86_64", StringComparison.OrdinalIgnoreCase))
 			{
 				configureArguments.Add("-DCMAKE_C_FLAGS=-march=x86-64-v3");
 				configureArguments.Add("-DCMAKE_CXX_FLAGS=-march=x86-64-v3");
-			}
-			else if (string.Equals(arch, "arm64", StringComparison.OrdinalIgnoreCase))
-			{
-				configureArguments.Add("-DREFII_VCPKG_TRIPLET=arm64-windows");
 			}
 
 			LogPhase("prepare-windows-install-inputs");
@@ -1397,45 +1392,6 @@ public static class GameCodeBuild
 			? new[] { "-target", "aarch64-windows-gnu" }
 			: Array.Empty<string>();
 
-	/// <summary>True for a C translation unit, which cannot take the C++ flag set.</summary>
-	private static bool IsCSource(string path) =>
-		Path.GetExtension(path).Equals(".c", StringComparison.OrdinalIgnoreCase);
-
-	/// <summary>
-	/// The C++ flag set rewritten for a C translation unit.
-	/// </summary>
-	/// <remarks>
-	/// Only the flags that are actually C++-specific are touched, so the defines, the undefines
-	/// and every include path stay exactly as the C++ units saw them -- lua51 has to be
-	/// configured by the same macros whichever language builds it.
-	///
-	/// gnu99 to match refii_lua51's own C_STANDARD, so the payload's copy is built the way this
-	/// tree builds it. The dropped `-include` is the libc++ chrono shim, which is C++ only.
-	/// </remarks>
-	private static List<string> AsCFlags(IReadOnlyList<string> cxxFlags)
-	{
-		var flags = new List<string>(cxxFlags.Count);
-		for (int index = 0; index < cxxFlags.Count; index++)
-		{
-			string flag = cxxFlags[index];
-			if (flag.StartsWith("-std=", StringComparison.Ordinal))
-			{
-				flags.Add("-std=gnu99");
-				continue;
-			}
-
-			if (flag == "-include")
-			{
-				index++;  // and the header it names
-				continue;
-			}
-
-			flags.Add(flag);
-		}
-
-		return flags;
-	}
-
 	private static List<string> CompileFlags(IReadOnlyList<string> includeDirectories)
 	{
 		var flags = new List<string>
@@ -1654,21 +1610,10 @@ public static class GameCodeBuild
 						}
 					}
 
-					// LUA51 IS C. Its 32 files compile into the payload beside the generated code,
-					// and everything above this is a C++ flag set: clang rejects -std=gnu++23
-					// outright on a C input, and a C++ precompiled header and the libc++ chrono
-					// shim mean nothing there either.
-					//
-					// They must build AS C, not merely be made to compile. lua.h carries no
-					// extern "C" guards and host_lua_vm.cpp wraps its includes in one, so the
-					// C-linkage names are what that side references -- built as C++ every lua_*
-					// entry would be mangled and none of them would resolve.
-					bool isC = IsCSource(sources[slot]);
-
 					List<string> BuildArguments(bool withPch)
 					{
-						var arguments = isC ? AsCFlags(flags) : new List<string>(flags);
-						if (withPch && !isC)
+						var arguments = new List<string>(flags);
+						if (withPch)
 						{
 							arguments.Add("-include-pch");
 							arguments.Add(precompiledHeader);
@@ -1691,12 +1636,11 @@ public static class GameCodeBuild
 						return arguments;
 					}
 
-					// A C unit never uses it, so it can never be the unit that blames it either.
-					bool usePch = precompiledHeader.Length != 0 && !isC
+					bool usePch = precompiledHeader.Length != 0
 						&& Volatile.Read(ref pchBroken) == 0;
 
 					(int code, string output) = await RunCaptureAsync(
-						zig.Zig, Prefixed(isC ? "cc" : "c++", BuildArguments(usePch)), cancellation)
+						zig.Zig, Prefixed("c++", BuildArguments(usePch)), cancellation)
 						.ConfigureAwait(false);
 
 					// A CRASH WITH THE PCH IS THE PCH'S FAULT until shown otherwise, so this unit is
@@ -1712,7 +1656,7 @@ public static class GameCodeBuild
 						}
 
 						(code, output) = await RunCaptureAsync(
-							zig.Zig, Prefixed(isC ? "cc" : "c++", BuildArguments(false)), cancellation)
+							zig.Zig, Prefixed("c++", BuildArguments(false)), cancellation)
 							.ConfigureAwait(false);
 					}
 

@@ -19,8 +19,7 @@
                 "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo",
                 "CMAKE_CROSS_CONFIGS": "all",
                 "CMAKE_DEFAULT_BUILD_TYPE": "Debug",
-                "CMAKE_DEFAULT_CONFIGS": "all",
-                "REFII_RENDERER_PLUME_D3D12_AGILITY_SDK_ENABLED": "ON"
+                "CMAKE_DEFAULT_CONFIGS": "all"
             },
             "condition": {
                 "type": "equals",
@@ -34,8 +33,7 @@
             "inherits": "windows-base",
             "cacheVariables": {
                 "CMAKE_C_FLAGS": "",
-                "CMAKE_CXX_FLAGS": "",
-                "REFII_VCPKG_TRIPLET": "arm64-windows"
+                "CMAKE_CXX_FLAGS": ""
             }
         },
         {
@@ -45,8 +43,7 @@
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang-20",
-                "CMAKE_CXX_COMPILER": "clang++-20",
-                "REFII_RENDERER_PLUME_SDL_VULKAN_ENABLED": "ON"
+                "CMAKE_CXX_COMPILER": "clang++-20"
             },
             "condition": {
                 "type": "equals",

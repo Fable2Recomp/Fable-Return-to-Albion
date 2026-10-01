@@ -243,21 +243,15 @@ public static class RuntimeConfig
     public const string DisplayCategory = "Display";
 
     /// <summary>
-    /// Categories that belonged to the native renderer and its window, and are now dead.
-    ///
-    /// Godot draws the game — there is no backend to choose, no Xenia, Plume, D3D12 or Vulkan
-    /// device of ours to configure, no RenderDoc or ImGui hooked into one, no presenter to
-    /// letterbox, and the guest's own input and audio paths are not the ones running. Embedded,
-    /// the host bridge fixes the guest's backend through the environment and the guest never
-    /// reads refii.toml, so nothing in these categories could reach it anyway. Retiring them
-    /// here hides them AND stops them being written, because `ShouldWriteCVar` is this same
-    /// predicate.
+    /// Categories of SDK settings the embedded game does not use: its window, presenter, GPU,
+    /// input and audio. Godot draws, takes input and plays the sound, so none of these is the
+    /// path that runs. The guest DOES read this file — the host bridge states the app root — so
+    /// they must not be written either: retiring them hides them AND stops them being written,
+    /// because `ShouldWriteCVar` is this same predicate.
     /// </summary>
     private static bool IsRetiredNativeCategory(string category) =>
-        category is "Renderer" or "Renderer/ImGui" or "Renderer/Debug"
-            or "Renderer/Vulkan" or "Renderer/D3D12" or "Renderer/RenderDoc"
-            or "UI/Window" or "UI/Presenter" or "UI/D3D12" or "UI/Vulkan"
-            or "GPU" or "GPU/Shader" or "GPU/D3D12" or "GPU/Vulkan"
+        category is "UI/Window" or "UI/Presenter" or "UI/D3D12"
+            or "GPU" or "GPU/Shader" or "GPU/D3D12"
             or "Input" or "Input/Keybinds" or "Audio";
 
     /// <summary>
@@ -429,7 +423,7 @@ public static class RuntimeConfig
             // A key with a definition that ShouldWriteCVar declined is INTENTIONALLY absent —
             // it belongs to a retired category — so only keys with no definition at all belong
             // here.
-            if (!written.Contains(key) && FindDefinition(key) is null)
+            if (!written.Contains(key) && FindDefinition(key) is null && !RetiredKeys.Contains(key))
             {
                 unrecognised[key] = value;
             }
@@ -449,6 +443,79 @@ public static class RuntimeConfig
             builder.Append(key).Append(" = ").Append(FormatUnknownValue(value)).Append('\n');
         }
     }
+
+    /// <summary>
+    /// Settings removed because nothing reads them, or what they gated is gone: the native
+    /// startup-video and front-end handoffs (Godot plays the movies; skipping is `video_skip`),
+    /// the native Lua handlers and the Lua workspace overrides (mods ship Lua at the script's own
+    /// path through the mount), the mods folder (fixed at assets/mods), and the native renderer's
+    /// settings (Godot is the renderer; nothing defines them any more). Dropped from refii.toml on
+    /// the next save rather than kept under "Other".
+    /// </summary>
+    private static readonly HashSet<string> RetiredKeys = new(StringComparer.Ordinal)
+    {
+        "audio_maxqframes",
+        "log_high_frequency_kernel_calls",
+        "lua_force_loose_banks",
+        "lua_mod_workspace_root",
+        "lua_trace_mod_overrides",
+        "lua_trace_native_handlers",
+        "lua_use_mod_overrides",
+        "lua_use_native_handlers",
+        "mnk_user_index",
+        "perf_log_csv",
+        "renderer_backend",
+        "renderer_d3d12_debug_layer",
+        "renderer_d3d12_shader_root",
+        "renderer_debug_test_triangle",
+        "renderer_gtl_content_authority",
+        "renderer_imgui_dim_alpha",
+        "renderer_imgui_dim_fable",
+        "renderer_imgui_enable",
+        "renderer_imgui_show_stats",
+        "renderer_physical_view_reads",
+        "renderer_plume_api",
+        "renderer_plume_present_fps",
+        "renderer_renderdoc_capture_draw",
+        "renderer_renderdoc_capture_draw_target",
+        "renderer_renderdoc_capture_frame",
+        "renderer_renderdoc_capture_next_frame",
+        "renderer_renderdoc_capture_on_error",
+        "renderer_renderdoc_capture_pass",
+        "renderer_renderdoc_capture_path",
+        "renderer_renderdoc_enable",
+        "renderer_renderdoc_launch_replay",
+        "renderer_renderdoc_native_arm",
+        "renderer_renderdoc_overlay",
+        "renderer_renderdoc_runtime_path",
+        "renderer_renderdoc_trigger_capture",
+        "renderer_scaling",
+        "renderer_trace_draws",
+        "renderer_trace_hooks",
+        "renderer_trace_resources",
+        "renderer_trace_verbose",
+        "renderer_unlock_dirty_ranges",
+        "renderer_vulkan_shader_root",
+        "renderer_vulkan_validation",
+        "rexcrt_heap_enable",
+        "trace_gpu_prefix",
+        "trace_gpu_stream",
+        "vfs_auto_augment_request_manager_hashes",
+        "vfs_auto_press_start",
+        "vfs_babel_csv_overrides",
+        "vfs_enabled_mods",
+        "vfs_force_retail_update_mode",
+        "vfs_force_startup_video_sequence",
+        "vfs_frontend_synthetic_handoff",
+        "vfs_gdb_csv_overrides",
+        "vfs_log_folder",
+        "vfs_mod_roots",
+        "vfs_mods_root",
+        "vfs_native_bank_parse_probe",
+        "vfs_skip_startup_videos",
+        "vfs_startup_video_minimum_playback_ms",
+        "xex_apply_patches",
+    };
 
     private static RuntimeCVarDefinition? FindDefinition(string name)
     {

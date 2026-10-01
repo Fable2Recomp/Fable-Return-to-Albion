@@ -54,7 +54,6 @@ int32_t refii_bridge_rex_mmio_check_store(void* handler, uint32_t address, uint3
 
 void* refii_bridge_rex_runtime_instance(void);
 
-size_t refii_bridge_rex_runtime_root(uint32_t kind, char* out, size_t capacity);
 void* refii_bridge_rex_kernel_state(void);
 
 void* refii_bridge_rex_xthread_current(void);
@@ -69,7 +68,6 @@ uint32_t refii_bridge_rex_nt_set_event(uint32_t handle, void* previous_state);
 
 void* refii_bridge_rex_default_logger(void);
 void refii_bridge_rex_logger_flush(void* logger);
-void* refii_bridge_rex_global_critical_region_mutex(void);
 
 void refii_bridge_rex_global_critical_region_lock(void);
 int32_t refii_bridge_rex_global_critical_region_try_lock(void);
@@ -91,5 +89,4 @@ int32_t refii_bridge_rex_cvar_register(
     int32_t (*setter)(const char* name, const char* value),
     size_t (*getter)(const char* name, char* out, size_t capacity));
 void refii_bridge_rex_cvar_unregister(const char* name);
-
 }  // extern "C"

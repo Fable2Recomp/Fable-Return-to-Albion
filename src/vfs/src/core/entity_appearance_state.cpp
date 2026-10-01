@@ -30,8 +30,6 @@ constexpr uint32_t kSlots = 8192u;
 constexpr uint32_t kProbes = 32u;
 
 StatedAppearance g_appearances[kSlots];
-std::atomic<uint64_t> g_statements{0};
-std::atomic<uint64_t> g_dropped{0};
 
 uint32_t SlotFor(uint32_t component) {
   const uint32_t h = component * 2654435761u;
@@ -84,8 +82,8 @@ bool IsConstructed(const uint32_t* words) {
   }
   return words[kAppearanceFlags] == kAppearanceDrawable;
 }
-
 }  // namespace
+
 
 /// Fills `out` with what the guest last stated for one renderable; false when it never stated
 /// anything but the constructor's values, which the caller then assumes.
@@ -104,33 +102,22 @@ bool StatedAppearanceFor(uint32_t component, uint32_t* out) {
   }
   return true;
 }
-
-/// Statements seen since boot, and those the table had no room for. 0 statements means the
-/// hook is not loaded.
-uint64_t StatedAppearanceStatements() { return g_statements.load(std::memory_order_relaxed); }
-uint64_t StatedAppearanceDropped() { return g_dropped.load(std::memory_order_relaxed); }
-
 }  // namespace refii::vfs
 
 // --- The payload's side. C only; see core/payload_bridge.h. --------------------------------
 
 extern "C" {
-
 void refii_bridge_note_appearance(uint32_t component, const uint32_t* words) {
   if (component <= refii::vfs::kGone) {
     return;
   }
 
-  refii::vfs::g_statements.fetch_add(1u, std::memory_order_relaxed);
-
   // Back to the constructor's look with no entry standing is the common case of a setter
   // called with the value it already had elsewhere; nothing to hold.
   refii::vfs::StatedAppearance* slot =
+
       refii::vfs::IsConstructed(words) ? refii::vfs::Find(component) : refii::vfs::Claim(component);
   if (slot == nullptr) {
-    if (!refii::vfs::IsConstructed(words)) {
-      refii::vfs::g_dropped.fetch_add(1u, std::memory_order_relaxed);
-    }
     return;
   }
 
@@ -144,5 +131,4 @@ void refii_bridge_forget_appearance(uint32_t component) {
     slot->component.store(refii::vfs::kGone, std::memory_order_release);
   }
 }
-
 }  // extern "C"

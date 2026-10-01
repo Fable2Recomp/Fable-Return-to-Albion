@@ -22,7 +22,6 @@ struct RefiiHostStreamRecord {
   std::filesystem::path path;
   uint64_t size = 0;
   uint64_t position = 0;
-  uint32_t open_mode = 1;
   uint32_t materialized_buffer_guest = 0;
   uint32_t materialized_bytes = 0;
   uint64_t read_calls = 0;
@@ -67,8 +66,6 @@ struct RefiiReadRequestRecord {
   std::chrono::steady_clock::time_point queued_at{};
   std::chrono::steady_clock::time_point started_at{};
   std::chrono::steady_clock::time_point completed_at{};
-  std::shared_future<void> async_read;
   std::mutex mutex;
 };
-
 }  // namespace refii::vfs

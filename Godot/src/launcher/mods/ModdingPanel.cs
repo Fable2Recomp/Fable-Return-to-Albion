@@ -117,22 +117,6 @@ public partial class ModdingPanel : VBoxContainer
 		RefreshState();
 	}
 
-	private static string ResolveModsRoot()
-	{
-		var values = RuntimeConfig.ReadValues(Installer.GetRuntimeConfigPath());
-		if (values.TryGetValue("vfs_mods_root", out string? configured) && configured.Length != 0)
-		{
-			if (Path.IsPathRooted(configured))
-			{
-				return Path.GetFullPath(configured);
-			}
-
-			return Path.GetFullPath(Path.Combine(Installer.GetInstallBasePath(), configured));
-		}
-
-		return ModWorkspace.GetDefaultModsRoot(Installer.GetInstallBasePath());
-	}
-
 	/// <summary>
 	/// Rereads the folder and folds the enabled mods' manifests.
 	///
@@ -143,7 +127,7 @@ public partial class ModdingPanel : VBoxContainer
 	/// </summary>
 	private void RefreshState()
 	{
-		_modsRoot = ResolveModsRoot();
+		_modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
 		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
 		_order = ModLoadOrder.Read(_modsRoot);
 		_fileCounts.Clear();

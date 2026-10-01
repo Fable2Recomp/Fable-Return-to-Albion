@@ -45,10 +45,6 @@ bool TryHandleRefiiHostDiskStreamNoopSuccess(PPCContext& ctx,
                                              uint8_t* base,
                                              uint32_t stream_guest,
                                              std::string_view api);
-bool TryHandleRefiiStreamReaderFlush(PPCContext& ctx,
-                                     uint8_t* base,
-                                     uint32_t reader_guest,
-                                     std::string_view api);
 bool TryHandleRefiiStreamReaderRefill(PPCContext& ctx,
                                       uint8_t* base,
                                       uint32_t reader_guest,
@@ -103,19 +99,5 @@ bool TryHandleRefiiReadRequestSmartPtrAssign(PPCContext& ctx,
                                              uint8_t* base,
                                              uint32_t target_guest,
                                              uint32_t source_guest);
-bool TryHandleRefiiHostCompositeStreamRead(PPCContext& ctx,
-                                           uint8_t* base,
-                                           uint32_t out_guest,
-                                           uint32_t stream_guest,
-                                           uint32_t buffer_guest,
-                                           uint64_t offset,
-                                           uint32_t requested_bytes);
-bool TryHandleRefiiHostCompositeStreamDirectRead(PPCContext& ctx,
-                                                 uint8_t* base,
-                                                 uint32_t stream_guest,
-                                                 uint32_t buffer_guest,
-                                                 uint64_t offset,
-                                                 uint32_t requested_bytes);
-
 }  // namespace detail
 }  // namespace refii::vfs

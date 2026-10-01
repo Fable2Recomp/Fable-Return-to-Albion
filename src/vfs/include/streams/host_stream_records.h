@@ -15,15 +15,6 @@ struct PPCContext;
 
 namespace refii::vfs {
 inline namespace detail {
-
-std::mutex& RenderSharedStateMutex();
-void LogLooseAssetCallSite(std::string_view api,
-                           const PPCContext& ctx,
-                           uint32_t out_guest,
-                           uint32_t manager_guest,
-                           uint32_t name_guest,
-                           uint32_t mode,
-                           std::string_view asset_path);
 std::shared_ptr<RefiiHostStreamRecord> FindRefiiHostStreamRecord(
     uint32_t stream_guest);
 std::unordered_map<uint32_t, std::shared_ptr<RefiiHostStreamRecord>>&
@@ -94,13 +85,5 @@ void LogLooseStreamWrapperResult(std::string_view api,
                                  uint32_t out_guest,
                                  uint32_t source_stream_guest);
 bool IsNativeGetCachedShapeRepairCandidate(std::string_view asset_path);
-void LogLooseBufferedInit(uint8_t* base,
-                          const PPCContext& before_ctx,
-                          const PPCContext& after_ctx,
-                          uint32_t buffered_guest,
-                          uint32_t source_stream_guest,
-                          uint32_t arg5,
-                          uint32_t arg6);
-
 }  // namespace detail
 }  // namespace refii::vfs

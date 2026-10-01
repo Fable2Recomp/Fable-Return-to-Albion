@@ -96,7 +96,6 @@ uint32_t CreateRefiiHostDiskStream(PPCContext& ctx,
 
   auto record = std::make_shared<RefiiHostStreamRecord>();
   record->path = loose_path;
-  record->open_mode = open_mode;
   record->file.open(loose_path, std::ios::binary | std::ios::ate);
   if (!record->file) {
     REXLOG_WARN("Refii loose asset open failed: host file could not be opened "
@@ -171,7 +170,6 @@ uint32_t CreateRefiiHostMemoryStream(PPCContext& ctx,
   }
 
   record->host_served = true;
-  record->open_mode = open_mode;
   record->size = record->bytes.size();
 
   const uint32_t stream_guest =
@@ -215,14 +213,6 @@ uint32_t ReadRefiiHostStreamToDestination(PPCContext& ctx,
                                           uint32_t destination_guest,
                                           uint64_t offset,
                                           uint32_t requested_bytes);
-
-uint32_t CreateCompletedReadRequest(PPCContext& ctx,
-                                    uint8_t* base,
-                                    uint32_t stream_guest,
-                                    uint32_t buffer_guest,
-                                    uint64_t offset,
-                                    uint32_t requested_bytes,
-                                    uint32_t bytes_read);
 
 uint32_t CreateDeferredReadRequest(PPCContext& ctx,
                                    uint8_t* base,
@@ -461,92 +451,6 @@ bool TryOpenLooseAssetResourceWrapper(
   return true;
 }
 
-uint32_t CreateCompletedReadRequest(PPCContext& ctx,
-                                    uint8_t* base,
-                                    uint32_t stream_guest,
-                                    uint32_t buffer_guest,
-                                    uint64_t offset,
-                                    uint32_t requested_bytes,
-                                    uint32_t bytes_read) {
-  if (base == nullptr || stream_guest == 0 || bytes_read != requested_bytes) {
-    return 0;
-  }
-
-  const uint32_t request_guest =
-      CallLhMalloc(ctx, base, kNativeReadRequestSize);
-  if (request_guest == 0) {
-    return 0;
-  }
-
-  auto* request =
-      rex::memory::GuestPtr<uint8_t*>(base, request_guest);
-  std::memset(request, 0, kNativeReadRequestSize);
-
-  StoreGuestU32(base, request_guest + 0, kNativeReadRequestVTable);
-  StoreGuestU32(base, request_guest + 4, kNativeReadRequestInterfaceVTable);
-  StoreGuestU32(base, request_guest + 8, 1);
-
-  // Mirror the native async read request enough for consumers that wait on the
-  // request object and release it after the synchronous host copy completes.
-  StoreGuestU32(base, request_guest + 12, stream_guest);
-  AddRefGuestObject(ctx, base, stream_guest);
-  StoreGuestU32(base, request_guest + 20, 1);
-  // The read-request waiter returns field +24; decompression treats value 1 as
-  // a completed successful read.
-  // Fields the guest's accessors read, measured from the request: +124/+128 are what
-  // `GetDataBuffer` (0x82B5C0C0) hands back as { pointer, length }; +200 is what slot +24
-  // (0x82B5C0D8) returns as the byte count. +28 is the status — a completed read is not
-  // IO_PENDING (997).
-  StoreGuestU32(base, request_guest + 24, 1);
-  StoreGuestU32(base, request_guest + 28, 0);
-  StoreGuestU32(base, request_guest + 124, buffer_guest);
-  StoreGuestU32(base, request_guest + 128, bytes_read);
-  StoreGuestU32(base, request_guest + 168, 5);
-  StoreGuestU32(base, request_guest + 172, 0);
-  StoreGuestU32(base, request_guest + 176, bytes_read);
-  StoreGuestU64(base, request_guest + 192, requested_bytes);
-  StoreGuestU32(base, request_guest + 200, bytes_read);
-  StoreGuestU32(base, request_guest + 332,
-                CreateReadRequestEvent(ctx, base));
-  StoreGuestU32(base, request_guest + 340, 0);
-
-  auto read_record = std::make_shared<RefiiReadRequestRecord>();
-  read_record->request_guest = request_guest;
-  read_record->stream_guest = stream_guest;
-  read_record->buffer_guest = buffer_guest;
-  read_record->offset = offset;
-  read_record->requested_bytes = requested_bytes;
-  read_record->bytes_read = bytes_read;
-  read_record->completed = true;
-  read_record->attempted = true;
-  read_record->completion_counted = true;
-  read_record->queued_at = std::chrono::steady_clock::now();
-  read_record->started_at = read_record->queued_at;
-  read_record->completed_at = read_record->queued_at;
-  StoreRefiiReadRequestRecord(request_guest, std::move(read_record));
-  SignalReadRequestEvent(ctx, base, request_guest);
-  LooseStats().read_requests_completed.fetch_add(1, std::memory_order_relaxed);
-  LooseStats().refii_owned_reads_completed.fetch_add(
-      1, std::memory_order_relaxed);
-
-  if (LooseAssetOverrideTracingEnabled() ||
-      ShouldLogLooseStreamOperation("RefiiHostReadRequest", stream_guest, 16)) {
-    REXLOG_INFO("Refii host loose stream completed read request "
-                "request=0x{:08X} stream=0x{:08X} offset={} requested={} "
-                "read={} active_requests={} words={} {}",
-                request_guest,
-                stream_guest,
-                offset,
-                requested_bytes,
-                bytes_read,
-                RefiiReadRequestRecordCount(),
-                FormatGuestWords(base, request_guest, 16),
-                FormatGuestObjectVTable(base, request_guest, 8));
-  }
-
-  return request_guest;
-}
-
 uint32_t CreateDeferredReadRequest(PPCContext& ctx,
                                    uint8_t* base,
                                    uint32_t stream_guest,
@@ -773,24 +677,6 @@ bool TryOpenLooseAsset(PPCContext& ctx,
   return true;
 }
 
-bool TryHandleRefiiHostDiskStreamGetSize(PPCContext& ctx,
-                                         uint8_t* base,
-                                         uint32_t stream_guest,
-                                         uint32_t out_guest) {
-  if (!IsRefiiHostDiskStream(base, stream_guest)) {
-    return false;
-  }
-
-  const auto record = FindRefiiHostStreamRecord(stream_guest);
-  const uint64_t size = record != nullptr ? record->size
-                                          : LoadGuestU64(base, stream_guest + 16);
-  if (out_guest != 0) {
-    StoreGuestU64(base, out_guest, size);
-  }
-  ctx.r3.u32 = out_guest;
-  return true;
-}
-
 uint32_t ReadRefiiHostStreamBytes(uint8_t* base,
                                   uint32_t stream_guest,
                                   uint32_t buffer_guest,
@@ -1014,25 +900,10 @@ void CompleteRefiiReadRequest(PPCContext& ctx,
       }
     }
 
-    const auto zero = std::chrono::steady_clock::time_point{};
-    const int64_t queue_wait_ms =
-        queued_at == zero || started_at == zero
-            ? -1
-            : std::chrono::duration_cast<std::chrono::milliseconds>(
-                  started_at - queued_at)
-                  .count();
-    const int64_t read_ms =
-        started_at == zero || completed_at == zero
-            ? -1
-            : std::chrono::duration_cast<std::chrono::milliseconds>(
-                  completed_at - started_at)
-                  .count();
     RecordRefiiStartupVideoReadComplete(base,
                                         record->stream_guest,
                                         record->requested_bytes,
-                                        bytes_read,
-                                        queue_wait_ms,
-                                        read_ms);
+                                        bytes_read);
   }
 
   if (count_completion) {
@@ -1102,7 +973,5 @@ void CompleteRefiiReadRequest(PPCContext& ctx,
                 FormatBikPpcStreamSummary(base, record->stream_guest));
   }
 }
-
-
 }  // namespace detail
 }  // namespace refii::vfs

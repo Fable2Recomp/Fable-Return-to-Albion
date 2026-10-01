@@ -76,22 +76,11 @@ uint32_t StatedHighlightFor(uint32_t component) {
 
   return 0u;
 }
-
-/// Colour statements and targeting changes seen since boot; 0 means the hook is not loaded.
-uint32_t StatedHighlightColourCalls() {
-  return static_cast<uint32_t>(g_colour_calls.load(std::memory_order_relaxed));
-}
-
-uint32_t StatedHighlightTargetCalls() {
-  return static_cast<uint32_t>(g_target_calls.load(std::memory_order_relaxed));
-}
-
 }  // namespace refii::vfs
 
 // --- The payload's side. C only; see core/payload_bridge.h. --------------------------------
 
 extern "C" {
-
 void refii_bridge_note_highlight_colour(uint32_t component, uint32_t rgba) {
   refii::vfs::g_colour_calls.fetch_add(1u, std::memory_order_relaxed);
 
@@ -103,8 +92,8 @@ void refii_bridge_note_highlight_colour(uint32_t component, uint32_t rgba) {
   }
 }
 
+
 void refii_bridge_note_highlight_target(void) {
   refii::vfs::g_target_calls.fetch_add(1u, std::memory_order_relaxed);
 }
-
 }  // extern "C"

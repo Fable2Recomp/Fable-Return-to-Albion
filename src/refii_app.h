@@ -29,15 +29,6 @@
 #include "host_audio.h"
 #include "host_input.h"
 
-#if REFII_HAS_RENDERER_RUNTIME
-#include "renderdoc_debugger.h"
-#include "renderer_runtime.h"
-#include "runtime/cvars.h"
-#include "runtime/plume/general/plume_backend.h"
-#include "runtime/plume/general/plume_graphics_system.h"
-#include "runtime/plume/general/plume_imgui_overlay.h"
-#endif
-
 #include <algorithm>
 #include <span>
 #include <cctype>
@@ -48,7 +39,6 @@
 #include <vector>
 
 namespace {
-
 inline bool RefiiUsePackagedLinuxPaths() {
 #if defined(__linux__)
   const char *appImagePath = std::getenv("APPIMAGE");
@@ -58,6 +48,7 @@ inline bool RefiiUsePackagedLinuxPaths() {
 
   const char *appDirPath = std::getenv("APPDIR");
   if (appDirPath != nullptr && appDirPath[0] != '\0') {
+
     return true;
   }
 
@@ -287,78 +278,6 @@ RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig &paths) {
   RefiiWriteDefaultRexNetConfig(runtime_metadata / "rexnet.toml");
 }
 
-inline std::vector<char> RefiiLoadWindowIconBytes() {
-  const std::filesystem::path icon_path =
-      rex::filesystem::GetExecutableFolder() / "assets" / "launcher" /
-      "assets" / "icon.png";
-  std::ifstream stream(icon_path, std::ios::binary);
-  if (!stream.is_open()) {
-    return {};
-  }
-
-  stream.seekg(0, std::ios::end);
-  const std::streamoff size = stream.tellg();
-  if (size <= 0) {
-    return {};
-  }
-  stream.seekg(0, std::ios::beg);
-
-  std::vector<char> bytes(static_cast<std::size_t>(size));
-  if (!stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
-    return {};
-  }
-  return bytes;
-}
-
-inline std::string RefiiGetLowerRuntimeCVar(std::string_view name) {
-  std::string value = rex::cvar::GetFlagByName(name);
-  std::transform(
-      value.begin(), value.end(), value.begin(),
-      [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-  return value;
-}
-
-/// True when the guest is embedded in a host that owns presentation (Godot). Set by the
-/// host bridge before the guest boots; see rex_app.cpp's SetupPresentation.
-inline bool RefiiIsEmbeddedHeadless() {
-  const char* embedded = std::getenv("REX_EMBED_HEADLESS");
-  return embedded != nullptr && embedded[0] == '1';
-}
-
-inline bool RefiiShouldSuppressReXGlueRenderer() {
-  // Embedded, there is no guest GPU at all — the host presents. This has to be checked
-  // FIRST and cannot go through the cvar: `renderer_backend` is defined in
-  // src/renderer/src/rendering/core/cvars.cpp, so with the renderer not built the cvar
-  // is never registered and GetFlagByName returns EMPTY — never "plume", no matter what
-  // is passed on the command line or in the environment.
-  //
-  // Empty then falls through to the netplay SDK's default of gpu_plugin="xenos", which
-  // tries to dlopen librexgpu-xenosd.so from beside the executable. Embedded, that is
-  // the HOST's directory, so it fails there and takes the boot down.
-  if (RefiiIsEmbeddedHeadless()) {
-    return true;
-  }
-
-  const std::string backend = RefiiGetLowerRuntimeCVar("renderer_backend");
-  return backend == "plume";
-}
-
-inline void RefiiLogRuntimeBackendSplit() {
-  static bool logged = false;
-  if (logged) {
-    return;
-  }
-  logged = true;
-
-  // THE VFS IS NO LONGER A SPLIT. Godot owns the whole file system, so there is one
-  // implementation and nothing to report about which was chosen — only the renderer still has
-  // a backend worth naming.
-  const std::string renderer_backend =
-      RefiiGetLowerRuntimeCVar("renderer_backend");
-  REXLOG_INFO("Refii runtime backend: renderer_backend={} plume_renderer={} refii_vfs=true",
-              renderer_backend, renderer_backend == "plume" ? "true" : "false");
-}
-
 // The title's XDBF resource — the section named by the title id inside the executable
 // module — handed to the achievement seam once, for Godot to parse. The definitions, the
 // strings and the icons are all in it; nothing native reads them any more.
@@ -385,7 +304,6 @@ inline void RefiiPublishTitleXdbf(rex::system::KernelState *kernel_state) {
   refii::achievement::SetTitleXdbf(
       std::span<const uint8_t>(bytes, static_cast<size_t>(resource_size)));
 }
-
 } // namespace
 
 class RefiiApp : public rex::ReXApp {
@@ -399,8 +317,6 @@ public:
   }
 
   void OnPreSetup(rex::RuntimeConfig &config) override {
-    RefiiLogRuntimeBackendSplit();
-
     // Embedded, the HOST owns input.
     //
     // The SDK's default input system builds an SDL driver whose subsystems are
@@ -413,146 +329,69 @@ public:
     //
     // The NOP driver stays behind ours as the fallback the SDK always installs, so a
     // guest asking about pad 4 gets the same answer it always did.
-    if (RefiiIsEmbeddedHeadless()) {
-      config.input_factory =
-          [](bool tool_mode) -> std::unique_ptr<rex::system::IInputSystem> {
-        // X_STATUS_SUCCESS is a macro that casts to an unqualified X_STATUS, so it can
-        // only be used where that name is visible.
-        using namespace rex;
+    config.input_factory =
+        [](bool tool_mode) -> std::unique_ptr<rex::system::IInputSystem> {
+      // X_STATUS_SUCCESS is a macro that casts to an unqualified X_STATUS, so it can
+      // only be used where that name is visible.
+      using namespace rex;
 
-        auto input = std::make_unique<rex::input::InputSystem>(nullptr);
-        if (!tool_mode) {
-          auto host_driver =
-              std::make_unique<refii::host::HostInputDriver>(nullptr, 0);
-          if (host_driver->Setup() == X_STATUS_SUCCESS) {
-            input->AddDriver(std::move(host_driver));
-          }
+      auto input = std::make_unique<rex::input::InputSystem>(nullptr);
+      if (!tool_mode) {
+        auto host_driver =
+            std::make_unique<refii::host::HostInputDriver>(nullptr, 0);
+        if (host_driver->Setup() == X_STATUS_SUCCESS) {
+          input->AddDriver(std::move(host_driver));
         }
-
-        input->AddDriver(
-            std::make_unique<rex::input::nop::NopInputDriver>(nullptr, 1));
-        // THE POLICY IS NOT OPTIONAL. The v0.10 InputSystem answers every query
-        // DEVICE_NOT_CONNECTED until an assignment maps device ordinals to guest users;
-        // the SDK's own factory ends the same way. SlotAssignment: ordinal N feeds
-        // user N, which is the contract HostInputDriver enumerates for.
-        input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
-        return input;
-      };
-      REXLOG_INFO("Refii: embedded — host-fed controller input installed");
-
-      // Embedded, the HOST owns audio too — and for a reason beyond tidiness.
-      //
-      // ReXApp::SetupPresentation installs the SDL audio system BEFORE the headless
-      // branch, so an embedded guest opened a real host audio device and played to it on
-      // its own clock while Godot drew on another. That is not a latency problem to tune
-      // out; it is two clocks.
-      //
-      // The guest's audio clock is the output device's CONSUMPTION rate: one semaphore
-      // credit per frame consumed wakes the audio worker, which re-enters the guest's
-      // render-driver callback, which mixes the next frame. Handing that credit to Godot
-      // makes Godot the clock, which is the whole point — and is also why the device
-      // cannot simply be closed to silence it: with nothing consuming, the guest's audio
-      // thread stops being pumped and NLHAudio wedges at its ten-packet cap.
-      config.audio_factory =
-          [](rex::runtime::FunctionDispatcher* function_dispatcher)
-          -> std::unique_ptr<rex::system::IAudioSystem> {
-        return refii::host::HostAudioSystem::Create(function_dispatcher);
-      };
-      REXLOG_INFO("Refii: embedded — host-fed audio output installed");
-    }
-#if REFII_HAS_RENDERER_RUNTIME
-    // The backend setting is final here (TOML + launcher env both applied);
-    // freeze the cache so per-hook backend queries stop string-parsing the
-    // cvar (measured on the xenia per-D3D-call path).
-    refii::renderer::FreezeRendererBackendCache();
-
-    // Native/xenia backend arms RenderDoc HERE, in pre-setup: it renders
-    // through rexglue's own Vulkan instance (Plume's arming never touches
-    // it), and refii's per-hook path is dormant in native mode
-    // (RendererHooksEnabled() is false without the heavy observe cvar), so
-    // the OnRendererGuestHookEnter arming never runs. Pre-setup is before
-    // the guest boots — before rexglue's vkCreateInstance — so the layer
-    // env lands in time and F12/captures work under backend=xenia. Plume
-    // arms itself later in its own backend init; only arm here for native.
-    if (RefiiGetLowerRuntimeCVar("renderer_backend") != "plume" &&
-        refii::renderer::RenderDocNativeArmEnabled()) {
-      refii::renderer::PrepareRenderDocVulkanLayer();
-      refii::renderer::InitializeRenderDocDebugger();
-      REXLOG_INFO(
-          "Refii RenderDoc armed for the native/xenia backend in pre-setup; "
-          "use F12 to capture (the capture_request file needs a per-frame "
-          "poll that the native hook path does not run)");
-    } else if (RefiiGetLowerRuntimeCVar("renderer_backend") != "plume" &&
-               refii::renderer::RenderDocDebuggerEnabled()) {
-      // renderer_renderdoc_native_arm defaults ON; this branch only fires
-      // when it was explicitly disabled to isolate layer interactions.
-      REXLOG_INFO(
-          "Refii RenderDoc native arming SKIPPED "
-          "(renderer_renderdoc_native_arm is off)");
-    }
-#endif  // REFII_HAS_RENDERER_RUNTIME
-
-    if (!RefiiShouldSuppressReXGlueRenderer()) {
-      // The SDK ships its Xenia-derived GPU emulation as an opt-in plugin
-      // (empty gpu_plugin cvar = no graphics system = blank window).
-      // backend=xenia means the user wants exactly that system, so default it.
-      if (config.gpu_plugin.empty()) {
-        config.gpu_plugin = "xenos";
-        REXLOG_INFO(
-            "Refii renderer backend is {}; defaulting the SDK GPU plugin to "
-            "'xenos'",
-            RefiiGetLowerRuntimeCVar("renderer_backend"));
       }
-      return;
-    }
 
-#if REFII_HAS_RENDERER_RUNTIME
-    config.graphics = std::make_unique<refii::renderer::PlumeGraphicsSystem>();
-    REXLOG_INFO(
-        "Refii renderer backend is {}; installing the Plume guest GPU frontend "
-        "shim without a ReXGlue renderer presenter",
-        RefiiGetLowerRuntimeCVar("renderer_backend"));
-#else
+      input->AddDriver(
+          std::make_unique<rex::input::nop::NopInputDriver>(nullptr, 1));
+      // THE POLICY IS NOT OPTIONAL. The v0.10 InputSystem answers every query
+      // DEVICE_NOT_CONNECTED until an assignment maps device ordinals to guest users;
+      // the SDK's own factory ends the same way. SlotAssignment: ordinal N feeds
+      // user N, which is the contract HostInputDriver enumerates for.
+      input->SetDeviceAssignment(std::make_unique<rex::input::SlotAssignment>());
+      return input;
+    };
+    REXLOG_INFO("Refii: embedded — host-fed controller input installed");
+
+    // Embedded, the HOST owns audio too — and for a reason beyond tidiness.
+    //
+    // ReXApp::SetupPresentation installs the SDL audio system BEFORE the headless
+    // branch, so an embedded guest opened a real host audio device and played to it on
+    // its own clock while Godot drew on another. That is not a latency problem to tune
+    // out; it is two clocks.
+    //
+    // The guest's audio clock is the output device's CONSUMPTION rate: one semaphore
+    // credit per frame consumed wakes the audio worker, which re-enters the guest's
+    // render-driver callback, which mixes the next frame. Handing that credit to Godot
+    // makes Godot the clock, which is the whole point — and is also why the device
+    // cannot simply be closed to silence it: with nothing consuming, the guest's audio
+    // thread stops being pumped and NLHAudio wedges at its ten-packet cap.
+    config.audio_factory =
+        [](rex::runtime::FunctionDispatcher* function_dispatcher)
+        -> std::unique_ptr<rex::system::IAudioSystem> {
+      return refii::host::HostAudioSystem::Create(function_dispatcher);
+    };
+    REXLOG_INFO("Refii: embedded — host-fed audio output installed");
+
+    // No guest GPU at all: Godot draws. Left to the SDK, an empty graphics system defaults
+    // gpu_plugin to "xenos" and dlopens librexgpu-xenosd.so from beside the executable, which
+    // embedded is Godot's directory, and the boot fails.
     config.graphics.reset();
-    REXLOG_INFO(
-        "Refii renderer backend is {}; suppressing the ReXGlue graphics "
-        "system so renderer hooks can own output",
-        RefiiGetLowerRuntimeCVar("renderer_backend"));
-#endif
+    REXLOG_INFO("Refii: embedded — no guest graphics system; the host draws");
   }
 
   bool OnNeedsImGuiDrawerWithoutPresenter() const override {
-    return RefiiShouldSuppressReXGlueRenderer();
+    return true;
   }
 
-  void OnPostSetup() override {
-    if (window() != nullptr) {
-      const std::vector<char> icon_bytes = RefiiLoadWindowIconBytes();
-      if (!icon_bytes.empty()) {
-        window()->SetIcon(icon_bytes.data(), icon_bytes.size());
-      }
-    }
-#if REFII_HAS_RENDERER_RUNTIME
-    if (RefiiShouldSuppressReXGlueRenderer()) {
-      refii::renderer::AttachPlumeImGuiToReXGlue(window(), imgui_drawer());
-    }
-#endif
-  }
 
   void OnPostLaunchModule(rex::system::XThread *thread) override {
     (void)thread;
     if (runtime() != nullptr) {
       RefiiPublishTitleXdbf(runtime()->kernel_state());
     }
-  }
-
-  void OnShutdown() override {
-#if REFII_HAS_RENDERER_RUNTIME
-    refii::renderer::ShutdownRendererPresentPump();
-    refii::renderer::DetachPlumeImGuiFromReXGlue();
-    refii::renderer::ShutdownPlumeImGuiOverlay();
-    refii::renderer::ShutdownPlumeBackend();
-#endif
   }
 
   // Set game and update paths relative to game_directory.
