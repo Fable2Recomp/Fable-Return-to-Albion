@@ -486,6 +486,32 @@ public partial class Engine_GameAssets : Node
 			entry, ReadAllBytes, FindByFileName, out scenePath, out error);
 	}
 
+	/// <summary>Every discovered level's world and path, once; for tools that walk them all.</summary>
+	public List<(string World, string LevelPath)> LevelPaths()
+	{
+		var paths = new List<(string, string)>();
+		if (Snapshot() is not { } fs)
+		{
+			return paths;
+		}
+
+		_levels ??= Refii.Level.Engine_LevelIndex.Discover(fs);
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (Refii.Level.LevelEntry entry in _levels)
+		{
+			if (seen.Add(entry.World + "/" + entry.LevelPath))
+			{
+				paths.Add((entry.World, entry.LevelPath));
+			}
+		}
+
+		return paths;
+	}
+
+	/// <summary>The level the guest's (world, name) resolves to — the game's own resolution.</summary>
+	public bool TryResolve(string world, string name, out Refii.Level.LevelEntry entry, out string error) =>
+		TryResolveLevel(world, name, out entry, out error);
+
 	/// <summary>Builds a level and returns the live node; no disk trip (`res://` is read-only when exported).</summary>
 	public Node3D? BuildLevelNode(string world, string name, out string error)
 	{

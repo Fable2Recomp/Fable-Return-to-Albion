@@ -97,7 +97,8 @@ public static class Engine_EhfAlbedo
             }
         }
 
-        if (usable < Math.Max(4, tiles.Count / 4))
+        // A quarter of the tiles, and at least one: a 4 m vista is a single page.
+        if (usable < Math.Max(1, tiles.Count / 4))
         {
             error = $"only {usable} of {tiles.Count} tile pages decoded";
             return false;

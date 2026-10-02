@@ -126,7 +126,9 @@ public partial class Engine_BnkTerrainAlbedoLoader : ResourceFormatLoader
             }
         }
 
-        if (verticesX == 0 || verticesZ == 0)
+        // A vista has no .ghf; its .ehf states the same sample counts.
+        if ((verticesX == 0 || verticesZ == 0) &&
+            !Engine_EhfHeights.TryReadSize(ehf, out verticesX, out verticesZ))
         {
             return Variant.CreateFrom((int)Error.FileCorrupt);
         }

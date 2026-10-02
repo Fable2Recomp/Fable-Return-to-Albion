@@ -36,7 +36,11 @@ public static class WaterThemeParam
     public const int DetailMapSpeedY = 27;
     public const int DetailMapScale = 28;
 
-    public const int Count = 29;
+    /// <summary>Theme param 102 `WATER_VISTA_DISABLED`: the vista ocean draws only while this is
+    /// exactly 0 (`sub_821D5068`, theme+1648).</summary>
+    public const int DisableVistaWater = 29;
+
+    public const int Count = 30;
 }
 
 public sealed class WaterTheme
@@ -72,6 +76,7 @@ public sealed class WaterTheme
         0.052f, 0.011f, -0.019f, 0.019f,
         0.047f, 0.055f,
         0.0f, 0.0f, 0.0f,
+        0.0f,
     };
 
     public static WaterTheme Default => new();
@@ -113,6 +118,7 @@ public static class Engine_WaterTheme
         (WaterThemeParam.DetailMapSpeedX, 0xB2CE584B),
         (WaterThemeParam.DetailMapSpeedY, 0xB2CE584A),
         (WaterThemeParam.DetailMapScale, 0x0BF8E61E),
+        (WaterThemeParam.DisableVistaWater, 0xE5E4C38B),
     };
 
     public static bool TryExtract(

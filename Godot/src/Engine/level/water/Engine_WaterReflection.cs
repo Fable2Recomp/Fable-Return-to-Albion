@@ -23,6 +23,10 @@ public sealed partial class Engine_WaterReflection : Node
     private sealed class Body
     {
         public MeshInstance3D Surface = null!;
+
+        /// <summary>Surfaces on the same plane, drawn with this body's mirror.</summary>
+        public readonly List<MeshInstance3D> Sharers = new();
+
         public SubViewport Viewport = null!;
         public Camera3D Camera = null!;
         public float Height;
@@ -33,6 +37,11 @@ public sealed partial class Engine_WaterReflection : Node
     }
 
     private readonly List<Body> _bodies = new();
+
+    /// <summary>Metres between two water planes that one mirror serves.</summary>
+    private const float SharePlaneMetres = 0.25f;
+
+    private int _shared;
 
     private Camera3D? _view;
 
@@ -91,6 +100,35 @@ public sealed partial class Engine_WaterReflection : Node
                 (bounds.Position.Y + (bounds.Size.Y * 0.5f));
 
             surface.Layers = WaterLayer;
+
+            // ONE MIRROR PER PLANE. A planar reflection depends only on the plane, so a surface
+            // within SharePlaneMetres of a mirror already made reads that one — the vista ocean
+            // sits 0.1 below the body it extends, and a level's bodies often share a level.
+            Body? same = _bodies.Find(b => System.MathF.Abs(b.Height - height) <= SharePlaneMetres);
+
+            // THE VISTA OCEAN NEVER DRIVES A MIRROR. It spans the horizon, so it is always "in
+            // view" even where the ground hides all of it — a mirror of its own, or a vote to
+            // refresh a shared one, would re-render the scene for water nobody sees. It reads the
+            // mirror of a body on its plane as that body last left it, or none at all.
+            bool ocean = surface.Name == Refii.Level.Engine_LevelScene.VistaOceanNodeName;
+            if (ocean && same is null)
+            {
+                material.SetShaderParameter("planar_reflection", false);
+                continue;
+            }
+
+            if (same is not null)
+            {
+                material.SetShaderParameter("reflection_tex", same.Viewport.GetTexture());
+                material.SetShaderParameter("planar_reflection", true);
+                if (!ocean)
+                {
+                    same.Sharers.Add(surface);
+                }
+
+                ++_shared;
+                continue;
+            }
 
             var viewport = new SubViewport
             {
@@ -158,7 +196,8 @@ public sealed partial class Engine_WaterReflection : Node
 
         if (_bodies.Count != 0)
         {
-            GD.Print($"[water] {_bodies.Count} planar reflection(s) at {TileSize}x{TileSize}");
+            GD.Print($"[water] {_bodies.Count} planar reflection(s) at {TileSize}x{TileSize}, " +
+                $"{_shared} surface(s) sharing one");
         }
     }
 
@@ -200,7 +239,8 @@ public sealed partial class Engine_WaterReflection : Node
         for (int i = 0; i < _bodies.Count; ++i)
         {
             Body body = _bodies[(_turn + i) % _bodies.Count];
-            if (!body.Surface.IsVisibleInTree() || !InView(body.Surface, frustum, eye.Origin))
+            if (!Seen(body.Surface, frustum, eye.Origin) &&
+                !body.Sharers.Exists(sharer => Seen(sharer, frustum, eye.Origin)))
             {
                 continue;
             }
@@ -224,6 +264,9 @@ public sealed partial class Engine_WaterReflection : Node
         chosen.RenderedEye = eye;
         chosen.RenderedFrame = _frame;
     }
+
+    private static bool Seen(MeshInstance3D surface, Godot.Collections.Array<Plane> frustum, Vector3 eye) =>
+        GodotObject.IsInstanceValid(surface) && surface.IsVisibleInTree() && InView(surface, frustum, eye);
 
     private bool Stale(Body body, in Transform3D eye)
     {

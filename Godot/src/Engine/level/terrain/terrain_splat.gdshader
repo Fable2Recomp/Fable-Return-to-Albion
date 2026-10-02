@@ -9,6 +9,13 @@ global uniform int fable_light_debug;
 
 uniform bool has_lightmap = false;
 
+// THE BACKGROUND PATH (Engine_EhfPages): a vista's albedo is its pre-baked colour page at UV,
+// squared as PS 7 does (`r4 = tex*tex`), in place of the splat. The page is an atlas of 16-texel
+// chunk rectangles packed edge to edge (black filler between), so it carries no generated mips:
+// they would average neighbouring rectangles into every chunk seam.
+uniform bool page_mode = false;
+uniform sampler2D page_albedo : filter_linear, repeat_disable;
+
 uniform sampler2DArray lod_array : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray lod_detail_array : filter_linear_mipmap_anisotropic, repeat_enable;
 
@@ -101,9 +108,11 @@ uniform vec4 material_params[32];
 
 varying vec3 v_local;
 varying vec3 v_local_normal;
+varying flat vec4 v_page_rect;
 
 void vertex() {
 	v_local = VERTEX;
+	v_page_rect = CUSTOM0;
 	v_local_normal = NORMAL;
 	fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
@@ -285,7 +294,7 @@ void fragment() {
 	weight_uv = clamp(weight_uv, edge_uv, vec2(1.0) - edge_uv);
 
 	for (int mat = 0; mat < 32; mat++) {
-		if (mat >= int(chunk_grid_size.z)) {
+		if (page_mode || mat >= int(chunk_grid_size.z)) {
 			break;
 		}
 
@@ -305,7 +314,16 @@ void fragment() {
 		weight_sum += w;
 	}
 
-	if (weight_sum > 0.001) {
+	if (page_mode) {
+		// Clamped inside this chunk's own atlas rectangle (CUSTOM0 = u0, v0, u1, v1), half a
+		// texel in: bilinear at a rectangle's edge otherwise mixes in its neighbour.
+		vec2 half_texel = 0.5 / vec2(textureSize(page_albedo, 0));
+		vec2 page_uv = clamp(UV, v_page_rect.xy + half_texel, max(v_page_rect.zw - half_texel, v_page_rect.xy + half_texel));
+		vec3 page = texture(page_albedo, page_uv).rgb;
+		final = page * page;
+		mapped_normal = vec3(0.0, 0.0, 1.0);
+		ao = 1.0;
+	} else if (weight_sum > 0.001) {
 		final /= weight_sum;
 		mapped_normal /= weight_sum;
 		ao /= weight_sum;

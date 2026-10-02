@@ -99,6 +99,10 @@ public sealed class EngineLevelFile
     /// <summary>The level's heightfields, in file order, each with its lightmap id.</summary>
     public List<EngineLevelHeightfield> Heightfields { get; } = new();
 
+    /// <summary>Type-5 records: one .water per record, loaded by `sub_82AB9818` (0x82abb374).</summary>
+    public List<string> WaterPaths { get; } = new();
+
+    /// <summary>Type-32 records: one .mist per record, loaded by `sub_82AB99F8` (0x82abb3a0).</summary>
     public List<string> MistPaths { get; } = new();
 
     public int Type21Blocks { get; set; }
@@ -217,6 +221,10 @@ public static class Engine_EngineLevelFile
                             Path = assetPath,
                             LightmapKey = lightmapKey,
                         });
+                    }
+                    else if (type == 5 && assetPath.Length != 0)
+                    {
+                        file.WaterPaths.Add(assetPath);
                     }
                     else if (type == 32 && assetPath.Length != 0)
                     {

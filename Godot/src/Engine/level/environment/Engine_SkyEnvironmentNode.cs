@@ -533,6 +533,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                     Engine_WaterMaterial.Apply(waterMaterial, waterTheme);
                 }
             }
+
+            Engine_LevelScene.ApplyVistaOceanGate(water, waterTheme);
         }
 
         _msWater = SinceMs(ref mark);

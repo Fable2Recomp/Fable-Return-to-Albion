@@ -2500,11 +2500,21 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   // refills every frame from `g_Menu:GetHighlightedMenuItemData()`. So the guest equips whatever
   // ITS cursor is on, and pushing an identity at it equips the right thing only while the two
   // cursors agree. Naming the record removes that dependency entirely.
+  //
+  // `use` goes through the same switch, because that is the screen's own call for it: event 3
+  // runs `sub_826C9AB8(slots, screen+396, 1)` at 0x826D1BEC for every category. Categories
+  // 2..4/0x10/0x18/0x1A and 5/6 reach `sub_826CA170`, which uses the item (`sub_823E0FF8`,
+  // 0x826ca20c) and then, when its InventoryItemComponent states `ExitPauseMenuOnUse`
+  // (0x826ca250), leaves the pause menu itself: `sub_8236ED98(*(0x83496B08 + 28), 1)` at
+  // 0x826ca278. `sub_823E0FF8` alone uses the item without that close; any confirmation is the
+  // item's own use script (`OnCarriedActionUse*` :Update()).
   const uint32_t activate = 0x826C9AB8u;
+  const bool joiner = IsCoopJoiner(base);
+  const bool switched = op == "equip" || (op == "use" && !joiner);
   PPCFunc* find = FindGuestFunction(0x824F1C90u);
   PPCFunc* release = FindGuestFunction(0x82764DC0u);
   PPCFunc* act = FindGuestFunction(
-      op == "gift" ? 0x823F2718u : (op == "equip" ? activate : 0x823E0FF8u));
+      op == "gift" ? 0x823F2718u : (switched ? activate : 0x823E0FF8u));
   if (find == nullptr || release == nullptr || act == nullptr) {
     REXLOG_INFO("Refii guest-tick pump: Inventory:{} — the handle pair is not callable here",
                 body);
@@ -2537,7 +2547,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
 
   if (op == "outfit") {
     DressOutfit(ctx, base, saved, frame, handle, hero, static_cast<uint32_t>(hash));
-  } else if (op == "equip" && IsCoopJoiner(base)) {
+  } else if (op == "equip" && joiner) {
     // A JOINER EQUIPS PLAYER TWO DIRECTLY. The pending-record slot at `GUI+52` (record A) is
     // applied at pause exit by `sub_8236ED98` to the entity at EM+104 — player ONE — on every
     // side (0x8236ee98..0x8236eeb0); only `GUI+80` (record B) reaches EM+112, and nothing the
@@ -2553,7 +2563,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     REXLOG_INFO("Refii guest-tick pump: Inventory:equip — joiner {} record 0x{:08X} on its hero "
                 "0x{:08X}:{}", drawn ? "drew" : "could NOT draw", static_cast<uint32_t>(hash),
                 hero, report);
-  } else if (op == "equip") {
+  } else if (switched) {
     const uint32_t root = LoadGuestU32(base, 0x83496B08u);
     const uint32_t slots = root != 0u ? LoadGuestU32(base, root + 52u) : 0u;
 
@@ -2587,6 +2597,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     ctx.r4.u32 = handle;
     ctx.r5.u32 = text;
     act(ctx, base);
+    const bool used = (ctx.r3.u32 & 0xFFu) != 0u;
     ctx = saved;
 
     ctx = saved;
@@ -2594,6 +2605,53 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     ctx.r3.u32 = text;
     sub_82214DD8(ctx, base);
     ctx = saved;
+
+    // A joiner's hero is not the one `sub_826CA170` resolves (`sub_8222C1B8`, the local
+    // player), so the switch is not used here; its tail is, as `sub_826CA170` runs it after a
+    // successful use (0x826ca224..0x826ca278): the item's InventoryItemComponent
+    // (`sub_822A99E8(sub_821B24F8(item + 4), "InventoryItemComponent")`, 0x826ca238
+    // `mr r4, r7` with r7 the literal at 0x820AF11C), its bool
+    // `ExitPauseMenuOnUse` (`sub_82310290`, literal at 0x820D43B4), and on true
+    // `sub_8236ED98(*(0x83496B08 + 28), 1)`.
+    PPCFunc* record = FindGuestFunction(0x821B24F8u);
+    PPCFunc* component = FindGuestFunction(0x822A99E8u);
+    PPCFunc* flag = FindGuestFunction(0x82310290u);
+    PPCFunc* leave = FindGuestFunction(0x8236ED98u);
+    if (used && record != nullptr && component != nullptr && flag != nullptr &&
+        leave != nullptr) {
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = LoadGuestU32(base, handle) + 4u;
+      record(ctx, base);
+      const uint32_t item_record = ctx.r3.u32;
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = item_record;
+      ctx.r4.u32 = 0x820AF11Cu;  // "InventoryItemComponent"
+      component(ctx, base);
+      const uint32_t item_component = ctx.r3.u32;
+      bool exits = false;
+      if (item_component != 0u) {
+        ctx.r1.u32 = frame;
+        ctx.r3.u32 = item_component;
+        ctx.r4.u32 = 0x820D43B4u;  // "ExitPauseMenuOnUse"
+        flag(ctx, base);
+        exits = (ctx.r3.u32 & 0xFFu) != 0u;
+      }
+      ctx = saved;
+
+      const uint32_t root = LoadGuestU32(base, 0x83496B08u);
+      const uint32_t gui = root != 0u ? LoadGuestU32(base, root + 28u) : 0u;
+      if (exits && gui != 0u) {
+        ctx.r1.u32 = frame;
+        ctx.r3.u32 = gui;
+        ctx.r4.u32 = 1u;
+        leave(ctx, base);
+        ctx = saved;
+        REXLOG_INFO("Refii guest-tick pump: Inventory:use — the item states ExitPauseMenuOnUse; "
+                    "left the pause menu (sub_8236ED98)");
+      }
+    }
   }
 
   ctx = saved;

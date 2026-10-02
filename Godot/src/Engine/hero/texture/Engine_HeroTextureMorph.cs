@@ -117,6 +117,15 @@ public static class Engine_HeroTextureMorph
     private static long _compositesBuilt;
 
     /// <summary>
+    /// Serialises <c>Duplicate()</c> of the SHARED model materials. Composites build on
+    /// several workers at once (GameEntities.QueueCompositeBuild), and Godot's
+    /// <c>ShaderMaterial::_get</c>, which <c>Resource::duplicate</c> calls per property, fills a
+    /// lazy remap cache on the source material, so concurrent duplicates race (a null deref in
+    /// <c>ShaderMaterial::_getv</c>).
+    /// </summary>
+    private static readonly object DuplicateGate = new();
+
+    /// <summary>
     /// Replaces, on a private copy of each material, every texture the guest stated a composite
     /// for (<c>sub_825B38B0</c>) — whichever slot holds it — and lays the overlays it stated
     /// for the material's diffuse (<c>sub_8222AAC8</c>, command type 14) over diffuse and normal.
@@ -182,7 +191,14 @@ public static class Engine_HeroTextureMorph
                     continue;
                 }
 
-                own ??= (ShaderMaterial)material.Duplicate();
+                if (own is null)
+                {
+                    lock (DuplicateGate)
+                    {
+                        own = (ShaderMaterial)material.Duplicate();
+                    }
+                }
+
                 own.SetShaderParameter(
                     Refii.Models.Engine_MdlMaterial.TextureParameters[slot], composited);
             }

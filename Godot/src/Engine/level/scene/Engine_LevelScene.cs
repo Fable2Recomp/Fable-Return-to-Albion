@@ -285,62 +285,287 @@ public static class Engine_LevelScene
     /// manifest lists — a region has one per heightfield that carries paint.
     /// </summary>
     private static Refii.Lighting.Engine_PaintedDaySets? LoadPaintedDaySets(
-        LevelEntry level, Func<string, byte[]?> source, IReadOnlyList<byte[]> gdbs)
+        LevelEntry level, StatedWorld stated, Func<string, byte[]?> source, IReadOnlyList<byte[]> gdbs)
     {
-        if (level.HeightfieldPath.Length == 0)
-        {
-            return null;
-        }
-
-        string genvPath = Engine_LevelGdb.SiblingWithExtension(level.HeightfieldPath, ".genv");
-        byte[]? bytes = source(genvPath);
-        if (bytes is null)
-        {
-            return null;
-        }
-
-        if (source(level.HeightfieldPath) is not { } ghfBytes ||
-            !Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out _))
-        {
-            GD.Print($"[painted] {level.Name}: {genvPath} present but the heightfield did not decode; no origin");
-            return null;
-        }
-
-        if (!Refii.Lighting.Engine_PaintedDaySets.TryParse(
-                bytes, heights.OriginX, heights.OriginZ, out Refii.Lighting.Engine_PaintedDaySets.Grid grid, out string error))
-        {
-            GD.Print($"[painted] {level.Name}: {genvPath}: {error}");
-            return null;
-        }
-
         var painted = new Refii.Lighting.Engine_PaintedDaySets();
-        painted.Add(grid);
+        var sets = new Dictionary<uint, int>();
+        foreach (StatedLandscape landscape in stated.Landscapes)
+        {
+            if (landscape.Ghf.Length == 0)
+            {
+                continue;
+            }
+
+            string genvPath = Engine_LevelGdb.SiblingWithExtension(landscape.Ghf, ".genv");
+            if (source(genvPath) is not { } bytes)
+            {
+                continue;
+            }
+
+            if (source(landscape.Ghf) is not { } ghfBytes ||
+                !Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out _))
+            {
+                GD.Print($"[painted] {level.Name}: {genvPath} present but the heightfield did not decode; no origin");
+                continue;
+            }
+
+            if (!Refii.Lighting.Engine_PaintedDaySets.TryParse(
+                    bytes, heights.OriginX, heights.OriginZ, out Refii.Lighting.Engine_PaintedDaySets.Grid grid, out string error))
+            {
+                GD.Print($"[painted] {level.Name}: {genvPath}: {error}");
+                continue;
+            }
+
+            int before = painted.PaintedCells;
+            painted.Add(grid);
+            foreach (uint cell in grid.Cells)
+            {
+                if (cell != Refii.Lighting.Engine_PaintedDaySets.None)
+                {
+                    sets[cell] = sets.TryGetValue(cell, out int n) ? n + 1 : 1;
+                }
+            }
+
+            GD.Print($"[painted] {level.Name}: {genvPath}: {grid.Width}x{grid.Height} cells at {grid.Cell} m from " +
+                $"({grid.OriginX:0.#}, {grid.OriginZ:0.#}), {painted.PaintedCells - before} painted");
+        }
+
         if (painted.PaintedCells == 0)
         {
-            GD.Print($"[painted] {level.Name}: {grid.Width}x{grid.Height} cells, none painted");
             return null;
         }
 
         Engine_LightingTheme.ReadPaintedBlendTimes(gdbs, out painted.BlendInSeconds, out painted.BlendOutSeconds);
-        var sets = new Dictionary<uint, int>();
-        foreach (uint cell in grid.Cells)
-        {
-            if (cell != Refii.Lighting.Engine_PaintedDaySets.None)
-            {
-                sets[cell] = sets.TryGetValue(cell, out int n) ? n + 1 : 1;
-            }
-        }
-
         var parts = new List<string>();
         foreach ((uint hash, int count) in sets)
         {
             parts.Add($"0x{hash:X8}x{count}");
         }
 
-        GD.Print($"[painted] {level.Name}: {grid.Width}x{grid.Height} cells at {grid.Cell} m from " +
-            $"({grid.OriginX:0.#}, {grid.OriginZ:0.#}), {painted.PaintedCells} painted: {string.Join(" ", parts)}; " +
+        GD.Print($"[painted] {level.Name}: {painted.PaintedCells} painted: {string.Join(" ", parts)}; " +
             $"blend in/out {painted.BlendInSeconds:0.#}/{painted.BlendOutSeconds:0.#} s");
         return painted;
+    }
+
+    /// <summary>The scenario's own heightfield: the discovered one when the .list names it, else its first .ghf.</summary>
+    private static string StatedHeightfield(
+        LevelEntry level, ScenarioManifest manifest, Func<string, byte[]?> read, string discovered)
+    {
+        if (manifest.Ghf.Count == 0 ||
+            manifest.Ghf.Exists(line => Engine_LevelManifest.VirtualPath(line).Equals(
+                discovered, StringComparison.OrdinalIgnoreCase)) ||
+            !Engine_LevelManifest.TryResolvePath(manifest.Ghf[0], read, out string stated))
+        {
+            return discovered;
+        }
+
+        GD.Print(
+            $"[level] {level}: manifest states heightfield {stated}" +
+            (discovered.Length != 0 ? $" (discovery had {discovered})" : string.Empty));
+        return stated;
+    }
+
+    /// <summary>
+    /// What a level's stated landscapes and water come to, without building it: per landscape
+    /// whether its grid decodes and what material it takes (and so whether it is drawn); per
+    /// water file how many bodies are entirely under the ground; the ocean's height and how much
+    /// of the mapped ground lies below it. One line per finding.
+    /// </summary>
+    /// <summary>The .ehf of every stated landscape with no stated grid — the vistas.</summary>
+    public static List<string> VistaEhfPaths(LevelEntry level, Func<string, byte[]?> source)
+    {
+        var paths = new List<string>();
+        if (Engine_LevelManifest.TryResolve(level, source, out ScenarioManifest manifest, out _, out _))
+        {
+            string heightfield = StatedHeightfield(level, manifest, source, level.HeightfieldPath);
+            foreach (StatedLandscape landscape in ReadStatedWorld(level, manifest, source, heightfield).Landscapes)
+            {
+                if (landscape.Ghf.Length == 0 && landscape.Ehf.Length != 0)
+                {
+                    paths.Add(landscape.Ehf);
+                }
+            }
+        }
+
+        return paths;
+    }
+
+    public static List<string> Audit(LevelEntry level, Func<string, byte[]?> source)
+    {
+        var lines = new List<string>();
+        Engine_LevelVfsConfig.Apply(level, source);
+        if (!Engine_LevelManifest.TryResolve(level, source, out ScenarioManifest manifest, out _, out string scenario))
+        {
+            lines.Add($"{level}: no scenario .list");
+            return lines;
+        }
+
+        if (level.Scenario.Length == 0)
+        {
+            level.Scenario = scenario;
+        }
+
+        string heightfield = StatedHeightfield(level, manifest, source, level.HeightfieldPath);
+        StatedWorld stated = ReadStatedWorld(level, manifest, source, heightfield);
+        List<(StatedLandscape Landscape, GhfHeights? Grid)> grids = DecodeGrids(stated, source);
+        Engine_LandscapeGround ground = GroundOf(grids);
+
+        // Each landscape's bake, decoded as the binder decodes it, summarised by its mean colour.
+        var bakes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        Engine_LevelGdb.TryRead(level, p => source(p), out string gdbPath);
+        Engine_LevelBakedLighting.TryLoad(gdbPath, p => source(p), out LightmapContainer? lightmaps, out _);
+        string enginePath = Engine_LevelGdb.EngineLevelPath(level, source, gdbPath);
+        if (lightmaps is not null && (source(enginePath) ?? source("data/" + enginePath)) is { } engineBytes)
+        {
+            foreach (EngineLevelHeightfield record in Engine_EngineLevelFile.Parse(engineBytes).Heightfields)
+            {
+                string bake = "no bake";
+                if (Engine_LevelBakedLighting.TryGetTerrainLightmap(lightmaps, record.LightmapKey, out TerrainLightmap lm))
+                {
+                    ImageTexture? texture = Engine_LevelBakedLighting.DecodeTexture(lm.Blob);
+                    if (texture?.GetImage() is { } image)
+                    {
+                        if (image.IsCompressed())
+                        {
+                            image.Decompress();
+                        }
+
+                        double r = 0, g = 0, b = 0;
+                        int n = 0;
+                        for (int y = 0; y < image.GetHeight(); y += 2)
+                        {
+                            for (int x = 0; x < image.GetWidth(); x += 2)
+                            {
+                                Color c = image.GetPixel(x, y);
+                                r += c.R; g += c.G; b += c.B; n++;
+                            }
+                        }
+
+                        bake = $"bake {image.GetWidth()}x{image.GetHeight()} {image.GetFormat()} mean " +
+                            $"({r / n:0.00},{g / n:0.00},{b / n:0.00})";
+                    }
+                    else
+                    {
+                        bake = "bake DID NOT DECODE";
+                    }
+                }
+
+                bakes[StemOf(record.Path)] = bake;
+            }
+        }
+
+        foreach ((StatedLandscape landscape, GhfHeights? grid) in grids)
+        {
+            bool isGrid = landscape.Ghf.Length != 0;
+            Material? material = landscape.Ehf.Length != 0 && isGrid ? LoadTerrainMaterial(landscape.Ehf) : null;
+            Engine_EhfPages.Built? pagedBuild = null;
+            bool pagedOk = !isGrid && grid is not null && landscape.Ehf.Length != 0 &&
+                source(landscape.Ehf) is { } pageBytes &&
+                Engine_EhfPages.TryBuild(pageBytes, grid, out pagedBuild, out _);
+            if (!isGrid && !pagedOk && landscape.Ehf.Length != 0)
+            {
+                material = LoadTerrainMaterial(landscape.Ehf, vista: true);
+            }
+
+            bool drawn = grid is not null && (isGrid || pagedOk || material is not null);
+            string what = isGrid ? "grid" : "vista";
+            string size = grid is null ? "NO HEIGHTS" :
+                $"{grid.Width}x{grid.Height}@{grid.Spacing} at ({grid.OriginX:0.#},{grid.OriginZ:0.#})..(" +
+                $"{grid.OriginX + ((grid.Width - 1) * grid.Spacing):0.#},{grid.OriginZ + ((grid.Height - 1) * grid.Spacing):0.#}) " +
+                $"h {grid.MinHeight:0.#}..{grid.MaxHeight:0.#}";
+            string palette = string.Empty;
+            if (!isGrid && landscape.Ehf.Length != 0 && source(landscape.Ehf) is { } ehfBytes &&
+                Engine_EhfBody.TryParse(ehfBytes, out EhfParsedBody body, out _))
+            {
+                palette = " palette[" + string.Join(", ", body.Lods.ConvertAll(l => System.IO.Path.GetFileName(l.BaseDiffuse))) +
+                    $"] pages {body.BackgroundPatches.Count} patch(es)";
+            }
+
+            lines.Add($"{level}: {(drawn ? "ok     " : "MISSING")} {what} {StemOf(landscape.Ehf.Length != 0 ? landscape.Ehf : landscape.Ghf)}{palette} " +
+                $"{size} {(pagedOk ? $"COLOUR PAGES on {pagedBuild!.Chunks}/{pagedBuild.GridChunks} chunks" : material is null ? "NO MATERIAL" : material.GetClass())} " +
+                (bakes.TryGetValue(StemOf(landscape.Ehf), out string? bakeText) ? bakeText : "no record"));
+        }
+
+        foreach (string line in manifest.Ghf)
+        {
+            if (Engine_LevelManifest.TryResolvePath(line, source, out string ghf) &&
+                !stated.Landscapes.Exists(l => l.Ghf.Equals(ghf, StringComparison.OrdinalIgnoreCase)))
+            {
+                // The .list loads every .ghf (gameplay ground); only type-4 records draw, so the
+                // guest draws none of these either — another scenario's landscape.
+                lines.Add($"{level}: note   .list grid {ghf} is ground only (no .engine_level landscape draws it)");
+            }
+        }
+
+        float oceanHeight = float.PositiveInfinity;
+        foreach (string waterPath in stated.Water)
+        {
+            if (source(waterPath) is not { Length: > 8 } bytes ||
+                !Engine_WaterFile.TryParse(bytes, out WaterScene scene, out _) || scene.Bodies.Count == 0)
+            {
+                continue;
+            }
+
+            int under = 0;
+            float lowest = float.PositiveInfinity;
+            foreach (WaterBody body in scene.Bodies)
+            {
+                lowest = MathF.Min(lowest, body.BaseHeight);
+                if (ground.GridCount != 0 && ground.OpenCells(body, true, out _) == 0)
+                {
+                    under++;
+                }
+            }
+
+            if (!float.IsFinite(oceanHeight))
+            {
+                oceanHeight = lowest - 0.1f;
+            }
+
+            lines.Add($"{level}: water {StemOf(waterPath)}: {scene.Bodies.Count} body(s), {under} entirely under the ground");
+        }
+
+        if (float.IsFinite(oceanHeight))
+        {
+            // The theme's switch across the day: the ocean draws only where it reads exactly 0.
+            List<byte[]> gdbs = Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
+            var gate = new List<string>();
+            foreach (float tod in new[] { 0.0f, 0.25f, 0.5f, 0.75f })
+            {
+                gate.Add(gdbs.Count != 0 &&
+                    Engine_ThemeTimeline.TryExtractWaterBlended(gdbs, tod, out WaterTheme water)
+                    ? (water.Stated[WaterThemeParam.DisableVistaWater]
+                        ? water[WaterThemeParam.DisableVistaWater].ToString("0.##")
+                        : "unstated")
+                    : "no theme");
+            }
+
+            lines.Add($"{level}: ocean DisableVistaWater at 0/6/12/18h: {string.Join(" ", gate)}");
+
+            int samples = 0;
+            int above = 0;
+            foreach ((_, GhfHeights? grid) in grids)
+            {
+                if (grid is null)
+                {
+                    continue;
+                }
+
+                foreach (float h in grid.Values)
+                {
+                    samples++;
+                    if (h < oceanHeight)
+                    {
+                        above++;
+                    }
+                }
+            }
+
+            lines.Add($"{level}: ocean at {oceanHeight:0.###}: above the ground on " +
+                $"{(samples == 0 ? 0 : 100.0 * above / samples):0.#}% of mapped samples");
+        }
+
+        return lines;
     }
 
     public static Node3D? Build(
@@ -417,25 +642,7 @@ public static class Engine_LevelScene
             Preload(level, gameManifest, reads);
             Mark("preload");
 
-            if (gameManifest.Ghf.Count != 0)
-            {
-                bool discoveredIsStated = gameManifest.Ghf.Exists(line =>
-                    Engine_LevelManifest.VirtualPath(line).Equals(
-                        heightfieldPath, StringComparison.OrdinalIgnoreCase));
-
-                if (!discoveredIsStated &&
-                    Engine_LevelManifest.TryResolvePath(
-                        gameManifest.Ghf[0], reads.Read, out string statedHeightfield))
-                {
-                    GD.Print(
-                        $"[level] {level}: manifest states heightfield " +
-                        $"{statedHeightfield}" +
-                        (heightfieldPath.Length != 0
-                            ? $" (discovery had {heightfieldPath})"
-                            : string.Empty));
-                    heightfieldPath = statedHeightfield;
-                }
-            }
+            heightfieldPath = StatedHeightfield(level, gameManifest, reads.Read, heightfieldPath);
 
             ReadGameOrderResources(level, gameManifest, reads.Read);
             Mark("game-order");
@@ -448,53 +655,122 @@ public static class Engine_LevelScene
         }
 
         string meshPath = Engine_BnkTerrainLoader.PathPrefix + heightfieldPath;
+        StatedWorld stated = ReadStatedWorld(level, gameManifest, source, heightfieldPath);
+        Mark("engine-level");
+
         Func<string, byte[]?>? terrainRead = source;
-        (List<ArrayMesh> Chunks, Material? Material,
-            List<(string Path, string Name, List<ArrayMesh> Chunks, Material? Material)> VistaBuilt)
-            TerrainWork()
+        List<BuiltLandscape> TerrainWork()
         {
-            // The same decode and grid the `game://` loader builds for the browser, cut into
-            // chunks for the scene (Engine_LevelMesh.ChunkCells). A read that fails leaves no
-            // chunks and the build reports the path.
-            var chunks = new List<ArrayMesh>();
-            string ghfError = terrainRead is null ? "no reader" : "not in any bank";
-            if (terrainRead?.Invoke(heightfieldPath) is { } ghfBytes &&
-                Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
+            // Every landscape the .engine_level states is built: the guest gives each type-4
+            // record its own landscape entity (sub_82B36478, vtable off_82005870) through one
+            // path with no main/vista branch. One whose .ghf the scenario .list names is the
+            // full grid the `game://` loader builds, cut into chunks (Engine_LevelMesh.ChunkCells);
+            // one without a .ghf is built from the .ehf's own patches.
+            var built = new List<BuiltLandscape>();
+            int vistas = 0;
+            foreach (StatedLandscape landscape in stated.Landscapes)
             {
-                chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), "Terrain");
-            }
-            else if (terrainRead is null &&
-                ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh") is { } whole)
-            {
-                chunks.Add(whole);
-            }
-            else
-            {
-                GD.Print($"[level] {level}: heightfield {heightfieldPath} did not decode ({ghfError})");
-            }
+                bool main = built.Count == 0;
 
-            Material? material = level.MainEhfPath.Length != 0
-                ? LoadTerrainMaterial(level.MainEhfPath)
-                : null;
+                // A vista's material is its fallback only; the colour pages come first.
+                Material? material = landscape.Ehf.Length != 0 && landscape.Ghf.Length != 0
+                    ? LoadTerrainMaterial(landscape.Ehf)
+                    : null;
 
-            var vistaBuilt = new List<(string Path, string Name, List<ArrayMesh> Chunks, Material? Material)>();
-            List<(string Path, TerrainMesh Mesh)> vistas = BuildAdjacent(level, terrainRead);
-            for (int i = 0; i < vistas.Count; i++)
-            {
-                (string vistaPath, TerrainMesh vistaMesh) = vistas[i];
-                string name = vistas.Count == 1 ? AdjacentNodeName : $"{AdjacentNodeName}{i}";
-                Material? vistaMaterial = LoadTerrainMaterial(vistaPath);
+                if (landscape.Ghf.Length != 0)
+                {
+                    var chunks = new List<ArrayMesh>();
+                    string ghfError = terrainRead is null ? "no reader" : "not in any bank";
+                    string name = main ? TerrainNodeName : $"{TerrainNodeName}_{StemOf(landscape.Ghf)}_";
+                    if (terrainRead?.Invoke(landscape.Ghf) is { } ghfBytes &&
+                        Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
+                    {
+                        chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), name);
+                    }
+                    else if (main && terrainRead is null &&
+                        ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh") is { } whole)
+                    {
+                        chunks.Add(whole);
+                    }
+                    else
+                    {
+                        GD.Print($"[level] {level}: heightfield {landscape.Ghf} did not decode ({ghfError})");
+                    }
+
+                    if (!main)
+                    {
+                        GD.Print(
+                            $"[level] {level}: landscape {landscape.Ehf} drawn from its grid " +
+                            $"{landscape.Ghf} ({chunks.Count} chunks, " +
+                            (material is null ? "NO splat material" : "splat material") + ")");
+                    }
+
+                    built.Add(new BuiltLandscape(landscape, name, true, chunks, material));
+                    continue;
+                }
+
+                if (terrainRead?.Invoke(landscape.Ehf) is not { } ehfBytes)
+                {
+                    GD.Print($"[level] {level}: landscape {landscape.Ehf} is not in any bank");
+                    continue;
+                }
+
+                string vistaName = $"{AdjacentNodeName}{vistas++}";
+
+                // The vista's own height grid — the texture the guest's vertex shader samples —
+                // through the same mesh and chunking as a stated .ghf.
+                string pageError = "height grid did not decode";
+                if (Engine_EhfHeights.TryDecode(ehfBytes, out GhfHeights vistaHeights, out string heightError) &&
+                    Engine_EhfPages.TryBuild(ehfBytes, vistaHeights, out Engine_EhfPages.Built paged, out pageError))
+                {
+                    // The guest's own background draw: chunks textured from the colour pages.
+                    GD.Print(
+                        $"[vista] {level}: {vistaName} from {landscape.Ehf} " +
+                        $"({vistaHeights.Width}x{vistaHeights.Height} at {vistaHeights.Spacing} m, " +
+                        $"{paged.Chunks} chunks on {paged.Patches} colour page(s))");
+                    built.Add(new BuiltLandscape(
+                        landscape, vistaName, false, paged.Meshes, null, Paged: true));
+                    continue;
+                }
+
+                if (heightError.Length == 0)
+                {
+                    GD.Print($"[vista] {level}: {vistaName} colour pages not built ({pageError}) — falling back");
+                }
+
+                material = LoadTerrainMaterial(landscape.Ehf, vista: true);
+
+                if (Engine_EhfHeights.TryDecode(ehfBytes, out vistaHeights, out heightError))
+                {
+                    TerrainMesh gridMesh = Engine_GhfTerrain.BuildMesh(vistaHeights);
+                    GD.Print(
+                        $"[vista] {level}: {vistaName} from {landscape.Ehf} " +
+                        $"({vistaHeights.Width}x{vistaHeights.Height} at {vistaHeights.Spacing} m, " +
+                        $"{gridMesh.TriangleCount} tris, " +
+                        (material is null ? "NO splat material" : material.GetClass()) + ")");
+                    built.Add(new BuiltLandscape(
+                        landscape, vistaName, false, Engine_LevelMesh.ToChunkMeshes(gridMesh, vistaName), material));
+                    continue;
+                }
+
+                if (BuildPatches(level, landscape.Ehf, terrainRead) is not { } patchMesh)
+                {
+                    continue;
+                }
 
                 GD.Print(
-                    $"[vista] {level}: {name} from {vistaPath} " +
-                    $"({vistaMesh.TriangleCount} tris, " +
-                    (vistaMaterial is null ? "NO splat material" : "splat material") + ")");
+                    $"[vista] {level}: {vistaName} from {landscape.Ehf} PATCHES ONLY — height grid " +
+                    $"did not decode ({heightError}); {patchMesh.TriangleCount} tris, " +
+                    (material is null ? "NO splat material" : material.GetClass()));
 
-                vistaBuilt.Add(
-                    (vistaPath, name, Engine_LevelMesh.ToChunkMeshes(vistaMesh, name), vistaMaterial));
+                // ONE MESH, never ToChunkMeshes: the fused patches carry no grid (Width/Height 0),
+                // and chunking a gridless mesh yields nothing.
+                built.Add(new BuiltLandscape(
+                    landscape, vistaName, false,
+                    new List<ArrayMesh> { Engine_LevelMesh.ToArrayMesh(patchMesh, vistaName) }, material));
             }
 
-            return (chunks, material, vistaBuilt);
+            return built;
         }
 
         var terrainTask =
@@ -508,10 +784,10 @@ public static class Engine_LevelScene
             Scale = new Vector3(-1f, 1f, 1f),
         };
 
-        AddWater(level, source, findByName, root);
+        AddWater(level, stated, source, findByName, root);
         Mark("water");
 
-        bool hasMist = AddMist(level, source, root);
+        bool hasMist = AddMist(level, stated, source, root);
         Mark("mist");
 
         LightmapContainer? bakedLightmaps = null;
@@ -712,7 +988,7 @@ public static class Engine_LevelScene
                     {
                         skyNode.LightingGdbs.AddRange(gdbs);
                         skyNode.Sun = sun;
-                        skyNode.Painted = LoadPaintedDaySets(level, source, gdbs);
+                        skyNode.Painted = LoadPaintedDaySets(level, stated, source, gdbs);
                     }
 
                     // BOTH THE STATED FIELDS AND THE SOLVED CURVE. The two densities are control
@@ -787,25 +1063,22 @@ public static class Engine_LevelScene
 
         Mark("rest");
 
-        (List<ArrayMesh> terrainChunks, Material? terrainMaterial,
-            List<(string Path, string Name, List<ArrayMesh> Chunks, Material? Material)> vistaBuilt) =
+        List<BuiltLandscape> landscapes =
             terrainTask is not null ? terrainTask.GetAwaiter().GetResult() : TerrainWork();
 
-        if (terrainChunks.Count == 0)
+        if (landscapes.Count == 0 || !landscapes[0].Grid || landscapes[0].Chunks.Count == 0)
         {
             root.QueueFree();
             error = $"terrain mesh did not load from {meshPath}";
             return null;
         }
 
-        // A terrain is a container of chunk instances sharing one splat material: the chunks
-        // are what the passes cull, the container is what the editor and the lightmap binding
-        // address (TerrainChunksOf).
-        List<MeshInstance3D> AddTerrain(string name, List<ArrayMesh> chunks, Material? material)
+        // Chunk instances, each with its landscape's splat material: the chunks are what the
+        // passes cull. Every full-grid landscape lands in the one `Terrain` container
+        // (TerrainChunksOf), the scenario's own heightfield first; each patch-built landscape
+        // has a container of its own.
+        List<MeshInstance3D> AddChunks(Node3D container, string name, List<ArrayMesh> chunks, Material? material)
         {
-            var container = new Node3D { Name = name };
-            root.AddChild(container);
-            container.Owner = root;
             var nodes = new List<MeshInstance3D>(chunks.Count);
             for (int i = 0; i < chunks.Count; i++)
             {
@@ -828,23 +1101,49 @@ public static class Engine_LevelScene
             return nodes;
         }
 
-        List<MeshInstance3D> terrainNodes = AddTerrain(TerrainNodeName, terrainChunks, terrainMaterial);
-        var allTerrainNodes = new List<MeshInstance3D>(terrainNodes);
-        var surfaces = new List<(string Path, MeshInstance3D Node)>
+        Node3D Container(string name)
         {
-            (level.MainEhfPath, terrainNodes[0]),
-        };
-        foreach ((string vistaPath, string vistaName, List<ArrayMesh> vistaChunks, Material? vistaMaterial)
-                 in vistaBuilt)
+            var container = new Node3D { Name = name };
+            root.AddChild(container);
+            container.Owner = root;
+            return container;
+        }
+
+        Node3D terrainContainer = Container(TerrainNodeName);
+        var allTerrainNodes = new List<MeshInstance3D>();
+        var surfaces = new List<(string Path, MeshInstance3D Node)>();
+        foreach (BuiltLandscape built in landscapes)
         {
-            if (vistaChunks.Count == 0)
+            if (built.Chunks.Count == 0)
             {
                 continue;
             }
 
-            List<MeshInstance3D> vistaNodes = AddTerrain(vistaName, vistaChunks, vistaMaterial);
-            allTerrainNodes.AddRange(vistaNodes);
-            surfaces.Add((vistaPath, vistaNodes[0]));
+            // A vista with no colour pages and no material is not drawn: it would take Godot's
+            // default white.
+            if (!built.Grid && !built.Paged && built.Material is null)
+            {
+                GD.Print($"[vista] {level}: {built.Name} ({built.Landscape.Ehf}) NOT DRAWN — no splat and no placeable colour pages");
+                continue;
+            }
+
+            List<MeshInstance3D> nodes = AddChunks(
+                built.Grid ? terrainContainer : Container(built.Name), built.Name, built.Chunks, built.Material);
+            allTerrainNodes.AddRange(nodes);
+            if (built.Paged)
+            {
+                // Each patch carries its own page material, so each takes the bake; and a vista,
+                // like every guest landscape, is never a sun caster.
+                foreach (MeshInstance3D node in nodes)
+                {
+                    node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                    surfaces.Add((built.Landscape.Ehf, node));
+                }
+            }
+            else
+            {
+                surfaces.Add((built.Landscape.Ehf, nodes[0]));
+            }
         }
 
         if (bakedLightmaps is not null && source is not null)
@@ -900,10 +1199,33 @@ public static class Engine_LevelScene
 
         foreach ((string surfacePath, MeshInstance3D node) in surfaces)
         {
-            if (node.MaterialOverride is not ShaderMaterial splat)
+            // The splat override, or — for a page-built vista — every surface's own page material.
+            var targets = new List<ShaderMaterial>();
+            if (node.MaterialOverride is ShaderMaterial overridden)
             {
+                targets.Add(overridden);
+            }
+            else if (node.Mesh is { } surfacesMesh)
+            {
+                for (int i = 0; i < surfacesMesh.GetSurfaceCount(); i++)
+                {
+                    if (surfacesMesh.SurfaceGetMaterial(i) is ShaderMaterial own)
+                    {
+                        targets.Add(own);
+                    }
+                }
+            }
+
+            if (targets.Count == 0)
+            {
+                GD.Print(
+                    $"[baked] {level}: {surfacePath} carries " +
+                    (node.MaterialOverride is null ? "no material" : node.MaterialOverride.GetClass()) +
+                    ", not the splat — its bake has nowhere to go");
                 continue;
             }
+
+            ShaderMaterial splat = targets[0];
 
             foreach (EngineLevelHeightfield heightfield in engineLevel.Heightfields)
             {
@@ -928,8 +1250,12 @@ public static class Engine_LevelScene
                     break;
                 }
 
-                splat.SetShaderParameter("lightmap", texture);
-                splat.SetShaderParameter("has_lightmap", true);
+                foreach (ShaderMaterial target in targets)
+                {
+                    target.SetShaderParameter("lightmap", texture);
+                    target.SetShaderParameter("has_lightmap", true);
+                }
+
                 bound.Add(heightfield.LightmapKey);
 
                 // One texel per CELL is what makes the plain normalised heightfield coordinate
@@ -987,8 +1313,20 @@ public static class Engine_LevelScene
         return cut < 0 ? path : path[(cut + 1)..];
     }
 
-    private static Material? LoadTerrainMaterial(string ehfPath)
+    /// <summary>
+    /// A landscape's material: its splat, else its pre-baked colour pages. A VISTA takes the pages
+    /// first. The guest draws a patch past 64 m through the background path (`sub_82236508`), which
+    /// samples those pages, not the material palette — and a vista is always that far, so its
+    /// palette is an editor default nobody sees (`art\editor\invalid_texture.tex` on a market
+    /// vista, painted magenta wherever no layer covers).
+    /// </summary>
+    private static Material? LoadTerrainMaterial(string ehfPath, bool vista = false)
     {
+        if (vista && LoadPageMaterial(ehfPath) is { } pages)
+        {
+            return pages;
+        }
+
         string materialPath =
             Engine_BnkTerrainMaterialLoader.PathPrefix + ehfPath +
             Engine_BnkTerrainMaterialLoader.PathSuffix;
@@ -999,6 +1337,12 @@ public static class Engine_LevelScene
             return splat;
         }
 
+        return vista ? null : LoadPageMaterial(ehfPath);
+    }
+
+    /// <summary>The landscape's pre-baked colour pages as one albedo.</summary>
+    private static Material? LoadPageMaterial(string ehfPath)
+    {
         string albedoPath = Engine_BnkTerrainAlbedoLoader.PathPrefix + ehfPath;
         var albedo = ResourceLoader.Load<Texture2D>(albedoPath, "Texture2D");
         if (albedo is null)
@@ -1121,8 +1465,13 @@ public static class Engine_LevelScene
         }
     }
 
+    /// <summary>
+    /// Every .water the .engine_level states (type 5, `sub_82AB9818` per record), into the one
+    /// `Water` container. A body samples the grid of the landscape that shares its file's stem.
+    /// </summary>
     private static void AddWater(
         LevelEntry level,
+        StatedWorld stated,
         Func<string, byte[]?>? source,
         Func<string, string?>? findByName,
         Node3D root)
@@ -1132,106 +1481,139 @@ public static class Engine_LevelScene
             return;
         }
 
-        byte[]? bytes = null;
-        foreach (string candidate in WaterCandidates(level))
-        {
-            bytes = source(candidate);
-            if (bytes is not null && bytes.Length > 8)
-            {
-                break;
-            }
-
-            bytes = null;
-        }
-
-        if (bytes is null)
-        {
-            return;
-        }
-
-        if (!Engine_WaterFile.TryParse(bytes, out WaterScene scene, out string why))
-        {
-            GD.Print($"[water] {level}: {why}");
-            return;
-        }
-
         var container = new Node3D { Name = WaterNodeName };
         int emitted = 0;
+        int tiles = 0;
+        int buried = 0;
+        List<(StatedLandscape Landscape, GhfHeights? Grid)> grids = DecodeGrids(stated, source);
+        Engine_LandscapeGround ground = GroundOf(grids);
+        WaterBody? oceanBody = null;
+        string oceanFile = string.Empty;
+        Aabb? waterBounds = null;
 
-        ImageTexture? terrainTexture = null;
-        var terrainBounds = Vector4.Zero;
-        if (!Engine_WaterMaterial.GuestMode &&
-            level.HeightfieldPath.Length != 0 &&
-            source(level.HeightfieldPath) is { } ghfBytes &&
-            Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out _) &&
-            heights.Width > 1 && heights.Height > 1)
+        foreach (string waterPath in stated.Water)
         {
-            var data = new byte[heights.Values.Length * sizeof(float)];
-            Buffer.BlockCopy(heights.Values, 0, data, 0, data.Length);
-            Image image = Image.CreateFromData(
-                heights.Width, heights.Height, false, Image.Format.Rf, data);
-            terrainTexture = ImageTexture.CreateFromImage(image);
-            terrainBounds = new Vector4(
-                heights.OriginX,
-                heights.OriginZ,
-                1f / ((heights.Width - 1) * Engine_GhfTerrain.CellSize),
-                1f / ((heights.Height - 1) * Engine_GhfTerrain.CellSize));
-        }
-
-        for (int i = 0; i < scene.Bodies.Count; i++)
-        {
-            WaterBody body = scene.Bodies[i];
-            TerrainMesh? mesh = Engine_WaterMesh.BuildBody(body);
-            if (mesh is null)
+            byte[]? bytes = source(waterPath);
+            if (bytes is null || bytes.Length <= 8)
             {
                 continue;
             }
 
-            string name = $"WaterBody{i}";
-            var node = new MeshInstance3D
+            if (!Engine_WaterFile.TryParse(bytes, out WaterScene scene, out string why))
             {
-                Name = name,
-                Mesh = Engine_LevelMesh.ToArrayMesh(mesh, name),
-            };
-
-            ShaderMaterial? material = Engine_WaterMaterial.Build(
-                body,
-                p => source(p),
-                findByName is null ? null : n => findByName(n),
-                out string materialError);
-
-            if (material is null)
-            {
-                GD.Print($"[water] {level}: {materialError}");
+                GD.Print($"[water] {level}: {waterPath}: {why}");
+                continue;
             }
-            else
+
+            string ghfPath = stated.GridFor(waterPath);
+            ImageTexture? terrainTexture = null;
+            var terrainBounds = Vector4.Zero;
+            GhfHeights? owned = ghfPath.Length != 0
+                ? grids.Find(g => g.Landscape.Ghf == ghfPath).Grid
+                : null;
+            if (!Engine_WaterMaterial.GuestMode && owned is { Width: > 1, Height: > 1 } heights)
             {
-                if (terrainTexture is not null)
+                var data = new byte[heights.Values.Length * sizeof(float)];
+                Buffer.BlockCopy(heights.Values, 0, data, 0, data.Length);
+                Image image = Image.CreateFromData(
+                    heights.Width, heights.Height, false, Image.Format.Rf, data);
+                terrainTexture = ImageTexture.CreateFromImage(image);
+                terrainBounds = new Vector4(
+                    heights.OriginX,
+                    heights.OriginZ,
+                    1f / ((heights.Width - 1) * heights.Spacing),
+                    1f / ((heights.Height - 1) * heights.Spacing));
+            }
+
+            int fromFile = 0;
+            float lowest = float.PositiveInfinity;
+            for (int i = 0; i < scene.Bodies.Count; i++)
+            {
+                WaterBody body = scene.Bodies[i];
+
+                // The first file with bodies states the ocean, at the LOWEST of ALL its bodies
+                // (the guest's min over every body's box) — buried ones included.
+                if ((oceanFile.Length == 0 || oceanFile == waterPath) && float.IsFinite(body.BaseHeight) &&
+                    (oceanBody is null || body.BaseHeight < oceanBody.BaseHeight))
                 {
-                    material.SetShaderParameter("terrain_height_tex", terrainTexture);
-                    material.SetShaderParameter("terrain_bounds", terrainBounds);
-                    material.SetShaderParameter("has_terrain_height", true);
+                    oceanBody = body;
+                    oceanFile = waterPath;
                 }
 
-                Aabb bodyAabb = node.Mesh.GetAabb();
-                material.SetShaderParameter("w_body_bounds", new Vector4(
-                    bodyAabb.Position.X,
-                    bodyAabb.Position.Z,
-                    bodyAabb.Position.X + bodyAabb.Size.X,
-                    bodyAabb.Position.Z + bodyAabb.Size.Z));
-                material.SetShaderParameter("has_body_bounds", true);
+                // UNDER THE GROUND IS NEVER SEEN: a heightfield is single-valued and opaque, so
+                // a body none of whose water cells clears the ground under it draws nothing and
+                // would still cost a mirror render whenever its box is in view.
+                if (ground.GridCount != 0 && ground.OpenCells(body, true, out _) == 0)
+                {
+                    buried++;
+                    continue;
+                }
 
-                node.MaterialOverride = material;
+                TerrainMesh? mesh = Engine_WaterMesh.BuildBody(body);
+                if (mesh is null)
+                {
+                    continue;
+                }
+
+                string name = $"WaterBody{emitted}";
+                var node = new MeshInstance3D
+                {
+                    Name = name,
+                    Mesh = Engine_LevelMesh.ToArrayMesh(mesh, name),
+                };
+
+                ShaderMaterial? material = Engine_WaterMaterial.Build(
+                    body,
+                    p => source(p),
+                    findByName is null ? null : n => findByName(n),
+                    out string materialError);
+
+                if (material is null)
+                {
+                    GD.Print($"[water] {level}: {materialError}");
+                }
+                else
+                {
+                    if (terrainTexture is not null)
+                    {
+                        material.SetShaderParameter("terrain_height_tex", terrainTexture);
+                        material.SetShaderParameter("terrain_bounds", terrainBounds);
+                        material.SetShaderParameter("has_terrain_height", true);
+                    }
+
+                    Aabb bodyAabb = node.Mesh.GetAabb();
+                    material.SetShaderParameter("w_body_bounds", new Vector4(
+                        bodyAabb.Position.X,
+                        bodyAabb.Position.Z,
+                        bodyAabb.Position.X + bodyAabb.Size.X,
+                        bodyAabb.Position.Z + bodyAabb.Size.Z));
+                    material.SetShaderParameter("has_body_bounds", true);
+
+                    node.MaterialOverride = material;
+                }
+
+                container.AddChild(node);
+                emitted++;
+                fromFile++;
+                lowest = MathF.Min(lowest, body.BaseHeight);
+                waterBounds = waterBounds is { } so_far ? so_far.Merge(node.Mesh.GetAabb()) : node.Mesh.GetAabb();
+
             }
 
-            container.AddChild(node);
-            emitted++;
+            tiles += (int)scene.TileCount;
+            GD.Print($"[water] {level}: {waterPath}: {fromFile} body(s), {scene.TileCount} tiles, lowest {lowest:0.###}" +
+                (terrainTexture is null ? "" : $", ground from {ghfPath}"));
         }
 
         if (emitted == 0)
         {
             container.QueueFree();
             return;
+        }
+
+        if (oceanBody is not null && waterBounds is { } bounds)
+        {
+            AddVistaOcean(level, container, oceanBody, oceanFile, bounds, source, findByName);
         }
 
         root.AddChild(container);
@@ -1243,7 +1625,125 @@ public static class Engine_LevelScene
         }
 
         GD.Print(
-            $"[water] {level}: {emitted} body(s), {scene.TileCount} tiles");
+            $"[water] {level}: {emitted} body(s), {tiles} tiles from {stated.Water.Count} stated file(s)" +
+            (buried != 0 ? $"; {buried} body(s) entirely under the ground not built" : string.Empty));
+    }
+
+    /// <summary>Each stated landscape with its height grid: the stated .ghf, else the .ehf's own.</summary>
+    private static List<(StatedLandscape Landscape, GhfHeights? Grid)> DecodeGrids(
+        StatedWorld stated, Func<string, byte[]?> source)
+    {
+        var grids = new List<(StatedLandscape, GhfHeights?)>();
+        foreach (StatedLandscape landscape in stated.Landscapes)
+        {
+            GhfHeights? grid = null;
+            if (landscape.Ghf.Length != 0)
+            {
+                if (source(landscape.Ghf) is { } ghf && Engine_GhfTerrain.TryDecode(ghf, out GhfHeights g, out _))
+                {
+                    grid = g;
+                }
+            }
+            else if (landscape.Ehf.Length != 0 && source(landscape.Ehf) is { } ehf &&
+                     Engine_EhfHeights.TryDecode(ehf, out GhfHeights e, out _))
+            {
+                grid = e;
+            }
+
+            grids.Add((landscape, grid));
+        }
+
+        return grids;
+    }
+
+    private static Engine_LandscapeGround GroundOf(List<(StatedLandscape Landscape, GhfHeights? Grid)> grids)
+    {
+        var ground = new Engine_LandscapeGround();
+        foreach ((_, GhfHeights? grid) in grids)
+        {
+            if (grid is not null)
+            {
+                ground.Add(grid);
+            }
+        }
+
+        return ground;
+    }
+
+    public const string VistaOceanNodeName = "VistaOcean";
+
+    /// <summary>Half the ocean's side: the `sky_oceanwater` VS (blob 0129) spans ±2850 units.</summary>
+    private const float VistaOceanHalfExtent = 2850f;
+
+    /// <summary>
+    /// The vista ocean — the unmasked sheet that carries a level's water to the horizon.
+    /// </summary>
+    /// <remarks>
+    /// `sub_82A931E0` makes it after a .water file's bodies, from the minimum of their AABBs
+    /// (lane 2 = height, 0x82a93370): desc `off_820F7EB4` → `sub_82B2EC08`, primitive 47
+    /// (PRIMITIVE_INSTANCE_OCEANWATER), height - 0.1 (0x82b2eccc). Its draw (`sub_821D5068`)
+    /// submits only while the theme's DisableVistaWater reads 0 and at most once per frame, so
+    /// one is built: the first stated file's. Terrain hides it by depth; it samples no mask.
+    /// Shaded with that file's lowest body; centred on the level's water.
+    /// </remarks>
+    private static void AddVistaOcean(
+        LevelEntry level,
+        Node3D container,
+        WaterBody body,
+        string waterPath,
+        Aabb bounds,
+        Func<string, byte[]?> source,
+        Func<string, string?>? findByName)
+    {
+        ShaderMaterial? material = Engine_WaterMaterial.Build(
+            body,
+            p => source(p),
+            findByName is null ? null : n => findByName(n),
+            out string materialError);
+        if (material is null)
+        {
+            GD.Print($"[water] {level}: vista ocean has no material ({materialError})");
+            return;
+        }
+
+        material.SetShaderParameter("has_water_mask", false);
+        material.SetShaderParameter("has_body_bounds", false);
+        material.SetShaderParameter("has_terrain_height", false);
+        material.SetShaderParameter("ocean_mode", true);
+
+        float height = body.BaseHeight - 0.1f;
+        Vector3 centre = bounds.GetCenter();
+        float side = VistaOceanHalfExtent * 2f;
+        var sheet = new GhfHeights
+        {
+            Width = 2,
+            Height = 2,
+            Values = new[] { height, height, height, height },
+            MinHeight = height,
+            MaxHeight = height,
+            OriginX = centre.X - VistaOceanHalfExtent,
+            OriginZ = centre.Z - VistaOceanHalfExtent,
+            Spacing = side,
+        };
+
+        var node = new MeshInstance3D
+        {
+            Name = VistaOceanNodeName,
+            Mesh = Engine_LevelMesh.ToArrayMesh(Engine_GhfTerrain.BuildMesh(sheet), VistaOceanNodeName),
+            MaterialOverride = material,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        container.AddChild(node);
+        GD.Print($"[water] {level}: vista ocean at {height:0.###} from {waterPath}, ±{VistaOceanHalfExtent} around ({centre.X:0.#}, {centre.Z:0.#})");
+    }
+
+    /// <summary>The theme's DisableVistaWater: the ocean shows only while it reads exactly 0.</summary>
+    public static void ApplyVistaOceanGate(Node3D water, WaterTheme theme)
+    {
+        if (water.GetNodeOrNull<MeshInstance3D>(VistaOceanNodeName) is { } ocean)
+        {
+            ocean.Visible = theme[WaterThemeParam.DisableVistaWater] == 0f;
+        }
     }
 
     private static void ApplyWaterTheme(Node3D root, WaterTheme theme)
@@ -1262,23 +1762,17 @@ public static class Engine_LevelScene
                 Engine_WaterMaterial.Apply(material, theme);
             }
         }
+
+        ApplyVistaOceanGate(water, theme);
     }
 
-    private static IEnumerable<string> WaterCandidates(LevelEntry level)
-    {
-        if (level.MainEhfPath.Length != 0)
-        {
-            yield return ReplaceExtension(level.MainEhfPath, ".water");
-        }
-
-        if (level.HeightfieldPath.Length != 0)
-        {
-            yield return ReplaceExtension(level.HeightfieldPath, ".water");
-        }
-    }
-
+    /// <summary>
+    /// Every .mist the .engine_level states (type 32, `sub_82AB99F8` per record), into one
+    /// `Mist` container. A file whose count is zero states no volume.
+    /// </summary>
     private static bool AddMist(
         LevelEntry level,
+        StatedWorld stated,
         Func<string, byte[]?>? source,
         Node3D root)
     {
@@ -1287,71 +1781,60 @@ public static class Engine_LevelScene
             return false;
         }
 
-        byte[]? bytes = null;
-        foreach (string candidate in MistCandidates(level))
-        {
-            bytes = source(candidate);
-            if (bytes is not null && bytes.Length > 8)
-            {
-                break;
-            }
-
-            bytes = null;
-        }
-
-        if (bytes is null)
-        {
-            return false;
-        }
-
-        if (!Engine_MistFile.TryParse(bytes, out MistScene scene, out string why))
-        {
-            GD.Print($"[mist] {level}: {why}");
-            return false;
-        }
-
-        if (scene.Volumes.Count == 0)
-        {
-            return false;
-        }
-
         var container = new Node3D { Name = "Mist" };
         int emitted = 0;
+        int records = 0;
 
-        for (int i = 0; i < scene.Volumes.Count; i++)
+        foreach (string mistPath in stated.Mist)
         {
-            MistVolume vol = scene.Volumes[i];
-
-            float sizeX = MathF.Abs(vol.BoxSize[0]);
-            float sizeY = MathF.Abs(vol.BoxSize[1]);
-            float sizeZ = MathF.Abs(vol.BoxSize[2]);
-            if (sizeX < 0.01f && sizeY < 0.01f && sizeZ < 0.01f)
+            byte[]? bytes = source(mistPath);
+            if (bytes is null || bytes.Length <= 8)
             {
                 continue;
             }
 
-            float centreX = vol.BoxMin[0] + vol.BoxSize[0] * 0.5f;
-            float centreY = vol.BoxMin[1] + vol.BoxSize[1] * 0.5f;
-            float centreZ = vol.BoxMin[2] + vol.BoxSize[2] * 0.5f;
-
-            var material = new FogMaterial();
-            material.Density = vol.Density;
-            material.Albedo = new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]);
-
-            var fog = new FogVolume
+            if (!Engine_MistFile.TryParse(bytes, out MistScene scene, out string why))
             {
-                Name = $"MistVolume{i}",
-                Position = new Vector3(centreX, centreY, centreZ),
-                Size = new Vector3(sizeX, sizeY, sizeZ),
-                Shape = RenderingServer.FogVolumeShape.Box,
-                Material = material,
-            };
+                GD.Print($"[mist] {level}: {mistPath}: {why}");
+                continue;
+            }
 
-            container.AddChild(fog);
-            emitted++;
-            GD.Print($"[mist] volume {i}: min=({vol.BoxMin[0]:0.#},{vol.BoxMin[1]:0.#},{vol.BoxMin[2]:0.#}) " +
-                $"size=({vol.BoxSize[0]:0.#},{vol.BoxSize[1]:0.#},{vol.BoxSize[2]:0.#}) density={vol.Density:0.####} " +
-                $"colour=({vol.Colour[0]:0.00},{vol.Colour[1]:0.00},{vol.Colour[2]:0.00}) falloff={vol.Falloff:0.###} recip={vol.Reciprocal:0.###}");
+            records += scene.Volumes.Count;
+            for (int i = 0; i < scene.Volumes.Count; i++)
+            {
+                MistVolume vol = scene.Volumes[i];
+
+                float sizeX = MathF.Abs(vol.BoxSize[0]);
+                float sizeY = MathF.Abs(vol.BoxSize[1]);
+                float sizeZ = MathF.Abs(vol.BoxSize[2]);
+                if (sizeX < 0.01f && sizeY < 0.01f && sizeZ < 0.01f)
+                {
+                    continue;
+                }
+
+                float centreX = vol.BoxMin[0] + vol.BoxSize[0] * 0.5f;
+                float centreY = vol.BoxMin[1] + vol.BoxSize[1] * 0.5f;
+                float centreZ = vol.BoxMin[2] + vol.BoxSize[2] * 0.5f;
+
+                var material = new FogMaterial();
+                material.Density = vol.Density;
+                material.Albedo = new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]);
+
+                var fog = new FogVolume
+                {
+                    Name = $"MistVolume{emitted}",
+                    Position = new Vector3(centreX, centreY, centreZ),
+                    Size = new Vector3(sizeX, sizeY, sizeZ),
+                    Shape = RenderingServer.FogVolumeShape.Box,
+                    Material = material,
+                };
+
+                container.AddChild(fog);
+                emitted++;
+                GD.Print($"[mist] volume {i}: min=({vol.BoxMin[0]:0.#},{vol.BoxMin[1]:0.#},{vol.BoxMin[2]:0.#}) " +
+                    $"size=({vol.BoxSize[0]:0.#},{vol.BoxSize[1]:0.#},{vol.BoxSize[2]:0.#}) density={vol.Density:0.####} " +
+                    $"colour=({vol.Colour[0]:0.00},{vol.Colour[1]:0.00},{vol.Colour[2]:0.00}) falloff={vol.Falloff:0.###} recip={vol.Reciprocal:0.###}");
+            }
         }
 
         if (emitted == 0)
@@ -1369,22 +1852,9 @@ public static class Engine_LevelScene
         }
 
         GD.Print(
-            $"[mist] {level}: {emitted} volume(s) from {scene.Volumes.Count} record(s)");
+            $"[mist] {level}: {emitted} volume(s) from {records} record(s) in {stated.Mist.Count} stated file(s)");
 
         return true;
-    }
-
-    private static IEnumerable<string> MistCandidates(LevelEntry level)
-    {
-        if (level.MainEhfPath.Length != 0)
-        {
-            yield return ReplaceExtension(level.MainEhfPath, ".mist");
-        }
-
-        if (level.HeightfieldPath.Length != 0)
-        {
-            yield return ReplaceExtension(level.HeightfieldPath, ".mist");
-        }
     }
 
     private static string ReplaceExtension(string path, string extension)
@@ -1393,59 +1863,187 @@ public static class Engine_LevelScene
         return dot < 0 ? path + extension : path[..dot] + extension;
     }
 
-    /// <summary>
-    /// The level's adjacent heightfields, ONE MESH PER FILE rather than all of them fused.
-    /// </summary>
-    /// <remarks>
-    /// Concatenating them into a single anonymous mesh costs the vista both halves of its
-    /// lighting: a landscape's splat material is built for ITS heightfield's world extents, and
-    /// a landscape's bake is keyed by ITS own type-4 record. Fused there is no file to ask about
-    /// either, so the vista falls back to Godot's default material with no bake while the ground
-    /// beside it takes the region's full lighting model.
-    ///
-    /// Keeping them separate costs one draw call each — a region ships one or two — and lets the
-    /// vista go through exactly the same material and bake path as the terrain it continues.
-    /// </remarks>
-    private static List<(string Path, TerrainMesh Mesh)> BuildAdjacent(
-        LevelEntry level, Func<string, byte[]?>? source)
+    private sealed record StatedLandscape(string Ehf, string Ghf);
+
+    private sealed record BuiltLandscape(
+        StatedLandscape Landscape, string Name, bool Grid, List<ArrayMesh> Chunks, Material? Material,
+        bool Paged = false);
+
+    /// <summary>What the scenario's .engine_level states, as VFS paths.</summary>
+    private sealed class StatedWorld
     {
-        var built = new List<(string, TerrainMesh)>();
-        if (source is null || level.AdjacentEhfPaths.Length == 0)
+        /// <summary>The scenario's own heightfield first.</summary>
+        public List<StatedLandscape> Landscapes { get; } = new();
+
+        public List<string> Water { get; } = new();
+
+        public List<string> Mist { get; } = new();
+
+        /// <summary>The .ghf of the landscape whose stem a sibling file shares, or empty.</summary>
+        public string GridFor(string sibling)
         {
-            return built;
-        }
-
-        foreach (string path in level.AdjacentEhfPaths)
-        {
-            byte[]? bytes = source(path);
-            if (bytes is null)
+            string stem = StemOf(sibling);
+            foreach (StatedLandscape landscape in Landscapes)
             {
-                continue;
-            }
-
-            if (!Engine_EhfPatches.TryBuild(bytes, out List<EhfVistaPatch> patches, out string why))
-            {
-                GD.Print($"[level] {level}: adjacent {path} skipped ({why})");
-                continue;
-            }
-
-            var meshes = new List<TerrainMesh>();
-            foreach (EhfVistaPatch patch in patches)
-            {
-                if (patch.Mesh.TriangleCount != 0)
+                if (landscape.Ghf.Length != 0 &&
+                    StemOf(landscape.Ghf).Equals(stem, StringComparison.OrdinalIgnoreCase))
                 {
-                    meshes.Add(patch.Mesh);
+                    return landscape.Ghf;
                 }
             }
 
-            // The PATCHES of one heightfield do fuse — they share its material and its bake.
-            if (meshes.Count != 0)
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// The landscapes, water and mist the .engine_level the scenario .list names states.
+    /// </summary>
+    /// <remarks>
+    /// `sub_82ABAEF0` walks the file's records: type 4 (0x82abb1ec) is a landscape .ehf by full
+    /// path, made a landscape entity for every record alike; type 5 (0x82abb358) a .water,
+    /// type 32 (0x82abb384) a .mist. Each scenario's file names its own scenario folder, so the
+    /// paths are taken literally — matching vista files by leaf name across every .engine_level
+    /// in the banks drew Bowerstone's chapter-3 vistas in the default scenario. A landscape's
+    /// grid is the .ghf of the same stem the scenario .list names (Level_LoadHeightfieldGhfEntry
+    /// 0x8250ECE0 loads every one listed). Without a stated .engine_level this falls back to the
+    /// discovered heightfield and its siblings.
+    /// </remarks>
+    private static StatedWorld ReadStatedWorld(
+        LevelEntry level, ScenarioManifest? manifest, Func<string, byte[]?>? read, string heightfieldPath)
+    {
+        var world = new StatedWorld();
+        EngineLevelFile? engineLevel = null;
+        if (manifest is not null && read is not null)
+        {
+            foreach (string line in manifest.EngineLevel)
             {
-                built.Add((path, Concatenate(meshes)));
+                if (Engine_LevelManifest.TryResolvePath(line, read, out string path) &&
+                    read(path) is { } bytes &&
+                    Engine_EngineLevelFile.Parse(bytes) is { Heightfields.Count: > 0 } parsed)
+                {
+                    engineLevel = parsed;
+                    break;
+                }
             }
         }
 
-        return built;
+        if (engineLevel is null || manifest is null || read is null)
+        {
+            world.Landscapes.Add(new StatedLandscape(level.MainEhfPath, heightfieldPath));
+            foreach (string adjacent in level.AdjacentEhfPaths)
+            {
+                world.Landscapes.Add(new StatedLandscape(adjacent, string.Empty));
+            }
+
+            foreach ((string extension, List<string> into) in
+                     new[] { (".water", world.Water), (".mist", world.Mist) })
+            {
+                foreach (string owner in new[] { level.MainEhfPath, heightfieldPath })
+                {
+                    string candidate = owner.Length != 0 ? ReplaceExtension(owner, extension) : string.Empty;
+                    if (candidate.Length != 0 && (read is null || read(candidate) is not null))
+                    {
+                        into.Add(candidate);
+                        break;
+                    }
+                }
+            }
+
+            return world;
+        }
+
+        var grids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string line in manifest.Ghf)
+        {
+            if (Engine_LevelManifest.TryResolvePath(line, read, out string ghf))
+            {
+                grids[StemOf(ghf)] = ghf;
+            }
+        }
+
+        if (heightfieldPath.Length != 0)
+        {
+            grids.TryAdd(StemOf(heightfieldPath), heightfieldPath);
+        }
+
+        bool mainStated = false;
+        foreach (EngineLevelHeightfield heightfield in engineLevel.Heightfields)
+        {
+            string ehf = Engine_LevelManifest.VirtualPath(heightfield.Path);
+            string ghf = grids.TryGetValue(StemOf(ehf), out string? stated) ? stated : string.Empty;
+            var landscape = new StatedLandscape(ehf, ghf);
+            if (!mainStated && ghf.Length != 0 &&
+                ghf.Equals(heightfieldPath, StringComparison.OrdinalIgnoreCase))
+            {
+                world.Landscapes.Insert(0, landscape);
+                mainStated = true;
+            }
+            else
+            {
+                world.Landscapes.Add(landscape);
+            }
+        }
+
+        if (!mainStated && heightfieldPath.Length != 0)
+        {
+            world.Landscapes.Insert(0, new StatedLandscape(level.MainEhfPath, heightfieldPath));
+        }
+
+        foreach (string water in engineLevel.WaterPaths)
+        {
+            world.Water.Add(Engine_LevelManifest.VirtualPath(water));
+        }
+
+        foreach (string mist in engineLevel.MistPaths)
+        {
+            world.Mist.Add(Engine_LevelManifest.VirtualPath(mist));
+        }
+
+        int gridCount = world.Landscapes.FindAll(l => l.Ghf.Length != 0).Count;
+        GD.Print(
+            $"[level] {level}: .engine_level states {world.Landscapes.Count} landscape(s) " +
+            $"({gridCount} with a stated grid), {world.Water.Count} water, {world.Mist.Count} mist");
+        return world;
+    }
+
+    private static string StemOf(string path)
+    {
+        int cut = path.LastIndexOfAny(new[] { '/', '\\' });
+        string leaf = cut < 0 ? path : path[(cut + 1)..];
+        int dot = leaf.LastIndexOf('.');
+        return dot < 0 ? leaf : leaf[..dot];
+    }
+
+    /// <summary>
+    /// A landscape with no stated grid, from the .ehf's own patches: one mesh per file, so it
+    /// takes its own splat material and its own type-4 bake.
+    /// </summary>
+    private static TerrainMesh? BuildPatches(LevelEntry level, string ehfPath, Func<string, byte[]?> source)
+    {
+        if (source(ehfPath) is not { } bytes)
+        {
+            GD.Print($"[level] {level}: landscape {ehfPath} is not in any bank");
+            return null;
+        }
+
+        if (!Engine_EhfPatches.TryBuild(bytes, out List<EhfVistaPatch> patches, out string why))
+        {
+            GD.Print($"[level] {level}: landscape {ehfPath} skipped ({why})");
+            return null;
+        }
+
+        var meshes = new List<TerrainMesh>();
+        foreach (EhfVistaPatch patch in patches)
+        {
+            if (patch.Mesh.TriangleCount != 0)
+            {
+                meshes.Add(patch.Mesh);
+            }
+        }
+
+        // The PATCHES of one heightfield do fuse — they share its material and its bake.
+        return meshes.Count != 0 ? Concatenate(meshes) : null;
     }
 
     private static TerrainMesh Concatenate(List<TerrainMesh> meshes)

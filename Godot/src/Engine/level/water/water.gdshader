@@ -10,6 +10,12 @@ uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
 
 uniform bool guest_water = false;
 
+// THE VISTA OCEAN (Engine_LevelScene.AddVistaOcean). The guest draws it with `sky_oceanwater`
+// (blobs 0129/0130), which binds no refraction sampler: reflection and water colour only. The
+// near-field refraction reads the screen behind the surface, which under a sheet with no ground
+// is the sky; the far blend is the whole sheet.
+uniform bool ocean_mode = false;
+
 // The mirrored render of the world — Engine_WaterReflection's SubViewport, one per body, mounted
 // only in guest mode. Until it is mounted `planar_reflection` stays false and the sky dome stands
 // in, which is what every path that builds water without a live camera (the viewers, headless)
@@ -288,7 +294,7 @@ void fragment() {
 		// refraction tiles are 8-bit in the guest, so both fetches clip at 1.0. The glint is the
 		// guest's own Phong against the bent normal, `saturate(dot(V, 2(g.S)g - S))^power`.
 		float frefl = clamp(fres + w_bias.y, 0.0, 1.0);
-		float distf = clamp(dist / max(w_bias.w, 0.001), 0.0, 1.0);
+		float distf = ocean_mode ? 1.0 : clamp(dist / max(w_bias.w, 0.001), 0.0, 1.0);
 
 		vec2 raw_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.x);
 		vec2 refl_uv = vec2(1.0 - raw_uv.x, raw_uv.y);
@@ -332,7 +338,7 @@ void fragment() {
 
 		float depth_w = max(refr_lin - water_lin, 0.0);
 		float absorb = 1.0 - exp(-depth_w * (6.0 / max(w_bias.w, 1.0)));
-		vec3 under = mix(Rr, watercol, absorb);
+		vec3 under = ocean_mode ? watercol : mix(Rr, watercol, absorb);
 
 		vec3 R = reflect(-V, Nr);
 		R.y = abs(R.y);
@@ -347,7 +353,7 @@ void fragment() {
 		// stores `a1+384 = 1/v` from theme+2048, the slot after ShadowScaleBias (+2032 -> WC23 as
 		// (v, 1-v)). Schlick keeps its grazing mirror.
 		float frefl = clamp(fres + w_bias.y, 0.0, 1.0);
-		float distf = clamp(dist / max(w_bias.w, 0.001), 0.0, 1.0);
+		float distf = ocean_mode ? 1.0 : clamp(dist / max(w_bias.w, 0.001), 0.0, 1.0);
 		float F = clamp(max(fres_s, mix(frefl, 1.0, distf)) * refl_str, 0.0, 1.0);
 		if (F > 0.004) {
 			vec3 world_n = normalize((MODEL_MATRIX * vec4(Nr, 0.0)).xyz);

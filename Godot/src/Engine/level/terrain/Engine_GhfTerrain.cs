@@ -19,6 +19,10 @@ public sealed class GhfHeights
     public float OriginX { get; init; }
 
     public float OriginZ { get; init; }
+
+    /// <summary>World units between samples: the .ghf's <see cref="Engine_GhfTerrain.CellSize"/>;
+    /// an .ehf states its own (2 or 4 on vistas).</summary>
+    public float Spacing { get; init; } = Engine_GhfTerrain.CellSize;
 }
 
 public sealed class TerrainMesh
@@ -177,14 +181,15 @@ public static class Engine_GhfTerrain
         var indices = new int[quads * 6];
 
         float[] values = heights.Values;
+        float spacing = heights.Spacing;
 
         for (int y = 0; y < h; y++)
         {
             for (int x = 0; x < w; x++)
             {
                 long i = ((long)y * w) + x;
-                float wx = heights.OriginX + (x * CellSize);
-                float wz = heights.OriginZ + (y * CellSize);
+                float wx = heights.OriginX + (x * spacing);
+                float wz = heights.OriginZ + (y * spacing);
 
                 positions[(i * 3) + 0] = wx;
                 positions[(i * 3) + 1] = values[i];
@@ -205,7 +210,7 @@ public static class Engine_GhfTerrain
                 float up = At(values, w, h, x, y + 1);
 
                 float nx = left - right;
-                float ny = 2f * CellSize;
+                float ny = 2f * spacing;
                 float nz = down - up;
 
                 float length = MathF.Sqrt((nx * nx) + (ny * ny) + (nz * nz));
