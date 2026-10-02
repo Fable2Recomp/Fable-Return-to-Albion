@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 160;
+	public const int ExpectedAbiVersion = 162;
 
 	private const int MessageCapacity = 512;
 
@@ -2664,6 +2664,28 @@ public static class HostBridge
 
 		RefiiHostGetCoopPlayerEntities(out uint one, out uint two);
 		return (one, two);
+	}
+
+	/// <summary>
+	/// The clothing screen's (16) preview mannequin entity — spawned by the guest at screen open
+	/// in the hero's clothes — or null when the screen is not up.
+	/// </summary>
+	public static uint? ClothingMannequin()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			uint entity = RefiiHostGetClothingMannequin();
+			return entity != 0u ? entity : null;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return null;
+		}
 	}
 
 	public static (uint Entity, uint Ticket)? CoopMannequin()
@@ -5858,7 +5880,8 @@ public static class HostBridge
 	/// <summary>
 	/// One shop row's ASKING PRICE — what the shop charges, which is not the item's worth.
 	/// </summary>
-	public readonly record struct ShopPrice(bool Known, uint Ticket, int Price)
+	/// <param name="Record">The item's GDB record — what the ticket names, read where the price reads it.</param>
+	public readonly record struct ShopPrice(bool Known, uint Ticket, int Price, uint Record)
 	{
 		public bool IsFor(uint ticket) => Known && Ticket == ticket && ticket != 0u;
 	}
@@ -5890,8 +5913,8 @@ public static class HostBridge
 
 		try
 		{
-			uint known = RefiiHostGetShopPrice(out uint ticket, out int price);
-			return new ShopPrice(known != 0u, ticket, price);
+			uint known = RefiiHostGetShopPrice(out uint ticket, out int price, out uint record);
+			return new ShopPrice(known != 0u, ticket, price, record);
 		}
 		catch (System.EntryPointNotFoundException)
 		{
@@ -6778,6 +6801,9 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetCoopMannequin(out uint entity, out uint ticket);
 
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClothingMannequin();
+
 	[DllImport(Library, CharSet = CharSet.Ansi)]
 	private static extern int RefiiNetCoopSend(string text);
 
@@ -6871,7 +6897,7 @@ public static class HostBridge
 	private static extern void RefiiHostSetShopPrice(uint ticket, uint sell);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetShopPrice(out uint outTicket, out int outPrice);
+	private static extern uint RefiiHostGetShopPrice(out uint outTicket, out int outPrice, out uint outRecord);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetInventoryScreenMode();

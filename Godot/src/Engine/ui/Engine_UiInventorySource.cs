@@ -215,6 +215,16 @@ public static class Engine_UiInventorySource
 		int ungiftable = 0;
 		int equipped = 0;
 
+		// WHAT THE HERO CARRIES, by record — an outfit is listed only for its pieces.
+		var carried = new HashSet<uint>();
+		foreach (Refii.Host.HostBridge.InventoryRecord record in records)
+		{
+			carried.Add(record.RecordId);
+		}
+
+		var outfits = new HashSet<uint>();
+		int unwearable = 0;
+
 		// THE SLOT'S `None` ROW, FIRST — the guest spawns one per clothing category immediately
 		// after the header (`sub_829B3340` for 17..23, `sub_829B2D58` for Suits), and answers a
 		// press on it by taking that slot's garment off.
@@ -231,6 +241,38 @@ public static class Engine_UiInventorySource
 			{
 				++hidden;
 				continue;
+			}
+
+			// AN OUTFIT IS LISTED FOR ITS PIECES. `sub_829B2D58` spawns a suit the hero carries
+			// only when `sub_829B2AE8` finds at least one of its `SuitParts` in the inventory by
+			// record (`sub_824F1C90`) — an outfit with nothing to put on is not offered. One row
+			// per outfit: a second copy of the same suit would dress the hero identically.
+			string rowOperation = operation;
+			if (record.Category == Category.Suits && operation == WearOperation)
+			{
+				if (!outfits.Add(record.RecordId))
+				{
+					++hidden;
+					continue;
+				}
+
+				bool owned = false;
+				foreach (uint piece in Engine_UiItemStats.SuitPieces(record.RecordId))
+				{
+					if (carried.Contains(piece))
+					{
+						owned = true;
+						break;
+					}
+				}
+
+				if (!owned)
+				{
+					++unwearable;
+					continue;
+				}
+
+				rowOperation = OutfitOperation;
 			}
 
 			// A GIFT LIST IS THE INVENTORY NARROWED BY `sub_8242FB28`, and by nothing else — see
@@ -290,8 +332,8 @@ public static class Engine_UiInventorySource
 				// points (`AddAndReplaceItemOfRecordID`, `Player:GiveGift`) through the tick
 				// pump. Empty when the screen states no operation, and then the row falls back
 				// to borrowing the guest's identity.
-				Command: Acts(operation, record)
-					? $"{InventoryAction}{operation}:{record.RecordId}"
+				Command: Acts(rowOperation, record)
+					? $"{InventoryAction}{rowOperation}:{record.RecordId}"
 					: null,
 				Group: grouped ? Category.NameOf(record.Category) : string.Empty,
 				GroupTag: grouped ? Category.TagOf(record.Category) : string.Empty,
@@ -309,6 +351,7 @@ public static class Engine_UiInventorySource
 			(hidden == 0 ? string.Empty : $", {hidden} not listable") +
 			(ungiftable == 0 ? string.Empty : $", {ungiftable} not giftable") +
 			(equipped == 0 ? string.Empty : $", {equipped} already worn") +
+			(unwearable == 0 ? string.Empty : $", {unwearable} outfit(s) with no piece carried") +
 			(unnamed == 0 ? string.Empty : $", {unnamed} with no NameTag");
 
 		// Change-keyed per request, because this is asked once per category per rebuild and a
@@ -344,6 +387,14 @@ public static class Engine_UiInventorySource
 	/// `wear` and `gift` are not gated here: wear is only ever offered on the clothing
 	/// categories, and gift has its own predicate on a component this cannot yet read.
 	/// </summary>
+	private const string WearOperation = "wear";
+
+	/// <summary>
+	/// `Inventory:outfit:<suit>` — the pump runs `sub_826CBF10`, which puts on the hero's own
+	/// pieces of the suit and never the suit item itself (`sub_826D3A10`, event 89).
+	/// </summary>
+	private const string OutfitOperation = "outfit";
+
 	private static bool Acts(string operation, Refii.Host.HostBridge.InventoryRecord record)
 	{
 		if (operation.Length == 0)
@@ -964,6 +1015,10 @@ public static class Engine_UiInventorySource
 	/// way the guest does it — `L" x"` then the number (`word_820CE5E0`, 0x826CE31C), so
 	/// "Silver Key x5". An unresolved tag shows verbatim, which is what the guest does too
 	/// (`sub_8230E0E8`'s third fallback copies the raw tag).
+	///
+	/// An OUTFIT reads its name alone: it is worn as its pieces, so how many copies of the suit
+	/// item are carried says nothing the player can use — a remaster choice over the guest's
+	/// suffix, which it appends to every row.
 	/// </summary>
 	private static string LabelOf(Refii.Host.HostBridge.InventoryRecord record, string tag)
 	{
@@ -974,7 +1029,7 @@ public static class Engine_UiInventorySource
 					? resolved
 					: tag;
 
-		return record.Count > 1 ? $"{text} x{record.Count}" : text;
+		return record.Count > 1 && record.Category != Category.Suits ? $"{text} x{record.Count}" : text;
 	}
 
 	private static string IconOf(Refii.Host.HostBridge.InventoryRecord record) =>
@@ -992,8 +1047,8 @@ public static class Engine_UiInventorySource
 		//
 		//   Augmentations, Dyes, Books  -> the constant 11 (`li r29, 0xB` at 0x826CE50C)
 		//   Weapons, Accessories        -> an augment-SLOT code, not a rating: 2 per filled slot
-		//                                  and 1 per empty one, weighted by powers of ten. Not
-		//                                  reproduced here — it needs the fitted-augment vector.
+		//                                  and 1 per empty one, slot 1 on the hundreds digit —
+		//                                  see Engine_UiItemStats.AugmentSlotCode.
 		//   everything else             -> GDB `Rating` DOUBLED (`slwi r29, r3, 1`, 0x826CE524)
 		//
 		// The doubling is the guest's, so it is kept: whatever turns `Float4` into one to three
@@ -1003,9 +1058,17 @@ public static class Engine_UiInventorySource
 			return AugmentedRating;
 		}
 
-		if (record.Category is Category.Weapons or Category.Accessories)
+		// An outfit is its pieces, and its own `Rating` grades nothing the player wears — the
+		// row reads its name alone (a remaster choice, like the dropped stack count).
+		if (record.Category == Category.Suits)
 		{
 			return Engine_UiMenuConstants.EmptyRatingSlide;
+		}
+
+		if (record.Category is Category.Weapons or Category.Accessories)
+		{
+			return Engine_UiItemStats.AugmentSlotCode(
+				record.RecordId, Refii.Host.HostBridge.GetItemAugments(record.RecordId));
 		}
 
 		return TryItemNumber(record.RecordId, RatingField, out uint rating)

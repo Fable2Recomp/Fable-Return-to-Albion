@@ -309,9 +309,23 @@ struct ShopPrice {
     /// The row this answers for — a per-population TICKET, never a record hash.
     uint32_t ticket = 0;
     int32_t price = 0;
+
+    /// The item's GDB record: `*(*holder + 4)`, the lazy ref `sub_8296B310` resolves with
+    /// `sub_821B24F8` to read `BasePrice`. Zero when the ticket did not resolve.
+    uint32_t record = 0;
 };
 
 void RequestShopPrice(uint32_t ticket, bool sell);
+
+/// The clothing screen's (16) preview mannequin entity, resolved on the guest thread by the
+/// ticket at `screen+44` through the preview manager `*(GUI+8)` and published every tick — 0 when
+/// the screen is not up. Crosses through the bridge state like every other pump answer: the
+/// bridge does not link the pump's hooks.
+inline void PublishClothingMannequin(uint32_t entity) {
+  refii_bridge_publish_clothing_mannequin(entity);
+}
+
+uint32_t ClothingMannequinSnapshot();
 inline uint32_t RequestedShopPrice(bool* sell) {
   int32_t selling = 0;
   const uint32_t ticket = refii_bridge_requested_shop_price(&selling);

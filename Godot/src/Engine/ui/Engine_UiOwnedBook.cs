@@ -1302,6 +1302,16 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 				foreach (int ordinal in subtree ? OrdinalsUnderPath(key) : OrdinalsForPath(key))
 				{
+					// NaN RELEASES rather than states: the guest's number is dropped and the
+					// element falls back to its slide's or its authored opacity — for a group the
+					// guest blanked on its own stuck cursor, whose children author their own
+					// numbers (a dimmed arrow at 50, a stick frame kept at 0).
+					if (float.IsNaN(pair.Value))
+					{
+						Drop(ordinal);
+						continue;
+					}
+
 					if (ordinal >= 0 && ordinal < stated.Count)
 					{
 						// THE STATED CHANNEL IS 0..100, NOT 0..1. The resolve clamps it to 100 and

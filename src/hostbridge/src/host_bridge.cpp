@@ -2026,7 +2026,11 @@ extern "C" {
 ///     RefiiHostGetBoneMorphHeight — the morph record's bone-1 height factor.
 /// 160 adds dyeing: RefiiHostGetDyeStates — which garments are dyed — and the pump action
 ///     `Inventory:dye:<dye>:<target>:<slot>`.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 160; }
+/// 161 RefiiHostGetShopPrice also returns the row's item record (`*(*holder + 4)`), so the shop
+///     page reads the item the ticket names instead of guessing it from the row's label.
+/// 162 adds RefiiHostGetClothingMannequin — screen 16's preview mannequin, which the remaster
+///     draws for an outfit row and dresses through the pump's `Inventory:tryon`.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 162; }
 
 /// THE SHAPE, PER PART, as the guest states it to `sub_82A48B90`: per morphed part [model hash,
 /// count, then count x (target model hash, weight float bits)]; the part itself takes 1 - sum.
@@ -3595,7 +3599,8 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetShopPrice(uint32_t ticket, uint32_t sell)
     refii::vfs::RequestShopPrice(ticket, sell != 0u);
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetShopPrice(uint32_t* out_ticket, int32_t* out_price) {
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetShopPrice(uint32_t* out_ticket, int32_t* out_price,
+                                                     uint32_t* out_record) {
     const refii::vfs::ShopPrice answer = refii::vfs::ShopPriceSnapshot();
 
     if (out_ticket != nullptr) {
@@ -3604,6 +3609,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetShopPrice(uint32_t* out_ticket, int32
 
     if (out_price != nullptr) {
         *out_price = answer.price;
+    }
+
+    if (out_record != nullptr) {
+        *out_record = answer.record;
     }
 
     return answer.known ? 1u : 0u;
@@ -15396,6 +15405,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopPlayerEntities(uint32_t* out_one,
     if (out_one != nullptr) *out_one = PlayerEntityForKey(base, 1u);
     if (out_two != nullptr) *out_two = PlayerEntityForKey(base, 2u);
     return 1;
+}
+
+/// The clothing screen's mannequin — the `CreatureHeroMannequin*` screen 16 spawns at open and
+/// dresses on a press (and, in the remaster, on `Inventory:tryon`). 0 when the screen is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClothingMannequin(void) {
+    return refii::vfs::ClothingMannequinSnapshot();
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopMannequin(uint32_t* out_entity, uint32_t* out_ticket) {

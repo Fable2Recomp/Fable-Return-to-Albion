@@ -1848,6 +1848,11 @@ public partial class GameUi : Node
 				Engine_UiDetailPages.Positions(state.ScreenId, sliders, _screenMenu?.Script.Highlighted);
 			abilityBook.HostActive =
 				Engine_UiDetailPages.Active(state.ScreenId, _screenMenu?.Script.Highlighted);
+			// The opacity claims ride here too: this path marks the frame filled, so the owned
+			// screen driver that also sets them stands down, and without this line no item
+			// book ever received one (the clothing footer, the shop's front-page parchment).
+			abilityBook.HostOpacity =
+				Engine_UiDetailPages.Opacities(state.ScreenId, _screenMenu?.Script.Highlighted);
 
 			// THIS PATH FILLS THE BOOK TOO. DriveOwnedScreenProvider stands down on this flag,
 			// and it was only ever set by the page path above — so for the ability book it ran
@@ -4184,6 +4189,56 @@ public partial class GameUi : Node
 	/// <summary>The clothing book (`equipmentscreen.bgf`), the one item book that dresses a mannequin.</summary>
 	private const uint EquipmentScreenId = 16;
 
+	/// <summary>
+	/// AN OUTFIT IS SHOWN ON THE MANNEQUIN. Screen 16 spawns a `CreatureHeroMannequin*` at open,
+	/// cloned from the hero in the hero's clothes, and the original's ring never shows anything
+	/// else; an outfit has no model of its own (most state none, the DLC ones a single piece).
+	/// The highlighted outfit is tried on it through the pump (`Inventory:tryon`, the mechanism
+	/// the guest's own dye mode uses on highlight), and put back on leaving the outfit rows.
+	/// Single garments keep the item-alone view. Null when the row is not an outfit.
+	/// </summary>
+	private HostBridge.UiPreviewObject? OutfitTryOn(Engine_UiExpandableMenu.Item? row)
+	{
+		const string outfit = Engine_UiInventorySource.InventoryAction + "outfit:";
+		uint record = row?.Command is { } command &&
+			command.StartsWith(outfit, System.StringComparison.Ordinal) &&
+			uint.TryParse(command[outfit.Length..], out uint parsed)
+				? parsed
+				: 0u;
+
+		// Keyed on the BODY too: the screen spawns a fresh mannequin, in the hero's clothes, every
+		// time it opens, and the first outfit highlighted after a reopen must still be tried on.
+		uint body = HostBridge.ClothingMannequin() ?? 0u;
+		if (body != 0u && (record != _triedOn || body != _triedOnBody))
+		{
+			HostBridge.PostFrontEndAction($"{Engine_UiInventorySource.InventoryAction}tryon:{record}");
+		}
+
+		_triedOn = record;
+		_triedOnBody = body;
+		if (record == 0u || body == 0u)
+		{
+			return null;
+		}
+
+		uint mannequin = body;
+
+		// Turned a quarter to face the viewer, as the co-op body is: the composed body's
+		// forward is +X. The scale is the panel's fit of a standing figure.
+		return new HostBridge.UiPreviewObject(
+			EquipmentScreenId, 0u, mannequin, Vector3.Zero,
+			new Vector3(0f, Mathf.Pi / 2f, 0f), MannequinScale, 0);
+	}
+
+	/// <summary>The outfit record last tried on the mannequin; 0 = the hero's own clothes.</summary>
+	private uint _triedOn;
+
+	/// <summary>The mannequin that try-on was posted for.</summary>
+	private uint _triedOnBody;
+
+	/// <summary>The co-op page's figure scale (`(2.1 / body) * 350` canvas units, fitted).</summary>
+	private const float MannequinScale = 121f;
+
 	private void DrivePreviewObject()
 	{
 		// THIS ONE LIVES INSIDE THE BUILT TREE ON PURPOSE — it hangs off the anchor element so
@@ -4230,7 +4285,12 @@ public partial class GameUi : Node
 					$"provider '{provider}' row '{row}'");
 			}
 
-			if (provider == Engine_UiPageProviders.ItemBook)
+			if (up == EquipmentScreenId)
+			{
+				spinning = OutfitTryOn(menu.Script.Highlighted);
+			}
+
+			if (spinning is null && provider == Engine_UiPageProviders.ItemBook)
 			{
 				spinning = Engine_UiItemPage.Preview(up, menu.Script.Highlighted);
 			}
@@ -4424,7 +4484,8 @@ public partial class GameUi : Node
 			: preview.Translation;
 
 		uint was = _previewObject.ModelHash;
-		bool live = preview.ScreenId == CoopScreenId;
+		bool live = preview.ScreenId == CoopScreenId ||
+			(preview.ScreenId == EquipmentScreenId && preview.ModelHash == 0u && preview.Entity != 0u);
 		// Hung by its origin wherever the guest's own placement stands (`sub_828C3C78` reads no
 		// bounds); centred where the placement is ours — the live body, and screen 16's
 		// item-alone view, whose stated offset was dropped above.
@@ -4444,7 +4505,9 @@ public partial class GameUi : Node
 			Skeleton3D? rig = feedNode is not null && !feedNode.Skeleton.IsEmpty
 				? feedNode.GetNodeOrNull<Skeleton3D>(feedNode.Skeleton)
 				: null;
-			shown = _previewObject.ShowLive(body, preview.Entity, placement, rig);
+			shown = _previewObject.ShowLive(
+				body, preview.Entity, placement, rig, inPage: preview.ScreenId == CoopScreenId,
+				skin: feedNode?.Skin);
 			_previewLiveShown = shown ? preview.Entity : 0u;
 		}
 		else

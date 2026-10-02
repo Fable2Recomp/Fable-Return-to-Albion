@@ -598,10 +598,53 @@ public static class Engine_UiPageProviders
 				active["Foreground.FrontPage"] =
 					page.Row is null ||
 					page.Row.EventType == (int)Engine_UiMenuConstants.EventType.Submenu;
+				Engine_UiItemPage.ShopStatsActive(active, ShopPageElements[ShopStatsPage]);
 			}
 
 			return active;
 		}
+
+		/// <summary>
+		/// THE SHOP'S FRONT PAGE STANDS ON PARCHMENT. `HidePages` slides the page stack off to
+		/// x 405 and leaves `Foreground.FrontPage` — text and a frame strip, no paper of its own.
+		/// The paper authored under it is `Foreground.PageTextureFar` (canvas z 655), which our
+		/// depth-tested quads put BEHIND the opaque, screen-wide `Layer.Background` cloth (BC1,
+		/// z 1220), so the shop's name and owner read on green. `PageTextureNear` is the same
+		/// page-sized sheet at the front page's own place (z 1245, between the cloth and the
+		/// frame); the root `Intro` sweeps it in and fades it out. The remaster holds it up while
+		/// the front page is, the way the item pages keep their `ModelHider` parchment.
+		/// </summary>
+		public IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page)
+		{
+			bool folder = page.Row is null ||
+				page.Row.EventType == (int)Engine_UiMenuConstants.EventType.Submenu;
+			if (page.ScreenId == ShopScreenId)
+			{
+				return folder ? ShopFrontPageParchment : NoOpacities;
+			}
+
+			return page.ScreenId == EquipmentScreenId && !folder ? EquipmentFooter : NoOpacities;
+		}
+
+		/// <summary>
+		/// THE CLOTHING PAGE'S FOOTER — the `1 / 2` page turn and the `Select` prompt. Its slide
+		/// switches every piece on, but the guest's Page1 filler (`sub_829B6310`) blanks the page
+		/// through opacity whenever ITS cursor sits on a category row (id 301), and Godot owns
+		/// the cursor, so that blank is never lifted: the footer stood switched on at opacity 0
+		/// on every item. Released, not restated — the pieces keep their authored numbers (the
+		/// arrows at 50, the stick frames at 0).
+		/// </summary>
+		private static readonly IReadOnlyDictionary<string, float> EquipmentFooter =
+			new Dictionary<string, float>(System.StringComparer.Ordinal)
+			{
+				["Foreground.Book.Pages.Page1.Contents.Footer.*"] = float.NaN,
+			};
+
+		private static readonly IReadOnlyDictionary<string, float> ShopFrontPageParchment =
+			new Dictionary<string, float>(System.StringComparer.Ordinal)
+			{
+				["Foreground.PageTextureNear"] = 1f,
+			};
 
 		/// <summary>
 		/// THE PAGE THAT IS UP SITS IN THE VISIBLE SLOT. `giftgivingscreen.bgf` authors the two
@@ -644,6 +687,11 @@ public static class Engine_UiPageProviders
 				[$"{pages[BookPage]}.{HiderOf(page.ScreenId)}.PageTexture"] = new Vector3(-204f, 0f, ModelHiderParchmentDepth),
 			};
 
+			if (page.ScreenId == ShopScreenId)
+			{
+				Engine_UiItemPage.ShopStatsPositions(positions, ShopPageElements[ShopStatsPage]);
+			}
+
 			if (page.ScreenId == EquipmentScreenId)
 			{
 				string hider = $"{pages[BookPage]}.{HiderOf(page.ScreenId)}";
@@ -654,6 +702,8 @@ public static class Engine_UiPageProviders
 				// because a stated transform outranks the host slide's own command; the item
 				// slides' anchor (30, 30, +350) is stated outright so the item hangs in the ring.
 				positions[$"{hider}.MapHighlight"] = new Vector3(16f, 50f, ModelHiderParchmentDepth - 1f);
+				// Garment and outfit alike sit in the ring at the Item slides' anchor; an outfit
+				// is the mannequin wearing it, fitted to the same panel.
 				positions[$"{hider}.model_proxy"] = new Vector3(30f, 30f, 350f);
 			}
 
@@ -668,7 +718,7 @@ public static class Engine_UiPageProviders
 		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page)
 		{
 			IReadOnlyDictionary<string, int> stars = page.ScreenId == ShopScreenId
-				? ShopStarSlides(page.Row)
+				? ShopStarSlides(page.Row, page.Strings)
 				: Engine_UiItemPage.Slides(page.Row, page.Strings);
 
 			// THE PARCHMENT STAYS. `ModelHider` authors two slides: `Show` (1) fades
@@ -691,7 +741,19 @@ public static class Engine_UiPageProviders
 				slides[key] = value;
 			}
 
+			// `ItemOff` for an outfit too: `HeroOff` switches off the ring, the oval and the
+			// item's icon (the original's ringless standing figure), and the remaster keeps
+			// every clothing page in one layout — the mannequin stands in the ring instead.
 			slides[$"{pages[BookPage]}.{HiderOf(page.ScreenId)}"] = HideSlideOf(page.ScreenId);
+
+			// THE FOOTER'S `Normal` SLIDE: the `1 / 2` turn and `Select`. The guest states
+			// `Clothing` (2) in non-dye mode (`sub_829B5D68`, 0x829b5f08), which adds a
+			// Back-button "Take Picture" prompt this remaster does not answer from this page.
+			if (page.ScreenId == EquipmentScreenId)
+			{
+				slides["Foreground.Book.Pages.Page1.Contents.Footer"] = FooterNormalSlide;
+			}
+
 			return slides;
 		}
 
@@ -713,10 +775,18 @@ public static class Engine_UiPageProviders
 
 		private const int ModelHiderHideSlide = 2;
 		private const int TypeSpecificItemOffSlide = 4;
+		private const int FooterNormalSlide = 1;
 		private const float ModelHiderParchmentDepth = 43f;
 	}
 
 	private const uint ShopScreenId = 22;
+
+	/// <summary>The shop's stats page — `Page2` of `shopscreen.bgf`.</summary>
+	private const int ShopStatsPage = 1;
+
+	/// <summary>The shop's transaction row types (`sub_826AE5C0`): 30 buy, 31 sell.</summary>
+	private const int ShopBuyEventType = 30;
+	private const int ShopSellEventType = 31;
 	private const uint EquipmentScreenId = 16;
 
 	/// <summary>
@@ -925,15 +995,31 @@ public static class Engine_UiPageProviders
 		"Page3.Contents.StarRating",
 	};
 
-	private static IReadOnlyDictionary<string, int> ShopStarSlides(Engine_UiExpandableMenu.Item? row)
+	private static IReadOnlyDictionary<string, int> ShopStarSlides(
+		Engine_UiExpandableMenu.Item? row, Refii.Text.Engine_BabelDatabase? strings)
 	{
-		if (row is null || row.RatingSlide < Engine_UiMenuConstants.OneStarEmptyRatingSlide ||
+		// AN ITEM ROW'S STARS ARE ITS RECORD'S. `sub_82992998` slides `StarRating` to the GDB
+		// `Rating` (`detail+0x44`) when it is 1..5 and leaves it alone otherwise; the row's
+		// `RatingSlide` answers only for the front page's own rating.
+		int stars;
+		if (row?.EventType is (int)ShopBuyEventType or (int)ShopSellEventType)
+		{
+			stars = Engine_UiItemPage.ShopRating(row, strings);
+			if (stars < 1 || stars > 5)
+			{
+				return NoSlides;
+			}
+		}
+		else if (row is null || row.RatingSlide < Engine_UiMenuConstants.OneStarEmptyRatingSlide ||
 			row.RatingSlide > Engine_UiMenuConstants.FiveStarFullRatingSlide)
 		{
 			return NoSlides;
 		}
+		else
+		{
+			stars = System.Math.Clamp((row.RatingSlide + 1) / 2, 1, 5);
+		}
 
-		int stars = System.Math.Clamp((row.RatingSlide + 1) / 2, 1, 5);
 		var slides = new Dictionary<string, int>(ShopStarRatings.Length);
 		foreach (string path in ShopStarRatings)
 		{

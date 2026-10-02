@@ -469,6 +469,14 @@ extern "C" void refii_bridge_publish_shop_price(const void* price) {
   g_shop_price = *static_cast<const ShopPrice*>(price);
 }
 
+std::atomic<uint32_t> g_clothing_mannequin{0};
+
+extern "C" void refii_bridge_publish_clothing_mannequin(uint32_t entity) {
+  g_clothing_mannequin.store(entity);
+}
+
+uint32_t ClothingMannequinSnapshot() { return g_clothing_mannequin.load(); }
+
 ShopPrice ShopPriceSnapshot() {
   std::lock_guard<std::mutex> lock(g_shop_price_mutex);
   return g_shop_price;

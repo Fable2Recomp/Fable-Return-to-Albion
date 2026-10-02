@@ -253,6 +253,43 @@ public static class Engine_UiItemStats
 	}
 
 	/// <summary>
+	/// A weapon or accessory row's AUGMENT-SLOT CODE — the row's `Float4`, which the shipped
+	/// `UpdateStarRating` decodes into five pips. `sub_826CE230` (0x826CE4C8..504) walks the
+	/// definition's `NumberOfSlots` with a place value starting at 100 and multiplied by ten per
+	/// slot, adding 2·place while filled slots remain and place after: three slots with one
+	/// filled is 200 + 1000 + 10000 = 11200. No `AugmentableComponent` or no slots is 0.
+	///
+	/// FILLED is the item's instance pairs, else the definition's `InitialAugmentations`. The
+	/// guest's row reads the instance record alone and only its detail page SEEDS that record
+	/// from the definition; Godot builds the page itself, so the seed is counted here or the row
+	/// would show empty slots beside a page listing the same item's augments.
+	/// </summary>
+	public static int AugmentSlotCode(uint definition, IReadOnlyList<(uint Primary, uint Secondary)>? socketed)
+	{
+		GdbMulti? multi = Engine_GameGdb.Database;
+		if (multi is null || definition == 0u || !multi.TryLookup(definition, out GdbCursor at) ||
+			!Engine_AbilityRecords.TryRef(multi, at, AugmentableComponent, out GdbCursor augmentable))
+		{
+			return 0;
+		}
+
+		int slots = Engine_AbilityRecords.IntOrEnumOn(augmentable, "NumberOfSlots");
+		int filled = (socketed ?? Seeded(multi, augmentable)).Count;
+		int code = 0;
+		int place = 100;
+		for (int slot = 0; slot < slots && slot < MaxPipSlots; ++slot)
+		{
+			code += slot < filled ? 2 * place : place;
+			place *= 10;
+		}
+
+		return code;
+	}
+
+	/// <summary>The decoder's pip strip holds five; a sixth digit would land past its divisor.</summary>
+	private const int MaxPipSlots = 5;
+
+	/// <summary>
 	/// What the guest seeds a never-touched item with: `InitialAugmentations` is a list record
 	/// of `Augmentation1..N`, each stating a `PrimaryType` and optionally a `SecondaryType`.
 	/// </summary>
@@ -365,6 +402,34 @@ public static class Engine_UiItemStats
 
 	/// <summary>The outfit's effects: the sum over its parts' `DefaultMaleEffects` — see the
 	/// category 25 note in <see cref="For"/>. Primary is the largest magnitude, as for a piece.</summary>
+	/// <summary>
+	/// The pieces an outfit names — `AppearanceModifierComponent.SuitParts`, the record
+	/// references `sub_826CC618` collects for both the outfit list's filter and its equip.
+	/// </summary>
+	public static IReadOnlyCollection<uint> SuitPieces(uint suit)
+	{
+		var pieces = new HashSet<uint>();
+		GdbMulti? multi = Engine_GameGdb.Database;
+		if (multi is null || suit == 0u || !multi.TryLookup(suit, out GdbCursor at) ||
+			!Engine_AbilityRecords.TryRef(multi, at, AppearanceModifier, out GdbCursor holder) ||
+			!Engine_AbilityRecords.TryRef(multi, holder, SuitParts, out GdbCursor parts))
+		{
+			return pieces;
+		}
+
+		foreach ((uint hash, GdbFieldType type, uint raw) in multi.InheritedFields(parts))
+		{
+			if (hash != GdbView.HashParent &&
+				type is GdbFieldType.Reference or GdbFieldType.ResourceReference &&
+				raw != 0u && raw != GdbHash.Null)
+			{
+				pieces.Add(raw);
+			}
+		}
+
+		return pieces;
+	}
+
 	private static void Suit(
 		GdbMulti multi, GdbCursor at, List<Line> lines, ref Line primary,
 		Refii.Text.Engine_BabelDatabase? strings)

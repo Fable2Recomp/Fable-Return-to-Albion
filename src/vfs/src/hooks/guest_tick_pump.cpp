@@ -2140,6 +2140,209 @@ bool DispatchDye(PPCContext& ctx, uint8_t* base, const std::string& arguments) {
   return true;
 }
 
+uint32_t ScreenObjectRO(uint8_t* base, uint32_t screen_id);
+
+/// One guest call on a frame claimed below `saved.r1`; returns r3 and restores the context.
+uint32_t CallGuestAt(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uint32_t frame,
+                     uint32_t address, uint32_t r3, uint32_t r4 = 0u, uint32_t r5 = 0u) {
+  PPCFunc* fn = FindGuestFunction(address);
+  if (fn == nullptr) {
+    return 0u;
+  }
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = r3;
+  ctx.r4.u32 = r4;
+  ctx.r5.u32 = r5;
+  ctx.ctr.u32 = address;
+  fn(ctx, base);
+  const uint32_t result = ctx.r3.u32;
+  ctx = saved;
+  return result;
+}
+
+/// Puts one inventory piece on `appearance` (a component 15) the way `sub_826CB218` does:
+/// `sub_824C4258` "already worn?", else `sub_824BECF8`, which strips whatever overlaps the
+/// piece's `BodyAreasCovered`. Returns true when it was put on.
+bool WearPiece(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uint32_t frame,
+               uint32_t appearance, uint32_t handle) {
+  if ((CallGuestAt(ctx, base, saved, frame, 0x824C4258u, appearance, handle) & 0xFFu) != 0u) {
+    return false;
+  }
+  CallGuestAt(ctx, base, saved, frame, 0x824BECF8u, appearance, handle);
+  return true;
+}
+
+/// Every piece of the suit at `suit` (an inventory handle) the hero carries in `inventory`,
+/// put on `appearance`: `sub_826CC618` reads `SuitParts` into a vector (begin/end/capacity at
+/// +4/+8/+12, `sub_8237C1D8`) and `sub_824F1C90` finds the first owned copy of each.
+void WearSuitPieces(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uint32_t frame,
+                    uint32_t suit, uint32_t inventory, uint32_t appearance, uint32_t* owned,
+                    uint32_t* worn) {
+  const uint32_t parts = frame + 0x60u;
+  const uint32_t piece = frame + 0x80u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, parts + (word * 4u), 0u);
+  }
+  CallGuestAt(ctx, base, saved, frame, 0x826CC618u, 0u, suit, parts);
+
+  const uint32_t begin = LoadGuestU32(base, parts + 4u);
+  const uint32_t end = LoadGuestU32(base, parts + 8u);
+  for (uint32_t at = begin; begin != 0u && at < end; at += 4u) {
+    for (uint32_t word = 0; word < 4u; ++word) {
+      StoreGuestU32(base, piece + (word * 4u), 0u);
+    }
+    CallGuestAt(ctx, base, saved, frame, 0x824F1C90u, piece, inventory, LoadGuestU32(base, at));
+    const uint32_t item = LoadGuestU32(base, piece);
+    if (item == 0u) {
+      continue;
+    }
+
+    ++*owned;
+    if (WearPiece(ctx, base, saved, frame, appearance, piece)) {
+      ++*worn;
+    }
+    CallGuestAt(ctx, base, saved, frame, 0x82764DC0u, item, piece);
+  }
+
+  if (begin != 0u) {
+    CallGuestAt(ctx, base, saved, frame, 0x8221BD38u, begin);
+  }
+}
+
+/// AN OUTFIT IS ITS PIECES. Screen 16's outfit row (event 89) is answered by `sub_826D3A10`,
+/// whose work is `sub_826CBF10(_, &suitHandle, creature)`: every inventory item whose record is
+/// one of the suit's `SuitParts` goes through `sub_826CB218`. The suit item itself is never
+/// worn; slots no piece touches stay. Neither callee reads the first argument, so 0 stands in
+/// for the screen's manager.
+///
+/// A joiner cannot take that call: it picks the player through the `game+140` chooser, the read
+/// that faulted for `unequip` on a client. It runs the same inner pair on its own hero instead.
+void DressOutfit(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uint32_t frame,
+                 uint32_t suit, uint32_t hero, uint32_t suit_hash) {
+  if (!IsCoopJoiner(base)) {
+    const uint32_t dressed = CallGuestAt(ctx, base, saved, frame, 0x826CBF10u, 0u, suit) & 0xFFu;
+    REXLOG_INFO("Refii guest-tick pump: Inventory:outfit — sub_826CBF10 on suit 0x{:08X}: {}",
+                suit_hash, dressed != 0u ? "pieces equipped" : "the hero owns none of its pieces");
+    return;
+  }
+
+  const uint32_t inventory = HeroComponent(base, hero, 13u);
+  const uint32_t appearance = HeroComponent(base, hero, 15u);
+  if (inventory == 0u || appearance == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:outfit — joiner hero 0x{:08X} has no "
+                "component 13/15", hero);
+    return;
+  }
+
+  uint32_t owned = 0;
+  uint32_t worn = 0;
+  WearSuitPieces(ctx, base, saved, frame, suit, inventory, appearance, &owned, &worn);
+  REXLOG_INFO("Refii guest-tick pump: Inventory:outfit — joiner dressed suit 0x{:08X}: {} of {} "
+              "owned piece(s) put on", suit_hash, worn, owned);
+}
+
+/// THE CLOTHING SCREEN'S MANNEQUIN. Screen 16's open (`sub_826D2B88`) spawns a
+/// `CreatureHeroMannequin*` through `sub_826D7650`, cloned from the hero in the hero's clothes,
+/// and keeps only its TICKET at `screen+44`; `sub_826D8008(*(GUI+8), ticket)` resolves it. The
+/// preview manager `*(GUI+8)` (vtable 0x82006CC0) holds 24-byte records at `*(pm+56)..*(pm+60)`:
+/// `+4` the entity holder (`*holder` = entity), `+16` the ticket, `+20` active. 0 when screen 16
+/// is not up.
+uint32_t ClothingMannequin(uint8_t* base) {
+  const uint32_t screen = ScreenObjectRO(base, 16u);
+  if (screen == 0u) {
+    return 0u;
+  }
+
+  const uint32_t ticket = LoadGuestU32(base, screen + 44u);
+  const uint32_t gui = LoadGuestU32(base, kGuiObject);
+  const uint32_t pm = LooksLikeGuestPointer(gui) ? LoadGuestU32(base, gui + 8u) : 0u;
+  if (ticket == 0u || !LooksLikeGuestPointer(pm) || LoadGuestU32(base, pm) != 0x82006CC0u) {
+    return 0u;
+  }
+
+  const uint32_t begin = LoadGuestU32(base, pm + 56u);
+  const uint32_t end = LoadGuestU32(base, pm + 60u);
+  if (!LooksLikeGuestPointer(begin) || end < begin || end - begin > 24u * 16u) {
+    return 0u;
+  }
+
+  for (uint32_t rec = begin; rec + 24u <= end; rec += 24u) {
+    if (LoadGuestU32(base, rec + 16u) != ticket || base[rec + 20u] == 0u) {
+      continue;
+    }
+    const uint32_t holder = LoadGuestU32(base, rec + 4u);
+    const uint32_t entity = LooksLikeGuestPointer(holder) ? LoadGuestU32(base, holder) : 0u;
+    return LooksLikeGuestPointer(entity) ? entity : 0u;
+  }
+
+  return 0u;
+}
+
+/// TRYING AN OUTFIT ON — `Inventory:tryon:<record>`, the remaster's preview of the highlighted
+/// outfit on screen 16's mannequin. The original changes the mannequin only on a press; in dye
+/// mode it already dresses it on HIGHLIGHT (`sub_826D31E0`), and that is the mechanism used here.
+///
+/// First the mannequin is put back in the hero's clothes, as `sub_826D3358` does: the worn list
+/// copied (`sub_824C5FC8(manq15 + 12, hero15 + 12)`) with byte +61. A list copy rebuilds nothing,
+/// so the four calls `sub_824BECF8` makes after its own list change follow (`sub_824C1FC8`,
+/// `sub_824C09C0`, `sub_824C1730`, `sub_824C4780`). Then every clothing slot is emptied and the
+/// record's pieces go on — every owned `SuitParts` piece for a suit (category 25), the garment
+/// itself otherwise. Record 0 only resets.
+void TryOnMannequin(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uint32_t frame,
+                    uint32_t hero, uint32_t record) {
+  const uint32_t mannequin = ClothingMannequin(base);
+  const uint32_t dummy = mannequin != 0u ? HeroComponent(base, mannequin, 15u) : 0u;
+  const uint32_t worn = HeroComponent(base, hero, 15u);
+  const uint32_t inventory = HeroComponent(base, hero, 13u);
+  if (dummy == 0u || worn == 0u || inventory == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:tryon — no clothing mannequin (0x{:08X}) or "
+                "hero component 13/15", mannequin);
+    return;
+  }
+
+  CallGuestAt(ctx, base, saved, frame, 0x824C5FC8u, dummy + 12u, worn + 12u);
+  base[dummy + 61u] = base[worn + 61u];
+  for (const uint32_t rebuild : {0x824C1FC8u, 0x824C09C0u, 0x824C1730u, 0x824C4780u}) {
+    CallGuestAt(ctx, base, saved, frame, rebuild, dummy);
+  }
+
+  if (record == 0u) {
+    return;
+  }
+
+  // ONLY THE OUTFIT. Every clothing slot (categories 17..23) is emptied first through the
+  // guest's own per-slot unequip `sub_824BF4D8(comp15, category)` — it drops the worn items of
+  // that category and runs the same rebuild — so a slot the outfit leaves empty, or whose piece
+  // the hero does not carry, shows nothing rather than what the hero has on.
+  for (uint32_t category = 17u; category <= 23u; ++category) {
+    CallGuestAt(ctx, base, saved, frame, 0x824BF4D8u, dummy, category);
+  }
+
+  const uint32_t handle = frame + 0xA0u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, handle + (word * 4u), 0u);
+  }
+  CallGuestAt(ctx, base, saved, frame, 0x824F1C90u, handle, inventory, record);
+  const uint32_t item = LoadGuestU32(base, handle);
+  if (item == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:tryon — record 0x{:08X} is not carried", record);
+    return;
+  }
+
+  uint32_t owned = 0;
+  uint32_t put = 0;
+  if (LoadGuestU32(base, item + 16u) == 25u) {
+    WearSuitPieces(ctx, base, saved, frame, handle, inventory, dummy, &owned, &put);
+  } else {
+    owned = 1u;
+    put = WearPiece(ctx, base, saved, frame, dummy, handle) ? 1u : 0u;
+  }
+  CallGuestAt(ctx, base, saved, frame, 0x82764DC0u, item, handle);
+  REXLOG_INFO("Refii guest-tick pump: Inventory:tryon — mannequin 0x{:08X} wears 0x{:08X}: {} of "
+              "{} owned piece(s) put on", mannequin, record, put, owned);
+}
+
 bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
   if (body.rfind("dye:", 0) == 0) {
     return DispatchDye(ctx, base, body.substr(4));
@@ -2154,7 +2357,8 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   const std::string op = body.substr(0, colon);
   char* end = nullptr;
   const unsigned long hash = std::strtoul(body.c_str() + colon + 1, &end, 10);
-  if (end == body.c_str() + colon + 1 || *end != '\0' || hash == 0u) {
+  // `tryon:0` is the one zero that means something: put the mannequin back in the hero's clothes.
+  if (end == body.c_str() + colon + 1 || *end != '\0' || (hash == 0u && op != "tryon")) {
     REXLOG_INFO("Refii guest-tick pump: 'Inventory:{}' has no record hash — dropped", body);
     return true;
   }
@@ -2241,6 +2445,14 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     return true;
   }
 
+  if (op == "tryon") {
+    const PPCContext saved_tryon = ctx;
+    TryOnMannequin(ctx, base, saved_tryon, (ctx.r1.u32 - 0x200u) & ~0xFu, hero,
+                   static_cast<uint32_t>(hash));
+    ctx = saved_tryon;
+    return true;
+  }
+
   if (op == "wear") {
     const uint32_t appearance = HeroComponent(base, hero, 15u);
     PPCFunc* wear = FindGuestFunction(0x824BF068u);
@@ -2261,7 +2473,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     return true;
   }
 
-  if (op != "use" && op != "gift" && op != "equip") {
+  if (op != "use" && op != "gift" && op != "equip" && op != "outfit") {
     REXLOG_INFO("Refii guest-tick pump: inventory op '{}' is not one this knows", op);
     return true;
   }
@@ -2323,7 +2535,9 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     return true;
   }
 
-  if (op == "equip" && IsCoopJoiner(base)) {
+  if (op == "outfit") {
+    DressOutfit(ctx, base, saved, frame, handle, hero, static_cast<uint32_t>(hash));
+  } else if (op == "equip" && IsCoopJoiner(base)) {
     // A JOINER EQUIPS PLAYER TWO DIRECTLY. The pending-record slot at `GUI+52` (record A) is
     // applied at pause exit by `sub_8236ED98` to the entity at EM+104 — player ONE — on every
     // side (0x8236ee98..0x8236eeb0); only `GUI+80` (record B) reaches EM+112, and nothing the
@@ -3323,6 +3537,7 @@ void CoopAnimatePreview(PPCContext& ctx, uint8_t* base) {
   const auto [entity, handler] = CoopMannequin(base);
   (void)handler;
   PosePreviewMannequins(base, entity);
+  PublishClothingMannequin(ClothingMannequin(base));
 }
 
 void CoopRedress(PPCContext& ctx, uint8_t* base) {
@@ -5484,10 +5699,15 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
   const bool found = (ctx.r3.u32 & 0xFFu) != 0u;
   ctx = saved;
 
-  if (!found || LoadGuestU32(base, item) == 0u) {
+  const uint32_t object = found ? LoadGuestU32(base, item) : 0u;
+  if (!plausible(object)) {
     PublishShopPrice(answer);
     return;
   }
+
+  // The item's record, as the price itself reads it: `sub_8296B310` resolves
+  // `sub_821B24F8(*holder + 4)` — a lazy `{hash, cache}` ref whose first word is the hash.
+  answer.record = LoadGuestU32(base, object + 4u);
 
   ctx = saved;
   ctx.r1.u32 = frame;

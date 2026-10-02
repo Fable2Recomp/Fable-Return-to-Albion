@@ -84,6 +84,8 @@ public static class Engine_UiItemPage
 
 	private const string ShopDamageLabel = "TextElements.Damage";
 
+	private const string ShopInfo = "TextElements.Info";
+
 	/// <summary>The guest's own UI codes for the two shop transactions (`sub_826AE5C0`).</summary>
 	private const int BuyEventType = 30;
 
@@ -110,8 +112,13 @@ public static class Engine_UiItemPage
 			[ShopDescription] = string.Empty,
 			[ShopValue] = string.Empty,
 			[ShopAskingPrice] = string.Empty,
+
+			// `sub_82992998` writes the shop's `Info` as an EMPTY string on every item row
+			// (0x82992b88..bb8): the authored "Info:" caption never shows.
+			[ShopInfo] = string.Empty,
 		};
 
+		ShopLayout = (0, 0);
 		if (row is null || string.IsNullOrEmpty(row.Name) ||
 			row.EventType == SubmenuEventType || row.EventType == SpellAssignEventType)
 		{
@@ -146,9 +153,7 @@ public static class Engine_UiItemPage
 				: string.Empty;
 		}
 
-		ItemDetail? detail = Engine_ItemDetails.BuildOne(multi, id)
-			?? Engine_ItemDetails.BuildOne(multi, Refii.Core.Engine_GameHash.Fnv1(row.Name))
-			?? ByNameTag(multi, row.Name);
+		ItemDetail? detail = Resolve(multi, row, id);
 
 		if (detail is null)
 		{
@@ -156,8 +161,11 @@ public static class Engine_UiItemPage
 			// (`AbilityPhysiqueBase`) and resolve by `Fnv1(name)`; the item books' own filler
 			// resolves `(Float2<<16)|Float1` through the `menuMgr+4` map into an entity handle
 			// and reads the live entity's def, never the spawn name. The first miss per row name
-			// is reported so the answer comes from a run rather than an assumption.
-			if (_unresolved.Add(row.Name))
+			// is reported so the answer comes from a run rather than an assumption. A shop row
+			// whose ticket the bridge has not answered yet is pending, not unresolved.
+			bool shopPending = (row.EventType == BuyEventType || row.EventType == SellEventType) &&
+				!Refii.Host.HostBridge.GetShopPrice().IsFor(id);
+			if (!shopPending && _unresolved.Add(row.Name))
 			{
 				GD.Print($"[item-page] '{row.Name}' (type {row.EventType}, label " +
 					$"'{row.StatedLabel}') is not a GDB record — the item books may key on the " +
@@ -197,27 +205,28 @@ public static class Engine_UiItemPage
 		// The inventory keys its records by the DEFINITION's id (`item+4`), which is what the
 		// augment read is asked by.
 		uint definition = detail.DefinitionHash != 0 ? detail.DefinitionHash : detail.RecordHash;
+		bool shopRow = row.EventType == BuyEventType || row.EventType == SellEventType;
+
+		// A shop row's item is the SHOP's, not one the hero carries: the hero's socketed copy of
+		// the same definition is not this item, so the definition's own seed is what is read.
 		Engine_UiItemStats.Stats stats = Engine_UiItemStats.For(
-			definition, strings, Socketed(definition));
-
-		// THE SHOP'S DAMAGE ROW. `shopscreen.bgf` authors `Damage:` / `10000` on every item
-		// page and the guest writes the value only for a weapon; a food item was showing the
-		// file's 10000. The label and the value are stated together: a weapon's damage line,
-		// or nothing for anything else — a blank host value is a blanking order.
-		if (row.EventType == BuyEventType || row.EventType == SellEventType)
+			definition, strings, shopRow ? null : Socketed(definition));
+		if (shopRow)
 		{
-			string damage = string.Empty;
-			foreach (Engine_UiItemStats.Line line in stats.Lines)
-			{
-				if (line.Label.StartsWith("Damage", System.StringComparison.OrdinalIgnoreCase))
-				{
-					damage = line.Value;
-					break;
-				}
-			}
+			ShopStatsPage(values, stats, strings);
+		}
 
-			values[ShopDamageValue] = damage;
-			values[ShopDamageLabel] = damage.Length != 0 ? Babel(strings, "GUI_SCREEN_SHOP_DAMAGE") : string.Empty;
+		// THE SHOP'S ONE STAT LINE. `sub_82992998` writes `Damage` / `DamageValue` from the
+		// detail builder's PRIMARY pair (`detail+0x08` / `+0x0C`, 0x82992c08..c20) for every
+		// category — a weapon's damage, a potion's health, a garment's largest change — and both
+		// blank when the category states none. The authored `Health` pair is never addressed.
+		// Its worth is `"$" + BasePrice` with the local starting at 0 (`sub_829931A8`), so an
+		// item without a `ShopItemComponent` reads `$0` rather than nothing.
+		if (shopRow)
+		{
+			values[ShopDamageLabel] = stats.Primary.Label;
+			values[ShopDamageValue] = stats.Primary.Value;
+			values[ShopValue] = "$" + System.Math.Max(detail.BasePrice, 0).ToString(CultureInfo.InvariantCulture);
 		}
 		if (stats.Any)
 		{
@@ -238,7 +247,6 @@ public static class Engine_UiItemPage
 
 			body.Append(values[ItemDescription]);
 			values[ItemDescription] = body.ToString();
-			values[ShopDescription] = values[ItemDescription];
 		}
 
 		// Page1's one-liner — the primary stat, which is the largest appearance change on a
@@ -246,6 +254,26 @@ public static class Engine_UiItemPage
 		if (stats.Primary.Label.Length != 0)
 		{
 			string summary = $"{stats.Primary.Label} {stats.Primary.Value}";
+
+			// AN OUTFIT STATES EVERY LINE. The original prints nothing for one (no category-25
+			// handler in `sub_824698D8`); the remaster sums its pieces, and an outfit that
+			// changes two things — Attractiveness and Poshness — says both, one per line.
+			if (IsOutfitRow(row) && stats.Lines.Count > 1)
+			{
+				var lines = new System.Text.StringBuilder();
+				foreach (Engine_UiItemStats.Line line in stats.Lines)
+				{
+					if (lines.Length != 0)
+					{
+						lines.Append('\n');
+					}
+
+					lines.Append(line.Label).Append(' ').Append(line.Value);
+				}
+
+				summary = lines.ToString();
+			}
+
 			values[Info] = summary;
 			values[EquipmentInfo] = summary;
 		}
@@ -279,6 +307,88 @@ public static class Engine_UiItemPage
 	}
 
 	/// <summary>
+	/// THE SHOP'S STATS PAGE IS A GRID, NOT A BLOB. `sub_82993408` (screen 22's Page2 filler, run
+	/// on a highlight change) writes the detail builder's two vectors row by row: `Stat{i}` /
+	/// `StatValue{i}` for i &lt; 8 (0x82993c78 `cmpwi r29, 8`), then `Augments` with
+	/// `GUI_SCREEN_AUGMENT_AUGMENTS` and `Augment{i}` for i &lt; 5 (0x82993e58), each slot's name
+	/// bare. Rows past the item's count are hidden (<see cref="ShopStatsActive"/>), and the
+	/// description is the description alone — the item books' concatenated block is
+	/// `sub_829B6EAC`'s, a different page. `Health`, `Drunkeness` and `Corruption` are authored
+	/// and never addressed: food and potions report through the same Stat rows.
+	/// </summary>
+	private static void ShopStatsPage(
+		Dictionary<string, string> values,
+		Engine_UiItemStats.Stats stats,
+		Refii.Text.Engine_BabelDatabase? strings)
+	{
+		int lines = System.Math.Min(stats.Lines.Count, ShopStatRows);
+		int augments = System.Math.Min(stats.Augments.Count, ShopAugmentRows);
+		ShopLayout = (lines, augments);
+
+		for (int i = 0; i < lines; i++)
+		{
+			values[$"{ShopStatGroup}.Stat{i + 1}"] = stats.Lines[i].Label;
+			values[$"{ShopStatGroup}.StatValue{i + 1}"] = stats.Lines[i].Value;
+		}
+
+		values[$"{ShopAugmentGroup}.Augments"] = Babel(strings, "GUI_SCREEN_AUGMENT_AUGMENTS");
+		for (int i = 0; i < augments; i++)
+		{
+			values[$"{ShopAugmentGroup}.Augment{i + 1}"] = stats.Augments[i];
+		}
+	}
+
+	/// <summary>
+	/// Which rows of the shop's stats page stand, as switches over Page2: the `Stats` caption
+	/// and its rule only when there are stat rows, `Augments` and `line2` only when the item has
+	/// slots, and every unused row off (the guest fades them through opacity and leaves their
+	/// authored "Base Value:" text behind).
+	/// </summary>
+	public static void ShopStatsActive(Dictionary<string, bool> active, string page)
+	{
+		(int lines, int augments) = ShopLayout;
+		active[$"{page}.Contents.{ShopStatGroup}.Stats"] = lines > 0;
+		active[$"{page}.Contents.{ShopStatGroup}.line"] = lines > 0;
+		for (int i = 0; i < ShopStatRows; i++)
+		{
+			active[$"{page}.Contents.{ShopStatGroup}.Stat{i + 1}"] = i < lines;
+			active[$"{page}.Contents.{ShopStatGroup}.StatValue{i + 1}"] = i < lines;
+		}
+
+		active[$"{page}.Contents.{ShopAugmentGroup}.Augments"] = augments > 0;
+		active[$"{page}.Contents.{ShopAugmentGroup}.line2"] = augments > 0;
+		for (int i = 0; i < ShopAugmentRows; i++)
+		{
+			active[$"{page}.Contents.{ShopAugmentGroup}.Augment{i + 1}"] = i < augments;
+		}
+	}
+
+	/// <summary>
+	/// The shop stats page closes up around what it shows: `sub_82993408` writes `Group.Group`'s
+	/// y as `n ? (8 − n)·30 − 144 : 0` (0x82993d6c) and `ItemDescription`'s as
+	/// `(m ? (5 − m)·30 : 175) + (n == 0 ? 144 : 0) − 115` (0x82993e84), x and z kept — the
+	/// authored layout is the full eight-and-five case (−144, −115).
+	/// </summary>
+	public static void ShopStatsPositions(Dictionary<string, Vector3> positions, string page)
+	{
+		(int lines, int augments) = ShopLayout;
+		float group = lines > 0 ? ((ShopStatRows - lines) * ShopRowPitch) - 144f : 0f;
+		float description = (augments > 0 ? (ShopAugmentRows - augments) * ShopRowPitch : 175f) +
+			(lines == 0 ? 144f : 0f) - 115f;
+		positions[$"{page}.Contents.{ShopAugmentGroup}"] = new Vector3(0f, group, 0f);
+		positions[$"{page}.Contents.{ShopAugmentGroup}.ItemDescription"] = new Vector3(30f, description, 0f);
+	}
+
+	/// <summary>The current shop row's stat and augment counts, as its page was last filled.</summary>
+	private static (int Lines, int Augments) ShopLayout;
+
+	private const string ShopStatGroup = "Text.Group";
+	private const string ShopAugmentGroup = "Text.Group.Group";
+	private const int ShopStatRows = 8;
+	private const int ShopAugmentRows = 5;
+	private const float ShopRowPitch = 30f;
+
+	/// <summary>
 	/// The item's live augment pairs, re-read twice a second: the page is filled every frame,
 	/// the read walks the hero's inventory, and socketing an augment happens on another screen.
 	/// </summary>
@@ -300,6 +410,29 @@ public static class Engine_UiItemPage
 	private static ulong _socketedAt;
 
 	private static (uint Primary, uint Secondary)[]? _socketed;
+
+	/// <summary>
+	/// THE ITEM A ROW NAMES. A shop row's id is a per-population TICKET, not a record, and its
+	/// name is a spawn label (`INV_ITEM_…_NAME_(Augmented)_0`) that is no tag either; the guest
+	/// joins it through `sub_82880BC0` to the item object and reads the record at `*obj + 4`,
+	/// which the bridge returns beside the asking price. Until that reply is for this row the
+	/// shop page has no item — never a guess from the label. Every other book's id is the
+	/// inventory's own record (`item + 4`), resolved directly.
+	/// </summary>
+	private static ItemDetail? Resolve(GdbMulti multi, Engine_UiExpandableMenu.Item row, uint id)
+	{
+		if (row.EventType == BuyEventType || row.EventType == SellEventType)
+		{
+			Refii.Host.HostBridge.ShopPrice stated = Refii.Host.HostBridge.GetShopPrice();
+			return stated.IsFor(id) && stated.Record != 0u
+				? Engine_ItemDetails.BuildOne(multi, stated.Record)
+				: null;
+		}
+
+		return Engine_ItemDetails.BuildOne(multi, id)
+			?? Engine_ItemDetails.BuildOne(multi, Refii.Core.Engine_GameHash.Fnv1(row.Name))
+			?? ByNameTag(multi, row.Name);
+	}
 
 	/// <summary>
 	/// The item whose NAME TAG the row carries. The item books spawn rows with the record's
@@ -352,8 +485,7 @@ public static class Engine_UiItemPage
 		}
 
 		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-		ItemDetail? detail = Engine_ItemDetails.BuildOne(multi, id)
-			?? ByNameTag(multi, row.Name);
+		ItemDetail? detail = Resolve(multi, row, id);
 		if (detail is null || detail.IconTex.Length == 0)
 		{
 			return textures;
@@ -396,7 +528,7 @@ public static class Engine_UiItemPage
 		}
 
 		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-		ItemDetail? detail = Engine_ItemDetails.BuildOne(multi, id) ?? ByNameTag(multi, row.Name);
+		ItemDetail? detail = Resolve(multi, row, id);
 		if (detail is null)
 		{
 			ReportPreview($"'{row.Name}' id {id:X8}: no record");
@@ -436,6 +568,11 @@ public static class Engine_UiItemPage
 			detail.PreviewRotationAxis);
 	}
 
+	/// <summary>An outfit row — the inventory source routes its press to `Inventory:outfit`.</summary>
+	private static bool IsOutfitRow(Engine_UiExpandableMenu.Item row) =>
+		row.Command?.StartsWith(
+			Engine_UiInventorySource.InventoryAction + "outfit:", System.StringComparison.Ordinal) == true;
+
 	private const string ItemImage = "Contents.ItemImage";
 
 	private const string EquipmentItemImage = "TypeSpecific.ItemImage";
@@ -468,6 +605,25 @@ public static class Engine_UiItemPage
 			: string.Empty;
 
 	/// <summary>
+	/// The shop row's GDB `Rating`, or 0 while its record is unresolved — `sub_82992998` takes
+	/// the star slide from `detail+0x44` and applies it only for 1..5 (0x82992b38..b64).
+	/// </summary>
+	public static int ShopRating(Engine_UiExpandableMenu.Item? row, Refii.Text.Engine_BabelDatabase? strings)
+	{
+		if (row is null || (row.EventType != BuyEventType && row.EventType != SellEventType) ||
+			Engine_GameGdb.Database is not { } multi)
+		{
+			return 0;
+		}
+
+		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
+		ItemDetail? detail = Resolve(multi, row, id);
+		return detail is null
+			? 0
+			: Engine_UiItemStats.For(detail.DefinitionHash != 0 ? detail.DefinitionHash : detail.RecordHash, strings).Rating;
+	}
+
+	/// <summary>
 	/// THE STAR STRIP. `sub_82426BA8(elem, ctx, details+0x44)` where `+0x44` is
 	/// `sub_823BF820(entry, "Rating")` — the GDB integer goes STRAIGHT to the slide index, with
 	/// no compare, divide or clamp anywhere on the item path. (The real-estate page's strip does
@@ -489,9 +645,7 @@ public static class Engine_UiItemPage
 		}
 
 		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-		ItemDetail? detail = Engine_ItemDetails.BuildOne(multi, id)
-			?? Engine_ItemDetails.BuildOne(multi, Refii.Core.Engine_GameHash.Fnv1(row.Name))
-			?? ByNameTag(multi, row.Name);
+		ItemDetail? detail = Resolve(multi, row, id);
 		if (detail is null)
 		{
 			return Engine_UiPageProviders.NoSlides;

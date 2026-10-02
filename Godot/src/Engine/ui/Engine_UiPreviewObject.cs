@@ -150,8 +150,21 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// skeleton renders in BIND pose whatever the guest animates, so the copy here is bound to
 	/// the same skeleton the feed poses — the pose then comes through as the feed writes it.
 	/// </param>
-	public bool ShowLive(Mesh? mesh, uint key, Placement placement, Skeleton3D? skeleton = null)
+	/// <param name="inPage">
+	/// Keep the body at its anchor's depth — the co-op pages compose their figure behind the
+	/// page's mask and the save-card fan. False lifts it clear of the page as a named model is:
+	/// the clothing book's anchor lies 350 behind its parchment and the book's cloth.
+	/// </param>
+	/// <param name="skin">
+	/// The feed node's own <see cref="Skin"/> for that mesh. Without it Godot binds the copy by
+	/// skeleton bone ORDER, and a redressed body is a new mesh over a rebuilt bone table — the
+	/// vertices landed on the wrong bones and the figure exploded into spikes.
+	/// </param>
+	public bool ShowLive(
+		Mesh? mesh, uint key, Placement placement, Skeleton3D? skeleton = null, bool inPage = true,
+		Skin? skin = null)
 	{
+		_inPage = inPage;
 		if (skeleton is not null && _mesh is not null && GodotObject.IsInstanceValid(skeleton) &&
 			skeleton.IsInsideTree() && _mesh.IsInsideTree())
 		{
@@ -168,6 +181,23 @@ public partial class Engine_UiPreviewObject : Node3D
 		// here outlives that node, so the panel keeps showing it for the same entity.
 		if (key != 0 && key == _liveKey && _mesh is not null)
 		{
+			// THE SAME BODY, REDRESSED. The feed composes a body by its part list and builds a
+			// new mesh when the parts change — the clothing mannequin trying an outfit on — so
+			// the copy follows the feed's current mesh; only a frame with NO mesh keeps the last.
+			// The rig can be rebuilt a frame after the mesh, so the skin is followed on its own.
+			if (skin is not null && !ReferenceEquals(_mesh.Skin, skin))
+			{
+				_mesh.Skin = skin;
+			}
+
+			if (mesh is not null && !ReferenceEquals(_mesh.Mesh, mesh))
+			{
+				_mesh.Mesh = mesh;
+				int retextured = Present(_mesh, mesh, inPage);
+				LastReport = $"live entity 0x{key:X8} redressed ({retextured}/{mesh.GetSurfaceCount()} " +
+					"surface(s) textured)";
+			}
+
 			Apply(placement);
 			Visible = true;
 			return true;
@@ -183,9 +213,8 @@ public partial class Engine_UiPreviewObject : Node3D
 		ModelHash = 0;
 		_liveKey = key;
 		_mesh?.QueueFree();
-		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
-		_inPage = true;
-		int textured = Present(_mesh, mesh, inPage: true);
+		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh, Skin = skin };
+		int textured = Present(_mesh, mesh, inPage);
 		AddChild(_mesh);
 		LastReport = $"live entity 0x{key:X8} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
 		Apply(placement);
@@ -265,7 +294,7 @@ public partial class Engine_UiPreviewObject : Node3D
 		}
 
 		// A live body's pose is the host's: a plain turn about the vertical over its euler.
-		Basis turned = _inPage
+		Basis turned = _liveKey != 0
 			? new Basis(Vector3.Up, _yaw) * Basis.FromEuler(_placed.Rotation)
 			: Stated(_yaw, _placed.Rotation, _placed.RotationAxis);
 		_mesh.Basis = turned.Scaled(Vector3.One * _drawnScale);

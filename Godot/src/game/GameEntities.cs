@@ -345,9 +345,25 @@ public partial class GameEntities : Node3D
             // The same for a still prop already promoted into an entity batch: hidden node, slot
             // in a batch, nothing to re-apply while unchanged. A change of placement or look
             // (both in `Changed`) takes the full path, which unbatches it.
+            // A batched prop is still DRAWN by us: its record and place go into the drawn sets
+            // exactly as on the full path, or the reconcile reads the record as undrawn and
+            // stands the region's copy back up inside it.
+            bool adoptedStill = _adoptions.ContainsKey(entity.Address);
             if (!entity.Changed && !Due(entity.Address, ReconcileTicks) &&
-                (_adoptions.ContainsKey(entity.Address) || (_batches?.Contains(entity.Address) ?? false)))
+                (adoptedStill || (_batches?.Contains(entity.Address) ?? false)))
             {
+                if (!adoptedStill)
+                {
+                    if (entity.RecordHash != 0)
+                    {
+                        _drawnRecords.Add(entity.RecordHash);
+                    }
+                    if (ModelKeyFor(entity.ModelHash) is { } stillKey)
+                    {
+                        _drawnKeys.Add((entity.Address, stillKey));
+                    }
+                }
+
                 _seen.Add(entity.Address);
                 ++_withModel;
                 ++_prologueSkipped;

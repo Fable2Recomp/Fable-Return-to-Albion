@@ -66,6 +66,9 @@ public interface Engine_UiPageProvider
 	/// Buttons` groups are authored at 0, so nothing that only DROPS the guest's value can ever
 	/// light them, and their children (the X and Y prompts, the profile titles) inherit the
 	/// zero. Stating the number is the only way to own it.
+	///
+	/// <see cref="float.NaN"/> RELEASES instead: the guest's stated number is dropped and the
+	/// element takes its slide's or authored opacity. A `.*` suffix claims the subtree either way.
 	/// </summary>
 	IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page) =>
 		Engine_UiPageProviders.NoOpacities;

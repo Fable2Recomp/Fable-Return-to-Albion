@@ -243,6 +243,7 @@ uint32_t refii_bridge_requested_quest_travel(void);
 void refii_bridge_publish_quest_travel(const void* travel);
 uint32_t refii_bridge_requested_shop_price(int32_t* sell);
 void refii_bridge_publish_shop_price(const void* price);
+void refii_bridge_publish_clothing_mannequin(uint32_t entity);
 
 void refii_bridge_note_gui_native_registration(uint32_t implementation,
                                                const char* name, size_t length);
