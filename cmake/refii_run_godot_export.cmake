@@ -310,6 +310,19 @@ file(WRITE "${_app}/sdk/pins.json"
 "}\n"
 )
 
+# THE LICENCES TRAVEL WITH THE BINARIES. The BSD, MIT, Apache and LGPL components all require
+# their notices in a binary distribution, not only in the source tree. THIRD_PARTY_NOTICES.txt
+# is written by tools/licenses/gen_third_party_notices.py.
+get_filename_component(_repo_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+foreach(_notice LICENSE THIRD_PARTY_NOTICES.txt)
+    if(NOT EXISTS "${_repo_root}/${_notice}")
+        message(FATAL_ERROR
+            "${_notice} is missing from ${_repo_root}; a release must carry it. "
+            "Run tools/licenses/gen_third_party_notices.py.")
+    endif()
+    file(COPY "${_repo_root}/${_notice}" DESTINATION "${_app}")
+endforeach()
+
 # One file to hand over. Zipped from the work directory so the archive contains the app
 # FOLDER rather than loose files — unzipping in Downloads should not scatter 1 GB of
 # libraries across it.
