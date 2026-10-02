@@ -427,6 +427,7 @@ public static class Engine_LevelLighting
 		}
 
 		environment.TonemapMode = Godot.Environment.ToneMapper.Linear;
+		Engine_LevelBakedLighting.PublishThemeLighting(frame);
 
 		// ONE FILL FOR EVERY SURFACE, AND GODOT CARRIES IT. The lit shaders no longer switch
 		// Godot's ambient off, so exactly one side may supply the fill or it is counted twice:
@@ -449,7 +450,7 @@ public static class Engine_LevelLighting
 			// it with the trace (`ambient_light = diffuse`), so it lands only where the sky is seen
 			// — which is what the guest's BAKE did. It carries the bake's share of the fill,
 			// `mean bake * LightmapColour`, in the theme's own colour; the flat floor is the
-			// per-instance `ambient_colour` the shader emits. `ambient_light_scale` scales both.
+			// global `fable_ambient_colour` the shader emits. `ambient_light_scale` scales both.
 			float[] sky =
 			{
 				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[0],

@@ -112,7 +112,14 @@ public static class Engine_SkyEnvironment
     /// FoggingStart of zero for as long as nothing consumed it.
     /// </remarks>
     public static (AtmosphereState State, ImageTexture Lut) ComputeDome(
-        SkyFrame frame, SkyTheme theme)
+        SkyFrame frame, SkyTheme theme) => ComputeDome(frame, theme, null);
+
+    /// <summary>
+    /// As above, writing the table into <paramref name="reuse"/> when given one, so a dome
+    /// re-evaluated many times a second updates one texture rather than creating one each time.
+    /// </summary>
+    public static (AtmosphereState State, ImageTexture Lut) ComputeDome(
+        SkyFrame frame, SkyTheme theme, ImageTexture? reuse)
     {
         AtmosphereInputs inputs = Engine_SkyAtmosphere.FromFrame(frame, theme);
         AtmosphereState state = Engine_SkyAtmosphere.Compute(inputs);
@@ -122,13 +129,26 @@ public static class Engine_SkyEnvironment
         Buffer.BlockCopy(lut, 0, bytes, 0, bytes.Length);
         var image = Image.CreateFromData(
             Engine_SkyAtmosphere.LutWidth, 1, false, Image.Format.Rgbaf, bytes);
+        if (reuse is not null && reuse.GetWidth() == image.GetWidth() &&
+            reuse.GetHeight() == image.GetHeight())
+        {
+            reuse.Update(image);
+            return (state, reuse);
+        }
+
         return (state, ImageTexture.CreateFromImage(image));
     }
 
     public static void ApplyDomeUniforms(
         ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
     {
-        material.SetShaderParameter("in_scatter_lut", lut);
+        // ONLY WHEN IT IS A DIFFERENT TEXTURE. A texture parameter queues the material's uniform
+        // set for a rebuild on the render thread; the continuous tick updates one texture in place.
+        if (material.GetShaderParameter(Param_in_scatter_lut).AsGodotObject() != lut)
+        {
+            material.SetShaderParameter(Param_in_scatter_lut, lut);
+        }
+
         material.SetShaderParameter("beta_rayleigh", new Vector3(
             state.BetaRayleigh[0], state.BetaRayleigh[1], state.BetaRayleigh[2]));
         material.SetShaderParameter("beta_mie", new Vector3(
@@ -156,9 +176,22 @@ public static class Engine_SkyEnvironment
     /// through these, because they were already wired that way and a sky is drawn once.
     /// </remarks>
     public static void ApplyAtmosphereGlobals(
-        SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut)
+        SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut) =>
+        ApplyAtmosphereGlobals(frame, theme, state, lut, report: true);
+
+    /// <param name="report">False for the continuous tick, which would print every change.</param>
+    public static void ApplyAtmosphereGlobals(
+        SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut, bool report)
     {
-        RenderingServer.GlobalShaderParameterSet("atmos_inscatter", lut);
+        // ONLY WHEN IT IS A DIFFERENT TEXTURE. Setting a sampler global queues EVERY material
+        // that reads it for a uniform-set rebuild (`MaterialStorage::global_shader_parameter_set`,
+        // the `texture_materials` loop) — every lit surface in the region. At the atmosphere's
+        // 15 Hz that held the render thread at ~50 ms a frame. The table is updated in place.
+        if (!ReferenceEquals(lut, _publishedLut))
+        {
+            RenderingServer.GlobalShaderParameterSet("atmos_inscatter", lut);
+            _publishedLut = lut;
+        }
 
         // The sum, because the sum is what the guest's LUT baker exponentiates — it loads both
         // registers of the atmospheric constant block and adds them per channel before the exp.
@@ -192,8 +225,15 @@ public static class Engine_SkyEnvironment
 
         RenderingServer.GlobalShaderParameterSet("atmos_fog_on", state.HasFog);
 
-        ReportAtmosphere(state);
+        if (report)
+        {
+            ReportAtmosphere(state);
+        }
     }
+
+    private static ImageTexture? _publishedLut;
+
+    private static readonly StringName Param_in_scatter_lut = "in_scatter_lut";
 
     private static string _lastAtmosphereReport = string.Empty;
 

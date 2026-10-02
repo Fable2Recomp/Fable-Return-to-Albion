@@ -57,11 +57,11 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// <summary>The region's painted day sets, sampled at the hero; null when it paints none.</summary>
     public Refii.Lighting.Engine_PaintedDaySets? Painted { get; set; }
 
-    /// <summary>Weight movement since the last re-evaluate; a blend re-evaluates in steps.</summary>
-    private float _paintedMoved;
-
-    /// <summary>A 5 s fade in ten steps: each re-evaluate costs tens of milliseconds.</summary>
-    private const float PaintedStep = 0.1f;
+    /// <summary>
+    /// Each painted day set's lighting at both ends of the current step, by hash; null when no
+    /// loaded gdb states it. Folded every frame at the layer's live weight (<see cref="LightingNow"/>).
+    /// </summary>
+    private readonly Dictionary<uint, (LightingTheme Start, LightingTheme? End)?> _paintedThemes = new();
 
     public ToneMapTheme? ToneMap => _toneMapTheme;
 
@@ -182,7 +182,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Refii.Core.Engine_FramePhases.Lap("sky.relight", ref lap);
         TickPainted((float)delta);
         Refii.Core.Engine_FramePhases.Lap("sky.painted", ref lap);
-        TrackBodies();
+        TrackBodies((float)delta);
         Refii.Core.Engine_FramePhases.Lap("sky.bodies", ref lap);
         AnimateSky((float)delta);
         Refii.Core.Engine_FramePhases.Lap("sky.anim", ref lap);
@@ -210,25 +210,15 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private const double ReevaluateWarnMs = 6.9;
 
     /// <summary>
-    /// How far the day has to move before the themes are re-read: one game minute.
+    /// How far the day moves between theme extracts: five game minutes.
     /// </summary>
     /// <remarks>
-    /// NOT EVERY FRAME, because <see cref="Reevaluate"/> is not a cheap function — it walks the
-    /// GDB chain to re-extract and re-blend the sky, cloud and lighting themes, and doing that at
-    /// display rate would cost more than everything it feeds. One minute of game time is 1/1440 of
-    /// the day, which at the guest's default day speed is one real second: fine enough that the
-    /// sun's movement is continuous to the eye and coarse enough to be free.
-    ///
-    /// The guest itself re-evaluates the day set every 15 Hz tick (`sub_82275F68` advances the
-    /// clock at 0x822760C0 and calls `sub_8218EAF8` at 0x82276104), so this is coarser than the
-    /// original by design rather than by accident — and it can afford to be, because its
-    /// re-evaluation uploads a few shader constants where ours re-lights every prop in the region.
-    ///
-    /// FIVE MINUTES, NOT ONE, and the difference is entirely in the stutter rather than the image.
-    /// A day is a full 360 degrees of azimuth, so five game minutes moves the sun about 1.25
-    /// degrees — invisible — while cutting the number of times a frame has to absorb a GDB walk,
-    /// a dome LUT rebuild and a pass over every prop by a factor of five. At the default day speed
-    /// that is one every five real seconds instead of one every second.
+    /// The extract walks the GDB chain for the sky, cloud, water, tone and lighting themes at both
+    /// ends of the step. Nothing on screen holds for the step: the sun and the lighting are
+    /// interpolated between the two ends every frame (<see cref="TrackBodies"/>), the atmosphere
+    /// at the guest's 15 Hz (<see cref="TickAtmosphere"/>). The blend between day-set entries is
+    /// linear in time, so the interpolation is exact except where an entry boundary falls inside
+    /// a step.
     /// </remarks>
     private const float ReevaluateStep = 5.0f / 1440.0f;
 
@@ -248,19 +238,31 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private LightingTheme? _lightingTheme;
 
     /// <summary>
-    /// THE THEMES AT BOTH ENDS OF THE CURRENT STEP. The re-evaluate runs once per five game
-    /// minutes and swapped the blended sky and lighting themes whole, so the rig rotation, the
-    /// sun's colour and its energy all moved at once by five minutes' worth of blend — a hop
-    /// every few seconds with the shadows riding it, while the guest's clock itself is smooth
-    /// (a fifteenth of a game minute per tick). The step now extracts the themes at its start
-    /// and its end, and <see cref="TrackBodies"/> interpolates between them every frame. The
-    /// blend between day-set entries is linear in time, so the interpolation is exact except
-    /// where an entry boundary falls inside a step.
+    /// THE THEMES AT BOTH ENDS OF THE CURRENT STEP; see <see cref="ReevaluateStep"/>.
     /// </summary>
     private SkyTheme? _skyStepStart;
     private SkyTheme? _skyStepEnd;
     private LightingTheme? _lightingStepEnd;
+    private WaterTheme? _waterStepStart;
+    private WaterTheme? _waterStepEnd;
+    private CloudTheme? _cloudStepStart;
+    private CloudTheme? _cloudStepEnd;
+    private ToneMapTheme? _toneMapStepStart;
+    private ToneMapTheme? _toneMapStepEnd;
     private float _stepStart = float.NaN;
+
+    /// <summary>
+    /// How often the atmosphere follows the clock between steps: the guest's own tick rate
+    /// (`sub_8218EAF8` runs every 15 Hz tick). The dome, fog, water, clouds and tone curve used
+    /// to hold for the whole five-minute step and then jump.
+    /// </summary>
+    private const float AtmosphereHz = 15f;
+
+    private float _atmosphereClock;
+    private ImageTexture? _domeLut;
+
+    /// <summary>The per-instance bake dial the region was last lit with; NaN until it has been.</summary>
+    private float _instanceDial = float.NaN;
 
     private static float WrapForward(float from, float to)
     {
@@ -288,7 +290,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// frame. The scatter LUT is deliberately NOT rebuilt here; it changes slowly and the coarse
     /// pass still owns it.
     /// </summary>
-    private void TrackBodies()
+    private void TrackBodies(float delta)
     {
         if (Theme is null || !float.IsFinite(_dayFraction))
         {
@@ -303,6 +305,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
+        _frame = frame;
+        TickAtmosphere(delta, w, frame);
 
         Vector3 dome = Engine_SkyFrame.ToDome(frame.SunDirection);
         if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
@@ -317,11 +321,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
         }
 
-        if (_lightingTheme is { } lightingTheme && ResolveSun() is { } sun)
+        if (LightingNow(w) is { } lightingNow && ResolveSun() is { } sun)
         {
-            LightingTheme lightingNow = _lightingStepEnd is { } lightingEnd && w > 0f
-                ? Engine_ThemeTimeline.BlendLighting(lightingTheme, lightingEnd, w)
-                : lightingTheme;
             LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingNow, frame);
             Lighting = lighting;
             Engine_LevelLighting.UpdateSun(sun, lighting);
@@ -329,12 +330,151 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             {
                 Engine_LevelLighting.ConfigureEnvironment(Environment, lighting);
             }
+
+            RelightIfDialMoved(lighting);
         }
     }
 
     /// <summary>
-    /// The guest's painted-day-set blend, at the hero, on real time. Re-evaluates the theme
-    /// once per tenth of weight rather than per frame; see <see cref="PaintedStep"/>.
+    /// The level day set's lighting at weight <paramref name="w"/> through the step, with every
+    /// painted layer folded over it at its live weight — the guest's fold (`sub_8218EAF8`).
+    /// </summary>
+    private LightingTheme? LightingNow(float w)
+    {
+        if (_lightingTheme is not { } start)
+        {
+            return null;
+        }
+
+        LightingTheme now = _lightingStepEnd is { } end && w > 0f
+            ? Engine_ThemeTimeline.BlendLighting(start, end, w)
+            : start;
+
+        if (Painted is { Any: true } painted)
+        {
+            foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in painted.Layers)
+            {
+                if (layer.Weight > 0f &&
+                    _paintedThemes.TryGetValue(layer.Hash, out var stated) && stated is { } pair)
+                {
+                    LightingTheme layerNow = pair.End is { } layerEnd && w > 0f
+                        ? Engine_ThemeTimeline.BlendLighting(pair.Start, layerEnd, w)
+                        : pair.Start;
+                    now = Engine_LightingTheme.FoldPainted(now, layerNow, layer.Weight);
+                }
+            }
+        }
+
+        return now;
+    }
+
+    /// <summary>
+    /// Re-lights the region when the one per-instance value that is not the theme's — the
+    /// prop bake dial — has changed, and once when the region first stands: packed props
+    /// carry no instance parameters until something writes them.
+    /// </summary>
+    private void RelightIfDialMoved(LightingFrame lighting)
+    {
+        float dial = Engine_LevelBakedLighting.DialProbeLitProps
+            ? Engine_LevelBakedLighting.AuthoredBakeWeight
+            : 1f;
+        if (dial == _instanceDial || GetParent() is not Node region)
+        {
+            return;
+        }
+
+        _instanceDial = dial;
+        Engine_LevelBakedLighting.QueueRefreshInstanceLighting(region.GetParent() ?? region, lighting);
+    }
+
+    /// <summary>
+    /// The dome, fog, water, clouds and tone curve, between the step's two themes, at
+    /// <see cref="AtmosphereHz"/>.
+    /// </summary>
+    private void TickAtmosphere(float delta, float w, SkyFrame frame)
+    {
+        _atmosphereClock += delta;
+        if (_atmosphereClock < 1f / AtmosphereHz || Theme is null)
+        {
+            return;
+        }
+
+        _atmosphereClock = 0f;
+        ApplyAtmosphere(frame, w, report: false);
+    }
+
+    private void ApplyAtmosphere(SkyFrame frame, float w, bool report)
+    {
+        if (Theme is null)
+        {
+            return;
+        }
+
+        (AtmosphereState domeState, ImageTexture domeLut) =
+            Engine_SkyEnvironment.ComputeDome(frame, Theme, _domeLut);
+        _domeLut = domeLut;
+
+        if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
+        {
+            Engine_SkyEnvironment.ApplyDomeUniforms(material, frame, domeState, domeLut);
+        }
+
+        // OUTSIDE the sky-material guard. The world is fogged whether or not this region drew a
+        // dome, and a level whose sky material failed to build would otherwise lose its fog too —
+        // which is the harder of the two failures to spot.
+        Engine_SkyEnvironment.ApplyAtmosphereGlobals(frame, Theme, domeState, domeLut, report);
+
+        Node3D? water = GetParent()?.GetNodeOrNull<Node3D>(Engine_LevelScene.WaterNodeName);
+        if (water is not null)
+        {
+            WaterTheme waterTheme = _waterStepStart is { } waterStart
+                ? (_waterStepEnd is { } waterEnd && w > 0f
+                    ? Engine_ThemeTimeline.BlendWater(waterStart, waterEnd, w)
+                    : waterStart)
+                : WaterTheme.Default;
+
+            foreach (Node child in water.GetChildren())
+            {
+                if (child is MeshInstance3D waterMesh &&
+                    waterMesh.MaterialOverride is ShaderMaterial waterMaterial)
+                {
+                    Engine_SkyEnvironment.ApplyWaterFrame(
+                        waterMaterial, frame, domeState, domeLut);
+                    Engine_WaterMaterial.Apply(waterMaterial, waterTheme);
+                }
+            }
+
+            if (report)
+            {
+                Engine_LevelScene.ApplyVistaOceanGate(water, waterTheme);
+            }
+        }
+
+        if (_cloudStepStart is { } cloudStart)
+        {
+            CloudTheme cloudTheme = _cloudStepEnd is { } cloudEnd && w > 0f
+                ? Engine_ThemeTimeline.BlendClouds(cloudStart, cloudEnd, w)
+                : cloudStart;
+            if (GetParent()?.GetNodeOrNull<Node3D>(Path_Clouds) is { } clouds)
+            {
+                Engine_Clouds.Update(clouds, cloudTheme, frame.SunDirection, frame.MainLightColour);
+            }
+
+            _cloudTheme = cloudTheme;
+        }
+
+        if (_toneMapStepStart is { } toneStart)
+        {
+            _toneMapTheme = _toneMapStepEnd is { } toneEnd && w > 0f
+                ? Engine_ThemeTimeline.BlendToneMap(toneStart, toneEnd, w)
+                : toneStart;
+        }
+    }
+
+    /// <summary>
+    /// The guest's painted-day-set blend, at the hero, on real time. The weights are folded every
+    /// frame (<see cref="LightingNow"/>); a re-evaluate is needed only to read a day set the hero
+    /// has just walked into.
     /// </summary>
     private void TickPainted(float delta)
     {
@@ -353,14 +493,15 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             hero = root.GlobalTransform.AffineInverse() * world;
         }
 
-        _paintedMoved += Painted.Tick(hero, delta);
-        if (_paintedMoved < PaintedStep)
+        Painted.Tick(hero, delta);
+        foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in Painted.Layers)
         {
-            return;
+            if (layer.Weight > 0f && !_paintedThemes.ContainsKey(layer.Hash))
+            {
+                Reevaluate(restartStep: false);
+                return;
+            }
         }
-
-        _paintedMoved = 0f;
-        Reevaluate(restartStep: false);
     }
 
     private void FollowGuestClock()
@@ -417,7 +558,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             // dome LUT upload from the instance walk, and those want completely different fixes.
             GD.Print(
                 $"[lighting] re-evaluate took {ms:0.0} ms at tod={_dayFraction:0.0000} " +
-                $"(theme {_msTheme:0.0}, dome {_msDome:0.0}, water {_msWater:0.0}, " +
+                $"(theme {_msTheme:0.0}, atmosphere {_msDome:0.0}, " +
                 $"celestial {_msCelestial:0.0}, instances {_msInstances:0.0})");
         }
     }
@@ -426,7 +567,6 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private double _msTheme;
     private double _msDome;
-    private double _msWater;
     private double _msCelestial;
     private double _msInstances;
 
@@ -455,13 +595,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// window measures. FALSE for a painted-weight change, which is a POSITIONAL event: the step
     /// is not over, only its content changed.
     ///
-    /// Resetting the phase on a painted trigger is what couples the two. `TickPainted`
-    /// re-evaluates once per tenth of weight, so up to ten times across one transition, and each
-    /// one threw away where we were inside the current step and snapped the drawn lighting back
-    /// to that step's start. The size of that snap is exactly `end − start`, which for five game
-    /// minutes of sun is normally invisible — it only became a flash because the painted fold
-    /// was replacing the level's main light, making start and end a lit world and a black one.
-    /// Holding the phase keeps it continuous even when they legitimately differ, as at dawn.
+    /// Resetting the phase on a painted trigger would snap the drawn lighting back to the step's
+    /// start; holding it keeps the lighting continuous.
     /// </param>
     public void Reevaluate(bool restartStep = true)
     {
@@ -475,18 +610,28 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         _skyStepStart = null;
         _skyStepEnd = null;
         _lightingStepEnd = null;
+        _waterStepStart = null;
+        _waterStepEnd = null;
+        _cloudStepStart = null;
+        _cloudStepEnd = null;
+        _toneMapStepStart = null;
+        _toneMapStepEnd = null;
         if (restartStep || float.IsNaN(_stepStart))
         {
             _stepStart = _dayFraction;
         }
-        float stepEndTime = (_dayFraction + ReevaluateStep) % 1f;
+
+        // BOTH ENDS AT THE STEP'S OWN TIMES, so the per-frame interpolation is exact however far
+        // into the step a painted re-evaluate lands.
+        float stepStartTime = _stepStart;
+        float stepEndTime = (_stepStart + ReevaluateStep) % 1f;
 
         if (LightingGdbs.Count != 0 &&
             Engine_ThemeTimeline.TryExtractSkyBlended(
-                LightingGdbs, _dayFraction, out SkyTheme timeTheme))
+                LightingGdbs, stepStartTime, out SkyTheme startTheme))
         {
-            Theme = timeTheme;
-            _skyStepStart = timeTheme;
+            Theme = startTheme;
+            _skyStepStart = startTheme;
             if (Engine_ThemeTimeline.TryExtractSkyBlended(
                     LightingGdbs, stepEndTime, out SkyTheme endTheme))
             {
@@ -494,50 +639,55 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
         }
 
-        SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
-        _msTheme = SinceMs(ref mark);
-
-        (AtmosphereState domeState, ImageTexture domeLut) =
-            Engine_SkyEnvironment.ComputeDome(frame, Theme);
-
-        if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
+        float w = StepWeight();
+        if (_skyStepStart is { } skyStart && _skyStepEnd is { } skyEnd && w > 0f)
         {
-            Engine_SkyEnvironment.ApplyDomeUniforms(material, frame, domeState, domeLut);
+            Theme = Engine_ThemeTimeline.BlendSky(skyStart, skyEnd, w);
         }
 
-        // OUTSIDE the sky-material guard. The world is fogged whether or not this region drew a
-        // dome, and a level whose sky material failed to build would otherwise lose its fog too —
-        // which is the harder of the two failures to spot.
-        Engine_SkyEnvironment.ApplyAtmosphereGlobals(frame, Theme, domeState, domeLut);
+        SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
 
-        _msDome = SinceMs(ref mark);
-
-        Node3D? water = GetParent()?.GetNodeOrNull<Node3D>(
-            Engine_LevelScene.WaterNodeName);
-        if (water is not null)
+        if (LightingGdbs.Count != 0)
         {
-            WaterTheme waterTheme =
-                LightingGdbs.Count != 0 &&
-                Engine_ThemeTimeline.TryExtractWaterBlended(
-                    LightingGdbs, _dayFraction, out WaterTheme blendedWater)
-                    ? blendedWater
-                    : WaterTheme.Default;
-
-            foreach (Node child in water.GetChildren())
+            if (Engine_ThemeTimeline.TryExtractWaterBlended(
+                    LightingGdbs, stepStartTime, out WaterTheme waterStart))
             {
-                if (child is MeshInstance3D waterMesh &&
-                    waterMesh.MaterialOverride is ShaderMaterial waterMaterial)
+                _waterStepStart = waterStart;
+                if (Engine_ThemeTimeline.TryExtractWaterBlended(
+                        LightingGdbs, stepEndTime, out WaterTheme waterEnd))
                 {
-                    Engine_SkyEnvironment.ApplyWaterFrame(
-                        waterMaterial, frame, domeState, domeLut);
-                    Engine_WaterMaterial.Apply(waterMaterial, waterTheme);
+                    _waterStepEnd = waterEnd;
                 }
             }
 
-            Engine_LevelScene.ApplyVistaOceanGate(water, waterTheme);
+            if (Engine_ThemeTimeline.TryExtractCloudsBlended(
+                    LightingGdbs, stepStartTime, out CloudTheme cloudStart))
+            {
+                _cloudStepStart = cloudStart;
+                if (Engine_ThemeTimeline.TryExtractCloudsBlended(
+                        LightingGdbs, stepEndTime, out CloudTheme cloudEnd))
+                {
+                    _cloudStepEnd = cloudEnd;
+                }
+            }
+
+            if (Engine_ThemeTimeline.TryExtractToneMapBlended(
+                    LightingGdbs, stepStartTime, out ToneMapTheme toneStart))
+            {
+                _toneMapStepStart = toneStart;
+                if (Engine_ThemeTimeline.TryExtractToneMapBlended(
+                        LightingGdbs, stepEndTime, out ToneMapTheme toneEnd))
+                {
+                    _toneMapStepEnd = toneEnd;
+                }
+            }
         }
 
-        _msWater = SinceMs(ref mark);
+        _msTheme = SinceMs(ref mark);
+
+        ApplyAtmosphere(frame, w, report: true);
+        _atmosphereClock = 0f;
+        _msDome = SinceMs(ref mark);
 
         Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(
             Engine_CelestialElements.NodeName);
@@ -547,78 +697,51 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         _msCelestial = SinceMs(ref mark);
-
-        Node3D? clouds = GetParent()?.GetNodeOrNull<Node3D>(Path_Clouds);
-        if (clouds is not null && LightingGdbs.Count != 0 &&
-            Engine_ThemeTimeline.TryExtractCloudsBlended(
-                LightingGdbs, _dayFraction, out CloudTheme cloudTheme))
-        {
-            Engine_Clouds.Update(
-                clouds, cloudTheme, frame.SunDirection, frame.MainLightColour);
-            _cloudTheme = cloudTheme;
-        }
-
         _frame = frame;
-
-        if (LightingGdbs.Count != 0 &&
-            Engine_ThemeTimeline.TryExtractToneMapBlended(
-                LightingGdbs, _dayFraction, out ToneMapTheme toneMapTheme))
-        {
-            _toneMapTheme = toneMapTheme;
-        }
 
         if (LightingGdbs.Count == 0 ||
             !Engine_ThemeTimeline.TryExtractLightingBlended(
-                LightingGdbs, _dayFraction, out LightingTheme lightingTheme))
+                LightingGdbs, stepStartTime, out LightingTheme lightingTheme))
         {
             return;
         }
 
-        // THE PAINTED LAYERS, over the level day set by weight — the guest's fold
-        // (sub_8218EAF8). A hash the chain cannot resolve is said once and skipped.
+        _lightingTheme = lightingTheme;
+        if (Engine_ThemeTimeline.TryExtractLightingBlended(
+                LightingGdbs, stepEndTime, out LightingTheme lightingEnd))
+        {
+            _lightingStepEnd = lightingEnd;
+        }
+
+        // THE PAINTED LAYERS' OWN DAY SETS, at both ends of the step. Folded over the level day
+        // set every frame by weight (LightingNow). A hash the chain cannot resolve is said once
+        // and remembered as null, so walking into it does not re-evaluate every frame.
+        _paintedThemes.Clear();
         if (Painted is { Any: true } painted)
         {
             foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in painted.Layers)
             {
-                if (layer.Weight <= 0f)
-                {
-                    continue;
-                }
-
                 if (Engine_ThemeTimeline.TryExtractLightingBlended(
-                        LightingGdbs, _dayFraction, layer.Hash, out LightingTheme paintedTheme))
+                        LightingGdbs, stepStartTime, layer.Hash, out LightingTheme paintedStart))
                 {
-                    lightingTheme = Engine_LightingTheme.FoldPainted(lightingTheme, paintedTheme, layer.Weight);
-                }
-                else if (_paintedUnresolved.Add(layer.Hash))
-                {
-                    GD.Print($"[painted] day set 0x{layer.Hash:X8} is painted but no loaded gdb states it");
-                }
-            }
-        }
-
-        _lightingTheme = lightingTheme;
-
-        if (Engine_ThemeTimeline.TryExtractLightingBlended(
-                LightingGdbs, stepEndTime, out LightingTheme lightingEnd))
-        {
-            if (Painted is { Any: true } paintedEnd)
-            {
-                foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in paintedEnd.Layers)
-                {
-                    if (layer.Weight > 0f &&
+                    _paintedThemes[layer.Hash] = (paintedStart,
                         Engine_ThemeTimeline.TryExtractLightingBlended(
-                            LightingGdbs, stepEndTime, layer.Hash, out LightingTheme paintedEndTheme))
+                            LightingGdbs, stepEndTime, layer.Hash, out LightingTheme paintedEnd)
+                            ? paintedEnd
+                            : null);
+                }
+                else
+                {
+                    _paintedThemes[layer.Hash] = null;
+                    if (_paintedUnresolved.Add(layer.Hash))
                     {
-                        lightingEnd = Engine_LightingTheme.FoldPainted(lightingEnd, paintedEndTheme, layer.Weight);
+                        GD.Print($"[painted] day set 0x{layer.Hash:X8} is painted but no loaded gdb states it");
                     }
                 }
             }
-
-            _lightingStepEnd = lightingEnd;
         }
 
-        LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingTheme, frame);
+        LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, LightingNow(w) ?? lightingTheme, frame);
         Lighting = lighting;
 
         if (Environment is not null)
@@ -685,21 +808,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
         }
 
-        // The region and everything mounted ALONGSIDE it, not just the sun and the sky.
-        //
-        // Everything standing in the world carries the ambient of the moment it was lit, and
-        // that moves with the sun. Refreshing only the region misses the live guest entities:
-        // GameWorld hangs them beside the region so they can carry the guest-to-Godot map
-        // themselves, exactly as the camera does, so they are cousins rather than descendants.
-        // One level up covers both, and in the editor it simply reaches the scene the region
-        // was opened in.
-        if (GetParent() is Node region)
-        {
-            ulong instanceMark = Time.GetTicksUsec();
-            Engine_LevelBakedLighting.QueueRefreshInstanceLighting(
-                region.GetParent() ?? region, lighting);
-            _msInstances = SinceMs(ref instanceMark);
-        }
+        ulong instanceMark = Time.GetTicksUsec();
+        RelightIfDialMoved(lighting);
+        _msInstances = SinceMs(ref instanceMark);
     }
 
     /// <summary>

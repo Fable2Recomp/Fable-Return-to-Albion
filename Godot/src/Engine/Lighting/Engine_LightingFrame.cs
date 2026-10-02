@@ -357,6 +357,11 @@ public static class Engine_LightingFrame
 		// light, so it reads as the sun shining through the floor. The theme states no moon
 		// COLOUR at all — only disc parameters — which is the tell that the moon was never
 		// meant to drive this light.
+		// THE HANDOVER IS AT ZERO ENERGY. The disc fades out as it reaches the horizon and the rig
+		// fades in as the disc sinks the same distance below it, so the one DirectionalLight3D
+		// changes direction only while it is dark. Handing the rig its full energy the frame the
+		// disc set snapped the light and every shadow twice a day. In the fable model the disc IS
+		// the rig, so the rig branch only runs with the rig below the horizon and stays at zero.
 		float discUp = result.SunDirection[1];
 		float rigUp = frame.MainLightDirection[1];
 		if (discUp > 0f)
@@ -367,7 +372,7 @@ public static class Engine_LightingFrame
 		{
 			Array.Copy(frame.MainLightDirection, result.LightDirection, 3);
 			result.SunEnergy = rigUp > 0f
-				? sunEnergy * MathF.Min(rigUp / HorizonFade, 1f)
+				? sunEnergy * MathF.Min(rigUp / HorizonFade, 1f) * MathF.Min(-discUp / HorizonFade, 1f)
 				: 0f;
 		}
 

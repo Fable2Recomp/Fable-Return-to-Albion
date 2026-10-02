@@ -83,10 +83,11 @@ uniform bool has_body_bounds = false;
 //
 // WORLD SPACE, pointing TOWARD the sun. The guest hands its light the NEGATED sun direction and
 // the shader negates it back at the reflect; carrying the toward-sun vector skips both.
-instance uniform vec4 sun_direction = vec4(0.0, 1.0, 0.0, 0.0);
+// Global, published every frame with the rest of the theme's lighting (Engine_LevelLighting).
+global uniform vec3 fable_sun_toward;
 
-/// rgb: the main light's colour already multiplied by its energy.
-instance uniform vec4 sun_colour = vec4(1.0);
+/// The main light's colour already multiplied by its energy.
+global uniform vec3 fable_sun_colour;
 
 uniform sampler2D in_scatter_lut : filter_linear, repeat_disable;
 uniform vec3 beta_rayleigh = vec3(0.001, 0.0015, 0.004);
@@ -184,7 +185,7 @@ void vertex() {
 
 	// The glint is built against `v_local` and `v_eye_local`, so the sun has to be in the same
 	// space as they are. w = 0 — this is a direction, and the body's translation must not reach it.
-	v_sun_local = (inverse(MODEL_MATRIX) * vec4(sun_direction.xyz, 0.0)).xyz;
+	v_sun_local = (inverse(MODEL_MATRIX) * vec4(fable_sun_toward, 0.0)).xyz;
 
 	if (!guest_water) {
 		vec2 sdir;
@@ -318,7 +319,7 @@ void fragment() {
 		vec3 Rl = (2.0 * dot(L, g) * g) - L;
 		float spec = clamp(dot(V, Rl), 0.0, 1.0);
 		float glint = pow(max(spec, 1e-6), max(w_glit.x, 1.0));
-		col += sun_colour.rgb * (glint * max(w_reflp.w, 0.0));
+		col += fable_sun_colour * (glint * max(w_reflp.w, 0.0));
 	} else {
 		float distort = clamp(w_reflp.x * 0.25, 0.05, 1.0);
 		vec3 Nr = normalize(vec3(nxy.x * distort, nz, nxy.y * distort));
@@ -402,7 +403,7 @@ void fragment() {
 		float power = max(w_glit.x, 8.0);
 		float glare = pow(ndh, power) + (0.04 * pow(ndh, power * 0.1));
 		float corridor = pow(clamp(dot(reflect(-V, vec3(0.0, 1.0, 0.0)), L), 0.0, 1.0), 16.0);
-		col += sun_colour.rgb * max(w_reflp.w, 0.0) * glare * corridor *
+		col += fable_sun_colour * max(w_reflp.w, 0.0) * glare * corridor *
 			clamp(L.y * 6.0, 0.0, 1.0);
 
 		float lap = 0.6 + (0.4 * w_surge);
@@ -418,7 +419,7 @@ void fragment() {
 			float foam = smoothstep(0.45, 0.95, band * (0.35 + (0.95 * pattern)));
 
 			vec3 zen = has_dome ? dome_reflect(vec3(0.0, 1.0, 0.0)) : sky_constant;
-			vec3 foam_col = (zen * 0.75) + (sun_colour.rgb * 0.30 * clamp(L.y * 2.0, 0.0, 1.0));
+			vec3 foam_col = (zen * 0.75) + (fable_sun_colour * 0.30 * clamp(L.y * 2.0, 0.0, 1.0));
 			col = mix(col, foam_col, foam * 0.75);
 		}
 	}

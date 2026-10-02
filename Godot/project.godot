@@ -143,6 +143,26 @@ fable_sky_ambient={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)
 }
+fable_ambient_colour={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+fable_lightmap_tint={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
+fable_darkening={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
+fable_sun_toward={
+"type": "vec3",
+"value": Vector3(0, 1, 0)
+}
+fable_sun_colour={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
 fable_prop_lightmaps={
 "type": "sampler2D",
 "value": ""

@@ -18,7 +18,8 @@ instance uniform vec4 probe_r = vec4(0.0);
 instance uniform vec4 probe_g = vec4(0.0);
 instance uniform vec4 probe_b = vec4(0.0);
 
-// rgb: the theme's LightmapColour — the guest's `g_LightmapFactorAndSRGBGamma.xyz`.
+// rgb: this instance's own bake dial (1.0 unless the prop bake-weight option reaches it); the
+// theme's LightmapColour is `fable_lightmap_tint`, read through `fable_lightmap_rgb()`.
 // w: WHICH BAKE this surface has, because the guest picks between them per instance rather
 // than blending, and each arrives by a different route:
 //   0 = none                          1 = probe SH, in the probe_* instance uniforms (guest AMB2)
@@ -28,6 +29,17 @@ instance uniform vec4 probe_b = vec4(0.0);
 // undecoded — see `fable_bake`. Mode 2 differs from mode 3 by the vertex shader's extra 2.2, not
 // by having no transfer at all.
 instance uniform vec4 lightmap_colour = vec4(1.0, 1.0, 1.0, 0.0);
+
+/// THE THEME'S LIGHTING IS GLOBAL, published every frame by Engine_LevelLighting. As instance
+/// uniforms these were rewritten on every node once per five game minutes, spread over many
+/// frames, so each step crossed the world as a visible wave.
+///
+/// The theme's LightmapColour — the guest's `g_LightmapFactorAndSRGBGamma.xyz`.
+global uniform vec3 fable_lightmap_tint;
+
+vec3 fable_lightmap_rgb() {
+	return lightmap_colour.rgb * fable_lightmap_tint;
+}
 
 /// The region's object lightmaps in one texture (the amb3 interiors), published by
 /// Engine_LevelBakedLighting when the container's atlas builds.
@@ -44,7 +56,7 @@ instance uniform vec4 lightmap_rect = vec4(0.0);
 global uniform float fable_bake_weight;
 
 /// The modern model's SKY TETHER for the probe field. rgb = the live sky-derived ambient (the
-/// same value ambient_colour carries, in the same ambient_light_scale space); w = how far the
+/// same value fable_ambient_colour carries, in the same ambient_light_scale space); w = how far the
 /// probe bake is pulled toward it. The probes are a baked-era snapshot — authored locality
 /// (interiors dark, under-canopy dim) worth keeping, level and tint worth retiring — so the
 /// blend keeps their shape at 1-w while the sky sets the tone. w = 0 in the fable model.
@@ -105,10 +117,10 @@ const float FABLE_BAKE_GAMMA = 1.3;
 /// probe bake takes 1.3 alone and only the vertex-colour bake takes the pair.
 const float FABLE_VERTEX_BAKE_GAMMA = 2.2;
 
-// rgb: the theme's AmbientColour already multiplied by its energy.
-instance uniform vec4 ambient_colour = vec4(0.0);
+/// The theme's AmbientColour already multiplied by its energy.
+global uniform vec3 fable_ambient_colour;
 
-/// rgb: the theme's AmbientNormalMapDarkeningColour — how dark the ambient goes where a mapped
+/// The theme's AmbientNormalMapDarkeningColour — how dark the ambient goes where a mapped
 /// normal turns away from the surface. WHITE IS THE NEUTRAL VALUE, not black: the guest's term
 /// is `lerp(this, 1, ndotn^2)`, so this colour is the FLOOR the ambient falls to, and a default
 /// of white leaves a surface with no normal map exactly as it was.
@@ -117,7 +129,7 @@ instance uniform vec4 ambient_colour = vec4(0.0);
 /// than type 2 (`dword_8349EB8C = 1` at 0x83288CA0); the type-1 arm reads Red, Green and Blue,
 /// forces w to 1.0 and scales by 1/255, and never looks for the Factor field the type-2 colours
 /// have.
-instance uniform vec4 darkening_colour = vec4(1.0);
+global uniform vec3 fable_darkening;
 
 /// The probe field's order-2 spherical harmonics, evaluated for a world normal.
 ///
@@ -290,7 +302,7 @@ global uniform float fable_unified = 0.0;
 global uniform vec3 fable_fill_floor = vec3(0.0);
 
 vec3 fable_ambient(vec3 bake) {
-	return (bake * (1.0 - fable_unified)) + ambient_colour.rgb + fable_fill_floor;
+	return (bake * (1.0 - fable_unified)) + fable_ambient_colour + fable_fill_floor;
 }
 
 /// The main light. Lambert, because Fable's main light is one directional source and the

@@ -70,14 +70,15 @@ public static class Engine_LevelBakedLighting
 	public static readonly StringName BakeModeMetaName = "bake_mode";
 	public static readonly StringName BakeKeyMetaName = "bake_key";
 	private static readonly float[] WhiteLightmap = { 1f, 1f, 1f };
-	private static readonly StringName Param_ambient_colour = "ambient_colour";
-	private static readonly StringName Param_darkening_colour = "darkening_colour";
+	private static readonly StringName Global_ambient_colour = "fable_ambient_colour";
+	private static readonly StringName Global_darkening = "fable_darkening";
+	private static readonly StringName Global_lightmap_tint = "fable_lightmap_tint";
+	private static readonly StringName Global_sun_toward = "fable_sun_toward";
+	private static readonly StringName Global_sun_colour = "fable_sun_colour";
 	private static readonly StringName Param_lightmap_colour = "lightmap_colour";
 	private static readonly StringName Param_probe_b = "probe_b";
 	private static readonly StringName Param_probe_g = "probe_g";
 	private static readonly StringName Param_probe_r = "probe_r";
-	private static readonly StringName Param_sun_colour = "sun_colour";
-	private static readonly StringName Param_sun_direction = "sun_direction";
 
 	/// <summary>Where a runtime entity last sampled the probe field (region-local Godot axes).</summary>
 	public const string ProbeAtMeta = "probe_at";
@@ -705,11 +706,12 @@ public static class Engine_LevelBakedLighting
 	public static bool DialProbeLitProps;
 
 	/// <summary>
-	/// Writes one instance's lighting into its shader parameters: the baked probe sample it is
-	/// carrying, and the theme's ambient and lightmap tint for the moment.
+	/// Writes one instance's own lighting into its shader parameters: the baked probe sample it
+	/// is carrying, its bake mode and its bake dial. The theme's half is global and moves every
+	/// frame (<see cref="PublishThemeLighting"/>); <paramref name="frame"/> is not read.
 	///
-	/// Called when a mesh arrives and again whenever time of day moves, so the two halves stay
-	/// together. Nothing here re-samples the probe field — the bake does not move.
+	/// Called when a mesh arrives and again when a dial changes. Nothing here re-samples the
+	/// probe field — the bake does not move.
 	/// </summary>
 	public static void ApplyInstanceLighting(GeometryInstance3D node, LightingFrame? frame) =>
 		ApplyInstanceLighting(node, frame, staticProp: false);
@@ -777,20 +779,33 @@ public static class Engine_LevelBakedLighting
 				? stored.AsInt32()
 				: (probeValid ? 1f : 0f);
 
-		float[] lightmap = frame?.LightmapColour ?? WhiteLightmap;
-
-		// The theme factor multiplies the bake for every mode — `bake * lightmap_colour.rgb`
-		// in standard_material.gdshader, the guest's own
-		// `bake * g_LightmapFactorAndSRGBGamma + g_GlobalAmbient` — so scaling it here is
-		// exactly the dial the shader applies to the authored modes, with no shader change and
-		// no extra channel. Mode 1 only: every other mode already takes the dial inside
-		// `fable_bake`, and applying it twice would halve them again.
+		// THE INSTANCE CARRIES ONLY WHAT IS ITS OWN: the dial and the bake mode. The theme's
+		// factor multiplies the bake for every mode — `bake * lightmap_colour.rgb *
+		// fable_lightmap_tint`, the guest's own `bake * g_LightmapFactorAndSRGBGamma +
+		// g_GlobalAmbient` — and arrives as a global (PublishThemeLighting). Mode 1 only: every
+		// other mode already takes the dial inside `fable_bake`, and applying it twice would
+		// halve them again.
 		float dial = staticProp && DialProbeLitProps && mode > 0.5f && mode < 1.5f
 			? AuthoredBakeWeight
 			: 1f;
 
-		node.SetInstanceShaderParameter(Param_lightmap_colour,
-			new Vector4(lightmap[0] * dial, lightmap[1] * dial, lightmap[2] * dial, mode));
+		node.SetInstanceShaderParameter(Param_lightmap_colour, new Vector4(dial, dial, dial, mode));
+	}
+
+	/// <summary>
+	/// Publishes the theme's lighting to every surface, as global shader parameters. Every frame.
+	/// </summary>
+	/// <remarks>
+	/// ONE VALUE FOR THE WHOLE REGION, so it is global rather than per instance. Written per
+	/// instance it could only move on the periodic re-light, which walked the region a slice per
+	/// frame: every time-of-day step and every tenth of a painted blend crossed the world as a
+	/// visible wave, and between steps nothing moved at all.
+	/// </remarks>
+	public static void PublishThemeLighting(LightingFrame? frame)
+	{
+		float[] lightmap = frame?.LightmapColour ?? WhiteLightmap;
+		RenderingServer.GlobalShaderParameterSet(Global_lightmap_tint,
+			new Vector3(lightmap[0], lightmap[1], lightmap[2]));
 
 		float ar = 0f, ag = 0f, ab = 0f;
 		if (frame is not null && frame.HasAmbient)
@@ -801,20 +816,19 @@ public static class Engine_LevelBakedLighting
 			ab = frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale;
 		}
 
-		node.SetInstanceShaderParameter(Param_ambient_colour, new Vector4(ar, ag, ab, 1f));
+		RenderingServer.GlobalShaderParameterSet(Global_ambient_colour, new Vector3(ar, ag, ab));
 
 		// White when the theme states none, because this colour is the FLOOR of a lerp toward
 		// 1 rather than a tint — black here would drive every normal-mapped surface's ambient
 		// to nothing.
-		float[] darkening = frame?.DarkeningColour ?? new float[] { 1f, 1f, 1f };
-		node.SetInstanceShaderParameter(Param_darkening_colour, new Vector4(darkening[0], darkening[1], darkening[2], 1f));
+		float[] darkening = frame?.DarkeningColour ?? WhiteLightmap;
+		RenderingServer.GlobalShaderParameterSet(Global_darkening,
+			new Vector3(darkening[0], darkening[1], darkening[2]));
 
 		// THE MAIN LIGHT, for the surfaces that cannot take it through Godot's `light()`.
 		//
 		// Water is `unshaded` — it composes reflection, refraction and a sun glint itself, so no
-		// DirectionalLight3D ever reaches it and it needs the light stated. It was lit by a
-		// direction hardcoded in Engine_WaterMaterial instead, which meant the glint sat in the
-		// same corner of every lake at dawn, noon and dusk.
+		// DirectionalLight3D ever reaches it and it needs the light stated.
 		//
 		// It is the SAME light, proven rather than assumed: the offscreen water renderer
 		// (`sub_82B3CDE8`) uploads `light+0xD0` of the last PRIMITIVE_INSTANCE_DIRECTIONAL_LIGHT
@@ -826,12 +840,13 @@ public static class Engine_LevelBakedLighting
 		// stated in the guest's axes and the level root is mirrored through X. This is the disc's
 		// vector, NOT the DirectionalLight3D's forward — that one is the negation.
 		float[] sunDir = frame?.SunDirection ?? new float[] { 0f, 1f, 0f };
-		node.SetInstanceShaderParameter(Param_sun_direction, new Vector4(-sunDir[0], sunDir[1], sunDir[2], 0f));
+		RenderingServer.GlobalShaderParameterSet(Global_sun_toward,
+			new Vector3(-sunDir[0], sunDir[1], sunDir[2]));
 
-		float[] sunRgb = frame?.SunColour ?? new float[] { 1f, 1f, 1f };
+		float[] sunRgb = frame?.SunColour ?? WhiteLightmap;
 		float sunEnergy = frame?.SunEnergy ?? 1f;
-		node.SetInstanceShaderParameter(Param_sun_colour,
-			new Vector4(sunRgb[0] * sunEnergy, sunRgb[1] * sunEnergy, sunRgb[2] * sunEnergy, 1f));
+		RenderingServer.GlobalShaderParameterSet(Global_sun_colour,
+			new Vector3(sunRgb[0] * sunEnergy, sunRgb[1] * sunEnergy, sunRgb[2] * sunEnergy));
 	}
 
 	/// <summary>
@@ -857,10 +872,9 @@ public static class Engine_LevelBakedLighting
 	/// frame by <see cref="PumpRefresh"/> rather than in one pass.
 	/// </summary>
 	/// <remarks>
-	/// Eight instance parameters on every geometry node is too much for one frame; the time-of-day
-	/// step it follows is small enough that a walk spread over a few frames is not visible. A new
-	/// request restarts the walk with the newer frame. Cast-only nodes are skipped: nothing reads
-	/// their lighting.
+	/// Instance parameters on every geometry node are too much for one frame. It runs when a
+	/// region first stands and when a per-instance dial changes, never on time of day. A new
+	/// request restarts the walk. Cast-only nodes are skipped: nothing reads their lighting.
 	/// </remarks>
 	public static void QueueRefreshInstanceLighting(Node root, LightingFrame frame)
 	{
@@ -917,7 +931,7 @@ public static class Engine_LevelBakedLighting
 	/// </summary>
 	/// <remarks>
 	/// `GetChildren()` marshals a new array per call; `GetChildCount()` + `GetChild(i)` does not.
-	/// Runs on every periodic re-light (`Engine_SkyEnvironmentNode.ReevaluateStep`). Order is
+	/// Runs on every queued re-light. Order is
 	/// depth-first, children before grandchildren. The stack is local because this is a lazy
 	/// iterator: two concurrent enumerations would corrupt a shared one.
 	/// </remarks>

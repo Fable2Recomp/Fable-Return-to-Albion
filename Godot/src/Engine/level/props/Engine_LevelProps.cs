@@ -2245,8 +2245,7 @@ public static class Engine_LevelProps
 
             // THE BLOCK'S U32 ARRAY IS ITS BAKE — one D3DCOLOR per loop1 instance, keyed by
             // the block's own hash. All 158 of chapter2posh's type-21 blocks join its 158
-            // arrays with the array length equal to the loop1 count exactly. Instances past
-            // the array (the loop2 tail) carry no authored colour and keep the probe sample.
+            // arrays with the array length equal to the loop1 count exactly.
             uint[]? authored = null;
             bakes?.U32Arrays.TryGetValue(block.Hash, out authored);
 

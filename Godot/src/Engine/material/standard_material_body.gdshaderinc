@@ -368,7 +368,7 @@ void fragment() {
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
         vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
         float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
-        darken = mix(darkening_colour.rgb, vec3(1.0), nb * nb);
+        darken = mix(fable_darkening, vec3(1.0), nb * nb);
     }
 
     if (foliage) {
@@ -397,7 +397,7 @@ void fragment() {
     // what split the bridge from the terrain beside it. The probe and flat modes are synthetic
     // ambient with no baked occlusion, so the modernized AO stays legitimate there.
     float bake_ao = lightmap_colour.w > 2.5 ? 1.0 : ao;
-    vec3 ambient_half = bake * lightmap_colour.rgb * darken * bake_ao;
+    vec3 ambient_half = bake * fable_lightmap_rgb() * darken * bake_ao;
 
     // The sky tether runs POST-LightmapColour (see fable_sky_tether) on every exterior mode;
     // mode 4's amb3 lightmaps are interiors-only and stay authored.

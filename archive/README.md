@@ -12,6 +12,7 @@ carried as a build cost nobody pays for. Nothing depends on them.
 | `imgui-launcher-*.zip` | `src/launcher` — the GLFW + ImGui launcher executable | replaced by the Godot launcher in `Godot/src/launcher` |
 | `renderer-*.zip` | `src/renderer` — the D3D9/GTL renderer and its Plume backends | Godot renders; the guest never draws. Already `OFF` by default, and 86% of the build |
 | `appimage-flatpak-*.zip` | the AppImage/Flatpak CMake logic and `refii.desktop` | packaged the standalone `refii` exe and the ImGui launcher, so it could not outlive them |
+| `shader-tools-*.zip` | `src/shader` — the `.sbk` shader extractor and Xenos translator, with a standalone CMake root and README (taken at `d5b604b7f`, 2026-10-03; includes the vendored zlib, but not the DXC binaries, which are fetched at configure time) | handed to someone outside the project who is pursuing the translated-shader route; refii does not use it |
 
 ## What is NOT in the zips, and why
 

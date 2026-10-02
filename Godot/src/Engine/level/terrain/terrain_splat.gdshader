@@ -434,7 +434,7 @@ void fragment() {
 		: vec3(0.0);
 
 	// darken = lerp(DarkeningColour, 1, saturate(dot(Nbent, Nmapped))^2). The square is the
-	// guest's, and the theme's darkening colour arrives through `darkening_colour` — it is the
+	// guest's, and the theme's darkening colour arrives through `fable_darkening` — it is the
 	// one lighting colour registered as type 1 rather than type 2, so it carries no Factor.
 	//
 	// THE SAME BENT NORMAL THE PROPS USE: standard_material bends toward the sun (blob 0245:
@@ -454,7 +454,7 @@ void fragment() {
 		float bend = 0.5 * (dot(world_geom, amb_ref) + 1.0);
 		vec3 bent = normalize(mix(world_geom, amb_ref, bend));
 		float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
-		darken = mix(darkening_colour.rgb, vec3(1.0), nb * nb);
+		darken = mix(fable_darkening, vec3(1.0), nb * nb);
 	}
 
 	// The theme's LightmapFactor, applied now that it has the operand the guest authored it
@@ -485,7 +485,7 @@ void fragment() {
 	// texture-scale occlusion. The direct half is untouched, same as the props' ao.
 	// The same weight the props take, interior exemption and interior bake factor included.
 	float authored_weight = fable_authored_bake_weight();
-	vec3 authored = bake * lightmap_colour.rgb * darken * authored_weight;
+	vec3 authored = bake * fable_lightmap_rgb() * darken * authored_weight;
 
 	// THE TERRAIN'S SKY TETHER — the SAME plain mix the probe field takes in `fable_bake`,
 	// deliberately NOT a chroma-only retint. The painted lightmap carries the 360's baked sun

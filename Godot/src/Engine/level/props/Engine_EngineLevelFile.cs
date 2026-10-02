@@ -60,7 +60,22 @@ public sealed class EngineLevelBlock
     public float DrawDistance { get; set; }
 
     public List<EngineLevelInstance> Instances { get; } = new();
+
+    /// <summary>Type-21 only: the block's cull clusters, which tile <see cref="Instances"/> in order.</summary>
+    public List<EngineLevelCluster> Clusters { get; } = new();
 }
+
+/// <summary>
+/// One type-21 cull cluster: instances [First, First + Count) and their guest-space bounds.
+/// </summary>
+/// <remarks>
+/// The second loop of a type-21 record — u32 first, u32 count, then min and max. Over all 78
+/// shipped .engine_level files (19009 blocks) the ranges tile loop1 exactly and every
+/// instance lies in its own cluster's box. It places nothing: reading it as more plants stood
+/// one at each box's min corner, which on a slope is in the air.
+/// </remarks>
+public readonly record struct EngineLevelCluster(
+    uint First, uint Count, System.Numerics.Vector3 Min, System.Numerics.Vector3 Max);
 
 /// <summary>
 /// A type-4 record: one heightfield, and the id of the baked lightmap that belongs to it.
@@ -108,8 +123,6 @@ public sealed class EngineLevelFile
     public int Type21Blocks { get; set; }
 
     public int Type21Instances { get; set; }
-
-    public int Type21Rejected { get; set; }
 
     public uint StoppedAtType { get; set; }
 
@@ -440,67 +453,34 @@ public static class Engine_EngineLevelFile
             block.Instances.Add(instance);
         }
 
-        if (!reader.U32(out uint loop2Count))
+        if (!reader.U32(out uint clusterCount))
         {
-            file.Error = "truncated type-21 loop2 count";
+            file.Error = "truncated type-21 cluster count";
             return false;
         }
 
-        if (loop2Count > 100000)
+        if (clusterCount > 100000)
         {
-            file.Error = "type-21 loop2 count looks corrupt";
+            file.Error = "type-21 cluster count looks corrupt";
             return false;
         }
 
-        for (uint k = 0; k < loop2Count; k++)
+        for (uint k = 0; k < clusterCount; k++)
         {
-            if (!reader.F32(out float aValue) || !reader.F32(out _) ||
-                !reader.F32(out float p1X) || !reader.F32(out float p1Y) ||
-                !reader.F32(out float p1Z) ||
-                !reader.F32(out float p2X) || !reader.F32(out float p2Y) ||
-                !reader.F32(out _))
+            if (!reader.U32(out uint first) || !reader.U32(out uint count) ||
+                !reader.F32(out float minX) || !reader.F32(out float minY) ||
+                !reader.F32(out float minZ) ||
+                !reader.F32(out float maxX) || !reader.F32(out float maxY) ||
+                !reader.F32(out float maxZ))
             {
-                file.Error = "truncated type-21 loop2 body";
+                file.Error = "truncated type-21 cluster";
                 return false;
             }
 
-            bool plausible =
-                InBounds(p1X, -2048f, 2048f) &&
-                InBounds(p1Y, -2048f, 2048f) &&
-                InBounds(p1Z, -512f, 512f) &&
-                (MathF.Abs(p1X) + MathF.Abs(p1Y) + MathF.Abs(p1Z)) > 0.5f;
-
-            if (!plausible)
-            {
-                file.Type21Rejected++;
-                continue;
-            }
-
-            var instance = new EngineLevelInstance();
-            instance.Values[0] = p1X;
-            instance.Values[1] = p1Y;
-            instance.Values[2] = p1Z;
-
-            float fxy = MathF.Sqrt((p2X * p2X) + (p2Y * p2Y));
-            if (float.IsFinite(fxy) && fxy > 0.001f && fxy < 100f)
-            {
-                instance.Values[6] = p2Y / fxy;
-                instance.Values[7] = p2X / fxy;
-            }
-            else
-            {
-                instance.Values[6] = 0f;
-                instance.Values[7] = 1f;
-            }
-
-            float s = float.IsFinite(aValue) && aValue > 0.05f && aValue < 100f
-                ? aValue
-                : 1f;
-            instance.Values[9] = s;
-            instance.Values[10] = s;
-            instance.Values[11] = s;
-
-            block.Instances.Add(instance);
+            block.Clusters.Add(new EngineLevelCluster(
+                first, count,
+                new System.Numerics.Vector3(minX, minY, minZ),
+                new System.Numerics.Vector3(maxX, maxY, maxZ)));
         }
 
         file.Type21Blocks++;
@@ -513,9 +493,6 @@ public static class Engine_EngineLevelFile
 
         return true;
     }
-
-    private static bool InBounds(float value, float low, float high) =>
-        float.IsFinite(value) && value >= low && value <= high;
 
     private sealed class Reader
     {

@@ -159,11 +159,11 @@ void fragment() {
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
         vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
         float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
-        darken = mix(darkening_colour.rgb, vec3(1.0), nb * nb);
+        darken = mix(fable_darkening, vec3(1.0), nb * nb);
     }
 
     // `bake * LightmapFactor * darkening + GlobalAmbient`, the guest's line for this family.
-    EMISSION = alb.rgb * fable_ambient(bake * lightmap_colour.rgb * darken);
+    EMISSION = alb.rgb * fable_ambient(bake * fable_lightmap_rgb() * darken);
     if (has_emission) {
         // Squared for the same reason, and by the same line: the guest's self-illumination
         // fetch is followed by `r3.xyz = r3.xyz * r3.xyz` before it is added in.
