@@ -18,7 +18,7 @@ uniform float moon_phase_offset = 0.0;
 uniform vec3 colour_zenith : source_color = vec3(0.42, 0.56, 0.76);
 uniform vec3 colour_horizon : source_color = vec3(0.78, 0.72, 0.64);
 uniform vec3 colour_sunset : source_color = vec3(1.0, 0.52, 0.30);
-uniform vec3 colour_night : source_color = vec3(0.025, 0.035, 0.07);
+uniform vec3 colour_night : source_color = vec3(0.045, 0.09, 0.22);
 uniform vec3 colour_ground : source_color = vec3(0.30, 0.29, 0.28);
 uniform float exposure = 1.0;
 uniform float haze = 0.40;
@@ -100,7 +100,13 @@ vec3 sky_gradient(vec3 dir, vec3 sun, float day) {
 	float warm = sun_low(sun) * band * (toward * toward);
 	col = mix(col, colour_sunset, warm);
 
-	vec3 night = colour_night * (1.0 + band * 0.9);
+	// THE NIGHT IS THE FABLE DOME'S — the same in-scatter the cubemap pass hands the GI and the
+	// ambient, so the sky on screen is the sky that lights the world. `colour_night` stands only
+	// where there is no dome (the preview scene).
+	vec3 night = cubemap_fable_dome
+		? fable_sky_inscatter(vec3(dir.x, dir.z, dir.y), sun_engine, in_scatter_lut,
+			beta_rayleigh, beta_mie, horizon_distance)
+		: colour_night * (1.0 + band * 0.9);
 	col = mix(night, col, day);
 
 	float grey = mix(1.0, 0.72, overcast) * mix(1.0, 0.80, storm);
@@ -238,7 +244,8 @@ vec4 cloud_layers(vec3 dir, vec3 sun, vec3 moon, float day) {
 	vec3 light_tint = mix(sun_colour, colour_sunset, low * 0.9);
 	vec3 moon_tint = moon_colour * 0.08 * moon_brightness * smoothstep(-0.1, 0.2, moon.y);
 	vec3 day_light = mix(cloud_shadow_colour, cloud_colour, lit) * light_tint;
-	vec3 night_light = mix(cloud_shadow_colour * 0.08, cloud_shadow_colour * 0.25, lit) + moon_tint;
+	vec3 night_light = mix(cloud_shadow_colour * 0.08, cloud_shadow_colour * 0.25, lit) *
+		vec3(0.55, 0.72, 1.0) + moon_tint;
 	vec3 col = mix(night_light, day_light, day);
 
 	float edge = a * (1.0 - a) * 4.0;
