@@ -730,7 +730,8 @@ public partial class Engine_GameAssets : Node
 		if (TryGetFile(virtualPath, out BnkFile file))
 		{
 			// True if attributed to a mod name, marked as override/loose, or created via virtual row/mesh/image overlays:
-			return file.IsOverride || file.SourceMod.Length != 0 || file.SourceArchivePath.StartsWith("<rows:");
+			return file.IsOverride || file.SourceMod.Length != 0 || file.SourceArchivePath.StartsWith("<rows:") ||
+				virtualPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase);
 		}
 
 		return false;

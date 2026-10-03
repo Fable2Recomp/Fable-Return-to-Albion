@@ -8,12 +8,6 @@ std::vector<std::string> BuildSyntheticVfsEntryCandidates(
   std::vector<std::string> candidates;
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
   AddUnique(candidates, normalized);
-  constexpr std::string_view kTitleUpdateDatabaseSuffix = ".gdb.tu";
-  if (normalized.ends_with(kTitleUpdateDatabaseSuffix)) {
-    std::string base_database = normalized;
-    base_database.erase(base_database.size() - 3);
-    AddUnique(candidates, std::move(base_database));
-  }
   const std::string mip0_redirect =
       CanonicalizeMip0TextureHeaderRedirect(normalized);
   if (!mip0_redirect.empty()) {
