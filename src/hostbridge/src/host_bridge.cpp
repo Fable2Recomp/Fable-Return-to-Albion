@@ -2905,6 +2905,13 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetAssetReader(refii::vfs::HostAssetReaderFn
     refii::vfs::SetHostAssetReader(reader);
 }
 
+/// Installs Godot's asset override query — answers whether an asset is a virtual mod override.
+/// When true, native VFS prioritizes Godot's virtual asset over loose files on disk.
+REFII_HOST_ABI_EXPORT void RefiiHostSetAssetOverrideQuery(
+        refii::vfs::HostAssetIsOverrideFn query) {
+    refii::vfs::SetHostAssetOverrideQuery(query);
+}
+
 /// Installs Godot's HASH index — same direction and threading as RefiiHostSetAssetReader, but
 /// installed independently. `resolver` writes the asset's path and returns its length, 0 for
 /// "no such hash".
