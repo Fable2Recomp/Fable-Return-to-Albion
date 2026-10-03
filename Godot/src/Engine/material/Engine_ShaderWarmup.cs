@@ -253,11 +253,17 @@ public partial class Engine_ShaderWarmup : Node
 		access.ListDirEnd();
 	}
 
+	/// <summary>The backdrop behind the preparation text — the seal art, our own, shipped with
+	/// the app rather than read from the banks, which are still mounting while this is up.</summary>
+	public const string BackdropPath = "res://assets/ui/preparation_seal.png";
+
 	/// <summary>
 	/// STYLED LIKE THE GAME'S OWN LOAD SCREENS, but code-drawn: the real one draws bank art
 	/// with the guest's fonts, and during warm-up the banks are still mounting and the guest
-	/// does not exist. Black ground, the gold the loading seal uses, a drawn spinner arc in
-	/// the lower right where the game puts its own, and the text beside it.
+	/// does not exist. The seal backdrop over black ground, the gold the loading seal uses, a
+	/// drawn spinner arc in the lower right where the game puts its own, and the text beside
+	/// it. The picture covers the window keeping its aspect, so a wide or tall window crops
+	/// the seal rather than letterboxing it; black shows only if the art is missing.
 	/// </summary>
 	private void BuildScreen()
 	{
@@ -275,6 +281,24 @@ public partial class Engine_ShaderWarmup : Node
 			AnchorBottom = 1.0f,
 		};
 		_screen.AddChild(backdrop);
+
+		if (ResourceLoader.Exists(BackdropPath) &&
+			ResourceLoader.Load<Texture2D>(BackdropPath) is { } seal)
+		{
+			_screen.AddChild(new TextureRect
+			{
+				Texture = seal,
+				AnchorRight = 1.0f,
+				AnchorBottom = 1.0f,
+				ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+				StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+				TextureFilter = CanvasItem.TextureFilterEnum.LinearWithMipmaps,
+			});
+		}
+		else
+		{
+			GD.Print($"[shader-warmup] no backdrop at {BackdropPath}; black ground");
+		}
 
 		_spinner = new SpinnerArc
 		{

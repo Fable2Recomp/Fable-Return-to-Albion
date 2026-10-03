@@ -52,6 +52,28 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	public System.Collections.Generic.IReadOnlyDictionary<string, Vector3>? HostPositions { get; set; }
 
 	/// <summary>
+	/// Host-stated `rotation.z`, radians, keyed by element path — the same slot a guest
+	/// attribute write takes, turning the element about its authored pivot. Only the world map's
+	/// minimap image states one today.
+	/// </summary>
+	public System.Collections.Generic.IReadOnlyDictionary<string, float>? HostRotations { get; set; }
+
+	/// <summary>The live node of the first element named by <paramref name="path"/>, for an owned
+	/// overlay that stands under one element (the minimap's markers under `Page2.Contents`).</summary>
+	public Node3D? NodeFor(string path) =>
+		OrdinalForPath(path) is { } ordinal ? _binding.NodeFor(ordinal) : null;
+
+	/// <summary>The AUTHORED position of the first element named by <paramref name="path"/>, in its
+	/// parent's units — what the guest reads back off the minimap image before it adds it to
+	/// every marker.</summary>
+	public Vector3? AuthoredPosition(string path) =>
+		Document is not null && OrdinalForPath(path) is { } ordinal &&
+		ordinal >= 0 && ordinal < Document.Nodes.Length
+			? new Vector3(Document.Nodes[ordinal].PositionX, Document.Nodes[ordinal].PositionY,
+				Document.Nodes[ordinal].PositionZ)
+			: null;
+
+	/// <summary>
 	/// Components the host switches, keyed by document path, as a 1-based slide index (1 is the
 	/// first slide after the master; `sub_82BB5760` rejects anything below).
 	/// </summary>
@@ -799,8 +821,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		bool values = HostValues is { Count: > 0 };
 		bool textures = HostTextures is { Count: > 0 };
 		bool positions = HostPositions is { Count: > 0 };
+		bool rotations = HostRotations is { Count: > 0 };
 		bool slid = HostSlides is { Count: > 0 };
-		if ((!values && !textures && !positions && !slid) || Document is null)
+		if ((!values && !textures && !positions && !rotations && !slid) || Document is null)
 		{
 			return stated;
 		}
@@ -890,6 +913,39 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		if (slid)
 		{
 			ForEachSlideCommand(ScaleId, DropScale);
+		}
+
+		// A host rotation rides slot 6, beside the position (0..2) and scale (3..5) slots.
+		if (rotations)
+		{
+			foreach (var pair in HostRotations!)
+			{
+				foreach (int ordinal in OrdinalsForPath(pair.Key))
+				{
+					if (patched is null)
+					{
+						patched = new List<float?[]?>(Document.Nodes.Length);
+						for (int i = 0; i < Document.Nodes.Length; ++i)
+						{
+							patched.Add(stated is not null && i < stated.Count ? stated[i] : null);
+						}
+					}
+
+					if (ordinal < 0 || ordinal >= patched.Count)
+					{
+						continue;
+					}
+
+					var widened = new float?[7];
+					if (patched[ordinal] is { } existing)
+					{
+						CopyInto(existing, widened);
+					}
+
+					widened[6] = pair.Value;
+					patched[ordinal] = widened;
+				}
+			}
 		}
 
 		if (!positions)

@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 162;
+	public const int ExpectedAbiVersion = 166;
 
 	private const int MessageCapacity = 512;
 
@@ -3166,6 +3166,78 @@ public static class HostBridge
 	public readonly record struct GuestWeather(
 		float SnowSize, float SnowFallSpeed, float RainSize, float RainDensity);
 
+	/// <summary>
+	/// One theme the guest has pushed on its environment theme stack: the FNV-1 of its name,
+	/// which is its record hash in `environmentthemes.gdb`, and the weight the guest is blending
+	/// it at this tick (0..1, rising over the push's blend-in, falling over its fade-out) with
+	/// the weight it is heading for.
+	/// </summary>
+	public readonly record struct GuestThemeLayer(uint RecordHash, float Weight, float Target);
+
+	/// <summary>
+	/// The themes on the guest's environment theme stack right now — Time Control's
+	/// `EnvThemeSlowTime2`, spell charging, the banshee — see RefiiHostGetThemeStack. Empty at
+	/// rest, so a host blending these over its own tone map changes nothing until the guest
+	/// states a push.
+	/// </summary>
+	public static void ThemeStack(System.Collections.Generic.List<GuestThemeLayer> into)
+	{
+		into.Clear();
+		try
+		{
+			if (TryGetAbiVersion() is null || !IsGuestUp)
+			{
+				return;
+			}
+
+			uint[] words = _themeStackWords ??= new uint[ThemeStackMax * 3];
+			uint count = RefiiHostGetThemeStack(words, ThemeStackMax);
+			for (int i = 0; i < count; ++i)
+			{
+				into.Add(new GuestThemeLayer(
+					words[i * 3],
+					System.BitConverter.Int32BitsToSingle(unchecked((int)words[(i * 3) + 1])),
+					System.BitConverter.Int32BitsToSingle(unchecked((int)words[(i * 3) + 2]))));
+			}
+		}
+		catch (DllNotFoundException)
+		{
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	private const uint ThemeStackMax = 16;
+
+	[System.ThreadStatic]
+	private static uint[]? _themeStackWords;
+
+	/// <summary>
+	/// The address of one component on an entity, by id, or 0 when the entity does not carry it
+	/// — the pointer half of <see cref="GetEntityComponents"/>, for the reads that have a
+	/// verified layout to apply to it.
+	/// </summary>
+	public static uint EntityComponentAddress(uint entity, uint id)
+	{
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		_componentPairs ??= new uint[MaxComponents * 2];
+		uint pairs = RefiiHostGetEntityComponents(entity, _componentPairs, MaxComponents);
+		for (int i = 0; i < pairs; ++i)
+		{
+			if (_componentPairs[i * 2] == id)
+			{
+				return _componentPairs[(i * 2) + 1];
+			}
+		}
+
+		return 0;
+	}
+
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
 		uint Manager, double Submitted, double Deadline, bool Busy,
@@ -4968,7 +5040,16 @@ public static class HostBridge
 		uint Count, uint Index, string Name, string Distance, string Travel,
 		string Fine, string Owned, string Chests, string Digspots,
 		string Divespots, string Gargoyles, string SilverKeys, string Merchants,
-		int Stars)
+		int Stars,
+
+		/// <summary>The region's first level, the `MinimapInfo` key — see the sampler.</summary>
+		string LevelName = "",
+
+		/// <summary>The guest's world/level key for it, compared to the current level's.</summary>
+		uint LevelKey = 0,
+
+		/// <summary>The scenario the world names for that key; empty means DefaultScenario.</summary>
+		string Scenario = "")
 	{
 		/// <summary>
 		/// Whether this sample is of the region a caller asked for. A `default` sample — what
@@ -5012,15 +5093,19 @@ public static class HostBridge
 		var travel = new byte[64];
 		var counts = new byte[256];
 		var merchants = new byte[512];
+		var levelName = new byte[64];
+		var scenario = new byte[64];
 		uint total;
 		uint index;
 		int stars;
+		uint levelKey;
 		try
 		{
 			total = RefiiHostGetWorldMapRegion(
 				out index, name, (uint)name.Length, distance, (uint)distance.Length,
 				travel, (uint)travel.Length, counts, (uint)counts.Length,
-				merchants, (uint)merchants.Length, out stars);
+				merchants, (uint)merchants.Length, out stars,
+				levelName, (uint)levelName.Length, out levelKey, scenario, (uint)scenario.Length);
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -5034,8 +5119,57 @@ public static class HostBridge
 		return new WorldMapRegion(
 			total, index, Utf8(name), Utf8(distance), Utf8(travel),
 			Part(0), Part(1), Part(2), Part(3), Part(4), Part(5), Part(6),
-			Utf8(merchants), stars);
+			Utf8(merchants), stars, Utf8(levelName), levelKey, Utf8(scenario));
 	}
+
+	/// <summary>
+	/// What the world map's minimap page plots from live state — see RefiiHostGetMinimapLive.
+	/// <see cref="Known"/> is false before a level stands.
+	/// </summary>
+	public readonly record struct MinimapLive(
+		uint LevelKey, int MinX, int MinY, int MaxX, int MaxY,
+		uint Dog, bool HasTrailTarget, Vector3 TrailTarget, bool PrimaryQuestHere, uint Hero,
+		uint[] Merchants)
+	{
+		public bool Known => LevelKey != 0u || MaxX != MinX;
+
+		/// <summary>`max(maxX − minX, maxY − minY)` — the page's projection divisor.</summary>
+		public float Extent => System.Math.Max(MaxX - MinX, MaxY - MinY);
+	}
+
+	public static MinimapLive GetMinimapLive()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] words = _minimapWords ??= new uint[13 + 32];
+		try
+		{
+			if (RefiiHostGetMinimapLive(words, (uint)words.Length) == 0u)
+			{
+				return default;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
+		int merchantCount = (int)System.Math.Min(words[12], 32u);
+		var merchants = new uint[merchantCount];
+		System.Array.Copy(words, 13, merchants, 0, merchantCount);
+		return new MinimapLive(
+			words[0], unchecked((int)words[1]), unchecked((int)words[2]),
+			unchecked((int)words[3]), unchecked((int)words[4]),
+			words[5], words[6] != 0u, new Vector3(F(words[7]), F(words[8]), F(words[9])),
+			words[10] != 0u, words[11], merchants);
+	}
+
+	[System.ThreadStatic]
+	private static uint[]? _minimapWords;
 
 	/// <summary>
 	/// Screen 28's one building. The screen's left column is a list of COMMANDS, not of
@@ -5721,7 +5855,11 @@ public static class HostBridge
 		uint RecordId, bool Unlocked, bool Completed, bool Failed, bool OnWorldMap, bool Viewed,
 		bool Primary, bool Active,
 		int Rating, int RewardRenown, int RewardMoney, int ObjectiveParameter,
-		float DaysRemaining, int TaskCount);
+		float DaysRemaining, int TaskCount,
+
+		/// <summary>The entity the quest's objective weak-references (`quest+84`), or 0 — what
+		/// the minimap plots as an "other quest" marker.</summary>
+		uint ObjectiveEntity = 0);
 
 	/// <summary>
 	/// One job's journey — distance and travel time, already worded by the guest's own
@@ -5734,6 +5872,28 @@ public static class HostBridge
 		string Days)
 	{
 		public bool IsFor(uint record) => Known && Record == record && record != 0u;
+	}
+
+	/// <summary>
+	/// Whether the trail is following a sale or a family member instead of the primary quest —
+	/// the quest log's TrailOverrideInfo at +40. While it is, the world map shows the primary
+	/// quest as merely active (`sub_829A3260`). See RefiiHostGetQuestTrailOverride.
+	/// </summary>
+	public static bool QuestTrailOverridden()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostGetQuestTrailOverride() != 0u;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
 	}
 
 	/// <summary>Names the quest whose journey the pump should answer for next.</summary>
@@ -5832,7 +5992,7 @@ public static class HostBridge
 		}
 
 		const int max = 256;
-		const int stride = 8;
+		const int stride = 9;
 		uint[] words = new uint[max * stride];
 		uint found;
 		try
@@ -5866,7 +6026,8 @@ public static class HostBridge
 				(int)words[at + 4],
 				(int)words[at + 5],
 				System.BitConverter.Int32BitsToSingle((int)words[at + 6]),
-				(int)words[at + 7]));
+				(int)words[at + 7],
+				words[at + 8]));
 		}
 
 		return quests;
@@ -6241,6 +6402,52 @@ public static class HostBridge
 			words[11] == uint.MaxValue ? -1 : (int)words[11],
 			words[12] != 0, words[13] != 0);
 	}
+
+	/// <summary>
+	/// The quick spell wheel's cursor as the guest's own widget holds it — see
+	/// RefiiHostGetSpellWheel. <see cref="Engine_UiModel.SpellWheelState.Known"/> is false while
+	/// the wheel is closed, when its tables are uninitialised heap.
+	/// </summary>
+	public static Engine_UiModel.SpellWheelState GetSpellWheel(int player)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] words = _spellWheelWords ??= new uint[53];
+		try
+		{
+			if (RefiiHostGetSpellWheel((uint)player, words, (uint)words.Length) == 0)
+			{
+				return default;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		var counts = new int[Engine_UiModel.SpellAssignState.Slots];
+		var cells = new int[Engine_UiModel.SpellAssignState.Slots];
+		var lists = new int[Engine_UiModel.SpellAssignState.Slots][];
+		for (int r = 0; r < counts.Length; ++r)
+		{
+			counts[r] = (int)words[3 + r];
+			cells[r] = (int)words[8 + r];
+			lists[r] = new int[counts[r]];
+			for (int c = 0; c < counts[r]; ++c)
+			{
+				lists[r][c] = (int)words[13 + (8 * r) + c];
+			}
+		}
+
+		return new Engine_UiModel.SpellWheelState(
+			words[0], (int)words[1], unchecked((int)words[2]), counts, cells, lists);
+	}
+
+	[System.ThreadStatic]
+	private static uint[]? _spellWheelWords;
 
 	/// <summary>
 	/// Puts a will on a d-pad slot, through the guest's own committing wrapper. Commit on
@@ -6860,6 +7067,9 @@ public static class HostBridge
 	private static extern int RefiiHostGetSpellAssign([Out] uint[] outWords);
 
 	[DllImport(Library)]
+	private static extern int RefiiHostGetSpellWheel(uint player, [Out] uint[] outWords, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetMenuRow(
 		uint index, [Out] byte[]? name, uint nameCapacity, [Out] byte[]? parent,
 		uint parentCapacity, out uint id, out int eventType, out ulong generation,
@@ -6904,6 +7114,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetQuestLog(uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetQuestTrailOverride();
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetFastTravelRegions([Out] uint[]? outWords, uint wordCapacity);
@@ -7050,6 +7263,9 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetWeather(
 		out float snowSize, out float snowFallSpeed, out float rainSize, out float rainDensity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetThemeStack(uint[] outWords, uint maxEntries);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(
@@ -7210,7 +7426,11 @@ public static class HostBridge
 	private static extern uint RefiiHostGetWorldMapRegion(
 		out uint outIndex, byte[] name, uint nameCapacity, byte[] distance, uint distanceCapacity,
 		byte[] travel, uint travelCapacity, byte[] counts, uint countsCapacity,
-		byte[] merchants, uint merchantsCapacity, out int outStars);
+		byte[] merchants, uint merchantsCapacity, out int outStars,
+		byte[] levelName, uint levelCapacity, out uint outLevelKey, byte[] scenario, uint scenarioCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetMinimapLive(uint[] outWords, uint capacity);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetWorldMapRegion(uint index);

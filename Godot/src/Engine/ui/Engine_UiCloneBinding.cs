@@ -683,6 +683,15 @@ public sealed class Engine_UiCloneBinding
 				: Axis(axis) * length;
 		}
 
+		// A stated `rotation.z` (slot 6) REPLACES the element's turn: the basis is rebuilt as
+		// R(z)·S from the scale alone, the way `Engine_UiSceneBuilder.BuildTransform` composes
+		// an authored rotation (`FromEuler(-x, -y, z)`, Z unconjugated), and the pivot term
+		// follows it below, so the element turns about its authored pivot.
+		if (values is not null && values.Length > 6 && values[6] is { } rz && !float.IsNaN(rz))
+		{
+			basis = new Basis(Vector3.Back, rz).Scaled(scale);
+		}
+
 		var after = new Transform3D(basis, position - (basis * bound.Pivot));
 		if (after == before)
 		{

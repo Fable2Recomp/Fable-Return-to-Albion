@@ -52,6 +52,7 @@ public static class Engine_PostFxReport
             $"maxLB={tv[(int)Refii.Level.ToneMapParam.MaxLumLowerBound]:0.000} " +
             $"contrastClamp={tv[(int)Refii.Level.ToneMapParam.ContrastClamping]:0.000} " +
             $"brightness={tv[(int)Refii.Level.ToneMapParam.Brightness]:0.000} " +
+            $"saturation={tv[(int)Refii.Level.ToneMapParam.Saturation]:0.000} " +
             $"darkLift={Engine_PostFxParams.DarkLift:0.00} modern={Engine_LightingFrame.ModernModel}").Append('\n');
         text.Append(
             $"[postfx]   raw black={state[Engine_PostFxState.RawBlack]:0.0000} " +

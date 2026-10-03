@@ -75,7 +75,16 @@ public static class Engine_UiMenuSources
 		/// is `sub_826CF098`'s second suffix (`word_820AEFF0`, appended when the count pair's
 		/// `[1]` is above zero, and `[1]` counts exactly these).
 		/// </summary>
-		bool Unviewed = false);
+		bool Unviewed = false,
+
+		/// <summary>
+		/// WHICH emphasis, when a row wears one of the three the guest's `g_Menu.EmphasisConst`
+		/// names rather than the one <see cref="Emphasised"/> stands for. The world map's quest
+		/// rows: `sub_829A3BA0` emphasises a PRIMARY quest with 1 and an ACTIVE one with 2
+		/// (0x829a3e2c / 0x829a3e4c), and the re-emphasis `sub_829A3260` demotes the primary to
+		/// 2 while a sale or family member holds the trail. None defers to <see cref="Emphasised"/>.
+		/// </summary>
+		Engine_UiMenuConstants.Emphasis Emphasis = Engine_UiMenuConstants.Emphasis.None);
 
 	/// <summary>A provider: given the source's argument, the rows it supplies.</summary>
 	public delegate IReadOnlyList<Row> Provider(string argument);

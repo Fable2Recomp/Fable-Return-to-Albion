@@ -81,6 +81,11 @@ public interface Engine_UiPageProvider
 	IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
 		Engine_UiPageProviders.NoSlides;
 
+	/// <summary>Elements the provider TURNS, as a stated `rotation.z` in radians — the world map's
+	/// minimap image, which the guest rotates by `MinimapDegreesRotationToNorth`.</summary>
+	IReadOnlyDictionary<string, float> Rotations(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoRotations;
+
 	/// <summary>
 	/// Whether this screen needs the guest's option sliders read this frame.
 	///

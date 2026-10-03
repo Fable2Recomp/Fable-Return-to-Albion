@@ -1584,6 +1584,58 @@ public partial class GameUi : Node
 	/// action codes 36 and 37 on the screen's handler, and the highlight drawn is read back out
 	/// of the layout the guest produced. Yields the frame outright while a modal box is pending.
 	/// </summary>
+	/// <summary>The world map's region minimap markers, standing under the live `Page2.Contents`.</summary>
+	private Engine_UiMinimapMarkers? _minimapMarkers;
+
+	private const uint WorldMapScreenId = 23;
+
+	/// <summary>
+	/// The world map's minimap page: the stick's page turn (host-owned, the guest's own page
+	/// index never sees our stick) and the markers the guest would have put on its GUI list —
+	/// see <see cref="Engine_UiMinimapPage"/>. Every other screen drops the turn, so the map
+	/// opens on the readout next time.
+	/// </summary>
+	private void DriveMinimap(uint screenId, Engine_UiOwnedBook book,
+		HostBridge.WorldMapRegion worldMap, Engine_UiExpandableMenu.Item? row, double delta)
+	{
+		if (screenId != WorldMapScreenId)
+		{
+			Engine_UiMinimapPage.Reset();
+			_minimapMarkers?.Feed(System.Array.Empty<Engine_UiMinimapPage.Marker>());
+			return;
+		}
+
+		Engine_UiMinimapPage.DriveFlip(
+			Engine_UiWorldMapPage.RegionOf(row) >= 0, GameInput.MenuHorizontal, (float)delta);
+
+		Node3D? contents = Engine_UiMinimapPage.Standing(row)
+			? book.NodeFor(Engine_UiMinimapPage.Contents)
+			: null;
+		if (contents is null)
+		{
+			_minimapMarkers?.Feed(System.Array.Empty<Engine_UiMinimapPage.Marker>());
+			return;
+		}
+
+		if (_minimapMarkers is null || !GodotObject.IsInstanceValid(_minimapMarkers))
+		{
+			_minimapMarkers = new Engine_UiMinimapMarkers
+			{
+				Name = "MinimapMarkers",
+				ResolveTexture = hash => book.ResolveTexture?.Invoke(hash),
+			};
+		}
+
+		if (_minimapMarkers.GetParent() != contents)
+		{
+			_minimapMarkers.GetParent()?.RemoveChild(_minimapMarkers);
+			contents.AddChild(_minimapMarkers);
+		}
+
+		_minimapMarkers.Feed(Engine_UiMinimapPage.Markers(
+			row, worldMap, book.AuthoredPosition("Foreground.Book.Pages." + Engine_UiMinimapPage.MapImage)));
+	}
+
 	private bool DriveScreenMenu(double delta, Engine_UiModel.PauseState? pause)
 	{
 		// Re-validate the held node: a Godot node freed elsewhere throws on EVERY access, and an
@@ -1742,6 +1794,7 @@ public partial class GameUi : Node
 					Engine_UiDetailPages.Positions(state.ScreenId, pageSliders, pageRow);
 				pageBook.HostActive = Engine_UiDetailPages.Active(state.ScreenId, pageRow);
 				pageBook.HostOpacity = Engine_UiDetailPages.Opacities(state.ScreenId, pageRow);
+				pageBook.HostRotations = Engine_UiDetailPages.Rotations(state.ScreenId, pageRow);
 				_providerFilledThisFrame = true;
 			}
 
@@ -1853,6 +1906,9 @@ public partial class GameUi : Node
 			// book ever received one (the clothing footer, the shop's front-page parchment).
 			abilityBook.HostOpacity =
 				Engine_UiDetailPages.Opacities(state.ScreenId, _screenMenu?.Script.Highlighted);
+			abilityBook.HostRotations =
+				Engine_UiDetailPages.Rotations(state.ScreenId, _screenMenu?.Script.Highlighted);
+			DriveMinimap(state.ScreenId, abilityBook, worldMap, _screenMenu?.Script.Highlighted, delta);
 
 			// THIS PATH FILLS THE BOOK TOO. DriveOwnedScreenProvider stands down on this flag,
 			// and it was only ever set by the page path above — so for the ability book it ran
@@ -2584,6 +2640,20 @@ public partial class GameUi : Node
 		};
 		_presentation.AddChild(_reticule);
 
+		// TIME CONTROL'S DIAL, which the guest keeps as a sprite record on the hero's component
+		// 118 and never as an element — see Engine_HudSlowTimeDial. Behind the reticule.
+		_slowTimeDial = new Engine_HudSlowTimeDial
+		{
+			Name = "SlowTimeDial",
+			Position = new Vector3(0f, 0f, 50f),
+			ResolveTexture = hash =>
+				_presentation.TextureNames is { } names &&
+				names.TryResolve(hash, out string path)
+					? _presentation.LoadTexture(path)
+					: null,
+		};
+		_presentation.AddChild(_slowTimeDial);
+
 		BuildAchievementToast();
 	}
 
@@ -2597,6 +2667,8 @@ public partial class GameUi : Node
 	private Engine_HudWorldSprites? _worldSprites;
 
 	private Engine_HudReticule? _reticule;
+
+	private Engine_HudSlowTimeDial? _slowTimeDial;
 
 	/// <summary>`GUI.PlayFullCutscene`'s game-flow state (`sub_82305FE8` builds it; its type
 	/// slot is `li r3,7`).</summary>
@@ -2811,6 +2883,66 @@ public partial class GameUi : Node
 				record[8],
 				unchecked((int)record[13])));
 		}
+	}
+
+	/// <summary>
+	/// Feeds Time Control's dial each frame from the record at `comp118 + 484` on the hero:
+	/// active byte, alpha, and per segment the rectangle, texture hash and angle. The guest ticks
+	/// and paces the record itself on the sim path (`sub_821DFDD0` -> `sub_822B5150`), so this
+	/// reads its statement and draws nothing of its own.
+	/// </summary>
+	private void DriveSlowTimeDial()
+	{
+		if (_slowTimeDial is null || !GodotObject.IsInstanceValid(_slowTimeDial))
+		{
+			return;
+		}
+
+		uint hero = HostBridge.IsInGame ? HostBridge.HeroEntityAddress() : 0u;
+		uint spells = hero != 0u ? HostBridge.EntityComponentAddress(hero, 118u) : 0u;
+		if (spells == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
+		{
+			_slowTimeDial.Feed(null);
+			return;
+		}
+
+		// Dial +0..+108: words 1 (active byte high), 3 (alpha), then per segment i at word
+		// 8 + 10i: prim, top, left, bottom, right, texture, angle.
+		uint[] dial = HostBridge.Peek(spells + 484u, 28);
+		if (dial.Length != 28 || (dial[1] >> 24) == 0u)
+		{
+			_slowTimeDial.Feed(null);
+			return;
+		}
+
+		uint[] backbuffer = HostBridge.Peek(0x834A5FE8u, 2);
+		float guestWidth = backbuffer.Length == 2 && backbuffer[0] != 0u ? backbuffer[0] : 1280f;
+		float guestHeight = backbuffer.Length == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
+		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
+		_slowTimeDial.UnitsPerGuestPixel = extent.Y / guestHeight;
+
+		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
+
+		Engine_HudSlowTimeDial.Segment? Segment(int i)
+		{
+			int at = 8 + (10 * i);
+			if (dial[at] == 0xFFFFFFFFu)
+			{
+				return null;
+			}
+
+			float top = unchecked((int)dial[at + 1]);
+			float left = unchecked((int)dial[at + 2]);
+			float bottom = unchecked((int)dial[at + 3]);
+			float right = unchecked((int)dial[at + 4]);
+			return new Engine_HudSlowTimeDial.Segment(
+				new Vector2(((left + right) * 0.5f) - (guestWidth * 0.5f), ((top + bottom) * 0.5f) - (guestHeight * 0.5f)),
+				(right - left) * 0.5f,
+				dial[at + 5],
+				F(dial[at + 6]));
+		}
+
+		_slowTimeDial.Feed(new Engine_HudSlowTimeDial.Dial(F(dial[3]), Segment(0), Segment(1)));
 	}
 
 	private bool _worldSpritesCleared;
@@ -3364,6 +3496,7 @@ public partial class GameUi : Node
 	{
 		DriveWorldSprites();
 		DriveReticule();
+		DriveSlowTimeDial();
 		DriveFullCutscene();
 		DriveCreditsRoll();
 		if (_worldIcons is null || _hudAddress == 0 ||
@@ -3618,22 +3751,31 @@ public partial class GameUi : Node
 					}
 					else if (GameInput.SpellsMenuHeld)
 					{
-						// ONE POST, NO DIRECTION AND NO CLOCK.
+						// THE HELD DIRECTION, AS THE GUEST'S OWN IDS, EVERY FRAME. The widget
+						// moves on GameAction 28 UP / 29 DOWN / 30 LEFT / 31 RIGHT and nothing
+						// else: its stick resolution is compiled off (`widget+165` is left 0 by
+						// `sub_826B4358` at 0x826b4410, and `sub_828818E8` drops a 26 while it is
+						// clear), which is why the old `stick` post never moved the box. The
+						// cadence is the widget's own latch — first press at once, then 0.3 s,
+						// then 0.1 s — so no clock here; `release` resets it when the pad lets go.
 						//
-						// `sub_826B5430`'s switch runs on what `sub_828818E8` RETURNS, not on
-						// the code it is handed (0x826b5450 / `switch (result)` 0x826b5474), and
-						// for code 26 that routine reads the live left stick out of the guest's
-						// own pad through `sub_82881AB0`, applies the guest's hysteresis — 0.6
-						// from rest, 0.1 along the axis held, 0.95 to cross — and the guest's
-						// auto-repeat `sub_82881B28`, then moves the row or the carousel and
-						// commits. A centred stick returns 0 and the switch falls through: a
-						// no-op. A host clock here would only fight `sub_82881B28`, which is
-						// also what makes this unable to race the guest's own delivery.
-						//
-						// Posted unconditionally while the trigger is held; the pump holds the
-						// authoritative gate (the blade's own open byte) and refuses silently,
-						// so there is no second copy of that state here to fall out of step.
-						HostBridge.PostFrontEndAction("SpellBlade:stick");
+						// 28 is UP = `++row` = the higher power level, drawn higher on screen; the
+						// host's menu direction is a LIST direction (down = +1), so up is < 0.
+						string? direction = GameInput.MenuDirection < 0 ? "up"
+							: GameInput.MenuDirection > 0 ? "down"
+							: GameInput.MenuHorizontal < 0 ? "left"
+							: GameInput.MenuHorizontal > 0 ? "right"
+							: null;
+						if (direction is not null)
+						{
+							HostBridge.PostFrontEndAction("SpellBlade:" + direction);
+							_spellBladeHeld = true;
+						}
+						else if (_spellBladeHeld)
+						{
+							HostBridge.PostFrontEndAction("SpellBlade:release");
+							_spellBladeHeld = false;
+						}
 
 						// A copies this power level's will down into every later level that also
 						// offers it (`sub_826B4EF8`). B is the guest's own GameAction 43 and is
@@ -3747,6 +3889,9 @@ public partial class GameUi : Node
 	/// <summary>The owned spell-assignment blade and quick wheel — see
 	/// <see cref="Engine_UiSpellAssignSet"/>.</summary>
 	private readonly Engine_UiSpellAssignSet _spells = new();
+
+	/// <summary>Whether a blade direction was posted last frame, so one `release` follows it.</summary>
+	private bool _spellBladeHeld;
 
 	/// <summary>The options page's second input level — see <see cref="Engine_UiScreenLevel"/>.</summary>
 	private readonly Engine_UiScreenLevel _screenLevel = new();

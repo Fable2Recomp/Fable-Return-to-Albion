@@ -2028,9 +2028,19 @@ extern "C" {
 ///     `Inventory:dye:<dye>:<target>:<slot>`.
 /// 161 RefiiHostGetShopPrice also returns the row's item record (`*(*holder + 4)`), so the shop
 ///     page reads the item the ticket names instead of guessing it from the row's label.
+/// 166 adds RefiiHostGetMinimapLive, widens RefiiHostGetWorldMapRegion by the region's first
+///     level name, key and scenario, and RefiiHostGetQuestLog by each quest's objective entity —
+///     the world map's minimap page, drawn by the host.
+/// 165 adds RefiiHostGetQuestTrailOverride — whether the trail follows a sale or family member
+///     instead of the primary quest, which decides the world map's row emphasis.
+/// 164 adds RefiiHostGetSpellWheel — the quick spell wheel's row, cells and lists as the guest's
+///     own widget holds them, so the host draws the guest's cursor instead of keeping one.
+/// 163 adds RefiiHostGetThemeStack — the themes the guest has pushed on its environment theme
+///     stack, by name hash and live weight, so Time Control's `EnvThemeSlowTime2` (and every
+///     other pushed theme) blends over the host's own tone map at the guest's stated weight.
 /// 162 adds RefiiHostGetClothingMannequin — screen 16's preview mannequin, which the remaster
 ///     draws for an outfit row and dresses through the pump's `Inventory:tryon`.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 162; }
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 166; }
 
 /// THE SHAPE, PER PART, as the guest states it to `sub_82A48B90`: per morphed part [model hash,
 /// count, then count x (target model hash, weight float bits)]; the part itself takes 1 - sum.
@@ -2680,8 +2690,24 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldMapRegion(uint32_t* out_index,
                                                           char* counts, uint32_t counts_capacity,
                                                           char* merchants,
                                                           uint32_t merchants_capacity,
-                                                          int32_t* out_stars) {
+                                                          int32_t* out_stars,
+                                                          char* level_name,
+                                                          uint32_t level_capacity,
+                                                          uint32_t* out_level_key,
+                                                          char* scenario,
+                                                          uint32_t scenario_capacity) {
     const refii::vfs::WorldMapRegion region = refii::vfs::WorldMapRegionSnapshot();
+
+    // The minimap page's keys — see the sampler. Null-safe so an older caller shape still works.
+    if (level_name != nullptr && level_capacity != 0u) {
+        WriteOut(region.level_name, level_name, level_capacity);
+    }
+    if (out_level_key != nullptr) {
+        *out_level_key = region.level_key;
+    }
+    if (scenario != nullptr && scenario_capacity != 0u) {
+        WriteOut(region.scenario, scenario, scenario_capacity);
+    }
 
     // Which region this is; a caller that asked for another one is holding a stale answer.
     if (out_index != nullptr) *out_index = region.index;
@@ -3707,7 +3733,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestLog(uint32_t* words, uint32_t wo
     // "does this quest exist": the star rating, both rewards, the objective's `%1` parameter
     // and the days remaining are all plain fields on the quest object, and the pages are blank
     // without them. Every offset is from the save serialiser `sub_825237C8`, which names them.
-    constexpr uint32_t kWordsPerQuest = 8u;
+    // NINE since ABI 166: word 8 is the quest's OBJECTIVE ENTITY (`sub_82523500`: the weak
+    // reference at +84, holder at +88, entity at the holder's +0), which the world map's
+    // minimap page plots as an "other quest" marker (`sub_829ABFC0`, `minimap3`).
+    constexpr uint32_t kWordsPerQuest = 9u;
 
     const uint32_t span = end - begin;
     if ((span % kStride) != 0u || (span / kStride) > kMaxQuests) {
@@ -3721,7 +3750,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestLog(uint32_t* words, uint32_t wo
             continue;
         }
 
-        if (words != nullptr && (found * kWordsPerQuest + 7u) < word_capacity) {
+        if (words != nullptr && (found * kWordsPerQuest + 8u) < word_capacity) {
             uint32_t flags = 0u;
             flags |= GuestByteAt(base, quest + 12u) != 0u ? 1u : 0u;
             flags |= GuestByteAt(base, quest + 21u) != 0u ? 2u : 0u;
@@ -3741,6 +3770,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestLog(uint32_t* words, uint32_t wo
             row[4] = GuestWordAt(base, quest + 36u);   // RewardMoney
             row[5] = GuestWordAt(base, quest + 40u);   // CurrentObjectiveParameter, the `%1`
             row[6] = GuestWordAt(base, quest + 44u);   // DaysRemaining, raw float bits
+
+            {
+                const uint32_t holder = GuestWordAt(base, quest + 88u);
+                const uint32_t target = plausible(holder) ? GuestWordAt(base, holder) : 0u;
+                row[8] = plausible(target) ? target : 0u;
+            }
 
             // How many task lines it has. The vector at +104/+108 is stride 8,
             // `{ LHString babelTag; u8 Succeeded; }`; the LAST entry is the current task and
@@ -3763,6 +3798,221 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestLog(uint32_t* words, uint32_t wo
     }
 
     return found;
+}
+
+/// Whether the golden trail is following a SALE or a FAMILY MEMBER rather than the primary
+/// quest: the TrailOverrideInfo pointer at quest log +40 (component 102; `sub_8251CC00` frees
+/// it when a quest is made primary, `sub_82520428` serialises it). The world map's re-emphasis
+/// `sub_829A3260` (0x829a3770..0x829a37a8) shows the primary quest as merely ACTIVE while it is
+/// set — emphasis 1 means "what the trail follows". Returns 1 when set, 0 when clear or unknown.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestTrailOverride(void) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const uint32_t hero = ResolvePlayerHero(base);
+    if (hero == 0u) {
+        return 0u;
+    }
+
+    const uint32_t log = EntityComponent(base, hero, 102u);
+    if (log == 0u) {
+        return 0u;
+    }
+
+    const uint32_t override_info = GuestWordAt(base, log + 40u);
+    return override_info >= 0x10000u && override_info < 0xC0000000u ? 1u : 0u;
+}
+
+/// WHAT THE WORLD MAP'S MINIMAP PAGE PLOTS FROM LIVE STATE — `sub_829ABFC0`'s inputs that are
+/// not GDB: the current level's key and bounds, the dog, the primary quest's trail target, and
+/// whether the primary quest is in this level.
+///
+///   [0]  current level key, `L+180` — the page plots the hero only when it equals the selected
+///        region's key (`World_ComputeWorldLevelFnv1Key(World, "Albion", &firstLevel)`).
+///   [1..4] `L+152, +156, +160, +164` — signed level bounds in metres (minX, minY, maxX, maxY);
+///        the page's extent is `max(maxX − minX, maxY − minY)` and the projection divides the
+///        RAW world position by it (0x829AEAE4..: `n = pos / extent; m = 240·(n − 0.5)`).
+///   [5]  the dog entity: `sub_82363D38(roster)` = the weak reference at roster+192 (holder at
+///        +196, entity at the holder's +0), drawn when its `+144 & 0x40` is set (`minimap11`).
+///   [6]  1 when [7..9] hold a position: the trail target of the primary quest — the entity the
+///        hero's component 33 weak-references at +316 (holder +320), its component 162, the
+///        float4 at +32 (`sub_82551D40`). Plotted with `minimap1` when the primary quest is in
+///        this level, `minimap17` (the exit) otherwise; the guest plots the same point for both.
+///   [10] 1 when the primary quest's level name (`quest+132`) equals `L+172`, case-insensitive
+///        (the `strcmpi` at 0x829AC...), 0 otherwise or when no quest is primary.
+///   [11] the hero entity.
+///   [12] how many TRAVELLING MERCHANTS follow, then their entities (`minimap10`): the page's
+///        `sub_823235A0(mgr, &27, 2, out)` — list 2 of the entity manager (`*(*(party+12))+124`,
+///        then `+ 12·2`: an intrusive list, node `{next, _, entity}`), each entity alive
+///        (`+144 & 0x40`), of KIND 2 (`sub_822035E0(e, 2)`: the object at `e+120`, vtable slot
+///        16 returns 2) and carrying component 27 (`sub_8250FD20`: bit 27 of the set at `e+36`),
+///        then `sub_828738D8(comp27)`: the weak reference at comp27+16 (holder +20) alive, its
+///        `+144 & 0x40` set and bit 26 of its `+36` set. The kind test is read, not called: the
+///        slot's function is the two-word stub `li r3, 2; blr`.
+///
+/// `L = *(*(World+36)+4)`, `World = *(*(*(*(*(0x83496AB8+12)+88)+4)+8)+4)`, roster =
+/// `*(*(*(*(0x83496AB8+12)+88)+4))`. Returns 1 when the level resolved; every other word is 0
+/// when its chain did not.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMinimapLive(uint32_t* out, uint32_t capacity) {
+    constexpr uint32_t kWords = 13u;
+    constexpr uint32_t kMaxMerchants = 32u;
+    if (out == nullptr || capacity < kWords) {
+        return 0u;
+    }
+    for (uint32_t i = 0; i < kWords; ++i) {
+        out[i] = 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
+
+    const uint32_t root = load_be32(0x83496AB8u);
+    const uint32_t game = plausible(root) ? load_be32(root + 12u) : 0u;
+    const uint32_t holder = plausible(game) ? load_be32(game + 88u) : 0u;
+    const uint32_t party = plausible(holder) ? load_be32(holder + 4u) : 0u;
+    const uint32_t h = plausible(party) ? load_be32(party + 8u) : 0u;
+    const uint32_t world = plausible(h) ? load_be32(h + 4u) : 0u;
+    const uint32_t level_handle = plausible(world) ? load_be32(world + 36u) : 0u;
+    const uint32_t level = plausible(level_handle) ? load_be32(level_handle + 4u) : 0u;
+    if (!plausible(level)) {
+        return 0u;
+    }
+
+    out[0] = load_be32(level + 180u);
+    out[1] = load_be32(level + 152u);
+    out[2] = load_be32(level + 156u);
+    out[3] = load_be32(level + 160u);
+    out[4] = load_be32(level + 164u);
+
+    const uint32_t roster = plausible(party) ? load_be32(party) : 0u;
+    if (plausible(roster)) {
+        const uint32_t dog_holder = load_be32(roster + 196u);
+        const uint32_t dog = plausible(dog_holder) ? load_be32(dog_holder) : 0u;
+        if (plausible(dog) && (GuestByteAt(base, dog + 144u) & 0x40u) != 0u) {
+            out[5] = dog;
+        }
+    }
+
+    const uint32_t hero = ResolvePlayerHero(base);
+    if (!plausible(hero)) {
+        return 1u;
+    }
+    out[11] = hero;
+
+    const uint32_t comp33 = EntityComponent(base, hero, 33u);
+    if (plausible(comp33)) {
+        const uint32_t target_holder = load_be32(comp33 + 320u);
+        const uint32_t target = plausible(target_holder) ? load_be32(target_holder) : 0u;
+        const uint32_t comp162 = plausible(target) ? EntityComponent(base, target, 162u) : 0u;
+        if (plausible(comp162)) {
+            uint32_t bits[3];
+            bool finite = true;
+            for (uint32_t i = 0; i < 3u; ++i) {
+                bits[i] = load_be32(comp162 + 32u + (4u * i));
+                float f = 0.0f;
+                std::memcpy(&f, &bits[i], sizeof(f));
+                finite = finite && std::isfinite(f);
+            }
+            if (finite) {
+                out[6] = 1u;
+                out[7] = bits[0];
+                out[8] = bits[1];
+                out[9] = bits[2];
+            }
+        }
+    }
+
+    // The travelling merchants.
+    {
+        const uint32_t manager = plausible(party) ? party + 12u : 0u;
+        const uint32_t inner = plausible(manager) ? load_be32(manager) : 0u;
+        const uint32_t table = plausible(inner) ? load_be32(inner + 124u) : 0u;
+        const uint32_t list = plausible(table) ? table + 24u : 0u;
+        uint32_t node = plausible(list) ? load_be32(list) : 0u;
+        const uint32_t tail = plausible(list) ? load_be32(list + 4u) : 0u;
+        uint32_t count = 0u;
+        for (uint32_t guard = 0; guard < 4096u && plausible(node) && count < kMaxMerchants; ++guard) {
+            const uint32_t entity = load_be32(node + 8u);
+            if (plausible(entity) && (GuestByteAt(base, entity + 144u) & 0x40u) != 0u) {
+                // Component 27 present: bit 27 of the set at +36 (`sub_8250FD20` with &27).
+                const bool has27 = (load_be32(entity + 36u) & (1u << 27)) != 0u;
+
+                // Kind 2: `*(e+120)` -> vtable slot 16 -> `li r3, 2; blr`.
+                bool kind2 = false;
+                const uint32_t kind = load_be32(entity + 120u);
+                const uint32_t kind_vtable = plausible(kind) ? load_be32(kind) : 0u;
+                const uint32_t kind_fn = plausible(kind_vtable) ? load_be32(kind_vtable + 64u) : 0u;
+                if (kind_fn >= 0x82000000u && kind_fn < 0x83000000u) {
+                    kind2 = load_be32(kind_fn) == 0x38600002u && load_be32(kind_fn + 4u) == 0x4E800020u;
+                }
+
+                if (has27 && kind2) {
+                    const uint32_t comp27 = EntityComponent(base, entity, 27u);
+                    const uint32_t owner_holder = plausible(comp27) ? load_be32(comp27 + 20u) : 0u;
+                    const uint32_t owner = plausible(owner_holder) ? load_be32(owner_holder) : 0u;
+                    if (plausible(owner) && (GuestByteAt(base, owner + 144u) & 0x40u) != 0u &&
+                        (load_be32(owner + 36u) & (1u << 26)) != 0u &&
+                        (kWords + count) < capacity) {
+                        out[kWords + count] = entity;
+                        ++count;
+                    }
+                }
+            }
+
+            if (node == tail) {
+                break;
+            }
+            node = load_be32(node);
+        }
+        out[12] = count;
+    }
+
+    const uint32_t log = EntityComponent(base, hero, 102u);
+    if (plausible(log)) {
+        const uint32_t begin = load_be32(log + 16u);
+        const uint32_t end = load_be32(log + 20u);
+        if (plausible(begin) && end > begin && (end - begin) <= 0x10000u) {
+            for (uint32_t at = begin; at + 12u <= end; at += 12u) {
+                const uint32_t quest = load_be32(at + 4u);
+                if (!plausible(quest) || GuestByteAt(base, quest + 20u) == 0u) {
+                    continue;
+                }
+                const std::string quest_level = ReadGuestString(base, quest + 132u, 128u);
+                const std::string here = ReadGuestString(base, level + 172u, 128u);
+                if (!quest_level.empty() && quest_level.size() == here.size()) {
+                    bool same = true;
+                    for (std::size_t i = 0; i < here.size(); ++i) {
+                        if (std::tolower(static_cast<unsigned char>(quest_level[i])) !=
+                            std::tolower(static_cast<unsigned char>(here[i]))) {
+                            same = false;
+                            break;
+                        }
+                    }
+                    out[10] = same ? 1u : 0u;
+                }
+                break;
+            }
+        }
+    }
+
+    return 1u;
 }
 
 /// ONE JOB'S JOURNEY — its distance and travel time, both already worded by the guest's own
@@ -5745,6 +5995,108 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* 
     }
 
     return 1;
+}
+
+/// The environment-theme STACK — what the guest has pushed over the day set this tick, each
+/// theme by name and at the weight the guest is blending it at.
+///
+/// Every full-screen effect the game has is a theme on this stack: Time Control pushes
+/// `EnvThemeSlowTime2` (`sub_827EC460`: `sub_82549640(mgr, name, 0.5, -1.0, 0.5)` then
+/// `sub_82549810(mgr, name, 1.0, 0.5)` — in over half a second, held, and `sub_827EBB70` fades
+/// it out over the spell's last half second), spell charging pushes `EnvThemeChargingLo/Hi`,
+/// the banshee `BansheeAttackHigh`. The guest's own compose (`sub_8218EAF8`) lerps each stated
+/// slot of each theme over its base at these weights; the host does the same over ITS base, so
+/// nothing changes while the stack is empty and the stated weights alone decide the effect.
+///
+/// The walk is the manager's intrusive list (`sub_82549640` inserts at `mgr+164`, the tick
+/// `sub_822C0E08` iterates it): `S = *(mgr+168)` is the sentinel, `node = *S`, `node = *node`
+/// until it returns to S; the record starts at `node+8` — `+0` a refcounted name string
+/// (`sub_822651A0` copies the pointer, characters at `*name`), `+4` the theme block, `+8` the
+/// current weight, `+12` the target (`sub_8254A260` 0x8254a260: `+8 = 0`, `+12 = target`,
+/// `+16 = hold ticks`, `+24 = Δ/tick`, `+28 = fade Δ/tick`). The name's FNV-1 is the theme's
+/// GDB record hash (`sub_825483B8` resolves it the same way), which is what the host extracts
+/// the theme by. `mgr = *(world+0x50)`, the object RefiiHostGetWeather already walks.
+///
+/// Writes 3 words per entry — name hash, weight bits, target bits — up to `max_entries`.
+/// Returns the entries written; 0 while the world is unbuilt or the list is empty.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeStack(uint32_t* out_words, uint32_t max_entries) {
+    if (out_words == nullptr || max_entries == 0u) {
+        return 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
+
+    const uint32_t root = load_be32(0x83496AB8u);
+    if (root == 0u) {
+        return 0u;
+    }
+    const uint32_t x = load_be32(root + 0x0Cu);
+    if (x == 0u) {
+        return 0u;
+    }
+    const uint32_t y = load_be32(x + 0x58u);
+    if (y == 0u) {
+        return 0u;
+    }
+    const uint32_t world = load_be32(y + 0x04u);
+    if (world == 0u) {
+        return 0u;
+    }
+    const uint32_t theme_manager = load_be32(world + 0x50u);
+    if (!plausible(theme_manager)) {
+        return 0u;
+    }
+
+    const uint32_t sentinel = load_be32(theme_manager + 168u);
+    if (!plausible(sentinel)) {
+        return 0u;
+    }
+
+    uint32_t written = 0u;
+    uint32_t node = load_be32(sentinel);
+    // A theme stack deeper than this is a torn read, not a stack.
+    for (uint32_t guard = 0; guard < 32u && plausible(node) && node != sentinel; ++guard) {
+        const uint32_t record = node + 8u;
+        const uint32_t name = load_be32(record);
+        const uint32_t characters = plausible(name) ? load_be32(name) : 0u;
+        std::string text;
+        if (plausible(characters)) {
+            for (uint32_t i = 0; i < 96u; ++i) {
+                char c = 0;
+                CopyGuest(base, characters + i, &c, 1u);
+                if (c == 0) {
+                    break;
+                }
+                text.push_back(c);
+            }
+        }
+
+        const uint32_t weight_bits = load_be32(record + 8u);
+        const uint32_t target_bits = load_be32(record + 12u);
+        float weight = 0.0f;
+        std::memcpy(&weight, &weight_bits, sizeof(weight));
+        if (!text.empty() && std::isfinite(weight) && written < max_entries) {
+            out_words[written * 3u] = RefiiFnv1(text);
+            out_words[(written * 3u) + 1u] = weight_bits;
+            out_words[(written * 3u) + 2u] = target_bits;
+            ++written;
+        }
+
+        node = load_be32(node);
+    }
+
+    return written;
 }
 
 /// The render-frame fence the LEVEL LOAD waits on — state 7 of `CmdLevelChange_Update`.
@@ -12566,6 +12918,88 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetSpellAssign(uint32_t* out) {
         }
 
         out[6u + row] = offered;
+    }
+
+    return 1;
+}
+
+/// THE QUICK SPELL WHEEL'S CURSOR AND LISTS, as the guest's own widget holds them.
+///
+/// The wheel over the running game is the `SpellAssigning` controller at `*(*(GUI+32)+92)`
+/// (player 1) / `+96` (player 2) — the same 420-byte class the abilities blade embeds at
+/// `screen14+200` (`sub_826B4358`, binder `sub_826B5860`). The GUEST moves its cursor:
+/// `sub_826B5430` case 28 `if (row < *(this+412)) ++row` (0x826b54a8), 29 `--row`
+/// (0x826b5538), 30/31 move the row's cell and COMMIT through `sub_82541F30`; the pump's
+/// `SpellBlade:up|down|left|right` lever hands it the held direction every frame. So the row and cell are
+/// data points to read, not a cursor to keep — the host kept one of its own and the gold box
+/// never left row 0.
+///
+/// Layout from the widget (decompiled 2026-08-21, re-read live 2026-10-03): `+172` the
+/// CECSpellManager, `+176` row, `+180+4r` cells populated in row r, `+200+4r` the row's current
+/// cell, `+220+32r+4c` the spell index (0..7) at row r cell c — the row's offered wills,
+/// compacted in index order by `sub_826B4848` — and `+412` the highest populated row (−1 =
+/// nothing to assign). Entries past a row's count are stale heap and are not read.
+///
+/// Writes `out[0]` widget, `[1]` row, `[2]` max row (as written, signed), `[3+r]` count,
+/// `[8+r]` cell, `[13 + 8r + c]` list — 53 words. Returns 1 when the widget resolved and the
+/// wheel's open flag (`QM+36`/`+37`) is set, else 0 with the tail zeroed: a closed wheel's
+/// tables are uninitialised heap (`sub_826B4848` runs only on open).
+REFII_HOST_ABI_EXPORT int RefiiHostGetSpellWheel(uint32_t player, uint32_t* out, uint32_t capacity) {
+    constexpr uint32_t kWords = 53u;
+    constexpr uint32_t kRows = 5u;
+    constexpr uint32_t kCells = 8u;
+    if (out == nullptr || capacity < kWords) {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < kWords; ++i) {
+        out[i] = 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const bool two = player == 2u;
+    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t quick = plausible(gui) ? read32(gui + 28u) : 0u;
+    const uint32_t hud = plausible(gui) ? read32(gui + 32u) : 0u;
+    if (!plausible(quick) || !plausible(hud) || read8(quick + (two ? 37u : 36u)) == 0u) {
+        return 0;
+    }
+
+    const uint32_t widget = read32(hud + (two ? 96u : 92u));
+    if (!plausible(widget)) {
+        return 0;
+    }
+
+    const uint32_t row = read32(widget + 176u);
+    const int32_t max_row = static_cast<int32_t>(read32(widget + 412u));
+    if (row >= kRows || max_row < -1 || max_row >= static_cast<int32_t>(kRows)) {
+        return 0;
+    }
+
+    out[0] = widget;
+    out[1] = row;
+    out[2] = static_cast<uint32_t>(max_row);
+    for (uint32_t r = 0; r < kRows; ++r) {
+        const uint32_t count = read32(widget + 180u + (4u * r));
+        const uint32_t cell = read32(widget + 200u + (4u * r));
+        out[3u + r] = count <= kCells ? count : 0u;
+        out[8u + r] = cell < kCells ? cell : 0u;
+        for (uint32_t c = 0; c < out[3u + r]; ++c) {
+            out[13u + (kCells * r) + c] = read32(widget + 220u + (32u * r) + (4u * c));
+        }
     }
 
     return 1;

@@ -835,7 +835,88 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private void PublishPostFx()
     {
-        Engine_PostFxParams.Publish(_toneMapTheme, Theme, _frame, ResolveCamera());
+        Engine_PostFxParams.Publish(WithGuestThemes(_toneMapTheme), Theme, _frame, ResolveCamera());
+    }
+
+    private readonly System.Collections.Generic.List<Refii.Host.HostBridge.GuestThemeLayer> _guestLayers = new();
+    private readonly System.Collections.Generic.Dictionary<uint, ToneMapTheme?> _guestLayerThemes = new();
+    private ToneMapTheme? _guestBlend;
+
+    /// <summary>
+    /// The host's tone map with the themes the guest has PUSHED blended over it at the guest's
+    /// own weights — Time Control's `EnvThemeSlowTime2` (Saturation -0.70, Brightness 0.25, its
+    /// own Exposure and Contrast), spell charging, the banshee. The stack is the data point: the
+    /// guest states each theme by name and the weight it is at this tick (in over 0.5 s, out
+    /// over the spell's last 0.5 s for Time Control), and `sub_8218EAF8` composes them exactly
+    /// so — the stack as one layer at `clamp(Σw, 0, 1)`, each theme at its share of Σw, each
+    /// STATED slot lerped over the base. An empty stack returns the base untouched, so the
+    /// picture at rest is unchanged. Fields a theme inherits through `parent` are not blended;
+    /// only what the record and its sub-records state is.
+    /// </summary>
+    private ToneMapTheme? WithGuestThemes(ToneMapTheme? baseTheme)
+    {
+        if (baseTheme is null || Engine.IsEditorHint() || !Refii.Host.HostBridge.IsInGame)
+        {
+            return baseTheme;
+        }
+
+        Refii.Host.HostBridge.ThemeStack(_guestLayers);
+        float sum = 0f;
+        foreach (Refii.Host.HostBridge.GuestThemeLayer layer in _guestLayers)
+        {
+            sum += Mathf.Max(layer.Weight, 0f);
+        }
+
+        if (sum <= 1e-4f)
+        {
+            return baseTheme;
+        }
+
+        float layerWeight = Mathf.Clamp(sum, 0f, 1f);
+        _guestBlend ??= new ToneMapTheme();
+        _guestBlend.CopyFrom(baseTheme);
+        for (int field = 0; field < ToneMapTheme.ParamCount; field++)
+        {
+            float stated = 0f;
+            float value = 0f;
+            foreach (Refii.Host.HostBridge.GuestThemeLayer layer in _guestLayers)
+            {
+                if (layer.Weight <= 0f || GuestThemeFor(layer.RecordHash) is not { } theme || !theme.Present[field])
+                {
+                    continue;
+                }
+
+                float share = layer.Weight / sum;
+                stated += share;
+                value += share * theme.V[field];
+            }
+
+            if (stated > 0f)
+            {
+                _guestBlend.V[field] = Mathf.Lerp(baseTheme.V[field], value / stated, layerWeight * stated);
+                _guestBlend.Present[field] = true;
+            }
+        }
+
+        _guestBlend.HasAny = true;
+        return _guestBlend;
+    }
+
+    /// <summary>One pushed theme's stated tone mapping, extracted once per record hash.</summary>
+    private ToneMapTheme? GuestThemeFor(uint recordHash)
+    {
+        if (!_guestLayerThemes.TryGetValue(recordHash, out ToneMapTheme? theme))
+        {
+            theme = Engine_EnvironmentTheme.TryExtractToneMapRecord(LightingGdbs, recordHash, out ToneMapTheme stated)
+                ? stated
+                : null;
+            _guestLayerThemes[recordHash] = theme;
+            GD.Print(theme is null
+                ? $"[postfx] guest pushed theme {recordHash:X8}: not in the lighting GDBs, not blended"
+                : $"[postfx] guest pushed theme {recordHash:X8}: saturation={stated[ToneMapParam.Saturation]:0.###} brightness={stated[ToneMapParam.Brightness]:0.###} exposure={stated[ToneMapParam.MiddleGray]:0.###}");
+        }
+
+        return theme;
     }
 
     private void SyncEditorCompositor()

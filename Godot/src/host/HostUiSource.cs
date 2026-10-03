@@ -119,6 +119,8 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override Engine_UiModel.SpellAssignState GetSpellAssign() => HostBridge.GetSpellAssign();
 
+	public override Engine_UiModel.SpellWheelState GetSpellWheel(int player) => HostBridge.GetSpellWheel(player);
+
 	public override Dictionary<uint, float> GetHudMeters() => HostBridge.GetHudMeters();
 
 	public override Dictionary<uint, float> GetHudPulsers() => HostBridge.GetHudPulsers();

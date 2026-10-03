@@ -74,6 +74,16 @@ public static class Engine_UiScreenActions
 			return true;
 		}
 
+		// `Quest:select:<record>` — the world map's quest rows. The pump turns the record into
+		// the guest's own row ordinal and delivers event 42 to screen 23, whose handler asks
+		// "make this your primary quest?" and commits through `QuestTracker.SetAsPrimary`.
+		if (action.StartsWith(Engine_UiQuestSource.QuestAction, System.StringComparison.Ordinal) ||
+			action.StartsWith(Engine_UiQuestSource.SaleAction, System.StringComparison.Ordinal))
+		{
+			Refii.Host.HostBridge.PostFrontEndAction(action);
+			return true;
+		}
+
 		// `Ability:learn:<1..14>` — the same arrangement for the abilities screen. The guest's
 		// own answer to one of those rows is a single two-argument call that reads nothing from
 		// the screen or the menu (`sub_8246C970` / `sub_8246CF48`), so the row performs it

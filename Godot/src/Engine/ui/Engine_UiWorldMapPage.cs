@@ -158,6 +158,14 @@ public static class Engine_UiWorldMapPage
 			shown = CategoryPageOf(root.Name) ?? RegionPage;
 		}
 
+		// THE MAP IS THE REGION PAGE'S OTHER LEAF: a stick-right turns the book from the
+		// readout (`Page1`) to the minimap (`Page2`, `sub_82990E48` pushes page index 1), left
+		// turns it back. The turn is host-owned — see Engine_UiMinimapPage.DriveFlip.
+		if (ReferenceEquals(shown, RegionPage) && Engine_UiMinimapPage.Shown)
+		{
+			shown = MapPage;
+		}
+
 		if (shown is not null)
 		{
 			active[shown] = true;

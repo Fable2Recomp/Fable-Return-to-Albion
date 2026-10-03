@@ -155,10 +155,14 @@ public static class Engine_UiQuestSource
 				EventType: FamilyEventType,
 
 				// `Float1` is the LOOP INDEX, not a record key — the guest has nothing else to
-				// identify the row by, and neither have we.
+				// identify the row by, and neither have we. The index is the guest's own: both
+				// this list and the A handler's (`sub_826C6F40` -> `sub_8246F020`) walk the
+				// family manager's member list in order, so the identity push IS the guest's
+				// event 45 — "trail to this family member?" (box 6), the trail override on yes
+				// (`sub_825215A8`), and "fast travel there?" (box 11) when it applies.
 				Id: (uint)i,
 				Rating: Engine_UiMenuConstants.EmptyRatingSlide,
-				Committable: false));
+				Committable: true));
 		}
 
 		Say($"{rows.Count} family member(s)");
@@ -219,7 +223,13 @@ public static class Engine_UiQuestSource
 				EventType: SalesEventType,
 				Id: key,
 				Rating: Engine_UiMenuConstants.EmptyRatingSlide,
-				Committable: false));
+				Committable: false,
+
+				// A is the guest's event 44, whose id is the ordinal in ITS sales list; the pump
+				// finds this key on this pass there — see `Sale:select` in the pump. The guest
+				// asks "trail to this sale?" (box 5), writes the trail override on yes, and may
+				// ask "fast travel there?" (box 10).
+				Command: $"{SaleAction}select:{key}:{(shortage ? 1 : 0)}"));
 		}
 
 		Report = $"{rows.Count} sale(s)/shortage(s) of {sales.Count}" +
@@ -230,6 +240,9 @@ public static class Engine_UiQuestSource
 
 	/// <summary>`sub_829A40C0` spawns sales with 44.</summary>
 	private const int SalesEventType = 44;
+
+	/// <summary>The prefix of a sales row's host action — see the pump's `Sale:select`.</summary>
+	public const string SaleAction = "Sale:";
 
 	public static IReadOnlyList<Engine_UiMenuSources.Row> Quests(string argument) =>
 		Rows(jobs: false);
@@ -266,6 +279,11 @@ public static class Engine_UiQuestSource
 		// DESCENDING by DisplayPriority, the guest's own ordering.
 		kept.Sort((a, b) => b.Priority.CompareTo(a.Priority));
 
+		// THE TRAIL FOLLOWS THE PRIMARY QUEST, and a sale or family member can hold it instead:
+		// while that override stands, `sub_829A3260` shows the primary quest as merely active
+		// (0x829a3770..0x829a37a8). Emphasis 1 means "what the trail follows".
+		bool overridden = Refii.Host.HostBridge.QuestTrailOverridden();
+
 		var rows = new List<Engine_UiMenuSources.Row>(kept.Count);
 		foreach ((Refii.Host.HostBridge.QuestEntry quest, int _, string label) in kept)
 		{
@@ -279,13 +297,32 @@ public static class Engine_UiQuestSource
 				// ours is the definition key, which means something on both sides.
 				Id: quest.RecordId,
 				Rating: Engine_UiMenuConstants.EmptyRatingSlide,
-				Committable: false));
+				Committable: false,
+
+				// A is the guest's own event 42 (jobs: 43) on this row, delivered by the pump with
+				// the ordinal the guest's own list gives this record: "make this your primary
+				// quest?" (box 3 / 4), then `SetAsPrimary`, then "fast travel there?" (box 8 / 9).
+				Command: $"{QuestAction}select:{quest.RecordId}",
+
+				// `sub_829A3BA0`: 1 PRIMARY_QUEST, 2 ACTIVE_QUEST, else none.
+				Emphasis: quest.Primary && !overridden
+					? Engine_UiMenuConstants.Emphasis.PrimaryQuest
+					: quest.Active
+						? Engine_UiMenuConstants.Emphasis.ActiveQuest
+						: Engine_UiMenuConstants.Emphasis.None));
 		}
 
 		Report = $"{rows.Count} {(jobs ? "job" : "quest")}(s) of {log.Count} log entr(y/ies)";
 		Godot.GD.Print($"[quest-source] {Report}");
 		return rows;
 	}
+
+	/// <summary>
+	/// The prefix of a quest row's host action: `Quest:select:&lt;record&gt;` goes to the tick
+	/// pump, which finds the record in the guest's own world-map list and delivers the row's
+	/// event 42 to screen 23 with that ordinal, so the guest asks its questions and commits.
+	/// </summary>
+	public const string QuestAction = "Quest:";
 
 	/// <summary>`dword_8349D354` — every world-map child row states the same icon.</summary>
 	private const string QuestIcon = @"Art\GUI\WheelIcons\icon_logbook.tga";

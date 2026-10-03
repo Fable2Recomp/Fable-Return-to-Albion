@@ -151,7 +151,15 @@ public sealed class Engine_UiSpellAssignSet
 			_wheel.Visible = wheelUp;
 			if (wheelUp)
 			{
+				// THE CURSOR IS THE GUEST'S. Its widget at `*(*(GUI+32)+92)` moves row and cell
+				// itself (the pump feeds it the stick every held frame); this copy follows them.
+				_wheel.FollowGuest(Engine_UiSource.Current.GetSpellWheel(
+					_spells.WheelOpenPlayerTwo && !_spells.WheelOpen ? 2 : 1));
 				_wheel.SetLive(_spells);
+			}
+			else
+			{
+				_wheel.FollowGuest(default);
 			}
 		}
 	}

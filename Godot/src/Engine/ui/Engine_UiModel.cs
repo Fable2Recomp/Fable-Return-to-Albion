@@ -448,6 +448,31 @@ public static class Engine_UiModel
 	}
 
 	/// <summary>
+	/// The quick spell wheel's CURSOR, as the guest's own `SpellAssigning` widget holds it: the
+	/// row the gold box is on, the cell each row's carousel sits at, and each row's compacted
+	/// list of offered wills. The guest moves these itself (`sub_826B5430`, fed the live stick by
+	/// the pump); the host draws them. Default (<see cref="Known"/> false) while the wheel is
+	/// closed.
+	/// </summary>
+	public readonly record struct SpellWheelState(
+		uint Widget, int Row, int MaxRow, int[] Counts, int[] Cells, int[][] Lists)
+	{
+		public bool Known => Widget != 0;
+
+		/// <summary>The row's current cell, clamped into its list; -1 for an empty row.</summary>
+		public int CellOf(int row) =>
+			Known && row >= 0 && row < Counts.Length && Counts[row] > 0
+				? System.Math.Clamp(Cells[row], 0, Counts[row] - 1)
+				: -1;
+
+		/// <summary>The will at a row's cell, or null.</summary>
+		public int? WillAt(int row, int cell) =>
+			Known && row >= 0 && row < Lists.Length && cell >= 0 && cell < Lists[row].Length
+				? Lists[row][cell]
+				: null;
+	}
+
+	/// <summary>
 	/// The front end's own storage criteria. <paramref name="Count"/> is -1 until the tick pump has
 	/// sampled, which is not zero: a menu built while it is -1 must not conclude "no saves".
 	/// </summary>

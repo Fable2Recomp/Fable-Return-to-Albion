@@ -223,6 +223,13 @@ PPC_EXTERN_FUNC(sub_8236E458);
 // recompiler may not emit it, and `sub_82541168` goes through `sub_82173EB0`, which CREATES the
 // `CECSpellManager` component when it is absent.
 PPC_EXTERN_FUNC(sub_82541F30);
+PPC_EXTERN_FUNC(sub_8246E800);  // the world map's filtered, sorted quest list — see DispatchQuestSelect
+PPC_EXTERN_FUNC(sub_8246EA08);  // the same list keeping only Type 5 — the JOBS
+PPC_EXTERN_FUNC(sub_8246EC10);  // the world map's SALES rows (44 bytes: +0 NameTagHash, +16 multiplier, +24 RecordId)
+PPC_EXTERN_FUNC(sub_826C6EE8);  // frees that sales vector
+PPC_EXTERN_FUNC(sub_8231CA18);  // World_ComputeWorldLevelFnv1Key(world, "Albion", &levelName)
+PPC_EXTERN_FUNC(sub_8231E258);  // World_LookupLevelNameByKey(world, key) -> &scenario handle
+PPC_EXTERN_FUNC(sub_825B9F60);  // frees that list, as sub_826C6940 does at 0x826c6a4c
 
 // The Lua string runner, and the two LHString primitives that feed it.
 //
@@ -709,8 +716,8 @@ constexpr const char* kActionQuickWheelPrefix = "QuickWheel:";
 /// binding vector ships EMPTY in `sub_8244B678` — so it cannot be read out of the executable.
 constexpr const char* kActionSpellsMenuPrefix = "SpellsMenu:";
 
-/// "SpellBlade:stick|copydown" — one input into the QUICK SPELL BLADE, the five-power-level
-/// widget the right trigger opens over the world.
+/// "SpellBlade:up|down|left|right|release|copydown" — one input into the QUICK SPELL BLADE,
+/// the five-power-level widget the right trigger opens over the world.
 ///
 /// IT IS WIRED ON THE ABILITIES SCREEN AND NOWHERE ELSE. `sub_826C2958` routes that screen's
 /// input into `sub_826B5430(screen14 + 200, ...)` at 0x826c29a0, which `DispatchScreenAction`
@@ -721,19 +728,21 @@ constexpr const char* kActionSpellsMenuPrefix = "SpellsMenu:";
 /// one. `sub_826B5430` needs neither a vtable nor a player index, so it is the first
 /// host-addressable link.
 ///
-/// POST `stick`, AND STATE NO DIRECTION. `sub_826B5430`'s switch is NOT on the code it is
-/// handed — it is on what `sub_828818E8(this + 132, code)` RETURNS (0x826b5450, `switch (result)`
-/// at 0x826b5474). For code 26 that routine reads the live pad itself through `sub_82881AB0`,
-/// with the guest's own hysteresis (0.6 to leave rest at 0x8288194c; 0.1 along the axis already
-/// held and 0.95 to cross, 0x82881968/0x82881984) and its own auto-repeat `sub_82881B28`, and
-/// returns 28/29/30/31 or 0. So one post per frame hands the whole gesture back: the host keeps
-/// NO clock and picks NO direction, and a centred stick returns 0 and falls through the switch's
-/// default at 0x826b55ec.
+/// THE CODES ARE THE GUEST'S OWN GAMEACTION IDS, AND THE STICK IS NOT ONE OF THEM. `sub_826B5430`
+/// switches on what `sub_828818E8(this + 132, code)` RETURNS (0x826b5450 / 0x826b5474): 28 UP
+/// `++row`, 29 DOWN `--row`, 30/31 move the carousel and commit, 36 A copies down. Code 26, the
+/// left stick, is resolved into a direction ONLY while the latch byte at widget+165 is set
+/// (`if (!*((_BYTE *)a1 + 33)) goto LABEL_17;` at 0x82881914) — and the constructor
+/// `sub_826B4358` writes that byte 1 at 0x826b43d4 and then 0 at 0x826b4410 (`stb r10, 0xA5(r3)`,
+/// r10 the zero register), so it is compiled off for this widget and a 26 falls through to
+/// nothing. A `stick` post moved the box exactly never. The guest moves it on the held d-pad ids,
+/// which is what these verbs hand over.
 ///
-/// AND IT CANNOT RACE THE GUEST — the difference from the SpellsMenu close that orphaned a
-/// GuiBlock. That byte had no arbiter; this path has one. If the guest's own chain delivers a 26
-/// in the same repeat window, `sub_82881B28` returns 0 for whichever lands second (0x82881a48),
-/// so a double step is structurally impossible.
+/// POST THE HELD DIRECTION EVERY FRAME, AND `release` ONCE WHEN IT LETS GO. The repeat is the
+/// widget's own latch (`sub_82881B28`: the first press lands at once, the second after 0.3 s,
+/// then every 0.1 s, 0x826b43f0..0x826b4440), so the host keeps no clock; a second 28 inside
+/// the window returns 0 (0x82881a48). Ids 32..35 reset the latch (0x82881a88..0x82881a9c), so
+/// the next press after a release lands at once again, as the guest's would.
 ///
 /// THE OPEN BYTE IS NOT TIDINESS. `*(HUD+92)` is allocated once at GUI construction and nulled
 /// only in the destructor — open and close never touch it — but the row ceiling at widget+412
@@ -935,6 +944,33 @@ constexpr const char* kActionGuiLuaPrefix = "GuiLua:";
 /// `slot` is the row, 0..4, and `spell` is the guest's own 0..7 will index — not an ability id
 /// and not a GDB row. Both are the numbers `sub_826B4848` builds its table from.
 constexpr const char* kActionSpellAssignPrefix = "SpellAssign:";
+
+/// "Quest:select:<record>" — A on a world-map quest row, delivered as the guest's own event.
+///
+/// The row's event (type 42, id = ORDINAL into the guest's filtered, sorted quest list) goes to
+/// screen 23's handler `sub_826C6110`, which stores the type and id on the quick-menu object
+/// (+84/+88, 0x826c6148/0x826c6150) and runs `sub_826C6940`: a quest already primary (or one in
+/// the current level when fast travel is barred) goes straight to the travel path; any other
+/// opens the query box id 3 "make this your primary quest?" (`sub_8236FA68(QM, text, 3, 3, 1)`
+/// at 0x826c6ab4). The host draws that box and answers it through the modal router; the yes
+/// (`sub_826C73B0`) re-reads the id from +88, runs `sub_8251CB30` = `QuestTracker.SetAsPrimary`
+/// (primary flag on this quest and off every other, trail retargeted, banner), and then asks
+/// "fast travel there?" (box id 8) when the quest is in another region and travel is allowed.
+///
+/// THE ORDINAL IS COMPUTED HERE, ON THE GUEST'S OWN LIST. `sub_8246E800` builds the list the
+/// handler indexes — component 102's map through its five filters, sorted by DisplayPriority —
+/// so the index of the quest whose definition (`quest+4`) is the record is exact by
+/// construction, whatever the sort does with ties. The host's rows carry the record.
+constexpr const char* kActionQuestPrefix = "Quest:";
+
+/// "Sale:select:<nameTagHash>:<0|1>" — A on a world-map SALES row (1 = a shortage, the second
+/// pass of `sub_8246EC10`). Same arrangement as the quests: the guest's own 44-byte row list is
+/// rebuilt here, the row whose `+0` NameTagHash matches on the matching pass gives the ordinal,
+/// and event 44 goes to screen 23's handler `sub_826C6CF0`, which asks "trail to this sale?"
+/// (box 5), writes the TrailOverrideInfo on yes (`sub_82521698`) and may ask "fast travel
+/// there?" (box 10). Jobs ride the quest verb: `sub_826C6B10` indexes `sub_8246EA08`'s list
+/// (event 43), so `Quest:select` tries the quest list, then the jobs list.
+constexpr const char* kActionSaleSelectPrefix = "Sale:select:";
 
 /// "LoadSave:<index>" — pick a save out of the list the guest enumerated. An index, not a name:
 /// the guest identifies a save by the ADDRESS of its handle slot inside its own vector, and the
@@ -1706,6 +1742,123 @@ bool DispatchSpellAssign(PPCContext& ctx, uint8_t* base, uint32_t slot, uint32_t
 
   ctx = saved;
   return true;
+}
+
+// Defined with the menu-event machinery below; the world map's select levers deliver through it.
+bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& name,
+                             uint32_t type, uint32_t id);
+
+/// Builds one of the world map's guest-side lists into a 16-byte vector on a claimed frame
+/// (+4 begin, +8 end), runs `visit` over it, and frees it the way the guest does.
+template <typename Visit>
+void WithGuestVector(PPCContext& ctx, uint8_t* base, void (*build)(PPCContext&, uint8_t*),
+                     void (*release)(PPCContext&, uint8_t*), Visit visit) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t vector = frame + 0x20u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, vector + (word * 4u), 0u);
+  }
+
+  ctx = saved;
+  ctx.r1.u32 = frame;
+  ctx.r3.u32 = vector;
+  build(ctx, base);
+  ctx = saved;
+
+  const uint32_t begin = LoadGuestU32(base, vector + 4u);
+  const uint32_t end = LoadGuestU32(base, vector + 8u);
+  if (plausible(begin) && end > begin && (end - begin) <= 0x8000u) {
+    visit(begin, end);
+  }
+
+  if (LoadGuestU32(base, vector + 4u) != 0u) {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = vector;
+    release(ctx, base);
+    ctx = saved;
+  }
+}
+
+/// `Quest:select:<record>` — see kActionQuestPrefix. Quests first (event 42), then jobs (43).
+bool DispatchQuestSelect(PPCContext& ctx, uint8_t* base, uint32_t record) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  uint32_t ordinal = 0xFFFFFFFFu;
+  uint32_t type = 0u;
+  std::string name;
+  const auto find = [&](uint32_t begin, uint32_t end) {
+    for (uint32_t at = begin, index = 0; at + 4u <= end; at += 4u, ++index) {
+      const uint32_t quest = LoadGuestU32(base, at);
+      if (plausible(quest) && LoadGuestU32(base, quest + 4u) == record) {
+        ordinal = index;
+        const uint32_t handle = LoadGuestU32(base, quest);  // +0 QuestName
+        const uint32_t chars = plausible(handle) ? LoadGuestU32(base, handle) : 0u;
+        for (uint32_t i = 0; plausible(chars) && i < 96u; ++i) {
+          const char c = static_cast<char>(LoadGuestU8(base, chars + i));
+          if (c == 0) {
+            break;
+          }
+          name.push_back(c);
+        }
+        break;
+      }
+    }
+  };
+
+  WithGuestVector(ctx, base, sub_8246E800, sub_825B9F60, find);
+  if (ordinal != 0xFFFFFFFFu) {
+    type = 42u;
+  } else {
+    WithGuestVector(ctx, base, sub_8246EA08, sub_825B9F60, find);
+    if (ordinal != 0xFFFFFFFFu) {
+      type = 43u;
+    }
+  }
+
+  if (type == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Quest:select:{:08X} is in neither the quest nor the job "
+                "list — dropped", record);
+    return true;
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: Quest:select:{:08X} is '{}' at ordinal {} — event {} to "
+              "screen 23", record, name, ordinal, type);
+  return DispatchMenuEventDirect(ctx, base, name, type, ordinal);
+}
+
+/// `Sale:select:<nameTagHash>:<shortage>` — see kActionSaleSelectPrefix.
+bool DispatchSaleSelect(PPCContext& ctx, uint8_t* base, uint32_t key, bool shortage) {
+  uint32_t ordinal = 0xFFFFFFFFu;
+  WithGuestVector(ctx, base, sub_8246EC10, sub_826C6EE8, [&](uint32_t begin, uint32_t end) {
+    constexpr uint32_t kRow = 44u;
+    for (uint32_t at = begin, index = 0; at + kRow <= end; at += kRow, ++index) {
+      if (LoadGuestU32(base, at) != key) {
+        continue;
+      }
+      const uint32_t bits = LoadGuestU32(base, at + 16u);
+      float multiplier = 1.0f;
+      std::memcpy(&multiplier, &bits, sizeof(multiplier));
+      if ((multiplier > 1.0f) == shortage) {
+        ordinal = index;
+        break;
+      }
+    }
+  });
+
+  if (ordinal == 0xFFFFFFFFu) {
+    REXLOG_INFO("Refii guest-tick pump: Sale:select:{:08X}:{} is not in the sales list — dropped",
+                key, shortage ? 1 : 0);
+    return true;
+  }
+
+  REXLOG_INFO("Refii guest-tick pump: Sale:select:{:08X}:{} at ordinal {} — event 44 to screen 23",
+              key, shortage ? 1 : 0, ordinal);
+  char label[32];
+  std::snprintf(label, sizeof(label), "Sale:%08X", key);
+  return DispatchMenuEventDirect(ctx, base, label, 44u, ordinal);
 }
 
 /// Runs one Lua chunk on the GUI's current presentation. Returns false when there is none.
@@ -4499,10 +4652,26 @@ bool DispatchSpellBlade(PPCContext& ctx, uint8_t* base, const std::string& verb)
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
   uint32_t code = 0u;
-  if (verb == "stick") {
-    code = 26u;
+  if (verb == "up") {
+    code = 28u;  // `++row` toward the higher power levels (0x826b54a8)
+  } else if (verb == "down") {
+    code = 29u;  // `--row` (0x826b5538)
+  } else if (verb == "left") {
+    code = 30u;  // `sub_826B5240`: previous offered will, committed at once
+  } else if (verb == "right") {
+    code = 31u;  // `sub_826B5330`: next offered will, committed at once
+  } else if (verb == "release") {
+    code = 32u;  // any of 32..35 resets the repeat latch (0x82881a88)
   } else if (verb == "copydown") {
     code = 36u;  // `sub_826B4EF8`: copy this level's will down into every later level offering it
+  } else if (verb == "stick") {
+    static bool said = false;
+    if (!said) {
+      said = true;
+      REXLOG_INFO("Refii guest-tick pump: SpellBlade:stick is dead — code 26 resolves to nothing "
+                  "while widget+165 is 0, which sub_826B4358 leaves it at; post up/down/left/right");
+    }
+    return true;
   } else {
     REXLOG_INFO("Refii guest-tick pump: SpellBlade:{} is not a verb — dropped", verb);
     return true;
@@ -5433,6 +5602,63 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   sub_8246FE20(ctx, base);
   region.stars = static_cast<int32_t>(ctx.r3.u32);
   ctx = saved;
+
+  // THE MINIMAP PAGE'S KEYS, taken the way `sub_829ABFC0` takes them: the region's first level
+  // name, its world/level key through the guest's own hasher, and the scenario the world names
+  // for that key (`World+88` table; the lookup returns the address of the pair's string handle,
+  // or an empty global when there is none).
+  //
+  // BOTH STRING ARGUMENTS ARE LHString HANDLES, NOT CHARACTERS. `sub_8231CA18(world, a2, a3)`
+  // copies `a2` as a handle (`sub_821E3108` -> `sub_822651A0(a1, a2)`) and appends `a3` the
+  // same way, then releases both. Handing it the bytes "Albion" made it treat 'Albi' as a
+  // string object and free it, which took the game down from inside the heap's spin lock the
+  // first time the map opened. So "Albion" is built as a guest string on the frame with the
+  // guest's own constructor and released after, and the level goes as the providers take it:
+  // `level` IS the handle pointer the guest's `&regionName` names.
+  std::snprintf(region.level_name, sizeof(region.level_name), "%s",
+                ReadGuestLhString(base, level).c_str());
+  {
+    const uint32_t world_text = frame + 0x100u;
+    const uint32_t world_handle = frame + 0x110u;
+    static const char kWorld[] = "Albion";
+    for (uint32_t i = 0; i < sizeof(kWorld); ++i) {
+      base[world_text + i] = static_cast<uint8_t>(kWorld[i]);
+    }
+    StoreGuestU32(base, world_handle, 0u);
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = world_handle;
+    ctx.r4.u32 = world_text;
+    ctx.r5.u32 = 0xFFFFFFFFu;  // NUL-terminated, as the event constructor is handed it
+    sub_8222CED0(ctx, base);
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = inner;
+    ctx.r4.u32 = world_handle;
+    ctx.r5.u32 = level;
+    sub_8231CA18(ctx, base);
+    region.level_key = ctx.r3.u32;
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = world_handle;
+    sub_82214DD8(ctx, base);
+
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = inner;
+    ctx.r4.u32 = region.level_key;
+    sub_8231E258(ctx, base);
+    const uint32_t scenario_slot = ctx.r3.u32;
+    const uint32_t scenario_handle =
+        plausible(scenario_slot) ? LoadGuestU32(base, scenario_slot) : 0u;
+    std::snprintf(region.scenario, sizeof(region.scenario), "%s",
+                  plausible(scenario_handle) ? ReadGuestLhString(base, scenario_handle).c_str()
+                                             : "");
+    ctx = saved;
+  }
 
   PublishWorldMapRegion(region);
 }
@@ -6490,6 +6716,37 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
 
       ran = LoadSavedGame(ctx, base, static_cast<uint32_t>(value));
+    } else if (name.rfind(kActionSaleSelectPrefix, 0) == 0) {
+      // `<key>:<0|1>` — see kActionSaleSelectPrefix.
+      const std::string rest = name.substr(std::strlen(kActionSaleSelectPrefix));
+      const std::size_t colon = rest.find(':');
+      char* keyEnd = nullptr;
+      const unsigned long key = std::strtoul(rest.c_str(), &keyEnd, 0);
+      if (colon == std::string::npos || keyEnd != rest.c_str() + colon) {
+        REXLOG_INFO("Refii guest-tick pump: '{}' has no sale key — dropped", name);
+        GuestTickPumpNoteRan();
+        continue;
+      }
+      ran = DispatchSaleSelect(ctx, base, static_cast<uint32_t>(key), rest.substr(colon + 1) == "1");
+    } else if (name.rfind(kActionQuestPrefix, 0) == 0) {
+      // `select:<record>` — see kActionQuestPrefix. The record is the quest definition's GDB
+      // hash, decimal or 0x-hex, as the host's row carries it.
+      const std::string rest = name.substr(std::strlen(kActionQuestPrefix));
+      const std::string verb = "select:";
+      if (rest.rfind(verb, 0) != 0) {
+        REXLOG_INFO("Refii guest-tick pump: '{}' is not a quest verb — dropped", name);
+        GuestTickPumpNoteRan();
+        continue;
+      }
+      const std::string number = rest.substr(verb.size());
+      char* numberEnd = nullptr;
+      const unsigned long value = std::strtoul(number.c_str(), &numberEnd, 0);
+      if (number.empty() || numberEnd == number.c_str() || *numberEnd != '\0') {
+        REXLOG_INFO("Refii guest-tick pump: '{}' has no quest record — dropped", name);
+        GuestTickPumpNoteRan();
+        continue;
+      }
+      ran = DispatchQuestSelect(ctx, base, static_cast<uint32_t>(value));
     } else if (name.rfind(kActionSpellAssignPrefix, 0) == 0) {
       // Two numbers, `slot:spell` — see kActionSpellAssignPrefix.
       const std::string pair = name.substr(std::strlen(kActionSpellAssignPrefix));

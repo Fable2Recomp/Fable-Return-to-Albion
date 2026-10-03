@@ -310,14 +310,22 @@ public partial class GameEntities : Node3D
         _principals = (heroAddress, playerOne, playerTwo);
         _createdThisFrame = 0;
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+        _guestPositions.Clear();
         foreach (HostBridge.GuestEntity entity in entities)
         {
             long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (IsUsablePlacement(entity.Position))
+            {
+                _guestPositions[entity.Address] = entity.Position;
+            }
+
             if (entity.Address == heroAddress && heroAddress != 0u && IsUsablePlacement(entity.Position))
             {
                 // THE HERO'S STATED POSITION, in Godot space, for whatever samples the world at
                 // the hero the way the guest does (the painted day-set grid).
                 HeroPosition = ToGodot(entity.Position, entity.Rotation).Origin;
+                HeroGuestPosition = entity.Position;
+                HeroGuestRotation = entity.Rotation;
             }
 
             // NOTHING TO DRAW, ALREADY KNOWN. Most entities are triggers, markers and
@@ -3406,6 +3414,21 @@ public partial class GameEntities : Node3D
 
     /// <summary>The hero's newest stated position in Godot space; null before the first walk.</summary>
     public static Vector3? HeroPosition { get; private set; }
+
+    /// <summary>The same position in the GUEST's own space, for readers that reproduce the guest's
+    /// arithmetic on it — the world map's minimap among them.</summary>
+    public static Vector3? HeroGuestPosition { get; private set; }
+
+    /// <summary>The hero's stated rotation in the guest's space, beside the position.</summary>
+    public static Quaternion? HeroGuestRotation { get; private set; }
+
+    /// <summary>Every walked entity's stated position in the guest's space, by address, from the
+    /// last walk — for the readers that plot an entity the guest names (the minimap's dog and
+    /// quest markers).</summary>
+    private static readonly Dictionary<uint, Vector3> _guestPositions = new();
+
+    public static bool TryGuestPosition(uint address, out Vector3 position) =>
+        _guestPositions.TryGetValue(address, out position);
 
     /// <summary>The guest's sim tick as of this frame's walk, read once.</summary>
     private uint _tickNow;

@@ -127,6 +127,11 @@ public static class Engine_UiDetailPages
 		return placed;
 	}
 
+	/// <summary>Elements this screen's provider TURNS — see <see cref="Engine_UiOwnedBook.HostRotations"/>.</summary>
+	public static IReadOnlyDictionary<string, float> Rotations(
+		uint screenId, Engine_UiExpandableMenu.Item? row = null) =>
+		Provider(screenId)?.Rotations(Row(screenId, row)) ?? Engine_UiPageProviders.NoRotations;
+
 	/// <summary>
 	/// The MOVIE this screen's page wants playing, or empty when it wants none. Only the
 	/// abilities page states one — see <see cref="Engine_UiAbilityPage.MovieFor"/>.

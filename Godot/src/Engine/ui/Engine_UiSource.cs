@@ -100,6 +100,9 @@ public abstract class Engine_UiSource
 	/// <summary>The spell-assignment blade's model.</summary>
 	public virtual Engine_UiModel.SpellAssignState GetSpellAssign() => default;
 
+	/// <summary>The quick wheel's guest-held cursor — see <see cref="Engine_UiModel.SpellWheelState"/>.</summary>
+	public virtual Engine_UiModel.SpellWheelState GetSpellWheel(int player) => default;
+
 	// ---- THE HUD -----------------------------------------------------------------------
 
 	/// <summary>Meter values by FNV-1 name hash.</summary>

@@ -214,6 +214,22 @@ public sealed class Engine_UiMenuTemplate
 
 		if (Same(current, rows))
 		{
+			// The SAME rows, possibly re-emphasised — the world map's primary quest moving from
+			// one row to another after `SetAsPrimary`. Written onto the standing items rather
+			// than respawned, so the fold and the cursor survive; the view's signature carries
+			// the emphasis and re-tints on its next pass.
+			for (int i = 0; i < rows.Count; ++i)
+			{
+				Engine_UiMenuConstants.Emphasis wanted =
+					rows[i].Emphasis != Engine_UiMenuConstants.Emphasis.None ? rows[i].Emphasis
+					: rows[i].Emphasised ? Engine_UiMenuConstants.Emphasis.PrimaryQuest
+					: Engine_UiMenuConstants.Emphasis.None;
+				if (current[i].Emphasis != wanted)
+				{
+					current[i].Emphasis = wanted;
+				}
+			}
+
 			return false;
 		}
 
@@ -255,7 +271,9 @@ public sealed class Engine_UiMenuTemplate
 			sourced.Committable = row.Committable;
 			sourced.Sourced = true;
 			sourced.Ghosted = row.Ghosted;
-			sourced.Emphasised = row.Emphasised;
+			sourced.Emphasis = row.Emphasis != Engine_UiMenuConstants.Emphasis.None
+				? row.Emphasis
+				: row.Emphasised ? Engine_UiMenuConstants.Emphasis.PrimaryQuest : Engine_UiMenuConstants.Emphasis.None;
 			sourced.Counted = row.Counted;
 			sourced.Unviewed = row.Unviewed;
 			// The row's own action wins; the menu's stands in for a screen whose rows all commit

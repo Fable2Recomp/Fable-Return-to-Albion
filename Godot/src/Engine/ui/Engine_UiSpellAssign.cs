@@ -111,6 +111,18 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 	/// <summary>The row <see cref="_seededFrom"/> was read from; -1 before the first sample.</summary>
 	private int _seededRow = -1;
 
+	/// <summary>
+	/// The GUEST'S cursor, when this copy follows one — the quick wheel's widget at
+	/// `*(*(GUI+32)+92)`, whose row (`+176`) and per-row cell (`+200+4r`) the guest moves itself
+	/// (`sub_826B5430` cases 28..31, fed the held d-pad ids by the pump's `SpellBlade:up|down|left|right`). While
+	/// set, <see cref="Row_"/> and the carousel cell are read from it and never seeded here.
+	/// The abilities blade's copy follows the live presentation instead and leaves this unset.
+	/// </summary>
+	private Engine_UiModel.SpellWheelState _guest;
+
+	/// <summary>States the guest's cursor for this copy to follow; default to stop following.</summary>
+	public void FollowGuest(Engine_UiModel.SpellWheelState guest) => _guest = guest;
+
 	private Engine_UiModel.SpellAssignState _state;
 
 	/// <summary>True once the art resolved and the widget can stand.</summary>
@@ -287,6 +299,14 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 			return;
 		}
 
+		if (_guest.Known)
+		{
+			// THE GUEST'S ROW AND CELL, read, not kept. The gold box sat on row 0 for as long as
+			// the wheel was drawn from a host cursor nothing moved; the guest's own climbs and
+			// descends with the stick, and its cell is the one the commit just wrote.
+			Row_ = System.Math.Clamp(_guest.Row, 0, Engine_UiModel.SpellAssignState.Slots - 1);
+		}
+
 		Row_ = System.Math.Clamp(Row_, 0, MaxAssignableRow());
 		List<int> choices = state.Choices(Row_);
 
@@ -306,7 +326,18 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 		// different offer list — and the two rarely have the same membership, so the label and
 		// the flanking icons named the wrong wills. The row is part of the key.
 		int assignedNow = state.On(Row_) ?? -1;
-		if (assignedNow != _seededFrom || Row_ != _seededRow)
+		if (_guest.Known)
+		{
+			// The guest's list for a row is its offered wills compacted in index order
+			// (`sub_826B4848`), which is exactly `Choices(row)`, so its cell indexes ours. Resolve
+			// by the will it names rather than trusting the index outright.
+			int guestCell = _guest.CellOf(Row_);
+			int found = _guest.WillAt(Row_, guestCell) is { } will ? choices.IndexOf(will) : -1;
+			_cell = found >= 0 ? found : System.Math.Max(guestCell, 0);
+			_seededFrom = assignedNow;
+			_seededRow = Row_;
+		}
+		else if (assignedNow != _seededFrom || Row_ != _seededRow)
 		{
 			_seededFrom = assignedNow;
 			_seededRow = Row_;

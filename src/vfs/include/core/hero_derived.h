@@ -33,6 +33,18 @@ struct WorldMapRegion {
     /// How many regions the list holds, so a host can bound its cursor.
     uint32_t count = 0;
 
+    /// The region's FIRST LEVEL (`**(region+16)`), what the world map's minimap page keys the
+    /// `MinimapInfo` record on: `regionmap_<level>_<scenario>` (`sub_829ABFC0`).
+    char level_name[64] = {};
+
+    /// `World_ComputeWorldLevelFnv1Key(World, "Albion", &level)` — the key the page compares to
+    /// the current level's `L+180` before it plots the hero.
+    uint32_t level_key = 0;
+
+    /// `World_LookupLevelNameByKey(World, level_key)`, empty when the world names no scenario
+    /// for it (the page then uses "DefaultScenario").
+    char scenario[64] = {};
+
     /// Economy as filled stars: `sub_8246FE20`'s return, before the guest's `+1` slide index.
     /// -1 when not sampled.
     int32_t stars = -1;

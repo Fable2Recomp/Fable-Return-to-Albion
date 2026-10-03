@@ -18,6 +18,9 @@ public static class Engine_UiPageProviders
 
 	public static readonly IReadOnlyDictionary<string, float> NoOpacities =
 		new Dictionary<string, float>();
+
+	public static readonly IReadOnlyDictionary<string, float> NoRotations =
+		new Dictionary<string, float>();
 	public static readonly IReadOnlyDictionary<string, Vector3> NoPositions = new Dictionary<string, Vector3>();
 	public static readonly IReadOnlyDictionary<string, int> NoSlides = new Dictionary<string, int>();
 
@@ -477,10 +480,20 @@ public static class Engine_UiPageProviders
 	private sealed class WorldMapProvider : Engine_UiPageProvider
 	{
 		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
-			Engine_UiWorldMapPage.Values(page.Row, page.WorldMap, page.Strings);
+			Engine_UiMinimapPage.Merge(
+				Engine_UiWorldMapPage.Values(page.Row, page.WorldMap, page.Strings),
+				Engine_UiMinimapPage.Values(page.Row, page.WorldMap, page.Strings));
+
+		public IReadOnlyDictionary<string, uint> Textures(in Engine_UiPageContext page) =>
+			Engine_UiMinimapPage.Textures(page.Row, page.WorldMap);
 
 		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
-			Engine_UiWorldMapPage.Active(page.Row);
+			Engine_UiMinimapPage.Merge(
+				Engine_UiWorldMapPage.Active(page.Row),
+				Engine_UiMinimapPage.Active(page.Row, page.WorldMap));
+
+		public IReadOnlyDictionary<string, float> Rotations(in Engine_UiPageContext page) =>
+			Engine_UiMinimapPage.Rotations(page.Row, page.WorldMap);
 
 		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
 			Engine_UiWorldMapPage.Slides(page.Row, page.WorldMap);

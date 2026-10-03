@@ -363,6 +363,15 @@ public static class Engine_EnvironmentTheme
         return extractor.ExtractClouds(theme);
     }
 
+    /// <summary>The tone mapping one theme record states, by its record hash — see
+    /// <see cref="Extractor.ExtractToneMapRecord"/>.</summary>
+    public static bool TryExtractToneMapRecord(IReadOnlyList<byte[]> gdbs, uint recordHash, out ToneMapTheme theme)
+    {
+        theme = new ToneMapTheme();
+        var extractor = Extractor.Create(gdbs);
+        return extractor is not null && extractor.ExtractToneMapRecord(recordHash, theme);
+    }
+
     public static bool TryExtractToneMap(IReadOnlyList<byte[]> gdbs, out ToneMapTheme theme) =>
         TryExtractToneMap(gdbs, 0.5f, out theme);
 
@@ -559,6 +568,24 @@ public static class Engine_EnvironmentTheme
             }
 
             theme.LayerCount = count;
+            theme.HasAny = applied;
+            return applied;
+        }
+
+        /// <summary>
+        /// The tone mapping ONE theme record states — `EnvThemeSlowTime2` and the other themes
+        /// the guest pushes on its stack, looked up by the record hash the guest keys them by
+        /// (the FNV-1 of the name). Only what the record and its sub-records state is marked
+        /// present; fields a theme leaves to its base stay unmarked so a blend leaves them alone.
+        /// </summary>
+        public bool ExtractToneMapRecord(uint recordHash, ToneMapTheme theme)
+        {
+            bool applied = false;
+            foreach (RecordRef record in LookupAll(recordHash))
+            {
+                applied |= ApplyToneMapThemeRecord(record, theme);
+            }
+
             theme.HasAny = applied;
             return applied;
         }
