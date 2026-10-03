@@ -207,6 +207,26 @@ public partial class Engine_DynamicPrecipitation : Node3D
         }
     }
 
+    private int _shelterVersion = -1;
+
+    public override void _Process(double delta)
+    {
+        if (_shelterVersion == Engine_WeatherShelter.Version)
+        {
+            return;
+        }
+
+        _shelterVersion = Engine_WeatherShelter.Version;
+        foreach (MeshInstance3D? layer in new[] { _rain, _snow })
+        {
+            if (layer?.MaterialOverride is ShaderMaterial material)
+            {
+                material.SetShaderParameter("shelter_on", Engine_WeatherShelter.HasBox ? 1f : 0f);
+                material.SetShaderParameter("shelter_box", Engine_WeatherShelter.ToBox);
+            }
+        }
+    }
+
     public void Apply(float rain, float snowFall, Vector2 windDir, float windSpeed, float brightness)
     {
         int rainCount = (int)(Math.Clamp(rain * _look.RainDensity, 0f, 1f) * RainSlots);

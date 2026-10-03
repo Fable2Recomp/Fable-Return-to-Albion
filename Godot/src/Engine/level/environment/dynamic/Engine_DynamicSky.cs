@@ -625,6 +625,23 @@ public sealed class Engine_DynamicSkyDriver
         _sceneDirty = true;
     }
 
+    private float _haze = 1f;
+    private float _falling = 1f;
+
+    /// <summary>
+    /// The hero's building (<see cref="Engine_WeatherShelter"/>): the scale on the haze in the
+    /// air and on what falls. The sky itself keeps its weather.
+    /// </summary>
+    public void SetShelter(float haze, float falling)
+    {
+        if (haze != _haze || falling != _falling)
+        {
+            _haze = haze;
+            _falling = falling;
+            _sceneDirty = true;
+        }
+    }
+
     public void SetDaylight(float day)
     {
         if (MathF.Abs(day - _day) > 0.01f)
@@ -669,16 +686,18 @@ public sealed class Engine_DynamicSkyDriver
             _sceneDirty = true;
         }
 
-        bool fogWanted = _now.FogHaze * _now.FogHaze * Engine_DynamicSky.FogDensityMax > 1e-5f;
+        DynamicWeatherState ground = _now with { FogHaze = _now.FogHaze * _haze };
+        bool fogWanted = ground.FogHaze * ground.FogHaze * Engine_DynamicSky.FogDensityMax > 1e-5f;
         if (_sceneDirty || (environment is not null && environment.FogEnabled != fogWanted))
         {
             _sceneDirty = false;
             float brightness = 0.25f + (0.75f * _day);
-            precipitation?.Apply(_now.Rain, _now.SnowFall, _windDir, _now.WindSpeed, brightness);
+            precipitation?.Apply(
+                _now.Rain * _falling, _now.SnowFall * _falling, _windDir, _now.WindSpeed, brightness);
             if (environment is not null)
             {
                 Engine_DynamicSky.ApplyFog(
-                    environment, _now, Engine_DynamicSky.HorizonColour(material), _day);
+                    environment, ground, Engine_DynamicSky.HorizonColour(material), _day);
             }
         }
 

@@ -6,6 +6,10 @@ uniform vec4 rain_p;
 uniform vec4 snow_p;
 uniform vec4 area;
 
+// World to the dry volume's unit box (Engine_WeatherShelter): nothing falls inside it.
+uniform mat4 shelter_box = mat4(1.0);
+uniform float shelter_on = 0.0;
+
 varying vec2 v_meta;
 
 float wx_hash(float n) {
@@ -75,6 +79,11 @@ void vertex() {
 		off = (cam_right * (uv.x - 0.5) * s) + (cam_up * (uv.y - 0.5) * s);
 		vec3 to_cam = center - eye;
 		fade = clamp(1.5 - (length(to_cam) / R), 0.0, 1.0);
+	}
+
+	if (shelter_on > 0.5) {
+		vec3 q = abs((shelter_box * (MODEL_MATRIX * vec4(center, 1.0))).xyz);
+		live = live && max(q.x, max(q.y, q.z)) > 1.0;
 	}
 
 	VERTEX = live ? center + off : vec3(0.0);

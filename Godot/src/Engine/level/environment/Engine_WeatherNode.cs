@@ -32,6 +32,7 @@ public partial class Engine_WeatherNode : MeshInstance3D
     private bool _raining;
     private bool _snowing;
     private bool _everApplied;
+    private int _shelterVersion = -1;
 
     public void Attach(ShaderMaterial material)
     {
@@ -100,6 +101,16 @@ public partial class Engine_WeatherNode : MeshInstance3D
             return;
         }
 
-        Apply(live.RainDensity, live.RainSize, live.SnowFallSpeed, live.SnowSize, "guest");
+        // The one thing here that is NOT the guest's: its weather has no indoor test, so the
+        // remaster keeps it out of the hero's building — see Engine_WeatherShelter.
+        if (_shelterVersion != Engine_WeatherShelter.Version && _material is not null)
+        {
+            _shelterVersion = Engine_WeatherShelter.Version;
+            _material.SetShaderParameter("shelter_on", Engine_WeatherShelter.HasBox ? 1f : 0f);
+            _material.SetShaderParameter("shelter_box", Engine_WeatherShelter.ToBox);
+        }
+
+        float open = Engine_WeatherShelter.Falling;
+        Apply(live.RainDensity * open, live.RainSize, live.SnowFallSpeed, live.SnowSize * open, "guest");
     }
 }

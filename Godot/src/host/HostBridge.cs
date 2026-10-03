@@ -4049,6 +4049,56 @@ public static class HostBridge
 	/// The screen the captured rows belong to, or `Engine_UiMenuSources.AnyScreen` when none —
 	/// the front end, or before the guest is up. See the native side for why the key exists.
 	/// </summary>
+	/// <summary>
+	/// The building entity the guest's own per-frame query finds the HERO standing in, 0 when it
+	/// finds none. Null when the guest is not up, the hero is not built, or the guest did not
+	/// ask this frame — hold what was last read.
+	/// </summary>
+	/// <remarks>
+	/// The query is `sub_828330C8` (through `sub_821D8508`): a ray 10.5 units down from the
+	/// entity, kept when it lands on an entity whose byte +144 has 0x40. `sub_821AA080` runs it
+	/// on the hero to scale the light shafts by `flt_833191F8` indoors. Its answer is cached on
+	/// the hero's component 128 — a weak reference at +12 (node pointer at +16) stamped at +20
+	/// with the frame counter `dword_83319650` — and that cached answer is what is read here.
+	/// Hero: `World = *(*(*(*(0x83496AB8)+12)+88)+4)`, node `*(*(World)+108)`, entity `*node`;
+	/// component: entity+52 bit 0, slot byte at `*(entity+140)+128`, pointer at
+	/// `*(entity+72) + slot*8 + 4` — all as `sub_821AA080` walks them.
+	/// </remarks>
+	public static uint? HeroBuilding()
+	{
+		static uint Word(uint at) => at >= 0x10000u && Peek(at, 1) is { Length: 1 } w ? w[0] : 0u;
+
+		uint root = Word(0x83496AB8u);
+		uint world = Word(Word(Word(root + 12u) + 88u) + 4u);
+		uint hero = Word(Word(Word(world) + 108u));
+		if (root == 0 || world == 0 || hero == 0 || (Word(hero + 52u) & 1u) == 0)
+		{
+			return null;
+		}
+
+		uint slots = Word(hero + 140u);
+		uint table = Word(hero + 72u);
+		if (slots == 0 || table == 0)
+		{
+			return null;
+		}
+
+		uint component = Word(table + ((Word(slots + 128u) >> 24) * 8u) + 4u);
+		if (component == 0)
+		{
+			return null;
+		}
+
+		uint[] cache = Peek(component + 16u, 2);
+		uint frame = Word(0x83319650u);
+		if (cache.Length != 2 || frame - cache[1] > 2u)
+		{
+			return null;
+		}
+
+		return cache[0] != 0 ? Word(cache[0]) : 0u;
+	}
+
 	/// <summary>Raw guest words — the debug channel's microscope. Empty when unreadable.</summary>
 	public static uint[] Peek(uint addr, uint count)
 	{

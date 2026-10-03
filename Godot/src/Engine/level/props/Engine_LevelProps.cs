@@ -1379,7 +1379,7 @@ public static class Engine_LevelProps
                 foreach (Transform3D instance in parent.Instances)
                 {
                     Transform3D world = ComposeChild(instance, child.Local);
-                    if (OnPlacement(placed, world.Origin) is string by)
+                    if (OnPlacement(placed, world.Origin, NameOf(childPath)) is string by)
                     {
                         stats.GmdChildrenSuperseded++;
                         string pair = NameOf(childPath) + " -> " + by;
@@ -1429,19 +1429,32 @@ public static class Engine_LevelProps
 
     private const float SupersedeRadius = 0.25f;
 
+    /// <summary>
+    /// The reach for a placement of the child's OWN model. Knothole Island's shops place
+    /// `MI_Door_Double_Shop` 0.84 m and 1.05 m from the layout child of the same model, and
+    /// both stood: one shut, one open.
+    /// </summary>
+    private const float SupersedeSameModelRadius = 1.5f;
+
     private static (int, int, int) GridCell(Vector3 at) =>
         (Mathf.FloorToInt(at.X), Mathf.FloorToInt(at.Y), Mathf.FloorToInt(at.Z));
 
-    /// <summary>The model of the .save placement within <see cref="SupersedeRadius"/> of <paramref name="at"/>, or null.</summary>
-    private static string? OnPlacement(Dictionary<(int, int, int), List<(Vector3 At, string Model)>> placed, Vector3 at)
+    /// <summary>
+    /// The model of the .save placement that replaces a layout child at <paramref name="at"/>,
+    /// or null: any model within <see cref="SupersedeRadius"/>, or the child's own within
+    /// <see cref="SupersedeSameModelRadius"/>.
+    /// </summary>
+    private static string? OnPlacement(
+        Dictionary<(int, int, int), List<(Vector3 At, string Model)>> placed, Vector3 at, string childModel)
     {
         (int cx, int cy, int cz) = GridCell(at);
         float limit = SupersedeRadius * SupersedeRadius;
-        for (int dx = -1; dx <= 1; dx++)
+        float sameLimit = SupersedeSameModelRadius * SupersedeSameModelRadius;
+        for (int dx = -2; dx <= 2; dx++)
         {
-            for (int dy = -1; dy <= 1; dy++)
+            for (int dy = -2; dy <= 2; dy++)
             {
-                for (int dz = -1; dz <= 1; dz++)
+                for (int dz = -2; dz <= 2; dz++)
                 {
                     if (!placed.TryGetValue((cx + dx, cy + dy, cz + dz), out List<(Vector3 At, string Model)>? list))
                     {
@@ -1450,7 +1463,10 @@ public static class Engine_LevelProps
 
                     foreach ((Vector3 origin, string model) in list)
                     {
-                        if (origin.DistanceSquaredTo(at) <= limit)
+                        float distance = origin.DistanceSquaredTo(at);
+                        if (distance <= limit ||
+                            (distance <= sameLimit &&
+                            model.Equals(childModel, StringComparison.OrdinalIgnoreCase)))
                         {
                             return model;
                         }

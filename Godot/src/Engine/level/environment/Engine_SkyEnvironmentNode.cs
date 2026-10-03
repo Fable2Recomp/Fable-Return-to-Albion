@@ -134,6 +134,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     public override void _ExitTree()
     {
+        Engine_WeatherShelter.Reset();
         if (Current == this)
         {
             Current = null;
@@ -185,6 +186,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         TrackBodies((float)delta);
         Refii.Core.Engine_FramePhases.Lap("sky.bodies", ref lap);
         AnimateSky((float)delta);
+        Engine_WeatherShelter.Tick((float)delta);
         FollowSkyChoice();
         if (Engine_DynamicSky.Enabled &&
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
@@ -195,6 +197,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 _dynamicSky.SetDaylight(Engine_DynamicSky.Daylight(dynamicFrame));
             }
 
+            _dynamicSky.SetShelter(Engine_WeatherShelter.Exposure, Engine_WeatherShelter.Falling);
             _dynamicSky.Tick((float)delta, dynamicMaterial,
                 GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(
                     Engine_DynamicPrecipitation.NodeName),

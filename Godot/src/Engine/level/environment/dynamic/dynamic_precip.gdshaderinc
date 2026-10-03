@@ -16,6 +16,10 @@ uniform float wind_scale = 1.0;
 uniform float size_jitter = 0.5;
 uniform float speed_jitter = 0.3;
 
+// World to the dry volume's unit box (Engine_WeatherShelter): nothing falls inside it.
+uniform mat4 shelter_box = mat4(1.0);
+uniform float shelter_on = 0.0;
+
 vec3 precip_hash31(float n) {
 	return fract(sin(vec3(n, n + 1.3, n + 2.7)) * vec3(43758.5453, 22578.1459, 19642.3490));
 }
@@ -89,6 +93,14 @@ vec4 precip_place(
 
 		col = vec4(rgb, particle_colour.a * fade);
 		clip = projection * (view * vec4(pos, 1.0));
+
+		if (shelter_on > 0.5) {
+			vec3 q = abs((shelter_box * vec4(world, 1.0)).xyz);
+			if (max(q.x, max(q.y, q.z)) <= 1.0) {
+				clip = vec4(0.0, 0.0, 2.0, 1.0);
+				col = vec4(0.0);
+			}
+		}
 	}
 
 	return clip;
