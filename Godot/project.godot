@@ -71,6 +71,14 @@ fx_scene_depth_valid={
 "type": "float",
 "value": 0.0
 }
+dynamic_sky_time={
+"type": "float",
+"value": 0.0
+}
+dynamic_sky_lightning={
+"type": "vec4",
+"value": Vector4(0, 0.3, 1, 0)
+}
 atmos_inscatter={
 "type": "sampler2D",
 "value": ""

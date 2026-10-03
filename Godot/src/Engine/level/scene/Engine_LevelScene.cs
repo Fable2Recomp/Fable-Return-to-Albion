@@ -953,6 +953,17 @@ public static class Engine_LevelScene
             {
                 root.AddChild(precipitation);
                 precipitation.Owner = root;
+                if (Engine_DynamicSky.Enabled && Engine_DynamicSky.HideGameWeather)
+                {
+                    precipitation.Visible = false;
+                }
+            }
+
+            if (Engine_DynamicSky.Enabled &&
+                Engine_DynamicPrecipitation.Build() is { } dynamicPrecipitation)
+            {
+                root.AddChild(dynamicPrecipitation);
+                dynamicPrecipitation.Owner = root;
             }
 
             List<byte[]> gdbs = Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
@@ -1035,6 +1046,11 @@ public static class Engine_LevelScene
                     {
                         child.Owner = root;
                     }
+
+                    if (Engine_DynamicSky.Enabled && Engine_DynamicSky.HideGameCelestial)
+                    {
+                        celestial.Visible = false;
+                    }
                 }
 
                 if (Engine_ThemeTimeline.TryExtractCloudsBlended(
@@ -1055,6 +1071,11 @@ public static class Engine_LevelScene
                         foreach (Node child in clouds.GetChildren())
                         {
                             child.Owner = root;
+                        }
+
+                        if (Engine_DynamicSky.Enabled && Engine_DynamicSky.HideGameClouds)
+                        {
+                            clouds.Visible = false;
                         }
                     }
                 }

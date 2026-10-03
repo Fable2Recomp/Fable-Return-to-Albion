@@ -426,6 +426,7 @@ public sealed class Engine_UiMenuTemplate
 			item.Command = entry.Command;
 			item.Opens = entry.Opens;
 			item.HostOnly = entry.HostOnly;
+			Engine_UiScreenActions.RefreshSettingLabel(item);
 
 			// See the `committable` parameter: a hand-authored row has no guest identity, a
 			// population-table row is the guest's own.
@@ -1233,6 +1234,30 @@ public static class Engine_UiTemplates
 					$"{Engine_UiInventorySource.Category.Hair}," +
 					$"{Engine_UiInventorySource.Category.Beard}," +
 					$"{Engine_UiInventorySource.Category.Moustache}",
+			});
+		}
+
+		if (_menus!.TryGetValue("OptionsMenu", out Engine_UiMenuTemplate? options))
+		{
+			int afterVideo = options.Entries.FindIndex(
+				entry => string.Equals(entry.Name, "Video", System.StringComparison.Ordinal)) + 1;
+			int at = afterVideo == 0 ? options.Entries.Count : afterVideo;
+			options.Entries.Insert(at, new Engine_UiMenuEntry
+			{
+				Name = "Weather",
+				Tag = "Weather",
+				Icon = "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+				HostOnly = true,
+				Command = Engine_UiScreenActions.SettingToggle + Refii.Level.Engine_DynamicSky.SwitchKey,
+			});
+			options.Entries.Insert(at + 1, new Engine_UiMenuEntry
+			{
+				Name = "WeatherOverride",
+				Tag = "Weather Override",
+				Icon = "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+				HostOnly = true,
+				Command = Engine_UiScreenActions.SettingCycle + Engine_UiScreenActions.WeatherOverrideKey +
+					":" + Engine_UiScreenActions.WeatherOverrideValues,
 			});
 		}
 

@@ -11,6 +11,115 @@ namespace Refii.Ui;
 /// </summary>
 public static class Engine_UiScreenActions
 {
+	public const string SettingToggle = "setting:toggle:";
+
+	public const string SettingSet = "setting:set:";
+
+	public const string SettingCycle = "setting:cycle:";
+
+	public const string WeatherOverrideKey = "dynamic_sky_weather";
+
+	public const string WeatherOverrideValues =
+		"theme,clear,partlycloudy,cloudy,overcast,rain,storm,snow,fog";
+
+	private static readonly System.Collections.Generic.Dictionary<string, string> SettingTitles =
+		new(System.StringComparer.Ordinal)
+		{
+			[Refii.Level.Engine_DynamicSky.SwitchKey] = "Weather",
+			[WeatherOverrideKey] = "Weather Override",
+		};
+
+	private static readonly System.Collections.Generic.Dictionary<string, string> ValueTitles =
+		new(System.StringComparer.Ordinal)
+		{
+			["theme"] = "Auto",
+			["clear"] = "Clear",
+			["partlycloudy"] = "Partly Cloudy",
+			["cloudy"] = "Cloudy",
+			["overcast"] = "Overcast",
+			["rain"] = "Rain",
+			["storm"] = "Storm",
+			["snow"] = "Snow",
+			["fog"] = "Fog",
+		};
+
+	public static void RefreshSettingLabel(Engine_UiExpandableMenu.Item item)
+	{
+		if (item.Command is not { } command)
+		{
+			return;
+		}
+
+		if (command.StartsWith(SettingToggle, System.StringComparison.Ordinal))
+		{
+			string key = command[SettingToggle.Length..];
+			string title = SettingTitles.TryGetValue(key, out string? known) ? known : key;
+			bool on = Refii.Core.Engine_Switches.Flag(key, false);
+			item.StatedLabel = $"{title}: {(on ? "On" : "Off")}";
+			return;
+		}
+
+		if (command.StartsWith(SettingCycle, System.StringComparison.Ordinal) &&
+			SplitCycle(command, out string cycleKey, out string[] values))
+		{
+			string title = SettingTitles.TryGetValue(cycleKey, out string? known) ? known : cycleKey;
+			string current = Refii.Core.Engine_Switches.String(cycleKey, values[0]).Trim().ToLowerInvariant();
+			string shown = ValueTitles.TryGetValue(current, out string? pretty) ? pretty : current;
+			item.StatedLabel = $"{title}: {shown}";
+		}
+	}
+
+	private static bool SplitCycle(string command, out string key, out string[] values)
+	{
+		string body = command[SettingCycle.Length..];
+		int colon = body.IndexOf(':');
+		key = colon > 0 ? body[..colon] : string.Empty;
+		values = colon > 0
+			? body[(colon + 1)..].Split(',', System.StringSplitOptions.RemoveEmptyEntries)
+			: System.Array.Empty<string>();
+		return key.Length != 0 && values.Length != 0;
+	}
+
+	private static bool CycleSetting(string command)
+	{
+		if (!SplitCycle(command, out string key, out string[] values))
+		{
+			return false;
+		}
+
+		string current = Refii.Core.Engine_Switches.String(key, values[0]).Trim().ToLowerInvariant();
+		int at = System.Array.IndexOf(values, current);
+		string next = values[(at + 1) % values.Length];
+		return WriteSetting(key, next);
+	}
+
+	private static bool ToggleSetting(string key)
+	{
+		string path = Refii.Core.Engine_AppRoot.ConfigPath;
+		System.Collections.Generic.SortedDictionary<string, string> values =
+			Refii.Launcher.Core.RuntimeConfig.ReadValues(path);
+		bool on = values.TryGetValue(key, out string? current) &&
+			current.Trim().Trim('"') is "true" or "1";
+		return WriteSetting(key, on ? "false" : "true");
+	}
+
+	private static bool WriteSetting(string key, string value)
+	{
+		string path = Refii.Core.Engine_AppRoot.ConfigPath;
+		System.Collections.Generic.SortedDictionary<string, string> values =
+			Refii.Launcher.Core.RuntimeConfig.ReadValues(path);
+		values[key] = value;
+		if (!Refii.Launcher.Core.RuntimeConfig.WriteValues(path, values, out string error))
+		{
+			Godot.GD.Print($"[screen-actions] could not write {key} to {path}: {error}");
+			return false;
+		}
+
+		Refii.Core.Engine_Switches.Invalidate();
+		Godot.GD.Print($"[screen-actions] {key} = {value} written to {path}");
+		return true;
+	}
+
 	/// <summary>Closes the screen through the guest's own back lever.</summary>
 	public const string ScreenBack = "screen:back";
 
@@ -42,6 +151,23 @@ public static class Engine_UiScreenActions
 	/// <summary>Runs a named action. An empty or unknown name does nothing.</summary>
 	public static bool Run(string action)
 	{
+		if (action.StartsWith(SettingToggle, System.StringComparison.Ordinal))
+		{
+			return ToggleSetting(action[SettingToggle.Length..]);
+		}
+
+		if (action.StartsWith(SettingCycle, System.StringComparison.Ordinal))
+		{
+			return CycleSetting(action);
+		}
+
+		if (action.StartsWith(SettingSet, System.StringComparison.Ordinal))
+		{
+			string assignment = action[SettingSet.Length..];
+			int equals = assignment.IndexOf('=');
+			return equals > 0 && WriteSetting(assignment[..equals], assignment[(equals + 1)..]);
+		}
+
 		// `Inventory:<op>:<record hash>` — an operation on the SIMULATION, posted to the guest's
 		// tick pump because guest code must run on the guest's thread. It reaches
 		// `AddAndReplaceItemOfRecordID` / `Player:GiveGift` directly: no GUI event queue, no

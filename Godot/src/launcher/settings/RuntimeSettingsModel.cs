@@ -37,6 +37,7 @@ public sealed class RuntimeSettingsModel
         }
 
         Values = RuntimeConfig.ReadValues(ConfigPath);
+        Refii.Core.Engine_Switches.Invalidate();
         foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             if (!Values.ContainsKey(definition.Name))
@@ -55,6 +56,7 @@ public sealed class RuntimeSettingsModel
         }
 
         StatusMessage = "Saved " + System.IO.Path.GetFileName(ConfigPath);
+        Refii.Core.Engine_Switches.Invalidate();
     }
 
     public void ResetAllToDefaults()

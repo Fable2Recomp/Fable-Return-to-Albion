@@ -337,6 +337,17 @@ public static class RuntimeCVarsGodot
                 + "Halves the pixel work on solid shapes. Off draws every surface from both "
                 + "sides. Trees and leaves are always drawn from both. Takes effect on the next "
                 + "level load."),
+            new("dynamic_sky_and_weather", VideoCategory, RuntimeCVarType.Bool, "false",
+                "Dynamic Sky and Weather. On draws the new procedural sky — sun, moon, stars, "
+                + "moving clouds — with weather that changes from visit to visit: rain, storms, "
+                + "fog, overcast. The childhood is always snowing, Rookridge always raining, "
+                + "and Knothole Island follows its own weather. Off keeps the original Fable 2 "
+                + "sky dome and weather exactly as shipped. Lighting is identical either way."),
+            new("dynamic_sky_weather", VideoCategory, RuntimeCVarType.String, "theme",
+                "Weather override for the dynamic sky. 'theme' lets each region decide — the "
+                + "childhood snows, Rookridge rains, Knothole Island follows its own weather, "
+                + "everywhere else rolls. Any other value forces that weather everywhere.",
+                "theme,clear,partlycloudy,cloudy,overcast,rain,storm,snow,fog"),
             new("gi_half_resolution", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Resolve the bounced light at half the screen's resolution and scale it up. The "
                 + "bounce itself is unchanged; its edges where one surface meets another are a "

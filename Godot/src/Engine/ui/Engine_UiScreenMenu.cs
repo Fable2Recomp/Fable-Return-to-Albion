@@ -1698,6 +1698,7 @@ public sealed class Engine_UiScreenMenu
 
 		if (Engine_UiScreenActions.Run(action))
 		{
+			Engine_UiScreenActions.RefreshSettingLabel(row);
 			GD.Print($"[screen-menu] '{label}' ran the HOST action '{action}' — " +
 				"nothing was pushed to the guest");
 			return true;

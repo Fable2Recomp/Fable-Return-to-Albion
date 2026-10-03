@@ -56,10 +56,17 @@ public static class Engine_SkyEnvironment
 
         Engine_EnvironmentTheme.TryExtractWeather(chain, out weather);
 
-        var shader = GD.Load<Shader>(ShaderPath);
+        Engine_DynamicSky.SetLevel(level);
+        if (Engine_DynamicSky.Enabled)
+        {
+            Engine_DynamicSky.EnsureGlobals();
+        }
+
+        string shaderPath = Engine_DynamicSky.Enabled ? Engine_DynamicSky.ShaderPath : ShaderPath;
+        var shader = GD.Load<Shader>(shaderPath);
         if (shader is null)
         {
-            GD.Print($"[sky] shader missing at {ShaderPath}");
+            GD.Print($"[sky] shader missing at {shaderPath}");
             return null;
         }
 
@@ -77,6 +84,10 @@ public static class Engine_SkyEnvironment
 
         var material = new ShaderMaterial { Shader = shader };
         ApplyFrame(material, frame, sky);
+        if (Engine_DynamicSky.Enabled)
+        {
+            Engine_DynamicSky.Prime(material, frame, sky, weather);
+        }
 
         var environment = new Godot.Environment
         {

@@ -185,6 +185,22 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         TrackBodies((float)delta);
         Refii.Core.Engine_FramePhases.Lap("sky.bodies", ref lap);
         AnimateSky((float)delta);
+        FollowSkyChoice();
+        if (Engine_DynamicSky.Enabled &&
+            Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
+        {
+            _dynamicSky ??= new Engine_DynamicSkyDriver();
+            if (_frame is { } dynamicFrame)
+            {
+                _dynamicSky.SetDaylight(Engine_DynamicSky.Daylight(dynamicFrame));
+            }
+
+            _dynamicSky.Tick((float)delta, dynamicMaterial,
+                GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(
+                    Engine_DynamicPrecipitation.NodeName),
+                Environment);
+        }
+
         Refii.Core.Engine_FramePhases.Lap("sky.anim", ref lap);
         if (Engine_PostFxParams.SunSourcesRequested)
         {
@@ -315,6 +331,17 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         RenderingServer.GlobalShaderParameterSet("atmos_sun", dome);
+
+        if (Engine_DynamicSky.Enabled &&
+            Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
+        {
+            Vector3 moon = Engine_SkyFrame.ToGodot(frame.MoonDirection);
+            if (moon != _lastMoon)
+            {
+                _lastMoon = moon;
+                dynamicMaterial.SetShaderParameter("moon_dir_world", moon);
+            }
+        }
 
         if (GetParent()?.GetNodeOrNull<Node3D>(Engine_CelestialElements.NodeName) is { } celestial)
         {
@@ -699,6 +726,22 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         _msCelestial = SinceMs(ref mark);
         _frame = frame;
 
+        if (Engine_DynamicSky.Enabled &&
+            Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
+        {
+            Engine_DynamicSky.ApplyFrame(dynamicMaterial, frame, Theme);
+            _dynamicSky ??= new Engine_DynamicSkyDriver();
+            if (LightingGdbs.Count != 0 &&
+                Engine_EnvironmentTheme.TryExtractWeather(LightingGdbs, out WeatherTheme dynamicWeather))
+            {
+                _dynamicSky.FollowTheme(dynamicWeather);
+            }
+
+            Vector2 wind = Refii.Models.Engine_MdlMaterial.WindDirection;
+            Engine_DynamicSky.ApplyWind(dynamicMaterial, new Vector2(-wind.X, wind.Y));
+            _dynamicSky.SetWind(new Vector2(-wind.X, wind.Y));
+        }
+
         if (LightingGdbs.Count == 0 ||
             !Engine_ThemeTimeline.TryExtractLightingBlended(
                 LightingGdbs, stepStartTime, out LightingTheme lightingTheme))
@@ -825,6 +868,94 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private CloudTheme? _cloudTheme;
     private SkyFrame? _frame;
     private ToneMapTheme? _toneMapTheme;
+    private Engine_DynamicSkyDriver? _dynamicSky;
+    private Vector3 _lastMoon = new(float.NaN, 0, 0);
+
+    private bool SkyIsDynamic =>
+        Environment?.Sky?.SkyMaterial is ShaderMaterial { Shader: { } shader } &&
+        shader.ResourcePath == Engine_DynamicSky.ShaderPath;
+
+    private void FollowSkyChoice()
+    {
+        if (Theme is null || Environment?.Sky is not { } sky)
+        {
+            return;
+        }
+
+        bool wanted = Engine_DynamicSky.Enabled;
+        if (wanted == SkyIsDynamic)
+        {
+            return;
+        }
+
+        SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
+        var shader = GD.Load<Shader>(
+            wanted ? Engine_DynamicSky.ShaderPath : Engine_SkyEnvironment.ShaderPath);
+        if (shader is null)
+        {
+            return;
+        }
+
+        if (wanted)
+        {
+            Engine_DynamicSky.EnsureGlobals();
+        }
+
+        var material = new ShaderMaterial { Shader = shader };
+        Engine_SkyEnvironment.ApplyFrame(material, frame, Theme);
+        if (wanted)
+        {
+            WeatherTheme weather = new();
+            if (LightingGdbs.Count != 0)
+            {
+                Engine_EnvironmentTheme.TryExtractWeather(LightingGdbs, out weather);
+            }
+
+            Engine_DynamicSky.Prime(material, frame, Theme, weather);
+        }
+
+        sky.SkyMaterial = material;
+        _dynamicSky = null;
+        _lastMoon = new Vector3(float.NaN, 0, 0);
+
+        Node? parent = GetParent();
+        if (parent is not null)
+        {
+            if (parent.GetNodeOrNull<Node3D>("Clouds") is { } clouds)
+            {
+                clouds.Visible = !(wanted && Engine_DynamicSky.HideGameClouds);
+            }
+
+            if (parent.GetNodeOrNull<Node3D>(Engine_CelestialElements.NodeName) is { } celestial)
+            {
+                celestial.Visible = !(wanted && Engine_DynamicSky.HideGameCelestial);
+            }
+
+            if (parent.GetNodeOrNull<Node3D>("Weather") is { } weatherNode)
+            {
+                weatherNode.Visible = !(wanted && Engine_DynamicSky.HideGameWeather);
+            }
+
+            Engine_DynamicPrecipitation? precipitation =
+                parent.GetNodeOrNull<Engine_DynamicPrecipitation>(Engine_DynamicPrecipitation.NodeName);
+            if (wanted && precipitation is null && Engine_DynamicPrecipitation.Build() is { } built)
+            {
+                parent.AddChild(built);
+            }
+            else if (!wanted && precipitation is not null)
+            {
+                precipitation.Visible = false;
+            }
+        }
+
+        if (!wanted && Environment is not null)
+        {
+            Environment.FogEnabled = false;
+        }
+
+        GD.Print($"[dynamic-sky] live switch: sky is now {(wanted ? "dynamic" : "the Fable dome")}");
+        Reevaluate();
+    }
 
     private readonly float[] _cloudUvX = new float[4];
     private readonly float[] _cloudUvY = new float[4];
