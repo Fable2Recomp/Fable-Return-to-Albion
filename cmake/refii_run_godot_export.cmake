@@ -277,6 +277,11 @@ endif()
 # WITHOUT THE BUILD OUTPUT. `.godot/` is an editor cache, `build/` is the native staging tree
 # (per-arch, ~600 MB, and already staged into bin/), and an exported binary left in the project
 # would ship twice.
+#
+# WITHOUT `levels/` EITHER. Those scenes are editor bakes of the player's own game data —
+# meshes and images embedded — so they are not redistributable, and the game does not read
+# them: regions build straight to a node and a pub game stage rebuilds from the mount when
+# its scene is absent. The export presets exclude the same folder from the pck.
 message(STATUS "Staging the modding SDK -> ${_app}/sdk")
 file(REMOVE_RECURSE "${_app}/sdk")
 file(
@@ -284,6 +289,7 @@ file(
     DESTINATION "${_app}/sdk"
     PATTERN ".godot" EXCLUDE
     PATTERN "build" EXCLUDE
+    PATTERN "levels" EXCLUDE
     PATTERN "bin" EXCLUDE
     PATTERN "obj" EXCLUDE
     PATTERN "*.x86_64" EXCLUDE
