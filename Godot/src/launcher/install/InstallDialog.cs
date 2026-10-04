@@ -77,8 +77,11 @@ public partial class InstallDialog : Control
 		column.AddChild(heading);
 
 		Label intro = MakeLabel(
-			"Select the Fable 2 ISO and its title update: either the default.xexp itself, " +
-			"or the title update package it came in (TU_16L61VH_..., any name).");
+			"Select the " + SupportedGame.Name + " ISO (media ID " +
+			SupportedGame.ShortMediaIdText + ") and its title update: either the " +
+			"default.xexp itself, or the package it came in (" +
+			SupportedGame.TitleUpdateName + ", any name). Other pressings are not supported. " +
+			SupportedGame.EasingNote);
 		intro.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		column.AddChild(intro);
 
@@ -296,17 +299,16 @@ public partial class InstallDialog : Control
 	}
 
 	/// <summary>
-	/// The one check that can save the player an hour: the patch must be for the disc in
-	/// hand. Both identities come from file headers, so this costs a few reads, not an
-	/// extraction.
+	/// The one check that can save the player an hour: the disc must be the supported
+	/// pressing and the patch the supported title update. Both identities come from file
+	/// headers, so this costs a few reads, not an extraction.
 	/// </summary>
+	/// <remarks>
+	/// The disc is judged first: a wrong pressing is the answer the player needs, whatever
+	/// update they picked to go with it.
+	/// </remarks>
 	private static bool TitleUpdateFitsDisc(string isoPath, string updatePath, out string error)
 	{
-		if (!TitleUpdate.TryLoad(updatePath, out TitleUpdate update, out error))
-		{
-			return false;
-		}
-
 		if (!Xiso.XisoExtractor.TryReadRootFileHead(
 				isoPath, "default.xex", 64 * 1024, out byte[] head, out string isoError))
 		{
@@ -320,7 +322,18 @@ public partial class InstallDialog : Control
 			return false;
 		}
 
-		return update.AppliesTo(executable, out error);
+		if (!SupportedGame.IsExecutable(executable, out error))
+		{
+			return false;
+		}
+
+		if (!TitleUpdate.TryLoad(updatePath, out TitleUpdate update, out error))
+		{
+			return false;
+		}
+
+		return SupportedGame.IsTitleUpdate(update.Identity, out error) &&
+			update.AppliesTo(executable, out error);
 	}
 
 	private void RefreshState()

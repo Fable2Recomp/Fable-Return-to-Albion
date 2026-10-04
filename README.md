@@ -22,8 +22,9 @@ This remake is currently based on [Fable 2](https://en.wikipedia.org/wiki/Fable_
 | Title update | `TU_16L61VH_0000038000000.000000000008Q` |
 
 Other Fable 2 pressings have different media IDs, and each has its own title update. The launcher
-only applies a title update whose media ID matches the disc, and shows the disc's media ID once it
-is installed.
+checks both files before it copies anything and refuses any disc or title update other than the
+pair above. This restriction will be eased as we eventually support more versions closer to
+release.
 
 ## Features
 

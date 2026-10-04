@@ -127,7 +127,9 @@ public static class Installer
             return false;
         }
 
-        if (!update.AppliesTo(executable, out error))
+        if (!SupportedGame.IsExecutable(executable, out error) ||
+            !SupportedGame.IsTitleUpdate(update.Identity, out error) ||
+            !update.AppliesTo(executable, out error))
         {
             return false;
         }
@@ -194,6 +196,12 @@ public static class Installer
             return false;
         }
 
+        if (!SupportedGame.IsExecutable(executable, out string unsupported))
+        {
+            summary = unsupported;
+            return false;
+        }
+
         if (!File.Exists(patchPath))
         {
             summary = "Game version " + executable.VersionText + ", media ID " +
@@ -207,7 +215,8 @@ public static class Installer
             return false;
         }
 
-        if (!update.AppliesTo(executable, out string mismatch))
+        if (!SupportedGame.IsTitleUpdate(update.Identity, out string mismatch) ||
+            !update.AppliesTo(executable, out mismatch))
         {
             summary = mismatch;
             return false;
