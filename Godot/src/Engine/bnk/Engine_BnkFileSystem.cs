@@ -576,7 +576,8 @@ public sealed class BnkFileSystem : IDisposable
     private static bool IsModBookkeeping(string leaf)
     {
         if (leaf.Equals(Refii.Mods.ModWorkspace.ModMetadataFilename, StringComparison.OrdinalIgnoreCase) ||
-            leaf.Equals(Refii.Mods.ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase))
+            leaf.Equals(Refii.Mods.ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase) ||
+            leaf.EndsWith(".import", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }

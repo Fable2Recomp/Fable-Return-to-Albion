@@ -14,15 +14,43 @@ public partial class Engine_BnkGdbLoader : ResourceFormatLoader
 
     public static byte[]? ReadBytes(string virtualPath) => _resolver?.Invoke(virtualPath);
 
-    public static bool Recognises(string path) =>
-        path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase) &&
-        path.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase);
+    public static bool Recognises(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return false;
+        }
 
-    public override string[] _GetRecognizedExtensions() => new[] { "gdb" };
+        bool isGame = path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase);
+        bool isRes = path.StartsWith("res://", StringComparison.OrdinalIgnoreCase);
+        if (!isGame && !isRes)
+        {
+            return false;
+        }
+
+        return path.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase) ||
+               path.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase) ||
+               path.EndsWith(".tu", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public override string[] _GetRecognizedExtensions() => new[] { "gdb", "tu" };
 
     public override bool _RecognizePath(string path, StringName type) => Recognises(path);
 
-    public override bool _Exists(string path) => Recognises(path);
+    public override bool _Exists(string path)
+    {
+        if (!Recognises(path))
+        {
+            return false;
+        }
+
+        if (path.StartsWith("res://", StringComparison.OrdinalIgnoreCase))
+        {
+            return FileAccess.FileExists(path);
+        }
+
+        return true;
+    }
 
     public override bool _HandlesType(StringName type)
     {
@@ -41,8 +69,29 @@ public partial class Engine_BnkGdbLoader : ResourceFormatLoader
             return Variant.CreateFrom((int)Error.FileUnrecognized);
         }
 
-        string virtualPath = path[PathPrefix.Length..];
-        byte[]? bytes = _resolver?.Invoke(virtualPath);
+        byte[]? bytes;
+        string virtualPath;
+
+        if (path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            virtualPath = path[PathPrefix.Length..];
+            bytes = _resolver?.Invoke(virtualPath);
+        }
+        else
+        {
+            virtualPath = path;
+            string globalPath = ProjectSettings.GlobalizePath(path);
+            try
+            {
+                bytes = System.IO.File.Exists(globalPath) ? System.IO.File.ReadAllBytes(globalPath) : null;
+            }
+            catch (Exception ex)
+            {
+                GD.PushWarning($"[gdb_loader] Failed to read {path}: {ex.Message}");
+                return Variant.CreateFrom((int)Error.FileCantOpen);
+            }
+        }
+
         if (bytes is null)
         {
             GD.PushWarning($"[bnk] database not found: {path}");

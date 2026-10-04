@@ -31,6 +31,7 @@ public sealed class ResolvedEntry
 	public const string KindOverride = "override";
 	public const string KindAddition = "addition";
 	public const string KindRows = "rows";
+	public const string KindTu = "tu";
 }
 
 /// <summary>Per-mod totals, for the panel.</summary>
@@ -39,12 +40,19 @@ public sealed class ModTally
 	public int Overrides;
 	public int Additions;
 	public int Rows;
+	public int Tu;
 
-	/// <summary>Paths this mod contributed that another enabled mod also contributed.</summary>
+	/// <summary>Paths or records this mod contributed that another enabled mod also contributed.</summary>
 	public int Conflicts;
 
 	/// <summary>Of those, the ones it lost.</summary>
 	public int Lost;
+
+	/// <summary>Number of individual GDB records overridden by higher priority mods.</summary>
+	public int OverriddenRecords;
+
+	/// <summary>Human-readable collision details for tooltips.</summary>
+	public List<string> ConflictDetails { get; } = new();
 }
 
 /// <summary>
@@ -160,6 +168,26 @@ public static class ModIndex
 
 			foreach (ModManifestEntry entry in ModManifest.EnsureCurrent(mod).Entries)
 			{
+				if (entry.Kind is ModManifestEntry.KindTu or ModManifestEntry.KindRows)
+				{
+					if (owners.TryGetValue(entry.Path, out ResolvedEntry? existingVirtual))
+					{
+						existingVirtual.Owner = mod.Name;
+						existingVirtual.Kind = entry.Kind;
+						// GDB Title Updates and Babel row tables merge at the record/row level;
+						// multiple mods modifying the same container is a merge, not a whole-file loss.
+						continue;
+					}
+
+					owners[entry.Path] = new ResolvedEntry
+					{
+						Path = entry.Path,
+						Owner = mod.Name,
+						Kind = entry.Kind,
+					};
+					continue;
+				}
+
 				if (owners.TryGetValue(entry.Path, out ResolvedEntry? existing))
 				{
 					existing.Shadowed.Insert(0, existing.Owner);
@@ -242,9 +270,11 @@ public static class ModIndex
 			{
 				Path = file.VirtualPath,
 				Owner = file.SourceMod,
-				Kind = !ownerIsMod || HasGameSource(file)
-					? ResolvedEntry.KindOverride
-					: ResolvedEntry.KindAddition,
+				Kind = file.VirtualPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase)
+					? ResolvedEntry.KindTu
+					: (!ownerIsMod || HasGameSource(file)
+						? ResolvedEntry.KindOverride
+						: ResolvedEntry.KindAddition),
 			};
 
 			foreach (BnkFile shadowed in file.Shadowed)
@@ -259,8 +289,10 @@ public static class ModIndex
 		return entries;
 	}
 
-	/// <summary>Per-mod totals over a built report.</summary>
-	public static Dictionary<string, ModTally> Tally(IReadOnlyList<ResolvedEntry> entries)
+	/// <summary>Per-mod totals over a built report or prediction.</summary>
+	public static Dictionary<string, ModTally> Tally(
+		IReadOnlyList<ResolvedEntry> entries,
+		IReadOnlyList<Refii.Gdb.GdbRecordConflict>? recordConflicts = null)
 	{
 		var tallies = new Dictionary<string, ModTally>(StringComparer.OrdinalIgnoreCase);
 
@@ -297,6 +329,9 @@ public static class ModIndex
 					case ResolvedEntry.KindRows:
 						owner.Rows++;
 						break;
+					case ResolvedEntry.KindTu:
+						owner.Tu++;
+						break;
 					default:
 						owner.Overrides++;
 						break;
@@ -318,6 +353,30 @@ public static class ModIndex
 				ModTally loser = For(shadowed);
 				loser.Conflicts++;
 				loser.Lost++;
+			}
+		}
+
+		if (recordConflicts is not null)
+		{
+			foreach (Refii.Gdb.GdbRecordConflict conflict in recordConflicts)
+			{
+				if (!string.IsNullOrEmpty(conflict.WinnerMod))
+				{
+					ModTally winner = For(conflict.WinnerMod);
+					winner.Conflicts++;
+				}
+
+				foreach (string loser in conflict.LoserMods)
+				{
+					ModTally loserTally = For(loser);
+					loserTally.Conflicts++;
+					loserTally.Lost++;
+					loserTally.OverriddenRecords++;
+					string desc = !string.IsNullOrEmpty(conflict.PropertyName)
+						? $"{conflict.PropertyName} on {conflict.RecordName} in {conflict.DatabaseSubPath} (overridden by '{conflict.WinnerMod}')"
+						: $"{conflict.RecordName} in {conflict.DatabaseSubPath} (overridden by '{conflict.WinnerMod}')";
+					loserTally.ConflictDetails.Add(desc);
+				}
 			}
 		}
 

@@ -137,12 +137,16 @@ public static class EditorModValueService
     /// based on which GDB file actually contains that record.
     /// Falls back to <c>globals/globals.gdb.tu</c> when the source file cannot be determined.
     /// </summary>
-    private static string ResolveGdbTuSubPath(GdbMulti multi, uint targetHash)
+    private static string ResolveGdbTuSubPath(GdbMulti? baseMulti, uint targetHash)
     {
-        int viewIndex = multi.ViewIndexOf(targetHash);
-        if (viewIndex >= 0 && viewIndex < KnownGdbPaths.Length)
+        baseMulti ??= Engine_GameGdb.BaseDatabase;
+        if (baseMulti is not null)
         {
-            return KnownGdbPaths[viewIndex] + ".tu";
+            int viewIndex = baseMulti.ViewIndexOf(targetHash);
+            if (viewIndex >= 0 && viewIndex < KnownGdbPaths.Length)
+            {
+                return KnownGdbPaths[viewIndex] + ".tu";
+            }
         }
 
         return GlobalsTuSubPath;
@@ -546,28 +550,26 @@ public static class EditorModValueService
         string modName = !string.IsNullOrWhiteSpace(activeMod) ? activeMod : EditorModExporter.ActiveModName;
         string filesRoot = Path.Combine(Engine_GameAssets.ModsRoot, modName, "files");
 
-        GdbMulti? multi = Engine_GameGdb.Database ?? Engine_GameGdb.BaseDatabase;
+        GdbMulti? baseMulti = Engine_GameGdb.BaseDatabase ?? Engine_GameGdb.Database;
         var values = new ItemModValues();
-        if (multi is null)
+        if (baseMulti is null)
         {
             return values;
         }
 
-        // 1. Text values:
-        ItemDetail vanillaDetail = Engine_GameGdb.BaseDatabase is not null
-            ? Engine_ItemDetails.BuildOne(Engine_GameGdb.BaseDatabase, detail.RecordHash) ?? detail
-            : detail;
+        // 1. Text values (start with vanilla defaults):
+        ItemDetail vanillaDetail = Engine_ItemDetails.BuildOne(baseMulti, detail.RecordHash) ?? detail;
 
         values.VanillaDisplayName = Engine_ItemNames.VanillaDisplayNameOf(vanillaDetail);
         values.VanillaDescription = Engine_ItemNames.VanillaDescriptionOf(vanillaDetail);
-        values.DisplayName = Engine_ItemNames.DisplayNameOf(detail);
-        values.Description = Engine_ItemNames.DescriptionOf(detail);
+        values.DisplayName = values.VanillaDisplayName;
+        values.Description = values.VanillaDescription;
 
-        // 2. Discover all genuine GDB properties:
-        List<ModItemProperty> discovered = DiscoverProperties(detail, multi);
+        // 2. Discover all genuine GDB properties from vanilla baseMulti:
+        List<ModItemProperty> discovered = DiscoverProperties(vanillaDetail, baseMulti);
         values.Properties.AddRange(discovered);
 
-        // 3. Check for active mod GDB overrides in .gdb.tu files:
+        // 3. Check for active mod GDB overrides in its own .gdb.tu files ONLY:
         var tuEntryMap = new Dictionary<uint, Dictionary<uint, uint>>();
         foreach (string gdbPath in KnownGdbPaths)
         {
@@ -606,7 +608,11 @@ public static class EditorModValueService
 
         foreach (ModItemProperty prop in values.Properties)
         {
-            // Priority 1: Check TargetRecordHash in TU database (promoted leaf record):
+            // Reset to vanilla baseline:
+            prop.CurrentValue = prop.VanillaValue;
+            prop.IsModified = false;
+
+            // Priority 1: Check TargetRecordHash in active mod's TU database (promoted leaf record):
             if (tuEntryMap.TryGetValue(prop.TargetRecordHash, out var targetProps) &&
                 targetProps.TryGetValue(prop.PropertyHash, out uint rawVal))
             {
@@ -620,7 +626,7 @@ public static class EditorModValueService
                 continue;
             }
 
-            // Priority 2: Check DeclaringHash in TU database:
+            // Priority 2: Check DeclaringHash in active mod's TU database:
             if (tuEntryMap.TryGetValue(prop.DeclaringHash, out var declProps) &&
                 declProps.TryGetValue(prop.PropertyHash, out uint declRawVal))
             {
@@ -632,12 +638,6 @@ public static class EditorModValueService
                     values.HasModOverrides = true;
                 }
                 continue;
-            }
-
-            prop.IsModified = !AreValuesEqual(prop.Type, prop.CurrentValue, prop.VanillaValue);
-            if (prop.IsModified)
-            {
-                values.HasModOverrides = true;
             }
         }
 
@@ -687,7 +687,7 @@ public static class EditorModValueService
 
         foreach (ModItemProperty prop in values.Properties)
         {
-            string tuSubPath = ResolveGdbTuSubPath(multi, prop.TargetRecordHash);
+            string tuSubPath = ResolveGdbTuSubPath(baseMulti, prop.TargetRecordHash);
             if (!propsByTuFile.TryGetValue(tuSubPath, out var byRecord))
             {
                 byRecord = new Dictionary<uint, List<ModItemProperty>>();
@@ -730,6 +730,33 @@ public static class EditorModValueService
                     GdbPatchBuilder.UpsertEntry(db, entry);
 
                     string recName = multi.NameOf(targetHash);
+                    if (string.IsNullOrWhiteSpace(recName))
+                    {
+                        string baseLabel = !string.IsNullOrWhiteSpace(values.DisplayName)
+                            ? values.DisplayName
+                            : (!string.IsNullOrWhiteSpace(detail.DisplayName) ? detail.DisplayName : detail.Label);
+
+                        if (targetHash == detail.DefinitionHash || targetHash == detail.RecordHash)
+                        {
+                            recName = baseLabel;
+                        }
+                        else if (targetHash == detail.WeaponComponent)
+                        {
+                            recName = $"{baseLabel} (WeaponComponent)";
+                        }
+                        else if (targetHash == detail.InventoryComponentHash)
+                        {
+                            recName = $"{baseLabel} (InventoryItemComponent)";
+                        }
+                        else if (!string.IsNullOrWhiteSpace(detail.InternalName))
+                        {
+                            recName = detail.InternalName;
+                        }
+                        else if (!string.IsNullOrWhiteSpace(baseLabel))
+                        {
+                            recName = baseLabel;
+                        }
+                    }
                     if (!string.IsNullOrWhiteSpace(recName))
                     {
                         db.Names[targetHash] = recName;

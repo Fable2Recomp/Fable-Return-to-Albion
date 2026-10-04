@@ -225,6 +225,17 @@ public partial class Engine_GameAssets : Node
 			}
 		}
 
+		// TITLE UPDATE PATCHES: Compose multi-mod GDB databases in load order:
+		var composites = Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, ModsRoot);
+		foreach (Refii.Gdb.CompositeGdbResult comp in composites)
+		{
+			GD.Print($"[mods] tu composite: {comp.SubPath} across {comp.ContributingMods.Count} mod(s) ({comp.Conflicts.Count} conflict(s))");
+			foreach (Refii.Gdb.GdbRecordConflict conflict in comp.Conflicts)
+			{
+				GD.Print($"[mods]   override: {conflict}");
+			}
+		}
+
 		var entries = Refii.Mods.ModIndex.Build(mounted);
 		if (!Refii.Mods.ModIndex.WriteReport(
 				ResolvedReportPath, Instance?.GameDirectory ?? string.Empty, overlays, entries,

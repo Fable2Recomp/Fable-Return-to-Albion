@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Godot;
 using Refii.Bnk;
@@ -106,6 +107,7 @@ public partial class BnkMountPlugin : EditorPlugin
         _entityInspector = new EntityInspectorPlugin();
         AddInspectorPlugin(_entityInspector);
         SetupContextMenu();
+        EnsureFileExtensionsRecognized();
     }
 
     public override void _ExitTree()
@@ -316,6 +318,9 @@ public partial class BnkMountPlugin : EditorPlugin
                         GD.PushWarning($"[bnk_mount] model {Refii.Mods.ModMeshOverlays.Describe(c)}");
                     }
                 }
+
+                // Compose multi-mod GDB Title Updates in load order:
+                Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, modsRoot);
             }
             catch (Exception exception)
             {
@@ -944,6 +949,115 @@ public partial class BnkMountPlugin : EditorPlugin
             Callable.From<TreeItem, bool>(IsOurs),
             Callable.From<TreeItem>(ActivateBnkItem),
             Callable.From<TreeItem, Vector2>(OnItemRmb));
+
+        Node? dock = FindByClass(GetTree().Root, "FileSystemDock", 0);
+        if (dock is not null)
+        {
+            HookDockPopups(dock);
+        }
+    }
+
+    private const int MenuInspectFileSystemTu = 98765;
+    private readonly HashSet<ulong> _hookedPopups = new();
+
+    private void HookDockPopups(Node node)
+    {
+        if (node is PopupMenu popup && !_hookedPopups.Contains(popup.GetInstanceId()))
+        {
+            _hookedPopups.Add(popup.GetInstanceId());
+            popup.AboutToPopup += () =>
+            {
+                int existing = popup.GetItemIndex(MenuInspectFileSystemTu);
+                if (existing != -1)
+                {
+                    popup.RemoveItem(existing);
+                }
+
+                string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+                if (selected != null && selected.Any(p => p.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase)))
+                {
+                    popup.AddSeparator();
+                    popup.AddItem("Inspect GDB Title Update (.tu)", MenuInspectFileSystemTu);
+                }
+            };
+            popup.IdPressed += id =>
+            {
+                if (id == MenuInspectFileSystemTu)
+                {
+                    string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+                    string? target = selected?.FirstOrDefault(p => p.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase));
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        string diskPath = target.StartsWith("res://", StringComparison.OrdinalIgnoreCase)
+                            ? ProjectSettings.GlobalizePath(target)
+                            : (File.Exists(target) ? target : ProjectSettings.GlobalizePath(target));
+
+                        if (File.Exists(diskPath))
+                        {
+                            string content = Refii.Gdb.GdbPrettyPrinter.Print(diskPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                            ShowTextPopup($"GDB Title Update Inspection — {Path.GetFileName(diskPath)}", content);
+                        }
+                    }
+                }
+            };
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            HookDockPopups(child);
+        }
+    }
+
+    private void EnsureFileExtensionsRecognized()
+    {
+        try
+        {
+            EditorSettings? settings = EditorInterface.Singleton?.GetEditorSettings();
+            if (settings is null)
+            {
+                return;
+            }
+
+            bool changed = false;
+
+            void EnsureExtension(string settingKey, string defaultVal, string[] newExts)
+            {
+                string current = settings.HasSetting(settingKey)
+                    ? settings.GetSetting(settingKey).AsString()
+                    : defaultVal;
+
+                var parts = current.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                bool modified = false;
+                foreach (string ext in newExts)
+                {
+                    if (!parts.Contains(ext, StringComparer.OrdinalIgnoreCase))
+                    {
+                        parts.Add(ext);
+                        modified = true;
+                    }
+                }
+
+                if (modified)
+                {
+                    string updated = string.Join(",", parts);
+                    settings.SetSetting(settingKey, updated);
+                    settings.SetInitialValue(settingKey, updated, false);
+                    changed = true;
+                }
+            }
+
+            EnsureExtension("docks/filesystem/other_file_extensions", "ico,icns", new[] { "tu", "gdb" });
+            EnsureExtension("docks/filesystem/textfile_extensions", "txt,md,cfg,ini,log,json,yml,yaml,toml,xml", new[] { "tu", "gdb" });
+
+            if (changed)
+            {
+                EditorInterface.Singleton?.GetResourceFilesystem()?.Scan();
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[bnk_mount] Failed to register file extensions in EditorSettings: {ex.Message}");
+        }
     }
 
     /// <summary>Context menu displayed when right-clicking assets under the Game:// root in the FileSystem dock.</summary>
@@ -957,6 +1071,9 @@ public partial class BnkMountPlugin : EditorPlugin
 
     /// <summary>Virtual path of the currently selected asset in the Game:// tree.</summary>
     private string _contextVirtualPath = string.Empty;
+
+    /// <summary>Physical disk path of the selected asset in the res:// filesystem dock, if applicable.</summary>
+    private string _contextDiskPath = string.Empty;
 
     /// <summary>Resolved 3D model paths (.mdl) associated with the right-clicked item.</summary>
     private readonly List<string> _contextModelPaths = new();
@@ -980,6 +1097,8 @@ public partial class BnkMountPlugin : EditorPlugin
     private const int MenuChangeActiveMod = 105;
     private const int MenuReloadOverlays = 106;
     private const int MenuEditItemValues = 107;
+    private const int MenuInspectModTu = 108;
+    private const int MenuInspectTu = 109;
 
     private Refii.Equipment.ItemDetail? _contextItemDetail;
     private ModItemEditorDialog? _itemEditorDialog;
@@ -1017,6 +1136,12 @@ public partial class BnkMountPlugin : EditorPlugin
         _contextMenu = new PopupMenu();
         _contextMenu.IdPressed += OnContextMenuIdPressed;
         EditorInterface.Singleton.GetBaseControl().AddChild(_contextMenu);
+
+        Node? dock = FindByClass(GetTree().Root, "FileSystemDock", 0);
+        if (dock is not null)
+        {
+            HookDockPopups(dock);
+        }
     }
 
     /// <summary>
@@ -1099,11 +1224,14 @@ public partial class BnkMountPlugin : EditorPlugin
         _contextItem = item;
         _contextItemDetail = null;
         _contextVirtualPath = string.Empty;
+        _contextDiskPath = string.Empty;
         _contextModelPaths.Clear();
         _contextTexturePaths.Clear();
         _contextIconPaths.Clear();
 
         string meta = item.GetMetadata(0).AsString();
+        string text = item.GetText(0);
+
         if (meta.StartsWith(FilePrefix, StringComparison.Ordinal))
         {
             _contextVirtualPath = meta[FilePrefix.Length..];
@@ -1111,6 +1239,22 @@ public partial class BnkMountPlugin : EditorPlugin
         else if (meta.StartsWith("bnk:", StringComparison.Ordinal))
         {
             _contextVirtualPath = meta[4..];
+        }
+        else if (meta.StartsWith("res://", StringComparison.OrdinalIgnoreCase))
+        {
+            _contextDiskPath = ProjectSettings.GlobalizePath(meta);
+        }
+        else if (File.Exists(meta))
+        {
+            _contextDiskPath = meta;
+        }
+        else if (text.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || text.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))
+        {
+            string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+            if (selected != null && selected.Length > 0)
+            {
+                _contextDiskPath = ProjectSettings.GlobalizePath(selected[0]);
+            }
         }
 
         if (_contextVirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
@@ -1244,7 +1388,15 @@ public partial class BnkMountPlugin : EditorPlugin
             _contextMenu.AddSeparator();
         }
 
+        if (_contextVirtualPath.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrEmpty(_contextDiskPath) && (_contextDiskPath.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || _contextDiskPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))))
+        {
+            _contextMenu.AddItem("Inspect GDB Title Update (.tu)", MenuInspectTu);
+            _contextMenu.AddSeparator();
+        }
+
         _contextMenu.AddItem($"Active Mod: {activeMod} (Change...)", MenuChangeActiveMod);
+        _contextMenu.AddItem("Inspect Active Mod Title Updates (.tu)", MenuInspectModTu);
         _contextMenu.AddItem("Reload Mod Overlays", MenuReloadOverlays);
 
         Vector2I mousePos = _contextMenu.IsEmbedded()
@@ -1404,7 +1556,104 @@ public partial class BnkMountPlugin : EditorPlugin
                 ReloadModOverlays();
                 break;
             }
+            case MenuInspectModTu:
+            {
+                InspectModTuDialog(EditorModExporter.ActiveModName);
+                break;
+            }
+            case MenuInspectTu:
+            {
+                if (!string.IsNullOrEmpty(_contextDiskPath) && File.Exists(_contextDiskPath))
+                {
+                    string content = Refii.Gdb.GdbPrettyPrinter.Print(_contextDiskPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                    ShowTextPopup($"GDB Title Update Inspection — {Path.GetFileName(_contextDiskPath)}", content);
+                }
+                else if (!string.IsNullOrEmpty(_contextVirtualPath))
+                {
+                    InspectTuPathDialog(_contextVirtualPath);
+                }
+                break;
+            }
         }
+    }
+
+    private void InspectModTuDialog(string modName)
+    {
+        string filesRoot = Path.Combine(Refii.Assets.Engine_GameAssets.ModsRoot, modName, "files");
+        var sb = new System.Text.StringBuilder();
+        if (Directory.Exists(filesRoot))
+        {
+            var tuFiles = Directory.GetFiles(filesRoot, "*.gdb.tu", SearchOption.AllDirectories);
+            if (tuFiles.Length == 0)
+            {
+                sb.AppendLine($"No .gdb.tu files found in mod '{modName}' ({filesRoot}).");
+            }
+            else
+            {
+                foreach (string file in tuFiles)
+                {
+                    sb.AppendLine(Refii.Gdb.GdbPrettyPrinter.Print(file, Refii.Gdb.Engine_GameGdb.BaseDatabase));
+                    sb.AppendLine();
+                }
+            }
+        }
+        else
+        {
+            sb.AppendLine($"Mod folder not found: {filesRoot}");
+        }
+
+        ShowTextPopup($"GDB Title Update Inspection — {modName}", sb.ToString());
+    }
+
+    private void InspectTuPathDialog(string virtualPath)
+    {
+        string content = string.Empty;
+        if (_filesystem != null && _filesystem.TryGetFile(virtualPath, out var file))
+        {
+            if (File.Exists(file.SourceArchivePath))
+            {
+                content = Refii.Gdb.GdbPrettyPrinter.Print(file.SourceArchivePath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+            }
+            else
+            {
+                try
+                {
+                    byte[] bytes = file.ReadAllBytes();
+                    string tempPath = Path.Combine(Path.GetTempPath(), "refii_inspect_" + Path.GetFileName(virtualPath));
+                    File.WriteAllBytes(tempPath, bytes);
+                    content = Refii.Gdb.GdbPrettyPrinter.Print(tempPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                    try { File.Delete(tempPath); } catch { }
+                }
+                catch (Exception ex)
+                {
+                    content = $"Failed to read virtual file '{virtualPath}': {ex.Message}";
+                }
+            }
+        }
+        else
+        {
+            content = $"File not found in filesystem: '{virtualPath}'";
+        }
+
+        ShowTextPopup($"GDB Title Update Inspection — {virtualPath}", content);
+    }
+
+    private void ShowTextPopup(string title, string text)
+    {
+        var dialog = new AcceptDialog();
+        dialog.Title = title;
+        dialog.MinSize = new Vector2I(680, 480);
+        var textEdit = new TextEdit
+        {
+            Text = text,
+            Editable = false,
+            CustomMinimumSize = new Vector2(650, 420),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+        };
+        dialog.AddChild(textEdit);
+        EditorInterface.Singleton.GetBaseControl().AddChild(dialog);
+        dialog.PopupCentered();
     }
 
     /// <summary>
@@ -1456,6 +1705,36 @@ public partial class BnkMountPlugin : EditorPlugin
     private void ActivateBnkItem(TreeItem item)
     {
         string meta = item.GetMetadata(0).AsString();
+        string text = item.GetText(0);
+
+        if (text.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || meta.EndsWith(".tu", StringComparison.OrdinalIgnoreCase))
+        {
+            string diskPath = meta.StartsWith("res://", StringComparison.OrdinalIgnoreCase)
+                ? ProjectSettings.GlobalizePath(meta)
+                : (File.Exists(meta) ? meta : string.Empty);
+
+            if (string.IsNullOrEmpty(diskPath) && !meta.StartsWith(FilePrefix))
+            {
+                string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+                if (selected != null && selected.Length > 0 && selected[0].EndsWith(".tu", StringComparison.OrdinalIgnoreCase))
+                {
+                    diskPath = ProjectSettings.GlobalizePath(selected[0]);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(diskPath) && File.Exists(diskPath))
+            {
+                string content = Refii.Gdb.GdbPrettyPrinter.Print(diskPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                ShowTextPopup($"GDB Title Update Inspection — {Path.GetFileName(diskPath)}", content);
+                return;
+            }
+
+            if (meta.StartsWith(FilePrefix))
+            {
+                InspectTuPathDialog(meta[FilePrefix.Length..]);
+                return;
+            }
+        }
 
         if (meta.StartsWith(LevelPrefix, StringComparison.Ordinal))
         {
@@ -2469,7 +2748,8 @@ public partial class BnkMountPlugin : EditorPlugin
         var databases = new List<BnkFile>();
         foreach (BnkFile file in _filesystem.EnumerateAllFiles())
         {
-            if (file.VirtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))
+            if (file.VirtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase) ||
+                file.VirtualPath.EndsWith(".tu", StringComparison.OrdinalIgnoreCase))
             {
                 databases.Add(file);
             }

@@ -112,7 +112,7 @@ public static class ModWorkspace
 		foreach (string directory in directories)
 		{
 			string name = Path.GetFileName(directory);
-			if (!IsSafeModFolderName(name))
+			if (name.StartsWith('.') || !IsSafeModFolderName(name))
 			{
 				continue;
 			}

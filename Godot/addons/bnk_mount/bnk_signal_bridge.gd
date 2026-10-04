@@ -69,22 +69,30 @@ func _forward(signal_name: String, args: Array) -> void:
 		if c is Callable and c.is_valid():
 			c.callv(args)
 
+func _is_tu_or_gdb(item: TreeItem) -> bool:
+	if item == null:
+		return false
+	var text := item.get_text(0)
+	var meta := str(item.get_metadata(0))
+	return text.ends_with(".tu") or meta.ends_with(".tu") or text.ends_with(".gdb") or meta.ends_with(".gdb")
+
 ## Double-click / Enter activation handler.
 func _on_item_activated() -> void:
-	if _ours():
+	var item := _tree.get_selected() if _tree != null and is_instance_valid(_tree) else null
+	if item != null and (_ours() or _is_tu_or_gdb(item)):
 		if _on_activate.is_valid():
-			_on_activate.call(_tree.get_selected())
+			_on_activate.call(item)
 		return
 	_forward("item_activated", [])
 
-## Mouse selection handler, capturing right-clicks on Game:// items to trigger the mod context menu.
+## Mouse selection handler, capturing right-clicks on Game:// or .tu/.gdb items to trigger the mod context menu.
 func _on_item_mouse_selected(position: Vector2, mouse_button_index: int) -> void:
 	if _tree == null or not is_instance_valid(_tree):
 		return
 	var item := _tree.get_item_at_position(position)
 	if item == null:
 		item = _tree.get_selected()
-	if item != null and _is_ours.is_valid() and _is_ours.call(item):
+	if item != null and (_ours() or _is_tu_or_gdb(item)):
 		if mouse_button_index == MOUSE_BUTTON_RIGHT and _on_rmb.is_valid():
 			item.select(0)
 			var mouse_pos: Vector2
@@ -94,7 +102,9 @@ func _on_item_mouse_selected(position: Vector2, mouse_button_index: int) -> void
 			else:
 				mouse_pos = _tree.get_global_mouse_position()
 			_on_rmb.call(item, mouse_pos)
-		return
+			return
+		if _ours():
+			return
 	_forward("item_mouse_selected", [position, mouse_button_index])
 
 ## Suppresses multi-selection processing for Game:// items.

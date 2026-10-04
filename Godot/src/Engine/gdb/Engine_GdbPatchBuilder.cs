@@ -61,12 +61,12 @@ public static class GdbPatchBuilder
     }
 
     /// <summary>
-    /// Reconstructs a leaf record by copying its original local fields (including 'parent'),
-    /// updating modified local properties, and promoting modified inherited properties into local fields.
-    /// The ancestor prototype is never modified, isolating sibling records.
+    /// Constructs a sparse patch entry containing ONLY the modified properties.
+    /// Unmodified vanilla baseline fields are omitted so mod patch files remain sparse,
+    /// preventing false collisions between mods in load order.
     /// </summary>
     public static GdbPatchEntry BuildPromotedEntry(
-        GdbMulti baseMulti,
+        GdbMulti? baseMulti,
         uint targetRecordHash,
         IEnumerable<(uint PropertyHash, GdbFieldType Type, string Value)> modifiedProps)
     {
@@ -76,43 +76,91 @@ public static class GdbPatchBuilder
         }
 
         byte schemaFlags = 0;
-        var properties = new List<GdbPatchProperty>();
-        var localPropertyMap = new Dictionary<uint, int>();
-
-        // 1. Copy local vanilla fields from base database:
         if (baseMulti != null && baseMulti.TryLookup(targetRecordHash, out GdbCursor cursor))
         {
             schemaFlags = cursor.View.RecordSchemaFlags(cursor.Record);
-
-            foreach (var (hash, type, raw) in cursor.View.RawFields(cursor.Record))
-            {
-                localPropertyMap[hash] = properties.Count;
-                properties.Add(new GdbPatchProperty(hash, type, raw));
-            }
         }
-
-        // 2. Apply modifications and promote inherited properties:
-        foreach (var (propHash, type, strVal) in modifiedProps)
+        else
         {
-            uint rawValue = ParseRawValue(type, strVal);
-
-            if (localPropertyMap.TryGetValue(propHash, out int existingIndex))
-            {
-                // Already local on the leaf record: update in-place:
-                properties[existingIndex].Value = rawValue;
-                properties[existingIndex].Type = type;
-            }
-            else
-            {
-                // Inherited from an ancestor prototype: PROMOTE to local leaf property:
-                localPropertyMap[propHash] = properties.Count;
-                properties.Add(new GdbPatchProperty(propHash, type, rawValue));
-            }
+            schemaFlags = 0x01;
         }
 
         var entry = new GdbPatchEntry(targetRecordHash, schemaFlags);
-        entry.Properties.AddRange(properties);
+        foreach (var (propHash, type, strVal) in modifiedProps)
+        {
+            uint rawValue = ParseRawValue(type, strVal);
+            int existing = entry.Properties.FindIndex(p => p.NameHash == propHash);
+            if (existing >= 0)
+            {
+                entry.Properties[existing].Value = rawValue;
+                entry.Properties[existing].Type = type;
+            }
+            else
+            {
+                entry.Properties.Add(new GdbPatchProperty(propHash, type, rawValue));
+            }
+        }
+
         return entry;
+    }
+
+    /// <summary>
+    /// Reconstructs full native records for all entries in a sparse patch database by filling in
+    /// baseline local fields (including 'parent' and other local vanilla properties) from the base database.
+    /// This produces a complete native GDB container suitable for consumption by the native Fable 2 game engine.
+    /// </summary>
+    public static GdbPatchDatabase SynthesizeCompleteDatabase(GdbPatchDatabase sparseDb, GdbMulti? baseMulti)
+    {
+        if (baseMulti == null)
+        {
+            return sparseDb;
+        }
+
+        var fullDb = new GdbPatchDatabase();
+        foreach (var kvp in sparseDb.Names) fullDb.Names[kvp.Key] = kvp.Value;
+        fullDb.Aliases.AddRange(sparseDb.Aliases);
+
+        foreach (GdbPatchEntry sparseEntry in sparseDb.Entries)
+        {
+            byte schemaFlags = sparseEntry.SchemaFlags;
+            var fullProperties = new List<GdbPatchProperty>();
+            var propMap = new Dictionary<uint, int>();
+
+            if (baseMulti.TryLookup(sparseEntry.Id, out GdbCursor cursor))
+            {
+                if (schemaFlags == 0)
+                {
+                    schemaFlags = cursor.View.RecordSchemaFlags(cursor.Record);
+                }
+
+                foreach (var (hash, type, raw) in cursor.View.RawFields(cursor.Record))
+                {
+                    propMap[hash] = fullProperties.Count;
+                    fullProperties.Add(new GdbPatchProperty(hash, type, raw));
+                }
+            }
+
+            // Apply sparse properties on top of base fields:
+            foreach (GdbPatchProperty sparseProp in sparseEntry.Properties)
+            {
+                if (propMap.TryGetValue(sparseProp.NameHash, out int idx))
+                {
+                    fullProperties[idx].Value = sparseProp.Value;
+                    fullProperties[idx].Type = sparseProp.Type;
+                }
+                else
+                {
+                    propMap[sparseProp.NameHash] = fullProperties.Count;
+                    fullProperties.Add(new GdbPatchProperty(sparseProp.NameHash, sparseProp.Type, sparseProp.Value));
+                }
+            }
+
+            var entry = new GdbPatchEntry(sparseEntry.Id, schemaFlags);
+            entry.Properties.AddRange(fullProperties);
+            fullDb.Entries.Add(entry);
+        }
+
+        return fullDb;
     }
 
     /// <summary>

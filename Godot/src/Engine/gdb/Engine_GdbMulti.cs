@@ -23,6 +23,7 @@ public sealed class GdbMulti
     private readonly List<GdbView> _views = new();
 
     private readonly Dictionary<uint, GdbCursor> _index = new();
+    private readonly Dictionary<uint, List<GdbCursor>> _cursorsByHash = new();
 
     public IReadOnlyList<GdbView> Views => _views;
 
@@ -51,7 +52,15 @@ public sealed class GdbMulti
                     continue;
                 }
 
-                multi._index[hash] = new GdbCursor(view, i);
+                var cursor = new GdbCursor(view, i);
+                multi._index[hash] = cursor;
+
+                if (!multi._cursorsByHash.TryGetValue(hash, out var list))
+                {
+                    list = new List<GdbCursor>();
+                    multi._cursorsByHash[hash] = list;
+                }
+                list.Add(cursor);
             }
         }
 
@@ -133,7 +142,26 @@ public sealed class GdbMulti
                 !visited.Add(parent) ||
                 !TryLookup(parent, out current))
             {
-                return false;
+                break;
+            }
+        }
+
+        // Fallback: if this record was overlaid (e.g. by a sparse TU patch), check underlying cursors for this record hash:
+        uint startHash = start.View.RecordHash(start.Record);
+        if (startHash != 0 && _cursorsByHash.TryGetValue(startHash, out var cursors) && cursors.Count > 1)
+        {
+            for (int i = cursors.Count - 1; i >= 0; i--)
+            {
+                GdbCursor underlying = cursors[i];
+                if (ReferenceEquals(underlying.View, start.View))
+                {
+                    continue;
+                }
+
+                if (TryFindInherited(underlying, fieldHash, expectedType, out owner, out value, out type))
+                {
+                    return true;
+                }
             }
         }
 

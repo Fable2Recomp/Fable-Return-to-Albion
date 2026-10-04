@@ -24,6 +24,7 @@ public sealed class ModManifestEntry
 
 	public const string KindFile = "file";
 	public const string KindRows = "rows";
+	public const string KindTu = "tu";
 }
 
 /// <summary>
@@ -119,6 +120,11 @@ public sealed class ModManifest
 				entry.Source = normalized;
 				entry.Path = normalized[..^4];
 			}
+			else if (normalized.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+			{
+				entry.Kind = ModManifestEntry.KindTu;
+				entry.Source = normalized;
+			}
 
 			manifest.Entries.Add(entry);
 		}
@@ -151,7 +157,8 @@ public sealed class ModManifest
 		{
 			string name = System.IO.Path.GetFileName(file);
 			if (name.Equals(ModWorkspace.ModMetadataFilename, StringComparison.OrdinalIgnoreCase) ||
-				name.Equals(ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase))
+				name.Equals(ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase) ||
+				name.EndsWith(".import", StringComparison.OrdinalIgnoreCase))
 			{
 				continue;
 			}

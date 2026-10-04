@@ -26,7 +26,6 @@ public partial class ModdingPanel : VBoxContainer
 	private string _statusMessage = string.Empty;
 	private List<ModInstall> _mods = new();
 	private ModLoadOrder _order = new();
-	private readonly Dictionary<string, int> _fileCounts = new();
 	private readonly Dictionary<string, ModTally> _tallies = new();
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
@@ -65,9 +64,8 @@ public partial class ModdingPanel : VBoxContainer
 		Label help = MakeLabel(
 			"Install mods as folders here. A mod places files directly in its folder or " +
 			"under a files folder, and may ship them packed as a .bnk instead. Enabled mods " +
-			"override matching game files; higher in the list wins a conflict. Pack turns a " +
-			"mod into a bank you can hand to someone. Changes apply the next time the game " +
-			"starts.");
+			"override matching game records; higher in the list wins a conflict. Pack turns a " +
+			"mod into a package you can share. Changes apply the next time the game starts.");
 		help.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		AddChild(help);
 
@@ -130,18 +128,10 @@ public partial class ModdingPanel : VBoxContainer
 		_modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
 		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
 		_order = ModLoadOrder.Read(_modsRoot);
-		_fileCounts.Clear();
 		_tallies.Clear();
 
-		foreach (ModInstall mod in _mods)
-		{
-			if (_order.Enabled.Contains(mod.Name))
-			{
-				_fileCounts[mod.Name] = ModManifest.EnsureCurrent(mod).Entries.Count;
-			}
-		}
-
-		foreach ((string name, ModTally tally) in ModIndex.Tally(ModIndex.Predict(_order, _mods)))
+		var recordConflicts = Refii.Gdb.GdbPatchCompositor.DetectRecordConflicts(_modsRoot, _order, _mods);
+		foreach ((string name, ModTally tally) in ModIndex.Tally(ModIndex.Predict(_order, _mods), recordConflicts))
 		{
 			_tallies[name] = tally;
 		}
@@ -289,17 +279,20 @@ public partial class ModdingPanel : VBoxContainer
 			}
 		}
 
-		var grid = new GridContainer { Columns = 7 };
+		var grid = new GridContainer { Columns = 5 };
 		grid.AddThemeConstantOverride("h_separation", 8);
-		grid.AddThemeConstantOverride("v_separation", 3);
+		grid.AddThemeConstantOverride("v_separation", 4);
 		grid.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 		_list.AddChild(grid);
 
-		foreach (string header in
-			new[] { "Enabled", "Order", "Mod", "Files", "Conflicts", "Pack", "Path" })
+		foreach (string header in new[] { "Active", "Order", "Mod", "Status", "Actions" })
 		{
 			Label label = MakeLabel(header);
 			label.AddThemeColorOverride("font_color", _style.TabSelected);
+			if (header is "Order" or "Status" or "Actions")
+			{
+				label.HorizontalAlignment = HorizontalAlignment.Center;
+			}
 			grid.AddChild(label);
 		}
 
@@ -316,6 +309,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var check = new CheckBox { ButtonPressed = enabled };
 		Apply(check);
+		check.CustomMinimumSize = new Vector2(24, 24);
 		ModInstall captured = mod;
 		check.Toggled += pressed =>
 		{
@@ -336,13 +330,17 @@ public partial class ModdingPanel : VBoxContainer
 		grid.AddChild(check);
 
 		var orderBox = new HBoxContainer();
-		orderBox.AddThemeConstantOverride("separation", 2);
+		orderBox.AddThemeConstantOverride("separation", 3);
 		if (enabled)
 		{
-			orderBox.AddChild(MakeLabel((position + 1).ToString()));
+			Label numLabel = MakeLabel((position + 1).ToString());
+			numLabel.CustomMinimumSize = new Vector2(16, 0);
+			numLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			orderBox.AddChild(numLabel);
 
-			var up = new Button { Text = "^", Disabled = position == 0 };
+			var up = new Button { Text = "▲", Disabled = position == 0 };
 			Apply(up);
+			up.CustomMinimumSize = new Vector2(20, 20);
 			int upIndex = position;
 			up.Pressed += () =>
 			{
@@ -352,8 +350,9 @@ public partial class ModdingPanel : VBoxContainer
 			};
 			orderBox.AddChild(up);
 
-			var down = new Button { Text = "v", Disabled = position + 1 >= _order.Enabled.Count };
+			var down = new Button { Text = "▼", Disabled = position + 1 >= _order.Enabled.Count };
 			Apply(down);
+			down.CustomMinimumSize = new Vector2(20, 20);
 			int downIndex = position;
 			down.Pressed += () =>
 			{
@@ -362,6 +361,13 @@ public partial class ModdingPanel : VBoxContainer
 				SaveEnabledMods();
 			};
 			orderBox.AddChild(down);
+		}
+		else
+		{
+			Label dash = MakeLabel("-");
+			dash.CustomMinimumSize = new Vector2(58, 0);
+			dash.HorizontalAlignment = HorizontalAlignment.Center;
+			orderBox.AddChild(dash);
 		}
 
 		grid.AddChild(orderBox);
@@ -372,54 +378,94 @@ public partial class ModdingPanel : VBoxContainer
 			: displayName + " (" + mod.Metadata.Version + ")";
 
 		Label nameLabel = MakeLabel(label);
-		nameLabel.CustomMinimumSize = new Vector2(160, 0);
+		nameLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+		nameLabel.CustomMinimumSize = new Vector2(80, 0);
 		nameLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 
-		string tooltip = "Folder: " + mod.Name;
+		var sb = new System.Text.StringBuilder();
+		sb.AppendLine("Mod: " + displayName);
+		sb.AppendLine("Folder: " + mod.Name);
+		sb.AppendLine("Path: " + mod.Root.Replace('\\', '/'));
 		if (mod.Metadata.Author.Length != 0)
 		{
-			tooltip += "\nAuthor: " + mod.Metadata.Author;
+			sb.AppendLine("Author: " + mod.Metadata.Author);
 		}
-
 		if (mod.Metadata.Description.Length != 0)
 		{
-			tooltip += "\n" + mod.Metadata.Description;
+			sb.AppendLine();
+			sb.AppendLine(mod.Metadata.Description);
 		}
-
-		nameLabel.TooltipText = tooltip;
+		nameLabel.TooltipText = sb.ToString().TrimEnd();
 		grid.AddChild(nameLabel);
 
-		string files = _fileCounts.TryGetValue(mod.Name, out int fileCount)
-			? fileCount.ToString()
-			: "-";
-		grid.AddChild(MakeLabel(files));
-
-		// CONFLICTS, AND HOW MANY OF THEM THIS MOD LOST — the count alone says two mods touch a
-		// file, not which one the player will actually see.
-		Label conflictLabel = MakeLabel(
-			_tallies.TryGetValue(mod.Name, out ModTally? tally)
-				? tally.Conflicts == 0 ? "0" : $"{tally.Conflicts} ({tally.Lost} lost)"
-				: "0");
-		if (tally is not null && tally.Lost != 0)
+		// CONFLICTS / STATUS
+		Control statusControl;
+		if (_tallies.TryGetValue(mod.Name, out ModTally? tally) && (tally.Lost > 0 || tally.OverriddenRecords > 0))
 		{
-			conflictLabel.TooltipText =
-				$"{tally.Lost} file(s) another enabled mod owns instead. Move '{mod.Name}' up " +
-				"to win them.";
-		}
+			int lostCount = tally.Lost;
+			var lostBtn = new Button { Text = $"⚠ {lostCount} lost" };
+			Apply(lostBtn);
+			lostBtn.AddThemeColorOverride("font_color", new Color(0.95f, 0.55f, 0.15f)); // Amber warning
+			lostBtn.CustomMinimumSize = new Vector2(60, 22);
 
-		grid.AddChild(conflictLabel);
+			var tip = new System.Text.StringBuilder();
+			tip.AppendLine($"[Modding Warning] {lostCount} modification(s) overridden by higher-priority mods:");
+			foreach (string detail in tally.ConflictDetails)
+			{
+				tip.AppendLine($"  • {detail}");
+			}
+			if (tally.ConflictDetails.Count == 0)
+			{
+				tip.AppendLine("  • Overridden by another active mod higher in load order.");
+			}
+			tip.AppendLine();
+			tip.Append("Click to view details of overridden modifications.");
+			lostBtn.TooltipText = tip.ToString();
+
+			ModInstall modCaptured = mod;
+			ModTally tallyCaptured = tally;
+			lostBtn.Pressed += () => ShowConflictDetailsDialog(modCaptured, tallyCaptured);
+			statusControl = lostBtn;
+		}
+		else if (tally is not null && tally.Conflicts > 0)
+		{
+			var priorityLabel = MakeLabel("✓ Priority");
+			priorityLabel.AddThemeColorOverride("font_color", new Color(0.35f, 0.85f, 0.35f)); // Light green
+			priorityLabel.TooltipText = $"{tally.Conflicts} collision(s) resolved in favor of this mod.";
+			priorityLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			priorityLabel.CustomMinimumSize = new Vector2(50, 0);
+			statusControl = priorityLabel;
+		}
+		else
+		{
+			var okLabel = MakeLabel("✓ OK");
+			okLabel.AddThemeColorOverride("font_color", _style.TabDimmed);
+			okLabel.TooltipText = "No record conflicts with other enabled mods.";
+			okLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			okLabel.CustomMinimumSize = new Vector2(50, 0);
+			statusControl = okLabel;
+		}
+		grid.AddChild(statusControl);
+
+		var actionsBox = new HBoxContainer();
+		actionsBox.AddThemeConstantOverride("separation", 4);
 
 		var pack = new Button { Text = "Pack" };
 		Apply(pack);
-		pack.TooltipText = "Write this mod as a .bnk you can hand to someone.";
+		pack.CustomMinimumSize = new Vector2(46, 22);
+		pack.TooltipText = "Package this mod into a .f2zip distribution archive and a .bnk archive.";
 		ModInstall packed = mod;
 		pack.Pressed += () => OnPack(packed);
-		grid.AddChild(pack);
+		actionsBox.AddChild(pack);
 
-		Label pathLabel = MakeLabel(mod.Root.Replace('\\', '/'));
-		pathLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-		pathLabel.TooltipText = mod.Root;
-		grid.AddChild(pathLabel);
+		grid.AddChild(actionsBox);
+	}
+
+	private void ShowConflictDetailsDialog(ModInstall mod, ModTally tally)
+	{
+		var dialog = new ModConflictDialog(mod, tally, _style, _font, _fontSize);
+		Node top = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
+		top.AddChild(dialog);
 	}
 
 	/// <summary>
