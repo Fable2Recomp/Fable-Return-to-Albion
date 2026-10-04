@@ -107,6 +107,13 @@ public static class Engine_GameGdb
 					{
 						absent.Add(path);
 					}
+
+					// Companion Title Update (.gdb.tu) patch:
+					byte[]? tuBlob = _resolver(path + ".tu") ?? _resolver("data/" + path + ".tu");
+					if (tuBlob is not null)
+					{
+						blobs.Add(tuBlob);
+					}
 				}
 
 				_multi = GdbMulti.Build(blobs);

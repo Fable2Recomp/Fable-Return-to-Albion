@@ -499,6 +499,23 @@ public sealed class GdbView
         }
     }
 
+    public byte RecordSchemaFlags(int index)
+    {
+        if (index < 0 || index >= RecordCount)
+        {
+            return 0;
+        }
+
+        int record = _recordOffsets[index];
+        if (!TryReadSchemaHeader(
+                _bytes, record, SchemaBase, HashBase, out int schemaOffset, out _))
+        {
+            return 0;
+        }
+
+        return (byte)ReadU32(_bytes, schemaOffset);
+    }
+
     public uint ReadU32At(int at) =>
         at >= 0 && at + 4 <= _bytes.Length ? ReadU32(_bytes, at) : 0u;
 

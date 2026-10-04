@@ -159,10 +159,26 @@ public partial class ModdingPanel : VBoxContainer
 
 	private void OnPack(ModInstall mod)
 	{
-		_statusMessage = ModExport.ToBank(mod, _modsRoot, out string packed, out string error)
-			? $"Packed '{mod.Name}' into {packed.Replace('\\', '/')}. Enable it in place of the " +
-			  "loose mod to test it."
-			: $"Failed to pack '{mod.Name}': {error}";
+		bool bnkOk = ModExport.ToBank(mod, _modsRoot, out string packed, out string error);
+		string zipDest = Path.Combine(mod.Root, mod.Name + ".f2zip");
+		bool zipOk = ModExport.ToF2Zip(mod, zipDest, out string zipError);
+
+		if (bnkOk && zipOk)
+		{
+			_statusMessage = $"Packed '{mod.Name}' to bank ({packed.Replace('\\', '/')}) and package ({zipDest.Replace('\\', '/')}).";
+		}
+		else if (bnkOk)
+		{
+			_statusMessage = $"Packed '{mod.Name}' into {packed.Replace('\\', '/')}. (.f2zip warning: {zipError})";
+		}
+		else if (zipOk)
+		{
+			_statusMessage = $"Packed '{mod.Name}' into package ({zipDest.Replace('\\', '/')}). (Bank warning: {error})";
+		}
+		else
+		{
+			_statusMessage = $"Failed to pack '{mod.Name}': {error}";
+		}
 		RefreshState();
 	}
 

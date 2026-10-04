@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 
 namespace Refii.Mods;
 
@@ -75,6 +76,29 @@ public static class ModWorkspace
 			return mods;
 		}
 
+		// Auto-unpack any .f2zip packages dropped directly into modsRoot
+		try
+		{
+			foreach (string archive in Directory.GetFiles(modsRoot, "*.f2zip"))
+			{
+				string modName = Path.GetFileNameWithoutExtension(archive);
+				if (!IsSafeModFolderName(modName))
+				{
+					continue;
+				}
+
+				string targetDir = Path.Combine(modsRoot, modName);
+				if (!Directory.Exists(targetDir) || File.GetLastWriteTimeUtc(archive) > Directory.GetLastWriteTimeUtc(targetDir))
+				{
+					Directory.CreateDirectory(targetDir);
+					ZipFile.ExtractToDirectory(archive, targetDir, overwriteFiles: true);
+				}
+			}
+		}
+		catch
+		{
+		}
+
 		string[] directories;
 		try
 		{
@@ -91,6 +115,20 @@ public static class ModWorkspace
 			if (!IsSafeModFolderName(name))
 			{
 				continue;
+			}
+
+			// If mod folder contains an .f2zip but files/ is missing, unpack it into the mod folder
+			string zipInMod = Path.Combine(directory, name + ".f2zip");
+			string filesDir = Path.Combine(directory, ModFilesFolderName);
+			if (File.Exists(zipInMod) && !Directory.Exists(filesDir))
+			{
+				try
+				{
+					ZipFile.ExtractToDirectory(zipInMod, directory, overwriteFiles: true);
+				}
+				catch
+				{
+				}
 			}
 
 			mods.Add(new ModInstall

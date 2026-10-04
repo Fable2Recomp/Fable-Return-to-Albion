@@ -175,8 +175,7 @@ void RecordRefiiOwnedStreamLifecycleOpen(std::string_view provider_name) {
     classified = true;
   }
   if (normalized.ends_with(".gdb") || normalized.ends_with(".gdb.tu") ||
-      normalized.ends_with(".babel") || normalized.ends_with(".gdb.csv") ||
-      normalized.ends_with(".babel.csv")) {
+      normalized.ends_with(".babel") || normalized.ends_with(".babel.csv")) {
     record_class(stats.refii_database_streams_opened,
                  "database_streams_opened");
     classified = true;

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Refii.Bnk;
-using Refii.Gdb;
 using Refii.Text;
 
 namespace Refii.Mods;
@@ -35,34 +34,16 @@ public sealed class RowConflict
 }
 
 /// <summary>
-/// COMPOSES ROW OVERLAYS INTO ONE TABLE, so two mods editing different rows of `Globals.gdb`
-/// both apply.
-///
-/// File replacement cannot do that: the second mod's copy of a 3 MB database simply beats the
-/// first, and the only thing the player can choose is which of the two edits to lose. Rows are
-/// the smallest thing a mod actually means to change, so they are what the fold works in.
-///
-/// THE MERGED TABLE LIVES IN MEMORY. It is added to the mount as a virtual file, which is what
-/// the guest and Godot's own readers then open by name — nothing is written to disk, so the
-/// player's shipped data is never modified and no derived copy of it is created.
-///
-/// The base is whatever the mount currently serves, so a mod that replaces `globals.gdb`
-/// wholesale and another that edits one row of it compose in the obvious way: the replacement
-/// wins the file, and the rows are applied on top of the replacement.
+/// Composes row overlays (such as Babel text translations) across mods into one table in memory.
 /// </summary>
 public static class ModRowOverlays
 {
 	/// <summary>
 	/// Applies every enabled mod's row overlays to the mount.
-	///
-	/// <paramref name="overlays"/> is in mount order — lowest priority first — so appending rows
-	/// in that order leaves the highest-priority mod's value in place, the same rule the file
-	/// overlay follows.
 	/// </summary>
 	public static List<RowMerge> Apply(
 		BnkFileSystem mounted, IReadOnlyList<ModOverlay> overlays)
 	{
-		var gdbByTable = new Dictionary<string, List<GdbOverlayRow>>(StringComparer.OrdinalIgnoreCase);
 		var babelByTable = new Dictionary<string, List<BabelOverlayRow>>(StringComparer.OrdinalIgnoreCase);
 		var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 		var contributors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -71,9 +52,7 @@ public static class ModRowOverlays
 		{
 			foreach (string file in ModManifest.EnumerateAssets(overlay.AssetRoot))
 			{
-				bool isGdb = file.EndsWith(GdbOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase);
-				bool isBabel = file.EndsWith(BabelOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase);
-				if (!isGdb && !isBabel)
+				if (!file.EndsWith(BabelOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase))
 				{
 					continue;
 				}
@@ -91,81 +70,37 @@ public static class ModRowOverlays
 					continue;
 				}
 
-				// `globals.gdb.csv` contributes to `globals.gdb`.
 				string table = ModLoadOrder.Normalize(relative);
 				table = table[..^4];
 
 				var parseErrors = new List<string>();
-				int added;
-				if (isGdb)
+				List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(text, parseErrors);
+				foreach (BabelOverlayRow row in rows)
 				{
-					List<GdbOverlayRow> rows = GdbOverlay.ParseCsv(text, parseErrors);
-					foreach (GdbOverlayRow row in rows)
-					{
-						row.Mod = overlay.Name;
-					}
-
-					added = rows.Count;
-					if (added != 0)
-					{
-						if (!gdbByTable.TryGetValue(table, out List<GdbOverlayRow>? existing))
-						{
-							existing = new List<GdbOverlayRow>();
-							gdbByTable[table] = existing;
-						}
-
-						existing.AddRange(rows);
-					}
+					row.Mod = overlay.Name;
 				}
-				else
+
+				int added = rows.Count;
+				if (added != 0)
 				{
-					List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(text, parseErrors);
-					foreach (BabelOverlayRow row in rows)
+					if (!babelByTable.TryGetValue(table, out List<BabelOverlayRow>? existing))
 					{
-						row.Mod = overlay.Name;
+						existing = new List<BabelOverlayRow>();
+						babelByTable[table] = existing;
 					}
 
-					added = rows.Count;
-					if (added != 0)
-					{
-						if (!babelByTable.TryGetValue(table, out List<BabelOverlayRow>? existing))
-						{
-							existing = new List<BabelOverlayRow>();
-							babelByTable[table] = existing;
-						}
-
-						existing.AddRange(rows);
-					}
+					existing.AddRange(rows);
+					Add(contributors, table, overlay.Name);
 				}
 
 				foreach (string error in parseErrors)
 				{
 					Add(errors, table, $"{overlay.Name}: {error}");
 				}
-
-				if (added != 0)
-				{
-					Add(contributors, table, overlay.Name);
-				}
 			}
 		}
 
 		var merges = new List<RowMerge>();
-
-		foreach ((string table, List<GdbOverlayRow> rows) in gdbByTable)
-		{
-			var keys = new List<(string Key, string Mod)>(rows.Count);
-			foreach (GdbOverlayRow row in rows)
-			{
-				keys.Add((row.Key, row.Mod));
-			}
-
-			Merge(mounted, merges, contributors, errors, table, keys, original =>
-			{
-				GdbOverlayResult result = GdbOverlay.Apply(original, rows);
-				return (result.Bytes, result.Applied, result.Errors);
-			});
-		}
 
 		foreach ((string table, List<BabelOverlayRow> rows) in babelByTable)
 		{

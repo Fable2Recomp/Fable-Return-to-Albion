@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Godot;
 using Refii.Assets;
@@ -25,6 +26,7 @@ public sealed class ModItemProperty
     public string CategoryId { get; set; } = string.Empty;
     public string CategoryDisplayName { get; set; } = string.Empty;
     public uint PropertyHash { get; set; }
+    public uint TargetRecordHash { get; set; }
     public uint DeclaringHash { get; set; }
     public GdbFieldType Type { get; set; }
     public string VanillaValue { get; set; } = string.Empty;
@@ -113,13 +115,13 @@ public sealed class ItemModValues
 public static class EditorModValueService
 {
     private const string GlobalsVirtualPath = "globals/globals.gdb";
-    private const string GlobalsCsvSubPath = "globals/globals.gdb.csv";
+    private const string GlobalsTuSubPath = "globals/globals.gdb.tu";
     private const string BabelCsvSubPath = "language/en-uk/text/book.babel.csv";
 
     /// <summary>
     /// The GDB database paths that the game mounts, mirroring
     /// <see cref="Refii.Level.Engine_LevelProps.SupplementalGdbPaths"/>.
-    /// Each has a corresponding <c>.csv</c> overlay file.
+    /// Each has a corresponding <c>.tu</c> patch file.
     /// </summary>
     private static readonly string[] KnownGdbPaths =
     {
@@ -131,23 +133,19 @@ public static class EditorModValueService
     };
 
     /// <summary>
-    /// Determines which <c>.gdb.csv</c> sub-path a property's declaring record should be written to,
+    /// Determines which <c>.gdb.tu</c> sub-path a property's target leaf record should be written to,
     /// based on which GDB file actually contains that record.
-    /// Falls back to <c>globals/globals.gdb.csv</c> when the source file cannot be determined.
+    /// Falls back to <c>globals/globals.gdb.tu</c> when the source file cannot be determined.
     /// </summary>
-    /// <param name="multi">The merged multi-database to look up the record in.</param>
-    /// <param name="declaringHash">The hash of the record that locally declares the property.</param>
-    /// <returns>The relative CSV sub-path (e.g. <c>entity/entity.gdb.csv</c>).</returns>
-    private static string ResolveGdbCsvSubPath(GdbMulti multi, uint declaringHash)
+    private static string ResolveGdbTuSubPath(GdbMulti multi, uint targetHash)
     {
-        int viewIndex = multi.ViewIndexOf(declaringHash);
+        int viewIndex = multi.ViewIndexOf(targetHash);
         if (viewIndex >= 0 && viewIndex < KnownGdbPaths.Length)
         {
-            return KnownGdbPaths[viewIndex] + ".csv";
+            return KnownGdbPaths[viewIndex] + ".tu";
         }
 
-        // Default to globals when the source file cannot be determined:
-        return GlobalsCsvSubPath;
+        return GlobalsTuSubPath;
     }
 
     /// <summary>
@@ -296,6 +294,49 @@ public static class EditorModValueService
         _ => raw.ToString(CultureInfo.InvariantCulture),
     };
 
+    public static bool AreValuesEqual(GdbFieldType type, string? valA, string? valB)
+    {
+        if (string.Equals(valA, valB, StringComparison.Ordinal))
+        {
+            return true;
+        }
+        if (valA is null || valB is null)
+        {
+            return false;
+        }
+
+        switch (type)
+        {
+            case GdbFieldType.Bool:
+            {
+                bool bA = valA.Equals("true", StringComparison.OrdinalIgnoreCase) || valA == "1";
+                bool bB = valB.Equals("true", StringComparison.OrdinalIgnoreCase) || valB == "1";
+                return bA == bB;
+            }
+            case GdbFieldType.Float:
+            {
+                if (float.TryParse(valA, NumberStyles.Float, CultureInfo.InvariantCulture, out float fA) &&
+                    float.TryParse(valB, NumberStyles.Float, CultureInfo.InvariantCulture, out float fB))
+                {
+                    return Math.Abs(fA - fB) < 0.0001f;
+                }
+                break;
+            }
+            case GdbFieldType.Int:
+            case GdbFieldType.Enum:
+            {
+                if (int.TryParse(valA, NumberStyles.Integer, CultureInfo.InvariantCulture, out int iA) &&
+                    int.TryParse(valB, NumberStyles.Integer, CultureInfo.InvariantCulture, out int iB))
+                {
+                    return iA == iB;
+                }
+                break;
+            }
+        }
+
+        return false;
+    }
+
     private static readonly string[] InternalSkipNames =
     {
         "GUIScreen", "Icon", "parent", "Component", "Tag",
@@ -381,6 +422,7 @@ public static class EditorModValueService
 
         foreach (var (startCursor, catId, catName) in startingComponents)
         {
+            uint leafHash = startCursor.View.RecordHash(startCursor.Record);
             GdbCursor walk = startCursor;
             var visited = new HashSet<uint>();
 
@@ -411,14 +453,26 @@ public static class EditorModValueService
                         continue;
                     }
 
+                    GdbFieldType effectiveType = type;
                     string currentFormatted = FormatRawValue(type, raw);
                     string vanillaFormatted = currentFormatted;
 
-                    if (baseMulti.TryLookup(currentEntryHash, out GdbCursor baseCursor) &&
-                        baseCursor.View.TryFindLocalRaw(baseCursor.Record, hash, -1, out uint baseRaw, out GdbFieldType baseType))
+                    // Resolve the true vanilla value by walking up the prototype hierarchy in baseMulti starting from leafHash:
+                    if (baseMulti.TryLookup(leafHash, out GdbCursor baseCursor) &&
+                        baseMulti.TryFindInherited(baseCursor, hash, -1, out _, out uint baseRaw, out GdbFieldType baseType))
                     {
+                        effectiveType = baseType;
                         vanillaFormatted = FormatRawValue(baseType, baseRaw);
                     }
+                    else if (baseMulti.TryLookup(currentEntryHash, out GdbCursor declCursor) &&
+                             baseMulti.TryFindInherited(declCursor, hash, -1, out _, out uint declRaw, out GdbFieldType declType))
+                    {
+                        effectiveType = declType;
+                        vanillaFormatted = FormatRawValue(declType, declRaw);
+                    }
+
+                    currentFormatted = FormatRawValue(effectiveType, raw);
+                    bool isMod = !AreValuesEqual(effectiveType, currentFormatted, vanillaFormatted);
 
                     props.Add(new ModItemProperty
                     {
@@ -427,11 +481,12 @@ public static class EditorModValueService
                         CategoryId = catId,
                         CategoryDisplayName = catName,
                         PropertyHash = hash,
+                        TargetRecordHash = leafHash,
                         DeclaringHash = currentEntryHash,
-                        Type = type,
+                        Type = effectiveType,
                         VanillaValue = vanillaFormatted,
                         CurrentValue = currentFormatted,
-                        IsModified = false,
+                        IsModified = isMod,
                     });
                 }
 
@@ -512,38 +567,77 @@ public static class EditorModValueService
         List<ModItemProperty> discovered = DiscoverProperties(detail, multi);
         values.Properties.AddRange(discovered);
 
-        // 3. Check for active mod GDB overrides across ALL known .gdb.csv files:
-        //    Properties may be spread across globals.gdb, entity.gdb, etc.
-        var rowMap = new Dictionary<(string Entry, string Property), string>();
+        // 3. Check for active mod GDB overrides in .gdb.tu files:
+        var tuEntryMap = new Dictionary<uint, Dictionary<uint, uint>>();
         foreach (string gdbPath in KnownGdbPaths)
         {
-            string csvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(csvPath))
+            string tuPath = Path.Combine(filesRoot, (gdbPath + ".tu").Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(tuPath))
             {
                 continue;
             }
 
-            List<GdbOverlayRow> rows = GdbOverlay.ParseCsv(File.ReadAllText(csvPath), new List<string>());
-            foreach (GdbOverlayRow r in rows)
+            try
             {
-                rowMap[(r.Entry.Trim(), r.Property.Trim())] = r.Value.Trim();
+                byte[] bytes = File.ReadAllBytes(tuPath);
+                if (GdbView.TryParse(bytes, out GdbView tuView, out _))
+                {
+                    for (int i = 0; i < tuView.RecordCount; i++)
+                    {
+                        uint entryHash = tuView.RecordHash(i);
+                        if (!tuEntryMap.TryGetValue(entryHash, out var propMap))
+                        {
+                            propMap = new Dictionary<uint, uint>();
+                            tuEntryMap[entryHash] = propMap;
+                        }
+
+                        foreach (var (fHash, _, fRaw) in tuView.RawFields(i))
+                        {
+                            propMap[fHash] = fRaw;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PushWarning($"[mod_values] Could not read TU patch {tuPath}: {ex.Message}");
             }
         }
 
         foreach (ModItemProperty prop in values.Properties)
         {
-            string hexUpper = $"0x{prop.DeclaringHash:X8}";
-            string hexLower = $"0x{prop.DeclaringHash:x8}";
-
-            if (rowMap.TryGetValue((hexUpper, prop.PropertyName), out string? val) ||
-                rowMap.TryGetValue((hexLower, prop.PropertyName), out val))
+            // Priority 1: Check TargetRecordHash in TU database (promoted leaf record):
+            if (tuEntryMap.TryGetValue(prop.TargetRecordHash, out var targetProps) &&
+                targetProps.TryGetValue(prop.PropertyHash, out uint rawVal))
             {
+                string val = FormatRawValue(prop.Type, rawVal);
                 prop.CurrentValue = val;
-                prop.IsModified = !string.Equals(val, prop.VanillaValue, StringComparison.Ordinal);
+                prop.IsModified = !AreValuesEqual(prop.Type, val, prop.VanillaValue);
                 if (prop.IsModified)
                 {
                     values.HasModOverrides = true;
                 }
+                continue;
+            }
+
+            // Priority 2: Check DeclaringHash in TU database:
+            if (tuEntryMap.TryGetValue(prop.DeclaringHash, out var declProps) &&
+                declProps.TryGetValue(prop.PropertyHash, out uint declRawVal))
+            {
+                string val = FormatRawValue(prop.Type, declRawVal);
+                prop.CurrentValue = val;
+                prop.IsModified = !AreValuesEqual(prop.Type, val, prop.VanillaValue);
+                if (prop.IsModified)
+                {
+                    values.HasModOverrides = true;
+                }
+                continue;
+            }
+
+            prop.IsModified = !AreValuesEqual(prop.Type, prop.CurrentValue, prop.VanillaValue);
+            if (prop.IsModified)
+            {
+                values.HasModOverrides = true;
             }
         }
 
@@ -585,109 +679,86 @@ public static class EditorModValueService
             return;
         }
 
-        // 1. UPDATE GDB PROPERTIES — routed to the correct per-database .gdb.csv file.
-        //    Properties are grouped by the GDB file that owns their declaring record, so
-        //    weapon stats in entity.gdb go to entity/entity.gdb.csv, pricing in globals.gdb
-        //    goes to globals/globals.gdb.csv, etc.
-        var propsByFile = new Dictionary<string, List<ModItemProperty>>(StringComparer.OrdinalIgnoreCase);
+        // 1. UPDATE GDB PROPERTIES VIA TITLE UPDATE (.gdb.tu)
+        //    Properties are grouped by target TU file and target leaf record:
+        GdbMulti baseMulti = Engine_GameGdb.BaseDatabase ?? multi;
+
+        var propsByTuFile = new Dictionary<string, Dictionary<uint, List<ModItemProperty>>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (ModItemProperty prop in values.Properties)
         {
-            string csvSubPath = ResolveGdbCsvSubPath(multi, prop.DeclaringHash);
-            if (!propsByFile.TryGetValue(csvSubPath, out var list))
+            string tuSubPath = ResolveGdbTuSubPath(multi, prop.TargetRecordHash);
+            if (!propsByTuFile.TryGetValue(tuSubPath, out var byRecord))
             {
-                list = new List<ModItemProperty>();
-                propsByFile[csvSubPath] = list;
+                byRecord = new Dictionary<uint, List<ModItemProperty>>();
+                propsByTuFile[tuSubPath] = byRecord;
             }
 
-            list.Add(prop);
+            if (!byRecord.TryGetValue(prop.TargetRecordHash, out var propList))
+            {
+                propList = new List<ModItemProperty>();
+                byRecord[prop.TargetRecordHash] = propList;
+            }
+
+            propList.Add(prop);
         }
 
-        // Process each target GDB CSV file independently:
-        foreach (var (csvSubPath, props) in propsByFile)
+        foreach (var (tuSubPath, records) in propsByTuFile)
         {
-            string gdbCsvPath = Path.Combine(filesRoot, csvSubPath.Replace('/', Path.DirectorySeparatorChar));
-            string? gdbDir = Path.GetDirectoryName(gdbCsvPath);
-            if (!string.IsNullOrEmpty(gdbDir))
+            string tuPath = Path.Combine(filesRoot, tuSubPath.Replace('/', Path.DirectorySeparatorChar));
+            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(tuPath);
+
+            foreach (var (targetHash, propList) in records)
             {
-                Directory.CreateDirectory(gdbDir);
+                var modifiedList = propList
+                    .Where(p => !AreValuesEqual(p.Type, p.CurrentValue, p.VanillaValue))
+                    .ToList();
+
+                // Clean up stale names associated with this target record:
+                db.Names.Remove(targetHash);
+                foreach (var p in propList)
+                {
+                    db.Names.Remove(p.PropertyHash);
+                }
+
+                if (modifiedList.Count > 0)
+                {
+                    var modifiedFields = modifiedList
+                        .Select(p => (p.PropertyHash, p.Type, p.CurrentValue));
+
+                    GdbPatchEntry entry = GdbPatchBuilder.BuildPromotedEntry(baseMulti, targetHash, modifiedFields);
+                    GdbPatchBuilder.UpsertEntry(db, entry);
+
+                    string recName = multi.NameOf(targetHash);
+                    if (!string.IsNullOrWhiteSpace(recName))
+                    {
+                        db.Names[targetHash] = recName;
+                    }
+                    foreach (var p in modifiedList)
+                    {
+                        if (!string.IsNullOrWhiteSpace(p.PropertyName))
+                        {
+                            db.Names[p.PropertyHash] = p.PropertyName;
+                        }
+                    }
+                }
+                else
+                {
+                    GdbPatchBuilder.RemoveEntry(db, targetHash);
+                }
             }
 
-            var existingGdbRows = new List<GdbOverlayRow>();
+            GdbPatchBuilder.SavePatchDatabase(db, tuPath);
+        }
+
+        // Clean up legacy .gdb.csv files from mod filesRoot:
+        foreach (string gdbPath in KnownGdbPaths)
+        {
+            string gdbCsvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
             if (File.Exists(gdbCsvPath))
             {
-                existingGdbRows = GdbOverlay.ParseCsv(File.ReadAllText(gdbCsvPath), new List<string>());
+                try { File.Delete(gdbCsvPath); } catch { }
             }
-
-            var updates = new Dictionary<(string Entry, string Property), string>();
-            var removals = new HashSet<(string Entry, string Property)>();
-
-            foreach (ModItemProperty prop in props)
-            {
-                string hex = $"0x{prop.DeclaringHash:X8}";
-                var key = (hex, prop.PropertyName);
-
-                if (!string.Equals(prop.CurrentValue, prop.VanillaValue, StringComparison.Ordinal))
-                {
-                    updates[key] = prop.CurrentValue;
-                }
-                else
-                {
-                    removals.Add(key);
-                }
-            }
-
-            var mergedGdbRows = new List<(string Entry, string Property, string Value)>();
-            var updatedKeys = new HashSet<(string Entry, string Property)>();
-
-            foreach (GdbOverlayRow row in existingGdbRows)
-            {
-                var key = (row.Entry, row.Property);
-                if (removals.Contains(key))
-                {
-                    continue;
-                }
-
-                if (updates.TryGetValue(key, out string? newVal))
-                {
-                    mergedGdbRows.Add((row.Entry, row.Property, newVal));
-                    updatedKeys.Add(key);
-                }
-                else
-                {
-                    mergedGdbRows.Add((row.Entry, row.Property, row.Value));
-                }
-            }
-
-            foreach (var kvp in updates)
-            {
-                if (!updatedKeys.Contains(kvp.Key))
-                {
-                    mergedGdbRows.Add((kvp.Key.Entry, kvp.Key.Property, kvp.Value));
-                }
-            }
-
-            if (mergedGdbRows.Count == 0)
-            {
-                if (File.Exists(gdbCsvPath))
-                {
-                    try { File.Delete(gdbCsvPath); } catch { }
-                }
-            }
-            else
-            {
-                var gdbSb = new StringBuilder();
-                gdbSb.AppendLine("# Refii GDB Property Overlays");
-                gdbSb.AppendLine("# entry,property,value");
-                foreach (var r in mergedGdbRows)
-                {
-                    gdbSb.Append(r.Entry).Append(',').Append(r.Property).Append(',').AppendLine(EscapeCsv(r.Value));
-                }
-
-                File.WriteAllText(gdbCsvPath, gdbSb.ToString(), Encoding.UTF8);
-            }
-
-            GD.Print($"[mod_values] Wrote {mergedGdbRows.Count} row(s) to {csvSubPath}");
         }
 
         // 2. UPDATE BABEL TEXT (language/en-uk/text/book.babel.csv)
@@ -778,7 +849,7 @@ public static class EditorModValueService
     }
 
     /// <summary>
-    /// Removes all overrides targeting this item from the active mod's overlay CSV files.
+    /// Removes all overrides targeting this item from the active mod's .gdb.tu patch files.
     /// </summary>
     public static void RevertItemOverrides(ItemDetail detail, string? activeMod = null)
     {
@@ -786,49 +857,40 @@ public static class EditorModValueService
         string filesRoot = Path.Combine(Engine_GameAssets.ModsRoot, modName, "files");
 
         GdbMulti? multi = Engine_GameGdb.Database ?? Engine_GameGdb.BaseDatabase;
-        var targets = CollectTargetEntries(multi, detail);
+        var targetHashes = CollectTargetHashes(multi, detail);
 
-        // Filter ALL known .gdb.csv files — properties may be spread across multiple databases:
+        // Remove from all known .gdb.tu files:
         foreach (string gdbPath in KnownGdbPaths)
         {
-            string gdbCsvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(gdbCsvPath))
+            string tuPath = Path.Combine(filesRoot, (gdbPath + ".tu").Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(tuPath))
             {
                 continue;
             }
 
-            List<GdbOverlayRow> rows = GdbOverlay.ParseCsv(File.ReadAllText(gdbCsvPath), new List<string>());
-            var remaining = new List<GdbOverlayRow>();
-            foreach (GdbOverlayRow row in rows)
+            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(tuPath);
+            bool changed = false;
+            foreach (uint h in targetHashes)
             {
-                if (!targets.Contains(row.Entry.Trim()))
+                if (GdbPatchBuilder.RemoveEntry(db, h))
                 {
-                    remaining.Add(row);
+                    changed = true;
                 }
             }
 
-            if (remaining.Count == 0)
+            if (changed)
             {
-                try
-                {
-                    File.Delete(gdbCsvPath);
-                }
-                catch (Exception ex)
-                {
-                    GD.PushWarning($"[mod_values] Could not delete empty {gdbPath}.csv: {ex.Message}");
-                }
+                GdbPatchBuilder.SavePatchDatabase(db, tuPath);
             }
-            else
-            {
-                var sb = new StringBuilder();
-                sb.AppendLine("# Refii GDB Property Overlays");
-                sb.AppendLine("# entry,property,value");
-                foreach (GdbOverlayRow r in remaining)
-                {
-                    sb.Append(r.Entry).Append(',').Append(r.Property).Append(',').AppendLine(EscapeCsv(r.Value));
-                }
+        }
 
-                File.WriteAllText(gdbCsvPath, sb.ToString(), Encoding.UTF8);
+        // Clean up any legacy .gdb.csv files:
+        foreach (string gdbPath in KnownGdbPaths)
+        {
+            string gdbCsvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(gdbCsvPath))
+            {
+                try { File.Delete(gdbCsvPath); } catch { }
             }
         }
 
@@ -937,18 +999,17 @@ public static class EditorModValueService
     }
 
     /// <summary>
-    /// Gathers all entry identifiers (record hexes) associated with this item that could receive GDB overrides.
+    /// Gathers all entry hashes associated with this item that could receive GDB overrides in .gdb.tu files.
     /// </summary>
-    private static HashSet<string> CollectTargetEntries(GdbMulti? multi, ItemDetail detail)
+    private static HashSet<uint> CollectTargetHashes(GdbMulti? multi, ItemDetail detail)
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var set = new HashSet<uint>();
 
         void AddHash(uint h)
         {
             if (h != 0 && h != GdbHash.Null)
             {
-                set.Add($"0x{h:X8}");
-                set.Add($"0x{h:x8}");
+                set.Add(h);
             }
         }
 
@@ -961,6 +1022,7 @@ public static class EditorModValueService
         {
             foreach (var prop in DiscoverProperties(detail, multi))
             {
+                AddHash(prop.TargetRecordHash);
                 AddHash(prop.DeclaringHash);
             }
         }
@@ -970,12 +1032,14 @@ public static class EditorModValueService
         {
             foreach (var prop in DiscoverProperties(detail, baseMulti))
             {
+                AddHash(prop.TargetRecordHash);
                 AddHash(prop.DeclaringHash);
             }
         }
 
         return set;
     }
+
 
     /// <summary>
     /// Walks up the parent inheritance chain from <paramref name="startHash"/> until an entry that locally

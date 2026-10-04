@@ -516,7 +516,6 @@ public static class RuntimeConfig
         "vfs_force_retail_update_mode",
         "vfs_force_startup_video_sequence",
         "vfs_frontend_synthetic_handoff",
-        "vfs_gdb_csv_overrides",
         "vfs_log_folder",
         "vfs_mod_roots",
         "vfs_mods_root",

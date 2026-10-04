@@ -91,7 +91,11 @@ std::string OwnDirectory() {
 
 ModuleHandle OpenModule(const std::string& path, std::string& error) {
 #if defined(_WIN32)
-  ModuleHandle handle = LoadLibraryA(path.c_str());
+  ModuleHandle handle =
+      LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+  if (handle == nullptr) {
+    handle = LoadLibraryA(path.c_str());
+  }
   if (handle == nullptr) {
     error = "LoadLibrary failed with error " + std::to_string(GetLastError());
   }
@@ -136,6 +140,10 @@ bool Load(std::string& error) {
     error = state.error;
     return false;
   }
+
+#if defined(_WIN32)
+  SetDllDirectoryA(directory.c_str());
+#endif
 
   // Beside this library first: that is where the install-time build writes the module, and
   // where an exported app keeps its whole native closure. The others are dev-tree layouts

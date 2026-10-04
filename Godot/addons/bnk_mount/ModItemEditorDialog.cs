@@ -677,7 +677,7 @@ public partial class ModItemEditorDialog : ConfirmationDialog
             {
                 MinValue = -1000000.0,
                 MaxValue = 1000000.0,
-                Step = 0.05,
+                Step = 0.0001,
                 AllowGreater = true,
                 AllowLesser = true,
                 SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
@@ -762,7 +762,7 @@ public partial class ModItemEditorDialog : ConfirmationDialog
                 {
                     MinValue = 0,
                     MaxValue = 100000000,
-                    Step = 10,
+                    Step = 1,
                     AllowGreater = true,
                     Suffix = " Gold",
                     SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
@@ -860,7 +860,7 @@ public partial class ModItemEditorDialog : ConfirmationDialog
             sb.ValueChanged += _ =>
             {
                 prop.CurrentValue = getValue();
-                prop.IsModified = !string.Equals(prop.CurrentValue, prop.VanillaValue, StringComparison.Ordinal);
+                prop.IsModified = !EditorModValueService.AreValuesEqual(prop.Type, prop.CurrentValue, prop.VanillaValue);
                 UpdateRowVisual(row);
                 UpdateTabTitles();
                 UpdateRevertButtonState();
@@ -871,7 +871,7 @@ public partial class ModItemEditorDialog : ConfirmationDialog
             cb.Toggled += _ =>
             {
                 prop.CurrentValue = getValue();
-                prop.IsModified = !string.Equals(prop.CurrentValue, prop.VanillaValue, StringComparison.Ordinal);
+                prop.IsModified = !EditorModValueService.AreValuesEqual(prop.Type, prop.CurrentValue, prop.VanillaValue);
                 UpdateRowVisual(row);
                 UpdateTabTitles();
                 UpdateRevertButtonState();
@@ -882,7 +882,7 @@ public partial class ModItemEditorDialog : ConfirmationDialog
             ob.ItemSelected += _ =>
             {
                 prop.CurrentValue = getValue();
-                prop.IsModified = !string.Equals(prop.CurrentValue, prop.VanillaValue, StringComparison.Ordinal);
+                prop.IsModified = !EditorModValueService.AreValuesEqual(prop.Type, prop.CurrentValue, prop.VanillaValue);
                 UpdateRowVisual(row);
                 UpdateTabTitles();
                 UpdateRevertButtonState();
@@ -1149,7 +1149,7 @@ public partial class ModItemEditorDialog : ConfirmationDialog
         foreach (PropRow row in _rowControls)
         {
             row.Property.CurrentValue = row.GetValue();
-            row.Property.IsModified = !string.Equals(row.Property.CurrentValue, row.Property.VanillaValue, StringComparison.Ordinal);
+            row.Property.IsModified = !EditorModValueService.AreValuesEqual(row.Property.Type, row.Property.CurrentValue, row.Property.VanillaValue);
         }
 
         EditorModValueService.SaveItemOverrides(_currentDetail, _currentValues);

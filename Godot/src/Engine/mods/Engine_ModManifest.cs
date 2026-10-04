@@ -113,8 +113,7 @@ public sealed class ModManifest
 			// to itself, so that is the path it claims — which is what makes two mods editing
 			// different rows of one table a reported row conflict rather than a file conflict.
 			// Phase 2 merges them; phase 1 records them.
-			if (normalized.EndsWith(".gdb.csv", StringComparison.Ordinal) ||
-				normalized.EndsWith(".babel.csv", StringComparison.Ordinal))
+			if (normalized.EndsWith(".babel.csv", StringComparison.Ordinal))
 			{
 				entry.Kind = ModManifestEntry.KindRows;
 				entry.Source = normalized;

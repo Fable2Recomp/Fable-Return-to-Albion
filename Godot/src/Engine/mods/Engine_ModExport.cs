@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using Refii.Bnk;
 
 namespace Refii.Mods;
@@ -157,6 +158,68 @@ public static class ModExport
 	}
 
 	public static bool IsRowOverlay(string path) =>
-		path.EndsWith(".gdb.csv", StringComparison.OrdinalIgnoreCase) ||
 		path.EndsWith(".babel.csv", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// Packages the mod into a standard .f2zip archive ready for distribution.
+	/// Only packages metadata (mod.toml) and runtime files under files/.
+	/// Authoring sources under src/ are strictly excluded.
+	/// </summary>
+	public static bool ToF2Zip(ModInstall mod, string destinationZip, out string error)
+	{
+		error = string.Empty;
+		string assetRoot = ModWorkspace.GetModAssetRoot(mod);
+		bool hasFiles = Directory.Exists(assetRoot);
+		string metadataPath = Path.Combine(mod.Root, ModWorkspace.ModMetadataFilename);
+		bool hasMeta = File.Exists(metadataPath);
+
+		if (!hasFiles && !hasMeta)
+		{
+			error = $"'{mod.Name}' has no files or metadata to package.";
+			return false;
+		}
+
+		try
+		{
+			string? dir = Path.GetDirectoryName(destinationZip);
+			if (!string.IsNullOrEmpty(dir))
+			{
+				Directory.CreateDirectory(dir);
+			}
+
+			if (File.Exists(destinationZip))
+			{
+				File.Delete(destinationZip);
+			}
+
+			using var zip = ZipFile.Open(destinationZip, ZipArchiveMode.Create);
+
+			if (hasMeta)
+			{
+				zip.CreateEntryFromFile(metadataPath, ModWorkspace.ModMetadataFilename, CompressionLevel.Optimal);
+			}
+
+			if (hasFiles)
+			{
+				foreach (string file in Directory.EnumerateFiles(assetRoot, "*", SearchOption.AllDirectories))
+				{
+					string rel = Path.GetRelativePath(assetRoot, file).Replace('\\', '/');
+					if (rel.StartsWith(".") || rel.Contains("/."))
+					{
+						continue;
+					}
+
+					string entryName = Path.Combine(ModWorkspace.ModFilesFolderName, rel).Replace('\\', '/');
+					zip.CreateEntryFromFile(file, entryName, CompressionLevel.Optimal);
+				}
+			}
+
+			return true;
+		}
+		catch (Exception exception)
+		{
+			error = exception.Message;
+			return false;
+		}
+	}
 }

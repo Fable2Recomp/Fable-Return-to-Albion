@@ -51,7 +51,7 @@ public sealed class GdbMulti
                     continue;
                 }
 
-                multi._index.TryAdd(hash, new GdbCursor(view, i));
+                multi._index[hash] = new GdbCursor(view, i);
             }
         }
 
