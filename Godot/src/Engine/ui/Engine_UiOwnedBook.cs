@@ -240,6 +240,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			clone.Transform = Engine_UiTheme.CanvasTransform(source);
 			clone.Name = unit;
 			AddChild(clone);
+			_unitAuthored[clone] = clone.Transform;
 
 			if (ordinal >= 0)
 			{
@@ -310,6 +311,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		// listed. Wrap mode, size, alignment and colour are stamped on the node.
 		foreach ((MeshInstance3D mesh, int ordinal) in _binding.TextNodes(Document))
 		{
+			_textMeshes.Add(mesh);
 			_fields.Add(new Field
 			{
 				Path = DocumentPath(Document.Nodes[ordinal]),
@@ -433,6 +435,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		// the page widgets above do, so per frame the deltas start from authored, never compound.
 		FlowMeasuredText();
 		DriveScrollRegion();
+		FitTextToPage();
+		ApplyWideSpread();
 
 		ReportHostChannels();
 		ReportDark();
@@ -2061,6 +2065,239 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		static string Short(string s) => s.Length > 48 ? s[..48] + "…" : s;
 	}
 
+	/// <summary>Each top-level unit's authored canvas transform — unit roots are not restated
+	/// by the binding, so anything that moves one starts from here.</summary>
+	private readonly System.Collections.Generic.Dictionary<Node3D, Transform3D> _unitAuthored = new();
+
+	private readonly System.Collections.Generic.List<MeshInstance3D> _textMeshes = new();
+
+	private readonly System.Collections.Generic.Dictionary<MeshInstance3D, Vector3> _textFitted = new();
+
+	/// <summary>How far inside the 16:9 edge a page's text must end — the cover's width.</summary>
+	private const float PageEdgeMargin = 40f;
+
+	/// <summary>The smallest a too-long line is drawn, as a fraction of its authored size.</summary>
+	private const float MinimumTextFit = 0.6f;
+
+	/// <summary>
+	/// TEXT STAYS ON ITS PAGE. A single-line field never folds, so a long name (a co-op
+	/// partner's, the dog's, a localised ability title) ran off the parchment and under the
+	/// cover. A line that passes its page's outer edge is drawn smaller about its own anchor,
+	/// down to a floor. Measured in the unspread 16:9 layout, before the wide layout rides the
+	/// pages out, and from the transform this frame stands at — a line already fitted
+	/// measures as fitting, so nothing compounds.
+	/// </summary>
+	private void FitTextToPage()
+	{
+		float edge = Engine_UiSceneBuilder.DesignHalfWidth - PageEdgeMargin;
+		Transform3D toBook = GlobalTransform.AffineInverse();
+		foreach (MeshInstance3D mesh in _textMeshes)
+		{
+			if (!GodotObject.IsInstanceValid(mesh) || mesh.Mesh is null || !mesh.IsVisibleInTree())
+			{
+				continue;
+			}
+
+			Transform3D inBook = toBook * mesh.GlobalTransform;
+			float origin = inBook.Origin.X;
+
+			// A line anchored past the edge belongs to a parked page, not to this one.
+			if (Mathf.Abs(origin) >= edge)
+			{
+				continue;
+			}
+
+			Aabb box = inBook * mesh.GetAabb();
+			float fit = 1f;
+			if (box.End.X > edge && box.End.X - origin > 1f)
+			{
+				fit = Mathf.Min(fit, (edge - origin) / (box.End.X - origin));
+			}
+
+			if (box.Position.X < -edge && origin - box.Position.X > 1f)
+			{
+				fit = Mathf.Min(fit, (origin + edge) / (origin - box.Position.X));
+			}
+
+			// At the floor a line can still measure long; one this pass already shrank and
+			// nothing restated since is left alone.
+			if (fit < 0.999f &&
+				!(_textFitted.TryGetValue(mesh, out Vector3 left) && mesh.Scale.IsEqualApprox(left)))
+			{
+				fit = Mathf.Max(fit, MinimumTextFit);
+				Vector3 scale = mesh.Scale;
+				Engine_UiSceneBuilder.SetLiveScale(
+					mesh, new Vector3(scale.X * fit, scale.Y * fit, scale.Z));
+				_textFitted[mesh] = mesh.Scale;
+			}
+		}
+	}
+
+	/// <summary>What the wide layout last did to a node: the transform it started from, the
+	/// one it left, and the amount — so a node nothing restated this frame is not moved twice.</summary>
+	private readonly System.Collections.Generic.Dictionary<Node3D, (Transform3D From, Transform3D To, float Amount)> _spreadAt = new();
+
+	private float _wideShift;
+
+	private float _groundWiden = 1f;
+
+	/// <summary>
+	/// THE BOOK OPENS TO THE WINDOW — the template's wide layout
+	/// (<see cref="Engine_UiScreenTemplate.WideLeft"/>, `WideRight`, `WideStretch`,
+	/// `WideGround`). After the binding has restated every bound transform, like the reflow
+	/// and the scroll.
+	/// </summary>
+	private void ApplyWideSpread()
+	{
+		bool stated = Template is { } t &&
+			(t.WideLeft.Count + t.WideRight.Count + t.WideStretch.Count + t.WideGround.Count) > 0;
+		float shift = stated ? Engine_UiSceneBuilder.WideShift : 0f;
+
+		if (!Mathf.IsEqualApprox(shift, _wideShift))
+		{
+			_wideShift = shift;
+			_binding.ClipShiftX = shift;
+
+			// The masks are measured from the unspread layout: put back whatever the binding
+			// does not restate (unit roots) before measuring.
+			foreach ((Node3D node, var was) in _spreadAt)
+			{
+				if (GodotObject.IsInstanceValid(node) && node.Transform.IsEqualApprox(was.To))
+				{
+					node.Transform = was.From;
+				}
+			}
+
+			_spreadAt.Clear();
+			if (Document is not null)
+			{
+				_masked = _binding.ApplyMasks(Document);
+			}
+		}
+
+		if (!stated)
+		{
+			return;
+		}
+
+		// Unit roots are not restated by the binding: written on a change, from authored.
+		float widen = 1f + (shift / Engine_UiSceneBuilder.DesignHalfWidth);
+		if (!Mathf.IsEqualApprox(widen, _groundWiden))
+		{
+			_groundWiden = widen;
+			foreach ((Node3D unit, Transform3D authored) in _unitAuthored)
+			{
+				if (GodotObject.IsInstanceValid(unit) &&
+					Template!.WideGround.Contains(unit.Name.ToString()))
+				{
+					unit.Transform = new Transform3D(
+						authored.Basis.Scaled(new Vector3(widen, widen, 1f)),
+						authored.Origin * new Vector3(widen, widen, 1f));
+				}
+			}
+		}
+
+		if (shift <= 0f)
+		{
+			return;
+		}
+
+		Transform3D toBook = GlobalTransform.AffineInverse();
+
+		foreach (string path in Template!.WideLeft)
+		{
+			Ride(path, -shift);
+		}
+
+		foreach (string path in Template.WideRight)
+		{
+			Ride(path, shift);
+		}
+
+		foreach (string path in Template.WideStretch)
+		{
+			Stretch(path);
+		}
+
+		// The transform a piece starts this frame from: what the binding just restated, or —
+		// for one nothing restated — what it stood at before the last spread.
+		bool Rebase(Node3D piece, float amount)
+		{
+			if (_spreadAt.TryGetValue(piece, out var last) && piece.Transform.IsEqualApprox(last.To))
+			{
+				if (Mathf.IsEqualApprox(last.Amount, amount))
+				{
+					return false;
+				}
+
+				piece.Transform = last.From;
+			}
+
+			return true;
+		}
+
+		void Ride(string path, float canvas)
+		{
+			if (NodeByPath(path) is not { } piece || piece.GetParent() is not Node3D parent ||
+				!Rebase(piece, canvas))
+			{
+				return;
+			}
+
+			// Canvas units into the piece's parent space.
+			Transform3D from = piece.Transform;
+			float scale = (toBook * parent.GlobalTransform).Basis.X.Length();
+			piece.Position += new Vector3(canvas / Mathf.Max(scale, 0.0001f), 0f, 0f);
+			_spreadAt[piece] = (from, piece.Transform, canvas);
+		}
+
+		// A page's paper keeps its gutter edge and reaches `shift` further out.
+		void Stretch(string path)
+		{
+			if (NodeByPath(path) is not { } piece || piece.GetParent() is not Node3D parent ||
+				!Rebase(piece, shift))
+			{
+				return;
+			}
+
+			Transform3D from = piece.Transform;
+			float low = float.MaxValue;
+			float high = float.MinValue;
+			Measure(piece);
+			if (high - low <= 1f)
+			{
+				return;
+			}
+
+			bool rightHand = (low + high) * 0.5f > 0f;
+			float anchor = rightHand ? low : high;
+			float factor = (high - low + shift) / (high - low);
+
+			// Scale x about the gutter edge, in book space, then back into the parent's.
+			Transform3D inBook = toBook * piece.GlobalTransform;
+			var widened = new Transform3D(
+				new Basis(new Vector3(factor, 0f, 0f), Vector3.Up, Vector3.Back),
+				new Vector3(anchor * (1f - factor), 0f, 0f)) * inBook;
+			piece.Transform = (toBook * parent.GlobalTransform).AffineInverse() * widened;
+			_spreadAt[piece] = (from, piece.Transform, shift);
+
+			void Measure(Node node)
+			{
+				if (node is MeshInstance3D { Mesh: not null } mesh && !mesh.HasMeta("text"))
+				{
+					Aabb box = (toBook * mesh.GlobalTransform) * mesh.GetAabb();
+					low = Mathf.Min(low, box.Position.X);
+					high = Mathf.Max(high, box.End.X);
+				}
+
+				foreach (Node child in node.GetChildren())
+				{
+					Measure(child);
+				}
+			}
+		}
+	}
+
 	/// <summary>Seconds since the last sample, for the page scroll (`SCROLL_SPEED` is per second: page.dis main.1 pc15..27).</summary>
 	public double ScrollDelta { get; set; } = 1.0 / 30.0;
 
@@ -2074,6 +2311,22 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	/// <summary>The scroll region driving now, by its content path; a change resets the offset.</summary>
 	private string _scrollContentPath = string.Empty;
+
+	/// <summary>What the scroll region is showing (the highlighted row); a change resets the offset.</summary>
+	public string ScrollKey
+	{
+		get => _scrollKey;
+		set
+		{
+			if (_scrollKey != value)
+			{
+				_scrollKey = value;
+				_scrollOffset = 0f;
+			}
+		}
+	}
+
+	private string _scrollKey = string.Empty;
 
 	/// <summary>The bound clone for a template path, through the same trailing-segment match
 	/// every host channel uses.</summary>
@@ -2197,6 +2450,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		if (content is null)
 		{
+			// Off screen: the next showing starts at the top.
+			_scrollOffset = 0f;
 			return;
 		}
 

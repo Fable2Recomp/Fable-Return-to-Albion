@@ -266,15 +266,11 @@ public static class Engine_UiPageProviders
 				["Foreground.RightPage.model_proxy"] = new(239f, 110f, float.NaN),
 				["Foreground.LeftPage.model_proxy"] = new(-236f, 110f, float.NaN),
 
-				// The frames reach the window's edge: coopscreen.bgf has no backdrop and its frames
-				// end at +630 / −672 canvas (the console's overscan hid the shortfall). Each frame
-				// group (parent scale 1.04) moves outward by the shortfall; the parchment runs 140
-				// units under the copper, so this holds up to a 2.16:1 window.
+				// The right frame reaches the 16:9 edge: coopscreen.bgf's frames end at +630 / −672
+				// canvas (the console's overscan hid the shortfall), so its group (parent scale
+				// 1.04) moves out by the shortfall. Wider than 16:9 is the template's wide layout.
 				["Foreground.RightFrame2.Group"] = new(
-					263f + System.MathF.Max(0f, Engine_UiSceneBuilder.VisibleHalfWidth - 629.7f) / 1.04f,
-					float.NaN, float.NaN),
-				["Foreground.LeftFrame2.LeftFrame2"] = new(
-					-171f - System.MathF.Max(0f, Engine_UiSceneBuilder.VisibleHalfWidth - 671.8f) / 1.04f,
+					263f + System.MathF.Max(0f, Engine_UiSceneBuilder.DesignHalfWidth - 629.7f) / 1.04f,
 					float.NaN, float.NaN),
 			};
 

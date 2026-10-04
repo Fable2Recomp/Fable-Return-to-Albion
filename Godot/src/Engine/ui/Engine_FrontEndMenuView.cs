@@ -373,12 +373,10 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>
-	/// An entry's <c>g_Menu.EmphasisConst</c> value. The model carries it as a flag because the
-	/// guest raises it one way only: <c>sub_826E2220</c> and <c>sub_826E1C98</c> both call
-	/// <c>SetItemEmphasis(1)</c> (<c>eEMPHASIS_PRIMARY_QUEST</c>).
+	/// An entry's <c>g_Menu.EmphasisConst</c> value, as the model carries it — the world map
+	/// states primary (1) and active (2) quests apart, and they wear different tints.
 	/// </summary>
-	private static int Emphasis(Engine_UiExpandableMenu.Item item) =>
-		item.Emphasised ? EmphasisPrimaryQuest : EmphasisNone;
+	private static int Emphasis(Engine_UiExpandableMenu.Item item) => (int)item.Emphasis;
 
 	private double _elapsed;
 
@@ -1143,7 +1141,9 @@ public partial class Engine_FrontEndMenuView : Node3D
 	{
 		for (int r = 0; r < _rows.Length; ++r)
 		{
-			if (_rowItem[r] is null || !_rows[r].Visible)
+			// Keyed on the assignment, not on `Visible`: the clip below hides a row whose slide
+			// STARTS outside the band, and a skip on that hide would keep it hidden at rest.
+			if (_rowItem[r] is null)
 			{
 				continue;
 			}
@@ -1305,7 +1305,27 @@ public partial class Engine_FrontEndMenuView : Node3D
 		{
 			LabelsWithoutGlyphs++;
 		}
+
+		// THE LABEL STAYS ON ITS ROW. Wrap mode 0 never folds, so a long name ran past the tab
+		// and across the gutter; it is drawn smaller instead, down to a floor, so the whole
+		// name stays readable inside the slot's truncate width.
+		if (!label.HasMeta(LabelBaseScaleMeta))
+		{
+			label.SetMeta(LabelBaseScaleMeta, label.Scale);
+		}
+
+		Vector3 baseScale = label.GetMeta(LabelBaseScaleMeta).AsVector3();
+		float width = label.Mesh is { } mesh ? mesh.GetAabb().Size.X : 0f;
+		float fit = truncate > 0f && width > truncate
+			? Mathf.Max(truncate / width, MinimumLabelFit)
+			: 1f;
+		label.Scale = new Vector3(baseScale.X * fit, baseScale.Y * fit, baseScale.Z);
 	}
+
+	private static readonly StringName LabelBaseScaleMeta = "label_base_scale";
+
+	/// <summary>The smallest a long row label is drawn, as a fraction of its slot's size.</summary>
+	private const float MinimumLabelFit = 0.6f;
 
 	/// <summary>
 	/// A tag to its display string, through the theme's book. An unresolved tag is shown VERBATIM

@@ -335,6 +335,20 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 		return (null, at);
 	}
 
+	/// <summary>Unlights every slot — the feed is gone (the guest left the game).</summary>
+	public void Clear()
+	{
+		Lit = 0;
+		foreach (Slot slot in _slots)
+		{
+			slot.Lit = false;
+			if (slot.Node is not null)
+			{
+				slot.Node.Visible = false;
+			}
+		}
+	}
+
 	/// <summary>
 	/// Takes the slow-changing statements: which slots are lit, their titles, their art.
 	/// Declined on a count mismatch — the live arrays join to the file by ordinal.
@@ -343,6 +357,7 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	{
 		if (elements.Count != _documentElements)
 		{
+			Clear();
 			return;
 		}
 

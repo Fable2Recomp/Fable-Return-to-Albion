@@ -195,61 +195,24 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	}
 
 	/// <summary>
-	/// THE PAPER'S SIZE IS A SLIDE, NOT A TRANSFORM. `sub_8236FA68` fits the text into one of
-	/// the six MessageText variants and puts the `paper` element on that size's slide;
-	/// messageboxmulti.bgf's paper owns `type1`..`type6`, each scaling `paperbox` (3, 4, 5, 5,
-	/// 6, 7) and activating exactly one text. The guest never writes a scale, so reading the
-	/// transform alone kept the parchment at the authored scale 1 under a full-size text —
-	/// the box on the abilities page with its notice spilling past the paper on every side.
+	/// THE PAPER'S SIZE IS A SLIDE, NOT A TRANSFORM. The guest's fitter puts the `paper`
+	/// element on one of its `type1`..`type6` slides and writes no scale or position; this
+	/// is that slide, from the file.
 	/// </summary>
-	private Vector2? PaperScaleFromSlide(int chosen)
+	private BgfSlide? SizeSlide(int chosen)
 	{
 		if (_document?.Document is not { } file || _joins is null)
 		{
 			return null;
 		}
 
-		uint scaleX = Refii.Core.Engine_GameHash.AttributeId("scale.x");
-		uint scaleY = Refii.Core.Engine_GameHash.AttributeId("scale.y");
 		string want = $"type{chosen + 1}";
 		foreach (BgfSlide slide in file.Slides)
 		{
-			if (slide.OwnerElement != _joins.Paper ||
-				!slide.Name.Equals(want, System.StringComparison.Ordinal))
+			if (slide.OwnerElement == _joins.Paper &&
+				slide.Name.Equals(want, System.StringComparison.Ordinal))
 			{
-				continue;
-			}
-
-			foreach (BgfSlideEntry entry in slide.Entries)
-			{
-				if (entry.ElementOrdinal != _joins.PaperBox)
-				{
-					continue;
-				}
-
-				float? x = null;
-				float? y = null;
-				foreach (BgfAttribute command in entry.Commands)
-				{
-					if (command.Type != BgfValueType.Float)
-					{
-						continue;
-					}
-
-					if (command.Id == scaleX)
-					{
-						x = command.AsFloat();
-					}
-					else if (command.Id == scaleY)
-					{
-						y = command.AsFloat();
-					}
-				}
-
-				if (x is { } sx && y is { } sy && sx > 0f && sy > 0f)
-				{
-					return new Vector2(sx, sy);
-				}
+				return slide;
 			}
 		}
 
@@ -312,33 +275,10 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 			return;
 		}
 
-		// The nine-slice's resolved size, off the guest's own live transform — on `paperbox`,
-		// or on its `paper` parent (the slide's writes may land on either; take whichever
-		// states a scale).
-		Vector2? paperScale = null;
-		float?[]?[]? transform = Engine_UiLiveAttributes.Transform(Address, elements.Count);
-		if (transform is not null)
-		{
-			foreach (int ordinal in new[] { _joins.PaperBox, _joins.Paper })
-			{
-				if (ordinal < transform.Length &&
-					transform[ordinal] is { } stated &&
-					stated[3] is { } scaleX && stated[4] is { } scaleY)
-				{
-					paperScale = new Vector2(scaleX, scaleY);
-					break;
-				}
-			}
-		}
+		BgfSlide? size = SizeSlide(chosen);
+		string paperSource = size is null ? "authored" : $"slide type{chosen + 1}";
 
-		string paperSource = "guest-stated";
-		if (paperScale is null)
-		{
-			paperScale = PaperScaleFromSlide(chosen);
-			paperSource = paperScale is null ? "authored" : $"slide type{chosen + 1}";
-		}
-
-		View!.ShowStated(body, chosen, paperScale);
+		View!.ShowStated(body, chosen, size);
 		GD.Print((_display != 0
 				? $"[game-ui] display message box {_display:X8} up "
 				: $"[game-ui] message box {_modalId} up over screen {_screenId} ") +
@@ -444,7 +384,9 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 		}
 
 		string body = elements[_joins.Body].Text ?? string.Empty;
-		if (body.Length == 0 || !Changed($"{row.Name}\u0001{body}"))
+		// The captions ride in the key: the guest may write them a frame after the body.
+		if (body.Length == 0 || !Changed(
+			$"{row.Name}\u0001{body}\u0001{elements[row.First].Text}\u0001{elements[row.Second].Text}"))
 		{
 			return;
 		}

@@ -62,7 +62,11 @@ public static class Engine_UiCanvasText
 					origin + new Vector2((pen + glyph.LeftBearing) * scale, 0f),
 					new Vector2(source.Size.X * scale, source.Size.Y * scale));
 
-				into.DrawTextureRectRegion(font.Atlas, destination, source, colour);
+				// The atlas texture is supersampled; the metrics stay in shipped texels.
+				float super = Engine_BitmapFontTexture.SupersampleOf(font.Atlas);
+				into.DrawTextureRectRegion(
+					font.Atlas, destination,
+					new Rect2(source.Position * super, source.Size * super), colour);
 			}
 
 			pen += glyph.Advance;

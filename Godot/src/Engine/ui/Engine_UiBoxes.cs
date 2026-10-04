@@ -22,8 +22,12 @@ namespace Refii.Ui;
 /// </remarks>
 public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 {
+	/// <summary>An element path inside this box's art, through its template record — the
+	/// built-in path is the key, so a mod's art re-points it in `boxPaths`.</summary>
+	private static string P(string path) => Engine_UiTemplates.BoxPath(Engine_UiTemplates.MenuBoxId, path);
+
 	/// <summary>The bank entry name of the guest's presentation.</summary>
-	public const string Presentation = "menubox";
+	public static string Presentation => Engine_UiTemplates.BoxPresentation(Engine_UiTemplates.MenuBoxId, "menubox");
 
 	/// <summary>The authored option cap — the guest refuses a seventh.</summary>
 	public const int MaxOptions = 6;
@@ -31,7 +35,7 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 	/// <summary>The remaster's readability bump on the option labels — see FromPatternBook.</summary>
 	private const float ChoiceTextScale = 2f;
 
-	public const string GroupName = "Group";
+	public static string GroupName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.MenuBoxId, 0, "Group");
 
 	public Engine_UiTheme? Theme { get; set; }
 
@@ -61,8 +65,8 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 	public static Joins? Resolve(Engine_UiScreen screen)
 	{
 		UiNode? group = Engine_UiStatedPanel.FindByName(screen.Roots, GroupName);
-		UiNode? choices = Engine_UiStatedPanel.Child(group, "Choices");
-		UiNode? title = Engine_UiStatedPanel.Child(group, "Title");
+		UiNode? choices = Engine_UiStatedPanel.Child(group, P("Choices"));
+		UiNode? title = Engine_UiStatedPanel.Child(group, P("Title"));
 		if (choices is null || title is null)
 		{
 			return null;
@@ -73,11 +77,11 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 		{
 			// The shipped file frames the label (`Choice1/Frame/Choice1`), as the art clone
 			// already knows; the bare form is kept for a file without the frame.
-			UiNode? button = Engine_UiStatedPanel.Child(choices, $"Multiplayer_Button{i + 1}");
-			UiNode? choice = Engine_UiStatedPanel.Child(button, "Choice1");
+			UiNode? button = Engine_UiStatedPanel.Child(choices, P("Multiplayer_Button") + $"{i + 1}");
+			UiNode? choice = Engine_UiStatedPanel.Child(button, P("Choice1"));
 			UiNode? label =
-				Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(choice, "Frame"), "Choice1") ??
-				Engine_UiStatedPanel.Child(choice, "Choice1");
+				Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(choice, P("Frame")), P("Choice1")) ??
+				Engine_UiStatedPanel.Child(choice, P("Choice1"));
 			if (button is null || label is null)
 			{
 				return null;
@@ -88,8 +92,8 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 		}
 
 		joins.Cancel = Engine_UiStatedPanel.Child(
-			Engine_UiStatedPanel.Child(group, "OK/CANCEL"), "Negative")?.Ordinal ?? -1;
-		if (Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(group, "GamerTag"), "gamertag")
+			Engine_UiStatedPanel.Child(group, P("OK/CANCEL")), P("Negative"))?.Ordinal ?? -1;
+		if (Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(group, P("GamerTag")), P("gamertag"))
 			is { } card)
 		{
 			joins.GamerTag = card.Ordinal;
@@ -163,20 +167,20 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 
 		// The player card is cloned with the group and shown only while the guest raises it —
 		// see Joins.GamerTag.
-		if (_group.GetNodeOrNull<Node3D>("GamerTag") is { } card)
+		if (_group.GetNodeOrNull<Node3D>(P("GamerTag")) is { } card)
 		{
 			card.Visible = gamerTag;
 		}
 
 		if (!string.IsNullOrEmpty(title) &&
-			_group.GetNodeOrNull<MeshInstance3D>("Title") is { } titleNode)
+			_group.GetNodeOrNull<MeshInstance3D>(P("Title")) is { } titleNode)
 		{
 			LastReport = Theme.SetMeshText(titleNode, title);
 		}
 
 		for (int i = 0; i < MaxOptions; ++i)
 		{
-			if (_group.GetNodeOrNull<Node3D>($"Choices/Multiplayer_Button{i + 1}") is not { } button)
+			if (_group.GetNodeOrNull<Node3D>(P("Choices/Multiplayer_Button") + $"{i + 1}") is not { } button)
 			{
 				continue;
 			}
@@ -189,8 +193,8 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 			}
 
 			if (labels[i] is { Length: > 0 } label &&
-				(button.GetNodeOrNull<MeshInstance3D>("Choice1/Frame/Choice1") ??
-				 button.GetNodeOrNull<MeshInstance3D>("Choice1/Choice1")) is { } labelNode)
+				(button.GetNodeOrNull<MeshInstance3D>(P("Choice1/Frame/Choice1")) ??
+				 button.GetNodeOrNull<MeshInstance3D>(P("Choice1/Choice1"))) is { } labelNode)
 			{
 				Theme.SetMeshText(labelNode, label);
 			}
@@ -198,7 +202,7 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 			// THE SELECTION RIM — `Choice1/RimSelect` and its `sliderframe` quad, authored OFF on
 			// every row and lit by the guest on the selected one. The cursor is ours (the guest's
 			// follows through MenuBoxSelect), so the rim follows the stated selection.
-			if (button.GetNodeOrNull<Node3D>("Choice1/RimSelect") is { } rim)
+			if (button.GetNodeOrNull<Node3D>(P("Choice1/RimSelect")) is { } rim)
 			{
 				rim.Visible = i == selected;
 			}
@@ -210,7 +214,7 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 				button, !enabled ? 0.35f : i == selected ? 1f : 0.7f);
 		}
 
-		if (_group.GetNodeOrNull<Node3D>("OK/CANCEL/Negative") is { } cancel)
+		if (_group.GetNodeOrNull<Node3D>(P("OK/CANCEL/Negative")) is { } cancel)
 		{
 			cancel.Visible = cancelable;
 		}
@@ -235,12 +239,16 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 /// </remarks>
 public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 {
+	/// <summary>An element path inside this box's art, through its template record — the
+	/// built-in path is the key, so a mod's art re-points it in `boxPaths`.</summary>
+	private static string P(string path) => Engine_UiTemplates.BoxPath(Engine_UiTemplates.MessageBoxId, path);
+
 	/// <summary>The bank entry name of the guest's presentation.</summary>
-	public const string Presentation = "messageboxmulti";
+	public static string Presentation => Engine_UiTemplates.BoxPresentation(Engine_UiTemplates.MessageBoxId, "messageboxmulti");
 
 	/// <summary>Authored group names, as `messageboxmulti.bgf` names them.</summary>
-	public const string PaperName = "paper";
-	public const string DimName = "Background";
+	public static string PaperName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.MessageBoxId, 1, "paper");
+	public static string DimName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.MessageBoxId, 0, "Background");
 
 	/// <summary>The authored text-size variants, smallest first.</summary>
 	public const int TextSizes = 6;
@@ -265,8 +273,8 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 	public static Joins? Resolve(Engine_UiScreen screen)
 	{
 		UiNode? paper = Engine_UiStatedPanel.FindByName(screen.Roots, PaperName);
-		UiNode? box = Engine_UiStatedPanel.Child(paper, "MessageBox");
-		UiNode? paperBox = Engine_UiStatedPanel.Child(paper, "paperbox");
+		UiNode? box = Engine_UiStatedPanel.Child(paper, P("MessageBox"));
+		UiNode? paperBox = Engine_UiStatedPanel.Child(paper, P("paperbox"));
 		if (paper is null || box is null || paperBox is null)
 		{
 			return null;
@@ -275,7 +283,7 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 		var joins = new Joins { PaperBox = paperBox.Ordinal, Paper = paper.Ordinal };
 		for (int i = 0; i < TextSizes; ++i)
 		{
-			UiNode? text = Engine_UiStatedPanel.Child(box, $"MessageText{i + 1}");
+			UiNode? text = Engine_UiStatedPanel.Child(box, P("MessageText") + $"{i + 1}");
 			if (text is null)
 			{
 				return null;
@@ -308,6 +316,7 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 			}
 
 			clone.Transform = Engine_UiTheme.CanvasTransform(source);
+			Engine_UiStatedPanel.CoverWindow(clone, piece);
 			panel.AddChild(clone);
 			if (piece == PaperName)
 			{
@@ -321,7 +330,7 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 		panel.LastReport = $"{cloned}/2 authored groups cloned";
 
 		// The X row is the unowned marketplace box's; see the class remarks.
-		if (panel._paper?.GetNodeOrNull<Node3D>("MessageBox/Action") is { } action)
+		if (panel._paper?.GetNodeOrNull<Node3D>(P("MessageBox/Action")) is { } action)
 		{
 			action.Visible = false;
 		}
@@ -330,10 +339,17 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 	}
 
 	/// <summary>
-	/// Shows the guest's stated text on the guest's chosen size variant, at the guest's
-	/// stated paper scale (null keeps the authored one).
+	/// Shows the guest's stated text on the guest's chosen size variant, with the paper put on
+	/// that size's slide.
 	/// </summary>
-	public void ShowStated(string body, int textIndex, Vector2? paperScale)
+	/// <remarks>
+	/// THE SIZE IS THE WHOLE SLIDE, not a scale. `sub_823CEFA8` states the size with one
+	/// slide switch (`sub_82426BA8(paper, i)`) and writes nothing else; each `typeN` scales
+	/// `paperbox`, switches the nine-slice's `middle` pieces on for sizes 4..6, re-seats its
+	/// rows and moves the `Affirmative` prompt. Taking the scale alone drew a size-4 notice
+	/// on the two-column paper with the prompt in the middle of the text.
+	/// </remarks>
+	public void ShowStated(string body, int textIndex, BgfSlide? size)
 	{
 		if (_paper is null || Theme is null)
 		{
@@ -341,27 +357,111 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 			return;
 		}
 
+		if (size is { } slide)
+		{
+			ApplySlide(slide);
+		}
+
 		for (int i = 0; i < TextSizes; ++i)
 		{
-			if (_paper.GetNodeOrNull<Node3D>($"MessageBox/MessageText{i + 1}") is { } text)
+			if (_paper.GetNodeOrNull<Node3D>(P("MessageBox/MessageText") + $"{i + 1}") is { } text)
 			{
 				text.Visible = i == textIndex;
 			}
 		}
 
-		if (_paper.GetNodeOrNull<MeshInstance3D>($"MessageBox/MessageText{textIndex + 1}") is { } node)
+		// The X row is the unowned marketplace box's; see the class remarks.
+		if (_paper.GetNodeOrNull<Node3D>(P("MessageBox/Action")) is { } action)
+		{
+			action.Visible = false;
+		}
+
+		if (_paper.GetNodeOrNull<MeshInstance3D>(P("MessageBox/MessageText") + $"{textIndex + 1}") is { } node)
 		{
 			LastReport = Theme.SetMeshText(node, body);
 		}
 
-		if (paperScale is { } scale && _paper.GetNodeOrNull<Node3D>("paperbox") is { } paperBox)
+		Visible = true;
+	}
+
+	private System.Collections.Generic.Dictionary<int, Node3D>? _byOrdinal;
+
+	/// <summary>
+	/// States one slide's entries on the clone: each named element's switch, and its
+	/// position / scale / rotation.z writes, through the pivot-keeping writers.
+	/// </summary>
+	private void ApplySlide(BgfSlide slide)
+	{
+		if (_byOrdinal is null)
 		{
-			// THROUGH THE BUILDER'S WRITER, not `Scale =`: the origin folds in the pivot against
-			// the basis, and a bare scale write drifts this slice sideways. See SetLiveScale.
-			Engine_UiSceneBuilder.SetLiveScale(paperBox, new Vector3(scale.X, scale.Y, 1f));
+			_byOrdinal = new System.Collections.Generic.Dictionary<int, Node3D>();
+			Index(_paper!);
+
+			void Index(Node node)
+			{
+				if (node is Node3D element && element.HasMeta("ordinal"))
+				{
+					_byOrdinal![(int)element.GetMeta("ordinal")] = element;
+				}
+
+				foreach (Node child in node.GetChildren())
+				{
+					Index(child);
+				}
+			}
 		}
 
-		Visible = true;
+		uint positionX = Refii.Core.Engine_GameHash.AttributeId("position.x");
+		uint positionY = Refii.Core.Engine_GameHash.AttributeId("position.y");
+		uint scaleX = Refii.Core.Engine_GameHash.AttributeId("scale.x");
+		uint scaleY = Refii.Core.Engine_GameHash.AttributeId("scale.y");
+		uint rotationZ = Refii.Core.Engine_GameHash.AttributeId("rotation.z");
+
+		foreach (BgfSlideEntry entry in slide.Entries)
+		{
+			if (!_byOrdinal.TryGetValue(entry.ElementOrdinal, out Node3D? node) || node == _paper)
+			{
+				continue;
+			}
+
+			node.Visible = entry.Active;
+			if (entry.Commands is null)
+			{
+				continue;
+			}
+
+			float? x = null, y = null, sx = null, sy = null, rz = null;
+			foreach (BgfAttribute command in entry.Commands)
+			{
+				if (command.Type != BgfValueType.Float)
+				{
+					continue;
+				}
+
+				if (command.Id == positionX) x = command.AsFloat();
+				else if (command.Id == positionY) y = command.AsFloat();
+				else if (command.Id == scaleX) sx = command.AsFloat();
+				else if (command.Id == scaleY) sy = command.AsFloat();
+				else if (command.Id == rotationZ) rz = command.AsFloat();
+			}
+
+			if (rz is { } turn)
+			{
+				Engine_UiSceneBuilder.SetLiveRotationZ(node, turn);
+			}
+
+			if (sx is > 0f && sy is > 0f)
+			{
+				Engine_UiSceneBuilder.SetLiveScale(node, new Vector3(sx.Value, sy.Value, 1f));
+			}
+
+			if (x is not null || y is not null)
+			{
+				Vector3 offset = node.Transform.Basis * Engine_UiSceneBuilder.PivotOf(node);
+				Vector3 stated = node.Position + offset;
+				node.Position = new Vector3(x ?? stated.X, y ?? stated.Y, stated.Z) - offset;
+			}
+		}
 	}
 
 }
@@ -385,13 +485,17 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 /// </remarks>
 public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 {
+	/// <summary>An element path inside this box's art, through its template record — the
+	/// built-in path is the key, so a mod's art re-points it in `boxPaths`.</summary>
+	private static string P(string path) => Engine_UiTemplates.BoxPath(Engine_UiTemplates.QueryBoxId, path);
+
 	/// <summary>The bank entry name of the guest's presentation.</summary>
-	public const string Presentation = "querybox";
+	public static string Presentation => Engine_UiTemplates.BoxPresentation(Engine_UiTemplates.QueryBoxId, "querybox");
 
 	/// <summary>Authored group names, as `querybox.bgf` names them.</summary>
-	public const string BoxName = "QueryBox";
-	public const string DimName = "Background";
-	public const string PaperName = "Paper";
+	public static string BoxName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.QueryBoxId, 0, "QueryBox");
+	public static string DimName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.QueryBoxId, 1, "Background");
+	public static string PaperName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.QueryBoxId, 2, "Paper");
 
 	/// <summary>Fonts and strings for the re-meshed text.</summary>
 	public Engine_UiTheme? Theme { get; set; }
@@ -410,9 +514,9 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 	/// </summary>
 	public static readonly (string Row, string First, string Second)[] ChoiceRows =
 	{
-		("Choices", "Affirmative", "Negative"),
-		("XAChoices", "EquipAndContinue", "Continue"),
-		("ReloadChoices", "Reload", "Cancel"),
+		(P("Choices"), P("Affirmative"), P("Negative")),
+		(P("XAChoices"), P("EquipAndContinue"), P("Continue")),
+		(P("ReloadChoices"), P("Reload"), P("Cancel")),
 	};
 
 	/// <summary>One row's document ordinals: the row root and its two label texts.</summary>
@@ -433,7 +537,7 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 	public static Joins? Resolve(Engine_UiScreen screen)
 	{
 		UiNode? box = Engine_UiStatedPanel.FindByName(screen.Roots, BoxName);
-		UiNode? body = Engine_UiStatedPanel.Child(box, "Text");
+		UiNode? body = Engine_UiStatedPanel.Child(box, P("Text"));
 		if (box is null || body is null)
 		{
 			return null;
@@ -443,8 +547,8 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 		foreach ((string rowName, string first, string second) in ChoiceRows)
 		{
 			UiNode? row = Engine_UiStatedPanel.Child(box, rowName);
-			UiNode? firstLabel = Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(row, first), "Text");
-			UiNode? secondLabel = Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(row, second), "Text");
+			UiNode? firstLabel = Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(row, first), P("Text"));
+			UiNode? secondLabel = Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(row, second), P("Text"));
 			if (row is not null && firstLabel is not null && secondLabel is not null)
 			{
 				joins.Rows.Add(new RowJoin(
@@ -484,6 +588,7 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 			// Art() zeroes the clone's root, and this screen authors its depth ordering across the
 			// group roots, so the authored placement is restored.
 			clone.Transform = Engine_UiTheme.CanvasTransform(source);
+			Engine_UiStatedPanel.CoverWindow(clone, piece);
 			panel.AddChild(clone);
 			if (piece == BoxName)
 			{
@@ -498,9 +603,9 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 
 		// The A/B row is the pause family's; the alternates stay down until a box using them is
 		// owned.
-		panel.SetRow("Choices", true);
-		panel.SetRow("XAChoices", false);
-		panel.SetRow("ReloadChoices", false);
+		panel.SetRow(P("Choices"), true);
+		panel.SetRow(P("XAChoices"), false);
+		panel.SetRow(P("ReloadChoices"), false);
 
 		return panel;
 	}
@@ -549,10 +654,10 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 		Visible = true;
 	}
 
-	private MeshInstance3D? BodyNode() => _box?.GetNodeOrNull<MeshInstance3D>("Text");
+	private MeshInstance3D? BodyNode() => _box?.GetNodeOrNull<MeshInstance3D>(P("Text"));
 
 	private MeshInstance3D? LabelNode(string row, string choice) =>
-		_box?.GetNodeOrNull<MeshInstance3D>($"{row}/{choice}/Text");
+		_box?.GetNodeOrNull<MeshInstance3D>($"{row}/{choice}/" + P("Text"));
 
 	/// <summary>
 	/// Re-meshes one text node, applying the script's theme colour first: `text_colour` is what
@@ -598,13 +703,17 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 /// </remarks>
 public partial class Engine_UiNumericBox : Node3D, IUiSurfaceView
 {
+	/// <summary>An element path inside this box's art, through its template record — the
+	/// built-in path is the key, so a mod's art re-points it in `boxPaths`.</summary>
+	private static string P(string path) => Engine_UiTemplates.BoxPath(Engine_UiTemplates.NumericBoxId, path);
+
 	/// <summary>The bank entry name of the guest's presentation.</summary>
-	public const string Presentation = "numericadjusterbox";
+	public static string Presentation => Engine_UiTemplates.BoxPresentation(Engine_UiTemplates.NumericBoxId, "numericadjusterbox");
 
 	/// <summary>Authored group names, as `numericadjusterbox.bgf` names them.</summary>
-	public const string BoxName = "QueryBox";
-	public const string DimName = "Background";
-	public const string PaperName = "Paper";
+	public static string BoxName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.NumericBoxId, 0, "QueryBox");
+	public static string DimName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.NumericBoxId, 1, "Background");
+	public static string PaperName => Engine_UiTemplates.BoxUnit(Engine_UiTemplates.NumericBoxId, 2, "Paper");
 
 	public Engine_UiTheme? Theme { get; set; }
 
@@ -626,12 +735,12 @@ public partial class Engine_UiNumericBox : Node3D, IUiSurfaceView
 	public static Joins? Resolve(Engine_UiScreen screen)
 	{
 		UiNode? box = Engine_UiStatedPanel.FindByName(screen.Roots, BoxName);
-		UiNode? body = Engine_UiStatedPanel.Child(box, "Text");
-		UiNode? widget = Engine_UiStatedPanel.Child(box, "PriceWidget");
-		UiNode? value = Engine_UiStatedPanel.Child(widget, "Text");
-		UiNode? arrows = Engine_UiStatedPanel.Child(widget, "Arrows");
-		UiNode? up = Engine_UiStatedPanel.Child(arrows, "up");
-		UiNode? down = Engine_UiStatedPanel.Child(arrows, "down");
+		UiNode? body = Engine_UiStatedPanel.Child(box, P("Text"));
+		UiNode? widget = Engine_UiStatedPanel.Child(box, P("PriceWidget"));
+		UiNode? value = Engine_UiStatedPanel.Child(widget, P("Text"));
+		UiNode? arrows = Engine_UiStatedPanel.Child(widget, P("Arrows"));
+		UiNode? up = Engine_UiStatedPanel.Child(arrows, P("up"));
+		UiNode? down = Engine_UiStatedPanel.Child(arrows, P("down"));
 
 		if (body is null || value is null || up is null || down is null)
 		{
@@ -668,6 +777,7 @@ public partial class Engine_UiNumericBox : Node3D, IUiSurfaceView
 			}
 
 			clone.Transform = Engine_UiTheme.CanvasTransform(source);
+			Engine_UiStatedPanel.CoverWindow(clone, piece);
 			panel.AddChild(clone);
 			if (piece == BoxName)
 			{
@@ -691,12 +801,12 @@ public partial class Engine_UiNumericBox : Node3D, IUiSurfaceView
 			return;
 		}
 
-		if (body.Length != 0 && _box.GetNodeOrNull<MeshInstance3D>("Text") is { } bodyNode)
+		if (body.Length != 0 && _box.GetNodeOrNull<MeshInstance3D>(P("Text")) is { } bodyNode)
 		{
 			LastReport = Theme.SetMeshText(bodyNode, body);
 		}
 
-		if (_box.GetNodeOrNull<MeshInstance3D>("PriceWidget/Text") is { } valueNode)
+		if (_box.GetNodeOrNull<MeshInstance3D>(P("PriceWidget/Text")) is { } valueNode)
 		{
 			Theme.SetMeshText(valueNode, value);
 		}
@@ -709,7 +819,7 @@ public partial class Engine_UiNumericBox : Node3D, IUiSurfaceView
 
 	private void SetArrow(string arrow, bool enabled)
 	{
-		if (_box?.GetNodeOrNull<Node3D>($"PriceWidget/Arrows/{arrow}") is { } node)
+		if (_box?.GetNodeOrNull<Node3D>(P("PriceWidget/Arrows/") + $"{arrow}") is { } node)
 		{
 			node.Visible = enabled;
 		}
@@ -732,11 +842,15 @@ public partial class Engine_UiNumericBox : Node3D, IUiSurfaceView
 /// </remarks>
 public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 {
-	/// <summary>The bank entry name of the guest's presentation.</summary>
-	public const string Presentation = "receiveitemsscreen";
+	/// <summary>An element path inside this box's art, through its template record — the
+	/// built-in path is the key, so a mod's art re-points it in `boxPaths`.</summary>
+	private static string P(string path) => Engine_UiTemplates.BoxPath(8u, path);
 
-	public const string FrontName = "Foreground";
-	public const string BackName = "CardBack";
+	/// <summary>The bank entry name of the guest's presentation.</summary>
+	public static string Presentation => Engine_UiTemplates.BoxPresentation(8u, "receiveitemsscreen");
+
+	public static string FrontName => Engine_UiTemplates.BoxUnit(8u, 0, "Foreground");
+	public static string BackName => Engine_UiTemplates.BoxUnit(8u, 1, "CardBack");
 
 	public Engine_UiTheme? Theme { get; set; }
 
@@ -792,22 +906,22 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 	{
 		UiNode? front = Engine_UiStatedPanel.FindByName(screen.Roots, FrontName);
 		UiNode? back = Engine_UiStatedPanel.FindByName(screen.Roots, BackName);
-		UiNode? nameAndIcon = Engine_UiStatedPanel.Child(front, "NameAndIcon");
-		UiNode? title = Engine_UiStatedPanel.Child(nameAndIcon, "Title");
-		UiNode? name = Engine_UiStatedPanel.Child(nameAndIcon, "Text");
-		UiNode? icon = Engine_UiStatedPanel.Child(nameAndIcon, "IconGraphic");
+		UiNode? nameAndIcon = Engine_UiStatedPanel.Child(front, P("NameAndIcon"));
+		UiNode? title = Engine_UiStatedPanel.Child(nameAndIcon, P("Title"));
+		UiNode? name = Engine_UiStatedPanel.Child(nameAndIcon, P("Text"));
+		UiNode? icon = Engine_UiStatedPanel.Child(nameAndIcon, P("IconGraphic"));
 		UiNode? backText = back is null
 			? null
-			: Engine_UiStatedPanel.FindByName(back.Children, "Text");
+			: Engine_UiStatedPanel.FindByName(back.Children, P("Text"));
 
 		if (front is null || back is null || title is null || name is null || icon is null)
 		{
 			return null;
 		}
 
-		UiNode? frontButtons = Engine_UiStatedPanel.Child(front, "Buttons");
-		UiNode? backButtons = Engine_UiStatedPanel.Child(back, "Buttons");
-		UiNode? prompts = Engine_UiStatedPanel.Child(frontButtons, "Buttons");
+		UiNode? frontButtons = Engine_UiStatedPanel.Child(front, P("Buttons"));
+		UiNode? backButtons = Engine_UiStatedPanel.Child(back, P("Buttons"));
+		UiNode? prompts = Engine_UiStatedPanel.Child(frontButtons, P("Buttons"));
 		int[] labels = { -1, -1, -1 };
 		for (int i = 0; i < Prompts.Length; ++i)
 		{
@@ -824,7 +938,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 		// `position ± 50·scale`, the builder's own mask rule; `Mask` sits at Layer level under
 		// identity parents, so its own numbers are already canvas.
 		Rect2? clip = null;
-		if (Engine_UiStatedPanel.FindByName(screen.Roots, "Mask") is { } mask)
+		if (Engine_UiStatedPanel.FindByName(screen.Roots, P("Mask")) is { } mask)
 		{
 			float halfW = 0.5f * Engine_UiSceneBuilder.QuadBaseSize * Mathf.Abs(mask.ScaleX);
 			float halfH = 0.5f * Engine_UiSceneBuilder.QuadBaseSize * Mathf.Abs(mask.ScaleY);
@@ -869,6 +983,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 			}
 
 			clone.Transform = Engine_UiTheme.CanvasTransform(source);
+			Engine_UiStatedPanel.CoverWindow(clone, piece);
 			panel.AddChild(clone);
 			if (piece == FrontName)
 			{
@@ -885,7 +1000,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 
 		// The icon's material is privatised once: the clone shares the pattern book's, and swapping
 		// a texture on a shared material would restyle the book.
-		if (panel._front?.GetNodeOrNull<MeshInstance3D>("NameAndIcon/IconGraphic") is { } iconMesh &&
+		if (panel._front?.GetNodeOrNull<MeshInstance3D>(P("NameAndIcon/IconGraphic")) is { } iconMesh &&
 			iconMesh.MaterialOverride is ShaderMaterial shared)
 		{
 			panel._iconMaterial = (ShaderMaterial)shared.Duplicate();
@@ -915,7 +1030,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 		}
 
 		if (!string.IsNullOrEmpty(title) &&
-			_front.GetNodeOrNull<MeshInstance3D>("NameAndIcon/Title") is { } titleNode)
+			_front.GetNodeOrNull<MeshInstance3D>(P("NameAndIcon/Title")) is { } titleNode)
 		{
 			LastReport = Theme.SetMeshText(titleNode, title);
 		}
@@ -923,7 +1038,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 		// WRITTEN EVEN WHEN EMPTY. `sub_82538910` writes this element on every refresh, and
 		// for most items it writes nothing — leaving the file's own placeholder, the word
 		// "Text", standing under the ring.
-		if (_front.GetNodeOrNull<MeshInstance3D>("NameAndIcon/Text") is { } nameNode)
+		if (_front.GetNodeOrNull<MeshInstance3D>(P("NameAndIcon/Text")) is { } nameNode)
 		{
 			Theme.SetMeshText(nameNode, name ?? string.Empty);
 		}
@@ -992,7 +1107,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 
 			for (int i = 0; i < Prompts.Length && i < labels.Length; ++i)
 			{
-				if (side.GetNodeOrNull<Node3D>($"Buttons/Buttons/{Prompts[i]}") is not { } prompt)
+				if (side.GetNodeOrNull<Node3D>(P("Buttons/Buttons/") + $"{Prompts[i]}") is not { } prompt)
 				{
 					continue;
 				}
@@ -1028,7 +1143,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 				Engine_UiSceneBuilder.RestateOpacity(_back, 1f);
 			}
 
-			if (_back.GetNodeOrNull<Node3D>("PaperBackground") is { } paper)
+			if (_back.GetNodeOrNull<Node3D>(P("PaperBackground")) is { } paper)
 			{
 				paper.Visible = true;
 			}
@@ -1079,7 +1194,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 		_scroll = Mathf.Clamp(_scroll - (stick * ScrollUnitsPerSecond * (float)delta), 0f, range);
 		text.Position = _backTextRest + (Vector3.Up * (_scroll / unitsPerLocal));
 
-		if (_back.GetNodeOrNull<Node3D>("Group") is not { } group)
+		if (_back.GetNodeOrNull<Node3D>(P("Group")) is not { } group)
 		{
 			return;
 		}
@@ -1101,8 +1216,8 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 		}
 
 		float fraction = _scroll / range;
-		var up = group.GetNodeOrNull<Node3D>("Scrollbar/UpArrow");
-		var down = group.GetNodeOrNull<Node3D>("Scrollbar/DownArrow");
+		var up = group.GetNodeOrNull<Node3D>(P("Scrollbar/UpArrow"));
+		var down = group.GetNodeOrNull<Node3D>(P("Scrollbar/DownArrow"));
 		if (up is null || down is null)
 		{
 			return;
@@ -1110,7 +1225,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 
 		SetLimit(up, fraction > 0.01f, ref _upLit);
 		SetLimit(down, fraction < 0.99f, ref _downLit);
-		if (group.GetNodeOrNull<Node3D>("Scrollbar/Icon") is { } thumb)
+		if (group.GetNodeOrNull<Node3D>(P("Scrollbar/Icon")) is { } thumb)
 		{
 			Vector3 at = thumb.Position;
 			thumb.Position = new Vector3(
@@ -1171,6 +1286,18 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 /// </remarks>
 public partial class Engine_UiStatedPanel : Node3D, IUiSurfaceView
 {
+	/// <summary>
+	/// A box's `Background` dim is a flat tint authored 2000 units wide — short of a 32:9
+	/// window. Cloned oversized, like a book's backdrop, so it covers any aspect.
+	/// </summary>
+	public static void CoverWindow(Node3D clone, string piece)
+	{
+		if (piece == Engine_UiMessageBox.DimName && clone is MeshInstance3D)
+		{
+			clone.Scale *= new Vector3(4f, 4f, 1f);
+		}
+	}
+
 	/// <summary>
 	/// One followed text: the '/'-separated authored path from a cloned group's root to the node,
 	/// and the theme colour the script writes onto it — `displaybox.dis main.6 pc3..56` writes
@@ -1271,6 +1398,7 @@ public partial class Engine_UiStatedPanel : Node3D, IUiSurfaceView
 			}
 
 			clone.Transform = Engine_UiTheme.CanvasTransform(source);
+			Engine_UiStatedPanel.CoverWindow(clone, piece);
 			panel.AddChild(clone);
 			panel._groups[piece] = clone;
 			++cloned;

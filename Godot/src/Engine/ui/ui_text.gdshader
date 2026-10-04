@@ -11,6 +11,9 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_never;
 
 uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable;
 
+// Texture pixels per SHIPPED atlas texel — the atlas is supersampled at load.
+uniform float supersample = 1.0;
+
 uniform vec4 colour = vec4(1.0);
 
 // Same contract as ui_quad.gdshader: min.xy, max.xy in the laid-out UI space.
@@ -38,6 +41,17 @@ void fragment() {
 	}
 
 	vec4 texel = texture(atlas, UV);
+
+	// LEGIBLE AT ANY SIZE. The font is a 720p coverage mask whose edge is about one shipped
+	// texel wide; drawn at 2x or 3x that edge is a 2-3 pixel blur. `magnified` is screen pixels
+	// per shipped texel, and the coverage is re-contrasted about its half point by that
+	// factor, so the edge is one SCREEN pixel wide whatever the display. At or below 1:1 it
+	// is the shipped coverage untouched.
+	vec2 shipped = UV * vec2(textureSize(atlas, 0)) / supersample;
+	float magnified = 1.0 / max(max(fwidth(shipped.x), fwidth(shipped.y)), 1e-5);
+	if (magnified > 1.0) {
+		texel.a = clamp((texel.a - 0.5) * min(magnified, 8.0) + 0.5, 0.0, 1.0);
+	}
 
 	// PER-RUN TINT RIDES THE VERTEX COLOUR, as a multiplier over the element's own. Inline
 	// `<b>`/`<s1>`..`<s4>` colour the run they enclose, and they can appear several times in

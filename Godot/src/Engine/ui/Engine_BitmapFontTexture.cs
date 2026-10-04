@@ -66,6 +66,15 @@ public static class Engine_BitmapFontTexture
 	/// conversion once here rather than in the shader keeps <c>ui_text.gdshader</c> to a
 	/// single coverage read, and keeps the atlas usable by anything that samples it plainly.
 	/// </summary>
+	/// <summary>Meta on the atlas texture: texture pixels per shipped atlas texel.</summary>
+	public static readonly StringName SupersampleMeta = "supersample";
+
+	/// <summary>Texture pixels per shipped atlas texel for an atlas built here; 1 otherwise.</summary>
+	public static float SupersampleOf(Texture2D? atlas) =>
+		atlas is not null && atlas.HasMeta(SupersampleMeta)
+			? (float)atlas.GetMeta(SupersampleMeta).AsDouble()
+			: 1f;
+
 	public static ImageTexture CreateAtlasTextureDecompressed(Engine_BitmapFont font)
 	{
 		Image image = Image.CreateFromData(
@@ -83,7 +92,18 @@ public static class Engine_BitmapFontTexture
 			for (int x = 0; x < width; x++)
 				mask.SetPixel(x, y, new Color(1f, 1f, 1f, image.GetPixel(x, y).R));
 
-		return ImageTexture.CreateFromImage(mask);
+		// SUPERSAMPLED, WITH MIPS. The shipped atlas is a 720p font; the UI's own art is
+		// enhanced x4 and the text was the one thing still magnified raw — 2x at 1440p, 3x at
+		// 2160p. A cubic upsample gives the coverage smooth contours for `ui_text.gdshader`
+		// to re-sharpen at the display's own pixel size; the mips are what its
+		// `filter_linear_mipmap` samples when a label draws smaller than authored.
+		int factor = Mathf.Max(width, height) * 4 <= 4096 ? 4 : 2;
+		mask.Resize(width * factor, height * factor, Image.Interpolation.Cubic);
+		mask.GenerateMipmaps();
+
+		ImageTexture texture = ImageTexture.CreateFromImage(mask);
+		texture.SetMeta(SupersampleMeta, factor);
+		return texture;
 	}
 
 	/// <summary>

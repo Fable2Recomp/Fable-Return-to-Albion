@@ -729,6 +729,7 @@ public sealed class Engine_UiSceneBuilder
 		if (atlas is not null)
 		{
 			material.SetShaderParameter("atlas", atlas);
+			material.SetShaderParameter("supersample", Engine_BitmapFontTexture.SupersampleOf(atlas));
 		}
 
 		return material;
@@ -1305,6 +1306,17 @@ public sealed class Engine_UiSceneBuilder
 	/// co-op screen's frames stop at +630 / −672) anchors its outer pieces to this edge.
 	/// </summary>
 	public static float VisibleHalfWidth { get; private set; } = DesignWidth / 2f / PixelsPerUnit;
+
+	/// <summary>Half of the 16:9 canvas, in canvas units — where the books' covers end.</summary>
+	public const float DesignHalfWidth = DesignWidth / 2f / PixelsPerUnit;
+
+	/// <summary>
+	/// How far each half of a two-page book rides outward on a window wider than 16:9, in
+	/// canvas units; 0 at 16:9 and narrower. The books are authored to the 16:9 edges, so a
+	/// wider window opens the book — left half to the left edge, right half to the right —
+	/// over the backdrop, rather than leaving it centred with bare sides.
+	/// </summary>
+	public static float WideShift => Mathf.Max(0f, VisibleHalfWidth - DesignHalfWidth);
 
 	/// <summary>
 	/// The narrowest canvas the game authors — 960x720, the 4:3 layout 31 of the 36 shipped

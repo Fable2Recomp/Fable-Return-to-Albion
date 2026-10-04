@@ -380,16 +380,27 @@ public sealed class Engine_UiScreenMenu
 		{
 			foreach (Engine_UiMenuModel.Row row in stated)
 			{
+				// Re-borrowed whenever the guest's differs: the ticket is per POPULATION, so one
+				// latched at the first borrow is dead after the guest repopulates.
 				if (row.Name.Length == 0 || Menu.Find(row.Name) is not { Sourced: true } sourced ||
-					sourced.Committable)
+					(sourced.Committable && !sourced.BorrowedIdentity))
+				{
+					continue;
+				}
+
+				int low = (int)(row.Id & 0xFFFFu);
+				int high = (int)((row.Id >> 16) & 0xFFFFu);
+				if (sourced.BorrowedIdentity && sourced.EventType == row.EventType &&
+					sourced.IdLow == low && sourced.IdHigh == high)
 				{
 					continue;
 				}
 
 				sourced.EventType = row.EventType;
-				sourced.IdLow = (int)(row.Id & 0xFFFFu);
-				sourced.IdHigh = (int)((row.Id >> 16) & 0xFFFFu);
+				sourced.IdLow = low;
+				sourced.IdHigh = high;
 				sourced.Committable = true;
+				sourced.BorrowedIdentity = true;
 				moved = true;
 			}
 		}
@@ -1776,6 +1787,13 @@ public sealed class Engine_UiScreenMenu
 			//
 			// The identity push stays as the fallback for rows that genuinely have no action of
 			// their own, which is most of them.
+			// A ghosted leaf is silent here as below — `SelectMenuItem` returns before pushing.
+			if (row.Ghosted)
+			{
+				GD.Print($"[screen-menu] '{label}' is GHOSTED — no commit");
+				return true;
+			}
+
 			if (!discard && RunHostAction(row, label))
 			{
 				return true;

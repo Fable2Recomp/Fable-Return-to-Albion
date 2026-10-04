@@ -228,7 +228,14 @@ public sealed class Engine_HudLayout
     /// the achievement toast's: the HUD is the game's own furniture and tracks the display.
     /// </summary>
     public static float Scale(Vector2 viewport) =>
-        viewport.Y <= 0f ? 1f : viewport.Y / ReferenceHeight;
+        viewport.Y <= 0f
+            ? 1f
+            // ONE canvas unit per design unit, the scale every other UI layer draws at: the
+            // extent is already in canvas units (`CanvasExtent` divides by the camera's
+            // px-per-unit), so the design height it is measured against is too. Capped at 1:
+            // narrower than 4:3 the camera pins the WIDTH, and the extra canvas height is
+            // slack, not a larger design box.
+            : Mathf.Min(viewport.Y * Engine_UiSceneBuilder.PixelsPerUnit / ReferenceHeight, 1f);
 
     /// <summary>The canvas box the design is authored in — the one the canvas camera fits.</summary>
     public const float DesignWidth = 1280f;

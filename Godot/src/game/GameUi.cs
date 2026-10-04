@@ -268,6 +268,12 @@ public partial class GameUi : Node
 		{
 			_hud.ElementActive = null;
 			_hud.Visible = false;
+			_hud.Values.Reset();
+		}
+
+		if (_worldIcons is not null && GodotObject.IsInstanceValid(_worldIcons))
+		{
+			_worldIcons.Clear();
 		}
 
 		_boxes.Clear();
@@ -1470,7 +1476,7 @@ public partial class GameUi : Node
 		// presentation root's plane. The anchor's Z is part of the same composed chain as its X
 		// and Y; see `_pauseAnchor`.
 		_pauseView.Position = new Vector3(
-			_pauseAnchor.X, _pauseAnchor.Y,
+			_pauseAnchor.X - Engine_UiTemplates.WideListShift(0), _pauseAnchor.Y,
 			built.Position.Z + _pauseAnchor.Z +
 				(Engine_UiTemplates.Screen(0)?.ListLift ?? 0f));
 
@@ -1837,6 +1843,8 @@ public partial class GameUi : Node
 			{
 				bladeBook.HostActive = Engine_UiDetailPages.Active(
 					state.ScreenId, _screenMenu?.Script.Highlighted);
+				bladeBook.HostPositions = Engine_UiDetailPages.Positions(
+					state.ScreenId, default, _screenMenu?.Script.Highlighted);
 			}
 
 			HoldScreenStick(0);
@@ -1914,6 +1922,8 @@ public partial class GameUi : Node
 			// and it was only ever set by the page path above — so for the ability book it ran
 			// afterwards with `default` vitals and blanked the experience it had just written.
 			_providerFilledThisFrame = true;
+			_providerFilledScreen = state.ScreenId;
+			abilityBook.ScrollKey = _screenMenu?.Script.Highlighted?.Name ?? string.Empty;
 			abilityBook.HostSlides = Engine_UiDetailPages.Slides(
 				state.ScreenId, _screenMenu?.Script.Highlighted, worldMap,
 				_screenMenu?.HostExpanded ?? false, vitals, hero);
@@ -2005,7 +2015,9 @@ public partial class GameUi : Node
 		{
 			Vector3 at = _screenMenuView.Position;
 			_screenMenuView.Position = new Vector3(
-				_screenMenuAnchor.X + (liveX - _screenMenuFollowAuthoredX), at.Y, at.Z);
+				_screenMenuAnchor.X + (liveX - _screenMenuFollowAuthoredX) -
+					Engine_UiTemplates.WideListShift(state.ScreenId),
+				at.Y, at.Z);
 		}
 
 		if (_screenMenuButtonsOrdinal >= 0 && drawn.Opacity is { } liveOpacity &&
@@ -2372,7 +2384,7 @@ public partial class GameUi : Node
 			// The pool's own plane — the cover overlaps the tabs by authored z; see the pause
 			// view's placement note.
 			_screenMenuView.Position = new Vector3(
-				_screenMenuAnchor.X, _screenMenuAnchor.Y,
+				_screenMenuAnchor.X - Engine_UiTemplates.WideListShift(screenId), _screenMenuAnchor.Y,
 				drawn.Node.Position.Z + ListLift(screenId));
 			return;
 		}
@@ -2469,7 +2481,7 @@ public partial class GameUi : Node
 		_presentation.AddChild(_screenMenuView);
 		_screenMenuView.Bind(_screenMenu.Menu);
 		_screenMenuView.Position = new Vector3(
-			_screenMenuAnchor.X, _screenMenuAnchor.Y,
+			_screenMenuAnchor.X - Engine_UiTemplates.WideListShift(screenId), _screenMenuAnchor.Y,
 			// THE ANCHOR'S Z IS READ AND REPORTED BUT NOT YET APPLIED HERE. The pause view is
 			// having the same correction proved on it first; these screens draw correctly today
 			// and moving both planes in one change would leave no way to tell which one the
@@ -2817,6 +2829,11 @@ public partial class GameUi : Node
 		}
 
 		_letterbox.Visible = up;
+		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
+		{
+			_hud.Suppressed = up;
+		}
+
 		foreach (Node3D? layer in new Node3D?[] { _hud, _worldIcons, _worldSprites, _reticule })
 		{
 			if (layer is not null && GodotObject.IsInstanceValid(layer))
@@ -4894,6 +4911,9 @@ public partial class GameUi : Node
 	/// <summary>Set when the page path above already filled a book this frame.</summary>
 	private bool _providerFilledThisFrame;
 
+	/// <summary>The screen whose book the list path last filled, 0 when none.</summary>
+	private uint _providerFilledScreen;
+
 	/// <summary>
 	/// EVERY OWNED SCREEN WITH A PROVIDER GETS ITS CHANNELS, not only one whose provider fills a
 	/// PAGE.
@@ -4917,7 +4937,20 @@ public partial class GameUi : Node
 		}
 
 		uint upId = OwnedScreenId();
+		if (upId != _providerFilledScreen)
+		{
+			_providerFilledScreen = 0u;
+		}
+
 		if (upId == 0u || !Engine_UiDetailPages.Owns(upId) || _books.Book(upId) is not { } book)
+		{
+			return;
+		}
+
+		// A screen the list path fills keeps its last stated channels while that path is
+		// starved (a modal or the spell blade over it): refilling here from `default` samples
+		// blanks the page behind the box.
+		if (upId == _providerFilledScreen)
 		{
 			return;
 		}
@@ -5613,6 +5646,15 @@ public partial class GameUi : Node
 		}
 
 
+		// The front-end list rides out with its book's left half — the template's wide layout.
+		if (_menuView is not null && GodotObject.IsInstanceValid(_menuView))
+		{
+			_menuView.Position = _menuView.Position with
+			{
+				X = _menuView.Anchor.X - Engine_UiTemplates.WideListShift(1010),
+			};
+		}
+
 		// The anchors resolve against the WINDOW, and it can change under us at any time.
 		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
 		{
@@ -5631,6 +5673,7 @@ public partial class GameUi : Node
 				float unitsPerPixel = extent.Y / window.Y;
 				_toastMount.Scale = new Vector3(unitsPerPixel, unitsPerPixel, 1f);
 				_toast.Canvas = window;
+				_toast.Held = !IsRevealed;
 			}
 		}
 

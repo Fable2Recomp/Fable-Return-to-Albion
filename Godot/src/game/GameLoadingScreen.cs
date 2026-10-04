@@ -407,6 +407,16 @@ public partial class GameLoadingScreen : Node
 			(viewport.Y - CanvasHeight * scale) * 0.5f));
 	}
 
+	/// <summary>
+	/// The canvas fitted by HEIGHT and centred: identical to <see cref="CanvasToWindow"/> up to
+	/// 16:9, and uncropped vertically beyond it.
+	/// </summary>
+	internal static (float Scale, Vector2 Offset) FurnitureToWindow(Vector2 viewport)
+	{
+		float scale = viewport.Y / CanvasHeight;
+		return (scale, new Vector2((viewport.X - CanvasWidth * scale) * 0.5f, 0f));
+	}
+
 	private sealed partial class LoadingFurniture : Control
 	{
 		/// <summary>The screen that owns the state this draws. Named to avoid Node.Owner.</summary>
@@ -508,6 +518,11 @@ public partial class GameLoadingScreen : Node
 			// the spinner, so a LARGER z is further back. Draw order here is that list reversed.
 			DrawArt(owner, scale, offset);
 			DrawVignette(owner, scale);
+
+			// The painting covers; the furniture must stay ON SCREEN. The guest knows only 4:3
+			// and 16:9 (`sub_8235E1E0`), where the two rules agree — wider than 16:9, cover
+			// crops top and bottom and takes the banner and the tip panel with it.
+			(scale, offset) = FurnitureToWindow(GetViewportRect().Size);
 
 			// The tip panel only makes sense under a tip, and the original rebuilds it under the
 			// same flag — a panel with nothing on it is furniture the player has to wonder about.

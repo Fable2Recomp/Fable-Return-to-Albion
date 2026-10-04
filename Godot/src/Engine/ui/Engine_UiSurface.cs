@@ -238,6 +238,15 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 	{
 	}
 
+	/// <summary>Takes the surface down because another has the frame; the shared mask is the
+	/// winner's to write.</summary>
+	public void StandDown()
+	{
+		Close();
+		Address = 0;
+		Released();
+	}
+
 	/// <summary>
 	/// One frame of this surface. True when it has the frame, including the window between the
 	/// guest opening the box and the view being ready — that window is not handed on behind it.
@@ -363,9 +372,23 @@ public sealed class Engine_UiSurfaceSet
 	public bool Drive(
 		Engine_UiPresentationHost? host, Engine_UiModel.PauseState? pause, Engine_UiSurfaceInput input)
 	{
-		return Query.Drive(host, pause, input)
-			|| Message.Drive(host, pause, input)
-			|| Numeric.Drive(host, pause, input)
+		// The router shows ONE modal at a time, and a surface only closes inside its own
+		// drive — so the winner stands the others down, or a box replaced between two samples
+		// (a notice then a question) stays up under its successor.
+		if (Query.Drive(host, pause, input))
+		{
+			Message.StandDown();
+			Numeric.StandDown();
+			return true;
+		}
+
+		if (Message.Drive(host, pause, input))
+		{
+			Numeric.StandDown();
+			return true;
+		}
+
+		return Numeric.Drive(host, pause, input)
 			|| ReceiveItems.Drive(host, pause, input)
 			|| MenuBox.Drive(host, pause, input);
 	}

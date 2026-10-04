@@ -37,6 +37,19 @@ public sealed class Engine_HudValues
     /// <summary>Elements hidden or shown through `GUI.ToggleElement`; same key rule. The set at `STORE+40` is separate from the fade-in set at `STORE+0`: fading out does not clear toggled visibility.</summary>
     private readonly Dictionary<uint, bool> _toggled = new();
 
+    /// <summary>Drops every statement: they belong to the game that made them, and the view
+    /// outlives it across quit-to-title.</summary>
+    public void Reset()
+    {
+        _stated.Clear();
+        _toggled.Clear();
+        _statedMeters.Clear();
+        _faded.Clear();
+        _slideSets.Clear();
+        DpadCentered = null;
+        PlayerIconsDrawn = null;
+    }
+
     /// <summary>`GUI.SetGUIText(element, tag)` — the call, already resolved.</summary>
     public void StateText(uint elementHash, string display) => _stated[elementHash] = display;
 

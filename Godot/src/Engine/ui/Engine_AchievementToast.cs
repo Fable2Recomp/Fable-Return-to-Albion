@@ -197,6 +197,12 @@ public sealed partial class Engine_AchievementToast : Node3D
 			GD.Print($"[achievements] toast up — {LastShown}, {_pending.Count} behind it");
 		}
 
+		// Not while nobody can see it: the UI viewport is concealed under a fullscreen movie.
+		if (Held)
+		{
+			return;
+		}
+
 		// The original floors the step at 1/240s so a stalled frame cannot freeze the toast.
 		_age += Mathf.Max(delta, 1f / 240f);
 		if (_age >= ToastDurationSeconds)
@@ -205,6 +211,9 @@ public sealed partial class Engine_AchievementToast : Node3D
 			_age = 0f;
 		}
 	}
+
+	/// <summary>Set by the owner while the UI is concealed; the toast's clock stands still.</summary>
+	public bool Held { get; set; }
 
 	public override void _Process(double delta)
 	{

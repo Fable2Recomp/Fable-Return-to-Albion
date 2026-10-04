@@ -203,12 +203,30 @@ public sealed class Engine_UiMenuTemplate
 		List<Engine_UiMenuSources.Row> rows =
 			Expanded(Engine_UiMenuSources.Rows(source, argument));
 
+		// `current` in the order `Expanded` states: each sourced child, and under a group
+		// HEADER its own sourced rows — `SpawnSourced` hangs a grouped row under its header, so
+		// counting direct children alone never matched and a grouped list respawned, fold and
+		// cursor lost, on every sample.
+		var direct = new List<Engine_UiExpandableMenu.Item>();
 		var current = new List<Engine_UiExpandableMenu.Item>();
 		foreach (Engine_UiExpandableMenu.Item child in item.Children)
 		{
-			if (child.Sourced)
+			if (!child.Sourced)
 			{
-				current.Add(child);
+				continue;
+			}
+
+			direct.Add(child);
+			current.Add(child);
+			if (child.EventType == (int)Engine_UiMenuConstants.EventType.Submenu)
+			{
+				foreach (Engine_UiExpandableMenu.Item grouped in child.Children)
+				{
+					if (grouped.Sourced)
+					{
+						current.Add(grouped);
+					}
+				}
 			}
 		}
 
@@ -218,6 +236,7 @@ public sealed class Engine_UiMenuTemplate
 			// one row to another after `SetAsPrimary`. Written onto the standing items rather
 			// than respawned, so the fold and the cursor survive; the view's signature carries
 			// the emphasis and re-tints on its next pass.
+			bool restated = false;
 			for (int i = 0; i < rows.Count; ++i)
 			{
 				Engine_UiMenuConstants.Emphasis wanted =
@@ -228,12 +247,32 @@ public sealed class Engine_UiMenuTemplate
 				{
 					current[i].Emphasis = wanted;
 				}
+
+				// The rest of what a row states can change under an unchanged name and label
+				// (a viewed flag, a new ticket in its command); restated in place. Not `Ghosted`:
+				// the guest's by-name ghosting writes that after the source has spoken.
+				Engine_UiMenuSources.Row row = rows[i];
+				if (row.IsHeader)
+				{
+					continue;
+				}
+
+				string? command = row.Command ?? (rowCommand.Length != 0 ? rowCommand : null);
+				if (current[i].Unviewed != row.Unviewed ||
+					current[i].Counted != row.Counted ||
+					!string.Equals(current[i].Command, command, System.StringComparison.Ordinal))
+				{
+					current[i].Unviewed = row.Unviewed;
+					current[i].Counted = row.Counted;
+					current[i].Command = command;
+					restated = true;
+				}
 			}
 
-			return false;
+			return restated;
 		}
 
-		foreach (Engine_UiExpandableMenu.Item stale in current)
+		foreach (Engine_UiExpandableMenu.Item stale in direct)
 		{
 			item.Children.Remove(stale);
 			menu.Model.Forget(stale);
@@ -341,9 +380,11 @@ public sealed class Engine_UiMenuTemplate
 			// header is spawned with no stated label so the view resolves its Babel tag, and
 			// comparing that null to the tag would report a difference on every sample and
 			// rebuild the list — cursor, fold and all — every frame.
-			string? spawned = rows[i].IsHeader ? null : rows[i].Label;
+			// A header is compared by NAME alone: the bound list writes its "Caption (N)" count
+			// onto the header's stated label afterwards.
 			if (!string.Equals(current[i].Name, rows[i].Name, System.StringComparison.Ordinal) ||
-				!string.Equals(current[i].StatedLabel, spawned, System.StringComparison.Ordinal))
+				(!rows[i].IsHeader &&
+				!string.Equals(current[i].StatedLabel, rows[i].Label, System.StringComparison.Ordinal)))
 			{
 				return false;
 			}
@@ -568,6 +609,51 @@ public sealed class Engine_UiScreenTemplate
 	/// any other aspect.
 	/// </summary>
 	public string BackdropUnit = string.Empty;
+
+	/// <summary>
+	/// For a modal BOX drawn by its own view rather than as a book: the `.bgf` it is cloned
+	/// from. Separate from <see cref="Presentation"/>, which names a SCREEN's live file.
+	/// </summary>
+	public string BoxPresentation = string.Empty;
+
+	/// <summary>The art units a box's view clones, by ROLE — the position is the role, stated
+	/// on each built-in record.</summary>
+	public List<string> BoxUnits = new();
+
+	/// <summary>
+	/// Element paths inside a box's art that its view reads or writes (texts, button rows,
+	/// prompts), keyed by the built-in path. See <see cref="Engine_UiTemplates.BoxPath"/>.
+	/// </summary>
+	public Dictionary<string, string> BoxPaths = new(System.StringComparer.Ordinal);
+
+	/// <summary>
+	/// THE WIDE LAYOUT — what the screen does on a window wider than 16:9, as element paths.
+	/// The books are authored to the 16:9 edges; wider than that the pieces in
+	/// <see cref="WideLeft"/> ride out to the left edge and those in <see cref="WideRight"/> to
+	/// the right (by <see cref="Engine_UiSceneBuilder.WideShift"/>), so the covers stay on the
+	/// screen edges and the backdrop shows between the pages. A piece in neither list stays
+	/// where it is — a centred card states nothing. The owned row list rides with
+	/// <see cref="WideLeft"/> when that list is not empty, and a page's clip window follows
+	/// its page.
+	/// </summary>
+	public List<string> WideLeft = new();
+
+	/// <summary>See <see cref="WideLeft"/>.</summary>
+	public List<string> WideRight = new();
+
+	/// <summary>
+	/// Page PAPER that widens instead of riding: it keeps its gutter edge and reaches the
+	/// same distance further out, for a screen with no backdrop to show between the pages
+	/// (the co-op screen), so the paper still meets in the middle under frames that rode out.
+	/// </summary>
+	public List<string> WideStretch = new();
+
+	/// <summary>
+	/// Chrome UNITS that are the screen's ground rather than its furniture (the world map's
+	/// tiles): scaled about the canvas centre with the window's width, so the picture keeps
+	/// its 16:9 framing and still reaches both edges.
+	/// </summary>
+	public List<string> WideGround = new();
 
 	/// <summary>
 	/// Elements INSIDE a cloned unit that a Godot-owned view already draws, by element name — not
@@ -976,6 +1062,7 @@ public static class Engine_UiTemplates
 		_menus = new Dictionary<string, Engine_UiMenuTemplate>();
 		_dropped = new Dictionary<string, List<DroppedRow>>(System.StringComparer.Ordinal);
 		BuildDefaults();
+		StateWideLayouts();
 		int overridden = ApplyOverrides(OverridePath);
 		SaveSnapshot(SnapshotPath);
 		GD.Print($"[ui-templates] {_screens.Count} screen(s), {_menus.Count} menu(s)" +
@@ -2679,8 +2766,70 @@ public static class Engine_UiTemplates
 		{
 			ScreenId = 8, Name = "receiveitems", Presentation = "receiveitemsscreen",
 			PreviewAnchor = "Foreground.SpinningCube.Cube",
+
+			// Front, back — see `BoxUnit`.
+			BoxPresentation = "receiveitemsscreen",
+			BoxUnits = { "Foreground", "CardBack" },
+			BoxPaths = { ["NameAndIcon"] = "NameAndIcon", ["Title"] = "Title", ["Text"] = "Text", ["IconGraphic"] = "IconGraphic", ["Buttons"] = "Buttons", ["Mask"] = "Mask", ["NameAndIcon/IconGraphic"] = "NameAndIcon/IconGraphic", ["NameAndIcon/Title"] = "NameAndIcon/Title", ["NameAndIcon/Text"] = "NameAndIcon/Text", ["Buttons/Buttons/"] = "Buttons/Buttons/", ["PaperBackground"] = "PaperBackground", ["Group"] = "Group", ["Scrollbar/UpArrow"] = "Scrollbar/UpArrow", ["Scrollbar/DownArrow"] = "Scrollbar/DownArrow", ["Scrollbar/Icon"] = "Scrollbar/Icon" },
+		});
+
+		// THE MODAL BOXES. Drawn by their own views (`Engine_UiBoxes`), which take the
+		// presentation and the art units from these records BY ROLE — the position in
+		// `boxUnits` is the role, stated beside each — so a mod re-points a box at its own art
+		// in the same file it re-points a book. `boxPresentation`, not `presentation`: these
+		// are not screens, and a record that named a live file would be taken for its book.
+		AddScreen(new Engine_UiScreenTemplate
+		{
+			ScreenId = MessageBoxId, Name = "messagebox", BoxPresentation = "messageboxmulti",
+			BoxUnits = { "Background", "paper" },             // dim, paper
+			BoxPaths = { ["MessageBox"] = "MessageBox", ["paperbox"] = "paperbox", ["MessageText"] = "MessageText", ["MessageBox/Action"] = "MessageBox/Action", ["MessageBox/MessageText"] = "MessageBox/MessageText" },
+		});
+		AddScreen(new Engine_UiScreenTemplate
+		{
+			ScreenId = QueryBoxId, Name = "querybox", BoxPresentation = "querybox",
+			BoxUnits = { "QueryBox", "Background", "Paper" }, // box, dim, paper
+			BoxPaths = { ["Choices"] = "Choices", ["Affirmative"] = "Affirmative", ["Negative"] = "Negative", ["XAChoices"] = "XAChoices", ["EquipAndContinue"] = "EquipAndContinue", ["Continue"] = "Continue", ["ReloadChoices"] = "ReloadChoices", ["Reload"] = "Reload", ["Cancel"] = "Cancel", ["Text"] = "Text" },
+		});
+		AddScreen(new Engine_UiScreenTemplate
+		{
+			ScreenId = NumericBoxId, Name = "numericbox", BoxPresentation = "numericadjusterbox",
+			BoxUnits = { "QueryBox", "Background", "Paper" }, // box, dim, paper
+			BoxPaths = { ["Text"] = "Text", ["PriceWidget"] = "PriceWidget", ["Arrows"] = "Arrows", ["up"] = "up", ["down"] = "down", ["PriceWidget/Text"] = "PriceWidget/Text", ["PriceWidget/Arrows/"] = "PriceWidget/Arrows/" },
+		});
+		AddScreen(new Engine_UiScreenTemplate
+		{
+			ScreenId = MenuBoxId, Name = "menubox", BoxPresentation = "menubox",
+			BoxUnits = { "Group" },                           // the option group
+			BoxPaths = { ["Choices"] = "Choices", ["Title"] = "Title", ["Multiplayer_Button"] = "Multiplayer_Button", ["Choice1"] = "Choice1", ["Frame"] = "Frame", ["OK/CANCEL"] = "OK/CANCEL", ["Negative"] = "Negative", ["GamerTag"] = "GamerTag", ["gamertag"] = "gamertag", ["Choices/Multiplayer_Button"] = "Choices/Multiplayer_Button", ["Choice1/Frame/Choice1"] = "Choice1/Frame/Choice1", ["Choice1/Choice1"] = "Choice1/Choice1", ["Choice1/RimSelect"] = "Choice1/RimSelect", ["OK/CANCEL/Negative"] = "OK/CANCEL/Negative" },
 		});
 	}
+
+	/// <summary>Host-only template ids for the modal boxes (the guest's box ids are modal
+	/// codes, not screens).</summary>
+	public const uint MessageBoxId = 1020u;
+	public const uint QueryBoxId = 1021u;
+	public const uint NumericBoxId = 1022u;
+	public const uint MenuBoxId = 1023u;
+
+	/// <summary>The `.bgf` a box is drawn from, off its record.</summary>
+	public static string BoxPresentation(uint id, string fallback) =>
+		Screen(id) is { BoxPresentation.Length: > 0 } box ? box.BoxPresentation : fallback;
+
+	/// <summary>
+	/// An element path inside a box's art. The built-in path is the KEY; the record's
+	/// `boxPaths` maps it to the path in the art actually loaded, and an unmapped key is itself.
+	/// </summary>
+	public static string BoxPath(uint id, string path) =>
+		Screen(id) is { } box && box.BoxPaths.TryGetValue(path, out string? mapped) &&
+		mapped.Length != 0
+			? mapped
+			: path;
+
+	/// <summary>A box's art unit by ROLE — its position in the record's `boxUnits` list.</summary>
+	public static string BoxUnit(uint id, int role, string fallback) =>
+		Screen(id) is { } box && role < box.BoxUnits.Count && box.BoxUnits[role].Length != 0
+			? box.BoxUnits[role]
+			: fallback;
 
 	/// <summary>
 	/// One pause tab — the command the guest's dispatch recognises, plus whatever the guest
@@ -2723,6 +2872,97 @@ public static class Engine_UiTemplates
 
 	private static void AddScreen(Engine_UiScreenTemplate template) =>
 		_screens![template.ScreenId] = template;
+
+	/// <summary>
+	/// The built-in books' wide layouts, from each file's own tree (`ui_viewer`,
+	/// `REFII_UI_TREE=Layer`): the list assembly `Foreground.ExpandableMenu` carries the left
+	/// cover, and every other child of `Foreground` belongs to the right-hand page. Stated in
+	/// one table because the shipped books share one skeleton; an override record states its
+	/// own lists.
+	/// </summary>
+	private static void StateWideLayouts()
+	{
+		const string list = "Foreground.ExpandableMenu";
+		var right = new Dictionary<uint, string[]>
+		{
+			[0] = new[] { "Foreground.RightFrame", "Foreground.Pages", "Foreground.ReusableTokens" },
+			[14] = new[] { "Foreground.Book" },
+			[15] = new[] { "Foreground.Book" },
+			[16] = new[] { "Foreground.Book" },
+			[25] = new[] { "Foreground.Book" },
+			[26] = new[] { "Foreground.Book" },
+			[27] = new[] { "Foreground.Book" },
+			[17] = new[] { "Foreground.Book", "Foreground.Mask" },
+			[18] = new[] { "Foreground.Book" },
+			[21] = new[] { "Foreground.Book" },
+			[22] = new[]
+			{
+				"Foreground.Book", "Foreground.FrontPage",
+				"Foreground.PageTextureFar", "Foreground.PageTextureNear",
+			},
+			[23] = new[] { "Foreground.Book" },
+			[28] = new[] { "Foreground.Book" },
+			[Engine_UiMultiplayerPage.ScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
+			[Engine_UiAchievementPage.ScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
+		};
+
+		foreach ((uint id, string[] pieces) in right)
+		{
+			if (_screens!.TryGetValue(id, out Engine_UiScreenTemplate? screen))
+			{
+				screen.WideLeft = new List<string> { list };
+				screen.WideRight = new List<string>(pieces);
+			}
+		}
+
+		// The front end is the same book skeleton; its painting is the `backdrop` record's.
+		if (_screens!.TryGetValue(1010, out Engine_UiScreenTemplate? frontEnd))
+		{
+			frontEnd.WideLeft = new List<string> { list };
+			frontEnd.WideRight = new List<string> { "Foreground.Book" };
+		}
+
+		if (_screens!.TryGetValue(1012, out Engine_UiScreenTemplate? painting))
+		{
+			painting.WideGround = new List<string> { "Scrolling" };
+		}
+
+		// CO-OP HAS NO BACKDROP (coopscreen.bgf, `Foreground` at 1.3): the pages and frames
+		// ride out and each page's parchment widens from the gutter to stay under them.
+		if (_screens!.TryGetValue(24, out Engine_UiScreenTemplate? coop))
+		{
+			coop.WideLeft = new List<string> { "Foreground.LeftPage", "Foreground.LeftFrame2" };
+			coop.WideRight = new List<string> { "Foreground.RightPage", "Foreground.RightFrame2" };
+			coop.WideStretch = new List<string>
+			{
+				"Foreground.LeftBackground.PageTexture", "Foreground.RightBackground.PageTexture",
+			};
+		}
+
+		if (_screens!.TryGetValue(23, out Engine_UiScreenTemplate? worldMap))
+		{
+			worldMap.WideGround = new List<string>
+			{
+				"WorldMap_Spring_A", "WorldMap_Spring_B", "WorldMap_Spring_C",
+				"WorldMap_Spring_D", "WorldMap_Spring_C2", "WorldMap_Spring_A2",
+			};
+		}
+	}
+
+	private static Godot.Collections.Dictionary PathsJson(Dictionary<string, string> paths)
+	{
+		var json = new Godot.Collections.Dictionary();
+		foreach ((string key, string mapped) in paths)
+		{
+			json[key] = mapped;
+		}
+
+		return json;
+	}
+
+	/// <summary>How far the owned row list of a screen rides left on a wide window.</summary>
+	public static float WideListShift(uint screenId) =>
+		Screen(screenId) is { WideLeft.Count: > 0 } ? Engine_UiSceneBuilder.WideShift : 0f;
 
 	// -----------------------------------------------------------------------------------
 	// JSON — the editor's and a mod's way in.
@@ -2978,6 +3218,9 @@ public static class Engine_UiTemplates
 			BackdropUnit = record.TryGetValue("backdropUnit", out Variant backdrop)
 				? backdrop.AsString()
 				: string.Empty,
+			BoxPresentation = record.TryGetValue("boxPresentation", out Variant boxFile)
+				? boxFile.AsString()
+				: string.Empty,
 
 			// How far the owned row view stands in FRONT of the book. Editable because it is
 			// what decides whether the rows draw behind the left cover or over it, and the right
@@ -2991,6 +3234,20 @@ public static class Engine_UiTemplates
 		Strings(record, "panelSubtrees", screen.PanelSubtrees);
 		Strings(record, "ownedElsewhere", screen.OwnedElsewhere);
 		Strings(record, "liveTexts", screen.LiveTexts);
+		Strings(record, "boxUnits", screen.BoxUnits);
+		if (record.TryGetValue("boxPaths", out Variant boxPaths) &&
+			boxPaths.VariantType == Variant.Type.Dictionary)
+		{
+			foreach ((Variant key, Variant mapped) in boxPaths.AsGodotDictionary())
+			{
+				screen.BoxPaths[key.AsString()] = mapped.AsString();
+			}
+		}
+
+		Strings(record, "wideLeft", screen.WideLeft);
+		Strings(record, "wideRight", screen.WideRight);
+		Strings(record, "wideGround", screen.WideGround);
+		Strings(record, "wideStretch", screen.WideStretch);
 		Strings(record, "flowMoved", screen.FlowMoved);
 		Strings(record, "flowTailMoved", screen.FlowTailMoved);
 
@@ -3111,6 +3368,13 @@ public static class Engine_UiTemplates
 				["panelSubtrees"] = ToArray(screen.PanelSubtrees),
 				["ownedElsewhere"] = ToArray(screen.OwnedElsewhere),
 				["liveTexts"] = ToArray(screen.LiveTexts),
+				["boxPresentation"] = screen.BoxPresentation,
+				["boxUnits"] = ToArray(screen.BoxUnits),
+				["boxPaths"] = PathsJson(screen.BoxPaths),
+				["wideLeft"] = ToArray(screen.WideLeft),
+				["wideRight"] = ToArray(screen.WideRight),
+				["wideGround"] = ToArray(screen.WideGround),
+				["wideStretch"] = ToArray(screen.WideStretch),
 				["panelFields"] = fields,
 			};
 		}

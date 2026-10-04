@@ -1387,11 +1387,14 @@ public sealed partial class Engine_HudView : Node3D
 
         // On the guest's frame, or while a stated meter is still gliding: the guest publishes
         // per HF tick, and the walk below crosses into every piece's node.
-        if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking)
+        // A resized window re-places every piece even while the guest is not stepping.
+        if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking &&
+            Window == _placedWindow)
         {
             return;
         }
 
+        _placedWindow = Window;
         _refreshed = true;
         ++Walks;
         long walkMark = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -1400,7 +1403,7 @@ public sealed partial class Engine_HudView : Node3D
 
         // Nothing before the first publish: an empty registry means "the hero has not spawned",
         // not "everything is at zero".
-        Visible = Values.Live;
+        Visible = Values.Live && !Suppressed;
         if (!Visible)
         {
             return;
@@ -1743,6 +1746,12 @@ public sealed partial class Engine_HudView : Node3D
 
     private bool _refreshed;
 
+    private Vector2 _placedWindow;
+
+    /// <summary>Held hidden by the owner (the full cutscene replaces the whole GUI) — the walk
+    /// restates <see cref="Node3D.Visible"/> every guest frame, so a bare hide does not hold.</summary>
+    public bool Suppressed { get; set; }
+
     private readonly List<Engine_HudValues.Handle> _wanted = new();
 
     /// <summary>Why the hidden pieces are hidden, counted over the last pass.</summary>
@@ -1920,6 +1929,9 @@ public sealed partial class Engine_HudView : Node3D
         return at - baseline;
     }
 
+    /// <summary>The widest a subtitle line runs, in canvas units — inside the 4:3 canvas.</summary>
+    private const float SubtitleWrapWidth = 800f;
+
     private void DriveText(Built built)
     {
         if (built.Node is not MeshInstance3D label || Theme is null)
@@ -1950,10 +1962,20 @@ public sealed partial class Engine_HudView : Node3D
         var colour = record is not null
             ? new Color(record.R, record.G, record.B, 1f)
             : new Color(1f, 224f / 255f, 128f / 255f, 1f);
+        // The record's own wrap box. A SUBTITLE ALWAYS WRAPS: it is a sentence of any length
+        // and must stay on screen at 4:3 (952 units visible), whatever the record says.
+        float boxWidth = record?.BoxWidth ?? 0f;
+        int wrapMode = record?.WrapMode ?? 0;
+        if (built.Piece.Id == "text.Subtitles.Text")
+        {
+            boxWidth = boxWidth > 0f ? Mathf.Min(boxWidth, SubtitleWrapWidth) : SubtitleWrapWidth;
+            wrapMode = 1;
+        }
+
         Theme.Paint(
             label, live, record?.Size is > 0 and var size ? size : TextSize, colour,
             horizontalAlign: record?.HorzAlign ?? 0, verticalAlign: record?.VertAlign ?? 1,
-            boxWidth: 0f, boxHeight: 0f, wrapMode: 0);
+            boxWidth: boxWidth, boxHeight: record?.BoxHeight ?? 0f, wrapMode: wrapMode);
     }
 
     /// <summary>Point size for HUD text, at the layout's reference height.</summary>

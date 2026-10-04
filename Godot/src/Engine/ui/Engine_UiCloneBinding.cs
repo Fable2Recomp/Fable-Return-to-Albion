@@ -252,10 +252,31 @@ public sealed class Engine_UiCloneBinding
 				continue;
 			}
 
-			applied += Paint(bound.Node, band);
+			applied += Paint(bound.Node, Spread(band));
 		}
 
 		return applied;
+	}
+
+	/// <summary>
+	/// How far the owner has moved each half of the book outward (see
+	/// <see cref="Engine_UiSceneBuilder.WideShift"/>). Every rect here is measured from the
+	/// UNSPREAD layout — the document, or nodes the apply pass has just restated — so the
+	/// window follows its page by the same amount.
+	/// </summary>
+	public float ClipShiftX { get; set; }
+
+	private Rect2 Spread(Rect2 band)
+	{
+		if (ClipShiftX <= 0f)
+		{
+			return band;
+		}
+
+		float centre = band.Position.X + (band.Size.X * 0.5f);
+		return Mathf.Abs(centre) < 50f
+			? band.GrowIndividual(ClipShiftX, 0f, ClipShiftX, 0f)
+			: new Rect2(band.Position + new Vector2(centre > 0f ? ClipShiftX : -ClipShiftX, 0f), band.Size);
 	}
 
 	/// <summary>
@@ -544,7 +565,7 @@ public sealed class Engine_UiCloneBinding
 					continue;
 				}
 
-				band = fresh;
+				band = Spread(fresh);
 				_maskRects[mask] = band;
 			}
 
