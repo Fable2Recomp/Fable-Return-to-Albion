@@ -25,8 +25,9 @@
 #
 # INCLUDE ORDER IS PART OF THE CONTRACT. <cmath> reaches the C library through
 # `#include_next <math.h>`, which resumes searching AFTER the directory it was found in —
-# so the C++ headers must precede zig's libc headers. GameCodeBuild.CompileFlags emits
-# them in that order; changing it produces "fatal error: 'math.h' file not found".
+# so the C++ headers must precede zig's libc headers. GameCodeBuild.StandardLibraryFlags
+# passes them as -I for that reason: zig puts its own libc -isystem flags first, so
+# -isystem here lands after them and produces "fatal error: 'math.h' file not found".
 
 include_guard(GLOBAL)
 

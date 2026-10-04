@@ -1499,6 +1499,14 @@ public static class GameCodeBuild
 	/// which resumes the search after the directory it was itself found in. Reversed, the
 	/// build fails with "fatal error: 'math.h' file not found".
 	///
+	/// SO THE C++ HEADERS ARE -I, NOT -isystem. On a host with no glibc headers of its own
+	/// (SteamOS ships none in /usr/include) zig falls back to its bundled libc and emits
+	/// -isystem for those directories AHEAD of anything given here; clang then drops our
+	/// later copies as duplicates, which leaves every libc directory before the C++ ones
+	/// and nothing for the #include_next to find. -I is searched before all -isystem, so
+	/// the order holds whichever libc zig picks. libstdc++'s headers mark themselves
+	/// system headers, so nothing is lost in diagnostics.
+	///
 	/// Returns empty when nothing is staged, which is the Windows case: that build links
 	/// MSVC's runtime and this question does not arise.
 	/// </remarks>
@@ -1520,7 +1528,7 @@ public static class GameCodeBuild
 				continue;
 			}
 
-			flags.Add("-isystem");
+			flags.Add("-I");
 			flags.Add(Path.Combine(StdCxxDirectory, slot.Trim()));
 		}
 
