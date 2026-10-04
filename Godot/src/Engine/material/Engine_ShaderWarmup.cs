@@ -257,6 +257,12 @@ public partial class Engine_ShaderWarmup : Node
 	/// the app rather than read from the banks, which are still mounting while this is up.</summary>
 	public const string BackdropPath = "res://assets/ui/preparation_seal.png";
 
+	public const string SmokeShaderPath = "res://src/Engine/material/preparation_smoke.gdshader";
+
+	public const string SmokeNoisePath = "res://src/Engine/material/preparation_smoke_noise.tres";
+
+	public const string MedallionShaderPath = "res://src/Engine/material/preparation_medallion.gdshader";
+
 	/// <summary>
 	/// STYLED LIKE THE GAME'S OWN LOAD SCREENS, but code-drawn: the real one draws bank art
 	/// with the guest's fonts, and during warm-up the banks are still mounting and the guest
@@ -274,30 +280,42 @@ public partial class Engine_ShaderWarmup : Node
 		_canvasRoot = new Control();
 		_screen.AddChild(_canvasRoot);
 
-		var backdrop = new ColorRect
-		{
-			Color = Colors.Black,
-			AnchorRight = 1.0f,
-			AnchorBottom = 1.0f,
-		};
-		_screen.AddChild(backdrop);
+		_screen.AddChild(BuildSmokeBackground());
 
 		if (ResourceLoader.Exists(BackdropPath) &&
 			ResourceLoader.Load<Texture2D>(BackdropPath) is { } seal)
 		{
-			_screen.AddChild(new TextureRect
+			var medallionLayer = new Control
 			{
+				Name = "MedallionLayer",
+				AnchorRight = 1.0f,
+				AnchorBottom = 1.0f,
+				MouseFilter = Control.MouseFilterEnum.Ignore,
+			};
+			_screen.AddChild(medallionLayer);
+
+			var medallion = new TextureRect
+			{
+				Name = "Medallion",
 				Texture = seal,
 				AnchorRight = 1.0f,
 				AnchorBottom = 1.0f,
 				ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-				StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+				StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
 				TextureFilter = CanvasItem.TextureFilterEnum.LinearWithMipmaps,
-			});
+			};
+
+			if (ResourceLoader.Exists(MedallionShaderPath) &&
+				ResourceLoader.Load<Shader>(MedallionShaderPath) is { } medallionShader)
+			{
+				medallion.Material = new ShaderMaterial { Shader = medallionShader };
+			}
+
+			medallionLayer.AddChild(medallion);
 		}
 		else
 		{
-			GD.Print($"[shader-warmup] no backdrop at {BackdropPath}; black ground");
+			GD.Print($"[shader-warmup] no backdrop at {BackdropPath}; smoke ground only");
 		}
 
 		_spinner = new SpinnerArc
@@ -330,6 +348,49 @@ public partial class Engine_ShaderWarmup : Node
 		_label.AddThemeColorOverride("font_color", Gold);
 		_label.AddThemeFontSizeOverride("font_size", 22);
 		_screen.AddChild(_label);
+	}
+
+	private static Control BuildSmokeBackground()
+	{
+		var smokeRect = new ColorRect
+		{
+			Name = "SmokeBackground",
+			AnchorRight = 1.0f,
+			AnchorBottom = 1.0f,
+			Color = Colors.Black,
+		};
+
+		if (ResourceLoader.Exists(SmokeShaderPath) &&
+			ResourceLoader.Load<Shader>(SmokeShaderPath) is { } shader)
+		{
+			var mat = new ShaderMaterial { Shader = shader };
+			if (ResourceLoader.Exists(SmokeNoisePath) &&
+				ResourceLoader.Load<Texture2D>(SmokeNoisePath) is { } noiseTex)
+			{
+				mat.SetShaderParameter("noise_texture", noiseTex);
+			}
+			else
+			{
+				var noise = new FastNoiseLite
+				{
+					NoiseType = FastNoiseLite.NoiseTypeEnum.Simplex,
+					Frequency = 0.008f,
+					FractalType = FastNoiseLite.FractalTypeEnum.Fbm,
+					FractalOctaves = 4,
+				};
+				mat.SetShaderParameter("noise_texture", new NoiseTexture2D
+				{
+					Width = 512,
+					Height = 512,
+					Seamless = true,
+					Noise = noise,
+				});
+			}
+
+			smokeRect.Material = mat;
+		}
+
+		return smokeRect;
 	}
 
 	/// <summary>
