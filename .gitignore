@@ -10,6 +10,7 @@
 *.userosscache
 *.sln.docstates
 *.env
+.agent/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
@@ -446,6 +447,7 @@ src/Shader/processed/
 
 # Local working notes (not for pushing)
 /NEXT.md
+notes/  
 
 # Assets converted from the user's own copy of Fable 2. Derived game data —
 # never redistributable, so it lives in the per-user data dir (user://), never

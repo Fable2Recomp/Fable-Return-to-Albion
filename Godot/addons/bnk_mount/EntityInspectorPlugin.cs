@@ -1,5 +1,6 @@
 #if TOOLS
 using Godot;
+using Refii.EditorTools;
 
 namespace Refii.Assets;
 
@@ -8,12 +9,18 @@ public partial class EntityInspectorPlugin : EditorInspectorPlugin
     public override bool _CanHandle(GodotObject godotObject) =>
         godotObject.HasMeta("container_type") ||
         godotObject.HasMeta("readable_text") ||
-        godotObject.HasMeta("property");
+        godotObject.HasMeta("property") ||
+        godotObject.HasMeta("equipment_hash");
 
     public override void _ParseBegin(GodotObject godotObject)
     {
         var root = new VBoxContainer();
         root.AddThemeConstantOverride("separation", 6);
+
+        if (godotObject.HasMeta("equipment_hash"))
+        {
+            AddEquipmentSection(root, godotObject);
+        }
 
         if (godotObject.HasMeta("container_type"))
         {
@@ -46,6 +53,55 @@ public partial class EntityInspectorPlugin : EditorInspectorPlugin
         {
             root.QueueFree();
         }
+    }
+
+    private void AddEquipmentSection(VBoxContainer root, GodotObject godotObject)
+    {
+        string activeMod = EditorTools.EditorModExporter.ActiveModName;
+        root.AddChild(Header($"Item Modding [{activeMod}]"));
+
+        string hashStr = godotObject.GetMeta("equipment_hash").AsString();
+        uint hash = 0;
+        if (hashStr.StartsWith("0x", System.StringComparison.OrdinalIgnoreCase))
+        {
+            uint.TryParse(hashStr[2..], System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out hash);
+        }
+
+        bool hasOverrides = EditorModValueService.HasModOverridesForHash(hash, activeMod);
+
+        var statusRow = new HBoxContainer();
+        statusRow.AddThemeConstantOverride("separation", 8);
+
+        var statusDot = new Label
+        {
+            Text = hasOverrides ? "●" : "○",
+            Modulate = hasOverrides ? new Color(1.0f, 0.8f, 0.25f) : new Color(0.4f, 0.85f, 0.5f),
+        };
+        statusRow.AddChild(statusDot);
+
+        var statusLabel = new Label
+        {
+            Text = hasOverrides
+                ? $"Modified in mod [{activeMod}]"
+                : "Using vanilla game defaults",
+            Modulate = hasOverrides ? new Color(1.0f, 0.85f, 0.5f) : new Color(0.75f, 0.75f, 0.75f),
+        };
+        statusRow.AddChild(statusLabel);
+        root.AddChild(statusRow);
+
+        var btn = new Button
+        {
+            Text = "✏️ Open Modding Dialogue...",
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        btn.Pressed += () =>
+        {
+            if (godotObject is Equipment.Engine_EquipmentInstance equip && GodotObject.IsInstanceValid(equip))
+            {
+                equip.OpenModEditor();
+            }
+        };
+        root.AddChild(btn);
     }
 
     private void AddContainerSection(VBoxContainer root, GodotObject godotObject)

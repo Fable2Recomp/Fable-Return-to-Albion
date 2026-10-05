@@ -133,6 +133,28 @@ public static class Engine_WeaponIndex
         return _byFileName.TryGetValue(leaf, out entry!);
     }
 
+    /// <summary>
+    /// Resolves a weapon entry by either its definition record hash or its inventory component hash.
+    /// </summary>
+    public static bool TryGetByHash(uint recordHash, out WeaponEntry entry)
+    {
+        Build();
+        if (_entries is not null)
+        {
+            foreach (WeaponEntry candidate in _entries)
+            {
+                if (candidate.RecordHash == recordHash || candidate.Detail.InventoryComponentHash == recordHash)
+                {
+                    entry = candidate;
+                    return true;
+                }
+            }
+        }
+
+        entry = null!;
+        return false;
+    }
+
     private static void Build()
     {
         lock (IndexLock)
@@ -148,12 +170,7 @@ public static class Engine_WeaponIndex
             return;
         }
 
-        var blobs = new List<byte[]?>();
-        foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
-        {
-            blobs.Add(_resolver(path) ?? _resolver("data/" + path));
-        }
-
+        var blobs = Refii.Gdb.Engine_GameGdb.LoadSupplementalBlobs(_resolver, includeTu: true);
         GdbMulti multi = GdbMulti.Build(blobs);
 
         var entries = new List<WeaponEntry>();
@@ -188,6 +205,15 @@ public static class Engine_WeaponIndex
         foreach (WeaponEntry entry in entries)
         {
             map[FileNameOf(entry)] = entry;
+
+            // DUAL-HASH ALIAS LOOKUP:
+            // Allow resolving this weapon by its inventory component filename as well.
+            if (entry.Detail.InventoryComponentHash != 0)
+            {
+                string compFile = Engine_ItemNames.FileNameOf(
+                    entry.Name, entry.Detail.InventoryComponentHash, Extension);
+                map.TryAdd(compFile, entry);
+            }
         }
 
         _multi = multi;

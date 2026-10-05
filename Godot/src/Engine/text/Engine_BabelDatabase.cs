@@ -210,9 +210,17 @@ public sealed class Engine_BabelDatabase
 		return db;
 	}
 
-	/// <summary>Look up by tag, e.g. <c>GUI_BACK</c>. Case sensitive.</summary>
-	public bool TryGetString(string tag, out string value) =>
-		TryGetString(Engine_GameHash.Fnv1(tag), out value);
+	/// <summary>Look up by tag, e.g. <c>GUI_BACK</c> (or hex <c>0x1234ABCD</c>). Case sensitive.</summary>
+	public bool TryGetString(string tag, out string value)
+	{
+		if (tag.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+			uint.TryParse(tag.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out uint hexKey))
+		{
+			return TryGetString(hexKey, out value);
+		}
+
+		return TryGetString(Engine_GameHash.Fnv1(tag), out value);
+	}
 
 	/// <summary>
 	/// Strings already resolved, by key. The table never changes after load, and the HUD asks

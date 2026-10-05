@@ -364,5 +364,14 @@ public partial class SettingsPanel : VBoxContainer
 		{
 			Rebuild();
 		}
+		else if (definition.Name == "hdr_output" && value == "true" && System.OperatingSystem.IsWindows())
+		{
+			if (_model.Values.TryGetValue("rendering_driver", out string? currentDriver) && currentDriver != "d3d12")
+			{
+				_model.Values["rendering_driver"] = "d3d12";
+				_model.Save();
+				Rebuild();
+			}
+		}
 	}
 }

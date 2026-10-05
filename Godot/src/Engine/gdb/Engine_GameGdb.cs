@@ -20,6 +20,12 @@ public static class Engine_GameGdb
 
 	private static bool _built;
 
+	private static Func<string, byte[]?>? _baseResolver;
+
+	private static GdbMulti? _baseMulti;
+
+	private static bool _baseBuilt;
+
 	/// <summary>Where to read the GDB blobs from. Clears anything already built.</summary>
 	public static void SetResolver(Func<string, byte[]?>? resolver)
 	{
@@ -28,6 +34,70 @@ public static class Engine_GameGdb
 			_resolver = resolver;
 			_multi = null;
 			_built = false;
+		}
+	}
+
+	/// <summary>Binds a resolver for unpatched base game files.</summary>
+	public static void SetBaseResolver(Func<string, byte[]?>? baseResolver)
+	{
+		lock (BuildLock)
+		{
+			_baseResolver = baseResolver;
+			_baseMulti = null;
+			_baseBuilt = false;
+		}
+	}
+
+	/// <summary>Forces re-reading the active GDB blobs on next access.</summary>
+	public static void Invalidate()
+	{
+		lock (BuildLock)
+		{
+			_multi = null;
+			_built = false;
+		}
+	}
+
+	/// <summary>
+	/// Loads raw GDB binary blobs for all supplemental databases, optionally including companion Title Update (.gdb.tu) patches.
+	/// </summary>
+	public static List<byte[]?> LoadSupplementalBlobs(Func<string, byte[]?> resolver, bool includeTu = true)
+	{
+		var blobs = new List<byte[]?>();
+		foreach (string path in Refii.Level.Engine_LevelProps.SupplementalGdbPaths)
+		{
+			byte[]? blob = resolver(path) ?? resolver("data/" + path);
+			blobs.Add(blob);
+
+			if (includeTu)
+			{
+				byte[]? tuBlob = resolver(path + ".tu") ?? resolver("data/" + path + ".tu");
+				if (tuBlob is not null)
+				{
+					blobs.Add(tuBlob);
+				}
+			}
+		}
+		return blobs;
+	}
+
+	/// <summary>The unpatched base database before any mod overlays are applied.</summary>
+	public static GdbMulti? BaseDatabase
+	{
+		get
+		{
+			lock (BuildLock)
+			{
+				if (_baseBuilt || _baseResolver is null)
+				{
+					return _baseMulti;
+				}
+
+				var blobs = LoadSupplementalBlobs(_baseResolver, includeTu: false);
+				_baseMulti = GdbMulti.Build(blobs);
+				_baseBuilt = true;
+				return _baseMulti;
+			}
 		}
 	}
 
@@ -43,14 +113,11 @@ public static class Engine_GameGdb
 					return _multi;
 				}
 
-				var blobs = new List<byte[]?>();
+				var blobs = LoadSupplementalBlobs(_resolver, includeTu: true);
 				var absent = new List<string>();
 				foreach (string path in Refii.Level.Engine_LevelProps.SupplementalGdbPaths)
 				{
-					// Both spellings the mount answers to; a null blob is skipped by the merge.
-					byte[]? blob = _resolver(path) ?? _resolver("data/" + path);
-					blobs.Add(blob);
-					if (blob is null)
+					if ((_resolver(path) ?? _resolver("data/" + path)) is null)
 					{
 						absent.Add(path);
 					}

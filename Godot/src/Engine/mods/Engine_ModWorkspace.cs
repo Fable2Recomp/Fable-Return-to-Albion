@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 
 namespace Refii.Mods;
 
-/// <summary>What a mod says about itself, from its <c>mod.toml</c>. All fields optional.</summary>
+/// <summary>What a mod says about itself, from its embedded <c>mod.toml</c>. All fields optional.</summary>
 public sealed class ModMetadata
 {
 	public string Title = string.Empty;
@@ -13,22 +14,26 @@ public sealed class ModMetadata
 	public string Description = string.Empty;
 }
 
-/// <summary>One installed mod folder. <see cref="Root"/> is the folder; assets may be under it
-/// directly or under <c>files/</c> — see <see cref="ModWorkspace.GetModAssetRoot"/>.</summary>
+/// <summary>One installed mod package (.f2mod).</summary>
 public sealed class ModInstall
 {
 	public string Name = string.Empty;
-	public string Root = string.Empty;
-	public bool HasFilesFolder;
+	public string PackagePath = string.Empty;
 	public ModMetadata Metadata = new();
+
+	public bool HasFilesFolder;
+
+	/// <summary>Points to the package path or parent directory.</summary>
+	public string Root
+	{
+		get => !string.IsNullOrEmpty(_root) ? _root : (!string.IsNullOrEmpty(PackagePath) ? PackagePath : string.Empty);
+		set => _root = value;
+	}
+	private string _root = string.Empty;
 }
 
 /// <summary>
-/// The mod folder on disk: where mods live, which ones are installed, and what each says.
-///
-/// IN THE ENGINE, NOT THE LAUNCHER, because both read it — the launcher panel lists mods and the
-/// mount overlays them. Two copies of "which mods are installed" is two answers to the question
-/// the resolved index exists to settle.
+/// The mod workspace on disk: where .f2mod packages live, which ones are installed, and what each says.
 /// </summary>
 public static class ModWorkspace
 {
@@ -36,6 +41,7 @@ public static class ModWorkspace
 	public const string ModFilesFolderName = "files";
 	public const string ModMetadataFilename = "mod.toml";
 	public const string ModManifestFilename = "manifest.json";
+	public const string PackageExtension = ".f2mod";
 
 	public static string GetDefaultModsRoot(string assetsRoot) =>
 		string.IsNullOrEmpty(assetsRoot)
@@ -44,9 +50,6 @@ public static class ModWorkspace
 
 	/// <summary>
 	/// Whether a name may be joined to the mods root.
-	///
-	/// The name comes from a file the player can edit, and it is used to build a path — so
-	/// rooted paths and <c>..</c> are refused rather than normalised.
 	/// </summary>
 	public static bool IsSafeModFolderName(string name)
 	{
@@ -57,7 +60,7 @@ public static class ModWorkspace
 
 		foreach (string component in name.Split('/', '\\'))
 		{
-			if (component.Length == 0 || component == "." || component == "..")
+			if (component is ".." or "." || string.IsNullOrWhiteSpace(component))
 			{
 				return false;
 			}
@@ -66,7 +69,10 @@ public static class ModWorkspace
 		return true;
 	}
 
-	/// <summary>Every mod folder under <paramref name="modsRoot"/>, name-ordered.</summary>
+	/// <summary>
+	/// Discovers all .f2mod packages directly under <paramref name="modsRoot"/>, name-ordered.
+	/// Subdirectories, non-.f2mod files, and cache folders (.cache) are strictly ignored.
+	/// </summary>
 	public static List<ModInstall> DiscoverModInstalls(string modsRoot)
 	{
 		var mods = new List<ModInstall>();
@@ -75,75 +81,90 @@ public static class ModWorkspace
 			return mods;
 		}
 
-		string[] directories;
+		string[] files;
 		try
 		{
-			directories = Directory.GetDirectories(modsRoot);
+			files = Directory.GetFiles(modsRoot, "*.f2mod");
 		}
 		catch (Exception)
 		{
 			return mods;
 		}
 
-		foreach (string directory in directories)
+		foreach (string file in files)
 		{
-			string name = Path.GetFileName(directory);
+			string name = Path.GetFileNameWithoutExtension(file);
 			if (!IsSafeModFolderName(name))
 			{
 				continue;
 			}
 
-			mods.Add(new ModInstall
+			if (F2ModPackage.TryReadMetadata(file, out ModMetadata meta, out _))
 			{
-				Name = name,
-				Root = directory,
-				HasFilesFolder = Directory.Exists(Path.Combine(directory, ModFilesFolderName)),
-				Metadata = ReadModMetadata(directory),
-			});
+				if (string.IsNullOrWhiteSpace(meta.Title))
+				{
+					meta.Title = name;
+				}
+
+				mods.Add(new ModInstall
+				{
+					Name = name,
+					PackagePath = file,
+					Metadata = meta,
+				});
+			}
 		}
 
 		mods.Sort((left, right) => string.CompareOrdinal(left.Name, right.Name));
 		return mods;
 	}
 
-	public static string GetModAssetRoot(ModInstall mod) =>
-		mod.HasFilesFolder ? Path.Combine(mod.Root, ModFilesFolderName) : mod.Root;
-
-	public static string GetModManifestPath(ModInstall mod) =>
-		Path.Combine(mod.Root, ModManifestFilename);
-
 	/// <summary>
-	/// The mod's own description of itself.
-	///
-	/// Deliberately a hand-rolled key=value reader, not a TOML parser: the four keys below are
-	/// the whole vocabulary, and an unreadable or absent file is an empty description rather
-	/// than an error — a mod that ships no metadata still works.
+	/// Creates a brand-new .f2mod package in modsRoot with default metadata.
 	/// </summary>
-	public static ModMetadata ReadModMetadata(string modRoot)
+	public static bool CreateModPackage(
+		string modsRoot, string modName, out string packagePath, out string error)
+	{
+		packagePath = string.Empty;
+		error = string.Empty;
+
+		if (string.IsNullOrWhiteSpace(modName) || !IsSafeModFolderName(modName))
+		{
+			error = $"Invalid mod name: '{modName}'.";
+			return false;
+		}
+
+		packagePath = Path.Combine(modsRoot, modName + PackageExtension);
+		if (File.Exists(packagePath))
+		{
+			error = $"Mod package '{modName}{PackageExtension}' already exists.";
+			return false;
+		}
+
+		var meta = new ModMetadata
+		{
+			Title = modName,
+			Version = "1.0.0",
+			Author = "Modder",
+			Description = "Custom mod for Fable 2",
+		};
+
+		return F2ModPackage.Create(packagePath, meta, Array.Empty<(string, byte[])>(), out error);
+	}
+
+	public static string GetModAssetRoot(ModInstall mod) => mod.PackagePath;
+
+	public static ModMetadata ParseModToml(string tomlText)
 	{
 		var metadata = new ModMetadata();
-		if (string.IsNullOrEmpty(modRoot))
+		if (string.IsNullOrWhiteSpace(tomlText))
 		{
 			return metadata;
 		}
 
-		string path = Path.Combine(modRoot, ModMetadataFilename);
-		if (!File.Exists(path))
-		{
-			return metadata;
-		}
-
-		IEnumerable<string> lines;
-		try
-		{
-			lines = File.ReadLines(path);
-		}
-		catch (Exception)
-		{
-			return metadata;
-		}
-
-		foreach (string line in lines)
+		using var reader = new StringReader(tomlText);
+		string? line;
+		while ((line = reader.ReadLine()) is not null)
 		{
 			string trimmed = line.Trim();
 			if (trimmed.Length == 0 || trimmed[0] == '#' || trimmed[0] == '[')
@@ -179,6 +200,16 @@ public static class ModWorkspace
 		}
 
 		return metadata;
+	}
+
+	public static string FormatModToml(ModMetadata metadata)
+	{
+		var sb = new StringBuilder();
+		sb.AppendLine($"title = \"{metadata.Title}\"");
+		sb.AppendLine($"version = \"{metadata.Version}\"");
+		sb.AppendLine($"author = \"{metadata.Author}\"");
+		sb.AppendLine($"description = \"{metadata.Description}\"");
+		return sb.ToString();
 	}
 
 	internal static string Unquote(string value) =>

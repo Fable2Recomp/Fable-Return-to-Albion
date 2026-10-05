@@ -218,7 +218,39 @@ public sealed class BnkFileSystem : IDisposable
     /// </summary>
     private void IndexOverlay(string name, string assetRoot, bool expandNested)
     {
-        if (string.IsNullOrEmpty(assetRoot) || !Directory.Exists(assetRoot))
+        if (string.IsNullOrEmpty(assetRoot))
+        {
+            return;
+        }
+
+        if (File.Exists(assetRoot) && assetRoot.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Mods.F2ModPackage.TryOpen(assetRoot, out Refii.Mods.F2ModPackage? package, out string pkgError) && package is not null)
+            {
+                foreach (Refii.Mods.F2ModEntry entry in package.Entries)
+                {
+                    if (IsModBookkeeping(Path.GetFileName(entry.Path)))
+                    {
+                        continue;
+                    }
+
+                    Refii.Mods.F2ModEntry captured = entry;
+                    AddVirtualFile(
+                        entry.Path,
+                        assetRoot,
+                        (long)entry.Size,
+                        () => package.ReadEntryBytes(captured),
+                        name);
+                }
+            }
+            else
+            {
+                _failures.Add($"{name}: {pkgError}");
+            }
+            return;
+        }
+
+        if (!Directory.Exists(assetRoot))
         {
             return;
         }
@@ -309,6 +341,29 @@ public sealed class BnkFileSystem : IDisposable
         promoted.Alternates.AddRange(shadowed);
         node.Files[split < 0 ? normalized : normalized[(split + 1)..]] = promoted;
         return true;
+    }
+
+    /// <summary>
+    /// Reads the unpatched original file bytes before any mod or virtual overlays were applied.
+    /// Walks the alternates chain to find the deepest original source file.
+    /// </summary>
+    public byte[]? ReadBaseBytes(string virtualPath)
+    {
+        string normalized = Normalize(virtualPath);
+        if (!TryGetFile(normalized, out BnkFile file))
+        {
+            return null;
+        }
+
+        BnkFile baseFile = file.Alternates.Count > 0 ? file.Alternates[^1] : file;
+        try
+        {
+            return baseFile.ReadAllBytes();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -472,38 +527,71 @@ public sealed class BnkFileSystem : IDisposable
     ///
     /// `data/` comes off because the archives never had it; the locale comes off because
     /// `GameInit_MountDataFileSystems` mounts `language` over the active culture's directory.
+    ///
+    /// Aliasing is bidirectional: virtual files and mod overlays authored with or without `data/`,
+    /// or with/without a culture folder (like `en-uk`), generate all corresponding variants so
+    /// both the host loaders and the guest engine resolve the intended virtual assets.
     /// </summary>
     public static IEnumerable<string> AliasesFor(string normalized)
     {
+        if (string.IsNullOrEmpty(normalized))
+        {
+            yield break;
+        }
+
         const string dataPrefix = "data/";
-        if (!normalized.StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase))
+        string noData = normalized.StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase)
+            ? normalized[dataPrefix.Length..]
+            : normalized;
+
+        if (noData.Length == 0)
         {
             yield break;
         }
 
-        string alias = normalized[dataPrefix.Length..];
-        if (alias.Length == 0)
-        {
-            yield break;
-        }
+        var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        yield return alias;
+        // Alias between data/... and the no-data spelling:
+        string withData = dataPrefix + noData;
+        results.Add(noData);
+        results.Add(withData);
 
+        // Language / culture aliases:
         const string languagePrefix = "language/";
-        if (!alias.StartsWith(languagePrefix, StringComparison.OrdinalIgnoreCase))
+        if (noData.StartsWith(languagePrefix, StringComparison.OrdinalIgnoreCase))
         {
-            yield break;
+            int localeEnd = noData.IndexOf('/', languagePrefix.Length);
+            if (localeEnd > languagePrefix.Length)
+            {
+                string folder = noData[languagePrefix.Length..localeEnd];
+                if (IsCultureFolder(folder))
+                {
+                    // Has active culture folder (e.g. language/en-uk/text/book.babel)
+                    // Produce locale-less spellings (e.g. language/text/book.babel):
+                    string rest = noData[(localeEnd + 1)..];
+                    string localeLess = languagePrefix + rest;
+                    results.Add(localeLess);
+                    results.Add(dataPrefix + localeLess);
+                }
+                else if (!IsAnyCultureFolder(folder))
+                {
+                    // Locale-less spelling (e.g. language/text/book.babel where folder is "text")
+                    // Produce active culture spellings (e.g. language/en-uk/text/book.babel):
+                    string rest = noData[languagePrefix.Length..];
+                    string withCulture = $"{languagePrefix}{ActiveCulture}/{rest}";
+                    results.Add(withCulture);
+                    results.Add(dataPrefix + withCulture);
+                }
+            }
         }
 
-        int localeEnd = alias.IndexOf('/', languagePrefix.Length);
-        if (localeEnd <= languagePrefix.Length)
+        // Return all aliases except the input path itself:
+        foreach (string alias in results)
         {
-            yield break;
-        }
-
-        if (IsCultureFolder(alias[languagePrefix.Length..localeEnd]))
-        {
-            yield return languagePrefix + alias[(localeEnd + 1)..];
+            if (!alias.Equals(normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return alias;
+            }
         }
     }
 
@@ -520,7 +608,8 @@ public sealed class BnkFileSystem : IDisposable
     private static bool IsModBookkeeping(string leaf)
     {
         if (leaf.Equals(Refii.Mods.ModWorkspace.ModMetadataFilename, StringComparison.OrdinalIgnoreCase) ||
-            leaf.Equals(Refii.Mods.ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase))
+            leaf.Equals(Refii.Mods.ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase) ||
+            leaf.EndsWith(".import", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
@@ -539,11 +628,23 @@ public sealed class BnkFileSystem : IDisposable
     /// <summary>Authored inputs the overlay systems compile into the assets they name.</summary>
     private static readonly string[] ModSourceSuffixes =
     {
-        ".gdb.csv", ".babel.csv", ".tex.png", ".mdl.glb", ".mdl.gltf",
+        ".babel.csv", ".tex.png", ".mdl.glb", ".mdl.gltf",
     };
 
+    /// <summary>
+    /// All supported culture folder names from <see cref="Refii.Text.TextBank.LanguageOrder"/>.
+    /// Used by <see cref="AliasesFor"/> to distinguish culture-scoped directory names from generic subpaths.
+    /// </summary>
+    private static readonly HashSet<string> KnownCultures = new(
+        Refii.Text.TextBank.LanguageOrder, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True when <paramref name="segment"/> matches <see cref="ActiveCulture"/>.</summary>
     private static bool IsCultureFolder(string segment) =>
         string.Equals(segment, ActiveCulture, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when <paramref name="segment"/> matches any known game localization culture folder.</summary>
+    private static bool IsAnyCultureFolder(string segment) =>
+        KnownCultures.Contains(segment);
 
     private void IndexLoose(string gameDirectory, IReadOnlyList<string> extensions)
     {

@@ -50,6 +50,10 @@ uniform bool has_envmap = false;
 uniform sampler2D orm_tex : filter_linear_mipmap_anisotropic;
 uniform bool has_orm = false;
 
+/// Flag indicating that the material uses modern authored PBR assets rather than legacy 2008 Blinn-Phong.
+/// When true: albedo is linearized from sRGB, authored Roughness/Metallic/AO are preserved, and reflection probes contribute.
+uniform bool is_pbr = false;
+
 // Whether the ORM's alpha carries a SOLVED height. The heightless sentinel is opaque white —
 // read as relief it is +0.5 everywhere, a permanent view-dependent UV shift on surfaces with no
 // relief at all — so parallax runs only when the packer says the channel is real.
@@ -226,9 +230,17 @@ void fragment() {
     }
 #endif
 
-    // Gamma 2.0 by squaring, exactly as the guest's pixel shader does it. Alpha stays raw —
-    // it was tested above as the artist authored it.
-    alb.rgb *= alb.rgb;
+    // Gamma 2.0 by squaring for legacy assets; standard sRGB linear decode for authored PBR.
+    // Alpha stays raw — it was tested above as the artist authored it.
+    if (is_pbr) {
+        alb.rgb = mix(
+            alb.rgb / 12.92,
+            pow((alb.rgb + vec3(0.055)) / 1.055, vec3(2.4)),
+            step(vec3(0.04045), alb.rgb)
+        );
+    } else {
+        alb.rgb *= alb.rgb;
+    }
 
     if (premultiplied_alpha) {
         alb.rgb /= max(alb.a * alb.a, 1e-6);
@@ -333,20 +345,21 @@ void fragment() {
     // produced. A normal-only ORM has no exponent to invert, and the 0.04 dielectric floor
     // would hand a specular lobe to a material the guest renders with NONE — its fallback
     // sampler is transparent black.
-    if (has_orm && has_specular) {
+    if (has_orm && (has_specular || is_pbr)) {
         v_specular_power = clamp(2.0 / max(ROUGHNESS * ROUGHNESS, 1e-4) - 2.0, 1.0, 4096.0);
         v_specular = mix(vec3(0.04), alb.rgb, METALLIC);
     }
 
-    // GODOT'S INDIRECT SPECULAR IS OFF. The direct lobe is ours — `light()` takes it from the two
-    // varyings above — so SPECULAR, METALLIC and ROUGHNESS reach only Godot's ambient and GI
-    // REFLECTIONS. Those were inert while the shader disabled Godot's ambient; with the fill now
-    // Godot's they are live, and a Phong exponent turned into roughness 0.14 made every leaf card
-    // a mirror of the sky: lavender canopies over a red dusk (Bower Lake, view 1 lit them alone).
-    // The guest has no indirect specular; its one reflection is the authored cube below.
-    SPECULAR = 0.0;
-    METALLIC = 0.0;
-    ROUGHNESS = 1.0;
+    // GODOT'S INDIRECT SPECULAR IS OFF for legacy materials. For authored PBR, keep real roughness/metallic/AO.
+    if (!is_pbr) {
+        SPECULAR = 0.0;
+        METALLIC = 0.0;
+        ROUGHNESS = 1.0;
+    } else {
+        AO = ao;
+        AO_LIGHT_AFFECT = 1.0;
+        SPECULAR = 0.5;
+    }
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
     vec3 bake = fable_bake(world_normal, COLOR, UV2);

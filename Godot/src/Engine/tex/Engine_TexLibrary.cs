@@ -735,30 +735,238 @@ public static class Engine_TexLibrary
 		new(StringComparer.Ordinal);
 
 	/// <summary>
-	/// Builds, caches and serves the packed ORM texture for a material's specular map.
+	/// Suffixes checked when probing for an artist-authored ORM (Ambient Occlusion, Roughness, Metallic) texture.
+	/// </summary>
+	private static readonly string[] OrmCandidates = new[]
+	{
+		"_orm.png",
+		".orm.png",
+		"_orm.tex.png",
+		"_orm.tex",
+		"_orm",
+	};
+
+	/// <summary>
+	/// Suffixes stripped from diffuse/albedo texture names when probing for companion ORM maps (e.g. `stone_wall_d.png` -> `stone_wall_orm.png`).
+	/// </summary>
+	private static readonly string[] DiffuseSuffixes = new[]
+	{
+		"_d", "_diff", "_diffuse", "_basecolor", "_albedo", "_col"
+	};
+
+	/// <summary>
+	/// Probes for artist-authored ORM textures matching the material's diffuse, normal, or specular names.
 	/// </summary>
 	/// <remarks>
-	/// Keyed on the specular source AND the exponent range, because the packing depends on both.
-	/// Every shipped record states (1, 100) so in practice the range is one value, but a material
-	/// that varied it would otherwise be handed another material's roughness — and a cache that
-	/// can serve the wrong answer for a reason nobody wrote down is worse than no cache.
-	///
-	/// Its own map, like the cubes, because it is a derived texture: nothing else names it, so
-	/// keying it by the specular path plus the range keeps it out of the slot-keyed live map where
-	/// a plain path would collide with the specular itself.
+	/// When an authored ORM map is found, it bypasses synthetic heuristic generation and is loaded at full resolution,
+	/// preserving micro-detail and marking the material for PBR rendering in the standard material shader.
 	/// </remarks>
+	/// <param name="diffusePath">The material's diffuse texture path.</param>
+	/// <param name="specularPath">The material's specular texture path.</param>
+	/// <param name="normalPath">The material's normal map path.</param>
+	/// <param name="read">VFS read callback.</param>
+	/// <param name="texture">The loaded ORM texture if found.</param>
+	/// <param name="hasHeight">True if the ORM alpha channel contains active height/parallax displacement data.</param>
+	/// <returns>True if an authored ORM map was located and loaded; false otherwise.</returns>
+	private static bool TryResolveAuthoredOrm(
+		string diffusePath,
+		string specularPath,
+		string normalPath,
+		Func<string, byte[]?> read,
+		out ImageTexture? texture,
+		out bool hasHeight)
+	{
+		texture = null;
+		hasHeight = false;
+
+		string[] inputPaths = { diffusePath, normalPath, specularPath };
+		foreach (string rawPath in inputPaths)
+		{
+			if (string.IsNullOrWhiteSpace(rawPath))
+			{
+				continue;
+			}
+
+			string normalized = Normalise(rawPath);
+			int extIdx = normalized.LastIndexOf('.');
+			string stem = extIdx > 0 ? normalized[..extIdx] : normalized;
+
+			var candidates = new List<string>(OrmCandidates.Length * 2);
+			foreach (string suffix in OrmCandidates)
+			{
+				candidates.Add(stem + suffix);
+			}
+
+			foreach (string diffSuffix in DiffuseSuffixes)
+			{
+				if (stem.EndsWith(diffSuffix, StringComparison.OrdinalIgnoreCase))
+				{
+					string baseStem = stem[..^diffSuffix.Length];
+					foreach (string suffix in OrmCandidates)
+					{
+						candidates.Add(baseStem + suffix);
+					}
+					break;
+				}
+			}
+
+			foreach (string candidate in candidates)
+			{
+				string cacheKey = "authored:" + candidate;
+				lock (Gate)
+				{
+					if (LiveOrm.TryGetValue(cacheKey, out (ImageTexture? Texture, bool HasHeight) cached))
+					{
+						if (cached.Texture is not null)
+						{
+							texture = cached.Texture;
+							hasHeight = cached.HasHeight;
+							return true;
+						}
+					}
+				}
+
+				byte[]? bytes = null;
+				try
+				{
+					bytes = read(candidate);
+				}
+				catch
+				{
+					bytes = null;
+				}
+
+				if (bytes is null || bytes.Length == 0)
+				{
+					continue;
+				}
+
+				Image? img = null;
+				if (bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
+				{
+					img = new Image();
+					if (img.LoadPngFromBuffer(bytes) != Error.Ok)
+					{
+						img = null;
+					}
+				}
+				else
+				{
+					img = Engine_TexImage.TryCreateImage(bytes, out _, out _);
+				}
+
+				if (img is null)
+				{
+					continue;
+				}
+
+				if (img.GetFormat() != Image.Format.Rgba8)
+				{
+					img.Convert(Image.Format.Rgba8);
+				}
+
+				bool height = CheckHasHeight(img);
+				img.GenerateMipmaps();
+				Engine_TexImage.CompressBlocks(img, isNormalMap: false);
+				texture = ImageTexture.CreateFromImage(img);
+				hasHeight = height;
+
+				lock (Gate)
+				{
+					LiveOrm[cacheKey] = (texture, height);
+				}
+
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Determines if an authored ORM texture contains valid height data in its alpha channel.
+	/// </summary>
+	/// <remarks>
+	/// If all alpha pixels share identical values (e.g. solid 255 or solid 0), the channel represents a dummy/default alpha
+	/// and height parallax is suppressed. If alpha values vary, active surface displacement is enabled.
+	/// </remarks>
+	private static bool CheckHasHeight(Image img)
+	{
+		if (img.GetFormat() != Image.Format.Rgba8)
+		{
+			return false;
+		}
+
+		byte[] data = img.GetData();
+		if (data.Length < 4)
+		{
+			return false;
+		}
+
+		byte firstA = data[3];
+		for (int i = 7; i < data.Length; i += 4)
+		{
+			if (data[i] != firstA)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Legacy overload of <see cref="GetOrm"/> omitting diffuse path and authored PBR flag.
+	/// </summary>
 	public static ImageTexture? GetOrm(
 		string specularPath,
 		string normalPath,
 		float powerMin,
 		float powerMax,
 		Func<string, byte[]?> read,
-		out bool hasHeight)
+		out bool hasHeight) =>
+		GetOrm(string.Empty, specularPath, normalPath, powerMin, powerMax, read, out hasHeight, out _);
+
+	/// <summary>
+	/// Resolves, caches and returns an ORM (Occlusion-Roughness-Metallic) texture for a material.
+	/// </summary>
+	/// <remarks>
+	/// Operates in two modes:
+	/// 1. Authored PBR Mode: First probes for artist-authored companion maps (such as <c>&lt;stem&gt;_orm.png</c>).
+	///    If found, the texture is served at full resolution and <paramref name="isAuthored"/> is true.
+	/// 2. Shipped Heuristic Mode: When no authored map exists and <see cref="Engine_TexSettings.OrmEnabled"/> is on,
+	///    packs a derived ORM from specular alpha (roughness), specular color (metallic F0), and tangent-space normal divergence (cavity AO).
+	/// </remarks>
+	/// <param name="diffusePath">The material's diffuse texture path.</param>
+	/// <param name="specularPath">The material's specular texture path.</param>
+	/// <param name="normalPath">The material's normal map path.</param>
+	/// <param name="powerMin">Specular power exponent minimum.</param>
+	/// <param name="powerMax">Specular power exponent maximum.</param>
+	/// <param name="read">VFS read callback.</param>
+	/// <param name="hasHeight">True if parallax height displacement is active.</param>
+	/// <param name="isAuthored">True if an authored PBR map was found; false if derived from legacy maps.</param>
+	public static ImageTexture? GetOrm(
+		string diffusePath,
+		string specularPath,
+		string normalPath,
+		float powerMin,
+		float powerMax,
+		Func<string, byte[]?> read,
+		out bool hasHeight,
+		out bool isAuthored)
 	{
 		hasHeight = false;
+		isAuthored = false;
 
-		// A specular OR a normal map is enough — AO and height derive from the normal alone,
-		// and roughly a third of the asset set names a normal without a specular.
+		// 1. Probe for authored ORM texture (modded PBR)
+		if (TryResolveAuthoredOrm(diffusePath, specularPath, normalPath, read, out ImageTexture? authoredTex, out bool authoredHeight))
+		{
+			hasHeight = authoredHeight;
+			isAuthored = true;
+			return authoredTex;
+		}
+
+		// 2. Fall back to derived legacy ORM if enabled
 		if (!Engine_TexSettings.OrmEnabled ||
 			(string.IsNullOrWhiteSpace(specularPath) && string.IsNullOrWhiteSpace(normalPath)))
 		{

@@ -111,17 +111,6 @@ void AddGlobalTextureCandidates(std::vector<std::string>& candidates,
   }
 }
 
-void AddTitleUpdateDatabaseCandidates(std::vector<std::string>& candidates,
-                                      std::string_view relative) {
-  constexpr std::string_view kTitleUpdateSuffix = ".gdb.tu";
-  if (!EndsWith(relative, kTitleUpdateSuffix)) {
-    return;
-  }
-
-  std::string base_database(relative);
-  base_database.erase(base_database.size() - 3);
-  AddUnique(candidates, std::move(base_database));
-}
 
 void AddLocalizedAssetCandidates(std::vector<std::string>& candidates,
                                  std::string_view relative) {
@@ -211,7 +200,6 @@ std::vector<std::string> BuildLooseAssetCandidates(std::string_view normalized) 
       continue;
     }
     AddUnique(candidates, relative);
-    AddTitleUpdateDatabaseCandidates(candidates, relative);
     AddGeneratedBankRootCandidates(candidates, relative);
     AddGlobalTextureCandidates(candidates, relative);
     AddLocalizedAssetCandidates(candidates, relative);

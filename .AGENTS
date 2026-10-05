@@ -1,0 +1,97 @@
+# AGENTS.md / .AGENTS — Refii Project & Agent Instructions
+
+This file provides context, filesystem orientation, documentation standards, and mandatory engineering workflows for AI agents working in this repository.
+
+---
+
+## 1. Project Explanation & Architecture
+
+**Refii** is a modern static recompilation and port of *Fable 2* (Xbox 360) targeting PC.
+
+The project architecture is divided into two collaborating layers:
+1. **Guest Engine (Native C++ Recompilation)**:
+   - Statically recompiled PowerPC executable source files (`refii_recomp.*.cpp`).
+   - Executes the original game loops, AI, physics, simulation, and low-level game scripts.
+   - Communicates with the host through `src/hostbridge/`, `src/vfs/`, and native host interfaces.
+2. **Host Engine (Godot 4 / C# .NET 8)**:
+   - Located under `Godot/`.
+   - Acts as the presentation runtime, UI, launcher, modding platform, and asset loader.
+   - Hosts the Virtual File System (`BnkFileSystem`) that parses Xbox 360 `.bnk` archives, Title Updates (`.gdb.tu`), localized string databases (`book.babel`), tiled textures (`.tex`), and 3D models (`.mdl`).
+   - Provides live in-editor tooling via `Godot/addons/bnk_mount/` to inspect and hot-patch game databases and assets directly into `.f2mod` containers.
+
+---
+
+## 2. File System Summary
+
+```
+refii/
+├── .AGENTS                     # This instructions and project guidelines file
+├── refii_recomp.*.cpp          # Recompiled PPC game logic source files
+├── sources.cmake, rexglue.cmake# CMake configuration for native recomp build
+├── src/                        # Native C++ host layer
+│   ├── hostbridge/             # Bridge interfacing native guest calls with host
+│   ├── vfs/                    # Native virtual filesystem hooks
+│   ├── hooks/                  # Function detour hooks and guest patches
+│   ├── host_audio.*            # Host audio streaming
+│   ├── host_input.*            # Gamepad and keyboard input handling
+│   ├── upscaler/ & shader/     # Rendering pipelines and post-processing
+│   └── lua/                    # Native Lua script integration
+├── Godot/                      # Godot 4 .NET host project (C#)
+│   ├── refii-launcher.sln      # Solution file for host engine and tests
+│   ├── refii-launcher.csproj   # Host engine project (build triggers automated tests)
+│   ├── src/                    # Host engine C# source code
+│   │   ├── Engine/             # Core host subsystems
+│   │   │   ├── bnk/            # BnkFileSystem, archive reading, virtual mounting
+│   │   │   ├── gdb/            # Game Database (GDB) parsing, patching, composting
+│   │   │   ├── mods/           # F2ModPackage (.f2mod), load order, manifests, overlays
+│   │   │   ├── text/           # Babel text databases and CSV row overlays
+│   │   │   ├── tex/            # Xbox 360 texture swizzling & PNG conversion
+│   │   │   ├── mdl/            # 3D model parsing & GLTF mesh conversion
+│   │   │   ├── equipment/      # Weapon, clothing, item indexes
+│   │   │   └── entities/       # Entity definitions and indexes
+│   │   ├── launcher/           # Launcher UI, settings, and modding management panel
+│   │   └── game/               # In-game HUD, UI, and host presentation nodes
+│   ├── addons/
+│   │   └── bnk_mount/          # In-editor live asset browser, inspector & mod creator
+│   ├── assets/
+│   │   └── mods/               # Target folder for .f2mod mod packages (no loose folders)
+│   ├── docs/                   # Architecture and unit testing guides
+│   └── tests/
+│       └── Refii.Tests/        # Automated GdUnit4Net test project
+├── notes/                      # User's research documentation, format specs, modding design
+└── tools/                      # Python/shell tools (disassemblers, debuggers, contracts)
+```
+
+---
+
+## 3. Code Commenting & Documentation Rules
+
+To ensure long-term codebase maintainability, maintain strict documentation integrity:
+
+1. **XML Documentation**:
+   - Every newly created or modified class, interface, struct, enum, public/internal method, and property must have clear XML documentation (`/// <summary>`, `/// <param>`, `/// <returns>`).
+2. **Context & Rationale**:
+   - Comments must explain *why* a particular design decision or workaround exists, not just reiterate syntax.
+   - Note non-obvious binary format constraints, byte alignments, endianness swaps (Xbox 360 big-endian vs PC little-endian), or VFS virtual path aliasing rules where relevant.
+3. **Preserve Documentation Integrity**:
+   - Never strip existing comments or docstrings from untouched code when making edits.
+
+---
+
+## 4. Mandatory Unit Testing Rule for C# in `Godot/`
+
+**Any work done on C# code in `Godot/` MUST be accompanied by comprehensive unit tests.**
+
+1. **Test-First & Regression Prevention**:
+   - Whenever creating a new class or modifying an existing class/method in `Godot/src/` or `Godot/addons/`, you must either add new unit tests or update existing test suites in `Godot/tests/Refii.Tests/`.
+   - Aim for high test coverage: cover standard workflows, boundary conditions, edge cases, error handling, and conflict resolution scenarios.
+2. **Test Framework**:
+   - Unit tests use **GdUnit4Net** (`[TestSuite]`, `[TestCase]`, `AssertThat(...)`).
+   - Tests are integrated directly into the MSBuild pipeline. Running `dotnet build Godot/refii-launcher.csproj` automatically compiles and executes all unit tests. Any test failure fails the entire build.
+3. **Headless Execution Compatibility**:
+   - `dotnet test Godot/` runs in a standalone CLI test process outside the Godot runtime engine.
+   - **Do not instantiate native Godot GUI controls** (`new Tree()`, `new Button()`, `new Window()`) inside unit tests without `[RequireGodotRuntime]` because Godot unmanaged bindings are not initialized in headless CLI runners.
+   - Test functionality through pure C# domain models, data layers, virtual filesystem instances, or mocked service delegates.
+   - Guard any Godot engine logging (`GD.Print`, `GD.PushWarning`) in tested code with headless execution checks (or delegate handlers) to prevent native interop access violations.
+4. **Verification Requirement**:
+   - Always run `dotnet test Godot/` and confirm all tests pass (`Passed: Total, Failed: 0`) before reporting any task or branch complete.

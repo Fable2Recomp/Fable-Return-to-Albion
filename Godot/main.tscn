@@ -471,7 +471,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-texture = ExtResource("2_7mycd")
+texture = ExtResource("2_272bh")
 expand_mode = 1
 stretch_mode = 6
 
@@ -483,7 +483,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-texture = ExtResource("2_272bh")
+texture = ExtResource("2_7mycd")
 expand_mode = 1
 stretch_mode = 6
 
@@ -574,8 +574,6 @@ popup/item_1/text = "RexGlue"
 popup/item_1/id = 1
 
 [node name="ArtCredit" type="Label" parent="." unique_id=1900001001]
-visible = false
-modulate = Color(1, 1, 1, 0.017148018)
 layout_mode = 0
 offset_left = 36.0
 offset_top = 612.0
@@ -647,19 +645,19 @@ mouse_default_cursor_shape = 2
 theme_override_colors/font_color = Color(0.9098039, 0.8627451, 0.7607843, 1)
 theme_override_colors/font_disabled_color = Color(0.54901963, 0.48235294, 0.41960785, 1)
 theme_override_fonts/font = SubResource("FontVariation_074og")
-theme_override_font_sizes/font_size = 14
+theme_override_font_sizes/font_size = 22
 theme_override_styles/normal = SubResource("StyleBoxFlat_cegan")
 theme_override_styles/pressed = SubResource("StyleBoxFlat_82xsv")
 theme_override_styles/hover = SubResource("StyleBoxFlat_getpj")
 theme_override_styles/disabled = SubResource("StyleBoxFlat_ryguw")
 theme_override_styles/focus = SubResource("StyleBoxFlat_d13ii")
-text = "Build Game Code"
+text = "Play Fable 2"
 
 [node name="InfoPanel" type="Panel" parent="." unique_id=238176640]
 layout_mode = 0
 offset_left = 24.0
 offset_top = 318.0
-offset_right = 462.4
+offset_right = 462.40002
 offset_bottom = 598.0
 theme_override_styles/panel = SubResource("StyleBoxFlat_1u8w0")
 
@@ -738,7 +736,7 @@ text = "✕"
 layout_mode = 0
 offset_left = 792.0
 offset_top = 56.0
-offset_right = 1256.0
+offset_right = 1255.9999
 offset_bottom = 736.0
 theme_override_styles/panel = SubResource("StyleBoxFlat_4k2k6")
 

@@ -118,12 +118,7 @@ public static class Engine_EntityIndex
             return;
         }
 
-        var blobs = new List<byte[]?>();
-        foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
-        {
-            blobs.Add(_resolver(path) ?? _resolver("data/" + path));
-        }
-
+        var blobs = Refii.Gdb.Engine_GameGdb.LoadSupplementalBlobs(_resolver, includeTu: true);
         GdbMulti multi = GdbMulti.Build(blobs);
         List<EntityEntry> entries = Engine_EntityCatalog.Build(multi);
 

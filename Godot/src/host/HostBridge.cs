@@ -4862,6 +4862,12 @@ public static class HostBridge
 	/// </summary>
 	private static Func<string, long>? _assetSize;
 
+	[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+	private delegate int AssetIsOverrideDelegate(IntPtr path, UIntPtr length);
+
+	private static AssetIsOverrideDelegate? _assetIsOverride;
+	private static Func<string, bool>? _assetOverrideSource;
+
 	/// <summary>
 	/// Points the guest's loaders at Godot's. Call after the mount succeeds, with the SAME reader
 	/// every Godot loader uses. Pass null on the way out, so a guest read arriving after teardown
@@ -4869,13 +4875,13 @@ public static class HostBridge
 	/// </summary>
 	public static void SetAssetReader(Func<string, byte[]?>? source, Func<string, long>? size = null)
 	{
+		_assetSource = source;
+		_assetSize = size;
+
 		if (TryGetAbiVersion() is null)
 		{
 			return;
 		}
-
-		_assetSource = source;
-		_assetSize = size;
 
 		try
 		{
@@ -4895,17 +4901,79 @@ public static class HostBridge
 	}
 
 	/// <summary>
-	/// Points the guest's HASH lookups at Godot's index — the other half of
-	/// <see cref="SetAssetReader"/>, registered separately. Pass null on the way out.
+	/// Points the guest VFS at Godot's asset override predicate.
+	/// When Godot serves a virtual mod overlay (e.g. globals.gdb or book.babel), this answers 1
+	/// so native VFS prioritizes Godot's virtual asset over loose files on disk.
 	/// </summary>
-	public static void SetAssetNameResolver(Func<uint, string?>? source)
+	public static void SetAssetOverrideQuery(Func<string, bool>? source)
 	{
+		// Preserve the predicate callback so HostBridge.Initialize() can bind it once ABI is ready.
+		_assetOverrideSource = source;
+
 		if (TryGetAbiVersion() is null)
 		{
 			return;
 		}
 
+		try
+		{
+			if (source is null)
+			{
+				RefiiHostSetAssetOverrideQuery(IntPtr.Zero);
+				_assetIsOverride = null;
+				return;
+			}
+
+			_assetIsOverride ??= IsAssetOverrideForGuest;
+			RefiiHostSetAssetOverrideQuery(Marshal.GetFunctionPointerForDelegate(_assetIsOverride));
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	private static int IsAssetOverrideForGuest(IntPtr path, UIntPtr length)
+	{
+		try
+		{
+			if (_assetOverrideSource is not { } source || path == IntPtr.Zero || length == UIntPtr.Zero)
+			{
+				return 0;
+			}
+
+			string name = Marshal.PtrToStringUTF8(path, (int)length);
+			if (string.IsNullOrEmpty(name))
+			{
+				return 0;
+			}
+
+			bool isOverride = source(name);
+			if (isOverride || name.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".babel", StringComparison.OrdinalIgnoreCase))
+			{
+				GD.Print($"[host-bridge] IsAssetOverride('{name}') => {isOverride}");
+			}
+			return isOverride ? 1 : 0;
+		}
+		catch (Exception e)
+		{
+			GD.PushWarning($"[host-assets] the guest's asset override check threw: {e.Message}");
+			return 0;
+		}
+	}
+
+	/// <summary>
+	/// Points the guest's HASH lookups at Godot's index — the other half of
+	/// <see cref="SetAssetReader"/>, registered separately. Pass null on the way out.
+	/// </summary>
+	public static void SetAssetNameResolver(Func<uint, string?>? source)
+	{
+		// Preserve the resolver delegate unconditionally.
 		_assetNameSource = source;
+
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
 
 		try
 		{
@@ -7507,6 +7575,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetAssetReader(IntPtr reader);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetAssetOverrideQuery(IntPtr query);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetAssetNameResolver(IntPtr resolver);

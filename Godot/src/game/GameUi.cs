@@ -375,6 +375,22 @@ public partial class GameUi : Node
 		// The host's own _Ready runs on AddChild, so the screen is already standing up by the
 		// time this returns and the theme has a presentation to catalogue.
 		_viewport.AddChild(_presentation);
+
+		// When asset mounting completes or modded text overlays arrive, update all UI references:
+		_presentation.StringsChanged += newStrings =>
+		{
+			if (_loading is not null)
+			{
+				_loading.Strings = newStrings;
+			}
+			if (_hud is not null)
+			{
+				_hud.Values.Strings = newStrings;
+			}
+			GameWhereabouts.Strings = newStrings;
+			Engine_UiInventorySource.Strings = newStrings;
+		};
+
 		_books.Host = _presentation;
 		_infoPanel.Host = _presentation;
 		_spells.Host = _presentation;
@@ -9063,7 +9079,7 @@ public partial class GameUi : Node
 			// The same two inputs for the DATA-AREA source, which needs the string book to name
 			// an item and `globals.gdb` to find its tag. Read once and kept: the GDB is 3 MB and
 			// its parse is shared, but re-resolving it per sample would still walk the banks.
-			if (Engine_UiInventorySource.Strings is null)
+			if (Engine_UiInventorySource.Strings is null || Engine_UiInventorySource.Strings != _presentation?.Strings)
 			{
 				Engine_UiInventorySource.Strings = _presentation?.Strings;
 			}

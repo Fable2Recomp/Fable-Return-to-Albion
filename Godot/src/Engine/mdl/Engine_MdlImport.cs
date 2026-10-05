@@ -179,6 +179,15 @@ public static class Engine_MdlImport
 			return mesh;
 		}
 
+		if (root is ImporterMeshInstance3D impInstance && impInstance.Mesh is { } impMesh)
+		{
+			ArrayMesh array = impMesh.GetMesh();
+			if (array is not null && array.GetSurfaceCount() > 0)
+			{
+				return array;
+			}
+		}
+
 		foreach (Node child in root.GetChildren())
 		{
 			if (FindFirstMesh(child) is { } found)

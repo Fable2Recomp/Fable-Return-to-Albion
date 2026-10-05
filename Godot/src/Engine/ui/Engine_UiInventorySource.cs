@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Refii.Core;
+using Refii.Equipment;
 using Refii.Gdb;
 
 namespace Refii.Ui;
@@ -1011,9 +1012,9 @@ public static class Engine_UiInventorySource
 		ItemString(record.RecordId, NameTagField);
 
 	/// <summary>
-	/// The row's display text: the tag through the string book, with the stack count appended the
-	/// way the guest does it — `L" x"` then the number (`word_820CE5E0`, 0x826CE31C), so
-	/// "Silver Key x5". An unresolved tag shows verbatim, which is what the guest does too
+	/// The row's display text: resolves via Engine_ItemNames (or Babel tag fallback), with the stack
+	/// count appended the way the guest does it — `L" x"` then the number (`word_820CE5E0`, 0x826CE31C),
+	/// so "Silver Key x5". An unresolved tag shows verbatim, which is what the guest does too
 	/// (`sub_8230E0E8`'s third fallback copies the raw tag).
 	///
 	/// An OUTFIT reads its name alone: it is worn as its pieces, so how many copies of the suit
@@ -1022,6 +1023,17 @@ public static class Engine_UiInventorySource
 	/// </summary>
 	private static string LabelOf(Refii.Host.HostBridge.InventoryRecord record, string tag)
 	{
+		// Try resolving via Engine_ItemNames first (unified DRY path matching editor & item pages):
+		if (Globals is { } gdb &&
+			Engine_ItemDetails.BuildOne(gdb, record.RecordId) is { } detail)
+		{
+			string displayName = Engine_ItemNames.DisplayNameOf(detail);
+			if (!string.IsNullOrEmpty(displayName) && displayName != detail.Label)
+			{
+				return record.Count > 1 ? $"{displayName} x{record.Count}" : displayName;
+			}
+		}
+
 		string text = tag.Length == 0
 			? $"0x{record.RecordId:X8}"
 			: Strings is { } book && book.TryGetString(tag, out string resolved) &&

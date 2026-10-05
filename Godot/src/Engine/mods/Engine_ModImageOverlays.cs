@@ -50,6 +50,65 @@ public static class ModImageOverlays
 
 		foreach (ModOverlay overlay in overlays)
 		{
+			string sourcePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot;
+			if (File.Exists(sourcePath) && sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+			{
+				if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out _) && pkg is not null)
+				{
+					using (pkg)
+					{
+						foreach (F2ModEntry entry in pkg.Entries)
+						{
+							if (!entry.Path.EndsWith(Suffix, StringComparison.OrdinalIgnoreCase))
+							{
+								continue;
+							}
+
+							byte[] png;
+							try
+							{
+								png = pkg.ReadEntryBytes(entry);
+							}
+							catch (Exception exception)
+							{
+								conversions.Add(new ImageConversion
+								{
+									Target = entry.Path,
+									Mod = overlay.Name,
+									Error = exception.Message,
+								});
+								continue;
+							}
+
+							string relative = entry.Path.Replace('\\', '/').TrimStart('/');
+							if (relative.StartsWith("files/", StringComparison.OrdinalIgnoreCase))
+							{
+								relative = relative["files/".Length..];
+							}
+							string target = ModLoadOrder.Normalize(relative);
+							target = target[..^4];
+
+							var conversion = new ImageConversion { Target = target, Mod = overlay.Name };
+							if (!TryConvert(png, out byte[] tex, conversion))
+							{
+								conversions.Add(conversion);
+								continue;
+							}
+
+							conversions.Add(conversion);
+							mounted.AddVirtualFile(
+								target, $"<image:{target}>", tex.LongLength, () => tex, overlay.Name);
+						}
+					}
+				}
+				continue;
+			}
+
+			if (!Directory.Exists(overlay.AssetRoot))
+			{
+				continue;
+			}
+
 			foreach (string file in ModManifest.EnumerateAssets(overlay.AssetRoot))
 			{
 				if (!file.EndsWith(Suffix, StringComparison.OrdinalIgnoreCase))
@@ -76,7 +135,12 @@ public static class ModImageOverlays
 				}
 
 				// `foo.tex.png` becomes `foo.tex`.
-				string target = ModLoadOrder.Normalize(relative);
+				string normRel = relative.Replace('\\', '/').TrimStart('/');
+				if (normRel.StartsWith("files/", StringComparison.OrdinalIgnoreCase))
+				{
+					normRel = normRel["files/".Length..];
+				}
+				string target = ModLoadOrder.Normalize(normRel);
 				target = target[..^4];
 
 				var conversion = new ImageConversion { Target = target, Mod = overlay.Name };

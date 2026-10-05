@@ -225,6 +225,17 @@ public partial class Engine_GameAssets : Node
 			}
 		}
 
+		// TITLE UPDATE PATCHES: Compose multi-mod GDB databases in load order:
+		var composites = Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, ModsRoot);
+		foreach (Refii.Gdb.CompositeGdbResult comp in composites)
+		{
+			GD.Print($"[mods] tu composite: {comp.SubPath} across {comp.ContributingMods.Count} mod(s) ({comp.Conflicts.Count} conflict(s))");
+			foreach (Refii.Gdb.GdbRecordConflict conflict in comp.Conflicts)
+			{
+				GD.Print($"[mods]   override: {conflict}");
+			}
+		}
+
 		var entries = Refii.Mods.ModIndex.Build(mounted);
 		if (!Refii.Mods.ModIndex.WriteReport(
 				ResolvedReportPath, Instance?.GameDirectory ?? string.Empty, overlays, entries,
@@ -276,8 +287,14 @@ public partial class Engine_GameAssets : Node
 		// The game's GDB for the owned detail pages; bound here AND in addons/bnk_mount.
 		Refii.Gdb.Engine_GameGdb.SetResolver(ReadAllBytes);
 
+		// The game's text bank for localized item names and descriptions; bound here AND in addons/bnk_mount.
+		Refii.Gdb.Engine_BnkTextBankLoader.SetGameDirectory(GameDirectory);
+		Refii.Gdb.Engine_BnkTextBankLoader.SetResolver(ReadAllBytes);
+		Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
+
 		// The guest reads through this same mount.
 		Refii.Host.HostBridge.SetAssetReader(ReadAllBytes, FileSize);
+		Refii.Host.HostBridge.SetAssetOverrideQuery(FileIsOverride);
 
 		// Guest texture requests carry a 32-bit hash and no path; the index is a view of this mount.
 		Refii.Bnk.AssetHashIndex.Build(EnumerateAllFiles());
@@ -713,6 +730,23 @@ public partial class Engine_GameAssets : Node
 		TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
 
 	public bool FileExists(string virtualPath) => TryGetFile(virtualPath, out _);
+
+	/// <summary>
+	/// Returns whether the mounted file is contributed by a mod or virtual overlay rather than base game data.
+	/// Used by the native C++ VFS bridge to determine when an in-memory virtual asset should take precedence
+	/// over a loose file residing on disk (such as globals.gdb or book.babel).
+	/// </summary>
+	public bool FileIsOverride(string virtualPath)
+	{
+		if (TryGetFile(virtualPath, out BnkFile file))
+		{
+			// True if attributed to a mod name, marked as override/loose, or created via virtual row/mesh/image overlays:
+			return file.IsOverride || file.SourceMod.Length != 0 || file.SourceArchivePath.StartsWith("<rows:") ||
+				virtualPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase);
+		}
+
+		return false;
+	}
 
 	/// <summary>The asset's length without reading it, or -1 if absent. Files with alternates
 	/// (`.mdl`, `.tex`) must be read: <see cref="BnkFile.ReadAllBytes"/> concatenates them.</summary>

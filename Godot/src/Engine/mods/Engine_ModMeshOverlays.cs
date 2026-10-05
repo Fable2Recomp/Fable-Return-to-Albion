@@ -44,6 +44,64 @@ public static class ModMeshOverlays
 
 		foreach (ModOverlay overlay in overlays)
 		{
+			string sourcePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot;
+			if (File.Exists(sourcePath) && sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+			{
+				if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out _) && pkg is not null)
+				{
+					using (pkg)
+					{
+						foreach (F2ModEntry entry in pkg.Entries)
+						{
+							string? suffix = null;
+							foreach (string candidate in Suffixes)
+							{
+								if (entry.Path.EndsWith(candidate, StringComparison.OrdinalIgnoreCase))
+								{
+									suffix = candidate;
+									break;
+								}
+							}
+
+							if (suffix is null)
+							{
+								continue;
+							}
+
+							byte[] gltf;
+							try
+							{
+								gltf = pkg.ReadEntryBytes(entry);
+							}
+							catch (Exception exception)
+							{
+								conversions.Add(new MeshConversion
+								{
+									Target = entry.Path, Mod = overlay.Name, Error = exception.Message,
+								});
+								continue;
+							}
+
+							string relative = entry.Path.Replace('\\', '/').TrimStart('/');
+							if (relative.StartsWith("files/", StringComparison.OrdinalIgnoreCase))
+							{
+								relative = relative["files/".Length..];
+							}
+							string target = ModLoadOrder.Normalize(relative);
+							target = target[..^(suffix.Length - ".mdl".Length)];
+
+							ProcessMesh(mounted, conversions, overlay.Name, target, gltf);
+						}
+					}
+				}
+				continue;
+			}
+
+			if (!Directory.Exists(overlay.AssetRoot))
+			{
+				continue;
+			}
+
 			foreach (string file in ModManifest.EnumerateAssets(overlay.AssetRoot))
 			{
 				string? suffix = null;
@@ -77,73 +135,102 @@ public static class ModMeshOverlays
 					continue;
 				}
 
-				string target = ModLoadOrder.Normalize(relative);
+				string normRel = relative.Replace('\\', '/').TrimStart('/');
+				if (normRel.StartsWith("files/", StringComparison.OrdinalIgnoreCase))
+				{
+					normRel = normRel["files/".Length..];
+				}
+				string target = ModLoadOrder.Normalize(normRel);
 				target = target[..^(suffix.Length - ".mdl".Length)];
 
-				var conversion = new MeshConversion { Target = target, Mod = overlay.Name };
-
-				if (!mounted.TryGetFile(target, out BnkFile template))
-				{
-					conversion.Error =
-						$"there is no '{target}' to replace — a model mod edits a model the game " +
-						"already has, because the file states far more than its mesh.";
-					conversions.Add(conversion);
-					continue;
-				}
-
-				byte[] original;
-				try
-				{
-					original = template.ReadAllBytes();
-				}
-				catch (Exception exception)
-				{
-					conversion.Error = exception.Message;
-					conversions.Add(conversion);
-					continue;
-				}
-
-				if (!Engine_MdlData.TryParseInfo(original, target, out MdlInfo info, out string parseError))
-				{
-					conversion.Error = $"'{target}' could not be read: {parseError}";
-					conversions.Add(conversion);
-					continue;
-				}
-
-				if (!TryLoadMesh(gltf, out Mesh? mesh, out string loadError) || mesh is null)
-				{
-					conversion.Error = loadError;
-					conversions.Add(conversion);
-					continue;
-				}
-
-				if (!Engine_MdlImport.TryFromSurface(mesh, 0, out MdlImportedMesh imported, out string importError))
-				{
-					conversion.Error = importError;
-					conversions.Add(conversion);
-					continue;
-				}
-
-				if (!Engine_MdlWriter.TryReplaceMesh(
-						original, info, 0,
-						imported.Positions, imported.Uvs, imported.Normals, imported.Tangents,
-						imported.Indices, out byte[] rebuilt, out string writeError))
-				{
-					conversion.Error = writeError;
-					conversions.Add(conversion);
-					continue;
-				}
-
-				conversion.VertexCount = imported.VertexCount;
-				conversion.TriangleCount = imported.TriangleCount;
-				conversions.Add(conversion);
-
-				mounted.AddVirtualFile(
-					target, $"<mesh:{target}>", rebuilt.LongLength, () => rebuilt, overlay.Name);
+				ProcessMesh(mounted, conversions, overlay.Name, target, gltf);
 			}
 		}
 
 		return conversions;
+	}
+
+	private static void ProcessMesh(
+		BnkFileSystem mounted,
+		List<MeshConversion> conversions,
+		string modName,
+		string target,
+		byte[] gltf)
+	{
+		var conversion = new MeshConversion { Target = target, Mod = modName };
+
+		if (!mounted.TryGetFile(target, out BnkFile template))
+		{
+			bool foundAlias = false;
+			foreach (string alias in BnkFileSystem.AliasesFor(target))
+			{
+				if (mounted.TryGetFile(alias, out template))
+				{
+					target = alias;
+					foundAlias = true;
+					break;
+				}
+			}
+
+			if (!foundAlias)
+			{
+				conversion.Error =
+					$"there is no '{target}' to replace — a model mod edits a model the game " +
+					"already has, because the file states far more than its mesh.";
+				conversions.Add(conversion);
+				return;
+			}
+		}
+
+		byte[] original;
+		try
+		{
+			original = template.ReadAllBytes();
+		}
+		catch (Exception exception)
+		{
+			conversion.Error = exception.Message;
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (!Engine_MdlData.TryParseInfo(original, target, out MdlInfo info, out string parseError))
+		{
+			conversion.Error = $"'{target}' could not be read: {parseError}";
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (!TryLoadMesh(gltf, out Mesh? mesh, out string loadError) || mesh is null)
+		{
+			conversion.Error = loadError;
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (!Engine_MdlImport.TryFromSurface(mesh, 0, out MdlImportedMesh imported, out string importError))
+		{
+			conversion.Error = importError;
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (!Engine_MdlWriter.TryReplaceMesh(
+				original, info, 0,
+				imported.Positions, imported.Uvs, imported.Normals, imported.Tangents,
+				imported.Indices, out byte[] rebuilt, out string writeError))
+		{
+			conversion.Error = writeError;
+			conversions.Add(conversion);
+			return;
+		}
+
+		conversion.VertexCount = imported.VertexCount;
+		conversion.TriangleCount = imported.TriangleCount;
+		conversions.Add(conversion);
+
+		mounted.AddVirtualFile(
+			target, $"<mesh:{target}>", rebuilt.LongLength, () => rebuilt, modName);
 	}
 
 	/// <summary>Reads a glTF into a scene and takes its first mesh.</summary>
@@ -155,7 +242,10 @@ public static class ModMeshOverlays
 		try
 		{
 			var document = new GltfDocument();
-			var state = new GltfState();
+			var state = new GltfState
+			{
+				HandleBinaryImageMode = GltfState.HandleBinaryImageModeEnum.DiscardTextures,
+			};
 			Error appended = document.AppendFromBuffer(gltf, string.Empty, state);
 			if (appended != Error.Ok)
 			{
@@ -163,15 +253,30 @@ public static class ModMeshOverlays
 				return false;
 			}
 
-			Node scene = document.GenerateScene(state);
-			if (scene is null)
+			// First check GltfState meshes directly:
+			var gltfMeshes = state.GetMeshes();
+			if (gltfMeshes is not null)
 			{
-				error = "the glTF holds no scene.";
-				return false;
+				foreach (GltfMesh gltfMesh in gltfMeshes)
+				{
+					if (gltfMesh.Mesh is { } imp)
+					{
+						ArrayMesh array = imp.GetMesh();
+						if (array is not null && array.GetSurfaceCount() > 0)
+						{
+							mesh = array;
+							return true;
+						}
+					}
+				}
 			}
 
-			mesh = Engine_MdlImport.FindFirstMesh(scene);
-			scene.QueueFree();
+			Node scene = document.GenerateScene(state);
+			if (scene is not null)
+			{
+				mesh = Engine_MdlImport.FindFirstMesh(scene);
+				scene.QueueFree();
+			}
 
 			if (mesh is null)
 			{

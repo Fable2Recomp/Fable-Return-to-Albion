@@ -2,9 +2,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Godot;
 using Refii.Bnk;
+using Refii.EditorTools;
+using Refii.Mods;
 
 namespace Refii.Assets;
 
@@ -31,6 +34,37 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string LevelPrefix = "lvl:";
     private const string ContainerMeta = "__bnk_container__";
     private const string FilePrefix = "game://";
+    public const string BnkMetaKey = "__bnk_meta__";
+
+    /// <summary>
+    /// Attaches custom metadata to a Game:// tree item.
+    /// Sets column 0 metadata to "res://" so that Godot's FileSystemDock tooltip handler
+    /// evaluates DirAccess::exists("res://") as true and returns nullptr immediately,
+    /// preventing the '!FileAccess::exists(p_path)' console error when hovered.
+    /// </summary>
+    public static void SetItemMeta(TreeItem item, string meta)
+    {
+        item.SetMeta(BnkMetaKey, meta);
+        item.SetMetadata(0, "res://");
+    }
+
+    /// <summary>
+    /// Retrieves custom metadata from a Game:// tree item, falling back to column 0 metadata.
+    /// </summary>
+    public static string GetItemMeta(TreeItem? item)
+    {
+        if (item is null || !GodotObject.IsInstanceValid(item))
+        {
+            return string.Empty;
+        }
+
+        if (item.HasMeta(BnkMetaKey))
+        {
+            return item.GetMeta(BnkMetaKey).AsString();
+        }
+
+        return item.GetMetadata(0).AsString();
+    }
 
     private BnkFileSystem? _filesystem;
     private Refii.Textures.Engine_BnkTextureLoader? _textureLoader;
@@ -71,6 +105,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
     public override void _EnterTree()
     {
+        Instance = this;
         // BEFORE THE MOUNT, ON THIS THREAD, AND BOTH HALVES MATTER. Godot restores the last-open
         // scene the moment the editor comes up, and res://levels/pubgames/*.tscn is nothing but
         // game:// references. The rest of the loaders are registered by Inject() once the
@@ -100,10 +135,11 @@ public partial class BnkMountPlugin : EditorPlugin
 
         StartMount();
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged += OnFilesystemChanged;
-        GetTree().NodeAdded += OnNodeAdded;
         AddStreamingLabel();
         _entityInspector = new EntityInspectorPlugin();
         AddInspectorPlugin(_entityInspector);
+        SetupContextMenu();
+        EnsureFileExtensionsRecognized();
     }
 
     public override void _ExitTree()
@@ -115,11 +151,35 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged -= OnFilesystemChanged;
-        GetTree().NodeAdded -= OnNodeAdded;
         RemoveStreamingLabel();
         RemoveGameRoot();
         RemoveLoaders();
         Refii.FlashGames.Engine_SwfAssets.RemoveLoaders();
+        RemoveContextMenu();
+
+        if (Instance == this)
+        {
+            Instance = null;
+        }
+
+        if (_bridge is not null && GodotObject.IsInstanceValid(_bridge))
+        {
+            try
+            {
+                _bridge.Call("uninstall");
+            }
+            catch
+            {
+            }
+            _bridge = null;
+        }
+
+        if (_tree is not null && GodotObject.IsInstanceValid(_tree) && _collapsedHooked)
+        {
+            _tree.ItemCollapsed -= OnItemCollapsed;
+            _collapsedHooked = false;
+        }
+
         _filesystem?.Dispose();
         _filesystem = null;
     }
@@ -257,8 +317,17 @@ public partial class BnkMountPlugin : EditorPlugin
                 // THE EDITOR BROWSES WHAT THE GAME WILL LOAD, mods included — same mount, same
                 // order. An editor that showed only the shipped assets would report a modded
                 // file as missing and export a mod against the wrong base.
+                string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+                var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
+                string activeMod = EditorTools.EditorModExporter.ActiveModName;
+                if (!string.IsNullOrEmpty(activeMod) && !order.Enabled.Contains(activeMod))
+                {
+                    order.Enabled.Insert(0, activeMod);
+                    order.Write(modsRoot, out _);
+                }
+
                 var overlays = Refii.Mods.ModIndex.ResolveOverlays(
-                    Refii.Assets.Engine_GameAssets.ModsRoot, out Refii.Mods.ModLoadOrder order);
+                    modsRoot, order, Refii.Mods.ModWorkspace.DiscoverModInstalls(modsRoot));
                 mounted = BnkFileSystem.Mount(
                     gameDirectory,
                     overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays));
@@ -269,7 +338,21 @@ public partial class BnkMountPlugin : EditorPlugin
 
                 Refii.Mods.ModRowOverlays.Apply(mounted, overlays);
                 Refii.Mods.ModImageOverlays.Apply(mounted, overlays);
-                Refii.Mods.ModMeshOverlays.Apply(mounted, overlays);
+                var conversions = Refii.Mods.ModMeshOverlays.Apply(mounted, overlays);
+                foreach (var c in conversions)
+                {
+                    if (c.Ok)
+                    {
+                        GD.Print($"[bnk_mount] model {Refii.Mods.ModMeshOverlays.Describe(c)}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[bnk_mount] model {Refii.Mods.ModMeshOverlays.Describe(c)}");
+                    }
+                }
+
+                // Compose multi-mod GDB Title Updates in load order:
+                Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, modsRoot);
             }
             catch (Exception exception)
             {
@@ -277,6 +360,13 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             _filesystem = mounted;
+            Refii.Gdb.Engine_GameGdb.Invalidate();
+            Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
+            Refii.Equipment.Engine_WeaponIndex.Invalidate();
+            Refii.Equipment.Engine_ItemIndex.Invalidate();
+            Refii.Equipment.Engine_ClothingIndex.Invalidate();
+            Refii.Entities.Engine_EntityIndex.Invalidate();
+            _ = Refii.Equipment.Engine_WeaponIndex.Families;
             _videos = Refii.Video.Engine_VideoLibrary.Load(gameDirectory);
             _byFileName = null;
             _mounting = false;
@@ -311,6 +401,16 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             return null;
         }
+    }
+
+    public byte[]? ResolveBaseBytes(string virtualPath)
+    {
+        if (_filesystem is null)
+        {
+            return null;
+        }
+
+        return _filesystem.ReadBaseBytes(virtualPath);
     }
 
     private string? HeightfieldForEhf(string ehfVirtualPath)
@@ -429,6 +529,8 @@ public partial class BnkMountPlugin : EditorPlugin
         // Engine_GameAssets so the editor and the running game answer the same, which is the
         // parity the comment in that file is about.
         Refii.Gdb.Engine_GameGdb.SetResolver(ResolveBytes);
+        Refii.Gdb.Engine_GameGdb.SetBaseResolver(ResolveBaseBytes);
+        Refii.Gdb.Engine_BnkTextBankLoader.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_WeaponIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_ClothingIndex.SetResolver(ResolveBytes);
         Refii.Equipment.Engine_ItemIndex.SetResolver(ResolveBytes);
@@ -528,6 +630,26 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Hero.Engine_HeroMorphCatalog.SetResolver(null);
         Refii.Hero.Engine_SkeletalMorphs.SetSource(null, null);
         Refii.Hero.Engine_HeroTextureMorph.SetResolver(null);
+
+        // When running in headless mode (e.g. project export / packaging) or when the engine
+        // is shutting down, Godot's core cleanup dismantles ResourceLoader before plugin _ExitTree runs.
+        if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            _weaponLoader = null;
+            _clothingLoader = null;
+            _itemLoader = null;
+            _entityLoader = null;
+            _fxLoader = null;
+            _textureLoader = null;
+            _meshLoader = null;
+            _audioLoader = null;
+            _gdbLoader = null;
+            _terrainLoader = null;
+            _albedoLoader = null;
+            _terrainMaterialLoader = null;
+            Refii.Textures.Engine_BnkTextureLoader.SetResolver(null);
+            return;
+        }
 
         if (_weaponLoader is not null)
         {
@@ -701,6 +823,9 @@ public partial class BnkMountPlugin : EditorPlugin
 
         EnsureLoaders();
 
+        // Refresh placed scene instances now that virtual filesystem and GDB database are remounted:
+        EditorTools.EditorModValueService.RefreshSceneEquipment();
+
         Tree? tree = ResolveTree();
         TreeItem? root = tree?.GetRoot();
         if (tree is null || root is null)
@@ -719,7 +844,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         _gameRoot = tree.CreateItem(root);
         _gameRoot.SetText(0, RootLabel);
-        _gameRoot.SetMetadata(0, ContainerMeta);
+        SetItemMeta(_gameRoot, ContainerMeta);
         _gameRoot.SetSelectable(0, false);
         _gameRoot.SetIcon(0, GetFolderIcon());
         _gameRoot.SetIconModulate(0, GameFolderColor);
@@ -727,7 +852,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem assets = tree.CreateItem(_gameRoot);
         assets.SetText(0, "Assets");
-        assets.SetMetadata(0, RootMeta);
+        SetItemMeta(assets, RootMeta);
         assets.SetSelectable(0, false);
         assets.SetIcon(0, GetFolderIcon());
         assets.SetIconModulate(0, GameFolderColor);
@@ -736,7 +861,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem databases = tree.CreateItem(_gameRoot);
         databases.SetText(0, "Database");
-        databases.SetMetadata(0, DatabaseRootMeta);
+        SetItemMeta(databases, DatabaseRootMeta);
         databases.SetSelectable(0, false);
         databases.SetIcon(0, GetFolderIcon());
         databases.SetIconModulate(0, GameFolderColor);
@@ -745,7 +870,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem entities = tree.CreateItem(_gameRoot);
         entities.SetText(0, "Entities");
-        entities.SetMetadata(0, EntitiesRootMeta);
+        SetItemMeta(entities, EntitiesRootMeta);
         entities.SetSelectable(0, false);
         entities.SetIcon(0, GetFolderIcon());
         entities.SetIconModulate(0, GameFolderColor);
@@ -754,7 +879,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem hero = tree.CreateItem(_gameRoot);
         hero.SetText(0, "Hero");
-        hero.SetMetadata(0, HeroRootMeta);
+        SetItemMeta(hero, HeroRootMeta);
         hero.SetSelectable(0, false);
         hero.SetIcon(0, GetFolderIcon());
         hero.SetIconModulate(0, GameFolderColor);
@@ -763,7 +888,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem equipment = tree.CreateItem(_gameRoot);
         equipment.SetText(0, "Equipment");
-        equipment.SetMetadata(0, EquipmentRootMeta);
+        SetItemMeta(equipment, EquipmentRootMeta);
         equipment.SetSelectable(0, false);
         equipment.SetIcon(0, GetFolderIcon());
         equipment.SetIconModulate(0, GameFolderColor);
@@ -772,7 +897,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem items = tree.CreateItem(_gameRoot);
         items.SetText(0, "Items");
-        items.SetMetadata(0, ItemsRootMeta);
+        SetItemMeta(items, ItemsRootMeta);
         items.SetSelectable(0, false);
         items.SetIcon(0, GetFolderIcon());
         items.SetIconModulate(0, GameFolderColor);
@@ -781,7 +906,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem effects = tree.CreateItem(_gameRoot);
         effects.SetText(0, "Effects");
-        effects.SetMetadata(0, EffectsRootMeta);
+        SetItemMeta(effects, EffectsRootMeta);
         effects.SetSelectable(0, false);
         effects.SetIcon(0, GetFolderIcon());
         effects.SetIconModulate(0, GameFolderColor);
@@ -790,7 +915,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem levels = tree.CreateItem(_gameRoot);
         levels.SetText(0, "Levels");
-        levels.SetMetadata(0, LevelsRootMeta);
+        SetItemMeta(levels, LevelsRootMeta);
         levels.SetSelectable(0, false);
         levels.SetIcon(0, GetFolderIcon());
         levels.SetIconModulate(0, GameFolderColor);
@@ -799,7 +924,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem videos = tree.CreateItem(_gameRoot);
         videos.SetText(0, "Videos");
-        videos.SetMetadata(0, VideosRootMeta);
+        SetItemMeta(videos, VideosRootMeta);
         videos.SetSelectable(0, false);
         videos.SetIcon(0, GetFolderIcon());
         videos.SetIconModulate(0, GameFolderColor);
@@ -858,7 +983,833 @@ public partial class BnkMountPlugin : EditorPlugin
             "install",
             tree,
             Callable.From<TreeItem, bool>(IsOurs),
-            Callable.From<TreeItem>(ActivateBnkItem));
+            Callable.From<TreeItem>(ActivateBnkItem),
+            Callable.From<TreeItem, Vector2>(OnItemRmb));
+
+        Node? dock = FindByClass(GetTree().Root, "FileSystemDock", 0);
+        if (dock is not null)
+        {
+            HookDockPopups(dock);
+        }
+    }
+
+    private const int MenuInspectFileSystemTu = 98765;
+    private readonly HashSet<ulong> _hookedPopups = new();
+
+    private void HookDockPopups(Node node)
+    {
+        if (node is PopupMenu popup && !_hookedPopups.Contains(popup.GetInstanceId()))
+        {
+            _hookedPopups.Add(popup.GetInstanceId());
+            popup.AboutToPopup += () =>
+            {
+                int existing = popup.GetItemIndex(MenuInspectFileSystemTu);
+                if (existing != -1)
+                {
+                    popup.RemoveItem(existing);
+                }
+
+                string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+                if (selected != null && selected.Any(p => p.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase)))
+                {
+                    popup.AddSeparator();
+                    popup.AddItem("Inspect GDB Title Update (.tu)", MenuInspectFileSystemTu);
+                }
+            };
+            popup.IdPressed += id =>
+            {
+                if (id == MenuInspectFileSystemTu)
+                {
+                    string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+                    string? target = selected?.FirstOrDefault(p => p.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase));
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        string diskPath = target.StartsWith("res://", StringComparison.OrdinalIgnoreCase)
+                            ? ProjectSettings.GlobalizePath(target)
+                            : (File.Exists(target) ? target : ProjectSettings.GlobalizePath(target));
+
+                        if (File.Exists(diskPath))
+                        {
+                            string content = Refii.Gdb.GdbPrettyPrinter.Print(diskPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                            ShowTextPopup($"GDB Title Update Inspection — {Path.GetFileName(diskPath)}", content);
+                        }
+                    }
+                }
+            };
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            HookDockPopups(child);
+        }
+    }
+
+    private void EnsureFileExtensionsRecognized()
+    {
+        try
+        {
+            EditorSettings? settings = EditorInterface.Singleton?.GetEditorSettings();
+            if (settings is null)
+            {
+                return;
+            }
+
+            bool changed = false;
+
+            void EnsureExtension(string settingKey, string defaultVal, string[] newExts)
+            {
+                string current = settings.HasSetting(settingKey)
+                    ? settings.GetSetting(settingKey).AsString()
+                    : defaultVal;
+
+                var parts = current.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                bool modified = false;
+                foreach (string ext in newExts)
+                {
+                    if (!parts.Contains(ext, StringComparer.OrdinalIgnoreCase))
+                    {
+                        parts.Add(ext);
+                        modified = true;
+                    }
+                }
+
+                if (modified)
+                {
+                    string updated = string.Join(",", parts);
+                    settings.SetSetting(settingKey, updated);
+                    settings.SetInitialValue(settingKey, updated, false);
+                    changed = true;
+                }
+            }
+
+            EnsureExtension("docks/filesystem/other_file_extensions", "ico,icns", new[] { "tu", "gdb" });
+            EnsureExtension("docks/filesystem/textfile_extensions", "txt,md,cfg,ini,log,json,yml,yaml,toml,xml", new[] { "tu", "gdb" });
+
+            if (changed)
+            {
+                EditorInterface.Singleton?.GetResourceFilesystem()?.Scan();
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[bnk_mount] Failed to register file extensions in EditorSettings: {ex.Message}");
+        }
+    }
+
+    /// <summary>Context menu displayed when right-clicking assets under the Game:// root in the FileSystem dock.</summary>
+    private PopupMenu? _contextMenu;
+
+    /// <summary>Dialog for changing the active mod workspace folder name.</summary>
+    private ConfirmationDialog? _modNameDialog;
+
+    /// <summary>Text input field inside the mod name configuration dialog.</summary>
+    private LineEdit? _modNameEdit;
+
+    /// <summary>Dropdown selector listing all discovered .f2mod mods.</summary>
+    private OptionButton? _modOptionBtn;
+
+    /// <summary>Virtual path of the currently selected asset in the Game:// tree.</summary>
+    private string _contextVirtualPath = string.Empty;
+
+    /// <summary>Physical disk path of the selected asset in the res:// filesystem dock, if applicable.</summary>
+    private string _contextDiskPath = string.Empty;
+
+    /// <summary>Resolved 3D model paths (.mdl) associated with the right-clicked item.</summary>
+    private readonly List<string> _contextModelPaths = new();
+
+    /// <summary>Resolved texture paths (.tex) associated with the right-clicked item.</summary>
+    private readonly List<string> _contextTexturePaths = new();
+
+    /// <summary>Resolved GUI/inventory icon texture paths associated with the right-clicked item.</summary>
+    private readonly List<string> _contextIconPaths = new();
+
+    /// <summary>Reference to the currently right-clicked TreeItem.</summary>
+    private TreeItem? _contextItem;
+
+    public static BnkMountPlugin? Instance { get; private set; }
+
+    private const int MenuExportGlb = 100;
+    private const int MenuExportPng = 101;
+    private const int MenuExportPbr = 102;
+    private const int MenuExportIcon = 103;
+    private const int MenuOpenModFolder = 104;
+    private const int MenuChangeActiveMod = 105;
+    private const int MenuReloadOverlays = 106;
+    private const int MenuEditItemValues = 107;
+    private const int MenuInspectModTu = 108;
+    private const int MenuInspectTu = 109;
+
+    private Refii.Equipment.ItemDetail? _contextItemDetail;
+    private ModItemEditorDialog? _itemEditorDialog;
+
+    /// <summary>
+    /// Opens the visual item property editor dialog for the specified item.
+    /// </summary>
+    public void OpenModItemEditor(Refii.Equipment.ItemDetail detail)
+    {
+        SetupItemEditorDialog();
+        _itemEditorDialog?.OpenForItem(detail);
+    }
+
+    private void SetupItemEditorDialog()
+    {
+        if (_itemEditorDialog is not null && IsInstanceValid(_itemEditorDialog))
+        {
+            return;
+        }
+
+        _itemEditorDialog = new ModItemEditorDialog();
+        EditorInterface.Singleton.GetBaseControl().AddChild(_itemEditorDialog);
+    }
+
+    /// <summary>
+    /// Creates and registers the asset browser right-click context menu under the editor's base control.
+    /// </summary>
+    private void SetupContextMenu()
+    {
+        if (_contextMenu is not null && IsInstanceValid(_contextMenu))
+        {
+            return;
+        }
+
+        _contextMenu = new PopupMenu();
+        _contextMenu.IdPressed += OnContextMenuIdPressed;
+        EditorInterface.Singleton.GetBaseControl().AddChild(_contextMenu);
+
+        Node? dock = FindByClass(GetTree().Root, "FileSystemDock", 0);
+        if (dock is not null)
+        {
+            HookDockPopups(dock);
+        }
+    }
+
+    /// <summary>
+    /// Unhooks signals and frees the context menu and dialogs when the plugin exits the tree.
+    /// </summary>
+    private void RemoveContextMenu()
+    {
+        if (_contextMenu is not null && IsInstanceValid(_contextMenu))
+        {
+            _contextMenu.IdPressed -= OnContextMenuIdPressed;
+            _contextMenu.QueueFree();
+            _contextMenu = null;
+        }
+
+        if (_modNameDialog is not null && IsInstanceValid(_modNameDialog))
+        {
+            _modNameDialog.QueueFree();
+            _modNameDialog = null;
+        }
+
+        if (_itemEditorDialog is not null && IsInstanceValid(_itemEditorDialog))
+        {
+            _itemEditorDialog.QueueFree();
+            _itemEditorDialog = null;
+        }
+    }
+
+    /// <summary>
+    /// Initializes and attaches the modal dialog used to switch or create active mod workspaces.
+    /// </summary>
+    private void SetupModNameDialog()
+    {
+        if (_modNameDialog is not null && IsInstanceValid(_modNameDialog))
+        {
+            RefreshModNameDialog();
+            return;
+        }
+
+        _modNameDialog = new ConfirmationDialog();
+        _modNameDialog.Title = "Select Active Mod";
+        _modNameDialog.MinSize = new Vector2I(380, 180);
+
+        var vbox = new VBoxContainer();
+        vbox.AddThemeConstantOverride("separation", 8);
+
+        var chooseLabel = new Label { Text = "Switch to Existing Mod:" };
+        vbox.AddChild(chooseLabel);
+
+        _modOptionBtn = new OptionButton();
+        _modOptionBtn.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        vbox.AddChild(_modOptionBtn);
+
+        vbox.AddChild(new HSeparator());
+
+        var createLabel = new Label { Text = "Or Create New Mod (.f2mod):" };
+        vbox.AddChild(createLabel);
+
+        var createRow = new HBoxContainer();
+        createRow.AddThemeConstantOverride("separation", 6);
+        _modNameEdit = new LineEdit { PlaceholderText = "NewModName" };
+        _modNameEdit.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        createRow.AddChild(_modNameEdit);
+
+        var createBtn = new Button { Text = "Create" };
+        createBtn.Pressed += () =>
+        {
+            if (_modNameEdit != null && !string.IsNullOrWhiteSpace(_modNameEdit.Text))
+            {
+                string newName = _modNameEdit.Text.Trim();
+                if (ModWorkspace.IsSafeModFolderName(newName))
+                {
+                    string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+                    if (string.IsNullOrEmpty(modsRoot))
+                    {
+                        modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+                    }
+                    if (ModWorkspace.CreateModPackage(modsRoot, newName, out _, out string err))
+                    {
+                        EditorModExporter.ActiveModName = newName;
+                        EditorModExporter.EnsureActiveModWorkspace();
+                        _modNameEdit.Text = string.Empty;
+                        RefreshModNameDialog();
+                        ReloadModOverlays();
+                        GD.Print($"[mod_export] Created and activated '{newName}.f2mod'");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to create mod package: {err}");
+                    }
+                }
+                else
+                {
+                    GD.PushWarning($"[mod_export] '{newName}' is not a valid mod name.");
+                }
+            }
+        };
+        createRow.AddChild(createBtn);
+        vbox.AddChild(createRow);
+
+        _modNameDialog.AddChild(vbox);
+
+        _modNameDialog.Confirmed += () =>
+        {
+            if (_modNameEdit != null && !string.IsNullOrWhiteSpace(_modNameEdit.Text))
+            {
+                string newName = _modNameEdit.Text.Trim();
+                if (ModWorkspace.IsSafeModFolderName(newName))
+                {
+                    string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+                    if (string.IsNullOrEmpty(modsRoot))
+                    {
+                        modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+                    }
+                    ModWorkspace.CreateModPackage(modsRoot, newName, out _, out _);
+                    EditorModExporter.ActiveModName = newName;
+                    EditorModExporter.EnsureActiveModWorkspace();
+                    ReloadModOverlays();
+                    GD.Print($"[mod_export] Active mod set to '{newName}'");
+                    return;
+                }
+            }
+
+            if (_modOptionBtn != null && _modOptionBtn.ItemCount > 0 && _modOptionBtn.Selected >= 0)
+            {
+                string chosen = _modOptionBtn.GetItemText(_modOptionBtn.Selected);
+                if (!string.IsNullOrWhiteSpace(chosen))
+                {
+                    EditorModExporter.ActiveModName = chosen;
+                    EditorModExporter.EnsureActiveModWorkspace();
+                    ReloadModOverlays();
+                    GD.Print($"[mod_export] Active mod set to '{chosen}'");
+                }
+            }
+        };
+
+        EditorInterface.Singleton.GetBaseControl().AddChild(_modNameDialog);
+        RefreshModNameDialog();
+    }
+
+    private void RefreshModNameDialog()
+    {
+        if (_modOptionBtn == null) return;
+        _modOptionBtn.Clear();
+        List<string> mods = EditorModExporter.DiscoverModNames();
+        string current = EditorModExporter.ActiveModName;
+        int selectedIndex = 0;
+        for (int i = 0; i < mods.Count; i++)
+        {
+            _modOptionBtn.AddItem(mods[i]);
+            if (string.Equals(mods[i], current, StringComparison.OrdinalIgnoreCase))
+            {
+                selectedIndex = i;
+            }
+        }
+        if (mods.Count > 0)
+        {
+            _modOptionBtn.Select(selectedIndex);
+        }
+    }
+
+    /// <summary>
+    /// Callback triggered by the GDScript signal bridge when a user right-clicks an item in the Game:// tree.
+    /// </summary>
+    /// <param name="item">The TreeItem that received the right-click.</param>
+    /// <param name="screenPos">The global screen coordinates of the cursor.</param>
+    private void OnItemRmb(TreeItem item, Vector2 screenPos)
+    {
+        if (item is null || !GodotObject.IsInstanceValid(item))
+        {
+            return;
+        }
+
+        SetupContextMenu();
+        if (_contextMenu is null)
+        {
+            return;
+        }
+
+        _contextItem = item;
+        _contextItemDetail = null;
+        _contextVirtualPath = string.Empty;
+        _contextDiskPath = string.Empty;
+        _contextModelPaths.Clear();
+        _contextTexturePaths.Clear();
+        _contextIconPaths.Clear();
+
+        string meta = GetItemMeta(item);
+        string text = item.GetText(0);
+
+        if (meta.StartsWith(FilePrefix, StringComparison.Ordinal))
+        {
+            _contextVirtualPath = meta[FilePrefix.Length..];
+        }
+        else if (meta.StartsWith("bnk:", StringComparison.Ordinal))
+        {
+            _contextVirtualPath = meta[4..];
+        }
+        else if (meta.StartsWith("res://", StringComparison.OrdinalIgnoreCase))
+        {
+            _contextDiskPath = ProjectSettings.GlobalizePath(meta);
+        }
+        else if (File.Exists(meta))
+        {
+            _contextDiskPath = meta;
+        }
+        else if (text.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || text.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))
+        {
+            string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+            if (selected != null && selected.Length > 0)
+            {
+                _contextDiskPath = ProjectSettings.GlobalizePath(selected[0]);
+            }
+        }
+
+        if (_contextVirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+        {
+            _contextModelPaths.Add(_contextVirtualPath);
+        }
+        else if (_contextVirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+        {
+            _contextTexturePaths.Add(_contextVirtualPath);
+        }
+        else if (_contextVirtualPath.EndsWith(".weapon", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Equipment.Engine_WeaponIndex.TryGet(_contextVirtualPath, out var wEntry))
+            {
+                _contextItemDetail = wEntry.Detail;
+                if (!string.IsNullOrEmpty(wEntry.ModelPath))
+                {
+                    _contextModelPaths.Add(wEntry.ModelPath);
+                }
+                if (!string.IsNullOrEmpty(wEntry.Detail.IconTex))
+                {
+                    _contextIconPaths.Add(wEntry.Detail.IconTex);
+                }
+            }
+        }
+        else if (_contextVirtualPath.EndsWith(".clothing", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Equipment.Engine_ClothingIndex.TryGet(_contextVirtualPath, out var cEntry))
+            {
+                _contextItemDetail = cEntry.Detail;
+                if (!string.IsNullOrEmpty(cEntry.MaleModelPath))
+                {
+                    _contextModelPaths.Add(cEntry.MaleModelPath);
+                }
+                if (!string.IsNullOrEmpty(cEntry.FemaleModelPath) && cEntry.FemaleModelPath != cEntry.MaleModelPath)
+                {
+                    _contextModelPaths.Add(cEntry.FemaleModelPath);
+                }
+                if (!string.IsNullOrEmpty(cEntry.Detail.IconTex))
+                {
+                    _contextIconPaths.Add(cEntry.Detail.IconTex);
+                }
+            }
+        }
+        else if (_contextVirtualPath.EndsWith(".item", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Equipment.Engine_ItemIndex.TryGet(_contextVirtualPath, out var iEntry))
+            {
+                _contextItemDetail = iEntry.Detail;
+                if (!string.IsNullOrEmpty(iEntry.ModelPath))
+                {
+                    _contextModelPaths.Add(iEntry.ModelPath);
+                }
+                if (!string.IsNullOrEmpty(iEntry.Detail.IconTex))
+                {
+                    _contextIconPaths.Add(iEntry.Detail.IconTex);
+                }
+            }
+        }
+        else if (_contextVirtualPath.EndsWith(".entity", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Entities.Engine_EntityIndex.TryGet(_contextVirtualPath, out var eEntry))
+            {
+                foreach (uint modelHash in eEntry.ModelHashes)
+                {
+                    string? path = Refii.Level.Engine_PropModelIndex.Resolve(modelHash, Array.Empty<string>());
+                    if (!string.IsNullOrEmpty(path) && !_contextModelPaths.Contains(path))
+                    {
+                        _contextModelPaths.Add(path);
+                    }
+                }
+            }
+        }
+
+        // For all resolved 3D models, extract the actual 3D textures (Diffuse, Normal, Specular, etc.)
+        foreach (string modelPath in _contextModelPaths)
+        {
+            foreach (string texPath in EditorModExporter.GetModelTexturePaths(modelPath, _filesystem))
+            {
+                if (!_contextTexturePaths.Contains(texPath))
+                {
+                    _contextTexturePaths.Add(texPath);
+                }
+            }
+        }
+
+        _contextMenu.Clear();
+        string activeMod = EditorModExporter.ActiveModName;
+
+        if (_contextModelPaths.Count == 1)
+        {
+            string fileName = Path.GetFileName(_contextModelPaths[0]);
+            _contextMenu.AddItem($"Export Model ({fileName}.glb) to [{activeMod}]", MenuExportGlb);
+        }
+        else if (_contextModelPaths.Count > 1)
+        {
+            _contextMenu.AddItem($"Export {_contextModelPaths.Count} Models (.glb) to [{activeMod}]", MenuExportGlb);
+        }
+
+        if (_contextTexturePaths.Count == 1)
+        {
+            string fileName = Path.GetFileName(_contextTexturePaths[0]);
+            _contextMenu.AddItem($"Export Model Texture ({fileName}) to [{activeMod}]", MenuExportPng);
+            _contextMenu.AddItem($"Export PBR Texture Set ({fileName}) to [{activeMod}]", MenuExportPbr);
+        }
+        else if (_contextTexturePaths.Count > 1)
+        {
+            _contextMenu.AddItem($"Export {_contextTexturePaths.Count} Model Textures (.png) to [{activeMod}]", MenuExportPng);
+            _contextMenu.AddItem($"Export {_contextTexturePaths.Count} PBR Texture Sets (with _orm.png) to [{activeMod}]", MenuExportPbr);
+        }
+
+        if (_contextIconPaths.Count == 1)
+        {
+            string fileName = Path.GetFileName(_contextIconPaths[0]);
+            _contextMenu.AddItem($"Export Inventory Icon ({fileName}) to [{activeMod}]", MenuExportIcon);
+        }
+        else if (_contextIconPaths.Count > 1)
+        {
+            _contextMenu.AddItem($"Export {_contextIconPaths.Count} Inventory Icons (.png) to [{activeMod}]", MenuExportIcon);
+        }
+
+        if (!string.IsNullOrEmpty(_contextVirtualPath) || _contextModelPaths.Count > 0 || _contextTexturePaths.Count > 0 || _contextIconPaths.Count > 0)
+        {
+            _contextMenu.AddItem("Open in Mod Folder", MenuOpenModFolder);
+            _contextMenu.AddSeparator();
+        }
+
+        if (_contextItemDetail is not null)
+        {
+            _contextMenu.AddItem($"✏️ Edit Properties in Mod [{activeMod}]...", MenuEditItemValues);
+            _contextMenu.AddSeparator();
+        }
+
+        if (_contextVirtualPath.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrEmpty(_contextDiskPath) && (_contextDiskPath.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || _contextDiskPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))))
+        {
+            _contextMenu.AddItem("Inspect GDB Title Update (.tu)", MenuInspectTu);
+            _contextMenu.AddSeparator();
+        }
+
+        _contextMenu.AddItem($"Active Mod: {activeMod} (Change...)", MenuChangeActiveMod);
+        _contextMenu.AddItem("Inspect Active Mod Title Updates (.tu)", MenuInspectModTu);
+        _contextMenu.AddItem("Reload Mod Overlays", MenuReloadOverlays);
+
+        Vector2I mousePos = _contextMenu.IsEmbedded()
+            ? (Vector2I)(_tree?.GetGlobalMousePosition() ?? screenPos)
+            : DisplayServer.MouseGetPosition();
+        _contextMenu.Position = mousePos;
+        _contextMenu.ResetSize();
+        _contextMenu.Popup();
+    }
+
+    /// <summary>
+    /// Dispatches actions selected from the Game:// right-click context menu.
+    /// </summary>
+    /// <param name="id">Identifier of the pressed menu option.</param>
+    private void OnContextMenuIdPressed(long id)
+    {
+        switch (id)
+        {
+            case MenuEditItemValues:
+            {
+                if (_contextItemDetail is not null)
+                {
+                    OpenModItemEditor(_contextItemDetail);
+                }
+                break;
+            }
+            case MenuExportGlb:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string modelPath in _contextModelPaths)
+                {
+                    if (EditorModExporter.ExportModel(modelPath, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported model to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export model '{modelPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuExportPng:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string texPath in _contextTexturePaths)
+                {
+                    if (EditorModExporter.ExportTexture(texPath, _filesystem, false, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported model texture to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export texture '{texPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuExportPbr:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string texPath in _contextTexturePaths)
+                {
+                    if (EditorModExporter.ExportTexture(texPath, _filesystem, true, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported PBR texture set to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export PBR texture '{texPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuExportIcon:
+            {
+                string lastPath = string.Empty;
+                int successCount = 0;
+                foreach (string iconPath in _contextIconPaths)
+                {
+                    if (EditorModExporter.ExportTexture(iconPath, _filesystem, false, out string exportedPath, out string error))
+                    {
+                        lastPath = exportedPath;
+                        successCount++;
+                        GD.Print($"[mod_export] Exported inventory icon to: {exportedPath}");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to export icon '{iconPath}': {error}");
+                    }
+                }
+
+                if (successCount > 0 && !string.IsNullOrEmpty(lastPath))
+                {
+                    EditorModExporter.RevealInExplorer(lastPath);
+                }
+                break;
+            }
+            case MenuOpenModFolder:
+            {
+                string target = !string.IsNullOrEmpty(_contextVirtualPath)
+                    ? _contextVirtualPath
+                    : _contextModelPaths.Count > 0
+                        ? _contextModelPaths[0]
+                        : _contextTexturePaths.Count > 0
+                            ? _contextTexturePaths[0]
+                            : _contextIconPaths.Count > 0
+                                ? _contextIconPaths[0]
+                                : string.Empty;
+
+                if (string.IsNullOrEmpty(target))
+                {
+                    EditorModExporter.RevealInExplorer(EditorModExporter.EnsureActiveModWorkspace());
+                    return;
+                }
+
+                string dir = EditorModExporter.EnsureModAssetDirectory(target);
+                EditorModExporter.RevealInExplorer(dir);
+                break;
+            }
+            case MenuChangeActiveMod:
+            {
+                SetupModNameDialog();
+                RefreshModNameDialog();
+                if (_modNameEdit is not null)
+                {
+                    _modNameEdit.Text = string.Empty;
+                }
+                _modNameDialog?.PopupCentered(new Vector2I(380, 180));
+                break;
+            }
+            case MenuReloadOverlays:
+            {
+                ReloadModOverlays();
+                break;
+            }
+            case MenuInspectModTu:
+            {
+                InspectModTuDialog(EditorModExporter.ActiveModName);
+                break;
+            }
+            case MenuInspectTu:
+            {
+                if (!string.IsNullOrEmpty(_contextDiskPath) && File.Exists(_contextDiskPath))
+                {
+                    string content = Refii.Gdb.GdbPrettyPrinter.Print(_contextDiskPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                    ShowTextPopup($"GDB Title Update Inspection — {Path.GetFileName(_contextDiskPath)}", content);
+                }
+                else if (!string.IsNullOrEmpty(_contextVirtualPath))
+                {
+                    InspectTuPathDialog(_contextVirtualPath);
+                }
+                break;
+            }
+        }
+    }
+
+    private void InspectModTuDialog(string modName)
+    {
+        string filesRoot = Path.Combine(Refii.Assets.Engine_GameAssets.ModsRoot, modName, "files");
+        var sb = new System.Text.StringBuilder();
+        if (Directory.Exists(filesRoot))
+        {
+            var tuFiles = Directory.GetFiles(filesRoot, "*.gdb.tu", SearchOption.AllDirectories);
+            if (tuFiles.Length == 0)
+            {
+                sb.AppendLine($"No .gdb.tu files found in mod '{modName}' ({filesRoot}).");
+            }
+            else
+            {
+                foreach (string file in tuFiles)
+                {
+                    sb.AppendLine(Refii.Gdb.GdbPrettyPrinter.Print(file, Refii.Gdb.Engine_GameGdb.BaseDatabase));
+                    sb.AppendLine();
+                }
+            }
+        }
+        else
+        {
+            sb.AppendLine($"Mod folder not found: {filesRoot}");
+        }
+
+        ShowTextPopup($"GDB Title Update Inspection — {modName}", sb.ToString());
+    }
+
+    private void InspectTuPathDialog(string virtualPath)
+    {
+        string content = string.Empty;
+        if (_filesystem != null && _filesystem.TryGetFile(virtualPath, out var file))
+        {
+            if (File.Exists(file.SourceArchivePath))
+            {
+                content = Refii.Gdb.GdbPrettyPrinter.Print(file.SourceArchivePath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+            }
+            else
+            {
+                try
+                {
+                    byte[] bytes = file.ReadAllBytes();
+                    string tempPath = Path.Combine(Path.GetTempPath(), "refii_inspect_" + Path.GetFileName(virtualPath));
+                    File.WriteAllBytes(tempPath, bytes);
+                    content = Refii.Gdb.GdbPrettyPrinter.Print(tempPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                    try { File.Delete(tempPath); } catch { }
+                }
+                catch (Exception ex)
+                {
+                    content = $"Failed to read virtual file '{virtualPath}': {ex.Message}";
+                }
+            }
+        }
+        else
+        {
+            content = $"File not found in filesystem: '{virtualPath}'";
+        }
+
+        ShowTextPopup($"GDB Title Update Inspection — {virtualPath}", content);
+    }
+
+    private void ShowTextPopup(string title, string text)
+    {
+        var dialog = new AcceptDialog();
+        dialog.Title = title;
+        dialog.MinSize = new Vector2I(680, 480);
+        var textEdit = new TextEdit
+        {
+            Text = text,
+            Editable = false,
+            CustomMinimumSize = new Vector2(650, 420),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+        };
+        dialog.AddChild(textEdit);
+        EditorInterface.Singleton.GetBaseControl().AddChild(dialog);
+        dialog.PopupCentered();
+    }
+
+    /// <summary>
+    /// Flushes runtime texture, material, and equipment indices, and triggers an asynchronous remount of all mod overlays.
+    /// </summary>
+    public void ReloadModOverlays()
+    {
+        GD.Print("[bnk_mount] Reloading mod overlays...");
+        Refii.Gdb.Engine_GameGdb.Invalidate();
+        Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
+        Refii.Equipment.Engine_WeaponIndex.Invalidate();
+        Refii.Equipment.Engine_ItemIndex.Invalidate();
+        Refii.Equipment.Engine_ClothingIndex.Invalidate();
+        Refii.Textures.Engine_TexLibrary.Clear();
+        Refii.Models.Engine_MdlMaterial.ClearSharedCache();
+        Refii.Level.Engine_PropStreamer.ClearCache();
+        StartMount();
     }
 
     private bool IsOurs(TreeItem item)
@@ -868,7 +1819,7 @@ public partial class BnkMountPlugin : EditorPlugin
             return false;
         }
 
-        string meta = item.GetMetadata(0).AsString();
+        string meta = GetItemMeta(item);
         return meta == RootMeta ||
                meta == DatabaseRootMeta ||
                meta == LevelsRootMeta ||
@@ -892,7 +1843,37 @@ public partial class BnkMountPlugin : EditorPlugin
 
     private void ActivateBnkItem(TreeItem item)
     {
-        string meta = item.GetMetadata(0).AsString();
+        string meta = GetItemMeta(item);
+        string text = item.GetText(0);
+
+        if (text.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || meta.EndsWith(".tu", StringComparison.OrdinalIgnoreCase))
+        {
+            string diskPath = meta.StartsWith("res://", StringComparison.OrdinalIgnoreCase)
+                ? ProjectSettings.GlobalizePath(meta)
+                : (File.Exists(meta) ? meta : string.Empty);
+
+            if (string.IsNullOrEmpty(diskPath) && !meta.StartsWith(FilePrefix))
+            {
+                string[] selected = EditorInterface.Singleton.GetSelectedPaths();
+                if (selected != null && selected.Length > 0 && selected[0].EndsWith(".tu", StringComparison.OrdinalIgnoreCase))
+                {
+                    diskPath = ProjectSettings.GlobalizePath(selected[0]);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(diskPath) && File.Exists(diskPath))
+            {
+                string content = Refii.Gdb.GdbPrettyPrinter.Print(diskPath, Refii.Gdb.Engine_GameGdb.BaseDatabase);
+                ShowTextPopup($"GDB Title Update Inspection — {Path.GetFileName(diskPath)}", content);
+                return;
+            }
+
+            if (meta.StartsWith(FilePrefix))
+            {
+                InspectTuPathDialog(meta[FilePrefix.Length..]);
+                return;
+            }
+        }
 
         if (meta.StartsWith(LevelPrefix, StringComparison.Ordinal))
         {
@@ -1251,12 +2232,12 @@ public partial class BnkMountPlugin : EditorPlugin
             return;
         }
 
-        if (item.GetChild(0).GetMetadata(0).AsString() != PlaceholderMeta)
+        if (GetItemMeta(item.GetChild(0)) != PlaceholderMeta)
         {
             return;
         }
 
-        string meta = item.GetMetadata(0).AsString();
+        string meta = GetItemMeta(item);
         if (meta != RootMeta &&
             meta != DatabaseRootMeta &&
             meta != LevelsRootMeta &&
@@ -1299,7 +2280,7 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             TreeItem only = item.GetChild(0);
-            if (only.GetMetadata(0).AsString() != PlaceholderMeta)
+            if (GetItemMeta(only) != PlaceholderMeta)
             {
                 continue;
             }
@@ -1307,7 +2288,7 @@ public partial class BnkMountPlugin : EditorPlugin
             item.RemoveChild(only);
             only.Free();
 
-            string meta = item.GetMetadata(0).AsString();
+            string meta = GetItemMeta(item);
             if (meta == DatabaseRootMeta)
             {
                 PopulateDatabases(item);
@@ -1427,8 +2408,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, Refii.Entities.Engine_EntityIndex.FileNameOf(entry));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Entities.Engine_EntityIndex.VirtualPathOf(entry));
+            SetItemMeta(item, FilePrefix + Refii.Entities.Engine_EntityIndex.VirtualPathOf(entry));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);
@@ -1449,8 +2429,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, Refii.Hero.Engine_HeroCatalog.FileNameOf(entry));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Hero.Engine_HeroCatalog.VirtualPathOf(entry));
+            SetItemMeta(item, FilePrefix + Refii.Hero.Engine_HeroCatalog.VirtualPathOf(entry));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);
@@ -1468,7 +2447,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem weapons = tree.CreateItem(parent);
         weapons.SetText(0, "Weapons");
-        weapons.SetMetadata(0, WeaponsRootMeta);
+        SetItemMeta(weapons, WeaponsRootMeta);
         weapons.SetSelectable(0, false);
         weapons.SetIcon(0, GetFolderIcon());
         weapons.SetIconModulate(0, GameFolderColor);
@@ -1477,7 +2456,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem clothes = tree.CreateItem(parent);
         clothes.SetText(0, "Clothes");
-        clothes.SetMetadata(0, ClothesRootMeta);
+        SetItemMeta(clothes, ClothesRootMeta);
         clothes.SetSelectable(0, false);
         clothes.SetIcon(0, GetFolderIcon());
         clothes.SetIconModulate(0, GameFolderColor);
@@ -1499,7 +2478,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, $"{family} ({count})");
-            item.SetMetadata(0, WeaponFamilyPrefix + family);
+            SetItemMeta(item, WeaponFamilyPrefix + family);
             item.SetSelectable(0, false);
             item.SetIcon(0, GetFolderIcon());
             item.SetIconModulate(0, GameFolderColor);
@@ -1536,9 +2515,8 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, labels[i]);
-            item.SetTooltipText(0, Refii.Equipment.Engine_WeaponIndex.FileNameOf(entry));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Equipment.Engine_WeaponIndex.VirtualPathOf(entry));
+            item.SetTooltipText(0, Refii.Equipment.Engine_ItemNames.FormatTooltip(entry.Detail, entry.Family, entry.ModelPath));
+            SetItemMeta(item, FilePrefix + Refii.Equipment.Engine_WeaponIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
         }
     }
@@ -1559,7 +2537,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, $"{folder} ({count})");
-            item.SetMetadata(0, ClothingSlotPrefix + folder);
+            SetItemMeta(item, ClothingSlotPrefix + folder);
             item.SetSelectable(0, false);
             item.SetIcon(0, GetFolderIcon());
             item.SetIconModulate(0, GameFolderColor);
@@ -1598,9 +2576,9 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, labels[i]);
-            item.SetTooltipText(0, Refii.Equipment.Engine_ClothingIndex.FileNameOf(entry));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Equipment.Engine_ClothingIndex.VirtualPathOf(entry));
+            string clothModel = entry.MaleModelPath.Length != 0 ? entry.MaleModelPath : entry.FemaleModelPath;
+            item.SetTooltipText(0, Refii.Equipment.Engine_ItemNames.FormatTooltip(entry.Detail, Refii.Equipment.Engine_ClothingSlots.LabelOf(entry.Slot), clothModel));
+            SetItemMeta(item, FilePrefix + Refii.Equipment.Engine_ClothingIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
         }
     }
@@ -1622,7 +2600,7 @@ public partial class BnkMountPlugin : EditorPlugin
             item.SetText(0, $"{folder} ({count})");
             item.SetTooltipText(
                 0, Refii.Equipment.Engine_ItemCategories.DescribeCategory(category));
-            item.SetMetadata(0, ItemCategoryPrefix + folder);
+            SetItemMeta(item, ItemCategoryPrefix + folder);
             item.SetSelectable(0, false);
             item.SetIcon(0, GetFolderIcon());
             item.SetIconModulate(0, GameFolderColor);
@@ -1660,13 +2638,12 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, labels[i]);
-            string mesh = entry.HasModel ? entry.ModelPath : "no mesh";
+            string mesh = entry.HasModel ? entry.ModelPath : "No 3D mesh";
             item.SetTooltipText(
                 0,
-                Refii.Equipment.Engine_ItemIndex.FileNameOf(entry) +
-                    System.Environment.NewLine + mesh);
-            item.SetMetadata(
-                0, FilePrefix + Refii.Equipment.Engine_ItemIndex.VirtualPathOf(entry));
+                Refii.Equipment.Engine_ItemNames.FormatTooltip(
+                    entry.Detail, Refii.Equipment.Engine_ItemCategories.LabelOf(entry.Category), mesh));
+            SetItemMeta(item, FilePrefix + Refii.Equipment.Engine_ItemIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
 
             if (!entry.HasModel)
@@ -1744,7 +2721,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, display);
-            item.SetMetadata(0, FilePrefix + Refii.Fx.Engine_BnkFxLoader.VirtualPathOf(display));
+            SetItemMeta(item, FilePrefix + Refii.Fx.Engine_BnkFxLoader.VirtualPathOf(display));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);
@@ -1771,7 +2748,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, $"{group.Key}  ({group.Value})");
-            item.SetMetadata(0, LevelRegionPrefix + group.Key);
+            SetItemMeta(item, LevelRegionPrefix + group.Key);
             item.SetSelectable(0, false);
             item.SetIcon(0, folder);
             item.SetIconModulate(0, GameFolderColor);
@@ -1784,7 +2761,7 @@ public partial class BnkMountPlugin : EditorPlugin
             TreeItem empty = tree.CreateItem(parent);
             empty.SetText(0, "(no heightfields found)");
             empty.SetSelectable(0, false);
-            empty.SetMetadata(0, PlaceholderMeta);
+            SetItemMeta(empty, PlaceholderMeta);
         }
     }
 
@@ -1807,7 +2784,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, level.DisplayName);
-            item.SetMetadata(0, LevelPrefix + level.HeightfieldPath);
+            SetItemMeta(item, LevelPrefix + level.HeightfieldPath);
 
             if (icon is not null)
             {
@@ -1872,7 +2849,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name + ".bik");
-            item.SetMetadata(0, FilePrefix + "art/videos/" + name + ".bik");
+            SetItemMeta(item, FilePrefix + "art/videos/" + name + ".bik");
 
             if (icon is not null)
             {
@@ -1905,7 +2882,8 @@ public partial class BnkMountPlugin : EditorPlugin
         var databases = new List<BnkFile>();
         foreach (BnkFile file in _filesystem.EnumerateAllFiles())
         {
-            if (file.VirtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase))
+            if (file.VirtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase) ||
+                file.VirtualPath.EndsWith(".tu", StringComparison.OrdinalIgnoreCase))
             {
                 databases.Add(file);
             }
@@ -1927,7 +2905,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, Path.GetFileName(file.VirtualPath));
-            item.SetMetadata(0, FilePrefix + file.VirtualPath);
+            SetItemMeta(item, FilePrefix + file.VirtualPath);
 
             if (icon is not null)
             {
@@ -1952,7 +2930,7 @@ public partial class BnkMountPlugin : EditorPlugin
             TreeItem empty = tree.CreateItem(parent);
             empty.SetText(0, "(no .gdb found)");
             empty.SetSelectable(0, false);
-            empty.SetMetadata(0, PlaceholderMeta);
+            SetItemMeta(empty, PlaceholderMeta);
         }
     }
 
@@ -1972,7 +2950,7 @@ public partial class BnkMountPlugin : EditorPlugin
             string child = directory.Length == 0 ? name : directory + "/" + name;
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name);
-            item.SetMetadata(0, "bnk:" + child);
+            SetItemMeta(item, "bnk:" + child);
             item.SetSelectable(0, false);
             item.SetIcon(0, folderIcon);
             item.SetIconModulate(0, GameFolderColor);
@@ -1985,7 +2963,7 @@ public partial class BnkMountPlugin : EditorPlugin
             string child = directory.Length == 0 ? name : directory + "/" + name;
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name);
-            item.SetMetadata(0, FilePrefix + child);
+            SetItemMeta(item, FilePrefix + child);
             item.SetIcon(0, fileIcon);
             item.SetIconModulate(0, GameFolderColor);
             if (_filesystem.TryGetFile(child, out BnkFile file))
@@ -2254,7 +3232,7 @@ public partial class BnkMountPlugin : EditorPlugin
         TreeItem placeholder = tree.CreateItem(parent);
         placeholder.SetText(0, "...");
         placeholder.SetSelectable(0, false);
-        placeholder.SetMetadata(0, PlaceholderMeta);
+        SetItemMeta(placeholder, PlaceholderMeta);
     }
 
     private static Texture2D GetFolderIcon() =>
