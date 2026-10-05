@@ -339,7 +339,7 @@ public partial class GameWindow : Node
 		GD.Print(DisplayServer.WindowIsHdrOutputEnabled(Main)
 			? $"[game] hdr: on, white {DisplayServer.WindowGetHdrOutputCurrentReferenceLuminance(Main):0} nits, " +
 				$"peak {DisplayServer.WindowGetHdrOutputCurrentMaxLuminance(Main):0} nits, headroom {headroom:0.00}x"
-			: "[game] hdr: requested, but this screen is SDR");
+			: "[game] hdr: requested, but HDR output is not active (screen is SDR, or rendering driver does not support HDR output on this platform)");
 	}
 
 	/// <summary>

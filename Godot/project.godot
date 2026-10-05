@@ -58,8 +58,19 @@ banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
 
 [rendering]
 
+rendering_device/staging_buffer/block_size_kb=1024
+rendering_device/staging_buffer/max_size_mb=256
+rendering_device/staging_buffer/texture_upload_region_size_px=128
+rendering_device/d3d12/max_resource_descriptors=1000000
+rendering_device/d3d12/max_sampler_descriptors=2048
+rendering_device/driver.windows="d3d12"
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+shader_compiler/shader_cache/strip_debug=true
+viewport/hdr_2d=true
 limits/global_shader_variables/buffer_size=262144
+rendering_device/d3d12/max_resource_descriptors_per_frame=131072
+rendering_device/d3d12/max_sampler_descriptors_per_frame=2048
+rendering_device/d3d12/max_misc_descriptors_per_frame=2048
 
 [shader_globals]
 

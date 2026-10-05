@@ -131,10 +131,11 @@ public static class RuntimeCVarsGodot
                 + "below what the frame time allows makes motion hold and step instead of "
                 + "gliding; above 1.5 adds lag for nothing."),
 
-            new("rendering_driver", DisplayCategory, RuntimeCVarType.String, "vulkan",
-                "The graphics API Godot draws the game with. Windows offers Vulkan or Direct3D 12; "
-                + "everywhere else it is Vulkan. Takes effect at the next launch.",
-                "vulkan|Vulkan,d3d12|Direct3D 12"),
+            new("rendering_driver", DisplayCategory, RuntimeCVarType.String,
+                System.OperatingSystem.IsWindows() ? "d3d12" : "vulkan",
+                "The graphics API Godot draws the game with. Windows offers Direct3D 12 (required for HDR) "
+                + "or Vulkan; everywhere else it is Vulkan. Takes effect at the next launch.",
+                "d3d12|Direct3D 12,vulkan|Vulkan"),
 
             new("render_thread", DisplayCategory, RuntimeCVarType.Bool, "true",
                 "Run Godot's renderer on its own thread, so the frame costs the longer of the "
@@ -259,8 +260,8 @@ public static class RuntimeCVarsGodot
             new("hdr_output", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Output HDR to a display that supports it: highlights the SDR picture clips at "
                 + "white are shown up to the display's peak brightness, and everything below "
-                + "white is unchanged. Falls back to SDR where the display, the OS or the "
-                + "graphics driver has no HDR, and follows the window between screens."),
+                + "white is unchanged. Requires Direct3D 12 on Windows (selected automatically). "
+                + "Falls back to SDR where the display or OS has no HDR, and follows the window between screens."),
 
             new("hdr_reference_nits", DisplayCategory, RuntimeCVarType.Double, "0",
                 "The brightness of white — the UI, and everything the SDR picture shows — in "

@@ -58,11 +58,15 @@ public static class GameChildProcess
 
 		// The graphics API is fixed when the rendering device is created, so it rides the command
 		// line too. Direct3D 12 is Windows-only; everywhere else the driver is Vulkan whatever
-		// refii.toml says.
-		string driver = System.OperatingSystem.IsWindows()
-			&& Refii.Core.Engine_RefiiConfig.String(config, "rendering_driver", "vulkan") == "d3d12"
-				? "d3d12"
-				: "vulkan";
+		// refii.toml says. HDR output on Windows requires Direct3D 12 (Godot's Windows display
+		// server does not support HDR swapchains under Vulkan).
+		string driver = ResolveRenderingDriver(config, System.OperatingSystem.IsWindows());
+		if (System.OperatingSystem.IsWindows()
+			&& Refii.Core.Engine_RefiiConfig.Bool(config, "hdr_output", false)
+			&& Refii.Core.Engine_RefiiConfig.String(config, "rendering_driver", "d3d12") == "vulkan")
+		{
+			GD.Print("[launch] HDR output is enabled: using Direct3D 12 rendering driver on Windows (Vulkan does not support HDR swapchains in Godot)");
+		}
 		arguments.Add("--rendering-driver");
 		arguments.Add(driver);
 
@@ -124,5 +128,28 @@ public static class GameChildProcess
 			environment,
 			out handle,
 			out error);
+	}
+
+	/// <summary>
+	/// Chooses the graphics API passed to the child process.
+	/// Direct3D 12 is Windows-only; everywhere else the driver is Vulkan whatever refii.toml says.
+	/// On Windows, HDR output requires Direct3D 12 (Godot's Windows display server does not
+	/// support HDR swapchains under Vulkan), so requesting HDR automatically selects Direct3D 12.
+	/// </summary>
+	public static string ResolveRenderingDriver(IReadOnlyDictionary<string, string> config, bool isWindows)
+	{
+		if (!isWindows)
+		{
+			return "vulkan";
+		}
+
+		bool hdrWanted = Refii.Core.Engine_RefiiConfig.Bool(config, "hdr_output", false);
+		string configured = Refii.Core.Engine_RefiiConfig.String(config, "rendering_driver", "d3d12");
+		if (hdrWanted && configured != "d3d12")
+		{
+			return "d3d12";
+		}
+
+		return configured == "d3d12" ? "d3d12" : "vulkan";
 	}
 }
