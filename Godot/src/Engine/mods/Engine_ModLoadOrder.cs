@@ -239,6 +239,6 @@ public sealed class ModLoadOrder
 
 	private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-	internal static string Normalize(string path) =>
+	public static string Normalize(string path) =>
 		path.Replace('\\', '/').Trim('/').ToLowerInvariant();
 }

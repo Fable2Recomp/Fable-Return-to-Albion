@@ -32,4 +32,17 @@
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="tests\**" />
+  </ItemGroup>
+
+  <!-- Auto-run tests during C# compilation: fail build on test error -->
+  <Target Name="RunTestsAfterBuild" AfterTargets="Build" Condition="'$(REFII_NO_TESTS)' != '1' and '$(IsTesting)' != 'true'">
+    <Message Importance="high" Text="================= [RUNNING UNIT TESTS] =================" />
+    <Exec Command="dotnet test &quot;$(MSBuildThisFileDirectory)tests\Refii.Tests\Refii.Tests.csproj&quot; -c $(Configuration) -p:IsTesting=true -p:REFII_NO_TESTS=1 --logger &quot;console;verbosity=minimal&quot;"
+          StandardOutputImportance="High"
+          StandardErrorImportance="High" />
+    <Message Importance="high" Text="========================================================" />
+  </Target>
 </Project>

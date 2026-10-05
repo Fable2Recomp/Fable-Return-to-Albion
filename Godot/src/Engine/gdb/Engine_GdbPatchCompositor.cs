@@ -51,6 +51,31 @@ public static class GdbPatchCompositor
 {
     public const string CompositeCacheDirName = ".cache/gdb_composite";
 
+    public static Action<string>? LogHandler;
+    public static Action<string>? WarnHandler;
+
+    private static void LogPrint(string message)
+    {
+        if (LogHandler is not null)
+        {
+            LogHandler(message);
+            return;
+        }
+
+        try { GD.Print(message); } catch { }
+    }
+
+    private static void LogWarning(string message)
+    {
+        if (WarnHandler is not null)
+        {
+            WarnHandler(message);
+            return;
+        }
+
+        try { GD.PushWarning(message); } catch { }
+    }
+
     /// <summary>
     /// Detects all record-level conflicts across enabled mods without mounting the full filesystem.
     /// Used by ModIndex and the launcher ModdingPanel to display granular warning indicators.
@@ -207,11 +232,11 @@ public static class GdbPatchCompositor
 
                     File.WriteAllBytes(cachePath, binary);
                     File.WriteAllText(stampPath, currentStamp);
-                    GD.Print($"[gdb_compositor] Composited {completeDb.Entries.Count} record(s) across {modFiles.Count} mod(s) into {cachePath}");
+                    LogPrint($"[gdb_compositor] Composited {completeDb.Entries.Count} record(s) across {modFiles.Count} mod(s) into {cachePath}");
                 }
                 catch (Exception ex)
                 {
-                    GD.PushWarning($"[gdb_compositor] Failed to write composite cache {cachePath}: {ex.Message}");
+                    LogWarning($"[gdb_compositor] Failed to write composite cache {cachePath}: {ex.Message}");
                 }
             }
 

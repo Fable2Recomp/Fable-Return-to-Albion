@@ -133,10 +133,26 @@ public static class GdbPatchBuilder
                     schemaFlags = cursor.View.RecordSchemaFlags(cursor.Record);
                 }
 
-                foreach (var (hash, type, raw) in cursor.View.RawFields(cursor.Record))
+                // Populate all inherited properties from parent hierarchy:
+                foreach (var (hash, type, raw) in baseMulti.InheritedFields(cursor))
                 {
                     propMap[hash] = fullProperties.Count;
                     fullProperties.Add(new GdbPatchProperty(hash, type, raw));
+                }
+
+                // Ensure local fields (such as parent reference) are also included:
+                foreach (var (hash, type, raw) in cursor.View.RawFields(cursor.Record))
+                {
+                    if (propMap.TryGetValue(hash, out int idx))
+                    {
+                        fullProperties[idx].Value = raw;
+                        fullProperties[idx].Type = type;
+                    }
+                    else
+                    {
+                        propMap[hash] = fullProperties.Count;
+                        fullProperties.Add(new GdbPatchProperty(hash, type, raw));
+                    }
                 }
             }
 
