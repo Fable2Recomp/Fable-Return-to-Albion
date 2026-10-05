@@ -169,12 +169,7 @@ public static class Engine_ItemIndex
             return;
         }
 
-        var blobs = new List<byte[]?>();
-        foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
-        {
-            blobs.Add(_resolver(path) ?? _resolver("data/" + path));
-        }
-
+        var blobs = Refii.Gdb.Engine_GameGdb.LoadSupplementalBlobs(_resolver, includeTu: true);
         GdbMulti multi = GdbMulti.Build(blobs);
 
         var entries = new List<ItemEntry>();

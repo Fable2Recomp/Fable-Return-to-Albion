@@ -85,12 +85,7 @@ public static class Engine_HeroTextureMorph
             }
         }
 
-        var blobs = new List<byte[]?>();
-        foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
-        {
-            blobs.Add(_resolver(path) ?? _resolver("data/" + path));
-        }
-
+        var blobs = Refii.Gdb.Engine_GameGdb.LoadSupplementalBlobs(_resolver, includeTu: true);
         List<TextureMorphPair> built = Engine_GdbTextureMorphs.Build(GdbMulti.Build(blobs));
         GD.Print($"[morph] {built.Count} texture morph pair(s), " +
             $"{Engine_TexPathIndex.Count} texture(s) indexed");

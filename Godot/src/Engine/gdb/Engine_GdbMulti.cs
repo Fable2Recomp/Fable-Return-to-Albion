@@ -219,6 +219,34 @@ public sealed class GdbMulti
             }
         }
 
+        // Also check if start had underlying cursors (e.g. from base databases):
+        uint startHash = start.View.RecordHash(start.Record);
+        if (startHash != 0 && _cursorsByHash.TryGetValue(startHash, out var cursors) && cursors.Count > 1)
+        {
+            for (int c = cursors.Count - 1; c >= 0; c--)
+            {
+                GdbCursor underlying = cursors[c];
+                if (ReferenceEquals(underlying.View, start.View))
+                {
+                    continue;
+                }
+
+                GdbCursor underCurrent = underlying;
+                for (int depth = 0; depth < 64 && underCurrent.Valid; depth++)
+                {
+                    chain.Add(underCurrent);
+                    if (!underCurrent.View.TryFindLocalRaw(
+                            underCurrent.Record, GdbView.HashParent, 6, out uint parent, out _) ||
+                        parent == 0 || parent == GdbHash.Null ||
+                        !seen.Add(parent) ||
+                        !TryLookup(parent, out underCurrent))
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
         chain.Reverse();
 
         var emitted = new HashSet<uint>();
@@ -233,7 +261,7 @@ public sealed class GdbMulti
 
                 // The deepest definition wins.
                 (GdbFieldType Type, uint Raw) value = (type, raw);
-                for (int i = chain.Count - 1; i > 0; i--)
+                for (int i = chain.Count - 1; i >= 0; i--)
                 {
                     if (chain[i].View.TryFindLocalRaw(
                             chain[i].Record, hash, -1, out uint over, out GdbFieldType overType))

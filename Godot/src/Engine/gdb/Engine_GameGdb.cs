@@ -58,6 +58,29 @@ public static class Engine_GameGdb
 		}
 	}
 
+	/// <summary>
+	/// Loads raw GDB binary blobs for all supplemental databases, optionally including companion Title Update (.gdb.tu) patches.
+	/// </summary>
+	public static List<byte[]?> LoadSupplementalBlobs(Func<string, byte[]?> resolver, bool includeTu = true)
+	{
+		var blobs = new List<byte[]?>();
+		foreach (string path in Refii.Level.Engine_LevelProps.SupplementalGdbPaths)
+		{
+			byte[]? blob = resolver(path) ?? resolver("data/" + path);
+			blobs.Add(blob);
+
+			if (includeTu)
+			{
+				byte[]? tuBlob = resolver(path + ".tu") ?? resolver("data/" + path + ".tu");
+				if (tuBlob is not null)
+				{
+					blobs.Add(tuBlob);
+				}
+			}
+		}
+		return blobs;
+	}
+
 	/// <summary>The unpatched base database before any mod overlays are applied.</summary>
 	public static GdbMulti? BaseDatabase
 	{
@@ -70,13 +93,7 @@ public static class Engine_GameGdb
 					return _baseMulti;
 				}
 
-				var blobs = new List<byte[]?>();
-				foreach (string path in Refii.Level.Engine_LevelProps.SupplementalGdbPaths)
-				{
-					byte[]? blob = _baseResolver(path) ?? _baseResolver("data/" + path);
-					blobs.Add(blob);
-				}
-
+				var blobs = LoadSupplementalBlobs(_baseResolver, includeTu: false);
 				_baseMulti = GdbMulti.Build(blobs);
 				_baseBuilt = true;
 				return _baseMulti;
@@ -96,23 +113,13 @@ public static class Engine_GameGdb
 					return _multi;
 				}
 
-				var blobs = new List<byte[]?>();
+				var blobs = LoadSupplementalBlobs(_resolver, includeTu: true);
 				var absent = new List<string>();
 				foreach (string path in Refii.Level.Engine_LevelProps.SupplementalGdbPaths)
 				{
-					// Both spellings the mount answers to; a null blob is skipped by the merge.
-					byte[]? blob = _resolver(path) ?? _resolver("data/" + path);
-					blobs.Add(blob);
-					if (blob is null)
+					if ((_resolver(path) ?? _resolver("data/" + path)) is null)
 					{
 						absent.Add(path);
-					}
-
-					// Companion Title Update (.gdb.tu) patch:
-					byte[]? tuBlob = _resolver(path + ".tu") ?? _resolver("data/" + path + ".tu");
-					if (tuBlob is not null)
-					{
-						blobs.Add(tuBlob);
 					}
 				}
 

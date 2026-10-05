@@ -115,12 +115,7 @@ public static class Engine_HeroMorphCatalog
             }
         }
 
-        var blobs = new List<byte[]?>();
-        foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
-        {
-            blobs.Add(_resolver(path) ?? _resolver("data/" + path));
-        }
-
+        var blobs = Refii.Gdb.Engine_GameGdb.LoadSupplementalBlobs(_resolver, includeTu: true);
         List<MorphTargetPair> built = Engine_GdbMorphTargets.Build(GdbMulti.Build(blobs));
         GD.Print($"[morph] {built.Count} authored morph target pair(s)");
 

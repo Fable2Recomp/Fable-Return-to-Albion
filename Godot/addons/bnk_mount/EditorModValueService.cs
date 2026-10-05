@@ -870,6 +870,9 @@ public static class EditorModValueService
         GD.Print($"[mod_values] Saved overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] to mod '{modName}'");
 
         // 3. HOT-RELOAD IN-MEMORY OVERLAYS AND REFRESH SCENE NODES
+        Engine_GameGdb.Invalidate();
+        Refii.Equipment.Engine_WeaponIndex.Invalidate();
+        Refii.Equipment.Engine_ItemIndex.Invalidate();
         Engine_BnkTextBankLoader.Invalidate();
         BnkMountPlugin.Instance?.ReloadModOverlays();
         RefreshSceneEquipment();
@@ -964,6 +967,9 @@ public static class EditorModValueService
         GD.Print($"[mod_values] Reverted overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] in mod '{modName}'");
 
         // Hot-reload in-memory overlays and refresh scene nodes:
+        Engine_GameGdb.Invalidate();
+        Refii.Equipment.Engine_WeaponIndex.Invalidate();
+        Refii.Equipment.Engine_ItemIndex.Invalidate();
         Engine_BnkTextBankLoader.Invalidate();
         BnkMountPlugin.Instance?.ReloadModOverlays();
         RefreshSceneEquipment();

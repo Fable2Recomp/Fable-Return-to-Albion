@@ -330,6 +330,10 @@ public partial class BnkMountPlugin : EditorPlugin
             _filesystem = mounted;
             Refii.Gdb.Engine_GameGdb.Invalidate();
             Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
+            Refii.Equipment.Engine_WeaponIndex.Invalidate();
+            Refii.Equipment.Engine_ItemIndex.Invalidate();
+            Refii.Equipment.Engine_ClothingIndex.Invalidate();
+            Refii.Entities.Engine_EntityIndex.Invalidate();
             _ = Refii.Equipment.Engine_WeaponIndex.Families;
             _videos = Refii.Video.Engine_VideoLibrary.Load(gameDirectory);
             _byFileName = null;
