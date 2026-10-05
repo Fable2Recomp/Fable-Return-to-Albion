@@ -2,6 +2,10 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <!-- .NET 8 OR NEWER. The tests are built for 8 and run on it when it is installed; on a
+         machine that only has a later runtime they roll forward to that one instead of the
+         test host refusing to start and failing the build gate. -->
+    <RollForward>Major</RollForward>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>

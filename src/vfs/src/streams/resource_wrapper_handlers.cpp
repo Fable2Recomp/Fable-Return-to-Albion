@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 inline namespace detail {
@@ -483,10 +484,10 @@ bool TryHandleRefiiHostDiskStreamDirectRead(PPCContext& ctx,
   }
 
   const bool uses_stream_reader_destination =
-      ctx.lr == 0x82B4E89C ||
-      ctx.lr == 0x82C8EC80 ||
-      ctx.lr == 0x82C6E950 ||
-      ctx.lr == 0x82C6E9CC;
+      ctx.lr == refii::guest::Address(0x82B4E89Cu) ||
+      ctx.lr == refii::guest::Address(0x82C8EC80u) ||
+      ctx.lr == refii::guest::Address(0x82C6E950u) ||
+      ctx.lr == refii::guest::Address(0x82C6E9CCu);
   const bool trace_bik_slot12 =
       ShouldTraceBikPpcShape(base, stream_guest, "BIKPpcSlot12", 16);
   const std::string destination_before =

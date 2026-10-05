@@ -32,6 +32,7 @@
 
 #include "vfs_hooks_private.h"
 #include "hooks/ppc_externs.h"
+#include "core/guest_build.h"
 
 namespace {
 
@@ -52,21 +53,21 @@ namespace {
 
 }  // namespace
 
-REFII_TRACE_GAME_INIT_CALL(sub_8234EF58)
-REFII_TRACE_GAME_INIT_CALL(sub_82459280)
-REFII_TRACE_GAME_INIT_CALL(sub_823272E0)
-REFII_TRACE_GAME_INIT_CALL(sub_823BEDC0)
+REFII_TRACE_GAME_INIT_CALL(rex_lhGameInit_CreateGameSystems)
+REFII_TRACE_GAME_INIT_CALL(rex_lhLuaScriptSystem_LoadStartupScripts)
+REFII_TRACE_GAME_INIT_CALL(rex_lhNetManager_ResetSessionState)
+REFII_TRACE_GAME_INIT_CALL(rex_lhLuaConsole_RunStartupConsoleScripts)
 
 // Second pass. sub_823272E0 (0x823113CC) ENTERED AND RETURNED, and sub_823BEDC0
 // (0x8231162C) never enters — so the stall is between them. These bracket that span,
 // which is where GameFlow_QueueCommand(CmdLevelChange) at 0x823115D0 lives.
-REFII_TRACE_GAME_INIT_CALL(sub_824732A8)
-REFII_TRACE_GAME_INIT_CALL(sub_82473C60)
-REFII_TRACE_GAME_INIT_CALL(sub_8247A720)
-REFII_TRACE_GAME_INIT_CALL(sub_82487790)
-REFII_TRACE_GAME_INIT_CALL(sub_824926A8)
-REFII_TRACE_GAME_INIT_CALL(sub_82882C88)
-REFII_TRACE_GAME_INIT_CALL(sub_821E3108)
+REFII_TRACE_GAME_INIT_CALL(rex_lhFactionManager_Init)
+REFII_TRACE_GAME_INIT_CALL(rex_lhRepeatDelayTable_InitFromGDB)
+REFII_TRACE_GAME_INIT_CALL(rex_lhGDBDefRegistry_RegisterEntriesFromDef)
+REFII_TRACE_GAME_INIT_CALL(rex_lhDynamicRewards_LoadSettings)
+REFII_TRACE_GAME_INIT_CALL(rex_lhSpeechFrequency_LoadLifetimeSettings)
+REFII_TRACE_GAME_INIT_CALL(rex_lhInputMap_LoadFromGameData)
+REFII_TRACE_GAME_INIT_CALL(rex_lhCharString_CtorConcat)
 
 // One level deeper. sub_82459280 (the gameplay Lua bring-up at 0x82311318) is entered and
 // never returns, and it is NOT our hook — the stall is identical with
@@ -80,7 +81,7 @@ REFII_TRACE_GAME_INIT_CALL(sub_821E3108)
     REX_EXTERN(symbol) {                                                      \
         REX_FUNC_PROLOGUE();                                                  \
         const uint32_t lr = ctx.lr;                                           \
-        const bool inside = lr >= 0x82459280u && lr <= 0x82459900u;           \
+        const bool inside = lr >= refii::guest::Address(0x82459280u) && lr <= refii::guest::Address(0x82459900u);           \
         if (inside) {                                                         \
             REXLOG_INFO("Refii LuaInit ENTER " #symbol " (lr=0x{:08X})", lr);  \
         }                                                                     \
@@ -90,7 +91,7 @@ REFII_TRACE_GAME_INIT_CALL(sub_821E3108)
         }                                                                     \
     }
 
-REFII_TRACE_LUA_INIT_CALL(sub_82C68F30)
-REFII_TRACE_LUA_INIT_CALL(sub_8219A9A0)
-REFII_TRACE_LUA_INIT_CALL(sub_82458C88)
+REFII_TRACE_LUA_INIT_CALL(rex_lhResourceManager_QueryNameHash)
+REFII_TRACE_LUA_INIT_CALL(rex_lhLuaFunctionRef_ProtectedCall)
+REFII_TRACE_LUA_INIT_CALL(rex_lhLuaBindings_RegisterGameNamespaces)
 // sub_821956A0 (the Lua GC driver) keeps this same trace inside its own hook, lua_gc_slice.cpp.

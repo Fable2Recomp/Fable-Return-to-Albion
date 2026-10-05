@@ -29,7 +29,7 @@
 // librefii_vfs: this file compiles into the payload and the host bridge reads what it records,
 // so a table beside these hooks is one the host cannot reach on Windows. See that file.
 
-REX_EXTERN(sub_825738F0) {
+REX_EXTERN(rex_CECGraphicAppearance_SetHighlightColour) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
 
@@ -42,12 +42,12 @@ REX_EXTERN(sub_825738F0) {
                         static_cast<uint32_t>(refii::vfs::LoadGuestU8(base, at + 3u));
   refii::vfs::NoteHighlightColour(ctx.r3.u32, rgba);
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_825738F0);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CECGraphicAppearance_SetHighlightColour);
 }
 
-REX_EXTERN(sub_82427FD0) {
+REX_EXTERN(rex_lhECTargeted_SetTargetedByPlayer) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   refii::vfs::NoteHighlightTarget();
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82427FD0);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhECTargeted_SetTargetedByPlayer);
 }

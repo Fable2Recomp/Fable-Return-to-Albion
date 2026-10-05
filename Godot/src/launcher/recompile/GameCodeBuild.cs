@@ -57,6 +57,27 @@ public static class GameCodeBuild
 
 	public static string RecompileDirectory => Path.Combine(BinDirectory, "recompile");
 
+	/// <summary>The title update beside the installed executable, when the player installed one.</summary>
+	public static string GameTitleUpdatePath =>
+		Path.Combine(Path.GetDirectoryName(GameExecutablePath) ?? string.Empty, "default.xexp");
+
+	/// <summary>
+	/// Which <c>versions/</c> folder describes the installed game: the patched executable or
+	/// the disc one.
+	/// </summary>
+	/// <remarks>
+	/// THE TWO ARE DIFFERENT PROGRAMS. The title update is a full relink, so no guest address
+	/// is shared between them; each folder carries its own manifest and config, and the hooks
+	/// bind through the function names the two configs have in common. The generator applies
+	/// the patch whenever it sits beside the executable, so its presence IS the version.
+	/// </remarks>
+	public static string GameVersionName =>
+		File.Exists(GameTitleUpdatePath) ? "Fable2TU1" : "Fable2";
+
+	/// <summary>The ReXGlue manifest and config for the installed game's version.</summary>
+	public static string VersionDirectory =>
+		Path.Combine(RecompileDirectory, "versions", GameVersionName);
+
 	/// <summary>The generator's output. Deleted once the module is built.</summary>
 	public static string GeneratedDirectory => Installer.GetGeneratedCodeDirectoryPath();
 
@@ -289,6 +310,15 @@ public static class GameCodeBuild
 				}
 			}
 
+			// The manifest and config the generator reads for THIS install's version. They
+			// decide which functions exist and what they are called, so a config change is a
+			// code change even when no hook source moved.
+			if (Directory.Exists(VersionDirectory))
+			{
+				files.AddRange(Directory.EnumerateFiles(
+					VersionDirectory, "*", SearchOption.AllDirectories));
+			}
+
 			if (files.Count == 0)
 			{
 				return string.Empty;
@@ -336,9 +366,17 @@ public static class GameCodeBuild
 	{
 		try
 		{
-			using FileStream stream = File.OpenRead(GameExecutablePath);
+			// The executable AND its title update: the generator recompiles the patched image
+			// when the patch is present, so adding or removing it changes the code produced
+			// without changing a byte of default.xex.
 			using var sha = SHA256.Create();
-			return Convert.ToHexString(sha.ComputeHash(stream));
+			byte[] executable = File.ReadAllBytes(GameExecutablePath);
+			sha.TransformBlock(executable, 0, executable.Length, null, 0);
+			byte[] update = File.Exists(GameTitleUpdatePath)
+				? File.ReadAllBytes(GameTitleUpdatePath)
+				: Array.Empty<byte>();
+			sha.TransformFinalBlock(update, 0, update.Length);
+			return Convert.ToHexString(sha.Hash ?? Array.Empty<byte>());
 		}
 		catch (Exception)
 		{
@@ -377,8 +415,8 @@ public static class GameCodeBuild
 			!DirectoryHasFiles(Path.Combine(recompile, "include")) ||
 			!File.Exists(Path.Combine(recompile, "include_dirs.cmake")) ||
 			!File.Exists(Path.Combine(recompile, "hook_sources.cmake")) ||
-			!File.Exists(Path.Combine(recompile, "refii_manifest.toml")) ||
-			!File.Exists(Path.Combine(recompile, "refii_config.toml")) ||
+			!File.Exists(Path.Combine(VersionDirectory, "refii_manifest.toml")) ||
+			!File.Exists(Path.Combine(VersionDirectory, "refii_config.toml")) ||
 			!File.Exists(Path.Combine(recompile, "src", "payload_export.cpp")) ||
 			!File.Exists(Path.Combine(recompile, "zig", "zig.exe")) ||
 			!Directory.Exists(Path.Combine(recompile, "zig", "lib"));
@@ -1120,10 +1158,11 @@ public static class GameCodeBuild
 	/// </remarks>
 	private static string WriteEffectiveManifest(out string error)
 	{
-		string source = Path.Combine(RecompileDirectory, "refii_manifest.toml");
+		string source = Path.Combine(VersionDirectory, "refii_manifest.toml");
 		if (!File.Exists(source))
 		{
-			error = "The code generation manifest is missing from this install (" + source + ").";
+			error = "The code generation manifest for " + GameVersionName +
+					" is missing from this install (" + source + ").";
 			return string.Empty;
 		}
 
@@ -1250,10 +1289,11 @@ public static class GameCodeBuild
 		var absolute = new List<string>();
 		foreach (string name in names)
 		{
-			// By file NAME: the staged SDK is flat, and the repo path an include is
-			// written as does not exist on a player's machine.
+			// By file NAME, beside the manifest that names it: an include sits in its
+			// version's folder, and the repo path it is written as does not exist on a
+			// player's machine.
 			absolute.Add("\"" +
-				Escape(Path.Combine(RecompileDirectory, Path.GetFileName(name))) + "\"");
+				Escape(Path.Combine(VersionDirectory, Path.GetFileName(name))) + "\"");
 		}
 
 		rewritten.AppendLine("includes = [" + string.Join(", ", absolute) + "]");
@@ -1433,6 +1473,13 @@ public static class GameCodeBuild
 		// logging crosses as C rather than as spdlog, and Tracy is absent. Omitting either
 		// produces a module that imports C++ symbols again and fails to link on Windows.
 		flags.Add("-DREFII_PAYLOAD_LOG_BRIDGE=1");
+
+		// Which executable this payload is recompiled from. guest_build_stamp.cpp states it to
+		// the runtime at load, which is how the hooks and the host bridge pick per-build values.
+		if (GameVersionName == "Fable2")
+		{
+			flags.Add("-DREFII_GUEST_BUILD_UNPATCHED=1");
+		}
 
 		// HEADER-ONLY fmt. The log bridge still formats with ::fmt::format before handing the
 		// finished string across the C boundary, so the payload pulls in fmt::vformat, which is

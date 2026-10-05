@@ -17,7 +17,7 @@
 #   lib/            rexruntime, refii_core, refii_vfs, refii_lua
 #   src/            payload_export.cpp
 #   payload_exports.def
-#   refii_manifest.toml, refii_config.toml
+#   versions/<name>/  refii_manifest.toml + refii_config.toml, one folder per supported executable
 #
 # NOTHING derived from a game image is staged here. The generated sources are produced on
 # the player's machine, into assets/generated, and deleted once the module is built.
@@ -109,10 +109,12 @@ function(refii_stage_payload_sdk)
         # absolute paths, because only it knows where the player put the game and where
         # the generated sources are going; a manifest with relative paths baked in here
         # resolves differently in a dev tree than in an exported app.
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/refii_config.toml"
-            "${CMAKE_SOURCE_DIR}/refii_manifest.toml"
-            "${_sdk_dir}"
+        # One folder per supported executable; the launcher reads the one matching the
+        # player's install. Removed first so a version dropped from the tree does not linger.
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_dir}/versions"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/versions"
+            "${_sdk_dir}/versions"
     )
 
     # The libraries the payload links. refii_generated itself is NOT among them: it is what

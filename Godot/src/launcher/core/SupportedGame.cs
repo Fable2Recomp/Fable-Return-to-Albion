@@ -3,8 +3,9 @@ using System;
 namespace Refii.Launcher.Core;
 
 /// <summary>
-/// The one pressing of Fable 2 this build recompiles, and the one title update that goes
-/// with it.
+/// The one pressing of Fable 2 this build recompiles, and the one title update that may be
+/// installed with it. The update is the player's choice: each of the two executables has its
+/// own config under versions/.
 /// </summary>
 /// <remarks>
 /// The generated code, the hooks and every guest address in this build were taken from one

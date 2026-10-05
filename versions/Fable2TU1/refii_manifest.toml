@@ -3,8 +3,8 @@ sdk_version = "0.10.0"
 name = "refii"
 
 [entrypoint]
-file_path = "assets/game/default.xex"
-out_directory_path = "generated"
+file_path = "../../assets/game/default.xex"
+out_directory_path = "../../generated"
 includes = [
   "refii_config.toml",
 ]

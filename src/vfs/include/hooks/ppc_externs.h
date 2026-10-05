@@ -19,84 +19,84 @@
 
 PPC_EXTERN_FUNC(__imp__rex_lhResourceManager_OpenInternal);
 PPC_EXTERN_FUNC(__imp__rex_lhResourceManager_FindAndCreateStream);
-PPC_EXTERN_FUNC(__imp__sub_82B48CB8);
-PPC_EXTERN_FUNC(__imp__sub_82B72430);
-PPC_EXTERN_FUNC(__imp__sub_82B53438);
-PPC_EXTERN_FUNC(__imp__sub_82B504D8);
-PPC_EXTERN_FUNC(__imp__sub_82B5AD98);
-PPC_EXTERN_FUNC(__imp__sub_82B5BFF8);
-PPC_EXTERN_FUNC(__imp__sub_82B5C0C0);
-PPC_EXTERN_FUNC(__imp__sub_82B5C0D8);
-PPC_EXTERN_FUNC(__imp__sub_82B5C0E0);
-PPC_EXTERN_FUNC(__imp__sub_82B5C110);
-PPC_EXTERN_FUNC(__imp__sub_82B5C148);
-PPC_EXTERN_FUNC(__imp__sub_82B5C160); // Lumen: LHVFS::CWin32Request::GetDevice(void)
-PPC_EXTERN_FUNC(__imp__sub_82A20EE8);
-PPC_EXTERN_FUNC(__imp__sub_82B70868);
-PPC_EXTERN_FUNC(__imp__sub_82B6DB20);
-PPC_EXTERN_FUNC(__imp__sub_82B6C340);
-PPC_EXTERN_FUNC(__imp__sub_82176018); // Lumen: LHFile::CDataInputStream::SetPosition(uint)
-PPC_EXTERN_FUNC(__imp__sub_82B8BA38);
-PPC_EXTERN_FUNC(__imp__sub_82B8C158);
-PPC_EXTERN_FUNC(__imp__sub_82B8C4A8);
-PPC_EXTERN_FUNC(__imp__sub_82B8C5F0);
-PPC_EXTERN_FUNC(__imp__sub_82B8CAC0);
-PPC_EXTERN_FUNC(__imp__sub_82B8CDF8);
-PPC_EXTERN_FUNC(__imp__sub_82B8CEE0);
-PPC_EXTERN_FUNC(__imp__sub_82B8D028);
-PPC_EXTERN_FUNC(__imp__sub_82B8D170);
-PPC_EXTERN_FUNC(__imp__sub_82B8D280);
-PPC_EXTERN_FUNC(__imp__sub_82B8D2D0);
-PPC_EXTERN_FUNC(__imp__sub_82B8D348);
-PPC_EXTERN_FUNC(__imp__sub_82B8D3D8);
-PPC_EXTERN_FUNC(__imp__sub_82B8D468);
-PPC_EXTERN_FUNC(__imp__sub_82B8D500);
-PPC_EXTERN_FUNC(__imp__sub_82B8D718);
-PPC_EXTERN_FUNC(__imp__sub_82B8D870);
-PPC_EXTERN_FUNC(__imp__sub_82B8D8C8);
-PPC_EXTERN_FUNC(__imp__sub_82B8DC78);
-PPC_EXTERN_FUNC(__imp__sub_82B8DCE0);
-PPC_EXTERN_FUNC(__imp__sub_82B8DDB0);
-PPC_EXTERN_FUNC(__imp__sub_82B8DE40);
-PPC_EXTERN_FUNC(__imp__sub_82B8DF50);
-PPC_EXTERN_FUNC(__imp__sub_82B8DFA0);
-PPC_EXTERN_FUNC(__imp__sub_82B96220);
-PPC_EXTERN_FUNC(__imp__sub_8252AA18);
-PPC_EXTERN_FUNC(__imp__sub_82B4E6D0);
-PPC_EXTERN_FUNC(__imp__sub_82B4E8E0);
-PPC_EXTERN_FUNC(__imp__sub_82B4EC30);
-PPC_EXTERN_FUNC(__imp__sub_82B4ED70);
-PPC_EXTERN_FUNC(__imp__sub_82B49028);
-PPC_EXTERN_FUNC(__imp__sub_82B49220);
-PPC_EXTERN_FUNC(__imp__sub_82B49D80);
-PPC_EXTERN_FUNC(__imp__sub_8244B978);
-PPC_EXTERN_FUNC(__imp__sub_8244BA28);
-PPC_EXTERN_FUNC(__imp__sub_8244BAD8);
-PPC_EXTERN_FUNC(__imp__sub_8244BED0);
-PPC_EXTERN_FUNC(__imp__sub_82190728);
-PPC_EXTERN_FUNC(__imp__sub_82C51CA0);
-PPC_EXTERN_FUNC(__imp__sub_82C51EC0);
-PPC_EXTERN_FUNC(__imp__sub_82B54D28);
-PPC_EXTERN_FUNC(__imp__sub_82B54E58);
-PPC_EXTERN_FUNC(__imp__sub_82B54250);
-PPC_EXTERN_FUNC(__imp__sub_82B54268);
-PPC_EXTERN_FUNC(__imp__sub_82B542D8);
-PPC_EXTERN_FUNC(__imp__sub_82B542F0); // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(void)
-PPC_EXTERN_FUNC(__imp__sub_822C72E8);
-PPC_EXTERN_FUNC(__imp__sub_822CBB98);
-PPC_EXTERN_FUNC(__imp__sub_8290DD10);
-PPC_EXTERN_FUNC(__imp__sub_83032078);
-PPC_EXTERN_FUNC(__imp__sub_83032088);
-PPC_EXTERN_FUNC(__imp__sub_82237338);
-PPC_EXTERN_FUNC(__imp__sub_82B75328);
-PPC_EXTERN_FUNC(__imp__sub_82B75D18);
-PPC_EXTERN_FUNC(__imp__sub_82B86B40);
-PPC_EXTERN_FUNC(__imp__sub_82C0EE10);
-PPC_EXTERN_FUNC(__imp__sub_82B456D8);
-PPC_EXTERN_FUNC(__imp__sub_82B45F70);
-PPC_EXTERN_FUNC(__imp__sub_8218FA68);
-PPC_EXTERN_FUNC(__imp__sub_82BA2830);
-PPC_EXTERN_FUNC(__imp__sub_82C6E8F0);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_RequestManager_SubmitRequest);
+PPC_EXTERN_FUNC(__imp__rex_lhFontGlyphVector_Resize);
+PPC_EXTERN_FUNC(__imp__rex_lhMem_ReserveCommitAlignedVirtual);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_ProviderSet_OpenCompositeDevice);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_CompositeDevice_CreateRequest);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Request_WaitForCompletion);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Request_GetBufferSpec);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Request_GetSize);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Request_ForwardToCompletionTarget);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Request_SetCallbackAndSubmit);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Request_ForwardInnerGetSize);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Request_GetDevice); // Lumen: LHVFS::CWin32Request::GetDevice(void)
+PPC_EXTERN_FUNC(__imp__rex_lhBufferedReader_Read);
+PPC_EXTERN_FUNC(__imp__rex_lhMeshResourceContainer_Remove);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureStreamRequest_OpenStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureStreamRequest_LoadPixels);
+PPC_EXTERN_FUNC(__imp__rex_lhDataInputStream_SetPosition); // Lumen: LHFile::CDataInputStream::SetPosition(uint)
+PPC_EXTERN_FUNC(__imp__rex_lhTextureHeader_ReadFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_LoadCubeMipsFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_DecodeCubeFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_BuildMipTextureHeader);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_LoadMipsFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_DecodeFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_CreateFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_LoadFromStreamWithHeader);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_LoadFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureLock_ScalarDeletingDtor);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureLock_Dtor);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureLock_LockTexture);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureLock_LockSurface);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureLock_Unlock);
+PPC_EXTERN_FUNC(__imp__rex_lhGfx_ReleaseVertexDecl);
+PPC_EXTERN_FUNC(__imp__rex_lhGfx_BufferHandle_Assign);
+PPC_EXTERN_FUNC(__imp__rex_lhGfx_LockWholeBuffer);
+PPC_EXTERN_FUNC(__imp__rex_lhRect_SubtractIntoList);
+PPC_EXTERN_FUNC(__imp__rex_lhGfx_CreateCubeTexture);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_GetMemorySize);
+PPC_EXTERN_FUNC(__imp__rex_lhTexture_LockCubeFace);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderBufferOwner_Ctor);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderBufferOwner_ScalarDeletingDtor);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderBufferOwner_Dtor);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureDecoder_GetInstance);
+PPC_EXTERN_FUNC(__imp__rex_lhRefPtr_Assign);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_PagedStream_Read);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_PagedStream_Write);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_PagedStream_FlushPage);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_PagedStream_LoadPageAt);
+PPC_EXTERN_FUNC(__imp__rex_lhLockFreeQueue_Push);
+PPC_EXTERN_FUNC(__imp__rex_lhLockFreeQueue_Pop);
+PPC_EXTERN_FUNC(__imp__rex_stdListDword_Insert);
+PPC_EXTERN_FUNC(__imp__rex_lhActionHandlerRegistry_AddHandler);
+PPC_EXTERN_FUNC(__imp__rex_lhActionHandlerRegistry_RemoveHandler);
+PPC_EXTERN_FUNC(__imp__rex_lhActionHandlerRegistry_SetActiveTypesForPlayer);
+PPC_EXTERN_FUNC(__imp__rex_lhActionHandlerRegistry_CollectHandlersByPlayerAndType);
+PPC_EXTERN_FUNC(__imp__rex_lhDeferredDestroyQueue_DrainWithTimeBudget);
+PPC_EXTERN_FUNC(__imp__rex_lhAudioObject_LoadFromStream);
+PPC_EXTERN_FUNC(__imp__rex_lhAudioObject_LoadFromFile);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Device_ScalarDeletingDtor);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Device_CreateRequest);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_BasicBufferedRequest_WaitForCompletion);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_BasicBufferedRequest_GetResultBuffer);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_BasicBufferedRequest_GetStatus);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_BasicBufferedRequest_GetDevice); // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(void)
+PPC_EXTERN_FUNC(__imp__rex_lhIoRefCounted_Release);
+PPC_EXTERN_FUNC(__imp__rex_lhIoRefCounted_AddRef);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_Win32Request_GetStatus);
+PPC_EXTERN_FUNC(__imp__rex_lhStream_ReturnENotImpl);
+PPC_EXTERN_FUNC(__imp__rex_lhStream_ReturnEFail);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderState_ResetAllToDefaults);
+PPC_EXTERN_FUNC(__imp__rex_lhGfx_InitRenderStateTable);
+PPC_EXTERN_FUNC(__imp__rex_lhGfx_ApplyDefaultRenderStates);
+PPC_EXTERN_FUNC(__imp__rex_lhGfx_InitStandardVertexDecls);
+PPC_EXTERN_FUNC(__imp__rex_lhResourceWrapper_GetSize);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_RequestManager_FindStreamByHashEntry);
+PPC_EXTERN_FUNC(__imp__rex_lhVFS_RequestManager_BuildProviderHash);
+PPC_EXTERN_FUNC(__imp__rex_lhLockedIdTable_QueueEntryUpdate);
+PPC_EXTERN_FUNC(__imp__rex_D3DDevice_InitializeRingBuffer);
+PPC_EXTERN_FUNC(__imp__rex_lhFile_ReadSequential);
 
 // Render_DrawBinkMovieFrame — the game's own call into Bink, hooked to capture the BINK
 // handle so the host can find the CPU-decoded video planes. Hooking inside Bink itself
@@ -110,35 +110,35 @@ PPC_EXTERN_FUNC(__imp__sub_82C6E8F0);
 // GAMEFACE UI VM — hooking it fires tens of thousands of times and never sees a GUI
 // native, because RegisterGUI registers into the game VM. The copies are not even
 // layout-identical: the hook-mask byte is at L+56 here and L+54 there.
-PPC_EXTERN_FUNC(__imp__sub_82228730);
+PPC_EXTERN_FUNC(__imp__rex_luaD_precall);
 // The display MessageBox's dtor, Open and Close (vtable 0x820AE668), stated to the host — see
 // hooks/display_box_hooks.cpp.
-PPC_EXTERN_FUNC(__imp__sub_823CEAE8);
-PPC_EXTERN_FUNC(__imp__sub_823CEB58);
-PPC_EXTERN_FUNC(__imp__sub_823CEC98);
+PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Dtor);
+PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Close);
 // hooks/reticule_hooks.cpp.
-PPC_EXTERN_FUNC(__imp__sub_8287C658);
-PPC_EXTERN_FUNC(__imp__sub_8234EF58);
-PPC_EXTERN_FUNC(__imp__sub_82C68F30);
-PPC_EXTERN_FUNC(__imp__sub_8219A9A0);
-PPC_EXTERN_FUNC(__imp__sub_82458C88);
-PPC_EXTERN_FUNC(__imp__sub_821956A0);
-PPC_EXTERN_FUNC(__imp__sub_824732A8);
-PPC_EXTERN_FUNC(__imp__sub_82473C60);
-PPC_EXTERN_FUNC(__imp__sub_8247A720);
-PPC_EXTERN_FUNC(__imp__sub_82487790);
-PPC_EXTERN_FUNC(__imp__sub_824926A8);
-PPC_EXTERN_FUNC(__imp__sub_82882C88);
-PPC_EXTERN_FUNC(__imp__sub_821E3108);
-PPC_EXTERN_FUNC(__imp__sub_82459280);
-PPC_EXTERN_FUNC(__imp__sub_823272E0);
-PPC_EXTERN_FUNC(__imp__sub_823BEDC0);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_Reticule_SetActiveForObject);
+PPC_EXTERN_FUNC(__imp__rex_lhGameInit_CreateGameSystems);
+PPC_EXTERN_FUNC(__imp__rex_lhResourceManager_QueryNameHash);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaFunctionRef_ProtectedCall);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBindings_RegisterGameNamespaces);
+PPC_EXTERN_FUNC(__imp__rex_lhLua_GcSliceStep);
+PPC_EXTERN_FUNC(__imp__rex_lhFactionManager_Init);
+PPC_EXTERN_FUNC(__imp__rex_lhRepeatDelayTable_InitFromGDB);
+PPC_EXTERN_FUNC(__imp__rex_lhGDBDefRegistry_RegisterEntriesFromDef);
+PPC_EXTERN_FUNC(__imp__rex_lhDynamicRewards_LoadSettings);
+PPC_EXTERN_FUNC(__imp__rex_lhSpeechFrequency_LoadLifetimeSettings);
+PPC_EXTERN_FUNC(__imp__rex_lhInputMap_LoadFromGameData);
+PPC_EXTERN_FUNC(__imp__rex_lhCharString_CtorConcat);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaScriptSystem_LoadStartupScripts);
+PPC_EXTERN_FUNC(__imp__rex_lhNetManager_ResetSessionState);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaConsole_RunStartupConsoleScripts);
 
 // The registration side channel — runs between pushcclosure and setfield for EVERY Lua
 // native, with the closure on the stack and the name in r5. Hooked to build impl -> name
 // without an address table, because the shipped metadata's address column is the THUNK for
 // some entries and thunks are shared between different natives.
-PPC_EXTERN_FUNC(__imp__sub_823CE420);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaNamespace_RegisterFunctionHash);
 
 // Value-returning GUI thunks, hooked so the host can answer a predicate in place of the guest:
 //   sub_822AA418  no args -> BOOLEAN: top = *(L+8); top[1] = 1 (LUA_TBOOLEAN); top[0] = value;
@@ -146,8 +146,8 @@ PPC_EXTERN_FUNC(__imp__sub_823CE420);
 //   sub_82197FF0  no args -> FLOAT (lua_Number is float): *(float*)top = value;
 //                 *(u32*)(top+4) = 3 (LUA_TNUMBER); return 1
 // `sub_82309EE8` (one string -> boolean) is absent: its answer depends on the argument.
-PPC_EXTERN_FUNC(__imp__sub_822AA418);
-PPC_EXTERN_FUNC(__imp__sub_82197FF0);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBind_ThunkReturnBool);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBind_ThunkReturnFloat);
 
 // Expression-meter void thunks, hooked so a host-owned native can be suppressed. All six
 // return zero Lua results, so the hook sets r3 = 0 and returns.
@@ -157,164 +157,164 @@ PPC_EXTERN_FUNC(__imp__sub_82197FF0);
 //   sub_8230A760  (number, number)      SetFillColourPercentages
 //   sub_8230A7F0  inline, 5 arguments   TurnOnExpressionStaticFill
 //   sub_8230A8C8  inline, 4 arguments   TurnOnExpressionDynamicFill
-PPC_EXTERN_FUNC(__imp__sub_82309D48);
-PPC_EXTERN_FUNC(__imp__sub_822B7BB8);
-PPC_EXTERN_FUNC(__imp__sub_823C00C8);
-PPC_EXTERN_FUNC(__imp__sub_8230A760);
-PPC_EXTERN_FUNC(__imp__sub_8230A7F0);
-PPC_EXTERN_FUNC(__imp__sub_8230A8C8);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBind_ThunkVoidNoArgs);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBind_ThunkVoidOneNumber);
+PPC_EXTERN_FUNC(__imp__rex_LuaAPI_SetHeroSpellTableItem);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBind_ThunkVoidTwoNumbers);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBind_ThunkVoidFiveArgs);
+PPC_EXTERN_FUNC(__imp__rex_lhLuaBind_ThunkForwardToDispatcher);
 
-PPC_EXTERN_FUNC(__imp__sub_82A41B48);
-PPC_EXTERN_FUNC(__imp__sub_82A41E30);
-PPC_EXTERN_FUNC(__imp__sub_82A41D88);
+PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_SetDestRect);
+PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_SetTrackVolume);
 PPC_EXTERN_FUNC(__imp__rex_lhRenderer_EndScene);
-PPC_EXTERN_FUNC(__imp__sub_82A1AC40);
-PPC_EXTERN_FUNC(__imp__sub_821C3C60);
-PPC_EXTERN_FUNC(__imp__sub_82A54500);
-PPC_EXTERN_FUNC(__imp__sub_821A61B0);
-PPC_EXTERN_FUNC(__imp__sub_82191F50);
-PPC_EXTERN_FUNC(__imp__sub_82A67188);
-PPC_EXTERN_FUNC(__imp__sub_82C6EA48);
-PPC_EXTERN_FUNC(__imp__sub_82C6EA80);
-PPC_EXTERN_FUNC(__imp__sub_82C6EAD8);
-PPC_EXTERN_FUNC(__imp__sub_8218DFB8);
-PPC_EXTERN_FUNC(__imp__sub_82231CB8);
-PPC_EXTERN_FUNC(sub_821F7800); // Lumen: LHString::CCharString::CCharString(void)
-PPC_EXTERN_FUNC(__imp__sub_8286FDB0);
-PPC_EXTERN_FUNC(__imp__sub_828D4110);
-PPC_EXTERN_FUNC(__imp__sub_822C9388); // Lumen: PulseEvent
-PPC_EXTERN_FUNC(__imp__sub_82382558); // subtitles state: self-gated getter incl. the first-boot non-en-uk default
-PPC_EXTERN_FUNC(__imp__sub_82B4F400);
-PPC_EXTERN_FUNC(__imp__sub_822DFE08); // the command-stream drain; headless it spins its whole budget
-PPC_EXTERN_FUNC(__imp__sub_825738F0); // CECGraphicAppearance: states the highlight RGBA
-PPC_EXTERN_FUNC(__imp__sub_82427FD0); // CECTargeted: states that an entity became a target
-PPC_EXTERN_FUNC(__imp__sub_82573318); // CECGraphicAppearance: every appearance setter ends here
-PPC_EXTERN_FUNC(__imp__sub_82572238); // CECGraphicAppearance: save/load of Alpha, TintColour, ...
-PPC_EXTERN_FUNC(__imp__sub_82571DF8); // CECGraphicAppearance: constructor
-PPC_EXTERN_FUNC(__imp__sub_82571FF0); // CECGraphicAppearance: destructor
-PPC_EXTERN_FUNC(__imp__sub_8220DE88); // CECGraphicAppearanceMorph: the composite submit
-PPC_EXTERN_FUNC(__imp__sub_8217FA50); // CECGraphicAppearanceMorph: rebuilds the part records
-PPC_EXTERN_FUNC(__imp__sub_825B38B0); // texture composite command: one original, its layers
-PPC_EXTERN_FUNC(__imp__sub_82A48B90); // morph descriptor constructor: a part and its weighted targets
-PPC_EXTERN_FUNC(__imp__sub_8222AAC8); // render command to one model handle; type 14 = overlays
-PPC_EXTERN_FUNC(__imp__sub_832325A8); // CParticleSystemEntityInstance: states the world position
-PPC_EXTERN_FUNC(__imp__sub_83231C40); // CParticleSystemEntityInstance: states the orientation
-PPC_EXTERN_FUNC(__imp__sub_825F81E0); // spell FX: create from <Spell>SpellParticleFXInfo.<slot>
-PPC_EXTERN_FUNC(__imp__sub_82374728);
-PPC_EXTERN_FUNC(__imp__sub_82377980);
-PPC_EXTERN_FUNC(__imp__sub_82377E10);
-PPC_EXTERN_FUNC(__imp__sub_82378020);
-PPC_EXTERN_FUNC(__imp__sub_82378110);
-PPC_EXTERN_FUNC(__imp__sub_82378118);
-PPC_EXTERN_FUNC(__imp__sub_82214890);
-PPC_EXTERN_FUNC(__imp__sub_82B96E78); // Lumen: nullsub_1
-PPC_EXTERN_FUNC(__imp__sub_82C2FC78);
-PPC_EXTERN_FUNC(__imp__sub_82EA63A8);
-PPC_EXTERN_FUNC(__imp__sub_8231A908);
-PPC_EXTERN_FUNC(__imp__sub_8231A748);
-PPC_EXTERN_FUNC(__imp__sub_8231A368);
-PPC_EXTERN_FUNC(__imp__sub_826D6108);
-PPC_EXTERN_FUNC(__imp__sub_8231A9A8);
-PPC_EXTERN_FUNC(__imp__sub_8231AA98);
-PPC_EXTERN_FUNC(__imp__sub_8231AAA0);
-PPC_EXTERN_FUNC(__imp__sub_8231AAA8);
-PPC_EXTERN_FUNC(__imp__sub_8231AAD0);
-PPC_EXTERN_FUNC(sub_82319928);
-PPC_EXTERN_FUNC(__imp__sub_82372500);
-PPC_EXTERN_FUNC(__imp__sub_82313268);
-PPC_EXTERN_FUNC(__imp__sub_82313270);
-PPC_EXTERN_FUNC(__imp__sub_82313278);
-PPC_EXTERN_FUNC(__imp__sub_82377A00);
-PPC_EXTERN_FUNC(__imp__sub_82377DC8);
-PPC_EXTERN_FUNC(__imp__sub_823781E0);
-PPC_EXTERN_FUNC(__imp__sub_82378618);
-PPC_EXTERN_FUNC(__imp__sub_821DE2E8);
-PPC_EXTERN_FUNC(__imp__sub_826D5E48);
-PPC_EXTERN_FUNC(__imp__sub_826DB598);
-PPC_EXTERN_FUNC(__imp__sub_82378F00);
-PPC_EXTERN_FUNC(__imp__sub_82379D78);
-PPC_EXTERN_FUNC(__imp__sub_82379088);
-PPC_EXTERN_FUNC(__imp__sub_82379170);
+PPC_EXTERN_FUNC(__imp__rex_lhApp_IdleWaitForFlags);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_DrawScene);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderView_UpdatePrewarm);
+PPC_EXTERN_FUNC(__imp__rex_lhGameLoop_HighFrequencyUpdate);
+PPC_EXTERN_FUNC(__imp__rex_lhStreamedTexture_PollPendingCompletions);
+PPC_EXTERN_FUNC(__imp__rex_lhTextureStreamJob_PublishMipResidency);
+PPC_EXTERN_FUNC(__imp__rex_lhFile_GetStreamSizeLow);
+PPC_EXTERN_FUNC(__imp__rex_lhFile_HasData);
+PPC_EXTERN_FUNC(__imp__rex_lhFile_GetDataPointer);
+PPC_EXTERN_FUNC(__imp__rex_lhIntrusivePtr_Assign);
+PPC_EXTERN_FUNC(__imp__rex_lhIntrusivePtr_Reset);
+PPC_EXTERN_FUNC(rex_lhCharString_Ctor); // Lumen: LHString::CCharString::CCharString(void)
+PPC_EXTERN_FUNC(__imp__rex_lhGui_AcquireFontFromActiveContext);
+PPC_EXTERN_FUNC(__imp__rex_lhFoldedGetter_DwordAtOffsetThirtyTwo);
+PPC_EXTERN_FUNC(__imp__rex_SetEvent); // Lumen: PulseEvent
+PPC_EXTERN_FUNC(__imp__rex_lhProfile_GetSubtitlesEnabled); // subtitles state: self-gated getter incl. the first-boot non-en-uk default
+PPC_EXTERN_FUNC(__imp__rex_lhSyncEvent_Wait);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderCommandStream_Drain); // the command-stream drain; headless it spins its whole budget
+PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_SetHighlightColour); // CECGraphicAppearance: states the highlight RGBA
+PPC_EXTERN_FUNC(__imp__rex_lhECTargeted_SetTargetedByPlayer); // CECTargeted: states that an entity became a target
+PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_ReplicateAppearance); // CECGraphicAppearance: every appearance setter ends here
+PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_Serialize); // CECGraphicAppearance: save/load of Alpha, TintColour, ...
+PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_Ctor); // CECGraphicAppearance: constructor
+PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_ScalarDtor); // CECGraphicAppearance: destructor
+PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_ApplyTextureLayers); // CECGraphicAppearanceMorph: the composite submit
+PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_RebuildParts); // CECGraphicAppearanceMorph: rebuilds the part records
+PPC_EXTERN_FUNC(__imp__rex_lhSetTextureLayersCommand_Ctor); // texture composite command: one original, its layers
+PPC_EXTERN_FUNC(__imp__rex_lhMorphDescriptor_Ctor); // morph descriptor constructor: a part and its weighted targets
+PPC_EXTERN_FUNC(__imp__rex_lhRenderCommandStream_PostModelCommand); // render command to one model handle; type 14 = overlays
+PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetPositionAndVelocity); // CParticleSystemEntityInstance: states the world position
+PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetOrientation); // CParticleSystemEntityInstance: states the orientation
+PPC_EXTERN_FUNC(__imp__rex_lhFx_SpawnFromDefProperty); // spell FX: create from <Spell>SpellParticleFXInfo.<slot>
+PPC_EXTERN_FUNC(__imp__rex_CRemappingFileSystem_AddRemap);
+PPC_EXTERN_FUNC(__imp__rex_lhApp_CreateFrontEnd);
+PPC_EXTERN_FUNC(__imp__rex_lhApp_ScalarDeletingDtor);
+PPC_EXTERN_FUNC(__imp__rex_lhAppHolder_ScalarDeletingDtor);
+PPC_EXTERN_FUNC(__imp__rex_lhAppHolder_Initialise);
+PPC_EXTERN_FUNC(__imp__rex_lhAppHolder_Shutdown);
+PPC_EXTERN_FUNC(__imp__rex_lhVirtual_ReturnNine);
+PPC_EXTERN_FUNC(__imp__rex_lhDebugPrint_Nullsub); // Lumen: nullsub_1
+PPC_EXTERN_FUNC(__imp__rex_lhStub_ReturnTwelve);
+PPC_EXTERN_FUNC(__imp__rex_lhStub_ReturnOne);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndState_Ctor);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndGame_ScalarDtor);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndGame_VtableSlot6);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_PreviewScene_Dtor);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndState_ScalarDtor);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndState_Init);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndState_Shutdown);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndState_Run);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndState_AbortPendingStart);
+PPC_EXTERN_FUNC(rex_lhFrontEndGame_CreateInGameState);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiPresentation_RunLuaString);
+PPC_EXTERN_FUNC(__imp__rex_lhInGameState_Init);
+PPC_EXTERN_FUNC(__imp__rex_lhInGameState_Shutdown);
+PPC_EXTERN_FUNC(__imp__rex_lhInGameState_Run);
+PPC_EXTERN_FUNC(__imp__rex_lhApp_RunStartupLoop);
+PPC_EXTERN_FUNC(__imp__rex_lhApp_OnSkipMovieInput);
+PPC_EXTERN_FUNC(__imp__rex_lhAppHolder_GetRenderer);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEnd_Enter);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderCommandStream_PostCreateCommand);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_PreviewScene_CreateSceneObjects);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_LoadTunableVectorGlobals);
+PPC_EXTERN_FUNC(__imp__rex_lhRefPtrPair_Assign);
+PPC_EXTERN_FUNC(__imp__rex_lhRefPtrPair_CtorFromMovedPtr);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEnd_BindScrollingElement);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEnd_Update);
 // The guest's once-per-tick thunk, on its own "GameThread" — see guest_tick_pump.cpp.
-PPC_EXTERN_FUNC(__imp__sub_822C1BD0);
+PPC_EXTERN_FUNC(__imp__rex_lhTickDelegate_ForwardToInner);
 // Menu spawn and list boundary: `sub_826CE8D0` is `g_Menu:CreateMenuItem`'s C++ side (name,
 // parent, id, event type in r4/r7/r8/r9); `sub_826CE110` wraps `DeleteAllSpawnedMenuItems`.
-PPC_EXTERN_FUNC(__imp__sub_826CE8D0);
-PPC_EXTERN_FUNC(__imp__sub_826CE110);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_InGameMenu_SpawnButton);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_InGameMenu_DeleteAllSpawnedMenuItems);
 
 // The pause-tab lever poller, run EVERY GUI TICK — the one heartbeat that beats while the
 // pause book is open (`sub_822C1BD0`, the game-loop tick, stops there). The pause-screen
 // samplers ride it: a sampler gated on "screen 23 is up" can never fire from a tick the
 // pause stops.
-PPC_EXTERN_FUNC(__imp__sub_8229ABD8);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_TickUpdate);
 // The front end's emitter: `sub_826E4798` is `sub_826CE8D0` against `dword_83496AC0` rather
 // than the in-game GUI manager `dword_83496B08`.
-PPC_EXTERN_FUNC(__imp__sub_826E4798);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_Frontend_SpawnButton);
 // Six inline list boundaries (world map / abilities / shop / logbook / gift-gold / front end):
 // they fire `"g_Menu:DeleteAllSpawnedMenuItems()"` through the GUI Lua exec, not `sub_826CE110`.
-PPC_EXTERN_FUNC(__imp__sub_829A2F40);
-PPC_EXTERN_FUNC(__imp__sub_829A45A0);
-PPC_EXTERN_FUNC(__imp__sub_82994218);
-PPC_EXTERN_FUNC(__imp__sub_829B8648);
-PPC_EXTERN_FUNC(__imp__sub_829BA860);
-PPC_EXTERN_FUNC(__imp__sub_82430468);
-PPC_EXTERN_FUNC(__imp__sub_826E1F70);
-PPC_EXTERN_FUNC(sub_823DCB10);
-PPC_EXTERN_FUNC(sub_823DCC70);
-PPC_EXTERN_FUNC(__imp__sub_82426470);
-PPC_EXTERN_FUNC(__imp__sub_823889A8);
-PPC_EXTERN_FUNC(__imp__sub_82388A18);
-PPC_EXTERN_FUNC(__imp__sub_82388A88);
-PPC_EXTERN_FUNC(__imp__sub_82388B48);
-PPC_EXTERN_FUNC(__imp__sub_823865F8);
-PPC_EXTERN_FUNC(__imp__sub_82388040);
-PPC_EXTERN_FUNC(__imp__sub_82389040);
-PPC_EXTERN_FUNC(__imp__sub_82389210);
-PPC_EXTERN_FUNC(__imp__sub_82360300);
-PPC_EXTERN_FUNC(__imp__sub_8235D5E8);
-PPC_EXTERN_FUNC(__imp__sub_8235E1E0);
-PPC_EXTERN_FUNC(__imp__sub_8235E5A0);
-PPC_EXTERN_FUNC(__imp__sub_8235E420);
-PPC_EXTERN_FUNC(__imp__sub_82360418);
-PPC_EXTERN_FUNC(__imp__sub_82360618);
-PPC_EXTERN_FUNC(__imp__sub_82360968);
-PPC_EXTERN_FUNC(__imp__sub_82361AF8);
-PPC_EXTERN_FUNC(__imp__sub_82180418);
-PPC_EXTERN_FUNC(__imp__sub_82467B08);
-PPC_EXTERN_FUNC(__imp__sub_822C6C68);
-PPC_EXTERN_FUNC(sub_823C0D90);
-PPC_EXTERN_FUNC(__imp__sub_823C1658);
-PPC_EXTERN_FUNC(__imp__sub_8237AA98);
-PPC_EXTERN_FUNC(__imp__sub_8237AC80);
-PPC_EXTERN_FUNC(__imp__sub_822B88A8);
-PPC_EXTERN_FUNC(sub_822D6408);
-PPC_EXTERN_FUNC(__imp__sub_82361128);
-PPC_EXTERN_FUNC(__imp__sub_82361200);
-PPC_EXTERN_FUNC(sub_8222CED0);
-PPC_EXTERN_FUNC(sub_82214DD8);
-PPC_EXTERN_FUNC(sub_822651A0);
-PPC_EXTERN_FUNC(sub_82275438);
-PPC_EXTERN_FUNC(sub_823C1CB0);
-PPC_EXTERN_FUNC(sub_82467E40);
-PPC_EXTERN_FUNC(sub_824679F8);
-PPC_EXTERN_FUNC(__imp__sub_821E2C08);
-PPC_EXTERN_FUNC(__imp__sub_82A415C0);
-PPC_EXTERN_FUNC(__imp__sub_82A41758);
-PPC_EXTERN_FUNC(__imp__sub_82A41B00);
-PPC_EXTERN_FUNC(sub_82A97368);
-PPC_EXTERN_FUNC(sub_82426518);
-PPC_EXTERN_FUNC(sub_82426CA8);
-PPC_EXTERN_FUNC(sub_8222AB78);
-PPC_EXTERN_FUNC(sub_8222ABE0);
-PPC_EXTERN_FUNC(sub_82A8F6E8);
-PPC_EXTERN_FUNC(__imp__sub_822F3B20);
-PPC_EXTERN_FUNC(__imp__sub_82CC38E8); // Lumen: SwitchToThread
+PPC_EXTERN_FUNC(__imp__rex_lhGuiWorldMapScreen_PopulateMenu);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiAbilitiesScreen_PopulateMenu);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiShopScreen_PopulateMenu);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiLogbookScreen_PopulateMenu);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_LogbookAttractivenessPage_UpdateMeter);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiGiftGoldScreen_PopulateMenu);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_FrontendRoot_PopulateMainMenu);
+PPC_EXTERN_FUNC(rex_lhGuiPresentation_LoadIfUnloaded);
+PPC_EXTERN_FUNC(rex_lhGuiPresentation_RunInitScripts);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_RunLuaString);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_SuspendThread);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_ResumeThread);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_SetFrameRequest);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_SetRenderDeadline);
+PPC_EXTERN_FUNC(__imp__rex_lhMarketplace_RefreshOfferCounts);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_FlushAndWaitFrame);
+PPC_EXTERN_FUNC(__imp__rex_lhBinkMoviePlayer_Ctor);
+PPC_EXTERN_FUNC(__imp__rex_lhBinkMovieHolder_UpdateAndDraw);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_DrawLoadingAnimation);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_ParseLoadingScreenData);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_SetupProjection);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_UpdateAndRender);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_CollectTipTexts);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_DrawTip);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_DrawLevelTitle);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreen_DrawText);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreenManager_Render);
+PPC_EXTERN_FUNC(__imp__rex_lhLockedStateSingleton_GetInstance);
+PPC_EXTERN_FUNC(__imp__rex_lhPubGameManager_RenderFrameUpdate);
+PPC_EXTERN_FUNC(__imp__rex_lhScriptTimerSingleton_GetInstance);
+PPC_EXTERN_FUNC(rex_lhCutsceneMoviePlayer_StartMovie);
+PPC_EXTERN_FUNC(__imp__rex_lhCutsceneMoviePlayer_RenderUpdate);
+PPC_EXTERN_FUNC(__imp__rex_lhTextManager_GetString);
+PPC_EXTERN_FUNC(__imp__rex_lhTextManager_FindTextGroup);
+PPC_EXTERN_FUNC(__imp__rex_lhCharString_AssignIfDifferent);
+PPC_EXTERN_FUNC(rex_lhWideString_CtorFromWStr);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreenManager_IsActive);
+PPC_EXTERN_FUNC(__imp__rex_lhLoadingScreenManager_Show);
+PPC_EXTERN_FUNC(rex_lhCharString_CtorFromCStr);
+PPC_EXTERN_FUNC(rex_lhCharString_Dtor);
+PPC_EXTERN_FUNC(rex_lhCharString_Assign);
+PPC_EXTERN_FUNC(rex_lhCharString_AssignCStr);
+PPC_EXTERN_FUNC(rex_lhCutsceneMoviePlayer_SetState);
+PPC_EXTERN_FUNC(rex_lhPubGameManager_SetState);
+PPC_EXTERN_FUNC(rex_lhPubGameManager_StartPubGame);
+PPC_EXTERN_FUNC(__imp__rex_lhRenderer_ClearColorScoped);
+PPC_EXTERN_FUNC(__imp__rex_lhStreamedTextureDesc_Ctor);
+PPC_EXTERN_FUNC(__imp__rex_lhStreamedTextureDesc_CloneToCommandBuffer);
+PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_Dtor);
+PPC_EXTERN_FUNC(rex_stdListDword_InsertWithLengthCheck);
+PPC_EXTERN_FUNC(rex_lhGuiPresentation_GetRootElement);
+PPC_EXTERN_FUNC(rex_lhGuiElement_GoToSlideAndRestart);
+PPC_EXTERN_FUNC(rex_lhRenderCommandStream_BeginCommand);
+PPC_EXTERN_FUNC(rex_lhRenderCommandStream_Reserve);
+PPC_EXTERN_FUNC(rex_lhHandleAllocator_RefillLocalFreeList);
+PPC_EXTERN_FUNC(__imp__rex_lhGameApp_PollDoneAndClearPending);
+PPC_EXTERN_FUNC(__imp__rex_SwitchToThread); // Lumen: SwitchToThread
 PPC_EXTERN_FUNC(__imp__rex_Sleep);
-PPC_EXTERN_FUNC(sub_822F22B8);
-PPC_EXTERN_FUNC(sub_822F2308);
-PPC_EXTERN_FUNC(sub_82313400);
-PPC_EXTERN_FUNC(sub_82374D78);
-PPC_EXTERN_FUNC(sub_82374F70);
+PPC_EXTERN_FUNC(rex_lhResourceName_Dtor);
+PPC_EXTERN_FUNC(rex_lhResourceName_CopyCtor);
+PPC_EXTERN_FUNC(rex_lhBankDirectory_EntryAt);
+PPC_EXTERN_FUNC(rex_lhVFSPathVector_PushBack);
+PPC_EXTERN_FUNC(rex_CRemappingFileSystem_GetOrInsertRemapEntry);
 PPC_EXTERN_FUNC(__imp__RtlInitializeCriticalSection);
 PPC_EXTERN_FUNC(__imp__rex_VirtualAlloc);
 PPC_EXTERN_FUNC(__imp__rex_lh_malloc);
@@ -374,17 +374,17 @@ PPC_EXTERN_FUNC(__imp__rex_lhGameData_Init);
 PPC_EXTERN_FUNC(__imp__rex_lhGameInit_SetupUI);
 PPC_EXTERN_FUNC(__imp__rex_lhGameInit_SetupAudio);
 PPC_EXTERN_FUNC(__imp__rex_lhGameInit_CheckUpdateMode);
-PPC_EXTERN_FUNC(__imp__sub_822F3D90);
-PPC_EXTERN_FUNC(__imp__sub_82451F18);
-PPC_EXTERN_FUNC(__imp__sub_8237FE30);
-PPC_EXTERN_FUNC(__imp__sub_82374980);
-PPC_EXTERN_FUNC(__imp__sub_82BBA8D0);
-PPC_EXTERN_FUNC(__imp__sub_8231A368);
-PPC_EXTERN_FUNC(__imp__sub_8237FD60);
-PPC_EXTERN_FUNC(__imp__sub_82A4E998);
-PPC_EXTERN_FUNC(__imp__sub_822F4210);
-PPC_EXTERN_FUNC(__imp__sub_822F4750);
-PPC_EXTERN_FUNC(__imp__sub_822F4948);
+PPC_EXTERN_FUNC(__imp__rex_lhGameData_RunDlcLuaStartupScript);
+PPC_EXTERN_FUNC(__imp__rex_lhLua_RunScriptBuffer);
+PPC_EXTERN_FUNC(__imp__rex_lhVFSConfig_FindFileSystemFailingPredicate);
+PPC_EXTERN_FUNC(__imp__rex_CRemappingFileSystem_OpenFirstRemappedManifest);
+PPC_EXTERN_FUNC(__imp__rex_lhItemManager_NotifyAndRemoveItem);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEndGame_VtableSlot6);
+PPC_EXTERN_FUNC(__imp__rex_lhVFSConfig_LoadConfigByName);
+PPC_EXTERN_FUNC(__imp__rex_lhAnimationBank_OpenGlobal);
+PPC_EXTERN_FUNC(__imp__rex_lhGameData_LoadAudioDatabaseByName);
+PPC_EXTERN_FUNC(__imp__rex_lhGameData_LoadNamedBankEntry);
+PPC_EXTERN_FUNC(__imp__rex_lhGameData_RegisterResourceFilesByName);
 PPC_EXTERN_FUNC(__imp__rex_lhRenderer_BeginGPUFrame);
 PPC_EXTERN_FUNC(__imp__rex_lhRenderer_EndGPUFrame);
 PPC_EXTERN_FUNC(__imp__rex_lhBank_Open);
@@ -424,20 +424,20 @@ PPC_EXTERN_FUNC(__imp__rex_lhFile_IsOpen);
 PPC_EXTERN_FUNC(__imp__rex_lhFile_Dtor);
 PPC_EXTERN_FUNC(__imp__rex_lhFile_Ctor);
 PPC_EXTERN_FUNC(__imp__rex_lhFile_ResolveAndOpen);
-PPC_EXTERN_FUNC(__imp__sub_82C72E60);
-PPC_EXTERN_FUNC(__imp__sub_82C73028);
-PPC_EXTERN_FUNC(__imp__sub_82C8C718);
+PPC_EXTERN_FUNC(__imp__rex_lhStream_DiskStream_ReadDirect);
+PPC_EXTERN_FUNC(__imp__rex_lhStream_DiskStream_GetInnerSize);
+PPC_EXTERN_FUNC(__imp__rex_lhXmlDocument_ResetAndParseStream);
 PPC_EXTERN_FUNC(rex_lhVFS_GetGlobalDataProvider);
 
 // The guest's XAudio API shims — the audio seam Godot plays through.
-// Hooked in src/hooks/xaudio_voices.cpp. Named by address rather than through
-// refii_config.toml on purpose: a config name only takes effect after a full codegen, and
-// it would rename the very symbols these hooks bind to, silently detaching the mirror.
-PPC_EXTERN_FUNC(__imp__sub_82CD92B0);  // XAudioDestroyVoice
-PPC_EXTERN_FUNC(__imp__sub_82CD93E0);  // XAudioSetChannelVolumes
-PPC_EXTERN_FUNC(__imp__sub_82CD9490);  // XAudioSubmitSourceBuffer
-PPC_EXTERN_FUNC(__imp__sub_82CD9548);  // XAudioStartVoice
-PPC_EXTERN_FUNC(__imp__sub_82CD9590);  // XAudioStopVoice
-PPC_EXTERN_FUNC(__imp__sub_82CD97B0);  // XAudioSetVolume
-PPC_EXTERN_FUNC(__imp__sub_82CD9828);  // XAudioSetPitch
-PPC_EXTERN_FUNC(__imp__sub_82CD9B00);  // XAudioCreateSourceVoice
+// Hooked in src/hooks/xaudio_voices.cpp. Named in the ReXGlue config like every other hook,
+// so the same source binds in each supported build of the game. A config name only takes
+// effect after a full codegen: until then the hook has nothing to bind to.
+PPC_EXTERN_FUNC(__imp__rex_XAudioDestroyVoice);  // XAudioDestroyVoice
+PPC_EXTERN_FUNC(__imp__rex_XAudioSetChannelVolumes);  // XAudioSetChannelVolumes
+PPC_EXTERN_FUNC(__imp__rex_XAudioSubmitSourceBuffer);  // XAudioSubmitSourceBuffer
+PPC_EXTERN_FUNC(__imp__rex_XAudioStartVoice);  // XAudioStartVoice
+PPC_EXTERN_FUNC(__imp__rex_XAudioStopVoice);  // XAudioStopVoice
+PPC_EXTERN_FUNC(__imp__rex_XAudioSetVolume);  // XAudioSetVolume
+PPC_EXTERN_FUNC(__imp__rex_XAudioSetPitch);  // XAudioSetPitch
+PPC_EXTERN_FUNC(__imp__rex_XAudioCreateSourceVoice);  // XAudioCreateSourceVoice

@@ -27,19 +27,20 @@
 #include "vfs_hooks_private.h"
 #include "core/rex_payload_bridge.h"
 #include "hooks/ppc_externs.h"
+#include "core/guest_build.h"
 
-PPC_EXTERN_FUNC(__imp__sub_821956A0);
+PPC_EXTERN_FUNC(__imp__rex_lhLua_GcSliceStep);
 
-REX_EXTERN(sub_821956A0) {
+REX_EXTERN(rex_lhLua_GcSliceStep) {
     REX_FUNC_PROLOGUE();
     const uint32_t lr = ctx.lr;
-    const bool inside = lr >= 0x82459280u && lr <= 0x82459900u;
+    const bool inside = lr >= refii::guest::Address(0x82459280u) && lr <= refii::guest::Address(0x82459900u);
     if (inside) {
         REXLOG_INFO("Refii LuaInit ENTER sub_821956A0 (lr=0x{:08X})", lr);
     }
 
     refii_bridge_rex_time_base_real_slice(1);
-    __imp__sub_821956A0(ctx, base);
+    __imp__rex_lhLua_GcSliceStep(ctx, base);
     refii_bridge_rex_time_base_real_slice(0);
 
     if (inside) {

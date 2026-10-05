@@ -35,7 +35,7 @@
 #include <rex/ppc/context.h>
 
 // bool IsCollectorsEdition()
-REX_EXTERN(sub_824E6370) {
+REX_EXTERN(rex_CECStats_IsCollectorsEdition) {
   (void)base;
   static const bool once = [] {
     REXLOG_INFO("unlock: IsCollectorsEdition forced true (sub_824E6370)");
@@ -46,7 +46,7 @@ REX_EXTERN(sub_824E6370) {
 }
 
 // bool PlayerWebsiteUnlocks::IsItemUnlocked(const String& itemName)
-REX_EXTERN(sub_8253A630) {
+REX_EXTERN(rex_CECPlayerWebsiteUnlocks_IsItemUnlocked) {
   (void)base;
   static const bool once = [] {
     REXLOG_INFO(

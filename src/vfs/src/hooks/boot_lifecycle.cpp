@@ -7,9 +7,10 @@
 #include "core/precise_sleep.h"
 
 #include <rex/system/xthread.h>
+#include "core/guest_build.h"
 
 namespace {
-constexpr uint32_t kFableRendererFrameCriticalSection = 0x8349F7FCu;
+constexpr refii::guest::Addr kFableRendererFrameCriticalSection{0x8349F7FCu};
 constexpr uint32_t kFableCriticalSectionRecursionOffset = 0x14u;
 constexpr uint32_t kFableCriticalSectionOwnerOffset = 0x18u;
 std::atomic<uint32_t> g_fable_renderer_dynamic_critical_section{0};
@@ -97,7 +98,7 @@ bool ShouldTraceGameDataBootBoundary(uint32_t lr) {
     return false;
   }
 
-  switch (lr) {
+  switch (refii::guest::ToTu1(lr)) {
   case 0x822F4094:
   case 0x822F40CC:
   case 0x822F4124:
@@ -129,11 +130,11 @@ bool ShouldTraceGameDataBootBoundary(uint32_t lr) {
 // function returns and after this write. So no wait-capable reader can ever see the bit clear.
 // Re-runs on a device reset re-arm the same byte; the OR is idempotent. The hostbridge's own
 // arm (`ArmGuestNoGpuMode`) stays as the belt for any path that skips ring init.
-REX_EXTERN(sub_82BA2830) {
+REX_EXTERN(rex_D3DDevice_InitializeRingBuffer) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t device = ctx.r3.u32;
-  __imp__sub_82BA2830(ctx, base);
+  __imp__rex_D3DDevice_InitializeRingBuffer(ctx, base);
 
   if (device != 0u) {
     const uint8_t before = base[device + 0x2ABDu];
@@ -145,14 +146,14 @@ REX_EXTERN(sub_82BA2830) {
   }
 }
 
-REX_EXTERN(sub_823889A8) {
+REX_EXTERN(rex_lhRenderer_SuspendThread) {
   REX_FUNC_PROLOGUE();
 
   const PPCContext original_ctx = ctx;
   const uint32_t owner_guest = original_ctx.r3.u32;
   const uint32_t handoff_guest =
       owner_guest != 0 ? refii::vfs::LoadGuestU32(base, owner_guest + 4) : 0;
-  const bool native_startup_frame_wait = original_ctx.lr == 0x823890ECu;
+  const bool native_startup_frame_wait = original_ctx.lr == refii::guest::Address(0x823890ECu);
 
   const auto begin = std::chrono::steady_clock::now();
   refii::vfs::RecordRefiiRenderProducerScheduleSnapshot(
@@ -162,7 +163,7 @@ REX_EXTERN(sub_823889A8) {
                          "StartupVideoFrame_823889A8") ||
                      (refii::vfs::kTraceNonVfsBootFrameProbes &&
                       refii::vfs::VfsTracingEnabled() &&
-                      (original_ctx.lr == 0x823890EC ||
+                      (original_ctx.lr == refii::guest::Address(0x823890ECu) ||
                        refii::vfs::ShouldTracePostVideoBoundaryProbe(
                            "PostVideoFrame_823889A8")));
   if (trace) {
@@ -183,7 +184,7 @@ REX_EXTERN(sub_823889A8) {
           ? ReleaseFableCriticalSectionForStartupVideoWait(
                 ctx, base, renderer_critical_section)
           : 0u;
-  __imp__sub_823889A8(ctx, base);
+  __imp__rex_lhRenderer_SuspendThread(ctx, base);
   if (render_frame_lock_release_count != 0) {
     ReacquireFableCriticalSectionForStartupVideoWait(
         original_ctx, base, renderer_critical_section,
@@ -257,11 +258,11 @@ REX_EXTERN(sub_823889A8) {
 // // The host takes the ARGUMENTS here: polling the floats out of B between the open and this
 // // call reads that uninitialised heap as a rect.
 // ============================================================================================
-REX_EXTERN(sub_82A41E30) {
+REX_EXTERN(rex_lhBinkPlayer_SetDestRect) {
   REX_FUNC_PROLOGUE();
   const uint32_t player = ctx.r3.u32;
   const uint32_t rect = ctx.r4.u32;
-  __imp__sub_82A41E30(ctx, base);
+  __imp__rex_lhBinkPlayer_SetDestRect(ctx, base);
   if (player == 0 || rect == 0) {
     return;
   }
@@ -281,13 +282,13 @@ REX_EXTERN(sub_82A41E30) {
 //
 // The arguments are taken BEFORE the call: the open hook below clears the sound byte, so the
 // original returns early and the guest's copy of the track stays silent.
-REX_EXTERN(sub_82A41D88) {
+REX_EXTERN(rex_lhBinkPlayer_SetTrackVolume) {
   REX_FUNC_PROLOGUE();
   refii::vfs::NoteBinkVolume(ctx.r3.u32, ctx.r4.u32, static_cast<float>(ctx.f1.f64));
-  __imp__sub_82A41D88(ctx, base);
+  __imp__rex_lhBinkPlayer_SetTrackVolume(ctx, base);
 }
 
-REX_EXTERN(sub_82A41B48) {
+REX_EXTERN(rex_lhBinkPlayer_Open) {
   REX_FUNC_PROLOGUE();
 
   // THE HOST PLAYS THE SOUND, from the same decode that produces the picture. The guest's
@@ -319,7 +320,7 @@ REX_EXTERN(sub_82A41B48) {
   // The rect is a second guest call and cannot be atomic with this one. It does not need to
   // be: publishing the player CLEARS the stated rect, and `BinkMovieDestRect` answers "none
   // yet" until the `sub_82A41E30` hook above states one for this player.
-  __imp__sub_82A41B48(ctx, base);
+  __imp__rex_lhBinkPlayer_Open(ctx, base);
   refii::vfs::NoteBinkMovieOpen(bink_object, base);
   return;
 
@@ -330,7 +331,7 @@ REX_EXTERN(sub_82A41B48) {
           "StartupVideoFrame_82A41B48") ||
       (refii::vfs::kTraceNonVfsBootFrameProbes &&
        refii::vfs::VfsTracingEnabled() &&
-       (original_ctx.lr == 0x82389110 || original_ctx.lr == 0x82388FA8 ||
+       (original_ctx.lr == refii::guest::Address(0x82389110u) || original_ctx.lr == refii::guest::Address(0x82388FA8u) ||
         refii::vfs::ShouldTracePostVideoBoundaryProbe(
             "PostVideoFrame_82A41B48")));
   if (trace) {
@@ -347,7 +348,7 @@ REX_EXTERN(sub_82A41B48) {
         refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
 
-  __imp__sub_82A41B48(ctx, base);
+  __imp__rex_lhBinkPlayer_Open(ctx, base);
 
   const int64_t elapsed_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -371,7 +372,7 @@ REX_EXTERN(sub_82A41B48) {
                 refii::vfs::FormatRefiiPostVideoHandoffTraceForLog(),
                 refii::vfs::FormatRefiiMainMenuBlockerTraceForLog());
   }
-  if (ctx.r3.u32 == 0 && original_ctx.lr == 0x823C19D8u &&
+  if (ctx.r3.u32 == 0 && original_ctx.lr == refii::guest::Address(0x823C19D8u) &&
       refii::vfs::RefiiPostVideoVfsHandoffTraceActive() &&
       refii::vfs::ShouldLogRepeatedVfsTraceOperation(
           "PostLoadingAfterHolderBinkReject", 12)) {
@@ -418,13 +419,13 @@ REX_EXTERN(sub_82A41B48) {
   }
 }
 
-REX_EXTERN(sub_82389040) {
+REX_EXTERN(rex_lhBinkMoviePlayer_Ctor) {
   REX_FUNC_PROLOGUE();
 
   const PPCContext original_ctx = ctx;
   const auto begin = std::chrono::steady_clock::now();
   const bool native_startup_frame_construct =
-      original_ctx.lr == 0x82377CD4u;
+      original_ctx.lr == refii::guest::Address(0x82377CD4u);
   const bool native_startup_audit =
       native_startup_frame_construct &&
       ShouldLogNativeStartupPlaybackAudit("NativeStartupFrame_82389040", 4, 1);
@@ -432,7 +433,7 @@ REX_EXTERN(sub_82389040) {
       refii::vfs::ShouldTracePostVideoTextureOwnedHandoffProbe(
           "StartupVideoFrame_82389040") ||
       (refii::vfs::kTraceNonVfsBootFrameProbes &&
-       refii::vfs::VfsTracingEnabled() && original_ctx.lr != 0x82377CD4 &&
+       refii::vfs::VfsTracingEnabled() && original_ctx.lr != refii::guest::Address(0x82377CD4u) &&
        refii::vfs::ShouldTracePostVideoBoundaryProbe(
            "PostVideoFrame_82389040"));
   if (native_startup_audit && !trace) {
@@ -465,7 +466,7 @@ REX_EXTERN(sub_82389040) {
           ? ReleaseFableCriticalSectionForStartupVideoWait(
                 ctx, base, renderer_critical_section)
           : 0u;
-  __imp__sub_82389040(ctx, base);
+  __imp__rex_lhBinkMoviePlayer_Ctor(ctx, base);
   if (render_frame_lock_release_count != 0) {
     ReacquireFableCriticalSectionForStartupVideoWait(
         original_ctx, base, renderer_critical_section,
@@ -603,7 +604,7 @@ REX_EXTERN(rex_lhFile_CloseAndRelease) {
                     : 0);
   }
 
-  if (original_ctx.lr == 0x822F4208 &&
+  if (original_ctx.lr == refii::guest::Address(0x822F4208u) &&
       refii::vfs::LooksLikeGuestPointer(original_ctx.r3.u32)) {
     const uint32_t vtable = refii::vfs::LoadGuestU32(base, original_ctx.r3.u32);
     const uint32_t total_stream =
@@ -614,7 +615,7 @@ REX_EXTERN(rex_lhFile_CloseAndRelease) {
         refii::vfs::IsRefiiHostDiskStream(base, total_stream) ||
         refii::vfs::IsRefiiHostDiskStream(base, read_stream);
     const bool known_lh_file_vtable =
-        vtable == 0x8200DF08 || vtable == 0x820A4928;
+        vtable == refii::guest::Address(0x8200DF08u) || vtable == refii::guest::Address(0x820A4928u);
     if (!known_lh_file_vtable) {
       PPCContext release_ctx = original_ctx;
       if (refii::vfs::IsRefiiHostDiskStream(base, total_stream)) {
@@ -708,7 +709,7 @@ REX_EXTERN(rex_lhRenderer_EndScene) {
   // // once, so a queued game-thread waiter starves: the engine pause request before each boot
   // // movie (`sub_823889A8` -> RtlEnterCriticalSection). That present is paced after the frame
   // // instead — see `sub_82A1AC40` below.
-  if (caller != 0x82388670u) {
+  if (caller != refii::guest::Address(0x82388670u)) {
     PaceGuestPresent();
   }
 }
@@ -718,11 +719,11 @@ REX_EXTERN(rex_lhRenderer_EndScene) {
 // lock at 0x8238832C and before it re-enters at 0x82388270. The only point in the loop where the
 // lock is free, so the frame's pacing sleep lives here: every waiter gets a whole present
 // period to take the lock, and the frame itself is paced exactly as before.
-REX_EXTERN(sub_82A1AC40) {
+REX_EXTERN(rex_lhApp_IdleWaitForFlags) {
   REX_FUNC_PROLOGUE();
   const uint32_t caller = ctx.lr;
-  __imp__sub_82A1AC40(ctx, base);
-  if (caller == 0x82388348u) {
+  __imp__rex_lhApp_IdleWaitForFlags(ctx, base);
+  if (caller == refii::guest::Address(0x82388348u)) {
     PaceGuestPresent();
   }
 }
@@ -735,9 +736,9 @@ REX_EXTERN(sub_82A1AC40) {
 // host learns that a new frame of guest state is in memory. Godot reads that state once per
 // count and interpolates between counts.
 // ============================================================================================
-REX_EXTERN(sub_821A61B0) {
+REX_EXTERN(rex_lhGameLoop_HighFrequencyUpdate) {
   REX_FUNC_PROLOGUE();
-  __imp__sub_821A61B0(ctx, base);
+  __imp__rex_lhGameLoop_HighFrequencyUpdate(ctx, base);
   refii_bridge_note_guest_frame();
 }
 
@@ -765,10 +766,10 @@ bool GuestRenderWanted() {
 }
 }  // namespace
 
-REX_EXTERN(sub_821C3C60) {
+REX_EXTERN(rex_lhRenderer_DrawScene) {
   REX_FUNC_PROLOGUE();
   if (GuestRenderWanted()) {
-    __imp__sub_821C3C60(ctx, base);
+    __imp__rex_lhRenderer_DrawScene(ctx, base);
     return;
   }
 
@@ -815,10 +816,10 @@ REX_EXTERN(sub_821C3C60) {
   // regardless of drawing and their completions gate `IsEnginePreLoading`: without this
   // call the fence monitor showed "streamed-texture residency BLOCKS the level load" for
   // five minutes (2026-09-04, build131).
-  __imp__sub_82191F50(ctx, base);
+  __imp__rex_lhStreamedTexture_PollPendingCompletions(ctx, base);
 
-  const uint32_t table_begin = load32(0x8349F79Cu);
-  const uint32_t table_end = load32(0x8349F7A0u);
+  const uint32_t table_begin = load32(refii::guest::Address(0x8349F79Cu));
+  const uint32_t table_end = load32(refii::guest::Address(0x8349F7A0u));
   if (!plausible(table_begin) || table_end < table_begin || table_end - table_begin > 4u * 1024u) {
     return;
   }
@@ -909,10 +910,10 @@ REX_EXTERN(sub_821C3C60) {
 // The writes are the guest's own completion set at 0x82A54708-0x82A54724: `+3692 = 1`,
 // `dbl_834BEC48 = 0`, and the inner render view's `+7232 = 250` when `+3676` names one.
 // ============================================================================================
-REX_EXTERN(sub_82A54500) {
+REX_EXTERN(rex_lhRenderView_UpdatePrewarm) {
   REX_FUNC_PROLOGUE();
   if (GuestRenderWanted()) {
-    __imp__sub_82A54500(ctx, base);
+    __imp__rex_lhRenderView_UpdatePrewarm(ctx, base);
     return;
   }
 
@@ -935,7 +936,7 @@ REX_EXTERN(sub_82A54500) {
   };
 
   base[view + 3692u] = 1u;
-  std::memset(base + 0x834BEC48u, 0, sizeof(double));
+  std::memset(base + refii::guest::Address(0x834BEC48u), 0, sizeof(double));
   const uint32_t inner = load32(view + 3676u);
   if (inner >= 0x10000u && inner < 0xE0000000u) {
     store32(inner + 7232u, 250u);

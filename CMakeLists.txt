@@ -110,6 +110,21 @@ option(REFII_DEV_SKIP_GAMECODE_REBUILD
 option(REFII_BUILD_GENERATED_PAYLOAD
        "DEV ONLY: compile generated/ into librefii_generated here instead of leaving it to the launcher" OFF)
 
+# ONE CONFIG FOLDER PER SUPPORTED EXECUTABLE. versions/<name>/ holds the ReXGlue manifest and
+# config for one build of the game; the hooks bind by the function NAMES those configs share, so
+# the same hook sources compile against either. This picks the one the DEV codegen reads. The
+# launcher picks for a player at install time, from what they installed.
+set(REFII_GAME_VERSION "Fable2TU1" CACHE STRING
+    "Which versions/<name> folder the dev codegen reads (Fable2TU1 or Fable2)")
+set_property(CACHE REFII_GAME_VERSION PROPERTY STRINGS Fable2TU1 Fable2)
+set(REFII_GAME_VERSIONS Fable2TU1 Fable2)
+set(REFII_REXGLUE_MANIFEST
+    "${CMAKE_CURRENT_SOURCE_DIR}/versions/${REFII_GAME_VERSION}/refii_manifest.toml")
+if(NOT EXISTS "${REFII_REXGLUE_MANIFEST}")
+    message(FATAL_ERROR "No ReXGlue manifest for REFII_GAME_VERSION=${REFII_GAME_VERSION}: "
+                        "${REFII_REXGLUE_MANIFEST}")
+endif()
+
 # Staging is per-architecture, because Godot exports one build per architecture and each
 # needs its OWN native closure. With a single Godot/build the x86_64 and ARM64 builds
 # overwrite each other's DLLs, so only whichever ran last could ever be exported — and the
@@ -398,6 +413,11 @@ function(refii_apply_generated_payload_compile_options target_name)
     # what pulls spdlog and fmt into the payload. Same bridge as the hooks: see the shadowed
     # rex/logging/macros.h.
     target_compile_definitions("${target_name}" PRIVATE REFII_PAYLOAD_LOG_BRIDGE=1)
+
+    # Which executable generated/ was recompiled from: guest_build_stamp.cpp states it at load.
+    if(REFII_GAME_VERSION STREQUAL "Fable2")
+        target_compile_definitions("${target_name}" PRIVATE REFII_GUEST_BUILD_UNPATCHED=1)
+    endif()
 
     # fmt LINKED IN, not imported. The bridge formats payload-side, so fmt has to resolve
     # inside the module rather than crossing to the host — it is a pure formatter with no

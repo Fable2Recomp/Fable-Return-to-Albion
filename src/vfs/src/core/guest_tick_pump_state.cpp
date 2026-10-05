@@ -36,6 +36,7 @@
 
 #include "core/payload_bridge.h"
 #include "core/hero_derived.h"
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 
@@ -228,7 +229,7 @@ uint32_t ResolveInGameLoadingScreen(uint8_t* base) {
   if (base == nullptr) {
     return 0;
   }
-  for (uint32_t root : {0x83496AB8u, 0x83496AC0u, 0x8335C4C4u}) {
+  for (uint32_t root : {refii::guest::Address(0x83496AB8u), refii::guest::Address(0x83496AC0u), refii::guest::Address(0x8335C4C4u)}) {
     const uint32_t app = ReadU32(base, root);
     if (!IsGuestPointer(app)) continue;
     const uint32_t owner = ReadU32(base, app + 8u);

@@ -1,26 +1,27 @@
 #pragma once
 
 #include <cstdint>
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 inline namespace detail {
 
-constexpr uint32_t kRefiiSyntheticBankVTable = 0x8200DEA0;
+constexpr refii::guest::Addr kRefiiSyntheticBankVTable{0x8200DEA0u};
 constexpr uint32_t kRefiiSyntheticBankSize = 128;
 // rex_lhStream_DiskStream_Ctor builds this as 0x82010000 - 0x1FD4.
-constexpr uint32_t kRefiiDiskStreamVTable = 0x8200E02C;
-constexpr uint32_t kNativeBufferedStreamVTable = 0x820F9AE0;
-constexpr uint32_t kStreamDestinationCopyTable = 0x83317164;
+constexpr refii::guest::Addr kRefiiDiskStreamVTable{0x8200E02Cu};
+constexpr refii::guest::Addr kNativeBufferedStreamVTable{0x820F9AE0u};
+constexpr refii::guest::Addr kStreamDestinationCopyTable{0x83317164u};
 constexpr uint32_t kRefiiHostDiskStreamSize = 32;
-constexpr uint32_t kNativeReadRequestVTable = 0x820FABBC;
-constexpr uint32_t kNativeReadRequestInterfaceVTable = 0x820FABEC;
+constexpr refii::guest::Addr kNativeReadRequestVTable{0x820FABBCu};
+constexpr refii::guest::Addr kNativeReadRequestInterfaceVTable{0x820FABECu};
 constexpr uint32_t kNativeReadRequestSize = 344;
-constexpr uint32_t kResourceStreamWrapperVTable = 0x820F9DA8;
-constexpr uint32_t kResourceStreamWrapperInterfaceVTable = 0x820F9DD8;
+constexpr refii::guest::Addr kResourceStreamWrapperVTable{0x820F9DA8u};
+constexpr refii::guest::Addr kResourceStreamWrapperInterfaceVTable{0x820F9DD8u};
 constexpr uint32_t kResourceStreamWrapperSize = 0x40;
 constexpr uint32_t kResourceWrapperVTableCopySize = 0x40;
-constexpr uint32_t kNativeStartupReadyRequestVTable = 0x820A8FA8;
-constexpr uint32_t kNativeFrontendRenderRequestVTable = 0x820A48F0;
+constexpr refii::guest::Addr kNativeStartupReadyRequestVTable{0x820A8FA8u};
+constexpr refii::guest::Addr kNativeFrontendRenderRequestVTable{0x820A48F0u};
 constexpr bool kDirectResourceManagerWrapperOverride = true;
 constexpr bool kTraceNonVfsBootFrameProbes = false;
 // Gated at runtime by vfs_trace_vfs.

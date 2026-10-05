@@ -8,11 +8,11 @@
 #include "gui/gui_element_state.h"
 #include "hooks/ppc_externs.h"
 
-PPC_EXTERN_FUNC(__imp__sub_82284798);
-PPC_EXTERN_FUNC(__imp__sub_82284BE8);
-PPC_EXTERN_FUNC(__imp__sub_82BB5760);
-PPC_EXTERN_FUNC(__imp__sub_82425DD0);
-PPC_EXTERN_FUNC(__imp__sub_82425F40);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiAttributeService_SetElementAttribute);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiAttributeService_SetElementFlags);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiAnimation_GotoSlide);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiElement_SetText);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiElement_SetTextFromTag);
 
 namespace {
 
@@ -36,7 +36,7 @@ uint32_t NameHashOf(uint8_t* base, uint32_t element) {
 /// vtable `0x820065C0` slot +0x48, also fed by the keyframe interpolator `sub_822846B0`.
 /// The value is raw bits; the type is in the element's record
 /// (`(*(u32*)rec >> 2) & 7`: 1,2 int · 3 float · 4 bool · 5 string · 6 userdata).
-REX_EXTERN(sub_82284798) {
+REX_EXTERN(rex_lhGuiAttributeService_SetElementAttribute) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t service = ctx.r3.u32;
@@ -52,7 +52,7 @@ REX_EXTERN(sub_82284798) {
         refii::vfs::NoteGuiElementChange(change);
     }
 
-    __imp__sub_82284798(ctx, base);
+    __imp__rex_lhGuiAttributeService_SetElementAttribute(ctx, base);
 }
 
 /// The flag writer — `(attrSvc, element, u16 mask, bool set)`; attribute-service vtable
@@ -61,7 +61,7 @@ REX_EXTERN(sub_82284798) {
 /// write `element+0x1C` without passing here. `sub_822849A0` calls this for every element every
 /// frame with no dirty check, so the guest's own no-op filter (0x82284c48) is applied here too.
 /// Read the halfword BEFORE the call — the original mutates `element+0x1C`.
-REX_EXTERN(sub_82284BE8) {
+REX_EXTERN(rex_lhGuiAttributeService_SetElementFlags) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t service = ctx.r3.u32;
@@ -85,13 +85,13 @@ REX_EXTERN(sub_82284BE8) {
         }
     }
 
-    __imp__sub_82284BE8(ctx, base);
+    __imp__rex_lhGuiAttributeService_SetElementFlags(ctx, base);
 }
 
 /// The slide writer — `(animSvc, element, int slideIndex, bool notify)`; animation-service
 /// slot +0x08. Slides live on the animation record (`+43` current, `+44` previous), not as
 /// an attribute.
-REX_EXTERN(sub_82BB5760) {
+REX_EXTERN(rex_lhGuiAnimation_GotoSlide) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t service = ctx.r3.u32;
@@ -106,14 +106,14 @@ REX_EXTERN(sub_82BB5760) {
         refii::vfs::NoteGuiElementChange(change);
     }
 
-    __imp__sub_82BB5760(ctx, base);
+    __imp__rex_lhGuiAnimation_GotoSlide(ctx, base);
 }
 
 /// The text writer — `(element, ...)`. Text lives on the text record: `element+4` holder,
 /// `*holder` record, `record+140` live string; this marks it dirty (`record+144 = 1`, then
 /// `record+138`/`+136` once layout takes). The string is mutated in place and no presentation
 /// is recoverable from an element, so only the element address is recorded.
-REX_EXTERN(sub_82425DD0) {
+REX_EXTERN(rex_lhGuiElement_SetText) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t element = ctx.r3.u32;
@@ -126,7 +126,7 @@ REX_EXTERN(sub_82425DD0) {
         refii::vfs::NoteGuiElementChange(change);
     }
 
-    __imp__sub_82425DD0(ctx, base);
+    __imp__rex_lhGuiElement_SetText(ctx, base);
 }
 
 /// The OTHER text writer — same record, but it takes a TAG and resolves it first.
@@ -143,7 +143,7 @@ REX_EXTERN(sub_82425DD0) {
 /// and all eight sectors painted `hud.bgf`'s authored placeholder `QUICK_FLIRTY` — the same
 /// string sixteen times in the art, which is why every sector read alike rather than each
 /// reading its own name.
-REX_EXTERN(sub_82425F40) {
+REX_EXTERN(rex_lhGuiElement_SetTextFromTag) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t element = ctx.r3.u32;
@@ -156,5 +156,5 @@ REX_EXTERN(sub_82425F40) {
         refii::vfs::NoteGuiElementChange(change);
     }
 
-    __imp__sub_82425F40(ctx, base);
+    __imp__rex_lhGuiElement_SetTextFromTag(ctx, base);
 }

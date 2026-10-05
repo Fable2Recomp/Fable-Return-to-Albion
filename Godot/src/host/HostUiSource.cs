@@ -64,8 +64,12 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override FrontEndDialogState? GetFrontEndDialog()
 	{
-		uint[] app = HostBridge.Peek(0x83496AC0u, 2);
-		if (app.Length != 2 || app[0] < 0x10000u || (app[1] >> 24) == 0u)
+		// The pointer and its gate byte are read SEPARATELY. In TU1 the gate (`byte_83496AC4`)
+		// follows the pointer; without the title update it sits three bytes BEFORE it
+		// (`byte_83496925`, pointer at 0x83496928), so one two-word read is only right in TU1.
+		uint[] app = HostBridge.Peek(HostBridge.GuestAddress(0x83496AC0u), 1);
+		uint[] gate = HostBridge.Peek(HostBridge.GuestAddress(0x83496AC4u), 1);
+		if (app.Length != 1 || gate.Length != 1 || app[0] < 0x10000u || (gate[0] >> 24) == 0u)
 		{
 			return null;
 		}
@@ -90,12 +94,16 @@ public sealed class HostUiSource : Engine_UiSource
 			// +0 vtable, +20 presentation, +24 mode, +56..+59 holds the +57 flag, +204..+207
 			// the +206 cancel flag.
 			uint[] words = HostBridge.Peek(owner[0], 52);
-			if (words.Length != 52 || words[0] != vtable || ((words[14] >> 16) & 0xFFu) == 0u)
+			if (words.Length != 52 || HostBridge.GuestAddressToTu1(words[0]) != vtable || ((words[14] >> 16) & 0xFFu) == 0u)
 			{
 				continue;
 			}
 
-			bool cancel = vtable == 0x820D0934u && ((words[51] >> 8) & 0xFFu) != 0u;
+			// The root's cancel flag is at +206 in TU1 and +194 without the title update: every
+			// root field from +72 up sits 12 bytes lower there (`lbz` 206 against 194 at the same
+			// place in the two builds' root action handlers).
+			uint cancelWord = HostBridge.PickByBuild(words[51], words[48]);
+			bool cancel = vtable == 0x820D0934u && ((cancelWord >> 8) & 0xFFu) != 0u;
 			return new FrontEndDialogState(owner[0], words[5], words[6] == accepting, cancel);
 		}
 

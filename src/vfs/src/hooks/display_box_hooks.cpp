@@ -58,26 +58,26 @@ void State(uint8_t* base, const char* name, uint32_t box) {
 
 // MessageBox::Open — stated after the guest's own Open, so the presentation exists and the open
 // byte is set by the time the host asks for either.
-REX_EXTERN(sub_823CEB58) {
+REX_EXTERN(rex_lhDisplayMessageBox_Open) {
     const uint32_t box = ctx.r3.u32;
-    __imp__sub_823CEB58(ctx, base);
+    __imp__rex_lhDisplayMessageBox_Open(ctx, base);
     State(base, "@MessageBox.Open", box);
 }
 
 // MessageBox::Close — `RemoveDisplayBox` reaches a SHOWING box through this slot too
 // (`sub_826B9AA8` 0x826b9b58).
-REX_EXTERN(sub_823CEC98) {
+REX_EXTERN(rex_lhDisplayMessageBox_Close) {
     const uint32_t box = ctx.r3.u32;
-    __imp__sub_823CEC98(ctx, base);
+    __imp__rex_lhDisplayMessageBox_Close(ctx, base);
     State(base, "@MessageBox.Close", box);
 }
 
 // MessageBox::~MessageBox — only a box destroyed while still OPEN is stated: a normal close
 // already was, and its 0.75 s fade ends here.
-REX_EXTERN(sub_823CEAE8) {
+REX_EXTERN(rex_lhDisplayMessageBox_Dtor) {
     const uint32_t box = ctx.r3.u32;
     if (refii::vfs::LoadGuestU8(base, box + kBoxOpen) != 0u) {
         State(base, "@MessageBox.Close", box);
     }
-    __imp__sub_823CEAE8(ctx, base);
+    __imp__rex_lhDisplayMessageBox_Dtor(ctx, base);
 }

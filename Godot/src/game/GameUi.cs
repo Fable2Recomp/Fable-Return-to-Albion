@@ -177,7 +177,7 @@ public partial class GameUi : Node
 	{
 		const uint MessageBoxVtable = 0x820AE668u;
 		uint[] words = HostBridge.Peek(box, 4);
-		return words.Length == 4 && words[0] == MessageBoxVtable && (words[3] >> 24) != 0u;
+		return words.Length == 4 && HostBridge.GuestAddressToTu1(words[0]) == MessageBoxVtable && (words[3] >> 24) != 0u;
 	}
 
 	/// <summary>This frame's press, in the form an owned surface takes it.</summary>
@@ -2787,7 +2787,7 @@ public partial class GameUi : Node
 	/// <summary>True while the top game-flow state is the full cutscene.</summary>
 	private static bool FullCutscenePlaying()
 	{
-		uint at = 0x83496AB8u;
+		uint at = HostBridge.GuestAddress(0x83496AB8u);
 		foreach (uint offset in FlowListChain)
 		{
 			uint[] word = HostBridge.Peek(at + offset, 1);
@@ -2809,7 +2809,7 @@ public partial class GameUi : Node
 		uint[] vtable = state.Length == 1 && state[0] >= 0x10000u
 			? HostBridge.Peek(state[0], 1)
 			: System.Array.Empty<uint>();
-		return vtable.Length == 1 && vtable[0] == FullCutsceneStateVtable;
+		return vtable.Length == 1 && HostBridge.GuestAddressToTu1(vtable[0]) == FullCutsceneStateVtable;
 	}
 
 	/// <summary>
@@ -2875,9 +2875,9 @@ public partial class GameUi : Node
 			return;
 		}
 
-		uint[] gui = HostBridge.IsInGame ? HostBridge.Peek(0x83496B08u, 1) : System.Array.Empty<uint>();
+		uint[] gui = HostBridge.IsInGame ? HostBridge.Peek(HostBridge.GuestAddress(0x83496B08u), 1) : System.Array.Empty<uint>();
 		uint[] root = gui.Length == 1 ? HostBridge.Peek(gui[0], 9) : System.Array.Empty<uint>();
-		uint[] hud = root.Length == 9 && root[0] == 0x82001610u
+		uint[] hud = root.Length == 9 && HostBridge.GuestAddressToTu1(root[0]) == 0x82001610u
 			? HostBridge.Peek(root[8] + 72u, 1)
 			: System.Array.Empty<uint>();
 		if (hud.Length != 1 || hud[0] == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
@@ -2888,7 +2888,7 @@ public partial class GameUi : Node
 		}
 
 		// The guest's backbuffer, `qword_834A5FE8` — the pixels its petal sizes are stated in.
-		uint[] backbuffer = HostBridge.Peek(0x834A5FE8u, 2);
+		uint[] backbuffer = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), 2);
 		float guestHeight = backbuffer.Length == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
 		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
 		_reticule.CanvasHalfExtent = extent * 0.5f;
@@ -2948,7 +2948,7 @@ public partial class GameUi : Node
 			return;
 		}
 
-		uint[] backbuffer = HostBridge.Peek(0x834A5FE8u, 2);
+		uint[] backbuffer = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), 2);
 		float guestWidth = backbuffer.Length == 2 && backbuffer[0] != 0u ? backbuffer[0] : 1280f;
 		float guestHeight = backbuffer.Length == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
 		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);

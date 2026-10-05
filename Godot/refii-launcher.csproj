@@ -37,8 +37,14 @@
     <Compile Remove="tests\**" />
   </ItemGroup>
 
-  <!-- Auto-run tests during C# compilation: fail build on test error -->
-  <Target Name="RunTestsAfterBuild" AfterTargets="Build" Condition="'$(REFII_NO_TESTS)' != '1' and '$(IsTesting)' != 'true'">
+  <!-- Auto-run tests during C# compilation: fail build on test error.
+
+       NOT DURING AN EXPORT. The test project references this one, so running it from inside
+       Godot's ExportDebug/ExportRelease publish rebuilds this assembly a second time, in the same
+       output folders and without the export's runtime identifier, while the publish is still in
+       flight. The export then finishes with no .NET assemblies embedded and the game stops at
+       ".NET assemblies not found". The gate belongs to the editor/dev build. -->
+  <Target Name="RunTestsAfterBuild" AfterTargets="Build" Condition="'$(REFII_NO_TESTS)' != '1' and '$(IsTesting)' != 'true' and '$(Configuration)' != 'ExportDebug' and '$(Configuration)' != 'ExportRelease'">
     <Message Importance="high" Text="================= [RUNNING UNIT TESTS] =================" />
     <Exec Command="dotnet test &quot;$(MSBuildThisFileDirectory)tests\Refii.Tests\Refii.Tests.csproj&quot; -c $(Configuration) -p:IsTesting=true -p:REFII_NO_TESTS=1 --logger &quot;console;verbosity=minimal&quot;"
           StandardOutputImportance="High"

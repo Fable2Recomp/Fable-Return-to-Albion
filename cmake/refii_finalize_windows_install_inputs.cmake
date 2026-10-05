@@ -20,8 +20,10 @@ set(_required_inputs
     "${_recompile}/bin/rexglue.exe"
     "${_recompile}/include_dirs.cmake"
     "${_recompile}/hook_sources.cmake"
-    "${_recompile}/refii_manifest.toml"
-    "${_recompile}/refii_config.toml"
+    "${_recompile}/versions/Fable2TU1/refii_manifest.toml"
+    "${_recompile}/versions/Fable2TU1/refii_config.toml"
+    "${_recompile}/versions/Fable2/refii_manifest.toml"
+    "${_recompile}/versions/Fable2/refii_config.toml"
     "${_recompile}/src/payload_export.cpp"
 )
 foreach(_input IN LISTS _required_inputs)

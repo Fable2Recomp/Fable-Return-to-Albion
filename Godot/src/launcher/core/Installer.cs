@@ -115,6 +115,23 @@ public static class Installer
             return false;
         }
 
+        // No title update chosen: the disc executable is installed as it is. A patch left by an
+        // earlier install has to go, because its presence is what selects the patched build.
+        if (sourcePath.Length == 0)
+        {
+            try
+            {
+                File.Delete(destinationPath);
+                error = string.Empty;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                error = exception.Message;
+                return false;
+            }
+        }
+
         if (!TitleUpdate.TryLoad(sourcePath, out TitleUpdate update, out error))
         {
             return false;
@@ -205,8 +222,8 @@ public static class Installer
         if (!File.Exists(patchPath))
         {
             summary = "Game version " + executable.VersionText + ", media ID " +
-                      executable.ShortMediaIdText + ", no title update installed.";
-            return false;
+                      executable.ShortMediaIdText + ", installed without the title update.";
+            return true;
         }
 
         if (!TitleUpdate.TryLoad(patchPath, out TitleUpdate update, out string patchError))
@@ -394,6 +411,15 @@ public static class Installer
     {
         string configured = GetGameDataDirectoryPath();
         if (HasExtractedAssets(configured, GetGameMarkerPath()))
+        {
+            return configured;
+        }
+
+        // An install without the title update has no patch to act as the marker; the
+        // executable beside where it would sit stands in for it.
+        string executable = Path.Combine(
+            Path.GetDirectoryName(GetGameMarkerPath()) ?? string.Empty, "default.xex");
+        if (HasExtractedAssets(configured, executable))
         {
             return configured;
         }

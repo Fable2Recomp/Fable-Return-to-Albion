@@ -4,13 +4,13 @@
 // Open → OpenInternal → FindAndCreateStream → Submit each have silent fail paths ending in a
 // NULL manifest; these hooks log each stage's verdict.
 
-REX_EXTERN(sub_82B48CB8) {
+REX_EXTERN(rex_lhVFS_RequestManager_SubmitRequest) {
   REX_FUNC_PROLOGUE();
   const uint32_t mgr = ctx.r3.u32;
   const uint32_t item = ctx.r4.u32;
   const uint32_t shutdown =
       mgr != 0 ? (refii::vfs::LoadGuestU32(base, mgr + 152u) >> 24) : 0xFFu;
-  __imp__sub_82B48CB8(ctx, base);
+  __imp__rex_lhVFS_RequestManager_SubmitRequest(ctx, base);
   static std::atomic<uint32_t> logged{0};
   if (logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
     REXLOG_INFO("Refii RequestManager Submit: mgr=0x{:08X} shutdown_byte={} item=0x{:08X} "
@@ -21,14 +21,14 @@ REX_EXTERN(sub_82B48CB8) {
   }
 }
 
-REX_EXTERN(sub_82B6DB20) {
+REX_EXTERN(rex_lhTextureStreamRequest_OpenStream) {
   REX_FUNC_PROLOGUE();
 
   // Replicates REFII_VFS_NATIVE_PASSTHROUGH but keeps the outcome log, which the macro's early
   // return would skip.
   {
     const uint32_t native_item = ctx.r3.u32;
-    __imp__sub_82B6DB20(ctx, base);
+    __imp__rex_lhTextureStreamRequest_OpenStream(ctx, base);
     const uint32_t success_byte =
         refii::vfs::LoadGuestU32(base, native_item + 116u) >> 24;
     static std::atomic<uint32_t> logged_native_pool_execs{0};
@@ -123,7 +123,7 @@ REX_EXTERN(rex_lhResourceManager_OpenInternal) {
   }
 }
 
-REX_EXTERN(sub_82426470) {
+REX_EXTERN(rex_lhGui_RunLuaString) {
   REX_FUNC_PROLOGUE();
 
   // THE CAPTURE RUNS BEFORE THE PASSTHROUGH. It used to sit after it, and
@@ -183,5 +183,5 @@ REX_EXTERN(sub_82426470) {
     }
   }
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82426470);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGui_RunLuaString);
 }

@@ -10,6 +10,7 @@
 // an input pump and a frame loop.
 
 #include <algorithm>
+#include "core/guest_build.h"
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -1192,7 +1193,7 @@ void ApplyEmbeddedEnvironment() {
 
 /// Guest globals and device fields the no-GPU latch needs. All IDA-proven against
 /// `default.xex`; see ArmGuestNoGpuMode for the proof chain.
-constexpr uint32_t kGuestDevicePointer = 0x83360364u;  // g_D3DDevice_PresentModule
+constexpr refii::guest::Addr kGuestDevicePointer{0x83360364u};  // g_D3DDevice_PresentModule
 constexpr uint32_t kDeviceNoGpuFlagByte = 0x2ABDu;     // dev+0x2ABD
 constexpr uint8_t kDeviceNoGpuFlagBit = 0x02u;         // "GPU is dead" latch
 constexpr uint32_t kDeviceDebugConsumer = 0x541Cu;     // dev+0x541C, NULL in retail
@@ -1388,7 +1389,7 @@ void RetireGuestSceneStreams() {
         return cap != 0u && cap <= kMaxRingBytes && offset <= cap;
     };
 
-    constexpr uint32_t kSchedulerStreams = 0x8349F9B0u;
+    const uint32_t kSchedulerStreams = refii::guest::Address(0x8349F9B0u);
 
     for (uint32_t slot = 0; slot < 4u; ++slot) {
         const uint32_t object = read32(kSchedulerStreams + slot * 4u);
@@ -1487,9 +1488,9 @@ void RetireGuestSceneStreams() {
 /// Base = `kFrameSyncRecords + 24*i`:
 /// `+0` u64 stamp (this frame), `+8` u64 stamp (the previous one, carried), `+16` u32 completed
 /// count, `+20` u32 reader lock. `kFrameSyncIndex` names the newest published record.
-constexpr uint32_t kPresentFrameCount = 0x83497120u;
-constexpr uint32_t kFrameSyncIndex = 0x83497124u;
-constexpr uint32_t kFrameSyncRecords = 0x83491D98u;
+constexpr refii::guest::Addr kPresentFrameCount{0x83497120u};
+constexpr refii::guest::Addr kFrameSyncIndex{0x83497124u};
+constexpr refii::guest::Addr kFrameSyncRecords{0x83491D98u};
 constexpr uint32_t kFrameSyncStride = 24u;
 constexpr uint32_t kFrameSyncSlots = 2u;
 
@@ -1658,7 +1659,7 @@ bool SamePeerId(const RexNetPeerId& a, const RexNetPeerId& b) {
 }
 
 /// `g_XrnmNetContext` — IDA names it; `sub_822EDCF0` reads the admit gates off it.
-constexpr uint32_t kXrnmNetContext = 0x83497490u;
+constexpr refii::guest::Addr kXrnmNetContext{0x83497490u};
 
 /// Are we hosting a session at all — the session machinery's byte, never ours to write.
 constexpr uint32_t kNetHostingByte = 0xF3u;
@@ -2040,7 +2041,20 @@ extern "C" {
 ///     other pushed theme) blends over the host's own tone map at the guest's stated weight.
 /// 162 adds RefiiHostGetClothingMannequin — screen 16's preview mannequin, which the remaster
 ///     draws for an outfit row and dresses through the pump's `Inventory:tryon`.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 166; }
+/// 167 adds RefiiHostGuestBuild / RefiiHostGuestAddress / RefiiHostGuestAddressToTu1 -- which
+/// executable is running (0 TU1, 1 unpatched) and the address translation between the two, and
+/// reports every GUI screen id in TU1 numbering whichever build is running.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 167; }
+
+REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddress(uint32_t tu1_address) {
+    return refii_guest_address(tu1_address);
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddressToTu1(uint32_t live_address) {
+    return refii_guest_address_to_tu1(live_address);
+}
 
 /// THE SHAPE, PER PART, as the guest states it to `sub_82A48B90`: per morphed part [model hash,
 /// count, then count x (target model hash, weight float bits)]; the part itself takes 1 - sum.
@@ -2134,8 +2148,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMapMarkers(uint32_t* out_hashes,
         return value;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) {
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) {
         return 0;
     }
 
@@ -2241,8 +2255,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetAbilitiesMode(void) {
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) {
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) {
         return -1;
     }
 
@@ -2261,7 +2275,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetAbilitiesMode(void) {
     constexpr uint32_t kAbilitiesScreenId = 14u;
     uint32_t node = read32(end_node + 4u);
     for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
-        const uint32_t key = read32(node + 12u);
+        const uint32_t key = refii::guest::ScreenIdToTu1(read32(node + 12u));
         if (key == kAbilitiesScreenId) {
             const uint32_t handler = read32(node + 16u);
             if (!plausible(handler)) {
@@ -2330,7 +2344,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetScreenFade(float* out_rgba, float* ou
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t owner = GuestWordAt(base, 0x83496B08u);
+    const uint32_t owner = GuestWordAt(base, refii::guest::Address(0x83496B08u));
     if (!plausible(owner)) {
         return 0;
     }
@@ -2412,7 +2426,7 @@ uint32_t ResolvePlayerHero(const uint8_t* base) {
     const auto read8 = [base](uint32_t at) { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t game_root = read32(0x83496AB8u);
+    const uint32_t game_root = read32(refii::guest::Address(0x83496AB8u));
     if (!plausible(game_root)) return refuse(1, game_root);
     const uint32_t game = read32(game_root + 12u);
     if (!plausible(game)) return refuse(2, game);
@@ -2420,7 +2434,7 @@ uint32_t ResolvePlayerHero(const uint8_t* base) {
     // THE MANAGER ITSELF, not the game object's counted copy at +0x8C: `g_XrnmNetContext`
     // (0x83497490). A title-joined client had the copy empty in game, so this read 0 there and
     // the joiner's whole hero pipeline — vitals, inventory, the weapons fold — went blank.
-    uint32_t session = read32(0x83497490u);
+    uint32_t session = read32(refii::guest::Address(0x83497490u));
     if (!plausible(session)) session = read32(game + 0x8Cu);
     if (!plausible(session)) return refuse(3, session);
     const uint32_t player_key =
@@ -2481,7 +2495,7 @@ uint32_t PlayerEntityForKey(const uint8_t* base, uint32_t wanted) {
     if (base == nullptr) return 0u;
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-    const uint32_t game_root = read32(0x83496AB8u);
+    const uint32_t game_root = read32(refii::guest::Address(0x83496AB8u));
     if (!plausible(game_root)) return 0u;
     const uint32_t game = read32(game_root + 12u);
     if (!plausible(game)) return 0u;
@@ -2568,8 +2582,8 @@ static uint32_t ScreenObject(const uint8_t* base, uint32_t screen_id) {
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) {
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) {
         return 0u;
     }
 
@@ -2585,7 +2599,7 @@ static uint32_t ScreenObject(const uint8_t* base, uint32_t screen_id) {
 
     uint32_t node = read32(end_node + 4u);
     for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
-        const uint32_t key = read32(node + 12u);
+        const uint32_t key = refii::guest::ScreenIdToTu1(read32(node + 12u));
         if (key == screen_id) {
             const uint32_t screen = read32(node + 16u);
             return plausible(screen) ? screen : 0u;
@@ -2826,7 +2840,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetOptions(uint32_t* words, uint32_t word_cap
     word(0, 1u);
 
     // SUBTITLES — the GUI manager's own byte, not component 33's.
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
     const uint32_t owner = plausible(gui) ? read32(gui + 32u) : 0u;
     const uint32_t block = plausible(owner) ? read32(owner + 68u) : 0u;
     word(1, plausible(block) ? GuestByteAt(base, block + 4u) : 0u);
@@ -2842,7 +2856,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetOptions(uint32_t* words, uint32_t word_cap
     if (plausible(object) && (GuestByteAt(base, object + 144u) & 0x40u) != 0u) {
         const uint32_t trail = EntityComponent(base, object, 162u);
         if (trail != 0u && GuestByteAt(base, trail + 331u) != 0u && out_breadcrumb != nullptr) {
-            const uint32_t raw = read32(0x83319198u);
+            const uint32_t raw = read32(refii::guest::Address(0x83319198u));
             float value = 0.0f;
             std::memcpy(&value, &raw, sizeof(value));
             *out_breadcrumb = value;
@@ -2939,8 +2953,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCrimeScreen(int32_t* out_fine, uint32_t* o
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
 
     const uint32_t owner = read32(gui + 28u);
     if (!plausible(owner)) return 0;
@@ -2951,7 +2965,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCrimeScreen(int32_t* out_fine, uint32_t* o
     constexpr uint32_t kCrimeScreenId = 21u;
     uint32_t node = read32(end_node + 4u);
     for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
-        const uint32_t key = read32(node + 12u);
+        const uint32_t key = refii::guest::ScreenIdToTu1(read32(node + 12u));
         if (key == kCrimeScreenId) {
             const uint32_t screen = read32(node + 16u);
             if (!plausible(screen)) return 0;
@@ -3268,7 +3282,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventory(uint32_t* words, uint32
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetItemAugments(uint32_t record_id, uint32_t* words,
                                                         uint32_t word_capacity) {
     constexpr uint32_t kNone = 0xFFFFFFFFu;
-    constexpr uint32_t kAugmentRecordVtable = 0x820C7E40u;
+    const uint32_t kAugmentRecordVtable = refii::guest::Address(0x820C7E40u);
     constexpr uint32_t kMaxRecords = 4096u;
     constexpr uint32_t kMaxExtras = 16u;
     constexpr uint32_t kMaxPairs = 16u;
@@ -3384,7 +3398,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSales(uint32_t* words, uint32_t word_
 
     static constexpr uint32_t kSalesHops[] = {0xCu, 0x58u, 0x4u, 0x64u};
 
-    uint32_t at = GuestWordAt(base, 0x83496AB8u);
+    uint32_t at = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     for (const uint32_t hop : kSalesHops) {
         if (!plausible(at)) {
             return 0;
@@ -3413,7 +3427,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSales(uint32_t* words, uint32_t word_
     constexpr uint32_t kWordsPerSale = 5u;
 
     // The world's game-time manager, for the day the countdown is measured against.
-    uint32_t clock = GuestWordAt(base, 0x83496AB8u);
+    uint32_t clock = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     for (const uint32_t hop : {0xCu, 0x58u, 0x4u, 0x14u}) {
         clock = plausible(clock) ? GuestWordAt(base, clock + hop) : 0u;
     }
@@ -3505,7 +3519,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFastTravelRegions(uint32_t* words,
     // returns nothing instead of dereferencing whatever is there.
     static constexpr uint32_t kFastTravelHops[] = {0xCu, 0x58u, 0x4u, 0x8u, 0x4u, 0xCu};
 
-    uint32_t at = GuestWordAt(base, 0x83496AB8u);
+    uint32_t at = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     for (const uint32_t hop : kFastTravelHops) {
         if (!plausible(at)) {
             return 0;
@@ -3890,7 +3904,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMinimapLive(uint32_t* out, uint32_t c
     const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
 
-    const uint32_t root = load_be32(0x83496AB8u);
+    const uint32_t root = load_be32(refii::guest::Address(0x83496AB8u));
     const uint32_t game = plausible(root) ? load_be32(root + 12u) : 0u;
     const uint32_t holder = plausible(game) ? load_be32(game + 88u) : 0u;
     const uint32_t party = plausible(holder) ? load_be32(holder + 4u) : 0u;
@@ -3966,7 +3980,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMinimapLive(uint32_t* out, uint32_t c
                 const uint32_t kind = load_be32(entity + 120u);
                 const uint32_t kind_vtable = plausible(kind) ? load_be32(kind) : 0u;
                 const uint32_t kind_fn = plausible(kind_vtable) ? load_be32(kind_vtable + 64u) : 0u;
-                if (kind_fn >= 0x82000000u && kind_fn < 0x83000000u) {
+                if (kind_fn >= refii::guest::Address(0x82000000u) && kind_fn < 0x83000000u) {
                     kind2 = load_be32(kind_fn) == 0x38600002u && load_be32(kind_fn + 4u) == 0x4E800020u;
                 }
 
@@ -4661,9 +4675,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveState(uint32_t* out_signed_in, in
 
     auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
 
-    constexpr uint32_t kActiveUserIndex = 0x83496AF8u;
-    constexpr uint32_t kSignedInMask = 0x83496A70u;
-    constexpr uint32_t kSaveSlotLimit = 0x83319620u;
+    const uint32_t kActiveUserIndex = refii::guest::Address(0x83496AF8u);
+    const uint32_t kSignedInMask = refii::guest::Address(0x83496A70u);
+    const uint32_t kSaveSlotLimit = refii::guest::Address(0x83319620u);
 
     const uint32_t user = read32(kActiveUserIndex);
     const uint32_t mask = read32(kSignedInMask);
@@ -4721,9 +4735,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLanguages(uint32_t* out_current, char
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    constexpr uint32_t kLanguageTable = 0x83319930u;
-    constexpr uint32_t kLanguageCount = 0x83319934u;
-    constexpr uint32_t kLanguageCurrent = 0x83319938u;
+    const uint32_t kLanguageTable = refii::guest::Address(0x83319930u);
+    const uint32_t kLanguageCount = refii::guest::Address(0x83319934u);
+    const uint32_t kLanguageCurrent = refii::guest::Address(0x83319938u);
     constexpr uint32_t kLanguageStride = 96u;
     constexpr uint32_t kLanguageNameOffset = 88u;
 
@@ -5251,9 +5265,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopRole(void) {
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
     // The manager itself (`g_XrnmNetContext`, 0x83497490); `game+140` is only its counted copy
     // and was empty on a title-joined client in game, which read as role 0 there.
-    uint32_t coop = GuestWordAt(base, 0x83497490u);
+    uint32_t coop = GuestWordAt(base, refii::guest::Address(0x83497490u));
     if (!plausible(coop)) {
-        const uint32_t root = GuestWordAt(base, 0x83496AB8u);
+        const uint32_t root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
         const uint32_t game = plausible(root) ? GuestWordAt(base, root + 12u) : 0u;
         coop = plausible(game) ? GuestWordAt(base, game + 140u) : 0u;
     }
@@ -5281,15 +5295,15 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCoopShares(float* out_gold, float* out_exp
         return value;
     };
     // The manager itself, the game object's copy only as a fallback — see RefiiHostGetCoopRole.
-    uint32_t coop = GuestWordAt(base, 0x83497490u);
+    uint32_t coop = GuestWordAt(base, refii::guest::Address(0x83497490u));
     if (!plausible(coop)) {
-        const uint32_t root = GuestWordAt(base, 0x83496AB8u);
+        const uint32_t root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
         const uint32_t game = plausible(root) ? GuestWordAt(base, root + 12u) : 0u;
         coop = plausible(game) ? GuestWordAt(base, game + 140u) : 0u;
     }
     if (!plausible(coop)) return 0;
-    if (out_gold != nullptr) *out_gold = read_float(0x833193D4u);
-    if (out_experience != nullptr) *out_experience = read_float(0x833193D8u);
+    if (out_gold != nullptr) *out_gold = read_float(refii::guest::Address(0x833193D4u));
+    if (out_experience != nullptr) *out_experience = read_float(refii::guest::Address(0x833193D8u));
     return 1;
 }
 
@@ -5304,7 +5318,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostIsInGame(void) {
         return 0;
     }
 
-    return GuestByteAt(base, 0x83496A5Eu);
+    return GuestByteAt(base, refii::guest::Address(0x83496A5Eu));
 }
 
 /// The guest's SIMULATION TICK, as the guest itself counts it.
@@ -5349,7 +5363,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
     }
 
     uint32_t raw;
-    raw = __builtin_bswap32(GuestWordAt(base, 0x83319650u));
+    raw = __builtin_bswap32(GuestWordAt(base, refii::guest::Address(0x83319650u)));
     return __builtin_bswap32(raw);
 }
 
@@ -5394,7 +5408,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimClock(double* out_seconds, uint32_
 
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t root = GuestWordAt(base, 0x83496AB8u);
+    const uint32_t root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     if (!plausible(root)) {
         return 0;
     }
@@ -5551,10 +5565,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
 
     // The composed world matrix is read from `node + 0x20`; see the read site below.
 
-    constexpr uint32_t kVectorBegin = 0x8349E490u;
-    constexpr uint32_t kVectorEnd = 0x8349E494u;
+    const uint32_t kVectorBegin = refii::guest::Address(0x8349E490u);
+    const uint32_t kVectorEnd = refii::guest::Address(0x8349E494u);
 
-    constexpr uint32_t kReservedRootName = 0x8349E678u;
+    const uint32_t kReservedRootName = refii::guest::Address(0x8349E678u);
 
     /// 20 words per node: instance pointer, name hash, flags, live-particle count, the world
     /// position (3 floats), the world basis rows 0..2 (9 floats), the effect handle, the
@@ -5590,8 +5604,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
     EffectWork registry[512];
     uint32_t registry_count = 0u;
     {
-        const uint32_t rbegin = read32(0x8349E480u);
-        const uint32_t rend = read32(0x8349E484u);
+        const uint32_t rbegin = read32(refii::guest::Address(0x8349E480u));
+        const uint32_t rend = read32(refii::guest::Address(0x8349E484u));
         if (plausible(rbegin) && rend > rbegin && ((rend - rbegin) % 28u) == 0u &&
             (rend - rbegin) <= 28u * 512u) {
             for (uint32_t at = rbegin; at + 28u <= rend && registry_count < 512u; at += 28u) {
@@ -5828,7 +5842,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_
 
     const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
 
-    const uint32_t root = load_be32(0x83496AB8u);
+    const uint32_t root = load_be32(refii::guest::Address(0x83496AB8u));
     if (root == 0) {
         return 0;
     }
@@ -5857,7 +5871,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_
     // construction site in the whole image (0x8234F2C4), so nothing else can present it. Without
     // this a half-built chain hands back whatever the allocator left behind, and a garbage day
     // fraction reads as the sun being in the wrong place rather than as a bad pointer.
-    if (load_be32(timing + 0x00u) != 0x820BF8A8u) {
+    if (load_be32(timing + 0x00u) != refii::guest::Address(0x820BF8A8u)) {
         return 0;
     }
 
@@ -5946,7 +5960,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* 
 
     const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
 
-    const uint32_t root = load_be32(0x83496AB8u);
+    const uint32_t root = load_be32(refii::guest::Address(0x83496AB8u));
     if (root == 0) {
         return 0;
     }
@@ -6044,7 +6058,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeStack(uint32_t* out_words, uint3
     const auto load_be32 = [base](uint32_t guest_address) { return GuestWordAt(base, guest_address); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
 
-    const uint32_t root = load_be32(0x83496AB8u);
+    const uint32_t root = load_be32(refii::guest::Address(0x83496AB8u));
     if (root == 0u) {
         return 0u;
     }
@@ -6160,7 +6174,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRenderFence(uint32_t* out_manager, double*
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t mode = GuestWordAt(base, 0x83496AB8u);
+    const uint32_t mode = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     if (!plausible(mode)) {
         return 0;
     }
@@ -6212,9 +6226,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRenderFence(uint32_t* out_manager, double*
     if (out_arms != nullptr) {
         out_arms[0] = read32(manager + 116u);
         out_arms[1] = read32(manager + 124u);
-        out_arms[2] = GuestWordAt(base, 0x83496E34u);
-        out_arms[3] = GuestWordAt(base, 0x8349FB5Cu);
-        out_arms[4] = GuestByteAt(base, 0x83496E20u);
+        out_arms[2] = GuestWordAt(base, refii::guest::Address(0x83496E34u));
+        out_arms[3] = GuestWordAt(base, refii::guest::Address(0x8349FB5Cu));
+        out_arms[4] = GuestByteAt(base, refii::guest::Address(0x83496E20u));
     }
 
     return 1;
@@ -6276,7 +6290,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint3
     uint32_t context = 0;
     // THREE ROOTS, NOT TWO — `sub_82388380` falls through 0x83496AB8, then 0x83496AC0, then
     // 0x8335C4C4 at 0x8238862C, and only gives up when all three are null.
-    for (uint32_t mode_global : {0x83496AB8u, 0x83496AC0u, 0x8335C4C4u}) {
+    for (uint32_t mode_global : {refii::guest::Address(0x83496AB8u), refii::guest::Address(0x83496AC0u), refii::guest::Address(0x8335C4C4u)}) {
         const uint32_t mode = read32(mode_global);
         if (!plausible(mode)) {
             continue;
@@ -6423,7 +6437,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsReady(void) {
     }
 
     uint32_t mode = 0;
-    mode = __builtin_bswap32(GuestWordAt(base, 0x83496AB8u));
+    mode = __builtin_bswap32(GuestWordAt(base, refii::guest::Address(0x83496AB8u)));
     mode = __builtin_bswap32(mode);
     if (mode < 0x10000u || mode >= 0xC0000000u) {
         return 0;
@@ -6434,7 +6448,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsReady(void) {
         return 0;
     }
 
-    return GuestByteAt(base, game + 0x105u) != 0 ? 1u : 0u;
+    return GuestByteAt(base, game + refii::guest::GameField(0x105u)) != 0 ? 1u : 0u;
 }
 
 /// Whether Godot is still building a region the guest must not be let into yet.
@@ -6457,7 +6471,7 @@ static uint32_t engine_object(const uint8_t* base) {
         return (at >= 0x10000u && at < 0xC0000000u) ? u32(at + offset) : 0u;
     };
 
-    uint32_t at = u32(0x83496AB8u);
+    uint32_t at = u32(refii::guest::Address(0x83496AB8u));
     at = step(at, 0x0Cu);
     at = step(at, 0x68u);
     at = step(at, 0x04u);
@@ -6594,7 +6608,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsActive(void) {
         return plausible(at) ? u32(at + offset) : 0u;
     };
 
-    uint32_t at = u32(0x83496AB8u);
+    uint32_t at = u32(refii::guest::Address(0x83496AB8u));
     at = step(at, 0x0Cu);
     at = step(at, 0x58u);
     at = step(at, 0x04u);
@@ -6641,7 +6655,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostDescribeGameFlowQueue(char* out, uint32_
         return plausible(at) ? u32(at + offset) : 0u;
     };
 
-    const uint32_t p = step(u32(0x83496AB8u), 0x0Cu);
+    const uint32_t p = step(u32(refii::guest::Address(0x83496AB8u)), 0x0Cu);
     const uint32_t holder = step(p, 0x80u);
     const uint32_t gameflow = step(holder, 0x04u);
 
@@ -6808,7 +6822,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* world, char* level,
         return plausible(at) ? u32(at + offset) : 0u;
     };
 
-    const uint32_t mode = u32(0x83496AB8u);
+    const uint32_t mode = u32(refii::guest::Address(0x83496AB8u));
     const uint32_t p = step(mode, 0x0Cu);
     const uint32_t gameflow = step(step(p, 0x80u), 0x04u);
     if (!plausible(gameflow)) {
@@ -6854,7 +6868,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* world, char* level,
         // An adjacent vtable is not evidence of a shared layout. The initial load simply has no
         // level-change command to find, and the caller's own fallbacks cover that.
         const uint32_t candidate = u32(node + 0x08u);
-        if (plausible(candidate) && u32(candidate) == 0x820AECE8u) {
+        if (plausible(candidate) && u32(candidate) == refii::guest::Address(0x820AECE8u)) {
             command = candidate;
             break;
         }
@@ -6920,10 +6934,10 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetInitMarkers(uint32_t* out) {
 
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
-    out[0] = GuestWordAt(base, 0x83496DA0u);
-    out[1] = GuestByteAt(base, 0x83496A5Eu);
-    out[2] = GuestWordAt(base, 0x83496AB8u);
-    out[3] = GuestWordAt(base, 0x83496AC0u);
+    out[0] = GuestWordAt(base, refii::guest::Address(0x83496DA0u));
+    out[1] = GuestByteAt(base, refii::guest::Address(0x83496A5Eu));
+    out[2] = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
+    out[3] = GuestWordAt(base, refii::guest::Address(0x83496AC0u));
 }
 
 /// Every LIVE entity's world transform and model, for Godot to draw.
@@ -7048,19 +7062,19 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         bool delegate;  // sub_8220DDB0: the placement lives on the object at +0x20
     };
 
-    static constexpr Ec2Layout kEc2Layouts[] = {
-    {0x82006F88u, 0x20u, kNoDirect, false, false},  // orientation is a global
-    {0x82007258u, 0x20u, 0x30u, false, false},
-    {0x820E6048u, 0x20u, 0x30u, false, false},
-    {0x820CA190u, 0x40u, 0x30u, false, false},
-    {0x82007038u, 0x70u, kNoDirect, true, false},
-    {0x820071A0u, 0x70u, kNoDirect, true, false},
-    {0x820C4B90u, 0x70u, kNoDirect, true, false},
-    {0x820070F0u, kNoDirect, kNoDirect, false, true},
-    {0x82007308u, kNoDirect, kNoDirect, false, true},
-    {0x820073B8u, kNoDirect, kNoDirect, false, true},
-    {0x820C6E58u, kNoDirect, kNoDirect, false, true},
-    {0x820CB140u, kNoDirect, kNoDirect, false, true},  // the abstract base
+    const Ec2Layout kEc2Layouts[] = {
+    {refii::guest::Address(0x82006F88u), 0x20u, kNoDirect, false, false},  // orientation is a global
+    {refii::guest::Address(0x82007258u), 0x20u, 0x30u, false, false},
+    {refii::guest::Address(0x820E6048u), 0x20u, 0x30u, false, false},
+    {refii::guest::Address(0x820CA190u), 0x40u, 0x30u, false, false},
+    {refii::guest::Address(0x82007038u), 0x70u, kNoDirect, true, false},
+    {refii::guest::Address(0x820071A0u), 0x70u, kNoDirect, true, false},
+    {refii::guest::Address(0x820C4B90u), 0x70u, kNoDirect, true, false},
+    {refii::guest::Address(0x820070F0u), kNoDirect, kNoDirect, false, true},
+    {refii::guest::Address(0x82007308u), kNoDirect, kNoDirect, false, true},
+    {refii::guest::Address(0x820073B8u), kNoDirect, kNoDirect, false, true},
+    {refii::guest::Address(0x820C6E58u), kNoDirect, kNoDirect, false, true},
+    {refii::guest::Address(0x820CB140u), kNoDirect, kNoDirect, false, true},  // the abstract base
 };
 
     /// The delegate targets — the physics/proxy objects an EC-2 hands its placement to.
@@ -7090,22 +7104,22 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         bool dispatch;
     };
 
-    static constexpr DelegateLayout kDelegateLayouts[] = {
+    const DelegateLayout kDelegateLayouts[] = {
         // slot 0x0C = sub_8255AFE0 `li r11,0x50`, slot 0x10 = sub_828CA2A0 `ld 0x60/0x68`.
-        {0x82006B30u, 0x50u, 0x60u, kNoHop, false},
+        {refii::guest::Address(0x82006B30u), 0x50u, 0x60u, kNoHop, false},
         // slot 0x0C = sub_8222A4B0 `li r11,0x40`, slot 0x10 = sub_822082F8 `ld 0x50/0x58`.
         // 90 of the 388 unplaceable entities in BWSSlums were this class.
-        {0x820069C8u, 0x40u, 0x50u, kNoHop, false},
+        {refii::guest::Address(0x820069C8u), 0x40u, 0x50u, kNoHop, false},
         // slot 0x0C = sub_8220B9E0 `lwz r4,0x38(r4)` then slot 0x14; slot 0x10 = sub_82232B70,
         // same hop then slot 0x18. 298 of the 388 were this one.
-        {0x82006A40u, 0u, 0u, 0x38u, true},
+        {refii::guest::Address(0x82006A40u), 0u, 0u, 0x38u, true},
         // slot 0x14 = sub_8257A608 `li r11,0xF0`, slot 0x18 = sub_8257A618 `ld 0x100/0x108`.
         // Reached from 0x82006A40's hop and from the hybrid's +0x38.
-        {0x82005460u, 0xF0u, 0x100u, kNoHop, false},
+        {refii::guest::Address(0x82005460u), 0xF0u, 0x100u, kNoHop, false},
         // slot 0x14 = sub_8220B9C8 `lwz r11,0x2C(r4); li r10,0x110`, slot 0x18 = sub_82232B38,
         // same hop then +0x150. The other thing 0x82006A40's +0x38 can hold — and what all
         // 298 of them actually held.
-        {0x82005B80u, 0x110u, 0x150u, 0x2Cu, false},
+        {refii::guest::Address(0x82005B80u), 0x110u, 0x150u, 0x2Cu, false},
     };
 
     /// The delegate layout for a vtable, or null when it is not one we know.
@@ -7251,7 +7265,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         return false;
     };
 
-    const uint32_t manager = GuestWordAt(base, 0x83496B28u);
+    const uint32_t manager = GuestWordAt(base, refii::guest::Address(0x83496B28u));
     if (!plausible(manager)) {
         return 0u;
     }
@@ -7366,7 +7380,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         /// This is the translation lane of the same `hkTransform` whose basis the orientation
         /// read above takes from `+0xA0`.
         const auto read_phantom_position = [&](uint32_t proxy, uint32_t* out) -> bool {
-            if (!plausible(proxy) || read32(proxy) != 0x82005720u) {
+            if (!plausible(proxy) || read32(proxy) != refii::guest::Address(0x82005720u)) {
                 return false;
             }
 
@@ -7393,7 +7407,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         };
 
         const auto read_phantom_quaternion = [&](uint32_t proxy, uint32_t* out) -> bool {
-            if (!plausible(proxy) || read32(proxy) != 0x82005720u) {
+            if (!plausible(proxy) || read32(proxy) != refii::guest::Address(0x82005720u)) {
                 return false;
             }
 
@@ -8363,7 +8377,7 @@ static bool EntityPhysicsOwnsPose(const uint8_t* base, uint32_t entity) {
     const auto plausible = [](uint32_t address) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
-    static constexpr uint32_t kRagdollVtable = 0x820067F8u;
+    const uint32_t kRagdollVtable = refii::guest::Address(0x820067F8u);
     if (!plausible(entity)) {
         return false;
     }
@@ -8804,7 +8818,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    const uint32_t manager = GuestWordAt(base, 0x83496B28u);
+    const uint32_t manager = GuestWordAt(base, refii::guest::Address(0x83496B28u));
     if (!plausible(manager)) {
         return 0u;
     }
@@ -8987,7 +9001,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLocomotion(uint32_t entity, uin
     for (uint32_t step = 0u; step < 64u && plausible(node) && node != sentinel; ++step) {
         const uint32_t mode = read32(node + 8u);
         if (plausible(mode)) {
-            switch (read32(mode)) {
+            switch (refii::guest::ToTu1(read32(mode))) {
                 case 0x82006070u: machine = mode; mode_type = 2u; break;
                 case 0x820DA468u: machine = mode; mode_type = 3u; break;
                 case 0x820DA4C8u: machine = mode; mode_type = 4u; break;
@@ -9131,11 +9145,11 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetPauseState(uint32_t* out_screen_id, uint32
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
 
     const uint32_t screen = read32(gui + 56u);
-    if (out_screen_id != nullptr && plausible(screen)) *out_screen_id = read32(screen + 4u);
+    if (out_screen_id != nullptr && plausible(screen)) *out_screen_id = refii::guest::ScreenIdToTu1(read32(screen + 4u));
 
     const uint32_t mgr = read32(gui + 28u);
     if (plausible(mgr)) {
@@ -9176,8 +9190,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostPauseTabSelect(uint32_t tab) {
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;     // the IN-GAME object only
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;     // the IN-GAME object only
 
     const uint32_t screen = read32(gui + 56u);
     if (!plausible(screen) || read32(screen + 4u) != 0u) return 0;   // pause root only
@@ -9217,8 +9231,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDisplayBox(uint32_t* out_vtable) {
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
 
     const uint32_t gui_owner = read32(gui + 28u);
     if (!plausible(gui_owner)) return 0;
@@ -9256,8 +9270,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuBox(uint32_t* out_selected, uint3
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
 
     const uint32_t owner = read32(gui + 28u);
     if (!plausible(owner)) return 0;
@@ -10072,7 +10086,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDeadEntities(uint64_t* out_uids, uint
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    constexpr uint32_t kEntityManagerGlobal = 0x83496B28u;
+    const uint32_t kEntityManagerGlobal = refii::guest::Address(0x83496B28u);
     const uint32_t manager = read32(kEntityManagerGlobal);
     if (!plausible(manager)) {
         return 0u;
@@ -10835,7 +10849,7 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetSceneStreams(uint32_t* out) {
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
 
     for (uint32_t slot = 0; slot < 4u; ++slot) {
-        const uint32_t object = GuestWordAt(base, 0x8349F9B0u + slot * 4u);
+        const uint32_t object = GuestWordAt(base, refii::guest::Address(0x8349F9B0u) + slot * 4u);
         if (object < 0x10000u || object >= 0xC0000000u) {
             continue;
         }
@@ -10922,8 +10936,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGameLoopPacer(uint32_t* words, uint32
     for (uint32_t i = 0; i < 11u; ++i) word(i, 0u);
     for (uint32_t i = 0; i < 5u; ++i) real(i, 0.0);
 
-    real(1, read_double(0x834970A0u));
-    real(2, read_double(0x834970A8u));
+    real(1, read_double(refii::guest::Address(0x834970A0u)));
+    real(2, read_double(refii::guest::Address(0x834970A8u)));
 
     // The GUI manager's update gate and the presentation clock. `sub_821A1140` runs the
     // gameplan update — advancing every timeline and draining every presentation's event queue
@@ -10934,8 +10948,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGameLoopPacer(uint32_t* words, uint32
     {
         // The enable byte is a global: read it whether or not the in-game manager exists, or a
         // front-end sample reports "update off" for a byte that is 1 from image load.
-        word(9, GuestByteAt(base, 0x83319409u));
-        const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+        word(9, GuestByteAt(base, refii::guest::Address(0x83319409u)));
+        const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
         if (plausible(gui)) {
             word(8, GuestByteAt(base, gui + 0x65u));
             word(10, GuestByteAt(base, gui + 0x64u));
@@ -10947,33 +10961,33 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGameLoopPacer(uint32_t* words, uint32
             }
 
             const uint32_t manager = GuestWordAt(base, gui + 56u);
-            const uint32_t screen_pres = plausible(manager) ? GuestWordAt(base, manager + 156u) : 0u;
+            const uint32_t screen_pres = plausible(manager) ? GuestWordAt(base, manager + refii::guest::ScreenManagerField(156u)) : 0u;
             if (plausible(screen_pres)) {
                 real(4, static_cast<double>(GuestWordAt(base, screen_pres + 852u)));
             }
         }
     }
 
-    word(3, GuestWordAt(base, 0x83497120u));
+    word(3, GuestWordAt(base, refii::guest::Address(0x83497120u)));
 
     // The index first, then the record it names — never a fixed address: the callback
     // ping-pongs the slot on every completion.
-    const uint32_t index = GuestWordAt(base, 0x83497124u);
+    const uint32_t index = GuestWordAt(base, refii::guest::Address(0x83497124u));
     word(4, index);
     if (index < 2u) {
-        const uint32_t record = 0x83491D98u + index * 24u;
+        const uint32_t record = refii::guest::Address(0x83491D98u) + index * 24u;
         word(5, GuestWordAt(base, record + 0x10u));
         word(6, GuestWordAt(base, record + 0x14u));
     }
 
     // The loop's continuation predicate is `app->vtbl[0x10]()` == `*(u8*)(app + 44) == 0`
     // (`sub_82185868`). Non-zero means the loop was asked to end, not that it is stuck.
-    const uint32_t app = GuestWordAt(base, 0x8349E9ECu);
+    const uint32_t app = GuestWordAt(base, refii::guest::Address(0x8349E9ECu));
     if (plausible(app)) {
         word(7, GuestByteAt(base, app + 44u));
     }
 
-    const uint32_t game_root = GuestWordAt(base, 0x83496AB8u);
+    const uint32_t game_root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     if (!plausible(game_root)) {
         return 0;
     }
@@ -10983,8 +10997,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGameLoopPacer(uint32_t* words, uint32
     }
 
     word(0, game);
-    word(1, GuestByteAt(base, game + 0x104u));
-    word(2, GuestByteAt(base, game + 0x105u));
+    word(1, GuestByteAt(base, game + refii::guest::GameField(0x104u)));
+    word(2, GuestByteAt(base, game + refii::guest::GameField(0x105u)));
     real(0, read_double(game + 0x110u));
 
     return game;
@@ -11076,9 +11090,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetStartLevel(char* world, char* level, char*
         return 0;
     }
 
-    read_guest_name(base, 0x83497584u, world, capacity);
-    read_guest_name(base, 0x83497590u, entrance, capacity);
-    return read_guest_name(base, 0x83497588u, level, capacity) ? 1 : 0;
+    read_guest_name(base, refii::guest::Address(0x83497584u), world, capacity);
+    read_guest_name(base, refii::guest::Address(0x83497590u), entrance, capacity);
+    return read_guest_name(base, refii::guest::Address(0x83497588u), level, capacity) ? 1 : 0;
 }
 
 /// The world manager, from the one fixed global that reaches it.
@@ -11100,7 +11114,7 @@ static uint32_t world_manager(const uint8_t* base) {
         return u32(at + offset);
     };
 
-    uint32_t at = u32(0x83496AB8u);
+    uint32_t at = u32(refii::guest::Address(0x83496AB8u));
     at = step(at, 0x0Cu);
     at = step(at, 0x58u);
     at = step(at, 0x04u);
@@ -11357,7 +11371,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetStartScenario(char* scenario, uint32_t cap
         return 0;
     }
 
-    return read_guest_name(base, 0x8349758Cu, scenario, capacity) ? 1 : 0;
+    return read_guest_name(base, refii::guest::Address(0x8349758Cu), scenario, capacity) ? 1 : 0;
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndState(void) {
@@ -11372,7 +11386,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndState(void) {
     }
 
     // byte_83496AC4 — one byte, so endianness does not enter into it.
-    return GuestByteAt(base, 0x83496AC4u);
+    return GuestByteAt(base, refii::guest::Address(0x83496AC4u));
 }
 
 /// Every element of the active screen: its identity, its slide, and its live TEXT.
@@ -11445,8 +11459,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x820A924Cu) {
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x820A924Cu)) {
         return 0u;  // the base-only instance the game republishes — no front end here
     }
 
@@ -11454,20 +11468,20 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
     const uint32_t menu = read32(gui + 184u);
     const uint32_t active = read32(gui + 188u);
 
-    const uint32_t user = GuestWordAt(base, 0x83496AF8u);
-    const uint32_t signed_mask = GuestWordAt(base, 0x83496A70u);
+    const uint32_t user = GuestWordAt(base, refii::guest::Address(0x83496AF8u));
+    const uint32_t signed_mask = GuestWordAt(base, refii::guest::Address(0x83496A70u));
     const bool signed_in = user < 32u && ((1u << user) & signed_mask) != 0u;
 
     out[0] = signed_in ? 1u : 0u;
     out[1] = user;
-    out[2] = GuestWordAt(base, 0x83319934u);  // installed language count; > 1 spawns "Language"
-    out[3] = GuestWordAt(base, 0x83319938u);  // current language index
+    out[2] = GuestWordAt(base, refii::guest::Address(0x83319934u));  // installed language count; > 1 spawns "Language"
+    out[3] = GuestWordAt(base, refii::guest::Address(0x83319938u));  // current language index
 
     // The "new downloadable content" glyph: shown when the flag is set and the available
     // count differs from the count already seen.
-    const uint32_t available = GuestWordAt(base, 0x83496B20u);
-    const uint32_t seen = GuestWordAt(base, 0x83496B24u);
-    out[4] = (GuestByteAt(base, 0x8331963Eu) != 0u && (int32_t)available > 0 && available != seen) ? 1u : 0u;
+    const uint32_t available = GuestWordAt(base, refii::guest::Address(0x83496B20u));
+    const uint32_t seen = GuestWordAt(base, refii::guest::Address(0x83496B24u));
+    out[4] = (GuestByteAt(base, refii::guest::Address(0x8331963Eu)) != 0u && (int32_t)available > 0 && available != seen) ? 1u : 0u;
 
     // WHICH SCREEN, by pointer identity. There is no title state that means "the menu is up" —
     // state 11 is consumed and reset to 0 in the same update, so reading it that way reports
@@ -11475,11 +11489,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
     out[5] = (plausible(menu) && active == menu) ? 1u : 0u;
     out[6] = plausible(menu) ? read32(menu + 24u) : 0u;
     out[7] = plausible(title) ? read32(title + 24u) : 0u;
-    out[8] = plausible(title) ? GuestByteAt(base, title + 80u) : 0u;  // the CAN_PRESS_A gate
+    out[8] = plausible(title) ? GuestByteAt(base, title + refii::guest::FrontEndTitleField(80u)) : 0u;  // the CAN_PRESS_A gate
 
     // The Load Game card cursor. NOT the menu highlight — it moves only on Left/Right and only
     // in menu state 5, and it indexes the save-card vector at menu+84.
-    out[9] = plausible(menu) ? read32(menu + 72u) : 0u;
+    out[9] = plausible(menu) ? read32(menu + refii::guest::FrontEndMenuField(72u)) : 0u;
 
     // HOW MANY SAVES THE GUEST HAS ENUMERATED, from the same vector its own "Load Game"
     // branch tests before deciding whether to offer one:
@@ -11499,8 +11513,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndModel(uint32_t* out) {
     // decides that with a live XamContentCreateEnumerator, which is a call and not a read.
     uint32_t enumerated = 0;
     if (plausible(menu)) {
-        const uint32_t begin = read32(menu + 84u);
-        const uint32_t end = read32(menu + 88u);
+        const uint32_t begin = read32(menu + refii::guest::FrontEndMenuField(84u));
+        const uint32_t end = read32(menu + refii::guest::FrontEndMenuField(88u));
         if (end >= begin && (end - begin) < 0x10000u) {
             enumerated = (end - begin) / 4u;
         }
@@ -11575,8 +11589,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint3
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x820A924Cu) {
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x820A924Cu)) {
         return 0u;  // the base-only instance the game republishes — no front end here
     }
 
@@ -11585,8 +11599,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint3
         return 0u;
     }
 
-    const uint32_t files_begin = read32(screen + 84u);
-    const uint32_t files_end = read32(screen + 88u);
+    const uint32_t files_begin = read32(screen + refii::guest::FrontEndMenuField(84u));
+    const uint32_t files_end = read32(screen + refii::guest::FrontEndMenuField(88u));
     if (!plausible(files_begin) || files_end < files_begin ||
         (files_end - files_begin) >= 0x10000u) {
         return 0u;
@@ -11598,10 +11612,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint3
     }
 
     if (out_cursor != nullptr) {
-        *out_cursor = read32(screen + 72u);
+        *out_cursor = read32(screen + refii::guest::FrontEndMenuField(72u));
     }
     if (out_base_slot != nullptr) {
-        *out_base_slot = read32(screen + 76u);
+        *out_base_slot = read32(screen + refii::guest::FrontEndMenuField(76u));
     }
 
     if (text == nullptr || capacity == 0u) {
@@ -11611,8 +11625,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint3
     // The description container's OWN bound, not the file count's. They agree by construction
     // — see the remarks — and disagreeing means the enumeration is half-done, which is a state
     // a host polling every frame will genuinely observe.
-    const uint32_t text_begin = read32(screen + 132u);
-    const uint32_t text_end = read32(screen + 136u);
+    const uint32_t text_begin = read32(screen + refii::guest::FrontEndMenuField(132u));
+    const uint32_t text_end = read32(screen + refii::guest::FrontEndMenuField(136u));
     const uint32_t described =
         (plausible(text_begin) && text_end >= text_begin && (text_end - text_begin) < 0x10000u)
             ? (text_end - text_begin) / 4u
@@ -11686,7 +11700,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiTextureHashes(uint32_t presentation
     // ask both about the same presentation the same way. The `gui+188` chain is the front end's
     // only and is dead in game; see that function for why.
     if (presentation == 0u) {
-        const uint32_t gui = read32(0x83496B08u);
+        const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
         if (!plausible(gui)) {
             return 0;
         }
@@ -11995,7 +12009,7 @@ static uint32_t hud_script_store(const uint8_t* base) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
     if (!plausible(gui)) {
         return 0u;
     }
@@ -12041,7 +12055,7 @@ static uint32_t walk_gui_registry(const uint8_t* base, uint32_t index, uint32_t*
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
     if (!plausible(gui)) {
         return 0u;
     }
@@ -12237,7 +12251,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiMovie(uint32_t presentation, uint32
     };
 
     if (presentation == 0u) {
-        const uint32_t gui = read32(0x83496B08u);
+        const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
         if (!plausible(gui)) {
             return 0;
         }
@@ -12392,7 +12406,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetExpressionMeter(float* out_values, ui
     }
 
     const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
     const uint32_t hud = plausible(gui) ? GuestWordAt(base, gui + 32u) : 0u;
     const uint32_t meter = plausible(hud) ? GuestWordAt(base, hud + 44u) : 0u;
     if (!plausible(meter)) {
@@ -12441,7 +12455,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetExpressionMeter(float* out_values, ui
 static uint32_t TopBoxFrontRecord(const uint8_t* base, uint32_t& channel, bool& manager_found) {
     const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
     manager_found = false;
-    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
     const uint32_t hud = plausible(gui) ? GuestWordAt(base, gui + 32u) : 0u;
     const uint32_t manager = plausible(hud) ? GuestWordAt(base, hud + 88u) : 0u;
     if (!plausible(manager)) {
@@ -12539,7 +12553,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTopBoxBody(uint32_t* out_words, uint3
     }
     const uint32_t vtable = GuestWordAt(base, provider);
     uint32_t cls = 0xFFu;
-    switch (vtable) {
+    switch (refii::guest::ToTu1(vtable)) {
         case 0x820A4268u: cls = 0u; break;
         case 0x820A4270u: cls = 1u; break;
         case 0x820A4278u: cls = 2u; break;
@@ -12666,7 +12680,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTargetedQuery(uint32_t* out_words, ui
     }
 
     const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
     const uint32_t hud = plausible(gui) ? GuestWordAt(base, gui + 32u) : 0u;
     const uint32_t block = plausible(hud) ? GuestWordAt(base, hud + 112u) : 0u;
     if (!plausible(block)) {
@@ -12865,12 +12879,12 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetSpellAssign(uint32_t* out) {
 
     // The quick-wheel assigner flags and the abilities screen's mode, read even when the
     // manager below does not resolve, so "open but no hero" is distinguishable from closed.
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
     if (plausible(gui)) {
         const uint32_t owner = read32(gui + 28u);
         if (plausible(owner)) {
-            out[12] = read8(owner + 36u);
-            out[13] = read8(owner + 37u);
+            out[12] = read8(owner + refii::guest::GuiOwnerField(36u));
+            out[13] = read8(owner + refii::guest::GuiOwnerField(37u));
         }
     }
 
@@ -12978,10 +12992,10 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetSpellWheel(uint32_t player, uint32_t* out,
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
     const bool two = player == 2u;
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
     const uint32_t quick = plausible(gui) ? read32(gui + 28u) : 0u;
     const uint32_t hud = plausible(gui) ? read32(gui + 32u) : 0u;
-    if (!plausible(quick) || !plausible(hud) || read8(quick + (two ? 37u : 36u)) == 0u) {
+    if (!plausible(quick) || !plausible(hud) || read8(quick + refii::guest::GuiOwnerField(two ? 37u : 36u)) == 0u) {
         return 0;
     }
 
@@ -13144,7 +13158,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
     if (!plausible(gui)) {
         return 0;
     }
@@ -13810,7 +13824,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t requested_present
     // screen, and only while the front end owned the GUI.
     uint32_t presentation = requested_presentation;
     if (presentation == 0u) {
-        const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+        const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
         if (!plausible(gui)) {
             return 0;
         }
@@ -14073,7 +14087,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
     if (!plausible(gui)) {
         return 0;
     }
@@ -14094,10 +14108,10 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEnd(uint32_t* out) {
     out[8] = read32(active);  // the screen's vtable — its identity
 
     if (plausible(startup)) {
-        out[4] = GuestByteAt(base, startup + 80u);
+        out[4] = GuestByteAt(base, startup + refii::guest::FrontEndTitleField(80u));
     }
     if (plausible(menu)) {
-        out[5] = read32(menu + 72u);
+        out[5] = read32(menu + refii::guest::FrontEndMenuField(72u));
     }
 
     // The scene slide, down the presentation's own element tree.
@@ -14155,8 +14169,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEndInit(uint32_t* out) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t gui = GuestWordAt(base, 0x83496B08u);
-    if (!plausible(gui) || GuestWordAt(base, gui) != 0x820A924Cu) {
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || GuestWordAt(base, gui) != refii::guest::Address(0x820A924Cu)) {
         return 0;
     }
 
@@ -14172,9 +14186,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetFrontEndInit(uint32_t* out) {
     }
 
     const uint32_t title = GuestWordAt(base, gui + 180u);
-    if (plausible(title) && GuestWordAt(base, title) == 0x820D09C4u) {
+    if (plausible(title) && GuestWordAt(base, title) == refii::guest::Address(0x820D09C4u)) {
         out[4] = GuestWordAt(base, title + 20u);
-        out[5] = GuestWord64At(base, title + 72u) != 0u ? 1u : 0u;
+        out[5] = GuestWord64At(base, title + refii::guest::FrontEndTitleField(72u)) != 0u ? 1u : 0u;
     }
 
     return 1;
@@ -14263,7 +14277,7 @@ static uint32_t loading_screen_object(const uint8_t* base) {
         return address >= 0x10000u && address < 0xC0000000u;
     };
 
-    for (uint32_t root : {0x83496AB8u, 0x83496AC0u, 0x8335C4C4u}) {
+    for (uint32_t root : {refii::guest::Address(0x83496AB8u), refii::guest::Address(0x83496AC0u), refii::guest::Address(0x8335C4C4u)}) {
         const uint32_t app = read32(root);
         if (!plausible(app)) {
             continue;
@@ -14653,7 +14667,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetUiTextureStats(uint32_t presentation, uint
 // the `char*`. Reading one level in gets a plausible-looking pointer that is not text.
 
 namespace {
-constexpr uint32_t kPubGameManager = 0x834C20B8u;
+constexpr refii::guest::Addr kPubGameManager{0x834C20B8u};
 
 
 constexpr uint32_t kPubGameNameOffset = 8u;
@@ -14903,7 +14917,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetInventoryScreenMode(void) {
     const auto read32 = [base](uint32_t address) -> uint32_t { return GuestWordAt(base, address); };
     const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
     const uint32_t manager = plausible(gui) ? read32(gui + 28u) : 0u;
     const uint32_t map = plausible(manager) ? manager + 68u : 0u;
     const uint32_t head = map != 0u ? read32(map + 4u) : 0u;
@@ -14922,7 +14936,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetInventoryScreenMode(void) {
             break;
         }
 
-        const int32_t key = static_cast<int32_t>(read32(node + 12u));
+        const int32_t key =
+            static_cast<int32_t>(refii::guest::ScreenIdToTu1(read32(node + 12u)));
         if (key >= kInventoryScreenKey) {
             candidate = node;
             node = read32(node);
@@ -14933,7 +14948,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetInventoryScreenMode(void) {
 
     // The guest would insert here; we simply have no answer.
     if (candidate == head ||
-        static_cast<int32_t>(read32(candidate + 12u)) != kInventoryScreenKey) {
+        static_cast<int32_t>(refii::guest::ScreenIdToTu1(read32(candidate + 12u))) !=
+            kInventoryScreenKey) {
         return 0;
     }
 
@@ -14970,7 +14986,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetInGameScreen(uint32_t* out) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
     if (!plausible(gui)) {
         return 0;
     }
@@ -14988,18 +15004,23 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetInGameScreen(uint32_t* out) {
     // NOT RANGE-CHECKED TO 0..29 HERE. 31 is the guest's own "no screen up" and the caller
     // needs to see it; clamping it into the array's range would report the pause menu as open
     // for a player who is simply walking around.
-    out[3] = read32(manager + 4u);
+    out[3] = refii::guest::ScreenIdToTu1(read32(manager + 4u));
 
     // The thirty per-screen slots, ID order. `sub_823DCBE0` indexes them as `a1[id + 3]`, i.e.
     // manager + 0x0C + 4*id, for id < 30.
+    //
+    // REPORTED BY TU1 ID in both builds. Without the title update there are twenty-nine, keyed
+    // by ids one lower from 13 up, and TU1's id 13 has no slot at all -- so each TU1 id is
+    // looked up at the running build's own slot and 13 reads as empty there.
     for (uint32_t id = 0; id < 30u; ++id) {
-        out[4 + id] = read32(manager + 0x0Cu + 4u * id);
+        const uint32_t slot = refii::guest::ScreenManagerSlot(id);
+        out[4 + id] = slot != 0u ? read32(manager + slot) : 0u;
     }
 
     // The shared slot. Screens not in `sub_823DCDA0`'s dedicated list take turns in this one,
     // so a presentation found here belongs to whichever ID currently owns it.
-    out[34] = read32(manager + 0x98u);
-    out[35] = read32(manager + 0x9Cu);
+    out[34] = refii::guest::ScreenIdToTu1(read32(manager + refii::guest::ScreenManagerField(0x98u)));
+    out[35] = read32(manager + refii::guest::ScreenManagerField(0x9Cu));
     return 1;
 }
 
@@ -15057,7 +15078,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
 
     uint32_t presentation = requested_presentation;
     if (presentation == 0u) {
-        const uint32_t gui = GuestWordAt(base, 0x83496B08u);
+        const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
         if (!plausible(gui)) {
             return 0;
         }
@@ -15176,7 +15197,7 @@ static uint32_t resolve_camera_manager(const uint8_t* base) {
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t mode = u32(0x83496AB8u);
+    const uint32_t mode = u32(refii::guest::Address(0x83496AB8u));
     if (!plausible(mode)) {
         return 0;
     }
@@ -15246,7 +15267,7 @@ static bool resolve_camera_pair(const uint8_t* base, uint32_t* out_prev, uint32_
         return pointer >= 0x10000u && pointer < 0xC0000000u;
     };
 
-    const uint32_t mode = u32(0x83496AB8u);
+    const uint32_t mode = u32(refii::guest::Address(0x83496AB8u));
     if (!plausible(mode)) {
         return false;
     }
@@ -15419,7 +15440,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
         }
     }
 
-    constexpr uint32_t kCamera = 0x8331A230u;
+    const uint32_t kCamera = refii::guest::Address(0x8331A230u);
 
     // Five unsynchronised stores with no barrier and no sequence counter, and the
     // "cached" memo is published BEFORE the payload (0x82211600, ahead of the vectors at
@@ -15629,7 +15650,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeroSaveName(char* out, uint32_t 
     uint8_t* base = memory->virtual_membase();
     if (base == nullptr) return 0;
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-    const uint32_t root = GuestWordAt(base, 0x83496AB8u);
+    const uint32_t root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     const uint32_t game = plausible(root) ? GuestWordAt(base, root + 12u) : 0u;
     const uint32_t saves = plausible(game) ? GuestWordAt(base, game + 148u) : 0u;
     if (!plausible(saves)) return 0;
@@ -15654,7 +15675,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeroSave(float* out_values, uint3
         if (out_values != nullptr && slot < value_count) out_values[slot] = value;
     };
 
-    const uint32_t root = GuestWordAt(base, 0x83496AB8u);
+    const uint32_t root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     const uint32_t game = plausible(root) ? GuestWordAt(base, root + 12u) : 0u;
     const uint32_t saves = plausible(game) ? GuestWordAt(base, game + 148u) : 0u;
     if (!plausible(saves)) return 0;
@@ -15776,7 +15797,7 @@ namespace {
 
 uint32_t PlayerPadForKey(const uint8_t* base, uint32_t wanted) {
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-    const uint32_t game_root = GuestWordAt(base, 0x83496AB8u);
+    const uint32_t game_root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     if (!plausible(game_root)) return 0xFFFFFFFFu;
     const uint32_t game = GuestWordAt(base, game_root + 12u);
     if (!plausible(game)) return 0xFFFFFFFFu;
@@ -15814,7 +15835,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopSession(uint32_t* out_words, uint
     if (base == nullptr) return 0;
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t manager = GuestWordAt(base, 0x83497490u);
+    const uint32_t manager = GuestWordAt(base, refii::guest::Address(0x83497490u));
     if (plausible(manager)) {
         out_words[0] = 1u;
         out_words[1] = GuestByteAt(base, manager + 52u);
@@ -15826,7 +15847,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopSession(uint32_t* out_words, uint
     }
     out_words[7] = PlayerEntityForKey(base, 1u);
     out_words[8] = PlayerEntityForKey(base, 2u);
-    const uint32_t root = GuestWordAt(base, 0x83496AB8u);
+    const uint32_t root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
     const uint32_t game = plausible(root) ? GuestWordAt(base, root + 12u) : 0u;
     out_words[9] = plausible(game) && plausible(GuestWordAt(base, game + 140u)) ? 1u : 0u;
     if (written == kLocalWords) {
@@ -15874,19 +15895,19 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopMannequin(uint32_t* out_entity, u
         return 0u;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return refuse(1, gui);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return refuse(1, gui);
     const uint32_t manager = read32(gui + 56u);
     const uint32_t owner = read32(gui + 28u);
     if (!plausible(manager) || !plausible(owner)) return refuse(2, manager);
-    if (read32(manager + 4u) != 24u) return refuse(3, read32(manager + 4u));
+    if (refii::guest::ScreenIdToTu1(read32(manager + 4u)) != 24u) return refuse(3, read32(manager + 4u));
 
     const uint32_t end_node = read32(owner + 72u);
     if (!plausible(end_node)) return refuse(4, end_node);
     uint32_t node = read32(end_node + 4u);
     uint32_t handler = 0;
     for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
-        const uint32_t key = read32(node + 12u);
+        const uint32_t key = refii::guest::ScreenIdToTu1(read32(node + 12u));
         if (key == 24u) { handler = read32(node + 16u); break; }
         node = read32(node + (24u < key ? 0u : 8u));
     }
@@ -15924,14 +15945,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_h
         return value;
     };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
 
     const uint32_t manager = read32(gui + 56u);
     const uint32_t owner = read32(gui + 28u);
     if (!plausible(manager) || !plausible(owner)) return 0;
 
-    const uint32_t screen_id = read32(manager + 4u);
+    const uint32_t screen_id = refii::guest::ScreenIdToTu1(read32(manager + 4u));
     uint32_t preview_offset = 0;
     switch (screen_id) {
         case 8u: preview_offset = 96u; break;
@@ -15948,7 +15969,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_h
     uint32_t node = read32(end_node + 4u);  // the header's parent is the root
     uint32_t handler = 0;
     for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
-        const uint32_t key = read32(node + 12u);
+        const uint32_t key = refii::guest::ScreenIdToTu1(read32(node + 12u));
         if (key == screen_id) {
             handler = read32(node + 16u);
             break;
@@ -16031,14 +16052,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
                                                         uint32_t max_icons) {
     constexpr uint32_t kWords = 8u;
     constexpr uint32_t kValues = 6u;
-    constexpr uint32_t kSpriteVtable = 0x820028C4u;
+    const uint32_t kSpriteVtable = refii::guest::Address(0x820028C4u);
     // The POOLED class (types 31-35/52-54, drawn on the 16 `WorldIconN` HUD elements): its
     // update projects `+112` (cached world anchor) plus `+144` (the lift putting the element's
     // bottom on the anchor) and writes the element's position. Published as a world point so
     // Godot projects it through ITS camera. Valid once the first update has run (`+160`
     // cleared); `+128` = pool slot record.
-    constexpr uint32_t kPooledVtable = 0x820DD0E0u;
-    constexpr uint32_t kPoolBase = 0x8349BC80u;
+    const uint32_t kPooledVtable = refii::guest::Address(0x820DD0E0u);
+    const uint32_t kPoolBase = refii::guest::Address(0x8349BC80u);
 
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) return 0;
@@ -16056,8 +16077,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
     // PHYSICAL heaps, above 0xC0000000, so the usual pointer ceiling does not apply.
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
     const uint32_t hud = read32(gui + 32u);
     if (!plausible(hud)) return 0;
     const uint32_t wim = read32(hud + 28u);
@@ -16183,8 +16204,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
-    const uint32_t gui = read32(0x83496B08u);
-    if (!plausible(gui) || read32(gui) != 0x82001610u) return 0;
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
 
     const uint32_t hud = read32(gui + 32u);
     if (!plausible(hud)) return 0;
@@ -16196,7 +16217,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
 
     // ShowIncomeIcon, off the hero's money component: the pause-tab predicate's hero chain,
     // then component id 81 (`CECMoney`) via the sorted {id, ptr} pairs at entity+0x48..+0x4C.
-    const uint32_t game_root = read32(0x83496AB8u);
+    const uint32_t game_root = read32(refii::guest::Address(0x83496AB8u));
     const uint32_t game = plausible(game_root) ? read32(game_root + 12u) : 0u;
     const uint32_t session = plausible(game) ? read32(game + 0x8Cu) : 0u;
     const uint32_t player_map = plausible(game) ? read32(game + 0x9Cu) : 0u;
@@ -16240,15 +16261,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
     // rather than a pool slot and are counted in bits 16..18.
     //
     // Packed into the existing flags word: a new out parameter would be an ABI break.
-    constexpr uint32_t kIconPool = 0x8349BC80u;
-    constexpr uint32_t kIconPoolEnd = 0x8349C080u;
+    const uint32_t kIconPool = refii::guest::Address(0x8349BC80u);
+    const uint32_t kIconPoolEnd = refii::guest::Address(0x8349C080u);
     uint32_t lit = 0;
     for (uint32_t slot = kIconPool; slot < kIconPoolEnd; slot += 64u) {
         if (base[slot + 48u] != 0u) ++lit;
     }
     flags |= (lit & 0xFFu) << 8;
 
-    constexpr uint32_t kIconSingles[3] = {0x8349C080u, 0x8349C0C0u, 0x8349C100u};
+    const uint32_t kIconSingles[3] = {refii::guest::Address(0x8349C080u), refii::guest::Address(0x8349C0C0u), refii::guest::Address(0x8349C100u)};
     for (uint32_t i = 0; i < 3u; ++i) {
         if (base[kIconSingles[i] + 48u] != 0u) flags |= 1u << (16u + i);
     }

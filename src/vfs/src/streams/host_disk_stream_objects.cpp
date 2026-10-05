@@ -1,10 +1,11 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 inline namespace detail {
 
 namespace {
-constexpr uint32_t kCreateEvent = 0x82CC2CE0u;
+constexpr refii::guest::Addr kCreateEvent{0x82CC2CE0u};
 // `0x822C9388` is PulseEvent, not SetEvent (no SetEvent symbol exists in the image). The guest
 // signals request completion with PulseEvent too (`sub_82B5BC20`), but PulseEvent releases only
 // threads already blocked, and the guest's waiter `sub_82B5BFF8` waits before it checks
@@ -16,8 +17,8 @@ constexpr uint32_t kCreateEvent = 0x82CC2CE0u;
 //
 // Synchronous reads can therefore pulse before anyone waits; safe only because
 // `TryHandleRefiiReadRequestWait` intercepts that waiter for our requests and never blocks.
-constexpr uint32_t kPulseEvent = 0x822C9388u;
-constexpr uint32_t kCloseHandle = 0x82CC27B0u;
+constexpr refii::guest::Addr kPulseEvent{0x822C9388u};
+constexpr refii::guest::Addr kCloseHandle{0x82CC27B0u};
 
 uint32_t CreateReadRequestEvent(PPCContext& source_ctx, uint8_t* base) {
   PPCFunc* function = FindGuestFunction(kCreateEvent);

@@ -35,40 +35,41 @@
 #include <rex/ppc/func.h>
 
 #include "core/guest_state.h"
+#include "core/guest_build.h"
 
-extern "C" REX_FUNC(__imp__sub_82389AF8);
-extern "C" REX_FUNC(__imp__sub_82371860);
-extern "C" REX_FUNC(__imp__sub_8232B518);
-extern "C" REX_FUNC(__imp__sub_8232E398);
-extern "C" REX_FUNC(__imp__sub_82334E60);
-extern "C" REX_FUNC(__imp__sub_822EEA50);
-extern "C" REX_FUNC(__imp__sub_8232CBA8);
-extern "C" REX_FUNC(__imp__sub_82438818);
-extern "C" REX_FUNC(__imp__sub_8233C508);
-extern "C" REX_FUNC(__imp__sub_82437BF0);
-extern "C" REX_FUNC(__imp__sub_8222CED0);
+extern "C" REX_FUNC(__imp__rex_lhPlayer_ScalarDeletingDtor);
+extern "C" REX_FUNC(__imp__rex_lhGui_RegisterPlayer);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_ProcessInboundSessionPacket);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_ProcessInboundGamePacket);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_AcceptJoinAsClient);
+extern "C" REX_FUNC(__imp__rex_lhXboxLive_ProcessJoinResponse);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_DisplayCoopScreen);
+extern "C" REX_FUNC(__imp__rex_lhCoopScreen_SpawnPreviewMannequin);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_GetHenchmanCreatureName);
+extern "C" REX_FUNC(__imp__rex_lhCoopScreen_GetMannequinDefName);
+extern "C" REX_FUNC(__imp__rex_lhCharString_CtorFromCStr);
 
 /// The bit itself lives with the pump, in refii_vfs — see `guest_tick_pump.cpp`. It is set from
 /// the host through the front-end action `CoopHeroBody:`, and the hooks already link that way
 /// round (`core/guest_state.h` below). 0 henchman, 1 their own hero.
 extern "C" int RefiiCoopGetOwnHero(void);
 
-extern "C" REX_FUNC(__imp__sub_82365258);
-extern "C" REX_FUNC(__imp__sub_8233D090);
+extern "C" REX_FUNC(__imp__rex_lhEntityManager_ChangeEntityType);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_SetupHenchman);
 extern "C" void RefiiCoopRedress(void* ctx, uint8_t* base);
 extern "C" const char* RefiiCoopMeleeName(void);
 extern "C" const char* RefiiCoopRangedName(void);
-extern "C" REX_FUNC(__imp__sub_8233C640);
-extern "C" REX_FUNC(__imp__sub_8233C778);
-extern "C" REX_FUNC(__imp__sub_82315AD0);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_GetHenchmanMeleeWeaponName);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_GetHenchmanRangedWeaponName);
+extern "C" REX_FUNC(__imp__rex_lhCoop_ArmHenchmanWeapons);
 
 // 0x82371948, which refii_config.toml misnames `rex_lhScene_UpdateHeightfield` — the body
 // unpublishes a Player. That config line is the name's only reference in the tree.
 extern "C" REX_FUNC(__imp__rex_lhScene_UpdateHeightfield);
 
 namespace {
-constexpr uint32_t kAppPointer = 0x83496B08u;
-constexpr uint32_t kGameRoot = 0x83496AB8u;
+constexpr refii::guest::Addr kAppPointer{0x83496B08u};
+constexpr refii::guest::Addr kGameRoot{0x83496AB8u};
 
 constexpr uint32_t kFirstHandler = 20u;
 constexpr uint32_t kSecondHandler = 24u;
@@ -82,7 +83,7 @@ constexpr bool Plausible(uint32_t address) {
 /// COPY of it, and a title-joined client had that copy EMPTY in game; the global is the truth.
 uint32_t CoopManager(uint8_t* base) {
   using refii::vfs::LoadGuestU32;
-  const uint32_t manager = LoadGuestU32(base, 0x83497490u);
+  const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83497490u));
   if (Plausible(manager)) return manager;
   const uint32_t root = LoadGuestU32(base, kGameRoot);
   const uint32_t game = Plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
@@ -124,7 +125,7 @@ void ReportJoinState(uint8_t* base, const char* where) {
 //
 // One line per DISTINCT id, not per arrival: the question is which ids ever come through, and
 // the simulation mirrors (entity, AI, economy) would otherwise bury the answer.
-REX_EXTERN(sub_8232E398) {
+REX_EXTERN(rex_lhNetManager_ProcessInboundGamePacket) {
   using refii::vfs::LoadGuestU8;
 
   const uint32_t message = ctx.r4.u32;
@@ -138,11 +139,11 @@ REX_EXTERN(sub_8232E398) {
     }
   }
 
-  __imp__sub_8232E398(ctx, base);
+  __imp__rex_lhNetManager_ProcessInboundGamePacket(ctx, base);
 }
 
 // ProcessInboundSessionPacket — a3 (r5) is the packet; its 16-bit id is the switch key.
-REX_EXTERN(sub_8232B518) {
+REX_EXTERN(rex_lhNetManager_ProcessInboundSessionPacket) {
   using refii::vfs::LoadGuestU8;
 
   const uint32_t packet = ctx.r5.u32;
@@ -152,35 +153,35 @@ REX_EXTERN(sub_8232B518) {
     REXLOG_INFO("coop JOIN: inbound session packet id=0x{:X}", id);
   }
 
-  __imp__sub_8232B518(ctx, base);
+  __imp__rex_lhNetManager_ProcessInboundSessionPacket(ctx, base);
 }
 
 // Packet 0x118's handler — sets CM+52 = 1, CM+54 = 1 (0x82334ED8 / 0x82334EDC).
-REX_EXTERN(sub_82334E60) {
-  __imp__sub_82334E60(ctx, base);
+REX_EXTERN(rex_lhNetManager_AcceptJoinAsClient) {
+  __imp__rex_lhNetManager_AcceptJoinAsClient(ctx, base);
   ReportJoinState(base, "packet 0x118 handled");
 }
 
 // XboxLive_ProcessJoinResponse — on APPROVED sets CXboxLive+1328 and CM+218 (0x822EF1D8/DC).
-REX_EXTERN(sub_822EEA50) {
+REX_EXTERN(rex_lhXboxLive_ProcessJoinResponse) {
   REXLOG_INFO("coop JOIN: ProcessJoinResponse entered");
-  __imp__sub_822EEA50(ctx, base);
+  __imp__rex_lhXboxLive_ProcessJoinResponse(ctx, base);
   ReportJoinState(base, "join response processed");
 }
 
 // Multiplayer.DisplayCoopScreen — the only thing that opens screen 24.
-REX_EXTERN(sub_8232CBA8) {
+REX_EXTERN(rex_lhNetManager_DisplayCoopScreen) {
   ReportJoinState(base, "DisplayCoopScreen entered");
-  __imp__sub_8232CBA8(ctx, base);
+  __imp__rex_lhNetManager_DisplayCoopScreen(ctx, base);
 }
 
 // The henchman mannequin spawn. `screen+276` is the raw entity (0x824388CC) and `screen+284`
 // the preview ticket (0x824389B4); both zero means the preview was never built.
-REX_EXTERN(sub_82438818) {
+REX_EXTERN(rex_lhCoopScreen_SpawnPreviewMannequin) {
   using refii::vfs::LoadGuestU32;
 
   const uint32_t screen = ctx.r3.u32;
-  __imp__sub_82438818(ctx, base);
+  __imp__rex_lhCoopScreen_SpawnPreviewMannequin(ctx, base);
 
   if (Plausible(screen)) {
     REXLOG_INFO("coop MANNEQUIN: sub_82438818 ran — screen+276(entity)=0x{:08X} ticket=0x{:08X}",
@@ -189,12 +190,12 @@ REX_EXTERN(sub_82438818) {
 }
 
 // sub_82371860 — publish a Player into the App's handlers.
-REX_EXTERN(sub_82371860) {
+REX_EXTERN(rex_lhGui_RegisterPlayer) {
   using refii::vfs::LoadGuestU32;
 
   const uint32_t player = ctx.r4.u32;
   const uint32_t player_id = Plausible(player) ? LoadGuestU32(base, player + 36u) : 0u;
-  __imp__sub_82371860(ctx, base);
+  __imp__rex_lhGui_RegisterPlayer(ctx, base);
 
   const uint32_t app = LoadGuestU32(base, kAppPointer);
   if (Plausible(app)) {
@@ -207,7 +208,7 @@ REX_EXTERN(sub_82371860) {
 }
 
 // Player::~Player — vtable off_820A9984 slot 0, through the shared_ptr deleter.
-REX_EXTERN(sub_82389AF8) {
+REX_EXTERN(rex_lhPlayer_ScalarDeletingDtor) {
   using refii::vfs::LoadGuestU32;
 
   const uint32_t player = ctx.r3.u32;
@@ -221,11 +222,11 @@ REX_EXTERN(sub_82389AF8) {
     PPCContext unpublish = ctx;
     unpublish.r3.u32 = app;
     unpublish.r4.u32 = player;
-    unpublish.lr = 0x82389B18u;
+    unpublish.lr = refii::guest::Address(0x82389B18u);
     __imp__rex_lhScene_UpdateHeightfield(unpublish, base);
   }
 
-  __imp__sub_82389AF8(ctx, base);
+  __imp__rex_lhPlayer_ScalarDeletingDtor(ctx, base);
 }
 
 // --- Player two in their own hero's body --------------------------------
@@ -246,9 +247,9 @@ REX_EXTERN(sub_82389AF8) {
 // re-skins and previews the hero for us, on both machines, with no race to lose.
 //
 // The index mapping is the pickbox's own: 0-2 female, 3-5 male, 6 male child, 7 female child.
-REX_EXTERN(sub_8233C508) {
+REX_EXTERN(rex_lhNetManager_GetHenchmanCreatureName) {
   if (RefiiCoopGetOwnHero() == 0) {
-    __imp__sub_8233C508(ctx, base);
+    __imp__rex_lhNetManager_GetHenchmanCreatureName(ctx, base);
     return;
   }
 
@@ -279,7 +280,7 @@ REX_EXTERN(sub_8233C508) {
   work.r1.u32 = frame;
   work.r4.u32 = text;
   work.r5.u32 = 0xFFFFFFFFu;
-  __imp__sub_8222CED0(work, base);
+  __imp__rex_lhCharString_CtorFromCStr(work, base);
 
   static std::atomic<bool> said{false};
   if (!said.exchange(true, std::memory_order_relaxed)) {
@@ -296,10 +297,10 @@ REX_EXTERN(sub_8233C508) {
 // mannequin), so while player two stands in their own hero the preview answers those, and the
 // guest's own `sub_82438818` spawns the hero on the right page. The pump dresses it and asks for
 // a respawn when the bit flips.
-REX_EXTERN(sub_82437BF0) {
+REX_EXTERN(rex_lhCoopScreen_GetMannequinDefName) {
   const uint32_t index = ctx.r5.u32;
   if (RefiiCoopGetOwnHero() == 0 || index >= 6u) {
-    __imp__sub_82437BF0(ctx, base);
+    __imp__rex_lhCoopScreen_GetMannequinDefName(ctx, base);
     return;
   }
 
@@ -317,7 +318,7 @@ REX_EXTERN(sub_82437BF0) {
   work.r1.u32 = frame;
   work.r4.u32 = text;
   work.r5.u32 = 0xFFFFFFFFu;
-  __imp__sub_8222CED0(work, base);
+  __imp__rex_lhCharString_CtorFromCStr(work, base);
 
   static std::atomic<bool> said{false};
   if (!said.exchange(true, std::memory_order_relaxed)) {
@@ -338,13 +339,13 @@ REX_EXTERN(sub_82437BF0) {
 // So the pump's redress runs after BOTH — `sub_8233D090` is the one entry every body build goes
 // through, create or retype, and `sub_82365258` also covers the direct nudge `sub_82389FB8`.
 // The redress itself dresses once per entity and outfit; see CoopRedress in the pump.
-REX_EXTERN(sub_8233D090) {
-  __imp__sub_8233D090(ctx, base);
+REX_EXTERN(rex_lhNetManager_SetupHenchman) {
+  __imp__rex_lhNetManager_SetupHenchman(ctx, base);
   RefiiCoopRedress(&ctx, base);
 }
 
-REX_EXTERN(sub_82365258) {
-  __imp__sub_82365258(ctx, base);
+REX_EXTERN(rex_lhEntityManager_ChangeEntityType) {
+  __imp__rex_lhEntityManager_ChangeEntityType(ctx, base);
   RefiiCoopRedress(&ctx, base);
 }
 
@@ -375,25 +376,25 @@ void AnswerWeaponName(PPCContext& ctx, uint8_t* base, const char* name) {
   work.r1.u32 = frame;
   work.r4.u32 = text;
   work.r5.u32 = 0xFFFFFFFFu;
-  __imp__sub_8222CED0(work, base);
+  __imp__rex_lhCharString_CtorFromCStr(work, base);
 }
 }  // namespace
 
 
-REX_EXTERN(sub_8233C640) {
+REX_EXTERN(rex_lhNetManager_GetHenchmanMeleeWeaponName) {
   const char* name = RefiiCoopGetOwnHero() != 0 ? RefiiCoopMeleeName() : "";
   if (name == nullptr || name[0] == '\0') {
-    __imp__sub_8233C640(ctx, base);
+    __imp__rex_lhNetManager_GetHenchmanMeleeWeaponName(ctx, base);
     return;
   }
 
   AnswerWeaponName(ctx, base, name);
 }
 
-REX_EXTERN(sub_8233C778) {
+REX_EXTERN(rex_lhNetManager_GetHenchmanRangedWeaponName) {
   const char* name = RefiiCoopGetOwnHero() != 0 ? RefiiCoopRangedName() : "";
   if (name == nullptr || name[0] == '\0') {
-    __imp__sub_8233C778(ctx, base);
+    __imp__rex_lhNetManager_GetHenchmanRangedWeaponName(ctx, base);
     return;
   }
 
@@ -406,7 +407,7 @@ REX_EXTERN(sub_8233C778) {
 // `sub_8232E398`, `sub_824AAF10`. A hero body is armed by RECORD (the pump's EquipRecord and
 // CoopAttachHeld), and a record with no def name cannot be answered by the tables, so for a
 // hero body the routine is a no-op.
-REX_EXTERN(sub_82315AD0) {
+REX_EXTERN(rex_lhCoop_ArmHenchmanWeapons) {
   if (RefiiCoopGetOwnHero() != 0) {
     static bool said = false;
     if (!said) {
@@ -418,5 +419,5 @@ REX_EXTERN(sub_82315AD0) {
     return;
   }
 
-  __imp__sub_82315AD0(ctx, base);
+  __imp__rex_lhCoop_ArmHenchmanWeapons(ctx, base);
 }

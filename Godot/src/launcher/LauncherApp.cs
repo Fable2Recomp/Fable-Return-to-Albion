@@ -1840,7 +1840,9 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		_installStatus = "Installing title update...";
+		_installStatus = xexpPath.Length == 0
+			? "Finishing the game install..."
+			: "Installing title update...";
 		RefreshState();
 
 		if (!Installer.InstallTitleUpdate(

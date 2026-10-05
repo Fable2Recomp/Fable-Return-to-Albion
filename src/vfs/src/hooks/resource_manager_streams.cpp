@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 namespace {
 
@@ -71,7 +72,7 @@ REX_EXTERN(rex_lhResourceManager_FindAndCreateStream) {
     uint32_t resource_hash = 0;
     if (name.empty() && resource_manager_guest != 0 &&
         refii::vfs::LoadGuestU32(base, resource_manager_guest) ==
-            0x820F9EA4) {
+            refii::guest::Address(0x820F9EA4u)) {
       resource_hash =
           refii::vfs::LoadGuestU32(base, resource_manager_guest + 48);
     }
@@ -169,7 +170,7 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
   }
 
   uint32_t caller_resource_hash = 0;
-  if ((original_ctx.lr == 0x82C68EB0 || original_ctx.lr == 0x82C68DD8) &&
+  if ((original_ctx.lr == refii::guest::Address(0x82C68EB0u) || original_ctx.lr == refii::guest::Address(0x82C68DD8u)) &&
       original_ctx.r1.u32 != 0) {
     caller_resource_hash =
         refii::vfs::LoadGuestU32(base, original_ctx.r1.u32 + 124);
@@ -201,7 +202,7 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
   if (!name.empty()) {
     refii::vfs::RefiiVfsOpenResult open_result;
     const bool bik_object_open_stream =
-        original_ctx.lr == 0x82C6F534u &&
+        original_ctx.lr == refii::guest::Address(0x82C6F534u) &&
         refii::vfs::IsStartupBikAssetName(name);
     const refii::vfs::RefiiVfsOpenShape shape =
         bik_object_open_stream ? refii::vfs::RefiiVfsOpenShape::RawStream

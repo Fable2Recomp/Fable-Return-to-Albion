@@ -50,33 +50,33 @@ void StateAppearance(uint8_t* base, uint32_t component) {
 
 }  // namespace
 
-REX_EXTERN(sub_82573318) {
+REX_EXTERN(rex_CECGraphicAppearance_ReplicateAppearance) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   StateAppearance(base, ctx.r3.u32);
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82573318);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CECGraphicAppearance_ReplicateAppearance);
 }
 
 // sub_82572238(CECGraphicAppearance* r3, archive r4, version r5): both directions; a save
 // restates what the component already holds, which records nothing new.
-REX_EXTERN(sub_82572238) {
+REX_EXTERN(rex_CECGraphicAppearance_Serialize) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   const uint32_t component = ctx.r3.u32;
-  __imp__sub_82572238(ctx, base);
+  __imp__rex_CECGraphicAppearance_Serialize(ctx, base);
   StateAppearance(base, component);
 }
 
-REX_EXTERN(sub_82571DF8) {
+REX_EXTERN(rex_CECGraphicAppearance_Ctor) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   refii::vfs::ForgetAppearance(ctx.r3.u32);
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82571DF8);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CECGraphicAppearance_Ctor);
 }
 
-REX_EXTERN(sub_82571FF0) {
+REX_EXTERN(rex_CECGraphicAppearance_ScalarDtor) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   refii::vfs::ForgetAppearance(ctx.r3.u32);
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82571FF0);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CECGraphicAppearance_ScalarDtor);
 }

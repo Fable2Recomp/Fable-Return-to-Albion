@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 REX_EXTERN(rex_lhStream_DiskStream_GetSize) {
   REX_FUNC_PROLOGUE();
@@ -29,7 +30,7 @@ REX_EXTERN(rex_lhStream_DiskStream_GetSize) {
       "DiskStream_GetSize", base, stream_guest, ctx);
 }
 
-REX_EXTERN(sub_82B72430) {
+REX_EXTERN(rex_lhFontGlyphVector_Resize) {
   REX_FUNC_PROLOGUE();
 
   // Diagnostic capture of the glyph-vector resize the .bft font parse dies in. r4 is the count
@@ -43,7 +44,7 @@ REX_EXTERN(sub_82B72430) {
       const uint32_t count = ctx.r4.u32;
       const uint32_t lr = static_cast<uint32_t>(ctx.lr);
       const uint32_t sp = ctx.r1.u32;
-      constexpr uint32_t kFontParseReturn = 0x82B70E08u;
+      const uint32_t kFontParseReturn = refii::guest::Address(0x82B70E08u);
       if (lr == kFontParseReturn) {
         const uint32_t staged = refii::vfs::LoadGuestU32(base, sp + 0x7Cu);
         const uint32_t rd_consumed = refii::vfs::LoadGuestU32(base, sp + 0xC4u);
@@ -66,10 +67,10 @@ REX_EXTERN(sub_82B72430) {
     }
   }
 
-  __imp__sub_82B72430(ctx, base);
+  __imp__rex_lhFontGlyphVector_Resize(ctx, base);
 }
 
-REX_EXTERN(sub_83032078) {
+REX_EXTERN(rex_lhStream_ReturnENotImpl) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -82,7 +83,7 @@ REX_EXTERN(sub_83032078) {
   }
 
 
-  __imp__sub_83032078(ctx, base);
+  __imp__rex_lhStream_ReturnENotImpl(ctx, base);
 }
 
 namespace {
@@ -175,7 +176,7 @@ bool TryAnswerRefiiStreamResidentBuffer(PPCContext& ctx,
 }
 }  // namespace
 
-REX_EXTERN(sub_83032088) {
+REX_EXTERN(rex_lhStream_ReturnEFail) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -195,10 +196,10 @@ REX_EXTERN(sub_83032088) {
     return;
   }
 
-  __imp__sub_83032088(ctx, base);
+  __imp__rex_lhStream_ReturnEFail(ctx, base);
 }
 
-REX_EXTERN(sub_82C72E60) {
+REX_EXTERN(rex_lhStream_DiskStream_ReadDirect) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -223,7 +224,7 @@ REX_EXTERN(sub_82C72E60) {
     return;
   }
 
-  __imp__sub_82C72E60(ctx, base);
+  __imp__rex_lhStream_DiskStream_ReadDirect(ctx, base);
   refii::vfs::LogLooseStreamRead(
       "DiskStream_DirectRead",
       base,
@@ -234,7 +235,7 @@ REX_EXTERN(sub_82C72E60) {
       ctx);
 }
 
-REX_EXTERN(sub_82C73028) {
+REX_EXTERN(rex_lhStream_DiskStream_GetInnerSize) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -263,7 +264,7 @@ REX_EXTERN(sub_82C73028) {
     return;
   }
 
-  __imp__sub_82C73028(ctx, base);
+  __imp__rex_lhStream_DiskStream_GetInnerSize(ctx, base);
 }
 
 REX_EXTERN(rex_lhStream_DiskStream_Read) {

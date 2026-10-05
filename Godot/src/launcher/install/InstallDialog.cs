@@ -16,6 +16,8 @@ public partial class InstallDialog : Control
 
 	private LineEdit _isoEdit = null!;
 	private LineEdit _xexpEdit = null!;
+	private CheckBox _updateCheck = null!;
+	private Label _xexpLabel = null!;
 	private Label _errorLabel = null!;
 	private Button _startButton = null!;
 	private PanelContainer _frame = null!;
@@ -78,8 +80,8 @@ public partial class InstallDialog : Control
 
 		Label intro = MakeLabel(
 			"Select the " + SupportedGame.Name + " ISO (media ID " +
-			SupportedGame.ShortMediaIdText + ") and its title update: either the " +
-			"default.xexp itself, or the package it came in (" +
+			SupportedGame.ShortMediaIdText + "). To install with the title update, tick the " +
+			"box and select either the default.xexp itself or the package it came in (" +
 			SupportedGame.TitleUpdateName + ", any name). Other pressings are not supported. " +
 			SupportedGame.EasingNote);
 		intro.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -89,7 +91,24 @@ public partial class InstallDialog : Control
 		_isoEdit = AddPathRow(column, () => BrowseForFile(
 			"Select the Fable 2 ISO", new[] { "*.iso ; Disc image" }, _isoEdit));
 
-		column.AddChild(MakeLabel("Title update (.xexp or package)"));
+		// The tick decides which build of the game is installed: with the title update the
+		// patch is copied beside the executable and the TU1 config is used; without it the
+		// disc executable is recompiled as it is, from its own config.
+		_updateCheck = new CheckBox
+		{
+			Text = "Install with the title update (TU1)",
+			ButtonPressed = true,
+		};
+		_updateCheck.AddThemeFontSizeOverride("font_size", _fontSize);
+		_updateCheck.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
+		_updateCheck.AddThemeColorOverride("font_pressed_color", LauncherTokens.Walnut);
+		_updateCheck.AddThemeColorOverride("font_hover_color", LauncherTokens.Walnut);
+		_updateCheck.AddThemeColorOverride("font_hover_pressed_color", LauncherTokens.Walnut);
+		_updateCheck.Toggled += _ => RefreshState();
+		column.AddChild(_updateCheck);
+
+		_xexpLabel = MakeLabel("Title update (.xexp or package)");
+		column.AddChild(_xexpLabel);
 		_xexpEdit = AddPathRow(column, () => BrowseForFile(
 			"Select the title update",
 			new[] { "*.xexp ; Title update patch", "* ; Title update package" }, _xexpEdit));
@@ -273,12 +292,23 @@ public partial class InstallDialog : Control
 	private void OnStartPressed()
 	{
 		string isoPath = _isoEdit.Text;
-		string xexpPath = _xexpEdit.Text;
+		string xexpPath = _updateCheck.ButtonPressed ? _xexpEdit.Text : string.Empty;
 		_dialogError = string.Empty;
 
 		if (!File.Exists(isoPath))
 		{
 			_dialogError = "The selected ISO path does not exist.";
+		}
+		else if (!_updateCheck.ButtonPressed)
+		{
+			if (DiscIsSupported(isoPath, out _, out string unsupported))
+			{
+				InstallRequested?.Invoke(isoPath, string.Empty);
+				QueueFree();
+				return;
+			}
+
+			_dialogError = unsupported;
 		}
 		else if (!File.Exists(xexpPath))
 		{
@@ -309,20 +339,7 @@ public partial class InstallDialog : Control
 	/// </remarks>
 	private static bool TitleUpdateFitsDisc(string isoPath, string updatePath, out string error)
 	{
-		if (!Xiso.XisoExtractor.TryReadRootFileHead(
-				isoPath, "default.xex", 64 * 1024, out byte[] head, out string isoError))
-		{
-			error = "The ISO's game executable could not be read: " + isoError;
-			return false;
-		}
-
-		if (!TitleUpdate.TryReadExecutable(head, out XexIdentity executable, out string xexError))
-		{
-			error = "The ISO's game executable could not be identified: " + xexError;
-			return false;
-		}
-
-		if (!SupportedGame.IsExecutable(executable, out error))
+		if (!DiscIsSupported(isoPath, out XexIdentity executable, out error))
 		{
 			return false;
 		}
@@ -336,9 +353,37 @@ public partial class InstallDialog : Control
 			update.AppliesTo(executable, out error);
 	}
 
+	private static bool DiscIsSupported(string isoPath, out XexIdentity executable, out string error)
+	{
+		executable = new XexIdentity();
+
+		if (!Xiso.XisoExtractor.TryReadRootFileHead(
+				isoPath, "default.xex", 64 * 1024, out byte[] head, out string isoError))
+		{
+			error = "The ISO's game executable could not be read: " + isoError;
+			return false;
+		}
+
+		if (!TitleUpdate.TryReadExecutable(head, out executable, out string xexError))
+		{
+			error = "The ISO's game executable could not be identified: " + xexError;
+			return false;
+		}
+
+		return SupportedGame.IsExecutable(executable, out error);
+	}
+
 	private void RefreshState()
 	{
-		_startButton.Disabled = _isoEdit.Text.Length == 0 || _xexpEdit.Text.Length == 0;
+		bool withUpdate = _updateCheck.ButtonPressed;
+		_xexpLabel.Visible = withUpdate;
+		if (_xexpEdit.GetParent() is Control updateRow)
+		{
+			updateRow.Visible = withUpdate;
+		}
+
+		_startButton.Disabled = _isoEdit.Text.Length == 0 ||
+			(withUpdate && _xexpEdit.Text.Length == 0);
 
 		_errorLabel.Visible = _dialogError.Length != 0;
 		_errorLabel.Text = _dialogError.Length == 0

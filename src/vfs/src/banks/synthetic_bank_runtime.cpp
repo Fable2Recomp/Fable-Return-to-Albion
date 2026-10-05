@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 inline namespace detail {
@@ -359,10 +360,10 @@ bool TryCreateSyntheticBank(PPCContext& ctx,
   // without it, provider-hash registration finds nothing and frontend loading
   // never completes. We replicate the constructor's per-entry name append with
   // the same native helpers instead of hand-laying the string bytes.
-  constexpr uint32_t kBankNameVectorReserve = 0x82C6BC48;
-  constexpr uint32_t kBankNameVectorAppend = 0x82C6C2D8;
-  constexpr uint32_t kStringFromCStr = 0x8217B0A8;
-  constexpr uint32_t kStringDtor = 0x822F22B8;
+  const uint32_t kBankNameVectorReserve = refii::guest::Address(0x82C6BC48u);
+  const uint32_t kBankNameVectorAppend = refii::guest::Address(0x82C6C2D8u);
+  const uint32_t kStringFromCStr = refii::guest::Address(0x8217B0A8u);
+  const uint32_t kStringDtor = refii::guest::Address(0x822F22B8u);
   // One reusable context for the whole table build: the guest helpers restore
   // non-volatile state on return, so only r3/r4/ctr need refreshing per call.
   // Copying the full PPCContext (GPR+FPR+VMX) per call is measurably hot when

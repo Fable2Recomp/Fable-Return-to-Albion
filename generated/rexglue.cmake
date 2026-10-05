@@ -117,7 +117,7 @@ endmacro()
 add_custom_command(
     OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/generated/codegen.build.stamp"
            ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
-    COMMAND $<TARGET_FILE:rex::rexglue> codegen ${CMAKE_CURRENT_SOURCE_DIR}/refii_manifest.toml
+    COMMAND $<TARGET_FILE:rex::rexglue> codegen "${REFII_REXGLUE_MANIFEST}"
     DEPFILE "${CMAKE_CURRENT_SOURCE_DIR}/generated/codegen.d"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Generating recompiled code for refii"

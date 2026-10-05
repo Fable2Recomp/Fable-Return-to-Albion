@@ -19,6 +19,9 @@ set(REFII_VFS_RUNTIME_SOURCES
     # refii_vfs, which BOTH link, and not in the hook set: a copy in each library
     # means the hook writes one global and the bridge reads another.
     ${REFII_VFS_ROOT}/src/core/bink_frame_state.cpp
+    # Which build of the game is running and the addresses that differ between builds. In
+    # refii_vfs so the payload's hooks and the host bridge read ONE answer.
+    ${REFII_VFS_ROOT}/src/core/guest_build.cpp
     # Audio state, shared for the same reason and by three libraries rather than two:
     # the Stage 2 voice hooks (refii_generated), the Stage 1 driver (refii_host) and the
     # host bridge all link refii_vfs, so this is the one place they can agree.
@@ -68,6 +71,8 @@ set(REFII_VFS_HOOK_INTERNAL_SOURCES
     # the C entries in core/rex_payload_bridge.h. PAYLOAD ONLY — see the file header.
     ${REFII_VFS_ROOT}/src/core/rex_bridge_payload.cpp
     ${REFII_VFS_ROOT}/src/core/internal_state_guest.cpp
+    # States the payload's build (TU1 or unpatched) to refii_vfs at load.
+    ${REFII_VFS_ROOT}/src/hooks/guest_build_stamp.cpp
     # Back-off policy for the guest's SwitchToThread spin waits. PAYLOAD-side, with the
     # hook that calls it: the payload must not import a C++ symbol from refii_vfs, which
     # on Windows is MSVC-built and does not resolve against the MinGW-driver payload link.

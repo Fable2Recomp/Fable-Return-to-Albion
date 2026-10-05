@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "hooks/ppc_externs.h"
+#include "core/guest_build.h"
 
 // Each character's texture composites, taken where the guest states them.
 //
@@ -48,26 +49,26 @@ void Begin() {
 
 }  // namespace
 
-REX_EXTERN(sub_8220DE88) {
+REX_EXTERN(rex_lhGraphicAppearanceMorph_ApplyTextureLayers) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   const uint32_t outer = t_entity;
   const bool outer_begun = t_begun;
   t_entity = ctx.r3.u32 >= 12u ? refii::vfs::LoadGuestU32(base, ctx.r3.u32 - 8u) : 0u;
   t_begun = false;
-  __imp__sub_8220DE88(ctx, base);
+  __imp__rex_lhGraphicAppearanceMorph_ApplyTextureLayers(ctx, base);
   t_entity = outer;
   t_begun = outer_begun;
 }
 
-REX_EXTERN(sub_8217FA50) {
+REX_EXTERN(rex_lhGraphicAppearanceMorph_RebuildParts) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   Begin();
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_8217FA50);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGraphicAppearanceMorph_RebuildParts);
 }
 
-REX_EXTERN(sub_82A48B90) {
+REX_EXTERN(rex_lhMorphDescriptor_Ctor) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   const uint32_t list = ctx.r5.u32;
@@ -85,7 +86,7 @@ REX_EXTERN(sub_82A48B90) {
       refii::vfs::NotePartMorph(t_entity, refii::vfs::LoadGuestU32(base, begin), pairs, count);
     }
   }
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A48B90);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhMorphDescriptor_Ctor);
 }
 
 // OVERLAYS. Scars (`sub_825B8420`, 0x8220f938) and blend-mode-0 morphs (0x8220f988) are sent as
@@ -94,10 +95,10 @@ REX_EXTERN(sub_82A48B90) {
 // spec, bump, morph texture} (`sub_825B39C8`, `sub_825BA570`). The guest draws the mesh again
 // per entry with that material, blended, wherever the base material's diffuse is the original.
 // A scar fills diffuse and bump; a morph fills only the last word.
-REX_EXTERN(sub_8222AAC8) {
+REX_EXTERN(rex_lhRenderCommandStream_PostModelCommand) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
-  constexpr uint32_t kOverlayVtable = 0x820C57A4u;
+  const uint32_t kOverlayVtable = refii::guest::Address(0x820C57A4u);
   constexpr uint32_t kEntryBytes = 20u;
   const uint32_t command = ctx.r4.u32;
   if (t_entity != 0u && command != 0u &&
@@ -127,10 +128,10 @@ REX_EXTERN(sub_8222AAC8) {
       refii::vfs::NoteTextureLayers(t_entity, original, 1u, words, count);
     }
   }
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_8222AAC8);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderCommandStream_PostModelCommand);
 }
 
-REX_EXTERN(sub_825B38B0) {
+REX_EXTERN(rex_lhSetTextureLayersCommand_Ctor) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
   if (t_entity != 0u && ctx.r5.u32 != 0u && ctx.r6.u32 != 0u) {
@@ -157,5 +158,5 @@ REX_EXTERN(sub_825B38B0) {
       refii::vfs::NoteTextureLayers(t_entity, original, 0u, words, count);
     }
   }
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_825B38B0);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhSetTextureLayersCommand_Ctor);
 }

@@ -13,11 +13,11 @@
 
 // The attribute stagers. `r3` is dead on both: each resolves the "Parameters" element from
 // `dword_8349AF78` and overwrites r3 before use (`lwz r3, 0x38(r11)` at 0x826B9534 / 0x826B9468).
-PPC_EXTERN_FUNC(__imp__sub_826B9510);
-PPC_EXTERN_FUNC(__imp__sub_826B9440);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiPresentation_SetStringParam);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiPresentation_SetFloatParam);
 
 /// String stager — `r4` attribute name, `r5` value, `r6` presentation (0 = current).
-REX_EXTERN(sub_826B9510) {
+REX_EXTERN(rex_lhGuiPresentation_SetStringParam) {
     REX_FUNC_PROLOGUE();
 
     refii::vfs::StageMenuAttribute(
@@ -26,12 +26,12 @@ REX_EXTERN(sub_826B9510) {
         0.0f,
         /*is_number=*/false);
 
-    __imp__sub_826B9510(ctx, base);
+    __imp__rex_lhGuiPresentation_SetStringParam(ctx, base);
 }
 
 /// Float stager — `r4` attribute name, `f1` value (a double in the register, stored narrowed),
 /// `r6` presentation.
-REX_EXTERN(sub_826B9440) {
+REX_EXTERN(rex_lhGuiPresentation_SetFloatParam) {
     REX_FUNC_PROLOGUE();
 
     refii::vfs::StageMenuAttribute(
@@ -40,7 +40,7 @@ REX_EXTERN(sub_826B9440) {
         static_cast<float>(ctx.f1.f64),
         /*is_number=*/true);
 
-    __imp__sub_826B9440(ctx, base);
+    __imp__rex_lhGuiPresentation_SetFloatParam(ctx, base);
 }
 
 // The chunk runner `sub_82426470` is hooked in resource_manager_open.cpp, before that hook's

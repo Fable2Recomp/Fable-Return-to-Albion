@@ -7,6 +7,7 @@
 #endif
 #include <array>
 #include <cstddef>
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 inline namespace detail {
@@ -530,7 +531,7 @@ uint64_t LoadGuestU64(uint8_t* base, uint32_t guest_address) {
 
 void StoreGuestU8(uint8_t* base, uint32_t guest_address, uint8_t value) {
   if (base != nullptr && value != 0u) {
-    const uint32_t root = LoadGuestU32(base, 0x83496B0Cu);
+    const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496B0Cu));
     if (LooksLikeGuestPointer(root)) {
       const uint32_t state = LoadGuestU32(base, root + 8u);
       const uint32_t owner = LooksLikeGuestPointer(state)

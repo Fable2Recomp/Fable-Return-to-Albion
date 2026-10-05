@@ -7,6 +7,7 @@
 
 #include "core/guest_state.h"
 #include "hooks/ppc_externs.h"
+#include "core/guest_build.h"
 
 // Raise Dead's creation effect is never killed by the guest and cannot end itself. This is a
 // Fable 2 defect; the lifetime below is host policy, since the guest states no kill.
@@ -190,7 +191,7 @@ void SweepOrphanSpellFx(PPCContext& ctx, uint8_t* base) {
   // Outside the lock: both calls re-enter the guest, and `sub_825F82B8` destroys an entity.
   for (size_t i = 0; i < due_count; ++i) {
     if (due[i].destroy) {
-      CallGuest(ctx, base, 0x825F82B8u, due[i].entity, 0u);
+      CallGuest(ctx, base, refii::guest::Address(0x825F82B8u), due[i].entity, 0u);
       continue;
     }
 
@@ -198,14 +199,14 @@ void SweepOrphanSpellFx(PPCContext& ctx, uint8_t* base) {
     // below still runs and `sub_825F82B8` kills whatever is there outright.
     if (due[i].instance != 0u) {
       const auto frames = static_cast<uint32_t>(FadeSeconds() * kAuthoredFramesPerSecond + 0.5f);
-      CallGuest(ctx, base, 0x83232048u, due[i].instance, frames != 0u ? frames : 1u);
+      CallGuest(ctx, base, refii::guest::Address(0x83232048u), due[i].instance, frames != 0u ? frames : 1u);
     }
   }
 }
 
 }  // namespace refii::vfs
 
-REX_EXTERN(sub_825F81E0) {
+REX_EXTERN(rex_lhFx_SpawnFromDefProperty) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
 
@@ -214,7 +215,7 @@ REX_EXTERN(sub_825F81E0) {
 
   t_capturing = watched;
   t_captured_instance = 0u;
-  __imp__sub_825F81E0(ctx, base);
+  __imp__rex_lhFx_SpawnFromDefProperty(ctx, base);
   const uint32_t instance = t_captured_instance;
   t_capturing = false;
   t_captured_instance = 0u;

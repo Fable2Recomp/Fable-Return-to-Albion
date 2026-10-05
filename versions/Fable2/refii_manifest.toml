@@ -1,0 +1,45 @@
+[project]
+sdk_version = "0.10.0"
+name = "refii"
+
+[entrypoint]
+file_path = "../../assets/game/default.xex"
+out_directory_path = "../../generated"
+includes = [
+  "refii_config.toml",
+]
+
+longjmp_address = 0x82CA9260
+setjmp_address = 0x83000200
+ CreateFileA        = 0x82CBCC00
+ ReadFile           = 0x82CBCDF8
+ WriteFile          = 0x82CC0760
+ SetFilePointer     = 0x82CC0FC0
+ GetFileSize        = 0x82CBD6F8
+ GetFileSizeEx      = 0x82CC1460
+ SetEndOfFile       = 0x82CC14D0
+ FlushFileBuffers   = 0x82CC1130
+ DeleteFileA        = 0x82CC0E68
+ CloseHandle        = 0x82CBBF60
+ FindFirstFileA     = 0x82CC0C10
+ FindNextFileA      = 0x82CC0BB8
+ CreateDirectoryA   = 0x82CC0DD8
+ MoveFileA          = 0x83004F70
+ RtlAllocateHeap    = 0x82238790
+ RtlFreeHeap        = 0x82239468
+ RtlSizeHeap        = 0x822397E0
+ RtlReAllocateHeap  = 0x82CBFC80
+ memcpy             = 0x82CA2C60
+ memmove            = 0x82CAA2E0
+ memset             = 0x82CA3190
+ memchr             = 0x82CA5E30
+ memcpy_s           = 0x82CA3730
+ memmove_s          = 0x82CA3808
+ strncmp            = 0x82CA3920
+ strncpy            = 0x822CD828
+ strchr             = 0x82CA3980
+ strrchr            = 0x82CA70C0
+ _stricmp           = 0x82CA6320
+ strcpy_s           = 0x82170CC8
+ lstrcmpiA          = 0x83005040
+

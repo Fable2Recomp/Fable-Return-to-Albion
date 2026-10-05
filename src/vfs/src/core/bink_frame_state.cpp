@@ -9,6 +9,7 @@
 #include <rex/logging.h>
 
 #include "core/payload_bridge.h"
+#include "core/guest_build.h"
 
 // Where the guest's Bink frame buffers live.
 //
@@ -183,8 +184,8 @@ uint32_t RequestedBinkVideoName(char* out, uint32_t capacity) {
 namespace {
 
 constexpr uint32_t kBinkSoundTrackFlag = 0x4000u;
-constexpr uint32_t kBinkTrackCount = 0x834FC4B8u;
-constexpr uint32_t kBinkTrackIds = 0x834FC4C0u;
+constexpr refii::guest::Addr kBinkTrackCount{0x834FC4B8u};
+constexpr refii::guest::Addr kBinkTrackIds{0x834FC4C0u};
 constexpr uint32_t kMaxStatedTracks = 8u;
 
 struct StatedBinkSound {

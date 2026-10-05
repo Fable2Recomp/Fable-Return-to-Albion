@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 inline namespace detail {
@@ -16,7 +17,7 @@ std::string FormatPostVideoFrameTeardownState(uint8_t* base,
 }
 
 bool IsParserBoundaryTextureWrapperCaller(uint32_t lr) {
-  return lr == 0x82B6D690 || lr == 0x82B6C374 || lr == 0x82B6C390;
+  return lr == refii::guest::Address(0x82B6D690u) || lr == refii::guest::Address(0x82B6C374u) || lr == refii::guest::Address(0x82B6C390u);
 }
 }  // namespace detail
 }  // namespace refii::vfs

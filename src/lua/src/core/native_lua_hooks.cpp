@@ -7,8 +7,8 @@
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 
-PPC_EXTERN_FUNC(__imp__sub_82451E40);
-PPC_EXTERN_FUNC(__imp__sub_82451F18);
+PPC_EXTERN_FUNC(__imp__rex_lhLua_RunScriptFile);
+PPC_EXTERN_FUNC(__imp__rex_lhLua_RunScriptBuffer);
 
 namespace refii::lua {
 namespace {
@@ -40,15 +40,15 @@ void TraceScriptLoad(uint8_t* base, uint32_t source_guest, uint32_t chunk_name_g
 }  // namespace
 }  // namespace refii::lua
 
-REX_EXTERN(sub_82451E40) {
+REX_EXTERN(rex_lhLua_RunScriptFile) {
   REX_FUNC_PROLOGUE();
 
   refii::lua::TraceScriptLoad(base, ctx.r4.u32, ctx.r5.u32);
 
-  __imp__sub_82451E40(ctx, base);
+  __imp__rex_lhLua_RunScriptFile(ctx, base);
 }
 
-REX_EXTERN(sub_82451F18) {
+REX_EXTERN(rex_lhLua_RunScriptBuffer) {
   REX_FUNC_PROLOGUE();
 
   if (refii::lua::NativeLuaScriptLoadTracingEnabled()) {
@@ -65,5 +65,5 @@ REX_EXTERN(sub_82451F18) {
     }
   }
 
-  __imp__sub_82451F18(ctx, base);
+  __imp__rex_lhLua_RunScriptBuffer(ctx, base);
 }

@@ -21,12 +21,13 @@
 #include "core/guest_state.h"
 #include "gui/gui_native_calls.h"
 #include "hooks/ppc_externs.h"
+#include "core/guest_build.h"
 
 namespace {
 
 /// The game root, and the byte the setter requires with it (0x8287c678..0x8287c69c).
-constexpr uint32_t kGameRoot = 0x83496AB8u;
-constexpr uint32_t kInWorld = 0x83496A5Eu;
+constexpr refii::guest::Addr kGameRoot{0x83496AB8u};
+constexpr refii::guest::Addr kInWorld{0x83496A5Eu};
 
 bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
 
@@ -84,15 +85,15 @@ void State(int player, uint32_t object, bool active) {
 
 // sub_8287C658(object, active) — after the guest's own body, and only past its own early-outs
 // (no game, not in the world, or the world's +260 byte, 0x8287c6a4), where it wrote nothing.
-REX_EXTERN(sub_8287C658) {
+REX_EXTERN(rex_lhGui_Reticule_SetActiveForObject) {
     const uint32_t object = ctx.r3.u32;
     const bool active = (ctx.r4.u32 & 0xFFu) != 0u;
-    __imp__sub_8287C658(ctx, base);
+    __imp__rex_lhGui_Reticule_SetActiveForObject(ctx, base);
 
     const uint32_t game = refii::vfs::LoadGuestU32(base, kGameRoot);
     if (!Plausible(game) || refii::vfs::LoadGuestU8(base, kInWorld) == 0u) return;
     const uint32_t world = refii::vfs::LoadGuestU32(base, game + 12u);
-    if (!Plausible(world) || refii::vfs::LoadGuestU8(base, world + 260u) != 0u) return;
+    if (!Plausible(world) || refii::vfs::LoadGuestU8(base, world + refii::guest::GameField(260u)) != 0u) return;
 
     // The setter's own choice of record (0x8287c6c8..0x8287c6f0): player one's is the first.
     const int player = Owner(base, object) == PlayerOneEntity(base) ? 0 : 1;

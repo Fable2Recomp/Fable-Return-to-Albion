@@ -10,14 +10,15 @@
 #include "vfs_hooks_private.h"
 #include "core/guest_state.h"
 #include "hooks/ppc_externs.h"
+#include "core/guest_build.h"
 
-PPC_EXTERN_FUNC(__imp__sub_8237E040);
+PPC_EXTERN_FUNC(__imp__rex_lhBabel_MaterializeString);
 
 namespace {
 
 /// The shared decompression scratch's capacity — `dword_834BE98C`, 18022 from
 /// `TextManager_Construct` (`8237a854 li r11, 0x4666`). Smaller blocks never allocate.
-constexpr uint32_t kScratchCapacity = 0x834BE98Cu;
+constexpr refii::guest::Addr kScratchCapacity{0x834BE98Cu};
 
 /// A size no Babel block can have (`book.babel` is 2.6 MB whole); far above anything real.
 constexpr uint32_t kImpossibleBlockBytes = 64u * 1024u * 1024u;
@@ -27,7 +28,7 @@ bool Plausible(uint32_t value) { return value >= 0x10000u && value < 0xC0000000u
 }  // namespace
 
 /// `Babel_MaterializeString(blockDesc, offset, out)`.
-REX_EXTERN(sub_8237E040) {
+REX_EXTERN(rex_lhBabel_MaterializeString) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t descriptor = ctx.r3.u32;
@@ -62,7 +63,7 @@ REX_EXTERN(sub_8237E040) {
         }
     }
 
-    __imp__sub_8237E040(ctx, base);
+    __imp__rex_lhBabel_MaterializeString(ctx, base);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +89,7 @@ REX_EXTERN(rex_lh_malloc_impl) {
         // When `lr` is 0x8221F26C the request came through `operator new` (0x8221F258), whose
         // prologue is `mflr r12; stw r12, -8(r1); stwu r1, -0x60(r1)`, so its caller's return
         // address is at r1+0x58 on entry here.
-        constexpr uint32_t kOperatorNewReturn = 0x8221F26Cu;
+        const uint32_t kOperatorNewReturn = refii::guest::Address(0x8221F26Cu);
         const uint32_t lr = static_cast<uint32_t>(ctx.lr);
         const uint32_t outer_lr =
             lr == kOperatorNewReturn ? refii::vfs::LoadGuestU32(base, ctx.r1.u32 + 0x58u) : lr;

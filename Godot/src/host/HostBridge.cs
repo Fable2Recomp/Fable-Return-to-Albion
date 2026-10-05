@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 166;
+	public const int ExpectedAbiVersion = 167;
 
 	private const int MessageCapacity = 512;
 
@@ -1794,6 +1794,10 @@ public static class HostBridge
 		}
 
 		uint box = RefiiHostGetDisplayBox(out uint vtable);
+
+		// Stated in TU1 terms, so the vtable constants in this assembly classify it whichever
+		// build is running.
+		vtable = GuestAddressToTu1(vtable);
 		return box == 0 ? null : (box, vtable);
 	}
 
@@ -2448,7 +2452,7 @@ public static class HostBridge
 	public static InGameScreens? GetInGameScreens()
 	{
 		uint[] words = _screenWords ??= new uint[36];
-		if (RefiiHostGetInGameScreen(words) == 0 || words[1] != InGameGuiVtable)
+		if (RefiiHostGetInGameScreen(words) == 0 || GuestAddressToTu1(words[1]) != InGameGuiVtable)
 		{
 			_screenCache = null;
 			_screenWordsSeen = null;
@@ -4068,7 +4072,7 @@ public static class HostBridge
 	{
 		static uint Word(uint at) => at >= 0x10000u && Peek(at, 1) is { Length: 1 } w ? w[0] : 0u;
 
-		uint root = Word(0x83496AB8u);
+		uint root = Word(GuestAddress(0x83496AB8u));
 		uint world = Word(Word(Word(root + 12u) + 88u) + 4u);
 		uint hero = Word(Word(Word(world) + 108u));
 		if (root == 0 || world == 0 || hero == 0 || (Word(hero + 52u) & 1u) == 0)
@@ -4090,7 +4094,7 @@ public static class HostBridge
 		}
 
 		uint[] cache = Peek(component + 16u, 2);
-		uint frame = Word(0x83319650u);
+		uint frame = Word(GuestAddress(0x83319650u));
 		if (cache.Length != 2 || frame - cache[1] > 2u)
 		{
 			return null;
@@ -4100,6 +4104,77 @@ public static class HostBridge
 	}
 
 	/// <summary>Raw guest words — the debug channel's microscope. Empty when unreadable.</summary>
+	/// <summary>
+	/// The running build's address for one this source names by its TU1 value.
+	/// </summary>
+	/// <remarks>
+	/// TWO EXECUTABLES ARE SUPPORTED and no guest address is shared between them. Source keeps
+	/// the TU1 address as the name; the table for the other build is the native side's
+	/// (versions/Fable2/guest_addresses.inc). Apply this to LITERALS only: a pointer read from
+	/// the guest is already the running build's.
+	/// </remarks>
+	public static uint GuestAddress(uint tu1Address)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return tu1Address;
+		}
+
+		try
+		{
+			return RefiiHostGuestAddress(tu1Address);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return tu1Address;
+		}
+	}
+
+	/// <summary>
+	/// The TU1 address for a value READ from the guest, so it can be matched against the TU1
+	/// constants this source holds — a vtable, a handler.
+	/// </summary>
+	public static uint GuestAddressToTu1(uint liveAddress)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return liveAddress;
+		}
+
+		try
+		{
+			return RefiiHostGuestAddressToTu1(liveAddress);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return liveAddress;
+		}
+	}
+
+	/// <summary>True when the running game was installed without the title update.</summary>
+	public static bool IsUnpatchedBuild
+	{
+		get
+		{
+			if (TryGetAbiVersion() is null)
+			{
+				return false;
+			}
+
+			try
+			{
+				return RefiiHostGuestBuild() == 1;
+			}
+			catch (EntryPointNotFoundException)
+			{
+				return false;
+			}
+		}
+	}
+
+	/// <summary>A value that is not an address and differs between the two builds.</summary>
+	public static T PickByBuild<T>(T tu1, T unpatched) => IsUnpatchedBuild ? unpatched : tu1;
+
 	public static uint[] Peek(uint addr, uint count)
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp || count == 0 || count > 64)
@@ -4141,7 +4216,7 @@ public static class HostBridge
 	/// </remarks>
 	public static int HighlightWidthTexels()
 	{
-		uint[] words = Peek(0x83318558u, 1);
+		uint[] words = Peek(GuestAddress(0x83318558u), 1);
 		return words.Length == 1 ? (int)Math.Clamp(words[0], 1u, 16u) : 0;
 	}
 
@@ -6788,7 +6863,7 @@ public static class HostBridge
 	}
 
 	public static bool FrontEndGuiIsUp =>
-		GetFrontEndRaw() is { } words && words[9] == FrontEndGuiVtable;
+		GetFrontEndRaw() is { } words && GuestAddressToTu1(words[9]) == FrontEndGuiVtable;
 
 	/// <summary>
 	/// The guest's live front-end state.
@@ -7612,6 +7687,15 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetItemAugments(uint recordId, uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGuestBuild();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGuestAddress(uint tu1Address);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGuestAddressToTu1(uint liveAddress);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetGameLoopPacer(

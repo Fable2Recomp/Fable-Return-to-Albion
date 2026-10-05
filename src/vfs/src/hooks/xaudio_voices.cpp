@@ -115,13 +115,13 @@ uint32_t ReadChannelGains(uint8_t* base, uint32_t volumes_guest, float* out, uin
 }  // namespace
 
 /// XAudioCreateSourceVoice(pInit, pOutVoice) — sub_82CD9B00.
-REX_EXTERN(sub_82CD9B00) {
+REX_EXTERN(rex_XAudioCreateSourceVoice) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t init_guest = ctx.r3.u32;
   const uint32_t out_guest = ctx.r4.u32;
 
-  __imp__sub_82CD9B00(ctx, base);
+  __imp__rex_XAudioCreateSourceVoice(ctx, base);
 
   // The handle only exists after the call, and only if it succeeded. XAudio returns an
   // HRESULT, so the sign bit is the failure test.
@@ -150,7 +150,7 @@ REX_EXTERN(sub_82CD9B00) {
 }
 
 /// XAudioDestroyVoice(hVoice) — sub_82CD92B0.
-REX_EXTERN(sub_82CD92B0) {
+REX_EXTERN(rex_XAudioDestroyVoice) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t voice = ctx.r3.u32;
@@ -159,11 +159,11 @@ REX_EXTERN(sub_82CD92B0) {
   // off a handle that is about to become someone else's memory.
   refii::vfs::NoteVoiceDestroyed(voice);
 
-  __imp__sub_82CD92B0(ctx, base);
+  __imp__rex_XAudioDestroyVoice(ctx, base);
 }
 
 /// XAudioSubmitSourceBuffer(hVoice, pBuffer, flags) — sub_82CD9490.
-REX_EXTERN(sub_82CD9490) {
+REX_EXTERN(rex_XAudioSubmitSourceBuffer) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t voice = ctx.r3.u32;
@@ -186,16 +186,16 @@ REX_EXTERN(sub_82CD9490) {
     }
   }
 
-  __imp__sub_82CD9490(ctx, base);
+  __imp__rex_XAudioSubmitSourceBuffer(ctx, base);
 }
 
 /// XAudioStartVoice(hVoice, flags) — sub_82CD9548.
-REX_EXTERN(sub_82CD9548) {
+REX_EXTERN(rex_XAudioStartVoice) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t voice = ctx.r3.u32;
 
-  __imp__sub_82CD9548(ctx, base);
+  __imp__rex_XAudioStartVoice(ctx, base);
 
   if (static_cast<int32_t>(ctx.r3.u32) >= 0) {
     // Flags bit 0 means "synchronised start" — queue it, do not run it yet — but the
@@ -207,13 +207,13 @@ REX_EXTERN(sub_82CD9548) {
 }
 
 /// XAudioStopVoice(hVoice, flags) — sub_82CD9590.
-REX_EXTERN(sub_82CD9590) {
+REX_EXTERN(rex_XAudioStopVoice) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t voice = ctx.r3.u32;
   const uint32_t flags = ctx.r4.u32;
 
-  __imp__sub_82CD9590(ctx, base);
+  __imp__rex_XAudioStopVoice(ctx, base);
 
   if (static_cast<int32_t>(ctx.r3.u32) >= 0) {
     // Bit 0 clear means "play out the tail", and a stop of EITHER kind leaves the packet
@@ -225,7 +225,7 @@ REX_EXTERN(sub_82CD9590) {
 }
 
 /// XAudioSetVolume(hVoice, float) — sub_82CD97B0.
-REX_EXTERN(sub_82CD97B0) {
+REX_EXTERN(rex_XAudioSetVolume) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t voice = ctx.r3.u32;
@@ -233,13 +233,13 @@ REX_EXTERN(sub_82CD97B0) {
   // the guest never speaks in decibels. PPC passes a float argument in f1 as a double.
   const float volume = static_cast<float>(ctx.f1.f64);
 
-  __imp__sub_82CD97B0(ctx, base);
+  __imp__rex_XAudioSetVolume(ctx, base);
 
   refii::vfs::NoteVoiceVolume(voice, volume);
 }
 
 /// XAudioSetPitch(hVoice, float) — sub_82CD9828.
-REX_EXTERN(sub_82CD9828) {
+REX_EXTERN(rex_XAudioSetPitch) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t voice = ctx.r3.u32;
@@ -248,13 +248,13 @@ REX_EXTERN(sub_82CD9828) {
   // passes log10(rate) * 3.321928f, which is 1/log10(2), i.e. log2(rate).
   const float octaves = static_cast<float>(ctx.f1.f64);
 
-  __imp__sub_82CD9828(ctx, base);
+  __imp__rex_XAudioSetPitch(ctx, base);
 
   refii::vfs::NoteVoicePitchOctaves(voice, octaves);
 }
 
 /// XAudioSetChannelVolumes(hVoice, pOutputVolumes) — sub_82CD93E0.
-REX_EXTERN(sub_82CD93E0) {
+REX_EXTERN(rex_XAudioSetChannelVolumes) {
   REX_FUNC_PROLOGUE();
 
   const uint32_t voice = ctx.r3.u32;
@@ -263,7 +263,7 @@ REX_EXTERN(sub_82CD93E0) {
   float gains[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
   const uint32_t count = ReadChannelGains(base, volumes, gains, 6);
 
-  __imp__sub_82CD93E0(ctx, base);
+  __imp__rex_XAudioSetChannelVolumes(ctx, base);
 
   if (count != 0) {
     refii::vfs::NoteVoiceChannelVolumes(voice, gains, count);

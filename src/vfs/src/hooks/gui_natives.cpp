@@ -261,7 +261,7 @@ void TakeCall(uint8_t* base, uint32_t lua_state, uint32_t func, const std::strin
 
 }  // namespace
 
-REX_EXTERN(sub_82228730) {
+REX_EXTERN(rex_luaD_precall) {
     REX_FUNC_PROLOGUE();
 
     // The cheap gate first: this runs for every native the game VM calls, thousands a second at
@@ -292,7 +292,7 @@ REX_EXTERN(sub_82228730) {
     // Taking the call is not suppressing it: the guest's implementation still runs, so every
     // predicate the scripts read back keeps answering out of the guest's own state.
     // Suppression is a per-native decision made elsewhere.
-    __imp__sub_82228730(ctx, base);
+    __imp__rex_luaD_precall(ctx, base);
 }
 
 /// Registration: name the implementation that is about to be bound.
@@ -303,7 +303,7 @@ REX_EXTERN(sub_82228730) {
 ///
 /// Gated on the namespace being `GUI`: this is called once per binding across ~3,000 natives,
 /// and the namespace is the first argument, so the rest cost one string compare each.
-REX_EXTERN(sub_823CE420) {
+REX_EXTERN(rex_lhLuaNamespace_RegisterFunctionHash) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t namespace_object = ctx.r3.u32;
@@ -426,7 +426,7 @@ REX_EXTERN(sub_823CE420) {
         }
     }
 
-    __imp__sub_823CE420(ctx, base);
+    __imp__rex_lhLuaNamespace_RegisterFunctionHash(ctx, base);
 }
 
 
@@ -493,33 +493,33 @@ static bool SuppressForHost(PPCContext& ctx) {
         __imp__##name(ctx, base);               \
     }
 
-REFII_SUPPRESSIBLE_THUNK(sub_82309D48)
-REFII_SUPPRESSIBLE_THUNK(sub_822B7BB8)
-REFII_SUPPRESSIBLE_THUNK(sub_823C00C8)
-REFII_SUPPRESSIBLE_THUNK(sub_8230A760)
-REFII_SUPPRESSIBLE_THUNK(sub_8230A7F0)
-REFII_SUPPRESSIBLE_THUNK(sub_8230A8C8)
+REFII_SUPPRESSIBLE_THUNK(rex_lhLuaBind_ThunkVoidNoArgs)
+REFII_SUPPRESSIBLE_THUNK(rex_lhLuaBind_ThunkVoidOneNumber)
+REFII_SUPPRESSIBLE_THUNK(rex_LuaAPI_SetHeroSpellTableItem)
+REFII_SUPPRESSIBLE_THUNK(rex_lhLuaBind_ThunkVoidTwoNumbers)
+REFII_SUPPRESSIBLE_THUNK(rex_lhLuaBind_ThunkVoidFiveArgs)
+REFII_SUPPRESSIBLE_THUNK(rex_lhLuaBind_ThunkForwardToDispatcher)
 
 #undef REFII_SUPPRESSIBLE_THUNK
 
 /// The no-argument BOOLEAN predicate thunk.
-REX_EXTERN(sub_822AA418) {
+REX_EXTERN(rex_lhLuaBind_ThunkReturnBool) {
     REX_FUNC_PROLOGUE();
 
     if (AnswerFromHost(ctx, base, /*boolean=*/true)) {
         return;
     }
 
-    __imp__sub_822AA418(ctx, base);
+    __imp__rex_lhLuaBind_ThunkReturnBool(ctx, base);
 }
 
 /// The no-argument FLOAT predicate thunk.
-REX_EXTERN(sub_82197FF0) {
+REX_EXTERN(rex_lhLuaBind_ThunkReturnFloat) {
     REX_FUNC_PROLOGUE();
 
     if (AnswerFromHost(ctx, base, /*boolean=*/false)) {
         return;
     }
 
-    __imp__sub_82197FF0(ctx, base);
+    __imp__rex_lhLuaBind_ThunkReturnFloat(ctx, base);
 }

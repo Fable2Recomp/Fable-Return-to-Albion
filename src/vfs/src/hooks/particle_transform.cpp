@@ -51,17 +51,17 @@
 // librefii_vfs: this file compiles into the payload and the host bridge reads what it records,
 // so a table beside these hooks is one the host cannot reach on Windows. See that file.
 
-REX_EXTERN(sub_832325A8) {
+REX_EXTERN(rex_CParticleSystemEntityInstance_SetPositionAndVelocity) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
 
   // All four lanes of v1 in the recompiler's register order; the host decides which is x.
   refii::vfs::NoteFxPosition(ctx.r3.u32, ctx.v1.f32);
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_832325A8);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CParticleSystemEntityInstance_SetPositionAndVelocity);
 }
 
-REX_EXTERN(sub_83231C40) {
+REX_EXTERN(rex_CParticleSystemEntityInstance_SetOrientation) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
 
@@ -77,5 +77,5 @@ REX_EXTERN(sub_83231C40) {
       static_cast<uint32_t>(ctx.r5.u64 >> 32), static_cast<uint32_t>(ctx.r5.u64)};
   refii::vfs::NoteFxOrientation(ctx.r3.u32, lanes);
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_83231C40);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_CParticleSystemEntityInstance_SetOrientation);
 }

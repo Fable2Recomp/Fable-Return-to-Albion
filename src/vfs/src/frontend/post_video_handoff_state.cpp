@@ -1,4 +1,5 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 namespace refii::vfs {
 inline namespace detail {
@@ -157,7 +158,7 @@ double RefiiGuestF64FromWord(uint64_t word) {
 }
 
 std::string FormatStartupVideoRenderPollDispatchState(uint8_t* base) {
-  constexpr uint32_t kStartupVideoRenderPollObjectGlobal = 0x8349E9EC;
+  const uint32_t kStartupVideoRenderPollObjectGlobal = refii::guest::Address(0x8349E9ECu);
   if (base == nullptr) {
     return {};
   }

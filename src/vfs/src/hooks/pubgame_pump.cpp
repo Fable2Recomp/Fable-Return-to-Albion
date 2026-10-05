@@ -28,8 +28,9 @@
 #include "core/guest_state.h"
 #include "core/payload_bridge.h"
 #include "hooks/ppc_externs.h"
+#include "core/guest_build.h"
 
-PPC_EXTERN_FUNC(__imp__sub_82467B08);
+PPC_EXTERN_FUNC(__imp__rex_lhPubGameManager_RenderFrameUpdate);
 
 namespace {
 
@@ -40,19 +41,19 @@ constexpr uint32_t kManagerEmitterOffset = 64u;
 constexpr uint32_t kManagerProfileOffset = 124u;
 constexpr uint32_t kManagerAbortOffset = 136u;     // byte; set by the GameFlow command's abort
 
-constexpr uint32_t kSoundManagerGlobal = 0x83496D9Cu;
+constexpr refii::guest::Addr kSoundManagerGlobal{0x83496D9Cu};
 
-constexpr uint32_t kSetState = 0x82467E40u;          // (mgr, state) under mgr+68
-constexpr uint32_t kCreateEmitter = 0x829FD018u;     // (soundMgr, v1 position) -> emitter
-constexpr uint32_t kFreeEmitter = 0x829FD168u;       // (soundMgr, emitter, 1)
-constexpr uint32_t kPlaySound = 0x82467668u;         // (mgr, char* cue, f1, f2, f3)
-constexpr uint32_t kSetSoundVolume = 0x82467790u;    // (mgr, f1) — category 0, mgr+128
-constexpr uint32_t kSetMusicVolume = 0x824677D8u;    // (mgr, f1) — category 1, mgr+132
-constexpr uint32_t kPauseSounds = 0x82467820u;       // (mgr, bool) — the "PUB_GAMES" voices
-constexpr uint32_t kProfileSetGold = 0x82EE8640u;    // (profile, int64) +0x108, dirty +0x364
-constexpr uint32_t kProfileSetDebt = 0x82EE8810u;    // (profile, int64) +0x130
-constexpr uint32_t kProfileSetRank = 0x82EE86B0u;    // (profile, int64) +0x110
-constexpr uint32_t kProfileAddPoints = 0x82EE87A8u;  // (profile, index, int64) +0x118[index] +=
+constexpr refii::guest::Addr kSetState{0x82467E40u};          // (mgr, state) under mgr+68
+constexpr refii::guest::Addr kCreateEmitter{0x829FD018u};     // (soundMgr, v1 position) -> emitter
+constexpr refii::guest::Addr kFreeEmitter{0x829FD168u};       // (soundMgr, emitter, 1)
+constexpr refii::guest::Addr kPlaySound{0x82467668u};         // (mgr, char* cue, f1, f2, f3)
+constexpr refii::guest::Addr kSetSoundVolume{0x82467790u};    // (mgr, f1) — category 0, mgr+128
+constexpr refii::guest::Addr kSetMusicVolume{0x824677D8u};    // (mgr, f1) — category 1, mgr+132
+constexpr refii::guest::Addr kPauseSounds{0x82467820u};       // (mgr, bool) — the "PUB_GAMES" voices
+constexpr refii::guest::Addr kProfileSetGold{0x82EE8640u};    // (profile, int64) +0x108, dirty +0x364
+constexpr refii::guest::Addr kProfileSetDebt{0x82EE8810u};    // (profile, int64) +0x130
+constexpr refii::guest::Addr kProfileSetRank{0x82EE86B0u};    // (profile, int64) +0x110
+constexpr refii::guest::Addr kProfileAddPoints{0x82EE87A8u};  // (profile, index, int64) +0x118[index] +=
 
 // Command kinds — HostBridge.PubGameCommand on the C# side.
 constexpr uint32_t kCommandPlaySound = 1u;
@@ -224,11 +225,11 @@ void Drain(PPCContext& ctx, uint8_t* base, uint32_t manager, bool live) {
 
 }  // namespace
 
-REX_EXTERN(sub_82467B08) {
+REX_EXTERN(rex_lhPubGameManager_RenderFrameUpdate) {
   REX_FUNC_PROLOGUE();
 
   if (refii_bridge_pubgame_claimed() == 0) {
-    __imp__sub_82467B08(ctx, base);
+    __imp__rex_lhPubGameManager_RenderFrameUpdate(ctx, base);
     return;
   }
 

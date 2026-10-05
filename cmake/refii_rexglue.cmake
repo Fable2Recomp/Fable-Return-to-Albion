@@ -648,7 +648,7 @@ function(refii_rexglue_generate_sources_if_missing)
     message(STATUS "Generating missing Refii sources with ${_refii_rexglue_codegen_tool}")
     execute_process(
         COMMAND "${_refii_rexglue_codegen_tool}" --force codegen
-                "${CMAKE_CURRENT_SOURCE_DIR}/refii_manifest.toml"
+                "${REFII_REXGLUE_MANIFEST}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         RESULT_VARIABLE _refii_rexglue_codegen_result
     )
@@ -711,7 +711,7 @@ function(refii_define_rexglue_codegen_bootstrap_target)
     elseif(TARGET rexglue)
         add_custom_target(refii_codegen_if_empty ALL
             COMMAND $<TARGET_FILE:rexglue> --force codegen
-                    "${CMAKE_CURRENT_SOURCE_DIR}/refii_manifest.toml"
+                    "${REFII_REXGLUE_MANIFEST}"
             COMMAND ${_refii_rexglue_continue_configure}
             COMMAND ${_refii_rexglue_continue_build}
             DEPENDS rexglue

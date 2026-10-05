@@ -131,7 +131,7 @@ public partial class GameDevTabGuest : GameDevTab
 	/// <summary>The top of the game-flow stack — the chain `sub_82296368` walks.</summary>
 	private static string TopFlowState()
 	{
-		uint at = 0x83496AB8u;
+		uint at = HostBridge.GuestAddress(0x83496AB8u);
 		foreach (uint offset in FlowChain)
 		{
 			uint[] word = HostBridge.Peek(at + offset, 1);
@@ -155,6 +155,6 @@ public partial class GameDevTabGuest : GameDevTab
 			: System.Array.Empty<uint>();
 		return vtable.Length != 1
 			? "-"
-			: FlowStates.TryGetValue(vtable[0], out string? name) ? name : $"vt {vtable[0]:X8}";
+			: FlowStates.TryGetValue(HostBridge.GuestAddressToTu1(vtable[0]), out string? name) ? name : $"vt {vtable[0]:X8}";
 	}
 }

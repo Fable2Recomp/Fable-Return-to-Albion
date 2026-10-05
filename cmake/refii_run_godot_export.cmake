@@ -55,6 +55,34 @@ set(_app "${WORK_DIR}/${APP_NAME}")
 file(REMOVE_RECURSE "${_app}")
 file(MAKE_DIRECTORY "${_app}")
 
+# THE UNIT TESTS GATE THE PACKAGE, AND THEY RUN HERE, BEFORE THE EXPORT.
+#
+# The C# project runs them after an ordinary build, but not inside Godot's export build: the
+# test project references the launcher, so testing from within the ExportRelease publish
+# rebuilds the launcher a second time into the folders the publish is using, and the export
+# then finishes with no .NET assemblies in it. Running them as their own step, in the Debug
+# configuration, keeps the gate and keeps the two builds out of each other's way.
+if(EXISTS "${PROJECT_DIR}/tests/Refii.Tests/Refii.Tests.csproj")
+    find_program(_refii_dotnet NAMES dotnet)
+    if(NOT _refii_dotnet)
+        message(FATAL_ERROR
+            "dotnet was not found, so the unit tests that gate a package cannot run.")
+    endif()
+
+    message(STATUS "Running the unit tests before the export")
+    execute_process(
+        COMMAND "${_refii_dotnet}" test "${PROJECT_DIR}/tests/Refii.Tests/Refii.Tests.csproj"
+                -c Debug -p:IsTesting=true -p:REFII_NO_TESTS=1
+                --logger "console;verbosity=minimal"
+        RESULT_VARIABLE _tests_result
+    )
+    if(NOT _tests_result EQUAL 0)
+        message(FATAL_ERROR
+            "The unit tests failed (exit ${_tests_result}); nothing was exported. "
+            "Run `dotnet test Godot/tests/Refii.Tests` to see them on their own.")
+    endif()
+endif()
+
 # IMPORT AS ITS OWN RUN FIRST. --export-release reimports anything stale on its way past,
 # and on Windows that killed the editor: an access violation partway through the .glsl
 # files, reported below as "Godot export failed (exit Access violation)" with nothing to
@@ -92,6 +120,25 @@ if(NOT EXISTS "${_app}/${OUT_BINARY}")
     message(FATAL_ERROR
         "Godot reported success but wrote no binary to ${_app}/${OUT_BINARY}. "
         "Usually the export templates for this Godot version are not installed.")
+endif()
+
+# AND THE .NET ASSEMBLIES ARE THE OTHER HALF OF THE ARTEFACT. Godot has also returned 0 with a
+# binary that carries none of them -- it then stops at ".NET assemblies not found" on the
+# player's machine, and nothing in the export's own output says so. A preset that embeds them
+# stores them in the binary under .godot/mono/publish/<arch>/; one that does not writes a
+# data_* folder beside it.
+file(GLOB_RECURSE _refii_loose_assemblies "${_app}/data_*/refii-launcher.dll")
+if(NOT _refii_loose_assemblies)
+    file(STRINGS "${_app}/${OUT_BINARY}" _refii_embedded_assemblies
+         REGEX "\\.godot/mono/publish/[A-Za-z0-9_]+/refii-launcher\\.dll"
+         LIMIT_COUNT 1)
+    if(NOT _refii_embedded_assemblies)
+        message(FATAL_ERROR
+            "The export wrote ${_app}/${OUT_BINARY} without the .NET assemblies: neither a "
+            "data_* folder beside it nor refii-launcher.dll embedded in it. The game would "
+            "stop at \".NET assemblies not found\". Run the package again; if it repeats, "
+            "delete Godot/.godot/mono/temp and export once more.")
+    endif()
 endif()
 
 # The native closure, in the shape Engine_AppRoot resolves: <app>/bin, <app>/bin/recompile.

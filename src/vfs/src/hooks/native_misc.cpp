@@ -1,9 +1,10 @@
 #include "vfs_hooks_private.h"
+#include "core/guest_build.h"
 
 namespace {
 
 bool IsNativeStartupBikCursorCaller(uint32_t link_register) {
-  return link_register == 0x82377C98u || link_register == 0x822F4FC8u;
+  return link_register == refii::guest::Address(0x82377C98u) || link_register == refii::guest::Address(0x822F4FC8u);
 }
 
 } // namespace
@@ -19,7 +20,7 @@ bool ShouldLogNativeStartupVideoNativeMiscAudit(std::string_view key,
   return next_count <= limit;
 }
 
-REX_EXTERN(sub_82C6EAD8) {
+REX_EXTERN(rex_lhFile_GetDataPointer) {
   REX_FUNC_PROLOGUE();
 
   const PPCContext original_ctx = ctx;
@@ -47,7 +48,7 @@ REX_EXTERN(sub_82C6EAD8) {
                     base, stream_guest, 12));
   }
   const auto cursor_started_at = std::chrono::steady_clock::now();
-  __imp__sub_82C6EAD8(ctx, base);
+  __imp__rex_lhFile_GetDataPointer(ctx, base);
   const auto cursor_elapsed_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - cursor_started_at)
@@ -68,7 +69,7 @@ REX_EXTERN(sub_82C6EAD8) {
   }
 }
 
-REX_EXTERN(sub_82C8C718) {
+REX_EXTERN(rex_lhXmlDocument_ResetAndParseStream) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -92,7 +93,7 @@ REX_EXTERN(sub_82C8C718) {
                 refii::vfs::FormatGuestObjectVTable(base, stream_guest, 12));
   }
 
-  __imp__sub_82C8C718(ctx, base);
+  __imp__rex_lhXmlDocument_ResetAndParseStream(ctx, base);
   if (trace) {
     refii::vfs::RecordRefiiPostVideoUiEvent("ConfigParser_ParseStream",
                                                 original_ctx.lr,
@@ -114,7 +115,7 @@ REX_EXTERN(sub_82C8C718) {
   }
 }
 
-REX_EXTERN(sub_822C72E8) {
+REX_EXTERN(rex_lhIoRefCounted_Release) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -126,7 +127,7 @@ REX_EXTERN(sub_822C72E8) {
     return;
   }
 
-  __imp__sub_822C72E8(ctx, base);
+  __imp__rex_lhIoRefCounted_Release(ctx, base);
   if (ctx.r3.u32 == 0) {
     refii::vfs::RetireRefiiReadRequestAfterNativeRelease(
         ctx, base, object_guest, "sub_822C72E8");
@@ -137,7 +138,7 @@ REX_EXTERN(sub_822C72E8) {
   }
 }
 
-REX_EXTERN(sub_822CBB98) {
+REX_EXTERN(rex_lhIoRefCounted_AddRef) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -148,10 +149,10 @@ REX_EXTERN(sub_822CBB98) {
     return;
   }
 
-  __imp__sub_822CBB98(ctx, base);
+  __imp__rex_lhIoRefCounted_AddRef(ctx, base);
 }
 
-REX_EXTERN(sub_8290DD10) {
+REX_EXTERN(rex_lhVFS_Win32Request_GetStatus) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -162,10 +163,10 @@ REX_EXTERN(sub_8290DD10) {
     return;
   }
 
-  __imp__sub_8290DD10(ctx, base);
+  __imp__rex_lhVFS_Win32Request_GetStatus(ctx, base);
 }
 
-REX_EXTERN(sub_82B54D28) {
+REX_EXTERN(rex_lhVFS_Win32Device_ScalarDeletingDtor) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -176,10 +177,10 @@ REX_EXTERN(sub_82B54D28) {
     return;
   }
 
-  __imp__sub_82B54D28(ctx, base);
+  __imp__rex_lhVFS_Win32Device_ScalarDeletingDtor(ctx, base);
 }
 
-REX_EXTERN(sub_82B54250) {
+REX_EXTERN(rex_lhVFS_BasicBufferedRequest_WaitForCompletion) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -190,10 +191,10 @@ REX_EXTERN(sub_82B54250) {
     return;
   }
 
-  __imp__sub_82B54250(ctx, base);
+  __imp__rex_lhVFS_BasicBufferedRequest_WaitForCompletion(ctx, base);
 }
 
-REX_EXTERN(sub_82B54268) {
+REX_EXTERN(rex_lhVFS_BasicBufferedRequest_GetResultBuffer) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -218,7 +219,7 @@ REX_EXTERN(sub_82B54268) {
       trace_native ? refii::vfs::FormatGuestWords(base, wrapper_guest, 12)
                    : std::string{};
 
-  __imp__sub_82B54268(ctx, base);
+  __imp__rex_lhVFS_BasicBufferedRequest_GetResultBuffer(ctx, base);
 
   if (trace_native) {
     REXLOG_INFO("Native resource wrapper ResourceWrapper_GetBytes "
@@ -241,7 +242,7 @@ REX_EXTERN(sub_82B54268) {
   }
 }
 
-REX_EXTERN(sub_82B542D8) {
+REX_EXTERN(rex_lhVFS_BasicBufferedRequest_GetStatus) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -262,7 +263,7 @@ REX_EXTERN(sub_82B542D8) {
       trace_native ? refii::vfs::FormatGuestWords(base, wrapper_guest, 12)
                    : std::string{};
 
-  __imp__sub_82B542D8(ctx, base);
+  __imp__rex_lhVFS_BasicBufferedRequest_GetStatus(ctx, base);
 
   if (trace_native) {
     REXLOG_INFO("Native resource wrapper ResourceWrapper_Status "
@@ -280,7 +281,7 @@ REX_EXTERN(sub_82B542D8) {
   }
 }
 
-REX_EXTERN(sub_82B542F0) { // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(void)
+REX_EXTERN(rex_lhVFS_BasicBufferedRequest_GetDevice) { // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(void)
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -291,10 +292,10 @@ REX_EXTERN(sub_82B542F0) { // Lumen: LHVFS::CBasicBufferedRequest::GetDevice(voi
     return;
   }
 
-  __imp__sub_82B542F0(ctx, base);
+  __imp__rex_lhVFS_BasicBufferedRequest_GetDevice(ctx, base);
 }
 
-REX_EXTERN(sub_82C0EE10) {
+REX_EXTERN(rex_lhResourceWrapper_GetSize) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -315,7 +316,7 @@ REX_EXTERN(sub_82C0EE10) {
       trace_native ? refii::vfs::FormatGuestWords(base, wrapper_guest, 12)
                    : std::string{};
 
-  __imp__sub_82C0EE10(ctx, base);
+  __imp__rex_lhResourceWrapper_GetSize(ctx, base);
 
   if (trace_native) {
     REXLOG_INFO("Native resource wrapper ResourceWrapper_GetSize "
@@ -333,7 +334,7 @@ REX_EXTERN(sub_82C0EE10) {
   }
 }
 
-REX_EXTERN(sub_82B5BFF8) {
+REX_EXTERN(rex_lhVFS_Win32Request_WaitForCompletion) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -344,10 +345,10 @@ REX_EXTERN(sub_82B5BFF8) {
     return;
   }
 
-  __imp__sub_82B5BFF8(ctx, base);
+  __imp__rex_lhVFS_Win32Request_WaitForCompletion(ctx, base);
 }
 
-REX_EXTERN(sub_82B5C0C0) {
+REX_EXTERN(rex_lhVFS_Win32Request_GetBufferSpec) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -358,10 +359,10 @@ REX_EXTERN(sub_82B5C0C0) {
     return;
   }
 
-  __imp__sub_82B5C0C0(ctx, base);
+  __imp__rex_lhVFS_Win32Request_GetBufferSpec(ctx, base);
 }
 
-REX_EXTERN(sub_82B5C0D8) {
+REX_EXTERN(rex_lhVFS_Win32Request_GetSize) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -371,10 +372,10 @@ REX_EXTERN(sub_82B5C0D8) {
     return;
   }
 
-  __imp__sub_82B5C0D8(ctx, base);
+  __imp__rex_lhVFS_Win32Request_GetSize(ctx, base);
 }
 
-REX_EXTERN(sub_82B5C0E0) {
+REX_EXTERN(rex_lhVFS_Win32Request_ForwardToCompletionTarget) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -385,10 +386,10 @@ REX_EXTERN(sub_82B5C0E0) {
     return;
   }
 
-  __imp__sub_82B5C0E0(ctx, base);
+  __imp__rex_lhVFS_Win32Request_ForwardToCompletionTarget(ctx, base);
 }
 
-REX_EXTERN(sub_82B5C110) {
+REX_EXTERN(rex_lhVFS_Win32Request_SetCallbackAndSubmit) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -399,10 +400,10 @@ REX_EXTERN(sub_82B5C110) {
     return;
   }
 
-  __imp__sub_82B5C110(ctx, base);
+  __imp__rex_lhVFS_Win32Request_SetCallbackAndSubmit(ctx, base);
 }
 
-REX_EXTERN(sub_8252AA18) {
+REX_EXTERN(rex_lhRefPtr_Assign) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -413,10 +414,10 @@ REX_EXTERN(sub_8252AA18) {
     return;
   }
 
-  __imp__sub_8252AA18(ctx, base);
+  __imp__rex_lhRefPtr_Assign(ctx, base);
 }
 
-REX_EXTERN(sub_82B4ED70) {
+REX_EXTERN(rex_lhVFS_PagedStream_LoadPageAt) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -453,7 +454,7 @@ REX_EXTERN(sub_82B4ED70) {
                 refii::vfs::FormatGuestWords(base, reader_guest, 16));
   }
 
-  __imp__sub_82B4ED70(ctx, base);
+  __imp__rex_lhVFS_PagedStream_LoadPageAt(ctx, base);
 
   if (interesting) {
     const uint32_t request_slot_guest =
@@ -480,7 +481,7 @@ REX_EXTERN(sub_82B4ED70) {
 }
 
 
-REX_EXTERN(sub_82C51CA0) {
+REX_EXTERN(rex_lhAudioObject_LoadFromStream) {
   REX_FUNC_PROLOGUE();
 
   // No native passthrough macro: it returns before the check that recognises Refii-owned
@@ -507,7 +508,7 @@ REX_EXTERN(sub_82C51CA0) {
                 refii::vfs::FormatGuestWords(base, original_ctx.r4.u32, 16));
   }
 
-  __imp__sub_82C51CA0(ctx, base);
+  __imp__rex_lhAudioObject_LoadFromStream(ctx, base);
 
 
   if (interesting) {

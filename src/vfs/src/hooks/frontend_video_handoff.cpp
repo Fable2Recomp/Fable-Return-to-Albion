@@ -9,6 +9,7 @@
 #include "hooks/ppc_externs.h"
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/system/xvideo.h>
+#include "core/guest_build.h"
 
 namespace refii::renderer {
 // No-renderer shims.
@@ -77,7 +78,7 @@ bool NativeStartupUpdateHasActiveMovie(uint8_t* base, uint32_t update_guest) {
     return true;
   }
 
-  constexpr uint32_t kStartupVideoGlobalRoot = 0x83496B0C;
+  const uint32_t kStartupVideoGlobalRoot = refii::guest::Address(0x83496B0Cu);
   const uint32_t global_root =
       refii::vfs::LoadGuestU32(base, kStartupVideoGlobalRoot);
   const uint32_t game_state =
@@ -104,7 +105,7 @@ void NotifyRendererStartupVideoPumpInitIfNeeded(const char* label,
 }
 
 std::string FormatNativeStartupMovieOwnerSlot(uint8_t* base) {
-  constexpr uint32_t kStartupVideoGlobalRoot = 0x83496B0C;
+  const uint32_t kStartupVideoGlobalRoot = refii::guest::Address(0x83496B0Cu);
   if (base == nullptr) {
     return "base=null";
   }
@@ -196,7 +197,7 @@ void MaybeLogCompactStartupVideoProgress(uint8_t* base,
 }
 } // namespace
 
-REX_EXTERN(sub_82377A00) {
+REX_EXTERN(rex_lhApp_RunStartupLoop) {
   REX_FUNC_PROLOGUE();
 
   const PPCContext original_ctx = ctx;
@@ -217,7 +218,7 @@ REX_EXTERN(sub_82377A00) {
                 refii::vfs::FormatPostVideoBoundaryArgs(base, original_ctx));
   }
 
-  __imp__sub_82377A00(ctx, base);
+  __imp__rex_lhApp_RunStartupLoop(ctx, base);
   refii::renderer::NotifyFableStartupVideoPumpRunComplete(original_ctx.r3.u32);
 
   refii::vfs::RecordRefiiStartupUpdateSnapshot(base,
@@ -288,44 +289,44 @@ REX_EXTERN(sub_82377A00) {
     }                                                                          \
   }
 
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_82377E10,
-                                         __imp__sub_82377E10,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhApp_ScalarDeletingDtor,
+                                         __imp__rex_lhApp_ScalarDeletingDtor,
                                          "StartupReadyRequest_Dtor_82377E10",
                                          false)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_82378020,
-                                         __imp__sub_82378020,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhAppHolder_ScalarDeletingDtor,
+                                         __imp__rex_lhAppHolder_ScalarDeletingDtor,
                                          "StartupReadyRequest_Dtor2_82378020",
                                          false)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_82378110,
-                                         __imp__sub_82378110,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhAppHolder_Initialise,
+                                         __imp__rex_lhAppHolder_Initialise,
                                          "StartupReadyRequest_Update_82378110",
                                          true)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_82378118,
-                                         __imp__sub_82378118,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhAppHolder_Shutdown,
+                                         __imp__rex_lhAppHolder_Shutdown,
                                          "StartupReadyRequest_Dispatch_82378118",
                                          true)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231A748,
-                                         __imp__sub_8231A748,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhFrontEndGame_ScalarDtor,
+                                         __imp__rex_lhFrontEndGame_ScalarDtor,
                                          "FrontendRenderRequest_Dtor_8231A748",
                                          false)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231A9A8,
-                                         __imp__sub_8231A9A8,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhFrontEndState_ScalarDtor,
+                                         __imp__rex_lhFrontEndState_ScalarDtor,
                                          "FrontendRenderRequest_Dtor2_8231A9A8",
                                          false)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231AA98,
-                                         __imp__sub_8231AA98,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhFrontEndState_Init,
+                                         __imp__rex_lhFrontEndState_Init,
                                          "FrontendRenderRequest_Ready_8231AA98",
                                          true)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231AAA0,
-                                         __imp__sub_8231AAA0,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhFrontEndState_Shutdown,
+                                         __imp__rex_lhFrontEndState_Shutdown,
                                          "FrontendRenderRequest_Run_8231AAA0",
                                          true)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231AAA8,
-                                         __imp__sub_8231AAA8,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhFrontEndState_Run,
+                                         __imp__rex_lhFrontEndState_Run,
                                          "FrontendRenderRequest_Tick_8231AAA8",
                                          true)
-REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231AAD0,
-                                         __imp__sub_8231AAD0,
+REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(rex_lhFrontEndState_AbortPendingStart,
+                                         __imp__rex_lhFrontEndState_AbortPendingStart,
                                          "FrontendRenderRequest_Commit_8231AAD0",
                                          true)
 
@@ -348,7 +349,7 @@ REFII_NATIVE_VFS_SCHEDULED_REQUEST_TRACE(sub_8231AAD0,
 /// fence is opcode 17 in this ring. `r4` is a slot index, not a pointer (`lwzx r31, r10, r9` at
 /// `0x822DFE44` indexes `dword_8349F9B0`). Read cursor is slot+12, published write pointer
 /// slot+60.
-REX_EXTERN(sub_822DFE08) {
+REX_EXTERN(rex_lhRenderCommandStream_Drain) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
 
@@ -364,7 +365,7 @@ REX_EXTERN(sub_822DFE08) {
     const uint32_t slot_index = ctx.r4.u32;
     const uint32_t slot =
         slot_index < 4u
-            ? refii::vfs::LoadGuestU32(base, 0x8349F9B0u + (slot_index * 4u))
+            ? refii::vfs::LoadGuestU32(base, refii::guest::Address(0x8349F9B0u) + (slot_index * 4u))
             : 0u;
     const bool usable = refii::vfs::LooksLikeGuestPointer(slot);
     const uint32_t read_cursor = usable ? refii::vfs::LoadGuestU32(base, slot + 12u) : 0u;
@@ -397,10 +398,10 @@ REX_EXTERN(sub_822DFE08) {
     }
   }
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_822DFE08);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhRenderCommandStream_Drain);
 }
 
-REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
+REX_EXTERN(rex_SwitchToThread) { // Lumen: SwitchToThread
   // Every guest thread yields here sooner or later; one thread_local test per call.
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
@@ -440,7 +441,7 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
   {
     static std::atomic<bool> device_guard_healed{false};
     if (!device_guard_healed.load(std::memory_order_relaxed)) {
-      constexpr uint32_t kGuestD3DOwnershipGuard = 0x83360350u;
+      const uint32_t kGuestD3DOwnershipGuard = refii::guest::Address(0x83360350u);
       if (refii::vfs::LoadGuestU32(base, kGuestD3DOwnershipGuard) == 0u &&
           !device_guard_healed.exchange(true, std::memory_order_relaxed)) {
         refii::vfs::StoreGuestU32(base, kGuestD3DOwnershipGuard, 0xFFFFFFFFu);
@@ -465,9 +466,9 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
       if (now_us >= due &&
           pacing_globals_next_check_us.compare_exchange_strong(
               due, now_us + 100000ull, std::memory_order_relaxed)) {
-        constexpr uint32_t kGuestRefreshRateFloat = 0x8336035Cu;
-        constexpr uint32_t kGuestPresentInterval = 0x83360358u;
-        constexpr uint32_t kGuestDisplayPairW = 0x834A5FE8u;
+        const uint32_t kGuestRefreshRateFloat = refii::guest::Address(0x8336035Cu);
+        const uint32_t kGuestPresentInterval = refii::guest::Address(0x83360358u);
+        const uint32_t kGuestDisplayPairW = refii::guest::Address(0x834A5FE8u);
         const uint32_t refresh_bits =
             refii::vfs::LoadGuestU32(base, kGuestRefreshRateFloat);
         if (refresh_bits == 0u &&
@@ -523,7 +524,7 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
     static std::atomic<uint64_t> total{0};
     static std::atomic<uint64_t> from_present_throttle{0};
     const uint32_t lr = ctx.lr;
-    const bool present_throttle = lr >= 0x82B6F380u && lr <= 0x82B6F410u;
+    const bool present_throttle = lr >= refii::guest::Address(0x82B6F380u) && lr <= refii::guest::Address(0x82B6F410u);
     if (present_throttle) {
       from_present_throttle.fetch_add(1, std::memory_order_relaxed);
     }
@@ -546,7 +547,7 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
       // parked producer thread so we can see what OUR runtime has it
       // blocked in. Fields: [1]=buffer, [3]=read cursor, [4]=WPTR snapshot,
       // [15]=shared WPTR.
-      if (lr == 0x822DFF2Cu) {
+      if (lr == refii::guest::Address(0x822DFF2Cu)) {
         const uint32_t slot = ctx.r31.u32;
         if (refii::vfs::LooksLikeGuestPointer(slot)) {
           const uint32_t owner_tid =
@@ -578,13 +579,13 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
           // (`Render_FrameCompletionCallback` 0x82B90160 publishes it one bit wide). The real
           // count is `*(u32*)(0x83491D98 + 24*index + 0x10)`.
           const uint32_t presented =
-              refii::vfs::LoadGuestU32(base, 0x83497120u);
+              refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83497120u));
           const uint32_t frame_sync_index =
-              refii::vfs::LoadGuestU32(base, 0x83497124u);
+              refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83497124u));
           const uint32_t completed =
               frame_sync_index < 2u
                   ? refii::vfs::LoadGuestU32(
-                        base, 0x83491D98u + frame_sync_index * 24u + 0x10u)
+                        base, refii::guest::Address(0x83491D98u) + frame_sync_index * 24u + 0x10u)
                   : 0u;
           REXLOG_INFO(
               "Refii guest stream-drain spin slot=0x{:08X} owner_tid=0x{:08X} "
@@ -599,7 +600,7 @@ REX_EXTERN(sub_82CC38E8) { // Lumen: SwitchToThread
     }
   }
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82CC38E8);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_SwitchToThread);
 }
 
 namespace {
@@ -640,9 +641,9 @@ namespace {
 // A lost pulse therefore costs at most one slice instead of a permanent
 // park. Behaviour is unchanged whenever the pulse is delivered. Kill switch:
 // REX_VFS_LH_HANDSHAKE_EMULATION=0 restores the original INFINITE waits.
-constexpr uint32_t kLhSuspendAckWaitLr = 0x823889FCu;
-constexpr uint32_t kLhResumeKickWaitLr = 0x823882E0u;
-constexpr uint32_t kLhResumeAckWaitLr = 0x82388A6Cu;
+constexpr refii::guest::Addr kLhSuspendAckWaitLr{0x823889FCu};
+constexpr refii::guest::Addr kLhResumeKickWaitLr{0x823882E0u};
+constexpr refii::guest::Addr kLhResumeAckWaitLr{0x82388A6Cu};
 // THE WORLD UPDATE'S PRESENT GATE. rex_lhRenderer_SyncThread (sub_82A3EC50)
 // polls a present-completion event with a bounded 1000ms wait (lr 0x82A3ECB0,
 // loop loc_82A3ECA0) and re-loops while the result is timeout. The render side
@@ -650,7 +651,7 @@ constexpr uint32_t kLhResumeAckWaitLr = 0x82388A6Cu;
 // forever after New Game — the camera frozen in the void (the world loads, the
 // guest is released, but the frame/camera pass never advances). Release it at
 // the call site: signal the event and return signalled so the loop exits.
-constexpr uint32_t kPresentGateWaitLr = 0x82A3ECB0u;
+constexpr refii::guest::Addr kPresentGateWaitLr{0x82A3ECB0u};
 constexpr uint32_t kLhEventSuspendAckEmbedOffset = 196u;
 constexpr uint32_t kLhEventResumeKickEmbedOffset = 328u;
 constexpr uint32_t kLhEventResumeAckEmbedOffset = 460u;
@@ -688,16 +689,16 @@ bool TryEmulateLhRendererHandshakeWait(PPCContext& ctx, uint8_t* base,
   enum class LhWaitKind { kSuspendAck, kResumeKick, kResumeAck };
   LhWaitKind kind;
   uint32_t controller_guest = 0;
-  switch (lr) {
-    case kLhSuspendAckWaitLr:
+  switch (refii::guest::ToTu1(lr)) {
+    case kLhSuspendAckWaitLr.tu1():
       kind = LhWaitKind::kSuspendAck;
       controller_guest = original_ctx.r3.u32 - kLhEventSuspendAckEmbedOffset;
       break;
-    case kLhResumeKickWaitLr:
+    case kLhResumeKickWaitLr.tu1():
       kind = LhWaitKind::kResumeKick;
       controller_guest = original_ctx.r3.u32 - kLhEventResumeKickEmbedOffset;
       break;
-    case kLhResumeAckWaitLr:
+    case kLhResumeAckWaitLr.tu1():
       kind = LhWaitKind::kResumeAck;
       controller_guest = original_ctx.r3.u32 - kLhEventResumeAckEmbedOffset;
       break;
@@ -739,7 +740,7 @@ bool TryEmulateLhRendererHandshakeWait(PPCContext& ctx, uint8_t* base,
     ctx.r3.u32 = original_ctx.r3.u32;
     ctx.r4.s64 = static_cast<int32_t>(kLhWaitSliceMs);
     ctx.r5.u32 = original_ctx.r5.u32;
-    __imp__sub_82B4F400(ctx, base);
+    __imp__rex_lhSyncEvent_Wait(ctx, base);
     ++slices;
     if (ctx.r3.u32 != kLhWaitResultTimeout) {
       // Real wake (or APC): original semantics, pass the result through. Keep
@@ -779,7 +780,7 @@ bool TryEmulateLhRendererHandshakeWait(PPCContext& ctx, uint8_t* base,
 }
 }  // namespace
 
-REX_EXTERN(sub_82B4F400) {
+REX_EXTERN(rex_lhSyncEvent_Wait) {
   REX_FUNC_PROLOGUE();
 
   const PPCContext original_ctx = ctx;
@@ -824,8 +825,8 @@ REX_EXTERN(sub_82B4F400) {
   // startup movies — the property this relies on. The fence itself means the same thing in
   // both phases, so this is a phase heuristic, not a contract.
   const bool frontend_or_databases_up =
-      refii::vfs::LoadGuestU8(base, 0x83496AC4u) != 0u ||
-      refii::vfs::LoadGuestU8(base, 0x83496A5Eu) != 0u;
+      refii::vfs::LoadGuestU8(base, refii::guest::Address(0x83496AC4u)) != 0u ||
+      refii::vfs::LoadGuestU8(base, refii::guest::Address(0x83496A5Eu)) != 0u;
   if (original_ctx.lr == kPresentGateWaitLr && frontend_or_databases_up) {
     ctx.r3.u32 = kLhWaitResultSignalled;
     return;
@@ -860,10 +861,10 @@ REX_EXTERN(sub_82B4F400) {
     return;
   }
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82B4F400);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhSyncEvent_Wait);
 }
 
-REX_EXTERN(sub_82A41B00) {
+REX_EXTERN(rex_lhBinkPlayer_Dtor) {
   REX_FUNC_PROLOGUE();
 
   // BinkClose. r3 is B, the same handle the open hook publishes — and the caller frees the
@@ -872,5 +873,5 @@ REX_EXTERN(sub_82A41B00) {
   // below, which returns straight out in a bank build.
   refii::vfs::NoteBinkMovieClosed(ctx.r3.u32);
 
-  REFII_VFS_NATIVE_PASSTHROUGH(sub_82A41B00);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBinkPlayer_Dtor);
 }

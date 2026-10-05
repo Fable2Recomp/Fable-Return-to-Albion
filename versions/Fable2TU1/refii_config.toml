@@ -80,7 +80,7 @@
 0x82197CE0 = { size = 0x120 }
 0x82197E00 = { size = 0x18C }
 0x82197F98 = { size = 0x58 }
-0x82197FF0 = { size = 0x5C }
+0x82197FF0 = { name = "rex_lhLuaBind_ThunkReturnFloat", size = 0x5C }
 0x82198050 = { size = 0xCC }
 0x82198120 = { size = 0xA0 }
 0x8219A840 = { name = "rex_lua_cpcall", size = 0xC8 }
@@ -297,7 +297,7 @@
 0x822A49F0 = { size = 0xC }
 0x822A94F0 = { size = 0x8 }
 0x822AA340 = { size = 0xD8 }
-0x822AA418 = { size = 0x6C }
+0x822AA418 = { name = "rex_lhLuaBind_ThunkReturnBool", size = 0x6C }
 0x822AA698 = { size = 0x174 }
 0x822AB508 = { name = "rex_lhRenderLayer_Construct", size = 0x98 }
 0x822AD158 = { size = 0x1C }
@@ -306,7 +306,7 @@
 0x822B57D8 = { size = 0xA4 }
 0x822B6DE0 = { size = 0x8 }
 0x822B77E8 = { size = 0x3CC }
-0x822B7BB8 = { size = 0x64 }
+0x822B7BB8 = { name = "rex_lhLuaBind_ThunkVoidOneNumber", size = 0x64 }
 0x822B8010 = { size = 0x178 }
 0x822BDCB0 = { size = 0x5C }
 0x822BE5F8 = { size = 0x100 }
@@ -390,7 +390,7 @@
 0x822F3898 = { name = "rex_lhGame_UpdateThread", size = 0x284 }
 0x822F3B98 = { size = 0x170 }
 0x822F3D08 = { size = 0x84 }
-0x822F3D90 = { size = 0x264 }
+0x822F3D90 = { name = "rex_lhGameData_RunDlcLuaStartupScript", size = 0x264 }
 0x822F3FF8 = { name = "rex_lhGameData_Init", size = 0x218 }
 0x822F4CE8 = { name = "rex_lhGameThread_RunStates", size = 0x15C }
 0x822F4E48 = { name = "rex_lhGameInit_SetupUI", size = 0x2B0 }
@@ -446,7 +446,7 @@
 0x82305A88 = { size = 0x18 }
 0x82305AA0 = { size = 0xA8 }
 0x82305B48 = { size = 0xC0 }
-0x82305C08 = { size = 0xA8 }
+0x82305C08 = { name = "rex_lhScriptGui_FadeScreenIn", size = 0xA8 }
 0x82305CB0 = { size = 0x10 }
 0x82305CC0 = { size = 0x8C }
 0x82305D50 = { size = 0x10 }
@@ -516,7 +516,7 @@
 0x82307500 = { size = 0x18 }
 0x82309BF0 = { size = 0xB4 }
 0x82309CA8 = { size = 0xA0 }
-0x82309D48 = { size = 0x34 }
+0x82309D48 = { name = "rex_lhLuaBind_ThunkVoidNoArgs", size = 0x34 }
 0x82309D80 = { size = 0x68 }
 0x82309DE8 = { size = 0x64 }
 0x82309E50 = { size = 0x40 }
@@ -537,9 +537,9 @@
 0x8230A610 = { size = 0x78 }
 0x8230A688 = { size = 0x40 }
 0x8230A6C8 = { size = 0x94 }
-0x8230A760 = { size = 0x8C }
-0x8230A7F0 = { size = 0xD4 }
-0x8230A8C8 = { size = 0x40 }
+0x8230A760 = { name = "rex_lhLuaBind_ThunkVoidTwoNumbers", size = 0x8C }
+0x8230A7F0 = { name = "rex_lhLuaBind_ThunkVoidFiveArgs", size = 0xD4 }
+0x8230A8C8 = { name = "rex_lhLuaBind_ThunkForwardToDispatcher", size = 0x40 }
 0x8230B070 = { size = 0x8 }
 0x8230B078 = { size = 0x8 }
 0x8230E0E0 = { size = 0x8 }
@@ -1195,7 +1195,7 @@
 0x823BFF90 = { size = 0x40 }
 0x823BFFD0 = { size = 0xA8 }
 0x823C0078 = { size = 0x50 }
-0x823C00C8 = { size = 0x8C }
+0x823C00C8 = { name = "rex_LuaAPI_SetHeroSpellTableItem", size = 0x8C }
 0x823C0158 = { size = 0x8C }
 0x823C01E8 = { size = 0x84 }
 0x823C0270 = { size = 0x84 }
@@ -1611,7 +1611,7 @@
 0x82465B50 = { size = 0x6C }
 0x82465BC0 = { size = 0xA8 }
 0x82465C68 = { size = 0x98 }
-0x824679F8 = { size = 0xB0 }
+0x824679F8 = { name = "rex_lhPubGameManager_StartPubGame", size = 0xB0 }
 0x82479BE0 = { size = 0x58 }
 0x82479C38 = { size = 0x4C }
 0x82479C88 = { size = 0x60 }
@@ -1954,7 +1954,7 @@
 0x824E5B10 = { size = 0x170 }
 0x824E5C80 = { size = 0x170 }
 0x824E5FE0 = { size = 0x90 }
-0x824E6370 = { size = 0x8 }
+0x824E6370 = { name = "rex_CECStats_IsCollectorsEdition", size = 0x8 }
 0x824E6378 = { size = 0x8 }
 0x824E6380 = { size = 0x44 }
 0x824ECD68 = { size = 0x17C }
@@ -2158,7 +2158,7 @@
 0x82536710 = { size = 0x178 }
 0x82536888 = { size = 0x17C }
 0x82536A08 = { size = 0x160 }
-0x8253A630 = { size = 0xC0 }
+0x8253A630 = { name = "rex_CECPlayerWebsiteUnlocks_IsItemUnlocked", size = 0xC0 }
 0x8253B018 = { size = 0x40 }
 0x8253B058 = { size = 0x18C }
 0x8253CA18 = { size = 0x40 }
@@ -3155,7 +3155,7 @@
 0x826A0810 = { size = 0x38 }
 0x826D8458 = { size = 0x40 }
 0x826DA518 = { name = "rex_lh_lua_allocator", size = 0x124 }
-0x826E0D60 = { size = 0xF8 }
+0x826E0D60 = { name = "rex_lhGui_FrontendRoot_HandleGuiEvent", size = 0xF8 }
 0x826E0E58 = { size = 0x1E8 }
 0x826E1040 = { size = 0x3B0 }
 0x826E13F0 = { size = 0x18 }
@@ -5181,8 +5181,8 @@
 0x82B5ACC8 = { name = "rex_lhStream_DecompressStream_Read", size = 0xCC }
 0x82B5B7F0 = { name = "rex_lhStream_Buffered_Flush", size = 0x30 }
 0x82B5B820 = { size = 0x4CC }
-0x82B5C0D8 = { size = 0x8 }
-0x82B5C110 = { size = 0x38 }
+0x82B5C0D8 = { name = "rex_lhVFS_Win32Request_GetSize", size = 0x8 }
+0x82B5C110 = { name = "rex_lhVFS_Win32Request_SetCallbackAndSubmit", size = 0x38 }
 0x82B5CCC0 = { size = 0x8 }
 0x82B5CCC8 = { size = 0x8 }
 0x82B606A8 = { name = "rex_lhTexture_PoolInit", size = 0x10C }
@@ -5198,7 +5198,7 @@
 0x82B6ED10 = { name = "rex_lhRenderer_PrepareFrame", size = 0x78 }
 0x82B6EDE0 = { name = "rex_lhRenderer_SetupFrame", size = 0xE8 }
 0x82B6F1D0 = { name = "rex_lhRenderer_EndScene", size = 0x2EC }
-0x82B6F6C0 = { size = 0x30C }
+0x82B6F6C0 = { name = "rex_lhGfx_CreateDevice", size = 0x30C }
 0x82B6FCE8 = { name = "rex_lhRenderer_GetTimeDelta", size = 0x78 }
 0x82B707D0 = { name = "rex_lhMeshResourceContainer_Init", size = 0x98 }
 0x82B70908 = { name = "rex_lhMeshResource_Deserialize", size = 0xB98 }
@@ -5221,7 +5221,7 @@
 0x82B8D7A8 = { name = "rex_lhGfx_CreateIndexBuffer", size = 0xC4 }
 0x82B90160 = { size = 0x90 }
 0x82B90D10 = { size = 0x12C }
-0x82B96E78 = { size = 0x4 }
+0x82B96E78 = { name = "rex_lhDebugPrint_Nullsub", size = 0x4 }
 0x82B99260 = { name = "rex_XGGetMicrocodeShaderParts", size = 0x50 }
 0x82B993C0 = { name = "rex_XGRegisterVertexShader", size = 0xF8 }
 0x82B99630 = { name = "rex_XGSetVertexDeclaration", size = 0xEC }
@@ -5436,7 +5436,7 @@
 0x82C2FBE8 = { name = "rex___iob_func_125", size = 0xC }
 0x82C2FC00 = { name = "rex___iob_func_126", size = 0xC }
 0x82C2FC0C = { name = "rex___iob_func_127", size = 0xC }
-0x82C2FC78 = { size = 0x8 }
+0x82C2FC78 = { name = "rex_lhStub_ReturnTwelve", size = 0x8 }
 0x82C2FEB0 = { name = "rex___iob_func_128", size = 0xC }
 0x82C2FFB0 = { name = "rex___iob_func_129", size = 0xC }
 0x82C316A8 = { name = "rex___iob_func_130", size = 0xC }
@@ -6930,7 +6930,7 @@
 0x82E9F058 = { name = "rex___iob_func_333", size = 0xC }
 0x82E9F7B8 = { size = 0x64 }
 0x82EA43C0 = { size = 0x4C }
-0x82EA63A8 = {}
+0x82EA63A8 = { name = "rex_lhStub_ReturnOne" }
 0x82EAB070 = { name = "rex___iob_func_334", size = 0xC }
 0x82EABBC0 = { size = 0x48 }
 0x82EAF8F8 = { size = 0x68 }
@@ -10720,20 +10720,20 @@
 0x832C16B0 = { size = 0x2B4 }
 0x832C1968 = { size = 0x29C }
 0x82E8C8E8 = { size = 0x44 }
-0x82176018 = { }
+0x82176018 = { name = "rex_lhDataInputStream_SetPosition" }
 0x8217F3E8 = { }
-0x82180418 = { }
+0x82180418 = { name = "rex_lhLockedStateSingleton_GetInstance" }
 0x82181B68 = { }
 0x821887D8 = { }
 0x82188800 = { }
-0x8218DFB8 = { }
-0x8218FA68 = { }
-0x82190728 = { }
-0x821956A0 = { }
+0x8218DFB8 = { name = "rex_lhIntrusivePtr_Assign" }
+0x8218FA68 = { name = "rex_lhLockedIdTable_QueueEntryUpdate" }
+0x82190728 = { name = "rex_lhDeferredDestroyQueue_DrainWithTimeBudget" }
+0x821956A0 = { name = "rex_lhLua_GcSliceStep" }
 0x82196628 = { }
 0x82196750 = { }
 0x82196980 = { }
-0x8219A9A0 = { }
+0x8219A9A0 = { name = "rex_lhLuaFunctionRef_ProtectedCall" }
 0x8219CC30 = { }
 0x821A4ED0 = { }
 0x821A59E0 = { }
@@ -10745,7 +10745,7 @@
 0x821BA0F0 = { }
 0x821BFDF0 = { }
 0x821C3858 = { }
-0x821C3C60 = { }
+0x821C3C60 = { name = "rex_lhRenderer_DrawScene" }
 0x821C6708 = { }
 0x821C91C8 = { }
 0x821CA5E8 = { }
@@ -10756,12 +10756,12 @@
 0x821D9C98 = { }
 0x821DC158 = { }
 0x821DCAA0 = { }
-0x821DE2E8 = { }
+0x821DE2E8 = { name = "rex_lhRenderCommandStream_PostCreateCommand" }
 0x821E0220 = { }
 0x821E0BF8 = { }
-0x821E2C08 = { }
+0x821E2C08 = { name = "rex_lhRenderer_ClearColorScoped" }
 0x821E2FE0 = { }
-0x821E3108 = { }
+0x821E3108 = { name = "rex_lhCharString_CtorConcat" }
 0x821E56F8 = { }
 0x821E5DB8 = { }
 0x821E8D38 = { }
@@ -10796,8 +10796,8 @@
 0x82208BB0 = { }
 0x8220A3F0 = { }
 0x8220B470 = { }
-0x82214890 = { }
-0x82214DD8 = { }
+0x82214890 = { name = "rex_lhVirtual_ReturnNine" }
+0x82214DD8 = { name = "rex_lhCharString_Dtor" }
 0x82214E30 = { }
 0x82215488 = { }
 0x822154B0 = { }
@@ -10820,19 +10820,19 @@
 0x8221F348 = { }
 0x822224A8 = { }
 0x82225E08 = { }
-0x82228730 = { }
+0x82228730 = { name = "rex_luaD_precall" }
 0x8222A5D8 = { }
-0x8222AB78 = { }
+0x8222AB78 = { name = "rex_lhRenderCommandStream_BeginCommand" }
 0x8222BFA0 = { }
 0x8222C2B0 = { }
-0x8222CED0 = { }
+0x8222CED0 = { name = "rex_lhCharString_CtorFromCStr" }
 0x8222E120 = { }
 0x8222EA20 = { }
-0x82231CB8 = { }
+0x82231CB8 = { name = "rex_lhIntrusivePtr_Reset" }
 0x82231ED8 = { }
 0x82232510 = { }
 0x822326E0 = { }
-0x82237338 = { }
+0x82237338 = { name = "rex_lhRenderState_ResetAllToDefaults" }
 0x82239910 = { }
 0x8223CFA0 = { }
 0x82242108 = { }
@@ -10876,109 +10876,109 @@
 0x822AA0A0 = { }
 0x822AF568 = { }
 0x822B4008 = { }
-0x822B88A8 = { }
+0x822B88A8 = { name = "rex_lhCharString_AssignIfDifferent" }
 0x822C08E8 = { }
 0x822C0968 = { }
-0x822C1BD0 = { }
+0x822C1BD0 = { name = "rex_lhTickDelegate_ForwardToInner" }
 0x822C40C8 = { }
 0x822C4290 = { }
 0x822C6BA8 = { }
-0x822C6C68 = { }
-0x822C72E8 = { }
-0x822C9388 = { }
-0x822CBB98 = { }
-0x822DFE08 = { }
-0x822F3B20 = { }
-0x822F4210 = { }
-0x822F4750 = { }
-0x822F4948 = { }
-0x82313268 = { }
-0x82313270 = { }
-0x82313278 = { }
-0x8231A368 = { }
-0x8231A748 = { }
-0x8231A908 = { }
-0x8231AA98 = { }
-0x8231AAA0 = { }
-0x8231AAA8 = { }
-0x8231AAD0 = { }
-0x823272E0 = { }
-0x8234EF58 = { }
-0x8235D5E8 = { }
-0x8235E1E0 = { }
-0x8235E420 = { }
-0x8235E5A0 = { }
-0x82360300 = { }
-0x82360418 = { }
-0x82360618 = { }
-0x82360968 = { }
-0x82361128 = { }
-0x82361200 = { }
-0x82361AF8 = { }
-0x82372500 = { }
-0x82374728 = { }
-0x82374980 = { }
-0x82377980 = { }
-0x82377A00 = { }
-0x82377DC8 = { }
-0x82377E10 = { }
+0x822C6C68 = { name = "rex_lhScriptTimerSingleton_GetInstance" }
+0x822C72E8 = { name = "rex_lhIoRefCounted_Release" }
+0x822C9388 = { name = "rex_SetEvent" }
+0x822CBB98 = { name = "rex_lhIoRefCounted_AddRef" }
+0x822DFE08 = { name = "rex_lhRenderCommandStream_Drain" }
+0x822F3B20 = { name = "rex_lhGameApp_PollDoneAndClearPending" }
+0x822F4210 = { name = "rex_lhGameData_LoadAudioDatabaseByName" }
+0x822F4750 = { name = "rex_lhGameData_LoadNamedBankEntry" }
+0x822F4948 = { name = "rex_lhGameData_RegisterResourceFilesByName" }
+0x82313268 = { name = "rex_lhInGameState_Init" }
+0x82313270 = { name = "rex_lhInGameState_Shutdown" }
+0x82313278 = { name = "rex_lhInGameState_Run" }
+0x8231A368 = { name = "rex_lhFrontEndGame_VtableSlot6" }
+0x8231A748 = { name = "rex_lhFrontEndGame_ScalarDtor" }
+0x8231A908 = { name = "rex_lhFrontEndState_Ctor" }
+0x8231AA98 = { name = "rex_lhFrontEndState_Init" }
+0x8231AAA0 = { name = "rex_lhFrontEndState_Shutdown" }
+0x8231AAA8 = { name = "rex_lhFrontEndState_Run" }
+0x8231AAD0 = { name = "rex_lhFrontEndState_AbortPendingStart" }
+0x823272E0 = { name = "rex_lhNetManager_ResetSessionState" }
+0x8234EF58 = { name = "rex_lhGameInit_CreateGameSystems" }
+0x8235D5E8 = { name = "rex_lhLoadingScreen_ParseLoadingScreenData" }
+0x8235E1E0 = { name = "rex_lhLoadingScreen_SetupProjection" }
+0x8235E420 = { name = "rex_lhLoadingScreen_CollectTipTexts" }
+0x8235E5A0 = { name = "rex_lhLoadingScreen_UpdateAndRender" }
+0x82360300 = { name = "rex_lhLoadingScreen_DrawLoadingAnimation" }
+0x82360418 = { name = "rex_lhLoadingScreen_DrawTip" }
+0x82360618 = { name = "rex_lhLoadingScreen_DrawLevelTitle" }
+0x82360968 = { name = "rex_lhLoadingScreen_DrawText" }
+0x82361128 = { name = "rex_lhLoadingScreenManager_IsActive" }
+0x82361200 = { name = "rex_lhLoadingScreenManager_Show" }
+0x82361AF8 = { name = "rex_lhLoadingScreenManager_Render" }
+0x82372500 = { name = "rex_lhGuiPresentation_RunLuaString" }
+0x82374728 = { name = "rex_CRemappingFileSystem_AddRemap" }
+0x82374980 = { name = "rex_CRemappingFileSystem_OpenFirstRemappedManifest" }
+0x82377980 = { name = "rex_lhApp_CreateFrontEnd" }
+0x82377A00 = { name = "rex_lhApp_RunStartupLoop" }
+0x82377DC8 = { name = "rex_lhApp_OnSkipMovieInput" }
+0x82377E10 = { name = "rex_lhApp_ScalarDeletingDtor" }
 0x82377F30 = { }
-0x82378020 = { }
-0x82378110 = { }
-0x82378118 = { }
+0x82378020 = { name = "rex_lhAppHolder_ScalarDeletingDtor" }
+0x82378110 = { name = "rex_lhAppHolder_Initialise" }
+0x82378118 = { name = "rex_lhAppHolder_Shutdown" }
 0x823781D8 = { }
-0x823781E0 = { }
-0x82378618 = { }
-0x82378F00 = { }
-0x82379088 = { }
-0x82379170 = { }
-0x82379D78 = { }
-0x8237AA98 = { }
-0x8237FD60 = { }
-0x8237FE30 = { }
-0x823865F8 = { }
-0x82388040 = { }
-0x82388A18 = { }
-0x82388A88 = { }
-0x82388B48 = { }
-0x82389210 = { }
-0x823BEDC0 = { }
-0x823C1658 = { }
-0x823CE420 = { }
-0x82426470 = { }
-0x8244B978 = { }
-0x8244BA28 = { }
-0x8244BAD8 = { }
-0x8244BED0 = { }
-0x82451E40 = { }
-0x82451F18 = { }
-0x82458C88 = { }
-0x82459280 = { }
-0x82467B08 = { }
-0x824732A8 = { }
-0x82473C60 = { }
-0x8247A720 = { }
-0x82487790 = { }
-0x824926A8 = { }
-0x8252AA18 = { }
-0x826D5E48 = { }
-0x826D6108 = { }
-0x826DB598 = { }
-0x8286FDB0 = { }
-0x82882C88 = { }
-0x828D4110 = { }
-0x8290DD10 = { }
-0x82A20EE8 = { }
-0x82A415C0 = { }
-0x82A41758 = { }
-0x82A41B00 = { }
-0x82A41B48 = { }
+0x823781E0 = { name = "rex_lhAppHolder_GetRenderer" }
+0x82378618 = { name = "rex_lhFrontEnd_Enter" }
+0x82378F00 = { name = "rex_lhRefPtrPair_Assign" }
+0x82379088 = { name = "rex_lhFrontEnd_BindScrollingElement" }
+0x82379170 = { name = "rex_lhFrontEnd_Update" }
+0x82379D78 = { name = "rex_lhRefPtrPair_CtorFromMovedPtr" }
+0x8237AA98 = { name = "rex_lhTextManager_GetString" }
+0x8237FD60 = { name = "rex_lhVFSConfig_LoadConfigByName" }
+0x8237FE30 = { name = "rex_lhVFSConfig_FindFileSystemFailingPredicate" }
+0x823865F8 = { name = "rex_lhMarketplace_RefreshOfferCounts" }
+0x82388040 = { name = "rex_lhRenderer_FlushAndWaitFrame" }
+0x82388A18 = { name = "rex_lhRenderer_ResumeThread" }
+0x82388A88 = { name = "rex_lhRenderer_SetFrameRequest" }
+0x82388B48 = { name = "rex_lhRenderer_SetRenderDeadline" }
+0x82389210 = { name = "rex_lhBinkMovieHolder_UpdateAndDraw" }
+0x823BEDC0 = { name = "rex_lhLuaConsole_RunStartupConsoleScripts" }
+0x823C1658 = { name = "rex_lhCutsceneMoviePlayer_RenderUpdate" }
+0x823CE420 = { name = "rex_lhLuaNamespace_RegisterFunctionHash" }
+0x82426470 = { name = "rex_lhGui_RunLuaString" }
+0x8244B978 = { name = "rex_lhActionHandlerRegistry_AddHandler" }
+0x8244BA28 = { name = "rex_lhActionHandlerRegistry_RemoveHandler" }
+0x8244BAD8 = { name = "rex_lhActionHandlerRegistry_SetActiveTypesForPlayer" }
+0x8244BED0 = { name = "rex_lhActionHandlerRegistry_CollectHandlersByPlayerAndType" }
+0x82451E40 = { name = "rex_lhLua_RunScriptFile" }
+0x82451F18 = { name = "rex_lhLua_RunScriptBuffer" }
+0x82458C88 = { name = "rex_lhLuaBindings_RegisterGameNamespaces" }
+0x82459280 = { name = "rex_lhLuaScriptSystem_LoadStartupScripts" }
+0x82467B08 = { name = "rex_lhPubGameManager_RenderFrameUpdate" }
+0x824732A8 = { name = "rex_lhFactionManager_Init" }
+0x82473C60 = { name = "rex_lhRepeatDelayTable_InitFromGDB" }
+0x8247A720 = { name = "rex_lhGDBDefRegistry_RegisterEntriesFromDef" }
+0x82487790 = { name = "rex_lhDynamicRewards_LoadSettings" }
+0x824926A8 = { name = "rex_lhSpeechFrequency_LoadLifetimeSettings" }
+0x8252AA18 = { name = "rex_lhRefPtr_Assign" }
+0x826D5E48 = { name = "rex_lhGui_PreviewScene_CreateSceneObjects" }
+0x826D6108 = { name = "rex_lhGui_PreviewScene_Dtor" }
+0x826DB598 = { name = "rex_lhGui_LoadTunableVectorGlobals" }
+0x8286FDB0 = { name = "rex_lhGui_AcquireFontFromActiveContext" }
+0x82882C88 = { name = "rex_lhInputMap_LoadFromGameData" }
+0x828D4110 = { name = "rex_lhFoldedGetter_DwordAtOffsetThirtyTwo" }
+0x8290DD10 = { name = "rex_lhVFS_Win32Request_GetStatus" }
+0x82A20EE8 = { name = "rex_lhBufferedReader_Read" }
+0x82A415C0 = { name = "rex_lhStreamedTextureDesc_Ctor" }
+0x82A41758 = { name = "rex_lhStreamedTextureDesc_CloneToCommandBuffer" }
+0x82A41B00 = { name = "rex_lhBinkPlayer_Dtor" }
+0x82A41B48 = { name = "rex_lhBinkPlayer_Open" }
 0x82A41F10 = { }
 0x82A42D20 = { }
 0x82A42FA0 = { }
 0x82A431A8 = { }
 0x82A4E8D0 = { }
-0x82A4E998 = { }
+0x82A4E998 = { name = "rex_lhAnimationBank_OpenGlobal" }
 0x82A4F5D8 = { }
 0x82A5AA98 = { }
 0x82A61860 = { }
@@ -11007,75 +11007,75 @@
 0x82ABD088 = { }
 0x82B1E1B8 = { }
 0x82B285F8 = { }
-0x82B456D8 = { }
-0x82B45F70 = { }
-0x82B49028 = { }
-0x82B49220 = { }
-0x82B49D80 = { }
-0x82B4E6D0 = { }
-0x82B4E8E0 = { }
-0x82B4EC30 = { }
-0x82B4ED70 = { }
-0x82B4F400 = { }
-0x82B504D8 = { }
-0x82B53438 = { }
-0x82B54250 = { }
-0x82B54268 = { }
-0x82B542D8 = { }
-0x82B542F0 = { }
-0x82B54D28 = { }
-0x82B54E58 = { }
-0x82B5AD98 = { }
-0x82B5BFF8 = { }
-0x82B5C0C0 = { }
-0x82B5C0E0 = { }
-0x82B5C148 = { }
-0x82B5C160 = { }
+0x82B456D8 = { name = "rex_lhVFS_RequestManager_FindStreamByHashEntry" }
+0x82B45F70 = { name = "rex_lhVFS_RequestManager_BuildProviderHash" }
+0x82B49028 = { name = "rex_lhLockFreeQueue_Push" }
+0x82B49220 = { name = "rex_lhLockFreeQueue_Pop" }
+0x82B49D80 = { name = "rex_stdListDword_Insert" }
+0x82B4E6D0 = { name = "rex_lhVFS_PagedStream_Read" }
+0x82B4E8E0 = { name = "rex_lhVFS_PagedStream_Write" }
+0x82B4EC30 = { name = "rex_lhVFS_PagedStream_FlushPage" }
+0x82B4ED70 = { name = "rex_lhVFS_PagedStream_LoadPageAt" }
+0x82B4F400 = { name = "rex_lhSyncEvent_Wait" }
+0x82B504D8 = { name = "rex_lhVFS_ProviderSet_OpenCompositeDevice" }
+0x82B53438 = { name = "rex_lhMem_ReserveCommitAlignedVirtual" }
+0x82B54250 = { name = "rex_lhVFS_BasicBufferedRequest_WaitForCompletion" }
+0x82B54268 = { name = "rex_lhVFS_BasicBufferedRequest_GetResultBuffer" }
+0x82B542D8 = { name = "rex_lhVFS_BasicBufferedRequest_GetStatus" }
+0x82B542F0 = { name = "rex_lhVFS_BasicBufferedRequest_GetDevice" }
+0x82B54D28 = { name = "rex_lhVFS_Win32Device_ScalarDeletingDtor" }
+0x82B54E58 = { name = "rex_lhVFS_Win32Device_CreateRequest" }
+0x82B5AD98 = { name = "rex_lhVFS_CompositeDevice_CreateRequest" }
+0x82B5BFF8 = { name = "rex_lhVFS_Win32Request_WaitForCompletion" }
+0x82B5C0C0 = { name = "rex_lhVFS_Win32Request_GetBufferSpec" }
+0x82B5C0E0 = { name = "rex_lhVFS_Win32Request_ForwardToCompletionTarget" }
+0x82B5C148 = { name = "rex_lhVFS_Request_ForwardInnerGetSize" }
+0x82B5C160 = { name = "rex_lhVFS_Win32Request_GetDevice" }
 0x82B667F0 = { }
 0x82B668D0 = { }
-0x82B6C340 = { }
-0x82B6DB20 = { }
+0x82B6C340 = { name = "rex_lhTextureStreamRequest_LoadPixels" }
+0x82B6DB20 = { name = "rex_lhTextureStreamRequest_OpenStream" }
 0x82B6EA60 = { }
 0x82B6F040 = { }
 0x82B6F5C8 = { }
-0x82B70868 = { }
-0x82B75328 = { }
-0x82B75D18 = { }
+0x82B70868 = { name = "rex_lhMeshResourceContainer_Remove" }
+0x82B75328 = { name = "rex_lhGfx_InitRenderStateTable" }
+0x82B75D18 = { name = "rex_lhGfx_ApplyDefaultRenderStates" }
 0x82B81868 = { }
 0x82B843B8 = { }
 0x82B84460 = { }
-0x82B86B40 = { }
+0x82B86B40 = { name = "rex_lhGfx_InitStandardVertexDecls" }
 0x82B87330 = { }
 0x82B876F0 = { }
 0x82B87738 = { }
 0x82B87818 = { }
 0x82B8AB30 = { }
-0x82B8BA38 = { }
-0x82B8C158 = { }
-0x82B8C4A8 = { }
-0x82B8C5F0 = { }
-0x82B8CAC0 = { }
-0x82B8CDF8 = { }
-0x82B8CEE0 = { }
-0x82B8D028 = { }
-0x82B8D170 = { }
-0x82B8D280 = { }
-0x82B8D2D0 = { }
-0x82B8D348 = { }
-0x82B8D3D8 = { }
-0x82B8D468 = { }
-0x82B8D500 = { }
-0x82B8D718 = { }
-0x82B8D870 = { }
-0x82B8D8C8 = { }
-0x82B8DC78 = { }
-0x82B8DCE0 = { }
-0x82B8DDB0 = { }
-0x82B8DE40 = { }
-0x82B8DF50 = { }
+0x82B8BA38 = { name = "rex_lhTextureHeader_ReadFromStream" }
+0x82B8C158 = { name = "rex_lhTexture_LoadCubeMipsFromStream" }
+0x82B8C4A8 = { name = "rex_lhTexture_DecodeCubeFromStream" }
+0x82B8C5F0 = { name = "rex_lhTexture_BuildMipTextureHeader" }
+0x82B8CAC0 = { name = "rex_lhTexture_LoadMipsFromStream" }
+0x82B8CDF8 = { name = "rex_lhTexture_DecodeFromStream" }
+0x82B8CEE0 = { name = "rex_lhTexture_CreateFromStream" }
+0x82B8D028 = { name = "rex_lhTexture_LoadFromStreamWithHeader" }
+0x82B8D170 = { name = "rex_lhTexture_LoadFromStream" }
+0x82B8D280 = { name = "rex_lhTextureLock_ScalarDeletingDtor" }
+0x82B8D2D0 = { name = "rex_lhTextureLock_Dtor" }
+0x82B8D348 = { name = "rex_lhTextureLock_LockTexture" }
+0x82B8D3D8 = { name = "rex_lhTextureLock_LockSurface" }
+0x82B8D468 = { name = "rex_lhTextureLock_Unlock" }
+0x82B8D500 = { name = "rex_lhGfx_ReleaseVertexDecl" }
+0x82B8D718 = { name = "rex_lhGfx_BufferHandle_Assign" }
+0x82B8D870 = { name = "rex_lhGfx_LockWholeBuffer" }
+0x82B8D8C8 = { name = "rex_lhRect_SubtractIntoList" }
+0x82B8DC78 = { name = "rex_lhGfx_CreateCubeTexture" }
+0x82B8DCE0 = { name = "rex_lhTexture_GetMemorySize" }
+0x82B8DDB0 = { name = "rex_lhTexture_LockCubeFace" }
+0x82B8DE40 = { name = "rex_lhRenderBufferOwner_Ctor" }
+0x82B8DF50 = { name = "rex_lhRenderBufferOwner_ScalarDeletingDtor" }
 0x82B94DE0 = { }
 0x82B96028 = { }
-0x82B96220 = { }
+0x82B96220 = { name = "rex_lhTextureDecoder_GetInstance" }
 0x82B96EF0 = { }
 0x82B96F60 = { }
 0x82B96FD0 = { }
@@ -11130,28 +11130,28 @@
 0x82BAE960 = { }
 0x82BAEA88 = { }
 0x82BAEC38 = { }
-0x82BBA8D0 = { }
-0x82C0EE10 = { }
-0x82C51CA0 = { }
-0x82C51EC0 = { }
-0x82C68F30 = { }
-0x82C6E8F0 = { }
-0x82C6EA48 = { }
-0x82C6EA80 = { }
-0x82C6EAD8 = { }
-0x82C72E60 = { }
-0x82C73028 = { }
-0x82C8C718 = { }
-0x82CC38E8 = { }
-0x82CD92B0 = { }
-0x82CD93E0 = { }
-0x82CD9490 = { }
-0x82CD9548 = { }
-0x82CD9590 = { }
+0x82BBA8D0 = { name = "rex_lhItemManager_NotifyAndRemoveItem" }
+0x82C0EE10 = { name = "rex_lhResourceWrapper_GetSize" }
+0x82C51CA0 = { name = "rex_lhAudioObject_LoadFromStream" }
+0x82C51EC0 = { name = "rex_lhAudioObject_LoadFromFile" }
+0x82C68F30 = { name = "rex_lhResourceManager_QueryNameHash" }
+0x82C6E8F0 = { name = "rex_lhFile_ReadSequential" }
+0x82C6EA48 = { name = "rex_lhFile_GetStreamSizeLow" }
+0x82C6EA80 = { name = "rex_lhFile_HasData" }
+0x82C6EAD8 = { name = "rex_lhFile_GetDataPointer" }
+0x82C72E60 = { name = "rex_lhStream_DiskStream_ReadDirect" }
+0x82C73028 = { name = "rex_lhStream_DiskStream_GetInnerSize" }
+0x82C8C718 = { name = "rex_lhXmlDocument_ResetAndParseStream" }
+0x82CC38E8 = { name = "rex_SwitchToThread" }
+0x82CD92B0 = { name = "rex_XAudioDestroyVoice" }
+0x82CD93E0 = { name = "rex_XAudioSetChannelVolumes" }
+0x82CD9490 = { name = "rex_XAudioSubmitSourceBuffer" }
+0x82CD9548 = { name = "rex_XAudioStartVoice" }
+0x82CD9590 = { name = "rex_XAudioStopVoice" }
 0x82CD9650 = { }
-0x82CD97B0 = { }
-0x82CD9828 = { }
-0x82CD9B00 = { }
+0x82CD97B0 = { name = "rex_XAudioSetVolume" }
+0x82CD9828 = { name = "rex_XAudioSetPitch" }
+0x82CD9B00 = { name = "rex_XAudioCreateSourceVoice" }
 0x82CFD4A8 = { }
 0x82D14378 = { }
 0x82D14B20 = { }
@@ -11179,8 +11179,8 @@
 0x830117B8 = { }
 0x83011AE0 = { }
 0x83013A70 = { }
-0x83032078 = { }
-0x83032088 = { }
+0x83032078 = { name = "rex_lhStream_ReturnENotImpl" }
+0x83032088 = { name = "rex_lhStream_ReturnEFail" }
 0x830FE488 = { }
 0x831CBAF8 = { }
 0x831CFA58 = { }
@@ -11219,7 +11219,7 @@
 0x821E1F40 = { }
 0x821E8C78 = { }
 0x821EB130 = { }
-0x821F7800 = { }
+0x821F7800 = { name = "rex_lhCharString_Ctor" }
 0x821FC178 = { }
 0x82202D10 = { }
 0x822059E8 = { }
@@ -11229,7 +11229,7 @@
 0x82220CA8 = { }
 0x82227A50 = { }
 0x82229218 = { }
-0x8222ABE0 = { }
+0x8222ABE0 = { name = "rex_lhRenderCommandStream_Reserve" }
 0x8222C568 = { }
 0x8222C818 = { }
 0x822373F0 = { }
@@ -11237,21 +11237,21 @@
 0x822383A0 = { }
 0x822398D0 = { }
 0x8223DB60 = { }
-0x822651A0 = { }
+0x822651A0 = { name = "rex_lhCharString_Assign" }
 0x8226B078 = { }
 0x8226D908 = { }
-0x82275438 = { }
+0x82275438 = { name = "rex_lhCharString_AssignCStr" }
 0x82292AC0 = { }
 0x82298630 = { }
 0x82298998 = { }
 0x82299AE8 = { }
 0x8229BA10 = { }
-0x822D6408 = { }
+0x822D6408 = { name = "rex_lhWideString_CtorFromWStr" }
 0x822D7888 = { }
-0x822F22B8 = { }
-0x822F2308 = { }
-0x82313400 = { }
-0x82319928 = { }
+0x822F22B8 = { name = "rex_lhResourceName_Dtor" }
+0x822F2308 = { name = "rex_lhResourceName_CopyCtor" }
+0x82313400 = { name = "rex_lhBankDirectory_EntryAt" }
+0x82319928 = { name = "rex_lhFrontEndGame_CreateInGameState" }
 0x8235CA90 = { }
 0x8235CCB8 = { }
 0x8235CED8 = { }
@@ -11259,20 +11259,20 @@
 0x8235D268 = { }
 0x8235F108 = { }
 0x8235FDC0 = { }
-0x82374D78 = { }
-0x82374F70 = { }
-0x82379838 = { }
-0x823C0D90 = { }
-0x823C1CB0 = { }
-0x823DCB10 = { }
-0x823DCC70 = { }
-0x82426518 = { }
-0x82426CA8 = { }
-0x82443308 = { }
+0x82374D78 = { name = "rex_lhVFSPathVector_PushBack" }
+0x82374F70 = { name = "rex_CRemappingFileSystem_GetOrInsertRemapEntry" }
+0x82379838 = { name = "rex_lhFrontEnd_SetStartGameTarget" }
+0x823C0D90 = { name = "rex_lhCutsceneMoviePlayer_StartMovie" }
+0x823C1CB0 = { name = "rex_lhCutsceneMoviePlayer_SetState" }
+0x823DCB10 = { name = "rex_lhGuiPresentation_LoadIfUnloaded" }
+0x823DCC70 = { name = "rex_lhGuiPresentation_RunInitScripts" }
+0x82426518 = { name = "rex_lhGuiPresentation_GetRootElement" }
+0x82426CA8 = { name = "rex_lhGuiElement_GoToSlideAndRestart" }
+0x82443308 = { name = "rex_lhSaveManager_CountSavedGamesAllDevices" }
 0x82456E60 = { }
-0x82467E40 = { }
+0x82467E40 = { name = "rex_lhPubGameManager_SetState" }
 0x824EB290 = { }
-0x826DFD58 = { }
+0x826DFD58 = { name = "rex_lhGui_FrontendRoot_MenuActionDispatch" }
 0x826E4E58 = { }
 0x826E4F68 = { }
 0x82870B70 = { }
@@ -11287,9 +11287,9 @@
 0x82A77C48 = { }
 0x82A780C0 = { }
 0x82A8F1D8 = { }
-0x82A8F6E8 = { }
+0x82A8F6E8 = { name = "rex_lhHandleAllocator_RefillLocalFreeList" }
 0x82A931E0 = { }
-0x82A97368 = { }
+0x82A97368 = { name = "rex_stdListDword_InsertWithLengthCheck" }
 0x82AB99F8 = { }
 0x82AB9CF8 = { }
 0x82ABA800 = { }
@@ -11298,8 +11298,205 @@
 0x82BA2500 = { }
 0x82BA4AF8 = { }
 0x82BCBD08 = { }
-0x82D00278 = { }
+0x82D00278 = { name = "rex_XStorageEnumerate" }
 0x82EF2A90 = { }
 0x8300F7E8 = { }
 0x83012888 = { }
 0x831C51F8 = { }
+0x8217FA50 = { name = "rex_lhGraphicAppearanceMorph_RebuildParts" }
+0x82191F50 = { name = "rex_lhStreamedTexture_PollPendingCompletions" }
+0x821A61B0 = { name = "rex_lhGameLoop_HighFrequencyUpdate" }
+0x821C67F8 = { name = "rex_lhWideString_Dtor" }
+0x821C7D30 = { name = "rex_lhHeroStats_GetRenown" }
+0x8220DE88 = { name = "rex_lhGraphicAppearanceMorph_ApplyTextureLayers" }
+0x8222AAC8 = { name = "rex_lhRenderCommandStream_PostModelCommand" }
+0x8223D320 = { name = "rex_lhHeroStats_GetMorality" }
+0x8223D910 = { name = "rex_lhHeroStats_GetPurity" }
+0x82284798 = { name = "rex_lhGuiAttributeService_SetElementAttribute" }
+0x82284BE8 = { name = "rex_lhGuiAttributeService_SetElementFlags" }
+0x8229ABD8 = { name = "rex_lhGuiManager_TickUpdate" }
+0x822EEA50 = { name = "rex_lhXboxLive_ProcessJoinResponse" }
+0x82315AD0 = { name = "rex_lhCoop_ArmHenchmanWeapons" }
+0x8231A9A8 = { name = "rex_lhFrontEndState_ScalarDtor" }
+0x8231CA18 = { name = "rex_lhWorld_ComputeWorldLevelFnv1Key" }
+0x8231E258 = { name = "rex_lhWorld_LookupScenarioNameByLevelKey" }
+0x8232B518 = { name = "rex_lhNetManager_ProcessInboundSessionPacket" }
+0x8232CBA8 = { name = "rex_lhNetManager_DisplayCoopScreen" }
+0x8232E398 = { name = "rex_lhNetManager_ProcessInboundGamePacket" }
+0x82334A60 = { name = "rex_lhNetManager_FindEntityByNetId" }
+0x82334E60 = { name = "rex_lhNetManager_AcceptJoinAsClient" }
+0x8233C508 = { name = "rex_lhNetManager_GetHenchmanCreatureName" }
+0x8233C640 = { name = "rex_lhNetManager_GetHenchmanMeleeWeaponName" }
+0x8233C778 = { name = "rex_lhNetManager_GetHenchmanRangedWeaponName" }
+0x8233D090 = { name = "rex_lhNetManager_SetupHenchman" }
+0x82365258 = { name = "rex_lhEntityManager_ChangeEntityType" }
+0x8236E458 = { name = "rex_lhGuiManager_RouteModalInput" }
+0x8236ED98 = { name = "rex_lhGuiManager_ExitScreen" }
+0x8236F110 = { name = "rex_lhGuiManager_OpenExpressionWheel" }
+0x8236F340 = { name = "rex_lhGuiManager_CloseExpressionWheel" }
+0x8236F400 = { name = "rex_lhGuiManager_CanPlayerOpenQuickMenu" }
+0x8236F788 = { name = "rex_lhGuiManager_OpenSpellsMenu" }
+0x8236F968 = { name = "rex_lhGuiManager_CloseSpellsMenu" }
+0x8236FF58 = { name = "rex_lhGuiManager_ClearModalState" }
+0x8236FFC0 = { name = "rex_lhGuiManager_FindScreenHandler" }
+0x82371860 = { name = "rex_lhGui_RegisterPlayer" }
+0x8237AC80 = { name = "rex_lhTextManager_FindTextGroup" }
+0x8237E040 = { name = "rex_lhBabel_MaterializeString" }
+0x82382558 = { name = "rex_lhProfile_GetSubtitlesEnabled" }
+0x823889A8 = { name = "rex_lhRenderer_SuspendThread" }
+0x82389040 = { name = "rex_lhBinkMoviePlayer_Ctor" }
+0x82389AF8 = { name = "rex_lhPlayer_ScalarDeletingDtor" }
+0x82389FB8 = { name = "rex_lhPlayer_ChangeEntityType" }
+0x8238BE08 = { name = "rex_lhEntity_Activate" }
+0x8238D828 = { name = "rex_lhEntity_Destroy" }
+0x823C6C18 = { name = "rex_lhRegionStats_FormatFineText" }
+0x823C6E50 = { name = "rex_lhRegionStats_FormatMerchantsText" }
+0x823C7030 = { name = "rex_lhRegionStats_FormatPropertiesOwnedText" }
+0x823C7250 = { name = "rex_lhRegionStats_FormatChestsText" }
+0x823C7450 = { name = "rex_lhRegionStats_FormatDigSpotsText" }
+0x823C7690 = { name = "rex_lhRegionStats_FormatGargoylesText" }
+0x823C7988 = { name = "rex_lhRegionStats_FormatDiveSpotsText" }
+0x823C7BC8 = { name = "rex_lhRegionStats_FormatSilverKeysText" }
+0x823C8BE0 = { name = "rex_lhRegionStats_FormatTravelTimeText" }
+0x823C9000 = { name = "rex_lhRegionStats_FormatDistanceText" }
+0x823C9228 = { name = "rex_lhGuiText_FormatDaysRemaining" }
+0x823CDC08 = { name = "rex_lhGuiMinigameCompletedScreen_HandleAction" }
+0x823CEAE8 = { name = "rex_lhDisplayMessageBox_Dtor" }
+0x823CEB58 = { name = "rex_lhDisplayMessageBox_Open" }
+0x823CEC98 = { name = "rex_lhDisplayMessageBox_Close" }
+0x823CEDD8 = { name = "rex_lhDisplayMessageBox_HandleAction" }
+0x823CF3B0 = { name = "rex_lhDisplayQueryBox_HandleAction" }
+0x823CF8A8 = { name = "rex_lhDisplayNumericAdjuster_HandleAction" }
+0x823D0090 = { name = "rex_lhDisplayQuestBox_HandleAction" }
+0x823D3F98 = { name = "rex_lhGuiQuestCompletionScreen_HandleAction" }
+0x823DBB48 = { name = "rex_lhMenuBox_SetSelection" }
+0x823DC2B0 = { name = "rex_lhMenuBox_Close" }
+0x823DC720 = { name = "rex_lhMenuBox_Accept" }
+0x823DCBE0 = { name = "rex_lhGuiPresentationSet_GetCurrent" }
+0x823E0FF8 = { name = "rex_lhEntity_UseInventoryItem" }
+0x823F2718 = { name = "rex_lhGiftComponent_GiveGift" }
+0x82404ED0 = { name = "rex_lhGuiInput_OnDirectionHeld" }
+0x82405030 = { name = "rex_lhGuiInput_OnDirectionReleased" }
+0x82425DD0 = { name = "rex_lhGuiElement_SetText" }
+0x82425F40 = { name = "rex_lhGuiElement_SetTextFromTag" }
+0x82426BA8 = { name = "rex_lhGuiElement_GoToSlide" }
+0x82427FD0 = { name = "rex_lhECTargeted_SetTargetedByPlayer" }
+0x82430468 = { name = "rex_lhGuiGiftGoldScreen_PopulateMenu" }
+0x82437BF0 = { name = "rex_lhCoopScreen_GetMannequinDefName" }
+0x82438818 = { name = "rex_lhCoopScreen_SpawnPreviewMannequin" }
+0x82441CB8 = { name = "rex_lhSaveManager_SelectStorageDevice" }
+0x8246BB10 = { name = "rex_lhRegionManager_FindFastTravelStopForLevel" }
+0x8246C970 = { name = "rex_lhGuiAbilitiesScreen_PurchaseStrengthOrSkillLevel" }
+0x8246E800 = { name = "rex_lhWorldMap_BuildQuestList" }
+0x8246EA08 = { name = "rex_lhWorldMap_BuildJobList" }
+0x8246EC10 = { name = "rex_lhWorldMap_BuildSalesList" }
+0x8246F020 = { name = "rex_lhWorldMap_BuildFamilyList" }
+0x8246FE20 = { name = "rex_lhRegionStats_GetEconomyRating" }
+0x824707E8 = { name = "rex_lhWorldMap_CanFastTravelTo" }
+0x82470CD0 = { name = "rex_lhFamily_GetFastTravelStopFromGameData" }
+0x82470F80 = { name = "rex_lhQuestTrail_IsTrailActive" }
+0x82470FE8 = { name = "rex_lhQuestTrail_IsTargetingEntity" }
+0x82471438 = { name = "rex_lhQuestTrail_HasNoDestination" }
+0x824AB170 = { name = "rex_CECWeaponSet_PlayWeaponDrawEffect" }
+0x824ABA28 = { name = "rex_CECWeaponSet_EquipWeaponByRecord" }
+0x824AC920 = { name = "rex_CECWeaponSet_GetSlotNameForRecord" }
+0x824AD108 = { name = "rex_CECWeaponSet_RecordDrawnItem" }
+0x824BEB78 = { name = "rex_CECAppearanceModifiers_ApplyInitialModifiers" }
+0x824BF068 = { name = "rex_CECAppearanceModifiers_WearItemByDefHash" }
+0x824BF4D8 = { name = "rex_CECAppearanceModifiers_RemoveWornByCategory" }
+0x824C3570 = { name = "rex_CECAppearanceModifiers_GetModifierEffectTerm" }
+0x824C3940 = { name = "rex_CECAppearanceModifiers_GetHomeBonusTerm" }
+0x824C3AF8 = { name = "rex_CECAppearanceModifiers_GetPreferenceTerm" }
+0x824C4030 = { name = "rex_CECAppearanceModifiers_GetPurityOpinionTerm" }
+0x824E0B40 = { name = "rex_CECStats_FlushAppearance" }
+0x824E2F28 = { name = "rex_CECStats_SetAbilityLevel" }
+0x824EFFC8 = { name = "rex_CECInventory_AddInitialItems" }
+0x824F0370 = { name = "rex_CECInventory_AddItemByDefHash" }
+0x824F0820 = { name = "rex_CECInventory_AddOneOfRecord" }
+0x824F1C90 = { name = "rex_CECInventory_FindItemByRecordHash" }
+0x824F26A8 = { name = "rex_CECInventory_InstantiateHeldRecord" }
+0x824FB5D8 = { name = "rex_CECHeldItems_AttachItemToSlot" }
+0x824FCB20 = { name = "rex_CECHeldItems_ReleaseSlot" }
+0x82518490 = { name = "rex_lhRegionManager_FindRegionOwningLevel" }
+0x82537128 = { name = "rex_lhGuiReceiveItemsScreen_OnScreenAction" }
+0x82541F30 = { name = "rex_CECSpellManager_SetSpellSlot" }
+0x82571DF8 = { name = "rex_CECGraphicAppearance_Ctor" }
+0x82571FF0 = { name = "rex_CECGraphicAppearance_ScalarDtor" }
+0x82572238 = { name = "rex_CECGraphicAppearance_Serialize" }
+0x82573318 = { name = "rex_CECGraphicAppearance_ReplicateAppearance" }
+0x825738F0 = { name = "rex_CECGraphicAppearance_SetHighlightColour" }
+0x825B38B0 = { name = "rex_lhSetTextureLayersCommand_Ctor" }
+0x825B5F30 = { name = "rex_CECCompositeModel_ApplyCharacterCreationRecord" }
+0x825B9F60 = { name = "rex_lhPodVector_FreeStorage" }
+0x825F81E0 = { name = "rex_lhFx_SpawnFromDefProperty" }
+0x826A26E8 = { name = "rex_lhGuiPauseRootScreen_OnMenuEvent" }
+0x826A92D8 = { name = "rex_lhGuiCrimeScreen_OnMenuEvent" }
+0x826A96B8 = { name = "rex_lhGuiCrimeScreen_OnScreenAction" }
+0x826AA060 = { name = "rex_lhGuiExpressionWheel_SetCursorFromStick" }
+0x826AA230 = { name = "rex_lhGuiExpressionWheel_Accept" }
+0x826AA510 = { name = "rex_lhGuiExpressionWheel_Back" }
+0x826AA5D8 = { name = "rex_lhGuiExpressionWheel_EndHeldExpression" }
+0x826AE5C0 = { name = "rex_lhGuiShopScreen_OnMenuEvent" }
+0x826AE760 = { name = "rex_lhGuiShopScreen_OnScreenAction" }
+0x826B2210 = { name = "rex_lhGuiRealEstateScreen_OnMenuEvent" }
+0x826B2A18 = { name = "rex_lhGuiRealEstateScreen_OnScreenAction" }
+0x826B4358 = { name = "rex_lhGuiWillAssignWidget_Ctor" }
+0x826B4448 = { name = "rex_lhGuiWillAssignWidget_CanOpen" }
+0x826B5430 = { name = "rex_lhGuiWillAssignWidget_OnScreenAction" }
+0x826B65F0 = { name = "rex_lhGuiScreen_OnMenuEventNavSoundsOnly" }
+0x826B6D98 = { name = "rex_lhGuiSelectionScreen_OnScreenAction" }
+0x826B7770 = { name = "rex_lhGuiDecorationScreen_OnScreenAction" }
+0x826B83D0 = { name = "rex_lhGuiPauseMenu_IsTabAvailable" }
+0x826B9210 = { name = "rex_lhGuiPresentation_GetFloatParam" }
+0x826B9440 = { name = "rex_lhGuiPresentation_SetFloatParam" }
+0x826B9510 = { name = "rex_lhGuiPresentation_SetStringParam" }
+0x826C2660 = { name = "rex_lhGuiAbilitiesScreen_OnMenuEvent" }
+0x826C2958 = { name = "rex_lhGuiAbilitiesScreen_OnScreenAction" }
+0x826C45C8 = { name = "rex_lhGuiGiftGivingScreen_OnMenuEvent" }
+0x826C4BC0 = { name = "rex_lhGuiGiftGivingScreen_OnScreenAction" }
+0x826C6110 = { name = "rex_lhGuiWorldMapScreen_OnMenuEvent" }
+0x826C63C8 = { name = "rex_lhGuiWorldMapScreen_OnScreenAction" }
+0x826C6EE8 = { name = "rex_lhWorldMapSaleVector_Destroy" }
+0x826C9450 = { name = "rex_lhFamilyMemberVector_Destroy" }
+0x826C9AB8 = { name = "rex_lhGuiInventory_ActivateItemByCategory" }
+0x826CAB78 = { name = "rex_lhGuiInventory_ApplyDyeToItem" }
+0x826CAE08 = { name = "rex_lhGuiInventory_ScrubDyeFromItem" }
+0x826CB120 = { name = "rex_lhGuiInventory_ItemHasDyeLayer" }
+0x826CBF10 = { name = "rex_lhGui_InventoryActions_EquipOwnedSuitParts" }
+0x826CC430 = { name = "rex_lhGui_InventoryActions_UnequipClothingByEventType" }
+0x826CCBA8 = { name = "rex_lhGuiQueryScreen_OnScreenAction" }
+0x826CE110 = { name = "rex_lhGui_InGameMenu_DeleteAllSpawnedMenuItems" }
+0x826CE8D0 = { name = "rex_lhGui_InGameMenu_SpawnButton" }
+0x826D1800 = { name = "rex_lhGuiItemsScreen_OnMenuEvent" }
+0x826D2560 = { name = "rex_lhGuiItemsScreen_OnScreenAction" }
+0x826D4D58 = { name = "rex_lhGuiClothingScreen_OnMenuEvent" }
+0x826D5120 = { name = "rex_lhGuiClothingScreen_OnScreenAction" }
+0x826D9620 = { name = "rex_lhGuiLogbookScreen_OnMenuEvent" }
+0x826D96F0 = { name = "rex_lhGuiLogbookScreen_OnScreenAction" }
+0x826DA038 = { name = "rex_lhGuiOptionsScreen_OnMenuEvent" }
+0x826DA228 = { name = "rex_lhGuiOptionsScreen_OnScreenAction" }
+0x826DEE40 = { name = "rex_lhGui_FrontendRoot_OnScreenAction" }
+0x826E1F70 = { name = "rex_lhGui_FrontendRoot_PopulateMainMenu" }
+0x826E2F18 = { name = "rex_lhGui_FrontendTitle_OnScreenAction" }
+0x826E4798 = { name = "rex_lhGui_Frontend_SpawnButton" }
+0x82764DC0 = { name = "rex_lhTrackedObject_RemoveHandleRef" }
+0x8287C658 = { name = "rex_lhGui_Reticule_SetActiveForObject" }
+0x82994218 = { name = "rex_lhGuiShopScreen_PopulateMenu" }
+0x829A2F40 = { name = "rex_lhGuiWorldMapScreen_PopulateMenu" }
+0x829A45A0 = { name = "rex_lhGuiAbilitiesScreen_PopulateMenu" }
+0x829B8648 = { name = "rex_lhGuiLogbookScreen_PopulateMenu" }
+0x829BA860 = { name = "rex_lhGui_LogbookAttractivenessPage_UpdateMeter" }
+0x82A1AC40 = { name = "rex_lhApp_IdleWaitForFlags" }
+0x82A41D88 = { name = "rex_lhBinkPlayer_SetTrackVolume" }
+0x82A41E30 = { name = "rex_lhBinkPlayer_SetDestRect" }
+0x82A48B90 = { name = "rex_lhMorphDescriptor_Ctor" }
+0x82A54500 = { name = "rex_lhRenderView_UpdatePrewarm" }
+0x82A67188 = { name = "rex_lhTextureStreamJob_PublishMipResidency" }
+0x82B3DE48 = { name = "rex_lhCharString_OperatorNotEqual" }
+0x82B48CB8 = { name = "rex_lhVFS_RequestManager_SubmitRequest" }
+0x82B72430 = { name = "rex_lhFontGlyphVector_Resize" }
+0x82B8DFA0 = { name = "rex_lhRenderBufferOwner_Dtor" }
+0x82BA2830 = { name = "rex_D3DDevice_InitializeRingBuffer" }
+0x82BB5760 = { name = "rex_lhGuiAnimation_GotoSlide" }
+0x83231C40 = { name = "rex_CParticleSystemEntityInstance_SetOrientation" }
+0x832325A8 = { name = "rex_CParticleSystemEntityInstance_SetPositionAndVelocity" }

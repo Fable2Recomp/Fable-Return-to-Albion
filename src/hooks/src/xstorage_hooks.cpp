@@ -25,18 +25,18 @@ void StoreGuestU32(uint8_t* base, uint32_t guest_address, uint32_t value) {
 
 }  // namespace
 
-REX_EXTERN(__imp__sub_82D00278);
+REX_EXTERN(__imp__rex_XStorageEnumerate);
 
 // DWORD XStorageEnumerate(dwUserIndex, wszServerPath, dwStartingIndex,
 //                         dwMaxResultsToReturn, cbResults, pResults,
 //                         pXOverlapped)
-REX_EXTERN(sub_82D00278) {
+REX_EXTERN(rex_XStorageEnumerate) {
   const uint32_t results_ptr = ctx.r8.u32;
   const uint32_t overlapped_ptr = ctx.r9.u32;
   if (!results_ptr || overlapped_ptr) {
     // Unexpected shape (async or no results target): keep the original
     // failing path rather than mis-completing an overlapped.
-    __imp__sub_82D00278(ctx, base);
+    __imp__rex_XStorageEnumerate(ctx, base);
     return;
   }
   // XSTORAGE_ENUMERATE_RESULTS { dwTotalNumItems, dwNumItemsReturned,
