@@ -94,13 +94,13 @@ public static class Engine_BnkTextBankLoader
                         TextBank? bank = TextBank.FromBytes(blob);
                         if (bank is not null)
                         {
-                            GD.Print($"[babel] {bank.TagCount} text tag(s) loaded from mounted bank ({path})");
+                            Log($"[babel] {bank.TagCount} text tag(s) loaded from mounted bank ({path})");
                             return bank;
                         }
                     }
                     catch (Exception ex)
                     {
-                        GD.PushWarning($"[babel] failed reading mounted bank '{path}': {ex.Message}");
+                        Warn($"[babel] failed reading mounted bank '{path}': {ex.Message}");
                     }
                 }
             }
@@ -159,7 +159,7 @@ public static class Engine_BnkTextBankLoader
                 TextBank? bank = TextBank.FromBytes(File.ReadAllBytes(path));
                 if (bank is not null)
                 {
-                    GD.Print(
+                    Log(
                         $"[babel] {bank.TagCount} text tag(s) from " +
                         $"{Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(path)))}");
                     return bank;
@@ -171,5 +171,54 @@ public static class Engine_BnkTextBankLoader
         }
 
         return null;
+    }
+
+    public static Action<string>? LogHandler;
+    public static Action<string>? WarnHandler;
+
+    private static void Log(string message)
+    {
+        if (LogHandler is not null)
+        {
+            LogHandler(message);
+            return;
+        }
+
+        if (AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
+            System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            GD.Print(message);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void Warn(string message)
+    {
+        if (WarnHandler is not null)
+        {
+            WarnHandler(message);
+            return;
+        }
+
+        if (AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
+            System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            GD.PushWarning(message);
+        }
+        catch
+        {
+        }
     }
 }

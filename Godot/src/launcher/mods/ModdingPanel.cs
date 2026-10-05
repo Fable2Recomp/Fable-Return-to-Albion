@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Godot;
 using Refii.Launcher.Core;
 using Refii.Launcher.Editing;
@@ -62,10 +64,9 @@ public partial class ModdingPanel : VBoxContainer
 		AddChild(_rootLabel);
 
 		Label help = MakeLabel(
-			"Install mods as folders here. A mod places files directly in its folder or " +
-			"under a files folder, and may ship them packed as a .bnk instead. Enabled mods " +
-			"override matching game records; higher in the list wins a conflict. Pack turns a " +
-			"mod into a package you can share. Changes apply the next time the game starts.");
+			"Install mods by dropping .f2mod packages directly into this folder. Enabled mods " +
+			"override matching game records; higher in the list wins a conflict. Changes " +
+			"apply the next time the game starts.");
 		help.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		AddChild(help);
 
@@ -73,9 +74,18 @@ public partial class ModdingPanel : VBoxContainer
 		row.AddThemeConstantOverride("separation", 6);
 		AddChild(row);
 
-		var create = new Button { Text = "Create Folder" };
+		var openFolder = new Button { Text = "Open Mods Folder" };
+		Apply(openFolder);
+		openFolder.Pressed += () =>
+		{
+			Directory.CreateDirectory(_modsRoot);
+			OS.ShellOpen(_modsRoot);
+		};
+		row.AddChild(openFolder);
+
+		var create = new Button { Text = "New Mod" };
 		Apply(create);
-		create.Pressed += OnCreateFolder;
+		create.Pressed += OnNewMod;
 		row.AddChild(create);
 
 		var refresh = new Button { Text = "Refresh" };
@@ -128,6 +138,14 @@ public partial class ModdingPanel : VBoxContainer
 		_modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
 		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
 		_order = ModLoadOrder.Read(_modsRoot);
+
+		// Prune any enabled mods that no longer exist on disk:
+		var installedNames = new HashSet<string>(_mods.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
+		if (_order.Enabled.RemoveAll(name => !installedNames.Contains(name)) > 0)
+		{
+			_order.Write(_modsRoot, out _);
+		}
+
 		_tallies.Clear();
 
 		var recordConflicts = Refii.Gdb.GdbPatchCompositor.DetectRecordConflicts(_modsRoot, _order, _mods);
@@ -139,6 +157,27 @@ public partial class ModdingPanel : VBoxContainer
 		Rebuild();
 	}
 
+	private void OnDeleteMod(ModInstall mod)
+	{
+		try
+		{
+			if (File.Exists(mod.PackagePath))
+			{
+				File.Delete(mod.PackagePath);
+			}
+
+			_order.Enabled.Remove(mod.Name);
+			_order.Write(_modsRoot, out _);
+			_statusMessage = $"Deleted '{mod.Name}.f2mod'.";
+		}
+		catch (System.Exception ex)
+		{
+			_statusMessage = $"Failed to delete '{mod.Name}': {ex.Message}";
+		}
+
+		RefreshState();
+	}
+
 	private void SaveEnabledMods()
 	{
 		_statusMessage = _order.Write(_modsRoot, out string error)
@@ -147,30 +186,6 @@ public partial class ModdingPanel : VBoxContainer
 		RefreshState();
 	}
 
-	private void OnPack(ModInstall mod)
-	{
-		bool bnkOk = ModExport.ToBank(mod, _modsRoot, out string packed, out string error);
-		string zipDest = Path.Combine(mod.Root, mod.Name + ".f2zip");
-		bool zipOk = ModExport.ToF2Zip(mod, zipDest, out string zipError);
-
-		if (bnkOk && zipOk)
-		{
-			_statusMessage = $"Packed '{mod.Name}' to bank ({packed.Replace('\\', '/')}) and package ({zipDest.Replace('\\', '/')}).";
-		}
-		else if (bnkOk)
-		{
-			_statusMessage = $"Packed '{mod.Name}' into {packed.Replace('\\', '/')}. (.f2zip warning: {zipError})";
-		}
-		else if (zipOk)
-		{
-			_statusMessage = $"Packed '{mod.Name}' into package ({zipDest.Replace('\\', '/')}). (Bank warning: {error})";
-		}
-		else
-		{
-			_statusMessage = $"Failed to pack '{mod.Name}': {error}";
-		}
-		RefreshState();
-	}
 
 	/// <summary>
 	/// Installs the editor if it is not here, otherwise opens it.
@@ -229,16 +244,37 @@ public partial class ModdingPanel : VBoxContainer
 		RefreshState();
 	}
 
-	private void OnCreateFolder()
+	private void OnNewMod()
 	{
 		try
 		{
 			Directory.CreateDirectory(_modsRoot);
-			_statusMessage = "Mod folder is ready.";
+			string baseName = "NewMod";
+			string modName = baseName;
+			int counter = 1;
+			while (File.Exists(Path.Combine(_modsRoot, modName + ModWorkspace.PackageExtension)))
+			{
+				counter++;
+				modName = $"{baseName}{counter}";
+			}
+
+			if (ModWorkspace.CreateModPackage(_modsRoot, modName, out string pkgPath, out string error))
+			{
+				_statusMessage = $"Created '{modName}.f2mod'.";
+				if (!_order.Enabled.Contains(modName))
+				{
+					_order.Enabled.Add(modName);
+					_order.Write(_modsRoot, out _);
+				}
+			}
+			else
+			{
+				_statusMessage = "Failed to create mod: " + error;
+			}
 		}
 		catch (System.Exception exception)
 		{
-			_statusMessage = "Failed to create mod folder: " + exception.Message;
+			_statusMessage = "Failed to create mod: " + exception.Message;
 		}
 
 		RefreshState();
@@ -449,14 +485,15 @@ public partial class ModdingPanel : VBoxContainer
 
 		var actionsBox = new HBoxContainer();
 		actionsBox.AddThemeConstantOverride("separation", 4);
+		actionsBox.Alignment = BoxContainer.AlignmentMode.Center;
 
-		var pack = new Button { Text = "Pack" };
-		Apply(pack);
-		pack.CustomMinimumSize = new Vector2(46, 22);
-		pack.TooltipText = "Package this mod into a .f2zip distribution archive and a .bnk archive.";
-		ModInstall packed = mod;
-		pack.Pressed += () => OnPack(packed);
-		actionsBox.AddChild(pack);
+		var deleteBtn = new Button { Text = "🗑" };
+		Apply(deleteBtn);
+		deleteBtn.CustomMinimumSize = new Vector2(28, 22);
+		deleteBtn.TooltipText = $"Delete '{mod.Name}.f2mod' package.";
+		ModInstall targetMod = mod;
+		deleteBtn.Pressed += () => OnDeleteMod(targetMod);
+		actionsBox.AddChild(deleteBtn);
 
 		grid.AddChild(actionsBox);
 	}

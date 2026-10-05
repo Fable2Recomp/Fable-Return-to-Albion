@@ -16,10 +16,10 @@ public sealed class ModManifestEntry
 
 	public string Sha1 = string.Empty;
 
-	/// <summary><c>file</c> replaces a whole asset; <c>rows</c> merges into one (phase 2).</summary>
+	/// <summary><c>file</c> replaces a whole asset; <c>rows</c> merges into one; <c>tu</c> merges records.</summary>
 	public string Kind = KindFile;
 
-	/// <summary>For <c>rows</c>: the file under the mod that produced it.</summary>
+	/// <summary>For <c>rows</c> or <c>tu</c>: the relative container path.</summary>
 	public string Source = string.Empty;
 
 	public const string KindFile = "file";
@@ -28,13 +28,7 @@ public sealed class ModManifestEntry
 }
 
 /// <summary>
-/// A MOD'S LOCAL DIFF: every virtual path it contributes, with what it takes to tell whether the
-/// folder still matches.
-///
-/// Enabling and disabling mods is then a set operation over cached manifests rather than a walk
-/// of every mod folder. <see cref="Stamp"/> is what makes that safe — a folder that changed
-/// under us fails the check and is rebuilt, so the manifest can never quietly describe an older
-/// version of the mod.
+/// A MOD'S LOCAL DIFF: every virtual path it contributes, derived directly from its .f2mod package.
 /// </summary>
 public sealed class ModManifest
 {
@@ -42,38 +36,45 @@ public sealed class ModManifest
 	public string Version = string.Empty;
 	public string Generated = string.Empty;
 
-	/// <summary>File count and newest write time of the asset root, as <c>count:ticks</c>.</summary>
+	/// <summary>Package length and last write ticks, as <c>length:ticks</c>.</summary>
 	public string Stamp = string.Empty;
 
 	public List<ModManifestEntry> Entries { get; } = new();
 
 	/// <summary>
-	/// The manifest for <paramref name="mod"/>, rebuilt and saved when the folder has moved on.
-	///
-	/// Hashing happens only on a rebuild: the staleness check needs the walk, which is cheap,
-	/// and not the hashes, which are not.
+	/// Returns the up-to-date manifest for <paramref name="mod"/>, read directly from its .f2mod package.
 	/// </summary>
 	public static ModManifest EnsureCurrent(ModInstall mod)
 	{
-		string assetRoot = ModWorkspace.GetModAssetRoot(mod);
-		string stamp = ComputeStamp(assetRoot);
+		string packagePath = mod.PackagePath;
+		string stamp = ComputeStamp(packagePath);
 
-		string path = ModWorkspace.GetModManifestPath(mod);
-		ModManifest? cached = Load(path);
+		string cacheDir = Path.Combine(Path.GetDirectoryName(packagePath) ?? string.Empty, ".cache", "manifests");
+		string cachePath = Path.Combine(cacheDir, mod.Name + ".manifest.json");
+
+		ModManifest? cached = Load(cachePath);
 		if (cached is not null && cached.Stamp == stamp && stamp.Length != 0)
 		{
 			return cached;
 		}
 
-		ModManifest built = Build(mod, assetRoot, stamp);
-		built.Save(path);
+		ModManifest built = Build(mod, stamp);
+		try
+		{
+			Directory.CreateDirectory(cacheDir);
+			built.Save(cachePath);
+		}
+		catch
+		{
+		}
+
 		return built;
 	}
 
 	public static ModManifest Build(ModInstall mod) =>
-		Build(mod, ModWorkspace.GetModAssetRoot(mod), ComputeStamp(ModWorkspace.GetModAssetRoot(mod)));
+		Build(mod, ComputeStamp(mod.PackagePath));
 
-	private static ModManifest Build(ModInstall mod, string assetRoot, string stamp)
+	private static ModManifest Build(ModInstall mod, string stamp)
 	{
 		var manifest = new ModManifest
 		{
@@ -83,60 +84,109 @@ public sealed class ModManifest
 			Stamp = stamp,
 		};
 
-		foreach (string file in EnumerateAssets(assetRoot))
+		if (File.Exists(mod.PackagePath) && mod.PackagePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
 		{
-			string relative;
-			long size;
-			try
+			if (F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? package, out _) && package is not null)
 			{
-				relative = System.IO.Path.GetRelativePath(assetRoot, file);
-				size = new FileInfo(file).Length;
-			}
-			catch (Exception)
-			{
-				continue;
-			}
+				using (package)
+				{
+					foreach (F2ModEntry f2Entry in package.Entries)
+					{
+						string normalized = ModLoadOrder.Normalize(f2Entry.Path);
+						if (normalized.Length == 0)
+						{
+							continue;
+						}
 
-			string normalized = ModLoadOrder.Normalize(relative);
-			if (normalized.Length == 0)
-			{
-				continue;
-			}
+						var entry = new ModManifestEntry
+						{
+							Path = normalized,
+							Size = (long)f2Entry.Size,
+							Sha1 = string.Empty,
+						};
 
-			var entry = new ModManifestEntry
-			{
-				Path = normalized,
-				Size = size,
-				Sha1 = HashFile(file),
-			};
+						if (normalized.EndsWith(".babel.csv", StringComparison.OrdinalIgnoreCase))
+						{
+							entry.Kind = ModManifestEntry.KindRows;
+							entry.Source = normalized;
+							entry.Path = normalized[..^4];
+						}
+						else if (normalized.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+						{
+							entry.Kind = ModManifestEntry.KindTu;
+							entry.Source = normalized;
+						}
 
-			// A ROW OVERLAY NAMES ITS TABLE. `globals.gdb.csv` contributes to `globals.gdb`, not
-			// to itself, so that is the path it claims — which is what makes two mods editing
-			// different rows of one table a reported row conflict rather than a file conflict.
-			// Phase 2 merges them; phase 1 records them.
-			if (normalized.EndsWith(".babel.csv", StringComparison.Ordinal))
-			{
-				entry.Kind = ModManifestEntry.KindRows;
-				entry.Source = normalized;
-				entry.Path = normalized[..^4];
+						manifest.Entries.Add(entry);
+					}
+				}
 			}
-			else if (normalized.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+		}
+		else
+		{
+			string dir = !string.IsNullOrEmpty(mod.Root) && Directory.Exists(mod.Root) ? mod.Root : string.Empty;
+			if (!string.IsNullOrEmpty(dir))
 			{
-				entry.Kind = ModManifestEntry.KindTu;
-				entry.Source = normalized;
-			}
+				foreach (string file in EnumerateAssets(dir))
+				{
+					string rel = Path.GetRelativePath(dir, file);
+					string normalized = ModLoadOrder.Normalize(rel);
+					if (normalized.Length == 0) continue;
 
-			manifest.Entries.Add(entry);
+					var entry = new ModManifestEntry
+					{
+						Path = normalized,
+						Size = new FileInfo(file).Length,
+						Sha1 = HashFile(file),
+					};
+
+					if (normalized.EndsWith(".babel.csv", StringComparison.OrdinalIgnoreCase))
+					{
+						entry.Kind = ModManifestEntry.KindRows;
+						entry.Source = normalized;
+						entry.Path = normalized[..^4];
+					}
+					else if (normalized.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+					{
+						entry.Kind = ModManifestEntry.KindTu;
+						entry.Source = normalized;
+					}
+
+					manifest.Entries.Add(entry);
+				}
+			}
 		}
 
 		manifest.Entries.Sort((left, right) => string.CompareOrdinal(left.Path, right.Path));
 		return manifest;
 	}
 
-	/// <summary>Everything under the asset root except the mod's own bookkeeping.</summary>
+	/// <summary>
+	/// Enumerates relative asset paths under an .f2mod package or directory, strictly excluding sidecars.
+	/// </summary>
 	public static IEnumerable<string> EnumerateAssets(string assetRoot)
 	{
-		if (string.IsNullOrEmpty(assetRoot) || !Directory.Exists(assetRoot))
+		if (string.IsNullOrEmpty(assetRoot))
+		{
+			yield break;
+		}
+
+		if (File.Exists(assetRoot) && assetRoot.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+		{
+			if (F2ModPackage.TryOpen(assetRoot, out F2ModPackage? package, out _) && package is not null)
+			{
+				using (package)
+				{
+					foreach (F2ModEntry entry in package.Entries)
+					{
+						yield return entry.Path;
+					}
+				}
+			}
+			yield break;
+		}
+
+		if (!Directory.Exists(assetRoot))
 		{
 			yield break;
 		}
@@ -155,40 +205,20 @@ public sealed class ModManifest
 		files.Sort(StringComparer.OrdinalIgnoreCase);
 		foreach (string file in files)
 		{
-			string name = System.IO.Path.GetFileName(file);
+			string name = Path.GetFileName(file);
 			if (name.Equals(ModWorkspace.ModMetadataFilename, StringComparison.OrdinalIgnoreCase) ||
 				name.Equals(ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase) ||
-				name.EndsWith(".import", StringComparison.OrdinalIgnoreCase))
+				name.EndsWith(".import", StringComparison.OrdinalIgnoreCase) ||
+				name.EndsWith(".uid", StringComparison.OrdinalIgnoreCase) ||
+				name.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase) ||
+				name.EndsWith(".f2zip", StringComparison.OrdinalIgnoreCase) ||
+				name.EndsWith(".bnk", StringComparison.OrdinalIgnoreCase))
 			{
 				continue;
 			}
 
 			yield return file;
 		}
-	}
-
-	private static string ComputeStamp(string assetRoot)
-	{
-		long count = 0;
-		long newest = 0;
-		foreach (string file in EnumerateAssets(assetRoot))
-		{
-			try
-			{
-				long ticks = File.GetLastWriteTimeUtc(file).Ticks;
-				if (ticks > newest)
-				{
-					newest = ticks;
-				}
-
-				count++;
-			}
-			catch (Exception)
-			{
-			}
-		}
-
-		return count == 0 ? string.Empty : $"{count}:{newest}";
 	}
 
 	private static string HashFile(string path)
@@ -198,21 +228,44 @@ public sealed class ModManifest
 			using FileStream stream = File.OpenRead(path);
 			return Convert.ToHexString(SHA1.HashData(stream)).ToLowerInvariant();
 		}
-		catch (Exception)
+		catch
 		{
 			return string.Empty;
 		}
 	}
 
-	/// <summary>
-	/// Written and read WITHOUT reflection — <see cref="Utf8JsonWriter"/> and
-	/// <see cref="JsonDocument"/> — so an export that trims unused metadata cannot turn this
-	/// into an empty manifest at runtime.
-	/// </summary>
+	public static string ComputeStamp(string assetPath)
+	{
+		if (string.IsNullOrEmpty(assetPath))
+		{
+			return string.Empty;
+		}
+
+		try
+		{
+			if (File.Exists(assetPath))
+			{
+				var fi = new FileInfo(assetPath);
+				return $"{fi.Length}:{fi.LastWriteTimeUtc.Ticks}";
+			}
+		}
+		catch
+		{
+		}
+
+		return string.Empty;
+	}
+
 	public void Save(string path)
 	{
 		try
 		{
+			string? dir = Path.GetDirectoryName(path);
+			if (!string.IsNullOrEmpty(dir))
+			{
+				Directory.CreateDirectory(dir);
+			}
+
 			using var stream = new MemoryStream();
 			using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
 			{
@@ -221,6 +274,7 @@ public sealed class ModManifest
 				writer.WriteString("version", Version);
 				writer.WriteString("generated", Generated);
 				writer.WriteString("stamp", Stamp);
+
 				writer.WriteStartArray("entries");
 				foreach (ModManifestEntry entry in Entries)
 				{
@@ -243,7 +297,7 @@ public sealed class ModManifest
 
 			File.WriteAllBytes(path, stream.ToArray());
 		}
-		catch (Exception)
+		catch
 		{
 		}
 	}
@@ -257,51 +311,43 @@ public sealed class ModManifest
 
 		try
 		{
-			using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+			using var document = JsonDocument.Parse(File.ReadAllBytes(path));
 			JsonElement root = document.RootElement;
+
 			var manifest = new ModManifest
 			{
-				Name = ReadString(root, "name"),
-				Version = ReadString(root, "version"),
-				Generated = ReadString(root, "generated"),
-				Stamp = ReadString(root, "stamp"),
+				Name = root.GetProperty("name").GetString() ?? string.Empty,
+				Version = root.GetProperty("version").GetString() ?? string.Empty,
+				Generated = root.GetProperty("generated").GetString() ?? string.Empty,
+				Stamp = root.GetProperty("stamp").GetString() ?? string.Empty,
 			};
 
-			if (root.TryGetProperty("entries", out JsonElement entries) &&
-				entries.ValueKind == JsonValueKind.Array)
+			if (root.TryGetProperty("entries", out JsonElement entries))
 			{
 				foreach (JsonElement element in entries.EnumerateArray())
 				{
-					string entryPath = ReadString(element, "path");
-					if (entryPath.Length == 0)
+					var entry = new ModManifestEntry
 					{
-						continue;
+						Path = element.GetProperty("path").GetString() ?? string.Empty,
+						Size = element.GetProperty("size").GetInt64(),
+						Sha1 = element.GetProperty("sha1").GetString() ?? string.Empty,
+						Kind = element.GetProperty("kind").GetString() ?? ModManifestEntry.KindFile,
+					};
+
+					if (element.TryGetProperty("source", out JsonElement source))
+					{
+						entry.Source = source.GetString() ?? string.Empty;
 					}
 
-					manifest.Entries.Add(new ModManifestEntry
-					{
-						Path = entryPath,
-						Size = element.TryGetProperty("size", out JsonElement size) &&
-							   size.TryGetInt64(out long value) ? value : 0,
-						Sha1 = ReadString(element, "sha1"),
-						Kind = ReadString(element, "kind") is { Length: > 0 } kind
-							? kind
-							: ModManifestEntry.KindFile,
-						Source = ReadString(element, "source"),
-					});
+					manifest.Entries.Add(entry);
 				}
 			}
 
 			return manifest;
 		}
-		catch (Exception)
+		catch
 		{
 			return null;
 		}
 	}
-
-	private static string ReadString(JsonElement element, string name) =>
-		element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
-			? value.GetString() ?? string.Empty
-			: string.Empty;
 }

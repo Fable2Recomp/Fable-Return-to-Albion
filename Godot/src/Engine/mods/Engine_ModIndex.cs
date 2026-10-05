@@ -11,6 +11,8 @@ public sealed class ModOverlay
 {
 	public required string Name { get; init; }
 
+	public string PackagePath { get; init; } = string.Empty;
+
 	public required string AssetRoot { get; init; }
 }
 
@@ -104,10 +106,10 @@ public static class ModIndex
 				continue;
 			}
 
-			string assetRoot = ModWorkspace.GetModAssetRoot(mod);
-			if (Directory.Exists(assetRoot))
+			string packagePath = mod.PackagePath;
+			if (File.Exists(packagePath))
 			{
-				overlays.Add(new ModOverlay { Name = mod.Name, AssetRoot = assetRoot });
+				overlays.Add(new ModOverlay { Name = mod.Name, PackagePath = packagePath, AssetRoot = packagePath });
 			}
 		}
 
@@ -272,9 +274,11 @@ public static class ModIndex
 				Owner = file.SourceMod,
 				Kind = file.VirtualPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase)
 					? ResolvedEntry.KindTu
-					: (!ownerIsMod || HasGameSource(file)
-						? ResolvedEntry.KindOverride
-						: ResolvedEntry.KindAddition),
+					: (file.SourceArchivePath.StartsWith("<rows:", StringComparison.OrdinalIgnoreCase)
+						? ResolvedEntry.KindRows
+						: (!ownerIsMod || HasGameSource(file)
+							? ResolvedEntry.KindOverride
+							: ResolvedEntry.KindAddition)),
 			};
 
 			foreach (BnkFile shadowed in file.Shadowed)
@@ -353,6 +357,7 @@ public static class ModIndex
 				ModTally loser = For(shadowed);
 				loser.Conflicts++;
 				loser.Lost++;
+				loser.ConflictDetails.Add($"File '{entry.Path}' overridden by '{entry.Owner}'");
 			}
 		}
 

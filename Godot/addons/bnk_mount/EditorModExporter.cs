@@ -106,20 +106,30 @@ public static class EditorModExporter
     {
         var names = new List<string>();
         string modsRoot = Engine_GameAssets.ModsRoot;
-        if (string.IsNullOrEmpty(modsRoot) || !Directory.Exists(modsRoot))
+        if (string.IsNullOrEmpty(modsRoot))
         {
-            names.Add(GetActiveModName());
-            return names;
+            modsRoot = ModWorkspace.GetDefaultModsRoot(Engine_AppRoot.AssetsDirectory);
         }
 
-        foreach (ModInstall mod in ModWorkspace.DiscoverModInstalls(modsRoot))
+        if (Directory.Exists(modsRoot))
         {
-            names.Add(mod.Name);
+            foreach (ModInstall mod in ModWorkspace.DiscoverModInstalls(modsRoot))
+            {
+                if (!names.Contains(mod.Name))
+                {
+                    names.Add(mod.Name);
+                }
+            }
         }
 
         string current = GetActiveModName();
-        if (!names.Contains(current))
+        if (names.Count == 0)
         {
+            names.Add(current);
+        }
+        else if (names.Contains(current))
+        {
+            names.Remove(current);
             names.Insert(0, current);
         }
 
@@ -127,9 +137,10 @@ public static class EditorModExporter
     }
 
     /// <summary>
-    /// Ensures that the active mod folder, its <c>files/</c> directory, and its initial <c>mod.toml</c> manifest exist on disk.
+    /// Ensures that the active mod package (.f2mod) exists under assets/mods/ and returns
+    /// the creators workbench working directory under assets/creators/&lt;ActiveMod&gt;/.
     /// </summary>
-    /// <returns>The absolute path to the active mod's <c>files/</c> directory.</returns>
+    /// <returns>The absolute path to the creator workbench working directory.</returns>
     public static string EnsureActiveModWorkspace()
     {
         string modsRoot = Engine_GameAssets.ModsRoot;
@@ -139,26 +150,20 @@ public static class EditorModExporter
         }
 
         string activeName = GetActiveModName();
-        string modDir = Path.Combine(modsRoot, activeName);
-        Directory.CreateDirectory(modDir);
 
-        string filesDir = Path.Combine(modDir, ModWorkspace.ModFilesFolderName);
-        Directory.CreateDirectory(filesDir);
-
-        string toml = Path.Combine(modDir, ModWorkspace.ModMetadataFilename);
-        if (!File.Exists(toml))
+        // 1. Ensure assets/mods/<activeName>.f2mod exists:
+        string pkgPath = Path.Combine(modsRoot, activeName + ModWorkspace.PackageExtension);
+        if (!File.Exists(pkgPath))
         {
-            try
-            {
-                File.WriteAllText(
-                    toml,
-                    $"name = \"{activeName}\"\nversion = \"1.0.0\"\nauthor = \"Modder\"\ndescription = \"Custom mod for Fable 2\"\n");
-            }
-            catch
-            {
-            }
+            Directory.CreateDirectory(modsRoot);
+            ModWorkspace.CreateModPackage(modsRoot, activeName, out _, out _);
         }
 
+        // 2. Ensure creator workbench working directory exists under assets/creators/<activeName>/ (NOT in assets/mods/):
+        string creatorsDir = Path.Combine(Engine_AppRoot.AssetsDirectory, "creators", activeName);
+        Directory.CreateDirectory(creatorsDir);
+
+        // 3. Ensure enabled in loadorder.toml:
         try
         {
             var order = ModLoadOrder.Read(modsRoot);
@@ -172,7 +177,7 @@ public static class EditorModExporter
         {
         }
 
-        return filesDir;
+        return creatorsDir;
     }
 
     /// <summary>

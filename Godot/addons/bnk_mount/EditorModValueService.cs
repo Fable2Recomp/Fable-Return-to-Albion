@@ -542,13 +542,34 @@ public static class EditorModValueService
         return values;
     }
 
+    private static byte[]? LoadPackageEntry(string pkgPath, string subPath)
+    {
+        if (File.Exists(pkgPath) && F2ModPackage.TryOpen(pkgPath, out F2ModPackage? pkg, out _) && pkg is not null)
+        {
+            using (pkg)
+            {
+                if (pkg.TryGetEntry(subPath, out F2ModEntry? entry) && entry is not null)
+                {
+                    return pkg.ReadEntryBytes(entry);
+                }
+            }
+        }
+        return null;
+    }
+
     /// <summary>
-    /// Retrieves current effective values for an item, checking if any overrides exist in the active mod.
+    /// Retrieves current effective values for an item, checking if any overrides exist in the active mod (.f2mod package).
     /// </summary>
     public static ItemModValues GetEffectiveValues(ItemDetail detail, string? activeMod = null)
     {
         string modName = !string.IsNullOrWhiteSpace(activeMod) ? activeMod : EditorModExporter.ActiveModName;
-        string filesRoot = Path.Combine(Engine_GameAssets.ModsRoot, modName, "files");
+        string modsRoot = Engine_GameAssets.ModsRoot;
+        if (string.IsNullOrEmpty(modsRoot))
+        {
+            modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+        }
+
+        string pkgPath = Path.Combine(modsRoot, modName + ModWorkspace.PackageExtension);
 
         GdbMulti? baseMulti = Engine_GameGdb.BaseDatabase ?? Engine_GameGdb.Database;
         var values = new ItemModValues();
@@ -569,40 +590,120 @@ public static class EditorModValueService
         List<ModItemProperty> discovered = DiscoverProperties(vanillaDetail, baseMulti);
         values.Properties.AddRange(discovered);
 
-        // 3. Check for active mod GDB overrides in its own .gdb.tu files ONLY:
+        // 3. Check for active mod GDB overrides in .f2mod package (or fallback loose files):
         var tuEntryMap = new Dictionary<uint, Dictionary<uint, uint>>();
-        foreach (string gdbPath in KnownGdbPaths)
+
+        if (File.Exists(pkgPath) && F2ModPackage.TryOpen(pkgPath, out F2ModPackage? pkg, out _) && pkg is not null)
         {
-            string tuPath = Path.Combine(filesRoot, (gdbPath + ".tu").Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(tuPath))
+            using (pkg)
             {
-                continue;
-            }
-
-            try
-            {
-                byte[] bytes = File.ReadAllBytes(tuPath);
-                if (GdbView.TryParse(bytes, out GdbView tuView, out _))
+                foreach (string gdbPath in KnownGdbPaths)
                 {
-                    for (int i = 0; i < tuView.RecordCount; i++)
+                    string tuSub = gdbPath + ".tu";
+                    if (pkg.TryGetEntry(tuSub, out F2ModEntry? entry) && entry is not null)
                     {
-                        uint entryHash = tuView.RecordHash(i);
-                        if (!tuEntryMap.TryGetValue(entryHash, out var propMap))
+                        byte[] bytes = pkg.ReadEntryBytes(entry);
+                        if (GdbView.TryParse(bytes, out GdbView tuView, out _))
                         {
-                            propMap = new Dictionary<uint, uint>();
-                            tuEntryMap[entryHash] = propMap;
-                        }
+                            for (int i = 0; i < tuView.RecordCount; i++)
+                            {
+                                uint entryHash = tuView.RecordHash(i);
+                                if (!tuEntryMap.TryGetValue(entryHash, out var propMap))
+                                {
+                                    propMap = new Dictionary<uint, uint>();
+                                    tuEntryMap[entryHash] = propMap;
+                                }
 
-                        foreach (var (fHash, _, fRaw) in tuView.RawFields(i))
+                                foreach (var (fHash, _, fRaw) in tuView.RawFields(i))
+                                {
+                                    propMap[fHash] = fRaw;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check for active mod text overrides in book.babel.csv inside package:
+                string relBabel = "language/en-uk/text/book.babel.csv";
+                if (pkg.TryGetEntry(relBabel, out F2ModEntry? babelEntry) && babelEntry is not null)
+                {
+                    string csvText = Encoding.UTF8.GetString(pkg.ReadEntryBytes(babelEntry));
+                    List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(csvText, new List<string>());
+                    foreach (BabelOverlayRow row in rows)
+                    {
+                        if (MatchesBabelKey(row.Key, detail.NameTagName, detail.NameTag))
                         {
-                            propMap[fHash] = fRaw;
+                            values.DisplayName = row.Value;
+                            values.HasModOverrides = true;
+                        }
+                        else if (MatchesBabelKey(row.Key, detail.DescTagName, detail.DescTag))
+                        {
+                            values.Description = row.Value;
+                            values.HasModOverrides = true;
                         }
                     }
                 }
             }
-            catch (Exception ex)
+        }
+        else
+        {
+            string filesRoot = Path.Combine(modsRoot, modName, "files");
+            if (!Directory.Exists(filesRoot))
             {
-                GD.PushWarning($"[mod_values] Could not read TU patch {tuPath}: {ex.Message}");
+                filesRoot = Path.Combine(Refii.Core.Engine_AppRoot.AssetsDirectory, "creators", modName);
+            }
+            if (Directory.Exists(filesRoot))
+            {
+                foreach (string gdbPath in KnownGdbPaths)
+                {
+                    string tuPath = Path.Combine(filesRoot, (gdbPath + ".tu").Replace('/', Path.DirectorySeparatorChar));
+                    if (!File.Exists(tuPath)) continue;
+
+                    try
+                    {
+                        byte[] bytes = File.ReadAllBytes(tuPath);
+                        if (GdbView.TryParse(bytes, out GdbView tuView, out _))
+                        {
+                            for (int i = 0; i < tuView.RecordCount; i++)
+                            {
+                                uint entryHash = tuView.RecordHash(i);
+                                if (!tuEntryMap.TryGetValue(entryHash, out var propMap))
+                                {
+                                    propMap = new Dictionary<uint, uint>();
+                                    tuEntryMap[entryHash] = propMap;
+                                }
+
+                                foreach (var (fHash, _, fRaw) in tuView.RawFields(i))
+                                {
+                                    propMap[fHash] = fRaw;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        GD.PushWarning($"[mod_values] Could not read TU patch {tuPath}: {ex.Message}");
+                    }
+                }
+
+                string babelCsvPath = ResolveBabelCsvPath(filesRoot);
+                if (File.Exists(babelCsvPath))
+                {
+                    List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(File.ReadAllText(babelCsvPath), new List<string>());
+                    foreach (BabelOverlayRow row in rows)
+                    {
+                        if (MatchesBabelKey(row.Key, detail.NameTagName, detail.NameTag))
+                        {
+                            values.DisplayName = row.Value;
+                            values.HasModOverrides = true;
+                        }
+                        else if (MatchesBabelKey(row.Key, detail.DescTagName, detail.DescTag))
+                        {
+                            values.Description = row.Value;
+                            values.HasModOverrides = true;
+                        }
+                    }
+                }
             }
         }
 
@@ -641,36 +742,27 @@ public static class EditorModValueService
             }
         }
 
-        // 4. Check for active mod text overrides in book.babel.csv:
-        string babelCsvPath = ResolveBabelCsvPath(filesRoot);
-        if (File.Exists(babelCsvPath))
-        {
-            List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(File.ReadAllText(babelCsvPath), new List<string>());
-            foreach (BabelOverlayRow row in rows)
-            {
-                if (MatchesBabelKey(row.Key, detail.NameTagName, detail.NameTag))
-                {
-                    values.DisplayName = row.Value;
-                    values.HasModOverrides = true;
-                }
-                else if (MatchesBabelKey(row.Key, detail.DescTagName, detail.DescTag))
-                {
-                    values.Description = row.Value;
-                    values.HasModOverrides = true;
-                }
-            }
-        }
-
         return values;
     }
 
     /// <summary>
-    /// Writes or updates property and text overlays for the specified item into the active mod.
+    /// Writes or updates property and text overlays for the specified item into the active mod (.f2mod package).
     /// </summary>
     public static void SaveItemOverrides(ItemDetail detail, ItemModValues values, string? activeMod = null)
     {
         string modName = !string.IsNullOrWhiteSpace(activeMod) ? activeMod : EditorModExporter.ActiveModName;
-        string filesRoot = EditorModExporter.EnsureActiveModWorkspace();
+        string modsRoot = Engine_GameAssets.ModsRoot;
+        if (string.IsNullOrEmpty(modsRoot))
+        {
+            modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+        }
+
+        string pkgPath = Path.Combine(modsRoot, modName + ModWorkspace.PackageExtension);
+        if (!File.Exists(pkgPath))
+        {
+            Directory.CreateDirectory(modsRoot);
+            ModWorkspace.CreateModPackage(modsRoot, modName, out _, out _);
+        }
 
         GdbMulti? multi = Engine_GameGdb.Database;
         if (multi is null)
@@ -680,7 +772,6 @@ public static class EditorModValueService
         }
 
         // 1. UPDATE GDB PROPERTIES VIA TITLE UPDATE (.gdb.tu)
-        //    Properties are grouped by target TU file and target leaf record:
         GdbMulti baseMulti = Engine_GameGdb.BaseDatabase ?? multi;
 
         var propsByTuFile = new Dictionary<string, Dictionary<uint, List<ModItemProperty>>>(StringComparer.OrdinalIgnoreCase);
@@ -703,10 +794,13 @@ public static class EditorModValueService
             propList.Add(prop);
         }
 
+        var updates = new List<(string Path, byte[] Bytes)>();
+        var deletes = new List<string>();
+
         foreach (var (tuSubPath, records) in propsByTuFile)
         {
-            string tuPath = Path.Combine(filesRoot, tuSubPath.Replace('/', Path.DirectorySeparatorChar));
-            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(tuPath);
+            byte[]? existingBytes = LoadPackageEntry(pkgPath, tuSubPath);
+            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(existingBytes);
 
             foreach (var (targetHash, propList) in records)
             {
@@ -775,31 +869,23 @@ public static class EditorModValueService
                 }
             }
 
-            GdbPatchBuilder.SavePatchDatabase(db, tuPath);
-        }
-
-        // Clean up legacy .gdb.csv files from mod filesRoot:
-        foreach (string gdbPath in KnownGdbPaths)
-        {
-            string gdbCsvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(gdbCsvPath))
+            if (db.Entries.Count > 0)
             {
-                try { File.Delete(gdbCsvPath); } catch { }
+                updates.Add((tuSubPath, GdbWriter.Serialize(db)));
+            }
+            else
+            {
+                deletes.Add(tuSubPath);
             }
         }
 
         // 2. UPDATE BABEL TEXT (language/en-uk/text/book.babel.csv)
-        string babelCsvPath = ResolveBabelCsvPath(filesRoot);
-        string? babelDir = Path.GetDirectoryName(babelCsvPath);
-        if (!string.IsNullOrEmpty(babelDir))
-        {
-            Directory.CreateDirectory(babelDir);
-        }
-
+        string relBabel = "language/en-uk/text/book.babel.csv";
+        byte[]? existingBabelBytes = LoadPackageEntry(pkgPath, relBabel);
         var existingBabelRows = new List<BabelOverlayRow>();
-        if (File.Exists(babelCsvPath))
+        if (existingBabelBytes != null && existingBabelBytes.Length > 0)
         {
-            existingBabelRows = BabelOverlay.ParseCsv(File.ReadAllText(babelCsvPath), new List<string>());
+            existingBabelRows = BabelOverlay.ParseCsv(Encoding.UTF8.GetString(existingBabelBytes), new List<string>());
         }
 
         string nameKey = detail.NameTagName.Length > 0
@@ -809,7 +895,6 @@ public static class EditorModValueService
             ? detail.DescTagName
             : (detail.DescTag != 0 ? $"0x{detail.DescTag:X8}" : string.Empty);
 
-        // Diagnostic: log the babel keys being used so key mismatches are visible:
         GD.Print($"[mod_values] Babel keys — name: '{nameKey}' (tag=0x{detail.NameTag:X8}, tagName='{detail.NameTagName}'), " +
                  $"desc: '{descKey}' (tag=0x{detail.DescTag:X8}, tagName='{detail.DescTagName}')");
 
@@ -849,10 +934,7 @@ public static class EditorModValueService
 
         if (mergedBabelRows.Count == 0)
         {
-            if (File.Exists(babelCsvPath))
-            {
-                try { File.Delete(babelCsvPath); } catch { }
-            }
+            deletes.Add(relBabel);
         }
         else
         {
@@ -863,11 +945,19 @@ public static class EditorModValueService
             {
                 babelSb.Append(r.Key).Append(',').AppendLine(EscapeCsv(r.Value));
             }
-
-            File.WriteAllText(babelCsvPath, babelSb.ToString(), Encoding.UTF8);
+            updates.Add((relBabel, Encoding.UTF8.GetBytes(babelSb.ToString())));
         }
 
-        GD.Print($"[mod_values] Saved overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] to mod '{modName}'");
+        try
+        {
+            F2ModPackage.IncrementalSync(pkgPath, updates, deletes);
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[mod_values] Failed to auto-sync .f2mod package for '{modName}': {ex.Message}");
+        }
+
+        GD.Print($"[mod_values] Saved overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] to mod '{modName}' (.f2mod)");
 
         // 3. HOT-RELOAD IN-MEMORY OVERLAYS AND REFRESH SCENE NODES
         Engine_GameGdb.Invalidate();
@@ -879,26 +969,40 @@ public static class EditorModValueService
     }
 
     /// <summary>
-    /// Removes all overrides targeting this item from the active mod's .gdb.tu patch files.
+    /// Removes all overrides targeting this item from the active mod's .f2mod package.
     /// </summary>
     public static void RevertItemOverrides(ItemDetail detail, string? activeMod = null)
     {
         string modName = !string.IsNullOrWhiteSpace(activeMod) ? activeMod : EditorModExporter.ActiveModName;
-        string filesRoot = Path.Combine(Engine_GameAssets.ModsRoot, modName, "files");
+        string modsRoot = Engine_GameAssets.ModsRoot;
+        if (string.IsNullOrEmpty(modsRoot))
+        {
+            modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+        }
+
+        string pkgPath = Path.Combine(modsRoot, modName + ModWorkspace.PackageExtension);
+        if (!File.Exists(pkgPath))
+        {
+            return;
+        }
 
         GdbMulti? multi = Engine_GameGdb.Database ?? Engine_GameGdb.BaseDatabase;
         var targetHashes = CollectTargetHashes(multi, detail);
 
-        // Remove from all known .gdb.tu files:
+        var updates = new List<(string Path, byte[] Bytes)>();
+        var deletes = new List<string>();
+
+        // Revert from all known .gdb.tu entries in the package:
         foreach (string gdbPath in KnownGdbPaths)
         {
-            string tuPath = Path.Combine(filesRoot, (gdbPath + ".tu").Replace('/', Path.DirectorySeparatorChar));
-            if (!File.Exists(tuPath))
+            string tuSub = gdbPath + ".tu";
+            byte[]? existingBytes = LoadPackageEntry(pkgPath, tuSub);
+            if (existingBytes == null || existingBytes.Length == 0)
             {
                 continue;
             }
 
-            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(tuPath);
+            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(existingBytes);
             bool changed = false;
             foreach (uint h in targetHashes)
             {
@@ -910,25 +1014,23 @@ public static class EditorModValueService
 
             if (changed)
             {
-                GdbPatchBuilder.SavePatchDatabase(db, tuPath);
+                if (db.Entries.Count > 0)
+                {
+                    updates.Add((tuSub, GdbWriter.Serialize(db)));
+                }
+                else
+                {
+                    deletes.Add(tuSub);
+                }
             }
         }
 
-        // Clean up any legacy .gdb.csv files:
-        foreach (string gdbPath in KnownGdbPaths)
+        // Filter book.babel.csv inside package:
+        string relBabel = "language/en-uk/text/book.babel.csv";
+        byte[]? existingBabelBytes = LoadPackageEntry(pkgPath, relBabel);
+        if (existingBabelBytes != null && existingBabelBytes.Length > 0)
         {
-            string gdbCsvPath = Path.Combine(filesRoot, (gdbPath + ".csv").Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(gdbCsvPath))
-            {
-                try { File.Delete(gdbCsvPath); } catch { }
-            }
-        }
-
-        // Filter book.babel.csv:
-        string babelCsvPath = ResolveBabelCsvPath(filesRoot);
-        if (File.Exists(babelCsvPath))
-        {
-            List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(File.ReadAllText(babelCsvPath), new List<string>());
+            List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(Encoding.UTF8.GetString(existingBabelBytes), new List<string>());
             var remaining = new List<BabelOverlayRow>();
             foreach (BabelOverlayRow row in rows)
             {
@@ -941,14 +1043,7 @@ public static class EditorModValueService
 
             if (remaining.Count == 0)
             {
-                try
-                {
-                    File.Delete(babelCsvPath);
-                }
-                catch (Exception ex)
-                {
-                    GD.PushWarning($"[mod_values] Could not delete empty book.babel.csv: {ex.Message}");
-                }
+                deletes.Add(relBabel);
             }
             else
             {
@@ -959,12 +1054,20 @@ public static class EditorModValueService
                 {
                     babelSb.Append(r.Key).Append(',').AppendLine(EscapeCsv(r.Value));
                 }
-
-                File.WriteAllText(babelCsvPath, babelSb.ToString(), Encoding.UTF8);
+                updates.Add((relBabel, Encoding.UTF8.GetBytes(babelSb.ToString())));
             }
         }
 
-        GD.Print($"[mod_values] Reverted overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] in mod '{modName}'");
+        try
+        {
+            F2ModPackage.IncrementalSync(pkgPath, updates, deletes);
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[mod_values] Failed to auto-sync .f2mod package on revert for '{modName}': {ex.Message}");
+        }
+
+        GD.Print($"[mod_values] Reverted overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] in mod '{modName}' (.f2mod)");
 
         // Hot-reload in-memory overlays and refresh scene nodes:
         Engine_GameGdb.Invalidate();

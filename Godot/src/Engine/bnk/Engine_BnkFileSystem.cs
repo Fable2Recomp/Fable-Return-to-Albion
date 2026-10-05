@@ -218,7 +218,39 @@ public sealed class BnkFileSystem : IDisposable
     /// </summary>
     private void IndexOverlay(string name, string assetRoot, bool expandNested)
     {
-        if (string.IsNullOrEmpty(assetRoot) || !Directory.Exists(assetRoot))
+        if (string.IsNullOrEmpty(assetRoot))
+        {
+            return;
+        }
+
+        if (File.Exists(assetRoot) && assetRoot.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Refii.Mods.F2ModPackage.TryOpen(assetRoot, out Refii.Mods.F2ModPackage? package, out string pkgError) && package is not null)
+            {
+                foreach (Refii.Mods.F2ModEntry entry in package.Entries)
+                {
+                    if (IsModBookkeeping(Path.GetFileName(entry.Path)))
+                    {
+                        continue;
+                    }
+
+                    Refii.Mods.F2ModEntry captured = entry;
+                    AddVirtualFile(
+                        entry.Path,
+                        assetRoot,
+                        (long)entry.Size,
+                        () => package.ReadEntryBytes(captured),
+                        name);
+                }
+            }
+            else
+            {
+                _failures.Add($"{name}: {pkgError}");
+            }
+            return;
+        }
+
+        if (!Directory.Exists(assetRoot))
         {
             return;
         }

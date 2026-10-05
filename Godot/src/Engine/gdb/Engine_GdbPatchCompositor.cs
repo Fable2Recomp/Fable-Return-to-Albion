@@ -140,6 +140,34 @@ public static class GdbPatchCompositor
 
         foreach (ModOverlay overlay in overlays)
         {
+            string sourcePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot;
+            if (File.Exists(sourcePath) && sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+            {
+                if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out _) && pkg is not null)
+                {
+                    using (pkg)
+                    {
+                        foreach (F2ModEntry entry in pkg.Entries)
+                        {
+                            if (!entry.Path.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+
+                            string normalized = ModLoadOrder.Normalize(entry.Path);
+                            if (!tuFilesBySubPath.TryGetValue(normalized, out var list))
+                            {
+                                list = new List<(string, string)>();
+                                tuFilesBySubPath[normalized] = list;
+                            }
+
+                            list.Add((overlay.Name, sourcePath));
+                        }
+                    }
+                }
+                continue;
+            }
+
             if (!Directory.Exists(overlay.AssetRoot))
             {
                 continue;
@@ -209,7 +237,7 @@ public static class GdbPatchCompositor
                 GdbPatchDatabase mergedDb;
                 if (modFiles.Count == 1)
                 {
-                    mergedDb = GdbPatchBuilder.LoadOrCreatePatchDatabase(modFiles[0].DiskPath);
+                    mergedDb = LoadTuPatch(modFiles[0].DiskPath, subPath);
                 }
                 else
                 {
@@ -271,6 +299,33 @@ public static class GdbPatchCompositor
 
         foreach (ModInstall mod in enabledModsInMountOrder)
         {
+            if (File.Exists(mod.PackagePath) && mod.PackagePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+            {
+                if (F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? pkg, out _) && pkg is not null)
+                {
+                    using (pkg)
+                    {
+                        foreach (F2ModEntry entry in pkg.Entries)
+                        {
+                            if (!entry.Path.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+
+                            string normalized = ModLoadOrder.Normalize(entry.Path);
+                            if (!tuFilesBySubPath.TryGetValue(normalized, out var list))
+                            {
+                                list = new List<(string, string)>();
+                                tuFilesBySubPath[normalized] = list;
+                            }
+
+                            list.Add((mod.Name, mod.PackagePath));
+                        }
+                    }
+                }
+                continue;
+            }
+
             string assetRoot = ModWorkspace.GetModAssetRoot(mod);
             if (!Directory.Exists(assetRoot))
             {
@@ -304,6 +359,26 @@ public static class GdbPatchCompositor
         return tuFilesBySubPath;
     }
 
+    private static GdbPatchDatabase LoadTuPatch(string sourcePath, string subPath)
+    {
+        if (sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+        {
+            if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out _) && pkg is not null)
+            {
+                using (pkg)
+                {
+                    if (pkg.TryGetEntry(subPath, out F2ModEntry? entry) && entry is not null)
+                    {
+                        return GdbPatchBuilder.LoadOrCreatePatchDatabase(pkg.ReadEntryBytes(entry));
+                    }
+                }
+            }
+            return new GdbPatchDatabase();
+        }
+
+        return GdbPatchBuilder.LoadOrCreatePatchDatabase(sourcePath);
+    }
+
     /// <summary>
     /// Merges sparse GDB patch databases from multiple mods in mount order (lowest priority first).
     /// When multiple mods touch the same record, their modifications are composited at the property level.
@@ -323,7 +398,7 @@ public static class GdbPatchCompositor
 
         foreach (var (modName, diskPath) in modFiles)
         {
-            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(diskPath);
+            GdbPatchDatabase db = LoadTuPatch(diskPath, subPath);
 
             foreach (GdbPatchEntry entry in db.Entries)
             {

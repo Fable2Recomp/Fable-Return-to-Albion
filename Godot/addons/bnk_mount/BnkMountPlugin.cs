@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Godot;
 using Refii.Bnk;
 using Refii.EditorTools;
+using Refii.Mods;
 
 namespace Refii.Assets;
 
@@ -33,6 +34,37 @@ public partial class BnkMountPlugin : EditorPlugin
     private const string LevelPrefix = "lvl:";
     private const string ContainerMeta = "__bnk_container__";
     private const string FilePrefix = "game://";
+    public const string BnkMetaKey = "__bnk_meta__";
+
+    /// <summary>
+    /// Attaches custom metadata to a Game:// tree item.
+    /// Sets column 0 metadata to "res://" so that Godot's FileSystemDock tooltip handler
+    /// evaluates DirAccess::exists("res://") as true and returns nullptr immediately,
+    /// preventing the '!FileAccess::exists(p_path)' console error when hovered.
+    /// </summary>
+    public static void SetItemMeta(TreeItem item, string meta)
+    {
+        item.SetMeta(BnkMetaKey, meta);
+        item.SetMetadata(0, "res://");
+    }
+
+    /// <summary>
+    /// Retrieves custom metadata from a Game:// tree item, falling back to column 0 metadata.
+    /// </summary>
+    public static string GetItemMeta(TreeItem? item)
+    {
+        if (item is null || !GodotObject.IsInstanceValid(item))
+        {
+            return string.Empty;
+        }
+
+        if (item.HasMeta(BnkMetaKey))
+        {
+            return item.GetMeta(BnkMetaKey).AsString();
+        }
+
+        return item.GetMetadata(0).AsString();
+    }
 
     private BnkFileSystem? _filesystem;
     private Refii.Textures.Engine_BnkTextureLoader? _textureLoader;
@@ -812,7 +844,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         _gameRoot = tree.CreateItem(root);
         _gameRoot.SetText(0, RootLabel);
-        _gameRoot.SetMetadata(0, ContainerMeta);
+        SetItemMeta(_gameRoot, ContainerMeta);
         _gameRoot.SetSelectable(0, false);
         _gameRoot.SetIcon(0, GetFolderIcon());
         _gameRoot.SetIconModulate(0, GameFolderColor);
@@ -820,7 +852,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem assets = tree.CreateItem(_gameRoot);
         assets.SetText(0, "Assets");
-        assets.SetMetadata(0, RootMeta);
+        SetItemMeta(assets, RootMeta);
         assets.SetSelectable(0, false);
         assets.SetIcon(0, GetFolderIcon());
         assets.SetIconModulate(0, GameFolderColor);
@@ -829,7 +861,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem databases = tree.CreateItem(_gameRoot);
         databases.SetText(0, "Database");
-        databases.SetMetadata(0, DatabaseRootMeta);
+        SetItemMeta(databases, DatabaseRootMeta);
         databases.SetSelectable(0, false);
         databases.SetIcon(0, GetFolderIcon());
         databases.SetIconModulate(0, GameFolderColor);
@@ -838,7 +870,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem entities = tree.CreateItem(_gameRoot);
         entities.SetText(0, "Entities");
-        entities.SetMetadata(0, EntitiesRootMeta);
+        SetItemMeta(entities, EntitiesRootMeta);
         entities.SetSelectable(0, false);
         entities.SetIcon(0, GetFolderIcon());
         entities.SetIconModulate(0, GameFolderColor);
@@ -847,7 +879,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem hero = tree.CreateItem(_gameRoot);
         hero.SetText(0, "Hero");
-        hero.SetMetadata(0, HeroRootMeta);
+        SetItemMeta(hero, HeroRootMeta);
         hero.SetSelectable(0, false);
         hero.SetIcon(0, GetFolderIcon());
         hero.SetIconModulate(0, GameFolderColor);
@@ -856,7 +888,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem equipment = tree.CreateItem(_gameRoot);
         equipment.SetText(0, "Equipment");
-        equipment.SetMetadata(0, EquipmentRootMeta);
+        SetItemMeta(equipment, EquipmentRootMeta);
         equipment.SetSelectable(0, false);
         equipment.SetIcon(0, GetFolderIcon());
         equipment.SetIconModulate(0, GameFolderColor);
@@ -865,7 +897,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem items = tree.CreateItem(_gameRoot);
         items.SetText(0, "Items");
-        items.SetMetadata(0, ItemsRootMeta);
+        SetItemMeta(items, ItemsRootMeta);
         items.SetSelectable(0, false);
         items.SetIcon(0, GetFolderIcon());
         items.SetIconModulate(0, GameFolderColor);
@@ -874,7 +906,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem effects = tree.CreateItem(_gameRoot);
         effects.SetText(0, "Effects");
-        effects.SetMetadata(0, EffectsRootMeta);
+        SetItemMeta(effects, EffectsRootMeta);
         effects.SetSelectable(0, false);
         effects.SetIcon(0, GetFolderIcon());
         effects.SetIconModulate(0, GameFolderColor);
@@ -883,7 +915,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem levels = tree.CreateItem(_gameRoot);
         levels.SetText(0, "Levels");
-        levels.SetMetadata(0, LevelsRootMeta);
+        SetItemMeta(levels, LevelsRootMeta);
         levels.SetSelectable(0, false);
         levels.SetIcon(0, GetFolderIcon());
         levels.SetIconModulate(0, GameFolderColor);
@@ -892,7 +924,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem videos = tree.CreateItem(_gameRoot);
         videos.SetText(0, "Videos");
-        videos.SetMetadata(0, VideosRootMeta);
+        SetItemMeta(videos, VideosRootMeta);
         videos.SetSelectable(0, false);
         videos.SetIcon(0, GetFolderIcon());
         videos.SetIconModulate(0, GameFolderColor);
@@ -1073,6 +1105,9 @@ public partial class BnkMountPlugin : EditorPlugin
     /// <summary>Text input field inside the mod name configuration dialog.</summary>
     private LineEdit? _modNameEdit;
 
+    /// <summary>Dropdown selector listing all discovered .f2mod mods.</summary>
+    private OptionButton? _modOptionBtn;
+
     /// <summary>Virtual path of the currently selected asset in the Game:// tree.</summary>
     private string _contextVirtualPath = string.Empty;
 
@@ -1180,31 +1215,130 @@ public partial class BnkMountPlugin : EditorPlugin
     {
         if (_modNameDialog is not null && IsInstanceValid(_modNameDialog))
         {
+            RefreshModNameDialog();
             return;
         }
 
         _modNameDialog = new ConfirmationDialog();
-        _modNameDialog.Title = "Set Active Mod";
+        _modNameDialog.Title = "Select Active Mod";
+        _modNameDialog.MinSize = new Vector2I(380, 180);
 
         var vbox = new VBoxContainer();
-        var label = new Label { Text = "Mod Folder Name (under assets/mods/):" };
-        _modNameEdit = new LineEdit { Text = EditorModExporter.ActiveModName };
-        vbox.AddChild(label);
-        vbox.AddChild(_modNameEdit);
+        vbox.AddThemeConstantOverride("separation", 8);
+
+        var chooseLabel = new Label { Text = "Switch to Existing Mod:" };
+        vbox.AddChild(chooseLabel);
+
+        _modOptionBtn = new OptionButton();
+        _modOptionBtn.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        vbox.AddChild(_modOptionBtn);
+
+        vbox.AddChild(new HSeparator());
+
+        var createLabel = new Label { Text = "Or Create New Mod (.f2mod):" };
+        vbox.AddChild(createLabel);
+
+        var createRow = new HBoxContainer();
+        createRow.AddThemeConstantOverride("separation", 6);
+        _modNameEdit = new LineEdit { PlaceholderText = "NewModName" };
+        _modNameEdit.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        createRow.AddChild(_modNameEdit);
+
+        var createBtn = new Button { Text = "Create" };
+        createBtn.Pressed += () =>
+        {
+            if (_modNameEdit != null && !string.IsNullOrWhiteSpace(_modNameEdit.Text))
+            {
+                string newName = _modNameEdit.Text.Trim();
+                if (ModWorkspace.IsSafeModFolderName(newName))
+                {
+                    string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+                    if (string.IsNullOrEmpty(modsRoot))
+                    {
+                        modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+                    }
+                    if (ModWorkspace.CreateModPackage(modsRoot, newName, out _, out string err))
+                    {
+                        EditorModExporter.ActiveModName = newName;
+                        EditorModExporter.EnsureActiveModWorkspace();
+                        _modNameEdit.Text = string.Empty;
+                        RefreshModNameDialog();
+                        ReloadModOverlays();
+                        GD.Print($"[mod_export] Created and activated '{newName}.f2mod'");
+                    }
+                    else
+                    {
+                        GD.PushWarning($"[mod_export] Failed to create mod package: {err}");
+                    }
+                }
+                else
+                {
+                    GD.PushWarning($"[mod_export] '{newName}' is not a valid mod name.");
+                }
+            }
+        };
+        createRow.AddChild(createBtn);
+        vbox.AddChild(createRow);
+
         _modNameDialog.AddChild(vbox);
 
         _modNameDialog.Confirmed += () =>
         {
-            if (_modNameEdit is not null && !string.IsNullOrWhiteSpace(_modNameEdit.Text))
+            if (_modNameEdit != null && !string.IsNullOrWhiteSpace(_modNameEdit.Text))
             {
-                string chosen = _modNameEdit.Text.Trim();
-                EditorModExporter.ActiveModName = chosen;
-                EditorModExporter.EnsureActiveModWorkspace();
-                GD.Print($"[mod_export] Active mod set to '{chosen}'");
+                string newName = _modNameEdit.Text.Trim();
+                if (ModWorkspace.IsSafeModFolderName(newName))
+                {
+                    string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+                    if (string.IsNullOrEmpty(modsRoot))
+                    {
+                        modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+                    }
+                    ModWorkspace.CreateModPackage(modsRoot, newName, out _, out _);
+                    EditorModExporter.ActiveModName = newName;
+                    EditorModExporter.EnsureActiveModWorkspace();
+                    ReloadModOverlays();
+                    GD.Print($"[mod_export] Active mod set to '{newName}'");
+                    return;
+                }
+            }
+
+            if (_modOptionBtn != null && _modOptionBtn.ItemCount > 0 && _modOptionBtn.Selected >= 0)
+            {
+                string chosen = _modOptionBtn.GetItemText(_modOptionBtn.Selected);
+                if (!string.IsNullOrWhiteSpace(chosen))
+                {
+                    EditorModExporter.ActiveModName = chosen;
+                    EditorModExporter.EnsureActiveModWorkspace();
+                    ReloadModOverlays();
+                    GD.Print($"[mod_export] Active mod set to '{chosen}'");
+                }
             }
         };
 
         EditorInterface.Singleton.GetBaseControl().AddChild(_modNameDialog);
+        RefreshModNameDialog();
+    }
+
+    private void RefreshModNameDialog()
+    {
+        if (_modOptionBtn == null) return;
+        _modOptionBtn.Clear();
+        List<string> mods = EditorModExporter.DiscoverModNames();
+        string current = EditorModExporter.ActiveModName;
+        int selectedIndex = 0;
+        for (int i = 0; i < mods.Count; i++)
+        {
+            _modOptionBtn.AddItem(mods[i]);
+            if (string.Equals(mods[i], current, StringComparison.OrdinalIgnoreCase))
+            {
+                selectedIndex = i;
+            }
+        }
+        if (mods.Count > 0)
+        {
+            _modOptionBtn.Select(selectedIndex);
+        }
     }
 
     /// <summary>
@@ -1233,7 +1367,7 @@ public partial class BnkMountPlugin : EditorPlugin
         _contextTexturePaths.Clear();
         _contextIconPaths.Clear();
 
-        string meta = item.GetMetadata(0).AsString();
+        string meta = GetItemMeta(item);
         string text = item.GetText(0);
 
         if (meta.StartsWith(FilePrefix, StringComparison.Ordinal))
@@ -1548,11 +1682,12 @@ public partial class BnkMountPlugin : EditorPlugin
             case MenuChangeActiveMod:
             {
                 SetupModNameDialog();
+                RefreshModNameDialog();
                 if (_modNameEdit is not null)
                 {
-                    _modNameEdit.Text = EditorModExporter.ActiveModName;
+                    _modNameEdit.Text = string.Empty;
                 }
-                _modNameDialog?.PopupCentered(new Vector2I(350, 100));
+                _modNameDialog?.PopupCentered(new Vector2I(380, 180));
                 break;
             }
             case MenuReloadOverlays:
@@ -1684,7 +1819,7 @@ public partial class BnkMountPlugin : EditorPlugin
             return false;
         }
 
-        string meta = item.GetMetadata(0).AsString();
+        string meta = GetItemMeta(item);
         return meta == RootMeta ||
                meta == DatabaseRootMeta ||
                meta == LevelsRootMeta ||
@@ -1708,7 +1843,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
     private void ActivateBnkItem(TreeItem item)
     {
-        string meta = item.GetMetadata(0).AsString();
+        string meta = GetItemMeta(item);
         string text = item.GetText(0);
 
         if (text.EndsWith(".tu", StringComparison.OrdinalIgnoreCase) || meta.EndsWith(".tu", StringComparison.OrdinalIgnoreCase))
@@ -2097,12 +2232,12 @@ public partial class BnkMountPlugin : EditorPlugin
             return;
         }
 
-        if (item.GetChild(0).GetMetadata(0).AsString() != PlaceholderMeta)
+        if (GetItemMeta(item.GetChild(0)) != PlaceholderMeta)
         {
             return;
         }
 
-        string meta = item.GetMetadata(0).AsString();
+        string meta = GetItemMeta(item);
         if (meta != RootMeta &&
             meta != DatabaseRootMeta &&
             meta != LevelsRootMeta &&
@@ -2145,7 +2280,7 @@ public partial class BnkMountPlugin : EditorPlugin
             }
 
             TreeItem only = item.GetChild(0);
-            if (only.GetMetadata(0).AsString() != PlaceholderMeta)
+            if (GetItemMeta(only) != PlaceholderMeta)
             {
                 continue;
             }
@@ -2153,7 +2288,7 @@ public partial class BnkMountPlugin : EditorPlugin
             item.RemoveChild(only);
             only.Free();
 
-            string meta = item.GetMetadata(0).AsString();
+            string meta = GetItemMeta(item);
             if (meta == DatabaseRootMeta)
             {
                 PopulateDatabases(item);
@@ -2273,8 +2408,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, Refii.Entities.Engine_EntityIndex.FileNameOf(entry));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Entities.Engine_EntityIndex.VirtualPathOf(entry));
+            SetItemMeta(item, FilePrefix + Refii.Entities.Engine_EntityIndex.VirtualPathOf(entry));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);
@@ -2295,8 +2429,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, Refii.Hero.Engine_HeroCatalog.FileNameOf(entry));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Hero.Engine_HeroCatalog.VirtualPathOf(entry));
+            SetItemMeta(item, FilePrefix + Refii.Hero.Engine_HeroCatalog.VirtualPathOf(entry));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);
@@ -2314,7 +2447,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem weapons = tree.CreateItem(parent);
         weapons.SetText(0, "Weapons");
-        weapons.SetMetadata(0, WeaponsRootMeta);
+        SetItemMeta(weapons, WeaponsRootMeta);
         weapons.SetSelectable(0, false);
         weapons.SetIcon(0, GetFolderIcon());
         weapons.SetIconModulate(0, GameFolderColor);
@@ -2323,7 +2456,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         TreeItem clothes = tree.CreateItem(parent);
         clothes.SetText(0, "Clothes");
-        clothes.SetMetadata(0, ClothesRootMeta);
+        SetItemMeta(clothes, ClothesRootMeta);
         clothes.SetSelectable(0, false);
         clothes.SetIcon(0, GetFolderIcon());
         clothes.SetIconModulate(0, GameFolderColor);
@@ -2345,7 +2478,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, $"{family} ({count})");
-            item.SetMetadata(0, WeaponFamilyPrefix + family);
+            SetItemMeta(item, WeaponFamilyPrefix + family);
             item.SetSelectable(0, false);
             item.SetIcon(0, GetFolderIcon());
             item.SetIconModulate(0, GameFolderColor);
@@ -2383,8 +2516,7 @@ public partial class BnkMountPlugin : EditorPlugin
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, labels[i]);
             item.SetTooltipText(0, Refii.Equipment.Engine_ItemNames.FormatTooltip(entry.Detail, entry.Family, entry.ModelPath));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Equipment.Engine_WeaponIndex.VirtualPathOf(entry));
+            SetItemMeta(item, FilePrefix + Refii.Equipment.Engine_WeaponIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
         }
     }
@@ -2405,7 +2537,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, $"{folder} ({count})");
-            item.SetMetadata(0, ClothingSlotPrefix + folder);
+            SetItemMeta(item, ClothingSlotPrefix + folder);
             item.SetSelectable(0, false);
             item.SetIcon(0, GetFolderIcon());
             item.SetIconModulate(0, GameFolderColor);
@@ -2446,8 +2578,7 @@ public partial class BnkMountPlugin : EditorPlugin
             item.SetText(0, labels[i]);
             string clothModel = entry.MaleModelPath.Length != 0 ? entry.MaleModelPath : entry.FemaleModelPath;
             item.SetTooltipText(0, Refii.Equipment.Engine_ItemNames.FormatTooltip(entry.Detail, Refii.Equipment.Engine_ClothingSlots.LabelOf(entry.Slot), clothModel));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Equipment.Engine_ClothingIndex.VirtualPathOf(entry));
+            SetItemMeta(item, FilePrefix + Refii.Equipment.Engine_ClothingIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
         }
     }
@@ -2469,7 +2600,7 @@ public partial class BnkMountPlugin : EditorPlugin
             item.SetText(0, $"{folder} ({count})");
             item.SetTooltipText(
                 0, Refii.Equipment.Engine_ItemCategories.DescribeCategory(category));
-            item.SetMetadata(0, ItemCategoryPrefix + folder);
+            SetItemMeta(item, ItemCategoryPrefix + folder);
             item.SetSelectable(0, false);
             item.SetIcon(0, GetFolderIcon());
             item.SetIconModulate(0, GameFolderColor);
@@ -2512,8 +2643,7 @@ public partial class BnkMountPlugin : EditorPlugin
                 0,
                 Refii.Equipment.Engine_ItemNames.FormatTooltip(
                     entry.Detail, Refii.Equipment.Engine_ItemCategories.LabelOf(entry.Category), mesh));
-            item.SetMetadata(
-                0, FilePrefix + Refii.Equipment.Engine_ItemIndex.VirtualPathOf(entry));
+            SetItemMeta(item, FilePrefix + Refii.Equipment.Engine_ItemIndex.VirtualPathOf(entry));
             ApplyEquipmentIcon(item, entry.Detail.IconTex, fallback);
 
             if (!entry.HasModel)
@@ -2591,7 +2721,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, display);
-            item.SetMetadata(0, FilePrefix + Refii.Fx.Engine_BnkFxLoader.VirtualPathOf(display));
+            SetItemMeta(item, FilePrefix + Refii.Fx.Engine_BnkFxLoader.VirtualPathOf(display));
             if (icon is not null)
             {
                 item.SetIcon(0, icon);
@@ -2618,7 +2748,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, $"{group.Key}  ({group.Value})");
-            item.SetMetadata(0, LevelRegionPrefix + group.Key);
+            SetItemMeta(item, LevelRegionPrefix + group.Key);
             item.SetSelectable(0, false);
             item.SetIcon(0, folder);
             item.SetIconModulate(0, GameFolderColor);
@@ -2631,7 +2761,7 @@ public partial class BnkMountPlugin : EditorPlugin
             TreeItem empty = tree.CreateItem(parent);
             empty.SetText(0, "(no heightfields found)");
             empty.SetSelectable(0, false);
-            empty.SetMetadata(0, PlaceholderMeta);
+            SetItemMeta(empty, PlaceholderMeta);
         }
     }
 
@@ -2654,7 +2784,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, level.DisplayName);
-            item.SetMetadata(0, LevelPrefix + level.HeightfieldPath);
+            SetItemMeta(item, LevelPrefix + level.HeightfieldPath);
 
             if (icon is not null)
             {
@@ -2719,7 +2849,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name + ".bik");
-            item.SetMetadata(0, FilePrefix + "art/videos/" + name + ".bik");
+            SetItemMeta(item, FilePrefix + "art/videos/" + name + ".bik");
 
             if (icon is not null)
             {
@@ -2775,7 +2905,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, Path.GetFileName(file.VirtualPath));
-            item.SetMetadata(0, FilePrefix + file.VirtualPath);
+            SetItemMeta(item, FilePrefix + file.VirtualPath);
 
             if (icon is not null)
             {
@@ -2800,7 +2930,7 @@ public partial class BnkMountPlugin : EditorPlugin
             TreeItem empty = tree.CreateItem(parent);
             empty.SetText(0, "(no .gdb found)");
             empty.SetSelectable(0, false);
-            empty.SetMetadata(0, PlaceholderMeta);
+            SetItemMeta(empty, PlaceholderMeta);
         }
     }
 
@@ -2820,7 +2950,7 @@ public partial class BnkMountPlugin : EditorPlugin
             string child = directory.Length == 0 ? name : directory + "/" + name;
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name);
-            item.SetMetadata(0, "bnk:" + child);
+            SetItemMeta(item, "bnk:" + child);
             item.SetSelectable(0, false);
             item.SetIcon(0, folderIcon);
             item.SetIconModulate(0, GameFolderColor);
@@ -2833,7 +2963,7 @@ public partial class BnkMountPlugin : EditorPlugin
             string child = directory.Length == 0 ? name : directory + "/" + name;
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name);
-            item.SetMetadata(0, FilePrefix + child);
+            SetItemMeta(item, FilePrefix + child);
             item.SetIcon(0, fileIcon);
             item.SetIconModulate(0, GameFolderColor);
             if (_filesystem.TryGetFile(child, out BnkFile file))
@@ -3102,7 +3232,7 @@ public partial class BnkMountPlugin : EditorPlugin
         TreeItem placeholder = tree.CreateItem(parent);
         placeholder.SetText(0, "...");
         placeholder.SetSelectable(0, false);
-        placeholder.SetMetadata(0, PlaceholderMeta);
+        SetItemMeta(placeholder, PlaceholderMeta);
     }
 
     private static Texture2D GetFolderIcon() =>

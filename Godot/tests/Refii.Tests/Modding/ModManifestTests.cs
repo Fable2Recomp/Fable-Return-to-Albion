@@ -159,4 +159,93 @@ public class ModManifestTests
             }
         }
     }
+
+    [TestCase]
+    public void TestSidecarsExcludedFromEnumerateAssets()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_manifest_sidecars_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(tempDir, "globals.gdb.tu"), "valid");
+            File.WriteAllText(Path.Combine(tempDir, "globals.gdb.tu.uid"), "sidecar");
+            File.WriteAllText(Path.Combine(tempDir, "model.mesh"), "valid");
+            File.WriteAllText(Path.Combine(tempDir, "model.mesh.import"), "sidecar");
+            File.WriteAllText(Path.Combine(tempDir, "old.f2zip"), "archive");
+            File.WriteAllText(Path.Combine(tempDir, "old.bnk"), "archive");
+            File.WriteAllText(Path.Combine(tempDir, "pkg.f2mod"), "package");
+
+            var assets = ModManifest.EnumerateAssets(tempDir).Select(Path.GetFileName).ToList();
+
+            AssertThat(assets.Count).IsEqual(2);
+            AssertThat(assets.Contains("globals.gdb.tu")).IsTrue();
+            AssertThat(assets.Contains("model.mesh")).IsTrue();
+            AssertThat(assets.Contains("globals.gdb.tu.uid")).IsFalse();
+            AssertThat(assets.Contains("model.mesh.import")).IsFalse();
+            AssertThat(assets.Contains("old.f2zip")).IsFalse();
+            AssertThat(assets.Contains("old.bnk")).IsFalse();
+            AssertThat(assets.Contains("pkg.f2mod")).IsFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void TestManifestBuildFromF2ModPackage()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_manifest_pkg_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "MyMod.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "MyMod", Version = "2.0.0" };
+            var files = new[]
+            {
+                ("globals/globals.gdb.tu", System.Text.Encoding.UTF8.GetBytes("tu_data")),
+                ("language/en-uk/text/book.babel.csv", System.Text.Encoding.UTF8.GetBytes("tag,text\n1,one")),
+                ("textures/icon.png", System.Text.Encoding.UTF8.GetBytes("png_bytes"))
+            };
+
+            F2ModPackage.Create(pkgPath, meta, files, out _);
+
+            var mod = new ModInstall
+            {
+                Name = "MyMod",
+                PackagePath = pkgPath,
+                Metadata = meta,
+            };
+
+            var manifest = ModManifest.Build(mod);
+
+            AssertThat(manifest.Name).IsEqual("MyMod");
+            AssertThat(manifest.Version).IsEqual("2.0.0");
+            AssertThat(manifest.Entries.Count).IsEqual(3);
+
+            var tuEntry = manifest.Entries.Find(e => e.Path.EndsWith("globals.gdb.tu"));
+            AssertThat(tuEntry).IsNotNull();
+            AssertThat(tuEntry!.Kind).IsEqual(ModManifestEntry.KindTu);
+
+            var rowsEntry = manifest.Entries.Find(e => e.Path.EndsWith("book.babel"));
+            AssertThat(rowsEntry).IsNotNull();
+            AssertThat(rowsEntry!.Kind).IsEqual(ModManifestEntry.KindRows);
+
+            var fileEntry = manifest.Entries.Find(e => e.Path.EndsWith("icon.png"));
+            AssertThat(fileEntry).IsNotNull();
+            AssertThat(fileEntry!.Kind).IsEqual(ModManifestEntry.KindFile);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
 }

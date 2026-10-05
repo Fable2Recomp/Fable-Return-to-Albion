@@ -18,18 +18,38 @@ public static class GdbPatchBuilder
     /// </summary>
     public static GdbPatchDatabase LoadOrCreatePatchDatabase(string tuPath)
     {
-        var db = new GdbPatchDatabase();
         if (string.IsNullOrWhiteSpace(tuPath) || !File.Exists(tuPath))
+        {
+            return new GdbPatchDatabase();
+        }
+
+        try
+        {
+            return LoadOrCreatePatchDatabase(File.ReadAllBytes(tuPath));
+        }
+        catch (Exception ex)
+        {
+            LogWarning($"[gdb_patch] Failed to read TU patch at {tuPath}: {ex.Message}");
+            return new GdbPatchDatabase();
+        }
+    }
+
+    /// <summary>
+    /// Loads an existing Title Update (.gdb.tu) database from raw binary bytes.
+    /// </summary>
+    public static GdbPatchDatabase LoadOrCreatePatchDatabase(byte[]? bytes)
+    {
+        var db = new GdbPatchDatabase();
+        if (bytes is null || bytes.Length == 0)
         {
             return db;
         }
 
         try
         {
-            byte[] bytes = File.ReadAllBytes(tuPath);
             if (!GdbView.TryParse(bytes, out GdbView view, out string error))
             {
-                LogWarning($"[gdb_patch] Failed to parse existing TU patch at {tuPath}: {error}");
+                LogWarning($"[gdb_patch] Failed to parse TU patch bytes: {error}");
                 return db;
             }
 
@@ -54,7 +74,7 @@ public static class GdbPatchBuilder
         }
         catch (Exception ex)
         {
-            GD.PushWarning($"[gdb_patch] Error reading existing TU patch at {tuPath}: {ex.Message}");
+            LogWarning($"[gdb_patch] Error reading TU patch bytes: {ex.Message}");
         }
 
         return db;

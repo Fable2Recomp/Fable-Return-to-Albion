@@ -69,11 +69,18 @@ func _forward(signal_name: String, args: Array) -> void:
 		if c is Callable and c.is_valid():
 			c.callv(args)
 
+func _get_item_meta(item: TreeItem) -> String:
+	if item == null:
+		return ""
+	if item.has_meta("__bnk_meta__"):
+		return str(item.get_meta("__bnk_meta__"))
+	return str(item.get_metadata(0))
+
 func _is_tu_or_gdb(item: TreeItem) -> bool:
 	if item == null:
 		return false
 	var text := item.get_text(0)
-	var meta := str(item.get_metadata(0))
+	var meta := _get_item_meta(item)
 	return text.ends_with(".tu") or meta.ends_with(".tu") or text.ends_with(".gdb") or meta.ends_with(".gdb")
 
 ## Double-click / Enter activation handler.
