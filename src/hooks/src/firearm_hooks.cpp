@@ -21,6 +21,8 @@
 #include <rex/ppc/context.h>
 #include <rex/ppc/func.h>
 
+#include "core/guest_build.h"
+
 namespace {
 
 inline uint32_t LoadGuestU32(const uint8_t* base, uint32_t guest_address) {
@@ -71,7 +73,8 @@ REX_EXTERN(rex_CECFirearm_Serialize) {
 
   // 2. Resolve c_str pointer:
   // When str_addr points to valid buffer, dereference once; otherwise fallback to empty string
-  uint32_t cstr_ptr = 0x8208FFDFu;  // guest empty string literal &byte_8208FFDF
+  // The guest's empty string literal (`byte_8208FFDF` in TU1), by the running build.
+  uint32_t cstr_ptr = refii::guest::Address(0x8208FFDFu);
   const uint32_t str_buf_ptr = LoadGuestU32(base, str_addr);
   if (str_buf_ptr != 0) {
     cstr_ptr = LoadGuestU32(base, str_buf_ptr);
