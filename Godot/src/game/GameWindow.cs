@@ -216,6 +216,9 @@ public partial class GameWindow : Node
 		// F4: the dev menu — the full diagnostic view behind F3's spot check.
 		AddChild(new GameDevMenu { Name = "GameDevMenu" });
 
+		// Discord: "Playing Fable 2: Return to Albion" and the level the player is in.
+		AddChild(new GamePresence { Name = "GamePresence" });
+
 		// Video over UI: a movie covers the front end and hands it back when it ends.
 		// Concealing is immediate; revealing waits for the guest to say it has a front end
 		// (see _Process), not for a movie to end. Never for an embedded movie — an ability

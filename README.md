@@ -102,6 +102,11 @@ Fable 2 ISO and its title update (`default.xexp` or the TU package). The launche
 and compiles the result with the bundled Zig toolchain. Nothing derived from the game is built
 into or shipped with this repository.
 
+## Discord presence
+With Discord running, the game shows as "Playing Fable 2: Return to Albion" with the level you
+are in (Bowerstone Market, Rookridge). Nothing to set up; `discord_presence = false` in
+`refii.toml` turns it off.
+
 ## Contributing
 We welcome contributions to Return To Albion! We're still learning as we go, and we're happy to
 learn from anyone willing to teach. If you have experience, or are willing to learn and help out,

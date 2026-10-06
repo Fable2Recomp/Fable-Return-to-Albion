@@ -36,6 +36,9 @@ public static class RuntimeCVarsGodot
     /// </summary>
     public const string DisplayCategory = "Display";
 
+    /// <summary>Discord Rich Presence: the game's name and the player's level, on their profile.</summary>
+    public const string PresenceCategory = "Discord";
+
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
         {
@@ -475,6 +478,14 @@ public static class RuntimeCVarsGodot
                 + "is off). The debug channel's `flicker` command writes the ring on demand. "
                 + "Costs one quarter-resolution copy per frame and a small readback every 20 "
                 + "frames; read at launch."),
+
+            new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
+                "Show \"Playing Fable 2: Return to Albion\" and the level you are in on your "
+                + "Discord profile while Discord is running."),
+            new("discord_application_id", PresenceCategory, RuntimeCVarType.String,
+                "1556952543400173668",
+                "The Discord application the presence is shown as. The default is the project's "
+                + "own; another needs its own art asset keyed \"logo\". Blank turns presence off."),
         };
 }
 
