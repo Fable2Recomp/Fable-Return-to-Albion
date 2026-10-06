@@ -6,9 +6,11 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using Godot;
 using Refii.Core;
 using Refii.Host;
+using Refii.Launcher.Core;
 using SysEnvironment = System.Environment;
 
 namespace Refii.Game;
@@ -23,14 +25,25 @@ namespace Refii.Game;
 /// local IPC endpoint (a Unix socket, or a named pipe on Windows); when Discord is not running
 /// the node retries quietly every <see cref="RetrySeconds"/> and never holds the frame up.
 ///
-/// The game's name and artwork belong to the Discord application in the developer portal, not
-/// to us: the application is named "Fable 2: Return to Albion" and carries one art asset keyed
-/// `logo`. Its ID goes in `discord_application_id` in refii.toml, or <see cref="DefaultApplicationId"/>.
+/// JOINING. While we host a joinable session the activity carries a party and a join secret —
+/// our peer id, the title id and the session id, the same material a RexNet invite carries —
+/// so Discord offers "Invite to Join" in chat and "Ask to Join" on the profile. A friend who
+/// accepts gets <c>ACTIVITY_JOIN</c> on their side, and <see cref="NetBridge.JoinSession"/>
+/// raises the invite for them; an "Ask to Join" is approved while we are joinable, declined
+/// otherwise. The joiner's guest takes it from there as it would any accepted invite.
+///
+/// A JOIN MAKES A FRIEND. The joiner's request carries the session id as its note, which is
+/// proof it came with the secret; while that session is ours the request is accepted here, so
+/// the two are friends in RexNet's own list and can find each other without Discord next time.
+///
+/// The game's name and artwork belong to the project's Discord application in the developer
+/// portal: it is named "Fable 2: Return to Albion" and carries one art asset keyed `logo`. Its
+/// ID is <see cref="ApplicationId"/> and is not a setting — the presence is the project's.
 /// </remarks>
 public partial class GamePresence : Node
 {
 	/// <summary>The project's Discord application, "Fable 2: Return to Albion".</summary>
-	private const string DefaultApplicationId = "1556952543400173668";
+	private const string ApplicationId = "1556952543400173668";
 
 	private const string LargeImageKey = "logo";
 
@@ -44,28 +57,24 @@ public partial class GamePresence : Node
 
 	private readonly DiscordIpc _discord = new();
 
-	private string _applicationId = string.Empty;
-
 	private double _poll;
 
 	private double _sinceAttempt = RetrySeconds;
 
-	private (string Details, string State) _shown;
+	private Activity _shown;
+
+	/// <summary>Everything Discord is told; a change in any field is sent.</summary>
+	private readonly record struct Activity(
+		string Details, string State, string PartyId, string JoinSecret, bool Joinable);
 
 	private long _startedUnix;
 
 	public override void _Ready()
 	{
 		IReadOnlyDictionary<string, string> config = Engine_RefiiConfig.Read(out _);
-		bool enabled = Engine_RefiiConfig.Bool(config, "discord_presence", true);
-		_applicationId = Engine_RefiiConfig.String(
-			config, "discord_application_id", DefaultApplicationId).Trim();
-
-		if (!enabled || _applicationId.Length == 0)
+		if (!Engine_RefiiConfig.Bool(config, "discord_presence", true))
 		{
-			GD.Print(enabled
-				? "[presence] discord_application_id is blank; Discord presence off"
-				: "[presence] discord_presence = false");
+			GD.Print("[presence] discord_presence = false");
 			SetProcess(false);
 			return;
 		}
@@ -102,7 +111,7 @@ public partial class GamePresence : Node
 			}
 
 			_sinceAttempt = 0;
-			if (!_discord.Connect(_applicationId, out string why))
+			if (!_discord.Connect(ApplicationId, out string why))
 			{
 				if (why.Length > 0)
 				{
@@ -116,38 +125,127 @@ public partial class GamePresence : Node
 			_shown = default;
 		}
 
-		(string Details, string State) wanted = Describe();
-		if (wanted == _shown)
-		{
-			return;
-		}
-
-		if (_discord.SetActivity(wanted.Details, wanted.State, _startedUnix))
+		Activity wanted = Describe();
+		if (wanted != _shown && _discord.SetActivity(wanted, _startedUnix))
 		{
 			_shown = wanted;
-			GD.Print($"[presence] {wanted.Details} — {wanted.State}");
+			GD.Print($"[presence] {wanted.Details} — {wanted.State}" +
+				(wanted.PartyId.Length > 0 ? " (joinable)" : string.Empty));
+		}
+
+		while (_discord.Events.TryDequeue(out DiscordIpc.Event evt))
+		{
+			Handle(evt, wanted.Joinable);
+		}
+
+		if (wanted.PartyId.Length > 0)
+		{
+			BefriendJoiners(wanted.PartyId);
 		}
 	}
 
-	/// <summary>The two lines Discord shows under the game's name.</summary>
-	private static (string Details, string State) Describe()
+	/// <summary>
+	/// Accepts the friend requests of players who joined this session through Discord: the
+	/// ones whose note names our session id, which only the join secret carries.
+	/// </summary>
+	private static void BefriendJoiners(string sessionId)
+	{
+		foreach (NetBridge.Request request in NetBridge.Requests())
+		{
+			if (request.Note != "discord:" + sessionId)
+			{
+				continue;
+			}
+
+			if (NetBridge.PeerAction(request.PeerId, NetBridge.Act.AcceptRequest))
+			{
+				GD.Print("[presence] " + (request.DisplayName.Length > 0
+					? request.DisplayName : Short(request.PeerId)) + " joined through Discord; now a friend");
+			}
+		}
+	}
+
+	/// <summary>A Discord join or ask-to-join, on the main thread.</summary>
+	private void Handle(DiscordIpc.Event evt, bool joinable)
+	{
+		switch (evt.Kind)
+		{
+			case DiscordIpc.EventKind.Join:
+			{
+				string[] parts = evt.Value.Split('|');
+				if (parts.Length != 3 || !uint.TryParse(parts[1],
+					System.Globalization.NumberStyles.HexNumber, null, out uint titleId))
+				{
+					GD.Print("[presence] join secret not understood");
+					return;
+				}
+
+				if (titleId != SupportedGame.TitleId)
+				{
+					GD.Print($"[presence] join refused: title {titleId:X8} is not ours");
+					return;
+				}
+
+				// The native side also sends the host a friend request, noted with the
+				// session id, which the host's shell accepts (see BefriendJoiners).
+				bool sent = NetBridge.JoinSession(parts[0], titleId, parts[2]);
+				GD.Print(sent
+					? "[presence] joining " + Short(parts[0]) + "'s session from Discord"
+					: "[presence] join from Discord failed: RexNet is not up");
+				return;
+			}
+
+			case DiscordIpc.EventKind.JoinRequest:
+				GD.Print($"[presence] {evt.Name} asks to join: " +
+					(joinable ? "approved" : "declined, not joinable"));
+				_discord.AnswerJoinRequest(evt.Value, joinable);
+				return;
+		}
+	}
+
+	private static string Short(string peerId) =>
+		peerId.Length <= 8 ? peerId : "…" + peerId[^8..];
+
+	/// <summary>
+	/// The two lines Discord shows under the game's name, and the party and secret while we
+	/// host a session others may join.
+	/// </summary>
+	private static Activity Describe()
 	{
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
-			return ("Starting up", string.Empty);
+			return new Activity("Starting up", string.Empty, string.Empty, string.Empty, false);
 		}
 
+		string details;
+		string state;
 		if (!HostBridge.IsInGame)
 		{
-			return ("At the main menu", string.Empty);
+			details = "At the main menu";
+			state = string.Empty;
 		}
-
-		if (GameWhereabouts.Current is { } place && place.DisplayName.Length > 0)
+		else if (GameWhereabouts.Current is { } place && place.DisplayName.Length > 0)
 		{
-			return (place.DisplayName, "Exploring Albion");
+			details = place.DisplayName;
+			state = "Exploring Albion";
+		}
+		else
+		{
+			details = "Travelling";
+			state = "Exploring Albion";
 		}
 
-		return ("Travelling", "Exploring Albion");
+		// The party is the session: offered only while the game admits a joiner, so a
+		// Discord "Join" never lands on a session that would refuse it.
+		if (NetBridge.HostState() is { Hosting: true, Joinable: true } &&
+			NetBridge.Self() is { } self &&
+			NetBridge.OwnSessionId() is { } session)
+		{
+			string secret = self.PeerId + "|" + SupportedGame.TitleId.ToString("X8") + "|" + session;
+			return new Activity(details, "Co-op, open to join", session, secret, true);
+		}
+
+		return new Activity(details, state, string.Empty, string.Empty, false);
 	}
 
 	/// <summary>
@@ -157,6 +255,20 @@ public partial class GamePresence : Node
 	/// </summary>
 	private sealed class DiscordIpc : IDisposable
 	{
+		public enum EventKind
+		{
+			/// <summary>The player accepted an invite: <see cref="Event.Value"/> is the secret.</summary>
+			Join,
+
+			/// <summary>Someone asked to join: <see cref="Event.Value"/> is their user id.</summary>
+			JoinRequest,
+		}
+
+		public readonly record struct Event(EventKind Kind, string Value, string Name);
+
+		/// <summary>Discord's join events, queued by the reader for the main thread.</summary>
+		public ConcurrentQueue<Event> Events { get; } = new();
+
 		private const int OpHandshake = 0;
 
 		private const int OpFrame = 1;
@@ -219,6 +331,10 @@ public partial class GamePresence : Node
 				_dropped = false;
 				Task.Run(() => Drain(stream));
 				why = string.Empty;
+
+				// Without these Discord shows the party but tells us nothing when it is used.
+				Subscribe("ACTIVITY_JOIN");
+				Subscribe("ACTIVITY_JOIN_REQUEST");
 				return true;
 			}
 
@@ -227,11 +343,11 @@ public partial class GamePresence : Node
 			return false;
 		}
 
-		public bool SetActivity(string details, string state, long startedUnix)
+		public bool SetActivity(Activity wanted, long startedUnix)
 		{
 			var activity = new Dictionary<string, object>
 			{
-				["details"] = details,
+				["details"] = wanted.Details,
 				["timestamps"] = new Dictionary<string, object> { ["start"] = startedUnix },
 				["assets"] = new Dictionary<string, object>
 				{
@@ -239,9 +355,24 @@ public partial class GamePresence : Node
 					["large_text"] = LargeImageText,
 				},
 			};
-			if (state.Length > 0)
+			if (wanted.State.Length > 0)
 			{
-				activity["state"] = state;
+				activity["state"] = wanted.State;
+			}
+
+			if (wanted.PartyId.Length > 0)
+			{
+				// Co-op is two players. Discord wants the current size too; the session
+				// machinery does not say how many are in, so an open session reads as one.
+				activity["party"] = new Dictionary<string, object>
+				{
+					["id"] = wanted.PartyId,
+					["size"] = new[] { 1, 2 },
+				};
+				activity["secrets"] = new Dictionary<string, object>
+				{
+					["join"] = wanted.JoinSecret,
+				};
 			}
 
 			return Send(new Dictionary<string, object>
@@ -255,6 +386,22 @@ public partial class GamePresence : Node
 				["nonce"] = Guid.NewGuid().ToString(),
 			});
 		}
+
+		/// <summary>Approves or declines an "Ask to Join" from the Discord user given.</summary>
+		public void AnswerJoinRequest(string userId, bool approve) => Send(new Dictionary<string, object>
+		{
+			["cmd"] = approve ? "SEND_ACTIVITY_JOIN_INVITE" : "CLOSE_ACTIVITY_REQUEST",
+			["args"] = new Dictionary<string, object> { ["user_id"] = userId },
+			["nonce"] = Guid.NewGuid().ToString(),
+		});
+
+		private void Subscribe(string eventName) => Send(new Dictionary<string, object>
+		{
+			["cmd"] = "SUBSCRIBE",
+			["evt"] = eventName,
+			["args"] = new Dictionary<string, object>(),
+			["nonce"] = Guid.NewGuid().ToString(),
+		});
 
 		public void ClearActivity() => Send(new Dictionary<string, object>
 		{
@@ -367,14 +514,17 @@ public partial class GamePresence : Node
 			}
 		}
 
-		/// <summary>Reads and discards Discord's replies so its send buffer never fills.</summary>
+		/// <summary>
+		/// Reads Discord's frames so its send buffer never fills, keeping the join events for
+		/// the main thread and discarding the rest.
+		/// </summary>
 		private void Drain(Stream stream)
 		{
 			try
 			{
 				while (ReferenceEquals(stream, _stream))
 				{
-					ReadFrame(stream);
+					Keep(ReadFrame(stream));
 				}
 			}
 			catch (Exception exception) when (exception is IOException or SocketException
@@ -384,6 +534,49 @@ public partial class GamePresence : Node
 				{
 					_dropped = true;
 				}
+			}
+		}
+
+		/// <summary>Queues a frame if it is a join event; malformed JSON is dropped.</summary>
+		private void Keep(string json)
+		{
+			try
+			{
+				using JsonDocument doc = JsonDocument.Parse(json);
+				JsonElement root = doc.RootElement;
+				if (!root.TryGetProperty("evt", out JsonElement evt) || evt.ValueKind != JsonValueKind.String ||
+					!root.TryGetProperty("data", out JsonElement data) || data.ValueKind != JsonValueKind.Object)
+				{
+					return;
+				}
+
+				switch (evt.GetString())
+				{
+					case "ACTIVITY_JOIN":
+						if (data.TryGetProperty("secret", out JsonElement secret) &&
+							secret.ValueKind == JsonValueKind.String)
+						{
+							Events.Enqueue(new Event(EventKind.Join, secret.GetString() ?? string.Empty, string.Empty));
+						}
+
+						break;
+
+					case "ACTIVITY_JOIN_REQUEST":
+						if (data.TryGetProperty("user", out JsonElement user) &&
+							user.TryGetProperty("id", out JsonElement id) && id.ValueKind == JsonValueKind.String)
+						{
+							string name = user.TryGetProperty("username", out JsonElement username) &&
+								username.ValueKind == JsonValueKind.String
+								? username.GetString() ?? string.Empty
+								: string.Empty;
+							Events.Enqueue(new Event(EventKind.JoinRequest, id.GetString() ?? string.Empty, name));
+						}
+
+						break;
+				}
+			}
+			catch (JsonException)
+			{
 			}
 		}
 

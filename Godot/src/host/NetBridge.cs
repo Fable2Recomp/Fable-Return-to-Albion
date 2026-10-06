@@ -229,6 +229,50 @@ public static class NetBridge
 		}
 	}
 
+	/// <summary>Our session's id as 32 hex digits, or null when we are not hosting one.</summary>
+	public static string? OwnSessionId()
+	{
+		var buffer = new byte[64];
+		uint written;
+		try
+		{
+			written = RefiiNetOwnSession(buffer, (uint)buffer.Length);
+		}
+		catch (DllNotFoundException)
+		{
+			return null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		return written == 0 || written > buffer.Length
+			? null
+			: Encoding.UTF8.GetString(buffer, 0, (int)written);
+	}
+
+	/// <summary>
+	/// Joins a session from its material — the host's peer id, the title id and the session
+	/// id as <see cref="OwnSessionId"/> gives it — without the host being a friend. What a
+	/// Discord join secret carries.
+	/// </summary>
+	public static bool JoinSession(string peerId, uint titleId, string sessionId)
+	{
+		try
+		{
+			return RefiiNetJoinSession(peerId ?? string.Empty, titleId, sessionId ?? string.Empty) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
 	public static bool PeerAction(string peerId, Act act)
 	{
 		try
@@ -339,4 +383,10 @@ public static class NetBridge
 
 	[DllImport(Library, CharSet = CharSet.Ansi)]
 	private static extern int RefiiNetPeerAction(string peerId, int action);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetOwnSession(byte[] outText, uint capacity);
+
+	[DllImport(Library, CharSet = CharSet.Ansi)]
+	private static extern int RefiiNetJoinSession(string peerId, uint titleId, string sessionId);
 }

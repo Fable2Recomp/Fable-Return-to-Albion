@@ -482,10 +482,6 @@ public static class RuntimeCVarsGodot
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
                 "Show \"Playing Fable 2: Return to Albion\" and the level you are in on your "
                 + "Discord profile while Discord is running."),
-            new("discord_application_id", PresenceCategory, RuntimeCVarType.String,
-                "1556952543400173668",
-                "The Discord application the presence is shown as. The default is the project's "
-                + "own; another needs its own art asset keyed \"logo\". Blank turns presence off."),
         };
 }
 

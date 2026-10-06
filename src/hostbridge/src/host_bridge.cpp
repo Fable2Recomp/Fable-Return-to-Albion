@@ -2044,7 +2044,9 @@ extern "C" {
 /// 167 adds RefiiHostGuestBuild / RefiiHostGuestAddress / RefiiHostGuestAddressToTu1 -- which
 /// executable is running (0 TU1, 1 unpatched) and the address translation between the two, and
 /// reports every GUI screen id in TU1 numbering whichever build is running.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 167; }
+/// 168 adds RefiiNetOwnSession / RefiiNetJoinSession -- our session id for a Discord join
+///     secret, and a join from that material without a friend's presence.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 168; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -17337,6 +17339,78 @@ REFII_HOST_ABI_EXPORT int RefiiNetPeerAction(const char* peer_text, int action) 
 #else
     (void)peer_text;
     (void)action;
+    return 0;
+#endif
+}
+
+/// Our session's 16-byte id as 32 hex digits, or 0 when we are not hosting one. With the peer
+/// id, it is the whole of what a joiner needs — the material an invite carries.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetOwnSession(char* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    if (net == nullptr) {
+        return 0;
+    }
+
+    std::optional<std::array<uint8_t, 16>> session = net->current_session_id();
+    if (!session.has_value()) {
+        return 0;
+    }
+
+    std::string hex;
+    for (uint8_t byte : *session) {
+        char pair[3];
+        std::snprintf(pair, sizeof(pair), "%02x", byte);
+        hex += pair;
+    }
+    return Emit(hex, out, capacity);
+#else
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
+/// Joins a session from the material itself — host peer, title id and the session id as
+/// `RefiiNetOwnSession` writes it — rather than from a friend's presence. The uninvited join
+/// above (action 6) with the lookup removed: a Discord invite carries all three, and the host
+/// need not be a friend yet. 0 when the node is down or the material does not parse.
+///
+/// A JOIN THROUGH DISCORD MAKES A FRIEND. Unless they already are one, the host is sent a
+/// friend request whose note is `discord:<session>`: the session id is the proof that the
+/// request came with the secret, and the host's shell accepts a request so marked while that
+/// session is its own. Mutual consent then completes as for any request.
+REFII_HOST_ABI_EXPORT int RefiiNetJoinSession(const char* peer_text, uint32_t title_id,
+                                              const char* session_hex) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    RexNetPeerId peer{};
+    if (net == nullptr || !ParsePeer(peer_text, peer) || session_hex == nullptr ||
+        std::strlen(session_hex) != 32) {
+        return 0;
+    }
+
+    rex::net::RexNet::InviteInfo invite;
+    invite.peer = peer;
+    invite.title_id = title_id;
+    for (size_t i = 0; i < 16; ++i) {
+        unsigned value = 0;
+        if (std::sscanf(session_hex + 2 * i, "%2x", &value) != 1) {
+            return 0;
+        }
+        invite.session_id[i] = static_cast<uint8_t>(value);
+    }
+
+    net->AcceptInvite(invite);
+    net->SessionSearch();
+    if (!net->IsFriend(peer)) {
+        net->FriendRequest(peer, std::string("discord:") + session_hex);
+    }
+    return 1;
+#else
+    (void)peer_text;
+    (void)title_id;
+    (void)session_hex;
     return 0;
 #endif
 }
