@@ -582,6 +582,14 @@ public static class Engine_LevelProps
                 };
                 keyNode.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
 
+                // THE RECORD RIDES ON THE KEY like on every other single prop. A key is a `.save`
+                // placement the guest keys by `0:record`, and a collected one sits in its
+                // DeadEntities set from the moment the save loads, with no live entity ever
+                // reported for it. The twin index joins that set BY RECORD, so a key node without
+                // one was the only prop the dead-placement test could not reach: every collected
+                // silver key stood bobbing where it was taken, in every later session.
+                keyNode.SetMeta(Engine_PropStreamer.RecordMeta, (long)placement.Hash);
+
                 // NO EFFECT IS BUILT HERE ANY MORE. This used to hang a hardcoded
                 // `FX_Key_Silver_01` off the key, which is the effect the DATA states for it
                 // anyway — the ordinary attachment walk resolves it, and it simulates. Building it

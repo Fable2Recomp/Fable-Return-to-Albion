@@ -167,6 +167,18 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// change the stated width.</summary>
     private readonly Rid[] _glow = new Rid[2];
 
+    /// <summary>
+    /// The size the glow ping-pong was last allocated at: the LAYER's, not the internal half.
+    ///
+    /// The layer is half the window because that is what the guest allocates (half of the
+    /// extent it was told), while the internal size is the window times the player's render
+    /// scale. At native the two agree; under FSR or any render scale below 100 they do not,
+    /// and the prep pass fetched the layer by pixel into a buffer of the other size — the
+    /// silhouette landed scaled and displaced, so the halo stood away from the character.
+    /// </summary>
+    private Vector2I _glowSize;
+    private Rid _glowLayer;
+
     private Vector2I _fullSize;
     private Vector2I _quarterSize;
     private Vector2I _halfSize;
@@ -473,11 +485,6 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _quarterSize = new Vector2I(Math.Max(size.X / 4, 1), Math.Max(size.Y / 4, 1));
         _halfSize = new Vector2I(Math.Max(size.X / 2, 1), Math.Max(size.Y / 2, 1));
 
-        for (int i = 0; i < 2; i++)
-        {
-            _glow[i] = CreateTexture(_halfSize.X, _halfSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
-        }
-
         _quarter = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
         _occl = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
         for (int i = 0; i < 2; i++)
@@ -585,6 +592,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
             Free(ref _dof[i]);
             Free(ref _glow[i]);
         }
+
+        _glowSize = default;
+        _glowLayer = default;
     }
 
     private void FreeSet(ref Rid set)
@@ -778,6 +788,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // bailing on an empty list or an empty rect union at 0x82197ba8 / 0x82197bb4.
             if (Refii.Entities.Engine_EntityHighlightLayer.TrySnapshot(
                     out Rid layer, out float scale, _highlightTargets) &&
+                EnsureGlow(layer) &&
                 HighlightTargets(camBasis, camOrigin, projection))
             {
                 HighlightPrep(layer);
@@ -1044,8 +1055,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Vector3 forward = -camBasis.Z;
         Vector3 right = camBasis.X;
         Vector3 up = camBasis.Y;
-        float hw = _halfSize.X;
-        float hh = _halfSize.Y;
+        // Rects are padded by 16 texels of the guest's half-res buffer, which is the layer's size.
+        float hw = Math.Max(_glowSize.X, 1);
+        float hh = Math.Max(_glowSize.Y, 1);
         bool any = false;
 
         for (int k = 0; k < _highlightTargets.Length; ++k)
@@ -1146,6 +1158,42 @@ public partial class Engine_PostFxEffect : CompositorEffect
     }
 
     /// <summary>The layer's slots resolved to the guest's buffer contents, into _glow[0].</summary>
+    /// <summary>
+    /// Keeps the glow ping-pong at the layer's own size. Asked of the render device only when
+    /// the layer's texture changes, which is a resize; every set that binds a glow texture is
+    /// released with it, because the composite's set is keyed on (colour, layer) and would
+    /// otherwise keep sampling the freed one.
+    /// </summary>
+    private bool EnsureGlow(Rid layer)
+    {
+        RenderingDevice rd = _rd!;
+        if (layer == _glowLayer && _glow[0].IsValid)
+        {
+            return true;
+        }
+
+        _glowLayer = layer;
+        RDTextureFormat format = rd.TextureGetFormat(layer);
+        var size = new Vector2I(Math.Max((int)format.Width, 1), Math.Max((int)format.Height, 1));
+        if (size == _glowSize && _glow[0].IsValid)
+        {
+            return true;
+        }
+
+        _highlightPrepSet.Release(rd);
+        _highlightCompositeSet.Release(rd);
+        _glowHSet.Release(rd);
+        _glowVSet.Release(rd);
+        for (int i = 0; i < 2; i++)
+        {
+            Free(ref _glow[i]);
+            _glow[i] = CreateTexture(size.X, size.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
+        }
+
+        _glowSize = size;
+        return _glow[0].IsValid && _glow[1].IsValid;
+    }
+
     private void HighlightPrep(Rid layer)
     {
         RenderingDevice rd = _rd!;
@@ -1160,11 +1208,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         byte[] push = _pushSmall;
-        BitConverter.TryWriteBytes(push.AsSpan(0), _halfSize.X);
-        BitConverter.TryWriteBytes(push.AsSpan(4), _halfSize.Y);
+        BitConverter.TryWriteBytes(push.AsSpan(0), _glowSize.X);
+        BitConverter.TryWriteBytes(push.AsSpan(4), _glowSize.Y);
         BitConverter.TryWriteBytes(push.AsSpan(8), Refii.Entities.Engine_EntityHighlightLayer.Slots);
         BitConverter.TryWriteBytes(push.AsSpan(12), 0.0f);
-        Dispatch(_highlightPrepPipeline, _highlightPrepSet.Set, push, (_halfSize.X + 7) / 8, (_halfSize.Y + 7) / 8);
+        Dispatch(_highlightPrepPipeline, _highlightPrepSet.Set, push, (_glowSize.X + 7) / 8, (_glowSize.Y + 7) / 8);
     }
 
     /// <summary>
@@ -1184,15 +1232,15 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         byte[] push = _pushWide;
-        BitConverter.TryWriteBytes(push.AsSpan(0), _halfSize.X);
-        BitConverter.TryWriteBytes(push.AsSpan(4), _halfSize.Y);
+        BitConverter.TryWriteBytes(push.AsSpan(0), _glowSize.X);
+        BitConverter.TryWriteBytes(push.AsSpan(4), _glowSize.Y);
         BitConverter.TryWriteBytes(push.AsSpan(8), dir.X);
         BitConverter.TryWriteBytes(push.AsSpan(12), dir.Y);
         BitConverter.TryWriteBytes(push.AsSpan(16), scale);
         BitConverter.TryWriteBytes(push.AsSpan(20), 0.0f);
         BitConverter.TryWriteBytes(push.AsSpan(24), 0.0f);
         BitConverter.TryWriteBytes(push.AsSpan(28), 0.0f);
-        Dispatch(_highlightPipeline, set.Set, push, (_halfSize.X + 7) / 8, (_halfSize.Y + 7) / 8);
+        Dispatch(_highlightPipeline, set.Set, push, (_glowSize.X + 7) / 8, (_glowSize.Y + 7) / 8);
     }
 
     /// <summary>

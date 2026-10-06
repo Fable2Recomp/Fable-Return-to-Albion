@@ -258,6 +258,34 @@ add_compile_options(
     -Wextra
 )
 
+# refii: the classes upstream's own sources trip under -Wall -Wextra (552 distinct sites,
+# clang 20, measured 2026-10-07 — graphics, kernel, system, and the vendored VMA header).
+# None sit in a line this shadow tree changes, so they are not ours to fix and they buried
+# the one warning that would be. Listed one class per line so a NEW class still shows.
+# Clang spellings; the SDK needs Clang 20+ on Linux and builds with clang on Windows.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(
+        -Wno-unused-parameter
+        -Wno-missing-field-initializers
+        -Wno-missing-designated-field-initializers
+        -Wno-unused-variable
+        -Wno-unused-but-set-variable
+        -Wno-unused-private-field
+        -Wno-unused-function
+        -Wno-unused-lambda-capture
+        -Wno-sign-compare
+        -Wno-nontrivial-memcall
+        -Wno-unknown-pragmas
+        -Wno-pessimizing-move
+        -Wno-reorder-ctor
+        -Wno-missing-braces
+        -Wno-logical-op-parentheses
+        -Wno-ignored-qualifiers
+        -Wno-range-loop-construct
+        -Wno-dangling-assignment-gsl
+    )
+endif()
+
 include_directories(${REXGLUE_ROOT}/include)
 
 add_subdirectory(src/core)

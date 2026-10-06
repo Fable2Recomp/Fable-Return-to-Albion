@@ -76,6 +76,21 @@ if(REFII_STAGE_GODOT_BUILD)
     set(_refii_hostbridge_stage_commands
         COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_GODOT_BUILD_BIN_DIR}"
     )
+    # The SDK's libraries carry a configuration postfix (d, rd) and copy_if_different only
+    # ever adds, so a tree built Debug and then RelWithDebInfo staged both runtimes: the
+    # host loaded one, the launcher linked the payload against the newest by mtime and
+    # logged "more than one rexruntime". The other configurations' copies go first.
+    foreach(_staged rexruntime TracyClient)
+        if(TARGET ${_staged})
+            list(APPEND _refii_hostbridge_stage_commands
+                COMMAND ${CMAKE_COMMAND}
+                    -DBIN=${REFII_GODOT_BUILD_BIN_DIR}
+                    -DSTEM=${_staged}
+                    -DKEEP=$<TARGET_FILE_NAME:${_staged}>
+                    -P "${CMAKE_SOURCE_DIR}/cmake/refii_prune_stale_configs.cmake"
+            )
+        endif()
+    endforeach()
     foreach(_staged IN LISTS _refii_hostbridge_staged_targets)
         if(TARGET ${_staged})
             list(APPEND _refii_hostbridge_stage_commands
