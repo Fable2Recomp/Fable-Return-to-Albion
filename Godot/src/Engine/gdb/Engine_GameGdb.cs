@@ -81,6 +81,30 @@ public static class Engine_GameGdb
 		return blobs;
 	}
 
+	private static byte[]? DefaultBaseFileResolver(string virtualPath)
+	{
+		string gameDir = Refii.Core.Engine_GameData.Resolve();
+		if (string.IsNullOrEmpty(gameDir))
+		{
+			return null;
+		}
+
+		string norm = virtualPath.Replace('\\', '/').TrimStart('/');
+		string full = System.IO.Path.Combine(gameDir, norm);
+		if (System.IO.File.Exists(full))
+		{
+			return System.IO.File.ReadAllBytes(full);
+		}
+
+		string underData = System.IO.Path.Combine(gameDir, "data", norm);
+		if (System.IO.File.Exists(underData))
+		{
+			return System.IO.File.ReadAllBytes(underData);
+		}
+
+		return null;
+	}
+
 	/// <summary>The unpatched base database before any mod overlays are applied.</summary>
 	public static GdbMulti? BaseDatabase
 	{
@@ -88,14 +112,18 @@ public static class Engine_GameGdb
 		{
 			lock (BuildLock)
 			{
-				if (_baseBuilt || _baseResolver is null)
+				if (_baseBuilt)
 				{
 					return _baseMulti;
 				}
 
-				var blobs = LoadSupplementalBlobs(_baseResolver, includeTu: false);
+				Func<string, byte[]?> resolver = _baseResolver ?? DefaultBaseFileResolver;
+				var blobs = LoadSupplementalBlobs(resolver, includeTu: false);
 				_baseMulti = GdbMulti.Build(blobs);
-				_baseBuilt = true;
+				if (_baseMulti is not null || _baseResolver is not null)
+				{
+					_baseBuilt = true;
+				}
 				return _baseMulti;
 			}
 		}
@@ -125,8 +153,7 @@ public static class Engine_GameGdb
 
 				_multi = GdbMulti.Build(blobs);
 				_built = true;
-
-				GD.Print($"[game-gdb] {blobs.Count - absent.Count}/{blobs.Count} database(s) read, " +
+				LogPrint($"[game-gdb] {blobs.Count - absent.Count}/{blobs.Count} database(s) read, " +
 					$"{_multi?.RecordCount ?? 0} record(s)" +
 					(absent.Count == 0 ? string.Empty : $" — NOT FOUND: {string.Join(", ", absent)}") +
 					(_multi is null || _multi.RecordCount == 0
@@ -136,6 +163,17 @@ public static class Engine_GameGdb
 				return _multi;
 			}
 		}
+	}
+
+	private static void LogPrint(string message)
+	{
+		if (AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
+			System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase))
+		{
+			return;
+		}
+
+		try { GD.Print(message); } catch { }
 	}
 
 	/// <summary>A record by its hash, for ids the guest already resolved.</summary>

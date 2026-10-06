@@ -50,8 +50,20 @@ public static class Engine_AppRoot
 		var other => other.ToString().ToLowerInvariant(),
 	};
 
+	private static bool IsTestHost =>
+		AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
+		System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase);
+
 	/// <summary>True when running from an exported template rather than the editor.</summary>
-	public static bool IsExported => OS.HasFeature("template");
+	public static bool IsExported
+	{
+		get
+		{
+			if (IsTestHost)
+				return false;
+			try { return OS.HasFeature("template"); } catch { return false; }
+		}
+	}
 
 	public static string Path
 	{
@@ -73,6 +85,34 @@ public static class Engine_AppRoot
 		}
 	}
 
+	internal static string SafeGetProjectDir()
+	{
+		if (IsTestHost)
+		{
+			string dir = Directory.GetCurrentDirectory();
+			while (!string.IsNullOrEmpty(dir))
+			{
+				if (File.Exists(System.IO.Path.Combine(dir, "project.godot")))
+					return dir;
+				if (Directory.Exists(System.IO.Path.Combine(dir, "Godot")) && File.Exists(System.IO.Path.Combine(dir, "Godot", "project.godot")))
+					return System.IO.Path.Combine(dir, "Godot");
+				string? parent = Directory.GetParent(dir)?.FullName;
+				if (parent == null || parent == dir) break;
+				dir = parent;
+			}
+			return Directory.GetCurrentDirectory();
+		}
+
+		try
+		{
+			return ProjectSettings.GlobalizePath("res://");
+		}
+		catch
+		{
+			return Directory.GetCurrentDirectory();
+		}
+	}
+
 	private static string Resolve()
 	{
 		// System.Environment: Godot.Environment is the 3D world environment resource.
@@ -87,7 +127,8 @@ public static class Engine_AppRoot
 			// The executable's directory. Deliberately NOT res://: with an embedded PCK
 			// there is no on-disk res://, and this is also exactly what the guest runtime
 			// resolves its own paths from, so the two cannot drift.
-			string? executable = System.IO.Path.GetDirectoryName(OS.GetExecutablePath());
+			string? executable = null;
+			try { executable = System.IO.Path.GetDirectoryName(OS.GetExecutablePath()); } catch { }
 			if (!string.IsNullOrEmpty(executable))
 			{
 				return Normalize(executable!);
@@ -97,7 +138,7 @@ public static class Engine_AppRoot
 		// Editor: the staging root the native build writes, which already has the shipped
 		// shape. Per-architecture, because an x86_64 and an ARM64 build produce identically
 		// named libraries and a shared directory can only ever hold one of them.
-		string project = ProjectSettings.GlobalizePath("res://");
+		string project = SafeGetProjectDir();
 		return Normalize(System.IO.Path.Combine(project, "build", ArchFolder));
 	}
 

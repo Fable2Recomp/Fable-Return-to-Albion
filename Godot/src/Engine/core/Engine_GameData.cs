@@ -58,7 +58,7 @@ public static class Engine_GameData
 		// exported build keeps the player's data. Everything below is a dev-tree fallback.
 		yield return Path.Combine(Engine_AppRoot.AssetsDirectory, "game");
 
-		string projectDir = ProjectSettings.GlobalizePath("res://");
+		string projectDir = Engine_AppRoot.SafeGetProjectDir();
 		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
 
 		// The engine's own two, in its order.

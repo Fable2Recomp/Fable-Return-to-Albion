@@ -62,6 +62,12 @@ public static class GdbPatchCompositor
             return;
         }
 
+        if (AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
+            System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         try { GD.Print(message); } catch { }
     }
 
@@ -73,7 +79,38 @@ public static class GdbPatchCompositor
             return;
         }
 
+        if (AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
+            System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         try { GD.PushWarning(message); } catch { }
+    }
+
+    /// <summary>
+    /// Deletes any cached composite .gdb.tu files and directories.
+    /// </summary>
+    public static void PurgeCache(string modsRoot)
+    {
+        if (string.IsNullOrEmpty(modsRoot))
+        {
+            return;
+        }
+
+        string cacheRoot = Path.Combine(modsRoot, CompositeCacheDirName.Replace('/', Path.DirectorySeparatorChar));
+        if (Directory.Exists(cacheRoot))
+        {
+            try
+            {
+                Directory.Delete(cacheRoot, recursive: true);
+                LogPrint($"[mods] purged composite cache at {cacheRoot}");
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"[mods] failed to purge composite cache at {cacheRoot}: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>
@@ -125,13 +162,14 @@ public static class GdbPatchCompositor
     /// Merges sparse .gdb.tu files, caches results, and registers composite virtual files into BnkFileSystem.
     /// </summary>
     public static List<CompositeGdbResult> Apply(
-        BnkFileSystem mounted,
+        BnkFileSystem? mounted,
         IReadOnlyList<ModOverlay> overlays,
         string modsRoot)
     {
         var results = new List<CompositeGdbResult>();
         if (overlays.Count == 0)
         {
+            PurgeCache(modsRoot);
             return results;
         }
 
@@ -197,7 +235,33 @@ public static class GdbPatchCompositor
             }
         }
 
+        if (tuFilesBySubPath.Count == 0)
+        {
+            PurgeCache(modsRoot);
+            return results;
+        }
+
         string cacheRoot = Path.Combine(modsRoot, CompositeCacheDirName.Replace('/', Path.DirectorySeparatorChar));
+
+        // Clean up any stale cached composite files that are no longer contributed by active overlays:
+        if (Directory.Exists(cacheRoot))
+        {
+            foreach (string file in Directory.GetFiles(cacheRoot, "*.gdb.tu", SearchOption.AllDirectories))
+            {
+                string rel = Path.GetRelativePath(cacheRoot, file);
+                string norm = ModLoadOrder.Normalize(rel);
+                if (!tuFilesBySubPath.ContainsKey(norm))
+                {
+                    try
+                    {
+                        File.Delete(file);
+                        string stamp = file + ".stamp";
+                        if (File.Exists(stamp)) File.Delete(stamp);
+                    }
+                    catch { }
+                }
+            }
+        }
 
         foreach (var (subPath, modFiles) in tuFilesBySubPath)
         {
@@ -268,9 +332,9 @@ public static class GdbPatchCompositor
                 }
             }
 
-            // Inject composite virtual file into BnkFileSystem:
+            // Inject composite virtual file into BnkFileSystem if mounted:
             byte[] capturedBinary = binary;
-            mounted.AddVirtualFile(
+            mounted?.AddVirtualFile(
                 subPath,
                 File.Exists(cachePath) ? cachePath : modFiles[^1].DiskPath,
                 capturedBinary.Length,

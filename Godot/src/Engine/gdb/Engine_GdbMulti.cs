@@ -124,45 +124,73 @@ public sealed class GdbMulti
         value = 0;
         type = default;
 
-        GdbCursor current = start;
-        var visited = new HashSet<uint>();
-
-        for (int depth = 0; depth < 64 && current.Valid; depth++)
+        if (!start.Valid)
         {
-            if (current.View.TryFindLocalRaw(
-                    current.Record, fieldHash, expectedType, out value, out type))
-            {
-                owner = current;
-                return true;
-            }
-
-            if (!current.View.TryFindLocalRaw(
-                    current.Record, GdbView.HashParent, 6, out uint parent, out _) ||
-                parent == 0 || parent == GdbHash.Null ||
-                !visited.Add(parent) ||
-                !TryLookup(parent, out current))
-            {
-                break;
-            }
+            return false;
         }
 
-        // Fallback: if this record was overlaid (e.g. by a sparse TU patch), check underlying cursors for this record hash:
-        uint startHash = start.View.RecordHash(start.Record);
-        if (startHash != 0 && _cursorsByHash.TryGetValue(startHash, out var cursors) && cursors.Count > 1)
+        // If the caller passed a cursor for a record, first check that specific cursor:
+        if (start.View.TryFindLocalRaw(start.Record, fieldHash, expectedType, out value, out type))
         {
-            for (int i = cursors.Count - 1; i >= 0; i--)
-            {
-                GdbCursor underlying = cursors[i];
-                if (ReferenceEquals(underlying.View, start.View))
-                {
-                    continue;
-                }
+            owner = start;
+            return true;
+        }
 
-                if (TryFindInherited(underlying, fieldHash, expectedType, out owner, out value, out type))
+        var visited = new HashSet<uint>();
+        uint currentHash = start.View.RecordHash(start.Record);
+        if (currentHash == 0 && start.View.TryFindLocalRaw(start.Record, GdbView.HashParent, 6, out uint startParent, out _))
+        {
+            currentHash = startParent;
+        }
+
+        while (currentHash != 0 && currentHash != GdbHash.Null && visited.Add(currentHash))
+        {
+            // Gather all cursors for this record hash (highest priority / TU patch first, base GDB last):
+            List<GdbCursor>? layers = null;
+            if (_cursorsByHash.TryGetValue(currentHash, out var list) && list.Count > 0)
+            {
+                layers = list;
+            }
+
+            uint nextParent = 0;
+
+            if (layers is not null)
+            {
+                for (int i = layers.Count - 1; i >= 0; i--)
                 {
-                    return true;
+                    GdbCursor c = layers[i];
+                    if (c.View.TryFindLocalRaw(c.Record, fieldHash, expectedType, out value, out type))
+                    {
+                        owner = c;
+                        return true;
+                    }
+
+                    if (nextParent == 0)
+                    {
+                        if (c.View.TryFindLocalRaw(c.Record, GdbView.HashParent, 6, out uint p, out _) &&
+                            p != 0 && p != GdbHash.Null)
+                        {
+                            nextParent = p;
+                        }
+                    }
                 }
             }
+            else if (TryLookup(currentHash, out GdbCursor fallback))
+            {
+                if (fallback.View.TryFindLocalRaw(fallback.Record, fieldHash, expectedType, out value, out type))
+                {
+                    owner = fallback;
+                    return true;
+                }
+
+                if (fallback.View.TryFindLocalRaw(fallback.Record, GdbView.HashParent, 6, out uint p, out _) &&
+                    p != 0 && p != GdbHash.Null)
+                {
+                    nextParent = p;
+                }
+            }
+
+            currentHash = nextParent;
         }
 
         return false;

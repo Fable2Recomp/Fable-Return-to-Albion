@@ -327,6 +327,75 @@ public class ModRowOverlaysTests
         }
     }
 
+    [TestCase]
+    public void TestDetectRowConflictsBetweenMultipleMods()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_rowconflict_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            string pkgAPath = Path.Combine(tempDir, "ModA.f2mod");
+            string pkgBPath = Path.Combine(tempDir, "ModB.f2mod");
+
+            string csvA = $"0x{SwordNameTag:X8},Blade From Mod A\n0x{SwordDescTag:X8},Desc A\n";
+            string csvB = $"0x{SwordNameTag:X8},Blade From Mod B\n0x{ModNewItemTag:X8},New Item B\n";
+
+            var filesA = new List<(string Path, byte[] Bytes)>
+            {
+                ("language/en-uk/text/book.babel.csv", Encoding.UTF8.GetBytes(csvA))
+            };
+            var filesB = new List<(string Path, byte[] Bytes)>
+            {
+                ("language/en-uk/text/book.babel.csv", Encoding.UTF8.GetBytes(csvB))
+            };
+
+            var metaA = new ModMetadata { Title = "Mod A", Version = "1.0", Author = "Dev" };
+            var metaB = new ModMetadata { Title = "Mod B", Version = "1.0", Author = "Dev" };
+
+            AssertThat(F2ModPackage.Create(pkgAPath, metaA, filesA, out _)).IsTrue();
+            AssertThat(F2ModPackage.Create(pkgBPath, metaB, filesB, out _)).IsTrue();
+
+            var order = new ModLoadOrder();
+            order.Enabled.Add("ModA");
+            order.Enabled.Add("ModB");
+
+            var installs = new List<ModInstall>
+            {
+                new()
+                {
+                    Name = "ModA",
+                    PackagePath = pkgAPath,
+                    Metadata = metaA
+                },
+                new()
+                {
+                    Name = "ModB",
+                    PackagePath = pkgBPath,
+                    Metadata = metaB
+                }
+            };
+
+            List<(string Table, RowConflict Conflict)> conflicts = ModRowOverlays.DetectRowConflicts(order, installs);
+
+            // Both mods touch SwordNameTag (0x1000A001) in book.babel
+            AssertThat(conflicts.Count).IsEqual(1);
+            var (table, conflict) = conflicts[0];
+            AssertThat(table).IsEqual("language/en-uk/text/book.babel");
+            AssertThat(conflict.Key).IsEqual($"0x{SwordNameTag:X8}");
+            AssertThat(conflict.Winner).IsEqual("ModA");
+            AssertThat(conflict.Losers.Count).IsEqual(1);
+            AssertThat(conflict.Losers[0]).IsEqual("ModB");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
     private static byte[] CreateMinimalBabel(Dictionary<uint, string> entries)
     {
         var blocks = new List<byte[]>();

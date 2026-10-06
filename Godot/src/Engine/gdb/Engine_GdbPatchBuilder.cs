@@ -153,11 +153,30 @@ public static class GdbPatchBuilder
                     schemaFlags = cursor.View.RecordSchemaFlags(cursor.Record);
                 }
 
+                string entryName = baseMulti.NameOf(sparseEntry.Id);
+                if (!string.IsNullOrEmpty(entryName) && !fullDb.Names.ContainsKey(sparseEntry.Id))
+                {
+                    fullDb.Names[sparseEntry.Id] = entryName;
+                }
+
                 // Populate all inherited properties from parent hierarchy:
                 foreach (var (hash, type, raw) in baseMulti.InheritedFields(cursor))
                 {
                     propMap[hash] = fullProperties.Count;
                     fullProperties.Add(new GdbPatchProperty(hash, type, raw));
+                    string propName = baseMulti.NameOf(hash);
+                    if (!string.IsNullOrEmpty(propName) && !fullDb.Names.ContainsKey(hash))
+                    {
+                        fullDb.Names[hash] = propName;
+                    }
+                    if (type == GdbFieldType.String)
+                    {
+                        string strVal = baseMulti.NameOf(raw);
+                        if (!string.IsNullOrEmpty(strVal) && !fullDb.Names.ContainsKey(raw))
+                        {
+                            fullDb.Names[raw] = strVal;
+                        }
+                    }
                 }
 
                 // Ensure local fields (such as parent reference) are also included:
@@ -172,6 +191,19 @@ public static class GdbPatchBuilder
                     {
                         propMap[hash] = fullProperties.Count;
                         fullProperties.Add(new GdbPatchProperty(hash, type, raw));
+                    }
+                    string propName = baseMulti.NameOf(hash);
+                    if (!string.IsNullOrEmpty(propName) && !fullDb.Names.ContainsKey(hash))
+                    {
+                        fullDb.Names[hash] = propName;
+                    }
+                    if (type == GdbFieldType.String)
+                    {
+                        string strVal = baseMulti.NameOf(raw);
+                        if (!string.IsNullOrEmpty(strVal) && !fullDb.Names.ContainsKey(raw))
+                        {
+                            fullDb.Names[raw] = strVal;
+                        }
                     }
                 }
             }
@@ -188,6 +220,20 @@ public static class GdbPatchBuilder
                 {
                     propMap[sparseProp.NameHash] = fullProperties.Count;
                     fullProperties.Add(new GdbPatchProperty(sparseProp.NameHash, sparseProp.Type, sparseProp.Value));
+                }
+
+                string propName = baseMulti.NameOf(sparseProp.NameHash);
+                if (!string.IsNullOrEmpty(propName) && !fullDb.Names.ContainsKey(sparseProp.NameHash))
+                {
+                    fullDb.Names[sparseProp.NameHash] = propName;
+                }
+                if (sparseProp.Type == GdbFieldType.String)
+                {
+                    string strVal = baseMulti.NameOf(sparseProp.Value);
+                    if (!string.IsNullOrEmpty(strVal) && !fullDb.Names.ContainsKey(sparseProp.Value))
+                    {
+                        fullDb.Names[sparseProp.Value] = strVal;
+                    }
                 }
             }
 

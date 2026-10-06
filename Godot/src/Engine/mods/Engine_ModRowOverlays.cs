@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Refii.Bnk;
 using Refii.Text;
@@ -337,6 +338,157 @@ public static class ModRowOverlays
 		{
 			list.Add(value);
 		}
+	}
+
+	/// <summary>
+	/// Detects row conflicts across enabled mods without mounting.
+	/// </summary>
+	public static List<(string Table, RowConflict Conflict)> DetectRowConflicts(
+		ModLoadOrder order,
+		IReadOnlyList<ModInstall> installs)
+	{
+		var results = new List<(string Table, RowConflict Conflict)>();
+		if (order.Enabled.Count < 2)
+		{
+			return results;
+		}
+
+		// Gather enabled mods in mount order (lowest priority first -> highest priority last):
+		var enabledInMountOrder = new List<ModInstall>();
+		for (int i = order.Enabled.Count - 1; i >= 0; i--)
+		{
+			string name = order.Enabled[i];
+			ModInstall? mod = installs.FirstOrDefault(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
+			if (mod is not null)
+			{
+				enabledInMountOrder.Add(mod);
+			}
+		}
+
+		var babelByTable = new Dictionary<string, List<BabelOverlayRow>>(StringComparer.OrdinalIgnoreCase);
+
+		foreach (ModInstall mod in enabledInMountOrder)
+		{
+			if (File.Exists(mod.PackagePath) && mod.PackagePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+			{
+				if (F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? pkg, out _) && pkg is not null)
+				{
+					using (pkg)
+					{
+						foreach (F2ModEntry entry in pkg.Entries)
+						{
+							if (!entry.Path.EndsWith(BabelOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase))
+							{
+								continue;
+							}
+
+							string text;
+							try
+							{
+								byte[] bytes = pkg.ReadEntryBytes(entry);
+								text = Encoding.UTF8.GetString(bytes);
+							}
+							catch
+							{
+								continue;
+							}
+
+							string relative = entry.Path.Replace('\\', '/').TrimStart('/');
+							if (relative.StartsWith("files/", StringComparison.OrdinalIgnoreCase))
+							{
+								relative = relative["files/".Length..];
+							}
+							string table = ModLoadOrder.Normalize(relative);
+							table = table[..^4];
+
+							List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(text, new List<string>());
+							foreach (BabelOverlayRow row in rows)
+							{
+								row.Mod = mod.Name;
+							}
+
+							if (rows.Count > 0)
+							{
+								if (!babelByTable.TryGetValue(table, out List<BabelOverlayRow>? existing))
+								{
+									existing = new List<BabelOverlayRow>();
+									babelByTable[table] = existing;
+								}
+								existing.AddRange(rows);
+							}
+						}
+					}
+				}
+				continue;
+			}
+
+			string assetRoot = ModWorkspace.GetModAssetRoot(mod);
+			if (!Directory.Exists(assetRoot))
+			{
+				continue;
+			}
+
+			foreach (string file in ModManifest.EnumerateAssets(assetRoot))
+			{
+				if (!file.EndsWith(BabelOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+
+				string relative;
+				string text;
+				try
+				{
+					relative = Path.GetRelativePath(assetRoot, file);
+					text = File.ReadAllText(file);
+				}
+				catch
+				{
+					continue;
+				}
+
+				string normRel = relative.Replace('\\', '/').TrimStart('/');
+				if (normRel.StartsWith("files/", StringComparison.OrdinalIgnoreCase))
+				{
+					normRel = normRel["files/".Length..];
+				}
+				string table = ModLoadOrder.Normalize(normRel);
+				table = table[..^4];
+
+				List<BabelOverlayRow> rows = BabelOverlay.ParseCsv(text, new List<string>());
+				foreach (BabelOverlayRow row in rows)
+				{
+					row.Mod = mod.Name;
+				}
+
+				if (rows.Count > 0)
+				{
+					if (!babelByTable.TryGetValue(table, out List<BabelOverlayRow>? existing))
+					{
+						existing = new List<BabelOverlayRow>();
+						babelByTable[table] = existing;
+					}
+					existing.AddRange(rows);
+				}
+			}
+		}
+
+		foreach ((string table, List<BabelOverlayRow> rows) in babelByTable)
+		{
+			var keys = new List<(string Key, string Mod)>(rows.Count);
+			foreach (BabelOverlayRow row in rows)
+			{
+				keys.Add((row.Key, row.Mod));
+			}
+
+			List<RowConflict> conflicts = FindConflicts(keys);
+			foreach (RowConflict conflict in conflicts)
+			{
+				results.Add((table, conflict));
+			}
+		}
+
+		return results;
 	}
 
 	/// <summary>A one-line summary per merged table, for the log.</summary>

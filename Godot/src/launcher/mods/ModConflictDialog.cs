@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Refii.Launcher.Core;
 using Refii.Mods;
@@ -82,11 +83,13 @@ public partial class ModConflictDialog : Control
 		rootCol.AddThemeConstantOverride("separation", LauncherTokens.Sp3);
 		frame.AddChild(rootCol);
 
+		bool isPriorityMode = _tally.Lost == 0 && _tally.Conflicts > 0;
+
 		// Header row
 		var header = new HBoxContainer();
 		header.AddThemeConstantOverride("separation", LauncherTokens.Sp2);
 
-		Label title = MakeLabel($"Mod Conflicts — {_mod.Name}");
+		Label title = MakeLabel(isPriorityMode ? $"Mod Priority Details — {_mod.Name}" : $"Mod Conflicts — {_mod.Name}");
 		title.AddThemeFontSizeOverride("font_size", _fontSize + 2);
 		title.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
 		title.SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -107,7 +110,9 @@ public partial class ModConflictDialog : Control
 		rootCol.AddChild(header);
 
 		// Explanatory label
-		Label desc = MakeLabel($"The following modifications in '{_mod.Name}' are overridden by higher-priority mods:");
+		Label desc = MakeLabel(isPriorityMode
+			? $"The following modifications from lower-priority mods are overridden by '{_mod.Name}':"
+			: $"The following modifications in '{_mod.Name}' are overridden by higher-priority mods:");
 		desc.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
 		desc.AddThemeFontSizeOverride("font_size", _fontSize);
 		desc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
@@ -156,15 +161,19 @@ public partial class ModConflictDialog : Control
 		list.AddThemeConstantOverride("separation", LauncherTokens.Sp2);
 		scroll.AddChild(list);
 
-		if (_tally.ConflictDetails.Count == 0)
+		IReadOnlyList<string> details = isPriorityMode ? _tally.WonConflictDetails : _tally.ConflictDetails;
+
+		if (details.Count == 0)
 		{
-			var empty = MakeLabel("• Overridden by another active mod higher in load order.");
+			var empty = MakeLabel(isPriorityMode
+				? "• Prioritized over colliding changes in lower-priority mods."
+				: "• Overridden by another active mod higher in load order.");
 			empty.AddThemeColorOverride("font_color", LauncherTokens.Sepia);
 			list.AddChild(empty);
 		}
 		else
 		{
-			foreach (string detail in _tally.ConflictDetails)
+			foreach (string detail in details)
 			{
 				var itemCard = new PanelContainer
 				{
@@ -209,7 +218,9 @@ public partial class ModConflictDialog : Control
 
 		// Tip notice
 		var tipBar = new HBoxContainer();
-		Label tip = MakeLabel($"Tip: Move '{_mod.Name}' higher in the load order to prioritize its changes over conflicting mods.");
+		Label tip = MakeLabel(isPriorityMode
+			? $"Tip: '{_mod.Name}' is prioritized in the load order and wins these collisions over lower mods."
+			: $"Tip: Move '{_mod.Name}' higher in the load order to prioritize its changes over conflicting mods.");
 		tip.AddThemeColorOverride("font_color", LauncherTokens.Sepia);
 		tip.AddThemeFontSizeOverride("font_size", _fontSize - 1);
 		tip.AutowrapMode = TextServer.AutowrapMode.WordSmart;

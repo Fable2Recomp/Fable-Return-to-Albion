@@ -148,9 +148,56 @@ public class SceneComponentTests
 
 ---
 
+## 5. Writing End-to-End Feature & Integration Tests
+
+While unit tests isolate individual classes, **feature tests** (`ModdingFeatureTests.cs`) exercise full multi-system lifecycles across realistic data flows.
+
+### When to Write Feature Tests:
+- Multi-component pipelines: Modding -> Compositor -> VFS -> Cache -> Conflict Reporting.
+- File system and cache invalidation: Ensuring cache directories (`.cache/gdb_composite`) purge when mods are disabled and rebuild when load order changes.
+- Cross-subsystem conflicts: Verifying that GDB record overrides and Babel CSV row collisions are properly tallied across winning and losing mods.
+- Complete container synthesis: Ensuring virtual mounts provide complete records with archetype inheritance (`parent`, `WeaponType`) and registered string names.
+
+### Architectural Pattern for Feature Tests:
+```csharp
+[TestCase]
+public void TestFeaturePipeline_E2E()
+{
+    string tempDir = Path.Combine(Path.GetTempPath(), "refii_feature_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDir);
+
+    try
+    {
+        // 1. Arrange: Mount mock base game data into BnkFileSystem
+        var fs = new BnkFileSystem();
+        fs.AddVirtualFile("globals/globals.gdb", "base", baseGdb.Length, () => baseGdb);
+        Engine_GameGdb.SetResolver(vpath => fs.TryGetFile(vpath, out var f) ? f.ReadAllBytes() : null);
+
+        // 2. Author multi-mod packages (.f2mod)
+        F2ModPackage.Create(modAPath, metaA, filesA, out _);
+        F2ModPackage.Create(modBPath, metaB, filesB, out _);
+
+        // 3. Act: Discover, resolve overlays, and execute compositors
+        var installs = ModWorkspace.DiscoverModInstalls(tempDir);
+        var overlays = ModIndex.ResolveOverlays(tempDir, order, installs);
+        GdbPatchCompositor.Apply(fs, overlays, tempDir);
+        ModRowOverlays.Apply(fs, overlays);
+
+        // 4. Assert: Validate VFS, synthesized inheritance, and cache state
+        AssertThat(fs.TryGetFile("globals/globals.gdb.tu", out BnkFile tuFile)).IsTrue();
+        // Verify parent link, winning properties, and string table...
+    }
+    finally
+    {
+        Engine_GameGdb.SetResolver(null);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+    }
+}
+```
+
 ---
 
-## 5. Directory Structure & Existing Test Suites
+## 6. Directory Structure & Test Suite Catalog
 
 Tests are organized into subdirectories by subsystem under `Godot/tests/Refii.Tests/`:
 
@@ -162,19 +209,30 @@ Godot/tests/Refii.Tests/
 │   ├── GdbLeafPromotionTests.cs
 │   └── GdbMultiTests.cs
 ├── Modding/
+│   ├── ModdingFeatureTests.cs      <-- End-to-end multi-mod feature tests
 │   ├── GdbCompositorTests.cs
+│   ├── ModRowOverlaysTests.cs
+│   ├── F2ModPackageTests.cs
 │   ├── ModLoadOrderTests.cs
-│   └── ModManifestTests.cs
+│   ├── ModManifestTests.cs
+│   ├── EditorModWorkflowTests.cs
+│   └── BnkTreeMetadataTests.cs
 └── Host/
     └── HostSystemsExampleTests.cs
 ```
 
 | Subdirectory / Fixture | System Under Test | Description |
 | :--- | :--- | :--- |
+| **`Modding/ModdingFeatureTests.cs`** | End-to-End Modding Pipeline | **E2E Feature Suite**: Full multi-mod mounting, GDB leaf synthesis with archetype inheritance, Babel overlays, cross-subsystem conflict tallying, cache purge/rebuild lifecycles, and load order list position preservation. |
 | **`Gdb/GdbSerializationTests.cs`** | `GdbWriter`, `GdbView`, `GdbPatchDatabase` | Validates `'GDB\0'` header magic, all 11 field types (`Int`, `Float`, `Bool`, `Reference`, `Enum`, etc.), authored string dictionaries, and FNV-1 alias tables. |
-| **`Gdb/GdbLeafPromotionTests.cs`** | `GdbPatchBuilder`, `EditorModValueService` | Verifies sparse delta authoring (unmodified baseline fields are omitted), sibling record isolation (Toy Gun vs Standard Flintlock), and complete native synthesis. |
+| **`Gdb/GdbLeafPromotionTests.cs`** | `GdbPatchBuilder`, `EditorModValueService` | Verifies sparse delta authoring (unmodified baseline fields are omitted), sibling record isolation, and complete native synthesis. |
 | **`Gdb/GdbMultiTests.cs`** | `GdbMulti` | Validates patch view overlay precedence, `TryFindInherited` fallback traversal, and `InheritedFields` cursor resolution. |
 | **`Modding/GdbCompositorTests.cs`** | `GdbPatchCompositor` | Tests multi-mod priority merging, non-colliding property composition, disjoint record merging, and granular conflict detection. |
+| **`Modding/ModRowOverlaysTests.cs`** | `ModRowOverlays`, `BabelOverlay` | Tests Babel `.babel.csv` row parsing, multi-mod text merging into `book.babel`, and row collision detection. |
+| **`Modding/F2ModPackageTests.cs`** | `F2ModPackage` | Validates `.f2mod` container creation, metadata reading, streaming entry reads, and directory exports. |
 | **`Modding/ModLoadOrderTests.cs`** | `ModLoadOrder` | Validates reading/writing `loadorder.toml`, priority precedence, `[pins]` overrides, legacy `enabled.txt` migration, and path normalization. |
-| **`Modding/ModManifestTests.cs`** | `ModManifest`, `ModWorkspace` | Validates asset enumeration (filtering out `.import` / metadata), `.gdb.tu` classification as `KindTu` (`tu`), and JSON manifest serialization round-trip. |
+| **`Modding/ModManifestTests.cs`** | `ModManifest`, `ModWorkspace` | Validates asset enumeration, `.gdb.tu` classification as `KindTu` (`tu`), and JSON manifest serialization round-trip. |
+| **`Modding/EditorModWorkflowTests.cs`** | In-Editor Modding Tools | Validates package creation and saving from editor workspace files. |
+| **`Modding/BnkTreeMetadataTests.cs`** | `BnkTreeMetadata` | Validates tree node metadata extraction for editor asset browser. |
 | **`Host/HostSystemsExampleTests.cs`** | `SafePath`, Godot math/types | Reference tests for path traversal protection and Godot vector / color operations. |
+
