@@ -7,6 +7,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Godot;
 using Refii.Gdb;
+using Refii.Mods;
 
 [TestSuite]
 public class GdbCompositorTests
@@ -185,5 +186,171 @@ public class GdbCompositorTests
                 Directory.Delete(tempDir, true);
             }
         }
+    }
+
+    [TestCase]
+    public void TestPurgeCacheDeletesCompositeDirectory()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_purge_test_" + Guid.NewGuid().ToString("N"));
+        string cacheDir = Path.Combine(tempDir, ".cache", "gdb_composite");
+        Directory.CreateDirectory(cacheDir);
+        File.WriteAllText(Path.Combine(cacheDir, "test.gdb.tu"), "dummy");
+
+        try
+        {
+            AssertThat(Directory.Exists(cacheDir)).IsTrue();
+            GdbPatchCompositor.PurgeCache(tempDir);
+            AssertThat(Directory.Exists(cacheDir)).IsFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void TestApplyWithZeroOverlaysPurgesCompositeCache()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_apply_test_" + Guid.NewGuid().ToString("N"));
+        string cacheDir = Path.Combine(tempDir, ".cache", "gdb_composite");
+        Directory.CreateDirectory(cacheDir);
+        File.WriteAllText(Path.Combine(cacheDir, "test.gdb.tu"), "dummy");
+
+        try
+        {
+            AssertThat(Directory.Exists(cacheDir)).IsTrue();
+            using var bnk = new Refii.Bnk.BnkFileSystem();
+            var results = GdbPatchCompositor.Apply(bnk, Array.Empty<Refii.Mods.ModOverlay>(), tempDir);
+            AssertThat(results.Count).IsEqual(0);
+            AssertThat(Directory.Exists(cacheDir)).IsFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void TestModIndexTallyRecordsWonConflicts()
+    {
+        var entries = new List<ResolvedEntry>
+        {
+            new()
+            {
+                Path = "files/texture.dds",
+                Owner = "ModB",
+                Kind = ResolvedEntry.KindOverride,
+                Shadowed = new List<string> { "ModA" }
+            }
+        };
+
+        var gdbConflicts = new List<GdbRecordConflict>
+        {
+            new()
+            {
+                DatabaseSubPath = "globals/globals.gdb.tu",
+                RecordHash = ToyGunId,
+                RecordName = "ToyGun",
+                PropertyHash = HashBulletCapacity,
+                PropertyName = "BulletCapacity",
+                WinnerMod = "ModB",
+                LoserMods = { "ModA" }
+            }
+        };
+
+        var rowConflicts = new List<(string Table, RowConflict Conflict)>
+        {
+            (
+                "language/en-uk/text/book.babel",
+                new RowConflict
+                {
+                    Key = "0x1000A001",
+                    Winner = "ModB",
+                    Losers = new List<string> { "ModA" }
+                }
+            )
+        };
+
+        Dictionary<string, ModTally> tallies = ModIndex.Tally(entries, gdbConflicts, rowConflicts);
+
+        AssertThat(tallies.ContainsKey("ModA")).IsTrue();
+        AssertThat(tallies.ContainsKey("ModB")).IsTrue();
+        var tallyA = tallies["ModA"];
+        var tallyB = tallies["ModB"];
+
+        // ModA lost 3 things: 1 file overwrite, 1 GDB property, 1 Babel row
+        AssertThat(tallyA.Lost).IsEqual(3);
+        AssertThat(tallyA.ConflictDetails.Count).IsEqual(3);
+
+        // ModB won those 3 things, and lost 0
+        AssertThat(tallyB.Lost).IsEqual(0);
+        AssertThat(tallyB.Conflicts).IsEqual(3);
+        AssertThat(tallyB.WonConflictDetails.Count).IsEqual(3);
+
+        // Verify detail strings
+        AssertThat(tallyB.WonConflictDetails.Exists(d => d.Contains("globals/globals.gdb.tu"))).IsTrue();
+        AssertThat(tallyB.WonConflictDetails.Exists(d => d.Contains("0x1000A001"))).IsTrue();
+        AssertThat(tallyA.ConflictDetails.Exists(d => d.Contains("0x1000A001"))).IsTrue();
+    }
+
+    [TestCase]
+    public void TestSynthesizeCompleteDatabasePropagatesBasePropertiesAndNames()
+    {
+        uint swordId = 0xA2AE58D0;
+        uint hashWeaponType = 0x77777777;
+
+        var baseDb = new GdbPatchDatabase();
+        var baseEntry = new GdbPatchEntry(swordId, 0x01);
+        baseEntry.Properties.Add(new GdbPatchProperty(HashParent, GdbFieldType.Reference, 0x11111111));
+        baseEntry.Properties.Add(new GdbPatchProperty(hashWeaponType, GdbFieldType.Int, 1));
+        baseEntry.Properties.Add(new GdbPatchProperty(HashBasePrice, GdbFieldType.Int, 20));
+        baseDb.Entries.Add(baseEntry);
+        baseDb.Names[swordId] = "WoodenSword";
+        baseDb.Names[HashParent] = "parent";
+        baseDb.Names[hashWeaponType] = "WeaponType";
+        baseDb.Names[HashBasePrice] = "BasePrice";
+
+        byte[] baseBytes = GdbWriter.Serialize(baseDb);
+        GdbMulti baseMulti = GdbMulti.Build(new[] { baseBytes });
+
+        // Sparse patch modifying only BasePrice to 120
+        var sparseDb = new GdbPatchDatabase();
+        var sparseEntry = new GdbPatchEntry(swordId, 0x01);
+        sparseEntry.Properties.Add(new GdbPatchProperty(HashBasePrice, GdbFieldType.Int, 120));
+        sparseDb.Entries.Add(sparseEntry);
+        sparseDb.Names[HashBasePrice] = "BasePrice";
+
+        GdbPatchDatabase fullDb = GdbPatchBuilder.SynthesizeCompleteDatabase(sparseDb, baseMulti);
+
+        AssertThat(fullDb.Entries.Count).IsEqual(1);
+        var entry = fullDb.Entries[0];
+        AssertThat(entry.Id).IsEqual(swordId);
+        AssertThat(entry.Properties.Count).IsEqual(3);
+
+        var priceProp = entry.Properties.Find(p => p.NameHash == HashBasePrice);
+        AssertThat(priceProp).IsNotNull();
+        AssertThat(priceProp!.Value).IsEqual(120u);
+
+        var parentProp = entry.Properties.Find(p => p.NameHash == HashParent);
+        AssertThat(parentProp).IsNotNull();
+        AssertThat(parentProp!.Value).IsEqual(0x11111111u);
+
+        var weaponTypeProp = entry.Properties.Find(p => p.NameHash == hashWeaponType);
+        AssertThat(weaponTypeProp).IsNotNull();
+        AssertThat(weaponTypeProp!.Value).IsEqual(1u);
+
+        // Verify names propagated
+        AssertThat(fullDb.Names.ContainsKey(swordId)).IsTrue();
+        AssertThat(fullDb.Names[swordId]).IsEqual("WoodenSword");
+        AssertThat(fullDb.Names.ContainsKey(HashParent)).IsTrue();
+        AssertThat(fullDb.Names[HashParent]).IsEqual("parent");
+        AssertThat(fullDb.Names.ContainsKey(hashWeaponType)).IsTrue();
+        AssertThat(fullDb.Names[hashWeaponType]).IsEqual("WeaponType");
     }
 }

@@ -319,12 +319,6 @@ public partial class BnkMountPlugin : EditorPlugin
                 // file as missing and export a mod against the wrong base.
                 string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
                 var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
-                string activeMod = EditorTools.EditorModExporter.ActiveModName;
-                if (!string.IsNullOrEmpty(activeMod) && !order.Enabled.Contains(activeMod))
-                {
-                    order.Enabled.Insert(0, activeMod);
-                    order.Write(modsRoot, out _);
-                }
 
                 var overlays = Refii.Mods.ModIndex.ResolveOverlays(
                     modsRoot, order, Refii.Mods.ModWorkspace.DiscoverModInstalls(modsRoot));
@@ -351,8 +345,15 @@ public partial class BnkMountPlugin : EditorPlugin
                     }
                 }
 
-                // Compose multi-mod GDB Title Updates in load order:
-                Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, modsRoot);
+                // Compose multi-mod GDB Title Updates in load order (or purge if no overlays enabled):
+                if (overlays.Count == 0)
+                {
+                    Refii.Gdb.GdbPatchCompositor.PurgeCache(modsRoot);
+                }
+                else
+                {
+                    Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, modsRoot);
+                }
             }
             catch (Exception exception)
             {
@@ -1259,6 +1260,12 @@ public partial class BnkMountPlugin : EditorPlugin
                     }
                     if (ModWorkspace.CreateModPackage(modsRoot, newName, out _, out string err))
                     {
+                        var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
+                        if (!order.Enabled.Contains(newName))
+                        {
+                            order.Enabled.Insert(0, newName);
+                            order.Write(modsRoot, out _);
+                        }
                         EditorModExporter.ActiveModName = newName;
                         EditorModExporter.EnsureActiveModWorkspace();
                         _modNameEdit.Text = string.Empty;
@@ -1295,6 +1302,12 @@ public partial class BnkMountPlugin : EditorPlugin
                         modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
                     }
                     ModWorkspace.CreateModPackage(modsRoot, newName, out _, out _);
+                    var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
+                    if (!order.Enabled.Contains(newName))
+                    {
+                        order.Enabled.Insert(0, newName);
+                        order.Write(modsRoot, out _);
+                    }
                     EditorModExporter.ActiveModName = newName;
                     EditorModExporter.EnsureActiveModWorkspace();
                     ReloadModOverlays();
@@ -1308,6 +1321,17 @@ public partial class BnkMountPlugin : EditorPlugin
                 string chosen = _modOptionBtn.GetItemText(_modOptionBtn.Selected);
                 if (!string.IsNullOrWhiteSpace(chosen))
                 {
+                    string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+                    if (string.IsNullOrEmpty(modsRoot))
+                    {
+                        modsRoot = ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+                    }
+                    var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
+                    if (!order.Enabled.Contains(chosen))
+                    {
+                        order.Enabled.Insert(0, chosen);
+                        order.Write(modsRoot, out _);
+                    }
                     EditorModExporter.ActiveModName = chosen;
                     EditorModExporter.EnsureActiveModWorkspace();
                     ReloadModOverlays();

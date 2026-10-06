@@ -29,6 +29,9 @@ public sealed class ModLoadOrder
 	/// <summary>Enabled mod folder names, highest priority first.</summary>
 	public List<string> Enabled { get; } = new();
 
+	/// <summary>Overall display order of all installed mods (including disabled mods).</summary>
+	public List<string> Order { get; } = new();
+
 	/// <summary>Normalised virtual path to the mod name that owns it regardless of order.</summary>
 	public Dictionary<string, string> Pins { get; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -90,6 +93,24 @@ public sealed class ModLoadOrder
 			}
 
 			text.AppendLine("]");
+
+			if (Order.Count != 0)
+			{
+				text.AppendLine();
+				text.AppendLine("# Overall display order for all installed mods (including disabled mods):");
+				text.Append("order = [");
+				for (int i = 0; i < Order.Count; i++)
+				{
+					if (i != 0)
+					{
+						text.Append(", ");
+					}
+
+					text.Append('"').Append(Escape(Order[i])).Append('"');
+				}
+
+				text.AppendLine("]");
+			}
 
 			if (Pins.Count != 0)
 			{
@@ -169,16 +190,40 @@ public sealed class ModLoadOrder
 				continue;
 			}
 
-			if (!key.Equals("enabled", StringComparison.OrdinalIgnoreCase))
+			if (key.Equals("enabled", StringComparison.OrdinalIgnoreCase))
 			{
-				continue;
-			}
-
-			foreach (string name in SplitArray(value))
-			{
-				if (ModWorkspace.IsSafeModFolderName(name) && !order.Enabled.Contains(name))
+				foreach (string name in SplitArray(value))
 				{
-					order.Enabled.Add(name);
+					if (ModWorkspace.IsSafeModFolderName(name) && !order.Enabled.Contains(name))
+					{
+						order.Enabled.Add(name);
+					}
+				}
+			}
+			else if (key.Equals("order", StringComparison.OrdinalIgnoreCase))
+			{
+				foreach (string name in SplitArray(value))
+				{
+					if (ModWorkspace.IsSafeModFolderName(name) && !order.Order.Contains(name))
+					{
+						order.Order.Add(name);
+					}
+				}
+			}
+		}
+
+		if (order.Order.Count == 0)
+		{
+			order.Order.AddRange(order.Enabled);
+		}
+		else
+		{
+			// Ensure any enabled mods not yet in Order are appended:
+			foreach (string name in order.Enabled)
+			{
+				if (!order.Order.Contains(name))
+				{
+					order.Order.Add(name);
 				}
 			}
 		}
@@ -213,6 +258,11 @@ public sealed class ModLoadOrder
 			{
 				order.Enabled.Add(name);
 			}
+		}
+
+		if (order.Order.Count == 0)
+		{
+			order.Order.AddRange(order.Enabled);
 		}
 	}
 

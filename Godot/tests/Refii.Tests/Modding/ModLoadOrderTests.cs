@@ -185,5 +185,78 @@ public class ModLoadOrderTests
             }
         }
     }
+
+    [TestCase]
+    public void TestOrderListPreservesDisabledModPositionAndRoundTrips()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_order_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            var order = new ModLoadOrder();
+            // 4 mods: mod1, mod2, mod3, mod4
+            order.Order.Add("mod1");
+            order.Order.Add("mod2");
+            order.Order.Add("mod3");
+            order.Order.Add("mod4");
+
+            // mod2 is disabled:
+            order.Enabled.Add("mod1");
+            order.Enabled.Add("mod3");
+            order.Enabled.Add("mod4");
+
+            bool written = order.Write(tempDir, out string writeError);
+            AssertThat(written).IsTrue();
+            AssertThat(writeError).IsEqual(string.Empty);
+
+            var loaded = ModLoadOrder.Read(tempDir);
+            // Verify Order has all 4 mods in position
+            AssertThat(loaded.Order.Count).IsEqual(4);
+            AssertThat(loaded.Order[0]).IsEqual("mod1");
+            AssertThat(loaded.Order[1]).IsEqual("mod2");
+            AssertThat(loaded.Order[2]).IsEqual("mod3");
+            AssertThat(loaded.Order[3]).IsEqual("mod4");
+
+            // Verify Enabled only has 3 mods
+            AssertThat(loaded.Enabled.Count).IsEqual(3);
+            AssertThat(loaded.Enabled[0]).IsEqual("mod1");
+            AssertThat(loaded.Enabled[1]).IsEqual("mod3");
+            AssertThat(loaded.Enabled[2]).IsEqual("mod4");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void TestLegacyTomlWithoutOrderArrayPopulatesOrderFromEnabled()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_legacy_order_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            string tomlWithoutOrder = "enabled = [\"modA\", \"modB\"]\n";
+            File.WriteAllText(Path.Combine(tempDir, ModLoadOrder.Filename), tomlWithoutOrder);
+
+            var loaded = ModLoadOrder.Read(tempDir);
+            AssertThat(loaded.Enabled.Count).IsEqual(2);
+            AssertThat(loaded.Order.Count).IsEqual(2);
+            AssertThat(loaded.Order[0]).IsEqual("modA");
+            AssertThat(loaded.Order[1]).IsEqual("modB");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
 }
 

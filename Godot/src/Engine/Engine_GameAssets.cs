@@ -169,6 +169,7 @@ public partial class Engine_GameAssets : Node
 	{
 		if (overlays.Count == 0)
 		{
+			Refii.Gdb.GdbPatchCompositor.PurgeCache(ModsRoot);
 			return;
 		}
 
@@ -224,6 +225,10 @@ public partial class Engine_GameAssets : Node
 				GD.PushWarning($"[mods] {Refii.Mods.ModMeshOverlays.Describe(conversion)}");
 			}
 		}
+
+		// Ensure GDB resolvers are bound so composite synthesis can access the unpatched base database:
+		Refii.Gdb.Engine_GameGdb.SetResolver(p => mounted.TryGetFile(p, out var f) ? f.ReadAllBytes() : null);
+		Refii.Gdb.Engine_GameGdb.SetBaseResolver(p => mounted.ReadBaseBytes(p));
 
 		// TITLE UPDATE PATCHES: Compose multi-mod GDB databases in load order:
 		var composites = Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, ModsRoot);
@@ -286,6 +291,7 @@ public partial class Engine_GameAssets : Node
 
 		// The game's GDB for the owned detail pages; bound here AND in addons/bnk_mount.
 		Refii.Gdb.Engine_GameGdb.SetResolver(ReadAllBytes);
+		Refii.Gdb.Engine_GameGdb.SetBaseResolver(p => Snapshot()?.ReadBaseBytes(p));
 
 		// The game's text bank for localized item names and descriptions; bound here AND in addons/bnk_mount.
 		Refii.Gdb.Engine_BnkTextBankLoader.SetGameDirectory(GameDirectory);

@@ -102,4 +102,57 @@ public class GdbMultiTests
         AssertThat(rangeField.Hash).IsEqual(HashRange);
         AssertThat(rangeField.Raw).IsEqual(0x41400000u);
     }
+
+    [TestCase]
+    public void TestNonExistentPropertyDoesNotStackOverflow()
+    {
+        var baseDb = new GdbPatchDatabase();
+        var baseToy = new GdbPatchEntry(ToyGunId, 0x01);
+        baseToy.Properties.Add(new GdbPatchProperty(HashBulletCapacity, GdbFieldType.Int, 1));
+        baseToy.Properties.Add(new GdbPatchProperty(HashParent, GdbFieldType.Reference, ParentArchetypeId));
+        baseDb.Entries.Add(baseToy);
+
+        var patchDb = new GdbPatchDatabase();
+        var patchToy = new GdbPatchEntry(ToyGunId, 0x01);
+        patchToy.Properties.Add(new GdbPatchProperty(HashBulletCapacity, GdbFieldType.Int, 15));
+        patchDb.Entries.Add(patchToy);
+
+        var multi = GdbMulti.Build(new byte[]?[] { GdbWriter.Serialize(baseDb), GdbWriter.Serialize(patchDb) });
+        AssertThat(multi.TryLookup(ToyGunId, out GdbCursor cursor)).IsTrue();
+
+        // Querying non-existent property MUST return false without infinite recursion or stack overflow:
+        bool found = multi.TryFindInherited(cursor, 0x99999999, -1, out _, out _, out _);
+        AssertThat(found).IsFalse();
+    }
+
+    [TestCase]
+    public void TestSparsePatchWithoutParentInheritsFromBaseRecord()
+    {
+        var baseDb = new GdbPatchDatabase();
+        var parentEntry = new GdbPatchEntry(ParentArchetypeId, 0x01);
+        parentEntry.Properties.Add(new GdbPatchProperty(HashRange, GdbFieldType.Float, 0x41400000));
+        baseDb.Entries.Add(parentEntry);
+
+        var baseToy = new GdbPatchEntry(ToyGunId, 0x01);
+        baseToy.Properties.Add(new GdbPatchProperty(HashBulletCapacity, GdbFieldType.Int, 1));
+        baseToy.Properties.Add(new GdbPatchProperty(HashParent, GdbFieldType.Reference, ParentArchetypeId));
+        baseDb.Entries.Add(baseToy);
+
+        // Patch contains ONLY BulletCapacity, NO parent property!
+        var patchDb = new GdbPatchDatabase();
+        var patchToy = new GdbPatchEntry(ToyGunId, 0x01);
+        patchToy.Properties.Add(new GdbPatchProperty(HashBulletCapacity, GdbFieldType.Int, 99));
+        patchDb.Entries.Add(patchToy);
+
+        var multi = GdbMulti.Build(new byte[]?[] { GdbWriter.Serialize(baseDb), GdbWriter.Serialize(patchDb) });
+        AssertThat(multi.TryLookup(ToyGunId, out GdbCursor cursor)).IsTrue();
+
+        // BulletCapacity is 99 from patch:
+        AssertThat(multi.TryFindInherited(cursor, HashBulletCapacity, -1, out _, out uint cap, out _)).IsTrue();
+        AssertThat(cap).IsEqual(99u);
+
+        // Range inherits from ParentArchetype via base record's parent:
+        AssertThat(multi.TryFindInherited(cursor, HashRange, -1, out _, out uint range, out _)).IsTrue();
+        AssertThat(range).IsEqual(0x41400000u);
+    }
 }

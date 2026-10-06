@@ -10,6 +10,7 @@ set(REFII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/xstorage_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/unlock_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/coop_player_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/firearm_hooks.cpp
 )
 
 set(REFII_HOOK_INCLUDE_DIRS

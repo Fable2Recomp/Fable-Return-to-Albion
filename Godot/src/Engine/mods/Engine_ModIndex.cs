@@ -55,6 +55,9 @@ public sealed class ModTally
 
 	/// <summary>Human-readable collision details for tooltips.</summary>
 	public List<string> ConflictDetails { get; } = new();
+
+	/// <summary>Human-readable details of collisions won by this mod.</summary>
+	public List<string> WonConflictDetails { get; } = new();
 }
 
 /// <summary>
@@ -296,7 +299,8 @@ public static class ModIndex
 	/// <summary>Per-mod totals over a built report or prediction.</summary>
 	public static Dictionary<string, ModTally> Tally(
 		IReadOnlyList<ResolvedEntry> entries,
-		IReadOnlyList<Refii.Gdb.GdbRecordConflict>? recordConflicts = null)
+		IReadOnlyList<Refii.Gdb.GdbRecordConflict>? recordConflicts = null,
+		IReadOnlyList<(string Table, RowConflict Conflict)>? rowConflicts = null)
 	{
 		var tallies = new Dictionary<string, ModTally>(StringComparer.OrdinalIgnoreCase);
 
@@ -344,6 +348,11 @@ public static class ModIndex
 				if (modsOnPath > 1)
 				{
 					owner.Conflicts++;
+					var beaten = entry.Shadowed.FindAll(s => s != "game");
+					if (beaten.Count > 0)
+					{
+						owner.WonConflictDetails.Add($"File '{entry.Path}' (overrode '{string.Join(", ", beaten)}')");
+					}
 				}
 			}
 
@@ -369,6 +378,10 @@ public static class ModIndex
 				{
 					ModTally winner = For(conflict.WinnerMod);
 					winner.Conflicts++;
+					string wonDesc = !string.IsNullOrEmpty(conflict.PropertyName)
+						? $"{conflict.PropertyName} on {conflict.RecordName} in {conflict.DatabaseSubPath} (overrode '{string.Join(", ", conflict.LoserMods)}')"
+						: $"{conflict.RecordName} in {conflict.DatabaseSubPath} (overrode '{string.Join(", ", conflict.LoserMods)}')";
+					winner.WonConflictDetails.Add(wonDesc);
 				}
 
 				foreach (string loser in conflict.LoserMods)
@@ -381,6 +394,27 @@ public static class ModIndex
 						? $"{conflict.PropertyName} on {conflict.RecordName} in {conflict.DatabaseSubPath} (overridden by '{conflict.WinnerMod}')"
 						: $"{conflict.RecordName} in {conflict.DatabaseSubPath} (overridden by '{conflict.WinnerMod}')";
 					loserTally.ConflictDetails.Add(desc);
+				}
+			}
+		}
+
+		if (rowConflicts is not null)
+		{
+			foreach (var (table, conflict) in rowConflicts)
+			{
+				if (!string.IsNullOrEmpty(conflict.Winner))
+				{
+					ModTally winner = For(conflict.Winner);
+					winner.Conflicts++;
+					winner.WonConflictDetails.Add($"Text tag '{conflict.Key}' in {table} (overrode '{string.Join(", ", conflict.Losers)}')");
+				}
+
+				foreach (string loser in conflict.Losers)
+				{
+					ModTally loserTally = For(loser);
+					loserTally.Conflicts++;
+					loserTally.Lost++;
+					loserTally.ConflictDetails.Add($"Text tag '{conflict.Key}' in {table} (overridden by '{conflict.Winner}')");
 				}
 			}
 		}

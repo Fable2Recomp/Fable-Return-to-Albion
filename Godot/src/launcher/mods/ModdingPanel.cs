@@ -139,17 +139,48 @@ public partial class ModdingPanel : VBoxContainer
 		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
 		_order = ModLoadOrder.Read(_modsRoot);
 
-		// Prune any enabled mods that no longer exist on disk:
+		// Synchronize _order.Order and _order.Enabled with installed mods:
 		var installedNames = new HashSet<string>(_mods.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
+		bool orderChanged = false;
+
 		if (_order.Enabled.RemoveAll(name => !installedNames.Contains(name)) > 0)
 		{
+			orderChanged = true;
+		}
+
+		if (_order.Order.RemoveAll(name => !installedNames.Contains(name)) > 0)
+		{
+			orderChanged = true;
+		}
+
+		foreach (ModInstall mod in _mods)
+		{
+			if (!_order.Order.Contains(mod.Name, StringComparer.OrdinalIgnoreCase))
+			{
+				_order.Order.Add(mod.Name);
+				orderChanged = true;
+			}
+		}
+
+		if (orderChanged)
+		{
 			_order.Write(_modsRoot, out _);
+			if (_order.Enabled.Count == 0)
+			{
+				Refii.Gdb.GdbPatchCompositor.PurgeCache(_modsRoot);
+			}
+			else
+			{
+				var overlays = Refii.Mods.ModIndex.ResolveOverlays(_modsRoot, _order, _mods);
+				Refii.Gdb.GdbPatchCompositor.Apply(null, overlays, _modsRoot);
+			}
 		}
 
 		_tallies.Clear();
 
 		var recordConflicts = Refii.Gdb.GdbPatchCompositor.DetectRecordConflicts(_modsRoot, _order, _mods);
-		foreach ((string name, ModTally tally) in ModIndex.Tally(ModIndex.Predict(_order, _mods), recordConflicts))
+		var rowConflicts = Refii.Mods.ModRowOverlays.DetectRowConflicts(_order, _mods);
+		foreach ((string name, ModTally tally) in ModIndex.Tally(ModIndex.Predict(_order, _mods), recordConflicts, rowConflicts))
 		{
 			_tallies[name] = tally;
 		}
@@ -166,23 +197,46 @@ public partial class ModdingPanel : VBoxContainer
 				File.Delete(mod.PackagePath);
 			}
 
-			_order.Enabled.Remove(mod.Name);
-			_order.Write(_modsRoot, out _);
+			_order.Enabled.RemoveAll(name => string.Equals(name, mod.Name, StringComparison.OrdinalIgnoreCase));
+			_order.Order.RemoveAll(name => string.Equals(name, mod.Name, StringComparison.OrdinalIgnoreCase));
 			_statusMessage = $"Deleted '{mod.Name}.f2mod'.";
+			SaveEnabledMods();
 		}
 		catch (System.Exception ex)
 		{
 			_statusMessage = $"Failed to delete '{mod.Name}': {ex.Message}";
+			RefreshState();
 		}
-
-		RefreshState();
 	}
 
 	private void SaveEnabledMods()
 	{
+		// Synchronize _order.Enabled to strictly follow _order.Order
+		var newEnabled = new List<string>();
+		foreach (string name in _order.Order)
+		{
+			if (_order.Enabled.Contains(name, StringComparer.OrdinalIgnoreCase))
+			{
+				newEnabled.Add(name);
+			}
+		}
+		_order.Enabled.Clear();
+		_order.Enabled.AddRange(newEnabled);
+
 		_statusMessage = _order.Write(_modsRoot, out string error)
 			? "Updated enabled mods."
 			: "Failed to update enabled mods: " + error;
+
+		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
+		if (_order.Enabled.Count == 0)
+		{
+			Refii.Gdb.GdbPatchCompositor.PurgeCache(_modsRoot);
+		}
+		else
+		{
+			var overlays = Refii.Mods.ModIndex.ResolveOverlays(_modsRoot, _order, _mods);
+			Refii.Gdb.GdbPatchCompositor.Apply(null, overlays, _modsRoot);
+		}
 		RefreshState();
 	}
 
@@ -261,11 +315,16 @@ public partial class ModdingPanel : VBoxContainer
 			if (ModWorkspace.CreateModPackage(_modsRoot, modName, out string pkgPath, out string error))
 			{
 				_statusMessage = $"Created '{modName}.f2mod'.";
-				if (!_order.Enabled.Contains(modName))
+				if (!_order.Order.Contains(modName, StringComparer.OrdinalIgnoreCase))
+				{
+					_order.Order.Add(modName);
+				}
+				if (!_order.Enabled.Contains(modName, StringComparer.OrdinalIgnoreCase))
 				{
 					_order.Enabled.Add(modName);
-					_order.Write(_modsRoot, out _);
 				}
+				SaveEnabledMods();
+				return;
 			}
 			else
 			{
@@ -298,9 +357,9 @@ public partial class ModdingPanel : VBoxContainer
 		}
 
 		var ordered = new List<ModInstall>();
-		foreach (string name in _order.Enabled)
+		foreach (string name in _order.Order)
 		{
-			ModInstall? mod = _mods.Find(installed => installed.Name == name);
+			ModInstall? mod = _mods.Find(installed => string.Equals(installed.Name, name, StringComparison.OrdinalIgnoreCase));
 			if (mod is not null)
 			{
 				ordered.Add(mod);
@@ -309,7 +368,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		foreach (ModInstall mod in _mods)
 		{
-			if (!_order.Enabled.Contains(mod.Name))
+			if (!ordered.Contains(mod))
 			{
 				ordered.Add(mod);
 			}
@@ -332,16 +391,19 @@ public partial class ModdingPanel : VBoxContainer
 			grid.AddChild(label);
 		}
 
-		foreach (ModInstall mod in ordered)
+		int enabledCounter = 0;
+		for (int i = 0; i < ordered.Count; i++)
 		{
-			AddRow(grid, mod);
+			ModInstall mod = ordered[i];
+			bool enabled = _order.Enabled.Contains(mod.Name, StringComparer.OrdinalIgnoreCase);
+			int? rank = enabled ? ++enabledCounter : null;
+			AddRow(grid, mod, i, ordered.Count, rank);
 		}
 	}
 
-	private void AddRow(GridContainer grid, ModInstall mod)
+	private void AddRow(GridContainer grid, ModInstall mod, int rowIndex, int totalRows, int? displayRank)
 	{
-		int position = _order.Enabled.IndexOf(mod.Name);
-		bool enabled = position >= 0;
+		bool enabled = displayRank.HasValue;
 
 		var check = new CheckBox { ButtonPressed = enabled };
 		Apply(check);
@@ -351,14 +413,14 @@ public partial class ModdingPanel : VBoxContainer
 		{
 			if (pressed)
 			{
-				if (!_order.Enabled.Contains(captured.Name))
+				if (!_order.Enabled.Contains(captured.Name, StringComparer.OrdinalIgnoreCase))
 				{
 					_order.Enabled.Add(captured.Name);
 				}
 			}
 			else
 			{
-				_order.Enabled.Remove(captured.Name);
+				_order.Enabled.RemoveAll(name => string.Equals(name, captured.Name, StringComparison.OrdinalIgnoreCase));
 			}
 
 			SaveEnabledMods();
@@ -367,44 +429,41 @@ public partial class ModdingPanel : VBoxContainer
 
 		var orderBox = new HBoxContainer();
 		orderBox.AddThemeConstantOverride("separation", 3);
-		if (enabled)
-		{
-			Label numLabel = MakeLabel((position + 1).ToString());
-			numLabel.CustomMinimumSize = new Vector2(16, 0);
-			numLabel.HorizontalAlignment = HorizontalAlignment.Center;
-			orderBox.AddChild(numLabel);
 
-			var up = new Button { Text = "▲", Disabled = position == 0 };
-			Apply(up);
-			up.CustomMinimumSize = new Vector2(20, 20);
-			int upIndex = position;
-			up.Pressed += () =>
-			{
-				(_order.Enabled[upIndex], _order.Enabled[upIndex - 1]) =
-					(_order.Enabled[upIndex - 1], _order.Enabled[upIndex]);
-				SaveEnabledMods();
-			};
-			orderBox.AddChild(up);
+		Label rankLabel = MakeLabel(displayRank.HasValue ? displayRank.Value.ToString() : "-");
+		rankLabel.CustomMinimumSize = new Vector2(16, 0);
+		rankLabel.HorizontalAlignment = HorizontalAlignment.Center;
+		orderBox.AddChild(rankLabel);
 
-			var down = new Button { Text = "▼", Disabled = position + 1 >= _order.Enabled.Count };
-			Apply(down);
-			down.CustomMinimumSize = new Vector2(20, 20);
-			int downIndex = position;
-			down.Pressed += () =>
-			{
-				(_order.Enabled[downIndex], _order.Enabled[downIndex + 1]) =
-					(_order.Enabled[downIndex + 1], _order.Enabled[downIndex]);
-				SaveEnabledMods();
-			};
-			orderBox.AddChild(down);
-		}
-		else
+		var up = new Button { Text = "▲", Disabled = rowIndex == 0 };
+		Apply(up);
+		up.CustomMinimumSize = new Vector2(20, 20);
+		int upIndex = rowIndex;
+		up.Pressed += () =>
 		{
-			Label dash = MakeLabel("-");
-			dash.CustomMinimumSize = new Vector2(58, 0);
-			dash.HorizontalAlignment = HorizontalAlignment.Center;
-			orderBox.AddChild(dash);
-		}
+			if (upIndex > 0 && upIndex < _order.Order.Count)
+			{
+				(_order.Order[upIndex], _order.Order[upIndex - 1]) =
+					(_order.Order[upIndex - 1], _order.Order[upIndex]);
+				SaveEnabledMods();
+			}
+		};
+		orderBox.AddChild(up);
+
+		var down = new Button { Text = "▼", Disabled = rowIndex >= totalRows - 1 };
+		Apply(down);
+		down.CustomMinimumSize = new Vector2(20, 20);
+		int downIndex = rowIndex;
+		down.Pressed += () =>
+		{
+			if (downIndex >= 0 && downIndex < _order.Order.Count - 1)
+			{
+				(_order.Order[downIndex], _order.Order[downIndex + 1]) =
+					(_order.Order[downIndex + 1], _order.Order[downIndex]);
+				SaveEnabledMods();
+			}
+		};
+		orderBox.AddChild(down);
 
 		grid.AddChild(orderBox);
 
@@ -465,12 +524,29 @@ public partial class ModdingPanel : VBoxContainer
 		}
 		else if (tally is not null && tally.Conflicts > 0)
 		{
-			var priorityLabel = MakeLabel("✓ Priority");
-			priorityLabel.AddThemeColorOverride("font_color", new Color(0.35f, 0.85f, 0.35f)); // Light green
-			priorityLabel.TooltipText = $"{tally.Conflicts} collision(s) resolved in favor of this mod.";
-			priorityLabel.HorizontalAlignment = HorizontalAlignment.Center;
-			priorityLabel.CustomMinimumSize = new Vector2(50, 0);
-			statusControl = priorityLabel;
+			var priorityBtn = new Button { Text = "✓ Priority" };
+			Apply(priorityBtn);
+			priorityBtn.AddThemeColorOverride("font_color", new Color(0.35f, 0.85f, 0.35f)); // Light green
+			priorityBtn.CustomMinimumSize = new Vector2(60, 22);
+
+			var tip = new System.Text.StringBuilder();
+			tip.AppendLine($"[Modding Priority] {tally.Conflicts} collision(s) resolved in favor of '{mod.Name}':");
+			foreach (string detail in tally.WonConflictDetails)
+			{
+				tip.AppendLine($"  • {detail}");
+			}
+			if (tally.WonConflictDetails.Count == 0)
+			{
+				tip.AppendLine("  • Priority over colliding changes in lower-priority mods.");
+			}
+			tip.AppendLine();
+			tip.Append("Click to view details of prioritized modifications.");
+			priorityBtn.TooltipText = tip.ToString();
+
+			ModInstall modCaptured = mod;
+			ModTally tallyCaptured = tally;
+			priorityBtn.Pressed += () => ShowConflictDetailsDialog(modCaptured, tallyCaptured);
+			statusControl = priorityBtn;
 		}
 		else
 		{
