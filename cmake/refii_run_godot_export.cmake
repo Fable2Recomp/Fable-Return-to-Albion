@@ -235,6 +235,17 @@ foreach(_leaked
     endif()
 endforeach()
 
+# The per-title metadata DOES ship: assets/metadata/rexnet.toml is ours, not the game's, and
+# it is what the guest reads at XNetStartup for the shard tier, the advertised title id and
+# the presence mappings. The runtime writes a built-in default when an install has none
+# (refii_app.h, RefiiWriteDefaultRexNetConfig), and the shipped copy replaces that default
+# once it is newer, so this is the file that carries the reasoning for each value.
+set(_metadata "${PROJECT_DIR}/../assets/metadata")
+if(IS_DIRECTORY "${_metadata}")
+    file(COPY "${_metadata}" DESTINATION "${_app}/assets")
+    message(STATUS "Staged per-title metadata: ${_metadata} -> ${_app}/assets/metadata")
+endif()
+
 if(NOT EXISTS "${_app}/bin")
     message(FATAL_ERROR "Staging produced no bin/ in ${_app}; the package would not run.")
 endif()

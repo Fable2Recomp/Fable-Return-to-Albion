@@ -182,6 +182,26 @@ public static class Engine_UiNetworkSource
 
 	private static IReadOnlyList<Engine_UiMenuSources.Row> BuildRequests()
 	{
+		// DECLINES ARRIVE HERE, on the same refresh that re-reads the requests: the node
+		// drains them on read, so this is the one place that takes them, and the add row's
+		// page is where they are said.
+		foreach (string peer in NetBridge.Delivered())
+		{
+			string who = _sentNames.TryGetValue(peer, out string? name) && name.Length != 0
+				? name
+				: Short(peer);
+			// "Sent" was the node taking it; this is the other side's acknowledgement.
+			_declinedSays = $"Your friend request reached {who}.\n\nThey appear under Friends once they accept.";
+		}
+
+		foreach (string peer in NetBridge.Declined())
+		{
+			string who = _sentNames.TryGetValue(peer, out string? name) && name.Length != 0
+				? name
+				: Short(peer);
+			_declinedSays = $"{who} declined your friend request.\n\nYou can ask again.";
+		}
+
 		var rows = new List<Engine_UiMenuSources.Row>();
 		foreach (NetBridge.Request request in NetBridge.Requests())
 		{
@@ -191,6 +211,10 @@ public static class Engine_UiNetworkSource
 			string label = request.Note.Length == 0 ? name : $"{name} — \"{request.Note}\"";
 			rows.Add(Row(
 				$"request:{request.PeerId}", label, $"{CommandPrefix}accept:{request.PeerId}"));
+			// THE OTHER ANSWER, as its own row. A request the player does not want is kept by
+			// the node across runs now, so it needs a way out that is not "accept".
+			rows.Add(Row(
+				$"dismiss:{request.PeerId}", "    Dismiss", $"{CommandPrefix}dismiss:{request.PeerId}"));
 		}
 
 
@@ -416,12 +440,16 @@ public static class Engine_UiNetworkSource
 					if (request.PeerId == peer)
 					{
 						return request.Note.Length == 0
-							? "Wants to be your friend.\n\nA accepts."
-							: $"\"{request.Note}\"\n\nA accepts.";
+							? "Wants to be your friend.\n\nA accepts; the row below dismisses."
+							: $"\"{request.Note}\"\n\nA accepts; the row below dismisses.";
 					}
 				}
 
 				return "This request has been withdrawn.";
+
+			case "dismiss":
+				return "Drops this request without answering it.\n\nThey are not told, and " +
+					"they can ask again.";
 
 			case "invite":
 				return "You have been invited to this game.\n\nA joins it.";
@@ -483,12 +511,22 @@ public static class Engine_UiNetworkSource
 	/// <summary>The code awaiting a confirming press, or empty.</summary>
 	public static string PendingAdd => _addPending;
 
+	/// <summary>Names of the people we sent requests to, by peer id, for a decline to name.</summary>
+	private static readonly Dictionary<string, string> _sentNames = new();
+
+	/// <summary>What the add row's page says after a decline, until the next paste.</summary>
+	private static string _declinedSays = string.Empty;
+
+	/// <summary>Notes who a request went to.</summary>
+	public static void RememberSent(string peerId, string name) => _sentNames[peerId] = name;
+
 	/// <summary>States what the add row's page says now, and what it is holding.</summary>
 	public static void SetAddState(string says, string pending = "")
 	{
 		_addSays = says;
 		_addPending = pending;
 		_addAt = Godot.Time.GetTicksMsec();
+		_declinedSays = string.Empty;
 	}
 
 	/// <summary>What the page says about a row that is an action rather than a subject.</summary>
@@ -500,7 +538,9 @@ public static class Engine_UiNetworkSource
 		// the offer so the row does not keep shouting about a paste from minutes ago.
 		"AddFriend" => _addPending.Length != 0 || Godot.Time.GetTicksMsec() - _addAt < CopiedShownMs
 			? _addSays
-			: "Copy someone's friend code, then choose this.\n\nA reads your clipboard.",
+			: _declinedSays.Length != 0
+				? _declinedSays
+				: "Copy someone's friend code, then choose this.\n\nA reads your clipboard.",
 		// THE CODE ITSELF, on the page. It exists to be handed to someone, so a page that
 		// describes it without showing it is a page that does nothing; A copies it.
 		"MyCode" => NetBridge.Self() is { FriendCode.Length: > 0 } self
@@ -534,7 +574,23 @@ public static class Engine_UiNetworkSource
 	private static bool _saysHeld;
 
 	/// <summary>The row whose page is up now — the page states it every frame.</summary>
-	public static string CurrentRow { get; set; } = string.Empty;
+	public static string CurrentRow
+	{
+		get => _currentRow;
+		set
+		{
+			// A HELD CODE BELONGS TO THE ADD ROW. It used to survive the cursor leaving: the
+			// next press on AddFriend skipped the clipboard and sent the code from minutes ago.
+			if (value != "AddFriend" && _addPending.Length != 0)
+			{
+				_addPending = string.Empty;
+			}
+
+			_currentRow = value;
+		}
+	}
+
+	private static string _currentRow = string.Empty;
 
 	/// <summary>Writes an outcome onto the current row's page.</summary>
 	public static void Say(string text, bool hold = false)

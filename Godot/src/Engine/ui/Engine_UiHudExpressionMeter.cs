@@ -25,7 +25,16 @@ public static class Engine_UiHudExpressionMeter
 	public const string HenchmanPip = "HenchmanPip";
 	public const string BothPip = "BothPip";
 
-	public static void Publish(Refii.Host.HostBridge.ExpressionMeter meter, Engine_HudView hud)
+	/// <param name="mine">
+	/// Whether the meter that is up belongs on THIS screen. The guest replicates an expression's
+	/// meter to the peer: `sub_823D1A48` sends `off_820A6084` in a session (0x823d1b7c) and the
+	/// peer's packet handler, case 136, starts its own meter from it — the shipped game shared
+	/// one screen. Over the network each player has their own, so the caller says whether the
+	/// armed pip is the local player's (hero pip A on the host, henchman pip B on a client) or
+	/// whether both belong here (local co-op, a job's bar fill).
+	/// </param>
+	public static void Publish(Refii.Host.HostBridge.ExpressionMeter meter, Engine_HudView hud,
+		bool mine = true)
 	{
 		Engine_HudValues values = hud.Values;
 		// NOT THE ON BYTE EITHER. Gating on the mode hid the meter for every emote; gating on
@@ -39,7 +48,7 @@ public static class Engine_UiHudExpressionMeter
 		// SweetSpotShrinkPixelsPerSecond and SweetSpotMovementPixelsPerSecond and hands them to
 		// `sub_823D1F98`, which publishes ExpressionFillPos/Size — a sweet spot that moves and
 		// shrinks. Modes 1 and 2 are the job pip.
-		bool on = meter.Up;
+		bool on = meter.Up && mine;
 		State(values, "ExpressionMeter", on);
 
 		float fillSize = values.Meter(Engine_HudValues.Handle.For("ExpressionFillSize")) ?? 0f;

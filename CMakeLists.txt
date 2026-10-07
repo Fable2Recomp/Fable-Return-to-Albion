@@ -492,7 +492,7 @@ set(
     REFII_PACKAGE_ICON_SOURCE
     "${_REFII_PACKAGE_ICON_SOURCE_DEFAULT}"
     CACHE FILEPATH
-    "PNG icon used for AppImage and Flatpak packaging"
+    "PNG icon used for the launcher and package icons"
 )
 set(
     REFII_DEFAULT_XEX_SOURCE
@@ -505,7 +505,7 @@ if("${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_LEGACY_
         REFII_PACKAGE_ICON_SOURCE
         "${_REFII_PACKAGE_ICON_SOURCE_DEFAULT}"
         CACHE FILEPATH
-        "PNG icon used for AppImage and Flatpak packaging"
+        "PNG icon used for the launcher and package icons"
         FORCE
     )
 endif()

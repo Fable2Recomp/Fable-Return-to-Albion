@@ -26,7 +26,9 @@
 // the pause menu to regain control. So at least one of those bytes is never set. These hooks
 // say which, rather than guessing.
 
+#include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -62,6 +64,12 @@ extern "C" const char* RefiiCoopRangedName(void);
 extern "C" REX_FUNC(__imp__rex_lhNetManager_GetHenchmanMeleeWeaponName);
 extern "C" REX_FUNC(__imp__rex_lhNetManager_GetHenchmanRangedWeaponName);
 extern "C" REX_FUNC(__imp__rex_lhCoop_ArmHenchmanWeapons);
+extern "C" REX_FUNC(__imp__rex_CECHeldItems_OnNetMessage);
+extern "C" REX_FUNC(__imp__rex_lhEntity_Destroy);
+extern "C" REX_FUNC(__imp__rex_CECNetwork_SendTransform);
+extern "C" REX_FUNC(__imp__rex_lhNetManager_FindEntityByNetId);
+extern "C" REX_FUNC(__imp__rex_CECNetwork_ApplyReplicaTarget);
+extern "C" REX_FUNC(__imp__rex_CECNetwork_PushReceivedTransform);
 
 // 0x82371948, which refii_config.toml misnames `rex_lhScene_UpdateHeightfield` — the body
 // unpublishes a Player. That config line is the name's only reference in the tree.
@@ -420,4 +428,300 @@ REX_EXTERN(rex_lhCoop_ArmHenchmanWeapons) {
   }
 
   __imp__rex_lhCoop_ArmHenchmanWeapons(ctx, base);
+}
+
+namespace {
+/// One component off an entity by id, or 0: the presence bitmask (eight dwords at `+0x24`),
+/// then the sorted stride-8 `{s32 id, u32 ptr}` vector at `+0x48..+0x4C`. The bridge's walk,
+/// without its accelerator hop.
+uint32_t ComponentOf(uint8_t* base, uint32_t entity, uint32_t id) {
+  using refii::vfs::LoadGuestU32;
+  if (!Plausible(entity) || id >= 256u) return 0u;
+  const uint32_t present = LoadGuestU32(base, entity + 0x24u + (id / 32u) * 4u);
+  if (((present >> (id % 32u)) & 1u) == 0u) return 0u;
+  const uint32_t pairs = LoadGuestU32(base, entity + 0x48u);
+  const uint32_t pairs_end = LoadGuestU32(base, entity + 0x4Cu);
+  if (!Plausible(pairs) || pairs_end < pairs || (pairs_end - pairs) > 8u * 512u) return 0u;
+  for (uint32_t at = pairs; at + 8u <= pairs_end; at += 8u) {
+    if (LoadGuestU32(base, at) == id) {
+      const uint32_t component = LoadGuestU32(base, at + 4u);
+      return Plausible(component) ? component : 0u;
+    }
+  }
+  return 0u;
+}
+
+/// The item entities a CECCarrying (component 24) holds: entries of 12 bytes at `+16..+20`,
+/// holder at entry+8, item = `*holder`. Fills `out`, returns the count.
+std::size_t HeldItems(uint8_t* base, uint32_t carrying, std::array<uint32_t, 16>& out) {
+  using refii::vfs::LoadGuestU32;
+  std::size_t count = 0u;
+  const uint32_t begin = LoadGuestU32(base, carrying + 16u);
+  const uint32_t end = LoadGuestU32(base, carrying + 20u);
+  if (!Plausible(begin) || end < begin || (end - begin) > 12u * 64u) return 0u;
+  for (uint32_t at = begin; at + 12u <= end && count < out.size(); at += 12u) {
+    const uint32_t holder = LoadGuestU32(base, at + 8u);
+    const uint32_t item = Plausible(holder) ? LoadGuestU32(base, holder) : 0u;
+    if (Plausible(item)) out[count++] = item;
+  }
+  return count;
+}
+}  // namespace
+
+// `sub_824FEC48(carrying, msg)` — the held-items message off the net dispatcher
+// (`sub_82392250`): type 1 attaches the replica named by the message's net id
+// (`sub_82334A60` → `sub_824FB5D8`), anything else RELEASES the named slot (`sub_824FCB20`).
+//
+// THE RELEASE NEVER DESTROYS. `sub_824FCB20` detaches the item from the holder's attachment
+// graph and leaves it as a free world entity; only the HOST's wrapper `sub_824FDB70` follows
+// with `sub_8238D828`, and the host's own destroy message names the HOST's entity, which the
+// client's replica map (`netmgr+128`) cannot resolve for an item the client made itself. So
+// when the host releases a slot on player two's body — our EquipRecord does, before it
+// attaches the hero's own weapon — the joiner's save-loaded weapon in that slot is cut loose
+// on the joiner's floor and stays there. The guest's own client branch of `sub_82315AD0`
+// releases AND destroys every local held item first (0x82315d8c/0x82315db8); that routine is
+// a no-op for a hero body, so the same thing is done here: an item this message released
+// that is not a replica is destroyed. A REPLICA IS WHAT THE REPLICA MAP SAYS: the client's
+// spawn handler keys `netmgr+128` on the host's id and writes it to CECNetwork+120, so
+// `sub_82334A60(netmgr, *(comp91+120))` answers the item itself; a local item either has no
+// CECNetwork, carries no id there, or is not in the map. "Has no component 91" was the first
+// test and it was wrong — a save-loaded weapon carries one (run 2026-10-07 20:31: the pistol
+// on the ice, no "cut loose" line).
+REX_EXTERN(rex_CECHeldItems_OnNetMessage) {
+  using refii::vfs::LoadGuestU32;
+  using refii::vfs::LoadGuestU8;
+
+  const uint32_t carrying = ctx.r3.u32;
+  const uint32_t message = ctx.r4.u32;
+  const uint32_t cm = CoopManager(base);
+  const bool client = Plausible(cm) && LoadGuestU8(base, cm + 52u) != 0u &&
+                      LoadGuestU8(base, cm + 54u) != 0u;
+  const bool release = Plausible(message) && LoadGuestU32(base, message + 4u) != 1u;
+  if (!client || !release || !Plausible(carrying)) {
+    __imp__rex_CECHeldItems_OnNetMessage(ctx, base);
+    return;
+  }
+
+  std::array<uint32_t, 16> before{};
+  const std::size_t had = HeldItems(base, carrying, before);
+  const PPCContext saved = ctx;
+  __imp__rex_CECHeldItems_OnNetMessage(ctx, base);
+
+  std::array<uint32_t, 16> after{};
+  const std::size_t has = HeldItems(base, carrying, after);
+  const auto is_replica = [&](uint32_t item) -> bool {
+    const uint32_t network = ComponentOf(base, item, 91u);
+    if (network == 0u) return false;
+    const uint64_t id = (static_cast<uint64_t>(LoadGuestU32(base, network + 120u)) << 32) |
+                        LoadGuestU32(base, network + 124u);
+    if (id == 0u || !Plausible(cm)) return false;
+    PPCContext find = saved;
+    find.r3.u32 = cm;
+    find.r4.u64 = id;
+    __imp__rex_lhNetManager_FindEntityByNetId(find, base);
+    return find.r3.u32 == item;
+  };
+  for (std::size_t i = 0; i < had; ++i) {
+    const uint32_t item = before[i];
+    bool still = false;
+    for (std::size_t j = 0; j < has && !still; ++j) still = after[j] == item;
+    if (still) continue;
+    if ((LoadGuestU8(base, item + 144u) & 0x40u) == 0u) continue;  // not active: nothing to drop
+    if (is_replica(item)) continue;                                // the host owns it
+    REXLOG_INFO("coop hooks: held-items release from the host cut loose LOCAL item 0x{:08X} "
+                "(record {:08X}) on 0x{:08X} — destroyed, as the guest's own client arm does",
+                item, LoadGuestU32(base, item + 28u), carrying);
+    PPCContext destroy = saved;
+    destroy.r3.u32 = item;
+    __imp__rex_lhEntity_Destroy(destroy, base);
+  }
+}
+
+// THE REPLICA MOTION CADENCE — the guest's own transport, re-paced for a network that is not
+// 2008 Xbox Live.
+//
+// A networked entity's authority sends its transform from `sub_822BCA68` (CECNetwork tick,
+// vtable +56, under `sub_82214AF8`): message 5 when it moved past a threshold, message 6 once
+// when it came to rest, and never more often than an interval in GAME TICKS (`dword_83319650`,
+// 15 Hz under refii, 66 ms): `*(this+248) >= *(this+252) + interval`, interval 30 by default,
+// 2 for a player (`sub_82232778`), 5 visible and within 15 m, 8 visible and farther, 3 for a
+// few flagged classes (0x822bcd4c..0x822bcdb4). The receiver (`sub_8239E9E0`) pushes each
+// sample into an 8-deep ring on the entity's CECNetwork with a playback time of ARRIVAL +
+// 0.1 s (slot+0x20, 0x8239eab8..), and the replica tick (`sub_8239EB00`) lerps between the two
+// samples around "now", extrapolating up to three segments past the newest, then moves the
+// placement halfway to that target each tick (`sub_8239ED30`, 0.5 at 0x8239ee14).
+//
+// So a hero arrives every 133 ms and is played 100 ms behind: the receiver runs past its
+// newest sample between almost every pair, extrapolates, and is pulled back when the next one
+// lands — the partner's stutter on both machines. A villager arrives every 333 or 533 ms
+// against the same 100 ms and does worse, which is the joiner's whole town.
+//
+// Two seams, both the guest's own numbers: the SENDER is let through every tick for a player
+// and every third tick for anyone else, by backdating `this+252` so its own test passes (the
+// movement thresholds and the at-rest message are untouched, so a still body still sends
+// nothing); the RECEIVER's playback delay is widened to cover the cadence with a sample to
+// spare: 0.15 s for a player, 0.4 s for the rest. The 0.1 literal is shared by fifty other
+// functions and is left alone; the slot's time is adjusted after the push instead.
+namespace {
+/// Whether `entity` is one of the two player bodies — the entity manager's own slots, which
+/// `sub_82232778` reads (`EM+104`/`+112`, objects at `+108`/`+116`).
+bool IsPlayerBody(uint8_t* base, uint32_t entity) {
+  using refii::vfs::LoadGuestU32;
+  const uint32_t root = LoadGuestU32(base, kGameRoot);
+  const uint32_t game = Plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t holder = Plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
+  const uint32_t slot = Plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
+  const uint32_t manager = Plausible(slot) ? LoadGuestU32(base, slot) : 0u;
+  if (!Plausible(manager)) return false;
+  for (uint32_t at : {108u, 116u}) {
+    const uint32_t object = LoadGuestU32(base, manager + at);
+    if (Plausible(object) && LoadGuestU32(base, object) == entity) return true;
+  }
+  return false;
+}
+
+/// Ticks between sends, by class: a player every tick, anyone else every third.
+constexpr uint32_t kPlayerSendTicks = 1u;
+constexpr uint32_t kOtherSendTicks = 3u;
+
+/// Playback delay behind arrival, by class, replacing the guest's 0.1 s.
+constexpr float kPlayerPlaybackDelay = 0.15f;
+constexpr float kOtherPlaybackDelay = 0.4f;
+constexpr float kGuestPlaybackDelay = 0.1f;
+
+float LoadGuestF32(uint8_t* base, uint32_t at) {
+  const uint32_t bits = refii::vfs::LoadGuestU32(base, at);
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+void StoreGuestF32(uint8_t* base, uint32_t at, float value) {
+  uint32_t bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  refii::vfs::StoreGuestU32(base, at, bits);
+}
+}  // namespace
+
+REX_EXTERN(rex_CECNetwork_SendTransform) {
+  using refii::vfs::LoadGuestU32;
+  using refii::vfs::StoreGuestU32;
+
+  const uint32_t net = ctx.r3.u32;
+  if (Plausible(net)) {
+    const uint32_t entity = LoadGuestU32(base, net + 4u);
+    const uint32_t now = LoadGuestU32(base, net + 248u);
+    const uint32_t last = LoadGuestU32(base, net + 252u);
+    const uint32_t wanted = Plausible(entity) && IsPlayerBody(base, entity) ? kPlayerSendTicks
+                                                                           : kOtherSendTicks;
+    // Due by our cadence but not yet by the guest's: backdate the last send so the guest's own
+    // test passes. 30 is its widest interval. A fresh component (last 0) is left to the guest.
+    if (last != 0u && now >= last + wanted && now < last + 30u) {
+      StoreGuestU32(base, net + 252u, now - 30u);
+    }
+  }
+
+  __imp__rex_CECNetwork_SendTransform(ctx, base);
+}
+
+REX_EXTERN(rex_CECNetwork_PushReceivedTransform) {
+  using refii::vfs::LoadGuestU32;
+
+  const uint32_t net = ctx.r3.u32;
+  const uint32_t head_before = Plausible(net) ? LoadGuestU32(base, net + 0x304u) : 0u;
+  __imp__rex_CECNetwork_PushReceivedTransform(ctx, base);
+  if (!Plausible(net)) return;
+
+  // Only a sample the guest accepted (the head moved) is re-timed, and only one that carries
+  // the shared 0.1 s delay — the zero-delay snap class (entity+0x40 bit 10) keeps its own.
+  const uint32_t head = LoadGuestU32(base, net + 0x304u);
+  if (head == head_before || head == 0u) return;
+  const uint32_t slot = net + 0x180u + 48u * ((head - 1u) & 7u);
+  const float playback = LoadGuestF32(base, slot + 0x20u);
+  if (!std::isfinite(playback)) return;
+  const uint32_t entity = LoadGuestU32(base, net + 4u);
+  const uint32_t flags = Plausible(entity) ? LoadGuestU32(base, entity + 0x40u) : 0u;
+  if (((flags >> 10) & 1u) != 0u) return;
+  const float delay = Plausible(entity) && IsPlayerBody(base, entity) ? kPlayerPlaybackDelay
+                                                                       : kOtherPlaybackDelay;
+  StoreGuestF32(base, slot + 0x20u, playback - kGuestPlaybackDelay + delay);
+}
+
+// THE REPLICA MOVER — exact placement at the interpolated target, not a half-step toward it.
+//
+// `sub_8239ED30(net, quat in r4:r5, position in v1)` is what the replica tick (`sub_8239EB00`)
+// calls with the transform it interpolated between two received samples. The shipped body
+// does not go there: it reads the placement's current position (vt+64) and orientation
+// (vt+68) and sets `cur + 0.5 * (target - cur)` (0x8239ee14 / 0x8239ee2c, vt+100) and the
+// same half-way quaternion (0x8239ee78 / 0x8239eeac, vt+104) — a low-pass filter on top of
+// an interpolation that is already smooth, converging on each target only as the next one
+// arrives. It hides sample jitter, which the playback buffer now covers, and it costs a
+// permanent lag of several ticks behind a body that is already played back late. A modern
+// receiver draws the interpolated sample itself. So: the target goes straight into vt+100
+// and vt+104, through the same virtuals, with the original's hemisphere correction kept (the
+// quaternion is negated when it faces away from the current one, so the renderable's own
+// prev/live slerp never takes the long way round). The snap class (entity+0x40 bit 10, a
+// matrix set through vt+132) is left to the original.
+REX_EXTERN(rex_CECNetwork_ApplyReplicaTarget) {
+  using refii::vfs::LoadGuestU32;
+
+  const uint32_t net = ctx.r3.u32;
+  const uint32_t entity = Plausible(net) ? LoadGuestU32(base, net + 4u) : 0u;
+  const uint32_t placement = Plausible(entity) ? LoadGuestU32(base, entity + 124u) : 0u;
+  const uint32_t vtable = Plausible(placement) ? LoadGuestU32(base, placement) : 0u;
+  const bool snaps = Plausible(entity) && ((LoadGuestU32(base, entity + 64u) >> 10) & 1u) != 0u;
+  PPCFunc* set_position = Plausible(vtable) ? refii::vfs::FindGuestFunction(LoadGuestU32(base, vtable + 100u)) : nullptr;
+  PPCFunc* set_orientation = Plausible(vtable) ? refii::vfs::FindGuestFunction(LoadGuestU32(base, vtable + 104u)) : nullptr;
+  PPCFunc* get_orientation = Plausible(vtable) ? refii::vfs::FindGuestFunction(LoadGuestU32(base, vtable + 68u)) : nullptr;
+  if (snaps || set_position == nullptr || set_orientation == nullptr) {
+    __imp__rex_CECNetwork_ApplyReplicaTarget(ctx, base);
+    return;
+  }
+
+  const PPCContext saved = ctx;
+  {
+    PPCContext call = saved;  // v1 already holds the target position
+    call.r3.u32 = placement;
+    set_position(call, base);
+  }
+
+  // Target quaternion as the guest passes it: r4 = {x, y}, r5 = {z, w}, big-endian floats.
+  uint64_t q0 = saved.r4.u64;
+  uint64_t q1 = saved.r5.u64;
+  if (get_orientation != nullptr) {
+    const uint32_t frame = (saved.r1.u32 - 0x100u) & ~0xFu;
+    const uint32_t out = frame + 0x20u;
+    PPCContext call = saved;
+    call.r1.u32 = frame;
+    call.r3.u32 = out;
+    call.r4.u32 = placement;
+    get_orientation(call, base);
+    float current[4];
+    float target[4];
+    const uint32_t target_bits[4] = {static_cast<uint32_t>(q0 >> 32), static_cast<uint32_t>(q0),
+                                     static_cast<uint32_t>(q1 >> 32), static_cast<uint32_t>(q1)};
+    for (int i = 0; i < 4; ++i) {
+      const uint32_t bits = LoadGuestU32(base, out + 4u * static_cast<uint32_t>(i));
+      std::memcpy(&current[i], &bits, sizeof(float));
+      std::memcpy(&target[i], &target_bits[i], sizeof(float));
+    }
+    const float dot = current[0] * target[0] + current[1] * target[1] + current[2] * target[2] +
+                      current[3] * target[3];
+    if (std::isfinite(dot) && dot < 0.0f) {
+      uint32_t flipped[4];
+      for (int i = 0; i < 4; ++i) {
+        const float value = -target[i];
+        std::memcpy(&flipped[i], &value, sizeof(uint32_t));
+      }
+      q0 = (static_cast<uint64_t>(flipped[0]) << 32) | flipped[1];
+      q1 = (static_cast<uint64_t>(flipped[2]) << 32) | flipped[3];
+    }
+  }
+  {
+    PPCContext call = saved;
+    call.r3.u32 = placement;
+    call.r4.u64 = q0;
+    call.r5.u64 = q1;
+    set_orientation(call, base);
+  }
 }

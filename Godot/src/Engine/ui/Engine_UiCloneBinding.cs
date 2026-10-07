@@ -192,6 +192,11 @@ public sealed class Engine_UiCloneBinding
 				Ordinal = element.Ordinal,
 				IsQuad = element.Quad is not null,
 				IsRoot = isRoot,
+				// WHAT THE NODE SHOWS NOW, not an assumption. A clone of art the builder parked
+				// (`slide_inactive`) arrives invisible; with Drawn defaulting to true, the first
+				// sample that stated it drawn found nothing to change and the node stayed hidden
+				// for good — the co-op screen's X prompt: active, drawn, opacity 1, HIDDEN.
+				Drawn = spatial.Visible,
 				Pivot = new Vector3(element.PivotX, element.PivotY,
 					Engine_UiSceneBuilder.ToGodotZ(element.PivotZ)),
 			});

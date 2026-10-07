@@ -57,15 +57,9 @@ upstream's work plus our delta:
 | Shadow file | Our delta vs `c339752` | Upstream work now preserved |
 |---|---|---|
 | `src/audio/xma_context.cpp` | +8/-0 | `a7638a5` flush ffmpeg buffers on context release; `e5c3554` XMA loop-wrap garbage + dropped loop-end frame |
-| `CMakeLists.txt` | +24/-0 | `db97de5` GNS drop; `a3b9a6c` RexNet behind a Rust toolchain gate |
-| `include/rex/rex_app.h` | +18/-0 | `a3b9a6c` toolchain gate; `4944683` file headers |
-| `src/ui/CMakeLists.txt` | +19/-1 | `a3b9a6c` toolchain gate |
-| `src/ui/rex_app.cpp` | +257/-27 | `a3b9a6c` toolchain gate; `4944683` file headers |
-| `include/rex/ui/window.h` | +21/-5 | `6c1c66a` per-window cursor auto-hide delay |
-| `src/kernel/xam/apps/xgi_app.cpp` | +66/-22 | `aa6f90a` clang-format; `4944683` file headers |
-| `src/kernel/xam/xam_notify.cpp` | +51/-0 | `aa6f90a` clang-format; `4944683` file headers |
-| `src/kernel/xam/xam_user.cpp` | +13/-0 | `aa6f90a` clang-format; `4944683` file headers |
-| `src/ui/imgui_drawer.cpp` | +56/-14 | `4944683` file headers |
+| `CMakeLists.txt` | +28/-0 | upstream absorbed the toolchain gate; the delta is now the `-Wno-` list for the 18 warning classes upstream's own sources trip under `-Wall -Wextra` (2026-10-07) |
+| `src/codegen/codegen_writer.cpp` | +5/-2 | a function larger than `max_file_size_bytes` is reported at debug level: it cannot be split, so warning on every run stated nothing actionable (2026-10-07) |
+| `src/rexnet/core/src/ffi.rs` | none | identical to the SDK copy since the friend-path work (2026-10-07) went into the SDK tree itself: we own RexNet, so the overlay is no longer where its fixes live |
 | `src/system/xsocket.cpp`, `src/kernel/xam/xam_net.cpp` | none | upstream absorbed our version verbatim |
 
 The rebase was a `git merge-file` 3-way against each file's original base

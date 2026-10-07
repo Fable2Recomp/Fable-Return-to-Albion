@@ -1,0 +1,43 @@
+# RexNet per-title configuration for Fable II (design spec §11.1).
+
+[game]
+# No public lobby browser: co-op is invite/orb driven.
+session_model = "private-invite"
+# XRNM runs its own reliability; the game plane must stay unreliable (§6).
+game_channel = "unreliable"
+# Advertise the XEX's own title id (0x4D5307F1). An earlier note here claimed
+# NLivePresence::ConnectToFriend (0x822FA988) compares friend records against
+# the retail id 0x4D530910 -- the disassembly says otherwise:
+#     lis r8, 0x4D53 ; ori r6, r8, 0x7F1   -> 0x4D5307F1
+#     lwz r5, -0xA0(r10)                   -> friend entry +0x24 (title_id)
+#     cmplw cr6, r5, r6 ; bne -> skip this friend
+# Advertising the retail id made every friend and shard member fail that
+# compare, so the title never sent its port-1002 presence INITIAL and no orbs
+# were ever created. 0 = use the id from the XEX header.
+advertised_title_id = 0
+
+# Discord Rich Presence (spoken straight to the Discord client on this machine).
+# The application is the project's own in the Discord developer portal, named
+# "Fable 2: Return to Albion" with one art asset keyed `logo`. While a co-op
+# session admits a joiner the activity carries a party and a join secret, so
+# Discord offers "Invite to Join" and "Ask to Join"; a friend who accepts lands
+# in the session AND in the host's title shard. The launcher states the two
+# lines live (the level the player stands in); these are the defaults.
+[discord]
+application_id = "1556952543400173668"
+details = "Fable 2: Return to Albion"
+state = "Exploring Albion"
+large_image = "logo"
+large_text = "Fable 2: Return to Albion"
+
+# Ambient "Connected" tier (§17.3): passive presence shared by everyone
+# playing Fable II, up to 255 per shard. This is what populates passive orbs
+# for players who are not on your friends list — they show under a generated
+# name (§17.3.7), never their own.
+[shard]
+enabled = true
+cap = 255
+# Fable II builds its passive orbs from the XFriends enumerator, so shard
+# members have to be surfaced through it to be visible in game. Non-friends
+# appear under a generated name (§17.3.7), never their own.
+surface_as_friends = true

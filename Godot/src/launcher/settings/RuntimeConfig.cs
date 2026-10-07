@@ -126,43 +126,32 @@ public static class RuntimeConfig
         SortedDictionary<string, string> values = ReadValues(configPath);
         bool changed = !File.Exists(configPath);
 
-        if (ShouldUsePackagedRuntimeDefaults())
-        {
-            string packagedGameDataRoot = Installer.GetInstallBasePath();
-            string packagedUserDataRoot = LauncherPaths.GetRuntimeDataRootDirectory();
+        string baseRoot = Installer.GetInstallBasePath();
+        string configDirectory = Path.GetDirectoryName(configPath) ?? string.Empty;
 
-            changed |= UpdateDefaultPath(values, "game_data_root", "assets", ToGeneric(packagedGameDataRoot));
-            changed |= UpdateDefaultPath(values, "user_data_root", "assets/save", ToGeneric(packagedUserDataRoot));
-        }
-        else
+        foreach ((string key, string legacyDefault) in AssetRelativeRoots)
         {
-            string baseRoot = Installer.GetInstallBasePath();
-            string configDirectory = Path.GetDirectoryName(configPath) ?? string.Empty;
-
-            foreach ((string key, string legacyDefault) in AssetRelativeRoots)
+            // If the config carries a stale absolute path from another machine/drive/build folder
+            // that does not exist on disk, clear it so it can be re-resolved to the local install:
+            if (values.TryGetValue(key, out string? currentVal) &&
+                Path.IsPathRooted(currentVal) &&
+                (!Directory.Exists(currentVal) || PointsIntoAnotherInstall(currentVal, baseRoot)))
             {
-                // If the config carries a stale absolute path from another machine/drive/build folder
-                // that does not exist on disk, clear it so it can be re-resolved to the local install:
-                if (values.TryGetValue(key, out string? currentVal) &&
-                    Path.IsPathRooted(currentVal) &&
-                    !Directory.Exists(currentVal))
-                {
-                    values.Remove(key);
-                }
-
-                string relative = legacyDefault.Length > AssetsPrefix.Length
-                    ? legacyDefault[(AssetsPrefix.Length + 1)..]
-                    : string.Empty;
-                string absolute = relative.Length == 0
-                    ? baseRoot
-                    : Path.Combine(baseRoot, relative.Replace('/', Path.DirectorySeparatorChar));
-
-                string legacy = key == "game_data_root" && configDirectory.Length != 0
-                    ? ToGeneric(LauncherPaths.Normalize(Path.Combine(configDirectory, AssetsPrefix)))
-                    : legacyDefault;
-
-                changed |= UpdateDefaultPath(values, key, legacy, ToGeneric(absolute));
+                values.Remove(key);
             }
+
+            string relative = legacyDefault.Length > AssetsPrefix.Length
+                ? legacyDefault[(AssetsPrefix.Length + 1)..]
+                : string.Empty;
+            string absolute = relative.Length == 0
+                ? baseRoot
+                : Path.Combine(baseRoot, relative.Replace('/', Path.DirectorySeparatorChar));
+
+            string legacy = key == "game_data_root" && configDirectory.Length != 0
+                ? ToGeneric(LauncherPaths.Normalize(Path.Combine(configDirectory, AssetsPrefix)))
+                : legacyDefault;
+
+            changed |= UpdateDefaultPath(values, key, legacy, ToGeneric(absolute));
         }
 
         // ONE CACHE CONTAINER, STATED RATHER THAN DERIVED.
@@ -206,6 +195,37 @@ public static class RuntimeConfig
         return true;
     }
 
+    /// <summary>
+    /// True when an absolute root lives inside a DIFFERENT install of this app.
+    /// </summary>
+    /// <remarks>
+    /// A SECOND INSTALL MADE BY COPYING THE FIRST carries its refii.toml, and these roots are
+    /// written absolute, so the copy kept reading and writing the original's assets/save: the
+    /// same saves, the same RexNet identity, the same friend list. Two instances on one
+    /// machine then had one peer id, and a friend code sent between them was a request to
+    /// itself. The tell is a root under a directory that holds our own executable and is not
+    /// this one; a root the player pointed somewhere that is not a refii install is kept.
+    /// </remarks>
+    private static bool PointsIntoAnotherInstall(string value, string baseRoot)
+    {
+        string normalized = LauncherPaths.Normalize(value);
+        string thisInstall = LauncherPaths.Normalize(Path.GetDirectoryName(LauncherPaths.Normalize(baseRoot)) ?? string.Empty);
+        if (thisInstall.Length == 0)
+        {
+            return false;
+        }
+
+        for (string? dir = normalized; !string.IsNullOrEmpty(dir); dir = Path.GetDirectoryName(dir))
+        {
+            if (File.Exists(Path.Combine(dir, Platform.ExecutableName)))
+            {
+                return !string.Equals(LauncherPaths.Normalize(dir), thisInstall, StringComparison.Ordinal);
+            }
+        }
+
+        return false;
+    }
+
     private const string AssetsPrefix = "assets";
 
     private static readonly (string Key, string LegacyDefault)[] AssetRelativeRoots =
@@ -214,7 +234,6 @@ public static class RuntimeConfig
         ("user_data_root", "assets/save"),
     };
 
-    private static bool ShouldUsePackagedRuntimeDefaults() => LauncherPaths.UseLinuxUserDataRoot();
 
     private static bool UpdateDefaultPath(
         IDictionary<string, string> values,

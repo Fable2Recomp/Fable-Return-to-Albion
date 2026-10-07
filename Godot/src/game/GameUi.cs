@@ -5319,9 +5319,9 @@ public partial class GameUi : Node
 
 				// And their whole inventory, so the pause book on either side lists what they
 				// actually own, not the henchman's two pickbox weapons.
-				foreach (string list in CoopHeroKit.GiveLists(two))
+				if (CoopHeroKit.GiveList(two) is { } twoList)
 				{
-					HostBridge.PostFrontEndAction("CoopHeroGive:2:" + list);
+					HostBridge.PostFrontEndAction("CoopHeroGive:2:" + twoList);
 				}
 
 				// DRAWN, not just owned: the guest's own equip-by-record, after the give has put
@@ -5344,9 +5344,9 @@ public partial class GameUi : Node
 					HostBridge.PostFrontEndAction("CoopHeroWear:1:" + CoopHeroKit.WornList(one));
 				}
 
-				foreach (string list in CoopHeroKit.GiveLists(one))
+				if (CoopHeroKit.GiveList(one) is { } oneList)
 				{
-					HostBridge.PostFrontEndAction("CoopHeroGive:1:" + list);
+					HostBridge.PostFrontEndAction("CoopHeroGive:1:" + oneList);
 				}
 
 				// The joiner's copy of player one is armed by name only — the weapon-set sync
@@ -5419,9 +5419,9 @@ public partial class GameUi : Node
 		{
 			for (uint player = 1u; player <= 2u; ++player)
 			{
-				if (HostBridge.CoopHeldUids(player) is { } heldIds && (heldIds.Melee != 0u || heldIds.Ranged != 0u))
+				if (HostBridge.CoopHeldUids(player) is { } heldIds && (heldIds.Melee != 0ul || heldIds.Ranged != 0ul))
 				{
-					HostBridge.CoopSend($"CoopHeroHeld:{player}:{heldIds.Melee:X8},{heldIds.Ranged:X8}");
+					HostBridge.CoopSend($"CoopHeroHeld:{player}:{heldIds.Melee:X16},{heldIds.Ranged:X16}");
 				}
 			}
 		}
@@ -5766,7 +5766,15 @@ public partial class GameUi : Node
 			Engine_UiHudTopBox.Publish(
 				HostBridge.GetTopBoxFront(), GameInput.AHeld, GameInput.YHeld, _hud.Values,
 				_presentation?.Strings);
-			Engine_UiHudExpressionMeter.Publish(HostBridge.GetExpressionMeter(), _hud);
+			// THE PEER'S EXPRESSION STAYS ON THE PEER'S SCREEN. The guest starts the local meter
+			// for a remote expression too (net message 136); in a network session only the local
+			// player's pip is drawn here — pip A is player one's, pip B player two's
+			// (`sub_824143F8`: 1 when the expressing entity is `*(EM+108)`). Split screen and a
+			// job's bar fill (mode 3) are one screen's business and draw as they are.
+			HostBridge.ExpressionMeter meter = HostBridge.GetExpressionMeter();
+			bool mine = !CoopSession.PeerStanding || CoopSession.LocalCoop || meter.Mode == 3 ||
+				(CoopSession.IsClient ? meter.ArmedB : meter.ArmedA);
+			Engine_UiHudExpressionMeter.Publish(meter, _hud, mine);
 			Engine_UiHudTargetedQuery.Publish(HostBridge.GetTargetedQuery(), _hud.Values);
 		}
 
@@ -6499,10 +6507,21 @@ public partial class GameUi : Node
 				// press on this same row rather than a box, so nothing here opens a modal.
 				if (Engine_UiNetworkSource.PendingAdd is { Length: > 0 } confirmed)
 				{
+					// The name rides the code; kept so a decline can say who it came from.
+					if (NetBridge.PreviewCode(confirmed) is { } target)
+					{
+						Engine_UiNetworkSource.RememberSent(target.PeerId, target.Name);
+					}
+
 					Engine_UiNetworkSource.SetAddState(
-						NetBridge.AddFriendByCode(confirmed, string.Empty)
-							? "Friend request sent.\n\nThey appear under Friends once they accept."
-							: "That request could not be sent — RexNet may be off.");
+						NetBridge.AddFriendByCodeResult(confirmed, string.Empty) switch
+						{
+							1 => "Friend request sent.\n\nThey appear under Friends once they accept.",
+							2 => "That is your own friend code.\n\nIf this came from another install, " +
+								"that install is a copy of this one and shares its identity: delete " +
+								"its assets/save/rexnet/identity.key and restart it.",
+							_ => "That request could not be sent — RexNet may be off.",
+						});
 					break;
 				}
 
@@ -6543,6 +6562,11 @@ public partial class GameUi : Node
 			case "accept":
 				Answer(NetBridge.PeerAction(argument, NetBridge.Act.AcceptRequest),
 					"Friend request accepted.", "That friend request could not be accepted.");
+				break;
+
+			case "dismiss":
+				Answer(NetBridge.PeerAction(argument, NetBridge.Act.DismissRequest),
+					"Friend request dismissed.", "That friend request could not be dismissed.");
 				break;
 
 			case "accept-invite":

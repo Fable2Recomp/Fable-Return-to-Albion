@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 168;
+	public const int ExpectedAbiVersion = 170;
 
 	private const int MessageCapacity = 512;
 
@@ -2596,18 +2596,18 @@ public static class HostBridge
 	}
 
 	/// <summary>
-	/// The net ids of the item entities player 1 or 2 holds on THIS machine (ABI 135) — what the
-	/// host sends so a client attaches the replicas rather than making its own. Null when the
-	/// player has no body here; zero for an empty slot.
+	/// The net ids of the item entities player 1 or 2 holds on THIS machine (ABI 135; the full
+	/// 64-bit uid since 170) — what the host sends so a client attaches the replicas rather than
+	/// making its own. Null when the player has no body here; zero for an empty slot.
 	/// </summary>
-	public static (uint Melee, uint Ranged)? CoopHeldUids(uint player)
+	public static (ulong Melee, ulong Ranged)? CoopHeldUids(uint player)
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return null;
 		}
 
-		return RefiiHostGetCoopHeldUids(player, out uint melee, out uint ranged) != 0
+		return RefiiHostGetCoopHeldUids(player, out ulong melee, out ulong ranged) != 0
 			? (melee, ranged)
 			: null;
 	}
@@ -7196,7 +7196,7 @@ public static class HostBridge
 	private static extern uint RefiiHostGetHeroWeapons(out uint melee, out uint ranged);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopHeldUids(uint player, out uint melee, out uint ranged);
+	private static extern uint RefiiHostGetCoopHeldUids(uint player, out ulong melee, out ulong ranged);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetCoopMannequin(out uint entity, out uint ticket);

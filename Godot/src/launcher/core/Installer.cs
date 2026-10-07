@@ -305,8 +305,7 @@ public static class Installer
     /// it is derived from the same install and has to follow it. Anchoring this on the
     /// native library directory instead put it under <c>build/&lt;arch&gt;/bin</c> while the
     /// installer wrote the game to <c>assets/game</c> — two different roots, so the build
-    /// looked for an executable nothing had written. It also has to follow the install on a
-    /// packaged Linux build, where the data root is under XDG rather than beside the app.
+    /// looked for an executable nothing had written.
     ///
     /// Deleted once the module is built; nothing may be kept here.
     /// </remarks>

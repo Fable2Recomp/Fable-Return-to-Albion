@@ -310,6 +310,28 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
         )
     endif()
 
+    # THE SDK TREE IS OURS TOO. RexNet is edited in rexglue-net/rexglue-sdk directly (we
+    # own the fork), and the build compiles the staged COPY below, refreshed only here at
+    # configure. With nothing tracking the SDK's own sources, an SDK edit followed by a
+    # plain build compiled the stale copy: the Discord null-frame fix sat in the source
+    # while both instances kept crashing on the binary (2026-10-07). The SDK's src/ and
+    # include/ are tracked like the shadow; thirdparty/ and out/ are left out, upstream's
+    # vendored trees do not change under us.
+    file(GLOB_RECURSE _refii_rexglue_sdk_inputs
+        CONFIGURE_DEPENDS
+        LIST_DIRECTORIES FALSE
+        "${REFII_REXGLUE_SDK_SOURCE_DIR}/src/*"
+        "${REFII_REXGLUE_SDK_SOURCE_DIR}/include/*"
+        "${REFII_REXGLUE_SDK_SOURCE_DIR}/cmake/*"
+        "${REFII_REXGLUE_SDK_SOURCE_DIR}/CMakeLists.txt"
+    )
+    list(FILTER _refii_rexglue_sdk_inputs EXCLUDE REGEX "/src/rexnet/core/target/")
+    if(_refii_rexglue_sdk_inputs)
+        set_property(DIRECTORY APPEND PROPERTY
+            CMAKE_CONFIGURE_DEPENDS ${_refii_rexglue_sdk_inputs}
+        )
+    endif()
+
     file(MAKE_DIRECTORY "${REFII_REXGLUE_SHADOW_BUILD_DIR}")
     if(WIN32)
         refii_rexglue_shadow_link_sdk_tree()

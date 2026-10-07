@@ -114,7 +114,11 @@ public sealed class Engine_UiSpellAssignSet
 		//
 		// The offers per level are already in the state we read, so the count that gate turns on
 		// can be said out loud. Printed only when it changes.
-		bool wheelUp = _spells.WheelOpen;
+		// EITHER PLAYER'S FLAG. The guest keeps one open flag per player (QM+36 player one,
+		// QM+37 player two: `sub_8236F788` sets `a1[37]` when the player's `+36` is 2) and a
+		// joiner's own hero IS player two, so a gate on player one's flag alone never drew the
+		// joiner's wheel. The cursor below follows whichever is open.
+		bool wheelUp = _spells.WheelOpen || _spells.WheelOpenPlayerTwo;
 		if (_spells.Known)
 		{
 			var offers = new System.Collections.Generic.List<string>();

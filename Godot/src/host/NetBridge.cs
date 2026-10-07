@@ -142,6 +142,30 @@ public static class NetBridge
 		return list;
 	}
 
+	/// <summary>Peers a request we sent reached (their ack), since the last call. Drained.</summary>
+	public static List<string> Delivered()
+	{
+		var list = new List<string>();
+		foreach (string[] f in Records(RefiiNetDelivered, 1))
+		{
+			list.Add(f[0]);
+		}
+
+		return list;
+	}
+
+	/// <summary>Peers that dismissed a request we sent, since the last call. Drained.</summary>
+	public static List<string> Declined()
+	{
+		var list = new List<string>();
+		foreach (string[] f in Records(RefiiNetDeclined, 1))
+		{
+			list.Add(f[0]);
+		}
+
+		return list;
+	}
+
 	public static List<Invite> Invites()
 	{
 		var list = new List<Invite>();
@@ -213,6 +237,23 @@ public static class NetBridge
 	}
 
 	/// <summary>Sends a friend request to a <c>REXN-…</c> code.</summary>
+	/// <summary>Outcome of <see cref="AddFriendByCode"/>: 0 failed, 1 sent, 2 that was our own code.</summary>
+	public static int AddFriendByCodeResult(string code, string note)
+	{
+		try
+		{
+			return RefiiNetAddFriendByCode(code ?? string.Empty, note ?? string.Empty);
+		}
+		catch (DllNotFoundException)
+		{
+			return 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
 	public static bool AddFriendByCode(string code, string note)
 	{
 		try
@@ -257,6 +298,40 @@ public static class NetBridge
 	/// id as <see cref="OwnSessionId"/> gives it — without the host being a friend. What a
 	/// Discord join secret carries.
 	/// </summary>
+	/// <summary>
+	/// States what Discord shows for us; the node owns the Discord connection, the party and
+	/// the join secret. <paramref name="joinable"/> null means "whenever a session exists".
+	/// </summary>
+	public static void DiscordActivity(string details, string state, bool? joinable)
+	{
+		try
+		{
+			RefiiNetDiscordActivity(details ?? string.Empty, state ?? string.Empty,
+				joinable is null ? -1 : joinable.Value ? 1 : 0);
+		}
+		catch (DllNotFoundException)
+		{
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>Rich Presence on or off, the player's setting.</summary>
+	public static void DiscordEnabled(bool enabled)
+	{
+		try
+		{
+			RefiiNetDiscordEnabled(enabled ? 1 : 0);
+		}
+		catch (DllNotFoundException)
+		{
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
 	public static bool JoinSession(string peerId, uint titleId, string sessionId)
 	{
 		try
@@ -361,6 +436,12 @@ public static class NetBridge
 	private static extern uint RefiiNetRequests(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
+	private static extern uint RefiiNetDeclined(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetDelivered(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiNetInvites(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
@@ -389,4 +470,10 @@ public static class NetBridge
 
 	[DllImport(Library, CharSet = CharSet.Ansi)]
 	private static extern int RefiiNetJoinSession(string peerId, uint titleId, string sessionId);
+
+	[DllImport(Library)]
+	private static extern void RefiiNetDiscordActivity(string details, string state, int joinable);
+
+	[DllImport(Library)]
+	private static extern void RefiiNetDiscordEnabled(int enabled);
 }

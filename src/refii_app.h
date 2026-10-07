@@ -39,139 +39,6 @@
 #include <vector>
 
 namespace {
-inline bool RefiiUsePackagedLinuxPaths() {
-#if defined(__linux__)
-  const char *appImagePath = std::getenv("APPIMAGE");
-  if (appImagePath != nullptr && appImagePath[0] != '\0') {
-    return true;
-  }
-
-  const char *appDirPath = std::getenv("APPDIR");
-  if (appDirPath != nullptr && appDirPath[0] != '\0') {
-
-    return true;
-  }
-
-  const char *flatpakId = std::getenv("FLATPAK_ID");
-  if (flatpakId != nullptr && flatpakId[0] != '\0') {
-    return true;
-  }
-#endif
-  return false;
-}
-
-inline std::filesystem::path RefiiGetPackagedLinuxRuntimeRoot() {
-#if defined(__linux__)
-  if (!RefiiUsePackagedLinuxPaths()) {
-    return {};
-  }
-
-  const char *xdgDataHome = std::getenv("XDG_DATA_HOME");
-  if (xdgDataHome != nullptr && xdgDataHome[0] != '\0') {
-    return (std::filesystem::path(xdgDataHome) / "refii").lexically_normal();
-  }
-
-  const char *homeDirectory = std::getenv("HOME");
-  if (homeDirectory != nullptr && homeDirectory[0] != '\0') {
-    return (std::filesystem::path(homeDirectory) / ".local" / "share" / "refii")
-        .lexically_normal();
-  }
-#endif
-  return {};
-}
-
-inline std::string RefiiTrim(std::string value) {
-  const auto isWhitespace = [](unsigned char ch) {
-    return std::isspace(ch) != 0;
-  };
-
-  value.erase(value.begin(),
-              std::find_if(value.begin(), value.end(), [&](unsigned char ch) {
-                return !isWhitespace(ch);
-              }));
-  value.erase(std::find_if(value.rbegin(), value.rend(),
-                           [&](unsigned char ch) { return !isWhitespace(ch); })
-                  .base(),
-              value.end());
-  return value;
-}
-
-inline std::string RefiiUnquoteToml(std::string value) {
-  value = RefiiTrim(std::move(value));
-  if (value.size() < 2 || value.front() != '"' || value.back() != '"') {
-    return value;
-  }
-
-  std::string result;
-  result.reserve(value.size() - 2);
-  bool escaped = false;
-  for (std::size_t i = 1; i + 1 < value.size(); ++i) {
-    const char ch = value[i];
-    if (escaped) {
-      switch (ch) {
-      case 'n':
-        result.push_back('\n');
-        break;
-      case 'r':
-        result.push_back('\r');
-        break;
-      case 't':
-        result.push_back('\t');
-        break;
-      default:
-        result.push_back(ch);
-        break;
-      }
-      escaped = false;
-      continue;
-    }
-    if (ch == '\\') {
-      escaped = true;
-      continue;
-    }
-    result.push_back(ch);
-  }
-  return result;
-}
-
-inline void
-RefiiApplyPackagedRuntimeOverrides(const std::filesystem::path &configPath,
-                                   rex::PathConfig &paths) {
-  std::ifstream stream(configPath);
-  if (!stream.is_open()) {
-    return;
-  }
-
-  std::string line;
-  while (std::getline(stream, line)) {
-    const std::size_t commentPos = line.find('#');
-    if (commentPos != std::string::npos) {
-      line.erase(commentPos);
-    }
-
-    const std::size_t equalsPos = line.find('=');
-    if (equalsPos == std::string::npos) {
-      continue;
-    }
-
-    const std::string key = RefiiTrim(line.substr(0, equalsPos));
-    const std::string value = RefiiUnquoteToml(line.substr(equalsPos + 1));
-    if (key.empty() || value.empty()) {
-      continue;
-    }
-
-    if (key == "game_data_root") {
-      paths.game_data_root = value;
-    } else if (key == "user_data_root") {
-      paths.user_data_root = value;
-    } else if (key == "update_data_root") {
-      paths.update_data_root = value;
-    } else if (key == "cache_path") {
-      paths.cache_root = value;
-    }
-  }
-}
-
 inline void RefiiEnsureDirectoryExists(const std::filesystem::path &path) {
   if (path.empty()) {
     return;
@@ -212,7 +79,7 @@ surface_as_friends = true
 }
 
 inline void
-RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig &paths) {
+RefiiEnsureRuntimeDirectories(const rex::PathConfig &paths) {
   RefiiEnsureDirectoryExists(paths.config_path.parent_path());
 
   std::filesystem::path gameBase = paths.game_data_root;
@@ -225,15 +92,16 @@ RefiiEnsurePackagedRuntimeDirectories(const rex::PathConfig &paths) {
   RefiiEnsureDirectoryExists(paths.update_data_root);
   RefiiEnsureDirectoryExists(paths.cache_root);
 
-  // Seed per-title metadata (rexnet.toml, ...) into the packaged runtime.
+  // Seed per-title metadata (rexnet.toml, ...) into the runtime, on every launch.
   //
-  // Runtime::FindMetadataPath only searches under game_data_root, so a
-  // packaged install that never receives these files silently runs with all
+  // Runtime::FindMetadataPath only searches under game_data_root, so an
+  // install that never receives these files silently runs with all
   // per-title configuration inactive -- RexNet shard opt-in,
   // advertised_title_id, presence mappings -- and the sole symptom is one
   // warning at startup. That cost a debugging round on 2026-07-21, where a
   // packaged instance and a build-tree instance behaved differently for no
-  // visible reason.
+  // visible reason, and again on 2026-10-07 when the zip package turned out
+  // never to have had the file: this ran only under packagings since removed.
   const std::filesystem::path runtime_metadata = gameBase / "metadata";
   RefiiEnsureDirectoryExists(runtime_metadata);
 
@@ -415,19 +283,6 @@ public:
       RefiiEnsureDirectoryExists(paths.config_path.parent_path());
     }
 
-    if (const std::filesystem::path runtimeRoot =
-            RefiiGetPackagedLinuxRuntimeRoot();
-        !runtimeRoot.empty()) {
-      paths.config_path = runtimeRoot / "refii.toml";
-      if (paths.game_data_root.empty()) {
-        paths.game_data_root = runtimeRoot / "assets";
-      }
-      if (paths.cache_root.empty()) {
-        paths.cache_root = runtimeRoot / "cache";
-      }
-      RefiiApplyPackagedRuntimeOverrides(paths.config_path, paths);
-    }
-
     auto base = paths.game_data_root;
     if (base.empty()) {
       base = "assets";
@@ -468,8 +323,10 @@ public:
       paths.update_data_root = base / "update";
     }
 
-    if (RefiiUsePackagedLinuxPaths()) {
-      RefiiEnsurePackagedRuntimeDirectories(paths);
-    }
+    // EVERY LAUNCH. The guest reads rexnet.toml from under game_data_root and nothing else
+    // puts one there; while this ran only under the AppImage and Flatpak packagings (since
+    // removed), the zip package and the dev tree booted without it and XNetStartup logged
+    // "no rexnet.toml found for this title" on every run.
+    RefiiEnsureRuntimeDirectories(paths);
   }
 };

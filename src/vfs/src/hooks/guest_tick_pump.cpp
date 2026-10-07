@@ -819,8 +819,8 @@ constexpr const char* kActionCoopHeroWearPrefix = "CoopHeroWear:";
 /// carries, equips and replicates them itself.
 constexpr const char* kActionCoopHeroWeaponsPrefix = "CoopHeroWeapons:";
 
-/// "CoopHeroGive:<1|2>:<hex>:<count>,..." — records to put in a player's inventory, one chunk.
-/// Remembered per player and given once per (entity, chunk set).
+/// "CoopHeroGive:<1|2>:<hex>:<count>,..." — records to put in a player's inventory, the WHOLE
+/// set in one action. Remembered per player and given once per (entity, set).
 constexpr const char* kActionCoopHeroGivePrefix = "CoopHeroGive:";
 
 /// "ReceiveItemsAction:<code>" — one press on the received-item card, through its handler's
@@ -3119,6 +3119,21 @@ uint32_t FirstPlayer(uint8_t* base) {
   return one != 0u ? one : PlayerWithId(base, 2u);
 }
 
+/// The player THIS machine's pad drives — the guest's own rule in `sub_8240B2A0` (TU1
+/// `sub_826B83D0`): id 1 when the net context's bytes +52 and +53 are both set (host, and solo
+/// reads as host), else id 2 (a client). The host-owned menus — spells, blade, expression
+/// wheel — act for this player: on a joiner `FirstPlayer` is the sync's copy of the HOST's
+/// hero, so the spells menu opened for player one there and the joiner's own never drew.
+uint32_t LocalPlayer(uint8_t* base) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t net = plausible(game) ? LoadGuestU32(base, game + 140u) : 0u;
+  const bool both = plausible(net) && base[net + 52u] != 0u && base[net + 53u] != 0u;
+  const uint32_t player = PlayerWithId(base, both || !plausible(net) ? 1u : 2u);
+  return player != 0u ? player : FirstPlayer(base);
+}
+
 /// Is player two standing in their own hero's body rather than the pickbox henchman?
 ///
 /// A BIT, NOT A COMMAND: nothing applies it here. `coop_player_hooks.cpp` overrides
@@ -3376,8 +3391,8 @@ bool DispatchCoopHeroWeapons(const std::string& text) {
   return true;
 }
 
-/// See kActionCoopHeroGivePrefix. A chunk REPLACES the player's set only when its text differs,
-/// so restatements are free; the give itself is latched on the assembled set.
+/// See kActionCoopHeroGivePrefix. The action REPLACES the player's set — which is why it must
+/// carry the whole inventory: two chunks in one tick left only the second one to give.
 bool DispatchCoopHeroGive(const std::string& text) {
   const std::size_t colon = text.find(':');
   if (colon == std::string::npos) {
@@ -3677,7 +3692,7 @@ extern uint32_t g_coop_face_record;
 
 /// Every per-body latch, dropped together when the peer goes: a re-joined player can land on a
 /// RECYCLED entity address, and a latch that remembered the old body would skip the new one.
-extern std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_held_attached;
+extern std::map<uint32_t, std::pair<uint64_t, uint64_t>> g_coop_held_attached;
 
 void CoopResetLatches() {
   g_coop_held_attached.clear();
@@ -4102,11 +4117,12 @@ void ApplyEquip(PPCContext& ctx, uint8_t* base, int player, uint32_t entity, uin
               LoadGuestU32(base, weapons + 88u));
 }
 
-/// The host's held items per player, as net ids: [player-1][0] melee, [1] ranged.
-uint32_t g_coop_held[2][2] = {{0u, 0u}, {0u, 0u}};
+/// The host's held items per player, as 64-bit net ids (the entity uid, high word `+0x14`,
+/// low word `+0x18`): [player-1][0] melee, [1] ranged.
+uint64_t g_coop_held[2][2] = {{0u, 0u}, {0u, 0u}};
 
 /// Body → the (melee, ranged) net ids it was last attached with.
-std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_held_attached;
+std::map<uint32_t, std::pair<uint64_t, uint64_t>> g_coop_held_attached;
 
 /// See kActionCoopHeroHeldPrefix — stores; the tick attaches.
 bool DispatchCoopHeroHeld(const std::string& text) {
@@ -4123,24 +4139,43 @@ bool DispatchCoopHeroHeld(const std::string& text) {
   const std::string pair = text.substr(colon + 1u);
   const std::size_t comma = pair.find(',');
   g_coop_held[player - 1][0] =
-      static_cast<uint32_t>(std::strtoul(pair.substr(0, comma).c_str(), nullptr, 16));
+      static_cast<uint64_t>(std::strtoull(pair.substr(0, comma).c_str(), nullptr, 16));
   g_coop_held[player - 1][1] = comma == std::string::npos
       ? 0u
-      : static_cast<uint32_t>(std::strtoul(pair.substr(comma + 1u).c_str(), nullptr, 16));
+      : static_cast<uint64_t>(std::strtoull(pair.substr(comma + 1u).c_str(), nullptr, 16));
   return true;
 }
 
-/// On a client: attach the host's replicated weapon entities by net id — the guest's own
-/// client branch of `sub_82315AD0`: `sub_82334A60(manager, netId)` resolves the replica, the
-/// slot is released, the replica attached and recorded. Retried each tick until both replicas
-/// exist, then once per (body, pair).
+/// On a client: the host's replicated weapon entities, by net id, put on the body SILENTLY when
+/// the guest's own attach did not land.
+///
+/// THE GUEST'S ATTACH RACES ITS OWN CREATE. The host's EquipRecord ends in `sub_824FB5D8`
+/// (attach to slot), which on an authoritative holder sends a held-items message of type 1
+/// (0x824fcb10); the client's handler `sub_824FEC48` resolves the replica with
+/// `sub_82334A60(netmgr, netId)` and attaches it — but only an ACTIVE item (`+144 & 0x40`,
+/// 0x824fb610), and a replica spawned by the create message just before it is not yet active
+/// (`sub_8238B860` skips activation on a client), so the attach is dropped on the floor and
+/// nothing retries it. Player one's weapons land because they were active long before the
+/// join sync restated them; player two's are made at the moment they are equipped (run
+/// 2026-10-07 20:31: both replicas present, "NOT on the body yet", for the whole session).
+///
+/// NEVER ATTACH WITH AUTHORITY FROM HERE. Both machines are authoritative for player two's
+/// body (`sub_82214AF8`: the host because it is not locally controlled there, the client
+/// because it is), so an attach made here would be sent to the host, whose `sub_824FB5D8`
+/// finds the slot occupied (`sub_824F9AC8`) and RELEASES AND DESTROYS the occupant
+/// (`sub_824FDB70`, 0x824fb878) — the very item — before re-attaching it; an earlier version
+/// of this routine that released and attached with authority bounced one weapon off and the
+/// other on every few seconds (run 19:21). The send is gated on the holder's CECNetwork
+/// byte `+104` ("locally controlled", read by `sub_82214AF8` at 0x82214b78), so that byte is
+/// cleared for the one call and restored: the attachment graph is updated here, nothing
+/// crosses the wire, and the host keeps its own attachment, which it already has.
 void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
   if (entity == 0u) {
     return;
   }
 
-  const uint32_t melee_net = g_coop_held[player - 1][0];
-  const uint32_t ranged_net = g_coop_held[player - 1][1];
+  const uint64_t melee_net = g_coop_held[player - 1][0];
+  const uint64_t ranged_net = g_coop_held[player - 1][1];
   if (melee_net == 0u && ranged_net == 0u) {
     return;
   }
@@ -4158,20 +4193,33 @@ void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
   }
 
   const uint32_t frame = (ctx.r1.u32 - 0x400u) & ~0xFu;
-  const auto call = [&](PPCFunc* fn, uint32_t r3, uint32_t r4 = 0u, uint32_t r5 = 0u) -> uint32_t {
+  const auto call = [&](PPCFunc* fn, uint32_t r3, uint64_t r4 = 0u, uint32_t r5 = 0u) -> uint32_t {
     PPCContext work = ctx;
     work.r1.u32 = frame;
     work.r3.u32 = r3;
-    work.r4.u32 = r4;
+    work.r4.u64 = r4;
     work.r5.u32 = r5;
     fn(work, base);
     return work.r3.u32;
   };
 
+  // What the body holds: component 24 entries of 12 bytes at `+16..+20`, holder at entry+8,
+  // item = `*holder` (`sub_824FB4E8`).
+  const auto held_here = [&](uint32_t item) -> bool {
+    const uint32_t begin = LoadGuestU32(base, held + 16u);
+    const uint32_t end = LoadGuestU32(base, held + 20u);
+    if (!LooksLikeGuestPointer(begin) || end < begin || (end - begin) > 12u * 64u) return false;
+    for (uint32_t at = begin; at + 12u <= end; at += 12u) {
+      const uint32_t holder = LoadGuestU32(base, at + 8u);
+      if (LooksLikeGuestPointer(holder) && LoadGuestU32(base, holder) == item) return true;
+    }
+    return false;
+  };
+
   std::string report;
   char step[160];
   bool complete = true;
-  for (uint32_t net : {melee_net, ranged_net}) {
+  for (uint64_t net : {melee_net, ranged_net}) {
     if (net == 0u) {
       continue;
     }
@@ -4183,35 +4231,46 @@ void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
     }
 
     const uint32_t record = LoadGuestU32(base, item + 28u);
+    if (held_here(item)) {
+      std::snprintf(step, sizeof(step), " net %016llX: replica 0x%08X (record %08X) on the body;",
+                    static_cast<unsigned long long>(net), item, record);
+      report += step;
+      continue;
+    }
+
     const uint32_t slot = call(rex_CECWeaponSet_GetSlotNameForRecord, weapons, record);
     const uint32_t slot_block = slot != 0u ? LoadGuestU32(base, slot) : 0u;
     if (slot_block == 0u || LoadGuestU32(base, slot_block + 4u) == 0u) {
-      std::snprintf(step, sizeof(step), " net %08X: record %08X has no slot name;", net, record);
+      std::snprintf(step, sizeof(step), " net %016llX: record %08X has no slot name;",
+                    static_cast<unsigned long long>(net), record);
       report += step;
       complete = false;
       continue;
     }
 
-    const uint32_t old = call(rex_CECHeldItems_ReleaseSlot, held, slot);
-    if (old != 0u && old != item && LooksLikeGuestPointer(old) &&
-        (LoadGuestU8(base, old + 144u) & 0x40u) != 0u) {
-      call(rex_lhEntity_Destroy, old);
-    }
-
+    // Silently: the holder is not "locally controlled" for the length of the call.
+    const uint32_t network = EntityComponent(base, entity, 91u);
+    const uint8_t controlled = network != 0u ? LoadGuestU8(base, network + 104u) : 0u;
+    if (network != 0u) base[network + 104u] = 0u;
     call(rex_CECHeldItems_AttachItemToSlot, held, slot, item);
-    call(rex_CECWeaponSet_RecordDrawnItem, weapons, item);
-    call(rex_CECWeaponSet_PlayWeaponDrawEffect, weapons, item);
-    std::snprintf(step, sizeof(step), " net %08X: replica 0x%08X (record %08X) attached;", net,
-                  item, record);
+    if (network != 0u) base[network + 104u] = controlled;
+
+    const bool attached = held_here(item);
+    if (!attached) {
+      complete = false;
+    }
+    std::snprintf(step, sizeof(step), " net %016llX: replica 0x%08X (record %08X) %s;",
+                  static_cast<unsigned long long>(net), item, record,
+                  attached ? "attached here, silently" : "attach REFUSED");
     report += step;
   }
 
-  static std::map<uint32_t, std::pair<uint32_t, uint32_t>> waited;
+  static std::map<uint32_t, std::pair<uint64_t, uint64_t>> waited;
   if (!complete) {
     if (waited[entity] != std::make_pair(melee_net, ranged_net)) {
       waited[entity] = std::make_pair(melee_net, ranged_net);
       REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}: waiting for the "
-                  "host's replicas (melee net {:08X}, ranged net {:08X}){}",
+                  "host's replicas (melee net {:016X}, ranged net {:016X}){}",
                   player, entity, melee_net, ranged_net, report);
     }
     return;
@@ -4219,7 +4278,7 @@ void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
 
   g_coop_held_attached[entity] = std::make_pair(melee_net, ranged_net);
   REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}:{} weapon set 0x{:08X} "
-              "now holds melee 0x{:08X}, ranged 0x{:08X}",
+              "holds melee 0x{:08X}, ranged 0x{:08X}",
               player, entity, report, weapons, LoadGuestU32(base, weapons + 84u),
               LoadGuestU32(base, weapons + 88u));
 }
@@ -4424,7 +4483,7 @@ bool DispatchQuickWheel(PPCContext& ctx, uint8_t* base, const std::string& verb)
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
   const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
   const uint32_t wheel = plausible(hud) ? LoadGuestU32(base, hud + 60u) : 0u;
-  const uint32_t player = FirstPlayer(base);
+  const uint32_t player = LocalPlayer(base);
   if (!plausible(quick) || !plausible(wheel) || player == 0u) {
     REXLOG_INFO("Refii guest-tick pump: QuickWheel:{} with no quick menu / player — dropped", verb);
     return true;
@@ -4565,7 +4624,7 @@ bool DispatchSpellsMenu(PPCContext& ctx, uint8_t* base, const std::string& verb)
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   const uint32_t gui = LoadGuestU32(base, kGuiObject);
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
-  const uint32_t player = FirstPlayer(base);
+  const uint32_t player = LocalPlayer(base);
   if (!plausible(quick) || player == 0u) {
     REXLOG_INFO("Refii guest-tick pump: SpellsMenu:{} with no quick menu / player — dropped",
                 verb);
@@ -4683,7 +4742,7 @@ bool DispatchSpellBlade(PPCContext& ctx, uint8_t* base, const std::string& verb)
   const uint32_t gui = LoadGuestU32(base, kGuiObject);
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
   const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
-  const uint32_t player = FirstPlayer(base);
+  const uint32_t player = LocalPlayer(base);
 
   // SILENT REFUSALS THROUGHOUT: `stick` is posted every frame a trigger is held, so a log line
   // on the ordinary "nothing to do" answer would bury the run.
@@ -6350,6 +6409,32 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
 void SamplePauseTabs(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kFirstTab = 2u;
   constexpr uint32_t kLastTab = 8u;
+
+  // THE PREDICATE'S OWN PRECONDITION, checked here because we call it from outside the
+  // game's flow. `sub_8240B2A0` (TU1 `sub_826B83D0`) picks the local player from the player
+  // table -- id 1 when the net context's bytes +52 and +53 are both set, else id 2 -- takes
+  // that player's entity handle at +12, and reads a flag byte at entity+144 with no null
+  // check. The guest only ever runs it from pause-tab navigation, when that entity exists.
+  // We run it every eighth GUI tick, and on a JOINER in the moment between the session
+  // forming and the player's entity existing it read 0+144: the co-op CTD of 2026-10-07,
+  // "read of guest 0x00000090" in rex_lhGuiPauseMenu_IsTabAvailable. Skipped until the
+  // entity is there; the previous mask stands.
+  {
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+    const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+    const uint32_t net = plausible(game) ? LoadGuestU32(base, game + 140u) : 0u;
+    if (!plausible(net)) {
+      return;
+    }
+    const bool both = base[net + 52u] != 0u && base[net + 53u] != 0u;
+    const uint32_t player = PlayerWithId(base, both ? 1u : 2u);
+    const uint32_t block = plausible(player) ? LoadGuestU32(base, player + 12u + 4u) : 0u;
+    const uint32_t entity = plausible(block) ? LoadGuestU32(base, block) : 0u;
+    if (!plausible(entity)) {
+      return;
+    }
+  }
 
   const PPCContext saved = ctx;
 

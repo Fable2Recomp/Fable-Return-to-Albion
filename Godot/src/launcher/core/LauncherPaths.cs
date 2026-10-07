@@ -29,44 +29,9 @@ public static class LauncherPaths
     public static string GetBundledLauncherDataDirectory() =>
         Path.Combine(GetLauncherDirectory(), "assets", "launcher");
 
-    public static bool UseLinuxUserDataRoot()
-    {
-        if (!OperatingSystem.IsLinux())
-        {
-            return false;
-        }
-
-        foreach (string variable in new[] { "APPIMAGE", "APPDIR", "FLATPAK_ID" })
-        {
-            string? value = Environment.GetEnvironmentVariable(variable);
-            if (!string.IsNullOrEmpty(value))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    public static string GetRuntimeDataRootDirectory()
-    {
-        if (OperatingSystem.IsLinux() && UseLinuxUserDataRoot())
-        {
-            string? xdgDataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
-            if (!string.IsNullOrEmpty(xdgDataHome))
-            {
-                return Normalize(Path.Combine(xdgDataHome!, "refii"));
-            }
-
-            string? home = Environment.GetEnvironmentVariable("HOME");
-            if (!string.IsNullOrEmpty(home))
-            {
-                return Normalize(Path.Combine(home!, ".local", "share", "refii"));
-            }
-        }
-
-        return GetLauncherDirectory();
-    }
+    /// <summary>The runtime data lives beside the app on every platform; the XDG data root
+    /// that the AppImage and Flatpak packagings used is gone with them.</summary>
+    public static string GetRuntimeDataRootDirectory() => GetLauncherDirectory();
 
     public static string GetLauncherDataDirectory() =>
         Path.Combine(GetRuntimeDataRootDirectory(), "assets", "launcher");

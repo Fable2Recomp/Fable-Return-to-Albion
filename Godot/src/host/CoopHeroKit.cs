@@ -122,9 +122,13 @@ public static class CoopHeroKit
 	/// </summary>
 	/// <param name="appearanceOnly">
 	/// Keep the standing kit's stats (money, experience, ranks, morality…) and take only what the
-	/// body shows — outfit, weapons, inventory, looks. The joiner's copy of its own hero is not
-	/// the authority for its stats once the host's world owns it, and its money read there came
-	/// back as 32768.
+	/// body shows and carries — outfit, weapons, inventory, looks. The joiner's copy of its own
+	/// hero is not the authority for its stats once the host's world owns it, and its money read
+	/// there came back as 32768. The weapons and the inventory ARE taken live: a change of sword
+	/// or coat on the joiner is stated here or nowhere, and the host's copy only ever re-equips
+	/// from this kit. An empty weapon slot is never taken — the joiner's own guest drops its
+	/// weapons on a client until the host's replicas are attached, and a kit sampled in that gap
+	/// would unarm player two on the host.
 	/// </param>
 	public static void Sample(bool appearanceOnly = false)
 	{
@@ -220,10 +224,11 @@ public static class CoopHeroKit
 			Will: keep ? before.Will : vitals.Will,
 			AbilityLevels: keep ? before.AbilityLevels : abilities,
 			Worn: hashes,
-			// Appearance only means the outfit; the weapons and the inventory stay the record's.
-			Melee: keep ? before.Melee : melee,
-			Ranged: keep ? before.Ranged : ranged,
-			Inventory: keep ? before.Inventory : inventory,
+			// Appearance is the outfit, the weapons and the inventory; an empty slot keeps the
+			// record's weapon (see the parameter note).
+			Melee: keep && meleeId == 0u ? before.Melee : melee,
+			Ranged: keep && rangedId == 0u ? before.Ranged : ranged,
+			Inventory: inventory,
 			Name: LocalName,
 			Money: keep ? before.Money : vitals.Gold,
 			Experience: keep ? before.Experience : pools,
@@ -232,8 +237,8 @@ public static class CoopHeroKit
 			Fat: keep ? before.Fat : looks.Fat,
 			Height: keep ? before.Height : looks.Height,
 			Tan: keep ? before.Tan : looks.Tan,
-			MeleeId: keep ? before.MeleeId : meleeId,
-			RangedId: keep ? before.RangedId : rangedId);
+			MeleeId: keep && meleeId == 0u ? before.MeleeId : meleeId,
+			RangedId: keep && rangedId == 0u ? before.RangedId : rangedId);
 	}
 
 	/// <summary>
@@ -679,13 +684,17 @@ public static class CoopHeroKit
 		return true;
 	}
 
-	/// <summary>The inventory as the pump's <c>CoopHeroGive:</c> wants it — one chunk per string.</summary>
-	public static List<string> GiveLists(in Kit kit)
+	/// <summary>
+	/// The inventory as the pump's <c>CoopHeroGive:</c> wants it: ONE list, the whole set. The
+	/// action is in-process and uncapped; the wire's chunks are <see cref="EncodeInventory"/>'s.
+	/// Two give actions in one tick each REPLACED the pump's set, so only the last chunk was
+	/// ever given and player two's ranged weapon never reached their inventory on the host.
+	/// </summary>
+	public static string? GiveList(in Kit kit)
 	{
-		var lists = new List<string>();
 		if (kit.Inventory is null)
 		{
-			return lists;
+			return null;
 		}
 
 		// THE DRAWN WEAPONS TOO. An equipped weapon is a HELD ITEM ENTITY, not an inventory
@@ -702,25 +711,24 @@ public static class CoopHeroKit
 			}
 		}
 
-		for (int from = 0; from < records.Count; from += InventoryChunk)
+		if (records.Count == 0)
 		{
-			var text = new StringBuilder();
-			int to = Math.Min(records.Count, from + InventoryChunk);
-			for (int k = from; k < to; ++k)
-			{
-				if (k != from)
-				{
-					text.Append(',');
-				}
-
-				text.Append(records[k].Record.ToString("X8", CultureInfo.InvariantCulture))
-					.Append(':').Append(records[k].Count.ToString(CultureInfo.InvariantCulture));
-			}
-
-			lists.Add(text.ToString());
+			return null;
 		}
 
-		return lists;
+		var text = new StringBuilder();
+		for (int k = 0; k < records.Count; ++k)
+		{
+			if (k != 0)
+			{
+				text.Append(',');
+			}
+
+			text.Append(records[k].Record.ToString("X8", CultureInfo.InvariantCulture))
+				.Append(':').Append(records[k].Count.ToString(CultureInfo.InvariantCulture));
+		}
+
+		return text.ToString();
 	}
 
 	/// <summary>

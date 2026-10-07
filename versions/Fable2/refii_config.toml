@@ -11190,6 +11190,10 @@
 0x8261C390 = { name = "rex_CECInventory_InstantiateHeldRecord" }
 0x82500DA0 = { name = "rex_CECHeldItems_AttachItemToSlot" }
 0x825022E8 = { name = "rex_CECHeldItems_ReleaseSlot" }
+0x82504410 = { name = "rex_CECHeldItems_OnNetMessage" }
+0x822BC788 = { name = "rex_CECNetwork_SendTransform" }
+0x8238A2D8 = { name = "rex_CECNetwork_PushReceivedTransform" }
+0x8238A628 = { name = "rex_CECNetwork_ApplyReplicaTarget" }
 0x82608518 = { name = "rex_lhRegionManager_FindRegionOwningLevel" }
 0x824028C8 = { name = "rex_lhGuiReceiveItemsScreen_OnScreenAction" }
 0x8242C970 = { name = "rex_CECSpellManager_SetSpellSlot" }
