@@ -371,6 +371,10 @@ void CoopRepairNetworkSlot(uint8_t* base);
 void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity);
 bool EquipRecord(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t id, std::string& report);
 void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity);
+void CoopKeepHostWeapons(PPCContext& ctx, uint8_t* base, uint32_t entity);
+bool ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& text);
+bool ApplyFace(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t record);
+void CoopResetSession();
 
 // The queue and the counters live in src/core/guest_tick_pump_state.cpp, which links into
 // refii_vfs: the HOST posts and this side drains, so state beside the pump would be a copy the
@@ -775,53 +779,29 @@ constexpr const char* kActionRegisterPlayer = "RegisterPlayer";
 /// the shipped game never spawns two.
 constexpr const char* kActionCoopHeroBodyPrefix = "CoopHeroBody:";
 
-/// "CoopHeroSkills:<hex>,<hex>,..." — player two's ability ranks, ids 0..14 in order (0 unused).
-constexpr const char* kActionCoopHeroSkillsPrefix = "CoopHeroSkills:";
-
-/// "CoopHeroBuild:<strength>,<skill>,<will>,<fat>,<height>,<tan>" — player two's BODY SHAPE.
-constexpr const char* kActionCoopHeroBuildPrefix = "CoopHeroBuild:";
-
-/// "CoopHeroStats:<money>,<gender>,<morality>,<purity>,<renown>,<15 ranks>,<4 exp>,<4 total>" —
-/// a HeroSave block, applied the way `sub_8243AEF8` applies one it just loaded.
-constexpr const char* kActionCoopHeroStatsPrefix = "CoopHeroStats:";
-
-/// "CoopHeroFace:<hex record id>" — player two's character-creation record, on component 17.
-constexpr const char* kActionCoopHeroFacePrefix = "CoopHeroFace:";
-
-/// "CoopHeroEquip:<1|2>:<meleeHex>,<rangedHex>" — draw two weapons the player already OWNS.
-/// `sub_824ABA28(comp28, recordId, 0)` is the guest's own equip-by-record (the handler behind
-/// the weapons book's own row, `sub_826BA618`): it instantiates the record held in component 13
-/// (`sub_824F26A8(comp13, id, "Weapon")`), attaches it to the held-item slots
-/// (`sub_824FB5D8(comp24, slotName, item)`), records it in the weapon set (`sub_824AD108`) and
-/// plays the draw effect. Verified in the decompile (0x824ABA28): with the third argument 0 and
-/// the entity not mid-action it takes the direct path; the replication inside gates on
-/// `sub_82214AF8(comp91)`, so on the joiner's copy of player one it stays local — which is the
-/// copy the sync leaves armed by name only. Latched per (entity, pair): restated freely.
-constexpr const char* kActionCoopHeroEquipPrefix = "CoopHeroEquip:";
+/// "HeroState:<1|2>:<base64>" — one player's WHOLE hero as the HeroState binary v1
+/// (little-endian, magic "HST1"), standard base64 with padding, in ONE action. The pump
+/// decodes it (DispatchHeroState) into the per-player stores the apply steps read; the version
+/// is the generation CoopApplyHero latches per body, so a changed state on the joiner is a new
+/// version and re-applies, while a restated identical one does nothing. Layout, in order:
+///   u32 magic 'H','S','T','1'; u32 version; u8 flags (bit0 female, bit1 hasLooks, bit2 known);
+///   u8 nameLen, nameLen bytes of UTF-8 (<= 48); u32 face (0 none); f32 fat, height, tan;
+///   f32 strength, skill, will; f32 morality, purity; i32 renown, money;
+///   u8 rankCount, i32[rankCount] ability ranks, ids 0..14 in order; u8 expCount, f32[expCount];
+///   u8 totalCount, f32[totalCount]; u32 melee, u32 ranged (drawn weapon records, 0 none);
+///   u16 wornCount, u32[wornCount] worn def hashes; u16 invCount, (u32 record, u16 count)[].
+/// A malformed payload (bad magic, short buffer, a count past the end, version 0) is logged
+/// once and ignored; the stores keep the last good version.
+constexpr const char* kActionHeroStatePrefix = "HeroState:";
 
 /// `CoopHeroHeld:<1|2>:<meleeNetId>,<rangedNetId>` — net ids of the item entities the host's
 /// player holds; a client attaches the replicas (CoopAttachHeld). Stored; the tick attaches.
 constexpr const char* kActionCoopHeroHeldPrefix = "CoopHeroHeld:";
 
-/// "CoopHeroApply:<1|2>:<generation>" — apply the slot's stored hero record to its body, ONCE per
-/// (body, generation), in the verified order: give, wear, equip, then (player two) stats, skills,
-/// build, face. The field actions only STORE from here on; this is the one apply. The generation
-/// is the shell's hash of the whole record, so a changed outfit or weapon on the joiner is a new
-/// generation and re-applies, while a restated identical record does nothing.
-constexpr const char* kActionCoopHeroApplyPrefix = "CoopHeroApply:";
-
-/// "CoopHeroWear:<1|2>:<hex>,<hex>,..." — the GDB def hashes a player's hero wears. Remembered,
-/// not applied on receipt: the body is dressed whenever the guest (re)builds it.
-constexpr const char* kActionCoopHeroWearPrefix = "CoopHeroWear:";
-
-/// "CoopHeroWeapons:<meleeName>,<rangedName>" — the def names player two's own hero equips.
-/// Answered from the guest's two weapon name tables by the hooks; the guest then creates,
-/// carries, equips and replicates them itself.
-constexpr const char* kActionCoopHeroWeaponsPrefix = "CoopHeroWeapons:";
-
-/// "CoopHeroGive:<1|2>:<hex>:<count>,..." — records to put in a player's inventory, the WHOLE
-/// set in one action. Remembered per player and given once per (entity, set).
-constexpr const char* kActionCoopHeroGivePrefix = "CoopHeroGive:";
+/// "CoopHeroReset" — no payload: drop every stored hero state, outfit, inventory, held pair,
+/// the own-hero bit, every per-body latch and the applied versions. Godot posts it on peer
+/// loss and on a role change; the pump also runs it on the session's live→not-live edge.
+constexpr const char* kActionCoopHeroReset = "CoopHeroReset";
 
 /// "ReceiveItemsAction:<code>" — one press on the received-item card, through its handler's
 /// own screen-input method: 36 done, 39 flip, 75 close.
@@ -3125,12 +3105,9 @@ uint32_t FirstPlayer(uint8_t* base) {
 /// wheel — act for this player: on a joiner `FirstPlayer` is the sync's copy of the HOST's
 /// hero, so the spells menu opened for player one there and the joiner's own never drew.
 uint32_t LocalPlayer(uint8_t* base) {
-  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
-  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
-  const uint32_t net = plausible(game) ? LoadGuestU32(base, game + 140u) : 0u;
-  const bool both = plausible(net) && base[net + 52u] != 0u && base[net + 53u] != 0u;
-  const uint32_t player = PlayerWithId(base, both || !plausible(net) ? 1u : 2u);
+  const uint32_t net = CoopNetworkManager(base);
+  const bool both = net != 0u && base[net + 52u] != 0u && base[net + 53u] != 0u;
+  const uint32_t player = PlayerWithId(base, both || net == 0u ? 1u : 2u);
   return player != 0u ? player : FirstPlayer(base);
 }
 
@@ -3225,43 +3202,45 @@ uint32_t CoopPlayerTwoEntity(uint8_t* base) {
   return LooksLikeGuestPointer(entity) ? entity : 0u;
 }
 
-/// See kActionCoopHeroSkillsPrefix.
-///
-/// IDEMPOTENT AND RE-APPLIED, not fired once. Re-typing player two's entity rebuilds its
-/// components from the GDB, so ranks written before a re-skin are gone after it — and the co-op
-/// screen re-skins every frame. The host therefore restates this, and the pass writes only the
-/// ids that actually differ, so it settles to a no-op once the body has stopped changing.
-/// The stored hero record per slot — what the field actions carry, applied by CoopApplyHero.
+/// The stored hero record per slot — what DispatchHeroState fills, applied by CoopApplyHero.
+/// The text fields keep the shapes the apply steps parse (see DispatchHeroState for each).
 struct CoopHeroRecord {
-  uint32_t generation = 0u;   // the shell's hash of the whole record; 0 = nothing to apply
-  uint32_t melee = 0u;        // weapon record ids to draw (CoopHeroEquip)
+  uint32_t generation = 0u;   // the HeroState version; 0 = nothing to apply
+  uint32_t melee = 0u;        // weapon record ids to draw (ApplyEquip)
   uint32_t ranged = 0u;
-  std::string stats;          // CoopHeroStats text (28 fields), player two only
-  std::string skills;         // CoopHeroSkills text, player two only
-  std::string build;          // CoopHeroBuild text, player two only
-  uint32_t face = 0u;         // CoopHeroFace record, player two only
+  std::string stats;          // HeroSave block text (28 fields), player two only
+  std::string skills;         // ability ranks text, player two only
+  std::string build;          // body-shape text, player two only
+  uint32_t face = 0u;         // character-creation record, player two only
+  std::string name;           // display name, logged only
 };
 CoopHeroRecord g_coop_record[2];
 std::map<uint32_t, std::string> g_coop_skills_applied;  // body -> ranks last applied
 std::map<uint32_t, std::string> g_coop_build_applied;   // body -> morphs last applied
 
-bool DispatchCoopHeroSkills(const std::string& levels) {
-  g_coop_record[1].skills = levels;
-  return true;
-}
-
-void ApplySkills(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& levels) {
+/// The ability ranks — CoopHeroRecord::skills, hex ids 0..14 in order (0 unused).
+///
+/// IDEMPOTENT AND RE-APPLIED, not fired once. Re-typing player two's entity rebuilds its
+/// components from the GDB, so ranks written before a re-skin are gone after it — and the co-op
+/// screen re-skins every frame. The tick therefore restates this, and the pass writes only the
+/// ids that actually differ, so it settles to a no-op once the body has stopped changing.
+/// True when applied or nothing to apply; false when the body has no stats component yet.
+bool ApplySkills(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& levels) {
   constexpr uint32_t kStatsComponent = 57u;
   constexpr uint32_t kFirstAbility = 1u;
   constexpr uint32_t kLastAbility = 14u;
 
-  const uint32_t stats = entity != 0u ? EntityComponent(base, entity, kStatsComponent) : 0u;
-  if (stats == 0u || levels.empty()) {
-    return;
+  if (entity == 0u || levels.empty()) {
+    return true;
+  }
+
+  const uint32_t stats = EntityComponent(base, entity, kStatsComponent);
+  if (stats == 0u) {
+    return false;
   }
 
   if (g_coop_skills_applied[entity] == levels) {
-    return;
+    return true;
   }
   g_coop_skills_applied[entity] = levels;
 
@@ -3296,9 +3275,11 @@ void ApplySkills(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::str
     REXLOG_INFO("Refii guest-tick pump: CoopHeroSkills — {} rank(s) applied to player two "
                 "(entity 0x{:08X}, stats 0x{:08X})", written, entity, stats);
   }
+
+  return true;
 }
 
-/// See kActionCoopHeroBuildPrefix.
+/// The body shape — CoopHeroRecord::build, "strength,skill,will,fat,height,tan" off the HeroState.
 ///
 /// The three body-morph percentages live on the SAME component as the ability ranks — CECStats,
 /// id 57 — at `+0x40` strength, `+0x44` skill, `+0x48` will. Those offsets are not taken on
@@ -3309,25 +3290,25 @@ void ApplySkills(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::str
 /// gossip events ("ModifyFat") — a character being applied is not a character being changed. The
 /// flush afterwards is the guest's, so the fan-out to the morph and clothing components is its
 /// own. Values are clamped here because a direct write skips the setters' clamp.
-bool DispatchCoopHeroBuild(const std::string& build) {
-  g_coop_record[1].build = build;
-  return true;
-}
-
-void ApplyBuild(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& build) {
+/// True when applied or nothing to apply; false when the body has no stats component yet.
+bool ApplyBuild(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& build) {
   constexpr uint32_t kStatsComponent = 57u;
   // strength, skill, will (vitals reader, ABI 78), then fat `+56` (`sub_824D7868`), height
   // `+60` (`sub_824D7A68`, the one -1..1 scalar) and tan `+52` (`sub_824D77F8`).
   constexpr uint32_t kSlots[] = {0x40u, 0x44u, 0x48u, 0x38u, 0x3Cu, 0x34u};
   constexpr float kLow[] = {0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f};
 
-  const uint32_t stats = entity != 0u ? EntityComponent(base, entity, kStatsComponent) : 0u;
-  if (stats == 0u || build.empty()) {
-    return;
+  if (entity == 0u || build.empty()) {
+    return true;
+  }
+
+  const uint32_t stats = EntityComponent(base, entity, kStatsComponent);
+  if (stats == 0u) {
+    return false;
   }
 
   if (g_coop_build_applied[entity] == build) {
-    return;
+    return true;
   }
   g_coop_build_applied[entity] = build;
 
@@ -3363,6 +3344,8 @@ void ApplyBuild(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::stri
     REXLOG_INFO("Refii guest-tick pump: CoopHeroBuild — {} morph(s) applied to player two "
                 "(entity 0x{:08X}, stats 0x{:08X})", written, entity, stats);
   }
+
+  return true;
 }
 
 bool IsCoopJoiner(uint8_t* base);
@@ -3376,69 +3359,42 @@ std::vector<uint32_t> g_coop_wear[3];
 uint32_t g_coop_dressed_entity[3] = {0u, 0u, 0u};
 std::string g_coop_dressed_set[3];
 
-/// Player two's weapon names, and the inventory chunks per player. See CoopRedressPlayer.
-std::string g_coop_melee_name;
-std::string g_coop_ranged_name;
+/// The inventory per player — (record, count) pairs off the HeroState, the drawn weapons
+/// included — and the entity + set last given for each. See CoopGivePlayer.
 std::vector<std::pair<uint32_t, uint32_t>> g_coop_give[3];
 std::string g_coop_given_set[3];
 uint32_t g_coop_given_entity[3] = {0u, 0u, 0u};
 
-/// See kActionCoopHeroWeaponsPrefix.
-bool DispatchCoopHeroWeapons(const std::string& text) {
-  const std::size_t comma = text.find(',');
-  g_coop_melee_name = comma == std::string::npos ? text : text.substr(0, comma);
-  g_coop_ranged_name = comma == std::string::npos ? std::string() : text.substr(comma + 1u);
-  return true;
-}
 
-/// See kActionCoopHeroGivePrefix. The action REPLACES the player's set — which is why it must
-/// carry the whole inventory: two chunks in one tick left only the second one to give.
-bool DispatchCoopHeroGive(const std::string& text) {
-  const std::size_t colon = text.find(':');
-  if (colon == std::string::npos) {
-    return true;
-  }
-
-  const int player = std::atoi(text.substr(0, colon).c_str());
-  if (player != 1 && player != 2) {
-    return true;
-  }
-
-  std::vector<std::pair<uint32_t, uint32_t>> records;
-  const std::string list = text.substr(colon + 1u);
-  std::size_t at = 0;
-  while (at <= list.size()) {
-    const std::size_t comma = list.find(',', at);
-    const std::string field = list.substr(at, comma == std::string::npos ? comma : comma - at);
-    at = comma == std::string::npos ? list.size() + 1u : comma + 1u;
-    const std::size_t split = field.find(':');
-    if (split == std::string::npos) {
-      continue;
+/// How many of a record the inventory (component 13) holds: the MS-STL list at `inv+16`
+/// (sentinel), item at `node+8`, record at `item+4`, count at `item+12` — the layout the
+/// inventory export walks. An item added by def hash lands here under that hash as its record
+/// (`sub_8261A058` falls through to `sub_8261A508(inv, hash)` for a def with no TableEntry).
+uint32_t HeldCount(uint8_t* base, uint32_t inventory, uint32_t record) {
+  const uint32_t sentinel = LoadGuestU32(base, inventory + 16u);
+  uint32_t node = LooksLikeGuestPointer(sentinel) ? LoadGuestU32(base, sentinel) : 0u;
+  for (uint32_t hops = 0; hops < 4096u && LooksLikeGuestPointer(node) && node != sentinel; ++hops) {
+    const uint32_t item = LoadGuestU32(base, node + 8u);
+    if (LooksLikeGuestPointer(item) && LoadGuestU32(base, item + 4u) == record) {
+      return LoadGuestU32(base, item + 12u);
     }
 
-    const uint32_t record = static_cast<uint32_t>(std::strtoul(field.substr(0, split).c_str(), nullptr, 16));
-    const uint32_t count = static_cast<uint32_t>(std::strtoul(field.substr(split + 1u).c_str(), nullptr, 10));
-    if (record != 0u && count != 0u) {
-      records.emplace_back(record, count);
-    }
+    node = LoadGuestU32(base, node);
   }
 
-  if (player == 2) {
-    g_coop_give[2] = records;  // the preview wears what player two wears
-  }
-  g_coop_give[player - 1] = std::move(records);
-  return true;
+  return 0u;
 }
 
 /// Puts a player's transported inventory into their body's inventory, once per (entity, set).
 /// `sub_824F0820(out, comp13, record, notify)` adds exactly ONE — a held record's count is
 /// bumped by one per call (0x824F08BC) — so a count is that many calls. Skipped for records the
 /// body already holds at that count or more, so a restatement after a partial give completes
-/// it rather than doubling it.
-void CoopGivePlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+/// it rather than doubling it. Returns true when given (or nothing to give); false when the
+/// body has no inventory yet — the caller asks again.
+bool CoopGivePlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
   const int slot = player - 1;
   if (entity == 0u || g_coop_give[slot].empty()) {
-    return;
+    return true;
   }
 
   std::string set;
@@ -3447,39 +3403,23 @@ void CoopGivePlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
   }
 
   if (entity == g_coop_given_entity[slot] && set == g_coop_given_set[slot]) {
-    return;
+    return true;
   }
 
   const uint32_t inventory = EntityComponent(base, entity, 13u);
   if (inventory == 0u) {
-    return;
+    return false;
   }
 
   g_coop_given_entity[slot] = entity;
   g_coop_given_set[slot] = set;
 
-  // What the body already holds: the MS-STL list at `inv+16` (sentinel), item at `node+8`,
-  // record at `item+4`, count at `item+12` — the layout the inventory export walks.
-  const auto held = [&](uint32_t record) -> uint32_t {
-    const uint32_t sentinel = LoadGuestU32(base, inventory + 16u);
-    uint32_t node = LooksLikeGuestPointer(sentinel) ? LoadGuestU32(base, sentinel) : 0u;
-    for (uint32_t hops = 0; hops < 4096u && LooksLikeGuestPointer(node) && node != sentinel; ++hops) {
-      const uint32_t item = LoadGuestU32(base, node + 8u);
-      if (LooksLikeGuestPointer(item) && LoadGuestU32(base, item + 4u) == record) {
-        return LoadGuestU32(base, item + 12u);
-      }
-
-      node = LoadGuestU32(base, node);
-    }
-
-    return 0u;
-  };
-
+  // Scratch above the callee's argument-save area: frame+0x60 and up.
   const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
-  const uint32_t ref = frame + 0x20u;
+  const uint32_t ref = frame + 0x60u;
   uint32_t given = 0u;
   for (const auto& record : g_coop_give[slot]) {
-    const uint32_t have = held(record.first);
+    const uint32_t have = HeldCount(base, inventory, record.first);
     for (uint32_t n = have; n < record.second && n < 999u; ++n) {
       for (uint32_t i = 0; i < 4u; ++i) StoreGuestU32(base, ref + 4u * i, 0u);
 
@@ -3505,46 +3445,17 @@ void CoopGivePlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
 
   REXLOG_INFO("Refii guest-tick pump: CoopGive — player {} 0x{:08X}: {} item(s) added across {} "
               "record(s)", player, entity, given, g_coop_give[slot].size());
-}
-
-/// See kActionCoopHeroWearPrefix. Remembers the set; the redress applies it.
-bool DispatchCoopHeroWear(const std::string& text) {
-  const std::size_t colon = text.find(':');
-  if (colon == std::string::npos) {
-    return true;
-  }
-
-  const int player = std::atoi(text.substr(0, colon).c_str());
-  if (player != 1 && player != 2) {
-    return true;
-  }
-
-  std::vector<uint32_t> hashes;
-  const std::string list = text.substr(colon + 1u);
-  std::size_t at = 0;
-  while (at <= list.size()) {
-    const std::size_t comma = list.find(',', at);
-    const std::string field = list.substr(at, comma == std::string::npos ? comma : comma - at);
-    at = comma == std::string::npos ? list.size() + 1u : comma + 1u;
-    if (!field.empty()) {
-      hashes.push_back(static_cast<uint32_t>(std::strtoul(field.c_str(), nullptr, 16)));
-    }
-  }
-
-  if (player == 2) {
-    g_coop_wear[2] = hashes;
-  }
-  g_coop_wear[player - 1] = std::move(hashes);
   return true;
 }
 
-/// Dresses one player's current body, once per (entity, outfit). With an outfit: give then wear
-/// each hash. Without one: the def's own `InitialItems` then `InitialModifiers`, what a new game
-/// does to player one.
-void CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+/// Dresses one player's current body, once per (entity, outfit): each hash is given only when
+/// the inventory does not already hold it (HeldCount, keyed by the def hash, which is the
+/// record an AddItemByDefHash lands under), and always worn. Returns true when dressed (or no
+/// outfit to dress); false when the body is not dressable yet — the caller asks again.
+bool CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
   const int slot = player - 1;
   if (entity == 0u) {
-    return;
+    return true;
   }
 
   std::string set;
@@ -3553,20 +3464,8 @@ void CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t enti
   }
 
   if (entity == g_coop_dressed_entity[slot] && set == g_coop_dressed_set[slot]) {
-    return;
+    return true;
   }
-
-  const uint32_t inventory = EntityComponent(base, entity, 13u);
-  const uint32_t modifiers = EntityComponent(base, entity, 15u);
-  if (inventory == 0u || modifiers == 0u) {
-    return;  // not a dressable body yet — the next tick asks again
-  }
-
-  g_coop_dressed_entity[slot] = entity;
-  g_coop_dressed_set[slot] = set;
-
-  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
-  const uint32_t ref = frame + 0x20u;
 
   if (g_coop_wear[slot].empty()) {
     // NO OUTFIT, NO DRESS. The def's own `InitialItems`/`InitialModifiers` were tried here and
@@ -3575,23 +3474,46 @@ void CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t enti
     // is the honest state; the latch is left clear so the first named outfit dresses it.
     g_coop_dressed_entity[slot] = 0u;
     g_coop_dressed_set[slot].clear();
-    return;
+    return true;
   }
 
+  const uint32_t inventory = EntityComponent(base, entity, 13u);
+  const uint32_t modifiers = EntityComponent(base, entity, 15u);
+  if (inventory == 0u || modifiers == 0u) {
+    return false;  // not a dressable body yet — the next tick asks again
+  }
+
+  g_coop_dressed_entity[slot] = entity;
+  g_coop_dressed_set[slot] = set;
+
+  // Scratch above the callee's argument-save area: frame+0x60 and up.
+  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t ref = frame + 0x60u;
+
   uint32_t worn = 0u;
+  uint32_t given = 0u;
   for (uint32_t hash : g_coop_wear[slot]) {
-    for (uint32_t i = 0; i < 4u; ++i) StoreGuestU32(base, ref + 4u * i, 0u);
+    if (HeldCount(base, inventory, hash) == 0u) {
+      for (uint32_t i = 0; i < 4u; ++i) StoreGuestU32(base, ref + 4u * i, 0u);
 
-    PPCContext give = ctx;
-    give.r1.u32 = frame;
-    give.r3.u32 = ref;
-    give.r4.u32 = inventory;
-    give.r5.u32 = hash;
-    rex_CECInventory_AddItemByDefHash(give, base);
+      PPCContext give = ctx;
+      give.r1.u32 = frame;
+      give.r3.u32 = ref;
+      give.r4.u32 = inventory;
+      give.r5.u32 = hash;
+      rex_CECInventory_AddItemByDefHash(give, base);
 
-    const uint32_t item = LoadGuestU32(base, ref);
-    if (item == 0u) {
-      continue;
+      const uint32_t item = LoadGuestU32(base, ref);
+      if (item == 0u) {
+        continue;
+      }
+      ++given;
+
+      PPCContext release = ctx;
+      release.r1.u32 = frame;
+      release.r3.u32 = item;
+      release.r4.u32 = ref;
+      rex_lhTrackedObject_RemoveHandleRef(release, base);
     }
 
     PPCContext wear = ctx;
@@ -3600,16 +3522,12 @@ void CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t enti
     wear.r4.u32 = hash;
     rex_CECAppearanceModifiers_WearItemByDefHash(wear, base);
     ++worn;
-
-    PPCContext release = ctx;
-    release.r1.u32 = frame;
-    release.r3.u32 = item;
-    release.r4.u32 = ref;
-    rex_lhTrackedObject_RemoveHandleRef(release, base);
   }
 
   REXLOG_INFO("Refii guest-tick pump: CoopRedress — player {} 0x{:08X} dressed: {} of {} outfit "
-              "item(s) given and worn", player, entity, worn, g_coop_wear[slot].size());
+              "item(s) given and worn ({} newly given)", player, entity, worn,
+              g_coop_wear[slot].size(), given);
+  return true;
 }
 
 /// Both players, whenever a body exists that has not been dressed with the current outfit.
@@ -3656,16 +3574,18 @@ std::pair<uint32_t, uint32_t> CoopMannequin(uint8_t* base) {
 /// the hero mannequin through the overridden name table), and a hero preview is dressed in
 /// player two's outfit like the body itself. Not gated on a peer standing — it is a local
 /// preview entity on a screen the local player is looking at.
+/// The own-hero bit the preview was last respawned for. Cleared with the session.
+bool g_coop_bit_seen = false;
+
 void CoopDressMannequin(PPCContext& ctx, uint8_t* base) {
-  static bool bit_seen = false;
   const bool bit = g_coop_own_hero.load(std::memory_order_relaxed);
   const auto [entity, handler] = CoopMannequin(base);
   if (handler == 0u) {
     return;
   }
 
-  if (bit != bit_seen) {
-    bit_seen = bit;
+  if (bit != g_coop_bit_seen) {
+    g_coop_bit_seen = bit;
     PPCContext work = ctx;
     work.r1.u32 = (ctx.r1.u32 - 0x100u) & ~0xFu;
     work.r3.u32 = handler;
@@ -3686,18 +3606,44 @@ void CoopDressMannequin(PPCContext& ctx, uint8_t* base) {
 // Defined with their owners further down.
 extern std::map<uint32_t, uint32_t> g_coop_applied_generation;
 extern std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_equip_latched;
+extern std::map<uint32_t, std::array<uint32_t, 2>> g_coop_host_weapon;
+extern std::map<uint32_t, uint32_t> g_coop_host_weapon_loose;
 extern uint32_t g_coop_stats_entity;
 extern uint32_t g_coop_face_entity;
 extern uint32_t g_coop_face_record;
+
+extern uint64_t g_coop_held[2][2];
+extern std::string g_coop_stats_set;
+extern std::atomic<uint32_t> g_herostate_applied[2];
+extern uint32_t g_herostate_body[2];
+}  // namespace refii::vfs
+/// The copy the host bridge reads — src/core/guest_tick_pump_state.cpp, linked into refii_vfs;
+/// C linkage because the payload may import only C symbols from a host library.
+extern "C" void refii_bridge_publish_herostate_applied(uint32_t player, uint32_t version);
+namespace refii::vfs {
 
 /// Every per-body latch, dropped together when the peer goes: a re-joined player can land on a
 /// RECYCLED entity address, and a latch that remembered the old body would skip the new one.
 extern std::map<uint32_t, std::pair<uint64_t, uint64_t>> g_coop_held_attached;
 
+/// CoopAttachHeld's pacing, per body: the pair it last reported waiting for, the tick it may
+/// try again, and (pair, silent attach attempts so far).
+std::map<uint32_t, std::pair<uint64_t, uint64_t>> g_coop_held_waited;
+std::map<uint32_t, uint32_t> g_coop_held_next_try;
+std::map<uint32_t, std::pair<std::pair<uint64_t, uint64_t>, uint32_t>> g_coop_held_attempts;
+
+/// Ticks of the pump's co-op pass, the clock CoopAttachHeld paces its retries by.
+uint32_t g_coop_ticks = 0u;
+
 void CoopResetLatches() {
   g_coop_held_attached.clear();
+  g_coop_held_waited.clear();
+  g_coop_held_next_try.clear();
+  g_coop_held_attempts.clear();
   g_coop_applied_generation.clear();
   g_coop_equip_latched.clear();
+  g_coop_host_weapon.clear();
+  g_coop_host_weapon_loose.clear();
   g_coop_skills_applied.clear();
   g_coop_build_applied.clear();
   for (int slot = 0; slot < 3; ++slot) {
@@ -3709,6 +3655,73 @@ void CoopResetLatches() {
   g_coop_stats_entity = 0u;
   g_coop_face_entity = 0u;
   g_coop_face_record = 0u;
+  for (int slot = 0; slot < 2; ++slot) {
+    g_herostate_body[slot] = 0u;
+    g_herostate_applied[slot].store(0u, std::memory_order_relaxed);
+    refii_bridge_publish_herostate_applied(static_cast<uint32_t>(slot) + 1u, 0u);
+  }
+}
+
+/// Every latch keyed on ONE body, dropped when that body is rebuilt in place (a retype keeps
+/// the entity address and replaces its components) or player two changes bodies.
+void CoopForgetBody(uint32_t entity) {
+  if (entity == 0u) {
+    return;
+  }
+
+  g_coop_held_attached.erase(entity);
+  g_coop_held_waited.erase(entity);
+  g_coop_held_next_try.erase(entity);
+  g_coop_held_attempts.erase(entity);
+  g_coop_applied_generation.erase(entity);
+  g_coop_equip_latched.erase(entity);
+  g_coop_host_weapon.erase(entity);
+  g_coop_host_weapon_loose.erase(entity);
+  g_coop_skills_applied.erase(entity);
+  g_coop_build_applied.erase(entity);
+  for (int slot = 0; slot < 3; ++slot) {
+    if (g_coop_dressed_entity[slot] == entity) {
+      g_coop_dressed_entity[slot] = 0u;
+      g_coop_dressed_set[slot].clear();
+    }
+    if (g_coop_given_entity[slot] == entity) {
+      g_coop_given_entity[slot] = 0u;
+      g_coop_given_set[slot].clear();
+    }
+  }
+  if (g_coop_stats_entity == entity) {
+    g_coop_stats_entity = 0u;
+  }
+  if (g_coop_face_entity == entity) {
+    g_coop_face_entity = 0u;
+    g_coop_face_record = 0u;
+  }
+  for (int slot = 0; slot < 2; ++slot) {
+    if (g_herostate_body[slot] == entity) {
+      g_herostate_body[slot] = 0u;
+      g_herostate_applied[slot].store(0u, std::memory_order_relaxed);
+      refii_bridge_publish_herostate_applied(static_cast<uint32_t>(slot) + 1u, 0u);
+    }
+  }
+}
+
+/// See kActionCoopHeroReset: the whole session's hero data and every latch.
+void CoopResetSession() {
+  for (CoopHeroRecord& record : g_coop_record) {
+    record = CoopHeroRecord{};
+  }
+  for (int slot = 0; slot < 3; ++slot) {
+    g_coop_give[slot].clear();
+    g_coop_wear[slot].clear();
+  }
+  for (auto& pair : g_coop_held) {
+    pair[0] = 0u;
+    pair[1] = 0u;
+  }
+  g_coop_own_hero.store(false, std::memory_order_relaxed);
+  g_coop_stats_set.clear();
+  g_coop_bit_seen = false;
+  CoopResetLatches();
 }
 
 /// ANIMATE THE CO-OP PREVIEW. The guest poses a preview entity only from the GUI's Gameface
@@ -3728,7 +3741,10 @@ void CoopResetLatches() {
 /// poses them only from the Gameface render path, so the motion force byte (comp3+132,
 /// `sub_8220D1B8`) is re-set every tick.
 void PosePreviewMannequins(uint8_t* base, uint32_t coop_entity) {
+  // A ring of the entities already reported, overwritten oldest-first: a ninth entity evicts
+  // one rather than logging every tick.
   static uint32_t said[8] = {};
+  static uint32_t said_next = 0u;
   auto pose = [&](uint32_t entity, const char* what) {
     if (!LooksLikeGuestPointer(entity)) return;
     const uint32_t motion = EntityComponent(base, entity, 3u);
@@ -3737,9 +3753,7 @@ void PosePreviewMannequins(uint8_t* base, uint32_t coop_entity) {
     for (uint32_t& seen : said) {
       if (seen == entity) return;
     }
-    for (uint32_t& seen : said) {
-      if (seen == 0u) { seen = entity; break; }
-    }
+    said[said_next++ % 8u] = entity;
     REXLOG_INFO("Refii guest-tick pump: {} preview 0x{:08X} is posed by the simulation "
                 "(force byte comp3+132 re-set each tick)", what, entity);
   };
@@ -3776,7 +3790,7 @@ void CoopRedress(PPCContext& ctx, uint8_t* base) {
   static bool was_live = false;
   const bool live = CoopSessionLive(base);
   if (was_live && !live) {
-    CoopResetLatches();
+    CoopResetSession();
     REXLOG_INFO("Refii guest-tick pump: co-op — the peer is gone; every per-body latch dropped");
   }
   was_live = live;
@@ -3792,9 +3806,23 @@ void CoopRedress(PPCContext& ctx, uint8_t* base) {
   }
 
   if (g_coop_own_hero.load(std::memory_order_relaxed)) {
-    CoopApplyHero(ctx, base, 2, CoopPlayerTwoEntity(base));
+    const uint32_t two = CoopPlayerTwoEntity(base);
+    CoopApplyHero(ctx, base, 2, two);
+
+    // A field restated after the body's apply has landed: each has its own latch, so this
+    // settles to a no-op once the stored text stops changing.
+    const auto applied = g_coop_applied_generation.find(two);
+    if (two != 0u && applied != g_coop_applied_generation.end() && applied->second != 0u) {
+      ApplyStats(ctx, base, two, g_coop_record[1].stats);
+      ApplySkills(ctx, base, two, g_coop_record[1].skills);
+      ApplyBuild(ctx, base, two, g_coop_record[1].build);
+      ApplyFace(ctx, base, two, g_coop_record[1].face);
+    }
+
     if (IsCoopJoiner(base)) {
-      CoopAttachHeld(ctx, base, 2, CoopPlayerTwoEntity(base));
+      CoopAttachHeld(ctx, base, 2, two);
+    } else {
+      CoopKeepHostWeapons(ctx, base, two);
     }
   } else {
     g_coop_dressed_entity[1] = 0u;
@@ -3802,7 +3830,8 @@ void CoopRedress(PPCContext& ctx, uint8_t* base) {
   }
 }
 
-/// See kActionCoopHeroStatsPrefix.
+/// The HeroSave block — CoopHeroRecord::stats, the HeroState's money/gender/morality/purity/
+/// renown/ranks/experience as 28 comma-separated fields.
 ///
 /// THE GUEST'S OWN APPLY, HANDED OUR BLOCK. `sub_8243AEF8` loads a chosen save's HeroSave into
 /// `SaveMgr+1016` and then walks player two's components (`entity+72..76`, stride 8, component
@@ -3818,14 +3847,11 @@ void CoopRedress(PPCContext& ctx, uint8_t* base) {
 uint32_t g_coop_stats_entity = 0u;
 std::string g_coop_stats_set;
 
-bool DispatchCoopHeroStats(const std::string& text) {
-  g_coop_record[1].stats = text;
-  return true;
-}
-
-void ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& text) {
-  if (text.empty()) {
-    return;
+/// True when applied, already applied to this body, or nothing/garbage to apply; false when
+/// the body's component vector is not readable yet.
+bool ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::string& text) {
+  if (text.empty() || entity == 0u) {
+    return true;
   }
 
   std::vector<std::string> fields;
@@ -3838,22 +3864,26 @@ void ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::stri
 
   // money, gender, morality, purity, renown, 15 ranks, 4 pools, 4 totals = 28 fields.
   if (fields.size() < 28u) {
-    REXLOG_INFO("Refii guest-tick pump: CoopHeroStats has {} field(s), wants 28 — dropped",
-                fields.size());
-    return;
+    static std::string dropped;
+    if (dropped != text) {
+      dropped = text;
+      REXLOG_INFO("Refii guest-tick pump: CoopHeroStats has {} field(s), wants 28 — dropped",
+                  fields.size());
+    }
+    return true;
   }
 
   // ONCE PER BODY. The block is the chosen save's snapshot; from then on the host's world owns
   // player two's money and experience, and a restated block (its money field drifting with the
   // joiner's own reads) must not keep resetting them.
-  if (entity == 0u || entity == g_coop_stats_entity) {
-    return;
+  if (entity == g_coop_stats_entity) {
+    return true;
   }
 
   const uint32_t pairs = LoadGuestU32(base, entity + 0x48u);
   const uint32_t pairs_end = LoadGuestU32(base, entity + 0x4Cu);
   if (!LooksLikeGuestPointer(pairs) || pairs_end < pairs || (pairs_end - pairs) > 8u * 512u) {
-    return;
+    return false;
   }
 
   g_coop_stats_entity = entity;
@@ -3869,10 +3899,11 @@ void ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::stri
     return bits;
   };
 
+  // Scratch above the callee's argument-save area: frame+0x60 and up.
   const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
-  const uint32_t block = frame + 0x20u;      // 0x80 bytes
-  const uint32_t pools = frame + 0xA0u;      // 4 floats
-  const uint32_t totals = frame + 0xB0u;     // 4 floats
+  const uint32_t block = frame + 0x60u;      // 0x80 bytes
+  const uint32_t pools = frame + 0xE0u;      // 4 floats
+  const uint32_t totals = frame + 0xF0u;     // 4 floats
   for (uint32_t i = 0; i < 0x80u; i += 4u) StoreGuestU32(base, block + i, 0u);
 
   StoreGuestU32(base, block + 0u, as_int(0));            // Money
@@ -3919,26 +3950,23 @@ void ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::stri
   REXLOG_INFO("Refii guest-tick pump: CoopHeroStats — HeroSave block applied to player two "
               "0x{:08X} through {} component slot-40 method(s); money {} renown {}",
               entity, called, fields[0], fields[4]);
-}
-
-/// See kActionCoopHeroFacePrefix. Once per (entity, record).
-uint32_t g_coop_face_entity = 0u;
-uint32_t g_coop_face_record = 0u;
-
-bool DispatchCoopHeroFace(const std::string& text) {
-  g_coop_record[1].face = static_cast<uint32_t>(std::strtoul(text.c_str(), nullptr, 16));
   return true;
 }
 
-void ApplyFace(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t record) {
+/// Player two's character-creation record, on component 17. Once per (entity, record).
+uint32_t g_coop_face_entity = 0u;
+uint32_t g_coop_face_record = 0u;
+
+/// True when set or nothing to set; false when the body has no morph component yet.
+bool ApplyFace(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t record) {
   if (record == 0u || entity == 0u ||
       (entity == g_coop_face_entity && record == g_coop_face_record)) {
-    return;
+    return true;
   }
 
   const uint32_t morph = EntityComponent(base, entity, 17u);
   if (morph == 0u) {
-    return;  // the body has no appearance-morph component yet; the next apply asks again
+    return false;  // the body has no appearance-morph component yet; the next apply asks again
   }
 
   g_coop_face_entity = entity;
@@ -3952,27 +3980,6 @@ void ApplyFace(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t record)
 
   REXLOG_INFO("Refii guest-tick pump: CoopHeroFace — record 0x{:08X} set on player two "
               "0x{:08X} (component 17 0x{:08X})", record, entity, morph);
-}
-
-/// See kActionCoopHeroEquipPrefix.
-bool DispatchCoopHeroEquip(const std::string& text) {
-  const std::size_t colon = text.find(':');
-  if (colon == std::string::npos) {
-    return true;
-  }
-
-  const int player = std::atoi(text.substr(0, colon).c_str());
-  if (player != 1 && player != 2) {
-    return true;
-  }
-
-  const std::string pair = text.substr(colon + 1u);
-  const std::size_t comma = pair.find(',');
-  g_coop_record[player - 1].melee =
-      static_cast<uint32_t>(std::strtoul(pair.substr(0, comma).c_str(), nullptr, 16));
-  g_coop_record[player - 1].ranged = comma == std::string::npos
-      ? 0u
-      : static_cast<uint32_t>(std::strtoul(pair.substr(comma + 1u).c_str(), nullptr, 16));
   return true;
 }
 
@@ -3985,6 +3992,38 @@ bool DispatchCoopHeroEquip(const std::string& text) {
 /// an unactivated item, which is what left swords on the ground. Here the item is activated
 /// when the guest did not, each step reports, and nothing is retried: a pair is one attempt per
 /// body, because every attempt instantiates an item.
+/// The weapon class the guest gives an item (`sub_824AD108` at 0x824AD254): component 179's
+/// `+12` through `sub_82561420` — 2..4 melee (1), 5..8 ranged (2), anything else 0.
+uint32_t WeaponClassOf(uint8_t* base, uint32_t item) {
+  const uint32_t kind = EntityComponent(base, item, 179u);
+  const uint32_t type = kind != 0u ? LoadGuestU32(base, kind + 12u) : 0u;
+  return type >= 2u && type <= 4u ? 1u : type >= 5u && type <= 8u ? 2u : 0u;
+}
+
+/// The alive item with `record` the body holds in any slot (component 24, 12-byte entries at
+/// `+16..+20`, holder at entry+8, item = `*holder`), or 0.
+uint32_t HeldItemWithRecord(uint8_t* base, uint32_t entity, uint32_t record) {
+  const uint32_t held = EntityComponent(base, entity, 24u);
+  if (held == 0u) return 0u;
+  const uint32_t begin = LoadGuestU32(base, held + 16u);
+  const uint32_t end = LoadGuestU32(base, held + 20u);
+  if (!LooksLikeGuestPointer(begin) || end < begin || (end - begin) > 12u * 64u) return 0u;
+  for (uint32_t at = begin; at + 12u <= end; at += 12u) {
+    const uint32_t holder = LoadGuestU32(base, at + 8u);
+    const uint32_t item = LooksLikeGuestPointer(holder) ? LoadGuestU32(base, holder) : 0u;
+    if (LooksLikeGuestPointer(item) && (LoadGuestU8(base, item + 144u) & 0x40u) != 0u &&
+        LoadGuestU32(base, item + 28u) == record) {
+      return item;
+    }
+  }
+  return 0u;
+}
+
+/// The host's equipped item per body and class ([0] melee, [1] ranged), set by EquipRecord on
+/// the host; and the tick each was first seen off the body (0 while held).
+std::map<uint32_t, std::array<uint32_t, 2>> g_coop_host_weapon;
+std::map<uint32_t, uint32_t> g_coop_host_weapon_loose;
+
 /// One record onto one body: the guest's own equip-by-record sequence, step by step, with the
 /// activation the guest skips on a client done here. Appends the outcome to `report`; returns
 /// true when the item was attached. NO latch — the callers decide when to try.
@@ -3999,10 +4038,11 @@ bool EquipRecord(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t id, s
     return false;
   }
 
+  // Scratch above the callee's argument-save area: frame+0x60 and up.
   const uint32_t frame = (ctx.r1.u32 - 0x400u) & ~0xFu;
-  const uint32_t handle = frame + 0x20u;     // 4 words: sub_824F1C90's item handle
-  const uint32_t name = frame + 0x40u;       // LHString "Weapon", the item entity's name
-  const uint32_t text = frame + 0x80u;
+  const uint32_t handle = frame + 0x60u;     // 4 words: sub_824F1C90's item handle
+  const uint32_t name = frame + 0x80u;       // LHString "Weapon", the item entity's name
+  const uint32_t text = frame + 0xC0u;
   static const char kWeapon[] = "Weapon";
   std::memcpy(base + text, kWeapon, sizeof(kWeapon));
 
@@ -4051,10 +4091,47 @@ bool EquipRecord(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t id, s
     return false;
   }
 
-  bool activated = (LoadGuestU8(base, item + 144u) & 0x40u) != 0u;
+  // Activated is entity+144 bit 0x10: `sub_8238BE08` clears 0x80, starts every component and
+  // sets 0x90 (0x8238BE2C, 0x8238BE74). Bit 0x40 is ALIVE — set by the constructor, cleared
+  // only by destroy — so testing it here never ran the activation.
+  bool activated = (LoadGuestU8(base, item + 144u) & 0x10u) != 0u;
   if (!activated) {
     call(rex_lhEntity_Activate, item);
-    activated = (LoadGuestU8(base, item + 144u) & 0x40u) != 0u;
+    activated = (LoadGuestU8(base, item + 144u) & 0x10u) != 0u;
+  }
+
+  // 3b. On the host, every OTHER held item of the new one's class leaves too. The slot of a
+  // class is per record (`sub_824AC820` keys the sheath slot on WeaponType), so a new ranged
+  // weapon can go to `.SheathRangedWeaponBack` while the old one hangs on `.SheathWeaponFront`;
+  // releasing only the target slot left two crossbows on the body. Class is the guest's own
+  // test (`sub_824AD108` 0x824AD254): component 179 `+12` through `sub_82561420`, 2..4 melee,
+  // 5..8 ranged. Released by item (`sub_824FDA98`) and destroyed, as `sub_824FDB70` does.
+  if (!client) {
+    const auto weapon_class = [&](uint32_t entity_item) { return WeaponClassOf(base, entity_item); };
+    const uint32_t wanted = weapon_class(item);
+    PPCFunc* release_item = FindGuestFunction(refii::guest::Address(0x824FDA98u));
+    std::array<uint32_t, 16> others{};
+    std::size_t n = 0u;
+    const uint32_t begin = LoadGuestU32(base, held + 16u);
+    const uint32_t end = LoadGuestU32(base, held + 20u);
+    if (wanted != 0u && release_item != nullptr && LooksLikeGuestPointer(begin) && end >= begin &&
+        end - begin <= 12u * 64u) {
+      for (uint32_t at = begin; at + 12u <= end && n < others.size(); at += 12u) {
+        const uint32_t holder = LoadGuestU32(base, at + 8u);
+        const uint32_t other = LooksLikeGuestPointer(holder) ? LoadGuestU32(base, holder) : 0u;
+        if (LooksLikeGuestPointer(other) && other != item &&
+            (LoadGuestU8(base, other + 144u) & 0x40u) != 0u && weapon_class(other) == wanted) {
+          others[n++] = other;
+        }
+      }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      call(release_item, held, others[i]);
+      call(rex_lhEntity_Destroy, others[i]);
+      std::snprintf(step, sizeof(step), " %08X: old %s item 0x%08X (record %08X) removed;", id,
+                    wanted == 1u ? "melee" : "ranged", others[i], LoadGuestU32(base, others[i] + 28u));
+      report += step;
+    }
   }
 
   // 4. Release the slot's current item and destroy it — the guest's own `sub_824FDB70` on the
@@ -4067,54 +4144,166 @@ bool EquipRecord(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t id, s
     }
   }
 
-  // 5. Attach, record, draw.
-  call(rex_CECHeldItems_AttachItemToSlot, held, slot, item);
+  // 5. Attach, record, draw. On the host the attach is BROADCAST for a body the joiner
+  // controls: `sub_824FB5D8` sends held-items type 1 only under `sub_82214AF8`, which on the
+  // host needs CECNetwork+104 clear, so for that one call it is cleared. The joiner's handler
+  // then attaches the replica right behind its create, in the same stream — not after our
+  // CoopHeroHeld round trip, which left it lying where it was made for a moment at spawn
+  // (2026-10-08 02:59: on the ground, then into the hand). The record and the effect stay
+  // unbroadcast: a weapon-set message (`sub_824AD698`) would overwrite the joiner's
+  // +84/+88 with entity ids (`sub_824AB0A0`).
+  {
+    const uint32_t network = client ? 0u : EntityComponent(base, entity, 91u);
+    const uint8_t controlled = network != 0u ? LoadGuestU8(base, network + 104u) : 0u;
+    if (network != 0u) base[network + 104u] = 0u;
+    call(rex_CECHeldItems_AttachItemToSlot, held, slot, item);
+    if (network != 0u) base[network + 104u] = controlled;
+  }
   call(rex_CECWeaponSet_RecordDrawnItem, weapons, item);
   call(rex_CECWeaponSet_PlayWeaponDrawEffect, weapons, item);
   call(rex_lhCharString_Dtor, name);
+  if (!client) {
+    // The previous weapon of this class, if it was left loose in the world, goes now.
+    const uint32_t weapon_class = WeaponClassOf(base, item);
+    if (weapon_class != 0u) {
+      uint32_t& tracked = g_coop_host_weapon[entity][weapon_class - 1u];
+      if (tracked != 0u && tracked != item && (LoadGuestU8(base, tracked + 144u) & 0x40u) != 0u &&
+          HeldItemWithRecord(base, entity, LoadGuestU32(base, tracked + 28u)) != tracked) {
+        call(rex_lhEntity_Destroy, tracked);
+        std::snprintf(step, sizeof(step), " %08X: loose old item 0x%08X removed;", id, tracked);
+        report += step;
+      }
+      tracked = item;
+    }
+  }
   std::snprintf(step, sizeof(step), " %08X: item 0x%08X %s, attached;", id, item,
                 activated ? "active" : "NOT ACTIVE even after sub_8238BE08");
   report += step;
   return true;
 }
 
-/// Player two's / player one's two weapons from the record, ONE attempt per (body, pair) —
-/// every attempt instantiates an item, so nothing here retries.
+/// Body → the (melee, ranged) pair every record of which was drawn. A pair with a record the
+/// body did not hold yet is NOT latched: EquipRecord refuses before instantiating anything, so
+/// the next apply (after the give lands) tries again at no cost. A record the body already
+/// holds in any slot counts as done without instantiating a second item.
 std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_coop_equip_latched;
 
-void ApplyEquip(PPCContext& ctx, uint8_t* base, int player, uint32_t entity, uint32_t melee,
+/// True when every record is drawn (or there is nothing for this side to draw); false when the
+/// body has no weapon set yet or a record could not be drawn.
+bool ApplyEquip(PPCContext& ctx, uint8_t* base, int player, uint32_t entity, uint32_t melee,
                 uint32_t ranged) {
   if (entity == 0u || (melee == 0u && ranged == 0u)) {
-    return;
+    return true;
   }
 
-  // A client never instantiates: the host's items replicate as entities and CoopAttachHeld
-  // attaches those by net id.
+  // CONTRACT: a joiner never instantiates. `CoopHeroEquip:1` and `:2` are stored on a joiner
+  // and ignored here; the host's items replicate as entities and CoopAttachHeld attaches
+  // those by net id.
   if (IsCoopJoiner(base)) {
-    return;
+    return true;
   }
 
   const auto seen = g_coop_equip_latched.find(entity);
   if (seen != g_coop_equip_latched.end() && seen->second == std::make_pair(melee, ranged)) {
-    return;
-  }
-
-  if (EntityComponent(base, entity, 28u) == 0u) {
-    return;  // no weapon set yet; the next apply asks again
-  }
-
-  g_coop_equip_latched[entity] = std::make_pair(melee, ranged);
-
-  std::string report;
-  for (uint32_t id : {melee, ranged}) {
-    if (id != 0u) EquipRecord(ctx, base, entity, id, report);
+    return true;
   }
 
   const uint32_t weapons = EntityComponent(base, entity, 28u);
-  REXLOG_INFO("Refii guest-tick pump: CoopHeroEquip — player {} 0x{:08X}:{} weapon set 0x{:08X} "
-              "now holds melee 0x{:08X}, ranged 0x{:08X}",
-              player, entity, report, weapons, LoadGuestU32(base, weapons + 84u),
-              LoadGuestU32(base, weapons + 88u));
+  if (weapons == 0u) {
+    return false;  // no weapon set yet; the next apply asks again
+  }
+
+  std::string report;
+  char step[64];
+  bool all = true;
+  for (uint32_t id : {melee, ranged}) {
+    if (id == 0u) {
+      continue;
+    }
+
+    // Held already, in any slot. Not the weapon set's +84/+88: on a body the joiner controls
+    // its weapon-set message (`sub_824AB0A0`) rewrites them with entity ids.
+    if (HeldItemWithRecord(base, entity, id) != 0u) {
+      std::snprintf(step, sizeof(step), " %08X: already held;", id);
+      report += step;
+      continue;
+    }
+
+    if (!EquipRecord(ctx, base, entity, id, report)) {
+      all = false;
+    }
+  }
+
+  if (all) {
+    g_coop_equip_latched[entity] = std::make_pair(melee, ranged);
+  }
+
+  // One line per distinct outcome: a pair waiting on its give would otherwise log every tick.
+  static std::map<uint32_t, std::string> reported;
+  if (reported[entity] != report) {
+    reported[entity] = report;
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroEquip — player {} 0x{:08X}:{} weapon set 0x{:08X} "
+                "now holds melee 0x{:08X}, ranged 0x{:08X}{}",
+                player, entity, report, weapons, LoadGuestU32(base, weapons + 84u),
+                LoadGuestU32(base, weapons + 88u), all ? "" : " — incomplete, retried on the next apply");
+  }
+
+  return all;
+}
+
+/// THE HOST KEEPS PLAYER TWO'S WEAPONS ON PLAYER TWO. The joiner controls that body, so its
+/// draw and sheathe arrive as held-items messages: a release (`sub_824FCB20`, which never
+/// destroys) followed by an attach of the same replica into the next slot. A release with no
+/// attach after it — the joiner's guest acting on a stale weapon set, or spawning an item the
+/// host cannot resolve — leaves the host's weapon alive in the world, on the floor of both
+/// machines. The weapons EquipRecord put on the body are therefore re-attached to their
+/// record's slot once they have been off every slot for kLooseTicks, silently (the host is
+/// not the body's authority, `sub_82214AF8`, so the attach broadcasts nothing). A destroyed
+/// item is forgotten.
+void CoopKeepHostWeapons(PPCContext& ctx, uint8_t* base, uint32_t entity) {
+  constexpr uint32_t kLooseTicks = 4u;
+  const auto found = g_coop_host_weapon.find(entity);
+  if (entity == 0u || found == g_coop_host_weapon.end()) return;
+  const uint32_t weapons = EntityComponent(base, entity, 28u);
+  const uint32_t held = EntityComponent(base, entity, 24u);
+  if (weapons == 0u || held == 0u) return;
+
+  const uint32_t frame = (ctx.r1.u32 - 0x400u) & ~0xFu;
+  const auto call = [&](PPCFunc* fn, uint32_t r3, uint32_t r4 = 0u, uint32_t r5 = 0u) -> uint32_t {
+    PPCContext work = ctx;
+    work.r1.u32 = frame;
+    work.r3.u32 = r3;
+    work.r4.u32 = r4;
+    work.r5.u32 = r5;
+    fn(work, base);
+    return work.r3.u32;
+  };
+
+  bool loose = false;
+  for (uint32_t& item : found->second) {
+    if (item == 0u) continue;
+    if ((LoadGuestU8(base, item + 144u) & 0x40u) == 0u) {
+      item = 0u;  // destroyed: the guest or a later equip replaced it
+      continue;
+    }
+    const uint32_t record = LoadGuestU32(base, item + 28u);
+    if (HeldItemWithRecord(base, entity, record) == item) continue;
+    loose = true;
+    uint32_t& since = g_coop_host_weapon_loose[entity];
+    if (since == 0u) since = g_coop_ticks;
+    if (g_coop_ticks - since < kLooseTicks) continue;
+
+    const uint32_t slot = call(rex_CECWeaponSet_GetSlotNameForRecord, weapons, record);
+    const uint32_t slot_block = slot != 0u ? LoadGuestU32(base, slot) : 0u;
+    if (slot_block == 0u || LoadGuestU32(base, slot_block + 4u) == 0u) continue;
+    call(rex_CECHeldItems_AttachItemToSlot, held, slot, item);
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroEquip — player two 0x{:08X}: weapon 0x{:08X} "
+                "(record {:08X}) was off the body {} ticks — {}",
+                entity, item, record, g_coop_ticks - since,
+                HeldItemWithRecord(base, entity, record) == item ? "re-attached to its slot"
+                                                                  : "re-attach REFUSED");
+  }
+  if (!loose) g_coop_host_weapon_loose[entity] = 0u;
 }
 
 /// The host's held items per player, as 64-bit net ids (the entity uid, high word `+0x14`,
@@ -4180,10 +4369,28 @@ void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
     return;
   }
 
+  const auto pair = std::make_pair(melee_net, ranged_net);
   const auto seen = g_coop_held_attached.find(entity);
-  if (seen != g_coop_held_attached.end() && seen->second == std::make_pair(melee_net, ranged_net)) {
+  if (seen != g_coop_held_attached.end() && seen->second == pair) {
     return;
   }
+
+  // Paced: one try per body every kRetryTicks, and at most kMaxAttempts silent attaches per
+  // (body, pair) — one line when that cap is hit, then nothing until the pair changes.
+  constexpr uint32_t kRetryTicks = 8u;
+  constexpr uint32_t kMaxAttempts = 20u;
+  auto& attempts = g_coop_held_attempts[entity];
+  if (attempts.first != pair) {
+    attempts = std::make_pair(pair, 0u);
+  }
+  if (attempts.second >= kMaxAttempts) {
+    return;
+  }
+  uint32_t& next_try = g_coop_held_next_try[entity];
+  if (g_coop_ticks < next_try) {
+    return;
+  }
+  next_try = g_coop_ticks + kRetryTicks;
 
   const uint32_t manager = CoopNetworkManager(base);
   const uint32_t weapons = EntityComponent(base, entity, 28u);
@@ -4215,10 +4422,81 @@ void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
     }
     return false;
   };
+  const auto held_items = [&](std::array<uint32_t, 16>& out) -> std::size_t {
+    std::size_t n = 0u;
+    const uint32_t begin = LoadGuestU32(base, held + 16u);
+    const uint32_t end = LoadGuestU32(base, held + 20u);
+    if (!LooksLikeGuestPointer(begin) || end < begin || (end - begin) > 12u * 64u) return 0u;
+    for (uint32_t at = begin; at + 12u <= end && n < out.size(); at += 12u) {
+      const uint32_t holder = LoadGuestU32(base, at + 8u);
+      const uint32_t item = LooksLikeGuestPointer(holder) ? LoadGuestU32(base, holder) : 0u;
+      if (LooksLikeGuestPointer(item)) out[n++] = item;
+    }
+    return n;
+  };
+  // A replica is what the replica map answers for the id in its CECNetwork (+120, the u64 the
+  // client's create handler stores at 0x8232EBF4..); a local item is not in the map.
+  const auto is_replica = [&](uint32_t item) -> bool {
+    const uint32_t network = EntityComponent(base, item, 91u);
+    if (network == 0u) return false;
+    const uint64_t id = (static_cast<uint64_t>(LoadGuestU32(base, network + 120u)) << 32) |
+                        LoadGuestU32(base, network + 124u);
+    return id != 0u && call(rex_lhNetManager_FindEntityByNetId, manager, id) == item;
+  };
+  // What a guest call took off the body: every LOCAL item that left is destroyed (a client's
+  // release never destroys, `sub_824FDB70` 0x824FDB80..0x824FDBE8); a replica is the host's.
+  const auto destroy_local_leavers = [&](const std::array<uint32_t, 16>& before, std::size_t had,
+                                         uint32_t keep, const char* by) {
+    for (std::size_t i = 0; i < had; ++i) {
+      const uint32_t gone = before[i];
+      if (gone == keep || held_here(gone) || (LoadGuestU8(base, gone + 144u) & 0x40u) == 0u ||
+          is_replica(gone)) {
+        continue;
+      }
+      REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}: local item 0x{:08X} "
+                  "(record {:08X}) displaced by {} 0x{:08X} — destroyed",
+                  player, entity, gone, LoadGuestU32(base, gone + 28u), by, keep);
+      call(rex_lhEntity_Destroy, gone);
+    }
+  };
+  // THE WEAPON SET STATES WHAT THE BODY HOLDS. The draw action (`sub_82837AB8`, no authority
+  // gate) takes the record from weapons+84 (melee, 0x82837D48) or +88 (ranged, 0x82837E10),
+  // looks in that record's slot and, when the item there carries another record, empties the
+  // slot (`sub_824FDB70`, 0x82837F48) and instantiates the record LOCALLY (0x828380A0). On the
+  // joiner those fields still named the save's weapons, so every draw released the host's
+  // weapon onto the floor of both machines and spawned the old one (run 2026-10-08 02:07:55).
+  // The guest's own RecordDrawnItem (`sub_824AD108`) stores the replica's record by its class,
+  // run with the body's authority cleared so it sends no weapon-set message.
+  const auto state_in_weapon_set = [&](uint32_t item, uint32_t record) {
+    const uint32_t kind = EntityComponent(base, item, 179u);
+    const uint32_t type = kind != 0u ? LoadGuestU32(base, kind + 12u) : 0u;
+    const uint32_t field = type >= 2u && type <= 4u ? 84u : type >= 5u && type <= 8u ? 88u : 0u;
+    if (field == 0u || LoadGuestU32(base, weapons + field) == record) return;
+    std::array<uint32_t, 16> before{};
+    const std::size_t had = held_items(before);
+    const uint32_t network = EntityComponent(base, entity, 91u);
+    const uint8_t controlled = network != 0u ? LoadGuestU8(base, network + 104u) : 0u;
+    if (network != 0u) base[network + 104u] = 0u;
+    call(rex_CECWeaponSet_RecordDrawnItem, weapons, item);
+    if (network != 0u) base[network + 104u] = controlled;
+    destroy_local_leavers(before, had, item, "the weapon set's record of replica");
+    REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}: weapon set 0x{:08X} "
+                "now states {} {:08X} (replica 0x{:08X})",
+                player, entity, weapons, field == 84u ? "melee" : "ranged", record, item);
+  };
 
-  std::string report;
-  char step[160];
+  // Outcomes per net id, formatted only when a line is logged.
+  enum class Outcome { kOnBody, kNoSlot, kAttached, kRefused };
+  struct Step {
+    uint64_t net;
+    uint32_t item;
+    uint32_t record;
+    Outcome outcome;
+  };
+  Step steps[2];
+  std::size_t count = 0u;
   bool complete = true;
+  bool attempted = false;
   for (uint64_t net : {melee_net, ranged_net}) {
     if (net == 0u) {
       continue;
@@ -4232,74 +4510,338 @@ void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
 
     const uint32_t record = LoadGuestU32(base, item + 28u);
     if (held_here(item)) {
-      std::snprintf(step, sizeof(step), " net %016llX: replica 0x%08X (record %08X) on the body;",
-                    static_cast<unsigned long long>(net), item, record);
-      report += step;
+      state_in_weapon_set(item, record);
+      steps[count++] = {net, item, record, Outcome::kOnBody};
       continue;
     }
 
     const uint32_t slot = call(rex_CECWeaponSet_GetSlotNameForRecord, weapons, record);
     const uint32_t slot_block = slot != 0u ? LoadGuestU32(base, slot) : 0u;
     if (slot_block == 0u || LoadGuestU32(base, slot_block + 4u) == 0u) {
-      std::snprintf(step, sizeof(step), " net %016llX: record %08X has no slot name;",
-                    static_cast<unsigned long long>(net), record);
-      report += step;
+      steps[count++] = {net, item, record, Outcome::kNoSlot};
       complete = false;
       continue;
     }
 
     // Silently: the holder is not "locally controlled" for the length of the call.
+    // An occupied slot is emptied first by `sub_824FDB70` (0x824FB878), which RELEASES the
+    // occupant and destroys it only on the host (netmgr+0x34 && +0x35, 0x824FDB80..0x824FDBE8):
+    // on this client a local occupant is left in the world. Every local item the attach took
+    // off the body is destroyed here; a replica is the host's.
+    std::array<uint32_t, 16> before{};
+    const std::size_t had = held_items(before);
     const uint32_t network = EntityComponent(base, entity, 91u);
     const uint8_t controlled = network != 0u ? LoadGuestU8(base, network + 104u) : 0u;
     if (network != 0u) base[network + 104u] = 0u;
     call(rex_CECHeldItems_AttachItemToSlot, held, slot, item);
     if (network != 0u) base[network + 104u] = controlled;
+    attempted = true;
+    destroy_local_leavers(before, had, item, "replica");
 
     const bool attached = held_here(item);
     if (!attached) {
       complete = false;
+    } else {
+      state_in_weapon_set(item, record);
     }
-    std::snprintf(step, sizeof(step), " net %016llX: replica 0x%08X (record %08X) %s;",
-                  static_cast<unsigned long long>(net), item, record,
-                  attached ? "attached here, silently" : "attach REFUSED");
-    report += step;
+    steps[count++] = {net, item, record, attached ? Outcome::kAttached : Outcome::kRefused};
   }
 
-  static std::map<uint32_t, std::pair<uint64_t, uint64_t>> waited;
+  if (attempted) {
+    ++attempts.second;
+  }
+
+  const auto report = [&]() -> std::string {
+    std::string text;
+    char step[160];
+    for (std::size_t i = 0; i < count; ++i) {
+      const Step& s = steps[i];
+      switch (s.outcome) {
+        case Outcome::kOnBody:
+          std::snprintf(step, sizeof(step), " net %016llX: replica 0x%08X (record %08X) on the body;",
+                        static_cast<unsigned long long>(s.net), s.item, s.record);
+          break;
+        case Outcome::kNoSlot:
+          std::snprintf(step, sizeof(step), " net %016llX: record %08X has no slot name;",
+                        static_cast<unsigned long long>(s.net), s.record);
+          break;
+        default:
+          std::snprintf(step, sizeof(step), " net %016llX: replica 0x%08X (record %08X) %s;",
+                        static_cast<unsigned long long>(s.net), s.item, s.record,
+                        s.outcome == Outcome::kAttached ? "attached here, silently"
+                                                        : "attach REFUSED");
+          break;
+      }
+      text += step;
+    }
+    return text;
+  };
+
   if (!complete) {
-    if (waited[entity] != std::make_pair(melee_net, ranged_net)) {
-      waited[entity] = std::make_pair(melee_net, ranged_net);
+    if (attempts.second >= kMaxAttempts) {
+      REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}: gave up after {} "
+                  "silent attach attempts (melee net {:016X}, ranged net {:016X}){}",
+                  player, entity, attempts.second, melee_net, ranged_net, report());
+      return;
+    }
+
+    if (g_coop_held_waited[entity] != pair) {
+      g_coop_held_waited[entity] = pair;
       REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}: waiting for the "
                   "host's replicas (melee net {:016X}, ranged net {:016X}){}",
-                  player, entity, melee_net, ranged_net, report);
+                  player, entity, melee_net, ranged_net, report());
     }
     return;
   }
 
-  g_coop_held_attached[entity] = std::make_pair(melee_net, ranged_net);
+  g_coop_held_attached[entity] = pair;
   REXLOG_INFO("Refii guest-tick pump: CoopHeroHeld — player {} 0x{:08X}:{} weapon set 0x{:08X} "
               "holds melee 0x{:08X}, ranged 0x{:08X}",
-              player, entity, report, weapons, LoadGuestU32(base, weapons + 84u),
+              player, entity, report(), weapons, LoadGuestU32(base, weapons + 84u),
               LoadGuestU32(base, weapons + 88u));
 }
 
 /// Body → generation last applied. Cleared with the other latches when the session drops.
 std::map<uint32_t, uint32_t> g_coop_applied_generation;
 
-/// See kActionCoopHeroApplyPrefix — stores the generation; the tick applies.
-bool DispatchCoopHeroApply(const std::string& text) {
+/// The HeroState version last applied per player, and the body it was applied to — the
+/// bridge's RefiiHostGetHeroStateApplied answer, which Godot acks back to the joiner.
+std::atomic<uint32_t> g_herostate_applied[2] = {0u, 0u};
+uint32_t g_herostate_body[2] = {0u, 0u};
+
+/// Standard base64 (RFC 4648 alphabet, '=' padding, whitespace ignored). False on any other
+/// character or a dangling 1-char tail.
+bool DecodeBase64(const std::string& text, std::vector<uint8_t>& out) {
+  out.clear();
+  out.reserve(text.size() / 4u * 3u);
+  uint32_t acc = 0u;
+  int bits = 0;
+  std::size_t pad = 0u;
+  for (char c : text) {
+    int value;
+    if (c >= 'A' && c <= 'Z') value = c - 'A';
+    else if (c >= 'a' && c <= 'z') value = c - 'a' + 26;
+    else if (c >= '0' && c <= '9') value = c - '0' + 52;
+    else if (c == '+') value = 62;
+    else if (c == '/') value = 63;
+    else if (c == '=') { ++pad; continue; }
+    else if (c == ' ' || c == '\r' || c == '\n' || c == '\t') continue;
+    else return false;
+    if (pad != 0u) {
+      return false;  // data after padding
+    }
+    acc = (acc << 6) | static_cast<uint32_t>(value);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(static_cast<uint8_t>((acc >> bits) & 0xFFu));
+    }
+  }
+  return bits < 6;  // a lone sextet cannot start a byte
+}
+
+/// A little-endian cursor over a decoded HeroState; every read is bounds-checked and the first
+/// short read latches `bad`, so a truncated or count-overrun payload parses to nothing.
+struct HeroStateReader {
+  const std::vector<uint8_t>& bytes;
+  std::size_t at = 0u;
+  bool bad = false;
+
+  bool take(void* into, std::size_t size) {
+    if (bad || size > bytes.size() - at) {
+      bad = true;
+      return false;
+    }
+    std::memcpy(into, bytes.data() + at, size);
+    at += size;
+    return true;
+  }
+  uint8_t u8() { uint8_t v = 0u; take(&v, 1u); return v; }
+  uint16_t u16() { uint16_t v = 0u; take(&v, 2u); return v; }
+  uint32_t u32() { uint32_t v = 0u; take(&v, 4u); return v; }
+  int32_t i32() { int32_t v = 0; take(&v, 4u); return v; }
+  float f32() { float v = 0.0f; take(&v, 4u); return v; }
+};
+
+/// A float the way the old C# encoders wrote one ("0.###" / "0.####"): fixed `decimals`
+/// places, trailing zeros and a bare point trimmed. ApplyStats/ApplyBuild parse with strtof.
+std::string TrimmedFixed(float value, int decimals) {
+  char text[64];
+  std::snprintf(text, sizeof(text), "%.*f", decimals, static_cast<double>(value));
+  std::string out = text;
+  if (out.find('.') != std::string::npos) {
+    while (!out.empty() && out.back() == '0') out.pop_back();
+    if (!out.empty() && out.back() == '.') out.pop_back();
+  }
+  if (out == "-0") out = "0";
+  return out;
+}
+
+/// See kActionHeroStatePrefix. Parses one player's HeroState into the per-player stores the
+/// apply steps already read, exactly as the nine field actions used to fill them:
+///   record.generation = version; melee/ranged = the record ids; face = face;
+///   record.stats  = "money,gender,morality,purity,renown,r0..r14,e0..e3,t0..t3"
+///                   (gender 2 male / 1 female, ranks decimal, floats TrimmedFixed 3);
+///   record.skills = "r0,r1,...,r14" hex (empty unless `known`);
+///   record.build  = "strength,skill,will,fat,height,tan" TrimmedFixed 4 (only with hasLooks);
+///   g_coop_wear   = the worn hashes; g_coop_give = inventory plus one each of melee/ranged
+///                   when the inventory lacks them (the drawn weapons are held entities, not
+///                   inventory records, so a give without them leaves the equip nothing to draw).
+/// Player two's outfit and inventory are mirrored into slot 2, the co-op screen's preview.
+/// The tick's CoopApplyHero does the rest; the version is its generation.
+bool DispatchHeroState(const std::string& text) {
+  constexpr uint32_t kMagic = 0x31545348u;  // 'H','S','T','1' little-endian
+  constexpr std::size_t kNameLimit = 48u;
+
+  static std::string rejected;  // the last malformed action, logged once
+  const auto reject = [&](const char* why) {
+    if (rejected != text) {
+      rejected = text;
+      REXLOG_INFO("Refii guest-tick pump: HeroState rejected — {} ({} chars)", why, text.size());
+    }
+    return true;
+  };
+
   const std::size_t colon = text.find(':');
   if (colon == std::string::npos) {
-    return true;
+    return reject("no player");
   }
-
   const int player = std::atoi(text.substr(0, colon).c_str());
   if (player != 1 && player != 2) {
-    return true;
+    return reject("player is not 1 or 2");
   }
 
-  g_coop_record[player - 1].generation =
-      static_cast<uint32_t>(std::strtoul(text.substr(colon + 1u).c_str(), nullptr, 16));
+  std::vector<uint8_t> bytes;
+  if (!DecodeBase64(text.substr(colon + 1u), bytes)) {
+    return reject("bad base64");
+  }
+
+  HeroStateReader in{bytes};
+  if (in.u32() != kMagic) {
+    return reject("bad magic");
+  }
+  const uint32_t version = in.u32();
+  const uint8_t flags = in.u8();
+  const bool female = (flags & 1u) != 0u;
+  const bool has_looks = (flags & 2u) != 0u;
+  const bool known = (flags & 4u) != 0u;
+  const uint8_t name_len = in.u8();
+  if (in.bad || name_len > kNameLimit) {
+    return reject("name length");
+  }
+  std::string name(name_len, '\0');
+  if (name_len != 0u) {
+    in.take(&name[0], name_len);
+  }
+  const uint32_t face = in.u32();
+  const float fat = in.f32();
+  const float height = in.f32();
+  const float tan = in.f32();
+  const float strength = in.f32();
+  const float skill = in.f32();
+  const float will = in.f32();
+  const float morality = in.f32();
+  const float purity = in.f32();
+  const int32_t renown = in.i32();
+  const int32_t money = in.i32();
+
+  const uint8_t rank_count = in.u8();
+  std::vector<int32_t> ranks;
+  for (uint8_t i = 0; i < rank_count && !in.bad; ++i) ranks.push_back(in.i32());
+  const uint8_t exp_count = in.u8();
+  std::vector<float> pools;
+  for (uint8_t i = 0; i < exp_count && !in.bad; ++i) pools.push_back(in.f32());
+  const uint8_t total_count = in.u8();
+  std::vector<float> totals;
+  for (uint8_t i = 0; i < total_count && !in.bad; ++i) totals.push_back(in.f32());
+
+  const uint32_t melee = in.u32();
+  const uint32_t ranged = in.u32();
+
+  const uint16_t worn_count = in.u16();
+  std::vector<uint32_t> worn;
+  for (uint16_t i = 0; i < worn_count && !in.bad; ++i) {
+    const uint32_t hash = in.u32();
+    if (hash != 0u) worn.push_back(hash);
+  }
+  const uint16_t inv_count = in.u16();
+  std::vector<std::pair<uint32_t, uint32_t>> give;
+  for (uint16_t i = 0; i < inv_count && !in.bad; ++i) {
+    const uint32_t record = in.u32();
+    const uint16_t count = in.u16();
+    if (record != 0u && count != 0u) give.emplace_back(record, count);
+  }
+  if (in.bad) {
+    return reject("short buffer");
+  }
+  if (version == 0u) {
+    return reject("version 0");
+  }
+
+  // The stats block, the old CoopHeroStats text: 5 + 15 + 4 + 4 = 28 fields, missing ranks
+  // and pools padded with 0 as the old encoder padded them.
+  std::string stats = std::to_string(money) + "," + (female ? "1" : "2") + "," +
+                      TrimmedFixed(morality, 3) + "," + TrimmedFixed(purity, 3) + "," +
+                      std::to_string(renown);
+  for (std::size_t i = 0; i < 15u; ++i) {
+    stats += "," + std::to_string(i < ranks.size() ? ranks[i] : 0);
+  }
+  for (std::size_t i = 0; i < 4u; ++i) {
+    stats += "," + TrimmedFixed(i < pools.size() ? pools[i] : 0.0f, 3);
+  }
+  for (std::size_t i = 0; i < 4u; ++i) {
+    stats += "," + TrimmedFixed(i < totals.size() ? totals[i] : 0.0f, 3);
+  }
+
+  // The ranks as the old CoopHeroSkills text: hex, ids 0..14 in order, only for a known hero.
+  std::string skills;
+  if (known) {
+    for (std::size_t i = 0; i < ranks.size(); ++i) {
+      char hex[16];
+      std::snprintf(hex, sizeof(hex), "%s%X", i == 0u ? "" : ",",
+                    static_cast<unsigned>(ranks[i] < 0 ? 0 : ranks[i]));
+      skills += hex;
+    }
+  }
+
+  // The body shape as the old CoopHeroBuild text, only when the state carries looks.
+  std::string build;
+  if (has_looks) {
+    build = TrimmedFixed(strength, 4) + "," + TrimmedFixed(skill, 4) + "," +
+            TrimmedFixed(will, 4) + "," + TrimmedFixed(fat, 4) + "," +
+            TrimmedFixed(height, 4) + "," + TrimmedFixed(tan, 4);
+  }
+
+  // The drawn weapons too (the old GiveList): one each unless the inventory already lists it.
+  for (uint32_t weapon : {melee, ranged}) {
+    if (weapon == 0u) continue;
+    bool listed = false;
+    for (const auto& record : give) listed = listed || record.first == weapon;
+    if (!listed) give.emplace_back(weapon, 1u);
+  }
+
+  const int slot = player - 1;
+  CoopHeroRecord& record = g_coop_record[slot];
+  record.generation = version;
+  record.melee = melee;
+  record.ranged = ranged;
+  record.stats = std::move(stats);
+  record.skills = std::move(skills);
+  record.build = has_looks ? std::move(build) : std::string();
+  record.face = face;
+  record.name = std::move(name);
+  if (player == 2) {
+    g_coop_wear[2] = worn;
+    g_coop_give[2] = give;
+  }
+  g_coop_wear[slot] = std::move(worn);
+  g_coop_give[slot] = std::move(give);
+
+  REXLOG_INFO("Refii guest-tick pump: HeroState v{} for player {}: {} worn, {} record(s), "
+              "melee 0x{:08X} ranged 0x{:08X}, face 0x{:08X}, {} rank(s), looks {}, known {}, "
+              "name '{}'", version, player, g_coop_wear[slot].size(), g_coop_give[slot].size(),
+              melee, ranged, face, ranks.size(), has_looks ? "yes" : "no", known ? "yes" : "no",
+              record.name);
   return true;
 }
 
@@ -4308,8 +4850,10 @@ bool DispatchCoopHeroApply(const std::string& text) {
 /// records held, equip needs the weapons held, and the stats walk needs the body to be the one
 /// they belong to. Once per (body, generation): every step is idempotent on its own, so a new
 /// generation re-runs only what changed (a new outfit re-wears; the same weapons are not
-/// re-drawn). A body the guest rebuilds (level change, retype) is a new entity and gets the
-/// standing generation again from the tick.
+/// re-drawn). Each step reports done or DEFERRED (a component the body does not have yet, a
+/// record not held yet); the generation is latched only when every step is done, and every
+/// step runs each tick until then. A body the guest rebuilds (level change, retype) is a new
+/// entity and gets the standing generation again from the tick.
 void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
   CoopHeroRecord& record = g_coop_record[player - 1];
   if (entity == 0u || record.generation == 0u) {
@@ -4320,19 +4864,26 @@ void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) 
     return;
   }
 
-  CoopGivePlayer(ctx, base, player, entity);
-  CoopRedressPlayer(ctx, base, player, entity);
-  ApplyEquip(ctx, base, player, entity, record.melee, record.ranged);
+  bool done = CoopGivePlayer(ctx, base, player, entity);
+  done = CoopRedressPlayer(ctx, base, player, entity) && done;
+  done = ApplyEquip(ctx, base, player, entity, record.melee, record.ranged) && done;
   if (player == 2) {
-    ApplyStats(ctx, base, entity, record.stats);
-    ApplySkills(ctx, base, entity, record.skills);
-    ApplyBuild(ctx, base, entity, record.build);
-    ApplyFace(ctx, base, entity, record.face);
+    done = ApplyStats(ctx, base, entity, record.stats) && done;
+    done = ApplySkills(ctx, base, entity, record.skills) && done;
+    done = ApplyBuild(ctx, base, entity, record.build) && done;
+    done = ApplyFace(ctx, base, entity, record.face) && done;
+  }
+
+  if (!done) {
+    return;  // a deferred step asks again on the next tick
   }
 
   g_coop_applied_generation[entity] = record.generation;
-  REXLOG_INFO("Refii guest-tick pump: CoopApplyHero — generation {:08X} applied to player {} "
-              "0x{:08X}", record.generation, player, entity);
+  g_herostate_body[player - 1] = entity;
+  g_herostate_applied[player - 1].store(record.generation, std::memory_order_relaxed);
+  refii_bridge_publish_herostate_applied(static_cast<uint32_t>(player), record.generation);
+  REXLOG_INFO("Refii guest-tick pump: CoopApplyHero — generation (HeroState version) {} applied "
+              "to player {} 0x{:08X}", record.generation, player, entity);
 }
 
 /// See kActionCoopHeroBodyPrefix.
@@ -4396,7 +4947,12 @@ bool DispatchCoopHeroBody(PPCContext& ctx, uint8_t* base, const std::string& whi
   // undone within a frame on the screen, and again the moment play starts. What survives all of
   // that is answering `sub_8233C508` — the sole source of player two's creature name — which
   // `coop_player_hooks.cpp` overrides and this bit drives.
-  RefiiCoopSetOwnHero(henchman == nullptr && choice != "henchman" ? 1 : 0);
+  const bool own = henchman == nullptr && choice != "henchman";
+  if (own != g_coop_own_hero.load(std::memory_order_relaxed)) {
+    // A different body is coming for player two: nothing latched on the current one holds.
+    CoopForgetBody(CoopPlayerTwoEntity(base));
+  }
+  RefiiCoopSetOwnHero(own ? 1 : 0);
 
   const uint32_t player = PlayerWithId(base, 2u);
   if (player == 0u) {
@@ -4408,9 +4964,10 @@ bool DispatchCoopHeroBody(PPCContext& ctx, uint8_t* base, const std::string& whi
   // resolves to a live entity. Player two is created with no entity attached (`a8 = 0` at
   // 0x82316C00) and `sub_8233D090` attaches it later (0x8233D698), so this is a no-op until the
   // henchman has actually spawned — call it after the join completes, not during.
+  // Scratch above the callee's argument-save area: frame+0x60 and up.
   const uint32_t sp = ctx.r1.u32;
   const uint32_t frame = (sp - 0x200u) & ~0xFu;
-  const uint32_t text = frame + 0x20u;
+  const uint32_t text = frame + 0x60u;
   const uint32_t handle = frame + 0x1A0u;
 
   const std::size_t length = std::strlen(creature);
@@ -6755,11 +7312,143 @@ bool DispatchQueryAnswer(PPCContext& ctx, uint8_t* base, uint32_t code) {
 ///
 /// Swapped rather than popped one at a time: actions make guest calls, and a host mutex must
 /// never be held across guest code. A post made while the pump runs lands in the next tick.
+/// Set while the drain runs actions: a redress the hooks ask for from inside one (a body
+/// retype posted as an action) waits for the tick instead of nesting.
+std::atomic<bool> g_pump_draining{false};
+
+// --- Guest heap integrity, checked every tick --------------------------------------------
+//
+// THE INSTRUMENT FOR A CORRUPTION NOBODY CAN SEE IN A CRASH LOG. Three runs (2026-10-07
+// 22:07, 23:31; 2026-10-08 00:33) died on both machines inside the TU1 coalescing allocator
+// with its free list carrying garbage — 0x19BE as a node, then the vtable 0x82001770 as a
+// block — long after the write that put it there. The allocator (`sub_832378D0` alloc,
+// `sub_83237AB8` free, `MemSys_CoalesceHeap_Free`, `sub_83238460` the `lh_free` entry) is
+// three heaps at `dword_83496DB0/B4/B8`. Each heap: `+4` region size, `+8` bucket count,
+// `+24` the region list — a region is {base +0, bucket array +4, next +8}. A bucket is a
+// list of free NODES sorted by (size, block): node {size +0, block header +4, prev +8,
+// next +12}. A block header sits 16 bytes under the user pointer: {magic 0xABCDEF12 +0, its
+// free node (-1 below the heap's minimum, 0 when allocated) +4, previous block's size +8,
+// size +12}. SIZE COUNTS FROM THE HEADER (`sub_83237618` makes the first block
+// `regionSize - 0x210` long at region+0x210, so header + size == region end); the region
+// record is the first 16 bytes of the region {base, bucket array at region+16, next, size}
+// and the bucket heads are per region. The walk checks
+// every link both ways and every header against its node; the first tick that disagrees,
+// confirmed on the next tick (other guest threads allocate under the heap lock while this
+// reads without it), is reported ONCE with the actions the pump ran most recently, which is
+// the attribution the crash logs could never give. TU1 only: the heap globals are not in
+// the address map for the unpatched executable.
+
+constexpr std::size_t kHeapCheckActionRing = 8u;
+std::string g_heap_check_actions[kHeapCheckActionRing];
+std::size_t g_heap_check_action_next = 0u;
+
+void HeapCheckNoteAction(const std::string& name) {
+  g_heap_check_actions[g_heap_check_action_next % kHeapCheckActionRing] =
+      name.size() > 96u ? name.substr(0, 96u) + "..." : name;
+  ++g_heap_check_action_next;
+}
+
+struct HeapViolation {
+  uint32_t heap = 0u;
+  uint32_t bucket = 0u;
+  uint32_t node = 0u;
+  const char* what = "";
+};
+
+/// Walks one heap; returns the first violation or an empty one. `steps` is a budget.
+HeapViolation WalkGuestHeap(uint8_t* base, uint32_t heap_global, uint32_t heap_index, uint32_t& steps) {
+  HeapViolation none;
+  const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+  const uint32_t heap = LoadGuestU32(base, heap_global);
+  if (!plausible(heap)) return none;
+  const uint32_t region_size = LoadGuestU32(base, heap + 4u);
+  const uint32_t buckets = LoadGuestU32(base, heap + 8u);
+  if (buckets == 0u || buckets > 4096u) return none;
+  uint32_t region = LoadGuestU32(base, heap + 24u);
+  for (uint32_t r = 0; plausible(region) && r < 64u; ++r, region = LoadGuestU32(base, region + 8u)) {
+    const uint32_t region_base = LoadGuestU32(base, region);
+    const uint32_t bucket_array = LoadGuestU32(base, region + 4u);
+    if (!plausible(region_base) || !plausible(bucket_array)) continue;
+    const uint32_t region_end = region_base + region_size;
+    for (uint32_t b = 0; b < buckets; ++b) {
+      uint32_t node = LoadGuestU32(base, bucket_array + 4u * b);
+      uint32_t prev = 0u;
+      for (uint32_t n = 0; node != 0u && n < 65536u; ++n) {
+        if (steps-- == 0u) return none;
+        HeapViolation v;
+        v.heap = heap_index;
+        v.bucket = b;
+        v.node = node;
+        if (!plausible(node) || (node & 3u) != 0u) { v.what = "node pointer outside the guest or unaligned"; return v; }
+        const uint32_t size = LoadGuestU32(base, node);
+        const uint32_t block = LoadGuestU32(base, node + 4u);
+        const uint32_t node_prev = LoadGuestU32(base, node + 8u);
+        const uint32_t next = LoadGuestU32(base, node + 12u);
+        if (node_prev != prev) { v.what = "prev link does not point back"; return v; }
+        if (block < region_base + 16u + 4u * buckets || block + 16u > region_end) { v.what = "block outside the region"; return v; }
+        if (LoadGuestU32(base, block) != 0xABCDEF12u) { v.what = "block header magic"; return v; }
+        if (LoadGuestU32(base, block + 4u) != node) { v.what = "block header does not name this node"; return v; }
+        if (LoadGuestU32(base, block + 12u) != size) { v.what = "block header size differs from the node's"; return v; }
+        if (size < 16u || (size & 15u) != 0u || block + size > region_end) { v.what = "block size runs past the region"; return v; }
+        prev = node;
+        node = next;
+      }
+    }
+  }
+  return none;
+}
+
+void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
+  static bool reported = false;
+  static HeapViolation pending;
+  static uint32_t pending_tick = 0u;
+  if (reported || refii_guest_build() != 0) {
+    return;
+  }
+
+  static const uint32_t kHeaps[3] = {0x83496DB0u, 0x83496DB4u, 0x83496DB8u};
+  uint32_t steps = 200000u;
+  HeapViolation found;
+  for (uint32_t i = 0; i < 3u && found.what[0] == '\0'; ++i) {
+    found = WalkGuestHeap(base, kHeaps[i], i, steps);
+  }
+
+  if (found.what[0] == '\0') {
+    pending = HeapViolation{};
+    return;
+  }
+
+  // Confirmed only when the same node is wrong on two consecutive ticks.
+  if (pending.node != found.node || pending.what != found.what || tick != pending_tick + 1u) {
+    pending = found;
+    pending_tick = tick;
+    return;
+  }
+
+  reported = true;
+  std::string actions;
+  for (std::size_t i = 0; i < kHeapCheckActionRing; ++i) {
+    const std::string& a = g_heap_check_actions[(g_heap_check_action_next + i) % kHeapCheckActionRing];
+    if (!a.empty()) actions += " [" + a + "]";
+  }
+  const uint32_t node = found.node;
+  const auto word = [&](uint32_t at) { return LooksLikeGuestPointer(at) || at < 0x10000u ? LoadGuestU32(base, at) : 0u; };
+  REXLOG_INFO("Refii HEAP CORRUPTION at tick {} — heap {} bucket {} node 0x{:08X}: {} (node words "
+              "{:08X} {:08X} {:08X} {:08X}); last actions ran:{}",
+              tick, found.heap, found.bucket, node, found.what, word(node), word(node + 4u),
+              word(node + 8u), word(node + 12u), actions.empty() ? " (none)" : actions.c_str());
+}
+
 void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
   const uint32_t taken = GuestTickPumpBeginDrain();
   if (taken == 0) {
     return;
   }
+
+  struct Draining {
+    Draining() { g_pump_draining.store(true, std::memory_order_relaxed); }
+    ~Draining() { g_pump_draining.store(false, std::memory_order_relaxed); }
+  } draining;
 
   for (uint32_t slot = 0; slot < taken; ++slot) {
     const std::string name = GuestTickPumpTakenAction(slot);
@@ -6768,8 +7457,37 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
     // Logged before the call, not only after it: everything below dispatches into the guest on
     // its own thread, so an action that never returns would otherwise log nothing. The last
     // `dispatching '<name>'` with no matching `ran` names the action the thread is parked in.
-    REXLOG_INFO("Refii guest-tick pump: dispatching '{}' ({} of {} this tick)",
-                name, slot + 1, taken);
+    //
+    // A Coop* field is restated every few seconds; it logs at INFO only when its text differs
+    // from the last text seen under its prefix (through the player digit, so `:1:` and `:2:`
+    // are separate), else at debug. A HeroState is one versioned payload, logged by its
+    // prefix, player and byte count — never the base64 body.
+    bool quiet = false;
+    std::string shown = name;
+    if (name.rfind("Coop", 0) == 0) {
+      static std::map<std::string, std::string> coop_last;
+      std::size_t cut = name.find(':');
+      if (cut != std::string::npos) {
+        const std::size_t second = name.find(':', cut + 1u);
+        cut = second != std::string::npos ? second : cut;
+      }
+      const std::string prefix = cut == std::string::npos ? name : name.substr(0, cut + 1u);
+      std::string& last = coop_last[prefix];
+      quiet = last == name;
+      last = name;
+    } else if (name.rfind(kActionHeroStatePrefix, 0) == 0) {
+      const std::size_t body = name.find(':', std::strlen(kActionHeroStatePrefix));
+      shown = (body == std::string::npos ? name : name.substr(0, body + 1u)) + "<" +
+              std::to_string(body == std::string::npos ? 0u : name.size() - body - 1u) +
+              " base64 chars>";
+    }
+    if (quiet) {
+      REXLOG_DEBUG("Refii guest-tick pump: dispatching '{}' ({} of {} this tick)",
+                   shown, slot + 1, taken);
+    } else {
+      REXLOG_INFO("Refii guest-tick pump: dispatching '{}' ({} of {} this tick)",
+                  shown, slot + 1, taken);
+    }
 
     // Dispatch BY NAME: the guest's front-end dispatcher is a strcmp chain over these strings,
     // so an entry the guest never had simply never matches. The two new-game names are the
@@ -6971,26 +7689,15 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
 
       ran = DispatchMenuEvent(ctx, base, body.substr(0, firstColon),
                               static_cast<uint32_t>(type), static_cast<uint32_t>(id), arm);
-    } else if (name.rfind(kActionCoopHeroWeaponsPrefix, 0) == 0) {
-      ran = DispatchCoopHeroWeapons(name.substr(std::strlen(kActionCoopHeroWeaponsPrefix)));
-    } else if (name.rfind(kActionCoopHeroGivePrefix, 0) == 0) {
-      ran = DispatchCoopHeroGive(name.substr(std::strlen(kActionCoopHeroGivePrefix)));
-    } else if (name.rfind(kActionCoopHeroWearPrefix, 0) == 0) {
-      ran = DispatchCoopHeroWear(name.substr(std::strlen(kActionCoopHeroWearPrefix)));
-    } else if (name.rfind(kActionCoopHeroStatsPrefix, 0) == 0) {
-      ran = DispatchCoopHeroStats(name.substr(std::strlen(kActionCoopHeroStatsPrefix)));
-    } else if (name.rfind(kActionCoopHeroFacePrefix, 0) == 0) {
-      ran = DispatchCoopHeroFace(name.substr(std::strlen(kActionCoopHeroFacePrefix)));
+    } else if (name == kActionCoopHeroReset) {
+      CoopResetSession();
+      REXLOG_INFO("Refii guest-tick pump: CoopHeroReset — hero states, outfits, inventories, "
+                  "held pairs, the own-hero bit and every latch dropped");
+      ran = true;
+    } else if (name.rfind(kActionHeroStatePrefix, 0) == 0) {
+      ran = DispatchHeroState(name.substr(std::strlen(kActionHeroStatePrefix)));
     } else if (name.rfind(kActionCoopHeroHeldPrefix, 0) == 0) {
       ran = DispatchCoopHeroHeld(name.substr(std::strlen(kActionCoopHeroHeldPrefix)));
-    } else if (name.rfind(kActionCoopHeroEquipPrefix, 0) == 0) {
-      ran = DispatchCoopHeroEquip(name.substr(std::strlen(kActionCoopHeroEquipPrefix)));
-    } else if (name.rfind(kActionCoopHeroApplyPrefix, 0) == 0) {
-      ran = DispatchCoopHeroApply(name.substr(std::strlen(kActionCoopHeroApplyPrefix)));
-    } else if (name.rfind(kActionCoopHeroBuildPrefix, 0) == 0) {
-      ran = DispatchCoopHeroBuild(name.substr(std::strlen(kActionCoopHeroBuildPrefix)));
-    } else if (name.rfind(kActionCoopHeroSkillsPrefix, 0) == 0) {
-      ran = DispatchCoopHeroSkills(name.substr(std::strlen(kActionCoopHeroSkillsPrefix)));
     } else if (name.rfind(kActionCoopHeroBodyPrefix, 0) == 0) {
       ran = DispatchCoopHeroBody(ctx, base,
                                  name.substr(std::strlen(kActionCoopHeroBodyPrefix)));
@@ -7180,8 +7887,13 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
     }
 
     if (ran) {
-      REXLOG_INFO("Refii guest-tick pump: ran '{}' on the guest tick thread", name);
+      if (quiet) {
+        REXLOG_DEBUG("Refii guest-tick pump: ran '{}' on the guest tick thread", name);
+      } else {
+        REXLOG_INFO("Refii guest-tick pump: ran '{}' on the guest tick thread", name);
+      }
       GuestTickPumpNoteRan();
+      HeapCheckNoteAction(name);
     } else {
       // The world is not ready — no front-end state, or the event ids are not interned yet.
       // Held rather than dropped or forced: the pump runs from the boot movies onward, so
@@ -7230,7 +7942,14 @@ bool InGameWorldActive(uint8_t* base) {
 /// every guest chooser that reads `*(game+140)+52` faulted at 0x34. The global is the truth.
 uint32_t CoopNetworkManager(uint8_t* base) {
   const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83497490u));
-  return LooksLikeGuestPointer(manager) ? manager : 0u;
+  if (LooksLikeGuestPointer(manager)) {
+    return manager;
+  }
+
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = LooksLikeGuestPointer(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t copy = game != 0u ? LoadGuestU32(base, game + 140u) : 0u;
+  return LooksLikeGuestPointer(copy) ? copy : 0u;
 }
 
 bool IsCoopJoiner(uint8_t* base) {
@@ -7574,6 +8293,8 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // in-game tick, once the world it was loading is up.
   MaybeFinishInGameLoadingScreen(ctx, base);
   MaybeFadeInCoopScreen(ctx, base);
+  ++g_coop_ticks;
+  CheckGuestHeaps(base, g_coop_ticks);
   CoopRedress(ctx, base);
 
   MaybeArmInGameSimulation(ctx, base);
@@ -7809,12 +8530,26 @@ int RefiiCoopGetOwnHero(void) {
   return refii::vfs::g_coop_own_hero.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
-/// Player two's weapon names for the hooks' table overrides; empty when none is set.
-const char* RefiiCoopMeleeName(void) { return refii::vfs::g_coop_melee_name.c_str(); }
-const char* RefiiCoopRangedName(void) { return refii::vfs::g_coop_ranged_name.c_str(); }
+/// Player two's weapon names for the hooks' table overrides. ALWAYS EMPTY: the names went with
+/// the CoopHeroWeapons action — the HeroState carries weapon RECORDS and the pump draws them
+/// itself (ApplyEquip / CoopAttachHeld). Kept so src/hooks still links.
+const char* RefiiCoopMeleeName(void) { return ""; }
+const char* RefiiCoopRangedName(void) { return ""; }
 
-/// Dress player two's body after the guest has built or re-typed it — see CoopRedress.
+/// Dress player two's body after the guest has built or re-typed it — see CoopRedress. Not
+/// from inside the pump's own drain: the tick runs the same pass next.
 void RefiiCoopRedress(void* ctx, uint8_t* base) {
+  if (refii::vfs::g_pump_draining.load(std::memory_order_relaxed)) {
+    return;
+  }
   refii::vfs::CoopRedress(*static_cast<PPCContext*>(ctx), base);
 }
+
+/// Drop every latch keyed on one body — the hooks call it when the guest rebuilds a player
+/// body in place (retype) or gives player two a new one.
+void RefiiCoopForgetBody(uint32_t entity) { refii::vfs::CoopForgetBody(entity); }
+
+/// Player two's current entity, or 0.
+uint32_t RefiiCoopPlayerTwoEntity(uint8_t* base) { return refii::vfs::CoopPlayerTwoEntity(base); }
+
 }  // extern "C"

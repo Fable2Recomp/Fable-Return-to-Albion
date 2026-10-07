@@ -434,6 +434,7 @@ public sealed class Engine_ClipAnimator
 		}
 
 		int count = HostBridge.GetEntityAnimState(entity, _leaves, out uint flags);
+		count = DelayNetworkLeaves(count);
 		// Only a procedural layer the clips cannot express (dog paw/look IK, component 97)
 		// keeps the pose feed; the byte at +576 reads 1 on ordinary rigs and means nothing here.
 		if ((flags & 2) != 0)
@@ -1614,7 +1615,14 @@ public sealed class Engine_ClipAnimator
 			return;
 		}
 
+		uint elapsed = tick - c.PlayheadTick;
 		c.PlayheadTick = tick;
+
+		if (leaf.Network && length > 0f)
+		{
+			ObserveNetworkPlayhead(c, leaf, tick, elapsed, length);
+			return;
+		}
 
 		// The guest states its own continuity; do not infer it from a threshold.
 		// `sub_82200F60` shifts the current time into the leaf's +28 and writes the new one at
@@ -1641,6 +1649,119 @@ public sealed class Engine_ClipAnimator
 		}
 
 		c.Unwrapped += seam + stated;
+		c.Playhead.Push(tick, c.Unwrapped);
+	}
+
+	/// <summary>
+	/// The guest's transform playback delay for a replica: `sub_8239E9E0` stamps each received
+	/// sample `arrival + flt_8209B650` (0.1 s) and the replica tick plays it then.
+	/// </summary>
+	private const double NetworkPlaybackDelayUsec = 100_000.0;
+
+	/// <summary>Leaf sets of a replica rig, newest last, with the frame instant each was read.</summary>
+	private readonly List<(ulong Usec, List<HostBridge.GuestAnimLeaf> Leaves)> _networkHistory = new();
+
+	private readonly Stack<List<HostBridge.GuestAnimLeaf>> _spareLeafLists = new();
+
+	/// <summary>
+	/// ONE TIMELINE FOR A REPLICA'S BODY AND ITS LIMBS. The guest times the two streams from their
+	/// own arrivals and neither carries a sender time: the animation tree (messages 174/175) plays
+	/// from its receipt (`sub_825657C8` stores the arrival at comp19+164, `sub_82563B78` samples
+	/// from it), the transform (messages 5/6) from arrival + 0.1 s (`sub_8239E9E0`). So the limbs
+	/// ran a tenth of a second ahead of the body: measured 2026-10-08, the idle clip began while
+	/// player two's replica glided on for 0.45 s — feet sliding. A modern client plays both from
+	/// one buffered timeline; here the replica's leaf sets are held back by the same 0.1 s, so the
+	/// clip changes land when the body does. Only a rig whose leaves are network-sampled is
+	/// delayed; everything the guest animates locally is drawn as read.
+	/// </summary>
+	private int DelayNetworkLeaves(int count)
+	{
+		bool network = false;
+		foreach (HostBridge.GuestAnimLeaf leaf in _leaves)
+		{
+			if (leaf.Network)
+			{
+				network = true;
+				break;
+			}
+		}
+
+		if (!network)
+		{
+			foreach ((ulong _, List<HostBridge.GuestAnimLeaf> spare) in _networkHistory)
+			{
+				_spareLeafLists.Push(spare);
+			}
+
+			_networkHistory.Clear();
+			return count;
+		}
+
+		ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
+		List<HostBridge.GuestAnimLeaf> copy = _spareLeafLists.Count > 0 ? _spareLeafLists.Pop() : new();
+		copy.Clear();
+		copy.AddRange(_leaves);
+		_networkHistory.Add((now, copy));
+
+		// The newest set read at least the delay ago; until one exists, the oldest held.
+		double due = now - NetworkPlaybackDelayUsec;
+		int pick = 0;
+		for (int i = _networkHistory.Count - 1; i >= 0; --i)
+		{
+			if (_networkHistory[i].Usec <= due)
+			{
+				pick = i;
+				break;
+			}
+		}
+
+		// Everything older than the pick is spent.
+		for (int i = 0; i < pick; ++i)
+		{
+			_spareLeafLists.Push(_networkHistory[i].Leaves);
+		}
+
+		_networkHistory.RemoveRange(0, pick);
+		_leaves.Clear();
+		_leaves.AddRange(_networkHistory[0].Leaves);
+		return _leaves.Count;
+	}
+
+	/// <summary>The share of a network clip's drift closed per tick.</summary>
+	private const float NetworkConvergence = 0.25f;
+
+	/// <summary>
+	/// A replica's clip (<see cref="HostBridge.GuestAnimLeaf.Network"/>): the time is the
+	/// sender's packet extrapolated by the receipt alpha, so consecutive ticks differ by the
+	/// clip's step plus the jitter of the packet's arrival and of the read. That is not a
+	/// re-time, and cutting on it drew the replica once per tick (2026-10-08: a host-side watch
+	/// of player two moved its bones on one frame in eleven). The timeline here advances by the
+	/// stated step per tick and closes a quarter of the gap to the stated time each tick; only a
+	/// gap past the restart bound — a new clip position, not drift — cuts.
+	/// </summary>
+	private static void ObserveNetworkPlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick,
+		uint elapsed, float length)
+	{
+		float step = leaf.Loop ? LoopGap(leaf.Time - leaf.PreviousTime, length) : leaf.Time - leaf.PreviousTime;
+		c.LastStated = leaf.Time;
+		if (!(step >= 0f) || step >= RestartSeconds || elapsed == 0u || elapsed > 8u)
+		{
+			c.Unwrapped = leaf.Time;
+			c.Playhead.Reset(tick, leaf.Time);
+			return;
+		}
+
+		double predicted = c.Unwrapped + (double)step * elapsed;
+		float gap = (float)(leaf.Time - predicted);
+		float error = leaf.Loop ? LoopGap(gap, length) : gap;
+		if (Mathf.Abs(error) >= RestartSeconds)
+		{
+			c.Unwrapped = leaf.Time;
+			c.Playhead.Reset(tick, leaf.Time);
+			return;
+		}
+
+		c.Unwrapped = predicted + error * NetworkConvergence;
 		c.Playhead.Push(tick, c.Unwrapped);
 	}
 

@@ -1890,6 +1890,63 @@ public partial class GameDebugServer : Node
 				return Ok(Refii.Physics.Engine_ClothBody.Describe());
 			}
 
+			case "coop":
+			{
+				// THE CO-OP STACK IN ONE READ: role and phase, both bodies, what each player
+				// holds, and the HeroState versions on every side of the protocol — the answer
+				// that took four logs to stitch together.
+				(uint one, uint two) = Refii.Host.HostBridge.CoopPlayerEntities();
+				var held = new Dictionary<string, object?>();
+				for (uint player = 1u; player <= 2u; ++player)
+				{
+					held[$"player{player}"] = Refii.Host.HostBridge.CoopHeldUids(player) is { } ids
+						? new Dictionary<string, object?>
+						{
+							["melee"] = $"{ids.Melee:X16}",
+							["ranged"] = $"{ids.Ranged:X16}",
+						}
+						: null;
+				}
+
+				Refii.Host.HostBridge.CoopSessionWords? words = Refii.Host.HostBridge.CoopSessionRaw();
+				return Ok(new Dictionary<string, object?>
+				{
+					["side"] = Refii.Host.CoopSession.Side.ToString(),
+					["phase"] = Refii.Host.CoopSession.State.ToString(),
+					["localCoop"] = Refii.Host.CoopSession.LocalCoop,
+					["words"] = words is { } w
+						? new Dictionary<string, object?>
+						{
+							["session"] = w.Session, ["host"] = w.Host, ["client"] = w.Client,
+							["clientJoined"] = w.ClientJoined, ["peers"] = w.PeerCount,
+						}
+						: null,
+					["playerOne"] = $"{one:X8}",
+					["playerTwo"] = $"{two:X8}",
+					["ownHero"] = Refii.Ui.Engine_UiPageProviders.CoopOwnHero,
+					["heroAvailable"] = Refii.Ui.Engine_UiPageProviders.CoopHeroAvailable,
+					["names"] = new Dictionary<string, object?>
+					{
+						["one"] = Refii.Ui.Engine_UiPageProviders.CoopPlayerOneName,
+						["two"] = Refii.Ui.Engine_UiPageProviders.CoopPlayerTwoName,
+					},
+					["held"] = held,
+					["heroState"] = new Dictionary<string, object?>
+					{
+						["localKnown"] = Refii.Host.CoopHeroKit.Local.Known,
+						["remoteKnown"] = Refii.Host.CoopHeroKit.Remote.Known,
+						["chosenSaveRead"] = Refii.Host.CoopHeroKit.ChosenSaveRead,
+						["sentVersion"] = Refii.Host.CoopHeroState.Version,
+						["peerAckedOurs"] = Refii.Host.CoopHeroState.AckedVersion,
+						["receivedVersion"] = Refii.Host.CoopHeroState.ReceivedVersion,
+						["ackedToPeer"] = Refii.Host.CoopHeroState.AckedToPeer,
+						["ackDue"] = Refii.Host.CoopHeroState.AckDue,
+						["appliedPlayer1"] = Refii.Host.HostBridge.HeroStateApplied(1u),
+						["appliedPlayer2"] = Refii.Host.HostBridge.HeroStateApplied(2u),
+					},
+				});
+			}
+
 			case "twins":
 			{
 				// The live entities and the static twins of one model family, with the hide

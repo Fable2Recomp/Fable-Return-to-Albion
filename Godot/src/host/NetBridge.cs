@@ -154,6 +154,28 @@ public static class NetBridge
 		return list;
 	}
 
+	public readonly record struct Notice(int Kind, string PeerId, string Message)
+	{
+		public const int Error = 0;
+		public const int InviteFailed = 1;
+		public const int JoinTimedOut = 2;
+	}
+
+	/// <summary>
+	/// The node's own word since the last call: an invite it could not deliver, a join the host
+	/// never answered, an error. Drained.
+	/// </summary>
+	public static List<Notice> Notices()
+	{
+		var list = new List<Notice>();
+		foreach (string[] f in Records(RefiiNetNotices, 3))
+		{
+			list.Add(new Notice(int.TryParse(f[0], out int kind) ? kind : 0, f[1], f[2]));
+		}
+
+		return list;
+	}
+
 	/// <summary>Peers that dismissed a request we sent, since the last call. Drained.</summary>
 	public static List<string> Declined()
 	{
@@ -236,7 +258,6 @@ public static class NetBridge
 		return parts.Length == 2 ? (parts[0], parts[1]) : null;
 	}
 
-	/// <summary>Sends a friend request to a <c>REXN-…</c> code.</summary>
 	/// <summary>Outcome of <see cref="AddFriendByCode"/>: 0 failed, 1 sent, 2 that was our own code.</summary>
 	public static int AddFriendByCodeResult(string code, string note)
 	{
@@ -254,6 +275,7 @@ public static class NetBridge
 		}
 	}
 
+	/// <summary>Sends a friend request to a <c>REXN-…</c> code.</summary>
 	public static bool AddFriendByCode(string code, string note)
 	{
 		try
@@ -294,11 +316,6 @@ public static class NetBridge
 	}
 
 	/// <summary>
-	/// Joins a session from its material — the host's peer id, the title id and the session
-	/// id as <see cref="OwnSessionId"/> gives it — without the host being a friend. What a
-	/// Discord join secret carries.
-	/// </summary>
-	/// <summary>
 	/// States what Discord shows for us; the node owns the Discord connection, the party and
 	/// the join secret. <paramref name="joinable"/> null means "whenever a session exists".
 	/// </summary>
@@ -332,11 +349,57 @@ public static class NetBridge
 		}
 	}
 
+	/// <summary>
+	/// Joins a session from its material — the host's peer id, the title id and the session
+	/// id as <see cref="OwnSessionId"/> gives it — without the host being a friend. What a
+	/// Discord join secret carries.
+	/// </summary>
 	public static bool JoinSession(string peerId, uint titleId, string sessionId)
 	{
 		try
 		{
 			return RefiiNetJoinSession(peerId ?? string.Empty, titleId, sessionId ?? string.Empty) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>A Discord "ask to join" the node is holding for an answer.</summary>
+	public readonly record struct JoinRequest(string UserId, string UserName);
+
+	/// <summary>
+	/// The join requests that arrived since the last call. Drained: the node hands each one
+	/// over once, so the caller keeps what it reads until it answers with
+	/// <see cref="JoinRequestReply"/>.
+	/// </summary>
+	public static List<JoinRequest> JoinRequests()
+	{
+		var list = new List<JoinRequest>();
+		foreach (string[] f in Records(RefiiNetJoinRequests, 2))
+		{
+			list.Add(new JoinRequest(f[0], f[1]));
+		}
+
+		return list;
+	}
+
+	/// <summary>Answers one join request by the Discord user id it named.</summary>
+	public static bool JoinRequestReply(string userId, bool accept)
+	{
+		if (string.IsNullOrEmpty(userId))
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiNetJoinRequestReply(userId, accept ? 1 : 0) != 0;
 		}
 		catch (DllNotFoundException)
 		{
@@ -439,6 +502,9 @@ public static class NetBridge
 	private static extern uint RefiiNetDeclined(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
+	private static extern uint RefiiNetNotices(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiNetDelivered(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
@@ -456,24 +522,30 @@ public static class NetBridge
 	[DllImport(Library)]
 	private static extern int RefiiNetSetJoinable(int on);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern uint RefiiNetPreviewCode(string code, byte[] outText, uint capacity);
+	[DllImport(Library)]
+	private static extern uint RefiiNetPreviewCode([MarshalAs(UnmanagedType.LPUTF8Str)] string code, byte[] outText, uint capacity);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern int RefiiNetAddFriendByCode(string code, string note);
+	[DllImport(Library)]
+	private static extern int RefiiNetAddFriendByCode([MarshalAs(UnmanagedType.LPUTF8Str)] string code, [MarshalAs(UnmanagedType.LPUTF8Str)] string note);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern int RefiiNetPeerAction(string peerId, int action);
+	[DllImport(Library)]
+	private static extern int RefiiNetPeerAction([MarshalAs(UnmanagedType.LPUTF8Str)] string peerId, int action);
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetOwnSession(byte[] outText, uint capacity);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern int RefiiNetJoinSession(string peerId, uint titleId, string sessionId);
+	[DllImport(Library)]
+	private static extern int RefiiNetJoinSession([MarshalAs(UnmanagedType.LPUTF8Str)] string peerId, uint titleId, [MarshalAs(UnmanagedType.LPUTF8Str)] string sessionId);
 
 	[DllImport(Library)]
-	private static extern void RefiiNetDiscordActivity(string details, string state, int joinable);
+	private static extern void RefiiNetDiscordActivity([MarshalAs(UnmanagedType.LPUTF8Str)] string details, [MarshalAs(UnmanagedType.LPUTF8Str)] string state, int joinable);
 
 	[DllImport(Library)]
 	private static extern void RefiiNetDiscordEnabled(int enabled);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetJoinRequests(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiNetJoinRequestReply([MarshalAs(UnmanagedType.LPUTF8Str)] string userId, int accept);
 }

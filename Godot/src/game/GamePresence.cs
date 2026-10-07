@@ -33,6 +33,9 @@ public partial class GamePresence : Node
 
 	private (string Details, string State, bool? Joinable)? _stated;
 
+	/// <summary>Whether the node was up at the last poll; a statement made while it was not reached nothing.</summary>
+	private bool _nodeWasUp;
+
 	public override void _Ready()
 	{
 		IReadOnlyDictionary<string, string> config = Engine_RefiiConfig.Read(out _);
@@ -63,8 +66,14 @@ public partial class GamePresence : Node
 			return;
 		}
 
+		// RESTATED ON THE FIRST POLL AFTER THE NODE COMES UP, whatever the text: an activity
+		// stated to a node that was not there yet was never stated at all.
+		bool nodeUp = NetBridge.Available;
+		bool resend = nodeUp && !_nodeWasUp;
+		_nodeWasUp = nodeUp;
+
 		(string Details, string State, bool? Joinable) wanted = Describe();
-		if (_stated is { } stated && stated == wanted)
+		if (!resend && _stated is { } stated && stated == wanted)
 		{
 			return;
 		}

@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 170;
+	public const int ExpectedAbiVersion = 171;
 
 	private const int MessageCapacity = 512;
 
@@ -285,7 +285,7 @@ public static class HostBridge
 		uint Key, float Time, float PreviousTime, float Weight, bool Loop, bool Additive,
 		int Priority, int Track, uint Uid, float BlendIn, float BlendOut,
 		bool Overlay, uint Mask, uint PriorityMask,
-		float RecordPrevious, float RecordCurrent);
+		float RecordPrevious, float RecordCurrent, bool Network = false);
 
 	private const int AnimLeafWords = 12;
 
@@ -818,7 +818,9 @@ public static class HostBridge
 	/// The guest's stated animation for one rig: the clip leaves of its controller's blend
 	/// tree (see RefiiHostGetEntityAnimState). Empty when the entity has no active controller.
 	/// <paramref name="flags"/>: bit0 controller active, bit1 a procedural IK component is
-	/// present, bit2 the tree is netplay-replicated and was not walked.
+	/// present, bit2 the tree is netplay-replicated and was not walked. A leaf's
+	/// <see cref="GuestAnimLeaf.Network"/> marks clip times extrapolated from a replica's packet
+	/// alpha: their tick-to-tick continuity is not stated.
 	/// </summary>
 	public static int GetEntityAnimState(uint entity, List<GuestAnimLeaf> into, out uint flags)
 	{
@@ -848,7 +850,8 @@ public static class HostBridge
 				_animWords[at + 8],
 				_animWords[at + 9],
 				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 10]),
-				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 11])));
+				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 11]),
+				(f & 8) != 0));
 		}
 
 		return (int)leaves;
@@ -2520,10 +2523,12 @@ public static class HostBridge
 	public static bool IsInGame => RefiiHostIsInGame() != 0;
 
 	/// <summary>
-	/// This player's role in a co-op session, as the co-op manager states it: 0 solo, 1 host,
-	/// 2 joiner. The manager is <c>*(*(0x83496AB8)+12)+140</c>; <c>+52</c> is "in a session",
-	/// <c>+53</c> host and <c>+54</c> joiner, and the guest's own joiner-side front-end teardown
-	/// is gated on exactly <c>+52 &amp;&amp; +54</c>.
+	/// This player's role in a co-op session, as the network manager states it: 0 no session,
+	/// 1 host, 2 joiner. SOLO READS AS HOST — a single-player game has <c>+52</c> and <c>+53</c>
+	/// set — so 1 is "host or solo", not "co-op host". The manager is <c>g_XrnmNetContext</c>
+	/// (<c>0x83497490</c>; <c>*(*(0x83496AB8)+12)+140</c> is its counted copy, the fallback);
+	/// <c>+52</c> is "in a session", <c>+53</c> host and <c>+54</c> joiner, and the guest's own
+	/// joiner-side front-end teardown is gated on exactly <c>+52 &amp;&amp; +54</c>.
 	/// </summary>
 	public static uint CoopRole => RefiiHostGetCoopRole();
 
@@ -2544,15 +2549,6 @@ public static class HostBridge
 		return new CoopShare(known != 0, gold, experience);
 	}
 
-	/// <summary>
-	/// The co-op screen's mannequin — the live entity the guest spawned for the pickbox preview and
-	/// its preview ticket — or null when screen 24 is not up or nothing is standing yet. There is
-	/// no model hash: the entity is drawn from its own components like any spawned creature.
-	/// </summary>
-	/// <summary>
-	/// The hero's equipped weapons as GDB record ids — the same id space the inventory records
-	/// carry — or null when the hero has no weapon set. 0 in a slot means it is empty.
-	/// </summary>
 	/// <summary>The chosen co-op hero save's directory name, or null when none is chosen.</summary>
 	public static string? CoopHeroSaveName()
 	{
@@ -2612,6 +2608,10 @@ public static class HostBridge
 			: null;
 	}
 
+	/// <summary>
+	/// The hero's equipped weapons as GDB record ids — the same id space the inventory records
+	/// carry — or null when the hero has no weapon set. 0 in a slot means it is empty.
+	/// </summary>
 	public static (uint Melee, uint Ranged)? HeroWeapons()
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
@@ -2622,10 +2622,6 @@ public static class HostBridge
 		return RefiiHostGetHeroWeapons(out uint melee, out uint ranged) != 0 ? (melee, ranged) : null;
 	}
 
-	/// <summary>
-	/// The two players' live entity addresses off the game's player map (key 1 and key 2), 0 for
-	/// a slot that has no entity. ABI 133 — so the entity feed can name player two's rig.
-	/// </summary>
 	/// <summary>The co-op session's raw words off the authoritative network manager (ABI 134).</summary>
 	public readonly record struct CoopSessionWords(
 		bool ManagerPresent, bool Session, bool Host, bool Client, bool Lost, bool ClientJoined,
@@ -2659,6 +2655,10 @@ public static class HostBridge
 			count >= 12 ? w[10] : 0u, count >= 12 ? w[11] : 0xFFFFFFFFu);
 	}
 
+	/// <summary>
+	/// The two players' live entity addresses (key 1 and key 2: the entity manager's own slots first, the player map second), 0 for
+	/// a slot that has no entity. ABI 133 — so the entity feed can name player two's rig.
+	/// </summary>
 	public static (uint One, uint Two) CoopPlayerEntities()
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
@@ -2692,6 +2692,11 @@ public static class HostBridge
 		}
 	}
 
+	/// <summary>
+	/// The co-op screen's mannequin — the live entity the guest spawned for the pickbox preview and
+	/// its preview ticket — or null when screen 24 is not up or nothing is standing yet. There is
+	/// no model hash: the entity is drawn from its own components like any spawned creature.
+	/// </summary>
 	public static (uint Entity, uint Ticket)? CoopMannequin()
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
@@ -2712,8 +2717,52 @@ public static class HostBridge
 	/// restated while it matters, never a one-shot event. A lost datagram then costs one
 	/// restatement instead of a desync.
 	/// </summary>
-	public static bool CoopSend(string message) =>
-		!string.IsNullOrEmpty(message) && RefiiNetCoopSend(message) != 0;
+	public static bool CoopSend(string message)
+	{
+		if (string.IsNullOrEmpty(message) || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiNetCoopSend(message) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// The HeroState version the pump last APPLIED to a player's body (1 host, 2 joiner), 0 when
+	/// none has been, or when the bridge is down. The receiver acks a version only once this
+	/// reports it.
+	/// </summary>
+	public static uint HeroStateApplied(uint player)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0u;
+		}
+
+		try
+		{
+			return RefiiHostGetHeroStateApplied(player);
+		}
+		catch (DllNotFoundException)
+		{
+			return 0u;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0u;
+		}
+	}
 
 	/// <summary>
 	/// Takes the oldest message the peer sent, or null when nothing is waiting. Drain it every
@@ -2721,8 +2770,26 @@ public static class HostBridge
 	/// </summary>
 	public static string? CoopReceive()
 	{
-		uint written = RefiiNetCoopReceive(CoopInbox, (uint)CoopInbox.Length);
-		return written == 0
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		uint written;
+		try
+		{
+			written = RefiiNetCoopReceive(CoopInbox, (uint)CoopInbox.Length);
+		}
+		catch (DllNotFoundException)
+		{
+			return null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		return written == 0 || written > CoopInbox.Length
 			? null
 			: System.Text.Encoding.UTF8.GetString(CoopInbox, 0, (int)written);
 	}
@@ -7204,11 +7271,14 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetClothingMannequin();
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern int RefiiNetCoopSend(string text);
+	[DllImport(Library)]
+	private static extern int RefiiNetCoopSend([MarshalAs(UnmanagedType.LPUTF8Str)] string text);
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetCoopReceive(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetHeroStateApplied(uint player);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetSimTick();
@@ -7272,8 +7342,8 @@ public static class HostBridge
 	private static extern uint RefiiHostTakeUiElementChanges(
 		uint[]? outWords, uint wordCapacity, byte[]? outKinds, uint kindCapacity);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern void RefiiHostSetGuiPredicate(string name, uint kind, uint bits);
+	[DllImport(Library)]
+	private static extern void RefiiHostSetGuiPredicate([MarshalAs(UnmanagedType.LPUTF8Str)] string name, uint kind, uint bits);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostUiElementCounters(
@@ -7377,7 +7447,7 @@ public static class HostBridge
 		out uint flags);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostSetCvar(string name, string value);
+	private static extern uint RefiiHostSetCvar([MarshalAs(UnmanagedType.LPUTF8Str)] string name, [MarshalAs(UnmanagedType.LPUTF8Str)] string value);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostVfsResolve(
@@ -7400,19 +7470,19 @@ public static class HostBridge
 		[Out] long[] outValues, [Out] byte[] outNames, uint nameStride, uint capacity);
 
 	[DllImport(Library)]
-	private static extern void RefiiHostTraceMessage(string text);
+	private static extern void RefiiHostTraceMessage([MarshalAs(UnmanagedType.LPUTF8Str)] string text);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostTraceStartup();
 
 	[DllImport(Library)]
-	private static extern ulong RefiiHostTraceZoneBegin(string name);
+	private static extern ulong RefiiHostTraceZoneBegin([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostTraceZoneEnd(ulong zone);
 
 	[DllImport(Library)]
-	private static extern void RefiiHostTracePlot(string name, double value);
+	private static extern void RefiiHostTracePlot([MarshalAs(UnmanagedType.LPUTF8Str)] string name, double value);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostTraceGpuPasses(
@@ -7530,8 +7600,8 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern void RefiiHostGetSceneStreams(uint[] outWords);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
-	private static extern uint RefiiHostPostFrontEndAction(string name);
+	[DllImport(Library)]
+	private static extern uint RefiiHostPostFrontEndAction([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetLanguages(
@@ -7977,7 +8047,7 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern int RefiiHostProbeGuestMemory(byte[] message, nuint capacity);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
+	[DllImport(Library)]
 	private static extern int RefiiHostStart(
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string gameDirectory,
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string arguments,
@@ -7995,11 +8065,11 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern int RefiiHostJoin(byte[] message, nuint capacity);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
+	[DllImport(Library)]
 	private static extern void RefiiHostSetAppRoot(
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string root);
 
-	[DllImport(Library, CharSet = CharSet.Ansi)]
+	[DllImport(Library)]
 	private static extern int RefiiHostInitialize(
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string gameDirectory,
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string arguments,

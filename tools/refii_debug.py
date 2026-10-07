@@ -31,7 +31,7 @@ KNOWN_OPS = [
     "call-result", "poke", "heap", "probe", "guestlog", "mark", "lights", "fx", "fxlayer",
     "render", "entity", "twins", "casters", "doubles", "lodcensus", "gpuprofile", "capture",
     "metrics", "input-record", "input-replay", "achievements", "elements", "log", "hud", "watch",
-    "alpha", "camera", "shot", "flicker", "press",
+    "alpha", "camera", "shot", "flicker", "press", "coop",
 ]
 SHELL_COMMANDS = ["set", "levers", "watch", "raw", "ops", "help", "quit", "exit"]
 HISTORY = os.path.expanduser("~/.cache/refii-scratch/refii_debug_history")

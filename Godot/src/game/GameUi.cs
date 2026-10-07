@@ -283,15 +283,8 @@ public partial class GameUi : Node
 		HasInGameUi = false;
 	}
 
-	/// <summary>Whether the first kit send has been reported.</summary>
-	private bool _coopSendReported;
-
 	/// <summary>The key over the last co-op mannequin line; null before the first one.</summary>
 	private long? _coopMannequinReport;
-
-	private string _coopWeaponsReported = string.Empty;
-
-	private string _coopRejectedReported = string.Empty;
 
 	/// <summary>Joiner only: whether the live hero has become the kit's source.</summary>
 	private bool _coopLiveSampling;
@@ -4986,12 +4979,10 @@ public partial class GameUi : Node
 		// `MenuEquipPressed` is the pad's X. The prompt is the authored `icon_button_x` beside
 		// `Title2` on the right page, which the provider labels; this is the half that acts.
 		//
-		// `CoopHeroBody:auto` takes the gender from the appearance pickbox rather than assuming
-		// one, so X on a female henchman gives a female hero. `sub_82389FB8` is the guest's own
+		// The body's gender is the kit's where one describes player two, else the appearance
+		// pickbox's (`CoopHeroBody:auto`). `sub_82389FB8` is the guest's own
 		// `Player::ChangeEntityType`, proven live — the body swaps and the session survives.
-		//
-		// THE BODY IS ALL THIS DOES. It arrives bare, because appearance and equipment are the
-		// capture and transport stages of docs/coop_native_hero_plan.md and are not built yet.
+		// The outfit, weapons, inventory and stats follow from the kit on the channel drive.
 		if (upId == CoopScreenId && GameInput.MenuEquipPressed)
 		{
 			PressCoopHeroToggle();
@@ -5011,21 +5002,38 @@ public partial class GameUi : Node
 
 	/// <summary>
 	/// X was pressed. THE JOINER OWNS THE BIT — it is their hero — so the host does not flip it
-	/// locally; it asks, and adopts whatever the joiner states back. Two instances that each
-	/// flipped their own copy would take one press to disagree about what player two IS.
+	/// locally; it states the body it wants player two in and adopts whatever the joiner states
+	/// back. Two instances that each flipped their own copy would take one press to disagree
+	/// about what player two IS.
 	/// </summary>
 	private void PressCoopHeroToggle()
 	{
 		if (SessionRole == 1u)
 		{
-			GD.Print("[game-ui] co-op X — asking the joiner to swap player two's body");
-			HostBridge.CoopSend(CoopHeroToggleMessage);
+			bool wanted = !_coopHeroApplied;
+			GD.Print($"[game-ui] co-op X — asking the joiner to put player two in their " +
+				$"{(wanted ? "own hero" : "henchman")}");
+			HostBridge.CoopSend($"{CoopHeroToggleMessage}={(wanted ? "1" : "0")}");
 			return;
 		}
 
-		// ONLY AFTER A SAVE IS CHOSEN. The hero comes from the save the player picked with Y on
-		// this screen; until one is chosen there is no hero to switch to, and the prompt says so.
-		bool ownHero = !Engine_UiPageProviders.CoopOwnHero;
+		RequestCoopHeroBody(!Engine_UiPageProviders.CoopOwnHero);
+	}
+
+	/// <summary>
+	/// The joiner's side of the toggle, from its own X or the host's request: a DESIRED body,
+	/// applied only when it differs from the one player two is in, so a repeated request is
+	/// not a flip. ONLY AFTER A SAVE IS CHOSEN: the hero comes from the save the player picked
+	/// with Y on this screen; until one is chosen there is no hero to switch to, and the prompt
+	/// says so.
+	/// </summary>
+	private void RequestCoopHeroBody(bool ownHero)
+	{
+		if (ownHero == Engine_UiPageProviders.CoopOwnHero)
+		{
+			return;
+		}
+
 		if (ownHero && !Engine_UiPageProviders.CoopHeroAvailable)
 		{
 			GD.Print("[game-ui] co-op X — no save chosen yet; the hero comes from the chosen save");
@@ -5037,47 +5045,46 @@ public partial class GameUi : Node
 
 	/// <summary>
 	/// Puts player two in their own hero's body, or back in the pickbox henchman, on THIS
-	/// instance. The restatement to the peer rides <see cref="DriveCoopHeroChannel"/>.
+	/// instance. The restatement to the peer rides <see cref="DriveCoopHeroChannel"/>, which
+	/// also dresses, arms and stats the new body from the kit once the guest has built it.
 	///
-	/// `auto` takes the hero's gender from the appearance pickbox rather than assuming one, so X
-	/// on a female henchman gives a female hero. `pickbox` goes back to the exact henchman the
-	/// pickbox is showing, out of `sub_8233C508`'s own table — a fixed name would quietly change
-	/// their henchman on the way back. `sub_82389FB8` is the guest's own `Player::ChangeEntityType`
-	/// and the swap is proven live.
-	///
-	/// THE BODY IS ALL THIS DOES. It arrives bare: appearance and equipment are the capture and
-	/// transport stages of docs/coop_native_hero_plan.md and are not built yet.
+	/// `pickbox` goes back to the exact henchman the pickbox is showing, out of `sub_8233C508`'s
+	/// own table — a fixed name would quietly change their henchman on the way back.
+	/// `sub_82389FB8` is the guest's own `Player::ChangeEntityType` and the swap is proven live.
 	/// </summary>
 	private void SetCoopHeroBody(bool ownHero)
 	{
 		Engine_UiPageProviders.CoopOwnHero = ownHero;
 		_coopHeroApplied = ownHero;
 
-		// THE PICKBOX'S GENDER, NOT A CAPTURED KIT'S. The guest sets that pickbox from the chosen
-		// save's real Gender and Morality (`sub_8243AEF8`: index 0-2 female, 3-5 male, +3 on
-		// Gender==2), so it is the authority. Reading gender off a live capture instead built a
-		// female hero over a male henchman in one run — the capture came off no real hero.
-		//
-		// SUPERSEDED WHERE A KIT EXISTS. The two pickboxes did not agree in one run ("Good
-		// Female" on the host, "Good Male" on the joiner), and the save's own Gender is in the
-		// kit that describes player two — Local on the joiner, Remote on the host.
-		CoopHeroKit.Kit two = SessionRole == 2u ? CoopHeroKit.Local : CoopHeroKit.Remote;
-		string body = !ownHero ? "CoopHeroBody:pickbox"
-			: two.Known ? (two.Female ? "CoopHeroBody:female" : "CoopHeroBody:male")
-			: "CoopHeroBody:auto";
+		// A new body comes up armed with the henchman's defaults, in either direction: the
+		// joiner's live sample waits for the kit's own weapons to be drawn again.
+		_coopLiveSampling = false;
 
+		// A new body is a new apply: player two's record goes to the pump again for it.
+		_coopStatePostedTwo = 0u;
+
+		string body = CoopHeroBodyAction(ownHero);
+		_coopBodyPosted = body;
 		GD.Print($"[game-ui] co-op — player two to their {(ownHero ? "own hero" : "henchman")} ({body})");
 		HostBridge.PostFrontEndAction(body);
 	}
 
 	/// <summary>
-	/// Refii's own co-op channel, drained and restated once a frame.
-	///
-	/// THE MESSAGES ARE STATE, NOT EVENTS. The joiner restates "player two's body is X" on a
-	/// timer for as long as the session lasts, so a dropped datagram costs one restatement rather
-	/// than leaving the two instances rendering different creatures. That is why the channel
-	/// needs no acking and no sequence numbers.
+	/// The body action for a state. THE KIT'S GENDER WHERE A KIT DESCRIBES PLAYER TWO — Local on
+	/// the joiner, Remote on the host — because the two pickboxes did not agree in one run
+	/// ("Good Female" on the host, "Good Male" on the joiner). `auto` otherwise: the guest sets
+	/// that pickbox from the chosen save's real Gender and Morality (`sub_8243AEF8`), so it is
+	/// the authority until a kit arrives.
 	/// </summary>
+	private static string CoopHeroBodyAction(bool ownHero)
+	{
+		CoopHeroKit.Kit two = SessionRole == 2u ? CoopHeroKit.Local : CoopHeroKit.Remote;
+		return !ownHero ? "CoopHeroBody:pickbox"
+			: two.Known ? (two.Female ? "CoopHeroBody:female" : "CoopHeroBody:male")
+			: "CoopHeroBody:auto";
+	}
+
 	/// <summary>The session's role as the pump's numbers: 0 solo, 1 host, 2 client.</summary>
 	private static uint SessionRole => CoopSession.Side switch
 	{
@@ -5088,25 +5095,65 @@ public partial class GameUi : Node
 
 	private CoopSession.Phase _coopPhaseSeen = CoopSession.Phase.Solo;
 
+	private CoopSession.Role _coopSideSeen = CoopSession.Role.Solo;
+
+	/// <summary>
+	/// Drops every piece of co-op state on both sides of the bridge: the pump's stored state
+	/// (`CoopHeroReset`), the own-hero bit, the applied body, the live-sampling latch, the
+	/// restate clock, the peer's record, the chosen save, both names, the HeroState versions,
+	/// acks, fragment buffers and post latches. Everything restarts from the next poll, so a
+	/// later join starts clean.
+	/// </summary>
+	private void ResetCoopHero(string why)
+	{
+		HostBridge.PostFrontEndAction("CoopHeroReset");
+		Engine_UiPageProviders.CoopOwnHero = false;
+		Engine_UiPageProviders.CoopHeroAvailable = false;
+		Engine_UiPageProviders.CoopPlayerOneName = string.Empty;
+		Engine_UiPageProviders.CoopPlayerTwoName = string.Empty;
+		_coopHeroApplied = false;
+		_coopLiveSampling = false;
+		_coopBodyPosted = string.Empty;
+		_coopHeroRestate = 0.0;
+		_coopStatePostedOne = 0u;
+		_coopStatePostedTwo = 0u;
+		CoopHeroKit.ResetSession();
+		CoopHeroState.Reset();
+		GD.Print($"[game-ui] co-op — {why}; remote hero, chosen save, own-hero bit, versions and acks dropped");
+	}
+
+	/// <summary>
+	/// Refii's own co-op channel, drained and restated once a frame.
+	///
+	/// THE MESSAGES ARE STATE, NOT EVENTS. The joiner restates "player two's body is X" and the
+	/// host its held pairs on a timer for as long as the session lasts, so a dropped datagram
+	/// costs one restatement rather than leaving the two instances rendering different
+	/// creatures. The hero record itself is the one message too large for that: it crosses as
+	/// a versioned, fragmented, acknowledged HeroState (<see cref="CoopHeroState"/>), resent
+	/// only until the peer's pump reports the version applied.
+	/// </summary>
 	private void DriveCoopHeroChannel(double delta)
 	{
 		// THE SESSION MODEL FIRST — one read of the authoritative manager per frame; every
-		// role decision below comes off it. On the frame the peer goes, everything learned
-		// about them goes too, so nothing restates a torn-down body and a later join is clean.
+		// role decision below comes off it. On the frame the peer goes, the session drops to
+		// solo or the side changes, everything learned about the peer goes too, so nothing
+		// restates a torn-down body and a later join is clean.
 		CoopSession.Poll();
-		if (_coopPhaseSeen == CoopSession.Phase.PeerJoined &&
-			CoopSession.State != CoopSession.Phase.PeerJoined)
+		string? reset =
+			_coopPhaseSeen == CoopSession.Phase.PeerJoined && CoopSession.State != CoopSession.Phase.PeerJoined
+				? "the peer is gone"
+			: _coopPhaseSeen != CoopSession.Phase.Solo && CoopSession.State == CoopSession.Phase.Solo
+				? "the session ended"
+			: _coopSideSeen != CoopSession.Side
+				? $"the side changed ({_coopSideSeen} → {CoopSession.Side})"
+			: null;
+		if (reset is not null)
 		{
-			Engine_UiPageProviders.CoopOwnHero = false;
-			Engine_UiPageProviders.CoopHeroAvailable = false;
-			Engine_UiPageProviders.CoopPlayerTwoName = string.Empty;
-			_coopHeroApplied = false;
-			_coopLiveSampling = false;
-			CoopHeroKit.ForgetRemote();
-			GD.Print("[game-ui] co-op — the peer is gone; remote hero, own-hero bit and chunks dropped");
+			ResetCoopHero(reset);
 		}
 
 		_coopPhaseSeen = CoopSession.State;
+		_coopSideSeen = CoopSession.Side;
 
 		// SAMPLED EVEN OUTSIDE A SESSION, and deliberately first. Joining tears the joiner's own
 		// world down, so their hero has to have been captured BEFORE the co-op screen ever asks
@@ -5136,55 +5183,56 @@ public partial class GameUi : Node
 					? cursor.View.RecordName(cursor.Record)
 					: string.Empty;
 
-			// THE JOINER SAMPLES TOO, ONCE THEIR HERO STANDS. The hero resolver answers player
-			// two on the joiner (session && !host → key 2), so a live sample there is their own
-			// hero — the outfit they changed in the clothing book, the weapon they drew — and
-			// the host follows it. Not before the body is theirs: a henchman's empty stash would
-			// overwrite the chosen save's outfit with nothing.
+			// THE JOINER'S HERO IS THE ONE THEY WERE PLAYING. A joiner who loads a save and joins
+			// from the pause menu has a live capture of that hero (`Sample` ran while the role was
+			// still 0 or host); that capture is the kit, and nothing replaces it. The save picked
+			// on the co-op screen is read only when there is NO capture — a join from the title,
+			// where no hero was ever loaded. Reading the pick whenever its name changed shipped a
+			// different hero with every cursor move on the save list (run 2026-10-07 22:07: Hero000
+			// then Hero002, the host built the second), and the pick's weapon is the SAVE FILE's,
+			// not the one the live hero holds.
+			//
+			// Once the body is player two's, the live sample is appearance only and starts at
+			// once: Worn and Inventory keep their previous values while the fresh body reads
+			// empty, and a weapon slot is taken only when it holds a record, so an early sample
+			// cannot unarm or undress the kit.
 			if (SessionRole != 2u)
 			{
 				CoopHeroKit.Sample();
 			}
 			else if (HostBridge.IsInGame && Engine_UiPageProviders.CoopOwnHero &&
-				CoopHeroKit.Local.Known)
+				CoopHeroKit.Local.Known && HostBridge.HeroEntityAddress() != 0u)
 			{
-				// NOT BEFORE THE SAVE'S WEAPONS ARE DRAWN. Until the equip lands, the live weapon
-				// set holds the henchman's defaults, and a sample then would ship those to the
-				// host as the hero's own — which is what put a plain longsword on player two.
-				if (!_coopLiveSampling && HostBridge.HeroWeapons() is { } live &&
-					(CoopHeroKit.Local.MeleeId == 0u || live.Melee == CoopHeroKit.Local.MeleeId))
+				if (!_coopLiveSampling)
 				{
 					_coopLiveSampling = true;
-					GD.Print("[game-ui] co-op — the joiner's hero stands with its own weapons; " +
-						"sampling it live from here (appearance only)");
+					GD.Print("[game-ui] co-op — the joiner's body is their own hero; sampling it " +
+						"live from here (appearance only)");
 				}
 
-				if (_coopLiveSampling)
-				{
-					CoopHeroKit.Sample(appearanceOnly: true);
-				}
+				CoopHeroKit.Sample(appearanceOnly: true);
 			}
 
-			// THE JOINER'S HERO IS THE SAVE IT CHOSE. On pick (Y then A on the co-op screen) the
-			// guest reads that save's HeroSave block into its save manager; with no loaded hero to
-			// capture, the kit is built from that block instead — stats, money, experience, ranks,
-			// gender — so both machines apply them. The host offers whatever the joiner sent.
-			if (SessionRole == 2u && !CoopHeroKit.Local.Known)
+			if (SessionRole == 2u && (!CoopHeroKit.Local.Known || CoopHeroKit.ChosenSaveRead))
 			{
+				// No capture, or the kit came from a pick: the pick names the hero, and a
+				// different pick replaces it. The read skips an unchanged name.
 				CoopHeroKit.SampleChosenSave();
 			}
 
-			Engine_UiPageProviders.CoopHeroAvailable =
-				(SessionRole == 1u ? CoopHeroKit.Remote : CoopHeroKit.Local).Known;
+			// The host offers whatever the joiner's kit says; the joiner offers its kit from
+			// either source.
+			Engine_UiPageProviders.CoopHeroAvailable = SessionRole switch
+			{
+				1u => CoopHeroKit.Remote.Known,
+				2u => CoopHeroKit.Local.Known,
+				_ => false,
+			};
 
 			// Player one is the host, player two the joiner; each side knows its own name from
 			// the node and the other's from the kit.
 			string own = CoopHeroKit.LocalName;
 			string peer = CoopHeroKit.Remote.Name ?? string.Empty;
-			CoopSession.Local.Name = own;
-			CoopSession.Local.Kit = CoopHeroKit.Local;
-			CoopSession.Remote.Name = peer;
-			CoopSession.Remote.Kit = CoopHeroKit.Remote;
 			bool joiner = SessionRole == 2u;
 			Engine_UiPageProviders.CoopPlayerOneName = joiner ? peer : own;
 			Engine_UiPageProviders.CoopPlayerTwoName = joiner ? own : peer;
@@ -5196,49 +5244,42 @@ public partial class GameUi : Node
 		// below need a side.
 		uint role = SessionRole;
 
+		// THE INBOX IS DRAINED EVERY FRAME AND READ ONLY WHILE A SESSION STANDS: a kit, a chunk
+		// or a held pair that arrives after the peer has gone, or before a session exists,
+		// belongs to no one and is dropped rather than stored against the next join.
+		bool listening = CoopSession.State is CoopSession.Phase.Hosting or CoopSession.Phase.PeerJoined;
 		while (HostBridge.CoopReceive() is { } message)
 		{
-			if (message == CoopHeroToggleMessage)
+			if (!listening)
 			{
-				// Only the joiner answers a toggle; a host that echoed one would ping-pong.
+				continue;
+			}
+
+			if (message.StartsWith(CoopHeroToggleMessage, System.StringComparison.Ordinal))
+			{
+				// Only the joiner answers a toggle; a host that echoed one would ping-pong. The
+				// host states the body it wants (`=1` / `=0`); the bare form is an older peer's
+				// flip request.
 				if (role == 2u)
 				{
-					SetCoopHeroBody(!Engine_UiPageProviders.CoopOwnHero);
+					string wanted = message[CoopHeroToggleMessage.Length..];
+					RequestCoopHeroBody(wanted.Length == 0 ? !Engine_UiPageProviders.CoopOwnHero : wanted == "=1");
 				}
 
 				continue;
 			}
 
-			if (message.StartsWith(CoopHeroKit.InventoryPrefix, System.StringComparison.Ordinal))
+			if (message.StartsWith(CoopHeroState.FragmentPrefix, System.StringComparison.Ordinal))
 			{
-				if (CoopHeroKit.DecodeInventory(message))
-				{
-					GD.Print($"[game-ui] co-op — player {(role == 2u ? "one" : "two")}'s inventory " +
-						$"arrived: {CoopHeroKit.Remote.Inventory.Length} record(s)");
-				}
-
+				// The peer's hero, one fragment of a version. Complete and decoded it is
+				// `CoopHeroKit.Remote`; the pump post and the ack ride the tick below.
+				CoopHeroState.Receive(message);
 				continue;
 			}
 
-			if (message.StartsWith(CoopHeroKit.Prefix, System.StringComparison.Ordinal))
+			if (message.StartsWith(CoopHeroState.AckPrefix, System.StringComparison.Ordinal))
 			{
-				// The peer's character. Only the host has any use for it — it is the host's world
-				// player two stands in — but decoding on both costs nothing and keeps the two
-				// sides' idea of the kit identical for anything that wants to show it.
-				if (CoopHeroKit.Decode(message))
-				{
-					GD.Print($"[game-ui] co-op — peer kit arrived (role {role}): name '" +
-						$"{CoopHeroKit.Remote.Name}', hero {(CoopHeroKit.Remote.Known ? "yes" : "no")}, " +
-						$"{(CoopHeroKit.Remote.Female ? "female" : "male")}, " +
-						$"{CoopHeroKit.Remote.Worn.Length} worn");
-				}
-				else if (_coopRejectedReported != message)
-				{
-					// Once per distinct record: a restated kit repeats every few seconds.
-					_coopRejectedReported = message;
-					GD.Print($"[game-ui] co-op — peer kit REJECTED: '{message[..System.Math.Min(160, message.Length)]}'");
-				}
-
+				CoopHeroState.Acknowledge(message);
 				continue;
 			}
 
@@ -5267,136 +5308,40 @@ public partial class GameUi : Node
 
 		if (role == 0u)
 		{
-			// Nothing to apply outside a session; the kit below still goes out.
+			// Nothing to apply outside a session; the record goes out while the co-op screen is
+			// up, so the peer's page can name this player before the role bytes land.
 			_coopHeroRestate -= delta;
-			if (_coopHeroRestate > 0.0)
+			if (_coopHeroRestate > 0.0 || OwnedScreenId() != CoopScreenId)
 			{
 				return;
 			}
 
 			_coopHeroRestate = CoopHeroRestateSeconds;
-			_coopKitRestate -= CoopHeroRestateSeconds;
-			if (_coopKitRestate <= 0.0 && CoopHeroKit.Encode() is { } idleKit)
-			{
-				_coopKitRestate = CoopKitRestateSeconds;
-				ReportCoopSend(HostBridge.CoopSend(idleKit), role, idleKit);
-			}
-
+			CoopHeroState.Send(CoopHeroKit.Local, CoopHeroRestateSeconds);
 			return;
 		}
 
-		// THE OUTFIT IS. The save cannot carry appearance, so the one thing the kit still supplies
-		// is what their hero WEARS — GDB def hashes off the worn walk — restated so the pump has
-		// them whenever the guest next builds the body. The pump dresses once per body.
-		_coopWearRestate -= delta;
-		if (_coopWearRestate <= 0.0)
+		// THE KIT'S GENDER REACHES THE BODY. A body posted as `auto` before the kit arrived, or
+		// under a kit of the other gender, is rebuilt from the kit's: the pump re-types player
+		// two and the restatement below dresses the new body.
+		if (Engine_UiPageProviders.CoopOwnHero && CoopHeroBodyAction(true) != _coopBodyPosted)
 		{
-			_coopWearRestate = CoopWearRestateSeconds;
-
-			// Player two wears the JOINER's hero: the host holds that as Remote, the joiner as
-			// its own Local. Player one wears the HOST's hero, which only the joiner needs told
-			// — its own copy of player one is created by the sync, armed and naked. The pump
-			// refuses to re-give the host's own player one for exactly that reason.
-			CoopHeroKit.Kit two = role == 1u ? CoopHeroKit.Remote : CoopHeroKit.Local;
-			if (Engine_UiPageProviders.CoopOwnHero && two.Known)
-			{
-				if (two.Worn.Length > 0)
-				{
-					HostBridge.PostFrontEndAction("CoopHeroWear:2:" + CoopHeroKit.WornList(two));
-				}
-
-				// Their own weapons, by def name — the guest's equip path takes it from here.
-				// Resolved HERE when the sender could not: the joiner's kit comes off the front
-				// end with no database, so the names arrive empty and the record ids beside them.
-				(string melee, string ranged) = CoopHeroKit.WeaponNames(two);
-				HostBridge.PostFrontEndAction($"CoopHeroWeapons:{melee},{ranged}");
-				if (_coopWeaponsReported != melee + "," + ranged)
-				{
-					_coopWeaponsReported = melee + "," + ranged;
-					GD.Print($"[game-ui] co-op — player two's weapons: melee '{melee}' " +
-						$"(0x{two.MeleeId:X8}), ranged '{ranged}' (0x{two.RangedId:X8})");
-				}
-
-				// And their whole inventory, so the pause book on either side lists what they
-				// actually own, not the henchman's two pickbox weapons.
-				if (CoopHeroKit.GiveList(two) is { } twoList)
-				{
-					HostBridge.PostFrontEndAction("CoopHeroGive:2:" + twoList);
-				}
-
-				// DRAWN, not just owned: the guest's own equip-by-record, after the give has put
-				// the records in the inventory. On the host this also follows the joiner's live
-				// swaps, since their kit re-samples the weapon set once their hero stands.
-				if (two.MeleeId != 0u || two.RangedId != 0u)
-				{
-					HostBridge.PostFrontEndAction($"CoopHeroEquip:2:{two.MeleeId:X8},{two.RangedId:X8}");
-				}
-
-				// THE ONE APPLY, after every field has been stored: the pump runs give, wear,
-				// equip, stats, skills, build and face in that order once per body and generation.
-				HostBridge.PostFrontEndAction($"CoopHeroApply:2:{CoopHeroKit.Generation(two):X8}");
-			}
-
-			if (role == 2u && CoopHeroKit.Remote is { Known: true } one)
-			{
-				if (one.Worn.Length > 0)
-				{
-					HostBridge.PostFrontEndAction("CoopHeroWear:1:" + CoopHeroKit.WornList(one));
-				}
-
-				if (CoopHeroKit.GiveList(one) is { } oneList)
-				{
-					HostBridge.PostFrontEndAction("CoopHeroGive:1:" + oneList);
-				}
-
-				// The joiner's copy of player one is armed by name only — the weapon-set sync
-				// (msg 29) never touches its held-item slots — so it draws them here.
-				if (one.MeleeId != 0u || one.RangedId != 0u)
-				{
-					HostBridge.PostFrontEndAction($"CoopHeroEquip:1:{one.MeleeId:X8},{one.RangedId:X8}");
-				}
-
-				HostBridge.PostFrontEndAction($"CoopHeroApply:1:{CoopHeroKit.Generation(one):X8}");
-			}
+			GD.Print("[game-ui] co-op — player two's kit states a different body; restating it");
+			SetCoopHeroBody(true);
 		}
 
-		// RANKS AND BUILD FROM THE KIT — restated on both sides for the same reason the body is:
-		// re-typing player two rebuilds its components, and each pass writes only what differs.
-		// This was retired while a "captured hero" could be the henchman; a kit now carries
-		// `h=1` only for a hero the joiner actually stood in, loaded from its save before the
-		// join. `sub_824E2F28` clamps and replicates the ranks; the three morphs are written to
-		// the slots our own vitals reader has used since ABI 78. Money, morality, purity,
-		// renown and experience stay the guest's: its Y-then-A save path sets them.
-		_coopSkillsRestate -= delta;
-		if (_coopSkillsRestate <= 0.0)
+		// SENT ONLY INTO A SESSION. After the loss there is nobody to state anything to, and a kit
+		// sent into that gap is one the next peer misreads as its own. The host states from the
+		// moment its session is up — the joiner's co-op page names player one before the
+		// joined byte lands — the joiner only once it stands.
+		bool inSession = CoopSession.PeerStanding ||
+			(role == 1u && CoopSession.State == CoopSession.Phase.Hosting);
+		if (!inSession)
 		{
-			_coopSkillsRestate = CoopSkillsRestateSeconds;
-			CoopHeroKit.Kit stats = role == 1u ? CoopHeroKit.Remote : CoopHeroKit.Local;
-			if (Engine_UiPageProviders.CoopOwnHero && stats.Known)
-			{
-				if (CoopHeroKit.Skills(stats) is { } ranks)
-				{
-					HostBridge.PostFrontEndAction("CoopHeroSkills:" + ranks);
-				}
-
-				// Only a hero captured standing has a body to state; a save-picked one keeps the
-				// pickbox's.
-				if (CoopHeroKit.HasLooks(stats))
-				{
-					HostBridge.PostFrontEndAction("CoopHeroBuild:" + CoopHeroKit.Build(stats));
-				}
-
-				// THE REST OF THE HERO: the HeroSave block the guest itself would have loaded —
-				// money, morality, purity, renown, ranks, experience — applied through the same
-				// component walk as a chosen save; and the face record on component 17.
-				HostBridge.PostFrontEndAction("CoopHeroStats:" + CoopHeroKit.Stats(stats));
-				if (stats.Face != 0u)
-				{
-					HostBridge.PostFrontEndAction($"CoopHeroFace:{stats.Face:X8}");
-				}
-			}
+			return;
 		}
 
+		// ONE TICK for the bit, the held pairs, the record and its ack.
 		_coopHeroRestate -= delta;
 		if (_coopHeroRestate > 0.0)
 		{
@@ -5414,46 +5359,111 @@ public partial class GameUi : Node
 		}
 
 		// The host names the item entities both players hold, as net ids; the client attaches
-		// the replicas (the pump's CoopAttachHeld). Idempotent state, restated.
+		// the replicas (the pump's CoopAttachHeld). Idempotent state, restated — the zero pair
+		// included, which says "nothing held" and the pump stores as such.
 		if (role == 1u)
 		{
 			for (uint player = 1u; player <= 2u; ++player)
 			{
-				if (HostBridge.CoopHeldUids(player) is { } heldIds && (heldIds.Melee != 0ul || heldIds.Ranged != 0ul))
+				if (HostBridge.CoopHeldUids(player) is { } heldIds)
 				{
 					HostBridge.CoopSend($"CoopHeroHeld:{player}:{heldIds.Melee:X16},{heldIds.Ranged:X16}");
+				}
+				else if (player == 2u && Engine_UiPageProviders.CoopOwnHero &&
+					(_coopHeldUnanswered += CoopHeroRestateSeconds) >= 5.0)
+				{
+					// Said while it lasts: a body the bridge cannot read is a joiner who never
+					// gets their weapons (run 2026-10-07 22:07: no CoopHeroHeld:2 for a session).
+					_coopHeldUnanswered = 0.0;
+					(uint one, uint two) = HostBridge.CoopPlayerEntities();
+					GD.Print($"[game-ui] co-op — player two's held ids are unanswered by the bridge " +
+						$"(player entities one 0x{one:X8}, two 0x{two:X8})");
 				}
 			}
 		}
 
-		// The kit goes at a slower cadence than the bit: it is the larger record and only has to
-		// be there by the time a body is built.
-		_coopKitRestate -= CoopHeroRestateSeconds;
-		if (_coopKitRestate <= 0.0 && CoopHeroKit.Encode() is { } kit)
-		{
-			_coopKitRestate = CoopKitRestateSeconds;
-			ReportCoopSend(HostBridge.CoopSend(kit), role, kit);
+		// THE RECORD GOES BOTH WAYS. The joiner's dresses player two on the host; the host's
+		// dresses player one on the joiner, whose copy of the host's hero the sync creates
+		// without any clothes. A changed record is a new version; an unacked one is resent.
+		CoopHeroState.Send(CoopHeroKit.Local, CoopHeroRestateSeconds);
+		PostHeroStates(role);
+		AckHeroState(role);
+	}
 
-			// The inventory rides as its own chunks, each a datagram, each restated with the
-			// kit; the peer applies nothing until every chunk is in.
-			foreach (string chunk in CoopHeroKit.EncodeInventory())
+	/// <summary>
+	/// Hands each player's HeroState to the pump as <c>HeroState:&lt;player&gt;:&lt;base64&gt;</c>, once
+	/// per version per body. Player two's is the JOINER's record — Remote on the host, Local on
+	/// the joiner, so the joiner's own copy of player two is dressed too — and goes only while
+	/// player two is in their own hero's body: the apply dresses whatever body stands, and the
+	/// pickbox henchman is not to be dressed. Player one's is the host's record, which only the
+	/// joiner's copy needs; the pump refuses to re-give the host's own player one.
+	/// </summary>
+	private void PostHeroStates(uint role)
+	{
+		if (Engine_UiPageProviders.CoopOwnHero)
+		{
+			(uint version, string? record, bool known) = role == 1u
+				? (CoopHeroState.ReceivedVersion, CoopHeroState.ReceivedBase64, CoopHeroKit.Remote.Known)
+				: (CoopHeroState.Version, CoopHeroState.LocalBase64, CoopHeroKit.Local.Known);
+			if (known && version != 0u && version != _coopStatePostedTwo && record is not null)
 			{
-				HostBridge.CoopSend(chunk);
+				_coopStatePostedTwo = version;
+				HostBridge.PostFrontEndAction("HeroState:2:" + record);
+				GD.Print($"[game-ui] co-op — HeroState v{version} posted for player two " +
+					$"({(role == 1u ? "the joiner's record" : "own record")})");
+			}
+		}
+
+		if (role == 2u && CoopHeroKit.Remote.Known)
+		{
+			uint version = CoopHeroState.ReceivedVersion;
+			if (version != 0u && version != _coopStatePostedOne && CoopHeroState.ReceivedBase64 is { } record)
+			{
+				_coopStatePostedOne = version;
+				HostBridge.PostFrontEndAction("HeroState:1:" + record);
+				GD.Print($"[game-ui] co-op — HeroState v{version} posted for player one (the host's record)");
 			}
 		}
 	}
 
-	/// <summary>The joiner's statement of which body player two is in.</summary>
+	/// <summary>
+	/// Acknowledges the peer's record once the pump reports that version APPLIED to the peer's
+	/// body — player two's on the host, player one's on the joiner. A record without a hero has
+	/// nothing to apply and is acknowledged on receipt. Acked again when the peer resends a
+	/// version already acknowledged, which says the ack was lost.
+	/// </summary>
+	private static void AckHeroState(uint role)
+	{
+		uint received = CoopHeroState.ReceivedVersion;
+		if (received == 0u || (CoopHeroState.AckedToPeer == received && !CoopHeroState.AckDue))
+		{
+			return;
+		}
+
+		uint applied = CoopHeroKit.Remote.Known ? HostBridge.HeroStateApplied(role == 1u ? 2u : 1u) : received;
+		if (applied == received)
+		{
+			CoopHeroState.SendAck();
+		}
+	}
+
+	/// <summary>The joiner's statement of which body player two is in.</summary>	/// <summary>The joiner's statement of which body player two is in.</summary>
 	private const string CoopHeroStatePrefix = "coop.hero=";
 
-	/// <summary>The host's request that the joiner flip it.</summary>
+	/// <summary>The host's request for a body, `=1` own hero / `=0` henchman; bare, an older peer's flip.</summary>
 	private const string CoopHeroToggleMessage = "coop.hero.toggle";
 
 	/// <summary>How often the joiner restates it. Often enough that a drop is invisible.</summary>
 	private const double CoopHeroRestateSeconds = 0.5;
 
+	/// <summary>Seconds the bridge has answered nothing for player two's held items.</summary>
+	private double _coopHeldUnanswered;
+
 	/// <summary>What this instance last asked the guest for, so a restatement is not re-applied.</summary>
 	private bool _coopHeroApplied;
+
+	/// <summary>The last `CoopHeroBody:` action posted, so a kit stating another body re-posts it.</summary>
+	private string _coopBodyPosted = string.Empty;
 
 	/// <summary>Seconds until the next restatement.</summary>
 	private double _coopHeroRestate;
@@ -5461,26 +5471,14 @@ public partial class GameUi : Node
 	/// <summary>How often the local hero is captured, in a session or out of one.</summary>
 	private const double CoopKitSampleSeconds = 2.0;
 
-	/// <summary>How often the joiner restates their character. Slower — it is the big record.</summary>
-	private const double CoopKitRestateSeconds = 3.0;
-
 	/// <summary>Seconds until the next capture.</summary>
 	private double _coopKitSample;
 
-	/// <summary>Seconds until the next character restatement.</summary>
-	private double _coopKitRestate;
+	/// <summary>The HeroState version last posted to the pump for player one (joiner only).</summary>
+	private uint _coopStatePostedOne;
 
-	/// <summary>How often the ranks and build are re-asserted onto player two's body.</summary>
-	private const double CoopSkillsRestateSeconds = 2.0;
-
-	/// <summary>Seconds until the next rank pass.</summary>
-	private double _coopSkillsRestate;
-
-	/// <summary>How often the outfit is restated to the pump.</summary>
-	private const double CoopWearRestateSeconds = 3.0;
-
-	/// <summary>Seconds until the next outfit restatement.</summary>
-	private double _coopWearRestate;
+	/// <summary>The HeroState version last posted to the pump for player two, for the body posted.</summary>
+	private uint _coopStatePostedTwo;
 
 
 	/// <summary>
@@ -6569,6 +6567,19 @@ public partial class GameUi : Node
 					"Friend request dismissed.", "That friend request could not be dismissed.");
 				break;
 
+			case "join-allow":
+				Engine_UiNetworkSource.ForgetJoinRequest(argument);
+				Answer(NetBridge.JoinRequestReply(argument, true),
+					"Invite sent through Discord.\n\nThe game joins when they accept it.",
+					"That ask could not be answered; it may have lapsed.");
+				break;
+
+			case "join-deny":
+				Engine_UiNetworkSource.ForgetJoinRequest(argument);
+				Answer(NetBridge.JoinRequestReply(argument, false),
+					"Declined.", "That ask could not be answered; it may have lapsed.");
+				break;
+
 			case "accept-invite":
 				Answer(NetBridge.PeerAction(argument, NetBridge.Act.AcceptInvite),
 					"Invitation accepted.\n\nThe game joins when the host is ready.",
@@ -6603,25 +6614,6 @@ public partial class GameUi : Node
 
 		GD.Print($"[game-ui] content command '{command}' handled");
 	}
-
-	/// <summary>
-	/// Reports the first kit send and every later change of outcome. A send the bridge refuses
-	/// (no peer address learned yet, no net) is the one fact that explains a blank peer name.
-	/// </summary>
-	private void ReportCoopSend(bool sent, uint role, string kit)
-	{
-		if (_coopSendReported && sent == _coopSendLast)
-		{
-			return;
-		}
-
-		_coopSendReported = true;
-		_coopSendLast = sent;
-		GD.Print($"[game-ui] co-op — kit {(sent ? "SENT" : "NOT SENT (bridge refused: no peer yet or no net)")} " +
-			$"as role {role}: '{kit[..System.Math.Min(60, kit.Length)]}'");
-	}
-
-	private bool _coopSendLast;
 
 	private static void Answer(bool ok, string good, string bad, bool hold = false) =>
 		Engine_UiNetworkSource.Say(ok ? good : bad, hold: ok && hold);

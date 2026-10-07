@@ -71,6 +71,32 @@ namespace {
 std::mutex g_mutex;
 std::vector<std::string> g_pending;
 
+/// The queue's ceiling. Past it the OLDEST action is dropped and counted: a pump that is not
+/// draining (front end down, guest stalled) must not turn every poll into unbounded memory.
+constexpr size_t kMaxPending = 256;
+std::atomic<uint64_t> g_dropped{0};
+
+/// The coalescing key of a `Coop*` action, or empty for any other. Those actions are
+/// idempotent STATE restated while it matters ("player two wears X"), so one per verb and
+/// player is all the pump needs: `CoopHeroGive:2:<list>` keys as `CoopHeroGive:2`,
+/// `CoopHeroBody:male` as `CoopHeroBody`. The key is the verb up to the first ':' plus the
+/// next field when it is a player number (1 or 2).
+std::string CoalesceKey(const std::string& name) {
+  if (name.compare(0, 4, "Coop") != 0) {
+    return std::string();
+  }
+  const size_t verb_end = name.find(':');
+  if (verb_end == std::string::npos) {
+    return name;
+  }
+  const size_t field_end = name.find(':', verb_end + 1);
+  const std::string field = name.substr(verb_end + 1, field_end == std::string::npos
+                                                          ? std::string::npos
+                                                          : field_end - verb_end - 1);
+  return field == "1" || field == "2" ? name.substr(0, verb_end + 1) + field
+                                      : name.substr(0, verb_end);
+}
+
 /// Ticks observed, for the diagnostic in the pump. Relaxed: it is a counter nobody makes a
 /// decision on, and making it ordered would put a barrier in a function that runs every frame.
 std::atomic<uint64_t> g_ticks{0};
@@ -157,17 +183,57 @@ size_t WriteOut(const std::string& text, char* out, size_t capacity) {
 
 /// Queues work to run on the guest's tick thread. Safe from any thread; returns the queue
 /// depth after the post, so a caller can notice a pump that has stopped draining.
+///
+/// A `Coop*` action REPLACES the queued one with the same key (see CoalesceKey) in place —
+/// latest text wins, order kept. The queue holds kMaxPending; past that the oldest is dropped.
 uint32_t PostGuestTickAction(const char* name) {
   if (name == nullptr || name[0] == '\0') {
     return 0;
   }
 
+  std::string action(name);
+  const std::string key = CoalesceKey(action);
   std::lock_guard<std::mutex> lock(g_mutex);
-  g_pending.emplace_back(name);
+  if (!key.empty()) {
+    for (std::string& queued : g_pending) {
+      if (CoalesceKey(queued) == key) {
+        queued = std::move(action);
+        return static_cast<uint32_t>(g_pending.size());
+      }
+    }
+  }
+  while (g_pending.size() >= kMaxPending) {
+    g_pending.erase(g_pending.begin());
+    const uint64_t dropped = g_dropped.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((dropped & (dropped - 1)) == 0) {  // 1, 2, 4, 8, ... so a stuck pump is said, not spammed
+      REXLOG_INFO("Refii guest tick pump: queue full at {}, oldest action dropped ({} so far)",
+                  kMaxPending, dropped);
+    }
+  }
+  g_pending.push_back(std::move(action));
   return static_cast<uint32_t>(g_pending.size());
 }
 
 /// Ticks seen and actions drained, for the host's diagnostics.
+/// The HeroState version last APPLIED to each player's body, written by the pump (hooks
+/// archive, guest side) and read by the host bridge: like the counters, it lives here because
+/// the pump's own globals are not linked into the bridge. [0] player one, [1] player two.
+std::atomic<uint32_t> g_herostate_applied_version[2] = {0u, 0u};
+
+/// C linkage: the pump sits in the payload, which may import only C symbols from a host
+/// library (src/hooks/CMakeLists.txt checks it), like the other `refii_bridge_publish_*`.
+extern "C" void refii_bridge_publish_herostate_applied(uint32_t player, uint32_t version) {
+  if (player == 1u || player == 2u) {
+    g_herostate_applied_version[player - 1u].store(version, std::memory_order_relaxed);
+  }
+}
+
+uint32_t GuestTickPumpHeroStateApplied(uint32_t player) {
+  return player == 1u || player == 2u
+             ? g_herostate_applied_version[player - 1u].load(std::memory_order_relaxed)
+             : 0u;
+}
+
 void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained, uint32_t* out_queued) {
   if (out_ticks != nullptr) {
     *out_ticks = g_ticks.load(std::memory_order_relaxed);

@@ -27,6 +27,16 @@ public static class Engine_UiNetworkSource
 	public const string ModsSource = "mods";
 	public const string FriendsSource = "friends";
 	public const string RequestsSource = "requests";
+
+	/// <summary>Discord asks the node handed over, kept until answered or stale.</summary>
+	private static readonly List<(NetBridge.JoinRequest Request, ulong SeenMs)> _joinRequests = new();
+
+	/// <summary>How long an unanswered Discord ask stays listed; Discord's own ask lapses sooner.</summary>
+	private const ulong JoinRequestLifetimeMs = 60_000;
+
+	/// <summary>Drops an ask once it has been answered.</summary>
+	public static void ForgetJoinRequest(string userId) =>
+		_joinRequests.RemoveAll(entry => entry.Request.UserId == userId);
 	public const string InvitesSource = "invites";
 	public const string GamesSource = "games";
 
@@ -98,7 +108,33 @@ public static class Engine_UiNetworkSource
 	}
 
 	/// <summary>Drops every held list, so the next ask re-reads.</summary>
-	public static void Invalidate() => Cached.Clear();
+	public static void Invalidate()
+	{
+		Cached.Clear();
+		_friendsAt = 0;
+	}
+
+	/// <summary>
+	/// The node's friends, read at most once per <see cref="FreshMs"/>: the friend rows, the
+	/// games rows and every row's detail page share one read rather than each taking a
+	/// P/Invoke of their own.
+	/// </summary>
+	private static List<NetBridge.Friend> FriendList()
+	{
+		ulong now = Godot.Time.GetTicksMsec();
+		if (_friendsAt != 0 && now - _friendsAt < FreshMs)
+		{
+			return _friends;
+		}
+
+		_friends = NetBridge.Friends();
+		_friendsAt = now;
+		return _friends;
+	}
+
+	private static List<NetBridge.Friend> _friends = new();
+
+	private static ulong _friendsAt;
 
 	private static Engine_UiMenuSources.Row Row(
 		string name, string label, string command, bool ghosted = false) =>
@@ -158,7 +194,7 @@ public static class Engine_UiNetworkSource
 	private static IReadOnlyList<Engine_UiMenuSources.Row> BuildFriends()
 	{
 		var rows = new List<Engine_UiMenuSources.Row>();
-		foreach (NetBridge.Friend friend in NetBridge.Friends())
+		foreach (NetBridge.Friend friend in FriendList())
 		{
 			string name = friend.DisplayName.Length == 0 ? Short(friend.PeerId) : friend.DisplayName;
 			string state = friend.Joinable
@@ -194,6 +230,19 @@ public static class Engine_UiNetworkSource
 			_declinedSays = $"Your friend request reached {who}.\n\nThey appear under Friends once they accept.";
 		}
 
+		foreach (NetBridge.Notice notice in NetBridge.Notices())
+		{
+			string who = _sentNames.TryGetValue(notice.PeerId, out string? name) && name.Length != 0
+				? name
+				: Short(notice.PeerId);
+			_declinedSays = notice.Kind switch
+			{
+				NetBridge.Notice.InviteFailed => $"Your invitation to {who} could not be delivered.\n\nThey may be offline; invite them again.",
+				NetBridge.Notice.JoinTimedOut => $"{who} did not answer the join.\n\nTry again once they are in a game.",
+				_ => notice.Message.Length == 0 ? "RexNet reported an error." : notice.Message,
+			};
+		}
+
 		foreach (string peer in NetBridge.Declined())
 		{
 			string who = _sentNames.TryGetValue(peer, out string? name) && name.Length != 0
@@ -203,6 +252,27 @@ public static class Engine_UiNetworkSource
 		}
 
 		var rows = new List<Engine_UiMenuSources.Row>();
+
+		// DISCORD "ASK TO JOIN", answered here. The node queues each ask for the title under its
+		// default policy (a stranger is never let in unless the player says so); the bridge read
+		// DRAINS the queue, so what it handed over is kept here until answered or stale.
+		ulong nowMs = Godot.Time.GetTicksMsec();
+		foreach (NetBridge.JoinRequest ask in NetBridge.JoinRequests())
+		{
+			_joinRequests.RemoveAll(entry => entry.Request.UserId == ask.UserId);
+			_joinRequests.Add((ask, nowMs));
+		}
+		_joinRequests.RemoveAll(entry => nowMs - entry.SeenMs > JoinRequestLifetimeMs);
+		foreach ((NetBridge.JoinRequest ask, ulong _) in _joinRequests)
+		{
+			string who = ask.UserName.Length == 0 ? "A Discord player" : ask.UserName;
+			rows.Add(Row(
+				$"joinask:{ask.UserId}", $"{who} asks to join your game",
+				$"{CommandPrefix}join-allow:{ask.UserId}"));
+			rows.Add(Row(
+				$"joindeny:{ask.UserId}", "    Decline", $"{CommandPrefix}join-deny:{ask.UserId}"));
+		}
+
 		foreach (NetBridge.Request request in NetBridge.Requests())
 		{
 			string name = request.DisplayName.Length == 0
@@ -255,9 +325,13 @@ public static class Engine_UiNetworkSource
 	private static IReadOnlyList<Engine_UiMenuSources.Row> BuildGames()
 	{
 		var rows = new List<Engine_UiMenuSources.Row>();
-		foreach (NetBridge.Friend friend in NetBridge.Friends())
+
+		// ONE ROW PER HOST. A friend's session also turns up in a search, and the row name is
+		// the peer id, so the friend row stands and the search's copy is not added under it.
+		var listed = new HashSet<string>();
+		foreach (NetBridge.Friend friend in FriendList())
 		{
-			if (!friend.Joinable)
+			if (!friend.Joinable || !listed.Add(friend.PeerId))
 			{
 				continue;
 			}
@@ -271,6 +345,11 @@ public static class Engine_UiNetworkSource
 
 		foreach (NetBridge.Session session in Found)
 		{
+			if (!listed.Add(session.HostPeerId))
+			{
+				continue;
+			}
+
 			rows.Add(Row(
 				$"game:{session.HostPeerId}",
 				$"{Short(session.HostPeerId)} — {session.SlotsOpen}/{session.SlotsTotal} open",
@@ -403,7 +482,7 @@ public static class Engine_UiNetworkSource
 			return rowName switch
 			{
 				FriendsGroup => "Everyone who has added you, and what they are doing.",
-				RequestsGroup => "People asking to be your friend. A accepts.",
+				RequestsGroup => "People asking to be your friend or to join your game. A accepts.",
 				InvitesGroup => "Games you have been invited to. A joins.",
 				_ => "Friends who are hosting, and any public games a search found.",
 			};
@@ -417,7 +496,7 @@ public static class Engine_UiNetworkSource
 		{
 			case "friend":
 			case "game":
-				foreach (NetBridge.Friend friend in NetBridge.Friends())
+				foreach (NetBridge.Friend friend in FriendList())
 				{
 					if (friend.PeerId != peer)
 					{
@@ -430,6 +509,18 @@ public static class Engine_UiNetworkSource
 						: friend.Online
 							? "Online, not in a game.\n\nA asks them for an invitation."
 							: "Offline.\n\nThey appear here again when they next play.";
+				}
+
+				// A game row can name a stranger's session off the last search.
+				foreach (NetBridge.Session session in Found)
+				{
+					if (session.HostPeerId == peer)
+					{
+						return session.SlotsOpen == 0
+							? $"A public game, full ({session.SlotsTotal} of {session.SlotsTotal} taken)."
+							: $"A public game, {session.SlotsOpen} of {session.SlotsTotal} open." +
+								(session.RequiresInvite ? "\n\nIt needs an invitation." : "\n\nA joins it.");
+					}
 				}
 
 				return "This player is no longer listed.";
@@ -450,6 +541,13 @@ public static class Engine_UiNetworkSource
 			case "dismiss":
 				return "Drops this request without answering it.\n\nThey are not told, and " +
 					"they can ask again.";
+
+			case "joinask":
+				return "Asked through Discord to join your game.\n\nA sends them the invite; the " +
+					"row below declines. Unanswered, the ask lapses on its own.";
+
+			case "joindeny":
+				return "Tells Discord no.\n\nThey can ask again.";
 
 			case "invite":
 				return "You have been invited to this game.\n\nA joins it.";

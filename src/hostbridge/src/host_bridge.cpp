@@ -132,6 +132,7 @@ uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
 // write cannot do this job, and that state file for why the queue is in refii_vfs and not
 // beside the pump hook that drains it.
 uint32_t PostGuestTickAction(const char* name);
+uint32_t GuestTickPumpHeroStateApplied(uint32_t player);
 uint32_t DebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3,
                          char* out_note, uint32_t note_capacity);
 void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained,
@@ -1668,7 +1669,66 @@ constexpr uint32_t kNetHostingByte = 0xF3u;
 constexpr uint32_t kNetJoinableByte = 0xF5u;
 
 /// The live node, or null when RexNet is off, not built in, or not up yet.
+///
+/// A RAW STATIC, NOT A REFERENCE. `RexNet::shared()` is `shared_instance_`, deleted by the
+/// guest thread's last XNetCleanup (`DestroyShared`) with no refcount and no lock the SDK
+/// exposes, so the bridge cannot hold the node alive across a call. What it can do: take the
+/// pointer once at entry, null-check it, and re-check it (`NetStillUp`) between calls into the
+/// node, so a teardown between two calls is noticed instead of dereferenced. A teardown DURING
+/// a node call is the SDK's to serialise; the shell never calls here after it has stopped the
+/// guest.
 rex::net::RexNet* Net() { return rex::net::RexNet::shared(); }
+
+/// The node taken at entry is still the shared instance.
+bool NetStillUp(const rex::net::RexNet* net) { return net != nullptr && Net() == net; }
+
+/// The standard guest-address bound for the net exports.
+bool NetPlausible(uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; }
+
+/// `g_XrnmNetContext`, or 0 when the guest has none yet.
+uint32_t NetContext(const uint8_t* base) {
+    const uint32_t context = base == nullptr ? 0u : GuestWordAt(base, kXrnmNetContext);
+    return NetPlausible(context) ? context : 0u;
+}
+
+/// 32 hex digits to a 16-byte id; false on any other input.
+bool ParseHex16(const char* text, std::array<uint8_t, 16>& out) {
+    if (text == nullptr || std::strlen(text) != 32) {
+        return false;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        unsigned value = 0;
+        for (size_t nibble = 0; nibble < 2; ++nibble) {
+            const char c = text[i * 2 + nibble];
+            unsigned digit;
+            if (c >= '0' && c <= '9') digit = c - '0';
+            else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+            else return false;
+            value = (value << 4) | digit;
+        }
+        out[i] = static_cast<uint8_t>(value);
+    }
+    return true;
+}
+
+/// The guest is already a joiner in `host`'s `session_id`: the arm that resolved names that
+/// host and session, and the guest's own bytes say it is in a session as a joiner
+/// (`g_XrnmNetContext` +52 session, +54 joiner). Re-arming here made the guest run
+/// JoinSessionFromInvite inside the session it was in (2026-10-07, 17:08:57), so both join
+/// routes refuse on it.
+bool GuestAlreadyJoined(rex::net::RexNet* net, const RexNetPeerId& host,
+                        const std::array<uint8_t, 16>& session_id) {
+    std::optional<rex::net::RexNet::AcceptedInvite> joined = net->accepted_invite();
+    if (!joined.has_value() || !SamePeerId(joined->host, host) || joined->session_id != session_id) {
+        return false;
+    }
+    rex::memory::Memory* memory = SafeKernelMemory();
+    const uint8_t* base = memory == nullptr ? nullptr : memory->virtual_membase();
+    const uint32_t context = NetContext(base);
+    return context != 0u && GuestByteAt(base, context + 52u) != 0u &&
+           GuestByteAt(base, context + 54u) != 0u;
+}
 
 /// Resolves a peer id the shell named. Accepts the canonical peer string; a friend code is
 /// parsed by the caller, which needs its embedded name anyway.
@@ -1684,6 +1744,64 @@ uint32_t Emit(const std::string& text, char* out, uint32_t capacity) {
     std::memcpy(out, text.data(), text.size());
     out[text.size()] = '\0';
     return static_cast<uint32_t>(text.size());
+}
+
+/// The bridge-side carry for a DRAINING reader. The node's Take* calls empty their queue on
+/// read, so a record the caller's buffer could not hold would be lost; it is kept here and
+/// emitted on the next call instead. Whole records only: the text handed out always ends on a
+/// record boundary.
+struct DrainCarry {
+    std::mutex mutex;
+    std::string pending;
+    uint64_t dropped = 0;
+
+    /// Bounded: past this the oldest whole records are dropped, counted, rather than growing
+    /// without a reader.
+    static constexpr size_t kMaxPending = 1u << 20;
+};
+
+/// Appends `fresh` to the carry and emits as many whole records as fit in `capacity - 1`
+/// bytes; the rest waits. A single record longer than the buffer can never be emitted and is
+/// dropped, counted, so it does not block every record behind it. 0 when nothing fits.
+uint32_t EmitRecords(DrainCarry& carry, const std::string& fresh, char* out, uint32_t capacity) {
+    std::lock_guard<std::mutex> lock(carry.mutex);
+    carry.pending += fresh;
+    while (carry.pending.size() > DrainCarry::kMaxPending) {
+        const size_t cut = carry.pending.find('\n');
+        if (cut == std::string::npos) {
+            carry.pending.clear();
+            ++carry.dropped;
+            break;
+        }
+        carry.pending.erase(0, cut + 1);
+        ++carry.dropped;
+    }
+    if (out == nullptr || capacity == 0 || carry.pending.empty()) {
+        return 0;
+    }
+
+    const size_t room = capacity - 1;
+    size_t take = 0;
+    if (carry.pending.size() <= room) {
+        take = carry.pending.size();
+    } else {
+        const size_t cut = carry.pending.rfind('\n', room - 1);
+        if (cut == std::string::npos) {
+            // The first record alone overflows the buffer: drop it rather than hold the rest.
+            const size_t first = carry.pending.find('\n');
+            carry.pending.erase(0, first == std::string::npos ? carry.pending.size() : first + 1);
+            ++carry.dropped;
+            REXLOG_INFO("RefiiNet drain: record longer than the caller's buffer ({} bytes) dropped; {} so far",
+                        capacity, carry.dropped);
+            return 0;
+        }
+        take = cut + 1;
+    }
+
+    std::memcpy(out, carry.pending.data(), take);
+    out[take] = '\0';
+    carry.pending.erase(0, take);
+    return static_cast<uint32_t>(take);
 }
 }  // namespace
 #endif
@@ -1715,9 +1833,10 @@ extern "C" {
 /// 20 adds RefiiHostGetLoadingScreen — the take-down handshake the game thread blocks on.
 /// 126 adds RefiiHostGetCoopShares — the co-op screen's gold/experience shares, so the host
 ///     owns those labels instead of taking text the guest stops writing.
-/// 125 adds RefiiHostGetCoopRole — 0 solo, 1 host, 2 joiner, off the co-op manager's own
-///     session/host/joiner bytes. The pause menu and the native-hero work both need to know
-///     which side they are running on, and nothing else in the bridge said.
+/// 125 adds RefiiHostGetCoopRole — 0 no session, 1 host (solo reads as host), 2 joiner, off
+///     the co-op manager's own session/host/joiner bytes. The pause menu and the native-hero
+///     work both need to know which side they are running on, and nothing else in the bridge
+///     said.
 /// 23 adds RefiiHostGetStartLevel — the world/level/entrance the guest asked for.
 /// 22 adds RefiiHostGetSceneStreams — the command-stream rings, read-only.
 /// 21 adds RefiiHostGetInitMarkers — how far Game_InitDatabases has got, which it does not
@@ -2007,6 +2126,9 @@ extern "C" {
 /// lost-connection latch +238 (set first thing in HandleLostConnection 0x8232D4D8), client
 /// joined +221 (set on "Client joined!", cleared in that handler), peer count +100, and both
 /// players' entities off the player map. The host's session model reads this and nothing else.
+/// 135 adds RefiiHostGetCoopHeldUids — the net ids of the item entities a player holds, as the
+/// export's own comment cites it ("ABI 135"); 32-bit until 170.
+/// 136 unknown: no comment in the code names what it added.
 /// 137 adds RefiiHostGetGuestFrame — the guest's render frame, counted by the hook on the
 /// 30 Hz HF pass (`sub_821A61B0`) that writes every pose. Godot reads guest state once per
 /// count and interpolates between counts.
@@ -2029,11 +2151,11 @@ extern "C" {
 ///     `Inventory:dye:<dye>:<target>:<slot>`.
 /// 161 RefiiHostGetShopPrice also returns the row's item record (`*(*holder + 4)`), so the shop
 ///     page reads the item the ticket names instead of guessing it from the row's label.
+/// 165 adds RefiiHostGetQuestTrailOverride — whether the trail follows a sale or family member
+///     instead of the primary quest, which decides the world map's row emphasis.
 /// 166 adds RefiiHostGetMinimapLive, widens RefiiHostGetWorldMapRegion by the region's first
 ///     level name, key and scenario, and RefiiHostGetQuestLog by each quest's objective entity —
 ///     the world map's minimap page, drawn by the host.
-/// 165 adds RefiiHostGetQuestTrailOverride — whether the trail follows a sale or family member
-///     instead of the primary quest, which decides the world map's row emphasis.
 /// 164 adds RefiiHostGetSpellWheel — the quick spell wheel's row, cells and lists as the guest's
 ///     own widget holds them, so the host draws the guest's cursor instead of keeping one.
 /// 163 adds RefiiHostGetThemeStack — the themes the guest has pushed on its environment theme
@@ -2049,8 +2171,16 @@ extern "C" {
 /// 169 moves Discord into RexNet: RefiiNetDiscordActivity / RefiiNetDiscordEnabled feed the
 ///     SDK's own Rich Presence (application id from the title's rexnet.toml); the join
 ///     secret and the join itself are the node's, RefiiNetJoinSession routes through it.
+///     Also adds RefiiNetDeclined / RefiiNetDelivered — the peers that dismissed, and the
+///     peers that acknowledged, a friend request we sent — and widens RefiiHostGetCoopSession
+///     from 10 to 12 words (game+284 mode, player two's pad) for a caller whose buffer asks.
 /// 170 widens RefiiHostGetCoopHeldUids to the entity's 64-bit uid.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 170; }
+/// 171 adds RefiiNetJoinRequests / RefiiNetJoinRequestReply — the Discord "ask to join" prompt
+///     the node holds for an answer, and the answer — and RefiiNetNotices, the node's own
+///     word on an invite that could not be delivered or a join the host never answered.
+///     Also adds RefiiHostGetHeroStateApplied — the HeroState version the pump last applied
+///     to a player's current body, the ack Godot sends the joiner.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 171; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -2402,23 +2532,23 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetScreenFade(float* out_rgba, float* ou
 
 extern "C++" {
 namespace {
+uint32_t PlayerEntityForKey(const uint8_t* base, uint32_t wanted);
+
 /// The player's hero ENTITY, or 0 when there is not one yet. One walk, shared by every proxy
 /// below; from `sub_826B83D0` / `sub_82264230`:
-
 ///
 ///   game = *(*(0x83496AB8) + 12); sess = *(game + 0x8C)
 ///   key  = (bytes sess+0x34 && sess+0x35) ? 1 : 2          -- the co-op slot choice
-///   rec  = the entry for `key` in the sorted stride-12 map {s32, u32, u32} at *(game + 0x9C)
-///          (+8 begin, +12 end)
-///   hero = *(*(rec + 16))                                  -- through the handle control block
+///   hero = PlayerEntityForKey(key)                          -- EM slot first, player map second
 ///
+/// ONE RESOLVER: the key is chosen here, the entity for it comes from `PlayerEntityForKey`, so
+/// the hero, player one and player two can never be different addresses for the same key.
 /// Every failure is 0, meaning "no hero", not "error": before a save is loaded there is none.
 uint32_t ResolvePlayerHero(const uint8_t* base) {
     // Change-keyed: the step that refused, so a blank readout names its cause once.
-    static int last_step = -1;
+    static std::atomic<int> last_step{-1};
     const auto refuse = [&](int step, uint32_t detail) {
-        if (last_step != step) {
-            last_step = step;
+        if (last_step.exchange(step) != step) {
             REXLOG_INFO("Refii hero resolver: no hero — refused at step {} (detail {:08X})", step, detail);
         }
         return 0u;
@@ -2450,49 +2580,44 @@ uint32_t ResolvePlayerHero(const uint8_t* base) {
     // as host (+0x34 and +0x35 set, +0x36 clear), so this is false for a single-player run.
     const bool in_session = read8(session + 0x34u) != 0u && read8(session + 0x36u) != 0u;
 
-    const uint32_t player_map = read32(game + 0x9Cu);
-    if (!plausible(player_map)) return refuse(4, player_map);
-
-    uint32_t entry = read32(player_map + 8u);
-    const uint32_t entries_end = read32(player_map + 12u);
-    if (!plausible(entry) || entries_end < entry || (entries_end - entry) > 12u * 64u) {
-        return refuse(5, entries_end - entry);
+    // PREFER THE ROLE'S SLOT, FALL BACK TO THE OTHER OUTSIDE A SESSION. Key 2 is right for a
+    // joiner IN a session, but the same instance before it joins has only its own solo hero,
+    // and a fixed key 2 read nothing there — so the joiner's own hero was never captured for
+    // the kit. Solo there is one hero, so the other slot is this player's; in a session it
+    // would be the other player's hero, so the lookup refuses.
+    uint32_t hero = PlayerEntityForKey(base, player_key);
+    if (hero == 0u && !in_session) {
+        hero = PlayerEntityForKey(base, player_key == 1u ? 2u : 1u);
     }
-
-    // PREFER THE ROLE'S SLOT, FALL BACK TO WHICHEVER EXISTS. Key 2 is right for a joiner IN a
-    // session, but the same instance before it joins has only its own solo hero, and a fixed
-    // key 2 read nothing there — so the joiner's own hero was never captured for the kit.
-    uint32_t record = 0u;
-    uint32_t other = 0u;
-    for (; entry < entries_end; entry += 12u) {
-        const uint32_t key = read32(entry);
-        if (key == player_key) {
-            record = read32(entry + 4u);
-            break;
-        }
-        if ((key == 1u || key == 2u) && other == 0u) {
-            other = read32(entry + 4u);
-        }
-    }
-    // The other-slot fallback applies outside a session only. `sub_82264230` is a plain
-    // lower_bound returning 0 on a miss; solo there is one hero, so the other slot is this
-    // player's. In a session it would be the other player's hero, so the lookup refuses.
-    if (record == 0u && !in_session) {
-        record = other;
-    }
-
-    if (!plausible(record)) return refuse(6, player_key);
-
-    const uint32_t control = read32(record + 16u);
-    if (!plausible(control)) return refuse(7, record);
-
-    const uint32_t hero = read32(control);
-    if (!plausible(hero)) return refuse(8, control);
-    if (last_step != 0) {
-        last_step = 0;
+    if (hero == 0u) return refuse(4, player_key);
+    if (last_step.exchange(0) != 0) {
         REXLOG_INFO("Refii hero resolver: player key {} → entity {:08X}", player_key, hero);
     }
     return hero;
+}
+
+/// The player map's record for key 1 or 2 — the sorted stride-12 map `{s32 key, u32 record,
+/// u32}` at `game+0x9C` (+8 begin, +12 end), as `sub_82264230`'s lower_bound reads it — or 0.
+/// The record is the Player object: `+16` its entity handle's control block, `+0x28` its pad.
+uint32_t PlayerMapRecordForKey(const uint8_t* base, uint32_t wanted) {
+    if (base == nullptr) return 0u;
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    const uint32_t game_root = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(game_root)) return 0u;
+    const uint32_t game = read32(game_root + 12u);
+    if (!plausible(game)) return 0u;
+    const uint32_t player_map = read32(game + 0x9Cu);
+    if (!plausible(player_map)) return 0u;
+    uint32_t entry = read32(player_map + 8u);
+    const uint32_t entries_end = read32(player_map + 12u);
+    if (!plausible(entry) || entries_end < entry || (entries_end - entry) > 12u * 64u) return 0u;
+    for (; entry < entries_end; entry += 12u) {
+        if (read32(entry) != wanted) continue;
+        const uint32_t record = read32(entry + 4u);
+        return plausible(record) ? record : 0u;
+    }
+    return 0u;
 }
 
 /// The entity of player 1 or 2, or 0.
@@ -2524,21 +2649,12 @@ uint32_t PlayerEntityForKey(const uint8_t* base, uint32_t wanted) {
         if (plausible(entity)) return entity;
     }
 
-    const uint32_t player_map = read32(game + 0x9Cu);
-    if (!plausible(player_map)) return 0u;
-    uint32_t entry = read32(player_map + 8u);
-    const uint32_t entries_end = read32(player_map + 12u);
-    if (!plausible(entry) || entries_end < entry || (entries_end - entry) > 12u * 64u) return 0u;
-    for (; entry < entries_end; entry += 12u) {
-        if (read32(entry) != wanted) continue;
-        const uint32_t record = read32(entry + 4u);
-        if (!plausible(record)) return 0u;
-        const uint32_t control = read32(record + 16u);
-        if (!plausible(control)) return 0u;
-        const uint32_t hero = read32(control);
-        return plausible(hero) ? hero : 0u;
-    }
-    return 0u;
+    const uint32_t record = PlayerMapRecordForKey(base, wanted);
+    if (record == 0u) return 0u;
+    const uint32_t control = read32(record + 16u);
+    if (!plausible(control)) return 0u;
+    const uint32_t hero = read32(control);
+    return plausible(hero) ? hero : 0u;
 }
 
 /// One component off an entity by id, or 0 when the entity does not carry it.
@@ -5261,27 +5377,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetRequestedVideoName(char* out, uint32_
     return refii::vfs::RequestedBinkVideoName(out, capacity);
 }
 
-/// Non-zero while the guest is IN its front end (title screen / main menu).
-///
-/// IDA-proven, and deliberately NOT the mode singleton `dword_83496AC0`. That global is a
-/// pointer stored when `sub_8231A908` CONSTRUCTS the front-end mode (0x8231A988) and it
-/// stays set forever after — so a host reading it would keep the menu on screen right
-/// through gameplay. `byte_83496AC4` is the flag the front end actually maintains, with
-/// exactly two writers: `= 1` in its OnEnter (0x82319360) and `= 0` in its OnExit
-/// (0x82319B24).
-///
-/// The guest only enters that mode once every startup logo has played AND the "Permanent
-/// Bank Mounter" handshake has completed — the boot-movie loop blocks at 0x82377D74 on
-/// `sub_822F3B20` until the mounter sets its +5 byte. So this going true is the title
-/// SAYING the boot sequence is over, rather than the host timing a movie and guessing.
-/// Whether the guest is IN GAME, as the guest itself states it.
-///
-/// `byte_83496A5E` — set to 1 by `Game_InitDatabases` at 0x82311648 and cleared by the game
-/// mode's shutdown at 0x82311860, with ~150 readers. This is the signal to use rather than
-/// inferring from the front end going away: `dword_83496B08` is re-pointed at a 176-byte
-/// base-only GUI at that moment, so every front-end field reads out of bounds.
-/// This player's role in a co-op session, off the co-op manager `*(*(0x83496AB8)+12)+140`:
-/// `+52` in a session, `+53` host, `+54` joiner. 0 solo, 1 host, 2 joiner.
+/// This player's role in a co-op session, off the network manager `g_XrnmNetContext`
+/// (0x83497490; `*(*(0x83496AB8)+12)+140` is its counted copy, the fallback): `+52` in a
+/// session, `+53` host, `+54` joiner. 0 no session, 1 host, 2 joiner. SOLO READS AS HOST:
+/// a single-player game has +52 and +53 set, so 1 is "host or solo", not "co-op host".
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopRole(void) {
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) return 0;
@@ -5332,6 +5431,12 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCoopShares(float* out_gold, float* out_exp
     return 1;
 }
 
+/// Whether the guest is IN GAME, as the guest itself states it.
+///
+/// `byte_83496A5E` — set to 1 by `Game_InitDatabases` at 0x82311648 and cleared by the game
+/// mode's shutdown at 0x82311860, with ~150 readers. This is the signal to use rather than
+/// inferring from the front end going away: `dword_83496B08` is re-pointed at a 176-byte
+/// base-only GUI at that moment, so every front-end field reads out of bounds.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostIsInGame(void) {
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
@@ -8370,15 +8475,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_
 /// primary snaps every bone its clip does not cover to rest — the villager walking in a T pose
 /// while waving.
 ///
-/// Out words, REFII_ANIM_LEAF_WORDS (10) per leaf: [0] clip hash, [1] current time bits,
+/// Out words, REFII_ANIM_LEAF_WORDS (12) per leaf: [0] clip hash, [1] current time bits,
 /// [2] previous time bits, [3] weight bits, [4] flags (bit0 loop, bit1 additive, bit2 OVERLAY,
 /// bits 8..15 record priority, bits 16..23 track), [5] record uid, [6] blend-in seconds
 /// bits, [7] blend-out seconds bits (the record's ramp objects at +40/+48: `+4` is the step
 /// per 15 Hz tick, 1/(seconds·15); 0 when absent), [8] the nearest mask node above the leaf
-/// (0 = none; read it with RefiiHostGetAnimMask), [9] the record's priority bitmask.
+/// (0 = none; read it with RefiiHostGetAnimMask), [9] the record's priority bitmask,
+/// [10] the record's weight_previous bits, [11] its weight_current bits (1.0 for the +156
+/// tree, which is not a record).
 /// Returns the leaf count (0 = no controller or nothing playing). `out_flags`, when given:
-/// bit0 controller active, bit1 has component 97 (dog paw/look IK, a procedural layer),
-/// bit2 replicated tree (netplay; +156 path, not walked).
+/// bit0 the guest's bone-count LOD tier (`comp19+148 == 3`: within the LOD radius and recently
+/// visible), bit1 has component 97 (dog paw/look IK, a procedural layer), bit2 the constant
+/// `comp19+576` byte (always 1, carries nothing; kept so the numbering holds), bit3 physics owns
+/// the pose (ragdoll mode 3 or 4). The replicated tree at +156 IS walked: it is the root when
+/// the guest's own choice (`sub_82208D70`) picks it over the layer lists.
+
 /// Why a rig had no clip leaves, split by cause — see RefiiHostGetEntityAnimState.
 std::atomic<uint64_t> RefiiAnimNoComponentBit{0};
 std::atomic<uint64_t> RefiiAnimComponentUnresolved{0};
@@ -8619,8 +8730,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     uint32_t weight_bits;
                     std::memcpy(&weight_bits, &frame.weight, sizeof(weight_bits));
                     out[3] = weight_bits;
+                    // Bit 3: the times are the packet-alpha extrapolation above, whose
+                    // continuity tick to tick is NOT stated (the receipt is an arrival time, and
+                    // this read lands anywhere in the frame); the animator keeps its own timeline
+                    // for such a clip and converges on these values.
                     out[4] = (read8(frame.node + 36u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) |
-                             (overlay_list ? 4u : 0u) |
+                             (overlay_list ? 4u : 0u) | (net_extrapolate ? 8u : 0u) |
                              ((priority & 0xFFu) << 8) | ((track & 0xFFu) << 16);
                     out[5] = uid;
                     out[6] = ramp_in_bits;
@@ -8788,18 +8903,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         // The +156 tree is not a record and has no weight pair; it plays whole.
         record_prev_bits = 0x3F800000u;
         record_cur_bits = 0x3F800000u;
-        {
-            // The guest's own alpha for this tree (see the note above `flatten`). `mftb` in
-            // recompiled code is QueryGuestTickCount; the two doubles are LHTiming's base and
-            // frequency, stored high word first.
-            const auto read_double = [&](uint32_t at) {
-                const uint64_t bits = (static_cast<uint64_t>(read32(at)) << 32) | read32(at + 4u);
-                double out = 0.0;
-                std::memcpy(&out, &bits, sizeof(out));
-                return out;
-            };
-            const double time_base = read_double(refii::guest::Address(0x834970A0u));
-            const double frequency = read_double(refii::guest::Address(0x834970A8u));
+        // The guest's own alpha for this tree (see the note above `flatten`). `mftb` in
+        // recompiled code is QueryGuestTickCount; the two doubles are LHTiming's base and
+        // frequency, stored high word first. A packet landing mid-walk re-bases +164 and
+        // swaps the tree, so a walk whose receipt moved is done once more with the new one.
+        const auto read_double = [&](uint32_t at) {
+            const uint64_t bits = (static_cast<uint64_t>(read32(at)) << 32) | read32(at + 4u);
+            double out = 0.0;
+            std::memcpy(&out, &bits, sizeof(out));
+            return out;
+        };
+        const double time_base = read_double(refii::guest::Address(0x834970A0u));
+        const double frequency = read_double(refii::guest::Address(0x834970A8u));
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            leaves = 0u;
+            net_extrapolate = false;
             const float receipt = readf(controller + 164u);
             if (std::isfinite(frequency) && frequency > 0.0 && std::isfinite(time_base) &&
                 std::isfinite(receipt)) {
@@ -8812,8 +8930,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     net_alpha = static_cast<float>(alpha);
                 }
             }
+            flatten(read32(controller + 156u), 1.0f, 0u, 0u, 0u);
+            if (readf(controller + 164u) == receipt) {
+                break;
+            }
         }
-        flatten(root, 1.0f, 0u, 0u, 0u);
+        // The overlay list's records are LOCAL per-tick pairs; only the +156 tree is sampled
+        // by the packet alpha.
+        net_extrapolate = false;
         walk_list(controller + 108u, true);
         return leaves;
     }
@@ -11457,6 +11581,19 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetStartScenario(char* scenario, uint32_t cap
     return read_guest_name(base, refii::guest::Address(0x8349758Cu), scenario, capacity) ? 1 : 0;
 }
 
+/// Non-zero while the guest is IN its front end (title screen / main menu).
+///
+/// IDA-proven, and deliberately NOT the mode singleton `dword_83496AC0`. That global is a
+/// pointer stored when `sub_8231A908` CONSTRUCTS the front-end mode (0x8231A988) and it
+/// stays set forever after — so a host reading it would keep the menu on screen right
+/// through gameplay. `byte_83496AC4` is the flag the front end actually maintains, with
+/// exactly two writers: `= 1` in its OnEnter (0x82319360) and `= 0` in its OnExit
+/// (0x82319B24).
+///
+/// The guest only enters that mode once every startup logo has played AND the "Permanent
+/// Bank Mounter" handshake has completed — the boot-movie loop blocks at 0x82377D74 on
+/// `sub_822F3B20` until the mounter sets its +5 byte. So this going true is the title
+/// SAYING the boot sequence is over, rather than the host timing a movie and guessing.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFrontEndState(void) {
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
@@ -15684,47 +15821,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostMovieState(void) {
     return refii::vfs::BinkMovieState(memory->virtual_membase());
 }
 
-/// The 3D PREVIEW OBJECT the current in-game screen shows — the spinning weapon or item.
-///
-/// There is no mesh element: the ring's interior is a plain transform anchor and the guest
-/// spawns a real scene entity at it. Everything needed to draw it is in a 128-byte plain
-/// struct (no vptr) built by `sub_82536B68`, at a fixed offset in the screen handler. Six
-/// screens have one:
-///
-///   id  8 receive-items   handler+96    anchor "Foreground.SpinningCube.Cube"
-///   id 15 items/weapons   handler+128   anchor "Foreground.Book.Pages.Page1.Contents.
-///   id 22 shop            handler+160          ModelHider.model_proxy.model"
-///   id 25 gift giving     handler+128
-///   id 26 item selection  handler+128
-///   id 27 decoration      handler+128
-///
-/// Fields from previewObj: +0 the previewed entity, **+64 the SPAWNED byte**, +68 render id,
-/// +80 GUIScreenTranslationOffset, +96 GUIScreenRotationOffset, +112 GUIScreenScaleMultiplier,
-/// +120 GUIScreenRotationAxis, **+124 the model resource-name hash**.
-///
-/// "Is something shown" is +64, not +124: the hash is sticky, since `sub_828C3FD8` clears only
-/// +64 and sets +68 to -1. The hash is `rex_lhResourceName_ComputeHash(lowercase(path))` — the
-/// currency the model index keys on, not an index.
-///
-/// The handler comes out of the guest's own screen map at `guiOwner+68` (a std::map keyed by
-/// screen id: node +0 left, +4 parent, +8 right, +12 key, +16 value; the end node is at
-/// `guiOwner+72`). Walked READ-ONLY and step-bounded rather than calling `sub_8236FFC0`,
-/// because this runs on the host thread.
-///
-/// Returns the screen id whose preview is live, or 0.
-/// The co-op screen's mannequin: the LIVE ENTITY `sub_82438818` spawned (`screen+276`,
-/// 0x824388CC) and its preview ticket (`screen+284`, 0x824389B4). Both zero until the guest has
-/// built one. The handler comes off the same screen map the preview export walks. Returns 1 when
-/// the screen is up and an entity is standing.
-/// The hero's equipped weapons as record ids: `sub_824AD108` stores the weapon entity's `+28`
-/// into `comp28+84` (melee, 0x824AD264) or `+88` (ranged, 0x824AD400), and a live read
-/// confirmed the slot holds a bare id, not a pointer. 0 for an empty slot. Returns 1 when the
-/// hero has a weapon set at all.
-/// The hero's looks that no other export carries. Returns 1 when the hero has component 57.
-/// The chosen co-op hero save, as the guest holds it. `SaveMgr = *(*(0x83496AB8)+12)+148`.
-/// `out_values` takes 28: money, gender, morality, purity, renown, 15 ranks, 4 experience
-/// pools, 4 totals — in `sub_82440F78`'s order. Returns 1 when a save is chosen; the block is
-/// only meaningful then.
 /// The chosen co-op hero save's name, or 0 bytes when none is chosen.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeroSaveName(char* out, uint32_t capacity) {
     if (out != nullptr && capacity != 0) out[0] = '\0';
@@ -15742,6 +15838,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeroSaveName(char* out, uint32_t 
     return static_cast<uint32_t>(name.size());
 }
 
+/// The chosen co-op hero save, as the guest holds it. `SaveMgr = *(*(0x83496AB8)+12)+148`.
+/// `out_values` takes 28: money, gender, morality, purity, renown, 15 ranks, 4 experience
+/// pools, 4 totals — in `sub_82440F78`'s order. Returns 1 when a save is chosen; the block is
+/// only meaningful then.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeroSave(float* out_values, uint32_t value_count) {
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) return 0;
@@ -15788,6 +15888,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeroSave(float* out_values, uint3
     return 1;
 }
 
+/// The hero's looks that no other export carries. Returns 1 when the hero has component 57.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroLooks(uint32_t* out_face, float* out_fat,
                                                      float* out_height, float* out_tan) {
     if (out_face != nullptr) *out_face = 0;
@@ -15815,6 +15916,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroLooks(uint32_t* out_face, float* 
     return 1;
 }
 
+/// The hero's equipped weapons as record ids: `sub_824AD108` stores the weapon entity's `+28`
+/// into `comp28+84` (melee, 0x824AD264) or `+88` (ranged, 0x824AD400), and a live read
+/// confirmed the slot holds a bare id, not a pointer. 0 for an empty slot. Returns 1 when the
+/// hero has a weapon set at all.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroWeapons(uint32_t* out_melee, uint32_t* out_ranged) {
     if (out_melee != nullptr) *out_melee = 0;
     if (out_ranged != nullptr) *out_ranged = 0;
@@ -15833,8 +15938,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroWeapons(uint32_t* out_melee, uint
 }
 
 /// The item entities a player holds, as net ids (ABI 135, 64-bit since 170). Component 24
-/// entries of 12 bytes at `+16..+20`, holder at entry+8, item = `*holder` (`sub_824FB4E8`);
-/// component 28 names the held records at `+84`/`+88`; an item's record is `entity+28`. The net
+/// entries of 12 bytes at `+16..+20`, holder at entry+8, item = `*holder` (`sub_824FB4E8`).
+/// An item is melee or ranged by the guest's own test (`sub_824AD108` at 0x824AD254): component
+/// 179's `+12` through `sub_82561420` — 2..4 melee, 5..8 ranged. Component 28's `+84`/`+88` are
+/// NOT the key: on a body the client controls, the client's weapon-set message (`sub_824AB0A0`,
+/// 0x824AB0BC..) zeroes both and refills them with entity id words, so on the host player two's
+/// read 0/0 while both weapons hung on the body (2026-10-08) and the joiner was never told which
+/// replicas to attach. The first held item of each class answers. The net
 /// id is the entity's 64-bit uid, high word `entity+20`, low word `entity+24` — `sub_821B2390`
 /// returns `(entity+0x14 << 32) | entity+0x18` on the host, and `sub_82334A60(manager, id)`
 /// takes that whole value in r4. An entity made on the host carries its creation counter in the
@@ -15851,11 +15961,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeldUids(uint32_t player, uint64_
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
     const uint32_t entity = PlayerEntityForKey(base, player);
     if (entity == 0u) return 0u;
-    const uint32_t weapons = EntityComponent(base, entity, 28u);
     const uint32_t held = EntityComponent(base, entity, 24u);
-    if (weapons == 0u || held == 0u) return 0u;
-    const uint32_t melee = GuestWordAt(base, weapons + 84u);
-    const uint32_t ranged = GuestWordAt(base, weapons + 88u);
+    if (held == 0u) return 0u;
     const uint32_t begin = GuestWordAt(base, held + 16u);
     const uint32_t end = GuestWordAt(base, held + 20u);
     if (!plausible(begin) || end < begin || (end - begin) > 12u * 64u) return 0u;
@@ -15865,13 +15972,17 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeldUids(uint32_t player, uint64_
         if (!plausible(holder)) continue;
         const uint32_t item = GuestWordAt(base, holder);
         if (!plausible(item) || (GuestByteAt(base, item + 144u) & 0x40u) == 0u) continue;
-        const uint32_t record = GuestWordAt(base, item + 28u);
+        const uint32_t kind = EntityComponent(base, item, 179u);
+        if (kind == 0u) continue;
+        const uint32_t type = GuestWordAt(base, kind + 12u);
+        const bool melee = type >= 2u && type <= 4u;
+        const bool ranged = type >= 5u && type <= 8u;
         const uint64_t net = (static_cast<uint64_t>(GuestWordAt(base, item + 20u)) << 32) |
                              GuestWordAt(base, item + 24u);
-        if (melee != 0u && record == melee && out_melee != nullptr && *out_melee == 0u) {
+        if (melee && out_melee != nullptr && *out_melee == 0u) {
             *out_melee = net;
             ++found;
-        } else if (ranged != 0u && record == ranged && out_ranged != nullptr && *out_ranged == 0u) {
+        } else if (ranged && out_ranged != nullptr && *out_ranged == 0u) {
             *out_ranged = net;
             ++found;
         }
@@ -15881,27 +15992,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopHeldUids(uint32_t player, uint64_
 
 namespace {
 /// The pad bound to player-map key 1 or 2, or 0xFFFFFFFF — `Player+0x28`, stored by the
-/// Player ctor `sub_82389938` (`stw r5, 0x28(r31)` at 0x8238998c) from the joining pad.
-
+/// Player ctor `sub_82389938` (`stw r5, 0x28(r31)` at 0x8238998c) from the joining pad. The
+/// map is the only source of the pad; the ENTITY for a key is `PlayerEntityForKey`'s.
 uint32_t PlayerPadForKey(const uint8_t* base, uint32_t wanted) {
-    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-    const uint32_t game_root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
-    if (!plausible(game_root)) return 0xFFFFFFFFu;
-    const uint32_t game = GuestWordAt(base, game_root + 12u);
-    if (!plausible(game)) return 0xFFFFFFFFu;
-    const uint32_t player_map = GuestWordAt(base, game + 0x9Cu);
-    if (!plausible(player_map)) return 0xFFFFFFFFu;
-    uint32_t entry = GuestWordAt(base, player_map + 8u);
-    const uint32_t entries_end = GuestWordAt(base, player_map + 12u);
-    if (!plausible(entry) || entries_end < entry || (entries_end - entry) > 12u * 64u) {
-        return 0xFFFFFFFFu;
-    }
-    for (; entry < entries_end; entry += 12u) {
-        if (GuestWordAt(base, entry) != wanted) continue;
-        const uint32_t record = GuestWordAt(base, entry + 4u);
-        return plausible(record) ? GuestWordAt(base, record + 0x28u) : 0xFFFFFFFFu;
-    }
-    return 0xFFFFFFFFu;
+    const uint32_t record = PlayerMapRecordForKey(base, wanted);
+    return record == 0u ? 0xFFFFFFFFu : GuestWordAt(base, record + 0x28u);
 }
 }  // namespace
 
@@ -15963,6 +16058,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClothingMannequin(void) {
     return refii::vfs::ClothingMannequinSnapshot();
 }
 
+/// The co-op screen's mannequin: the LIVE ENTITY `sub_82438818` spawned (`screen+276`,
+/// 0x824388CC) and its preview ticket (`screen+284`, 0x824389B4). Both zero until the guest has
+/// built one. The handler comes off the same screen map the preview export walks. Returns 1 when
+/// the screen is up and an entity is standing.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopMannequin(uint32_t* out_entity, uint32_t* out_ticket) {
     if (out_entity != nullptr) *out_entity = 0;
     if (out_ticket != nullptr) *out_ticket = 0;
@@ -15974,10 +16073,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopMannequin(uint32_t* out_entity, u
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
 
     // Change-keyed: the step that refused, so a silent panel names its cause once.
-    static int last_step = -1;
+    static std::atomic<int> last_step{-1};
     const auto refuse = [&](int step, uint32_t detail) {
-        if (last_step != step) {
-            last_step = step;
+        if (last_step.exchange(step) != step) {
             REXLOG_INFO("Refii co-op mannequin: refused at step {} (detail {:08X})", step, detail);
         }
         return 0u;
@@ -16012,6 +16110,34 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopMannequin(uint32_t* out_entity, u
     return 1;
 }
 
+/// The 3D PREVIEW OBJECT the current in-game screen shows — the spinning weapon or item.
+///
+/// There is no mesh element: the ring's interior is a plain transform anchor and the guest
+/// spawns a real scene entity at it. Everything needed to draw it is in a 128-byte plain
+/// struct (no vptr) built by `sub_82536B68`, at a fixed offset in the screen handler. Six
+/// screens have one:
+///
+///   id  8 receive-items   handler+96    anchor "Foreground.SpinningCube.Cube"
+///   id 15 items/weapons   handler+128   anchor "Foreground.Book.Pages.Page1.Contents.
+///   id 22 shop            handler+160          ModelHider.model_proxy.model"
+///   id 25 gift giving     handler+128
+///   id 26 item selection  handler+128
+///   id 27 decoration      handler+128
+///
+/// Fields from previewObj: +0 the previewed entity, **+64 the SPAWNED byte**, +68 render id,
+/// +80 GUIScreenTranslationOffset, +96 GUIScreenRotationOffset, +112 GUIScreenScaleMultiplier,
+/// +120 GUIScreenRotationAxis, **+124 the model resource-name hash**.
+///
+/// "Is something shown" is +64, not +124: the hash is sticky, since `sub_828C3FD8` clears only
+/// +64 and sets +68 to -1. The hash is `rex_lhResourceName_ComputeHash(lowercase(path))` — the
+/// currency the model index keys on, not an index.
+///
+/// The handler comes out of the guest's own screen map at `guiOwner+68` (a std::map keyed by
+/// screen id: node +0 left, +4 parent, +8 right, +12 key, +16 value; the end node is at
+/// `guiOwner+72`). Walked READ-ONLY and step-bounded rather than calling `sub_8236FFC0`,
+/// because this runs on the host thread.
+///
+/// Returns the screen id whose preview is live, or 0.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_hash,
                                                            uint32_t* out_entity,
                                                            float* out_values,
@@ -17114,7 +17240,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetIdentity(char* out, uint32_t capacity) {
         return 0;
     }
 
-    const RexNetPeerId& self = net->local_peer_id();
+    const RexNetPeerId self = net->local_peer_id();
+    if (!NetStillUp(net)) {
+        return 0;
+    }
 
     const std::string name = net->display_name();
     char code[192] = {0};
@@ -17185,6 +17314,31 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetRequests(char* out, uint32_t capacity) {
 #endif
 }
 
+/// One record per notice the node raised since the last call: `kind\tpeerId\tmessage`, kind
+/// 0 error, 1 invite failed, 2 join timed out (`RexNet::Notice::Kind`). Drained on read.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetNotices(char* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    if (net == nullptr) {
+        return 0;
+    }
+
+    static DrainCarry carry;
+    std::string text;
+    for (const rex::net::RexNet::Notice& notice : net->TakeNotices()) {
+        Field(text, std::to_string(static_cast<uint32_t>(notice.kind)), '\t');
+        Field(text, PeerText(notice.peer), '\t');
+        Field(text, notice.message, '\n');
+    }
+
+    return EmitRecords(carry, text, out, capacity);
+#else
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
 /// One record per peer that dismissed a request we sent since the last call: `peerId`.
 /// Drained on read; the node keeps nothing once it is reported.
 REFII_HOST_ABI_EXPORT uint32_t RefiiNetDeclined(char* out, uint32_t capacity) {
@@ -17194,12 +17348,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetDeclined(char* out, uint32_t capacity) {
         return 0;
     }
 
+    static DrainCarry carry;
     std::string text;
     for (const RexNetPeerId& peer : net->TakeDeclinedFriendRequests()) {
         Field(text, PeerText(peer), '\n');
     }
 
-    return Emit(text, out, capacity);
+    return EmitRecords(carry, text, out, capacity);
 #else
     (void)out;
     (void)capacity;
@@ -17216,12 +17371,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetDelivered(char* out, uint32_t capacity) {
         return 0;
     }
 
+    static DrainCarry carry;
     std::string text;
     for (const RexNetPeerId& peer : net->TakeDeliveredFriendRequests()) {
         Field(text, PeerText(peer), '\n');
     }
 
-    return Emit(text, out, capacity);
+    return EmitRecords(carry, text, out, capacity);
 #else
     (void)out;
     (void)capacity;
@@ -17255,7 +17411,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetInvites(char* out, uint32_t capacity) {
 /// Drains the accumulated session search: `hostPeerId \t sessionId \t total \t open \t invite`.
 ///
 /// DRAINING, so the shell must keep what it reads — `TakeSessionResults` empties the queue and a
-/// second call returns nothing. `RefiiNetSessionSearch` starts a fresh sweep.
+/// second call returns nothing. `RefiiNetSessionSearch` starts a fresh sweep. Records the
+/// caller's buffer could not hold are carried to the next call, never lost.
 REFII_HOST_ABI_EXPORT uint32_t RefiiNetSessionResults(char* out, uint32_t capacity) {
 #if defined(REXGLUE_ENABLE_REXNET)
     rex::net::RexNet* net = Net();
@@ -17263,6 +17420,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetSessionResults(char* out, uint32_t capaci
         return 0;
     }
 
+    static DrainCarry carry;
     std::string text;
     for (const rex::net::RexNet::SessionResult& result : net->TakeSessionResults()) {
         Field(text, PeerText(result.host), '\t');
@@ -17272,7 +17430,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetSessionResults(char* out, uint32_t capaci
         FieldNum(text, result.requires_invite ? 1u : 0u, '\n');
     }
 
-    return Emit(text, out, capacity);
+    return EmitRecords(carry, text, out, capacity);
 #else
     (void)out;
     (void)capacity;
@@ -17314,14 +17472,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetHostState(char* out, uint32_t capacity) {
         return 0;
     }
 
-    const uint32_t context = GuestWordAt(base, kXrnmNetContext);
-    if (context < 0x10000u || context >= 0xE0000000u) {
+    const uint32_t context = NetContext(base);
+    if (context == 0u) {
         return 0;
     }
 
     std::string row;
-    Field(row, base[context + kNetHostingByte] != 0 ? "1" : "0", '\t');
-    Field(row, base[context + kNetJoinableByte] != 0 ? "1" : "0", '\n');
+    Field(row, GuestByteAt(base, context + kNetHostingByte) != 0u ? "1" : "0", '\t');
+    Field(row, GuestByteAt(base, context + kNetJoinableByte) != 0u ? "1" : "0", '\n');
     return Emit(row, out, capacity);
 #else
     (void)out;
@@ -17343,8 +17501,8 @@ REFII_HOST_ABI_EXPORT int RefiiNetSetJoinable(int on) {
         return 0;
     }
 
-    const uint32_t context = GuestWordAt(base, kXrnmNetContext);
-    if (context < 0x10000u || context >= 0xE0000000u) {
+    const uint32_t context = NetContext(base);
+    if (context == 0u) {
         return 0;
     }
 
@@ -17404,6 +17562,9 @@ REFII_HOST_ABI_EXPORT int RefiiNetAddFriendByCode(const char* code, const char* 
     if (std::memcmp(&peer, &net->local_peer_id(), sizeof(peer)) == 0) {
         return 2;
     }
+    if (!NetStillUp(net)) {
+        return 0;
+    }
 
     net->FriendRequest(peer, note == nullptr ? std::string() : std::string(note));
     return 1;
@@ -17442,6 +17603,9 @@ REFII_HOST_ABI_EXPORT int RefiiNetPeerAction(const char* peer_text, int action) 
             // rather than rebuilt: an accept for an invite that is no longer offered must fail.
             for (const rex::net::RexNet::InviteInfo& invite : net->PendingInvites()) {
                 if (SamePeerId(invite.peer, peer)) {
+                    if (!NetStillUp(net)) {
+                        return 0;
+                    }
                     net->AcceptInvite(invite);
                     return 1;
                 }
@@ -17455,29 +17619,18 @@ REFII_HOST_ABI_EXPORT int RefiiNetPeerAction(const char* peer_text, int action) 
             // the host peer and the 16-byte session id — and presence already carries both for
             // a friend who is hosting, so nothing new has to be resolved.
             std::optional<rex::net::RexNet::PresenceInfo> presence = net->GetPresence(peer);
-            if (!presence.has_value() || !presence->has_session) {
+            if (!presence.has_value() || !presence->has_session || !NetStillUp(net)) {
                 return 0;
             }
 
-            // ALREADY IN THAT GAME. A second Join to the host whose session the guest is in
-            // re-armed the accept, the host's descriptor resolved it at once, and the guest ran
-            // JoinSessionFromInvite again inside the session it was in: player two started a
-            // second join while the host sat on the co-op screen (2026-10-07, 17:08:57). The
-            // guest's own bytes say whether it is a joiner in a session (`g_XrnmNetContext`
-            // +52 session, +54 joiner); with those set and the accepted invite naming this
-            // host and session, the press is answered as the join it already is.
-            if (std::optional<rex::net::RexNet::AcceptedInvite> joined = net->accepted_invite();
-                joined.has_value() && SamePeerId(joined->host, peer) &&
-                joined->session_id == presence->session_id) {
-                rex::memory::Memory* memory = SafeKernelMemory();
-                uint8_t* base = memory == nullptr ? nullptr : memory->virtual_membase();
-                const uint32_t context = base == nullptr ? 0u : GuestWordAt(base, kXrnmNetContext);
-                if (context >= 0x10000u && context < 0xE0000000u && base[context + 52u] != 0 &&
-                    base[context + 54u] != 0) {
-                    REXLOG_INFO(
-                        "RefiiNetPeerAction: join to the session the guest is already in; not re-armed");
-                    return 1;
-                }
+            // ALREADY IN THAT GAME: the press is answered as the join it already is.
+            if (GuestAlreadyJoined(net, peer, presence->session_id)) {
+                REXLOG_INFO(
+                    "RefiiNetPeerAction: join to the session the guest is already in; not re-armed");
+                return 1;
+            }
+            if (!NetStillUp(net)) {
+                return 0;
             }
 
             rex::net::RexNet::InviteInfo self_invite;
@@ -17488,6 +17641,9 @@ REFII_HOST_ABI_EXPORT int RefiiNetPeerAction(const char* peer_text, int action) 
 
             // The arm resolves on the HOST'S DESCRIPTOR, which arrives as a search result — so
             // the search is part of the join, not a separate step the player has to take.
+            if (!NetStillUp(net)) {
+                return 0;
+            }
             net->SessionSearch();
             return 1;
         }
@@ -17543,8 +17699,18 @@ REFII_HOST_ABI_EXPORT int RefiiNetJoinSession(const char* peer_text, uint32_t ti
 #if defined(REXGLUE_ENABLE_REXNET)
     rex::net::RexNet* net = Net();
     RexNetPeerId peer{};
-    if (net == nullptr || !ParsePeer(peer_text, peer) || session_hex == nullptr ||
-        std::strlen(session_hex) != 32) {
+    std::array<uint8_t, 16> session_id{};
+    if (net == nullptr || !ParsePeer(peer_text, peer) || !ParseHex16(session_hex, session_id)) {
+        return 0;
+    }
+
+    // ALREADY IN THAT GAME: the same refusal as action 6, so neither route re-arms a join the
+    // guest is in.
+    if (GuestAlreadyJoined(net, peer, session_id)) {
+        REXLOG_INFO("RefiiNetJoinSession: join to the session the guest is already in; not re-armed");
+        return 1;
+    }
+    if (!NetStillUp(net)) {
         return 0;
     }
 
@@ -17553,7 +17719,6 @@ REFII_HOST_ABI_EXPORT int RefiiNetJoinSession(const char* peer_text, uint32_t ti
     // shard) in one place for every host, Discord's included.
     char material[256];
     std::snprintf(material, sizeof(material), "%s|%08X|%s", peer_text, title_id, session_hex);
-    (void)peer;
     return net->JoinFromSecret(material) ? 1 : 0;
 #else
     (void)peer_text;
@@ -17594,6 +17759,47 @@ REFII_HOST_ABI_EXPORT void RefiiNetDiscordEnabled(int enabled) {
 #endif
 }
 
+/// One record per Discord "ask to join" the node is holding for an answer: `userId \t userName`.
+/// Drained on read; a record the buffer could not hold is carried to the next call.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetJoinRequests(char* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    if (net == nullptr) {
+        return 0;
+    }
+
+    static DrainCarry carry;
+    std::string text;
+    for (const rex::net::RexNet::JoinRequest& request : net->TakeJoinRequests()) {
+        Field(text, request.user_id, '\t');
+        Field(text, request.user_name, '\n');
+    }
+
+    return EmitRecords(carry, text, out, capacity);
+#else
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
+/// Answers one join request by the Discord user id it named. 0 when the node is down.
+REFII_HOST_ABI_EXPORT int RefiiNetJoinRequestReply(const char* user_id, int accept) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    if (net == nullptr || user_id == nullptr || user_id[0] == '\0') {
+        return 0;
+    }
+
+    net->ReplyJoinRequest(std::string(user_id), accept != 0);
+    return 1;
+#else
+    (void)user_id;
+    (void)accept;
+    return 0;
+#endif
+}
+
 // --- Refii's own co-op channel ------------------------------------------
 //
 // Two Refii instances, one co-op session, and state that is OURS: which body player two is in,
@@ -17610,15 +17816,24 @@ extern "C" uint16_t RefiiCoopChannelPort(void);
 extern "C" uint32_t RefiiCoopChannelPeer(void);
 extern "C" uint32_t RefiiCoopChannelTake(char* out, uint32_t capacity);
 
+/// The HeroState version the pump last applied, in full, to player 1 or 2's current body — 0
+/// when none has, after a reset, after that body was dropped, or when the guest memory is not
+/// up. Godot acks the joiner's HeroState with it; the joiner stops resending at the ack.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroStateApplied(uint32_t player) {
+    if (SafeKernelMemory() == nullptr) {
+        return 0u;
+    }
+    return refii::vfs::GuestTickPumpHeroStateApplied(player);
+}
+
 /// Sends one message to the co-op peer. Returns 0 when RexNet is down or no peer has been seen.
 REFII_HOST_ABI_EXPORT int RefiiNetCoopSend(const char* text) {
 #if defined(REXGLUE_ENABLE_REXNET)
     rex::net::RexNet* net = Net();
     const uint32_t peer_vip = RefiiCoopChannelPeer();
-    static int last_outcome = -1;  // -1 never, 0 refused, 1 sent — logged on change only
+    static std::atomic<int> last_outcome{-1};  // -1 never, 0 refused, 1 sent; logged on change
     if (net == nullptr || peer_vip == 0 || text == nullptr || text[0] == '\0') {
-        if (last_outcome != 0) {
-            last_outcome = 0;
+        if (last_outcome.exchange(0) != 0) {
             REXLOG_INFO("Refii co-op channel: send refused — net {}, peer vip {:08X}",
                         net == nullptr ? "MISSING" : "up", peer_vip);
         }
@@ -17627,8 +17842,7 @@ REFII_HOST_ABI_EXPORT int RefiiNetCoopSend(const char* text) {
 
     const uint16_t port = RefiiCoopChannelPort();
     net->SendDatagram(peer_vip, port, port, text, static_cast<uint32_t>(std::strlen(text)));
-    if (last_outcome != 1) {
-        last_outcome = 1;
+    if (last_outcome.exchange(1) != 1) {
         REXLOG_INFO("Refii co-op channel: sending to 10.77.{}.{} port {}", (peer_vip >> 8) & 0xFF,
                     peer_vip & 0xFF, port);
     }
