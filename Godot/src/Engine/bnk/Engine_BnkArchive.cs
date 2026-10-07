@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Threading;
 
 namespace Refii.Bnk;
 
@@ -407,7 +408,9 @@ public sealed class BnkArchive : IDisposable
 			}
 		}
 
-		if (chunkCount >= ParallelInflateChunks)
+		// Nested parallel dispatch inside an existing thread-pool worker can saturate
+		// the thread pool and cause work starvation; only parallelize on dedicated threads.
+		if (chunkCount >= ParallelInflateChunks && !Thread.CurrentThread.IsThreadPoolThread)
 		{
 			try
 			{

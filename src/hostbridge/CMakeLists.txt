@@ -69,6 +69,8 @@ if(REFII_STAGE_GODOT_BUILD)
         refii_core
         refii_lua
         refii_vfs
+        refii_binkdecode
+        refii_xmadecode
         rexruntime
         TracyClient
     )

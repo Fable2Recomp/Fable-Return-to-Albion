@@ -566,6 +566,20 @@ public static class Engine_TexCache
 			return;
 		}
 
+		// Clean up any incomplete temporary files left behind by killed processes.
+		foreach (string tmp in Safely(
+					 () => System.IO.Directory.EnumerateFiles(
+						 epoch, "*.tmp", System.IO.SearchOption.AllDirectories)))
+		{
+			try
+			{
+				System.IO.File.Delete(tmp);
+			}
+			catch (Exception)
+			{
+			}
+		}
+
 		var entries = new List<(string Path, long Size, DateTime Written, byte Cost)>();
 		long total = 0;
 		foreach (string file in Safely(
