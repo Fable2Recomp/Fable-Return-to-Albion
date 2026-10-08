@@ -154,10 +154,10 @@ public partial class SettingsPanel : VBoxContainer
 		var listBox = new StyleBoxFlat { BgColor = _style.ChildBg };
 		listBox.BorderColor = _style.Border;
 		listBox.SetBorderWidthAll(1);
-		listBox.ContentMarginLeft = 6;
-		listBox.ContentMarginRight = 6;
-		listBox.ContentMarginTop = 4;
-		listBox.ContentMarginBottom = 4;
+		listBox.ContentMarginLeft = 12;
+		listBox.ContentMarginRight = 12;
+		listBox.ContentMarginTop = 8;
+		listBox.ContentMarginBottom = 8;
 		listBackground.AddThemeStyleboxOverride("panel", listBox);
 		AddChild(listBackground);
 
@@ -258,6 +258,11 @@ public partial class SettingsPanel : VBoxContainer
 		{
 			case RuntimeCVarType.Bool:
 			{
+				if (definition.Name == "hdr_output")
+				{
+					return BuildHdrRowEditor(definition, current);
+				}
+
 				var check = new CheckBox
 				{
 					ButtonPressed = RuntimeConfig.NormalizeBoolValue(current) == "true",
@@ -348,6 +353,47 @@ public partial class SettingsPanel : VBoxContainer
 		option.Selected = selected;
 		option.ItemSelected += index => Commit(definition, options[(int)index].Value);
 		return option;
+	}
+
+	private Control BuildHdrRowEditor(RuntimeCVarDefinition definition, string current)
+	{
+		var container = new HBoxContainer();
+		container.AddThemeConstantOverride("separation", 6);
+
+		bool isEnabled = RuntimeConfig.NormalizeBoolValue(current) == "true";
+
+		var check = new CheckBox
+		{
+			ButtonPressed = isEnabled,
+		};
+		Apply(check);
+
+		var settingsBtn = new Button
+		{
+			Text = "Settings...",
+			Disabled = !isEnabled,
+		};
+		Apply(settingsBtn);
+
+		check.Toggled += pressed =>
+		{
+			settingsBtn.Disabled = !pressed;
+			Commit(definition, pressed ? "true" : "false");
+		};
+
+		settingsBtn.Pressed += () =>
+		{
+			var dialog = new HdrSettingsDialog(_model, _style, _font, _fontSize, () =>
+			{
+				_statusLabel.Text = _model.StatusMessage;
+			});
+			Node top = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
+			top.AddChild(dialog);
+		};
+
+		container.AddChild(check);
+		container.AddChild(settingsBtn);
+		return container;
 	}
 
 	private void Commit(RuntimeCVarDefinition definition, string value)

@@ -146,6 +146,10 @@ fable_unified={
 "type": "float",
 "value": 0.0
 }
+fable_emission_boost={
+"type": "float",
+"value": 1.0
+}
 fable_fill_floor={
 "type": "vec3",
 "value": Vector3(0, 0, 0)

@@ -266,15 +266,13 @@ public static class RuntimeCVarsGodot
                 + "white is unchanged. Requires Direct3D 12 on Windows (selected automatically). "
                 + "Falls back to SDR where the display or OS has no HDR, and follows the window between screens."),
 
-            new("hdr_reference_nits", DisplayCategory, RuntimeCVarType.Double, "0",
+            new("hdr_reference_nits", DisplayCategory, RuntimeCVarType.Double, "200",
                 "The brightness of white — the UI, and everything the SDR picture shows — in "
-                + "HDR, in nits. 0 follows the OS's own SDR brightness setting. Windows only; "
-                + "elsewhere the OS's value is always used."),
+                + "HDR, in nits. Recommended: 200 nits. 0 follows the OS's own SDR brightness setting."),
 
-            new("hdr_peak_nits", DisplayCategory, RuntimeCVarType.Double, "0",
+            new("hdr_peak_nits", DisplayCategory, RuntimeCVarType.Double, "1000",
                 "The brightest the display can show, in nits, which bounds the highlights. 0 "
-                + "uses what the display reports; set it when that report is wrong. Windows and "
-                + "macOS only."),
+                + "uses what the display reports; set it when that report is wrong."),
 
             new("borderless", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Drops the window's title bar and border. With a window sized to the monitor "

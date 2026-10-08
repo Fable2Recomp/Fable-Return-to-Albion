@@ -54,6 +54,6 @@ void main() {
 	}
 
 	vec4 disc = texture(disc_tex, (local * 0.5) + 0.5);
-	vec3 c = min(push.colour.rgb * disc.rgb * disc.a, vec3(1.0));
+	vec3 c = max(push.colour.rgb * disc.rgb * disc.a, vec3(0.0));
 	imageStore(dst_image, coord, vec4(c, 0.0));
 }

@@ -81,5 +81,5 @@ void main() {
 		}
 	}
 
-	imageStore(dst_image, coord, vec4(min(sum, vec3(1.0)), 0.0));
+	imageStore(dst_image, coord, vec4(max(sum, vec3(0.0)), 0.0));
 }

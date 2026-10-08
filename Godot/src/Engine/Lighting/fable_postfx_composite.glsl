@@ -72,6 +72,52 @@ float fable_filmic_hdr(float x, float headroom) {
 	return at + room * (1.0 - exp(-(x - FILMIC_KNEE) * slope / room));
 }
 
+/// The legacy 2008 extended Reinhard curve with white point.
+float fable_reinhard(float x, float inv_white_sq) {
+	return ((x * inv_white_sq) + 1.0) * x / (x + 1.0);
+}
+
+const float REINHARD_KNEE = 0.5;
+
+/// The extended Reinhard curve for HDR output. Past the knee it becomes an exponential approach
+/// to the display headroom that meets the curve's value and slope at the knee, allowing outdoor
+/// highlights (sun, sky, water glints) to reach display peak without crushing shadows.
+float fable_reinhard_hdr(float x, float inv_white_sq, float headroom) {
+	if (x <= REINHARD_KNEE) {
+		return fable_reinhard(x, inv_white_sq);
+	}
+	float at = fable_reinhard(REINHARD_KNEE, inv_white_sq);
+	float slope = (fable_reinhard(REINHARD_KNEE + 1e-3, inv_white_sq) - at) / 1e-3;
+	float room = max(headroom - at, 1e-4);
+	return at + room * (1.0 - exp(-(x - REINHARD_KNEE) * slope / room));
+}
+
+/// Gradually desaturates highlights above paper white (1.0) towards luminance as they approach
+/// peak display brightness, creating a natural incandescent 'filament effect' without hue shift.
+vec3 fable_highlight_desaturate(vec3 color, float lum, float headroom) {
+	if (headroom <= 1.001 || lum <= 1.0) {
+		return color;
+	}
+	float t = clamp((lum - 1.0) / max(headroom - 1.0, 1e-4), 0.0, 1.0);
+	float desat = pow(t, 1.5) * 0.70;
+	return mix(color, vec3(lum), desat);
+}
+
+/// Pulls a colour over the display ceiling towards its own luminance until the
+/// brightest channel fits, so saturation desaturates gracefully to white without rotating hue.
+vec3 fable_fit_ceiling(vec3 color, float ceiling) {
+	float peak = max(max(color.r, color.g), color.b);
+	if (peak <= ceiling) {
+		return color;
+	}
+	float l = dot(color, LUMINANCE_WEIGHTS);
+	if (peak <= l + 1e-5) {
+		return vec3(ceiling);
+	}
+	float t = clamp((peak - ceiling) / (peak - l), 0.0, 1.0);
+	return mix(color, vec3(l), t);
+}
+
 void main() {
 	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
 	if (coord.x >= push.size.x || coord.y >= push.size.y) {
@@ -110,12 +156,16 @@ void main() {
 	if (params.bits.x > 0.5) {
 		float l = dot(c, LUMINANCE_WEIGHTS);
 		float x = l * state.v[S_CURVE_SCALE];
-		// THE MODERN CURVE (params.reserved0.y): a filmic fit with a toe and a shoulder, on the
-		// same key-scaled input as the original's Reinhard, so exposure, key and floors are
-		// untouched and only the shape differs. 0.6 puts its middle grey where the original's is.
-		float mapped = params.reserved0.y > 0.5
-			? (hdr ? fable_filmic_hdr(x * 0.6, headroom) : fable_filmic(x * 0.6))
-			: ((x * state.v[S_INV_WHITE_SQ]) + 1.0) * x / (x + 1.0);
+		float mapped;
+		if (hdr) {
+			mapped = params.reserved0.y > 0.5
+				? fable_filmic_hdr(x * 0.6, headroom)
+				: fable_reinhard_hdr(x, state.v[S_INV_WHITE_SQ], headroom);
+		} else {
+			mapped = params.reserved0.y > 0.5
+				? fable_filmic(x * 0.6)
+				: fable_reinhard(x, state.v[S_INV_WHITE_SQ]);
+		}
 		float gain = l > 1e-6 ? mapped / l : 1.0;
 		// AGAINST DISPLAY LUMINANCE, NOT SCENE LUMINANCE. ColourSensitivityThreshold is 0.15 —
 		// a display-space number, like the 0.1/0.3/0.6 bounds and a middle grey of 0.36 — and
@@ -125,8 +175,8 @@ void main() {
 		float s = clamp(l * applied * params.misc.x, 0.0, 1.0);
 		col = vec3(l) + s * (c - vec3(l));
 		col = clamp(gain * params.sat.y * applied * col, 0.0, headroom);
-		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, 1.0);
-		col = col + bloom * max(1.0 - col, 0.0);
+		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, headroom);
+		col = col + bloom * max(headroom - col, 0.0) / headroom;
 	} else {
 		col = clamp(c * applied, 0.0, headroom);
 	}
@@ -137,9 +187,20 @@ void main() {
 	}
 
 	col *= params.misc.z;
+	if (hdr) {
+		float l_post = dot(col, LUMINANCE_WEIGHTS);
+		col = fable_highlight_desaturate(col, l_post, headroom);
+	}
+	col = fable_fit_ceiling(col, headroom);
 	col = clamp(col, 0.0, headroom);
 	if (params.misc.y > 0.0) {
-		col = min(pow(max(col, vec3(1e-6)), vec3(params.misc.y)), vec3(headroom));
+		if (hdr) {
+			vec3 sdr_part = clamp(col, 0.0, 1.0);
+			vec3 sdr_curved = pow(max(sdr_part, vec3(1e-6)), vec3(params.misc.y));
+			col = min(sdr_curved + max(col - 1.0, 0.0), vec3(headroom));
+		} else {
+			col = min(pow(max(col, vec3(1e-6)), vec3(params.misc.y)), vec3(headroom));
+		}
 	}
 
 	imageStore(color_image, coord, vec4(col, texel.a));

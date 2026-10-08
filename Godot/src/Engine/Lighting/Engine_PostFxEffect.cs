@@ -1023,10 +1023,12 @@ public partial class Engine_PostFxEffect : CompositorEffect
             });
         }
 
+        float effectiveGain = gain * Math.Max(Engine_PostFxParams.EmissionBoost, 1.0f);
+
         byte[] push = _pushSmall;
         BitConverter.TryWriteBytes(push.AsSpan(0), size.X);
         BitConverter.TryWriteBytes(push.AsSpan(4), size.Y);
-        BitConverter.TryWriteBytes(push.AsSpan(8), gain);
+        BitConverter.TryWriteBytes(push.AsSpan(8), effectiveGain);
         BitConverter.TryWriteBytes(push.AsSpan(12), 0.0f);
         Dispatch(_addlayerPipeline, set.Set, push, (size.X + 7) / 8, (size.Y + 7) / 8);
     }
@@ -1328,18 +1330,20 @@ public partial class Engine_PostFxEffect : CompositorEffect
         // Reversed-Z: the far plane is where the scene wrote nothing. Same convention the
         // celestial overlay derives in-shader from PROJECTION[2][2].
         float farValue = -projection.Z.Z >= 0.5f ? 1.0f : 0.0f;
+        float boost = Math.Max(Engine_PostFxParams.EmissionBoost, 1.0f);
 
         var push = new byte[48];
         BitConverter.GetBytes(_quarterSize.X).CopyTo(push, 0);
         BitConverter.GetBytes(_quarterSize.Y).CopyTo(push, 4);
         BitConverter.GetBytes(farValue).CopyTo(push, 8);
+        BitConverter.GetBytes(0.0f).CopyTo(push, 12);
         BitConverter.GetBytes(sunUv.X).CopyTo(push, 16);
         BitConverter.GetBytes(sunUv.Y).CopyTo(push, 20);
         BitConverter.GetBytes(halfUv.X).CopyTo(push, 24);
         BitConverter.GetBytes(halfUv.Y).CopyTo(push, 28);
-        BitConverter.GetBytes(disc.Colour.X).CopyTo(push, 32);
-        BitConverter.GetBytes(disc.Colour.Y).CopyTo(push, 36);
-        BitConverter.GetBytes(disc.Colour.Z).CopyTo(push, 40);
+        BitConverter.GetBytes(disc.Colour.X * boost).CopyTo(push, 32);
+        BitConverter.GetBytes(disc.Colour.Y * boost).CopyTo(push, 36);
+        BitConverter.GetBytes(disc.Colour.Z * boost).CopyTo(push, 40);
         BitConverter.GetBytes(1.0f).CopyTo(push, 44);
 
         Dispatch(
@@ -1381,6 +1385,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Vector3 right = camBasis.X;
         Vector3 up = camBasis.Y;
 
+        float boost = Math.Max(Engine_PostFxParams.EmissionBoost, 1.0f);
         int count = 0;
         foreach (Refii.Fx.Engine_PostFxHalos.WorldHalo halo in _haloSnapshot)
         {
@@ -1409,9 +1414,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _haloScratch[at + 1] = y;
             _haloScratch[at + 2] = hx;
             _haloScratch[at + 3] = hy;
-            _haloScratch[at + 4] = halo.Colour.X;
-            _haloScratch[at + 5] = halo.Colour.Y;
-            _haloScratch[at + 6] = halo.Colour.Z;
+            _haloScratch[at + 4] = halo.Colour.X * boost;
+            _haloScratch[at + 5] = halo.Colour.Y * boost;
+            _haloScratch[at + 6] = halo.Colour.Z * boost;
             _haloScratch[at + 7] = facing;
             _haloScratch[at + 8] = halo.Layer;
             _haloScratch[at + 9] = 0f;

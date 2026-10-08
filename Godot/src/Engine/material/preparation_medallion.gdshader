@@ -13,6 +13,8 @@ uniform float red_sensitivity  : hint_range(0.5, 2.5) = 1.35;
 uniform vec3 blue_glow_tint : source_color = vec3(0.30, 0.75, 1.0);
 uniform vec3 red_glow_tint  : source_color = vec3(1.00, 0.25, 0.35);
 
+global uniform float fable_emission_boost = 1.0;
+
 float detect_blue(vec4 c) {
 	if (c.a < 0.05) {
 		return 0.0;
@@ -87,13 +89,16 @@ void fragment() {
 	float p_blue = mix(min_pulse, max_pulse, 0.5 + 0.5 * sin(TIME * pulse_speed));
 	float p_red  = mix(min_pulse, max_pulse, 0.5 + 0.5 * sin(TIME * pulse_speed + phase_offset));
 
+	float boost = max(fable_emission_boost, 1.0);
+
 	// Subtle, focused bloom aura that stays close to the runes
-	vec3 aura = (b_bloom * blue_glow_tint * p_blue + r_bloom * red_glow_tint * p_red) * aura_intensity;
+	vec3 aura = (b_bloom * blue_glow_tint * p_blue + r_bloom * red_glow_tint * p_red) * (aura_intensity * boost);
 
 	// Gentle, natural modulative pulse on the runes
 	float active_p = blue_val > red_val ? p_blue : p_red;
+	vec3 lit_core = (blue_val * blue_glow_tint + red_val * red_glow_tint) * (0.45 * boost);
 	vec3 rune_lit = mix(base.rgb * min_pulse,
-	                    base.rgb * 1.25 + (blue_val * blue_glow_tint + red_val * red_glow_tint) * 0.45,
+	                    base.rgb * 1.25 + lit_core,
 	                    active_p / max_pulse);
 
 	vec3 final_rgb = mix(base.rgb, rune_lit, rune_mask) + aura * (1.0 - rune_mask * 0.4);

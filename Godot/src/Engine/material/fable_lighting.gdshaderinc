@@ -294,6 +294,9 @@ vec3 fable_sky_tether(vec3 ambient_half) {
 /// 0 is the fable model, where Godot's ambient has no energy and both terms are emitted here.
 global uniform float fable_unified = 0.0;
 
+/// Physical radiance boost for emissive maps in HDR output mode (1.0 in SDR).
+global uniform float fable_emission_boost = 1.0;
+
 /// THE BAKE'S UNOCCLUDED SHARE, modern model only (zero in the fable model). The guest's bake is
 /// fill that reaches UNDER a canopy — a night forest floor holds `bake * LightmapColour`, blue and
 /// readable — and the GI's sky light reaches only where the sky is seen, so handing it the whole

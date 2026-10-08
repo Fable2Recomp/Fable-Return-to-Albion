@@ -9,9 +9,11 @@ uniform float fx_alpha_ref = 1.0;
 uniform float fx_exposure = 3.3333333;
 global uniform sampler2D fable_exposure_tex;
 global uniform float fable_exposure_valid;
+uniform bool is_pbr = false;
 
 // `texel.rgb * texel.rgb` STAYS — that is Fable's colour-texture decode, gamma exactly 2.0,
 // the same one the material shaders and the sky dome's overlay textures use.
+// Modern PBR mod particle textures (is_pbr = true) bypass squaring.
 //
 // What goes is the sRGB encode that followed it, and the clamp. Nothing in this game applies
 // the sRGB curve: its single display transfer is `pow(colour, g_GlobalGammaAdjustment.x)` at
@@ -24,7 +26,8 @@ void fragment() {
 		discard;
 	}
 	float fade = fx_soft_fade(texel.a * COLOR.a, VERTEX, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
-	vec3 rgb = COLOR.a * COLOR.rgb * texel.rgb * texel.rgb;
+	vec3 tex_rgb = is_pbr ? texel.rgb : (texel.rgb * texel.rgb);
+	vec3 rgb = COLOR.a * COLOR.rgb * tex_rgb;
 	// NO CLAMP — MIX-BLENDED PARTICLES ARE SCENE CONTENT. The guest draws them into the HDR
 	// scene with no bound of their own and the tone curve compresses them like any surface;
 	// only the ADDITIVE layer is bounded. Clamping here pinned smoke to a fixed fraction of

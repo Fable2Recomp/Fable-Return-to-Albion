@@ -17,6 +17,8 @@ uniform float red_intensity : hint_range(0.5, 3.0) = 1.35;
 
 uniform vec4 void_color : source_color = vec4(0.0, 0.0, 0.0, 1.0);
 
+global uniform float fable_emission_boost = 1.0;
+
 uniform sampler2D noise_texture : repeat_enable, filter_linear;
 uniform float flow_speed : hint_range(0.005, 0.15) = 0.02;
 uniform float distortion_intensity : hint_range(0.0, 1.0) = 0.5;
@@ -61,16 +63,17 @@ void fragment() {
 	// Directional Blue light gradient (calculated in tilted space)
 	vec2 diff_blue = vec2((tilted_uv.x - blue_light_pos.x) * aspect * 0.65, tilted_uv.y - blue_light_pos.y);
 	float dist_blue = length(diff_blue);
+	float boost = max(fable_emission_boost, 1.0);
 	float blue_factor = clamp(1.0 - (dist_blue / blue_light_radius), 0.0, 1.0);
 	blue_factor = smoothstep(0.0, 1.0, blue_factor);
-	vec3 blue_lit = mix(blue_smoke_color.rgb, blue_light_core.rgb, pow(blue_factor, 1.8));
+	vec3 blue_lit = mix(blue_smoke_color.rgb, blue_light_core.rgb * boost, pow(blue_factor, 1.8));
 
 	// Directional Red light gradient (calculated in tilted space)
 	vec2 diff_red = vec2((tilted_uv.x - red_light_pos.x) * aspect * 0.65, tilted_uv.y - red_light_pos.y);
 	float dist_red = length(diff_red);
 	float red_factor = clamp(1.0 - (dist_red / red_light_radius), 0.0, 1.0);
 	red_factor = smoothstep(0.0, 1.0, red_factor);
-	vec3 red_lit = mix(red_smoke_color.rgb, red_light_core.rgb, pow(red_factor, 1.8));
+	vec3 red_lit = mix(red_smoke_color.rgb, red_light_core.rgb * boost, pow(red_factor, 1.8));
 
 	// Combined volumetric illumination
 	vec3 smoke_illumination = (blue_lit * (blue_factor * blue_intensity)) +

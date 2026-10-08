@@ -24,6 +24,11 @@ public static class Engine_PostFxParams
     public static float OutputHeadroom { get; set; } = 1.0f;
 
     /// <summary>
+    /// Radiance boost factor for emissive and light-emitting elements in HDR mode (1.0 in SDR).
+    /// </summary>
+    public static float EmissionBoost { get; set; } = 1.0f;
+
+    /// <summary>
     /// ON, against the real source at last. The guest's rays are a radial blur of its SUN
     /// LAYER — off_8331A9A8, the depth-tested sun/moon disc draws in a half-res [0,1] UNORM
     /// target — DOWNSCALE2X'd then RADIALBLUR'd twice (decoded from sub_821CB750's frame

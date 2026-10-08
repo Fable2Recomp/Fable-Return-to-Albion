@@ -422,16 +422,15 @@ void fragment() {
     // Godot's ambient and GI take the AO the guest's fills took above; 1 in the fable model.
     AO = mix(1.0, ao, fable_unified);
     if (has_emission) {
-        // Squared for the same reason, and by the same line: the guest's self-illumination
-        // fetch is followed by `r3.xyz = r3.xyz * r3.xyz` before it is added in.
-        //
-        // AND SCALED. The full line is
-        // `colour = selfIllum^2 * g_StandardMaterialPSConstants(0).zzz + colour`, and c24.z is the
-        // material's own self-illumination scale — block offset 29, stored to material+72 by
-        // `82b24954 stfs f0, 0x48(r30)`. Adding the texture unscaled made every self-illuminated
-        // surface glow at whatever full strength its map happened to be authored at.
+        // Linear for authored PBR mod assets (is_pbr = true) with authored physical radiance.
+        // Squared for legacy assets per guest pixel shader (r3.xyz = r3.xyz * r3.xyz),
+        // scaled by material self_illum_scale and global fable_emission_boost for HDR headroom.
         vec3 selfIllum = texture(emission_tex, uv).rgb;
-        EMISSION += selfIllum * selfIllum * self_illum_scale;
+        if (is_pbr) {
+            EMISSION += selfIllum * self_illum_scale;
+        } else {
+            EMISSION += (selfIllum * selfIllum) * (self_illum_scale * fable_emission_boost);
+        }
     }
 
     if (has_envmap) {

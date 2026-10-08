@@ -39,8 +39,8 @@ void main() {
 
 	vec2 uv = (vec2(coord) + 0.5) / vec2(push.size);
 
-	// The bilinear the hardware would have done, with the guest's ceiling applied to each tap
-	// first. A NaN texel would composite to black and the histogram would bin it at zero: one
+	// Bilinear sample in linear scene radiance space.
+	// A NaN texel would composite to black and the histogram would bin it at zero: one
 	// bad particle vertex must not be able to flash a frame, and clamp() does not define NaN.
 	ivec2 lsize = textureSize(layer_tex, 0);
 	vec2 t = uv * vec2(lsize) - 0.5;
@@ -52,9 +52,7 @@ void main() {
 	for (int i = 0; i < 4; ++i) {
 		ivec2 at = clamp(b + ivec2(i & 1, i >> 1), ivec2(0), hi);
 		vec3 tap = texelFetch(layer_tex, at, 0).rgb;
-		taps[i] = (any(isnan(tap)) || any(isinf(tap)))
-			? vec3(0.0)
-			: clamp(tap, vec3(0.0), vec3(1.0));
+		taps[i] = (any(isnan(tap)) || any(isinf(tap))) ? vec3(0.0) : max(tap, vec3(0.0));
 	}
 
 	vec3 layer = mix(mix(taps[0], taps[1], f.x), mix(taps[2], taps[3], f.x), f.y);

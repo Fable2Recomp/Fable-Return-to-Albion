@@ -41,8 +41,11 @@ void vertex() {
 // The elements write linear HDR and the hardware blend sums them in that space, so the correct
 // contribution is just the product, and subtracting an estimated background from it removes
 // light the blend never double-counted.
+global uniform float fable_emission_boost = 1.0;
+
 void fragment() {
 	// 0117/0121 are two multiplies and out — the celestial family squares nothing.
-	ALBEDO = max(texture(element_tex, UV).rgb * v_colour, vec3(0.0));
+	float boost = max(fable_emission_boost, 1.0);
+	ALBEDO = max(texture(element_tex, UV).rgb * v_colour * boost, vec3(0.0));
 	ALPHA = 1.0;
 }

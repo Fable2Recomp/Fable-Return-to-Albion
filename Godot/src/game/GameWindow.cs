@@ -330,18 +330,34 @@ public partial class GameWindow : Node
 		}
 
 		root.HdrOutputRequested = true;
-		root.OutputMaxLinearValueChanged += _ => FollowHeadroom(root);
-		FollowHeadroom(root);
+		root.OutputMaxLinearValueChanged += _ => FollowHeadroom(root, settings);
+		FollowHeadroom(root, settings);
 	}
 
-	private static void FollowHeadroom(Window root)
+	private static void FollowHeadroom(Window root, GameWindowSettings settings)
 	{
 		const int Main = (int)DisplayServer.MainWindowId;
 		float headroom = Mathf.Max(root.GetOutputMaxLinearValue(), 1.0f);
 		Refii.Lighting.Engine_PostFxParams.OutputHeadroom = headroom;
-		GD.Print(DisplayServer.WindowIsHdrOutputEnabled(Main)
+		bool hdrActive = DisplayServer.WindowIsHdrOutputEnabled(Main) && headroom > 1.001f;
+		// Closed-form dynamic mathematical model:
+		// Places legacy 2008 emissive textures into the lower ~37.5% of the specular headroom
+		// (e.g. 500 nits on a 1000-nit / 200-nit white display), leaving the remaining dynamic range for
+		// specular glints, direct sun reflections, and bloom without clipping.
+		float boost = hdrActive ? 1.0f + 0.375f * (headroom - 1.0f) : 1.0f;
+		Refii.Lighting.Engine_PostFxParams.EmissionBoost = boost;
+
+		try
+		{
+			RenderingServer.GlobalShaderParameterSet("fable_emission_boost", boost);
+		}
+		catch
+		{
+		}
+
+		GD.Print(hdrActive
 			? $"[game] hdr: on, white {DisplayServer.WindowGetHdrOutputCurrentReferenceLuminance(Main):0} nits, " +
-				$"peak {DisplayServer.WindowGetHdrOutputCurrentMaxLuminance(Main):0} nits, headroom {headroom:0.00}x"
+				$"peak {DisplayServer.WindowGetHdrOutputCurrentMaxLuminance(Main):0} nits, headroom {headroom:0.00}x, emission boost {boost:0.00}x"
 			: "[game] hdr: requested, but HDR output is not active (screen is SDR, or rendering driver does not support HDR output on this platform)");
 	}
 

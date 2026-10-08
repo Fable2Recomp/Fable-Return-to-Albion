@@ -65,13 +65,16 @@ void vertex() {
 // no Reinhard, no squaring, no per-element exposure. The celestial set is the family that
 // squares NOTHING (0114's asymmetry note), and c20.w's equivalent is the composite's global
 // exposure, so it does not belong here either.
+global uniform float fable_emission_boost = 1.0;
+
 void fragment() {
 	vec4 texel = texture(element_tex, UV);
+	float boost = (element_mode == 0 || element_mode == 1) ? max(fable_emission_boost, 1.0) : 1.0;
 	if (element_mode == 0) {
-		ALBEDO = max(texel.rgb * v_colour.rgb, vec3(0.0));
+		ALBEDO = max(texel.rgb * v_colour.rgb * boost, vec3(0.0));
 		ALPHA = texel.a * v_colour.a;
 	} else {
-		ALBEDO = max(texel.rgb * v_colour.rgb * texel.a, vec3(0.0));
+		ALBEDO = max(texel.rgb * v_colour.rgb * texel.a * boost, vec3(0.0));
 		ALPHA = element_mode == 2 ? texel.a * v_colour.a : texel.a;
 	}
 }

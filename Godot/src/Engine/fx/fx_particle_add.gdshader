@@ -10,7 +10,10 @@ uniform float fx_exposure = 3.3333333;
 global uniform sampler2D fable_exposure_tex;
 global uniform float fable_exposure_valid;
 
+global uniform float fable_emission_boost = 1.0;
+
 uniform float fx_src_alpha = 1.0;
+uniform bool is_pbr = false;
 
 // THE SAME COMPOSITION AS THE MIX VARIANT — only the blend differs.
 //
@@ -33,19 +36,8 @@ void fragment() {
 		discard;
 	}
 	float fade = fx_soft_fade(texel.a * COLOR.a, VERTEX, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
-	vec3 rgb = COLOR.a * COLOR.rgb * texel.rgb * texel.rgb;
-	// PER CHANNEL AT 1.0 — THE LAYER BOUND, NOT DISPLAY WHITE. The guest's additive FX
-	// accumulate in a bounded surface (the AltBloom layer): the ceiling is 1.0 in layer space,
-	// independent of the eye. 0509 then adds `fx * exposure` into the scene and the TONE CURVE
-	// compresses it. A 1/exposure ceiling instead scales with adaptation — in a dark interior
-	// (exposure toward 16) everything above 0.06 flattened to the ceiling and composited at
-	// exactly display white: every flame a white-cored blob. Per channel, so a hot core still
-	// desaturates toward white as the guest's does.
-	if (fable_exposure_valid > 0.5) {
-		rgb = min(rgb, vec3(1.0));
-	} else {
-		rgb = clamp(rgb * fx_exposure, 0.0, 1.0);
-	}
+	vec3 tex_rgb = is_pbr ? texel.rgb : (texel.rgb * texel.rgb * max(fable_emission_boost, 1.0));
+	vec3 rgb = max(COLOR.a * COLOR.rgb * tex_rgb, vec3(0.0));
 	ALBEDO = rgb * fade;
 	ALPHA = mix(1.0, texel.a * COLOR.a * fade, fx_src_alpha);
 }

@@ -173,7 +173,33 @@ public static class RuntimeConfig
 
         changed |= AdoptFixtureShadowDefault(values);
 
+        if (!File.Exists(configPath))
+        {
+            DetectAndApplyHdrDefaults(values);
+        }
+
         return changed ? WriteValues(configPath, values, out error) : true;
+    }
+
+    private static void DetectAndApplyHdrDefaults(IDictionary<string, string> values)
+    {
+        (bool isHdr, float peakNits, _) = Native.HdrDisplayDetector.QueryPrimaryDisplay();
+        if (isHdr)
+        {
+            values["hdr_output"] = "true";
+            if (OperatingSystem.IsWindows())
+            {
+                values["rendering_driver"] = "d3d12";
+            }
+            values["hdr_peak_nits"] = peakNits > 0f ? ((int)MathF.Round(peakNits)).ToString() : "1000";
+            values["hdr_reference_nits"] = "200";
+        }
+        else
+        {
+            values["hdr_output"] = "false";
+            values["hdr_peak_nits"] = "1000";
+            values["hdr_reference_nits"] = "200";
+        }
     }
 
     /// <summary>
@@ -258,14 +284,23 @@ public static class RuntimeConfig
     /// Whether a setting is offered in the panel. Nothing depends on another setting's value
     /// any more: the last such gate was the renderer backend, and there is no renderer to pick.
     /// </summary>
-    public static bool ShouldShowCVar(RuntimeCVarDefinition definition) =>
-        !IsRetiredNativeCategory(definition.Category) || IsDisplayCVar(definition.Name);
+    public static bool ShouldShowCVar(RuntimeCVarDefinition definition)
+    {
+        // HDR sub-settings are configured via the dedicated HDR Settings modal dialog
+        if (definition.Name is "hdr_reference_nits" or "hdr_peak_nits")
+        {
+            return false;
+        }
+
+        return !IsRetiredNativeCategory(definition.Category) || IsDisplayCVar(definition.Name);
+    }
 
     /// <summary>
     /// Whether a setting is written to refii.toml — the same question as showing it. A setting
     /// nobody can act on should not sit in the file implying it does something.
     /// </summary>
-    public static bool ShouldWriteCVar(RuntimeCVarDefinition definition) => ShouldShowCVar(definition);
+    public static bool ShouldWriteCVar(RuntimeCVarDefinition definition) =>
+        !IsRetiredNativeCategory(definition.Category) || IsDisplayCVar(definition.Name);
 
     /// <summary>The settings panel's name for everything the player tunes about the picture.</summary>
     public const string DisplayCategory = "Display";
