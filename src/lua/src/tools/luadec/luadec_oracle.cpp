@@ -33,6 +33,12 @@
 #include "luac32_luaconf.h"
 
 #define LUA_CORE
+// clang's <stddef.h> has no working include guard in C++20 (its guards yield to
+// __has_feature(modules)), so each re-include inside the namespace re-emits
+// `namespace std { nullptr_t }` under _MSC_EXTENSIONS. That leaves a
+// refii::luac32::std, which the using-directive below then puts ahead of ::std.
+#pragma push_macro("_MSC_EXTENSIONS")
+#undef _MSC_EXTENSIONS
 namespace refii::luac32 {
 #include "lapi.c"
 #include "lauxlib.c"
@@ -55,6 +61,7 @@ namespace refii::luac32 {
 #include "lvm.c"
 #include "lzio.c"
 }  // namespace refii::luac32
+#pragma pop_macro("_MSC_EXTENSIONS")
 
 namespace refii::luadec {
 namespace {
