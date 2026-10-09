@@ -228,7 +228,14 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private bool _materialDisabledWritten;
     private double _lastFrameSeconds;
     private Rid _checkedColour;
-    private bool _colourUsable;
+    private Engine_PostFxModel.ColourRoute _colourRoute;
+
+    /// <summary>
+    /// The chain's own full-size rgba16f colour for <see cref="Engine_PostFxModel.ColourRoute.Staged"/>:
+    /// storage-capable where the scene's MSAA resolve target is not. Allocated on first staged
+    /// frame, freed with the other size-bound targets.
+    /// </summary>
+    private Rid _staging;
 
     public static void RegisterGlobals()
     {
@@ -583,6 +590,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         _trapRingColour = default;
+        Free(ref _staging);
         Free(ref _quarter);
         Free(ref _occl);
         for (int i = 0; i < 2; i++)
@@ -736,7 +744,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         uint views = buffers.GetViewCount();
-        if (views == 0 || !ColourLayerUsable(buffers.GetColorLayer(0)))
+        if (views == 0 || !ColourLayerUsable(buffers))
         {
             WriteDisabledMaterialExposure();
             return;
@@ -769,9 +777,25 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Reduce();
         _rd.BufferClear(_histogramBuffer, 0, HistogramBytes);
 
+        bool staged = _colourRoute == Engine_PostFxModel.ColourRoute.Staged;
+        if (staged && !_staging.IsValid)
+        {
+            _staging = CreateTexture(size.X, size.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat, readable: true);
+        }
+
         for (uint view = 0; view < views; view++)
         {
-            Rid colour = buffers.GetColorLayer(view);
+            Rid sceneColour = buffers.GetColorLayer(view);
+            Rid colour = sceneColour;
+            if (staged)
+            {
+                // At PostTransparent the MSAA colour is already resolved into the scene layer,
+                // but that layer cannot be copied FROM; resolving the MSAA source again gives
+                // the staging texture the same pixels.
+                _rd.TextureResolveMultisample(buffers.GetColorLayer(view, true), _staging);
+                colour = _staging;
+            }
+
             Rid depth = buffers.GetDepthLayer(view);
             Projection projection = sceneData is not null ? sceneData.GetViewProjection(view) : camProjection;
             bool sunOnScreen = TrySunScreenUv(
@@ -857,6 +881,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 TrapCapture(colour, size);
             }
+
+            if (staged)
+            {
+                _rd.TextureCopy(
+                    _staging, sceneColour, Vector3.Zero, Vector3.Zero,
+                    new Vector3(size.X, size.Y, 1), 0, 0, 0, 0);
+            }
         }
 
         _firstFrame = false;
@@ -873,22 +904,46 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
     }
 
-    private bool ColourLayerUsable(Rid colour)
+    /// <summary>
+    /// Decides, once per colour layer, how the chain reaches it (see
+    /// <see cref="Engine_PostFxModel.ChooseColourRoute"/>). Re-evaluated whenever the scene
+    /// buffers are rebuilt, which a resize or an MSAA change does.
+    /// </summary>
+    /// <param name="buffers">The scene buffers of the frame being rendered.</param>
+    /// <returns>Whether the chain can run this frame.</returns>
+    private bool ColourLayerUsable(RenderSceneBuffersRD buffers)
     {
+        Rid colour = buffers.GetColorLayer(0);
         if (colour == _checkedColour)
         {
-            return _colourUsable;
+            return _colourRoute != Engine_PostFxModel.ColourRoute.Unusable;
         }
 
         _checkedColour = colour;
-        RenderingDevice.DataFormat format = _rd!.TextureGetFormat(colour).Format;
-        _colourUsable = format == RenderingDevice.DataFormat.R16G16B16A16Sfloat;
-        if (!_colourUsable)
+        RDTextureFormat colourFormat = _rd!.TextureGetFormat(colour);
+        RenderingDevice.TextureUsageBits? msaaUsage = null;
+        if (buffers.GetMsaa3D() != RenderingServer.ViewportMsaa.Disabled)
         {
-            GD.PrintErr($"[postfx] colour layer is {format}; the chain needs rgba16f and is disabled");
+            msaaUsage = _rd.TextureGetFormat(buffers.GetColorLayer(0, true)).UsageBits;
         }
 
-        return _colourUsable;
+        _colourRoute = Engine_PostFxModel.ChooseColourRoute(colourFormat.Format, colourFormat.UsageBits, msaaUsage);
+
+        // New scene buffers may be a new size; the staging copy is re-made on the next staged frame.
+        Free(ref _staging);
+        switch (_colourRoute)
+        {
+            case Engine_PostFxModel.ColourRoute.Staged:
+                GD.Print($"[postfx] colour layer is not a storage image (usage {colourFormat.UsageBits}); " +
+                    "running the chain on a staged copy resolved from MSAA");
+                break;
+            case Engine_PostFxModel.ColourRoute.Unusable:
+                GD.PrintErr($"[postfx] colour layer is {colourFormat.Format} (usage {colourFormat.UsageBits}, " +
+                    $"msaa usage {msaaUsage?.ToString() ?? "none"}); the chain cannot reach it and is disabled");
+                break;
+        }
+
+        return _colourRoute != Engine_PostFxModel.ColourRoute.Unusable;
     }
 
     /// <summary>

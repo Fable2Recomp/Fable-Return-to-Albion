@@ -129,58 +129,12 @@ u32 XNotifyGetNext_entry(u32 handle, u32 match_id, mapped_u32 id_ptr, mapped_u32
     if (id == 0x0000000A || id == 0x02000001 || id == 0x02000002) {
       REXKRNL_INFO("XNotify consumed by guest: handle={:08X} id={:#010x} param={:#010x}",
                    uint32_t(handle), id, param);
-
-      // TEMP(refii netplay bring-up, Fable 2 only): the game's
-      // connection-changed handler (default.xex sub_822CAD38, called from
-      // the per-frame Live pump sub_82185178) sets its one-shot guard
-      // (a1+5) UNCONDITIONALLY the instant it sees id==0x02000001 with
-      // param==0x1510F0 and (a1+5) wasn't already set, then enables
-      // presence (sub_8233EA80(g_XrnmNetContext, 1)) only if:
-      //   (!live_flag || *(impl+284) != 2) && *(g_XrnmNetContext+0xD4)
-      // Both conjuncts are read here, live, at the exact moment the guest
-      // consumes the notification — the guard never resets, so a bad
-      // reading of either term means enable was silently and permanently
-      // skipped this boot; a periodic poll even a frame later can't see
-      // this race.
-      if (id == 0x02000001 &&
-          (REX_KERNEL_STATE()->title_id() == 0x4D530910 ||
-           REX_KERNEL_STATE()->title_id() == 0x4D5307F1)) {
-        auto valid = [](uint32_t p) { return p >= 0x00010000u && p < 0xC0000000u; };
-        auto rd32 = [](uint32_t addr) {
-          return rex::memory::load_and_swap<uint32_t>(
-              REX_KERNEL_MEMORY()->TranslateVirtual(addr));
-        };
-        auto rd8 = [](uint32_t addr) {
-          return *REX_KERNEL_MEMORY()->TranslateVirtual(addr);
-        };
-        constexpr uint32_t kXrnmNetContext = 0x83497490;
-        constexpr uint32_t kLiveMgr = 0x83496AB8;      // dword_83496AB8
-        constexpr uint32_t kLiveFlag = 0x83496A5E;     // byte_83496A5E
-        const uint32_t ctx = rd32(kXrnmNetContext);
-        const uint32_t mgr = rd32(kLiveMgr);
-        const uint8_t live_flag = mgr ? rd8(kLiveFlag) : 0;
-        uint32_t mode212 = 0xFFFFFFFF;
-        uint32_t impl = 0;
-        uint32_t impl_284 = 0xFFFFFFFF;
-        if (valid(ctx)) {
-          mode212 = rd32(ctx + 0xD4);
-        }
-        if (valid(mgr)) {
-          impl = rd32(mgr + 12);
-          if (valid(impl)) {
-            impl_284 = rd32(impl + 284);
-          }
-        }
-        const bool term_a = !live_flag || (impl_284 != 2);
-        const bool term_b = (mode212 != 0 && mode212 != 0xFFFFFFFF);
-        REXKRNL_INFO(
-            "F2 connection-changed AT CONSUME TIME: ctx={:08X} mode212={} "
-            "mgr={:08X} impl={:08X} impl+284={} live_flag={} -> "
-            "term_a(!live||impl284!=2)={} term_b(mode212!=0)={} enable={}",
-            ctx, static_cast<int32_t>(mode212), mgr, impl,
-            static_cast<int32_t>(impl_284), live_flag, term_a, term_b,
-            (term_a && term_b));
-      }
+      // No title-specific guest reads here: the SDK runtime cannot see refii's
+      // TU1->unpatched address table (versions/Fable2/guest_addresses.inc),
+      // so a hardcoded Fable 2 global is a different word on the unpatched
+      // build. A probe of g_XrnmNetContext+0xD4 here read 1.0f as a pointer
+      // and faulted on consume of XN_LIVE_CONNECTIONCHANGED. Read guest state
+      // from refii's hooks/hostbridge, which translate through that table.
     }
   }
   return dequeued ? 1 : 0;

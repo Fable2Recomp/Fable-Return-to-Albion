@@ -15,6 +15,59 @@ public static class Engine_PostFxModel
 
     private const float Pi = 3.14159265358979f;
 
+    /// <summary>How the post-fx chain reaches the scene's colour layer.</summary>
+    public enum ColourRoute
+    {
+        /// <summary>The chain cannot run on this colour layer; it is skipped for the frame.</summary>
+        Unusable,
+
+        /// <summary>The colour layer is a storage image and every pass binds it directly.</summary>
+        Direct,
+
+        /// <summary>
+        /// The colour layer is not a storage image, so the chain runs on an owned rgba16f copy:
+        /// the MSAA colour is resolved into it, and the result is copied back at the end.
+        /// </summary>
+        Staged,
+    }
+
+    /// <summary>
+    /// Picks the route from the colour layer's actual format and usage bits rather than from
+    /// what the renderer is expected to allocate.
+    ///
+    /// WHY THE USAGE BITS, NOT JUST THE FORMAT: with MSAA on, the colour layer Godot hands a
+    /// compositor effect is the MSAA resolve target. On the Windows D3D12 build it arrived as
+    /// rgba16f without STORAGE, so a format-only check passed, every <c>Image(colour, ...)</c>
+    /// uniform set came back null, and the next dispatch took the process down.
+    /// </summary>
+    /// <param name="format">The colour layer's data format.</param>
+    /// <param name="colourUsage">The colour layer's usage bits.</param>
+    /// <param name="msaaUsage">The MSAA colour layer's usage bits, or null when MSAA is off.</param>
+    /// <returns>The route the chain must take this frame.</returns>
+    public static ColourRoute ChooseColourRoute(
+        Godot.RenderingDevice.DataFormat format,
+        Godot.RenderingDevice.TextureUsageBits colourUsage,
+        Godot.RenderingDevice.TextureUsageBits? msaaUsage)
+    {
+        if (format != Godot.RenderingDevice.DataFormat.R16G16B16A16Sfloat)
+        {
+            return ColourRoute.Unusable;
+        }
+
+        if ((colourUsage & Godot.RenderingDevice.TextureUsageBits.StorageBit) != 0)
+        {
+            return ColourRoute.Direct;
+        }
+
+        // Staging needs the MSAA source to be resolvable (copy-from) and the scene layer to take
+        // the result back (copy-to). Without MSAA there is nothing to resolve from, and a
+        // non-MSAA layer without copy-from cannot be read into the staging texture either.
+        bool canResolve = msaaUsage is { } msaa &&
+            (msaa & Godot.RenderingDevice.TextureUsageBits.CanCopyFromBit) != 0;
+        bool canWriteBack = (colourUsage & Godot.RenderingDevice.TextureUsageBits.CanCopyToBit) != 0;
+        return canResolve && canWriteBack ? ColourRoute.Staged : ColourRoute.Unusable;
+    }
+
     public sealed class Derived
     {
         public bool TonemapEnabled = true;
