@@ -826,6 +826,11 @@ endif()
 # AFTER refii_host: the bridge stages the whole dependency closure into Godot/build/bin,
 # and `if(TARGET ...)` only sees targets already defined. Added earlier, it silently
 # staged a partial set — the bridge without the recompiled guest behind it.
+# The code generator the launcher loads to build the player's game code. BEFORE the host
+# bridge, whose staging target takes every native in the closure that exists when its
+# directory is processed: declared after it, the library built but never reached bin/.
+add_subdirectory(src/recompiler)
+
 if(REFII_BUILD_HOST_BRIDGE)
     add_subdirectory(src/hostbridge)
 endif()
@@ -862,6 +867,7 @@ foreach(_refii_origin_rpath_target
     refii-launcher
     refii_core
     refii_hostbridge
+    refii_recompiler
     refii_generated
     refii_bnk_extractor
     refii_lua

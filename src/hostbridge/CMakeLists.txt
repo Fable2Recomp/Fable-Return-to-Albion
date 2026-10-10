@@ -65,6 +65,10 @@ set_target_properties(refii_hostbridge PROPERTIES
 if(REFII_STAGE_GODOT_BUILD)
     set(_refii_hostbridge_staged_targets
         refii_hostbridge
+        # The code generator, loaded by the launcher to build the player's game code. It
+        # imports rexruntime from this same directory, which is the whole point of its
+        # being a library here rather than an executable under bin/recompile.
+        refii_recompiler
         refii_generated
         refii_core
         refii_lua

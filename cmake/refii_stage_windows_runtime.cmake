@@ -1,11 +1,10 @@
 # Stages the MSVC runtime the package's own binaries import, beside those binaries.
 #
 # The Windows counterpart to the ldd closure the Linux package walks. A player has no Visual
-# Studio and no guarantee of a Visual C++ redistributable, and our DLLs and rexglue.exe all
-# link the CRT dynamically -- so without this the package ships binaries whose imports cannot
-# be resolved, and rexglue.exe fails at process start with "the code execution cannot proceed
-# because VCRUNTIME140D.dll was not found". Nothing has run at that point, so the launcher
-# reports a generator that will not start rather than a missing runtime.
+# Studio and no guarantee of a Visual C++ redistributable, and our DLLs all link the CRT
+# dynamically -- so without this the package ships binaries whose imports cannot
+# be resolved, and the first refii_* library the launcher loads fails with "the code execution
+# cannot proceed because VCRUNTIME140D.dll was not found".
 #
 # THE LIST IS DERIVED, NOT WRITTEN DOWN. The imports differ by configuration (VCRUNTIME140.dll
 # against VCRUNTIME140D.dll) and by what the code happens to use -- MSVCP140_ATOMIC_WAIT.dll
@@ -18,9 +17,9 @@
 # msvcp140d.dll resolved out of C:/WINDOWS/system32 on the machine this was written on, which
 # is not a file we may ship. So the names come from the walk and the FILES come from CRT_DIRS.
 #
-# TWO DESTINATIONS. bin/ holds the host natives and is what the launcher puts on the child's
-# PATH; bin/recompile/bin holds rexglue.exe alone, and a copy there means it also starts when
-# run directly, which is how anyone debugging the install-time build invokes it.
+# ONE DESTINATION: bin/, which holds every native the package runs -- the host libraries and
+# the code generator library the launcher loads from the same directory. There is no longer a
+# generator executable anywhere else to stage a second copy beside.
 
 cmake_minimum_required(VERSION 3.24)
 
@@ -35,10 +34,9 @@ foreach(_required APP_DIR)
 endforeach()
 
 set(_bin "${APP_DIR}/bin")
-set(_generator_bin "${APP_DIR}/bin/recompile/bin")
 
 file(GLOB _libraries LIST_DIRECTORIES FALSE "${_bin}/*.dll")
-file(GLOB _executables LIST_DIRECTORIES FALSE "${_bin}/*.exe" "${_generator_bin}/*.exe")
+file(GLOB _executables LIST_DIRECTORIES FALSE "${_bin}/*.exe")
 if(NOT _libraries AND NOT _executables)
     message(FATAL_ERROR
         "refii_stage_windows_runtime: no binaries under ${_bin}; the package would not run.")
@@ -53,7 +51,7 @@ file(GET_RUNTIME_DEPENDENCIES
     LIBRARIES ${_libraries}
     RESOLVED_DEPENDENCIES_VAR _resolved
     UNRESOLVED_DEPENDENCIES_VAR _unresolved
-    DIRECTORIES ${CRT_DIRS} "${_bin}" "${_generator_bin}"
+    DIRECTORIES ${CRT_DIRS} "${_bin}"
     PRE_EXCLUDE_REGEXES "api-ms-win-.*" "ext-ms-.*"
 )
 
@@ -94,11 +92,7 @@ foreach(_name IN LISTS _wanted)
         continue()
     endif()
 
-    foreach(_destination "${_bin}" "${_generator_bin}")
-        if(IS_DIRECTORY "${_destination}")
-            file(COPY "${_found}" DESTINATION "${_destination}")
-        endif()
-    endforeach()
+    file(COPY "${_found}" DESTINATION "${_bin}")
     list(APPEND _staged "${_name}")
     if(_name MATCHES "d\.dll$")
         set(_debug_crt TRUE)

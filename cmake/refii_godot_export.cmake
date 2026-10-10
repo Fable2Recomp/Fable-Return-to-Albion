@@ -56,13 +56,13 @@ option(REFII_PACKAGE "Build the release package (export + stage + zip) as part o
 # WHERE THE MSVC RUNTIME LIVES, so the package can carry it.
 #
 # Our Windows binaries link the CRT as a DLL, and a player has no Visual Studio: nothing in
-# the package supplied VCRUNTIME140*.dll or MSVCP140*.dll, so rexglue.exe dies at process
-# start with "the code execution cannot proceed", before a single line of its output. Linux
-# never showed this because its equivalent closure IS staged -- see the ldd walk in the top
-# level CMakeLists -- and because libstdc++ is the same library in every configuration.
+# the package supplied VCRUNTIME140*.dll or MSVCP140*.dll, so the first native the launcher
+# loaded failed with "the code execution cannot proceed". Linux never showed this because its
+# equivalent closure IS staged -- see the ldd walk in the top level CMakeLists -- and because
+# libstdc++ is the same library in every configuration.
 #
 # A dev box hides it too, which is why it went unnoticed here: an installer had already put
-# the debug CRT in system32 on the machine this was written on, so the staged rexglue.exe ran
+# the debug CRT in system32 on the machine this was written on, so the staged natives loaded
 # perfectly while carrying imports no clean machine can resolve.
 set(REFII_WINDOWS_CRT_DIRS "")
 if(WIN32)

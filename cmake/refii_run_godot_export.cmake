@@ -250,30 +250,21 @@ if(NOT EXISTS "${_app}/bin")
     message(FATAL_ERROR "Staging produced no bin/ in ${_app}; the package would not run.")
 endif()
 
-# ONE COPY OF EACH NATIVE. The payload SDK stages the runtime and the refii libraries into
-# bin/recompile/lib for the install-time link, and the host loads the same files from bin/.
-# The launcher looks in bin/ for a library that lib/ does not hold, so a byte-identical
-# second copy is only weight: the runtime alone was 444 MB twice.
-file(GLOB _sdk_libraries LIST_DIRECTORIES false "${_app}/bin/recompile/lib/*")
-foreach(_sdk_library IN LISTS _sdk_libraries)
-    get_filename_component(_library_name "${_sdk_library}" NAME)
-    set(_host_copy "${_app}/bin/${_library_name}")
-    if(NOT EXISTS "${_host_copy}")
-        continue()
-    endif()
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} -E compare_files "${_sdk_library}" "${_host_copy}"
-        RESULT_VARIABLE _differs
-        OUTPUT_QUIET ERROR_QUIET)
-    if(_differs EQUAL 0)
-        file(REMOVE "${_sdk_library}")
-        message(STATUS "Dropped duplicate of bin/${_library_name} from bin/recompile/lib")
+# ONE COPY OF EACH NATIVE, and one directory for them. The install-time link reads the
+# runtime and the refii libraries from bin/, where the host loads them from, and the
+# generator is a library in that same directory; nothing under bin/recompile is a binary.
+# A staging root from before that still carries the old lib/ and bin/ copies -- the runtime
+# alone was 444 MB twice -- and they are not ours to ship a second time.
+foreach(_stale "${_app}/bin/recompile/lib" "${_app}/bin/recompile/bin")
+    if(IS_DIRECTORY "${_stale}")
+        file(REMOVE_RECURSE "${_stale}")
+        message(STATUS "Removed the pre-library staging directory ${_stale} from the package")
     endif()
 endforeach()
 
 # THE MSVC RUNTIME, staged from the redistributables rather than assumed present. Without
-# it the package's own binaries have imports no player's machine can resolve, and
-# rexglue.exe fails at process start. See refii_stage_windows_runtime.cmake.
+# it the package's own binaries have imports no player's machine can resolve, and the
+# launcher's first native load fails. See refii_stage_windows_runtime.cmake.
 if(TOOL_PLATFORM STREQUAL "windows")
     if(WINDOWS_RUNTIME_SCRIPT AND EXISTS "${WINDOWS_RUNTIME_SCRIPT}")
         set(APP_DIR "${_app}")
@@ -282,7 +273,7 @@ if(TOOL_PLATFORM STREQUAL "windows")
     else()
         message(WARNING
             "No Windows runtime staging script at '${WINDOWS_RUNTIME_SCRIPT}'; the package "
-            "ships without the MSVC runtime and rexglue.exe will not start on a machine "
+            "ships without the MSVC runtime and its natives will not load on a machine "
             "that has no matching Visual C++ runtime installed.")
     endif()
 endif()
@@ -298,10 +289,7 @@ if(TOOL_PLATFORM STREQUAL "linux")
     find_program(_strip NAMES llvm-strip strip)
     if(_strip)
         file(GLOB _strippable LIST_DIRECTORIES false
-            "${_app}/bin/*.so"
-            "${_app}/bin/recompile/lib/*.so"
-            "${_app}/bin/recompile/lib/*.a"
-            "${_app}/bin/recompile/bin/*")
+            "${_app}/bin/*.so")
         set(_stripped 0)
         foreach(_binary IN LISTS _strippable)
             if(IS_SYMLINK "${_binary}")

@@ -19,11 +19,12 @@ namespace Refii.Launcher.Recompile;
 /// <remarks>
 /// AN INSTALL STEP, and the one that cannot be skipped: the recompiled guest is derived
 /// from the player's game image, so it is not redistributable and no release can contain
-/// it. What we ship is the generator, the runtime, our own libraries and a bundled Zig
-/// under <c>recompile/</c>; this drives them.
+/// it. What we ship is the generator (refii_recompiler, a library in bin/), the runtime,
+/// our own libraries and a bundled Zig under <c>recompile/</c>; this drives them.
 ///
 /// Five phases, in order:
-///   1. generate  — rexglue reads assets/game/default.xex and writes C++ to assets/generated
+///   1. generate  — the generator reads assets/game/default.xex and writes C++ to
+///                  assets/generated, in this process (see <see cref="Recompiler"/>)
 ///   2. precompile — the ~61,000-line generated header, once instead of ~148 times
 ///   3. compile   — ~150k functions, JobCount() translation units at a time
 ///   4. link      — one shared module, next to the other native libraries
@@ -129,7 +130,10 @@ public static class GameCodeBuild
 
 	public readonly record struct Progress(string Status, float Fraction);
 
-	public readonly record struct Result(bool Ok, string Error);
+	/// <summary>The outcome. <c>Stopped</c> is the player's doing, not a failure.</summary>
+	public readonly record struct Result(bool Ok, string Error, bool Stopped = false);
+
+	private static Result StoppedResult => new(false, "stopped", Stopped: true);
 
 	/// <summary>True when a module exists at all.</summary>
 	public static bool IsBuilt() => File.Exists(ModulePath);
@@ -407,7 +411,8 @@ public static class GameCodeBuild
 			!AnyFileExists(BinDirectory,
 				"rexruntime.dll", "rexruntimed.dll", "rexruntimerd.dll",
 				"librexruntime.dll", "librexruntimed.dll", "librexruntimerd.dll") ||
-			!File.Exists(Path.Combine(recompile, "bin", "rexglue.exe")) ||
+			!File.Exists(Path.Combine(BinDirectory,
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_recompiler"))) ||
 			FindShippedLibrary("rexruntime").Length == 0 ||
 			FindShippedLibrary("refii_core").Length == 0 ||
 			FindShippedLibrary("refii_vfs").Length == 0 ||
@@ -851,8 +856,57 @@ public static class GameCodeBuild
 	/// <summary>
 	/// Runs the whole pipeline. Reports progress as a status line and a 0..1 fraction.
 	/// </summary>
-	public static async Task<Result> RunAsync(
-		Action<Progress> progress, CancellationToken cancellation)
+	/// <remarks>
+	/// <paramref name="control"/> is where a pause holds the build and a stop abandons it; see
+	/// <see cref="BuildControl"/> for exactly where each takes effect. A stop comes back as a
+	/// <see cref="Result"/> with <c>Stopped</c> set, never as an error: the partial output is
+	/// deleted here, the module was removed before generation started, and the next build is a
+	/// full build regardless.
+	/// </remarks>
+	public static async Task<Result> RunAsync(Action<Progress> progress, BuildControl control)
+	{
+		CancellationToken cancellation = control.StopToken;
+		Result result;
+		try
+		{
+			result = await RunPipelineAsync(progress, control, cancellation).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException)
+		{
+			result = StoppedResult;
+		}
+
+		// A step that fails because its process was killed reports the kill as its error; the
+		// token says which it was.
+		if (result.Ok || (!result.Stopped && !cancellation.IsCancellationRequested))
+		{
+			return result;
+		}
+
+		LogPhase("stopped");
+		progress(new Progress("Game code build stopped.", 0.0f));
+
+		// The sources and objects of a build that will never finish. Best effort: on Windows a
+		// killed compiler can still hold a handle for a moment, and the next build's clean step
+		// removes whatever this could not, loudly if it cannot either.
+		try
+		{
+			if (Directory.Exists(GeneratedDirectory))
+			{
+				Directory.Delete(GeneratedDirectory, recursive: true);
+			}
+		}
+		catch (Exception exception)
+		{
+			LogWrite("could not remove the stopped build's output: " + exception.Message);
+		}
+
+		InvalidateStatus();
+		return StoppedResult;
+	}
+
+	private static async Task<Result> RunPipelineAsync(
+		Action<Progress> progress, BuildControl control, CancellationToken cancellation)
 	{
 		if (BinDirectory.Length == 0)
 		{
@@ -878,8 +932,8 @@ public static class GameCodeBuild
 
 		// EVERYTHING missing, in one message. Reported one at a time this takes a build
 		// attempt per fault to discover, and each attempt looks like "it just doesn't work".
-		string generator = Path.Combine(RecompileDirectory, "bin",
-			OperatingSystem.IsWindows() ? "rexglue.exe" : "rexglue");
+		string generator = Path.Combine(BinDirectory,
+			Refii.Core.Engine_NativeLibraries.FileNameFor("refii_recompiler"));
 
 		var missing = new List<string>();
 		if (!Directory.Exists(RecompileDirectory))
@@ -895,7 +949,7 @@ public static class GameCodeBuild
 
 			if (FindShippedLibrary("rexruntime").Length == 0)
 			{
-				missing.Add("the link libraries (" + string.Join(" or ", LibraryDirectories) + ")");
+				missing.Add("the link libraries (" + BinDirectory + ")");
 			}
 
 			if (!File.Exists(Path.Combine(RecompileDirectory, "include_dirs.cmake")))
@@ -909,7 +963,7 @@ public static class GameCodeBuild
 			return new Result(false,
 				"This install cannot build the game code because it is missing " +
 				string.Join("; ", missing) +
-				". These ship beside the app under bin/recompile — if you copied the " +
+				". These ship beside the app under bin/ — if you copied the " +
 				"executable on its own, copy the whole exported folder instead.");
 		}
 
@@ -979,14 +1033,20 @@ public static class GameCodeBuild
 			return new Result(false, manifestError);
 		}
 
-		// 1. Generate. The generator prints its own phases; the fraction advances only per
-		//    phase because it does not report a count we could scale.
-		Result generated = await RunStepAsync(
-			generator, new[] { "--force", "codegen", manifest }, RecompileDirectory,
-			line => progress(new Progress("Generating game code... " + Tail(line), 0.05f)),
-			cancellation);
+		// 1. Generate, in this process. The fraction advances only per phase because the
+		//    generator does not report a count we could scale. Its log lines go to the
+		//    launcher log, as the executable's output did; its phases drive the status line.
+		LogPhase("generate");
+		Result generated = await Task.Run(
+			() => Recompiler.Generate(
+				manifest,
+				control,
+				line => progress(new Progress("Generating game code... " + line, 0.05f)),
+				LogWrite),
+			cancellation).ConfigureAwait(false);
 		if (!generated.Ok)
 		{
+			LogWrite("generate failed: " + generated.Error);
 			return new Result(false, "Code generation failed: " + generated.Error);
 		}
 
@@ -1051,6 +1111,7 @@ public static class GameCodeBuild
 		//    the same header is parsed 148 times, about 15 minutes of pure CPU on a player's
 		//    machine. Precompiling takes a TU from 17.7s to 10.6s, a 40% cut, and the object
 		//    files come out byte-identical.
+		await control.WaitWhilePausedAsync(cancellation).ConfigureAwait(false);
 		LogPhase("precompile");
 		progress(new Progress("Preparing the game code build...", 0.36f));
 
@@ -1083,8 +1144,8 @@ public static class GameCodeBuild
 				"-x", "c++-header", header, "-o", pch,
 			};
 
-			(int pchCode, string pchOutput) =
-				await RunCaptureAsync(resolved.Zig, Prefixed("c++", pchArguments), cancellation);
+			(int pchCode, string pchOutput) = await RunCaptureAsync(
+				resolved.Zig, Prefixed("c++", pchArguments), control, cancellation);
 
 			// NOT FATAL. A precompiled header is a speed optimisation, and the TUs include the
 			// header themselves regardless — so if clang refuses it, the right outcome is a
@@ -1108,16 +1169,17 @@ public static class GameCodeBuild
 		//    Explicitly limited: left unbounded this takes every core for however long the
 		//    build runs, and the player cannot use their machine meanwhile. See JobCount.
 		Result compiled = await CompileAllAsync(
-			resolved, sources, flags, pchUsed, progress, cancellation);
+			resolved, sources, flags, pchUsed, progress, control, cancellation);
 		if (!compiled.Ok)
 		{
 			return new Result(false, "Compiling the game code failed: " + compiled.Error);
 		}
 
 		// 4. Link.
+		await control.WaitWhilePausedAsync(cancellation).ConfigureAwait(false);
 		LogPhase("link");
 		progress(new Progress("Linking the game module...", 0.95f));
-		Result linked = await LinkAsync(resolved, sources.Count, cancellation);
+		Result linked = await LinkAsync(resolved, sources.Count, control, cancellation);
 		if (!linked.Ok)
 		{
 			return new Result(false, "Linking the game module failed: " + linked.Error);
@@ -1300,9 +1362,6 @@ public static class GameCodeBuild
 	}
 
 	private static string Escape(string path) => path.Replace("\\", "\\\\");
-
-	private static string Tail(string line) =>
-		line.Length <= 60 ? line : line[^60..];
 
 	/// <summary>
 	/// Reads a <c>set(VARIABLE a b c)</c> list out of one of the staged .cmake files.
@@ -1614,6 +1673,7 @@ public static class GameCodeBuild
 		IReadOnlyList<string> flags,
 		string precompiledHeader,
 		Action<Progress> progress,
+		BuildControl control,
 		CancellationToken cancellation)
 	{
 		int total = sources.Count;
@@ -1653,6 +1713,12 @@ public static class GameCodeBuild
 				{
 					await warmed.Task.WaitAsync(cancellation).ConfigureAwait(false);
 				}
+
+				// BEFORE THE PERMIT. The compilers already running are frozen by the pause
+				// itself (RunCaptureOnceAsync attaches each to the control); this keeps new ones
+				// from starting, and waiting with a permit held would keep that permit from a
+				// resumed unit for no reason.
+				await control.WaitWhilePausedAsync(cancellation).ConfigureAwait(false);
 
 				await gate.WaitAsync(cancellation).ConfigureAwait(false);
 				try
@@ -1695,7 +1761,7 @@ public static class GameCodeBuild
 						&& Volatile.Read(ref pchBroken) == 0;
 
 					(int code, string output) = await RunCaptureAsync(
-						zig.Zig, Prefixed("c++", BuildArguments(usePch)), cancellation)
+						zig.Zig, Prefixed("c++", BuildArguments(usePch)), control, cancellation)
 						.ConfigureAwait(false);
 
 					// A CRASH WITH THE PCH IS THE PCH'S FAULT until shown otherwise, so this unit is
@@ -1711,7 +1777,7 @@ public static class GameCodeBuild
 						}
 
 						(code, output) = await RunCaptureAsync(
-							zig.Zig, Prefixed("c++", BuildArguments(false)), cancellation)
+							zig.Zig, Prefixed("c++", BuildArguments(false)), control, cancellation)
 							.ConfigureAwait(false);
 					}
 
@@ -1771,7 +1837,7 @@ public static class GameCodeBuild
 	/// runs, and behaves as though none of refii's native overrides existed.
 	/// </remarks>
 	private static async Task<Result> LinkAsync(
-		Toolchain zig, int objectCount, CancellationToken cancellation)
+		Toolchain zig, int objectCount, BuildControl control, CancellationToken cancellation)
 	{
 		var arguments = new List<string> { "-shared", "-o", ModulePath };
 		arguments.InsertRange(0, TargetFlags());
@@ -1815,8 +1881,7 @@ public static class GameCodeBuild
 			if (found.Length == 0)
 			{
 				return new Result(false,
-					"the " + name + " library is missing from "
-					+ string.Join(" and ", LibraryDirectories));
+					"the " + name + " library is missing from " + BinDirectory);
 			}
 
 			arguments.Add(found);
@@ -1837,7 +1902,7 @@ public static class GameCodeBuild
 		}
 
 		(int code, string output) = await RunCaptureAsync(
-			zig.Zig, Prefixed("c++", LinkArguments(arguments)), cancellation)
+			zig.Zig, Prefixed("c++", LinkArguments(arguments)), control, cancellation)
 			.ConfigureAwait(false);
 
 		return code == 0
@@ -1888,34 +1953,16 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Where a shipped library may be: the payload SDK's lib/ first, then the host's bin/.
+	/// Finds a shipped library by base name in bin/, or "".
 	/// </summary>
 	/// <remarks>
-	/// The host loads the runtime and the refii libraries from bin/, and the SDK stages the
-	/// same files into recompile/lib for the link. A package keeps one copy of each — the
-	/// lib/ one is dropped when it is byte-identical to bin/'s — so both places are the
-	/// closure. lib/ first: it is the one the SDK staging empties and refills, so when a dev
-	/// tree holds two configurations it is the one that agrees with the generator.
+	/// bin/ is the ONE directory for natives: the host loads the runtime and the refii
+	/// libraries from it, the generator library imports the runtime from it, and the
+	/// payload links the same files. There used to be a second copy of each under
+	/// recompile/lib for the link, and the two drifting apart is how the payload once
+	/// imported a four-hour-old runtime while the host loaded the current one.
 	/// </remarks>
-	private static IReadOnlyList<string> LibraryDirectories =>
-		new[] { Path.Combine(RecompileDirectory, "lib"), BinDirectory };
-
-	/// <summary>
-	/// Finds a shipped library by base name in <see cref="LibraryDirectories"/>, or "".
-	/// </summary>
-	private static string FindShippedLibrary(string name)
-	{
-		foreach (string directory in LibraryDirectories)
-		{
-			string found = FindLibrary(directory, name);
-			if (found.Length != 0)
-			{
-				return found;
-			}
-		}
-
-		return string.Empty;
-	}
+	private static string FindShippedLibrary(string name) => FindLibrary(BinDirectory, name);
 
 	/// <summary>
 	/// Finds a library by base name in one directory, in either build configuration.
@@ -1957,7 +2004,7 @@ public static class GameCodeBuild
 			return string.Empty;
 		}
 
-		// ONE CONFIGURATION SHOULD BE PRESENT, and the staging now empties lib/ so that it is.
+		// ONE CONFIGURATION SHOULD BE PRESENT, and the staging prunes bin/ so that it is.
 		// When more than one is anyway -- an older tree, or a hand-copied file -- the newest is
 		// the one this install just built, and taking it on name order instead is how the
 		// payload ended up importing a four-hour-old rexruntimerd.dll while the host loaded
@@ -1997,6 +2044,7 @@ public static class GameCodeBuild
 				["game_hash"] = HashGameExecutable(),
 				["build_inputs"] = HashBuildInputs(),
 				["compiler"] = "zig " + Toolchain.Version(zig),
+				["generator"] = "rexglue " + Recompiler.SdkVersion(),
 				["platform"] = RuntimeInformation.RuntimeIdentifier,
 				["built_utc"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
 			};
@@ -2035,12 +2083,13 @@ public static class GameCodeBuild
 	/// always safe.
 	/// </summary>
 	private static async Task<(int Code, string Output)> RunCaptureAsync(
-		string executable, IReadOnlyList<string> arguments, CancellationToken cancellation)
+		string executable, IReadOnlyList<string> arguments, BuildControl control,
+		CancellationToken cancellation)
 	{
 		for (int attempt = 0; ; attempt++)
 		{
 			(int Code, string Output) result = await RunCaptureOnceAsync(
-				executable, arguments, cancellation).ConfigureAwait(false);
+				executable, arguments, control, cancellation).ConfigureAwait(false);
 
 			if (!IsCrashExit(result.Code) || attempt >= CrashRetries
 					|| cancellation.IsCancellationRequested)
@@ -2054,9 +2103,13 @@ public static class GameCodeBuild
 		}
 	}
 
-	/// <summary>Runs a process to completion and returns its exit code and output.</summary>
+	/// <summary>
+	/// Runs a process to completion and returns its exit code and output. Attached to
+	/// <paramref name="control"/> while it runs, so a pause freezes it and a resume thaws it.
+	/// </summary>
 	private static async Task<(int Code, string Output)> RunCaptureOnceAsync(
-		string executable, IReadOnlyList<string> arguments, CancellationToken cancellation)
+		string executable, IReadOnlyList<string> arguments, BuildControl control,
+		CancellationToken cancellation)
 	{
 		var startInfo = new ProcessStartInfo
 		{
@@ -2067,7 +2120,7 @@ public static class GameCodeBuild
 			RedirectStandardError = true,
 
 			// NO CONSOLE WINDOW. Redirecting both streams is not enough on Windows: the
-			// launcher is a GUI-subsystem process and zig and rexglue are console ones, so
+			// launcher is a GUI-subsystem process and zig is a console one, so
 			// each child gets a console allocated and flashed on screen even though nothing
 			// is ever drawn in it. The compile phase runs one per batch across ~150k
 			// functions, which is a window appearing and vanishing for the whole build.
@@ -2096,6 +2149,7 @@ public static class GameCodeBuild
 				return (-1, LogResult(-1, "could not start " + executable));
 			}
 
+			control.Attach(process);
 			Task<string> output = process.StandardOutput.ReadToEndAsync();
 			Task<string> errors = process.StandardError.ReadToEndAsync();
 			try
@@ -2104,6 +2158,7 @@ public static class GameCodeBuild
 			}
 			catch (OperationCanceledException)
 			{
+				control.Detach(process);
 				// KILL THE CHILD, as RunStepAsync does. WaitForExitAsync only stops WAITING; the
 				// zig process carries on. On Windows the survivors keep handles open on the
 				// object files and the cache, so step 0's delete of the build directory fails
@@ -2120,6 +2175,7 @@ public static class GameCodeBuild
 				return (-1, LogResult(-1, "cancelled"));
 			}
 
+			control.Detach(process);
 			return (process.ExitCode, LogResult(process.ExitCode,
 				(await output.ConfigureAwait(false) + await errors.ConfigureAwait(false)).Trim()));
 		}
@@ -2231,25 +2287,19 @@ public static class GameCodeBuild
 			startInfo.ArgumentList.Add(argument);
 		}
 
-		// The generator links the ReXGlue runtime, and its RUNPATH is $ORIGIN — it looks
-		// beside itself, while the staged libraries are one directory over in lib/, or in
-		// bin/ when the package kept only that copy. Without this it cannot start at all,
-		// which reads as "the generator is missing" rather than "it could not find its
-		// runtime".
-		string variable = OperatingSystem.IsWindows()
-			? "PATH"
-			: OperatingSystem.IsMacOS() ? "DYLD_LIBRARY_PATH" : "LD_LIBRARY_PATH";
-		string existing = Environment.GetEnvironmentVariable(variable) ?? string.Empty;
-		var searchDirectories = new List<string>(LibraryDirectories);
-		if (additionalPathDirectories is not null)
+		// Only the Windows bootstrap uses this, and its tools may live outside PATH (the
+		// copies Visual Studio bundles): cmake finds ninja and the compiler by name, so their
+		// directories go ahead of the inherited PATH.
+		if (additionalPathDirectories is not null && additionalPathDirectories.Count > 0)
 		{
-			searchDirectories.AddRange(additionalPathDirectories);
+			string existing = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+			var searchDirectories = new List<string>(additionalPathDirectories);
+			if (existing.Length != 0)
+			{
+				searchDirectories.Add(existing);
+			}
+			startInfo.Environment["PATH"] = string.Join(Path.PathSeparator, searchDirectories);
 		}
-		if (existing.Length != 0)
-		{
-			searchDirectories.Add(existing);
-		}
-		startInfo.Environment[variable] = string.Join(Path.PathSeparator, searchDirectories);
 
 		// The tail of the output, kept so a failure can say what actually went wrong
 		// instead of only an exit code. Bounded: a failing compile can produce megabytes.
@@ -2326,9 +2376,9 @@ public static class GameCodeBuild
 				return new Result(false, "cancelled");
 			}
 
-			// The transcript goes to the log whether this succeeded or not: a generator that
-			// exits 0 without writing sources.cmake is exactly the failure this pipeline has
-			// hit, and the reason is in the output, not the exit code.
+			// The transcript goes to the log whether this succeeded or not: a tool that exits 0
+			// without producing what it was run for is a failure this pipeline has hit, and the
+			// reason is in the output, not the exit code.
 			//
 			// Read under the same lock the writers take — the reader threads are drained by
 			// WaitForExit() by now, but taking it costs nothing and keeps one rule for the pair.

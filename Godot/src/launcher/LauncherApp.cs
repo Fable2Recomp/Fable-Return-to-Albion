@@ -44,6 +44,9 @@ public partial class LauncherApp : Control
 	private string _installLabel = string.Empty;
 	private string _installStatus = string.Empty;
 	private string _installError = string.Empty;
+
+	/// <summary>The running game code build's pause and stop, while one runs.</summary>
+	private Recompile.BuildControl? _buildControl;
 	private long _installCopiedBytes;
 	private long _installTotalBytes;
 	private int _installCompletedFiles;
@@ -93,6 +96,9 @@ public partial class LauncherApp : Control
 	private Label _warningLabel = null!;
 	private Panel _actionPanel = null!;
 	private Button _primaryButton = null!;
+	private HBoxContainer? _buildControls;
+	private Button? _pauseBuildButton;
+	private Button? _stopBuildButton;
 	private TextureRect _progressTrack = null!;
 	private Control _progressClip = null!;
 	private TextureRect _progressFill = null!;
@@ -1005,6 +1011,14 @@ public partial class LauncherApp : Control
 		_primaryButton.Pressed += OnPrimaryPressed;
 		WirePrimaryButtonInteractions();
 
+		// CLIPPED, WITH AN ELLIPSIS. The button is a fixed 280 units wide and the install
+		// status is written into it; a status longer than that drew straight past the edge
+		// and under the pause and stop buttons beside it. The full line is still on the
+		// Reinstall tab, which wraps.
+		_primaryButton.ClipText = true;
+		_primaryButton.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		BuildBuildControls();
+
 		ApplySystemFont(_artCredit, LauncherScale.Font(LauncherTokens.CaptionSize));
 		_artCredit.AddThemeColorOverride("font_color", new Color(LauncherTokens.Cream, 0.72f));
 		_artCredit.AddThemeColorOverride("font_shadow_color", new Color(0, 0, 0, 0.75f));
@@ -1110,6 +1124,9 @@ public partial class LauncherApp : Control
 		_reinstallPanel.ReinstallRequested += StartInstallFlow;
 		_reinstallPanel.UnpackBanksRequested += () => StartOps(ops => ops.ExtractGameBanks());
 		_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
+		_reinstallPanel.PauseBuildRequested += OnPauseBuildPressed;
+		_reinstallPanel.ResumeBuildRequested += OnPauseBuildPressed;
+		_reinstallPanel.StopBuildRequested += OnStopBuildPressed;
 		_reinstallPanel.CompileShadersRequested += () => StartOps(ops => ops.CompileShaders());
 		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
 
@@ -1338,6 +1355,13 @@ public partial class LauncherApp : Control
 		_progressFill.Position = Vector2.Zero;
 		_progressFill.Size = _primaryButton.Size;
 
+		// Beside the primary button, over the artwork: the one free space next to it.
+		if (_buildControls is not null)
+		{
+			_buildControls.Position = new Vector2(layout.ActionSize.X + LauncherScale.Px(10.0f), 0);
+			_buildControls.Size = new Vector2(LauncherScale.Px(240.0f), layout.ActionSize.Y);
+		}
+
 		_drawerBasePos = layout.InfoPos;
 		_infoPanel.Position = _drawerBasePos;
 		_infoPanel.Size = layout.InfoSize;
@@ -1458,7 +1482,7 @@ public partial class LauncherApp : Control
 
 		if (isoInProgress)
 		{
-			label = ProgressLabel.BuildButtonLabel(_installLabel, _installStatus);
+			label = ProgressLabel.BuildButtonLabel(_installLabel, DisplayStatus());
 			enabled = false;
 			compactFont = true;
 		}
@@ -1517,7 +1541,128 @@ public partial class LauncherApp : Control
 			? LauncherScale.Font(LauncherTokens.BodySize)
 			: LauncherScale.Font(LauncherTokens.DisplaySize));
 
+		RefreshBuildControls();
 		RefreshInfoBody();
+	}
+
+	/// <summary>
+	/// The install status as shown, which says so when the game code build is held or
+	/// stopping: the status line itself only moves when the build does.
+	/// </summary>
+	private string DisplayStatus()
+	{
+		if (_buildControl is null)
+		{
+			return _installStatus;
+		}
+
+		if (_buildControl.IsStopping)
+		{
+			return "Stopping... " + _installStatus;
+		}
+
+		if (_buildControl.IsPaused)
+		{
+			return "Paused... " + _installStatus;
+		}
+
+		return _installStatus;
+	}
+
+	/// <summary>
+	/// The pause and stop buttons beside the primary action, for the player who started
+	/// the build from there and is not looking at the Reinstall tab.
+	/// </summary>
+	private void BuildBuildControls()
+	{
+		_buildControls = new HBoxContainer { Visible = false };
+		_buildControls.AddThemeConstantOverride("separation", (int)LauncherScale.Px(8.0f));
+		_actionPanel.AddChild(_buildControls);
+
+		_pauseBuildButton = MakeBuildControlButton("Pause", OnPauseBuildPressed);
+		_buildControls.AddChild(_pauseBuildButton);
+		_stopBuildButton = MakeBuildControlButton("Stop", OnStopBuildPressed);
+		_buildControls.AddChild(_stopBuildButton);
+	}
+
+	private Button MakeBuildControlButton(string text, Action onPressed)
+	{
+		var button = new Button
+		{
+			Text = text,
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			SizeFlagsVertical = SizeFlags.ExpandFill,
+			MouseDefaultCursorShape = CursorShape.PointingHand,
+		};
+		button.AddThemeStyleboxOverride(
+			"normal", ButtonFace(_buttonStyle.Button, new Color(LauncherTokens.Gold, 0.55f)));
+		button.AddThemeStyleboxOverride(
+			"hover", ButtonFace(_buttonStyle.ButtonHovered, new Color(LauncherTokens.Gold, 0.8f)));
+		button.AddThemeStyleboxOverride(
+			"pressed", ButtonFace(_buttonStyle.ButtonActive, new Color(LauncherTokens.Gold, 0.55f)));
+		button.AddThemeStyleboxOverride(
+			"disabled", ButtonFace(new Color(LauncherTokens.OakDim, 0.85f), new Color(LauncherTokens.Gold, 0.35f)));
+		button.AddThemeStyleboxOverride("focus", FocusFace());
+		button.AddThemeColorOverride("font_color", LauncherTokens.Cream);
+		button.AddThemeColorOverride("font_disabled_color", _infoStyle.TextDisabled);
+		ApplyFont(button, LauncherScale.Font(LauncherTokens.BodySize));
+		button.Pressed += onPressed;
+		return button;
+	}
+
+	private void RefreshBuildControls()
+	{
+		if (_buildControls is null || _pauseBuildButton is null || _stopBuildButton is null)
+		{
+			return;
+		}
+
+		Recompile.BuildControl? control = _buildControl;
+		_buildControls.Visible = control is not null;
+		if (control is null)
+		{
+			return;
+		}
+
+		_pauseBuildButton.Text = control.IsPaused ? "Resume" : "Pause";
+		_pauseBuildButton.Disabled = control.IsStopping;
+		_stopBuildButton.Text = control.IsStopping ? "Stopping..." : "Stop";
+		_stopBuildButton.Disabled = control.IsStopping;
+	}
+
+	private void OnPauseBuildPressed()
+	{
+		Recompile.BuildControl? control = _buildControl;
+		if (control is null)
+		{
+			return;
+		}
+
+		if (control.IsPaused)
+		{
+			control.Resume();
+			Log("Game code build resumed.");
+		}
+		else
+		{
+			control.Pause();
+			Log("Game code build paused.");
+		}
+
+		RefreshState();
+	}
+
+	private void OnStopBuildPressed()
+	{
+		Recompile.BuildControl? control = _buildControl;
+		if (control is null || control.IsStopping)
+		{
+			return;
+		}
+
+		control.Stop();
+		Log("Game code build stop requested.");
+		RefreshState();
 	}
 
 	private void RefreshDebugDrawer()
@@ -1540,6 +1685,10 @@ public partial class LauncherApp : Control
 		{
 			_reinstallPanel.Refresh(
 				_installInProgress || _ops is not null || _prebuilding, _launch.GameIsRunning);
+			_reinstallPanel.SetBuildControls(
+				_buildControl is not null,
+				_buildControl?.IsPaused ?? false,
+				_buildControl?.IsStopping ?? false);
 
 			if (_prebuilding || _prebuildLabel.Length != 0)
 			{
@@ -1549,7 +1698,7 @@ public partial class LauncherApp : Control
 			{
 				_reinstallPanel.SetProgress(
 					_ops is not null ? _ops.OperationLabel : _installLabel,
-					_ops is not null ? _ops.StatusMessage : _installStatus,
+					_ops is not null ? _ops.StatusMessage : DisplayStatus(),
 					_ops is not null ? string.Empty : _installError);
 			}
 		}
@@ -1925,15 +2074,38 @@ public partial class LauncherApp : Control
 		RefreshState();
 		Log("Building the recompiled game module from the installed executable.");
 
-		var result = await Recompile.GameCodeBuild.RunAsync(
-			progress =>
-			{
-				_installStatus = progress.Status;
-				_installStepFraction = progress.Fraction;
-			},
-			CancellationToken.None);
+		using var control = new Recompile.BuildControl();
+		_buildControl = control;
+		Recompile.GameCodeBuild.Result result;
+		try
+		{
+			result = await Recompile.GameCodeBuild.RunAsync(
+				progress =>
+				{
+					_installStatus = progress.Status;
+					_installStepFraction = progress.Fraction;
+				},
+				control);
+		}
+		finally
+		{
+			_buildControl = null;
+		}
 
 		_installStepFraction = -1.0f;
+
+		// The player's choice, not a failure: nothing to report in red, and the primary
+		// button goes back to offering the build.
+		if (result.Stopped)
+		{
+			_installInProgress = false;
+			_installLabel = string.Empty;
+			_installStatus = string.Empty;
+			_installError = string.Empty;
+			Log("Game code build stopped.");
+			RefreshState();
+			return false;
+		}
 
 		if (!result.Ok)
 		{

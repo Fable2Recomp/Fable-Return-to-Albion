@@ -26,6 +26,9 @@ public partial class ReinstallPanel : VBoxContainer
 	private Label _statusLabel = null!;
 	private Label _errorLabel = null!;
 	private HSeparator _progressSeparator = null!;
+	private HBoxContainer _buildControls = null!;
+	private Button _pauseBuild = null!;
+	private Button _stopBuild = null!;
 	private bool _built;
 
 	private const string CheckGlyph = "✓";
@@ -58,6 +61,11 @@ public partial class ReinstallPanel : VBoxContainer
 	/// WHEN that look is paid for.
 	/// </remarks>
 	public event Action? BuildModernizedAssetsRequested;
+
+	/// <summary>Hold the running game code build where it is; resume it; abandon it.</summary>
+	public event Action? PauseBuildRequested;
+	public event Action? ResumeBuildRequested;
+	public event Action? StopBuildRequested;
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
@@ -134,7 +142,39 @@ public partial class ReinstallPanel : VBoxContainer
 		_errorLabel.Visible = false;
 		AddChild(_errorLabel);
 
+		// Shown only while the game code build runs: the one install step long enough to
+		// want holding or abandoning. Pause toggles to Resume while held.
+		_buildControls = new HBoxContainer { Visible = false };
+		_buildControls.AddThemeConstantOverride("separation", 8);
+		_pauseBuild = MakeActionButton("Pause Build", () =>
+		{
+			if (_pauseBuild.Text == "Resume Build")
+			{
+				ResumeBuildRequested?.Invoke();
+			}
+			else
+			{
+				PauseBuildRequested?.Invoke();
+			}
+		});
+		_buildControls.AddChild(_pauseBuild);
+		_stopBuild = MakeActionButton("Stop Build", () => StopBuildRequested?.Invoke());
+		_buildControls.AddChild(_stopBuild);
+		AddChild(_buildControls);
+
 		Refresh(false, false);
+	}
+
+	/// <summary>
+	/// Shows the pause and stop buttons while a game code build runs, and reflects its state.
+	/// </summary>
+	public void SetBuildControls(bool visible, bool paused, bool stopping)
+	{
+		_buildControls.Visible = visible;
+		_pauseBuild.Text = paused ? "Resume Build" : "Pause Build";
+		_pauseBuild.Disabled = stopping;
+		_stopBuild.Text = stopping ? "Stopping..." : "Stop Build";
+		_stopBuild.Disabled = stopping;
 	}
 
 	private Button AddAction(string text, Action onPressed)

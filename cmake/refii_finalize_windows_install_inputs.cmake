@@ -17,7 +17,7 @@ set(_required_inputs
     "${STAGING_BIN}/refii_vfs.dll"
     "${STAGING_BIN}/refii_binkdecode.dll"
     "${STAGING_BIN}/refii_xmadecode.dll"
-    "${_recompile}/bin/rexglue.exe"
+    "${STAGING_BIN}/refii_recompiler.dll"
     "${_recompile}/include_dirs.cmake"
     "${_recompile}/hook_sources.cmake"
     "${_recompile}/versions/Fable2TU1/refii_manifest.toml"
@@ -39,20 +39,18 @@ if(NOT _runtime_dlls)
     message(FATAL_ERROR "The staged Windows RexGlue runtime DLL is missing from ${STAGING_BIN}")
 endif()
 
+# The install-time link reads these from bin/, the same files the host loads.
 foreach(_library rexruntime refii_core refii_vfs)
     file(GLOB _matches LIST_DIRECTORIES FALSE
-        "${_recompile}/lib/${_library}.dll"
-        "${_recompile}/lib/${_library}d.dll"
-        "${_recompile}/lib/${_library}rd.dll"
-        "${_recompile}/lib/lib${_library}.dll"
-        "${_recompile}/lib/lib${_library}d.dll"
-        "${_recompile}/lib/lib${_library}rd.dll"
-        "${_recompile}/lib/${_library}.lib"
-        "${_recompile}/lib/${_library}d.lib"
-        "${_recompile}/lib/${_library}rd.lib")
+        "${STAGING_BIN}/${_library}.dll"
+        "${STAGING_BIN}/${_library}d.dll"
+        "${STAGING_BIN}/${_library}rd.dll"
+        "${STAGING_BIN}/lib${_library}.dll"
+        "${STAGING_BIN}/lib${_library}d.dll"
+        "${STAGING_BIN}/lib${_library}rd.dll")
     if(NOT _matches)
         message(FATAL_ERROR
-            "Windows install link library is missing from ${_recompile}/lib: ${_library}")
+            "Windows install link library is missing from ${STAGING_BIN}: ${_library}")
     endif()
 endforeach()
 

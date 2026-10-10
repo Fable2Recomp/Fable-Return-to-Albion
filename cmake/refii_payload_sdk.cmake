@@ -10,14 +10,18 @@
 #
 # Laid out under <app bin>/recompile:
 #
-#   bin/            the ReXGlue generator
 #   zig/            the bundled toolchain: zig + its lib/ (libc, libc++, MinGW CRT)
 #   include/NN/     the include directories, staged verbatim, one per number
 #   include_dirs.cmake  the list, in the order the compiler saw them
-#   lib/            rexruntime, refii_core, refii_vfs, refii_lua
+#   hooks/          the hook sources, compiled into the payload on the player's machine
 #   src/            payload_export.cpp
-#   payload_exports.def
 #   versions/<name>/  refii_manifest.toml + refii_config.toml, one folder per supported executable
+#
+# NO BINARIES. The generator is refii_recompiler, a library in bin/ beside the runtime it
+# imports, and the libraries the payload links (rexruntime, refii_core, refii_vfs) are the
+# ones in bin/ that the host loads. This directory used to carry a second copy of each and
+# a generator executable with its own CRT, and the generator's dependency on a PATH the
+# launcher set is what failed on machines with a restrictive DLL search policy.
 #
 # NOTHING derived from a game image is staged here. The generated sources are produced on
 # the player's machine, into assets/generated, and deleted once the module is built.
@@ -92,15 +96,12 @@ function(refii_stage_payload_sdk)
     endif()
 
     set(_commands
-        # lib/ IS EMPTIED FIRST, because copy_if_different only ever adds. A tree configured
-        # RelWithDebInfo and then Debug ends up holding rexruntimerd.dll AND rexruntimed.dll,
-        # and the payload link picks by name from whatever it finds: it linked the stale one,
-        # so the payload imported one runtime while the host loaded the other. Two copies of
-        # the runtime means two copies of its globals, and the guest died reading a field off
-        # a null the second copy had never initialised. Same rule the hook staging already
-        # follows one call above.
-        COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_dir}/lib"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_sdk_dir}/lib" "${_sdk_dir}/src" "${_sdk_dir}/bin"
+        # lib/ and bin/ are what this directory held before the generator became a library:
+        # copies of the runtime and a rexglue executable. A staging root from that layout
+        # still has them, the launcher no longer reads either, and the export must not ship
+        # them -- so they are removed on every build rather than left to be found.
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_dir}/lib" "${_sdk_dir}/bin"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_sdk_dir}/src"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/src/payload/src/payload_export.cpp"
             "${CMAKE_SOURCE_DIR}/src/payload/src/libcxx_chrono_shim.h"
@@ -116,31 +117,6 @@ function(refii_stage_payload_sdk)
             "${CMAKE_SOURCE_DIR}/versions"
             "${_sdk_dir}/versions"
     )
-
-    # The libraries the payload links. refii_generated itself is NOT among them: it is what
-    # gets built, and shipping our copy would be shipping code derived from our game image.
-    # NOT the hook archive either: the hooks are staged as SOURCES above and compiled into
-    # the payload on the player's machine, and the launcher's link takes no archive — one
-    # shipped anyway was 58 MB nothing read.
-    # TracyClient is here for the GENERATOR, not the payload: rexglue links the runtime,
-    # which links Tracy, and the staged tool finds neither without them beside it.
-    foreach(_library rexruntime refii_core refii_vfs refii_lua TracyClient)
-        if(TARGET ${_library})
-            list(APPEND _commands
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "$<TARGET_FILE:${_library}>" "${_sdk_dir}/lib"
-            )
-        endif()
-    endforeach()
-
-    # Under its fixed name: the SDK postfixes Debug binaries (rexglued), and the launcher
-    # resolves the generator as bin/rexglue.
-    if(TARGET rex::rexglue)
-        list(APPEND _commands
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:rex::rexglue>" "${_sdk_dir}/bin/rexglue${CMAKE_EXECUTABLE_SUFFIX}"
-        )
-    endif()
 
     # Unquoted -D values: under VERBATIM, CMake quotes each argument itself, and quotes
     # written here arrive as part of the value — an EXISTS test on a path with literal
@@ -160,12 +136,6 @@ function(refii_stage_payload_sdk)
         COMMENT "Staging the install-time payload build inputs into Godot/build"
         VERBATIM
     )
-
-    foreach(_dependency rexruntime refii_core refii_vfs refii_lua rexglue)
-        if(TARGET ${_dependency})
-            add_dependencies(refii_payload_sdk ${_dependency})
-        endif()
-    endforeach()
 
     unset(_payload_include_target)
 endfunction()
