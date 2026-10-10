@@ -67,9 +67,12 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// <summary>The preview mesh's node name — how the paint probe recognises it.</summary>
 	public const string MeshName = "PreviewModel";
 
-	public bool Show(uint modelHash, Placement placement)
+	public bool Show(
+		uint modelHash, Placement placement,
+		System.Collections.Generic.IReadOnlyList<Refii.Host.HostBridge.GuestTextureComposite>? dye = null)
 	{
-		if (modelHash == ModelHash)
+		ulong dyeSignature = DyeSignature(dye);
+		if (modelHash == ModelHash && dyeSignature == _dyeSignature)
 		{
 			// AND RE-ASSERT VISIBILITY. This path restored the placement but never the
 			// visibility, while every failure below and both null-frame sites in the caller
@@ -84,6 +87,7 @@ public partial class Engine_UiPreviewObject : Node3D
 		}
 
 		ModelHash = modelHash;
+		_dyeSignature = dyeSignature;
 		_liveKey = 0;
 		_mesh?.QueueFree();
 		_mesh = null;
@@ -122,11 +126,23 @@ public partial class Engine_UiPreviewObject : Node3D
 			return false;
 		}
 
+		// A DYED GARMENT SHOWS DYED. The guest's own dye builder states the item's layers
+		// (RefiiHostGetItemDyeLayers) and the hero's compositor lays them on a PRIVATE copy of
+		// the model — the shared mesh keeps its materials for every other holder.
+		string dyed = string.Empty;
+		if (dye is { Count: > 0 } && mesh is ArrayMesh shared)
+		{
+			var own = (ArrayMesh)shared.Duplicate();
+			Refii.Hero.Engine_HeroTextureMorph.ApplyTo(own, dye);
+			mesh = own;
+			dyed = $", dyed ({dye.Count} composite(s))";
+		}
+
 		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
 		_inPage = false;
 		int textured = Present(_mesh, mesh);
 		AddChild(_mesh);
-		LastReport = $"{path} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
+		LastReport = $"{path} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured{dyed})";
 		Apply(placement);
 		Visible = true;
 		return true;
@@ -224,6 +240,35 @@ public partial class Engine_UiPreviewObject : Node3D
 
 	/// <summary>The entity a live body was last shown for; 0 when the hash path owns the mesh.</summary>
 	private uint _liveKey;
+
+	/// <summary>The dye layers the shown model was composited with, as a hash; 0 for none.</summary>
+	private ulong _dyeSignature;
+
+	private static ulong DyeSignature(
+		System.Collections.Generic.IReadOnlyList<Refii.Host.HostBridge.GuestTextureComposite>? dye)
+	{
+		if (dye is null || dye.Count == 0)
+		{
+			return 0UL;
+		}
+
+		ulong hash = 14695981039346656037UL;
+		foreach (Refii.Host.HostBridge.GuestTextureComposite composite in dye)
+		{
+			hash = (hash ^ composite.Original ^ (composite.Overlay ? 1UL : 0UL)) * 1099511628211UL;
+			foreach (Refii.Host.HostBridge.GuestTextureLayer layer in composite.Layers)
+			{
+				hash = (hash ^ layer.Texture) * 1099511628211UL;
+				hash = (hash ^ (uint)layer.Mode) * 1099511628211UL;
+				hash = (hash ^ System.BitConverter.SingleToUInt32Bits(layer.Weight)) * 1099511628211UL;
+				hash = (hash ^ (layer.HasTint ? layer.Tint : 0u)) * 1099511628211UL;
+				hash = (hash ^ System.BitConverter.SingleToUInt32Bits(layer.Brightness)) * 1099511628211UL;
+				hash = (hash ^ layer.Bump) * 1099511628211UL;
+			}
+		}
+
+		return hash == 0UL ? 1UL : hash;
+	}
 
 	/// Gives each surface an unlit material carrying the model's own albedo.
 	///

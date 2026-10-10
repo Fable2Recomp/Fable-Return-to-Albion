@@ -661,11 +661,19 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
 
         _skeleton = skeleton;
+        _skin = parent.Skin;
         for (int i = 0; i < _inverseRest.Count; i++)
         {
             _inverseRest[i] = Array.Empty<Transform3D>();
         }
     }
+
+    /// <summary>
+    /// The body's skin: its bind poses carry each bone's live scale (the morph), which the
+    /// skeleton does not — see Engine_EntitySkeleton.SetBoneScales. Read per frame, because the
+    /// binds are rewritten in place when the scale changes.
+    /// </summary>
+    private Skin? _skin;
 
     /// <summary>
     /// The guest's palette (<c>sub_8222E2B8</c>): pose × inverse bind per bone, in the cloth's
@@ -719,11 +727,15 @@ public partial class Engine_ClothBody : MeshInstance3D
         // model-space pose (owner+512, `sub_82A94A18`), their file values being bone-local; the
         // skin rows are that pose times the inverse bind (owner+628, `sub_8222E2B8`). Feeding
         // the skin matrix to the colliders put every capsule off its limb by the inverse rest.
+        Skin? binds = _skin;
+        int bindCount = binds?.GetBindCount() ?? 0;
         foreach (int b in used)
         {
             int bone = SkeletonBone(piece, b, skeleton);
             Transform3D pose = bone >= 0 ? skeleton.GetBoneGlobalPose(bone) : Transform3D.Identity;
-            Transform3D skin = bone >= 0 ? pose * inverseRest[b] : Transform3D.Identity;
+            // The body's own bind, scale included, so the cloth skins exactly as the body does.
+            Transform3D bind = bone >= 0 && bone < bindCount ? binds!.GetBindPose(bone) : inverseRest[b];
+            Transform3D skin = bone >= 0 ? pose * bind : Transform3D.Identity;
 
             inst.BonePoses[b] = Engine_PhysicsMatrix.FromTransform3D(pose);
             Engine_PhysicsMatrix.SkinRows(

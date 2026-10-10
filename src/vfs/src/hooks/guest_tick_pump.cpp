@@ -30,6 +30,7 @@
 #include "core/hero_derived.h"
 #include "vfs_hooks_private.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -6865,6 +6866,179 @@ void SampleQuests(uint8_t* base, uint32_t hero) {
   PublishQuests(entries, count);
 }
 
+/// Writes a C string into guest scratch; returns its address.
+uint32_t PlaceGuestString(uint8_t* base, uint32_t at, const char* text) {
+  uint32_t i = 0u;
+  for (; text[i] != '\0'; ++i) {
+    StoreGuestU8(base, at + i, static_cast<uint8_t>(text[i]));
+  }
+  StoreGuestU8(base, at + i, 0u);
+  return at;
+}
+
+/// The texture layers the GUEST'S OWN dye builder states for one dyed item, worn or carried,
+/// written as a character's composites are ([original, count, count x kTextureLayerWords]).
+///
+/// What the draw virtual does for a worn dyed item (`sub_8220DE88` 0x8220f1a8..0x8220f2d4,
+/// read in the disassembly): the item's type-2 dye component (`sub_823A1E18`), the item's
+/// definition (`sub_821B24F8(item+4)`), its `AppearanceModifierComponent` (`sub_822A99E8`,
+/// a plain C-string field name), then `DyeTextures` — or `OverrideOpenDyeTextures` when the
+/// hero's worn items are open (comp15+0x3D), the garment covers body area 0x800
+/// (`sub_82A00580(app, "BodyAreasCovered")`) and that entry resolves an `OriginalTexture`
+/// (`sub_82783418`) — and the same name with `_2`, each handed to
+/// `sub_825B7470(vector, entry, dye)`, which pushes 32-byte records {+0 original, +4 texture,
+/// +8 mode, +12 weight, +16 tint B G R A, +20 brightness, +24 layer key, +28 replacement}.
+/// Only the vector is ours (a zeroed 0x14-byte header; `sub_825B9F60` frees it) — the guest
+/// allocates and fills it. The records then take the virtual's own order: grouped by original
+/// (stable sort on +0, 0x8220f5d8), a base layer {original, mode 0, weight 1} first, then each
+/// record by layer key and texture id (`sub_825BCBE8`, 0x8220f8a8); a layer is tinted when its
+/// tint is not {0,0,0,0xFF} or its brightness is beyond 1e-4 (the virtual's isDyed).
+uint32_t BuildItemDyeLayers(PPCContext& ctx, uint8_t* base, const PPCContext& saved,
+                            uint32_t frame, uint32_t item, uint32_t appearance, uint32_t* out,
+                            uint32_t capacity) {
+  PPCFunc* dye_of = FindGuestFunction(refii::guest::Address(0x823A1E18u));
+  PPCFunc* definition_of = FindGuestFunction(refii::guest::Address(0x821B24F8u));
+  PPCFunc* field = FindGuestFunction(refii::guest::Address(0x822A99E8u));
+  PPCFunc* areas_of = FindGuestFunction(refii::guest::Address(0x82A00580u));
+  PPCFunc* texture_of = FindGuestFunction(refii::guest::Address(0x82783418u));
+  PPCFunc* build = FindGuestFunction(refii::guest::Address(0x825B7470u));
+  PPCFunc* release = FindGuestFunction(refii::guest::Address(0x825B9F60u));
+  if (dye_of == nullptr || definition_of == nullptr || field == nullptr || areas_of == nullptr ||
+      texture_of == nullptr || build == nullptr || release == nullptr || out == nullptr) {
+    return 0u;
+  }
+
+  // Scratch above the frame the guest calls run on: the record vector, two out-params and the
+  // field names, as C strings — `sub_822A99E8` and its kin take a plain `char*` (the virtual
+  // passes string literals: 0x8220f178 `addi r21, r11, "AppearanceModifierComponent"`).
+  const uint32_t vec = frame + 0x40u;
+  const uint32_t dye_out = frame + 0x60u;
+  const uint32_t texture_out = frame + 0x64u;
+  const uint32_t s_component = PlaceGuestString(base, frame + 0x80u, "AppearanceModifierComponent");
+  const uint32_t s_dye = PlaceGuestString(base, frame + 0xA0u, "DyeTextures");
+  const uint32_t s_dye2 = PlaceGuestString(base, frame + 0xB0u, "DyeTextures_2");
+  const uint32_t s_open = PlaceGuestString(base, frame + 0xC0u, "OverrideOpenDyeTextures");
+  const uint32_t s_open2 = PlaceGuestString(base, frame + 0xE0u, "OverrideOpenDyeTextures_2");
+  const uint32_t s_areas = PlaceGuestString(base, frame + 0x100u, "BodyAreasCovered");
+  const uint32_t s_original = PlaceGuestString(base, frame + 0x120u, "OriginalTexture");
+  for (uint32_t i = 0u; i < 0x14u; i += 4u) {
+    StoreGuestU32(base, vec + i, 0u);
+  }
+
+  const auto call = [&](PPCFunc* fn, uint32_t r3, uint32_t r4, uint32_t r5) {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = r3;
+    ctx.r4.u32 = r4;
+    ctx.r5.u32 = r5;
+    fn(ctx, base);
+    return ctx.r3.u32;
+  };
+
+  uint32_t written = 0u;
+  StoreGuestU32(base, dye_out, 0u);
+  if ((call(dye_of, item, dye_out, 0u) & 0xFFu) != 0u) {
+    const uint32_t dye = LoadGuestU32(base, dye_out);
+    const uint32_t definition = LooksLikeGuestPointer(dye) ? call(definition_of, item + 4u, 0u, 0u) : 0u;
+    const uint32_t component =
+        LooksLikeGuestPointer(definition) ? call(field, definition, s_component, 0u) : 0u;
+    if (LooksLikeGuestPointer(component)) {
+      uint32_t name = s_dye;
+      uint32_t name2 = s_dye2;
+      const bool worn_open = appearance != 0u &&
+          ((LoadGuestU32(base, appearance + 0x3Cu) >> 16) & 0xFFu) != 0u;
+      if (worn_open && (call(areas_of, component, s_areas, 0u) & 0x800u) != 0u) {
+        const uint32_t open = call(field, component, s_open, 0u);
+        if (LooksLikeGuestPointer(open)) {
+          StoreGuestU32(base, texture_out, 0u);
+          call(texture_of, texture_out, open, s_original);
+          if (LoadGuestU32(base, texture_out) != 0u) {
+            name = s_open;
+            name2 = s_open2;
+          }
+        }
+      }
+
+      const uint32_t first = call(field, component, name, 0u);
+      if (LooksLikeGuestPointer(first)) {
+        call(build, vec, first, dye);
+      }
+      const uint32_t second = call(field, component, name2, 0u);
+      if (LooksLikeGuestPointer(second)) {
+        call(build, vec, second, dye);
+      }
+
+      struct Record {
+        uint32_t original, texture, mode, weight, tint, brightness, key;
+      };
+      Record records[16];
+      uint32_t count = 0u;
+      const uint32_t begin = LoadGuestU32(base, vec + 4u);
+      const uint32_t end = LoadGuestU32(base, vec + 8u);
+      if (LooksLikeGuestPointer(begin) && end >= begin && ((end - begin) & 31u) == 0u) {
+        for (uint32_t at = begin; at < end && count < 16u; at += 32u) {
+          records[count++] = Record{LoadGuestU32(base, at),       LoadGuestU32(base, at + 4u),
+                                    LoadGuestU32(base, at + 8u),  LoadGuestU32(base, at + 12u),
+                                    LoadGuestU32(base, at + 16u), LoadGuestU32(base, at + 20u),
+                                    LoadGuestU32(base, at + 24u)};
+        }
+      }
+      call(release, vec, 0u, 0u);
+
+      std::stable_sort(records, records + count,
+                       [](const Record& a, const Record& b) { return a.original < b.original; });
+      const auto tinted = [](const Record& r) {
+        float brightness;
+        std::memcpy(&brightness, &r.brightness, sizeof(brightness));
+        return r.tint != 0x000000FFu || std::fabs(brightness) > 1e-4f;
+      };
+      const float one = 1.0f;
+      uint32_t one_bits;
+      std::memcpy(&one_bits, &one, sizeof(one_bits));
+      for (uint32_t i = 0u; i < count;) {
+        uint32_t j = i;
+        while (j < count && records[j].original == records[i].original) {
+          ++j;
+        }
+        std::stable_sort(records + i, records + j, [](const Record& a, const Record& b) {
+          return a.key != b.key ? static_cast<int32_t>(a.key) < static_cast<int32_t>(b.key)
+                                : a.texture < b.texture;
+        });
+        const uint32_t layers = 1u + (j - i);
+        const uint32_t needed = 2u + layers * kTextureLayerWords;
+        if (written + needed > capacity || layers > static_cast<uint32_t>(kTextureLayersPerTexture)) {
+          break;
+        }
+        out[written++] = records[i].original;
+        out[written++] = layers;  // kind 0: a composite
+        uint32_t* layer = out + written;
+        layer[0] = records[i].original;
+        layer[1] = 0u;
+        layer[2] = one_bits;
+        layer[3] = 0u;
+        layer[4] = 0xFFFFFFFFu;
+        layer[5] = 0u;
+        layer[6] = 0u;
+        layer += kTextureLayerWords;
+        for (uint32_t k = i; k < j; ++k, layer += kTextureLayerWords) {
+          layer[0] = records[k].texture;
+          layer[1] = records[k].mode;
+          layer[2] = records[k].weight;
+          layer[3] = tinted(records[k]) ? 1u : 0u;
+          layer[4] = records[k].tint;
+          layer[5] = records[k].brightness;
+          layer[6] = 0u;
+        }
+        written += layers * kTextureLayerWords;
+        i = j;
+      }
+    }
+  }
+
+  ctx = saved;
+  return written;
+}
+
 /// Which of the hero's garments are dyed, by the guest's own test.
 ///
 /// `sub_826CAFA8(_, itemRef, slot)` reads only `*itemRef` (the item) and the item's type-2
@@ -6889,6 +7063,15 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
 
   uint32_t words[kDyeStateItems * kDyeStateWords];
   uint32_t count = 0u;
+
+  // The dyed items' layers, from the guest's own builder (BuildItemDyeLayers), for the menu.
+  // Static: one sampler, one thread, and the buffer is too large for a guest thread's stack.
+  static uint32_t layer_records[kItemDyeLayerItems];
+  static uint32_t layer_offsets[kItemDyeLayerItems];
+  static uint32_t layer_counts[kItemDyeLayerItems];
+  static uint32_t layer_words[kItemDyeLayerItems * kItemDyeLayerWords];
+  uint32_t layer_items = 0u;
+  uint32_t layer_used = 0u;
 
   const auto offered = [](uint32_t category) {
     return (category >= 9u && category <= 11u) || (category >= 17u && category <= 24u);
@@ -6926,6 +7109,21 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
     words[count * kDyeStateWords] = record;
     words[count * kDyeStateWords + 1u] = flags;
     ++count;
+
+    if ((flags & 3u) != 0u && layer_items < static_cast<uint32_t>(kItemDyeLayerItems) &&
+        layer_used + static_cast<uint32_t>(kItemDyeLayerWords) <=
+            static_cast<uint32_t>(kItemDyeLayerItems * kItemDyeLayerWords)) {
+      const uint32_t wrote = BuildItemDyeLayers(
+          ctx, base, saved, frame, item, appearance, layer_words + layer_used,
+          static_cast<uint32_t>(kItemDyeLayerWords));
+      if (wrote != 0u) {
+        layer_records[layer_items] = record;
+        layer_offsets[layer_items] = layer_used;
+        layer_counts[layer_items] = wrote;
+        ++layer_items;
+        layer_used += wrote;
+      }
+    }
   };
 
   if (appearance != 0u) {
@@ -6951,6 +7149,8 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
 
   ctx = saved;
   refii_bridge_note_dye_states(words, count);
+  refii_bridge_set_item_dye_layers(layer_records, layer_offsets, layer_counts, layer_items,
+                                   layer_words);
 }
 
 /// Which pause tabs the guest would offer, by calling its own predicate for tabs 2..8.

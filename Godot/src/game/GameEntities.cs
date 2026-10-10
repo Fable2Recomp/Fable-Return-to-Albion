@@ -1431,6 +1431,7 @@ public partial class GameEntities : Node3D
             _clipAnimators[address] = animator;
         }
 
+        animator.Rig = rig;
         animator.Address = address;
         animator.OwnerPlayhead =
             _pairs.TryGetValue(address, out (Transform3D Previous, Transform3D Stated,
@@ -1604,11 +1605,11 @@ public partial class GameEntities : Node3D
 
         node.AddChild(skeleton.Node);
 
-        // The mesh has to be a CHILD of the skeleton and name it, and the skin comes from the
-        // rest transforms — Godot derives the bind matrices by inverting them, which is exactly
-        // why the rest is fed in local and left for Godot to compose.
+        // The mesh has to be a CHILD of the skeleton and name it. The skin is the rig's own:
+        // the model's inverse rests, each carrying the bone's live scale (the morph), which the
+        // skeleton itself never holds.
         node.Skeleton = node.GetPathTo(skeleton.Node);
-        node.Skin = skeleton.Node.CreateSkinFromRestTransforms();
+        node.Skin = skeleton.Skin;
         _skeletons[address] = skeleton;
 
         // The proxy casts on THIS skeleton and skin, or its shadow stands in the bind pose.

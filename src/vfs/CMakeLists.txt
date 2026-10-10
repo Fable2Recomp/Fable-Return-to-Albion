@@ -46,6 +46,7 @@ set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/core/entity_appearance_state.cpp
     # Each character's texture composites, filled by src/hooks/texture_layers.cpp.
     ${REFII_VFS_ROOT}/src/core/texture_layer_state.cpp
+    ${REFII_VFS_ROOT}/src/core/item_dye_layer_state.cpp
     ${REFII_VFS_ROOT}/src/core/part_morph_state.cpp
     # Which of the hero's garments are dyed, sampled from the guest's own test.
     ${REFII_VFS_ROOT}/src/core/dye_state.cpp

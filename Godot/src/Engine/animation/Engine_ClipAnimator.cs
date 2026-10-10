@@ -350,6 +350,7 @@ public sealed class Engine_ClipAnimator
 		_finalPosition = new Vector3[bones];
 		_finalRotation = new Quaternion[bones];
 		_finalScale = new Vector3[bones];
+		System.Array.Fill(_finalScale, Vector3.One);
 		int guestCount = 0;
 		foreach (int g in modelToGuest)
 		{
@@ -1033,10 +1034,17 @@ public sealed class Engine_ClipAnimator
 		// after any of those writes every bone, not only the ones that moved this frame.
 		bool shadowNow = Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out Skeleton3D? shadow);
 		bool shadowAll = shadowNow && _shadowStale;
+		// The skeleton takes rotation and translation; the scale binds through the skin (see
+		// ApplyMorph), and only when the record was re-read.
+		if (_scaleDirty && Rig is { } rig)
+		{
+			rig.SetBoneScales(_finalScale);
+			_scaleDirty = false;
+		}
+
 		for (int b = 0; b < bones; ++b)
 		{
-			var pose = new Transform3D(
-				new Basis(_finalRotation[b]).ScaledLocal(_finalScale[b]), _finalPosition[b]);
+			var pose = new Transform3D(new Basis(_finalRotation[b]), _finalPosition[b]);
 			bool unchanged = _hasWritten && pose.IsEqualApprox(_written[b]);
 			if (unchanged && !shadowAll)
 			{
@@ -1440,6 +1448,7 @@ public sealed class Engine_ClipAnimator
 			System.Array.Fill(_morphOffset, Vector3.Zero);
 			System.Array.Fill(_morphScale, Vector3.One);
 			_hasMorph = false;
+			_scaleDirty = true;
 			_morphHeight = HostBridge.GetBoneMorphHeight(_entity);
 			_morphHeightBone = -1;
 			foreach (HostBridge.GuestBoneMorph m in HostBridge.GetBoneMorph(_entity))
@@ -1467,34 +1476,58 @@ public sealed class Engine_ClipAnimator
 
 		if (!_hasMorph)
 		{
-			System.Array.Fill(_finalScale, Vector3.One);
+			if (_morphWasApplied)
+			{
+				System.Array.Fill(_finalScale, Vector3.One);
+				_scaleDirty = true;
+			}
+
 			_morphWasApplied = false;
 			return;
 		}
 
+		// THE GUEST'S ORDER (`sub_821F2C78`): the record first — `t += off / parent.s` and
+		// `s *= sc` per entry (`sub_822BF9B8`) — then the pre-pass that multiplies every
+		// child's LOCAL translation by its parent's own scale, lane-wise (`sub_821E5AC0`), and
+		// only then the compose, which carries rotation and translation and never a scale
+		// (`sub_821F58D8`). Net translation `t * s_parent + off`; the bone's scale is its OWN
+		// and reaches the skin matrix alone (`sub_8222E1C0`), so it goes to the skin bind
+		// through the rig (`Engine_EntitySkeleton.SetBoneScales`), never into the skeleton,
+		// whose parent chain would inherit it. Model order is parent-before-child, so a
+		// parent's scale is final before its children read it.
 		for (int b = 0; b < bones; ++b)
 		{
 			int parent = _parents![b];
 			Vector3 parentScale = parent >= 0 ? _morphScale[parent] : Vector3.One;
 			Vector3 offset = _morphOffset[b];
+			Vector3 t = _finalPosition[b];
 			if (b == _morphHeightBone)
 			{
-				// Guest (t.x*h, t.y*h, t.z + off.z); its z is up, which is Y here.
-				Vector3 t = _finalPosition[b];
-				_finalPosition[b] = new Vector3(t.X * _morphHeight, t.Y + offset.Y, t.Z * _morphHeight);
+				// Guest (t.x*h, t.y*h, t.z + off.z), no parent divide; its z is up, Y here.
+				t = new Vector3(t.X * _morphHeight, t.Y + offset.Y, t.Z * _morphHeight);
+				_finalPosition[b] = t * parentScale;
 			}
-			else if (parent >= 0 && offset != Vector3.Zero)
+			else if (parent >= 0)
 			{
-				_finalPosition[b] += offset / parentScale;
+				_finalPosition[b] = (t * parentScale) + offset;
 			}
 
-			_finalScale[b] = _morphScale[b] / parentScale;
+			_finalScale[b] = _morphScale[b];
 		}
 
 		_morphWasApplied = true;
 	}
 
 	private bool _morphWasApplied;
+
+	/// <summary>Set when <see cref="_finalScale"/> was re-read, so the rig's skin takes it once.</summary>
+	private bool _scaleDirty;
+
+	/// <summary>
+	/// The rig this animator poses, when it has one: the bone scales go to its skin. Null
+	/// when the animator drives a bare skeleton (the editor), where the scale has nowhere to go.
+	/// </summary>
+	public Refii.Entities.Engine_EntitySkeleton? Rig { get; set; }
 
 	/// <summary>The record's height factor (rec+36) and the model bone it rewrites, -1 for none.</summary>
 	private float _morphHeight;

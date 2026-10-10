@@ -4684,7 +4684,10 @@ public partial class GameUi : Node
 		else
 		{
 			_previewLiveShown = 0u;
-			shown = _previewObject.Show(preview.ModelHash, placement);
+			// A dyed garment shows dyed: the guest's own dye builder states the item's layers.
+			shown = _previewObject.Show(
+				preview.ModelHash, placement,
+				preview.Item != 0u ? HostBridge.GetItemDyeLayers(preview.Item, out _) : null);
 		}
 
 		if (changed)

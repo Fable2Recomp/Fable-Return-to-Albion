@@ -283,6 +283,7 @@ inline void NotePartMorph(uint32_t entity, uint32_t base_model, const uint32_t* 
 
 /// The entity's texture composites are about to be restated.
 inline void BeginTextureLayers(uint32_t entity) { refii_bridge_begin_texture_layers(entity); }
+inline void EndTextureLayers(uint32_t entity) { refii_bridge_end_texture_layers(entity); }
 
 /// One original texture's layers as the guest just stated them; per core/payload_bridge.h.
 inline void NoteTextureLayers(uint32_t entity, uint32_t original, uint32_t kind,

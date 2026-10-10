@@ -198,8 +198,10 @@ public sealed class Engine_EntityAttachments
 				["boneName"] = rig is not null && record.Bone >= 0 ? rig.BoneName(record.Bone) : null,
 				["solved"] = record.Solved,
 				["offset"] = new[] { record.Offset.Origin.X, record.Offset.Origin.Y, record.Offset.Origin.Z },
-				["offsetMetres"] = record.Offset.Origin.Length(),
-				["residual"] = record.LastResidual,
+				// Finite or null: a NaN residual (never solved) or an infinite offset is not a
+				// JSON number, and one record took the whole entity reply down with it.
+				["offsetMetres"] = float.IsFinite(record.Offset.Origin.Length()) ? record.Offset.Origin.Length() : null,
+				["residual"] = float.IsFinite(record.LastResidual) ? record.LastResidual : null,
 				["scored"] = record.Solves,
 			});
 		}

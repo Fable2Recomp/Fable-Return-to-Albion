@@ -165,6 +165,9 @@ uint32_t StatedPartMorphs(uint32_t entity, uint32_t* out, uint32_t capacity,
 // src/vfs/src/core/texture_layer_state.cpp.
 uint32_t StatedTextureLayers(uint32_t entity, uint32_t* out, uint32_t capacity,
                              uint32_t* out_generation, uint64_t* out_statements);
+// src/vfs/src/core/item_dye_layer_state.cpp.
+uint32_t StatedItemDyeLayers(uint32_t record, uint32_t* out, uint32_t capacity,
+                             uint32_t* out_generation);
 
 // Defined in src/vfs/src/core/pubgame_state.cpp — the pub-game seam. The host posts what
 // Godot's game said and the pump replacement in the payload drains it on the guest's render
@@ -2180,7 +2183,9 @@ extern "C" {
 ///     word on an invite that could not be delivered or a join the host never answered.
 ///     Also adds RefiiHostGetHeroStateApplied — the HeroState version the pump last applied
 ///     to a player's current body, the ack Godot sends the joiner.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 171; }
+/// 172 adds RefiiHostGetItemDyeLayers — the texture layers the guest's own dye builder states
+///     for one inventory item, worn or carried, so the menu shows a dyed garment dyed.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 172; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -2224,6 +2229,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityTextureLayers(uint32_t entity, 
                                                                uint64_t* out_statements) {
     return refii::vfs::StatedTextureLayers(entity, out_words, word_capacity, out_generation,
                                            out_statements);
+}
+
+/// One inventory item's dye composites, as the guest's own dye builder states them for the
+/// item's dye component — [original, count | kind << 16, count x 7 layer words] per texture,
+/// the words RefiiHostGetEntityTextureLayers uses. Empty for an item that is not dyed. Returns
+/// the words written; `out_generation` moves when the layers changed.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetItemDyeLayers(uint32_t record, uint32_t* out_words,
+                                                        uint32_t word_capacity,
+                                                        uint32_t* out_generation) {
+    return refii::vfs::StatedItemDyeLayers(record, out_words, word_capacity, out_generation);
 }
 
 /// Answers one `GUI` predicate from the host, by name.

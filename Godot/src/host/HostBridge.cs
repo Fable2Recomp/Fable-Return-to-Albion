@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 171;
+	public const int ExpectedAbiVersion = 172;
 
 	private const int MessageCapacity = 512;
 
@@ -647,6 +647,39 @@ public static class HostBridge
 			return System.Array.Empty<GuestTextureComposite>();
 		}
 
+		return DecodeTextureLayers(words, written);
+	}
+
+	/// <summary>
+	/// The layers the guest's own dye builder states for ONE inventory item (worn or not), by
+	/// record id, in the same words a character's composites use — so the menu shows a dyed
+	/// garment through the very compositor that dresses the hero. Empty for an undyed item.
+	/// </summary>
+	public static GuestTextureComposite[] GetItemDyeLayers(uint record, out uint generation)
+	{
+		generation = 0;
+		if (record == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return System.Array.Empty<GuestTextureComposite>();
+		}
+
+		uint[] words = _textureLayerWords;
+		uint written;
+		try
+		{
+			written = RefiiHostGetItemDyeLayers(record, words, (uint)words.Length, out generation);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return System.Array.Empty<GuestTextureComposite>();
+		}
+
+		return DecodeTextureLayers(words, written);
+	}
+
+	/// <summary>[original, count | kind &lt;&lt; 16, count x layer words] per texture, as the tables write them.</summary>
+	private static GuestTextureComposite[] DecodeTextureLayers(uint[] words, uint written)
+	{
 		if (written == 0)
 		{
 			return System.Array.Empty<GuestTextureComposite>();
@@ -2123,7 +2156,8 @@ public static class HostBridge
 	/// </remarks>
 	public readonly record struct UiPreviewObject(
 		uint ScreenId, uint ModelHash, uint Entity,
-		Vector3 Translation, Vector3 Rotation, float Scale, int RotationAxis);
+		Vector3 Translation, Vector3 Rotation, float Scale, int RotationAxis,
+		uint Item = 0);
 
 	public static UiPreviewObject? GetUiPreviewObject()
 	{
@@ -8366,6 +8400,10 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityTextureLayers(
 		uint entity, [Out] uint[] outWords, uint wordCapacity, out uint generation, out ulong statements);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetItemDyeLayers(
+		uint record, [Out] uint[] outWords, uint wordCapacity, out uint generation);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityPartMorphs(

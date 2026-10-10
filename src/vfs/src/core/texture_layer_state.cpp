@@ -124,14 +124,107 @@ uint32_t StatedTextureLayers(uint32_t entity, uint32_t* out, uint32_t capacity,
 }
 }  // namespace refii::vfs
 
+namespace refii::vfs {
+namespace {
+
+// THE REBUILD IS STAGED AND PUBLISHED WHOLE. The guest clears and re-states a character's
+// layers inside one call of its draw virtual, texture by texture; the host reads this table on
+// its own thread at any instant. Clearing the live record at the first statement let a read
+// land on an empty or half-filled list with a fresh generation, and the host composed the
+// character UNDYED from it — the garment went back to its default colour on every rebuild
+// (drawing a weapon, an interaction) and came back dyed one reconcile later, once the read
+// caught the finished list. So statements accumulate here and replace the live record in one
+// step when the virtual returns (`refii_bridge_end_texture_layers`).
+EntityLayers g_staging;
+bool g_staging_active = false;
+
+void Append(EntityLayers& record, uint32_t original, uint32_t kind, const uint32_t* layers,
+            uint32_t count, bool* changed) {
+  Composite* texture = nullptr;
+  for (uint32_t i = 0u; i < record.used; ++i) {
+    if (record.textures[i].original == original && record.textures[i].kind == kind) {
+      texture = &record.textures[i];
+      break;
+    }
+  }
+
+  const size_t bytes = sizeof(uint32_t) * count * kTextureLayerWords;
+  if (texture != nullptr && texture->count == count &&
+      std::memcmp(texture->layers, layers, bytes) == 0) {
+    return;
+  }
+
+  if (texture == nullptr) {
+    if (record.used >= kTextureLayerTextures) {
+      ++g_dropped;
+      return;
+    }
+    texture = &record.textures[record.used++];
+  }
+
+  texture->original = original;
+  texture->kind = kind;
+  texture->count = count;
+  std::memcpy(texture->layers, layers, bytes);
+  *changed = true;
+}
+
+bool SameContent(const EntityLayers& a, const EntityLayers& b) {
+  if (a.used != b.used) {
+    return false;
+  }
+  for (uint32_t i = 0u; i < a.used; ++i) {
+    const Composite& x = a.textures[i];
+    const Composite& y = b.textures[i];
+    if (x.original != y.original || x.kind != y.kind || x.count != y.count ||
+        std::memcmp(x.layers, y.layers, sizeof(uint32_t) * x.count * kTextureLayerWords) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Replaces the live record with the staged one, in one step, bumping the generation only when
+// the content moved. Called with the lock held.
+void Commit() {
+  if (!g_staging_active) {
+    return;
+  }
+  g_staging_active = false;
+  EntityLayers* live = Claim(g_staging.entity);
+  if (live == nullptr) {
+    ++g_dropped;
+    return;
+  }
+  if (SameContent(*live, g_staging)) {
+    return;
+  }
+  live->used = g_staging.used;
+  std::memcpy(live->textures, g_staging.textures, sizeof(Composite) * g_staging.used);
+  ++live->generation;
+}
+
+}  // namespace
+}  // namespace refii::vfs
+
 extern "C" {
+
 void refii_bridge_begin_texture_layers(uint32_t entity) {
   using namespace refii::vfs;
   std::lock_guard<std::mutex> guard(g_lock);
-  if (EntityLayers* record = Find(entity); record != nullptr && record->used != 0u) {
-    record->used = 0u;
-    ++record->generation;
+  if (g_staging_active && g_staging.entity != entity) {
+    Commit();  // a rebuild that never ended: publish what it stated
+  }
+  g_staging.entity = entity;
+  g_staging.used = 0u;
+  g_staging_active = true;
+}
 
+void refii_bridge_end_texture_layers(uint32_t entity) {
+  using namespace refii::vfs;
+  std::lock_guard<std::mutex> guard(g_lock);
+  if (g_staging_active && g_staging.entity == entity) {
+    Commit();
   }
 }
 
@@ -145,43 +238,26 @@ void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32
   std::lock_guard<std::mutex> guard(g_lock);
   ++g_statements;
 
-  EntityLayers* record = Claim(entity);
-  if (record == nullptr) {
-    ++g_dropped;
-    return;
-  }
-
   if (count > kTextureLayersPerTexture) {
     count = kTextureLayersPerTexture;
     ++g_dropped;
   }
 
-  Composite* texture = nullptr;
-  for (uint32_t i = 0u; i < record->used; ++i) {
-    if (record->textures[i].original == original && record->textures[i].kind == kind) {
-      texture = &record->textures[i];
-      break;
-    }
-  }
-
-  const size_t bytes = sizeof(uint32_t) * count * kTextureLayerWords;
-  if (texture != nullptr && texture->count == count &&
-      std::memcmp(texture->layers, layers, bytes) == 0) {
+  bool changed = false;
+  if (g_staging_active && g_staging.entity == entity) {
+    Append(g_staging, original, kind, layers, count, &changed);
     return;
   }
 
-  if (texture == nullptr) {
-    if (record->used >= kTextureLayerTextures) {
-      ++g_dropped;
-      return;
-    }
-    texture = &record->textures[record->used++];
+  // A statement outside a staged rebuild lands on the live record directly.
+  EntityLayers* record = Claim(entity);
+  if (record == nullptr) {
+    ++g_dropped;
+    return;
   }
-
-  texture->original = original;
-  texture->kind = kind;
-  texture->count = count;
-  std::memcpy(texture->layers, layers, bytes);
-  ++record->generation;
+  Append(*record, original, kind, layers, count, &changed);
+  if (changed) {
+    ++record->generation;
+  }
 }
 }  // extern "C"

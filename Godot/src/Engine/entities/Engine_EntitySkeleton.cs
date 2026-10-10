@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Core;
@@ -233,6 +234,69 @@ public sealed class Engine_EntitySkeleton
 		}
 
 		_restReach = Mathf.Max(reach, 0.25f);
+
+		// THE SKIN CARRIES THE BONE SCALE; THE SKELETON CARRIES NONE. The guest's skin matrix is
+		// `[R * diag(s) | t]` per bone with s the bone's OWN scale (`sub_8222E2B8` ->
+		// `sub_8222E1C0`), composed through the parents with rotation and translation only
+		// (`sub_821F58D8`). A Godot bone pose inherits its parent's scale, and a pose written
+		// as `inverse(parent) * child` to cancel that is decomposed by `SetBonePose` into
+		// position, rotation and scale — the shear of `S_p⁻¹ R S_c` is dropped, and across a
+		// rotated joint the parent's scale lands on the wrong axes of every descendant
+		// (measured on the morphed hero: hands 16 cm and feet 12 cm from the guest's pose).
+		// So the skeleton is posed with R and t alone, and the scale goes into the bind:
+		// `pose * (diag(s) * bind⁻¹)` is exactly the guest's product.
+		int count = skeleton.GetBoneCount();
+		_inverseRest = new Transform3D[count];
+		_skinScale = new Vector3[count];
+		for (int m = 0; m < count; ++m)
+		{
+			_inverseRest[m] = skeleton.GetBoneGlobalRest(m).AffineInverse();
+			_skinScale[m] = Vector3.One;
+		}
+
+		Skin = skeleton.CreateSkinFromRestTransforms();
+	}
+
+	/// <summary>
+	/// The skin every mesh on this rig binds with — the model's inverse rests, each scaled by
+	/// the bone's live scale (<see cref="SetBoneScales"/>). One resource, shared by the body,
+	/// its shadow proxy and the cloth palette, so a scale lands on all of them at once.
+	/// </summary>
+	public Skin Skin { get; }
+
+	private readonly Transform3D[] _inverseRest;
+
+	private readonly Vector3[] _skinScale;
+
+	/// <summary>Bind poses rewritten for a changed bone scale; run total.</summary>
+	public static long SkinScaleWrites;
+
+	/// <summary>
+	/// Gives each model bone its own scale, in the bone's axes, by folding it into the skin's
+	/// bind pose — never into the skeleton, which must stay scale-free (see the constructor).
+	/// Indexed by model bone; a shorter span leaves the rest at their last value. Only binds
+	/// whose scale moved are rewritten, so a settled rig costs a comparison per bone.
+	/// </summary>
+	public void SetBoneScales(ReadOnlySpan<Vector3> scales)
+	{
+		int bones = Math.Min(scales.Length, _inverseRest.Length);
+		for (int m = 0; m < bones; ++m)
+		{
+			Vector3 s = scales[m];
+			if (!s.IsFinite() || Mathf.Abs(s.X) < 1e-6f || Mathf.Abs(s.Y) < 1e-6f || Mathf.Abs(s.Z) < 1e-6f)
+			{
+				s = Vector3.One;
+			}
+
+			if (s.IsEqualApprox(_skinScale[m]))
+			{
+				continue;
+			}
+
+			_skinScale[m] = s;
+			Skin.SetBindPose(m, new Transform3D(Basis.FromScale(s), Vector3.Zero) * _inverseRest[m]);
+			++SkinScaleWrites;
+		}
 	}
 
 	private readonly float _restReach;
@@ -1164,13 +1228,10 @@ public sealed class Engine_EntitySkeleton
 					_scale[g] = s;
 				}
 
-				// ScaledLocal for the same reason ToGodot uses it, and now with a citation:
-				// `sub_8222E1C0` splats the scale's three lanes and multiplies them into the
-				// three COLUMNS of the rotation matrix (`vmulfp128 v21, v24, v11` and its two
-				// siblings), giving `[R * diag(s) | t]`. Scale on the bone's own axes, applied
-				// after the rotation, and never touching the translation in column 3.
-				_composed[g] = new Transform3D(
-					new Basis(_rotation[g]).ScaledLocal(_scale[g]), _translation[g]);
+				// ROTATION AND TRANSLATION ONLY. The scale lane goes to the skin bind
+				// (`SetBoneScales`), where `sub_8222E1C0`'s `[R * diag(s) | t]` is reproduced
+				// without a scale ever entering the skeleton's parent chain.
+				_composed[g] = new Transform3D(new Basis(_rotation[g]), _translation[g]);
 			}
 		}
 
@@ -1231,6 +1292,12 @@ public sealed class Engine_EntitySkeleton
 		// the blend between the two on every drawn frame, one guest interval behind.
 		_newest ??= new Transform3D[_rig.BoneCount];
 		_previous ??= new Transform3D[_rig.BoneCount];
+		if (_newestScale.Length != _rig.BoneCount)
+		{
+			_newestScale = new Vector3[_rig.BoneCount];
+			System.Array.Fill(_newestScale, Vector3.One);
+		}
+
 		if (!changed && !first && _haveNewest)
 		{
 			return;  // the same pose again: the blend keeps moving on the clock
@@ -1277,11 +1344,19 @@ public sealed class Engine_EntitySkeleton
 				continue;
 			}
 
+			// The bone's own scale, kept beside the pose for the skin: permuted into the
+			// mesh's axes exactly as ToGodot permutes it, never swizzled (see there).
+			Vector3 guestScale = modelSpace ? pose.Scale(g) : _scale![g];
+			var scale = modelSpace ? new Vector3(guestScale.X, guestScale.Z, guestScale.Y) : guestScale;
+			_newestScale[m] = scale.IsFinite() ? scale : Vector3.One;
 			_newest[m] = modelSpace
-				? ToGodot(pose.Rotation(g), pose.Translation(g), pose.Scale(g))
+				? ToGodot(pose.Rotation(g), pose.Translation(g), Vector3.One)
 				: _composed![g];
 		}
 	}
+
+	/// <summary>Each model bone's own scale from the newest pose, in the mesh's axes.</summary>
+	private Vector3[] _newestScale = System.Array.Empty<Vector3>();
 
 	private Transform3D[]? _globals;
 	private Transform3D[]? _newest;
@@ -1492,6 +1567,10 @@ public sealed class Engine_EntitySkeleton
 
 		if (!settled)
 		{
+			// The scale lane is a property of the bone, not of the blend: the newest pose's
+			// is the one the skin binds with (a morph record changes between rebuilds, not
+			// between frames), and a settled rig has already written it.
+			SetBoneScales(_newestScale);
 			_wroteUsec = _newestUsec;
 			_wroteSettled = alpha >= (float)_playhead.TopAlpha;
 			// The shadow trails this write unless it took it too.

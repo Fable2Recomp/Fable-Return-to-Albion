@@ -126,8 +126,22 @@ enum {
   kTextureLayerTextures = 40,
 };
 void refii_bridge_begin_texture_layers(uint32_t entity);
+// Publishes the statements since the begin as the entity's layers, in one step.
+void refii_bridge_end_texture_layers(uint32_t entity);
 void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32_t kind,
                                       const uint32_t* layers, uint32_t count);
+
+// The layers the guest's own dye builder states for ONE inventory item, keyed by the item's
+// record hash and written as a character's composites are (kTextureLayerWords per layer); the
+// menu previews a dyed garment through them. Sampled on the GUI tick for every dyed item the
+// hero wears or carries. Table in src/core/item_dye_layer_state.cpp.
+enum {
+  kItemDyeLayerItems = 64,
+  kItemDyeLayerWords = 4 * (2 + kTextureLayersPerTexture * kTextureLayerWords),
+};
+void refii_bridge_set_item_dye_layers(const uint32_t* records, const uint32_t* offsets,
+                                      const uint32_t* counts, uint32_t items,
+                                      const uint32_t* words);
 
 // The pub-game seam. The host claims the guest's pub-game module and posts the fscommands
 // Godot's game issues; the pump replacement (src/hooks/pubgame_pump.cpp, on the guest's render

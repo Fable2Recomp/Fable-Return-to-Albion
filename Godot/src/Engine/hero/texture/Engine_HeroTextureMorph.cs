@@ -164,6 +164,8 @@ public static class Engine_HeroTextureMorph
                 over = stated.Layers;
             }
 
+            const int SpecularSlot = 2;
+            bool packedSourceChanged = false;
             for (int slot = 0;
                  slot < names.Length && slot < Refii.Models.Engine_MdlMaterial.TextureParameters.Length;
                  slot++)
@@ -196,6 +198,26 @@ public static class Engine_HeroTextureMorph
 
                 own.SetShaderParameter(
                     Refii.Models.Engine_MdlMaterial.TextureParameters[slot], composited);
+                packedSourceChanged |= slot == NormalSlot || slot == SpecularSlot;
+            }
+
+            // THE ORM FOLLOWS THE MAPS IT WAS PACKED FROM. Roughness and metallic come from the
+            // specular, occlusion and height from the normal (Engine_TexOrm); a material whose
+            // composite replaced either would otherwise draw with the unmorphed pack beside the
+            // morphed map — the rule Engine_MdlMaterial already applies to an overridden source.
+            if (own is not null && packedSourceChanged && own.GetShaderParameter("has_orm").AsBool())
+            {
+                ImageTexture? orm = Engine_TexLibrary.BuildOrmFromTextures(
+                    own.GetShaderParameter("specular_tex").As<Texture2D>(),
+                    own.GetShaderParameter("normal_tex").As<Texture2D>(),
+                    own.GetShaderParameter("spec_power_min").AsSingle(),
+                    own.GetShaderParameter("spec_power_max").AsSingle(),
+                    out bool hasHeight);
+                if (orm is not null)
+                {
+                    own.SetShaderParameter("orm_tex", orm);
+                    own.SetShaderParameter("has_height", hasHeight);
+                }
             }
 
             if (own is not null)
@@ -322,8 +344,7 @@ public static class Engine_HeroTextureMorph
         }
 
         System.Threading.Interlocked.Increment(ref _compositesBuilt);
-        ImageTexture texture = ImageTexture.CreateFromImage(
-            Image.CreateFromData(width, height, false, Image.Format.Rgba8, output));
+        ImageTexture texture = ToTexture(output, width, height, normalSlot);
 
         lock (MorphLock)
         {
@@ -656,8 +677,9 @@ public static class Engine_HeroTextureMorph
         }
 
         System.Threading.Interlocked.Increment(ref _compositesBuilt);
-        ImageTexture texture = ImageTexture.CreateFromImage(
-            Image.CreateFromData(width, height, false, Image.Format.Rgba8, output));
+        string stem = System.IO.Path.GetFileName(baseName);
+        ImageTexture texture = ToTexture(
+            output, width, height, stem.StartsWith("norm", StringComparison.OrdinalIgnoreCase));
 
         lock (MorphLock)
         {
@@ -670,6 +692,22 @@ public static class Engine_HeroTextureMorph
         }
 
         return texture;
+    }
+
+    /// <summary>
+    /// The finished composite as a texture, WITH A FULL MIP CHAIN like every other texture the
+    /// material binds. The samplers are mipmapped; a top level alone is minified by
+    /// point-picking texels, and on a normal map and a self-illumination map that is a skin
+    /// full of sparkling highlights and stray glowing dots. A normal map is renormalised down
+    /// the chain and block-compressed the way the library compresses its own (BC5 for a
+    /// normal, BC1/BC3 otherwise).
+    /// </summary>
+    private static ImageTexture ToTexture(byte[] rgba, int width, int height, bool normalMap)
+    {
+        Image image = Image.CreateFromData(width, height, false, Image.Format.Rgba8, rgba);
+        image.GenerateMipmaps(normalMap);
+        Engine_TexImage.CompressBlocks(image, normalMap);
+        return ImageTexture.CreateFromImage(image);
     }
 
     private static DecodedTexture Decode(string path)

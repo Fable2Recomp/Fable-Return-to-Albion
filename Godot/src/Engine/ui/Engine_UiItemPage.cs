@@ -580,7 +580,9 @@ public static class Engine_UiItemPage
 			detail.PreviewTranslation,
 			detail.PreviewRotation,
 			detail.PreviewScale,
-			detail.PreviewRotationAxis);
+			detail.PreviewRotationAxis,
+			// The record, so the panel can ask what dye the guest holds on this item.
+			Item: id);
 	}
 
 	/// <summary>An outfit row — the inventory source routes its press to `Inventory:outfit`.</summary>

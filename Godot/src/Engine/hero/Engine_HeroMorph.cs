@@ -109,10 +109,13 @@ public static class Engine_HeroMorph
     public const float WeightFloor = 0.0001f;
 
     /// <summary>
-    /// The guest's blend: <c>sum(w_i * v_i)</c> with the part's own model at <c>1 - sum</c>,
-    /// positions and normals, normals renormalised. A target whose mesh count differs leaves
-    /// the whole part unmorphed (<c>sub_82AB12F8</c>); a mesh whose vertex count differs is
-    /// left as the part's own.
+    /// The guest's blend (<c>sub_82B25D38</c> skinned, <c>sub_82B2A890</c> rigid, read in the
+    /// disassembly): <c>sum(w_i * v_i)</c> over the whole list with the part's own model at
+    /// <c>1 - sum</c> — negative when the targets exceed one, nothing clamped or renormalised
+    /// — on positions and normals, the normal renormalised; the TANGENT is copied whole from
+    /// the heaviest listed model (first strictly greater wins, <c>sub_82B36878</c>), never
+    /// blended. A target whose mesh count differs leaves the whole part unmorphed
+    /// (<c>sub_82AB12F8</c>); a mesh whose vertex count differs is left as the part's own.
     /// </summary>
     public static ArrayMesh Blend(
         ArrayMesh neutral, IReadOnlyList<(ArrayMesh Target, float Weight)> targets)
@@ -128,6 +131,25 @@ public static class Engine_HeroMorph
             if (target.GetSurfaceCount() != surfaces)
             {
                 return neutral;
+            }
+        }
+
+        // The reference for the unblended attributes: the heaviest model, the base counting at
+        // its 1 - sum; the first strictly greater weight wins, as the guest's search does.
+        float sum = 0f;
+        foreach ((_, float weight) in targets)
+        {
+            sum += weight;
+        }
+
+        int reference = -1;
+        float heaviest = 1f - sum;
+        for (int i = 0; i < targets.Count; i++)
+        {
+            if (targets[i].Weight > heaviest)
+            {
+                heaviest = targets[i].Weight;
+                reference = i;
             }
         }
 
@@ -204,6 +226,20 @@ public static class Engine_HeroMorph
                 }
 
                 arrays[(int)Mesh.ArrayType.Vertex] = positions;
+
+                if (reference >= 0)
+                {
+                    Godot.Collections.Array heavy =
+                        Refii.Models.Engine_MdlSurfaceArrays.Of(targets[reference].Target, s);
+                    Variant tangents = heavy[(int)Mesh.ArrayType.Tangent];
+                    if (tangents.VariantType == Variant.Type.PackedFloat32Array &&
+                        arrays[(int)Mesh.ArrayType.Tangent].VariantType == Variant.Type.PackedFloat32Array &&
+                        tangents.AsFloat32Array().Length == arrays[(int)Mesh.ArrayType.Tangent].AsFloat32Array().Length)
+                    {
+                        arrays[(int)Mesh.ArrayType.Tangent] = tangents;
+                    }
+                }
+
                 blended = true;
             }
 

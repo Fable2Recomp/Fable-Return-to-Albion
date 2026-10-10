@@ -57,6 +57,11 @@ REX_EXTERN(rex_lhGraphicAppearanceMorph_ApplyTextureLayers) {
   t_entity = ctx.r3.u32 >= 12u ? refii::vfs::LoadGuestU32(base, ctx.r3.u32 - 8u) : 0u;
   t_begun = false;
   __imp__rex_lhGraphicAppearanceMorph_ApplyTextureLayers(ctx, base);
+  // PUBLISHED WHOLE, when the virtual returns: every layer it stated lands at once, so the
+  // host never composes from the half of a rebuild (the dye that reverted on each interaction).
+  if (t_begun) {
+    refii::vfs::EndTextureLayers(t_entity);
+  }
   t_entity = outer;
   t_begun = outer_begun;
 }
