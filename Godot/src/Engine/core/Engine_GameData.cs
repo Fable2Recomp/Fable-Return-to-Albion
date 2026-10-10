@@ -29,6 +29,25 @@ public static class Engine_GameData
 	public static string Resolve() => ResolveWhere(HasBanks);
 
 	/// <summary>
+	/// The title update's data root beside a game data directory: <c>&lt;assets&gt;/update</c>,
+	/// the directory the runtime mounts as <c>update:</c> (refii_app.h derives it the same way).
+	/// The installer writes the update package's <c>data/tu1_data.bnk</c> under it.
+	/// </summary>
+	public static string UpdateRootFor(string gameDirectory)
+	{
+		if (string.IsNullOrEmpty(gameDirectory))
+			return string.Empty;
+
+		string basePath = Path.TrimEndingDirectorySeparator(gameDirectory);
+		if (string.Equals(Path.GetFileName(basePath), "data", StringComparison.OrdinalIgnoreCase))
+			basePath = Path.GetDirectoryName(basePath) ?? basePath;
+		if (string.Equals(Path.GetFileName(basePath), "game", StringComparison.OrdinalIgnoreCase))
+			basePath = Path.GetDirectoryName(basePath) ?? basePath;
+
+		return Path.Combine(basePath, "update");
+	}
+
+	/// <summary>
 	/// The same search, judged by a different test.
 	/// </summary>
 	/// <remarks>

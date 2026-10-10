@@ -101,8 +101,18 @@ public static class Installer
     }
 
     /// <summary>
+    /// The title update's data bank, on the update volume the runtime mounts beside the game
+    /// data: <c>&lt;assets&gt;/update/data/tu1_data.bnk</c>, for a patch at <c>&lt;assets&gt;/game/default.xexp</c>.
+    /// </summary>
+    public static string GetTitleUpdateDataBankPath(string patchPath) =>
+        Path.Combine(
+            Refii.Core.Engine_GameData.UpdateRootFor(Path.GetDirectoryName(patchPath) ?? string.Empty),
+            TitleUpdate.DataBankRelativePath);
+
+    /// <summary>
     /// Writes the title update beside the installed executable, from a .xexp or the package
-    /// it came in, after checking that it patches that executable.
+    /// it came in, after checking that it patches that executable. A package's data bank goes
+    /// to the update volume with it.
     /// </summary>
     /// <remarks>
     /// The check runs against the executable the ISO extraction just wrote, not the one the
@@ -115,13 +125,21 @@ public static class Installer
             return false;
         }
 
+        string dataBankPath = GetTitleUpdateDataBankPath(destinationPath);
+        if (!SafePath.IsSafeDestinationUnderBase(dataBankPath, GetInstallBasePath(), out error))
+        {
+            return false;
+        }
+
         // No title update chosen: the disc executable is installed as it is. A patch left by an
-        // earlier install has to go, because its presence is what selects the patched build.
+        // earlier install has to go, because its presence is what selects the patched build,
+        // and its bank with it, because the guest would layer it over the disc data.
         if (sourcePath.Length == 0)
         {
             try
             {
                 File.Delete(destinationPath);
+                File.Delete(dataBankPath);
                 error = string.Empty;
                 return true;
             }
@@ -160,6 +178,20 @@ public static class Installer
             }
 
             File.WriteAllBytes(destinationPath, update.Patch);
+
+            // A bank from an earlier package never outlives the patch it came with.
+            File.Delete(dataBankPath);
+            if (update.HasDataBank)
+            {
+                string? bankParent = Path.GetDirectoryName(dataBankPath);
+                if (!string.IsNullOrEmpty(bankParent))
+                {
+                    Directory.CreateDirectory(bankParent!);
+                }
+
+                File.WriteAllBytes(dataBankPath, update.DataBank);
+            }
+
             error = string.Empty;
             return true;
         }
@@ -239,8 +271,13 @@ public static class Installer
             return false;
         }
 
+        // The bank is what a bare .xexp install lacks: the patched code runs, on the disc's
+        // scripts and text. Said here so the reinstall panel shows it, not an error.
+        string bank = File.Exists(GetTitleUpdateDataBankPath(patchPath))
+            ? " and its data bank"
+            : ", without its data bank (install the update from its package to get it)";
         summary = "Game version " + executable.VersionText + " with title update " +
-                  update.Identity.VersionText + ", media ID " + executable.ShortMediaIdText + ".";
+                  update.Identity.VersionText + bank + ", media ID " + executable.ShortMediaIdText + ".";
         return true;
     }
 

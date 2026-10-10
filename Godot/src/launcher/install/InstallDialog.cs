@@ -14,6 +14,8 @@ public partial class InstallDialog : Control
 	private readonly int _fontSize;
 	private readonly SmartStyle _style;
 
+	private OptionButton _versionOption = null!;
+	private Label _versionSummary = null!;
 	private LineEdit _isoEdit = null!;
 	private LineEdit _xexpEdit = null!;
 	private CheckBox _updateCheck = null!;
@@ -79,13 +81,34 @@ public partial class InstallDialog : Control
 		column.AddChild(heading);
 
 		Label intro = MakeLabel(
-			"Select the " + SupportedGame.Name + " ISO (media ID " +
-			SupportedGame.ShortMediaIdText + "). To install with the title update, tick the " +
-			"box and select either the default.xexp itself or the package it came in (" +
-			SupportedGame.TitleUpdateName + ", any name). Other pressings are not supported. " +
-			SupportedGame.EasingNote);
+			"Select your game version and its ISO. To install with the title update, tick the " +
+			"box and select either the default.xexp itself or the package it came in, under any " +
+			"name. Other pressings are not supported. " + SupportedGame.EasingNote);
 		intro.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		column.AddChild(intro);
+
+		// THE PRESSING IS THE PLAYER'S CHOICE. The dropdown names each supported disc once; the
+		// disc and the update are then checked against that one, so a wrong pick is reported as
+		// a wrong pick and the list grows without the text above growing with it.
+		column.AddChild(MakeLabel("Game version"));
+		_versionOption = MakeDropdown();
+		foreach (SupportedGame.Pressing pressing in SupportedGame.Pressings)
+		{
+			_versionOption.AddItem(pressing.DisplayName);
+		}
+
+		_versionOption.Selected = 0;
+		_versionOption.ItemSelected += _ =>
+		{
+			_dialogError = string.Empty;
+			RefreshState();
+		};
+		column.AddChild(_versionOption);
+
+		_versionSummary = MakeLabel(string.Empty);
+		_versionSummary.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		_versionSummary.AddThemeColorOverride("font_color", LauncherTokens.Sepia);
+		column.AddChild(_versionSummary);
 
 		column.AddChild(MakeLabel("Game ISO"));
 		_isoEdit = AddPathRow(column, () => BrowseForFile(
@@ -93,17 +116,24 @@ public partial class InstallDialog : Control
 
 		// The tick decides which build of the game is installed: with the title update the
 		// patch is copied beside the executable and the TU1 config is used; without it the
-		// disc executable is recompiled as it is, from its own config.
+		// disc executable is recompiled as it is, from its own config. Unticked by default:
+		// the player opts in with the update they have.
 		_updateCheck = new CheckBox
 		{
-			Text = "Install with the title update (TU1)",
-			ButtonPressed = true,
+			Text = "Install with the title update",
+			ButtonPressed = false,
 		};
 		_updateCheck.AddThemeFontSizeOverride("font_size", _fontSize);
 		_updateCheck.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
 		_updateCheck.AddThemeColorOverride("font_pressed_color", LauncherTokens.Walnut);
 		_updateCheck.AddThemeColorOverride("font_hover_color", LauncherTokens.Walnut);
 		_updateCheck.AddThemeColorOverride("font_hover_pressed_color", LauncherTokens.Walnut);
+		_updateCheck.AddThemeColorOverride("font_disabled_color", LauncherTokens.Sepia);
+		// White box whenever the update is available: the theme's own icons are grey, so the
+		// enabled states get drawn ones. The disabled grey is left to the theme.
+		_updateCheck.AddThemeIconOverride("unchecked", MakeCheckIcon(ticked: false));
+		_updateCheck.AddThemeIconOverride("checked", MakeCheckIcon(ticked: true));
+
 		_updateCheck.Toggled += _ => RefreshState();
 		column.AddChild(_updateCheck);
 
@@ -289,19 +319,23 @@ public partial class InstallDialog : Control
 		picker.PopupCentered();
 	}
 
+	private SupportedGame.Pressing SelectedPressing =>
+		SupportedGame.Pressings[Math.Clamp(_versionOption.Selected, 0, SupportedGame.Pressings.Length - 1)];
+
 	private void OnStartPressed()
 	{
 		string isoPath = _isoEdit.Text;
-		string xexpPath = _updateCheck.ButtonPressed ? _xexpEdit.Text : string.Empty;
+		bool withUpdate = _updateCheck.ButtonPressed && SelectedPressing.HasTitleUpdate;
+		string xexpPath = withUpdate ? _xexpEdit.Text : string.Empty;
 		_dialogError = string.Empty;
 
 		if (!File.Exists(isoPath))
 		{
 			_dialogError = "The selected ISO path does not exist.";
 		}
-		else if (!_updateCheck.ButtonPressed)
+		else if (!withUpdate)
 		{
-			if (DiscIsSupported(isoPath, out _, out string unsupported))
+			if (DiscIsSupported(isoPath, SelectedPressing, out _, out string unsupported))
 			{
 				InstallRequested?.Invoke(isoPath, string.Empty);
 				QueueFree();
@@ -314,7 +348,7 @@ public partial class InstallDialog : Control
 		{
 			_dialogError = "The selected title update path does not exist.";
 		}
-		else if (TitleUpdateFitsDisc(isoPath, xexpPath, out string mismatch))
+		else if (TitleUpdateFitsDisc(isoPath, xexpPath, SelectedPressing, out string mismatch))
 		{
 			InstallRequested?.Invoke(isoPath, xexpPath);
 			QueueFree();
@@ -337,9 +371,10 @@ public partial class InstallDialog : Control
 	/// The disc is judged first: a wrong pressing is the answer the player needs, whatever
 	/// update they picked to go with it.
 	/// </remarks>
-	private static bool TitleUpdateFitsDisc(string isoPath, string updatePath, out string error)
+	private static bool TitleUpdateFitsDisc(
+		string isoPath, string updatePath, SupportedGame.Pressing pressing, out string error)
 	{
-		if (!DiscIsSupported(isoPath, out XexIdentity executable, out error))
+		if (!DiscIsSupported(isoPath, pressing, out XexIdentity executable, out error))
 		{
 			return false;
 		}
@@ -349,11 +384,12 @@ public partial class InstallDialog : Control
 			return false;
 		}
 
-		return SupportedGame.IsTitleUpdate(update.Identity, out error) &&
+		return SupportedGame.IsTitleUpdate(update.Identity, pressing, out error) &&
 			update.AppliesTo(executable, out error);
 	}
 
-	private static bool DiscIsSupported(string isoPath, out XexIdentity executable, out string error)
+	private static bool DiscIsSupported(
+		string isoPath, SupportedGame.Pressing pressing, out XexIdentity executable, out string error)
 	{
 		executable = new XexIdentity();
 
@@ -370,12 +406,27 @@ public partial class InstallDialog : Control
 			return false;
 		}
 
-		return SupportedGame.IsExecutable(executable, out error);
+		return SupportedGame.IsExecutable(executable, pressing, out error);
 	}
 
 	private void RefreshState()
 	{
-		bool withUpdate = _updateCheck.ButtonPressed;
+		SupportedGame.Pressing pressing = SelectedPressing;
+		_versionSummary.Text = pressing.Summary;
+
+		// A pressing without a confirmed update has nothing to tick: the box is greyed, not
+		// hidden, so the player sees the update exists and is simply not available here.
+		_updateCheck.Disabled = !pressing.HasTitleUpdate;
+		if (!pressing.HasTitleUpdate)
+		{
+			_updateCheck.SetPressedNoSignal(false);
+		}
+
+		_updateCheck.Text = pressing.HasTitleUpdate
+			? "Install with the title update (" + pressing.TitleUpdateName + ")"
+			: "Install with the title update (none confirmed for this version)";
+
+		bool withUpdate = _updateCheck.ButtonPressed && pressing.HasTitleUpdate;
 		_xexpLabel.Visible = withUpdate;
 		if (_xexpEdit.GetParent() is Control updateRow)
 		{
@@ -407,5 +458,120 @@ public partial class InstallDialog : Control
 		Apply(label);
 		label.AddThemeColorOverride("font_color", _style.Text);
 		return label;
+	}
+
+	/// <summary>
+	/// A white box with a gold rule, with or without a walnut tick, at the size the theme draws
+	/// its own check icons.
+	/// </summary>
+	private static ImageTexture MakeCheckIcon(bool ticked)
+	{
+		const int size = 20;
+		var image = Image.CreateEmpty(size, size, false, Image.Format.Rgba8);
+		Color border = LauncherTokens.Gold;
+		Color face = Colors.White;
+		Color ink = LauncherTokens.Walnut;
+
+		for (int y = 0; y < size; y++)
+		{
+			for (int x = 0; x < size; x++)
+			{
+				// Rounded corners: the four corner pixels stay clear.
+				bool corner = (x == 0 || x == size - 1) && (y == 0 || y == size - 1);
+				if (corner)
+				{
+					continue;
+				}
+
+				bool edge = x == 0 || y == 0 || x == size - 1 || y == size - 1;
+				image.SetPixel(x, y, edge ? border : face);
+			}
+		}
+
+		if (ticked)
+		{
+			// Two strokes: down to the base, then up to the far corner.
+			DrawStroke(image, new Vector2(4.5f, 10f), new Vector2(8.5f, 14f), 1.3f, ink);
+			DrawStroke(image, new Vector2(8.5f, 14f), new Vector2(15.5f, 5.5f), 1.3f, ink);
+		}
+
+		return ImageTexture.CreateFromImage(image);
+	}
+
+	private static void DrawStroke(Image image, Vector2 from, Vector2 to, float radius, Color ink)
+	{
+		Vector2 direction = to - from;
+		float lengthSquared = direction.LengthSquared();
+		for (int y = 0; y < image.GetHeight(); y++)
+		{
+			for (int x = 0; x < image.GetWidth(); x++)
+			{
+				var point = new Vector2(x + 0.5f, y + 0.5f);
+				float t = lengthSquared == 0 ? 0 : Mathf.Clamp((point - from).Dot(direction) / lengthSquared, 0, 1);
+				float distance = point.DistanceTo(from + direction * t);
+				if (distance <= radius)
+				{
+					image.SetPixel(x, y, ink);
+				}
+				else if (distance <= radius + 1)
+				{
+					// One pixel of coverage so the stroke is not jagged.
+					Color under = image.GetPixel(x, y);
+					image.SetPixel(x, y, under.Lerp(ink, radius + 1 - distance));
+				}
+			}
+		}
+	}
+
+	/// <summary>A dropdown dressed like the path fields: parchment face, gold rule, walnut ink.</summary>
+	private OptionButton MakeDropdown()
+	{
+		var option = new OptionButton
+		{
+			CustomMinimumSize = new Vector2(0, 36),
+			FitToLongestItem = false,
+			TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+			MouseDefaultCursorShape = CursorShape.PointingHand,
+		};
+		Apply(option);
+
+		var face = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.ParchmentLit,
+			BorderColor = new Color(LauncherTokens.Gold, 0.4f),
+		};
+		face.SetBorderWidthAll(1);
+		face.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+		face.ContentMarginLeft = 10;
+		face.ContentMarginRight = 10;
+
+		var faceHover = new StyleBoxFlat
+		{
+			BgColor = LauncherTokens.ParchmentLit,
+			BorderColor = LauncherTokens.Gold,
+		};
+		faceHover.SetBorderWidthAll(1);
+		faceHover.SetCornerRadiusAll(LauncherTokens.RadiusSm);
+		faceHover.ContentMarginLeft = 10;
+		faceHover.ContentMarginRight = 10;
+
+		option.AddThemeStyleboxOverride("normal", face);
+		option.AddThemeStyleboxOverride("hover", faceHover);
+		option.AddThemeStyleboxOverride("pressed", faceHover);
+		option.AddThemeStyleboxOverride("focus", faceHover);
+		option.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
+		option.AddThemeColorOverride("font_hover_color", LauncherTokens.Walnut);
+		option.AddThemeColorOverride("font_pressed_color", LauncherTokens.Walnut);
+		option.AddThemeColorOverride("font_focus_color", LauncherTokens.Walnut);
+
+		// The popup is a Window, not a Control: it takes the same font by its own overrides.
+		PopupMenu popup = option.GetPopup();
+		if (_font is not null)
+		{
+			popup.AddThemeFontOverride("font", _font);
+		}
+
+		popup.AddThemeFontSizeOverride("font_size", _fontSize);
+		return option;
 	}
 }

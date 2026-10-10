@@ -3,14 +3,17 @@ using System;
 namespace Refii.Launcher.Core;
 
 /// <summary>
-/// The one pressing of Fable 2 this build recompiles, and the one title update that may be
-/// installed with it. The update is the player's choice: each of the two executables has its
-/// own config under versions/.
+/// The pressings of Fable 2 this build recompiles, and the title update each may be installed
+/// with. The update is the player's choice: the patched and the disc executables each have
+/// their own config under versions/.
 /// </summary>
 /// <remarks>
-/// The generated code, the hooks and every guest address in this build were taken from one
-/// executable with one patch applied. Any other pair extracts and compiles for an hour and
-/// then fails or misbehaves at run time, so it is refused before anything is copied.
+/// A pressing is accepted only when its code is byte-identical to the one the generated code,
+/// the hooks and every guest address were taken from. The Russian GOTY disc is the USA/Europe
+/// disc re-signed: same PE payload, same file key, same section digest; only the signature,
+/// media id, version stamp, ratings and LAN key differ, so it runs on the disc config. Its
+/// title update (0.0.0.33 to 0.0.1.33) carries the same 48 image-delta blocks as the USA/Europe
+/// one, so a patched Russian image is the TU1 program and runs on the TU1 config.
 ///
 /// All of it is read from the XEX headers: title id and version from the execution info,
 /// the 16-byte media id from the security block, the versions a patch joins from its delta
@@ -22,23 +25,69 @@ public static class SupportedGame
 
 	public const uint TitleId = 0x4D5307F1;
 
-	/// <summary>The disc executable's version, which is also what the patch applies to.</summary>
-	public const uint BaseVersion = 0x0000001A;
-
-	/// <summary>The version the title update produces.</summary>
-	public const uint UpdatedVersion = 0x0000011A;
-
-	/// <summary>The title update's package name, as it is distributed.</summary>
-	public const string TitleUpdateName = "TU_16L61VH_0000038000000.000000000008Q";
-
-	/// <summary>The XGD2 media id; its last dword is the short id, 716F0A0D.</summary>
-	private static readonly byte[] MediaId =
+	/// <summary>One disc pressing: its media id, its executable version and its title update.</summary>
+	public sealed class Pressing
 	{
-		0xA5, 0x09, 0xA2, 0xD6, 0xD9, 0xE9, 0x98, 0x32,
-		0x7C, 0x39, 0x80, 0x33, 0x71, 0x6F, 0x0A, 0x0D,
+		public string Name = string.Empty;
+
+		/// <summary>The XGD2 media id; its last dword is the short id.</summary>
+		public byte[] MediaId = Array.Empty<byte>();
+
+		/// <summary>The disc executable's version, which is also what the patch applies to.</summary>
+		public uint BaseVersion;
+
+		/// <summary>The title update's package name as distributed, or empty when none is known.</summary>
+		public string TitleUpdateName = string.Empty;
+
+		/// <summary>The version the title update produces; meaningless without one.</summary>
+		public uint UpdatedVersion;
+
+		public bool HasTitleUpdate => TitleUpdateName.Length > 0;
+
+		public string ShortMediaIdText =>
+			(((uint)MediaId[12] << 24) | ((uint)MediaId[13] << 16) | ((uint)MediaId[14] << 8) | MediaId[15])
+			.ToString("X8");
+
+		public bool Matches(ReadOnlySpan<byte> mediaId) => mediaId.SequenceEqual(MediaId);
+
+		/// <summary>The dropdown entry: "USA / Europe (716F0A0D)".</summary>
+		public string DisplayName => Name + " (" + ShortMediaIdText + ")";
+
+		/// <summary>The line under the dropdown: the identity the disc and the update must carry.</summary>
+		public string Summary =>
+			"Media ID " + ShortMediaIdText + ", version " + XexIdentity.FormatVersion(BaseVersion) +
+			(HasTitleUpdate
+				? ", title update " + TitleUpdateName
+				: ", no title update");
+	}
+
+	public static readonly Pressing UsaEurope = new()
+	{
+		Name = "USA / Europe",
+		MediaId = new byte[]
+		{
+			0xA5, 0x09, 0xA2, 0xD6, 0xD9, 0xE9, 0x98, 0x32,
+			0x7C, 0x39, 0x80, 0x33, 0x71, 0x6F, 0x0A, 0x0D,
+		},
+		BaseVersion = 0x0000001A,
+		TitleUpdateName = "TU_16L61VH_0000038000000.000000000008Q",
+		UpdatedVersion = 0x0000011A,
 	};
 
-	public const string ShortMediaIdText = "716F0A0D";
+	public static readonly Pressing Russia = new()
+	{
+		Name = "Russia",
+		MediaId = new byte[]
+		{
+			0x84, 0x5B, 0xD5, 0xA1, 0xC7, 0xEE, 0xC1, 0xDF,
+			0xC1, 0xA5, 0xA4, 0x05, 0x05, 0xFB, 0xEC, 0xEA,
+		},
+		BaseVersion = 0x00000021,
+		TitleUpdateName = "TU_16L61VH_0000044000000.0000000000091",
+		UpdatedVersion = 0x00000121,
+	};
+
+	public static readonly Pressing[] Pressings = { UsaEurope, Russia };
 
 	public static string TitleIdText => TitleId.ToString("X8");
 
@@ -46,12 +95,60 @@ public static class SupportedGame
 	public const string EasingNote =
 		"This restriction will be eased as we eventually support more versions closer to release.";
 
+	/// <summary>The supported pressings as "716F0A0D (USA / Europe), 05FBECEA (Russia)".</summary>
+	public static string PressingsText
+	{
+		get
+		{
+			string[] parts = new string[Pressings.Length];
+			for (int i = 0; i < Pressings.Length; i++)
+			{
+				parts[i] = Pressings[i].ShortMediaIdText + " (" + Pressings[i].Name + ")";
+			}
+
+			return string.Join(", ", parts);
+		}
+	}
+
+	/// <summary>The title updates that may be installed, as "TU_... for 716F0A0D".</summary>
+	public static string TitleUpdatesText
+	{
+		get
+		{
+			string text = string.Empty;
+			foreach (Pressing pressing in Pressings)
+			{
+				if (!pressing.HasTitleUpdate)
+				{
+					continue;
+				}
+
+				text += (text.Length > 0 ? ", " : string.Empty) +
+						pressing.TitleUpdateName + " for " + pressing.ShortMediaIdText;
+			}
+
+			return text;
+		}
+	}
+
 	/// <summary>What the player has to bring, for messages.</summary>
 	public static string Requirement =>
-		Name + " (title ID " + TitleIdText + ", media ID " + ShortMediaIdText +
-		") with title update " + TitleUpdateName;
+		Name + " (title ID " + TitleIdText + ", media ID " + PressingsText + ")";
 
-	/// <summary>Whether a base executable is the supported one.</summary>
+	public static Pressing? FindPressing(ReadOnlySpan<byte> mediaId)
+	{
+		foreach (Pressing pressing in Pressings)
+		{
+			if (pressing.Matches(mediaId))
+			{
+				return pressing;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>Whether a base executable is one of the supported pressings.</summary>
 	public static bool IsExecutable(XexIdentity executable, out string error)
 	{
 		error = string.Empty;
@@ -63,45 +160,99 @@ public static class SupportedGame
 			return false;
 		}
 
-		if (!executable.MediaId.AsSpan().SequenceEqual(MediaId))
+		Pressing? pressing = FindPressing(executable.MediaId);
+		if (pressing == null)
 		{
 			error = "This is a different pressing of Fable 2: its media ID is " +
 					executable.ShortMediaIdText + ", and this build only supports media ID " +
-					ShortMediaIdText + " (" + Name + ").";
+					PressingsText + ".";
 			return false;
 		}
 
-		if (executable.Version != BaseVersion)
+		if (executable.Version != pressing.BaseVersion)
 		{
 			error = "This disc image's executable is version " + executable.VersionText +
 					", and this build only supports version " +
-					XexIdentity.FormatVersion(BaseVersion) + ".";
+					XexIdentity.FormatVersion(pressing.BaseVersion) + " for media ID " +
+					pressing.ShortMediaIdText + ".";
 			return false;
 		}
 
 		return true;
 	}
 
-	/// <summary>Whether a patch is the supported title update.</summary>
+	/// <summary>Whether a base executable is the pressing the player selected.</summary>
+	/// <remarks>
+	/// The whole list is still consulted so a disc of another supported pressing is named as
+	/// such: the fix is a different dropdown choice, not a different disc.
+	/// </remarks>
+	public static bool IsExecutable(XexIdentity executable, Pressing selected, out string error)
+	{
+		if (!IsExecutable(executable, out error))
+		{
+			return false;
+		}
+
+		if (!selected.Matches(executable.MediaId))
+		{
+			Pressing actual = FindPressing(executable.MediaId)!;
+			error = "This disc image is the " + actual.Name + " pressing (media ID " +
+					actual.ShortMediaIdText + "), not " + selected.DisplayName +
+					". Select " + actual.DisplayName + " as the game version.";
+			return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>Whether a patch is the title update of the pressing the player selected.</summary>
+	public static bool IsTitleUpdate(XexIdentity patch, Pressing selected, out string error)
+	{
+		if (!IsTitleUpdate(patch, out error))
+		{
+			return false;
+		}
+
+		if (!selected.Matches(patch.MediaId))
+		{
+			Pressing actual = FindPressing(patch.MediaId)!;
+			error = "This title update is for the " + actual.Name + " pressing (media ID " +
+					actual.ShortMediaIdText + "), not " + selected.DisplayName +
+					". The one to fetch is " + selected.TitleUpdateName + ".";
+			return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>Whether a patch is the supported title update for its pressing.</summary>
 	public static bool IsTitleUpdate(XexIdentity patch, out string error)
 	{
 		error = string.Empty;
 
-		if (!patch.MediaId.AsSpan().SequenceEqual(MediaId))
+		Pressing? pressing = FindPressing(patch.MediaId);
+		if (pressing == null)
 		{
 			error = "This title update is for a different pressing of Fable 2: it names media ID " +
 					patch.ShortMediaIdText + ", and this build only supports media ID " +
-					ShortMediaIdText + ". The one to fetch is " + TitleUpdateName + ".";
+					PressingsText + ". The ones to fetch are " + TitleUpdatesText + ".";
 			return false;
 		}
 
-		if (patch.SourceVersion != BaseVersion || patch.Version != UpdatedVersion)
+		if (!pressing.HasTitleUpdate)
+		{
+			error = "No title update is supported for the " + pressing.Name + " pressing (media ID " +
+					pressing.ShortMediaIdText + ") yet; install it without one.";
+			return false;
+		}
+
+		if (patch.SourceVersion != pressing.BaseVersion || patch.Version != pressing.UpdatedVersion)
 		{
 			error = "This is not the supported title update: it patches version " +
 					patch.SourceVersionText + " to " + patch.VersionText +
-					", and this build needs " + XexIdentity.FormatVersion(BaseVersion) + " to " +
-					XexIdentity.FormatVersion(UpdatedVersion) + ". The one to fetch is " +
-					TitleUpdateName + ".";
+					", and this build needs " + XexIdentity.FormatVersion(pressing.BaseVersion) + " to " +
+					XexIdentity.FormatVersion(pressing.UpdatedVersion) + ". The one to fetch is " +
+					pressing.TitleUpdateName + ".";
 			return false;
 		}
 

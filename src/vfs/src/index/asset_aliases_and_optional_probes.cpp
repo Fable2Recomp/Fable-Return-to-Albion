@@ -1,5 +1,10 @@
 #include "vfs_hooks_private.h"
 
+#include <rex/runtime.h>
+
+#include <filesystem>
+#include <system_error>
+
 namespace refii::vfs {
 inline namespace detail {
 bool IsDefaultExecutablePatchProbe(std::string_view normalized) {
@@ -274,6 +279,38 @@ bool LookupRefiiVfsTypedBankManifest(std::string_view bank_name,
                                      std::filesystem::path* out_manifest_root,
                                      std::filesystem::path* out_manifest_path);
 
+// The file the guest asks the update volume for, relative to that volume's root. The guest
+// opens the title update's data bank as `update:\data\tu1_data.bnk` when the volume exists
+// (GameInit_MountDataFileSystems, 0x822F2868) and as `tu1_data.bnk` on the game data otherwise.
+std::string UpdateMountRelativePath(std::string_view normalized) {
+  if (StartsWith(normalized, "update:/")) {
+    return std::string(normalized.substr(8));
+  }
+  if (StartsWith(normalized, "update/")) {
+    return std::string(normalized.substr(7));
+  }
+  if (normalized == "tu1_data.bnk" || normalized == "data/tu1_data.bnk") {
+    return "data/tu1_data.bnk";
+  }
+  return {};
+}
+
+// Whether the update volume the kernel mounted (Runtime::SetupVfs, `update:`) holds the file.
+// The installer writes the title update's data bank there from its package; an install
+// without the update, or from a bare .xexp, has nothing under it.
+bool UpdateMountHasFile(std::string_view normalized) {
+  const std::string relative = UpdateMountRelativePath(normalized);
+  if (relative.empty()) {
+    return false;
+  }
+  const auto* runtime = rex::Runtime::instance();
+  if (runtime == nullptr || runtime->update_data_root().empty()) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::is_regular_file(runtime->update_data_root() / relative, ec);
+}
+
 bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
   const std::string normalized = NormalizeLooseAssetKey(asset_path);
   if (normalized.empty()) {
@@ -283,14 +320,11 @@ bool IsOptionalSyntheticVfsProbe(std::string_view asset_path) {
   if (IsDefaultExecutablePatchProbe(normalized)) {
     return true;
   }
-  if (StartsWith(normalized, "update:/") || StartsWith(normalized, "update/")) {
-    return true;
-  }
-  if (normalized == "tu1_data.bnk" ||
-      normalized == "data/tu1_data.bnk" ||
-      normalized == "update:/data/tu1_data.bnk" ||
-      normalized == "update/data/tu1_data.bnk") {
-    return true;
+  if (StartsWith(normalized, "update:/") || StartsWith(normalized, "update/") ||
+      normalized == "tu1_data.bnk" || normalized == "data/tu1_data.bnk") {
+    // A miss only while the update volume lacks the file: when the bank is there the
+    // guest's own open must reach the kernel and read it.
+    return !UpdateMountHasFile(normalized);
   }
   if (normalized == "padding.dat" ||
       normalized == "data/padding.dat" ||

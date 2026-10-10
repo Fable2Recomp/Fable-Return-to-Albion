@@ -106,7 +106,8 @@ public partial class Engine_GameAssets : Node
 					ModsRoot, out Refii.Mods.ModLoadOrder order);
 				mounted = BnkFileSystem.Mount(
 					GameDirectory,
-					overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays));
+					overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays),
+					updateRoot: Refii.Core.Engine_GameData.UpdateRootFor(GameDirectory));
 				ApplyModOrder(mounted, overlays, order);
 			}
 			catch (Exception exception)

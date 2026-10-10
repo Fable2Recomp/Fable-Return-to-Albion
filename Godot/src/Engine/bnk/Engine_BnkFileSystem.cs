@@ -151,7 +151,8 @@ public sealed class BnkFileSystem : IDisposable
         string gameDirectory,
         bool expandNested = true,
         IReadOnlyList<string>? looseExtensions = null,
-        IReadOnlyList<(string Name, string AssetRoot)>? overlays = null)
+        IReadOnlyList<(string Name, string AssetRoot)>? overlays = null,
+        string? updateRoot = null)
     {
         var filesystem = new BnkFileSystem();
         if (string.IsNullOrEmpty(gameDirectory) || !Directory.Exists(gameDirectory))
@@ -185,6 +186,11 @@ public sealed class BnkFileSystem : IDisposable
             }
         }
 
+        // THE TITLE UPDATE'S BANK OVER THE GAME'S. The guest layers tu1_data.bnk over its data
+        // registry; what this mount serves in its place has to be the same files, so the bank is
+        // indexed after the game's banks and before the loose files and mods that shadow both.
+        filesystem.IndexUpdateRoot(updateRoot, expandNested);
+
         if (looseExtensions is null)
         {
             filesystem.IndexAllLoose(gameDirectory);
@@ -207,6 +213,44 @@ public sealed class BnkFileSystem : IDisposable
         }
 
         return filesystem;
+    }
+
+    /// <summary>
+    /// The banks under the update root, each file winning over the game's copy. Nothing under
+    /// it is a mod: the files carry no source and the mods index does not list them.
+    /// </summary>
+    private void IndexUpdateRoot(string? updateRoot, bool expandNested)
+    {
+        if (string.IsNullOrEmpty(updateRoot) || !Directory.Exists(updateRoot))
+        {
+            return;
+        }
+
+        IEnumerable<string> banks;
+        try
+        {
+            banks = EnumerateByExtension(updateRoot, ".bnk").ToList();
+        }
+        catch (Exception exception)
+        {
+            _failures.Add($"{updateRoot}: {exception.Message}");
+            return;
+        }
+
+        foreach (string bank in banks.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            if (BnkArchive.TryOpen(bank, out BnkArchive? archive, out string error) &&
+                archive is not null)
+            {
+                _archives.Add(archive);
+                BnkArchive owner = archive;
+                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, preferNew: true);
+            }
+            else
+            {
+                _failures.Add($"{Path.GetFileName(bank)}: {error}");
+            }
+        }
     }
 
     /// <summary>
@@ -705,7 +749,8 @@ public sealed class BnkFileSystem : IDisposable
         Func<BnkEntry, byte[]> read,
         int depth,
         bool expandNested,
-        string sourceMod = "")
+        string sourceMod = "",
+        bool? preferNew = null)
     {
         foreach (BnkEntry entry in archive.Entries)
         {
@@ -727,7 +772,7 @@ public sealed class BnkFileSystem : IDisposable
             Insert(
                 normalized,
                 new BnkFile(archive.ArchivePath, entry, normalized, read, sourceMod: sourceMod),
-                preferNew: sourceMod.Length != 0);
+                preferNew: preferNew ?? sourceMod.Length != 0);
         }
     }
 

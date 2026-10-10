@@ -72,8 +72,9 @@ RefiiVfsOwnershipDecision DecideRefiiVfsOwnershipForName(
     }
   }
 
-  // The title patch, the `update:` mount and the TU bank do not ship in a base install; the
-  // guest probes for all three and "miss" is the correct answer.
+  // The title patch and the TU bank do not ship in a base install; the guest probes for both
+  // and "miss" is the correct answer. With the update installed from its package the bank sits
+  // on the `update:` mount and the probe stops being optional (IsOptionalSyntheticVfsProbe).
   if (IsCachedOptionalSyntheticVfsMiss(decision.normalized) ||
       IsOptionalSyntheticVfsProbe(decision.normalized) ||
       IsKnownAbsentBootProbe(decision.normalized)) {

@@ -14,11 +14,22 @@ namespace Refii.Launcher.Core;
 /// source version must be the executable's version. A patch for another pressing carries the
 /// same title id and the same file name and is rejected by the loader at run time, long after
 /// the install, so it is rejected here first.
+///
+/// The package also ships the update's data bank, <c>tu1_data.bnk</c>: the scripts and text the
+/// update changed. The patched guest opens it as <c>update:\data\tu1_data.bnk</c> on every
+/// boot (GameInit_MountDataFileSystems, 0x822F2868) and layers it over the game data, so the
+/// bank is lifted out with the patch. A bare .xexp has none.
 /// </remarks>
 public sealed class TitleUpdate
 {
 	private const int HeadLength = 64 * 1024;
 	private const string PatchExtension = ".xexp";
+
+	/// <summary>The data bank's name, the one the guest opens on the update volume.</summary>
+	public const string DataBankName = "tu1_data.bnk";
+
+	/// <summary>Where the bank goes under the update root: the guest asks for <c>data\</c>.</summary>
+	public static readonly string DataBankRelativePath = Path.Combine("data", DataBankName);
 
 	public string SourcePath = string.Empty;
 
@@ -27,6 +38,11 @@ public sealed class TitleUpdate
 
 	/// <summary>The patch bytes, whole.</summary>
 	public byte[] Patch = Array.Empty<byte>();
+
+	/// <summary>The data bank's bytes, whole; empty when the source carried none.</summary>
+	public byte[] DataBank = Array.Empty<byte>();
+
+	public bool HasDataBank => DataBank.Length != 0;
 
 	public XexIdentity Identity = new();
 
@@ -93,6 +109,13 @@ public sealed class TitleUpdate
 				error = "The package holds no .xexp: " + packageError;
 				return false;
 			}
+
+			// The bank is part of the update, not a condition of it: a package without one
+			// installs its patch alone, as a bare .xexp does.
+			if (!StfsPackage.TryReadFile(path, IsDataBankEntry, out _, out update.DataBank, out _))
+			{
+				update.DataBank = Array.Empty<byte>();
+			}
 		}
 		else
 		{
@@ -121,6 +144,10 @@ public sealed class TitleUpdate
 	/// </summary>
 	private static bool IsPatchEntry(StfsPackage.Entry entry) =>
 		entry.Name.EndsWith(PatchExtension, StringComparison.OrdinalIgnoreCase);
+
+	private static bool IsDataBankEntry(StfsPackage.Entry entry) =>
+		!entry.IsDirectory &&
+		string.Equals(entry.Name, DataBankName, StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>Whether this patch applies to the given base executable.</summary>
 	public bool AppliesTo(XexIdentity executable, out string error)
