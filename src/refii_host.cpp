@@ -40,6 +40,11 @@
 // inside refii_hostbridge.dll, which already links dbghelp for ReportEmbeddedFailure.
 #include <dbghelp.h>
 #include <cstring>
+// Naming the guest side of a crash record: the payload's function table owns every host pc
+// inside the recompiled module, the kernel's memory owns every host address inside the arena,
+// and the faulting thread's PPC context carries the guest stack.
+#include <rex/system/thread_state.h>
+#include <rex/system/xmemory.h>
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -285,6 +290,134 @@ std::atomic<int> PosixTerminationSignalBridge::signalWriteFd_{-1};
 #endif
 
 #if defined(_WIN32)
+/// Names a host pc inside the recompiled game module as the guest function whose body holds
+/// it, `sub_8XXXXXXX+0xNN` — the address IDA wants.
+///
+/// The module exports nothing a symbol lookup can see and ships no PDB, so `SymFromAddr` names
+/// none of it and a fault there used to be a bare RVA into a module that is built on the
+/// player's machine for the player's CPU, which no map on this side can resolve. The payload's
+/// function table pairs every guest entry with its host body: the body owning `pc` is the one
+/// with the greatest host address not above it, bounded by the next body up. A hook's strong
+/// override is what the table holds for a hooked function, so hooks name themselves too.
+/// Nothing here allocates or locks; it reads a table the payload published at load.
+bool DescribeGuestFunction(uintptr_t pc, char* out, size_t capacity) {
+    if (pc == 0 || !refii::payload::IsLoaded()) {
+        return false;
+    }
+    const PPCFuncMapping* mappings = refii::payload::FuncMappings();
+    if (mappings == nullptr) {
+        return false;
+    }
+    uintptr_t bestHost = 0;
+    size_t bestGuest = 0;
+    uintptr_t nextHost = UINTPTR_MAX;
+    for (size_t i = 0; mappings[i].guest != 0; ++i) {
+        const uintptr_t host = reinterpret_cast<uintptr_t>(mappings[i].host);
+        if (host == 0) {
+            continue;
+        }
+        if (host <= pc) {
+            if (host > bestHost) {
+                bestHost = host;
+                bestGuest = mappings[i].guest;
+            }
+        } else if (host < nextHost) {
+            nextHost = host;
+        }
+    }
+    if (bestHost == 0 || pc >= nextHost) {
+        return false;
+    }
+    // Past the table's last body the bound above is open, so a pc in some other module would
+    // otherwise be handed to the highest guest function. The body and the pc must share a
+    // module.
+    HMODULE pcModule = nullptr;
+    HMODULE bodyModule = nullptr;
+    constexpr DWORD kFromAddress =
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if (!GetModuleHandleExA(kFromAddress, reinterpret_cast<LPCSTR>(pc), &pcModule) ||
+        !GetModuleHandleExA(kFromAddress, reinterpret_cast<LPCSTR>(bestHost), &bodyModule) ||
+        pcModule != bodyModule) {
+        return false;
+    }
+    std::snprintf(out, capacity, "sub_%08llX+0x%llX",
+                  static_cast<unsigned long long>(bestGuest),
+                  static_cast<unsigned long long>(pc - bestHost));
+    return true;
+}
+
+/// The guest address a host address stands for, when it lies inside the guest arena: the 4 GB
+/// virtual view first, the physical views above it (`Memory::MapViews`). A faulting access
+/// address reported this way is the pointer the guest actually dereferenced.
+bool GuestAddressOf(uintptr_t host, uint32_t* out, bool* physical) {
+    rex::system::KernelState* kernel = rex::system::kernel_state();
+    rex::memory::Memory* memory = kernel != nullptr ? kernel->memory() : nullptr;
+    const uintptr_t base =
+        memory != nullptr ? reinterpret_cast<uintptr_t>(memory->virtual_membase()) : 0;
+    if (base == 0 || host < base) {
+        return false;
+    }
+    const uintptr_t offset = host - base;
+    if (offset >= 0x120000000ull) {
+        return false;
+    }
+    *physical = offset >= 0x100000000ull;
+    *out = static_cast<uint32_t>(*physical ? offset - 0x100000000ull : offset);
+    return true;
+}
+
+/// A big-endian guest word, or false when the page is not committed. The Windows arena is a
+/// SEC_RESERVE mapping (`CreateFileMappingHandle(..., commit=false)`), so an unallocated guest
+/// page faults on read — and a fault inside the crash recorder would end the record mid-line.
+/// No C++ object with a destructor lives in this frame, which is what SEH requires of it.
+bool TryReadGuestWord(const uint8_t* base, uint32_t address, uint32_t* out) {
+    __try {
+        uint32_t raw = 0;
+        std::memcpy(&raw, base + address, sizeof(raw));
+        *out = _byteswap_ulong(raw);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+/// The faulting thread's GUEST stack, when it has one: `ThreadState::Get()` is the null-safe
+/// TLS read, and the walk is the title's own back chain — the 32-bit word at [r1], saved LR at
+/// back-chain - 8 — the same walk the Linux recorder does. Each frame is a guest return
+/// address, which IDA takes as is.
+void WriteGuestThread(FILE* crashLog) {
+    rex::runtime::ThreadState* state = rex::runtime::ThreadState::Get();
+    rex::system::KernelState* kernel = rex::system::kernel_state();
+    rex::memory::Memory* memory = kernel != nullptr ? kernel->memory() : nullptr;
+    if (state == nullptr || state->context() == nullptr || memory == nullptr) {
+        return;
+    }
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return;
+    }
+
+    PPCContext* context = state->context();
+    std::fprintf(crashLog, "guest_thread\ttid=%u r1=%08X lr=%08X\n",
+                 static_cast<unsigned>(state->thread_id()), context->r1.u32,
+                 static_cast<uint32_t>(context->lr));
+    std::fprintf(crashLog, "guest_stack\n");
+    uint32_t sp = context->r1.u32;
+    for (int frame = 0; frame < 32 && sp >= 0x10000u && sp < 0xC0000000u; ++frame) {
+        uint32_t back = 0;
+        if (!TryReadGuestWord(base, sp, &back) || back == 0u || back <= sp ||
+            back >= 0xC0000000u) {
+            break;
+        }
+        uint32_t lr = 0;
+        if (!TryReadGuestWord(base, back - 8u, &lr) || lr == 0u) {
+            break;
+        }
+        std::fprintf(crashLog, "  %08X\n", lr);
+        sp = back;
+    }
+}
+
 void WriteWindowsCrashRecord(const char* source,
                              EXCEPTION_POINTERS* exceptionPointers) {
     char modulePath[MAX_PATH] = {};
@@ -381,6 +514,14 @@ void WriteWindowsCrashRecord(const char* source,
                          reinterpret_cast<uintptr_t>(instructionPointer) -
                          reinterpret_cast<uintptr_t>(faultModule)));
     }
+    // The guest side of the fault: which recompiled function, and which guest pointer. An RVA
+    // into refii_generated.dll resolves to nothing off the player's machine; `sub_8XXXXXXX` and
+    // a guest address are what the binary can be asked about.
+    char guestFunction[64];
+    if (DescribeGuestFunction(reinterpret_cast<uintptr_t>(instructionPointer), guestFunction,
+                              sizeof(guestFunction))) {
+        std::fprintf(crashLog, "guest_function\t%s\n", guestFunction);
+    }
     if (haveAccessInfo) {
         const char* kindText = accessKind == 0   ? "read"
                                : accessKind == 1 ? "write"
@@ -389,7 +530,16 @@ void WriteWindowsCrashRecord(const char* source,
         std::fprintf(crashLog, "access_kind\t%s\n", kindText);
         std::fprintf(crashLog, "access_address\t0x%llX\n",
                      static_cast<unsigned long long>(accessAddress));
+        uint32_t guestAddress = 0;
+        bool physical = false;
+        if (GuestAddressOf(static_cast<uintptr_t>(accessAddress), &guestAddress, &physical)) {
+            std::fprintf(crashLog, "guest_address\t0x%08X%s\n", guestAddress,
+                         physical ? " (physical view)" : "");
+        }
     }
+    // Everything above is on disk before anything below walks memory the fault just proved
+    // unreliable.
+    std::fflush(crashLog);
     // THE STACK, symbolized as far as it can be.
     //
     // Without this a crash record is an address and nothing else, and on this box there is no
@@ -467,10 +617,22 @@ void WriteWindowsCrashRecord(const char* source,
             const char* name =
                 SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol) ? symbol->Name
                                                                                 : "";
+            // A frame in the recompiled module has no export to be named by; the payload's
+            // table names it.
+            if (name[0] == '\0' &&
+                DescribeGuestFunction(pc, guestFunction, sizeof(guestFunction))) {
+                name = guestFunction;
+            }
             std::fprintf(crashLog, "  #%02d\t%s+0x%llX\t%s\n", depth, ownerName,
                          static_cast<unsigned long long>(rva), name);
         }
     }
+    std::fflush(crashLog);
+
+    // The host walk stops at the first recompiled frame (no frame pointers, and the generated
+    // code's unwind data is not what StackWalk64 follows), so the guest's own back chain is
+    // the stack that says how the title got here.
+    WriteGuestThread(crashLog);
 
     std::fprintf(crashLog, "\n");
     std::fclose(crashLog);
