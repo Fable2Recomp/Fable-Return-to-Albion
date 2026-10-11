@@ -209,6 +209,30 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// </summary>
 	public Node3D? CursorTemplate { get; set; }
 
+	/// <summary>
+	/// The cursor template is the view's to free: <c>Art()</c> hands over a detached duplicate
+	/// with its own materials, <see cref="BuildCursor"/> only duplicates it again, and a node
+	/// outside the tree outlives the tree. Left behind, every view leaked its three quads into
+	/// Godot's exit, where the leaked instances are destroyed after the storage they depend on
+	/// (the SIGSEGV in ~RendererSceneCull that ended every session; 15 instances in the core).
+	/// <see cref="RowTemplate"/> is not freed here: it is a node inside the pattern book.
+	/// </summary>
+	public override void _Notification(int what)
+	{
+		if (what != NotificationPredelete)
+		{
+			return;
+		}
+
+		if (CursorTemplate is not null && GodotObject.IsInstanceValid(CursorTemplate) &&
+			!CursorTemplate.IsInsideTree())
+		{
+			CursorTemplate.Free();
+		}
+
+		CursorTemplate = null;
+	}
+
 	/// <summary>The model being drawn. Null until <see cref="Bind"/>.</summary>
 	public Engine_FrontEndMenu? Menu { get; private set; }
 

@@ -520,7 +520,12 @@ public sealed class Engine_UiSceneBuilder
 					passthrough.AddChild(builtChild);
 			}
 
-			return passthrough.GetChildCount() != 0 ? passthrough : null;
+			if (passthrough.GetChildCount() != 0)
+				return passthrough;
+
+			// Never parented, so nothing else frees it: an orphan at exit otherwise.
+			passthrough.Free();
+			return null;
 		}
 
 		if (n.Type == BgfElementType.Behavior && !IncludeBehaviors)

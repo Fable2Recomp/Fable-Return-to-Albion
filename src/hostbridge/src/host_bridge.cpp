@@ -774,15 +774,31 @@ void WriteRecord(const char* line, uintptr_t pc) {
     ::close(fd);
 }
 
-/// The record first, then the loggers. The loggers take mutexes a dying thread may hold, so
-/// the alarm turns a flush that never returns into a death five seconds later; cancelled on
-/// the way out because a managed fault carries on running.
+/// The deadline is armed BEFORE the record, not only around the loggers. A thread that
+/// aborts inside malloc or the dynamic loader still holds that lock, and the record's own
+/// backtrace() can want it (its first call loads libgcc_s — primed at install for that
+/// reason): a handler that never returns is a process that never ends. SIGALRM's default
+/// action is a death, nothing else here uses it, and a run in which one thread hung in the
+/// SIGABRT handler for ten minutes (2026-10-11, refii_crash.log cut off after the header)
+/// is what this costs without it.
+///
+/// Cancelled on the way out, because a managed fault carries on running.
 void Report(const char* line, uintptr_t pc) {
-    WriteRecord(line, pc);
     ::alarm(5);
+    WriteRecord(line, pc);
     REXLOG_INFO("{}", line);
     rex::FlushLogging();
     ::alarm(0);
+}
+
+/// `Report` for a thread that is dying: the deadline stays armed, so a death that then
+/// stalls in abort(), in a chained handler or in a core dump still ends.
+void ReportFatal(const char* line, uintptr_t pc) {
+    ::alarm(5);
+    WriteRecord(line, pc);
+    REXLOG_INFO("{}", line);
+    rex::FlushLogging();
+    ::alarm(5);
 }
 }  // namespace crash
 
@@ -953,7 +969,12 @@ void LastResort(int sig, siginfo_t* info, void* context) {
     Record(sig, pc, address,
            "outside guest memory — a host fault, or a managed exception (pc in no module) that "
            "the .NET handler takes next");
+    // A managed exception comes back from the chain and disarms. A native fault does not:
+    // the .NET handler hands it to Godot's crash handler, which symbolises a backtrace and
+    // re-raises, and if any of that stalls the deadline ends the process instead.
+    ::alarm(10);
     Chain(sig, g_managed[sig], info, context);
+    ::alarm(0);
 }
 
 /// The exits nothing else reports: a plain `exit()`, SIGTERM/SIGINT/SIGQUIT, and
@@ -1010,6 +1031,31 @@ void Install() {
     REXLOG_INFO("Refii host: last-resort fault reporter installed; records go to {}",
                 crash::g_path);
 }
+
+/// After the runtime is destroyed. `~MMIOHandler` → `ExceptionHandler::Uninstall` restores
+/// the sigaction it saved at install, which is .NET's — ours, installed over it, goes with
+/// it, and the exit crash of 2026-10-11 (inside the driver's unload, after a complete
+/// guest teardown) left no record for exactly that reason. Whatever is current becomes the
+/// handler to chain to; no guest arena exists any more, so every fault is a host fault.
+void Reinstall() {
+    if (!g_installed.load()) {
+        return;
+    }
+    for (int sig : kSignals) {
+        struct sigaction action{};
+        action.sa_sigaction = LastResort;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&action.sa_mask);
+        ::sigaction(sig, &action, &g_runtime[sig]);
+    }
+    for (int sig : kExtraSignals) {
+        struct sigaction action{};
+        action.sa_sigaction = LastResortExtra;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&action.sa_mask);
+        ::sigaction(sig, &action, &g_runtime[sig]);
+    }
+}
 }  // namespace fault
 #endif
 
@@ -1025,17 +1071,22 @@ void InstallLastResortFaultHandler() {
 /// A fail-fast inside the guest leaves no exception, no log line and no exit status —
 /// only 0xC0000409 from ucrtbase. These name the reason before the process dies.
 void ReportEmbeddedFailure(const char* kind, const std::string& detail) {
-    std::string line = std::string("[hostbridge] ") + kind;
-    if (!detail.empty()) {
-        line += ": " + detail;
+    // A fixed buffer and raw writes: this runs inside the SIGABRT handler, and the thread
+    // that aborted may hold the heap or the stdio lock (glibc's "free(): invalid pointer"
+    // aborts from inside free with the arena locked).
+    char line[1024];
+    if (detail.empty()) {
+        std::snprintf(line, sizeof(line), "[hostbridge] %s\n", kind);
+    } else {
+        std::snprintf(line, sizeof(line), "[hostbridge] %s: %s\n", kind, detail.c_str());
     }
-    line += '\n';
-
-    std::fputs(line.c_str(), stderr);
 
 #ifndef _WIN32
+    crash::Append(2, line);
     crash::ResolvePath();
-    crash::Report(line.c_str(), 0);
+    crash::ReportFatal(line, 0);
+#else
+    std::fputs(line, stderr);
 #endif
 
 #ifdef _WIN32
@@ -1154,10 +1205,24 @@ void InstallEmbeddedFailureHandlers() {
     ::AddVectoredExceptionHandler(1, TraceThrowHandler);
 #endif
 
+#ifndef _WIN32
+    // backtrace() loads libgcc_s on its first call, through the dynamic loader and the
+    // heap. Taken here, on a healthy thread, so the call inside a signal handler is a walk
+    // and nothing more.
+    {
+        void* frames[4];
+        (void)::backtrace(frames, 4);
+    }
+#endif
+
     // abort() raises SIGABRT before it fail-fasts, and unlike terminate this handler is
-    // process-wide — it is the only one that sees a guest worker die.
+    // process-wide — it is the only one that sees a guest worker die. The default action is
+    // restored and the signal re-raised here rather than left to abort()'s own second raise,
+    // so a SIGABRT that arrived any other way ends the process too.
     std::signal(SIGABRT, [](int) {
         ReportEmbeddedFailure("SIGABRT", {});
+        std::signal(SIGABRT, SIG_DFL);
+        std::raise(SIGABRT);
     });
 
     std::set_terminate([]() {
@@ -17164,6 +17229,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostShutdown(char* out, std::size_t capacity) {
             if (hosted.app) {
                 hosted.app->InvokeOnDestroy();
             }
+#ifndef _WIN32
+            fault::Reinstall();
+#endif
 
             // The guest really stopped, so its memory can go back and a later session is
             // possible within this process.

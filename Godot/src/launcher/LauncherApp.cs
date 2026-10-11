@@ -134,6 +134,10 @@ public partial class LauncherApp : Control
 		else if (what == NotificationPredelete)
 		{
 			GD.PrintErr("[launcher] the launcher root is being deleted — the app is quitting");
+
+			// The game child ends here, after its own teardown and before the engine's display
+			// unload; in the launcher this returns at once. See GameExit.EndChildProcess.
+			Refii.Game.GameExit.EndChildProcess();
 		}
 	}
 

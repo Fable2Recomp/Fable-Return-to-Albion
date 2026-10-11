@@ -948,8 +948,14 @@ void KernelState::SignalAllWaitableObjects() {
         break;
       }
       case XObject::Type::Timer: {
+        // Signalled, not cancelled. A cancelled timer leaves its waiters waiting
+        // (rex::thread::Timer::Cancel), so a worker parked on an INFINITE, non-alertable
+        // wait for its periodic timer never wakes and never reaches CheckTitleTermination —
+        // the one object type this wake-all could not wake. The title has such a worker
+        // (XHVWorkerThreadProc, 0x82D07B08: WaitForSingleObjectEx(timer, INFINITE, 0) in
+        // a loop a 10 ms timer drives). Signalled, it wakes into the check and exits.
         auto* timer = static_cast<XTimer*>(obj.get());
-        timer->Cancel();
+        timer->Signal();
         break;
       }
       default:

@@ -702,8 +702,14 @@ public partial class GameWindow : Node
 
 	public override void _ExitTree()
 	{
+		// The orphan count names what the tree's teardown will NOT free: a node outside the
+		// tree keeps its rendering-server instance, and Godot's own exit then destroys that
+		// instance after the storage it depends on — the SIGSEGV in ~RendererSceneCull that
+		// closed every session until 2026-10-11 (15 leaked instances in the core).
 		GD.Print($"[window] leaving the tree after {Engine.GetProcessFrames()} frames " +
-			$"(inTree={IsInsideTree()})");
+			$"(inTree={IsInsideTree()}); nodes " +
+			$"{Performance.GetMonitor(Performance.Monitor.ObjectNodeCount):0}, orphan nodes " +
+			$"{Performance.GetMonitor(Performance.Monitor.ObjectOrphanNodeCount):0}");
 
 		if (_current == this)
 		{
