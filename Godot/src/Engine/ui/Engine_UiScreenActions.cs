@@ -25,8 +25,10 @@ public static class Engine_UiScreenActions
 	private static readonly System.Collections.Generic.Dictionary<string, string> SettingTitles =
 		new(System.StringComparer.Ordinal)
 		{
-			[Refii.Level.Engine_DynamicSky.SwitchKey] = "Weather",
+			[Refii.Level.Engine_DynamicSky.SwitchKey] = "Enable/Disable",
 			[WeatherOverrideKey] = "Weather Override",
+			[Refii.Level.Engine_DynamicSky.VolumetricCloudsKey] = "Volumetric Clouds",
+			[Refii.Level.Engine_DynamicSky.CloudShadowsKey] = "Cloud Shadows",
 		};
 
 	private static readonly System.Collections.Generic.Dictionary<string, string> ValueTitles =

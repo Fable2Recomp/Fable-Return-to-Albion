@@ -204,6 +204,11 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 Environment);
         }
 
+        Engine_DynamicCloudShadows.Sync(this, ref _dynamicCloudShadowCaster,
+            Engine_DynamicSky.Enabled ? Environment?.Sky?.SkyMaterial as ShaderMaterial : null,
+            Engine_DynamicSky.CloudShadows, ResolveCamera(), ResolveSun(),
+            Refii.Lighting.Engine_LevelLighting.SunShadowOverride ?? Lighting?.SunShadow);
+
         Refii.Core.Engine_FramePhases.Lap("sky.anim", ref lap);
         if (Engine_PostFxParams.SunSourcesRequested)
         {
@@ -872,6 +877,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private SkyFrame? _frame;
     private ToneMapTheme? _toneMapTheme;
     private Engine_DynamicSkyDriver? _dynamicSky;
+    private Engine_DynamicCloudShadows? _dynamicCloudShadowCaster;
     private Vector3 _lastMoon = new(float.NaN, 0, 0);
 
     private bool SkyIsDynamic =>

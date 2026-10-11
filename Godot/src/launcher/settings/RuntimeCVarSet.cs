@@ -344,7 +344,13 @@ public static class RuntimeCVarsGodot
                 + "moving clouds — with weather that changes from visit to visit: rain, storms, "
                 + "fog, overcast. The childhood is always snowing, Rookridge always raining, "
                 + "and Knothole Island follows its own weather. Off keeps the original Fable 2 "
-                + "sky dome and weather exactly as shipped. Lighting is identical either way."),
+                + "sky dome and weather exactly as shipped. Cloud Shadows optionally changes sunlight."),
+            new("dynamic_sky_cloud_shadows", VideoCategory, RuntimeCVarType.Bool, "false",
+                "Clouds cast moving shadows from the sun; requires dynamic sky and weather."),
+            new("dynamic_sky_volumetric_clouds", VideoCategory, RuntimeCVarType.Bool, "false",
+                "Cloud rendering for Dynamic Sky and Weather. Off uses the 2D procedural layers. "
+                + "On raymarches a 3D cloud volume with self-shadowing. Applies immediately; "
+                + "requires Dynamic Sky and Weather and uses more GPU time."),
             new("dynamic_sky_weather", VideoCategory, RuntimeCVarType.String, "theme",
                 "Weather override for the dynamic sky. 'theme' lets each region decide — the "
                 + "childhood snows, Rookridge rains, Knothole Island follows its own weather, "

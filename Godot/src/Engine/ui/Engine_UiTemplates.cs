@@ -1324,28 +1324,71 @@ public static class Engine_UiTemplates
 			});
 		}
 
-		if (_menus!.TryGetValue("OptionsMenu", out Engine_UiMenuTemplate? options))
+		if (_menus!.TryGetValue("OptionsMenu", out Engine_UiMenuTemplate? options) &&
+			options.Entries.FindIndex(entry => entry.Name == "Video") is >= 0 and var videoIndex)
 		{
-			int afterVideo = options.Entries.FindIndex(
-				entry => string.Equals(entry.Name, "Video", System.StringComparison.Ordinal)) + 1;
-			int at = afterVideo == 0 ? options.Entries.Count : afterVideo;
-			options.Entries.Insert(at, new Engine_UiMenuEntry
+			Engine_UiMenuEntry gamma = options.Entries[videoIndex];
+			gamma.Tag = "GUI_SCREEN_OPTIONS_GAMMA";
+			options.Entries[videoIndex] = new Engine_UiMenuEntry
 			{
-				Name = "Weather",
-				Tag = "Weather",
-				Icon = "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+				Name = "VideoSettings",
+				Tag = "GUI_SCREEN_OPTIONS_VIDEO",
+				Icon = gamma.Icon,
 				HostOnly = true,
-				Command = Engine_UiScreenActions.SettingToggle + Refii.Level.Engine_DynamicSky.SwitchKey,
-			});
-			options.Entries.Insert(at + 1, new Engine_UiMenuEntry
-			{
-				Name = "WeatherOverride",
-				Tag = "Weather Override",
-				Icon = "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
-				HostOnly = true,
-				Command = Engine_UiScreenActions.SettingCycle + Engine_UiScreenActions.WeatherOverrideKey +
-					":" + Engine_UiScreenActions.WeatherOverrideValues,
-			});
+				Counted = false,
+				Children =
+				{
+					gamma,
+					new Engine_UiMenuEntry
+					{
+						Name = "DynamicSkyAndWeather",
+						Tag = "Dynamic Sky and Weather",
+						Icon = gamma.Icon,
+						HostOnly = true,
+						Counted = false,
+						Children =
+						{
+							new Engine_UiMenuEntry
+							{
+								Name = "DynamicSkyAndWeatherEnabled",
+								Tag = "Enable/Disable",
+								Icon = gamma.Icon,
+								HostOnly = true,
+								Command = Engine_UiScreenActions.SettingToggle +
+									Refii.Level.Engine_DynamicSky.SwitchKey,
+							},
+							new Engine_UiMenuEntry
+							{
+								Name = "VolumetricClouds",
+								Tag = "Volumetric Clouds",
+								Icon = gamma.Icon,
+								HostOnly = true,
+								Command = Engine_UiScreenActions.SettingToggle +
+									Refii.Level.Engine_DynamicSky.VolumetricCloudsKey,
+							},
+							new Engine_UiMenuEntry
+							{
+								Name = "CloudShadows",
+								Tag = "Cloud Shadows",
+								Icon = gamma.Icon,
+								HostOnly = true,
+								Command = Engine_UiScreenActions.SettingToggle +
+									Refii.Level.Engine_DynamicSky.CloudShadowsKey,
+							},
+							new Engine_UiMenuEntry
+							{
+								Name = "WeatherOverride",
+								Tag = "Weather Override",
+								Icon = gamma.Icon,
+								HostOnly = true,
+								Command = Engine_UiScreenActions.SettingCycle +
+									Engine_UiScreenActions.WeatherOverrideKey + ":" +
+									Engine_UiScreenActions.WeatherOverrideValues,
+							},
+						},
+					},
+				},
+			};
 		}
 
 		if (_menus!.TryGetValue("LogbookMenu", out Engine_UiMenuTemplate? logbook))

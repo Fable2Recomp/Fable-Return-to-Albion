@@ -4,6 +4,11 @@ Everything the shader needs by default is generated in-project:
 
 - `dynamic_sky_cloud_shape.tres`, `dynamic_sky_cloud_detail.tres` — Godot `NoiseTexture2D`
   resources (FastNoiseLite, seamless). No third-party content.
+- `dynamic_sky_cloud_volume_shape.tres`, `dynamic_sky_cloud_volume_detail.tres` —
+  generated Godot `NoiseTexture3D` resources for volumetric cloud density.
+- `dynamic_cloud_density.gdshaderinc` shares density sampling between sky and cloud shadows;
+  `dynamic_cloud_layers.gdshaderinc` shares world-space 2D cloud sampling;
+  `dynamic_cloud_shadow_density.gdshader` generates the GPU shadow mask. No third-party content.
 - Sun, moon (with phase), stars and lightning are procedural in `dynamic_sky.gdshader`.
 
 Optional textures the shader has slots for (`moon_use_texture` / `moon_texture`,

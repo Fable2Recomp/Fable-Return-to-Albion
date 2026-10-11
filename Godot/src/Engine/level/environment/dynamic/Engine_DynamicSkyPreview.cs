@@ -13,6 +13,14 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
     private float _dream = 0.6f;
     private float _haze = 0.4f;
     private bool _animate = true;
+    private float _cloudSpeed = 1f;
+    private bool _volumetricClouds;
+    private bool _cloudShadows;
+    private Engine_DynamicCloudShadows? _cloudShadowCaster;
+    private DirectionalLight3D? _previewSun;
+    private bool _ownsPreviewSun;
+    private float _originalSunEnergy;
+    private Transform3D _originalSunTransform;
     private float _dayLengthSeconds = 0f;
 
     private ShaderMaterial? _material;
@@ -44,6 +52,25 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
         }
     }
 
+    [Export]
+    public bool VolumetricClouds
+    {
+        get => _volumetricClouds;
+        set
+        {
+            _volumetricClouds = value;
+            if (_material is not null)
+                Engine_DynamicSky.ApplyCloudChoice(_material, value);
+        }
+    }
+
+    [Export]
+    public bool CloudShadows
+    {
+        get => _cloudShadows;
+        set { _cloudShadows = value; SyncCloudShadows(); }
+    }
+
     [Export(PropertyHint.Range, "0,60,0.5,suffix:s")]
     public float BlendSeconds { get => _blendSeconds; set => _blendSeconds = value; }
 
@@ -66,6 +93,17 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
     {
         get => _haze;
         set { _haze = value; _material?.SetShaderParameter("haze", value); }
+    }
+
+    [Export(PropertyHint.Range, "0,10,0.1")]
+    public float CloudSpeed
+    {
+        get => _cloudSpeed;
+        set
+        {
+            _cloudSpeed = Math.Clamp(value, 0f, 10f);
+            _material?.SetShaderParameter("cloud_motion_multiplier", _cloudSpeed);
+        }
     }
 
     [Export]
@@ -125,9 +163,11 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
             return;
         }
 
+        Engine_DynamicSky.ApplyCloudChoice(_material, _volumetricClouds);
         _material.SetShaderParameter("exposure", _exposure);
         _material.SetShaderParameter("dream", _dream);
         _material.SetShaderParameter("haze", _haze);
+        _material.SetShaderParameter("cloud_motion_multiplier", _cloudSpeed);
 
         Environment = new Godot.Environment
         {
@@ -139,10 +179,28 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
             TonemapMode = Godot.Environment.ToneMapper.Filmic,
         };
 
+        _previewSun = GetParent()?.GetNodeOrNull<DirectionalLight3D>("Sun");
+        _ownsPreviewSun = _previewSun is null;
+        if (_previewSun is null)
+        {
+            _previewSun = new DirectionalLight3D
+            {
+                Name = "DynamicSkySun",
+                ShadowEnabled = true,
+                DirectionalShadowMaxDistance = 600f,
+                DirectionalShadowBlendSplits = true,
+                SkyMode = DirectionalLight3D.SkyModeEnum.LightOnly,
+            };
+            AddChild(_previewSun);
+            _previewSun.TopLevel = true;
+        }
+        _originalSunEnergy = _previewSun.LightEnergy;
+        _originalSunTransform = _previewSun.Transform;
+
         _driver = new Engine_DynamicSkyDriver();
-        _driver.SetWeather(
-            _preset == DynamicWeatherPreset.Theme ? DynamicWeatherPreset.PartlyCloudy : _preset,
-            0.01f);
+        var initialWeather = _preset == DynamicWeatherPreset.Theme ? DynamicWeatherPreset.PartlyCloudy : _preset;
+        _driver.SetWeather(initialWeather, 0.01f);
+        Engine_DynamicSky.ApplyWeather(_material, DynamicWeatherState.Of(initialWeather));
         Engine_DynamicSky.ApplyWind(_material, new Vector2(1f, 0.25f));
         _driver.SetWind(new Vector2(1f, 0.25f));
 
@@ -168,13 +226,33 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
 
         if (_animate)
         {
-            _driver.Tick((float)delta, _material, _precipitation, Environment);
+            _driver.Tick((float)delta, _material, _precipitation, Environment, _volumetricClouds);
         }
 
         if (_dayLengthSeconds > 0f && _animate)
         {
             _timeOfDay = (_timeOfDay + ((float)delta * 24f / _dayLengthSeconds)) % 24f;
             PushFrame();
+        }
+        SyncCloudShadows();
+    }
+
+    private void SyncCloudShadows()
+    {
+        if (_material is null || !IsInsideTree()) return;
+        Camera3D? camera = GetViewport().GetCamera3D();
+#if TOOLS
+        if (Engine.IsEditorHint()) camera ??= EditorInterface.Singleton.GetEditorViewport3D(0)?.GetCamera3D();
+#endif
+        Engine_DynamicCloudShadows.Sync(this, ref _cloudShadowCaster, _material, _cloudShadows, camera, _previewSun);
+    }
+
+    public override void _ExitTree()
+    {
+        if (!_ownsPreviewSun && _previewSun is not null && GodotObject.IsInstanceValid(_previewSun))
+        {
+            _previewSun.LightEnergy = _originalSunEnergy;
+            _previewSun.Transform = _originalSunTransform;
         }
     }
 
@@ -188,5 +266,14 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
         SkyFrame frame = Engine_SkyFrame.Evaluate(_theme, _timeOfDay / 24f);
         Engine_DynamicSky.ApplyFrame(_material, frame, _theme);
         _driver?.SetDaylight(Engine_DynamicSky.Daylight(frame));
+        if (_previewSun is not null)
+        {
+            Vector3 towardSun = Engine_SkyFrame.ToGodot(frame.SunDirection).Normalized();
+            Basis basis = Basis.LookingAt(-towardSun, Mathf.Abs(towardSun.Y) > 0.99f ? Vector3.Forward : Vector3.Up);
+            if (_previewSun.IsInsideTree()) _previewSun.GlobalBasis = basis;
+            else _previewSun.Basis = basis;
+            _previewSun.LightEnergy = _originalSunEnergy * Engine_DynamicSky.Daylight(frame);
+        }
+        SyncCloudShadows();
     }
 }

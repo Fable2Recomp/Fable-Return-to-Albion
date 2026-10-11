@@ -1,5 +1,5 @@
 shader_type sky;
-render_mode use_quarter_res_pass, disable_fog;
+render_mode use_quarter_res_pass, use_half_res_pass, disable_fog;
 
 #include "res://src/Engine/level/environment/sky_dome.gdshaderinc"
 
@@ -41,6 +41,9 @@ uniform bool star_use_texture = false;
 uniform sampler2D star_texture : filter_linear_mipmap, repeat_enable;
 uniform float star_rotation = 0.0;
 
+uniform bool volumetric_clouds = false;
+uniform sampler3D cloud_volume_shape : filter_linear, repeat_enable;
+uniform sampler3D cloud_volume_detail : filter_linear, repeat_enable;
 uniform sampler2D cloud_shape : filter_linear_mipmap, repeat_enable;
 uniform sampler2D cloud_detail : filter_linear_mipmap, repeat_enable;
 uniform float cloud_coverage = 0.45;
@@ -49,6 +52,8 @@ uniform float cloud_softness = 0.35;
 uniform float cloud_scale = 1.0;
 uniform float cloud_height = 0.12;
 uniform float cloud_speed = 1.0;
+uniform float cloud_time = 0.0;
+uniform float cloud_motion_multiplier = 1.0;
 uniform vec2 wind_dir = vec2(1.0, 0.25);
 uniform float cirrus_amount = 0.35;
 uniform vec3 cloud_colour : source_color = vec3(1.0, 0.98, 0.96);
@@ -213,25 +218,20 @@ vec3 star_terms(vec3 dir, float day, float cloud_cover) {
 	return tint * star * (0.35 + h.y * 0.65) * fade;
 }
 
-vec4 cloud_layers(vec3 dir, vec3 sun, vec3 moon, float day) {
+#include "res://src/Engine/level/environment/dynamic/dynamic_cloud_layers.gdshaderinc"
+
+vec4 cloud_layers(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
 	if (dir.y <= 0.0) {
 		return vec4(0.0);
 	}
 
-	float cover = clamp(cloud_coverage + overcast * 0.6 + storm * 0.3, 0.0, 1.0);
-	float dens = clamp(cloud_density + overcast * 0.35 + storm * 0.3, 0.0, 1.0);
-	float soft = mix(cloud_softness, 0.12, overcast);
-
-	float horizon_fade = smoothstep(0.0, 0.16, dir.y);
-	vec2 drift = wind_dir * (dynamic_sky_time * cloud_speed * 0.004);
-
-	vec2 p = dir.xz / (dir.y + 0.10) * cloud_height * cloud_scale;
-	vec2 uv = p + drift;
-	float shape = texture(cloud_shape, uv).r;
-	float detail = texture(cloud_detail, uv * 2.7 + drift * 1.6).r;
-	float n = shape - (1.0 - detail) * 0.22 * (1.0 - overcast * 0.5);
-	float t0 = 1.0 - cover;
-	float a = smoothstep(t0, t0 + soft, n) * dens;
+    float layer_distance = (CLOUD_LAYER_ALTITUDE - origin.y) / dir.y;
+    if (layer_distance <= 0.0) { return vec4(0.0); }
+    float horizon_fade = smoothstep(0.0, 0.16, dir.y);
+    vec2 drift = wind_dir * (cloud_time * cloud_speed * cloud_motion_multiplier * 0.004);
+    vec2 uv = cloud_layer_uv(origin + dir * layer_distance);
+    float n = cloud_layer_noise(uv);
+    float a = cloud_layer_opacity(n);
 
 	vec2 sun_flat = sun.xz;
 	float sun_len = length(sun_flat);
@@ -265,7 +265,8 @@ vec4 cloud_layers(vec3 dir, vec3 sun, vec3 moon, float day) {
 
 	a *= horizon_fade;
 
-	vec2 p2 = dir.xz / (dir.y + 0.05) * cloud_height * 0.55 * cloud_scale;
+	vec3 cirrus_position = origin + dir * ((CLOUD_LAYER_ALTITUDE * 1.8 - origin.y) / dir.y);
+    vec2 p2 = cirrus_position.xz / CLOUD_LAYER_ALTITUDE * cloud_height * 0.55 * cloud_scale;
 	vec2 uv2 = p2 * vec2(0.55, 1.7) + drift * 1.8 + vec2(0.31, 0.77);
 	float wisp = texture(cloud_shape, uv2).r;
 	float cirrus = smoothstep(0.58, 0.86, wisp) * cirrus_amount * 0.45 * horizon_fade;
@@ -276,6 +277,134 @@ vec4 cloud_layers(vec3 dir, vec3 sun, vec3 moon, float day) {
 	float out_a = a + cirrus * (1.0 - a);
 	vec3 out_rgb = (col * a + cirrus_col * cirrus * (1.0 - a));
 	return vec4(out_rgb, out_a);
+}
+
+const float CLOUD_BASE = 1400.0;
+const float CLOUD_DEPTH = 1300.0;
+const float CLOUD_DISTANCE = 60000.0;
+const float CLOUD_EXTINCTION = 0.009;
+const int CLOUD_STEPS = 64;
+
+float weather_noise(vec2 position) {
+	vec2 cell = floor(position);
+	vec2 f = fract(position);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(hash12(cell), hash12(cell + vec2(1.0, 0.0)), f.x),
+		mix(hash12(cell + vec2(0.0, 1.0)), hash12(cell + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+vec2 cloud_weather(vec2 position) {
+	vec2 p = position / 6500.0 + vec2(1.0, 1.0);
+	vec2 warp = vec2(weather_noise(p * 0.61 + vec2(19.1, 7.3)),
+		weather_noise(p * 0.73 + vec2(-4.7, 31.5))) - 0.5;
+	p += warp * 1.8;
+	vec2 rotated = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * p;
+	float distribution = weather_noise(p) * 0.62 +
+		weather_noise(rotated * 2.17 + vec2(17.4, -8.2)) * 0.26 +
+		weather_noise(rotated * 4.39 + vec2(-11.2, 23.7)) * 0.12;
+	float type = weather_noise(rotated * 0.87 + vec2(43.3, 12.8));
+	return vec2(distribution, type);
+}
+
+float volume_density(vec3 position) {
+	float height = (position.y - CLOUD_BASE) / CLOUD_DEPTH;
+	if (height <= 0.0 || height >= 1.0) {
+		return 0.0;
+	}
+	vec3 drift = vec3(wind_dir.x, 0.0, wind_dir.y) * cloud_time * cloud_speed * cloud_motion_multiplier * 20.0;
+	vec3 advected = (position + drift) * max(cloud_scale, 0.05);
+	vec2 weather = cloud_weather(advected.xz);
+	float cover = clamp(cloud_coverage + overcast * 0.38 + storm * 0.2, 0.0, 1.0);
+	float local_cover = smoothstep(1.0 - cover - 0.14, 1.0 - cover + 0.17, weather.x);
+	if (local_cover < 0.001) {
+		return 0.0;
+	}
+
+	float top = mix(0.38, 1.0, weather.y) * mix(0.65, 1.0, local_cover);
+	float profile = smoothstep(0.0, 0.07, height) *
+		(1.0 - smoothstep(top * 0.42, top, height));
+	if (profile < 0.001) {
+		return 0.0;
+	}
+	vec3 uv = advected / 3400.0;
+	vec3 warp = vec3(weather.y - 0.5, weather.x - 0.5, weather.x - weather.y) * 0.27;
+	float billow = texture(cloud_volume_shape, uv + warp).r;
+	vec3 rotated = vec3(uv.z * 0.8 + uv.x * 0.6, uv.y, uv.z * 0.6 - uv.x * 0.8);
+	billow = billow * 0.72 + texture(cloud_volume_shape, rotated * 1.73 + vec3(0.31, 0.73, 0.17)).r * 0.28;
+	float body = clamp((billow - (1.0 - local_cover) * 0.35 - 0.36) / 0.36, 0.0, 1.0);
+	body *= profile;
+	float erosion = 1.0 - texture(cloud_volume_detail, uv * 5.31 + warp * 2.0).r;
+	body = max(body - erosion * 0.36 * pow(1.0 - body, 2.0), 0.0);
+	float density = clamp(cloud_density + overcast * 0.3 + storm * 0.3, 0.0, 1.0);
+	return body * local_cover * density;
+}
+
+float volume_light(vec3 position, vec3 light_dir) {
+	float optical_depth = 0.0;
+	float step_length = 85.0;
+	for (int j = 0; j < 5; j++) {
+		position += light_dir * step_length;
+		optical_depth += volume_density(position) * step_length * CLOUD_EXTINCTION;
+		step_length *= 1.65;
+	}
+	return exp(-optical_depth);
+}
+
+float cloud_phase(float cosine, float g) {
+	return (1.0 - g * g) / (4.0 * PI * pow(max(1.0 + g * g - 2.0 * g * cosine, 0.001), 1.5));
+}
+
+vec4 cloud_volume(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
+	if (abs(dir.y) < 0.001) {
+		return vec4(0.0);
+	}
+	float a = (CLOUD_BASE - origin.y) / dir.y;
+	float b = (CLOUD_BASE + CLOUD_DEPTH - origin.y) / dir.y;
+	float entry = max(min(a, b), 0.0);
+	float exit_distance = min(max(a, b), CLOUD_DISTANCE);
+	if (exit_distance <= entry) {
+		return vec4(0.0);
+	}
+
+	float step_length = (exit_distance - entry) / float(CLOUD_STEPS);
+	vec3 light_dir = day >= 0.5 ? sun : moon;
+	vec3 warm = mix(sun_colour, colour_sunset, sun_low(sun) * 0.9);
+	vec3 direct = mix(moon_colour * moon_brightness * 0.16, warm * sun_intensity, day);
+	vec3 ambient = mix(vec3(0.03, 0.045, 0.075), cloud_shadow_colour * 0.42, day);
+	vec3 distant_sky = sky_gradient(dir, sun, day);
+	float cosine = dot(dir, light_dir);
+	float phase = mix(cloud_phase(cosine, -0.2), cloud_phase(cosine, 0.65), 0.8) * 4.0 * PI;
+	vec3 radiance = vec3(0.0);
+	float transmission = 1.0;
+	for (int i = 0; i < CLOUD_STEPS; i++) {
+		float distance_to_sample = entry + (float(i) + 0.5) * step_length;
+		vec3 position = origin + dir * distance_to_sample;
+		float density = volume_density(position);
+		if (density > 0.001) {
+			float shadow = volume_light(position, light_dir);
+			float absorbed = 1.0 - exp(-density * step_length * CLOUD_EXTINCTION);
+			float height = clamp((position.y - CLOUD_BASE) / CLOUD_DEPTH, 0.0, 1.0);
+			float multiple_scatter = 0.28 * sqrt(shadow) + 0.12;
+			float powder = 1.0 - exp(-density * 4.0);
+			vec3 light = ambient * mix(0.45, 1.3, height) +
+				direct * cloud_colour * (shadow * (0.55 + phase * 0.18) + multiple_scatter) *
+				mix(0.85, 1.15, powder);
+			light *= mix(1.0, 0.8, overcast) * mix(1.0, 0.7, storm);
+			light = mix(light, vec3(dot(light, LUMA)) * vec3(0.96, 0.98, 1.02), snow * 0.6);
+			vec2 flash_dir = normalize(dynamic_sky_lightning.xz + vec2(0.0001));
+			float toward_flash = dot(normalize(dir.xz + vec2(0.0001)), flash_dir) * 0.5 + 0.5;
+			light += vec3(0.85, 0.88, 1.0) * dynamic_sky_lightning.w * pow(toward_flash, 3.0);
+			float aerial = 1.0 - exp(-distance_to_sample * 0.000055);
+			light = mix(light, distant_sky, aerial);
+			radiance += transmission * absorbed * light;
+			transmission *= 1.0 - absorbed;
+			if (transmission < 0.01) {
+				break;
+			}
+		}
+	}
+	float horizon_fade = smoothstep(0.0, 0.035, abs(dir.y));
+	return vec4(radiance * horizon_fade, (1.0 - transmission) * horizon_fade);
 }
 
 void sky() {
@@ -300,11 +429,21 @@ void sky() {
 		float day = daylight(sun);
 
 		if (AT_QUARTER_RES_PASS) {
-			vec4 c = cloud_layers(dir, sun, moon, day);
+			vec4 c = vec4(0.0);
+			if (!volumetric_clouds) {
+				c = cloud_layers(POSITION, dir, sun, moon, day);
+			}
+			COLOR = c.rgb;
+			ALPHA = c.a;
+		} else if (AT_HALF_RES_PASS) {
+			vec4 c = vec4(0.0);
+			if (volumetric_clouds) {
+				c = cloud_volume(POSITION, dir, sun, moon, day);
+			}
 			COLOR = c.rgb;
 			ALPHA = c.a;
 		} else {
-			vec4 clouds = QUARTER_RES_COLOR;
+			vec4 clouds = volumetric_clouds ? HALF_RES_COLOR : QUARTER_RES_COLOR;
 			float cover = clamp(clouds.a, 0.0, 1.0);
 
 			vec3 col = sky_gradient(dir, sun, day);

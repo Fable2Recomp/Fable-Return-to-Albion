@@ -131,6 +131,31 @@ public static class Engine_DynamicSky
 
     public const string SwitchKey = "dynamic_sky_and_weather";
 
+    public const string VolumetricCloudsKey = "dynamic_sky_volumetric_clouds";
+
+    public const string CloudShadowsKey = "dynamic_sky_cloud_shadows";
+
+    public static bool CloudShadows => Refii.Core.Engine_Switches.Flag(CloudShadowsKey, false);
+
+    private const string CloudVolumeShapePath =
+        "res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_volume_shape.tres";
+    private const string CloudVolumeDetailPath =
+        "res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_volume_detail.tres";
+
+    public static bool VolumetricClouds => Refii.Core.Engine_Switches.Flag(VolumetricCloudsKey, false);
+
+    public static void ApplyCloudChoice(ShaderMaterial material, bool? volumetricClouds = null)
+    {
+        bool wanted = volumetricClouds ?? VolumetricClouds;
+        if (wanted)
+        {
+            material.SetShaderParameter("cloud_volume_shape", GD.Load<Texture3D>(CloudVolumeShapePath));
+            material.SetShaderParameter("cloud_volume_detail", GD.Load<Texture3D>(CloudVolumeDetailPath));
+        }
+
+        material.SetShaderParameter("volumetric_clouds", wanted);
+    }
+
     private static bool _enabled;
     private static int _enabledGeneration = -1;
 
@@ -310,6 +335,7 @@ public static class Engine_DynamicSky
     public static void Configure(ShaderMaterial material, bool cubemapFableDome)
     {
         material.SetShaderParameter("cubemap_fable_dome", cubemapFableDome);
+        ApplyCloudChoice(material);
 
         var shape = GD.Load<Texture2D>(CloudShapePath);
         var detail = GD.Load<Texture2D>(CloudDetailPath);
@@ -367,8 +393,10 @@ public static class Engine_DynamicSky
         material.SetShaderParameter("cirrus_amount", w.Cirrus);
     }
 
-    public static void ApplyClock(float skyTime, float lightning, Vector3 lightningDir)
+    public static void ApplyClock(float skyTime, float lightning, Vector3 lightningDir,
+        ShaderMaterial? material = null)
     {
+        material?.SetShaderParameter("cloud_time", skyTime);
         RenderingServer.GlobalShaderParameterSet(SkyTimeGlobal, skyTime);
         RenderingServer.GlobalShaderParameterSet(LightningGlobal,
             new Vector4(lightningDir.X, lightningDir.Y, lightningDir.Z, lightning));
@@ -653,7 +681,8 @@ public sealed class Engine_DynamicSkyDriver
 
     public void Tick(
         float delta, ShaderMaterial material,
-        Engine_DynamicPrecipitation? precipitation, Godot.Environment? environment)
+        Engine_DynamicPrecipitation? precipitation, Godot.Environment? environment,
+        bool? volumetricClouds = null)
     {
         _time = (_time + delta) % TimeRollover;
 
@@ -661,6 +690,7 @@ public sealed class Engine_DynamicSkyDriver
         if (generation != _switchGeneration)
         {
             _switchGeneration = generation;
+            Engine_DynamicSky.ApplyCloudChoice(material, volumetricClouds);
             _forcedParsed = false;
             if (_lastTheme is { } theme)
             {
@@ -703,7 +733,7 @@ public sealed class Engine_DynamicSkyDriver
 
         TickRandomDrift(delta);
         TickLightning(delta);
-        Engine_DynamicSky.ApplyClock(_time, _lightning, _strikeDir);
+        Engine_DynamicSky.ApplyClock(_time, _lightning, _strikeDir, material);
     }
 
     private void TickLightning(float delta)

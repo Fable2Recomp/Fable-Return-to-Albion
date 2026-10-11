@@ -147,9 +147,19 @@ public static class Engine_UiMenuFormatter
 	public static Engine_UiExpandableMenu.Item? AutoCollapse(
 		Engine_UiExpandableMenu menu, Engine_UiExpandableMenu.Item opening)
 	{
+		var ancestors = new System.Collections.Generic.HashSet<Engine_UiExpandableMenu.Item>();
+		if (opening.HostOnly)
+		{
+			for (Engine_UiExpandableMenu.Item? parent = opening.Parent;
+				parent is not null; parent = parent.Parent)
+			{
+				ancestors.Add(parent);
+			}
+		}
+
 		foreach (Engine_UiExpandableMenu.Item row in menu.Visible)
 		{
-			if (!ReferenceEquals(row, opening) && row.IsOpen)
+			if (!ReferenceEquals(row, opening) && !ancestors.Contains(row) && row.IsOpen)
 			{
 				return row;
 			}

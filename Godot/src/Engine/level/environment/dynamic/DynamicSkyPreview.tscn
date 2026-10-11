@@ -4,8 +4,10 @@
 [ext_resource type="Shader" uid="uid://5ma00xg6ckn1" path="res://src/Engine/level/environment/dynamic/dynamic_sky.gdshader" id="1_qxcue"]
 [ext_resource type="Texture2D" uid="uid://dsua8eyinf80" path="res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_detail.tres" id="2_ulq7a"]
 [ext_resource type="Texture2D" uid="uid://cvyht8kjsra07" path="res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_shape.tres" id="3_u8ixs"]
+[ext_resource type="NoiseTexture3D" uid="uid://big621aayguxg" path="res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_volume_detail.tres" id="4_u8ixs"]
+[ext_resource type="NoiseTexture3D" uid="uid://v175dqlnipdy" path="res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_volume_shape.tres" id="5_tkqir"]
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_qxcue"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_u8ixs"]
 shader = ExtResource("1_qxcue")
 shader_parameter/beta_rayleigh = Vector3(0.001, 0.0015, 0.004)
 shader_parameter/beta_mie = Vector3(0.0056, 0.0064, 0.0105)
@@ -34,6 +36,9 @@ shader_parameter/star_brightness = 1.0
 shader_parameter/star_density = 0.35
 shader_parameter/star_use_texture = false
 shader_parameter/star_rotation = 0.0
+shader_parameter/volumetric_clouds = true
+shader_parameter/cloud_volume_shape = ExtResource("5_tkqir")
+shader_parameter/cloud_volume_detail = ExtResource("4_u8ixs")
 shader_parameter/cloud_shape = ExtResource("3_u8ixs")
 shader_parameter/cloud_detail = ExtResource("2_ulq7a")
 shader_parameter/cloud_coverage = 0.68
@@ -42,6 +47,8 @@ shader_parameter/cloud_softness = 0.35
 shader_parameter/cloud_scale = 1.0
 shader_parameter/cloud_height = 0.12
 shader_parameter/cloud_speed = 1.3
+shader_parameter/cloud_time = 56.715107
+shader_parameter/cloud_motion_multiplier = 1.0
 shader_parameter/wind_dir = Vector2(0.97014254, 0.24253564)
 shader_parameter/cirrus_amount = 0.2
 shader_parameter/cloud_colour = Color(1, 0.98, 0.96, 1)
@@ -50,20 +57,20 @@ shader_parameter/overcast = 0.25
 shader_parameter/storm = 0.0
 shader_parameter/snow = 0.0
 shader_parameter/fog_haze = 0.0
-shader_parameter/cloud_shading = 1.0
-shader_parameter/cloud_thickness = 1.0
 
-[sub_resource type="Sky" id="Sky_ulq7a"]
-sky_material = SubResource("ShaderMaterial_qxcue")
+[sub_resource type="Sky" id="Sky_tkqir"]
+sky_material = SubResource("ShaderMaterial_u8ixs")
 radiance_size = 0
 
-[sub_resource type="Environment" id="Environment_u8ixs"]
+[sub_resource type="Environment" id="Environment_wpsue"]
 background_mode = 2
-sky = SubResource("Sky_ulq7a")
+sky = SubResource("Sky_tkqir")
 ambient_light_source = 2
 ambient_light_color = Color(0.5, 0.5, 0.55, 1)
 reflected_light_source = 1
 tonemap_mode = 2
+fog_light_color = Color(0.6511646, 0.62527025, 0.59074444, 1)
+fog_density = 1.5560796e-05
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_ground"]
 size = Vector2(400, 400)
@@ -74,10 +81,12 @@ albedo_color = Color(0.32, 0.36, 0.28, 1)
 [node name="DynamicSkyPreview" type="Node3D" unique_id=1867836301]
 
 [node name="Sky" type="WorldEnvironment" parent="." unique_id=2003732966]
-environment = SubResource("Environment_u8ixs")
+environment = SubResource("Environment_wpsue")
 script = ExtResource("1_preview")
 TimeOfDay = 12.25
 Weather = 3
+VolumetricClouds = true
+CloudShadows = true
 RainOpacity = 0.18
 RainWidth = 0.004
 RainLength = 0.35
@@ -94,8 +103,11 @@ mesh = SubResource("PlaneMesh_ground")
 surface_material_override/0 = SubResource("StandardMaterial3D_ground")
 
 [node name="Sun" type="DirectionalLight3D" parent="." unique_id=2073787638]
-transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0.5, -0.612372, 0.612372, 0, 10, 0)
+transform = Transform3D(-0.07273087, -0.43627405, 0.89686966, 0, 0.8992512, 0.43743256, -0.9973516, 0.03181485, -0.06540332, 0, 10, 0)
 light_energy = 0.6
+light_angular_distance = 0.53
+shadow_enabled = true
+directional_shadow_pancake_size = 7195.921
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=199334898]
 transform = Transform3D(1, 0, 0, 0, 0.976296, 0.216439, 0, -0.216439, 0.976296, 0, 2, 0)
