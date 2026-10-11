@@ -126,18 +126,41 @@ function(refii_fetch_zig platform arch dest cache_dir)
 
     if(NOT EXISTS "${_archive}")
         message(STATUS "Downloading ${_file}")
-        file(DOWNLOAD
-             "https://ziglang.org/download/${REFII_ZIG_VERSION}/${_file}"
-             "${_archive}"
-             EXPECTED_HASH SHA256=${_sha}
+        set(_url "https://ziglang.org/download/${REFII_ZIG_VERSION}/${_file}")
+        set(_download "${_archive}.download")
+        file(DOWNLOAD "${_url}" "${_download}"
+             TLS_VERIFY ON
+             TIMEOUT 300
+             INACTIVITY_TIMEOUT 60
              SHOW_PROGRESS
              STATUS _status)
         list(GET _status 0 _code)
-        if(NOT _code EQUAL 0)
-            list(GET _status 1 _reason)
-            file(REMOVE "${_archive}")
+        list(GET _status 1 _reason)
+        if(_code EQUAL 60 AND CMAKE_HOST_WIN32)
+            set(_windows_curl "$ENV{SystemRoot}/System32/curl.exe")
+            if(EXISTS "${_windows_curl}")
+                message(STATUS "Retrying Zig download with the Windows certificate store")
+                execute_process(
+                    COMMAND "${_windows_curl}" --fail --location --silent --show-error
+                            --proto "=https" --proto-redir "=https" --tlsv1.2
+                            --connect-timeout 30 --max-time 300
+                            --output "${_download}" "${_url}"
+                    RESULT_VARIABLE _code
+                    ERROR_VARIABLE _reason
+                    TIMEOUT 310)
+            endif()
+        endif()
+        if(NOT "${_code}" STREQUAL "0")
+            file(REMOVE "${_download}")
             message(FATAL_ERROR "Could not download ${_file}: ${_reason}")
         endif()
+        file(SHA256 "${_download}" _download_sha)
+        if(NOT _download_sha STREQUAL _sha)
+            file(REMOVE "${_download}")
+            message(FATAL_ERROR
+                "SHA256 mismatch for ${_file}: expected ${_sha}, got ${_download_sha}")
+        endif()
+        file(RENAME "${_download}" "${_archive}")
     endif()
 
     set(_work "${cache_dir}/extract-zig-${platform}-${arch}")
