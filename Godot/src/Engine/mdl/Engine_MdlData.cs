@@ -71,6 +71,13 @@ public sealed class MdlMaterial
     public float[] MaterialFloats { get; set; } = Array.Empty<float>();
 
     /// <summary>
+    /// The five floats of the scalar block between the specular range and the self-illumination
+    /// scale, in file order: the guest's RC+88..+104, which it packs as c24.w and c25.xyz of
+    /// its standard material block. Shared by every texture set of the material.
+    /// </summary>
+    public float[] BlockFloats { get; set; } = Array.Empty<float>();
+
+    /// <summary>
     /// The specular exponent this material uses where its specular map's alpha is 0.
     /// </summary>
     /// <remarks>
@@ -262,6 +269,12 @@ public sealed class MdlInfo
 
     /// <summary>Wind skew speed; 1.0 across every shipped mesh that has one.</summary>
     public float WindSpeed { get; set; }
+
+    /// <summary>The repeated family's normal gradient at the mesh's top (.mdl +90).</summary>
+    public float NormalGradientTop { get; set; }
+
+    /// <summary>The repeated family's normal gradient at the mesh's bottom (.mdl +94).</summary>
+    public float NormalGradientBottom { get; set; }
 
     /// <summary>True when the header says this mesh bends in wind at all.</summary>
     public bool SwaysInWind => MovementMode is 1 or 2;
@@ -827,6 +840,13 @@ public static class Engine_MdlData
         info.SphereCollisions = data[Block + 3] != 0;
         info.WindAmplitude = BigEndianSingle(data, Block + 4);
         info.WindSpeed = BigEndianSingle(data, Block + 8);
+        // The stream's second float pair (+90, +94; `sub_82B8F568` -> resource +120, +124): the
+        // normal gradient's values at the top and the bottom of the mesh (`sub_82233570`).
+        if (data.Length >= Block + 22)
+        {
+            info.NormalGradientTop = BigEndianSingle(data, Block + 14);
+            info.NormalGradientBottom = BigEndianSingle(data, Block + 18);
+        }
     }
 
     /// <summary>The file is big endian, as everything shipped for this console is.</summary>

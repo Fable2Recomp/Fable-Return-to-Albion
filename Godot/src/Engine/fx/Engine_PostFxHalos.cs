@@ -131,11 +131,11 @@ public partial class Engine_PostFxHalos : Node
 			return;
 		}
 
-		SceneTree? tree = context.GetTree();
-		if (tree is null)
+		if (!context.IsInsideTree())
 		{
 			return;
 		}
+		SceneTree tree = context.GetTree();
 
 		var node = new Engine_PostFxHalos { Name = NodeName };
 		_current = node;

@@ -314,6 +314,7 @@ public partial class GameEntities : Node3D
         foreach (HostBridge.GuestEntity entity in entities)
         {
             long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            Refii.Models.Engine_ClassicZones.NoteEntity(entity.RecordHash, entity.Address);
             if (IsUsablePlacement(entity.Position))
             {
                 _guestPositions[entity.Address] = entity.Position;

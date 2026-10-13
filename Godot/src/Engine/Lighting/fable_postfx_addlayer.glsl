@@ -25,11 +25,17 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(rgba16f, set = 0, binding = 0) uniform restrict image2D color_image;
 layout(set = 0, binding = 1) uniform sampler2D layer_tex;
 
+layout(set = 0, binding = 2, std430) restrict readonly buffer StateBuffer {
+	float v[];
+} state;
+
 layout(push_constant, std430) uniform Params {
 	ivec2 size;
 	float gain;
-	float pad0;
+	float exposed;  // the scene is already exposed (the classic look): the layer takes E too
 } push;
+
+const int S_MATERIAL_EXPOSURE = 28;
 
 void main() {
 	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
@@ -56,6 +62,10 @@ void main() {
 	}
 
 	vec3 layer = mix(mix(taps[0], taps[1], f.x), mix(taps[2], taps[3], f.x), f.y);
+	// DOWNSCALECOMPOSITE (0162) adds the layer × c31.x, the frame's pre-exposure
+	// (P+0x41AC, the value the materials' c20.w carried). An exposed scene takes it here; an
+	// unexposed one is multiplied by E downstream with the layer already inside it.
+	float gain = push.gain * (push.exposed > 0.5 ? state.v[S_MATERIAL_EXPOSURE] : 1.0);
 	vec4 c = imageLoad(color_image, coord);
-	imageStore(color_image, coord, vec4(c.rgb + layer * push.gain, c.a));
+	imageStore(color_image, coord, vec4(c.rgb + layer * gain, c.a));
 }

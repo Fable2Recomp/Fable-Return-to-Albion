@@ -349,7 +349,8 @@ public static class Installer
     public static string GetGeneratedCodeDirectoryPath() =>
         Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "generated");
 
-    public readonly record struct ReinstallStepStatus(bool Banks, bool Shaders);
+    /// <summary>Which derived artefacts the Install tab tracks by a file the pipeline writes.</summary>
+    public readonly record struct ReinstallStepStatus(bool Shaders);
 
     private const long StepStatusTtlMs = 1000;
     private static ReinstallStepStatus _stepStatus;
@@ -373,7 +374,6 @@ public static class Installer
 
         string workspace = GetLuaWorkspacePath();
         _stepStatus = new ReinstallStepStatus(
-            File.Exists(Path.Combine(workspace, "dir.manifest")),
             File.Exists(Path.Combine(workspace, "shaders", "compile_report.tsv")));
         _stepStatusValid = true;
         _stepStatusStamp = now;

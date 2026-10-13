@@ -124,7 +124,7 @@ public static class Engine_WaterMaterial
         material.SetShaderParameter("w_edge", Engine_WaterTheme.EdgeBlend(theme));
     }
 
-    private static Texture2D? LoadTexture(string path, ReadAsset read, FindByName? findByName)
+    public static Texture2D? LoadTexture(string path, ReadAsset read, FindByName? findByName)
     {
         if (string.IsNullOrEmpty(path))
         {

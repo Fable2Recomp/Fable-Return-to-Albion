@@ -69,7 +69,9 @@ public static class Engine_Clouds
                 continue;
             }
 
-            var material = new ShaderMaterial { Shader = shader };
+            ShaderMaterial? classic = Engine_ClassicClouds.Material(density, layer);
+            classic?.SetMeta(Engine_ClassicClouds.LayerMeta, index);
+            var material = classic ?? new ShaderMaterial { Shader = shader };
             material.SetShaderParameter("cloud_density", density);
 
             material.SetShaderParameter("layer_params", new Vector4(
@@ -139,6 +141,10 @@ public static class Engine_Clouds
             }
 
             CloudLayerTheme layer = theme.Layers[index];
+            if (material.HasMeta(Engine_ClassicClouds.ClassicCloudMeta))
+            {
+                Engine_ClassicClouds.SetLayer(material, layer);
+            }
             material.SetShaderParameter("layer_params", new Vector4(
                 layer.Transparency,
                 layer.AmbientLight,

@@ -216,9 +216,19 @@ public static class Engine_LightingFrame
 
 	/// <summary>
 	/// The `lighting_model` switch: "modern" derives ambient from the live sky dome (the
-	/// remaster default); "fable" reads the theme's authored day-set ambient exactly. Public
+	/// remaster default); "classic" (written "fable" by older configs) reads the theme's
+	/// authored day-set ambient exactly, and is also the switch that draws the title's own
+	/// translated shaders when they are built (<c>Engine_ClassicMaterial.Active</c>). Public
 	/// because the model is one decision, not one file's — the light fade reach follows it too.
 	/// </summary>
+	/// <summary>Whether a `lighting_model` value names the classic model ("fable" is the older spelling).</summary>
+	public static bool IsClassic(string value)
+	{
+		string model = value.Trim().Trim('"');
+		return model.Equals("classic", StringComparison.OrdinalIgnoreCase)
+			|| model.Equals("fable", StringComparison.OrdinalIgnoreCase);
+	}
+
 	public static bool ModernModel
 	{
 		get
@@ -229,13 +239,14 @@ public static class Engine_LightingFrame
 				{
 					// REFII_LIGHTING_MODEL overrides the config, so a tool can run either model
 					// without touching the player's settings.
+					// "classic" is the setting's name for the original; "fable" is what older
+					// configs wrote for the same thing.
 					string forced = Godot.OS.GetEnvironment("REFII_LIGHTING_MODEL");
 					_modernAmbient = forced.Length != 0
-						? !forced.Trim().Equals("fable", StringComparison.OrdinalIgnoreCase)
+						? !IsClassic(forced)
 						: !Refii.Core.Engine_RefiiConfig.Read(out _)
 							.TryGetValue("lighting_model", out string? model) ||
-							!model.Trim().Trim('"').Equals(
-								"fable", StringComparison.OrdinalIgnoreCase);
+							!IsClassic(model);
 				}
 				catch (Exception)
 				{

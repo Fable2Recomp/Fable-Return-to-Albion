@@ -745,6 +745,14 @@ public static class Engine_LevelBakedLighting
 			staticProp = StaticProps.TryGetValue(node, out _);
 		}
 
+		// The classic renderer lights per draw from the same seam: every lit instance passes here,
+		// and one with a transfer and a probe sample takes the title's AMB2 pair.
+		Refii.Models.Engine_ClassicLitInstances.Attach(node);
+		using (Refii.Core.Engine_FramePhases.Measure("classic.transfer"))
+		{
+			Refii.Models.Engine_ClassicTransfer.Apply(node);
+		}
+
 		// HasMeta FIRST, AND IT IS NOT BELT-AND-BRACES. `GetMeta(name, default)` reads as a safe
 		// lookup with a fallback and is not one: Godot returns the fallback only when the fallback
 		// is itself non-nil, and `default` for a Variant is nil. Every absent key otherwise takes
@@ -1112,6 +1120,24 @@ public static class Engine_LevelBakedLighting
 		catch (Exception)
 		{
 			return null;
+		}
+	}
+
+	/// <summary>The object lightmap for a placement key as its own texture, or null when none.</summary>
+	public static ImageTexture? ObjectLightmapTexture(LightmapContainer? container, ulong key)
+	{
+		if (container is null || !container.ObjectLightmapBlobs.TryGetValue(key, out byte[]? blob))
+		{
+			return null;
+		}
+		lock (container.ObjectTextures)
+		{
+			if (!container.ObjectTextures.TryGetValue(key, out ImageTexture? texture))
+			{
+				texture = DecodeTexture(blob);
+				container.ObjectTextures[key] = texture;
+			}
+			return texture;
 		}
 	}
 

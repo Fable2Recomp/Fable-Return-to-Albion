@@ -685,7 +685,30 @@ public static class Engine_LevelScene
                     if (terrainRead?.Invoke(landscape.Ghf) is { } ghfBytes &&
                         Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
                     {
-                        chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), name);
+                        // Under the classic renderer the main landscape is the title's own
+                        // patches on its own shaders, each patch's layers as its materials.
+                        string classicError = "no .ehf";
+                        List<ArrayMesh>? patches = null;
+                        if (Refii.Models.Engine_ClassicMaterial.Active && landscape.Ehf.Length != 0 &&
+                            terrainRead(landscape.Ehf) is { } classicEhf &&
+                            !Refii.Level.Engine_ClassicTerrain.TryBuild(classicEhf, heights, name, out patches, out classicError))
+                        {
+                            patches = null;
+                        }
+                        if (patches is not null)
+                        {
+                            chunks = patches;
+                            material = null;
+                            GD.Print($"[classic] {level}: terrain on the title's landscape shaders, {patches.Count} patch(es)");
+                        }
+                        else
+                        {
+                            if (Refii.Models.Engine_ClassicMaterial.Active)
+                            {
+                                GD.Print($"[classic] {level}: terrain stays on the modern splat ({classicError})");
+                            }
+                            chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), name);
+                        }
                     }
                     else if (main && terrainRead is null &&
                         ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh") is { } whole)
@@ -783,6 +806,13 @@ public static class Engine_LevelScene
             Name = level.SceneNodeName,
             Scale = new Vector3(-1f, 1f, 1f),
         };
+        if (Refii.Models.Engine_ClassicMaterial.Active)
+        {
+            // The classic look's editor drive; inert in the game, which pumps the path itself.
+            var driver = new Refii.Models.Engine_ClassicEditorDriver { Name = Refii.Models.Engine_ClassicEditorDriver.NodeName };
+            root.AddChild(driver);
+            driver.Owner = root;
+        }
 
         AddWater(level, stated, source, findByName, root);
         Mark("water");
@@ -1159,6 +1189,21 @@ public static class Engine_LevelScene
                 {
                     node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
                     surfaces.Add((built.Landscape.Ehf, node));
+                    if (node.Mesh is { } pageMesh && pageMesh.GetSurfaceCount() > 0 &&
+                        pageMesh.SurfaceGetMaterial(0) is ShaderMaterial pageMaterial &&
+                        pageMaterial.HasMeta(Engine_ClassicVista.VistaMeta))
+                    {
+                        Engine_ClassicVistaMist.Track(node);
+                    }
+                }
+            }
+            else if (nodes[0].MaterialOverride is null)
+            {
+                // The classic look's patches each carry their own layer chain, so each takes the
+                // bake (one lightmap per heightfield, decoded once).
+                foreach (MeshInstance3D node in nodes)
+                {
+                    surfaces.Add((built.Landscape.Ehf, node));
                 }
             }
             else
@@ -1217,6 +1262,8 @@ public static class Engine_LevelScene
 
         EngineLevelFile engineLevel = Engine_EngineLevelFile.Parse(bytes);
         var bound = new HashSet<ulong>();
+        var decoded = new Dictionary<ulong, ImageTexture?>();
+        var reported = new HashSet<ulong>();
 
         foreach ((string surfacePath, MeshInstance3D node) in surfaces)
         {
@@ -1264,7 +1311,11 @@ public static class Engine_LevelScene
                     break;
                 }
 
-                ImageTexture? texture = Engine_LevelBakedLighting.DecodeTexture(bake.Blob);
+                if (!decoded.TryGetValue(heightfield.LightmapKey, out ImageTexture? texture))
+                {
+                    texture = Engine_LevelBakedLighting.DecodeTexture(bake.Blob);
+                    decoded[heightfield.LightmapKey] = texture;
+                }
                 if (texture is null)
                 {
                     GD.Print($"[baked] {level}: lightmap 0x{heightfield.LightmapKey:X16} did not decode");
@@ -1275,6 +1326,69 @@ public static class Engine_LevelScene
                 {
                     target.SetShaderParameter("lightmap", texture);
                     target.SetShaderParameter("has_lightmap", true);
+                }
+                // A classic vista page takes the background's lightmapped variant, the bake on
+                // sampler 3 (`sub_822AA878`) at (position - origin) * (1 / (W s), 1 / (H s)).
+                if (node.MaterialOverride is null && node.Mesh is { } vistaMesh)
+                {
+                    for (int i = 0; i < vistaMesh.GetSurfaceCount(); i++)
+                    {
+                        if (vistaMesh.SurfaceGetMaterial(i) is ShaderMaterial page &&
+                            page.HasMeta(Engine_ClassicVista.VistaMeta) && page.HasMeta(Engine_ClassicVista.GridMeta))
+                        {
+                            Vector3 grid = page.GetMeta(Engine_ClassicVista.GridMeta).AsVector3();
+                            if (Engine_ClassicVista.Lightmapped(page, texture, new Vector2(grid.X, grid.Y),
+                                    new Vector2(1f / (texture.GetWidth() * grid.Z), 1f / (texture.GetHeight() * grid.Z))) is { } litPage)
+                            {
+                                vistaMesh.SurfaceSetMaterial(i, litPage);
+                            }
+                        }
+                    }
+                }
+                // The title's patches take the lightmapped (AMB1) pair with the map on sampler 3,
+                // for EVERY layer: each layer pass carries its weighted share of the ambient,
+                // which on the title's terrain is the bake.
+                if (node.MaterialOverride is null && node.Mesh is { } patchMesh)
+                {
+                    for (int i = 0; i < patchMesh.GetSurfaceCount(); i++)
+                    {
+                        if (patchMesh.SurfaceGetMaterial(i) is not ShaderMaterial own ||
+                            !own.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta))
+                        {
+                            continue;
+                        }
+                        ShaderMaterial? head = null, tail = null;
+                        for (Material? pass = own; pass is ShaderMaterial layer; pass = layer.NextPass)
+                        {
+                            ShaderMaterial lit = Refii.Models.Engine_ClassicMaterial.WithAmbient(layer, 1, texture) ?? layer;
+                            if (ReferenceEquals(lit, layer))
+                            {
+                                lit = (ShaderMaterial)layer.Duplicate();
+                            }
+                            // g_LandscapeLightmapUVFactor (VS c14), per landscape (`sub_82A8EA50`):
+                            // (1 / (W * s), 1 / (H * s), 1, 1), the bake's texel size over the
+                            // heightfield's metres per cell.
+                            float cell = layer.HasMeta(Engine_ClassicTerrain.CellSizeMeta)
+                                ? layer.GetMeta(Engine_ClassicTerrain.CellSizeMeta).AsSingle()
+                                : Engine_GhfTerrain.CellSize;
+                            lit.SetShaderParameter("vs_g_LandscapeLightmapUVFactor", new Vector4(
+                                1f / (texture.GetWidth() * cell), 1f / (texture.GetHeight() * cell), 1f, 1f));
+                            lit.NextPass = null;
+                            if (head is null)
+                            {
+                                head = lit;
+                            }
+                            else
+                            {
+                                tail!.NextPass = lit;
+                            }
+                            tail = lit;
+                        }
+                        if (head is not null)
+                        {
+                            patchMesh.SurfaceSetMaterial(i, head);
+                        }
+                    }
                 }
 
                 bound.Add(heightfield.LightmapKey);
@@ -1287,6 +1401,10 @@ public static class Engine_LevelScene
                     texture.GetWidth() == bake.SamplesX - 1 &&
                     texture.GetHeight() == bake.SamplesY - 1;
 
+                if (!reported.Add(heightfield.LightmapKey))
+                {
+                    break;
+                }
                 GD.Print(
                     $"[baked] {level}: terrain lightmap 0x{heightfield.LightmapKey:X16} " +
                     $"({texture.GetWidth()}x{texture.GetHeight()} over " +
@@ -1577,21 +1695,39 @@ public static class Engine_LevelScene
                 }
 
                 string name = $"WaterBody{emitted}";
+
+                // The classic renderer draws the body with the title's own pair; the mesh's
+                // texture coordinates become the body mask's before the mesh is built.
+                string classicError = string.Empty;
+                ShaderMaterial? classic = Engine_ClassicWater.Available
+                    ? Engine_ClassicWater.Build(
+                        body, mesh, p => source(p), findByName is null ? null : n => findByName(n), out classicError)
+                    : null;
+                if (Engine_ClassicWater.Available && classic is null)
+                {
+                    GD.Print($"[water] {level}: {classicError}; the modern water shader stands in");
+                }
+
                 var node = new MeshInstance3D
                 {
                     Name = name,
                     Mesh = Engine_LevelMesh.ToArrayMesh(mesh, name),
                 };
 
-                ShaderMaterial? material = Engine_WaterMaterial.Build(
+                string materialError = string.Empty;
+                ShaderMaterial? material = classic ?? Engine_WaterMaterial.Build(
                     body,
                     p => source(p),
                     findByName is null ? null : n => findByName(n),
-                    out string materialError);
+                    out materialError);
 
                 if (material is null)
                 {
                     GD.Print($"[water] {level}: {materialError}");
+                }
+                else if (classic is not null)
+                {
+                    node.MaterialOverride = classic;
                 }
                 else
                 {
@@ -1716,6 +1852,22 @@ public static class Engine_LevelScene
         Func<string, byte[]?> source,
         Func<string, string?>? findByName)
     {
+        if (Engine_ClassicWater.VistaAvailable)
+        {
+            float guestHeight = body.BaseHeight - 0.1f;
+            Texture2D? normal = Engine_WaterMaterial.LoadTexture(
+                body.NormalMapPath, p => source(p), findByName is null ? null : n => findByName(n));
+            MeshInstance3D? classic = Engine_ClassicWater.BuildVista(guestHeight, normal, out string classicError);
+            if (classic is not null)
+            {
+                classic.Name = VistaOceanNodeName;
+                container.AddChild(classic);
+                GD.Print($"[water] {level}: vista ocean on SKY_OCEANWATER at {guestHeight:0.###} from {waterPath}");
+                return;
+            }
+            GD.Print($"[water] {level}: classic vista ocean failed ({classicError}); the modern sheet stands in");
+        }
+
         ShaderMaterial? material = Engine_WaterMaterial.Build(
             body,
             p => source(p),
@@ -1780,7 +1932,14 @@ public static class Engine_LevelScene
             if (child is MeshInstance3D mesh &&
                 mesh.MaterialOverride is ShaderMaterial material)
             {
-                Engine_WaterMaterial.Apply(material, theme);
+                if (material.HasMeta(Engine_ClassicWater.Meta))
+                {
+                    Engine_ClassicWater.Apply(material, theme);
+                }
+                else
+                {
+                    Engine_WaterMaterial.Apply(material, theme);
+                }
             }
         }
 

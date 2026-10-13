@@ -75,6 +75,10 @@ public partial class GameSession : Node
 	{
 		Current = this;
 
+		// The classic renderer's shadow cascades, up before any level builds its materials
+		// so every classic material can bind the maps as it is made.
+		Refii.Models.Engine_ClassicPath.Ensure(this);
+
 		// EVERY FRAME PHASE BECOMES A TRACY ZONE, installed once here. The engine already
 		// measures 28 phases for its own report; wiring the profiler to the same annotation
 		// means a zone cannot drift from the phase it names, and nothing has to be annotated
@@ -295,8 +299,25 @@ public partial class GameSession : Node
 		}
 	}
 
+	private double _classicStatusTimer;
+
 	private void session_processBody(double delta)
 	{
+		// The classic renderer's frame constants: registered once, pushed when they changed.
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			Camera3D? camera = GetViewport()?.GetCamera3D();
+			Refii.Models.Engine_ClassicPath.Pump(this, camera, GetViewport()?.GetVisibleRect().Size ?? new Vector2(1920f, 1080f));
+
+			// The path's liveness, every ten seconds: which feeds ran and what they drew.
+			_classicStatusTimer += delta;
+			if (_classicStatusTimer >= 10.0)
+			{
+				_classicStatusTimer = 0.0;
+				GD.Print(Refii.Models.Engine_ClassicPath.Status());
+			}
+		}
+
 		if (!_booted)
 		{
 			if (_bootDirectory.Length == 0 || !Refii.Models.Engine_ShaderWarmup.Done)

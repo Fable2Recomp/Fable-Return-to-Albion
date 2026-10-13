@@ -96,11 +96,14 @@ public static class Engine_MdlComposite
         var pending =
             new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
                 string Name, Material Material, string? Bare, bool? Left, string Region, int Part,
-                Godot.Collections.Dictionary? Lods)>();
+                Godot.Collections.Dictionary? Lods, int[]? PrtDescriptor, float[]? PrtTable)>();
         var surfaceRegions = new List<string>();
         var surfaceParts = new List<int>();
         var surfaceLods = new Godot.Collections.Array();
         bool anyLods = false;
+        var prtDescriptors = new Godot.Collections.Array();
+        var prtTables = new Godot.Collections.Array();
+        bool anyPrt = false;
 
         var partPaths = new List<string>();
         var partSpans = new List<int>();
@@ -213,13 +216,15 @@ public static class Engine_MdlComposite
                     eyeSides.TryGetValue(partIndex, out bool left) ? left : null,
                     surface < partRegions.Length ? partRegions[surface] : string.Empty,
                     partIndex,
-                    Engine_MdlMesh.SurfaceLods(part, surface)));
+                    Engine_MdlMesh.SurfaceLods(part, surface),
+                    part.HasMeta(Engine_MdlTransfer.DescriptorMeta) ? part.GetMeta(Engine_MdlTransfer.DescriptorMeta).AsInt32Array() : null,
+                    part.HasMeta(Engine_MdlTransfer.TableMeta) ? part.GetMeta(Engine_MdlTransfer.TableMeta).AsFloat32Array() : null));
             }
         }
 
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
                   Material material, string? bare, bool? forcedLeft, string region, int fromPart,
-                  Godot.Collections.Dictionary? lods) in pending)
+                  Godot.Collections.Dictionary? lods, int[]? prtDescriptor, float[]? prtTable) in pending)
         {
             if (bare is not null && !Anchor(arrays, boneIndex, parents, rest, bare, forcedLeft))
             {
@@ -234,6 +239,11 @@ public static class Engine_MdlComposite
             mesh.SurfaceSetMaterial(added, material);
             surfaceRegions.Add(region);
             surfaceParts.Add(fromPart);
+            // Each part's own transfer header and cluster table: the title uploads a part's
+            // g_PRTConstants from its own model (`sub_8225DC80`), so they ride per surface.
+            prtDescriptors.Add(prtDescriptor ?? System.Array.Empty<int>());
+            prtTables.Add(prtTable ?? System.Array.Empty<float>());
+            anyPrt |= prtDescriptor is { Length: > 0 } && prtTable is { Length: > 0 };
             surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
             anyLods |= lods is not null;
         }
@@ -261,6 +271,11 @@ public static class Engine_MdlComposite
 
         mesh.SetMeta(Engine_MdlMesh.SurfaceRegionsMeta, surfaceRegions.ToArray());
         mesh.SetMeta(SurfacePartsMeta, surfaceParts.ToArray());
+        if (anyPrt)
+        {
+            mesh.SetMeta(Engine_MdlTransfer.SurfaceDescriptorsMeta, prtDescriptors);
+            mesh.SetMeta(Engine_MdlTransfer.SurfaceTablesMeta, prtTables);
+        }
         if (anyLods)
         {
             mesh.SetMeta(Engine_MdlMesh.SurfaceLodsMeta, surfaceLods);

@@ -246,7 +246,7 @@ public partial class Engine_PropStreamer : Node3D
         // What the guest states outranks this rule: a placement with a stated range was stamped
         // at build, an entity with one when its node was made (Engine_PropDrawRange), and the
         // screen-size cull is only for what neither describes.
-        if (Engine_PropDrawRange.Apply(instance) || CullMinPixels <= 0f)
+        if (Engine_PropDrawRange.Apply(instance, mesh) || CullMinPixels <= 0f)
         {
             return;
         }
@@ -434,7 +434,7 @@ public partial class Engine_PropStreamer : Node3D
                     if (stepMs > 8.0 && _slowStepsLogged++ < 16)
                     {
                         GD.Print($"[props] one step took {stepMs:0.0} ms on the main thread " +
-                            $"(assign {_stepAssignMs:0.0}, bake {_stepBakeMs:0.0}, range {_stepRangeMs:0.0}, " +
+                            $"(resolve {_stepResolveMs:0.0}, multimesh {_stepMultiMs:0.0}, assign {_stepAssignMs:0.0}, bake {_stepBakeMs:0.0}, range {_stepRangeMs:0.0}, " +
                             $"sway {_stepSwayMs:0.0}, light {_stepLightMs:0.0}): {path}");
                     }
 
@@ -577,7 +577,7 @@ public partial class Engine_PropStreamer : Node3D
     private int _syncLoadsLogged;
     private int _slowStepsLogged;
     private int _slowDrainsLogged;
-    private double _stepAssignMs, _stepBakeMs, _stepRangeMs, _stepSwayMs, _stepLightMs;
+    private double _stepResolveMs, _stepMultiMs, _stepAssignMs, _stepBakeMs, _stepRangeMs, _stepSwayMs, _stepLightMs;
 
     private static double Ms(long from) =>
         (System.Diagnostics.Stopwatch.GetTimestamp() - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -743,6 +743,9 @@ public partial class Engine_PropStreamer : Node3D
             node.Mesh = baked;
             node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 3);
             ++_bakeApplied;
+            // The title's shader for a vertex-baked instance is the AMB1 pair, reading the bake
+            // as the vertex colour the copy now carries.
+            ApplyClassicAmbient(node, 1, null);
             return;
         }
 
@@ -758,6 +761,10 @@ public partial class Engine_PropStreamer : Node3D
             node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 4);
             ++_bakeApplied;
             ++_bakeTextured;
+            // The AMB3 pair with this object's own lightmap bound, as the title binds it
+            // (`sub_82225100`, sampler 3) — one texture per drawable, no atlas.
+            ApplyClassicAmbient(node, 3,
+                Refii.Lighting.Engine_LevelBakedLighting.ObjectLightmapTexture(container, key));
             return;
         }
 
@@ -796,6 +803,34 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
+    /// <summary>
+    /// Under the classic renderer, re-keys this instance's surfaces to the ambient source the
+    /// title would pick for it, as per-surface overrides over the shared material.
+    /// </summary>
+    private static void ApplyClassicAmbient(MeshInstance3D node, int ambient, Texture2D? lightmap)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || node.Mesh is null)
+        {
+            return;
+        }
+        int surfaces = node.Mesh.GetSurfaceCount();
+        for (int i = 0; i < surfaces; i++)
+        {
+            if (node.Mesh.SurfaceGetMaterial(i) is not ShaderMaterial shared ||
+                !shared.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta) ||
+                shared.GetMeta(Refii.Models.Engine_ClassicMaterial.FamilyMetaName, string.Empty).AsString() == "TREEMATERIAL")
+            {
+                // A tree keeps its AMB2 pair whatever the placement baked (`sub_822092B0`).
+                continue;
+            }
+            ShaderMaterial? variant = Refii.Models.Engine_ClassicMaterial.WithAmbient(shared, ambient, lightmap);
+            if (variant is not null)
+            {
+                node.SetSurfaceOverrideMaterial(i, variant);
+            }
+        }
+    }
+
     private int _bakeApplied;
 
     private int _bakeKeyless;
@@ -824,9 +859,13 @@ public partial class Engine_PropStreamer : Node3D
             bool present;
             string why;
             ArrayMesh? mesh = ready;
+            _stepResolveMs = 0.0;
+            _stepMultiMs = 0.0;
             if (mesh is null && !knownFailure)
             {
+                long tr = System.Diagnostics.Stopwatch.GetTimestamp();
                 mesh = Resolve(path, out present, out why);
+                _stepResolveMs = Ms(tr);
             }
             else
             {
@@ -861,7 +900,9 @@ public partial class Engine_PropStreamer : Node3D
 
             if (instance is MultiMeshInstance3D multi && multi.Multimesh is not null)
             {
+                long tm = System.Diagnostics.Stopwatch.GetTimestamp();
                 multi.Multimesh.Mesh = mesh;
+                _stepMultiMs = Ms(tm);
 
                 // The provisional bounds give way to the union of every instance's transformed
                 // mesh box. ONE buffer read, not a transform read per instance: each is a

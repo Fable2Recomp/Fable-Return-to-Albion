@@ -59,6 +59,9 @@ public sealed class EngineLevelBlock
     /// </summary>
     public float DrawDistance { get; set; }
 
+    /// <summary>A type-21 block's fade fraction f (header float 5, a[0]): it fades over [D(1-f), D].</summary>
+    public float FadeFraction { get; set; }
+
     public List<EngineLevelInstance> Instances { get; } = new();
 
     /// <summary>Type-21 only: the block's cull clusters, which tile <see cref="Instances"/> in order.</summary>
@@ -357,8 +360,8 @@ public static class Engine_EngineLevelFile
         }
 
         // Seven floats (`sub_82B202C0`): two to msg+0xA0/+0xA4, a[7], a[8], the draw distance
-        // a[1], the fade fraction a[0] — which foliage uses only as an `a > 0` gate, so the cut
-        // is hard — and a[2].
+        // a[1], the fade fraction a[0] and a[2]. The CPU cull at D is hard; the pixel shader
+        // stipples the last fraction away (`sub_821FCCB0`: c15 = (D(1-f), 1/(fD), D(1-f), 0)).
         float[] header = new float[7];
         for (int f = 0; f < header.Length; f++)
         {
@@ -370,6 +373,7 @@ public static class Engine_EngineLevelFile
         }
 
         block.DrawDistance = header[4];
+        block.FadeFraction = header[5];
 
         if (!reader.Skip(12 + 4 + 24))
         {

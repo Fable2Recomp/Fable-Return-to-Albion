@@ -18,6 +18,15 @@ set(_required_inputs
     "${STAGING_BIN}/refii_binkdecode.dll"
     "${STAGING_BIN}/refii_xmadecode.dll"
     "${STAGING_BIN}/refii_recompiler.dll"
+    # The shader pipeline the launcher loads, with the compiler it links and the tool it runs
+    # (src/shader/CMakeLists.txt names them; src/hostbridge/CMakeLists.txt stages them).
+    "${STAGING_BIN}/refii_shader_sbk.dll"
+    "${STAGING_BIN}/refii_shader_xenos_translator.dll"
+    "${STAGING_BIN}/XenosRecomp.dll"
+    "${STAGING_BIN}/dxcompiler.dll"
+    "${STAGING_BIN}/dxil.dll"
+    "${STAGING_BIN}/dxc/dxc.exe"
+    "${STAGING_BIN}/dxc/shader_common.h"
     "${_recompile}/include_dirs.cmake"
     "${_recompile}/hook_sources.cmake"
     "${_recompile}/versions/Fable2TU1/refii_manifest.toml"

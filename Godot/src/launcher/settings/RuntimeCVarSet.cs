@@ -118,14 +118,13 @@ public static class RuntimeCVarsGodot
                 + "fixed step and only the drawing rate changes."),
 
             new("vsync_mode", DisplayCategory, RuntimeCVarType.String, "mailbox",
-                "How frames meet the display when vsync is on. 'mailbox' shows the newest "
-                + "finished frame at each refresh with no tearing and no cap at a fraction of "
-                + "the refresh rate; 'on' waits for every refresh, so a frame that misses one "
-                + "shows at half the rate; 'adaptive' waits when the frame is fast and tears "
-                + "when it is slow. Where the driver has no mailbox it falls back to 'adaptive', "
-                + "and to 'on' only if that is missing too. "
-                + "vsync = false turns all of it off.",
-                "mailbox,on,adaptive"),
+                "How frames meet the display. 'mailbox' shows the newest finished frame at each "
+                + "refresh with no tearing and no cap at a fraction of the refresh rate; 'on' "
+                + "waits for every refresh, so a frame that misses one shows at half the rate; "
+                + "'adaptive' waits when the frame is fast and tears when it is slow; 'off' "
+                + "draws as fast as it can and may tear. Where the driver has no mailbox it falls "
+                + "back to 'adaptive', and to 'on' only if that is missing too.",
+                "mailbox|Mailbox,on|On,adaptive|Adaptive,off|Off"),
 
             new("draw_latency_ticks", DisplayCategory, RuntimeCVarType.Double, "0",
                 "How far behind the game's simulation the picture is drawn, in 1/15 s ticks. "
@@ -387,10 +386,13 @@ public static class RuntimeCVarsGodot
                 + "throw modest pools — a tall lamp post barely reaches the ground — "
                 + "so the remaster brightens them. 1.0 follows the shipped data exactly."),
             new("lighting_model", LightingCategory, RuntimeCVarType.String, "modern",
-                "Where the world's ambient light comes from. 'modern' derives it live from "
-                + "the sky dome, so every surface breathes with the visible sky — golden at "
-                + "sunset, blue at night — one source for baked, probe-lit and bare objects "
-                + "alike. 'fable' reads the authored day-set ambient exactly as the 360 did."),
+                "How the world is lit. 'modern' is the remaster: Godot's lighting, with the "
+                + "ambient derived live from the sky dome so every surface breathes with the "
+                + "visible sky. 'classic' is the original: the game's own shaders, translated "
+                + "and drawn with the constants the game states each frame — built by Compile "
+                + "Shaders on the Reinstall tab, or ticked during install — and, where a shader "
+                + "has not been built, the authored day-set ambient exactly as the 360 read it.",
+                "modern|Modern,classic|Classic"),
             new("ambient_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "The one fill dial. In the modern model it scales both halves of the fill: the flat "
                 + "floor every surface keeps in shadow, and the sky light Godot's global illumination "

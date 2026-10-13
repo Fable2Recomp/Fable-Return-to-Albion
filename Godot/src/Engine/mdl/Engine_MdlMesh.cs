@@ -111,6 +111,27 @@ public static int SurfacesWithLods;
     /// </remarks>
     private const float MaxVertexReach = 1_000_000f;
 
+    private static readonly HashSet<string> _fallbacksReported = new();
+
+    /// <summary>
+    /// A surface drawn untextured: its record named no texture that loaded. Once per model and
+    /// surface, with what the record states, so the missing texture is named rather than seen.
+    /// </summary>
+    private static void ReportFallback(string model, string surface, MdlMaterial? record)
+    {
+        lock (_fallbacksReported)
+        {
+            if (_fallbacksReported.Count >= 256 || !_fallbacksReported.Add($"{model}|{surface}"))
+            {
+                return;
+            }
+        }
+        GD.Print(record is null
+            ? $"[material] UNTEXTURED {model} '{surface}': no material record"
+            : $"[material] UNTEXTURED {model} '{surface}': diffuse '{record.Diffuse}' normal '{record.Normal}' " +
+              $"specular '{record.Specular}' self-illum '{record.SelfIllumination}' envmap '{record.EnvironmentMap}'");
+    }
+
     /// <summary>Surfaces refused for a non-finite or absurd vertex. Run total.</summary>
     public static int NonFiniteSurfaces;
 
@@ -358,7 +379,44 @@ public static int SurfacesWithLods;
             // model that ships none, where the shader keeps its lookup along the normal.
             // Read by the FABLE model alone: under the unified model Godot carries the fill and
             // these 48 bytes a vertex would be uploaded for nothing.
-            if (!Refii.Lighting.Engine_LightingFrame.ModernModel &&
+            // Under the classic renderer the title's own AMB2 shader takes the transfer as the
+            // file carries it: the PCA weights in CUSTOM0 and the cluster offset in CUSTOM3.x
+            // (the position's w), with the cluster table on the mesh for the constants.
+            // A tree part's wind lanes for the title's tree shaders: the colours in CUSTOM1 and
+            // CUSTOM2, POSITION1's xyz in CUSTOM3.yzw beside the cluster offset (Engine_MdlTreeStreams).
+            float[] treePivots = System.Array.Empty<float>(), treeColour1 = treePivots, treeColour2 = treePivots;
+            bool treeStreams = Engine_ClassicMaterial.Active &&
+                geo.SourceVertices.Length == geo.VertexCount &&
+                Engine_MdlTreeStreams.TryRead(
+                    data, info, geo.SourceVertices, out treePivots, out treeColour1, out treeColour2);
+            if (treeStreams)
+            {
+                arrays[(int)Mesh.ArrayType.Custom1] = treeColour1;
+                arrays[(int)Mesh.ArrayType.Custom2] = treeColour2;
+                arrays[(int)Mesh.ArrayType.Custom3] = treePivots;
+            }
+            if (Engine_ClassicMaterial.Active &&
+                geo.SourceVertices.Length == geo.VertexCount &&
+                Engine_MdlTransfer.TryRaw(
+                    data, info, geo.SourceVertices, out float[] rawWeights, out float[] rawClusters))
+            {
+                arrays[(int)Mesh.ArrayType.Custom0] = rawWeights;
+                if (treeStreams)
+                {
+                    for (int v = 0; v < geo.VertexCount; v++)
+                    {
+                        treePivots[v * 4] = rawClusters[v * 4];
+                    }
+                }
+                else
+                {
+                    arrays[(int)Mesh.ArrayType.Custom3] = rawClusters;
+                }
+                mesh.SetMeta(Engine_MdlTransfer.DescriptorMeta, System.Array.ConvertAll(info.ShDescriptor, v => (int)v));
+                mesh.SetMeta(Engine_MdlTransfer.TableMeta, info.ShProbeData);
+                ++SurfacesWithTransfer;
+            }
+            else if (!treeStreams && !Refii.Lighting.Engine_LightingFrame.ModernModel &&
                 geo.SourceVertices.Length == geo.VertexCount &&
                 Engine_MdlTransfer.TryExpand(
                     data, info, geo.SourceVertices, out float[] tr, out float[] tg, out float[] tb))
@@ -402,8 +460,12 @@ public static int SurfacesWithLods;
             // (src/tools/WindGate.cs). So the mesh's statement is part of the shared material's
             // identity, never a mutation of a material another surface also holds.
             Material? material =
-                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis)
-                ?? Engine_MdlMaterial.Fallback();
+                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis);
+            if (material is null)
+            {
+                ReportFallback(virtualPath, geo.Name, geo.Material);
+                material = Engine_MdlMaterial.Fallback();
+            }
             if (material is not null)
             {
                 mesh.SurfaceSetMaterial(added, material);

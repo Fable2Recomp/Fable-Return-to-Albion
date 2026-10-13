@@ -39,6 +39,13 @@ public sealed class LightmapContainer
     /// under Godot's shared-material design, the way Phase 0 streams banks in place.</summary>
     public Godot.ImageTexture? ObjectAtlas { get; set; }
 
+    /// <summary>
+    /// Each object lightmap as its own texture, decoded on first use: what the title binds per
+    /// drawable (one 64x64 per object, sampled by the mesh's second UV set), for the classic
+    /// renderer. The modern path samples the atlas above instead.
+    /// </summary>
+    public Dictionary<ulong, Godot.ImageTexture?> ObjectTextures { get; } = new();
+
     public Dictionary<ulong, Godot.Rect2> ObjectAtlasRects { get; } = new();
 
     public bool ObjectAtlasBuilt { get; set; }

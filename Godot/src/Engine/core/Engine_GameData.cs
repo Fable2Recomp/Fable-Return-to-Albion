@@ -33,7 +33,17 @@ public static class Engine_GameData
 	/// the directory the runtime mounts as <c>update:</c> (refii_app.h derives it the same way).
 	/// The installer writes the update package's <c>data/tu1_data.bnk</c> under it.
 	/// </summary>
-	public static string UpdateRootFor(string gameDirectory)
+	public static string UpdateRootFor(string gameDirectory) => SiblingFor(gameDirectory, "update");
+
+	/// <summary>
+	/// The unpacked workspace beside a game data directory: <c>&lt;assets&gt;/unpacked</c>, where
+	/// the launcher's install steps write what they derive from the player's data (the translated
+	/// shaders under <c>shaders/</c>). The launcher resolves the same path in
+	/// <c>Installer.GetLuaWorkspacePath</c>.
+	/// </summary>
+	public static string UnpackedRootFor(string gameDirectory) => SiblingFor(gameDirectory, "unpacked");
+
+	private static string SiblingFor(string gameDirectory, string name)
 	{
 		if (string.IsNullOrEmpty(gameDirectory))
 			return string.Empty;
@@ -44,7 +54,7 @@ public static class Engine_GameData
 		if (string.Equals(Path.GetFileName(basePath), "game", StringComparison.OrdinalIgnoreCase))
 			basePath = Path.GetDirectoryName(basePath) ?? basePath;
 
-		return Path.Combine(basePath, "update");
+		return Path.Combine(basePath, name);
 	}
 
 	/// <summary>

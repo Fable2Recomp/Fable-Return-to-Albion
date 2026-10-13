@@ -333,6 +333,12 @@ public static class Engine_LevelLighting
 		{
 			new Refii.Fx.Engine_FxDepthCaptureEffect(),
 		};
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			// The classic look's screen-space sun shadow mask, between the depth prepass and the
+			// opaque colour pass, as the title draws it.
+			effects.Add(new Refii.Models.Engine_ClassicScreenShadow());
+		}
 
 		if (Engine_PostFxParams.ChainRequested)
 		{

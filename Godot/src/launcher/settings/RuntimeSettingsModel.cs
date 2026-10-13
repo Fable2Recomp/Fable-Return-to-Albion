@@ -13,6 +13,93 @@ public sealed class RuntimeSettingsModel
     public string StatusMessage { get; private set; } = string.Empty;
     public string Filter { get; set; } = string.Empty;
 
+    private const string PanelSection = "Settings";
+    private const string ShowAdvancedKey = "ShowAdvanced";
+
+    /// <summary>
+    /// Whether the tuning dials are listed. Off, the panel shows the decisions a player makes
+    /// — the look, the display, the controls — and the remaster's dials, the developer switches
+    /// and the runtime's own knobs stay out of sight; a non-empty filter searches everything.
+    /// </summary>
+    public bool ShowAdvanced
+    {
+        get => Ini.GetBool(ShowAdvancedKey, false, PanelSection);
+        set
+        {
+            Ini.SetBool(ShowAdvancedKey, value, PanelSection);
+            Ini.Save();
+        }
+    }
+
+    /// <summary>
+    /// A setting that tunes rather than decides. The remaster's lighting and texture dials, the
+    /// developer switches, the picture's internals, and every runtime cvar that is not a key
+    /// binding. The two decisions a look is made of stay in the plain view.
+    /// </summary>
+    public static bool IsAdvanced(RuntimeCVarDefinition definition)
+    {
+        if (definition.Name is "lighting_model" or "materials_modernized" or "texture_upscaling_enabled")
+        {
+            return false;
+        }
+        // fullscreen, monitor and vsync are runtime-side entries re-homed under Display; their
+        // registry category ("UI/Window") would otherwise count them as advanced.
+        if (RuntimeConfig.IsDisplayCVar(definition.Name))
+        {
+            return false;
+        }
+        if (definition.Category is RuntimeCVarsGodot.DeveloperCategory
+            or RuntimeCVarsGodot.LightingCategory or RuntimeCVarsGodot.Category)
+        {
+            return true;
+        }
+        if (definition.Name is "renderdoc" or "renderdoc_path" or "gc_heaps" or "perf_overlay"
+            or "gpu_profile" or "render_thread" or "draw_latency_ticks" or "mesh_lod_pixels"
+            or "prop_cull_min_pixels" or "prop_fade_fraction" or "texture_mipmap_bias"
+            or "cull_back_faces" or "video_skip_after" or "debanding")
+        {
+            return true;
+        }
+        // The runtime's own registry, apart from what a player sets: the bindings, and the
+        // RexNet settings, which are the multiplayer options (user, 2026-10-11).
+        bool godotSide = RuntimeCVarsGodot.Definitions.Contains(definition);
+        return !godotSide
+            && !definition.Category.StartsWith("Input", StringComparison.Ordinal)
+            && definition.Category != "RexNet";
+    }
+
+    /// <summary>The look the four switches add up to: "modern", "classic", or "custom" when mixed.</summary>
+    public string CurrentLook()
+    {
+        string lighting = Values.TryGetValue("lighting_model", out string? model) ? model.Trim().Trim('"') : "modern";
+        bool classicLighting = lighting.Equals("classic", StringComparison.OrdinalIgnoreCase)
+            || lighting.Equals("fable", StringComparison.OrdinalIgnoreCase);
+        bool modernized = !Values.TryGetValue("materials_modernized", out string? materials)
+            || RuntimeConfig.NormalizeBoolValue(materials) == "true";
+        if (!classicLighting && modernized)
+        {
+            return "modern";
+        }
+        if (classicLighting && !modernized)
+        {
+            return "classic";
+        }
+        return "custom";
+    }
+
+    /// <summary>
+    /// Sets the look as one decision: the lighting model and the materials switch together,
+    /// since "the original game" means both and the dials under them follow the materials
+    /// switch by default.
+    /// </summary>
+    public void ApplyLook(string look)
+    {
+        bool classic = look == "classic";
+        Values["lighting_model"] = classic ? "classic" : "modern";
+        Values["materials_modernized"] = classic ? "false" : "true";
+        Save();
+    }
+
     private bool _initialized;
 
     public void Initialize()
@@ -76,9 +163,14 @@ public sealed class RuntimeSettingsModel
         var order = new List<string>();
         var byCategory = new Dictionary<string, List<RuntimeCVarDefinition>>(StringComparer.Ordinal);
 
+        bool showAdvanced = ShowAdvanced || filter.Length != 0;
         foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             if (!RuntimeConfig.ShouldShowCVar(definition) || !MatchesFilter(definition, filter))
+            {
+                continue;
+            }
+            if (!showAdvanced && IsAdvanced(definition))
             {
                 continue;
             }
@@ -94,12 +186,29 @@ public sealed class RuntimeSettingsModel
             bucket.Add(definition);
         }
 
-        // Developer switches go last, after everything a player tunes.
+        // The picture first, then the game's services, then whatever the runtime adds, and
+        // the developer switches last. Definition order alone put Multiplayer second, because
+        // the runtime's registry is listed before Godot's.
         return order
-            .OrderBy(category => category == RuntimeCVarsGodot.DeveloperCategory ? 1 : 0)
+            .OrderBy(GroupRank)
             .Select(category => (category, byCategory[category]))
             .ToList();
     }
+
+    private static int GroupRank(string category) => category switch
+    {
+        RuntimeConfig.DisplayCategory => 0,
+        RuntimeCVarsGodot.VideoCategory => 1,
+        RuntimeCVarsGodot.LightingCategory => 2,
+        RuntimeCVarsGodot.Category => 3,
+        MultiplayerCategory => 4,
+        RuntimeCVarsGodot.PresenceCategory => 5,
+        RuntimeCVarsGodot.DeveloperCategory => 9,
+        _ => 6,
+    };
+
+    /// <summary>The panel's name for the runtime's RexNet group: what it is to a player.</summary>
+    private const string MultiplayerCategory = "Multiplayer";
 
     private static string DisplayCategory(RuntimeCVarDefinition definition)
     {
@@ -109,6 +218,10 @@ public sealed class RuntimeSettingsModel
         if (RuntimeConfig.IsDisplayCVar(definition.Name))
         {
             return RuntimeConfig.DisplayCategory;
+        }
+        if (definition.Category == "RexNet")
+        {
+            return MultiplayerCategory;
         }
 
         return definition.Category;

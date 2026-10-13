@@ -2250,9 +2250,24 @@ extern "C" {
 ///     to a player's current body, the ack Godot sends the joiner.
 /// 172 adds RefiiHostGetItemDyeLayers — the texture layers the guest's own dye builder states
 ///     for one inventory item, worn or carried, so the menu shows a dyed garment dyed.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 172; }
+/// 173 adds RefiiHostGetClassicFrame — the frame-constant sources the title's render passes
+///     read (ambient, sun, lightmap factor, normal darkening, the atmosphere block, the theme
+///     block), RefiiHostGetClassicLights (the scene's active light list) and
+///     RefiiHostGetClassicMists (its mist volumes), for the classic renderer's feed; replaces
+///     the device constant shadow read, which is empty here.
+/// 174 adds RefiiHostGetClassicParticles — the render scene's particle groups as their twins
+///     hold them (records, material, keyframes, transform), for the classic particle draw.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 174; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
+
+extern "C" void RefiiVfsSetGuestRender(int32_t on);
+
+/// Runs (1) or skips (0) the guest's own scene draw, or returns it to REFII_GUEST_RENDER (-1).
+/// A reference instrument for the classic renderer: with the draw on, the title's constant
+/// setters fill the device shadow. Additive and optional (the binding tolerates its absence),
+/// so the ABI number is unchanged.
+REFII_HOST_ABI_EXPORT void RefiiHostSetGuestRender(int32_t on) { RefiiVfsSetGuestRender(on); }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddress(uint32_t tu1_address) {
     return refii_guest_address(tu1_address);
@@ -8355,6 +8370,30 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartHides(uint32_t entity, char
     return parts;
 }
 
+/// THE LIGHTING ZONE an entity's geometry is drawn in: a light lights a draw only when either
+/// zone is 0 or both are equal (`sub_82AB6360`, 0x82AB6428-0x82AB644C). A CECBuilding's own
+/// static geometry is in the zone of its definition hash, `entity+0x1C & 0x7FFFFFFF`, when
+/// `entity+0x90 & 0x40` (StaticMesh AddToScene `sub_822370A8`, 0x82237260-0x822372B4), else 1;
+/// everything else is in its renderable's zone at `+0xD0`, which `sub_822D8AA8` keeps by
+/// `LightZoneMode` (+0xCC): the building under it, the owner's building, 1, or 0 for all.
+/// Returns 1 (the mesh constructor's zone, `sub_82AA2658` 0x82AA26D8) for an entity with no
+/// renderable.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLightZone(uint32_t entity) {
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 1u;
+    }
+    constexpr uint32_t kBuilding = 67u;
+    if (((GuestWordAt(base, entity + 0x24u + (kBuilding / 32u) * 4u) >> (kBuilding % 32u)) & 1u) != 0u) {
+        return (GuestByteAt(base, entity + 0x90u) & 0x40u) != 0u
+            ? GuestWordAt(base, entity + 0x1Cu) & 0x7FFFFFFFu
+            : 1u;
+    }
+    const uint32_t renderable = EntityComponent(base, entity, 3u);
+    return renderable != 0u ? GuestWordAt(base, renderable + 0xD0u) : 1u;
+}
+
 /// THE STATED DRAW DISTANCE. The renderable (component 3) holds, from its GDB definition,
 /// `MaxDrawDistance` times the class multiplier at +0x28 and `DrawDistanceFadeRangeFactor` at
 /// +0x24 (`sub_82572438` @0x825724cc / @0x825724e0, the first call of the loader
@@ -10192,12 +10231,20 @@ namespace probe {
 constexpr int kSlots = 16;
 
 
+// The device's constant shadow (`sub_8221A880`: VS cN at dev + 16*(N+120); `sub_82214E30`: PS
+// cN at dev + 16*(N+376)), dev = *(0x83360364). 256 float4 registers per stage.
+constexpr uint32_t kShadowBytes = 256u * 16u;
+
 struct Slot {
     std::atomic<uint32_t> address{0};
     PPCFunc* original = nullptr;
     std::atomic<uint64_t> hits{0};
     std::atomic<uint32_t> last_lr{0};
     std::atomic<uint64_t> last_args[6] = {};
+    // One-shot: the next call's return copies both shadows (raw, guest byte order).
+    std::atomic<uint32_t> snapshot_armed{0};
+    std::atomic<uint32_t> snapshot_ready{0};
+    uint8_t snapshot[2 * kShadowBytes] = {};
 };
 
 Slot g_slots[kSlots];
@@ -10215,6 +10262,14 @@ void Thunk(PPCContext& ctx, uint8_t* base) {
     slot.last_args[5].store(ctx.r8.u64, std::memory_order_relaxed);
     if (slot.original != nullptr) {
         slot.original(ctx, base);
+    }
+    if (slot.snapshot_armed.exchange(0, std::memory_order_acq_rel) != 0) {
+        const uint32_t device = GuestWordAt(base, refii::guest::Address(0x83360364u));
+        if (device >= 0x10000u && device < 0xC0000000u) {
+            std::memcpy(slot.snapshot, base + device + 0x780u, kShadowBytes);
+            std::memcpy(slot.snapshot + kShadowBytes, base + device + 0x1780u, kShadowBytes);
+            slot.snapshot_ready.store(1, std::memory_order_release);
+        }
     }
 }
 
@@ -10283,6 +10338,30 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeRead(int32_t slot, uint32_t* out_ad
         out_args[i] = held.last_args[i].load(std::memory_order_relaxed);
     }
 
+    return 1;
+}
+
+/// Arms a one-shot constant snapshot on an armed probe: the next return of the probed function
+/// copies the device's VS and PS constant shadows. Returns 1 when armed.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeSnapshotArm(int32_t slot) {
+    if (slot < 0 || slot >= probe::kSlots || probe::g_slots[slot].address.load() == 0) return 0;
+    probe::g_slots[slot].snapshot_ready.store(0, std::memory_order_relaxed);
+    probe::g_slots[slot].snapshot_armed.store(1, std::memory_order_release);
+    return 1;
+}
+
+/// The snapshot, as floats: VS c0..c255 then PS c0..c255, four lanes each (2048 floats).
+/// Returns 1 when one has been taken since the last arm.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeSnapshotRead(int32_t slot, float* out, uint32_t capacity) {
+    if (slot < 0 || slot >= probe::kSlots || out == nullptr || capacity < 2048u) return 0;
+    const probe::Slot& held = probe::g_slots[slot];
+    if (held.snapshot_ready.load(std::memory_order_acquire) == 0) return 0;
+    for (uint32_t i = 0; i < 2048u; ++i) {
+        uint32_t raw;
+        std::memcpy(&raw, held.snapshot + i * 4u, sizeof(raw));
+        raw = __builtin_bswap32(raw);
+        std::memcpy(out + i, &raw, sizeof(raw));
+    }
     return 1;
 }
 
@@ -11112,6 +11191,562 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char
 /// The command-stream rings, read-only. `sub_8222ABE0` blocks when the reader traps the
 /// writer, and these four numbers per slot are the whole condition.
 ///
+/// The frame-constant sources the title's render passes read, as host floats:
+///   [0..3]    ambient light colour, `*(0x834A4D60)+208` (the second directional light, whose
+///             colour is the theme's AMBIENT_COLOUR) -> PS c20 / VS c54 (`sub_821B1A88`)
+///   [4..7]    its direction, `*(0x834A4D60)+304` (the sun's, as the light travels)
+///             -> PS c23 = (-dir, 4), VS c19 = -dir (`sub_821B16F8`)
+///   [8..11]   lightmap factor, `0x834A4D40`       -> PS c21 = (xyz, 1.3), VS c18 = (xyz, 2.86)
+///   [12..15]  normal-map darkening, `0x834A4D50`  -> PS c22
+///   [16..35]  atmosphere block, `0x834A0EC0`, 5 float4 -> PS c64..68 / VS c108..112
+///             (filled by `sub_82263570` while the sky is on)
+///   [36..131] the scene's THEME BLOCK, 24 float4 at scene+16: MAIN_LIGHT_COLOUR,
+///             MAIN_LIGHT_SHADOWED, AMBIENT_COLOUR, LIGHTMAP_COLOUR, AMBIENT_NORMAL_MAP_
+///             DARKENING_COLOUR, DISTANT_SHADOW_FACTOR, ENABLE_LIGHT_ZONE_SHADOW_CULLING,
+///             SUN_INTENSITY, SKY_BETA_RAYLEIGH_MULTIPLIER, SKY_BETA_MIE_MULTIPLIER, SKY_COLOUR,
+///             SKY_COMPLEMENTARY_COLOUR, SKY_COMPLEMENTARY_COLOUR_BIAS, SKY_SUNSET_COLOUR,
+///             SKY_FOGGING_START, NEAR_DISTANCE, NEAR_DENSITY, FAR_DISTANCE, FAR_DENSITY,
+///             CLOSE_FOG_COLOUR, CLOSE_FOG_MAX_DISTANCE, then tone mapping (`sub_83288CA0`'s
+///             table; the render-side copy `sub_822AF480` writes at scene+16)
+///   [132..135] the sun light's colour (twin+208), [136..139] its direction (twin+304),
+///   [140] its shadow enable (byte twin+336), [141] intensity (twin+448), [142] twin+452,
+///   [143] the scene's global mist strength (O+3040.x), [144..146] the wind direction and
+///   [147] its speed (O+3384..3399).
+/// The scene is `*(*(0x8349F79C) + 4*idx)` and the sun twin `*(*(0x8349F7AC) + 4*slot)`, with
+/// idx = L+4 and slot = L+8 off the sky owner L = `*(wg+92)`,
+/// wg = `*(*(*(*(0x83496AB8)+12)+88)+4)` (`sub_8234EF58`, `sub_825A14C0`).
+///
+/// THE SOURCES, NOT THE DEVICE: the passes copy these into the D3D constant shadow as they
+/// run, and in this host they never run (the scene stream is drained, the twins are kept, the
+/// pass bodies are not entered), so the shadow is zero while these are live. Returns the floats
+/// written (148), or 0 when the lighting objects are not up yet; a missing scene or sun leaves
+/// its part zero.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicFrame(float* out, uint32_t capacity) {
+    constexpr uint32_t kFloats = 148u;
+    if (out == nullptr || capacity < kFloats) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < kFloats; ++i) {
+        out[i] = 0.0f;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+
+    const uint32_t lighting = read32(refii::guest::Address(0x834A4D60u));
+    if (!plausible(lighting)) {
+        return 0;
+    }
+    read_floats(lighting + 208u, out, 4u);
+    read_floats(lighting + 304u, out + 4, 4u);
+    read_floats(refii::guest::Address(0x834A4D40u), out + 8, 4u);
+    read_floats(refii::guest::Address(0x834A4D50u), out + 12, 4u);
+    read_floats(refii::guest::Address(0x834A0EC0u), out + 16, 20u);
+
+    // The sky owner, through the game mode's world graphics.
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return kFloats;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    if (!plausible(owner)) {
+        return kFloats;
+    }
+
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (plausible(scenes) && scene_index < 4096u) {
+        const uint32_t scene = read32(scenes + scene_index * 4u);
+        if (plausible(scene)) {
+            read_floats(scene + 16u, out + 36, 96u);
+            // [143] the scene's global mist strength (O+3040.x), the mist binder's factor.
+            read_floats(scene + 3040u, out + 143, 1u);
+            // [144..146] the wind's unit direction and [147] its speed (O+3384..3399, the wind
+            // object's command `sub_8229B798`): the tree and grass sway terms.
+            read_floats(scene + 3384u, out + 144, 4u);
+        }
+    }
+
+    const uint32_t sun_slot = read32(owner + 8u);
+    const uint32_t twins = read32(refii::guest::Address(0x8349F7ACu));
+    if (plausible(twins) && sun_slot < 65536u) {
+        const uint32_t sun = read32(twins + sun_slot * 4u);
+        if (plausible(sun)) {
+            read_floats(sun + 208u, out + 132, 4u);
+            read_floats(sun + 304u, out + 136, 4u);
+            out[140] = static_cast<float>(GuestWordAt(base, sun + 336u) >> 24);
+            read_floats(sun + 448u, out + 141, 2u);
+        }
+    }
+    return kFloats;
+}
+
+/// THE WHOLE THEME BLOCK and the sky object's sun and moon, for the classic sky. Out, floats:
+///   [0 .. 775]  the scene's theme block, 194 parameters x 4 lanes (scene+16 + 16 x index, the
+///               table `sub_83288CA0` fills; Engine_ClassicThemeParams names them)
+///   [776..779]  sun colour (sky S+0), [780..783] sun direction (S+16)
+///   [784..787]  moon direction (M+0), [788] moon phase (M+20, an integer 0..7)
+/// S = sky+144, M = sky+208, the sky being the render twin named by owner+16 (vtable 0x820052C8,
+/// slot 17 `sub_8228F038` draws dome, moon, stars and clouds). Returns the floats written, 0
+/// when the scene is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTheme(float* out, uint32_t capacity) {
+    constexpr uint32_t kTheme = 194u * 4u;
+    constexpr uint32_t kFloats = kTheme + 13u;
+    if (out == nullptr || capacity < kFloats) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    const uint32_t a = plausible(mode) ? read32(mode + 12u) : 0u;
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < kFloats; ++i) {
+        out[i] = 0.0f;
+    }
+    read_floats(scene + 16u, out, kTheme);
+    const uint32_t twins = read32(refii::guest::Address(0x8349F7ACu));
+    const uint32_t sky_slot = read32(owner + 16u);
+    const uint32_t sky = plausible(twins) && sky_slot < 65536u ? read32(twins + sky_slot * 4u) : 0u;
+    if (plausible(sky) && read32(sky) == refii::guest::Address(0x820052C8u)) {
+        read_floats(sky + 144u, out + kTheme, 4u);
+        read_floats(sky + 160u, out + kTheme + 4u, 4u);
+        read_floats(sky + 208u, out + kTheme + 8u, 4u);
+        out[kTheme + 12u] = static_cast<float>(read32(sky + 228u));
+    }
+    return kFloats;
+}
+
+/// The render scene's ACTIVE LIGHTS, as the light manager holds them: the set the title's
+/// per-draw light query walks (`sub_82AB6360`), so the classic renderer can assign lights to
+/// a draw the way the guest does. LM = scene+3684; its entries are 32 bytes at `*(LM+8)`
+/// (vec4 position.xyz / radius.w, +16 the light object L; the sun's radius is 1e10) and
+/// `*(LM+24)` is the 64-bit mask of live entries, bit i for entry i. Per light, 20 floats:
+///   [0..2] position, [3] radius (the entry's), [4..6] colour (L+208), [7] intensity (L+448),
+///   [8..10] direction (L+304), [11] type (L+4: 8 point, 9 spot, 10 directional),
+///   [12] range (L+320), [13] cone angle (L+324), [14] range scale (L+452),
+///   [15] flags: bit0 L+336, bit1 L+337, bit2 L+338, bit3 L+484 (the shadow-casting bytes),
+///   [16] lighting zone id (L+416) as raw bits, [17] the entry index, [18..19] reserved.
+/// Returns the number of lights written (at most `capacity / 20`), or 0 when the scene is not
+/// up. The fields are the ones `sub_82A6CDD0` packs into the light block and the query reads.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLights(float* out, uint32_t capacity) {
+    constexpr uint32_t kStride = 20u;
+    if (out == nullptr || capacity < kStride) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_float = [base](uint32_t at) {
+        const uint32_t bits = GuestWordAt(base, at);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return 0;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    const uint32_t manager = read32(scene + 3684u);
+    if (!plausible(manager)) {
+        return 0;
+    }
+    const uint32_t entries = read32(manager + 8u);
+    const uint64_t mask = (static_cast<uint64_t>(read32(manager + 24u)) << 32) | read32(manager + 28u);
+    if (!plausible(entries) || mask == 0u) {
+        return 0;
+    }
+
+    const uint32_t max_lights = capacity / kStride;
+    uint32_t written = 0;
+    for (uint32_t index = 0; index < 64u && written < max_lights; ++index) {
+        // Bit i is entry i: live, the mask read 1 with the sun in entry 0 and entry 63 empty.
+        if ((mask & (1ull << index)) == 0u) {
+            continue;
+        }
+        const uint32_t entry = entries + index * 32u;
+        const uint32_t light = read32(entry + 16u);
+        if (!plausible(light)) {
+            continue;
+        }
+        float* o = out + written * kStride;
+        o[0] = read_float(entry);
+        o[1] = read_float(entry + 4u);
+        o[2] = read_float(entry + 8u);
+        o[3] = read_float(entry + 12u);
+        o[4] = read_float(light + 208u);
+        o[5] = read_float(light + 212u);
+        o[6] = read_float(light + 216u);
+        o[7] = read_float(light + 448u);
+        o[8] = read_float(light + 304u);
+        o[9] = read_float(light + 308u);
+        o[10] = read_float(light + 312u);
+        o[11] = static_cast<float>(read32(light + 4u));
+        o[12] = read_float(light + 320u);
+        o[13] = read_float(light + 324u);
+        o[14] = read_float(light + 452u);
+        const uint32_t flag_word = read32(light + 336u);  // bytes +336..+339
+        uint32_t flags = 0;
+        flags |= ((flag_word >> 24) & 0xFFu) != 0u ? 1u : 0u;
+        flags |= ((flag_word >> 16) & 0xFFu) != 0u ? 2u : 0u;
+        flags |= ((flag_word >> 8) & 0xFFu) != 0u ? 4u : 0u;
+        flags |= (read32(light + 484u) >> 24) != 0u ? 8u : 0u;
+        o[15] = static_cast<float>(flags);
+        // The lighting zone id, bit for bit: a zone is a hash and a float cast would round it.
+        const uint32_t zone = read32(light + 416u);
+        std::memcpy(o + 16, &zone, sizeof(zone));
+        o[17] = static_cast<float>(index);
+        o[18] = 0.0f;
+        o[19] = 0.0f;
+        ++written;
+    }
+    return written;
+}
+
+/// The render scene's MIST VOLUMES: the type-27 objects of the scene's typed list (O+3412:
+/// nodes of 24 bytes between *(L+4) and *(L+8), keyed by type at +0, objects at *(node+12)..
+/// *(node+16); `sub_82A8B998`, `sub_821F4480`), as the per-draw test and the binder read them
+/// (`sub_82B1DE38`, `sub_82A6DD30`, `Render_BindHighSamplersAndPixelBool` 0x82A6EAA8). Per
+/// mist, 36 floats:
+///   [0..2] bounds min (V+80), [3..5] bounds max (V+96), [6..9] colour (V+192) -> c72,
+///   [10] density (V+184), [11] noise offset (V+216) -> the evolve pass's c46,
+///   [12] time speed (V+220), [13..14] noise tiling (V+264/268) -> the evolve pass's c31.xy,
+///   [15] V+316 (c76.w = 1/it), [16..19] V+320 -> c75, [20] global-strength weight (V+344),
+///   [21..24] V+352 -> c73, [25..28] V+368 -> c74, [29..31] extents (V+224), [32..34] origin
+///   (V+240), [35] 1 when the height texture (V+276) is set.
+/// Returns the mists written (at most capacity / 36), or 0 when the scene is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicMists(float* out, uint32_t capacity) {
+    constexpr uint32_t kStride = 36u;
+    if (out == nullptr || capacity < kStride) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return 0;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    const uint32_t list = scene + 3412u;
+    const uint32_t nodes_begin = read32(list + 4u);
+    const uint32_t nodes_end = read32(list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || nodes_end - nodes_begin > 48u * 24u) {
+        return 0;
+    }
+
+    const uint32_t max_mists = capacity / kStride;
+    uint32_t written = 0;
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+        if (read32(node) != 27u) {
+            continue;
+        }
+        const uint32_t objects_begin = read32(node + 12u);
+        const uint32_t objects_end = read32(node + 16u);
+        if (!plausible(objects_begin) || objects_end < objects_begin) {
+            break;
+        }
+        const uint32_t count = (objects_end - objects_begin) / 4u;
+        for (uint32_t i = 0; i < count && written < max_mists; ++i) {
+            const uint32_t mist = read32(objects_begin + i * 4u);
+            if (!plausible(mist)) {
+                continue;
+            }
+            float* o = out + written * kStride;
+            read_floats(mist + 80u, o, 3u);
+            read_floats(mist + 96u, o + 3, 3u);
+            read_floats(mist + 192u, o + 6, 4u);
+            read_floats(mist + 184u, o + 10, 1u);
+            read_floats(mist + 216u, o + 11, 1u);
+            read_floats(mist + 220u, o + 12, 1u);
+            read_floats(mist + 264u, o + 13, 2u);
+            read_floats(mist + 316u, o + 15, 1u);
+            read_floats(mist + 320u, o + 16, 4u);
+            read_floats(mist + 344u, o + 20, 1u);
+            read_floats(mist + 352u, o + 21, 4u);
+            read_floats(mist + 368u, o + 25, 4u);
+            read_floats(mist + 224u, o + 29, 3u);
+            read_floats(mist + 240u, o + 32, 3u);
+            o[35] = plausible(read32(mist + 276u)) ? 1.0f : 0.0f;
+            ++written;
+        }
+        break;
+    }
+    return written;
+}
+
+/// The render scene's PARTICLE GROUPS as their render-side twins hold them: the data the sim
+/// states to the renderer through the twin's receivers (`sub_821D8EA8` the records, material
+/// and bounds; `sub_821D9D40` the transform), which the title's point-sprite draw
+/// (`sub_821CA790`) turns into FACE_ME quads. Walks the scene's typed object list (O+3412) for
+/// the two particle classes (types 12 and 30, `sub_82A43EA0` / `sub_82A449A8`) and writes, per
+/// group whose +240 kind is 1 (quads; trails are 2 and 3):
+///   a 320-float header, then count x 12 floats of 48-byte records as the stream holds them.
+/// Header (R = the render object, D = *(*(R+180)+4) its render data, M = *(D+48) its material):
+///   [0] R (bits) [1] R+240 kind [2] count R+176 [3] R+244
+///   [4..6] bounds min R+80 [8..10] bounds max R+96
+///   [12..16] fade distances R+384..400 (in near, in far, out near, out far, alpha)
+///   [17] scale R+404 [18] R+408 [19] R+409 [20] R+412
+///   [21..36] the current transform R+320, row-major as the title lerps it (`sub_8288F408`)
+///   [37] M (bits) [38] texture count M+180 [39..41] blend src/dst/op M+36..44 (engine enums:
+///       0 ZERO 1 ONE 2 SRCCOLOR 3 INVSRCCOLOR 4 SRCALPHA 5 INVSRCALPHA 6 DESTCOLOR
+///       7 INVDESTCOLOR 8 DESTALPHA 9 INVDESTALPHA; ops 0 ADD 1 SUB 2 REVSUB 3 MIN 4 MAX)
+///   [42] soft fade distance M+48 [43] M+52 displacement [44] M+53 alpha ref 16 [45] M+56 fixed axes
+///   [46..49] D+32 the fixed-axis quaternion [50] keyframe count (at most 19)
+///   [51..53] the lighting object's +496 (the ambient the lit particle adds) [54] probe count
+///   [64..253] 19 keyframes x 10: colour(4) size x, size y, global scale x, y, self-illum, start
+///       (M+8 vector, stride 40: +0 colour, +16/+20 sizes, +24/+28 global scales, +32, +36)
+///   [254..313] 3 textures x 20: key word, start time, x divisions, y divisions, 16 words of the
+///       key's text when the key is a pointer to one (M+80 + 24 i: +4 key, +8 start, +20/+21)
+/// out[0] = groups written, out[1] = floats used; returns the floats used, 0 when the scene is
+/// not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t capacity) {
+    constexpr uint32_t kHeader = 320u;
+    constexpr uint32_t kRecord = 12u;
+    constexpr uint32_t kMaxRecords = 8192u;
+    if (out == nullptr || capacity < 2u + kHeader) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read8 = [&read32](uint32_t at) {
+        return (read32(at & ~3u) >> (8u * (3u - (at & 3u)))) & 0xFFu;
+    };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+    const auto put_bits = [](float* to, uint32_t bits) { std::memcpy(to, &bits, sizeof(float)); };
+
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return 0;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    const uint32_t list = scene + 3412u;
+    const uint32_t nodes_begin = read32(list + 4u);
+    const uint32_t nodes_end = read32(list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || nodes_end - nodes_begin > 48u * 24u) {
+        return 0;
+    }
+    const uint32_t lighting = read32(refii::guest::Address(0x834A4D60u));
+    const uint32_t probes = (read32(scene + 76u) - read32(scene + 72u)) / 12u;
+
+    uint32_t used = 2u;
+    uint32_t groups = 0u;
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+        const uint32_t type = read32(node);
+        if (type != 12u && type != 30u) {
+            continue;
+        }
+        const uint32_t objects_begin = read32(node + 12u);
+        const uint32_t objects_end = read32(node + 16u);
+        if (!plausible(objects_begin) || objects_end < objects_begin) {
+            continue;
+        }
+        const uint32_t count_objects = (objects_end - objects_begin) / 4u;
+        for (uint32_t i = 0; i < count_objects; ++i) {
+            const uint32_t r = read32(objects_begin + i * 4u);
+            if (!plausible(r) || read32(r + 240u) != 1u) {
+                continue;
+            }
+            uint32_t count = read32(r + 176u);
+            if (count == 0u || count > kMaxRecords) {
+                continue;
+            }
+            const uint32_t shared = read32(r + 180u);
+            const uint32_t data = plausible(shared) ? read32(shared + 4u) : 0u;
+            if (!plausible(data)) {
+                continue;
+            }
+            const uint32_t records = read32(data + 8u);
+            const uint32_t material = read32(data + 48u);
+            if (!plausible(records) || !plausible(material)) {
+                continue;
+            }
+            if (used + kHeader + count * kRecord > capacity) {
+                break;
+            }
+            float* h = out + used;
+            for (uint32_t k = 0; k < kHeader; ++k) {
+                h[k] = 0.0f;
+            }
+            put_bits(h + 0, r);
+            h[1] = 1.0f;
+            h[2] = static_cast<float>(count);
+            h[3] = static_cast<float>(static_cast<int32_t>(read32(r + 244u)));
+            read_floats(r + 80u, h + 4, 3u);
+            read_floats(r + 96u, h + 8, 3u);
+            read_floats(r + 384u, h + 12, 5u);
+            read_floats(r + 404u, h + 17, 1u);
+            h[18] = static_cast<float>(read8(r + 408u));
+            h[19] = static_cast<float>(read8(r + 409u));
+            read_floats(r + 412u, h + 20, 1u);
+            read_floats(r + 320u, h + 21, 16u);
+            put_bits(h + 37, material);
+            const uint32_t textures = read32(material + 180u);
+            h[38] = static_cast<float>(textures > 3u ? 3u : textures);
+            h[39] = static_cast<float>(read32(material + 36u));
+            h[40] = static_cast<float>(read32(material + 40u));
+            h[41] = static_cast<float>(read32(material + 44u));
+            read_floats(material + 48u, h + 42, 1u);
+            h[43] = static_cast<float>(read8(material + 52u));
+            h[44] = static_cast<float>(read8(material + 53u));
+            h[45] = static_cast<float>(read8(material + 56u));
+            read_floats(data + 32u, h + 46, 4u);
+            const uint32_t keys_begin = read32(material + 8u);
+            const uint32_t keys_end = read32(material + 12u);
+            uint32_t keys = plausible(keys_begin) && keys_end >= keys_begin ? (keys_end - keys_begin) / 40u : 0u;
+            if (keys > 19u) {
+                keys = 19u;
+            }
+            h[50] = static_cast<float>(keys);
+            if (plausible(lighting)) {
+                read_floats(lighting + 496u, h + 51, 3u);
+            }
+            h[54] = static_cast<float>(probes);
+            for (uint32_t k = 0; k < keys; ++k) {
+                const uint32_t key = keys_begin + k * 40u;
+                float* o = h + 64 + k * 10;
+                read_floats(key, o, 4u);
+                read_floats(key + 16u, o + 4, 2u);
+                read_floats(key + 24u, o + 6, 2u);
+                read_floats(key + 32u, o + 8, 2u);
+            }
+            for (uint32_t t = 0; t < textures && t < 3u; ++t) {
+                const uint32_t entry = material + 80u + t * 24u;
+                float* o = h + 254 + t * 20;
+                const uint32_t key = read32(entry + 4u);
+                put_bits(o, key);
+                read_floats(entry + 8u, o + 1, 1u);
+                o[2] = static_cast<float>(static_cast<int8_t>(read8(entry + 20u)));
+                o[3] = static_cast<float>(static_cast<int8_t>(read8(entry + 21u)));
+                // A key that points at printable text is the texture's path; carry it.
+                if (plausible(key)) {
+                    bool text = true;
+                    for (uint32_t c = 0; c < 4u && text; ++c) {
+                        const uint32_t ch = read8(key + c);
+                        text = ch >= 0x20u && ch < 0x7Fu;
+                    }
+                    if (text) {
+                        for (uint32_t w = 0; w < 16u; ++w) {
+                            put_bits(o + 4 + w, read32(key + w * 4u));
+                        }
+                    }
+                }
+            }
+            read_floats(records, h + kHeader, count * kRecord);
+            used += kHeader + count * kRecord;
+            ++groups;
+        }
+    }
+    out[0] = static_cast<float>(groups);
+    out[1] = static_cast<float>(used);
+    return groups == 0u ? 0u : used;
+}
+
 /// Fills 4 slots x 6 words: object, capacity, write cursor (+32), write consumed (+36),
 /// reader consumed (+64), last read (+24). A zero object means the slot is empty.
 REFII_HOST_ABI_EXPORT void RefiiHostGetSceneStreams(uint32_t* out) {

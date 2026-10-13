@@ -55,6 +55,12 @@ NATIVE = [
     dict(name="JSON for Modern C++ (via inja)", url="https://github.com/nlohmann/json", spdx="MIT",
          files=["tools/licenses/texts/nlohmann-json-LICENSE.MIT"]),
     dict(name="CLI11", url="https://github.com/CLIUtils/CLI11", spdx="BSD-3-Clause", files=[f"{RX}/cli11/LICENSE"]),
+    # Shipped as bin/dxc: the compiler the shader pipeline runs on the player's banks. The
+    # vendored binaries (src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin) carry no licence
+    # file, so the text was fetched from upstream.
+    dict(name="DirectX Shader Compiler (dxc, in bin/dxc)",
+         url="https://github.com/microsoft/DirectXShaderCompiler", spdx="NCSA",
+         files=["tools/licenses/texts/DirectXShaderCompiler-LICENSE.TXT"]),
     dict(name="UTF8-CPP", url="https://github.com/nemtrif/utfcpp", spdx="BSL-1.0", files=[f"{RX}/utfcpp/LICENSE"]),
     dict(name="o1heap", url="https://github.com/pavel-kirienko/o1heap", spdx="MIT", files=[f"{RX}/o1heap/LICENSE"]),
     dict(name="SIMDe", url="https://github.com/simd-everywhere/simde", spdx="MIT", files=[f"{RX}/simde/COPYING"]),

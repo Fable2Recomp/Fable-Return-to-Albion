@@ -19,6 +19,7 @@ public partial class InstallDialog : Control
 	private LineEdit _isoEdit = null!;
 	private LineEdit _xexpEdit = null!;
 	private CheckBox _updateCheck = null!;
+	private CheckBox _classicShadersCheck = null!;
 	private Label _xexpLabel = null!;
 	private Label _errorLabel = null!;
 	private Button _startButton = null!;
@@ -26,7 +27,8 @@ public partial class InstallDialog : Control
 
 	private string _dialogError = string.Empty;
 
-	public event Action<string, string>? InstallRequested;
+	/// <summary>The ISO, the title update (or empty), and whether to build the classic shaders.</summary>
+	public event Action<string, string, bool>? InstallRequested;
 
 	public InstallDialog(Font? font, int fontSize, SmartStyle style)
 	{
@@ -136,6 +138,23 @@ public partial class InstallDialog : Control
 
 		_updateCheck.Toggled += _ => RefreshState();
 		column.AddChild(_updateCheck);
+
+		// The classic renderer draws with the game's own shaders, translated from the installed
+		// shader bank; the remaster does not need them. A player who skips them here can build
+		// them later from the Reinstall tab's Compile Shaders.
+		_classicShadersCheck = new CheckBox
+		{
+			Text = "Build the classic shaders (for the original look; can be done later)",
+			ButtonPressed = false,
+		};
+		_classicShadersCheck.AddThemeFontSizeOverride("font_size", _fontSize);
+		_classicShadersCheck.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
+		_classicShadersCheck.AddThemeColorOverride("font_pressed_color", LauncherTokens.Walnut);
+		_classicShadersCheck.AddThemeColorOverride("font_hover_color", LauncherTokens.Walnut);
+		_classicShadersCheck.AddThemeColorOverride("font_hover_pressed_color", LauncherTokens.Walnut);
+		_classicShadersCheck.AddThemeIconOverride("unchecked", MakeCheckIcon(ticked: false));
+		_classicShadersCheck.AddThemeIconOverride("checked", MakeCheckIcon(ticked: true));
+		column.AddChild(_classicShadersCheck);
 
 		_xexpLabel = MakeLabel("Title update (.xexp or package)");
 		column.AddChild(_xexpLabel);
@@ -337,7 +356,7 @@ public partial class InstallDialog : Control
 		{
 			if (DiscIsSupported(isoPath, SelectedPressing, out _, out string unsupported))
 			{
-				InstallRequested?.Invoke(isoPath, string.Empty);
+				InstallRequested?.Invoke(isoPath, string.Empty, _classicShadersCheck.ButtonPressed);
 				QueueFree();
 				return;
 			}
@@ -350,7 +369,7 @@ public partial class InstallDialog : Control
 		}
 		else if (TitleUpdateFitsDisc(isoPath, xexpPath, SelectedPressing, out string mismatch))
 		{
-			InstallRequested?.Invoke(isoPath, xexpPath);
+			InstallRequested?.Invoke(isoPath, xexpPath, _classicShadersCheck.ButtonPressed);
 			QueueFree();
 			return;
 		}

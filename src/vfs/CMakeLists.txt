@@ -44,6 +44,8 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Each renderable's stated appearance (alpha, tint, scale, drawable): same rule, filled by
     # src/hooks/entity_appearance.cpp.
     ${REFII_VFS_ROOT}/src/core/entity_appearance_state.cpp
+    # The debug channel's guest-render switch: the host sets it, the DrawScene hook reads it.
+    ${REFII_VFS_ROOT}/src/core/guest_render_state.cpp
     # Each character's texture composites, filled by src/hooks/texture_layers.cpp.
     ${REFII_VFS_ROOT}/src/core/texture_layer_state.cpp
     ${REFII_VFS_ROOT}/src/core/item_dye_layer_state.cpp

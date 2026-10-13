@@ -331,44 +331,6 @@ function(refii_apply_origin_rpath target_name)
     endif()
 endfunction()
 
-function(refii_append_stage_library_command out_var target_name destination_dir)
-    if(NOT TARGET "${target_name}")
-        return()
-    endif()
-
-    get_target_property(_refii_stage_target_type "${target_name}" TYPE)
-    if(_refii_stage_target_type STREQUAL "INTERFACE_LIBRARY")
-        return()
-    endif()
-
-    get_target_property(_refii_stage_target_imported "${target_name}" IMPORTED)
-    set(_refii_stage_library_path "")
-    if(_refii_stage_target_imported)
-        if(CMAKE_BUILD_TYPE)
-            string(TOUPPER "${CMAKE_BUILD_TYPE}" _refii_stage_target_config)
-            get_target_property(
-                _refii_stage_library_path
-                "${target_name}"
-                "IMPORTED_LOCATION_${_refii_stage_target_config}"
-            )
-            unset(_refii_stage_target_config)
-        endif()
-        if(NOT _refii_stage_library_path)
-            get_target_property(_refii_stage_library_path "${target_name}" IMPORTED_LOCATION)
-        endif()
-    else()
-        set(_refii_stage_library_path "$<TARGET_FILE:${target_name}>")
-    endif()
-
-    if(_refii_stage_library_path)
-        list(APPEND ${out_var}
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_refii_stage_library_path}"
-                "${destination_dir}"
-        )
-        set(${out_var} "${${out_var}}" PARENT_SCOPE)
-    endif()
-endfunction()
 
 set(REFII_TARGET_SUPPORTS_SSE41 OFF)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
@@ -433,20 +395,6 @@ function(refii_apply_generated_payload_compile_options target_name)
     endif()
 endfunction()
 
-set(REFII_PACKAGE_EXTERNAL_LIB_TARGETS
-    rex::runtime
-    # Netplay-tree GPU plugin; skipped via the TARGET checks on the stable tree.
-    rex::gpu-xenos
-    rex::TracyClient
-    fmt::fmt
-    spdlog::spdlog
-    SDL3::SDL3-static
-    volk::volk
-    rex::SPIRV-Tools-static
-    # Despite the name, this is also used for Linux Vulkan/SPIR-V shader compilation today.
-    Microsoft::DirectXShaderCompiler
-    Microsoft::DXIL
-)
 
 option(REFII_BUILD_NATIVE_HOOKS "Build native hook sources into refii_generated" ON)
 option(REFII_BUILD_VFS_HOOKS "Build the native VFS runtime and hook sources" ON)
@@ -823,7 +771,7 @@ if(TARGET refii_vfs)
     target_link_libraries(refii_host PUBLIC refii_vfs)
 endif()
 
-# AFTER refii_host: the bridge stages the whole dependency closure into Godot/build/bin,
+# AFTER refii_host: the bridge stages the whole dependency closure into Godot/build/<arch>/bin,
 # and `if(TARGET ...)` only sees targets already defined. Added earlier, it silently
 # staged a partial set — the bridge without the recompiled guest behind it.
 # The code generator the launcher loads to build the player's game code. BEFORE the host
@@ -857,10 +805,6 @@ if(TARGET refii_generated)
 endif()
 refii_apply_generated_payload_compile_options(refii_hooks)
 
-
-if(TARGET refii-launcher AND TARGET refii-stage-external-libs)
-    add_dependencies(refii-launcher refii-stage-external-libs)
-endif()
 
 foreach(_refii_origin_rpath_target
     refii
@@ -1043,8 +987,7 @@ if(REFII_WINDOWS_INSTALL_INPUTS_ONLY)
             refii_payload_sdk
             refii_stage_godot
             refii_binkdecode
-            refii_xmadecode
-            refii-stage-external-libs)
+            refii_xmadecode)
         if(TARGET "${_dependency}")
             add_dependencies(refii_windows_install_inputs "${_dependency}")
         endif()

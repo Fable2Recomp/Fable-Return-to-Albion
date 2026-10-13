@@ -472,6 +472,14 @@ public static class Engine_TexSettings
 			_cacheEnabled = Engine_RefiiConfig.Bool(values, "texture_cache_enabled", true);
 			_model = Engine_RefiiConfig.String(values, "texture_upscaling_model", "resample");
 			_ormEnabled = Engine_RefiiConfig.Bool(values, "texture_orm_enabled", _modernized);
+			// NEVER UNDER THE CLASSIC LIGHTING MODEL, whatever the key says: the title's own
+			// shaders read the shipped specular map as it is, and the ground's cavity and
+			// parallax are modern-material terms. ORM is the modernization (user, 2026-10-12).
+			if (Refii.Lighting.Engine_LightingFrame.IsClassic(
+					Engine_RefiiConfig.String(values, "lighting_model", "modern")))
+			{
+				_ormEnabled = false;
+			}
 			_weights = Engine_RefiiConfig.String(
 				values, "texture_upscaling_weights", "realesr-general-x4v3");
 			_ormAoStrength =

@@ -975,7 +975,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private void PublishPostFx()
     {
-        Engine_PostFxParams.Publish(WithGuestThemes(_toneMapTheme), Theme, _frame, ResolveCamera());
+        Engine_PostFxParams.Publish(WithGuestThemes(LiveToneMap() ?? _toneMapTheme), Theme, _frame, ResolveCamera());
     }
 
     private readonly System.Collections.Generic.List<Refii.Host.HostBridge.GuestThemeLayer> _guestLayers = new();
@@ -993,6 +993,29 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// picture at rest is unchanged. Fields a theme inherits through `parent` are not blended;
     /// only what the record and its sub-records state is.
     /// </summary>
+    private ToneMapTheme? _liveToneMap;
+
+    /// <summary>
+    /// Under the classic renderer with the guest's theme block up: its tone-mapping parameters
+    /// as the base, after the guest's own day-set blending: ToneMapParam 0..31 are theme indices
+    /// 21..52 (exposure through radial blur) and the six depth-of-field ones 86..91. The pushed
+    /// themes still compose over it in <see cref="WithGuestThemes"/>.
+    /// </summary>
+    private ToneMapTheme? LiveToneMap()
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || !Refii.Models.Engine_ClassicTheme.Live)
+        {
+            return null;
+        }
+        _liveToneMap ??= new ToneMapTheme { HasAny = true };
+        for (int field = 0; field < ToneMapTheme.ParamCount; field++)
+        {
+            _liveToneMap.V[field] = Refii.Models.Engine_ClassicTheme.Param(field < 32 ? 21 + field : 86 + field - 32);
+            _liveToneMap.Present[field] = true;
+        }
+        return _liveToneMap;
+    }
+
     private ToneMapTheme? WithGuestThemes(ToneMapTheme? baseTheme)
     {
         if (baseTheme is null || Engine.IsEditorHint() || !Refii.Host.HostBridge.IsInGame)
@@ -1183,6 +1206,10 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Vector4 current = material.GetShaderParameter(Param_uv_scale_offset).AsVector4();
             material.SetShaderParameter(Param_uv_scale_offset, new Vector4(
                 current.X, current.Y, _cloudUvX[index], _cloudUvY[index]));
+            if (material.HasMeta(Engine_ClassicClouds.ClassicCloudMeta))
+            {
+                Engine_ClassicClouds.SetScroll(material, _cloudUvX[index], _cloudUvY[index]);
+            }
         }
     }
 

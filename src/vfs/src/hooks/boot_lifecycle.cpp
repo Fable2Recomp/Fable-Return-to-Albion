@@ -1,3 +1,5 @@
+#include <atomic>
+#include <unordered_map>
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
@@ -756,13 +758,139 @@ REX_EXTERN(rex_lhGameLoop_HighFrequencyUpdate) {
 // restores the guest's draw (a reference instrument, like the renderer build).
 // ============================================================================================
 namespace {
-// The guest's draw is OFF: Godot renders. REFII_GUEST_RENDER=1 is a diagnostic only.
+// The guest's draw is OFF: Godot renders. REFII_GUEST_RENDER=1, or the debug channel's
+// `guestrender` op at runtime, runs it as a reference instrument: its constant setters then
+// fill the device shadow the classic renderer is checked against.
 bool GuestRenderWanted() {
-  static const bool wanted = [] {
+  static const bool from_environment = [] {
     const char* value = std::getenv("REFII_GUEST_RENDER");
     return value != nullptr && std::string_view(value) == "1";
   }();
-  return wanted;
+  // The debug channel's switch (src/core/guest_render_state.cpp): -1 follows the environment.
+  const int32_t override_value = refii_bridge_guest_render_override();
+  return override_value >= 0 ? override_value != 0 : from_environment;
+}
+}  // namespace
+
+// ============================================================================================
+// THE LIGHT VISIBILITY STAMP, STATED BY THE HOST. The light manager's update `sub_82240CE8`
+// (0x821C3AF4, before the draw) keeps a non-directional light active only while
+// `sub_82AB5AB8` passes: `(ctx+0xA0 - L+0x94) <u 2` (0x82AB5B34-48), ctx being the first
+// render context of index 0 in `dword_834A57B0..B4` (`sub_821EFDB0`, 0 when none). L+0x94 is
+// written only by the light's vtable +8 `sub_8221FAE0` (`L[37 + ctx->index] = ctx+0xA0`),
+// which the draw's visibility walk (`sub_82192528` -> `sub_82ABD718`) calls on the primitives
+// whose AABB (L+0x50 min, L+0x60 max; `sub_82A6DF48`) passes the view's planes at view+0x2F0
+// (`sub_822362F8`: 16-byte planes, count at +0x100, outside when -w > dot3(p-vertex, n)).
+// The planes are built by `sub_8228B4E0` at 0x821C3B08, before the draw. With the draw
+// skipped no light was ever stamped (all stayed at the constructor's -100) and the manager
+// held the sun alone: 182 torches and lamps in Westcliff at night, none active.
+//
+// The walk's answer, given here: the scene's lights (registry nodes with flag 1 at
+// scene+3412+24..+28, objects at node+12..+16, as `sub_821FF800` iterates them) whose class
+// stamps through `sub_8221FAE0` get the context's counter when their box met the planes of
+// THIS OR THE PREVIOUS draw, and a stamp two passes old otherwise. The guest's counter
+// advances once per stamping draw (`sub_821AE258`), so with several views a frame (the main
+// view, reflections, a menu's preview) its test `< 2` passes a light any of the last two draws
+// saw; a last-writer stamp would let a narrow view switch off a lamp the main view shows.
+// Occlusion queries (the walk's vtable +0x48 when pass+0x709) have no answer without a GPU
+// and are not applied.
+// ============================================================================================
+namespace {
+// The draw each light was last seen in, by light address; draws counted here.
+std::unordered_map<uint32_t, uint32_t> g_light_last_drawn;
+uint32_t g_light_draws = 0;
+
+void StateDrawnLights(uint8_t* base, uint32_t view) {
+  ++g_light_draws;
+  const auto load32 = [base](uint32_t at) {
+    uint32_t raw;
+    std::memcpy(&raw, base + at, sizeof(raw));
+    return __builtin_bswap32(raw);
+  };
+  const auto loadf = [&load32](uint32_t at) {
+    const uint32_t bits = load32(at);
+    float value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  };
+  const auto store32 = [base](uint32_t at, uint32_t value) {
+    const uint32_t raw = __builtin_bswap32(value);
+    std::memcpy(base + at, &raw, sizeof(raw));
+  };
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xE0000000u; };
+  constexpr uint32_t kStampLight = 0x8221FAE0u;
+
+  const uint32_t scene = load32(view + 0x14u);
+  if (!plausible(scene)) {
+    return;
+  }
+
+  // `sub_821EFDB0`: the first registered context whose index is 0; its +0xA0 is the counter.
+  uint32_t counter = 0;
+  const uint32_t contexts = load32(refii::guest::Address(0x834A57B0u));
+  const uint32_t contexts_end = load32(refii::guest::Address(0x834A57B4u));
+  if (plausible(contexts) && contexts_end >= contexts && contexts_end - contexts <= 4u * 64u) {
+    for (uint32_t at = contexts; at + 4u <= contexts_end; at += 4u) {
+      const uint32_t context = load32(at);
+      if (plausible(context) && load32(context) == 0u) {
+        counter = load32(context + 0xA0u);
+        break;
+      }
+    }
+  }
+
+  const uint32_t planes = view + 0x2F0u;
+  const int32_t plane_count = static_cast<int32_t>(load32(planes + 0x100u));
+  const auto box_meets_planes = [&](uint32_t light) {
+    const float lo[3] = {loadf(light + 0x50u), loadf(light + 0x54u), loadf(light + 0x58u)};
+    const float hi[3] = {loadf(light + 0x60u), loadf(light + 0x64u), loadf(light + 0x68u)};
+    for (int32_t i = 0; i < plane_count && i < 16; ++i) {
+      const uint32_t plane = planes + static_cast<uint32_t>(i) * 16u;
+      float dot = 0.0f;
+      for (uint32_t axis = 0; axis < 3u; ++axis) {
+        const float n = loadf(plane + axis * 4u);
+        dot += n * (n >= 0.0f ? hi[axis] : lo[axis]);
+      }
+      if (-loadf(plane + 12u) > dot) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const uint32_t registry = scene + 3412u;
+  const uint32_t nodes_begin = load32(registry + 24u);
+  const uint32_t nodes_end = load32(registry + 28u);
+  if (!plausible(nodes_begin) || nodes_end < nodes_begin || (nodes_end - nodes_begin) % 24u != 0u ||
+      (nodes_end - nodes_begin) / 24u > 64u) {
+    return;
+  }
+  for (uint32_t node = nodes_begin; node < nodes_end; node += 24u) {
+    if ((load32(node + 4u) & 1u) == 0u) {
+      continue;
+    }
+    const uint32_t objects = load32(node + 12u);
+    const uint32_t objects_end = load32(node + 16u);
+    if (!plausible(objects) || objects_end < objects || objects_end - objects > 4u * 4096u) {
+      continue;
+    }
+    for (uint32_t at = objects; at < objects_end; at += 4u) {
+      const uint32_t light = load32(at);
+      if (!plausible(light)) {
+        continue;
+      }
+      const uint32_t vtable = load32(light);
+      if (!plausible(vtable) || load32(vtable + 8u) != kStampLight) {
+        continue;
+      }
+      uint32_t& last = g_light_last_drawn[light];
+      if (box_meets_planes(light)) {
+        last = g_light_draws;
+      }
+      const bool recent = last != 0u && g_light_draws - last < 2u;
+      store32(light + 0x94u, recent ? counter : counter - 2u);
+    }
+  }
 }
 }  // namespace
 
@@ -772,6 +900,8 @@ REX_EXTERN(rex_lhRenderer_DrawScene) {
     __imp__rex_lhRenderer_DrawScene(ctx, base);
     return;
   }
+
+  StateDrawnLights(base, ctx.r3.u32);
 
   // THE TWO QUESTIONS THE DRAW USED TO ANSWER, ANSWERED BY THE HOST. Nothing in the guest
   // draws any more, so "are this view's textures resident?" has one honest answer: yes,

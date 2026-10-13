@@ -54,6 +54,8 @@ public static class Engine_EntityAppearance
     /// common case — a constructed look on a node that never had another — touches no engine
     /// state. The caller has already taken the node out of any batch and any twin marriage.
     /// </summary>
+    private static readonly StringName ClassicTintParameter = "ps_g_StandardMaterialTintColour";
+
     public static void Apply(MeshInstance3D node, in HostBridge.EntityAppearance look, bool principal)
     {
         bool had = Applied.TryGetValue(node, out HostBridge.EntityAppearance was);
@@ -98,6 +100,13 @@ public static class Engine_EntityAppearance
         {
             node.SetInstanceShaderParameter(TintParameter,
                 new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f));
+            // The classic shaders read the same tint as the title's PS c49 (the instance's
+            // +240, which this appearance setter fills).
+            if (Refii.Models.Engine_ClassicMaterial.Active)
+            {
+                node.SetInstanceShaderParameter(ClassicTintParameter,
+                    new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f));
+            }
         }
 
         if (look.IsConstructed)

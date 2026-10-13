@@ -30,7 +30,7 @@ public sealed class Engine_TexRealEsrgan : ITexUpscaler, IDisposable
 	/// <remarks>
 	/// NOT OPTIONAL, and it is not obvious that it is missing. The build outputs are on no default
 	/// search path, so without the resolver a perfectly good <c>librefii_upscaler.so</c> sitting
-	/// in <c>Godot/build/bin</c> reports as "not present" — indistinguishable from never having
+	/// in <c>Godot/build/&lt;arch&gt;/bin</c> reports as "not present" — indistinguishable from never having
 	/// been built. The other bindings get away with it implicitly because
 	/// <see cref="Refii.Video.Engine_BinkDecoder"/>, <see cref="Refii.Audio.Engine_XmaDecoder"/>
 	/// and the host bridge all install it from their own static constructors, and something

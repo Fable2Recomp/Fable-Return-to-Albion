@@ -2104,12 +2104,12 @@ public static class Engine_LevelProps
         // A borrowed LOD model stands in for the impostor: the main model to F, the LOD beyond.
         float lod = block.PlacedTreeBorrowsLod && d.LodDistance <= 0f ? d.BillboardDistance : d.LodDistance;
         return new StatedRange(
-            d.MaxDrawDistance * Engine_PropDrawRange.EntityDistanceScale,
-            d.FadeRangeFactor,
-            lod,
-            d.BillboardDistance,
-            d.FadeInDistance,
-            d.FadeInRangeFactor);
+            Draw: d.MaxDrawDistance * Engine_PropDrawRange.EntityDistanceScale,
+            Fade: d.FadeRangeFactor,
+            NearDraw: d.FadeInDistance,
+            NearFade: d.FadeInRangeFactor,
+            Shadow: d.BillboardDistance,
+            Lod: lod);
     }
 
     private static void AppendEngineLevelBlocks(
@@ -2280,7 +2280,7 @@ public static class Engine_LevelProps
                     BuildFoliageTransform(instance.Values, instance.Rotation);
                 build.AddInstance(transform, bakeColour:
                     authored is not null && i < authored.Length ? authored[i] : 0,
-                    range: StatedRange.FromFoliage(block.DrawDistance));
+                    range: StatedRange.FromFoliage(block.DrawDistance, block.FadeFraction));
                 transformKeys.Add(TransformKey(transform, modelPath));
             }
         }

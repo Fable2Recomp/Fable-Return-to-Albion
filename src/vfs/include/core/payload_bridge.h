@@ -283,6 +283,10 @@ void refii_bridge_run_menu_chunk(const char* chunk, size_t length, uint32_t pres
 
 void refii_bridge_ensure_alternate_signal_stack(void);
 
+// The debug channel's switch for the guest's own scene draw: -1 follows REFII_GUEST_RENDER,
+// 0 off, 1 on. Read by the DrawScene hook; the state is in src/core/guest_render_state.cpp.
+int32_t refii_bridge_guest_render_override(void);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

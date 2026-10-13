@@ -4,6 +4,17 @@ using Refii.Launcher.Core;
 
 namespace Refii.Launcher;
 
+/// <summary>
+/// The Install tab: everything the launcher derives from the player's own game, one row each,
+/// with its state and a button to build it again.
+/// </summary>
+/// <remarks>
+/// A CHECKLIST, NOT A TOOLBOX. Each row is one artefact the install pipeline produces — the
+/// game data, the game code, the classic shaders, the modernized assets — with a tick that says
+/// whether it is there and current, and one button. The rows run through the same
+/// <c>InstallPipeline</c> the install dialog uses, so this tab is also where a stopped or failed
+/// step is resumed. One progress area and one pause/stop pair serve whichever step runs.
+/// </remarks>
 [Tool]
 public partial class ReinstallPanel : VBoxContainer
 {
@@ -12,19 +23,22 @@ public partial class ReinstallPanel : VBoxContainer
 	private SmartStyle _style = SmartStyle.FromTheme(
 		new Color(0.02f, 0.1f, 0.2f, 1f), new Color(0.2f, 0.8f, 0.4f, 1f));
 
-	private Label _targetLabel = null!;
-	private Label _titleUpdateLabel = null!;
-	private Button _reinstall = null!;
-	private Button _unpackBanks = null!;
-	private Button _compileShaders = null!;
-	private Button _buildGameCode = null!;
-	private Button _buildAssets = null!;
-	private Label _unpackBanksStatus = null!;
-	private Label _compileShadersStatus = null!;
-	private Label _buildGameCodeStatus = null!;
+	private sealed class Row
+	{
+		public Label Tick = null!;
+		public Label Name = null!;
+		public Label Detail = null!;
+		public Button Action = null!;
+	}
+
+	private Row _gameData = null!;
+	private Row _gameCode = null!;
+	private Row _shaders = null!;
+	private Row _assets = null!;
 	private Label _operationLabel = null!;
 	private Label _statusLabel = null!;
 	private Label _errorLabel = null!;
+	private ScrollContainer _errorScroll = null!;
 	private HSeparator _progressSeparator = null!;
 	private HBoxContainer _buildControls = null!;
 	private Button _pauseBuild = null!;
@@ -34,35 +48,27 @@ public partial class ReinstallPanel : VBoxContainer
 	private const string CheckGlyph = "✓";
 	private static readonly Color CheckFill = new(0.16f, 0.52f, 0.33f);
 
+	/// <summary>Install the game data again from a disc image.</summary>
 	public event Action? ReinstallRequested;
-	public event Action? UnpackBanksRequested;
+
+	/// <summary>
+	/// Generate and compile the game code again: the one artefact that something outside the
+	/// launcher can invalidate, since replacing the executable leaves a module whose every
+	/// function address belongs to a different binary.
+	/// </summary>
+	public event Action? BuildGameCodeRequested;
+
+	/// <summary>Translate the shader bank into the classic renderer's shaders.</summary>
 	public event Action? CompileShadersRequested;
 
 	/// <summary>
-	/// Generate and compile the game code again.
+	/// Build every modernized texture and material now rather than during play. A one-off
+	/// preparation of the player's data, not a preference: which look is drawn is the Look
+	/// setting; this only decides when that look is paid for.
 	/// </summary>
-	/// <remarks>
-	/// Separately runnable because it is the one install step that can be invalidated by
-	/// something outside the launcher: the module is built from a specific game executable,
-	/// and replacing that executable leaves a module whose every function address belongs
-	/// to a different binary.
-	/// </remarks>
-	public event Action? BuildGameCodeRequested;
-
-	/// <summary>
-	/// Build every modernized texture and material now, rather than during play.
-	/// </summary>
-	/// <remarks>
-	/// AN INSTALL STEP, which is why it sits here beside unpacking the banks and compiling the
-	/// shaders rather than in the settings panel where it was first put. It is the same kind of
-	/// thing they are: a one-off preparation of the player's own game data that makes every later
-	/// session cheaper, not a preference that changes how the game behaves. The preference — which
-	/// look you get — is <c>materials_modernized</c>, and it lives in settings; this only decides
-	/// WHEN that look is paid for.
-	/// </remarks>
 	public event Action? BuildModernizedAssetsRequested;
 
-	/// <summary>Hold the running game code build where it is; resume it; abandon it.</summary>
+	/// <summary>Hold the running step where it is; resume it; abandon it.</summary>
 	public event Action? PauseBuildRequested;
 	public event Action? ResumeBuildRequested;
 	public event Action? StopBuildRequested;
@@ -95,60 +101,87 @@ public partial class ReinstallPanel : VBoxContainer
 
 		_built = true;
 		AddThemeConstantOverride("separation", 8);
+		SizeFlagsVertical = SizeFlags.ExpandFill;
 
-		_targetLabel = MakeLabel(string.Empty);
-		_targetLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-		AddChild(_targetLabel);
+		// EVERYTHING SCROLLS. Four rows with their detail lines and a failure's text run past
+		// the drawer's height; the drawer must not grow past the window to hold them.
+		var scroll = new ScrollContainer
+		{
+			SizeFlagsVertical = SizeFlags.ExpandFill,
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+		};
+		AddChild(scroll);
+		var content = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		content.AddThemeConstantOverride("separation", 8);
+		scroll.AddChild(content);
 
-		_titleUpdateLabel = MakeLabel(string.Empty);
-		_titleUpdateLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-		_titleUpdateLabel.Visible = false;
-		AddChild(_titleUpdateLabel);
+		Label explain = MakeLabel(
+			"What the launcher builds from your own game files. A tick means it is there and " +
+			"current; each can be built again on its own.");
+		explain.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		explain.AddThemeColorOverride("font_color", _style.TextDisabled);
+		content.AddChild(explain);
 
-		_reinstall = AddAction("Reinstall Fable 2", () => ReinstallRequested?.Invoke());
-		_unpackBanks = AddTrackedAction("Unpack Game Banks",
-			() => UnpackBanksRequested?.Invoke(), out _unpackBanksStatus);
-		_compileShaders = AddTrackedAction("Compile Shaders",
-			() => CompileShadersRequested?.Invoke(), out _compileShadersStatus);
+		var rows = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		rows.AddThemeConstantOverride("separation", 6);
+		content.AddChild(rows);
 
-		// Tracked on the MODULE, not on a marker file, because it is the module the runtime
-		// loads — and its tick has to go out when the installed executable changes, which is
-		// something no "did this step run" flag can notice.
-		_buildGameCode = AddTrackedAction("Build Game Code",
-			() => BuildGameCodeRequested?.Invoke(), out _buildGameCodeStatus);
-
-		// UNTRACKED, unlike the three above. Their tick comes from
-		// Installer.GetReinstallStepStatus, which reports on files the native installer writes;
-		// this one fills the app's own texture cache, which the installer knows nothing about, and a tick
-		// driven by "has anything been cached" would show complete after a single texture.
-		_buildAssets = AddAction(
-			"Build Modernized Assets", () => BuildModernizedAssetsRequested?.Invoke());
+		_gameData = AddRow(rows, "Game data", "Reinstall", () => ReinstallRequested?.Invoke());
+		_gameCode = AddRow(rows, "Game code", "Build", () => BuildGameCodeRequested?.Invoke());
+		_shaders = AddRow(rows, "Classic shaders", "Build", () => CompileShadersRequested?.Invoke());
+		_assets = AddRow(rows, "Modernized assets", "Build", () => BuildModernizedAssetsRequested?.Invoke());
 
 		_progressSeparator = new HSeparator { Visible = false };
-		AddChild(_progressSeparator);
+		content.AddChild(_progressSeparator);
 
 		_operationLabel = MakeLabel(string.Empty);
 		_operationLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		_operationLabel.Visible = false;
-		AddChild(_operationLabel);
+		content.AddChild(_operationLabel);
 
 		_statusLabel = MakeLabel(string.Empty);
 		_statusLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		_statusLabel.Visible = false;
-		AddChild(_statusLabel);
+		content.AddChild(_statusLabel);
 
+		// A failure's text in its own box: a loader error runs to a dozen lines, and it is
+		// read and copied, not skimmed, so it scrolls and selects rather than pushing the
+		// buttons away.
+		_errorScroll = new ScrollContainer
+		{
+			Visible = false,
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+			CustomMinimumSize = new Vector2(0, 140),
+		};
+		var errorBox = new StyleBoxFlat
+		{
+			BgColor = new Color(0.35f, 0.08f, 0.08f, 0.25f),
+			BorderColor = new Color(0.6f, 0.15f, 0.15f, 0.6f),
+			ContentMarginLeft = 8,
+			ContentMarginRight = 8,
+			ContentMarginTop = 6,
+			ContentMarginBottom = 6,
+		};
+		errorBox.SetBorderWidthAll(1);
+		errorBox.SetCornerRadiusAll(4);
+		var errorFrame = new PanelContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		errorFrame.AddThemeStyleboxOverride("panel", errorBox);
+		_errorScroll.AddChild(errorFrame);
 		_errorLabel = MakeLabel(string.Empty);
 		_errorLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-		_errorLabel.Visible = false;
-		AddChild(_errorLabel);
+		_errorLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+		_errorLabel.MouseFilter = MouseFilterEnum.Stop;
+		errorFrame.AddChild(_errorLabel);
+		content.AddChild(_errorScroll);
 
-		// Shown only while the game code build runs: the one install step long enough to
-		// want holding or abandoning. Pause toggles to Resume while held.
+		// Shown while a step that can be held runs. Pause toggles to Resume while held.
 		_buildControls = new HBoxContainer { Visible = false };
 		_buildControls.AddThemeConstantOverride("separation", 8);
-		_pauseBuild = MakeActionButton("Pause Build", () =>
+		_pauseBuild = MakeActionButton("Pause", () =>
 		{
-			if (_pauseBuild.Text == "Resume Build")
+			if (_pauseBuild.Text == "Resume")
 			{
 				ResumeBuildRequested?.Invoke();
 			}
@@ -158,46 +191,55 @@ public partial class ReinstallPanel : VBoxContainer
 			}
 		});
 		_buildControls.AddChild(_pauseBuild);
-		_stopBuild = MakeActionButton("Stop Build", () => StopBuildRequested?.Invoke());
+		_stopBuild = MakeActionButton("Stop", () => StopBuildRequested?.Invoke());
 		_buildControls.AddChild(_stopBuild);
-		AddChild(_buildControls);
+		content.AddChild(_buildControls);
 
 		Refresh(false, false);
 	}
 
-	/// <summary>
-	/// Shows the pause and stop buttons while a game code build runs, and reflects its state.
-	/// </summary>
+	/// <summary>Shows the pause and stop buttons while a step runs, and reflects its state.</summary>
 	public void SetBuildControls(bool visible, bool paused, bool stopping)
 	{
 		_buildControls.Visible = visible;
-		_pauseBuild.Text = paused ? "Resume Build" : "Pause Build";
+		_pauseBuild.Text = paused ? "Resume" : "Pause";
 		_pauseBuild.Disabled = stopping;
-		_stopBuild.Text = stopping ? "Stopping..." : "Stop Build";
+		_stopBuild.Text = stopping ? "Stopping..." : "Stop";
 		_stopBuild.Disabled = stopping;
 	}
 
-	private Button AddAction(string text, Action onPressed)
+	/// <summary>
+	/// One artefact: the tick, then the name over its detail line, then the button. A box
+	/// rather than a grid so a row's detail wraps under its own name and a hidden tick does not
+	/// shift the columns beside it.
+	/// </summary>
+	private Row AddRow(VBoxContainer rows, string name, string action, Action onPressed)
 	{
-		Button button = MakeActionButton(text, onPressed);
-		AddChild(button);
-		return button;
-	}
+		var row = new Row { Tick = MakeCheckBox(), Name = MakeLabel(name), Detail = MakeLabel(string.Empty) };
+		var line = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		line.AddThemeConstantOverride("separation", 10);
 
-	/// <summary>Action row with a native-style status check: an empty box while
-	/// the step is pending, a filled box with a check once it is done.</summary>
-	private Button AddTrackedAction(string text, Action onPressed, out Label status)
-	{
-		var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		row.AddThemeConstantOverride("separation", 8);
+		row.Tick.SizeFlagsHorizontal = SizeFlags.ShrinkBegin;
+		row.Tick.SizeFlagsVertical = SizeFlags.ShrinkBegin;
+		line.AddChild(row.Tick);
 
-		status = MakeCheckBox();
-		row.AddChild(status);
+		var text = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		text.AddThemeConstantOverride("separation", 0);
+		text.AddChild(row.Name);
+		row.Detail.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		row.Detail.AddThemeFontSizeOverride("font_size", Mathf.Max(12, _fontSize - 3));
+		row.Detail.AddThemeColorOverride("font_color", _style.TextDisabled);
+		text.AddChild(row.Detail);
+		line.AddChild(text);
 
-		Button button = MakeActionButton(text, onPressed);
-		row.AddChild(button);
-		AddChild(row);
-		return button;
+		row.Action = MakeActionButton(action, onPressed);
+		row.Action.SizeFlagsHorizontal = SizeFlags.ShrinkEnd;
+		row.Action.SizeFlagsVertical = SizeFlags.ShrinkBegin;
+		row.Action.CustomMinimumSize = new Vector2(110, 32);
+		line.AddChild(row.Action);
+
+		rows.AddChild(line);
+		return row;
 	}
 
 	private Label MakeCheckBox()
@@ -234,7 +276,7 @@ public partial class ReinstallPanel : VBoxContainer
 	}
 
 	/// <summary>Designed action face matching the hero button: solid emerald fill,
-	/// gold hairline, cream label. The fade-to-transparent gradient is gone.</summary>
+	/// gold hairline, cream label.</summary>
 	private Button MakeActionButton(string text, Action onPressed)
 	{
 		var button = new Button
@@ -293,39 +335,52 @@ public partial class ReinstallPanel : VBoxContainer
 		return face;
 	}
 
+	/// <summary>Repaints every row's state. <paramref name="busy"/> is a running step.</summary>
 	public void Refresh(bool busy, bool gameIsRunning)
 	{
-		_targetLabel.Text = "Target: " + Installer.GetLuaWorkspacePath().Replace('\\', '/');
+		bool idle = !busy && !gameIsRunning;
+		bool assets = Installer.AssetsExist();
 
-		// The installed pair, from the two file headers: a patch for another pressing is the
-		// one install fault the game only reports when the loader rejects it.
+		// Game data: the installed pressing and its title update, from the two file headers.
 		bool pairOk = Installer.CheckInstalledTitleUpdate(out string pair);
-		_titleUpdateLabel.Visible = pair.Length != 0;
-		_titleUpdateLabel.Text = pairOk ? pair : "Title update: " + pair;
+		SetState(_gameData, assets, assets
+			? (pairOk ? pair : "Title update: " + pair)
+			: "Not installed. Install from your disc image.");
+		_gameData.Action.Disabled = !idle;
 
-		bool reinstallEnabled = !busy && !gameIsRunning;
-		bool moddingEnabled = reinstallEnabled && Installer.AssetsExist();
+		// Game code: tracked on the MODULE, which goes stale when the executable changes.
+		string reason = string.Empty;
+		bool gameCodeCurrent = assets && !Recompile.GameCodeBuild.NeedsBuildCached(out reason);
+		SetState(_gameCode, gameCodeCurrent, assets
+			? (gameCodeCurrent ? "Built from the installed executable." : reason)
+			: "Needs the game data.");
+		_gameCode.Action.Disabled = !idle || !assets;
 
-		_reinstall.Disabled = !reinstallEnabled;
-		_unpackBanks.Disabled = !moddingEnabled;
-		_compileShaders.Disabled = !moddingEnabled;
-		_buildGameCode.Disabled = !reinstallEnabled;
-
-		// GATED ON THE ASSETS EXISTING, like the other three, because there is nothing to build
-		// from without them — and on the game not running, because the prebuild and a live session
-		// would be two writers on one cache directory.
-		_buildAssets.Disabled = !moddingEnabled;
-
+		// Classic shaders: the pipeline's report marks the step done.
 		Installer.ReinstallStepStatus status = Installer.GetReinstallStepStatus();
-		SetStatus(_unpackBanksStatus, status.Banks);
-		SetStatus(_compileShadersStatus, status.Shaders);
-		SetStatus(_buildGameCodeStatus, !Recompile.GameCodeBuild.NeedsBuildCached(out _));
+		SetState(_shaders, status.Shaders, assets
+			? (status.Shaders
+				? "Built. Drawn when the Look setting is Classic."
+				: "Not built. Needed for the Classic look only.")
+			: "Needs the game data.");
+		_shaders.Action.Disabled = !idle || !assets;
+
+		// Modernized assets: untracked, because the cache fills during play as well and a tick
+		// driven by "has anything been cached" would show complete after one texture. Gated on
+		// the game not running: the prebuild and a session would be two writers on one cache.
+		SetState(_assets, false, assets
+			? "Optional. Builds the Modern look's textures ahead of play instead of during it."
+			: "Needs the game data.");
+		_assets.Tick.Modulate = new Color(1, 1, 1, 0.35f);
+		_assets.Action.Disabled = !idle || !assets;
 	}
 
-	private static void SetStatus(Label label, bool done)
+	private static void SetState(Row row, bool done, string detail)
 	{
-		label.Text = done ? CheckGlyph : string.Empty;
-		label.AddThemeStyleboxOverride("normal", CheckFace(done));
+		row.Tick.Text = done ? CheckGlyph : string.Empty;
+		row.Tick.AddThemeStyleboxOverride("normal", CheckFace(done));
+		row.Detail.Text = detail;
+		row.Detail.TooltipText = detail;
 	}
 
 	public void SetProgress(string operationLabel, string statusMessage, string errorMessage = "")
@@ -336,8 +391,8 @@ public partial class ReinstallPanel : VBoxContainer
 		_operationLabel.Text = operationLabel;
 		_statusLabel.Visible = statusMessage.Length != 0;
 		_statusLabel.Text = statusMessage;
-		_errorLabel.Visible = errorMessage.Length != 0;
-		_errorLabel.Text = "Error: " + errorMessage;
+		_errorScroll.Visible = errorMessage.Length != 0;
+		_errorLabel.Text = errorMessage;
 	}
 
 	private void Apply(Control control)

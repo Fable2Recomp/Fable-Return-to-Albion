@@ -1034,7 +1034,7 @@ public partial class FableFx : Node3D
         if (displacement)
         {
             var dispMat = new ShaderMaterial { Shader = GD.Load<Shader>(MeshDispShaderPath) };
-            if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial src && src.GetShaderParameter("albedo_tex").Obj is Texture2D albedo)
+            if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial src && Refii.Models.Engine_ClassicMaterial.Albedo(src) is Texture2D albedo)
             {
                 dispMat.SetShaderParameter("albedo_tex", albedo);
             }

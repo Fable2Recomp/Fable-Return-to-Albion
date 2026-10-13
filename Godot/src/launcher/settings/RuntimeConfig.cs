@@ -328,8 +328,10 @@ public static class RuntimeConfig
     /// type-in-a-number pair, replaced by the aspect and resolution dropdowns — retiring them
     /// keeps one answer to "how big is the window" rather than two that can disagree.
     /// </remarks>
+    /// <para>`vsync` is not here either: the panel's one VSync switch is `vsync_mode`, which
+    /// has an "off" value; <c>GameWindowSettings.Load</c> still reads a false left in a file.</para>
     public static bool IsDisplayCVar(string name) =>
-        name is "fullscreen" or "monitor" or "vsync";
+        name is "fullscreen" or "monitor";
 
     internal static string StripTomlComment(string line)
     {

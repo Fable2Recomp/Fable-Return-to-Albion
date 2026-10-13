@@ -1008,10 +1008,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             d.DofNearFocal,
             d.DofFarFocal,
             1.0f / MathF.Max(d.DofFarPlane - d.DofFarFocal, 1e-4f));
-        Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, Engine_PostFxParams.DarkLift);
+        // The classic look is the title's chain: its own operator (PSHADER_POSTPROCESSINGMATERIAL
+        // _TONEMAP1) on a scene the materials already exposed, and none of the remaster's lift.
+        bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+        Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, classic ? 1.0f : Engine_PostFxParams.DarkLift);
         Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f,
             Engine_PostFxParams.OutputHeadroom, 0.0f);
-        Set(p, 14, (float)_frameIndex, _trapRatio, 0.0f, 0.0f);
+        Set(p, 14, (float)_frameIndex, _trapRatio, classic ? 1.0f : 0.0f, 0.0f);
         Set(p, 8, d.Saturation, d.Brightness + 1.0f, d.SaturationMasked, d.BrightnessMasked);
 
         float gammaRatio = d.Gamma > 0.0f && MathF.Abs(d.Gamma - 1.0f) > 1e-4f ? d.Gamma : 0.0f;
@@ -1028,8 +1031,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
         Projection inverse = camProjection.Inverse();
         Set(p, 11, inverse.Z.Z, inverse.W.Z, inverse.Z.W, inverse.W.W);
+        // c31.x for the title's operator is 2 x TONE_MAPPING_BLOOM_FACTOR (`Render_LitMaterialSubmit_INFERRED`
+        // 0x821E5FC0: lfs P+0x4C; fmuls by 2.0); the modern composite keeps its own gain.
         Set(p, 12,
-            d.BloomFactor * Engine_PostFxParams.BloomGain,
+            classic ? 2.0f * d.BloomFactor : d.BloomFactor * Engine_PostFxParams.BloomGain,
             d.RadialFactor,
             Engine_PostFxParams.MaterialExposureFollowsApplied ? 1.0f : 0.0f,
             Engine_PostFxParams.BloomThresholdScale);
@@ -1056,7 +1061,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// colour += min(layer, 1) × gain, the layer sampled bilinearly from its half-res
     /// viewport. The clamp IS the guest's A8R8G8B8 target; the gain is 1.0 in the host's units,
     /// where a scene value is the guest's exposed value over the exposure — see
-    /// <see cref="Refii.Fx.Engine_FxAdditiveLayer"/>.
+    /// <see cref="Refii.Fx.Engine_FxAdditiveLayer"/>. The classic look's scene is already
+    /// exposed, so there the shader multiplies the gain by E as 0162 does (c31.x).
     /// </summary>
     private void AddLayer(Rid colour, Vector2I size, Rid layer) =>
         AddLayer(colour, size, layer, _addlayerSet, Refii.Fx.Engine_FxAdditiveLayer.Gain);
@@ -1075,6 +1081,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 Image(colour, 0),
                 Sampler(_linearSampler, layer, 1),
+                Buffer(_stateBuffer, 2),
             });
         }
 
@@ -1084,7 +1091,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         BitConverter.TryWriteBytes(push.AsSpan(0), size.X);
         BitConverter.TryWriteBytes(push.AsSpan(4), size.Y);
         BitConverter.TryWriteBytes(push.AsSpan(8), effectiveGain);
-        BitConverter.TryWriteBytes(push.AsSpan(12), 0.0f);
+        BitConverter.TryWriteBytes(push.AsSpan(12), Refii.Models.Engine_ClassicMaterial.Active ? 1.0f : 0.0f);
         Dispatch(_addlayerPipeline, set.Set, push, (size.X + 7) / 8, (size.Y + 7) / 8);
     }
 
@@ -1349,7 +1356,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Dispatch(
             _downscale4Pipeline,
             _downscale4Set.Set,
-            PushSizes(size, _quarterSize),
+            PushDownscale(size, _quarterSize, Refii.Models.Engine_ClassicMaterial.Active),
             (_quarterSize.X + 7) / 8,
             (_quarterSize.Y + 7) / 8);
     }
@@ -1645,7 +1652,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Dispatch(
             _downscale4Pipeline,
             _trapRingSets[slot],
-            PushSizes(size, _quarterSize),
+            PushDownscale(size, _quarterSize, false),
             (_quarterSize.X + 7) / 8,
             (_quarterSize.Y + 7) / 8);
     }
@@ -1838,6 +1845,21 @@ public partial class Engine_PostFxEffect : CompositorEffect
         BitConverter.TryWriteBytes(bytes.AsSpan(4), a.Y);
         BitConverter.TryWriteBytes(bytes.AsSpan(8), b.X);
         BitConverter.TryWriteBytes(bytes.AsSpan(12), b.Y);
+        return bytes;
+    }
+
+    /// <summary>The quarter pass's push: the two sizes, then whether the scene is already exposed.</summary>
+    private byte[] PushDownscale(Vector2I full, Vector2I quarter, bool sceneExposed)
+    {
+        byte[] bytes = _pushWide;
+        BitConverter.TryWriteBytes(bytes.AsSpan(0), full.X);
+        BitConverter.TryWriteBytes(bytes.AsSpan(4), full.Y);
+        BitConverter.TryWriteBytes(bytes.AsSpan(8), quarter.X);
+        BitConverter.TryWriteBytes(bytes.AsSpan(12), quarter.Y);
+        BitConverter.TryWriteBytes(bytes.AsSpan(16), sceneExposed ? 1.0f : 0.0f);
+        BitConverter.TryWriteBytes(bytes.AsSpan(20), 0.0f);
+        BitConverter.TryWriteBytes(bytes.AsSpan(24), 0.0f);
+        BitConverter.TryWriteBytes(bytes.AsSpan(28), 0.0f);
         return bytes;
     }
 

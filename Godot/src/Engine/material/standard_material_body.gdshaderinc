@@ -247,6 +247,9 @@ void fragment() {
     }
 
     ALBEDO = alb.rgb;
+#ifdef FABLE_TRANSLUCENT
+    ALPHA = alb.a;
+#endif
 
     // TWO-SIDED GEOMETRY NEEDS A TWO-SIDED NORMAL, and this shader is `cull_disabled`.
     //

@@ -1564,4 +1564,31 @@ public static class Engine_TexLibrary
 
 	private static string MemKey(string path, TexSemantic semantic) =>
 		$"{path} {(int)semantic}";
+
+
+	/// <summary>
+	/// The title's translucency marker for a texture: header flag 0x80 (the flags dword the
+	/// header parser `sub_82B8BA38` reads into a1[3]; `sub_82AA04A0` turns it into the
+	/// texture set's +154 byte, which routes the draw to the blended bucket). Cached per path.
+	/// </summary>
+	public static bool IsTranslucent(string virtualPath, Func<string, byte[]?> read) =>
+		(HeaderFlags(virtualPath, read) & 0x80) != 0;
+
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> FlagsByPath = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// A texture header's flags dword (`sub_82B8BA38`'s a1[3]), whose alpha bits the title turns
+	/// into the texture set's draw bytes (`sub_82AA04A0`): +152 alpha test (0x20), +153 cutout
+	/// only ((flags &amp; 0xA0) == 0x20, ALPHAREF 128 instead of 254), +154 translucent (0x80).
+	/// 0 when the texture does not resolve. Cached per path.
+	/// </summary>
+	public static int HeaderFlags(string virtualPath, Func<string, byte[]?> read)
+	{
+		if (string.IsNullOrWhiteSpace(virtualPath))
+		{
+			return 0;
+		}
+		return FlagsByPath.GetOrAdd(virtualPath, path =>
+			read(path) is { } bytes && TexHeader.TryParse(bytes, out TexHeader header, out _) ? header.Flags : 0);
+	}
 }

@@ -39,8 +39,8 @@ public readonly record struct StatedRange(
 	public static StatedRange FromStatic(float[] values) =>
 		new(values[13], values[14], values[18], values[19], values[16], values[17]);
 
-	/// <summary>A foliage block: a hard cut at its draw distance, nothing else.</summary>
-	public static StatedRange FromFoliage(float draw) => new(draw, 0f, 0f, 0f, 0f, 0f);
+	/// <summary>A foliage block: its draw distance and the fraction it fades over.</summary>
+	public static StatedRange FromFoliage(float draw, float fade) => new(draw, fade, 0f, 0f, 0f, 0f);
 }
 
 /// <summary>
@@ -70,6 +70,17 @@ public static class Engine_PropDrawRange
 {
 	/// <summary>Node metadata: {begin, begin margin, end, end margin, fade} the build stated.</summary>
 	public const string Meta = "stated_range";
+
+	/// <summary>
+	/// Node metadata on a classic tree's main or LOD node: the guest's per-placement fade as
+	/// {in start, 1/in length, in power, out end, 1/out length, out power}, a zero length
+	/// being no fade on that side. The node's own visibility range is then a hard bound.
+	/// </summary>
+	public const string TreeBandMeta = "tree_fade_band";
+
+	private static readonly StringName TreeFadeIn = "xr_tree_fade_in";
+	private static readonly StringName TreeFadeOut = "xr_tree_fade_out";
+	private static readonly StringName TreeCentre = "xr_tree_centre";
 
 	/// <summary>
 	/// Whether a TreeMesh's shadow stops at its stated S (`tree_shadow_reach = "stated"`, the
@@ -159,6 +170,20 @@ public static class Engine_PropDrawRange
 			return false;
 		}
 
+		if (modelClass == PropModelClass.Tree && role != PropRole.Shadow && Refii.Models.Engine_ClassicMaterial.Active &&
+			TreeBand(Scaled(range), role, hasLod) is { } band)
+		{
+			// The classic tree shader fades each placement itself (Engine_ClassicMaterial's
+			// tree fade), so the node's range only bounds where any copy can be drawn: from the
+			// fade-in's start to the fade-out's end, widened both ways by the batch's spread.
+			float pad = spread > 0f && float.IsFinite(spread) ? spread : 0f;
+			float begin = band[1] > 0f ? Mathf.Max(0f, band[0] - pad) : 0f;
+			stated = new[] { begin, 0f, band[3] + pad, 0f, 0f };
+			node.SetMeta(TreeBandMeta, band);
+			node.SetMeta(Meta, stated);
+			return true;
+		}
+
 		if (spread > 0f && float.IsFinite(spread))
 		{
 			// Not a tree's LOD start: pulled in by the spread it would put both models over the
@@ -216,12 +241,24 @@ public static class Engine_PropDrawRange
 	public static float Reach(float[] stated) =>
 		stated.Length >= 4 && stated[2] > 0f ? stated[2] + stated[3] : float.PositiveInfinity;
 
-	/// <summary>Applies a stamped range; false when the node carries none.</summary>
-	public static bool Apply(GeometryInstance3D node)
+	/// <summary>
+	/// Applies a stamped range; false when the node carries none. A classic tree's fade band
+	/// goes to its instance uniforms with <paramref name="mesh"/>'s box centre, the point the
+	/// guest measures from.
+	/// </summary>
+	public static bool Apply(GeometryInstance3D node, Mesh? mesh = null)
 	{
 		if (!node.HasMeta(Meta))
 		{
 			return false;
+		}
+
+		if (mesh is not null && node.HasMeta(TreeBandMeta) &&
+			node.GetMeta(TreeBandMeta).AsFloat32Array() is { Length: >= 6 } band)
+		{
+			node.SetInstanceShaderParameter(TreeFadeIn, new Vector4(band[0], band[1], band[2], 0f));
+			node.SetInstanceShaderParameter(TreeFadeOut, new Vector4(band[3], band[4], band[5], 0f));
+			node.SetInstanceShaderParameter(TreeCentre, mesh.GetAabb().GetCenter());
 		}
 
 		return ApplyStated(node, node.GetMeta(Meta).AsFloat32Array());
@@ -254,6 +291,41 @@ public static class Engine_PropDrawRange
 		NearDraw = r.NearDraw * DistanceScale,
 		Fade = Mathf.Max(r.Fade, FadeFloor),
 	};
+
+	/// <summary>
+	/// A tree's per-placement fade (`sub_8220AF90`, verified 0x8220B054..0x8220B2D4), R1 the
+	/// LOD distance L and R0 the LOD model's reach, d the eye's distance to the model's world box
+	/// centre (`sub_822109B0`):
+	///   main  alpha = sat((R1 - d) / 0.125 R1)^2                       — over [0.875, 1] R1
+	///   LOD   alpha = sat((d - 0.75 R1) / 0.125 R1)^2 · sat((R0 - d) / 0.125 R0)
+	/// (the LOD's fade-in here deviates: see below).
+	/// A main model with no LOD model is, to the guest, drawn unfaded to its cull; here it takes
+	/// the LOD's linear fade-out at its reach instead of popping (no impostor follows it).
+	/// </summary>
+	private static float[]? TreeBand(StatedRange r, PropRole role, bool hasLod)
+	{
+		if (!float.IsFinite(r.Draw) || !float.IsFinite(r.Lod) || !float.IsFinite(r.Shadow))
+		{
+			return null;
+		}
+
+		float lod = Mathf.Max(r.Lod, 0f);
+		float reach = Mathf.Max(lod, Mathf.Max(r.Draw, r.Shadow));
+		if (role == PropRole.Main)
+		{
+			return hasLod && lod > 0f
+				? new[] { 0f, 0f, 1f, lod, 1f / (0.125f * lod), 2f }
+				: reach > 0f ? new[] { 0f, 0f, 1f, reach, 1f / (0.125f * reach), 1f } : null;
+		}
+
+		// The LOD's fade-in is moved out to the main model's own band [0.875, 1] R1 and made
+		// linear, so the two models trade places across one stretch: on the title's
+		// [0.75, 0.875] R1 the LOD dithered in over a main model still drawn whole, and the
+		// overlap read as a pale ghost on the trunk (user's call, 2026-10-13).
+		return lod > 0f && reach > 0.875f * lod
+			? new[] { 0.875f * lod, 1f / (0.125f * lod), 1f, reach, 1f / (0.125f * reach), 1f }
+			: null;
+	}
 
 	private static bool Describe(
 		StatedRange r, PropModelClass modelClass, PropRole role, bool hasLod, out float[] stated)
@@ -296,16 +368,24 @@ public static class Engine_PropDrawRange
 			return false;
 		}
 
+		// THE CROSS-FADE (`sub_8220AF90`, modes from `sub_82208310`): with R1 = L the main
+		// model fades out over [0.875 L, L] while the LOD model fades in over [0.75 L, 0.875 L]; here
+		// the LOD fades in across the main's band instead (TreeBand), and out over the last eighth of its reach. Godot fades
+		// across end +- margin, so a band [a, b] is end (a + b) / 2, margin (b - a) / 2.
+		float reach = Mathf.Max(lod, far);
 		switch (role)
 		{
 			case PropRole.Main:
 				// With a LOD model the main one stops at L; without, modes 2 and 3 become 1 and
 				// it covers the LOD's range as well.
-				stated = new[] { 0f, 0f, hasLod ? lod : Mathf.Max(lod, far), 0f, 0f };
+				stated = hasLod
+					? new[] { 0f, 0f, 0.9375f * lod, 0.0625f * lod, 1f }
+					: new[] { 0f, 0f, 0.9375f * reach, 0.0625f * reach, 1f };
 				return stated[2] > 0f;
 
 			case PropRole.Lod:
-				stated = new[] { 0.75f * lod, 0f, Mathf.Max(lod, far), 0f, 0f };
+				// Fades in across the main model's own band, as the classic shader's does (TreeBand).
+				stated = new[] { 0.9375f * lod, 0.0625f * lod, 0.9375f * reach, 0.0625f * reach, 1f };
 				return stated[2] > stated[0];
 
 			default:

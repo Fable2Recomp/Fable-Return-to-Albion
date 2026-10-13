@@ -293,9 +293,10 @@ void main() {
 			// per RENDER FRAME with no dt term (0x82191D64) at about 30 fps. The step is referred
 			// to 30 Hz with the guest's own frame-rate compensation form
 			// (0x82276810..0x82276890, `1 - (1 - speed)^(dt * 30)`, 30.0 = flt_820992A4): exactly
-			// 0.05 at 30 fps, the same real-time response at any other rate. A long first frame
-			// drives the step toward 1.
-			float step_k = 1.0 - pow(1.0 - EXPOSURE_BLEND, max(params.frame.x, 0.0) * 30.0);
+			// 0.05 at 30 fps, the same real-time response at any faster rate. Below 30 fps the
+			// guest still steps once a frame, so a long frame (a hitch, a load) is ONE step, never
+			// a snap to the target.
+			float step_k = 1.0 - pow(1.0 - EXPOSURE_BLEND, clamp(params.frame.x * 30.0, 0.0, 1.0));
 			e = clamp(prev + step_k * (target - prev), EXPOSURE_MIN, EXPOSURE_MAX);
 		}
 

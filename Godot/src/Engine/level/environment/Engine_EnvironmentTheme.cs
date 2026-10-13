@@ -417,6 +417,30 @@ public static class Engine_EnvironmentTheme
         return times.Count > 0;
     }
 
+    /// <summary>
+    /// The title's blended theme block at a time of day, for the classic look where no guest
+    /// runs: 194 float4s (<see cref="Engine_ClassicThemeParams"/>) in <paramref name="values"/>.
+    /// </summary>
+    /// <remarks>
+    /// THE TITLE'S OWN EVALUATION, verified in IDA. EnvThemeGlobal is loaded over the defaults
+    /// (`sub_82A45DD0`, `sub_82A44D08`); the level's day set (`sub_82A46BD0`) is evaluated at the
+    /// time by `sub_8218E2F0` — the entries either side of it, wrapping the day, at 1-f and f —
+    /// and overlaid on the global per parameter by `sub_821D8588`: out = out * (1 - flag) + day,
+    /// the flag being how much of the day set states that parameter. A loaded float is (v, 0, 0,
+    /// 0); a colour (R, G, B) / 255 with w = 1, times Factor for type 2; a parameter whose group
+    /// record is present but whose field is not is zero with flag 0; one whose group is missing
+    /// is left as it was. Painted, weather and pushed themes are runtime layers and not here.
+    /// </remarks>
+    public static bool TryEvaluateClassic(IReadOnlyList<byte[]> gdbs, float dayFraction, float[] values)
+    {
+        if (values.Length < Engine_ClassicThemeParams.Count * 4)
+        {
+            return false;
+        }
+        Extractor? extractor = Extractor.Create(gdbs);
+        return extractor is not null && extractor.EvaluateClassic(dayFraction, values);
+    }
+
     private sealed class Extractor
     {
         private readonly List<GdbView> _views = new();
@@ -1438,6 +1462,223 @@ public static class Engine_EnvironmentTheme
             }
 
             return false;
+        }
+
+        public bool EvaluateClassic(float dayFraction, float[] output)
+        {
+            int count = Engine_ClassicThemeParams.Count;
+            var global = new float[count * 4];
+            var globalFlags = new float[count];
+            ClassicDefaults(global, globalFlags);
+
+            RecordRef globalRecord = default;
+            foreach (RecordRef level in LookupAllInDb(EnvHash.LevelData, 0))
+            {
+                globalRecord = ResolveRecordField(level, EnvHash.EnvThemeGlobal);
+                if (globalRecord.Valid)
+                {
+                    break;
+                }
+            }
+            if (!globalRecord.Valid)
+            {
+                RecordRef owner = FirstRecordWithFieldInDb(EnvHash.EnvThemeGlobal, 0);
+                globalRecord = owner.Valid ? ResolveRecordField(owner, EnvHash.EnvThemeGlobal) : default;
+            }
+            if (!globalRecord.Valid)
+            {
+                List<RecordRef> shared = LookupAll(EnvHash.EnvThemeGlobal);
+                globalRecord = shared.Count != 0 ? shared[0] : default;
+            }
+            bool any = globalRecord.Valid && LoadClassic(globalRecord, global, globalFlags);
+
+            // The day set's entries: (key, theme), the key from the entry's HH.MM TimeOfDay.
+            var entries = new List<(float Key, RecordRef Theme)>();
+            RecordRef daySet = FindDaySet(true);
+            if (!daySet.Valid)
+            {
+                daySet = FindDaySet(false);
+            }
+            if (daySet.Valid)
+            {
+                foreach (GdbField field in _views[daySet.Db].Fields(daySet.Index))
+                {
+                    byte type = (byte)field.Type;
+                    if (type != 4 && type != 6 && type != 7)
+                    {
+                        continue;
+                    }
+                    RecordRef entry = FieldToRecord(field);
+                    RecordRef theme = entry.Valid ? ResolveRecordField(entry, EnvHash.Theme) : default;
+                    if (!theme.Valid || !ReadFloat(entry, EnvHash.TimeOfDay, out float hhmm))
+                    {
+                        continue;
+                    }
+                    // `sub_82A46BD0`: n = (int)(TimeOfDay * 100); key = minutes / 60 / 24 + hours / 24.
+                    int n = (int)(hhmm * 100.0f);
+                    float key = (n % 100) * 0.016666668f * 0.041666668f + (n / 100) * 0.041666668f;
+                    entries.Add((key, theme));
+                }
+            }
+            entries.Sort((a, b) => a.Key.CompareTo(b.Key));
+
+            Array.Copy(global, output, count * 4);
+            if (entries.Count != 0)
+            {
+                var day = new float[count * 4];
+                var dayFlags = new float[count];
+                if (entries.Count == 1)
+                {
+                    LoadClassic(entries[0].Theme, day, dayFlags);
+                }
+                else
+                {
+                    // `sub_8218E2F0`: next = the first entry after the time (wrapping), prev the one
+                    // before it (wrapping); a prev after the time is a day earlier, a next before
+                    // it a day later; f = saturate((t - t0) / (t1 - t0)).
+                    int next = entries.FindIndex(e => e.Key > dayFraction);
+                    if (next < 0)
+                    {
+                        next = 0;
+                    }
+                    int prev = (next - 1 + entries.Count) % entries.Count;
+                    float t0 = entries[prev].Key, t1 = entries[next].Key;
+                    if (t0 > dayFraction)
+                    {
+                        t0 -= 1f;
+                    }
+                    if (t1 < dayFraction)
+                    {
+                        t1 += 1f;
+                    }
+                    float f = Math.Clamp((dayFraction - t0) / (t1 - t0), 0f, 1f);
+                    var a = new float[count * 4];
+                    var aFlags = new float[count];
+                    var b = new float[count * 4];
+                    var bFlags = new float[count];
+                    LoadClassic(entries[prev].Theme, a, aFlags);
+                    LoadClassic(entries[next].Theme, b, bFlags);
+                    for (int i = 0; i < count * 4; i++)
+                    {
+                        day[i] = a[i] * (1f - f) + b[i] * f;
+                    }
+                    for (int i = 0; i < count; i++)
+                    {
+                        dayFlags[i] = aFlags[i] * (1f - f) + bFlags[i] * f;
+                    }
+                }
+                // `sub_821D8588` at layer weight 1.
+                for (int i = 0; i < count; i++)
+                {
+                    for (int lane = 0; lane < 4; lane++)
+                    {
+                        output[i * 4 + lane] = output[i * 4 + lane] * (1f - dayFlags[i]) + day[i * 4 + lane];
+                    }
+                }
+                any = true;
+            }
+            return any;
+        }
+
+        /// <summary>`sub_82A44D08`: each parameter from its group record, by its field's name.</summary>
+        private bool LoadClassic(RecordRef theme, float[] values, float[] flags)
+        {
+            bool any = false;
+            var groups = new Dictionary<string, RecordRef>();
+            foreach (Engine_ClassicThemeParams.Param param in Engine_ClassicThemeParams.All)
+            {
+                if (!groups.TryGetValue(param.Group, out RecordRef group))
+                {
+                    group = theme;
+                    foreach (string part in param.Group.Split(','))
+                    {
+                        group = group.Valid ? ResolveRecordField(group, Refii.Core.Engine_GameHash.Fnv1(part)) : default;
+                    }
+                    groups[param.Group] = group;
+                }
+                if (!group.Valid)
+                {
+                    continue;
+                }
+                int at = param.Index * 4;
+                uint field = Refii.Core.Engine_GameHash.Fnv1(param.Field);
+                bool read = false;
+                if (param.Type == 3)
+                {
+                    if (ReadFloat(group, field, out float v))
+                    {
+                        values[at] = v; values[at + 1] = 0f; values[at + 2] = 0f; values[at + 3] = 0f;
+                        read = true;
+                    }
+                }
+                else
+                {
+                    // A colour is a record of Red/Green/Blue(/Factor), or the same four fields
+                    // flattened into the group as <Field>Red, <Field>Green, ... (both ship).
+                    RecordRef colour = ResolveRecordField(group, field);
+                    float r = 0f, g = 0f, bl = 0f, factor = 1f;
+                    bool rgb = colour.Valid
+                        ? ReadFloat(colour, EnvHash.Red, out r) && ReadFloat(colour, EnvHash.Green, out g) && ReadFloat(colour, EnvHash.Blue, out bl)
+                        : ReadFloat(group, Refii.Core.Engine_GameHash.Fnv1(param.Field + "Red"), out r) &&
+                          ReadFloat(group, Refii.Core.Engine_GameHash.Fnv1(param.Field + "Green"), out g) &&
+                          ReadFloat(group, Refii.Core.Engine_GameHash.Fnv1(param.Field + "Blue"), out bl);
+                    if (rgb)
+                    {
+                        if (param.Type == 2)
+                        {
+                            bool hasFactor = colour.Valid
+                                ? ReadFloat(colour, EnvHash.Factor, out factor)
+                                : ReadFloat(group, Refii.Core.Engine_GameHash.Fnv1(param.Field + "Factor"), out factor);
+                            if (!hasFactor)
+                            {
+                                factor = 1f;
+                            }
+                        }
+                        const float inv = 0.0039215689f;
+                        values[at] = r * factor * inv; values[at + 1] = g * factor * inv; values[at + 2] = bl * factor * inv;
+                        values[at + 3] = 1f;
+                        read = true;
+                    }
+                }
+                if (read)
+                {
+                    flags[param.Index] = 1f;
+                    any = true;
+                }
+                else
+                {
+                    values[at] = values[at + 1] = values[at + 2] = values[at + 3] = 0f;
+                    flags[param.Index] = 0f;
+                }
+            }
+            return any;
+        }
+
+        /// <summary>`sub_82A45DD0`'s defaults for the parameters the classic frame reads.</summary>
+        private static void ClassicDefaults(float[] values, float[] flags)
+        {
+            void Colour(int i, float r, float g, float b)
+            {
+                values[i * 4] = r; values[i * 4 + 1] = g; values[i * 4 + 2] = b; values[i * 4 + 3] = 1f; flags[i] = 1f;
+            }
+            void Float(int i, float v)
+            {
+                values[i * 4] = v; flags[i] = 1f;
+            }
+            Colour(0, 1f, 1f, 1f);
+            Colour(2, 0.8f, 0.8f, 1f);
+            Colour(3, 1f, 1f, 1f);
+            Colour(4, 0f, 0f, 0f);
+            Float(7, 10f); Float(8, 1f); Float(9, 1f);
+            Colour(10, 1f, 1f, 1f); Colour(11, 1f, 1f, 1f);
+            Float(12, 0f);
+            Colour(13, 1f, 0.3f, 0.1f);
+            Float(14, 1e6f); Float(15, 10f); Float(16, 0.3f); Float(17, 100f); Float(18, 0.3f);
+            Colour(19, 1f, 1f, 1f);
+            Float(20, 100f);
+            Float(53, 50f); Float(54, 20f); Float(55, 70f); Float(56, 20f);
+            Float(57, 0f); Float(58, 1f); Float(59, 70f); Float(60, 0f); Float(61, 0f);
+            Float(62, 50f); Float(63, 0f); Float(64, 0f);
         }
 
         private RecordRef FieldToRecord(GdbField field)

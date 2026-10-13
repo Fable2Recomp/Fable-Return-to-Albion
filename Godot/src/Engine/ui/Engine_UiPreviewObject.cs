@@ -287,8 +287,9 @@ public partial class Engine_UiPreviewObject : Node3D
 		int textured = 0;
 		for (int surface = 0; surface < mesh.GetSurfaceCount(); ++surface)
 		{
+			// The modern albedo or the classic diffuse sampler, whichever the model was built with.
 			Texture2D? albedo = mesh.SurfaceGetMaterial(surface) is ShaderMaterial source
-				? source.GetShaderParameter("albedo_tex").As<Texture2D>()
+				? Refii.Models.Engine_ClassicMaterial.Albedo(source)
 				: null;
 
 			var flat = new StandardMaterial3D

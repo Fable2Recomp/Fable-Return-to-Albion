@@ -206,6 +206,14 @@ void vertex() {
 // The reflected sky is THE SAME DOME the sky shader draws, so it comes from the same function.
 // A second copy of the arithmetic here would have to tonemap too, and then the water reflects
 // a compressed sky while the sky above it is not compressed at all.
+// The mirror is a linear HDR viewport (Engine_WaterReflection); this shader's look was set
+// against the LDR one, whose 3D output was clamped and sRGB-encoded. Encoded the same way here so
+// the modern picture is unchanged.
+vec3 mirror_as_ldr(vec3 c) {
+	c = clamp(c, vec3(0.0), vec3(1.0));
+	return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, vec3(lessThan(c, vec3(0.0031308))));
+}
+
 vec3 dome_reflect(vec3 r) {
 	return fable_sky_inscatter(
 		vec3(r.x, r.z, r.y),
@@ -305,7 +313,7 @@ void fragment() {
 		vec3 dome = has_dome ? dome_reflect(Rg) : sky_constant;
 
 		vec3 Rf = min(planar_reflection
-			? texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb
+			? mirror_as_ldr(texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb)
 			: dome, vec3(1.0));
 
 		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y);

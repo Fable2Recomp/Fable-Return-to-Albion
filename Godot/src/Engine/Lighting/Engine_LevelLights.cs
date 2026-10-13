@@ -834,6 +834,10 @@ public static class Engine_LevelLights
 
 		node.Name = $"Light_{entityName ?? "?"}_{index}";
 		node.SetMeta(AuthoredRangeMeta, light.Range * PlacedRange);
+		// The component as authored, for the classic light list where no guest states one.
+		Refii.Models.Engine_ClassicPlacedLights.Stamp(node, light.ColourLinear, light.Intensity, light.Range,
+			light.Type == LightTypeSpot, light.HalfAngleRadians, light.FadeDistance, light.FadeRange,
+			light.FlickerBrightnessRange, light.FlickerRadiusRange, light.FlickerRate, light.CastShadows);
 		node.LightColor = colour;
 
 		// The remaster's `placed_light_scale`: the authored fixtures throw modest pools — a

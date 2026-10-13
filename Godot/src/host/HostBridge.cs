@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 172;
+	public const int ExpectedAbiVersion = 174;
 
 	private const int MessageCapacity = 512;
 
@@ -450,6 +450,31 @@ public static class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			return false;
+		}
+	}
+
+	private static bool _lightZoneMissing;
+
+	/// <summary>
+	/// The lighting zone an entity's geometry is drawn in (a building's own geometry: its
+	/// definition hash; anything else: its renderable's zone). 1, outdoors, when the guest is not
+	/// up or the native library predates the call.
+	/// </summary>
+	public static uint GetEntityLightZone(uint entity)
+	{
+		if (entity == 0 || _lightZoneMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 1u;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityLightZone(entity);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_lightZoneMissing = true;
+			return 1u;
 		}
 	}
 
@@ -4718,6 +4743,35 @@ public static class HostBridge
 		return new ProbeState(addr, hits, lastLr, args);
 	}
 
+	/// <summary>Arms a one-shot snapshot of the device constant shadows on a probe's next return.</summary>
+	public static bool ProbeSnapshotArm(int slot)
+	{
+		try
+		{
+			return TryGetAbiVersion() is not null && RefiiHostProbeSnapshotArm(slot) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>The snapshot: VS c0..c255 then PS c0..c255 (2048 floats), or null before one is taken.</summary>
+	public static float[]? ProbeSnapshotRead(int slot)
+	{
+		var values = new float[2048];
+		try
+		{
+			return TryGetAbiVersion() is not null && RefiiHostProbeSnapshotRead(slot, values, (uint)values.Length) != 0
+				? values
+				: null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
 	/// <summary>The last debug-call/debug-lua outcome the tick pump recorded, with the
 	/// sequence number a poster compares to know its own call finished.</summary>
 	public static (ulong Seq, uint Addr, ulong R3, string Note)? DebugCallResult()
@@ -7536,6 +7590,12 @@ public static class HostBridge
 	private static extern uint RefiiHostProbeClear(int slot);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostProbeSnapshotArm(int slot);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostProbeSnapshotRead(int slot, [Out] float[] outValues, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostProbeRead(
 		int slot, out uint addr, out ulong hits, out uint lastLr, [Out] ulong[] outArgs,
 		uint argsCapacity);
@@ -7633,6 +7693,131 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostGetSceneStreams(uint[] outWords);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicFrame(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicLights(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicMists(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicParticles(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetGuestRender(int on);
+
+	/// <summary>
+	/// Runs (true) or skips (false) the guest's own scene draw, or hands it back to
+	/// REFII_GUEST_RENDER (null): a reference instrument for the classic renderer, whose constant
+	/// setters then fill the device shadow. False when the native build predates the export.
+	/// </summary>
+	public static bool SetGuestRender(bool? on)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return false;
+		}
+		try
+		{
+			RefiiHostSetGuestRender(on is null ? -1 : on.Value ? 1 : 0);
+			return true;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Floats in a particle group's header, and per record (see the native export).</summary>
+	public const int ClassicParticleHeader = 320;
+	public const int ClassicParticleRecord = 12;
+
+	/// <summary>
+	/// The render scene's particle groups as their twins hold them: [0] groups, [1] floats
+	/// used, then per group a header and its records. Returns the floats used, 0 when none.
+	/// </summary>
+	public static uint GetClassicParticles(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicParticles(values, (uint)values.Length);
+	}
+
+	/// <summary>Floats per mist in <see cref="GetClassicMists"/>.</summary>
+	public const int ClassicMistStride = 36;
+
+	/// <summary>The render scene's mist volumes, 36 floats each (see the native export).</summary>
+	public static uint GetClassicMists(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicMists(values, (uint)values.Length);
+	}
+
+	/// <summary>Floats per light in <see cref="GetClassicLights"/>.</summary>
+	public const int ClassicLightStride = 20;
+
+	/// <summary>
+	/// The render scene's active lights as the light manager holds them, 20 floats each (see
+	/// the native export for the layout). Returns the lights written, or 0 before the scene is up.
+	/// </summary>
+	public static uint GetClassicLights(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicLights(values, (uint)values.Length);
+	}
+
+	/// <summary>
+	/// The frame-constant sources the title's render passes read — ambient, sun direction,
+	/// lightmap factor, normal-map darkening, the five-row atmosphere block, the scene's theme
+	/// block, the sun light and the wind — as 148 floats (see the native export for the layout). Returns
+	/// the floats written, or 0 before the lighting object exists.
+	/// </summary>
+	public static uint GetClassicFrame(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicFrame(values, (uint)values.Length);
+	}
+
+	private static bool _classicThemeMissing;
+
+	/// <summary>
+	/// The scene's whole theme block (194 parameters x 4) and the sky object's sun colour and
+	/// direction, moon direction and phase, as 789 floats (see the native export). 0 before the
+	/// scene is up or when the native library predates the call.
+	/// </summary>
+	public static uint GetClassicTheme(float[] values)
+	{
+		if (_classicThemeMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicTheme(values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_classicThemeMissing = true;
+			return 0;
+		}
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicTheme([Out] float[] outValues, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostPostFrontEndAction([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
@@ -8420,6 +8605,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetEntityDrawRange(uint entity, out float distance, out float fadeFactor);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityLightZone(uint entity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityWornItems(uint entity, [Out] uint[] outWords, uint wordCapacity);

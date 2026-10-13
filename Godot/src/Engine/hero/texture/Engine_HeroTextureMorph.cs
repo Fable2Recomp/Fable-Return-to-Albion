@@ -192,12 +192,16 @@ public static class Engine_HeroTextureMorph
                 {
                     lock (DuplicateGate)
                     {
-                        own = (ShaderMaterial)material.Duplicate();
+                        own = material.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta)
+                            ? Refii.Models.Engine_ClassicMaterial.InstanceCopy(material)
+                            : (ShaderMaterial)material.Duplicate();
                     }
                 }
 
-                own.SetShaderParameter(
-                    Refii.Models.Engine_MdlMaterial.TextureParameters[slot], composited);
+                // The slot's own parameter: the classic material names its samplers as the
+                // title's shader does, and its glass pass takes the composite too.
+                Refii.Models.Engine_ClassicMaterial.SetOnPasses(own,
+                    Refii.Models.Engine_ClassicMaterial.TextureParameter(own, slot), composited);
                 packedSourceChanged |= slot == NormalSlot || slot == SpecularSlot;
             }
 

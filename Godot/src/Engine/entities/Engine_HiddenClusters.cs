@@ -306,6 +306,8 @@ public static class Engine_HiddenClusters
 				WriteOverrides(node, state, UInt128.Zero);
 				node.Mesh = variant;
 				Engine_BodyVariants.NoteShown(node, source!, variant);
+				// The classic transfer pair is per surface index: rebuilt for the new mesh.
+				Refii.Models.Engine_ClassicTransfer.Apply(node);
 			}
 
 			return;
@@ -315,6 +317,7 @@ public static class Engine_HiddenClusters
 		{
 			node.Mesh = source;
 			state.Written = UInt128.Zero;
+			Refii.Models.Engine_ClassicTransfer.Apply(node);
 		}
 
 		WriteOverrides(node, state, hidden);
@@ -328,7 +331,11 @@ public static class Engine_HiddenClusters
 			UInt128 bit = UInt128.One << s;
 			if ((changed & bit) != UInt128.Zero)
 			{
-				node.SetSurfaceOverrideMaterial(s, (wanted & bit) != UInt128.Zero ? Collapsed : null);
+				// Unhidden, a surface goes back to whatever lit it before: the classic transfer
+				// pair when the classic renderer gave it one, else its own material.
+				node.SetSurfaceOverrideMaterial(s, (wanted & bit) != UInt128.Zero
+					? Collapsed
+					: Refii.Models.Engine_ClassicTransfer.SurfaceOverride(node, s));
 				changed &= ~bit;
 			}
 		}

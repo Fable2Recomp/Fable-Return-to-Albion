@@ -64,9 +64,17 @@ static void writeAllBytes(const char* filePath, const void* data, size_t dataSiz
 static void translateSingleShaderFile(const char* input,
                                       const char* output,
                                       const std::string_view& include,
-                                      XenosRecompTranslationStats* stats)
+                                      XenosRecompTranslationStats* stats,
+                                      ShaderDialect dialect = ShaderDialect::Hlsl)
 {
     ShaderRecompiler recompiler;
+    recompiler.dialect = dialect;
+    {
+        std::string stem = std::filesystem::path(output).stem().string();
+        for (char& c : stem)
+            c = char(std::tolower(static_cast<unsigned char>(c)));
+        recompiler.godotEntryName = stem;
+    }
     size_t fileSize = 0;
     auto data = readAllBytes(input, fileSize);
     recompiler.recompile(data.get(), include);
@@ -273,6 +281,45 @@ int XenosRecompEntrypoint(int argc, char** argv)
     }
 
     return 0;
+}
+
+extern "C" bool XenosRecompTranslateEx(
+    const char* inputPath,
+    const char* outputPath,
+    const char* shaderCommonPath,
+    uint32_t dialect,
+    XenosRecompTranslationStats* stats,
+    const char** errorMessage) {
+    thread_local std::string lastError;
+    if (errorMessage != nullptr) {
+        *errorMessage = nullptr;
+    }
+    if (stats != nullptr) {
+        *stats = XenosRecompTranslationStats{};
+    }
+
+    if (dialect == XENOSRECOMP_DIALECT_HLSL) {
+        return XenosRecompTranslateToHlslEx(inputPath, outputPath, shaderCommonPath, stats, errorMessage);
+    }
+    if (dialect != XENOSRECOMP_DIALECT_GODOT) {
+        if (errorMessage != nullptr) {
+            lastError = "unknown dialect " + std::to_string(dialect);
+            *errorMessage = lastError.c_str();
+        }
+        return false;
+    }
+    if (inputPath == nullptr || outputPath == nullptr || std::filesystem::is_directory(inputPath)) {
+        if (errorMessage != nullptr) {
+            lastError = "the Godot dialect translates one blob to one file";
+            *errorMessage = lastError.c_str();
+        }
+        return false;
+    }
+
+    XenosRecompTranslationStats localStats{};
+    translateSingleShaderFile(inputPath, outputPath, std::string_view{},
+                              stats != nullptr ? stats : &localStats, ShaderDialect::Godot);
+    return true;
 }
 
 extern "C" bool XenosRecompTranslateToHlslEx(

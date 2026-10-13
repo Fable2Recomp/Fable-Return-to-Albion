@@ -242,8 +242,7 @@ function(refii_define_godot_export_target)
     foreach(_dependency
             refii_hostbridge
             refii_payload_sdk
-            refii_stage_godot
-            refii-stage-external-libs)
+            refii_stage_godot)
         if(TARGET ${_dependency})
             add_dependencies(refii_package ${_dependency})
         endif()

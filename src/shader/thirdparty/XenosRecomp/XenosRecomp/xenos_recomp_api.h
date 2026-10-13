@@ -45,6 +45,21 @@ XENOSRECOMP_API bool XenosRecompTranslateToHlslEx(
     XenosRecompTranslationStats* stats,
     const char** errorMessage);
 
+// What the recompiler writes: HLSL for dxc, or Godot's shading language (one .gdshaderinc per
+// blob, for the classic renderer's materials).
+#define XENOSRECOMP_DIALECT_HLSL 0
+#define XENOSRECOMP_DIALECT_GODOT 1
+
+// Single-blob translation in the given dialect. The shader common header is read only for
+// HLSL; the Godot output includes its own support file by resource path.
+XENOSRECOMP_API bool XenosRecompTranslateEx(
+    const char* inputPath,
+    const char* outputPath,
+    const char* shaderCommonPath,
+    uint32_t dialect,
+    XenosRecompTranslationStats* stats,
+    const char** errorMessage);
+
 #ifdef __cplusplus
 }
 #endif

@@ -194,3 +194,11 @@ fable_light_table={
 "type": "sampler2D",
 "value": ""
 }
+xr_ps_constants={
+"type": "sampler2D",
+"value": ""
+}
+xr_vs_constants={
+"type": "sampler2D",
+"value": ""
+}

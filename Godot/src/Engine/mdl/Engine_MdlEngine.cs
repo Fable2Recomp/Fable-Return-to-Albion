@@ -287,7 +287,14 @@ public static class Engine_MdlEngine
                 if (!r.F32(out float specPowerMin)) return false;
                 if (!r.F32(out float specPowerRange)) return false;
                 if (!r.Skip(1)) return false;
-                if (!r.Skip(20)) return false;
+                // The five floats between: the guest keeps them at RC+88..+104 and packs them
+                // into its material block (`sub_82B243E8`, `sub_822015B8`): c24.w = the first,
+                // c25.xyz = the second, fourth and fifth. The classic renderer feeds that block.
+                var blockFloats = new float[5];
+                for (int f = 0; f < 5; f++)
+                {
+                    if (!r.F32(out blockFloats[f])) return false;
+                }
                 if (!r.F32(out float selfIllumScale)) return false;
                 if (!r.Skip(8)) return false;
                 if (!r.Skip(4)) return false;
@@ -331,6 +338,7 @@ public static class Engine_MdlEngine
                     mat.SpecularPowerMin = specPowerMin;
                     mat.SpecularPowerMax = specPowerMin + specPowerRange;
                     mat.SelfIlluminationScale = selfIllumScale;
+                    mat.BlockFloats = blockFloats;
 
                     hdr.Materials.Add(mat);
                 }
