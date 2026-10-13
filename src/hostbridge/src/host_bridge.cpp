@@ -2257,7 +2257,10 @@ extern "C" {
 ///     the device constant shadow read, which is empty here.
 /// 174 adds RefiiHostGetClassicParticles — the render scene's particle groups as their twins
 ///     hold them (records, material, keyframes, transform), for the classic particle draw.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 174; }
+/// 175 adds RefiiHostGetThemeBlends — the script theme blend list (`BlendToEnvironmentTheme`,
+///     `mgr+148`), which the guest folds before the stack; RefiiHostGetThemeStack reads only the
+///     spell list at `mgr+164`.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 175; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -6265,7 +6268,25 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* 
 ///
 /// Writes 3 words per entry — name hash, weight bits, target bits — up to `max_entries`.
 /// Returns the entries written; 0 while the world is unbuilt or the list is empty.
+static uint32_t ReadThemeList(uint32_t* out_words, uint32_t max_entries, uint32_t sentinel_offset);
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeStack(uint32_t* out_words, uint32_t max_entries) {
+    return ReadThemeList(out_words, max_entries, 168u);
+}
+
+/// The SCRIPT blend list — `EnvironmentTheme.BlendToEnvironmentTheme(name, weight, seconds)`
+/// (`sub_82549B80`: find-or-insert in the list at `mgr+148`, sentinel `*(mgr+152)`), the
+/// quest-stated looks: the Cursed Snowglobe's `PastMonochromeNoon`, combat failure, XP, the
+/// balverine poison, Westcliff's night. `sub_8218EAF8` folds it as one group after the day set
+/// and painted layers and BEFORE the stack: group weight `clamp(mgr+160)` (`sub_822C0E08`'s sum
+/// of the node weights), each theme at its own weight. The list is saved with the game
+/// (`sub_8254A090`, chunk "ScriptOverride"), so it is read here rather than hooked at the call.
+/// Same node layout and output as RefiiHostGetThemeStack.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeBlends(uint32_t* out_words, uint32_t max_entries) {
+    return ReadThemeList(out_words, max_entries, 152u);
+}
+
+static uint32_t ReadThemeList(uint32_t* out_words, uint32_t max_entries, uint32_t sentinel_offset) {
     if (out_words == nullptr || max_entries == 0u) {
         return 0u;
     }
@@ -6304,7 +6325,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeStack(uint32_t* out_words, uint3
         return 0u;
     }
 
-    const uint32_t sentinel = load_be32(theme_manager + 168u);
+    const uint32_t sentinel = load_be32(theme_manager + sentinel_offset);
     if (!plausible(sentinel)) {
         return 0u;
     }

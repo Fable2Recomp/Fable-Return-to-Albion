@@ -2805,7 +2805,7 @@ public partial class GameEntities : Node3D
         {
             foreach (HostBridge.GuestTextureComposite composite in layers)
             {
-                layerHash = (layerHash ^ composite.Original ^ (composite.Overlay ? 1u : 0u)) * 1099511628211UL;
+                layerHash = (layerHash ^ composite.Original ^ (composite.Overlay ? 1u : 0u) ^ (composite.Wildcard ? 2u : 0u)) * 1099511628211UL;
                 foreach (HostBridge.GuestTextureLayer layer in composite.Layers)
                 {
                     layerHash = (layerHash ^ layer.Texture) * 1099511628211UL;

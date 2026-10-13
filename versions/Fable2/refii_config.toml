@@ -11203,8 +11203,10 @@
 0x82547FC0 = { name = "rex_CECGraphicAppearance_ReplicateAppearance" }
 0x82548598 = { name = "rex_CECGraphicAppearance_SetHighlightColour" }
 0x82465E20 = { name = "rex_lhSetTextureLayersCommand_Ctor" }
+0x825110E8 = { name = "rex_lhObjectAttachment_ResolveLoaded" }
 0x82468500 = { name = "rex_CECCompositeModel_ApplyCharacterCreationRecord" }
 0x823D2D28 = { name = "rex_lhPodVector_FreeStorage" }
+0x82469850 = { name = "rex_lhTextureMorph_StateWildcard" }
 0x824B8428 = { name = "rex_lhFx_SpawnFromDefProperty" }
 0x8240EAA0 = { name = "rex_lhGuiPauseRootScreen_OnMenuEvent" }
 0x82591B50 = { name = "rex_lhGuiCrimeScreen_OnMenuEvent", size = 0x3E0 }

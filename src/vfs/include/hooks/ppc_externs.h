@@ -195,6 +195,8 @@ PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_ScalarDtor); // CECGraphicAppear
 PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_ApplyTextureLayers); // CECGraphicAppearanceMorph: the composite submit
 PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_RebuildParts); // CECGraphicAppearanceMorph: rebuilds the part records
 PPC_EXTERN_FUNC(__imp__rex_lhSetTextureLayersCommand_Ctor); // texture composite command: one original, its layers
+PPC_EXTERN_FUNC(__imp__rex_lhTextureMorph_StateWildcard); // a whole-entity texture swap: every diffuse/specular/normal map
+PPC_EXTERN_FUNC(__imp__rex_lhObjectAttachment_ResolveLoaded); // component 22 resolving loaded AttachedEntity records
 PPC_EXTERN_FUNC(__imp__rex_lhMorphDescriptor_Ctor); // morph descriptor constructor: a part and its weighted targets
 PPC_EXTERN_FUNC(__imp__rex_lhRenderCommandStream_PostModelCommand); // render command to one model handle; type 14 = overlays
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetPositionAndVelocity); // CParticleSystemEntityInstance: states the world position

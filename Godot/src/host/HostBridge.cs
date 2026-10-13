@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 174;
+	public const int ExpectedAbiVersion = 175;
 
 	private const int MessageCapacity = 512;
 
@@ -635,10 +635,12 @@ public static class HostBridge
 	/// <summary>
 	/// An original texture and the layers the guest composites in its place, base first; or,
 	/// with <paramref name="Overlay"/>, the scars and mode-0 morphs it draws over the finished
-	/// material whose diffuse is that texture.
+	/// material whose diffuse is that texture; or, with <paramref name="Wildcard"/>, a swap of
+	/// EVERY map of one kind on the entity (`sub_825B7100`: the shadow creature's Spire Rock) —
+	/// Original 0 diffuse, 1 specular, 2 normal, one layer.
 	/// </summary>
 	public readonly record struct GuestTextureComposite(
-		uint Original, GuestTextureLayer[] Layers, bool Overlay = false);
+		uint Original, GuestTextureLayer[] Layers, bool Overlay = false, bool Wildcard = false);
 
 	private const int TextureLayerWords = 7;
 
@@ -716,7 +718,7 @@ public static class HostBridge
 		{
 			uint original = words[at];
 			int count = (int)(words[at + 1] & 0xFFFF);
-			bool overlay = (words[at + 1] >> 16) != 0;
+			uint kind = words[at + 1] >> 16;
 			at += 2;
 			if (count <= 0 || at + count * TextureLayerWords > written)
 			{
@@ -738,7 +740,7 @@ public static class HostBridge
 			}
 
 			at += count * TextureLayerWords;
-			composites.Add(new GuestTextureComposite(original, layers, overlay));
+			composites.Add(new GuestTextureComposite(original, layers, kind == 1u, kind == 2u));
 		}
 
 		return composites.ToArray();
@@ -3310,7 +3312,19 @@ public static class HostBridge
 	/// rest, so a host blending these over its own tone map changes nothing until the guest
 	/// states a push.
 	/// </summary>
-	public static void ThemeStack(System.Collections.Generic.List<GuestThemeLayer> into)
+	public static void ThemeStack(System.Collections.Generic.List<GuestThemeLayer> into) =>
+		ReadThemeLayers(into, stack: true);
+
+	/// <summary>
+	/// The themes scripts have blended in with `EnvironmentTheme.BlendToEnvironmentTheme` — the
+	/// Cursed Snowglobe's monochrome, combat failure, XP, the balverine poison — see
+	/// RefiiHostGetThemeBlends. The guest folds these as one layer BEFORE the stack. Empty unless
+	/// a script states one.
+	/// </summary>
+	public static void ThemeBlends(System.Collections.Generic.List<GuestThemeLayer> into) =>
+		ReadThemeLayers(into, stack: false);
+
+	private static void ReadThemeLayers(System.Collections.Generic.List<GuestThemeLayer> into, bool stack)
 	{
 		into.Clear();
 		try
@@ -3321,7 +3335,9 @@ public static class HostBridge
 			}
 
 			uint[] words = _themeStackWords ??= new uint[ThemeStackMax * 3];
-			uint count = RefiiHostGetThemeStack(words, ThemeStackMax);
+			uint count = stack
+				? RefiiHostGetThemeStack(words, ThemeStackMax)
+				: RefiiHostGetThemeBlends(words, ThemeStackMax);
 			for (int i = 0; i < count; ++i)
 			{
 				into.Add(new GuestThemeLayer(
@@ -7623,6 +7639,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetThemeStack(uint[] outWords, uint maxEntries);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetThemeBlends(uint[] outWords, uint maxEntries);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(

@@ -31,6 +31,8 @@ layout(set = 0, binding = 2, std140) uniform PostFxParams {
 layout(set = 0, binding = 3) uniform sampler2D bloom_tex;
 layout(set = 0, binding = 4) uniform sampler2D dof_tex;
 layout(set = 0, binding = 5) uniform sampler2D depth_tex;
+// g_SaturationMaskSampler (Engine_PostFxSaturationMask): 1 where a SetSaturationMask entity drew.
+layout(set = 0, binding = 6) uniform sampler2D satmask_tex;
 
 layout(push_constant, std430) uniform Params {
 	ivec2 size;
@@ -166,6 +168,13 @@ void main() {
 		c = mix(c, blurred, w);
 	}
 
+	// THE MASKED PAIR IS A DELTA (shader 0505): m = mask >= 0.5, then Brightness + 1 + m x
+	// BrightnessMasked and Saturation + m x SaturationMasked. The Cursed Snowglobe states -1 and
+	// +1: the world grey, its masked Shadows, hero and weapons in their own colour.
+	float m = (params.reserved1.w > 0.5 && texelFetch(satmask_tex, coord, 0).r >= 0.5) ? 1.0 : 0.0;
+	float brightness = params.sat.y + (m * params.sat.w);
+	float saturation = params.sat.x + (m * params.sat.z);
+
 	vec3 col = c;
 	if (classic && params.bits.x > 0.5) {
 		// PSHADER_POSTPROCESSINGMATERIAL_TONEMAP1 (shader 0500), instruction for instruction:
@@ -175,13 +184,13 @@ void main() {
 		// c46.x = 1/range (misc.w), c47.x = 1/ColourSensitivityThreshold (misc.x), c77 =
 		// (Saturation, Brightness + 1) (sat.xy), c31.x = the bloom factor (composite.x).
 		float lum = dot(c, LUMINANCE_WEIGHTS);
-		float s = classic_tone(lum * params.misc.w) * params.sat.y;
+		float s = classic_tone(lum * params.misc.w) * brightness;
 		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, 1.0);
 		float k = clamp(lum * params.misc.x, 0.0, 1.0);
 		col = clamp(s * (vec3(lum) + k * (c - vec3(lum))), 0.0, 1.0);
 		col = bloom + col - bloom * col;
 		float l2 = dot(col, LUMINANCE_WEIGHTS);
-		col = (col - vec3(l2)) * params.sat.x + col;
+		col = (col - vec3(l2)) * saturation + col;
 		// c78.x = GAMMA * 0.45454544 (`sub_821E5DB8`, 0x821E6404): the title writes
 		// pow(col, c78.x) straight to its 8-bit back buffer. Godot sRGB-encodes this target on
 		// output, so the power is decoded through sRGB here and the screen shows the power
@@ -213,7 +222,7 @@ void main() {
 		// a lit exterior meters around 0.02 before the exposure scalar is applied.
 		float s = clamp(l * applied * params.misc.x, 0.0, 1.0);
 		col = vec3(l) + s * (c - vec3(l));
-		col = clamp(gain * params.sat.y * applied * col, 0.0, headroom);
+		col = clamp(gain * brightness * applied * col, 0.0, headroom);
 		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, headroom);
 		col = col + bloom * max(headroom - col, 0.0) / headroom;
 	} else {
@@ -222,7 +231,7 @@ void main() {
 
 	if (params.bits.z > 0.5) {
 		float lc = dot(col, LUMINANCE_WEIGHTS);
-		col = col + params.sat.x * (col - vec3(lc));
+		col = col + saturation * (col - vec3(lc));
 	}
 
 	col *= params.misc.z;

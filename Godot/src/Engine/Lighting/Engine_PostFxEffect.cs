@@ -155,6 +155,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private Rid _linearSampler;
     private Rid _nearestSampler;
     private Rid _exposureRd;
+    private Engine_PostFxSaturationMask? _satMask;
+
+    /// <summary>This frame composites with the saturation mask: masked entities are up and the theme states a masked pair.</summary>
+    private bool _maskWanted;
 
     private Rid _quarter;
     private Rid _occl;
@@ -383,6 +387,14 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _trapUnitState = _rd.StorageBufferCreate((uint)unit.Length, unit);
         }
 
+        // The saturation mask is the one pass the chain runs without: unbuilt, masked entities
+        // take the plain saturation.
+        _satMask = new Engine_PostFxSaturationMask(_rd);
+        if (!_satMask.Initialise())
+        {
+            _satMask = null;
+        }
+
         bool ready = _histogramBuffer.IsValid && _stateBuffer.IsValid && _paramsBuffer.IsValid &&
             _haloBuffer.IsValid && _highlightBuffer.IsValid && _haloFallbackArray.IsValid && _linearSampler.IsValid &&
             _nearestSampler.IsValid && _exposureRd.IsValid;
@@ -493,6 +505,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _halfSize = new Vector2I(Math.Max(size.X / 2, 1), Math.Max(size.Y / 2, 1));
 
         _quarter = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
+        _satMask?.Resize(size);
         _occl = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
         for (int i = 0; i < 2; i++)
         {
@@ -704,6 +717,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Free(ref _histogramPipeline);
         Free(ref _reducePipeline);
         Free(ref _compositeShader);
+        _satMask?.Release();
+        _satMask = null;
         Free(ref _gaussShader);
         Free(ref _brightcutShader);
         Free(ref _radialShader);
@@ -773,6 +788,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
             camProjection = sceneData.GetCamProjection();
         }
 
+        // `Render_LitMaterialSubmit` takes the SaturationMask variant only when the theme states a
+        // masked pair (|SaturationMasked| or |BrightnessMasked| over 0.01, 0x821e5e60).
+        _maskWanted = _satMask is not null && Refii.Entities.Engine_EntityAppearance.MaskedCount > 0 &&
+            (MathF.Abs(_derived.SaturationMasked) > 0.01f || MathF.Abs(_derived.BrightnessMasked) > 0.01f);
         UpdateParams(dt, sun.SunDirection, camBasis, camProjection, bloomOn, raysOn, dofOn);
         Reduce();
         _rd.BufferClear(_histogramBuffer, 0, HistogramBytes);
@@ -873,6 +892,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 Gauss(_gaussDofHSet, new Vector2I(1, 0), _dofWeightsH);
                 Gauss(_gaussDofVSet, new Vector2I(0, 1), _dofWeightsV);
+            }
+
+            if (_maskWanted && !_satMask!.Build(depth))
+            {
+                Clear(_satMask.Texture);
             }
 
             Composite(colour, depth, size, projection.Inverse());
@@ -1014,7 +1038,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, classic ? 1.0f : Engine_PostFxParams.DarkLift);
         Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f,
             Engine_PostFxParams.OutputHeadroom, 0.0f);
-        Set(p, 14, (float)_frameIndex, _trapRatio, classic ? 1.0f : 0.0f, 0.0f);
+        Set(p, 14, (float)_frameIndex, _trapRatio, classic ? 1.0f : 0.0f, _maskWanted ? 1.0f : 0.0f);
         Set(p, 8, d.Saturation, d.Brightness + 1.0f, d.SaturationMasked, d.BrightnessMasked);
 
         float gammaRatio = d.Gamma > 0.0f && MathF.Abs(d.Gamma - 1.0f) > 1e-4f ? d.Gamma : 0.0f;
@@ -1574,6 +1598,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 Sampler(_linearSampler, _bloom[0], 3),
                 Sampler(_linearSampler, _dof[1], 4),
                 Sampler(_nearestSampler, depth, 5),
+                Sampler(_nearestSampler, _satMask?.Texture ?? _exposureRd, 6),
             });
         }
 

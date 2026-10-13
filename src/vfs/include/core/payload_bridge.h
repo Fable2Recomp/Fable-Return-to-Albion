@@ -119,6 +119,9 @@ void refii_bridge_note_dye_states(const uint32_t* words, uint32_t count);
 // `kind` 0 is a composite stated to `sub_825B38B0`, layer 0 the base. `kind` 1 is the OVERLAY
 // list sent as command type 14 through `sub_8222AAC8`: scars and blend-mode-0 morphs, drawn
 // over the finished material; texture id is the overlay's diffuse.
+// `kind` 2 is a WHOLE-ENTITY SWAP (`sub_825B7100`, the shadow creature's and component 192's):
+// original 0 every diffuse map, 1 every specular map, 2 every normal map; one layer, the
+// replacement at weight 1.
 // `begin` drops what the entity stated before.
 enum {
   kTextureLayerWords = 7,

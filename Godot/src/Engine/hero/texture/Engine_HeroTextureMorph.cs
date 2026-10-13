@@ -133,15 +133,38 @@ public static class Engine_HeroTextureMorph
             return;
         }
 
-        var byOriginal = new Dictionary<uint, Refii.Host.HostBridge.GuestTextureComposite>();
-        var overlays = new Dictionary<uint, Refii.Host.HostBridge.GuestTextureComposite>();
-        foreach (Refii.Host.HostBridge.GuestTextureComposite composite in composites)
-        {
-            (composite.Overlay ? overlays : byOriginal)[composite.Original] = composite;
-        }
-
         const int DiffuseSlot = 0;
         const int NormalSlot = 1;
+        const int SpecularSlot = 2;
+
+        var byOriginal = new Dictionary<uint, Refii.Host.HostBridge.GuestTextureComposite>();
+        var overlays = new Dictionary<uint, Refii.Host.HostBridge.GuestTextureComposite>();
+
+        // WHOLE-ENTITY SWAPS, by our slot: the guest states them as every diffuse (0), specular
+        // (1) or normal (2) map, and states no composite beside them (`sub_8220DE88` skips that
+        // path, 0x8220eb44).
+        var everyMap = new Refii.Host.HostBridge.GuestTextureLayer[]?[3];
+        foreach (Refii.Host.HostBridge.GuestTextureComposite composite in composites)
+        {
+            if (composite.Wildcard)
+            {
+                int slot = composite.Original switch
+                {
+                    0u => DiffuseSlot,
+                    1u => SpecularSlot,
+                    2u => NormalSlot,
+                    _ => -1,
+                };
+                if (slot >= 0)
+                {
+                    everyMap[slot] = composite.Layers;
+                }
+
+                continue;
+            }
+
+            (composite.Overlay ? overlays : byOriginal)[composite.Original] = composite;
+        }
 
         for (int s = 0; s < mesh.GetSurfaceCount(); s++)
         {
@@ -164,7 +187,6 @@ public static class Engine_HeroTextureMorph
                 over = stated.Layers;
             }
 
-            const int SpecularSlot = 2;
             bool packedSourceChanged = false;
             for (int slot = 0;
                  slot < names.Length && slot < Refii.Models.Engine_MdlMaterial.TextureParameters.Length;
@@ -178,6 +200,10 @@ public static class Engine_HeroTextureMorph
                 uint original = Engine_TexPathIndex.PathHash(names[slot]);
                 byOriginal.TryGetValue(
                     original, out Refii.Host.HostBridge.GuestTextureComposite composite);
+                if (slot < everyMap.Length && everyMap[slot] is { } swapped)
+                {
+                    composite = new Refii.Host.HostBridge.GuestTextureComposite(original, swapped);
+                }
 
                 Refii.Host.HostBridge.GuestTextureLayer[]? slotOver =
                     slot == DiffuseSlot || slot == NormalSlot ? over : null;
@@ -295,9 +321,31 @@ public static class Engine_HeroTextureMorph
             return null;
         }
 
-        int width = source.Width;
-        int height = source.Height;
-        byte[] output = (byte[])source.Rgba.Clone();
+        // THE TARGET IS THE LARGEST LAYER, not the base. `sub_82A5BCE8` sizes the composite from
+        // 64 x 64 up to the widest and tallest of ALL its layers (texture +148 / +152); a smaller
+        // layer is sampled up to it. The Will lines are a larger `ILL_*_will` map over a 32 x 32
+        // black `ILL_*` base: composited at the base's size they were soft blobs of glow. The guest
+        // then halves past 512 (`dword_8331AB00/04`); that hardware budget is not kept, so no
+        // composite comes out softer than its sharpest layer.
+        var decoded = new DecodedTexture?[layers.Length];
+        int width = Math.Max(MinimumCompositeSize, source.Width);
+        int height = Math.Max(MinimumCompositeSize, source.Height);
+        for (int i = 1; i < layers.Length; i++)
+        {
+            string? path = Engine_TexPathIndex.Resolve(layers[i].Texture);
+            decoded[i] = path is null ? null : Decode(path);
+            if (decoded[i] is { Ok: true } layerTexture)
+            {
+                width = Math.Max(width, layerTexture.Width);
+                height = Math.Max(height, layerTexture.Height);
+            }
+        }
+
+        byte[] output = Fit(source, width, height).Rgba;
+        if (ReferenceEquals(output, source.Rgba))
+        {
+            output = (byte[])output.Clone();
+        }
 
         if (layers.Length != 0 && layers[0].HasTint)
         {
@@ -311,10 +359,9 @@ public static class Engine_HeroTextureMorph
         for (int i = 1; i < layers.Length; i++)
         {
             Refii.Host.HostBridge.GuestTextureLayer layer = layers[i];
-            string? path = Engine_TexPathIndex.Resolve(layer.Texture);
-            DecodedTexture? over = path is null ? null : Decode(path);
-            if (over is not null && over.Ok)
+            if (decoded[i] is { Ok: true } over)
             {
+                over = Fit(over, width, height);
                 Blend(output, width, height, over, over, layer.Mode, layer.Weight,
                     layer.HasTint ? new Colourise(layer.Tint, layer.Brightness) : null);
             }
@@ -343,7 +390,7 @@ public static class Engine_HeroTextureMorph
 
             if (colour is not null && colour.Ok)
             {
-                Blend(output, width, height, colour, mask, 1, overlay.Weight, null);
+                Blend(output, width, height, Fit(colour, width, height), Fit(mask, width, height), 1, overlay.Weight, null);
             }
         }
 
@@ -370,6 +417,53 @@ public static class Engine_HeroTextureMorph
             .Append(layer.HasTint ? layer.Tint.ToString("x8") : "-")
             .Append(BitConverter.SingleToUInt32Bits(layer.Brightness).ToString("x8"))
             .Append(layer.Bump.ToString("x8"));
+
+    /// <summary>The composite's floor: `sub_82A5BCE8` starts its max over the layers from 64 x 64.</summary>
+    private const int MinimumCompositeSize = 64;
+
+    /// <summary>
+    /// <paramref name="texture"/> at the target's size: itself when it already is, else sampled
+    /// bilinearly between texel centres, as the guest's composite pass filters a smaller layer.
+    /// </summary>
+    private static DecodedTexture Fit(DecodedTexture texture, int width, int height)
+    {
+        if (texture.Width == width && texture.Height == height)
+        {
+            return texture;
+        }
+
+        var rgba = new byte[width * height * 4];
+        int sw = texture.Width;
+        int sh = texture.Height;
+        byte[] src = texture.Rgba;
+        for (int y = 0; y < height; y++)
+        {
+            float fy = Math.Clamp((((y + 0.5f) * sh) / height) - 0.5f, 0f, sh - 1f);
+            int y0 = (int)fy;
+            int y1 = Math.Min(y0 + 1, sh - 1);
+            float ty = fy - y0;
+            for (int x = 0; x < width; x++)
+            {
+                float fx = Math.Clamp((((x + 0.5f) * sw) / width) - 0.5f, 0f, sw - 1f);
+                int x0 = (int)fx;
+                int x1 = Math.Min(x0 + 1, sw - 1);
+                float tx = fx - x0;
+                int a = ((y0 * sw) + x0) * 4;
+                int b = ((y0 * sw) + x1) * 4;
+                int c = ((y1 * sw) + x0) * 4;
+                int d = ((y1 * sw) + x1) * 4;
+                int o = ((y * width) + x) * 4;
+                for (int k = 0; k < 4; k++)
+                {
+                    float top = src[a + k] + ((src[b + k] - src[a + k]) * tx);
+                    float bottom = src[c + k] + ((src[d + k] - src[c + k]) * tx);
+                    rgba[o + k] = (byte)Math.Clamp(top + ((bottom - top) * ty) + 0.5f, 0f, 255f);
+                }
+            }
+        }
+
+        return new DecodedTexture { Width = width, Height = height, HasAlpha = texture.HasAlpha, Ok = true, Rgba = rgba };
+    }
 
     /// <summary>One layer over the target: colour from one texture, coverage from another's alpha.</summary>
     private static void Blend(
@@ -634,18 +728,30 @@ public static class Engine_HeroTextureMorph
             return null;
         }
 
-        int width = source.Width;
-        int height = source.Height;
-        byte[] output = (byte[])source.Rgba.Clone();
-
+        // Sized as `sub_82A5BCE8` sizes a composite: the largest layer, 64 x 64 at least.
+        var decodedLayers = new List<(DecodedTexture Texture, TextureMorphEntry Entry)>(layers.Count);
+        int width = Math.Max(MinimumCompositeSize, source.Width);
+        int height = Math.Max(MinimumCompositeSize, source.Height);
         foreach ((string path, TextureMorphEntry entry) in layers)
         {
-            DecodedTexture over = Decode(path);
-            if (!over.Ok)
+            DecodedTexture decodedLayer = Decode(path);
+            if (decodedLayer.Ok)
             {
-                continue;
+                decodedLayers.Add((decodedLayer, entry));
+                width = Math.Max(width, decodedLayer.Width);
+                height = Math.Max(height, decodedLayer.Height);
             }
+        }
 
+        byte[] output = Fit(source, width, height).Rgba;
+        if (ReferenceEquals(output, source.Rgba))
+        {
+            output = (byte[])output.Clone();
+        }
+
+        foreach ((DecodedTexture decodedLayer, TextureMorphEntry entry) in decodedLayers)
+        {
+            DecodedTexture over = Fit(decodedLayer, width, height);
             bool additive = entry.Blend == TextureMorphBlend.Additive;
 
             for (int y = 0; y < height; y++)

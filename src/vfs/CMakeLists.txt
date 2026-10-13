@@ -127,6 +127,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/target_highlight.cpp
     ${REFII_VFS_ROOT}/src/hooks/entity_appearance.cpp
     ${REFII_VFS_ROOT}/src/hooks/texture_layers.cpp
+    ${REFII_VFS_ROOT}/src/hooks/attached_particle_restore.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_streams.cpp

@@ -981,12 +981,14 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private void PublishPostFx()
     {
-        Engine_PostFxParams.Publish(WithGuestThemes(LiveToneMap() ?? _toneMapTheme), Theme, _frame, ResolveCamera());
+        ToneMapTheme? live = LiveToneMap();
+        Engine_PostFxParams.Publish(WithGuestThemes(live ?? _toneMapTheme, live is not null), Theme, _frame, ResolveCamera());
     }
 
     private readonly System.Collections.Generic.List<Refii.Host.HostBridge.GuestThemeLayer> _guestLayers = new();
     private readonly System.Collections.Generic.Dictionary<uint, ToneMapTheme?> _guestLayerThemes = new();
     private ToneMapTheme? _guestBlend;
+    private ToneMapTheme? _guestScripted;
 
     /// <summary>
     /// The host's tone map with the themes the guest has PUSHED blended over it at the guest's
@@ -998,6 +1000,17 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// STATED slot lerped over the base. An empty stack returns the base untouched, so the
     /// picture at rest is unchanged. Fields a theme inherits through `parent` are not blended;
     /// only what the record and its sub-records state is.
+    ///
+    /// THE SCRIPT BLENDS GO FIRST, as their own layer: `sub_8218EAF8` folds the list
+    /// `EnvironmentTheme.BlendToEnvironmentTheme` fills (`mgr+148`) after the day set and painted
+    /// layers and before the stack (`mgr+164`), each list one group at `clamp(Σw)`. That list is
+    /// the quests' looks — the Cursed Snowglobe's `PastMonochromeNoon` (Saturation -1,
+    /// SaturationMasked +1), combat failure, XP, the balverine poison.
+    ///
+    /// THE CLASSIC BASE TAKES NEITHER. It is the render scene's theme block (scene+16), the copy
+    /// of the record `sub_8218EAF8` folds — script list and stack included (read live in the
+    /// Cursed Snowglobe: scene slot 44 = -1, the same as the record). Composing either again
+    /// applied it twice.
     /// </summary>
     private ToneMapTheme? _liveToneMap;
 
@@ -1022,16 +1035,34 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         return _liveToneMap;
     }
 
-    private ToneMapTheme? WithGuestThemes(ToneMapTheme? baseTheme)
+    private ToneMapTheme? WithGuestThemes(ToneMapTheme? baseTheme, bool baseIsGuestFolded)
     {
-        if (baseTheme is null || Engine.IsEditorHint() || !Refii.Host.HostBridge.IsInGame)
+        if (baseTheme is null || baseIsGuestFolded || Engine.IsEditorHint() || !Refii.Host.HostBridge.IsInGame)
         {
             return baseTheme;
         }
 
+        Refii.Host.HostBridge.ThemeBlends(_guestLayers);
+        _guestScripted ??= new ToneMapTheme();
+        ToneMapTheme composed = ComposeGuestLayer(baseTheme, _guestLayers, _guestScripted);
+
         Refii.Host.HostBridge.ThemeStack(_guestLayers);
+        _guestBlend ??= new ToneMapTheme();
+        return ComposeGuestLayer(composed, _guestLayers, _guestBlend);
+    }
+
+    /// <summary>
+    /// One guest group over <paramref name="baseTheme"/>, as `sub_82197938` folds it: the group
+    /// at `clamp(Σw, 0, 1)`, its themes normalised by Σw, and each slot
+    /// `dst·(1 − present·W) + src·W` (`sub_821D8588`). Returns the base itself when the group is
+    /// empty, else <paramref name="into"/>.
+    /// </summary>
+    private ToneMapTheme ComposeGuestLayer(
+        ToneMapTheme baseTheme, System.Collections.Generic.List<Refii.Host.HostBridge.GuestThemeLayer> layers,
+        ToneMapTheme into)
+    {
         float sum = 0f;
-        foreach (Refii.Host.HostBridge.GuestThemeLayer layer in _guestLayers)
+        foreach (Refii.Host.HostBridge.GuestThemeLayer layer in layers)
         {
             sum += Mathf.Max(layer.Weight, 0f);
         }
@@ -1042,13 +1073,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         float layerWeight = Mathf.Clamp(sum, 0f, 1f);
-        _guestBlend ??= new ToneMapTheme();
-        _guestBlend.CopyFrom(baseTheme);
+        into.CopyFrom(baseTheme);
         for (int field = 0; field < ToneMapTheme.ParamCount; field++)
         {
             float stated = 0f;
             float value = 0f;
-            foreach (Refii.Host.HostBridge.GuestThemeLayer layer in _guestLayers)
+            foreach (Refii.Host.HostBridge.GuestThemeLayer layer in layers)
             {
                 if (layer.Weight <= 0f || GuestThemeFor(layer.RecordHash) is not { } theme || !theme.Present[field])
                 {
@@ -1062,13 +1092,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
             if (stated > 0f)
             {
-                _guestBlend.V[field] = Mathf.Lerp(baseTheme.V[field], value / stated, layerWeight * stated);
-                _guestBlend.Present[field] = true;
+                into.V[field] = Mathf.Lerp(baseTheme.V[field], value / stated, layerWeight * stated);
+                into.Present[field] = true;
             }
         }
 
-        _guestBlend.HasAny = true;
-        return _guestBlend;
+        into.HasAny = true;
+        return into;
     }
 
     /// <summary>One pushed theme's stated tone mapping, extracted once per record hash.</summary>

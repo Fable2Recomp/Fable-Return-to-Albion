@@ -28,6 +28,19 @@ public static class Engine_EntityAppearance
 
     private static readonly StringName TintParameter = "entity_tint";
 
+    /// <summary>Nodes drawing the saturation-mask overlay; read by the post-process to skip its pass.</summary>
+    private static readonly HashSet<MeshInstance3D> Masked = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The overlay each node carries: 0 none, else <see cref="OverlayMask"/> | <see cref="OverlayDepth"/>.</summary>
+    private static readonly Dictionary<MeshInstance3D, int> Overlays = new(ReferenceEqualityComparer.Instance);
+
+    private const int OverlayMask = 1;
+    private const int OverlayDepth = 2;
+    private static readonly ShaderMaterial?[] OverlayMaterials = new ShaderMaterial?[4];
+
+    /// <summary>How many entity nodes carry the saturation mask right now.</summary>
+    public static int MaskedCount { get; private set; }
+
     /// <summary>Opacity at or above which the guest draws without blending (`flt_83320A70`).</summary>
     private const float OpaqueFrom = 0.999f;
 
@@ -109,6 +122,39 @@ public static class Engine_EntityAppearance
             }
         }
 
+        // THE OVERLAY: SetSaturationMask (+196) marks the node's pixels for the post-process,
+        // and a faded node writes the depth its blend tests against (entity_fade_depth). One
+        // material carries whichever the look needs.
+        bool masked = drawn && look.SaturationMask;
+        if (masked != Masked.Contains(node))
+        {
+            if (masked)
+            {
+                Masked.Add(node);
+            }
+            else
+            {
+                Masked.Remove(node);
+            }
+
+            MaskedCount = Masked.Count;
+        }
+
+        int overlay = (masked ? OverlayMask : 0) | (node.Transparency > 0f ? OverlayDepth : 0);
+        Overlays.TryGetValue(node, out int carried);
+        if (overlay != carried)
+        {
+            node.MaterialOverlay = OverlayMaterial(overlay);
+            if (overlay == 0)
+            {
+                Overlays.Remove(node);
+            }
+            else
+            {
+                Overlays[node] = overlay;
+            }
+        }
+
         if (look.IsConstructed)
         {
             Applied.Remove(node);
@@ -138,8 +184,46 @@ public static class Engine_EntityAppearance
     }
 
     /// <summary>The node is going away.</summary>
-    public static void Forget(MeshInstance3D node) => Applied.Remove(node);
+    /// <summary>
+    /// The overlay for a combination. The depth writer draws ahead of every other transparent
+    /// surface (render priority -128), so the faded body's own surfaces then pass only where they
+    /// are nearest; the mask alone draws with the rest.
+    /// </summary>
+    private static ShaderMaterial? OverlayMaterial(int overlay)
+    {
+        if (overlay == 0)
+        {
+            return null;
+        }
+
+        return OverlayMaterials[overlay] ??= new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>(overlay switch
+            {
+                OverlayMask => "res://src/Engine/entities/entity_saturation_mask.gdshader",
+                OverlayDepth => "res://src/Engine/entities/entity_fade_depth.gdshader",
+                _ => "res://src/Engine/entities/entity_fade_depth_mask.gdshader",
+            }),
+            RenderPriority = (overlay & OverlayDepth) != 0 ? (int)Material.RenderPriorityMin : 0,
+        };
+    }
+
+    public static void Forget(MeshInstance3D node)
+    {
+        Applied.Remove(node);
+        Overlays.Remove(node);
+        if (Masked.Remove(node))
+        {
+            MaskedCount = Masked.Count;
+        }
+    }
 
     /// <summary>Every node is going away (a level change).</summary>
-    public static void ForgetAll() => Applied.Clear();
+    public static void ForgetAll()
+    {
+        Applied.Clear();
+        Masked.Clear();
+        Overlays.Clear();
+        MaskedCount = 0;
+    }
 }

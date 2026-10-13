@@ -30,6 +30,9 @@ public partial class ShaderCheck : Node
 		"res://src/Engine/level/environment/clouds.gdshader",
 		"res://src/Engine/fx/fx_particle.gdshader",
 		"res://src/Engine/entities/entity_highlight_silhouette.gdshader",
+		"res://src/Engine/entities/entity_saturation_mask.gdshader",
+		"res://src/Engine/entities/entity_fade_depth.gdshader",
+		"res://src/Engine/entities/entity_fade_depth_mask.gdshader",
 	};
 
 	public override void _Ready()
@@ -54,8 +57,10 @@ public partial class ShaderCheck : Node
 			// tested. What does change is the uniform list: compilation is what registers it, so a
 			// shader that failed reports zero. Every shader here declares uniforms, so zero is
 			// unambiguous rather than merely suspicious.
+			// A shader that declares no uniform (the saturation-mask overlay) has nothing to count;
+			// its parse errors still print as SHADER ERROR.
 			int uniforms = shader.GetShaderUniformList().Count;
-			if (uniforms == 0)
+			if (uniforms == 0 && shader.Code.Contains("uniform", System.StringComparison.Ordinal))
 			{
 				GD.Print($"[shader] COMPILE FAILED {path} — see the SHADER ERROR above");
 				++bad;
