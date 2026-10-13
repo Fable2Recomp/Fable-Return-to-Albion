@@ -178,6 +178,14 @@ fable_darkening={
 "type": "vec3",
 "value": Vector3(1, 1, 1)
 }
+fable_wind_direction={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+fable_wind_factors={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
 fable_sun_toward={
 "type": "vec3",
 "value": Vector3(0, 1, 0)

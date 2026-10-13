@@ -142,6 +142,20 @@ public static class Engine_TerrainSplatMaterial
 
         material.SetShaderParameter("mesh_xform", new Vector4(1f, 1f, 0f, 0f));
 
+        // g_CliffBlendOffsetAndScale, the level's own: the two header floats after the spacing
+        // (res+84, res+88; Engine_ClassicTerrain reads the same pair). The landscape pixel shader
+        // takes ground = saturate(|n.up| x scale + offset) (blob 0197 1285) — a per-level slope,
+        // not one hard-coded band.
+        if (ehf.Length >= 55)
+        {
+            float cliffOffset = BitConverter.Int32BitsToSingle((ehf[47] << 24) | (ehf[48] << 16) | (ehf[49] << 8) | ehf[50]);
+            float cliffScale = BitConverter.Int32BitsToSingle((ehf[51] << 24) | (ehf[52] << 16) | (ehf[53] << 8) | ehf[54]);
+            if (float.IsFinite(cliffOffset) && float.IsFinite(cliffScale) && cliffScale != 0f)
+            {
+                material.SetShaderParameter("cliff_blend", new Vector2(cliffOffset, cliffScale));
+            }
+        }
+
         material.SetShaderParameter(
             "weight_size",
             new Vector4(
@@ -643,25 +657,22 @@ public static class Engine_TerrainSplatMaterial
         int planes = Math.Min(data.MaterialCount, Engine_EhfSplat.MaxMaterials);
         var images = new Godot.Collections.Array<Image>();
 
-        // EIGHT BITS, NOT THIRTY-TWO. `BakeWeights` normalises every texel's layers to sum to
-        // one and writes a flat 1 where nothing was painted, so the value is always in [0,1] —
-        // a blend weight, at four bytes a texel, for what a byte carries with no visible
-        // difference. At 1024 square across 32 planes that is 134 MB against 33 MB, and the
-        // shader reads `.r` as a normalised float either way.
+        // EIGHT BITS A CHANNEL, NOT THIRTY-TWO: every value is in [0,1], and a byte carries a
+        // blend weight with no visible difference.
+        // R the weight, G the share of it from layers that state the cliff.
+        static byte Unit(float v) => v <= 0f ? (byte)0 : v >= 1f ? (byte)255 : (byte)((v * 255f) + 0.5f);
         for (int plane = 0; plane < planes; plane++)
         {
-            var bytes = new byte[area];
+            var bytes = new byte[area * 2];
             long baseIndex = plane * area;
             for (long t = 0; t < area; t++)
             {
-                float weight = data.Weights[baseIndex + t];
-                bytes[t] = weight <= 0f
-                    ? (byte)0
-                    : weight >= 1f ? (byte)255 : (byte)((weight * 255f) + 0.5f);
+                bytes[t * 2] = Unit(data.Weights[baseIndex + t]);
+                bytes[(t * 2) + 1] = data.CliffShares.Length > baseIndex + t ? Unit(data.CliffShares[baseIndex + t]) : (byte)255;
             }
 
             images.Add(Image.CreateFromData(
-                data.WeightWidth, data.WeightHeight, false, Image.Format.R8, bytes));
+                data.WeightWidth, data.WeightHeight, false, Image.Format.Rg8, bytes));
         }
 
         var array = new Texture2DArray();

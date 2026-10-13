@@ -170,12 +170,13 @@ public static class Engine_PropDrawRange
 			return false;
 		}
 
-		if (modelClass == PropModelClass.Tree && role != PropRole.Shadow && Refii.Models.Engine_ClassicMaterial.Active &&
+		if (modelClass == PropModelClass.Tree && role != PropRole.Shadow &&
 			TreeBand(Scaled(range), role, hasLod) is { } band)
 		{
-			// The classic tree shader fades each placement itself (Engine_ClassicMaterial's
-			// tree fade), so the node's range only bounds where any copy can be drawn: from the
-			// fade-in's start to the fade-out's end, widened both ways by the batch's spread.
+			// Both tree shaders fade each placement themselves (the classic TreeDefines, the
+			// modern body's v_tree_fade), so the node's range only bounds where any copy can be
+			// drawn: from the fade-in's start to the fade-out's end, widened both ways by the
+			// batch's spread.
 			float pad = spread > 0f && float.IsFinite(spread) ? spread : 0f;
 			float begin = band[1] > 0f ? Mathf.Max(0f, band[0] - pad) : 0f;
 			stated = new[] { begin, 0f, band[3] + pad, 0f, 0f };

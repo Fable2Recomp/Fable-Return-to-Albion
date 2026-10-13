@@ -104,48 +104,31 @@ uniform float self_illum_scale = 1.0;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
-/// The wind's direction in world XZ, as a UNIT vector.
-///
-/// DIRECTION ONLY — NO STRENGTH. The theme states `WindStrengthMin/Max` alongside the rotation, and
-/// the first version of this multiplied by it. Its UNITS ARE NOT ESTABLISHED: a census of the
-/// shipped themes could not recover a plausible range for it, so multiplying by it was applying a
-/// gain against an unknown scale, and the result bent every tree in Bowerstone flat. Only terms
-/// whose scale is known are used here, and an angle is one of them.
-uniform vec2 wind_direction = vec2(0.0, 0.0);
-
-/// How far the surface leans, as a FRACTION OF ITS OWN HEIGHT.
-///
-/// THE MESH STATES THIS ITSELF. `WindSkewMaxAmplitude` sits in the mesh file header beside the
-/// movement mode, and it is 0.05 on every shipped mesh that has one — so a four-metre tree's canopy
-/// travels about twenty centimetres. That is a breeze, which is what Albion has.
-///
-/// Zero means the surface does not move, and it is the default: nothing sways until a mesh header
-/// says it does.
+/// Whether this surface sways (the mesh header's movement byte 1 with an amplitude): the WIND1
+/// pair. The amplitude's VALUE is the scene's, folded into fable_wind_factors (Engine_SceneWind);
+/// here it is the gate.
 uniform float wind_amplitude : hint_range(0.0, 0.5) = 0.0;
 
-/// How fast it sways. Also from the mesh header — `WindSkewMaxSpeed`, 1.0 on everything shipped.
-uniform float wind_speed : hint_range(0.1, 8.0) = 1.0;
+/// g_SwaySpeed: the mesh header's own speed (.mdl +84), unclamped as the title takes it.
+uniform float wind_speed = 1.0;
 
-/// Light this surface as a tree canopy rather than as a solid.
-///
-/// DERIVED FROM `treematerial`, whose canopy permutation
-/// (`0544_pshader_treematerial_blt1_glt1_mist1`) is unambiguous: it references
-/// `g_GlobalLightParamsPS` NOWHERE and takes no `dot` against a normal. A canopy is lit entirely by
-/// two colours interpolated from its vertices, and the vertex shader builds them as
-///
-///     r6.xyz = r4.www * g_GlobalLightParamsVS(8).xyz          // sky colour  x term
-///     r7.xyz = r4.zzz * g_GlobalLightParamsVS(7).xyz + r6.xyz // sun colour  x term + sky
-///     r1.xyz = saturate(-r7.xzy + c253.www)                   // WRAPPED, not clamped at zero
-///
-/// — a per-light WRAP diffuse, `saturate((N.L + w)/(1 + w))`, decoded from tree VS blob 0524.
+/// A tree (movement mode 2): the TRUNK1 pair every shipped tree draws, leaves included —
+/// Lambert without specular, and the ambient darkening only with its own normal map.
 global uniform int fable_light_debug;
 
 uniform bool foliage = false;
 
-/// The canopy wrap amount `g_StandardMaterialVSConstants.w` (VS c50.w). Runtime material data
-/// with no CTAB default anywhere in the corpus — 0.5 is a placeholder until a live capture
-/// reads it. The FORMULA is the guest's; this number is not yet.
-uniform float foliage_wrap : hint_range(0.0, 1.0) = 0.5;
+/// Repeated scatter (grass, MeshKind 4): the GRASS1 pair, which has no specular and no
+/// ambient normal-map darkening.
+uniform bool grass = false;
+
+/// g_NormalMapGradient_Enable_Factor_Offset as (enable, factor, offset) in model height
+/// (`sub_82233570`; built from the header's gradient in Engine_MdlMaterial.ApplyVegetation).
+uniform vec3 grass_normal_gradient = vec3(0.0);
+
+global uniform vec3 fable_wind_direction;
+global uniform vec2 fable_wind_factors;
+
 
 /// THE SPECULAR TERMS, HANDED TO `light()`. Godot's `light()` cannot reach a fragment local, and
 /// the guest's specular is Phong over the material's own maps, so the colour and the exponent
@@ -162,8 +145,34 @@ varying float v_specular_power;
 /// The PRT ambient, computed per vertex as the guest's AMB2 vertex shader does; a = present.
 varying vec4 v_transfer;
 
+/// A TREE'S PER-PLACEMENT FADE (`sub_8220AF90`; Engine_PropDrawRange.TreeBand stamps the band):
+/// (start, 1/length, power) in and (end, 1/length, power) out, measured from the main camera to
+/// this copy's own box centre — per copy, so a batch fades tree by tree as the title's does.
+/// End 0 is no tree band.
+instance uniform vec4 xr_tree_fade_in = vec4(0.0);
+instance uniform vec4 xr_tree_fade_out = vec4(0.0);
+instance uniform vec3 xr_tree_centre = vec3(0.0);
+varying float v_tree_fade;
+
 void vertex() {
     v_transfer = fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX));
+    // GRASS1's normal gradient (VS 0453 1314-1371, PS 0487 1279-1287): w = saturate(height x
+    // factor + offset) bends the normal toward the instance's up, and the pixel stage bends
+    // the vertex normal toward that again by the same w.
+    if (grass_normal_gradient.x > 0.5) {
+        float w = clamp((VERTEX.y * grass_normal_gradient.y) + grass_normal_gradient.z, 0.0, 1.0);
+        vec3 bent = normalize(mix(NORMAL, vec3(0.0, 1.0, 0.0), w));
+        NORMAL = normalize(mix(NORMAL, bent, w));
+    }
+    v_tree_fade = 1.0;
+    if (xr_tree_fade_out.x > 0.0) {
+        float d = distance(MAIN_CAM_INV_VIEW_MATRIX[3].xyz, (MODEL_MATRIX * vec4(xr_tree_centre, 1.0)).xyz);
+        float fade_in = xr_tree_fade_in.y > 0.0
+            ? pow(clamp((d - xr_tree_fade_in.x) * xr_tree_fade_in.y, 0.0, 1.0), xr_tree_fade_in.z)
+            : 1.0;
+        float fade_out = pow(clamp((xr_tree_fade_out.x - d) * xr_tree_fade_out.y, 0.0, 1.0), xr_tree_fade_out.z);
+        v_tree_fade = fade_in * fade_out;
+    }
     // GUARDED BY AN `if`, NOT AN EARLY `return`. Godot rejects the latter outright — "Using
     // 'return' in the 'vertex' processor function is incorrect" — and the shader then fails to
     // compile as a whole, taking every uniform with it.
@@ -175,22 +184,18 @@ void vertex() {
     // carries it: `Engine_MdlMaterial.ApplyWind` hands that surface the wind shader.
 #ifdef FABLE_WIND
     if (wind_amplitude > 0.0) {
-        // ANCHORED AT THE BASE, and the displacement is a FRACTION OF HEIGHT. That is what keeps
-        // the motion proportionate without needing to know how tall anything is: a blade of grass
-        // moves millimetres and a tree's canopy moves centimetres, from one number.
-        float height = max(VERTEX.y, 0.0);
-
-        // PHASE FROM WORLD POSITION, so neighbouring instances are not synchronised. A MultiMesh
-        // draws thousands of copies of one mesh through one shader, and without this every blade
-        // in a field bends on the same beat — which reads as the ground breathing, not as wind.
-        float offset = (MODEL_MATRIX[3].x + MODEL_MATRIX[3].z) * 0.35;
-        float phase = (TIME * wind_speed) + offset;
-
-        // Two octaves, NORMALISED TO +/-1 so the amplitude above means exactly what it says. The
-        // second is deliberately not a harmonic of the first, or they would beat into a slow pulse.
-        float bend = (sin(phase) * 0.67) + (sin(phase * 2.3) * 0.33);
-
-        VERTEX.xz += wind_direction * bend * wind_amplitude * height;
+        // THE WIND1 VERTEX SHADER (blob 0455 1328-1424), in the guest's world axes:
+        //   f = frac(origin.x + origin.y)                  — the copy's world position (batch +
+        //                                                    instance translation)
+        //   c = cos(1 + f - T x SwaySpeed x (1 + 0.1 f))
+        //   offset = c x (WD0 x WF.x + (-0.35, 1.53, 0) x WF.y) x saturate(5 x model height)
+        // WD0 and WF are the scene's (Engine_SceneWind); the guest's x is our -x, its y our z.
+        vec3 origin = MODEL_MATRIX[3].xyz;
+        float f = fract(origin.z - origin.x);
+        float c = cos(1.0 + f - (TIME * wind_speed * (1.0 + (0.1 * f))));
+        vec3 g = c * ((fable_wind_direction * fable_wind_factors.x) + (vec3(-0.35, 1.53, 0.0) * fable_wind_factors.y));
+        vec3 world_offset = vec3(-g.x, g.z, g.y) * clamp(5.0 * VERTEX.y, 0.0, 1.0);
+        VERTEX += inverse(mat3(MODEL_MATRIX)) * world_offset;
     }
 #endif
 
@@ -199,6 +204,17 @@ void vertex() {
 }
 
 void fragment() {
+    // The tree fade, as an ordered 4x4 dither (Godot's own pattern style; the title's is a 2x2
+    // alpha-to-mask). A copy past its band is wholly discarded.
+    if (v_tree_fade < 0.999) {
+        const float bayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
+            3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+        ivec2 cell = ivec2(FRAGCOORD.xy) & ivec2(3);
+        if (v_tree_fade <= (bayer[(cell.y * 4) + cell.x] + 0.5) / 16.0) {
+            discard;
+        }
+    }
+
     // PARALLAX FIRST, because every other fetch below has to use the displaced coordinate — a
     // shader that offset only the albedo would slide the colour off its own normal and specular.
     //
@@ -374,26 +390,26 @@ void fragment() {
     // THE GUEST'S BENT NORMAL, exactly (blob 0245 lines 1248-1294, and 0335's use of it):
     // t = 0.5*(dot(N, AmbRef)+1); bent = lerp(N, AmbRef, t); factor = saturate(dot(bent,
     // mappedN))^2. AmbRef is VS c19 = the main light's direction (`sub_821B16F8` writes it
-    // beside the 1.3 gamma) — the same toward-the-sun vector the foliage wrap uses, NOT world
+    // beside the 1.3 gamma) — the toward-the-sun vector, NOT world
     // up. Dotting the map against the geometric normal instead under-darkened every wall.
-    // nrm0 surfaces take no darkening, as shipped — the term is the nrm1 permutation's.
+    // WHO TAKES IT: every standard surface draws NRM1 — a record naming no normal map gets the
+    // loader's flat default (`sub_82A9EEA0`), and the flat map still bends against the ambient
+    // reference, so it darkens too (blob 0351 1582-1586). A tree takes it only with its own map
+    // (0563 AMB2_NRM1_TRUNK1 1318-1323; 0559 has none); grass never (GRASS1 0487/0495 have no
+    // g_AmbientNormalMapDarkeningColour).
+    vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
     vec3 darken = vec3(1.0);
-    if (has_normal) {
+    if (!grass && (!foliage || has_normal)) {
         vec3 amb_ref = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
         float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
-        vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
         float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
         darken = mix(fable_darkening, vec3(1.0), nb * nb);
     }
 
     if (foliage) {
-        // NO SUN TERM HERE ANY MORE — foliage is lit in `light()` by the guest's per-light wrap,
-        // which covers the sun AND the lamps (blob 0524 runs the same formula over every slot).
-        // Modulating the bake by a sun wrap as well counted the sun twice and the lamps never:
-        // a hedge beside a lantern stayed pitch dark at night. The bake keeps only the relief
-        // exemption: a canopy has none to shade.
-        darken = vec3(1.0);
+        // NO SUN TERM HERE — foliage is lit in `light()`, the sun AND the lamps. Modulating the
+        // bake by a sun term as well counted the sun twice and the lamps never.
 
         // THE GUEST'S SHADOW FLOOR IS DELIBERATELY NOT REPRODUCED HERE. Its canopy applies
         // `shadow * 0.6 + 0.4` to a 0..1 scalar from the screen shadow map, so a shadowed canopy
@@ -449,10 +465,11 @@ void fragment() {
         // incident one mirrors the reflection through the surface and looks plausible until you
         // move the camera.
         //
-        // World space, because the cube is a world-space environment. NORMAL here is already the
-        // two-sided, normal-mapped one from above.
+        // World space, because the cube is a world-space environment, and off the MAPPED normal
+        // (0351 1663-1666 reflect about r10, the normalised mapped normal). NORMAL inside
+        // fragment() is still the interpolated one — NORMAL_MAP is applied after it returns.
         vec3 incident = normalize((INV_VIEW_MATRIX * vec4(-VIEW, 0.0)).xyz);
-        vec3 reflected = reflect(incident, world_normal);
+        vec3 reflected = reflect(incident, mapped_world);
 
         // SQUARED like the albedo and the specular — `r6.xyz = r6.xyz * r6.xyz` — because gamma
         // 2.0 is the guest's decode for every colour fetch, this one included.
@@ -471,7 +488,7 @@ void fragment() {
     // multiply, which Godot owns.
     vec3 fog_t;
     vec3 fog_c;
-    if (fable_atmosphere_terms(VERTEX, INV_VIEW_MATRIX, fog_t, fog_c)) {
+    if (fable_atmosphere_terms_for(VERTEX, INV_VIEW_MATRIX, !foliage, fog_t, fog_c)) {
         // A SCISSORED PIXEL IS OPAQUE, whatever its texture says. The in-scatter is weighted by
         // coverage so an alpha-BLENDED surface does not add a full fog term over whatever is
         // behind it — but an alpha-TESTED one has already been decided: it either survived the
@@ -540,9 +557,7 @@ void fragment() {
 /// square, which is what `fable_attenuation` restores. The sun reaches it as a slot with
 /// `Type = 0` and `InvRadii = 0`, so its attenuation collapses to the shadow term alone.
 ///
-/// FOLIAGE TAKES THE WRAP, NOT LAMBERT. The canopy vertex shader (blob 0524) runs
-/// `saturate((N.L + w)/(1 + w))` over EVERY light slot — the sun and the lamps alike — with the
-/// same linear attenuation, and no specular.
+/// FOLIAGE TAKES LAMBERT AND NO SPECULAR: the TRUNK1 pair (blob 0559) every shipped tree draws.
 ///
 /// GUARDED, NOT RETURNED FROM. Godot rejects `return` in the `light` processor outright —
 /// "Using 'return' in the 'light' processor function is incorrect" — and a shader that fails to
@@ -563,8 +578,10 @@ void light() {
     } else {
         float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
         if (foliage) {
-            float wrap = clamp((dot(NORMAL, LIGHT) + foliage_wrap) / (1.0 + foliage_wrap), 0.0, 1.0);
-            DIFFUSE_LIGHT += wrap * atten * (LIGHT_COLOR / PI);
+            // Plain Lambert, no specular: every shipped tree draws the TRUNK1 pair, leaves
+            // included (blob 0559 `saturate(dot(L, N))` x the shadow; the canopy wrap of 0524 is
+            // never reached), and a one-light tree has no specular (559 also serves SP1).
+            DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
         } else {
             DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
             SPECULAR_LIGHT += fable_specular(

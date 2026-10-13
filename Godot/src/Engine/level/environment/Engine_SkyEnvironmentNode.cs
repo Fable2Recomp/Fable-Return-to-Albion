@@ -164,6 +164,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         Refii.Core.Engine_FramePhases.Lap("sky.gi", ref lap);
 
+        Engine_WaterMaterial.AdvancePhases(GetParent()?.GetNodeOrNull<Node3D>(Engine_LevelScene.WaterNodeName), (float)delta);
+        if (Current == this)
+        {
+            Refii.Models.Engine_SceneWind.Pump();
+        }
+
         if (Lighting is null && _attempts <= MountAttempts)
         {
             if (++_attempts > MountAttempts)
@@ -492,7 +498,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 : cloudStart;
             if (GetParent()?.GetNodeOrNull<Node3D>(Path_Clouds) is { } clouds)
             {
-                Engine_Clouds.Update(clouds, cloudTheme, frame.SunDirection, frame.MainLightColour);
+                Engine_Clouds.Update(clouds, cloudTheme, frame.MainLightDirection, frame.MainLightColour);
             }
 
             _cloudTheme = cloudTheme;

@@ -116,14 +116,12 @@ public static class Engine_LevelMesh
         // array the frame degenerates and the perturbed normal collapses back to the geometric
         // one, so every layer normal map was decoded, blended and then thrown away before
         // light() ran. The frame is analytic because the projection is: u runs along local +X
-        // and v along local +Z (Engine_GhfTerrain.BuildMesh), so the tangent is +X everywhere,
-        // and w = -1 makes Godot's `cross(NORMAL, TANGENT) * w` come out +Z to match v.
+        // and v along local -Z (terrain_splat's ground_uv), so the tangent is +X everywhere,
+        // and w = +1 makes Godot's `cross(NORMAL, TANGENT) * w` come out -Z to match v.
         //
-        // THE HANDEDNESS IS PROVEN, NOT GUESSED — against the guest's own landscape vertex
-        // shader (blob 0173): it builds T = Gram-Schmidt(+X), B = T x n = guest -Y, and its
-        // ground V is ALSO negated (v = -worldY), so the invariant is "+sample.y tilts toward
-        // +v". Our v runs along +Z with B along +Z — the same invariant, mirrored consistently
-        // with the co-sampled diffuse. The broken combination is v and B disagreeing.
+        // THE GUEST'S OWN FRAME (landscape VS, blob 0173): T = Gram-Schmidt(+X), B = T x n =
+        // guest -Y, and its ground V negated (v = -worldY). Our local Z is guest Y, so this is
+        // that frame exactly; v and B disagreeing is the broken combination.
         for (int n = 0; n < count; n++)
         {
             int v = vertexIds[n];
@@ -151,7 +149,7 @@ public static class Engine_LevelMesh
             tangents[(n * 4) + 0] = tangent.X;
             tangents[(n * 4) + 1] = tangent.Y;
             tangents[(n * 4) + 2] = tangent.Z;
-            tangents[(n * 4) + 3] = -1f;
+            tangents[(n * 4) + 3] = 1f;
         }
 
         var arrays = new Godot.Collections.Array();
@@ -1089,7 +1087,7 @@ public static class Engine_LevelScene
                     Node3D? clouds = Engine_Clouds.Build(
                         cloudTheme,
                         gdbs,
-                        frame.SunDirection,
+                        frame.MainLightDirection,
                         frame.MainLightColour,
                         p => source(p),
                         findByName is null ? null : n => findByName(n));

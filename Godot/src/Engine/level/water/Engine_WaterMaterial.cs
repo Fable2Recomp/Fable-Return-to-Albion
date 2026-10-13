@@ -79,6 +79,36 @@ public static class Engine_WaterMaterial
         return material;
     }
 
+    private sealed class Phase
+    {
+        public Vector4 Speed;
+        public Vector4 Value;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, Phase> Phases = new();
+
+    /// <summary>
+    /// Advances every water surface's normal-map scroll by its current speed, as the title does
+    /// (`sub_822B9D70`: phase += speed x dt, rows 2 and 3). Main thread, once a frame.
+    /// </summary>
+    public static void AdvancePhases(Node3D? water, float delta)
+    {
+        if (water is null)
+        {
+            return;
+        }
+        foreach (Node child in water.GetChildren())
+        {
+            if (child is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material &&
+                Phases.TryGetValue(material, out Phase? phase))
+            {
+                Vector4 v = phase.Value + (phase.Speed * delta);
+                phase.Value = new Vector4(v.X - Mathf.Floor(v.X), v.Y - Mathf.Floor(v.Y), v.Z - Mathf.Floor(v.Z), v.W - Mathf.Floor(v.W));
+                material.SetShaderParameter("w_phase", phase.Value);
+            }
+        }
+    }
+
     public static void Apply(ShaderMaterial material, WaterTheme theme)
     {
         material.SetShaderParameter("w_bias", new Vector4(
@@ -87,11 +117,13 @@ public static class Engine_WaterMaterial
             theme[WaterThemeParam.NormalScale],
             theme[WaterThemeParam.MaxRefractionDistance]));
 
-        material.SetShaderParameter("w_speed", new Vector4(
+        var speed = new Vector4(
             theme[WaterThemeParam.NormalMapSpeed0X],
             theme[WaterThemeParam.NormalMapSpeed0Y],
             theme[WaterThemeParam.NormalMapSpeed1X],
-            theme[WaterThemeParam.NormalMapSpeed1Y]));
+            theme[WaterThemeParam.NormalMapSpeed1Y]);
+        material.SetShaderParameter("w_speed", speed);
+        Phases.GetOrCreateValue(material).Speed = speed;
 
         float normalScale0 = theme[WaterThemeParam.NormalMapScale0];
         float normalScale1 = theme[WaterThemeParam.NormalMapScale1];

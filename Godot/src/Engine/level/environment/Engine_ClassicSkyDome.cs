@@ -109,6 +109,10 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
         {
             _overlayHash = hash;
             Texture2D overlay = (hash == 0u ? null : Overlay(hash)) ?? NoOverlay();
+            if (hash != 0u)
+            {
+                GD.Print($"[sky] overlay texture 0x{hash:X8} {(overlay == NoOverlay() ? "did not resolve" : $"{overlay.GetWidth()}x{overlay.GetHeight()}")}");
+            }
             _material.SetShaderParameter("ps_g_SkyOverlayTexture0", overlay);
             _material.SetShaderParameter("ps_g_SkyOverlayTexture1", overlay);
             _currentOverlay = overlay;

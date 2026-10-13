@@ -41,6 +41,10 @@ uniform vec4 w_edge = vec4(0.0, 1.0, 0.0, 0.0);
 
 uniform vec4 w_bias;
 uniform vec4 w_speed;
+// The two normal maps' scroll, ACCUMULATED as speed x dt (`sub_822B9D70`; Engine_WaterMaterial
+// advances it every frame). TIME x speed jumped whenever the theme blend moved the speed, and
+// popped at TIME's rollover.
+uniform vec4 w_phase;
 uniform vec4 w_scale;
 uniform vec4 w_surface;
 uniform vec4 w_deep;
@@ -264,8 +268,8 @@ void fragment() {
 		}
 	}
 
-	vec2 phase01 = fract(TIME * w_speed.xy);
-	vec2 phase23 = fract(TIME * w_speed.zw);
+	vec2 phase01 = w_phase.xy;
+	vec2 phase23 = w_phase.zw;
 
 	vec2 uv0 = ((v_local.xz + w_warp) * w_scale.xy) + phase01;
 	vec2 uv1 = ((v_local.xz + w_warp) * w_scale.zw) + phase23;

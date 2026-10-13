@@ -21,7 +21,7 @@ public static class Engine_Clouds
     public static Node3D? Build(
         CloudTheme theme,
         IReadOnlyList<byte[]> gdbs,
-        float[] sunDirection,
+        float[] mainLightDirection,
         float[] mainLightColour,
         ReadAsset read,
         FindByName? findByName)
@@ -93,7 +93,7 @@ public static class Engine_Clouds
                 mainLightColour[0], mainLightColour[1], mainLightColour[2], 1f));
 
             material.SetShaderParameter("light_direction_world", new Vector3(
-                -sunDirection[0], sunDirection[1], sunDirection[2]));
+                -mainLightDirection[0], mainLightDirection[1], mainLightDirection[2]));
 
             var node = new MeshInstance3D
             {
