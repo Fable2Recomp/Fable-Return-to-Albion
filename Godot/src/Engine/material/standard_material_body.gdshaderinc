@@ -165,6 +165,9 @@ void vertex() {
         NORMAL = normalize(mix(NORMAL, bent, w));
     }
     v_tree_fade = 1.0;
+    // FABLE_SOLID never carries a band: a tree is .mdl byte 77 == 2, which hands every one of
+    // its surfaces, LOD1 included, to the two-sided or wind shader (Engine_MdlMaterial).
+#ifndef FABLE_SOLID
     if (xr_tree_fade_out.x > 0.0) {
         float d = distance(MAIN_CAM_INV_VIEW_MATRIX[3].xyz, (MODEL_MATRIX * vec4(xr_tree_centre, 1.0)).xyz);
         float fade_in = xr_tree_fade_in.y > 0.0
@@ -173,6 +176,7 @@ void vertex() {
         float fade_out = pow(clamp((xr_tree_fade_out.x - d) * xr_tree_fade_out.y, 0.0, 1.0), xr_tree_fade_out.z);
         v_tree_fade = fade_in * fade_out;
     }
+#endif
     // GUARDED BY AN `if`, NOT AN EARLY `return`. Godot rejects the latter outright — "Using
     // 'return' in the 'vertex' processor function is incorrect" — and the shader then fails to
     // compile as a whole, taking every uniform with it.
@@ -205,7 +209,9 @@ void vertex() {
 
 void fragment() {
     // The tree fade, as an ordered 4x4 dither (Godot's own pattern style; the title's is a 2x2
-    // alpha-to-mask). A copy past its band is wholly discarded.
+    // alpha-to-mask). A copy past its band is wholly discarded. Not in FABLE_SOLID: a discard
+    // there refuses the shared depth-only shadow material, and no culled surface has a band.
+#ifndef FABLE_SOLID
     if (v_tree_fade < 0.999) {
         const float bayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
             3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
@@ -214,6 +220,7 @@ void fragment() {
             discard;
         }
     }
+#endif
 
     // PARALLAX FIRST, because every other fetch below has to use the displaced coordinate — a
     // shader that offset only the albedo would slide the colour off its own normal and specular.
@@ -381,10 +388,12 @@ void fragment() {
     }
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-    vec3 bake = fable_bake(world_normal, COLOR, UV2);
+    vec3 bake;
     if (v_transfer.a > 0.5 && lightmap_colour.w > 0.5 && lightmap_colour.w < 1.5) {
         // Mode 1 on a mesh that carries its transfer: the guest's PRT, decoded as AMB2 is.
         bake = pow(max(v_transfer.rgb, vec3(0.0)), vec3(FABLE_BAKE_GAMMA));
+    } else {
+        bake = fable_bake(world_normal, COLOR, UV2);
     }
 
     // THE GUEST'S BENT NORMAL, exactly (blob 0245 lines 1248-1294, and 0335's use of it):
@@ -575,17 +584,21 @@ void light() {
         if (LIGHT_IS_DIRECTIONAL) {
             DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
         }
-    } else {
+    } else if (dot(NORMAL, LIGHT) > 0.0) {
+        // FACING AWAY, BOTH TERMS ARE EXACTLY ZERO — the diffuse's saturate(NdotL) and the
+        // specular's saturate(4 NdotL) gate scale finite factors — so the light is skipped there,
+        // and wherever its attenuation is zero, without changing a bit of the sum.
         float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
-        if (foliage) {
-            // Plain Lambert, no specular: every shipped tree draws the TRUNK1 pair, leaves
-            // included (blob 0559 `saturate(dot(L, N))` x the shadow; the canopy wrap of 0524 is
-            // never reached), and a one-light tree has no specular (559 also serves SP1).
+        if (atten > 0.0) {
+            // Plain Lambert, no specular, on foliage: every shipped tree draws the TRUNK1 pair,
+            // leaves included (blob 0559 `saturate(dot(L, N))` x the shadow; the canopy wrap of
+            // 0524 is never reached), and a one-light tree has no specular (559 also serves SP1).
             DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
-        } else {
-            DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
-            SPECULAR_LIGHT += fable_specular(
-                NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
+            // A black specular colour (no map, grass, a black texel) takes no highlight.
+            if (!foliage && any(notEqual(v_specular, vec3(0.0)))) {
+                SPECULAR_LIGHT += fable_specular(
+                    NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
+            }
         }
     }
 }

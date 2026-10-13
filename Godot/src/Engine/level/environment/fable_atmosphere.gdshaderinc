@@ -138,8 +138,6 @@ bool fable_atmosphere_terms_for(
 	// past FoggingStart, where the unshifted curve already put up to a fifth too much depth.
 	const float knot = 7.8125;
 	float dl = max(d - (0.5 * knot), 0.0);
-	float t = min(dl, atmos_range.y) * atmos_curve.y;
-	float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z);
 
 	// THE GUEST'S FIRST LUT KNOTS, reproduced because the look needs them. `sub_821FE040` bakes
 	// the curve at `i * 7.8125` units past FoggingStart (0x821FE21C..0x821FE234: the integer texel
@@ -148,13 +146,17 @@ bool fable_atmosphere_terms_for(
 	// itself climbs half of its first knot's depth within the first 0.7 units — drawn as stated it
 	// is a ring around the eye at FoggingStart, plain at night against an unfogged floor. Past a
 	// few knots the line and the curve agree and the curve is cheaper.
-	vec3 raw = exp(-atmos_beta * optical_depth);
+	vec3 raw;
 	if (dl < knot * 4.0) {
 		// Interpolated as the LUT is: in transmittance, between the knots either side.
 		float below = floor(dl / knot) * knot;
 		float depth_below = atmos_curve.x * pow(min(below, atmos_range.y) * atmos_curve.y, atmos_curve.z);
 		float depth_above = atmos_curve.x * pow(min(below + knot, atmos_range.y) * atmos_curve.y, atmos_curve.z);
 		raw = mix(exp(-atmos_beta * depth_below), exp(-atmos_beta * depth_above), (dl - below) / knot);
+	} else {
+		float t = min(dl, atmos_range.y) * atmos_curve.y;
+		float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z);
+		raw = exp(-atmos_beta * optical_depth);
 	}
 
 	// Fx AND Fy FOLDED IN HERE, so that `transmittance` is the EFFECTIVE one and every caller —

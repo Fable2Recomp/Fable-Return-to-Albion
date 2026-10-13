@@ -228,10 +228,11 @@ vec3 dome_reflect(vec3 r) {
 		horizon_distance);
 }
 
+// Only the z and w rows: a perspective inverse has no x/y term in either (jitter and the depth
+// correction live in the other rows), so this is the full product without its exact zeros.
 float linear_depth(vec2 uv, mat4 inv_proj) {
 	float d = texture(depth_tex, uv).r;
-	vec4 v = inv_proj * vec4((uv * 2.0) - 1.0, d, 1.0);
-	return -v.z / v.w;
+	return -((inv_proj[2].z * d) + inv_proj[3].z) / ((inv_proj[2].w * d) + inv_proj[3].w);
 }
 
 void fragment() {
@@ -339,19 +340,24 @@ void fragment() {
 		float fres_s = 0.02 + (0.98 * pow(1.0 - ndv, 5.0));
 
 		float water_lin = -VERTEX.z;
-		float depth_here = max(linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX) - water_lin, 0.0);
+		float scene_here = linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX);
+		float depth_here = max(scene_here - water_lin, 0.0);
 
-		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y * clamp(depth_here, 0.0, 1.0));
-		float refr_lin = linear_depth(refr_uv, INV_PROJECTION_MATRIX);
-		if (refr_lin < water_lin) {
-			refr_uv = SCREEN_UV;
-			refr_lin = linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX);
+		// The vista ocean refracts nothing (`sky_oceanwater` binds no refraction sampler).
+		vec3 under = watercol;
+		if (!ocean_mode) {
+			vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y * clamp(depth_here, 0.0, 1.0));
+			float refr_lin = linear_depth(refr_uv, INV_PROJECTION_MATRIX);
+			if (refr_lin < water_lin) {
+				refr_uv = SCREEN_UV;
+				refr_lin = scene_here;
+			}
+			vec3 Rr = texture(screen_tex, refr_uv).rgb;
+
+			float depth_w = max(refr_lin - water_lin, 0.0);
+			float absorb = 1.0 - exp(-depth_w * (6.0 / max(w_bias.w, 1.0)));
+			under = mix(Rr, watercol, absorb);
 		}
-		vec3 Rr = texture(screen_tex, refr_uv).rgb;
-
-		float depth_w = max(refr_lin - water_lin, 0.0);
-		float absorb = 1.0 - exp(-depth_w * (6.0 / max(w_bias.w, 1.0)));
-		vec3 under = ocean_mode ? watercol : mix(Rr, watercol, absorb);
 
 		vec3 R = reflect(-V, Nr);
 		R.y = abs(R.y);
@@ -377,9 +383,12 @@ void fragment() {
 			float hit = 0.0;
 			vec2 hit_uv = vec2(0.0);
 			float t_ray = 0.35;
+			// The projection is linear along the ray: clip(t) = P ro + t P rd.
+			vec4 clip_ro = PROJECTION_MATRIX * vec4(ro, 1.0);
+			vec4 clip_rd = PROJECTION_MATRIX * vec4(rd, 0.0);
 			for (int i = 0; i < 24; i++) {
 				vec3 pos = ro + (rd * t_ray);
-				vec4 clip = PROJECTION_MATRIX * vec4(pos, 1.0);
+				vec4 clip = clip_ro + (clip_rd * t_ray);
 				if (clip.w <= 0.01) {
 					break;
 				}

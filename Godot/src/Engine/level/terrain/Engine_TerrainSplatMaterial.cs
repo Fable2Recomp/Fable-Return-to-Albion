@@ -82,6 +82,7 @@ public static class Engine_TerrainSplatMaterial
         material.SetShaderParameter("lod_array", baseArray);
         material.SetShaderParameter("lod_detail_array", detailArray);
         material.SetShaderParameter("material_weight", weightArray);
+        material.SetShaderParameter("material_mask", BuildLayerMask(data));
 
         // The layers' normal maps, which the .ehf has always named and nothing has ever loaded.
         // A missing pair leaves the shader's flat default, which costs a sample and nothing else.
@@ -677,5 +678,67 @@ public static class Engine_TerrainSplatMaterial
 
         var array = new Texture2DArray();
         return array.CreateFromImages(images) == Error.Ok ? array : null;
+    }
+
+    /// <summary>
+    /// Bit m of a texel = material m's weight byte is non-zero somewhere in the 3x3 texels around
+    /// it, as RGBA8 (bits 0-7 in R). The shader's bilinear weight fetch reads at most the 2x2
+    /// around its nearest texel, so a layer outside the mask fetches exactly zero there and the
+    /// loop skips it without the fetch.
+    /// </summary>
+    private static ImageTexture? BuildLayerMask(TerrainSplatData data)
+    {
+        int width = data.WeightWidth;
+        int height = data.WeightHeight;
+        long area = (long)width * height;
+        if (area == 0)
+        {
+            return null;
+        }
+
+        int planes = Math.Min(data.MaterialCount, Engine_EhfSplat.MaxMaterials);
+        var own = new uint[area];
+        for (int plane = 0; plane < planes; plane++)
+        {
+            long baseIndex = plane * area;
+            for (long t = 0; t < area; t++)
+            {
+                // The same test as the weight byte: anything that rounds to a non-zero byte.
+                if (data.Weights[baseIndex + t] * 255f + 0.5f >= 1f)
+                {
+                    own[t] |= 1u << plane;
+                }
+            }
+        }
+
+        var bytes = new byte[area * 4];
+        long layers = 0;
+        int widest = 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                uint bits = 0;
+                for (int dy = Math.Max(y - 1, 0); dy <= Math.Min(y + 1, height - 1); dy++)
+                {
+                    for (int dx = Math.Max(x - 1, 0); dx <= Math.Min(x + 1, width - 1); dx++)
+                    {
+                        bits |= own[((long)dy * width) + dx];
+                    }
+                }
+
+                long t = ((long)y * width) + x;
+                bytes[t * 4] = (byte)bits;
+                bytes[(t * 4) + 1] = (byte)(bits >> 8);
+                bytes[(t * 4) + 2] = (byte)(bits >> 16);
+                bytes[(t * 4) + 3] = (byte)(bits >> 24);
+                int count = System.Numerics.BitOperations.PopCount(bits);
+                layers += count;
+                widest = Math.Max(widest, count);
+            }
+        }
+
+        GD.Print($"[terrain] layer mask: {layers / (double)area:0.00} layers a texel on average, at most {widest} of {planes}");
+        return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, bytes));
     }
 }

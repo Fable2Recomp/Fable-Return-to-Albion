@@ -101,6 +101,14 @@ public sealed partial class Engine_WaterReflection : Node
 
             surface.Layers = WaterLayer;
 
+            // ONLY A SURFACE THAT SAMPLES A MIRROR GETS ONE: the classic water and the guest-mode
+            // branch of water.gdshader. The modern branch reflects the dome and the screen and never
+            // reads `reflection_tex`, so a mirror for it re-rendered the world for nothing.
+            if (!material.HasMeta(Engine_ClassicWater.Meta) && !material.GetShaderParameter("guest_water").AsBool())
+            {
+                continue;
+            }
+
             // ONE MIRROR PER PLANE. A planar reflection depends only on the plane, so a surface
             // within SharePlaneMetres of a mirror already made reads that one — the vista ocean
             // sits 0.1 below the body it extends, and a level's bodies often share a level.

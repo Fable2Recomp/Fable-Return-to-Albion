@@ -15,6 +15,9 @@ public partial class ShaderCheck : Node
 	{
 		"res://src/Engine/material/standard_material.gdshader",
 		"res://src/Engine/material/standard_material_phong.gdshader",
+		Refii.Models.Engine_ShaderFamily.StandardCulledPath,
+		Refii.Models.Engine_ShaderFamily.StandardTranslucentPath,
+		Refii.Models.Engine_ShaderFamily.StandardWindPath,
 
 		// The draw-path families. Each is a DIFFERENT LIGHTING MODEL rather than a variant, so
 		// each can break on its own — and a family with no caller yet (the canopy, until the
