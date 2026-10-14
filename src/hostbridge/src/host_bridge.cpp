@@ -71,6 +71,7 @@ void FlushLogging();
 #include "core/precise_sleep.h"
 #include "core/payload_bridge.h"
 #include "core/rex_payload_bridge.h"
+#include <rex/memory/utils.h>
 #include <rex/system/mmio_handler.h>
 #include <rex/system/xmemory.h>
 #include <rex/rex_app.h>
@@ -5434,23 +5435,12 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRequestedVideo(unsigned char* out, uint32_
     // The guest's loader byte-swaps every DWORD on the way in — a big-endian console
     // reading a little-endian container — so the bytes in memory read 'iKIB' rather than
     // 'BIKi'. Handing that to FFmpeg decodes nothing. Swapping back on the way out
-    // restores the file exactly as it is on disc.
-    if (swapped != 0) {
-        const uint32_t whole = size & ~3u;
-        for (uint32_t at = 0; at < whole; at += 4) {
-            const uint32_t word = GuestWordAt(base, address + at);
-            std::memcpy(out + at, &word, sizeof(word));
-        }
-
-        // A trailing partial dword keeps its order: it was never a whole word to swap.
-        if (whole < size) {
-            CopyGuest(base, address + whole, out + whole, size - whole);
-        }
-
-        return 1;
-    }
-
+    // restores the file exactly as it is on disc. One guarded copy, then a vector swap in
+    // place; a trailing partial dword keeps its order, as it was never a whole word to swap.
     CopyGuest(base, address, out, size);
+    if (swapped != 0) {
+        rex::memory::copy_and_swap_32_unaligned(out, out, size / 4u);
+    }
     return 1;
 }
 
@@ -11317,16 +11307,16 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
         *out_torn = coherent ? 0u : 1u;
     }
 
-    for (uint32_t i = 0u; i < bones; ++i) {
-        float* row = out_transforms + (i * 12u);
-        for (uint32_t lane = 0u; lane < 12u; ++lane) {
-            uint32_t bits = 0u;
-            std::memcpy(&bits, first + (i * 48u) + (lane * 4u), sizeof(bits));
-            bits = __builtin_bswap32(bits);
-            std::memcpy(&row[lane], &bits, sizeof(row[lane]));
-        }
+    // 12 big-endian floats per bone; the parent index is the first word of each 8-byte
+    // bone-table entry. The table is read in one guarded copy, not one per bone.
+    rex::memory::copy_and_swap_32_unaligned(out_transforms, first, (size_t)bones * 12u);
 
-        out_parents[i] = (int32_t)read32(bone_table + (i * 8u));
+    static thread_local uint8_t table[kMaxSnapshotBones * 8u];
+    CopyGuest(base, bone_table, table, (size_t)bones * 8u);
+    for (uint32_t i = 0u; i < bones; ++i) {
+        uint32_t parent = 0u;
+        std::memcpy(&parent, table + (i * 8u), sizeof(parent));
+        out_parents[i] = (int32_t)__builtin_bswap32(parent);
     }
 
     if (out_space != nullptr) {
