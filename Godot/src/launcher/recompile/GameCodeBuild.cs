@@ -355,6 +355,27 @@ public static class GameCodeBuild
 				}
 			}
 
+			// The compile flags are an input too: a module built for instructions this CPU
+			// lacks would otherwise stay until some source happened to change. Paths are left
+			// out, as above, so moving the install does not move the fingerprint.
+			List<string> compileFlags = CompileFlags(Array.Empty<string>());
+			var options = new StringBuilder();
+			for (int i = 0; i < compileFlags.Count; i++)
+			{
+				if (compileFlags[i] == "-include")
+				{
+					i++;
+					continue;
+				}
+				if (compileFlags[i].StartsWith("-I", StringComparison.Ordinal))
+				{
+					continue;
+				}
+				options.Append(compileFlags[i]).Append('\n');
+			}
+			byte[] optionBytes = Encoding.UTF8.GetBytes(options.ToString());
+			sha.TransformBlock(optionBytes, 0, optionBytes.Length, null, 0);
+
 			sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
 			return Convert.ToHexString(sha.Hash ?? Array.Empty<byte>());
 		}
@@ -515,8 +536,10 @@ public static class GameCodeBuild
 			};
 			if (string.Equals(arch, "x86_64", StringComparison.OrdinalIgnoreCase))
 			{
-				configureArguments.Add("-DCMAKE_C_FLAGS=-march=x86-64-v3");
-				configureArguments.Add("-DCMAKE_CXX_FLAGS=-march=x86-64-v3");
+				// The same target as the shipped Windows libraries (windows-base in
+				// CMakePresets.json): x86-64-v2, so a CPU without AVX2 or FMA3 runs them.
+				configureArguments.Add("-DCMAKE_C_FLAGS=-march=x86-64-v2");
+				configureArguments.Add("-DCMAKE_CXX_FLAGS=-march=x86-64-v2");
 			}
 
 			LogPhase("prepare-windows-install-inputs");
@@ -1508,11 +1531,10 @@ public static class GameCodeBuild
 
 		if (RuntimeInformation.OSArchitecture == Architecture.X64)
 		{
+			// No -mfma or -march: with no -target, zig compiles for the CPU it runs on, so FMA
+			// (which std::fma needs to be one instruction) is used when this CPU has it.
+			// Forcing it would emit instructions a CPU without FMA3 cannot run.
 			flags.Add("-msse4.1");
-			// // The recompiler lowers every PPC fmadd to std::fma; without -mfma that is a
-			// // library call. Same flag as refii_apply_recompiled_module_compile_options in the
-			// // dev build.
-			flags.Add("-mfma");
 		}
 
 		if (!OperatingSystem.IsWindows())

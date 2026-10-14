@@ -8683,6 +8683,173 @@ static bool EntityPhysicsOwnsPose(const uint8_t* base, uint32_t entity) {
     return false;
 }
 
+/// Rigs posed by a linked animation (component 191) rather than their own controller; run total.
+std::atomic<uint64_t> RefiiAnimLinked{0};
+
+/// THE CLIP A LINKED ANIMATION PLAYS — component 191, as `sub_8253B608` evaluates it — written as
+/// one anim-state leaf (REFII_ANIM_LEAF_WORDS words), or 0 when the guest would pose nothing.
+/// See the caller for the chain.
+static uint32_t EntityLinkedAnimLeaf(const uint8_t* base, uint32_t entity, uint32_t* out) {
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto readf = [read32](uint32_t at) -> float {
+        const uint32_t raw = read32(at);
+        float value;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    };
+
+    const uint32_t linked = EntityComponent(base, entity, 191u);
+    if (!plausible(linked)) {
+        return 0u;
+    }
+
+    // `sub_82173E38(comp191+12)`: the control block at +16, whose first word is the entity.
+    const uint32_t control = read32(linked + 16u);
+    const uint32_t source = plausible(control) ? read32(control) : 0u;
+    if (!plausible(source) || (GuestByteAt(base, source + 144u) & 0x40u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t controller = EntityComponent(base, source, 19u);
+    if (!plausible(controller)) {
+        return 0u;
+    }
+
+    // `sub_82232070`: type 0 is the leaf; 1 takes +28 at t >= 0.5 else +24; 3 and 4 take +24;
+    // anything else has no dominant leaf.
+    const auto dominant = [&](uint32_t node) -> uint32_t {
+        for (int depth = 0; depth < 32 && plausible(node); ++depth) {
+            switch (read32(node + 20u)) {
+                case 0u:
+                    return node;
+                case 1u:
+                    node = read32(node + (readf(node + 32u) >= 0.5f ? 28u : 24u));
+                    break;
+                case 3u:
+                case 4u:
+                    node = read32(node + 24u);
+                    break;
+                default:
+                    return 0u;
+            }
+        }
+        return 0u;
+    };
+
+    uint32_t leaf = 0u;
+    bool from_tree = false;
+    float time = 0.0f;
+    float previous = 0.0f;
+    const uint32_t tree = read32(controller + 156u);
+    if (plausible(tree)) {
+        leaf = dominant(tree);
+        if (leaf == 0u) {
+            return 0u;
+        }
+        // `LHTiming_GetTime() - comp19+164 + leaf+32` (0x8253b7ec..0x8253b800): seconds since the
+        // tree's receipt, run on from the leaf's current time.
+        const auto read_double = [&](uint32_t at) {
+            const uint64_t bits = (static_cast<uint64_t>(read32(at)) << 32) | read32(at + 4u);
+            double value = 0.0;
+            std::memcpy(&value, &bits, sizeof(value));
+            return value;
+        };
+        const double time_base = read_double(refii::guest::Address(0x834970A0u));
+        const double frequency = read_double(refii::guest::Address(0x834970A8u));
+        if (!std::isfinite(frequency) || frequency <= 0.0 || !std::isfinite(time_base)) {
+            return 0u;
+        }
+        const double now = (static_cast<double>(::rex::chrono::Clock::QueryGuestTickCount()) - time_base) / frequency;
+        const float current = readf(leaf + 32u);
+        float step = current - readf(leaf + 28u);
+        if (!(step > 0.0f) || !std::isfinite(step)) {
+            step = 1.0f / 15.0f;
+        }
+        time = static_cast<float>(now - readf(controller + 164u)) + current;
+        previous = time - step;
+        from_tree = true;
+    } else {
+        // `sub_822013A8`: the live record (state +28 != 2) of highest priority (+8).
+        const uint32_t sentinel = read32(controller + 100u);
+        const uint32_t size = read32(controller + 104u);
+        if (!plausible(sentinel) || size == 0u || size > 64u) {
+            return 0u;
+        }
+        uint32_t winner = 0u;
+        int32_t best = -1;
+        uint32_t node = read32(sentinel);
+        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
+            const uint32_t record = read32(node + 8u);
+            node = read32(node);
+            if (!plausible(record) || read32(record + 28u) == 2u) {
+                continue;
+            }
+            const int32_t priority = static_cast<int32_t>(read32(record + 8u));
+            if (priority >= best) {
+                best = priority;
+                winner = record;
+            }
+        }
+        leaf = winner != 0u ? dominant(read32(winner + 36u)) : 0u;
+        if (leaf == 0u) {
+            return 0u;
+        }
+        time = readf(leaf + 32u);
+        previous = readf(leaf + 28u);
+    }
+
+    if (!std::isfinite(time) || !std::isfinite(previous)) {
+        return 0u;
+    }
+
+    // comp191's map (`std::map` head at +28): lower_bound on node+12, then an exact match.
+    const uint32_t source_key = read32(leaf + 24u);
+    const uint32_t head = read32(linked + 28u);
+    if (!plausible(head)) {
+        return 0u;
+    }
+    uint32_t found = head;
+    uint32_t at = read32(head + 4u);
+    for (int steps = 0; steps < 64 && plausible(at) && GuestByteAt(base, at + 21u) == 0u; ++steps) {
+        if (read32(at + 12u) >= source_key) {
+            found = at;
+            at = read32(at);
+        } else {
+            at = read32(at + 8u);
+        }
+    }
+    if (found == head || source_key < read32(found + 12u)) {
+        return 0u;
+    }
+    const uint32_t key = read32(found + 16u);
+    if (key == 0u) {
+        return 0u;
+    }
+
+    const float one = 1.0f;
+    uint32_t one_bits;
+    std::memcpy(&one_bits, &one, sizeof(one_bits));
+    std::memcpy(&out[1], &time, sizeof(out[1]));
+    std::memcpy(&out[2], &previous, sizeof(out[2]));
+    out[0] = key;
+    out[3] = one_bits;
+    // Looping (`stb 1` into the stack node's +36), and flagged as a network extrapolation when the
+    // time ran on from a receipt, so the host does not read a stalled pair as a cut.
+    out[4] = 1u | (from_tree ? 8u : 0u);
+    // The leaf's identity: the linked component, never a record uid of the rig.
+    out[5] = linked;
+    out[6] = 0u;
+    out[7] = 0u;
+    out[8] = 0u;
+    out[9] = 0xFFFFFFFFu;
+    out[10] = one_bits;
+    out[11] = one_bits;
+    return 1u;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint32_t* out_words, uint32_t word_capacity,
                                                             uint32_t* out_flags) {
     if (out_flags != nullptr) {
@@ -8727,6 +8894,26 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     // controller found (with `RefiiAnimEmptyList` for an empty leaf list).
     const uint32_t present_word = read32(entity + 0x24u);
     if (((present_word >> 19u) & 1u) == 0u) {
+        // A LINKED ANIMATION. With no component 19, `sub_8220D1B8` takes `beq loc_8220D98C`
+        // (0x8220d904) and poses the rig from component 191 instead (entity+0x38 bit 31, id 0xBF
+        // at 0x8220d9f4; `sub_8253B608` called at 0x8220da9c, its return is the pose).
+        // `sub_8253B608`: the source entity is the weak ref at comp191+12/+16 (`sub_82173E38`:
+        // `**(comp191+16)`), live only with entity+144 bit 0x40; its component 19's dominant leaf
+        // is `sub_82231FD0(comp19+156)` when a tree is installed — time `leaf+32 +
+        // (LHTiming_GetTime() - comp19+164)` — else `sub_82201518`: the winning record
+        // (`sub_822013A8`) reduced by `sub_82232070` — time `leaf+32`. The leaf's key is looked up
+        // in comp191's map (head at +28; node +12 key, +16 value, +21 nil) and the VALUE is the
+        // clip played, one type-0 node at weight 1, looping, `tPrev = tCur = t`, into comp191+36.
+        // Stated here as one leaf; the previous time is the source's own, so the host has the
+        // rate.
+        const uint32_t linked = EntityLinkedAnimLeaf(base, entity, out_words);
+        if (linked != 0u) {
+            if (out_flags != nullptr && EntityPhysicsOwnsPose(base, entity)) {
+                *out_flags = 8u;
+            }
+            RefiiAnimLinked.fetch_add(1u, std::memory_order_relaxed);
+            return linked;
+        }
         RefiiAnimNoComponentBit.fetch_add(1u, std::memory_order_relaxed);
         return 0u;
     }
@@ -9092,8 +9279,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
 }
 
 /// Why rigs are not clip-driven, split by cause. Four counters: the entity has no component-19
-/// bit, the bit is set but the component does not resolve, the controller was found, and the
-/// controller was found but its lists flattened to nothing.
+/// bit (and no linked animation), the bit is set but the component does not resolve, the
+/// controller was found, and the controller was found but its lists flattened to nothing; a
+/// fifth, when the capacity allows, counts rigs posed by a linked animation (component 191).
 ///
 /// Separates "the guest has nothing to play" from "this walk misses the controller".
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, uint32_t capacity) {
@@ -9105,7 +9293,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, ui
     out_words[1] = static_cast<uint32_t>(RefiiAnimComponentUnresolved.load(std::memory_order_relaxed));
     out_words[2] = static_cast<uint32_t>(RefiiAnimControllerFound.load(std::memory_order_relaxed));
     out_words[3] = static_cast<uint32_t>(RefiiAnimEmptyList.load(std::memory_order_relaxed));
-    return 4u;
+    if (capacity < 5u) {
+        return 4u;
+    }
+    // A fifth word for a caller that asks: rigs a linked animation (component 191) posed.
+    out_words[4] = static_cast<uint32_t>(RefiiAnimLinked.load(std::memory_order_relaxed));
+    return 5u;
 }
 
 /// How many words RefiiHostGetAttachments writes per attachment record.
@@ -9117,16 +9310,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, ui
 /// EVERY LIVE ATTACHMENT THE GUEST HAS STATED — which entity hangs on which entity's dummy.
 ///
 /// A weapon, a hat carried in the hand, a prop: each is an ENTITY of its own, and the guest
-/// re-derives its world placement every time the parent moves (`sub_825EBA10` ->
-/// `sub_825EBAA0` -> `sub_825ED2A0`, written into the child's own placement component through
-/// vtable slots +112/+116). That placement is computed from the GUEST's bone pose. Godot now
+/// re-derives its world placement every frame the parent moves (the attachment pass
+/// `sub_822025E0`, after the animation pass in `sub_82278AE0`; composed by `sub_8250F5F0`,
+/// written into the child's placement through vt+0x84 or vt+0x70/+0x74). That placement is
+/// computed from the GUEST's bone pose. Godot now
 /// plays the animation itself, so a child placed from the guest's pose swims against the body
 /// it is supposed to be attached to — the weapons "bounce around and do not match the
 /// character". The host has to hang the child off ITS OWN bone instead, and for that it needs
 /// the guest's STATEMENT of the attachment rather than its result.
 ///
-/// The statement lives on the PARENT, component 22 `CECObjectAttachment` (ctor `sub_82635358`,
-/// records built by `sub_825EBBC8`):
+/// The statement lives on the PARENT, component 22 `CECObjectAttachment` (registered by
+/// `sub_8265B680`, made by `sub_82649AA8`; records built by `sub_8250DF18` on the attach path
+/// `sub_8250E9F8`):
 ///     att+4          the owner entity
 ///     att+16         the list sentinel; att+20 the count. Nodes are {next +0, record +8}.
 ///     record+4       handle slot; `*slot` is the CHILD entity
@@ -9134,31 +9329,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, ui
 ///     record+12      dummy index — the ordinal among equally-named dummies
 ///     record+144     ticket, the id `CECDependantEntity` on the child joins back with
 ///
-/// The name and index are all the host needs: the dummy is a record in the parent model's own
-/// `.mdl.gmd` attachment table, which Godot already parses, and the offsets the guest composes
-/// (the dummy's local transform and the child's own offset matrix at record+16/+80) are
-/// constant, so the host recovers them once from the guest's own stated result rather than
-/// re-deriving them through a convention it would have to guess.
+/// The dummy is a record in the parent model's own `.mdl.gmd` attachment table, which Godot
+/// already parses; the child's own offset (record+0x50) comes from RefiiHostGetAttachmentGrips.
 ///
 /// Words per record: [0] child entity, [1] parent entity, [2] dummy index, [3] ticket.
 /// `out_names` takes REFII_ATTACHMENT_NAME bytes per record, NUL-padded. Returns the record
 /// count, capped at `max_records`.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint32_t max_records,
-                                                       char* out_names) {
-    if (out_words == nullptr || max_records == 0u) {
-        return 0u;
-    }
-
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) {
-        return 0u;
-    }
-
-    uint8_t* base = memory->virtual_membase();
-    if (base == nullptr) {
-        return 0u;
-    }
-
+/// The attachment walk the attachment exports share: every live entity's component 22 records,
+/// gated as the guest gates its own update, visited as (parent, record, child, slot) where slot
+/// counts the visits so far. Stops at `max_records`. Returns the count visited.
+extern "C++" {
+template <typename Visit>
+static uint32_t ForEachStatedAttachment(uint8_t* base, uint32_t max_records, Visit&& visit) {
     const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
@@ -9227,17 +9409,44 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint
                 continue;  // the handle has been released — the record is on its way out
             }
 
-            // The guest's own gate: `sub_825EBAA0` updates a record only for a child whose
-            // live bit is set, so a child that fails it is not being placed by the attachment.
+            // The guest's own gate: its attachment update places a record only for a child
+            // whose live bit is set, so a child that fails it is not being placed by it.
             if ((read8(child + 144u) & 0x40u) == 0u) {
                 continue;
             }
 
+            visit(entity, record, child, written);
+            ++written;
+        }
+    }
+
+    return written;
+}
+}  // extern "C++"
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint32_t max_records,
+                                                       char* out_names) {
+    if (out_words == nullptr || max_records == 0u) {
+        return 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    return ForEachStatedAttachment(base, max_records,
+        [&](uint32_t entity, uint32_t record, uint32_t child, uint32_t written) {
             uint32_t* words = out_words + (written * REFII_ATTACHMENT_WORDS);
             words[0] = child;
             words[1] = entity;
-            words[2] = read32(record + 12u);
-            words[3] = read32(record + 144u);
+            words[2] = GuestWordAt(base, record + 12u);
+            words[3] = GuestWordAt(base, record + 144u);
 
             if (out_names != nullptr) {
                 char* slotName = out_names + (written * REFII_ATTACHMENT_NAME);
@@ -9248,12 +9457,54 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint
                                                                : (REFII_ATTACHMENT_NAME - 1u);
                 std::memcpy(slotName, name.data(), copied);
             }
+        });
+}
 
-            ++written;
-        }
+/// How many words RefiiHostGetAttachmentGrips writes per record.
+#define REFII_ATTACHMENT_GRIP_WORDS 18u
+
+/// THE OFFSET EACH ATTACHED CHILD HANGS AT, AS THE GUEST STATES IT — so the host composes the
+/// child's placement instead of solving for it from reads taken at different instants (a solve
+/// that re-ran about once a second across a town and snapped a weapon each time).
+///
+/// The guest places a child in `sub_8250F5F0(att, out, record, W)`:
+///     8250f60c  bl   sub_822374D0          ; D = the parent dummy, model space, live pose
+///     8250f614  addi r4, r31, 0x50         ; A = record+0x50
+///     8250f61c  bl   sub_8221ACC0          ; T = A . D   (row vectors: A applies first)
+///     8250f62c  bl   sub_8221ACC0          ; out = T . W  (W = the parent's world placement)
+/// record+0x50 is the rigid inverse (`sub_82260FA0`, transpose and negated row 3) of the CHILD's
+/// own grip dummy at record+0x10, copied in by the attach path (`sub_8250DF18`). It is constant
+/// for the attachment's life. The dummy D is the parent gmd entry's local, times the gmd node
+/// locals up to the first live bone (`sub_8223D148`), times that bone's model-space pose — all of
+/// which the host has from its own `.mdl.gmd` and its own pose.
+///
+/// Words per record, in the same order as RefiiHostGetAttachments: [0] child, [1] ticket,
+/// [2..17] record+0x50 as 16 floats, row-major, row vectors, translation in row 3. Additive: a
+/// host that does not find this export solves as before.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachmentGrips(uint32_t* out_words, uint32_t max_records) {
+    if (out_words == nullptr || max_records == 0u) {
+        return 0u;
     }
 
-    return written;
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    return ForEachStatedAttachment(base, max_records,
+        [&](uint32_t, uint32_t record, uint32_t child, uint32_t written) {
+            uint32_t* words = out_words + (written * REFII_ATTACHMENT_GRIP_WORDS);
+            words[0] = child;
+            words[1] = GuestWordAt(base, record + 144u);
+            for (uint32_t i = 0u; i < 16u; ++i) {
+                words[2u + i] = GuestWordAt(base, record + 0x50u + (i * 4u));
+            }
+        });
 }
 
 /// The locomotion state a character is IN, by name, plus the gates that state was chosen under.

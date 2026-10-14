@@ -224,9 +224,25 @@ public sealed class Engine_GmdSkeleton
     ///
     /// Returns -1 in <paramref name="node"/> for a dummy that hangs from the model root.
     /// </summary>
-    public bool TryResolveNode(string dummy, int index, out int node)
+    public bool TryResolveNode(string dummy, int index, out int node) =>
+        TryResolveEntry(dummy, index, out node, out _);
+
+    /// <summary>
+    /// <see cref="TryResolveNode"/>, with the dummy's own transform RELATIVE TO THAT NODE — what the
+    /// guest's runtime entry holds (`sub_82265100`: quaternion at +0x20, translation at +0x30) and
+    /// composes under the node's live pose — or the identity when the dummy is a node itself.
+    /// </summary>
+    /// <remarks>
+    /// THE FILE'S ATTACHMENT TRANSFORM IS IN MODEL SPACE. Composed under the node as if it were
+    /// relative, every sheathed weapon landed 1.2-1.7 m from where the guest put it — the height
+    /// of the back dummy above the model root, counted twice. Relative = inverse(node's bind in
+    /// model space) x model-space local. <see cref="TryResolve"/> keeps the model-space value,
+    /// which is what a static prop composes directly onto its placement.
+    /// </remarks>
+    public bool TryResolveEntry(string dummy, int index, out int node, out Transform3D local)
     {
         node = -1;
+        local = Transform3D.Identity;
         if (dummy.Length == 0)
         {
             return false;
@@ -246,6 +262,9 @@ public sealed class Engine_GmdSkeleton
             }
 
             node = attachment.Node;
+            local = node >= 0 && node < Locals.Length
+                ? Compose(node).AffineInverse() * attachment.Local
+                : attachment.Local;
             return true;
         }
 

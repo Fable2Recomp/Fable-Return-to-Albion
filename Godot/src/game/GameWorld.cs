@@ -110,67 +110,38 @@ public partial class GameWorld : Node3D
 		// The guest renders only at alpha 0.5 and 1.0, where that is harmless; we render through
 		// the window. The drawn value is still the guest's; only the history is ours.
 		bool snap = pair is { } snapping && snapping.Live.Flag;
-		bool changed = !_haveStatedCamera ||
-			!stated.Origin.IsEqualApprox(_statedCamera.Origin) ||
-			!stated.Basis.IsEqualApprox(_statedCamera.Basis) ||
-			!Mathf.IsEqualApprox(fov, _statedCameraFov);
+		uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
+		bool changed = _cameraLine.Empty ||
+			!stated.Origin.IsEqualApprox(_cameraLine.Newest.Origin) ||
+			!stated.Basis.IsEqualApprox(_cameraLine.Newest.Basis) ||
+			!Mathf.IsEqualApprox(fov, _cameraLine.NewestScalar);
 		if (changed)
 		{
-			_previousCamera = _haveStatedCamera ? _statedCamera : stated;
-			_previousCameraFov = _haveStatedCamera ? _statedCameraFov : fov;
-			_statedCamera = stated;
-			_statedCameraFov = fov;
-			_haveStatedCamera = true;
-
-			// The camera has its own anchor: it is read in this node, the bodies in GameEntities,
-			// so its pair lands at a different point in the tick. The period is shared.
-			// The pair's width is the interval the guest's clock states, not a tick count (some
-			// ticks advance the clock by half the nominal period). The tick span, as for every
-			// body (see GameEntities.Drawn), is the fallback when the clock is unavailable or
-			// has re-based.
-			double statedUsec = Refii.Entities.Engine_DrawnFrame.StatedIntervalUsec(_cameraGuestSeconds);
-			_cameraGuestSeconds = Refii.Entities.Engine_DrawnFrame.GuestSeconds;
-			uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
-			int cameraSteps = _cameraTick != 0u && cameraTick > _cameraTick
-				? (int)System.Math.Clamp((long)cameraTick - (long)_cameraTick, 1L, 8L)
-				: 1;
-			_cameraTick = cameraTick;
-			if (statedUsec > 0.0)
-			{
-				_cameraPlayhead.SwapStated(Refii.Entities.Engine_DrawnFrame.NowUsec, statedUsec);
-			}
-			else
-			{
-				_cameraPlayhead.Swap(Refii.Entities.Engine_DrawnFrame.NowUsec, cameraSteps);
-			}
-
-			_lastCameraSteps = cameraSteps;
 			Refii.Entities.Engine_DrawnFrame.NoteRestated();
 		}
 
 		Transform3D drawn = stated;
 		float drawnFov = fov;
-		if (!snap && _haveStatedCamera && _cameraPlayhead.Ready)
+		if (snap || _cameraLine.Empty ||
+			_cameraLine.Newest.Origin.DistanceSquaredTo(stated.Origin) >
+				Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres)
 		{
-			// Same frame instant (NowUsec) and period as the bodies, measured from when the
-			// camera last restated.
-			float alpha = (float)_cameraPlayhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec);
-			drawn = Refii.Entities.Engine_DrawnFrame.Blend(_previousCamera, _statedCamera, alpha);
-
-			// The fov rides the same alpha as the transform; the guest blends it in the same
-			// call, `stfs f10, 0x30(r31)` at `0x82290058`.
-			drawnFov = Mathf.Lerp(_previousCameraFov, _statedCameraFov, alpha);
-			++BlendedCameras;
+			// A stated snap (`live+0x34`) restarts the history rather than gliding across it, and
+			// so does a jump the bodies treat as a teleport — the two restart together.
+			_cameraLine.Reset(cameraTick, stated, fov);
+			++LiveOnlyCameras;
 		}
 		else
 		{
-			// A stated snap (`live+0x34`) restarts the history rather than gliding across it.
-			_previousCamera = stated;
-			_previousCameraFov = fov;
-			_cameraPlayhead.Reset();
-			_cameraTick = 0u;
-			_cameraGuestSeconds = double.NaN;
-			++LiveOnlyCameras;
+			// On the bodies' clock and rule (Engine_TickTimeline): moved by the stated motion
+			// every frame, steered toward the guest's blend at the world's draw point. The fov
+			// rides the same timeline; the guest blends it in the same call, `stfs f10, 0x30(r31)`
+			// at `0x82290058`.
+			_cameraLine.Observe(cameraTick, stated, fov);
+			drawn = _cameraLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
+				Refii.Entities.Engine_DrawnFrame.DrawTick);
+			drawnFov = _cameraLine.DrawnScalar;
+			++BlendedCameras;
 		}
 
 		_camera.GlobalTransform = drawn;
@@ -401,35 +372,8 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>The last two cameras the guest stated; the playhead is shared.</summary>
-	private Transform3D _previousCamera = Transform3D.Identity;
-	private Transform3D _statedCamera = Transform3D.Identity;
-	private float _previousCameraFov;
-	private float _statedCameraFov;
-	/// <summary>The camera's own anchor; the period comes from the world's shared clock.</summary>
-	/// <remarks>
-	/// Swapped with the guest's exact stated interval for each pair, which is not an estimate
-	/// and so cannot drift; the shared period is the fallback when the clock is unavailable.
-	/// </remarks>
-	private readonly Refii.Core.Engine_PairPlayhead _cameraPlayhead =
-		new(Refii.Core.Engine_TickClock.TickUsec, carry: true);
-
-	/// <summary>The guest tick the camera's pair was last stated on; 0 before the first.</summary>
-	private uint _cameraTick;
-
-	/// <summary>The guest's stated clock when the camera's pair was last latched.</summary>
-	private double _cameraGuestSeconds = double.NaN;
-
-	private int _lastCameraSteps = 1;
-
-	/// <summary>The camera playhead's swap health, for the debug channel.</summary>
-	public (long Restarts, double LastSwapAlpha, int LastSteps) CameraSwapHealth =>
-		(_cameraPlayhead.Restarts, _cameraPlayhead.LastSwapAlpha, _lastCameraSteps);
-
-	/// <summary>Camera swaps taken on the stated-width path, and the furthest one landed from alpha 1.</summary>
-	public (long StatedSwaps, double WorstSwapError) CameraStatedSwapHealth =>
-		(_cameraPlayhead.StatedSwaps, _cameraPlayhead.WorstSwapError);
-
-	private bool _haveStatedCamera;
+	/// <summary>The camera's stated history, on the bodies' clock and rule.</summary>
+	private readonly Refii.Core.Engine_TickTimeline _cameraLine = new();
 
 	private int _cameraTraceRemaining;
 	private readonly System.Collections.Generic.List<(ulong Usec, uint Tick, Vector3 Position)> _cameraTrace = new();

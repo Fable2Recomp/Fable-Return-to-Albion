@@ -45,8 +45,6 @@ public partial class GameEntities : Node3D
     /// <summary>Children waiting for their parent: address, node, and the guest's own placement.</summary>
     private readonly List<(uint Child, MeshInstance3D Node, Transform3D Stated)> _attached = new();
 
-    /// <summary>How often the guest's statement of what is attached to what is re-read.</summary>
-    private const int AttachmentTicks = 15;
 
     /// <summary>Nodes by guest entity address, so a moved entity is updated rather than rebuilt.</summary>
     /// <summary>The live feed node, for the debug channel's levers.</summary>
@@ -1002,10 +1000,10 @@ public partial class GameEntities : Node3D
         // The placement stamp: must be the ungated game tick, or two distinct placements share
         // one tick.
         _tickNow = Refii.Core.Engine_TickClock.GuestGameTick;
-        if (_ticks % AttachmentTicks == 0)
-        {
-            _attachments.Refresh();
-        }
+        // EVERY WALK. A weapon drawn from the back moves to the hand on one of the guest's
+        // frames, as a re-attach with a new ticket; read every fifteenth walk, it hung on the back
+        // for up to half a second and then snapped into the hand.
+        _attachments.Refresh();
 
         if (entities.Count != _lastCount)
         {
@@ -1434,12 +1432,6 @@ public partial class GameEntities : Node3D
 
         animator.Rig = rig;
         animator.Address = address;
-        animator.OwnerPlayhead =
-            _pairs.TryGetValue(address, out (Transform3D Previous, Transform3D Stated,
-                Refii.Core.Engine_PairPlayhead Playhead, uint Tick, double GuestSeconds) owner)
-                ? owner.Playhead
-                : null;
-
         return animator;
     }
 
@@ -1520,7 +1512,7 @@ public partial class GameEntities : Node3D
 
             _followers[child] = node;
             Place(child, node, placed);
-            _pairs.Remove(child);  // it is not being blended; do not blend back to it
+            _bodies.Remove(child);  // it is not being blended; do not blend back to it
         }
 
         // DROPPED, NOT MISSED. A follower stops following when the guest's attachment record says
@@ -1562,8 +1554,8 @@ public partial class GameEntities : Node3D
     /// being drawn at. Falls back to the drawn transform for an entity with no history yet.
     /// </summary>
     private Transform3D StatedOf(uint address, Transform3D drawn) =>
-        _pairs.TryGetValue(address, out (Transform3D Previous, Transform3D Stated, Refii.Core.Engine_PairPlayhead Playhead, uint Tick, double GuestSeconds) pair)
-            ? pair.Stated
+        _bodies.TryGetValue(address, out Refii.Core.Engine_TickTimeline? body)
+            ? body.Newest
             : drawn;
 
     /// <summary><see cref="PartPaths"/> per mesh, computed once.</summary>
@@ -2387,7 +2379,7 @@ public partial class GameEntities : Node3D
             _eyes.Remove(address);
             _bodyAndEyes.Remove(address);
             _clipAnimators.Remove(address);
-            _pairs.Remove(address);
+            _bodies.Remove(address);
             _movers.Remove(address);
             _written.Remove(address);
             _compositeParts.Remove(address);
@@ -2751,8 +2743,6 @@ public partial class GameEntities : Node3D
     private bool IsPrincipal(uint address) =>
         address != 0u && (address == _principals.Hero || address == _principals.One || address == _principals.Two);
 
-    /// <summary>Rigs nearer than this to the eye (metres) are re-posed every drawn frame; farther ones step on the guest's frames.</summary>
-    private const float InterpolateRadius = 30f;
     private int _createdThisFrame;
 
     private long _createFrom;
@@ -3463,12 +3453,12 @@ public partial class GameEntities : Node3D
     /// </remarks>
     private void ResampleAnimation()
     {
-        // Between guest frames only rigs within InterpolateRadius and in view are re-posed;
-        // farther ones step at the guest's 30 Hz. Distances come from the transforms this feed
-        // wrote, not from the nodes.
+        // EVERY RIG IN VIEW, EVERY DRAWN FRAME. Animation runs on Godot's clock; a rig that
+        // waited for the guest's next frame stepped at 30 Hz under a display drawing faster.
+        // Out of view the pose holds, as the guest's own gate holds it (`sub_822142E8`). A rig
+        // the walk already posed this frame is not posed twice.
         Camera3D? eye = GetViewport()?.GetCamera3D();
         bool haveEye = eye is not null && IsInstanceValid(eye);
-        Vector3 eyeAt = haveEye ? eye!.GlobalTransform.Origin : Vector3.Zero;
         Transform3D toWorld = GlobalTransform;
 
         Plane[] frustum = haveEye ? Frustum(eye!) : System.Array.Empty<Plane>();
@@ -3477,7 +3467,7 @@ public partial class GameEntities : Node3D
         foreach (uint address in _reblending)
         {
             if (_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) &&
-                WithinInterpolateRadius(address, haveEye, eyeAt, toWorld, frustum, nowMs))
+                InViewForRepose(address, haveEye, toWorld, frustum, nowMs))
             {
                 rig.Reblend();
             }
@@ -3486,17 +3476,23 @@ public partial class GameEntities : Node3D
         foreach (uint address in _animating)
         {
             if (!_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) ||
-                !WithinInterpolateRadius(address, haveEye, eyeAt, toWorld, frustum, nowMs))
+                !InViewForRepose(address, haveEye, toWorld, frustum, nowMs))
             {
                 continue;
             }
 
-            ClipAnimatorFor(address, rig).Apply(address, writeBones: true);
+            Refii.Animations.Engine_ClipAnimator animator = ClipAnimatorFor(address, rig);
+            if (animator.WroteThisFrame)
+            {
+                continue;
+            }
+
+            animator.Apply(address, writeBones: true);
         }
     }
 
-    private bool WithinInterpolateRadius(
-        uint address, bool haveEye, Vector3 eyeAt, Transform3D toWorld, Plane[] frustum, ulong nowMs)
+    private bool InViewForRepose(
+        uint address, bool haveEye, Transform3D toWorld, Plane[] frustum, ulong nowMs)
     {
         if (!haveEye || IsPrincipal(address) ||
             !_written.TryGetValue(address, out (MeshInstance3D Node, Transform3D Drawn) last))
@@ -3504,9 +3500,7 @@ public partial class GameEntities : Node3D
             return true;
         }
 
-        Vector3 at = toWorld * last.Drawn.Origin;
-        return eyeAt.DistanceSquaredTo(at) <= InterpolateRadius * InterpolateRadius &&
-            RigInView(address, true, at, frustum, nowMs);
+        return RigInView(address, true, toWorld * last.Drawn.Origin, frustum, nowMs);
     }
 
     /// <summary>
@@ -3661,9 +3655,10 @@ public partial class GameEntities : Node3D
         }
 
         _arrived.Clear();
+        double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
         foreach (uint address in _movers)
         {
-            if (!_pairs.TryGetValue(address, out (Transform3D Previous, Transform3D Stated, Refii.Core.Engine_PairPlayhead Playhead, uint Tick, double GuestSeconds) pair) ||
+            if (!_bodies.TryGetValue(address, out Refii.Core.Engine_TickTimeline? body) ||
                 !_nodes.TryGetValue(address, out MeshInstance3D? node) ||
                 !IsInstanceValid(node))
             {
@@ -3671,7 +3666,11 @@ public partial class GameEntities : Node3D
                 continue;
             }
 
-            Place(address, node, DrawnFrom(pair));
+            Place(address, node, body.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, drawTick));
+            if (body.Settled)
+            {
+                _arrived.Add(address);
+            }
         }
 
         foreach (uint address in _arrived)
@@ -3716,7 +3715,7 @@ public partial class GameEntities : Node3D
     {
         if (!entity.Interpolate)
         {
-            _pairs.Remove(entity.Address);
+            _bodies.Remove(entity.Address);
             _movers.Remove(entity.Address);
             ++LiveOnlyEntities;
             return stated;
@@ -3726,88 +3725,58 @@ public partial class GameEntities : Node3D
         // guest latches `prev <- live` late in a tick and moves `live` only partway into the
         // next, so for part of every tick both halves are equal. The guest renders only at alpha
         // 0.5 and 1.0, where that is harmless; we render through the window. The value drawn is
-        // still the guest's; only the previous copy is kept here.
-        bool have = _pairs.TryGetValue(entity.Address, out (Transform3D Previous, Transform3D Stated, Refii.Core.Engine_PairPlayhead Playhead, uint Tick, double GuestSeconds) pair);
-        bool moved = !have ||
-            !stated.Origin.IsEqualApprox(pair.Stated.Origin) ||
-            !stated.Basis.IsEqualApprox(pair.Stated.Basis);
+        // still the guest's; only its history is kept here, stamped with the tick it was read on
+        // and drawn at the world's draw point with the limbs it carries.
+        uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
+        if (!_bodies.TryGetValue(entity.Address, out Refii.Core.Engine_TickTimeline? body))
+        {
+            body = new Refii.Core.Engine_TickTimeline();
+            body.Reset(tick, stated);
+            _bodies[entity.Address] = body;
+            ++LiveOnlyEntities;
+            return stated;
+        }
+
+        bool moved = !stated.Origin.IsEqualApprox(body.Newest.Origin) ||
+            !stated.Basis.IsEqualApprox(body.Newest.Basis);
+
+        // A jump beyond TeleportMetres (a door, a cut, a scripted placement) is a teleport,
+        // drawn at once rather than glided across.
+        if (moved && body.Newest.Origin.DistanceSquaredTo(stated.Origin) >
+            Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres)
+        {
+            body.Reset(tick, stated);
+            _movers.Remove(entity.Address);
+            ++LiveOnlyEntities;
+            return stated;
+        }
+
+        // Every read is stated, changed or not: unchanged is a body standing still.
+        body.Observe(tick, stated);
         if (moved)
         {
-            // A jump beyond TeleportMetres (a door, a cut, a scripted placement) is a teleport,
-            // drawn at once rather than glided across.
-            bool teleported = have &&
-                pair.Stated.Origin.DistanceSquaredTo(stated.Origin) >
-                    Refii.Core.Engine_TickTimeline.TeleportMetres *
-                    Refii.Core.Engine_TickTimeline.TeleportMetres;
-            // Per-entity anchor: alpha is 0 at the instant this entity's pair landed and 1 a
-            // period later. A teleport restarts it.
-            Refii.Core.Engine_PairPlayhead playhead = have && pair.Playhead is not null
-                ? pair.Playhead
-                : new Refii.Core.Engine_PairPlayhead(
-                    Refii.Core.Engine_TickClock.TickUsec, carry: true);
-            if (teleported)
-            {
-                playhead.Reset();
-            }
-
-            // How many ticks this pair covers: an entity latches only when its transform
-            // changes, so a slow mover's pair can span several ticks and must be drawn over
-            // that many periods.
-            uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
-            int steps = have && pair.Tick != 0u && tick > pair.Tick
-                ? (int)System.Math.Clamp((long)tick - (long)pair.Tick, 1L, 8L)
-                : 1;
-
-            // The width the guest's clock states (Engine_DrawnFrame.GuestSeconds) wins: some
-            // ticks advance it by half the nominal period, so `steps` is only the fallback.
-            double statedUsec = have && !teleported
-                ? Refii.Entities.Engine_DrawnFrame.StatedIntervalUsec(pair.GuestSeconds)
-                : 0.0;
-            if (statedUsec > 0.0)
-            {
-                playhead.SwapStated(Refii.Entities.Engine_DrawnFrame.NowUsec, statedUsec);
-            }
-            else
-            {
-                playhead.Swap(Refii.Entities.Engine_DrawnFrame.NowUsec, steps);
-            }
-
-            pair = (have && !teleported ? pair.Stated : stated, stated, playhead, tick,
-                Refii.Entities.Engine_DrawnFrame.GuestSeconds);
-            _pairs[entity.Address] = pair;
             _movers.Add(entity.Address);
 
             // Still told, because the world's own playhead is what MEASURES the shared period.
             Refii.Entities.Engine_DrawnFrame.NoteRestated();
         }
 
-        if (pair.Previous.Origin.IsEqualApprox(pair.Stated.Origin) &&
-            pair.Previous.Basis.IsEqualApprox(pair.Stated.Basis))
+        Transform3D drawn = body.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
+            Refii.Entities.Engine_DrawnFrame.DrawTick);
+        if (body.Settled)
         {
             _movers.Remove(entity.Address);
             ++LiveOnlyEntities;
             return stated;  // standing still: nothing to blend, and nothing to re-blend later
         }
 
+        _movers.Add(entity.Address);
         ++BlendedEntities;
-        return DrawnFrom(pair);
+        return drawn;
     }
 
-    /// <summary>
-    /// One pair drawn at its own playhead. Each entity has its own anchor because entities do
-    /// not restate together (the latch fires only on a change); the period is shared (see
-    /// Engine_PairPlayhead.SharedPeriodUsec), so nothing drifts in rate.
-    /// </summary>
-    private static Transform3D DrawnFrom(
-        (Transform3D Previous, Transform3D Stated, Refii.Core.Engine_PairPlayhead Playhead, uint Tick, double GuestSeconds) pair) =>
-        Refii.Entities.Engine_DrawnFrame.Blend(pair.Previous, pair.Stated,
-            pair.Playhead.Ready
-                ? (float)pair.Playhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec)
-                : Refii.Entities.Engine_DrawnFrame.Alpha);
-
-    /// <summary>The prev/live pair each moving entity was last stated with, and its own anchor.</summary>
-    private readonly Dictionary<uint,
-        (Transform3D Previous, Transform3D Stated, Refii.Core.Engine_PairPlayhead Playhead, uint Tick, double GuestSeconds)> _pairs = new();
+    /// <summary>Each entity's stated placements, stamped with the tick they were read on.</summary>
+    private readonly Dictionary<uint, Refii.Core.Engine_TickTimeline> _bodies = new();
 
     private uint _traceAddress;
     private int _traceRemaining;

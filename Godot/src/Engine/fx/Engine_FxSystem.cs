@@ -34,6 +34,15 @@ public sealed class Engine_FxSystem
     private sealed class ParticleState
     {
         public float[] Pos = new float[3];
+
+        /// <summary>
+        /// Where the particle was at the start of the last simulation step, and whether that is
+        /// known (false for a particle born in that step). The billboard shader draws between the
+        /// two by the effect's sub-step fraction, so particles move at the display's rate while the
+        /// simulation keeps the authored 30 frames a second.
+        /// </summary>
+        public float[] PrevPos = new float[3];
+        public bool HasPrev;
         public float[] Vel = new float[3];
         public float Age;
         public float KeyAge;
@@ -160,6 +169,12 @@ public sealed class Engine_FxSystem
         /// (`82b1c074 stfs f0, 0x1BC`), so a light opens at its authored brightness.
         /// </summary>
         public float Phase;
+
+        /// <summary>The light as it stood at the start of the last step, for the draw between steps.</summary>
+        public float[] PrevWorldPos = new float[3];
+        public float PrevAge;
+        public float PrevPhase;
+        public bool HasPrev;
     }
 
     private sealed class EmitterRuntime
@@ -218,7 +233,6 @@ public sealed class Engine_FxSystem
         public float Scale = 1f;
         public float[] Lit = { 1f, 1f, 1f };
         public float Time;
-        public float DtAccum;
         public int Frame;
         public int Step = 1;
         public float DtSec = 1f / 30f;
@@ -229,7 +243,7 @@ public sealed class Engine_FxSystem
     }
 
     private readonly List<InstanceState> _instances = new();
-    private readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> _scratch = new();
+    private readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _scratch = new();
     private uint _rng = 0x1234567u;
     private bool _loop = true;
     private float _intensity = 1f;
@@ -1150,6 +1164,7 @@ public sealed class Engine_FxSystem
     private ParticleState RentParticle()
     {
         ParticleState pt = _particlePool.Count != 0 ? _particlePool.Pop() : new ParticleState();
+        pt.HasPrev = false;
         pt.Age = 0f;
         pt.KeyAge = 0f;
         pt.Life = 0f;
@@ -1307,6 +1322,16 @@ public sealed class Engine_FxSystem
         float step = istep;
         float dts = inst.DtSec;
         inst.Frame += istep;
+
+        // The step's starting point, for the draw between steps.
+        foreach (EmitterRuntime held in inst.Emitters)
+        {
+            foreach (ParticleState live in held.Particles)
+            {
+                live.PrevPos[0] = live.Pos[0]; live.PrevPos[1] = live.Pos[1]; live.PrevPos[2] = live.Pos[2];
+                live.HasPrev = true;
+            }
+        }
         if (inst.SharedRand < 0f) inst.SharedRand = Frand();
 
         float[] rotTmp = _tickRot;
@@ -1318,6 +1343,10 @@ public sealed class Engine_FxSystem
 
         foreach (LightRuntime lt in inst.Lights)
         {
+            lt.PrevWorldPos[0] = lt.WorldPos[0]; lt.PrevWorldPos[1] = lt.WorldPos[1]; lt.PrevWorldPos[2] = lt.WorldPos[2];
+            lt.PrevAge = lt.Age;
+            lt.PrevPhase = lt.Phase;
+            lt.HasPrev = true;
             lt.Age += step;
             UpdateChain(lt.Chain, inst, inst.PlacePos, inst.PlaceRot, inst.Scale, lt.WorldPos, rotTmp);
 
@@ -1569,33 +1598,52 @@ public sealed class Engine_FxSystem
 
         if (dt <= 0f) dt = 1f / 60f;
         dt = MathF.Min(dt, 0.25f);
+        // AN AUTHORED FRAME IS 1/30 s FOR EVERY EMITTER, and `UpdateFrequency` is a simulation
+        // LOD rather than a speed. The guest keeps two parallel arrays indexed by that field:
+        // update rate 15 or 30 Hz, physics dt 1/15 or 1/30, and frames advanced per update 2.0
+        // (0x8209B480) or 1.0 (0x82099490). Its advance is a single `fmadds f11, f12, f0, f13`
+        // at 0x8322f21c writing the emitter's frame counter at +0xFC, so both columns come out at
+        // 15x2 = 30x1 = 30 authored frames a second.
+        //
+        // ONE ACCUMULATOR FOR THE EFFECT. A full-rate instance steps on every 1/30 s base step, a
+        // half-rate one (Step 2) on every second; sharing the phase is what lets the billboard
+        // shader draw every particle of the effect between its last two steps from two fractions
+        // (StepAlpha, StepAlphaHalf) instead of one per instance.
         foreach (InstanceState inst in _instances)
         {
-            // AN AUTHORED FRAME IS 1/30 s FOR EVERY EMITTER, and `UpdateFrequency` is a
-            // simulation LOD rather than a speed. The guest keeps two parallel arrays indexed by
-            // that field: update rate 15 or 30 Hz, physics dt 1/15 or 1/30, and frames advanced
-            // per update 2.0 (0x8209B480) or 1.0 (0x82099490). Its advance is a single
-            // `fmadds f11, f12, f0, f13` at 0x8322f21c writing the emitter's frame counter at
-            // +0xFC, so both columns come out at 15x2 = 30x1 = 30 authored frames a second.
-            //
-            // We advanced `Step` frames on EVERY 1/30 s tick, so a half-rate emitter ran at 60 —
-            // exactly twice too fast, and 0 is the default the quest trail carries. The period
-            // has to scale with the step, not just the step with the field.
-            float period = FrameDt * inst.Step;
             inst.Time += dt;
-            inst.DtAccum += dt;
-            int steps = 0;
-            while (inst.DtAccum >= period && steps < 8)
+        }
+
+        _baseAccum += dt;
+        int steps = 0;
+        while (_baseAccum >= FrameDt && steps < 8)
+        {
+            _baseAccum -= FrameDt;
+            ++_baseSteps;
+            foreach (InstanceState inst in _instances)
             {
-                inst.DtAccum -= period;
-                Tick(inst);
-                steps++;
+                if (inst.Step <= 1 || _baseSteps % inst.Step == 0)
+                {
+                    Tick(inst);
+                    ++LastSteps;
+                }
             }
 
-            if (steps == 8) inst.DtAccum = 0f;
-            LastSteps += steps;
+            steps++;
         }
+
+        if (steps == 8) _baseAccum = 0f;
     }
+
+    private float _baseAccum;
+    private long _baseSteps;
+
+    /// <summary>How far between its last two steps a full-rate emitter is drawn, 0 to 1.</summary>
+    public float StepAlpha => Math.Clamp(_baseAccum / FrameDt, 0f, 1f);
+
+    /// <summary>The same for a half-rate emitter (Step 2), which steps on even base steps.</summary>
+    public float StepAlphaHalf =>
+        Math.Clamp(((_baseSteps % 2 == 1 ? FrameDt : 0f) + _baseAccum) / (2f * FrameDt), 0f, 1f);
 
     private void Rebase(Transform3D delta)
     {
@@ -1608,6 +1656,8 @@ public sealed class Engine_FxSystem
                 {
                     Vector3 pos = delta * new Vector3(pt.Pos[0], pt.Pos[2], pt.Pos[1]);
                     pt.Pos[0] = pos.X; pt.Pos[1] = pos.Z; pt.Pos[2] = pos.Y;
+                    Vector3 prev = delta * new Vector3(pt.PrevPos[0], pt.PrevPos[2], pt.PrevPos[1]);
+                    pt.PrevPos[0] = prev.X; pt.PrevPos[1] = prev.Z; pt.PrevPos[2] = prev.Y;
                     Vector3 vel = delta.Basis * new Vector3(pt.Vel[0], pt.Vel[2], pt.Vel[1]);
                     pt.Vel[0] = vel.X; pt.Vel[1] = vel.Z; pt.Vel[2] = vel.Y;
                     for (int k = 0; k < pt.HistCount; k++)
@@ -1715,32 +1765,54 @@ public sealed class Engine_FxSystem
                 if (index-- != 0) continue;
                 FxEmitter? d = light.Def;
                 if (d is null) return default;
-                int f = (int)light.Age;
-                (float r, float g, float b) = d.LightColour.EvalFrame(f);
+                FxLightState now = LightState(d, light.Age, light.Phase, light.WorldPos);
+                if (!light.HasPrev)
+                {
+                    return now;
+                }
 
-                // Brightness = 1 + phase × p20, clamped to [0, 2] (0x821f0c4c, 0x821f0ca8);
-                // radius = 1 + phase × p19 (0x821f0c84), taken by a point light outright and by
-                // a spot only past two flags whose meaning is not established, so point only —
-                // the same reading the placed fixtures take.
-                float brightness = Math.Clamp(1f + (light.Phase * d.Generic[20].EvalFrame(f)), 0f, 2f);
-                float radius = d.TypeId == 7 ? 1f + (light.Phase * d.Generic[19].EvalFrame(f)) : 1f;
-                float energy = d.LightIntensity.EvalFrame(f) * brightness;
-
-                // Not scaled by the effect's scale: `sub_8323FA50` hands param 15 to the proxy
-                // unmultiplied (`fmr f1, f30` → `stfs f31, 0x90`), and the colour path is
-                // colour × intensity × kill-fade only. Only the position takes the transform.
+                // Between the last two steps, as the particles are drawn: on Godot's clock, at the
+                // effect's sub-step fraction for this instance's rate.
+                FxLightState before = LightState(d, light.PrevAge, light.PrevPhase, light.PrevWorldPos);
+                float a = inst.Step > 1 ? StepAlphaHalf : StepAlpha;
                 return new FxLightState(
-                    ToGodot(light.WorldPos),
-                    new Color(r, g, b),
-                    MathF.Max(0f, d.LightRange.EvalFrame(f) * radius),
-                    energy,
-                    d.LightCutoff.EvalFrame(f),
-                    d.LightFadeRamp.EvalFrame(f),
-                    d.LightConeAngle.EvalFrame(f));
+                    before.Position.Lerp(now.Position, a),
+                    before.Colour.Lerp(now.Colour, a),
+                    before.Range + ((now.Range - before.Range) * a),
+                    before.Energy + ((now.Energy - before.Energy) * a),
+                    now.Cutoff,
+                    now.Ramp,
+                    now.ConeAngle);
             }
         }
 
         return default;
+    }
+
+    private static FxLightState LightState(FxEmitter d, float age, float phase, float[] worldPos)
+    {
+        int f = (int)age;
+        (float r, float g, float b) = d.LightColour.EvalFrame(f);
+
+        // Brightness = 1 + phase × p20, clamped to [0, 2] (0x821f0c4c, 0x821f0ca8);
+        // radius = 1 + phase × p19 (0x821f0c84), taken by a point light outright and by
+        // a spot only past two flags whose meaning is not established, so point only —
+        // the same reading the placed fixtures take.
+        float brightness = Math.Clamp(1f + (phase * d.Generic[20].EvalFrame(f)), 0f, 2f);
+        float radius = d.TypeId == 7 ? 1f + (phase * d.Generic[19].EvalFrame(f)) : 1f;
+        float energy = d.LightIntensity.EvalFrame(f) * brightness;
+
+        // Not scaled by the effect's scale: `sub_8323FA50` hands param 15 to the proxy
+        // unmultiplied (`fmr f1, f30` → `stfs f31, 0x90`), and the colour path is
+        // colour × intensity × kill-fade only. Only the position takes the transform.
+        return new FxLightState(
+            ToGodot(worldPos),
+            new Color(r, g, b),
+            MathF.Max(0f, d.LightRange.EvalFrame(f) * radius),
+            energy,
+            d.LightCutoff.EvalFrame(f),
+            d.LightFadeRamp.EvalFrame(f),
+            d.LightConeAngle.EvalFrame(f));
     }
 
     /// <summary>
@@ -1765,7 +1837,11 @@ public sealed class Engine_FxSystem
     {
         public string MeshPath = string.Empty;
         public bool Displacement;
-        public List<(Transform3D Transform, Color Colour)> Instances { get; } = new();
+        /// <summary>
+        /// Each mesh particle at its last step, its colour, and its last step's displacement with
+        /// the rate class in w — placed between steps every frame (`FableFx.PlaceMeshParticles`).
+        /// </summary>
+        public List<(Transform3D Transform, Color Colour, Vector4 Motion)> Instances { get; } = new();
     }
 
     private readonly struct DrawKey : IEquatable<DrawKey>
@@ -1812,15 +1888,16 @@ public sealed class Engine_FxSystem
         foreach (MeshInstanceData data in meshOut.Values) data.Instances.Clear();
 
         // Pooled: the batch lists, the trail scratch and the key order live with the system.
-        Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)>> batches = _batches;
-        foreach (List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> pooled in batches.Values) pooled.Clear();
+        Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>> batches = _batches;
+        foreach (List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> pooled in batches.Values) pooled.Clear();
         // The delegate is cached: converting a method to a Func allocates, and this is used once
         // per ribbon inside the particle loop.
-        System.Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2)>> Sink =
+        System.Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> Sink =
             _sink ??= SinkFor;
 
         List<Vector3> pts = _pts;
         List<float> ages = _ages;
+        List<Vector4> motions = _motions;
         foreach (InstanceState inst in _instances)
         {
             foreach (EmitterRuntime rt in inst.Emitters)
@@ -1830,7 +1907,8 @@ public sealed class Engine_FxSystem
                 {
                     foreach (ParticleState pt in rt.Particles)
                     {
-                        pts.Clear(); ages.Clear();
+                        pts.Clear(); ages.Clear(); motions.Clear();
+                        float rateClass = inst.Step > 1 ? 1f : 0f;
                         for (int k = 0; k < pt.HistCount; k++)
                         {
                             float hage = k * inst.Step;
@@ -1838,18 +1916,31 @@ public sealed class Engine_FxSystem
                             float[]? h = pt.Hist[k];
                             if (h is null) break;
                             pts.Add(ToGodot(h)); ages.Add(hage);
+
+                            // The history shifts one slot a step, so between steps every point
+                            // flows from the slot behind it to its own: the trail slides.
+                            float[]? behind = k + 1 < pt.HistCount ? pt.Hist[k + 1] : null;
+                            Vector3 flow = behind is null ? Vector3.Zero : ToGodot(h) - ToGodot(behind);
+                            motions.Add(new Vector4(flow.X, flow.Y, flow.Z, rateClass));
                         }
 
-                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, cameraPosition, false, inst.Lit, pt.Intensity);
+                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, motions, cameraPosition, false, inst.Lit, pt.Intensity);
                     }
                 }
 
                 if (rt.Ribbon)
                 {
-                    pts.Clear(); ages.Clear();
+                    pts.Clear(); ages.Clear(); motions.Clear();
                     float ribbonIntensity = 1f;
-                    foreach (ParticleState pt in rt.Particles) { pts.Add(ToGodot(pt.Pos)); ages.Add(pt.KeyAge); ribbonIntensity = pt.Intensity; }
-                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, cameraPosition, true, inst.Lit, ribbonIntensity);
+                    float chainClass = inst.Step > 1 ? 1f : 0f;
+                    foreach (ParticleState pt in rt.Particles)
+                    {
+                        pts.Add(ToGodot(pt.Pos)); ages.Add(pt.KeyAge); ribbonIntensity = pt.Intensity;
+                        Vector3 moved = pt.HasPrev ? ToGodot(pt.Pos) - ToGodot(pt.PrevPos) : Vector3.Zero;
+                        motions.Add(new Vector4(moved.X, moved.Y, moved.Z, chainClass));
+                    }
+
+                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, ribbonIntensity);
                     continue;
                 }
 
@@ -1883,21 +1974,28 @@ public sealed class Engine_FxSystem
                     a *= DistanceFadeFactor(rt, ppos, cameraPosition) * pt.Intensity;
                     if (a <= 0.003f) { ++SkipZeroAlpha; continue; }
 
+                    // The last step's displacement, and whether this emitter steps at half rate:
+                    // a particle is drawn at `centre - motion x (1 - alpha)` between steps.
+                    Vector4 motion = pt.HasPrev
+                        ? new Vector4(pt.Pos[0] - pt.PrevPos[0], pt.Pos[2] - pt.PrevPos[2], pt.Pos[1] - pt.PrevPos[1],
+                            inst.Step > 1 ? 1f : 0f)
+                        : new Vector4(0f, 0f, 0f, inst.Step > 1 ? 1f : 0f);
+
                     if (va.IsMesh)
                     {
-                        EmitMeshParticle(va, vb, w, pt, a, col, meshOut);
+                        EmitMeshParticle(va, vb, w, pt, a, col, meshOut, motion);
                         continue;
                     }
 
                     if (vb is not null && vb.Texture != va.Texture)
                     {
-                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a * (1f - w), tLife, cameraRight, cameraUp);
-                        EmitBillboard(Sink(vb, rt.ZOrder), vb, ppos, pt, hx, hy, col, a * w, tLife, cameraRight, cameraUp);
+                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a * (1f - w), tLife, cameraRight, cameraUp, motion);
+                        EmitBillboard(Sink(vb, rt.ZOrder), vb, ppos, pt, hx, hy, col, a * w, tLife, cameraRight, cameraUp, motion);
                     }
                     else
                     {
                         ++EmittedBillboards;
-                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a, tLife, cameraRight, cameraUp);
+                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a, tLife, cameraRight, cameraUp, motion);
                     }
                 }
             }
@@ -1909,7 +2007,7 @@ public sealed class Engine_FxSystem
         keys.Sort(ByZOrder);
         foreach (DrawKey key in keys)
         {
-            List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> list = batches[key];
+            List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list = batches[key];
             if (list.Count == 0) continue;
             SortQuadsBackToFront(list, cameraPosition);
             if (DebugEmit && list.Count > 0) GD.Print($"[fx-emit] {key.Texture} mode={key.Mode} sat={key.Sat} soft={key.Soft} z={key.ZOrder} verts={list.Count} v0={list[0].Pos} uv0={list[0].Uv} c0={list[0].Col} v1={list[1].Pos} v2={list[2].Pos}");
@@ -1949,7 +2047,7 @@ public sealed class Engine_FxSystem
         if (addMesh is not null) EndSurfaces(addMesh);
     }
 
-    private void EmitPass(ArrayMesh mesh, Func<string, VisualBatchMaterial?> materialLookup, DrawKey key, string pass, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> list)
+    private void EmitPass(ArrayMesh mesh, Func<string, VisualBatchMaterial?> materialLookup, DrawKey key, string pass, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
     {
         VisualBatchMaterial? material = BatchMaterial(materialLookup, key, pass);
         if (material is not null) Flush(mesh, material.Material, list);
@@ -1999,6 +2097,9 @@ public sealed class Engine_FxSystem
         public Vector2[] Uvs = System.Array.Empty<Vector2>();
         public Color[] Colours = System.Array.Empty<Color>();
         public Vector2[] Offsets = System.Array.Empty<Vector2>();
+
+        /// <summary>CUSTOM0, four floats a vertex: the last step's displacement and the rate class.</summary>
+        public float[] Motion = System.Array.Empty<float>();
     }
 
     /// <summary>
@@ -2116,13 +2217,13 @@ public sealed class Engine_FxSystem
         }
     }
 
-    private void Flush(ArrayMesh mesh, Material material, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> list)
+    private void Flush(ArrayMesh mesh, Material material, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
     {
         int n = list.Count;
         SurfaceSlots slots = SlotsOf(mesh);
         for (int i = 0; i < n; i++)
         {
-            (Vector3 p, _, _, Vector2 off) = list[i];
+            (Vector3 p, _, _, Vector2 off, _) = list[i];
             if (!slots.HasBounds)
             {
                 slots.Bounds = new Aabb(p, Vector3.Zero);
@@ -2189,6 +2290,7 @@ public sealed class Engine_FxSystem
         public static int ColourBytes;
         public static int UvOffset;
         public static int Uv2Offset;
+        public static int Custom0Offset;
 
         public static void Learn(ArrayMesh mesh, int surface, int capacity)
         {
@@ -2203,6 +2305,7 @@ public sealed class Engine_FxSystem
             ColourOffset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.Color);
             UvOffset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.TexUV);
             Uv2Offset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.TexUV2);
+            Custom0Offset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.Custom0);
             ColourBytes = UvOffset - ColourOffset;
 
             // Position as three floats, colour as RGBA8 or four floats, both UVs as two floats:
@@ -2210,17 +2313,18 @@ public sealed class Engine_FxSystem
             Supported = vertexStride == 12 &&
                 (ColourBytes == 4 || ColourBytes == 16) &&
                 Uv2Offset - UvOffset == 8 &&
-                AttributeStride == Uv2Offset + 8;
+                Custom0Offset - Uv2Offset == 8 &&
+                AttributeStride == Custom0Offset + 16;
             Known = true;
             GD.Print($"[fx] in-place surface writes {(Supported ? "ON" : "OFF")}: vertex stride {vertexStride}, " +
-                $"attribute stride {AttributeStride}, colour +{ColourOffset}/{ColourBytes}B, uv +{UvOffset}, uv2 +{Uv2Offset}");
+                $"attribute stride {AttributeStride}, colour +{ColourOffset}/{ColourBytes}B, uv +{UvOffset}, uv2 +{Uv2Offset}, custom0 +{Custom0Offset}");
         }
     }
 
     private byte[] _vertexBytes = System.Array.Empty<byte>();
     private byte[] _attributeBytes = System.Array.Empty<byte>();
 
-    private void WriteInPlace(ArrayMesh mesh, int surface, int capacity, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> list)
+    private void WriteInPlace(ArrayMesh mesh, int surface, int capacity, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
     {
         int n = list.Count;
         int stride = InPlaceLayout.AttributeStride;
@@ -2235,6 +2339,7 @@ public sealed class Engine_FxSystem
         bool colour8 = InPlaceLayout.ColourBytes == 4;
         int uvAt = InPlaceLayout.UvOffset;
         int uv2At = InPlaceLayout.Uv2Offset;
+        int motionAt = InPlaceLayout.Custom0Offset;
 
         // The tail repeats the last vertex with no colour: zero-area triangles.
         Vector3 lastPos = list[n - 1].Pos;
@@ -2245,9 +2350,10 @@ public sealed class Engine_FxSystem
             Vector2 uv;
             Color col;
             Vector2 off;
+            Vector4 motion;
             if (i < n)
             {
-                (pos, uv, col, off) = list[i];
+                (pos, uv, col, off, motion) = list[i];
             }
             else
             {
@@ -2255,6 +2361,7 @@ public sealed class Engine_FxSystem
                 uv = lastUv;
                 col = new Color(0f, 0f, 0f, 0f);
                 off = Vector2.Zero;
+                motion = Vector4.Zero;
             }
 
             System.Runtime.InteropServices.MemoryMarshal.Write(vertices.Slice(i * 12, 12), in pos);
@@ -2274,6 +2381,7 @@ public sealed class Engine_FxSystem
 
             System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(uvAt, 8), in uv);
             System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(uv2At, 8), in off);
+            System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(motionAt, 16), in motion);
         }
 
         Rid rid = mesh.GetRid();
@@ -2282,7 +2390,7 @@ public sealed class Engine_FxSystem
     }
 
     /// <summary>Builds one surface of <paramref name="padded"/> vertices from the batch.</summary>
-    private void FlushBuild(ArrayMesh mesh, Material material, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> list, int padded)
+    private void FlushBuild(ArrayMesh mesh, Material material, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list, int padded)
     {
         int n = list.Count;
         if (!FlushPool.TryGetValue(padded, out FlushArrays? arraysFor))
@@ -2293,6 +2401,7 @@ public sealed class Engine_FxSystem
                 Uvs = new Vector2[padded],
                 Colours = new Color[padded],
                 Offsets = new Vector2[padded],
+                Motion = new float[padded * 4],
             };
             FlushPool[padded] = arraysFor;
         }
@@ -2301,13 +2410,18 @@ public sealed class Engine_FxSystem
         Vector2[] uvs = arraysFor.Uvs;
         Color[] colours = arraysFor.Colours;
         Vector2[] offsets = arraysFor.Offsets;
+        float[] motions = arraysFor.Motion;
         for (int i = 0; i < n; i++)
         {
-            (Vector3 pos, Vector2 uv, Color col, Vector2 off) = list[i];
+            (Vector3 pos, Vector2 uv, Color col, Vector2 off, Vector4 motion) = list[i];
             positions[i] = pos;
             uvs[i] = uv;
             colours[i] = col;
             offsets[i] = off;
+            motions[(i * 4) + 0] = motion.X;
+            motions[(i * 4) + 1] = motion.Y;
+            motions[(i * 4) + 2] = motion.Z;
+            motions[(i * 4) + 3] = motion.W;
         }
 
         if (padded > n && n > 0)
@@ -2321,28 +2435,38 @@ public sealed class Engine_FxSystem
                 uvs[i] = lastUv;
                 colours[i] = none;
                 offsets[i] = Vector2.Zero;
+                motions[(i * 4) + 0] = 0f;
+                motions[(i * 4) + 1] = 0f;
+                motions[(i * 4) + 2] = 0f;
+                motions[(i * 4) + 3] = 0f;
             }
         }
 
         // Each packed-array Variant carries a finalizable Disposer registered in GodotSharp's
         // DisposablesTracker; left to the finalizer, all four survive their first GC. Disposed
         // here they die in gen0; the Array holds its own reference to the packed data.
-        Variant vPositions = positions, vUvs = uvs, vColours = colours, vOffsets = offsets;
+        Variant vPositions = positions, vUvs = uvs, vColours = colours, vOffsets = offsets, vMotion = motions;
         Godot.Collections.Array arrays = _surfaceArrays;
         arrays[(int)Mesh.ArrayType.Vertex] = vPositions;
         arrays[(int)Mesh.ArrayType.TexUV] = vUvs;
         arrays[(int)Mesh.ArrayType.Color] = vColours;
         arrays[(int)Mesh.ArrayType.TexUV2] = vOffsets;
+        arrays[(int)Mesh.ArrayType.Custom0] = vMotion;
         vPositions.Dispose();
         vUvs.Dispose();
         vColours.Dispose();
         vOffsets.Dispose();
+        vMotion.Dispose();
         // The defaults for the last two build a fresh Array and Dictionary per call.
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, _noBlendShapes, _noLods);
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, _noBlendShapes, _noLods, MotionFormat);
         mesh.SurfaceSetMaterial(mesh.GetSurfaceCount() - 1, material);
     }
 
     private static readonly Godot.Collections.Array _surfaceArrays = MakeSurfaceArrays();
+
+    /// <summary>CUSTOM0 as four floats: the motion the billboard shader draws between steps by.</summary>
+    private static readonly Mesh.ArrayFormat MotionFormat =
+        (Mesh.ArrayFormat)((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift);
     private static readonly Godot.Collections.Array<Godot.Collections.Array> _noBlendShapes = new();
     private static readonly Godot.Collections.Dictionary _noLods = new();
 
@@ -2356,18 +2480,21 @@ public sealed class Engine_FxSystem
         return arrays;
     }
 
-    private readonly Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)>> _batches = new();
+    private readonly Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>> _batches = new();
     private readonly List<Vector3> _pts = new();
     private readonly List<float> _ages = new();
+
+    /// <summary>Each ribbon control point's last-step motion and rate class, beside <see cref="_pts"/>.</summary>
+    private readonly List<Vector4> _motions = new();
     private readonly List<DrawKey> _keys = new();
     private static readonly Comparison<DrawKey> ByZOrder = (l, r) => l.ZOrder.CompareTo(r.ZOrder);
     private static readonly Comparison<(float D, int Q)> FarthestFirst = (l, r) => r.D.CompareTo(l.D);
 
     /// <summary>Sort scratch, shared: geometry is emitted on the main thread only.</summary>
     private static readonly List<(float D, int Q)> _order = new();
-    private static readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> _sorted = new();
+    private static readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _sorted = new();
 
-    private static void SortQuadsBackToFront(List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> verts, Vector3 eye)
+    private static void SortQuadsBackToFront(List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> verts, Vector3 eye)
     {
         int quads = verts.Count / 6;
         if (quads < 2) return;
@@ -2380,14 +2507,14 @@ public sealed class Engine_FxSystem
         }
 
         order.Sort(FarthestFirst);
-        List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)> sorted = _sorted;
+        List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> sorted = _sorted;
         sorted.Clear();
         foreach ((_, int q) in order) for (int k = 0; k < 6; k++) sorted.Add(verts[(q * 6) + k]);
         verts.Clear();
         verts.AddRange(sorted);
     }
 
-    private void EmitMeshParticle(VisualRuntime va, VisualRuntime? vb, float w, ParticleState pt, float alpha, float[] col, Dictionary<string, MeshInstanceData> meshOut)
+    private void EmitMeshParticle(VisualRuntime va, VisualRuntime? vb, float w, ParticleState pt, float alpha, float[] col, Dictionary<string, MeshInstanceData> meshOut, Vector4 motion)
     {
         bool disp = va.BlendMode == "disp";
         string meshKey = va.MeshKey ??= disp ? va.MeshPath + "|disp" : va.MeshPath;
@@ -2404,12 +2531,12 @@ public sealed class Engine_FxSystem
         Vector3 axis = ToGodot(pt.Axis);
         if (axis.LengthSquared() < 1e-6f) axis = Vector3.Up;
         var basis = new Basis(axis.Normalized(), pt.Rot).Scaled(new Vector3(s, s, s));
-        data.Instances.Add((new Transform3D(basis, ToGodot(pt.Pos)), new Color(col[0], col[1], col[2], alpha)));
+        data.Instances.Add((new Transform3D(basis, ToGodot(pt.Pos)), new Color(col[0], col[1], col[2], alpha), motion));
     }
 
     private static void EmitBillboard(
-        List<(Vector3, Vector2, Color, Vector2)> sink, VisualRuntime vis, Vector3 centre, ParticleState pt, float hx, float hy,
-        float[] col, float alpha, float tLife, Vector3 cameraRight, Vector3 cameraUp)
+        List<(Vector3, Vector2, Color, Vector2, Vector4)> sink, VisualRuntime vis, Vector3 centre, ParticleState pt, float hx, float hy,
+        float[] col, float alpha, float tLife, Vector3 cameraRight, Vector3 cameraUp, Vector4 motion)
     {
         if (vis.Texture.Length == 0 || alpha <= 0.003f) return;
         float c = MathF.Cos(pt.Rot), s = MathF.Sin(pt.Rot);
@@ -2451,12 +2578,12 @@ public sealed class Engine_FxSystem
             Vector3 arx = right * hx, auy = up * hy;
             Vector3 aa = centre - arx - auy, ab = centre + arx - auy;
             Vector3 ac = centre - arx + auy, ad = centre + arx + auy;
-            sink.Add((aa, new Vector2(u0, v1), colr, Vector2.Zero));
-            sink.Add((ad, new Vector2(u1, v0), colr, Vector2.Zero));
-            sink.Add((ab, new Vector2(u1, v1), colr, Vector2.Zero));
-            sink.Add((aa, new Vector2(u0, v1), colr, Vector2.Zero));
-            sink.Add((ac, new Vector2(u0, v0), colr, Vector2.Zero));
-            sink.Add((ad, new Vector2(u1, v0), colr, Vector2.Zero));
+            sink.Add((aa, new Vector2(u0, v1), colr, Vector2.Zero, motion));
+            sink.Add((ad, new Vector2(u1, v0), colr, Vector2.Zero, motion));
+            sink.Add((ab, new Vector2(u1, v1), colr, Vector2.Zero, motion));
+            sink.Add((aa, new Vector2(u0, v1), colr, Vector2.Zero, motion));
+            sink.Add((ac, new Vector2(u0, v0), colr, Vector2.Zero, motion));
+            sink.Add((ad, new Vector2(u1, v0), colr, Vector2.Zero, motion));
             return;
         }
 
@@ -2466,25 +2593,25 @@ public sealed class Engine_FxSystem
         var oB = new Vector2((hx * c) + (hy * s), (hx * s) - (hy * c));
         var oC = new Vector2((-hx * c) - (hy * s), (-hx * s) + (hy * c));
         var oD = new Vector2((hx * c) - (hy * s), (hx * s) + (hy * c));
-        sink.Add((centre, new Vector2(u0, v1), colr, oA));
-        sink.Add((centre, new Vector2(u1, v0), colr, oD));
-        sink.Add((centre, new Vector2(u1, v1), colr, oB));
-        sink.Add((centre, new Vector2(u0, v1), colr, oA));
-        sink.Add((centre, new Vector2(u0, v0), colr, oC));
-        sink.Add((centre, new Vector2(u1, v0), colr, oD));
+        sink.Add((centre, new Vector2(u0, v1), colr, oA, motion));
+        sink.Add((centre, new Vector2(u1, v0), colr, oD, motion));
+        sink.Add((centre, new Vector2(u1, v1), colr, oB, motion));
+        sink.Add((centre, new Vector2(u0, v1), colr, oA, motion));
+        sink.Add((centre, new Vector2(u0, v0), colr, oC, motion));
+        sink.Add((centre, new Vector2(u1, v0), colr, oD, motion));
     }
 
     private readonly float[] _emitCol = new float[3];
 
-    private System.Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2)>>? _sink;
+    private System.Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>>? _sink;
 
     /// <summary>The batch a visual's quads go in, created on first sight and pooled thereafter.</summary>
-    private List<(Vector3, Vector2, Color, Vector2)> SinkFor(VisualRuntime v, int z)
+    private List<(Vector3, Vector2, Color, Vector2, Vector4)> SinkFor(VisualRuntime v, int z)
     {
         var key = new DrawKey(v.Texture, v.BlendMode, v.SatMask, v.SoftDepth, z);
-        if (!_batches.TryGetValue(key, out List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)>? list))
+        if (!_batches.TryGetValue(key, out List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>? list))
         {
-            list = new List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off)>();
+            list = new List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>();
             _batches[key] = list;
         }
 
@@ -2500,6 +2627,7 @@ public sealed class Engine_FxSystem
     private Vector3[] _ribC = System.Array.Empty<Vector3>();
     private float[] _ribA = System.Array.Empty<float>();
     private int[] _ribTex = System.Array.Empty<int>();
+    private Vector4[] _ribM = System.Array.Empty<Vector4>();
 
     private static float[] RentF(ref float[] slot, int n)
     {
@@ -2520,8 +2648,8 @@ public sealed class Engine_FxSystem
     }
 
     private void EmitRibbon(
-        Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2)>> sink, EmitterRuntime rt, List<VisualRuntime> vis,
-        List<Vector3> pts, List<float> ages, Vector3 eye, bool constWidth, float[] lit, float intensity)
+        Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> sink, EmitterRuntime rt, List<VisualRuntime> vis,
+        List<Vector3> pts, List<float> ages, List<Vector4> motions, Vector3 eye, bool constWidth, float[] lit, float intensity)
     {
         int n = pts.Count;
         if (n < 2 || vis.Count == 0) return;
@@ -2562,6 +2690,7 @@ public sealed class Engine_FxSystem
         Vector3[] rc = RentV(ref _ribC, ribs);
         float[] ra = RentF(ref _ribA, ribs);
         int[] rtex = RentI(ref _ribTex, ribs);
+        Vector4[] rm = _ribM.Length >= ribs ? _ribM : (_ribM = new Vector4[ribs]);
         for (int j = 0; j < ribs; j++)
         {
             int span = Math.Min(j / nseg, n - 2);
@@ -2583,6 +2712,7 @@ public sealed class Engine_FxSystem
             rc[j] = attrC[span] + ((attrC[a1] - attrC[span]) * sfrac);
             ra[j] = attrA[span] + ((attrA[a1] - attrA[span]) * sfrac);
             rtex[j] = attrTex[span];
+            rm[j] = motions[span].Lerp(motions[a1], sfrac);
         }
 
         for (int j = 0; j + 1 < ribs; j++)
@@ -2590,16 +2720,16 @@ public sealed class Engine_FxSystem
             if (ra[j] <= 0.003f && ra[j + 1] <= 0.003f) continue;
             VisualRuntime tv = vis[rtex[j]];
             if (tv.Texture.Length == 0) continue;
-            List<(Vector3, Vector2, Color, Vector2)> list = sink(tv, rt.ZOrder);
+            List<(Vector3, Vector2, Color, Vector2, Vector4)> list = sink(tv, rt.ZOrder);
             float u0 = (float)j / (ribs - 1), u1 = (float)(j + 1) / (ribs - 1);
             var c0 = new Color(rc[j].X, rc[j].Y, rc[j].Z, MathF.Max(ra[j], 0f));
             var c1 = new Color(rc[j + 1].X, rc[j + 1].Y, rc[j + 1].Z, MathF.Max(ra[j + 1], 0f));
-            list.Add((rp[j] + rside[j], new Vector2(u0, 0f), c0, Vector2.Zero));
-            list.Add((rp[j + 1] + rside[j + 1], new Vector2(u1, 0f), c1, Vector2.Zero));
-            list.Add((rp[j] - rside[j], new Vector2(u0, 1f), c0, Vector2.Zero));
-            list.Add((rp[j] - rside[j], new Vector2(u0, 1f), c0, Vector2.Zero));
-            list.Add((rp[j + 1] + rside[j + 1], new Vector2(u1, 0f), c1, Vector2.Zero));
-            list.Add((rp[j + 1] - rside[j + 1], new Vector2(u1, 1f), c1, Vector2.Zero));
+            list.Add((rp[j] + rside[j], new Vector2(u0, 0f), c0, Vector2.Zero, rm[j]));
+            list.Add((rp[j + 1] + rside[j + 1], new Vector2(u1, 0f), c1, Vector2.Zero, rm[j + 1]));
+            list.Add((rp[j] - rside[j], new Vector2(u0, 1f), c0, Vector2.Zero, rm[j]));
+            list.Add((rp[j] - rside[j], new Vector2(u0, 1f), c0, Vector2.Zero, rm[j]));
+            list.Add((rp[j + 1] + rside[j + 1], new Vector2(u1, 0f), c1, Vector2.Zero, rm[j + 1]));
+            list.Add((rp[j + 1] - rside[j + 1], new Vector2(u1, 1f), c1, Vector2.Zero, rm[j + 1]));
         }
     }
 }

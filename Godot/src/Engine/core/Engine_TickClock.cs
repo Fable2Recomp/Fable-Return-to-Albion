@@ -379,6 +379,72 @@ public static class Engine_TickClock
 	/// </remarks>
 	public static uint GuestGameTick { get; private set; }
 
+	/// <summary>
+	/// The stamp, in game ticks, of the state the guest's last finished HF step left in memory:
+	/// T − 0.5 after the step that ran tick T, T after the HF-only step that follows it. NaN until
+	/// the tick step's parity has been seen.
+	/// </summary>
+	/// <remarks>
+	/// `sub_82276D10` runs the game tick (`sub_821C8FB0`, 0x82277264) only on the step whose index
+	/// crosses a multiple of two (`v17 / v5 > v8 / v5`, v5 = 30/15 = 2, 0x82277200), then the HF
+	/// pass `sub_821A61B0` (0x822772a4) at alpha `(v17 % 2 + 1) / 2` (0x822771e4): 0.5 on that
+	/// step, 1.0 on the next. The guest-frame counter counts that HF pass, one per step, so its
+	/// parity on the step where the tick moved is the tick step's parity until the loop is
+	/// re-entered. Learned from consecutive frames that straddle a tick change; two straight
+	/// disagreements re-learn it.
+	///
+	/// A STATED STAMP, NOT AN ORDER. Stamping by the order the walk happened to see poses in
+	/// (first under a counter = T − 0.5, next = T) is wrong whenever the walk misses a step or
+	/// reads a step the session's tick read did not see — measured in res://debug/anim_timing_lab
+	/// as a fifth of all frames holding or jumping at 120 Hz and above.
+	/// </remarks>
+	public static double FrameStamp { get; private set; } = double.NaN;
+
+	private static uint _stampFrame;
+	private static uint _stampFrameTick;
+	private static int _tickParity = -1;
+	private static int _parityDisagreements;
+
+	/// <summary>
+	/// Publishes the guest-frame counter and the game tick, read together at the start of the
+	/// frame, and derives <see cref="FrameStamp"/>.
+	/// </summary>
+	public static void PublishGuestFrame(uint frame, uint tick)
+	{
+		if (tick == 0u)
+		{
+			FrameStamp = double.NaN;
+			return;
+		}
+
+		if (_stampFrame != 0u && frame == _stampFrame + 1u && tick == _stampFrameTick + 1u)
+		{
+			int parity = (int)(frame & 1u);
+			if (_tickParity < 0)
+			{
+				_tickParity = parity;
+			}
+			else if (parity != _tickParity)
+			{
+				if (++_parityDisagreements >= 2)
+				{
+					_tickParity = parity;
+					_parityDisagreements = 0;
+				}
+			}
+			else
+			{
+				_parityDisagreements = 0;
+			}
+		}
+
+		_stampFrame = frame;
+		_stampFrameTick = tick;
+		FrameStamp = _tickParity < 0
+			? double.NaN
+			: tick - ((int)(frame & 1u) == _tickParity ? 0.5 : 0.0);
+	}
+
 	/// <summary>Publishes the frame's game tick. Zero (no world) leaves the last one standing.</summary>
 	public static void PublishGuestGameTick(uint tick)
 	{
@@ -939,109 +1005,8 @@ public static class Engine_TickClock
 	/// <summary>Vblanks per present. The guest shipped 2 (`dword_83319638`); we present every one.</summary>
 	public static double PresentInterval = 1.0;
 
-	/// <summary>
-	/// How far through the guest's current game tick this frame falls, 0 to 1 — the guest's own
-	/// interpolation alpha.
-	/// </summary>
-	/// <remarks>
-	/// `sub_82276D10` computes
-	/// `(HFindex % 2 + 1) / 2` at `822771e4` and hands it to the transform blend, which draws
-	/// `prev*(1-alpha) + live*alpha` between the transform latched at the tick's first act
-	/// (`obj+0xA0`/`+0xB0`) and the live one. The host already carries the same quantity for
-	/// free: `_hostTicks` is the granted position in game ticks and `_hostTickOffset` puts it in
-	/// the guest's numbering, so the fraction of their sum IS where this frame sits in the tick.
-	///
-	/// No draw latency here, deliberately. Latency exists because a timeline can only be sampled
-	/// behind its newest sample; a prev/live pair has no such constraint — the live value is
-	/// always there, which is why the guest draws at alpha without waiting for anything.
-	/// </remarks>
-	public static double TickAlpha
-	{
-		get
-		{
-			if (!HostClockLive || double.IsNaN(_hostTicks))
-			{
-				return 1.0;  // no clock: the live transform stands on its own
-			}
-
-			double position = _hostTicks + _hostTickOffset;
-			double fraction = position - System.Math.Floor(position);
-			return fraction < 0.0 ? 0.0 : fraction > 1.0 ? 1.0 : fraction;
-		}
-	}
-
 	/// <summary>The newest guest tick any sample has carried.</summary>
 	public static uint HighestTick => _highestTick;
-
-	/// <summary>
-	/// Where this frame sits inside the guest's current high-frequency step, 0 to 1 — the alpha
-	/// our blend between two published poses uses.
-	/// </summary>
-	/// <remarks>
-	/// Poses are not placements and must not use the placement playhead: the guest publishes a
-	/// finished pose every HF step — two per game tick.
-	///
-	/// The guest does not blend two published poses. `sub_8222E2B8` does lerp
-	/// `renderObj+0x204` toward `+0x200`, but the only code that assigns either field gives them
-	/// the same block — `sub_82A75720` at `0x82a759f8`-`0x82a75a0c`
-	/// passes `r4 = r29` (`&amp;entity+0x74`) to both `+0x200` and `+0x204` — so the lerp is the
-	/// identity and the drawn pose is the newest published block. Every other reference to those
-	/// three fields is the constructor zeroing them and the destructor releasing them.
-	///
-	/// The guest interpolates at clip sample time, one level up:
-	/// `sub_8220DC78` composes `lerp(prev latched at tick start, live, alpha)` with the step's
-	/// own alpha, which `0x822771e4` fixes at exactly `(i + 1) / 2` — 0.5 on a tick's first HF
-	/// step, 1.0 on its second. So a published block is the world at the END of the step that
-	/// published it, already interpolated, and the guest simply draws the newest one.
-	///
-	/// Blending two of them is ours: the guest drew at 30 Hz and we draw faster. The draw point
-	/// must lie inside the pose pair, which spans half a tick, so <see cref="DrawTick"/> (a full
-	/// <see cref="DrawLatencyTicks"/> behind) cannot be used. `_hostTicks` counts game ticks, so
-	/// doubling it gives the HF step and its fraction is the alpha.
-	/// </remarks>
-	public static double PoseAlpha
-	{
-		get
-		{
-			if (!HostClockLive || double.IsNaN(_hostTicks))
-			{
-				return 1.0;
-			}
-
-			double step = (_hostTicks + _hostTickOffset) * 2.0;
-			double fraction = step - System.Math.Floor(step);
-			return fraction < 0.0 ? 0.0 : fraction > 1.0 ? 1.0 : fraction;
-		}
-	}
-
-	/// <summary>How far behind the newest pose the rigs are drawn, in ticks: one pose interval.</summary>
-	public const double PoseLatencyTicks = 0.5;
-
-	/// <summary>
-	/// The point on the guest's timeline the rigs are drawn at — the newest pose pair's own
-	/// interval, not the placement playhead.
-	/// </summary>
-	/// <remarks>
-	/// Measured against the pair's own stamps, the draw point and the pair move together: at a
-	/// swap the old pair reads alpha 1 and the new pair the same pose at alpha 0, so the drawn
-	/// value is continuous. <see cref="PoseAlpha"/> is a free-running sawtooth and the pair swaps
-	/// when the feed notices a pose, not on the step boundary.
-	///
-	/// One pose interval of latency, not <see cref="DrawLatencyTicks"/>: poses arrive every half
-	/// tick, so half a tick keeps the draw point inside the pair.
-	/// </remarks>
-	public static double PoseDrawTick
-	{
-		get
-		{
-			if (!HostClockLive || double.IsNaN(_hostTicks))
-			{
-				return double.NaN;
-			}
-
-			return _hostTicks + _hostTickOffset - PoseLatencyTicks;
-		}
-	}
 
 	/// <summary>
 	/// The playhead: where this frame sits on the guest's tick timeline, in the guest's own

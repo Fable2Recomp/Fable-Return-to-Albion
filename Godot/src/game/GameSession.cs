@@ -75,6 +75,17 @@ public partial class GameSession : Node
 	{
 		Current = this;
 
+		// THE GRANT GOES LAST IN THE FRAME, after every reader. A granted step starts on the
+		// guest's own thread at once, so granted at the top of the frame it ran under the camera
+		// read, the walk and the rig reads, and a read could take the next step's state under
+		// this frame's stamp (Engine_TickClock.FrameStamp, read at frame start). The guest
+		// finishes a step with the HF pass `sub_821A61B0` and then only publishes the render
+		// (`sub_82278DD0`) and spins in SwitchToThread until the next grant (sub_82276D10,
+		// 0x822772a4 onward), so a frame that saw a new guest frame now reads a parked guest,
+		// and the step computes while Godot renders. Before Engine_FrameEndNode, which closes
+		// the frame's measurements.
+		ProcessPriority = int.MaxValue - 1;
+
 		// The classic renderer's shadow cascades, up before any level builds its materials
 		// so every classic material can bind the maps as it is made.
 		Refii.Models.Engine_ClassicPath.Ensure(this);
@@ -448,10 +459,6 @@ public partial class GameSession : Node
 		if (guestTick != 0u)
 		{
 			Refii.Core.Engine_TickClock.ObserveCounterPair(HostBridge.SimTick, guestTick);
-
-			// The stamp. Published before anything poses this frame, so every sample rides the
-			// same counter the pacing loop does.
-			Refii.Core.Engine_TickClock.PublishGuestGameTick(guestTick);
 
 			// The draw point's terms are the display's: `sub_82388380` sizes its draw time from
 			// the refresh rate and present interval (`XGetVideoMode`), never a measured frame

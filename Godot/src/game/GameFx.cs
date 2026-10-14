@@ -556,30 +556,23 @@ public partial class GameFx : Node3D
     /// </summary>
     private Transform3D Smoothed(uint key, Transform3D stated)
     {
-        double now = Godot.Time.GetTicksUsec();
         if (!_timelines.TryGetValue(key, out Refii.Core.Engine_TickTimeline? timeline))
         {
-            timeline = new Refii.Core.Engine_TickTimeline();
+            timeline = new Refii.Core.Engine_TickTimeline(stillWhenUnchanged: false);
             timeline.Reset(_tickNow, stated);
             _timelines[key] = timeline;
             return stated;
         }
 
-        bool moved = timeline.Newest.Origin.DistanceSquaredTo(stated.Origin) > 1e-8f
-            || !timeline.Newest.Basis.IsEqualApprox(stated.Basis);
-        if (moved)
+        if (timeline.Newest.Origin.DistanceTo(stated.Origin) > 4f ||
+            (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
         {
-            if (timeline.Newest.Origin.DistanceTo(stated.Origin) > 4f ||
-                (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
-            {
-                timeline.Reset(_tickNow, stated);
-                return stated;
-            }
-
-            timeline.Push(_tickNow, stated, now);
+            timeline.Reset(_tickNow, stated);
+            return stated;
         }
 
-        return timeline.Sample(now);
+        timeline.Observe(_tickNow, stated);
+        return timeline.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, Refii.Entities.Engine_DrawnFrame.DrawTick);
     }
 
     /// <summary>The census, printed only when the distinct-effect count moves.</summary>

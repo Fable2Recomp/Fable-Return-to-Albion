@@ -872,6 +872,53 @@ public static class HostBridge
 		return into.Count;
 	}
 
+	private const int AttachmentGripWords = 18;
+
+	private static uint[]? _gripWords;
+
+	private static bool _gripExportMissing;
+
+	/// <summary>
+	/// The offset each attached child hangs at, as the guest states it (see
+	/// RefiiHostGetAttachmentGrips): record+0x50, the rigid inverse of the child's own grip
+	/// dummy, by child, with the attachment's ticket. Row-major, row vectors, translation in row
+	/// 3, in the child model's raw space. False when the library predates the export.
+	/// </summary>
+	public static bool GetAttachmentGrips(Dictionary<uint, (uint Ticket, float[] Matrix)> into)
+	{
+		into.Clear();
+		if (_gripExportMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		_gripWords ??= new uint[MaxAttachments * AttachmentGripWords];
+		uint count;
+		try
+		{
+			count = RefiiHostGetAttachmentGrips(_gripWords, MaxAttachments);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_gripExportMissing = true;
+			return false;
+		}
+
+		for (uint i = 0; i < count; ++i)
+		{
+			int at = (int)(i * AttachmentGripWords);
+			var matrix = new float[16];
+			for (int k = 0; k < 16; ++k)
+			{
+				matrix[k] = System.BitConverter.Int32BitsToSingle(unchecked((int)_gripWords[at + 2 + k]));
+			}
+
+			into[_gripWords[at]] = (_gripWords[at + 1], matrix);
+		}
+
+		return true;
+	}
+
 	private static uint[]? _animWords;
 
 	/// <summary>
@@ -2116,18 +2163,21 @@ public static class HostBridge
 
 	/// <summary>
 	/// Why rigs are not clip-driven: no component bit, component unresolved, controller found,
-	/// controller found but empty. See RefiiHostGetAnimWalkStats.
+	/// controller found but empty — and rigs a linked animation posed. See RefiiHostGetAnimWalkStats.
 	/// </summary>
-	public static (uint NoBit, uint Unresolved, uint Found, uint Empty)? AnimWalkStats()
+	public static (uint NoBit, uint Unresolved, uint Found, uint Empty, uint Linked)? AnimWalkStats()
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return null;
 		}
 
-		_animStatWords ??= new uint[4];
-		return RefiiHostGetAnimWalkStats(_animStatWords, 4u) == 4u
-			? (_animStatWords[0], _animStatWords[1], _animStatWords[2], _animStatWords[3])
+		// Five words from a bridge that counts linked animations, four from one that does not.
+		_animStatWords ??= new uint[5];
+		uint words = RefiiHostGetAnimWalkStats(_animStatWords, 5u);
+		return words >= 4u
+			? (_animStatWords[0], _animStatWords[1], _animStatWords[2], _animStatWords[3],
+				words >= 5u ? _animStatWords[4] : 0u)
 			: null;
 	}
 
@@ -2984,6 +3034,16 @@ public static class HostBridge
 			{
 				_guestFrameExportMissing = true;
 			}
+		}
+
+		// THE FRAME'S STAMP, read in the same instant as the frame counter: every sample this
+		// frame reads is stamped from this one pair (Engine_TickClock.FrameStamp), never from a
+		// read taken later while the guest may already be in its next step.
+		uint tick = SimClock() is { } clock ? clock.Tick : 0u;
+		Engine_TickClock.PublishGuestGameTick(tick);
+		if (!_guestFrameExportMissing)
+		{
+			Engine_TickClock.PublishGuestFrame(frame, tick);
 		}
 
 		if (_guestFrameExportMissing)
@@ -8634,6 +8694,9 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAnimMask(
 		uint node, [Out] byte[] outBytes, uint capacity, out uint outSkeletonId);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetAttachmentGrips([Out] uint[] outWords, uint maxRecords);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAttachments(

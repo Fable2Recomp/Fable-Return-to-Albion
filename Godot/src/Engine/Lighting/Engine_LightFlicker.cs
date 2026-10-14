@@ -82,6 +82,9 @@ public partial class Engine_LightFlicker : Node
 		/// </summary>
 		public float Phase;
 
+		/// <summary>The walk's state one step earlier: the light is drawn between the two.</summary>
+		public float PreviousPhase;
+
 		public bool FlickersRadius;
 
 		/// <summary>The radius scale last WRITTEN to the node, so <see cref="RadiusEpsilon"/> can
@@ -151,34 +154,49 @@ public partial class Engine_LightFlicker : Node
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("lightflicker");
 
-		// One walk per guest frame, not per display frame: the guest steps this once per its own
-		// frame, and every step is a render-server write per flickering light. Skipped time is
-		// carried, so the walk advances by the same total.
+		// THE WALK KEEPS THE GUEST'S STEP; THE DRAW IS GODOT'S. The guest steps this once per its
+		// own 30 Hz frame with `dt * 30`, so a step of exactly 1/30 s is one unit. Stepped per
+		// display frame instead, a random walk of more, smaller steps averages out and the
+		// flicker weakens — a look change. So the walk runs on its own 1/30 s accumulator on
+		// Godot's clock (not the guest's frames), and every display frame draws the light
+		// between its last two walk states.
 		_carried += delta;
-		if (!Refii.Core.Engine_GuestFrame.Changed)
+		int steps = 0;
+		while (_carried >= WalkSeconds && steps < MaxWalkSteps)
 		{
-			return;
+			_carried -= WalkSeconds;
+			++steps;
+			Walk();
 		}
 
-		double elapsed = _carried;
-		_carried = 0.0;
-
-		float step = (float)elapsed * RateNormaliser;
-		if (step <= 0.0f)
+		if (steps == MaxWalkSteps)
 		{
-			return;
+			_carried = 0.0;
 		}
 
+		float between = (float)Math.Clamp(_carried / WalkSeconds, 0.0, 1.0);
 		Updates += _lights.Count;
 		RadiusCandidates += _lights.Count;
-
 		foreach (Flickering light in _lights)
 		{
-			if (!IsInstanceValid(light.Node))
+			if (IsInstanceValid(light.Node))
 			{
-				continue;
+				Apply(light, light.PreviousPhase + ((light.Phase - light.PreviousPhase) * between));
 			}
+		}
+	}
 
+	/// <summary>One walk step: the guest's frame.</summary>
+	private const double WalkSeconds = 1.0 / RateNormaliser;
+
+	/// <summary>A stall walks at most this many steps and drops the rest.</summary>
+	private const int MaxWalkSteps = 4;
+
+	/// <summary>One step of every light's walk, `dt * 30` = 1.</summary>
+	private void Walk()
+	{
+		foreach (Flickering light in _lights)
+		{
 			// The guest's walk, in its own order: draw uniformly from [0, 2), subtract the current
 			// phase and one, scale by the rate and the normalised step, and add.
 			//
@@ -189,48 +207,53 @@ public partial class Engine_LightFlicker : Node
 			//
 			// Centred on zero because the draw is centred on one: `rand - phase - 1` has mean
 			// `-phase`, so the walk is pulled back toward the authored value and cannot run away.
+			light.PreviousPhase = light.Phase;
 			float draw = (float)(_random.NextDouble() * RandomRange);
-			light.Phase += (draw - light.Phase - 1.0f) * light.Rate * step;
+			light.Phase += (draw - light.Phase - 1.0f) * light.Rate;
 			light.Phase = Math.Clamp(light.Phase, -1.0f, 1.0f);
-
-			// `821f0c4c fmadds f11, f13, f27, f0` — phase * BrightnessRange + 1, straight onto the
-			// light's colour scale. The floor is ours: the guest stores the product unclamped at
-			// this point, and with the shipped ranges (0.05 to 0.23) it cannot go negative anyway,
-			// but a modded value past 1.0 would otherwise drive the energy through zero.
-			light.Node.LightEnergy =
-				light.BaseEnergy * MathF.Max(1.0f + (light.Phase * light.BrightnessRange), 0.0f);
-
-			if (!light.FlickersRadius)
-			{
-				continue;
-			}
-
-			// `821f0c84 fmadds f13, f13, f29, f0` — the same phase against the RADIUS range, which
-			// is a different number from the brightness one. The two ranges are authored
-			// separately (0.21 and 0.23 on the shipped torches) and share only the walk.
-			float scale = MathF.Max(1.0f + (light.Phase * light.RadiusRange), 0.01f);
-			if (RadiusEpsilon > 0.0f
-				&& MathF.Abs(scale - light.WrittenRadiusScale) < RadiusEpsilon)
-			{
-				continue;
-			}
-
-			light.WrittenRadiusScale = scale;
-			float reach = light.BaseRange * Refii.Lighting.Engine_LevelLights.RangeScale;
-
-			// THE NODE HOLDS THE ENVELOPE, THE TABLE HOLDS THE BREATH. The phase is clamped to
-			// [-1, 1], so `1 + RadiusRange` is the largest radius this light can state; the node
-			// sits there and is written only when that changes (the live range scale). The radius
-			// of THIS step goes to the light table, which is what the shader ramps over.
-			var omniNode = (OmniLight3D)light.Node;
-			float envelope = reach * (1.0f + MathF.Abs(light.RadiusRange));
-			if (MathF.Abs(omniNode.OmniRange - envelope) > 1e-4f)
-			{
-				omniNode.OmniRange = envelope;
-				RadiusWrites++;
-			}
-
-			Engine_LightTable.SetStatedRange(omniNode, reach * scale);
 		}
+	}
+
+	/// <summary>Writes one light's brightness and radius at a walk state.</summary>
+	private static void Apply(Flickering light, float phase)
+	{
+		// `821f0c4c fmadds f11, f13, f27, f0` — phase * BrightnessRange + 1, straight onto the
+		// light's colour scale. The floor is ours: the guest stores the product unclamped at
+		// this point, and with the shipped ranges (0.05 to 0.23) it cannot go negative anyway,
+		// but a modded value past 1.0 would otherwise drive the energy through zero.
+		light.Node.LightEnergy =
+			light.BaseEnergy * MathF.Max(1.0f + (phase * light.BrightnessRange), 0.0f);
+
+		if (!light.FlickersRadius)
+		{
+			return;
+		}
+
+		// `821f0c84 fmadds f13, f13, f29, f0` — the same phase against the RADIUS range, which
+		// is a different number from the brightness one. The two ranges are authored
+		// separately (0.21 and 0.23 on the shipped torches) and share only the walk.
+		float scale = MathF.Max(1.0f + (phase * light.RadiusRange), 0.01f);
+		if (RadiusEpsilon > 0.0f
+			&& MathF.Abs(scale - light.WrittenRadiusScale) < RadiusEpsilon)
+		{
+			return;
+		}
+
+		light.WrittenRadiusScale = scale;
+		float reach = light.BaseRange * Refii.Lighting.Engine_LevelLights.RangeScale;
+
+		// THE NODE HOLDS THE ENVELOPE, THE TABLE HOLDS THE BREATH. The phase is clamped to
+		// [-1, 1], so `1 + RadiusRange` is the largest radius this light can state; the node
+		// sits there and is written only when that changes (the live range scale). The radius
+		// of THIS step goes to the light table, which is what the shader ramps over.
+		var omniNode = (OmniLight3D)light.Node;
+		float envelope = reach * (1.0f + MathF.Abs(light.RadiusRange));
+		if (MathF.Abs(omniNode.OmniRange - envelope) > 1e-4f)
+		{
+			omniNode.OmniRange = envelope;
+			RadiusWrites++;
+		}
+
+		Engine_LightTable.SetStatedRange(omniNode, reach * scale);
 	}
 }

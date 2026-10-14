@@ -254,8 +254,8 @@ public sealed class Engine_ClipAnimator
 		public float Weight;
 		public float TargetWeight;
 
-		/// <summary>The clip time unwrapped across loops, one sample per game tick.</summary>
-		public readonly Refii.Core.Engine_TickScalar Playhead = new();
+		/// <summary>The clip's playhead, on Godot's clock, steered by the guest's stated pair.</summary>
+		public readonly Engine_ClipPlayhead Playhead = new();
 
 		/// <summary>
 		/// The record's OWN weight pair as the guest states it: latched at the tick start and
@@ -265,14 +265,21 @@ public sealed class Engine_ClipAnimator
 
 		public float RecordCurrent;
 
+		/// <summary>
+		/// The record's pair one tick earlier, and the tick the current pair was read on. A draw
+		/// point that the world's playhead carries back across a tick that landed early is still
+		/// inside the earlier pair; drawn from the newer one at a clamped 0 it jumped to that
+		/// pair's start.
+		/// </summary>
+		public float OlderPrevious;
+
+		public float OlderCurrent;
+		public bool HasOlder;
+		public uint WeightPairTick = uint.MaxValue;
+
 		/// <summary>The tick the playhead was last stated on; MaxValue before the first.</summary>
 		public uint PlayheadTick = uint.MaxValue;
 
-		/// <summary>Running unwrapped clip time behind <see cref="Playhead"/>.</summary>
-		public double Unwrapped;
-
-		/// <summary>The stated time the unwrapped time was last advanced from.</summary>
-		public float LastStated;
 		public float BlendIn = 0.2f;
 		public float BlendOut = 0.2f;
 		public ulong LastUsec;
@@ -308,6 +315,14 @@ public sealed class Engine_ClipAnimator
 
 	private static ulong PlayheadKey(HostBridge.GuestAnimLeaf leaf) => ((ulong)leaf.Uid << 32) | leaf.Key;
 	private readonly List<HostBridge.GuestAnimLeaf> _leaves = new();
+
+	/// <summary>The guest's leaves as last read, the guest frame and entity they were read on, and the read's answers.</summary>
+	private readonly List<HostBridge.GuestAnimLeaf> _read = new();
+
+	private uint _readFrame;
+	private uint _readEntity;
+	private int _readCount;
+	private uint _readFlags;
 	private Quaternion[] _rotation = System.Array.Empty<Quaternion>();
 	private Vector3[] _position = System.Array.Empty<Vector3>();
 	private float[] _rotationWeight = System.Array.Empty<float>();
@@ -434,8 +449,22 @@ public sealed class Engine_ClipAnimator
 			return false;
 		}
 
-		int count = HostBridge.GetEntityAnimState(entity, _leaves, out uint flags);
-		count = DelayNetworkLeaves(count);
+		// READ ONCE PER GUEST FRAME. Between two guest frames the guest's records read the same —
+		// unless its next step lands part-way through this host frame, and then the weight pair
+		// read here belongs to a tick the frame's stamp (Engine_TickClock) has not seen. The read
+		// taken on the frame the guest frame changed is the one that matches its stamp.
+		uint guestFrame = Refii.Core.Engine_GuestFrame.Frame;
+		if (guestFrame == 0u || guestFrame != _readFrame || entity != _readEntity)
+		{
+			_readCount = HostBridge.GetEntityAnimState(entity, _read, out _readFlags);
+			_readFrame = guestFrame;
+			_readEntity = entity;
+		}
+
+		_leaves.Clear();
+		_leaves.AddRange(_read);
+		uint flags = _readFlags;
+		int count = DelayNetworkLeaves(_readCount);
 		// Only a procedural layer the clips cannot express (dog paw/look IK, component 97)
 		// keeps the pose feed; the byte at +576 reads 1 on ordinary rigs and means nothing here.
 		if ((flags & 2) != 0)
@@ -488,6 +517,8 @@ public sealed class Engine_ClipAnimator
 			c.Seen = false;
 		}
 
+		// The world's draw point, read once: every clip on the rig is steered toward it.
+		double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
 		int order = -1;
 		_keyOccurrences.Clear();
 		foreach (HostBridge.GuestAnimLeaf leaf in _leaves)
@@ -547,20 +578,28 @@ public sealed class Engine_ClipAnimator
 			channel.Seen = true;
 			channel.Order = order;
 			channel.TargetWeight = leaf.Weight;
+			if (tick != channel.WeightPairTick)
+			{
+				channel.HasOlder = channel.WeightPairTick != uint.MaxValue && tick == channel.WeightPairTick + 1u;
+				channel.OlderPrevious = channel.RecordPrevious;
+				channel.OlderCurrent = channel.RecordCurrent;
+				channel.WeightPairTick = tick;
+			}
+
 			channel.RecordPrevious = leaf.RecordPrevious;
 			channel.RecordCurrent = leaf.RecordCurrent;
 			if (leaf.BlendIn > 0f) channel.BlendIn = leaf.BlendIn;
 			if (leaf.BlendOut > 0f) channel.BlendOut = leaf.BlendOut;
-			ObservePlayhead(channel, leaf, tick);
+			ObservePlayhead(channel, leaf, tick, drawTick);
 		}
 
 		// On the guest's ticks: a seen channel's weight and playhead are the stated per-tick
-		// values drawn at the shared draw point; a vanished channel ramps out on the host clock
-		// and drops. One alpha for the whole rig, from the owning body's playhead (else the
-		// world's), read once so every clip on the rig shares the instant.
-		float alpha = OwnerPlayhead is { Ready: true }
-			? (float)OwnerPlayhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec)
-			: Refii.Entities.Engine_DrawnFrame.Alpha;
+		// values drawn at the world's draw point; a vanished channel ramps out on the host clock
+		// and drops. Every record's weight pair was read on `tick` — previous at tick − 1,
+		// current at tick — so one alpha serves the rig. Clamped: past the pair a weight holds,
+		// it never over-weights its channel.
+		double pairAt = double.IsNaN(drawTick) ? 1.0 : drawTick - (tick - 1.0);
+		float alpha = (float)System.Math.Clamp(pairAt, 0.0, 1.0);
 		_dropped.Clear();
 		float totalWeight = 0f;
 		foreach ((ChannelKey key, Channel c) in _channels)
@@ -577,7 +616,7 @@ public sealed class Engine_ClipAnimator
 				// weight already scaled by the blend tree above the leaf, so the share is
 				// `TargetWeight / RecordCurrent` and the drawn weight is that share of the
 				// blended record weight.
-				float drawn = Mathf.Lerp(c.RecordPrevious, c.RecordCurrent, alpha);
+				float drawn = RecordWeightAt(c, pairAt);
 				float share = c.RecordCurrent > 1e-5f ? c.TargetWeight / c.RecordCurrent : 1f;
 				c.Weight = share * drawn;
 			}
@@ -592,7 +631,7 @@ public sealed class Engine_ClipAnimator
 				}
 			}
 
-			Advance(c, now);
+			Advance(c, dt, drawTick);
 			if (!c.Leaf.Additive)
 			{
 				totalWeight += c.Weight;
@@ -773,7 +812,7 @@ public sealed class Engine_ClipAnimator
 			{
 				if (!c.Leaf.Additive && !c.Leaf.Overlay && c.Leaf.Uid == topUid)
 				{
-					topWeight = Mathf.Lerp(c.RecordPrevious, c.RecordCurrent, alpha);
+					topWeight = RecordWeightAt(c, pairAt);
 					break;
 				}
 			}
@@ -1086,6 +1125,7 @@ public sealed class Engine_ClipAnimator
 
 		_hasWritten = true;
 		LastMovedBones = movedBones;
+		_wroteFrame = Godot.Engine.GetProcessFrames();
 		BoneWrites += movedBones;
 		if (movedBones != 0)
 		{
@@ -1159,16 +1199,13 @@ public sealed class Engine_ClipAnimator
 
 	public uint LastRunnerUid => _lastRunnerUid;
 
+	/// <summary>Whether this rig's bones were written in the current process frame.</summary>
+	public bool WroteThisFrame => _wroteFrame == Godot.Engine.GetProcessFrames();
+
+	private ulong _wroteFrame = ulong.MaxValue;
+
 	/// <summary>The guest entity this animator drives; 0 until it is adopted.</summary>
 	public uint Address;
-
-	/// <summary>
-	/// The owning body's anchor. The guest states the body's pair and its clip weights in the
-	/// same pass on the same tick, so they share one anchor; two anchors put the limbs out of
-	/// phase with the translation. Null while the body is not blending, where the world's
-	/// alpha stands.
-	/// </summary>
-	public Refii.Core.Engine_PairPlayhead? OwnerPlayhead;
 
 	/// <summary>
 	/// The rig being watched, set from the debug channel. Pinned to a single rig so consecutive
@@ -1604,85 +1641,20 @@ public sealed class Engine_ClipAnimator
 	/// the last key, so the sample never lands on the wrap.</summary>
 	private const float EndMargin = 1e-3f;
 
-	/// <summary>The most a clip may advance in one tick before it is read as re-timed: four ticks' worth.</summary>
-	private const float RestartSeconds = 4f / 15f;
-
-	/// <summary>How far the guest's stated previous time may sit from the value we last saw and
-	/// still be the same playback: a float's worth of rounding, not a tolerance.</summary>
-	private const float SeamSeconds = 1e-3f;
-
 	/// <summary>
-	/// Folds a tick's stated clip time into the channel's playhead timeline. The clip time
-	/// advances by `worldScale × entityScale / 15` per game tick through the clip's warp table
-	/// (`sub_82200F60`), so consecutive statements differ by a small non-negative step, unwrapped
-	/// across a loop; a step outside that is a restart or a re-time and starts the timeline over
-	/// at the new value — a hard cut, which is what the guest's fresh pair draws too. The first
-	/// sight seeds the previous tick from the leaf's own previous time.
+	/// Hands the stated pair to the channel's playhead. The clip time advances
+	/// by `worldScale × entityScale / 15` per game tick through the clip's warp table
+	/// (`sub_82200F60`, which shifts the current time into the leaf's previous slot), so the pair
+	/// states both the position and the rate. Its twin `sub_822B4970` writes both slots the same
+	/// value: a hard cut. A network replica's pair is the sender's packet extrapolated, so equal
+	/// halves there are a stall, not a cut.
 	/// </summary>
-	private static void ObservePlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick)
+	private static void ObservePlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick, double drawTick)
 	{
-		float length = c.Built.Length;
-		if (c.PlayheadTick == uint.MaxValue)
-		{
-			c.PlayheadTick = tick;
-			c.LastStated = leaf.Time;
-			c.Unwrapped = leaf.Time;
-			float back = length > 0f
-				? (leaf.Loop ? LoopGap(leaf.Time - leaf.PreviousTime, length) : leaf.Time - leaf.PreviousTime)
-				: 0f;
-			if (back > 0f && back < RestartSeconds)
-			{
-				c.Playhead.Reset(tick - 1, leaf.Time - back);
-				c.Playhead.Push(tick, leaf.Time);
-			}
-			else
-			{
-				c.Playhead.Reset(tick, leaf.Time);
-			}
-
-			return;
-		}
-
-		if (tick == c.PlayheadTick)
-		{
-			return;
-		}
-
-		uint elapsed = tick - c.PlayheadTick;
+		// Every read goes to the playhead, which tells a new tick from the same pair read again.
 		c.PlayheadTick = tick;
-
-		if (leaf.Network && length > 0f)
-		{
-			ObserveNetworkPlayhead(c, leaf, tick, elapsed, length);
-			return;
-		}
-
-		// The guest states its own continuity; do not infer it from a threshold.
-		// `sub_82200F60` shifts the current time into the leaf's +28 and writes the new one at
-		// +32, so the stated previous time is by construction continuous with the current one.
-		// Its twin `sub_822B4970` writes both slots the same value: a hard cut, no interpolation.
-		float stated = length > 0f
-			? (leaf.Loop ? LoopGap(leaf.Time - leaf.PreviousTime, length) : leaf.Time - leaf.PreviousTime)
-			: 0f;
-
-		// And whether the guest's own previous value is the one we last saw: if it is not, the
-		// clip was re-timed between our observations and there is nothing to carry forward.
-		float seam = length > 0f
-			? (leaf.Loop ? LoopGap(leaf.PreviousTime - c.LastStated, length) : leaf.PreviousTime - c.LastStated)
-			: 0f;
-
-		bool cut = leaf.PreviousTime == leaf.Time;
-		bool joins = Mathf.Abs(seam) <= SeamSeconds && stated >= -SeamSeconds && stated < RestartSeconds;
-		c.LastStated = leaf.Time;
-		if (length <= 0f || cut || !joins)
-		{
-			c.Unwrapped = leaf.Time;
-			c.Playhead.Reset(tick, leaf.Time);
-			return;
-		}
-
-		c.Unwrapped += seam + stated;
-		c.Playhead.Push(tick, c.Unwrapped);
+		bool cut = !leaf.Network && leaf.PreviousTime == leaf.Time;
+		c.Playhead.Observe(leaf.PreviousTime, leaf.Time, tick, c.Built.Length, leaf.Loop, cut, drawTick);
 	}
 
 	/// <summary>
@@ -1760,47 +1732,20 @@ public sealed class Engine_ClipAnimator
 		return _leaves.Count;
 	}
 
-	/// <summary>The share of a network clip's drift closed per tick.</summary>
-	private const float NetworkConvergence = 0.25f;
-
 	/// <summary>
-	/// A replica's clip (<see cref="HostBridge.GuestAnimLeaf.Network"/>): the time is the
-	/// sender's packet extrapolated by the receipt alpha, so consecutive ticks differ by the
-	/// clip's step plus the jitter of the packet's arrival and of the read. That is not a
-	/// re-time, and cutting on it drew the replica once per tick (2026-10-08: a host-side watch
-	/// of player two moved its bones on one frame in eleven). The timeline here advances by the
-	/// stated step per tick and closes a quarter of the gap to the stated time each tick; only a
-	/// gap past the restart bound — a new clip position, not drift — cuts.
+	/// The record's weight at the draw point, as the guest draws it — `lerp(prev, cur, alpha)`
+	/// (0x82211B08..0x82211B24) — with <paramref name="pairAt"/> 0 at the tick before the pair's
+	/// and 1 at its own. Below 0 the draw point is still in the previous tick's pair; past 1 it
+	/// holds, since a weight carried past its pair over-weights its channel.
 	/// </summary>
-	private static void ObserveNetworkPlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick,
-		uint elapsed, float length)
-	{
-		float step = leaf.Loop ? LoopGap(leaf.Time - leaf.PreviousTime, length) : leaf.Time - leaf.PreviousTime;
-		c.LastStated = leaf.Time;
-		if (!(step >= 0f) || step >= RestartSeconds || elapsed == 0u || elapsed > 8u)
-		{
-			c.Unwrapped = leaf.Time;
-			c.Playhead.Reset(tick, leaf.Time);
-			return;
-		}
+	private static float RecordWeightAt(Channel c, double pairAt) =>
+		pairAt < 0.0 && c.HasOlder
+			? Mathf.Lerp(c.OlderPrevious, c.OlderCurrent, (float)System.Math.Clamp(pairAt + 1.0, 0.0, 1.0))
+			: Mathf.Lerp(c.RecordPrevious, c.RecordCurrent, (float)System.Math.Clamp(pairAt, 0.0, 1.0));
 
-		double predicted = c.Unwrapped + (double)step * elapsed;
-		float gap = (float)(leaf.Time - predicted);
-		float error = leaf.Loop ? LoopGap(gap, length) : gap;
-		if (Mathf.Abs(error) >= RestartSeconds)
-		{
-			c.Unwrapped = leaf.Time;
-			c.Playhead.Reset(tick, leaf.Time);
-			return;
-		}
-
-		c.Unwrapped = predicted + error * NetworkConvergence;
-		c.Playhead.Push(tick, c.Unwrapped);
-	}
-
-	/// <summary>The clip time to sample now: the playhead timeline at the draw point, wrapped
+	/// <summary>The clip time to sample now: the playhead moved by this frame's real time, wrapped
 	/// for a looping clip and clamped short of the end otherwise.</summary>
-	private static void Advance(Channel c, double nowUsec)
+	private static void Advance(Channel c, double seconds, double drawTick)
 	{
 		float length = c.Built.Length;
 		if (length <= 0f)
@@ -1809,7 +1754,10 @@ public sealed class Engine_ClipAnimator
 			return;
 		}
 
-		double t = c.Playhead.Sample(nowUsec);
+		// A leaf the guest no longer states has no position left to follow: it runs on at its
+		// last rate while it ramps out. Steered toward its last pair, which stops moving, it was
+		// held back at the speed limit and then snapped — a pop on every locomotion change.
+		double t = c.Seen ? c.Playhead.Advance(seconds, drawTick) : c.Playhead.Freewheel(seconds, drawTick);
 		if (c.Leaf.Loop)
 		{
 			t %= length;
@@ -1823,22 +1771,6 @@ public sealed class Engine_ClipAnimator
 		}
 
 		c.Time = Mathf.Clamp((float)t, 0f, length - EndMargin);
-	}
-
-	/// <summary>The signed shortest distance between two times on a loop of the given length.</summary>
-	private static float LoopGap(float gap, float length)
-	{
-		gap %= length;
-		if (gap > length * 0.5f)
-		{
-			gap -= length;
-		}
-		else if (gap < -length * 0.5f)
-		{
-			gap += length;
-		}
-
-		return gap;
 	}
 
 	/// <summary>Built clips of this rig with their track coverage, for the debug channel.</summary>
@@ -1890,6 +1822,9 @@ public sealed class Engine_ClipAnimator
 				["uid"] = leaf.Uid,
 				["playhead"] = _channels.TryGetValue(new ChannelKey(leaf.Uid, leaf.Key, 0), out Channel? ch) ? ch.Time : null,
 				["hostWeight"] = ch?.Weight,
+				["rate"] = ch?.Playhead.Rate,
+				["error"] = ch?.Playhead.Error,
+				["stamp"] = ch?.Playhead.Stamp,
 				["target"] = ch?.TargetWeight,
 				["overlay"] = leaf.Overlay,
 				["mask"] = $"{leaf.Mask:X8}",

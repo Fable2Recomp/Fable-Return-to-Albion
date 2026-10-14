@@ -1385,8 +1385,9 @@ public sealed partial class Engine_HudView : Node3D
 
         Values.Advance((float)delta);
 
-        // On the guest's frame, or while a stated meter is still gliding: the guest publishes
-        // per HF tick, and the walk below crosses into every piece's node.
+        // On the guest's frame, or while anything is moving on Godot's clock (a gliding meter, a
+        // running pulser): the guest publishes per HF tick, and the walk below crosses into
+        // every piece's node.
         // A resized window re-places every piece even while the guest is not stepping.
         if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking &&
             Window == _placedWindow)
@@ -1394,11 +1395,18 @@ public sealed partial class Engine_HudView : Node3D
             return;
         }
 
+        // The guest's channels change only on its frames; between them the walk re-places the
+        // pieces from the values gliding on Godot's clock (Engine_HudValues.Advance).
+        bool read = !_refreshed || Refii.Core.Engine_GuestFrame.Changed;
         _placedWindow = Window;
         _refreshed = true;
         ++Walks;
         long walkMark = System.Diagnostics.Stopwatch.GetTimestamp();
-        Values.Read();
+        if (read)
+        {
+            Values.Read();
+        }
+
         TicksValues += System.Diagnostics.Stopwatch.GetTimestamp() - walkMark;
 
         // Nothing before the first publish: an empty registry means "the hero has not spawned",

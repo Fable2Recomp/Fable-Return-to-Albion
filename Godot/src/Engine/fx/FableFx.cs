@@ -449,6 +449,7 @@ public partial class FableFx : Node3D
         // expands each camera-facing quad from its centre along them, so a turn does not
         // rebuild geometry.
         PublishCameraAxes(cameraRight, cameraUp);
+        PublishStepAlpha();
 
         // The additive layer takes the ONE/ONE batches only while it can reach the screen —
         // the post chain composites it. Otherwise they draw into the scene.
@@ -464,6 +465,7 @@ public partial class FableFx : Node3D
         {
             if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
             if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
+            PlaceMeshParticles();
             return;
         }
 
@@ -513,10 +515,52 @@ public partial class FableFx : Node3D
             multi.VisibleInstanceCount = count;
             for (int i = 0; i < count; i++)
             {
-                (Transform3D transform, Color colour) = data.Instances[i];
+                (Transform3D transform, Color colour, Vector4 motion) = data.Instances[i];
                 Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-                multi.SetInstanceTransform(i, transform);
+                multi.SetInstanceTransform(i, Between(transform, motion));
                 multi.SetInstanceColor(i, colour);
+            }
+        }
+    }
+
+    /// <summary>A mesh particle between its last two steps, as the billboard shader draws one.</summary>
+    private Transform3D Between(Transform3D transform, Vector4 motion)
+    {
+        if (motion.X == 0f && motion.Y == 0f && motion.Z == 0f)
+        {
+            return transform;
+        }
+
+        float alpha = motion.W > 0.5f ? _system.StepAlphaHalf : _system.StepAlpha;
+        transform.Origin -= new Vector3(motion.X, motion.Y, motion.Z) * (1f - alpha);
+        return transform;
+    }
+
+    /// <summary>
+    /// Mesh particles moved between steps on the frames that do not re-emit: their transforms are
+    /// the MultiMesh's own, so the draw between steps is written here rather than in a shader.
+    /// Only instances that moved on their last step are touched.
+    /// </summary>
+    private void PlaceMeshParticles()
+    {
+        foreach ((string path, Engine_FxSystem.MeshInstanceData data) in _meshData)
+        {
+            if (!_meshNodes.TryGetValue(path, out MultiMeshInstance3D? node) || node.Multimesh is not MultiMesh multi)
+            {
+                continue;
+            }
+
+            int count = Math.Min(data.Instances.Count, multi.VisibleInstanceCount);
+            for (int i = 0; i < count; i++)
+            {
+                (Transform3D transform, _, Vector4 motion) = data.Instances[i];
+                if (motion.X == 0f && motion.Y == 0f && motion.Z == 0f)
+                {
+                    continue;
+                }
+
+                Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
+                multi.SetInstanceTransform(i, Between(transform, motion));
             }
         }
     }
@@ -671,6 +715,39 @@ public partial class FableFx : Node3D
 
     private static readonly StringName CamRightParam = new("fx_cam_right");
     private static readonly StringName CamUpParam = new("fx_cam_up");
+    private static readonly StringName StepAlphaParam = new("fx_step_alpha");
+    private static readonly StringName StepAlphaHalfParam = new("fx_step_alpha_half");
+
+    private float _publishedAlpha = -1f;
+    private float _publishedAlphaHalf = -1f;
+
+    /// <summary>
+    /// How far between its simulation steps this effect is drawn — the billboard shader draws
+    /// each particle on the segment it last moved along (`fx_billboard.gdshaderinc`). Every
+    /// frame, because it changes every frame; nothing is re-emitted for it.
+    /// </summary>
+    private void PublishStepAlpha()
+    {
+        float alpha = _system.StepAlpha;
+        float half = _system.StepAlphaHalf;
+        if (alpha == _publishedAlpha && half == _publishedAlphaHalf)
+        {
+            return;
+        }
+
+        _publishedAlpha = alpha;
+        _publishedAlphaHalf = half;
+        if (_surface is not null && IsInstanceValid(_surface))
+        {
+            _surface.SetInstanceShaderParameter(StepAlphaParam, alpha);
+            _surface.SetInstanceShaderParameter(StepAlphaHalfParam, half);
+        }
+
+        _addInstance?.SetShaderParameter(StepAlphaParam, alpha);
+        _addInstance?.SetShaderParameter(StepAlphaHalfParam, half);
+        _dispInstance?.SetShaderParameter(StepAlphaParam, alpha);
+        _dispInstance?.SetShaderParameter(StepAlphaHalfParam, half);
+    }
 
     /// <summary>
     /// Hands the shader this node's view of the camera. Instance parameters, because one

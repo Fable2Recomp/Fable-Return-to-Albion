@@ -68,6 +68,40 @@ public sealed class Engine_EntityAttachments
 
 		public bool HaveLastGuestBone;
 
+		/// <summary>
+		/// The child's offset as the guest states it — record+0x50, the rigid inverse of the
+		/// child's own grip dummy — in Godot's axes. Present once RefiiHostGetAttachmentGrips
+		/// has answered for this ticket.
+		/// </summary>
+		public Transform3D Grip = Transform3D.Identity;
+
+		public bool HaveGrip;
+
+		/// <summary>
+		/// The parent dummy relative to <see cref="Bone"/> (or to the model root when there is no
+		/// bone): its gmd entry's local under the gmd node locals up to the first live bone —
+		/// `sub_8223D148`'s accumulation. Composed once; the bone's pose is Godot's, every frame.
+		/// </summary>
+		public Transform3D Mount = Transform3D.Identity;
+
+		public bool DummyResolved;
+
+		/// <summary>Whether the stated composition was compared with a solve, for the log.</summary>
+		public bool Compared;
+
+		/// <summary>Frames placed by the stated composition; the comparison waits past the switch.</summary>
+		public int Placements;
+
+		/// <summary>
+		/// The attachment this one replaced on the same parent — the sheath a drawn weapon left —
+		/// and the game tick the switch was read on. Until the world's draw point reaches that
+		/// tick the previous mount stands: the guest re-attaches on its current tick, and the
+		/// hand reaching for the weapon is drawn about a tick behind it.
+		/// </summary>
+		public Record? Previous;
+
+		public double SwitchTick;
+
 	}
 
 
@@ -83,6 +117,11 @@ public sealed class Engine_EntityAttachments
 	private readonly Dictionary<uint, Record> _byChild = new();
 
 	private readonly List<HostBridge.GuestAttachment> _stated = new();
+
+	private readonly Dictionary<uint, (uint Ticket, float[] Matrix)> _grips = new();
+
+	/// <summary>Children placed by the stated composition, and by the old solve; run totals.</summary>
+	public static int PlacedStated;
 
 	private static readonly Dictionary<string, Refii.Models.Engine_GmdSkeleton?> GmdCache = new();
 
@@ -125,7 +164,35 @@ public sealed class Engine_EntityAttachments
 				Ticket = stated.Ticket,
 				Dummy = stated.Dummy,
 				Index = stated.Index,
+				Previous = record is { HaveGrip: true } replaced && replaced.Parent == stated.Parent
+					? replaced
+					: null,
+				SwitchTick = Refii.Core.Engine_TickClock.GuestGameTick,
 			};
+		}
+
+		// The stated offsets, for every record that has not taken one for its current ticket —
+		// read only when such a record exists: a grip is constant for its attachment's life.
+		bool needGrip = false;
+		foreach (Record held in _byChild.Values)
+		{
+			if (!held.HaveGrip)
+			{
+				needGrip = true;
+				break;
+			}
+		}
+
+		if (needGrip && HostBridge.GetAttachmentGrips(_grips))
+		{
+			foreach ((uint child, (uint ticket, float[] matrix)) in _grips)
+			{
+				if (_byChild.TryGetValue(child, out Record? held) && held.Ticket == ticket && !held.HaveGrip)
+				{
+					held.Grip = GripToGodot(matrix);
+					held.HaveGrip = held.Grip.Origin.IsFinite();
+				}
+			}
 		}
 
 		if (_byChild.Count == _stated.Count)
@@ -234,6 +301,47 @@ public sealed class Engine_EntityAttachments
 		if (!_byChild.TryGetValue(child, out Record? record))
 		{
 			return false;
+		}
+
+		// THE GUEST STATES THE OFFSET; COMPOSE IT. `sub_8250F5F0`: child = record+0x50 . D . W
+		// (row vectors), D the parent dummy on the LIVE pose. In Godot's order that is
+		// W x bone x dummy x grip, with Godot's own bone — so the child is rigid on the body
+		// that is drawn, every frame, with nothing solved from reads taken at different instants.
+		// A dummy no gmd names is the identity (`sub_822374D0`'s last fallback): the child sits at
+		// the parent's root, still composed, never the raw stated placement.
+		if (record.HaveGrip)
+		{
+			Record use = record;
+			if (record.Previous is { } previous)
+			{
+				double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
+				if (!double.IsNaN(drawTick) && drawTick < record.SwitchTick)
+				{
+					use = previous;
+				}
+				else
+				{
+					record.Previous = null;
+				}
+			}
+
+			if (!use.DummyResolved)
+			{
+				ResolveDummy(use, parentRig, parentParts);
+			}
+
+			Transform3D mount = use.Bone >= 0 && use.Bone < parentRig.BoneCount
+				? parentRig.Node.GetBoneGlobalPose(use.Bone) * use.Mount
+				: use.Mount;
+			placed = parentPlacement * mount * use.Grip;
+			if (use == record && !record.Compared && ++record.Placements >= 10)
+			{
+				Compare(record, childStated, parentStated, parentRig, parentParts, mount);
+			}
+
+			++Placed;
+			++PlacedStated;
+			return true;
 		}
 
 		if (!record.Solved)
@@ -400,6 +508,89 @@ public sealed class Engine_EntityAttachments
 		}
 
 		return false;
+	}
+
+	/// <summary>
+	/// The guest's row-major, row-vector 4x4 in Godot's axes: rows 0-2 are the images of the
+	/// basis axes (Godot's columns), row 3 the translation, conjugated by the same Z-up to Y-up
+	/// map the gmd transforms and the bones take.
+	/// </summary>
+	private static Transform3D GripToGodot(float[] m)
+	{
+		var basis = new Basis(
+			new Vector3(m[0], m[1], m[2]),
+			new Vector3(m[4], m[5], m[6]),
+			new Vector3(m[8], m[9], m[10]));
+		Basis map = Refii.Models.Engine_GmdSkeleton.ZUpToYUp;
+		return new Transform3D(map * basis * map.Inverse(), map * new Vector3(m[12], m[13], m[14]));
+	}
+
+	/// <summary>
+	/// The parent dummy, as `sub_8223B890` composes it: the gmd entry's local, under the locals of
+	/// every gmd node between it and the first node the live skeleton has (`sub_8223D148` climbs
+	/// child first). The first part gmd that names the dummy wins, as the guest's comp17 walk does.
+	/// </summary>
+	private static void ResolveDummy(Record record, Engine_EntitySkeleton rig, string[] parentParts)
+	{
+		record.DummyResolved = true;
+		record.Bone = -1;
+		record.Mount = Transform3D.Identity;
+		foreach (string part in parentParts)
+		{
+			Refii.Models.Engine_GmdSkeleton? gmd = Gmd(part);
+			if (gmd is null || !gmd.TryResolveEntry(record.Dummy, record.Index, out int node, out Transform3D local))
+			{
+				continue;
+			}
+
+			Transform3D chain = local;
+			for (int guard = 0; node >= 0 && node < gmd.Names.Length && guard < 64; ++guard)
+			{
+				if (rig.TryBone(gmd.Names[node], out int bone))
+				{
+					record.Bone = bone;
+					break;
+				}
+
+				chain = gmd.Locals[node] * chain;
+				node = gmd.Parents[node];
+			}
+
+			record.Mount = chain;
+			return;
+		}
+	}
+
+	/// <summary>Dummies whose stated composition has been compared and logged: once per name.</summary>
+	private static readonly HashSet<string> ComparedNames = new(System.StringComparer.OrdinalIgnoreCase);
+
+	private const int ComparedLogged = 32;
+
+	/// <summary>
+	/// Once per dummy name, ten placements in: the stated composition beside the old solve
+	/// from the guest's own numbers, so a convention error shows up as a fixed, readable offset in
+	/// the first run rather than as a weapon in the wrong place.
+	/// </summary>
+	private static void Compare(Record record, Transform3D childStated, Transform3D parentStated,
+		Engine_EntitySkeleton rig, string[] parentParts, Transform3D mount)
+	{
+		record.Compared = true;
+		if (ComparedNames.Count >= ComparedLogged || ComparedNames.Contains(record.Dummy) || record.Bone < 0 ||
+			!rig.TryGuestBoneGlobal(record.Parent, record.Bone, out Transform3D guestBone))
+		{
+			return;
+		}
+
+		ComparedNames.Add(record.Dummy);
+		Transform3D guestMount = parentStated * guestBone * record.Mount;
+		Transform3D composed = guestMount * record.Grip;
+		float angle = Mathf.RadToDeg(composed.Basis.GetRotationQuaternion().AngleTo(
+			childStated.Basis.GetRotationQuaternion()));
+		GD.Print($"[attach] stated {record.Child:X8} '{record.Dummy}'[{record.Index}] -> bone " +
+			$"{record.Bone} '{rig.BoneName(record.Bone)}': composed on the guest's pose lands " +
+			$"{composed.Origin.DistanceTo(childStated.Origin):0.000} m and {angle:0.0} deg from the " +
+			$"guest's own placement (grip {record.Grip.Origin.Length():0.000} m, dummy " +
+			$"{record.Mount.Origin.Length():0.000} m)");
 	}
 
 	private static Refii.Models.Engine_GmdSkeleton? Gmd(string modelPath)

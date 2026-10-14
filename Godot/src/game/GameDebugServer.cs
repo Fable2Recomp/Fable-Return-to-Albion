@@ -2344,6 +2344,7 @@ public partial class GameDebugServer : Node
 						["animNoComponentBit"] = Refii.Host.HostBridge.AnimWalkStats()?.NoBit,
 						["animComponentUnresolved"] = Refii.Host.HostBridge.AnimWalkStats()?.Unresolved,
 						["animControllerFound"] = Refii.Host.HostBridge.AnimWalkStats()?.Found,
+						["animLinked"] = Refii.Host.HostBridge.AnimWalkStats()?.Linked,
 						["animControllerEmpty"] = Refii.Host.HostBridge.AnimWalkStats()?.Empty,
 						["heldNoPrimary"] = Refii.Animations.Engine_ClipAnimator.HeldNoPrimaryFrames,
 						["fallbackUnknownClip"] = Refii.Animations.Engine_ClipAnimator.FallbackUnknownClip,
@@ -2877,12 +2878,14 @@ public partial class GameDebugServer : Node
 
 			case "alpha":
 			{
-				// The blend alpha as a per-frame sequence, for both paths: pose-blended rigs and
-				// clip-driven rigs.
+				// The pose-blended rigs' alpha as a per-frame sequence; for clip-driven rigs, how
+				// often a playhead re-timed and how often its correction ran at the speed limit
+				// (Engine_ClipPlayhead) — both should stay near zero while a clip plays on.
 				return Ok(new Dictionary<string, object?>
 				{
 					["trace"] = Refii.Entities.Engine_EntitySkeleton.AlphaTrace(),
-					["clip"] = Refii.Core.Engine_TickScalar.AlphaTrace(),
+					["clipRestarts"] = Refii.Animations.Engine_ClipPlayhead.Restarts,
+					["clipSaturated"] = Refii.Animations.Engine_ClipPlayhead.Saturated,
 				});
 			}
 
@@ -2895,19 +2898,15 @@ public partial class GameDebugServer : Node
 					return Ok(new Dictionary<string, object?> { ["tracing"] = world is not null });
 				}
 
-				(long restarts, double swapAlpha, int steps) = world?.CameraSwapHealth ?? (0L, 0.0, 0);
-				(long statedSwaps, double worstSwapError) = world?.CameraStatedSwapHealth ?? (0L, 0.0);
+				// The camera, bodies and live effects share one timeline type (Engine_TickTimeline):
+				// how often any of them re-placed past the snap bounds, and how often a correction
+				// ran at its speed limit. Both should stay near zero while things move normally.
 				return Ok(new Dictionary<string, object?>
 				{
 					["trace"] = world?.CameraTraceReport(),
-					["restarts"] = restarts,
-
-					// Written by BOTH swap paths. 1.0 is on time; the distance from 1 is how far
-					// the draw point had carried past (or fallen short of) the pair it left.
-					["lastSwapAlpha"] = swapAlpha,
-					["statedSwaps"] = statedSwaps,
-					["worstSwapError"] = worstSwapError,
-					["lastSteps"] = steps,
+					["timelineSnaps"] = Refii.Core.Engine_TickTimeline.Snaps,
+					["timelineSaturated"] = Refii.Core.Engine_TickTimeline.Saturated,
+					["pace"] = Refii.Core.Engine_DrawAdvance.Pace,
 				});
 			}
 
