@@ -56,9 +56,9 @@ public static class Engine_ClassicClouds
         _plain = shader;
         var material = new ShaderMaterial { Shader = _mist is not null && Misted() is { } misted ? misted : shader };
         material.SetMeta(ClassicCloudMeta, true);
-        material.SetShaderParameter("ps_g_CloudsSampler", density);
-        material.SetShaderParameter("xr_spec_constants", 2u);
-        material.SetShaderParameter("xr_alpha_threshold", 5.5f / 255f);
+        material.SetShaderParameter(PsCloudsSamplerName, density);
+        material.SetShaderParameter(XrSpecConstantsName, 2u);
+        material.SetShaderParameter(XrAlphaThresholdName, 5.5f / 255f);
         SetLayer(material, layer);
         SetScroll(material, 0f, 0f);
         lock (_materials)
@@ -78,23 +78,23 @@ public static class Engine_ClassicClouds
             int index = material.GetMeta(LayerMeta).AsInt32();
             FollowDensity(material, index);
             int at = 133 + 14 * index;
-            material.SetShaderParameter("ps_g_CloudsScale", new Vector4(Engine_ClassicTheme.Param(at + 10), Engine_ClassicTheme.Param(at + 11), 0f, 0f));
-            material.SetShaderParameter("ps_g_Transparency", Splat(Engine_ClassicTheme.Param(at)));
-            material.SetShaderParameter("ps_g_NormalStrength", Splat(Engine_Clouds.ShaderNormalStrength(Engine_ClassicTheme.Param(at + 2))));
-            material.SetShaderParameter("ps_g_AmbientLight", Splat(Engine_ClassicTheme.Param(at + 4)));
-            material.SetShaderParameter("ps_g_Brightness", Splat(Engine_ClassicTheme.Param(at + 5)));
+            material.SetShaderParameter(PsCloudsScaleName, new Vector4(Engine_ClassicTheme.Param(at + 10), Engine_ClassicTheme.Param(at + 11), 0f, 0f));
+            material.SetShaderParameter(PsTransparencyName, Splat(Engine_ClassicTheme.Param(at)));
+            material.SetShaderParameter(PsNormalStrengthName, Splat(Engine_Clouds.ShaderNormalStrength(Engine_ClassicTheme.Param(at + 2))));
+            material.SetShaderParameter(PsAmbientLightName, Splat(Engine_ClassicTheme.Param(at + 4)));
+            material.SetShaderParameter(PsBrightnessName, Splat(Engine_ClassicTheme.Param(at + 5)));
             return;
         }
-        material.SetShaderParameter("ps_g_CloudsScale", new Vector4(layer.TextureScaleX, layer.TextureScaleY, 0f, 0f));
-        material.SetShaderParameter("ps_g_Transparency", Splat(layer.Transparency));
-        material.SetShaderParameter("ps_g_NormalStrength", Splat(Engine_Clouds.ShaderNormalStrength(layer.NormalStrength)));
-        material.SetShaderParameter("ps_g_AmbientLight", Splat(layer.AmbientLight));
-        material.SetShaderParameter("ps_g_Brightness", Splat(layer.Brightness));
+        material.SetShaderParameter(PsCloudsScaleName, new Vector4(layer.TextureScaleX, layer.TextureScaleY, 0f, 0f));
+        material.SetShaderParameter(PsTransparencyName, Splat(layer.Transparency));
+        material.SetShaderParameter(PsNormalStrengthName, Splat(Engine_Clouds.ShaderNormalStrength(layer.NormalStrength)));
+        material.SetShaderParameter(PsAmbientLightName, Splat(layer.AmbientLight));
+        material.SetShaderParameter(PsBrightnessName, Splat(layer.Brightness));
     }
 
     /// <summary>The scrolled UV offset (binding 0, `sub_82205918`).</summary>
     public static void SetScroll(ShaderMaterial material, float x, float y) =>
-        material.SetShaderParameter("ps_g_AccumulatedUVOffset", new Vector4(x, y, 0f, 0f));
+        material.SetShaderParameter(PsAccumulatedUVOffsetName, new Vector4(x, y, 0f, 0f));
 
     /// <summary>The frame's viewer and main light, guest axes. Main thread, once a frame.</summary>
     public static void Pump(Vector3 eye, Vector3 viewerDirection, Vector3 lightColour, Vector3 lightDirection)
@@ -140,15 +140,15 @@ public static class Engine_ClassicClouds
                     }
                     if (mist is not null)
                     {
-                        material.SetShaderParameter("xr_cloud_row", _row);
-                        material.SetShaderParameter("ps_g_MistDensitySampler", mist.Density64);
-                        material.SetShaderParameter("ps_g_MistHeightSampler", Engine_ClassicMist.FlatHeight);
+                        material.SetShaderParameter(XrCloudRowName, _row);
+                        material.SetShaderParameter(PsMistDensitySamplerName, mist.Density64);
+                        material.SetShaderParameter(PsMistHeightSamplerName, Engine_ClassicMist.FlatHeight);
                     }
                 }
-                material.SetShaderParameter("ps_g_ViewerPosition", position);
-                material.SetShaderParameter("ps_g_ViewerDirection", direction);
-                material.SetShaderParameter("ps_g_LightColor", colour);
-                material.SetShaderParameter("ps_g_LightPosition", lightPosition);
+                material.SetShaderParameter(PsViewerPositionName, position);
+                material.SetShaderParameter(PsViewerDirectionName, direction);
+                material.SetShaderParameter(PsLightColorName, colour);
+                material.SetShaderParameter(PsLightPositionName, lightPosition);
             }
         }
         if (mist is null && _row != 0)
@@ -193,7 +193,25 @@ public static class Engine_ClassicClouds
         material.SetMeta(DensityHashMeta, (long)hash);
         if (Engine_EnvironmentTextures.Load(hash, Engine_BnkMeshLoader.ReadBytes, out _) is { } density)
         {
-            material.SetShaderParameter("ps_g_CloudsSampler", density);
+            material.SetShaderParameter(PsCloudsSamplerName, density);
         }
     }
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName PsCloudsSamplerName = "ps_g_CloudsSampler";
+    private static readonly StringName XrSpecConstantsName = "xr_spec_constants";
+    private static readonly StringName XrAlphaThresholdName = "xr_alpha_threshold";
+    private static readonly StringName PsCloudsScaleName = "ps_g_CloudsScale";
+    private static readonly StringName PsTransparencyName = "ps_g_Transparency";
+    private static readonly StringName PsNormalStrengthName = "ps_g_NormalStrength";
+    private static readonly StringName PsAmbientLightName = "ps_g_AmbientLight";
+    private static readonly StringName PsBrightnessName = "ps_g_Brightness";
+    private static readonly StringName PsAccumulatedUVOffsetName = "ps_g_AccumulatedUVOffset";
+    private static readonly StringName XrCloudRowName = "xr_cloud_row";
+    private static readonly StringName PsMistDensitySamplerName = "ps_g_MistDensitySampler";
+    private static readonly StringName PsMistHeightSamplerName = "ps_g_MistHeightSampler";
+    private static readonly StringName PsViewerPositionName = "ps_g_ViewerPosition";
+    private static readonly StringName PsViewerDirectionName = "ps_g_ViewerDirection";
+    private static readonly StringName PsLightColorName = "ps_g_LightColor";
+    private static readonly StringName PsLightPositionName = "ps_g_LightPosition";
 }

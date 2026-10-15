@@ -627,13 +627,13 @@ public static class Engine_ClassicMaterial
     /// g_PRTConstants read from the placement's row (Engine_ClassicPrtRows), named by the
     /// node's `xr_prt_row`. Null while its shader compiles (<see cref="AmbientPending"/>).
     /// </summary>
-    public static ShaderMaterial? WithPrtRows(ShaderMaterial classic)
+    public static ShaderMaterial? WithPrtRows(ShaderMaterial classic, int surfaceRow = 0)
     {
         if (!classic.HasMeta(PixelTokensMeta))
         {
             return null;
         }
-        ulong key = classic.GetInstanceId();
+        var key = (classic.GetInstanceId(), surfaceRow);
         lock (PrtVariants)
         {
             if (PrtVariants.TryGetValue(key, out ShaderMaterial? cached) && GodotObject.IsInstanceValid(cached))
@@ -651,6 +651,7 @@ public static class Engine_ClassicMaterial
         AmbientPending = earlier;
         if (built is not null)
         {
+            built.SetShaderParameter(PrtSurfaceUniform, surfaceRow);
             lock (PrtVariants)
             {
                 PrtVariants[key] = built;
@@ -659,7 +660,9 @@ public static class Engine_ClassicMaterial
         return built;
     }
 
-    private static readonly Dictionary<ulong, ShaderMaterial> PrtVariants = new();
+    private static readonly Dictionary<(ulong, int), ShaderMaterial> PrtVariants = new();
+
+    private static readonly StringName PrtSurfaceUniform = "xr_prt_surface";
 
     private const string PrtRowDefine = "#define XR_PRT_ROW_FETCH";
 
@@ -1105,13 +1108,6 @@ public static class Engine_ClassicMaterial
         material.GetShaderParameter(TextureParameter(material, 0)).As<Texture2D>();
 
     /// <summary>
-    /// The pair on another ambient source for ONE instance, not shared: what it carries per
-    /// instance (the transfer constants) would otherwise be every placement's at once.
-    /// </summary>
-    public static ShaderMaterial? OwnWithAmbient(ShaderMaterial classic, int ambient) =>
-        BuildWithAmbient(classic, ambient, null);
-
-    /// <summary>
     /// Sets a uniform on a material and on every pass drawn from it — its glass pass and the
     /// light-group variants of both — so per-instance state reaches whichever is on screen.
     /// </summary>
@@ -1120,17 +1116,26 @@ public static class Engine_ClassicMaterial
         source.SetShaderParameter(name, value);
         if (source.HasMeta(GroupVariantsMeta))
         {
-            foreach (Variant held in source.GetMeta(GroupVariantsMeta).AsGodotDictionary().Values)
+            using Variant meta = source.GetMeta(GroupVariantsMeta);
+            using Godot.Collections.Dictionary variants = meta.AsGodotDictionary();
+            foreach (Variant held in variants.Values)
             {
-                if (held.Obj is ShaderMaterial variant && GodotObject.IsInstanceValid(variant))
+                using (held)
                 {
-                    variant.SetShaderParameter(name, value);
+                    if (held.Obj is ShaderMaterial variant && GodotObject.IsInstanceValid(variant))
+                    {
+                        variant.SetShaderParameter(name, value);
+                    }
                 }
             }
         }
-        if (source.HasMeta(TranslucentPassMeta) && source.GetMeta(TranslucentPassMeta).Obj is ShaderMaterial glass)
+        if (source.HasMeta(TranslucentPassMeta))
         {
-            SetOnPasses(glass, name, value);
+            using Variant pass = source.GetMeta(TranslucentPassMeta);
+            if (pass.Obj is ShaderMaterial glass)
+            {
+                SetOnPasses(glass, name, value);
+            }
         }
     }
 

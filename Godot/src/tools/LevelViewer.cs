@@ -78,6 +78,7 @@ public partial class LevelViewer : Node3D
 	public override void _Ready()
 	{
 		_shotPath = OS.GetEnvironment("REFII_LEVEL_SHOT");
+		GD.Print($"[level-viewer] depth pre-pass {ProjectSettings.GetSetting("rendering/driver/depth_prepass/enable")}");
 
 		if (int.TryParse(OS.GetEnvironment("REFII_EXPOSURE_DUMP"), out int period) && period > 0)
 		{
@@ -318,6 +319,57 @@ public partial class LevelViewer : Node3D
 			foreach (Node found in GetTree().Root.FindChildren("*", nameof(SubViewport), true, false))
 			{
 				RenderingServer.ViewportSetMeasureRenderTime(((SubViewport)found).GetViewportRid(), true);
+			}
+			{
+				// What the main view draws, by kind: every surface of every node inside the camera's
+				// frustum, and each pass its material chains (terrain layers, light groups, glass).
+				Godot.Collections.Array<Plane> planes = _camera!.GetFrustum();
+				var byKind = new SortedDictionary<string, int>();
+				void Count(string kind, int n) => byKind[kind] = byKind.GetValueOrDefault(kind) + n;
+				foreach (Node found in _region.FindChildren("*", nameof(GeometryInstance3D), true, false))
+				{
+					if (found is not GeometryInstance3D g || !g.IsVisibleInTree() || (g.Layers & 1u) == 0)
+					{
+						continue;
+					}
+					Aabb box = g.GlobalTransform * g.GetAabb();
+					bool inside = true;
+					foreach (Plane plane in planes)
+					{
+						Vector3 c = box.GetCenter(), h = box.Size * 0.5f;
+						float r = Mathf.Abs(plane.Normal.X) * h.X + Mathf.Abs(plane.Normal.Y) * h.Y + Mathf.Abs(plane.Normal.Z) * h.Z;
+						if (plane.DistanceTo(c) > r) { inside = false; break; }
+					}
+					if (!inside)
+					{
+						continue;
+					}
+					Mesh? mesh = g switch { MeshInstance3D mi => mi.Mesh, MultiMeshInstance3D mm => mm.Multimesh?.Mesh, _ => null };
+					if (mesh is null)
+					{
+						continue;
+					}
+					for (int i = 0; i < mesh.GetSurfaceCount(); i++)
+					{
+						Material? m = g.MaterialOverride ?? (g is MeshInstance3D mi2 ? mi2.GetSurfaceOverrideMaterial(i) : null) ?? mesh.SurfaceGetMaterial(i);
+						int passes = 0;
+						string family = m?.GetMeta("xenos_family", "other").AsString() ?? "none";
+						bool lightPass = false;
+						for (Material? pass = m; pass is not null && passes < 32; pass = pass.NextPass)
+						{
+							passes++;
+							lightPass |= pass.HasMeta("xenos_group_variant");
+						}
+						string kind = g is MultiMeshInstance3D ? "batch:" + family : family;
+						Count(kind + " surfaces", 1);
+						Count(kind + " passes", passes);
+						if (lightPass)
+						{
+							Count(kind + " lit surfaces", 1);
+						}
+					}
+				}
+				GD.Print("[level-viewer] main-view census: " + string.Join(", ", System.Linq.Enumerable.Select(byKind, kv => $"{kv.Key} {kv.Value}")));
 			}
 			GD.Print("[level-viewer] classic casters: " + string.Join(", ", System.Linq.Enumerable.Select(
 				Refii.Models.Engine_ClassicCasters.Census(), kv => $"{kv.Key} {kv.Value}")));

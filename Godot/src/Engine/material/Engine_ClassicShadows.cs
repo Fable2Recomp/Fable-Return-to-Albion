@@ -308,6 +308,10 @@ public partial class Engine_ClassicShadows : Node
     [Tool]
     public partial class Capture : CompositorEffect
     {
+        /// <summary>The capture's uniform set, by the depth layer and target it binds; and its push constants.</summary>
+        private readonly Refii.Core.Engine_UniformSetKey _set = new(2);
+        private readonly byte[] _push = new byte[32];
+
         private const string ShaderPath = "res://src/Engine/material/classic_shadow_capture.glsl";
 
         private readonly Texture2Drd _texture = new();
@@ -393,7 +397,8 @@ public partial class Engine_ClassicShadows : Node
         private void EnsureTarget(Vector2I size)
         {
             if (_target.IsValid && size == _targetSize) return;
-            if (_target.IsValid) _rd!.FreeRid(_target);
+            // The materials sample the old map until the deferred re-point below lands.
+            Refii.Core.Engine_RdRetire.Retire(_target);
             _target = _rd!.TextureCreate(new RDTextureFormat
             {
                 Width = (uint)size.X,
@@ -432,6 +437,7 @@ public partial class Engine_ClassicShadows : Node
         public override void _RenderCallback(int effectCallbackType, RenderData renderData)
         {
             if (_rd is null) return;
+            Refii.Core.Engine_RdRetire.Pump(_rd);
             if (!_ready)
             {
                 // Without the capture the map must read as empty (no caster), not as the
@@ -454,13 +460,18 @@ public partial class Engine_ClassicShadows : Node
                 return;
             }
             Bind("capture");
-            var depthUniform = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
-            depthUniform.AddId(_sampler);
-            depthUniform.AddId(buffers.GetDepthLayer(0));
-            var outUniform = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
-            outUniform.AddId(_target);
-            Rid set = UniformSetCacheRD.GetCache(_shader, 0, new Array<RDUniform> { depthUniform, outUniform });
-            var push = new byte[32];
+            Rid depth = buffers.GetDepthLayer(0);
+            Rid set = _set.For(_rd, stackalloc Rid[] { depth, _target });
+            if (!set.IsValid)
+            {
+                var depthUniform = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
+                depthUniform.AddId(_sampler);
+                depthUniform.AddId(depth);
+                var outUniform = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
+                outUniform.AddId(_target);
+                set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, new Array<RDUniform> { depthUniform, outUniform }));
+            }
+            byte[] push = _push;
             BitConverter.TryWriteBytes(push.AsSpan(0), size.X);
             BitConverter.TryWriteBytes(push.AsSpan(4), size.Y);
             BitConverter.TryWriteBytes(push.AsSpan(8), 0);

@@ -48,6 +48,8 @@ public static class Engine_ClassicLitInstances
         /// <summary>The live entity or .save record the node names (Engine_ClassicZones), read once.</summary>
         public uint Entity, Record;
         public bool Identified;
+        /// <summary>The node is in the tree (its TreeEntered / TreeExiting).</summary>
+        public bool InTree;
         /// <summary>World bounds, kept for a node no live entity moves (region geometry never does).</summary>
         public Aabb Bounds;
         /// <summary>The frame layout (<see cref="_layout"/>) and zone the last complete assignment saw.</summary>
@@ -66,18 +68,10 @@ public static class Engine_ClassicLitInstances
     private static int _attached;
     private static readonly int[] _counts = new int[MaxGroups];
     private static readonly bool[] _singleLocal = new bool[MaxGroups];
-    private static readonly List<Engine_ClassicLights.Light>[] _members =
-    {
-        new(7), new(7), new(7),
-    };
 
     private const int MaxGroups = 3;
     private static readonly Dictionary<ulong, Entry> _entries = new();
     private static readonly List<ulong> _gone = new();
-    private static readonly List<Engine_ClassicLights.Light>[] _buckets =
-    {
-        new(), new(), new(), new(),
-    };
     private static readonly float[] _block = new float[Engine_ClassicRegisters.LightBlockRegisters * 4];
     private static readonly float[] _four = new float[4];
     private static long _frames;
@@ -97,7 +91,11 @@ public static class Engine_ClassicLitInstances
         {
             if (!_entries.ContainsKey(id))
             {
-                _entries[id] = new Entry { Node = node, Slice = _attached++ % Slices };
+                var entry = new Entry { Node = node, Slice = _attached++ % Slices, InTree = node.IsInsideTree() };
+                _entries[id] = entry;
+                // Kept by the node's own signals, not asked of the engine every assignment.
+                node.TreeEntered += () => entry.InTree = true;
+                node.TreeExiting += () => entry.InTree = false;
             }
         }
         Engine_ClassicFur.Attach(node);
@@ -145,6 +143,7 @@ public static class Engine_ClassicLitInstances
         lock (_entries)
         {
             _gone.Clear();
+            _work.Clear();
             _zoneTicks = 0;
             _variantTicks = 0;
             long assignFrom = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -155,7 +154,7 @@ public static class Engine_ClassicLitInstances
                 {
                     continue;
                 }
-                if (!GodotObject.IsInstanceValid(entry.Node) || !entry.Node.IsInsideTree())
+                if (!GodotObject.IsInstanceValid(entry.Node) || !entry.InTree)
                 {
                     Release(entry);
                     _gone.Add(pair.Key);
@@ -170,8 +169,10 @@ public static class Engine_ClassicLitInstances
                     }
                     continue;
                 }
-                Assign(entry, lights);
+                Prepare(entry);
+                _work.Add(entry);
             }
+            Assign(lights);
             Refii.Core.Engine_FramePhases.Lap("classic.lit.assign", ref assignFrom);
             double tickMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             Refii.Core.Engine_FramePhases.Record("classic.lit.zone", _zoneTicks * tickMs, false);
@@ -392,16 +393,25 @@ public static class Engine_ClassicLitInstances
     /// <summary>Instances registered, and those with local lights on the last frame.</summary>
     public static (int Attached, int Lit) Counts => (_entries.Count, _lit);
 
-    private static void Assign(Entry entry, IReadOnlyList<Engine_ClassicLights.Light> lights)
+    /// <summary>The entries this frame assigns, in walk order.</summary>
+    private static readonly List<Entry> _work = new();
+
+    /// <summary>What an entry's assignment found, computed off the main thread (<see cref="Compute"/>).</summary>
+    private sealed class Found
     {
-        if (AssignGroups(entry, lights) && entry.SignatureHash != int.MinValue)
-        {
-            entry.Layout = _layout;
-        }
+        public uint Zone;
+        public bool Skip;
+        public int Groups;
+        public bool OnlyDirectional;
+        public Engine_ClassicMist.Volume? Mist;
+        public readonly List<Engine_ClassicLights.Light>[] Buckets = { new(), new(), new(), new() };
+        public readonly List<Engine_ClassicLights.Light>[] Members = { new(7), new(7), new(7) };
     }
 
-    /// <summary>False when the entry's groups could not all be given rows (asked again next time).</summary>
-    private static bool AssignGroups(Entry entry, IReadOnlyList<Engine_ClassicLights.Light> lights)
+    private static readonly List<Found> _found = new();
+
+    /// <summary>The engine reads an assignment needs, on the main thread: who the node is and, for a moving one, its box.</summary>
+    private static void Prepare(Entry entry)
     {
         if (!entry.Identified)
         {
@@ -413,26 +423,76 @@ public static class Engine_ClassicLitInstances
             entry.Bounds = entry.Node.GlobalTransform * entry.Node.GetAabb();
             entry.BoundsKnown = true;
         }
+    }
+
+    /// <summary>
+    /// The frame's assignments: the sets and groups found in parallel (no engine object is
+    /// touched there), then applied in walk order on the main thread, so rows are shared and
+    /// handed out exactly as one sequential walk would.
+    /// </summary>
+    private static void Assign(IReadOnlyList<Engine_ClassicLights.Light> lights)
+    {
+        while (_found.Count < _work.Count)
+        {
+            _found.Add(new Found());
+        }
+        long zoneFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (_work.Count >= ParallelFrom)
+        {
+            System.Threading.Tasks.Parallel.For(0, _work.Count, i => Compute(_work[i], _found[i], lights));
+        }
+        else
+        {
+            for (int i = 0; i < _work.Count; i++)
+            {
+                Compute(_work[i], _found[i], lights);
+            }
+        }
+        _zoneTicks += System.Diagnostics.Stopwatch.GetTimestamp() - zoneFrom;
+        for (int i = 0; i < _work.Count; i++)
+        {
+            Entry entry = _work[i];
+            Found found = _found[i];
+            if (found.Skip)
+            {
+                ++SkippedThisFrame;
+                continue;
+            }
+            ++AssignedThisFrame;
+            entry.Layout = long.MinValue;
+            entry.Zone = found.Zone;
+            if (Apply(entry, found) && entry.SignatureHash != int.MinValue)
+            {
+                entry.Layout = _layout;
+            }
+        }
+    }
+
+    /// <summary>Below this many entries a frame the walk stays on the main thread: the hand-off costs more.</summary>
+    private const int ParallelFrom = 64;
+
+    /// <summary>
+    /// One entry's light set and groups. Any thread: reads the entry's cached box and identity,
+    /// the frame's light list, the spot frustums and the mist volumes, all fixed while it runs.
+    /// </summary>
+    private static void Compute(Entry entry, Found found, IReadOnlyList<Engine_ClassicLights.Light> lights)
+    {
         Aabb bounds = entry.Bounds;
         Vector3 min = bounds.Position, max = bounds.End;
-        long zoneFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         uint zone = Engine_ClassicZones.Of(entry.Entity, entry.Record);
-        _zoneTicks += System.Diagnostics.Stopwatch.GetTimestamp() - zoneFrom;
-        if (entry.Entity == 0u && entry.Layout == _layout && entry.Zone == zone)
+        found.Zone = zone;
+        found.Skip = entry.Entity == 0u && entry.Layout == _layout && entry.Zone == zone;
+        if (found.Skip)
         {
-            ++SkippedThisFrame;
-            return true;
+            return;
         }
-        ++AssignedThisFrame;
-        entry.Layout = long.MinValue;
-        entry.Zone = zone;
 
         // The set: directional lights always, local lights whose sphere meets the bounds.
-        foreach (List<Engine_ClassicLights.Light> bucket in _buckets)
+        List<Engine_ClassicLights.Light>[] buckets = found.Buckets;
+        foreach (List<Engine_ClassicLights.Light> bucket in buckets)
         {
             bucket.Clear();
         }
-        entry.Lights.Clear();
         for (int i = lights.Count - 1; i >= 0; i--)
         {
             Engine_ClassicLights.Light light = lights[i];
@@ -442,7 +502,7 @@ public static class Engine_ClassicLitInstances
             }
             if (light.Type == Engine_ClassicLights.Light.Directional)
             {
-                _buckets[0].Add(light);
+                buckets[0].Add(light);
                 continue;
             }
             Vector3 centre = new(-light.Position.X, light.Position.Z, light.Position.Y);
@@ -460,26 +520,22 @@ public static class Engine_ClassicLitInstances
             }
             if (light.Type == Engine_ClassicLights.Light.Spot)
             {
-                _buckets[light.Casts && !light.NoShadow ? 1 : 3].Add(light);
+                buckets[light.Casts && !light.NoShadow ? 1 : 3].Add(light);
             }
             else
             {
-                _buckets[2].Add(light);
+                buckets[2].Add(light);
             }
         }
 
         // Groups of seven in priority order, three at most.
         int groups = 0;
-        int[] counts = _counts;
-        bool[] singleLocal = _singleLocal;
-        List<Engine_ClassicLights.Light>[] members = _members;
+        List<Engine_ClassicLights.Light>[] members = found.Members;
         for (int g = 0; g < MaxGroups; g++)
         {
             members[g].Clear();
-            counts[g] = 0;
-            singleLocal[g] = false;
         }
-        foreach (List<Engine_ClassicLights.Light> bucket in _buckets)
+        foreach (List<Engine_ClassicLights.Light> bucket in buckets)
         {
             foreach (Engine_ClassicLights.Light light in bucket)
             {
@@ -494,8 +550,21 @@ public static class Engine_ClassicLitInstances
                 members[groups - 1].Add(light);
             }
         }
-        if (groups == 0)
+        found.Groups = groups;
+        found.OnlyDirectional = groups == 1 && buckets[1].Count + buckets[2].Count + buckets[3].Count == 0;
+        found.Mist = groups == 0 ? null : Engine_ClassicMist.VolumeFor(bounds);
+    }
+
+    /// <summary>
+    /// Applies what <see cref="Compute"/> found: the shared rows and the materials. Main thread.
+    /// False when the entry's groups could not all be given rows (asked again next time).
+    /// </summary>
+    private static bool Apply(Entry entry, Found found)
+    {
+        int groups = found.Groups;
+        if (groups == 0 || (found.OnlyDirectional && found.Mist is null))
         {
+            // No light, or only directional lights and no mist: the frame row, the material as built.
             if (entry.Groups != 0)
             {
                 Release(entry);
@@ -504,37 +573,33 @@ public static class Engine_ClassicLitInstances
             return true;
         }
 
-        // Only directional lights and no mist: the frame row, the material as built.
-        Engine_ClassicMist.Volume? mist = Engine_ClassicMist.VolumeFor(bounds);
-        bool onlyDirectional = groups == 1 && _buckets[1].Count + _buckets[2].Count + _buckets[3].Count == 0;
-        if (onlyDirectional && mist is null)
+        Engine_ClassicMist.Volume? mist = found.Mist;
+        int[] counts = _counts;
+        bool[] singleLocal = _singleLocal;
+        for (int g = 0; g < MaxGroups; g++)
         {
-            if (entry.Groups != 0)
-            {
-                Release(entry);
-                ApplyGroups(entry, 0, null);
-            }
-            return true;
+            counts[g] = 0;
+            singleLocal[g] = false;
         }
-
         bool complete = true;
         for (int g = 0; g < groups; g++)
         {
-            counts[g] = members[g].Count;
+            List<Engine_ClassicLights.Light> members = found.Members[g];
+            counts[g] = members.Count;
             int local = 0;
-            foreach (Engine_ClassicLights.Light light in members[g])
+            foreach (Engine_ClassicLights.Light light in members)
             {
                 if (light.Type != Engine_ClassicLights.Light.Directional)
                 {
                     ++local;
                 }
             }
-            singleLocal[g] = members[g].Count == 1 && local == 1;
+            singleLocal[g] = members.Count == 1 && local == 1;
 
             // The row for this group's lights in this pass and mist, shared with every other
             // instance that has the same; taken before the old one is let go, so an unchanged
             // set keeps its row.
-            int row = AcquireShared(g, members[g], mist);
+            int row = AcquireShared(g, members, mist);
             if (row == 0)
             {
                 groups = g;

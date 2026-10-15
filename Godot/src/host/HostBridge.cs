@@ -185,9 +185,21 @@ public static class HostBridge
 				}
 			}
 
-			return _hasGuestUpProbe == true ? RefiiHostIsGuestUp() == 1 : IsRunning;
+			// Once a frame: thousands of guarded accessors ask, and the answer moves only when the
+			// guest starts or stops.
+			long frame = Refii.Core.Engine_FramePhases.FrameIndex;
+			if (frame == _guestUpFrame)
+			{
+				return _guestUp;
+			}
+			_guestUp = _hasGuestUpProbe == true ? RefiiHostIsGuestUp() == 1 : IsRunning;
+			_guestUpFrame = frame;
+			return _guestUp;
 		}
 	}
+
+	private static long _guestUpFrame = -1;
+	private static bool _guestUp;
 
 	/// <summary>Whether the native library exports the liveness probe. Asked once — see above.</summary>
 	private static bool? _hasGuestUpProbe;

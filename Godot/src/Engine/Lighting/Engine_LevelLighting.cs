@@ -452,7 +452,7 @@ public static class Engine_LevelLighting
 		//   fable  — the guest: the shaders emit the 360's own fills and Godot's ambient has no
 		//            energy, which is what `ambient_light_disabled` used to guarantee.
 		bool unified = Engine_LightingFrame.ModernModel;
-		RenderingServer.GlobalShaderParameterSet("fable_unified", unified ? 1.0f : 0.0f);
+		RenderingServer.GlobalShaderParameterSet(FableUnifiedName, unified ? 1.0f : 0.0f);
 		ConfigureGlobalIllumination(environment, unified);
 
 		// Sky reflections are not part of this: the materials carry their own environment map.
@@ -480,7 +480,7 @@ public static class Engine_LevelLighting
 			float traced = 1f - Engine_LightingFrame.ModernFloorShare;
 			environment.AmbientLightEnergy = peak * traced * Engine_LevelBakedLighting.AmbientScale;
 			float floor = Engine_LightingFrame.ModernFloorShare * Engine_LevelBakedLighting.AmbientScale;
-			RenderingServer.GlobalShaderParameterSet("fable_fill_floor",
+			RenderingServer.GlobalShaderParameterSet(FableFillFloorName,
 				new Vector3(sky[0] * floor, sky[1] * floor, sky[2] * floor));
 		}
 		else
@@ -490,7 +490,7 @@ public static class Engine_LevelLighting
 			// region's in place — a cave entered from a sunset kept the sunset (b175).
 			environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
 			environment.AmbientLightEnergy = 0f;
-			RenderingServer.GlobalShaderParameterSet("fable_fill_floor", Vector3.Zero);
+			RenderingServer.GlobalShaderParameterSet(FableFillFloorName, Vector3.Zero);
 		}
 
 		// THE PROBE FIELD'S SKY TETHER. Published in ambient_light_scale space because the
@@ -513,13 +513,13 @@ public static class Engine_LevelLighting
 		Engine_LevelBakedLighting.InteriorNow = interior ? 1.0f : 0.0f;
 		Engine_LevelBakedLighting.InteriorBakeNow =
 			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f;
-		RenderingServer.GlobalShaderParameterSet("fable_interior", interior ? 1.0f : 0.0f);
-		RenderingServer.GlobalShaderParameterSet("fable_interior_fog",
+		RenderingServer.GlobalShaderParameterSet(FableInteriorName, interior ? 1.0f : 0.0f);
+		RenderingServer.GlobalShaderParameterSet(FableInteriorFogName,
 			interior ? Engine_LightingFrame.InteriorFogScale : 1.0f);
-		RenderingServer.GlobalShaderParameterSet("fable_interior_bake",
+		RenderingServer.GlobalShaderParameterSet(FableInteriorBakeName,
 			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f);
 		float ambientScale = Engine_LevelBakedLighting.AmbientScale;
-		RenderingServer.GlobalShaderParameterSet("fable_sky_ambient", new Vector4(
+		RenderingServer.GlobalShaderParameterSet(FableSkyAmbientName, new Vector4(
 			frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale,
 			frame.AmbientColour[1] * frame.AmbientEnergy * ambientScale,
 			frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale,
@@ -577,4 +577,12 @@ public static class Engine_LevelLighting
 		Vector3 up = MathF.Abs(forward.Y) > 0.99f ? Vector3.Forward : Vector3.Up;
 		return Basis.LookingAt(forward, up);
 	}
+
+	// Made once: a string literal converts to a new StringName on every call.
+	private static readonly StringName FableUnifiedName = "fable_unified";
+	private static readonly StringName FableFillFloorName = "fable_fill_floor";
+	private static readonly StringName FableInteriorName = "fable_interior";
+	private static readonly StringName FableInteriorFogName = "fable_interior_fog";
+	private static readonly StringName FableInteriorBakeName = "fable_interior_bake";
+	private static readonly StringName FableSkyAmbientName = "fable_sky_ambient";
 }

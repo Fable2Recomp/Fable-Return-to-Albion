@@ -32,8 +32,9 @@ public static class Engine_ClassicTransfer
         public ulong[] Sources = Array.Empty<ulong>();
         /// <summary>The xr_tree_ambient this node was given (trees only).</summary>
         public Vector4 Ambient;
-        /// <summary>A whole-model transfer's row of the shared constants (Engine_ClassicPrtRows); 0 = none.</summary>
-        public int PrtRow;
+        /// <summary>The placement's first row of the shared constants (Engine_ClassicPrtRows) and how many; 0 = none.</summary>
+        public int PrtRow, PrtRows, PrtGeneration;
+        public bool ReleaseHooked;
     }
 
     private static readonly ConditionalWeakTable<MeshInstance3D, State> States = new();
@@ -83,14 +84,10 @@ public static class Engine_ClassicTransfer
         {
             return;
         }
-        if (!node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMetaName) ||
-            node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMetaName).AsGodotArray() is not { Count: >= 3 } sample)
+        if (!ProbeOf(node, out Vector4 r, out Vector4 g, out Vector4 b))
         {
             return;
         }
-        var r = sample[0].AsVector4();
-        var g = sample[1].AsVector4();
-        var b = sample[2].AsVector4();
 
         if (state.Overrides.Length == surfaces && state.R == r && state.G == g && state.B == b && SourcesHold(state, mesh))
         {
@@ -98,16 +95,41 @@ public static class Engine_ClassicTransfer
         }
 
         // Per surface: the whole model's header and table, or (a composite) each part's own.
-        Godot.Collections.Array? descriptors = perSurface ? mesh.GetMeta(Engine_MdlTransfer.SurfaceDescriptorsMeta).AsGodotArray() : null;
-        Godot.Collections.Array? tables = perSurface ? mesh.GetMeta(Engine_MdlTransfer.SurfaceTablesMeta).AsGodotArray() : null;
-        uint[]? wholeDescriptor = whole ? Array.ConvertAll(mesh.GetMeta(Engine_MdlTransfer.DescriptorMeta).AsInt32Array(), v => (uint)v) : null;
-        float[]? wholeTable = whole ? mesh.GetMeta(Engine_MdlTransfer.TableMeta).AsFloat32Array() : null;
+        Decoded decoded = DecodedOf.GetValue(mesh, Decode);
+        uint[][]? descriptors = decoded.Descriptors;
+        float[][]? tables = decoded.Tables;
+        uint[]? wholeDescriptor = decoded.WholeDescriptor;
+        float[]? wholeTable = decoded.WholeTable;
 
         bool fresh = state.Overrides.Length != surfaces;
         if (fresh)
         {
             state.Overrides = new ShaderMaterial?[surfaces];
             state.Sources = new ulong[surfaces];
+        }
+        // The placement's rows: one for a whole model's constants, one per surface for a
+        // composite's parts (each part's own table), read through the shared pairs.
+        int rows = whole ? 1 : surfaces;
+        if (state.PrtRow == 0 || state.PrtRows != rows)
+        {
+            if (state.PrtRow != 0)
+            {
+                Engine_ClassicPrtRows.Release(state.PrtRow, state.PrtRows, state.PrtGeneration);
+            }
+            state.PrtRow = Engine_ClassicPrtRows.Acquire(rows);
+            state.PrtRows = rows;
+            state.PrtGeneration = Engine_ClassicPrtRows.Generation;
+            if (!state.ReleaseHooked)
+            {
+                state.ReleaseHooked = true;
+                node.TreeExiting += () =>
+                {
+                    Engine_ClassicPrtRows.Release(state.PrtRow, state.PrtRows, state.PrtGeneration);
+                    // Back in the tree it is applied afresh, with rows of its own again.
+                    state.PrtRow = 0;
+                    state.Overrides = Array.Empty<ShaderMaterial?>();
+                };
+            }
         }
         for (int i = 0; i < surfaces; i++)
         {
@@ -120,12 +142,12 @@ public static class Engine_ClassicTransfer
             }
             else
             {
-                if (i >= descriptors!.Count || i >= tables!.Count)
+                if (i >= descriptors!.Length || i >= tables!.Length)
                 {
                     continue;
                 }
-                descriptor = Array.ConvertAll(descriptors[i].AsInt32Array(), v => (uint)v);
-                table = tables[i].AsFloat32Array();
+                descriptor = descriptors[i];
+                table = tables[i];
                 if (descriptor.Length < 5 || table.Length == 0)
                 {
                     continue;
@@ -136,12 +158,9 @@ public static class Engine_ClassicTransfer
                 shared.HasMeta(Engine_ClassicMaterial.ClassicMeta))
             {
                 Engine_ClassicMaterial.AmbientPending = false;
-                // A whole model's surfaces all take the model's constants: one row for the
-                // placement and the pair every placement shares. A composite's parts each have
-                // their own, and keep a pair of their own.
-                ShaderMaterial? own2 = whole
-                    ? Engine_ClassicMaterial.WithPrtRows(shared)
-                    : Engine_ClassicMaterial.OwnWithAmbient(shared, 2);
+                // The pair every placement of this part shares, reading the placement's row for
+                // this surface (all surfaces of a whole model read its one row).
+                ShaderMaterial? own2 = Engine_ClassicMaterial.WithPrtRows(shared, whole ? 0 : i);
                 if (Engine_ClassicMaterial.AmbientPending)
                 {
                     // Its shader is still compiling: this surface is asked again (PumpPending).
@@ -160,26 +179,17 @@ public static class Engine_ClassicTransfer
                     ++_applied;
                 }
             }
-            if (state.Overrides[i] is { } own && !whole)
+            if (!whole && state.Overrides[i] is not null)
             {
-                Engine_ClassicMaterial.SetOnPasses(own, PrtConstants, Engine_MdlTransfer.Constants(descriptor, table, r, g, b));
+                Engine_ClassicPrtRows.Write(state.PrtRow + i, Engine_MdlTransfer.Constants(descriptor, table, r, g, b));
             }
         }
-        if (whole && Array.Exists(state.Overrides, o => o is not null))
+        if (whole)
         {
-            if (state.PrtRow == 0)
-            {
-                state.PrtRow = Engine_ClassicPrtRows.Acquire();
-                int row = state.PrtRow, generation = Engine_ClassicPrtRows.Generation;
-                node.TreeExiting += () =>
-                {
-                    Engine_ClassicPrtRows.Release(row, generation);
-                    // Back in the tree it is applied afresh, with a row of its own again.
-                    state.PrtRow = 0;
-                    state.Overrides = Array.Empty<ShaderMaterial?>();
-                };
-            }
             Engine_ClassicPrtRows.Write(state.PrtRow, Engine_MdlTransfer.Constants(wholeDescriptor!, wholeTable!, r, g, b));
+        }
+        if (Array.Exists(state.Overrides, o => o is not null))
+        {
             // After the overrides: an instance parameter needs a material that declares it.
             node.SetInstanceShaderParameter(Engine_ClassicPrtRows.RowUniform, state.PrtRow);
         }
@@ -231,8 +241,6 @@ public static class Engine_ClassicTransfer
             }
         }
     }
-
-    private static readonly StringName PrtConstants = "vs_g_PRTConstants";
 
     private static readonly StringName TreeAmbientName = "xr_tree_ambient";
     private static readonly ConditionalWeakTable<GeometryInstance3D, State> TreeStates = new();
@@ -328,7 +336,77 @@ public static class Engine_ClassicTransfer
         state.B = b;
     }
 
-    private static bool UsesTreeFamily(Mesh mesh)
+    /// <summary>A model's transfer descriptors and tables, decoded from its meta once (a relight reads them on every move).</summary>
+    private sealed class Decoded
+    {
+        public uint[]? WholeDescriptor;
+        public float[]? WholeTable;
+        public uint[][]? Descriptors;
+        public float[][]? Tables;
+    }
+
+    private static readonly ConditionalWeakTable<Mesh, Decoded> DecodedOf = new();
+
+    private static Decoded Decode(Mesh mesh)
+    {
+        var decoded = new Decoded();
+        if (mesh.HasMeta(Engine_MdlTransfer.DescriptorMeta))
+        {
+            using Variant descriptor = mesh.GetMeta(Engine_MdlTransfer.DescriptorMeta);
+            using Variant table = mesh.GetMeta(Engine_MdlTransfer.TableMeta);
+            decoded.WholeDescriptor = Array.ConvertAll(descriptor.AsInt32Array(), v => (uint)v);
+            decoded.WholeTable = table.AsFloat32Array();
+            return decoded;
+        }
+        using Variant descriptorsMeta = mesh.GetMeta(Engine_MdlTransfer.SurfaceDescriptorsMeta);
+        using Variant tablesMeta = mesh.GetMeta(Engine_MdlTransfer.SurfaceTablesMeta);
+        using Godot.Collections.Array descriptors = descriptorsMeta.AsGodotArray();
+        using Godot.Collections.Array tables = tablesMeta.AsGodotArray();
+        decoded.Descriptors = new uint[descriptors.Count][];
+        decoded.Tables = new float[tables.Count][];
+        for (int i = 0; i < descriptors.Count; i++)
+        {
+            using Variant one = descriptors[i];
+            decoded.Descriptors[i] = Array.ConvertAll(one.AsInt32Array(), v => (uint)v);
+        }
+        for (int i = 0; i < tables.Count; i++)
+        {
+            using Variant one = tables[i];
+            decoded.Tables[i] = one.AsFloat32Array();
+        }
+        return decoded;
+    }
+
+    /// <summary>The placement's probe sample (Engine_LevelBakedLighting.ProbeMetaName), its wrappers disposed.</summary>
+    private static bool ProbeOf(GodotObject node, out Vector4 r, out Vector4 g, out Vector4 b)
+    {
+        r = g = b = default;
+        if (!node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMetaName))
+        {
+            return false;
+        }
+        using Variant meta = node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMetaName);
+        if (meta.VariantType != Variant.Type.Array)
+        {
+            return false;
+        }
+        using Godot.Collections.Array sample = meta.AsGodotArray();
+        if (sample.Count < 3)
+        {
+            return false;
+        }
+        r = sample[0].AsVector4();
+        g = sample[1].AsVector4();
+        b = sample[2].AsVector4();
+        return true;
+    }
+
+    /// <summary>Whether any surface draws the tree family; cached per mesh (it is asked on every relight).</summary>
+    private static readonly ConditionalWeakTable<Mesh, StrongBox<bool>> TreeFamily = new();
+
+    private static bool UsesTreeFamily(Mesh mesh) => TreeFamily.GetValue(mesh, m => new StrongBox<bool>(ReadTreeFamily(m))).Value;
+
+    private static bool ReadTreeFamily(Mesh mesh)
     {
         for (int i = 0; i < mesh.GetSurfaceCount(); i++)
         {

@@ -115,6 +115,9 @@ public static class Engine_FramePhases
 
 	private static long _frameIndex;
 
+	/// <summary>Frames begun so far: a cheap per-frame key for caches (no engine call).</summary>
+	public static long FrameIndex => System.Threading.Volatile.Read(ref _frameIndex);
+
 	/// <summary>Each phase completion this frame, in order, so a hitch can be localised.</summary>
 	/// <remarks>
 	/// A frame also contains what Godot does between our nodes (scene-tree walk, signal

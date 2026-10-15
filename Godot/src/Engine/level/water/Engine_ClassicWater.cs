@@ -419,21 +419,30 @@ public static class Engine_ClassicWater
         surface.Rows[2] = new Vector4(surface.Phase0.X, surface.Phase0.Y, 0f, 0f);
         surface.Rows[3] = new Vector4(surface.Phase1.X, surface.Phase1.Y, 0f, 0f);
         surface.Rows[6] = new Vector4(t[WaterThemeParam.DetailMapSpeedX] * seconds, t[WaterThemeParam.DetailMapSpeedY] * seconds, 0f, 0f);
-        Push(surface);
+        // Only the vertex stage reads rows 2, 3 and 6 (every translated water pixel stage indexes
+        // its array by constant and never those), so the pixel array waits for a full write.
+        Push(surface, pixel: false);
     }
 
     /// <summary>Both stages' arrays onto both passes.</summary>
-    private static void Push(Surface surface)
+    private static void Push(Surface surface, bool pixel = true)
     {
         Array.Copy(surface.Rows, surface.VertexRowsImage, surface.VertexRowsImage.Length);
-        Array.Copy(surface.Rows, surface.PixelRowsImage, surface.PixelRowsImage.Length);
-        using Variant pixel = Variant.CreateFrom(surface.PixelRowsImage);
         using Variant vertex = Variant.CreateFrom(surface.VertexRowsImage);
         int n = surface.MaterialsInto(_passes);
         for (int m = 0; m < n; m++)
         {
-            _passes[m].SetShaderParameter(PixelConstantsName, pixel);
             _passes[m].SetShaderParameter(VertexConstantsName, vertex);
+        }
+        if (!pixel)
+        {
+            return;
+        }
+        Array.Copy(surface.Rows, surface.PixelRowsImage, surface.PixelRowsImage.Length);
+        using Variant pixels = Variant.CreateFrom(surface.PixelRowsImage);
+        for (int m = 0; m < n; m++)
+        {
+            _passes[m].SetShaderParameter(PixelConstantsName, pixels);
         }
     }
 

@@ -20,6 +20,7 @@ run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 run/flush_stdout_on_print=true
 config/icon="res://assets/launcher/icon.png"
+config/project_settings_override="user://renderer.cfg"
 
 [audio]
 
@@ -57,8 +58,6 @@ banks/native_dir="res://../out/build/assetbrowser"
 banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
 
 [rendering]
-
-driver/depth_prepass/enable=false
 
 rendering_device/staging_buffer/block_size_kb=1024
 rendering_device/staging_buffer/max_size_mb=256

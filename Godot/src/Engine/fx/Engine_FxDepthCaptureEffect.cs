@@ -77,7 +77,8 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     private void EnsureTarget(Vector2I size)
     {
         if (_target.IsValid && size == _targetSize) return;
-        if (_target.IsValid) _rd!.FreeRid(_target);
+        // The FX materials sample the old depth until the deferred re-point below lands.
+        Refii.Core.Engine_RdRetire.Retire(_target);
         var format = new RDTextureFormat
         {
             Width = (uint)size.X,
@@ -155,6 +156,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
 
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
+        if (_rd is not null) Refii.Core.Engine_RdRetire.Pump(_rd);
         if (!_ready || _rd is null) return;
         if (renderData.GetRenderSceneBuffers() is not RenderSceneBuffersRD buffers) return;
         Vector2I size = buffers.GetInternalSize();

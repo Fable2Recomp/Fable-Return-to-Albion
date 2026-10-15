@@ -116,7 +116,12 @@ vec4 xr_const_view(sampler2D registers, int index, bool main_view) {
 // texture, one texel per vertex in the mesh's order, the surface's start a material uniform.
 #ifdef XR_VERTEX_BAKE_FETCH
 global uniform sampler2D xr_vertex_bakes;
-instance uniform int xr_bake_base = 0;
+// PINNED SLOTS. Godot numbers unhinted instance uniforms in declaration order, and the stages'
+// own (the tint, the fade) come after this file; a uniform declared only under a define would
+// shift theirs, and one instance mixes variants with and without it (a composite's transfer
+// parts beside its plain ones), so the tint was read from the wrong slot. Explicit indices
+// leave every other slot where it always was; no composition numbers past 13 on its own.
+instance uniform int xr_bake_base : instance_index(15) = 0;
 uniform int xr_bake_surface = 0;
 vec4 xr_vertex_bake(int vertex_id) {
 	int width = textureSize(xr_vertex_bakes, 0).x;
@@ -128,9 +133,11 @@ vec4 xr_vertex_bake(int vertex_id) {
 // A transfer placement's g_PRTConstants (Engine_ClassicPrtRows): its row of the shared texture.
 #ifdef XR_PRT_ROW_FETCH
 global uniform sampler2D xr_prt_constants;
-instance uniform int xr_prt_row = 0;
+instance uniform int xr_prt_row : instance_index(14) = 0;
+// A composite's part reads its own row of the placement's block.
+uniform int xr_prt_surface = 0;
 vec4 xr_prt(int index) {
-	return texelFetch(xr_prt_constants, ivec2(index, xr_prt_row), 0);
+	return texelFetch(xr_prt_constants, ivec2(index, xr_prt_row + xr_prt_surface), 0);
 }
 #endif
 

@@ -16,7 +16,7 @@ namespace Refii.Animations;
 /// replicated, or the rig carries a procedural layer (dog paw IK), <see cref="Apply"/> answers
 /// false and the caller keeps the pose feed for that frame — a correctness fallback, not a mode.
 /// </summary>
-public sealed class Engine_ClipAnimator
+public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 {
 	private sealed class Built
 	{
@@ -442,6 +442,31 @@ public sealed class Engine_ClipAnimator
 	/// </remarks>
 	public bool Apply(uint entity, bool writeBones = true)
 	{
+		bool clips = Begin(entity, writeBones, out bool fold);
+		if (fold)
+		{
+			Fold();
+			Write();
+		}
+
+		return clips;
+	}
+
+	/// <summary>
+	/// <see cref="Apply"/>'s first part, on the main thread: reads the guest's records, steps the
+	/// channels and answers exactly as Apply does. <paramref name="fold"/> says a pose is due:
+	/// then <see cref="Fold"/> (any thread) and <see cref="Write"/> (main thread) finish it, and
+	/// everything the fold reads from the guest has been read here.
+	/// </summary>
+	public bool Begin(uint entity, bool writeBones, out bool fold)
+	{
+		fold = false;
+		// Already in this pass's batch (its fold may be running): the same pose is on its way.
+		if (_inBatch)
+		{
+			return true;
+		}
+
 		_entity = entity;
 		if (!Alive)
 		{
@@ -718,6 +743,157 @@ public sealed class Engine_ClipAnimator
 			return true;
 		}
 
+		// What the fold reads from the guest, read now: the reads share static buffers. The mask
+		// cache empties itself past its cap, so it is emptied first when this rig's would not fit.
+		if (_masks.Count + _channels.Count > 64)
+		{
+			_masks.Clear();
+		}
+
+		foreach (Channel c in _channels.Values)
+		{
+			if (c.Leaf.Mask != 0u)
+			{
+				Mask(c.Leaf.Uid, c.Leaf.Mask);
+			}
+		}
+
+		RefreshMorph(bones);
+		TakePostOps();
+		_foldBones = bones;
+		_foldPairAt = pairAt;
+		_foldAlpha = alpha;
+		_foldOnMain = false;
+		foreach (Channel c in _channels.Values)
+		{
+			// A clip sampled through its Animation resource crosses into the engine.
+			_foldOnMain |= c.Built.Animation is not null;
+		}
+
+		fold = true;
+		return true;
+	}
+
+	/// <summary>
+	/// The rigs posed in one pass of the entity loop: each rig's fold starts on the thread pool as
+	/// soon as it is added, so the folds run while the loop goes on; <see cref="Finish"/> waits
+	/// for the last and writes every rig in the order added. Each pose is the one
+	/// <see cref="Apply"/> would have computed; only the thread differs. Main thread.
+	/// </summary>
+	public sealed class PoseBatch
+	{
+		private readonly List<Engine_ClipAnimator> _rigs = new();
+		private readonly System.Threading.ManualResetEventSlim _done = new(true);
+
+		/// <summary>Folds still running, plus one held by the batch itself until Finish.</summary>
+		private int _pending;
+
+		public void Add(Engine_ClipAnimator rig)
+		{
+			if (_rigs.Count == 0)
+			{
+				_pending = 1;
+				_done.Reset();
+			}
+
+			_rigs.Add(rig);
+			rig._inBatch = true;
+			if (rig.FoldOnMain)
+			{
+				return;
+			}
+
+			rig._batch = this;
+			rig._foldError = null;
+			System.Threading.Interlocked.Increment(ref _pending);
+			System.Threading.ThreadPool.UnsafeQueueUserWorkItem(rig, preferLocal: false);
+		}
+
+		internal void Folded()
+		{
+			if (System.Threading.Interlocked.Decrement(ref _pending) == 0)
+			{
+				_done.Set();
+			}
+		}
+
+		public void Finish()
+		{
+			if (_rigs.Count == 0)
+			{
+				return;
+			}
+
+			foreach (Engine_ClipAnimator rig in _rigs)
+			{
+				if (rig.FoldOnMain)
+				{
+					rig.Fold();
+				}
+			}
+
+			Folded();
+			_done.Wait();
+			foreach (Engine_ClipAnimator rig in _rigs)
+			{
+				rig._inBatch = false;
+				if (rig._foldError is { } error)
+				{
+					rig._foldError = null;
+					GD.PushError($"[anim] fold failed for 0x{rig.Address:X8}: {error}");
+					continue;
+				}
+
+				rig.Write();
+			}
+
+			_rigs.Clear();
+		}
+	}
+
+	private PoseBatch? _batch;
+	private bool _inBatch;
+	private System.Exception? _foldError;
+
+	/// <summary>The thread pool's entry: this rig's fold, for its <see cref="PoseBatch"/>.</summary>
+	void System.Threading.IThreadPoolWorkItem.Execute()
+	{
+		try
+		{
+			Fold();
+		}
+		catch (System.Exception error)
+		{
+			_foldError = error;
+		}
+		finally
+		{
+			_batch!.Folded();
+		}
+	}
+
+	/// <summary>Whether <see cref="Fold"/> must run on the main thread (a clip read through its resource).</summary>
+	public bool FoldOnMain => _foldOnMain;
+
+	private int _foldBones;
+	private double _foldPairAt;
+	private float _foldAlpha;
+	private bool _foldOnMain;
+	private float _foldTopShare;
+	private float _foldShareStep;
+	private uint _foldTopKey;
+	private int _foldRestBones;
+
+	/// <summary>
+	/// The pose from the channels <see cref="Begin"/> left: the fold, overlays, morph and post-ops
+	/// into the final arrays. Touches only this animator, the shared clip keys (read-only; the
+	/// span cursor is a hint any value of which gives the same answer) and counters, so rigs
+	/// fold in parallel.
+	/// </summary>
+	public void Fold()
+	{
+		int bones = _foldBones;
+		double pairAt = _foldPairAt;
 		_recordWeight.Clear();
 		_recordOrder.Clear();
 		foreach (Channel c in _channels.Values)
@@ -789,7 +965,7 @@ public sealed class Engine_ClipAnimator
 
 		if (runnerUid != _lastRunnerUid && _lastRunnerUid != 0u && runnerUid != 0u)
 		{
-			++RunnerFlips;
+			System.Threading.Interlocked.Increment(ref RunnerFlips);
 			++RigRunnerFlips;
 		}
 
@@ -824,17 +1000,14 @@ public sealed class Engine_ClipAnimator
 
 		// How far the crossfade ratio moved in one frame; a step moves every bone by that
 		// fraction of the distance between two clips. Reported.
+		_foldShareStep = 0f;
 		if (_haveLastShare)
 		{
 			float step = Mathf.Abs(topShare - _lastShare);
-			if (step > LargestShareStep)
-			{
-				LargestShareStep = step;
-			}
-
+			_foldShareStep = step;
 			if (step > 0.1f)
 			{
-				++ShareSteps;
+				System.Threading.Interlocked.Increment(ref ShareSteps);
 				++RigShareSteps;
 			}
 		}
@@ -972,7 +1145,7 @@ public sealed class Engine_ClipAnimator
 					_layerRotation, _layerRotationWeight, _layerPosition, _layerPositionWeight, bones);
 			}
 
-			byte[] mask = Mask(uid, maskNode);
+			byte[] mask = MaskTaken(uid, maskNode);
 			float w = Mathf.Clamp(layerWeight, 0f, 1f);
 
 			// THE HIP'S CHILDREN STAY PUT. When an overlay's mask covers Shadow_Hip the guest
@@ -1053,6 +1226,22 @@ public sealed class Engine_ClipAnimator
 
 		ApplyMorph(bones);
 		ApplyPostOps();
+		_foldTopShare = topShare;
+		_foldTopKey = top?.Leaf.Key ?? 0u;
+		_foldRestBones = restBones;
+	}
+
+	/// <summary><see cref="Apply"/>'s last part, on the main thread: the folded pose onto the skeleton.</summary>
+	public void Write()
+	{
+		int bones = _foldBones;
+		float alpha = _foldAlpha;
+		float topShare = _foldTopShare;
+		int restBones = _foldRestBones;
+		if (_foldShareStep > LargestShareStep)
+		{
+			LargestShareStep = _foldShareStep;
+		}
 
 		// One crossing per bone, and only for bones that moved. The pose is handed over whole
 		// (Godot decomposes it back; `ScaledLocal` is its rotation-then-scale composition). A
@@ -1135,7 +1324,7 @@ public sealed class Engine_ClipAnimator
 		// The readout that says whether a rig is in bind pose BY CONSTRUCTION: bones no live
 		// channel covered are written as rest, so a frame with most bones here is a T pose.
 		LastRestBones = restBones;
-		LastTopKey = top?.Leaf.Key ?? 0u;
+		LastTopKey = _foldTopKey;
 		LastTopShare = topShare;
 		LastChannels = _channels.Count;
 		if (restBones * 2 > bones)
@@ -1162,7 +1351,6 @@ public sealed class Engine_ClipAnimator
 		++ClipDrivenFrames;
 		++Driven;
 		LastFallback = string.Empty;
-		return true;
 	}
 
 	/// <summary>Bones written as rest on the last applied frame — no live channel covered them.</summary>
@@ -1357,6 +1545,12 @@ public sealed class Engine_ClipAnimator
 		return bytes;
 	}
 
+	/// <summary>A mask <see cref="Begin"/> already read; the fold never reads the guest.</summary>
+	private byte[] MaskTaken(uint uid, uint maskNode) =>
+		maskNode == 0 || !_masks.TryGetValue(((ulong)uid << 32) | maskNode, out byte[]? bytes)
+			? System.Array.Empty<byte>()
+			: bytes;
+
 	/// <summary>Seconds between re-reads of the morph record; it moves with the character, slowly.</summary>
 	private const double MorphRefreshSeconds = 1.0;
 
@@ -1399,9 +1593,13 @@ public sealed class Engine_ClipAnimator
 	/// guest applies each record's inside that record's evaluation, and stacking two here
 	/// would double a head turn during a crossfade.
 	/// </summary>
-	private void ApplyPostOps()
+	/// <summary>
+	/// The strongest record's aim and look ops, read on the main thread (the bridge refills one
+	/// set of buffers per call) and copied out for <see cref="ApplyPostOps"/>.
+	/// </summary>
+	private void TakePostOps()
 	{
-		PostOpsApplied = 0;
+		_postKinds = 0;
 		HostBridge.GuestPostOps? ops = HostBridge.GetAnimPostOps(_entity);
 		if (ops is not { } post || post.Ops.Count == 0)
 		{
@@ -1426,8 +1624,53 @@ public sealed class Engine_ClipAnimator
 			}
 
 			int[] chain = kind == 0 ? post.AimBones : post.LookBones;
-			float w = chosen.Weight;
-			for (int i = 0; i < chain.Length && i < chosen.Targets.Length; i++)
+			int n = System.Math.Min(chain.Length, chosen.Targets.Length);
+			_postChain[kind] ??= new int[6];
+			_postTarget[kind] ??= new Quaternion[6];
+			n = System.Math.Min(n, 6);
+			System.Array.Copy(chain, _postChain[kind], n);
+			System.Array.Copy(chosen.Targets, _postTarget[kind], n);
+			_postCount[kind] = n;
+			_postMode[kind] = chosen.Mode;
+			_postWeight[kind] = chosen.Weight;
+			_postKinds |= 1 << kind;
+		}
+	}
+
+	private int _postKinds;
+	private readonly int[]?[] _postChain = new int[]?[2];
+	private readonly Quaternion[]?[] _postTarget = new Quaternion[]?[2];
+	private readonly int[] _postCount = new int[2];
+	private readonly int[] _postMode = new int[2];
+	private readonly float[] _postWeight = new float[2];
+
+	/// <summary>
+	/// THE GUEST'S AIM AND LOOK, after the fold. `sub_822DC980` ends every node's evaluation
+	/// by rewriting the skeleton's aim chain (5 bones) and look chain (6 bones) from the
+	/// per-bone 4-vectors its IK stated on the node's records (+8 aim, +12 look), through
+	/// `sub_822D9738`: with q the bone's folded local rotation and t the stated vector, q is
+	/// negated when q·t &lt; 0, then by the record's mode — 1: q + w·t, 2: t + w·(q − t),
+	/// 3: q + w·(t − q), 4: q + w·(q⊗t − q), otherwise t — and the result normalised (vmaddfp is A×C+B).
+	/// Component-wise, so the Y-up conjugation commutes with it and the host applies the same
+	/// arithmetic to its own local pose. Only the strongest record's ops count per chain: the
+	/// guest applies each record's inside that record's evaluation, and stacking two here
+	/// would double a head turn during a crossfade.
+	/// </summary>
+	private void ApplyPostOps()
+	{
+		PostOpsApplied = 0;
+		for (int kind = 0; kind < 2; kind++)
+		{
+			if ((_postKinds & (1 << kind)) == 0)
+			{
+				continue;
+			}
+
+			int[] chain = _postChain[kind]!;
+			Quaternion[] targets = _postTarget[kind]!;
+			float w = _postWeight[kind];
+			int mode = _postMode[kind];
+			for (int i = 0; i < _postCount[kind]; i++)
 			{
 				int guest = chain[i];
 				int b = guest >= 0 && guest < _guestToModel.Length ? _guestToModel[guest] : -1;
@@ -1436,7 +1679,7 @@ public sealed class Engine_ClipAnimator
 					continue;
 				}
 
-				Quaternion t = chosen.Targets[i];
+				Quaternion t = targets[i];
 				if (!t.IsFinite() || t.LengthSquared() < 1e-8f)
 				{
 					continue;
@@ -1451,7 +1694,7 @@ public sealed class Engine_ClipAnimator
 
 				// Mode 4's helper (`sub_82233200`) is a quaternion product: the stated vector is a
 				// DELTA applied in the bone's own frame, and the pose moves toward q⊗t by w.
-				Quaternion r = chosen.Mode switch
+				Quaternion r = mode switch
 				{
 					1 => q + t * w,
 					2 => t + (q - t) * w,
@@ -1470,7 +1713,8 @@ public sealed class Engine_ClipAnimator
 		}
 	}
 
-	private void ApplyMorph(int bones)
+	/// <summary>The morph record, re-read every <see cref="MorphRefreshSeconds"/> on the main thread.</summary>
+	private void RefreshMorph(int bones)
 	{
 		double now = Time.GetTicksMsec() / 1000.0;
 		if (now - _morphReadAt >= MorphRefreshSeconds)
@@ -1510,7 +1754,10 @@ public sealed class Engine_ClipAnimator
 				}
 			}
 		}
+	}
 
+	private void ApplyMorph(int bones)
+	{
 		if (!_hasMorph)
 		{
 			if (_morphWasApplied)

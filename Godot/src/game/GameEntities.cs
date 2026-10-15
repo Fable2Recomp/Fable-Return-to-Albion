@@ -238,14 +238,7 @@ public partial class GameEntities : Node3D
         int posedHalfRate = 0;
         long prologueTicks = 0;
         long skipTicks = 0;
-        long highlightTicks = 0;
         int pastPrologue = 0;
-        long facingTicks = 0;
-        long extentTicks = 0;
-        long traceTicks = 0;
-        long yawTicks = 0;
-        long stillTicks = 0;
-        long twinTicks = 0;
         Refii.Entities.Engine_EntitySkeleton.ReadMs = 0.0;
         Refii.Entities.Engine_EntitySkeleton.WriteMs = 0.0;
         Refii.Entities.Engine_EntitySkeleton.WritesSkipped = 0;
@@ -698,10 +691,8 @@ public partial class GameEntities : Node3D
             // The stated targeting highlight goes ABOVE the unchanged-entity skip: the guest
             // ramps its colour over several ticks on a target that may not move. Cheap when
             // unchanged: the word is stored per mesh and compared first.
-            long highlightFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             Refii.Entities.Engine_EntityHighlight.Apply(
                 node, entity.Highlighted, entity.HighlightColour, entity.Highlight);
-            highlightTicks += System.Diagnostics.Stopwatch.GetTimestamp() - highlightFrom;
 
             // Everything above runs for every entity, every walk, and is timed as one span
             // (`prologue` in the log line).
@@ -718,9 +709,7 @@ public partial class GameEntities : Node3D
                 _attachments.ParentOf(entity.Address) == 0u)
             {
                 ++_unchangedSkipped;
-                long stillFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 NoteStill(entity, node, mesh, adopted);
-                stillTicks += System.Diagnostics.Stopwatch.GetTimestamp() - stillFrom;
                 continue;
             }
 
@@ -905,11 +894,12 @@ public partial class GameEntities : Node3D
                     }
 
                     long clipFrom = System.Diagnostics.Stopwatch.GetTimestamp();
-                    if (!ClipAnimatorFor(entity.Address, rig).Apply(entity.Address, writeBones))
+                    Refii.Animations.Engine_ClipAnimator animator = ClipAnimatorFor(entity.Address, rig);
+                    if (!animator.Begin(entity.Address, writeBones, out bool fold))
                     {
                         // The feed is about to write this skeleton, so the animator's
                         // written-pose cache no longer describes it.
-                        ClipAnimatorFor(entity.Address, rig).ForgetWrittenPose();
+                        animator.ForgetWrittenPose();
                         rig.Follow(entity.Address, writeBones);
                         _reblending.Add(entity.Address);
                     }
@@ -917,41 +907,52 @@ public partial class GameEntities : Node3D
                     {
                         rig.ForgetLastPose();
                         _animating.Add(entity.Address);
+                        if (fold)
+                        {
+                            // Folds on the thread pool while the loop goes on; written after it, in this order.
+                            _poseBatch.Add(animator);
+                        }
                     }
 
                     clipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - clipFrom;
                 }
 
-                long tailFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 SampleFacing(entity.Address, node, entity.Rotation);
-                long facingAt = System.Diagnostics.Stopwatch.GetTimestamp();
-                StateVisibleExtent(entity.Address, node, rig);
-                long extentAt = System.Diagnostics.Stopwatch.GetTimestamp();
-                SampleTrace(entity.Address, node, StatedOf(entity.Address, node.Transform), rig);
-                facingTicks += facingAt - tailFrom;
-                extentTicks += extentAt - facingAt;
-                traceTicks += System.Diagnostics.Stopwatch.GetTimestamp() - extentAt;
-
-                long yawFrom = System.Diagnostics.Stopwatch.GetTimestamp();
-                float poseYaw = rig.PoseYawDegrees();
-                yawTicks += System.Diagnostics.Stopwatch.GetTimestamp() - yawFrom;
-                if (!float.IsNaN(poseYaw))
-                {
-                    ++_poseYawSamples;
-                    _poseYawSum += Mathf.Abs(poseYaw);
-                    _poseYawWorst = Mathf.Max(_poseYawWorst, Mathf.Abs(poseYaw));
-                }
+                // The pose's readers run once the queued poses are written (after the loop).
+                _afterPose.Add((entity.Address, node, rig, StatedOf(entity.Address, node.Transform)));
             }
 
             poseTicks += System.Diagnostics.Stopwatch.GetTimestamp() - poseFrom;
 
             if (_adoptions.TryGetValue(entity.Address, out var married))
             {
-                long twinFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 Refii.Entities.Engine_StaticTwins.Drive(married.Twin, AdoptedWorld(entity.Address, node));
-                twinTicks += System.Diagnostics.Stopwatch.GetTimestamp() - twinFrom;
             }
         }
+
+        // THE WALK'S POSES, TOGETHER. Each rig's fold is independent of every other's, so the
+        // rigs folded on the thread pool during the loop and are written now, in walk order; then what reads a finished
+        // pose — the culling box, the trace, the heading statistic — reads it, in walk order.
+        long batchFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+        _poseBatch.Finish();
+        long batchTicks = System.Diagnostics.Stopwatch.GetTimestamp() - batchFrom;
+        clipTicks += batchTicks;
+        poseTicks += batchTicks;
+        foreach ((uint address, MeshInstance3D posedNode, Refii.Entities.Engine_EntitySkeleton posedRig, Transform3D stated) in _afterPose)
+        {
+            StateVisibleExtent(address, posedNode, posedRig);
+            SampleTrace(address, posedNode, stated, posedRig);
+
+            float poseYaw = posedRig.PoseYawDegrees();
+            if (!float.IsNaN(poseYaw))
+            {
+                ++_poseYawSamples;
+                _poseYawSum += Mathf.Abs(poseYaw);
+                _poseYawWorst = Mathf.Max(_poseYawWorst, Mathf.Abs(poseYaw));
+            }
+        }
+
+        _afterPose.Clear();
 
         long drawnFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         ApplyDrawn();
@@ -959,17 +960,7 @@ public partial class GameEntities : Node3D
         long drawnTicks = flushFrom - drawnFrom;
         Refii.Level.Engine_PropShadow.FlushDeferred();
         Refii.Core.Engine_FramePhases.Lap("ent.flush", ref flushFrom);
-        // THE PLACE OF EVERY DRAWN ENTITY, read from the node AFTER attachment placement: a
-        // door is a child attached to its building, and its stated position describes the
-        // parent-relative body nobody draws; the node's world origin is where the mesh is.
-        foreach ((uint address, string modelKey) in _drawnKeys)
-        {
-            if (_nodes.TryGetValue(address, out MeshInstance3D? placed))
-            {
-                _drawnPlaces.Add((modelKey, placed.GlobalTransform.Origin));
-            }
-        }
-        Refii.Core.Engine_FramePhases.Lap("ent.drawnplaces", ref flushFrom);
+
         // The loop's own breakdown, in the same units as the laps around it.
         double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         double poseMs = poseTicks * toMs;
@@ -996,12 +987,9 @@ public partial class GameEntities : Node3D
                 $"{Refii.Entities.Engine_EntitySkeleton.WritesSkipped} settled), " +
                 $"place {placeMs:0.00}ms, rest {System.Math.Max(0.0, LastLoopMs - loopMs):0.00}ms " +
                 $"— of {LastLoopMs:0.00}ms in the loop | " +
-                $"clip {clipTicks * toMs:0.00} facing {facingTicks * toMs:0.00} " +
-                $"extent {extentTicks * toMs:0.00} trace {traceTicks * toMs:0.00} " +
-                $"yaw {yawTicks * toMs:0.00} | " +
+                $"clip {clipTicks * toMs:0.00} | " +
                 $"prologue {prologueTicks * toMs:0.00} ({entities.Count - _prologueSkipped} walked) + {skipTicks * toMs:0.00} ({_prologueSkipped} skipped: nothing to draw, or still and adopted/batched) " +
-                $"highlight {highlightTicks * toMs:0.00}, {pastPrologue} past it | " +
-                $"still {stillTicks * toMs:0.00} twins {twinTicks * toMs:0.00} drawn {drawnTicks * toMs:0.00}");
+                $"{pastPrologue} past it | drawn {drawnTicks * toMs:0.00}");
         }
         Retire();
         Refii.Core.Engine_FramePhases.Lap("ent.retire", ref lap);
@@ -1106,6 +1094,7 @@ public partial class GameEntities : Node3D
                 deactivated is null ? null : _layerIsDeactivated ??= _deactivatedLayers.Contains);
             // THE RECORD-LESS TWINS — a building's doors and windows come from its layout with
             // no record of their own, so only the model and the place can name them.
+            FillDrawnPlaces();
             Twins.HideAtPlaces(_drawnPlaces);
         }
 
@@ -1911,6 +1900,24 @@ public partial class GameEntities : Node3D
 
     /// <summary>The model and place of every entity we drew this pass — see Engine_StaticTwins.HideAtPlaces.</summary>
     private readonly List<(string ModelKey, Vector3 Origin)> _drawnPlaces = new();
+
+    /// <summary>
+    /// THE PLACE OF EVERY DRAWN ENTITY, read from the node AFTER attachment placement: a door is a
+    /// child attached to its building, and its stated position describes the parent-relative
+    /// body nobody draws; the node's world origin is where the mesh is. Read when the reconcile
+    /// (or a readout) asks, not on every walk: it is a node read per drawn entity.
+    /// </summary>
+    private void FillDrawnPlaces()
+    {
+        _drawnPlaces.Clear();
+        foreach ((uint address, string modelKey) in _drawnKeys)
+        {
+            if (_nodes.TryGetValue(address, out MeshInstance3D? placed) && IsInstanceValid(placed) && placed.IsInsideTree())
+            {
+                _drawnPlaces.Add((modelKey, placed.GlobalTransform.Origin));
+            }
+        }
+    }
     private readonly List<(uint Address, string ModelKey)> _drawnKeys = new();
 
     /// <summary>
@@ -2002,6 +2009,7 @@ public partial class GameEntities : Node3D
         if (apply && Twins is { } twinsNow)
         {
             int before = twinsNow.HiddenByPlace;
+            FillDrawnPlaces();
             twinsNow.HideAtPlaces(_drawnPlaces);
             applied = twinsNow.HiddenByPlace - before;
         }
@@ -2031,6 +2039,7 @@ public partial class GameEntities : Node3D
         }
 
         int drawnKeys = 0;
+        FillDrawnPlaces();
         foreach ((string key, Vector3 _) in _drawnPlaces)
         {
             if (key.Contains(want, System.StringComparison.Ordinal))
@@ -3590,9 +3599,21 @@ public partial class GameEntities : Node3D
                 continue;
             }
 
-            animator.Apply(address, writeBones: true);
+            if (animator.Begin(address, writeBones: true, out bool fold) && fold)
+            {
+                _poseBatch.Add(animator);
+            }
         }
+
+        // Folded on the thread pool as they were added, written in the order above.
+        _poseBatch.Finish();
     }
+
+    /// <summary>Rigs whose pose is due this frame (Engine_ClipAnimator.PoseBatch).</summary>
+    private readonly Refii.Animations.Engine_ClipAnimator.PoseBatch _poseBatch = new();
+
+    /// <summary>The walk's posed rigs, for the readers that need their finished pose.</summary>
+    private readonly List<(uint Address, MeshInstance3D Node, Refii.Entities.Engine_EntitySkeleton Rig, Transform3D Stated)> _afterPose = new();
 
     private bool InViewForRepose(
         uint address, bool haveEye, Transform3D toWorld, Plane[] frustum, ulong nowMs)

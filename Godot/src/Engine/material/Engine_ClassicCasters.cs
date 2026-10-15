@@ -51,11 +51,28 @@ public static class Engine_ClassicCasters
         public bool CentreStale = true;
         /// <summary>The joined cast mesh the instance draws instead of the node's (Engine_ClassicCasterMerge); held alive here.</summary>
         public ArrayMesh? Merged;
+        /// <summary>A batch's twin carrying <see cref="Merged"/> (Engine_PropShadow.ClassicTwin); held alive here.</summary>
+        public MultiMesh? MergedBatch;
+        /// <summary>The base the instance draws now (the node's, or a joined cast).</summary>
+        public Rid Cast;
+        /// <summary>The drawn node's visibility in the tree, kept by its `visibility_changed` (emitted on descendants too).</summary>
+        public bool Visible = true;
+        /// <summary>The cascades this caster joins (Engine_ClassicShadows.CasterLayers).</summary>
+        public uint Layers;
+        /// <summary>Its place in a cell of still casters (Engine_ClassicCasterCells), while it holds still.</summary>
+        public Engine_ClassicCasterCells.Member? Cell;
+        /// <summary>A dynamic caster's frames unmoved, toward joining a cell.</summary>
+        public int StillFrames;
+        /// <summary>It cannot share a cell (skinned, overridden, nothing joinable) until its next rebase.</summary>
+        public bool CellRefused;
     }
 
     private static World3D? _world;
     private static readonly List<Entry> Entries = new();
     private static readonly Dictionary<ulong, Entry> ByNode = new();
+
+    /// <summary>Casters whose node's visibility changed since the last update.</summary>
+    private static readonly HashSet<Entry> Touched = new();
     private static int _cursor;
     private static long _frame;
 
@@ -111,6 +128,11 @@ public static class Engine_ClassicCasters
         {
             known.Reach = node.HasMeta(ReachMeta) ? (float)node.GetMeta(ReachMeta).AsDouble() : 0f;
             known.TwoSided = twoSided;
+            if (known.Layers != layers)
+            {
+                LeaveCell(known);
+            }
+            known.Layers = layers;
             RenderingServer.InstanceSetLayerMask(known.Instance, layers);
             Rebase(known, baseRid);
             return;
@@ -122,8 +144,9 @@ public static class Engine_ClassicCasters
             Reach = node.HasMeta(ReachMeta) ? (float)node.GetMeta(ReachMeta).AsDouble() : 0f,
             Dynamic = dynamic,
             TwoSided = twoSided,
-            Stagger = Entries.Count & 7,
+            Stagger = Entries.Count & 31,
             Instance = RenderingServer.InstanceCreate(),
+            Layers = layers,
         };
         RenderingServer.InstanceSetScenario(entry.Instance, World.Scenario);
         RenderingServer.InstanceSetLayerMask(entry.Instance, layers);
@@ -135,7 +158,19 @@ public static class Engine_ClassicCasters
         Entries.Add(entry);
         ++Shown;  // a new server instance is visible until the cut says otherwise
         ByNode[node.GetInstanceId()] = entry;
+        Hook(entry, node);
+    }
+
+    /// <summary>The node's signals onto its caster; apart from <see cref="Register"/> so only a new caster allocates the closures.</summary>
+    private static void Hook(Entry entry, GeometryInstance3D node)
+    {
         node.TreeExiting += () => Release(entry);
+        entry.Visible = node.IsVisibleInTree();
+        node.VisibilityChanged += () =>
+        {
+            entry.Visible = GodotObject.IsInstanceValid(node) && node.IsVisibleInTree();
+            Touched.Add(entry);
+        };
     }
 
     /// <summary>
@@ -151,9 +186,20 @@ public static class Engine_ClassicCasters
         ++_frame;
 
         long from = System.Diagnostics.Stopwatch.GetTimestamp();
+        // A caster whose node was just shown or hidden follows now, not when its slice comes; a
+        // dynamic one takes the full look it skipped while hidden.
+        foreach (Entry touched in Touched)
+        {
+            if (touched.Instance.IsValid)
+            {
+                Follow(touched, eye, force: true);
+            }
+        }
+        Touched.Clear();
         foreach (Entry entry in Entries)
         {
-            if (entry.Dynamic)
+            // A hidden body casts nothing and is not followed until its node is shown again.
+            if (entry.Dynamic && (entry.Visible || entry.Shown))
             {
                 Follow(entry, eye);
             }
@@ -171,6 +217,9 @@ public static class Engine_ClassicCasters
             }
         }
         Refii.Core.Engine_FramePhases.Lap("classic.shadows.slice", ref from);
+
+        Engine_ClassicCasterCells.Pump();
+        Refii.Core.Engine_FramePhases.Lap("classic.shadows.cells", ref from);
     }
 
     /// <summary>
@@ -183,6 +232,7 @@ public static class Engine_ClassicCasters
         var shapes = new Dictionary<long, int>();
         var bases = new Dictionary<ulong, int>();
         int shown = 0, transfer = 0, dynamic = 0, dynamicShown = 0, joined = 0;
+        var outside = new SortedDictionary<string, int>();
         foreach (Entry entry in Entries)
         {
             dynamic += entry.Dynamic ? 1 : 0;
@@ -191,9 +241,24 @@ public static class Engine_ClassicCasters
             {
                 continue;
             }
+            if (!entry.Dynamic && entry.Cell is not { Built: true })
+            {
+                // Why a shown still caster draws on its own instead of in a cell.
+                string why = entry.Cell is not null ? "awaiting build"
+                    : entry.Node.MaterialOverride is not null ? "material override"
+                    : entry.Node is MultiMeshInstance3D { Multimesh: { } mm } ? (Refii.Level.Engine_PropShadow.StatedTransforms(mm) is null ? "batch without record" : "batch moved or unjoinable")
+                    : entry.Node is MeshInstance3D { Mesh: ArrayMesh m } mi
+                        ? mi.GetSkinReference() is not null ? "skinned"
+                        : !DrawsOwnMaterials(mi) ? "surface override"
+                        : Engine_ClassicCasterMerge.CellGeometry(m, entry.TwoSided) is not { } shape ? "no joinable surface"
+                        : shape.HasKept && entry.Merged is null ? "kept surfaces, no joined cast"
+                        : "moved"
+                    : "other";
+                outside[why] = outside.GetValueOrDefault(why) + 1;
+            }
             ++shown;
             joined += entry.Merged is not null ? 1 : 0;
-            ulong drawnBase = entry.Merged?.GetRid().Id ?? entry.Base.Id;
+            ulong drawnBase = entry.MergedBatch?.GetRid().Id ?? entry.Merged?.GetRid().Id ?? entry.Base.Id;
             bases[drawnBase] = bases.GetValueOrDefault(drawnBase) + 1;
             long key = (long)drawnBase * 31 + (long)(entry.Node.MaterialOverride?.GetInstanceId() ?? 0UL);
             bool ownPair = false;
@@ -239,6 +304,10 @@ public static class Engine_ClassicCasters
             ["dynamicShown"] = dynamicShown,
             ["distinctMeshes"] = bases.Count,
             ["meshesCastOnce"] = baseOnce,
+            ["cells"] = Engine_ClassicCasterCells.CellCount,
+            ["cellMembers"] = Engine_ClassicCasterCells.BuiltMembers,
+            ["cellBuilds"] = Engine_ClassicCasterCells.Builds,
+            ["outsideCells"] = outside,
         };
     }
 
@@ -277,11 +346,14 @@ public static class Engine_ClassicCasters
         }
         Entries.Clear();
         ByNode.Clear();
+        Batched.Clear();
+        Engine_ClassicCasterCells.Clear();
+        Touched.Clear();
         _cursor = 0;
         Shown = 0;
     }
 
-    private static void Follow(Entry entry, Vector3 eye)
+    private static void Follow(Entry entry, Vector3 eye, bool force = false)
     {
         GeometryInstance3D node = entry.Node;
         if (!GodotObject.IsInstanceValid(node))
@@ -289,17 +361,14 @@ public static class Engine_ClassicCasters
             return;
         }
 
-        // A dynamic node moves every frame but swaps its mesh or skeleton rarely (an outfit
-        // change), and leaving the tree releases it (TreeExiting): those checks come round every
-        // eighth frame, staggered; the transform and the cut every frame.
-        bool full = !entry.Dynamic || ((_frame + entry.Stagger) & 7) == 0 || entry.SurfacesPending || !entry.Base.IsValid;
+        // A dynamic node moves every frame but swaps its mesh or skeleton rarely; the transform
+        // and the cut are followed every frame. Leaving the tree releases the caster (TreeExiting), and a new mesh, skeleton or outfit
+        // re-registers it (the entity feed, Engine_ShadowProxy.Sync): the periodic look is only
+        // the safety net, every 32nd frame for a moving node.
+        bool full = force || !entry.Dynamic || ((_frame + entry.Stagger) & 31) == 0 || entry.SurfacesPending || !entry.Base.IsValid;
         Rid baseRid = entry.Base;
         if (full)
         {
-            if (!node.IsInsideTree())
-            {
-                return;
-            }
             baseRid = BaseOf(node);
             if (baseRid != entry.Base)
             {
@@ -318,13 +387,20 @@ public static class Engine_ClassicCasters
 
         // Nothing the drawn node does not draw casts (a hidden prop, a twin its entity replaced,
         // a batched entity's node); such a node is not placed until it draws again.
-        bool shown = node.IsVisibleInTree() && baseRid.IsValid;
+        bool shown = entry.Visible && baseRid.IsValid;
         if (shown)
         {
             Transform3D world = node.GlobalTransform;
             if (world != entry.Placed || entry.CentreStale)
             {
+                entry.StillFrames = 0;
                 Place(entry, world);
+            }
+            else if (entry.Dynamic && entry.Cell is null && !entry.CellRefused && ++entry.StillFrames >= StillToJoin)
+            {
+                // An entity that has stood still this long (a barrel, a cart, furniture) casts from
+                // its cell; its first move takes it out (Place).
+                entry.CellRefused = !TryJoinCell(entry);
             }
 
             // The guest's cut: a hard one at the reach, from the eye to the drawn box's centre
@@ -335,12 +411,21 @@ public static class Engine_ClassicCasters
         {
             entry.Shown = shown;
             Shown += shown ? 1 : -1;
-            RenderingServer.InstanceSetVisible(entry.Instance, shown);
+            if (entry.Cell is { } member)
+            {
+                Engine_ClassicCasterCells.Show(member, shown);
+            }
+            RenderingServer.InstanceSetVisible(entry.Instance, shown && entry.Cell is not { Built: true, HasKept: false });
         }
     }
 
     private static void Place(Entry entry, Transform3D world)
     {
+        if (entry.Cell is { } member && world != member.World)
+        {
+            // A cell holds its members where they stood; a moved one casts on its own again.
+            LeaveCell(entry);
+        }
         if (entry.CentreStale)
         {
             entry.LocalCentre = entry.Node.GetAabb().GetCenter();
@@ -359,28 +444,73 @@ public static class Engine_ClassicCasters
     /// </summary>
     private static void Rebase(Entry entry, Rid baseRid)
     {
+        LeaveCell(entry);
         entry.Base = baseRid;
         entry.SurfacesPending = false;
         entry.CentreStale = true;
         GeometryInstance3D node = entry.Node;
 
-        // A still, rigid prop drawing its mesh's own materials casts its joined mesh.
-        entry.Merged = baseRid.IsValid && !entry.Dynamic && node is MeshInstance3D { MaterialOverride: null, Mesh: ArrayMesh joinable } single &&
-            single.GetSkinReference() is null
-            ? Engine_ClassicCasterMerge.For(joinable, entry.TwoSided)
-            : null;
-        RenderingServer.InstanceSetBase(entry.Instance, entry.Merged?.GetRid() ?? baseRid);
+        // A still, rigid prop drawing its mesh's own materials casts its joined mesh; a batch of
+        // them casts a twin of the batch carrying it.
+        entry.Merged = null;
+        entry.MergedBatch = null;
+        Rid cast = baseRid;
+        if (baseRid.IsValid && node.MaterialOverride is null)
+        {
+            // Not cloth: its vertices are rewritten in place every frame, which a joined copy would never see.
+            if (node is MeshInstance3D { Mesh: ArrayMesh joinable } single && node is not Refii.Physics.Engine_ClothBody)
+            {
+                // A body casts what it shows: its collapsed clusters are left out.
+                entry.Merged = Engine_ClassicCasterMerge.For(joinable, entry.TwoSided, CollapsedOf(single));
+                cast = entry.Merged?.GetRid() ?? baseRid;
+            }
+            else if (!entry.Dynamic && node is MultiMeshInstance3D { Multimesh: { Mesh: ArrayMesh batchMesh } source } &&
+                Engine_ClassicCasterMerge.For(batchMesh, entry.TwoSided) is { } joined &&
+                Refii.Level.Engine_PropShadow.ClassicTwin(source, joined) is { } twin)
+            {
+                entry.Merged = joined;
+                entry.MergedBatch = twin;
+                cast = twin.GetRid();
+            }
+        }
+        bool same = cast == entry.Cast;
+        entry.Cast = cast;
+        if (!same)
+        {
+            RenderingServer.InstanceSetBase(entry.Instance, cast);
+        }
         if (!baseRid.IsValid)
         {
             return;
         }
+        entry.StillFrames = 0;
+        entry.CellRefused = false;
+        if (!entry.Dynamic && node is MeshInstance3D)
+        {
+            TryJoinCell(entry);
+        }
+        else if (!entry.Dynamic && node is MultiMeshInstance3D { Multimesh: { Mesh: ArrayMesh copied } batch } &&
+            node.MaterialOverride is null && Refii.Level.Engine_PropShadow.StatedTransforms(batch) is { } built &&
+            Engine_ClassicCasterMerge.CellGeometry(copied, entry.TwoSided) is { HasKept: false } batchShape)
+        {
+            // A batch joins whole, at its copies' built places; a later move of any copy takes it out.
+            Transform3D world = node.GlobalTransform;
+            entry.Cell = Engine_ClassicCasterCells.Join(entry.Instance, batchShape.Groups, default, world,
+                (Transform3D[])built.Clone(), world * node.GetAabb().GetCenter(), entry.Layers, entry.Shown, World);
+            Batched[batch.GetInstanceId()] = entry;
+        }
         if (entry.Merged is not null)
         {
             // Its surfaces carry their own materials; nothing of the node's is laid over them.
-            RenderingServer.InstanceGeometrySetMaterialOverride(entry.Instance, default);
-            RenderingServer.InstanceAttachSkeleton(entry.Instance, default);
-            entry.Skeleton = default;
-            entry.SurfacesPending = true;
+            // A skinned body's joined mesh keeps its bone indices and rides its skeleton.
+            Rid skeleton = node is MeshInstance3D skinned ? skinned.GetSkinReference()?.GetSkeleton() ?? default : default;
+            if (!same || skeleton != entry.Skeleton)
+            {
+                RenderingServer.InstanceGeometrySetMaterialOverride(entry.Instance, default);
+                RenderingServer.InstanceAttachSkeleton(entry.Instance, skeleton);
+                entry.SurfacesPending = !same;
+            }
+            entry.Skeleton = skeleton;
             return;
         }
 
@@ -409,6 +539,10 @@ public static class Engine_ClassicCasters
     private static void Surfaces(Entry entry)
     {
         entry.SurfacesPending = false;
+        if (entry.MergedBatch is not null)
+        {
+            return;
+        }
         if (entry.Merged is { } merged)
         {
             for (int i = 0; i < merged.GetSurfaceCount(); i++)
@@ -435,6 +569,84 @@ public static class Engine_ClassicCasters
         }
     }
 
+    /// <summary>Whether every surface of <paramref name="node"/> casts as its mesh's own material would (<see cref="DepthSurface"/>).</summary>
+    private static bool DrawsOwnMaterials(MeshInstance3D node)
+    {
+        int surfaces = node.Mesh?.GetSurfaceCount() ?? 0;
+        for (int i = 0; i < surfaces; i++)
+        {
+            if (DepthSurface(node, i) is not null)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Puts a single model's caster in its cell when it can share one: rigid, drawing its mesh's
+    /// own materials, not cloth. Surfaces that cannot join stay on the own instance as a mesh of
+    /// their own; that swap needs every surface override of the own instance empty, which holds
+    /// over a joined cast (its surfaces carry their materials) and over the source drawn
+    /// one-sided (<see cref="DrawsOwnMaterials"/>), not over two-sided copies. False when it cannot.
+    /// </summary>
+    private static bool TryJoinCell(Entry entry)
+    {
+        GeometryInstance3D node = entry.Node;
+        if (entry.Cell is not null || node is not MeshInstance3D { Mesh: ArrayMesh still } single ||
+            node is Refii.Physics.Engine_ClothBody || node.MaterialOverride is not null ||
+            single.GetSkinReference() is not null || !DrawsOwnMaterials(single) ||
+            Engine_ClassicCasterMerge.CellGeometry(still, entry.TwoSided) is not { } shape ||
+            (shape.HasKept && entry.Merged is null && entry.TwoSided))
+        {
+            return false;
+        }
+
+        Rid kept = shape.HasKept ? Engine_ClassicCasterMerge.KeptOnly(still, entry.TwoSided, shape).GetRid() : default;
+        Transform3D world = node.GlobalTransform;
+        entry.Cell = Engine_ClassicCasterCells.Join(entry.Instance, shape.Groups, kept, world, null,
+            world * still.GetAabb().GetCenter(), entry.Layers, entry.Shown, World);
+        return true;
+    }
+
+    /// <summary>Frames an entity's caster holds still before it joins a cell; a move takes it out again.</summary>
+    private const int StillToJoin = 90;
+
+    /// <summary>Batch casters in a cell, by their MultiMesh: told when a copy moves (<see cref="BatchChanged"/>).</summary>
+    private static readonly Dictionary<ulong, Entry> Batched = new();
+
+    /// <summary>
+    /// A copy of <paramref name="batch"/> was moved or hidden after the build (Engine_PropShadow,
+    /// where every such write goes): its cell holds the built places, so the batch casts on its own again.
+    /// </summary>
+    public static void BatchChanged(MultiMesh batch)
+    {
+        if (Batched.Count != 0 && Batched.Remove(batch.GetInstanceId(), out Entry? entry))
+        {
+            LeaveCell(entry);
+        }
+    }
+
+    /// <summary>Takes the caster out of its cell; its own instance draws again if it is shown.</summary>
+    private static void LeaveCell(Entry entry)
+    {
+        if (entry.Cell is not { } member)
+        {
+            return;
+        }
+        bool built = member.Built;
+        Engine_ClassicCasterCells.Leave(member);
+        entry.Cell = null;
+        if (built && entry.Instance.IsValid)
+        {
+            if (member.HasKept)
+            {
+                RenderingServer.InstanceSetBase(entry.Instance, entry.Cast);
+            }
+            RenderingServer.InstanceSetVisible(entry.Instance, entry.Shown);
+        }
+    }
+
     /// <summary>The one material every surface of <paramref name="mesh"/> draws, or null.</summary>
     private static Material? SharedMaterial(Mesh mesh)
     {
@@ -455,6 +667,21 @@ public static class Engine_ClassicCasters
     private static Rid BaseOf(GeometryInstance3D node) =>
         node is MeshInstance3D or MultiMeshInstance3D ? node.GetBase() : default;
 
+    /// <summary>The surfaces the hidden-cluster pass has collapsed on <paramref name="node"/>, as a mask over its mesh.</summary>
+    private static System.UInt128 CollapsedOf(MeshInstance3D node)
+    {
+        System.UInt128 mask = System.UInt128.Zero;
+        int surfaces = System.Math.Min(node.Mesh?.GetSurfaceCount() ?? 0, 128);
+        for (int i = 0; i < surfaces; i++)
+        {
+            if (Refii.Entities.Engine_HiddenClusters.IsCollapsed(node.GetSurfaceOverrideMaterial(i)))
+            {
+                mask |= System.UInt128.One << i;
+            }
+        }
+        return mask;
+    }
+
     /// <summary>
     /// A surface's material for the cascades: a classic variant of the surface's own material
     /// (an ambient pair, a transfer pair, a light group) differs from it only in lighting, which
@@ -472,6 +699,7 @@ public static class Engine_ClassicCasters
 
     private static void Release(Entry entry)
     {
+        LeaveCell(entry);
         if (entry.Instance.IsValid)
         {
             RenderingServer.FreeRid(entry.Instance);

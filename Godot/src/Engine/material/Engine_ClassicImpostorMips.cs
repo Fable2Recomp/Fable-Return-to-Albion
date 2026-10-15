@@ -18,6 +18,9 @@ namespace Refii.Models;
 /// </remarks>
 public partial class Engine_ClassicImpostorMips : CompositorEffect
 {
+    /// <summary>Each mip's uniform set, by the views it reads and writes.</summary>
+    private readonly Refii.Core.Engine_UniformSetKey?[] _sets = new Refii.Core.Engine_UniformSetKey?[Mips];
+
     public const string ShaderPath = "res://src/Engine/material/classic_impostor_mips.glsl";
     private const int Mips = 4;
 
@@ -67,7 +70,13 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
         {
             return;
         }
-        FreeTarget();
+        // The cards still sample the old atlas until the deferred re-point below lands.
+        for (int mip = 0; mip < Mips; mip++)
+        {
+            Refii.Core.Engine_RdRetire.Retire(_views[mip]);
+            _views[mip] = default;
+        }
+        Refii.Core.Engine_RdRetire.Retire(_target);
         _target = _rd!.TextureCreate(new RDTextureFormat
         {
             Width = (uint)size.X, Height = (uint)size.Y, Mipmaps = Mips,
@@ -86,6 +95,10 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
 
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
+        if (_rd is not null)
+        {
+            Refii.Core.Engine_RdRetire.Pump(_rd);
+        }
         if (!_ready || _rd is null || renderData.GetRenderSceneBuffers() is not RenderSceneBuffersRD buffers)
         {
             return;
@@ -104,12 +117,18 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
         for (int mip = 0; mip < Mips; mip++)
         {
             int w = System.Math.Max(size.X >> mip, 1), h = System.Math.Max(size.Y >> mip, 1);
-            var above = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
-            above.AddId(_linear);
-            above.AddId(mip == 0 ? source : _views[mip - 1]);
-            var below = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
-            below.AddId(_views[mip]);
-            Rid set = UniformSetCacheRD.GetCache(_shader, 0, new Array<RDUniform> { above, below });
+            Rid read = mip == 0 ? source : _views[mip - 1];
+            Refii.Core.Engine_UniformSetKey key = _sets[mip] ??= new Refii.Core.Engine_UniformSetKey(2);
+            Rid set = key.For(_rd, stackalloc Rid[] { read, _views[mip] });
+            if (!set.IsValid)
+            {
+                var above = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
+                above.AddId(_linear);
+                above.AddId(read);
+                var below = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
+                below.AddId(_views[mip]);
+                set = key.Hold(UniformSetCacheRD.GetCache(_shader, 0, new Array<RDUniform> { above, below }));
+            }
             long list = _rd.ComputeListBegin();
             _rd.ComputeListBindComputePipeline(list, _pipeline);
             _rd.ComputeListBindUniformSet(list, set, 0);

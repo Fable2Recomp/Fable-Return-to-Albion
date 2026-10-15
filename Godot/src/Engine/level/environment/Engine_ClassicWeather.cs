@@ -254,12 +254,12 @@ public partial class Engine_ClassicWeather : Node3D
         Vector3 colour = zone ? zoneColour * 0.25f : new Vector3(0.1f, 0.1f, 0.1f);
         var tint = new Vector4(colour.X, colour.Y, colour.Z, 0.25f * (1f - density));
         ShaderMaterial m = _rainMaterial!;
-        m.SetShaderParameter("vs_g_CameraPos", new Vector4(eye.X, eye.Y, eye.Z, 1f));
-        m.SetShaderParameter("vs_g_CameraDir", new Vector4(forward.X, forward.Y, forward.Z, 0f));
-        m.SetShaderParameter("ps_g_RainDiffColour", tint);
-        m.SetShaderParameter("ps_g_RainSpecColour", tint);
+        m.SetShaderParameter(VsCameraPosName, new Vector4(eye.X, eye.Y, eye.Z, 1f));
+        m.SetShaderParameter(VsCameraDirName, new Vector4(forward.X, forward.Y, forward.Z, 0f));
+        m.SetShaderParameter(PsRainDiffColourName, tint);
+        m.SetShaderParameter(PsRainSpecColourName, tint);
         RainLights(eye, lights);
-        m.SetShaderParameter("ps_g_RainLight", _rainLights);
+        m.SetShaderParameter(PsRainLightName, _rainLights);
 
         _rain!.Visible = true;
         Raining = true;
@@ -564,7 +564,7 @@ public partial class Engine_ClassicWeather : Node3D
             GD.Print($"[classic] {RainTexture} did not load; no rain");
             return false;
         }
-        material.SetShaderParameter("ps_g_RainTextureSampler", streaks);
+        material.SetShaderParameter(PsRainTextureSamplerName, streaks);
 
         // A quad per segment, two triangles each as the draw indexes them (b, b+1, b+2, b+3, b+2, b+1).
         var indices = new int[MaxSegments * 6];
@@ -679,7 +679,7 @@ public partial class Engine_ClassicWeather : Node3D
                     if (roofs && BlockRoofs(origin))
                     {
                         ShaderMaterial own = _blockMaterials[index] ??= (ShaderMaterial)_snowMaterial!.Duplicate();
-                        own.SetShaderParameter("vs_g_ClipShape", _blockClip);
+                        own.SetShaderParameter(VsClipShapeName, _blockClip);
                         block.MaterialOverride = own;
                         _roofed.Add(own);
                     }
@@ -697,8 +697,8 @@ public partial class Engine_ClassicWeather : Node3D
         foreach (ShaderMaterial own in _roofed)
         {
             SnowShared(own, eye, wind, w, size, fall, viewport, zone, zoneColour, clock);
-            own.SetShaderParameter("vs_g_PushVector", _push);
-            own.SetShaderParameter("vs_g_PushVectorOverDist", _pushOverDistance);
+            own.SetShaderParameter(VsPushVectorName, _push);
+            own.SetShaderParameter(VsPushVectorOverDistName, _pushOverDistance);
         }
     }
 
@@ -762,15 +762,15 @@ public partial class Engine_ClassicWeather : Node3D
     private static void SnowShared(ShaderMaterial m, Vector3 eye, Vector4 wind, float w, float size, float fall,
         Vector2 viewport, bool zone, Vector3 zoneColour, float clock)
     {
-        m.SetShaderParameter("vs_g_Time", new Vector4(clock, clock, clock, clock));
-        m.SetShaderParameter("vs_g_CamPos", new Vector4(eye.X, eye.Y, eye.Z, 1f));
-        m.SetShaderParameter("vs_g_SnowParams1", new Vector4(SnowReach - 5f, SnowReach, viewport.X * size * 0.109375f, 1f));
-        m.SetShaderParameter("vs_g_SnowParams2", new Vector4(wind.X * w * 0.7f, wind.Y * w * 0.7f, fall * 0.7f, 1f));
+        m.SetShaderParameter(VsTimeName, new Vector4(clock, clock, clock, clock));
+        m.SetShaderParameter(VsCamPosName, new Vector4(eye.X, eye.Y, eye.Z, 1f));
+        m.SetShaderParameter(VsSnowParams1Name, new Vector4(SnowReach - 5f, SnowReach, viewport.X * size * 0.109375f, 1f));
+        m.SetShaderParameter(VsSnowParams2Name, new Vector4(wind.X * w * 0.7f, wind.Y * w * 0.7f, fall * 0.7f, 1f));
         // The device's POINTSIZE_MIN / MAX (1, 64) were pixels of the title's 1280-wide target.
         float points = viewport.X / 1280f;
-        m.SetShaderParameter("xr_point_range", new Vector2(points, 64f * points));
+        m.SetShaderParameter(XrPointRangeName, new Vector2(points, 64f * points));
         Vector3 colour = zone ? Vector3.One * 0.75f + zoneColour * 0.25f : Vector3.One;
-        m.SetShaderParameter("ps_g_SnowColour", new Vector4(colour.X, colour.Y, colour.Z, 1f));
+        m.SetShaderParameter(PsSnowColourName, new Vector4(colour.X, colour.Y, colour.Z, 1f));
     }
 
     private bool InFrustum(Vector3 min, Vector3 max)
@@ -872,11 +872,11 @@ public partial class Engine_ClassicWeather : Node3D
             GD.Print($"[classic] {SnowTexture} did not load; no snow");
             return false;
         }
-        material.SetShaderParameter("ps_g_SnowTextureSampler", flakes);
-        material.SetShaderParameter("vs_g_GridSize", new Vector4(SnowBlock, SnowBlock, SnowBlock, 1f));
-        material.SetShaderParameter("vs_g_ClipShape", _clipShape);
-        material.SetShaderParameter("vs_g_PushVector", _push);
-        material.SetShaderParameter("vs_g_PushVectorOverDist", _pushOverDistance);
+        material.SetShaderParameter(PsSnowTextureSamplerName, flakes);
+        material.SetShaderParameter(VsGridSizeName, new Vector4(SnowBlock, SnowBlock, SnowBlock, 1f));
+        material.SetShaderParameter(VsClipShapeName, _clipShape);
+        material.SetShaderParameter(VsPushVectorName, _push);
+        material.SetShaderParameter(VsPushVectorOverDistName, _pushOverDistance);
 
         var arrays = new Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
@@ -916,8 +916,8 @@ public partial class Engine_ClassicWeather : Node3D
         }
         if (changed && _snowMaterial is not null)
         {
-            _snowMaterial.SetShaderParameter("vs_g_PushVector", _push);
-            _snowMaterial.SetShaderParameter("vs_g_PushVectorOverDist", _pushOverDistance);
+            _snowMaterial.SetShaderParameter(VsPushVectorName, _push);
+            _snowMaterial.SetShaderParameter(VsPushVectorOverDistName, _pushOverDistance);
         }
     }
 
@@ -927,4 +927,23 @@ public partial class Engine_ClassicWeather : Node3D
 
     /// <summary>A Godot plane (outward normal, n.p = d) in the guest's axes; the map is orthogonal.</summary>
     private static Plane ToGuest(Plane godot) => new(ToGuest(godot.Normal), godot.D);
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName VsCameraPosName = "vs_g_CameraPos";
+    private static readonly StringName VsCameraDirName = "vs_g_CameraDir";
+    private static readonly StringName PsRainDiffColourName = "ps_g_RainDiffColour";
+    private static readonly StringName PsRainSpecColourName = "ps_g_RainSpecColour";
+    private static readonly StringName PsRainLightName = "ps_g_RainLight";
+    private static readonly StringName PsRainTextureSamplerName = "ps_g_RainTextureSampler";
+    private static readonly StringName VsClipShapeName = "vs_g_ClipShape";
+    private static readonly StringName VsPushVectorName = "vs_g_PushVector";
+    private static readonly StringName VsPushVectorOverDistName = "vs_g_PushVectorOverDist";
+    private static readonly StringName VsTimeName = "vs_g_Time";
+    private static readonly StringName VsCamPosName = "vs_g_CamPos";
+    private static readonly StringName VsSnowParams1Name = "vs_g_SnowParams1";
+    private static readonly StringName VsSnowParams2Name = "vs_g_SnowParams2";
+    private static readonly StringName XrPointRangeName = "xr_point_range";
+    private static readonly StringName PsSnowColourName = "ps_g_SnowColour";
+    private static readonly StringName PsSnowTextureSamplerName = "ps_g_SnowTextureSampler";
+    private static readonly StringName VsGridSizeName = "vs_g_GridSize";
 }

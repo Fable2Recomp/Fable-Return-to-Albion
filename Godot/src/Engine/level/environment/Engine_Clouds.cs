@@ -72,27 +72,27 @@ public static class Engine_Clouds
             ShaderMaterial? classic = Engine_ClassicClouds.Material(density, layer);
             classic?.SetMeta(Engine_ClassicClouds.LayerMeta, index);
             var material = classic ?? new ShaderMaterial { Shader = shader };
-            material.SetShaderParameter("cloud_density", density);
+            material.SetShaderParameter(CloudDensityName, density);
 
-            material.SetShaderParameter("layer_params", new Vector4(
+            material.SetShaderParameter(LayerParamsName, new Vector4(
                 layer.Transparency,
                 layer.AmbientLight,
                 layer.Brightness,
                 ShaderNormalStrength(layer.NormalStrength)));
 
-            material.SetShaderParameter("uv_scale_offset", new Vector4(
+            material.SetShaderParameter(UvScaleOffsetName, new Vector4(
                 layer.TextureScaleX,
                 layer.TextureScaleY,
                 0f,
                 0f));
 
-            material.SetShaderParameter("cloud_globals",
+            material.SetShaderParameter(CloudGlobalsName,
                 new Vector4(0f, 0f, AlphaTestThreshold, 0f));
 
-            material.SetShaderParameter("light_colour", new Vector4(
+            material.SetShaderParameter(LightColourName, new Vector4(
                 mainLightColour[0], mainLightColour[1], mainLightColour[2], 1f));
 
-            material.SetShaderParameter("light_direction_world", new Vector3(
+            material.SetShaderParameter(LightDirectionWorldName, new Vector3(
                 -mainLightDirection[0], mainLightDirection[1], mainLightDirection[2]));
 
             var node = new MeshInstance3D
@@ -145,21 +145,21 @@ public static class Engine_Clouds
             {
                 Engine_ClassicClouds.SetLayer(material, layer);
             }
-            material.SetShaderParameter("layer_params", new Vector4(
+            material.SetShaderParameter(LayerParamsName, new Vector4(
                 layer.Transparency,
                 layer.AmbientLight,
                 layer.Brightness,
                 ShaderNormalStrength(layer.NormalStrength)));
 
-            Vector4 current = material.GetShaderParameter("uv_scale_offset").AsVector4();
-            material.SetShaderParameter("uv_scale_offset", new Vector4(
+            Vector4 current = material.GetShaderParameter(UvScaleOffsetName).AsVector4();
+            material.SetShaderParameter(UvScaleOffsetName, new Vector4(
                 layer.TextureScaleX,
                 layer.TextureScaleY,
                 current.Z,
                 current.W));
-            material.SetShaderParameter("light_colour", new Vector4(
+            material.SetShaderParameter(LightColourName, new Vector4(
                 lightColour[0], lightColour[1], lightColour[2], 1f));
-            material.SetShaderParameter("light_direction_world", new Vector3(
+            material.SetShaderParameter(LightDirectionWorldName, new Vector3(
                 -lightDirection[0], lightDirection[1], lightDirection[2]));
             mesh.Visible = layer.Enabled && layer.Transparency > 0.001f;
         }
@@ -232,4 +232,12 @@ public static class Engine_Clouds
 
         return Engine_TexImage.TryCreateTexture(bytes, out _);
     }
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName CloudDensityName = "cloud_density";
+    private static readonly StringName LayerParamsName = "layer_params";
+    private static readonly StringName UvScaleOffsetName = "uv_scale_offset";
+    private static readonly StringName CloudGlobalsName = "cloud_globals";
+    private static readonly StringName LightColourName = "light_colour";
+    private static readonly StringName LightDirectionWorldName = "light_direction_world";
 }

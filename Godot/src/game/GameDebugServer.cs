@@ -2177,6 +2177,17 @@ public partial class GameDebugServer : Node
 				return Ok(GameEntities.Current?.DescribeDoubles(radius) ?? new Dictionary<string, object?>());
 			}
 
+			case "drawcensus":
+			{
+				// The main view's surfaces and material passes by owner and family, and the draws
+				// left once equal (mesh, surface, material) keys merge: `{"op":"drawcensus"}`.
+				Node? world = GameEntities.Current?.GetTree()?.Root;
+				Camera3D? camera = GameEntities.Current?.GetViewport()?.GetCamera3D();
+				return Ok(world is null || camera is null
+					? new Dictionary<string, object?>()
+					: Refii.Core.Engine_DrawCensus.Describe(world, camera));
+			}
+
 			case "lodcensus":
 			{
 				// The main view's triangles by owner and mesh, at the level Godot picks and at the

@@ -29,31 +29,48 @@ public static class Engine_ClassicPrtRows
     private static byte[] _bytes = Array.Empty<byte>();
     private static int _rows;
     private static int _next = 1;
-    private static readonly Stack<int> _free = new();
+    /// <summary>Released blocks by their length.</summary>
+    private static readonly Dictionary<int, Stack<int>> _free = new();
     private static bool _dirty;
     private static Image? _image;
     private static ImageTexture? _texture;
     private static bool _registered;
 
-    /// <summary>A row of its own for one placement (row 0 stays zero). Main thread.</summary>
-    public static int Acquire()
+    /// <summary>
+    /// <paramref name="count"/> consecutive rows for one placement, a row per surface for a
+    /// composite whose parts carry their own constants (row 0 stays zero). Main thread.
+    /// </summary>
+    public static int Acquire(int count = 1)
     {
-        int row = _free.Count != 0 ? _free.Pop() : _next++;
-        Grow(row + 1);
+        int row;
+        if (_free.TryGetValue(count, out Stack<int>? sized) && sized.Count != 0)
+        {
+            row = sized.Pop();
+        }
+        else
+        {
+            row = _next;
+            _next += count;
+        }
+        Grow(row + count);
         return row;
     }
 
     /// <summary>Bumped by <see cref="Clear"/>: a row handed out before it is not released into the new set.</summary>
     public static int Generation { get; private set; }
 
-    public static void Release(int row, int generation)
+    public static void Release(int row, int count, int generation)
     {
-        if (generation != Generation || row <= 0 || row >= _next)
+        if (generation != Generation || row <= 0 || row + count > _next)
         {
             return;
         }
-        Array.Clear(_values, row * Registers * 4, Registers * 4);
-        _free.Push(row);
+        Array.Clear(_values, row * Registers * 4, Registers * 4 * count);
+        if (!_free.TryGetValue(count, out Stack<int>? sized))
+        {
+            _free[count] = sized = new Stack<int>();
+        }
+        sized.Push(row);
         _dirty = true;
     }
 

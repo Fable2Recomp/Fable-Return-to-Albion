@@ -212,11 +212,11 @@ public static class Engine_ClassicSkyElements
         var m = (ShaderMaterial)node.MaterialOverride;
         float clock = Engine_ClassicFeed.Seconds;
         Vector3 eye = ToGuest(camera.GlobalPosition);
-        m.SetShaderParameter("vs_g_StarParams", new Vector4(clock, brightness, 1.5f, 2.5f));
-        m.SetShaderParameter("vs_g_CamPos", new Vector4(eye.X, eye.Y, eye.Z, 0f));
+        m.SetShaderParameter(VsStarParamsName, new Vector4(clock, brightness, 1.5f, 2.5f));
+        m.SetShaderParameter(VsCamPosName, new Vector4(eye.X, eye.Y, eye.Z, 0f));
         // POINTSIZE_MIN / MAX were pixels of the title's 1280-wide target.
         float scale = camera.GetViewport().GetVisibleRect().Size.X / 1280f;
-        m.SetShaderParameter("xr_point_range", new Vector2(0.1f * scale, 64f * scale));
+        m.SetShaderParameter(XrPointRangeName, new Vector2(0.1f * scale, 64f * scale));
     }
 
     private static Rid SlotTexture(int slot)
@@ -272,4 +272,9 @@ public static class Engine_ClassicSkyElements
     private static Vector3 ToGodot(Vector3 sky) => new(-sky.X, sky.Z, sky.Y);
 
     private static Vector3 ToGuest(Vector3 godot) => new(-godot.X, godot.Z, godot.Y);
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName VsStarParamsName = "vs_g_StarParams";
+    private static readonly StringName VsCamPosName = "vs_g_CamPos";
+    private static readonly StringName XrPointRangeName = "xr_point_range";
 }

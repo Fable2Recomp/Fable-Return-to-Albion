@@ -225,6 +225,8 @@ public static class Engine_ShadowProxy
 		// through its classic caster, which shares its mesh, skeleton and surface overrides.
 		if (Refii.Models.Engine_ClassicMaterial.Active)
 		{
+			// Recorded as the proxy is, so SyncHidden re-registers only when the collapse changed.
+			BuiltFor.GetOrCreateValue(body).Value = (Engine_HiddenClusters.CollapsedMask(body), Enabled);
 			Refii.Models.Engine_ClassicCasters.Register(body, dynamic: true);
 			return;
 		}

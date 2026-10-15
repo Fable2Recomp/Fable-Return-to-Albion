@@ -207,13 +207,14 @@ public static class Engine_PropShadow
 		{
 			stated[instance] = transform;
 		}
+		Refii.Models.Engine_ClassicCasters.BatchChanged(batch);
 
 		if (!Twins.TryGetValue(batch, out MultiMesh? shadow) || instance >= shadow.InstanceCount)
 		{
 			return;
 		}
 
-		if (stated is null || Refii.Core.Engine_GuestFrame.HalfRate)
+		if (stated is null || Refii.Core.Engine_GuestFrame.HalfRate || Immediate.TryGetValue(shadow, out _))
 		{
 			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.ShadowTwin);
 			shadow.SetInstanceTransform(instance, transform);
@@ -224,6 +225,45 @@ public static class Engine_PropShadow
 			Deferred.Add((batch, instance));
 		}
 	}
+
+	/// <summary>
+	/// A classic batch caster's twin: the batch's recorded transforms over <paramref name="caster"/>
+	/// (Engine_ClassicCasterMerge), kept in step by <see cref="SetInstanceTransform"/> and
+	/// <see cref="CoverBounds"/>. Null for a batch built elsewhere (no record: no readback). Not
+	/// a node; the classic cascades' own instance draws it. Main thread.
+	/// </summary>
+	public static MultiMesh? ClassicTwin(MultiMesh batch, ArrayMesh caster)
+	{
+		if (Twins.TryGetValue(batch, out MultiMesh? existing) && ReferenceEquals(existing.Mesh, caster))
+		{
+			return existing;
+		}
+		if (StatedTransforms(batch) is not { } stated)
+		{
+			return null;
+		}
+		var transforms = new float[stated.Length * 12];
+		for (int i = 0; i < stated.Length; i++)
+		{
+			WriteSlot(transforms, i * 12, stated[i]);
+		}
+		var twin = new MultiMesh
+		{
+			TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+			InstanceCount = stated.Length,
+			CustomAabb = batch.CustomAabb,
+			Mesh = caster,
+		};
+		twin.Buffer = transforms;
+		Twins.AddOrUpdate(batch, twin);
+		Immediate.AddOrUpdate(twin, Marked);
+		return twin;
+	}
+
+	/// <summary>Twins that take every slot write at once: the classic cascades redraw every frame anyway.</summary>
+	private static readonly ConditionalWeakTable<MultiMesh, object> Immediate = new();
+
+	private static readonly object Marked = new();
 
 	/// <summary>Twin slots whose batch moved on a frame the twin does not take.</summary>
 	private static readonly HashSet<(MultiMesh Batch, int Instance)> Deferred = new();

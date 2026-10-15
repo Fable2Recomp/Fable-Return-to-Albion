@@ -662,9 +662,9 @@ public static class Engine_CelestialElements
         }
         var material = (ShaderMaterial)modern.Duplicate();
         material.Shader = shader;
-        material.SetShaderParameter("ps_" + textureName, texture);
-        material.SetShaderParameter("xr_spec_constants", 2u);
-        material.SetShaderParameter("xr_alpha_threshold", alphaThreshold);
+        material.SetShaderParameter(PsName + textureName, texture);
+        material.SetShaderParameter(XrSpecConstantsName, 2u);
+        material.SetShaderParameter(XrAlphaThresholdName, alphaThreshold);
         material.SetMeta(ClassicColourMeta, pixelEntry == "PSHADER_MOONDISC" ? "ps_g_MoonColour" : "ps_g_SunDiscColour");
         node.MaterialOverride = material;
     }
@@ -815,4 +815,9 @@ public static class Engine_CelestialElements
             new Vector3(CullExtent * 2f, CullExtent * 2f, CullExtent * 2f));
         return mesh;
     }
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName PsName = "ps_";
+    private static readonly StringName XrSpecConstantsName = "xr_spec_constants";
+    private static readonly StringName XrAlphaThresholdName = "xr_alpha_threshold";
 }

@@ -32,8 +32,16 @@ public partial class Engine_ClassicParticles
         public required ArrayMesh Mesh;
         public ShaderMaterial? Material;
         public string Key = string.Empty;
+        public long Shape = -1;
         public int Vertices;
         public ImageTexture? Stream;
+        /// <summary>The control-point image, refilled in place; and its bytes.</summary>
+        public Image? StreamImage;
+        public byte[] StreamBytes = Array.Empty<byte>();
+        /// <summary>The material the held array parameters were last sent to.</summary>
+        public ShaderMaterial? SentTo;
+        public readonly Refii.Core.Engine_ArrayParam Colours = new(), SelfIllum = new(), World = new(), UvScales = new();
+        public int InverseVpSent = -1;
         public int StreamWidth;
         public long Seen;
         /// <summary>Drawn into the displacement target (IsDisplacementTexture).</summary>
@@ -47,7 +55,6 @@ public partial class Engine_ClassicParticles
     private readonly Vector4[] _trailSelfIllum = new Vector4[20];
     private readonly Vector4[] _trailWorld = new Vector4[3];
     private readonly Vector4[] _trailUvScales = new Vector4[4];
-    private byte[] _streamBytes = Array.Empty<byte>();
     private bool _reportedStaleTrails;
 
     /// <summary>Trails drawn at the last pump.</summary>
@@ -91,6 +98,10 @@ public partial class Engine_ClassicParticles
             if (pair.Value.Seen != _frames)
             {
                 pair.Value.Node.QueueFree();
+                pair.Value.Colours.Dispose();
+                pair.Value.SelfIllum.Dispose();
+                pair.Value.World.Dispose();
+                pair.Value.UvScales.Dispose();
                 _trailsGone.Add(pair.Key);
             }
         }
@@ -141,11 +152,11 @@ public partial class Engine_ClassicParticles
     private void StreamTexture(Trail trail, int at, int points)
     {
         int floats = points * 4 * 2;
-        if (_streamBytes.Length < floats * 4)
+        if (trail.StreamBytes.Length != floats * 4)
         {
-            _streamBytes = new byte[floats * 4];
+            trail.StreamBytes = new byte[floats * 4];
         }
-        Span<float> texels = MemoryMarshal.Cast<byte, float>(_streamBytes.AsSpan(0, floats * 4));
+        Span<float> texels = MemoryMarshal.Cast<byte, float>(trail.StreamBytes.AsSpan());
         for (int p = 0; p < points; p++)
         {
             int src = at + p * TrailPoint;
@@ -155,16 +166,23 @@ public partial class Engine_ClassicParticles
                 texels[(points + p) * 4 + lane] = _trailBuffer[src + 4 + lane];
             }
         }
-        Image image = Image.CreateFromData(points, 2, false, Image.Format.Rgbaf, _streamBytes.AsSpan(0, floats * 4).ToArray());
-        if (trail.Stream is null || trail.StreamWidth != points)
+        if (trail.StreamImage is null)
         {
-            trail.Stream = ImageTexture.CreateFromImage(image);
-            trail.StreamWidth = points;
-            trail.Material?.SetShaderParameter("xr_vertex_stream", trail.Stream);
+            trail.StreamImage = Image.CreateFromData(points, 2, false, Image.Format.Rgbaf, trail.StreamBytes);
         }
         else
         {
-            trail.Stream.Update(image);
+            trail.StreamImage.SetData(points, 2, false, Image.Format.Rgbaf, trail.StreamBytes);
+        }
+        if (trail.Stream is null || trail.StreamWidth != points)
+        {
+            trail.Stream = ImageTexture.CreateFromImage(trail.StreamImage);
+            trail.StreamWidth = points;
+            trail.Material?.SetShaderParameter(VertexStreamName, trail.Stream);
+        }
+        else
+        {
+            trail.Stream.Update(trail.StreamImage);
         }
     }
 
@@ -186,6 +204,12 @@ public partial class Engine_ClassicParticles
         bool alphaRef16 = _trailBuffer[at + 47] != 0f;
         // IsDisplacementTexture: the strip draws into the displacement target (header [55]).
         bool displaces = _trailBuffer[at + 55] != 0f;
+        long shape = ShapeOf(textures, soft, anim, alphaRef16, doubled, displaces, src, dst, op);
+        if (shape == trail.Shape)
+        {
+            return trail.Material is not null;
+        }
+        trail.Shape = shape;
         string blend = BlendMode(src, dst, op, out bool oneOne);
         string key = $"{doubled}|{textures}|{soft}|{anim}|{blend}|{oneOne}|{alphaRef16}|{displaces}";
         if (key == trail.Key)
@@ -260,7 +284,7 @@ public partial class Engine_ClassicParticles
         }
         if (trail.Stream is not null)
         {
-            material.SetShaderParameter("xr_vertex_stream", trail.Stream);
+            material.SetShaderParameter(VertexStreamName, trail.Stream);
         }
         trail.Material = material;
         if (trail.Mesh.GetSurfaceCount() > 0)
@@ -278,17 +302,19 @@ public partial class Engine_ClassicParticles
             return;
         }
         bool doubled = _trailBuffer[at + 1] == 3f;
+        bool fresh = !ReferenceEquals(trail.SentTo, m);
+        trail.SentTo = m;
 
         float f0 = _trailBuffer[at + 12], f1 = _trailBuffer[at + 13], f2 = _trailBuffer[at + 14],
             f3 = _trailBuffer[at + 15], f4 = _trailBuffer[at + 16];
-        m.SetShaderParameter("vs_g_FadeInDistanceInfo", new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f));
-        m.SetShaderParameter("vs_g_FadeOutDistanceInfo", new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f));
+        m.SetShaderParameter(TrailFadeInDistanceInfoName, new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f));
+        m.SetShaderParameter(TrailFadeOutDistanceInfoName, new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f));
         Vector3 ambient = Engine_ClassicFeed.GlobalAmbient;
         if (_trailBuffer[at + 54] == 0f)
         {
             ambient += new Vector3(_trailBuffer[at + 51], _trailBuffer[at + 52], _trailBuffer[at + 53]);
         }
-        m.SetShaderParameter("vs_g_GlobalAmbient", new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
+        m.SetShaderParameter(TrailGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
 
         // c337 / c340 from the stride-28 keyframes (K+0..12 colour, K+16 the double trail's
         // scale, K+20 self-illum, K+24 start time), 19 at most into the shader's 20.
@@ -308,9 +334,15 @@ public partial class Engine_ClassicParticles
                 _trailSelfIllum[k] = Vector4.Zero;
             }
         }
-        m.SetShaderParameter("vs_g_KeyFrameColors", _trailColours);
-        m.SetShaderParameter("vs_g_KeyFrameSelfIllumFactorStartTimesScale", _trailSelfIllum);
-        m.SetShaderParameter("vs_g_ParticleTrailProperties",
+        if (trail.Colours.Take(_trailColours) || fresh)
+        {
+            m.SetShaderParameter(VsKeyFrameColorsName, trail.Colours.Value);
+        }
+        if (trail.SelfIllum.Take(_trailSelfIllum) || fresh)
+        {
+            m.SetShaderParameter(TrailSelfIllumName, trail.SelfIllum.Value);
+        }
+        m.SetShaderParameter(TrailParticleTrailPropertiesName,
             new Vector4(_trailBuffer[at + 8], _trailBuffer[at + 9], _trailBuffer[at + 10], 0f));
 
         // g_MatWorld: the columns of the row-major transform R+320, as for the quads.
@@ -319,7 +351,10 @@ public partial class Engine_ClassicParticles
             _trailWorld[i] = new Vector4(_trailBuffer[at + 17 + i], _trailBuffer[at + 21 + i],
                 _trailBuffer[at + 25 + i], _trailBuffer[at + 29 + i]);
         }
-        m.SetShaderParameter("vs_g_MatWorld", _trailWorld);
+        if (trail.World.Take(_trailWorld) || fresh)
+        {
+            m.SetShaderParameter(VsMatWorldName, trail.World.Value);
+        }
 
         if (!doubled)
         {
@@ -335,7 +370,7 @@ public partial class Engine_ClassicParticles
             {
                 axis = ToGuest(camera.GlobalTransform.Basis.Z);
             }
-            m.SetShaderParameter("vs_g_CameraZVector", new Vector4(axis.X, axis.Y, axis.Z, 0f));
+            m.SetShaderParameter(TrailCameraZVectorName, new Vector4(axis.X, axis.Y, axis.Z, 0f));
         }
 
         // The pixel side, as for the quads.
@@ -365,16 +400,35 @@ public partial class Engine_ClassicParticles
                 _trailUvScales[t] = new Vector4(x > 0f ? 1f / x : 0f, y > 0f ? 1f / y : 0f, 0f, 0f);
             }
         }
-        m.SetShaderParameter("ps_g_TextureStartTimes", starts);
-        m.SetShaderParameter("ps_g_TextureStartTimesInvDelta", invDeltas);
-        m.SetShaderParameter("ps_g_TextureNumXDivs", divisions);
-        m.SetShaderParameter("ps_g_TextureUVScales", _trailUvScales);
+        m.SetShaderParameter(TrailTextureStartTimesName, starts);
+        m.SetShaderParameter(TrailTextureStartTimesInvDeltaName, invDeltas);
+        m.SetShaderParameter(TrailTextureNumXDivsName, divisions);
+        if (trail.UvScales.Take(_trailUvScales) || fresh)
+        {
+            m.SetShaderParameter(PsTextureUVScalesName, trail.UvScales.Value);
+        }
         float softDistance = _trailBuffer[at + 45];
         if (softDistance > 0f)
         {
             float depthFade = 1f / softDistance;
-            m.SetShaderParameter("ps_g_DepthFadeScale", new Vector4(depthFade, depthFade, depthFade, depthFade));
-            m.SetShaderParameter("ps_g_InverseViewProjection", _inverseViewProjection);
+            m.SetShaderParameter(TrailDepthFadeScaleName, new Vector4(depthFade, depthFade, depthFade, depthFade));
+            if (fresh || trail.InverseVpSent != _inverseVp.Version)
+            {
+                trail.InverseVpSent = _inverseVp.Version;
+                m.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
+            }
         }
     }
+
+    private static readonly StringName VertexStreamName = "xr_vertex_stream";
+    private static readonly StringName TrailFadeInDistanceInfoName = "vs_g_FadeInDistanceInfo";
+    private static readonly StringName TrailFadeOutDistanceInfoName = "vs_g_FadeOutDistanceInfo";
+    private static readonly StringName TrailGlobalAmbientName = "vs_g_GlobalAmbient";
+    private static readonly StringName TrailSelfIllumName = "vs_g_KeyFrameSelfIllumFactorStartTimesScale";
+    private static readonly StringName TrailParticleTrailPropertiesName = "vs_g_ParticleTrailProperties";
+    private static readonly StringName TrailCameraZVectorName = "vs_g_CameraZVector";
+    private static readonly StringName TrailTextureStartTimesName = "ps_g_TextureStartTimes";
+    private static readonly StringName TrailTextureStartTimesInvDeltaName = "ps_g_TextureStartTimesInvDelta";
+    private static readonly StringName TrailTextureNumXDivsName = "ps_g_TextureNumXDivs";
+    private static readonly StringName TrailDepthFadeScaleName = "ps_g_DepthFadeScale";
 }

@@ -21,6 +21,9 @@ namespace Refii.Models;
 [GlobalClass]
 public partial class Engine_ClassicScreenShadow : CompositorEffect
 {
+    /// <summary>The pass's uniform set, by the depth, cascade maps, target and block it binds.</summary>
+    private readonly Refii.Core.Engine_UniformSetKey _set = new(5);
+
     public const string ShaderPath = "res://src/Engine/material/classic_screen_shadow.glsl";
     private const int ParamsBytes = 4 * 16 * 4 + 3 * 16;
 
@@ -115,10 +118,8 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         {
             return;
         }
-        if (_target.IsValid)
-        {
-            _rd!.FreeRid(_target);
-        }
+        // The SCR1 materials sample the old mask until the deferred re-point below lands.
+        Refii.Core.Engine_RdRetire.Retire(_target);
         _target = _rd!.TextureCreate(new RDTextureFormat
         {
             Width = (uint)size.X, Height = (uint)size.Y, Format = RenderingDevice.DataFormat.R8Unorm,
@@ -136,6 +137,10 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
 
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
+        if (_rd is not null)
+        {
+            Refii.Core.Engine_RdRetire.Pump(_rd);
+        }
         if (!_ready || _rd is null || !Engine_ClassicMaterial.Active || Engine_ClassicShadows.Instance is not { } shadows)
         {
             return;
@@ -187,24 +192,29 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         Buffer.BlockCopy(_floats, 0, _bytes, 0, ParamsBytes);
         _rd.BufferUpdate(_params, 0, ParamsBytes, _bytes);
 
-        var uniforms = new Array<RDUniform>();
-        RDUniform Sampled(int binding, Rid texture)
+        Rid depth = buffers.GetDepthLayer(0), near = c0.TextureRdRid, far = c1.TextureRdRid;
+        Rid set = _set.For(_rd, stackalloc Rid[] { depth, near, far, _target, _params });
+        if (!set.IsValid)
         {
-            var u = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = binding };
-            u.AddId(_nearest);
-            u.AddId(texture);
-            return u;
+            var uniforms = new Array<RDUniform>();
+            RDUniform Sampled(int binding, Rid texture)
+            {
+                var u = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = binding };
+                u.AddId(_nearest);
+                u.AddId(texture);
+                return u;
+            }
+            uniforms.Add(Sampled(0, depth));
+            uniforms.Add(Sampled(1, near));
+            uniforms.Add(Sampled(2, far));
+            var image = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 };
+            image.AddId(_target);
+            uniforms.Add(image);
+            var block = new RDUniform { UniformType = RenderingDevice.UniformType.UniformBuffer, Binding = 4 };
+            block.AddId(_params);
+            uniforms.Add(block);
+            set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, uniforms));
         }
-        uniforms.Add(Sampled(0, buffers.GetDepthLayer(0)));
-        uniforms.Add(Sampled(1, c0.TextureRdRid));
-        uniforms.Add(Sampled(2, c1.TextureRdRid));
-        var image = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 };
-        image.AddId(_target);
-        uniforms.Add(image);
-        var block = new RDUniform { UniformType = RenderingDevice.UniformType.UniformBuffer, Binding = 4 };
-        block.AddId(_params);
-        uniforms.Add(block);
-        Rid set = UniformSetCacheRD.GetCache(_shader, 0, uniforms);
 
         long list = _rd.ComputeListBegin();
         _rd.ComputeListBindComputePipeline(list, _pipeline);

@@ -48,6 +48,10 @@ public partial class Engine_ClassicParticles : Node
         public ArrayMesh Mesh = null!;
         public ShaderMaterial? Material;
         public string Key = string.Empty;
+        /// <summary>The inputs <see cref="Key"/> is built from, packed; the string is rebuilt only when they change.</summary>
+        public long Shape = -1;
+        /// <summary>The <see cref="_inverseVp"/> version its materials hold.</summary>
+        public int InverseVpSent = -1;
         public int Capacity;
         public Vector3[] Vertices = Array.Empty<Vector3>();
         public float[] Custom0 = Array.Empty<float>();
@@ -124,6 +128,9 @@ public partial class Engine_ClassicParticles : Node
     private readonly Vector4[] _world = new Vector4[3];
     private readonly Vector4[] _uvScales = new Vector4[4];
     private readonly Vector4[] _inverseViewProjection = new Vector4[4];
+
+    /// <summary>g_InverseViewProjection as one Variant, rebuilt when the camera moves; every soft group and trail sets this one.</summary>
+    private readonly Refii.Core.Engine_ArrayParam _inverseVp = new();
     private readonly Godot.Collections.Array _arrays = new();
     private long _frames;
     private int _particles;
@@ -272,6 +279,7 @@ public partial class Engine_ClassicParticles : Node
             {
                 group.Displacement = displacement;
                 group.Key = string.Empty;
+                group.Shape = -1;
                 group.Node.Layers = displacement ? Engine_ClassicDisplacement.Layer : Layer;
             }
             group.Seen = _frames;
@@ -485,6 +493,12 @@ public partial class Engine_ClassicParticles : Node
         }
         int src = (int)_buffer[at + 39], dst = (int)_buffer[at + 40], op = (int)_buffer[at + 41];
         bool alphaRef16 = _buffer[at + 44] != 0f;
+        long shape = ShapeOf(textures, soft, anim, alphaRef16, false, false, src, dst, op);
+        if (shape == group.Shape && group.Material is not null)
+        {
+            return true;
+        }
+        group.Shape = shape;
         string blend = BlendMode(src, dst, op, out bool oneOne);
         string key = $"{textures}|{soft}|{anim}|{blend}|{oneOne}|{alphaRef16}";
         if (key == group.Key && group.Material is not null)
@@ -564,6 +578,11 @@ public partial class Engine_ClassicParticles : Node
     /// 9 INVDESTALPHA; ops 0 ADD, 1 SUBTRACT, 2 REVSUBTRACT, 3 MIN, 4 MAX) as Godot's modes.
     /// ONE/ONE is premultiplied with the alpha held at zero.
     /// </summary>
+    /// <summary>A composition's inputs as one number, compared each frame instead of its key string.</summary>
+    private static long ShapeOf(int textures, bool soft, bool anim, bool alphaRef16, bool doubled, bool displaces, int src, int dst, int op) =>
+        textures | (soft ? 8L : 0L) | (anim ? 16L : 0L) | (alphaRef16 ? 32L : 0L) | (doubled ? 64L : 0L) | (displaces ? 128L : 0L) |
+        ((long)(src & 0xFFFF) << 8) | ((long)(dst & 0xFFFF) << 24) | ((long)(op & 0xFFFF) << 40);
+
     private static string BlendMode(int src, int dst, int op, out bool oneOne)
     {
         oneOne = false;
@@ -633,7 +652,7 @@ public partial class Engine_ClassicParticles : Node
     /// The draw's by-id constants (`sub_821CA108`). The camera's position and axes are frame
     /// registers (the feed writes them); the material's keyframes, fades, timings and ambient
     /// are written when they change; the transform when it moves; a soft group's view inverse
-    /// and tile every frame. A fixed-axis group (M+56) takes its own axes (XR_VS_CONST).
+    /// when the camera moves. A fixed-axis group (M+56) takes its own axes (XR_VS_CONST).
     /// </summary>
     private void Constants(Group group, int at, Vector2 viewport)
     {
@@ -710,6 +729,10 @@ public partial class Engine_ClassicParticles : Node
                 up = q * new Vector3(0f, 1f, 0f);
                 right = q * new Vector3(1f, 0f, 0f);
             }
+            using Variant colours = Variant.CreateFrom(_colours);
+            using Variant scales = Variant.CreateFrom(_scales);
+            using Variant globalScales = Variant.CreateFrom(_globalScales);
+            using Variant uvScales = Variant.CreateFrom(_uvScales);
             foreach (ShaderMaterial m in _chain)
             {
                 m.SetShaderParameter(FixedAxesName, fixedAxes);
@@ -718,13 +741,13 @@ public partial class Engine_ClassicParticles : Node
                 m.SetShaderParameter(VsFadeInDistanceInfoName, fadeIn);
                 m.SetShaderParameter(VsFadeOutDistanceInfoName, fadeOut);
                 m.SetShaderParameter(VsGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
-                m.SetShaderParameter(VsKeyFrameColorsName, _colours);
-                m.SetShaderParameter(VsKeyFrameScalesSelfIllumFactorStartTimesName, _scales);
-                m.SetShaderParameter(VsKeyFrameGlobalScalesName, _globalScales);
+                m.SetShaderParameter(VsKeyFrameColorsName, colours);
+                m.SetShaderParameter(VsKeyFrameScalesSelfIllumFactorStartTimesName, scales);
+                m.SetShaderParameter(VsKeyFrameGlobalScalesName, globalScales);
                 m.SetShaderParameter(PsTextureStartTimesName, starts);
                 m.SetShaderParameter(PsTextureStartTimesInvDeltaName, invDeltas);
                 m.SetShaderParameter(PsTextureNumXDivsName, divisions);
-                m.SetShaderParameter(PsTextureUVScalesName, _uvScales);
+                m.SetShaderParameter(PsTextureUVScalesName, uvScales);
                 if (softDistance > 0f)
                 {
                     m.SetShaderParameter(PsDepthFadeScaleName, new Vector4(depthFade, depthFade, depthFade, depthFade));
@@ -749,18 +772,19 @@ public partial class Engine_ClassicParticles : Node
             {
                 _world[i] = new Vector4(group.World[i], group.World[4 + i], group.World[8 + i], group.World[12 + i]);
             }
+            using Variant world = Variant.CreateFrom(_world);
             foreach (ShaderMaterial m in _chain)
             {
-                m.SetShaderParameter(VsMatWorldName, _world);
+                m.SetShaderParameter(VsMatWorldName, world);
             }
         }
 
-        if (_buffer[at + 42] > 0f)
+        if (_buffer[at + 42] > 0f && (liveChanged || group.InverseVpSent != _inverseVp.Version))
         {
-            var tile = new Vector4(0f, 0f, 1f / Math.Max(viewport.X, 1f), 1f / Math.Max(viewport.Y, 1f));
+            group.InverseVpSent = _inverseVp.Version;
             foreach (ShaderMaterial m in _chain)
             {
-                m.SetShaderParameter(PsInverseViewProjectionName, _inverseViewProjection);
+                m.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
             }
         }
     }
@@ -804,6 +828,7 @@ public partial class Engine_ClassicParticles : Node
         {
             _inverseViewProjection[i] = new Vector4(m.X[i], m.Y[i], m.Z[i], m.W[i]);
         }
+        _inverseVp.Take(_inverseViewProjection);
     }
 
     /// <summary>A material texture: by the path the key points at, else by the key as a hash.</summary>

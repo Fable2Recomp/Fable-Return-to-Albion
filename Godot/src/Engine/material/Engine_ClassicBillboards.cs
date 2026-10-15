@@ -536,14 +536,14 @@ public partial class Engine_ClassicBillboards : Node
     private ShaderMaterial CardMaterial()
     {
         var material = new ShaderMaterial { Shader = _shader };
-        material.SetShaderParameter("vs_s16", Engine_ClassicAtmosphere.ExtinctionTexture);
-        material.SetShaderParameter("vs_s17", Engine_ClassicAtmosphere.InScatteringTexture);
-        material.SetShaderParameter("xr_use_guest_position", true);
-        material.SetShaderParameter("xr_spec_constants", 2u);
-        material.SetShaderParameter("xr_alpha_threshold", AlphaThreshold);
+        material.SetShaderParameter(VsS16Name, Engine_ClassicAtmosphere.ExtinctionTexture);
+        material.SetShaderParameter(VsS17Name, Engine_ClassicAtmosphere.InScatteringTexture);
+        material.SetShaderParameter(XrUseGuestPositionName, true);
+        material.SetShaderParameter(XrSpecConstantsName, 2u);
+        material.SetShaderParameter(XrAlphaThresholdName, AlphaThreshold);
         // Set once: the mipped atlas (Engine_ClassicImpostorMips) keeps its object through
         // resizes, and a sampler set queues a uniform-set rebuild.
-        material.SetShaderParameter("ps_g_DiffuseTextureSampler", Engine_ClassicImpostorMips.Texture);
+        material.SetShaderParameter(PsDiffuseTextureSamplerName, Engine_ClassicImpostorMips.Texture);
         return material;
     }
 
@@ -778,10 +778,10 @@ public partial class Engine_ClassicBillboards : Node
         }
         var copy = (ShaderMaterial)own.Duplicate();
         copy.SetShaderParameter(ScreenShadow, Engine_ClassicScreenShadow.White);
-        if (copy.GetShaderParameter("xr_booleans").VariantType != Variant.Type.Nil)
+        if (copy.GetShaderParameter(XrBooleansName).VariantType != Variant.Type.Nil)
         {
-            uint booleans = copy.GetShaderParameter("xr_booleans").AsUInt32();
-            copy.SetShaderParameter("xr_booleans", booleans & ~(1u << (16 + 4)));
+            uint booleans = copy.GetShaderParameter(XrBooleansName).AsUInt32();
+            copy.SetShaderParameter(XrBooleansName, booleans & ~(1u << (16 + 4)));
         }
         _captureMaterials[id] = copy;
         return copy;
@@ -806,8 +806,8 @@ public partial class Engine_ClassicBillboards : Node
         Vector3 forward = ToGuestDirection(-camera.GlobalBasis.Z);
         var flat = new Vector2(forward.X, forward.Y);
         flat = flat.LengthSquared() > 1e-8f ? flat.Normalized() : Vector2.Zero;
-        _cards?.SetShaderParameter("vs_g_CameraPos", new Vector4(eye.X, eye.Y, eye.Z, 1f));
-        _cards?.SetShaderParameter("vs_g_CameraZVector", new Vector4(flat.X, flat.Y, 0f, 0f));
+        _cards?.SetShaderParameter(VsCameraPosName, new Vector4(eye.X, eye.Y, eye.Z, 1f));
+        _cards?.SetShaderParameter(VsCameraZVectorName, new Vector4(flat.X, flat.Y, 0f, 0f));
     }
 
     /// <summary>The kind's own card constants onto the frame's (see VS 0092 / PS 0093), into its row.</summary>
@@ -873,4 +873,15 @@ public partial class Engine_ClassicBillboards : Node
     private static Vector3 ToGuest(Vector3 godot) => new(-godot.X, godot.Z, godot.Y);
 
     private static Vector3 ToGuestDirection(Vector3 godot) => new(-godot.X, godot.Z, godot.Y);
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName VsS16Name = "vs_s16";
+    private static readonly StringName VsS17Name = "vs_s17";
+    private static readonly StringName XrUseGuestPositionName = "xr_use_guest_position";
+    private static readonly StringName XrSpecConstantsName = "xr_spec_constants";
+    private static readonly StringName XrAlphaThresholdName = "xr_alpha_threshold";
+    private static readonly StringName PsDiffuseTextureSamplerName = "ps_g_DiffuseTextureSampler";
+    private static readonly StringName XrBooleansName = "xr_booleans";
+    private static readonly StringName VsCameraPosName = "vs_g_CameraPos";
+    private static readonly StringName VsCameraZVectorName = "vs_g_CameraZVector";
 }
