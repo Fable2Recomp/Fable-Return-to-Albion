@@ -116,22 +116,7 @@ public partial class Engine_ClassicMist : Node
                 _volumes.Add(new Volume());
             }
             Volume v = _volumes[i];
-            int at = i * stride;
-            v.Min = new Vector3(_raw[at], _raw[at + 1], _raw[at + 2]);
-            v.Max = new Vector3(_raw[at + 3], _raw[at + 4], _raw[at + 5]);
-            v.Colour = new Vector3(_raw[at + 6], _raw[at + 7], _raw[at + 8]);
-            v.Density = _raw[at + 10];
-            v.NoiseOffset = _raw[at + 11];
-            v.Speed = _raw[at + 12];
-            v.TilingX = _raw[at + 13];
-            v.TilingY = _raw[at + 14];
-            v.Inv316 = _raw[at + 15] != 0f ? 1f / _raw[at + 15] : 0f;
-            v.Params320 = new Vector4(_raw[at + 16], _raw[at + 17], _raw[at + 18], _raw[at + 19]);
-            v.Weight = _raw[at + 20];
-            v.Remap352 = new Vector4(_raw[at + 21], _raw[at + 22], _raw[at + 23], _raw[at + 24]);
-            v.Remap368 = new Vector4(_raw[at + 25], _raw[at + 26], _raw[at + 27], _raw[at + 28]);
-            v.Extents = new Vector3(_raw[at + 29], _raw[at + 30], _raw[at + 31]);
-            v.Origin = new Vector3(_raw[at + 32], _raw[at + 33], _raw[at + 34]);
+            Read(_raw, i * stride, v);
 
             if (v.Viewport is null && !Build(v))
             {
@@ -147,6 +132,26 @@ public partial class Engine_ClassicMist : Node
     }
 
     private static float _globalStrength = 1f;
+
+    /// <summary>One mist record (36 floats at <paramref name="at"/>, see the native export) into <paramref name="v"/>; both renderers read it here.</summary>
+    public static void Read(float[] raw, int at, Volume v)
+    {
+        v.Min = new Vector3(raw[at], raw[at + 1], raw[at + 2]);
+        v.Max = new Vector3(raw[at + 3], raw[at + 4], raw[at + 5]);
+        v.Colour = new Vector3(raw[at + 6], raw[at + 7], raw[at + 8]);
+        v.Density = raw[at + 10];
+        v.NoiseOffset = raw[at + 11];
+        v.Speed = raw[at + 12];
+        v.TilingX = raw[at + 13];
+        v.TilingY = raw[at + 14];
+        v.Inv316 = raw[at + 15] != 0f ? 1f / raw[at + 15] : 0f;
+        v.Params320 = new Vector4(raw[at + 16], raw[at + 17], raw[at + 18], raw[at + 19]);
+        v.Weight = raw[at + 20];
+        v.Remap352 = new Vector4(raw[at + 21], raw[at + 22], raw[at + 23], raw[at + 24]);
+        v.Remap368 = new Vector4(raw[at + 25], raw[at + 26], raw[at + 27], raw[at + 28]);
+        v.Extents = new Vector3(raw[at + 29], raw[at + 30], raw[at + 31]);
+        v.Origin = new Vector3(raw[at + 32], raw[at + 33], raw[at + 34]);
+    }
 
     /// <summary>Writes a volume's five mist registers (c72..c76) into a draw's row.</summary>
     public static void WriteRegisters(Volume v, int row)

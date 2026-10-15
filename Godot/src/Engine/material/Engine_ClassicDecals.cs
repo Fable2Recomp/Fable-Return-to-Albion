@@ -29,9 +29,8 @@ public partial class Engine_ClassicDecals : Node
     /// <summary>The projected points: row 2s positions (NaN when off the surface), row 2s+1 normals.</summary>
     public const string PointsName = "fable_decal_points";
 
-    public const int Slots = 50;
+    public const int Slots = Refii.Fx.Engine_DecalFeed.Slots;
     public const int Points = 289;
-    private const int Words = Refii.Host.HostBridge.DecalWords;
     private const string VertexEntry = "VSHADER_DECAL";
     private const string PixelEntry = "PSHADER_DECAL";
 
@@ -44,27 +43,19 @@ public partial class Engine_ClassicDecals : Node
         public Vector2 Half;
     }
 
-    private sealed class Decal
+    /// <summary>What this renderer draws for one slot of the feed's ring.</summary>
+    private sealed class DrawnSlot
     {
         public uint Serial;
-        public uint Owner;
-        public uint Texture;
-        public Vector3 LocalPosition;
-        public Vector3 LocalDirection;
-        public Transform3D Laid = Transform3D.Identity;
-        public Vector3 Position;
-        public Vector3 Direction;
-        public Vector2 Half;
         public MeshInstance3D? Node;
         public ShaderMaterial? Material;
     }
 
     private static readonly object Gate = new();
     private static readonly Projection[] _published = new Projection[Slots];
-    private readonly uint[] _words = new uint[Slots * Words];
-    private readonly Decal?[] _slots = new Decal?[Slots];
+    private readonly Refii.Fx.Engine_DecalFeed _feed = new();
+    private readonly DrawnSlot?[] _drawn = new DrawnSlot?[Slots];
     private readonly Dictionary<uint, Texture2D?> _textures = new();
-    private uint _serial = uint.MaxValue;
     private ArrayMesh? _grid;
     private Shader? _shader;
     private bool _shaderTried;
@@ -101,30 +92,34 @@ public partial class Engine_ClassicDecals : Node
     /// <summary>Follows the guest's decals and their owners. Main thread, once a frame.</summary>
     public void Pump(Camera3D camera)
     {
-        uint count = Refii.Host.HostBridge.GetDecals(_words, out uint serial);
-        if (serial != _serial)
-        {
-            _serial = serial;
-            Restate((int)count);
-        }
-
+        _feed.Pump();
+        ReadOnlySpan<Refii.Fx.Engine_DecalFeed.Decal?> ring = _feed.Ring;
         Vector3 eye = ToGuest(camera.GlobalPosition);
         int drawn = 0;
         lock (Gate)
         {
             for (int s = 0; s < Slots; s++)
             {
-                Decal? decal = _slots[s];
+                Refii.Fx.Engine_DecalFeed.Decal? decal = ring[s];
                 _published[s].Active = false;
-                if (decal is null || !EnsureNode(decal, s))
+                if (_drawn[s] is { } old && (decal is null || old.Serial != decal.Serial))
+                {
+                    old.Node?.QueueFree();
+                    _drawn[s] = null;
+                }
+                if (decal is null)
                 {
                     continue;
                 }
-                Follow(decal, s, (int)count);
+                DrawnSlot slot = _drawn[s] ??= new DrawnSlot { Serial = decal.Serial };
+                if (!EnsureNode(decal, slot, s))
+                {
+                    continue;
+                }
                 float distance = eye.DistanceTo(decal.Position);
                 // `Render_ParticlePoolDraw_INFERRED`: a decal past 64 m is not drawn.
                 bool shown = distance * distance <= 4096f;
-                decal.Node!.Visible = shown;
+                slot.Node!.Visible = shown;
                 if (!shown)
                 {
                     continue;
@@ -136,97 +131,16 @@ public partial class Engine_ClassicDecals : Node
                     Direction = decal.Direction,
                     Half = decal.Half,
                 };
-                Constants(decal, camera, distance);
+                Constants(decal, slot, camera, distance);
                 ++drawn;
             }
         }
         Drawn = drawn;
     }
 
-    /// <summary>The decal set moved: keep each one that is still stated, add the new ones.</summary>
-    private void Restate(int count)
+    private bool EnsureNode(Refii.Fx.Engine_DecalFeed.Decal decal, DrawnSlot slot, int index)
     {
-        var stated = new Dictionary<uint, int>();
-        for (int i = 0; i < count; i++)
-        {
-            stated[_words[i * Words]] = i;
-        }
-        for (int s = 0; s < Slots; s++)
-        {
-            if (_slots[s] is { } decal && !stated.ContainsKey(decal.Serial))
-            {
-                decal.Node?.QueueFree();
-                _slots[s] = null;
-            }
-        }
-        for (int i = 0; i < count; i++)
-        {
-            uint serial = _words[i * Words];
-            if (Array.Exists(_slots, d => d is not null && d.Serial == serial))
-            {
-                continue;
-            }
-            int free = Array.FindIndex(_slots, d => d is null);
-            if (free < 0)
-            {
-                break;
-            }
-            int o = i * Words;
-            var decal = new Decal
-            {
-                Serial = serial,
-                Owner = _words[o + 1],
-                Texture = _words[o + 2],
-                Position = new Vector3(F(o + 3), F(o + 4), F(o + 5)),
-                Direction = new Vector3(F(o + 7), F(o + 8), F(o + 9)),
-                Half = new Vector2(F(o + 11), F(o + 12)),
-            };
-            // An owned decal is laid in the owner's frame and follows it from there.
-            if (decal.Owner != 0u)
-            {
-                decal.Laid = OwnerMatrix(o);
-                Transform3D inverse = decal.Laid.AffineInverse();
-                decal.LocalPosition = inverse * decal.Position;
-                decal.LocalDirection = inverse.Basis * decal.Direction;
-            }
-            _slots[free] = decal;
-        }
-    }
-
-    private void Follow(Decal decal, int slot, int count)
-    {
-        if (decal.Owner == 0u)
-        {
-            return;
-        }
-        for (int i = 0; i < count; i++)
-        {
-            int o = i * Words;
-            if (_words[o] != decal.Serial)
-            {
-                continue;
-            }
-            Transform3D now = OwnerMatrix(o);
-            decal.Position = now * decal.LocalPosition;
-            decal.Direction = (now.Basis * decal.LocalDirection).Normalized();
-            return;
-        }
-    }
-
-    /// <summary>The owner's matrix as `sub_8220B490` loads it: three rows (axis, translation).</summary>
-    private Transform3D OwnerMatrix(int o)
-    {
-        int m = o + 15;
-        var basis = new Basis(
-            new Vector3(F(m), F(m + 4), F(m + 8)),
-            new Vector3(F(m + 1), F(m + 5), F(m + 9)),
-            new Vector3(F(m + 2), F(m + 6), F(m + 10)));
-        return new Transform3D(basis, new Vector3(F(m + 3), F(m + 7), F(m + 11)));
-    }
-
-    private bool EnsureNode(Decal decal, int slot)
-    {
-        if (decal.Node is not null)
+        if (slot.Node is not null)
         {
             return true;
         }
@@ -256,7 +170,7 @@ public partial class Engine_ClassicDecals : Node
         Vector3 at = ToGodot(decal.Position);
         var node = new MeshInstance3D
         {
-            Name = $"Decal{slot}",
+            Name = $"Decal{index}",
             Mesh = _grid,
             MaterialOverride = material,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
@@ -266,10 +180,10 @@ public partial class Engine_ClassicDecals : Node
         };
         AddChild(node);
         node.GlobalPosition = at;
-        node.SetInstanceShaderParameter("xr_decal_slot", slot * 2);
+        node.SetInstanceShaderParameter("xr_decal_slot", index * 2);
         Engine_ClassicLitInstances.Attach(node);
-        decal.Node = node;
-        decal.Material = material;
+        slot.Node = node;
+        slot.Material = material;
         return true;
     }
 
@@ -333,9 +247,9 @@ public partial class Engine_ClassicDecals : Node
     }
 
     /// <summary>The per-frame constants: the camera's view-projection and the ambient with the distance fade.</summary>
-    private static void Constants(Decal decal, Camera3D camera, float distance)
+    private static void Constants(Refii.Fx.Engine_DecalFeed.Decal decal, DrawnSlot slot, Camera3D camera, float distance)
     {
-        ShaderMaterial m = decal.Material!;
+        ShaderMaterial m = slot.Material!;
         // g_MatViewProj rows: guest world -> Godot clip (the stage writes oPos straight out).
         Godot.Projection clip = Engine_ClassicShaders.GuestToClip(camera);
         m.SetShaderParameter("vs_g_MatViewProj", new[]
@@ -349,7 +263,7 @@ public partial class Engine_ClassicDecals : Node
         float fade = distance < 44.8f ? 1f : 1f - (distance - 44.8f) / 19.2f;
         m.SetShaderParameter("ps_g_GlobalAmbientAndDistanceAlpha", new Vector4(ambient.X, ambient.Y, ambient.Z, fade));
         m.SetShaderParameter("xr_use_guest_position", true);
-        decal.Node!.GlobalPosition = ToGodot(decal.Position);
+        slot.Node!.GlobalPosition = ToGodot(decal.Position);
     }
 
     private static bool _registered;
@@ -368,8 +282,6 @@ public partial class Engine_ClassicDecals : Node
         RenderingServer.GlobalShaderParameterAdd(PointsName,
             RenderingServer.GlobalShaderParameterType.Sampler2D, ImageTexture.CreateFromImage(image));
     }
-
-    private float F(int at) => BitConverter.UInt32BitsToSingle(_words[at]);
 
     private static Vector3 ToGuest(Vector3 godot) => new(-godot.X, godot.Z, godot.Y);
 

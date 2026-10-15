@@ -45,7 +45,7 @@ public partial class Engine_ClassicFur : Node
     private const string ShellVertex = "VSHADER_SHELL_FUR_SIMPLE_PRESKINNED";
     private const string ShellPixel = "PSHADER_SHELL_FUR_SIMPLE";
     private const string ShellMistPixel = "PSHADER_SHELL_FUR_SIMPLE_MIST";
-    private const int MaxShells = 30;
+    internal const int MaxShells = 30;
     private const int Slices = 20;
     private const int SliceSize = 128;
 
@@ -698,7 +698,7 @@ public partial class Engine_ClassicFur : Node
     /// The furred surfaces' triangles as a mesh of their own, skinned as the source, with the fur
     /// record per vertex in COLOR and CUSTOM0. Null when no source vertex maps to a fur block.
     /// </summary>
-    private static ArrayMesh? Shells(ArrayMesh source)
+    internal static ArrayMesh? Shells(ArrayMesh source)
     {
         ulong key = source.GetInstanceId();
         if (ShellMeshes.TryGetValue(key, out ArrayMesh? cached))
@@ -752,7 +752,7 @@ public partial class Engine_ClassicFur : Node
     }
 
     /// <summary>Shell mesh metadata: the source surfaces its triangles came from.</summary>
-    private static readonly StringName SourceSurfacesMeta = "fur_source_surfaces";
+    internal static readonly StringName SourceSurfacesMeta = "fur_source_surfaces";
 
     private static void AddShellSurface(ArrayMesh into, ArrayMesh source, int surface, int start, int[] sourceMap,
         Godot.Collections.Dictionary block)
@@ -863,6 +863,33 @@ public partial class Engine_ClassicFur : Node
         {
             return held;
         }
+        Image[] images = SliceImages(falloff);
+        var slices = new ImageTexture[Slices];
+        for (int slice = 0; slice < Slices; slice++)
+        {
+            slices[slice] = ImageTexture.CreateFromImage(images[slice]);
+        }
+        SlicesByFalloff[falloff] = slices;
+        return slices;
+    }
+
+    private static readonly Dictionary<float, Texture2DArray> SliceArraysByFalloff = new();
+
+    /// <summary>The same set as one array, layer = slice, for the modern shells.</summary>
+    internal static Texture2DArray SliceArrayFor(float falloff)
+    {
+        if (SliceArraysByFalloff.TryGetValue(falloff, out Texture2DArray? held))
+        {
+            return held;
+        }
+        var array = new Texture2DArray();
+        array.CreateFromImages(new Godot.Collections.Array<Image>(SliceImages(falloff)));
+        SliceArraysByFalloff[falloff] = array;
+        return array;
+    }
+
+    private static Image[] SliceImages(float falloff)
+    {
         const int texels = SliceSize * SliceSize;
         var luminance = new byte[texels];
         var alpha = new byte[Slices * texels];
@@ -891,7 +918,7 @@ public partial class Engine_ClassicFur : Node
                 alpha[(j - 1) * texels + texel] = (byte)(int)((1f - falloff * p) * 255f + 0.5f);
             }
         }
-        var slices = new ImageTexture[Slices];
+        var images = new Image[Slices];
         var bytes = new byte[texels * 2];
         for (int slice = 0; slice < Slices; slice++)
         {
@@ -902,9 +929,8 @@ public partial class Engine_ClassicFur : Node
             }
             Image image = Image.CreateFromData(SliceSize, SliceSize, false, Image.Format.La8, bytes);
             image.GenerateMipmaps();
-            slices[slice] = ImageTexture.CreateFromImage(image);
+            images[slice] = image;
         }
-        SlicesByFalloff[falloff] = slices;
-        return slices;
+        return images;
     }
 }

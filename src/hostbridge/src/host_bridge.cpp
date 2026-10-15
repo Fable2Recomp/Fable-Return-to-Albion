@@ -43,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <SDL3/SDL_events.h>
@@ -12123,6 +12124,54 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicMists(float* out, uint32_t cap
     return written;
 }
 
+/// THE PARTICLE-SYSTEM INSTANCE BEHIND EACH QUAD AND TRAIL TWIN, so the host can tell which
+/// effects the guest is drawing itself. The twin keeps no pointer back to the sim, so the link is
+/// walked from the sim side: every live instance (the vector at dword_8349E48C, {instance,
+/// refnode} stride 8) whose class carries the render component at +0x150 (`sub_8322F600`
+/// 0x8322F6C8 `addi r3,r31,0x150` -> `sub_83228588`) holds the renderer holder at component +28
+/// (`*(a1+28) = v39`), i.e. instance +0x16C; the holder (vtable off_82001AC0) keeps the quad/trail
+/// proxy at +24 and the proxy its twin handle at +4, -1 when none (`sub_82456E60`); the handle
+/// indexes the twin table dword_8349F7AC and the twin repeats it at +16 (`sub_821E1F40`
+/// `v24[4] = v21`). A class without the component reads past its end here, so a link counts
+/// only when the holder's vtable and the table's twin both agree. Child components (the 496-byte
+/// class's map at +460) are not walked: their twins have no owner.
+static void ParticleTwinOwners(uint8_t* base, std::unordered_map<uint32_t, uint32_t>& owners) {
+    owners.clear();
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const uint32_t begin = read32(refii::guest::Address(0x8349E490u));
+    const uint32_t end = read32(refii::guest::Address(0x8349E494u));
+    const uint32_t table = read32(refii::guest::Address(0x8349F7ACu));
+    const uint32_t table_end = read32(refii::guest::Address(0x8349F7B0u));
+    const uint32_t holder_vtable = refii::guest::Address(0x82001AC0u);
+    if (!plausible(begin) || end < begin || end - begin > 8u * 8192u || !plausible(table) || table_end < table) {
+        return;
+    }
+    const uint32_t handles = (table_end - table) / 4u;
+    for (uint32_t at = begin; at + 8u <= end; at += 8u) {
+        const uint32_t instance = read32(at);
+        if (!plausible(instance)) {
+            continue;
+        }
+        const uint32_t holder = read32(instance + 0x16Cu);
+        if (!plausible(holder) || read32(holder) != holder_vtable) {
+            continue;
+        }
+        const uint32_t proxy = read32(holder + 24u);
+        if (!plausible(proxy)) {
+            continue;
+        }
+        const uint32_t handle = read32(proxy + 4u);
+        if (handle >= handles) {
+            continue;
+        }
+        const uint32_t twin = read32(table + handle * 4u);
+        if (plausible(twin) && read32(twin + 16u) == handle) {
+            owners[twin] = instance;
+        }
+    }
+}
+
 /// The render scene's PARTICLE GROUPS as their render-side twins hold them: the data the sim
 /// states to the renderer through the twin's receivers (`sub_821D8EA8` the records, material
 /// and bounds; `sub_821D9D40` the transform), which the title's point-sprite draw
@@ -12132,7 +12181,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicMists(float* out, uint32_t cap
 ///   a 320-float header, then count x 12 floats of 48-byte records as the stream holds them.
 /// Header (R = the render object, D = *(*(R+180)+4) its render data, M = *(D+48) its material):
 ///   [0] R (bits) [1] R+240 kind [2] count R+176 [3] R+244
-///   [4..6] bounds min R+80 [8..10] bounds max R+96
+///   [4..6] bounds min R+80 [7] the owning particle-system instance (bits; 0 unknown,
+///   ParticleTwinOwners) [8..10] bounds max R+96
 ///   [12..16] fade distances R+384..400 (in near, in far, out near, out far, alpha)
 ///   [17] scale R+404 [18] R+408 [19] R+409 [20] R+412
 ///   [21..36] the current transform R+320, row-major as the title lerps it (`sub_8288F408`)
@@ -12208,6 +12258,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t
         : 0u;
 
     uint32_t used = 2u;
+    static thread_local std::unordered_map<uint32_t, uint32_t> owners;
+    ParticleTwinOwners(base, owners);
     uint32_t groups = 0u;
     for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
         const uint32_t type = read32(node);
@@ -12247,6 +12299,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t
                 h[k] = 0.0f;
             }
             put_bits(h + 0, r);
+            { const auto owner = owners.find(r); put_bits(h + 7, owner != owners.end() ? owner->second : 0u); }
             h[1] = 1.0f;
             h[2] = static_cast<float>(count);
             h[3] = static_cast<float>(static_cast<int32_t>(read32(r + 244u)));
@@ -12332,7 +12385,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t
 ///   [0] R (bits) [1] kind [2] n = R+176 [3] c [4] s (TM+0x20 / DM+0x14, int) [5] vertices
 ///   2((n-1)s+1) [6] closed loop (kind 2) [7] TM or DM (bits) [8..11] c366 (s, 1/((n-1)s), 1/s, 0)
 ///   [12..16] fades R+384..400 [17..32] transform R+320 [33] fixed axis TM+0x38 [34..37] D+48
-///   quaternion [42..44] blend src/dst/op (B+0/4/8; B = TM+0x24 / DM+0x18) [45] soft distance B+12
+///   quaternion [38] the owning particle-system instance (bits; 0 unknown, ParticleTwinOwners)
+///   [42..44] blend src/dst/op (B+0/4/8; B = TM+0x24 / DM+0x18) [45] soft distance B+12
 ///   [46] B+16 [47] B+17 (alpha ref 16) [48] texture count [50] keyframes (<= 19)
 ///   [51..53] the lighting object's +496 [54] probe count
 ///   [56..207] 19 keyframes x 8: K+0..12 colour, K+16, K+20, K+24, 0 (TM/DM+8, stride 28)
@@ -12380,6 +12434,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t ca
         : 0u;
 
     uint32_t used = 2u;
+    static thread_local std::unordered_map<uint32_t, uint32_t> owners;
+    ParticleTwinOwners(base, owners);
     uint32_t groups = 0u;
     for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
         const uint32_t type = read32(node);
@@ -12430,6 +12486,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t ca
                 h[k] = 0.0f;
             }
             put_bits(h + 0, r);
+            { const auto owner = owners.find(r); put_bits(h + 38, owner != owners.end() ? owner->second : 0u); }
             h[1] = static_cast<float>(kind);
             h[2] = static_cast<float>(n);
             h[3] = static_cast<float>(c);

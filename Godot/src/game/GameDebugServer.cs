@@ -1322,7 +1322,8 @@ public partial class GameDebugServer : Node
 						$"{light.Name} d={distance:0.0} at=({p.X:0.0},{p.Y:0.0},{p.Z:0.0}) range={range:0.0} " +
 						$"energy={light.LightEnergy:0.00} colour=({light.LightColor.R:0.00},{light.LightColor.G:0.00},{light.LightColor.B:0.00}) " +
 						$"fade={(light.DistanceFadeEnabled ? $"{light.DistanceFadeBegin:0}+{light.DistanceFadeLength:0}" : "off")} " +
-						$"visible={light.Visible} shadow={light.ShadowEnabled}");
+						$"visible={light.Visible} shadow={light.ShadowEnabled} cull=0x{light.LightCullMask:X8} " +
+						$"host={(light.HasMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta) ? $"0x{(uint)light.GetMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta).AsInt64():X8}" : "-")}");
 				}
 
 				return Ok(new Dictionary<string, object?>
@@ -1969,6 +1970,18 @@ public partial class GameDebugServer : Node
 						("GlobalAmbientAndBrightness", 54, 1), ("LightPositions", 76, 2), ("LightColors", 83, 2),
 						("LightType", 90, 1), ("LightPrimaryDirection", 105, 1), ("Atmosphere", 108, 5),
 					}),
+				});
+			}
+
+			case "looks":
+			{
+				// The drawn entities nearest the eye and what the guest states for their look.
+				int take = root.TryGetProperty("count", out JsonElement lk) && lk.ValueKind == JsonValueKind.Number
+					? System.Math.Clamp(lk.GetInt32(), 1, 64) : 12;
+				Vector3 eye = GetViewport()?.GetCamera3D()?.GlobalPosition ?? Vector3.Zero;
+				return Ok(new Dictionary<string, object?>
+				{
+					["looks"] = GameEntities.Current?.DescribeLooks(eye, take),
 				});
 			}
 

@@ -188,6 +188,12 @@ public static class Engine_MdlMaterial
         return LoadShared(Engine_ShaderFamily.StandardWindPath);
     }
 
+    /// <summary>The two-sided shader moved by the title's tree wind (fable_tree_sway.gdshaderinc).</summary>
+    private static Shader? SharedTree()
+    {
+        return LoadShared(Engine_ShaderFamily.StandardTreePath);
+    }
+
     /// <summary>The standard shader with back faces culled, or the two-sided one when `cull_back_faces` is off.</summary>
     private static Shader? SharedCulled()
     {
@@ -407,7 +413,10 @@ public static class Engine_MdlMaterial
             if (built is ShaderMaterial plant && (info.SwaysInWind || info.MovementMode != 0 || IsVegetationDrawPath(info)) &&
                 Shared() is { } twoSided)
             {
-                plant.Shader = plant.HasMeta(WindMetaName) ? SharedWind() ?? twoSided : twoSided;
+                // A tree takes the title's tree wind on every surface; a swaying plant its WIND1 bend.
+                plant.Shader = info.MovementMode == 2
+                    ? SharedTree() ?? twoSided
+                    : plant.HasMeta(WindMetaName) ? SharedWind() ?? twoSided : twoSided;
             }
         }
 

@@ -140,6 +140,12 @@ public partial class Engine_ClassicParticles : Node
     /// <summary>The live instance.</summary>
     public static Engine_ClassicParticles? Instance { get; private set; }
 
+    /// <summary>
+    /// The owners (quad header [7], trail header [38]: the particle-system instance) of the groups drawn at the last pump,
+    /// for GameFx to stand those effects' simulated copies down. Empty under classic.
+    /// </summary>
+    public static readonly HashSet<uint> DrawnOwners = new();
+
     /// <summary>Groups drawn last frame, particles among them, displacement groups skipped.</summary>
     /// <summary>
     /// For the debug channel: each group's guest address, world box (Godot), the stated blend
@@ -238,7 +244,16 @@ public partial class Engine_ClassicParticles : Node
         ++_frames;
         _particles = 0;
         _skippedDisplacement = 0;
-        if (!Engine_ClassicShaders.HasEntry(VertexEntry))
+        bool modern = !Engine_ClassicMaterial.Active;
+        if (modern)
+        {
+            // The main view leaves layers past 20 out; the particles' own layer joins it.
+            if ((camera.CullMask & Layer) == 0)
+            {
+                camera.CullMask |= Layer;
+            }
+        }
+        else if (!Engine_ClassicShaders.HasEntry(VertexEntry))
         {
             if (!_reportedMissing)
             {
@@ -249,6 +264,7 @@ public partial class Engine_ClassicParticles : Node
         }
 
         uint used = Refii.Host.HostBridge.GetClassicParticles(_buffer);
+        DrawnOwners.Clear();
         int groups = used == 0 ? 0 : (int)_buffer[0];
         Vector2 viewport = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1920f, 1080f);
         InverseViewProjection(camera);
@@ -301,6 +317,11 @@ public partial class Engine_ClassicParticles : Node
             {
                 Constants(group, at, viewport);
                 _particles += count;
+                uint owner = BitConverter.SingleToUInt32Bits(_buffer[at + 7]);
+                if (modern && owner != 0u && count > 0)
+                {
+                    DrawnOwners.Add(owner);
+                }
                 if (group.Displacement)
                 {
                     ++displaced;
@@ -506,6 +527,10 @@ public partial class Engine_ClassicParticles : Node
             return true;
         }
         group.Key = key;
+        if (!Engine_ClassicMaterial.Active)
+        {
+            return !group.Displacement && ComposeModern(group, at, textures, blend, oneOne, alphaRef16);
+        }
 
         var tokens = new List<string>();
         if (anim)
@@ -569,6 +594,65 @@ public partial class Engine_ClassicParticles : Node
             group.Attached = true;
             Engine_ClassicLitInstances.Attach(group.Node);
         }
+        return true;
+    }
+
+    private const string ModernParticleInclude = "res://src/Engine/fx/fx_guest_particle.gdshaderinc";
+    private const string ModernTrailInclude = "res://src/Engine/fx/fx_guest_trail.gdshaderinc";
+    private static readonly Dictionary<string, Shader> ModernShaders = new();
+    private static readonly StringName ModernTexturesName = "particle_textures";
+    private static readonly StringName ModernAlphaOutName = "particle_alpha_out";
+    private static readonly StringName AlphaThresholdName = "xr_alpha_threshold";
+
+    /// <summary>
+    /// Our own particle or trail shader (fx_guest_particle / fx_guest_trail) in a stated blend,
+    /// lit by Godot's lights; one per (stage, blend), shared by every group that states it.
+    /// </summary>
+    private static Shader ModernShader(string include, string defines, string blend)
+    {
+        string key = include + "|" + defines + "|" + blend;
+        if (!ModernShaders.TryGetValue(key, out Shader? shader))
+        {
+            shader = new Shader
+            {
+                Code = "shader_type spatial;\nrender_mode " + blend +
+                    ", cull_disabled, depth_draw_never, fog_disabled, shadows_disabled, specular_disabled, skip_vertex_transform;\n" +
+                    defines + "#include \"" + include + "\"\n",
+            };
+            ModernShaders[key] = shader;
+        }
+        return shader;
+    }
+
+    /// <summary>A modern material over <paramref name="shader"/> with the draw's textures, from the entries at <paramref name="entries"/>.</summary>
+    private ShaderMaterial ModernMaterial(Shader shader, float[] buffer, int entries, int textures, bool oneOne, bool alphaRef16)
+    {
+        var material = new ShaderMaterial
+        {
+            Shader = shader,
+            // The title draws its ONE/ONE groups after the translucent bucket.
+            RenderPriority = oneOne ? 10 : 0,
+        };
+        material.SetShaderParameter(ModernTexturesName, Math.Max(textures, 1));
+        material.SetShaderParameter(ModernAlphaOutName, oneOne ? 0f : 1f);
+        material.SetShaderParameter(AlphaThresholdName, (alphaRef16 ? 16f : 1f) / 255f);
+        for (int t = 0; t < textures; t++)
+        {
+            Texture2D? texture = Texture(buffer, entries + t * 20);
+            if (texture is not null)
+            {
+                material.SetShaderParameter(t == 0 ? "ps_g_ParticleTextureSamplers" : "ps_s" + t, texture);
+            }
+        }
+        return material;
+    }
+
+    /// <summary>A group's modern material: the quads on our own particle shader, the same constants as the classic stages.</summary>
+    private bool ComposeModern(Group group, int at, int textures, string blend, bool oneOne, bool alphaRef16)
+    {
+        ShaderMaterial material = ModernMaterial(ModernShader(ModernParticleInclude, string.Empty, blend), _buffer, at + 254, textures, oneOne, alphaRef16);
+        group.Material = material;
+        group.Node.SetSurfaceOverrideMaterial(0, material);
         return true;
     }
 
@@ -667,7 +751,8 @@ public partial class Engine_ClassicParticles : Node
             float f0 = _buffer[at + 12], f1 = _buffer[at + 13], f2 = _buffer[at + 14], f3 = _buffer[at + 15], f4 = _buffer[at + 16];
             var fadeIn = new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f);
             var fadeOut = new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f);
-            Vector3 ambient = Engine_ClassicFeed.GlobalAmbient;
+            // The modern shader adds the scene's ambient itself; it takes the material's own here.
+            Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
             if (_buffer[at + 54] == 0f)
             {
                 ambient += new Vector3(_buffer[at + 51], _buffer[at + 52], _buffer[at + 53]);
@@ -709,7 +794,9 @@ public partial class Engine_ClassicParticles : Node
                 if (t > 0)
                 {
                     float previous = _buffer[at + 254 + (t - 1) * 20 + 1];
-                    invDeltas[t] = start != previous ? 1f / (start - previous) : 0f;
+                    // Lane t - 1: the blend stages weigh texture t by (age - start[t - 1]) * invDelta[t - 1]
+                    // (`sub_821ABC60` stores it at +96 + 4 (t - 1)); lane t left blending off.
+                    invDeltas[t - 1] = start != previous ? 1f / (start - previous) : 0f;
                 }
                 if (Math.Max(x, y) > 1f)
                 {

@@ -3,11 +3,12 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Godot;
 using Refii.Host;
+using Refii.Models;
 
-namespace Refii.Models;
+namespace Refii.Fx;
 
 /// <summary>
-/// The classic renderer's FX mesh particles: the meshes an effect emits (shields, shockwaves,
+/// FX mesh particles for both renderers: the meshes an effect emits (shields, shockwaves,
 /// debris), drawn from the render twins the guest's effect keeps for them.
 /// </summary>
 /// <remarks>
@@ -21,14 +22,17 @@ namespace Refii.Models;
 /// displacement renderer's alone (`sub_82AA3C78`), where it draws its own diffuse (VS 172 / PS 173).
 ///
 /// HERE each twin (<see cref="HostBridge.GetFxMeshes"/>, the effects' descriptors taken at
-/// `sub_82456D58`) is a node on the model the classic material path builds, placed by the twin's
-/// world rows, faded by node transparency, tinted by its instance uniform, lit and cast like an
-/// entity.
+/// `sub_82456D58`) is a node on the model as the active renderer builds it, placed by the twin's
+/// world rows, faded by node transparency and tinted by its instance uniform. Classic lights and
+/// casts it as an entity through its own lists; Modern lets Godot light it and casts it through
+/// Godot's shadows by the twin's flags. Modern's own simulated mesh particles stand down while
+/// this draws (FableFx.GuestMeshTwins).
 /// </remarks>
-public partial class Engine_ClassicFxMeshes : Node
+public partial class Engine_FxMeshTwins : Node
 {
     private const int MaxMeshes = 512;
-    private static readonly StringName Tint = "ps_g_StandardMaterialTintColour";
+    private static readonly StringName ClassicTint = "ps_g_StandardMaterialTintColour";
+    private static readonly StringName ModernTint = "entity_tint";
 
     private sealed class Particle
     {
@@ -48,7 +52,10 @@ public partial class Engine_ClassicFxMeshes : Node
     private long _frames;
 
     /// <summary>The live instance.</summary>
-    public static Engine_ClassicFxMeshes? Instance { get; private set; }
+    public static Engine_FxMeshTwins? Instance { get; private set; }
+
+    /// <summary>Whether the guest's twin feed has answered: only then do simulated mesh particles stand down.</summary>
+    public static bool FeedLive { get; private set; }
 
     /// <summary>Mesh particles drawn on the last pump.</summary>
     public int Drawn { get; private set; }
@@ -56,7 +63,7 @@ public partial class Engine_ClassicFxMeshes : Node
     public override void _Ready()
     {
         Instance = this;
-        Name = "ClassicFxMeshes";
+        Name = "FxMeshTwins";
     }
 
     public override void _ExitTree()
@@ -78,6 +85,8 @@ public partial class Engine_ClassicFxMeshes : Node
         }
 
         uint got = HostBridge.GetFxMeshes(_buffer);
+        // The export answers with at least its count word; a bridge without it answers nothing.
+        FeedLive |= got >= 1;
         int count = got >= 1 ? Math.Min((int)_buffer[0], MaxMeshes) : 0;
         Vector3 eye = ToGuest(camera.GlobalPosition);
         int drawn = 0;
@@ -109,6 +118,12 @@ public partial class Engine_ClassicFxMeshes : Node
                 particle.Model = model;
                 particle.Displaces = displaces;
                 Dress(particle, mesh, (uint)_buffer[at + 2]);
+            }
+            if (displaces && !Engine_ClassicMaterial.Active)
+            {
+                // Modern draws no displacement twin yet (see Dress).
+                particle.Node.Visible = false;
+                continue;
             }
 
             // The world rows (guest, translation in w) onto Godot: a Godot model point q is the
@@ -145,11 +160,14 @@ public partial class Engine_ClassicFxMeshes : Node
             ++drawn;
             if (displaces)
             {
-                ++Engine_ClassicDisplacement.Drawn;
+                if (Engine_ClassicMaterial.Active)
+                {
+                    ++Engine_ClassicDisplacement.Drawn;
+                }
                 continue;
             }
             particle.Node.Transparency = alpha < 0.99609375f ? 1f - alpha : 0f;
-            particle.Node.SetInstanceShaderParameter(Tint,
+            particle.Node.SetInstanceShaderParameter(Engine_ClassicMaterial.Active ? ClassicTint : ModernTint,
                 new Vector4(_buffer[at + 15], _buffer[at + 16], _buffer[at + 17], _buffer[at + 18]));
         }
 
@@ -178,6 +196,22 @@ public partial class Engine_ClassicFxMeshes : Node
     {
         MeshInstance3D node = particle.Node;
         node.Mesh = mesh;
+        if (particle.Displaces && !Engine_ClassicMaterial.Active)
+        {
+            // Modern: not drawn here yet; its own displacement layer still draws the simulated ones.
+            node.Visible = false;
+            node.Layers = 0u;
+            return;
+        }
+        if (!Engine_ClassicMaterial.Active)
+        {
+            node.Layers = 1u;
+            node.CastShadow = (Engine_ClassicShadows.CastingOf(flags) &
+                (Engine_ClassicShadows.CastsNear | Engine_ClassicShadows.CastsFar)) != 0
+                ? GeometryInstance3D.ShadowCastingSetting.On
+                : GeometryInstance3D.ShadowCastingSetting.Off;
+            return;
+        }
         if (particle.Displaces)
         {
             node.Layers = Engine_ClassicDisplacement.Layer;

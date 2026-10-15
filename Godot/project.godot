@@ -187,6 +187,42 @@ fable_wind_factors={
 "type": "vec2",
 "value": Vector2(0, 0)
 }
+fable_tree_wind={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+fable_tree_clock={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
+fable_roofs={
+"type": "sampler2D",
+"value": ""
+}
+fable_roof_count={
+"type": "int",
+"value": 0
+}
+fable_snow_pushes={
+"type": "sampler2D",
+"value": ""
+}
+fable_snow_push={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
+fable_sky_overlay0={
+"type": "sampler2D",
+"value": ""
+}
+fable_sky_overlay1={
+"type": "sampler2D",
+"value": ""
+}
+fable_sky_overlay={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
 fable_sun_toward={
 "type": "vec3",
 "value": Vector3(0, 1, 0)

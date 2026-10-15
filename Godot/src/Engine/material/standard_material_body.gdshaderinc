@@ -5,6 +5,9 @@
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
+#ifdef FABLE_TREE_WIND
+#include "res://src/Engine/material/fable_tree_sway.gdshaderinc"
+#endif
 
 // NOT source_color. Fable decodes its colour textures by SQUARING them, not with the sRGB
 // transfer function — PSHADER_STANDARDMATERIAL_..._AMB1, recompiled out of Shaders.sbk, reads
@@ -155,7 +158,12 @@ instance uniform vec3 xr_tree_centre = vec3(0.0);
 varying float v_tree_fade;
 
 void vertex() {
+#ifdef FABLE_TREE_WIND
+    // A tree carries its wind lanes in CUSTOM1..3 (Engine_MdlTreeStreams), not transfer.
+    v_transfer = vec4(0.0);
+#else
     v_transfer = fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX));
+#endif
     // GRASS1's normal gradient (VS 0453 1314-1371, PS 0487 1279-1287): w = saturate(height x
     // factor + offset) bends the normal toward the instance's up, and the pixel stage bends
     // the vertex normal toward that again by the same w.
@@ -201,6 +209,11 @@ void vertex() {
         vec3 world_offset = vec3(-g.x, g.z, g.y) * clamp(5.0 * VERTEX.y, 0.0, 1.0);
         VERTEX += inverse(mat3(MODEL_MATRIX)) * world_offset;
     }
+#endif
+
+#ifdef FABLE_TREE_WIND
+    // The title's tree wind: the branch offset its trunk stage gives this vertex (COLOR1 weights).
+    VERTEX = fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX);
 #endif
 
     // After the wind: the light table measures to where the vertex is drawn.

@@ -219,13 +219,13 @@ vec3 mirror_as_ldr(vec3 c) {
 }
 
 vec3 dome_reflect(vec3 r) {
-	return fable_sky_inscatter(
+	return fable_sky_overlaid(r, fable_sky_inscatter(
 		vec3(r.x, r.z, r.y),
 		sun_engine,
 		in_scatter_lut,
 		beta_rayleigh,
 		beta_mie,
-		horizon_distance);
+		horizon_distance));
 }
 
 // Only the z and w rows: a perspective inverse has no x/y term in either (jitter and the depth

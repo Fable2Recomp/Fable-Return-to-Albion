@@ -17,11 +17,62 @@ uniform float size_jitter = 0.5;
 uniform float speed_jitter = 0.3;
 
 // World to the dry volume's unit box (Engine_WeatherShelter): nothing falls inside it.
+#include "res://src/Engine/level/environment/fable_roofs.gdshaderinc"
 uniform mat4 shelter_box = mat4(1.0);
 uniform float shelter_on = 0.0;
 
 vec3 precip_hash31(float n) {
 	return fract(sin(vec3(n, n + 1.3, n + 2.7)) * vec3(43758.5453, 22578.1459, 19642.3490));
+}
+
+// THE SPELLS' PUSHES ON THE SNOW (Engine_SnowPushes): eight slots the guest's weather primitive
+// holds, each a segment A -> B swept from time tA to tB, with a reach d. Learned from the title's
+// snow stage; not its code. For a flake at P (guest axes) with its own random R in [0, 1)^3 and a
+// lifetime, per slot: s = the clamped projection of P onto the segment, C its point, T its time,
+// f = sat(1 - |C - P| / d), age a = (clock - T)(R.x + 1/2), acting while 0 < clock - T < lifetime:
+//
+//   pull   a^2 / (a^2 + 0.3) (C - P)                  toward the line, held
+//   carry  5 a^2 / (a^2 + 0.5) (B - A) / |B - A|      along the push, held
+//   swirl  0.3 sat(1 - (a - 0.9)^2)^4 (u sin t + w cos t), t = 10 (2pi R.y + a + R.x), in the
+//          plane across Q = 2R - 1: u = (B - A) x Q, w = Q x u, both unit
+//
+// all times f, summed over the slots, every slot measured from the same P. Texels 0..15 are the
+// slots' ends (xyz, w the time), 16..17 the eight 1 / d; fable_snow_push = (clock, on).
+global uniform sampler2D fable_snow_pushes;
+global uniform vec2 fable_snow_push;
+
+vec3 precip_unit(vec3 v) {
+	return dot(v, v) > 0.0 ? normalize(v) : vec3(0.0);
+}
+
+vec3 precip_pushed(vec3 p, vec3 r, float lifetime) {
+	vec3 moved = vec3(0.0);
+	vec3 q = 2.0 * r - 1.0;
+	for (int i = 0; i < 8; i++) {
+		vec4 a = texelFetch(fable_snow_pushes, ivec2(2 * i, 0), 0);
+		vec4 b = texelFetch(fable_snow_pushes, ivec2(2 * i + 1, 0), 0);
+		float inv_reach = texelFetch(fable_snow_pushes, ivec2(16 + i / 4, 0), 0)[i % 4];
+		vec3 along = b.xyz - a.xyz;
+		float length2 = dot(along, along);
+		float t = dot(p - a.xyz, along);
+		float s = t <= 0.0 ? 0.0 : (t >= length2 ? 1.0 : t / length2);
+		vec3 toward = a.xyz + s * along - p;
+		float f = clamp(1.0 - length(toward) * inv_reach, 0.0, 1.0);
+		float since = fable_snow_push.x - mix(a.w, b.w, s);
+		if (f > 0.0 && since > 0.0 && since < lifetime) {
+			float age = since * (r.x + 0.5);
+			float a2 = age * age;
+			float bump = clamp(1.0 - (age - 0.9) * (age - 0.9), 0.0, 1.0);
+			bump *= bump;
+			vec3 u = precip_unit(cross(along, q));
+			vec3 w = precip_unit(cross(q, u));
+			float turn = 10.0 * (6.2831853 * r.y + age + r.x);
+			moved += f * ((a2 / (a2 + 0.3)) * toward
+				+ (5.0 * a2 / (a2 + 0.5)) * precip_unit(along)
+				+ (0.3 * bump * bump) * (u * sin(turn) + w * cos(turn)));
+		}
+	}
+	return moved;
 }
 
 vec4 precip_place(
@@ -55,6 +106,13 @@ vec4 precip_place(
 		vec3 rel = raw - origin;
 		rel -= b * floor(rel / b);
 		vec3 world = origin + rel;
+		if (!streak && fable_snow_push.y > 0.5) {
+			// Godot (x, y, z) is the guest's (-x, z, y); the map is its own inverse.
+			vec3 r = precip_hash31(pid * 4.123 + 47.0);
+			vec3 guest = vec3(-world.x, world.z, world.y);
+			vec3 moved = precip_pushed(guest, r, 10.0 * fract(r.z * 7.31 + r.x));
+			world += vec3(-moved.x, moved.z, moved.y);
+		}
 
 		vec3 to_cam = cam - world;
 		float dist = length(to_cam);
@@ -100,6 +158,11 @@ vec4 precip_place(
 				clip = vec4(0.0, 0.0, 2.0, 1.0);
 				col = vec4(0.0);
 			}
+		}
+		// Under any building's roof, as the title cuts its rain and snow.
+		if (fable_under_roof(world)) {
+			clip = vec4(0.0, 0.0, 2.0, 1.0);
+			col = vec4(0.0);
 		}
 	}
 

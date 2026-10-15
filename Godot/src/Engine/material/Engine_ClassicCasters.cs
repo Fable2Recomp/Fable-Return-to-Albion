@@ -88,6 +88,14 @@ public static class Engine_ClassicCasters
     /// <summary>Casters inside their reach at the last check.</summary>
     public static int Shown { get; private set; }
 
+    /// <summary>
+    /// Whether the guest states that <paramref name="node"/> casts no shadow at all (renderable flag
+    /// 0x40, or a prop's stated casting of nothing): both renderers honour it.
+    /// </summary>
+    public static bool NeverCasts(Node node) =>
+        node.HasMeta(CastingMeta) && (node.GetMeta(CastingMeta).AsInt32() &
+            (Engine_ClassicShadows.CastsNear | Engine_ClassicShadows.CastsFar)) == 0;
+
     /// <summary>States how a node casts, for <see cref="Register"/> to read once its mesh is in.</summary>
     public static void Mark(Node node, byte casting, float reach)
     {

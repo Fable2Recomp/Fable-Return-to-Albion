@@ -73,8 +73,7 @@ public static class Engine_ClassicFeed
             Vs(Engine_ClassicRegisters.Vs.CameraUpVector, up.X, up.Y, up.Z, 10f);
         }
 
-        double seconds = Refii.Entities.Engine_DrawnFrame.GuestSeconds;
-        float time = double.IsFinite(seconds) ? (float)seconds : (float)(Time.GetTicksMsec() / 1000.0);
+        float time = Refii.Level.Engine_GuestAtmosphere.Seconds();
         Seconds = time;
         Ps(Engine_ClassicRegisters.Ps.SimulationTime, time, time, time, time);
         Vs(Engine_ClassicRegisters.Vs.SimulationTime, time, time, time, time);
@@ -101,6 +100,7 @@ public static class Engine_ClassicFeed
             return;
         }
         ++_fed;
+        Refii.Level.Engine_GuestAtmosphere.Take(_frame);
 
         // The theme block when the scene is up, else the globals the passes cached from it.
         bool theme = HasScene();
@@ -144,17 +144,11 @@ public static class Engine_ClassicFeed
         // carries the clock and R+0x254, which every tree integrates alike (`sub_822DAB20`:
         // += clamp(speed, 0, 10) * dt from a zeroed field, so the first step spans the whole
         // clock). c16.w is the material's (xr_tree_c16w): 0.035 for a canopy, -1 for a trunk.
-        float speed = theme ? Math.Clamp(_frame[147], 0f, 10f) : 0f;
-        if (float.IsNaN(_windClock) || time < _windClock)
-        {
-            _windPhase = 0f;
-            _windClock = 0f;
-        }
-        _windPhase += speed * (time - _windClock);
-        _windClock = time;
+        Refii.Level.Engine_GuestAtmosphere.StepTrees(time);
+        float speed = Refii.Level.Engine_GuestAtmosphere.TreeSpeed;
         Vs(Engine_ClassicRegisters.Vs.TreeConstants, time, 0.63f, 0.72f, 0.32f);
         Vs(Engine_ClassicRegisters.Vs.TreeConstants + 1, 0.012f, 0.06f, 0.4f, -1f);
-        Vs(Engine_ClassicRegisters.Vs.TreeConstants + 2, 0f, 0f, speed, _windPhase);
+        Vs(Engine_ClassicRegisters.Vs.TreeConstants + 2, 0f, 0f, speed, Refii.Level.Engine_GuestAtmosphere.TreePhase);
         Vs(Engine_ClassicRegisters.Vs.HostWindDirection, theme ? _frame[144] : 0f, theme ? _frame[145] : 0f, theme ? _frame[146] : 0f, 0f);
 
         // The repeated family's wind (`sub_82224578`): c21 = (scene+3384 direction, 0), c22 =
@@ -214,8 +208,6 @@ public static class Engine_ClassicFeed
         return null;
     }
 
-    private static float _windPhase;
-    private static float _windClock = float.NaN;
 
     /// <summary>`XR_EXPOSURE_LANE` in xenos_common.gdshaderinc: "this lane is the scene exposure".</summary>
     public const float ExposureLane = -12345f;
@@ -230,10 +222,10 @@ public static class Engine_ClassicFeed
     public static Vector3 GlobalAmbient => new(_frame[0], _frame[1], _frame[2]);
 
     /// <summary>The scene's wind: unit direction xyz and speed w (O+0xD38..0xD44), guest axes.</summary>
-    public static Vector4 Wind => new(_frame[144], _frame[145], _frame[146], _frame[147]);
+    public static Vector4 Wind => Refii.Level.Engine_GuestAtmosphere.Wind;
 
     /// <summary>The scene's global mist strength (O+3040.x), 1 when the scene is not up.</summary>
-    public static float GlobalMistStrength => HasScene() ? _frame[143] : 1f;
+    public static float GlobalMistStrength => Refii.Level.Engine_GuestAtmosphere.MistStrength;
 
     /// <summary>The frame time the constants were written with, seconds.</summary>
     public static float Seconds { get; private set; }

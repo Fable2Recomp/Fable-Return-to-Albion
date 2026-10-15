@@ -746,6 +746,7 @@ public static class Engine_LevelBakedLighting
 		// and one with a transfer and a probe sample takes the title's AMB2 pair.
 		long from = System.Diagnostics.Stopwatch.GetTimestamp();
 		Refii.Models.Engine_ClassicLitInstances.Attach(node);
+		Refii.Models.Engine_ModernFur.Attach(node);
 		long attached = System.Diagnostics.Stopwatch.GetTimestamp();
 		long find = Refii.Models.Engine_ClassicMaterial.AmbientFindTicks, compose = Refii.Models.Engine_ClassicMaterial.AmbientComposeTicks;
 		long duplicate = Refii.Models.Engine_ClassicMaterial.AmbientDuplicateTicks, bind = Refii.Models.Engine_ClassicMaterial.AmbientBindTicks;

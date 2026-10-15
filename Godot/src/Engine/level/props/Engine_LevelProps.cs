@@ -624,7 +624,8 @@ public static class Engine_LevelProps
                 ((ulong)placement.ModelPathHash << 32) | placement.Hash,
                 range: placedRange);
             stats.Instances++;
-            if (Refii.Models.Engine_ClassicMaterial.Active && Engine_GdbPlacements.UsesDisplacement(view, placement.Hash))
+            // Guest data, for either renderer (classic's displacement renderer, modern's layer).
+            if (Engine_GdbPlacements.UsesDisplacement(view, placement.Hash))
             {
                 Refii.Models.Engine_ClassicDisplacement.NoteRecord(placement.Hash);
             }
@@ -1938,6 +1939,12 @@ public static class Engine_LevelProps
         {
             if (!Refii.Models.Engine_ClassicMaterial.Active)
             {
+                // Modern reads only "casts nothing" (Engine_PropStreamer's hand-off), on the
+                // node that would cast; how trees cast stays its own.
+                if (role == PropRole.Main && ModelClass != PropModelClass.Tree)
+                {
+                    Refii.Models.Engine_ClassicCasters.Mark(node, casting, 0f);
+                }
                 return;
             }
 

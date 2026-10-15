@@ -127,6 +127,9 @@ public partial class Engine_ClassicDisplacement : Node
     /// <summary>A `.save` record whose static mesh states UseDisplacement (the level build). Any thread.</summary>
     public static void NoteRecord(uint record) => Records[record] = 0;
 
+    /// <summary>Whether the level build noted <paramref name="record"/> as a displacement mesh (either renderer).</summary>
+    public static bool IsNoted(uint record) => record != 0u && Records.ContainsKey(record);
+
     /// <summary>
     /// A node drawing a record noted by <see cref="NoteRecord"/> becomes a displacement mesh: the
     /// displacement layer alone, its surfaces on <see cref="MeshMaterial"/>. False for any other.

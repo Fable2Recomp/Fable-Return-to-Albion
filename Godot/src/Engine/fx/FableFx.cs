@@ -62,6 +62,19 @@ public partial class FableFx : Node3D
     private bool _emitAddActive;
     private Engine_FxLayerInstance? _dispInstance;
     private ArrayMesh? _dispMesh;
+
+    /// <summary>Set while the guest's FX mesh twins are drawn (Engine_FxMeshTwins, modern renderer).</summary>
+    public static bool GuestMeshTwins;
+
+    /// <summary>
+    /// Set while the guest draws this effect's particle groups itself (Engine_ClassicParticles,
+    /// modern renderer; GameFx joins them by owner): its quads, ribbons and additive batch stand
+    /// down, its lights and displacement stay. An effect the guest is not drawing — every one
+    /// past its own reach — keeps drawing here.
+    /// </summary>
+    public bool GuestDrawn { get; set; }
+    private bool _emitGuest;
+
     private Engine_FxLayerInstance? _addInstance;
     private ArrayMesh? _addMesh;
 
@@ -357,7 +370,9 @@ public partial class FableFx : Node3D
         // view-culled). 209 systems in the market cost ~20 ms a frame simulating and rebuilding
         // billboards for effects behind the camera. A frozen system keeps its last geometry.
         Camera3D? cullCamera = sharedCamera ?? GetViewport()?.GetCamera3D();
-        if (cullCamera is not null && !InView(cullCamera))
+        // A far effect in view freezes only once it has something to show: one that has never
+        // been near would otherwise keep its empty first frame however long it is looked at.
+        if (cullCamera is not null && !InView(cullCamera, out bool farOnly) && (!farOnly || HasGeometry))
         {
             ++FrozenThisFrame;
             return;
@@ -366,7 +381,7 @@ public partial class FableFx : Node3D
         _system.SetLoop(Loop);
         _system.SetIntensity(Intensity);
         _system.SetSizeScale(SizeScale);
-        Engine_FxSystem.FadeReachScale = Refii.Lighting.Engine_LightingFrame.ModernModel ? 2f : 1f;
+        Engine_FxSystem.FadeOut = !Refii.Lighting.Engine_LightingFrame.ModernModel;
         ApplyLit();
         // The node's world transform goes in so the system can hold world-space particles still
         // when this effect moves — see AttachToRoot. A node bolted to a wall passes the same
@@ -467,7 +482,7 @@ public partial class FableFx : Node3D
         // still built against the camera (a ribbon's side vector `tan.Cross(eye - pos)` and the
         // back-to-front sort) reads only the camera's position.
         bool turned = !_emitted || cameraPos.DistanceSquaredTo(_emitPos) > 0.25f;
-        if (_system.LastSteps == 0 && !turned && (addMesh is null) == _emitAddNull)
+        if (_system.LastSteps == 0 && !turned && (addMesh is null) == _emitAddNull && GuestDrawn == _emitGuest)
         {
             if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
             if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
@@ -478,12 +493,13 @@ public partial class FableFx : Node3D
         _emitted = true;
         _emitPos = cameraPos;
         _emitAddNull = addMesh is null;
+        _emitGuest = GuestDrawn;
         if (addMesh is null && _addMesh is not null) _addMesh.ClearSurfaces();
         // The delegate is cached: a method group converted at the call site allocates a new Func
         // every call.
         _lookupMaterial ??= LookupMaterial;
         _system.EmitGeometry(
-            _mesh, _lookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh, addMesh);
+            _mesh, _lookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh, GuestDrawn ? null : addMesh, !GuestDrawn);
         _emitDispActive = _dispMesh is not null && _dispMesh.GetSurfaceCount() > 0;
         _emitAddActive = addMesh is not null && addMesh.GetSurfaceCount() > 0;
         if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
@@ -513,6 +529,13 @@ public partial class FableFx : Node3D
             }
 
             int count = data.Instances.Count;
+            // The guest's own mesh twins are drawn (Engine_FxMeshTwins): these simulated copies stand
+            // down, displacement meshes excepted (no modern displacement twin yet).
+            if (GuestMeshTwins && !data.Displacement)
+            {
+                multi.VisibleInstanceCount = 0;
+                continue;
+            }
             if (multi.InstanceCount < count)
             {
                 multi.InstanceCount = Math.Max(count, 16);
@@ -604,14 +627,12 @@ public partial class FableFx : Node3D
         return _frustum;
     }
 
-    private bool InView(Camera3D camera)
+    /// <summary>In the frustum and within <see cref="FreezeDistance"/>; <paramref name="farOnly"/> when
+    /// it is in the frustum and only too far.</summary>
+    private bool InView(Camera3D camera, out bool farOnly)
     {
+        farOnly = false;
         Vector3 origin = GlobalPosition;
-        if (origin.DistanceTo(camera.GlobalPosition) > FreezeDistance)
-        {
-            return false;
-        }
-
         foreach (Plane plane in FrameFrustum(camera))
         {
             if (plane.DistanceTo(origin) > FreezeRadius)
@@ -620,8 +641,18 @@ public partial class FableFx : Node3D
             }
         }
 
+        if (origin.DistanceTo(camera.GlobalPosition) > FreezeDistance)
+        {
+            farOnly = true;
+            return false;
+        }
+
         return true;
     }
+
+    /// <summary>Whether the last emit left anything to draw, in the scene or the additive layer.</summary>
+    private bool HasGeometry =>
+        (_mesh?.GetSurfaceCount() ?? 0) + (_addMesh?.GetSurfaceCount() ?? 0) > 0;
 
     /// <summary>Where the scene light was last sampled for a node without a bake probe.</summary>
     private Vector3 _litSampledAt = new(float.NaN, float.NaN, float.NaN);
@@ -1117,7 +1148,7 @@ public partial class FableFx : Node3D
         if (displacement)
         {
             var dispMat = new ShaderMaterial { Shader = GD.Load<Shader>(MeshDispShaderPath) };
-            if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial src && Refii.Models.Engine_ClassicMaterial.Albedo(src) is Texture2D albedo)
+            if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial src && (src.GetShaderParameter(AlbedoTexName).As<Texture2D>() ?? Refii.Models.Engine_ClassicMaterial.Albedo(src)) is Texture2D albedo)
             {
                 dispMat.SetShaderParameter(AlbedoTexName, albedo);
             }

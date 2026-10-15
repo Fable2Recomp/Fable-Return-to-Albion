@@ -17,9 +17,6 @@ namespace Refii.Models;
 /// </remarks>
 public static class Engine_SceneWind
 {
-    private const int FrameFloats = 148;
-    private const int ThemeFlag = 36 + 3;
-    private static readonly float[] _frame = new float[FrameFloats];
     private static readonly float Row1 = new Vector2(-35f, 153f).Length();
     private static float? _amplitude;
     private static float? _scale;
@@ -35,14 +32,16 @@ public static class Engine_SceneWind
     /// <summary>Reads the frame and publishes the globals. Main thread, once a frame.</summary>
     public static void Pump()
     {
+        Refii.Level.Engine_GuestAtmosphere.Read();
         Vector3 direction = Vector3.Zero;
         Vector2 factors = Vector2.Zero;
-        if (Refii.Host.HostBridge.GetClassicFrame(_frame) >= FrameFloats && _frame[ThemeFlag] != 0f)
+        Vector4 wind = Refii.Level.Engine_GuestAtmosphere.Wind;
+        if (Refii.Level.Engine_GuestAtmosphere.SceneUp)
         {
-            direction = new Vector3(_frame[144], _frame[145], _frame[146]);
+            direction = new Vector3(wind.X, wind.Y, wind.Z);
             if (_scale is null && _amplitude is { } amplitude)
             {
-                _scale = _frame[147] * amplitude;
+                _scale = wind.W * amplitude;
             }
             float s = _scale ?? 0f;
             factors = new Vector2(
@@ -50,13 +49,25 @@ public static class Engine_SceneWind
                 100f * s / (Row1 + 1e-10f));
         }
 
+        // The trees' wind and clock (fable_tree_sway.gdshaderinc), every frame: the clock moves.
+        Refii.Level.Engine_GuestAtmosphere.StepTrees(Refii.Level.Engine_GuestAtmosphere.Seconds());
+        RenderingServer.GlobalShaderParameterSet(TreeWindName,
+            new Vector4(direction.X, direction.Y, direction.Z, Refii.Level.Engine_GuestAtmosphere.TreeSpeed));
+        RenderingServer.GlobalShaderParameterSet(TreeClockName,
+            new Vector2(Refii.Level.Engine_GuestAtmosphere.TreeClock, Refii.Level.Engine_GuestAtmosphere.TreePhase));
+
         if (direction == _direction && factors == _factors)
         {
             return;
         }
         _direction = direction;
         _factors = factors;
-        RenderingServer.GlobalShaderParameterSet("fable_wind_direction", direction);
-        RenderingServer.GlobalShaderParameterSet("fable_wind_factors", factors);
+        RenderingServer.GlobalShaderParameterSet(WindDirectionName, direction);
+        RenderingServer.GlobalShaderParameterSet(WindFactorsName, factors);
     }
+
+    private static readonly StringName WindDirectionName = "fable_wind_direction";
+    private static readonly StringName WindFactorsName = "fable_wind_factors";
+    private static readonly StringName TreeWindName = "fable_tree_wind";
+    private static readonly StringName TreeClockName = "fable_tree_clock";
 }

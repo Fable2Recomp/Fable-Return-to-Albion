@@ -81,6 +81,12 @@ public partial class Engine_ClassicParticles
             trail.Seen = _frames;
             if (ComposeTrail(trail, at))
             {
+                // The trail's particle-system instance (header [38]): its effect stands down in FableFx.
+                uint owner = BitConverter.SingleToUInt32Bits(_trailBuffer[at + 38]);
+                if (!Engine_ClassicMaterial.Active && owner != 0u)
+                {
+                    DrawnOwners.Add(owner);
+                }
                 if (trail.Displaces)
                 {
                     ++Engine_ClassicDisplacement.Drawn;
@@ -217,6 +223,20 @@ public partial class Engine_ClassicParticles
             return trail.Material is not null;
         }
         trail.Key = key;
+        if (!Engine_ClassicMaterial.Active)
+        {
+            // The modern renderer draws the guest's displacement through its own target, not these.
+            trail.Displaces = false;
+            if (displaces)
+            {
+                trail.Material = null;
+                return false;
+            }
+            ShaderMaterial modern = ModernMaterial(
+                ModernShader(ModernTrailInclude, doubled ? "#define FX_TRAIL_DOUBLE\n" : string.Empty, blend),
+                _trailBuffer, at + 208, textures, oneOne, alphaRef16);
+            return UseTrailMaterial(trail, modern);
+        }
 
         var tokens = new List<string>();
         if (anim)
@@ -282,6 +302,11 @@ public partial class Engine_ClassicParticles
                 material.SetShaderParameter(t == 0 ? "ps_g_ParticleTextureSamplers" : "ps_s" + t, texture);
             }
         }
+        return UseTrailMaterial(trail, material);
+    }
+
+    private static bool UseTrailMaterial(Trail trail, ShaderMaterial material)
+    {
         if (trail.Stream is not null)
         {
             material.SetShaderParameter(VertexStreamName, trail.Stream);
@@ -309,7 +334,8 @@ public partial class Engine_ClassicParticles
             f3 = _trailBuffer[at + 15], f4 = _trailBuffer[at + 16];
         m.SetShaderParameter(TrailFadeInDistanceInfoName, new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f));
         m.SetShaderParameter(TrailFadeOutDistanceInfoName, new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f));
-        Vector3 ambient = Engine_ClassicFeed.GlobalAmbient;
+        // The modern shader adds the scene's ambient itself; it takes the material's own here.
+        Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
         if (_trailBuffer[at + 54] == 0f)
         {
             ambient += new Vector3(_trailBuffer[at + 51], _trailBuffer[at + 52], _trailBuffer[at + 53]);
@@ -393,7 +419,9 @@ public partial class Engine_ClassicParticles
             if (t > 0)
             {
                 float previous = _trailBuffer[at + 208 + (t - 1) * 20 + 1];
-                invDeltas[t] = start != previous ? 1f / (start - previous) : 0f;
+                // Lane t - 1: the blend stages weigh texture t by (age - start[t - 1]) * invDelta[t - 1]
+                    // (`sub_821ABC60` stores it at +96 + 4 (t - 1)); lane t left blending off.
+                    invDeltas[t - 1] = start != previous ? 1f / (start - previous) : 0f;
             }
             if (Math.Max(x, y) > 1f)
             {

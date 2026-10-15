@@ -533,7 +533,7 @@ public partial class GameEntities : Node3D
                     Mesh = mesh,
                     // Layer 1 draws it and the second bit is what a fixture's shadow map takes; a
                     // lamp host takes neither, as its static twin would not.
-                    Layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash),
+                    Layers = EntityLayers(entity),
                     // It moves: it takes the GI from the probes and is never voxelised into it.
                     GIMode = GeometryInstance3D.GIModeEnum.Dynamic,
                 };
@@ -601,6 +601,10 @@ public partial class GameEntities : Node3D
                 if (Refii.Models.Engine_ClassicMaterial.Active)
                 {
                     Refii.Models.Engine_ClassicDisplacement.AdoptRecord(entity.RecordHash, node, mesh);
+                }
+                else
+                {
+                    Refii.Fx.Engine_DisplacementMeshes.Adopt(entity.RecordHash, node, mesh);
                 }
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
             }
@@ -687,6 +691,7 @@ public partial class GameEntities : Node3D
             }
 
             Refii.Entities.Engine_EntityAppearance.Apply(node, entity.Appearance, IsPrincipal(entity.Address));
+            _lastLook[entity.Address] = entity.Appearance;
 
             // The stated targeting highlight goes ABOVE the unchanged-entity skip: the guest
             // ramps its colour over several ticks on a target that may not move. Cheap when
@@ -773,7 +778,7 @@ public partial class GameEntities : Node3D
                 if (Due(entity.Address, ReconcileTicks) || _relit.Add(entity.Address))
                 {
                     // A region's lights can spawn after the entity that hosts one.
-                    uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
+                    uint layers = EntityLayers(entity);
                     if (node.Layers != layers)
                     {
                         // A batch is keyed by its layers; the prop rejoins one under the new ones.
@@ -1599,14 +1604,16 @@ public partial class GameEntities : Node3D
 
     /// <summary>
     /// A composite's displacement-only parts (GDB DisplacementMeshes,
-    /// <see cref="HostBridge.GetEntityDisplacementParts"/>) under classic: the guest draws them only
-    /// into the displacement target (flag 0x800, `sub_8220DE88`), so their surfaces leave the body
-    /// (<see cref="Refii.Entities.Engine_HiddenClusters.SetDisplacedSurfaces"/>) and a child on the
-    /// same skeleton and skin draws them on the displacement layer with their own diffuse.
+    /// <see cref="HostBridge.GetEntityDisplacementParts"/>): the guest draws them only into the
+    /// displacement target (flag 0x800, `sub_8220DE88`), so their surfaces leave the body
+    /// (<see cref="Refii.Entities.Engine_HiddenClusters.SetDisplacedSurfaces"/>) and draw on the same
+    /// skeleton into the displacement layer with their own diffuse: under classic a child on the
+    /// classic layer, under modern an instance in the modern layer's world.
     /// </summary>
     private void AttachDisplacementParts(uint address, MeshInstance3D node, Mesh mesh)
     {
-        if (!Refii.Models.Engine_ClassicMaterial.Active || mesh is not ArrayMesh source ||
+        bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+        if (mesh is not ArrayMesh source ||
             node.Skin is null || node.GetNodeOrNull(node.Skeleton) is not Node skeleton ||
             !source.HasMeta(Refii.Models.Engine_MdlComposite.SurfacePartsMetaName) ||
             !source.HasMeta(Refii.Models.Engine_MdlComposite.PartHashesMetaName))
@@ -1631,12 +1638,25 @@ public partial class GameEntities : Node3D
                 continue;
             }
             mask |= System.UInt128.One << s;
-            int added = Refii.Models.Engine_MdlSurfaceArrays.Add(subset, Mesh.PrimitiveType.Triangles,
-                Refii.Models.Engine_MdlSurfaceArrays.Of(source, s), null);
-            subset.SurfaceSetMaterial(added, Refii.Models.Engine_ClassicDisplacement.MeshMaterial(source.SurfaceGetMaterial(s)));
+            Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(source, s);
+            if (!classic)
+            {
+                // The modern layer's stage scales by the vertex colour; a body's is its bake, not an offset.
+                arrays[(int)Mesh.ArrayType.Color] = default;
+            }
+            int added = Refii.Models.Engine_MdlSurfaceArrays.Add(subset, Mesh.PrimitiveType.Triangles, arrays, null);
+            subset.SurfaceSetMaterial(added, classic
+                ? Refii.Models.Engine_ClassicDisplacement.MeshMaterial(source.SurfaceGetMaterial(s))
+                : Refii.Fx.Engine_DisplacementMeshes.PartMaterial(source.SurfaceGetMaterial(s)));
         }
         if (mask == System.UInt128.Zero)
         {
+            return;
+        }
+        if (!classic)
+        {
+            Refii.Fx.Engine_DisplacementMeshes.AdoptParts(node, subset);
+            Refii.Entities.Engine_HiddenClusters.SetDisplacedSurfaces(node, mask);
             return;
         }
         var child = new MeshInstance3D
@@ -1779,6 +1799,12 @@ public partial class GameEntities : Node3D
         Refii.Models.Engine_ClassicCasters.Mark(node, CastingOf(address, node),
             Refii.Level.Engine_PropDrawRange.Reach(stated));
         Refii.Models.Engine_ClassicCasters.Register(node, dynamic: true);
+        if (!Refii.Models.Engine_ClassicMaterial.Active && node is MeshInstance3D body &&
+            Refii.Models.Engine_ClassicCasters.NeverCasts(body))
+        {
+            // Modern: the flag arrives after the body's proxy was made.
+            Refii.Entities.Engine_ShadowProxy.Sync(body);
+        }
         return true;
     }
 
@@ -2463,6 +2489,7 @@ public partial class GameEntities : Node3D
             }
 
             _nodes.Remove(address);
+            _lastLook.Remove(address);
             _batches?.Demote(address);
             _still.Remove(address);
             if (_adoptions.TryGetValue(address, out var married))
@@ -2818,7 +2845,7 @@ public partial class GameEntities : Node3D
             AddChild(_batches);
         }
 
-        uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
+        uint layers = EntityLayers(entity);
         if (_batches.Promote(entity.Address, shape, layers, placed.Drawn,
             _drawRanges.GetValueOrDefault(entity.Address)))
         {
@@ -3677,6 +3704,18 @@ public partial class GameEntities : Node3D
         return nowMs - _rigSeenMs[address] <= RigHoldMs;
     }
 
+    /// <summary>
+    /// An entity's render layers: the fixture rule (Engine_LevelLights.EntityLayersOf), in its
+    /// light zone under the modern renderer (Engine_LightZones: an interior trades the world bit).
+    /// </summary>
+    private static uint EntityLayers(HostBridge.GuestEntity entity)
+    {
+        uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
+        return Refii.Lighting.Engine_LightZones.Active
+            ? Refii.Lighting.Engine_LightZones.Zoned(layers, HostBridge.GetEntityLightZone(entity.Address))
+            : layers;
+    }
+
     private Plane[] Frustum(Camera3D eye)
     {
         ulong frame = Engine.GetProcessFrames();
@@ -4231,6 +4270,45 @@ public partial class GameEntities : Node3D
 
         found.Insert(0, $"{found.Count} of {bones} bones mirrored");
         return found;
+    }
+
+    /// <summary>Each drawn entity's look as last stated, for the debug channel's `looks`.</summary>
+    private readonly Dictionary<uint, HostBridge.EntityAppearance> _lastLook = new();
+
+    /// <summary>
+    /// For the debug channel: the drawn entities nearest the eye with what the guest states for
+    /// their look — appearance (opacity, tint, flags), texture composites (mode per layer,
+    /// wildcard, overlay) — and how the node draws it (transparency, layers).
+    /// </summary>
+    public List<string> DescribeLooks(Vector3 eye, int take)
+    {
+        var rows = new List<(float Distance, uint Address, MeshInstance3D Node)>();
+        foreach ((uint address, MeshInstance3D node) in _nodes)
+        {
+            if (GodotObject.IsInstanceValid(node) && node.IsInsideTree() && node.IsVisibleInTree())
+            {
+                rows.Add((eye.DistanceTo(node.GlobalPosition), address, node));
+            }
+        }
+        rows.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        var described = new List<string>();
+        foreach ((float distance, uint address, MeshInstance3D node) in rows.GetRange(0, System.Math.Min(take, rows.Count)))
+        {
+            string look = _lastLook.TryGetValue(address, out HostBridge.EntityAppearance a)
+                ? $"alpha={a.Alpha:0.00} cam={a.CameraAlpha:0.00} scale={a.Scale:0.00} tint=({a.TintLanes.X:0.00},{a.TintLanes.Y:0.00},{a.TintLanes.Z:0.00},{a.TintLanes.W:0.00}) flags=0x{a.Flags:X}"
+                : "look=?";
+            var composites = new List<string>();
+            foreach (HostBridge.GuestTextureComposite c in HostBridge.GetEntityTextureLayers(address, out _))
+            {
+                var modes = string.Join("", System.Array.ConvertAll(c.Layers, l =>
+                    $"{l.Mode}{(l.HasTint ? $"t{l.Tint:X8}" : "")}{(l.Brightness != 1f ? $"b{l.Brightness:0.00}" : "")}"));
+                composites.Add($"0x{c.Original:X8}{(c.Wildcard ? "W" : "")}{(c.Overlay ? "O" : "")}[{modes}]");
+            }
+            string model = node.HasMeta(MetaEntityModel) ? $"0x{(uint)node.GetMeta(MetaEntityModel).AsInt64():X8}" : "?";
+            described.Add($"{address:X8} d={distance:0.0} model={model} mesh='{node.Mesh?.ResourceName}' {look} " +
+                $"transparency={node.Transparency:0.00} layers=0x{node.Layers:X} composites={composites.Count} {string.Join(" ", composites)}");
+        }
+        return described;
     }
 
     public Dictionary<string, object?>? DescribeLighting(uint address)

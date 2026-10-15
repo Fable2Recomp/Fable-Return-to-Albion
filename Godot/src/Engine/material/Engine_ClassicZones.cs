@@ -81,6 +81,15 @@ public static class Engine_ClassicZones
         return entity != 0u ? Refii.Host.HostBridge.GetEntityLightZone(entity) : Outdoors;
     }
 
+    /// <summary>The live entity the walk joined to <paramref name="record"/>, when it has.</summary>
+    public static bool TryEntityOf(uint record, out uint entity)
+    {
+        lock (_entityOfRecord)
+        {
+            return _entityOfRecord.TryGetValue(record, out entity) && entity != 0u;
+        }
+    }
+
     /// <summary>Whether a light in <paramref name="lightZone"/> lights a draw in <paramref name="drawZone"/>.</summary>
     public static bool Lights(uint lightZone, uint drawZone) =>
         lightZone == 0u || drawZone == 0u || lightZone == drawZone;

@@ -1077,8 +1077,11 @@ public partial class Engine_PropStreamer : Node3D
             Refii.Models.Engine_ClassicBillboards.Register(instance, mesh);
             if (instance is MeshInstance3D displaced && displaced.HasMeta(RecordMeta))
             {
-                Refii.Models.Engine_ClassicDisplacement.AdoptRecord(
-                    (uint)displaced.GetMeta(RecordMeta).AsInt64(), displaced, mesh);
+                uint displacedRecord = (uint)displaced.GetMeta(RecordMeta).AsInt64();
+                if (!Refii.Models.Engine_ClassicDisplacement.AdoptRecord(displacedRecord, displaced, mesh))
+                {
+                    Refii.Fx.Engine_DisplacementMeshes.Adopt(displacedRecord, displaced, mesh);
+                }
             }
             _stepRangeMs = Ms(t2);
 
@@ -1101,8 +1104,9 @@ public partial class Engine_PropStreamer : Node3D
                 // node's own casting Off so something else can cast for it, and Off on a
                 // shadows-only node would make it drawn and not casting.
             }
-            else if (SwaysInWind(mesh))
+            else if (SwaysInWind(mesh) || Refii.Models.Engine_ClassicCasters.NeverCasts(instance))
             {
+                // A swaying plant, or a prop the guest states casts nothing.
                 Refii.Lighting.Engine_ShadowReach.Exclude(instance);
             }
             else if (instance is MultiMeshInstance3D castingBatch)
@@ -1116,6 +1120,12 @@ public partial class Engine_PropStreamer : Node3D
                 // Built from the shared mesh: a vertex bake later swaps in a per-instance copy of
                 // the same shape, which would merge once per prop instead of once per model.
                 Refii.Entities.Engine_ShadowProxy.Sync(castingProp);
+            }
+
+            // Modern: the prop's light zone, once the walk has joined its record to an entity.
+            if (Refii.Lighting.Engine_LightZones.Active && instance.HasMeta(RecordMeta))
+            {
+                Refii.Lighting.Engine_LightZones.AddProp(instance, (uint)instance.GetMeta(RecordMeta).AsInt64());
             }
 
             _stepSwayMs = Ms(t3);  // "sway": the shadow-caster hand-off above, named for its first branch

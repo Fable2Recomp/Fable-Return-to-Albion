@@ -399,7 +399,9 @@ public static int SurfacesWithLods;
             // A tree part's wind lanes for the title's tree shaders: the colours in CUSTOM1 and
             // CUSTOM2, POSITION1's xyz in CUSTOM3.yzw beside the cluster offset (Engine_MdlTreeStreams).
             float[] treePivots = System.Array.Empty<float>(), treeColour1 = treePivots, treeColour2 = treePivots;
-            bool treeStreams = Engine_ClassicMaterial.Active &&
+            // The modern renderer takes them for a tree alone, whose surfaces all draw the tree
+            // shader (standard_material_tree): anywhere else CUSTOM1/2 are read as transfer.
+            bool treeStreams = (Engine_ClassicMaterial.Active || info.MovementMode == 2) &&
                 geo.SourceVertices.Length == geo.VertexCount &&
                 Engine_MdlTreeStreams.TryRead(
                     data, info, geo.SourceVertices, out treePivots, out treeColour1, out treeColour2);

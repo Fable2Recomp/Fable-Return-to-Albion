@@ -58,10 +58,7 @@ public static class Engine_ClassicRoofs
     /// <summary>An entity's node, once made; one with interior records becomes a building. Main thread.</summary>
     public static void Track(uint entity, Node3D node)
     {
-        if (!Refii.Models.Engine_ClassicMaterial.Active)
-        {
-            return;
-        }
+        // Guest data, read for either renderer: the classic weather and the modern one both cut at it.
         uint[] interiors = Refii.Host.HostBridge.GetEntityInteriorMeshes(entity);
         if (interiors.Length == 0)
         {

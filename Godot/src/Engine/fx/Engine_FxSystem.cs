@@ -1854,21 +1854,21 @@ public sealed class Engine_FxSystem
     }
 
     /// <summary>
-    /// The modern model's multiplier on the fade-out distances, the same doubling the placed
-    /// lights' cutoff takes (the authored distances suit the original draw distance). 1.0
-    /// follows the shipped data.
+    /// Whether effects fade out with distance as authored. The modern model keeps every effect in
+    /// view drawn however far it is (user, 2026-10-16: "if you can see it you should be able to
+    /// view it"); the authored fade-outs suit the original draw distance. The fade-in near the
+    /// camera stays either way.
     /// </summary>
-    public static float FadeReachScale = 1f;
+    public static bool FadeOut = true;
 
     private float DistanceFadeFactor(EmitterRuntime rt, Vector3 p, Vector3 cam)
     {
         if (!_distanceFade || rt.Def is null) return 1f;
         float dist = (cam - p).Length();
         float[] fade = rt.Fade;
-        float reach = FadeReachScale > 0f ? FadeReachScale : 1f;
-        float f2 = fade[2] * reach, f3 = fade[3] * reach;
+        float f2 = fade[2], f3 = fade[3];
         float fi = fade[1] > fade[0] ? Math.Clamp((dist - fade[0]) / (fade[1] - fade[0]), 0f, 1f) : (dist >= fade[1] ? 1f : 0f);
-        float fo = f3 > f2 ? Math.Clamp((f3 - dist) / (f3 - f2), 0f, 1f) : (dist <= f3 ? 1f : 0f);
+        float fo = !FadeOut ? 1f : f3 > f2 ? Math.Clamp((f3 - dist) / (f3 - f2), 0f, 1f) : (dist <= f3 ? 1f : 0f);
         return fi * fo;
     }
 
@@ -1880,7 +1880,8 @@ public sealed class Engine_FxSystem
         Vector3 cameraUp,
         Dictionary<string, MeshInstanceData> meshOut,
         ArrayMesh? dispMesh = null,
-        ArrayMesh? addMesh = null)
+        ArrayMesh? addMesh = null,
+        bool sceneQuads = true)
     {
         BeginSurfaces(mesh);
         if (dispMesh is not null) BeginSurfaces(dispMesh);
@@ -1986,6 +1987,10 @@ public sealed class Engine_FxSystem
                         EmitMeshParticle(va, vb, w, pt, a, col, meshOut, motion);
                         continue;
                     }
+                    if (!sceneQuads && va.BlendMode != "disp")
+                    {
+                        continue;
+                    }
 
                     if (vb is not null && vb.Texture != va.Texture)
                     {
@@ -2019,6 +2024,9 @@ public sealed class Engine_FxSystem
                 Flush(dispMesh, dispMaterial.Material, list);
                 continue;
             }
+
+            // The guest draws this effect's quads and trails itself: only displacement stays here.
+            if (!sceneQuads) continue;
 
             // ONE/ONE goes to the additive layer when one is up: the guest's submit
             // (`sub_822749E0` 0x82274b88) sends SrcBlend==ONE && DestBlend==ONE to bucket 5,

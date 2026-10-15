@@ -59,9 +59,9 @@ public static class Engine_ClassicPath
         {
             host.AddChild(new Engine_ClassicFur());
         }
-        if (Engine_ClassicFxMeshes.Instance is null)
+        if (Refii.Fx.Engine_FxMeshTwins.Instance is null)
         {
-            host.AddChild(new Engine_ClassicFxMeshes());
+            host.AddChild(new Refii.Fx.Engine_FxMeshTwins());
         }
     }
 
@@ -94,7 +94,7 @@ public static class Engine_ClassicPath
             using (Refii.Core.Engine_FramePhases.Measure("classic.particles"))
             {
                 Engine_ClassicParticles.Instance?.Pump(camera);
-                Engine_ClassicFxMeshes.Instance?.Pump(camera);
+                Refii.Fx.Engine_FxMeshTwins.Instance?.Pump(camera);
                 Engine_ClassicDisplacement.Instance?.Pump(camera, viewport);
                 Engine_ClassicDecals.Instance?.Pump(camera);
             }
@@ -194,7 +194,7 @@ public static class Engine_ClassicPath
             $"rain {(Refii.Level.Engine_ClassicWeather.Instance?.Raining == true ? "on" : "off")}, " +
             $"snow blocks {Refii.Level.Engine_ClassicWeather.Instance?.SnowBlocks ?? 0}, " +
             $"displacement groups {Engine_ClassicDisplacement.Drawn}, decals {Engine_ClassicDecals.Instance?.Drawn ?? 0}, " +
-            $"billboards {Billboards()}, fur {Fur()}, fx meshes {Engine_ClassicFxMeshes.Instance?.Drawn ?? 0}, " +
+            $"billboards {Billboards()}, fur {Fur()}, fx meshes {Refii.Fx.Engine_FxMeshTwins.Instance?.Drawn ?? 0}, " +
             $"roofs {Refii.Level.Engine_ClassicRoofs.Roofs.Count} of {Refii.Level.Engine_ClassicRoofs.Count} buildings";
     }
 

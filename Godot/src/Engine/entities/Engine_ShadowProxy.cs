@@ -231,6 +231,22 @@ public static class Engine_ShadowProxy
 			return;
 		}
 
+		// The guest states this renderable casts nothing (flag 0x40): no proxy, and the reach
+		// policy never hands it a shadow.
+		if (Refii.Models.Engine_ClassicCasters.NeverCasts(body))
+		{
+			if (ProxyOf(body) is { } unwanted)
+			{
+				Engine_ShadowSkeletons.Forget(body);
+				Proxies.Remove(body);
+				unwanted.QueueFree();
+				Proxied.Remove(body.GetInstanceId());
+			}
+			body.SetMeta(StateMeta, "never");
+			Refii.Lighting.Engine_ShadowReach.Exclude(body);
+			return;
+		}
+
 		UInt128 collapsed = Engine_HiddenClusters.CollapsedMask(body);
 		BuiltFor.GetOrCreateValue(body).Value = (collapsed, Enabled);
 

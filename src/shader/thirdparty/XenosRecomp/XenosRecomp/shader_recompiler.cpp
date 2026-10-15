@@ -1747,7 +1747,8 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluScalarOpcode::SetpInv:
-            print("{0} == 0.0 ? 1.0 : {0}", op(SCALAR_0));
+            // 1 -> 0 (the predicate, set just above), 0 -> 1, anything else passes (ucode.h kSetpInv).
+            print("p0 ? 0.0 : ({0} == 0.0 ? 1.0 : {0})", op(SCALAR_0));
             break;
 
         case AluScalarOpcode::SetpPop:

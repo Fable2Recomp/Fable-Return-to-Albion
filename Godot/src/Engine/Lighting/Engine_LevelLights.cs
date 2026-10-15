@@ -423,6 +423,7 @@ public static class Engine_LevelLights
 
 			Light3D node = Build(placement, at, name, index);
 			container.AddChild(node);
+			Engine_LightZones.AddLight(node, entity);
 			flicker.Add(node, placement);
 			lock (FxRegistry)
 			{

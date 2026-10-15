@@ -2026,6 +2026,7 @@ public static class Engine_LevelScene
 
         root.AddChild(container);
         container.Owner = root;
+        BakedMist = container;
 
         foreach (Node child in container.GetChildren())
         {
@@ -2037,6 +2038,9 @@ public static class Engine_LevelScene
 
         return true;
     }
+
+    /// <summary>The level's .mist volumes as baked at load; Engine_ModernMist hides them while the guest states its own.</summary>
+    public static Node3D? BakedMist { get; private set; }
 
     private static string ReplaceExtension(string path, string extension)
     {

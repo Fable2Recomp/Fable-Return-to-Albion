@@ -58,6 +58,9 @@ public partial class GameFx : Node3D
     /// <summary>The effect hash each drawn node was built for — guest handles RECYCLE.</summary>
     private readonly Dictionary<uint, uint> _effectOf = new();
 
+    /// <summary>This walk's effects the guest draws itself (<see cref="FableFx.GuestDrawn"/>).</summary>
+    private readonly HashSet<uint> _guestDrawn = new();
+
     /// <summary>Every effect hash the guest has played, and how many instances carried it.</summary>
     private readonly Dictionary<uint, int> _census = new();
 
@@ -326,6 +329,21 @@ public partial class GameFx : Node3D
             }
         }
 
+        // The effects whose particle groups the guest is drawing itself (modern renderer): one
+        // owned group is enough, the guest draws an effect's groups together.
+        _guestDrawn.Clear();
+        System.Collections.Generic.HashSet<uint> owners = Refii.Models.Engine_ClassicParticles.DrawnOwners;
+        if (owners.Count != 0)
+        {
+            foreach (HostBridge.ActiveFx fx in live)
+            {
+                if (owners.Contains(fx.Instance))
+                {
+                    _guestDrawn.Add(fx.Handle != 0 ? fx.Handle : fx.Instance);
+                }
+            }
+        }
+
         foreach (HostBridge.ActiveFx fx in live)
         {
             // The guest's has-work predicate; a dead instance is retired this same tick.
@@ -486,6 +504,7 @@ public partial class GameFx : Node3D
             node.Intensity = fx.Intensity * fade;
             node.LightFade = fade;
             node.SizeScale = scale;
+            node.GuestDrawn = _guestDrawn.Contains(key);
         }
 
         // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the
