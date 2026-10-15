@@ -36,6 +36,8 @@ public static class Engine_ClassicWater
     private const string VertexEntry = "VSHADER_OCEAN_WATER";
     private const string CoreEntry = "PSHADER_OCEAN_WATER";
     private const string FringeEntry = "PSHADER_OCEAN_WATER_BLEND";
+    private const string MistedCoreEntry = "PSHADER_OCEAN_WATER_MISTED";
+    private const string MistedFringeEntry = "PSHADER_OCEAN_WATER_MISTED_BLEND";
     private const float AlphaReference = 15f / 255f;
 
     /// <summary>The title's water tiles span 1.5 screens (constant 87 = 2/3); ours span one.</summary>
@@ -68,6 +70,33 @@ public static class Engine_ClassicWater
         public Vector4[] VertexRowsImage = new Vector4[VertexRows];
         /// <summary>The pixel stage's array as it declares it (all rows; the vista ocean's 23).</summary>
         public Vector4[] PixelRowsImage = new Vector4[PixelRows];
+        /// <summary>The MISTED pair (`sub_82B3C548`: variant 2 x misted + blend), taken while the body is in a mist volume.</summary>
+        public ShaderMaterial? MistedCore;
+        public ShaderMaterial? MistedFringe;
+        /// <summary>The drawn body, for its bounds (<see cref="Attach"/>).</summary>
+        public MeshInstance3D? Node;
+        public int Row;
+        public Engine_ClassicMist.Volume? Mist;
+
+        /// <summary>The passes into <paramref name="into"/> (four at most); how many.</summary>
+        public int MaterialsInto(ShaderMaterial[] into)
+        {
+            int n = 0;
+            into[n++] = Core;
+            if (Fringe is not null)
+            {
+                into[n++] = Fringe;
+            }
+            if (MistedCore is not null)
+            {
+                into[n++] = MistedCore;
+            }
+            if (MistedFringe is not null)
+            {
+                into[n++] = MistedFringe;
+            }
+            return n;
+        }
 
         public IEnumerable<ShaderMaterial> Materials()
         {
@@ -75,6 +104,14 @@ public static class Engine_ClassicWater
             if (Fringe is not null)
             {
                 yield return Fringe;
+            }
+            if (MistedCore is not null)
+            {
+                yield return MistedCore;
+            }
+            if (MistedFringe is not null)
+            {
+                yield return MistedFringe;
             }
         }
     }
@@ -108,17 +145,16 @@ public static class Engine_ClassicWater
         Engine_WaterMaterial.FindByName? findByName, out string error)
     {
         error = string.Empty;
-        Shader? core = Engine_ClassicShaders.Compose(
-            VertexEntry, CoreEntry, "unshaded, cull_disabled, blend_mix, depth_draw_always, fog_disabled", 0,
-            "#define XR_ALPHA_OUT(a) 1.0\n" + UnexposedRefraction);
-        Shader? fringe = Engine_ClassicShaders.Compose(
-            VertexEntry, FringeEntry, "unshaded, cull_disabled, blend_mix, depth_draw_never, fog_disabled", 0,
-            UnexposedRefraction);
-        if (core is null || fringe is null)
+        (ShaderMaterial Core, ShaderMaterial Fringe)? plain = Pair(CoreEntry, FringeEntry);
+        if (plain is null)
         {
             error = "classic water pair did not compose";
             return null;
         }
+        (ShaderMaterial Core, ShaderMaterial Fringe)? misted =
+            Engine_ClassicShaders.HasEntry(MistedCoreEntry) && Engine_ClassicShaders.HasEntry(MistedFringeEntry)
+                ? Pair(MistedCoreEntry, MistedFringeEntry)
+                : null;
 
         // The mask in the body's own grid; its texture coordinates replace the mesh's world ones.
         Engine_WaterMask.Mask? mask = Engine_WaterMask.TryBuild(body);
@@ -137,14 +173,20 @@ public static class Engine_ClassicWater
         }
         Texture2D maskTexture = mask?.Texture ?? NoMask();
 
-        var coreMaterial = new ShaderMaterial { Shader = core, RenderPriority = -2 };
-        var fringeMaterial = new ShaderMaterial { Shader = fringe, RenderPriority = -1 };
-        coreMaterial.NextPass = fringeMaterial;
-        coreMaterial.SetMeta(Meta, true);
-        coreMaterial.SetMeta(Engine_ClassicMaterial.ClassicMeta, true);
+        ShaderMaterial coreMaterial = plain.Value.Core, fringeMaterial = plain.Value.Fringe;
+        var all = new List<ShaderMaterial> { coreMaterial, fringeMaterial };
+        if (misted is { } m2)
+        {
+            all.Add(m2.Core);
+            all.Add(m2.Fringe);
+            foreach (ShaderMaterial material in new[] { m2.Core, m2.Fringe })
+            {
+                material.SetShaderParameter("ps_g_MistHeightSampler", Engine_ClassicMist.FlatHeight);
+            }
+        }
 
         Texture2D? normal = Engine_WaterMaterial.LoadTexture(body.NormalMapPath, read, findByName);
-        foreach (ShaderMaterial material in new[] { coreMaterial, fringeMaterial })
+        foreach (ShaderMaterial material in all)
         {
             material.SetShaderParameter("ps_g_WaterMaskSampler", maskTexture);
             material.SetShaderParameter("vs_s16", maskTexture);
@@ -164,21 +206,146 @@ public static class Engine_ClassicWater
             // offset rows take the 1.5 instead (Write) — the same sample, measured on the screen.
             material.SetShaderParameter("ps_g_FOVAdjustment", new Vector4(1f, 1f, 1f, 1f));
         }
-        coreMaterial.SetShaderParameter("xr_spec_constants", 2u);
-        coreMaterial.SetShaderParameter("xr_alpha_threshold", AlphaReference);
-        fringeMaterial.SetShaderParameter("xr_spec_constants", 0u);
+        foreach (ShaderMaterial core in misted is { } m3 ? new[] { coreMaterial, m3.Core } : new[] { coreMaterial })
+        {
+            core.SetShaderParameter("xr_spec_constants", 2u);
+            core.SetShaderParameter("xr_alpha_threshold", AlphaReference);
+        }
+        foreach (ShaderMaterial fringe in misted is { } m4 ? new[] { fringeMaterial, m4.Fringe } : new[] { fringeMaterial })
+        {
+            fringe.SetShaderParameter("xr_spec_constants", 0u);
+        }
 
         // ONE WRITER. The level builds on a worker thread; once a surface is published here the
         // main thread's Pump writes its constants every frame, and ShaderMaterial's parameter
         // cache is not safe under two writers (it faulted inside set_shader_parameter). So the
         // builder writes everything first and publishes last, and Apply only stores the theme.
-        var surface = new Surface { Core = coreMaterial, Fringe = fringeMaterial };
+        var surface = new Surface
+        {
+            Core = coreMaterial,
+            Fringe = fringeMaterial,
+            MistedCore = misted?.Core,
+            MistedFringe = misted?.Fringe,
+        };
         Write(surface, 0f);
         lock (_surfaces)
         {
             _surfaces.Add(surface);
         }
         return coreMaterial;
+    }
+
+    /// <summary>A core and fringe pass of one variant; the fringe is the core's next pass.</summary>
+    private static (ShaderMaterial Core, ShaderMaterial Fringe)? Pair(string coreEntry, string fringeEntry)
+    {
+        Shader? core = Engine_ClassicShaders.Compose(
+            VertexEntry, coreEntry, "unshaded, cull_disabled, blend_mix, depth_draw_always, fog_disabled", 0,
+            "#define XR_ALPHA_OUT(a) 1.0\n" + UnexposedRefraction);
+        Shader? fringe = Engine_ClassicShaders.Compose(
+            VertexEntry, fringeEntry, "unshaded, cull_disabled, blend_mix, depth_draw_never, fog_disabled", 0,
+            UnexposedRefraction);
+        if (core is null || fringe is null)
+        {
+            return null;
+        }
+        var coreMaterial = new ShaderMaterial { Shader = core, RenderPriority = -2 };
+        var fringeMaterial = new ShaderMaterial { Shader = fringe, RenderPriority = -1 };
+        coreMaterial.NextPass = fringeMaterial;
+        coreMaterial.SetMeta(Meta, true);
+        coreMaterial.SetMeta(Engine_ClassicMaterial.ClassicMeta, true);
+        return (coreMaterial, fringeMaterial);
+    }
+
+    /// <summary>The node drawing a surface built here, whose bounds decide its mist (main thread).</summary>
+    public static void Attach(ShaderMaterial core, MeshInstance3D node)
+    {
+        lock (_surfaces)
+        {
+            foreach (Surface surface in _surfaces)
+            {
+                if (ReferenceEquals(surface.Core, core))
+                {
+                    surface.Node = node;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The body's mist (`sub_82B3C548` -> `sub_82B1DE38`): bounds meeting a mist volume's box with
+    /// the floor below its top (`sub_82A6DD30`) take the MISTED pair and the volume's five
+    /// registers in a row of their own. The title walks the scene's typed list by flag 32 here
+    /// where the mist export walks it by type 27; both reach `sub_82A6DD30` with the volume, so
+    /// the host's volumes stand for both (I).
+    /// </summary>
+    private static void FollowMist(Surface surface)
+    {
+        if (surface.MistedCore is null || surface.Node is not { } node || !GodotObject.IsInstanceValid(node) || !node.IsInsideTree())
+        {
+            return;
+        }
+        Aabb bounds = node.GlobalTransform * node.GetAabb();
+        Engine_ClassicMist.Volume? mist = Engine_ClassicMist.VolumeFor(bounds);
+        if (mist is not null && surface.Row == 0)
+        {
+            surface.Row = Engine_ClassicConstants.AcquireRow();
+        }
+        if (mist is not null && surface.Row != 0)
+        {
+            Engine_ClassicMist.WriteRegisters(mist, surface.Row);
+        }
+        Engine_ClassicMist.Volume? drawn = surface.Row != 0 ? mist : null;
+        if (ReferenceEquals(drawn, surface.Mist))
+        {
+            return;
+        }
+        surface.Mist = drawn;
+        if (drawn is not null)
+        {
+            surface.MistedCore.SetShaderParameter("ps_g_MistDensitySampler", drawn.Density64);
+            surface.MistedFringe?.SetShaderParameter("ps_g_MistDensitySampler", drawn.Density64);
+            node.MaterialOverride = surface.MistedCore;
+            node.SetInstanceShaderParameter("xr_light_row", surface.Row);
+        }
+        else
+        {
+            node.MaterialOverride = surface.Core;
+            node.SetInstanceShaderParameter("xr_light_row", 0);
+            Engine_ClassicConstants.ReleaseRow(surface.Row);
+            surface.Row = 0;
+        }
+    }
+
+    /// <summary>
+    /// For the debug channel: each surface's node, world box (Godot), whether it is the vista
+    /// ocean or misted, its mask-edge row (c25) and glitter rows (c20..c22).
+    /// </summary>
+    public static List<Dictionary<string, object?>> Describe()
+    {
+        var list = new List<Dictionary<string, object?>>();
+        lock (_surfaces)
+        {
+            foreach (Surface surface in _surfaces)
+            {
+                MeshInstance3D? node = surface.Node is { } n && GodotObject.IsInstanceValid(n) ? n : null;
+                Aabb box = node is not null && node.IsInsideTree() ? node.GlobalTransform * node.GetAabb() : default;
+                static float[] V(Vector4 v) => new[] { v.X, v.Y, v.Z, v.W };
+                list.Add(new Dictionary<string, object?>
+                {
+                    ["node"] = node?.GetPath().ToString(),
+                    ["name"] = node?.Name.ToString(),
+                    ["visible"] = node?.IsVisibleInTree(),
+                    ["vista"] = surface.Vista,
+                    ["misted"] = surface.Mist is not null,
+                    ["min"] = new[] { box.Position.X, box.Position.Y, box.Position.Z },
+                    ["max"] = new[] { box.End.X, box.End.Y, box.End.Z },
+                    ["edge"] = V(surface.Rows[25]),
+                    ["glitter"] = new[] { surface.Rows[20].X, surface.Rows[21].X, surface.Rows[22].X },
+                });
+            }
+        }
+        return list;
     }
 
     /// <summary>The day-set theme for a surface built here; the next Pump writes it.</summary>
@@ -213,9 +380,11 @@ public static class Engine_ClassicWater
                 Surface surface = _surfaces[i];
                 if (!GodotObject.IsInstanceValid(surface.Core))
                 {
+                    Engine_ClassicConstants.ReleaseRow(surface.Row);
                     _surfaces.RemoveAt(i);
                     continue;
                 }
+                FollowMist(surface);
                 WaterTheme theme = surface.Theme;
                 surface.Phase0 += new Vector2(theme[WaterThemeParam.NormalMapSpeed0X], theme[WaterThemeParam.NormalMapSpeed0Y]) * dt;
                 surface.Phase1 += new Vector2(theme[WaterThemeParam.NormalMapSpeed1X], theme[WaterThemeParam.NormalMapSpeed1Y]) * dt;
@@ -228,14 +397,15 @@ public static class Engine_ClassicWater
                 {
                     WritePhases(surface, seconds);
                 }
-                foreach (ShaderMaterial material in surface.Materials())
+                if (sun)
                 {
-                    if (sun)
+                    var dir = new Vector4(direction.X, direction.Y, direction.Z, 0f);
+                    var col = new Vector4(colour.X, colour.Y, colour.Z, 1f);
+                    int n = surface.MaterialsInto(_passes);
+                    for (int m = 0; m < n; m++)
                     {
-                        var dir = new Vector4(direction.X, direction.Y, direction.Z, 0f);
-                        var col = new Vector4(colour.X, colour.Y, colour.Z, 1f);
-                        material.SetShaderParameter("ps_g_LightDirection", dir);
-                        material.SetShaderParameter("ps_g_LightColor", col);
+                        _passes[m].SetShaderParameter(LightDirectionName, dir);
+                        _passes[m].SetShaderParameter(LightColorName, col);
                     }
                 }
             }
@@ -257,12 +427,21 @@ public static class Engine_ClassicWater
     {
         Array.Copy(surface.Rows, surface.VertexRowsImage, surface.VertexRowsImage.Length);
         Array.Copy(surface.Rows, surface.PixelRowsImage, surface.PixelRowsImage.Length);
-        foreach (ShaderMaterial material in surface.Materials())
+        using Variant pixel = Variant.CreateFrom(surface.PixelRowsImage);
+        using Variant vertex = Variant.CreateFrom(surface.VertexRowsImage);
+        int n = surface.MaterialsInto(_passes);
+        for (int m = 0; m < n; m++)
         {
-            material.SetShaderParameter("ps_g_WaterConstants", surface.PixelRowsImage);
-            material.SetShaderParameter("vs_g_WaterConstants", surface.VertexRowsImage);
+            _passes[m].SetShaderParameter(PixelConstantsName, pixel);
+            _passes[m].SetShaderParameter(VertexConstantsName, vertex);
         }
     }
+
+    private static readonly ShaderMaterial[] _passes = new ShaderMaterial[4];
+    private static readonly StringName LightDirectionName = "ps_g_LightDirection";
+    private static readonly StringName LightColorName = "ps_g_LightColor";
+    private static readonly StringName PixelConstantsName = "ps_g_WaterConstants";
+    private static readonly StringName VertexConstantsName = "vs_g_WaterConstants";
 
     /// <summary>g_WaterConstants as `sub_821E4C88` fills them from the theme, on both passes and both stages.</summary>
     private static void Write(Surface surface, float seconds)
@@ -313,20 +492,38 @@ public static class Engine_ClassicWater
     }
 
     /// <summary>The sky's overlay onto every vista ocean (the dome calls this when it changes).</summary>
-    public static void ApplyVistaOverlay(Texture2D overlay)
+    /// <summary>
+    /// The vista ocean takes the dome's overlay pair and blend: `0x821D17A8` submits the sky's
+    /// overlays through the same `Render_MeshMaterialSubmit_6`. Cheap when nothing changed.
+    /// </summary>
+    public static void ApplyVistaOverlay(Texture2D overlay0, Texture2D overlay1, float blend)
     {
+        if (ReferenceEquals(overlay0, _vistaOverlay0) && ReferenceEquals(overlay1, _vistaOverlay1) &&
+            blend == _vistaBlend)
+        {
+            return;
+        }
+        _vistaOverlay0 = overlay0;
+        _vistaOverlay1 = overlay1;
+        _vistaBlend = blend;
         lock (_surfaces)
         {
             foreach (Surface surface in _surfaces)
             {
                 if (surface.Vista && GodotObject.IsInstanceValid(surface.Core))
                 {
-                    surface.Core.SetShaderParameter("ps_g_SkyOverlayTexture0", overlay);
-                    surface.Core.SetShaderParameter("ps_g_SkyOverlayTexture1", overlay);
+                    surface.Core.SetShaderParameter("ps_g_SkyOverlayTexture0", overlay0);
+                    surface.Core.SetShaderParameter("ps_g_SkyOverlayTexture1", overlay1);
+                    surface.Core.SetShaderParameter("ps_g_SkyOverlayTextureBlend",
+                        new Vector4(blend, blend, blend, blend));
                 }
             }
         }
     }
+
+    private static Texture2D? _vistaOverlay0;
+    private static Texture2D? _vistaOverlay1;
+    private static float _vistaBlend = -1f;
 
     private const string VistaVertexEntry = "VSHADER_SKY_OCEANWATER";
     private const string VistaPixelEntry = "PSHADER_SKY_OCEANWATER";
@@ -369,10 +566,11 @@ public static class Engine_ClassicWater
         // The sky's zenith depths and overlays, as the dome binds them (`Render_MeshMaterialSubmit_INFERRED_6`).
         material.SetShaderParameter("ps_g_TzenithR", new Vector4(150f, 150f, 150f, 150f));
         material.SetShaderParameter("ps_g_TzenithM", new Vector4(100f, 100f, 100f, 100f));
-        material.SetShaderParameter("ps_g_SkyOverlayTextureBlend", Vector4.Zero);
-        Texture2D overlay = Engine_ClassicSkyDome.CurrentOverlay;
-        material.SetShaderParameter("ps_g_SkyOverlayTexture0", overlay);
-        material.SetShaderParameter("ps_g_SkyOverlayTexture1", overlay);
+        // The dome's pair as it stands; later changes arrive through ApplyVistaOverlay.
+        float blend = _vistaBlend < 0f ? 0f : _vistaBlend;
+        material.SetShaderParameter("ps_g_SkyOverlayTextureBlend", new Vector4(blend, blend, blend, blend));
+        material.SetShaderParameter("ps_g_SkyOverlayTexture0", _vistaOverlay0 ?? Engine_ClassicSkyDome.CurrentOverlay);
+        material.SetShaderParameter("ps_g_SkyOverlayTexture1", _vistaOverlay1 ?? Engine_ClassicSkyDome.CurrentOverlay);
 
         // The title's corners {0,1}^3, given to the world-space vertex input through
         // XR_GODOT_TO_GUEST_WORLD (its own inverse) on an identity node.

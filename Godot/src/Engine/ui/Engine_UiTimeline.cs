@@ -12,6 +12,11 @@ namespace Refii.Ui;
 /// </summary>
 public static class Engine_UiTimeline
 {
+    private static readonly StringName DiffuseTexName = "diffuse_tex";
+    private static readonly StringName OpacityName = "opacity";
+    private static readonly StringName Uv1OffsetName = "uv1_offset";
+    private static readonly StringName Uv1ScaleName = "uv1_scale";
+
     /// <summary>What one animation track drives on one clone node.</summary>
     public enum Target
     {
@@ -262,15 +267,15 @@ public static class Engine_UiTimeline
         // The strip is ANCHORED at its far edge: the bar's authored rect is v [0.939, 0.998]
         // for `scalev` 0.063 (the atlas's bottom rows, empty), and the guest's scrub to 0.5
         // grows it upward into the arc art. Hold the far edge, move the near one.
-        Vector2 scale = material.GetShaderParameter("uv1_scale").AsVector2();
-        Vector2 offset = material.GetShaderParameter("uv1_offset").AsVector2();
-        float inset = material.GetShaderParameter("diffuse_tex").As<Texture2D>() is { } tex
+        Vector2 scale = material.GetShaderParameter(Uv1ScaleName).AsVector2();
+        Vector2 offset = material.GetShaderParameter(Uv1OffsetName).AsVector2();
+        float inset = material.GetShaderParameter(DiffuseTexName).As<Texture2D>() is { } tex
             ? 1f / Mathf.Max(tex.GetHeight(), 1)
             : 0f;
         float far = offset.Y + scale.Y;
         float span = Mathf.Max(extent - inset, 0f);
-        material.SetShaderParameter("uv1_offset", new Vector2(offset.X, far - span));
-        material.SetShaderParameter("uv1_scale", new Vector2(scale.X, span));
+        material.SetShaderParameter(Uv1OffsetName, new Vector2(offset.X, far - span));
+        material.SetShaderParameter(Uv1ScaleName, new Vector2(scale.X, span));
     }
 
     /// <summary>Writes a scrubbed opacity onto a node's own quads — materials are per-piece
@@ -279,7 +284,7 @@ public static class Engine_UiTimeline
     {
         if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
         {
-            material.SetShaderParameter("opacity", alpha);
+            material.SetShaderParameter(OpacityName, alpha);
         }
 
         foreach (Node child in node.GetChildren())

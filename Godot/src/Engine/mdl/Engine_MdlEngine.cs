@@ -249,7 +249,14 @@ public static class Engine_MdlEngine
 
                 if (sel == 2)
                 {
-                    if (!r.Skip(68)) return false;
+                    // The fur record (`sub_82B29168` -> `sub_82A21910`): 68 bytes, no name, read
+                    // as 17 four-byte values; the u32 at +28 is discarded by the title too.
+                    var fur = new float[17];
+                    for (int f = 0; f < fur.Length; f++)
+                    {
+                        if (!r.F32(out fur[f])) return false;
+                    }
+                    hdr.Fur = fur;
                     lodHeaders.Add(hdr);
                     continue;
                 }
@@ -417,7 +424,7 @@ public static class Engine_MdlEngine
 
         foreach (EngMeshHeader hdr in allHeaders)
         {
-            var mesh = new MdlMesh { Name = hdr.Name };
+            var mesh = new MdlMesh { Name = hdr.Name, Fur = hdr.Fur };
             mesh.Materials.AddRange(hdr.Materials);
             info.Meshes.Add(mesh);
         }
@@ -447,7 +454,7 @@ public static class Engine_MdlEngine
         {
             foreach (EngMeshHeader hdr in headers)
             {
-                var mesh = new MdlMesh { Name = hdr.Name };
+                var mesh = new MdlMesh { Name = hdr.Name, Fur = hdr.Fur };
                 mesh.Materials.AddRange(hdr.Materials);
                 lodOut.Meshes.Add(mesh);
             }
@@ -515,6 +522,7 @@ public static class Engine_MdlEngine
     {
         public string Name { get; set; } = string.Empty;
         public uint ShaderType { get; set; }
+        public float[]? Fur { get; set; }
         public List<MdlMaterial> Materials { get; } = new();
     }
 
@@ -846,18 +854,19 @@ public static class Engine_MdlEngine
         if (!r.U32(out uint ext2)) return false;
         if (ext2 == 1)
         {
-            if (!r.U32(out uint a0) || !r.U32(out uint a1v) || !r.U32(out uint mcount)) return false;
-            if (mcount > 4000000u) return false;
+            // The fur block (`sub_82B8FD28`): skin material, fur material, count, count x 20 bytes.
+            if (!r.U32(out uint baseMaterial) || !r.U32(out uint furMaterial) || !r.U32(out uint count)) return false;
+            if (count > 4000000u) return false;
 
             int dataOff = r.Position;
-            if (!r.Skip((int)(mcount * 20))) return false;
+            if (!r.Skip((int)(count * 20))) return false;
 
-            info.MorphTargets.Add(new MdlMorphTarget
+            info.FurBlocks.Add(new MdlFurBlock
             {
                 RecordIndex = recIndex,
-                Header0 = a0,
-                Header1 = a1v,
-                Count = mcount,
+                BaseMaterial = baseMaterial,
+                FurMaterial = furMaterial,
+                Count = count,
                 DataOffset = dataOff,
             });
         }

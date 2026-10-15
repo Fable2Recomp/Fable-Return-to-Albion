@@ -231,9 +231,15 @@ public partial class GameFx : Node3D
             _draw = forced == "1";
         }
 
+        // Under classic the title's particle path (Engine_ClassicParticles) draws every live
+        // effect with its own shaders; drawing them here as well drew each one twice.
+        bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+        _draw &= !classic;
+
         GD.Print(
             $"[game-fx] live effect feed up; drawing is {(_draw ? "ON" : "OFF")} " +
-            $"({DrawSettingKey} in {(path.Length != 0 ? path : "refii.toml")})");
+            (classic ? "(classic renderer: the title's particles draw them)"
+                : $"({DrawSettingKey} in {(path.Length != 0 ? path : "refii.toml")})"));
 
         // A child, so its step follows this node's _Process in tree order — after the live
         // nodes are placed — and leaves with it on a level change; see Engine_FxDriver.

@@ -141,11 +141,19 @@ public static class Engine_LevelLighting
 		}
 	}
 
+	/// <summary>
+	/// Whether Godot's sun casts: the debug override, else the frame's. Never under classic: every
+	/// classic material is unshaded, and its sun shadow is the title's own cascades
+	/// (Engine_ClassicShadows), so Godot's maps would be drawn and read by nothing.
+	/// </summary>
+	public static bool SunCasts(bool frameShadow) =>
+		SunShadowOverride ?? (frameShadow && !Refii.Models.Engine_ClassicMaterial.Active);
+
 	public static void UpdateSun(DirectionalLight3D light, LightingFrame frame)
 	{
 		light.LightColor = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
 		light.LightEnergy = frame.SunEnergy * SunScale;
-		light.ShadowEnabled = SunShadowOverride ?? frame.SunShadow;
+		light.ShadowEnabled = SunCasts(frame.SunShadow);
 
 		// CASCADES BY STRENGTH. The moon at energy 0.2 cast the same four cascades over the
 		// whole market as the noon sun: 5,000 draw calls of shadow for a light nobody can see

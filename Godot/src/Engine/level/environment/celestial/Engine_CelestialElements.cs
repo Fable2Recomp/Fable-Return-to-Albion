@@ -201,6 +201,7 @@ public static class Engine_CelestialElements
 
         Vector3 sun = ToGodot(frame.SunDirection);
         Vector3 moon = ToGodot(frame.MoonDirection);
+        Stated(ref sun, ref moon, ref sunTint);
 
         var container = new Node3D { Name = NodeName };
         EnsureElements(container, theme, read, moonPhase);
@@ -355,6 +356,7 @@ public static class Engine_CelestialElements
 
         Vector3 sun = ToGodot(frame.SunDirection);
         Vector3 moon = ToGodot(frame.MoonDirection);
+        Stated(ref sun, ref moon, ref sunTint);
         bool sunActive = frame.SkyParams[0] >= IntensityGate;
 
         if (OS.GetEnvironment("REFII_CELESTIAL_DEBUG").Length != 0)
@@ -426,6 +428,7 @@ public static class Engine_CelestialElements
                         sunTint[2] * element[10] * element[7], 1f);
                     material.SetShaderParameter(Param_element_colour, discColour);
                     ClassicColour(material, discColour);
+                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotSunDisc, "ps_g_SunDiscTexture");
                     mesh.Visible = sunActive && element[7] >= IntensityGate;
                     break;
                 case "SunGlare":
@@ -464,6 +467,7 @@ public static class Engine_CelestialElements
                         element[4]);
                     material.SetShaderParameter(Param_element_colour, moonColour);
                     ClassicColour(material, moonColour);
+                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotMoon, "ps_g_MoonTexture");
                     mesh.Visible = element[0] >= IntensityGate;
                     break;
                 case "MoonGlare":
@@ -506,6 +510,23 @@ public static class Engine_CelestialElements
                     mesh.Visible = element[5] >= IntensityGate;
                     break;
             }
+        }
+
+        // Under classic the title's own draws take the sun's beams, disc and glare, the moon's
+        // glare and bloom and the stars (Engine_ClassicSkyElements); the moon disc above is
+        // already on its shader.
+        if (Engine_ClassicSkyElements.Active)
+        {
+            foreach (NodePath hostDrawn in new[] { Path_SunBeams, Path_SunDisc, Path_SunGlare, Path_Stars })
+            {
+                if (container.GetNodeOrNull<MeshInstance3D>(hostDrawn) is { } node)
+                {
+                    node.Visible = false;
+                }
+            }
+            Refii.Fx.Engine_PostFxHalos.PublishSky("MoonGlare", default);
+            Engine_ClassicSkyElements.Update(container, container.GetViewport()?.GetCamera3D());
+            return;
         }
 
         PublishMoonGlare(container, theme, element, moon, read ?? Refii.Models.Engine_BnkMeshLoader.ReadBytes);
@@ -557,6 +578,60 @@ public static class Engine_CelestialElements
     /// </summary>
     private static Vector3 ToGodot(float[] direction) =>
         Refii.Level.Engine_SkyFrame.ToGodot(direction);
+
+    private static readonly StringName SlotHashMeta = "xenos_slot_hash";
+
+    /// <summary>
+    /// Under classic, a classic disc's texture follows the theme's live slot (`sub_821D0BA0`, the
+    /// heaviest of the slot's textures), as the guest binds it each draw. Rebound only when the
+    /// hash moves; a hash that does not resolve keeps what is bound.
+    /// </summary>
+    private static void FollowSlot(ShaderMaterial material, int slot, string parameter)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || !Refii.Models.Engine_ClassicTheme.TexturesLive ||
+            !material.HasMeta(ClassicColourMeta))
+        {
+            return;
+        }
+        uint hash = Refii.Models.Engine_ClassicTheme.TopHash(slot);
+        if (hash == 0u || (material.HasMeta(SlotHashMeta) && (uint)material.GetMeta(SlotHashMeta).AsInt64() == hash))
+        {
+            return;
+        }
+        material.SetMeta(SlotHashMeta, (long)hash);
+        if (Engine_EnvironmentTextures.Load(hash, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out _) is { } texture)
+        {
+            material.SetShaderParameter(parameter, texture);
+        }
+    }
+
+    private static readonly float[] _statedSunColour = new float[3];
+
+    /// <summary>
+    /// Under classic, the guest's own sun and moon: `sub_82263570` writes the directions to
+    /// sky+160 and sky+208 and the attenuated sun colour to sky+144 every frame, and its disc,
+    /// beams and glare constants are built from those. Recomputing them from the theme would be
+    /// a second derivation of what the guest already states.
+    /// </summary>
+    private static void Stated(ref Vector3 sun, ref Vector3 moon, ref float[] sunTint)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || !Refii.Models.Engine_ClassicTheme.Live)
+        {
+            return;
+        }
+
+        sun = ToGodot(Refii.Models.Engine_ClassicTheme.SunDirection);
+        moon = ToGodot(Refii.Models.Engine_ClassicTheme.MoonDirection);
+        Vector3 colour = Refii.Models.Engine_ClassicTheme.SunColour;
+        _statedSunColour[0] = colour.X;
+        _statedSunColour[1] = colour.Y;
+        _statedSunColour[2] = colour.Z;
+        sunTint = _statedSunColour;
+    }
+
+    /// <summary>A stated sky direction: a guest world vector (Z-up), so (-x, z, y) — not the host
+    /// sky frame's Y-up layout (Engine_ClassicSkyElements.ToGodot).</summary>
+    private static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
 
     private static Vector3 Scaled(float[] rgb, float scale) =>
         new(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);

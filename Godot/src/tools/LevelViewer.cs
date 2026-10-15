@@ -49,6 +49,8 @@ public partial class LevelViewer : Node3D
 	private int _debugView = -1;
 	private float _bakeWeight = -1f;
 	private int _framesRendered;
+	private bool _classicLoaded;
+	private long _classicLoadFrom;
 	private int _framesWaited;
 
 	/// <summary>Viewport render times summed over the frames before the shot: one sample is noise.</summary>
@@ -118,6 +120,7 @@ public partial class LevelViewer : Node3D
 			Compositor = Refii.Lighting.Engine_LevelLighting.BuildCompositor(),
 		};
 		AddChild(_camera);
+		Refii.Lighting.Engine_DepthPrepassMarker.Attach(_camera);
 
 		var layer = new CanvasLayer { Name = "Hud" };
 		AddChild(layer);
@@ -238,6 +241,88 @@ public partial class LevelViewer : Node3D
 		{
 			_caption.Text = $"streaming {streamed}/{streamTotal}...";
 			return;
+		}
+
+		// THE GAME'S LOAD HOLD, classic share (GameWorld -> Engine_ClassicLoad): bakes applied,
+		// compositions compiled and the light-group warm built before the shot's warm-up starts.
+		if (_framesRendered == 0 && !_classicLoaded && _region is not null && Refii.Models.Engine_ClassicMaterial.Active &&
+			++_framesWaited < 2400)
+		{
+			if (_classicLoadFrom == 0)
+			{
+				_classicLoadFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+				Refii.Models.Engine_ClassicLoad.Begin(_region);
+			}
+			int settling = 0;
+			foreach (Node node in _region.FindChildren("*", nameof(Refii.Level.Engine_PropStreamer), true, false))
+			{
+				settling += ((Refii.Level.Engine_PropStreamer)node).Settling;
+			}
+			string wait = Refii.Models.Engine_ClassicLoad.Pump(settling == 0);
+			if (wait.Length != 0 || settling != 0)
+			{
+				_caption.Text = $"classic load: {(settling != 0 ? $"{settling} bake(s)" : wait)}...";
+				return;
+			}
+			Refii.Models.Engine_ClassicLoad.End();
+			_classicLoaded = true;
+			{
+				var shapes = new Dictionary<long, int>();
+				var meshUse = new Dictionary<ulong, int>();
+				int visible = 0, transfer = 0;
+				foreach (Node found in _region.FindChildren("*", nameof(MeshInstance3D), true, false))
+				{
+					if (found is not MeshInstance3D m || m.Mesh is not { } drawn || !m.IsVisibleInTree())
+					{
+						continue;
+					}
+					++visible;
+					long key = (long)drawn.GetInstanceId() * 31 + (long)(m.MaterialOverride?.GetInstanceId() ?? 0UL);
+					bool own = false;
+					for (int i = 0; i < drawn.GetSurfaceCount(); i++)
+					{
+						key = key * 31 + (long)(m.GetSurfaceOverrideMaterial(i)?.GetInstanceId() ?? 0UL);
+						own |= Refii.Models.Engine_ClassicTransfer.SurfaceOverride(m, i) is not null;
+					}
+					transfer += own ? 1 : 0;
+					shapes[key] = shapes.GetValueOrDefault(key) + 1;
+					meshUse[drawn.GetInstanceId()] = meshUse.GetValueOrDefault(drawn.GetInstanceId()) + 1;
+				}
+				var paths = new Dictionary<string, HashSet<ulong>>();
+				foreach (Node found in _region.FindChildren("*", nameof(MeshInstance3D), true, false))
+				{
+					if (found is MeshInstance3D m && m.Mesh is { } drawn && m.IsVisibleInTree() &&
+						m.HasMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta))
+					{
+						string path = m.GetMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta).AsString();
+						if (!paths.TryGetValue(path, out HashSet<ulong>? set))
+						{
+							paths[path] = set = new HashSet<ulong>();
+						}
+						set.Add(drawn.GetInstanceId());
+					}
+				}
+				int pathMeshes = 0, pathsSplit = 0;
+				foreach (HashSet<ulong> set in paths.Values)
+				{
+					pathMeshes += set.Count;
+					pathsSplit += set.Count > 1 ? 1 : 0;
+				}
+				GD.Print($"[level-viewer] model paths: {paths.Count} distinct, drawn through {pathMeshes} meshes ({pathsSplit} paths split across several)");
+				int once = 0, meshOnce = 0;
+				foreach (int n in shapes.Values) once += n == 1 ? 1 : 0;
+				foreach (int n in meshUse.Values) meshOnce += n == 1 ? 1 : 0;
+				GD.Print($"[level-viewer] drawn census: {visible} visible mesh node(s), {shapes.Count} distinct shapes " +
+					$"({once} drawn once), {transfer} with a transfer pair, {meshUse.Count} meshes ({meshOnce} used by one node)");
+			}
+			foreach (Node found in GetTree().Root.FindChildren("*", nameof(SubViewport), true, false))
+			{
+				RenderingServer.ViewportSetMeasureRenderTime(((SubViewport)found).GetViewportRid(), true);
+			}
+			GD.Print("[level-viewer] classic casters: " + string.Join(", ", System.Linq.Enumerable.Select(
+				Refii.Models.Engine_ClassicCasters.Census(), kv => $"{kv.Key} {kv.Value}")));
+			GD.Print($"[level-viewer] classic load hold done in " +
+				$"{System.Diagnostics.Stopwatch.GetElapsedTime(_classicLoadFrom).TotalSeconds:0.00} s after streaming");
 		}
 
 		// REFII_LEVEL_HERO=1: the hero's composed parts (CharacterLightLab.Parts) standing at the
@@ -899,6 +984,10 @@ public partial class LevelViewer : Node3D
 			probe.SetInstanceShaderParameter("lightmap_colour", new Vector4(0f, 0f, 0f, 0f));
 		}
 
+		if (_classicLoaded && _framesRendered % 30 == 0)
+		{
+			GD.Print($"[level-viewer] frame {_framesRendered}: {Engine.GetFramesPerSecond():0} fps, process {Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0:0.0} ms");
+		}
 		if (++_framesRendered >= ShotWarmupFrames)
 		{
 			// THE LIVE ENVIRONMENT, read off the node the renderer consumes.
@@ -924,6 +1013,21 @@ public partial class LevelViewer : Node3D
 			GD.Print($"[level-viewer] draw calls in frame: {Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame):0}, " +
 				$"prop shadow batches {Refii.Level.Engine_PropShadow.Batches} ({Refii.Level.Engine_PropShadow.SurfacesMerged} surfaces merged), " +
 				$"prop proxies {Refii.Entities.Engine_ShadowProxy.Active}");
+			foreach (Node found in GetTree().Root.FindChildren("*", nameof(SubViewport), true, false))
+			{
+				if (found is SubViewport sub && sub.RenderTargetUpdateMode == SubViewport.UpdateMode.Always)
+				{
+					Rid rid = sub.GetViewportRid();
+					GD.Print($"[level-viewer] pass {sub.Name}: draw calls {RenderingServer.ViewportGetRenderInfo(rid, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.DrawCallsInFrame)}, " +
+						$"objects {RenderingServer.ViewportGetRenderInfo(rid, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.ObjectsInFrame)}, " +
+						$"render cpu {RenderingServer.ViewportGetMeasuredRenderTimeCpu(rid):0.00} ms");
+				}
+			}
+			{
+				Rid main = GetViewport().GetViewportRid();
+				GD.Print($"[level-viewer] pass main: draw calls {RenderingServer.ViewportGetRenderInfo(main, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.DrawCallsInFrame)}, " +
+					$"objects {RenderingServer.ViewportGetRenderInfo(main, RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.ObjectsInFrame)}");
+			}
 			if (OS.GetEnvironment("REFII_LEVEL_MIRRORED") == "1" && _region is not null)
 			{
 				GD.Print("[level-viewer] mirrored: " + System.Text.Json.JsonSerializer.Serialize(

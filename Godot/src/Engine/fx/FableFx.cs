@@ -10,6 +10,12 @@ namespace Refii.Fx;
 [GlobalClass]
 public partial class FableFx : Node3D
 {
+    private static readonly StringName AlbedoTexName = "albedo_tex";
+    private static readonly StringName FxAlphaRefName = "fx_alpha_ref";
+    private static readonly StringName FxSoftInvName = "fx_soft_inv";
+    private static readonly StringName FxSrcAlphaName = "fx_src_alpha";
+    private static readonly StringName FxTexName = "fx_tex";
+
     public const string BankPath = "art/particles/particle_bank.bnk";
 
     public const string MixShaderPath = "res://src/Engine/fx/fx_particle.gdshader";
@@ -966,7 +972,7 @@ public partial class FableFx : Node3D
                 Texture2D? late = LoadTexture(retrySplit >= 0 ? key[..retrySplit] : key);
                 if (late is not null && cached.Material is ShaderMaterial sm)
                 {
-                    sm.SetShaderParameter("fx_tex", late);
+                    sm.SetShaderParameter(FxTexName, late);
                     _materialsMissingTexture.Remove(key);
                 }
             }
@@ -1006,8 +1012,8 @@ public partial class FableFx : Node3D
         }
 
         var material = new ShaderMaterial { Shader = shader };
-        material.SetShaderParameter("fx_alpha_ref", satMask ? 16.0f : 1.0f);
-        material.SetShaderParameter("fx_soft_inv", softDepth > 0f ? 1.0f / softDepth : 0.0f);
+        material.SetShaderParameter(FxAlphaRefName, satMask ? 16.0f : 1.0f);
+        material.SetShaderParameter(FxSoftInvName, softDepth > 0f ? 1.0f / softDepth : 0.0f);
         if (mode == "darken")
         {
             material.RenderPriority = -1;
@@ -1020,13 +1026,13 @@ public partial class FableFx : Node3D
 
         if (additive && mode != "addlayer")
         {
-            material.SetShaderParameter("fx_src_alpha", mode == "add" ? 1.0f : 0.0f);
+            material.SetShaderParameter(FxSrcAlphaName, mode == "add" ? 1.0f : 0.0f);
         }
 
         Texture2D? tex = LoadTexture(texture);
         if (tex is not null)
         {
-            material.SetShaderParameter("fx_tex", tex);
+            material.SetShaderParameter(FxTexName, tex);
         }
         else
         {
@@ -1113,7 +1119,7 @@ public partial class FableFx : Node3D
             var dispMat = new ShaderMaterial { Shader = GD.Load<Shader>(MeshDispShaderPath) };
             if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial src && Refii.Models.Engine_ClassicMaterial.Albedo(src) is Texture2D albedo)
             {
-                dispMat.SetShaderParameter("albedo_tex", albedo);
+                dispMat.SetShaderParameter(AlbedoTexName, albedo);
             }
             node.MaterialOverride = dispMat;
             node.Layers = Engine_FxDisplacement.LayerMask;

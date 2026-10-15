@@ -24,6 +24,20 @@ public static class Engine_MdlMesh
     public const string SurfaceRegionsMeta = "mdl_surface_regions";
 
     /// <summary>
+    /// The header's bounding sphere {x, y, z, radius} in the file's own (Z-up) axes: the model's
+    /// bound the title's tree billboards normalise by (Engine_ClassicBillboards).
+    /// </summary>
+    public const string BoundSphereMeta = "mdl_bound_sphere";
+
+    /// <summary>
+    /// The model's fur, one Dictionary per furred primitive (<see cref="MdlFurBlock"/>):
+    /// "base" (the primitive's first vertex in the model's numbering, <see cref="SourceVertexMapMeta"/>'s),
+    /// "count", "fur" (the fur material's 17 file values), "colour" (Color per vertex, the record's
+    /// D3DCOLOR) and "lanes" (float4 per vertex, the record's four floats).
+    /// </summary>
+    public const string FurMeta = "mdl_fur";
+
+    /// <summary>
     /// Cached per mesh: the names are fixed when the mesh is built, and the cluster pass asks
     /// per entity on every reconcile. Callers only read the result.
     /// </summary>
@@ -484,6 +498,14 @@ public static int SurfacesWithLods;
         mesh.SetMeta(SourceVertexMapMeta, sourceVertices.ToArray());
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
         mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
+        if (info.FileBoundingSphere.Length == 4)
+        {
+            mesh.SetMeta(BoundSphereMeta, info.FileBoundingSphere);
+        }
+        if (FurOf(data, info) is { } fur)
+        {
+            mesh.SetMeta(FurMeta, fur);
+        }
 
         LodLevelsAttached += lodsAttached;
         LodLevelsDropped += lodsDropped;
@@ -562,6 +584,54 @@ public static int SurfacesWithLods;
     }
 
     /// <summary>Metadata key: the model's bone parent indices, in the order BONES indexes.</summary>
+    /// <summary>The fur blocks as <see cref="FurMeta"/> carries them; null for a model without fur.</summary>
+    private static Godot.Collections.Array? FurOf(byte[] data, MdlInfo info)
+    {
+        if (info.FurBlocks.Count == 0)
+        {
+            return null;
+        }
+        var blocks = new Godot.Collections.Array();
+        foreach (MdlFurBlock block in info.FurBlocks)
+        {
+            if (block.FurMaterial >= info.Meshes.Count || info.Meshes[(int)block.FurMaterial].Fur is not { } furValues ||
+                block.DataOffset < 0 || block.DataOffset + block.Count * 20L > data.Length)
+            {
+                continue;
+            }
+            int bufferBase = 0;
+            for (int b = 0; b < block.RecordIndex && b < info.MeshBuffers.Count; b++)
+            {
+                bufferBase += (int)info.MeshBuffers[b].VertexCount;
+            }
+            int count = (int)block.Count;
+            var colours = new Color[count];
+            var lanes = new float[count * 4];
+            var span = new System.ReadOnlySpan<byte>(data);
+            for (int v = 0; v < count; v++)
+            {
+                int at = block.DataOffset + v * 20;
+                // D3DCOLOR, ARGB in the word: the stage reads (r, g, b, a).
+                uint argb = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(span.Slice(at, 4));
+                colours[v] = new Color(((argb >> 16) & 0xFF) / 255f, ((argb >> 8) & 0xFF) / 255f,
+                    (argb & 0xFF) / 255f, (argb >> 24) / 255f);
+                for (int k = 0; k < 4; k++)
+                {
+                    lanes[v * 4 + k] = System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(span.Slice(at + 4 + k * 4, 4));
+                }
+            }
+            blocks.Add(new Godot.Collections.Dictionary
+            {
+                ["base"] = bufferBase,
+                ["count"] = count,
+                ["fur"] = furValues,
+                ["colour"] = colours,
+                ["lanes"] = lanes,
+            });
+        }
+        return blocks.Count != 0 ? blocks : null;
+    }
+
     public const string BoneParentsMeta = "bone_parents";
 
     /// <summary>Metadata key: the model's bone names, same order.</summary>

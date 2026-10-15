@@ -229,6 +229,9 @@ public static class Engine_ClassicFeed
     /// <summary>The lighting object's ambient (G+208), the particle draw's g_GlobalAmbient base.</summary>
     public static Vector3 GlobalAmbient => new(_frame[0], _frame[1], _frame[2]);
 
+    /// <summary>The scene's wind: unit direction xyz and speed w (O+0xD38..0xD44), guest axes.</summary>
+    public static Vector4 Wind => new(_frame[144], _frame[145], _frame[146], _frame[147]);
+
     /// <summary>The scene's global mist strength (O+3040.x), 1 when the scene is not up.</summary>
     public static float GlobalMistStrength => HasScene() ? _frame[143] : 1f;
 

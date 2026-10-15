@@ -125,6 +125,11 @@ public partial class Engine_LightShadowBudget : Node
 		// VISIBILITY FIRST: a light whose fade has ended before the eye lights nothing on
 		// screen and still costs its cull and cluster work. Keep the nearest LightBudget of
 		// those that can reach; hide the rest until the eye comes back.
+		//
+		// NONE UNDER CLASSIC. Every classic material is unshaded and lit from the guest's own
+		// light set (Engine_ClassicLitInstances), so a placed Godot light lights nothing there and
+		// still costs its cull, cluster and shadow work. Hidden, it never competes for a map.
+		bool classic = Refii.Models.Engine_ClassicMaterial.Active;
 		_reach.Clear();
 		foreach (Light3D light in _lights)
 		{
@@ -137,7 +142,7 @@ public partial class Engine_LightShadowBudget : Node
 			float fadeEnd = light.DistanceFadeEnabled ? light.DistanceFadeBegin + light.DistanceFadeLength : float.MaxValue;
 			float distance = eye.DistanceTo(light.GlobalPosition);
 
-			bool reaches = LightsEnabled && distance <= fadeEnd + range;
+			bool reaches = LightsEnabled && !classic && distance <= fadeEnd + range;
 			_reach.Add((reaches ? distance : float.MaxValue, light));
 		}
 

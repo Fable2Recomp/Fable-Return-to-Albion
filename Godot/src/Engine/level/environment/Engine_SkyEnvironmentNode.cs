@@ -212,8 +212,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         Engine_DynamicCloudShadows.Sync(this, ref _dynamicCloudShadowCaster,
             Engine_DynamicSky.Enabled ? Environment?.Sky?.SkyMaterial as ShaderMaterial : null,
-            Engine_DynamicSky.CloudShadows, ResolveCamera(), ResolveSun(),
-            Refii.Lighting.Engine_LevelLighting.SunShadowOverride ?? Lighting?.SunShadow);
+            Engine_DynamicSky.CloudShadows && !Refii.Models.Engine_ClassicMaterial.Active,
+            ResolveCamera(), ResolveSun(),
+            Lighting is { } lit ? Refii.Lighting.Engine_LevelLighting.SunCasts(lit.SunShadow) : null);
 
         Refii.Core.Engine_FramePhases.Lap("sky.anim", ref lap);
         if (Engine_PostFxParams.SunSourcesRequested)
@@ -1141,6 +1142,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             return;
         }
+        // The editor's view needs its depth pre-pass as the game's does; ownerless, so it is
+        // never saved into the scene.
+        if (GetParent() is Node3D level)
+        {
+            Engine_DepthPrepassMarker.Attach(level);
+        }
 
         if (camera.Compositor != _editorCompositor)
         {
@@ -1232,12 +1239,17 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
 
             CloudLayerTheme layer = theme.Layers[index];
+            // Under classic, the guest's own blended velocities: CLOUDS_LAYERn_VELOCITY_X/Y at
+            // theme 145/146 + 14n, which `sub_82267610` scales by 0.001 per second.
+            bool stated = Refii.Models.Engine_ClassicMaterial.Active && Refii.Models.Engine_ClassicTheme.Live;
+            float velocityX = stated ? Refii.Models.Engine_ClassicTheme.Param(145 + 14 * index) : layer.VelocityX;
+            float velocityY = stated ? Refii.Models.Engine_ClassicTheme.Param(146 + 14 * index) : layer.VelocityY;
             _cloudUvX[index] = WrapUnit(
                 _cloudUvX[index] +
-                (layer.VelocityX * Engine_Clouds.VelocityScale * delta));
+                (velocityX * Engine_Clouds.VelocityScale * delta));
             _cloudUvY[index] = WrapUnit(
                 _cloudUvY[index] +
-                (layer.VelocityY * Engine_Clouds.VelocityScale * delta));
+                (velocityY * Engine_Clouds.VelocityScale * delta));
 
             Vector4 current = material.GetShaderParameter(Param_uv_scale_offset).AsVector4();
             material.SetShaderParameter(Param_uv_scale_offset, new Vector4(

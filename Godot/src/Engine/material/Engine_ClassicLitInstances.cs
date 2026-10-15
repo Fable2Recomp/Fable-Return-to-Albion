@@ -29,6 +29,9 @@ public static class Engine_ClassicLitInstances
         public GeometryInstance3D Node = null!;
         public readonly int[] Rows = new int[3];
         public int Groups;
+        /// <summary>Per group as last applied: its light count and whether it is one local light.</summary>
+        public readonly int[] Counts = new int[3];
+        public readonly bool[] Single = new bool[3];
         public readonly List<int> Lights = new();
         /// <summary>Per surface, the material the variants derive from: the ambient-keyed
         /// override when the placement has one, else the mesh's own; null = not classic.</summary>
@@ -47,6 +50,9 @@ public static class Engine_ClassicLitInstances
         public bool Identified;
         /// <summary>World bounds, kept for a node no live entity moves (region geometry never does).</summary>
         public Aabb Bounds;
+        /// <summary>The frame layout (<see cref="_layout"/>) and zone the last complete assignment saw.</summary>
+        public long Layout = long.MinValue;
+        public uint Zone;
         public bool BoundsKnown;
     }
 
@@ -76,6 +82,8 @@ public static class Engine_ClassicLitInstances
     private static readonly float[] _four = new float[4];
     private static long _frames;
     private static int _lit;
+    /// <summary>The assignment walk's split this frame: the zone lookups and the variant builds, in ticks.</summary>
+    private static long _zoneTicks, _variantTicks;
 
     /// <summary>Registers an instance the classic renderer lights; idempotent.</summary>
     public static void Attach(GeometryInstance3D node)
@@ -92,6 +100,7 @@ public static class Engine_ClassicLitInstances
                 _entries[id] = new Entry { Node = node, Slice = _attached++ % Slices };
             }
         }
+        Engine_ClassicFur.Attach(node);
     }
 
     /// <summary>Assigns this frame's lights to every instance. Main thread, after the light feed.</summary>
@@ -130,9 +139,14 @@ public static class Engine_ClassicLitInstances
             }
         }
         (_seen, _present) = (_present, _seen);
+        _layout = Layout(lights);
+        (LastAssigned, LastSkipped) = (AssignedThisFrame, SkippedThisFrame);
+        AssignedThisFrame = SkippedThisFrame = 0;
         lock (_entries)
         {
             _gone.Clear();
+            _zoneTicks = 0;
+            _variantTicks = 0;
             long assignFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             foreach (KeyValuePair<ulong, Entry> pair in _entries)
             {
@@ -159,6 +173,18 @@ public static class Engine_ClassicLitInstances
                 Assign(entry, lights);
             }
             Refii.Core.Engine_FramePhases.Lap("classic.lit.assign", ref assignFrom);
+            double tickMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            Refii.Core.Engine_FramePhases.Record("classic.lit.zone", _zoneTicks * tickMs, false);
+            Refii.Core.Engine_FramePhases.Record("classic.lit.variant", _variantTicks * tickMs, false);
+            // Inside the variant time: building new light-group materials (their shader composition
+            // apart), and finding ones already built.
+            Refii.Core.Engine_FramePhases.Record("classic.lit.compose", Engine_ClassicMaterial.VariantComposeTicks * tickMs, false);
+            Refii.Core.Engine_FramePhases.Record("classic.lit.build",
+                (Engine_ClassicMaterial.VariantBuildTicks - Engine_ClassicMaterial.VariantComposeTicks) * tickMs, false);
+            Refii.Core.Engine_FramePhases.Record("classic.lit.lookup", Engine_ClassicMaterial.VariantLookupTicks * tickMs, false);
+            Engine_ClassicMaterial.VariantComposeTicks = 0;
+            Engine_ClassicMaterial.VariantBuildTicks = 0;
+            Engine_ClassicMaterial.VariantLookupTicks = 0;
             foreach (ulong id in _gone)
             {
                 _entries.Remove(id);
@@ -277,6 +303,42 @@ public static class Engine_ClassicLitInstances
         }
     }
 
+    /// <summary>
+    /// Everything an assignment reads besides the entry: the lights' identity, place, reach, zone
+    /// and flags, the spot frustums and the mist volumes. A static entry (bounds cached) in the
+    /// same zone under the same layout gets the same groups, so it is not assigned again.
+    /// </summary>
+    private static long _layout;
+
+    /// <summary>The last frame's assignment walk: entries assigned, and static ones skipped under an unchanged layout.</summary>
+    public static int AssignedThisFrame, SkippedThisFrame;
+    public static int LastAssigned, LastSkipped;
+
+    private static long Layout(IReadOnlyList<Engine_ClassicLights.Light> lights)
+    {
+        long h = Engine_ClassicLights.FrustumHash();
+        void Mix(long v) => h = (h ^ v) * 1099511628211L;
+        foreach (Engine_ClassicLights.Light light in lights)
+        {
+            Mix(light.Index);
+            Mix(light.Type);
+            Mix(light.Flags);
+            Mix(light.Zone);
+            Mix(BitConverter.SingleToInt32Bits(light.Radius));
+            Mix(BitConverter.SingleToInt32Bits(light.Position.X));
+            Mix(BitConverter.SingleToInt32Bits(light.Position.Y));
+            Mix(BitConverter.SingleToInt32Bits(light.Position.Z));
+        }
+        foreach (Engine_ClassicMist.Volume volume in Engine_ClassicMist.Volumes)
+        {
+            Mix(volume.Row);
+            Mix((long)(volume.Viewport?.GetInstanceId() ?? 0UL));
+            Mix(volume.Min.GetHashCode());
+            Mix(volume.Max.GetHashCode());
+        }
+        return h == long.MinValue ? 0 : h;
+    }
+
     private static HashSet<(int, Vector3)> _seen = new();
     private static HashSet<(int, Vector3)> _present = new();
     private static readonly List<Engine_ClassicLights.Light> _arrived = new();
@@ -300,6 +362,30 @@ public static class Engine_ClassicLitInstances
         return false;
     }
 
+    /// <summary>
+    /// The light groups an instance drew with on its last assignment: per group its constant row,
+    /// light count and whether it is a single local light. 0 means the frame's row alone (its
+    /// directional lights, BLT1). Main thread.
+    /// </summary>
+    public static int GroupsOf(GeometryInstance3D node, Span<int> rows, Span<int> counts, Span<bool> single)
+    {
+        lock (_entries)
+        {
+            if (!_entries.TryGetValue(node.GetInstanceId(), out Entry? entry))
+            {
+                return 0;
+            }
+            int n = Math.Min(entry.Groups, Math.Min(rows.Length, Math.Min(counts.Length, single.Length)));
+            for (int g = 0; g < n; g++)
+            {
+                rows[g] = entry.Rows[g];
+                counts[g] = entry.Counts[g];
+                single[g] = entry.Single[g];
+            }
+            return n;
+        }
+    }
+
     /// <summary>Distinct light-set rows live, for the debug channel.</summary>
     public static int SharedRows => _sharedByRow.Count;
 
@@ -307,6 +393,15 @@ public static class Engine_ClassicLitInstances
     public static (int Attached, int Lit) Counts => (_entries.Count, _lit);
 
     private static void Assign(Entry entry, IReadOnlyList<Engine_ClassicLights.Light> lights)
+    {
+        if (AssignGroups(entry, lights) && entry.SignatureHash != int.MinValue)
+        {
+            entry.Layout = _layout;
+        }
+    }
+
+    /// <summary>False when the entry's groups could not all be given rows (asked again next time).</summary>
+    private static bool AssignGroups(Entry entry, IReadOnlyList<Engine_ClassicLights.Light> lights)
     {
         if (!entry.Identified)
         {
@@ -320,7 +415,17 @@ public static class Engine_ClassicLitInstances
         }
         Aabb bounds = entry.Bounds;
         Vector3 min = bounds.Position, max = bounds.End;
+        long zoneFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         uint zone = Engine_ClassicZones.Of(entry.Entity, entry.Record);
+        _zoneTicks += System.Diagnostics.Stopwatch.GetTimestamp() - zoneFrom;
+        if (entry.Entity == 0u && entry.Layout == _layout && entry.Zone == zone)
+        {
+            ++SkippedThisFrame;
+            return true;
+        }
+        ++AssignedThisFrame;
+        entry.Layout = long.MinValue;
+        entry.Zone = zone;
 
         // The set: directional lights always, local lights whose sphere meets the bounds.
         foreach (List<Engine_ClassicLights.Light> bucket in _buckets)
@@ -343,6 +448,13 @@ public static class Engine_ClassicLitInstances
             Vector3 centre = new(-light.Position.X, light.Position.Z, light.Position.Y);
             Vector3 nearest = centre.Clamp(min, max);
             if ((nearest - centre).LengthSquared() > light.Radius * light.Radius)
+            {
+                continue;
+            }
+            // A spot takes only what its frustum holds (its +96 receive filter, `sub_82A6CC98`).
+            if (light.Type == Engine_ClassicLights.Light.Spot &&
+                !Engine_ClassicLights.InFrustum(light.Index,
+                    new Vector3(-max.X, min.Z, min.Y), new Vector3(-min.X, max.Z, max.Y)))
             {
                 continue;
             }
@@ -389,7 +501,7 @@ public static class Engine_ClassicLitInstances
                 Release(entry);
                 ApplyGroups(entry, 0, null);
             }
-            return;
+            return true;
         }
 
         // Only directional lights and no mist: the frame row, the material as built.
@@ -402,9 +514,10 @@ public static class Engine_ClassicLitInstances
                 Release(entry);
                 ApplyGroups(entry, 0, null);
             }
-            return;
+            return true;
         }
 
+        bool complete = true;
         for (int g = 0; g < groups; g++)
         {
             counts[g] = members[g].Count;
@@ -425,6 +538,7 @@ public static class Engine_ClassicLitInstances
             if (row == 0)
             {
                 groups = g;
+                complete = false;
                 break;
             }
             ReleaseShared(entry.Rows[g]);
@@ -437,6 +551,7 @@ public static class Engine_ClassicLitInstances
         }
         entry.Groups = groups;
         ApplyGroups(entry, groups, mist);
+        return complete;
     }
 
     /// <summary>
@@ -445,6 +560,19 @@ public static class Engine_ClassicLitInstances
     /// </summary>
     /// <summary>Applies the first <paramref name="groups"/> of the scratch counts to the entry.</summary>
     private static void ApplyGroups(Entry entry, int groups, Engine_ClassicMist.Volume? mist)
+    {
+        long from = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            ApplyGroupsTimed(entry, groups, mist);
+        }
+        finally
+        {
+            _variantTicks += System.Diagnostics.Stopwatch.GetTimestamp() - from;
+        }
+    }
+
+    private static void ApplyGroupsTimed(Entry entry, int groups, Engine_ClassicMist.Volume? mist)
     {
         GeometryInstance3D node = entry.Node;
         int hash = groups;
@@ -463,16 +591,37 @@ public static class Engine_ClassicLitInstances
             // past one light) would read the group's light block as its own single light. Such a
             // shape keeps the whole node on the frame's row, and is remembered so it is not
             // retried at every assignment.
-            entry.Unpaired = groups != 0 && !ApplyChains(entry, counts, singleLocal, mist);
-            if (entry.Unpaired)
+            Engine_ClassicMaterial.Deferred = false;
+            bool paired = groups == 0 || ApplyChains(entry, counts, singleLocal, mist);
+            if (Engine_ClassicMaterial.Deferred)
             {
+                // A variant waits for a later frame: the base until then, asked again at the
+                // entry's next assignment (no signature matches).
+                Engine_ClassicMaterial.Deferred = false;
+                entry.SignatureHash = int.MinValue;
+                entry.Unpaired = false;
                 ApplyChains(entry, Array.Empty<int>(), Array.Empty<bool>(), null);
+                Release(entry);
+                groups = 0;
+            }
+            else
+            {
+                entry.Unpaired = !paired;
+                if (entry.Unpaired)
+                {
+                    ApplyChains(entry, Array.Empty<int>(), Array.Empty<bool>(), null);
+                }
             }
         }
         if (entry.Unpaired && groups != 0)
         {
             Release(entry);
             groups = 0;
+        }
+        for (int g = 0; g < MaxGroups; g++)
+        {
+            entry.Counts[g] = g < groups ? _counts[g] : 0;
+            entry.Single[g] = g < groups && _singleLocal[g];
         }
 
         for (int g = 0; g < MaxGroups; g++)
@@ -543,6 +692,132 @@ public static class Engine_ClassicLitInstances
             }
         }
         return complete;
+    }
+
+    /// <summary>
+    /// The load hold's warm: every light-group chain a lit instance could draw with, built before
+    /// the guest runs so its first assignment finds them cached. A placed fixture whose reach (at
+    /// its widest flicker) meets the instance's box may be in its set; with or without a
+    /// directional light, any count up to all of them can occur, so every count's shape is built.
+    /// Built through <see cref="Chain"/>, the same keys the assignment asks with.
+    /// </summary>
+    public static void PlanWarm(IReadOnlyList<(Vector3 Centre, float Reach)> fixtures)
+    {
+        _warm.Clear();
+        if (fixtures.Count == 0)
+        {
+            return;
+        }
+        var seen = new HashSet<(int, int)>();
+        lock (_entries)
+        {
+            foreach (Entry entry in _entries.Values)
+            {
+                if (!GodotObject.IsInstanceValid(entry.Node) || !entry.Node.IsInsideTree() || !ReadBases(entry))
+                {
+                    continue;
+                }
+                Aabb bounds = entry.Node.GlobalTransform * entry.Node.GetAabb();
+                int reached = 0;
+                foreach ((Vector3 centre, float reach) in fixtures)
+                {
+                    if ((centre.Clamp(bounds.Position, bounds.End) - centre).LengthSquared() <= reach * reach)
+                    {
+                        ++reached;
+                    }
+                }
+                if (reached == 0)
+                {
+                    continue;
+                }
+                int bases = 17;
+                foreach (ShaderMaterial? b in entry.Bases)
+                {
+                    bases = bases * 31 + (b?.GetInstanceId().GetHashCode() ?? 0);
+                }
+                for (int directional = 0; directional <= 1; directional++)
+                {
+                    for (int total = directional + 1; total <= Math.Min(reached + directional, MaxGroups * 7); total++)
+                    {
+                        (int[] counts, bool[] single) = Shape(total, directional);
+                        if (seen.Add((bases, Tail(counts, single, 0, 0))))
+                        {
+                            _warm.Enqueue((entry, counts, single));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>Builds queued warm chains for up to <paramref name="budgetTicks"/>; a chain whose shader is still compiling goes round again.</summary>
+    public static void PumpWarm(long budgetTicks)
+    {
+        long from = System.Diagnostics.Stopwatch.GetTimestamp();
+        int waiting = 0;
+        lock (_entries)
+        {
+            while (_warm.Count > waiting && System.Diagnostics.Stopwatch.GetTimestamp() - from < budgetTicks)
+            {
+                (Entry entry, int[] counts, bool[] single) = _warm.Dequeue();
+                if (!GodotObject.IsInstanceValid(entry.Node))
+                {
+                    continue;
+                }
+                Engine_ClassicMaterial.Deferred = false;
+                foreach (ShaderMaterial? b in entry.Bases)
+                {
+                    Chain(b, counts, single, null);
+                }
+                if (Engine_ClassicMaterial.Deferred)
+                {
+                    Engine_ClassicMaterial.Deferred = false;
+                    _warm.Enqueue((entry, counts, single));
+                    ++waiting;
+                }
+            }
+        }
+    }
+
+    /// <summary>Warm chains not yet built.</summary>
+    public static int WarmPending => _warm.Count;
+
+    public static void ClearWarm() => _warm.Clear();
+
+    private static readonly Queue<(Entry Entry, int[] Counts, bool[] Single)> _warm = new();
+
+    /// <summary>
+    /// The groups for <paramref name="total"/> lights, the directional ones first (Assign's
+    /// buckets): sevens, and a group of one is a single local light unless it holds the directional.
+    /// </summary>
+    private static (int[] Counts, bool[] Single) Shape(int total, int directional)
+    {
+        int groups = (total + 6) / 7;
+        var counts = new int[groups];
+        var single = new bool[groups];
+        for (int g = 0; g < groups; g++)
+        {
+            counts[g] = Math.Min(7, total - g * 7);
+            single[g] = counts[g] == 1 && (g > 0 || directional == 0);
+        }
+        return (counts, single);
+    }
+
+    /// <summary>The entry's bases as <see cref="ApplyChains"/> reads them; false when it would take no chain.</summary>
+    private static bool ReadBases(Entry entry)
+    {
+        if (entry.Node is MeshInstance3D mesh && mesh.Mesh is not null)
+        {
+            Bases(entry, mesh.Mesh.GetSurfaceCount(), i =>
+                (mesh.GetSurfaceOverrideMaterial(i) as ShaderMaterial, mesh.Mesh.SurfaceGetMaterial(i) as ShaderMaterial));
+            return true;
+        }
+        if (entry.Node is MultiMeshInstance3D batch && batch.Multimesh?.Mesh is { } shared && shared.GetSurfaceCount() == 1)
+        {
+            Bases(entry, 1, _ => (batch.MaterialOverride as ShaderMaterial, shared.SurfaceGetMaterial(0) as ShaderMaterial));
+            return true;
+        }
+        return false;
     }
 
     /// <summary>

@@ -182,6 +182,31 @@ public static class Engine_ClassicPlacedLights
         return count;
     }
 
+    /// <summary>
+    /// Every lit fixture under <paramref name="level"/> with the farthest it can reach: its
+    /// range at the widest flicker (L+452 tops at 1 + RadiusRange). Not the frame's list: no
+    /// eye cut, no view cut. For the load hold's warm, which builds for every light that may come.
+    /// </summary>
+    public static void Reaches(Node level, List<(Vector3 Centre, float Reach)> into)
+    {
+        into.Clear();
+        foreach (Node node in level.FindChildren("*", nameof(Light3D), true, false))
+        {
+            if (node is not Light3D light || !light.HasMeta(Meta) ||
+                light.GetMeta(Meta).AsFloat32Array() is not { Length: >= 13 } v)
+            {
+                continue;
+            }
+            float colourSq = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) * v[3] * v[3];
+            if (colourSq <= 1e-4f)
+            {
+                continue;
+            }
+            bool castingSpot = v[5] == 9f && v[12] != 0f;
+            into.Add((light.GlobalPosition, v[4] * (castingSpot ? 1f : 1f + MathF.Abs(v[10]))));
+        }
+    }
+
     /// <summary>`LHMath::GFFloatRandom(2.0, seed)` (0x821F09C8).</summary>
     private static float Random2(ref uint seed)
     {

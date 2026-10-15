@@ -48,6 +48,12 @@ struct ShaderRecompiler : StringBuffer
     bool godotRepeatedShader() const { return godotEntryName.find("repeated") != std::string::npos; }
     bool godotTreeShader() const { return godotEntryName.find("tree") != std::string::npos; }
     bool godotLandscapeShader() const { return godotEntryName.find("landscape") != std::string::npos; }
+    // The tree billboard: its stream is one FLOAT16_4 record per tree, {guest-world position,
+    // world radius}, repeated on the quad's four vertices (`sub_822DB218`).
+    bool godotBillboardShader() const { return godotEntryName.find("treebillboard") != std::string::npos; }
+    // The fur shells: TEXCOORD2 is the fur block's per-vertex float4 (`sub_82B8FD28`, stream 1),
+    // which the host keeps whole in CUSTOM0 (Engine_ClassicFur).
+    bool godotFurShellShader() const { return godotEntryName.find("shell_fur") != std::string::npos; }
     // The particle family: the FACE_ME vertex shaders and the PARTICLEMATERIAL pixel shaders,
     // drawn from the title's 48-byte particle records (position, TEXCOORD0, TEXCOORD1), not
     // from an imported model.
@@ -70,6 +76,19 @@ struct ShaderRecompiler : StringBuffer
         return godotEntryName.find("face_me") != std::string::npos ||
             godotEntryName.find("particlematerial") != std::string::npos;
     }
+    // The trail family: TRAILS / DOUBLE_TRAILS vertex shaders fetch their Catmull-Rom control
+    // points by a COMPUTED index (the point ring the CPU writes, POSITION0 at +0 and POSITION1 at
+    // +16 of 32 bytes), which no per-vertex attribute can carry. Those fetches read the host's
+    // control-point texture instead (xr_stream_fetch, one column a point, one row an element).
+    bool godotTrailShader() const { return godotEntryName.find("trails") != std::string::npos; }
+    // The post-processing family (PSHADER_POSTPROCESSING_*, PSHADER_POSTPROCESSINGMATERIAL_*): the
+    // title binds every constant of these by binding id per pass (`sub_821E5DB8`, `sub_822767E0`),
+    // so a name lands on a different register in each variant (g_BloomFactor is c31 in 0500 and
+    // c77 in 0516). All of them are the pass's own, by name; the host runs these as compute passes
+    // (Engine_ClassicPostPass).
+    bool godotPostShader() const { return godotEntryName.find("postprocessing") != std::string::npos; }
+    bool godotUsesVertexStream = false;
+    bool godotWritesPointSize = false;
     uint32_t indentation = 0;
     bool isPixelShader = false;
 

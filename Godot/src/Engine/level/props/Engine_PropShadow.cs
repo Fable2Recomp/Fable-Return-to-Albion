@@ -83,6 +83,9 @@ public static class Engine_PropShadow
 	public static void RecordBuilt(MultiMesh batch, Transform3D[] transforms) =>
 		Stated.AddOrUpdate(batch, transforms);
 
+	/// <summary>Whether the build recorded this batch at all (whatever its count now).</summary>
+	public static bool HasRecord(MultiMesh batch) => Stated.TryGetValue(batch, out _);
+
 	/// <summary>The batch's instance transforms without a readback, or null for a batch built elsewhere.</summary>
 	public static Transform3D[]? StatedTransforms(MultiMesh batch) =>
 		Stated.TryGetValue(batch, out Transform3D[]? transforms) &&

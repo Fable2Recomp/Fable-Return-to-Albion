@@ -54,6 +54,17 @@ uniform bool xr_use_guest_position = false;
 #ifndef XR_POSITION_OUT
 #define XR_POSITION_OUT(p) (p)
 #endif
+// The pixel stage's parameter register (Xenos param gen): xy the pixel position, signed by the
+// face; zw the point sprite's coordinate in [0, 1], which only a point draw has. A composition
+// that draws points defines this as POINT_COORD.
+#ifndef XR_PARAM_GEN_ZW
+#define XR_PARAM_GEN_ZW vec2(0.0)
+#endif
+// The point size a vertex stage writes, under the draw's POINTSIZE_MIN / POINTSIZE_MAX states,
+// which a composition that draws points defines.
+#ifndef XR_POINT_SIZE
+#define XR_POINT_SIZE(s) (s)
+#endif
 
 // THE FRAME'S CONSTANT FILE, one texel per register: the 256 pixel and 256 vertex float4
 // registers the title's render passes would have set, laid out as the device holds them. The
@@ -101,6 +112,33 @@ vec4 xr_const_view(sampler2D registers, int index, bool main_view) {
 
 #define xr_const(registers, index) xr_const_view(registers, index, (CAMERA_VISIBLE_LAYERS & 1u) != 0u)
 
+// A vertex-baked placement's bake stream (Engine_ClassicVertexBakes): its block of the shared
+// texture, one texel per vertex in the mesh's order, the surface's start a material uniform.
+#ifdef XR_VERTEX_BAKE_FETCH
+global uniform sampler2D xr_vertex_bakes;
+instance uniform int xr_bake_base = 0;
+uniform int xr_bake_surface = 0;
+vec4 xr_vertex_bake(int vertex_id) {
+	int width = textureSize(xr_vertex_bakes, 0).x;
+	int at = xr_bake_base + xr_bake_surface + vertex_id;
+	return texelFetch(xr_vertex_bakes, ivec2(at % width, at / width), 0);
+}
+#endif
+
+// A transfer placement's g_PRTConstants (Engine_ClassicPrtRows): its row of the shared texture.
+#ifdef XR_PRT_ROW_FETCH
+global uniform sampler2D xr_prt_constants;
+instance uniform int xr_prt_row = 0;
+vec4 xr_prt(int index) {
+	return texelFetch(xr_prt_constants, ivec2(index, xr_prt_row), 0);
+}
+#endif
+
+// A vertex stage's register read the composition may replace (the particle family's fixed axes).
+#ifndef XR_VS_CONST
+#define XR_VS_CONST(reg_index, reg_value) (reg_value)
+#endif
+
 // g_TreeConstants (VS c15..c17) as `sub_82222CE8` writes them per tree. Two lanes are the
 // tree's own: c15.x = R+0x250, the tree's phase, seeded once from its creator position and
 // advanced by the clock (`sub_822DAB20`), so it is the seed plus the clock the frame carries in
@@ -126,170 +164,37 @@ float xr_tree_seed(vec3 position) {
 // slot (record+24, mask bit 0x20 — the canopy, drawn without TRUNK1), else -1.
 uniform float xr_tree_c16w = -1.0;
 
+// A draw whose world matrix is not its placement's (the billboard capture, `sub_82A85510`: the
+// model at the origin, unscaled, with the placement's own tree lanes) states them: X = (the
+// placement's x axis over its squared length, c15.x phase), Y = (its y axis likewise, 1). The wind
+// stays the frame's register. The composition defines both macros to its instance uniforms.
+#ifndef XR_TREE_STATED_X
+#define XR_TREE_STATED_X vec4(0.0)
+#define XR_TREE_STATED_Y vec4(0.0)
+#endif
+
 vec4 xr_tree_constant(sampler2D registers, int index, mat4 world) {
 	vec4 value = xr_const_view(registers, index, true);
+	vec4 stated_x = XR_TREE_STATED_X;
+	vec4 stated_y = XR_TREE_STATED_Y;
+	bool stated = stated_y.w > 0.5;
 	if (index == 16) {
 		value.w = xr_tree_c16w;
 	} else if (index == 15) {
-		value.x += xr_tree_seed(world[3].xyz);
+		value.x += stated ? stated_x.w : xr_tree_seed(world[3].xyz);
 	} else if (index == 17) {
 		vec3 wind = xr_const_view(registers, XR_VS_HOST_WIND, true).xyz;
-		value.x = dot(wind, world[0].xyz) / max(dot(world[0].xyz, world[0].xyz), 1e-12);
-		value.y = dot(wind, world[1].xyz) / max(dot(world[1].xyz, world[1].xyz), 1e-12);
+		if (stated) {
+			value.x = dot(wind, stated_x.xyz);
+			value.y = dot(wind, stated_y.xyz);
+		} else {
+			value.x = dot(wind, world[0].xyz) / max(dot(world[0].xyz, world[0].xyz), 1e-12);
+			value.y = dot(wind, world[1].xyz) / max(dot(world[1].xyz, world[1].xyz), 1e-12);
+		}
 	}
 	return value;
 }
 
-// THE AXES. Models are rotated Z-up to Y-up on import (x, y, z) -> (x, z, -y), and the guest's
-// world point (x, y, z) is (-x, z, y) in Godot's (GameEntities.ToGodot; the level root is
-// scaled (-1, 1, 1)). The shaders were written in the file's axes with constants in the guest's,
-// so the vertex inputs are rotated back to the file and the object matrices are composed in the
-// guest's world. Both are column-major: `mat * v`. The world map is its own inverse.
-const mat4 XR_FILE_TO_MODEL = mat4(
-	vec4(1.0, 0.0, 0.0, 0.0),
-	vec4(0.0, 0.0, -1.0, 0.0),
-	vec4(0.0, 1.0, 0.0, 0.0),
-	vec4(0.0, 0.0, 0.0, 1.0));
-const mat4 XR_GODOT_TO_GUEST_WORLD = mat4(
-	vec4(-1.0, 0.0, 0.0, 0.0),
-	vec4(0.0, 0.0, 1.0, 0.0),
-	vec4(0.0, 1.0, 0.0, 0.0),
-	vec4(0.0, 0.0, 0.0, 1.0));
-
-vec3 xr_file_pos(vec3 model) {
-	return vec3(model.x, -model.z, model.y);
-}
-
-vec3 xr_file_dir(vec3 model) {
-	return vec3(model.x, -model.z, model.y);
-}
-
-// Row i of a column-major matrix, which is what a `dot(row, position)` in the shader wants.
-vec4 xr_row(mat4 m, int i) {
-	return vec4(m[0][i], m[1][i], m[2][i], m[3][i]);
-}
-
-// The two object matrices a translated vertex() builds first, because Godot's built-ins are
-// only readable inside the processor function:
-//   xr_wvp   = PROJECTION_MATRIX * MODELVIEW_MATRIX * XR_FILE_TO_MODEL
-//              g_WorldViewProjection: file space to Godot clip space, so oPos IS Godot's;
-//   xr_world = XR_GODOT_TO_GUEST_WORLD * MODEL_MATRIX * XR_FILE_TO_MODEL
-//              g_WorldTransform: file space to the guest's world, where its lights are stated.
-
-// g_WorldPositionAndReciprocalScale: the object's guest-world position and 1 / its scale.
-vec4 xr_world_pos_and_rscale(mat4 world) {
-	return vec4(world[3].xyz, 1.0 / max(length(world[0].xyz), 1e-6));
-}
-
-// Xenos `cube` writes a direction the following texture fetch picks up by index.
-struct CubeMapData {
-	vec3 dirs[2];
-	int index;
-};
-
-float xr_rcp(float x) {
-	return 1.0 / x;
-}
-
-vec4 xr_dst(vec4 a, vec4 b) {
-	return vec4(1.0, a.y * b.y, a.z, b.w);
-}
-
-float xr_max4(vec4 v) {
-	return max(max(v.x, v.y), max(v.z, v.w));
-}
-
-vec4 xr_cube(vec4 value, inout CubeMapData d) {
-	int i = d.index;
-	d.dirs[i] = value.xyz;
-	d.index++;
-	return vec4(0.0, 0.0, 0.0, float(i));
-}
-
-vec4 xr_tfetchTexcoord(uint swapped, vec4 value, uint index) {
-	return (swapped & (1u << index)) != 0u ? value.yxwz : value;
-}
-
-// Texture fetches. MACROS, NOT FUNCTIONS: Godot refuses a function whose sampler parameter is
-// passed textures of differing filter, repeat or hint settings, and one translated shader
-// fetches its diffuse (repeat), its shadow maps (nearest, clamped) and the scene depth (hinted)
-// alike; a macro inlines per call, so each fetch names its own sampler. A 1D fetch reads a 2D
-// texture at v = 0.5, as the HLSL side does; the 2D offset is in texels, as the instruction
-// states it.
-#define xr_tfetch1D(t, x) texture(t, vec2((x), 0.5))
-#define xr_tfetch2D(t, uv, offset) texture(t, (uv) + (offset) / vec2(textureSize(t, 0)))
-#define xr_tfetch2D_depth(t, uv, offset) texture(t, (uv) + (offset) / vec2(textureSize(t, 0)))
-// A composition whose title source was rendered unexposed while ours is the exposed scene
-// scales the read back (the water's refraction tile, Engine_ClassicWater).
-#ifndef XR_SCREEN_SCALE
-#define XR_SCREEN_SCALE 1.0
-#endif
-#define xr_tfetch2D_screen(t, uv, offset) (texture(t, (uv) + (offset) / vec2(textureSize(t, 0))) * XR_SCREEN_SCALE)
-// The host's planar mirror: a right-handed camera's image of the reflected world is the title's
-// reflection tile mirrored in u (Engine_WaterReflection, water.gdshader read it the same way).
-#define xr_tfetch2D_mirror(t, uv, offset) texture(t, xr_mirror_u((uv) + (offset) / vec2(textureSize(t, 0))))
-#define xr_getWeights2D(t, uv, offset) xr_weights((uv) * vec2(textureSize(t, 0)) + (offset) - 0.5, (uv))
-#define xr_tfetch3D(t, uvw) texture(t, (uvw))
-#define xr_tfetchCube(t, uvw, d) texture(t, (d).dirs[int((uvw).z)])
-
-vec2 xr_mirror_u(vec2 at) {
-	return vec2(1.0 - at.x, at.y);
-}
-
-vec2 xr_weights(vec2 scaled, vec2 uv) {
-	vec2 w = fract(scaled);
-	return mix(w, vec2(0.0), isnan(uv));
-}
-
-// Comparisons as the 0.0 / 1.0 floats Xenos produces (HLSL converts a bool implicitly; GLSL
-// does not), one overload per width.
-float xr_seq(float a, float b) { return a == b ? 1.0 : 0.0; }
-vec2 xr_seq(vec2 a, vec2 b) { return vec2(equal(a, b)); }
-vec3 xr_seq(vec3 a, vec3 b) { return vec3(equal(a, b)); }
-vec4 xr_seq(vec4 a, vec4 b) { return vec4(equal(a, b)); }
-float xr_sne(float a, float b) { return a != b ? 1.0 : 0.0; }
-vec2 xr_sne(vec2 a, vec2 b) { return vec2(notEqual(a, b)); }
-vec3 xr_sne(vec3 a, vec3 b) { return vec3(notEqual(a, b)); }
-vec4 xr_sne(vec4 a, vec4 b) { return vec4(notEqual(a, b)); }
-float xr_sgt(float a, float b) { return a > b ? 1.0 : 0.0; }
-vec2 xr_sgt(vec2 a, vec2 b) { return vec2(greaterThan(a, b)); }
-vec3 xr_sgt(vec3 a, vec3 b) { return vec3(greaterThan(a, b)); }
-vec4 xr_sgt(vec4 a, vec4 b) { return vec4(greaterThan(a, b)); }
-float xr_sge(float a, float b) { return a >= b ? 1.0 : 0.0; }
-vec2 xr_sge(vec2 a, vec2 b) { return vec2(greaterThanEqual(a, b)); }
-vec3 xr_sge(vec3 a, vec3 b) { return vec3(greaterThanEqual(a, b)); }
-vec4 xr_sge(vec4 a, vec4 b) { return vec4(greaterThanEqual(a, b)); }
-
-// Kill tests: true when any component compares, which is the HLSL `any(a op b)`.
-bool xr_any_eq(float a, float b) { return a == b; }
-bool xr_any_eq(vec2 a, vec2 b) { return any(equal(a, b)); }
-bool xr_any_eq(vec3 a, vec3 b) { return any(equal(a, b)); }
-bool xr_any_eq(vec4 a, vec4 b) { return any(equal(a, b)); }
-bool xr_any_ne(float a, float b) { return a != b; }
-bool xr_any_ne(vec2 a, vec2 b) { return any(notEqual(a, b)); }
-bool xr_any_ne(vec3 a, vec3 b) { return any(notEqual(a, b)); }
-bool xr_any_ne(vec4 a, vec4 b) { return any(notEqual(a, b)); }
-bool xr_any_gt(float a, float b) { return a > b; }
-bool xr_any_gt(vec2 a, vec2 b) { return any(greaterThan(a, b)); }
-bool xr_any_gt(vec3 a, vec3 b) { return any(greaterThan(a, b)); }
-bool xr_any_gt(vec4 a, vec4 b) { return any(greaterThan(a, b)); }
-bool xr_any_ge(float a, float b) { return a >= b; }
-bool xr_any_ge(vec2 a, vec2 b) { return any(greaterThanEqual(a, b)); }
-bool xr_any_ge(vec3 a, vec3 b) { return any(greaterThanEqual(a, b)); }
-bool xr_any_ge(vec4 a, vec4 b) { return any(greaterThanEqual(a, b)); }
-
-// Conditional moves: `c op 0.0 ? a : b` per component (the HLSL `select`).
-float xr_cnd_eq(float c, float a, float b) { return c == 0.0 ? a : b; }
-vec2 xr_cnd_eq(vec2 c, vec2 a, vec2 b) { return mix(b, a, equal(c, vec2(0.0))); }
-vec3 xr_cnd_eq(vec3 c, vec3 a, vec3 b) { return mix(b, a, equal(c, vec3(0.0))); }
-vec4 xr_cnd_eq(vec4 c, vec4 a, vec4 b) { return mix(b, a, equal(c, vec4(0.0))); }
-float xr_cnd_ge(float c, float a, float b) { return c >= 0.0 ? a : b; }
-vec2 xr_cnd_ge(vec2 c, vec2 a, vec2 b) { return mix(b, a, greaterThanEqual(c, vec2(0.0))); }
-vec3 xr_cnd_ge(vec3 c, vec3 a, vec3 b) { return mix(b, a, greaterThanEqual(c, vec3(0.0))); }
-vec4 xr_cnd_ge(vec4 c, vec4 a, vec4 b) { return mix(b, a, greaterThanEqual(c, vec4(0.0))); }
-float xr_cnd_gt(float c, float a, float b) { return c > 0.0 ? a : b; }
-vec2 xr_cnd_gt(vec2 c, vec2 a, vec2 b) { return mix(b, a, greaterThan(c, vec2(0.0))); }
-vec3 xr_cnd_gt(vec3 c, vec3 a, vec3 b) { return mix(b, a, greaterThan(c, vec3(0.0))); }
-vec4 xr_cnd_gt(vec4 c, vec4 a, vec4 b) { return mix(b, a, greaterThan(c, vec4(0.0))); }
+#include "res://src/Engine/material/xenos_helpers.gdshaderinc"
 
 #endif

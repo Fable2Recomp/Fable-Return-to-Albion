@@ -840,6 +840,8 @@ public sealed partial class Engine_HudView : Node3D
         }
     }
 
+    private static readonly StringName OpacityParameter = "opacity";
+
     /// <summary>A visible, non-empty label's bounds in the HUD's space, or null.</summary>
     private static Rect2? TextBounds(MeshInstance3D label)
     {
@@ -851,7 +853,7 @@ public sealed partial class Engine_HudView : Node3D
         // An unset uniform reads back as nil, which is the shader's default 1 — a freshly
         // painted label has never had its opacity written and is fully visible.
         if (label.MaterialOverride is ShaderMaterial m &&
-            m.GetShaderParameter("opacity") is { VariantType: Variant.Type.Float } op &&
+            m.GetShaderParameter(OpacityParameter) is { VariantType: Variant.Type.Float } op &&
             op.AsSingle() < 0.05f)
         {
             return null;
@@ -975,8 +977,9 @@ public sealed partial class Engine_HudView : Node3D
             }
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             bounds = Union(bounds, SubtreeBounds(child, ref behind));
         }
 
@@ -988,18 +991,40 @@ public sealed partial class Engine_HudView : Node3D
 
     private static readonly StringName[] PromptNameNames = { "LeftButton", "RightButton" };
 
+    /// <summary>
+    /// Each node's answer, by instance id. HUD node names never change, and reading `Name` makes
+    /// a tracked StringName per call; the per-frame walks asked it of every child.
+    /// </summary>
+    private static readonly Dictionary<(ulong Node, StringName[] Names), bool> NameMatches = new();
+
     private static bool NameIn(Node node, StringName[] names)
     {
-        StringName name = node.Name;
-        foreach (StringName candidate in names)
+        (ulong, StringName[]) key = (node.GetInstanceId(), names);
+        if (NameMatches.TryGetValue(key, out bool known))
         {
-            if (name == candidate)
+            return known;
+        }
+
+        if (NameMatches.Count >= 8192)
+        {
+            NameMatches.Clear();
+        }
+
+        bool found = false;
+        using (StringName name = node.Name)
+        {
+            foreach (StringName candidate in names)
             {
-                return true;
+                if (name == candidate)
+                {
+                    found = true;
+                    break;
+                }
             }
         }
 
-        return false;
+        NameMatches[key] = found;
+        return found;
     }
 
     /// <summary>
@@ -1020,7 +1045,7 @@ public sealed partial class Engine_HudView : Node3D
     private const float PromptDrop = 16f;
 
     /// <summary>Latches a prompt's authored height, so the drop is applied once and not per frame.</summary>
-    private const string PromptBaseMeta = "hud_prompt_base_y";
+    private static readonly StringName PromptBaseMeta = "hud_prompt_base_y";
 
     /// <summary>
     /// Brings the targeted readout's button prompts onto the widget's centre line, so they sit
@@ -1077,8 +1102,9 @@ public sealed partial class Engine_HudView : Node3D
             Engine_UiSceneBuilder.SetQuadTint(mesh, colour, 1f);
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             TintSubtree(child, colour);
         }
     }
@@ -1097,8 +1123,9 @@ public sealed partial class Engine_HudView : Node3D
             Engine_UiSceneBuilder.SetQuadOpacity(mesh, opacity);
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             LightSubtree(child, opacity);
         }
     }
@@ -2001,8 +2028,9 @@ public sealed partial class Engine_HudView : Node3D
             geometry.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             NoShadow(child);
         }
     }

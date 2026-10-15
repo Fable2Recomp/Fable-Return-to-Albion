@@ -282,18 +282,19 @@ public static class Engine_LevelBakedLighting
 	}
 
 	/// <summary>
-	/// Returns a copy of <paramref name="mesh"/> carrying the authored per-vertex bake, or null
-	/// when there is no bake for this placement or it does not fit.
+	/// The authored per-vertex bake of a placement, per surface of <paramref name="mesh"/> in its
+	/// vertex order, or null when there is no bake for this placement or it does not fit.
 	///
 	/// THE FIT CHECK IS THE GUEST'S OWN. It refuses a bake buffer unless its byte size equals
 	/// four times the summed vertex count over every submesh, and so do we — a bake that
 	/// belongs to a different build of the model would otherwise be applied vertex-for-vertex
 	/// to the wrong geometry, which looks like bad lighting rather than like a mismatch.
 	///
-	/// The copy is unavoidable: the bake is per PLACEMENT and the streamer shares one cached
-	/// mesh across every placement of a model, so a shared mesh cannot carry it.
+	/// The bake is per PLACEMENT and every placement of a model shares one cached mesh, so it is
+	/// not written into the mesh: classic reads it from the shared bake texture
+	/// (Engine_ClassicVertexBakes), and the placements keep merging into instanced draws.
 	/// </summary>
-	public static ArrayMesh? TryBuildVertexBake(LightmapContainer? bakes, ulong key, ArrayMesh mesh)
+	public static Color[][]? TryBuildVertexColours(LightmapContainer? bakes, ulong key, ArrayMesh mesh)
 	{
 		if (bakes is null || mesh.GetSurfaceCount() == 0)
 		{
@@ -333,12 +334,12 @@ public static class Engine_LevelBakedLighting
 			return null;
 		}
 
-		var baked = new ArrayMesh();
 		int cursor = 0;
 		SourceSurfaces source = SurfacesOf(mesh);
+		var baked = new Color[source.Arrays.Length][];
 		for (int s = 0; s < source.Arrays.Length; s++)
 		{
-			var arrays = (Godot.Collections.Array)source.Arrays[s].Duplicate(false);
+			Godot.Collections.Array arrays = source.Arrays[s];
 			int count = source.VertexCounts[s];
 
 			// Through the map, not by running cursor. Our vertex order is not the file's — a
@@ -377,12 +378,8 @@ public static class Engine_LevelBakedLighting
 				VertexBakeUnsourced += unsourced;
 			}
 
-			arrays[(int)Mesh.ArrayType.Color] = vertexColours;
+			baked[s] = vertexColours;
 			cursor += count;
-
-			int added = Refii.Models.Engine_MdlSurfaceArrays.Add(baked, source.Primitives[s], arrays, source.Lods[s]);
-			baked.SurfaceSetName(added, source.Names[s]);
-			baked.SurfaceSetMaterial(added, source.Materials[s]);
 		}
 
 		return baked;
@@ -747,11 +744,22 @@ public static class Engine_LevelBakedLighting
 
 		// The classic renderer lights per draw from the same seam: every lit instance passes here,
 		// and one with a transfer and a probe sample takes the title's AMB2 pair.
+		long from = System.Diagnostics.Stopwatch.GetTimestamp();
 		Refii.Models.Engine_ClassicLitInstances.Attach(node);
+		long attached = System.Diagnostics.Stopwatch.GetTimestamp();
+		long find = Refii.Models.Engine_ClassicMaterial.AmbientFindTicks, compose = Refii.Models.Engine_ClassicMaterial.AmbientComposeTicks;
+		long duplicate = Refii.Models.Engine_ClassicMaterial.AmbientDuplicateTicks, bind = Refii.Models.Engine_ClassicMaterial.AmbientBindTicks;
 		using (Refii.Core.Engine_FramePhases.Measure("classic.transfer"))
 		{
 			Refii.Models.Engine_ClassicTransfer.Apply(node);
 		}
+		long transferred = System.Diagnostics.Stopwatch.GetTimestamp();
+		double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+		LastLightSplit = $"attach {(attached - from) * toMs:0.0}, transfer {(transferred - attached) * toMs:0.0} " +
+			$"(find {(Refii.Models.Engine_ClassicMaterial.AmbientFindTicks - find) * toMs:0.0}, " +
+			$"compose {(Refii.Models.Engine_ClassicMaterial.AmbientComposeTicks - compose) * toMs:0.0}, " +
+			$"duplicate {(Refii.Models.Engine_ClassicMaterial.AmbientDuplicateTicks - duplicate) * toMs:0.0}, " +
+			$"bind {(Refii.Models.Engine_ClassicMaterial.AmbientBindTicks - bind) * toMs:0.0})";
 
 		// HasMeta FIRST, AND IT IS NOT BELT-AND-BRACES. `GetMeta(name, default)` reads as a safe
 		// lookup with a fallback and is not one: Godot returns the fallback only when the fallback
@@ -798,7 +806,11 @@ public static class Engine_LevelBakedLighting
 			: 1f;
 
 		node.SetInstanceShaderParameter(Param_lightmap_colour, new Vector4(dial, dial, dial, mode));
+		LastLightSplit += $", params {(System.Diagnostics.Stopwatch.GetTimestamp() - transferred) * toMs:0.0}";
 	}
+
+	/// <summary>The last <see cref="ApplyInstanceLighting"/>'s split, for the streamer's slow-step log.</summary>
+	public static string LastLightSplit = string.Empty;
 
 	/// <summary>
 	/// Publishes the theme's lighting to every surface, as global shader parameters. Every frame.

@@ -202,6 +202,10 @@ public partial class Engine_ClothBody : MeshInstance3D
         body.Bind(source, pieces, patch);
         node.AddChild(body);
         body.Owner = node.Owner ?? node;
+        // The body's tint and fade as they stand; later changes arrive with the body's look.
+        Refii.Entities.Engine_EntityAppearance.MirrorToCloth(node);
+        // Under classic the cloth casts into the guest's cascades with the body it is part of.
+        Refii.Models.Engine_ClassicCasters.Register(body, dynamic: true);
 
         Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(node, patch.DrivenMask);
         return body;

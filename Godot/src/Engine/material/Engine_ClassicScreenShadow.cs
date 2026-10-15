@@ -27,6 +27,26 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
     private static Texture2Drd? _mask;
     private static Rid _whiteRid;
 
+    private static ImageTexture? _white;
+
+    /// <summary>
+    /// The title's "no sun caster" mask, 16 x 16 white (`sub_822965E0`): for a draw outside the
+    /// main view (an impostor, a prelit texture), which cannot read the main view's mask.
+    /// </summary>
+    public static ImageTexture White
+    {
+        get
+        {
+            if (_white is null)
+            {
+                var image = Image.CreateEmpty(16, 16, false, Image.Format.L8);
+                image.Fill(Colors.White);
+                _white = ImageTexture.CreateFromImage(image);
+            }
+            return _white;
+        }
+    }
+
     /// <summary>The mask as the classic materials bind it; white until the first pass.</summary>
     public static Texture2Drd Mask
     {

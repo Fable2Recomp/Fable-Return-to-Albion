@@ -36,7 +36,9 @@ public static class Engine_ReflectionLayer
 	public const uint ReflectedLayers = 1u | Mask;
 
 	/// <summary>What a mirror camera sees.</summary>
-	public static uint MirrorCullMask => FollowGuest ? Mask : ~Engine_WaterReflection.WaterLayer;
+	public static uint MirrorCullMask => FollowGuest ? Mask
+		: ~(Engine_WaterReflection.WaterLayer | Refii.Models.Engine_ClassicShadows.NearCasterLayer |
+			Refii.Models.Engine_ClassicShadows.FarCasterLayer);
 
 	/// <summary>
 	/// A light's shadow caster mask with the reflected bit cleared. Unconditional: the bit means

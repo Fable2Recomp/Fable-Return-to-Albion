@@ -196,6 +196,10 @@ std::string ShaderRecompiler::godotVertexInput(uint32_t usage, uint32_t usageInd
             return "vec4(VERTEX, 1.0)";
         if (usageIndex == 0 && godotWorldSpaceShader())
             return "(XR_GODOT_TO_GUEST_WORLD * MODEL_MATRIX * vec4(VERTEX, 1.0))";
+        // A billboard record is a guest-world point with the tree's radius in w; the host puts
+        // the point in VERTEX and the radius in CUSTOM0.x (Engine_ClassicBillboards).
+        if (usageIndex == 0 && godotBillboardShader())
+            return "vec4((XR_GODOT_TO_GUEST_WORLD * MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz, CUSTOM0.x)";
         // A repeated mesh packs its texture coordinate into the spare lanes: u in POSITION.w,
         // v in NORMAL.w (its stage exports texcoord0 = (position.w, normal.w)).
         if (usageIndex == 0 && godotRepeatedShader())
@@ -239,7 +243,7 @@ std::string ShaderRecompiler::godotVertexInput(uint32_t usage, uint32_t usageInd
         {
         case 0: return "vec4(UV, 0.0, 0.0)";
         case 1: return "vec4(xr_file_dir(TANGENT), 1.0)";
-        case 2: return godotTransferShader() ? "CUSTOM0" : "vec4(UV2, 0.0, 0.0)";
+        case 2: return godotTransferShader() || godotFurShellShader() ? "CUSTOM0" : "vec4(UV2, 0.0, 0.0)";
         case 3: return "CUSTOM0";
         case 4: return "CUSTOM1";
         case 5: return "CUSTOM2";
@@ -344,6 +348,12 @@ static constexpr const char* GODOT_MATERIAL_CONSTANT_NAMES[] =
     "g_KeyFrameColors",
     "g_KeyFrameScalesSelfIllumFactorStartTimes",
     "g_KeyFrameGlobalScales",
+    // A trail's own (`sub_821B25F8`, `0x82A59DD0`): c340 its keyframes' self-illum and start
+    // times, c366 (s, 1/((n-1)s), 1/s, 0) from its point count and subdivisions, and c299 the
+    // camera's z or its own fixed axis. Per draw, so per material.
+    "g_KeyFrameSelfIllumFactorStartTimesScale",
+    "g_ParticleTrailProperties",
+    "g_CameraZVector",
     "g_MatWorld",
     "g_TextureStartTimes",
     "g_TextureStartTimesInvDelta",
@@ -383,11 +393,39 @@ static constexpr const char* GODOT_MATERIAL_CONSTANT_NAMES[] =
     "g_OffSetY",
     "g_WidthTextureMeters",
     "g_HeightTextureMeters",
+    // The rain draw's own (`0x822803D0`): the camera it builds its curtains around (VS c8, c46),
+    // its colours from the light zone and density (PS c46, c31), its three nearest lights.
+    // The snow draw's (`0x821BDE68`): the clock, its size and fall terms, the spell pushes, and
+    // per 16-unit block its origin, size and roof planes. Per draw, so per material; c8, c46,
+    // c114 and c115 are frame registers for everything else.
+    "g_CameraPos",
+    "g_CameraDir",
+    "g_RainDiffColour",
+    "g_RainSpecColour",
+    "g_RainLight",
+    "g_Time",
+    "g_SnowParams1",
+    "g_SnowParams2",
+    "g_PushVector",
+    "g_PushVectorOverDist",
+    "g_GridOrigin",
+    "g_GridSize",
+    "g_ClipShape",
+    "g_SnowColour",
+    // The decal draw's own (`Render_ParticlePoolDraw_INFERRED` 0x821A3B10): its fade, the
+    // view-projection and owner matrix it places the projected grid with (VS c72, c113: c113..115
+    // are frame registers for everything else), and the ambient with the distance fade (PS c31).
+    "g_DecalAlpha",
+    "g_MatViewProj",
+    "g_PrimitiveWorldMatrix",
+    "g_GlobalAmbientAndDistanceAlpha",
 };
 
 ShaderRecompiler::GodotConstantSource ShaderRecompiler::godotConstantSource(const char* name) const
 {
     const std::string_view view(name);
+    if (godotPostShader())
+        return GodotConstantSource::Material;
     for (const char* exact : GODOT_MATERIAL_CONSTANT_NAMES)
     {
         if (view == exact)
@@ -436,6 +474,11 @@ std::string ShaderRecompiler::godotAliasedConstant(const char* name, uint32_t in
 
 std::string ShaderRecompiler::godotFrameConstant(const std::string& registerExpression) const
 {
+    // A particle vertex stage's camera axes (c114 up, c115 right) are the group's own fixed axes
+    // when its material states them (`sub_821CA108`, M+56): the read goes through XR_VS_CONST,
+    // which the particle composition defines (xenos_common's default passes the register).
+    if (!isPixelShader && godotParticleShader())
+        return fmt::format("XR_VS_CONST({0}, xr_const(xr_vs_constants, {0}))", registerExpression);
     return fmt::format("xr_const({}, {})", isPixelShader ? "xr_ps_constants" : "xr_vs_constants",
         registerExpression);
 }
@@ -459,6 +502,13 @@ std::string ShaderRecompiler::godotHeader() const
     if (godotWritesExtraTargets)
         h.println("// Writes render targets beyond oC0, which a Godot material cannot carry; those are dropped.");
     h.println("#include \"res://src/Engine/material/xenos_common.gdshaderinc\"");
+    if (godotUsesVertexStream)
+    {
+        h.println("#ifndef XR_VERTEX_STREAM");
+        h.println("#define XR_VERTEX_STREAM");
+        h.println("uniform sampler2D xr_vertex_stream : filter_nearest, repeat_disable;");
+        h.println("#endif");
+    }
     if (godotTreeAmbient)
         h.println("instance uniform vec4 xr_tree_ambient;");
 
@@ -497,6 +547,10 @@ std::string ShaderRecompiler::godotHeader() const
         else if (std::string_view(name) == "g_FadeBeginDistanceAndRange")
             // Per batch; unset it never fades.
             h.println("instance uniform vec4 {} = vec4(0.0, 0.0, 0.0, 1.0);", uniform);
+        else if (std::string_view(name) == "g_GridOrigin")
+            // The snow's per-block origin (`0x821BDE68`, binding 327): one draw per 16-unit
+            // block, so per instance.
+            h.println("instance uniform vec4 {} = vec4(0.0);", uniform);
         else
             h.println("uniform vec4 {};", uniform);
     }
@@ -530,7 +584,8 @@ std::string ShaderRecompiler::godotHeader() const
         // map) and Godot's default for an unset sampler is white.
         else if (name.find("g_ReflectionSampler") != std::string::npos)
             h.println("uniform {} {} : hint_default_black, filter_linear, repeat_disable;", type, name);
-        else if (name.find("g_DepthSampler") != std::string::npos)
+        else if (name.find("g_DepthSampler") != std::string::npos ||
+                 name.find("g_RainDepthTexture") != std::string::npos)
             // The scene depth the title resolved before its translucent passes: Godot's own
             // depth buffer, which a transparent material reads as it draws.
             h.println("uniform {} {} : hint_depth_texture, filter_nearest, repeat_disable;", type, name);
@@ -613,7 +668,16 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
     auto findResult = vertexElements.find(address);
     assert(findResult != vertexElements.end());
 
-    if (godot())
+    if (godot() && godotTrailShader())
+    {
+        // An indexed fetch: the element at the index register's value, rounded or truncated as
+        // the instruction asks, from the host's control-point texture.
+        godotUsesVertexStream = true;
+        print("xr_stream_fetch(xr_vertex_stream, r{}.{}, {}u, {})", instr.srcRegister,
+            SWIZZLES[instr.srcSwizzle], uint32_t(findResult->second.usageIndex),
+            instr.isIndexRounded ? "true" : "false");
+    }
+    else if (godot())
     {
         const uint32_t usage = uint32_t(findResult->second.usage);
         const uint32_t usageIndex = uint32_t(findResult->second.usageIndex);
@@ -796,18 +860,28 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             // The scene depth is a hinted sampler, and Godot refuses one helper for samplers
             // whose hints differ, so it fetches through its own.
             instr.opcode != FetchOpcode::GetTextureWeights &&
-                std::string_view(constNamePtr).find("g_DepthSampler") != std::string_view::npos ? "2D_depth" :
+                (std::string_view(constNamePtr).find("g_DepthSampler") != std::string_view::npos ||
+                 std::string_view(constNamePtr).find("g_RainDepthTexture") != std::string_view::npos) ? "2D_depth" :
             instr.opcode != FetchOpcode::GetTextureWeights &&
                 std::string_view(constNamePtr).find("g_RefractionSampler") != std::string_view::npos ? "2D_screen" :
             // The host's mirror is a right-handed camera's image of the reflected world, which
             // is the title's reflection tile mirrored in u (Engine_WaterReflection).
             instr.opcode != FetchOpcode::GetTextureWeights &&
                 std::string_view(constNamePtr).find("g_ReflectionSampler") != std::string_view::npos ? "2D_mirror" :
+            // Unnormalised coordinates (texCoordDenorm: the source's texels, DOWNSCALE4's vPos x 4)
+            // and a 1D fetch's texel offset (the tone map's +0.5) each take a helper of their own.
+            instr.opcode != FetchOpcode::GetTextureWeights && instr.dimension == TextureDimension::Texture2D &&
+                instr.texCoordDenorm ? "2D_denorm" :
+            instr.opcode != FetchOpcode::GetTextureWeights && instr.dimension == TextureDimension::Texture1D ? "1D_offset" :
             dimension, uniformName);
         printSrcRegister(componentCount);
 
         switch (instr.dimension)
         {
+        case TextureDimension::Texture1D:
+            if (instr.opcode != FetchOpcode::GetTextureWeights)
+                print(", {}", formatFloat(instr.offsetX * 0.5f));
+            break;
         case TextureDimension::Texture2D:
             print(", vec2({}, {})", formatFloat(instr.offsetX * 0.5f), formatFloat(instr.offsetY * 0.5f));
             break;
@@ -1224,6 +1298,17 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                 }
             #endif
 
+                break;
+
+            case ExportRegister::VSPointSizeEdgeFlagKillVertex:
+                // oPts: x the point size (a point list's sprites: stars, snow), y the edge flag,
+                // z the vertex kill. Godot takes the size as POINT_SIZE.
+                if (godot())
+                {
+                    exportRegister = "oPts";
+                    hasResolvedExportRegister = true;
+                    godotWritesPointSize = true;
+                }
                 break;
 
             default:
@@ -2670,7 +2755,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 // landscape builds its own from g_PositionScale/OffSetXY), so
                 // g_WorldViewProjection is the camera alone, guest world to Godot clip, and
                 // g_WorldTransform is the identity a world-space vertex buffer is drawn with.
-                out += "\tmat4 xr_wvp = PROJECTION_MATRIX * VIEW_MATRIX * XR_GODOT_TO_GUEST_WORLD;\n";
+                out += "\tmat4 xr_wvp = XR_D3D_CLIP * PROJECTION_MATRIX * VIEW_MATRIX * XR_GODOT_TO_GUEST_WORLD;\n";
                 out += "\tmat4 xr_world = mat4(1.0);\n";
             }
             else if (godotRepeatedShader() && !isPixelShader)
@@ -2680,15 +2765,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 // (g_WorldPositionAndReciprocalScale), then projects it with
                 // g_WorldViewProjection, which for this draw is the camera alone. The object
                 // matrix applied again sent every instance off screen.
-                out += "\tmat4 xr_wvp = PROJECTION_MATRIX * VIEW_MATRIX * XR_GODOT_TO_GUEST_WORLD;\n";
+                out += "\tmat4 xr_wvp = XR_D3D_CLIP * PROJECTION_MATRIX * VIEW_MATRIX * XR_GODOT_TO_GUEST_WORLD;\n";
                 out += "\tmat4 xr_world = XR_GODOT_TO_GUEST_WORLD * MODEL_MATRIX * XR_FILE_TO_MODEL;\n";
             }
             else
             {
-                out += "\tmat4 xr_wvp = PROJECTION_MATRIX * MODELVIEW_MATRIX * XR_FILE_TO_MODEL;\n";
+                out += "\tmat4 xr_wvp = XR_D3D_CLIP * PROJECTION_MATRIX * MODELVIEW_MATRIX * XR_FILE_TO_MODEL;\n";
                 out += "\tmat4 xr_world = XR_GODOT_TO_GUEST_WORLD * MODEL_MATRIX * XR_FILE_TO_MODEL;\n";
             }
             out += "\tvec4 oPos = vec4(0.0);\n";
+            out += "\tvec4 oPts = vec4(0.0);\n";
             for (const std::string& varying : godotVaryings)
                 println("\t{} = vec4(0.0);", varying);
         }
@@ -2749,15 +2835,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 print("\tvec4 r{} = ", i);
                 if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))
-                    out += "vec4((FRAGCOORD.xy - 0.5) * vec2(FRONT_FACING ? 1.0 : -1.0, 1.0), 0.0, 0.0);\n";
+                    out += "vec4((FRAGCOORD.xy - 0.5) * vec2(FRONT_FACING ? 1.0 : -1.0, 1.0), XR_PARAM_GEN_ZW);\n";
                 else if (!isPixelShader && i == 0 && godotLandscapeShader())
                     // The title draws its terrain as hardware quad patches with no vertex buffer:
                     // r0 arrives as (quadrant index, tessellation u, tessellation v). The host's
                     // patch meshes carry exactly that per vertex in CUSTOM0 (Engine_ClassicTerrain).
                     out += "CUSTOM0;\n";
-                else if (!isPixelShader && i == 0 && godotParticleShader())
-                    // A particle quad's corner comes from the vertex index (QUADLIST, four
-                    // vertices a record); the host mesh indexes four vertices a quad too.
+                else if (!isPixelShader && i == 0)
+                    // Xenos hands every vertex shader its vertex index in r0.x: a particle
+                    // quad's corner (QUADLIST, four a record), a trail's strip position, a
+                    // star's or snowflake's hash seed. The host meshes index the same way.
                     out += "vec4(float(VERTEX_ID), 0.0, 0.0, 0.0);\n";
                 else
                     out += "vec4(0.0);\n";
@@ -3397,7 +3484,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             // oPos came through the aliased world-view-projection, so it is Godot's own transform
             // of this vertex, computed the guest's way. XR_POSITION_OUT is the composition's
             // hook (xenos_common.gdshaderinc), the identity unless it gates part of the mesh.
-            out += "\tPOSITION = XR_POSITION_OUT(oPos);\n";
+            // oPos is in the title's clip convention (XR_D3D_CLIP); Godot's is its mirror in y.
+            out += "\tPOSITION = XR_D3D_CLIP * XR_POSITION_OUT(oPos);\n";
         }
         else
         {
@@ -3406,6 +3494,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             // is exactly Godot's default, so a false switch changes nothing.
             out += "\tPOSITION = xr_use_guest_position ? oPos : (PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(VERTEX, 1.0));\n";
         }
+        if (godotWritesPointSize)
+            out += "\tPOINT_SIZE = XR_POINT_SIZE(oPts.x);\n";
 
         out += "}\n";
         out = godotHeader() + out;

@@ -11311,6 +11311,11 @@
 0x821C7D30 = { name = "rex_lhHeroStats_GetRenown" }
 0x8220DE88 = { name = "rex_lhGraphicAppearanceMorph_ApplyTextureLayers" }
 0x8222AAC8 = { name = "rex_lhRenderCommandStream_PostModelCommand" }
+0x82A40610 = { name = "rex_lhDecal_ExecuteRenderCommand" }
+0x82A406D8 = { name = "rex_lhDecal_ExecuteClearCommand" }
+0x82AA3D38 = { name = "rex_lhRenderTwin_ReleaseDecals" }
+0x82456D58 = { name = "rex_lhFx_CreateMeshDescriptor" }
+0x82175918 = { name = "rex_lhRenderTwin_Destroy" }
 0x8223D320 = { name = "rex_lhHeroStats_GetMorality" }
 0x8223D910 = { name = "rex_lhHeroStats_GetPurity" }
 0x82284798 = { name = "rex_lhGuiAttributeService_SetElementAttribute" }

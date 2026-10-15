@@ -36,7 +36,9 @@ public static class Engine_ClassicConstants
     private sealed class StageState
     {
         public readonly float[] Values = new float[Floats * Rows];
-        public readonly byte[] Bytes = new byte[Floats * Rows * 4];
+        /// <summary>The uploaded rows: the textures hold rows [0, Height) only (see Publish).</summary>
+        public int Height;
+        public byte[] Bytes = Array.Empty<byte>();
         public bool Dirty = true;
         public Image? Image;
         public ImageTexture? Texture;
@@ -56,6 +58,9 @@ public static class Engine_ClassicConstants
         BlockEnd = Engine_ClassicRegisters.Vs.LightBlockEnd,
     };
     private static readonly Stack<int> _freeRows = new();
+    /// <summary>The highest row ever taken: rows are handed out lowest first and reused, so the
+    /// live ones stay packed below it.</summary>
+    private static int _highRow;
     private static readonly HashSet<int> _liveRows = new();
     private static bool _registered;
 
@@ -91,6 +96,30 @@ public static class Engine_ClassicConstants
                     Write(state, row, r, values.Slice((r - register) * 4, Math.Min(4, values.Length - (r - register) * 4)));
                 }
             }
+        }
+    }
+
+    /// <summary>Row 0 of a stage, all registers, into <paramref name="into"/> (at least <see cref="Floats"/>); any thread.</summary>
+    public static void CopyFrame(bool pixel, float[] into)
+    {
+        StageState state = Stage(pixel);
+        lock (Gate)
+        {
+            Array.Copy(state.Values, 0, into, 0, Math.Min(Floats, into.Length));
+        }
+    }
+
+    /// <summary>A whole row of a stage into <paramref name="into"/> (at least <see cref="Floats"/>); row 0 when out of range. Any thread.</summary>
+    public static void CopyRow(bool pixel, int row, float[] into)
+    {
+        StageState state = Stage(pixel);
+        if (row < 0 || row >= Rows)
+        {
+            row = 0;
+        }
+        lock (Gate)
+        {
+            Array.Copy(state.Values, row * Floats, into, 0, Math.Min(Floats, into.Length));
         }
     }
 
@@ -134,6 +163,7 @@ public static class Engine_ClassicConstants
             }
             int taken = _freeRows.Pop();
             _liveRows.Add(taken);
+            _highRow = Math.Max(_highRow, taken);
             foreach (StageState state in new[] { _pixel, _vertex })
             {
                 Array.Copy(state.Values, 0, state.Values, taken * Floats, Floats);
@@ -186,8 +216,7 @@ public static class Engine_ClassicConstants
             _registered = true;
             foreach (StageState state in new[] { _pixel, _vertex })
             {
-                state.Image = Image.CreateEmpty(Registers, Rows, false, Image.Format.Rgbaf);
-                state.Texture = ImageTexture.CreateFromImage(state.Image);
+                Resize(state, RowStep);
             }
         }
 
@@ -224,18 +253,44 @@ public static class Engine_ClassicConstants
     {
         lock (Gate)
         {
-            foreach (StageState state in new[] { _pixel, _vertex })
+            // Only the rows in use travel: of 512 a frame typically holds a few dozen, and the
+            // whole texture was 2 MB per stage copied three times and uploaded every frame.
+            int height = Math.Min(Rows, (_highRow / RowStep + 1) * RowStep);
+            foreach ((StageState state, StringName global) in new[] { (_pixel, PixelGlobal), (_vertex, VertexGlobal) })
             {
-                if (!state.Dirty || state.Image is null || state.Texture is null)
+                if (state.Texture is null)
+                {
+                    continue;
+                }
+                if (height > state.Height)
+                {
+                    Resize(state, height);
+                    RenderingServer.GlobalShaderParameterSet(global, state.Texture!);
+                    state.Dirty = true;
+                }
+                if (!state.Dirty || state.Image is null)
                 {
                     continue;
                 }
                 Buffer.BlockCopy(state.Values, 0, state.Bytes, 0, state.Bytes.Length);
-                state.Image.SetData(Registers, Rows, false, Image.Format.Rgbaf, state.Bytes);
+                state.Image.SetData(Registers, state.Height, false, Image.Format.Rgbaf, state.Bytes);
                 state.Texture.Update(state.Image);
                 state.Dirty = false;
             }
         }
+    }
+
+    /// <summary>The uploaded height grows in steps of this many rows.</summary>
+    private const int RowStep = 32;
+
+    /// <summary>A stage's image and texture at <paramref name="height"/> rows (a new texture: Update needs the same size).</summary>
+    private static void Resize(StageState state, int height)
+    {
+        state.Height = height;
+        state.Bytes = new byte[Floats * height * 4];
+        Buffer.BlockCopy(state.Values, 0, state.Bytes, 0, state.Bytes.Length);
+        state.Image = Image.CreateFromData(Registers, height, false, Image.Format.Rgbaf, state.Bytes);
+        state.Texture = ImageTexture.CreateFromImage(state.Image);
     }
 
     /// <summary>One register run into one row; true when anything changed. Caller holds the gate.</summary>

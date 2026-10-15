@@ -1832,6 +1832,30 @@ public partial class GameDebugServer : Node
 				// lights the manager stated, the counts of every feed. `shadowMaps` is a lever:
 				// "capture" (the light's depth), "black" or "white" (a constant map) to tell the
 				// cascade lookup's two outcomes apart on screen.
+				// `cullHide` / `cullShow`: a render layer (1-based, as the inspector numbers them) off
+				// or back on for the drawn camera, to tell which layer draws something on screen.
+				if (GetViewport().GetCamera3D() is { } cullCamera)
+				{
+					if (root.TryGetProperty("cullHide", out JsonElement ch) && ch.ValueKind == JsonValueKind.Number)
+					{
+						cullCamera.SetCullMaskValue(ch.GetInt32(), false);
+					}
+					if (root.TryGetProperty("cullShow", out JsonElement cs) && cs.ValueKind == JsonValueKind.Number)
+					{
+						cullCamera.SetCullMaskValue(cs.GetInt32(), true);
+					}
+				}
+				// `hideNode` / `showNode`: one node by path off or back on, to find what draws a thing.
+				if (root.TryGetProperty("hideNode", out JsonElement hn) && hn.ValueKind == JsonValueKind.String &&
+					GetTree().Root.GetNodeOrNull(hn.GetString()) is Node3D hideTarget)
+				{
+					hideTarget.Visible = false;
+				}
+				if (root.TryGetProperty("showNode", out JsonElement sn) && sn.ValueKind == JsonValueKind.String &&
+					GetTree().Root.GetNodeOrNull(sn.GetString()) is Node3D showTarget)
+				{
+					showTarget.Visible = true;
+				}
 				if (root.TryGetProperty("shadowMaps", out JsonElement sm) && sm.ValueKind == JsonValueKind.String)
 				{
 					string mode = sm.GetString() ?? "capture";
@@ -1909,6 +1933,16 @@ public partial class GameDebugServer : Node
 						["direction"] = new[] { sunDirection.X, sunDirection.Y, sunDirection.Z },
 						["intensity"] = sunIntensity,
 					} : null,
+					// The sky elements' inputs as the title reads them (Engine_ClassicSkyElements):
+					// SUN_INTENSITY p7 gates, SUN_GLARE_INTENSITY p100 x facing^2 x visibility^2
+					// scales the sky object's colour, SUN_GLARE_SIZE p101 sizes; the visibilities are
+					// the sun disc's and moon bloom's counted pixels (GPU readback).
+					["sky"] = Refii.Level.Engine_ClassicSkyElements.Active ? SkyReadout() : null,
+					["water"] = Refii.Level.Engine_ClassicWater.Describe(),
+					["particleGroups"] = Refii.Models.Engine_ClassicParticles.Instance?.Describe(),
+					["casters"] = Refii.Models.Engine_ClassicCasters.Census(),
+					["litAssigned"] = Refii.Models.Engine_ClassicLitInstances.LastAssigned,
+					["litSkipped"] = Refii.Models.Engine_ClassicLitInstances.LastSkipped,
 					["ambient"] = new[]
 					{
 						Refii.Models.Engine_ClassicFeed.GlobalAmbient.X,
@@ -2901,8 +2935,13 @@ public partial class GameDebugServer : Node
 				// The camera, bodies and live effects share one timeline type (Engine_TickTimeline):
 				// how often any of them re-placed past the snap bounds, and how often a correction
 				// ran at its speed limit. Both should stay near zero while things move normally.
+				Camera3D? drawn = GetViewport().GetCamera3D();
 				return Ok(new Dictionary<string, object?>
 				{
+					["position"] = drawn is null ? null : new[] { drawn.GlobalPosition.X, drawn.GlobalPosition.Y, drawn.GlobalPosition.Z },
+					["forward"] = drawn is null ? null : new[] { -drawn.GlobalBasis.Z.X, -drawn.GlobalBasis.Z.Y, -drawn.GlobalBasis.Z.Z },
+					["up"] = drawn is null ? null : new[] { drawn.GlobalBasis.Y.X, drawn.GlobalBasis.Y.Y, drawn.GlobalBasis.Y.Z },
+					["fov"] = drawn?.Fov,
 					["trace"] = world?.CameraTraceReport(),
 					["timelineSnaps"] = Refii.Core.Engine_TickTimeline.Snaps,
 					["timelineSaturated"] = Refii.Core.Engine_TickTimeline.Saturated,
@@ -3041,6 +3080,50 @@ public partial class GameDebugServer : Node
 	/// from the previous one on the same port, and a stale answer looks exactly like a current
 	/// one — the failure this whole handshake exists to prevent.
 	/// </summary>
+	private static Dictionary<string, object?> SkyReadout()
+	{
+		Vector3 sun = Refii.Models.Engine_ClassicTheme.SunDirection;
+		Vector3 colour = Refii.Models.Engine_ClassicTheme.SunColour;
+		Camera3D? camera = ((SceneTree)Engine.GetMainLoop()).Root.GetViewport().GetCamera3D();
+		// The guest's axes to Godot's: (-x, z, y).
+		float facing = camera is null ? -2f : (-camera.GlobalBasis.Z).Dot(new Vector3(-sun.X, sun.Z, sun.Y));
+		float[] visibility = { -1f, -1f };
+		if (Refii.Lighting.Engine_ClassicSkyLayers.Visibility?.GetImage() is { } image && image.GetWidth() >= 2)
+		{
+			visibility[0] = image.GetPixel(0, 0).R;
+			visibility[1] = image.GetPixel(1, 0).R;
+		}
+		float Param(int index) => Refii.Models.Engine_ClassicTheme.Param(index);
+		return new Dictionary<string, object?>
+		{
+			["sunIntensity"] = Param(7),
+			["glareIntensity"] = Param(100),
+			["glareSize"] = Param(101),
+			["discSize"] = Param(92),
+			["discIntensity"] = Param(94),
+			["sunColour"] = new[] { colour.X, colour.Y, colour.Z },
+			["sunDirection"] = new[] { sun.X, sun.Y, sun.Z },
+			["facing"] = facing,
+			["sunVisibility"] = visibility[0],
+			["moonVisibility"] = visibility[1],
+			["glareColour"] = new[]
+			{
+				colour.X * Param(100) * facing * facing * System.MathF.Max(visibility[0], 0f) * System.MathF.Max(visibility[0], 0f),
+				colour.Y * Param(100) * facing * facing * System.MathF.Max(visibility[0], 0f) * System.MathF.Max(visibility[0], 0f),
+				colour.Z * Param(100) * facing * facing * System.MathF.Max(visibility[0], 0f) * System.MathF.Max(visibility[0], 0f),
+			},
+			["glareTexture"] = $"{Refii.Models.Engine_ClassicTheme.TopHash(Refii.Models.Engine_ClassicTheme.SlotSunGlare):X8}",
+			// Where the camera says the sun is (sign-free, as the halo layer projects) against
+			// where the post chain's sprites put it, and the projection those sprites read.
+			["sunScreenCamera"] = camera is not null && Refii.Lighting.Engine_PostFxParams.ProjectSun(new Vector3(-sun.X, sun.Z, sun.Y), camera, out Vector2 uv, out _)
+				? new[] { uv.X, uv.Y } : null,
+			["sunScreenSprites"] = new[] { Refii.Lighting.Engine_PostFxEffect.LastSunDisc.X, Refii.Lighting.Engine_PostFxEffect.LastSunDisc.Y },
+			["spriteProjection"] = new[] { Refii.Lighting.Engine_PostFxEffect.LastProjection.X, Refii.Lighting.Engine_PostFxEffect.LastProjection.Y,
+				Refii.Lighting.Engine_PostFxEffect.LastProjection.Z, Refii.Lighting.Engine_PostFxEffect.LastProjection.W },
+			["cameraFov"] = camera?.Fov ?? -1f,
+		};
+	}
+
 	private static Dictionary<string, object?> Ok(Dictionary<string, object?> body)
 	{
 		body["ok"] = true;

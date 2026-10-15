@@ -221,6 +221,14 @@ public static class Engine_ShadowProxy
 			return;
 		}
 
+		// Under classic Godot's lights cast nothing: the body casts into the guest's cascades
+		// through its classic caster, which shares its mesh, skeleton and surface overrides.
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			Refii.Models.Engine_ClassicCasters.Register(body, dynamic: true);
+			return;
+		}
+
 		UInt128 collapsed = Engine_HiddenClusters.CollapsedMask(body);
 		BuiltFor.GetOrCreateValue(body).Value = (collapsed, Enabled);
 
@@ -546,7 +554,7 @@ public static class Engine_ShadowProxy
 	/// full index list where it has none; keyed by the largest edge length among them. Null when
 	/// no source has any.
 	/// </summary>
-	private static Godot.Collections.Dictionary? MergedLods(List<(int At, int[] Full, List<(float Edge, int[] Indices)> Lods)> sources)
+	internal static Godot.Collections.Dictionary? MergedLods(List<(int At, int[] Full, List<(float Edge, int[] Indices)> Lods)> sources)
 	{
 		int depth = 0;
 		foreach ((_, _, List<(float Edge, int[] Indices)> lods) in sources)

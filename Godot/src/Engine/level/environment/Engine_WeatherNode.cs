@@ -95,6 +95,14 @@ public partial class Engine_WeatherNode : MeshInstance3D
 
     public override void _Process(double delta)
     {
+        // Under the classic renderer the title's own rain and snow draw (Engine_ClassicWeather).
+        if (Refii.Models.Engine_ClassicMaterial.Active)
+        {
+            Visible = false;
+            _everApplied = false;
+            return;
+        }
+
         if (HostBridge.Weather() is not { } live)
         {
             // No guest, or its world is not built yet: the last applied values stand.

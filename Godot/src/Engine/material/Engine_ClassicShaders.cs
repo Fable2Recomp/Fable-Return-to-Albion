@@ -35,6 +35,24 @@ public static class Engine_ClassicShaders
     private static readonly ConcurrentDictionary<string, Shader?> _composed = new();
     private static readonly ConcurrentDictionary<string, string> _sources = new();
 
+    /// <summary>Guest world (x, y, z) to Godot's (-x, z, y), as a matrix.</summary>
+    public static readonly Projection GuestToGodot = new(
+        new Vector4(-1f, 0f, 0f, 0f), new Vector4(0f, 0f, 1f, 0f), new Vector4(0f, 1f, 0f, 0f), new Vector4(0f, 0f, 0f, 1f));
+
+    /// <summary>
+    /// Guest world to the clip space Godot rasterises, for a stage that writes POSITION from its
+    /// own matrix (<c>xr_use_guest_position</c>). The camera's projection is GL's; the one Godot
+    /// renders with carries a y flip and a reversed [0, 1] depth (z' = 0.5 w - 0.5 z), which is the
+    /// PROJECTION_MATRIX a stage sees.
+    /// </summary>
+    public static Projection GuestToClip(Camera3D camera)
+    {
+        var correction = new Projection(
+            new Vector4(1f, 0f, 0f, 0f), new Vector4(0f, -1f, 0f, 0f),
+            new Vector4(0f, 0f, -0.5f, 0f), new Vector4(0f, 0f, 0.5f, 1f));
+        return correction * camera.GetCameraProjection() * new Projection(camera.GlobalTransform.AffineInverse()) * GuestToGodot;
+    }
+
     /// <summary>True when the translated shaders are on disk and the manifest read.</summary>
     public static bool Available
     {
@@ -100,6 +118,21 @@ public static class Engine_ClassicShaders
         int bestExtra = int.MaxValue;
         lock (Gate)
         {
+            // The family's bare entry (PSHADER_PARTICLEMATERIAL) is the exact answer to no tokens;
+            // the prefix below needs a trailing token and would hand back the first one-token
+            // variant instead.
+            string bare = stage + "_" + family;
+            if (tokens.Count == 0)
+            {
+                foreach (string name in _entries.Keys)
+                {
+                    if (name.Equals(bare, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return name;
+                    }
+                }
+            }
+
             foreach (string name in _entries.Keys)
             {
                 if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
@@ -160,6 +193,80 @@ public static class Engine_ClassicShaders
         return _composed.GetOrAdd(key, _ => Build(vertexEntry, pixelEntry, renderMode, pass, defines));
     }
 
+    private sealed class ComposedAt
+    {
+        public volatile bool Ready;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Shader, ComposedAt> Composed = new();
+
+    /// <summary>Main-thread compositions compiling on the pool at once.</summary>
+    private static readonly System.Threading.SemaphoreSlim CompileSlots = new(Math.Clamp(System.Environment.ProcessorCount / 2, 2, 8));
+
+    private static int _compiling;
+
+    /// <summary>Compositions handed to the pool and not yet compiled (the load hold waits for none).</summary>
+    public static int Compiling => System.Threading.Volatile.Read(ref _compiling);
+
+    /// <summary>
+    /// Whether a composed shader has been compiled. A Shader makes its server shader on its first
+    /// `get_rid()` (`Shader::_check_shader_rid`), and on Vulkan `shader_create_from_code` parses and
+    /// compiles it on the calling thread, so the first material bound to it would compile it on
+    /// the main thread (18-35 ms for the title's larger stages). <see cref="Build"/> makes that
+    /// first call off the main thread; a shader this class did not compose counts as settled.
+    /// </summary>
+    public static bool Settled(Shader shader)
+    {
+        lock (Composed)
+        {
+            return !Composed.TryGetValue(shader, out ComposedAt? at) || at.Ready;
+        }
+    }
+
+    /// <summary>Compiles the shader on this thread if the pool has not yet (waiting for it if it is compiling now).</summary>
+    public static void Settle(Shader shader)
+    {
+        shader.GetRid();
+        lock (Composed)
+        {
+            if (Composed.TryGetValue(shader, out ComposedAt? at))
+            {
+                at.Ready = true;
+            }
+        }
+    }
+
+    /// <summary>Creates the shader's server shader where it costs no frame: here on a worker, else on the pool.</summary>
+    private static void Prepare(Shader shader)
+    {
+        var at = new ComposedAt();
+        lock (Composed)
+        {
+            Composed.AddOrUpdate(shader, at);
+        }
+        if (OS.GetThreadCallerId() != OS.GetMainThreadId())
+        {
+            shader.GetRid();
+            at.Ready = true;
+            return;
+        }
+        System.Threading.Interlocked.Increment(ref _compiling);
+        System.Threading.Tasks.Task.Run(async () =>
+        {
+            await CompileSlots.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                shader.GetRid();
+            }
+            finally
+            {
+                at.Ready = true;
+                CompileSlots.Release();
+                System.Threading.Interlocked.Decrement(ref _compiling);
+            }
+        });
+    }
+
     /// <summary>Forget every composition: the next request rebuilds from disk.</summary>
     public static void Clear()
     {
@@ -193,7 +300,9 @@ public static class Engine_ClassicShaders
     private static Shader? Build(string vertexEntry, string pixelEntry, string renderMode, int pass, string defines)
     {
         string? vertex = Source(vertexEntry);
-        string? pixel = Source(pixelEntry);
+        // No pixel entry is the title's own "no pixel shader" (SetPixelShader(dev, 0)): a
+        // depth-only draw such as a sun-cascade caster.
+        string? pixel = pixelEntry.Length == 0 ? "void fragment() {}\n" : Source(pixelEntry);
         if (vertex is null || pixel is null)
         {
             GD.Print($"[classic] no translated shader for {(vertex is null ? vertexEntry : pixelEntry)}");
@@ -221,6 +330,21 @@ public static class Engine_ClassicShaders
             }
         }
 
+        // XR_PRT_ROW_FETCH: the AMB2 stage's g_PRTConstants come from the placement's row of the
+        // shared texture instead of a material per placement (Engine_ClassicPrtRows).
+        if (defines.Contains("XR_PRT_ROW_FETCH", StringComparison.Ordinal))
+        {
+            vertex = System.Text.RegularExpressions.Regex.Replace(vertex, @"uniform\s+vec4\s+vs_g_PRTConstants\[\d+\];", string.Empty);
+            vertex = System.Text.RegularExpressions.Regex.Replace(vertex, @"\bvs_g_PRTConstants\[([^\]]*)\]", "xr_prt($1)");
+        }
+
+        // XR_VERTEX_BAKE_FETCH: the AMB1 stage's bake stream (COLOR) comes from the placement's
+        // block of the shared bake texture instead (Engine_ClassicVertexBakes).
+        if (defines.Contains("XR_VERTEX_BAKE_FETCH", StringComparison.Ordinal))
+        {
+            vertex = System.Text.RegularExpressions.Regex.Replace(vertex, @"\bCOLOR\b", "xr_vertex_bake(VERTEX_ID)");
+        }
+
         foreach ((string prefix, string[] samplers) in ClampedVertexSamplers)
         {
             if (!vertexEntry.StartsWith(prefix, StringComparison.Ordinal))
@@ -234,6 +358,13 @@ public static class Engine_ClassicShaders
                     "uniform sampler2D " + sampler + " : hint_default_black, filter_linear, repeat_disable;",
                     StringComparison.Ordinal);
             }
+        }
+
+        // Godot's fog never touches a title shader: the title fogs in its own pixel code
+        // (atmosphere LUTs, mist rows), and Godot applies fog to unshaded output too.
+        if (!renderMode.Contains("fog_disabled", StringComparison.Ordinal))
+        {
+            renderMode += ", fog_disabled";
         }
 
         var code = new System.Text.StringBuilder(vertex.Length + pixel.Length + 512);
@@ -265,6 +396,7 @@ public static class Engine_ClassicShaders
         {
             GD.Print($"[classic] composed {vertexEntry} + {pixelEntry} (pass {pass}) in {ms:0} ms; {built} compositions, {_buildMs:0} ms in all");
         }
+        Prepare(shader);
         return shader;
     }
 
@@ -274,7 +406,8 @@ public static class Engine_ClassicShaders
     /// <summary>Compositions built and the milliseconds their shader compiles took, for the log.</summary>
     public static (int Built, double Milliseconds) BuildCounts => (_built, _buildMs);
 
-    private static string? Source(string entryName)
+    /// <summary>The translated stage's text by entry name (or a res:// path), null when absent.</summary>
+    public static string? Source(string entryName)
     {
         // A stage of our own (a vertex stage standing in for one Godot cannot run), by path.
         if (entryName.StartsWith("res://", StringComparison.Ordinal))

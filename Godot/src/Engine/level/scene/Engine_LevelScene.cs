@@ -1358,7 +1358,7 @@ public static class Engine_LevelScene
                         ShaderMaterial? head = null, tail = null;
                         for (Material? pass = own; pass is ShaderMaterial layer; pass = layer.NextPass)
                         {
-                            ShaderMaterial lit = Refii.Models.Engine_ClassicMaterial.WithAmbient(layer, 1, texture) ?? layer;
+                            ShaderMaterial lit = Refii.Models.Engine_ClassicMaterial.WithAmbient(layer, 1, texture, wait: true) ?? layer;
                             if (ReferenceEquals(lit, layer))
                             {
                                 lit = (ShaderMaterial)layer.Duplicate();
@@ -1726,6 +1726,7 @@ public static class Engine_LevelScene
                 else if (classic is not null)
                 {
                     node.MaterialOverride = classic;
+                    Engine_ClassicWater.Attach(classic, node);
                 }
                 else
                 {
@@ -1954,7 +1955,9 @@ public static class Engine_LevelScene
         Func<string, byte[]?>? source,
         Node3D root)
     {
-        if (source is null)
+        // Under classic the mist is the title's own (Engine_ClassicMist, the guest's volumes on
+        // its shaders), and every title shader is fog_disabled: Godot's volumes would only cost.
+        if (source is null || Refii.Models.Engine_ClassicMaterial.Active)
         {
             return false;
         }

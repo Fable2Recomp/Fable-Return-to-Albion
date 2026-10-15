@@ -5,6 +5,21 @@ namespace Refii.Level;
 
 public static class Engine_WaterMaterial
 {
+    private static readonly StringName GuestWaterName = "guest_water";
+    private static readonly StringName HasWaterMaskName = "has_water_mask";
+    private static readonly StringName NormalMapName = "normal_map";
+    private static readonly StringName WBiasName = "w_bias";
+    private static readonly StringName WDeepName = "w_deep";
+    private static readonly StringName WEdgeName = "w_edge";
+    private static readonly StringName WGlitName = "w_glit";
+    private static readonly StringName WMaskBoundsName = "w_mask_bounds";
+    private static readonly StringName WPhaseName = "w_phase";
+    private static readonly StringName WReflpName = "w_reflp";
+    private static readonly StringName WScaleName = "w_scale";
+    private static readonly StringName WSpeedName = "w_speed";
+    private static readonly StringName WSurfaceName = "w_surface";
+    private static readonly StringName WaterMaskName = "water_mask";
+
     public const string ShaderPath = "res://src/Engine/level/water/water.gdshader";
 
     public static bool GuestMode =>
@@ -30,13 +45,13 @@ public static class Engine_WaterMaterial
 
         if (GuestMode)
         {
-            material.SetShaderParameter("guest_water", true);
+            material.SetShaderParameter(GuestWaterName, true);
         }
 
         Texture2D? normalMap = LoadTexture(body.NormalMapPath, read, findByName);
         if (normalMap is not null)
         {
-            material.SetShaderParameter("normal_map", normalMap);
+            material.SetShaderParameter(NormalMapName, normalMap);
         }
         else
         {
@@ -65,9 +80,9 @@ public static class Engine_WaterMaterial
         Engine_WaterMask.Mask? mask = Engine_WaterMask.TryBuild(body);
         if (mask is { } built)
         {
-            material.SetShaderParameter("water_mask", built.Texture);
-            material.SetShaderParameter("w_mask_bounds", built.Bounds);
-            material.SetShaderParameter("has_water_mask", true);
+            material.SetShaderParameter(WaterMaskName, built.Texture);
+            material.SetShaderParameter(WMaskBoundsName, built.Bounds);
+            material.SetShaderParameter(HasWaterMaskName, true);
         }
 
         // NO SUN HERE. It used to be a hardcoded (0.3, 0.7, 0.5) with a colour ramped off its own
@@ -104,14 +119,14 @@ public static class Engine_WaterMaterial
             {
                 Vector4 v = phase.Value + (phase.Speed * delta);
                 phase.Value = new Vector4(v.X - Mathf.Floor(v.X), v.Y - Mathf.Floor(v.Y), v.Z - Mathf.Floor(v.Z), v.W - Mathf.Floor(v.W));
-                material.SetShaderParameter("w_phase", phase.Value);
+                material.SetShaderParameter(WPhaseName, phase.Value);
             }
         }
     }
 
     public static void Apply(ShaderMaterial material, WaterTheme theme)
     {
-        material.SetShaderParameter("w_bias", new Vector4(
+        material.SetShaderParameter(WBiasName, new Vector4(
             theme[WaterThemeParam.FresnelBias],
             theme[WaterThemeParam.ReflectionBias],
             theme[WaterThemeParam.NormalScale],
@@ -122,38 +137,38 @@ public static class Engine_WaterMaterial
             theme[WaterThemeParam.NormalMapSpeed0Y],
             theme[WaterThemeParam.NormalMapSpeed1X],
             theme[WaterThemeParam.NormalMapSpeed1Y]);
-        material.SetShaderParameter("w_speed", speed);
+        material.SetShaderParameter(WSpeedName, speed);
         Phases.GetOrCreateValue(material).Speed = speed;
 
         float normalScale0 = theme[WaterThemeParam.NormalMapScale0];
         float normalScale1 = theme[WaterThemeParam.NormalMapScale1];
-        material.SetShaderParameter("w_scale", new Vector4(
+        material.SetShaderParameter(WScaleName, new Vector4(
             normalScale0, normalScale0, normalScale1, normalScale1));
 
-        material.SetShaderParameter("w_surface", new Vector4(
+        material.SetShaderParameter(WSurfaceName, new Vector4(
             theme[WaterThemeParam.ShallowR],
             theme[WaterThemeParam.ShallowG],
             theme[WaterThemeParam.ShallowB],
             0f));
 
-        material.SetShaderParameter("w_deep", new Vector4(
+        material.SetShaderParameter(WDeepName, new Vector4(
             theme[WaterThemeParam.DeepR],
             theme[WaterThemeParam.DeepG],
             theme[WaterThemeParam.DeepB],
             theme[WaterThemeParam.ReflectionStrength]));
 
-        material.SetShaderParameter("w_reflp", new Vector4(
+        material.SetShaderParameter(WReflpName, new Vector4(
             theme[WaterThemeParam.ReflectionScale],
             theme[WaterThemeParam.RefractionScale],
             theme[WaterThemeParam.GlitterBend],
             theme[WaterThemeParam.GlitterStrength]));
 
-        material.SetShaderParameter("w_glit", new Vector4(
+        material.SetShaderParameter(WGlitName, new Vector4(
             theme[WaterThemeParam.GlitterPower],
             theme[WaterThemeParam.ShadowScaleBias],
             0f, 0f));
 
-        material.SetShaderParameter("w_edge", Engine_WaterTheme.EdgeBlend(theme));
+        material.SetShaderParameter(WEdgeName, Engine_WaterTheme.EdgeBlend(theme));
     }
 
     public static Texture2D? LoadTexture(string path, ReadAsset read, FindByName? findByName)

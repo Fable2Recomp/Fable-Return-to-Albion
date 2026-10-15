@@ -134,6 +134,23 @@ void refii_bridge_end_texture_layers(uint32_t entity);
 void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32_t kind,
                                       const uint32_t* layers, uint32_t count);
 
+// The decals the guest states (src/hooks/decals.cpp, table in src/core/decal_state.cpp): a ring
+// of 50, the oldest replaced. kDecalWords words each: 0 serial (the host's), 1 owner render
+// twin or 0, 2 texture name hash, 3..6 position, 7..10 direction (float bits, guest world),
+// 11 / 12 half sizes, 13 life, 14 flag.
+enum {
+  kDecalWords = 15,
+};
+void refii_bridge_note_decal(const uint32_t* words);
+void refii_bridge_clear_decals(void);
+void refii_bridge_drop_decals_of(uint32_t owner);
+
+// The FX mesh particle descriptors the guest's effects state (src/hooks/fx_meshes.cpp, table in
+// src/core/fx_mesh_state.cpp): noted at `sub_82456D58`, dropped when their twin is destroyed.
+void refii_bridge_note_fx_mesh(uint32_t descriptor);
+void refii_bridge_drop_fx_mesh(uint32_t descriptor);
+uint32_t refii_bridge_fx_meshes(uint32_t* out, uint32_t capacity);
+
 // The layers the guest's own dye builder states for ONE inventory item, keyed by the item's
 // record hash and written as a character's composites are (kTextureLayerWords per layer); the
 // menu previews a dyed garment through them. Sampled on the GUI tick for every dyed item the

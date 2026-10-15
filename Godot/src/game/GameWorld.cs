@@ -45,6 +45,7 @@ public partial class GameWorld : Node3D
 		};
 
 		AddChild(_camera);
+		Refii.Lighting.Engine_DepthPrepassMarker.Attach(_camera);
 
 		// After the add, and explicitly. Godot renders a viewport through exactly one
 		// current camera, and this is the window's — the front end renders into a viewport
@@ -255,12 +256,15 @@ public partial class GameWorld : Node3D
 		// hold the guest.
 		int done = 0;
 		int total = 0;
+		int settling = 0;
 		if (_region is not null)
 		{
-			SumPropProgress(_region, ref done, ref total);
+			SumPropProgress(_region, ref done, ref total, ref settling);
 		}
 
-		bool propsPending = total > 0 && done < total;
+		// Placed is not finished: a prop's vertex bake and its ambient variant land after its
+		// step, and either one left for play is a main-thread apply in the middle of it.
+		bool propsPending = (total > 0 && done < total) || settling > 0;
 
 		// AND THE ENTITIES, AND THEN A FEW FRAMES. Props streamed is not "the world is there":
 		// entity meshes build off-thread, the static copies reconcile against them, and the
@@ -272,7 +276,10 @@ public partial class GameWorld : Node3D
 		}
 
 		bool entitiesPending = _entities is { } feed && !feed.ReadyForRelease;
-		bool pending = propsPending || entitiesPending;
+		// THE CLASSIC SHADERS, last: every composition compiled and every light-group shape the
+		// placed fixtures can produce built, so play composes and compiles nothing.
+		string classicWait = Refii.Models.Engine_ClassicLoad.Pump(!propsPending && !entitiesPending);
+		bool pending = propsPending || entitiesPending || classicWait.Length != 0;
 		_readyFrames = pending ? 0 : _readyFrames + 1;
 		if (!pending && _readyFrames < ReleaseSettleFrames)
 		{
@@ -289,7 +296,8 @@ public partial class GameWorld : Node3D
 			if (_propHoldFrames % PropHoldReportFrames == 0)
 			{
 				GD.Print($"[game-world] still holding the guest for {_standing}: " +
-					$"{done}/{total} prop(s) streamed, entities waiting on " +
+					$"{done}/{total} prop(s) streamed ({settling} bake(s) or variant(s) to apply), " +
+					$"classic waiting on {(classicWait.Length != 0 ? classicWait : "nothing")}, entities waiting on " +
 					$"{(_entities is { } e ? e.ReleaseWait : "no feed")}, {_readyFrames} settle frame(s) " +
 					$"after {_propHoldFrames} frame(s)");
 			}
@@ -299,12 +307,14 @@ public partial class GameWorld : Node3D
 				return;
 			}
 
-			GD.PrintErr($"[game-world] props for {_standing} did not finish streaming " +
-				$"({done}/{total}) after {_propHoldFrames} frame(s) — releasing the guest " +
+			GD.PrintErr($"[game-world] {_standing} did not finish loading " +
+				$"({done}/{total} props, {settling} bake(s) or variant(s), classic waiting on " +
+				$"{(classicWait.Length != 0 ? classicWait : "nothing")}) after {_propHoldFrames} frame(s) — releasing the guest " +
 				"anyway. A world that fills in late is worse than one the player cannot leave.");
 		}
 
 		_holdingForProps = false;
+		Refii.Models.Engine_ClassicLoad.End();
 		SetWorldBuildHeld(false);
 		if (_entities is { } released)
 		{
@@ -320,7 +330,7 @@ public partial class GameWorld : Node3D
 		{
 			double heldSeconds = (System.Diagnostics.Stopwatch.GetTimestamp() - _heldSince) /
 				(double)System.Diagnostics.Stopwatch.Frequency;
-			GD.Print($"[game-world] {_standing} loaded in {heldSeconds:0.00} s — finished streaming its props, built every entity " +
+			GD.Print($"[game-world] {_standing} loaded in {heldSeconds:0.00} s — finished streaming its props and their bakes, compiled its classic shaders, built every entity " +
 				$"mesh, reconciled its copies and drew {ReleaseSettleFrames} settled frame(s) after " +
 				$"{_propHoldFrames} frame(s) — releasing the guest; " +
 				(_entities?.DescribeHero() ?? "no entity feed"));
@@ -427,17 +437,18 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>Adds up every prop streamer beneath one node. Recursive: a region nests them.</summary>
-	private static void SumPropProgress(Node node, ref int done, ref int total)
+	private static void SumPropProgress(Node node, ref int done, ref int total, ref int settling)
 	{
 		if (node is Refii.Level.Engine_PropStreamer streamer)
 		{
 			done += streamer.Done;
 			total += streamer.Total;
+			settling += streamer.Settling;
 		}
 
 		foreach (Node child in node.GetChildren())
 		{
-			SumPropProgress(child, ref done, ref total);
+			SumPropProgress(child, ref done, ref total, ref settling);
 		}
 	}
 
@@ -929,17 +940,22 @@ public partial class GameWorld : Node3D
 		_propHoldFrames = 0;
 		_readyFrames = 0;
 		AddChild(region);
+		Refii.Models.Engine_ClassicLoad.Begin(region);
 
 		SetStreamBudget(region, HeldStreamMsPerFrame);
 
 		MountWaterReflections(region);
 
 		// The sun's far cascades exist for the landscape; this stops every crate in 300 metres
-		// riding along in them.
-		region.AddChild(new Refii.Lighting.Engine_ShadowReach
+		// riding along in them. Godot's sun casts nothing under classic (the guest's cascades
+		// take the casters, each with its own stated reach), so there it has nothing to do.
+		if (!Refii.Models.Engine_ClassicMaterial.Active)
 		{
-			Name = Refii.Lighting.Engine_ShadowReach.NodeName,
-		});
+			region.AddChild(new Refii.Lighting.Engine_ShadowReach
+			{
+				Name = Refii.Lighting.Engine_ShadowReach.NodeName,
+			});
+		}
 
 		// NOT RELEASED HERE. Mounting is not the same as being ready to look at.
 		//
@@ -1054,6 +1070,9 @@ public partial class GameWorld : Node3D
 		_standingKey = 0u;
 		_waitingForGuest = false;
 		_holdingForProps = false;
+		Refii.Models.Engine_ClassicLoad.End();
+		Refii.Models.Engine_ClassicVertexBakes.Clear();
+		Refii.Models.Engine_ClassicPrtRows.Clear();
 		if (_entities is { } tornDown)
 		{
 			tornDown.LoadHold = false;

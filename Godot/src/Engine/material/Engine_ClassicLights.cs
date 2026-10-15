@@ -55,6 +55,46 @@ public static class Engine_ClassicLights
     /// <summary>The active lights read this frame.</summary>
     public static IReadOnlyList<Light> Lights => _lights;
 
+    private static readonly float[] _frustumRaw = new float[1 + MaxLights * 66];
+    private static readonly Dictionary<int, (int Count, int At)> _frustums = new();
+
+    /// <summary>
+    /// Whether a box (guest axes) is inside the spot's receive frustum, as `sub_822362F8` tests it
+    /// (the light's +96 receive filter): no plane has the box's farthest corner along its normal
+    /// behind it. True for a light with no frustum stated.
+    /// </summary>
+    private static int _frustumWords;
+
+    /// <summary>A hash of this frame's spot frustums as fed.</summary>
+    public static long FrustumHash()
+    {
+        long h = _frustumWords;
+        for (int i = 0; i < _frustumWords; i++)
+        {
+            h = h * 1099511628211L ^ BitConverter.SingleToInt32Bits(_frustumRaw[i]);
+        }
+        return h;
+    }
+
+    public static bool InFrustum(int index, Vector3 min, Vector3 max)
+    {
+        if (!_frustums.TryGetValue(index, out (int Count, int At) f))
+        {
+            return true;
+        }
+        for (int p = 0; p < f.Count; p++)
+        {
+            int at = f.At + p * 4;
+            float nx = _frustumRaw[at], ny = _frustumRaw[at + 1], nz = _frustumRaw[at + 2], w = _frustumRaw[at + 3];
+            float d = nx * (nx >= 0f ? max.X : min.X) + ny * (ny >= 0f ? max.Y : min.Y) + nz * (nz >= 0f ? max.Z : min.Z);
+            if (d + w < 0f)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>Recorded lights (20 floats each) read instead of the bridge.</summary>
     public static float[]? Replay;
 
@@ -89,6 +129,19 @@ public static class Engine_ClassicLights
             count = Refii.Host.HostBridge.GetClassicLights(_raw);
         }
         _rawCount = (int)count;
+        _frustums.Clear();
+        _frustumWords = 0;
+        if (Replay is null)
+        {
+            uint got = Refii.Host.HostBridge.GetSpotFrustums(_frustumRaw);
+            _frustumWords = (int)Math.Min(got, (uint)_frustumRaw.Length);
+            int spots = got >= 1 ? (int)_frustumRaw[0] : 0;
+            for (int s = 0; s < spots && 1 + (s + 1) * 66 <= got; s++)
+            {
+                int at = 1 + s * 66;
+                _frustums[(int)_frustumRaw[at]] = (Math.Clamp((int)_frustumRaw[at + 1], 0, 16), at + 2);
+            }
+        }
         for (int i = 0; i < count; i++)
         {
             int at = i * stride;

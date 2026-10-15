@@ -39,6 +39,13 @@ public static class Engine_ClassicEditorFrame
     /// <summary>The theme block the last <see cref="Build"/> evaluated, 194 float4s.</summary>
     public static ReadOnlySpan<float> Theme => _theme;
 
+    /// <summary>Whether a <see cref="Build"/> has evaluated a theme block.</summary>
+    public static bool HasTheme { get; private set; }
+
+    /// <summary>The sky's sun of the last <see cref="Build"/> (guest axes).</summary>
+    public static ReadOnlySpan<float> SkySun => _skySun;
+    private static readonly float[] _skySun = new float[3];
+
     /// <summary>Feeds the classic path from the level's environment node at its time of day.</summary>
     public static void Update(Node level)
     {
@@ -100,6 +107,10 @@ public static class Engine_ClassicEditorFrame
         }
         Vector3 sun = Axis(T(59), T(61) + T(57)) + new Vector3(0f, 0f, T(60));
         sun = sun.Length() < 1e-4f ? Vector3.Zero : sun.Normalized();
+        _skySun[0] = sun.X;
+        _skySun[1] = sun.Y;
+        _skySun[2] = sun.Z;
+        HasTheme = true;
         Vector3 rig = Axis(T(59), T(57));
         var h = new Vector3(rig.X, rig.Y, 0f);
         h = h.Length() < 1e-4f ? Vector3.Zero : h.Normalized();

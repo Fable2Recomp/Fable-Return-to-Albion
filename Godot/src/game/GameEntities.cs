@@ -244,6 +244,8 @@ public partial class GameEntities : Node3D
         long extentTicks = 0;
         long traceTicks = 0;
         long yawTicks = 0;
+        long stillTicks = 0;
+        long twinTicks = 0;
         Refii.Entities.Engine_EntitySkeleton.ReadMs = 0.0;
         Refii.Entities.Engine_EntitySkeleton.WriteMs = 0.0;
         Refii.Entities.Engine_EntitySkeleton.WritesSkipped = 0;
@@ -563,6 +565,12 @@ public partial class GameEntities : Node3D
                 }
                 AddChild(node);
                 _nodes[entity.Address] = node;
+                if (entity.ModelHash == 0u)
+                {
+                    // A multi-mesh appearance: a building whose interior records are the rain's
+                    // and snow's roofs.
+                    Refii.Level.Engine_ClassicRoofs.Track(entity.Address, node);
+                }
 
                 // Light it. These entities are created at runtime and hang BESIDE the region
                 // rather than inside it, so neither the level scene's baked pass nor the prop
@@ -596,6 +604,11 @@ public partial class GameEntities : Node3D
                 }
 
                 Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
+                AttachDisplacementParts(entity.Address, node, mesh);
+                if (Refii.Models.Engine_ClassicMaterial.Active)
+                {
+                    Refii.Models.Engine_ClassicDisplacement.AdoptRecord(entity.RecordHash, node, mesh);
+                }
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
             }
             else if (!_nodeMesh.TryGetValue(entity.Address, out Mesh? drawnMesh) || !ReferenceEquals(drawnMesh, mesh))
@@ -705,7 +718,9 @@ public partial class GameEntities : Node3D
                 _attachments.ParentOf(entity.Address) == 0u)
             {
                 ++_unchangedSkipped;
+                long stillFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 NoteStill(entity, node, mesh, adopted);
+                stillTicks += System.Diagnostics.Stopwatch.GetTimestamp() - stillFrom;
                 continue;
             }
 
@@ -932,12 +947,18 @@ public partial class GameEntities : Node3D
 
             if (_adoptions.TryGetValue(entity.Address, out var married))
             {
+                long twinFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 Refii.Entities.Engine_StaticTwins.Drive(married.Twin, AdoptedWorld(entity.Address, node));
+                twinTicks += System.Diagnostics.Stopwatch.GetTimestamp() - twinFrom;
             }
         }
 
+        long drawnFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         ApplyDrawn();
+        long flushFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+        long drawnTicks = flushFrom - drawnFrom;
         Refii.Level.Engine_PropShadow.FlushDeferred();
+        Refii.Core.Engine_FramePhases.Lap("ent.flush", ref flushFrom);
         // THE PLACE OF EVERY DRAWN ENTITY, read from the node AFTER attachment placement: a
         // door is a child attached to its building, and its stated position describes the
         // parent-relative body nobody draws; the node's world origin is where the mesh is.
@@ -948,6 +969,7 @@ public partial class GameEntities : Node3D
                 _drawnPlaces.Add((modelKey, placed.GlobalTransform.Origin));
             }
         }
+        Refii.Core.Engine_FramePhases.Lap("ent.drawnplaces", ref flushFrom);
         // The loop's own breakdown, in the same units as the laps around it.
         double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         double poseMs = poseTicks * toMs;
@@ -978,7 +1000,8 @@ public partial class GameEntities : Node3D
                 $"extent {extentTicks * toMs:0.00} trace {traceTicks * toMs:0.00} " +
                 $"yaw {yawTicks * toMs:0.00} | " +
                 $"prologue {prologueTicks * toMs:0.00} ({entities.Count - _prologueSkipped} walked) + {skipTicks * toMs:0.00} ({_prologueSkipped} skipped: nothing to draw, or still and adopted/batched) " +
-                $"highlight {highlightTicks * toMs:0.00}, {pastPrologue} past it");
+                $"highlight {highlightTicks * toMs:0.00}, {pastPrologue} past it | " +
+                $"still {stillTicks * toMs:0.00} twins {twinTicks * toMs:0.00} drawn {drawnTicks * toMs:0.00}");
         }
         Retire();
         Refii.Core.Engine_FramePhases.Lap("ent.retire", ref lap);
@@ -1585,6 +1608,62 @@ public partial class GameEntities : Node3D
     private static string[] PartPathsOf(Mesh mesh) =>
         Refii.Models.Engine_MdlComposite.ModelPathsOf(mesh);
 
+    /// <summary>
+    /// A composite's displacement-only parts (GDB DisplacementMeshes,
+    /// <see cref="HostBridge.GetEntityDisplacementParts"/>) under classic: the guest draws them only
+    /// into the displacement target (flag 0x800, `sub_8220DE88`), so their surfaces leave the body
+    /// (<see cref="Refii.Entities.Engine_HiddenClusters.SetDisplacedSurfaces"/>) and a child on the
+    /// same skeleton and skin draws them on the displacement layer with their own diffuse.
+    /// </summary>
+    private void AttachDisplacementParts(uint address, MeshInstance3D node, Mesh mesh)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || mesh is not ArrayMesh source ||
+            node.Skin is null || node.GetNodeOrNull(node.Skeleton) is not Node skeleton ||
+            !source.HasMeta(Refii.Models.Engine_MdlComposite.SurfacePartsMetaName) ||
+            !source.HasMeta(Refii.Models.Engine_MdlComposite.PartHashesMetaName))
+        {
+            return;
+        }
+        uint[] displaced = HostBridge.GetEntityDisplacementParts(address);
+        if (displaced.Length == 0)
+        {
+            return;
+        }
+        int[] surfaceParts = source.GetMeta(Refii.Models.Engine_MdlComposite.SurfacePartsMetaName).AsInt32Array();
+        uint[] partHashes = System.Array.ConvertAll(
+            source.GetMeta(Refii.Models.Engine_MdlComposite.PartHashesMetaName).AsInt64Array(), v => unchecked((uint)v));
+        var subset = new ArrayMesh();
+        System.UInt128 mask = System.UInt128.Zero;
+        for (int s = 0; s < source.GetSurfaceCount() && s < 128 && s < surfaceParts.Length; s++)
+        {
+            int part = surfaceParts[s];
+            if (part < 0 || part >= partHashes.Length || System.Array.IndexOf(displaced, partHashes[part]) < 0)
+            {
+                continue;
+            }
+            mask |= System.UInt128.One << s;
+            int added = Refii.Models.Engine_MdlSurfaceArrays.Add(subset, Mesh.PrimitiveType.Triangles,
+                Refii.Models.Engine_MdlSurfaceArrays.Of(source, s), null);
+            subset.SurfaceSetMaterial(added, Refii.Models.Engine_ClassicDisplacement.MeshMaterial(source.SurfaceGetMaterial(s)));
+        }
+        if (mask == System.UInt128.Zero)
+        {
+            return;
+        }
+        var child = new MeshInstance3D
+        {
+            Name = "DisplacementParts",
+            Mesh = subset,
+            Skin = node.Skin,
+            Layers = Refii.Models.Engine_ClassicDisplacement.Layer,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        node.AddChild(child);
+        child.Skeleton = child.GetPathTo(skeleton);
+        Refii.Models.Engine_ClassicDisplacement.Track(child);
+        Refii.Entities.Engine_HiddenClusters.SetDisplacedSurfaces(node, mask);
+    }
+
     private bool TryRig(uint address, MeshInstance3D node, Mesh mesh)
     {
         // THE MODEL'S OWN BONE TABLE IS THE SKELETON. The mesh's bone indices address it, so
@@ -1707,7 +1786,31 @@ public partial class GameEntities : Node3D
 
         _drawRanges[address] = stated;
         Refii.Level.Engine_PropDrawRange.StampEntity(node, stated);
+        // The same D cuts its shadow hard (`sub_8221E5F0`), from the eye.
+        Refii.Models.Engine_ClassicCasters.Mark(node, CastingOf(address, node),
+            Refii.Level.Engine_PropDrawRange.Reach(stated));
+        Refii.Models.Engine_ClassicCasters.Register(node, dynamic: true);
         return true;
+    }
+
+    /// <summary>
+    /// The cascades an entity casts into, as its definition states them (the renderable's flag
+    /// word, <see cref="HostBridge.GetEntityCasterFlags"/>: 0x40 none, 0x80 not the far cascade,
+    /// 0x100 both faces). Only the static-mesh descriptor carries the both-faces bit
+    /// (`sub_822370A8`; the animated one, `sub_8220DE88`, never does), so a skinned body drops it.
+    /// </summary>
+    private static byte CastingOf(uint address, GeometryInstance3D node)
+    {
+        if (HostBridge.GetEntityCasterFlags(address) is not { } flags)
+        {
+            return Refii.Models.Engine_ClassicShadows.CastsDefault;
+        }
+        byte casting = Refii.Models.Engine_ClassicShadows.CastingOf(flags);
+        if (node is MeshInstance3D { Skin: not null })
+        {
+            casting &= unchecked((byte)~Refii.Models.Engine_ClassicShadows.CastsTwoSided);
+        }
+        return casting;
     }
 
     /// <summary>
@@ -3572,6 +3675,9 @@ public partial class GameEntities : Node3D
                 _frustum[i] = planes[i];
             }
 
+            // Disposed, not left to the finalizer: an undisposed wrapper survives its first GC.
+            ((Godot.Collections.Array)planes).Dispose();
+
             _frustumFrame = frame;
         }
 
@@ -3640,11 +3746,17 @@ public partial class GameEntities : Node3D
     private void ApplyDrawn()
     {
         ++Refii.Entities.Engine_DrawnFrame.Frames;
+        long lap = System.Diagnostics.Stopwatch.GetTimestamp();
         ResampleMovers();
+        Refii.Core.Engine_FramePhases.Lap("ent.drawn.movers", ref lap);
         ResampleAnimation();
+        Refii.Core.Engine_FramePhases.Lap("ent.drawn.animation", ref lap);
         PlaceAttached();
+        Refii.Core.Engine_FramePhases.Lap("ent.drawn.attached", ref lap);
         ResampleAdopted();
+        Refii.Core.Engine_FramePhases.Lap("ent.drawn.adopted", ref lap);
         Refii.Entities.Engine_ShadowSkeletons.EndWalk();
+        Refii.Core.Engine_FramePhases.Lap("ent.drawn.shadows", ref lap);
     }
 
     private void ResampleMovers()

@@ -154,6 +154,13 @@ public partial class Engine_LightFlicker : Node
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("lightflicker");
 
+		// Under classic the placed lights are hidden (Engine_LightShadowBudget) and the title's
+		// shaders take the guest's own, already flickered, light set.
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			return;
+		}
+
 		// THE WALK KEEPS THE GUEST'S STEP; THE DRAW IS GODOT'S. The guest steps this once per its
 		// own 30 Hz frame with `dt * 30`, so a step of exactly 1/30 s is one unit. Stepped per
 		// display frame instead, a random walk of more, smaller steps averages out and the

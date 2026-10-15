@@ -39,6 +39,9 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
     private readonly Dictionary<uint, Texture2D?> _overlays = new();
     private ShaderMaterial? _material;
     private uint _overlayHash;
+    private uint _overlayHash1;
+    private float _overlayBlend = -1f;
+    private Texture2D? _currentOverlay1;
     private int _row;
     private bool _inMist;
 
@@ -103,21 +106,45 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
         {
             return;
         }
-        SkyTheme? theme = Engine_SkyEnvironmentNode.Current?.Theme;
-        uint hash = theme is { HasSkyOverlayTexture: true } ? theme.SkyOverlayTextureHash : 0u;
-        if (hash != _overlayHash)
+        // THE GUEST'S TWO OVERLAYS. `Render_MeshMaterialSubmit_6` (0x821DB9F4) takes the theme's
+        // two heaviest SKY_OVERLAY textures (`sub_821D0C00`), binds them as the dome's overlay pair
+        // (sky+272 / +276) and sets constant 225 to the second's weight: a theme cross-fade
+        // blends between them. Without the live slots, the GDB theme's one overlay on both.
+        uint hash0, hash1;
+        float blend;
+        System.Span<(float Weight, uint Hash)> pair = stackalloc (float, uint)[2];
+        if (Engine_ClassicTheme.TexturesLive)
         {
-            _overlayHash = hash;
-            Texture2D overlay = (hash == 0u ? null : Overlay(hash)) ?? NoOverlay();
-            if (hash != 0u)
-            {
-                GD.Print($"[sky] overlay texture 0x{hash:X8} {(overlay == NoOverlay() ? "did not resolve" : $"{overlay.GetWidth()}x{overlay.GetHeight()}")}");
-            }
-            _material.SetShaderParameter("ps_g_SkyOverlayTexture0", overlay);
-            _material.SetShaderParameter("ps_g_SkyOverlayTexture1", overlay);
-            _currentOverlay = overlay;
-            Engine_ClassicWater.ApplyVistaOverlay(overlay);
+            Engine_ClassicTheme.Pick(Engine_ClassicTheme.SlotSkyOverlay, pair);
+            (hash0, hash1, blend) = (pair[0].Hash, pair[1].Hash, pair[1].Weight);
         }
+        else
+        {
+            SkyTheme? theme = Engine_SkyEnvironmentNode.Current?.Theme;
+            hash0 = hash1 = theme is { HasSkyOverlayTexture: true } ? theme.SkyOverlayTextureHash : 0u;
+            blend = 0f;
+        }
+        if (hash0 != _overlayHash || hash1 != _overlayHash1)
+        {
+            _overlayHash = hash0;
+            _overlayHash1 = hash1;
+            Texture2D overlay0 = (hash0 == 0u ? null : Overlay(hash0)) ?? NoOverlay();
+            Texture2D overlay1 = (hash1 == 0u ? null : Overlay(hash1)) ?? NoOverlay();
+            if (hash0 != 0u)
+            {
+                GD.Print($"[sky] overlay textures 0x{hash0:X8} / 0x{hash1:X8} {(overlay0 == NoOverlay() ? "did not resolve" : $"{overlay0.GetWidth()}x{overlay0.GetHeight()}")}");
+            }
+            _material.SetShaderParameter("ps_g_SkyOverlayTexture0", overlay0);
+            _material.SetShaderParameter("ps_g_SkyOverlayTexture1", overlay1);
+            _currentOverlay = overlay0;
+            _currentOverlay1 = overlay1;
+        }
+        if (blend != _overlayBlend)
+        {
+            _overlayBlend = blend;
+            _material.SetShaderParameter("ps_g_SkyOverlayTextureBlend", new Vector4(blend, blend, blend, blend));
+        }
+        Engine_ClassicWater.ApplyVistaOverlay(_currentOverlay ?? NoOverlay(), _currentOverlay1 ?? NoOverlay(), blend);
 
         // Inside a mist volume the dome takes the volume's registers, as the title binds them.
         Engine_ClassicMist.Volume? mist = Engine_ClassicMist.VolumeFor(new Aabb(camera.GlobalPosition, Vector3.Zero));

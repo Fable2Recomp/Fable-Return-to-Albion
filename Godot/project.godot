@@ -58,6 +58,8 @@ banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
 
 [rendering]
 
+driver/depth_prepass/enable=false
+
 rendering_device/staging_buffer/block_size_kb=1024
 rendering_device/staging_buffer/max_size_mb=256
 rendering_device/staging_buffer/texture_upload_region_size_px=128
@@ -207,6 +209,14 @@ xr_ps_constants={
 "value": ""
 }
 xr_vs_constants={
+"type": "sampler2D",
+"value": ""
+}
+xr_vertex_bakes={
+"type": "sampler2D",
+"value": ""
+}
+xr_prt_constants={
 "type": "sampler2D",
 "value": ""
 }

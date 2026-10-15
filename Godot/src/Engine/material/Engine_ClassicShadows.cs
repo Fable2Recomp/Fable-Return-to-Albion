@@ -38,6 +38,36 @@ public partial class Engine_ClassicShadows : Node
     /// <summary>XR_SHADOW_PASS_LAYER in xenos_common.gdshaderinc: layer 24, used by no node.</summary>
     public const uint ShadowPassLayer = 1u << 23;
 
+    /// <summary>
+    /// The cascades draw only CASTERS, each on its own layer, as the guest's sun shadow scene
+    /// ("Directional Light Renderer", sub_82AA0A98) does: a render twin casts into the near
+    /// cascade when its +28 mask has bit 8 and into the far one with bit 16, and
+    /// `sub_82AA3C78` sets those from the stated flag word (0x40 = no cast, 0x80 = no distant
+    /// cast). Nothing else is drawn there: not the landscape, not particles, not water.
+    /// Layers 25 and 26, outside every other camera's mask.
+    /// </summary>
+    public const uint NearCasterLayer = 1u << 24;
+
+    public const uint FarCasterLayer = 1u << 25;
+
+    /// <summary>Casting bits: near cascade, far cascade, both faces (0x100, twin+272).</summary>
+    public const byte CastsNear = 1, CastsFar = 2, CastsTwoSided = 4;
+
+    /// <summary>The guest's defaults: ShadowCaster 1, DontCastDistantShadows 0.</summary>
+    public const byte CastsDefault = CastsNear | CastsFar;
+
+    /// <summary>The casting bits of a stated flag word, as `sub_82AA3C78` reads it.</summary>
+    public static byte CastingOf(uint flags) => (byte)(
+        ((flags & 0x40u) == 0 ? CastsNear : 0) |
+        ((flags & 0xC0u) == 0 ? CastsFar : 0) |
+        ((flags & 0x100u) != 0 ? CastsTwoSided : 0));
+
+    /// <summary>The cascade layers a node with these casting bits joins; none outside classic.</summary>
+    public static uint CasterLayers(byte casting) =>
+        !Engine_ClassicMaterial.Active ? 0u :
+        ((casting & CastsNear) != 0 ? NearCasterLayer : 0u) |
+        ((casting & CastsFar) != 0 ? FarCasterLayer : 0u);
+
     /// <summary>The cascade pass's depth biases (`sub_8228DCC8`): constant and slope scale per cascade.</summary>
     private static readonly (float Constant, float Slope)[] Biases = { (0.001f, 2.0f), (0.005f, 5.0f) };
 
@@ -46,6 +76,8 @@ public partial class Engine_ClassicShadows : Node
         (15f, 100f, 10f),
         (35f, 120f, 25f),
     };
+
+    private static readonly Godot.Environment DepthOnly = new();
 
     private readonly SubViewport[] _viewports = new SubViewport[Cascades];
     private readonly Camera3D[] _cameras = new Camera3D[Cascades];
@@ -86,6 +118,9 @@ public partial class Engine_ClassicShadows : Node
                 ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled,
                 UseTaa = false,
                 UseDebanding = false,
+                // The casters' own scene (Engine_ClassicCasters), not the main world: the guest's
+                // sun shadow scene holds its casters and nothing else.
+                World3D = Engine_ClassicCasters.World,
             };
             var camera = new Camera3D
             {
@@ -96,6 +131,9 @@ public partial class Engine_ClassicShadows : Node
                 Far = Params[k].Extent + Params[k].Back,
                 Current = true,
                 Compositor = compositor,
+                // Depth is all the capture reads: an empty environment (clear colour; no sky,
+                // fog, glow, GI or screen-space effects) instead of the world's.
+                Environment = DepthOnly,
             };
             viewport.AddChild(camera);
             AddChild(viewport);
@@ -109,6 +147,7 @@ public partial class Engine_ClassicShadows : Node
         if (Instance == this)
         {
             Instance = null;
+            Engine_ClassicCasters.Clear();
         }
     }
 
@@ -120,6 +159,11 @@ public partial class Engine_ClassicShadows : Node
     /// <param name="sunTravelGuest">The sun light's travel direction, guest axes (twin+304).</param>
     public void Pump(Camera3D main, Vector3 sunTravelGuest)
     {
+        // The casters follow their drawn nodes and take the guest's eye-distance cut first.
+        using (Refii.Core.Engine_FramePhases.Measure("classic.shadows.casters"))
+        {
+            Engine_ClassicCasters.Update(main.GlobalPosition);
+        }
         Vector3 eye = ToGuest(main.GlobalPosition);
         Vector3 forward = ToGuest(-main.GlobalTransform.Basis.Z).Normalized();
         Vector3 travel = sunTravelGuest.Normalized();
@@ -163,8 +207,8 @@ public partial class Engine_ClassicShadows : Node
 
             // The Godot camera on the same basis: position, target and up carried over.
             Camera3D camera = _cameras[k];
-            // The main camera's layers plus the shadow-pass marker the shaders test.
-            camera.CullMask = (main.CullMask & ~Engine_ClassicParticles.Layer) | ShadowPassLayer;
+            // This cascade's casters plus the shadow-pass marker the shaders test.
+            camera.CullMask = (k == 0 ? NearCasterLayer : FarCasterLayer) | ShadowPassLayer;
             if ((main.CullMask & Engine_ClassicParticles.Layer) == 0)
             {
                 main.CullMask |= Engine_ClassicParticles.Layer;

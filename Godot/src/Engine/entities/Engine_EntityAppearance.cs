@@ -69,6 +69,25 @@ public static class Engine_EntityAppearance
     /// </summary>
     private static readonly StringName ClassicTintParameter = "ps_g_StandardMaterialTintColour";
 
+    /// <summary>
+    /// The body's fade and tint onto its cloth. The guest draws the cloth as part of the body, so
+    /// it takes the same c49 tint and the same blend; here the cloth is a child node of its own
+    /// and would otherwise stay untinted and opaque under a fading, tinted body.
+    /// </summary>
+    public static void MirrorToCloth(GeometryInstance3D node)
+    {
+        if (node.GetNodeOrNull(Refii.Physics.Engine_ClothBody.NodeName) is not GeometryInstance3D cloth)
+        {
+            return;
+        }
+        cloth.Transparency = node.Transparency;
+        cloth.SetInstanceShaderParameter(TintParameter, node.GetInstanceShaderParameter(TintParameter));
+        if (Refii.Models.Engine_ClassicMaterial.Active)
+        {
+            cloth.SetInstanceShaderParameter(ClassicTintParameter, node.GetInstanceShaderParameter(ClassicTintParameter));
+        }
+    }
+
     public static void Apply(MeshInstance3D node, in HostBridge.EntityAppearance look, bool principal)
     {
         bool had = Applied.TryGetValue(node, out HostBridge.EntityAppearance was);
@@ -121,6 +140,8 @@ public static class Engine_EntityAppearance
                     new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f));
             }
         }
+
+        MirrorToCloth(node);
 
         // THE OVERLAY: SetSaturationMask (+196) marks the node's pixels for the post-process,
         // and a faded node writes the depth its blend tests against (entity_fade_depth). One

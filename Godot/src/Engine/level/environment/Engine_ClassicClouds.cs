@@ -16,6 +16,12 @@ namespace Refii.Level;
 /// ViewerPosition = eye, ViewerDirection = the view's forward, LightColor = the last directional
 /// light's +208, LightPosition = eye - (its +304) x 2000. States: cull none, alpha test GREATER
 /// 5, SRCALPHA / INVSRCALPHA, depth write ON.
+///
+/// MIST (`Render_MaterialQuadPass_INFERRED` 0x8223A3C4..E8): on the main view the pixel shader is
+/// CLOUDS + 1 = CLOUDS_MIST while the eye (view+1680) is inside a mist volume (`sub_82296290`),
+/// with that volume's five registers and samplers bound as for every MIST1 draw. The layers
+/// are materials, not instances, so the misted composition reads its row from a material
+/// uniform of its own (<c>XR_ROW_UNIFORM</c>).
 /// </remarks>
 public static class Engine_ClassicClouds
 {
@@ -25,6 +31,12 @@ public static class Engine_ClassicClouds
     public static readonly StringName ClassicCloudMeta = "xenos_cloud";
 
     private static readonly List<System.WeakReference<ShaderMaterial>> _materials = new();
+    private const string MistedDefines = "uniform int xr_cloud_row = 0;\n#define XR_ROW_UNIFORM xr_cloud_row";
+    private static Shader? _plain;
+    private static Shader? _misted;
+    private static bool _mistedTried;
+    private static int _row;
+    private static Engine_ClassicMist.Volume? _mist;
 
     /// <summary>The layer's material on VSHADER_CLOUDS + PSHADER_CLOUDS, or null without the pair.</summary>
     /// <summary>The theme's layer (0..3) a material draws.</summary>
@@ -41,7 +53,8 @@ public static class Engine_ClassicClouds
         {
             return null;
         }
-        var material = new ShaderMaterial { Shader = shader };
+        _plain = shader;
+        var material = new ShaderMaterial { Shader = _mist is not null && Misted() is { } misted ? misted : shader };
         material.SetMeta(ClassicCloudMeta, true);
         material.SetShaderParameter("ps_g_CloudsSampler", density);
         material.SetShaderParameter("xr_spec_constants", 2u);
@@ -62,7 +75,9 @@ public static class Engine_ClassicClouds
         // (`sub_82267610` reads 133+14i .. 146+14i).
         if (Engine_ClassicTheme.Live && material.HasMeta(LayerMeta))
         {
-            int at = 133 + 14 * material.GetMeta(LayerMeta).AsInt32();
+            int index = material.GetMeta(LayerMeta).AsInt32();
+            FollowDensity(material, index);
+            int at = 133 + 14 * index;
             material.SetShaderParameter("ps_g_CloudsScale", new Vector4(Engine_ClassicTheme.Param(at + 10), Engine_ClassicTheme.Param(at + 11), 0f, 0f));
             material.SetShaderParameter("ps_g_Transparency", Splat(Engine_ClassicTheme.Param(at)));
             material.SetShaderParameter("ps_g_NormalStrength", Splat(Engine_Clouds.ShaderNormalStrength(Engine_ClassicTheme.Param(at + 2))));
@@ -84,6 +99,24 @@ public static class Engine_ClassicClouds
     /// <summary>The frame's viewer and main light, guest axes. Main thread, once a frame.</summary>
     public static void Pump(Vector3 eye, Vector3 viewerDirection, Vector3 lightColour, Vector3 lightDirection)
     {
+        // The eye in a mist volume (guest (x, y, z) is Godot (-x, z, y)).
+        Engine_ClassicMist.Volume? mist = Misted() is null
+            ? null
+            : Engine_ClassicMist.VolumeFor(new Aabb(new Vector3(-eye.X, eye.Z, eye.Y), Vector3.Zero));
+        if (mist is not null && _row == 0)
+        {
+            _row = Engine_ClassicConstants.AcquireRow();
+        }
+        if (mist is not null && _row != 0)
+        {
+            Engine_ClassicMist.WriteRegisters(mist, _row);
+        }
+        else
+        {
+            mist = null;
+        }
+        bool changed = !ReferenceEquals(mist, _mist);
+        _mist = mist;
         var position = new Vector4(eye.X, eye.Y, eye.Z, 1f);
         var direction = new Vector4(viewerDirection.X, viewerDirection.Y, viewerDirection.Z, 0f);
         var colour = new Vector4(lightColour.X, lightColour.Y, lightColour.Z, 1f);
@@ -98,13 +131,69 @@ public static class Engine_ClassicClouds
                     _materials.RemoveAt(i);
                     continue;
                 }
+                if (changed)
+                {
+                    Shader? want = mist is not null ? _misted : _plain;
+                    if (want is not null && material.Shader != want)
+                    {
+                        material.Shader = want;
+                    }
+                    if (mist is not null)
+                    {
+                        material.SetShaderParameter("xr_cloud_row", _row);
+                        material.SetShaderParameter("ps_g_MistDensitySampler", mist.Density64);
+                        material.SetShaderParameter("ps_g_MistHeightSampler", Engine_ClassicMist.FlatHeight);
+                    }
+                }
                 material.SetShaderParameter("ps_g_ViewerPosition", position);
                 material.SetShaderParameter("ps_g_ViewerDirection", direction);
                 material.SetShaderParameter("ps_g_LightColor", colour);
                 material.SetShaderParameter("ps_g_LightPosition", lightPosition);
             }
         }
+        if (mist is null && _row != 0)
+        {
+            Engine_ClassicConstants.ReleaseRow(_row);
+            _row = 0;
+        }
+    }
+
+    /// <summary>The CLOUDS_MIST composition, or null when the bank has none.</summary>
+    private static Shader? Misted()
+    {
+        if (_misted is null && !_mistedTried)
+        {
+            _mistedTried = true;
+            _misted = Engine_ClassicShaders.HasEntry("PSHADER_CLOUDS_MIST")
+                ? Engine_ClassicShaders.Compose("VSHADER_CLOUDS", "PSHADER_CLOUDS_MIST", RenderMode, 0, MistedDefines)
+                : null;
+        }
+        return _misted;
     }
 
     private static Vector4 Splat(float v) => new(v, v, v, v);
+
+    private static readonly StringName DensityHashMeta = "xenos_density_hash";
+
+    /// <summary>
+    /// The layer's density map from the theme's live CLOUDS_LAYERn_DENSITY_MAP slot (8 + n, the
+    /// heaviest texture, `sub_82267610` -> layer+60), rebound when the hash moves.
+    /// </summary>
+    private static void FollowDensity(ShaderMaterial material, int index)
+    {
+        if (!Engine_ClassicTheme.TexturesLive || index < 0 || index > 3)
+        {
+            return;
+        }
+        uint hash = Engine_ClassicTheme.TopHash(Engine_ClassicTheme.SlotCloudDensity0 + index);
+        if (hash == 0u || (material.HasMeta(DensityHashMeta) && (uint)material.GetMeta(DensityHashMeta).AsInt64() == hash))
+        {
+            return;
+        }
+        material.SetMeta(DensityHashMeta, (long)hash);
+        if (Engine_EnvironmentTextures.Load(hash, Engine_BnkMeshLoader.ReadBytes, out _) is { } density)
+        {
+            material.SetShaderParameter("ps_g_CloudsSampler", density);
+        }
+    }
 }

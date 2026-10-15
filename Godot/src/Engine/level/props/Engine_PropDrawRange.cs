@@ -173,6 +173,7 @@ public static class Engine_PropDrawRange
 		if (modelClass == PropModelClass.Tree && role != PropRole.Shadow &&
 			TreeBand(Scaled(range), role, hasLod) is { } band)
 		{
+			StampBillboard(node, Scaled(range), role, hasLod);
 			// Both tree shaders fade each placement themselves (the classic TreeDefines, the
 			// modern body's v_tree_fade), so the node's range only bounds where any copy can be
 			// drawn: from the fade-in's start to the fade-out's end, widened both ways by the
@@ -294,6 +295,23 @@ public static class Engine_PropDrawRange
 	};
 
 	/// <summary>
+	/// Under classic, the node whose model is the placement's impostor — the LOD model, else the
+	/// main one (`sub_822754F8` forces tier 3) — carries {F, cull} for Engine_ClassicBillboards:
+	/// F = obj+0x258, the type-2 block's S or the definition's BillboardDistance (`sub_82A708E0`
+	/// 0x82A7091C stores msg+0x48), and the cull obj+0x124 = max(D, F) (0x82A70928).
+	/// </summary>
+	private static void StampBillboard(GeometryInstance3D node, StatedRange r, PropRole role, bool hasLod)
+	{
+		if (!Refii.Models.Engine_ClassicBillboards.Available || role != (hasLod ? PropRole.Lod : PropRole.Main) ||
+			!float.IsFinite(r.Shadow) || r.Shadow <= 0f)
+		{
+			return;
+		}
+
+		node.SetMeta(Refii.Models.Engine_ClassicBillboards.Meta, new[] { r.Shadow, Mathf.Max(r.Draw, r.Shadow) });
+	}
+
+	/// <summary>
 	/// A tree's per-placement fade (`sub_8220AF90`, verified 0x8220B054..0x8220B2D4), R1 the
 	/// LOD distance L and R0 the LOD model's reach, d the eye's distance to the model's world box
 	/// centre (`sub_822109B0`):
@@ -312,6 +330,14 @@ public static class Engine_PropDrawRange
 
 		float lod = Mathf.Max(r.Lod, 0f);
 		float reach = Mathf.Max(lod, Mathf.Max(r.Draw, r.Shadow));
+		// Under classic the impostor's model stops at F, fading out over [0.875, 1] F (tier 4,
+		// `sub_8220AF90` 0x8220B054..: fadeOut = sat(1 - (d - 0.875 F) / 0.125 F)); the billboard
+		// carries the placement from 0.75 F to the cull.
+		bool impostor = role == (hasLod ? PropRole.Lod : PropRole.Main);
+		if (Refii.Models.Engine_ClassicBillboards.Available && impostor && r.Shadow > 0f)
+		{
+			reach = r.Shadow;
+		}
 		if (role == PropRole.Main)
 		{
 			return hasLod && lod > 0f

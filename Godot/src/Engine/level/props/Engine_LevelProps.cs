@@ -180,7 +180,7 @@ public static class Engine_LevelProps
     /// </summary>
     private static void MergeSparseCells(
         PropBlockBuild block,
-        Dictionary<(Vector3I Cell, StatedRange? Range), List<int>> cells,
+        Dictionary<(Vector3I Cell, StatedRange? Range, byte Casting), List<int>> cells,
         PropBuildStats stats)
     {
         if (block.ModelClass == PropModelClass.Tree)
@@ -188,8 +188,8 @@ public static class Engine_LevelProps
             return;
         }
 
-        var sparse = new List<(Vector3I Cell, StatedRange? Range)>();
-        foreach (KeyValuePair<(Vector3I Cell, StatedRange? Range), List<int>> cell in cells)
+        var sparse = new List<(Vector3I Cell, StatedRange? Range, byte Casting)>();
+        foreach (KeyValuePair<(Vector3I Cell, StatedRange? Range, byte Casting), List<int>> cell in cells)
         {
             if (cell.Value.Count <= SparseCellMembers)
             {
@@ -203,7 +203,7 @@ public static class Engine_LevelProps
         }
 
         int before = cells.Count;
-        foreach ((Vector3I Cell, StatedRange? Range) key in sparse)
+        foreach ((Vector3I Cell, StatedRange? Range, byte Casting) key in sparse)
         {
             List<int> members = cells[key];
             cells.Remove(key);
@@ -211,7 +211,7 @@ public static class Engine_LevelProps
             var coarse = (new Vector3I(
                 Mathf.FloorToInt(key.Cell.X / 3f) + SparseCellKeyOffset,
                 Mathf.FloorToInt(key.Cell.Y / 3f) + SparseCellKeyOffset,
-                Mathf.FloorToInt(key.Cell.Z / 3f) + SparseCellKeyOffset), key.Range);
+                Mathf.FloorToInt(key.Cell.Z / 3f) + SparseCellKeyOffset), key.Range, key.Casting);
             if (!cells.TryGetValue(coarse, out List<int>? merged))
             {
                 cells[coarse] = merged = new List<int>();
@@ -624,6 +624,10 @@ public static class Engine_LevelProps
                 ((ulong)placement.ModelPathHash << 32) | placement.Hash,
                 range: placedRange);
             stats.Instances++;
+            if (Refii.Models.Engine_ClassicMaterial.Active && Engine_GdbPlacements.UsesDisplacement(view, placement.Hash))
+            {
+                Refii.Models.Engine_ClassicDisplacement.NoteRecord(placement.Hash);
+            }
 
             bool clocktowerBasePrimary = NormalisePath(modelPath).Contains(
                 "bs_market_clocktower/bs_market_clocktower.mdl", StringComparison.Ordinal);
@@ -735,7 +739,7 @@ public static class Engine_LevelProps
 
             var single = new MeshInstance3D
             {
-                Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
+                Layers = block.LayersFor(role),
                 Name = UniqueName(container, role == PropRole.Main ? block.Label : $"{block.Label} {role}"),
                 Transform = block.Instances[index],
             };
@@ -746,6 +750,7 @@ public static class Engine_LevelProps
             }
 
             block.Configure(single, role, range);
+            block.MarkCasting(single, role, block.CastingAt(index), range);
             single.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
 
             uint hash = index < block.InstanceHashes.Count ? block.InstanceHashes[index] : 0;
@@ -908,14 +913,16 @@ public static class Engine_LevelProps
             //
             // AND ONE PER STATED RANGE: a batch switches as one node, so placements the file gives
             // different distances cannot share one.
-            var cells = new Dictionary<(Vector3I Cell, StatedRange? Range), List<int>>();
+            var cells = new Dictionary<(Vector3I Cell, StatedRange? Range, byte Casting), List<int>>();
             foreach (int index in batched)
             {
                 Vector3 at = block.Instances[index].Origin;
                 var cell = (new Vector3I(Mathf.FloorToInt(at.X / BatchCellMetres),
                     Mathf.FloorToInt(at.Y / BatchCellMetres),
                     Mathf.FloorToInt(at.Z / BatchCellMetres)),
-                    index < block.Ranges.Count ? block.Ranges[index] : null);
+                    index < block.Ranges.Count ? block.Ranges[index] : null,
+                    index < block.InstanceCasting.Count ? block.InstanceCasting[index]
+                        : Refii.Models.Engine_ClassicShadows.CastsDefault);
                 if (!cells.TryGetValue(cell, out List<int>? indices))
                 {
                     cells[cell] = indices = new List<int>();
@@ -924,7 +931,7 @@ public static class Engine_LevelProps
             }
 
             var distinctCells = new HashSet<Vector3I>();
-            foreach ((Vector3I cellOnly, StatedRange? _) in cells.Keys)
+            foreach ((Vector3I cellOnly, StatedRange? _, byte _) in cells.Keys)
             {
                 distinctCells.Add(cellOnly);
             }
@@ -932,7 +939,7 @@ public static class Engine_LevelProps
             stats.RangeSplitBatches += cells.Count - distinctCells.Count;
             MergeSparseCells(block, cells, stats);
 
-            foreach (KeyValuePair<(Vector3I Cell, StatedRange? Range), List<int>> celled in cells)
+            foreach (KeyValuePair<(Vector3I Cell, StatedRange? Range, byte Casting), List<int>> celled in cells)
             foreach ((PropRole role, string rolePath) in block.Roles(celled.Key.Range))
             {
                 List<int> spatialBatch = celled.Value;
@@ -1038,7 +1045,7 @@ public static class Engine_LevelProps
                 string label = role == PropRole.Main ? block.Label : $"{block.Label} {role}";
                 var node = new MultiMeshInstance3D
                 {
-                    Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
+                    Layers = block.LayersFor(role),
                     Name = UniqueName(container, cells.Count == 1
                         ? label
                         : $"{label} [{at.X} {at.Y} {at.Z}]"),
@@ -1053,6 +1060,7 @@ public static class Engine_LevelProps
 
                 // The placements' spread about the batch's centre: Godot measures the range there.
                 block.Configure(node, role, celled.Key.Range, bounds.Size.Length() * 0.5f);
+                block.MarkCasting(node, role, celled.Key.Casting, celled.Key.Range);
                 node.SetMeta(Engine_PropStreamer.ModelPathMeta, rolePath);
 
                 // THE BATCHED SUBSET AGAIN, for the same reason the probe colours use it: the
@@ -1904,6 +1912,47 @@ public static class Engine_LevelProps
         public List<uint> InstanceBakeColours { get; } = new();
 
         /// <summary>
+        /// Which sun cascades each instance casts into under classic (Engine_ClassicShadows.Casts*);
+        /// parallel to <see cref="Instances"/>. The guest's defaults where the source states none.
+        /// </summary>
+        public List<byte> InstanceCasting { get; } = new();
+
+        /// <summary>
+        /// The layers a node of this block takes for a role: the main view's and the mirrors'.
+        /// Under classic a tree's ShadowModel is drawn by no camera in this world; it only feeds
+        /// its caster in the cascades' own scene (Engine_ClassicCasters).
+        /// </summary>
+        public uint LayersFor(PropRole role) =>
+            Refii.Models.Engine_ClassicMaterial.Active && ModelClass == PropModelClass.Tree &&
+            role == PropRole.Shadow
+                ? 0u
+                : Refii.Level.Engine_ReflectionLayer.ReflectedLayers;
+
+        /// <summary>
+        /// Marks a node with how it casts under classic, for its caster once the mesh is in. A
+        /// tree casts through its ShadowModel alone, within S (`sub_822DAB20` draws result[156]
+        /// at LOD 0 in the shadow pass, nothing when there is none); anything else through its
+        /// main model, cut hard at D (`sub_8221E5F0`, twin+292).
+        /// </summary>
+        public void MarkCasting(Node node, PropRole role, byte casting, StatedRange? range)
+        {
+            if (!Refii.Models.Engine_ClassicMaterial.Active)
+            {
+                return;
+            }
+
+            bool tree = ModelClass == PropModelClass.Tree;
+            bool caster = tree ? role == PropRole.Shadow : role == PropRole.Main;
+            float reach = range is { } stated ? (tree ? stated.Shadow : stated.Draw) : 0f;
+            Refii.Models.Engine_ClassicCasters.Mark(node, caster ? casting : (byte)0, reach);
+        }
+
+        /// <summary>The casting bits of instance <paramref name="index"/>.</summary>
+        public byte CastingAt(int index) => index < InstanceCasting.Count
+            ? InstanceCasting[index]
+            : Refii.Models.Engine_ClassicShadows.CastsDefault;
+
+        /// <summary>
         /// Records one instance, refusing any transform that is not finite.
         /// </summary>
         /// <remarks>
@@ -1921,7 +1970,8 @@ public static class Engine_LevelProps
         /// </remarks>
         public void AddInstance(
             Transform3D transform, uint hash = 0, ulong bakeKey = 0, uint bakeColour = 0,
-            StatedRange? range = null)
+            StatedRange? range = null,
+            byte casting = Refii.Models.Engine_ClassicShadows.CastsDefault)
         {
             if (!transform.Origin.IsFinite() ||
                 transform.Origin.Length() > MaxInstanceReach ||
@@ -1938,6 +1988,7 @@ public static class Engine_LevelProps
             InstanceBakeKeys.Add(bakeKey);
             InstanceBakeColours.Add(bakeColour);
             Ranges.Add(range);
+            InstanceCasting.Add(casting);
         }
 
         /// <summary>
@@ -1994,7 +2045,11 @@ public static class Engine_LevelProps
             {
                 if (role == PropRole.Shadow)
                 {
-                    node.CastShadow = GeometryInstance3D.ShadowCastingSetting.ShadowsOnly;
+                    // Under classic the cascade cameras DRAW it (its layers are theirs alone);
+                    // ShadowsOnly would hide it from every camera.
+                    node.CastShadow = Refii.Models.Engine_ClassicMaterial.Active
+                        ? GeometryInstance3D.ShadowCastingSetting.Off
+                        : GeometryInstance3D.ShadowCastingSetting.ShadowsOnly;
                 }
                 else if (ShadowModelPath.Length != 0 || Engine_PropDrawRange.TreeShadowStated)
                 {
@@ -2072,7 +2127,8 @@ public static class Engine_LevelProps
                 block.ShadowModelPath = Engine_PropModelIndex.Resolve(d.ShadowModelHash, Array.Empty<string>())
                     ?? string.Empty;
             }
-            if (d.LodModelHash == 0)
+            // Under classic the impostor follows the full model, as the title's does: no stand-in.
+            if (d.LodModelHash == 0 && !Refii.Models.Engine_ClassicBillboards.Available)
             {
                 foreach (PropBlockBuild other in blocks.Values)
                 {
@@ -2192,7 +2248,7 @@ public static class Engine_LevelProps
                 // map (the Bowerstone structures), 62 in the 48-byte ambient map. No composed
                 // model-hash key exists for this population; the file states the join directly.
                 build.AddInstance(transform, bakeKey: instance.Hash,
-                    range: StatedRange.FromStatic(instance.Values));
+                    range: StatedRange.FromStatic(instance.Values), casting: instance.Casting);
                 emitted++;
             }
 
@@ -2280,7 +2336,8 @@ public static class Engine_LevelProps
                     BuildFoliageTransform(instance.Values, instance.Rotation);
                 build.AddInstance(transform, bakeColour:
                     authored is not null && i < authored.Length ? authored[i] : 0,
-                    range: StatedRange.FromFoliage(block.DrawDistance, block.FadeFraction));
+                    range: StatedRange.FromFoliage(block.DrawDistance, block.FadeFraction),
+                    casting: block.Casting);
                 transformKeys.Add(TransformKey(transform, modelPath));
             }
         }

@@ -143,6 +143,10 @@ public static class Engine_ClassicMaterial
     private static readonly StringName PixelTokensMeta = "xenos_pixel_tokens";
     private static readonly StringName VertexTokensMeta = "xenos_vertex_tokens";
     private static readonly StringName RenderModeMeta = "xenos_render_mode";
+
+    /// <summary>A classic material's composed render mode (its blend, cull and depth states), or empty.</summary>
+    public static string RenderModeOf(ShaderMaterial material) =>
+        material.HasMeta(RenderModeMeta) ? material.GetMeta(RenderModeMeta).AsString() : string.Empty;
     private static readonly StringName FamilyMeta = "xenos_family";
     /// <summary>The bank family a classic material was built for (TREEMATERIAL, ...).</summary>
     public static StringName FamilyMetaName => FamilyMeta;
@@ -176,6 +180,10 @@ public static class Engine_ClassicMaterial
     /// </summary>
     private const string TreeDefines =
         "instance uniform vec4 xr_tree_ambient = vec4(0.0);\n" +
+        "instance uniform vec4 xr_tree_stated_x = vec4(0.0);\n" +
+        "instance uniform vec4 xr_tree_stated_y = vec4(0.0);\n" +
+        "#define XR_TREE_STATED_X xr_tree_stated_x\n" +
+        "#define XR_TREE_STATED_Y xr_tree_stated_y\n" +
         "#define XR_TREE_PRT_ROW0(row, cluster) (((cluster) != 0 || xr_tree_ambient.w < 0.5) ? (row) : " +
         "vec4(xr_tree_ambient.w > 1.5 ? COLOR.rgb * xr_tree_ambient.xyz : xr_tree_ambient.xyz, 0.0))\n" +
         "instance uniform vec4 xr_tree_fade_in = vec4(0.0);\n" +
@@ -528,7 +536,8 @@ public static class Engine_ClassicMaterial
     /// 2 radiance transfer) — with the instance's lightmap bound. The caller sets it as the
     /// instance's surface override; the shared material keeps the mesh's own choice.
     /// </summary>
-    public static ShaderMaterial? WithAmbient(ShaderMaterial classic, int ambient, Texture2D? lightmap)
+    /// <remarks><paramref name="wait"/>: finish a stage still compiling here rather than answer null (load-time callers with no retry).</remarks>
+    public static ShaderMaterial? WithAmbient(ShaderMaterial classic, int ambient, Texture2D? lightmap, bool wait = false)
     {
         if (!classic.HasMeta(PixelTokensMeta))
         {
@@ -545,7 +554,21 @@ public static class Engine_ClassicMaterial
                 return cached;
             }
         }
-        ShaderMaterial? built = BuildWithAmbient(classic, ambient, lightmap);
+        bool earlier = AmbientPending;
+        AmbientPending = false;
+        ShaderMaterial? built = BuildWithAmbient(classic, ambient, lightmap, wait);
+        if (AmbientPending)
+        {
+            // Some stage waits for its compile (the glass pass too): nothing is kept half built.
+            return null;
+        }
+        AmbientPending = earlier;
+        // A region's build runs on a worker before its hold begins: that is still the load.
+        if (built is not null && !Engine_ClassicLoad.Holding && Engine_ClassicLoad.Released &&
+            OS.GetThreadCallerId() == OS.GetMainThreadId() && _lateAmbientsLogged++ < 24)
+        {
+            GD.Print($"[classic] ambient variant built after the load: {classic.GetMeta(FamilyMeta, "?").AsString()} AMB{ambient}");
+        }
         if (built is not null)
         {
             lock (AmbientVariants)
@@ -557,8 +580,99 @@ public static class Engine_ClassicMaterial
     }
 
     private static readonly Dictionary<(ulong, int, ulong), ShaderMaterial> AmbientVariants = new();
+    private static int _lateAmbientsLogged;
 
-    private static ShaderMaterial? BuildWithAmbient(ShaderMaterial classic, int ambient, Texture2D? lightmap)
+    /// <summary>
+    /// The AMB1 pair for a vertex-baked placement's surface whose block starts
+    /// <paramref name="surfaceStart"/> texels into the placement's (Engine_ClassicVertexBakes):
+    /// the bake read from the shared texture, so every placement of the model shares this
+    /// material and its mesh. Null while its shader compiles (<see cref="AmbientPending"/>).
+    /// </summary>
+    public static ShaderMaterial? WithVertexBake(ShaderMaterial classic, int surfaceStart)
+    {
+        if (!classic.HasMeta(PixelTokensMeta))
+        {
+            return null;
+        }
+        var key = (classic.GetInstanceId(), surfaceStart);
+        lock (BakeVariants)
+        {
+            if (BakeVariants.TryGetValue(key, out ShaderMaterial? cached) && GodotObject.IsInstanceValid(cached))
+            {
+                return cached;
+            }
+        }
+        bool earlier = AmbientPending;
+        AmbientPending = false;
+        ShaderMaterial? built = BuildWithAmbient(classic, 1, null, false, surfaceStart);
+        if (AmbientPending)
+        {
+            return null;
+        }
+        AmbientPending = earlier;
+        if (built is not null)
+        {
+            lock (BakeVariants)
+            {
+                BakeVariants[key] = built;
+            }
+        }
+        return built;
+    }
+
+    private static readonly Dictionary<(ulong, int), ShaderMaterial> BakeVariants = new();
+
+    /// <summary>
+    /// The AMB2 transfer pair every placement of <paramref name="classic"/> shares: its
+    /// g_PRTConstants read from the placement's row (Engine_ClassicPrtRows), named by the
+    /// node's `xr_prt_row`. Null while its shader compiles (<see cref="AmbientPending"/>).
+    /// </summary>
+    public static ShaderMaterial? WithPrtRows(ShaderMaterial classic)
+    {
+        if (!classic.HasMeta(PixelTokensMeta))
+        {
+            return null;
+        }
+        ulong key = classic.GetInstanceId();
+        lock (PrtVariants)
+        {
+            if (PrtVariants.TryGetValue(key, out ShaderMaterial? cached) && GodotObject.IsInstanceValid(cached))
+            {
+                return cached;
+            }
+        }
+        bool earlier = AmbientPending;
+        AmbientPending = false;
+        ShaderMaterial? built = BuildWithAmbient(classic, 2, null, false, -1, PrtRowDefine);
+        if (AmbientPending)
+        {
+            return null;
+        }
+        AmbientPending = earlier;
+        if (built is not null)
+        {
+            lock (PrtVariants)
+            {
+                PrtVariants[key] = built;
+            }
+        }
+        return built;
+    }
+
+    private static readonly Dictionary<ulong, ShaderMaterial> PrtVariants = new();
+
+    private const string PrtRowDefine = "#define XR_PRT_ROW_FETCH";
+
+    private const string VertexBakeDefine = "#define XR_VERTEX_BAKE_FETCH";
+
+    /// <summary>Where an ambient variant's build goes (Stopwatch ticks, run totals): the entry walk, the composition, the duplicate, the shader bind.</summary>
+    public static long AmbientFindTicks, AmbientComposeTicks, AmbientDuplicateTicks, AmbientBindTicks;
+
+    /// <summary>Set when an ambient variant waited for its shader to settle; the caller clears it before asking.</summary>
+    public static bool AmbientPending;
+
+    private static ShaderMaterial? BuildWithAmbient(ShaderMaterial classic, int ambient, Texture2D? lightmap, bool wait = false,
+        int bakeSurface = -1, string extraDefine = "")
     {
         string family = classic.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
         if (family == "REPEATEDMATERIAL")
@@ -567,25 +681,61 @@ public static class Engine_ClassicMaterial
         }
         string pixel = Retoken(classic.GetMeta(PixelTokensMeta).AsString(), ambient, out List<string> pixelTokens);
         string vertex = Retoken(classic.GetMeta(VertexTokensMeta).AsString(), ambient, out List<string> vertexTokens);
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         string pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
         string vertexEntry = Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
         if (pixelEntry.Length == 0 || vertexEntry.Length == 0)
         {
             return null;
         }
+        long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
         // The source's own composition defines go with it (a terrain layer's premultiply,
         // quadrant gate and vertex kill).
+        string defines = classic.GetMeta(DefinesMeta, string.Empty).AsString();
+        if (bakeSurface >= 0)
+        {
+            extraDefine = VertexBakeDefine;
+        }
+        if (extraDefine.Length != 0)
+        {
+            defines = defines.Length == 0 ? extraDefine : defines + "\n" + extraDefine;
+        }
         Shader? shader = Engine_ClassicShaders.Compose(
-            vertexEntry, pixelEntry, classic.GetMeta(RenderModeMeta).AsString(), 0,
-            classic.GetMeta(DefinesMeta, string.Empty).AsString());
+            vertexEntry, pixelEntry, classic.GetMeta(RenderModeMeta).AsString(), 0, defines);
         if (shader is null)
         {
             return null;
         }
+        if (wait)
+        {
+            Engine_ClassicShaders.Settle(shader);
+        }
+        else if (!Engine_ClassicShaders.Settled(shader))
+        {
+            // Bound now it would compile on the main thread; asked again once the pool has compiled it.
+            AmbientPending = true;
+            return null;
+        }
+        long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
         var result = DuplicateOwn(classic);
+        long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
         result.Shader = shader;
+        long t4 = System.Diagnostics.Stopwatch.GetTimestamp();
+        AmbientFindTicks += t1 - t0;
+        AmbientComposeTicks += t2 - t1;
+        AmbientDuplicateTicks += t3 - t2;
+        AmbientBindTicks += t4 - t3;
         result.SetMeta(PixelTokensMeta, pixel);
         result.SetMeta(VertexTokensMeta, vertex);
+        if (extraDefine.Length != 0)
+        {
+            // The light groups derive from this one: they compose with its defines.
+            result.SetMeta(DefinesMeta, defines);
+        }
+        if (bakeSurface >= 0)
+        {
+            result.SetShaderParameter(Engine_ClassicVertexBakes.SurfaceUniform, bakeSurface);
+        }
         if (lightmap is not null)
         {
             result.SetShaderParameter("ps_g_TextureLightmapSampler", lightmap);
@@ -594,7 +744,7 @@ public static class Engine_ClassicMaterial
         result.NextPass = null;
         result.RemoveMeta(TranslucentPassMeta);
         if (classic.HasMeta(TranslucentPassMeta) && classic.GetMeta(TranslucentPassMeta).Obj is ShaderMaterial glass &&
-            BuildWithAmbient(glass, ambient, lightmap) is { } litGlass)
+            BuildWithAmbient(glass, ambient, lightmap, wait, bakeSurface, bakeSurface >= 0 ? "" : extraDefine) is { } litGlass)
         {
             result.NextPass = litGlass;
             result.SetMeta(TranslucentPassMeta, litGlass);
@@ -620,6 +770,73 @@ public static class Engine_ClassicMaterial
     public static ShaderMaterial? ForLightGroup(
         ShaderMaterial source, int lightCount, bool singleLocal, int pass, Engine_ClassicMist.Volume? mist, int tail = 0)
     {
+        long from = System.Diagnostics.Stopwatch.GetTimestamp();
+        ShaderMaterial? built = null;
+        bool fresh = false;
+        try
+        {
+            built = BuildLightGroup(source, lightCount, singleLocal, pass, mist, tail, out fresh);
+            return built;
+        }
+        finally
+        {
+            long spent = System.Diagnostics.Stopwatch.GetTimestamp() - from;
+            if (fresh)
+            {
+                VariantBuildTicks += spent;
+                ++VariantsBuilt;
+                if (!Engine_ClassicLoad.Holding && Engine_ClassicLoad.Released && _lateGroupsLogged++ < 24)
+                {
+                    GD.Print($"[classic] light group built after the load: {source.GetMeta(FamilyMeta, "?").AsString()} " +
+                        $"count {lightCount} single {singleLocal} pass {pass} mist {mist is not null} tail {tail} " +
+                        $"({spent * 1000.0 / System.Diagnostics.Stopwatch.Frequency:0.0} ms)");
+                }
+            }
+            else
+            {
+                VariantLookupTicks += spent;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether every classic surface of <paramref name="mesh"/> stands on a compiled shader
+    /// (Engine_ClassicShaders.Settled). Before that, the first bind of one compiles it on the
+    /// main thread: a streamed prop's light step took 15-50 ms.
+    /// </summary>
+    public static bool MeshSettled(Mesh? mesh)
+    {
+        if (!Active || mesh is null)
+        {
+            return true;
+        }
+        for (int i = 0; i < mesh.GetSurfaceCount(); i++)
+        {
+            if (mesh.SurfaceGetMaterial(i) is ShaderMaterial { Shader: { } shader } && !Engine_ClassicShaders.Settled(shader))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int _lateGroupsLogged;
+
+    /// <summary>The variant path's cost in Stopwatch ticks, taken and reset by Engine_ClassicLitInstances each frame.</summary>
+    public static long VariantBuildTicks, VariantLookupTicks, VariantComposeTicks;
+
+    /// <summary>A frame's build time past which a new variant waits (2 ms).</summary>
+    private static readonly long VariantBudgetTicks = System.Diagnostics.Stopwatch.Frequency / 500;
+
+    /// <summary>Set when a build waited for a later frame; the caller clears it before asking.</summary>
+    public static bool Deferred;
+    public static int VariantsBuilt;
+
+    private static ShaderMaterial? BuildLightGroup(
+        ShaderMaterial source, int lightCount, bool singleLocal, int pass, Engine_ClassicMist.Volume? mist, int tail,
+        out bool fresh)
+    {
+        fresh = false;
         int blt = singleLocal ? 2 : BltByCount[Math.Clamp(lightCount, 0, 7)];
         string key = $"{blt}:{pass}:{mist?.Viewport?.GetInstanceId() ?? 0UL}:{tail}";
         Godot.Collections.Dictionary? variants = source.HasMeta(GroupVariantsMeta)
@@ -667,6 +884,18 @@ public static class Engine_ClassicMaterial
         {
             return null;
         }
+        // NEW VARIANTS ARE SPREAD OVER FRAMES. Binding a newly composed shader compiles it
+        // on the main thread unless the pool already has (tens of ms for the title's larger stages), and a district coming
+        // into view states a dozen new light-group shapes at once: one frame took 700 ms. Past
+        // the frame's budget a build waits (`Deferred`), and the instance keeps its base until
+        // its next assignment; the first build of a frame always runs. Under the load hold
+        // nothing is on screen and there is no budget (Engine_ClassicLoad).
+        if (VariantBuildTicks > VariantBudgetTicks && !Engine_ClassicLoad.Holding)
+        {
+            Deferred = true;
+            return null;
+        }
+        fresh = true;
         string renderMode = source.GetMeta(RenderModeMeta).AsString();
         if (pass > 0)
         {
@@ -678,10 +907,19 @@ public static class Engine_ClassicMaterial
                 renderMode += ", blend_add";
             }
         }
+        long composeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         Shader? shader = Engine_ClassicShaders.Compose(
             vertexEntry, pixelEntry, renderMode, pass, source.GetMeta(DefinesMeta, string.Empty).AsString());
+        VariantComposeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - composeFrom;
         if (shader is null)
         {
+            return null;
+        }
+        if (!Engine_ClassicShaders.Settled(shader))
+        {
+            // Bound now it would compile on the main thread: the instance keeps its base
+            // and asks again at its next assignment.
+            Deferred = true;
             return null;
         }
         var result = DuplicateOwn(source);
@@ -730,6 +968,104 @@ public static class Engine_ClassicMaterial
     {
         var copy = (ShaderMaterial)source.Duplicate();
         copy.RemoveMeta(GroupVariantsMeta);
+        return copy;
+    }
+
+    /// <summary>The define that draws a translated stage at its texture coordinate instead of its place.</summary>
+    private static readonly StringName TwoSidedMeta = "xenos_two_sided";
+
+    /// <summary>
+    /// A classic material drawn with both faces, for a caster the guest draws into its cascades
+    /// with culling off (twin+0x110 from DisableBackFaceCullingForShadows, `sub_8221EE60`): the
+    /// same stages and parameters, `cull_disabled`. Held by the source; the source itself when it
+    /// is not classic or already draws both faces.
+    /// </summary>
+    public static Material TwoSidedCopy(Material source)
+    {
+        if (source is not ShaderMaterial shader || !shader.HasMeta(RenderModeMeta) || !shader.HasMeta(PixelTokensMeta))
+        {
+            return source;
+        }
+        if (shader.HasMeta(TwoSidedMeta) && shader.GetMeta(TwoSidedMeta).Obj is ShaderMaterial held && GodotObject.IsInstanceValid(held))
+        {
+            return held;
+        }
+        string renderMode = shader.GetMeta(RenderModeMeta).AsString();
+        if (renderMode.Contains("cull_disabled"))
+        {
+            return source;
+        }
+        string family = shader.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
+        string pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family,
+            shader.GetMeta(PixelTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        string vertexEntry = shader.HasMeta(VertexEntryMeta)
+            ? shader.GetMeta(VertexEntryMeta).AsString()
+            : Engine_ClassicShaders.FindEntry("VSHADER", family,
+                shader.GetMeta(VertexTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        Shader? composed = pixelEntry.Length == 0 || vertexEntry.Length == 0 ? null : Engine_ClassicShaders.Compose(
+            vertexEntry, pixelEntry, renderMode.Replace("cull_back", "cull_disabled").Replace("cull_front", "cull_disabled"),
+            0, shader.GetMeta(DefinesMeta, string.Empty).AsString());
+        if (composed is null)
+        {
+            return source;
+        }
+        ShaderMaterial copy = DuplicateOwn(shader);
+        copy.Shader = composed;
+        copy.NextPass = null;
+        shader.SetMeta(TwoSidedMeta, copy);
+        return copy;
+    }
+
+    /// <summary>A texture-space draw: no depth test, both faces, opaque (Compose then writes no ALPHA).</summary>
+    public const string UvSpaceRenderMode =
+        "unshaded, depth_draw_opaque, depth_test_disabled, cull_disabled, shadows_disabled, fog_disabled";
+
+    /// <summary>A later light group's texture-space pass: added on top (SrcBlend = DestBlend = ONE).</summary>
+    public const string UvSpaceAddRenderMode =
+        "unshaded, blend_add, depth_draw_never, depth_test_disabled, cull_disabled, shadows_disabled, fog_disabled";
+
+    /// <summary>An added pass writes alpha 1, so Godot's additive blend takes its colour whole.</summary>
+    public const string UvSpaceAddDefines = "#define XR_WRITE_ALPHA(a) ALPHA = 1.0";
+
+    public const string UvSpaceDefine = "#define XR_POSITION_OUT(p) vec4(UV.x * 2.0 - 1.0, 1.0 - UV.y * 2.0, 0.5, 1.0)";
+
+    /// <summary>
+    /// A classic material drawn into its own texture space: the fur's prelit skin pass, where the
+    /// title draws the furred primitive's cloned skin material with VS b0 g_ProjectToTexture
+    /// (`sub_82268C70`; uv -> clip (2u - 1, 1 - 2v), no depth test). The same stages with the
+    /// position replaced (the standard family's skinned variants project the same way; Godot's
+    /// skinning stands in for theirs), and the screen-space shadow mask white, as a draw outside
+    /// the main view cannot read the main view's. Null when the source is not classic.
+    /// </summary>
+    public static ShaderMaterial? UvSpaceCopy(ShaderMaterial source, int pass = 0)
+    {
+        if (!source.HasMeta(PixelTokensMeta) || !source.HasMeta(VertexTokensMeta))
+        {
+            return null;
+        }
+        string family = source.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
+        string[] pixelTokens = source.GetMeta(PixelTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string[] vertexTokens = source.GetMeta(VertexTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
+        string vertexEntry = source.HasMeta(VertexEntryMeta)
+            ? source.GetMeta(VertexEntryMeta).AsString()
+            : Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
+        if (pixelEntry.Length == 0 || vertexEntry.Length == 0)
+        {
+            return null;
+        }
+        string defines = source.GetMeta(DefinesMeta, string.Empty).AsString() + "\n" + UvSpaceDefine +
+            (pass > 0 ? "\n" + UvSpaceAddDefines : string.Empty);
+        Shader? shader = Engine_ClassicShaders.Compose(vertexEntry, pixelEntry,
+            pass > 0 ? UvSpaceAddRenderMode : UvSpaceRenderMode, pass, defines);
+        if (shader is null)
+        {
+            return null;
+        }
+        ShaderMaterial copy = DuplicateOwn(source);
+        copy.Shader = shader;
+        copy.NextPass = null;
+        copy.SetShaderParameter("ps_g_ScreenShadowMap", Engine_ClassicScreenShadow.White);
         return copy;
     }
 
@@ -874,6 +1210,9 @@ public static class Engine_ClassicMaterial
 
     /// <summary>`dword_833216F4`: the shader's light capacity for a group's light count.</summary>
     private static readonly int[] BltByCount = { 1, 1, 2, 4, 4, 7, 7, 7 };
+
+    /// <summary>The BLT permutation a light group of <paramref name="count"/> lights draws with.</summary>
+    public static int BltFor(int count, bool singleLocal) => singleLocal ? 2 : BltByCount[Math.Clamp(count, 0, 7)];
 
     private static string RetokenBlt(string tokens, int blt, bool mist, out List<string> list)
     {

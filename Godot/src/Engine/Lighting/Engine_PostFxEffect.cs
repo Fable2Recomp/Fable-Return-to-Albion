@@ -572,6 +572,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void FreeTargets()
     {
+        FreeClassicTargets();
         FreeSet(ref _histogramSet);
         FreeSet(ref _brightcutSet);
         for (int i = 0; i < 2; i++)
@@ -691,6 +692,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
+        FreeClassicPost();
         FreeTargets();
         FreeSet(ref _reduceSet);
         Free(ref _exposureRd);
@@ -793,6 +795,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _maskWanted = _satMask is not null && Refii.Entities.Engine_EntityAppearance.MaskedCount > 0 &&
             (MathF.Abs(_derived.SaturationMasked) > 0.01f || MathF.Abs(_derived.BrightnessMasked) > 0.01f);
         UpdateParams(dt, sun.SunDirection, camBasis, camProjection, bloomOn, raysOn, dofOn);
+        _frameProjection = camProjection;
+        _frameDof = dofOn;
         Reduce();
         _rd.BufferClear(_histogramBuffer, 0, HistogramBytes);
 
@@ -858,7 +862,20 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // buffer feeds the bright pass. SunLayer is the layer's content with the guest's
             // own per-pixel Z test, so a hill in front of the sun kills the rays exactly as
             // far as it covers.
-            if (raysOn && sunOnScreen && sun.Disc.Active && sun.Disc.Texture.IsValid)
+            // Under classic the layer holds what the title draws there, the SUN BEAMS (PS 0121,
+            // `sub_821CB750` 0x821CB958), and the glow layer takes the moon bloom and the sun disc
+            // (Engine_ClassicSkyLayers).
+            bool classicSky = Refii.Models.Engine_ClassicMaterial.Active && Engine_ClassicSkyLayers.Snapshot(_skyFrame);
+            if (classicSky)
+            {
+                Clear(_rays[0]);
+                if (raysOn && ClassicBeams(depth, camBasis, camOrigin, projection, out Vector2 beamsUv))
+                {
+                    Radial(0, beamsUv);
+                    Radial(1, beamsUv);
+                }
+            }
+            else if (raysOn && sunOnScreen && sun.Disc.Active && sun.Disc.Texture.IsValid)
             {
                 SunLayer(depth, sunUv, sun.Disc, projection);
                 Radial(0, sunUv);
@@ -876,12 +893,22 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 Clear(_occl);
             }
+            if (Refii.Models.Engine_ClassicMaterial.Active)
+            {
+                ClassicDecals(depth, camBasis, camOrigin, projection);
+            }
+            if (classicSky)
+            {
+                // Drawn even with bloom off: the sun disc's and moon bloom's pixels are the
+                // glares' occlusion queries.
+                ClassicGlow(depth, camBasis, camOrigin, projection);
+            }
 
             if (bloomOn)
             {
                 Brightcut();
-                Gauss(_gaussBloomHSet, new Vector2I(1, 0), _bloomWeightsH);
-                Gauss(_gaussBloomVSet, new Vector2I(0, 1), _bloomWeightsV);
+                Gauss(_gaussBloomHSet, _bloom[0], _bloom[1], new Vector2I(1, 0), _bloomWeightsH);
+                Gauss(_gaussBloomVSet, _bloom[1], _bloom[0], new Vector2I(0, 1), _bloomWeightsV);
             }
             else
             {
@@ -890,8 +917,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
             if (dofOn)
             {
-                Gauss(_gaussDofHSet, new Vector2I(1, 0), _dofWeightsH);
-                Gauss(_gaussDofVSet, new Vector2I(0, 1), _dofWeightsV);
+                Gauss(_gaussDofHSet, _quarter, _dof[0], new Vector2I(1, 0), _dofWeightsH);
+                Gauss(_gaussDofVSet, _dof[0], _dof[1], new Vector2I(0, 1), _dofWeightsV);
             }
 
             if (_maskWanted && !_satMask!.Build(depth))
@@ -1366,6 +1393,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Downscale4(Rid colour, Vector2I size)
     {
+        if (ClassicPost)
+        {
+            ClassicDownscale4(colour);
+            return;
+        }
         RenderingDevice rd = _rd!;
         if (!_downscale4Set.Matches(rd, colour, default))
         {
@@ -1557,6 +1589,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Radial(int src, Vector2 centre)
     {
+        if (ClassicPost)
+        {
+            ClassicRadial(src, centre);
+            return;
+        }
         Dispatch(
             _radialPipeline,
             _radialSets[src],
@@ -1567,6 +1604,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Brightcut()
     {
+        if (ClassicPost)
+        {
+            ClassicBrightcut();
+            return;
+        }
         Dispatch(
             _brightcutPipeline,
             _brightcutSet,
@@ -1575,8 +1617,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             (_quarterSize.Y + 7) / 8);
     }
 
-    private void Gauss(Rid set, Vector2I direction, float[] weights)
+    private void Gauss(Rid set, Rid src, Rid dst, Vector2I direction, float[] weights)
     {
+        if (ClassicPost)
+        {
+            ClassicGauss(src, dst, direction, weights);
+            return;
+        }
         Dispatch(
             _gaussPipeline,
             set,
@@ -1587,6 +1634,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Composite(Rid colour, Rid depth, Vector2I size, Projection inverse)
     {
+        if (ClassicPost)
+        {
+            ClassicComposite(colour, depth, size);
+            return;
+        }
         RenderingDevice rd = _rd!;
         if (!_compositeSet.Matches(rd, colour, depth))
         {
@@ -1612,6 +1664,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Histogram()
     {
+        if (ClassicPost)
+        {
+            ClassicHistogram();
+            return;
+        }
         Dispatch(
             _histogramPipeline,
             _histogramSet,

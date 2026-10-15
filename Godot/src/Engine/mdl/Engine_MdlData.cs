@@ -116,6 +116,13 @@ public sealed class MdlMesh
 {
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// A fur material record (type 2), as 17 values in file order, or null: +0 vec3, +12 f32,
+    /// +16 vec3, +28 discarded, +32 fur length, +36 local occlusion, +40 vec3, +52 vec3, +64 strand
+    /// alpha (`sub_82B29168`). Such a mesh has no name and no other material.
+    /// </summary>
+    public float[]? Fur { get; set; }
+
     public List<MdlMaterial> Materials { get; } = new();
 }
 
@@ -310,7 +317,8 @@ public sealed class MdlInfo
 
     public List<MdlClothBlock> ClothBlocks { get; } = new();
 
-    public List<MdlMorphTarget> MorphTargets { get; } = new();
+    /// <summary>The skinned primitives that carry fur, one block each.</summary>
+    public List<MdlFurBlock> FurBlocks { get; } = new();
 }
 
 /// <summary>
@@ -422,14 +430,24 @@ public sealed class MdlClothBlock
     public uint BoneVertexCount { get; set; }
 }
 
-public sealed class MdlMorphTarget
+/// <summary>
+/// A skinned primitive's fur block, the record's last field (`sub_82B26460` 0x82B27474 ->
+/// `sub_82B8FD28`): the primitive's own material, the FUR material (the nameless type-2 record in
+/// the material list, which no primitive names as its material), and one 20-byte record
+/// {u32, 4 x f32} per vertex of the primitive. The shells extrude this primitive.
+/// </summary>
+public sealed class MdlFurBlock
 {
+    /// <summary>The primitive (skinned record) it belongs to.</summary>
     public uint RecordIndex { get; set; }
 
-    public uint Header0 { get; set; }
+    /// <summary>furdata+0: the primitive's skin material index.</summary>
+    public uint BaseMaterial { get; set; }
 
-    public uint Header1 { get; set; }
+    /// <summary>furdata+0x10: the fur material index.</summary>
+    public uint FurMaterial { get; set; }
 
+    /// <summary>furdata+0x18: per-vertex records, the primitive's vertex count.</summary>
     public uint Count { get; set; }
 
     public int DataOffset { get; set; }

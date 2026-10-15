@@ -789,6 +789,32 @@ public static class Engine_GdbPlacements
         CollectModelFileFieldsAndParents(view, modelRecord, hashes);
     }
 
+    private static readonly uint UseDisplacementHash = Refii.Core.Engine_GameHash.Fnv1("UseDisplacement");
+
+    /// <summary>
+    /// Whether a placement's static-mesh component states UseDisplacement (inherited): the guest
+    /// then makes its mesh a displacement mesh (`sub_822370A8` 0x8223722C ORs 0x800), drawn only
+    /// into the displacement target. Within <paramref name="view"/>.
+    /// </summary>
+    public static bool UsesDisplacement(GdbView view, uint recordHash)
+    {
+        if (!view.TryLookup(recordHash, out int record) ||
+            !view.TryFindFieldOwner(record, GdbHash.StaticMeshComponent, 6, out GdbField component, out _) ||
+            !view.TryLookup(component.Raw, out int componentRecord))
+        {
+            return false;
+        }
+        bool? stated = null;
+        VisitRecordAndParents(view, componentRecord, r =>
+        {
+            if (stated is null && view.TryFindLocalRaw(r, UseDisplacementHash, (int)GdbFieldType.Bool, out uint raw, out _))
+            {
+                stated = raw != 0;
+            }
+        });
+        return stated == true;
+    }
+
     private static void CollectAnimatedMeshModelPathHashes(
         GdbView view, int record, List<uint> hashes)
     {

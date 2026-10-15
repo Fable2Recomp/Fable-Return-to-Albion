@@ -122,6 +122,15 @@ public static class Engine_LevelFx
         Dictionary<uint, Node3D>? attachTo = null,
         Refii.Lighting.LightProbeField? probes = null)
     {
+        // UNDER CLASSIC THE GUEST DRAWS THEM. A placed effect is simulated by the guest like any
+        // other, and Engine_ClassicParticles draws every live group with the title's own shaders;
+        // a modern copy beside it drew each effect twice. In the editor no guest runs, so there
+        // is nothing to draw them but this.
+        if (Refii.Models.Engine_ClassicMaterial.Active && Refii.Host.HostBridge.IsGuestUp)
+        {
+            return 0;
+        }
+
         FxBank? bank = FableFx.SharedBank();
         if (bank is null)
         {

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Godot;
 
@@ -29,6 +30,10 @@ public static class Engine_ClassicTransfer
         public ShaderMaterial?[] Overrides = Array.Empty<ShaderMaterial?>();
         /// <summary>The surface material each override was built from: a new one (the hero's composites) rebuilds it.</summary>
         public ulong[] Sources = Array.Empty<ulong>();
+        /// <summary>The xr_tree_ambient this node was given (trees only).</summary>
+        public Vector4 Ambient;
+        /// <summary>A whole-model transfer's row of the shared constants (Engine_ClassicPrtRows); 0 = none.</summary>
+        public int PrtRow;
     }
 
     private static readonly ConditionalWeakTable<MeshInstance3D, State> States = new();
@@ -130,8 +135,22 @@ public static class Engine_ClassicTransfer
             if ((fresh || rebuilt) && mesh.SurfaceGetMaterial(i) is ShaderMaterial shared &&
                 shared.HasMeta(Engine_ClassicMaterial.ClassicMeta))
             {
+                Engine_ClassicMaterial.AmbientPending = false;
+                // A whole model's surfaces all take the model's constants: one row for the
+                // placement and the pair every placement shares. A composite's parts each have
+                // their own, and keep a pair of their own.
+                ShaderMaterial? own2 = whole
+                    ? Engine_ClassicMaterial.WithPrtRows(shared)
+                    : Engine_ClassicMaterial.OwnWithAmbient(shared, 2);
+                if (Engine_ClassicMaterial.AmbientPending)
+                {
+                    // Its shader is still compiling: this surface is asked again (PumpPending).
+                    Engine_ClassicMaterial.AmbientPending = false;
+                    Pending.Add(node);
+                    continue;
+                }
                 state.Sources[i] = shared.GetInstanceId();
-                state.Overrides[i] = Engine_ClassicMaterial.OwnWithAmbient(shared, 2);
+                state.Overrides[i] = own2;
                 // A surface the hidden-cluster pass has collapsed stays collapsed; it takes this
                 // material back when it is shown (Engine_HiddenClusters asks SurfaceOverride).
                 if (state.Overrides[i] is not null &&
@@ -141,10 +160,28 @@ public static class Engine_ClassicTransfer
                     ++_applied;
                 }
             }
-            if (state.Overrides[i] is { } own)
+            if (state.Overrides[i] is { } own && !whole)
             {
                 Engine_ClassicMaterial.SetOnPasses(own, PrtConstants, Engine_MdlTransfer.Constants(descriptor, table, r, g, b));
             }
+        }
+        if (whole && Array.Exists(state.Overrides, o => o is not null))
+        {
+            if (state.PrtRow == 0)
+            {
+                state.PrtRow = Engine_ClassicPrtRows.Acquire();
+                int row = state.PrtRow, generation = Engine_ClassicPrtRows.Generation;
+                node.TreeExiting += () =>
+                {
+                    Engine_ClassicPrtRows.Release(row, generation);
+                    // Back in the tree it is applied afresh, with a row of its own again.
+                    state.PrtRow = 0;
+                    state.Overrides = Array.Empty<ShaderMaterial?>();
+                };
+            }
+            Engine_ClassicPrtRows.Write(state.PrtRow, Engine_MdlTransfer.Constants(wholeDescriptor!, wholeTable!, r, g, b));
+            // After the overrides: an instance parameter needs a material that declares it.
+            node.SetInstanceShaderParameter(Engine_ClassicPrtRows.RowUniform, state.PrtRow);
         }
         state.R = r;
         state.G = g;
@@ -169,6 +206,32 @@ public static class Engine_ClassicTransfer
     public static Material? SurfaceOverride(MeshInstance3D node, int surface) =>
         States.TryGetValue(node, out State? state) && surface < state.Overrides.Length ? state.Overrides[surface] : null;
 
+    /// <summary>Instances whose AMB2 pair waited for its shader's parse (Engine_ClassicShaders.Settled).</summary>
+    private static readonly HashSet<MeshInstance3D> Pending = new();
+    private static readonly List<MeshInstance3D> Retrying = new();
+
+    /// <summary>Instances whose pair waits for its shader (the load hold waits for none).</summary>
+    public static int PendingCount => Pending.Count;
+
+    /// <summary>Applies again every instance whose pair waited. Main thread, once a frame.</summary>
+    public static void PumpPending()
+    {
+        if (Pending.Count == 0)
+        {
+            return;
+        }
+        Retrying.Clear();
+        Retrying.AddRange(Pending);
+        Pending.Clear();
+        foreach (MeshInstance3D node in Retrying)
+        {
+            if (GodotObject.IsInstanceValid(node) && node.IsInsideTree())
+            {
+                Apply(node);
+            }
+        }
+    }
+
     private static readonly StringName PrtConstants = "vs_g_PRTConstants";
 
     private static readonly StringName TreeAmbientName = "xr_tree_ambient";
@@ -177,6 +240,18 @@ public static class Engine_ClassicTransfer
 
     /// <summary>Tree instances given their flat ambient so far, for the log.</summary>
     public static int TreeAmbients => _treeAmbients;
+
+    /// <summary>The xr_tree_ambient given to <paramref name="geometry"/>, if any; read without a render-thread round trip.</summary>
+    public static bool TreeAmbientOf(GeometryInstance3D geometry, out Vector4 ambient)
+    {
+        if (TreeStates.TryGetValue(geometry, out State? state) && state.Overrides.Length != 0)
+        {
+            ambient = state.Ambient;
+            return true;
+        }
+        ambient = Vector4.Zero;
+        return false;
+    }
 
     /// <summary>
     /// A tree's AMB2 cluster-mean row (VS c28, `sub_82238330` uploads `*(item+0x40)`), the same
@@ -215,7 +290,8 @@ public static class Engine_ClassicTransfer
                 TreeStates.GetOrCreateValue(geometry) is { Overrides.Length: 0 } fresh)
             {
                 float unscale = 1f / Refii.Lighting.Engine_LevelBakedLighting.AmbientScale;
-                geometry.SetInstanceShaderParameter(TreeAmbientName, new Vector4(unscale, unscale, unscale, 2f));
+                fresh.Ambient = new Vector4(unscale, unscale, unscale, 2f);
+                geometry.SetInstanceShaderParameter(TreeAmbientName, fresh.Ambient);
                 fresh.Overrides = new ShaderMaterial?[1];
                 ++_treeAmbients;
             }
@@ -240,7 +316,8 @@ public static class Engine_ClassicTransfer
         {
             row = new Vector4(r.X, g.X, b.X, 0f) * Refii.Lighting.Engine_LevelBakedLighting.ShBand0;
         }
-        geometry.SetInstanceShaderParameter(TreeAmbientName, new Vector4(row.X, row.Y, row.Z, 1f));
+        state.Ambient = new Vector4(row.X, row.Y, row.Z, 1f);
+        geometry.SetInstanceShaderParameter(TreeAmbientName, state.Ambient);
         if (state.Overrides.Length == 0)
         {
             state.Overrides = new ShaderMaterial?[1];

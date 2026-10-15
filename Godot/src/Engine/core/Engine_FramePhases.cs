@@ -78,9 +78,14 @@ public static class Engine_FramePhases
 				}
 
 				phase.LastMs = ms;
+				phase.LastFrame = _frameIndex;
 				phase.AverageMs += (ms - phase.AverageMs) * 0.05;
 				phase.PeakMs = System.Math.Max(phase.PeakMs * 0.98, ms);
 				phase.AverageAllocBytes += (alloc - phase.AverageAllocBytes) * 0.05;
+				if (_markCount < _marks.Length)
+				{
+					_marks[_markCount++] = (_name, Stopwatch.GetTimestamp());
+				}
 			}
 		}
 	}
@@ -117,7 +122,7 @@ public static class Engine_FramePhases
 	/// cannot be summed. Recording when each phase finished lets the largest gap between two
 	/// consecutive finishes bracket the unaccounted time between two named points.
 	/// </remarks>
-	private static readonly (string Name, long At)[] _marks = new (string, long)[96];
+	private static readonly (string Name, long At)[] _marks = new (string, long)[192];
 
 	private static int _markCount;
 

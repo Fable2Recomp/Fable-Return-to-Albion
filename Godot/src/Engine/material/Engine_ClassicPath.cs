@@ -39,6 +39,30 @@ public static class Engine_ClassicPath
         {
             host.AddChild(new Engine_ClassicParticles { Name = "ClassicParticles" });
         }
+        if (Refii.Level.Engine_ClassicWeather.Instance is null)
+        {
+            host.AddChild(new Refii.Level.Engine_ClassicWeather());
+        }
+        if (Engine_ClassicDisplacement.Instance is null)
+        {
+            host.AddChild(new Engine_ClassicDisplacement());
+        }
+        if (Engine_ClassicDecals.Instance is null)
+        {
+            host.AddChild(new Engine_ClassicDecals());
+        }
+        if (Engine_ClassicBillboards.Instance is null)
+        {
+            host.AddChild(new Engine_ClassicBillboards());
+        }
+        if (Engine_ClassicFur.Instance is null)
+        {
+            host.AddChild(new Engine_ClassicFur());
+        }
+        if (Engine_ClassicFxMeshes.Instance is null)
+        {
+            host.AddChild(new Engine_ClassicFxMeshes());
+        }
     }
 
     /// <summary>
@@ -70,11 +94,27 @@ public static class Engine_ClassicPath
             using (Refii.Core.Engine_FramePhases.Measure("classic.particles"))
             {
                 Engine_ClassicParticles.Instance?.Pump(camera);
+                Engine_ClassicFxMeshes.Instance?.Pump(camera);
+                Engine_ClassicDisplacement.Instance?.Pump(camera, viewport);
+                Engine_ClassicDecals.Instance?.Pump(camera);
+            }
+            Refii.Level.Engine_ClassicWeather.Instance?.Pump(camera, viewport);
+            using (Refii.Core.Engine_FramePhases.Measure("classic.billboards"))
+            {
+                Engine_ClassicBillboards.Instance?.Pump(camera);
+            }
+            using (Refii.Core.Engine_FramePhases.Measure("classic.fur"))
+            {
+                Engine_ClassicFur.Instance?.Pump(camera);
             }
         }
         using (Refii.Core.Engine_FramePhases.Measure("classic.water"))
         {
             Refii.Level.Engine_ClassicWater.Pump(viewport);
+        }
+        using (Refii.Core.Engine_FramePhases.Measure("classic.transfer"))
+        {
+            Engine_ClassicTransfer.PumpPending();
         }
         if (camera is not null)
         {
@@ -88,12 +128,17 @@ public static class Engine_ClassicPath
                 {
                     Engine_ClassicShadows.Instance?.Pump(camera, travel);
                 }
+            }
+            using (Refii.Core.Engine_FramePhases.Measure("classic.sky"))
+            {
                 Refii.Level.Engine_ClassicSkyDome.Instance?.Pump(camera);
             }
         }
         using (Refii.Core.Engine_FramePhases.Measure("classic.publish"))
         {
             Engine_ClassicConstants.Publish();
+            Engine_ClassicVertexBakes.Flush();
+            Engine_ClassicPrtRows.Flush();
         }
     }
 
@@ -142,7 +187,34 @@ public static class Engine_ClassicPath
         return $"[classic] status: feed {fed}/{feedFrames} frames, lights {Engine_ClassicLights.Lights.Count}, " +
             $"compositions {compositions} ({compileMs:0} ms compiling), " +
             $"lit instances {lit}/{attached}, mists {Engine_ClassicMist.Volumes.Count}, " +
-            $"particles {particles.Item2} in {particles.Item1} groups ({particles.Item3} displacement skipped), " +
-            $"water surfaces {Refii.Level.Engine_ClassicWater.Count}, materials {built} built / {fellBack} fell back, tree ambients {Engine_ClassicTransfer.TreeAmbients}";
+            $"particles {particles.Item2} in {particles.Item1} groups ({particles.Item3} displacement skipped; " +
+            $"surfaces {Engine_ClassicParticles.InPlaceUploads} rewritten in place, {Engine_ClassicParticles.Rebuilds} rebuilt), " +
+            $"water surfaces {Refii.Level.Engine_ClassicWater.Count}, materials {built} built / {fellBack} fell back, tree ambients {Engine_ClassicTransfer.TreeAmbients}, " +
+            $"sun casters {Engine_ClassicCasters.Shown}/{Engine_ClassicCasters.Count} in reach, " +
+            $"rain {(Refii.Level.Engine_ClassicWeather.Instance?.Raining == true ? "on" : "off")}, " +
+            $"snow blocks {Refii.Level.Engine_ClassicWeather.Instance?.SnowBlocks ?? 0}, " +
+            $"displacement groups {Engine_ClassicDisplacement.Drawn}, decals {Engine_ClassicDecals.Instance?.Drawn ?? 0}, " +
+            $"billboards {Billboards()}, fur {Fur()}, fx meshes {Engine_ClassicFxMeshes.Instance?.Drawn ?? 0}, " +
+            $"roofs {Refii.Level.Engine_ClassicRoofs.Roofs.Count} of {Refii.Level.Engine_ClassicRoofs.Count} buildings";
+    }
+
+    private static string Fur()
+    {
+        if (Engine_ClassicFur.Instance is not { } fur)
+        {
+            return "off";
+        }
+        (int instances, int shells) = fur.Counts;
+        return $"{instances} furred, {shells} shells";
+    }
+
+    private static string Billboards()
+    {
+        if (Engine_ClassicBillboards.Instance is not { } billboards)
+        {
+            return "off";
+        }
+        (int kinds, int visible, int placements) = billboards.Counts;
+        return $"{placements} placements of {kinds} models, {visible} captured (B {Engine_ClassicBillboards.Brightness:0.###})";
     }
 }

@@ -42,6 +42,9 @@ public partial class Engine_PostFxHalos : Node
 	/// HaloTextureHash in the FX bank) replaces this once decoded.
 	/// </summary>
 	public const float HalfPerRange = 0.15f;
+
+	private const int GuestHaloFloats = 12;
+	private readonly float[] _guestHalos = new float[GuestHaloFloats * 1024];
 	public const float HalfMin = 0.25f;
 	public const float HalfMax = 1.5f;
 
@@ -233,6 +236,27 @@ public partial class Engine_PostFxHalos : Node
 				: HalfMin;
 			_build.Add(new WorldHalo(
 				light.GlobalPosition, colour, half, LayerFor(halo.TextureHash)));
+		}
+
+		// Under classic, the guest's own halo list: the lights `sub_82274370` draws LIGHTHALO for
+		// this frame, with the quad's half-extent and the c123 colour as it states them. The
+		// placed Godot lights are hidden there and the modern FX do not run.
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			uint halos = Refii.Host.HostBridge.GetLightHalos(_guestHalos);
+			for (uint i = 0; i < halos; i++)
+			{
+				int o = (int)i * GuestHaloFloats;
+				var colour = new Vector3(_guestHalos[o + 4], _guestHalos[o + 5], _guestHalos[o + 6]);
+				if (MathF.Max(MathF.Max(colour.X, colour.Y), colour.Z) <= 1e-4f)
+				{
+					continue;
+				}
+				// Guest axes to the classic world's: (-x, z, y), as every classic feed places.
+				var position = new Vector3(-_guestHalos[o], _guestHalos[o + 2], _guestHalos[o + 1]);
+				uint hash = System.BitConverter.SingleToUInt32Bits(_guestHalos[o + 10]);
+				_build.Add(new WorldHalo(position, colour, _guestHalos[o + 3], LayerFor(hash)));
+			}
 		}
 
 		foreach ((SkyHalo halo, float visibility) in _sky)
