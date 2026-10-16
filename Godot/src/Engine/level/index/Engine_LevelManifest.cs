@@ -94,7 +94,7 @@ public static class Engine_LevelManifest
         scenarioUsed = string.Empty;
 
         string primary = level.Scenario.Length != 0 ? level.Scenario : DefaultScenario;
-        foreach (string scenario in Candidates(primary))
+        foreach (string scenario in Candidates(primary, level.Scenarios))
         {
             string lower = scenario.ToLowerInvariant();
             string path =
@@ -213,12 +213,28 @@ public static class Engine_LevelManifest
         foreach (string line in manifest.Unrecognized) yield return line;
     }
 
-    private static IEnumerable<string> Candidates(string primary)
+    private static IEnumerable<string> Candidates(string primary, string[]? registeredScenarios = null)
     {
-        yield return primary;
-        if (!primary.Equals(DefaultScenario, StringComparison.OrdinalIgnoreCase))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(primary) && seen.Add(primary))
+        {
+            yield return primary;
+        }
+
+        if (seen.Add(DefaultScenario))
         {
             yield return DefaultScenario;
+        }
+
+        if (registeredScenarios is not null)
+        {
+            foreach (string s in registeredScenarios)
+            {
+                if (!string.IsNullOrEmpty(s) && seen.Add(s))
+                {
+                    yield return s;
+                }
+            }
         }
     }
 

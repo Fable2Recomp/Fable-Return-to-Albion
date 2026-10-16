@@ -229,12 +229,21 @@ public static class Engine_CelestialElements
         return container;
     }
 
+    public const string InitializedMeta = "celestial_elements_initialized";
+
     public static void EnsureElements(
         Node3D container,
         SkyTheme theme,
         Func<string, byte[]?> read,
         int moonPhase = DefaultMoonPhase)
     {
+        if (container.HasMeta(InitializedMeta))
+        {
+            return;
+        }
+
+        container.SetMeta(InitializedMeta, true);
+
         Shader? mixShader = GD.Load<Shader>(MixShaderPath);
         Shader? additiveShader = GD.Load<Shader>(AdditiveShaderPath);
         if (mixShader is null || additiveShader is null)
@@ -636,6 +645,8 @@ public static class Engine_CelestialElements
     private static Vector3 Scaled(float[] rgb, float scale) =>
         new(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
 
+    private static readonly HashSet<uint> _loggedHashes = new();
+
     private static readonly StringName MoonPhaseMeta = "xenos_moon_phase";
 
     private const string ClassicVertex = "res://src/Engine/level/environment/celestial/classic_celestial_vertex.gdshaderinc";
@@ -681,7 +692,7 @@ public static class Engine_CelestialElements
     private static Texture2D? Load(uint hash, Func<string, byte[]?> read, string label)
     {
         Texture2D? texture = Engine_EnvironmentTextures.Load(hash, read, out string path);
-        if (texture is null)
+        if (texture is null && _loggedHashes.Add(hash))
         {
             GD.Print(path.Length == 0
                 ? $"[celestial] {label} texture 0x{hash:X8} unresolved"

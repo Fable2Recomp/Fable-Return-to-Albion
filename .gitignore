@@ -463,6 +463,7 @@ Godot/assets/gui/
 /Godot/t1.txt
 
 /Godot/levels/
+/Godot/creator/
 
 # Godot/debug/ is SOURCE — diagnostic scenes — not a build configuration. The
 # [Dd]ebug/ rule far above targets CMake/MSVC output directories and swallows it

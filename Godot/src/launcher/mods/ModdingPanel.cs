@@ -315,14 +315,7 @@ public partial class ModdingPanel : VBoxContainer
 			if (ModWorkspace.CreateModPackage(_modsRoot, modName, out string pkgPath, out string error))
 			{
 				_statusMessage = $"Created '{modName}.f2mod'.";
-				if (!_order.Order.Contains(modName, StringComparer.OrdinalIgnoreCase))
-				{
-					_order.Order.Add(modName);
-				}
-				if (!_order.Enabled.Contains(modName, StringComparer.OrdinalIgnoreCase))
-				{
-					_order.Enabled.Add(modName);
-				}
+				_order.RegisterMod(modName, enabled: true);
 				SaveEnabledMods();
 				return;
 			}

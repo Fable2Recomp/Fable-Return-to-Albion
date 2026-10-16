@@ -118,6 +118,14 @@ public static class Engine_ShadowProxy
 	});
 
 	/// <summary>
+	/// Eagerly initializes the caster material on the main thread to prevent worker thread GD.Load deadlocks.
+	/// </summary>
+	public static void WarmShader()
+	{
+		_ = CasterMaterial.Value;
+	}
+
+	/// <summary>
 	/// What the merged surface is drawn with: two-sided, as the bodies' own materials are, and
 	/// INVISIBLE OUTSIDE THE SHADOW PASS (`shadow_caster.gdshader` discards there), so a cast-only
 	/// mesh is never seen even if something switches its cast setting.

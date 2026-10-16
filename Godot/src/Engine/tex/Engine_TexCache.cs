@@ -337,8 +337,14 @@ public static class Engine_TexCache
 			{
 				try
 				{
-					decoded[face] = Image.CreateFromData(width, height, mipmaps, format,
+					Image img = Image.CreateFromData(width, height, mipmaps, format,
 						new ReadOnlySpan<byte>(all, face * (int)length, (int)length));
+					if (img is null || img.IsEmpty())
+					{
+						Interlocked.Increment(ref _misses);
+						return false;
+					}
+					decoded[face] = img;
 				}
 				catch (Exception)
 				{

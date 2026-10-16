@@ -53,7 +53,7 @@ public static class Engine_BitmapFontTexture
 			Image.Format.RgtcR,
 			DecodeAtlasBlocks(font));
 
-		return ImageTexture.CreateFromImage(image);
+		return image.IsEmpty() ? null! : ImageTexture.CreateFromImage(image);
 	}
 
 	/// <summary>
@@ -100,6 +100,11 @@ public static class Engine_BitmapFontTexture
 		int factor = Mathf.Max(width, height) * 4 <= 4096 ? 4 : 2;
 		mask.Resize(width * factor, height * factor, Image.Interpolation.Cubic);
 		mask.GenerateMipmaps();
+
+		if (mask.IsEmpty())
+		{
+			return null!;
+		}
 
 		ImageTexture texture = ImageTexture.CreateFromImage(mask);
 		texture.SetMeta(SupersampleMeta, factor);

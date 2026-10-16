@@ -58,6 +58,34 @@ public static class AssetHashIndex
 	/// <summary>Drops the index.</summary>
 	public static void Clear() => _byHash = null;
 
+	/// <summary>Registers a single virtual path into the live hash index.</summary>
+	public static void RegisterPath(string virtualPath)
+	{
+		if (string.IsNullOrWhiteSpace(virtualPath))
+		{
+			return;
+		}
+
+		string path = MountKey(virtualPath);
+		if (path.Length == 0)
+		{
+			return;
+		}
+
+		_byHash ??= new Dictionary<uint, string>();
+		_byHash[Hash(GuestSpelling(path))] = path;
+
+		const string dataPrefix = "data/";
+		if (path.StartsWith(dataPrefix, StringComparison.Ordinal))
+		{
+			_byHash[Hash(GuestSpelling(path[dataPrefix.Length..]))] = path;
+		}
+		else
+		{
+			_byHash[Hash(GuestSpelling(dataPrefix + path))] = path;
+		}
+	}
+
 	/// <summary>The mounted path for <paramref name="hash"/>; null if absent or before <see cref="Build"/>.</summary>
 	public static string? PathForHash(uint hash) =>
 		_byHash is { } index && index.TryGetValue(hash, out string? path) ? path : null;

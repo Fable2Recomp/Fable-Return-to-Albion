@@ -146,22 +146,10 @@ public partial class Engine_PropStreamer : Node3D
         _failed = 0;
         _reported = false;
 
-        foreach (Node child in GetChildren())
-        {
-            if (child is MultiMeshInstance3D multi &&
-                multi.Multimesh is not null &&
-                multi.Multimesh.Mesh is null &&
-                multi.HasMeta(ModelPathMeta))
-            {
-                _pending.Add(multi);
-            }
-            else if (child is MeshInstance3D single &&
-                single.Mesh is null &&
-                single.HasMeta(ModelPathMeta))
-            {
-                _pending.Add(single);
-            }
-        }
+        Engine_MdlMaterial.WarmShaders();
+        Refii.Entities.Engine_ShadowProxy.WarmShader();
+
+        CollectPendingInstances(this, _pending, recursive: Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode);
 
         _pending.Sort((a, b) => InstanceCount(b).CompareTo(InstanceCount(a)));
         _remaining.AddRange(_pending);
@@ -309,6 +297,9 @@ public partial class Engine_PropStreamer : Node3D
             return PrefetchJob.Empty;
         }
 
+        Engine_MdlMaterial.WarmShaders();
+        Refii.Entities.Engine_ShadowProxy.WarmShader();
+
         var job = new PrefetchJob(distinct.Count);
 
         int workers = Math.Min(Math.Max(2, System.Environment.ProcessorCount - 1), 8);
@@ -362,29 +353,65 @@ public partial class Engine_PropStreamer : Node3D
         return job;
     }
 
-    public static List<string> PendingModelPaths(Node container)
+    private static void CollectPendingInstances(
+        Node container, List<GeometryInstance3D> list, bool recursive)
     {
-        var paths = new List<string>();
         foreach (Node child in container.GetChildren())
         {
             if (child is MultiMeshInstance3D multi &&
-                multi.Visible &&
                 multi.Multimesh is not null &&
                 multi.Multimesh.Mesh is null &&
                 multi.HasMeta(ModelPathMeta))
             {
-                paths.Add(multi.GetMeta(ModelPathMeta).AsString());
+                list.Add(multi);
             }
             else if (child is MeshInstance3D single &&
-                single.Visible &&
                 single.Mesh is null &&
                 single.HasMeta(ModelPathMeta))
             {
-                paths.Add(single.GetMeta(ModelPathMeta).AsString());
+                list.Add(single);
+            }
+
+            if (recursive && child.GetChildCount() > 0)
+            {
+                CollectPendingInstances(child, list, recursive: true);
             }
         }
+    }
 
+    public static List<string> PendingModelPaths(Node container)
+    {
+        var paths = new List<string>();
+        bool recursive = Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode;
+        CollectPaths(container, paths, recursive);
         return paths;
+
+        static void CollectPaths(Node parent, List<string> result, bool recurse)
+        {
+            foreach (Node child in parent.GetChildren())
+            {
+                if (child is MultiMeshInstance3D multi &&
+                    multi.Visible &&
+                    multi.Multimesh is not null &&
+                    multi.Multimesh.Mesh is null &&
+                    multi.HasMeta(ModelPathMeta))
+                {
+                    result.Add(multi.GetMeta(ModelPathMeta).AsString());
+                }
+                else if (child is MeshInstance3D single &&
+                    single.Visible &&
+                    single.Mesh is null &&
+                    single.HasMeta(ModelPathMeta))
+                {
+                    result.Add(single.GetMeta(ModelPathMeta).AsString());
+                }
+
+                if (recurse && child.GetChildCount() > 0)
+                {
+                    CollectPaths(child, result, recurse: true);
+                }
+            }
+        }
     }
 
     public override void _ExitTree()
@@ -408,7 +435,7 @@ public partial class Engine_PropStreamer : Node3D
             (System.Diagnostics.Stopwatch.GetTimestamp() - drainFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency, plot: false);
         _watch.Restart();
 
-        double budget = Engine.IsEditorHint() ? double.PositiveInfinity : MillisecondsPerFrame;
+        double budget = (Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode) ? 16.0 : MillisecondsPerFrame;
         bool poolDone = _prefetch is null || _prefetch.IsComplete;
         int untouched = 0;
         while (_remaining.Count != 0 && untouched < _remaining.Count)
@@ -646,9 +673,7 @@ public partial class Engine_PropStreamer : Node3D
     {
         // HasMeta first — a nil default makes `GetMeta` take its ERR_FAIL path rather than return
         // the fallback, and most nodes reaching here carry no bake key at all.
-        if (!node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta) ||
-            node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta)
-                is not { VariantType: Variant.Type.Int } stored)
+        if (!node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta))
         {
             // No bake key at all. If the probe sample also failed this node renders at mode 0 —
             // flat global ambient, the blue-grey slab in every dawn screenshot. Aggregated by
@@ -665,9 +690,29 @@ public partial class Engine_PropStreamer : Node3D
             return;
         }
 
+        Variant stored = node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta);
+        ulong key = 0;
+        if (stored.VariantType == Variant.Type.String)
+        {
+            string s = stored.AsString();
+            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                s = s[2..];
+            }
+            ulong.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out key);
+        }
+        else if (stored.VariantType == Variant.Type.Int)
+        {
+            key = (ulong)stored.AsInt64();
+        }
+
+        if (key == 0)
+        {
+            return;
+        }
+
         string gdbPath = GetMeta(
             Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, string.Empty).AsString();
-        ulong key = (ulong)stored.AsInt64();
 
         // Built on a worker: the bake's per-vertex colours in the shared mesh's order. The
         // node shows the shared mesh unbaked until they land; the fallbacks and the accounting
@@ -1064,7 +1109,8 @@ public partial class Engine_PropStreamer : Node3D
                 // Godot merges neighbouring draws into one instanced draw only when they share
                 // mesh and material (`_fill_render_list`, equal sort keys) — so no two copies of a
                 // model ever merged. The lighting model is fixed for the run.
-                if (!Refii.Lighting.Engine_LightingFrame.ModernModel)
+                // In Editor mode, skip private mesh clones to keep RAM lean and UI responsive.
+                if (!Engine.IsEditorHint() && !Engine_LevelScene.ForceEditorMode && !Refii.Lighting.Engine_LightingFrame.ModernModel)
                 {
                     ApplyVertexBake(single, mesh);
                 }
@@ -1119,7 +1165,11 @@ public partial class Engine_PropStreamer : Node3D
             {
                 // Built from the shared mesh: a vertex bake later swaps in a per-instance copy of
                 // the same shape, which would merge once per prop instead of once per model.
-                Refii.Entities.Engine_ShadowProxy.Sync(castingProp);
+                // In Editor mode, skip attaching ShadowProxy child nodes to keep the scene hierarchy clean.
+                if (!Engine.IsEditorHint() && !Engine_LevelScene.ForceEditorMode)
+                {
+                    Refii.Entities.Engine_ShadowProxy.Sync(castingProp);
+                }
             }
 
             // Modern: the prop's light zone, once the walk has joined its record to an entity.

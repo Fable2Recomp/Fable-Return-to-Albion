@@ -147,6 +147,10 @@ public static class Engine_WaterMask
         // R8 with no mips — `levels = 1` in the create call, and format table entry 23 is FMT_8,
         // a single 8-bit channel.
         var image = Image.CreateFromData(width, height, false, Image.Format.R8, bytes);
+        if (image.IsEmpty())
+        {
+            return null;
+        }
         ImageTexture texture = ImageTexture.CreateFromImage(image);
 
         // SAY WHAT WAS BUILT. A vanished surface, an inverted mask and wrong bounds all look

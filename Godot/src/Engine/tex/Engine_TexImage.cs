@@ -390,6 +390,9 @@ public static class Engine_TexImage
 
 	private static bool IsUsable(Image? image, TexSurface surface) =>
 		image is not null &&
+		!image.IsEmpty() &&
+		surface.Width > 0 &&
+		surface.Height > 0 &&
 		image.GetWidth() == surface.Width &&
 		image.GetHeight() == surface.Height;
 
@@ -493,7 +496,7 @@ public static class Engine_TexImage
 		byte[] texBytes, out bool hasAlpha, out string error)
 	{
 		Image? image = TryCreateImage(texBytes, out hasAlpha, out error);
-		return image is null ? null : ImageTexture.CreateFromImage(image);
+		return image is null || image.IsEmpty() ? null : ImageTexture.CreateFromImage(image);
 	}
 
 	public static bool Bc1HasPunchThrough(byte[] blocks)

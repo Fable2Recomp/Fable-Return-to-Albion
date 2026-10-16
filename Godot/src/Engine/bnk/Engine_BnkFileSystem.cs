@@ -672,7 +672,7 @@ public sealed class BnkFileSystem : IDisposable
     /// <summary>Authored inputs the overlay systems compile into the assets they name.</summary>
     private static readonly string[] ModSourceSuffixes =
     {
-        ".babel.csv", ".tex.png", ".mdl.glb", ".mdl.gltf",
+        ".babel.csv", ".tex.png", ".mdl.glb", ".mdl.gltf", ".save.tu",
     };
 
     /// <summary>

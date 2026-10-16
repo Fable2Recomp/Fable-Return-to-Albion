@@ -604,15 +604,34 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         _trapRingColour = default;
-        Free(ref _staging);
-        Free(ref _quarter);
-        Free(ref _occl);
-        for (int i = 0; i < 2; i++)
+        if (!_disposed)
         {
-            Free(ref _rays[i]);
-            Free(ref _bloom[i]);
-            Free(ref _dof[i]);
-            Free(ref _glow[i]);
+            Free(ref _staging);
+            Free(ref _quarter);
+            Free(ref _occl);
+            for (int i = 0; i < 2; i++)
+            {
+                Free(ref _rays[i]);
+                Free(ref _bloom[i]);
+                Free(ref _dof[i]);
+                Free(ref _glow[i]);
+            }
+        }
+        else
+        {
+            // During effect disposal (NotificationPredelete), the rendering device / compositor
+            // has already torn down the viewport texture allocations; clear local RIDs to avoid
+            // attempting to free already-reclaimed IDs.
+            _staging = default;
+            _quarter = default;
+            _occl = default;
+            for (int i = 0; i < 2; i++)
+            {
+                _rays[i] = default;
+                _bloom[i] = default;
+                _dof[i] = default;
+                _glow[i] = default;
+            }
         }
 
         _glowSize = default;

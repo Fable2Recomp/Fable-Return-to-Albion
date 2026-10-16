@@ -32,6 +32,8 @@ public static class Engine_PropModelIndex
 
     private static Dictionary<string, string?>? _lowerPathCache;
 
+    private static readonly Dictionary<uint, PropModelAsset> _registeredPaths = new();
+
     private static readonly string[] TokenSuffixes =
     {
         "facademid", "facade", "lod1", "lod0", "mid",
@@ -54,7 +56,42 @@ public static class Engine_PropModelIndex
         lock (IndexLock)
         {
             _models = source;
+            if (source is null)
+            {
+                _registeredPaths.Clear();
+            }
             InvalidateLocked();
+        }
+    }
+
+    public static void RegisterPath(string virtualPath, string archivePath = "mod")
+    {
+        if (string.IsNullOrWhiteSpace(virtualPath))
+        {
+            return;
+        }
+
+        string normalized = virtualPath.Trim().Replace('/', '\\');
+        uint hash = PathHash(normalized);
+        var asset = new PropModelAsset(normalized, archivePath);
+
+        lock (IndexLock)
+        {
+            _registeredPaths[hash] = asset;
+            if (_byPathHash is not null)
+            {
+                if (!_byPathHash.TryGetValue(hash, out List<PropModelAsset>? bucket))
+                {
+                    bucket = new List<PropModelAsset>();
+                    _byPathHash[hash] = bucket;
+                }
+                else
+                {
+                    bucket.RemoveAll(a => string.Equals(a.VirtualPath, normalized, StringComparison.OrdinalIgnoreCase));
+                }
+                bucket.Insert(0, asset);
+            }
+            _lowerPathCache = null;
         }
     }
 
@@ -324,7 +361,7 @@ public static class Engine_PropModelIndex
         return dot <= 0 ? leaf : leaf[..dot];
     }
 
-    public static string? Resolve(uint pathHash, IReadOnlyList<string> preferredArchives)
+    public static string? Resolve(uint pathHash, IReadOnlyList<string>? preferredArchives = null)
     {
         if (pathHash == 0 || pathHash == NullHash)
         {
@@ -339,7 +376,7 @@ public static class Engine_PropModelIndex
             return null;
         }
 
-        return Choose(candidates, preferredArchives);
+        return Choose(candidates, preferredArchives ?? Array.Empty<string>());
     }
 
     private static string Choose(
@@ -413,7 +450,7 @@ public static class Engine_PropModelIndex
 
     private static void BuildLocked()
     {
-        if (_byPathHash is not null || _models is null)
+        if (_byPathHash is not null || (_models is null && _registeredPaths.Count == 0))
         {
             return;
         }
@@ -423,43 +460,60 @@ public static class Engine_PropModelIndex
         var compact = new Dictionary<string, List<PropModelAsset>>();
         var lowered = new List<(string, PropModelAsset)>();
 
-        foreach (PropModelAsset model in _models())
+        if (_models is not null)
         {
-            if (model.VirtualPath.Length == 0)
+            foreach (PropModelAsset model in _models())
             {
-                continue;
-            }
+                if (model.VirtualPath.Length == 0)
+                {
+                    continue;
+                }
 
-            uint hash = PathHash(model.VirtualPath);
-            if (!index.TryGetValue(hash, out List<PropModelAsset>? bucket))
+                uint hash = PathHash(model.VirtualPath);
+                if (!index.TryGetValue(hash, out List<PropModelAsset>? bucket))
+                {
+                    bucket = new List<PropModelAsset>();
+                    index[hash] = bucket;
+                }
+
+                bucket.Add(model);
+                lowered.Add((model.VirtualPath.Replace('\\', '/').ToLowerInvariant(), model));
+
+                string name = NameWithoutExtension(model.VirtualPath);
+
+                foreach (string key in KeysFor(model.VirtualPath, name))
+                {
+                    if (!compact.TryGetValue(key, out List<PropModelAsset>? keyed))
+                    {
+                        keyed = new List<PropModelAsset>();
+                        compact[key] = keyed;
+                    }
+
+                    keyed.Add(model);
+
+                    if (!tokens.TryGetValue(key, out List<PropModelAsset>? named))
+                    {
+                        named = new List<PropModelAsset>();
+                        tokens[key] = named;
+                    }
+
+                    named.Add(model);
+                }
+            }
+        }
+
+        foreach ((uint regHash, PropModelAsset regAsset) in _registeredPaths)
+        {
+            if (!index.TryGetValue(regHash, out List<PropModelAsset>? bucket))
             {
                 bucket = new List<PropModelAsset>();
-                index[hash] = bucket;
+                index[regHash] = bucket;
             }
-
-            bucket.Add(model);
-            lowered.Add((model.VirtualPath.Replace('\\', '/').ToLowerInvariant(), model));
-
-            string name = NameWithoutExtension(model.VirtualPath);
-
-            foreach (string key in KeysFor(model.VirtualPath, name))
+            else
             {
-                if (!compact.TryGetValue(key, out List<PropModelAsset>? keyed))
-                {
-                    keyed = new List<PropModelAsset>();
-                    compact[key] = keyed;
-                }
-
-                keyed.Add(model);
-
-                if (!tokens.TryGetValue(key, out List<PropModelAsset>? named))
-                {
-                    named = new List<PropModelAsset>();
-                    tokens[key] = named;
-                }
-
-                named.Add(model);
+                bucket.RemoveAll(a => string.Equals(a.VirtualPath, regAsset.VirtualPath, StringComparison.OrdinalIgnoreCase));
             }
+            bucket.Insert(0, regAsset);
         }
 
         // THE GUARD LAST. `_byPathHash` is what every reader tests to decide the index exists,

@@ -192,6 +192,9 @@ public static class Engine_LevelScene
 
     public const string WaterNodeName = "Water";
 
+    /// <summary>Allows testing the Editor-specific build pipeline in headless CLI runs.</summary>
+    public static bool ForceEditorMode { get; set; }
+
     public static bool TryBuild(
         LevelEntry level, Func<string, byte[]?>? source, out string scenePath, out string error) =>
         TryBuild(level, source, null, out scenePath, out error);
@@ -212,6 +215,10 @@ public static class Engine_LevelScene
         out string error)
     {
         scenePath = level.ScenePath;
+
+        Refii.Models.Engine_MdlMaterial.WarmShaders();
+        Refii.Entities.Engine_ShadowProxy.WarmShader();
+        _ = GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath);
 
         if (!EnsureDirectory(level, out error))
         {
@@ -455,14 +462,14 @@ public static class Engine_LevelScene
         foreach ((StatedLandscape landscape, GhfHeights? grid) in grids)
         {
             bool isGrid = landscape.Ghf.Length != 0;
-            Material? material = landscape.Ehf.Length != 0 && isGrid ? LoadTerrainMaterial(landscape.Ehf) : null;
+            Material? material = landscape.Ehf.Length != 0 && isGrid ? LoadTerrainMaterial(landscape.Ehf, source, null) : null;
             Engine_EhfPages.Built? pagedBuild = null;
             bool pagedOk = !isGrid && grid is not null && landscape.Ehf.Length != 0 &&
                 source(landscape.Ehf) is { } pageBytes &&
                 Engine_EhfPages.TryBuild(pageBytes, grid, out pagedBuild, out _);
             if (!isGrid && !pagedOk && landscape.Ehf.Length != 0)
             {
-                material = LoadTerrainMaterial(landscape.Ehf, vista: true);
+                material = LoadTerrainMaterial(landscape.Ehf, source, null, vista: true);
             }
 
             bool drawn = grid is not null && (isGrid || pagedOk || material is not null);
@@ -672,7 +679,7 @@ public static class Engine_LevelScene
 
                 // A vista's material is its fallback only; the colour pages come first.
                 Material? material = landscape.Ehf.Length != 0 && landscape.Ghf.Length != 0
-                    ? LoadTerrainMaterial(landscape.Ehf)
+                    ? LoadTerrainMaterial(landscape.Ehf, source, findByName)
                     : null;
 
                 if (landscape.Ghf.Length != 0)
@@ -759,7 +766,7 @@ public static class Engine_LevelScene
                     GD.Print($"[vista] {level}: {vistaName} colour pages not built ({pageError}) — falling back");
                 }
 
-                material = LoadTerrainMaterial(landscape.Ehf, vista: true);
+                material = LoadTerrainMaterial(landscape.Ehf, source, findByName, vista: true);
 
                 if (Engine_EhfHeights.TryDecode(ehfBytes, out vistaHeights, out heightError))
                 {
@@ -937,6 +944,57 @@ public static class Engine_LevelScene
                         $"[inspect] {level}: {markers.GetChildCount()} " +
                         "container marker(s) without a placed prop");
                 }
+            }
+
+            if (Engine.IsEditorHint() || ForceEditorMode)
+            {
+                var spawnedHashes = new HashSet<uint>();
+                LevelRecordMetadata.CollectRecordHashes(props, spawnedHashes, includeCulled: true);
+                LevelRecordMetadata.CollectRecordHashes(entities, spawnedHashes, includeCulled: true);
+
+                Node3D? levelMarkers = Engine_LevelMarkers.Build(
+                    level, p => source(p), spawnedHashes, out MarkerBuildStats markerStats);
+                if (levelMarkers is not null)
+                {
+                    root.AddChild(levelMarkers);
+                    SetOwnerRecursive(levelMarkers, root);
+                    LevelRecordMetadata.CollectRecordHashes(levelMarkers, spawnedHashes, includeCulled: true);
+                    GD.Print($"[markers] {level}: {markerStats}");
+                }
+
+                if (!string.IsNullOrEmpty(bakedGdbPath))
+                {
+                    MeshInstance3D? navGraph = Engine_KynapseGraph.Build(level, p => source(p), bakedGdbPath);
+                    if (navGraph is not null)
+                    {
+                        root.AddChild(navGraph);
+                        SetOwnerRecursive(navGraph, root);
+                    }
+
+                    root.SetMeta(LevelRecordMetadata.LevelGdbPathMeta, bakedGdbPath);
+                    root.SetMeta(
+                        LevelRecordMetadata.LevelSavePathMeta,
+                        Engine_LevelGdb.SiblingWithExtension(bakedGdbPath, ".save"));
+                }
+
+                root.SetMeta(LevelRecordMetadata.LevelNameMeta, level.Name);
+                root.SetMeta(LevelRecordMetadata.ScenarioNameMeta, level.Scenario);
+                string[] scenarios = level.Scenarios.Length > 0
+                    ? level.Scenarios
+                    : !string.IsNullOrEmpty(level.Scenario)
+                        ? new[] { level.Scenario }
+                        : new[] { Engine_LevelManifest.DefaultScenario };
+                root.SetMeta(LevelRecordMetadata.AvailableScenariosMeta, scenarios);
+
+                var spawnedArray = new long[spawnedHashes.Count];
+                int idx = 0;
+                foreach (uint h in spawnedHashes)
+                {
+                    spawnedArray[idx++] = h;
+                }
+
+                root.SetMeta(LevelRecordMetadata.SpawnedRecordHashesMeta, spawnedArray);
+                Mark("editor-overlays");
             }
         }
 
@@ -1140,6 +1198,10 @@ public static class Engine_LevelScene
                 if (material is not null)
                 {
                     chunk.MaterialOverride = material;
+                    if (chunks[i].GetSurfaceCount() > 0)
+                    {
+                        chunks[i].SurfaceSetMaterial(0, material);
+                    }
                 }
 
                 container.AddChild(chunk);
@@ -1457,11 +1519,27 @@ public static class Engine_LevelScene
     /// palette is an editor default nobody sees (`art\editor\invalid_texture.tex` on a market
     /// vista, painted magenta wherever no layer covers).
     /// </summary>
-    private static Material? LoadTerrainMaterial(string ehfPath, bool vista = false)
+    private static Material? LoadTerrainMaterial(
+        string ehfPath,
+        Func<string, byte[]?>? source = null,
+        Func<string, string?>? findByName = null,
+        bool vista = false)
     {
         if (vista && LoadPageMaterial(ehfPath) is { } pages)
         {
             return pages;
+        }
+
+        if (source?.Invoke(ehfPath) is { } ehfBytes &&
+            Engine_TerrainSplatMaterial.TryBuild(
+                ehfBytes,
+                p => source(p),
+                findByName is null ? null : n => findByName(n),
+                out ShaderMaterial builtSplat,
+                out _))
+        {
+            builtSplat.ResourceName = ehfPath[(ehfPath.LastIndexOf('/') + 1)..];
+            return builtSplat;
         }
 
         string materialPath =
@@ -1474,7 +1552,23 @@ public static class Engine_LevelScene
             return splat;
         }
 
-        return vista ? null : LoadPageMaterial(ehfPath);
+        if (LoadPageMaterial(ehfPath) is { } fallbackPage)
+        {
+            return fallbackPage;
+        }
+
+        if (GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath) is { } shader)
+        {
+            return new ShaderMaterial { Shader = shader };
+        }
+
+        return new StandardMaterial3D
+        {
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            Roughness = 0.9f,
+            Metallic = 0f,
+            SpecularMode = BaseMaterial3D.SpecularModeEnum.Disabled,
+        };
     }
 
     /// <summary>The landscape's pre-baked colour pages as one albedo.</summary>
@@ -1496,6 +1590,7 @@ public static class Engine_LevelScene
             // No built-in highlight: a placed light's specular scalar is its light-table slot
             // (Engine_LightTable), not a strength.
             SpecularMode = BaseMaterial3D.SpecularModeEnum.Disabled,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
         };
     }
 
@@ -1654,7 +1749,10 @@ public static class Engine_LevelScene
                 Buffer.BlockCopy(heights.Values, 0, data, 0, data.Length);
                 Image image = Image.CreateFromData(
                     heights.Width, heights.Height, false, Image.Format.Rf, data);
-                terrainTexture = ImageTexture.CreateFromImage(image);
+                if (!image.IsEmpty())
+                {
+                    terrainTexture = ImageTexture.CreateFromImage(image);
+                }
                 terrainBounds = new Vector4(
                     heights.OriginX,
                     heights.OriginZ,

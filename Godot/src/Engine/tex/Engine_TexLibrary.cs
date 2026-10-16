@@ -226,7 +226,7 @@ public static class Engine_TexLibrary
 			enhanced = true;
 		}
 
-		ImageTexture? texture = image is null ? null : ImageTexture.CreateFromImage(image);
+		ImageTexture? texture = image is null || image.IsEmpty() ? null : ImageTexture.CreateFromImage(image);
 
 		lock (Gate)
 		{
@@ -759,6 +759,8 @@ public static class Engine_TexLibrary
 		"_orm.tex.png",
 		"_orm.tex",
 		"_orm",
+		".tex.orm",
+		".orm",
 	};
 
 	/// <summary>
@@ -883,6 +885,10 @@ public static class Engine_TexLibrary
 				bool height = CheckHasHeight(img);
 				img.GenerateMipmaps();
 				Engine_TexImage.CompressBlocks(img, isNormalMap: false);
+				if (img.IsEmpty())
+				{
+					return false;
+				}
 				texture = ImageTexture.CreateFromImage(img);
 				hasHeight = height;
 
@@ -1016,7 +1022,7 @@ public static class Engine_TexLibrary
 		Image? packed = BuildOrmImage(
 			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
 			read, out bool packedHeight);
-		ImageTexture? built = packed is null ? null : ImageTexture.CreateFromImage(packed);
+		ImageTexture? built = packed is null || packed.IsEmpty() ? null : ImageTexture.CreateFromImage(packed);
 
 		lock (Gate)
 		{
@@ -1077,7 +1083,7 @@ public static class Engine_TexLibrary
 		packed.GenerateMipmaps();
 		CompressOrReport(packed, isNormalMap: false, "orm");
 		hasHeight = packedHeight;
-		return ImageTexture.CreateFromImage(packed);
+		return packed.IsEmpty() ? null : ImageTexture.CreateFromImage(packed);
 	}
 
 	/// <summary>
@@ -1392,7 +1398,7 @@ public static class Engine_TexLibrary
 				InFlight.Remove(job.MemKey);
 			}
 
-			if (produced is null)
+			if (produced is null || produced.IsEmpty())
 			{
 				// Settled, so the next material naming this texture does not queue it again. A
 				// declined texture would otherwise be a permanent source of work that never
@@ -1415,7 +1421,7 @@ public static class Engine_TexLibrary
 			Completions.Enqueue(() =>
 			{
 				ImageTexture? target = entry.Target;
-				if (target is null || !GodotObject.IsInstanceValid(target))
+				if (target is null || !GodotObject.IsInstanceValid(target) || image.IsEmpty())
 				{
 					// The UI texture was freed by Godot between the request and the apply. Not a
 					// fault: the work is in the cache, so if it is loaded again the re-request

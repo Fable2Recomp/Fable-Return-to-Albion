@@ -259,7 +259,10 @@ public static class Engine_EhfPages
             Shader = GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath),
         };
         material.SetShaderParameter("page_mode", true);
-        material.SetShaderParameter("page_albedo", ImageTexture.CreateFromImage(image));
+        if (!image.IsEmpty())
+        {
+            material.SetShaderParameter("page_albedo", ImageTexture.CreateFromImage(image));
+        }
         material.SetShaderParameter("chunk_origin_extent",
             new Vector4(heights.OriginX, heights.OriginZ, chunk, chunk));
         material.SetShaderParameter("chunk_grid_size",

@@ -17,6 +17,7 @@ public partial class Engine_GameAssets : Node
 	private bool _mounting;
 
 	public static Engine_GameAssets? Instance { get; private set; }
+	private static IReadOnlyList<Refii.Mods.ModOverlay> _activeOverlays = Array.Empty<Refii.Mods.ModOverlay>();
 
 	[Signal]
 	public delegate void MountedEventHandler(int fileCount);
@@ -168,6 +169,7 @@ public partial class Engine_GameAssets : Node
 		IReadOnlyList<Refii.Mods.ModOverlay> overlays,
 		Refii.Mods.ModLoadOrder order)
 	{
+		_activeOverlays = overlays;
 		if (overlays.Count == 0)
 		{
 			Refii.Gdb.GdbPatchCompositor.PurgeCache(ModsRoot);
@@ -231,8 +233,9 @@ public partial class Engine_GameAssets : Node
 		Refii.Gdb.Engine_GameGdb.SetResolver(p => mounted.TryGetFile(p, out var f) ? f.ReadAllBytes() : null);
 		Refii.Gdb.Engine_GameGdb.SetBaseResolver(p => mounted.ReadBaseBytes(p));
 
-		// TITLE UPDATE PATCHES: Compose multi-mod GDB databases in load order:
+		// TITLE UPDATE PATCHES: Compose multi-mod GDB databases and .save layer maps in load order:
 		var composites = Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, ModsRoot);
+		Refii.Gdb.SaveMapCompositor.Apply(mounted, overlays);
 		foreach (Refii.Gdb.CompositeGdbResult comp in composites)
 		{
 			GD.Print($"[mods] tu composite: {comp.SubPath} across {comp.ContributingMods.Count} mod(s) ({comp.Conflicts.Count} conflict(s))");
@@ -747,9 +750,12 @@ public partial class Engine_GameAssets : Node
 	{
 		if (TryGetFile(virtualPath, out BnkFile file))
 		{
-			// True if attributed to a mod name, marked as override/loose, or created via virtual row/mesh/image overlays:
-			return file.IsOverride || file.SourceMod.Length != 0 || file.SourceArchivePath.StartsWith("<rows:") ||
-				virtualPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase);
+			// True if attributed to a mod name, marked as override/loose, or created via virtual row/mesh/image/save overlays:
+			return file.IsOverride || file.SourceMod.Length != 0 ||
+				file.SourceArchivePath.StartsWith("<rows:") ||
+				file.SourceArchivePath.StartsWith("<save_tu:") ||
+				virtualPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase) ||
+				virtualPath.EndsWith(".save.tu", StringComparison.OrdinalIgnoreCase);
 		}
 
 		return false;

@@ -25,6 +25,27 @@ public static class EditorModExporter
     private const string ActiveModConfigFilename = "active_mod.txt";
 
     /// <summary>
+    /// Event triggered when the active mod workspace changes, notifying any open docks or workspaces.
+    /// </summary>
+    public static event Action<string>? ActiveModChanged;
+
+    /// <summary>
+    /// Event triggered whenever mod content (GDB patches, Babel strings, creator assets, metadata) is modified.
+    /// Passes the name of the modified mod.
+    /// </summary>
+    public static event Action<string>? ModContentChanged;
+
+    /// <summary>
+    /// Notifies all active editor panels and docks that the specified mod's content was updated.
+    /// </summary>
+    /// <param name="modName">Name of the modified mod, or null/empty to indicate current active mod.</param>
+    public static void NotifyModContentChanged(string? modName = null)
+    {
+        string target = !string.IsNullOrWhiteSpace(modName) ? modName : ActiveModName;
+        ModContentChanged?.Invoke(target);
+    }
+
+    /// <summary>
     /// Gets or sets the folder name of the active mod workspace (stored under <c>assets/mods/</c>).
     /// </summary>
     public static string ActiveModName
@@ -53,28 +74,80 @@ public static class EditorModExporter
         return filesRoot;
     }
 
-    /// <summary>
-    /// Retrieves the current active mod folder name from user configuration, defaulting to "MyMod".
-    /// </summary>
-    public static string GetActiveModName()
+    private static bool IsTestHost =>
+        AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
+        System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetActiveModConfigPath()
     {
-        string path = ProjectSettings.GlobalizePath("user://" + ActiveModConfigFilename);
+        if (IsTestHost)
+        {
+            string appData = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(appData, "Godot", "app_userdata", "refii", ActiveModConfigFilename);
+        }
+
+        try
+        {
+            return ProjectSettings.GlobalizePath("user://" + ActiveModConfigFilename);
+        }
+        catch
+        {
+            string appData = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(appData, "Godot", "app_userdata", "refii", ActiveModConfigFilename);
+        }
+    }
+
+    /// <summary>
+    /// Retrieves the current active mod folder name from user configuration, validating that
+    /// the mod actually exists on disk. Returns empty string if no mod exists or is active.
+    /// </summary>
+    /// <param name="customModsRoot">Optional override directory for mods root.</param>
+    public static string GetActiveModName(string? customModsRoot = null)
+    {
+        string modsRoot = customModsRoot ?? EditorModValueService.ModsRootOverride ?? Engine_GameAssets.ModsRoot;
+        if (string.IsNullOrEmpty(modsRoot))
+        {
+            modsRoot = ModWorkspace.GetDefaultModsRoot(Engine_AppRoot.AssetsDirectory);
+        }
+
+        string path = GetActiveModConfigPath();
+        string saved = string.Empty;
         if (File.Exists(path))
         {
             try
             {
-                string saved = File.ReadAllText(path).Trim();
-                if (saved.Length > 0 && ModWorkspace.IsSafeModFolderName(saved))
-                {
-                    return saved;
-                }
+                saved = File.ReadAllText(path).Trim();
             }
             catch
             {
             }
         }
 
-        return "MyMod";
+        // Validate that saved mod exists on disk as a .f2mod package or directory:
+        if (!string.IsNullOrEmpty(saved) && ModWorkspace.IsSafeModFolderName(saved))
+        {
+            string pkg = Path.Combine(modsRoot, saved + ModWorkspace.PackageExtension);
+            string loose = Path.Combine(modsRoot, saved);
+            if (File.Exists(pkg) || Directory.Exists(loose))
+            {
+                return saved;
+            }
+        }
+
+        // Saved mod does not exist on disk! Check if any other mods exist:
+        if (Directory.Exists(modsRoot))
+        {
+            var discovered = ModWorkspace.DiscoverModInstalls(modsRoot);
+            if (discovered.Count > 0)
+            {
+                string first = discovered[0].Name;
+                SetActiveModName(first);
+                return first;
+            }
+        }
+
+        // Zero mods exist on disk
+        return string.Empty;
     }
 
     /// <summary>
@@ -83,23 +156,47 @@ public static class EditorModExporter
     /// <param name="name">The valid mod directory name.</param>
     public static void SetActiveModName(string name)
     {
-        if (string.IsNullOrWhiteSpace(name) || !ModWorkspace.IsSafeModFolderName(name))
+        string path = GetActiveModConfigPath();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+            }
+            ActiveModChanged?.Invoke(string.Empty);
+            return;
+        }
+
+        if (!ModWorkspace.IsSafeModFolderName(name))
         {
             return;
         }
 
-        string path = ProjectSettings.GlobalizePath("user://" + ActiveModConfigFilename);
+        string trimmed = name.Trim();
         try
         {
-            File.WriteAllText(path, name.Trim());
+            string? dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            File.WriteAllText(path, trimmed);
         }
         catch
         {
         }
+        ActiveModChanged?.Invoke(trimmed);
     }
 
     /// <summary>
-    /// Discovers all existing mod directories under the mods root and includes the active mod.
+    /// Discovers all existing mod packages physically residing under the mods root.
+    /// Returns an empty list if zero mods exist on disk.
     /// </summary>
     /// <returns>A list of discovered mod folder names.</returns>
     public static List<string> DiscoverModNames()
@@ -123,11 +220,7 @@ public static class EditorModExporter
         }
 
         string current = GetActiveModName();
-        if (names.Count == 0)
-        {
-            names.Add(current);
-        }
-        else if (names.Contains(current))
+        if (!string.IsNullOrEmpty(current) && names.Contains(current))
         {
             names.Remove(current);
             names.Insert(0, current);
@@ -137,19 +230,56 @@ public static class EditorModExporter
     }
 
     /// <summary>
-    /// Ensures that the active mod package (.f2mod) exists under assets/mods/ and returns
-    /// the creators workbench working directory under assets/creators/&lt;ActiveMod&gt;/.
+    /// Returns the absolute filesystem path for the specified mod's creator folder under <c>res://creator/&lt;ModName&gt;</c>.
     /// </summary>
-    /// <returns>The absolute path to the creator workbench working directory.</returns>
+    /// <param name="modName">Mod name, or null/empty to use the current active mod.</param>
+    /// <returns>Absolute filesystem path, or empty string if no mod name is available.</returns>
+    public static string GetCreatorDirectory(string? modName = null)
+    {
+        string target = !string.IsNullOrWhiteSpace(modName) ? modName.Trim() : GetActiveModName();
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return string.Empty;
+        }
+
+        string projectDir = Engine_AppRoot.SafeGetProjectDir();
+        return Path.Combine(projectDir, "creator", target);
+    }
+
+    /// <summary>
+    /// Returns the Godot <c>res://</c> path for the specified mod's creator folder (<c>res://creator/&lt;ModName&gt;/</c>).
+    /// </summary>
+    /// <param name="modName">Mod name, or null/empty to use the current active mod.</param>
+    /// <returns>Godot resource path with trailing slash, or <c>res://creator/</c> if no mod is active.</returns>
+    public static string GetCreatorResPath(string? modName = null)
+    {
+        string target = !string.IsNullOrWhiteSpace(modName) ? modName.Trim() : GetActiveModName();
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return "res://creator/";
+        }
+
+        return $"res://creator/{target}/";
+    }
+
+    /// <summary>
+    /// Ensures that the active mod package (.f2mod) exists under assets/mods/ and returns
+    /// the creators workbench working directory under <c>res://creator/&lt;ActiveMod&gt;/</c>.
+    /// </summary>
+    /// <returns>The absolute path to the creator workbench working directory, or empty if no mod is active.</returns>
     public static string EnsureActiveModWorkspace()
     {
-        string modsRoot = Engine_GameAssets.ModsRoot;
+        string modsRoot = EditorModValueService.ModsRootOverride ?? Engine_GameAssets.ModsRoot;
         if (string.IsNullOrEmpty(modsRoot))
         {
             modsRoot = ModWorkspace.GetDefaultModsRoot(Engine_AppRoot.AssetsDirectory);
         }
 
-        string activeName = GetActiveModName();
+        string activeName = GetActiveModName(modsRoot);
+        if (string.IsNullOrEmpty(activeName))
+        {
+            return string.Empty;
+        }
 
         // 1. Ensure assets/mods/<activeName>.f2mod exists:
         string pkgPath = Path.Combine(modsRoot, activeName + ModWorkspace.PackageExtension);
@@ -159,25 +289,124 @@ public static class EditorModExporter
             ModWorkspace.CreateModPackage(modsRoot, activeName, out _, out _);
         }
 
-        // 2. Ensure creator workbench working directory exists under assets/creators/<activeName>/ (NOT in assets/mods/):
-        string creatorsDir = Path.Combine(Engine_AppRoot.AssetsDirectory, "creators", activeName);
-        Directory.CreateDirectory(creatorsDir);
+        // 2. Ensure creator workbench working directory exists under res://creator/<activeName>/
+        string creatorsDir = GetCreatorDirectory(activeName);
+        if (!string.IsNullOrEmpty(creatorsDir))
+        {
+            Directory.CreateDirectory(creatorsDir);
+        }
 
         // 3. Ensure enabled in loadorder.toml:
         try
         {
             var order = ModLoadOrder.Read(modsRoot);
-            if (!order.Enabled.Contains(activeName))
-            {
-                order.Enabled.Insert(0, activeName);
-                order.Write(modsRoot, out _);
-            }
+            order.RegisterMod(activeName, enabled: true);
+            order.Write(modsRoot, out _);
         }
         catch
         {
         }
 
         return creatorsDir;
+    }
+
+    /// <summary>
+    /// Permanently deletes a mod by name, removing its .f2mod package, loose directory,
+    /// and creator workbench folder under <c>res://creator/&lt;modName&gt;/</c> (and legacy <c>assets/creator/&lt;modName&gt;/</c>).
+    /// Also unregisters the mod from loadorder.toml and clears ActiveModName if it matches.
+    /// </summary>
+    /// <param name="modName">Name of the mod to delete.</param>
+    /// <param name="error">Error description if deletion failed.</param>
+    /// <param name="customModsRoot">Optional override directory for mods root (useful for tests).</param>
+    /// <returns>True on success; false otherwise.</returns>
+    public static bool DeleteMod(string modName, out string error, string? customModsRoot = null)
+    {
+        error = string.Empty;
+        if (string.IsNullOrWhiteSpace(modName))
+        {
+            error = "Mod name cannot be empty.";
+            return false;
+        }
+
+        string modsRoot = customModsRoot ?? EditorModValueService.ModsRootOverride ?? Engine_GameAssets.ModsRoot;
+        if (string.IsNullOrEmpty(modsRoot))
+        {
+            modsRoot = ModWorkspace.GetDefaultModsRoot(Engine_AppRoot.AssetsDirectory);
+        }
+
+        string pkgPath = Path.Combine(modsRoot, modName + ModWorkspace.PackageExtension);
+        string loosePath = Path.Combine(modsRoot, modName);
+        string resCreatorDir = GetCreatorDirectory(modName);
+        string creatorDir = Path.Combine(Engine_AppRoot.AssetsDirectory, "creator", modName);
+        string legacyCreatorDir = Path.Combine(Engine_AppRoot.AssetsDirectory, "creators", modName);
+
+        bool success = true;
+        try
+        {
+            if (File.Exists(pkgPath))
+            {
+                File.Delete(pkgPath);
+            }
+
+            if (Directory.Exists(loosePath))
+            {
+                Directory.Delete(loosePath, recursive: true);
+            }
+
+            if (!string.IsNullOrEmpty(resCreatorDir) && Directory.Exists(resCreatorDir))
+            {
+                Directory.Delete(resCreatorDir, recursive: true);
+            }
+
+            if (Directory.Exists(creatorDir))
+            {
+                Directory.Delete(creatorDir, recursive: true);
+            }
+
+            if (Directory.Exists(legacyCreatorDir))
+            {
+                Directory.Delete(legacyCreatorDir, recursive: true);
+            }
+
+            try
+            {
+                var order = ModLoadOrder.Read(modsRoot);
+                bool changed = order.Enabled.Remove(modName);
+                if (order.Order.Remove(modName))
+                {
+                    changed = true;
+                }
+
+                if (changed)
+                {
+                    order.Write(modsRoot, out _);
+                }
+            }
+            catch
+            {
+            }
+
+            if (modName.Equals(GetActiveModName(modsRoot), StringComparison.OrdinalIgnoreCase))
+            {
+                ActiveModName = string.Empty;
+            }
+
+            if (!IsTestHost)
+            {
+                GD.Print($"[mod_manager] Permanently deleted mod '{modName}' (package and creator folder)");
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            if (!IsTestHost)
+            {
+                GD.PushWarning($"[mod_manager] Failed to delete mod '{modName}': {ex.Message}");
+            }
+            success = false;
+        }
+
+        return success;
     }
 
     /// <summary>
@@ -232,6 +461,15 @@ public static class EditorModExporter
             instance.SetSurfaceOverrideMaterial(i, pbrMat);
         }
 
+        byte[]? gmdBytes = EditorModValueService.ReadVirtualAssetBytes(normalized + ".gmd");
+        var gmdSkeleton = gmdBytes is not null && gmdBytes.Length > 0
+            ? Engine_GmdSkeleton.TryParse(gmdBytes)
+            : null;
+        if (gmdSkeleton is not null && gmdSkeleton.Attachments.Length > 0)
+        {
+            Engine_GmdWriter.AppendGmdDummiesToScene(root, gmdSkeleton);
+        }
+
         var doc = new GltfDocument();
         var state = new GltfState();
         Error packErr = doc.AppendFromScene(root, state);
@@ -250,8 +488,279 @@ public static class EditorModExporter
             return false;
         }
 
+        if (gmdSkeleton is not null && gmdSkeleton.Attachments.Length > 0)
+        {
+            Engine_GmdWriter.PatchGlbGmdDummyNamesAndExtras(targetGlb, gmdSkeleton);
+        }
+
         exportedPath = targetGlb;
+        NotifyModContentChanged(GetActiveModName());
         return true;
+    }
+
+    /// <summary>
+    /// Exports a 3D model (.mdl) and all of its referenced surface textures into a clean subfolder
+    /// inside the active mod's creator directory (<c>res://creator/&lt;ActiveMod&gt;/&lt;subFolderSlug&gt;/</c>).
+    /// </summary>
+    /// <param name="virtualPath">Virtual model path (e.g. <c>art/models/weapons/ranged/pistol_clockwork/weapon_pistol_clockwork.mdl</c>).</param>
+    /// <param name="subFolderSlug">Optional record/asset subfolder name inside the creator folder (e.g. <c>toy_gun</c>).</param>
+    /// <param name="filesystem">Optional mounted bank filesystem.</param>
+    /// <param name="exportedGlbPath">Absolute filesystem path where the <c>.glb</c> file was written.</param>
+    /// <param name="exportedTextures">List of absolute filesystem paths of exported surface <c>.png</c> textures.</param>
+    /// <param name="error">Error description if the export failed.</param>
+    /// <returns>True on success; false otherwise.</returns>
+    public static bool ExportModelToCreatorDir(
+        string virtualPath,
+        string? subFolderSlug,
+        BnkFileSystem? filesystem,
+        out string exportedGlbPath,
+        out List<string> exportedTextures,
+        out string error,
+        bool exportTextures = false)
+    {
+        exportedGlbPath = string.Empty;
+        exportedTextures = new List<string>();
+        error = string.Empty;
+
+        string creatorRoot = EnsureActiveModWorkspace();
+        if (string.IsNullOrEmpty(creatorRoot))
+        {
+            error = "No active mod is selected.";
+            return false;
+        }
+
+        string normalized = virtualPath.Replace('\\', '/').TrimStart('/');
+        string targetDir = string.IsNullOrWhiteSpace(subFolderSlug)
+            ? creatorRoot
+            : Path.Combine(creatorRoot, SanitizeCreatorSubFolder(subFolderSlug));
+        Directory.CreateDirectory(targetDir);
+
+        string stem = Path.GetFileNameWithoutExtension(normalized);
+        if (string.IsNullOrWhiteSpace(stem))
+        {
+            stem = "model";
+        }
+
+        string targetGlb = Path.Combine(targetDir, stem + ".glb");
+
+        ArrayMesh? mesh = null;
+        try
+        {
+            if (ResourceLoader.Exists("game://" + normalized))
+            {
+                mesh = ResourceLoader.Load<ArrayMesh>(
+                    "game://" + normalized, "ArrayMesh", ResourceLoader.CacheMode.Ignore);
+            }
+        }
+        catch
+        {
+        }
+
+        if (mesh is null || mesh.GetSurfaceCount() == 0)
+        {
+            byte[]? mdlBytes = EditorModValueService.ReadVirtualAssetBytes(normalized, filesystem);
+            if (mdlBytes is not null && mdlBytes.Length > 0)
+            {
+                mesh = Engine_MdlMesh.TryCreateMesh(mdlBytes, normalized, out string meshErr);
+                if (mesh is null || mesh.GetSurfaceCount() == 0)
+                {
+                    error = $"Model '{normalized}' could not be decoded: {meshErr}";
+                    return false;
+                }
+            }
+            else
+            {
+                error = $"Model 'game://{normalized}' could not be found in VFS or active mod package.";
+                return false;
+            }
+        }
+
+        var root = new Node3D { Name = stem };
+        var instance = new MeshInstance3D { Mesh = mesh, Name = "Mesh" };
+        root.AddChild(instance);
+        instance.Owner = root;
+
+        int surfaceCount = mesh.GetSurfaceCount();
+        for (int i = 0; i < surfaceCount; i++)
+        {
+            Material? surfaceMat = mesh.SurfaceGetMaterial(i);
+            BaseMaterial3D pbrMat = ConvertToPbrMaterial(surfaceMat, stem, i);
+            instance.SetSurfaceOverrideMaterial(i, pbrMat);
+        }
+
+        byte[]? gmdBytes = EditorModValueService.ReadVirtualAssetBytes(normalized + ".gmd", filesystem);
+        var gmdSkeleton = gmdBytes is not null && gmdBytes.Length > 0
+            ? Engine_GmdSkeleton.TryParse(gmdBytes)
+            : null;
+        if (gmdSkeleton is not null && gmdSkeleton.Attachments.Length > 0)
+        {
+            Engine_GmdWriter.AppendGmdDummiesToScene(root, gmdSkeleton);
+        }
+
+        var doc = new GltfDocument();
+        var state = new GltfState();
+        Error packErr = doc.AppendFromScene(root, state);
+        root.Free();
+
+        if (packErr != Error.Ok)
+        {
+            error = $"Failed to serialize mesh into glTF document: {packErr}";
+            return false;
+        }
+
+        Error writeErr = doc.WriteToFilesystem(state, targetGlb);
+        if (writeErr != Error.Ok)
+        {
+            error = $"Failed to write GLB to {targetGlb}: {writeErr}";
+            return false;
+        }
+
+        if (gmdSkeleton is not null && gmdSkeleton.Attachments.Length > 0)
+        {
+            Engine_GmdWriter.PatchGlbGmdDummyNamesAndExtras(targetGlb, gmdSkeleton);
+        }
+
+        exportedGlbPath = targetGlb;
+
+        // Model export only writes the .glb (and GMD sockets). Textures are only exported
+        // if explicitly requested per-texture in the UI, keeping creator directories clean.
+        if (exportTextures)
+        {
+            foreach (string texPath in GetModelTexturePaths(normalized, filesystem))
+            {
+                if (ExportTextureToCreatorDir(texPath, subFolderSlug, filesystem, exportPbrTemplate: false, out string texOut, out _))
+                {
+                    exportedTextures.Add(texOut);
+                }
+            }
+        }
+
+        NotifyModContentChanged(GetActiveModName());
+        return true;
+    }
+
+    /// <summary>
+    /// Exports a virtual texture (<c>.tex</c>) as an uncompressed RGBA8 <c>.png</c> (and optional <c>_orm.png</c> template)
+    /// into a clean subfolder inside the active mod's creator directory (<c>res://creator/&lt;ActiveMod&gt;/&lt;subFolderSlug&gt;/</c>).
+    /// </summary>
+    public static bool ExportTextureToCreatorDir(
+        string virtualPath,
+        string? subFolderSlug,
+        BnkFileSystem? filesystem,
+        bool exportPbrTemplate,
+        out string exportedPngPath,
+        out string error)
+    {
+        exportedPngPath = string.Empty;
+        error = string.Empty;
+
+        string creatorRoot = EnsureActiveModWorkspace();
+        if (string.IsNullOrEmpty(creatorRoot))
+        {
+            error = "No active mod is selected.";
+            return false;
+        }
+
+        string normalized = virtualPath.Replace('\\', '/').TrimStart('/');
+        byte[]? bytes = EditorModValueService.ReadVirtualAssetBytes(normalized, filesystem);
+        if ((bytes is null || bytes.Length == 0) &&
+            !normalized.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+        {
+            bytes = EditorModValueService.ReadVirtualAssetBytes(normalized + ".tex", filesystem);
+            if (bytes is not null && bytes.Length > 0)
+            {
+                normalized += ".tex";
+            }
+        }
+
+        if (bytes is null || bytes.Length == 0)
+        {
+            error = $"Texture not found in VFS or active mod package: {virtualPath}";
+            return false;
+        }
+
+        string targetDir = string.IsNullOrWhiteSpace(subFolderSlug)
+            ? creatorRoot
+            : Path.Combine(creatorRoot, SanitizeCreatorSubFolder(subFolderSlug));
+        Directory.CreateDirectory(targetDir);
+
+        string fileName = Path.GetFileName(normalized);
+        if (fileName.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+        {
+            fileName = fileName[..^4];
+        }
+        if (fileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+        {
+            fileName = fileName[..^4];
+        }
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = "texture";
+        }
+
+        string targetPng = Path.Combine(targetDir, fileName + ".png");
+
+        Image? image = Engine_TexImage.TryCreateImage(bytes, out _, out string decodeErr);
+        if (image is null)
+        {
+            error = $"Could not decode texture '{virtualPath}': {decodeErr}";
+            return false;
+        }
+
+        if (image.IsCompressed())
+        {
+            image.Decompress();
+        }
+
+        image.Convert(Image.Format.Rgba8);
+        Error saveErr = image.SavePng(targetPng);
+        if (saveErr != Error.Ok)
+        {
+            error = $"Failed to save PNG to {targetPng}: {saveErr}";
+            return false;
+        }
+
+        if (exportPbrTemplate)
+        {
+            string ormPath = Path.Combine(targetDir, fileName + "_orm.png");
+            if (!File.Exists(ormPath))
+            {
+                var orm = Image.CreateEmpty(image.GetWidth(), image.GetHeight(), false, Image.Format.Rgba8);
+                orm.Fill(new Color(1.0f, 0.75f, 0.0f, 0.5f));
+                orm.SavePng(ormPath);
+            }
+        }
+
+        exportedPngPath = targetPng;
+        NotifyModContentChanged(GetActiveModName());
+        return true;
+    }
+
+    private static string SanitizeCreatorSubFolder(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "exported";
+        }
+
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (char c in raw.Trim())
+        {
+            if (char.IsLetterOrDigit(c) || c == '_' || c == '-')
+            {
+                sb.Append(char.ToLowerInvariant(c));
+            }
+            else if (c == ' ' || c == '.')
+            {
+                if (sb.Length > 0 && sb[^1] != '_')
+                {
+                    sb.Append('_');
+                }
+            }
+        }
+
+        string res = sb.ToString().Trim('_');
+        return string.IsNullOrEmpty(res) ? "exported" : res;
     }
 
     /// <summary>
@@ -265,15 +774,7 @@ public static class EditorModExporter
         var textures = new List<string>();
         string normalized = mdlVirtualPath.Replace('\\', '/').TrimStart('/');
 
-        byte[]? bytes = null;
-        if (filesystem is not null && filesystem.TryGetFile(normalized, out BnkFile file))
-        {
-            bytes = file.ReadAllBytes();
-        }
-        else
-        {
-            bytes = Engine_BnkMeshLoader.ReadBytes(normalized);
-        }
+        byte[]? bytes = EditorModValueService.ReadVirtualAssetBytes(normalized, filesystem);
 
         if (bytes is null || bytes.Length == 0)
         {
@@ -301,6 +802,7 @@ public static class EditorModExporter
                     Add(mat.Diffuse);
                     Add(mat.Normal);
                     Add(mat.Specular);
+                    Add(mat.EnvironmentMap);
                     Add(mat.SelfIllumination);
                 }
             }
@@ -315,7 +817,8 @@ public static class EditorModExporter
 
         if (material is ShaderMaterial shader)
         {
-            if (shader.GetShaderParameter("has_orm").AsBool() &&
+            if (shader.GetShaderParameter("is_pbr").AsBool() &&
+                shader.GetShaderParameter("has_orm").AsBool() &&
                 shader.GetShaderParameter("orm_tex").As<Texture2D>() is Texture2D orm)
             {
                 var ormMat = new OrmMaterial3D();
@@ -345,7 +848,7 @@ public static class EditorModExporter
                 shader.GetShaderParameter("normal_tex").As<Texture2D>() is Texture2D normal)
             {
                 pbr.NormalEnabled = true;
-                pbr.NormalTexture = PrepareGltfTexture(normal);
+                pbr.NormalTexture = PrepareGltfTexture(normal, isNormalMap: true);
             }
 
             if (shader.GetShaderParameter("has_emission").AsBool() &&
@@ -372,7 +875,7 @@ public static class EditorModExporter
         return pbr;
     }
 
-    private static Texture2D? PrepareGltfTexture(Texture2D? source)
+    private static Texture2D? PrepareGltfTexture(Texture2D? source, bool isNormalMap = false)
     {
         if (source is null)
         {
@@ -392,6 +895,23 @@ public static class EditorModExporter
         }
 
         copy.Convert(Image.Format.Rgba8);
+
+        if (isNormalMap)
+        {
+            byte[] data = copy.GetData();
+            int w = copy.GetWidth();
+            int h = copy.GetHeight();
+            for (int i = 0; i + 3 < data.Length; i += 4)
+            {
+                float nx = (data[i] / 255f) * 2f - 1f;
+                float ny = (data[i + 1] / 255f) * 2f - 1f;
+                float nz = MathF.Sqrt(MathF.Max(0f, 1f - nx * nx - ny * ny));
+                data[i + 2] = (byte)Math.Clamp((int)MathF.Round((nz * 0.5f + 0.5f) * 255f), 0, 255);
+                data[i + 3] = 255;
+            }
+            copy = Image.CreateFromData(w, h, false, Image.Format.Rgba8, data);
+        }
+
         return ImageTexture.CreateFromImage(copy);
     }
 

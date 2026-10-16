@@ -1,5 +1,6 @@
 #if TOOLS
 using Godot;
+using Refii.Assets.UI;
 using Refii.EditorTools;
 
 namespace Refii.Assets;
@@ -10,12 +11,25 @@ public partial class EntityInspectorPlugin : EditorInspectorPlugin
         godotObject.HasMeta("container_type") ||
         godotObject.HasMeta("readable_text") ||
         godotObject.HasMeta("property") ||
-        godotObject.HasMeta("equipment_hash");
+        godotObject.HasMeta("equipment_hash") ||
+        LevelNodeGdbInspectorCard.CanInspect(godotObject);
 
     public override void _ParseBegin(GodotObject godotObject)
     {
         var root = new VBoxContainer();
         root.AddThemeConstantOverride("separation", 6);
+
+        if (godotObject is Node node && LevelNodeGdbInspectorCard.CanInspect(node))
+        {
+            root.AddChild(new LevelNodeGdbInspectorCard(node));
+            if (godotObject.HasMeta("equipment_hash") ||
+                godotObject.HasMeta("container_type") ||
+                godotObject.HasMeta("readable_text") ||
+                godotObject.HasMeta("property"))
+            {
+                root.AddChild(new HSeparator());
+            }
+        }
 
         if (godotObject.HasMeta("equipment_hash"))
         {

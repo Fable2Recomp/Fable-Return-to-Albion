@@ -71,6 +71,11 @@ public static class GdbPatchBuilder
             {
                 db.Names[kvp.Key] = kvp.Value;
             }
+
+            foreach (var aliasPair in view.AliasPairs())
+            {
+                db.Aliases.Add(aliasPair);
+            }
         }
         catch (Exception ex)
         {
@@ -78,6 +83,93 @@ public static class GdbPatchBuilder
         }
 
         return db;
+    }
+
+    /// <summary>
+    /// Applies a Title Update (<c>.gdb.tu</c>) binary overlay onto a base GDB binary (such as <c>&lt;level&gt;.gdb</c>),
+    /// returning a single merged GDB binary where modified records have their properties updated and newly added
+    /// records are appended.
+    /// </summary>
+    public static byte[] ApplyOverlayToBaseGdb(byte[] baseGdbBytes, byte[]? tuGdbBytes)
+    {
+        if (tuGdbBytes is null || tuGdbBytes.Length == 0 || baseGdbBytes is null || baseGdbBytes.Length == 0)
+        {
+            return baseGdbBytes ?? Array.Empty<byte>();
+        }
+
+        GdbPatchDatabase tuDb = LoadOrCreatePatchDatabase(tuGdbBytes);
+        if (tuDb.Entries.Count == 0 && tuDb.Aliases.Count == 0)
+        {
+            return baseGdbBytes;
+        }
+
+        GdbPatchDatabase baseDb = LoadOrCreatePatchDatabase(baseGdbBytes);
+        if (baseDb.Entries.Count == 0)
+        {
+            return GdbWriter.Serialize(tuDb);
+        }
+
+        var entryById = new Dictionary<uint, GdbPatchEntry>(baseDb.Entries.Count);
+        foreach (GdbPatchEntry entry in baseDb.Entries)
+        {
+            entryById[entry.Id] = entry;
+        }
+
+        foreach (GdbPatchEntry tuEntry in tuDb.Entries)
+        {
+            if (entryById.TryGetValue(tuEntry.Id, out GdbPatchEntry? existing) && existing is not null)
+            {
+                if (tuEntry.SchemaFlags != 0 && existing.SchemaFlags == 0)
+                {
+                    existing.SchemaFlags = tuEntry.SchemaFlags;
+                }
+
+                foreach (GdbPatchProperty prop in tuEntry.Properties)
+                {
+                    int propIdx = existing.Properties.FindIndex(p => p.NameHash == prop.NameHash);
+                    if (propIdx >= 0)
+                    {
+                        existing.Properties[propIdx].Value = prop.Value;
+                        existing.Properties[propIdx].Type = prop.Type;
+                    }
+                    else
+                    {
+                        existing.Properties.Add(new GdbPatchProperty(prop.NameHash, prop.Type, prop.Value));
+                    }
+                }
+            }
+            else
+            {
+                var cloned = new GdbPatchEntry(tuEntry.Id, tuEntry.SchemaFlags != 0 ? tuEntry.SchemaFlags : (byte)0x01);
+                foreach (GdbPatchProperty prop in tuEntry.Properties)
+                {
+                    cloned.Properties.Add(new GdbPatchProperty(prop.NameHash, prop.Type, prop.Value));
+                }
+
+                baseDb.Entries.Add(cloned);
+                entryById[cloned.Id] = cloned;
+            }
+        }
+
+        foreach (var kvp in tuDb.Names)
+        {
+            baseDb.Names[kvp.Key] = kvp.Value;
+        }
+
+        foreach (var (aliasHash, targetId) in tuDb.Aliases)
+        {
+            int aliasIdx = baseDb.Aliases.FindIndex(a => a.AliasHash == aliasHash);
+            if (aliasIdx >= 0)
+            {
+                baseDb.Aliases[aliasIdx] = (aliasHash, targetId);
+            }
+            else
+            {
+                baseDb.Aliases.Add((aliasHash, targetId));
+            }
+        }
+
+        return GdbWriter.Serialize(baseDb);
     }
 
     /// <summary>
@@ -339,6 +431,11 @@ public static class GdbPatchBuilder
         }
 
         string trimmed = value.Trim();
+        bool isHex = trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                     uint.TryParse(trimmed.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _);
+        uint parsedHex = isHex
+            ? uint.Parse(trimmed.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture)
+            : 0u;
 
         switch (type)
         {
@@ -352,16 +449,17 @@ public static class GdbPatchBuilder
                 {
                     return BitConverter.SingleToUInt32Bits(f);
                 }
+                if (isHex)
+                {
+                    return parsedHex;
+                }
                 return 0u;
 
             case GdbFieldType.Int:
             case GdbFieldType.Enum:
-                if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                if (isHex)
                 {
-                    if (uint.TryParse(trimmed.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint hexVal))
-                    {
-                        return hexVal;
-                    }
+                    return parsedHex;
                 }
                 if (int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int intVal))
                 {
@@ -371,29 +469,71 @@ public static class GdbPatchBuilder
                 {
                     return uintVal;
                 }
+                if (type == GdbFieldType.Enum)
+                {
+                    return Refii.Core.Engine_GameHash.Fnv1(trimmed);
+                }
                 return 0u;
+
+            case GdbFieldType.String:
+                if (isHex)
+                {
+                    return parsedHex;
+                }
+                return HashStringOrAssetPath(trimmed);
 
             case GdbFieldType.Reference:
             case GdbFieldType.ResourceReference:
-                if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                if (isHex)
                 {
-                    if (uint.TryParse(trimmed.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint refHex))
-                    {
-                        return refHex;
-                    }
+                    return parsedHex;
                 }
                 if (uint.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint refUint))
                 {
                     return refUint;
                 }
-                return 0u;
+                return HashStringOrAssetPath(trimmed);
 
             default:
+                if (isHex)
+                {
+                    return parsedHex;
+                }
                 if (uint.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint defaultUint))
                 {
                     return defaultUint;
                 }
-                return 0u;
+                return HashStringOrAssetPath(trimmed);
         }
+    }
+
+    public static bool IsVirtualAssetPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        string trimmed = value.Trim();
+        return trimmed.Contains('\\') ||
+               trimmed.Contains('/') ||
+               trimmed.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.EndsWith(".skl", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.EndsWith(".phy", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.EndsWith(".dds", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static uint HashStringOrAssetPath(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return 0u;
+        }
+
+        string trimmed = value.Trim();
+        return IsVirtualAssetPath(trimmed)
+            ? Refii.Level.Engine_PropModelIndex.PathHash(trimmed)
+            : Refii.Core.Engine_GameHash.Fnv1(trimmed);
     }
 }

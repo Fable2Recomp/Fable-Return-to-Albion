@@ -137,4 +137,57 @@ public class EditorModWorkflowTests
             }
         }
     }
+
+    [TestCase]
+    public void TestDeleteModPurgesPackageAndCreatorDirectory()
+    {
+        string testModName = "DeleteTestMod_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        string modsDir = Path.Combine(Path.GetTempPath(), "refii_mod_delete_test_" + Guid.NewGuid().ToString("N"));
+        string creatorDir = Path.Combine(Refii.Core.Engine_AppRoot.AssetsDirectory, "creator", testModName);
+
+        Directory.CreateDirectory(modsDir);
+        Directory.CreateDirectory(creatorDir);
+        File.WriteAllText(Path.Combine(creatorDir, "draft_model.glb"), "test glb data");
+
+        string pkgPath = Path.Combine(modsDir, testModName + ModWorkspace.PackageExtension);
+        F2ModPackage.Create(pkgPath, new ModMetadata { Title = testModName }, Array.Empty<(string, byte[])>(), out _);
+
+        // Also create a loadorder.toml
+        var order = new ModLoadOrder();
+        order.Enabled.Add(testModName);
+        order.Order.Add(testModName);
+        order.Write(modsDir, out _);
+
+        EditorModExporter.ActiveModName = testModName;
+
+        try
+        {
+            AssertThat(File.Exists(pkgPath)).IsTrue();
+            AssertThat(Directory.Exists(creatorDir)).IsTrue();
+            AssertThat(EditorModExporter.GetActiveModName(modsDir)).IsEqual(testModName);
+
+            bool deleted = EditorModExporter.DeleteMod(testModName, out string error, modsDir);
+            AssertThat(deleted).IsTrue();
+            AssertThat(error).IsEqual(string.Empty);
+
+            // Verify .f2mod is deleted
+            AssertThat(File.Exists(pkgPath)).IsFalse();
+
+            // Verify creator directory is deleted
+            AssertThat(Directory.Exists(creatorDir)).IsFalse();
+
+            // Verify active mod is cleared
+            AssertThat(EditorModExporter.GetActiveModName(modsDir)).IsEqual(string.Empty);
+
+            // Verify removed from loadorder.toml
+            var reloadedOrder = ModLoadOrder.Read(modsDir);
+            AssertThat(reloadedOrder.Enabled.Contains(testModName)).IsFalse();
+            AssertThat(reloadedOrder.Order.Contains(testModName)).IsFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(modsDir)) Directory.Delete(modsDir, true);
+            if (Directory.Exists(creatorDir)) Directory.Delete(creatorDir, true);
+        }
+    }
 }

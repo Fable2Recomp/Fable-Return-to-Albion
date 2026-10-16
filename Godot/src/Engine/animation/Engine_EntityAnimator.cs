@@ -178,10 +178,8 @@ public partial class Engine_EntityAnimator : Node3D
 		AddChild(player);
 		player.AddAnimationLibrary(LibraryName, library);
 
-		if (RootMotion && RootBone(skeleton) is string rootBone)
-		{
-			player.RootMotionTrack = $"{Engine_AnimSkeleton.SkeletonName}:{rootBone}";
-		}
+		// Root motion track is left unset by default; AnimationPlayer is a sibling of Skeleton3D
+		// so an unqualified 'Skeleton3D:bone' path is invalid and triggers Godot node path errors.
 
 		Bind(skeleton);
 
@@ -260,10 +258,8 @@ public partial class Engine_EntityAnimator : Node3D
 		AddChild(player);
 		player.AddAnimationLibrary(LibraryName, new AnimationLibrary());
 
-		if (RootMotion && RootBone(Skeleton) is string rootBone)
-		{
-			player.RootMotionTrack = $"{Engine_AnimSkeleton.SkeletonName}:{rootBone}";
-		}
+		// Root motion track is left unset by default; AnimationPlayer is a sibling of Skeleton3D
+		// so an unqualified 'Skeleton3D:bone' path is invalid and triggers Godot node path errors.
 
 		return player;
 	}

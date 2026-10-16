@@ -146,7 +146,7 @@ public sealed class PropBuildStats
         (EngineLevelError.Length == 0 ? string.Empty : $" [{EngineLevelError}]");
 }
 
-public static class Engine_LevelProps
+public static partial class Engine_LevelProps
 {
     public const string NodeName = "Props";
 
@@ -311,8 +311,28 @@ public static class Engine_LevelProps
         }
 
         string savePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ".save");
-        List<SaveEntity> saveEntities =
-            Engine_GdbSaveMap.ParseEntities(read(savePath), out SaveLayerStats layers);
+        bool isEditor = Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode;
+        byte[]? saveBytes = read(savePath);
+        SaveLayerStats layers;
+        List<SaveEntity> saveEntities;
+        EditorPropHierarchy? editorHierarchy = null;
+
+        if (isEditor)
+        {
+            GdbSaveDocument saveDoc = Engine_GdbSaveMap.ParseDocument(saveBytes, out layers);
+            editorHierarchy = new EditorPropHierarchy(saveDoc, gdbPath);
+            IReadOnlyList<GdbSaveEntityEntry> allSaveEntries = saveDoc.GetAllEntities(includeInitiallyOff: true);
+            saveEntities = new List<SaveEntity>(allSaveEntries.Count);
+            foreach (GdbSaveEntityEntry entry in allSaveEntries)
+            {
+                saveEntities.Add(entry.ToRuntimeSaveEntity());
+            }
+        }
+        else
+        {
+            saveEntities = Engine_GdbSaveMap.ParseEntities(saveBytes, out layers);
+        }
+
         var saveMap = new List<KeyValuePair<uint, string>>(saveEntities.Count);
         foreach (SaveEntity entity in saveEntities)
         {
@@ -329,7 +349,8 @@ public static class Engine_LevelProps
         List<GdbPlacement> placements = Engine_GdbPlacements.Parse(view, saveMap);
         List<GdbView> supplementalViews = LoadSupplementalViews(read);
         AugmentPlacementModelHashes(level, placements, supplementalViews, stats);
-        AppendSupplementalPlacements(supplementalViews, saveMap, placements, stats);
+        AppendSupplementalPlacements(supplementalViews, saveMap, placements, stats, editorHierarchy);
+        editorHierarchy?.IndexPlacements(placements);
         stats.Placements = placements.Count;
 
         // A placement that carries a light keeps a node of its own: Engine_LevelLights removes its
@@ -367,7 +388,7 @@ public static class Engine_LevelProps
         }
 
         PropBuildStats buildStats = stats;
-        void AppendCompanionInstance(string keyPrefix, string path, Transform3D transform)
+        void AppendCompanionInstance(string keyPrefix, string path, Transform3D transform, uint ownerHash = 0)
         {
             if (path.Length == 0 ||
                 Engine_PropModelIndex.ResolveByPath(path) is not string resolved ||
@@ -385,7 +406,7 @@ public static class Engine_LevelProps
                 order.Add(companionKey);
             }
 
-            companionBlock.AddInstance(transform);
+            companionBlock.AddInstance(transform, ownerHash);
             buildStats.Instances++;
         }
 
@@ -634,21 +655,22 @@ public static class Engine_LevelProps
                 "bs_market_clocktower/bs_market_clocktower.mdl", StringComparison.Ordinal);
             if (clocktowerBasePrimary)
             {
+                uint ownerHash = isEditor ? placement.Hash : 0u;
                 if (clocktowerPlatformCompanion is not null)
                 {
-                    AppendCompanionInstance("clocktower", clocktowerPlatformCompanion, transform);
+                    AppendCompanionInstance("clocktower", clocktowerPlatformCompanion, transform, ownerHash);
                 }
 
                 foreach (string partPath in ClocktowerPartPaths)
                 {
-                    AppendCompanionInstance("clocktower", partPath, transform);
+                    AppendCompanionInstance("clocktower", partPath, transform, ownerHash);
                 }
             }
         }
 
-        AppendNoHashShells(shellCandidates, blocks, order, transformKeys, stats);
-        AppendCompanionBlocks(blocks, order, transformKeys, stats);
-        AppendGmdLayoutChildren(blocks, order, transformKeys, stats);
+        AppendNoHashShells(shellCandidates, blocks, order, transformKeys, stats, isEditor);
+        AppendCompanionBlocks(blocks, order, transformKeys, stats, isEditor);
+        AppendGmdLayoutChildren(blocks, order, transformKeys, stats, isEditor);
 
         if (stats.Instances == 0)
         {
@@ -706,8 +728,6 @@ public static class Engine_LevelProps
 
         foreach (SilverKeyNode keyNode in silverKeys)
         {
-            keyNode.Name = UniqueName(container, "SilverKey");
-
             // Same route every other prop takes: the probe sample is STORED on the node and the
             // streamer turns it into shader state once the mesh is standing. A key carries its
             // mesh from the start, so it is lit here too — but through the stored sample, not a
@@ -716,7 +736,15 @@ public static class Engine_LevelProps
                 keyNode, keyNode.BaseTransform.Origin, probes);
             Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
                 keyNode, lighting, staticProp: true);
-            container.AddChild(keyNode);
+            if (editorHierarchy is not null)
+            {
+                editorHierarchy.AttachSilverKey(container, keyNode);
+            }
+            else
+            {
+                keyNode.Name = UniqueName(container, "SilverKey");
+                container.AddChild(keyNode);
+            }
         }
 
         int singleInstances = 0;
@@ -724,6 +752,14 @@ public static class Engine_LevelProps
         void AddSingle(PropBlockBuild block, int index)
         {
             StatedRange? range = index < block.Ranges.Count ? block.Ranges[index] : null;
+            if (editorHierarchy is not null)
+            {
+                // In Editor mode, a 1:1 selectable tree only needs its primary mesh (PropRole.Main).
+                // Redundant distant-LOD and shadow proxy twins are omitted so the scene tree stays lean.
+                AddSingleAs(block, index, PropRole.Main, block.ModelPath, range);
+                return;
+            }
+
             foreach ((PropRole role, string path) in block.Roles(range))
             {
                 AddSingleAs(block, index, role, path, range);
@@ -741,7 +777,7 @@ public static class Engine_LevelProps
             var single = new MeshInstance3D
             {
                 Layers = block.LayersFor(role),
-                Name = UniqueName(container, role == PropRole.Main ? block.Label : $"{block.Label} {role}"),
+                Name = editorHierarchy is not null ? block.Label : UniqueName(container, role == PropRole.Main ? block.Label : $"{block.Label} {role}"),
                 Transform = block.Instances[index],
             };
 
@@ -791,7 +827,7 @@ public static class Engine_LevelProps
             {
                 ++keyed;
                 single.SetMeta(
-                    Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, (long)bakeKey);
+                    Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, $"0x{bakeKey:X16}");
             }
             else if (role == PropRole.Main)
             {
@@ -850,14 +886,21 @@ public static class Engine_LevelProps
                 Refii.Entities.Engine_EntityInspect.Annotate(single, hash, inspect);
             }
 
-            container.AddChild(single);
+            if (editorHierarchy is not null)
+            {
+                editorHierarchy.AttachSingleProp(container, single, block.Label, role, hash);
+            }
+            else
+            {
+                container.AddChild(single);
+            }
         }
 
         foreach (string key in order)
         {
             PropBlockBuild block = blocks[key];
 
-            if (block.Instances.Count <= SelectableInstanceLimit)
+            if (editorHierarchy is null && block.Instances.Count <= SelectableInstanceLimit)
             {
                 stats.SmallBlocks++;
                 stats.SmallBlockInstances += block.Instances.Count;
@@ -874,7 +917,8 @@ public static class Engine_LevelProps
             for (int i = 0; i < block.Instances.Count; i++)
             {
                 bool forcedSingle = i < block.InstanceHashes.Count &&
-                    ((inspect is not null && inspect.HasFor(block.InstanceHashes[i])) ||
+                    ((editorHierarchy is not null && block.InstanceHashes[i] != 0) ||
+                        (inspect is not null && inspect.HasFor(block.InstanceHashes[i])) ||
                         lightHosts.Contains(block.InstanceHashes[i]));
                 if (forcedSingle)
                 {
@@ -1044,12 +1088,11 @@ public static class Engine_LevelProps
                 // name, and a model with hundreds of cells under one label is that squared.
                 Vector3I at = celled.Key.Cell;
                 string label = role == PropRole.Main ? block.Label : $"{block.Label} {role}";
+                string batchName = cells.Count == 1 ? label : $"{label} [{at.X} {at.Y} {at.Z}]";
                 var node = new MultiMeshInstance3D
                 {
                     Layers = block.LayersFor(role),
-                    Name = UniqueName(container, cells.Count == 1
-                        ? label
-                        : $"{label} [{at.X} {at.Y} {at.Z}]"),
+                    Name = editorHierarchy is not null ? batchName : UniqueName(container, batchName),
                     Multimesh = multiMesh,
                     Transform = toBatch,
                 };
@@ -1095,10 +1138,25 @@ public static class Engine_LevelProps
                         node, bounds.GetCenter(), probes);
                 }
 
-                container.AddChild(node);
+                if (editorHierarchy is not null)
+                {
+                    editorHierarchy.AttachBatchedNode(container, node, batchName);
+                }
+                else
+                {
+                    container.AddChild(node);
+                }
             }
 
             stats.Blocks++;
+        }
+
+        if (editorHierarchy is not null)
+        {
+            foreach (KeyValuePair<uint, Node3D> kv in editorHierarchy.PrimaryRecordNodes)
+            {
+                fxAttachTo.TryAdd(kv.Key, kv.Value);
+            }
         }
 
         int levelFx = Engine_LevelFx.Spawn(
@@ -1256,7 +1314,8 @@ public static class Engine_LevelProps
         Dictionary<string, PropBlockBuild> blocks,
         List<string> order,
         HashSet<string> transformKeys,
-        PropBuildStats stats)
+        PropBuildStats stats,
+        bool isEditor = false)
     {
         var additions = new List<KeyValuePair<string, PropBlockBuild>>();
 
@@ -1277,11 +1336,15 @@ public static class Engine_LevelProps
             }
 
             var build = new PropBlockBuild(resolved, $"prop {NameOf(resolved)}");
-            foreach (Transform3D transform in source.Instances)
+            for (int i = 0; i < source.Instances.Count; i++)
             {
+                Transform3D transform = source.Instances[i];
+                uint ownerHash = isEditor && i < source.InstanceHashes.Count
+                    ? source.InstanceHashes[i]
+                    : 0u;
                 if (transformKeys.Add(TransformKey(transform, resolved)))
                 {
-                    build.AddInstance(transform);
+                    build.AddInstance(transform, ownerHash);
                 }
             }
 
@@ -1312,7 +1375,8 @@ public static class Engine_LevelProps
         Dictionary<string, PropBlockBuild> blocks,
         List<string> order,
         HashSet<string> transformKeys,
-        PropBuildStats stats)
+        PropBuildStats stats,
+        bool isEditor = false)
     {
         var additions = new Dictionary<string, PropBlockBuild>();
         var additionOrder = new List<string>();
@@ -1393,8 +1457,12 @@ public static class Engine_LevelProps
                 string dumpWant = OS.GetEnvironment("REFII_PROPS_DUMP");
                 bool dump = dumpWant.Length != 0 &&
                     (child.AssetKey + " " + childPath).Contains(dumpWant, StringComparison.OrdinalIgnoreCase);
-                foreach (Transform3D instance in parent.Instances)
+                for (int i = 0; i < parent.Instances.Count; i++)
                 {
+                    Transform3D instance = parent.Instances[i];
+                    uint ownerHash = isEditor && i < parent.InstanceHashes.Count
+                        ? parent.InstanceHashes[i]
+                        : 0u;
                     Transform3D world = ComposeChild(instance, child.Local);
                     if (OnPlacement(placed, world.Origin, NameOf(childPath)) is string by)
                     {
@@ -1411,7 +1479,7 @@ public static class Engine_LevelProps
                     }
                     if (transformKeys.Add(TransformKey(world, childPath)))
                     {
-                        build.AddInstance(world);
+                        build.AddInstance(world, ownerHash);
                         stats.GmdChildren++;
                         stats.Instances++;
                     }
@@ -1663,7 +1731,8 @@ public static class Engine_LevelProps
         Dictionary<string, PropBlockBuild> blocks,
         List<string> order,
         HashSet<string> transformKeys,
-        PropBuildStats stats)
+        PropBuildStats stats,
+        bool isEditor = false)
     {
         foreach (ShellCandidate candidate in candidates)
         {
@@ -1695,7 +1764,7 @@ public static class Engine_LevelProps
                     order.Add(key);
                 }
 
-                build.AddInstance(transform);
+                build.AddInstance(transform, isEditor ? placement.Hash : 0u);
                 stats.Shells++;
                 stats.Instances++;
             }
@@ -2674,7 +2743,8 @@ public static class Engine_LevelProps
         List<GdbView> views,
         List<KeyValuePair<uint, string>> saveMap,
         List<GdbPlacement> placements,
-        PropBuildStats stats)
+        PropBuildStats stats,
+        EditorPropHierarchy? editorHierarchy = null)
     {
         if (saveMap.Count == 0 || views.Count == 0)
         {
@@ -2709,6 +2779,7 @@ public static class Engine_LevelProps
                 }
 
                 placed.Add(entity.Key);
+                editorHierarchy?.MarkSupplemental(entity.Key);
                 stats.SupplementalHits++;
 
                 if (placement.ModelPathHashes.Count > 1)
@@ -2733,102 +2804,17 @@ public static class Engine_LevelProps
         placements.AddRange(appended);
     }
 
-    public static Transform3D BuildTransform(GdbPlacement placement)
-    {
-        float scale = float.IsFinite(placement.Scale) &&
-                      placement.Scale > 0.01f && placement.Scale < 100f
-            ? placement.Scale
-            : 1f;
+    public static Transform3D BuildTransform(GdbPlacement placement) =>
+        GdbTransformMath.BuildTransform(placement);
 
-        Basis basis = placement.HasRotation
-            ? RotationBasis(placement.RotX, placement.RotY, placement.RotZ, scale)
-            : YawBasis(placement.Yaw, scale);
+    public static Basis RotationBasis(float rx, float ry, float rz, float scale) =>
+        GdbTransformMath.RotationBasis(rx, ry, rz, scale);
 
-        return new Transform3D(basis, new Vector3(placement.X, placement.Z, placement.Y));
-    }
+    public static Basis YawBasis(float yaw, float scale) =>
+        GdbTransformMath.YawBasis(yaw, scale);
 
-    public static Basis RotationBasis(float rx, float ry, float rz, float scale)
-    {
-        if (!float.IsFinite(rx))
-        {
-            rx = 0f;
-        }
-
-        if (!float.IsFinite(ry))
-        {
-            ry = 0f;
-        }
-
-        if (!float.IsFinite(rz))
-        {
-            rz = 0f;
-        }
-
-        float sx = MathF.Sin(rx);
-        float cx = MathF.Cos(rx);
-        float sy = MathF.Sin(ry);
-        float cy = MathF.Cos(ry);
-        float sz = MathF.Sin(rz);
-        float cz = MathF.Cos(rz);
-
-        var game = new float[9];
-        game[0] = cy * cx;
-        game[1] = sx;
-        game[2] = -sy * cx;
-        game[3] = (sy * sz) - (cy * cz * sx);
-        game[4] = cz * cx;
-        game[5] = (sy * cz * sx) + (cy * sz);
-        game[6] = (cy * sz * sx) + (sy * cz);
-        game[7] = -sz * cx;
-        game[8] = (cy * cz) - (sy * sz * sx);
-
-        var map = new[] { 0, 2, 1 };
-        var m = new float[9];
-        for (int row = 0; row < 3; row++)
-        {
-            for (int col = 0; col < 3; col++)
-            {
-                m[(row * 3) + col] = game[(map[row] * 3) + map[col]] * scale;
-            }
-        }
-
-        return ToGodotBasis(m);
-    }
-
-    public static Basis YawBasis(float yaw, float scale)
-    {
-        float s = MathF.Sin(yaw);
-        float c = MathF.Cos(yaw);
-
-        if (!float.IsFinite(s) || !float.IsFinite(c))
-        {
-            s = 0f;
-            c = 1f;
-        }
-
-        return YawScaleBasis(s, c, scale, scale, scale);
-    }
-
-    public static Basis YawScaleBasis(float s, float c, float sx, float sy, float sz)
-    {
-        if (!float.IsFinite(s) || !float.IsFinite(c))
-        {
-            s = 0f;
-            c = 1f;
-        }
-
-        return ToGodotBasis(new[]
-        {
-            c * sx, 0f, s * sy,
-            0f, sz, 0f,
-            -s * sx, 0f, c * sy,
-        });
-    }
-
-    private static Basis ToGodotBasis(float[] m) => new(
-        new Vector3(m[0], m[3], m[6]),
-        new Vector3(m[1], m[4], m[7]),
-        new Vector3(-m[2], -m[5], -m[8]));
+    public static Basis YawScaleBasis(float s, float c, float sx, float sy, float sz) =>
+        GdbTransformMath.YawScaleBasis(s, c, sx, sy, sz);
 
     public static bool IsBridgeModel(string modelPath) =>
         modelPath.Replace('\\', '/').ToLowerInvariant()

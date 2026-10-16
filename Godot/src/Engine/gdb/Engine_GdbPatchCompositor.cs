@@ -310,6 +310,18 @@ public static class GdbPatchCompositor
 
                 // Synthesize complete native records for the game engine so omitted baseline fields are preserved:
                 GdbMulti? baseMulti = Engine_GameGdb.BaseDatabase ?? Engine_GameGdb.Database;
+                if (mounted is not null && subPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+                {
+                    string baseGdbSubPath = subPath[..^3];
+                    byte[]? baseGdbBytes = mounted.ReadBaseBytes(baseGdbSubPath) ?? mounted.ReadBaseBytes("data/" + baseGdbSubPath);
+                    if (baseGdbBytes is { Length: > 0 })
+                    {
+                        baseMulti = baseMulti is not null
+                            ? GdbMulti.BuildWithOverlays(baseMulti, new[] { baseGdbBytes })
+                            : GdbMulti.Build(new[] { baseGdbBytes });
+                    }
+                }
+
                 GdbPatchDatabase completeDb = GdbPatchBuilder.SynthesizeCompleteDatabase(mergedDb, baseMulti);
 
                 binary = GdbWriter.Serialize(completeDb);
@@ -353,7 +365,104 @@ public static class GdbPatchCompositor
             results.Add(res);
         }
 
+        SynthesizeMissingGmdSidecars(mounted, results);
         return results;
+    }
+
+    /// <summary>
+    /// Ensures any record-scoped <c>mods/.../*.mdl</c> referenced by a <c>.gdb.tu</c> record has a companion
+    /// <c>.mdl.gmd</c> in <paramref name="mounted"/> (inheriting the record's vanilla <c>.mdl.gmd</c> dummy transforms
+    /// if the <c>.f2mod</c> package did not already include one).
+    /// </summary>
+    private static void SynthesizeMissingGmdSidecars(
+        BnkFileSystem? mounted,
+        IReadOnlyList<CompositeGdbResult> results)
+    {
+        if (mounted is null || results.Count == 0)
+        {
+            return;
+        }
+
+        var missingMdlByHash = new Dictionary<uint, BnkFile>();
+        foreach (BnkFile file in mounted.EnumerateAllFiles())
+        {
+            if (file.VirtualPath.StartsWith("mods/", StringComparison.OrdinalIgnoreCase) &&
+                file.VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
+                !mounted.TryGetFile(file.VirtualPath + ".gmd", out _))
+            {
+                uint hash = Refii.Level.Engine_PropModelIndex.PathHash(file.VirtualPath);
+                if (hash != 0)
+                {
+                    missingMdlByHash[hash] = file;
+                }
+            }
+        }
+
+        if (missingMdlByHash.Count == 0)
+        {
+            return;
+        }
+
+        GdbMulti? baseMulti = Engine_GameGdb.BaseDatabase ?? Engine_GameGdb.Database;
+        if (baseMulti is null)
+        {
+            return;
+        }
+
+        foreach (CompositeGdbResult res in results)
+        {
+            if (res.Binary is null || res.Binary.Length == 0)
+            {
+                continue;
+            }
+
+            GdbPatchDatabase db = GdbPatchBuilder.LoadOrCreatePatchDatabase(res.Binary);
+            foreach (GdbPatchEntry rec in db.Entries)
+            {
+                foreach (GdbPatchProperty prop in rec.Properties)
+                {
+                    if (!missingMdlByHash.TryGetValue(prop.Value, out BnkFile? mdlFile) || mdlFile is null)
+                    {
+                        continue;
+                    }
+
+                    if (!baseMulti.TryLookup(rec.Id, out GdbCursor baseCursor) || !baseCursor.Valid ||
+                        !baseMulti.TryFindInherited(baseCursor, prop.NameHash, -1, out _, out uint vanillaModelHash, out _) ||
+                        vanillaModelHash == 0 || vanillaModelHash == GdbHash.Null)
+                    {
+                        continue;
+                    }
+
+                    string? vanillaMdlPath = Refii.Level.Engine_PropModelIndex.Resolve(vanillaModelHash, Array.Empty<string>());
+                    if (string.IsNullOrWhiteSpace(vanillaMdlPath))
+                    {
+                        string sym = baseMulti.NameOf(vanillaModelHash);
+                        if (!string.IsNullOrWhiteSpace(sym) && sym.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+                        {
+                            vanillaMdlPath = sym;
+                        }
+                    }
+
+                    if (string.IsNullOrWhiteSpace(vanillaMdlPath))
+                    {
+                        continue;
+                    }
+
+                    string vanillaGmdPath = vanillaMdlPath.Replace('\\', '/').TrimStart('/') + ".gmd";
+                    if (mounted.TryGetFile(vanillaGmdPath, out BnkFile vanillaGmdFile))
+                    {
+                        BnkFile capturedGmd = vanillaGmdFile;
+                        mounted.AddVirtualFile(
+                            mdlFile.VirtualPath + ".gmd",
+                            capturedGmd.SourceArchivePath,
+                            (int)capturedGmd.Size,
+                            () => capturedGmd.ReadAllBytes(),
+                            !string.IsNullOrEmpty(mdlFile.SourceMod) ? mdlFile.SourceMod : res.WinningMod);
+                        missingMdlByHash.Remove(prop.Value);
+                    }
+                }
+            }
+        }
     }
 
     private static Dictionary<string, List<(string ModName, string DiskPath)>> DiscoverTuFiles(

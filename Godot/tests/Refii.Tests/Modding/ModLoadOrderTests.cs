@@ -258,5 +258,53 @@ public class ModLoadOrderTests
             }
         }
     }
+
+    [TestCase]
+    public void TestSyncEnabledWithOrderRepairsInvertedOrder()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_sync_order_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            // Simulate an inverted loadorder.toml where Enabled was out of sync with Order:
+            string invertedToml = "enabled = [\"modB\", \"modA\"]\norder = [\"modA\", \"modB\"]\n";
+            File.WriteAllText(Path.Combine(tempDir, ModLoadOrder.Filename), invertedToml);
+
+            var loaded = ModLoadOrder.Read(tempDir);
+            AssertThat(loaded.Order.Count).IsEqual(2);
+            AssertThat(loaded.Order[0]).IsEqual("modA");
+            AssertThat(loaded.Order[1]).IsEqual("modB");
+
+            // Enabled must be repaired to strictly match Order:
+            AssertThat(loaded.Enabled.Count).IsEqual(2);
+            AssertThat(loaded.Enabled[0]).IsEqual("modA");
+            AssertThat(loaded.Enabled[1]).IsEqual("modB");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void TestRegisterModAppendsToOrderAndEnabledSynchronously()
+    {
+        var order = new ModLoadOrder();
+        order.RegisterMod("BaseMod", enabled: true);
+        order.RegisterMod("SecondMod", enabled: true);
+
+        AssertThat(order.Order.Count).IsEqual(2);
+        AssertThat(order.Order[0]).IsEqual("BaseMod");
+        AssertThat(order.Order[1]).IsEqual("SecondMod");
+
+        AssertThat(order.Enabled.Count).IsEqual(2);
+        AssertThat(order.Enabled[0]).IsEqual("BaseMod");
+        AssertThat(order.Enabled[1]).IsEqual("SecondMod");
+    }
 }
+
 

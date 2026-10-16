@@ -1,6 +1,48 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
 
 namespace Refii.Models;
+
+/// <summary>Replacement texture path strings for a single <see cref="MdlMaterial"/> record.</summary>
+public readonly struct MdlMaterialTexturePatch
+{
+	public string? Diffuse { get; init; }
+	public string? Specular { get; init; }
+	public string? Normal { get; init; }
+	public string? EnvironmentMap { get; init; }
+	public string? SelfIllumination { get; init; }
+
+	public string? GetSlot(int slotIndex) => slotIndex switch
+	{
+		0 => Diffuse,
+		1 => Specular,
+		2 => Normal,
+		3 => EnvironmentMap,
+		4 => SelfIllumination,
+		_ => null,
+	};
+}
+
+/// <summary>Describes a material record parsed from LOD 0 of an engine <c>.mdl</c> file.</summary>
+public readonly struct MdlMaterialSlotEntry
+{
+	public int FlatIndex { get; init; }
+	public int MeshIndex { get; init; }
+	public string MeshName { get; init; }
+	public int MaterialIndex { get; init; }
+	public MdlMaterial Material { get; init; }
+}
+
+/// <summary>Specification for a submesh section in a rewritten mesh buffer.</summary>
+public readonly struct MdlSectionSpec
+{
+	public int MaterialIndex { get; init; }
+	public int StartIndex { get; init; }
+	public int TriangleCount { get; init; }
+	public float[]? BoundingBox { get; init; }
+}
 
 /// <summary>New geometry for one of a model's mesh buffers.</summary>
 public sealed class MdlGeometryEdit
@@ -178,6 +220,23 @@ public static class Engine_MdlWriter
 		float[] normals,
 		float[] tangents,
 		ushort[] triangleIndices,
+		out byte[] result,
+		out string error)
+		=> TryReplaceMesh(
+			original, info, bufferIndex,
+			positions, uvs, normals, tangents, triangleIndices,
+			sections: null, out result, out error);
+
+	public static bool TryReplaceMesh(
+		byte[] original,
+		MdlInfo info,
+		int bufferIndex,
+		float[] positions,
+		float[] uvs,
+		float[] normals,
+		float[] tangents,
+		ushort[] triangleIndices,
+		IReadOnlyList<MdlSectionSpec>? sections,
 		out byte[] result,
 		out string error)
 	{
@@ -359,13 +418,13 @@ public static class Engine_MdlWriter
 			indices[(i * 2) + 1] = (byte)triangleIndices[i];
 		}
 
-		// SEVERAL SECTIONS COLLAPSE TO ONE. A replacement is a single mesh, so it is written as a
-		// single triangle list; the extra section records are spliced out and the count that
-		// stated them rewritten. Their positions are all BEFORE the sections, so nothing that is
-		// patched below moves.
-		var built = new System.IO.MemoryStream(original.Length + vertices.Length + indices.Length);
+		int sectionCount = sections is not null && sections.Count > 0 ? sections.Count : 1;
+		int oldSectionsBytes = buffer.SubMeshes.Count * SectionSize;
+		int newSectionsBytes = sectionCount * SectionSize;
+
+		var built = new System.IO.MemoryStream(original.Length + vertices.Length + indices.Length + (newSectionsBytes - oldSectionsBytes) + 256);
 		built.Write(original, 0, sectionsAt);
-		built.Write(new byte[SectionSize]);
+		built.Write(new byte[newSectionsBytes]);
 		built.Write(vertices, 0, vertices.Length);
 		built.Write(indices, 0, indices.Length);
 
@@ -383,17 +442,50 @@ public static class Engine_MdlWriter
 
 		WriteU32(bytes, vertexCountAt, (uint)vertexCount);
 		WriteU32(bytes, indexCountAt, (uint)indices.Length / 2);
-		WriteU32(bytes, sectionCountAt, 1);
+		WriteU32(bytes, sectionCountAt, (uint)sectionCount);
 
-		// One section, stating a triangle list over the whole buffer.
-		int section = sectionsAt;
-		WriteU32(bytes, section, 0xFFFFFFFFu);
-		WriteU32(bytes, section + 4, 0);
-		bytes[section + 8] = 0;
-		WriteU32(bytes, section + 9, (uint)(triangleIndices.Length / 3));
-		WriteU32(bytes, section + 13, 0);
+		if (sections is not null && sections.Count > 0)
+		{
+			for (int s = 0; s < sections.Count; s++)
+			{
+				MdlSectionSpec sec = sections[s];
+				int section = sectionsAt + (s * SectionSize);
+				WriteU32(bytes, section, 0xFFFFFFFFu);
+				WriteU32(bytes, section + 4, (uint)sec.MaterialIndex);
+				bytes[section + 8] = 0;
+				WriteU32(bytes, section + 9, (uint)sec.TriangleCount);
+				WriteU32(bytes, section + 13, (uint)sec.StartIndex);
 
-		WriteBounds(bytes, positions, vertexCount, section + 17, section + 29);
+				if (sec.BoundingBox is { Length: 6 } sbb)
+				{
+					for (int k = 0; k < 6; k++)
+					{
+						WriteU32(bytes, section + 17 + (k * 4), unchecked((uint)BitConverter.SingleToInt32Bits(sbb[k])));
+					}
+				}
+				else
+				{
+					ComputeSectionBounds(positions, triangleIndices, sec.StartIndex, sec.TriangleCount, out float[] sMin, out float[] sMax);
+					for (int k = 0; k < 3; k++)
+					{
+						WriteU32(bytes, section + 17 + (k * 4), unchecked((uint)BitConverter.SingleToInt32Bits(sMin[k])));
+						WriteU32(bytes, section + 29 + (k * 4), unchecked((uint)BitConverter.SingleToInt32Bits(sMax[k])));
+					}
+				}
+			}
+		}
+		else
+		{
+			// One section, stating a triangle list over the whole buffer.
+			int section = sectionsAt;
+			WriteU32(bytes, section, 0xFFFFFFFFu);
+			WriteU32(bytes, section + 4, 0);
+			bytes[section + 8] = 0;
+			WriteU32(bytes, section + 9, (uint)(triangleIndices.Length / 3));
+			WriteU32(bytes, section + 13, 0);
+
+			WriteBounds(bytes, positions, vertexCount, section + 17, section + 29);
+		}
 
 		// THE RECORD'S BOUNDS SIT AFTER THE COUNTS, NOT BEFORE THEM. The order on disk is
 		// indexCount, vertexCount, aabbMin, aabbMax, sphere, sectionCount — which is exactly how
@@ -413,6 +505,480 @@ public static class Engine_MdlWriter
 		}
 
 		result = bytes;
+		return true;
+	}
+
+	/// <summary>
+	/// Extracts all LOD 0 <see cref="MdlMaterial"/> records with their flat material index and mesh header name.
+	/// </summary>
+	public static IReadOnlyList<MdlMaterialSlotEntry> ExtractMaterials(byte[] mdlBytes)
+	{
+		if (mdlBytes is null || mdlBytes.Length < BodyStart)
+		{
+			return Array.Empty<MdlMaterialSlotEntry>();
+		}
+
+		var info = new MdlInfo();
+		if (!Engine_MdlEngine.TryParse(mdlBytes, info))
+		{
+			return Array.Empty<MdlMaterialSlotEntry>();
+		}
+
+		var list = new List<MdlMaterialSlotEntry>();
+		int flatIdx = 0;
+		for (int m = 0; m < info.Meshes.Count; m++)
+		{
+			MdlMesh mesh = info.Meshes[m];
+			for (int j = 0; j < mesh.Materials.Count; j++)
+			{
+				list.Add(new MdlMaterialSlotEntry
+				{
+					FlatIndex = flatIdx++,
+					MeshIndex = m,
+					MeshName = mesh.Name,
+					MaterialIndex = j,
+					Material = mesh.Materials[j],
+				});
+			}
+		}
+
+		return list;
+	}
+
+	/// <summary>
+	/// Rewrites texture path strings inside an engine <c>.mdl</c> file's material table across all LODs.
+	/// Because the <c>.mdl</c> format is read sequentially without internal byte-offset pointers,
+	/// splicing NUL-terminated material strings only requires updating <c>LodSizes[lod]</c> at <c>0x3C + lod * 4</c>.
+	/// </summary>
+	public static bool TryRewriteMaterialTextures(
+		byte[] original,
+		IReadOnlyDictionary<int, MdlMaterialTexturePatch> patchesByFlatMaterialIndex,
+		out byte[] result,
+		out string error)
+	{
+		result = original;
+		error = string.Empty;
+
+		if (original is null || original.Length < BodyStart)
+		{
+			error = "the model file is shorter than the 104-byte header";
+			return false;
+		}
+
+		if (patchesByFlatMaterialIndex is null || patchesByFlatMaterialIndex.Count == 0)
+		{
+			return true;
+		}
+
+		var info = new MdlInfo();
+		if (!Engine_MdlEngine.TryReadFileHeader(original, info, out long totalBodyBytes))
+		{
+			error = "the model file header could not be parsed";
+			return false;
+		}
+
+		if (BodyStart + totalBodyBytes > original.Length)
+		{
+			error = "the model body is truncated relative to its header LOD sizes";
+			return false;
+		}
+
+		var r = new MdlReader(original);
+		var output = new MemoryStream(original.Length + 256);
+		output.Write(original, 0, BodyStart);
+
+		var newLodSizes = new uint[3];
+		var lod0ReplacedStrings = new Dictionary<(int Slot, string OldValue), string>();
+
+		int off = BodyStart;
+		for (uint lod = 0; lod < info.LodCount; lod++)
+		{
+			uint oldLodSize = info.LodSizes[lod];
+			long secEnd = off + oldLodSize;
+			if (secEnd > original.Length)
+			{
+				error = $"LOD {lod} extends past the end of the file";
+				return false;
+			}
+
+			if (oldLodSize == 0)
+			{
+				newLodSizes[lod] = 0;
+				continue;
+			}
+
+			r.Position = off;
+			if (!r.Skip(32)) { error = "truncated LOD prologue"; return false; }
+			if (!r.U32(out uint bc) || bc > 100000u) { error = "invalid bone count"; return false; }
+			for (uint i = 0; i < bc; i++)
+			{
+				if (!r.Strz(out _) || !r.U32(out _)) { error = "truncated bone table"; return false; }
+			}
+
+			if (!r.U32(out uint btc) || btc > 100000u) { error = "invalid bone transform count"; return false; }
+			if (!r.Skip((int)(btc * 44))) { error = "truncated bone transforms"; return false; }
+			if (!r.Skip(40)) { error = "truncated LOD counts header"; return false; }
+
+			if (!r.U32(out uint mc) || !r.U32(out uint rigid) || !r.U32(out uint skinned) ||
+			    !r.U32(out uint ex52) || !r.U32(out _))
+			{
+				error = "truncated LOD part counts";
+				return false;
+			}
+
+			if (mc > 100000u || rigid > 100000u || skinned > 100000u || ex52 != 0)
+			{
+				error = "unsupported instanced (TypeC) or corrupt material class";
+				return false;
+			}
+
+			if (!r.U8(out _)) { error = "truncated section flag"; return false; }
+			if (!r.U32(out uint tagc) || tagc > 100000u) { error = "invalid tag count"; return false; }
+			for (uint t = 0; t < tagc; t++)
+			{
+				if (!r.Strz(out _) || !r.Skip(1)) { error = "truncated tag entry"; return false; }
+			}
+
+			for (int i = 0; i < 5; i++)
+			{
+				if (!r.U32(out _)) { error = "truncated SH descriptor"; return false; }
+			}
+
+			if (!r.U32(out uint fc) || fc > 1000000u || !r.Skip((int)(fc * 4)))
+			{
+				error = "truncated SH probe data";
+				return false;
+			}
+
+			if (!r.U32(out uint hrc) || hrc > 1000000u)
+			{
+				error = "invalid hide region count";
+				return false;
+			}
+			for (uint i = 0; i < hrc; i++)
+			{
+				if (!r.Strz(out _)) { error = "truncated hide region"; return false; }
+			}
+
+			using var lodStream = new MemoryStream((int)oldLodSize + 128);
+			int cursor = off;
+			int flatMatIdx = 0;
+
+			for (uint m = 0; m < mc; m++)
+			{
+				if (!r.U32(out uint sel)) { error = "truncated shader selector"; return false; }
+				if (sel == 2)
+				{
+					if (!r.Skip(68)) { error = "truncated shader type 2 header"; return false; }
+					continue;
+				}
+
+				if (!r.Strz(out _)) { error = "truncated mesh header name"; return false; }
+				if (!r.Skip(45)) { error = "truncated material scalar block"; return false; }
+				if (!r.U32(out uint matc) || matc > 100000u) { error = "invalid material count"; return false; }
+
+				for (uint j = 0; j < matc; j++)
+				{
+					patchesByFlatMaterialIndex.TryGetValue(flatMatIdx, out MdlMaterialTexturePatch patch);
+					bool hasDirectPatch = patchesByFlatMaterialIndex.ContainsKey(flatMatIdx);
+
+					for (int slot = 0; slot < 5; slot++)
+					{
+						int strStart = r.Position;
+						if (!r.Strz(out string oldVal))
+						{
+							error = "truncated material texture string";
+							return false;
+						}
+						int strEnd = r.Position;
+
+						string? replacement = hasDirectPatch ? patch.GetSlot(slot) : null;
+						if (replacement is null && !string.IsNullOrEmpty(oldVal) &&
+						    lod0ReplacedStrings.TryGetValue((slot, oldVal), out string? inheritedReplacement))
+						{
+							replacement = inheritedReplacement;
+						}
+
+						if (replacement is not null)
+						{
+							if (strStart > cursor)
+							{
+								lodStream.Write(original, cursor, strStart - cursor);
+							}
+
+							byte[] ascii = Encoding.ASCII.GetBytes(replacement);
+							lodStream.Write(ascii, 0, ascii.Length);
+							lodStream.WriteByte(0);
+							cursor = strEnd;
+
+							if (lod == 0 && !string.IsNullOrEmpty(oldVal))
+							{
+								lod0ReplacedStrings[(slot, oldVal)] = replacement;
+							}
+						}
+					}
+
+					for (int k = 0; k < 4; k++)
+					{
+						if (!r.Strz(out _)) { error = "truncated shader param string"; return false; }
+					}
+					if (!r.Skip(8)) { error = "truncated material floats"; return false; }
+
+					flatMatIdx++;
+				}
+			}
+
+			if (cursor < (int)secEnd)
+			{
+				lodStream.Write(original, cursor, (int)secEnd - cursor);
+			}
+
+			byte[] lodBytes = lodStream.ToArray();
+			newLodSizes[lod] = (uint)lodBytes.Length;
+			output.Write(lodBytes, 0, lodBytes.Length);
+			off = (int)secEnd;
+		}
+
+		if (off < original.Length)
+		{
+			output.Write(original, off, original.Length - off);
+		}
+
+		byte[] rewritten = output.ToArray();
+		for (int lod = 0; lod < info.LodCount; lod++)
+		{
+			WriteU32(rewritten, 0x3C + (lod * 4), newLodSizes[lod]);
+		}
+
+		var verifyInfo = new MdlInfo();
+		if (!Engine_MdlEngine.TryParse(rewritten, verifyInfo))
+		{
+			error = "rewritten .mdl failed post-write verification parse";
+			return false;
+		}
+
+		result = rewritten;
+		return true;
+	}
+
+	/// <summary>
+	/// Ensures that the model's mesh 0 states at least <paramref name="targetMaterialCount"/> materials.
+	/// If the model currently states fewer materials, additional empty material entries are appended
+	/// to mesh 0's material table in LOD 0, collapsing coarser LODs onto LOD 0 and updating the header LOD sizes.
+	/// </summary>
+	public static bool TryEnsureMaterialSlots(
+		byte[] original,
+		int targetMaterialCount,
+		out byte[] result,
+		out string error)
+	{
+		result = original;
+		error = string.Empty;
+
+		if (original is null || original.Length < BodyStart)
+		{
+			error = "the model file is shorter than the 104-byte header";
+			return false;
+		}
+
+		if (targetMaterialCount <= 1)
+		{
+			return true;
+		}
+
+		var info = new MdlInfo();
+		if (!Engine_MdlEngine.TryReadFileHeader(original, info, out long totalBodyBytes))
+		{
+			error = "the model file header could not be parsed";
+			return false;
+		}
+
+		if (BodyStart + totalBodyBytes > original.Length)
+		{
+			error = "the model body is truncated relative to its header LOD sizes";
+			return false;
+		}
+
+		var currentMaterials = ExtractMaterials(original);
+		if (currentMaterials.Count >= targetMaterialCount)
+		{
+			return true;
+		}
+
+		var r = new MdlReader(original);
+		var output = new MemoryStream(original.Length + 256);
+		output.Write(original, 0, BodyStart);
+
+		var newLodSizes = new uint[3];
+		int off = BodyStart;
+
+		for (uint lod = 0; lod < info.LodCount; lod++)
+		{
+			uint oldLodSize = info.LodSizes[lod];
+			long secEnd = off + oldLodSize;
+			if (secEnd > original.Length)
+			{
+				error = $"LOD {lod} extends past the end of the file";
+				return false;
+			}
+
+			if (oldLodSize == 0 || lod > 0)
+			{
+				newLodSizes[lod] = 0;
+				off = (int)secEnd;
+				continue;
+			}
+
+			r.Position = off;
+			if (!r.Skip(32)) { error = "truncated LOD prologue"; return false; }
+			if (!r.U32(out uint bc) || bc > 100000u) { error = "invalid bone count"; return false; }
+			for (uint i = 0; i < bc; i++)
+			{
+				if (!r.Strz(out _) || !r.U32(out _)) { error = "truncated bone table"; return false; }
+			}
+
+			if (!r.U32(out uint btc) || btc > 100000u) { error = "invalid bone transform count"; return false; }
+			if (!r.Skip((int)(btc * 44))) { error = "truncated bone transforms"; return false; }
+			if (!r.Skip(40)) { error = "truncated LOD counts header"; return false; }
+
+			if (!r.U32(out uint mc) || !r.U32(out uint rigid) || !r.U32(out uint skinned) ||
+			    !r.U32(out uint ex52) || !r.U32(out _))
+			{
+				error = "truncated LOD part counts";
+				return false;
+			}
+
+			if (mc > 100000u || rigid > 100000u || skinned > 100000u || ex52 != 0)
+			{
+				error = "unsupported instanced (TypeC) or corrupt material class";
+				return false;
+			}
+
+			if (!r.U8(out _)) { error = "truncated section flag"; return false; }
+			if (!r.U32(out uint tagc) || tagc > 100000u) { error = "invalid tag count"; return false; }
+			for (uint t = 0; t < tagc; t++)
+			{
+				if (!r.Strz(out _) || !r.Skip(1)) { error = "truncated tag entry"; return false; }
+			}
+
+			for (int i = 0; i < 5; i++)
+			{
+				if (!r.U32(out _)) { error = "truncated SH descriptor"; return false; }
+			}
+
+			if (!r.U32(out uint fc) || fc > 1000000u || !r.Skip((int)(fc * 4)))
+			{
+				error = "truncated SH probe data";
+				return false;
+			}
+
+			if (!r.U32(out uint hrc) || hrc > 1000000u)
+			{
+				error = "invalid hide region count";
+				return false;
+			}
+			for (uint i = 0; i < hrc; i++)
+			{
+				if (!r.Strz(out _)) { error = "truncated hide region"; return false; }
+			}
+
+			using var lodStream = new MemoryStream((int)oldLodSize + 256);
+			int cursor = off;
+
+			for (uint m = 0; m < mc; m++)
+			{
+				if (!r.U32(out uint sel)) { error = "truncated shader selector"; return false; }
+				if (sel == 2)
+				{
+					if (!r.Skip(68)) { error = "truncated shader type 2 header"; return false; }
+					continue;
+				}
+
+				if (!r.Strz(out _)) { error = "truncated mesh header name"; return false; }
+				if (!r.Skip(45)) { error = "truncated material scalar block"; return false; }
+
+				int matcPos = r.Position;
+				if (!r.U32(out uint matc) || matc > 100000u) { error = "invalid material count"; return false; }
+
+				if (m == 0 && matc < targetMaterialCount)
+				{
+					lodStream.Write(original, cursor, matcPos - cursor);
+					byte[] matcBytes = new byte[4];
+					WriteU32(matcBytes, 0, (uint)targetMaterialCount);
+					lodStream.Write(matcBytes, 0, 4);
+					cursor = matcPos + 4;
+
+					for (uint j = 0; j < matc; j++)
+					{
+						for (int slot = 0; slot < 5; slot++)
+						{
+							if (!r.Strz(out _)) { error = "truncated material texture string"; return false; }
+						}
+						for (int k = 0; k < 4; k++)
+						{
+							if (!r.Strz(out _)) { error = "truncated shader param string"; return false; }
+						}
+						if (!r.Skip(8)) { error = "truncated material floats"; return false; }
+					}
+
+					int existingMatsEnd = r.Position;
+					lodStream.Write(original, cursor, existingMatsEnd - cursor);
+					cursor = existingMatsEnd;
+
+					for (int j = (int)matc; j < targetMaterialCount; j++)
+					{
+						for (int s = 0; s < 5; s++) lodStream.WriteByte(0);
+						for (int sp = 0; sp < 4; sp++) lodStream.WriteByte(0);
+						lodStream.Write(new byte[8], 0, 8);
+					}
+				}
+				else
+				{
+					for (uint j = 0; j < matc; j++)
+					{
+						for (int slot = 0; slot < 5; slot++)
+						{
+							if (!r.Strz(out _)) { error = "truncated material texture string"; return false; }
+						}
+						for (int k = 0; k < 4; k++)
+						{
+							if (!r.Strz(out _)) { error = "truncated shader param string"; return false; }
+						}
+						if (!r.Skip(8)) { error = "truncated material floats"; return false; }
+					}
+				}
+			}
+
+			if (cursor < (int)secEnd)
+			{
+				lodStream.Write(original, cursor, (int)secEnd - cursor);
+			}
+
+			byte[] lodBytes = lodStream.ToArray();
+			newLodSizes[lod] = (uint)lodBytes.Length;
+			output.Write(lodBytes, 0, lodBytes.Length);
+			off = (int)secEnd;
+		}
+
+		if (off < original.Length)
+		{
+			output.Write(original, off, original.Length - off);
+		}
+
+		byte[] rewritten = output.ToArray();
+		for (int lod = 0; lod < info.LodCount; lod++)
+		{
+			WriteU32(rewritten, 0x3C + (lod * 4), newLodSizes[lod]);
+		}
+
+		var verifyInfo = new MdlInfo();
+		if (!Engine_MdlEngine.TryParse(rewritten, verifyInfo))
+		{
+			error = "expanded material .mdl failed post-write verification parse";
+			return false;
+		}
+
+		result = rewritten;
 		return true;
 	}
 
@@ -517,6 +1083,33 @@ public static class Engine_MdlWriter
 				min[i] = MathF.Min(min[i], value);
 				max[i] = MathF.Max(max[i], value);
 			}
+		}
+	}
+
+	private static void ComputeSectionBounds(
+		float[] positions, ushort[] triangleIndices, int startIndex, int triangleCount,
+		out float[] min, out float[] max)
+	{
+		min = new[] { float.MaxValue, float.MaxValue, float.MaxValue };
+		max = new[] { float.MinValue, float.MinValue, float.MinValue };
+		int endIndex = Math.Min(triangleIndices.Length, startIndex + (triangleCount * 3));
+		for (int i = startIndex; i < endIndex; i++)
+		{
+			int v = triangleIndices[i];
+			if (v * 3 + 2 < positions.Length)
+			{
+				for (int k = 0; k < 3; k++)
+				{
+					float val = positions[v * 3 + k];
+					min[k] = MathF.Min(min[k], val);
+					max[k] = MathF.Max(max[k], val);
+				}
+			}
+		}
+		if (min[0] > max[0])
+		{
+			min = new[] { -0.1f, -0.1f, -0.1f };
+			max = new[] { 0.1f, 0.1f, 0.1f };
 		}
 	}
 

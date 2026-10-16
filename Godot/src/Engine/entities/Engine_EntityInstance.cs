@@ -20,7 +20,25 @@ public partial class Engine_EntityInstance : MeshInstance3D
 
     private bool _meshTried;
 
-    public override void _Ready() => EnsureMesh();
+    public override void _Ready()
+    {
+        if (Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode)
+        {
+            SetProcess(true);
+            return;
+        }
+
+        EnsureMesh();
+    }
+
+    public override void _Process(double delta)
+    {
+        if (Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode)
+        {
+            EnsureMesh();
+            SetProcess(false);
+        }
+    }
 
     public void EnsureMesh()
     {

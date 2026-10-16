@@ -94,6 +94,7 @@ public static class GdbHash
     public const uint ModelFile2 = 0x578E3BF8;
     public const uint SkeletonFile = 0xC3D06E3A;
     public const uint RetargetSkeletonFile = 0x64234AF2;
+    public const uint PhysicsFile = 0x92F5FEEE;
 
     public const uint InlineVec3SchemaRel = 0x00000568;
 }
@@ -209,7 +210,7 @@ public static class Engine_GdbPlacements
             RotY = transform.RotY,
             RotZ = transform.RotZ,
             HasRotation = transform.HasRotation,
-            Scale = 1f,
+            Scale = transform.Scale > 0.0001f ? transform.Scale : 1f,
         };
 
         result.Yaw = result.HasRotation && float.IsFinite(result.RotX) ? result.RotX : 0f;
@@ -265,6 +266,7 @@ public static class Engine_GdbPlacements
         public float RotY;
         public float RotZ;
         public bool HasRotation;
+        public float Scale = 1f;
     }
 
     private static bool TryComponentTransformRecord(
@@ -371,6 +373,28 @@ public static class Engine_GdbPlacements
             transform.RotY = ry;
             transform.RotZ = rz;
             transform.HasRotation = true;
+        }
+        else if (view.TryFindLocalRaw(owner, GdbHash.Rotation, (int)GdbFieldType.Float, out uint rawYaw, out _))
+        {
+            float yaw = BitConverter.Int32BitsToSingle(unchecked((int)rawYaw));
+            if (float.IsFinite(yaw))
+            {
+                transform.RotX = yaw;
+                transform.RotY = 0f;
+                transform.RotZ = 0f;
+                transform.HasRotation = true;
+            }
+        }
+
+        const uint HashScale = 0xEC462524;
+        if (view.TryFindLocalRaw(owner, HashScale, (int)GdbFieldType.Float, out uint rawScale, out _) ||
+            view.TryFindLocalRaw(record, HashScale, (int)GdbFieldType.Float, out rawScale, out _))
+        {
+            float s = BitConverter.Int32BitsToSingle(unchecked((int)rawScale));
+            if (float.IsFinite(s) && s > 0.001f && s <= 100f)
+            {
+                transform.Scale = s;
+            }
         }
 
         return true;
@@ -537,13 +561,66 @@ public static class Engine_GdbPlacements
     public static List<uint> CollectModelPathHashes(GdbView view, int record)
     {
         var hashes = new List<uint>();
-        VisitRecordAndParents(view, record, r =>
+        var seen = new HashSet<int>();
+        var strippedSlots = new HashSet<uint>();
+        int current = record;
+
+        for (int depth = 0; depth < 64; depth++)
         {
-            CollectAnimatedMeshModelPathHashes(view, r, hashes);
-            CollectStaticMeshModelPathHashes(view, r, hashes);
-            CollectStaticMultipleModelPathHashes(view, r, hashes);
-            CollectGraphicAppearanceModelPathHashes(view, r, hashes);
-        });
+            if (!seen.Add(current))
+            {
+                break;
+            }
+
+            // Track any components stripped by this node or its descendants
+            foreach (GdbField field in view.Fields(current))
+            {
+                if ((field.Hash == 0x9B41D00A || field.Hash == 0xAD0D6E07) && field.Raw != 0)
+                {
+                    strippedSlots.Add(field.Raw);
+                }
+            }
+
+            // Check if current record declares an appearance component directly:
+            // 1. Animated mesh component
+            if (!strippedSlots.Contains(GdbHash.GraphicAppearanceAnimatedMeshComponent))
+            {
+                CollectAnimatedMeshModelPathHashes(view, current, hashes);
+            }
+
+            // 2. Static mesh component
+            if (hashes.Count == 0 && !strippedSlots.Contains(GdbHash.StaticMeshComponent))
+            {
+                CollectStaticMeshModelPathHashes(view, current, hashes);
+            }
+
+            // 3. Static multiple mesh component
+            if (hashes.Count == 0 && !strippedSlots.Contains(GdbHash.StaticMultipleMeshComponent))
+            {
+                CollectStaticMultipleModelPathHashes(view, current, hashes);
+            }
+
+            // 4. Direct ModelFile on the record itself
+            if (hashes.Count == 0)
+            {
+                CollectModelFileFields(view, current, hashes);
+            }
+
+            // Once a record provides an appearance that resolves models, we stop!
+            // Descendants override ancestral appearances.
+            if (hashes.Count > 0)
+            {
+                break;
+            }
+
+            if (!view.TryFindLocalRaw(current, GdbView.HashParent, 6, out uint parent, out _) ||
+                parent == 0 || !view.TryLookup(parent, out int parentRecord))
+            {
+                break;
+            }
+
+            current = parentRecord;
+        }
 
         return hashes;
     }
@@ -565,28 +642,6 @@ public static class Engine_GdbPlacements
     /// </summary>
     public static bool StatesAppearanceComponent(GdbView view, int record)
     {
-        bool stated = false;
-        VisitRecordAndParents(view, record, r =>
-        {
-            if (stated)
-            {
-                return;
-            }
-
-            stated =
-                view.TryFindFieldOwner(r, GdbHash.StaticMeshComponent, 6, out _, out _) ||
-                view.TryFindFieldOwner(
-                    r, GdbHash.GraphicAppearanceAnimatedMeshComponent, 6, out _, out _) ||
-                view.TryFindFieldOwner(
-                    r, GdbHash.StaticMultipleMeshComponent, 6, out _, out _) ||
-                view.TryFindLocalRaw(r, GdbHash.GraphicAppearanceComponent, 6, out _, out _);
-        });
-
-        return stated;
-    }
-
-    private static void VisitRecordAndParents(GdbView view, int record, Action<int> visit)
-    {
         var seen = new HashSet<int>();
         int current = record;
 
@@ -594,19 +649,27 @@ public static class Engine_GdbPlacements
         {
             if (!seen.Add(current))
             {
-                return;
+                return false;
             }
 
-            visit(current);
+            if (view.TryFindLocalRaw(current, GdbHash.StaticMeshComponent, 6, out _, out _) ||
+                view.TryFindLocalRaw(current, GdbHash.GraphicAppearanceAnimatedMeshComponent, 6, out _, out _) ||
+                view.TryFindLocalRaw(current, GdbHash.StaticMultipleMeshComponent, 6, out _, out _) ||
+                view.TryFindLocalRaw(current, GdbHash.GraphicAppearanceComponent, 6, out _, out _))
+            {
+                return true;
+            }
 
             if (!view.TryFindLocalRaw(current, GdbView.HashParent, 6, out uint parent, out _) ||
                 parent == 0 || !view.TryLookup(parent, out int parentRecord))
             {
-                return;
+                return false;
             }
 
             current = parentRecord;
         }
+
+        return false;
     }
 
     private static void AppendUnique(List<uint> hashes, uint hash)
@@ -779,9 +842,9 @@ public static class Engine_GdbPlacements
     private static void CollectStaticMeshModelPathHashes(
         GdbView view, int record, List<uint> hashes)
     {
-        if (!view.TryFindFieldOwner(
-                record, GdbHash.StaticMeshComponent, 6, out GdbField model, out _) ||
-            !view.TryLookup(model.Raw, out int modelRecord))
+        if (!view.TryFindLocalRaw(
+                record, GdbHash.StaticMeshComponent, 6, out uint modelRaw, out _) ||
+            !view.TryLookup(modelRaw, out int modelRecord))
         {
             return;
         }
@@ -815,13 +878,37 @@ public static class Engine_GdbPlacements
         return stated == true;
     }
 
+    private static void VisitRecordAndParents(GdbView view, int record, Action<int> visit)
+    {
+        var seen = new HashSet<int>();
+        int current = record;
+
+        for (int depth = 0; depth < 64; depth++)
+        {
+            if (!seen.Add(current))
+            {
+                return;
+            }
+
+            visit(current);
+
+            if (!view.TryFindLocalRaw(current, GdbView.HashParent, 6, out uint parent, out _) ||
+                parent == 0 || !view.TryLookup(parent, out int parentRecord))
+            {
+                return;
+            }
+
+            current = parentRecord;
+        }
+    }
+
     private static void CollectAnimatedMeshModelPathHashes(
         GdbView view, int record, List<uint> hashes)
     {
-        if (!view.TryFindFieldOwner(
+        if (!view.TryFindLocalRaw(
                 record, GdbHash.GraphicAppearanceAnimatedMeshComponent, 6,
-                out GdbField model, out _) ||
-            !view.TryLookup(model.Raw, out int modelRecord))
+                out uint modelRaw, out _) ||
+            !view.TryLookup(modelRaw, out int modelRecord))
         {
             return;
         }
@@ -850,34 +937,15 @@ public static class Engine_GdbPlacements
     private static void CollectStaticMultipleModelPathHashes(
         GdbView view, int record, List<uint> hashes)
     {
-        if (!view.TryFindFieldOwner(
+        if (!view.TryFindLocalRaw(
                 record, GdbHash.StaticMultipleMeshComponent, 6,
-                out GdbField component, out _) ||
-            !view.TryLookup(component.Raw, out int componentRecord))
+                out uint componentRaw, out _) ||
+            !view.TryLookup(componentRaw, out int componentRecord))
         {
             return;
         }
 
         CollectStaticMultipleComponentModelPathHashes(view, componentRecord, hashes);
-    }
-
-    private static void CollectGraphicAppearanceModelPathHashes(
-        GdbView view, int record, List<uint> hashes)
-    {
-        if (!view.TryFindLocalRaw(
-                record, GdbHash.GraphicAppearanceComponent, 6,
-                out uint appearance, out _) ||
-            !view.TryLookup(appearance, out int appearanceRecord))
-        {
-            return;
-        }
-
-        VisitRecordAndParents(view, appearanceRecord, r =>
-        {
-            CollectStaticMeshModelPathHashes(view, r, hashes);
-            CollectStaticMultipleModelPathHashes(view, r, hashes);
-            CollectStaticMultipleComponentModelPathHashes(view, r, hashes);
-        });
     }
 
     public static bool Finite3(float x, float y, float z) =>

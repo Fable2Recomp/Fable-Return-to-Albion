@@ -276,6 +276,15 @@ public static class Engine_ItemDetails
                 if (existing.Augments.Count == 0) existing.Augments.AddRange(detail.Augments);
             }
 
+            if (string.IsNullOrEmpty(detail.IconTex) && !string.IsNullOrEmpty(existing.IconTex))
+            {
+                detail.IconTex = existing.IconTex;
+            }
+            else if (string.IsNullOrEmpty(existing.IconTex) && !string.IsNullOrEmpty(detail.IconTex))
+            {
+                existing.IconTex = detail.IconTex;
+            }
+
             // If the incoming detail is the definition row, promote it over an earlier component row:
             if (detail.RecordHash == detail.DefinitionHash)
             {
@@ -487,9 +496,17 @@ public static class Engine_ItemDetails
             raw = info.NameTag;
         }
 
-        if (raw.Length != 0)
+        if (Engine_RecordNameCatalog.TryGetCuratedNodeName(recordHash, out string curatedLabel) ||
+            (ownerHash != 0 && Engine_RecordNameCatalog.TryGetCuratedNodeName(ownerHash, out curatedLabel)))
         {
-            detail.Label = Engine_ItemLabels.Prettify(raw);
+            detail.Label = curatedLabel;
+        }
+        else if (raw.Length != 0)
+        {
+            string prettified = Engine_ItemLabels.Prettify(raw);
+            detail.Label = Engine_RecordNameCatalog.IsGenericPlaceholderName(prettified) && detail.InternalName.Length != 0
+                ? Engine_ItemLabels.Prettify(detail.InternalName)
+                : prettified;
         }
         else
         {
@@ -537,11 +554,11 @@ public static class Engine_ItemDetails
     private static GdbMulti? _definitionIndexOf;
 
     /// <summary>
-    /// The definition whose `InventoryItemComponent` names this component, or an ancestor of it
+    /// The definition whose `InventoryItemComponent` or attached component names this component, or an ancestor of it
     /// (a DLC variant's own definition names the variant; the base definition names the base).
     /// One reverse index per database, built on first ask.
     /// </summary>
-    private static bool TryDefinitionOf(
+    public static bool TryDefinitionOf(
         GdbMulti multi, GdbCursor component, uint componentHash, out GdbCursor definition)
     {
         definition = default;
@@ -552,10 +569,20 @@ public static class Engine_ItemDetails
             {
                 for (int i = 0; i < view.RecordCount; ++i)
                 {
+                    uint recHash = view.RecordHash(i);
                     if (view.TryFindLocalRaw(i, InventoryItemComponent, 6, out uint target, out _) &&
                         IsRef(target))
                     {
-                        map.TryAdd(target, view.RecordHash(i));
+                        map.TryAdd(target, recHash);
+                    }
+
+                    foreach (uint compField in StatComponents)
+                    {
+                        if (view.TryFindLocalRaw(i, compField, 6, out uint compTarget, out _) &&
+                            IsRef(compTarget))
+                        {
+                            map.TryAdd(compTarget, recHash);
+                        }
                     }
                 }
             }
@@ -587,6 +614,22 @@ public static class Engine_ItemDetails
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Finds the owning item definition for a given component hash (or prototype).
+    /// </summary>
+    public static bool TryDefinitionOf(
+        GdbMulti multi, uint componentHash, out GdbCursor definition)
+    {
+        definition = default;
+        if (componentHash == 0 || componentHash == GdbHash.Null)
+        {
+            return false;
+        }
+
+        multi.TryLookup(componentHash, out GdbCursor cursor);
+        return TryDefinitionOf(multi, cursor, componentHash, out definition);
     }
 
     private static void ReadAppearance(GdbMulti multi, GdbCursor cursor, ItemDetail detail)

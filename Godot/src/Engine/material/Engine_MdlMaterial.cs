@@ -169,6 +169,20 @@ public static class Engine_MdlMaterial
     }
 
     /// <summary>
+    /// Preloads and caches all shared shader resources on the main thread.
+    /// This prevents background prefetch worker threads from invoking GD.Load and waiting
+    /// on the main thread's MessageQueue while the main thread is busy with scene opening.
+    /// </summary>
+    public static void WarmShaders()
+    {
+        LoadShared(Engine_ShaderFamily.StandardPath);
+        LoadShared(Engine_ShaderFamily.StandardCulledPath);
+        LoadShared(Engine_ShaderFamily.StandardWindPath);
+        LoadShared(Engine_ShaderFamily.StandardTreePath);
+        LoadShared(Engine_ShaderFamily.TreeCanopyPath);
+    }
+
+    /// <summary>
     /// The one shader every surface shares, loaded once.
     ///
     /// LOCKED because a level change has two threads building materials at once, and `??=` is

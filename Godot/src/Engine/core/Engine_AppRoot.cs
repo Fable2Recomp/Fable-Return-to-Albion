@@ -85,7 +85,7 @@ public static class Engine_AppRoot
 		}
 	}
 
-	internal static string SafeGetProjectDir()
+	public static string SafeGetProjectDir()
 	{
 		if (IsTestHost)
 		{
