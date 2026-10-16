@@ -474,6 +474,47 @@ public partial class Engine_FrontEndSaveCards : Node3D
 		return false;
 	}
 
+	/// <summary>
+	/// The save whose card is under a canvas point, or -1. Where the fanned cards overlap the
+	/// nearer one wins (larger z) — the lifted card stands in front of its neighbours.
+	/// </summary>
+	public int SaveAt(Vector2 at)
+	{
+		int best = -1;
+		float bestZ = float.NegativeInfinity;
+		for (int save = 0; save < _saves.Count; ++save)
+		{
+			int slot = SlotOf(save);
+			if (slot < 0 || slot >= MaxCards || _cards[slot] is not { Visible: true } card ||
+				Engine_UiPointer.CanvasBounds(card) is not { } bounds || !bounds.HasPoint(at))
+			{
+				continue;
+			}
+
+			float z = (_groups[slot] ?? card).GlobalPosition.Z;
+			if (z > bestZ)
+			{
+				best = save;
+				bestZ = z;
+			}
+		}
+
+		return best;
+	}
+
+	/// <summary>Lifts the card of one save, as the stick would reach it. True when it moved.</summary>
+	public bool Select(int save)
+	{
+		if (save < 0 || save >= _saves.Count || save == Cursor)
+		{
+			return false;
+		}
+
+		Cursor = save;
+		Refresh();
+		return true;
+	}
+
 	/// <summary>`screen+212/216 = 0.25` after a move that happened.</summary>
 	private const double MoveLockout = 0.25;
 
@@ -542,10 +583,123 @@ public partial class Engine_FrontEndSaveCards : Node3D
 		}
 
 		SetDescription(_saves.Count == 0 ? string.Empty : _saves[Cursor].Description);
+		LayCards();
 
 		_elapsed = 0.0;
 		_animating = true;
 		ApplyPoses(0f);
+	}
+
+	// THE PC ROW. With the keyboard and mouse the fan's overlap is a liability — the pointer
+	// lands on two cards at once — so the cards stand in one straight row instead, upright and
+	// apart, scaled to fit, the selected one enlarged and brought forward. The controller gets
+	// the shipped fan back the moment it is touched.
+
+	private const float RowGap = 18f;
+
+	/// <summary>The widest the row may run: inside the book's frame, with the selected card's
+	/// growth to spare.</summary>
+	private const float RowSpan = 740f;
+
+	private const float RowY = 30f;
+
+	private const float SelectedGrowth = 1.12f;
+
+	/// <summary>Which layout the cards stand in now.</summary>
+	private bool _laidOutPc;
+
+	/// <summary>A card's drawn width at scale 1, measured from its meshes; 0 until measured.</summary>
+	private float _cardWidth;
+
+	private readonly Transform3D[] _cardFrom = new Transform3D[MaxCards];
+
+	private readonly Transform3D[] _cardTo = new Transform3D[MaxCards];
+
+	/// <summary>
+	/// The narrowest card's width in its own space at scale 1. Measured in card space so the
+	/// fan's yaw and the card's scale drop out; the narrowest so the lifted card's roll does not
+	/// widen it.
+	/// </summary>
+	private float CardWidth()
+	{
+		if (_cardWidth > 0f)
+		{
+			return _cardWidth;
+		}
+
+		float width = float.PositiveInfinity;
+		foreach (Node3D? card in _cards)
+		{
+			if (card is null)
+			{
+				continue;
+			}
+
+			Rect2? local = null;
+			LocalBounds(card, card.GlobalTransform.AffineInverse(), ref local);
+			if (local is { } rect && rect.Size.X > 0f)
+			{
+				width = Mathf.Min(width, rect.Size.X);
+			}
+		}
+
+		_cardWidth = float.IsFinite(width) ? width : 0f;
+		return _cardWidth;
+	}
+
+	private static void LocalBounds(Node node, Transform3D toCard, ref Rect2? bounds)
+	{
+		if (node is MeshInstance3D { Mesh: not null } mesh)
+		{
+			Aabb box = toCard * mesh.GlobalTransform * mesh.GetAabb();
+			var rect = new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
+			bounds = bounds is { } so ? so.Merge(rect) : rect;
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			LocalBounds(child, toCard, ref bounds);
+		}
+	}
+
+	private static bool PcMode => Engine_UiInputMode.KeyboardMouse;
+
+	/// <summary>Stands every card in the fan, or in the PC row with the selection enlarged.</summary>
+	private void LayCards()
+	{
+		bool switched = _laidOutPc != PcMode;
+		_laidOutPc = PcMode;
+		int first = BaseSlot - 1;
+		int count = Mathf.Max(1, _saves.Count);
+		float width = CardWidth();
+		float scale = width <= 0f
+			? CardScale
+			: Mathf.Min(CardScale, (RowSpan - (RowGap * (count - 1))) / (count * width));
+		float pitch = (width * scale) + RowGap;
+		for (int i = 0; i < MaxCards; i++)
+		{
+			if (_cards[i] is not { } card)
+			{
+				continue;
+			}
+
+			if (!_laidOutPc)
+			{
+				card.Transform = Fan[i].ToTransform(CardScale);
+				continue;
+			}
+
+			int k = i - first;
+			bool selected = _saves.Count > 0 && k == Cursor;
+			float s = scale * (selected ? SelectedGrowth : 1f);
+			_cardTo[i] = new Transform3D(
+				Basis.Identity.Scaled(new Vector3(s, s, 1f)),
+				new Vector3((k - ((count - 1) * 0.5f)) * pitch, RowY, selected ? 0f : -20f));
+
+			// Entering the row snaps; within it the growth rides the move tween.
+			_cardFrom[i] = switched ? _cardTo[i] : card.Transform;
+			card.Transform = _cardFrom[i];
+		}
 	}
 
 	/// <summary>
@@ -555,6 +709,11 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("frontendsavecards");
+		if (_laidOutPc != PcMode && _cards[0] is not null)
+		{
+			Refresh();
+		}
+
 		if (!_animating)
 		{
 			return;
@@ -590,13 +749,20 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			// left on Slide2. Slide1's commands park `Group` at the origin and its tracks
 			// (records 2741..2746) carry it to (25, 199, roll -0.14) over 250 ticks; Slide2 runs
 			// them back. Cards never selected sit on the master slide, at the origin.
-			bool selected = _saves.Count > 0 && i == SlotOf(Cursor);
+			// The PC row lifts nothing: the selected card is enlarged in place instead, so no
+			// card ever rises over its neighbour.
+			bool selected = _saves.Count > 0 && i == SlotOf(Cursor) && !_laidOutPc;
 			Vector3 to = selected ? Row[i] : Vector3.Zero;
 			float roll = selected ? RowRoll[i] : 0f;
 
 			group.Position = _groupFrom[i].Lerp(to, t);
 			group.Rotation = new Vector3(0f, 0f,
 				_rollFrom[i] + ((roll - _rollFrom[i]) * t));
+
+			if (_laidOutPc && _cards[i] is { } card)
+			{
+				card.Transform = _cardFrom[i].InterpolateWith(_cardTo[i], t);
+			}
 		}
 	}
 

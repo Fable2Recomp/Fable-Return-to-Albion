@@ -28,6 +28,9 @@ public static class Engine_EntityAppearance
 
     private static readonly StringName TintParameter = "entity_tint";
 
+    /// <summary>The 7e3 scene ceiling over the exposure at rest: 31.875 / 4.</summary>
+    private const float SceneCeilingTint = 31.875f / 4f;
+
     /// <summary>Nodes drawing the saturation-mask overlay; read by the post-process to skip its pass.</summary>
     private static readonly HashSet<MeshInstance3D> Masked = new(ReferenceEqualityComparer.Instance);
 
@@ -130,8 +133,19 @@ public static class Engine_EntityAppearance
         // to c49 in order), and `.w` is read by no shader. A corpse is {103,103,103,255}: grey.
         if (!had || was.TintLanes != look.TintLanes)
         {
+            // THE MODERN TINT IS CAPPED AT THE XBOX'S SCENE CEILING. The title's scene target is
+            // 7e3 (`"1280x720 2xMSAA Horizontal Split (PIXEL_FORMAT_A2B10G10R10F_EDRAM)"`), whose
+            // largest value is 31.875, and its materials write lit × tint × exposure (c20.w,
+            // 4 at rest). qo240's ghosts state (0, 1000, 100000)/255 — blue 392 — and read as a
+            // faint blue only because the target saturates; our FP16 scene does not, and the
+            // ghost became a blinding glow. Capping the lane at 31.875 / 4 keeps every tint the
+            // title can actually show and touches only the over-range ones (qo240, qo900 ghosts,
+            // qo860/qo170/qo890 at 9..12). Classic clamps the export itself instead.
             node.SetInstanceShaderParameter(TintParameter,
-                new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f));
+                new Vector4(
+                    Mathf.Min(look.TintLanes.X, SceneCeilingTint),
+                    Mathf.Min(look.TintLanes.Y, SceneCeilingTint),
+                    Mathf.Min(look.TintLanes.Z, SceneCeilingTint), 1f));
             // The classic shaders read the same tint as the title's PS c49 (the instance's
             // +240, which this appearance setter fills).
             if (Refii.Models.Engine_ClassicMaterial.Active)

@@ -39,6 +39,9 @@ public static class RuntimeCVarsGodot
     /// <summary>Discord Rich Presence: the game's name and the player's level, on their profile.</summary>
     public const string PresenceCategory = "Discord";
 
+    /// <summary>The camera and the keyboard and mouse: how the player's hands reach the game.</summary>
+    public const string ControlsCategory = "Controls";
+
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
         {
@@ -495,10 +498,31 @@ public static class RuntimeCVarsGodot
                 + "Costs one quarter-resolution copy per frame and a small readback every 20 "
                 + "frames; read at launch."),
 
+            new("camera_invert_y", ControlsCategory, RuntimeCVarType.Bool, "false",
+                "Invert the camera's up and down, as the console's own profile setting: a new " +
+                "game starts from it, and the game's Controls page overrides it per save."),
+            new("camera_invert_x", ControlsCategory, RuntimeCVarType.Bool, "false",
+                "Invert the camera's left and right, on the stick and the mouse. The game has no " +
+                "setting of its own for this."),
+            new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
+                "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
+                "turns twice as far."),
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
                 "Show \"Playing Fable 2: Return to Albion\" and the level you are in on your "
                 + "Discord profile while Discord is running."),
-        };
+        }
+        .Concat(KeyBindings())
+        .ToList();
+
+    /// <summary>
+    /// One setting per keyboard and mouse action, from the game's own table so the defaults live
+    /// in one place: a comma list of key names, or MouseLeft / MouseRight / MouseMiddle /
+    /// Mouse4 / Mouse5.
+    /// </summary>
+    private static IEnumerable<RuntimeCVarDefinition> KeyBindings() =>
+        Refii.Game.GameInput.KeyActions.Select(action => new RuntimeCVarDefinition(
+            "key_" + action.Name, ControlsCategory, RuntimeCVarType.String, action.Defaults,
+            action.Description + " Default: " + action.Defaults + "."));
 }
 
 /// <summary>

@@ -250,6 +250,34 @@ public partial class Engine_FrontEndCardChoice : Node3D
 		return true;
 	}
 
+	/// <summary>Which card a canvas point is on.</summary>
+	public Choice ChoiceAt(Vector2 at)
+	{
+		if (_boy is { Visible: true } boy && Engine_UiPointer.CanvasBounds(boy) is { } b &&
+			b.HasPoint(at))
+		{
+			return Choice.Boy;
+		}
+
+		return _girl is { Visible: true } girl && Engine_UiPointer.CanvasBounds(girl) is { } g &&
+			g.HasPoint(at)
+				? Choice.Girl
+				: Choice.Neither;
+	}
+
+	/// <summary>Raises one card, as the stick would. True when the choice changed.</summary>
+	public bool Choose(Choice choice)
+	{
+		if (choice == Choice.Neither || choice == Chosen)
+		{
+			return false;
+		}
+
+		Chosen = choice;
+		Refresh();
+		return true;
+	}
+
 	/// <summary>
 	/// Confirms the chosen card and returns the NAME to dispatch to the guest, or null.
 	///

@@ -41,14 +41,19 @@ public static class GameExit
 	/// with no application-side ordering that avoids it. Each such death cost a multi-gigabyte
 	/// core on the root partition.
 	///
-	/// <c>_exit</c>, not <c>Environment.Exit</c>: the latter runs the C runtime's exit path,
-	/// whose library destructors are the very code that faults. The runtime does the same for
-	/// its standalone app (<c>ReXApp::RequestShutdown</c>: "hard-exit rather than run subsystem
-	/// teardown").
+	/// Windows dies in the same place: the release template's render thread faults inside
+	/// <c>~RendererSceneCull</c> under <c>RenderingServer</c> finish (player crash records,
+	/// 2026-10-16, a heap read in its hash-table teardown).
+	///
+	/// <c>_exit</c> / <c>TerminateProcess</c>, not <c>Environment.Exit</c> or
+	/// <c>ExitProcess</c>: those run the C runtime's exit path and DLL detach, whose destructors
+	/// are the very code that faults. The runtime does the same for its standalone app
+	/// (<c>ReXApp::RequestShutdown</c>: "hard-exit rather than run subsystem teardown").
 	/// </remarks>
 	public static void EndChildProcess()
 	{
-		if (!GameChildProcess.IsChild || !System.OperatingSystem.IsLinux())
+		if (!GameChildProcess.IsChild ||
+			!(System.OperatingSystem.IsLinux() || System.OperatingSystem.IsWindows()))
 		{
 			return;
 		}
@@ -57,7 +62,14 @@ public static class GameExit
 		GD.PrintErr("[game-exit] ending the process here; the engine's display teardown is " +
 			"skipped (see GameExit.EndChildProcess)");
 		Flush();
-		HardExit(0);
+		if (System.OperatingSystem.IsWindows())
+		{
+			TerminateProcess(GetCurrentProcess(), 0);
+		}
+		else
+		{
+			HardExit(0);
+		}
 	}
 
 	private static void Flush()
@@ -75,4 +87,10 @@ public static class GameExit
 
 	[System.Runtime.InteropServices.DllImport("libc", EntryPoint = "_exit")]
 	private static extern void HardExit(int status);
+
+	[System.Runtime.InteropServices.DllImport("kernel32.dll")]
+	private static extern System.IntPtr GetCurrentProcess();
+
+	[System.Runtime.InteropServices.DllImport("kernel32.dll")]
+	private static extern bool TerminateProcess(System.IntPtr process, uint exitCode);
 }

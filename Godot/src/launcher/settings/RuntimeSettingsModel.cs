@@ -199,6 +199,7 @@ public sealed class RuntimeSettingsModel
     {
         RuntimeConfig.DisplayCategory => 0,
         RuntimeCVarsGodot.VideoCategory => 1,
+        RuntimeCVarsGodot.ControlsCategory => 2,
         RuntimeCVarsGodot.LightingCategory => 2,
         RuntimeCVarsGodot.Category => 3,
         MultiplayerCategory => 4,

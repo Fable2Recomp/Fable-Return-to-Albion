@@ -3684,6 +3684,69 @@ public static class HostBridge
 		return 0;
 	}
 
+	/// <summary>
+	/// The hero's text suffix as `sub_8230FC40` states it: component 12's word at +12, 2 for
+	/// <c>_HM</c> and 1 for <c>_HF</c> (0x8230FDD8..0x8230FE14); empty without a hero or a value.
+	/// </summary>
+	public static string HeroTextSuffix()
+	{
+		uint record = EntityComponentAddress(HeroEntityAddress(), 12);
+		if (record == 0 || Peek(record + 12, 1) is not [uint sex])
+		{
+			return string.Empty;
+		}
+
+		return sex switch
+		{
+			2 => "_HM",
+			1 => "_HF",
+			_ => string.Empty,
+		};
+	}
+
+	/// <summary>
+	/// The brightness the guest's camera holds, `G = 1.4 − 0.8·slider` (0.6..1.4, 1.0 at rest):
+	/// the Video page writes it at `S+0x14` (0x829C08A4 commit, plus preview, revert and the
+	/// profile restores), the camera publishes it every frame (0x821A6188) and the tonemap takes
+	/// `pow(colour, G × 0.45454544)` as c78. Null when no camera is up.
+	/// </summary>
+	/// <remarks>
+	/// Six guest sites write the field and none carries it as an argument, so it is read where
+	/// the camera keeps it. Which camera follows `sub_823893C0`: the front end's
+	/// (`dword_83496AC0`, `vt[5]` = `+0xC` → `+0x1C`) while `byte_83496AC4` is set, else the
+	/// game's (`dword_83496AB8`, `vt[5]` = `+0xC` → `+0x6C`); either way `S = *(R+4)`.
+	/// </remarks>
+	public static float? GuestBrightness()
+	{
+		uint frontEnd = PickByBuild(0x83496AC0u, 0x83496928u);
+		uint frontEndUp = PickByBuild(0x83496AC4u, 0x83496925u);
+		uint game = PickByBuild(0x83496AB8u, 0x83496920u);
+
+		uint Word(uint address) => Peek(address, 1) is [uint value] ? value : 0u;
+		static bool Plausible(uint address) => address >= 0x10000u && address < 0xC0000000u;
+
+		uint aligned = frontEndUp & ~3u;
+		int shift = 24 - (int)((frontEndUp & 3u) * 8u);
+		bool useFrontEnd = Word(frontEnd) != 0 && ((Word(aligned) >> shift) & 0xFFu) != 0;
+
+		uint root = Word(useFrontEnd ? frontEnd : game);
+		if (!Plausible(root))
+		{
+			return null;
+		}
+
+		uint inner = Word(root + 0xC);
+		uint wrapper = Plausible(inner) ? Word(inner + (useFrontEnd ? 0x1Cu : 0x6Cu)) : 0u;
+		uint camera = Plausible(wrapper) ? Word(wrapper + 4) : 0u;
+		if (!Plausible(camera))
+		{
+			return null;
+		}
+
+		float g = System.BitConverter.Int32BitsToSingle((int)Word(camera + 0x14));
+		return float.IsFinite(g) && g is >= 0.5f and <= 1.5f ? g : null;
+	}
+
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
 		uint Manager, double Submitted, double Deadline, bool Busy,

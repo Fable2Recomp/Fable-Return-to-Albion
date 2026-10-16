@@ -281,9 +281,25 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 			return true;
 		}
 
+		// THE BOX TAKES THE FRAME'S CLICK, wherever it landed: a click that missed the box
+		// must not fall through as A, or clicking beside a yes/no question would answer yes.
+		if (Engine_UiPointer.TakeLeft() && Engine_UiPointer.Canvas is { } at)
+		{
+			input = Point(input, at);
+		}
+
 		Route(input);
 		return true;
 	}
+
+	/// <summary>
+	/// A click on this surface, as the press it stands for. The default reads a click on the box
+	/// as A and anything else as nothing; a box with more than one answer names its buttons.
+	/// </summary>
+	protected virtual Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at) =>
+		View is { } view && Engine_UiPointer.CanvasBounds(view) is { } bounds && bounds.HasPoint(at)
+			? input with { Accept = true }
+			: input;
 }
 
 /// <summary>

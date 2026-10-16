@@ -257,13 +257,17 @@ public sealed class Engine_UiMenuTemplate
 					continue;
 				}
 
+				// The rating too: an ability's rank changes under a label that does not (every
+				// `..._TOUGHNESS_NAME_LEVEL_0N` reads "Toughness"), so a purchase restates only it.
 				string? command = row.Command ?? (rowCommand.Length != 0 ? rowCommand : null);
 				if (current[i].Unviewed != row.Unviewed ||
 					current[i].Counted != row.Counted ||
+					current[i].RatingSlide != row.Rating ||
 					!string.Equals(current[i].Command, command, System.StringComparison.Ordinal))
 				{
 					current[i].Unviewed = row.Unviewed;
 					current[i].Counted = row.Counted;
+					current[i].RatingSlide = row.Rating;
 					current[i].Command = command;
 					restated = true;
 				}
@@ -1998,6 +2002,12 @@ public static class Engine_UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages",
+
+			// The minimap legend scrolls: `sub_826A19E0` registers it under `Mask` with the
+			// page's bar (0x826A23BC / 0x826A23DC), when the legend is the page shown.
+			ScrollContent = "Foreground.Pages.Contents.MiniMap.Legend",
+			ScrollMask = "Mask",
+			ScrollBar = "Foreground.Pages.Contents.Scrollbar",
 			BackdropUnit = "BackgroundTint",
 			// WHAT THE GUEST STILL WRITES HERE, and nothing more.
 			//
@@ -2055,6 +2065,12 @@ public static class Engine_UiTemplates
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_red",
 
+			// Page2's description scrolls: the Layer `Mask` is a `Scroller`, so the automatic
+			// registrar (`sub_828C2F38` via `sub_829A7390`) takes it, bar at 0x829A73B4.
+			ScrollContent = "Foreground.Book.Pages.Page2.Contents.Text",
+			ScrollMask = "Mask",
+			ScrollBar = "Foreground.Book.Pages.Page2.Contents.Scrollbar",
+
 			// Page4, not Page3 — the abilities book skips one. Its stack parks at x = 400.
 			Pages =
 			{
@@ -2080,6 +2096,14 @@ public static class Engine_UiTemplates
 			AddScreen(new Engine_UiScreenTemplate
 			{
 				ScreenId = id, OwnsList = true,
+
+				// Page2's item description scrolls — automatic `Mask` registration on items,
+				// clothing (`sub_829B7328`), gift (`sub_829A9E08`) and decoration
+				// (`sub_8299CEA8`). Upgrade furniture (26) has no mask: the guest registers
+				// nothing there.
+				ScrollContent = id == 26 ? string.Empty : "Foreground.Book.Pages.Page2.Contents.ItemDescription",
+				ScrollMask = id == 26 ? string.Empty : "Mask",
+				ScrollBar = id == 26 ? string.Empty : "Foreground.Book.Pages.Page2.Contents.Scrollbar",
 
 				// Two pages, authored ON the leaf (x = 0) in every book of this family —
 				// `giftgivingscreen`, `equipmentscreen` and `upgradefurniture` — so no
@@ -2185,13 +2209,23 @@ public static class Engine_UiTemplates
 			// and the stick glyph — the same region contract the region page ships on screen 23.
 			// The Renown page scrolls the same way (`sub_828C3250(…, "Foreground.Mask",
 			// "…RenownPage")`): its last two expression rows sit below the mask's band.
+			//
+			// Expressions, Completed Quests and Help register too (`sub_829BCD58`,
+			// `sub_829BD418`, `sub_829BDA90`); their rows author no MaskName, the guest clipping
+			// them at registration — see Engine_UiOwnedBook.AssignRegionMasks.
 			ScrollContent =
 				"Foreground.Book.Pages.StatsPage.Contents.LogBook.Stats|" +
-				"Foreground.Book.Pages.RenownPage.Contents.LogBook.Renown",
-			ScrollMask = "Mask|Mask",
+				"Foreground.Book.Pages.RenownPage.Contents.LogBook.Renown|" +
+				"Foreground.Book.Pages.ExpressionsPage.Contents|" +
+				"Foreground.Book.Pages.CompletedQuestsPage.Contents.Quests|" +
+				"Foreground.Book.Pages.HelpPage.Contents.LogBook",
+			ScrollMask = "Mask|Mask|Mask|Mask|Mask",
 			ScrollBar =
 				"Foreground.Book.Pages.StatsPage.Contents.LogBook.Scrollbar|" +
-				"Foreground.Book.Pages.RenownPage.Contents.LogBook.Scrollbar",
+				"Foreground.Book.Pages.RenownPage.Contents.LogBook.Scrollbar|" +
+				"Foreground.Book.Pages.ExpressionsPage.Scrollbar|" +
+				"Foreground.Book.Pages.CompletedQuestsPage.Contents.Scrollbar|" +
+				"Foreground.Book.Pages.HelpPage.Contents.Scrollbar",
 
 			// The Expressions page hangs its effects block under the measured description
 			// (`sub_829BD340`: `Effects.y = Description.y − wrapped height`). With the block as
@@ -2320,6 +2354,13 @@ public static class Engine_UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_grey",
+
+			// Each crime page scrolls its text — `sub_82991338`, `sub_82991500`, `sub_829915A0`
+			// register `PageN.Contents.Text` under `Mask` after writing it.
+			ScrollContent = "Foreground.Book.Pages.Page1.Contents.Text|Foreground.Book.Pages.Page2.Contents.Text|Foreground.Book.Pages.Page3.Contents.Text",
+			ScrollMask = "Mask|Mask|Mask",
+			ScrollBar =
+				"Foreground.Book.Pages.Page1.Contents.Scrollbar|Foreground.Book.Pages.Page2.Contents.Scrollbar|Foreground.Book.Pages.Page3.Contents.Scrollbar",
 			PanelFields =
 			{
 				new("Foreground.Book.Pages.Page1.Contents.Text", Multiline: true),
@@ -2352,6 +2393,12 @@ public static class Engine_UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_green",
+
+			// ONE guest region holding two rows (`sub_829933C8`, automatic): Page2's text and
+			// Page3's group. Only Page2's bar is ever handed to `sub_828C33F0`.
+			ScrollContent = "Foreground.Book.Pages.Page2.Contents.Text.Group|Foreground.Book.Pages.Page3.Contents.Group",
+			ScrollMask = "Mask|Mask",
+			ScrollBar = "Foreground.Book.Pages.Page2.Contents.Scrollbar|",
 
 			// The front page (name, anecdote, keeper, owner, opinions, sale, discount, wealth)
 			// is written natively by `sub_82991800` at the screen's show and never again —
@@ -2398,9 +2445,20 @@ public static class Engine_UiTemplates
 			// The region page scrolls — `sub_829AB060` registers `Page1.Contents.Text` under
 			// `MaskPage2` with the page's own scrollbar, and `sub_826C63C8` code 27 (the right
 			// stick) drives it.
-			ScrollContent = "Foreground.Book.Pages.Page1.Contents.Text",
-			ScrollMask = "MaskPage2",
-			ScrollBar = "Foreground.Book.Pages.Page1.Contents.Scrollbar",
+			// The Quests (`sub_829AF5D0`, `MaskQuests`), Family (`sub_829B03F0`, `MaskFamily`)
+			// and Legend (`sub_829ABF30`, automatic, `MaskPage3`) pages scroll too. Sales
+			// registers `MaskPage2` over a Description no row names: nothing to move.
+			ScrollContent =
+				"Foreground.Book.Pages.Page1.Contents.Text|" +
+				"Foreground.Book.Pages.QuestsPage.Contents.Description|" +
+				"Foreground.Book.Pages.FamilyPage.Contents.Group|" +
+				"Foreground.Book.Pages.Page2.Contents.Legend",
+			ScrollMask = "MaskPage2|MaskQuests|MaskFamily|MaskPage3",
+			ScrollBar =
+				"Foreground.Book.Pages.Page1.Contents.Scrollbar|" +
+				"Foreground.Book.Pages.QuestsPage.Contents.Scrollbar|" +
+				"Foreground.Book.Pages.FamilyPage.Contents.Scrollbar|" +
+				"Foreground.Book.Pages.Page2.Contents.Scrollbar",
 
 			// And it reflows — `sub_829AB8A8` measures the wrapped merchants list and moves
 			// every row below it by the overflow, silver keys taking the gargoyle row's place
@@ -2466,6 +2524,13 @@ public static class Engine_UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_grey",
+
+			// Both pages scroll under `Mask` (explicit — the mask is not a `Scroller`):
+			// `sub_82998FB0` registers `Page1.Group` (not under Contents) and `sub_8299B068`
+			// `Page2.Contents.Group`.
+			ScrollContent = "Foreground.Book.Pages.Page1.Group|Foreground.Book.Pages.Page2.Contents.Group",
+			ScrollMask = "Mask|Mask",
+			ScrollBar = "Foreground.Book.Pages.Page1.Contents.Scrollbar|Foreground.Book.Pages.Page2.Contents.Scrollbar",
 		});
 
 		// 1 PHOTO MODE — one dialog box, not a book.

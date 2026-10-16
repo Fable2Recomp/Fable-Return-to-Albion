@@ -1964,9 +1964,6 @@ public sealed partial class Engine_HudView : Node3D
         return at - baseline;
     }
 
-    /// <summary>The widest a subtitle line runs, in canvas units — inside the 4:3 canvas.</summary>
-    private const float SubtitleWrapWidth = 800f;
-
     private void DriveText(Built built)
     {
         if (built.Node is not MeshInstance3D label || Theme is null)
@@ -1997,20 +1994,16 @@ public sealed partial class Engine_HudView : Node3D
         var colour = record is not null
             ? new Color(record.R, record.G, record.B, 1f)
             : new Color(1f, 224f / 255f, 128f / 255f, 1f);
-        // The record's own wrap box. A SUBTITLE ALWAYS WRAPS: it is a sentence of any length
-        // and must stay on screen at 4:3 (952 units visible), whatever the record says.
-        float boxWidth = record?.BoxWidth ?? 0f;
-        int wrapMode = record?.WrapMode ?? 0;
-        if (built.Piece.Id == "text.Subtitles.Text")
-        {
-            boxWidth = boxWidth > 0f ? Mathf.Min(boxWidth, SubtitleWrapWidth) : SubtitleWrapWidth;
-            wrapMode = 1;
-        }
-
+        // The record's own wrap box. A subtitle arrives ALREADY WRAPPED: the subtitler
+        // (`sub_827E8560`) wraps each line at the Subtitles layout box (`sub_82803138` at
+        // 0x827E8814), breaks it with U+000A and publishes three lines a page, and places the
+        // measured block's left edge. Its record says no wrap; re-wrapping at the record's
+        // 240-unit box stacked five lines down the left of the screen.
         Theme.Paint(
             label, live, record?.Size is > 0 and var size ? size : TextSize, colour,
             horizontalAlign: record?.HorzAlign ?? 0, verticalAlign: record?.VertAlign ?? 1,
-            boxWidth: boxWidth, boxHeight: record?.BoxHeight ?? 0f, wrapMode: wrapMode);
+            boxWidth: record?.BoxWidth ?? 0f, boxHeight: record?.BoxHeight ?? 0f,
+            wrapMode: record?.WrapMode ?? 0);
     }
 
     /// <summary>Point size for HUD text, at the layout's reference height.</summary>

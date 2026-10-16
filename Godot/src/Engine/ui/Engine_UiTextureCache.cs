@@ -96,6 +96,8 @@ public sealed class Engine_UiTextureCache
 		}
 
 		++Loaded;
-		return texture;
+
+		// A controller button's art becomes the keycap proxy the device switch redraws.
+		return Engine_UiKeyGlyphs.Wrap(virtualPath, texture);
 	}
 }

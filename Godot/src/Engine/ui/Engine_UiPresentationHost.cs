@@ -357,6 +357,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	private void LoadTextResources(string dataRoot)
 	{
 		Fonts = Engine_UiFontLibrary.Load(dataRoot);
+		Engine_UiKeyGlyphs.Fonts ??= Fonts;
 		foreach (string failure in Fonts.Failures)
 			GD.PushWarning($"[ui] font: {failure}");
 

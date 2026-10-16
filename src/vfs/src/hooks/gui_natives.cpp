@@ -311,63 +311,30 @@ REX_EXTERN(rex_lhLuaNamespace_RegisterFunctionHash) {
     const uint32_t name_object = ctx.r5.u32;
 
     if (base != nullptr && lua_state != 0 && PlausibleGuestPointer(namespace_object)) {
-        // The name may be the characters, an object holding them, or an object holding a record
-        // that holds them — try each hop rather than guess.
-        const auto read_name = [base](uint32_t object) -> std::string {
-            uint32_t candidate = object;
-            for (int hop = 0; hop < 3; ++hop) {
-                if (!PlausibleGuestPointer(candidate)) {
-                    break;
-                }
-
-                std::string text =
-                    refii::vfs::ReadBestEffortGuestString(base, candidate, 128);
-
-                // A registered name is ASCII and short; anything else is one dereference short.
-                bool sane = !text.empty() && text.size() < 64u;
-                for (char c : text) {
-                    if (c < 0x20 || c > 0x7E) {
-                        sane = false;
-                        break;
-                    }
-                }
-
-                if (sane) {
-                    return text;
-                }
-
-                candidate = refii::vfs::LoadGuestU32(base, candidate);
-            }
-
-            return std::string();
-        };
-
-        // The namespace name is at `*r3 + 8`: `r3` points at the namespace SLOT, not the object
-        // (`sub_82307518` builds it with `sub_823CE200(&slot, ..., "GUI")` and passes `&slot`
-        // down; this function's own first act is `sub_821F0240(v12, *v3 + 8)`). Reading from
-        // `r3` instead lands on the `lua_State` pointer at `nsObj+0`.
+        // Both strings are read in the shape the binary states, never by probing the depth: a
+        // probe that dereferenced past the characters loaded text as a pointer, which faults on
+        // the Windows reserved arena.
+        //
+        // The namespace name is the `CCharString` handle at `*r3 + 8`: `r3` points at the
+        // namespace SLOT, not the object (`sub_82307518` builds it with
+        // `sub_823CE200(&slot, ..., "GUI")` and passes `&slot` down). This function copies it
+        // with `sub_821F0240(v12, *v3 + 8)` and reaches the characters as `*v13[0]`
+        // (0x823CE4B4) — handle, block, characters. Reading from `r3` instead lands on the
+        // `lua_State` pointer at `nsObj+0`.
+        //
+        // The name (`r5`) is the characters themselves: `sub_821DA9C0(v13, a3)` takes it as a
+        // `char*` and measures it a byte at a time.
         //
         // All three registration shapes reach here with the closure on top of the stack — the
         // shared `sub_823CE2E0`, the per-arity registrars (`sub_823091B0` and family) and
         // `sub_82307518`'s inline bindings (0x823075a4..0x823075e8) — which is why this
         // function, not any one registrar, is the observation point. Its own body is gated on
         // `*(u8*)(*r3 + 12)`, but this hook runs before handing the call on.
-        //
-        // The direct-object read is kept as a second attempt for registrars that pass the
-        // object itself.
-        const uint32_t namespace_object_indirect =
-            PlausibleGuestPointer(namespace_object)
-                ? refii::vfs::LoadGuestU32(base, namespace_object)
-                : 0u;
-
-        std::string namespace_name;
-        if (PlausibleGuestPointer(namespace_object_indirect)) {
-            namespace_name = read_name(namespace_object_indirect + 8u);
-        }
-
-        if (namespace_name.empty()) {
-            namespace_name = read_name(namespace_object);
-        }
+        const uint32_t namespace_slot_object = refii::vfs::LoadGuestU32(base, namespace_object);
+        const std::string namespace_name =
+            PlausibleGuestPointer(namespace_slot_object)
+                ? refii::vfs::ReadGuestLhString(base, namespace_slot_object + 8u)
+                : std::string();
 
         // A namespace census, so "no `GUI` natives" distinguishes never reaching this hook from
         // reaching it with a namespace that never reads as `GUI`.
@@ -404,7 +371,7 @@ REX_EXTERN(rex_lhLuaNamespace_RegisterFunctionHash) {
             const uint32_t top = refii::vfs::LoadGuestU32(base, lua_state + kStateTop);
             if (PlausibleGuestPointer(top)) {
                 const uint32_t implementation = ImplementationFor(base, top - kTValueSize);
-                std::string name = read_name(name_object);
+                std::string name = refii::vfs::FormatGuestAsciiBytes(base, name_object, 128u);
 
                 // A native whose implementation is a bare `blr` is a stub, and all six stubs in
                 // the namespace share one function. Interception keys on the implementation

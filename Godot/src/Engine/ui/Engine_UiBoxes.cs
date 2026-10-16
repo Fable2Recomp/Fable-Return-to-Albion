@@ -45,6 +45,32 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 
 	private Node3D? _group;
 
+	/// <summary>
+	/// Which option a canvas point is on, 0-based; -2 for the cancel prompt; -1 for neither.
+	/// </summary>
+	public int OptionAt(Vector2 at)
+	{
+		if (_group is null)
+		{
+			return -1;
+		}
+
+		for (int i = 0; i < MaxOptions; ++i)
+		{
+			if (_group.GetNodeOrNull<Node3D>(P("Choices/Multiplayer_Button") + $"{i + 1}") is
+					{ Visible: true } button &&
+				Engine_UiPointer.CanvasBounds(button) is { } bounds && bounds.HasPoint(at))
+			{
+				return i;
+			}
+		}
+
+		return _group.GetNodeOrNull<Node3D>(P("OK/CANCEL/Negative")) is { Visible: true } cancel &&
+			Engine_UiPointer.CanvasBounds(cancel) is { } box && box.HasPoint(at)
+				? -2
+				: -1;
+	}
+
 	/// <summary>Document ordinals: the title, and per option its button root and label.</summary>
 	public sealed class Joins
 	{
@@ -654,6 +680,37 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 		Visible = true;
 	}
 
+	/// <summary>
+	/// Which answer a canvas point is on: +1 the A choice, -1 the B choice, 0 neither. The
+	/// default and reload rows are A then B; `XAChoices` is X then A, and X has no answer here.
+	/// </summary>
+	public int AnswerAt(Vector2 at)
+	{
+		foreach ((string Row, string First, string Second) choice in ChoiceRows)
+		{
+			if (_box?.GetNodeOrNull<Node3D>(choice.Row) is not { Visible: true } row)
+			{
+				continue;
+			}
+
+			bool xa = choice.Row == ChoiceRows[1].Row;
+			if (Covers(row.GetNodeOrNull<Node3D>(choice.First), at))
+			{
+				return xa ? 0 : 1;
+			}
+
+			if (Covers(row.GetNodeOrNull<Node3D>(choice.Second), at))
+			{
+				return xa ? 1 : -1;
+			}
+		}
+
+		return 0;
+	}
+
+	private static bool Covers(Node3D? node, Vector2 at) =>
+		node is not null && Engine_UiPointer.CanvasBounds(node) is { } bounds && bounds.HasPoint(at);
+
 	private MeshInstance3D? BodyNode() => _box?.GetNodeOrNull<MeshInstance3D>(P("Text"));
 
 	private MeshInstance3D? LabelNode(string row, string choice) =>
@@ -817,6 +874,21 @@ public partial class Engine_UiNumericBox : Node3D, IUiSurfaceView
 		Visible = true;
 	}
 
+	/// <summary>Which arrow a canvas point is on: -1 up (increment), +1 down, 0 neither.</summary>
+	public int ArrowAt(Vector2 at)
+	{
+		foreach ((string arrow, int step) in new[] { ("up", -1), ("down", 1) })
+		{
+			if (_box?.GetNodeOrNull<Node3D>(P("PriceWidget/Arrows/") + arrow) is { Visible: true } node &&
+				Engine_UiPointer.CanvasBounds(node) is { } bounds && bounds.HasPoint(at))
+			{
+				return step;
+			}
+		}
+
+		return 0;
+	}
+
 	private void SetArrow(string arrow, bool enabled)
 	{
 		if (_box?.GetNodeOrNull<Node3D>(P("PriceWidget/Arrows/") + $"{arrow}") is { } node)
@@ -893,6 +965,30 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 
 	/// <summary>The prompt groups under `Buttons/Buttons`, in <see cref="Joins.Labels"/> order.</summary>
 	public static readonly string[] Prompts = { "Action", "Info", "Done" };
+
+	/// <summary>The drawn prompt a canvas point is on (one of <see cref="Prompts"/>), or null.</summary>
+	public string? PromptAt(Vector2 at)
+	{
+		foreach (Node3D? side in new[] { _front, _back })
+		{
+			if (side is not { Visible: true })
+			{
+				continue;
+			}
+
+			foreach (string name in Prompts)
+			{
+				if (side.GetNodeOrNull<Node3D>(P("Buttons/Buttons/") + name) is { } prompt &&
+					prompt.IsVisibleInTree() &&
+					Engine_UiPointer.CanvasBounds(prompt) is { } bounds && bounds.HasPoint(at))
+				{
+					return name;
+				}
+			}
+		}
+
+		return null;
+	}
 
 	/// <summary>Root slides that leave the reverse up: `Flip2Back` and its `FlipOutro`.</summary>
 	public const int FlipToBackSlide = 3;
@@ -1029,10 +1125,13 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 			return;
 		}
 
-		if (!string.IsNullOrEmpty(title) &&
-			_front.GetNodeOrNull<MeshInstance3D>(P("NameAndIcon/Title")) is { } titleNode)
+		// Written even when empty, like the name below: `sub_82538DF8` starts the title at
+		// hash("") and replaces it only when the item is found in the GUI player's inventory
+		// (0x82538FDC), while the model is set regardless. Skipping an empty title left the
+		// previous card's name over a new item's model.
+		if (_front.GetNodeOrNull<MeshInstance3D>(P("NameAndIcon/Title")) is { } titleNode)
 		{
-			LastReport = Theme.SetMeshText(titleNode, title);
+			LastReport = Theme.SetMeshText(titleNode, title ?? string.Empty);
 		}
 
 		// WRITTEN EVEN WHEN EMPTY. `sub_82538910` writes this element on every refresh, and
@@ -1171,7 +1270,10 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 	/// slides the description inside the `Mask` band, which already clips it; the bar stands only
 	/// while the text overflows, its arrows dim at their limits and the thumb rides the fraction.
 	/// </summary>
-	public void ScrollBack(float stick, double delta)
+	/// <summary>Canvas units one wheel notch scrolls the description.</summary>
+	private const float WheelUnitsPerNotch = 30f;
+
+	public void ScrollBack(float stick, double delta, int wheelNotches = 0)
 	{
 		if (_back is null || !_back.Visible || _backText is not { } text ||
 			!GodotObject.IsInstanceValid(text) || !IsInsideTree() || BackClip is not { } clip)
@@ -1191,7 +1293,9 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 			range = Mathf.Max(0f, clip.Position.Y - lowest);
 		}
 
-		_scroll = Mathf.Clamp(_scroll - (stick * ScrollUnitsPerSecond * (float)delta), 0f, range);
+		_scroll = Mathf.Clamp(
+			_scroll - (stick * ScrollUnitsPerSecond * (float)delta) + (wheelNotches * WheelUnitsPerNotch),
+			0f, range);
 		text.Position = _backTextRest + (Vector3.Up * (_scroll / unitsPerLocal));
 
 		if (_back.GetNodeOrNull<Node3D>(P("Group")) is not { } group)

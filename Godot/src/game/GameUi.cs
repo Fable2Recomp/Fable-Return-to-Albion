@@ -1244,13 +1244,14 @@ public partial class GameUi : Node
 		}
 
 		_guestDialogShown = true;
+		int clicked = _warningView.Click();
 		if (dialog.Accepting)
 		{
-			if (GameInput.MenuAcceptPressed)
+			if (GameInput.MenuAcceptPressed || clicked > 0)
 			{
 				Engine_UiSource.Current.PostFrontEndAction("FrontEndDialog:36");
 			}
-			else if (GameInput.MenuBackPressed && dialog.AllowCancel)
+			else if ((GameInput.MenuBackPressed || clicked < 0) && dialog.AllowCancel)
 			{
 				Engine_UiSource.Current.PostFrontEndAction("FrontEndDialog:37");
 			}
@@ -1620,8 +1621,15 @@ public partial class GameUi : Node
 			return;
 		}
 
+		// A click on the right-hand page turns between the region and its map.
+		int flip = GameInput.MenuHorizontal;
+		if (flip == 0 && Engine_UiWorldMapPage.RegionOf(row) >= 0 && PageClicked(book))
+		{
+			flip = Engine_UiMinimapPage.Shown ? -1 : 1;
+		}
+
 		Engine_UiMinimapPage.DriveFlip(
-			Engine_UiWorldMapPage.RegionOf(row) >= 0, GameInput.MenuHorizontal, (float)delta);
+			Engine_UiWorldMapPage.RegionOf(row) >= 0, flip, (float)delta);
 
 		Node3D? contents = Engine_UiMinimapPage.Standing(row)
 			? book.NodeFor(Engine_UiMinimapPage.Contents)
@@ -1815,6 +1823,11 @@ public partial class GameUi : Node
 
 			HoldScreenStick(0);
 			GameInput.ScreenMenuOwnsInput = true;
+			if (_books.Book(state.ScreenId) is { } optionsBook)
+			{
+				_screenLevel.Pointer(optionsBook, delta);
+			}
+
 			_screenLevel.Drive(SurfaceInput(delta));
 			return true;
 		}
@@ -1858,6 +1871,11 @@ public partial class GameUi : Node
 
 			HoldScreenStick(0);
 			GameInput.ScreenMenuOwnsInput = true;
+			if (_books.Book(state.ScreenId) is { } pointedBlade)
+			{
+				_spells.BladePointer(pointedBlade, delta);
+			}
+
 			_spells.DriveBlade(SurfaceInput(delta));
 			return true;
 		}
@@ -2102,6 +2120,15 @@ public partial class GameUi : Node
 				Engine_UiPageProviders.ItemBook or Engine_UiPageProviders.Abilities)
 		{
 			int sideways = GameInput.MenuHorizontal;
+
+			// A click on the page's own arrows turns it.
+			if (sideways == 0 && _books.Book(state.ScreenId) is { } turnedBook &&
+				PageArrowClicked(turnedBook) is var arrow && arrow != 0)
+			{
+				sideways = arrow;
+				_screenPageHeld = 0;
+			}
+
 			if (sideways != 0 && sideways != _screenPageHeld)
 			{
 				uint code = sideways > 0
@@ -2131,7 +2158,18 @@ public partial class GameUi : Node
 			return true;
 		}
 
-		if (GameInput.MenuAcceptPressed)
+		// The PC list stops above the footer (Back, the gold), never under it.
+		if (_screenMenuView is not null)
+		{
+			_screenMenuView.Book = _books.Book(state.ScreenId);
+		}
+
+		// The right-hand page first: the wheel over it scrolls it, its bar drags it. The list
+		// takes only what lands on its own rows or bar, so the two sides never share a notch.
+		PointerPage(_books.Book(state.ScreenId));
+		SwallowOverPages(_books.Book(state.ScreenId));
+
+		if (GameInput.MenuAcceptPressed || PointerList(_screenMenuView))
 		{
 			// By IDENTITY where the row can be named, by A press where it cannot.
 			// `ScreenAction(36)` posts `OnPressA` into the presentation's logic queue and the
@@ -3731,7 +3769,33 @@ public partial class GameUi : Node
 						// |v|² < 0.1, then the nearest of eight unit vectors at 3π/4 − iπ/4 (0 =
 						// NE, clockwise). The guest's own raw-stick route feeds the same routine
 						// when it is alive; this posts only on a sector change, so the two agree.
+						// THE POINTER AS THE STICK: its offset from the wheel's centre, inside a
+						// dead ring of a third of the wheel, is the same direction the stick
+						// would hold. Left press selects, its release ends a held expression.
 						Vector2 stick = GameInput.LeftStick;
+						if (Engine_UiPointer.Canvas is { } wheelAt &&
+							Engine_UiTheme.FindByName(_hud, "ExpressionWheel") is Node3D wheelNode &&
+							Engine_UiPointer.CanvasBounds(wheelNode) is { } wheelBox)
+						{
+							Vector2 offset = wheelAt - wheelBox.GetCenter();
+							float radius = Mathf.Min(wheelBox.Size.X, wheelBox.Size.Y) * 0.5f;
+							if (radius > 0f && offset.Length() > radius / 3f)
+							{
+								stick = offset.Normalized();
+							}
+
+							if (Engine_UiPointer.TakeLeft())
+							{
+								_wheelMouseDown = true;
+								HostBridge.PostFrontEndAction("QuickWheel:select");
+							}
+							else if (_wheelMouseDown && !Input.IsMouseButtonPressed(MouseButton.Left))
+							{
+								_wheelMouseDown = false;
+								HostBridge.PostFrontEndAction("QuickWheel:release");
+							}
+						}
+
 						if (stick.LengthSquared() >= 0.1f)
 						{
 							int best = -1;
@@ -3810,6 +3874,8 @@ public partial class GameUi : Node
 						{
 							HostBridge.PostFrontEndAction("SpellBlade:copydown");
 						}
+
+						_spells.WheelPointer();
 					}
 
 					for (int i = 0; i < elements.Count; ++i)
@@ -4102,7 +4168,8 @@ public partial class GameUi : Node
 				// Y REFRESHES the open page — MenuFlipPressed is Y, already plumbed.
 				if (_multiplayer.Drive(
 						GameInput.MenuDirection, GameInput.RightStickY,
-						GameInput.MenuAcceptPressed, GameInput.MenuBackPressed,
+						GameInput.MenuAcceptPressed || PointerList(_multiplayer.View),
+						GameInput.MenuBackPressed,
 						GameInput.MenuFlipPressed, delta, slab))
 				{
 					ReportMenuView(_multiplayer.View);
@@ -4130,7 +4197,8 @@ public partial class GameUi : Node
 						: 0f;
 
 				if (_achievements.Drive(
-						GameInput.MenuDirection, GameInput.MenuAcceptPressed,
+						GameInput.MenuDirection,
+						GameInput.MenuAcceptPressed || PointerList(_achievements.View),
 						GameInput.MenuBackPressed, delta, slabZ))
 				{
 					ReportMenuView(_achievements.View);
@@ -4195,7 +4263,9 @@ public partial class GameUi : Node
 
 		// No slide sound yet, deliberately: the front end's 140/141 command path runs against
 		// the front-end screen object, which does not exist in game.
+		_pauseView.Book = _pauseBook;
 		_pauseView.Navigate(GameInput.MenuDirection, delta);
+		bool pauseClicked = PointerList(_pauseView);
 
 		// Change-keyed, so this is one line when the list settles and one more per press —
 		// not a line per frame. It is the only report that walks the ROWS.
@@ -4208,7 +4278,7 @@ public partial class GameUi : Node
 			_pauseView.Back();
 		}
 
-		if (!GameInput.MenuAcceptPressed)
+		if (!GameInput.MenuAcceptPressed && !pauseClicked)
 		{
 			return true;
 		}
@@ -4721,6 +4791,32 @@ public partial class GameUi : Node
 			float step = (float)GetProcessDeltaTime();
 			float x = GameInput.RightStickX;
 			_previewYawTarget += x * x * x * PreviewStickDegreesPerSecond * step;
+
+			// THE MOUSE TURNS IT TOO: a press anywhere in its ring grabs it and the drag turns
+			// it, a degree per canvas unit, for as long as the button is held.
+			if (Engine_UiPointer.Canvas is { } turnAt)
+			{
+				if (_previewDragX is { } fromX)
+				{
+					if (Input.IsMouseButtonPressed(MouseButton.Left))
+					{
+						_previewYawTarget += turnAt.X - fromX;
+						_previewDragX = turnAt.X;
+					}
+					else
+					{
+						_previewDragX = null;
+					}
+				}
+				else if (Engine_UiPointer.LeftPressed &&
+					(PreviewRingHas(turnAt) ||
+						(Engine_UiPointer.CanvasBounds(_previewObject) is { } model &&
+							model.Grow(20f).HasPoint(turnAt))))
+				{
+					Engine_UiPointer.TakeLeft();
+					_previewDragX = turnAt.X;
+				}
+			}
 			_previewYaw += (_previewYawTarget - _previewYaw) * Mathf.Min(1f, PreviewEaseRate * step);
 			_previewObject.Spin(_previewYaw);
 
@@ -4734,6 +4830,9 @@ public partial class GameUi : Node
 	}
 
 	private ulong _previewYawSaid;
+
+	/// <summary>Where the drag turning the preview was last frame, in canvas X; null when none.</summary>
+	private float? _previewDragX;
 
 	private const float PreviewStartYaw = 0f;
 
@@ -5521,12 +5620,285 @@ public partial class GameUi : Node
 	{
 		using (Refii.Core.Engine_FramePhases.Measure("ui_process"))
 		{
+			// The pointer first, so every screen below reads the same position this frame.
+			Engine_UiPointer.Resolve(_uiCamera, _viewport, GetViewport().GetVisibleRect().Size);
+
+			PointerCoop();
 			ui_processBody(delta);
+
+			// What no screen took becomes the pad's: right click is always B and a wheel notch a
+			// D-pad step. A left click acts only on what it lands on — a click on nothing is
+			// nothing, never an A for whatever happens to be highlighted.
+			GameInput.QueuePointerButtons(
+				Engine_UiPointer.Free && Engine_UiPointer.RightPressed,
+				Engine_UiPointer.Free ? Engine_UiPointer.WheelSteps : 0);
+			Engine_UiPointer.EndFrame();
 		}
 	}
 
 	/// <summary>The pause state as read on the last guest frame.</summary>
 	private Engine_UiModel.PauseState? _modal;
+
+	/// <summary>Seconds until the hero's text suffix is read again.</summary>
+	private double _heroSuffixClock;
+
+	/// <summary>
+	/// The mouse on a list, as a PC menu: the row under the pointer is highlighted where it
+	/// stands, the wheel scrolls the column, the scroll bar drags it, and a click on a row is the
+	/// A press. True when a click landed on the row that is now highlighted — the caller treats
+	/// that as accept.
+	/// </summary>
+	private static bool PointerList(Engine_FrontEndMenuView? view)
+	{
+		if (view is null || Engine_UiPointer.Canvas is not { } at)
+		{
+			return false;
+		}
+
+		// THE SCROLL BAR: a press on it grabs the thumb (jumping there), and the drag follows the
+		// pointer for as long as the button is held, wherever the pointer wanders.
+		if (ReferenceEquals(_barDrag, view))
+		{
+			if (Input.IsMouseButtonPressed(MouseButton.Left))
+			{
+				view.ScrollTo(view.ScrollBarPositionAt(at.Y));
+				return false;
+			}
+
+			_barDrag = null;
+		}
+
+		if (view.ScrollBarAt(at) is { } barPosition)
+		{
+			if (Engine_UiPointer.TakeLeft())
+			{
+				_barDrag = view;
+				view.ScrollTo(barPosition);
+			}
+
+			if (Engine_UiPointer.WheelSteps != 0)
+			{
+				view.Scroll(Engine_UiPointer.TakeWheel());
+			}
+
+			return false;
+		}
+
+		// A list on the left page never answers the pointer over the right one: that half is
+		// the detail page's, to scroll and to turn the preview.
+		if (view.GlobalPosition.X < 0f && at.X >= 0f)
+		{
+			return false;
+		}
+
+		Engine_UiExpandableMenu.Item? item = view.EntryAt(at);
+
+		// The wheel scrolls the list under the pointer, if the pointer is on it.
+		if (item is not null && Engine_UiPointer.WheelSteps != 0)
+		{
+			view.Scroll(Engine_UiPointer.TakeWheel());
+		}
+
+		if (item is null)
+		{
+			return false;
+		}
+
+		// Not mid-slide: a scroll moves rows under a resting pointer, and the row it lands on is
+		// picked once they settle.
+		if (!view.Sliding)
+		{
+			view.PointAt(item);
+		}
+
+		if (!Engine_UiPointer.LeftPressed)
+		{
+			return false;
+		}
+
+		Engine_UiPointer.TakeLeft();
+		view.PointAt(item);
+		return ReferenceEquals(view.Menu?.Highlighted, item);
+	}
+
+	/// <summary>
+	/// The mouse on the co-op screen. The guest drives it from the pad itself, so a click on one
+	/// of its buttons presses that button: Accept is A, Cancel B, the X prompt (the hero toggle)
+	/// X and the Y prompt (load a hero) Y. Any other click is taken, so it cannot accept the
+	/// screen by falling through as A. Rows and values stay on the keys.
+	/// </summary>
+	private void PointerCoop()
+	{
+		if (!Engine_UiPointer.LeftPressed || Engine_UiPointer.Canvas is not { } at ||
+			OwnedScreenId() != CoopScreenId || _saveCardView is { Visible: true } ||
+			_books.Book(CoopScreenId) is not { Visible: true } book)
+		{
+			return;
+		}
+
+		Engine_UiPointer.TakeLeft();
+		foreach ((string path, uint button) in new[]
+		{
+			("Foreground.RightPage.buttons.AcceptGroup", GameInput.PadA),
+			("Foreground.RightPage.buttons.CancelGroup", GameInput.PadB),
+			("Foreground.RightPage.ProfileSelector.Buttons.icon_button_x", GameInput.PadX),
+			("Foreground.RightPage.ProfileSelector.Buttons.Title2", GameInput.PadX),
+			("Foreground.RightPage.ProfileSelector.Buttons.icon_button_y", GameInput.PadY),
+			("Foreground.RightPage.ProfileSelector.Buttons.Title", GameInput.PadY),
+		})
+		{
+			if (book.NodeFor(path) is { } node && node.IsVisibleInTree() &&
+				Engine_UiPointer.CanvasBounds(node) is { } bounds && bounds.Grow(6f).HasPoint(at))
+			{
+				GameInput.QueuePointerPress(button);
+				return;
+			}
+		}
+	}
+
+	/// <summary>The left button went down on the expression wheel and has not come up.</summary>
+	private bool _wheelMouseDown;
+
+	/// <summary>The list whose scroll bar the left button is dragging, or null.</summary>
+	private static Engine_FrontEndMenuView? _barDrag;
+
+	/// <summary>
+	/// The mouse on a book's right-hand page: the wheel over its scroll region scrolls it, and its
+	/// authored scroll bar jumps on a press and drags while the button is held.
+	/// </summary>
+	private static void PointerPage(Engine_UiOwnedBook? book)
+	{
+		if (book is null || Engine_UiPointer.Canvas is not { } at)
+		{
+			return;
+		}
+
+		if (ReferenceEquals(_pageDrag, book))
+		{
+			if (Input.IsMouseButtonPressed(MouseButton.Left))
+			{
+				book.ScrollRegionTo(book.ScrollBarAt(at, anyHeight: true) ?? 0f);
+				return;
+			}
+
+			_pageDrag = null;
+		}
+
+		if (book.ScrollBarAt(at) is { } fraction)
+		{
+			if (Engine_UiPointer.TakeLeft())
+			{
+				_pageDrag = book;
+				book.ScrollRegionTo(fraction);
+			}
+
+			if (Engine_UiPointer.WheelSteps != 0)
+			{
+				book.AddScrollWheel(Engine_UiPointer.TakeWheel());
+			}
+
+			return;
+		}
+
+		if (book.ScrollRegionRect is { } page && page.HasPoint(at) && Engine_UiPointer.WheelSteps != 0)
+		{
+			book.AddScrollWheel(Engine_UiPointer.TakeWheel());
+		}
+	}
+
+	/// <summary>The book whose scroll bar the left button is dragging, or null.</summary>
+	private static Engine_UiOwnedBook? _pageDrag;
+
+	/// <summary>
+	/// The right-hand pages keep the pointer to themselves: a click or a wheel notch over them
+	/// that nothing on the page took is dropped, never handed on to the list as A or a step.
+	/// </summary>
+	private void SwallowOverPages(Engine_UiOwnedBook? book)
+	{
+		if (book is null || Engine_UiPointer.Canvas is not { } at ||
+			(!Engine_UiPointer.LeftPressed && Engine_UiPointer.WheelSteps == 0) ||
+			_screenMenuView?.EntryAt(at) is not null || _screenMenuView?.ScrollBarAt(at) is not null ||
+			(book.NodeFor("Foreground.Book.Pages") ?? book.Find("Pages")) is not { } pages ||
+			Engine_UiPointer.CanvasBounds(pages) is not { } bounds || !bounds.HasPoint(at) ||
+			at.X < 0f)
+		{
+			return;
+		}
+
+		// The preview's ring takes its own press, to grab and turn the model.
+		if (!PreviewRingHas(at))
+		{
+			Engine_UiPointer.TakeLeft();
+		}
+
+		Engine_UiPointer.TakeWheel();
+	}
+
+	/// <summary>The page arrows each book screen authors: the equipment books' Page1 carries
+	/// them in its footer, every other page directly (`equipmentscreen.bgf`,
+	/// `abilitiesscreen.bgf`).</summary>
+	private static readonly string[] PageNumberGroups =
+	{
+		"Foreground.Book.Pages.Page1.Contents.Footer.PageNumber",
+		"Foreground.Book.Pages.Page1.Contents.PageNumber",
+		"Foreground.Book.Pages.Page2.Contents.PageNumber",
+	};
+
+	/// <summary>
+	/// -1 or +1 when this frame's click landed on a drawn page arrow (taking it), else 0.
+	/// </summary>
+	private static int PageArrowClicked(Engine_UiOwnedBook book)
+	{
+		if (!Engine_UiPointer.LeftPressed || Engine_UiPointer.Canvas is not { } at)
+		{
+			return 0;
+		}
+
+		foreach (string group in PageNumberGroups)
+		{
+			foreach ((string arrow, int way) in new[] { ("LeftArrow", -1), ("RightArrow", 1) })
+			{
+				if (book.NodeFor($"{group}.{arrow}") is { } node && node.IsVisibleInTree() &&
+					Engine_UiPointer.CanvasBounds(node) is { } bounds && bounds.Grow(12f).HasPoint(at))
+				{
+					Engine_UiPointer.TakeLeft();
+					return way;
+				}
+			}
+		}
+
+		return 0;
+	}
+
+	/// <summary>
+	/// Whether a canvas point is inside the item preview's ring — the panel the model is fitted
+	/// to, centred on the anchor it hangs from.
+	/// </summary>
+	private bool PreviewRingHas(Vector2 at) =>
+		_previewObject is { } preview && preview.IsVisibleInTree() &&
+		preview.GetParent() is Node3D anchor && preview.PanelSize > 0f &&
+		new Vector2(anchor.GlobalPosition.X, anchor.GlobalPosition.Y).DistanceTo(at) <=
+			preview.PanelSize * 0.5f;
+
+	/// <summary>
+	/// Whether this frame's click landed on the book's right-hand pages — not on its scroll bar,
+	/// which the page scroll takes — and takes it if so.
+	/// </summary>
+	private bool PageClicked(Engine_UiOwnedBook book)
+	{
+		if (!Engine_UiPointer.LeftPressed || Engine_UiPointer.Canvas is not { } at ||
+			book.ScrollBarAt(at) is not null || _screenMenuView?.EntryAt(at) is not null ||
+			_screenMenuView?.ScrollBarAt(at) is not null ||
+			(book.NodeFor("Foreground.Book.Pages") ?? book.Find("Pages")) is not { } pages ||
+			Engine_UiPointer.CanvasBounds(pages) is not { } bounds || !bounds.HasPoint(at) ||
+			at.X < 0f)
+		{
+			return false;
+		}
+
+		Engine_UiPointer.TakeLeft();
+		return true;
+	}
 
 	private void ui_processBody(double delta)
 	{
@@ -5552,6 +5924,22 @@ public partial class GameUi : Node
 				GD.Print("[game-ui] the pending quit to the desktop expired — the guest never " +
 					"reached the front end; staying in the game");
 			}
+		}
+
+		// The Video page's brightness, as the guest's camera holds it. Every frame, so the
+		// slider's own live preview (`sub_829C0AB0`) shows while it is dragged.
+		if (HostBridge.GuestBrightness() is { } brightness)
+		{
+			Refii.Lighting.Engine_PostFxParams.UserGamma = brightness;
+		}
+
+		// The hero's text suffix, which every guest string lookup tries first. It changes only
+		// with the hero, so twice a second is plenty.
+		_heroSuffixClock -= delta;
+		if (_heroSuffixClock <= 0.0)
+		{
+			_heroSuffixClock = 0.5;
+			Refii.Text.Engine_BabelDatabase.HeroTextSuffix = HostBridge.HeroTextSuffix();
 		}
 
 		// OUR MULTIPLAYER SCREEN COMES DOWN WHEN THE GAME STARTS, AND IT HAS TO BE CHECKED HERE.
@@ -5916,10 +6304,12 @@ public partial class GameUi : Node
 		// might have mismapped is a deadlock.
 		if (_warningView is { Visible: true })
 		{
+			int warningClick = _warningView.Click();
+
 			// ACCEPT may PROCEED rather than merely dismiss. The two-button form is an offer,
 			// not a dead end — "Continue without saving" goes on to the gender card — so the
 			// box carries where accepting leads and null means it leads nowhere.
-			if (GameInput.MenuAcceptPressed)
+			if (GameInput.MenuAcceptPressed || warningClick > 0)
 			{
 				string? proceed = _warningView.AcceptOpens;
 				_warningView.Visible = false;
@@ -5933,7 +6323,7 @@ public partial class GameUi : Node
 					_menuView.Visible = true;
 				}
 			}
-			else if (GameInput.MenuBackPressed && _warningView.AllowCancel)
+			else if ((GameInput.MenuBackPressed || warningClick < 0) && _warningView.AllowCancel)
 			{
 				// Cancel exists only on the two-button form, and the guest's B arm checks that
 				// flag before doing anything at all — see AllowCancel. It returns the screen to
@@ -5980,7 +6370,8 @@ public partial class GameUi : Node
 		{
 			if (_multiplayer.Drive(
 					GameInput.MenuDirection, GameInput.RightStickY,
-					GameInput.MenuAcceptPressed, GameInput.MenuBackPressed,
+					GameInput.MenuAcceptPressed || PointerList(_multiplayer.View),
+					GameInput.MenuBackPressed,
 					GameInput.MenuFlipPressed, delta, 0f))
 			{
 				ReportMenuView(_multiplayer.View);
@@ -6013,6 +6404,8 @@ public partial class GameUi : Node
 			HostBridge.PostFrontEndAction(
 				GameInput.MenuDirection < 0 ? MenuSlideUpAction : MenuSlideDownAction);
 		}
+
+		bool menuClicked = PointerList(_menuView);
 
 		// THE SOURCED ROWS, RE-READ EVERY FRAME. Friends come and go, a search answers over
 		// seconds, and a fold built once shows none of it — the row list was static until the
@@ -6055,7 +6448,7 @@ public partial class GameUi : Node
 			_menuView.Back();
 		}
 
-		if (!GameInput.MenuAcceptPressed)
+		if (!GameInput.MenuAcceptPressed && !menuClicked)
 		{
 			return;
 		}
@@ -6236,11 +6629,17 @@ public partial class GameUi : Node
 			// identical blank cards, which is what a run showed.
 			System.Collections.Generic.List<Texture2D?> portraits = ReadCardPortraits();
 
+			// Save i is stamped onto card `base + i`, not card i+1: the guest first resets all
+			// six portraits to the card back (0x826E06AC..0x826E070C), then writes save i into
+			// slot `i + screen+76` (`add r6, r31, r11` at 0x826E0744). Reading card i+1 gave a
+			// two-save fan the two reset backs.
+			int firstCard = Engine_FrontEndSaveCards.BaseSlotFor(cards.Count) - 1;
 			var saves = new System.Collections.Generic.List<Engine_FrontEndSaveCards.Save>();
 			for (int i = 0; i < cards.Count; ++i)
 			{
+				int card = firstCard + i;
 				saves.Add(new Engine_FrontEndSaveCards.Save(
-					cards[i].Description, i < portraits.Count ? portraits[i] : null));
+					cards[i].Description, card < portraits.Count ? portraits[card] : null));
 			}
 
 			OpenSaveCards(saves);
@@ -6263,7 +6662,26 @@ public partial class GameUi : Node
 			GD.Print($"[game-ui] load fan moved — {_saveCardView.Describe()}");
 		}
 
-		if (GameInput.MenuAcceptPressed && _saveCardView.Activate() is var chosen && chosen >= 0)
+		// The mouse: pointing at a card lifts it, clicking a card loads it. A click on no card
+		// is taken here too, so it cannot fall through as A on whichever card is lifted.
+		bool fanClicked = false;
+		if (Engine_UiPointer.Canvas is { } fanAt)
+		{
+			int pointed = _saveCardView.SaveAt(fanAt);
+			if (pointed >= 0 && Engine_UiPointer.Moved)
+			{
+				_saveCardView.Select(pointed);
+			}
+
+			if (Engine_UiPointer.TakeLeft() && pointed >= 0)
+			{
+				_saveCardView.Select(pointed);
+				fanClicked = true;
+			}
+		}
+
+		if ((GameInput.MenuAcceptPressed || fanClicked) &&
+			_saveCardView.Activate() is var chosen && chosen >= 0)
 		{
 			// THE INDEX IS THE GUEST'S JOIN. It identifies a save by the address of its handle
 			// slot — `Frontend_SetStartGameTarget` takes `*(screen+84) + 4*i` and
@@ -6312,7 +6730,7 @@ public partial class GameUi : Node
 		// `frontendmainmenu` carries exactly six elements named `screenshot` and all six are the
 		// load cards' — checked against the file rather than assumed, because matching a leaf
 		// name is only safe when the name is unique to the thing being matched. Walk order is
-		// card order, which is the same order the guest fills the save list in.
+		// card order; the caller maps saves onto cards by the guest's base slot.
 		uint screenshot = Engine_GameHash.Sdbm(Engine_FrontEndSaveCards.PortraitName);
 
 		for (int i = 0; i < elements.Count && portraits.Count < Engine_FrontEndSaveCards.MaxCards; ++i)
@@ -6696,6 +7114,24 @@ public partial class GameUi : Node
 			GD.Print($"[game-ui] gender card moved — {_cardView.Describe()}");
 		}
 
+		// The mouse: pointing raises a card, clicking one chooses it; a click elsewhere is
+		// taken so it cannot confirm the raised card by accident.
+		bool cardClicked = false;
+		if (Engine_UiPointer.Canvas is { } cardAt)
+		{
+			Engine_FrontEndCardChoice.Choice pointed = _cardView.ChoiceAt(cardAt);
+			if (Engine_UiPointer.Moved)
+			{
+				_cardView.Choose(pointed);
+			}
+
+			if (Engine_UiPointer.TakeLeft() && pointed != Engine_FrontEndCardChoice.Choice.Neither)
+			{
+				_cardView.Choose(pointed);
+				cardClicked = true;
+			}
+		}
+
 		if (GameInput.MenuBackPressed)
 		{
 			// The guest sees this press too, through XInput, and it is sitting in substate 0
@@ -6709,7 +7145,7 @@ public partial class GameUi : Node
 			return;
 		}
 
-		if (!GameInput.MenuAcceptPressed)
+		if (!GameInput.MenuAcceptPressed && !cardClicked)
 		{
 			return;
 		}

@@ -35,8 +35,11 @@ uniform bool xr_use_guest_position = false;
 #endif
 // The colour a composed material writes. A composition on the title's SRCALPHA/ZERO blend
 // (the terrain's base layer: colour x weight replacing what was there) premultiplies here.
+// Clamped to the title's scene target: 7e3 (PIXEL_FORMAT_A2B10G10R10F_EDRAM, the string at
+// 0x820FB2F8) holds 0..31.875 and no sign. Exposure (c20.w) is already in oC0, so this is the
+// exact ceiling; qo240's ghost tint of 392 reads as a faint blue only because of it.
 #ifndef XR_COLOUR_OUT
-#define XR_COLOUR_OUT(c) (c).rgb
+#define XR_COLOUR_OUT(c) clamp((c).rgb, vec3(0.0), vec3(31.875))
 #endif
 // A composition's own test on the finished colour before the title's alpha test and the
 // output (a second water pass discards what the first pass covered).

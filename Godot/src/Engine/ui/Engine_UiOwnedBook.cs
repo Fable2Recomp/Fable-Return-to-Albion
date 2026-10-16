@@ -257,6 +257,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 
 		// Pages parked off-window are clipped by the file's masks, not hidden.
+		AssignRegionMasks();
 		_masked = Document is null ? 0 : _binding.ApplyMasks(Document);
 
 		// The page stack may have arrived inside another unit; markers hang off it either way.
@@ -2307,6 +2308,46 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// <summary>Canvas units of scrollable overflow the last frame measured; 0 = fits.</summary>
 	private float _scrollRange;
 
+	// THE MOUSE ON THE PAGE. The wheel and the scroll bar reach the region the way the stick
+	// does, but in steps and in absolute positions; both are held until the next sample, which
+	// is the only place the offset is applied (it runs on the guest's frames).
+
+	/// <summary>Canvas units one wheel notch scrolls.</summary>
+	private const float WheelUnitsPerNotch = 45f;
+
+	private float _wheelUnits;
+
+	private float? _scrollTo;
+
+	/// <summary>The scroll region's window on screen, in canvas units; null when nothing scrolls.</summary>
+	public Rect2? ScrollRegionRect { get; private set; }
+
+	/// <summary>The authored scroll bar's arrows, top and bottom, in canvas units.</summary>
+	private (float Top, float Bottom, float X)? _scrollBarSpan;
+
+	/// <summary>Wheel notches over the page: positive scrolls down.</summary>
+	public void AddScrollWheel(int notches) => _wheelUnits += notches * WheelUnitsPerNotch;
+
+	/// <summary>
+	/// The 0..1 scroll position a canvas point on the authored scroll bar stands for — top arrow
+	/// 0, bottom arrow 1 — or null off it. <paramref name="anyHeight"/> clamps a drag that has
+	/// left the bar instead of declining it.
+	/// </summary>
+	public float? ScrollBarAt(Vector2 at, bool anyHeight = false)
+	{
+		if (_scrollBarSpan is not { } span || (!anyHeight &&
+			(Mathf.Abs(at.X - span.X) > 20f || at.Y > span.Top + 10f || at.Y < span.Bottom - 10f)))
+		{
+			return null;
+		}
+
+		float length = span.Top - span.Bottom;
+		return length <= 0f ? 0f : Mathf.Clamp((span.Top - at.Y) / length, 0f, 1f);
+	}
+
+	/// <summary>Scrolls the region to a 0..1 position — the scroll bar's drag.</summary>
+	public void ScrollRegionTo(float fraction) => _scrollTo = Mathf.Clamp(fraction, 0f, 1f);
+
 	private string _scrollReport = string.Empty;
 
 	/// <summary>The scroll region driving now, by its content path; a change resets the offset.</summary>
@@ -2452,26 +2493,36 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		{
 			// Off screen: the next showing starts at the top.
 			_scrollOffset = 0f;
+			_wheelUnits = 0f;
+			_scrollTo = null;
+			ScrollRegionRect = null;
+			_scrollBarSpan = null;
 			return;
 		}
 
 		// Both bands in CANVAS space: content from its meshes through the book's own transform,
 		// the mask from its authored quad (100 units by its scale) — the masks live at Layer
 		// level, outside every cloned unit, so the document is their one source.
+		// EVERY DRAWN ELEMENT, not only text: the guest's bounds (`sub_82427250`, counted by
+		// `sub_829EDA40` for rows whose opacity passes 0.1) include sprites, so a family
+		// portrait or a legend icon at the bottom is part of the length.
 		Transform3D toCanvas = GlobalTransform.AffineInverse();
 		float lowest = float.MaxValue;
-		bool any = false;
+		float highest = float.MinValue;
 		Measure(content);
 
 		void Measure(Node node)
 		{
-			if (node is MeshInstance3D mesh && mesh.Mesh is not null && mesh.Visible &&
-				mesh.HasMeta("text"))
+			if (node is Node3D { Visible: false })
 			{
-				Aabb box = mesh.GetAabb();
-				float canvasY = (toCanvas * mesh.GlobalPosition).Y;
-				lowest = Mathf.Min(lowest, canvasY + box.Position.Y);
-				any = true;
+				return;
+			}
+
+			if (node is MeshInstance3D mesh && mesh.Mesh is not null)
+			{
+				Aabb box = toCanvas * mesh.GlobalTransform * mesh.GetAabb();
+				lowest = Mathf.Min(lowest, box.Position.Y);
+				highest = Mathf.Max(highest, box.End.Y);
 			}
 
 			foreach (Node child in node.GetChildren())
@@ -2481,22 +2532,37 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 
 		float range = 0f;
-		if (any && OrdinalForPath(maskPath) is { } maskOrdinal &&
+		if (highest > lowest && OrdinalForPath(maskPath) is { } maskOrdinal &&
 			maskOrdinal >= 0 && maskOrdinal < Document.Nodes.Length)
 		{
 			UiNode mask = Document.Nodes[maskOrdinal];
-			float maskBottom = mask.PositionY - (0.5f * 100f * mask.ScaleY);
 
-			// How far the content runs past the window's lower edge. The binding just rewrote
-			// every stated position, so the measure is of the authored (plus reflow) layout —
-			// this frame's offset has not been applied yet.
-			range = Mathf.Max(0f, maskBottom - lowest);
+			// The guest's overflow (`sub_829ED788` against `sub_829EDA40`'s bounds): the
+			// content's height less the window's. The binding just rewrote every stated
+			// position, so this is the authored (plus reflow) layout — this frame's offset has
+			// not been applied yet.
+			range = Mathf.Max(0f, (highest - lowest) - (100f * Mathf.Abs(mask.ScaleY)));
 		}
 
 		_scrollRange = range;
 		float stick = Refii.Game.GameInput.RightStickY;
+		if (_scrollTo is { } to)
+		{
+			_scrollOffset = to * range;
+			_scrollTo = null;
+		}
+
 		_scrollOffset = Mathf.Clamp(
-			_scrollOffset - (stick * ScrollUnitsPerSecond * (float)ScrollDelta), 0f, range);
+			_scrollOffset - (stick * ScrollUnitsPerSecond * (float)ScrollDelta) + _wheelUnits,
+			0f, range);
+		_wheelUnits = 0f;
+
+		// Where the page sits on screen, for the pointer: the painted clip, which carries the
+		// wide-layout shift the document's mask does not.
+		ScrollRegionRect = range > 1f && FirstClipRect(content) is { } clip
+			? new Rect2(clip.X, clip.Y, clip.Z - clip.X, clip.W - clip.Y)
+			: null;
+		_scrollBarSpan = null;
 
 		if (_scrollOffset != 0f)
 		{
@@ -2535,6 +2601,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				{
 					SetStatedYOf(icon,
 						Mathf.Lerp(StatedYOf(up), StatedYOf(down), fraction));
+					_scrollBarSpan = (up.GlobalPosition.Y, down.GlobalPosition.Y, icon.GlobalPosition.X);
 				}
 			}
 		}
@@ -2548,6 +2615,51 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	private readonly List<Engine_UiPage> _pageWidgets = new();
+
+	/// <summary>
+	/// Gives every element under a scroll region's content the region's mask, where the file
+	/// authors none — what the guest does when it registers the region: `sub_82426F00(content,
+	/// mask, pres)` walks the subtree and writes the mask into each drawable (logbook pages
+	/// `sub_829BCD58`, `sub_829BD418`, `sub_829BDA90`). Without it the Expressions, Completed
+	/// Quests and Help pages scroll their rows straight over the page edge.
+	/// </summary>
+	private void AssignRegionMasks()
+	{
+		if (Template is not { ScrollContent.Length: > 0 } template || Document is null)
+		{
+			return;
+		}
+
+		string[] contents = template.ScrollContent.Split('|');
+		string[] masks = template.ScrollMask.Split('|');
+		for (int i = 0; i < contents.Length; ++i)
+		{
+			string maskPath = i < masks.Length ? masks[i] : masks[0];
+			if (contents[i].Length == 0 || OrdinalForPath(contents[i]) is not { } content ||
+				OrdinalForPath(maskPath) is not { } mask ||
+				content < 0 || content >= Document.Nodes.Length)
+			{
+				continue;
+			}
+
+			var stack = new Stack<UiNode>();
+			stack.Push(Document.Nodes[content]);
+			while (stack.Count > 0)
+			{
+				UiNode node = stack.Pop();
+				if (node.Ordinal >= 0 && node.Ordinal < Document.MaskByOrdinal.Length &&
+					Document.MaskByOrdinal[node.Ordinal] < 0)
+				{
+					Document.MaskByOrdinal[node.Ordinal] = mask;
+				}
+
+				foreach (UiNode child in node.Children)
+				{
+					stack.Push(child);
+				}
+			}
+		}
+	}
 
 	/// <summary>The ported `g_InfoWindow`, when this screen's art carries one.</summary>
 	private readonly Engine_UiInfoWindow _infoWindow = new();

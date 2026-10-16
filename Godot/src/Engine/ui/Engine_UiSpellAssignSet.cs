@@ -176,6 +176,123 @@ public sealed class Engine_UiSpellAssignSet
 	/// copy-down (`sub_826B4EF8`) and 37 to the close — and the widget repaints the presentation
 	/// the book's clone follows. Repeat cadence is the page clock's, as for every held direction.
 	/// </summary>
+	/// <summary>
+	/// The mouse on the abilities blade, drawn by <paramref name="book"/>'s clone of
+	/// `SpellAssigning`: a click on a `Spell{n}` row walks the guest's row to it, a click on an
+	/// `HL1`/`HR1` arrow steps the will carousel (which commits as it moves). Each press goes
+	/// with its release (32..35) so a burst lands. The copy-down stays on A — a click is not a
+	/// confirm here. Every click on the screen is taken.
+	/// </summary>
+	public void BladePointer(Engine_UiOwnedBook book, double delta)
+	{
+		_predictedFor = System.Math.Max(0.0, _predictedFor - delta);
+		if (!Engine_UiPointer.TakeLeft() || Engine_UiPointer.Canvas is not { } at ||
+			book.Find("SpellAssigning") is not { } blade ||
+			Engine_UiTheme.FindByName(blade, "Adjuster") is not Node3D adjuster)
+		{
+			return;
+		}
+
+		// The guest's row is where it put the adjuster (`y = -160 + 80·row`); a click within a
+		// moment of the last one uses the row it asked for, before the clone catches up.
+		int row = _predictedFor > 0.0
+			? _predictedRow
+			: Mathf.RoundToInt((adjuster.Position.Y + 160f) / 80f);
+
+		foreach ((string arrow, uint code, uint release) in new[]
+		{
+			("HL1", Engine_UiScreenInput.Left, Engine_UiScreenInput.LeftReleased),
+			("HR1", Engine_UiScreenInput.Right, Engine_UiScreenInput.RightReleased),
+		})
+		{
+			if (Engine_UiTheme.FindByName(adjuster, arrow) is Node3D button && button.IsVisibleInTree() &&
+				Engine_UiPointer.CanvasBounds(button) is { } box && box.Grow(6f).HasPoint(at))
+			{
+				Engine_UiSource.Current.ScreenAction(code);
+				Engine_UiSource.Current.ScreenAction(release);
+				return;
+			}
+		}
+
+		for (int n = 1; n <= 5; ++n)
+		{
+			if (Engine_UiTheme.FindByName(blade, $"Spell{n}") is not Node3D slot ||
+				!slot.IsVisibleInTree() || Engine_UiPointer.CanvasBounds(slot) is not { } bounds ||
+				!bounds.HasPoint(at))
+			{
+				continue;
+			}
+
+			int steps = (n - 1) - row;
+			for (int i = 0; i < System.Math.Abs(steps); ++i)
+			{
+				// 28 raises the row (`++row`), 29 lowers it.
+				Engine_UiSource.Current.ScreenAction(
+					steps > 0 ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
+				Engine_UiSource.Current.ScreenAction(
+					steps > 0 ? Engine_UiScreenInput.UpReleased : Engine_UiScreenInput.DownReleased);
+			}
+
+			_predictedRow = n - 1;
+			_predictedFor = 0.3;
+			return;
+		}
+	}
+
+	private int _predictedRow;
+	private double _predictedFor;
+
+	/// <summary>
+	/// The mouse on the quick spell blade (held right trigger): a click on a `Spell{n}` row walks
+	/// the guest's widget to it and a click on `HL1`/`HR1` steps the carousel, through the same
+	/// `SpellBlade:*` levers the stick uses, each step followed by its release. The cursor is
+	/// the guest's (`GetSpellWheel`). Every click while the blade stands is taken.
+	/// </summary>
+	public void WheelPointer()
+	{
+		int player = _spells.WheelOpenPlayerTwo && !_spells.WheelOpen ? 2 : 1;
+		if (_wheel is not { Visible: true } wheel || !GodotObject.IsInstanceValid(wheel) ||
+			!Engine_UiPointer.TakeLeft() || Engine_UiPointer.Canvas is not { } at)
+		{
+			return;
+		}
+
+		if (Engine_UiTheme.FindByName(wheel, "Adjuster") is Node3D adjuster)
+		{
+			foreach ((string arrow, string lever) in new[] { ("HL1", "left"), ("HR1", "right") })
+			{
+				if (Engine_UiTheme.FindByName(adjuster, arrow) is Node3D button &&
+					button.IsVisibleInTree() && Engine_UiPointer.CanvasBounds(button) is { } box &&
+					box.Grow(6f).HasPoint(at))
+				{
+					Engine_UiSource.Current.PostFrontEndAction("SpellBlade:" + lever);
+					Engine_UiSource.Current.PostFrontEndAction("SpellBlade:release");
+					return;
+				}
+			}
+		}
+
+		int row = Engine_UiSource.Current.GetSpellWheel(player).Row;
+		for (int n = 1; n <= 5; ++n)
+		{
+			if (Engine_UiTheme.FindByName(wheel, $"Spell{n}") is not Node3D slot ||
+				!slot.IsVisibleInTree() || Engine_UiPointer.CanvasBounds(slot) is not { } bounds ||
+				!bounds.HasPoint(at))
+			{
+				continue;
+			}
+
+			int steps = (n - 1) - row;
+			for (int i = 0; i < System.Math.Abs(steps); ++i)
+			{
+				Engine_UiSource.Current.PostFrontEndAction(steps > 0 ? "SpellBlade:up" : "SpellBlade:down");
+				Engine_UiSource.Current.PostFrontEndAction("SpellBlade:release");
+			}
+
+			return;
+		}
+	}
+
 	public void DriveBlade(Engine_UiSurfaceInput input)
 	{
 		_vertical ??= PageClock();

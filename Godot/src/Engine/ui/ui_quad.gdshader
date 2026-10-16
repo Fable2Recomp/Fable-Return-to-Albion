@@ -56,6 +56,13 @@ uniform float opacity = 1.0;
 // shipped masks (axis-aligned, zero pivot, single-texel textures) and nothing more.
 uniform vec4 clip_rect = vec4(-1e9, -1e9, 1e9, 1e9);
 
+// A controller button cut from a shared atlas (`abyx`) carries the keycap of the key bound to
+// it; while the keyboard and mouse are the active device the quad draws that instead of its
+// atlas cell. One global flips every glyph at once — no material is walked on a switch.
+uniform sampler2D keycap_tex : source_color, filter_linear_mipmap, repeat_disable;
+uniform bool has_keycap = false;
+global uniform bool ui_keyboard_mode;
+
 varying vec2 clip_world;
 
 void vertex() {
@@ -69,7 +76,9 @@ void fragment() {
 	}
 
 	vec2 uv = UV * uv1_scale + uv1_offset;
-	vec4 primary = texture(diffuse_tex, uv);
+	vec4 primary = has_keycap && ui_keyboard_mode
+		? texture(keycap_tex, UV)
+		: texture(diffuse_tex, uv);
 
 	vec3 rgb = primary.rgb;
 	float alpha = primary.a;

@@ -206,7 +206,10 @@ public sealed class Engine_UiElementState
 	private void Apply(Engine_UiModel.UiElementChange change)
 	{
 		// Text carries no presentation: `sub_82425DD0` takes the element itself and an element
-		// holds no back-pointer, so join by address against what is already cached.
+		// holds no back-pointer, so join by address against what is already cached. EVERY
+		// cached screen holding the address goes stale, not the first: the arena recycles
+		// addresses, so a dead screen cached earlier can hold the same one, and stopping at it
+		// left the live box unwalked — the rent adjuster's % never moved.
 		if (change.Kind == Engine_UiModel.UiElementChangeKind.Text)
 		{
 			foreach (Screen candidate in _screens.Values)
@@ -214,7 +217,6 @@ public sealed class Engine_UiElementState
 				if (candidate.Ordinal.ContainsKey(change.Element))
 				{
 					candidate.ElementsStale = true;
-					return;
 				}
 			}
 
