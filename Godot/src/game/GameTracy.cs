@@ -24,6 +24,13 @@ public static class GameTracy
 
 	public static bool Advanced { get; private set; }
 
+	/// <summary>
+	/// `tracy` was on and the profiler did not start: its library is missing — on Windows, most
+	/// likely quarantined by an antivirus. The game runs without it; captures, crash captures
+	/// included, do not.
+	/// </summary>
+	public static bool Unavailable { get; private set; }
+
 	public static string CapturesDirectory => ProjectSettings.GlobalizePath("user://captures");
 
 	public static void Start(IReadOnlyDictionary<string, string> config)
@@ -38,6 +45,8 @@ public static class GameTracy
 		Advanced = Enabled && Refii.Core.Engine_RefiiConfig.Bool(config, "tracy_advanced", false);
 		if (!Enabled)
 		{
+			Unavailable = true;
+			GD.PrintErr("[tracy] `tracy` is on but the profiler did not start: its library is missing");
 			return;
 		}
 

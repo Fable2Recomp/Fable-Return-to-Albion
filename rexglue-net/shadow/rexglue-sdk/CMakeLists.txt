@@ -24,12 +24,13 @@ option(REXGLUE_ENABLE_FIDELITYFX "Enable optional AMD FidelityFX integration (ex
 option(REXGLUE_ENABLE_TRACY                "Enable Tracy profiler integration" ON)
 option(REXGLUE_ENABLE_PERF_COUNTERS        "Enable lightweight perf counter registry and overlay" ON)
 option(REXGLUE_ENABLE_REXNET     "Build the RexNet netplay module (requires a Rust toolchain)" OFF)
-# Propagate profiling defines globally (compiled out in Release)
+# Propagate profiling defines globally. REFII: in every configuration, Release included — the
+# remake ships its in-game profiler, dev menu and crash-time captures to players.
 if(REXGLUE_ENABLE_TRACY)
-    add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PROFILING>)
+    add_compile_definitions(REXGLUE_ENABLE_PROFILING)
 endif()
 if(REXGLUE_ENABLE_PERF_COUNTERS)
-    add_compile_definitions($<$<NOT:$<CONFIG:Release>>:REXGLUE_ENABLE_PERF_COUNTERS>)
+    add_compile_definitions(REXGLUE_ENABLE_PERF_COUNTERS)
 endif()
 
 # Graphics backend selection

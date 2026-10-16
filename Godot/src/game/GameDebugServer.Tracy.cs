@@ -34,7 +34,9 @@ public partial class GameDebugServer
 		string action = Text(root, "action", "status");
 		if (!GameTracy.Enabled)
 		{
-			return Refused("Tracy is off in this session: set tracy = true in refii.toml (read once at launch) and restart");
+			return Refused(GameTracy.Unavailable
+				? "Tracy is unavailable in this session: tracy is on but the profiler's library could not be loaded"
+				: "Tracy is off in this session: set tracy = true in refii.toml (read once at launch) and restart");
 		}
 
 		if (s_tracySave is { IsCompleted: false })

@@ -10530,7 +10530,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPerfSnapshots(int64_t* out_values, ch
 /// TracyIsStarted as their active flag; this is the same gate for the C path. An inactive
 /// zone context (active = 0) is what ___tracy_emit_zone_end already ignores.
 #ifdef REXGLUE_ENABLE_PROFILING
-/// Brings the profiler up, once. Answers 1 when it is running.
+/// Brings the profiler up, once. Answers 1 when it is running, 0 when it is not — on Windows that
+/// is a quarantined Tracy library: every module delay-loads it and a missing one starts nothing
+/// (src/tracy/tracy_absent_win.cpp).
 ///
 /// THE ZONES ARE INERT WITHOUT THIS. The runtime is built with `TRACY_MANUAL_LIFETIME`, which
 /// means the client does nothing until it is started explicitly, and nothing in the tree ever
@@ -10544,10 +10546,14 @@ REFII_HOST_ABI_EXPORT int RefiiHostTraceStartup(void) {
     if (!started) {
         ___tracy_startup_profiler();
         started = true;
-        REXLOG_INFO("Refii host bridge: Tracy profiler started (in-process; capture from the dev menu)");
+        if (TracyIsStarted) {
+            REXLOG_INFO("Refii host bridge: Tracy profiler started (in-process; capture from the dev menu)");
+        } else {
+            REXLOG_WARN("Refii host bridge: Tracy library missing; profiler and crash captures unavailable");
+        }
     }
 
-    return 1;
+    return TracyIsStarted ? 1 : 0;
 }
 
 REFII_HOST_ABI_EXPORT void RefiiHostTraceMessage(const char* text) {

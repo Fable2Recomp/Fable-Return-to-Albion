@@ -790,6 +790,22 @@ if(REFII_BUILD_HOST_BRIDGE)
     add_subdirectory(src/hostbridge)
 endif()
 
+# Windows: the Tracy library is optional at run time. Every DLL that imports it delay-loads it, and
+# carries the failure hook that turns a missing file into "profiler not started" rather than a game
+# that will not load — an antivirus quarantining TracyClient.dll must not take the game with it.
+if(WIN32 AND TARGET TracyClient)
+    foreach(_refii_tracy_importer rexruntime refii_core refii_vfs refii_hostbridge refii_lua refii_recompiler)
+        if(TARGET ${_refii_tracy_importer})
+            get_target_property(_refii_tracy_importer_type ${_refii_tracy_importer} TYPE)
+            if(_refii_tracy_importer_type STREQUAL "SHARED_LIBRARY")
+                target_sources(${_refii_tracy_importer} PRIVATE "${CMAKE_SOURCE_DIR}/src/tracy/tracy_absent_win.cpp")
+                target_link_options(${_refii_tracy_importer} PRIVATE "LINKER:/DELAYLOAD:$<TARGET_FILE_NAME:TracyClient>")
+                target_link_libraries(${_refii_tracy_importer} PRIVATE delayimp)
+            endif()
+        endif()
+    endforeach()
+endif()
+
 
 # After every library the payload links: the staging target copies each one, and
 # `if(TARGET ...)` only sees targets that already exist.
