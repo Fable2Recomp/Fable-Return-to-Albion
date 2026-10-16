@@ -65,6 +65,9 @@ public partial class GameDevTracyTimeline : Control
 	/// <summary>Raised when the player zooms or pans, so a following view can let go.</summary>
 	public event Action? UserMoved;
 
+	/// <summary>Raised whenever the view range changes, by the player or by code.</summary>
+	public event Action? ViewChanged;
+
 	public GameDevTracyTimeline()
 	{
 		SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -80,6 +83,7 @@ public partial class GameDevTracyTimeline : Control
 		ViewStart = start;
 		ViewEnd = Math.Max(start + 1, end);
 		_dirty = true;
+		ViewChanged?.Invoke();
 	}
 
 	/// <summary>Asks again for the same view: a live capture's newest data.</summary>

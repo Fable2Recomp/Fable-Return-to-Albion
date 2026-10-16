@@ -9,6 +9,7 @@
 // For the cvar bridge below: TakeString turns the caller-buffer getter back into a
 // std::string on THIS side's heap, which is where rex::cvar's getter has to return one.
 #include "core/payload_bridge_string.h"
+#include "core/traced_mutex.h"
 
 #include <atomic>
 #include <cstring>
@@ -79,7 +80,7 @@ std::atomic<uint64_t> g_pending_steps{0};
 /// Granted steps dropped because the backlog exceeded `kMaxPendingSteps`: the guest cannot
 /// consume the rate it is granted.
 std::atomic<uint64_t> g_dropped_steps{0};
-std::mutex g_time_mutex;
+refii::TracedMutex g_time_mutex{"guest clock grant"};
 
 /// Atomic because the fast read path in `refii_bridge_rex_query_guest_tick_count` does not
 /// take the lock; both are only written under `g_time_mutex`.
@@ -127,7 +128,7 @@ extern "C" void refii_bridge_rex_set_time_base_mode(int mode) {
     return;
   }
 
-  std::lock_guard<std::mutex> lock(g_time_mutex);
+  std::lock_guard lock(g_time_mutex);
   if (g_time_base_mode.load(std::memory_order_relaxed) == mode) {
     return;
   }
@@ -191,7 +192,7 @@ extern "C" void refii_bridge_rex_advance_time_base(uint32_t steps) {
 
   const uint64_t real = ::rex::chrono::Clock::QueryGuestTickCount();
 
-  std::lock_guard<std::mutex> lock(g_time_mutex);
+  std::lock_guard lock(g_time_mutex);
   uint64_t ticks = g_virtual_ticks.load(std::memory_order_relaxed);
   if (ticks == 0u) {
     ticks = real;
@@ -256,7 +257,7 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
     // POD, so first touch cannot allocate (this can run from a signal handler).
     static thread_local uint64_t last_real = 0;
 
-    std::lock_guard<std::mutex> lock(g_time_mutex);
+    std::lock_guard lock(g_time_mutex);
     uint64_t ticks = g_virtual_ticks.load(std::memory_order_relaxed);
     if (ticks == 0u || last_real == 0u) {
       if (ticks == 0u) {
@@ -303,7 +304,7 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
   }
 
   g_locked_reads.fetch_add(1u, std::memory_order_relaxed);
-  std::lock_guard<std::mutex> lock(g_time_mutex);
+  std::lock_guard lock(g_time_mutex);
   uint64_t ticks = g_virtual_ticks.load(std::memory_order_relaxed);
   if (ticks == 0u) {
     ticks = real;

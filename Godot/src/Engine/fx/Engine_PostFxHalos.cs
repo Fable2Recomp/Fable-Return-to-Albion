@@ -64,7 +64,7 @@ public partial class Engine_PostFxHalos : Node
 	/// </summary>
 	public readonly record struct SkyHalo(Vector3 Direction, float Distance, float WorldHalf, Vector3 Colour, Texture2D? Sprite, bool Active);
 
-	private static readonly object Gate = new();
+	private static readonly Refii.Core.Engine_TracedLock Gate = new("post-FX halos");
 	private static readonly List<Halo> Entries = new();
 	private static readonly Dictionary<string, SkyHalo> Sky = new();
 	private static readonly Dictionary<string, float> SkyVisibility = new();
@@ -86,7 +86,7 @@ public partial class Engine_PostFxHalos : Node
 			return;
 		}
 
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Entries.Add(new Halo(light, textureHash));
 		}
@@ -95,7 +95,7 @@ public partial class Engine_PostFxHalos : Node
 	/// <summary>Publishes (or replaces) a sky halo under <paramref name="key"/>.</summary>
 	public static void PublishSky(string key, SkyHalo halo)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Sky[key] = halo;
 		}
@@ -105,7 +105,7 @@ public partial class Engine_PostFxHalos : Node
 	/// guest's fade² (0x82279a94..0x82279ac4).</summary>
 	public static void SetSkyVisibility(string key, float visibility)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			SkyVisibility[key] = Math.Clamp(visibility, 0f, 1f);
 		}
@@ -115,7 +115,7 @@ public partial class Engine_PostFxHalos : Node
 	public static void Snapshot(List<WorldHalo> into, out Rid spriteArray)
 	{
 		into.Clear();
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			into.AddRange(Published);
 			spriteArray = _publishedArray;
@@ -164,7 +164,7 @@ public partial class Engine_PostFxHalos : Node
 			_current = null;
 		}
 
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Published.Clear();
 			_publishedArray = default;
@@ -176,7 +176,7 @@ public partial class Engine_PostFxHalos : Node
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("postfxhalos");
 		_live.Clear();
 		_sky.Clear();
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			for (int i = Entries.Count - 1; i >= 0; i--)
 			{
@@ -279,7 +279,7 @@ public partial class Engine_PostFxHalos : Node
 				LayerForSprite(halo.Sprite)));
 		}
 
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Published.Clear();
 			Published.AddRange(_build);

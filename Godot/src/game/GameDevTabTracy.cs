@@ -31,9 +31,21 @@ public partial class GameDevTabTracy : GameDevTab
 	private readonly Button _discard = new() { Text = "Discard" };
 	private readonly Button _folder = new() { Text = "Open captures folder" };
 	private readonly CheckBox _follow = new() { Text = "Follow", ButtonPressed = true };
+	private readonly CheckBox _guest = new()
+	{
+		Text = "Guest stacks",
+		ButtonPressed = true,
+		TooltipText = "Sample the recompiled game's threads' call stacks into the capture, " +
+			$"{HostTracy.GuestSamplesPerSecond} times a second, each as its own timeline.",
+	};
 	private readonly SpinBox _limit = new() { MinValue = 256, MaxValue = 65536, Step = 256, Value = 2048, Suffix = "MB cap" };
 	private readonly GameDevTracyFrames _frames = new();
 	private readonly GameDevTracyTimeline _timeline = new();
+
+	/// <summary>The timeline's view, for the other Tracy tabs' "timeline view" scope; null before one exists.</summary>
+	public static (long Start, long End)? TimelineView { get; private set; }
+
+	private static GameDevTabTracy? s_instance;
 
 	private Task<bool>? _saving;
 	private string _savingPath = string.Empty;
@@ -64,7 +76,7 @@ public partial class GameDevTabTracy : GameDevTab
 
 		var controls = new HBoxContainer();
 		controls.AddThemeConstantOverride("separation", 8);
-		foreach (Control control in new Control[] { _start, _stop, _save, _discard, _folder, _limit, _follow })
+		foreach (Control control in new Control[] { _start, _stop, _save, _discard, _folder, _limit, _guest, _follow })
 		{
 			controls.AddChild(control);
 		}
@@ -118,6 +130,36 @@ public partial class GameDevTabTracy : GameDevTab
 		};
 
 		_advanced.Text = AdvancedNote();
+		s_instance = this;
+		_timeline.ViewChanged += () => TimelineView = (_timeline.ViewStart, _timeline.ViewEnd);
+	}
+
+	public override void _ExitTree()
+	{
+		if (s_instance == this)
+		{
+			s_instance = null;
+		}
+	}
+
+	/// <summary>
+	/// Shows [start, end] in the timeline and brings this tab forward — how the other Tracy tabs
+	/// open a zone instance they list.
+	/// </summary>
+	public static void Reveal(long start, long end)
+	{
+		if (s_instance is not { } tab)
+		{
+			return;
+		}
+
+		tab.LetGo();
+		long margin = System.Math.Max(1, (end - start) / 10);
+		tab._timeline.SetView(start - margin, end + margin);
+		if (tab.GetParent() is TabContainer tabs)
+		{
+			tabs.CurrentTab = tab.GetIndex();
+		}
 	}
 
 	private void LetGo()
@@ -128,7 +170,7 @@ public partial class GameDevTabTracy : GameDevTab
 
 	private void StartCapture()
 	{
-		if (!HostTracy.Start((long)_limit.Value * 1024 * 1024, GameTracy.Advanced))
+		if (!HostTracy.Start((long)_limit.Value * 1024 * 1024, GameTracy.Advanced, _guest.ButtonPressed))
 		{
 			_status.Text = "the capture did not start (Tracy's client is not running, or a capture is live)";
 			return;
@@ -211,6 +253,7 @@ public partial class GameDevTabTracy : GameDevTab
 		_save.Disabled = busy || state != HostTracy.CaptureState.Stopped;
 		_discard.Disabled = busy || state == HostTracy.CaptureState.None || live;
 		_limit.Editable = !busy && !live;
+		_guest.Disabled = busy || live;
 	}
 
 	private static string Describe(HostTracy.Status status)

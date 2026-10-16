@@ -12,7 +12,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
+#include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <capstone.h>
@@ -152,6 +155,130 @@ int64_t EndOr( int64_t end, bool valid, int64_t fallback )
     return valid ? end : fallback;
 }
 
+// An instance's self time: its span minus its direct children's.
+int64_t SelfTime( Worker& w, const ZoneEvent& ev )
+{
+    int64_t self = w.GetZoneEnd( ev ) - ev.Start();
+    if( !ev.HasChildren() ) return self;
+    const auto& children = w.GetZoneChildren( ev.Child() );
+    if( children.is_magic() )
+    {
+        for( const auto& child : *(const Vector<ZoneEvent>*)( &children ) ) self -= w.GetZoneEnd( child ) - child.Start();
+    }
+    else
+    {
+        for( const auto& child : children ) self -= w.GetZoneEnd( *child ) - child->Start();
+    }
+    return self;
+}
+
+// Every instance of a location starting in [t0, t1], on `thread` or any (0). The list is sorted
+// first, as the GUI does before searching it, under the same lock.
+template<typename Zones, typename Visit>
+void ForInstances( Worker& w, Zones& zones, uint64_t thread, int64_t t0, int64_t t1, Visit&& visit )
+{
+    auto& list = zones.zones;
+    list.ensure_sorted();
+    auto it = std::lower_bound( list.begin(), list.end(), t0, []( const auto& l, int64_t r ) { return l.Zone()->Start() < r; } );
+    for( ; it != list.end(); ++it )
+    {
+        const ZoneEvent* ev = it->Zone();
+        if( ev->Start() > t1 ) break;
+        const uint64_t tid = w.DecompressThread( it->Thread() );
+        if( thread != 0 && tid != thread ) continue;
+        visit( *ev, tid );
+    }
+}
+
+// Median and 95th percentile of `durations` (reordered).
+std::pair<int64_t, int64_t> Percentiles( std::vector<int64_t>& durations )
+{
+    const size_t mid = durations.size() / 2;
+    std::nth_element( durations.begin(), durations.begin() + mid, durations.end() );
+    const int64_t median = durations[mid];
+    const size_t high = std::min( durations.size() - 1, durations.size() * 95 / 100 );
+    std::nth_element( durations.begin(), durations.begin() + high, durations.end() );
+    return { median, durations[high] };
+}
+
+uint32_t ZoneStats( Worker& w, bool whole, uint64_t thread, int64_t t0, int64_t t1, uint32_t capacity,
+                    int16_t* out_srcloc, uint64_t* out_count, int64_t* out_total, int64_t* out_min,
+                    int64_t* out_max, int64_t* out_median, int64_t* out_p95, int64_t* out_self_total )
+{
+    std::vector<int16_t> locations;
+    for( const auto& entry : w.GetSourceLocationZones() )
+    {
+        if( !entry.second.zones.empty() ) locations.push_back( entry.first );
+    }
+
+    uint32_t n = 0;
+    std::vector<int64_t> durations;
+    for( const int16_t srcloc : locations )
+    {
+        if( n >= capacity ) break;
+        auto& zones = w.GetZonesForSourceLocation( srcloc );
+        durations.clear();
+        int64_t total = 0, self = 0;
+        int64_t lo = std::numeric_limits<int64_t>::max(), hi = std::numeric_limits<int64_t>::min();
+        if( whole )
+        {
+            // The Worker keeps these per location as the capture streams.
+            durations.reserve( zones.zones.size() );
+            for( const auto& z : zones.zones ) durations.push_back( w.GetZoneEnd( *z.Zone() ) - z.Zone()->Start() );
+            total = zones.total;
+            lo = zones.min;
+            hi = zones.max;
+            self = zones.selfTotal;
+        }
+        else
+        {
+            ForInstances( w, zones, thread, t0, t1, [&]( const ZoneEvent& ev, uint64_t ) {
+                const int64_t d = w.GetZoneEnd( ev ) - ev.Start();
+                durations.push_back( d );
+                total += d;
+                lo = std::min( lo, d );
+                hi = std::max( hi, d );
+                self += SelfTime( w, ev );
+            } );
+        }
+        if( durations.empty() ) continue;
+
+        const auto [median, p95] = Percentiles( durations );
+        out_srcloc[n] = srcloc;
+        out_count[n] = durations.size();
+        out_total[n] = total;
+        out_min[n] = lo;
+        out_max[n] = hi;
+        out_median[n] = median;
+        out_p95[n] = p95;
+        out_self_total[n] = self;
+        n++;
+    }
+    return n;
+}
+
+struct TreeNode
+{
+    int32_t parent;
+    uint64_t addr;
+    StringIdx name;
+    uint32_t total = 0;
+    uint32_t self = 0;
+    std::vector<uint32_t> children;
+};
+
+struct TreeKey
+{
+    int32_t parent;
+    uint64_t function;
+    bool operator==( const TreeKey& o ) const { return parent == o.parent && function == o.function; }
+};
+
+struct TreeKeyHash
+{
+    size_t operator()( const TreeKey& k ) const { return std::hash<uint64_t>()( k.function * 0x9E3779B97F4A7C15ull ^ uint64_t( uint32_t( k.parent ) ) ); }
+};
+
 }
 
 extern "C" {
@@ -236,38 +363,296 @@ TRACY_API uint32_t RefiiTracyGetZoneStats( uint32_t capacity, int16_t* out_srclo
                                            int64_t* out_self_total )
 {
     return WithWorker( [&]( Worker& w ) -> uint32_t {
-        uint32_t n = 0;
+        return ZoneStats( w, true, 0, 0, 0, capacity, out_srcloc, out_count, out_total, out_min, out_max, out_median, out_p95, out_self_total );
+    } );
+}
+
+TRACY_API uint32_t RefiiTracyGetZoneStatsRange( uint64_t thread, int64_t t0, int64_t t1,
+                                                uint32_t capacity, int16_t* out_srcloc,
+                                                uint64_t* out_count, int64_t* out_total,
+                                                int64_t* out_min, int64_t* out_max,
+                                                int64_t* out_median, int64_t* out_p95,
+                                                int64_t* out_self_total )
+{
+    return WithWorker( [&]( Worker& w ) -> uint32_t {
+        return ZoneStats( w, false, thread, t0, t1, capacity, out_srcloc, out_count, out_total, out_min, out_max, out_median, out_p95, out_self_total );
+    } );
+}
+
+TRACY_API uint32_t RefiiTracyFindZone( int16_t srcloc, uint64_t thread, int64_t t0, int64_t t1,
+                                       uint32_t buckets, int log_scale, uint64_t* out_histogram,
+                                       int64_t* out_min, int64_t* out_max, uint64_t* out_count,
+                                       int64_t* out_total, int64_t* out_median, int64_t* out_p95,
+                                       uint32_t slowest_capacity, int64_t* out_slow_start,
+                                       int64_t* out_slow_end, uint64_t* out_slow_thread )
+{
+    for( uint32_t b = 0; b < buckets; b++ ) out_histogram[b] = 0;
+    *out_min = *out_max = *out_total = *out_median = *out_p95 = 0;
+    *out_count = 0;
+    return WithWorker( [&]( Worker& w ) -> uint32_t {
+        struct Instance { int64_t start, end; uint64_t thread; };
+        std::vector<Instance> instances;
+        ForInstances( w, w.GetZonesForSourceLocation( srcloc ), thread, t0, t1, [&]( const ZoneEvent& ev, uint64_t tid ) {
+            instances.push_back( Instance { ev.Start(), w.GetZoneEnd( ev ), tid } );
+        } );
+        if( instances.empty() ) return 0;
+
         std::vector<int64_t> durations;
-        for( const auto& entry : w.GetSourceLocationZones() )
+        durations.reserve( instances.size() );
+        int64_t total = 0;
+        for( const auto& i : instances )
         {
-            if( n >= capacity ) break;
-            const auto& zones = entry.second;
-            if( zones.zones.empty() ) continue;
+            durations.push_back( i.end - i.start );
+            total += i.end - i.start;
+        }
+        const int64_t lo = *std::min_element( durations.begin(), durations.end() );
+        const int64_t hi = *std::max_element( durations.begin(), durations.end() );
+        *out_min = lo;
+        *out_max = hi;
+        *out_count = instances.size();
+        *out_total = total;
 
-            durations.clear();
-            durations.reserve( zones.zones.size() );
-            for( const auto& z : zones.zones )
+        if( buckets > 0 )
+        {
+            const bool logs = log_scale != 0 && lo > 0;
+            const double a = logs ? std::log( double( lo ) ) : double( lo );
+            const double span = ( logs ? std::log( double( hi ) ) : double( hi ) ) - a;
+            for( const int64_t d : durations )
             {
-                const ZoneEvent* ev = z.Zone();
-                durations.push_back( w.GetZoneEnd( *ev ) - ev->Start() );
+                const double x = ( logs ? std::log( double( std::max<int64_t>( d, 1 ) ) ) : double( d ) ) - a;
+                const uint32_t bucket = span > 0 ? std::min<uint32_t>( buckets - 1, uint32_t( x / span * buckets ) ) : 0;
+                out_histogram[bucket]++;
             }
-            const size_t mid = durations.size() / 2;
-            std::nth_element( durations.begin(), durations.begin() + mid, durations.end() );
-            const int64_t median = durations[mid];
-            const size_t high = std::min( durations.size() - 1, durations.size() * 95 / 100 );
-            std::nth_element( durations.begin(), durations.begin() + high, durations.end() );
+        }
 
-            out_srcloc[n] = entry.first;
-            out_count[n] = zones.zones.size();
-            out_total[n] = zones.total;
-            out_min[n] = zones.min;
-            out_max[n] = zones.max;
-            out_median[n] = median;
-            out_p95[n] = durations[high];
-            out_self_total[n] = zones.selfTotal;
+        const auto [median, p95] = Percentiles( durations );
+        *out_median = median;
+        *out_p95 = p95;
+
+        const size_t keep = std::min<size_t>( slowest_capacity, instances.size() );
+        std::partial_sort( instances.begin(), instances.begin() + keep, instances.end(), []( const Instance& l, const Instance& r ) {
+            return l.end - l.start > r.end - r.start;
+        } );
+        for( size_t i = 0; i < keep; i++ )
+        {
+            out_slow_start[i] = instances[i].start;
+            out_slow_end[i] = instances[i].end;
+            out_slow_thread[i] = instances[i].thread;
+        }
+        return uint32_t( keep );
+    } );
+}
+
+TRACY_API uint32_t RefiiTracyGetSampleTree( uint64_t thread, int64_t t0, int64_t t1, int inverted,
+                                            uint32_t min_samples, uint32_t capacity,
+                                            int32_t* out_parent, uint8_t* out_depth,
+                                            uint64_t* out_addr, uint32_t* out_total,
+                                            uint32_t* out_self, char* out_names,
+                                            uint32_t name_stride, uint64_t* out_samples )
+{
+    if( out_samples ) *out_samples = 0;
+    return WithWorker( [&]( Worker& w ) -> uint32_t {
+        std::vector<TreeNode> nodes;
+        std::vector<uint32_t> roots;
+        std::unordered_map<TreeKey, uint32_t, TreeKeyHash> index;
+        std::vector<const CallstackFrame*> path;
+        uint64_t samples = 0;
+
+        for( const ThreadData* td : w.GetThreadData() )
+        {
+            if( thread != 0 && td->id != thread ) continue;
+            for( const SampleData& sample : td->samples )
+            {
+                const int64_t time = sample.time.Val();
+                if( time < t0 || time > t1 ) continue;
+
+                // The call stack lists the leaf first; each frame lists its inline frames
+                // innermost first. Top-down walks both outermost first.
+                const auto& stack = w.GetCallstack( sample.callstack.Val() );
+                path.clear();
+                for( uint16_t i = 0; i < stack.size(); i++ )
+                {
+                    const CallstackFrameData* frames = w.GetCallstackFrame( stack[i] );
+                    if( !frames ) continue;
+                    for( uint8_t f = 0; f < frames->size; f++ ) path.push_back( &frames->data[f] );
+                }
+                if( path.empty() ) continue;
+                if( !inverted ) std::reverse( path.begin(), path.end() );
+                samples++;
+
+                int32_t parent = -1;
+                for( const CallstackFrame* frame : path )
+                {
+                    const uint64_t function = frame->symAddr != 0 ? frame->symAddr : ( 1ull << 63 ) | frame->name.Idx();
+                    auto [it, inserted] = index.try_emplace( TreeKey { parent, function }, uint32_t( nodes.size() ) );
+                    if( inserted )
+                    {
+                        nodes.push_back( TreeNode { parent, frame->symAddr, frame->name } );
+                        if( parent < 0 ) roots.push_back( it->second ); else nodes[parent].children.push_back( it->second );
+                    }
+                    nodes[it->second].total++;
+                    parent = int32_t( it->second );
+                }
+                nodes[parent].self++;
+            }
+        }
+        if( out_samples ) *out_samples = samples;
+
+        // Depth first, heaviest child first, light branches pruned.
+        uint32_t n = 0;
+        auto byTotal = [&nodes]( uint32_t l, uint32_t r ) { return nodes[l].total > nodes[r].total; };
+        std::sort( roots.begin(), roots.end(), byTotal );
+        std::vector<std::pair<uint32_t, int32_t>> stack;  // node, output index of its parent
+        for( auto it = roots.rbegin(); it != roots.rend(); ++it ) stack.emplace_back( *it, -1 );
+        while( !stack.empty() && n < capacity )
+        {
+            const auto [node, parentOut] = stack.back();
+            stack.pop_back();
+            TreeNode& data = nodes[node];
+            if( data.total < min_samples ) continue;
+            const uint8_t depth = parentOut < 0 ? 0 : uint8_t( std::min( 255, out_depth[parentOut] + 1 ) );
+            out_parent[n] = parentOut;
+            out_depth[n] = depth;
+            out_addr[n] = data.addr;
+            out_total[n] = data.total;
+            out_self[n] = data.self;
+            WriteSlot( out_names, name_stride, n, w.GetString( data.name ) );
+            std::sort( data.children.begin(), data.children.end(), byTotal );
+            for( auto child = data.children.rbegin(); child != data.children.rend(); ++child ) stack.emplace_back( *child, int32_t( n ) );
             n++;
         }
         return n;
+    } );
+}
+
+TRACY_API uint32_t RefiiTracyGetLocks( int64_t t0, int64_t t1, uint32_t capacity, char* out_names,
+                                       uint32_t name_stride, uint32_t* out_threads,
+                                       uint64_t* out_acquired, uint64_t* out_contended,
+                                       int64_t* out_wait_total, int64_t* out_wait_max,
+                                       int64_t* out_hold_total, int64_t* out_hold_max,
+                                       int64_t* out_worst_wait_at )
+{
+    return WithWorker( [&]( Worker& w ) -> uint32_t {
+        uint32_t n = 0;
+        for( const auto& entry : w.GetLockMap() )
+        {
+            if( n >= capacity ) break;
+            const LockMap& lock = *entry.second;
+            if( !lock.valid ) continue;
+
+            // Per thread (the lock's own small index): when it began waiting, whether someone
+            // else held the lock then, and when it obtained it.
+            int64_t waitAt[64], obtainAt[64];
+            bool contended[64];
+            for( int i = 0; i < 64; i++ ) { waitAt[i] = -1; obtainAt[i] = -1; contended[i] = false; }
+
+            uint64_t acquired = 0, contendedCount = 0;
+            int64_t waitTotal = 0, waitMax = 0, holdTotal = 0, holdMax = 0, worstAt = 0;
+            for( const auto& ptr : lock.timeline )
+            {
+                const LockEvent& ev = *ptr.ptr;
+                const uint8_t t = ev.thread & 63;
+                const int64_t time = ev.Time();
+                switch( ev.type )
+                {
+                case LockEvent::Type::Wait:
+                case LockEvent::Type::WaitShared:
+                    waitAt[t] = time;
+                    contended[t] = ptr.lockCount > 0;
+                    break;
+                case LockEvent::Type::Obtain:
+                case LockEvent::Type::ObtainShared:
+                    obtainAt[t] = time;
+                    if( time >= t0 && time <= t1 )
+                    {
+                        acquired++;
+                        if( waitAt[t] >= 0 )
+                        {
+                            const int64_t wait = time - waitAt[t];
+                            waitTotal += wait;
+                            if( wait > waitMax ) { waitMax = wait; worstAt = waitAt[t]; }
+                            if( contended[t] ) contendedCount++;
+                        }
+                    }
+                    waitAt[t] = -1;
+                    break;
+                case LockEvent::Type::Release:
+                case LockEvent::Type::ReleaseShared:
+                    if( obtainAt[t] >= 0 && obtainAt[t] >= t0 && obtainAt[t] <= t1 )
+                    {
+                        const int64_t hold = time - obtainAt[t];
+                        holdTotal += hold;
+                        holdMax = std::max( holdMax, hold );
+                    }
+                    obtainAt[t] = -1;
+                    break;
+                }
+            }
+            if( acquired == 0 ) continue;
+
+            const char* name = lock.customName.Active() ? w.GetString( lock.customName ) : w.GetZoneName( w.GetSourceLocation( lock.srcloc ) );
+            WriteSlot( out_names, name_stride, n, name );
+            out_threads[n] = uint32_t( lock.threadList.size() );
+            out_acquired[n] = acquired;
+            out_contended[n] = contendedCount;
+            out_wait_total[n] = waitTotal;
+            out_wait_max[n] = waitMax;
+            out_hold_total[n] = holdTotal;
+            out_hold_max[n] = holdMax;
+            out_worst_wait_at[n] = worstAt;
+            n++;
+        }
+        return n;
+    } );
+}
+
+TRACY_API uint32_t RefiiTracyGetMemoryPools( uint32_t capacity, char* out_names, uint32_t name_stride,
+                                             uint64_t* out_allocations, uint64_t* out_live,
+                                             uint64_t* out_bytes, uint64_t* out_peak )
+{
+    return WithWorker( [&]( Worker& w ) -> uint32_t {
+        uint32_t n = 0;
+        for( const auto& entry : w.GetMemNameMap() )
+        {
+            if( n >= capacity ) break;
+            const MemData& mem = *entry.second;
+            if( mem.data.empty() ) continue;
+            WriteSlot( out_names, name_stride, n, entry.first == 0 ? "default" : w.GetString( entry.first ) );
+            out_allocations[n] = mem.data.size();
+            out_live[n] = mem.active.size();
+            out_bytes[n] = mem.usage;
+            out_peak[n] = mem.plot ? uint64_t( mem.plot->max ) : mem.usage;
+            n++;
+        }
+        return n;
+    } );
+}
+
+TRACY_API uint32_t RefiiTracyGetMemoryLargest( const char* pool, uint32_t capacity, uint64_t* out_id,
+                                               uint64_t* out_size, int64_t* out_time )
+{
+    if( !pool ) return 0;
+    return WithWorker( [&]( Worker& w ) -> uint32_t {
+        const MemData* found = nullptr;
+        for( const auto& entry : w.GetMemNameMap() )
+        {
+            const char* name = entry.first == 0 ? "default" : w.GetString( entry.first );
+            if( strcmp( name, pool ) == 0 ) { found = entry.second; break; }
+        }
+        if( !found ) return 0;
+
+        std::vector<const MemEvent*> live;
+        live.reserve( found->active.size() );
+        for( const auto& active : found->active ) live.push_back( &found->data[active.second] );
+        const size_t keep = std::min<size_t>( capacity, live.size() );
+        std::partial_sort( live.begin(), live.begin() + keep, live.end(), []( const MemEvent* l, const MemEvent* r ) { return l->Size() > r->Size(); } );
+        for( size_t i = 0; i < keep; i++ )
+        {
+            out_id[i] = live[i]->Ptr();
+            out_size[i] = live[i]->Size();
+            out_time[i] = live[i]->TimeAlloc();
+        }
+        return uint32_t( keep );
     } );
 }
 

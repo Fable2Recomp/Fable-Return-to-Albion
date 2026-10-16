@@ -108,6 +108,7 @@ public partial class GameSession : Node
 			Refii.Core.Engine_FramePhases.ZoneEnd = Refii.Host.HostBridge.TraceZoneEnd;
 			Refii.Core.Engine_FramePhases.Plot = Refii.Host.HostBridge.TracePlot;
 			Refii.Core.Engine_GpuPasses.Sink = Refii.Host.HostBridge.TraceGpuPasses;
+			AddChild(new GameTracyFeed { Name = "GameTracyFeed" });
 		}
 
 		// RenderDoc, when the launcher armed its Vulkan layer for this run (`renderdoc = true`):

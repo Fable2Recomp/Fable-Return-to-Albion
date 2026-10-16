@@ -25,7 +25,7 @@ public static class Engine_FramePhases
 	}
 
 	private static readonly Dictionary<string, Phase> Phases = new();
-	private static readonly object Gate = new();
+	private static readonly Refii.Core.Engine_TracedLock Gate = new("frame phases");
 
 	/// <summary>
 	/// Opens a profiler zone for a phase, or 0 when no profiler is installed.
@@ -69,7 +69,7 @@ public static class Engine_FramePhases
 
 			double ms = (Stopwatch.GetTimestamp() - _start) * 1000.0 / Stopwatch.Frequency;
 			long alloc = System.GC.GetAllocatedBytesForCurrentThread() - _allocStart;
-			lock (Gate)
+			using (Gate.Hold())
 			{
 				if (!Phases.TryGetValue(_name, out Phase? phase))
 				{
@@ -221,7 +221,7 @@ public static class Engine_FramePhases
 	/// invisible to every `Measure`: pipeline compilations, texture and buffer uploads, and
 	/// the GC's stop-the-world pauses are the candidates, and each has a counter.
 	/// </remarks>
-	private struct FrameCounters
+	public struct FrameCounters
 	{
 		public double PipelinesCanvas, PipelinesMesh, PipelinesSurface, PipelinesDraw, PipelinesSpecialization;
 		public double VideoMemMB, TextureMemMB, BufferMemMB;
@@ -255,6 +255,9 @@ public static class Engine_FramePhases
 	}
 
 	private static FrameCounters _previousCounters;
+
+	/// <summary>The counters sampled at the latest frame start, for the in-game Tracy feed.</summary>
+	public static FrameCounters LatestCounters => _previousCounters;
 	private static bool _haveCounters;
 
 	/// <summary>A frame over this is logged with its counters, not only kept in the list.</summary>
@@ -315,7 +318,7 @@ public static class Engine_FramePhases
 			Record("frame_total", totalMs);
 
 			// Before the index moves on: the phases still hold the finished frame's values.
-			lock (Gate)
+			using (Gate.Hold())
 			{
 				// The instance-update window closes with the frame, so the hitch line below can
 				// name what this frame wrote into the scene.
@@ -326,7 +329,7 @@ public static class Engine_FramePhases
 		}
 		else
 		{
-			lock (Gate)
+			using (Gate.Hold())
 			{
 				Engine_InstanceUpdates.EndFrame();
 				LogHitch(0.0);
@@ -388,7 +391,7 @@ public static class Engine_FramePhases
 
 	private static void Record(string name, double ms)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			if (!Phases.TryGetValue(name, out Phase? phase))
 			{
@@ -411,7 +414,7 @@ public static class Engine_FramePhases
 	/// <summary>One phase's rolling average and decaying peak, or (0, 0) before it has run.</summary>
 	public static (double AverageMs, double PeakMs) Get(string name)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			return Phases.TryGetValue(name, out Phase? phase)
 				? (phase.AverageMs, phase.PeakMs)
@@ -422,7 +425,7 @@ public static class Engine_FramePhases
 	/// <summary>One phase's most recent duration, or 0 before it has run.</summary>
 	public static double Last(string name)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			return Phases.TryGetValue(name, out Phase? phase) ? phase.LastMs : 0.0;
 		}
@@ -432,7 +435,7 @@ public static class Engine_FramePhases
 	public static Dictionary<string, object?> Report()
 	{
 		var report = new Dictionary<string, object?>();
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			foreach ((string name, Phase phase) in Phases)
 			{

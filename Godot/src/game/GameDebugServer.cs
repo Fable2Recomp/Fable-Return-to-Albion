@@ -1283,6 +1283,9 @@ public partial class GameDebugServer : Node
 				return Ok(new Dictionary<string, object?> { ["dir"] = logs, ["lines"] = kept });
 			}
 
+			case "tracy":
+				return AnswerTracy(root);
+
 			case "mark":
 			{
 				string text = root.TryGetProperty("text", out JsonElement t)

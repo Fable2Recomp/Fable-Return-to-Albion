@@ -58,8 +58,12 @@ public sealed class Engine_BinkDecoder : IDisposable
 		}
 
 		error = string.Empty;
+		Refii.Core.Engine_TracedMemory.Alloc(TracedPool, (ulong)handle, (ulong)data.Length);
 		return new Engine_BinkDecoder(handle);
 	}
+
+	/// <summary>The in-game Tracy capture's pool for open movies (the decoder holds the whole .bik).</summary>
+	private const string TracedPool = "movies";
 
 	/// <summary>
 	/// Decodes the next frame into three tightly packed planes. False at the end of the
@@ -87,6 +91,7 @@ public sealed class Engine_BinkDecoder : IDisposable
 	{
 		if (_handle != IntPtr.Zero)
 		{
+			Refii.Core.Engine_TracedMemory.Free(TracedPool, (ulong)_handle);
 			RefiiBinkClose(_handle);
 			_handle = IntPtr.Zero;
 		}

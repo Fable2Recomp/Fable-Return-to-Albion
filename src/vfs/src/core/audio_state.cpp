@@ -12,6 +12,8 @@
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
+
+#include "core/traced_mutex.h"
 #include <vector>
 
 #include <rex/logging.h>
@@ -31,8 +33,8 @@ namespace {
 constexpr uint32_t kFrameRingCapacity = 64;
 
 struct HostAudioRing {
-    std::mutex mutex;
-    std::condition_variable space_available;
+    refii::TracedMutex mutex{"audio ring"};
+    std::condition_variable_any space_available;
 
     std::vector<float> storage;
     uint32_t read_at = 0;
@@ -85,7 +87,7 @@ struct VoiceSlot {
 };
 
 struct VoiceTable {
-    std::mutex mutex;
+    refii::TracedMutex mutex{"audio voice table"};
     VoiceSlot slots[kMaxTrackedVoices];
     uint32_t next_generation = 1;
     uint64_t overflow_drops = 0;
@@ -123,7 +125,7 @@ VoiceSlot* FindSlot(VoiceTable& table, uint32_t handle) {
 
 bool SetHostAudioCreditSink(HostAudioCreditFn fn, void* context) {
     auto& ring = Ring();
-    std::lock_guard<std::mutex> guard(ring.mutex);
+    std::lock_guard guard(ring.mutex);
 
     if (fn != nullptr && ring.credit_fn != nullptr && ring.credit_context != context) {
         REXLOG_WARN(
@@ -153,7 +155,7 @@ bool PushHostAudioFrame(const float* interleaved_stereo, uint32_t timeout_ms) {
     }
 
     auto& ring = Ring();
-    std::unique_lock<std::mutex> guard(ring.mutex);
+    std::unique_lock guard(ring.mutex);
 
     const bool have_space = ring.space_available.wait_for(
         guard, std::chrono::milliseconds(timeout_ms),
@@ -195,7 +197,7 @@ uint32_t PopHostAudioFrames(float* out, uint32_t max_frames) {
     uint32_t taken = 0;
 
     {
-        std::lock_guard<std::mutex> guard(ring.mutex);
+        std::lock_guard guard(ring.mutex);
         taken = std::min(max_frames, ring.count);
         for (uint32_t i = 0; i < taken; i++) {
             const float* slot = ring.storage.data() +
@@ -226,13 +228,13 @@ uint32_t PopHostAudioFrames(float* out, uint32_t max_frames) {
 
 uint32_t HostAudioQueuedFrames() {
     auto& ring = Ring();
-    std::lock_guard<std::mutex> guard(ring.mutex);
+    std::lock_guard guard(ring.mutex);
     return ring.count;
 }
 
 void HostAudioCounters(uint64_t* out_pushed, uint64_t* out_popped, uint64_t* out_dropped) {
     auto& ring = Ring();
-    std::lock_guard<std::mutex> guard(ring.mutex);
+    std::lock_guard guard(ring.mutex);
     if (out_pushed != nullptr) {
         *out_pushed = ring.pushed;
     }
@@ -266,7 +268,7 @@ extern "C" void refii_bridge_note_voice_created(uint32_t handle, uint32_t sample
     }
 
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     g_voice_capture_active.store(true, std::memory_order_release);
 
     // A handle can be reused by the guest's allocator, so an existing entry for it is a
@@ -303,7 +305,7 @@ extern "C" void refii_bridge_note_voice_created(uint32_t handle, uint32_t sample
 
 extern "C" void refii_bridge_note_voice_destroyed(uint32_t handle) {
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     VoiceSlot* slot = FindSlot(table, handle);
     if (slot == nullptr) {
         return;
@@ -332,7 +334,7 @@ extern "C" void refii_bridge_note_voice_destroyed(uint32_t handle) {
 
 extern "C" void refii_bridge_note_voice_started(uint32_t handle) {
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
         slot->record.started = 1;
     }
@@ -340,7 +342,7 @@ extern "C" void refii_bridge_note_voice_started(uint32_t handle) {
 
 extern "C" void refii_bridge_note_voice_stopped(uint32_t handle, int32_t immediate) {
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     VoiceSlot* slot = FindSlot(table, handle);
     if (slot == nullptr) {
         return;
@@ -362,7 +364,7 @@ extern "C" void refii_bridge_note_voice_stopped(uint32_t handle, int32_t immedia
 
 extern "C" void refii_bridge_note_voice_volume(uint32_t handle, float linear_volume) {
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
         slot->record.volume = linear_volume;
     }
@@ -370,7 +372,7 @@ extern "C" void refii_bridge_note_voice_volume(uint32_t handle, float linear_vol
 
 extern "C" void refii_bridge_note_voice_pitch_octaves(uint32_t handle, float octaves) {
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
         // The guest states octaves; CSourceStream::SetPitch @ 0x82ce00f8 stores
         // powf(2.0f, arg). Godot's PitchScale is the ratio, so convert once here rather
@@ -399,7 +401,7 @@ extern "C" void refii_bridge_note_voice_channel_volumes(uint32_t handle, const f
     const float right = (fr + br + centre_halved) * (1.0f / 2.5f);
 
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     if (VoiceSlot* slot = FindSlot(table, handle)) {
         slot->record.pan_left = left;
         slot->record.pan_right = right;
@@ -427,7 +429,7 @@ extern "C" void refii_bridge_note_voice_pcm(uint32_t handle, const void* pcm,
     }
 
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     VoiceSlot* slot = FindSlot(table, handle);
     if (slot == nullptr) {
         return;
@@ -465,7 +467,7 @@ extern "C" void refii_bridge_note_voice_pcm(uint32_t handle, const void* pcm,
 
 uint32_t TakeVoiceRecords(VoiceRecord* out, uint32_t capacity) {
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
 
     if (out != nullptr) {
         table.snapshots++;
@@ -505,7 +507,7 @@ uint32_t TakeVoicePcm(uint32_t handle, uint32_t generation, void* out, uint32_t 
     }
 
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
     VoiceSlot* slot = FindSlot(table, handle);
     if (slot == nullptr || slot->record.generation != generation) {
         // A generation mismatch means the guest recycled this handle for a new sound.
@@ -537,7 +539,7 @@ uint32_t TakeVoicePcm(uint32_t handle, uint32_t generation, void* out, uint32_t 
 void VoiceCaptureStats(uint32_t* out_live, uint64_t* out_bytes_held,
                        uint64_t* out_bytes_taken, uint64_t* out_snapshots) {
     auto& table = Voices();
-    std::lock_guard<std::mutex> guard(table.mutex);
+    std::lock_guard guard(table.mutex);
 
     uint32_t live = 0;
     uint64_t held = 0;

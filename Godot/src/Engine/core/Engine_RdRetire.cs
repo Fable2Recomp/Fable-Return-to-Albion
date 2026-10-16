@@ -21,6 +21,9 @@ public static class Engine_RdRetire
     /// <summary>Frames drawn before a retired texture is freed: the deferred re-point, then the GPU's queue.</summary>
     private const ulong Frames = 8;
 
+    /// <summary>The in-game Tracy capture's pool for RenderingDevice textures we create and free.</summary>
+    public const string TracedPool = "render targets";
+
     private static readonly List<(Rid Rid, ulong After)> Pending = new();
 
     /// <summary>Frees <paramref name="rid"/> once <see cref="Frames"/> more frames have been drawn.</summary>
@@ -28,6 +31,7 @@ public static class Engine_RdRetire
     {
         if (rid.IsValid)
         {
+            Engine_TracedMemory.Free(TracedPool, rid.Id);
             Pending.Add((rid, (ulong)Engine.GetFramesDrawn() + Frames));
         }
     }

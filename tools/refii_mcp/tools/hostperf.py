@@ -224,75 +224,84 @@ def mark(args):
     return ask({"op": "mark", "text": str(args.get("text", ""))})
 
 
-def _tracy_tool(name):
-    for candidate in (
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "..", "bin", name),
-        shutil.which(name) or "",
-        shutil.which(f"tracy-{name}") or "",
-    ):
-        if candidate and os.path.isfile(candidate):
-            return candidate
-    return None
-
-
 @tool(
     "refii_trace",
-    "Capture N seconds of the live Tracy stream headlessly and return the top zones by "
-    "self-time — where the frame actually goes, guest threads and Godot phases on one "
-    "timeline. The .tracy file is kept for the GUI. Needs the vendored capture tools built "
-    "once (tools/bin/capture + csvexport, from rexglue-net/rexglue-sdk/thirdparty/tracy — "
-    "the error says how).",
+    "Capture N seconds of the game's own in-process Tracy (no socket: the capture runs inside "
+    "the game, as the F4 Tracy tab's does) and return where the time went: the top zones by "
+    "self time, the slowest frames, and lock contention. Starts a capture unless one is live, "
+    "then stops it; with keep=true the capture is also saved as a .tracy file in the game's "
+    "captures folder (openable in Tracy's desktop viewer). Needs tracy = true in refii.toml.",
     {
         "seconds": {"type": "integer", "description": "Capture length (default 10, max 120)."},
         "top": {"type": "integer", "description": "Zones to report (default 20)."},
-        "address": {"type": "string", "description": (
-            "Host running the game (default 127.0.0.1). The game's Tracy client listens on "
-            "every interface, so a Windows run in the bridged VM or on another PC on the LAN "
-            "is captured from here by its IP — the debug channel is loopback-only, Tracy is not.")},
+        "guestStacks": {"type": "boolean", "description": "Sample the guest threads' call stacks too (default true)."},
+        "keep": {"type": "boolean", "description": "Save the capture as a .tracy file (default false)."},
     },
 )
 def trace(args):
-    capture = _tracy_tool("capture")
-    csvexport = _tracy_tool("csvexport")
-    if capture is None or csvexport is None:
-        return {"ok": False, "error": (
-            "tracy tools not found — build them once from the vendored tree "
-            "(protocol-matched 0.13.1): cmake -B /tmp/tracy-cap "
-            "rexglue-net/rexglue-sdk/thirdparty/tracy/capture && cmake --build /tmp/tracy-cap "
-            "(same for csvexport), then put the binaries in tools/bin/")}
-
     seconds = max(1, min(int(args.get("seconds", 10)), 120))
-    out_dir = os.path.join(os.path.dirname(SHOTS), "mcp-traces")
-    os.makedirs(out_dir, exist_ok=True)
-    trace_path = os.path.join(out_dir, f"{time.strftime('%H%M%S')}.tracy")
-    grabbed = subprocess.run(
-        [capture, "-a", str(args.get("address") or "127.0.0.1"), "-o", trace_path,
-         "-s", str(seconds), "-f"],
-        capture_output=True, text=True, timeout=seconds + 60)
-    if grabbed.returncode != 0 or not os.path.exists(trace_path):
-        return {"ok": False, "error": f"capture failed: {grabbed.stderr[-400:] or grabbed.stdout[-400:]}"}
+    status = ask({"op": "tracy", "action": "status"})
+    if not status.get("ok"):
+        return status
+    started = False
+    if status.get("state") not in ("live", "connecting"):
+        reply = ask({"op": "tracy", "action": "start", "guestStacks": bool(args.get("guestStacks", True))})
+        if not reply.get("ok"):
+            return reply
+        started = True
+    time.sleep(seconds)
+    if started:
+        ask({"op": "tracy", "action": "stop"})
 
-    exported = subprocess.run(
-        [csvexport, trace_path], capture_output=True, text=True, timeout=120)
-    if exported.returncode != 0:
-        return {"ok": True, "trace": trace_path,
-                "note": f"captured, but csvexport failed: {exported.stderr[-300:]}"}
+    top = max(1, min(int(args.get("top", 20)), 100))
+    result = {
+        "ok": True,
+        "seconds": seconds,
+        "status": ask({"op": "tracy", "action": "status"}),
+        "zones": ask({"op": "tracy", "action": "zones", "top": top, "sort": "self"}).get("zones"),
+        "slowestFrames": sorted(
+            ask({"op": "tracy", "action": "frames", "last": 2000}).get("frames") or [],
+            key=lambda f: f.get("ms", 0), reverse=True)[:10],
+        "locks": (ask({"op": "tracy", "action": "locks"}).get("locks") or [])[:10],
+    }
+    if args.get("keep") and started:
+        saving = ask({"op": "tracy", "action": "save"})
+        result["trace"] = saving.get("saving") or saving.get("error")
+        for _ in range(240):
+            time.sleep(0.5)
+            state = ask({"op": "tracy", "action": "status"})
+            if "saving" not in state:
+                result["saved"] = state.get("lastSave")
+                break
+    return result
 
-    zones = []
-    for row in csv.DictReader(exported.stdout.splitlines()):
-        try:
-            zones.append({
-                "zone": row.get("name", "?"),
-                "counts": int(row.get("counts", 0)),
-                "totalMs": round(int(row.get("total_ns", 0)) / 1e6, 2),
-                "meanUs": round(float(row.get("mean_ns", 0)) / 1e3, 1),
-            })
-        except (ValueError, TypeError):
-            continue
-    zones.sort(key=lambda z: z["totalMs"], reverse=True)
-    return {"ok": True, "trace": trace_path, "seconds": seconds,
-            "topZones": zones[:max(1, min(int(args.get("top", 20)), 100))]}
+
+@tool(
+    "refii_tracy",
+    "The game's in-process Tracy capture over the debug channel — the same data as the F4 "
+    "Tracy tabs. action: status | start [limitMB, guestStacks] | stop | discard | save [path] | "
+    "frames [last | first, count] | threads | zones [top, sort self|total|p95|max|count|mean] | "
+    "find [zone, slowest] | samples [mode functions|top-down|bottom-up, top, depth, minPercent] | "
+    "locks | memory [pool, top] | plots [plot, points] | messages [last]. Ranges: lastSeconds, "
+    "or frame (an index from frames); thread narrows zones/find/samples to one thread (name or "
+    "part of one). Times are ms from the capture's start.",
+    {
+        "action": {"type": "string", "description": "What to do or read (default status)."},
+        "zone": {"type": "string"}, "thread": {"type": "string"}, "mode": {"type": "string"},
+        "sort": {"type": "string"}, "pool": {"type": "string"}, "plot": {"type": "string"},
+        "path": {"type": "string"},
+        "top": {"type": "integer"}, "last": {"type": "integer"}, "first": {"type": "integer"},
+        "count": {"type": "integer"}, "slowest": {"type": "integer"}, "depth": {"type": "integer"},
+        "points": {"type": "integer"}, "frame": {"type": "integer"}, "limitMB": {"type": "integer"},
+        "lastSeconds": {"type": "number"}, "minPercent": {"type": "number"},
+        "guestStacks": {"type": "boolean"},
+    },
+)
+def tracy(args):
+    request = {"op": "tracy"}
+    request.update({k: v for k, v in args.items() if v is not None})
+    request.setdefault("action", "status")
+    return ask(request, timeout=30.0)
 
 
 @tool(

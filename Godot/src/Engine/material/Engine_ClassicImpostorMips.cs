@@ -83,6 +83,13 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
             Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
             UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.StorageBit,
         }, new RDTextureView());
+        ulong bytes = 0;
+        for (int mip = 0; mip < Mips; mip++)
+        {
+            bytes += (ulong)System.Math.Max(1, size.X >> mip) * (ulong)System.Math.Max(1, size.Y >> mip) * 8;  // RGBA16F
+        }
+
+        Refii.Core.Engine_TracedMemory.Alloc(Refii.Core.Engine_RdRetire.TracedPool, _target.Id, bytes);
         for (int mip = 0; mip < Mips; mip++)
         {
             _views[mip] = _rd.TextureCreateSharedFromSlice(new RDTextureView(), _target, 0, (uint)mip, 1,
@@ -149,6 +156,7 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
         }
         if (_target.IsValid)
         {
+            Refii.Core.Engine_TracedMemory.Free(Refii.Core.Engine_RdRetire.TracedPool, _target.Id);
             _rd!.FreeRid(_target);
             _target = default;
         }

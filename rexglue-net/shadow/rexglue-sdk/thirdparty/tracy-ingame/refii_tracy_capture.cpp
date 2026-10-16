@@ -219,6 +219,11 @@ TRACY_API void RefiiTracyCaptureGetStatus( RefiiTracyCaptureStatus* out )
     }
 }
 
+TRACY_API int RefiiTracyCaptureIsLive( void )
+{
+    return s_live.load( std::memory_order_relaxed ) ? 1 : 0;
+}
+
 TRACY_API int RefiiTracyCaptureSave( const char* path )
 {
     if( !path ) return 0;

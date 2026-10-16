@@ -41,7 +41,7 @@ public static class Engine_RenderStats
 		public Rid Rid;
 	}
 
-	private static readonly object Gate = new();
+	private static readonly Refii.Core.Engine_TracedLock Gate = new("render stats");
 	private static readonly List<Tracked> _tracked = new();
 	private static readonly Dictionary<ulong, Sample> _published = new();
 
@@ -106,7 +106,7 @@ public static class Engine_RenderStats
 	/// </summary>
 	public static void Track(Viewport viewport)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			foreach (Tracked have in _tracked)
 			{
@@ -130,7 +130,7 @@ public static class Engine_RenderStats
 	public static Sample Of(Viewport viewport)
 	{
 		Track(viewport);
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			return _published.TryGetValue(viewport.GetViewportRid().Id, out Sample sample)
 				? sample
@@ -144,7 +144,7 @@ public static class Engine_RenderStats
 	/// </summary>
 	public static void SampleFrame()
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			for (int i = _tracked.Count - 1; i >= 0; --i)
 			{
@@ -186,7 +186,7 @@ public static class Engine_RenderStats
 		const RenderingServer.ViewportRenderInfo Prims = RenderingServer.ViewportRenderInfo.PrimitivesInFrame;
 		const RenderingServer.ViewportRenderInfo Objects = RenderingServer.ViewportRenderInfo.ObjectsInFrame;
 
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			for (int i = 0; i < _pendingCount; ++i)
 			{

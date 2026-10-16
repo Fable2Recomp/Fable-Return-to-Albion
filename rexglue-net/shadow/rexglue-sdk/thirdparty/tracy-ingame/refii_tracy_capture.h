@@ -61,6 +61,9 @@ TRACY_API void RefiiTracyCaptureDiscard( void );
 
 TRACY_API void RefiiTracyCaptureGetStatus( RefiiTracyCaptureStatus* out );
 
+// 1 while a capture is streaming. One atomic load: what per-frame feeds check before doing work.
+TRACY_API int RefiiTracyCaptureIsLive( void );
+
 // Writes the stopped capture as a .tracy file (zstd), once its stream has fully ended. 1 =
 // written; 0 = nothing stopped to write, or the file could not be opened.
 TRACY_API int RefiiTracyCaptureSave( const char* path );
@@ -108,6 +111,61 @@ TRACY_API uint32_t RefiiTracyGetZoneStats( uint32_t capacity, int16_t* out_srclo
                                            int64_t* out_min, int64_t* out_max,
                                            int64_t* out_median, int64_t* out_p95,
                                            int64_t* out_self_total );
+
+// As RefiiTracyGetZoneStats, limited to zones starting in [t0, t1] and, when `thread` is not 0, to
+// that thread. Self time is each instance minus its direct children.
+TRACY_API uint32_t RefiiTracyGetZoneStatsRange( uint64_t thread, int64_t t0, int64_t t1,
+                                                uint32_t capacity, int16_t* out_srcloc,
+                                                uint64_t* out_count, int64_t* out_total,
+                                                int64_t* out_min, int64_t* out_max,
+                                                int64_t* out_median, int64_t* out_p95,
+                                                int64_t* out_self_total );
+
+// FIND ZONE: one source location's instances starting in [t0, t1] (one thread, or all when
+// `thread` is 0). Fills a histogram of `buckets` bins between the shortest and longest instance —
+// log-spaced when `log_scale` — and the count, total, median and 95th percentile; writes the
+// `slowest_capacity` longest instances, longest first (start, end, thread) and returns how many.
+TRACY_API uint32_t RefiiTracyFindZone( int16_t srcloc, uint64_t thread, int64_t t0, int64_t t1,
+                                       uint32_t buckets, int log_scale, uint64_t* out_histogram,
+                                       int64_t* out_min, int64_t* out_max, uint64_t* out_count,
+                                       int64_t* out_total, int64_t* out_median, int64_t* out_p95,
+                                       uint32_t slowest_capacity, int64_t* out_slow_start,
+                                       int64_t* out_slow_end, uint64_t* out_slow_thread );
+
+// SAMPLE CALL TREE over the samples taken in [t0, t1] (one thread, or all when `thread` is 0):
+// one node per distinct chain of functions, inline frames included. Top-down (`inverted` 0) roots
+// are the outermost callers; bottom-up (1) roots are the functions the samples landed in, with
+// their callers beneath. Nodes come depth first, each node's children by most samples first;
+// nodes under `min_samples` are left out with everything beneath. Per node: parent index (-1 for
+// a root), depth, function address, samples through it, samples that ended in it, name.
+// *out_samples = samples in the range.
+TRACY_API uint32_t RefiiTracyGetSampleTree( uint64_t thread, int64_t t0, int64_t t1, int inverted,
+                                            uint32_t min_samples, uint32_t capacity,
+                                            int32_t* out_parent, uint8_t* out_depth,
+                                            uint64_t* out_addr, uint32_t* out_total,
+                                            uint32_t* out_self, char* out_names,
+                                            uint32_t name_stride, uint64_t* out_samples );
+
+// LOCKS: one row per lock acquired in [t0, t1] — name, threads that used it, acquisitions, how
+// many waited on another holder (contended), total and longest wait, total and longest hold, and
+// when the longest wait began (to open it in the timeline).
+TRACY_API uint32_t RefiiTracyGetLocks( int64_t t0, int64_t t1, uint32_t capacity, char* out_names,
+                                       uint32_t name_stride, uint32_t* out_threads,
+                                       uint64_t* out_acquired, uint64_t* out_contended,
+                                       int64_t* out_wait_total, int64_t* out_wait_max,
+                                       int64_t* out_hold_total, int64_t* out_hold_max,
+                                       int64_t* out_worst_wait_at );
+
+// MEMORY POOLS (Tracy's named memory): name, allocations made, allocations live, bytes live, the
+// peak, and the capture's largest live allocations come from RefiiTracyGetMemoryLargest.
+TRACY_API uint32_t RefiiTracyGetMemoryPools( uint32_t capacity, char* out_names, uint32_t name_stride,
+                                             uint64_t* out_allocations, uint64_t* out_live,
+                                             uint64_t* out_bytes, uint64_t* out_peak );
+
+// The named pool's largest live allocations, largest first: id (the pointer or handle it was
+// reported with), size, when it was made.
+TRACY_API uint32_t RefiiTracyGetMemoryLargest( const char* pool, uint32_t capacity, uint64_t* out_id,
+                                               uint64_t* out_size, int64_t* out_time );
 
 // Plots: name, tracy::PlotType, tracy::PlotValueFormatting, point count, min, max.
 TRACY_API uint32_t RefiiTracyGetPlots( uint32_t capacity, char* out_names, uint32_t name_stride,

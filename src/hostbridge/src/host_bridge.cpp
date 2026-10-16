@@ -100,6 +100,7 @@ void FlushLogging();
 
 #include "host_abi.h"
 #include "host_tracy.h"
+#include "core/traced_mutex.h"
 
 // Included rather than redeclared like the Bink entries below: the audio exports marshal
 // VoiceRecord by value, and two hand-written copies of a struct layout is exactly the
@@ -1301,7 +1302,7 @@ std::thread g_arm_watcher;
 /// REFII_COMPLETION_THREAD=0 keeps the once-per-step publishing for comparison.
 std::atomic<bool> g_completion_stop{false};
 std::thread g_completion_thread;
-std::mutex g_completion_mutex;
+refii::TracedMutex g_completion_mutex{"guest I/O completion"};
 uint32_t g_completions_by_thread = 0;
 
 /// Puts Fable 2's own D3D into the "no GPU present" mode it ships with.
@@ -1607,7 +1608,7 @@ void SignalGuestFrameCompletions() {
     }
 
     // Two publishers (the step and the completion thread) must not race the double buffer.
-    std::lock_guard<std::mutex> publishers(g_completion_mutex);
+    std::lock_guard publishers(g_completion_mutex);
 
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
@@ -2295,7 +2296,11 @@ extern "C" {
 /// 182 adds RefiiHostTracy* (host_tracy.cpp) — the game's in-process Tracy capture: start, stop,
 ///     save, status and the dev menu's queries (frames, zones, statistics, plots, messages, GPU,
 ///     context switches, samples, disassembly).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 182; }
+/// 183 adds the Tracy lock and memory views (RefiiHostTracyGetLocks, GetMemoryPools,
+///     GetMemoryLargest), Godot-side memory and locks (RefiiHostTraceAlloc/Free, TraceLock*),
+///     find-zone and sample trees (RefiiHostTracyFindZone, GetZoneStatsRange, GetSampleTree),
+///     RefiiHostTracyLive, and guest stack sampling (RefiiHostGuestSamplerStart/Stop).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 183; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -10123,6 +10128,188 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestBacktrace(uint32_t tid, uint32_t* o
 
     return written;
 }
+
+#ifdef REXGLUE_ENABLE_PROFILING
+/// GUEST STACK SAMPLING into the in-game Tracy capture: the recompiled game's own call stacks,
+/// which are otherwise invisible to Tracy (instrumenting every guest function is far too heavy).
+///
+/// A sampler thread reads every guest thread's live context and walks its back chain, exactly as
+/// RefiiHostGuestBacktrace does, a few hundred times a second. Each guest thread is a Tracy fiber
+/// ("guest: <name> (<tid>)"); between samples, the frames that changed close and open as zones,
+/// so the timeline shows each guest thread's sampled call stack over time. Times are sample
+/// times: a zone is as long as the frame was seen, to the sampling interval.
+///
+/// The thread list is refreshed once a second; the kernel's global critical region is taken
+/// only for that, never per sample — the walk reads the context and guest memory with the same
+/// fault-guarded reads as the backtrace, without stopping the thread. A frame is the function
+/// containing a return address (the nearest recompiled function entry at or below it, cached
+/// per address), named sub_XXXXXXXX. Frame 0 is the context's LR — the most recent call's return
+/// address, so it names the function that made the last call.
+namespace guest_sampler {
+
+using ThreadRefs = decltype(rex::system::kernel_state()->object_table()->GetObjectsByType<rex::system::XThread>());
+
+struct Track {
+    rex::system::XThread* thread = nullptr;
+    const char* fiber = nullptr;
+    std::vector<uint32_t> stack;       // open frames, outermost first
+    std::vector<TracyCZoneCtx> zones;  // their zones, same order
+    bool seen = false;
+};
+
+std::mutex g_control;
+std::thread g_thread;
+std::atomic<bool> g_run{false};
+
+/// Fiber names live for the process: Tracy keeps the pointer.
+const char* InternFiber(const std::string& name) {
+    static std::mutex lock;
+    static std::set<std::string>* names = new std::set<std::string>();
+    std::lock_guard guard(lock);
+    return names->insert(name).first->c_str();
+}
+
+/// The recompiled function containing `address`: the nearest entry at or below it.
+uint32_t FunctionOf(rex::runtime::FunctionDispatcher* dispatcher, uint32_t address,
+                    std::unordered_map<uint32_t, uint32_t>& cache) {
+    if (auto it = cache.find(address); it != cache.end()) return it->second;
+    constexpr uint32_t kSearch = 64u * 1024u;  // no Fable 2 function is longer
+    uint32_t entry = 0;
+    for (uint32_t at = address & ~3u, steps = 0; at != 0 && steps < kSearch / 4u; at -= 4u, ++steps) {
+        if (dispatcher->GetFunction(at) != nullptr) {
+            entry = at;
+            break;
+        }
+    }
+    cache.emplace(address, entry);
+    return entry;
+}
+
+void Close(Track& track, size_t keep) {
+    while (track.zones.size() > keep) {
+        ___tracy_emit_zone_end(track.zones.back());
+        track.zones.pop_back();
+        track.stack.pop_back();
+    }
+}
+
+void Run(uint32_t interval_us, uint32_t depth) {
+    rex::runtime::FunctionDispatcher* dispatcher =
+        rex::Runtime::instance() != nullptr ? rex::Runtime::instance()->function_dispatcher() : nullptr;
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (dispatcher == nullptr || base == nullptr) return;
+
+    ThreadRefs refs;
+    std::unordered_map<uint32_t, Track> tracks;
+    std::unordered_map<uint32_t, uint32_t> functions;
+    std::vector<uint32_t> walk;
+    std::vector<uint32_t> now;
+    auto refreshed = std::chrono::steady_clock::time_point{};
+
+    while (g_run.load(std::memory_order_relaxed)) {
+        const auto tick = std::chrono::steady_clock::now();
+        if (tick - refreshed > std::chrono::seconds(1)) {
+            refreshed = tick;
+            if (rex::system::KernelState* state = rex::system::kernel_state()) {
+                refs = state->object_table()->GetObjectsByType<rex::system::XThread>();
+                for (auto& [tid, track] : tracks) track.seen = false;
+                for (const auto& thread : refs) {
+                    if (!thread->is_guest_thread() || thread->thread_state() == nullptr) continue;
+                    Track& track = tracks[thread->thread_id()];
+                    track.seen = true;
+                    track.thread = thread.get();
+                    if (track.fiber == nullptr) {
+                        const std::string name = thread->thread() != nullptr ? thread->thread()->name() : std::string();
+                        track.fiber = InternFiber("guest: " + (name.empty() ? std::string("thread") : name) + " (" +
+                                                  std::to_string(thread->thread_id()) + ")");
+                    }
+                }
+                for (auto it = tracks.begin(); it != tracks.end();) {
+                    if (it->second.seen) {
+                        ++it;
+                        continue;
+                    }
+                    ___tracy_fiber_enter(it->second.fiber);
+                    Close(it->second, 0);
+                    ___tracy_fiber_leave();
+                    it = tracks.erase(it);
+                }
+            }
+        }
+
+        for (auto& [tid, track] : tracks) {
+            PPCContext* context = track.thread->thread_state() != nullptr ? track.thread->thread_state()->context() : nullptr;
+            if (context == nullptr) continue;
+
+            walk.clear();
+            walk.push_back(static_cast<uint32_t>(context->lr));
+            uint32_t sp = context->r1.u32;
+            while (walk.size() < depth && sp >= 0x10000u && sp < 0xC0000000u) {
+                const uint32_t back = GuestWordAt(base, sp);
+                if (back == 0u || back <= sp) break;
+                const uint32_t lr = GuestWordAt(base, back - 8u);
+                if (lr == 0u) break;
+                walk.push_back(lr);
+                sp = back;
+            }
+
+            now.clear();
+            for (auto it = walk.rbegin(); it != walk.rend(); ++it) {
+                if (const uint32_t entry = FunctionOf(dispatcher, *it, functions)) now.push_back(entry);
+            }
+
+            size_t common = 0;
+            while (common < now.size() && common < track.stack.size() && now[common] == track.stack[common]) ++common;
+            if (common == now.size() && common == track.stack.size()) continue;
+
+            ___tracy_fiber_enter(track.fiber);
+            Close(track, common);
+            for (size_t i = common; i < now.size(); ++i) {
+                char name[16];
+                const int length = std::snprintf(name, sizeof(name), "sub_%08X", now[i]);
+                const uint64_t srcloc = ___tracy_alloc_srcloc_name(0, "guest", 5, name, length, name, length, 0);
+                track.zones.push_back(___tracy_emit_zone_begin_alloc(srcloc, 1));
+                track.stack.push_back(now[i]);
+            }
+            ___tracy_fiber_leave();
+        }
+
+        std::this_thread::sleep_until(tick + std::chrono::microseconds(interval_us));
+    }
+
+    for (auto& [tid, track] : tracks) {
+        ___tracy_fiber_enter(track.fiber);
+        Close(track, 0);
+        ___tracy_fiber_leave();
+    }
+}
+
+}  // namespace guest_sampler
+
+/// Starts sampling the guest threads' stacks into the Tracy capture: `hz` samples a second,
+/// at most `depth` frames each. 1 = running.
+REFII_HOST_ABI_EXPORT int RefiiHostGuestSamplerStart(uint32_t hz, uint32_t depth) {
+    std::lock_guard guard(guest_sampler::g_control);
+    if (guest_sampler::g_thread.joinable() || !TracyIsStarted) return guest_sampler::g_thread.joinable() ? 1 : 0;
+    const uint32_t interval_us = 1000000u / std::clamp<uint32_t>(hz, 1u, 2000u);
+    guest_sampler::g_run.store(true);
+    guest_sampler::g_thread = std::thread([interval_us, depth] {
+        tracy::SetThreadName("Guest stack sampler");
+        guest_sampler::Run(interval_us, std::clamp<uint32_t>(depth, 1u, 256u));
+    });
+    return 1;
+}
+
+REFII_HOST_ABI_EXPORT void RefiiHostGuestSamplerStop(void) {
+    std::lock_guard guard(guest_sampler::g_control);
+    guest_sampler::g_run.store(false);
+    if (guest_sampler::g_thread.joinable()) guest_sampler::g_thread.join();
+}
+#else
+REFII_HOST_ABI_EXPORT int RefiiHostGuestSamplerStart(uint32_t, uint32_t) { return 0; }
+REFII_HOST_ABI_EXPORT void RefiiHostGuestSamplerStop(void) {}
+#endif
 
 /// Every object in the kernel handle table: handle, type (rex::system::XObject::Type), name.
 /// `out_total` is the table's full population so a clamped read says it was clamped.

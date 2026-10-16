@@ -241,6 +241,7 @@ public static class Engine_TexLibrary
 			}
 
 			FailedUntil.Remove(memKey);
+			Held(texture, image);
 			Live[memKey] = new Entry
 			{
 				Texture = texture,
@@ -386,6 +387,20 @@ public static class Engine_TexLibrary
 			Live.Clear();
 			LiveCubes.Clear();
 			LiveOrm.Clear();
+		}
+
+		Refii.Core.Engine_TracedMemory.FreeAll(TracedPool);
+	}
+
+	/// <summary>The in-game Tracy capture's name for what this cache holds strongly.</summary>
+	private const string TracedPool = "texture cache";
+
+	/// <summary>A texture the cache now holds, for Tracy's memory view: its RID and decoded size.</summary>
+	private static void Held(ImageTexture? texture, Image? image)
+	{
+		if (texture is not null && image is not null)
+		{
+			Refii.Core.Engine_TracedMemory.Alloc(TracedPool, texture.GetRid().Id, (ulong)image.GetDataSize());
 		}
 	}
 
@@ -873,6 +888,7 @@ public static class Engine_TexLibrary
 
 				lock (Gate)
 				{
+					Held(texture, img);
 					LiveOrm[cacheKey] = (texture, height);
 				}
 
@@ -1010,6 +1026,7 @@ public static class Engine_TexLibrary
 				return raced.Texture;
 			}
 
+			Held(built, packed);
 			LiveOrm[memKey] = (built, packedHeight);
 		}
 
@@ -1410,6 +1427,7 @@ public static class Engine_TexLibrary
 				// holding this Texture2D is holding THIS object, so replacing its image updates
 				// all of them at once. SetImage rather than Update because the size changes.
 				target.SetImage(image);
+				Refii.Core.Engine_TracedMemory.Resize(TracedPool, target.GetRid().Id, (ulong)image.GetDataSize());
 				lock (Gate)
 				{
 					entry.State = kind == JobKind.Enhance

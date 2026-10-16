@@ -44,6 +44,28 @@ public static class GameTracy
 		System.IO.Directory.CreateDirectory(CapturesDirectory);
 		Refii.Host.HostTracy.SetCrashDirectory(CapturesDirectory);
 		System.AppDomain.CurrentDomain.UnhandledException += (_, _) => SaveCrashCapture();
+
+		// Godot-side memory pools and the locks the main and render threads share.
+		Refii.Core.Engine_TracedMemory.Sink = new MemorySink();
+		Refii.Core.Engine_TracedLock.Hooks = new LockHooks();
+	}
+
+	private sealed class MemorySink : Refii.Core.Engine_TracedMemory.ISink
+	{
+		public void Alloc(string pool, ulong id, ulong size) => Refii.Host.HostTracy.Alloc(pool, id, size);
+
+		public void Free(string pool, ulong id) => Refii.Host.HostTracy.Free(pool, id);
+	}
+
+	private sealed class LockHooks : Refii.Core.Engine_TracedLock.IHooks
+	{
+		public ulong Announce(string name) => Refii.Host.HostTracy.LockAnnounce(name);
+
+		public bool Before(ulong lockHandle) => Refii.Host.HostTracy.LockBefore(lockHandle);
+
+		public void After(ulong lockHandle) => Refii.Host.HostTracy.LockAfter(lockHandle);
+
+		public void AfterUnlock(ulong lockHandle) => Refii.Host.HostTracy.LockAfterUnlock(lockHandle);
 	}
 
 	/// <summary>A new capture file's path: `prefix-date-time.tracy` in the captures folder.</summary>

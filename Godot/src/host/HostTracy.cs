@@ -60,6 +60,28 @@ public static class HostTracy
 	public readonly record struct ZoneStat(
 		short SrcLoc, ulong Count, long Total, long Min, long Max, long Median, long P95, long SelfTotal);
 
+	public readonly record struct Instance(long Start, long End, ulong Thread);
+
+	/// <summary>One source location's instances in a range: histogram, summary and the slowest.</summary>
+	public sealed class FindZoneResult
+	{
+		public ulong[] Histogram = Array.Empty<ulong>();
+		public bool LogScale;
+		public long Min, Max, Total, Median, P95;
+		public ulong Count;
+		public List<Instance> Slowest = new();
+	}
+
+	/// <summary>A sample call tree node; nodes come depth first, <see cref="Parent"/> -1 for a root.</summary>
+	public readonly record struct TreeNode(int Parent, int Depth, ulong Address, uint Total, uint Self, string Name);
+
+	public readonly record struct LockInfo(string Name, uint Threads, ulong Acquired, ulong Contended,
+		long WaitTotal, long WaitMax, long HoldTotal, long HoldMax, long WorstWaitAt);
+
+	public readonly record struct MemoryPool(string Name, ulong Allocations, ulong Live, ulong Bytes, ulong Peak);
+
+	public readonly record struct Allocation(ulong Id, ulong Size, long Time);
+
 	public readonly record struct PlotInfo(int Index, string Name, byte Type, byte Format, ulong Count, double Min, double Max);
 
 	public readonly record struct Message(long Time, ulong Thread, uint Color, string Text);
@@ -118,7 +140,17 @@ public static class HostTracy
 
 	// ---- capture ---------------------------------------------------------------------------
 
-	public static bool Start(long memoryLimitBytes, bool systemTracing)
+	/// <summary>Guest stack sampling: how often, and how deep, while a capture streams.</summary>
+	public const uint GuestSamplesPerSecond = 250;
+
+	public const uint GuestSampleDepth = 48;
+
+	/// <summary>
+	/// Starts a capture. With <paramref name="guestStacks"/>, the guest threads' call stacks are
+	/// sampled into it as their own timelines; and the Godot-side memory already held is reported
+	/// first, so the capture opens with what is actually in use.
+	/// </summary>
+	public static bool Start(long memoryLimitBytes, bool systemTracing, bool guestStacks)
 	{
 		if (!Up)
 		{
@@ -129,6 +161,11 @@ public static class HostTracy
 		if (started)
 		{
 			SourceLocations.Clear();
+			Refii.Core.Engine_TracedMemory.Replay();
+			if (guestStacks)
+			{
+				RefiiHostGuestSamplerStart(GuestSamplesPerSecond, GuestSampleDepth);
+			}
 		}
 
 		return started;
@@ -138,6 +175,7 @@ public static class HostTracy
 	{
 		if (Up)
 		{
+			RefiiHostGuestSamplerStop();
 			RefiiHostTracyStop();
 		}
 	}
@@ -146,10 +184,38 @@ public static class HostTracy
 	{
 		if (Up)
 		{
+			RefiiHostGuestSamplerStop();
 			RefiiHostTracyDiscard();
 			SourceLocations.Clear();
 		}
 	}
+
+	/// <summary>True while a capture streams: one atomic read natively, for per-frame feeds.</summary>
+	public static bool Live => Up && RefiiHostTracyLive() != 0;
+
+	public static void Alloc(string pool, ulong id, ulong size)
+	{
+		if (Up)
+		{
+			RefiiHostTraceAlloc(pool, id, size);
+		}
+	}
+
+	public static void Free(string pool, ulong id)
+	{
+		if (Up)
+		{
+			RefiiHostTraceFree(pool, id);
+		}
+	}
+
+	public static ulong LockAnnounce(string name) => Up ? RefiiHostTraceLockAnnounce(name) : 0;
+
+	public static bool LockBefore(ulong handle) => RefiiHostTraceLockBefore(handle) != 0;
+
+	public static void LockAfter(ulong handle) => RefiiHostTraceLockAfter(handle);
+
+	public static void LockAfterUnlock(ulong handle) => RefiiHostTraceLockAfterUnlock(handle);
 
 	public static Status GetStatus()
 	{
@@ -287,6 +353,157 @@ public static class HostTracy
 		}
 
 		return stats;
+	}
+
+	/// <summary>Zone statistics for zones starting in [t0, t1], on one thread or all (0).</summary>
+	public static List<ZoneStat> ZoneStats(ulong thread, long t0, long t1)
+	{
+		var stats = new List<ZoneStat>();
+		if (!Up)
+		{
+			return stats;
+		}
+
+		const uint Capacity = 4096;
+		var srcloc = new short[Capacity];
+		var count = new ulong[Capacity];
+		var total = new long[Capacity];
+		var min = new long[Capacity];
+		var max = new long[Capacity];
+		var median = new long[Capacity];
+		var p95 = new long[Capacity];
+		var self = new long[Capacity];
+		uint n = RefiiHostTracyGetZoneStatsRange(thread, t0, t1, Capacity, srcloc, count, total, min, max, median, p95, self);
+		for (int i = 0; i < n; ++i)
+		{
+			stats.Add(new ZoneStat(srcloc[i], count[i], total[i], min[i], max[i], median[i], p95[i], self[i]));
+		}
+
+		return stats;
+	}
+
+	public static FindZoneResult FindZone(short srcloc, ulong thread, long t0, long t1, int buckets, bool logScale, int slowest)
+	{
+		var result = new FindZoneResult { Histogram = new ulong[buckets], LogScale = logScale };
+		if (!Up)
+		{
+			return result;
+		}
+
+		var start = new long[slowest];
+		var end = new long[slowest];
+		var threads = new ulong[slowest];
+		uint n = RefiiHostTracyFindZone(srcloc, thread, t0, t1, (uint)buckets, logScale ? 1 : 0, result.Histogram,
+			out result.Min, out result.Max, out result.Count, out result.Total, out result.Median, out result.P95,
+			(uint)slowest, start, end, threads);
+		for (int i = 0; i < n; ++i)
+		{
+			result.Slowest.Add(new Instance(start[i], end[i], threads[i]));
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// The sample call tree over [t0, t1], one thread or all (0): top-down, or bottom-up when
+	/// <paramref name="inverted"/>. Branches under <paramref name="minSamples"/> are left out.
+	/// </summary>
+	public static (List<TreeNode> Nodes, ulong Samples) SampleTree(ulong thread, long t0, long t1, bool inverted,
+		uint minSamples, int capacity)
+	{
+		var nodes = new List<TreeNode>();
+		if (!Up)
+		{
+			return (nodes, 0);
+		}
+
+		var parent = new int[capacity];
+		var depth = new byte[capacity];
+		var address = new ulong[capacity];
+		var total = new uint[capacity];
+		var self = new uint[capacity];
+		var names = new byte[capacity * NameStride];
+		uint n = RefiiHostTracyGetSampleTree(thread, t0, t1, inverted ? 1 : 0, minSamples, (uint)capacity, parent,
+			depth, address, total, self, names, NameStride, out ulong samples);
+		for (int i = 0; i < n; ++i)
+		{
+			nodes.Add(new TreeNode(parent[i], depth[i], address[i], total[i], self[i], Slot(names, i, NameStride)));
+		}
+
+		return (nodes, samples);
+	}
+
+	/// <summary>Every lock acquired in [t0, t1], with its contention.</summary>
+	public static List<LockInfo> Locks(long t0, long t1)
+	{
+		var locks = new List<LockInfo>();
+		if (!Up)
+		{
+			return locks;
+		}
+
+		const uint Capacity = 256;
+		var names = new byte[Capacity * NameStride];
+		var threads = new uint[Capacity];
+		var acquired = new ulong[Capacity];
+		var contended = new ulong[Capacity];
+		var waitTotal = new long[Capacity];
+		var waitMax = new long[Capacity];
+		var holdTotal = new long[Capacity];
+		var holdMax = new long[Capacity];
+		var worstAt = new long[Capacity];
+		uint n = RefiiHostTracyGetLocks(t0, t1, Capacity, names, NameStride, threads, acquired, contended, waitTotal,
+			waitMax, holdTotal, holdMax, worstAt);
+		for (int i = 0; i < n; ++i)
+		{
+			locks.Add(new LockInfo(Slot(names, i, NameStride), threads[i], acquired[i], contended[i], waitTotal[i],
+				waitMax[i], holdTotal[i], holdMax[i], worstAt[i]));
+		}
+
+		return locks;
+	}
+
+	public static List<MemoryPool> MemoryPools()
+	{
+		var pools = new List<MemoryPool>();
+		if (!Up)
+		{
+			return pools;
+		}
+
+		const uint Capacity = 64;
+		var names = new byte[Capacity * NameStride];
+		var allocations = new ulong[Capacity];
+		var live = new ulong[Capacity];
+		var bytes = new ulong[Capacity];
+		var peak = new ulong[Capacity];
+		uint n = RefiiHostTracyGetMemoryPools(Capacity, names, NameStride, allocations, live, bytes, peak);
+		for (int i = 0; i < n; ++i)
+		{
+			pools.Add(new MemoryPool(Slot(names, i, NameStride), allocations[i], live[i], bytes[i], peak[i]));
+		}
+
+		return pools;
+	}
+
+	public static List<Allocation> LargestAllocations(string pool, int capacity)
+	{
+		var allocations = new List<Allocation>();
+		if (!Up)
+		{
+			return allocations;
+		}
+
+		var id = new ulong[capacity];
+		var size = new ulong[capacity];
+		var time = new long[capacity];
+		uint n = RefiiHostTracyGetMemoryLargest(pool, (uint)capacity, id, size, time);
+		for (int i = 0; i < n; ++i)
+		{
+			allocations.Add(new Allocation(id[i], size[i], time[i]));
+		}
+
+		return allocations;
 	}
 
 	public static List<PlotInfo> Plots()
@@ -474,6 +691,62 @@ public static class HostTracy
 	private static extern uint RefiiHostTracyGetZoneStats(uint capacity, [Out] short[] srcloc, [Out] ulong[] count,
 		[Out] long[] total, [Out] long[] min, [Out] long[] max, [Out] long[] median, [Out] long[] p95,
 		[Out] long[] selfTotal);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostTracyLive();
+
+	[DllImport(Library)]
+	private static extern void RefiiHostTraceAlloc([MarshalAs(UnmanagedType.LPUTF8Str)] string pool, ulong id, ulong size);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostTraceFree([MarshalAs(UnmanagedType.LPUTF8Str)] string pool, ulong id);
+
+	[DllImport(Library)]
+	private static extern ulong RefiiHostTraceLockAnnounce([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostTraceLockBefore(ulong handle);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostTraceLockAfter(ulong handle);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostTraceLockAfterUnlock(ulong handle);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGuestSamplerStart(uint hz, uint depth);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostGuestSamplerStop();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTracyGetLocks(long t0, long t1, uint capacity, [Out] byte[] names,
+		uint nameStride, [Out] uint[] threads, [Out] ulong[] acquired, [Out] ulong[] contended, [Out] long[] waitTotal,
+		[Out] long[] waitMax, [Out] long[] holdTotal, [Out] long[] holdMax, [Out] long[] worstWaitAt);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTracyGetMemoryPools(uint capacity, [Out] byte[] names, uint nameStride,
+		[Out] ulong[] allocations, [Out] ulong[] live, [Out] ulong[] bytes, [Out] ulong[] peak);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTracyGetMemoryLargest([MarshalAs(UnmanagedType.LPUTF8Str)] string pool,
+		uint capacity, [Out] ulong[] id, [Out] ulong[] size, [Out] long[] time);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTracyGetZoneStatsRange(ulong thread, long t0, long t1, uint capacity,
+		[Out] short[] srcloc, [Out] ulong[] count, [Out] long[] total, [Out] long[] min, [Out] long[] max,
+		[Out] long[] median, [Out] long[] p95, [Out] long[] selfTotal);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTracyFindZone(short srcloc, ulong thread, long t0, long t1, uint buckets,
+		int logScale, [Out] ulong[] histogram, out long min, out long max, out ulong count, out long total,
+		out long median, out long p95, uint slowestCapacity, [Out] long[] slowStart, [Out] long[] slowEnd,
+		[Out] ulong[] slowThread);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTracyGetSampleTree(ulong thread, long t0, long t1, int inverted,
+		uint minSamples, uint capacity, [Out] int[] parent, [Out] byte[] depth, [Out] ulong[] address,
+		[Out] uint[] total, [Out] uint[] self, [Out] byte[] names, uint nameStride, out ulong samples);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostTracyGetPlots(uint capacity, [Out] byte[] names, uint nameStride,

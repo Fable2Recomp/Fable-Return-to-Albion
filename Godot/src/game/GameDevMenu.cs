@@ -109,6 +109,7 @@ public partial class GameDevMenu : CanvasLayer
 			Add(new GameDevTabTracyZones());
 			Add(new GameDevTabTracySamples());
 			Add(new GameDevTabTracyPlots());
+			Add(new GameDevTabTracyLocks());
 		}
 	}
 

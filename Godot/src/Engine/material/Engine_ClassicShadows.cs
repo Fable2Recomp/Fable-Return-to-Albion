@@ -410,6 +410,7 @@ public partial class Engine_ClassicShadows : Node
                     | RenderingDevice.TextureUsageBits.CanUpdateBit
                     | RenderingDevice.TextureUsageBits.CanCopyFromBit,
             }, new RDTextureView());
+            Refii.Core.Engine_TracedMemory.Alloc(Refii.Core.Engine_RdRetire.TracedPool, _target.Id, (ulong)size.X * (ulong)size.Y * 4);
             _targetSize = size;
             Rid rid = _target;
             _bound = "capture";
@@ -425,7 +426,11 @@ public partial class Engine_ClassicShadows : Node
             _texture.TextureRdRid = default;
             if (_black.IsValid) _rd.FreeRid(_black);
             if (_white.IsValid) _rd.FreeRid(_white);
-            if (_target.IsValid) _rd.FreeRid(_target);
+            if (_target.IsValid)
+            {
+                Refii.Core.Engine_TracedMemory.Free(Refii.Core.Engine_RdRetire.TracedPool, _target.Id);
+                _rd.FreeRid(_target);
+            }
             if (_sampler.IsValid) _rd.FreeRid(_sampler);
             if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
             if (_shader.IsValid) _rd.FreeRid(_shader);

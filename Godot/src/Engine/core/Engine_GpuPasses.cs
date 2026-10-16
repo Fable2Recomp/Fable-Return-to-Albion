@@ -33,7 +33,7 @@ public static class Engine_GpuPasses
 	}
 
 	private static readonly Dictionary<string, Pass> Passes = new();
-	private static readonly object Gate = new();
+	private static readonly Refii.Core.Engine_TracedLock Gate = new("GPU passes");
 
 	/// <summary>(packed names, stride, cpu times, gpu ns, count) for the finished frame.</summary>
 	public static System.Action<byte[], uint, long[], long[], int>? Sink;
@@ -191,7 +191,7 @@ public static class Engine_GpuPasses
 
 	private static void Record(string name, double ms, int order)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			if (!Passes.TryGetValue(name, out Pass? pass))
 			{
@@ -227,7 +227,7 @@ public static class Engine_GpuPasses
 		}
 
 		var ordered = new List<KeyValuePair<string, Pass>>();
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			foreach (KeyValuePair<string, Pass> entry in Passes)
 			{
