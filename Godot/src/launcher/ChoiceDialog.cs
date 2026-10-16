@@ -1,37 +1,42 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Refii.Launcher.Core;
 
 namespace Refii.Launcher;
 
 /// <summary>
-/// Asks how much of the machine the game-code compile may take.
+/// A decision put to the player at the moment it matters: a heading, a paragraph, one button per
+/// answer, and Cancel, which closes it without choosing.
 /// </summary>
 /// <remarks>
-/// A DECISION, not a setting, which is why it is a dialog rather than a checkbox in a tab.
-/// It is asked once, at the moment the player commits to a build that runs for a long time,
-/// and it is the only thing about that build they can usefully choose. Buried in Settings it
-/// would be found after the wait, not before it.
+/// A DECISION, not a setting, which is why it is a dialog rather than a checkbox in a tab. It is
+/// asked when the player commits to the thing it is about, where the answer is still useful;
+/// buried in Settings it would be found afterwards.
 /// </remarks>
 [Tool]
-public partial class BuildSpeedDialog : Control
+public partial class ChoiceDialog : Control
 {
 	private const int PopupWidth = 640;
+
+	public sealed record Choice(string Label, Action Chosen);
 
 	private readonly Font? _font;
 	private readonly int _fontSize;
 	private readonly SmartStyle _style;
 	private readonly string _heading;
+	private readonly string _text;
+	private readonly IReadOnlyList<Choice> _choices;
 
-	/// <summary>True to use every thread.</summary>
-	public event Action<bool>? Chosen;
-
-	public BuildSpeedDialog(Font? font, int fontSize, SmartStyle style, string heading)
+	public ChoiceDialog(Font? font, int fontSize, SmartStyle style, string heading, string text,
+		IReadOnlyList<Choice> choices)
 	{
 		_font = font;
 		_fontSize = fontSize;
 		_style = style;
 		_heading = heading;
+		_text = text;
+		_choices = choices;
 	}
 
 	public override void _Ready()
@@ -71,38 +76,28 @@ public partial class BuildSpeedDialog : Control
 		headingLabel.AddThemeStyleboxOverride("normal", headingBar);
 		column.AddChild(headingLabel);
 
-		int threads = System.Environment.ProcessorCount;
-		int half = Math.Max(1, threads / 2);
-
-		Label intro = MakeLabel(
-			"Your game's code has to be compiled on this machine — around 150,000 " +
-			"functions. It takes a while, and it is only done once.");
+		Label intro = MakeLabel(_text);
 		intro.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		column.AddChild(intro);
 
 		column.AddChild(new Control { CustomMinimumSize = new Vector2(0, 6) });
 
-		Button half_button = MakeButton(
-			"Use " + half + " of " + threads + " threads  —  slower, PC stays usable");
-		half_button.Pressed += () => Choose(false);
-		column.AddChild(half_button);
-
-		Button all_button = MakeButton(
-			"Use all " + threads + " threads  —  fastest, PC will be sluggish");
-		all_button.Pressed += () => Choose(true);
-		column.AddChild(all_button);
+		foreach (Choice choice in _choices)
+		{
+			Button button = MakeButton(choice.Label);
+			button.Pressed += () =>
+			{
+				choice.Chosen();
+				QueueFree();
+			};
+			column.AddChild(button);
+		}
 
 		column.AddChild(new Control { CustomMinimumSize = new Vector2(0, 4) });
 
 		Button cancel = MakeButton("Cancel");
 		cancel.Pressed += QueueFree;
 		column.AddChild(cancel);
-	}
-
-	private void Choose(bool useAllCores)
-	{
-		Chosen?.Invoke(useAllCores);
-		QueueFree();
 	}
 
 	private Button MakeButton(string text)

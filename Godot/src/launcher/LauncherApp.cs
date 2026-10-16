@@ -140,6 +140,19 @@ public partial class LauncherApp : Control
 		Refii.Core.Engine_AppRoot.EnsureLayout();
 		Recompile.GameCodeBuild.BinDirectory = Refii.Core.Engine_AppRoot.BinDirectory;
 
+		// THIS PROCESS IS THE ELEVATED RELAY, headless: it starts the game as Administrator and
+		// exits with it (see GameElevatedLaunch). Nothing of the launcher is built here either.
+		if (Refii.Game.GameElevatedLaunch.IsRelay)
+		{
+			foreach (Node child in GetChildren())
+			{
+				child.QueueFree();
+			}
+
+			Refii.Game.GameElevatedLaunch.RunRelay(this);
+			return;
+		}
+
 		// THIS PROCESS IS THE GAME, not the launcher. Spawned by the launcher's Play with the
 		// marker set — see GameChildProcess for why the game cannot simply run in-process.
 		// Nothing below this point is built: no config, no theme, no panels, no update check.
@@ -1813,8 +1826,42 @@ public partial class LauncherApp : Control
 			return;
 		}
 
+		// TRACY'S ADVANCED DATA NEEDS AN ELEVATED GAME on Windows (kernel event tracing), and the
+		// launcher never runs elevated or runs Tracy itself — so the question is put here, as the
+		// player commits to the launch. Unattended, nobody can answer a permission prompt.
+		if (Refii.Game.GameElevatedLaunch.Wanted(Refii.Core.Engine_RefiiConfig.Read(out _)))
+		{
+			if (Unattended)
+			{
+				Log("Unattended: starting the game without Tracy's advanced data (it needs Administrator).");
+				StartGame(elevated: false);
+				return;
+			}
+
+			AskChoice("Run the game as Administrator?",
+				"Tracy's advanced data is on (tracy_advanced): CPU sampling with call stacks and " +
+				"context switches for the game's threads. On Windows that comes from the kernel's " +
+				"event tracing, which only an Administrator may start. Windows will ask for " +
+				"permission next. Without it the game runs normally and those parts of a capture " +
+				"stay empty.",
+				new ChoiceDialog.Choice("Run as Administrator", () => StartGame(elevated: true)),
+				new ChoiceDialog.Choice("Run without the advanced data", () => StartGame(elevated: false)));
+			return;
+		}
+
+		StartGame(elevated: false);
+	}
+
+	private void StartGame(bool elevated)
+	{
+		if (_launch.GameIsRunning)
+		{
+			Log("The game is already running.");
+			return;
+		}
+
 		if (!Refii.Game.GameChildProcess.Spawn(
-				out Refii.Launcher.Core.ProcessHandle handle, out string spawnError))
+				elevated, out Refii.Launcher.Core.ProcessHandle handle, out string spawnError))
 		{
 			Log("Failed to start the game. " + spawnError);
 			return;
@@ -1830,7 +1877,8 @@ public partial class LauncherApp : Control
 		DisplayServer.WindowSetMode(
 			DisplayServer.WindowMode.Minimized, (int)DisplayServer.MainWindowId);
 		_standingDownForGame = true;
-		Log($"Started the game (pid {handle.ProcessId}); the launcher will return when it closes.");
+		Log($"Started the game{(elevated ? " as Administrator" : string.Empty)} (pid {handle.ProcessId}); " +
+			"the launcher will return when it closes.");
 		RefreshState();
 	}
 
@@ -2061,8 +2109,22 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		var dialog = new BuildSpeedDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle, heading);
-		dialog.Chosen += useAllCores => proceed(useAllCores);
+		// The only thing about a long build the player can usefully choose, asked as they commit
+		// to it rather than found in Settings after the wait.
+		int threads = System.Environment.ProcessorCount;
+		int half = Math.Max(1, threads / 2);
+		AskChoice(heading,
+			"Your game's code has to be compiled on this machine — around 150,000 " +
+			"functions. It takes a while, and it is only done once.",
+			new ChoiceDialog.Choice(
+				"Use " + half + " of " + threads + " threads  —  slower, PC stays usable", () => proceed(false)),
+			new ChoiceDialog.Choice(
+				"Use all " + threads + " threads  —  fastest, PC will be sluggish", () => proceed(true)));
+	}
+
+	private void AskChoice(string heading, string text, params ChoiceDialog.Choice[] choices)
+	{
+		var dialog = new ChoiceDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle, heading, text, choices);
 		AddChild(dialog);
 		AnimateIn(dialog);
 	}
@@ -2071,8 +2133,9 @@ public partial class LauncherApp : Control
 	{
 		// NOTHING TO DRIVE IN THE CHILD. `_Ready` returns before the launcher is built there,
 		// so `_launch`, `_patches` and every panel are still null — this whole method would
-		// dereference them. The game's own nodes do the work in that process.
-		if (Refii.Game.GameChildProcess.IsChild)
+		// dereference them. The game's own nodes do the work in that process. The same holds
+		// for the elevated relay.
+		if (Refii.Game.GameChildProcess.IsChild || Refii.Game.GameElevatedLaunch.IsRelay)
 		{
 			return;
 		}

@@ -1,0 +1,8 @@
+Capstone 6.0.0-Alpha5 (capstone-engine/capstone, commit fad9f80564501f083adc92db3ef37f999af28dd0),
+the version Tracy 0.13.1's own build pins. Used only by the in-game Tracy Worker
+(../tracy-ingame), to disassemble the code a capture transfers.
+
+Kept: the engine sources and headers, include/, LICENSES/, arch/X86 (Intel syntax; the AT&T printer
+and the _reduce tables are left out, matching Tracy's CAPSTONE_X86_ATT_DISABLE build), arch/AArch64,
+and every other arch's *Module.h, which cs.c includes unconditionally. Built by the TracyClient block
+in ../CMakeLists.txt.

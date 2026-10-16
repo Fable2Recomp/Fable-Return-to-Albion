@@ -98,11 +98,8 @@ void FlushLogging();
 
 #include "../../host_input.h"
 
-#if defined(_WIN32)
-#define REFII_HOST_ABI_EXPORT __declspec(dllexport)
-#else
-#define REFII_HOST_ABI_EXPORT __attribute__((visibility("default")))
-#endif
+#include "host_abi.h"
+#include "host_tracy.h"
 
 // Included rather than redeclared like the Bink entries below: the audio exports marshal
 // VoiceRecord by value, and two hand-written copies of a struct layout is exactly the
@@ -801,6 +798,10 @@ void Report(const char* line, uintptr_t pc) {
 void ReportFatal(const char* line, uintptr_t pc) {
     ::alarm(5);
     WriteRecord(line, pc);
+    // A live Tracy capture is saved before the process goes (bounded; the record is already
+    // written), and the deadline is re-armed for what follows.
+    refii_host_tracy::SaveOnCrash(3000);
+    ::alarm(5);
     REXLOG_INFO("{}", line);
     rex::FlushLogging();
     ::alarm(5);
@@ -962,6 +963,7 @@ void LastResort(int sig, siginfo_t* info, void* context) {
                "UNCLAIMED — three identical faults on this thread; the runtime's handler declines "
                "it and returning would re-execute it for ever. Default action restored; the next "
                "one kills the process");
+        refii_host_tracy::SaveOnCrash(3000);
         ::signal(sig, SIG_DFL);
         return;
     }
@@ -1179,6 +1181,17 @@ LONG CALLBACK TraceThrowHandler(PEXCEPTION_POINTERS info) {
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
+
+/// A fault nothing handled, on its way out: the live Tracy capture is saved (bounded), then the
+/// filter that was there before — the .NET runtime's or Godot's crash handler — runs exactly as
+/// it would have. Only truly unhandled exceptions arrive here, unlike the vectored handler above.
+LPTOP_LEVEL_EXCEPTION_FILTER g_previous_unhandled_filter = nullptr;
+
+LONG WINAPI SaveTracyOnUnhandled(PEXCEPTION_POINTERS info) {
+    refii_host_tracy::SaveOnCrash(3000);
+    return g_previous_unhandled_filter != nullptr ? g_previous_unhandled_filter(info)
+                                                  : EXCEPTION_CONTINUE_SEARCH;
+}
 #endif
 
 void InstallEmbeddedFailureHandlers() {
@@ -1208,6 +1221,7 @@ void InstallEmbeddedFailureHandlers() {
     // Always on. A crash that prints nothing costs a whole test run to learn nothing from;
     // the handler is capped and only reports faults that were going to be fatal anyway.
     ::AddVectoredExceptionHandler(1, TraceThrowHandler);
+    g_previous_unhandled_filter = ::SetUnhandledExceptionFilter(SaveTracyOnUnhandled);
 #endif
 
 #ifndef _WIN32
@@ -2278,7 +2292,10 @@ extern "C" {
 ///     owners' live matrices, for the host's decal draw.
 /// 179 adds RefiiHostGetClassicWeather — the light zone, clock and lights the title's rain and
 ///     snow draws read, for the classic weather.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 181; }
+/// 182 adds RefiiHostTracy* (host_tracy.cpp) — the game's in-process Tracy capture: start, stop,
+///     save, status and the dev menu's queries (frames, zones, statistics, plots, messages, GPU,
+///     context switches, samples, disassembly).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 182; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -10329,18 +10346,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPerfSnapshots(int64_t* out_values, ch
 /// Brings the profiler up, once. Answers 1 when it is running.
 ///
 /// THE ZONES ARE INERT WITHOUT THIS. The runtime is built with `TRACY_MANUAL_LIFETIME`, which
-/// means the client does nothing — no listen socket, no capture — until it is started
-/// explicitly, and nothing in the tree ever called it. Every zone the engine emitted therefore
-/// went nowhere, which reads exactly like "the profiler is compiled out" and is not.
+/// means the client does nothing until it is started explicitly, and nothing in the tree ever
+/// called it. Every zone the engine emitted therefore went nowhere, which reads exactly like
+/// "the profiler is compiled out" and is not.
 ///
 /// Cheap to leave running: `TRACY_ON_DEMAND` is also set, so the client collects nothing until
-/// a profiler actually connects. The socket is the whole standing cost.
+/// the game's own capture (refii_tracy_capture.h, in-process, no socket) connects to it.
 REFII_HOST_ABI_EXPORT int RefiiHostTraceStartup(void) {
     static bool started = false;
     if (!started) {
         ___tracy_startup_profiler();
         started = true;
-        REXLOG_INFO("Refii host bridge: Tracy profiler started; connect on the default port");
+        REXLOG_INFO("Refii host bridge: Tracy profiler started (in-process; capture from the dev menu)");
     }
 
     return 1;

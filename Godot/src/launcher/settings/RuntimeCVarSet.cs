@@ -467,6 +467,16 @@ public static class RuntimeCVarsGodot
             new("debug_channel", DeveloperCategory, RuntimeCVarType.Bool, "false",
                 "Open the loopback debug channel at launch and publish its handshake file, "
                 + "the same as launching with REFII_DEBUG_PORT=1. Off for players."),
+            new("tracy", DeveloperCategory, RuntimeCVarType.Bool, "false",
+                "The game's own Tracy profiler: captures are started, read and saved in the dev "
+                + "menu (F4). It records the game and its threads only, inside the game: no "
+                + "network, no other programs. Off, Tracy never starts. Takes effect at the next "
+                + "launch."),
+            new("tracy_advanced", DeveloperCategory, RuntimeCVarType.Bool, "false",
+                "Adds CPU sampling with call stacks and context switches for the game's threads "
+                + "to Tracy captures (needs tracy). On Windows that data needs the game to run as "
+                + "Administrator, so Play asks first. On Linux sampling works as is; context "
+                + "switches need kernel.perf_event_paranoid at -1. Takes effect at the next launch."),
             new("fx_additive_gain", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "How strongly the additive particle layer (fire, sparkles, spell cores — every "
                 + "ONE/ONE effect) joins the scene before the bloom extract and the tonemap. "

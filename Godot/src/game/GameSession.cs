@@ -90,24 +90,25 @@ public partial class GameSession : Node
 		// so every classic material can bind the maps as it is made.
 		Refii.Models.Engine_ClassicPath.Ensure(this);
 
-		// EVERY FRAME PHASE BECOMES A TRACY ZONE, installed once here. The engine already
-		// measures 28 phases for its own report; wiring the profiler to the same annotation
-		// means a zone cannot drift from the phase it names, and nothing has to be annotated
-		// twice. A no-op until the bridge is up — TraceZoneBegin answers 0 and the scope skips.
-		// STARTED, not just linked. `TRACY_MANUAL_LIFETIME` leaves the client inert until this
-		// runs, so without it every zone below is emitted into nothing.
-		if (Refii.Host.HostBridge.TraceStartup())
+		// THE GAME'S OWN PROFILER, when `tracy` is on (restart only; see GameTracy). Tracy runs
+		// whole inside the process — client and analysis connected in memory, no socket — and a
+		// capture is started from the dev menu. Until then the client collects nothing
+		// (`TRACY_ON_DEMAND`) and sampling is off.
+		//
+		// EVERY FRAME PHASE BECOMES A TRACY ZONE, installed once here: the profiler carries the
+		// same 28 phases the engine measures for its own report, so a zone cannot drift from the
+		// phase it names. Godot's pass timestamps go onto the same timeline as GPU zones while
+		// the engine captures them (`gpu_profile = true` passes `--gpu-profile`).
+		GameTracy.Start(Refii.Core.Engine_RefiiConfig.Read(out _));
+		if (GameTracy.Enabled)
 		{
-			GD.Print("[game] Tracy is up — connect a profiler to see the frame");
+			GD.Print("[game] Tracy is up — capture from the dev menu" +
+				(GameTracy.Advanced ? " (advanced data on)" : string.Empty));
+			Refii.Core.Engine_FramePhases.ZoneBegin = Refii.Host.HostBridge.TraceZoneBegin;
+			Refii.Core.Engine_FramePhases.ZoneEnd = Refii.Host.HostBridge.TraceZoneEnd;
+			Refii.Core.Engine_FramePhases.Plot = Refii.Host.HostBridge.TracePlot;
+			Refii.Core.Engine_GpuPasses.Sink = Refii.Host.HostBridge.TraceGpuPasses;
 		}
-
-		Refii.Core.Engine_FramePhases.ZoneBegin = Refii.Host.HostBridge.TraceZoneBegin;
-		Refii.Core.Engine_FramePhases.ZoneEnd = Refii.Host.HostBridge.TraceZoneEnd;
-		Refii.Core.Engine_FramePhases.Plot = Refii.Host.HostBridge.TracePlot;
-
-		// Godot's pass timestamps go onto the same timeline as GPU zones. They exist only while
-		// the engine captures them (`gpu_profile = true` in refii.toml passes `--gpu-profile`).
-		Refii.Core.Engine_GpuPasses.Sink = Refii.Host.HostBridge.TraceGpuPasses;
 
 		// RenderDoc, when the launcher armed its Vulkan layer for this run (`renderdoc = true`):
 		// takes the in-application API so the debug channel can trigger captures into user://captures.

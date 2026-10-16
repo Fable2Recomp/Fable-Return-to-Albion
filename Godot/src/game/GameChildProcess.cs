@@ -38,7 +38,9 @@ public static class GameChildProcess
 	/// side is identical — spawn, minimise, restore on exit — rather than the editor keeping a
 	/// second, in-process code path that would then be the one nobody tests.
 	/// </summary>
-	public static bool Spawn(out Refii.Launcher.Core.ProcessHandle handle, out string error)
+	/// <param name="elevated">Run the game as Administrator, through <see cref="GameElevatedLaunch"/>
+	/// (Windows; Tracy's advanced data). The handle is then the relay's, which exits with the game.</param>
+	public static bool Spawn(bool elevated, out Refii.Launcher.Core.ProcessHandle handle, out string error)
 	{
 		var arguments = new List<string>();
 		if (OS.HasFeature("editor"))
@@ -121,7 +123,13 @@ public static class GameChildProcess
 		}
 
 		GD.Print($"[launch] {OS.GetExecutablePath()} {string.Join(' ', arguments)} env " +
-			string.Join(' ', environment.Select(kv => kv.Key + "=" + kv.Value)));
+			string.Join(' ', environment.Select(kv => kv.Key + "=" + kv.Value)) +
+			(elevated ? " (as Administrator)" : string.Empty));
+
+		if (elevated)
+		{
+			return GameElevatedLaunch.Launch(OS.GetExecutablePath(), arguments, environment, out handle, out error);
+		}
 
 		return Refii.Launcher.Core.Platform.LaunchProcess(
 			string.Empty,

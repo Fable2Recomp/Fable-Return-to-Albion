@@ -8,6 +8,7 @@ set(REFII_HOSTBRIDGE_ROOT ${CMAKE_CURRENT_LIST_DIR})
 
 add_library(refii_hostbridge SHARED
     ${REFII_HOSTBRIDGE_ROOT}/src/host_bridge.cpp
+    ${REFII_HOSTBRIDGE_ROOT}/src/host_tracy.cpp
 )
 
 # refii_host carries RunRefiiEmbedded and pulls in refii_core and refii_generated —

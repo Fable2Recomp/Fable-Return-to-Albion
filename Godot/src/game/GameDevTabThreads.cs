@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
 using System.Diagnostics;
 using Godot;
 using Refii.Host;
@@ -138,74 +137,6 @@ public partial class GameDevTabThreads : GameDevTab
 		_backtrace.Text = text.ToString();
 	}
 
-	/// <summary>
-	/// The OS's name for a thread, or its id. Linux keeps it in `comm`; Windows keeps it as the
-	/// thread DESCRIPTION (`SetThreadDescription`, which Godot and .NET both call), read back with
-	/// `GetThreadDescription` — Windows 10 1607 and later.
-	/// </summary>
-	private static string ThreadName(int tid)
-	{
-		if (OperatingSystem.IsWindows())
-		{
-			return WindowsThreadName(tid) ?? $"thread {tid}";
-		}
-
-		try
-		{
-			string path = $"/proc/self/task/{tid}/comm";
-			if (System.IO.File.Exists(path))
-			{
-				return System.IO.File.ReadAllText(path).Trim();
-			}
-		}
-		catch (System.Exception)
-		{
-		}
-
-		return $"thread {tid}";
-	}
-
-	private const uint ThreadQueryLimitedInformation = 0x0800;
-
-	[DllImport("kernel32.dll", SetLastError = true)]
-	private static extern IntPtr OpenThread(uint access, bool inherit, uint threadId);
-
-	[DllImport("kernel32.dll")]
-	private static extern int GetThreadDescription(IntPtr thread, out IntPtr description);
-
-	[DllImport("kernel32.dll")]
-	private static extern IntPtr LocalFree(IntPtr memory);
-
-	[DllImport("kernel32.dll")]
-	private static extern bool CloseHandle(IntPtr handle);
-
-	/// <summary>The thread's description, or null when it has none or the OS predates the call.</summary>
-	private static string? WindowsThreadName(int tid)
-	{
-		IntPtr handle = IntPtr.Zero;
-		try
-		{
-			handle = OpenThread(ThreadQueryLimitedInformation, false, (uint)tid);
-			if (handle == IntPtr.Zero || GetThreadDescription(handle, out IntPtr text) < 0)
-			{
-				return null;
-			}
-
-			string? name = Marshal.PtrToStringUni(text);
-			LocalFree(text);
-			return string.IsNullOrWhiteSpace(name) ? null : name;
-		}
-		catch (Exception)
-		{
-			// EntryPointNotFoundException before Windows 10 1607.
-			return null;
-		}
-		finally
-		{
-			if (handle != IntPtr.Zero)
-			{
-				CloseHandle(handle);
-			}
-		}
-	}
+	/// <summary>The OS's name for a thread, or its id.</summary>
+	private static string ThreadName(int tid) => Refii.Core.Engine_OsThreads.Name(tid) ?? $"thread {tid}";
 }

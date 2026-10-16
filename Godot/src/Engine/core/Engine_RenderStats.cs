@@ -58,72 +58,48 @@ public static class Engine_RenderStats
 	/// viewports or the driver.
 	/// </summary>
 	/// <remarks>
-	/// Linux: `/proc/self/task/&lt;tid&gt;/stat` for the thread named "WorkerThread 0", which is
-	/// the render thread when `--render-thread separate` is on (a WorkerThreadPool native task).
-	/// Found once by name; re-scanned if the file goes away. Elsewhere NaN.
+	/// The thread Godot names "WorkerThread 0", which is the render thread when `--render-thread
+	/// separate` is on (a WorkerThreadPool native task); the name is the same on Linux and Windows.
+	/// Found once by name and re-found when its CPU time stops answering (the thread went away).
+	/// The OS clocks behind <see cref="Engine_OsThreads.CpuSeconds"/> accrue per scheduler tick, so
+	/// a share is only meaningful between asks a second or more apart.
 	/// </remarks>
 	public static double RenderThreadBusy()
 	{
-		if (!System.OperatingSystem.IsLinux())
+		if (_renderThreadId < 0)
 		{
+			_renderThreadId = Engine_OsThreads.FindByName(RenderThreadName);
+			_renderThreadCpu = double.NaN;
+			if (_renderThreadId < 0)
+			{
+				return double.NaN;
+			}
+		}
+
+		double cpu = Engine_OsThreads.CpuSeconds(_renderThreadId);
+		if (double.IsNaN(cpu))
+		{
+			_renderThreadId = -1;
 			return double.NaN;
 		}
 
-		try
+		long now = System.Diagnostics.Stopwatch.GetTimestamp();
+		double busy = double.NaN;
+		if (!double.IsNaN(_renderThreadCpu) && now > _renderThreadAt)
 		{
-			if (_renderThreadStat is null || !System.IO.File.Exists(_renderThreadStat))
-			{
-				_renderThreadStat = FindRenderThreadStat();
-				_renderThreadTicks = -1;
-				if (_renderThreadStat is null)
-				{
-					return double.NaN;
-				}
-			}
-
-			string stat = System.IO.File.ReadAllText(_renderThreadStat);
-			int close = stat.LastIndexOf(')');
-			string[] fields = stat[(close + 2)..].Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
-			long ticks = long.Parse(fields[11]) + long.Parse(fields[12]);
-			long now = System.Diagnostics.Stopwatch.GetTimestamp();
-			double busy = double.NaN;
-			if (_renderThreadTicks >= 0 && now > _renderThreadAt)
-			{
-				double wall = (now - _renderThreadAt) / (double)System.Diagnostics.Stopwatch.Frequency;
-				busy = (ticks - _renderThreadTicks) / (double)ClockTicksPerSecond / wall;
-			}
-
-			_renderThreadTicks = ticks;
-			_renderThreadAt = now;
-			return busy;
+			double wall = (now - _renderThreadAt) / (double)System.Diagnostics.Stopwatch.Frequency;
+			busy = (cpu - _renderThreadCpu) / wall;
 		}
-		catch (System.Exception)
-		{
-			_renderThreadStat = null;
-			return double.NaN;
-		}
+
+		_renderThreadCpu = cpu;
+		_renderThreadAt = now;
+		return busy;
 	}
 
-	private static string? _renderThreadStat;
-	private static long _renderThreadTicks = -1;
+	private const string RenderThreadName = "WorkerThread 0";
+	private static int _renderThreadId = -1;
+	private static double _renderThreadCpu = double.NaN;
 	private static long _renderThreadAt;
-
-	/// <summary>Linux `CLOCK_TCK`; 100 on every distribution kernel.</summary>
-	private const double ClockTicksPerSecond = 100.0;
-
-	private static string? FindRenderThreadStat()
-	{
-		foreach (string task in System.IO.Directory.GetDirectories("/proc/self/task"))
-		{
-			string comm = System.IO.Path.Combine(task, "comm");
-			if (System.IO.File.Exists(comm) && System.IO.File.ReadAllText(comm).Trim() == "WorkerThread 0")
-			{
-				return System.IO.Path.Combine(task, "stat");
-			}
-		}
-
-		return null;
-	}
 
 	/// <summary>
 	/// Starts measuring a viewport. Idempotent; the first sample arrives a frame later.

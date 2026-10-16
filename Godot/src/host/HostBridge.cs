@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 181;
+	public const int ExpectedAbiVersion = 182;
 
 	private const int MessageCapacity = 512;
 
@@ -4966,8 +4966,8 @@ public static class HostBridge
 	/// <remarks>
 	/// REQUIRED BEFORE ANY ZONE MEANS ANYTHING: the runtime is built with
 	/// `TRACY_MANUAL_LIFETIME`, so the client is inert until it is started explicitly. With
-	/// `TRACY_ON_DEMAND` also set it collects nothing until something connects, so starting it
-	/// costs a listen socket and no more.
+	/// `TRACY_ON_DEMAND` also set it collects nothing until the game's own in-process capture
+	/// connects, so starting it costs its idle threads and no more.
 	/// </remarks>
 	public static bool TraceStartup() =>
 		TryGetAbiVersion() is not null && RefiiHostTraceStartup() != 0;
