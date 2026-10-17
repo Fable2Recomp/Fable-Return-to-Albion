@@ -46,6 +46,10 @@ window/stretch/aspect="expand"
 
 project/assembly_name="refii-launcher"
 
+[editor]
+
+import/use_multiple_threads=false
+
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/bnk_mount/plugin.cfg", "res://addons/hud_editor/plugin.cfg")

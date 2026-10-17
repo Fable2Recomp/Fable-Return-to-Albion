@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c0os05vb2uqsr"
+path="res://.godot/imported/fable_postfx_dof_downscale.glsl-ba50a31fb891af69eb347f73cbb4c317.res"
+
+[deps]
+
+source_file="res://src/Engine/Lighting/fable_postfx_dof_downscale.glsl"
+dest_files=["res://.godot/imported/fable_postfx_dof_downscale.glsl-ba50a31fb891af69eb347f73cbb4c317.res"]
+
+[params]
+

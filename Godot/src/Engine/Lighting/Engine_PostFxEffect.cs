@@ -11,6 +11,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
     public const string ReduceShaderPath = "res://src/Engine/Lighting/fable_postfx_reduce.glsl";
     public const string HistogramShaderPath = "res://src/Engine/Lighting/fable_postfx_histogram.glsl";
     public const string Downscale4ShaderPath = "res://src/Engine/Lighting/fable_postfx_downscale4.glsl";
+    public const string DofDownscaleShaderPath = "res://src/Engine/Lighting/fable_postfx_dof_downscale.glsl";
     public const string RadialShaderPath = "res://src/Engine/Lighting/fable_postfx_radial.glsl";
     public const string BrightcutShaderPath = "res://src/Engine/Lighting/fable_postfx_brightcut.glsl";
     public const string GaussShaderPath = "res://src/Engine/Lighting/fable_postfx_gauss.glsl";
@@ -143,6 +144,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private Rid _brightcutShader;
     private Rid _brightcutPipeline;
     private Rid _gaussShader;
+    private Rid _dofDownscaleShader;
+    private Rid _dofDownscalePipeline;
     private Rid _gaussPipeline;
     private Rid _compositeShader;
     private Rid _compositePipeline;
@@ -192,6 +195,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private Rid _gaussDofHSet;
     private Rid _gaussDofVSet;
     private readonly KeyedSet _downscale4Set = new();
+    private readonly KeyedSet _dofDownscaleSet = new();
     private readonly KeyedSet _compositeSet = new();
     private readonly KeyedSet _sunlayerSet = new();
     private readonly KeyedSet _addlayerSet = new();
@@ -316,6 +320,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         if (!TryBuild(ReduceShaderPath, out _reduceShader, out _reducePipeline) ||
             !TryBuild(HistogramShaderPath, out _histogramShader, out _histogramPipeline) ||
             !TryBuild(Downscale4ShaderPath, out _downscale4Shader, out _downscale4Pipeline) ||
+            !TryBuild(DofDownscaleShaderPath, out _dofDownscaleShader, out _dofDownscalePipeline) ||
             !TryBuild(RadialShaderPath, out _radialShader, out _radialPipeline) ||
             !TryBuild(SunLayerShaderPath, out _sunlayerShader, out _sunlayerPipeline) ||
             !TryBuild(AddLayerShaderPath, out _addlayerShader, out _addlayerPipeline) ||
@@ -547,7 +552,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
         _gaussBloomHSet = GaussSet(_bloom[0], _bloom[1]);
         _gaussBloomVSet = GaussSet(_bloom[1], _bloom[0]);
-        _gaussDofHSet = GaussSet(_quarter, _dof[0]);
+        _gaussDofHSet = GaussSet(_dof[1], _dof[0]);
         _gaussDofVSet = GaussSet(_dof[0], _dof[1]);
     }
 
@@ -573,6 +578,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         if (_rd is not null)
         {
             _downscale4Set.Release(_rd);
+            _dofDownscaleSet.Release(_rd);
             _compositeSet.Release(_rd);
             _sunlayerSet.Release(_rd);
             _addlayerSet.Release(_rd);
@@ -692,6 +698,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Free(ref _histogramBuffer);
         Free(ref _compositePipeline);
         Free(ref _gaussPipeline);
+        Free(ref _dofDownscalePipeline);
         Free(ref _brightcutPipeline);
         Free(ref _radialPipeline);
         Free(ref _sunlayerPipeline);
@@ -705,6 +712,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Free(ref _reducePipeline);
         Free(ref _compositeShader);
         Free(ref _gaussShader);
+        Free(ref _dofDownscaleShader);
         Free(ref _brightcutShader);
         Free(ref _radialShader);
         Free(ref _sunlayerShader);
@@ -871,6 +879,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
             if (dofOn)
             {
+                DofDownscale(colour, depth, size, projection.Inverse());
                 Gauss(_gaussDofHSet, new Vector2I(1, 0), _dofWeightsH);
                 Gauss(_gaussDofVSet, new Vector2I(0, 1), _dofWeightsV);
             }
@@ -1542,6 +1551,27 @@ public partial class Engine_PostFxEffect : CompositorEffect
             PushSizeFloats(_quarterSize, 0.0f, 0.0f),
             (_quarterSize.X + 7) / 8,
             (_quarterSize.Y + 7) / 8);
+    }
+
+    private void DofDownscale(Rid colour, Rid depth, Vector2I size, Projection inverse)
+    {
+        RenderingDevice rd = _rd!;
+        if (!_dofDownscaleSet.Matches(rd, colour, depth))
+        {
+            _dofDownscaleSet.Replace(rd, colour, depth, _dofDownscaleShader, new Array<RDUniform>
+            {
+                Image(colour, 0),
+                Image(_dof[1], 1),
+                Buffer(_stateBuffer, 2),
+                Sampler(_nearestSampler, depth, 3),
+            });
+        }
+
+        byte[] push = PushSizeDepth(size, inverse);
+        BitConverter.TryWriteBytes(push.AsSpan(8), _quarterSize.X);
+        BitConverter.TryWriteBytes(push.AsSpan(12), _quarterSize.Y);
+        Dispatch(_dofDownscalePipeline, _dofDownscaleSet.Set, push,
+            (_quarterSize.X + 7) / 8, (_quarterSize.Y + 7) / 8);
     }
 
     private void Gauss(Rid set, Vector2I direction, float[] weights)

@@ -19,8 +19,8 @@ layout(push_constant, std430) uniform Params {
 	float pad0;
 } params;
 
-vec3 tap(ivec2 at) {
-	return imageLoad(src_image, clamp(at, ivec2(0), params.size - 1)).rgb;
+vec4 tap(ivec2 at) {
+	return imageLoad(src_image, clamp(at, ivec2(0), params.size - 1));
 }
 
 void main() {
@@ -30,12 +30,12 @@ void main() {
 	}
 
 	float w[7] = float[7](params.w0, params.w1, params.w2, params.w3, params.w4, params.w5, params.w6);
-	vec3 c = tap(coord) * w[0];
+	vec4 c = tap(coord) * w[0];
 	for (int k = 1; k < 7; k++) {
 		ivec2 o = params.dir * k;
 		c += tap(coord + o) * w[k];
 		c += tap(coord - o) * w[k];
 	}
 
-	imageStore(dst_image, coord, vec4(c, 1.0));
+	imageStore(dst_image, coord, c);
 }

@@ -95,6 +95,10 @@ float horizon_band(float up, float width) {
 }
 
 vec3 sky_gradient(vec3 dir, vec3 sun, float day) {
+	if (cubemap_fable_dome) {
+		return fable_sky_inscatter(vec3(dir.x, dir.z, dir.y), sun_engine, in_scatter_lut,
+			beta_rayleigh, beta_mie, horizon_distance);
+	}
 	float up = dir.y;
 	float band = horizon_band(up, haze * 0.5 + fog_haze * 0.6);
 	vec3 col = mix(colour_zenith, colour_horizon, band);
@@ -105,13 +109,7 @@ vec3 sky_gradient(vec3 dir, vec3 sun, float day) {
 	float warm = sun_low(sun) * band * (toward * toward);
 	col = mix(col, colour_sunset, warm);
 
-	// THE NIGHT IS THE FABLE DOME'S — the same in-scatter the cubemap pass hands the GI and the
-	// ambient, so the sky on screen is the sky that lights the world. `colour_night` stands only
-	// where there is no dome (the preview scene).
-	vec3 night = cubemap_fable_dome
-		? fable_sky_inscatter(vec3(dir.x, dir.z, dir.y), sun_engine, in_scatter_lut,
-			beta_rayleigh, beta_mie, horizon_distance)
-		: colour_night * (1.0 + band * 0.9);
+	vec3 night = colour_night * (1.0 + band * 0.9);
 	col = mix(night, col, day);
 
 	float grey = mix(1.0, 0.72, overcast) * mix(1.0, 0.80, storm);
@@ -124,6 +122,17 @@ vec3 sky_gradient(vec3 dir, vec3 sun, float day) {
 	col += dream * band * colour_horizon * 0.45 * day * (1.0 - overcast * 0.7);
 	col = mix(col, vec3(dot(col, LUMA)), dream * 0.12);
 	return col;
+}
+
+float cloud_scene_energy() {
+	if (!cubemap_fable_dome) { return 1.0; }
+	vec3 zenith = fable_sky_inscatter(vec3(0.0, 0.0, 1.0), sun_engine, in_scatter_lut,
+		beta_rayleigh, beta_mie, horizon_distance);
+	return max(dot(zenith, LUMA), 0.0);
+}
+
+vec3 cloud_light_tint(vec3 colour) {
+	return cubemap_fable_dome ? colour / max(dot(colour, LUMA), 0.0001) : colour;
 }
 
 vec3 sun_terms(vec3 dir, vec3 sun, float day, float cloud_cover) {
@@ -144,7 +153,9 @@ vec3 sun_terms(vec3 dir, vec3 sun, float day, float cloud_cover) {
 	float above = smoothstep(-sun_size, 0.0, sun.y);
 	disc *= above;
 
-	return tint * (halo * day * sun_intensity + disc * clear * sun_intensity * 3.0 * above);
+	vec3 halo_light = cubemap_fable_dome
+		? cloud_light_tint(tint) * cloud_scene_energy() : tint * sun_intensity;
+	return halo_light * halo * day + tint * disc * clear * sun_intensity * 3.0 * above;
 }
 
 vec3 moon_terms(vec3 dir, vec3 moon, vec3 sun, float day) {
@@ -241,7 +252,7 @@ vec4 cloud_layers(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
 	lit = mix(lit, 0.5, overcast * 0.7);
 
 	float low = sun_low(sun);
-	vec3 light_tint = mix(sun_colour, colour_sunset, low * 0.9);
+	vec3 light_tint = cloud_light_tint(mix(sun_colour, colour_sunset, low * 0.9));
 	vec3 moon_tint = moon_colour * 0.08 * moon_brightness * smoothstep(-0.1, 0.2, moon.y);
 	vec3 day_light = mix(cloud_shadow_colour, cloud_colour, lit) * light_tint;
 	vec3 night_light = mix(cloud_shadow_colour * 0.08, cloud_shadow_colour * 0.25, lit) *
@@ -276,7 +287,7 @@ vec4 cloud_layers(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
 
 	float out_a = a + cirrus * (1.0 - a);
 	vec3 out_rgb = (col * a + cirrus_col * cirrus * (1.0 - a));
-	return vec4(out_rgb, out_a);
+	return vec4(out_rgb * cloud_scene_energy(), out_a);
 }
 
 const float CLOUD_BASE = 1400.0;
@@ -371,6 +382,11 @@ vec4 cloud_volume(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
 	vec3 warm = mix(sun_colour, colour_sunset, sun_low(sun) * 0.9);
 	vec3 direct = mix(moon_colour * moon_brightness * 0.16, warm * sun_intensity, day);
 	vec3 ambient = mix(vec3(0.03, 0.045, 0.075), cloud_shadow_colour * 0.42, day);
+	float energy = cloud_scene_energy();
+	if (cubemap_fable_dome) {
+		direct = cloud_light_tint(mix(moon_colour, warm, day)) * energy;
+		ambient = cloud_shadow_colour * (0.42 * energy);
+	}
 	vec3 distant_sky = sky_gradient(dir, sun, day);
 	float cosine = dot(dir, light_dir);
 	float phase = mix(cloud_phase(cosine, -0.2), cloud_phase(cosine, 0.65), 0.8) * 4.0 * PI;
@@ -393,7 +409,7 @@ vec4 cloud_volume(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
 			light = mix(light, vec3(dot(light, LUMA)) * vec3(0.96, 0.98, 1.02), snow * 0.6);
 			vec2 flash_dir = normalize(dynamic_sky_lightning.xz + vec2(0.0001));
 			float toward_flash = dot(normalize(dir.xz + vec2(0.0001)), flash_dir) * 0.5 + 0.5;
-			light += vec3(0.85, 0.88, 1.0) * dynamic_sky_lightning.w * pow(toward_flash, 3.0);
+			light += vec3(0.85, 0.88, 1.0) * dynamic_sky_lightning.w * pow(toward_flash, 3.0) * energy;
 			float aerial = 1.0 - exp(-distance_to_sample * 0.000055);
 			light = mix(light, distant_sky, aerial);
 			radiance += transmission * absorbed * light;
@@ -453,12 +469,14 @@ void sky() {
 
 			col = col * (1.0 - cover) + clouds.rgb;
 
-			float band = horizon_band(dir.y, 0.10 + fog_haze * 0.5);
-			vec3 fog_col = mix(colour_horizon, vec3(dot(colour_horizon, LUMA)), 0.5) *
-				mix(colour_night * 4.0, vec3(1.0), day);
-			col = mix(col, fog_col * mix(1.0, 0.7, overcast), band * fog_haze * 0.85);
+			if (!cubemap_fable_dome) {
+				float band = horizon_band(dir.y, 0.10 + fog_haze * 0.5);
+				vec3 fog_col = mix(colour_horizon, vec3(dot(colour_horizon, LUMA)), 0.5) *
+					mix(colour_night * 4.0, vec3(1.0), day);
+				col = mix(col, fog_col * mix(1.0, 0.7, overcast), band * fog_haze * 0.85);
+			}
 
-			col += vec3(0.85, 0.88, 1.0) * dynamic_sky_lightning.w * 0.08;
+			col += vec3(0.85, 0.88, 1.0) * dynamic_sky_lightning.w * 0.08 * cloud_scene_energy();
 
 			COLOR = col * exposure;
 		}

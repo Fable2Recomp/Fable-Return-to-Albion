@@ -418,9 +418,10 @@ public static class Engine_DynamicSky
     }
 
     public static void ApplyFog(
-        Godot.Environment environment, in DynamicWeatherState w, Vector3 horizon, float day)
+        Godot.Environment environment, in DynamicWeatherState w, Vector3 horizon, float day,
+        bool usesFableAtmosphere = true)
     {
-        float density = w.FogHaze * w.FogHaze * FogDensityMax;
+        float density = Engine_DynamicSkyLighting.FogDensity(usesFableAtmosphere, w.FogHaze, FogDensityMax);
         bool on = density > 1e-5f;
         if (environment.FogEnabled != on)
         {
@@ -437,15 +438,12 @@ public static class Engine_DynamicSky
         Vector3 colour = soft * ((0.08f + (0.87f * day)) * (1f - (w.Overcast * 0.3f)));
         var fogColour = new Color(colour.X, colour.Y, colour.Z);
 
-        if (environment.FogMode != Godot.Environment.FogModeEnum.Exponential)
-        {
-            environment.FogMode = Godot.Environment.FogModeEnum.Exponential;
-            environment.FogLightEnergy = 1f;
-            environment.FogSkyAffect = 0f;
-            environment.FogAerialPerspective = 0.25f;
-            environment.FogSunScatter = 0f;
-            environment.FogHeightDensity = 0f;
-        }
+        environment.FogMode = Godot.Environment.FogModeEnum.Exponential;
+        environment.FogLightEnergy = 1f;
+        environment.FogSkyAffect = 0f;
+        environment.FogAerialPerspective = 0.25f;
+        environment.FogSunScatter = 0f;
+        environment.FogHeightDensity = 0f;
 
         if (MathF.Abs(environment.FogDensity - density) > 1e-5f)
         {
@@ -468,22 +466,8 @@ public static class Engine_DynamicSky
         material.SetShaderParameter("wind_dir", direction.Normalized());
     }
 
-    private static Vector3 Soft(float[] c, float r, float g, float b)
-    {
-        float x = float.IsFinite(c[0]) ? c[0] : r;
-        float y = float.IsFinite(c[1]) ? c[1] : g;
-        float z = float.IsFinite(c[2]) ? c[2] : b;
-        float peak = MathF.Max(MathF.Max(x, y), MathF.Max(z, 1e-3f));
-        if (peak > 1.2f)
-        {
-            float k = 1.2f / peak;
-            x *= k;
-            y *= k;
-            z *= k;
-        }
-
-        return new Vector3(Math.Clamp(x, 0f, 1.2f), Math.Clamp(y, 0f, 1.2f), Math.Clamp(z, 0f, 1.2f));
-    }
+    private static Vector3 Soft(float[] c, float r, float g, float b) =>
+        Engine_DynamicSkyLighting.LinearColour(c, new Vector3(r, g, b));
 }
 
 public sealed class Engine_DynamicSkyDriver
@@ -717,7 +701,9 @@ public sealed class Engine_DynamicSkyDriver
         }
 
         DynamicWeatherState ground = _now with { FogHaze = _now.FogHaze * _haze };
-        bool fogWanted = ground.FogHaze * ground.FogHaze * Engine_DynamicSky.FogDensityMax > 1e-5f;
+        bool usesFableAtmosphere = material.GetShaderParameter("cubemap_fable_dome").AsBool();
+        bool fogWanted = Engine_DynamicSkyLighting.FogDensity(
+            usesFableAtmosphere, ground.FogHaze, Engine_DynamicSky.FogDensityMax) > 1e-5f;
         if (_sceneDirty || (environment is not null && environment.FogEnabled != fogWanted))
         {
             _sceneDirty = false;
@@ -727,7 +713,7 @@ public sealed class Engine_DynamicSkyDriver
             if (environment is not null)
             {
                 Engine_DynamicSky.ApplyFog(
-                    environment, ground, Engine_DynamicSky.HorizonColour(material), _day);
+                    environment, ground, Engine_DynamicSky.HorizonColour(material), _day, usesFableAtmosphere);
             }
         }
 

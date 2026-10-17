@@ -102,9 +102,11 @@ public partial class BnkMountPlugin : EditorPlugin
     private static readonly Color MeshlessItemColor = new(0.62f, 0.62f, 0.62f);
 
     private EntityInspectorPlugin? _entityInspector;
+    private readonly EditorScanRequest _extensionScan = new();
 
     public override void _EnterTree()
     {
+        SetProcess(false);
         Instance = this;
         // BEFORE THE MOUNT, ON THIS THREAD, AND BOTH HALVES MATTER. Godot restores the last-open
         // scene the moment the editor comes up, and res://levels/pubgames/*.tscn is nothing but
@@ -144,6 +146,8 @@ public partial class BnkMountPlugin : EditorPlugin
 
     public override void _ExitTree()
     {
+        _extensionScan.Cancel();
+        SetProcess(false);
         if (_entityInspector is not null)
         {
             RemoveInspectorPlugin(_entityInspector);
@@ -1045,6 +1049,13 @@ public partial class BnkMountPlugin : EditorPlugin
         }
     }
 
+    public override void _Process(double delta)
+    {
+        EditorFileSystem filesystem = EditorInterface.Singleton.GetResourceFilesystem();
+        _extensionScan.TryRun(filesystem.IsScanning(), filesystem.IsImporting(), filesystem.Scan);
+        SetProcess(_extensionScan.Pending);
+    }
+
     private void EnsureFileExtensionsRecognized()
     {
         try
@@ -1088,7 +1099,8 @@ public partial class BnkMountPlugin : EditorPlugin
 
             if (changed)
             {
-                EditorInterface.Singleton?.GetResourceFilesystem()?.Scan();
+                _extensionScan.Request();
+                SetProcess(true);
             }
         }
         catch (Exception ex)

@@ -148,7 +148,8 @@ void main() {
 		float far_w = min(max((d - params.dof.z) * params.dof.w, 0.0), params.dof2.x);
 		float w = (d < params.dof.y) ? near_w : ((d > params.dof.z) ? far_w : 0.0);
 		w *= 1.0 - clamp(d - 2550.0, 0.0, 1.0);
-		vec3 blurred = texture(dof_tex, uv).rgb / applied;
+		vec4 dof = texture(dof_tex, uv);
+		vec3 blurred = dof.a > 1e-5 ? dof.rgb / (dof.a * applied) : c;
 		c = mix(c, blurred, w);
 	}
 
