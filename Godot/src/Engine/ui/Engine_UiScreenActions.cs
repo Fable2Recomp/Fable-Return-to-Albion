@@ -20,13 +20,16 @@ public static class Engine_UiScreenActions
 	public const string WeatherOverrideKey = "dynamic_sky_weather";
 
 	public const string WeatherOverrideValues =
-		"theme,clear,partlycloudy,cloudy,overcast,rain,storm,snow,fog";
+		"theme,clear,partlycloudy,cloudy,overcast,rain,storm,snow,fog,lightrain,lightsnow,blizzard";
 
 	private static readonly System.Collections.Generic.Dictionary<string, string> SettingTitles =
 		new(System.StringComparer.Ordinal)
 		{
 			[Refii.Level.Engine_DynamicSky.SwitchKey] = "Enable/Disable",
 			[WeatherOverrideKey] = "Weather Override",
+			[Refii.Level.Engine_DynamicNightSky.TimeKey] = "Time of Day Override",
+			[Refii.Level.Engine_DynamicNightSky.AuroraKey] = "Aurora",
+			[Refii.Level.Engine_DynamicSurfaceWeather.SwitchKey] = "Surface Weather",
 			[Refii.Level.Engine_DynamicSky.VolumetricCloudsKey] = "Volumetric Clouds",
 			[Refii.Level.Engine_DynamicSky.CloudShadowsKey] = "Cloud Shadows",
 		};

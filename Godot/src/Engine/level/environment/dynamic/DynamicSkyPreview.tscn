@@ -6,6 +6,7 @@
 [ext_resource type="Texture2D" uid="uid://cvyht8kjsra07" path="res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_shape.tres" id="3_u8ixs"]
 [ext_resource type="NoiseTexture3D" uid="uid://big621aayguxg" path="res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_volume_detail.tres" id="4_u8ixs"]
 [ext_resource type="NoiseTexture3D" uid="uid://v175dqlnipdy" path="res://src/Engine/level/environment/dynamic/dynamic_sky_cloud_volume_shape.tres" id="5_tkqir"]
+[ext_resource type="Shader" path="res://src/Engine/level/terrain/terrain_splat.gdshader" id="6_ground"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_u8ixs"]
 shader = ExtResource("1_qxcue")
@@ -75,8 +76,18 @@ fog_density = 1.5560796e-05
 [sub_resource type="PlaneMesh" id="PlaneMesh_ground"]
 size = Vector2(400, 400)
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ground"]
-albedo_color = Color(0.32, 0.36, 0.28, 1)
+[sub_resource type="Gradient" id="Gradient_ground"]
+colors = PackedColorArray(0.56, 0.6, 0.53, 1, 0.56, 0.6, 0.53, 1)
+
+[sub_resource type="GradientTexture2D" id="Texture_ground"]
+gradient = SubResource("Gradient_ground")
+width = 4
+height = 4
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ground"]
+shader = ExtResource("6_ground")
+shader_parameter/page_mode = true
+shader_parameter/page_albedo = SubResource("Texture_ground")
 
 [node name="DynamicSkyPreview" type="Node3D" unique_id=1867836301]
 
@@ -93,21 +104,20 @@ RainLength = 0.35
 RainSpeed = 16.0
 RainDensity = 0.6
 SnowOpacity = 0.8
-SnowSize = 0.02
+SnowSize = 0.018
 SnowSpeed = 0.9
-SnowDensity = 0.6
+SnowDensity = 0.7
 SnowSway = 0.3
 
 [node name="Ground" type="MeshInstance3D" parent="." unique_id=365703285]
 mesh = SubResource("PlaneMesh_ground")
-surface_material_override/0 = SubResource("StandardMaterial3D_ground")
+surface_material_override/0 = SubResource("ShaderMaterial_ground")
 
 [node name="Sun" type="DirectionalLight3D" parent="." unique_id=2073787638]
 transform = Transform3D(-0.07273087, -0.43627405, 0.89686966, 0, 0.8992512, 0.43743256, -0.9973516, 0.03181485, -0.06540332, 0, 10, 0)
 light_energy = 0.6
-light_angular_distance = 0.53
 shadow_enabled = true
-directional_shadow_pancake_size = 7195.921
+directional_shadow_max_distance = 600.0
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=199334898]
 transform = Transform3D(1, 0, 0, 0, 0.976296, 0.216439, 0, -0.216439, 0.976296, 0, 2, 0)

@@ -346,9 +346,14 @@ public static class RuntimeCVarsGodot
                 + "moving clouds — with weather that changes from visit to visit: rain, storms, "
                 + "fog, overcast. The childhood is always snowing, Rookridge always raining, "
                 + "and Knothole Island follows its own weather. Off keeps the original Fable 2 "
-                + "sky dome and weather exactly as shipped. Cloud Shadows optionally changes sunlight."),
+                + "sky dome and weather exactly as shipped. Lighting Override optionally changes sunlight."),
+            new("dynamic_sky_lighting_override", VideoCategory, RuntimeCVarType.Bool, "false",
+                "Use the dynamic sky's sun as the scene's directional light, with elevation-dependent colour and intensity. "
+                + "Off preserves level lighting, including disabling cloud-cast shadows. "
+                + "Ambient lighting and local lights retain the level's settings."),
             new("dynamic_sky_cloud_shadows", VideoCategory, RuntimeCVarType.Bool, "false",
-                "Clouds cast moving shadows from the sun; requires dynamic sky and weather."),
+                "Clouds cast moving shadows from the sun in the modern renderer; requires "
+                + "Dynamic Sky and Weather and Lighting Override. Classic surfaces receive the same projected cloud mask."),
             new("dynamic_sky_volumetric_clouds", VideoCategory, RuntimeCVarType.Bool, "false",
                 "Cloud rendering for Dynamic Sky and Weather. Off uses the 2D procedural layers. "
                 + "On raymarches a 3D cloud volume with self-shadowing. Applies immediately; "
@@ -357,7 +362,18 @@ public static class RuntimeCVarsGodot
                 "Weather override for the dynamic sky. 'theme' lets each region decide — the "
                 + "childhood snows, Rookridge rains, Knothole Island follows its own weather, "
                 + "everywhere else rolls. Any other value forces that weather everywhere.",
-                "theme,clear,partlycloudy,cloudy,overcast,rain,storm,snow,fog"),
+                "theme,clear,partlycloudy,cloudy,overcast,rain,storm,snow,fog,lightrain,lightsnow,blizzard"),
+            new("dynamic_sky_time_of_day", VideoCategory, RuntimeCVarType.String, "auto",
+                "Time of day override for Dynamic Sky and Weather. Auto follows the game clock; "
+                + "an hour freezes presentation time for sky, sun, fog and scene lighting. Game simulation time is unchanged.",
+                "auto,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23"),
+            new("dynamic_sky_aurora", VideoCategory, RuntimeCVarType.String, "auto",
+                "Aurora: Auto gives each game night a 10% chance. On forces it at night; Off hides it. "
+                + "Daylight fades it out and clouds obscure it. Requires Dynamic Sky and Weather.", "auto,on,off"),
+            new("dynamic_sky_surface_weather", VideoCategory, RuntimeCVarType.Bool, "false",
+                "Surface Weather: rain wets exposed terrain and meshes and forms puddles on flat areas; "
+                + "snow builds up on upward-facing surfaces and melts into wetness. Off restores original materials immediately. "
+                + "Requires Dynamic Sky and Weather; supports modern materials and classic world-surface shader families."),
             new("gi_half_resolution", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Resolve the bounced light at half the screen's resolution and scale it up. The "
                 + "bounce itself is unchanged; its edges where one surface meets another are a "

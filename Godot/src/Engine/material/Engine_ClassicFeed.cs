@@ -243,8 +243,8 @@ public static class Engine_ClassicFeed
     /// <summary>The sun light's colour and travel direction as the twin holds them, when up.</summary>
     public static bool TrySun(out Vector3 colour, out Vector3 direction, out float intensity)
     {
-        colour = new Vector3(_frame[SunColour], _frame[SunColour + 1], _frame[SunColour + 2]);
-        direction = new Vector3(_frame[SunDirection], _frame[SunDirection + 1], _frame[SunDirection + 2]);
+        colour = Refii.Level.Engine_DynamicSkyLighting.ResolveRadiance(new Vector3(_frame[SunColour], _frame[SunColour + 1], _frame[SunColour + 2]));
+        direction = Refii.Level.Engine_DynamicSkyLighting.ResolveGuestTravel(new Vector3(_frame[SunDirection], _frame[SunDirection + 1], _frame[SunDirection + 2]));
         intensity = _frame[141];
         return _frame[SunColour + 3] != 0f;
     }

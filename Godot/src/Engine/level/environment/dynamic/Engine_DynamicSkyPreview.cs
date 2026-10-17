@@ -16,16 +16,28 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
     private float _cloudSpeed = 1f;
     private bool _volumetricClouds;
     private bool _cloudShadows;
+    private bool _lightingOverride;
+    private float _daylight = 1f;
     private Engine_DynamicCloudShadows? _cloudShadowCaster;
     private DirectionalLight3D? _previewSun;
     private bool _ownsPreviewSun;
     private float _originalSunEnergy;
+    private Color _originalSunColour;
     private Transform3D _originalSunTransform;
     private float _dayLengthSeconds = 0f;
 
     private ShaderMaterial? _material;
     private Engine_DynamicSkyDriver? _driver;
     private Engine_DynamicPrecipitation? _precipitation;
+    private Engine_DynamicThunder? _thunder;
+    private readonly Engine_DynamicNightSky _nights = new();
+    private int _day;
+
+    [Export]
+    public DynamicAuroraMode Aurora { get; set; } = DynamicAuroraMode.Auto;
+
+    [Export]
+    public bool SurfaceWeather { get; set; }
     private readonly SkyTheme _theme = new();
 
     [Export(PropertyHint.Range, "0,24,0.05,suffix:h")]
@@ -69,6 +81,13 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
     {
         get => _cloudShadows;
         set { _cloudShadows = value; SyncCloudShadows(); }
+    }
+
+    [Export]
+    public bool LightingOverride
+    {
+        get => _lightingOverride;
+        set { _lightingOverride = value; UpdateWeatherLighting(); SyncCloudShadows(); }
     }
 
     [Export(PropertyHint.Range, "0,60,0.5,suffix:s")]
@@ -195,9 +214,16 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
             _previewSun.TopLevel = true;
         }
         _originalSunEnergy = _previewSun.LightEnergy;
+        _originalSunColour = _previewSun.LightColor;
         _originalSunTransform = _previewSun.Transform;
 
         _driver = new Engine_DynamicSkyDriver();
+        if (!Engine.IsEditorHint())
+        {
+            _thunder = new Engine_DynamicThunder { Name = "DynamicThunder" };
+            AddChild(_thunder);
+            _thunder.Bind(_driver);
+        }
         var initialWeather = _preset == DynamicWeatherPreset.Theme ? DynamicWeatherPreset.PartlyCloudy : _preset;
         _driver.SetWeather(initialWeather, 0.01f);
         Engine_DynamicSky.ApplyWeather(_material, DynamicWeatherState.Of(initialWeather));
@@ -226,15 +252,34 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
 
         if (_animate)
         {
-            _driver.Tick((float)delta, _material, _precipitation, Environment, _volumetricClouds);
+            _driver.SetNightClock(_timeOfDay, _day, Aurora, _nights);
+            _thunder?.Advance((float)delta);
+            _driver.Tick((float)delta, _material, _precipitation, Environment, _volumetricClouds, SurfaceWeather);
         }
 
         if (_dayLengthSeconds > 0f && _animate)
         {
-            _timeOfDay = (_timeOfDay + ((float)delta * 24f / _dayLengthSeconds)) % 24f;
+            float hours = _timeOfDay + ((float)delta * 24f / _dayLengthSeconds);
+            _day += (int)(hours / 24f);
+            _timeOfDay = hours % 24f;
             PushFrame();
         }
+        UpdateWeatherLighting();
         SyncCloudShadows();
+    }
+
+    private void UpdateWeatherLighting()
+    {
+        if (_previewSun is null || _driver is null) return;
+        SkyFrame frame = Engine_SkyFrame.Evaluate(_theme, _timeOfDay / 24f);
+        Engine_DynamicSkyLighting.ConfigureSun(frame, _driver.Weather, _lightingOverride, _cloudShadows);
+        _previewSun.LightEnergy = _lightingOverride
+            ? Engine_DynamicSkyLighting.SunEnergy : _originalSunEnergy * _daylight;
+        _previewSun.LightColor = _lightingOverride ? new Color(Engine_DynamicSkyLighting.SunColour.X,
+            Engine_DynamicSkyLighting.SunColour.Y, Engine_DynamicSkyLighting.SunColour.Z) : _originalSunColour;
+        RenderingServer.GlobalShaderParameterSet("dynamic_sun_toward", Engine_DynamicSkyLighting.SunToward);
+        RenderingServer.GlobalShaderParameterSet("dynamic_sun_radiance", Engine_DynamicSkyLighting.OverridesSun
+            ? Engine_DynamicSkyLighting.SunColour * Engine_DynamicSkyLighting.SunEnergy : Vector3.Zero);
     }
 
     private void SyncCloudShadows()
@@ -244,15 +289,19 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
 #if TOOLS
         if (Engine.IsEditorHint()) camera ??= EditorInterface.Singleton.GetEditorViewport3D(0)?.GetCamera3D();
 #endif
-        Engine_DynamicCloudShadows.Sync(this, ref _cloudShadowCaster, _material, _cloudShadows, camera, _previewSun);
+        Engine_DynamicCloudShadows.Sync(this, ref _cloudShadowCaster, _material,
+            _cloudShadows && _lightingOverride, camera, _previewSun);
     }
 
     public override void _ExitTree()
     {
+        Engine_DynamicSurfaceWeather.Reset();
+        Engine_DynamicSkyLighting.Reset();
         if (!_ownsPreviewSun && _previewSun is not null && GodotObject.IsInstanceValid(_previewSun))
         {
             _previewSun.LightEnergy = _originalSunEnergy;
             _previewSun.Transform = _originalSunTransform;
+            _previewSun.LightColor = _originalSunColour;
         }
     }
 
@@ -265,14 +314,15 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
 
         SkyFrame frame = Engine_SkyFrame.Evaluate(_theme, _timeOfDay / 24f);
         Engine_DynamicSky.ApplyFrame(_material, frame, _theme);
-        _driver?.SetDaylight(Engine_DynamicSky.Daylight(frame));
+        _daylight = Engine_DynamicSky.Daylight(frame);
+        _driver?.SetDaylight(_daylight);
         if (_previewSun is not null)
         {
             Vector3 towardSun = Engine_SkyFrame.ToGodot(frame.SunDirection).Normalized();
             Basis basis = Basis.LookingAt(-towardSun, Mathf.Abs(towardSun.Y) > 0.99f ? Vector3.Forward : Vector3.Up);
             if (_previewSun.IsInsideTree()) _previewSun.GlobalBasis = basis;
             else _previewSun.Basis = basis;
-            _previewSun.LightEnergy = _originalSunEnergy * Engine_DynamicSky.Daylight(frame);
+            UpdateWeatherLighting();
         }
         SyncCloudShadows();
     }

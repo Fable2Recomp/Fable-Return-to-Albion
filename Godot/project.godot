@@ -263,3 +263,27 @@ xr_prt_constants={
 "type": "sampler2D",
 "value": ""
 }
+dynamic_surface_weather={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+dynamic_surface_time={
+"type": "float",
+"value": 0.0
+}
+dynamic_sun_toward={
+"type": "vec3",
+"value": Vector3(0, 1, 0)
+}
+dynamic_sun_radiance={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+dynamic_cloud_mask={
+"type": "sampler2D",
+"value": ""
+}
+dynamic_cloud_projection={
+"type": "vec4",
+"value": Vector4(0, 0, 1, 0)
+}

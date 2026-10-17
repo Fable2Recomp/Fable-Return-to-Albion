@@ -132,7 +132,8 @@ public static class Engine_UiOptionsPending
 		Page = Engine_UiWeatherOptions.PageName;
 		Row = 0;
 		_index = Engine_UiWeatherOptions.Read(read ?? Engine_UiWeatherOptions.ReadCurrent);
-		_count = new[] { 2, 2, 2, Engine_UiWeatherOptions.Count(3) };
+		_count = new int[_index.Length];
+		for (int i = 0; i < _count.Length; i++) _count[i] = Engine_UiWeatherOptions.Count(i);
 		_slider = Array.Empty<float>();
 	}
 

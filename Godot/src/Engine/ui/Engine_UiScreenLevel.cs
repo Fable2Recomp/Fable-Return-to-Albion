@@ -132,6 +132,11 @@ public sealed class Engine_UiScreenLevel
 			return;
 		}
 
+		if (Engine_UiWeatherOptions.Open && wheel != 0)
+		{
+			WalkTo(System.Math.Clamp(Engine_UiOptionsPending.Row - wheel, 0, Engine_UiWeatherOptions.Keys.Length - 1));
+			return;
+		}
 		int row = RowAt(book, rows, at);
 		if (row < 0)
 		{
@@ -140,7 +145,7 @@ public sealed class Engine_UiScreenLevel
 
 		if (Engine_UiPointer.Moved || left || wheel != 0)
 		{
-			WalkTo(row);
+			WalkTo(row + (Engine_UiWeatherOptions.Open ? Engine_UiWeatherOptions.VisibleStart : 0));
 		}
 
 		bool slider = Engine_UiOptionsPending.SliderValue(row) is not null;

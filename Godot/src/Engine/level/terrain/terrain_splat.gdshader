@@ -1,9 +1,13 @@
 ﻿
 shader_type spatial;
-render_mode cull_disabled, specular_disabled;
+render_mode cull_disabled;
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
+#include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
+varying float v_weather_exposure;
+varying float v_weather_specular;
+varying float v_weather_power;
 
 global uniform int fable_light_debug;
 
@@ -121,6 +125,7 @@ void vertex() {
 	v_page_rect = CUSTOM0;
 	v_local_normal = NORMAL;
 	fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	v_weather_exposure = surface_exposure(fable_world);
 }
 
 /// The two vertical projections a cliff layer is sampled through, and their weights.
@@ -379,6 +384,15 @@ void fragment() {
 	// guest's, about twice as bright through the midtones, so a factor authored against the
 	// darker operand drove the whole surface to white. The ground reading visibly hotter than
 	// the props standing on it was the same defect seen from the other end.
+	vec3 weather_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	vec3 weather_weights = surface_weights(fable_world, weather_normal, v_weather_exposure);
+	ROUGHNESS = 1.0;
+	METALLIC = 0.0;
+	SPECULAR = 0.0;
+	surface_material(weather_weights, fable_world, final, ROUGHNESS, METALLIC);
+	v_weather_specular = weather_weights.x * (1.0 - weather_weights.y);
+	v_weather_power = mix(70.0, 350.0, weather_weights.z);
+	SPECULAR = v_weather_specular * 0.5;
 	ALBEDO = final;
 
 	// Godot builds the heightfield's tangent frame; the guest builds its own in the vertex
@@ -387,6 +401,11 @@ void fragment() {
 	// below only affects the AMBIENT half.
 	if (has_normals) {
 		NORMAL_MAP = mapped_normal * 0.5 + 0.5;
+	}
+	if (max(weather_weights.y, weather_weights.z) > 0.001) {
+		vec2 ripple = surface_ripple(fable_world) * weather_weights.z;
+		NORMAL_MAP = mix(mapped_normal * 0.5 + 0.5, vec3(0.5 + ripple.x, 0.5 + ripple.y, 1.0),
+			max(weather_weights.z, weather_weights.y * 0.8));
 	}
 
 	// THE TERRAIN HAS A LIGHTMAP, and the shipped shader is what says so:
@@ -614,5 +633,10 @@ void light() {
 			NORMAL, LIGHT,
 			fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world),
 			LIGHT_COLOR);
+		if (v_weather_specular > 0.001) {
+			SPECULAR_LIGHT += fable_specular(NORMAL, LIGHT, VIEW,
+				fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world),
+				LIGHT_COLOR, vec3(0.04 * v_weather_specular), v_weather_power);
+		}
 	}
 }

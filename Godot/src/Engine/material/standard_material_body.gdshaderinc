@@ -5,6 +5,8 @@
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
+#include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
+varying float v_weather_exposure;
 #ifdef FABLE_TREE_WIND
 #include "res://src/Engine/material/fable_tree_sway.gdshaderinc"
 #endif
@@ -158,6 +160,7 @@ instance uniform vec3 xr_tree_centre = vec3(0.0);
 varying float v_tree_fade;
 
 void vertex() {
+    v_weather_exposure = surface_exposure((MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz);
 #ifdef FABLE_TREE_WIND
     // A tree carries its wind lanes in CUSTOM1..3 (Engine_MdlTreeStreams), not transfer.
     v_transfer = vec4(0.0);
@@ -401,6 +404,20 @@ void fragment() {
     }
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+    vec3 weather_weights = surface_weights(fable_world, world_normal, v_weather_exposure);
+    surface_material(weather_weights, fable_world, alb.rgb, ROUGHNESS, METALLIC);
+    ALBEDO = alb.rgb;
+    float weather_wet = weather_weights.x * (1.0 - weather_weights.y);
+    if (max(weather_wet, weather_weights.y) > 0.001) {
+        SPECULAR = mix(SPECULAR, 0.5, weather_wet);
+        v_specular = mix(v_specular, vec3(0.04), weather_wet);
+        v_specular_power = mix(v_specular_power, mix(70.0, 350.0, weather_weights.z), weather_wet);
+        v_specular *= 1.0 - weather_weights.y;
+        vec2 ripple = surface_ripple(fable_world) * weather_weights.z;
+        vec3 base_map = has_normal ? texture(normal_tex, uv).rgb : vec3(0.5, 0.5, 1.0);
+        NORMAL_MAP = mix(base_map, vec3(0.5 + ripple.x, 0.5 + ripple.y, 1.0),
+            max(weather_weights.z, weather_weights.y * 0.8));
+    }
     vec3 bake;
     if (v_transfer.a > 0.5 && lightmap_colour.w > 0.5 && lightmap_colour.w < 1.5) {
         // Mode 1 on a mesh that carries its transfer: the guest's PRT, decoded as AMB2 is.

@@ -6,12 +6,15 @@ render_mode blend_add, cull_disabled, depth_draw_never, unshaded, shadows_disabl
 varying vec4 v_col;
 varying vec2 v_uv;
 varying float v_bokeh;
+varying float v_depth;
 
 void vertex() {
 	vec4 col;
 	float bokeh;
+	float view_depth;
 	POSITION = precip_place(true, UV2.x, UV, PROJECTION_MATRIX, VIEW_MATRIX, INV_VIEW_MATRIX,
-		CAMERA_POSITION_WORLD, VIEWPORT_SIZE, TIME, col, bokeh);
+		CAMERA_POSITION_WORLD, VIEWPORT_SIZE, TIME, col, bokeh, view_depth);
+	v_depth = view_depth;
 	v_col = col;
 	v_uv = UV;
 	v_bokeh = bokeh;
@@ -22,6 +25,7 @@ void fragment() {
 	float across = 1.0 - c.x * c.x;
 	float along = 1.0 - c.y * c.y;
 	float a = pow(across, mix(2.0, 3.5, v_bokeh)) * along * along;
+	a *= precip_depth_fade(SCREEN_UV, INV_PROJECTION_MATRIX, v_depth);
 	ALBEDO = v_col.rgb * v_col.a * a;
 	ALPHA = 1.0;
 }

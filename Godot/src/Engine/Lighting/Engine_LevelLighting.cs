@@ -113,6 +113,20 @@ public static class Engine_LevelLighting
 
 	private static float? _sunScale;
 
+	public static void ApplyWeatherSun(DirectionalLight3D light, LightingFrame frame)
+	{
+		float energy = (Refii.Level.Engine_DynamicSkyLighting.OverridesSun
+			? Refii.Level.Engine_DynamicSkyLighting.SunEnergy
+			: frame.SunEnergy * Refii.Level.Engine_DynamicSkyLighting.SunTransmission) * SunScale;
+		if (light.LightEnergy != energy) light.LightEnergy = energy;
+		if (Refii.Level.Engine_DynamicSkyLighting.OverridesSun)
+		{
+			Vector3 colour = Refii.Level.Engine_DynamicSkyLighting.SunColour;
+			var tint = new Color(colour.X, colour.Y, colour.Z);
+			if (light.LightColor != tint) light.LightColor = tint;
+		}
+	}
+
 	/// <summary>
 	/// The remaster's `sun_light_scale`. The shipped balance keeps the direct sun mild against
 	/// the bakes — people and ground barely react to it — and the user asked for the opposite.
@@ -151,20 +165,29 @@ public static class Engine_LevelLighting
 
 	public static void UpdateSun(DirectionalLight3D light, LightingFrame frame)
 	{
-		light.LightColor = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
-		light.LightEnergy = frame.SunEnergy * SunScale;
-		light.ShadowEnabled = SunCasts(frame.SunShadow);
+		if (!Refii.Level.Engine_DynamicSkyLighting.OverridesSun)
+		{
+			var tint = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
+			if (light.LightColor != tint) light.LightColor = tint;
+		}
+		ApplyWeatherSun(light, frame);
+		bool shadows = SunCasts(frame.SunShadow);
+		if (light.ShadowEnabled != shadows) light.ShadowEnabled = shadows;
 
 		// CASCADES BY STRENGTH. The moon at energy 0.2 cast the same four cascades over the
 		// whole market as the noon sun: 5,000 draw calls of shadow for a light nobody can see
 		// the shadows of. Two splits over a shorter depth at night; the day keeps four.
 		// Every cascade redraws every caster in its slice. `sun_shadow_splits` picks two
 		// (the near split to 35 m at half the map, the rest to the reach) or four.
-		int splits = SunSplitsOverride ?? (frame.SunEnergy < NightEnergy ? 2 : SunSplits);
-		light.DirectionalShadowMode = splits <= 2
+		float activeEnergy = Refii.Level.Engine_DynamicSkyLighting.OverridesSun
+			? Refii.Level.Engine_DynamicSkyLighting.SunEnergy : frame.SunEnergy;
+		int splits = SunSplitsOverride ?? (activeEnergy < NightEnergy ? 2 : SunSplits);
+		var mode = splits <= 2
 			? DirectionalLight3D.ShadowMode.Parallel2Splits
 			: DirectionalLight3D.ShadowMode.Parallel4Splits;
-		light.DirectionalShadowMaxDistance = splits <= 2 ? Mathf.Min(NightFarDepth, SunFarDepth) : SunFarDepth;
+		float distance = splits <= 2 ? Mathf.Min(NightFarDepth, SunFarDepth) : SunFarDepth;
+		if (light.DirectionalShadowMode != mode) light.DirectionalShadowMode = mode;
+		if (light.DirectionalShadowMaxDistance != distance) light.DirectionalShadowMaxDistance = distance;
 
 		// IN WORLD SPACE, because the node sits under the level root's Scale(-1, 1, 1). A local
 		// transform inherits that mirror, and the sun's world aim came out with its X flipped —
@@ -174,15 +197,17 @@ public static class Engine_LevelLighting
 		// composes the parent chain away, mirror included; before the node enters the tree the
 		// local assignment stands in (its parent applies the same mirror to the region, so the
 		// first configured frame corrects it).
-		var aimed = new Transform3D(SunBasis(frame.LightDirection), Vector3.Zero);
-		Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
-		if (light.IsInsideTree())
+		Vector3 toward = Refii.Level.Engine_DynamicSkyLighting.SunToward;
+		Basis basis = Refii.Level.Engine_DynamicSkyLighting.OverridesSun
+			? Basis.LookingAt(-toward, MathF.Abs(toward.Y) > 0.99f ? Vector3.Forward : Vector3.Up)
+			: SunBasis(frame.LightDirection);
+		var aimed = new Transform3D(basis, Vector3.Zero);
+		bool inTree = light.IsInsideTree();
+		if (!(inTree ? light.GlobalTransform : light.Transform).IsEqualApprox(aimed))
 		{
-			light.GlobalTransform = aimed;
-		}
-		else
-		{
-			light.Transform = aimed;
+			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
+			if (inTree) light.GlobalTransform = aimed;
+			else light.Transform = aimed;
 		}
 
 		ReportSun(frame);

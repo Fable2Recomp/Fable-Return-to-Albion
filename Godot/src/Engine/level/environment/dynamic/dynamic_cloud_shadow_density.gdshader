@@ -13,6 +13,7 @@ uniform float cloud_scale = 1.0;
 uniform float cloud_height = 0.12;
 uniform float cloud_speed = 1.0;
 uniform float cloud_time = 0.0;
+uniform vec2 cloud_offset = vec2(0.0);
 uniform float cloud_motion_multiplier = 1.0;
 uniform vec2 wind_dir = vec2(1.0, 0.25);
 uniform float overcast = 0.0;

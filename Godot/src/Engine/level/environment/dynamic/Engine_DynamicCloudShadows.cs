@@ -4,77 +4,105 @@ using Godot;
 namespace Refii.Level;
 
 [Tool]
-public partial class Engine_DynamicCloudShadows : MeshInstance3D
+public partial class Engine_DynamicCloudShadows : Node
 {
     public const string NodeName = "DynamicCloudShadows";
     private const float CloudBase = 1400f;
+    private const int MapSize = 256;
+    private const ulong RefreshIntervalUsec = 66_667;
     private SubViewport? _densityViewport;
     private ShaderMaterial? _densityMaterial;
-    private DirectionalLight3D? _sun;
-    private bool _originalShadow;
-    private float _originalAngularDistance;
-    private float _originalPancakeSize;
-    private float _mapExtent;
-    private static readonly StringName[] Parameters =
+    private ShaderMaterial? _source;
+    private ulong? _lastRefresh;
+    private Vector4 _projection;
+    private bool _published;
+    private bool _resourcesChanged;
+    public int DensityUpdateCount { get; private set; }
+    private readonly Variant[] _values = new Variant[Parameters.Length];
+    private readonly Resource?[] _resources = new Resource?[Parameters.Length];
+    private static readonly string[] Parameters =
     {
         "volumetric_clouds", "cloud_volume_shape", "cloud_volume_detail", "cloud_shape", "cloud_detail",
         "cloud_coverage", "cloud_density", "cloud_softness", "cloud_scale", "cloud_height",
-        "cloud_speed", "cloud_time", "cloud_motion_multiplier", "wind_dir", "overcast", "storm", "sun_engine",
+        "cloud_speed", "cloud_time", "cloud_offset", "cloud_motion_multiplier", "wind_dir", "overcast", "storm", "sun_engine",
     };
 
     public static void Sync(Node owner, ref Engine_DynamicCloudShadows? caster, ShaderMaterial? sky,
-        bool enabled, Camera3D? camera, DirectionalLight3D? sun = null, bool? normalSunShadows = null)
+        bool enabled, Camera3D? camera, DirectionalLight3D? sun = null)
     {
         Vector3 sunEngine = sky is not null ? sky.GetShaderParameter("sun_engine").AsVector3() : Vector3.Zero;
-        bool visible = enabled && sky is not null && sunEngine.Z > 0.03f;
-        if (!visible)
+        if (!enabled || sky is null || sunEngine.Z <= 0.03f)
         {
-            if (caster is not null)
-            {
-                if (normalSunShadows.HasValue) caster._originalShadow = normalSunShadows.Value;
-                caster.Visible = false;
-                caster.RestoreSun();
-                if (caster._densityViewport is not null) caster._densityViewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
-            }
+            caster?.Disable();
             return;
         }
         if (caster is null)
         {
-            caster = new Engine_DynamicCloudShadows
-            {
-                Name = NodeName,
-                Mesh = new PlaneMesh { Size = new Vector2(4000f, 4000f), SubdivideWidth = 127, SubdivideDepth = 127 },
-                MaterialOverride = new ShaderMaterial { Shader = GD.Load<Shader>("res://src/Engine/level/environment/dynamic/dynamic_cloud_shadow.gdshader") },
-                CastShadow = GeometryInstance3D.ShadowCastingSetting.ShadowsOnly,
-                GIMode = GeometryInstance3D.GIModeEnum.Disabled,
-            };
+            caster = new Engine_DynamicCloudShadows { Name = NodeName };
             owner.AddChild(caster);
-            caster.TopLevel = true;
             caster.BuildDensityMap();
         }
-        caster.Visible = true;
         Vector3 origin = camera?.GlobalPosition ?? Vector3.Zero;
         Vector3 towardSun = new Vector3(sunEngine.X, sunEngine.Z, sunEngine.Y).Normalized();
         Vector3 centre = origin + towardSun * ((CloudBase - origin.Y) / towardSun.Y);
         float extent = MathF.Max(4000f, (sun?.DirectionalShadowMaxDistance ?? 600f) * 3f);
-        float casterDepth = MathF.Abs(CloudBase - origin.Y) / towardSun.Y + extent;
-        caster.ConfigureSun(sun, normalSunShadows, casterDepth);
-        float texel = extent / 256f;
+        float texel = extent / MapSize;
         var mapCentre = new Vector2(SnapMapCoordinate(centre.X, texel), SnapMapCoordinate(centre.Z, texel));
-        caster.GlobalPosition = new Vector3(mapCentre.X, CloudBase, mapCentre.Y);
-        if (extent != caster._mapExtent)
+        var projection = new Vector4(mapCentre.X, mapCentre.Y, extent, 1f);
+        bool moved = projection != caster._projection;
+        bool first = !caster._published || caster._source != sky;
+        ulong now = Time.GetTicksUsec();
+        if (!first && !moved && !caster._resourcesChanged && !RefreshDue(now, caster._lastRefresh)) return;
+        caster._lastRefresh = now;
+        bool dirty = first || moved || caster._resourcesChanged;
+        for (int i = 0; i < Parameters.Length; i++)
         {
-            caster._mapExtent = extent;
-            ((PlaneMesh)caster.Mesh).Size = new Vector2(extent, extent);
+            Variant value = sky.GetShaderParameter(Parameters[i]);
+            if (!first && SameParameter(value, caster._values[i])) { value.Dispose(); continue; }
+            caster._values[i].Dispose();
+            caster._values[i] = value;
+            Resource? resource = value.VariantType == Variant.Type.Object ? value.AsGodotObject() as Resource : null;
+            if (caster._resources[i] != resource)
+            {
+                if (caster._resources[i] is { } previous) previous.Changed -= caster.InvalidateDensity;
+                caster._resources[i] = resource;
+                if (resource is not null) resource.Changed += caster.InvalidateDensity;
+            }
+            caster._densityMaterial!.SetShaderParameter(Parameters[i], value);
+            dirty = true;
         }
-        foreach (StringName parameter in Parameters)
-            caster._densityMaterial!.SetShaderParameter(parameter, sky!.GetShaderParameter(parameter));
-        caster._densityMaterial.SetShaderParameter("shadow_map_center", mapCentre);
+        caster._source = sky;
+        caster._resourcesChanged = false;
+        if (!dirty) return;
+        caster._densityMaterial!.SetShaderParameter("shadow_map_center", mapCentre);
         caster._densityMaterial.SetShaderParameter("shadow_map_extent", extent);
-        var material = (ShaderMaterial)caster.MaterialOverride;
-        material.SetShaderParameter("shadow_map_center", mapCentre);
-        material.SetShaderParameter("shadow_map_extent", extent);
-        caster._densityViewport!.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        caster._densityViewport!.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
+        caster.DensityUpdateCount++;
+        if (!caster._published)
+            RenderingServer.GlobalShaderParameterSet("dynamic_cloud_mask", caster._densityViewport.GetTexture());
+        if (first || moved)
+            RenderingServer.GlobalShaderParameterSet("dynamic_cloud_projection", projection);
+        caster._projection = projection;
+        caster._published = true;
+    }
+
+    public static bool RefreshDue(ulong nowUsec, ulong? lastUsec) =>
+        lastUsec is not { } last || nowUsec < last || nowUsec - last >= RefreshIntervalUsec;
+
+    public static bool SameParameter(in Variant left, in Variant right)
+    {
+        if (left.VariantType != right.VariantType) return false;
+        return left.VariantType switch
+        {
+            Variant.Type.Nil => true,
+            Variant.Type.Bool => left.AsBool() == right.AsBool(),
+            Variant.Type.Int => left.AsInt64() == right.AsInt64(),
+            Variant.Type.Float => left.AsDouble() == right.AsDouble(),
+            Variant.Type.Vector2 => left.AsVector2() == right.AsVector2(),
+            Variant.Type.Vector3 => left.AsVector3() == right.AsVector3(),
+            Variant.Type.Object => left.AsGodotObject() == right.AsGodotObject(),
+            _ => false,
+        };
     }
 
     public static float SnapMapCoordinate(float coordinate, float texelSize)
@@ -90,46 +118,33 @@ public partial class Engine_DynamicCloudShadows : MeshInstance3D
         _densityViewport = new SubViewport
         {
             Name = "CloudShadowDensity",
-            Size = new Vector2I(256, 256),
+            Size = new Vector2I(MapSize, MapSize),
             Disable3D = true,
             World2D = new World2D(),
-            RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+            RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled,
         };
         AddChild(_densityViewport);
-        _densityViewport.AddChild(new ColorRect { Size = new Vector2(256f, 256f), Material = _densityMaterial });
-        ((ShaderMaterial)MaterialOverride).SetShaderParameter("cloud_shadow_map", _densityViewport.GetTexture());
+        _densityViewport.AddChild(new ColorRect { Size = new Vector2(MapSize, MapSize), Material = _densityMaterial });
     }
 
-    private void ConfigureSun(DirectionalLight3D? sun, bool? normalShadows, float casterDepth)
+    private void Disable()
     {
-        if (_sun != sun)
-        {
-            RestoreSun();
-            _sun = sun;
-            if (sun is not null)
-            {
-                _originalShadow = sun.ShadowEnabled;
-                _originalAngularDistance = sun.LightAngularDistance;
-                _originalPancakeSize = sun.DirectionalShadowPancakeSize;
-            }
-        }
-        if (_sun is null) return;
-        if (normalShadows.HasValue) _originalShadow = normalShadows.Value;
-        _sun.ShadowEnabled = true;
-        _sun.DirectionalShadowPancakeSize = MathF.Max(_originalPancakeSize, casterDepth);
-        _sun.LightAngularDistance = MathF.Max(_originalAngularDistance, 0.53f);
+        if (_published) RenderingServer.GlobalShaderParameterSet("dynamic_cloud_projection", Vector4.Zero);
+        _published = false;
+        _lastRefresh = null;
+        if (_densityViewport is not null) _densityViewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
     }
 
-    private void RestoreSun()
+    private void InvalidateDensity() => _resourcesChanged = true;
+
+    public override void _ExitTree()
     {
-        if (_sun is not null && GodotObject.IsInstanceValid(_sun))
+        Disable();
+        for (int i = 0; i < _values.Length; i++)
         {
-            _sun.ShadowEnabled = _originalShadow;
-            _sun.LightAngularDistance = _originalAngularDistance;
-            _sun.DirectionalShadowPancakeSize = _originalPancakeSize;
+            if (_resources[i] is { } resource) resource.Changed -= InvalidateDensity;
+            _resources[i] = null;
+            _values[i].Dispose();
         }
-        _sun = null;
     }
-
-    public override void _ExitTree() => RestoreSun();
 }

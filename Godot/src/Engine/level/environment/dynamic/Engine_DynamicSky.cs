@@ -14,6 +14,9 @@ public enum DynamicWeatherPreset
     Storm,
     Snow,
     Fog,
+    LightRain,
+    LightSnow,
+    Blizzard,
 }
 
 public struct DynamicWeatherState
@@ -29,9 +32,20 @@ public struct DynamicWeatherState
     public float Rain;
     public float SnowFall;
 
+    public readonly DynamicWeatherState Sanitized()
+    {
+        static float Clamp(float v, float max = 1f) => float.IsFinite(v) ? Math.Clamp(v, 0f, max) : 0f;
+        return new DynamicWeatherState
+        {
+            Coverage = Clamp(Coverage), Density = Clamp(Density), Overcast = Clamp(Overcast),
+            Storm = Clamp(Storm), Snow = Clamp(Snow), FogHaze = Clamp(FogHaze),
+            WindSpeed = Clamp(WindSpeed, 4f), Cirrus = Clamp(Cirrus), Rain = Clamp(Rain), SnowFall = Clamp(SnowFall),
+        };
+    }
+
     public static DynamicWeatherState Lerp(in DynamicWeatherState a, in DynamicWeatherState b, float t)
     {
-        t = Math.Clamp(t, 0f, 1f);
+        t = float.IsFinite(t) ? Math.Clamp(t, 0f, 1f) : 0f;
         return new DynamicWeatherState
         {
             Coverage = a.Coverage + ((b.Coverage - a.Coverage) * t),
@@ -49,46 +63,18 @@ public struct DynamicWeatherState
 
     public static DynamicWeatherState Of(DynamicWeatherPreset preset) => preset switch
     {
-        DynamicWeatherPreset.Clear => new()
-        {
-            Coverage = 0.18f, Density = 0.55f, WindSpeed = 0.8f, Cirrus = 0.45f,
-        },
-        DynamicWeatherPreset.PartlyCloudy => new()
-        {
-            Coverage = 0.45f, Density = 0.70f, WindSpeed = 1.0f, Cirrus = 0.35f,
-        },
-        DynamicWeatherPreset.Cloudy => new()
-        {
-            Coverage = 0.68f, Density = 0.85f, Overcast = 0.25f, WindSpeed = 1.3f, Cirrus = 0.2f,
-        },
-        DynamicWeatherPreset.Overcast => new()
-        {
-            Coverage = 0.9f, Density = 1.0f, Overcast = 0.85f, FogHaze = 0.15f, WindSpeed = 1.2f,
-        },
-        DynamicWeatherPreset.Rain => new()
-        {
-            Coverage = 0.95f, Density = 1.0f, Overcast = 0.95f, FogHaze = 0.3f, WindSpeed = 1.8f,
-            Rain = 0.6f,
-        },
-        DynamicWeatherPreset.Storm => new()
-        {
-            Coverage = 1.0f, Density = 1.0f, Overcast = 1.0f, Storm = 1.0f, FogHaze = 0.35f,
-            WindSpeed = 3.0f, Rain = 1.0f,
-        },
-        DynamicWeatherPreset.Snow => new()
-        {
-            Coverage = 0.9f, Density = 0.95f, Overcast = 0.8f, Snow = 1.0f, FogHaze = 0.4f,
-            WindSpeed = 0.9f, SnowFall = 1.0f,
-        },
-        DynamicWeatherPreset.Fog => new()
-        {
-            Coverage = 0.5f, Density = 0.6f, Overcast = 0.4f, FogHaze = 1.0f, WindSpeed = 0.4f,
-            Cirrus = 0.1f,
-        },
-        _ => new()
-        {
-            Coverage = 0.45f, Density = 0.70f, WindSpeed = 1.0f, Cirrus = 0.35f,
-        },
+        DynamicWeatherPreset.LightRain => Engine_DynamicWeatherProfile.FromUnreal(6, rain: 3, lightning: 1, wind: 2, fog: 1.5f),
+        DynamicWeatherPreset.LightSnow => Engine_DynamicWeatherProfile.FromUnreal(6, snow: 3, wind: 1, fog: 3),
+        DynamicWeatherPreset.Blizzard => Engine_DynamicWeatherProfile.FromUnreal(10, snow: 10, wind: 10, fog: 10),
+        DynamicWeatherPreset.Clear => Engine_DynamicWeatherProfile.FromUnreal(0, wind: 2),
+        DynamicWeatherPreset.PartlyCloudy => Engine_DynamicWeatherProfile.FromUnreal(3.8f, wind: 2, fog: 1),
+        DynamicWeatherPreset.Cloudy => Engine_DynamicWeatherProfile.FromUnreal(5, wind: 2.5f, fog: 1),
+        DynamicWeatherPreset.Overcast => Engine_DynamicWeatherProfile.FromUnreal(7.5f, wind: 3, fog: 1.5f),
+        DynamicWeatherPreset.Rain => Engine_DynamicWeatherProfile.FromUnreal(7.5f, rain: 7, lightning: 4, wind: 3, fog: 3),
+        DynamicWeatherPreset.Storm => Engine_DynamicWeatherProfile.FromUnreal(8, rain: 10, lightning: 10, wind: 10, fog: 6.5f),
+        DynamicWeatherPreset.Snow => Engine_DynamicWeatherProfile.FromUnreal(8.5f, snow: 6, wind: 4, fog: 5),
+        DynamicWeatherPreset.Fog => Engine_DynamicWeatherProfile.FromUnreal(0, wind: 1, fog: 10),
+        _ => Engine_DynamicWeatherProfile.FromUnreal(3.8f, wind: 2, fog: 1),
     };
 
     public static DynamicWeatherState FromTheme(WeatherTheme theme)
@@ -134,6 +120,10 @@ public static class Engine_DynamicSky
     public const string VolumetricCloudsKey = "dynamic_sky_volumetric_clouds";
 
     public const string CloudShadowsKey = "dynamic_sky_cloud_shadows";
+
+    public const string LightingOverrideKey = "dynamic_sky_lighting_override";
+
+    public static bool LightingOverride => Refii.Core.Engine_Switches.Flag(LightingOverrideKey, false);
 
     public static bool CloudShadows => Refii.Core.Engine_Switches.Flag(CloudShadowsKey, false);
 
@@ -287,6 +277,7 @@ public static class Engine_DynamicSky
 
     public static ShaderMaterial? BuildMaterial(bool cubemapFableDome)
     {
+        Engine_DynamicSurfaceWeather.EnsureGlobals();
         EnsureGlobals();
         var shader = GD.Load<Shader>(ShaderPath);
         if (shader is null)
@@ -352,6 +343,18 @@ public static class Engine_DynamicSky
         material.SetShaderParameter("exposure", Exposure);
         material.SetShaderParameter("dream", Dream);
         material.SetShaderParameter("haze", Haze);
+        ApplyCelestialTextures(material);
+    }
+
+    public static void ApplyCelestialTextures(ShaderMaterial material)
+    {
+        const string root = "res://assets/dynamic_sky/";
+        foreach (var pair in new[] { ("moon", "lroc_color_2k.jpg"), ("star", "starmap_2020_4k.exr") })
+        {
+            Texture2D? texture = ResourceLoader.Exists(root + pair.Item2) ? GD.Load<Texture2D>(root + pair.Item2) : null;
+            material.SetShaderParameter(pair.Item1 + "_use_texture", texture is not null);
+            if (texture is not null) material.SetShaderParameter(pair.Item1 + "_texture", texture);
+        }
     }
 
     public static void ApplyFrame(ShaderMaterial material, SkyFrame frame, SkyTheme? theme)
@@ -472,18 +475,30 @@ public static class Engine_DynamicSky
 
 public sealed class Engine_DynamicSkyDriver
 {
+    public event Action<DynamicLightningStrike>? LightningStruck;
+
+    private bool _auroraWanted;
+    private float _aurora;
+    private readonly Engine_DynamicSurfaceState _surface = new();
+
+    public void SetNightClock(float hour, int day, DynamicAuroraMode mode, Engine_DynamicNightSky? history = null)
+    {
+        _auroraWanted = (history ?? Engine_DynamicNightSky.Session).Visible(hour, day, mode);
+    }
+
     public static Engine_DynamicSkyDriver? Current { get; private set; }
 
     private const float TimeRollover = 100000f;
 
-    private DynamicWeatherState _from;
-    private DynamicWeatherState _to;
-    private DynamicWeatherState _now;
-    private float _blend = 1f;
-    private float _blendSeconds = 1f;
+    private readonly Engine_DynamicWeatherTransition _transition = new(DynamicWeatherState.Of(DynamicWeatherPreset.PartlyCloudy));
+    private DynamicWeatherState _now => _transition.Value;
+    private double _cloudX;
+    private double _cloudY;
     private float _time;
 
     private float _lightning;
+    private float _echoStrike;
+    private float _echoStrength;
     private float _nextStrike = 4f;
     private Vector3 _strikeDir = new(0f, 0.3f, 1f);
     private readonly Random _random = new();
@@ -496,18 +511,21 @@ public sealed class Engine_DynamicSkyDriver
 
     public DynamicWeatherState Weather => _now;
 
+    public Engine_DynamicSurfaceState SurfaceState => _surface;
+
     public Engine_DynamicSkyDriver()
     {
-        _from = _to = _now = DynamicWeatherState.Of(DynamicWeatherPreset.PartlyCloudy);
+        _switchGeneration = Refii.Core.Engine_Switches.Generation;
+        if (Engine_DynamicSky.TryParsePreset(Engine_DynamicSky.WeatherSwitch, out var preset) &&
+            preset != DynamicWeatherPreset.Theme)
+            SetWeather(preset, 0f);
         Current = this;
     }
 
     public void SetWeather(in DynamicWeatherState target, float seconds)
     {
-        _from = _now;
-        _to = target;
-        _blendSeconds = MathF.Max(seconds, 0.01f);
-        _blend = 0f;
+        _transition.Begin(target, seconds);
+        _sceneDirty = true;
     }
 
     public void SetWeather(DynamicWeatherPreset preset, float seconds)
@@ -517,6 +535,10 @@ public sealed class Engine_DynamicSkyDriver
         if (preset != DynamicWeatherPreset.Theme)
         {
             SetWeather(DynamicWeatherState.Of(preset), seconds);
+        }
+        else if (_lastTheme is { } theme)
+        {
+            FollowTheme(theme);
         }
     }
 
@@ -569,25 +591,8 @@ public sealed class Engine_DynamicSkyDriver
 
     private void Retarget(in DynamicWeatherState target)
     {
-        if (_blend >= 1f && SameState(_to, target))
-        {
-            return;
-        }
-
         SetWeather(target, Engine_DynamicSky.BlendSeconds);
     }
-
-    private static bool SameState(in DynamicWeatherState a, in DynamicWeatherState b) =>
-        MathF.Abs(a.Coverage - b.Coverage) < 1e-4f &&
-        MathF.Abs(a.Density - b.Density) < 1e-4f &&
-        MathF.Abs(a.Overcast - b.Overcast) < 1e-4f &&
-        MathF.Abs(a.Storm - b.Storm) < 1e-4f &&
-        MathF.Abs(a.Snow - b.Snow) < 1e-4f &&
-        MathF.Abs(a.FogHaze - b.FogHaze) < 1e-4f &&
-        MathF.Abs(a.WindSpeed - b.WindSpeed) < 1e-4f &&
-        MathF.Abs(a.Cirrus - b.Cirrus) < 1e-4f &&
-        MathF.Abs(a.Rain - b.Rain) < 1e-4f &&
-        MathF.Abs(a.SnowFall - b.SnowFall) < 1e-4f;
 
     private float NextChangeSeconds()
     {
@@ -633,7 +638,8 @@ public sealed class Engine_DynamicSkyDriver
 
     public void SetWind(Vector2 direction)
     {
-        _windDir = direction;
+        _windDir = direction.IsFinite() && direction.LengthSquared() > 1e-6f
+            ? direction.Normalized() : new Vector2(1f, 0.25f).Normalized();
         _sceneDirty = true;
     }
 
@@ -666,8 +672,9 @@ public sealed class Engine_DynamicSkyDriver
     public void Tick(
         float delta, ShaderMaterial material,
         Engine_DynamicPrecipitation? precipitation, Godot.Environment? environment,
-        bool? volumetricClouds = null)
+        bool? volumetricClouds = null, bool? surfaceWeather = null)
     {
+        delta = float.IsFinite(delta) ? MathF.Max(delta, 0f) : 0f;
         _time = (_time + delta) % TimeRollover;
 
         int generation = Refii.Core.Engine_Switches.Generation;
@@ -691,14 +698,21 @@ public sealed class Engine_DynamicSkyDriver
             }
         }
 
-        if (_blend < 1f)
+        DynamicWeatherState previous = _now;
+        _transition.Advance(delta);
+        if (!previous.Equals(_now)) _sceneDirty = true;
+        if (_sceneDirty)
         {
-            _blend = MathF.Min(1f, _blend + (delta / _blendSeconds));
-            float eased = _blend * _blend * (3f - (2f * _blend));
-            _now = DynamicWeatherState.Lerp(_from, _to, eased);
             Engine_DynamicSky.ApplyWeather(material, _now);
-            _sceneDirty = true;
         }
+
+        Variant multiplier = material.GetShaderParameter("cloud_motion_multiplier");
+        float motion = multiplier.VariantType == Variant.Type.Nil ? 1f : multiplier.AsSingle();
+        motion = float.IsFinite(motion) ? Math.Clamp(motion, 0f, 10f) : 1f;
+        double travel = delta * (previous.WindSpeed + _now.WindSpeed) * 0.5 * motion;
+        _cloudX += _windDir.X * travel;
+        _cloudY += _windDir.Y * travel;
+        material.SetShaderParameter("cloud_offset", new Vector2((float)_cloudX, (float)_cloudY));
 
         DynamicWeatherState ground = _now with { FogHaze = _now.FogHaze * _haze };
         bool usesFableAtmosphere = material.GetShaderParameter("cubemap_fable_dome").AsBool();
@@ -719,11 +733,18 @@ public sealed class Engine_DynamicSkyDriver
 
         TickRandomDrift(delta);
         TickLightning(delta);
+        bool surfaces = surfaceWeather ?? Engine_DynamicSurfaceWeather.Enabled;
+        _surface.Advance(delta, _now, _day, surfaces);
+        Engine_DynamicSurfaceWeather.Publish(_surface, _time, surfaces);
+        _aurora = Mathf.MoveToward(_aurora, _auroraWanted ? 1f : 0f, delta / 6f);
+        material.SetShaderParameter("aurora_strength", _aurora);
+        precipitation?.AdvanceMotion(delta, _lightning);
         Engine_DynamicSky.ApplyClock(_time, _lightning, _strikeDir, material);
     }
 
     private void TickLightning(float delta)
     {
+        if (delta <= 0f) return;
         if (_lightning > 0f)
         {
             _lightning = MathF.Max(0f, _lightning - (delta * 6f));
@@ -731,7 +752,14 @@ public sealed class Engine_DynamicSkyDriver
 
         if (_now.Storm < 0.05f)
         {
+            _echoStrike = 0f;
             return;
+        }
+
+        if (_echoStrike > 0f)
+        {
+            _echoStrike -= delta;
+            if (_echoStrike <= 0f) _lightning = MathF.Max(_lightning, _echoStrength * _now.Storm);
         }
 
         _nextStrike -= delta;
@@ -742,7 +770,11 @@ public sealed class Engine_DynamicSkyDriver
 
         float angle = (float)(_random.NextDouble() * Math.PI * 2.0);
         _strikeDir = new Vector3(MathF.Cos(angle), 0.25f, MathF.Sin(angle));
-        _lightning = 0.6f + ((float)_random.NextDouble() * 0.6f) * _now.Storm;
+        _lightning = (0.6f + (float)_random.NextDouble() * 0.6f) * _now.Storm;
+        LightningStruck?.Invoke(new DynamicLightningStrike(_strikeDir, _lightning,
+            300f + (float)_random.NextDouble() * 1400f));
+        _echoStrike = 0.12f + (float)_random.NextDouble() * 0.12f;
+        _echoStrength = 0.35f + (float)_random.NextDouble() * 0.45f;
         _nextStrike = 2f + ((float)_random.NextDouble() * 10f) / MathF.Max(_now.Storm, 0.2f);
     }
 }

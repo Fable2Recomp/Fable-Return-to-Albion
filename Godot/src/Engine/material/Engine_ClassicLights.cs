@@ -201,8 +201,10 @@ public static class Engine_ClassicLights
 
         if (light.Type == Light.Directional)
         {
-            Set(block, positions + slot, -light.Direction.X, -light.Direction.Y, -light.Direction.Z, 0f);
-            Set(block, colors + slot, light.Colour.X, light.Colour.Y, light.Colour.Z, 0f);
+            Vector3 colour = light.Primary ? Refii.Level.Engine_DynamicSkyLighting.ResolveRadiance(light.Colour) : light.Colour;
+            Vector3 travel = light.Primary ? Refii.Level.Engine_DynamicSkyLighting.ResolveGuestTravel(light.Direction) : light.Direction;
+            Set(block, positions + slot, -travel.X, -travel.Y, -travel.Z, 0f);
+            Set(block, colors + slot, colour.X, colour.Y, colour.Z, 0f);
             Lane(block, type + quad, lane, 0f);
             Lane(block, invRadii + quad, lane, 0f);
             Set(block, spotDirections + slot, 0f, 0f, 0f, 0f);
@@ -245,7 +247,9 @@ public static class Engine_ClassicLights
     /// </summary>
     public static void PackCaster(float[] block, in Light light)
     {
-        Set(block, 29, -light.Direction.X, -light.Direction.Y, -light.Direction.Z, 0f);
+        Vector3 direction = light.Type == Light.Directional && light.Primary
+            ? Refii.Level.Engine_DynamicSkyLighting.ResolveGuestTravel(light.Direction) : light.Direction;
+        Set(block, 29, -direction.X, -direction.Y, -direction.Z, 0f);
     }
 
     /// <summary>Frames pumped, and the lights seen on the last one.</summary>

@@ -21,6 +21,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private static readonly StringName Param_uv_scale_offset = "uv_scale_offset";
 
     private float _dayFraction = 0.5f;
+    private float _guestDayFraction = 0.5f;
+    private int _guestDay;
+    private static float _thunderSfx = 1f;
 
     [Export(PropertyHint.Range, "0,24,0.05,suffix:h")]
     public float TimeOfDay
@@ -29,6 +32,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         set
         {
             _dayFraction = value / 24f;
+            _guestDayFraction = _dayFraction;
             if (IsNodeReady())
             {
                 Reevaluate();
@@ -98,6 +102,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     public override void _Ready()
     {
         Current = this;
+        Engine_DynamicSkyLighting.Reset();
         Refii.Fx.Engine_FxSystem.BindAmbientToScene();
 
         try
@@ -138,6 +143,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         if (Current == this)
         {
             Current = null;
+            Engine_DynamicSkyLighting.Reset();
+            Engine_DynamicSurfaceWeather.Reset();
+            RenderingServer.GlobalShaderParameterSet("dynamic_cloud_projection", Vector4.Zero);
         }
 
         DetachEditorCompositor();
@@ -204,17 +212,54 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
 
             _dynamicSky.SetShelter(Engine_WeatherShelter.Exposure, Engine_WeatherShelter.Falling);
+            _dynamicSky.SetNightClock(_dayFraction * 24f, _guestDay,
+                Engine_DynamicNightSky.ParseMode(Refii.Core.Engine_Switches.String(Engine_DynamicNightSky.AuroraKey, "auto")));
+            if (!Engine.IsEditorHint())
+            {
+                if (_dynamicThunder is null)
+                {
+                    _dynamicThunder = new Engine_DynamicThunder { Name = "DynamicThunder" };
+                    AddChild(_dynamicThunder);
+                }
+                _dynamicThunder.Bind(_dynamicSky);
+                var volume = HostBridge.GetOptionSliders();
+                if (volume.Known) _thunderSfx = volume.Sfx;
+                _dynamicThunder.Advance((float)delta, Engine_WeatherShelter.Exposure, _thunderSfx);
+            }
             _dynamicSky.Tick((float)delta, dynamicMaterial,
                 GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(
                     Engine_DynamicPrecipitation.NodeName),
                 Environment);
         }
+        else
+        {
+            _dynamicThunder?.Bind(null);
+            if (Current == this) Engine_DynamicSurfaceWeather.Reset();
+        }
+
+        if (Current == this)
+        {
+            Engine_DynamicSkyLighting.Update(_dynamicSky?.Weather ?? default,
+                _frame is { } weatherFrame ? Engine_DynamicSky.Daylight(weatherFrame) : 0f,
+                Engine_DynamicSky.Enabled && Engine_DynamicSky.LightingOverride);
+            if (_frame is { } sunFrame)
+                Engine_DynamicSkyLighting.ConfigureSun(sunFrame, _dynamicSky?.Weather ?? default,
+                    Engine_DynamicSky.Enabled && Engine_DynamicSky.LightingOverride, Engine_DynamicSky.CloudShadows,
+                    Lighting?.HasSky ?? false);
+            if (Lighting is { } weatherLighting)
+            {
+                if (ResolveSun() is { } weatherSun) Engine_LevelLighting.UpdateSun(weatherSun, weatherLighting);
+                Engine_LevelBakedLighting.PublishSunLighting(weatherLighting);
+            }
+            RenderingServer.GlobalShaderParameterSet("dynamic_sun_toward", Engine_DynamicSkyLighting.SunToward);
+            RenderingServer.GlobalShaderParameterSet("dynamic_sun_radiance", Engine_DynamicSkyLighting.OverridesSun
+                ? Engine_DynamicSkyLighting.SunColour * Engine_DynamicSkyLighting.SunEnergy : Vector3.Zero);
+        }
 
         Engine_DynamicCloudShadows.Sync(this, ref _dynamicCloudShadowCaster,
             Engine_DynamicSky.Enabled ? Environment?.Sky?.SkyMaterial as ShaderMaterial : null,
-            Engine_DynamicSky.CloudShadows && !Refii.Models.Engine_ClassicMaterial.Active,
-            ResolveCamera(), ResolveSun(),
-            Lighting is { } lit ? Refii.Lighting.Engine_LevelLighting.SunCasts(lit.SunShadow) : null);
+            Engine_DynamicSky.LightingOverride && Engine_DynamicSky.CloudShadows,
+            ResolveCamera(), ResolveSun());
 
         Refii.Core.Engine_FramePhases.Lap("sky.anim", ref lap);
         if (Engine_PostFxParams.SunSourcesRequested)
@@ -351,6 +396,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {
             Vector3 moon = Engine_SkyFrame.ToGodot(frame.MoonDirection);
+            dynamicMaterial.SetShaderParameter("moon_phase", MoonPhaseNow / 8f);
             if (moon != _lastMoon)
             {
                 _lastMoon = moon;
@@ -367,7 +413,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingNow, frame);
             Lighting = lighting;
-            Engine_LevelLighting.UpdateSun(sun, lighting);
+            if (Current != this) Engine_LevelLighting.UpdateSun(sun, lighting);
             if (Environment is not null)
             {
                 Engine_LevelLighting.ConfigureEnvironment(Environment, lighting);
@@ -548,14 +594,14 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private void FollowGuestClock()
     {
-        if (HostBridge.TimeOfDay() is not { } clock)
+        var clock = HostBridge.TimeOfDay();
+        if (clock is { } current)
         {
-            // No world clock yet — the front end, or a load in progress. Hold what we have rather
-            // than snapping the sky to a default that the game is not at.
-            return;
+            _guestDayFraction = current.Fraction;
+            _guestDay = current.DayCount;
         }
-
-        _dayFraction = clock.Fraction;
+        _dayFraction = Engine_DynamicNightSky.ResolveTime(_guestDayFraction, Engine_DynamicSky.Enabled,
+            Refii.Core.Engine_Switches.String(Engine_DynamicNightSky.TimeKey, "auto"));
 
         // Wrapped distance, so midnight is not a jump. Crossing 0.999 -> 0.001 is two minutes of
         // game time, and comparing the raw difference would read it as most of a day and force a
@@ -570,7 +616,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         _lastEvaluated = _dayFraction;
         GD.Print($"[sky-clock] tod={_dayFraction * 24f:0.00}h (fraction {_dayFraction:0.000}) " +
-            $"day {clock.DayCount}{(clock.Frozen ? ", FROZEN" : string.Empty)}");
+            $"day {_guestDay}{(clock?.Frozen == true ? ", FROZEN" : string.Empty)}");
 
         // WHERE THE SUN IS, in world space — the one direction every consumer takes.
         //
@@ -629,6 +675,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     {
         Theme = theme;
         _dayFraction = dayFraction;
+        _guestDayFraction = dayFraction;
         LevelGdbPath = levelGdbPath;
     }
 
@@ -745,6 +792,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {
             Engine_DynamicSky.ApplyFrame(dynamicMaterial, frame, Theme);
+            dynamicMaterial.SetShaderParameter("moon_phase", MoonPhaseNow / 8f);
             _dynamicSky ??= new Engine_DynamicSkyDriver();
             if (LightingGdbs.Count != 0 &&
                 Engine_EnvironmentTheme.TryExtractWeather(LightingGdbs, out WeatherTheme dynamicWeather))
@@ -884,6 +932,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private SkyFrame? _frame;
     private ToneMapTheme? _toneMapTheme;
     private Engine_DynamicSkyDriver? _dynamicSky;
+    private Engine_DynamicThunder? _dynamicThunder;
     private Engine_DynamicCloudShadows? _dynamicCloudShadowCaster;
     private Vector3 _lastMoon = new(float.NaN, 0, 0);
 
@@ -932,6 +981,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         sky.SkyMaterial = material;
         _dynamicSky = null;
+        _dynamicThunder?.Bind(null);
         _lastMoon = new Vector3(float.NaN, 0, 0);
 
         Node? parent = GetParent();

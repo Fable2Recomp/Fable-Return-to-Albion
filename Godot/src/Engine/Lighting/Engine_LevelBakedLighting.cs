@@ -860,14 +860,20 @@ public static class Engine_LevelBakedLighting
 		// TOWARD the sun, and X is flipped for the same reason the disc's is: SunDirection is
 		// stated in the guest's axes and the level root is mirrored through X. This is the disc's
 		// vector, NOT the DirectionalLight3D's forward — that one is the negation.
+		PublishSunLighting(frame);
+	}
+
+	public static void PublishSunLighting(LightingFrame? frame)
+	{
 		float[] sunDir = frame?.SunDirection ?? new float[] { 0f, 1f, 0f };
 		RenderingServer.GlobalShaderParameterSet(Global_sun_toward,
-			new Vector3(-sunDir[0], sunDir[1], sunDir[2]));
+			Refii.Level.Engine_DynamicSkyLighting.OverridesSun ? Refii.Level.Engine_DynamicSkyLighting.SunToward
+			: new Vector3(-sunDir[0], sunDir[1], sunDir[2]));
 
 		float[] sunRgb = frame?.SunColour ?? WhiteLightmap;
 		float sunEnergy = frame?.SunEnergy ?? 1f;
 		RenderingServer.GlobalShaderParameterSet(Global_sun_colour,
-			new Vector3(sunRgb[0] * sunEnergy, sunRgb[1] * sunEnergy, sunRgb[2] * sunEnergy));
+			Refii.Level.Engine_DynamicSkyLighting.ResolveRadiance(new Vector3(sunRgb[0] * sunEnergy, sunRgb[1] * sunEnergy, sunRgb[2] * sunEnergy)));
 	}
 
 	/// <summary>

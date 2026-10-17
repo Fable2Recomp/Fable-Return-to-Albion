@@ -23,10 +23,10 @@ public struct DynamicPrecipitationLook
         RainOpacity = Refii.Core.Engine_Switches.Float("dynamic_sky_rain_opacity", 0.18f),
         RainSpeed = Refii.Core.Engine_Switches.Float("dynamic_sky_rain_speed", 16f),
         RainDensity = Refii.Core.Engine_Switches.Float("dynamic_sky_rain_density", 0.6f),
-        SnowSize = Refii.Core.Engine_Switches.Float("dynamic_sky_snow_size", 0.02f),
+        SnowSize = Refii.Core.Engine_Switches.Float("dynamic_sky_snow_size", 0.018f),
         SnowOpacity = Refii.Core.Engine_Switches.Float("dynamic_sky_snow_opacity", 0.8f),
         SnowSpeed = Refii.Core.Engine_Switches.Float("dynamic_sky_snow_speed", 0.9f),
-        SnowDensity = Refii.Core.Engine_Switches.Float("dynamic_sky_snow_density", 0.6f),
+        SnowDensity = Refii.Core.Engine_Switches.Float("dynamic_sky_snow_density", 0.7f),
         SnowSway = Refii.Core.Engine_Switches.Float("dynamic_sky_snow_sway", 0.3f),
     };
 }
@@ -45,7 +45,7 @@ public partial class Engine_DynamicPrecipitation : Node3D
         Refii.Core.Engine_Switches.Int("dynamic_sky_rain_slots", 8000);
 
     public static readonly int SnowSlots =
-        Refii.Core.Engine_Switches.Int("dynamic_sky_snow_slots", 7000);
+        Refii.Core.Engine_Switches.Int("dynamic_sky_snow_slots", 12000);
 
     private static readonly StringName CountName = "particle_count";
     private static readonly StringName WindName = "wind";
@@ -57,6 +57,11 @@ public partial class Engine_DynamicPrecipitation : Node3D
     private int _snowCount = -1;
     private float _brightness = -1f;
     private Vector3 _wind;
+    private double _windX;
+    private double _windZ;
+    private double _snowWindX;
+    private double _snowWindZ;
+    private double _motionTime;
     private DynamicPrecipitationLook _look = DynamicPrecipitationLook.Default;
 
     public DynamicPrecipitationLook Look
@@ -190,19 +195,19 @@ public partial class Engine_DynamicPrecipitation : Node3D
         if (_snow?.MaterialOverride is ShaderMaterial snow)
         {
             snow.SetShaderParameter("particle_size", new Vector2(_look.SnowSize, _look.SnowSize));
-            snow.SetShaderParameter("min_pixels", new Vector2(1.5f, 1.5f));
-            snow.SetShaderParameter("max_pixels", new Vector2(22f, 22f));
+            snow.SetShaderParameter("min_pixels", new Vector2(0.65f, 0.65f));
+            snow.SetShaderParameter("max_pixels", new Vector2(5f, 5f));
             snow.SetShaderParameter("particle_colour",
                 new Color(1f, 1f, 1f, Math.Clamp(_look.SnowOpacity, 0f, 1f)));
             snow.SetShaderParameter("fall_speed", MathF.Max(_look.SnowSpeed, 0.05f));
             snow.SetShaderParameter("sway", MathF.Max(_look.SnowSway, 0f));
-            snow.SetShaderParameter("wind_scale", 0.3f);
+            snow.SetShaderParameter("wind_scale", 0.8f);
             snow.SetShaderParameter("size_jitter", 0.8f);
             snow.SetShaderParameter("speed_jitter", 0.6f);
-            snow.SetShaderParameter("box", new Vector3(9f, 8f, 9f));
-            snow.SetShaderParameter("box_far", new Vector3(38f, 20f, 38f));
-            snow.SetShaderParameter("near_fraction", 0.3f);
-            snow.SetShaderParameter("depth_fade", 0.07f);
+            snow.SetShaderParameter("box", new Vector3(16f, 12f, 16f));
+            snow.SetShaderParameter("box_far", new Vector3(42f, 26f, 42f));
+            snow.SetShaderParameter("near_fraction", 0.65f);
+            snow.SetShaderParameter("depth_fade", 0.035f);
             snow.SetShaderParameter("fog_tint", new Color(0.74f, 0.76f, 0.80f));
         }
     }
@@ -224,6 +229,26 @@ public partial class Engine_DynamicPrecipitation : Node3D
                 material.SetShaderParameter("shelter_on", Engine_WeatherShelter.HasBox ? 1f : 0f);
                 material.SetShaderParameter("shelter_box", Engine_WeatherShelter.ToBox);
             }
+        }
+    }
+
+    public void AdvanceMotion(float delta, float lightning)
+    {
+        if (!float.IsFinite(delta) || delta < 0f) return;
+        _windX += _wind.X * (double)delta;
+        _windZ += _wind.Z * (double)delta;
+        _motionTime += delta;
+        double gust = 1.0 + 0.35 * Math.Sin(_motionTime * 0.43) + 0.15 * Math.Sin(_motionTime * 1.13);
+        _snowWindX += _wind.X * delta * gust;
+        _snowWindZ += _wind.Z * delta * gust;
+        foreach (MeshInstance3D? layer in new[] { _rain, _snow })
+        {
+            if (layer?.MaterialOverride is not ShaderMaterial material) continue;
+            material.SetShaderParameter("motion_time", (float)_motionTime);
+            material.SetShaderParameter("wind_offset", layer == _snow
+                ? new Vector2((float)_snowWindX, (float)_snowWindZ)
+                : new Vector2((float)_windX, (float)_windZ));
+            material.SetShaderParameter("lightning_flash", float.IsFinite(lightning) ? Math.Clamp(lightning, 0f, 2f) : 0f);
         }
     }
 
@@ -252,7 +277,7 @@ public partial class Engine_DynamicPrecipitation : Node3D
         }
 
         windDir = windDir.Normalized();
-        float strength = 1.0f + (Math.Clamp(windSpeed, 0f, 4f) * 2.0f);
+        float strength = Math.Clamp(windSpeed, 0f, 4f) * 2.0f;
         var wind = new Vector3(windDir.X * strength, 0f, windDir.Y * strength);
         bool windChanged = !wind.IsEqualApprox(_wind);
         bool brightnessChanged = MathF.Abs(brightness - _brightness) > 0.01f;

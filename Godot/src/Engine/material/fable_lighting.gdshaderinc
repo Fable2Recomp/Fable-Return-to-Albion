@@ -14,6 +14,8 @@
 // everything standing on it takes all three, and a street whose buildings darken at dusk over
 // a path that does not reads as "the lighting is broken" rather than as two models.
 
+#include "res://src/Engine/level/environment/dynamic/dynamic_cloud_receiver.gdshaderinc"
+
 instance uniform vec4 probe_r = vec4(0.0);
 instance uniform vec4 probe_g = vec4(0.0);
 instance uniform vec4 probe_b = vec4(0.0);
@@ -393,15 +395,13 @@ vec3 fable_ambient(vec3 bake) {
 /// d/r = (1 - sqrt(A))^(1/4), exact to 3e-14. That inversion is NOT valid once a shadow is
 /// multiplied in, which is why every light that can cast is registered.
 ///
-/// The sun has no distance term (the guest's per-light scalar S = 0 collapses
-/// `lerp(1, cone*atten, S)` to 1), so its ATTENUATION is the shadow already and passes through.
 ///
 /// The guest's seven-light cap is NOT reproduced: the ramp reaches exactly zero at the range, so
 /// the cap only changes the picture where more than seven radii overlap one point — the worst
 /// overlap in the shipped set is 11, and only 4 of 81 lit levels exceed 7 anywhere.
 float fable_attenuation(float godot_attenuation, bool directional, float specular_amount, vec3 world) {
 	if (directional) {
-		return godot_attenuation;
+		return godot_attenuation * surface_cloud_transmission(world);
 	}
 
 	int slot = int(specular_amount * 0.5 + 0.5) - 2;

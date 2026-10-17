@@ -36,7 +36,7 @@ float volume_density(vec3 position) {
 	if (height <= 0.0 || height >= 1.0) {
 		return 0.0;
 	}
-	vec3 drift = vec3(wind_dir.x, 0.0, wind_dir.y) * cloud_time * cloud_speed * cloud_motion_multiplier * 20.0;
+	vec3 drift = vec3(cloud_offset.x, 0.0, cloud_offset.y) * 20.0;
 	vec3 advected = (position + drift) * max(cloud_scale, 0.05);
 	vec2 weather = cloud_weather(advected.xz);
 	float cover = clamp(cloud_coverage + overcast * 0.38 + storm * 0.2, 0.0, 1.0);

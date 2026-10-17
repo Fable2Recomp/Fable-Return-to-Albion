@@ -388,7 +388,9 @@ public static class Engine_ClassicShaders
         code.Append(vertex).Append('\n').Append(pixel);
 
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
-        var shader = new Shader { Code = code.ToString() };
+        string shaderCode = code.ToString();
+        if (Engine_ClassicWeather.Supports(pixelEntry, pass)) shaderCode = Engine_ClassicWeather.Adapt(shaderCode);
+        var shader = new Shader { Code = shaderCode };
         double ms = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         int built = System.Threading.Interlocked.Increment(ref _built);
         _buildMs += ms;
