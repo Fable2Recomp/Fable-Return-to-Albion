@@ -50,7 +50,7 @@ public sealed class Engine_UiTextureCache
 	{
 		_banks = banks;
 		Engine_BnkTextureLoader.EnsureRegistered();
-		Engine_BnkTextureLoader.SetResolver(
+		Engine_BnkTextureLoader.SetFallbackResolver(
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null);
 	}
 

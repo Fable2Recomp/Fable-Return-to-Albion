@@ -182,6 +182,14 @@ public partial class LauncherApp : Control
 		LoadLauncherConfig();
 		LauncherTheme.Load();
 
+		// The mods that ship with the app, packed into the mods folder before the Mods panel
+		// first lists it. Installed switched off; never over a copy someone has edited.
+		foreach (string line in Refii.Mods.ModBundled.Install(
+			Refii.Core.Engine_AppRoot.BundledModsDirectory, Refii.Assets.Engine_GameAssets.ModsRoot))
+		{
+			GD.Print("[mods] bundled " + line);
+		}
+
 		_patches = new Patches();
 		_launch = new LaunchController(_patches);
 		_updates = new UpdateChecker();

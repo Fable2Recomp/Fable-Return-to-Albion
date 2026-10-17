@@ -46,6 +46,10 @@ uniform float quad_base_size = 100.0;
 uniform vec3 tint_rgb = vec3(1.0);
 uniform float tint_amount = 0.0;
 
+// A hue rotation in turns, 0 = none. Lets a mod recolour shipped art — the health bar's red as
+// a mana bar's blue — without a second texture.
+uniform float hue_shift = 0.0;
+
 // The ACCUMULATED opacity down the element chain, not this element's own.
 uniform float opacity = 1.0;
 
@@ -95,6 +99,18 @@ void fragment() {
 		// REPLACE, not blend — the stored factor is 1.0.
 		rgb = detail.rgb;
 		alpha *= detail.a;
+	}
+
+	if (hue_shift != 0.0) {
+		// RGB -> HSV, rotate, back (the branchless form).
+		vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+		vec4 p = mix(vec4(rgb.bg, k.wz), vec4(rgb.gb, k.xy), step(rgb.b, rgb.g));
+		vec4 q = mix(vec4(p.xyw, rgb.r), vec4(rgb.r, p.yzx), step(p.x, rgb.r));
+		float d = q.x - min(q.w, q.y);
+		vec3 hsv = vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+		hsv.x = fract(hsv.x + hue_shift);
+		vec3 c = clamp(abs(fract(hsv.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
+		rgb = hsv.z * mix(vec3(1.0), c, hsv.y);
 	}
 
 	// SUBTRACTIVE and weighted; weight 0 leaves the colour alone.

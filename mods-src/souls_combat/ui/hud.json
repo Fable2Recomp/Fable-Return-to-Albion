@@ -1,0 +1,83 @@
+{
+	"scale": {
+		"group.PlayerHealth.PlayerHealth": 1.15
+	},
+	"clones": [
+		{
+			"id": "souls_combat.mana",
+			"of": "group.PlayerHealth.PlayerHealth",
+			"offset": [
+				0,
+				34
+			],
+			"hue": 0.62,
+			"hueElements": [
+				"Bar",
+				"BarMax"
+			],
+			"icon": {
+				"element": "Heart",
+				"textures": [
+					"art/gui/hud/souls_combat_mana.tex"
+				]
+			},
+			"values": {
+				"PlayerHealth": "mod:souls_combat.mana/mod:souls_combat.bar_cap",
+				"PlayerHealthMax": "mod:souls_combat.mana_max/mod:souls_combat.bar_cap",
+				"PlayerLowHealthPulser": "none"
+			},
+			"bars": {
+				"Bar": "PlayerHealth",
+				"BarMax": "PlayerHealthMax"
+			}
+		},
+		{
+			"id": "souls_combat.stamina",
+			"of": "group.PlayerHealth.PlayerHealth",
+			"offset": [
+				0,
+				68
+			],
+			"hue": 0.33,
+			"hueElements": [
+				"Bar",
+				"BarMax"
+			],
+			"icon": {
+				"element": "Heart",
+				"textures": [
+					"art/gui/hud/souls_combat_stamina.tex"
+				]
+			},
+			"values": {
+				"PlayerHealth": "mod:souls_combat.stamina/mod:souls_combat.bar_cap",
+				"PlayerHealthMax": "mod:souls_combat.stamina_max/mod:souls_combat.bar_cap",
+				"PlayerLowHealthPulser": "none"
+			},
+			"bars": {
+				"Bar": "PlayerHealth",
+				"BarMax": "PlayerHealthMax"
+			}
+		}
+	],
+	"pieces": [
+		{
+			"id": "souls_combat.stamina2",
+			"kind": "meter",
+			"follow": "group.CoopHealth.CoopHealth",
+			"followElement": "BarMax, Bar",
+			"offset": [
+				0,
+				3
+			],
+			"size": [
+				0,
+				6
+			],
+			"value": "mod:souls_combat.stamina2",
+			"max": "mod:souls_combat.stamina2_max",
+			"fill": "#3c9a3a",
+			"back": "#000000b8"
+		}
+	]
+}

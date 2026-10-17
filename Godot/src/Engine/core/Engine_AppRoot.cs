@@ -156,6 +156,14 @@ public static class Engine_AppRoot
 
 	public static string LogsDirectory => System.IO.Path.Combine(Path, "logs");
 
+	/// <summary>
+	/// Mods that ship with the app, as source: <c>bundled-mods</c> beside the binary once exported,
+	/// the repo's own <c>mods-src</c> in a dev tree. See <see cref="Refii.Mods.ModBundled"/>.
+	/// </summary>
+	public static string BundledModsDirectory => IsExported
+		? System.IO.Path.Combine(Path, "bundled-mods")
+		: System.IO.Path.GetFullPath(System.IO.Path.Combine(SafeGetProjectDir(), "..", "mods-src"));
+
 	/// <summary>Player-owned state: the profile, savegames, and derived caches.</summary>
 	public static string SaveDirectory => System.IO.Path.Combine(AssetsDirectory, "save");
 

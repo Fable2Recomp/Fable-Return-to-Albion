@@ -28,6 +28,8 @@ public partial class ModdingPanel : VBoxContainer
 	private string _statusMessage = string.Empty;
 	private List<ModInstall> _mods = new();
 	private ModLoadOrder _order = new();
+	private readonly Dictionary<string, ModNativeSources> _native = new(StringComparer.OrdinalIgnoreCase);
+	private List<ModNativeConflict> _nativeConflicts = new();
 	private readonly Dictionary<string, ModTally> _tallies = new();
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
@@ -177,6 +179,23 @@ public partial class ModdingPanel : VBoxContainer
 		}
 
 		_tallies.Clear();
+
+		_native.Clear();
+		foreach (ModInstall mod in _mods)
+		{
+			if (ModNative.Read(mod) is { } native)
+			{
+				_native[mod.Name] = native;
+			}
+		}
+
+		List<ModNativeSources> enabledNative = _order.Enabled
+			.Where(name => _native.ContainsKey(name))
+			.Select(name => _native[name])
+			.ToList();
+		_nativeConflicts = enabledNative.Count == 0
+			? new List<ModNativeConflict>()
+			: ModNative.FindConflicts(enabledNative, NativeModConsent.RefiiOverrides());
 
 		var recordConflicts = Refii.Gdb.GdbPatchCompositor.DetectRecordConflicts(_modsRoot, _order, _mods);
 		var rowConflicts = Refii.Mods.ModRowOverlays.DetectRowConflicts(_order, _mods);
@@ -404,6 +423,22 @@ public partial class ModdingPanel : VBoxContainer
 		ModInstall captured = mod;
 		check.Toggled += pressed =>
 		{
+			if (pressed && _native.TryGetValue(captured.Name, out ModNativeSources? native) &&
+				!NativeModConsent.IsGranted(native))
+			{
+				check.SetPressedNoSignal(false);
+				AskNativeConsent(native, () =>
+				{
+					if (!_order.Enabled.Contains(captured.Name, StringComparer.OrdinalIgnoreCase))
+					{
+						_order.Enabled.Add(captured.Name);
+					}
+
+					SaveEnabledMods();
+				});
+				return;
+			}
+
 			if (pressed)
 			{
 				if (!_order.Enabled.Contains(captured.Name, StringComparer.OrdinalIgnoreCase))
@@ -464,6 +499,11 @@ public partial class ModdingPanel : VBoxContainer
 		string label = mod.Metadata.Version.Length == 0
 			? displayName
 			: displayName + " (" + mod.Metadata.Version + ")";
+		_native.TryGetValue(mod.Name, out ModNativeSources? nativeSources);
+		if (nativeSources != null)
+		{
+			label += "  ⚙ native";
+		}
 
 		Label nameLabel = MakeLabel(label);
 		nameLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -483,12 +523,59 @@ public partial class ModdingPanel : VBoxContainer
 			sb.AppendLine();
 			sb.AppendLine(mod.Metadata.Description);
 		}
+		if (nativeSources != null)
+		{
+			sb.AppendLine();
+			sb.AppendLine("Native code — replaces these game functions:");
+			foreach (string function in nativeSources.Overrides)
+			{
+				sb.AppendLine("  • " + function);
+			}
+		}
 		nameLabel.TooltipText = sb.ToString().TrimEnd();
 		grid.AddChild(nameLabel);
 
 		// CONFLICTS / STATUS
 		Control statusControl;
-		if (_tallies.TryGetValue(mod.Name, out ModTally? tally) && (tally.Lost > 0 || tally.OverriddenRecords > 0))
+		List<ModNativeConflict> nativeConflicts = enabled
+			? _nativeConflicts.Where(conflict =>
+				string.Equals(conflict.First, mod.Name, StringComparison.OrdinalIgnoreCase) ||
+				string.Equals(conflict.Second, mod.Name, StringComparison.OrdinalIgnoreCase)).ToList()
+			: new List<ModNativeConflict>();
+		_tallies.TryGetValue(mod.Name, out ModTally? tally);
+		if (enabled && nativeSources != null && !NativeModConsent.IsGranted(nativeSources))
+		{
+			// ENABLED BUT NOT CONSENTED: enabled before it carried native code, or before an update
+			// changed it. Its data and Lua load; its native code is withheld from the build until
+			// the player says yes here.
+			var allow = new Button { Text = "⚙ Allow native" };
+			Apply(allow);
+			allow.AddThemeColorOverride("font_color", new Color(0.95f, 0.75f, 0.2f));
+			allow.TooltipText = "This mod's native code is not compiled into the game until you allow it.";
+			ModNativeSources pending = nativeSources;
+			allow.Pressed += () => AskNativeConsent(pending, SaveEnabledMods);
+			statusControl = allow;
+		}
+		else if (nativeConflicts.Count > 0)
+		{
+			// A FUNCTION HAS ONE BODY. Unlike a record or a file, no order resolves this: the game
+			// code build refuses, so the row says so before Play does.
+			var blockedLabel = MakeLabel("⛔ native");
+			blockedLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
+			blockedLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			blockedLabel.CustomMinimumSize = new Vector2(60, 0);
+			blockedLabel.MouseFilter = MouseFilterEnum.Pass;
+			var tip = new System.Text.StringBuilder();
+			tip.AppendLine("Two enabled mods (or a mod and refii itself) replace the same game function.");
+			tip.AppendLine("The game code cannot be built until one of them is disabled:");
+			foreach (ModNativeConflict conflict in nativeConflicts)
+			{
+				tip.AppendLine($"  • {conflict.Function}: {conflict.First} and {conflict.Second}");
+			}
+			blockedLabel.TooltipText = tip.ToString().TrimEnd();
+			statusControl = blockedLabel;
+		}
+		else if (tally is not null && (tally.Lost > 0 || tally.OverriddenRecords > 0))
 		{
 			int lostCount = tally.Lost;
 			var lostBtn = new Button { Text = $"⚠ {lostCount} lost" };
@@ -565,6 +652,35 @@ public partial class ModdingPanel : VBoxContainer
 		actionsBox.AddChild(deleteBtn);
 
 		grid.AddChild(actionsBox);
+	}
+
+	/// <summary>The one-time native code prompt; <paramref name="onGranted"/> runs only on consent.</summary>
+	private void AskNativeConsent(ModNativeSources native, Action onGranted)
+	{
+		var dialog = new ConfirmationDialog
+		{
+			Title = "This mod contains native code",
+			DialogText = NativeModConsent.PromptText(native),
+			OkButtonText = "Enable",
+			CancelButtonText = "Cancel",
+			DialogAutowrap = true,
+			MinSize = new Vector2I(520, 0),
+		};
+		dialog.Confirmed += () =>
+		{
+			NativeModConsent.Grant(native);
+			onGranted();
+		};
+		dialog.VisibilityChanged += () =>
+		{
+			if (!dialog.Visible)
+			{
+				dialog.QueueFree();
+			}
+		};
+		Node top = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
+		top.AddChild(dialog);
+		dialog.PopupCentered();
 	}
 
 	private void ShowConflictDetailsDialog(ModInstall mod, ModTally tally)

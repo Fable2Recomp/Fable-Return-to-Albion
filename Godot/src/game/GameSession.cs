@@ -323,6 +323,9 @@ public partial class GameSession : Node
 
 	private void session_processBody(double delta)
 	{
+		// The mods' settings.json values reach the game once per guest.
+		Refii.Mods.ModSettings.Pump(Refii.Host.HostBridge.IsGuestUp);
+
 		// The modern renderer's decals: the guest's stated ring as Godot decals.
 		if (!Refii.Models.Engine_ClassicMaterial.Active && Refii.Host.HostBridge.IsGuestUp)
 		{

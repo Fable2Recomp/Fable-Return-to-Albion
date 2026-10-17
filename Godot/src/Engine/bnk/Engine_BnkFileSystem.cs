@@ -273,7 +273,10 @@ public sealed class BnkFileSystem : IDisposable
             {
                 foreach (Refii.Mods.F2ModEntry entry in package.Entries)
                 {
-                    if (IsModBookkeeping(Path.GetFileName(entry.Path)))
+                    // native/ is compiled into the game module by the launcher, not served.
+                    if (IsModBookkeeping(Path.GetFileName(entry.Path)) ||
+                        Refii.Mods.ModNative.IsNativePath(entry.Path) ||
+                        Refii.Mods.ModLua.IsModLuaPath(entry.Path))
                     {
                         continue;
                     }

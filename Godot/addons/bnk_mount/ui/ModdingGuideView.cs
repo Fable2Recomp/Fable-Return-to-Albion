@@ -111,6 +111,7 @@ public partial class ModdingGuideView : MarginContainer
         AddSubTabButton(subNavRow, "🎨 3. Models, Textures & .gmd Sockets", 2);
         AddSubTabButton(subNavRow, "🗺️ 4. Levels & 3D Placements", 3);
         AddSubTabButton(subNavRow, "📜 5. Lua Scripts & Quests", 4);
+        AddSubTabButton(subNavRow, "🧩 6. Script API & Hard Mods", 5);
 
         topVBox.AddChild(subNavRow);
         topPanel.AddChild(topVBox);
@@ -135,6 +136,7 @@ public partial class ModdingGuideView : MarginContainer
         _subTabPages.Add(BuildModelsTexturesGmdPage());
         _subTabPages.Add(BuildLevelsPage());
         _subTabPages.Add(BuildLuaPage());
+        _subTabPages.Add(BuildScriptApiPage());
 
         foreach (Control page in _subTabPages)
         {
@@ -613,6 +615,86 @@ public partial class ModdingGuideView : MarginContainer
             "  • Entrypoint Script: A mod package can include 'scripts/mod_init.lua' (or custom script files under 'scripts/') to execute custom Lua code when the session starts.\n" +
             "  • GDB Script References: Many GDB components (such as EntityScriptComponent or QuestComponent) reference Lua script names or state machines that can be inspected and overridden in the GDB Hierarchy tab.\n" +
             "  • Dedicated visual level placement and interactive Lua script template tools are being expanded in upcoming Mod Studio updates."));
+
+        return page;
+    }
+
+    // =========================================================================
+    // SUB-TAB 5: THE SCRIPT API AND HARD MODS
+    // =========================================================================
+    private Control BuildScriptApiPage()
+    {
+        var page = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        page.AddThemeConstantOverride("separation", 10);
+
+        page.AddChild(CreateSectionCard(
+            "🧩 RefiiModApi — everything a mod is, as calls",
+            new Color(0.55f, 0.85f, 1.0f),
+            "Every kind of content a mod can carry can be written from a script: an EditorScript (File > Run), a tool script, or C#. " +
+            "Each call writes into the ACTIVE mod — the one the Studio is editing — re-mounts the mods and refreshes the Studio, exactly as saving from the Studio's own editors does.\n\n" +
+            "  var api := RefiiModApi.new()\n" +
+            "  api.CreateMod(\"my_mod\", \"My Mod\", \"Me\", \"What it does\")   # or api.SetActiveMod(\"my_mod\")\n" +
+            "  var error := api.SetModLua(\"CombatWheel.ActiveAttackerTimeOut = 6\")\n" +
+            "  if error != \"\": push_error(error)\n\n" +
+            "Calls that write return an error string; an empty string means it was written. Pass every argument — GDScript sees no defaults.\n\n" +
+            "Mods: GetModsRoot, ListMods, GetActiveMod, SetActiveMod, CreateMod(mod, title, author, description), ImportFolder(folder) — packs a source folder (mod.toml as the metadata) into the active mod.\n" +
+            "Files: ListFiles, WriteFile(path, bytes), WriteText, ReadFile, ReadText, DeleteFile — any file at its game path overrides the game's own.\n" +
+            "Settings: SetSetting(key, value) — settings.json, the numbers a mod's native code reads with refii::mods::Setting(key, default); pushed to the game when the guest comes up, and changeable in a running game with refii_action \"mod-setting <key> <value>\"."));
+
+        page.AddChild(CreateSectionCard(
+            "📜 Lua, text and images",
+            new Color(0.85f, 0.65f, 1.0f),
+            "SetModLua(source) — mod/init.lua: runs in the game's Lua VM once per session, after the shipped scripts. Patch the shipped tables; never ship an edited copy of a shipped script.\n" +
+            "SetCameraLua(source) — mod/camera.lua: runs after every load of the camera scripts, so it must be safe to run again.\n" +
+            "CheckLua(source) — the game's own Lua compiler's verdict; both setters check before writing.\n" +
+            "  • Each mod's Lua runs in its own pcall; an error lands in the global RefiiModErrors instead of stopping the game.\n" +
+            "  • RefiiModSave: whatever a mod puts in this table is saved with the save game and back on load (numbers, strings, tables).\n\n" +
+            "SetText(tag, value) / SetTextIn(language, tag, value) — one localised string, a row in language/<lang>/text/book.babel.csv.\n" +
+            "SetImage(texPath, image) — a Godot Image served to the game as a .tex (e.g. art/gui/hud/my_icon.tex)."));
+
+        page.AddChild(CreateSectionCard(
+            "🖼️ HUD, abilities and menus",
+            new Color(0.95f, 0.80f, 0.45f),
+            "HUD (ui/hud.json):\n" +
+            "  • SetHudClone({id, of, offset, hue, hueElements, icon, values, bars}) — a copy of a shipped piece, recoloured, with its own icon and fed by mod values. Souls Combat's mana and stamina bars are copies of the health bar.\n" +
+            "  • SetHudPiece({id, kind: meter|panel|picture, ...}) — a piece of the mod's own; follow, widthFrom and chip place it against shipped pieces.\n" +
+            "  • HideHudPiece(id), ShowHudPiece(id), SetHudScale(id, factor), RemoveHudEntry(id); ListShippedHudPieces() names what can be copied, followed or hidden.\n\n" +
+            "Abilities (ui/abilities.json): SetAbility({name, category, nameTag, descriptionTag, maxLevel, level, cost, stat, buy, refund, refundValue, image}), RemoveAbility(name). " +
+            "The row sits after its category's own abilities and reads the mod values its keys name; A buys and Y unlearns through the game's own boxes, and the mod's native code does the spending.\n\n" +
+            "Menus and screens (ui/templates.json): PatchMenu(menu, entries) adds, replaces or removes entries by name (after/before/parent/remove), composing with other mods; SetScreen(id, record) replaces a screen; ListMenus() names the menus."));
+
+        page.AddChild(CreateSectionCard(
+            "⚙ Hard mods — native code",
+            new Color(1.0f, 0.60f, 0.40f),
+            "A hard mod ships C++ under native/. The launcher compiles it into the game code when the mod is enabled, after the player allows that mod's native code once per version.\n\n" +
+            "SetNativeSource(fileName, source) — writes native/<fileName>.\n" +
+            "GetNativeOverrides() — the game functions the mod overrides, read from its sources.\n" +
+            "CheckNativeConflicts() — functions refii or another enabled mod also overrides; any one refuses the build, so resolve them before shipping.\n" +
+            "GetNativeHeaderPath() — core/refii_mod.h, the header native mods compile against.\n\n" +
+            "In the source:\n" +
+            "  #include \"core/refii_mod.h\"\n" +
+            "  REFII_MOD_ORIGINAL(rex_CPlayer_SetLookAtButtonDown);   // the game's own body, as __imp__<name>\n" +
+            "  REX_EXTERN(rex_CPlayer_SetLookAtButtonDown) { REX_FUNC_PROLOGUE(); ...; __imp__rex_CPlayer_SetLookAtButtonDown(ctx, base); }\n" +
+            "  static void Tick(PPCContext* ctx, uint8_t* base, float seconds) { ... }\n" +
+            "  REFII_MOD_ON_TICK(Tick);   // runs Tick once per game step\n\n" +
+            "  • Hook functions by their config names (versions/*/refii_config.toml), never sub_ addresses — the names hold for both game builds.\n" +
+            "  • Helpers: refii_mod_player_hero, refii_mod_local_hero, refii_mod_component, refii_mod_run_game_lua, refii_mod_game_lua_int, refii_mod_lua_generation, refii::mods::LoadU32/LoadF32/StoreU8/StoreU32/StoreF32, IsPlayerHero, CallGuest, CallVirtual.\n" +
+            "  • Mod values join native code to the UI: refii::mods::Publish(\"my_mod.mana\", v) is read as \"mod:my_mod.mana\" by HUD pieces and abilities; the UI hands a setting back with SetModSetting, read by refii::mods::Setting(key, fallback)."));
+
+        page.AddChild(CreateSectionCard(
+            "🗡️ Worked example: Souls Combat",
+            new Color(0.60f, 0.90f, 0.60f),
+            "The bundled Souls Combat mod is built from exactly these pieces — mod/init.lua (enemy pacing), native/ (stamina, roll, guard, lock-on, mana, the Stamina ability), ui/hud.json (the mana and stamina copies of the health bar), ui/abilities.json, its Babel text and its icons. " +
+            "Its source folder is mods-src/souls_combat in the refii tree; to take it apart or start a mod from it:\n\n" +
+            "  var api := RefiiModApi.new()\n" +
+            "  api.CreateMod(\"my_combat\", \"My Combat\", \"Me\", \"Souls Combat, my way\")\n" +
+            "  api.ImportFolder(\"/path/to/mods-src/souls_combat\")\n" +
+            "  api.SetText(\"SOULS_COMBAT_STAMINA_NAME\", \"Endurance\")\n" +
+            "  print(api.ReadText(\"ui/hud.json\"))   # a Set* call replaces the whole record it names, so start from what is there\n\n" +
+            "Then enable it in the launcher's Mods panel; the game code is rebuilt with its native sources on the next Play."));
 
         return page;
     }

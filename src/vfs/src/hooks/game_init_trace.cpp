@@ -54,7 +54,7 @@ namespace {
 }  // namespace
 
 REFII_TRACE_GAME_INIT_CALL(rex_lhGameInit_CreateGameSystems)
-REFII_TRACE_GAME_INIT_CALL(rex_lhLuaScriptSystem_LoadStartupScripts)
+// rex_lhLuaScriptSystem_LoadStartupScripts is traced by its owner, hooks/mod_lua_hooks.cpp.
 REFII_TRACE_GAME_INIT_CALL(rex_lhNetManager_ResetSessionState)
 REFII_TRACE_GAME_INIT_CALL(rex_lhLuaConsole_RunStartupConsoleScripts)
 

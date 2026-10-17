@@ -1986,6 +1986,14 @@ public partial class GameUi : Node
 				int quad = hosted?.Ordinal ??
 					abilityBook.OrdinalOf(Engine_UiAbilityPage.TarotFrame) ?? -1;
 
+				// A mod's ability shows its still card: no movie, and the last one taken down.
+				bool noMovie = Engine_UiAbilityPage.WantsNoMovie(_screenMenu?.Script.Highlighted);
+				if (noMovie)
+				{
+					wanted = string.Empty;
+					hosted = null;
+				}
+
 				if (wanted.Length != 0 && quad >= 0)
 				{
 					// The slot is registered BEFORE the open: `MovieStarted` fires inside
@@ -2075,6 +2083,7 @@ public partial class GameUi : Node
 
 		_screenMenuView.Visible = true;
 		GameInput.ScreenMenuOwnsInput = true;
+		GameInput.ScreenMenuHoldsFlip = _screenMenu.HighlightedIsModAbility;
 
 		// Navigation goes to the GUEST while the rows on screen are the guest's: its cursor is
 		// the authority for pool rows and the stick is a LATCH its Lua polls with the shipped
@@ -2103,9 +2112,18 @@ public partial class GameUi : Node
 		// the ability again. It does TWO things, and this used to do neither: it skips the row's
 		// own `Ability:learn:` command, which calls the purchase directly and beat the 39 to it,
 		// and it posts `MenuDiscard` so the pump clears `+198` instead of arming it.
+		// Y ON A MOD'S ABILITY is the mod's unlearn, never the guest's flip.
+		if (GameInput.MenuFlipPressed && _screenMenu is { HighlightedIsModAbility: true } modRow &&
+			modRow.Script.Highlighted is { } modItem &&
+			Engine_UiModAbilities.TryGet(modItem.Name, out Engine_UiModAbilities.Ability modAbility))
+		{
+			Engine_UiModAbilities.AskRefund(modAbility);
+			return true;
+		}
+
 		if (GameInput.MenuFlipPressed &&
 			Engine_UiTemplates.Screen(state.ScreenId) is { FlipAction.Length: > 0 } flipScreen &&
-			_screenMenu is { } unlearn)
+			_screenMenu is { } unlearn && !unlearn.HighlightedIsModAbility)
 		{
 			Engine_UiScreenActions.Run(flipScreen.FlipAction);
 			if (unlearn.Commit(discard: true))
@@ -6226,6 +6244,7 @@ public partial class GameUi : Node
 		// set cannot make for itself: "nobody raised a box at all" happens where none of them
 		// runs.
 		GameInput.ModalBoxOwnsInput = false;
+		GameInput.ScreenMenuHoldsFlip = false;
 
 		// THE GUEST'S STICK LATCH IS RELEASED BY DEFAULT. Every drive below can take the frame
 		// with a `return`, so "release it when the list stops owning the input" cannot be written

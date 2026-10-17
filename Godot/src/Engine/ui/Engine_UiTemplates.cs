@@ -824,6 +824,29 @@ public static class Engine_UiTemplates
 	public const string OverridePath = "user://ui/templates.json";
 	public const string SnapshotPath = "user://ui/templates.snapshot.json";
 
+	/// <summary>Where a mod ships its templates, inside its package.</summary>
+	public const string ModTemplatesPath = "ui/templates.json";
+
+	/// <summary>
+	/// Two mods stating the same template piece: the higher-priority one won, the other is named.
+	/// For the mod tooling's conflict view.
+	/// </summary>
+	public readonly record struct ModConflict(string Piece, string Winner, string Loser);
+
+	private static readonly List<ModConflict> _modConflicts = new();
+
+	/// <summary>Which mod last stated each piece ("menu:pause-root/Map", "screen:23").</summary>
+	private static readonly Dictionary<string, string> _pieceOwners = new(System.StringComparer.Ordinal);
+
+	public static IReadOnlyList<ModConflict> ModConflicts
+	{
+		get
+		{
+			EnsureLoaded();
+			return _modConflicts;
+		}
+	}
+
 	private static Dictionary<uint, Engine_UiScreenTemplate>? _screens;
 	private static Dictionary<string, Engine_UiMenuTemplate>? _menus;
 
@@ -1067,10 +1090,43 @@ public static class Engine_UiTemplates
 		_dropped = new Dictionary<string, List<DroppedRow>>(System.StringComparer.Ordinal);
 		BuildDefaults();
 		StateWideLayouts();
+		_modConflicts.Clear();
+		_pieceOwners.Clear();
+		int modded = ApplyModTemplates();
 		int overridden = ApplyOverrides(OverridePath);
 		SaveSnapshot(SnapshotPath);
 		GD.Print($"[ui-templates] {_screens.Count} screen(s), {_menus.Count} menu(s)" +
+			(modded == 0 ? string.Empty : $"; {modded} piece(s) from mods") +
 			(overridden == 0 ? string.Empty : $"; {overridden} record(s) overridden"));
+	}
+
+	/// <summary>
+	/// Drops every record and builds them again — built-ins, mods, then the player's own file.
+	/// For the editor, after a mod's templates change.
+	/// </summary>
+	public static void Reload()
+	{
+		_screens = null;
+		_menus = null;
+		_dropped = null;
+		EnsureLoaded();
+	}
+
+	/// <summary>
+	/// Every enabled mod's <see cref="ModTemplatesPath"/>, LOWEST priority first so the highest
+	/// is applied last and wins. Read from each package rather than through the mount, because
+	/// the mount serves one winner per path and templates compose: two mods adding a row to the
+	/// pause menu must both land.
+	/// </summary>
+	private static int ApplyModTemplates()
+	{
+		int taken = 0;
+		foreach ((string mod, string text) in Refii.Mods.ModEntries.ReadEnabledText(ModTemplatesPath))
+		{
+			taken += ApplyOverrideText(text, mod, $"{mod}:{ModTemplatesPath}");
+		}
+
+		return taken;
 	}
 
 	// -----------------------------------------------------------------------------------
@@ -3037,10 +3093,7 @@ public static class Engine_UiTemplates
 	// JSON — the editor's and a mod's way in.
 	// -----------------------------------------------------------------------------------
 
-	/// <summary>
-	/// Applies records from a file over the built-ins, whole-record: a screen or menu in the
-	/// file replaces the default entirely, which is the only merge a person can predict.
-	/// </summary>
+	/// <summary>The player's own file, applied after every mod.</summary>
 	private static int ApplyOverrides(string path)
 	{
 		if (!FileAccess.FileExists(path))
@@ -3049,15 +3102,29 @@ public static class Engine_UiTemplates
 		}
 
 		using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Read);
-		if (file is null)
-		{
-			return 0;
-		}
+		return file is null ? 0 : ApplyOverrideText(file.GetAsText(), owner: string.Empty, path);
+	}
 
-		var parsed = Json.ParseString(file.GetAsText());
+	/// <summary>
+	/// Applies one templates file over what is already registered.
+	/// </summary>
+	/// <remarks>
+	/// <para>SCREENS and plain MENUS replace the whole record — the only merge a person can predict
+	/// for a record they wrote out in full.</para>
+	/// <para>A menu with <c>"patch": true</c> composes PER ENTRY by <c>name</c>, which is how two
+	/// mods both add a row to the pause menu. Each patch entry replaces the entry of that name
+	/// where it stands, or is inserted (<c>"after"</c>/<c>"before"</c> a named entry, else at the
+	/// end; <c>"parent"</c> nests it under one), or with <c>"remove": true</c> deletes it.
+	/// Menu-level fields present in a patch replace the menu's own.</para>
+	/// <para><paramref name="owner"/> is the mod's name, empty for the player's file; a piece two
+	/// mods state is recorded in <see cref="ModConflicts"/>.</para>
+	/// </remarks>
+	private static int ApplyOverrideText(string text, string owner, string where)
+	{
+		var parsed = Json.ParseString(text);
 		if (parsed.VariantType != Variant.Type.Dictionary)
 		{
-			GD.PushWarning($"[ui-templates] '{path}' is not a JSON object; ignored");
+			GD.PushWarning($"[ui-templates] '{where}' is not a JSON object; ignored");
 			return 0;
 		}
 
@@ -3068,8 +3135,15 @@ public static class Engine_UiTemplates
 		{
 			foreach (var entry in menus.AsGodotDictionary())
 			{
-				if (ParseMenu(entry.Key.AsString(), entry.Value) is { } menu)
+				string name = entry.Key.AsString();
+				if (entry.Value.VariantType == Variant.Type.Dictionary &&
+					entry.Value.AsGodotDictionary().TryGetValue("patch", out Variant patch) && patch.AsBool())
 				{
+					taken += PatchMenu(name, entry.Value.AsGodotDictionary(), owner, where);
+				}
+				else if (ParseMenu(name, entry.Value) is { } menu)
+				{
+					NoteOwner("menu:" + name, owner);
 					_menus![menu.Name] = menu;
 					++taken;
 				}
@@ -3084,6 +3158,7 @@ public static class Engine_UiTemplates
 				if (uint.TryParse(entry.Key.AsString(), out uint id) &&
 					ParseScreen(id, entry.Value) is { } screen)
 				{
+					NoteOwner("screen:" + id, owner);
 					_screens![id] = screen;
 					++taken;
 				}
@@ -3091,6 +3166,157 @@ public static class Engine_UiTemplates
 		}
 
 		return taken;
+	}
+
+	/// <summary>Records who stated a piece; a second mod stating it is a conflict it won.</summary>
+	private static void NoteOwner(string piece, string owner)
+	{
+		if (owner.Length == 0)
+		{
+			return;
+		}
+
+		if (_pieceOwners.TryGetValue(piece, out string? previous) &&
+			!string.Equals(previous, owner, System.StringComparison.OrdinalIgnoreCase))
+		{
+			_modConflicts.Add(new ModConflict(piece, owner, previous));
+			GD.Print($"[ui-templates] '{piece}': mod '{owner}' replaces mod '{previous}'");
+		}
+
+		_pieceOwners[piece] = owner;
+	}
+
+	private static int PatchMenu(string name, Godot.Collections.Dictionary record, string owner, string where)
+	{
+		if (!_menus!.TryGetValue(name, out Engine_UiMenuTemplate? menu))
+		{
+			menu = new Engine_UiMenuTemplate { Name = name };
+			_menus[name] = menu;
+		}
+
+		if (record.TryGetValue("highlight", out Variant highlight))
+		{
+			menu.Highlight = highlight.AsString();
+		}
+
+		if (record.TryGetValue("title", out Variant title))
+		{
+			menu.Title = title.AsString();
+		}
+
+		if (record.TryGetValue("rowCommand", out Variant rowCommand))
+		{
+			menu.RowCommand = rowCommand.AsString();
+		}
+
+		if (record.TryGetValue("source", out Variant source))
+		{
+			menu.Source = source.AsString();
+		}
+
+		if (!record.TryGetValue("entries", out Variant entries) || entries.VariantType != Variant.Type.Array)
+		{
+			return 0;
+		}
+
+		int taken = 0;
+		foreach (Variant value in entries.AsGodotArray())
+		{
+			if (value.VariantType != Variant.Type.Dictionary)
+			{
+				continue;
+			}
+
+			var patch = value.AsGodotDictionary();
+			string entryName = patch.TryGetValue("name", out Variant n) ? n.AsString() : string.Empty;
+			if (entryName.Length == 0)
+			{
+				continue;
+			}
+
+			string parentName = patch.TryGetValue("parent", out Variant p) ? p.AsString() : string.Empty;
+			List<Engine_UiMenuEntry>? siblings = parentName.Length == 0
+				? menu.Entries
+				: FindEntry(menu.Entries, parentName)?.Children;
+			if (siblings is null)
+			{
+				GD.PushWarning($"[ui-templates] '{where}': menu '{name}' has no entry '{parentName}' " +
+					$"to put '{entryName}' under; ignored");
+				continue;
+			}
+
+			NoteOwner($"menu:{name}/{entryName}", owner);
+			int at = siblings.FindIndex(e => e.Name == entryName);
+			if (patch.TryGetValue("remove", out Variant remove) && remove.AsBool())
+			{
+				if (at >= 0)
+				{
+					siblings.RemoveAt(at);
+					++taken;
+				}
+
+				continue;
+			}
+
+			if (ParseEntry(value) is not { } parsed)
+			{
+				continue;
+			}
+
+			if (at >= 0)
+			{
+				siblings[at] = parsed;
+			}
+			else
+			{
+				siblings.Insert(InsertIndex(siblings, patch), parsed);
+			}
+
+			++taken;
+		}
+
+		return taken;
+	}
+
+	private static int InsertIndex(List<Engine_UiMenuEntry> siblings, Godot.Collections.Dictionary patch)
+	{
+		if (patch.TryGetValue("after", out Variant after))
+		{
+			int index = siblings.FindIndex(e => e.Name == after.AsString());
+			if (index >= 0)
+			{
+				return index + 1;
+			}
+		}
+
+		if (patch.TryGetValue("before", out Variant before))
+		{
+			int index = siblings.FindIndex(e => e.Name == before.AsString());
+			if (index >= 0)
+			{
+				return index;
+			}
+		}
+
+		return siblings.Count;
+	}
+
+	private static Engine_UiMenuEntry? FindEntry(List<Engine_UiMenuEntry> entries, string name)
+	{
+		foreach (Engine_UiMenuEntry entry in entries)
+		{
+			if (entry.Name == name)
+			{
+				return entry;
+			}
+
+			if (FindEntry(entry.Children, name) is { } nested)
+			{
+				return nested;
+			}
+		}
+
+		return null;
 	}
 
 	private static Engine_UiMenuTemplate? ParseMenu(string name, Variant value)
@@ -3313,6 +3539,34 @@ public static class Engine_UiTemplates
 			}
 		}
 
+		Strings(record, "pages", screen.Pages);
+		Strings(record, "guestTextUnits", screen.GuestTextUnits);
+		if (record.TryGetValue("pageStackAt", out Variant stack) &&
+			stack.VariantType == Variant.Type.Array && stack.AsGodotArray().Count == 3)
+		{
+			var xyz = stack.AsGodotArray();
+			screen.PageStackAt = new Vector3(
+				(float)xyz[0].AsDouble(), (float)xyz[1].AsDouble(), (float)xyz[2].AsDouble());
+		}
+
+		if (record.TryGetValue("statFields", out Variant stats) && stats.VariantType == Variant.Type.Array)
+		{
+			foreach (Variant stat in stats.AsGodotArray())
+			{
+				if (stat.VariantType != Variant.Type.Dictionary)
+				{
+					continue;
+				}
+
+				var statRecord = stat.AsGodotDictionary();
+				if (statRecord.TryGetValue("id", out Variant statId) &&
+					statRecord.TryGetValue("path", out Variant statPath))
+				{
+					screen.StatFields.Add((statId.AsInt32(), statPath.AsString()));
+				}
+			}
+		}
+
 		Strings(record, "wideLeft", screen.WideLeft);
 		Strings(record, "wideRight", screen.WideRight);
 		Strings(record, "wideGround", screen.WideGround);
@@ -3403,7 +3657,13 @@ public static class Engine_UiTemplates
 				});
 			}
 
-			screens[id.ToString()] = new Godot.Collections.Dictionary
+			var stats = new Godot.Collections.Array();
+			foreach ((int statId, string statPath) in screen.StatFields)
+			{
+				stats.Add(new Godot.Collections.Dictionary { ["id"] = statId, ["path"] = statPath });
+			}
+
+			var screenRecord = new Godot.Collections.Dictionary
 			{
 				["name"] = screen.Name,
 				["ownsList"] = screen.OwnsList,
@@ -3445,7 +3705,16 @@ public static class Engine_UiTemplates
 				["wideGround"] = ToArray(screen.WideGround),
 				["wideStretch"] = ToArray(screen.WideStretch),
 				["panelFields"] = fields,
+				["pages"] = ToArray(screen.Pages),
+				["guestTextUnits"] = ToArray(screen.GuestTextUnits),
+				["statFields"] = stats,
 			};
+			if (screen.PageStackAt is Vector3 stackAt)
+			{
+				screenRecord["pageStackAt"] = new Godot.Collections.Array { stackAt.X, stackAt.Y, stackAt.Z };
+			}
+
+			screens[id.ToString()] = screenRecord;
 		}
 
 		var root = new Godot.Collections.Dictionary

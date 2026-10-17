@@ -306,6 +306,7 @@ public sealed partial class LuaScriptEditor : Window
 			_mods.AddItem(mod.Name);
 		}
 		_mods.Selected = 0;
+		SelectMod(Refii.EditorTools.EditorModExporter.ActiveModName);
 	}
 
 	private void SelectMod(string name)
@@ -340,19 +341,10 @@ public sealed partial class LuaScriptEditor : Window
 			{
 				return null;
 			}
-			string root = Path.Combine(Engine_GameAssets.ModsRoot, newName);
-			try
+			// A MOD IS A PACKAGE. A loose folder with a mod.toml is not discovered by anything.
+			if (!ModWorkspace.CreateModPackage(Engine_GameAssets.ModsRoot, newName, out _, out string createError))
 			{
-				Directory.CreateDirectory(root);
-				string metadata = Path.Combine(root, ModWorkspace.ModMetadataFilename);
-				if (!File.Exists(metadata))
-				{
-					File.WriteAllText(metadata, $"name = \"{newName}\"\n");
-				}
-			}
-			catch (Exception exception)
-			{
-				SetStatus($"Could not create the mod folder: {exception.Message}");
+				SetStatus($"Could not create the mod: {createError}");
 				return null;
 			}
 			RefreshMods();
@@ -370,8 +362,18 @@ public sealed partial class LuaScriptEditor : Window
 		return _installed[selected];
 	}
 
-	private string ModFilePath(ModInstall mod) =>
-		Path.Combine(ModWorkspace.GetModAssetRoot(mod), _virtualPath.Replace('/', Path.DirectorySeparatorChar));
+	private bool PackageHasScript(ModInstall mod)
+	{
+		if (!F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? package, out _) || package is null)
+		{
+			return false;
+		}
+
+		using (package)
+		{
+			return package.TryGetEntry(_virtualPath, out _);
+		}
+	}
 
 	private void Save()
 	{
@@ -381,21 +383,22 @@ public sealed partial class LuaScriptEditor : Window
 			return;
 		}
 
-		string path = ModFilePath(mod);
+		// INTO THE PACKAGE, at the script's own virtual path, the way the mount serves it.
 		try
 		{
-			Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-			File.WriteAllText(path, _code.Text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+			byte[] bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(_code.Text);
+			F2ModPackage.IncrementalSync(mod.PackagePath, new[] { (_virtualPath, bytes) });
 			ModManifest.EnsureCurrent(mod);
 		}
 		catch (Exception exception)
 		{
-			SetStatus($"Could not write {path}: {exception.Message}");
+			SetStatus($"Could not write {_virtualPath} into '{mod.Name}': {exception.Message}");
 			return;
 		}
 
+		Refii.EditorTools.EditorModExporter.NotifyModContentChanged(mod.Name);
 		bool compiles = Engine_LuaDecompiler.TryCheckSource(_code.Text, "=" + _virtualPath, out string error);
-		SetStatus($"Saved to {path}. " + (compiles
+		SetStatus($"Saved {_virtualPath} into '{mod.Name}'. " + (compiles
 			? "Enable the mod in the launcher and the game loads this text in place of the bank's script."
 			: "WARNING, it does not compile: " + error));
 		_remount();
@@ -409,22 +412,23 @@ public sealed partial class LuaScriptEditor : Window
 			return;
 		}
 
-		string path = ModFilePath(mod);
-		if (!File.Exists(path))
+		if (!PackageHasScript(mod))
 		{
 			SetStatus($"'{mod.Name}' has no copy of {_virtualPath}.");
 			return;
 		}
 		try
 		{
-			File.Delete(path);
+			F2ModPackage.IncrementalSync(mod.PackagePath, Array.Empty<(string, byte[])>(), new[] { _virtualPath });
 			ModManifest.EnsureCurrent(mod);
 		}
 		catch (Exception exception)
 		{
-			SetStatus($"Could not delete {path}: {exception.Message}");
+			SetStatus($"Could not remove {_virtualPath} from '{mod.Name}': {exception.Message}");
 			return;
 		}
+
+		Refii.EditorTools.EditorModExporter.NotifyModContentChanged(mod.Name);
 		SetStatus($"Removed {_virtualPath} from '{mod.Name}'; the game's own script loads again.");
 		_remount();
 	}

@@ -1,0 +1,17 @@
+{
+	"souls_combat": {
+		"swing_cost": 18,
+		"roll_cost": 22,
+		"block_cost_per_damage": 1.2,
+		"stamina_floor": -25,
+		"stamina_regen_delay": 0.7,
+		"stamina_regen_per_second": 55,
+		"mana_per_level": 12,
+		"mana_regen_delay": 2.5,
+		"mana_regen_per_second": 6,
+		"poise_fraction": 0.3,
+		"poise_window_seconds": 3,
+		"commit_extra_seconds": 0.25,
+		"lock_drop_seconds": 0.5
+	}
+}

@@ -346,6 +346,11 @@ public static class EditorWorkspace
 			start.ArgumentList.Add("-e");
 			start.ArgumentList.Add("--path");
 			start.ArgumentList.Add(SdkRoot);
+			// The editor writes no log of its own (file logging is off in editor mode), and its
+			// stdout is not ours to read: one crash left nothing but a core dump. The SDK project
+			// is this app's project, so the editor's user:// is this user dir.
+			start.ArgumentList.Add("--log-file");
+			start.ArgumentList.Add(Path.Combine(OS.GetUserDataDir(), "logs", "editor.log"));
 			start.Environment["REFII_APP_ROOT"] = Engine_AppRoot.Path;
 
 			string? dotnet = FindDotnet();
@@ -365,16 +370,18 @@ public static class EditorWorkspace
 	}
 
 	/// <summary>
-	/// Ensures the C# solution is compiled before Godot opens.
+	/// Ensures the C# solution is compiled, and current, before Godot opens.
 	///
 	/// Godot C# plugins are loaded from the compiled assembly in <c>.godot/mono/temp/bin/Debug/</c>.
 	/// If the assembly is missing when Godot opens, Godot fails to instantiate the plugins
-	/// and disables them in <c>project.godot</c>.
+	/// and disables them in <c>project.godot</c>. If it is older than the sources, the editor
+	/// runs the OLD plugin code — Godot does not rebuild on open — which is how a fixed plugin
+	/// kept crashing the editor through two package rebuilds.
 	/// </summary>
 	public static void EnsurePluginsBuilt()
 	{
 		string assemblyPath = Path.Combine(SdkRoot, ".godot", "mono", "temp", "bin", "Debug", "refii-launcher.dll");
-		if (File.Exists(assemblyPath))
+		if (File.Exists(assemblyPath) && !SourcesNewerThan(File.GetLastWriteTimeUtc(assemblyPath)))
 		{
 			return;
 		}
@@ -406,5 +413,34 @@ public static class EditorWorkspace
 		{
 			// Best effort; if dotnet fails, launching Godot will report errors directly.
 		}
+	}
+
+	/// <summary>Whether a C# source or the project file under the SDK was written after <paramref name="built"/>.</summary>
+	private static bool SourcesNewerThan(DateTime built)
+	{
+		string project = Path.Combine(SdkRoot, "refii-launcher.csproj");
+		if (File.Exists(project) && File.GetLastWriteTimeUtc(project) > built)
+		{
+			return true;
+		}
+
+		foreach (string folder in new[] { "addons", "src" })
+		{
+			string root = Path.Combine(SdkRoot, folder);
+			if (!Directory.Exists(root))
+			{
+				continue;
+			}
+
+			foreach (string file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
+			{
+				if (File.GetLastWriteTimeUtc(file) > built)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 }

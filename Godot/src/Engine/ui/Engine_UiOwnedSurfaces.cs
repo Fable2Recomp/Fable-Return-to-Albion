@@ -187,7 +187,10 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	/// <summary>The router box's dismiss code, null when the table states none.</summary>
 	private uint? _dismiss;
 
-	protected override bool TakesInput => _display != 0 || _dismiss is not null;
+	protected override bool TakesInput => _display != 0 || _dismiss is not null || _host;
+
+	/// <summary>The box up is a HOST notice (<see cref="Engine_UiHostBoxes.Notice"/>).</summary>
+	private bool _host;
 
 	private uint _modalId;
 
@@ -245,6 +248,7 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	{
 		// DRAWN WHETHER OR NOT ITS CODE IS KNOWN: an unlisted box keeps the guest's own input
 		// (see Engine_UiTemplates.Modals), not the guest's hidden tree.
+		_host = false;
 		if (pause is { MessageBoxUp: true } state)
 		{
 			_dismiss = Engine_UiTemplates.Modal(state.ModalId, state.ScreenId, dismissal: true)
@@ -256,6 +260,12 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 		}
 
 		_display = StatedDisplayBox;
+		if (_display == 0 && Engine_UiHostBoxes.Notice is not null)
+		{
+			_host = true;
+			return true;
+		}
+
 		return _display != 0;
 	}
 
@@ -263,6 +273,19 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
 		Engine_UiPresentationHost host)
 	{
+		if (_host && Engine_UiHostBoxes.Notice is { } notice)
+		{
+			// The guest's fitter chooses the paper by the text; ours by its length the same way.
+			int fitted = notice.Length < 80 ? 0 : notice.Length < 160 ? 1 : 2;
+			if (Changed($"host:{notice}"))
+			{
+				View!.ShowStated(notice, fitted, SizeSlide(fitted));
+				GD.Print($"[game-ui] host message box up — {View.LastReport}");
+			}
+
+			return;
+		}
+
 		// The guest's chosen size is the variant its slide ACTIVATES; the text may be written
 		// into more than one. The first non-empty text stands in when none is active.
 		int chosen = -1;
@@ -314,6 +337,13 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 			return;
 		}
 
+		if (_host)
+		{
+			Engine_UiHostBoxes.Dismiss();
+			GD.Print("[game-ui] host message box dismissed");
+			return;
+		}
+
 		if (_display != 0)
 		{
 			Engine_UiSource.Current.PostFrontEndAction(
@@ -362,7 +392,10 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 	/// </summary>
 	private bool _display;
 
-	protected override bool TakesInput => _display || _codes is not null;
+	protected override bool TakesInput => _display || _codes is not null || _host;
+
+	/// <summary>The box up is a HOST question (<see cref="Engine_UiHostBoxes.Question"/>).</summary>
+	private bool _host;
 
 	protected override bool Joined => _joins is not null;
 
@@ -375,6 +408,9 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
 		// DRAWN WHETHER OR NOT ITS CODES ARE KNOWN — see the message surface.
+		// The guest's box outranks a host question, and the flag is re-derived on every path: one
+		// left over from a host question routed every press of the guest's next box to nothing.
+		_host = false;
 		if (pause is { QueryBoxUp: true } state)
 		{
 			_codes = Engine_UiTemplates.Modal(state.ModalId, uint.MaxValue, dismissal: false);
@@ -386,13 +422,26 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 		_codes = null;
 		_display = Engine_UiSource.Current.DisplayQueryUp();
-		return _display;
+		_host = !_display && Engine_UiHostBoxes.Question is not null;
+		return _display || _host;
 	}
 
 	protected override void Apply(
 		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
 		Engine_UiPresentationHost host)
 	{
+		if (_host && Engine_UiHostBoxes.Question is { } question)
+		{
+			// The default A/B row, its captions the authored ones.
+			if (Changed($"host:{question}"))
+			{
+				View!.ShowStated(question, _joins!.Rows[0].Name, null, null);
+				GD.Print($"[game-ui] host query up — {View.LastReport}");
+			}
+
+			return;
+		}
+
 		// The row the guest stood up; the default A/B pair when none reads active (the flags
 		// can lag the opener by a frame).
 		Engine_UiQueryBox.RowJoin row = _joins!.Rows[0];
@@ -429,6 +478,17 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
+		if (_host)
+		{
+			if (input.Accept || input.Back)
+			{
+				GD.Print($"[game-ui] host query {(input.Accept ? "CONFIRMED" : "cancelled")}");
+				Engine_UiHostBoxes.Answer(input.Accept);
+			}
+
+			return;
+		}
+
 		if (_display)
 		{
 			if (input.Accept || input.Back)

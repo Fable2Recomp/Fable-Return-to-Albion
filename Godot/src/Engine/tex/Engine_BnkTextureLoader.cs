@@ -13,10 +13,24 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 	public const string PathPrefix = "game://";
 
 	private static Func<string, byte[]?>? _resolver;
+	private static Func<string, byte[]?>? _fallback;
 
+	/// <summary>
+	/// The game's own mount — mods folded in. Set by <c>Engine_GameAssets</c> and the editor's
+	/// bank mount, and ASKED FIRST.
+	/// </summary>
 	public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
 
-	public static byte[]? ReadBytes(string virtualPath) => _resolver?.Invoke(virtualPath);
+	/// <summary>
+	/// A mount of the caller's own, asked only when the game's has nothing — the UI's bank cache,
+	/// the screen viewer, the exporter. It was a second <see cref="SetResolver"/> and won by
+	/// running last, which put the mod-less UI mount in front of the game's and left every
+	/// texture a mod added unreadable through <c>game://</c>.
+	/// </summary>
+	public static void SetFallbackResolver(Func<string, byte[]?>? resolver) => _fallback = resolver;
+
+	public static byte[]? ReadBytes(string virtualPath) =>
+		_resolver?.Invoke(virtualPath) ?? _fallback?.Invoke(virtualPath);
 
 	private static Engine_BnkTextureLoader? _registered;
 
@@ -74,7 +88,7 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 			return Variant.CreateFrom((int)Error.FileUnrecognized);
 		}
 
-		Func<string, byte[]?> read = _resolver ?? (_ => null);
+		Func<string, byte[]?> read = ReadBytes;
 
 		// THROUGH THE LIBRARY, not straight to the decoder. This route and the material route
 		// decode the same files — a bank texture is a bank texture whether a prop's albedo or a

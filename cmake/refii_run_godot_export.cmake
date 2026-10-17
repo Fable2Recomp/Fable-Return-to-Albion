@@ -246,6 +246,24 @@ if(IS_DIRECTORY "${_metadata}")
     message(STATUS "Staged per-title metadata: ${_metadata} -> ${_app}/assets/metadata")
 endif()
 
+# The mods that ship with the app, as SOURCE: the launcher packs each into assets/mods on first
+# start (Engine_ModBundled.cs), switched off. Ours, not the game's — mod Lua patches the shipped
+# scripts' tables and never carries a copy of one. Copied whole each time so a mod deleted from
+# mods-src does not linger in the package.
+set(_bundled_mods "${PROJECT_DIR}/../mods-src")
+if(IS_DIRECTORY "${_bundled_mods}")
+    file(REMOVE_RECURSE "${_app}/bundled-mods")
+    file(COPY "${_bundled_mods}/" DESTINATION "${_app}/bundled-mods")
+    # THE LIST IS THE CONTENT. A player unpacks an update over their install, which leaves a
+    # file this release deleted lying in bundled-mods/; the launcher packs only what this list
+    # names, so a stale file cannot come back as part of the mod.
+    file(GLOB_RECURSE _bundled_files RELATIVE "${_app}/bundled-mods" "${_app}/bundled-mods/*")
+    list(SORT _bundled_files)
+    list(JOIN _bundled_files "\n" _bundled_list)
+    file(WRITE "${_app}/bundled-mods/manifest.txt" "${_bundled_list}\n")
+    message(STATUS "Staged bundled mods: ${_bundled_mods} -> ${_app}/bundled-mods")
+endif()
+
 if(NOT EXISTS "${_app}/bin")
     message(FATAL_ERROR "Staging produced no bin/ in ${_app}; the package would not run.")
 endif()

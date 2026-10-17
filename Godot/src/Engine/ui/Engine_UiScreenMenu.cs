@@ -1748,12 +1748,22 @@ public sealed class Engine_UiScreenMenu
 	/// (`sub_826C2958` case 39 stores 0 at 0x826c2b2c; case 36 stores 1). `sub_826C2D40`
 	/// @0x826c2d78 reads that byte to choose purchase over the discard confirm.
 	/// </param>
+	/// <summary>Whether the highlighted row is a mod ability's, which has nothing to unlearn.</summary>
+	public bool HighlightedIsModAbility =>
+		Script.Highlighted?.Command?.StartsWith(Engine_UiModAbilities.BuyAction, System.StringComparison.Ordinal) == true;
+
 	public bool Commit(bool discard = false)
 	{
 		if (Script.Highlighted is not { } row)
 		{
 			GD.Print("[screen-menu] A pressed with NO highlighted row — falling back to the A press");
 			return false;
+		}
+
+		// A mod ability cannot be unlearned, and its identity means nothing to the guest.
+		if (discard && HighlightedIsModAbility)
+		{
+			return true;
 		}
 
 		string label = row.StatedLabel ?? row.Name;

@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Refii.Launcher.Core;
+using Refii.Mods;
 
 namespace Refii.Launcher.Recompile;
 
@@ -212,6 +213,7 @@ public static class GameCodeBuild
 
 		string recordedHash;
 		string recordedInputs;
+		string recordedMods;
 		try
 		{
 			using FileStream stream = File.OpenRead(BuildInfoPath);
@@ -223,6 +225,11 @@ public static class GameCodeBuild
 				document.RootElement.TryGetProperty("build_inputs", out JsonElement inputs)
 					? inputs.GetString() ?? string.Empty
 					: string.Empty;
+			// ABSENT MEANS NONE: every record written before hard mods existed compiled no mod code,
+			// which is exactly what an empty hash states.
+			recordedMods = document.RootElement.TryGetProperty("mods_hash", out JsonElement mods)
+				? mods.GetString() ?? string.Empty
+				: string.Empty;
 		}
 		catch (Exception exception)
 		{
@@ -268,8 +275,234 @@ public static class GameCodeBuild
 			return true;
 		}
 
+		// HARD MODS ARE COMPILED IN, so the module is only current for the native code it was
+		// built with. Enabling, disabling, reordering or updating one changes this hash.
+		string currentMods = HashNativeMods();
+		if (!string.Equals(recordedMods, currentMods, StringComparison.OrdinalIgnoreCase))
+		{
+			reason = currentMods.Length == 0
+				? "The mods with native code that the game was built with are no longer enabled."
+				: "The enabled mods with native code have changed since the game code was built.";
+			return true;
+		}
+
 		reason = string.Empty;
 		return false;
+	}
+
+	/// <summary>
+	/// The hard mods a build compiles: enabled, consented to, highest priority first.
+	/// </summary>
+	private static List<ModNativeSources> NativeModsForBuild(out List<string> withheld) =>
+		NativeModConsent.ForBuild(Refii.Assets.Engine_GameAssets.ModsRoot, out withheld);
+
+	/// <summary>
+	/// The fingerprint of the native code mods add to this build; empty when they add none.
+	/// </summary>
+	/// <remarks>
+	/// An unreadable mods folder hashes to a value no build records, so it reads as stale and
+	/// the build that follows reports the real error, rather than passing as "no mods".
+	/// </remarks>
+	public static string HashNativeMods()
+	{
+		try
+		{
+			return ModNative.HashSet(NativeModsForBuild(out _));
+		}
+		catch (Exception exception)
+		{
+			return "unreadable: " + exception.Message;
+		}
+	}
+
+	/// <summary>
+	/// Extracts every enabled, consented hard mod's native sources beside the generated code and
+	/// appends the compiled ones to <paramref name="sources"/>.
+	/// </summary>
+	/// <remarks>
+	/// Three refusals, all before a single unit compiles, each naming the mod:
+	/// <list type="bullet">
+	/// <item>two owners define one function — a duplicate-symbol link error otherwise, found
+	/// twenty minutes later;</item>
+	/// <item>a mod overrides a name the generator never declared — otherwise its hook defines a
+	/// symbol nothing calls and the mod silently does nothing. The usual cause is a
+	/// <c>sub_XXXXXXXX</c> the config has named, so the config's name is offered;</item>
+	/// <item>an entry path that would leave the mod's folder.</item>
+	/// </list>
+	/// Runs after generation, so the declared set is this install's own.
+	/// </remarks>
+	private static Result AddNativeModSources(
+		List<string> sources, Dictionary<string, string> includeDirectories, out string modsHash)
+	{
+		modsHash = string.Empty;
+		List<ModNativeSources> mods;
+		List<string> withheld;
+		try
+		{
+			mods = NativeModsForBuild(out withheld);
+		}
+		catch (Exception exception)
+		{
+			return new Result(false, "The mods folder could not be read: " + exception.Message);
+		}
+
+		foreach (string name in withheld)
+		{
+			LogWrite($"mod '{name}': its native code is NOT compiled - its current sources were " +
+				"never enabled in the launcher's Mods panel");
+		}
+
+		if (mods.Count == 0)
+		{
+			return new Result(true, string.Empty);
+		}
+
+		List<ModNativeConflict> conflicts = ModNative.FindConflicts(mods, NativeModConsent.RefiiOverrides());
+		if (conflicts.Count > 0)
+		{
+			return new Result(false,
+				"Two owners replace the same game function, and a function can only have one:\n" +
+				string.Join("\n", conflicts.Select(conflict =>
+					$"  {conflict.Function}: {conflict.First} and {conflict.Second}")) +
+				"\nDisable one of the mods named in the launcher's Mods panel.");
+		}
+
+		HashSet<string> declared = ReadDeclaredFunctions();
+		if (declared.Count == 0)
+		{
+			return new Result(false,
+				"The generated code declares no functions, so the mods' hooks cannot be checked.");
+		}
+
+		Dictionary<uint, string> configNames = ReadConfigFunctionNames();
+		var unknown = new List<string>();
+		foreach (ModNativeSources mod in mods)
+		{
+			foreach (string function in mod.Overrides)
+			{
+				if (declared.Contains(function))
+				{
+					continue;
+				}
+
+				string hint = function.StartsWith("sub_", StringComparison.Ordinal) &&
+					uint.TryParse(function.AsSpan(4), System.Globalization.NumberStyles.HexNumber,
+						null, out uint address) &&
+					configNames.TryGetValue(address, out string? named)
+						? $" (this build calls it {named})"
+						: " (no such function in this build of the game)";
+				unknown.Add($"  {mod.ModName}: {function}{hint}");
+			}
+		}
+
+		if (unknown.Count > 0)
+		{
+			return new Result(false,
+				"A mod replaces a game function that does not exist under that name, so its hook " +
+				"would never run:\n" + string.Join("\n", unknown));
+		}
+
+		string modsRoot = Path.Combine(GeneratedDirectory, "mods");
+		foreach (ModNativeSources mod in mods)
+		{
+			string root = Path.Combine(modsRoot, mod.ModName);
+			foreach (ModNativeFile file in mod.Files)
+			{
+				string target = Path.GetFullPath(Path.Combine(root, file.Path));
+				if (!target.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar,
+					StringComparison.Ordinal))
+				{
+					return new Result(false, $"mod '{mod.ModName}': '{file.Path}' leaves the mod's folder.");
+				}
+
+				try
+				{
+					Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+					File.WriteAllBytes(target, file.Bytes);
+				}
+				catch (Exception exception)
+				{
+					return new Result(false,
+						$"mod '{mod.ModName}': could not write '{file.Path}': {exception.Message}");
+				}
+
+				if (ModNative.IsCompiled(file.Path))
+				{
+					sources.Add(target);
+					includeDirectories[target] = root;
+				}
+			}
+
+			LogWrite($"mod '{mod.ModName}': compiling {mod.CompiledFiles.Count()} native source(s), " +
+				$"replacing {string.Join(", ", mod.Overrides)}");
+		}
+
+		modsHash = ModNative.HashSet(mods);
+		return new Result(true, string.Empty);
+	}
+
+	/// <summary>Every function the generator emitted, from its <c>DECLARE_REX_FUNC(name)</c> lines.</summary>
+	private static HashSet<string> ReadDeclaredFunctions()
+	{
+		var declared = new HashSet<string>(StringComparer.Ordinal);
+		const string marker = "DECLARE_REX_FUNC(";
+		foreach (string header in Directory.EnumerateFiles(GeneratedDirectory, "*.h"))
+		{
+			foreach (string line in File.ReadLines(header))
+			{
+				int at = line.IndexOf(marker, StringComparison.Ordinal);
+				if (at < 0)
+				{
+					continue;
+				}
+
+				int start = at + marker.Length;
+				int end = line.IndexOf(')', start);
+				if (end > start)
+				{
+					declared.Add(line.Substring(start, end - start).Trim());
+				}
+			}
+		}
+
+		return declared;
+	}
+
+	/// <summary>The config's function names by address (<c>0x8272A270 = { name = "rex_…" }</c>).</summary>
+	private static Dictionary<uint, string> ReadConfigFunctionNames()
+	{
+		var names = new Dictionary<uint, string>();
+		string config = Path.Combine(VersionDirectory, "refii_config.toml");
+		if (!File.Exists(config))
+		{
+			return names;
+		}
+
+		foreach (string line in File.ReadLines(config))
+		{
+			string trimmed = line.TrimStart();
+			int nameAt = trimmed.IndexOf("name = \"", StringComparison.Ordinal);
+			if (!trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase) || nameAt < 0)
+			{
+				continue;
+			}
+
+			int equals = trimmed.IndexOf('=');
+			if (!uint.TryParse(trimmed.AsSpan(2, equals - 2).Trim(),
+				System.Globalization.NumberStyles.HexNumber, null, out uint address))
+			{
+				continue;
+			}
+
+			int start = nameAt + "name = \"".Length;
+			int end = trimmed.IndexOf('"', start);
+			if (end > start)
+			{
+				names[address] = trimmed.Substring(start, end - start);
+			}
+		}
+
+		return names;
 	}
 
 	/// <summary>
@@ -1119,6 +1352,15 @@ public static class GameCodeBuild
 
 		sources.AddRange(hookSources);
 
+		// HARD MODS: their native sources compile in this same step, after refii's hooks, with the
+		// same compiler and flags. The link takes every object by index, so it needs nothing more.
+		var modIncludeDirectories = new Dictionary<string, string>(StringComparer.Ordinal);
+		Result modded = AddNativeModSources(sources, modIncludeDirectories, out string compiledModsHash);
+		if (!modded.Ok)
+		{
+			return modded;
+		}
+
 		List<string> includeDirectories = ReadCMakeList(
 			Path.Combine(RecompileDirectory, "include_dirs.cmake"), "REFII_PAYLOAD_INCLUDE_DIRS");
 		if (includeDirectories.Count == 0)
@@ -1204,7 +1446,7 @@ public static class GameCodeBuild
 		//    Explicitly limited: left unbounded this takes every core for however long the
 		//    build runs, and the player cannot use their machine meanwhile. See JobCount.
 		Result compiled = await CompileAllAsync(
-			resolved, sources, flags, pchUsed, progress, control, cancellation);
+			resolved, sources, flags, modIncludeDirectories, pchUsed, progress, control, cancellation);
 		if (!compiled.Ok)
 		{
 			return new Result(false, "Compiling the game code failed: " + compiled.Error);
@@ -1226,7 +1468,7 @@ public static class GameCodeBuild
 				"The build reported success but produced no module at " + ModulePath + ".");
 		}
 
-		WriteBuildInfo(resolved);
+		WriteBuildInfo(resolved, compiledModsHash);
 
 		// 4. Clean up. Best effort by design: the module is already built and usable, so
 		//    failing to reclaim the space must not fail the install.
@@ -1708,6 +1950,7 @@ public static class GameCodeBuild
 		Toolchain zig,
 		IReadOnlyList<string> sources,
 		IReadOnlyList<string> flags,
+		IReadOnlyDictionary<string, string> sourceIncludeDirectories,
 		string precompiledHeader,
 		Action<Progress> progress,
 		BuildControl control,
@@ -1785,6 +2028,13 @@ public static class GameCodeBuild
 						if (Path.GetFileName(sources[slot]) == "rex_bridge_payload.cpp")
 						{
 							arguments.Add("-fvisibility=hidden");
+						}
+
+						// A hard mod's own headers, for its own sources only: two mods may each
+						// ship a "combat.h" and neither may see the other's.
+						if (sourceIncludeDirectories.TryGetValue(sources[slot], out string? modInclude))
+						{
+							arguments.Add("-I" + modInclude);
 						}
 
 						arguments.Add("-c");
@@ -2072,7 +2322,7 @@ public static class GameCodeBuild
 	/// <remarks>
 	/// Beside the module, NOT beside the sources, which are deleted after a successful build.
 	/// </remarks>
-	private static void WriteBuildInfo(Toolchain zig)
+	private static void WriteBuildInfo(Toolchain zig, string modsHash)
 	{
 		try
 		{
@@ -2080,6 +2330,7 @@ public static class GameCodeBuild
 			{
 				["game_hash"] = HashGameExecutable(),
 				["build_inputs"] = HashBuildInputs(),
+				["mods_hash"] = modsHash,
 				["compiler"] = "zig " + Toolchain.Version(zig),
 				["generator"] = "rexglue " + Recompiler.SdkVersion(),
 				["platform"] = RuntimeInformation.RuntimeIdentifier,

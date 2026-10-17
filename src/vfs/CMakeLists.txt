@@ -58,6 +58,8 @@ set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/core/dye_state.cpp
     # The pub-game seam: the host posts Godot's fscommands, the pump replacement drains them.
     ${REFII_VFS_ROOT}/src/core/pubgame_state.cpp
+    # Hard mods' named values: a mod's hook publishes, Godot reads; Godot sets, the hook reads.
+    ${REFII_VFS_ROOT}/src/core/mod_values.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
     # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
     # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the
@@ -124,6 +126,10 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/babel_text_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/guest_tick_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
+    # Mods' own Lua, run in the game VM after the startup and camera scripts.
+    ${REFII_VFS_ROOT}/src/hooks/mod_lua_hooks.cpp
+    # The API a hard mod's native code calls into: tick callbacks, the hero.
+    ${REFII_VFS_ROOT}/src/hooks/mod_api.cpp
     ${REFII_VFS_ROOT}/src/hooks/lua_gc_slice.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/particle_transform.cpp

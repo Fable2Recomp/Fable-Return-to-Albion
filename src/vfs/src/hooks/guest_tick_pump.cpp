@@ -1976,6 +1976,15 @@ bool RunGuestLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
 /// and closed by the game's teardown, so it is re-read on every call. The game itself reaches it
 /// as `*(*(*(0x83496AB8)+0xC)+0x78)+4)` — the script system holding the same pointer
 /// (`World_LoadLevel_Execute` 0x8231c78c).
+/// The camera feel chunk last applied, or null before the host has chosen one.
+static const char* g_cameraFeelChunk = nullptr;
+
+void ReapplyCameraFeel(PPCContext& ctx, uint8_t* base) {
+  if (g_cameraFeelChunk != nullptr) {
+    RunGameLua(ctx, base, g_cameraFeelChunk);
+  }
+}
+
 bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
@@ -7931,6 +7940,14 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
         }
       }
       ran = true;
+    } else if (name.rfind("debug-gamelua:", 0) == 0) {
+      // The same probe against the GAME VM, where the shipped game scripts and mods' own Lua
+      // live. It answers one bit: whether the chunk ran without error -- so
+      // `assert(SoulsCombat.LockLatched)` reads a value out.
+      const bool luaRan = RunGameLua(ctx, base, name.substr(std::strlen("debug-gamelua:")));
+      NoteDebugCallResult(0, luaRan ? 1u : 0u,
+                          luaRan ? "ok" : "error, false assertion, or no game VM");
+      ran = true;
     } else if (name.rfind("debug-lua:", 0) == 0) {
       // Arbitrary Lua against the live GUI state, result noted for the host. GuiLua: predates
       // this and stays; this variant exists so the caller can SEE whether the chunk ran.
@@ -7941,7 +7958,8 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       ran = true;
     } else if (name.rfind(kActionCameraFeelPrefix, 0) == 0) {
       const bool pointer = name.substr(std::strlen(kActionCameraFeelPrefix)) == "pointer";
-      const bool luaRan = RunGameLua(ctx, base, pointer ? kCameraFeelPointer : kCameraFeelPad);
+      g_cameraFeelChunk = pointer ? kCameraFeelPointer : kCameraFeelPad;
+      const bool luaRan = RunGameLua(ctx, base, g_cameraFeelChunk);
       REXLOG_INFO("Refii guest-tick pump: camera feel '{}' {}", pointer ? "pointer" : "pad",
                   luaRan ? "set in the game VM" : "NOT set — no game VM yet, or the chunk failed");
       NoteDebugCallResult(0, luaRan ? 1u : 0u, luaRan ? "ok" : "no game VM");
@@ -8577,6 +8595,9 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   refii_bridge_menu_settle();
 
   DrainOnGuestThread(ctx, base);
+
+  // Hard mods' per-tick callbacks (core/refii_mod.h).
+  RunModTicks(ctx, base);
 
   // The hero sample, on a cadence — see SampleHeroDerived.
   if ((tick % 15u) == 0u) {

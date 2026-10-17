@@ -307,6 +307,14 @@ void refii_bridge_ensure_alternate_signal_stack(void);
 // 0 off, 1 on. Read by the DrawScene hook; the state is in src/core/guest_render_state.cpp.
 int32_t refii_bridge_guest_render_override(void);
 
+// Hard mods' named values, keyed "<mod>.<name>". A hook publishes, Godot reads; Godot sets a
+// setting, a hook reads it. Wrappers: refii::mods in core/mod_values.h; state in
+// src/core/mod_values.cpp.
+void refii_bridge_mod_publish_f32(const char* key, size_t key_length, float value);
+int32_t refii_bridge_mod_value_f32(const char* key, size_t key_length, float* out);
+void refii_bridge_mod_set_setting_f32(const char* key, size_t key_length, float value);
+float refii_bridge_mod_setting_f32(const char* key, size_t key_length, float fallback);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

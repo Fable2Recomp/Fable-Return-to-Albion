@@ -10733,6 +10733,25 @@
 0x824155C8 = { name = "rex_lhLua_RunScriptBuffer" }
 0x825ACEA0 = { name = "rex_lhLuaBindings_RegisterGameNamespaces" }
 0x825AD498 = { name = "rex_lhLuaScriptSystem_LoadStartupScripts" }
+0x825AE828 = { name = "rex_lhLuaScriptSystem_RunCameraScripts" }
+0x8273DA00 = { name = "rex_CECAbilities_PerformRequest" }
+0x829AEB98 = { name = "rex_CAbilityActionMelee_CommitSwing" }
+0x829A9718 = { name = "rex_CAbilityActionStrafeRoll_CanStart" }
+0x829A9E00 = { name = "rex_CAbilityActionStrafeRoll_Start" }
+0x826E3F80 = { name = "rex_CActionBlock_OnHitBlockPose" }
+0x826E1BD0 = { name = "rex_CActionBlock_OnHitBlockedResponse" }
+0x823C8940 = { name = "rex_CPlayer_SetLookAtButtonDown" }
+0x827428B0 = { name = "rex_CPlayerActionReceiver_ProcessAction" }
+0x8251C920 = { name = "rex_CECExperience_Spend" }
+0x8251C0A8 = { name = "rex_CECExperience_Modify" }
+0x824AB140 = { name = "rex_CECStats_AbilityExperienceCost" }
+0x825B0EA8 = { name = "rex_lhLuaScriptSystem_LoadScriptSave" }
+0x8242E460 = { name = "rex_CECSpellManager_OnSpellLaunched" }
+0x82428EF8 = { name = "rex_CECSpellManager_ChargeLevelFromTime" }
+0x829B9040 = { name = "rex_CAbilityActionMagicCharge_CanStart" }
+0x8296D570 = { name = "rex_CECHitResponsePlayAction_OnHit" }
+0x8268DEF0 = { name = "rex_CECHealth_CalculateDamage" }
+0x826DF198 = { name = "rex_CAction_OnAnimEvent" }
 0x825AB3D0 = { name = "rex_lhPubGameManager_RenderFrameUpdate", size = 0x334 }
 0x825BF038 = { name = "rex_lhFactionManager_Init" }
 0x825BF788 = { name = "rex_lhRepeatDelayTable_InitFromGDB" }

@@ -504,7 +504,7 @@ public partial class GameInput : Node
 			: queryMasked ? WithoutQueryInput
 			: cardMasked ? WithoutCardInput
 			: boxMasked ? WithoutQueryInput
-			: listMasked ? WithoutQueryInput
+			: listMasked ? WithoutListInput
 			: static b => b;
 
 		// A MASK LIFTING NEVER HANDS THE GUEST A PRESS. The guest edge-detects against its last
@@ -666,6 +666,17 @@ public partial class GameInput : Node
 
 	private static bool MaskScreenMenuInput =>
 		ScreenMenuOwnsInput && HostBridge.GetPauseState() is { ModalMode: 1, ScreenId: not 0 };
+
+	/// <summary>
+	/// Set while the owned list's highlighted row is a MOD's ability, whose Y is the mod's unlearn.
+	/// The guest must not see that Y: its abilities handler `sub_826C2958` takes code 39 as
+	/// `+198 = 0` (0x826c2b30), and `sub_826C2D40` reads that byte to open the discard confirm on
+	/// its next commit — for the guest's own highlighted ability, not ours.
+	/// </summary>
+	public static bool ScreenMenuHoldsFlip { get; set; }
+
+	private static uint WithoutListInput(uint buttons) =>
+		WithoutQueryInput(buttons) & (ScreenMenuHoldsFlip ? ~ButtonY : uint.MaxValue);
 
 	/// <summary>The buttons with the owned query box's whole vocabulary taken out — A and B
 	/// both, unlike the pause root where B is the guest's resume.</summary>

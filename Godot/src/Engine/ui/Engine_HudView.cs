@@ -16,6 +16,8 @@ namespace Refii.Ui;
 /// </summary>
 public sealed partial class Engine_HudView : Node3D
 {
+    private Engine_HudModPieces? _modPieces;
+
     public Engine_HudLayout Layout { get; set; } = Engine_HudLayout.Shipped();
 
     public Engine_HudArt Art { get; set; } = new();
@@ -180,6 +182,30 @@ public sealed partial class Engine_HudView : Node3D
         /// </summary>
         public Basis Authored { get; init; } = Basis.Identity;
 
+        /// <summary>A mod's size factor for this piece, on top of the canvas scale.</summary>
+        public float ExtraScale { get; set; } = 1f;
+
+        /// <summary>
+        /// A mod clone's meter sources by meter name (<see cref="Engine_HudModPieces.Clone"/>): its
+        /// nested meters read these instead of the guest's. Null for every shipped piece.
+        /// </summary>
+        public Dictionary<string, string>? Remap { get; set; }
+
+        /// <summary>A clone's own copies of its icon's materials, painted with <see cref="Icon"/>.</summary>
+        public List<ShaderMaterial> IconMaterials { get; } = new();
+
+        /// <summary>The icon's candidate textures, first that loads wins; empty once one has.</summary>
+        public List<string> IconCandidates { get; } = new();
+
+        /// <summary>The loaded icon, re-applied after the binding paints its own each frame.</summary>
+        public Texture2D? Icon { get; set; }
+
+        /// <summary>
+        /// A clone's bar elements: the node, the guest meter the original's fill follows, the
+        /// mod source the copy's fill follows, and the bar's full-length scale once measured.
+        /// </summary>
+        public List<ClonedBar> Bars { get; } = new();
+
         /// <summary>
         /// This piece's clone bound to the elements that drive it — the same join and per-frame
         /// apply the owned books use. Without it a piece shows the file's placeholder: where the
@@ -193,6 +219,17 @@ public sealed partial class Engine_HudView : Node3D
     }
 
     private readonly List<Built> _built = new();
+
+    /// <summary>One bar element of a mod clone — see <see cref="Built.Bars"/>.</summary>
+    private sealed class ClonedBar
+    {
+        public required Node3D Node { get; init; }
+        public required Engine_HudValues.Handle Guest { get; init; }
+        public required string Source { get; init; }
+
+        /// <summary>The element's x scale at a full meter, learned from the original's fill.</summary>
+        public float? Full { get; set; }
+    }
 
     /// <summary>The last published-channel report, so it prints on change rather than once.</summary>
 
@@ -209,10 +246,46 @@ public sealed partial class Engine_HudView : Node3D
         _built.Clear();
         BindCentreToggle();
 
+        // What mods put on the HUD, and which shipped pieces they replace (not built).
+        Engine_HudModPieces.ModLayout modLayout = Engine_HudModPieces.LoadFromMods();
+
+        // Pieces mods define (ui/hud.json), beside the ones cut from hud.bgf; children of this view
+        // so they show and hide with the HUD.
+        if (_modPieces is null)
+        {
+            _modPieces = new Engine_HudModPieces { Name = "ModPieces" };
+            _modPieces.FindPiece = id =>
+            {
+                foreach (Built built in _built)
+                {
+                    if (built.Piece.Id == id && GodotObject.IsInstanceValid(built.Node))
+                    {
+                        return built.Node;
+                    }
+                }
+
+                return null;
+            };
+            AddChild(_modPieces);
+        }
+
+        _modPieces.Window = Window;
+        _modPieces.Build(modLayout.Pieces);
+        if (modLayout.Hidden.Count != 0)
+        {
+            GD.Print($"[hud-mods] shipped piece(s) replaced by mods: {string.Join(", ", modLayout.Hidden)}");
+        }
+
         var missing = new List<string>();
         int unplaced = 0;
+
         foreach (Engine_HudLayout.Piece piece in Layout.Pieces)
         {
+            if (modLayout.Hidden.Contains(piece.Id))
+            {
+                continue;
+            }
+
             // Inventoried, not drawn: `hud.bgf` binds 110 elements and states where only some go;
             // the rest are authored at their component's origin, so building them would stack
             // pieces at dead centre.
@@ -222,6 +295,187 @@ public sealed partial class Engine_HudView : Node3D
                 continue;
             }
 
+            if (BuildPiece(piece, missing) is not { } built)
+            {
+                continue;
+            }
+
+            built.ExtraScale = modLayout.Scales.TryGetValue(piece.Id, out float factor) ? factor : 1f;
+
+            // Mods' copies of this piece, built right after it from the same art.
+            foreach (Engine_HudModPieces.Clone clone in modLayout.Clones)
+            {
+                if (clone.Of != piece.Id)
+                {
+                    continue;
+                }
+
+                Engine_HudLayout.Piece copy = piece with { Id = clone.Id, Offset = piece.Offset + clone.Offset };
+                if (BuildPiece(copy, missing) is { } cloned)
+                {
+                    cloned.ExtraScale = modLayout.Scales.TryGetValue(clone.Id, out float own) ? own : built.ExtraScale;
+                    ApplyClone(cloned, clone);
+                    GD.Print($"[hud-mods] '{clone.Id}' ({clone.Mod}) is a copy of '{piece.Id}'");
+                }
+            }
+        }
+
+        FinishBuild(missing, unplaced);
+    }
+
+    /// <summary>
+    /// A clone's differences from its original: its meters' sources, its hue, its picture. Every
+    /// material it changes is DUPLICATED first — a clone's art shares materials with the original
+    /// it was cut from, and recolouring the shared one would turn the health bar blue too.
+    /// </summary>
+    private void ApplyClone(Built built, Engine_HudModPieces.Clone clone)
+    {
+        built.Remap = clone.Values;
+
+        foreach ((string element, string meter) in clone.Bars)
+        {
+            if (built.Node.FindChild(element, recursive: true, owned: false) is Node3D bar &&
+                clone.Values.TryGetValue(meter, out string? source))
+            {
+                built.Bars.Add(new ClonedBar
+                {
+                    Node = bar,
+                    Guest = Engine_HudValues.Handle.For(meter),
+                    Source = source,
+                });
+            }
+            else
+            {
+                GD.PushWarning($"[hud-mods] '{clone.Id}': no element '{element}' or no value for meter '{meter}'");
+            }
+        }
+
+        if (clone.Hue != 0f)
+        {
+            foreach (string name in clone.HueElements)
+            {
+                if (built.Node.FindChild(name, recursive: true, owned: false) is { } element)
+                {
+                    foreach (ShaderMaterial material in OwnMaterials(element))
+                    {
+                        material.SetShaderParameter("hue_shift", clone.Hue);
+                    }
+                }
+            }
+        }
+
+        if (clone.IconElement.Length != 0 &&
+            built.Node.FindChild(clone.IconElement, recursive: true, owned: false) is { } icon)
+        {
+            built.IconMaterials.AddRange(OwnMaterials(icon));
+            foreach (string candidate in clone.IconTextures)
+            {
+                string path = candidate.StartsWith("game://", System.StringComparison.Ordinal)
+                    ? candidate["game://".Length..]
+                    : candidate;
+                built.IconCandidates.Add(path.Replace('\\', '/').ToLowerInvariant());
+            }
+        }
+    }
+
+    /// <summary>
+    /// A clone's bars at the MOD's values. The binding has just written the original's stated
+    /// fill (the guest's `scale.x` on the bar element), which is the health meter's — so the full
+    /// length is read off it (`scale ÷ meter%`, remembered once known) and the copy's bar is
+    /// redrawn at its own meter.
+    /// </summary>
+    private void RescaleClonedBars(Built built)
+    {
+        foreach (ClonedBar bar in built.Bars)
+        {
+            Transform3D transform = bar.Node.Transform;
+            Vector3 column = transform.Basis.X;
+            float stated = column.Length();
+            if (Values.Meter(bar.Guest) is { } guest && guest > 1f && stated > 0.0001f)
+            {
+                bar.Full = stated / (guest / 100f);
+            }
+
+            if (bar.Full is not { } full || Engine_HudModPieces.MeterValue(bar.Source) is not { } ours)
+            {
+                continue;
+            }
+
+            Vector3 direction = stated > 0.0001f ? column / stated : Vector3.Right;
+            Basis basis = transform.Basis;
+            basis.X = direction * (full * ours / 100f);
+            bar.Node.Transform = new Transform3D(basis, transform.Origin);
+        }
+    }
+
+    /// <summary>
+    /// A clone's icon: resolved LATE and retried, because the HUD is built before the game's own
+    /// mount (mods folded in) becomes the texture loader's first resolver — it is installed by a
+    /// deferred call after mounting, and a mod's texture asked for before that is not there.
+    /// The bytes are probed first so a retry never trips Godot's load errors.
+    /// </summary>
+    private static void PaintCloneIcon(Built built)
+    {
+        if (built.Icon is null && built.IconCandidates.Count != 0 &&
+            Engine.GetProcessFrames() % 30 == 0)
+        {
+            foreach (string candidate in built.IconCandidates)
+            {
+                if (Refii.Textures.Engine_BnkTextureLoader.ReadBytes(candidate) is null ||
+                    ResourceLoader.Load<Texture2D>(Refii.Textures.Engine_BnkTextureLoader.PathPrefix + candidate)
+                        is not { } picture)
+                {
+                    continue;
+                }
+
+                built.Icon = picture;
+                built.IconCandidates.Clear();
+
+                // The WHOLE picture: the original may show a window of a shared sheet, and a
+                // replacement is one image.
+                foreach (ShaderMaterial material in built.IconMaterials)
+                {
+                    material.SetShaderParameter("uv1_offset", Vector2.Zero);
+                    material.SetShaderParameter("uv1_scale", Vector2.One);
+                }
+
+                GD.Print($"[hud-mods] '{built.Piece.Id}' icon: {candidate}");
+                break;
+            }
+        }
+
+        if (built.Icon is { } icon)
+        {
+            foreach (ShaderMaterial material in built.IconMaterials)
+            {
+                material.SetShaderParameter("diffuse_tex", icon);
+            }
+        }
+    }
+
+    /// <summary>The subtree's shader materials, each replaced by its own copy.</summary>
+    private static List<ShaderMaterial> OwnMaterials(Node node)
+    {
+        var owned = new List<ShaderMaterial>();
+        if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial shared)
+        {
+            var copy = (ShaderMaterial)shared.Duplicate();
+            mesh.MaterialOverride = copy;
+            owned.Add(copy);
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            owned.AddRange(OwnMaterials(child));
+        }
+
+        return owned;
+    }
+
+    /// <summary>Builds one piece's node, binding and tracks; null (and named) when it has no art.</summary>
+    private Built? BuildPiece(Engine_HudLayout.Piece piece, List<string> missing)
+    {
+        {
             float scale = Engine_HudLayout.Scale(Engine_HudLayout.CanvasExtent(Window));
 
             Node3D? node = piece.Driven == Engine_HudLayout.Drive.Text
@@ -233,7 +487,7 @@ public sealed partial class Engine_HudView : Node3D
                 // Named, not counted: art in neither the banks nor a mod folder means the layout
                 // refers to something that does not exist.
                 missing.Add($"{piece.Id}({piece.Art})");
-                continue;
+                return null;
             }
 
             AddChild(node);
@@ -270,8 +524,12 @@ public sealed partial class Engine_HudView : Node3D
 
             BindTracks(built);
             _built.Add(built);
+            return built;
         }
+    }
 
+    private void FinishBuild(List<string> missing, int unplaced)
+    {
         // What the containment pass kept and dropped: a container is placed with the subtrees of
         // its separately-drawn children removed.
         var housings = new List<string>();
@@ -1261,11 +1519,24 @@ public sealed partial class Engine_HudView : Node3D
         }
     }
 
-    /// <summary>A nested value's playhead, or null while the guest has not published it.</summary>
-    private float? NestedTime(Engine_HudValues.Handle handle, bool pulse) =>
-        pulse
+    /// <summary>
+    /// A nested value's playhead, or null while the guest has not published it. A mod clone's
+    /// meters read the sources it names (<c>"none"</c> holds one still); every other meter is the
+    /// guest's, so a copy of the health widget still drops with it when the quest box grows.
+    /// </summary>
+    private float? NestedTime(Built built, Engine_HudValues.Handle handle, bool pulse)
+    {
+        if (built.Remap is { } remap && remap.TryGetValue(handle.Name, out string? source))
+        {
+            return source != "none" && Engine_HudModPieces.MeterValue(source) is { } mod
+                ? mod * 10f
+                : null;
+        }
+
+        return pulse
             ? Values.Pulser(handle) is { } phase ? Mathf.Clamp(phase, 0f, 1f) * 1000f : null
             : Values.Meter(handle) is { } value ? Mathf.Clamp(value, 0f, 100f) * 10f : null;
+    }
 
     /// <summary>
     /// Scrubs a group piece's nested meters and pulsers, each track and window at its own
@@ -1275,7 +1546,7 @@ public sealed partial class Engine_HudView : Node3D
     {
         foreach (BoundTrack track in built.Tracks)
         {
-            if (track.Value is { } handle && NestedTime(handle, track.Pulse) is { } time)
+            if (track.Value is { } handle && NestedTime(built, handle, track.Pulse) is { } time)
             {
                 ApplyTrack(built, track, at, time);
             }
@@ -1283,7 +1554,7 @@ public sealed partial class Engine_HudView : Node3D
 
         foreach (BoundWindow window in built.Windows)
         {
-            if (window.Value is { } handle && NestedTime(handle, window.Pulse) is { } time)
+            if (window.Value is { } handle && NestedTime(built, handle, window.Pulse) is { } time)
             {
                 built.Binding.Gate(window.Slot, window.Window.IsOpen(time));
             }
@@ -1403,6 +1674,11 @@ public sealed partial class Engine_HudView : Node3D
         {
             Visible = false;
             return;
+        }
+
+        if (_modPieces is not null)
+        {
+            _modPieces.Window = Window;
         }
 
         if (_built.Count == 0)
@@ -1527,6 +1803,10 @@ public sealed partial class Engine_HudView : Node3D
                 built.Binding.Apply(resolved, LiveTextures, LiveTransform);
             }
 
+            PaintCloneIcon(built);
+
+            RescaleClonedBars(built);
+
             now = System.Diagnostics.Stopwatch.GetTimestamp();
             TicksApply += now - mark;
             mark = now;
@@ -1612,7 +1892,7 @@ public sealed partial class Engine_HudView : Node3D
             mark = now;
 
             built.Node.Transform = new Transform3D(
-                built.Authored.Scaled(new Vector3(scale, scale, 1f)),
+                built.Authored.Scaled(new Vector3(scale * built.ExtraScale, scale * built.ExtraScale, 1f)),
                 built.Node.Transform.Origin);
 
             now = System.Diagnostics.Stopwatch.GetTimestamp();

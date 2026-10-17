@@ -232,6 +232,12 @@ public static class Engine_UiScreenActions
 			return true;
 		}
 
+		// `Mod:buy:<setting>` — a mod ability's row: the purchase is the mod's (Engine_UiModAbilities).
+		if (Engine_UiModAbilities.Buy(action))
+		{
+			return true;
+		}
+
 		switch (action)
 		{
 			case ScreenBack:

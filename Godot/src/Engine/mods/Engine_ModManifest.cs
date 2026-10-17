@@ -93,7 +93,10 @@ public sealed class ModManifest
 					foreach (F2ModEntry f2Entry in package.Entries)
 					{
 						string normalized = ModLoadOrder.Normalize(f2Entry.Path);
-						if (normalized.Length == 0)
+						// Native sources are owned per function (ModNative), never per file: two
+						// mods may each ship native/combat.cpp and both compile.
+						if (normalized.Length == 0 || ModNative.IsNativePath(normalized) ||
+							ModLua.IsModLuaPath(normalized))
 						{
 							continue;
 						}

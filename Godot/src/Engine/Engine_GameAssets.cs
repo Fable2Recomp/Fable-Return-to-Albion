@@ -244,6 +244,11 @@ public partial class Engine_GameAssets : Node
 			}
 		}
 
+		// MOD LUA: every enabled mod's mod/init.lua and mod/camera.lua, composed for the payload hook
+		// that runs them after the shipped scripts.
+		Refii.Mods.ModLua.Apply(mounted, overlays);
+		Refii.Mods.ModSettings.Reload();
+
 		// Ensure GDB resolvers are bound so composite synthesis can access the unpatched base database:
 		Refii.Gdb.Engine_GameGdb.SetResolver(p => mounted.TryGetFile(p, out var f) ? f.ReadAllBytes() : null);
 		Refii.Gdb.Engine_GameGdb.SetBaseResolver(p => mounted.ReadBaseBytes(p));

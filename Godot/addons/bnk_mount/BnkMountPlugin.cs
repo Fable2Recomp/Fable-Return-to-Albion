@@ -1141,7 +1141,7 @@ public partial class BnkMountPlugin : EditorPlugin
     public override void _Process(double delta)
     {
         EditorFileSystem filesystem = EditorInterface.Singleton.GetResourceFilesystem();
-        _extensionScan.TryRun(filesystem.IsScanning(), filesystem.IsImporting(), filesystem.Scan);
+        _extensionScan.TryRun(filesystem.IsScanning(), filesystem.IsImporting(), filesystem.ScanSources);
         SetProcess(_extensionScan.Pending);
     }
 
@@ -1176,9 +1176,9 @@ public partial class BnkMountPlugin : EditorPlugin
 
                 if (modified)
                 {
-                    string updated = string.Join(",", parts);
-                    settings.SetSetting(settingKey, updated);
-                    settings.SetInitialValue(settingKey, updated, false);
+                    // The setting only, never its initial value: a value equal to its default is
+                    // not persisted, and this ran — with a rescan — on every editor start.
+                    settings.SetSetting(settingKey, string.Join(",", parts));
                     changed = true;
                 }
             }
@@ -1186,6 +1186,14 @@ public partial class BnkMountPlugin : EditorPlugin
             EnsureExtension("docks/filesystem/other_file_extensions", "ico,icns", new[] { "tu", "gdb" });
             EnsureExtension("docks/filesystem/textfile_extensions", "txt,md,cfg,ini,log,json,yml,yaml,toml,xml", new[] { "tu", "gdb" });
 
+            // NEVER A FULL Scan() FROM THIS PLUGIN. A full scan replaces the editor's directory
+            // tree and frees the old one, while Godot's script-documentation thread
+            // (EditorHelp::_regen_script_doc_thread, started after the first scan and loading every
+            // script in the project) holds raw pointers into it — the editor died that way on
+            // 2026-10-17, four seconds after a plugin Scan() finished. ScanSources() re-reads the
+            // extension lists and updates the tree in place; during the first scan, where plugins
+            // are enabled from, it only marks a scan pending, and the first scan itself reads the
+            // lists after the plugins have loaded.
             if (changed)
             {
                 _extensionScan.Request();
@@ -1496,7 +1504,7 @@ public partial class BnkMountPlugin : EditorPlugin
     /// and optionally triggers a filesystem scan so new files appear immediately.
     /// </summary>
     /// <param name="modName">Optional mod name; defaults to <see cref="EditorModExporter.ActiveModName"/>.</param>
-    /// <param name="triggerScan">Whether to trigger an immediate <see cref="EditorFileSystem.Scan"/> when idle.</param>
+    /// <param name="triggerScan">Whether to have the filesystem pick the folder up now (<see cref="EditorFileSystem.ScanSources"/>).</param>
     public void SyncActiveModCreatorFavorite(string? modName = null, bool triggerScan = false)
     {
         if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
@@ -1547,11 +1555,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
             if (triggerScan)
             {
-                EditorFileSystem? efs = EditorInterface.Singleton?.GetResourceFilesystem();
-                if (efs is not null && !efs.IsScanning())
-                {
-                    efs.Scan();
-                }
+                EditorInterface.Singleton?.GetResourceFilesystem()?.ScanSources();
             }
         }
         catch (Exception ex)
@@ -1588,7 +1592,7 @@ public partial class BnkMountPlugin : EditorPlugin
                 resPath += "/";
             }
 
-            EditorInterface.Singleton?.GetResourceFilesystem()?.Scan();
+            EditorInterface.Singleton?.GetResourceFilesystem()?.ScanSources();
             string targetRes = resPath;
             Callable.From(() =>
             {

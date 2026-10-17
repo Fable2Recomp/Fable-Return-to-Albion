@@ -1041,6 +1041,24 @@ public partial class GameDebugServer : Node
 					};
 				}
 
+				// A mod's tunable, live: "mod-setting <key> <value>" (Engine_ModSettings pushes the
+				// files' values; this holds until the next push).
+				if (name.StartsWith("mod-setting ", System.StringComparison.Ordinal))
+				{
+					string[] parts = name.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+					if (parts.Length != 3 || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float,
+						System.Globalization.CultureInfo.InvariantCulture, out float setting))
+					{
+						return new Dictionary<string, object?>
+						{
+							["ok"] = false, ["error"] = "mod-setting needs <key> <number>",
+						};
+					}
+
+					Refii.Host.HostBridge.SetModSetting(parts[1], setting);
+					return Ok(new Dictionary<string, object?> { ["setting"] = parts[1], ["value"] = setting });
+				}
+
 				return Ok(new Dictionary<string, object?>
 				{
 					["queued"] = Refii.Host.HostBridge.PostFrontEndAction(name),
@@ -1087,8 +1105,13 @@ public partial class GameDebugServer : Node
 					};
 				}
 
+				// "@game <chunk>" runs in the GAME VM (game scripts, mods' Lua) instead of the GUI's.
+				const string gamePrefix = "@game ";
+				string action = chunk.StartsWith(gamePrefix, System.StringComparison.Ordinal)
+					? "debug-gamelua:" + chunk.Substring(gamePrefix.Length)
+					: "debug-lua:" + chunk;
 				ulong before = Refii.Host.HostBridge.DebugCallResult()?.Seq ?? 0;
-				uint queued = Refii.Host.HostBridge.PostFrontEndAction("debug-lua:" + chunk);
+				uint queued = Refii.Host.HostBridge.PostFrontEndAction(action);
 				return Ok(new Dictionary<string, object?>
 				{
 					["queued"] = queued, ["seqBefore"] = before,

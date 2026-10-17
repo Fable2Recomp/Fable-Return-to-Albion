@@ -167,6 +167,38 @@ public static class Engine_UiAbilitySource
 				Command: $"{AbilityAction}learn:{type}"));
 		}
 
+		// MODS' ABILITIES stand after the category's own (Engine_UiModAbilities): the same row
+		// shape, the same pip rule and affordability, but the level and cost are what the mod's
+		// hook publishes and A hands the purchase to the mod.
+		int modIndex = 0;
+		foreach (Engine_UiModAbilities.Ability mod in Engine_UiModAbilities.All)
+		{
+			++modIndex;
+			if (mod.Category != category)
+			{
+				continue;
+			}
+
+			int level = Engine_UiModAbilities.Level(mod);
+			bool maxed = level >= mod.MaxLevel;
+			int? cost = Engine_UiModAbilities.Cost(mod);
+			string label = Engine_UiInventorySource.Strings is { } book &&
+				book.TryGetString(mod.NameTag, out string named) && named.Length != 0
+					? named
+					: mod.Name;
+			rows.Add(new Engine_UiMenuSources.Row(
+				Name: mod.Name,
+				Label: label,
+				Icon: AbilityIcon,
+				EventType: eventType,
+				Id: 0x10000u + (uint)modIndex,
+				Rating: maxed ? 2 * level : (2 * level) + 1,
+				Committable: false,
+				Counted: !maxed && cost is { } price && price <= Affordable(vitals, category),
+				Ghosted: false,
+				Command: Engine_UiModAbilities.BuyAction + mod.BuyKey));
+		}
+
 		int buyable = 0;
 		foreach (Engine_UiMenuSources.Row made in rows)
 		{

@@ -243,6 +243,11 @@ public static class Engine_UiAbilityPage
 			return values;
 		}
 
+		if (Engine_UiModAbilities.TryGet(row.Name, out Engine_UiModAbilities.Ability mod))
+		{
+			return ModValues(values, strings, mod, wallet);
+		}
+
 		if (!Engine_AbilityRecords.TryGet(row.Name, out Engine_AbilityRecords.Ability ability))
 		{
 			// The row's own label is the fallback: the localised name the guest stated when it
@@ -314,6 +319,69 @@ public static class Engine_UiAbilityPage
 			$" | target '{values[Page1Target]}' | movie '{MovieFor(row, levels)}'");
 		return values;
 	}
+
+	/// <summary>
+	/// A mod ability's page: the same lines as the guest's, from the mod's tags and the values its
+	/// hook publishes. Everything the guest's own branch writes is written here too, so no line
+	/// from the previously highlighted ability is left standing.
+	/// </summary>
+	private static IReadOnlyDictionary<string, string> ModValues(
+		Dictionary<string, string> values,
+		Refii.Text.Engine_BabelDatabase? strings,
+		Engine_UiModAbilities.Ability mod,
+		float[]? wallet)
+	{
+		int level = Engine_UiModAbilities.Level(mod);
+		bool maxed = level >= mod.MaxLevel;
+		int? cost = maxed ? null : Engine_UiModAbilities.Cost(mod);
+
+		string name = Babel(strings, mod.NameTag);
+		if (name.Length == 0)
+		{
+			name = mod.Name;
+		}
+
+		string suffix = maxed
+			? Babel(strings, MaximisedTag)
+			: Babel(strings, LevelTagPrefix + (level + 1).ToString(CultureInfo.InvariantCulture));
+		values[Page1Name] = suffix.Length == 0 ? name : $"{name} {suffix}";
+		values[Page2Name] = values[Page1Name];
+		values[Page2Description] = Babel(strings, mod.DescriptionTag)
+			.Replace(StatToken, maxed ? string.Empty : Engine_UiModAbilities.Stat(mod), System.StringComparison.Ordinal);
+		values[Page1TotalXp] = TotalXp(strings, ModDisciplineType(mod.Category), wallet);
+
+		bool priced = cost is not null;
+		values[LearnLabel] = Button(
+			strings, priced ? LearnWithParametersTag : LearnTag, level + 1, cost ?? 0, priced);
+		int? refund = level > 0 ? Engine_UiModAbilities.RefundAmount(mod) : null;
+		values[UnlearnLabel] = mod.RefundKey.Length == 0
+			? string.Empty
+			: Button(strings, refund is not null ? DiscardWithParametersTag : DiscardTag,
+				level, refund ?? 0, refund is not null);
+		values[AbilityCost] = priced
+			? Babel(strings, CostTag).Replace(StatToken,
+				cost!.Value.ToString(CultureInfo.InvariantCulture), System.StringComparison.Ordinal)
+			: string.Empty;
+
+		Stats(values, strings, default, 0, string.Empty, known: false, damage: 1f);
+		values[Page1Target] = string.Empty;
+		values[Page1TargetValue] = string.Empty;
+		values[Page1Range] = string.Empty;
+		values[Page1RangeValue] = string.Empty;
+
+		Report($"'{mod.Name}' -> mod ability ({mod.Mod}) level {level}{(maxed ? " MAXED" : string.Empty)}" +
+			$" | name '{values[Page1Name]}' | learn '{values[LearnLabel]}'");
+		return values;
+	}
+
+	/// <summary>A type in the category's discipline, for <see cref="TotalXp"/>.</summary>
+	private static int ModDisciplineType(string category) => category switch
+	{
+		Engine_UiAbilitySource.Strength => 2,
+		Engine_UiAbilitySource.Skill => 5,
+		Engine_UiAbilitySource.Will => 8,
+		_ => 0,
+	};
 
 	/// <summary>The last line printed, so an unchanged row costs nothing.</summary>
 	private static string _reported = string.Empty;
@@ -736,6 +804,16 @@ public static class Engine_UiAbilityPage
 	public static IReadOnlyDictionary<string, uint> Textures(Engine_UiExpandableMenu.Item? row)
 	{
 		var textures = new Dictionary<string, uint>(1);
+		if (row is not null && Engine_UiModAbilities.TryGet(row.Name, out Engine_UiModAbilities.Ability mod))
+		{
+			if (Engine_UiModAbilities.ImageKey(mod) is { } card)
+			{
+				textures[TarotFrame] = card;
+			}
+
+			return textures;
+		}
+
 		if (row is null || IsCategory(row) || string.IsNullOrEmpty(row.Name) ||
 			!Engine_AbilityRecords.TryGet(row.Name, out Engine_AbilityRecords.Ability ability) ||
 			ability.ImagePath.Length == 0)
@@ -801,6 +879,36 @@ public static class Engine_UiAbilityPage
 			slides[OrbGroupPaths[at]] = OrbPlain;
 		}
 
+		if (row is not null && orbs is { Length: > 3 } &&
+			Engine_UiModAbilities.TryGet(row.Name, out Engine_UiModAbilities.Ability mod))
+		{
+			// The same rule for a mod's ability: its category's orb, General while it holds
+			// anything, and nothing lit once it is maxed.
+			if (Engine_UiModAbilities.Level(mod) >= mod.MaxLevel)
+			{
+				return slides;
+			}
+
+			int modDiscipline = mod.Category switch
+			{
+				Engine_UiAbilitySource.Strength => 1,
+				Engine_UiAbilitySource.Skill => 2,
+				Engine_UiAbilitySource.Will => 3,
+				_ => 0,
+			};
+			if (modDiscipline > 0)
+			{
+				slides[OrbGroupPaths[modDiscipline]] = OrbHighlighted;
+			}
+
+			if ((int)orbs[0] > 0)
+			{
+				slides[OrbGroupPaths[0]] = OrbHighlighted;
+			}
+
+			return slides;
+		}
+
 		if (row is null || orbs is not { Length: > 3 } ||
 			!Refii.Gdb.Engine_AbilityRecords.TryGet(row.Name,
 				out Refii.Gdb.Engine_AbilityRecords.Ability ability))
@@ -856,6 +964,13 @@ public static class Engine_UiAbilityPage
 	/// Empty when the row is a category or states no video — the guest leaves the last movie
 	/// standing there, and so do we.
 	/// </summary>
+	/// <summary>
+	/// Whether the row wants NO movie in the frame — a mod's ability, which has a still card and
+	/// no preview. Distinct from an empty <see cref="MovieFor"/>, which leaves the last movie up.
+	/// </summary>
+	public static bool WantsNoMovie(Engine_UiExpandableMenu.Item? row) =>
+		row is not null && Engine_UiModAbilities.TryGet(row.Name, out _);
+
 	public static string MovieFor(Engine_UiExpandableMenu.Item? row, int[]? levels)
 	{
 		if (row is null ||

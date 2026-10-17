@@ -107,6 +107,7 @@ void FlushLogging();
 // kind of thing that goes wrong silently.
 #include "core/audio_state.h"
 #include "core/hero_derived.h"
+#include "core/mod_values.h"
 
 // The alternate signal stack lives in the vfs library behind a C entry point since the
 // payload-bridge change (adarec1994, 3f9784ae): `EnsureAlternateSignalStack` is now an inline
@@ -2300,7 +2301,9 @@ extern "C" {
 ///     GetMemoryLargest), Godot-side memory and locks (RefiiHostTraceAlloc/Free, TraceLock*),
 ///     find-zone and sample trees (RefiiHostTracyFindZone, GetZoneStatsRange, GetSampleTree),
 ///     RefiiHostTracyLive, and guest stack sampling (RefiiHostGuestSamplerStart/Stop).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 183; }
+/// 184 adds hard mods' named values: RefiiHostGetModValue (what a mod's hook published) and
+///     RefiiHostSetModSetting (what Godot hands it), over src/vfs/src/core/mod_values.cpp.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 184; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -3288,6 +3291,31 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCompletedQuests(uint32_t index, uint3
     }
 
     return total;
+}
+
+/// A hard mod's published value by key ("combat.stamina"): 1 and the value when the mod's hook
+/// has published one, 0 otherwise. The hook states it; nothing here samples the guest.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostGetModValue(const char* key, uint32_t key_length,
+                                                    float* out_value) {
+    if (key == nullptr) {
+        return 0;
+    }
+    float value = 0.0f;
+    if (!refii::mods::Published(std::string_view(key, key_length), value)) {
+        return 0;
+    }
+    if (out_value != nullptr) {
+        *out_value = value;
+    }
+    return 1;
+}
+
+/// Hands a hard mod a setting by key; its hook reads it with refii::mods::Setting.
+REFII_HOST_ABI_EXPORT void RefiiHostSetModSetting(const char* key, uint32_t key_length,
+                                                  float value) {
+    if (key != nullptr) {
+        refii::mods::SetSetting(std::string_view(key, key_length), value);
+    }
 }
 
 REFII_HOST_ABI_EXPORT int RefiiHostGetHeroDerived(uint32_t* words, uint32_t word_capacity,

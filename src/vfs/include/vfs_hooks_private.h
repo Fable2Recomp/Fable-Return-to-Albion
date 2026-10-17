@@ -341,5 +341,19 @@ inline void GuestTickPumpNoteSaveCount(int32_t count) {
 inline void GuestTickPumpRequestSaveCount() {
   refii_bridge_guest_tick_pump_request_save_count();
 }
+
+/// Runs one Lua source chunk (at most 943 bytes) in the GAME VM; false when there is none.
+/// Defined in hooks/guest_tick_pump.cpp.
+bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk);
+
+/// Re-applies the camera feel the host last chose. The camera scripts run again whenever a
+/// CameraManager is built (a save load, a co-op join) and restore the shipped values.
+void ReapplyCameraFeel(PPCContext& ctx, uint8_t* base);
+
+/// Runs hard mods' registered tick callbacks. Defined in hooks/mod_api.cpp.
+void RunModTicks(PPCContext& ctx, uint8_t* base);
+
+/// Steps refii_mod_lua_generation: the game's Lua state was rebuilt or loaded from a save.
+void BumpLuaGeneration();
 }  // namespace refii::vfs
 

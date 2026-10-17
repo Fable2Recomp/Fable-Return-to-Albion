@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 183;
+	public const int ExpectedAbiVersion = 184;
 
 	private const int MessageCapacity = 512;
 
@@ -6246,6 +6246,47 @@ public static class HostBridge
 			values[9] != 0f, (int)values[10]);
 	}
 
+	/// <summary>
+	/// A hard mod's published value by key (<c>combat.stamina</c>), or false when its hook has
+	/// published none. The hook states the value; this never samples the guest.
+	/// </summary>
+	public static bool TryGetModValue(string key, out float value)
+	{
+		value = 0f;
+		if (TryGetAbiVersion() is null || string.IsNullOrEmpty(key))
+		{
+			return false;
+		}
+
+		byte[] bytes = System.Text.Encoding.UTF8.GetBytes(key);
+		try
+		{
+			return RefiiHostGetModValue(bytes, (uint)bytes.Length, out value) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Hands a hard mod a setting by key; its hook reads it with refii::mods::Setting.</summary>
+	public static void SetModSetting(string key, float value)
+	{
+		if (TryGetAbiVersion() is null || string.IsNullOrEmpty(key))
+		{
+			return;
+		}
+
+		byte[] bytes = System.Text.Encoding.UTF8.GetBytes(key);
+		try
+		{
+			RefiiHostSetModSetting(bytes, (uint)bytes.Length, value);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
 	/// <summary>Reads the hero's derived state. See <see cref="HeroDerived"/>.</summary>
 	public static HeroDerived GetHeroDerived()
 	{
@@ -8487,6 +8528,12 @@ public static class HostBridge
 	private static extern uint RefiiHostGetCompletedQuests(
 		uint index, out uint outRecord, out int outMoney, out int outRenown,
 		byte[] outConclusion, uint conclusionCapacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetModValue(byte[] key, uint keyLength, out float value);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetModSetting(byte[] key, uint keyLength, float value);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetHeroDerived(
