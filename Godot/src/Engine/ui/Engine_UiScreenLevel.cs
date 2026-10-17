@@ -49,7 +49,7 @@ public sealed class Engine_UiScreenLevel
 	/// <summary>To the guest, and to the host's own record of the page's pending choices.</summary>
 	private static void Send(uint code)
 	{
-		Engine_UiSource.Current.ScreenAction(code);
+		if (!Engine_UiWeatherOptions.Open) Engine_UiSource.Current.ScreenAction(code);
 		Engine_UiOptionsPending.Track(code);
 	}
 
@@ -67,6 +67,7 @@ public sealed class Engine_UiScreenLevel
 	/// <summary>Each page's rows, top to bottom, as the guest orders them.</summary>
 	private static readonly System.Collections.Generic.Dictionary<string, string[]> Rows = new()
 	{
+		[Engine_UiWeatherOptions.PageName] = Engine_UiWeatherOptions.Rows,
 		["Game"] = new[]
 		{
 			"Options.Subtitles_pickbox", "Options.BreadcrumbSize_pickbox",
@@ -175,8 +176,9 @@ public sealed class Engine_UiScreenLevel
 			bool up = row < Engine_UiOptionsPending.Row;
 			int before = Engine_UiOptionsPending.Row;
 			Send(up ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
-			Engine_UiSource.Current.ScreenAction(
-				up ? Engine_UiScreenInput.UpReleased : Engine_UiScreenInput.DownReleased);
+			if (!Engine_UiWeatherOptions.Open)
+				Engine_UiSource.Current.ScreenAction(
+					up ? Engine_UiScreenInput.UpReleased : Engine_UiScreenInput.DownReleased);
 			if (Engine_UiOptionsPending.Row == before)
 			{
 				return;
@@ -188,8 +190,9 @@ public sealed class Engine_UiScreenLevel
 	private static void Step(int direction)
 	{
 		Send(direction < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
-		Engine_UiSource.Current.ScreenAction(
-			direction < 0 ? Engine_UiScreenInput.LeftReleased : Engine_UiScreenInput.RightReleased);
+		if (!Engine_UiWeatherOptions.Open)
+			Engine_UiSource.Current.ScreenAction(
+				direction < 0 ? Engine_UiScreenInput.LeftReleased : Engine_UiScreenInput.RightReleased);
 	}
 
 	/// <summary>
@@ -238,6 +241,18 @@ public sealed class Engine_UiScreenLevel
 	/// <summary>The code a drawn A or B prompt on the page stands for, under the pointer.</summary>
 	private static uint? PromptAt(Engine_UiOwnedBook book, Godot.Vector2 at)
 	{
+		if (Engine_UiWeatherOptions.Open)
+		{
+			foreach ((string path, uint code) in new[]
+				{ ("Learn", Engine_UiScreenInput.Select), ("Unlearn", Engine_UiScreenInput.Back) })
+			{
+				if (book.NodeFor(Engine_UiWeatherOptions.Buttons + "." + path) is { } node &&
+					node.IsVisibleInTree() && Engine_UiPointer.CanvasBounds(node) is { } bounds &&
+					bounds.Grow(4f).HasPoint(at)) return code;
+			}
+			return null;
+		}
+
 		foreach ((string name, uint code) in new[]
 			{ ("icon_button_a", Engine_UiScreenInput.Select), ("icon_button_b", Engine_UiScreenInput.Back) })
 		{

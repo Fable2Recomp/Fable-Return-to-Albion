@@ -1775,14 +1775,17 @@ public partial class GameUi : Node
 		}
 
 		_screenMenuDeclined = null;
+		if (state.ScreenId != Engine_UiDetailPages.OptionsScreenId && Engine_UiWeatherOptions.Open)
+			Engine_UiOptionsPending.Leave();
 
 		// The options page level is not a list and must not be drawn as one: the owned view comes
 		// down, the guest's page stays mirrored, and input becomes the page's own vocabulary.
-		if (ScreenPageOpen(state.ScreenId, drawn))
+		if (ScreenPageOpen(state.ScreenId, drawn) || Engine_UiWeatherOptions.Open)
 		{
+			bool weatherPage = Engine_UiWeatherOptions.Open;
 			if (_screenMenuView is not null)
 			{
-				_screenMenuView.Visible = false;
+				_screenMenuView.Visible = weatherPage;
 			}
 
 			// The captions are the guest's while the page is open — every LEFT/RIGHT rewrites
@@ -1793,9 +1796,10 @@ public partial class GameUi : Node
 			// declared a page element reaches here at all, and only one that needs the sliders
 			// pays for reading them.
 			// THE PAGE'S PENDING CHOICES START FROM THE COMMITTED ONES the moment it opens.
-			Engine_UiOptionsPending.Enter(
-				_screenMenu?.Script.Highlighted?.Name ?? string.Empty,
-				HostBridge.GetOptions(), HostBridge.GetOptionSliders());
+			if (!Engine_UiWeatherOptions.Open)
+				Engine_UiOptionsPending.Enter(
+					_screenMenu?.Script.Highlighted?.Name ?? string.Empty,
+					HostBridge.GetOptions(), HostBridge.GetOptionSliders());
 
 			if (Engine_UiDetailPages.Owns(state.ScreenId) &&
 				_books.Book(state.ScreenId) is { } pageBook)
@@ -1818,6 +1822,8 @@ public partial class GameUi : Node
 				pageBook.HostActive = Engine_UiDetailPages.Active(state.ScreenId, pageRow);
 				pageBook.HostOpacity = Engine_UiDetailPages.Opacities(state.ScreenId, pageRow);
 				pageBook.HostRotations = Engine_UiDetailPages.Rotations(state.ScreenId, pageRow);
+				if (state.ScreenId == Engine_UiDetailPages.OptionsScreenId)
+					Engine_UiWeatherOptions.Apply(pageBook, pageRow);
 				_providerFilledThisFrame = true;
 			}
 
@@ -1828,7 +1834,8 @@ public partial class GameUi : Node
 				_screenLevel.Pointer(optionsBook, delta);
 			}
 
-			_screenLevel.Drive(SurfaceInput(delta));
+			if (!weatherPage || Engine_UiWeatherOptions.Open)
+				_screenLevel.Drive(SurfaceInput(delta));
 			return true;
 		}
 
@@ -1943,6 +1950,8 @@ public partial class GameUi : Node
 				Engine_UiDetailPages.Opacities(state.ScreenId, _screenMenu?.Script.Highlighted);
 			abilityBook.HostRotations =
 				Engine_UiDetailPages.Rotations(state.ScreenId, _screenMenu?.Script.Highlighted);
+			if (state.ScreenId == Engine_UiDetailPages.OptionsScreenId)
+				Engine_UiWeatherOptions.Apply(abilityBook, _screenMenu?.Script.Highlighted);
 			DriveMinimap(state.ScreenId, abilityBook, worldMap, _screenMenu?.Script.Highlighted, delta);
 
 			// THIS PATH FILLS THE BOOK TOO. DriveOwnedScreenProvider stands down on this flag,
@@ -8786,6 +8795,7 @@ public partial class GameUi : Node
 		_screenLists.Remove(address);
 		if (_screenMenuAddress == address)
 		{
+			Engine_UiOptionsPending.Leave();
 			_screenMenuAddress = 0;
 			_screenMenu = null;
 			_screenMenuView?.QueueFree();

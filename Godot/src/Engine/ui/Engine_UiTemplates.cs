@@ -1350,46 +1350,7 @@ public static class Engine_UiTemplates
 						Icon = gamma.Icon,
 						HostOnly = true,
 						Counted = false,
-						Children =
-						{
-							new Engine_UiMenuEntry
-							{
-								Name = "DynamicSkyAndWeatherEnabled",
-								Tag = "Enable/Disable",
-								Icon = gamma.Icon,
-								HostOnly = true,
-								Command = Engine_UiScreenActions.SettingToggle +
-									Refii.Level.Engine_DynamicSky.SwitchKey,
-							},
-							new Engine_UiMenuEntry
-							{
-								Name = "VolumetricClouds",
-								Tag = "Volumetric Clouds",
-								Icon = gamma.Icon,
-								HostOnly = true,
-								Command = Engine_UiScreenActions.SettingToggle +
-									Refii.Level.Engine_DynamicSky.VolumetricCloudsKey,
-							},
-							new Engine_UiMenuEntry
-							{
-								Name = "CloudShadows",
-								Tag = "Cloud Shadows",
-								Icon = gamma.Icon,
-								HostOnly = true,
-								Command = Engine_UiScreenActions.SettingToggle +
-									Refii.Level.Engine_DynamicSky.CloudShadowsKey,
-							},
-							new Engine_UiMenuEntry
-							{
-								Name = "WeatherOverride",
-								Tag = "Weather Override",
-								Icon = gamma.Icon,
-								HostOnly = true,
-								Command = Engine_UiScreenActions.SettingCycle +
-									Engine_UiScreenActions.WeatherOverrideKey + ":" +
-									Engine_UiScreenActions.WeatherOverrideValues,
-							},
-						},
+						Command = Engine_UiWeatherOptions.OpenCommand,
 					},
 				},
 			};

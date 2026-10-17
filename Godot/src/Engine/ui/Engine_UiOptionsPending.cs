@@ -126,10 +126,27 @@ public static class Engine_UiOptionsPending
 		_slider = Array.Empty<float>();
 	}
 
+	public static void EnterWeather(Func<string, string>? read = null)
+	{
+		if (Engine_UiWeatherOptions.Open) return;
+		Page = Engine_UiWeatherOptions.PageName;
+		Row = 0;
+		_index = Engine_UiWeatherOptions.Read(read ?? Engine_UiWeatherOptions.ReadCurrent);
+		_count = new[] { 2, 2, 2, Engine_UiWeatherOptions.Count(3) };
+		_slider = Array.Empty<float>();
+	}
+
 	/// <summary>One screen action the host just sent to the page.</summary>
-	public static void Track(uint code)
+	public static void Track(uint code,
+		Func<System.Collections.Generic.IReadOnlyDictionary<string, string>, bool>? writeWeather = null)
 	{
 		if (!Open)
+		{
+			return;
+		}
+
+		if (Engine_UiWeatherOptions.Open && code == Engine_UiScreenInput.Select &&
+			!(writeWeather ?? Engine_UiScreenActions.WriteSettings)(Engine_UiWeatherOptions.Settings(IndexOf)))
 		{
 			return;
 		}

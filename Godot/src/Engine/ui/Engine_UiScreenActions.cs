@@ -106,19 +106,22 @@ public static class Engine_UiScreenActions
 	}
 
 	private static bool WriteSetting(string key, string value)
+		=> WriteSettings(new System.Collections.Generic.Dictionary<string, string> { [key] = value });
+
+	public static bool WriteSettings(System.Collections.Generic.IReadOnlyDictionary<string, string> settings)
 	{
 		string path = Refii.Core.Engine_AppRoot.ConfigPath;
 		System.Collections.Generic.SortedDictionary<string, string> values =
 			Refii.Launcher.Core.RuntimeConfig.ReadValues(path);
-		values[key] = value;
+		foreach (var pair in settings) values[pair.Key] = pair.Value;
 		if (!Refii.Launcher.Core.RuntimeConfig.WriteValues(path, values, out string error))
 		{
-			Godot.GD.Print($"[screen-actions] could not write {key} to {path}: {error}");
+			Godot.GD.Print($"[screen-actions] could not write settings to {path}: {error}");
 			return false;
 		}
 
 		Refii.Core.Engine_Switches.Invalidate();
-		Godot.GD.Print($"[screen-actions] {key} = {value} written to {path}");
+		Godot.GD.Print($"[screen-actions] settings written to {path}");
 		return true;
 	}
 
@@ -153,6 +156,12 @@ public static class Engine_UiScreenActions
 	/// <summary>Runs a named action. An empty or unknown name does nothing.</summary>
 	public static bool Run(string action)
 	{
+		if (action == Engine_UiWeatherOptions.OpenCommand)
+		{
+			Engine_UiOptionsPending.EnterWeather();
+			return true;
+		}
+
 		if (action.StartsWith(SettingToggle, System.StringComparison.Ordinal))
 		{
 			return ToggleSetting(action[SettingToggle.Length..]);
