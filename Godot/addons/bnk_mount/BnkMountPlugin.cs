@@ -102,9 +102,6 @@ public partial class BnkMountPlugin : EditorPlugin
     private static readonly Color MeshlessItemColor = new(0.62f, 0.62f, 0.62f);
 
     private EntityInspectorPlugin? _entityInspector;
-    private static readonly Color MeshlessItemColor = new(0.62f, 0.62f, 0.62f);
-
-    private EntityInspectorPlugin? _entityInspector;
     private readonly EditorScanRequest _extensionScan = new();
     private Refii.Assets.UI.ModdingHubPanel? _modStudioMainPanel;
     private Refii.Assets.UI.ModStudioDockPanel? _modStudioDockPanel;

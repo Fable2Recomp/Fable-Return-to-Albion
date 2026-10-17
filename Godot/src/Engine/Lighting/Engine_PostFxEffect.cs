@@ -944,7 +944,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
             if (dofOn)
             {
-                DofDownscale(colour, depth, size, projection.Inverse());
+                if (!ClassicPost)
+                {
+                    DofDownscale(colour, depth, size, projection.Inverse());
+                }
                 Gauss(_gaussDofHSet, _quarter, _dof[0], new Vector2I(1, 0), _dofWeightsH);
                 Gauss(_gaussDofVSet, _dof[0], _dof[1], new Vector2I(0, 1), _dofWeightsV);
             }
@@ -1645,15 +1648,33 @@ public partial class Engine_PostFxEffect : CompositorEffect
             (_quarterSize.Y + 7) / 8);
     }
 
+    private void DofDownscale(Rid colour, Rid depth, Vector2I size, Projection inverse)
+    {
+        RenderingDevice rd = _rd!;
+        if (!_dofDownscaleSet.Matches(rd, colour, depth))
+        {
+            _dofDownscaleSet.Replace(rd, colour, depth, _dofDownscaleShader, new Array<RDUniform>
+            {
+                Image(colour, 0),
+                Image(_dof[1], 1),
+                Buffer(_stateBuffer, 2),
+                Sampler(_nearestSampler, depth, 3),
+            });
+        }
+
+        byte[] push = PushSizeDepth(size, inverse);
+        BitConverter.TryWriteBytes(push.AsSpan(8), _quarterSize.X);
+        BitConverter.TryWriteBytes(push.AsSpan(12), _quarterSize.Y);
+        Dispatch(_dofDownscalePipeline, _dofDownscaleSet.Set, push,
+            (_quarterSize.X + 7) / 8, (_quarterSize.Y + 7) / 8);
+    }
+
     private void Gauss(Rid set, Vector2I direction, float[] weights)
     {
         Gauss(set, _quarter, _dof[0], direction, weights);
     }
 
     private void Gauss(Rid set, Rid src, Rid dst, Vector2I direction, float[] weights)
-    {
-        if (ClassicPost)
-        {
     {
         if (ClassicPost)
         {
