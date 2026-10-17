@@ -220,10 +220,17 @@ void light() {
     // ONE ATTENUATION FOR BOTH TERMS, and it is the guest's linear ramp rather than Godot's
     // curve — see `fable_attenuation`. The diffuse and specular halves must be given the same
     // scalar because the guest multiplies both by the same `local * visibility` product.
-    float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
-
-    // No ALBEDO argument: Godot multiplies DIFFUSE_LIGHT by it after this function returns.
-    DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
-    SPECULAR_LIGHT += fable_specular(
-        NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
+    // Facing away, or out of reach, both terms are exactly zero: the light is skipped there.
+    // `if`, not an early `return` (Godot refuses one in a processor function).
+    if (dot(NORMAL, LIGHT) > 0.0) {
+        float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
+        if (atten > 0.0) {
+            // No ALBEDO argument: Godot multiplies DIFFUSE_LIGHT by it after this function returns.
+            DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
+            if (any(notEqual(v_specular, vec3(0.0)))) {
+                SPECULAR_LIGHT += fable_specular(
+                    NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
+            }
+        }
+    }
 }

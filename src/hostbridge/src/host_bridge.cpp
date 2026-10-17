@@ -43,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <SDL3/SDL_events.h>
@@ -71,6 +72,7 @@ void FlushLogging();
 #include "core/precise_sleep.h"
 #include "core/payload_bridge.h"
 #include "core/rex_payload_bridge.h"
+#include <rex/memory/utils.h>
 #include <rex/system/mmio_handler.h>
 #include <rex/system/xmemory.h>
 #include <rex/rex_app.h>
@@ -96,11 +98,9 @@ void FlushLogging();
 
 #include "../../host_input.h"
 
-#if defined(_WIN32)
-#define REFII_HOST_ABI_EXPORT __declspec(dllexport)
-#else
-#define REFII_HOST_ABI_EXPORT __attribute__((visibility("default")))
-#endif
+#include "host_abi.h"
+#include "host_tracy.h"
+#include "core/traced_mutex.h"
 
 // Included rather than redeclared like the Bink entries below: the audio exports marshal
 // VoiceRecord by value, and two hand-written copies of a struct layout is exactly the
@@ -165,6 +165,9 @@ uint32_t StatedPartMorphs(uint32_t entity, uint32_t* out, uint32_t capacity,
 // src/vfs/src/core/texture_layer_state.cpp.
 uint32_t StatedTextureLayers(uint32_t entity, uint32_t* out, uint32_t capacity,
                              uint32_t* out_generation, uint64_t* out_statements);
+// src/vfs/src/core/decal_state.cpp.
+uint32_t StatedDecals(uint32_t* out, uint32_t capacity, uint32_t* out_serial);
+uint32_t StatedFxMeshes(uint32_t* out, uint32_t capacity);
 // src/vfs/src/core/item_dye_layer_state.cpp.
 uint32_t StatedItemDyeLayers(uint32_t record, uint32_t* out, uint32_t capacity,
                              uint32_t* out_generation);
@@ -796,6 +799,10 @@ void Report(const char* line, uintptr_t pc) {
 void ReportFatal(const char* line, uintptr_t pc) {
     ::alarm(5);
     WriteRecord(line, pc);
+    // A live Tracy capture is saved before the process goes (bounded; the record is already
+    // written), and the deadline is re-armed for what follows.
+    refii_host_tracy::SaveOnCrash(3000);
+    ::alarm(5);
     REXLOG_INFO("{}", line);
     rex::FlushLogging();
     ::alarm(5);
@@ -957,6 +964,7 @@ void LastResort(int sig, siginfo_t* info, void* context) {
                "UNCLAIMED — three identical faults on this thread; the runtime's handler declines "
                "it and returning would re-execute it for ever. Default action restored; the next "
                "one kills the process");
+        refii_host_tracy::SaveOnCrash(3000);
         ::signal(sig, SIG_DFL);
         return;
     }
@@ -1174,6 +1182,17 @@ LONG CALLBACK TraceThrowHandler(PEXCEPTION_POINTERS info) {
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
+
+/// A fault nothing handled, on its way out: the live Tracy capture is saved (bounded), then the
+/// filter that was there before — the .NET runtime's or Godot's crash handler — runs exactly as
+/// it would have. Only truly unhandled exceptions arrive here, unlike the vectored handler above.
+LPTOP_LEVEL_EXCEPTION_FILTER g_previous_unhandled_filter = nullptr;
+
+LONG WINAPI SaveTracyOnUnhandled(PEXCEPTION_POINTERS info) {
+    refii_host_tracy::SaveOnCrash(3000);
+    return g_previous_unhandled_filter != nullptr ? g_previous_unhandled_filter(info)
+                                                  : EXCEPTION_CONTINUE_SEARCH;
+}
 #endif
 
 void InstallEmbeddedFailureHandlers() {
@@ -1203,6 +1222,7 @@ void InstallEmbeddedFailureHandlers() {
     // Always on. A crash that prints nothing costs a whole test run to learn nothing from;
     // the handler is capped and only reports faults that were going to be fatal anyway.
     ::AddVectoredExceptionHandler(1, TraceThrowHandler);
+    g_previous_unhandled_filter = ::SetUnhandledExceptionFilter(SaveTracyOnUnhandled);
 #endif
 
 #ifndef _WIN32
@@ -1282,7 +1302,7 @@ std::thread g_arm_watcher;
 /// REFII_COMPLETION_THREAD=0 keeps the once-per-step publishing for comparison.
 std::atomic<bool> g_completion_stop{false};
 std::thread g_completion_thread;
-std::mutex g_completion_mutex;
+refii::TracedMutex g_completion_mutex{"guest I/O completion"};
 uint32_t g_completions_by_thread = 0;
 
 /// Puts Fable 2's own D3D into the "no GPU present" mode it ships with.
@@ -1588,7 +1608,7 @@ void SignalGuestFrameCompletions() {
     }
 
     // Two publishers (the step and the completion thread) must not race the double buffer.
-    std::lock_guard<std::mutex> publishers(g_completion_mutex);
+    std::lock_guard publishers(g_completion_mutex);
 
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
@@ -2250,9 +2270,47 @@ extern "C" {
 ///     to a player's current body, the ack Godot sends the joiner.
 /// 172 adds RefiiHostGetItemDyeLayers — the texture layers the guest's own dye builder states
 ///     for one inventory item, worn or carried, so the menu shows a dyed garment dyed.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 172; }
+/// 173 adds RefiiHostGetClassicFrame — the frame-constant sources the title's render passes
+///     read (ambient, sun, lightmap factor, normal darkening, the atmosphere block, the theme
+///     block), RefiiHostGetClassicLights (the scene's active light list) and
+///     RefiiHostGetClassicMists (its mist volumes), for the classic renderer's feed; replaces
+///     the device constant shadow read, which is empty here.
+/// 174 adds RefiiHostGetClassicParticles — the render scene's particle groups as their twins
+///     hold them (records, material, keyframes, transform), for the classic particle draw.
+/// 175 adds RefiiHostGetThemeBlends — the script theme blend list (`BlendToEnvironmentTheme`,
+///     `mgr+148`), which the guest folds before the stack; RefiiHostGetThemeStack reads only the
+///     spell list at `mgr+164`.
+/// 181 adds RefiiHostGetEntityCasterFlags — an entity's stated sun-shadow casting off its
+///     renderable (component 3 +0x8C, +0xC1), for the classic cascades; RefiiHostGetClassicTrails
+///     also writes the displacement trails, flagged in header [55]; RefiiHostGetEntityInteriorMeshes
+///     — a building's interior records, the weather's roofs; RefiiHostGetClassicWeather's header
+///     carries the snow's push slots; RefiiHostGetDisplacementQuads — the drunk warp's quad;
+///     RefiiHostGetFxMeshes — the effects' mesh particles (hooks rex_lhFx_CreateMeshDescriptor,
+///     rex_lhRenderTwin_Destroy); RefiiHostGetEntityDisplacementParts — a composite's
+///     displacement-only parts (GDB DisplacementMeshes); RefiiHostGetSpotFrustums — the spots'
+///     receive frustums.
+/// 180 adds RefiiHostGetDecals — the decals the guest stated (src/hooks/decals.cpp) with their
+///     owners' live matrices, for the host's decal draw.
+/// 179 adds RefiiHostGetClassicWeather — the light zone, clock and lights the title's rain and
+///     snow draws read, for the classic weather.
+/// 182 adds RefiiHostTracy* (host_tracy.cpp) — the game's in-process Tracy capture: start, stop,
+///     save, status and the dev menu's queries (frames, zones, statistics, plots, messages, GPU,
+///     context switches, samples, disassembly).
+/// 183 adds the Tracy lock and memory views (RefiiHostTracyGetLocks, GetMemoryPools,
+///     GetMemoryLargest), Godot-side memory and locks (RefiiHostTraceAlloc/Free, TraceLock*),
+///     find-zone and sample trees (RefiiHostTracyFindZone, GetZoneStatsRange, GetSampleTree),
+///     RefiiHostTracyLive, and guest stack sampling (RefiiHostGuestSamplerStart/Stop).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 183; }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
+
+extern "C" void RefiiVfsSetGuestRender(int32_t on);
+
+/// Runs (1) or skips (0) the guest's own scene draw, or returns it to REFII_GUEST_RENDER (-1).
+/// A reference instrument for the classic renderer: with the draw on, the title's constant
+/// setters fill the device shadow. Additive and optional (the binding tolerates its absence),
+/// so the ABI number is unchanged.
+REFII_HOST_ABI_EXPORT void RefiiHostSetGuestRender(int32_t on) { RefiiVfsSetGuestRender(on); }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddress(uint32_t tu1_address) {
     return refii_guest_address(tu1_address);
@@ -5416,23 +5474,12 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetRequestedVideo(unsigned char* out, uint32_
     // The guest's loader byte-swaps every DWORD on the way in — a big-endian console
     // reading a little-endian container — so the bytes in memory read 'iKIB' rather than
     // 'BIKi'. Handing that to FFmpeg decodes nothing. Swapping back on the way out
-    // restores the file exactly as it is on disc.
-    if (swapped != 0) {
-        const uint32_t whole = size & ~3u;
-        for (uint32_t at = 0; at < whole; at += 4) {
-            const uint32_t word = GuestWordAt(base, address + at);
-            std::memcpy(out + at, &word, sizeof(word));
-        }
-
-        // A trailing partial dword keeps its order: it was never a whole word to swap.
-        if (whole < size) {
-            CopyGuest(base, address + whole, out + whole, size - whole);
-        }
-
-        return 1;
-    }
-
+    // restores the file exactly as it is on disc. One guarded copy, then a vector swap in
+    // place; a trailing partial dword keeps its order, as it was never a whole word to swap.
     CopyGuest(base, address, out, size);
+    if (swapped != 0) {
+        rex::memory::copy_and_swap_32_unaligned(out, out, size / 4u);
+    }
     return 1;
 }
 
@@ -6250,7 +6297,25 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* 
 ///
 /// Writes 3 words per entry — name hash, weight bits, target bits — up to `max_entries`.
 /// Returns the entries written; 0 while the world is unbuilt or the list is empty.
+static uint32_t ReadThemeList(uint32_t* out_words, uint32_t max_entries, uint32_t sentinel_offset);
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeStack(uint32_t* out_words, uint32_t max_entries) {
+    return ReadThemeList(out_words, max_entries, 168u);
+}
+
+/// The SCRIPT blend list — `EnvironmentTheme.BlendToEnvironmentTheme(name, weight, seconds)`
+/// (`sub_82549B80`: find-or-insert in the list at `mgr+148`, sentinel `*(mgr+152)`), the
+/// quest-stated looks: the Cursed Snowglobe's `PastMonochromeNoon`, combat failure, XP, the
+/// balverine poison, Westcliff's night. `sub_8218EAF8` folds it as one group after the day set
+/// and painted layers and BEFORE the stack: group weight `clamp(mgr+160)` (`sub_822C0E08`'s sum
+/// of the node weights), each theme at its own weight. The list is saved with the game
+/// (`sub_8254A090`, chunk "ScriptOverride"), so it is read here rather than hooked at the call.
+/// Same node layout and output as RefiiHostGetThemeStack.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeBlends(uint32_t* out_words, uint32_t max_entries) {
+    return ReadThemeList(out_words, max_entries, 152u);
+}
+
+static uint32_t ReadThemeList(uint32_t* out_words, uint32_t max_entries, uint32_t sentinel_offset) {
     if (out_words == nullptr || max_entries == 0u) {
         return 0u;
     }
@@ -6289,7 +6354,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeStack(uint32_t* out_words, uint3
         return 0u;
     }
 
-    const uint32_t sentinel = load_be32(theme_manager + 168u);
+    const uint32_t sentinel = load_be32(theme_manager + sentinel_offset);
     if (!plausible(sentinel)) {
         return 0u;
     }
@@ -8355,6 +8420,55 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartHides(uint32_t entity, char
     return parts;
 }
 
+/// THE LIGHTING ZONE an entity's geometry is drawn in: a light lights a draw only when either
+/// zone is 0 or both are equal (`sub_82AB6360`, 0x82AB6428-0x82AB644C). A CECBuilding's own
+/// static geometry is in the zone of its definition hash, `entity+0x1C & 0x7FFFFFFF`, when
+/// `entity+0x90 & 0x40` (StaticMesh AddToScene `sub_822370A8`, 0x82237260-0x822372B4), else 1;
+/// everything else is in its renderable's zone at `+0xD0`, which `sub_822D8AA8` keeps by
+/// `LightZoneMode` (+0xCC): the building under it, the owner's building, 1, or 0 for all.
+/// Returns 1 (the mesh constructor's zone, `sub_82AA2658` 0x82AA26D8) for an entity with no
+/// renderable.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLightZone(uint32_t entity) {
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 1u;
+    }
+    constexpr uint32_t kBuilding = 67u;
+    if (((GuestWordAt(base, entity + 0x24u + (kBuilding / 32u) * 4u) >> (kBuilding % 32u)) & 1u) != 0u) {
+        return (GuestByteAt(base, entity + 0x90u) & 0x40u) != 0u
+            ? GuestWordAt(base, entity + 0x1Cu) & 0x7FFFFFFFu
+            : 1u;
+    }
+    const uint32_t renderable = EntityComponent(base, entity, 3u);
+    return renderable != 0u ? GuestWordAt(base, renderable + 0xD0u) : 1u;
+}
+
+/// THE STATED SHADOW CASTING. The renderable (component 3) holds its definition's flag word at
+/// +0x8C (`sub_8257CB20`, `sub_828E7798`, `sub_8293AA70`: 0x40 = ShadowCaster off, 0x80 =
+/// DontCastDistantShadows; `sub_825720A8`: 0x8000 EnableLightZoneShadowCulling) and
+/// DisableBackFaceCullingForShadows at +0xC1 (`sub_825720A8` 0x825721CC), which the static-mesh
+/// descriptor adds as 0x100 (`sub_822370A8`). The twin init turns the word into the cascade mask
+/// (`sub_82AA3C78`: near unless 0x40, far unless 0x40 or 0x80) and the 0x100 into twin+0x110, which
+/// the cascade pass draws with culling off (`sub_8221EE60` 0x8221EF10).
+/// Returns the word with 0x100 for a two-sided caster, or 0xFFFFFFFF without the component.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityCasterFlags(uint32_t entity) {
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 0xFFFFFFFFu;
+    }
+    const uint32_t renderable = EntityComponent(base, entity, 3u);
+    if (renderable == 0u) {
+        return 0xFFFFFFFFu;
+    }
+    uint32_t flags = GuestWordAt(base, renderable + 0x8Cu) & ~0x100u;
+    if (GuestByteAt(base, renderable + 0xC1u) != 0u) {
+        flags |= 0x100u;
+    }
+    return flags;
+}
+
 /// THE STATED DRAW DISTANCE. The renderable (component 3) holds, from its GDB definition,
 /// `MaxDrawDistance` times the class multiplier at +0x28 and `DrawDistanceFadeRangeFactor` at
 /// +0x24 (`sub_82572438` @0x825724cc / @0x825724e0, the first call of the loader
@@ -8623,6 +8737,173 @@ static bool EntityPhysicsOwnsPose(const uint8_t* base, uint32_t entity) {
     return false;
 }
 
+/// Rigs posed by a linked animation (component 191) rather than their own controller; run total.
+std::atomic<uint64_t> RefiiAnimLinked{0};
+
+/// THE CLIP A LINKED ANIMATION PLAYS — component 191, as `sub_8253B608` evaluates it — written as
+/// one anim-state leaf (REFII_ANIM_LEAF_WORDS words), or 0 when the guest would pose nothing.
+/// See the caller for the chain.
+static uint32_t EntityLinkedAnimLeaf(const uint8_t* base, uint32_t entity, uint32_t* out) {
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto readf = [read32](uint32_t at) -> float {
+        const uint32_t raw = read32(at);
+        float value;
+        std::memcpy(&value, &raw, sizeof(value));
+        return value;
+    };
+
+    const uint32_t linked = EntityComponent(base, entity, 191u);
+    if (!plausible(linked)) {
+        return 0u;
+    }
+
+    // `sub_82173E38(comp191+12)`: the control block at +16, whose first word is the entity.
+    const uint32_t control = read32(linked + 16u);
+    const uint32_t source = plausible(control) ? read32(control) : 0u;
+    if (!plausible(source) || (GuestByteAt(base, source + 144u) & 0x40u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t controller = EntityComponent(base, source, 19u);
+    if (!plausible(controller)) {
+        return 0u;
+    }
+
+    // `sub_82232070`: type 0 is the leaf; 1 takes +28 at t >= 0.5 else +24; 3 and 4 take +24;
+    // anything else has no dominant leaf.
+    const auto dominant = [&](uint32_t node) -> uint32_t {
+        for (int depth = 0; depth < 32 && plausible(node); ++depth) {
+            switch (read32(node + 20u)) {
+                case 0u:
+                    return node;
+                case 1u:
+                    node = read32(node + (readf(node + 32u) >= 0.5f ? 28u : 24u));
+                    break;
+                case 3u:
+                case 4u:
+                    node = read32(node + 24u);
+                    break;
+                default:
+                    return 0u;
+            }
+        }
+        return 0u;
+    };
+
+    uint32_t leaf = 0u;
+    bool from_tree = false;
+    float time = 0.0f;
+    float previous = 0.0f;
+    const uint32_t tree = read32(controller + 156u);
+    if (plausible(tree)) {
+        leaf = dominant(tree);
+        if (leaf == 0u) {
+            return 0u;
+        }
+        // `LHTiming_GetTime() - comp19+164 + leaf+32` (0x8253b7ec..0x8253b800): seconds since the
+        // tree's receipt, run on from the leaf's current time.
+        const auto read_double = [&](uint32_t at) {
+            const uint64_t bits = (static_cast<uint64_t>(read32(at)) << 32) | read32(at + 4u);
+            double value = 0.0;
+            std::memcpy(&value, &bits, sizeof(value));
+            return value;
+        };
+        const double time_base = read_double(refii::guest::Address(0x834970A0u));
+        const double frequency = read_double(refii::guest::Address(0x834970A8u));
+        if (!std::isfinite(frequency) || frequency <= 0.0 || !std::isfinite(time_base)) {
+            return 0u;
+        }
+        const double now = (static_cast<double>(::rex::chrono::Clock::QueryGuestTickCount()) - time_base) / frequency;
+        const float current = readf(leaf + 32u);
+        float step = current - readf(leaf + 28u);
+        if (!(step > 0.0f) || !std::isfinite(step)) {
+            step = 1.0f / 15.0f;
+        }
+        time = static_cast<float>(now - readf(controller + 164u)) + current;
+        previous = time - step;
+        from_tree = true;
+    } else {
+        // `sub_822013A8`: the live record (state +28 != 2) of highest priority (+8).
+        const uint32_t sentinel = read32(controller + 100u);
+        const uint32_t size = read32(controller + 104u);
+        if (!plausible(sentinel) || size == 0u || size > 64u) {
+            return 0u;
+        }
+        uint32_t winner = 0u;
+        int32_t best = -1;
+        uint32_t node = read32(sentinel);
+        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
+            const uint32_t record = read32(node + 8u);
+            node = read32(node);
+            if (!plausible(record) || read32(record + 28u) == 2u) {
+                continue;
+            }
+            const int32_t priority = static_cast<int32_t>(read32(record + 8u));
+            if (priority >= best) {
+                best = priority;
+                winner = record;
+            }
+        }
+        leaf = winner != 0u ? dominant(read32(winner + 36u)) : 0u;
+        if (leaf == 0u) {
+            return 0u;
+        }
+        time = readf(leaf + 32u);
+        previous = readf(leaf + 28u);
+    }
+
+    if (!std::isfinite(time) || !std::isfinite(previous)) {
+        return 0u;
+    }
+
+    // comp191's map (`std::map` head at +28): lower_bound on node+12, then an exact match.
+    const uint32_t source_key = read32(leaf + 24u);
+    const uint32_t head = read32(linked + 28u);
+    if (!plausible(head)) {
+        return 0u;
+    }
+    uint32_t found = head;
+    uint32_t at = read32(head + 4u);
+    for (int steps = 0; steps < 64 && plausible(at) && GuestByteAt(base, at + 21u) == 0u; ++steps) {
+        if (read32(at + 12u) >= source_key) {
+            found = at;
+            at = read32(at);
+        } else {
+            at = read32(at + 8u);
+        }
+    }
+    if (found == head || source_key < read32(found + 12u)) {
+        return 0u;
+    }
+    const uint32_t key = read32(found + 16u);
+    if (key == 0u) {
+        return 0u;
+    }
+
+    const float one = 1.0f;
+    uint32_t one_bits;
+    std::memcpy(&one_bits, &one, sizeof(one_bits));
+    std::memcpy(&out[1], &time, sizeof(out[1]));
+    std::memcpy(&out[2], &previous, sizeof(out[2]));
+    out[0] = key;
+    out[3] = one_bits;
+    // Looping (`stb 1` into the stack node's +36), and flagged as a network extrapolation when the
+    // time ran on from a receipt, so the host does not read a stalled pair as a cut.
+    out[4] = 1u | (from_tree ? 8u : 0u);
+    // The leaf's identity: the linked component, never a record uid of the rig.
+    out[5] = linked;
+    out[6] = 0u;
+    out[7] = 0u;
+    out[8] = 0u;
+    out[9] = 0xFFFFFFFFu;
+    out[10] = one_bits;
+    out[11] = one_bits;
+    return 1u;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint32_t* out_words, uint32_t word_capacity,
                                                             uint32_t* out_flags) {
     if (out_flags != nullptr) {
@@ -8667,6 +8948,26 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     // controller found (with `RefiiAnimEmptyList` for an empty leaf list).
     const uint32_t present_word = read32(entity + 0x24u);
     if (((present_word >> 19u) & 1u) == 0u) {
+        // A LINKED ANIMATION. With no component 19, `sub_8220D1B8` takes `beq loc_8220D98C`
+        // (0x8220d904) and poses the rig from component 191 instead (entity+0x38 bit 31, id 0xBF
+        // at 0x8220d9f4; `sub_8253B608` called at 0x8220da9c, its return is the pose).
+        // `sub_8253B608`: the source entity is the weak ref at comp191+12/+16 (`sub_82173E38`:
+        // `**(comp191+16)`), live only with entity+144 bit 0x40; its component 19's dominant leaf
+        // is `sub_82231FD0(comp19+156)` when a tree is installed — time `leaf+32 +
+        // (LHTiming_GetTime() - comp19+164)` — else `sub_82201518`: the winning record
+        // (`sub_822013A8`) reduced by `sub_82232070` — time `leaf+32`. The leaf's key is looked up
+        // in comp191's map (head at +28; node +12 key, +16 value, +21 nil) and the VALUE is the
+        // clip played, one type-0 node at weight 1, looping, `tPrev = tCur = t`, into comp191+36.
+        // Stated here as one leaf; the previous time is the source's own, so the host has the
+        // rate.
+        const uint32_t linked = EntityLinkedAnimLeaf(base, entity, out_words);
+        if (linked != 0u) {
+            if (out_flags != nullptr && EntityPhysicsOwnsPose(base, entity)) {
+                *out_flags = 8u;
+            }
+            RefiiAnimLinked.fetch_add(1u, std::memory_order_relaxed);
+            return linked;
+        }
         RefiiAnimNoComponentBit.fetch_add(1u, std::memory_order_relaxed);
         return 0u;
     }
@@ -9032,8 +9333,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
 }
 
 /// Why rigs are not clip-driven, split by cause. Four counters: the entity has no component-19
-/// bit, the bit is set but the component does not resolve, the controller was found, and the
-/// controller was found but its lists flattened to nothing.
+/// bit (and no linked animation), the bit is set but the component does not resolve, the
+/// controller was found, and the controller was found but its lists flattened to nothing; a
+/// fifth, when the capacity allows, counts rigs posed by a linked animation (component 191).
 ///
 /// Separates "the guest has nothing to play" from "this walk misses the controller".
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, uint32_t capacity) {
@@ -9045,7 +9347,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, ui
     out_words[1] = static_cast<uint32_t>(RefiiAnimComponentUnresolved.load(std::memory_order_relaxed));
     out_words[2] = static_cast<uint32_t>(RefiiAnimControllerFound.load(std::memory_order_relaxed));
     out_words[3] = static_cast<uint32_t>(RefiiAnimEmptyList.load(std::memory_order_relaxed));
-    return 4u;
+    if (capacity < 5u) {
+        return 4u;
+    }
+    // A fifth word for a caller that asks: rigs a linked animation (component 191) posed.
+    out_words[4] = static_cast<uint32_t>(RefiiAnimLinked.load(std::memory_order_relaxed));
+    return 5u;
 }
 
 /// How many words RefiiHostGetAttachments writes per attachment record.
@@ -9057,16 +9364,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, ui
 /// EVERY LIVE ATTACHMENT THE GUEST HAS STATED — which entity hangs on which entity's dummy.
 ///
 /// A weapon, a hat carried in the hand, a prop: each is an ENTITY of its own, and the guest
-/// re-derives its world placement every time the parent moves (`sub_825EBA10` ->
-/// `sub_825EBAA0` -> `sub_825ED2A0`, written into the child's own placement component through
-/// vtable slots +112/+116). That placement is computed from the GUEST's bone pose. Godot now
+/// re-derives its world placement every frame the parent moves (the attachment pass
+/// `sub_822025E0`, after the animation pass in `sub_82278AE0`; composed by `sub_8250F5F0`,
+/// written into the child's placement through vt+0x84 or vt+0x70/+0x74). That placement is
+/// computed from the GUEST's bone pose. Godot now
 /// plays the animation itself, so a child placed from the guest's pose swims against the body
 /// it is supposed to be attached to — the weapons "bounce around and do not match the
 /// character". The host has to hang the child off ITS OWN bone instead, and for that it needs
 /// the guest's STATEMENT of the attachment rather than its result.
 ///
-/// The statement lives on the PARENT, component 22 `CECObjectAttachment` (ctor `sub_82635358`,
-/// records built by `sub_825EBBC8`):
+/// The statement lives on the PARENT, component 22 `CECObjectAttachment` (registered by
+/// `sub_8265B680`, made by `sub_82649AA8`; records built by `sub_8250DF18` on the attach path
+/// `sub_8250E9F8`):
 ///     att+4          the owner entity
 ///     att+16         the list sentinel; att+20 the count. Nodes are {next +0, record +8}.
 ///     record+4       handle slot; `*slot` is the CHILD entity
@@ -9074,31 +9383,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* out_words, ui
 ///     record+12      dummy index — the ordinal among equally-named dummies
 ///     record+144     ticket, the id `CECDependantEntity` on the child joins back with
 ///
-/// The name and index are all the host needs: the dummy is a record in the parent model's own
-/// `.mdl.gmd` attachment table, which Godot already parses, and the offsets the guest composes
-/// (the dummy's local transform and the child's own offset matrix at record+16/+80) are
-/// constant, so the host recovers them once from the guest's own stated result rather than
-/// re-deriving them through a convention it would have to guess.
+/// The dummy is a record in the parent model's own `.mdl.gmd` attachment table, which Godot
+/// already parses; the child's own offset (record+0x50) comes from RefiiHostGetAttachmentGrips.
 ///
 /// Words per record: [0] child entity, [1] parent entity, [2] dummy index, [3] ticket.
 /// `out_names` takes REFII_ATTACHMENT_NAME bytes per record, NUL-padded. Returns the record
 /// count, capped at `max_records`.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint32_t max_records,
-                                                       char* out_names) {
-    if (out_words == nullptr || max_records == 0u) {
-        return 0u;
-    }
-
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) {
-        return 0u;
-    }
-
-    uint8_t* base = memory->virtual_membase();
-    if (base == nullptr) {
-        return 0u;
-    }
-
+/// The attachment walk the attachment exports share: every live entity's component 22 records,
+/// gated as the guest gates its own update, visited as (parent, record, child, slot) where slot
+/// counts the visits so far. Stops at `max_records`. Returns the count visited.
+extern "C++" {
+template <typename Visit>
+static uint32_t ForEachStatedAttachment(uint8_t* base, uint32_t max_records, Visit&& visit) {
     const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
     const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
     const auto plausible = [](uint32_t address) {
@@ -9167,17 +9463,44 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint
                 continue;  // the handle has been released — the record is on its way out
             }
 
-            // The guest's own gate: `sub_825EBAA0` updates a record only for a child whose
-            // live bit is set, so a child that fails it is not being placed by the attachment.
+            // The guest's own gate: its attachment update places a record only for a child
+            // whose live bit is set, so a child that fails it is not being placed by it.
             if ((read8(child + 144u) & 0x40u) == 0u) {
                 continue;
             }
 
+            visit(entity, record, child, written);
+            ++written;
+        }
+    }
+
+    return written;
+}
+}  // extern "C++"
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint32_t max_records,
+                                                       char* out_names) {
+    if (out_words == nullptr || max_records == 0u) {
+        return 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    return ForEachStatedAttachment(base, max_records,
+        [&](uint32_t entity, uint32_t record, uint32_t child, uint32_t written) {
             uint32_t* words = out_words + (written * REFII_ATTACHMENT_WORDS);
             words[0] = child;
             words[1] = entity;
-            words[2] = read32(record + 12u);
-            words[3] = read32(record + 144u);
+            words[2] = GuestWordAt(base, record + 12u);
+            words[3] = GuestWordAt(base, record + 144u);
 
             if (out_names != nullptr) {
                 char* slotName = out_names + (written * REFII_ATTACHMENT_NAME);
@@ -9188,12 +9511,54 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint
                                                                : (REFII_ATTACHMENT_NAME - 1u);
                 std::memcpy(slotName, name.data(), copied);
             }
+        });
+}
 
-            ++written;
-        }
+/// How many words RefiiHostGetAttachmentGrips writes per record.
+#define REFII_ATTACHMENT_GRIP_WORDS 18u
+
+/// THE OFFSET EACH ATTACHED CHILD HANGS AT, AS THE GUEST STATES IT — so the host composes the
+/// child's placement instead of solving for it from reads taken at different instants (a solve
+/// that re-ran about once a second across a town and snapped a weapon each time).
+///
+/// The guest places a child in `sub_8250F5F0(att, out, record, W)`:
+///     8250f60c  bl   sub_822374D0          ; D = the parent dummy, model space, live pose
+///     8250f614  addi r4, r31, 0x50         ; A = record+0x50
+///     8250f61c  bl   sub_8221ACC0          ; T = A . D   (row vectors: A applies first)
+///     8250f62c  bl   sub_8221ACC0          ; out = T . W  (W = the parent's world placement)
+/// record+0x50 is the rigid inverse (`sub_82260FA0`, transpose and negated row 3) of the CHILD's
+/// own grip dummy at record+0x10, copied in by the attach path (`sub_8250DF18`). It is constant
+/// for the attachment's life. The dummy D is the parent gmd entry's local, times the gmd node
+/// locals up to the first live bone (`sub_8223D148`), times that bone's model-space pose — all of
+/// which the host has from its own `.mdl.gmd` and its own pose.
+///
+/// Words per record, in the same order as RefiiHostGetAttachments: [0] child, [1] ticket,
+/// [2..17] record+0x50 as 16 floats, row-major, row vectors, translation in row 3. Additive: a
+/// host that does not find this export solves as before.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachmentGrips(uint32_t* out_words, uint32_t max_records) {
+    if (out_words == nullptr || max_records == 0u) {
+        return 0u;
     }
 
-    return written;
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    return ForEachStatedAttachment(base, max_records,
+        [&](uint32_t, uint32_t record, uint32_t child, uint32_t written) {
+            uint32_t* words = out_words + (written * REFII_ATTACHMENT_GRIP_WORDS);
+            words[0] = child;
+            words[1] = GuestWordAt(base, record + 144u);
+            for (uint32_t i = 0u; i < 16u; ++i) {
+                words[2u + i] = GuestWordAt(base, record + 0x50u + (i * 4u));
+            }
+        });
 }
 
 /// The locomotion state a character is IN, by name, plus the gates that state was chosen under.
@@ -9764,6 +10129,188 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestBacktrace(uint32_t tid, uint32_t* o
     return written;
 }
 
+#ifdef REXGLUE_ENABLE_PROFILING
+/// GUEST STACK SAMPLING into the in-game Tracy capture: the recompiled game's own call stacks,
+/// which are otherwise invisible to Tracy (instrumenting every guest function is far too heavy).
+///
+/// A sampler thread reads every guest thread's live context and walks its back chain, exactly as
+/// RefiiHostGuestBacktrace does, a few hundred times a second. Each guest thread is a Tracy fiber
+/// ("guest: <name> (<tid>)"); between samples, the frames that changed close and open as zones,
+/// so the timeline shows each guest thread's sampled call stack over time. Times are sample
+/// times: a zone is as long as the frame was seen, to the sampling interval.
+///
+/// The thread list is refreshed once a second; the kernel's global critical region is taken
+/// only for that, never per sample — the walk reads the context and guest memory with the same
+/// fault-guarded reads as the backtrace, without stopping the thread. A frame is the function
+/// containing a return address (the nearest recompiled function entry at or below it, cached
+/// per address), named sub_XXXXXXXX. Frame 0 is the context's LR — the most recent call's return
+/// address, so it names the function that made the last call.
+namespace guest_sampler {
+
+using ThreadRefs = decltype(rex::system::kernel_state()->object_table()->GetObjectsByType<rex::system::XThread>());
+
+struct Track {
+    rex::system::XThread* thread = nullptr;
+    const char* fiber = nullptr;
+    std::vector<uint32_t> stack;       // open frames, outermost first
+    std::vector<TracyCZoneCtx> zones;  // their zones, same order
+    bool seen = false;
+};
+
+std::mutex g_control;
+std::thread g_thread;
+std::atomic<bool> g_run{false};
+
+/// Fiber names live for the process: Tracy keeps the pointer.
+const char* InternFiber(const std::string& name) {
+    static std::mutex lock;
+    static std::set<std::string>* names = new std::set<std::string>();
+    std::lock_guard guard(lock);
+    return names->insert(name).first->c_str();
+}
+
+/// The recompiled function containing `address`: the nearest entry at or below it.
+uint32_t FunctionOf(rex::runtime::FunctionDispatcher* dispatcher, uint32_t address,
+                    std::unordered_map<uint32_t, uint32_t>& cache) {
+    if (auto it = cache.find(address); it != cache.end()) return it->second;
+    constexpr uint32_t kSearch = 64u * 1024u;  // no Fable 2 function is longer
+    uint32_t entry = 0;
+    for (uint32_t at = address & ~3u, steps = 0; at != 0 && steps < kSearch / 4u; at -= 4u, ++steps) {
+        if (dispatcher->GetFunction(at) != nullptr) {
+            entry = at;
+            break;
+        }
+    }
+    cache.emplace(address, entry);
+    return entry;
+}
+
+void Close(Track& track, size_t keep) {
+    while (track.zones.size() > keep) {
+        ___tracy_emit_zone_end(track.zones.back());
+        track.zones.pop_back();
+        track.stack.pop_back();
+    }
+}
+
+void Run(uint32_t interval_us, uint32_t depth) {
+    rex::runtime::FunctionDispatcher* dispatcher =
+        rex::Runtime::instance() != nullptr ? rex::Runtime::instance()->function_dispatcher() : nullptr;
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (dispatcher == nullptr || base == nullptr) return;
+
+    ThreadRefs refs;
+    std::unordered_map<uint32_t, Track> tracks;
+    std::unordered_map<uint32_t, uint32_t> functions;
+    std::vector<uint32_t> walk;
+    std::vector<uint32_t> now;
+    auto refreshed = std::chrono::steady_clock::time_point{};
+
+    while (g_run.load(std::memory_order_relaxed)) {
+        const auto tick = std::chrono::steady_clock::now();
+        if (tick - refreshed > std::chrono::seconds(1)) {
+            refreshed = tick;
+            if (rex::system::KernelState* state = rex::system::kernel_state()) {
+                refs = state->object_table()->GetObjectsByType<rex::system::XThread>();
+                for (auto& [tid, track] : tracks) track.seen = false;
+                for (const auto& thread : refs) {
+                    if (!thread->is_guest_thread() || thread->thread_state() == nullptr) continue;
+                    Track& track = tracks[thread->thread_id()];
+                    track.seen = true;
+                    track.thread = thread.get();
+                    if (track.fiber == nullptr) {
+                        const std::string name = thread->thread() != nullptr ? thread->thread()->name() : std::string();
+                        track.fiber = InternFiber("guest: " + (name.empty() ? std::string("thread") : name) + " (" +
+                                                  std::to_string(thread->thread_id()) + ")");
+                    }
+                }
+                for (auto it = tracks.begin(); it != tracks.end();) {
+                    if (it->second.seen) {
+                        ++it;
+                        continue;
+                    }
+                    ___tracy_fiber_enter(it->second.fiber);
+                    Close(it->second, 0);
+                    ___tracy_fiber_leave();
+                    it = tracks.erase(it);
+                }
+            }
+        }
+
+        for (auto& [tid, track] : tracks) {
+            PPCContext* context = track.thread->thread_state() != nullptr ? track.thread->thread_state()->context() : nullptr;
+            if (context == nullptr) continue;
+
+            walk.clear();
+            walk.push_back(static_cast<uint32_t>(context->lr));
+            uint32_t sp = context->r1.u32;
+            while (walk.size() < depth && sp >= 0x10000u && sp < 0xC0000000u) {
+                const uint32_t back = GuestWordAt(base, sp);
+                if (back == 0u || back <= sp) break;
+                const uint32_t lr = GuestWordAt(base, back - 8u);
+                if (lr == 0u) break;
+                walk.push_back(lr);
+                sp = back;
+            }
+
+            now.clear();
+            for (auto it = walk.rbegin(); it != walk.rend(); ++it) {
+                if (const uint32_t entry = FunctionOf(dispatcher, *it, functions)) now.push_back(entry);
+            }
+
+            size_t common = 0;
+            while (common < now.size() && common < track.stack.size() && now[common] == track.stack[common]) ++common;
+            if (common == now.size() && common == track.stack.size()) continue;
+
+            ___tracy_fiber_enter(track.fiber);
+            Close(track, common);
+            for (size_t i = common; i < now.size(); ++i) {
+                char name[16];
+                const int length = std::snprintf(name, sizeof(name), "sub_%08X", now[i]);
+                const uint64_t srcloc = ___tracy_alloc_srcloc_name(0, "guest", 5, name, length, name, length, 0);
+                track.zones.push_back(___tracy_emit_zone_begin_alloc(srcloc, 1));
+                track.stack.push_back(now[i]);
+            }
+            ___tracy_fiber_leave();
+        }
+
+        std::this_thread::sleep_until(tick + std::chrono::microseconds(interval_us));
+    }
+
+    for (auto& [tid, track] : tracks) {
+        ___tracy_fiber_enter(track.fiber);
+        Close(track, 0);
+        ___tracy_fiber_leave();
+    }
+}
+
+}  // namespace guest_sampler
+
+/// Starts sampling the guest threads' stacks into the Tracy capture: `hz` samples a second,
+/// at most `depth` frames each. 1 = running.
+REFII_HOST_ABI_EXPORT int RefiiHostGuestSamplerStart(uint32_t hz, uint32_t depth) {
+    std::lock_guard guard(guest_sampler::g_control);
+    if (guest_sampler::g_thread.joinable() || !TracyIsStarted) return guest_sampler::g_thread.joinable() ? 1 : 0;
+    const uint32_t interval_us = 1000000u / std::clamp<uint32_t>(hz, 1u, 2000u);
+    guest_sampler::g_run.store(true);
+    guest_sampler::g_thread = std::thread([interval_us, depth] {
+        tracy::SetThreadName("Guest stack sampler");
+        guest_sampler::Run(interval_us, std::clamp<uint32_t>(depth, 1u, 256u));
+    });
+    return 1;
+}
+
+REFII_HOST_ABI_EXPORT void RefiiHostGuestSamplerStop(void) {
+    std::lock_guard guard(guest_sampler::g_control);
+    guest_sampler::g_run.store(false);
+    if (guest_sampler::g_thread.joinable()) guest_sampler::g_thread.join();
+}
+#else
+REFII_HOST_ABI_EXPORT int RefiiHostGuestSamplerStart(uint32_t, uint32_t) { return 0; }
+REFII_HOST_ABI_EXPORT void RefiiHostGuestSamplerStop(void) {}
+#endif
+
 /// Every object in the kernel handle table: handle, type (rex::system::XObject::Type), name.
 /// `out_total` is the table's full population so a clamped read says it was clamped.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetKernelObjects(uint32_t* out_handles,
@@ -9983,24 +10530,30 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPerfSnapshots(int64_t* out_values, ch
 /// TracyIsStarted as their active flag; this is the same gate for the C path. An inactive
 /// zone context (active = 0) is what ___tracy_emit_zone_end already ignores.
 #ifdef REXGLUE_ENABLE_PROFILING
-/// Brings the profiler up, once. Answers 1 when it is running.
+/// Brings the profiler up, once. Answers 1 when it is running, 0 when it is not — on Windows that
+/// is a quarantined Tracy library: every module delay-loads it and a missing one starts nothing
+/// (src/tracy/tracy_absent_win.cpp).
 ///
 /// THE ZONES ARE INERT WITHOUT THIS. The runtime is built with `TRACY_MANUAL_LIFETIME`, which
-/// means the client does nothing — no listen socket, no capture — until it is started
-/// explicitly, and nothing in the tree ever called it. Every zone the engine emitted therefore
-/// went nowhere, which reads exactly like "the profiler is compiled out" and is not.
+/// means the client does nothing until it is started explicitly, and nothing in the tree ever
+/// called it. Every zone the engine emitted therefore went nowhere, which reads exactly like
+/// "the profiler is compiled out" and is not.
 ///
 /// Cheap to leave running: `TRACY_ON_DEMAND` is also set, so the client collects nothing until
-/// a profiler actually connects. The socket is the whole standing cost.
+/// the game's own capture (refii_tracy_capture.h, in-process, no socket) connects to it.
 REFII_HOST_ABI_EXPORT int RefiiHostTraceStartup(void) {
     static bool started = false;
     if (!started) {
         ___tracy_startup_profiler();
         started = true;
-        REXLOG_INFO("Refii host bridge: Tracy profiler started; connect on the default port");
+        if (TracyIsStarted) {
+            REXLOG_INFO("Refii host bridge: Tracy profiler started (in-process; capture from the dev menu)");
+        } else {
+            REXLOG_WARN("Refii host bridge: Tracy library missing; profiler and crash captures unavailable");
+        }
     }
 
-    return 1;
+    return TracyIsStarted ? 1 : 0;
 }
 
 REFII_HOST_ABI_EXPORT void RefiiHostTraceMessage(const char* text) {
@@ -10192,12 +10745,20 @@ namespace probe {
 constexpr int kSlots = 16;
 
 
+// The device's constant shadow (`sub_8221A880`: VS cN at dev + 16*(N+120); `sub_82214E30`: PS
+// cN at dev + 16*(N+376)), dev = *(0x83360364). 256 float4 registers per stage.
+constexpr uint32_t kShadowBytes = 256u * 16u;
+
 struct Slot {
     std::atomic<uint32_t> address{0};
     PPCFunc* original = nullptr;
     std::atomic<uint64_t> hits{0};
     std::atomic<uint32_t> last_lr{0};
     std::atomic<uint64_t> last_args[6] = {};
+    // One-shot: the next call's return copies both shadows (raw, guest byte order).
+    std::atomic<uint32_t> snapshot_armed{0};
+    std::atomic<uint32_t> snapshot_ready{0};
+    uint8_t snapshot[2 * kShadowBytes] = {};
 };
 
 Slot g_slots[kSlots];
@@ -10215,6 +10776,14 @@ void Thunk(PPCContext& ctx, uint8_t* base) {
     slot.last_args[5].store(ctx.r8.u64, std::memory_order_relaxed);
     if (slot.original != nullptr) {
         slot.original(ctx, base);
+    }
+    if (slot.snapshot_armed.exchange(0, std::memory_order_acq_rel) != 0) {
+        const uint32_t device = GuestWordAt(base, refii::guest::Address(0x83360364u));
+        if (device >= 0x10000u && device < 0xC0000000u) {
+            std::memcpy(slot.snapshot, base + device + 0x780u, kShadowBytes);
+            std::memcpy(slot.snapshot + kShadowBytes, base + device + 0x1780u, kShadowBytes);
+            slot.snapshot_ready.store(1, std::memory_order_release);
+        }
     }
 }
 
@@ -10283,6 +10852,30 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeRead(int32_t slot, uint32_t* out_ad
         out_args[i] = held.last_args[i].load(std::memory_order_relaxed);
     }
 
+    return 1;
+}
+
+/// Arms a one-shot constant snapshot on an armed probe: the next return of the probed function
+/// copies the device's VS and PS constant shadows. Returns 1 when armed.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeSnapshotArm(int32_t slot) {
+    if (slot < 0 || slot >= probe::kSlots || probe::g_slots[slot].address.load() == 0) return 0;
+    probe::g_slots[slot].snapshot_ready.store(0, std::memory_order_relaxed);
+    probe::g_slots[slot].snapshot_armed.store(1, std::memory_order_release);
+    return 1;
+}
+
+/// The snapshot, as floats: VS c0..c255 then PS c0..c255, four lanes each (2048 floats).
+/// Returns 1 when one has been taken since the last arm.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostProbeSnapshotRead(int32_t slot, float* out, uint32_t capacity) {
+    if (slot < 0 || slot >= probe::kSlots || out == nullptr || capacity < 2048u) return 0;
+    const probe::Slot& held = probe::g_slots[slot];
+    if (held.snapshot_ready.load(std::memory_order_acquire) == 0) return 0;
+    for (uint32_t i = 0; i < 2048u; ++i) {
+        uint32_t raw;
+        std::memcpy(&raw, held.snapshot + i * 4u, sizeof(raw));
+        raw = __builtin_bswap32(raw);
+        std::memcpy(out + i, &raw, sizeof(raw));
+    }
     return 1;
 }
 
@@ -10520,6 +11113,84 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMeshParts(uint32_t entity, uint
         }
     }
 
+    return written;
+}
+
+/// The INTERIOR records of a multi-mesh appearance (component 5): the `Mesh` hashes of the
+/// records whose flag word +0x38 carries 0x2000 (`sub_828F9BA0` 0x828F9E10: set when the record's
+/// GDB `Interior` is non-zero). The consumer `sub_828F9F90` ORs it into the descriptor (0x828FA55C)
+/// and the twin init shifts it to twin+8 bit 14, which is what the weather's roof walk keeps
+/// (`sub_82A78528` 0x82A78694): these meshes are the rain's and snow's roofs.
+/// Same vector and checks as RefiiHostGetEntityMeshParts; returns the hashes written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityInteriorMeshes(uint32_t entity, uint32_t* out_hashes,
+                                                              uint32_t max_hashes) {
+    if (out_hashes == nullptr || max_hashes == 0u) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 0u;
+    }
+    constexpr uint8_t kStaticMultipleMeshId = 5u;
+    if (((GuestWordAt(base, entity + 0x24u + (kStaticMultipleMeshId / 32u) * 4u) >>
+          (kStaticMultipleMeshId % 32u)) & 1u) == 0u) {
+        return 0u;
+    }
+    const uint32_t component = EntityComponent(base, entity, kStaticMultipleMeshId);
+    if (component < 0x10000u || component >= 0xC0000000u) {
+        return 0u;
+    }
+    const uint32_t begin = GuestWordAt(base, component + 0x14u);
+    const uint32_t end = GuestWordAt(base, component + 0x18u);
+    const uint32_t capacity = GuestWordAt(base, component + 0x1Cu);
+    if (begin < 0x10000u || end <= begin || capacity < end || ((end - begin) % 64u) != 0u ||
+        ((capacity - begin) % 64u) != 0u || (end - begin) > 0x10000u) {
+        return 0u;
+    }
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at + 64u <= end && written < max_hashes; at += 64u) {
+        const uint32_t hash = GuestWordAt(base, at + 4u);
+        if (hash != 0u && (GuestWordAt(base, at + 0x38u) & 0x2000u) != 0u) {
+            out_hashes[written++] = hash;
+        }
+    }
+    return written;
+}
+
+/// The DISPLACEMENT parts of a composite character: the model hashes of component 17's built
+/// records (+0x38 begin, +0x3C end, +0x40 capacity, stride 24) whose +0x15 byte is set — the
+/// definition's GDB `DisplacementMeshes` (`sub_8217FA50`). The model create for such a record
+/// carries flag 0x800 (`sub_8220DE88` 0x8220E09C), which moves its twin to the displacement
+/// renderer's layer alone (`sub_82AA3C78`): drawn only as distortion. Returns the hashes written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityDisplacementParts(uint32_t entity, uint32_t* out_hashes,
+                                                                 uint32_t max_hashes) {
+    if (out_hashes == nullptr || max_hashes == 0u) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 0u;
+    }
+    const uint32_t morph = EntityComponent(base, entity, 17u);
+    if (morph < 0x10000u || morph >= 0xC0000000u) {
+        return 0u;
+    }
+    const uint32_t begin = GuestWordAt(base, morph + 0x38u);
+    const uint32_t end = GuestWordAt(base, morph + 0x3Cu);
+    const uint32_t capacity = GuestWordAt(base, morph + 0x40u);
+    if (begin < 0x10000u || end <= begin || capacity < end || ((end - begin) % 24u) != 0u ||
+        ((capacity - begin) % 24u) != 0u || (end - begin) > 0x18000u) {
+        return 0u;
+    }
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at + 24u <= end && written < max_hashes; at += 24u) {
+        const uint32_t hash = GuestWordAt(base, at);
+        if (hash != 0u && GuestByteAt(base, at + 0x15u) != 0u) {
+            out_hashes[written++] = hash;
+        }
+    }
     return written;
 }
 
@@ -10966,16 +11637,16 @@ static uint32_t RefiiHostReadEntityRig(uint32_t entity, float* out_transforms,
         *out_torn = coherent ? 0u : 1u;
     }
 
-    for (uint32_t i = 0u; i < bones; ++i) {
-        float* row = out_transforms + (i * 12u);
-        for (uint32_t lane = 0u; lane < 12u; ++lane) {
-            uint32_t bits = 0u;
-            std::memcpy(&bits, first + (i * 48u) + (lane * 4u), sizeof(bits));
-            bits = __builtin_bswap32(bits);
-            std::memcpy(&row[lane], &bits, sizeof(row[lane]));
-        }
+    // 12 big-endian floats per bone; the parent index is the first word of each 8-byte
+    // bone-table entry. The table is read in one guarded copy, not one per bone.
+    rex::memory::copy_and_swap_32_unaligned(out_transforms, first, (size_t)bones * 12u);
 
-        out_parents[i] = (int32_t)read32(bone_table + (i * 8u));
+    static thread_local uint8_t table[kMaxSnapshotBones * 8u];
+    CopyGuest(base, bone_table, table, (size_t)bones * 8u);
+    for (uint32_t i = 0u; i < bones; ++i) {
+        uint32_t parent = 0u;
+        std::memcpy(&parent, table + (i * 8u), sizeof(parent));
+        out_parents[i] = (int32_t)__builtin_bswap32(parent);
     }
 
     if (out_space != nullptr) {
@@ -11112,6 +11783,1316 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char
 /// The command-stream rings, read-only. `sub_8222ABE0` blocks when the reader traps the
 /// writer, and these four numbers per slot are the whole condition.
 ///
+/// The frame-constant sources the title's render passes read, as host floats:
+///   [0..3]    ambient light colour, `*(0x834A4D60)+208` (the second directional light, whose
+///             colour is the theme's AMBIENT_COLOUR) -> PS c20 / VS c54 (`sub_821B1A88`)
+///   [4..7]    its direction, `*(0x834A4D60)+304` (the sun's, as the light travels)
+///             -> PS c23 = (-dir, 4), VS c19 = -dir (`sub_821B16F8`)
+///   [8..11]   lightmap factor, `0x834A4D40`       -> PS c21 = (xyz, 1.3), VS c18 = (xyz, 2.86)
+///   [12..15]  normal-map darkening, `0x834A4D50`  -> PS c22
+///   [16..35]  atmosphere block, `0x834A0EC0`, 5 float4 -> PS c64..68 / VS c108..112
+///             (filled by `sub_82263570` while the sky is on)
+///   [36..131] the scene's THEME BLOCK, 24 float4 at scene+16: MAIN_LIGHT_COLOUR,
+///             MAIN_LIGHT_SHADOWED, AMBIENT_COLOUR, LIGHTMAP_COLOUR, AMBIENT_NORMAL_MAP_
+///             DARKENING_COLOUR, DISTANT_SHADOW_FACTOR, ENABLE_LIGHT_ZONE_SHADOW_CULLING,
+///             SUN_INTENSITY, SKY_BETA_RAYLEIGH_MULTIPLIER, SKY_BETA_MIE_MULTIPLIER, SKY_COLOUR,
+///             SKY_COMPLEMENTARY_COLOUR, SKY_COMPLEMENTARY_COLOUR_BIAS, SKY_SUNSET_COLOUR,
+///             SKY_FOGGING_START, NEAR_DISTANCE, NEAR_DENSITY, FAR_DISTANCE, FAR_DENSITY,
+///             CLOSE_FOG_COLOUR, CLOSE_FOG_MAX_DISTANCE, then tone mapping (`sub_83288CA0`'s
+///             table; the render-side copy `sub_822AF480` writes at scene+16)
+///   [132..135] the sun light's colour (twin+208), [136..139] its direction (twin+304),
+///   [140] its shadow enable (byte twin+336), [141] intensity (twin+448), [142] twin+452,
+///   [143] the scene's global mist strength (O+3040.x), [144..146] the wind direction and
+///   [147] its speed (O+3384..3399).
+/// The scene is `*(*(0x8349F79C) + 4*idx)` and the sun twin `*(*(0x8349F7AC) + 4*slot)`, with
+/// idx = L+4 and slot = L+8 off the sky owner L = `*(wg+92)`,
+/// wg = `*(*(*(*(0x83496AB8)+12)+88)+4)` (`sub_8234EF58`, `sub_825A14C0`).
+///
+/// THE SOURCES, NOT THE DEVICE: the passes copy these into the D3D constant shadow as they
+/// run, and in this host they never run (the scene stream is drained, the twins are kept, the
+/// pass bodies are not entered), so the shadow is zero while these are live. Returns the floats
+/// written (148), or 0 when the lighting objects are not up yet; a missing scene or sun leaves
+/// its part zero.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicFrame(float* out, uint32_t capacity) {
+    constexpr uint32_t kFloats = 148u;
+    if (out == nullptr || capacity < kFloats) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < kFloats; ++i) {
+        out[i] = 0.0f;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+
+    const uint32_t lighting = read32(refii::guest::Address(0x834A4D60u));
+    if (!plausible(lighting)) {
+        return 0;
+    }
+    read_floats(lighting + 208u, out, 4u);
+    read_floats(lighting + 304u, out + 4, 4u);
+    read_floats(refii::guest::Address(0x834A4D40u), out + 8, 4u);
+    read_floats(refii::guest::Address(0x834A4D50u), out + 12, 4u);
+    read_floats(refii::guest::Address(0x834A0EC0u), out + 16, 20u);
+
+    // The sky owner, through the game mode's world graphics.
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return kFloats;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    if (!plausible(owner)) {
+        return kFloats;
+    }
+
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (plausible(scenes) && scene_index < 4096u) {
+        const uint32_t scene = read32(scenes + scene_index * 4u);
+        if (plausible(scene)) {
+            read_floats(scene + 16u, out + 36, 96u);
+            // [143] the scene's global mist strength (O+3040.x), the mist binder's factor.
+            read_floats(scene + 3040u, out + 143, 1u);
+            // [144..146] the wind's unit direction and [147] its speed (O+3384..3399, the wind
+            // object's command `sub_8229B798`): the tree and grass sway terms.
+            read_floats(scene + 3384u, out + 144, 4u);
+        }
+    }
+
+    const uint32_t sun_slot = read32(owner + 8u);
+    const uint32_t twins = read32(refii::guest::Address(0x8349F7ACu));
+    if (plausible(twins) && sun_slot < 65536u) {
+        const uint32_t sun = read32(twins + sun_slot * 4u);
+        if (plausible(sun)) {
+            read_floats(sun + 208u, out + 132, 4u);
+            read_floats(sun + 304u, out + 136, 4u);
+            out[140] = static_cast<float>(GuestWordAt(base, sun + 336u) >> 24);
+            read_floats(sun + 448u, out + 141, 2u);
+        }
+    }
+    return kFloats;
+}
+
+/// The render scene the classic theme lives in: `*(0x8349F79C)[owner+4]`, with owner reached from
+/// the game mode (`*(0x83496AB8)+12 -> +88 -> +4 -> +92`). 0 when the world is not up.
+static uint32_t ClassicThemeScene(uint8_t* base) {
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    const uint32_t a = plausible(mode) ? read32(mode + 12u) : 0u;
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0u;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    return plausible(scene) ? scene : 0u;
+}
+
+/// THE THEME'S TEXTURE SLOTS, raw, for the classic sky and water. The theme (T = scene+16) holds,
+/// per slot s, a vector of {f32 weight, u32 texture hash} at T + 16 x (194 + s): +4 begin, +8 end
+/// (`sub_821D0C00`, 0x821D0C14..0x821D0C30). Slots: 0 TONE_MAPPING_OVERLAY, 1 SKY_OVERLAY,
+/// 2 SKY_SUNBEAMS, 3 SKY_SUNDISC, 4 SKY_STREAKSTEXTURE, 5 SKY_GLARETEXTURE, 6 SKY_MOONTEXTURE,
+/// 7 SKY_MOONGLARETEXTURE, 8..11 CLOUDS_LAYERn_DENSITY_MAP, 12 WATER_NORMAL_MAP,
+/// 13 WATER_DETAIL_MAP, 14 WATER_HEIGHT_MAP. Out, u32 words, per slot 17: [0] the element count
+/// (all of them, even past the 8 copied), then up to 8 pairs (weight bits, hash) in the vector's
+/// own order — the caller picks and normalises as `sub_821D0C00` does. Returns the words written
+/// (15 x 17), or 0 when the scene is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicThemeTextures(uint32_t* out, uint32_t capacity) {
+    constexpr uint32_t kSlots = 15u;
+    constexpr uint32_t kPairs = 8u;
+    constexpr uint32_t kStride = 1u + kPairs * 2u;
+    if (out == nullptr || capacity < kSlots * kStride) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const uint32_t scene = ClassicThemeScene(base);
+    if (scene == 0u) {
+        return 0;
+    }
+    const uint32_t theme = scene + 16u;
+    for (uint32_t slot = 0; slot < kSlots; ++slot) {
+        uint32_t* row = out + slot * kStride;
+        for (uint32_t i = 0; i < kStride; ++i) {
+            row[i] = 0u;
+        }
+        const uint32_t header = theme + 16u * (194u + slot);
+        const uint32_t begin = GuestWordAt(base, header + 4u);
+        const uint32_t end = GuestWordAt(base, header + 8u);
+        if (begin < 0x10000u || end < begin || end - begin > 0x10000u) {
+            continue;
+        }
+        const uint32_t count = (end - begin) >> 3;
+        row[0] = count;
+        const uint32_t copied = count < kPairs ? count : kPairs;
+        for (uint32_t i = 0; i < copied; ++i) {
+            row[1u + i * 2u] = GuestWordAt(base, begin + i * 8u);
+            row[2u + i * 2u] = GuestWordAt(base, begin + i * 8u + 4u);
+        }
+    }
+    return kSlots * kStride;
+}
+
+/// THE WHOLE THEME BLOCK and the sky object's sun and moon, for the classic sky. Out, floats:
+///   [0 .. 775]  the scene's theme block, 194 parameters x 4 lanes (scene+16 + 16 x index, the
+///               table `sub_83288CA0` fills; Engine_ClassicThemeParams names them)
+///   [776..779]  sun colour (sky S+0), [780..783] sun direction (S+16)
+///   [784..787]  moon direction (M+0), [788] moon phase (M+20, an integer 0..7)
+/// S = sky+144, M = sky+208, the sky being the render twin named by owner+16 (vtable 0x820052C8,
+/// slot 17 `sub_8228F038` draws dome, moon, stars and clouds). Returns the floats written, 0
+/// when the scene is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTheme(float* out, uint32_t capacity) {
+    constexpr uint32_t kTheme = 194u * 4u;
+    constexpr uint32_t kFloats = kTheme + 13u;
+    if (out == nullptr || capacity < kFloats) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    const uint32_t a = plausible(mode) ? read32(mode + 12u) : 0u;
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scene = ClassicThemeScene(base);
+    if (!plausible(owner) || scene == 0u) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < kFloats; ++i) {
+        out[i] = 0.0f;
+    }
+    read_floats(scene + 16u, out, kTheme);
+    const uint32_t twins = read32(refii::guest::Address(0x8349F7ACu));
+    const uint32_t sky_slot = read32(owner + 16u);
+    const uint32_t sky = plausible(twins) && sky_slot < 65536u ? read32(twins + sky_slot * 4u) : 0u;
+    if (plausible(sky) && read32(sky) == refii::guest::Address(0x820052C8u)) {
+        read_floats(sky + 144u, out + kTheme, 4u);
+        read_floats(sky + 160u, out + kTheme + 4u, 4u);
+        read_floats(sky + 208u, out + kTheme + 8u, 4u);
+        out[kTheme + 12u] = static_cast<float>(read32(sky + 228u));
+    }
+    return kFloats;
+}
+
+/// THE LIGHT HALOS the guest draws this frame: the light manager's halo list, a global vector of
+/// light pointers at 0x834A4DA0 (begin) / 0x834A4DA4 (end) that `sub_821D5628` refills each frame
+/// from families 8 and 9, and that `sub_82274370` walks to draw LIGHTHALO (VS 0x9B / PS 0x9C,
+/// ONE/ONE, depth-tested, no depth write) into the half-res bloom layer. Per light L the draw
+/// (`sub_82273E60`) needs L+240 (intensity) and L+236 (size) both >= 0.01 and a texture at L+460;
+/// it places a camera-facing quad of half-extent L+236 (aspect 1, 1 in the main pass) at L+288
+/// and sets PS c123 = L+208.rgb x L+448 x L+240. Out, per halo 12 floats:
+///   [0..2] centre L+288, [3] half-extent L+236, [4..6] colour (the c123 product), [7] the
+///   water pass's extra factor L+244, [8..9] its aspect L+248 / L+252, [10] the texture's
+///   resource hash (*(L+460)+28) as raw bits, [11] the light pointer as raw bits.
+/// Returns the halos written (at most capacity / 12), 0 when the list is empty.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLightHalos(float* out, uint32_t capacity) {
+    constexpr uint32_t kFloats = 12u;
+    if (out == nullptr || capacity < kFloats) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_float = [base](uint32_t at) {
+        const uint32_t bits = GuestWordAt(base, at);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(float));
+        return value;
+    };
+    const auto put_bits = [](float* to, uint32_t bits) { std::memcpy(to, &bits, sizeof(float)); };
+
+    const uint32_t begin = read32(refii::guest::Address(0x834A4DA0u));
+    const uint32_t end = read32(refii::guest::Address(0x834A4DA4u));
+    if (!plausible(begin) || end < begin || end - begin > 4u * 4096u) {
+        return 0;
+    }
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at < end && (written + 1u) * kFloats <= capacity; at += 4u) {
+        const uint32_t light = read32(at);
+        if (!plausible(light)) {
+            continue;
+        }
+        const float intensity = read_float(light + 240u);
+        const float size = read_float(light + 236u);
+        const uint32_t texture = read32(light + 460u);
+        if (!(intensity >= 0.01f) || !(size >= 0.01f) || !plausible(texture)) {
+            continue;
+        }
+        const float scale = read_float(light + 448u) * intensity;
+        float* o = out + written * kFloats;
+        o[0] = read_float(light + 288u);
+        o[1] = read_float(light + 292u);
+        o[2] = read_float(light + 296u);
+        o[3] = size;
+        o[4] = read_float(light + 208u) * scale;
+        o[5] = read_float(light + 212u) * scale;
+        o[6] = read_float(light + 216u) * scale;
+        o[7] = read_float(light + 244u);
+        o[8] = read_float(light + 248u);
+        o[9] = read_float(light + 252u);
+        put_bits(o + 10, read32(texture + 28u));
+        put_bits(o + 11, light);
+        ++written;
+    }
+    return written;
+}
+
+/// The render scene's ACTIVE LIGHTS, as the light manager holds them: the set the title's
+/// per-draw light query walks (`sub_82AB6360`), so the classic renderer can assign lights to
+/// a draw the way the guest does. LM = scene+3684; its entries are 32 bytes at `*(LM+8)`
+/// (vec4 position.xyz / radius.w, +16 the light object L; the sun's radius is 1e10) and
+/// `*(LM+24)` is the 64-bit mask of live entries, bit i for entry i. Per light, 20 floats:
+///   [0..2] position, [3] radius (the entry's), [4..6] colour (L+208), [7] intensity (L+448),
+///   [8..10] direction (L+304), [11] type (L+4: 8 point, 9 spot, 10 directional),
+///   [12] range (L+320), [13] cone angle (L+324), [14] range scale (L+452),
+///   [15] flags: bit0 L+336, bit1 L+337, bit2 L+338, bit3 L+484 (the shadow-casting bytes),
+///   [16] lighting zone id (L+416) as raw bits, [17] the entry index, [18..19] reserved.
+/// Returns the number of lights written (at most `capacity / 20`), or 0 when the scene is not
+/// up. The fields are the ones `sub_82A6CDD0` packs into the light block and the query reads.
+/// The SPOT LIGHTS' RECEIVE FRUSTUMS: a spot takes a draw only when the draw's box is inside its
+/// frustum (light vtable +96 = `sub_82A6CC98` -> +92 `sub_82A6CC80` -> `sub_822362F8(light+560,
+/// box)`: planes vec4 at +0, count at +0x100; a box is out when, for some plane, the box corner
+/// along the normal gives dot(n, p) + w < 0). Per live spot of the manager RefiiHostGetClassicLights
+/// walks: [0] entry index, [1] plane count (<= 16), [2..65] the planes. out[0] = spots; returns the
+/// floats written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSpotFrustums(float* out, uint32_t capacity) {
+    constexpr uint32_t kRecord = 66u;
+    if (out == nullptr || capacity < 1u) {
+        return 0u;
+    }
+    out[0] = 0.0f;
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const uint32_t scene = ClassicThemeScene(base);
+    const uint32_t manager = scene != 0u ? GuestWordAt(base, scene + 3684u) : 0u;
+    if (!plausible(manager)) {
+        return 1u;
+    }
+    const uint32_t entries = GuestWordAt(base, manager + 8u);
+    const uint64_t mask = (static_cast<uint64_t>(GuestWordAt(base, manager + 24u)) << 32) | GuestWordAt(base, manager + 28u);
+    if (!plausible(entries)) {
+        return 1u;
+    }
+    uint32_t used = 1u;
+    uint32_t spots = 0u;
+    for (uint32_t index = 0; index < 64u && used + kRecord <= capacity; ++index) {
+        if ((mask & (1ull << index)) == 0u) {
+            continue;
+        }
+        const uint32_t light = GuestWordAt(base, entries + index * 32u + 16u);
+        if (!plausible(light) || GuestWordAt(base, light + 4u) != 9u) {
+            continue;
+        }
+        const uint32_t frustum = light + 560u;
+        uint32_t count = GuestWordAt(base, frustum + 0x100u);
+        if (count > 16u) {
+            count = 16u;
+        }
+        float* f = out + used;
+        f[0] = static_cast<float>(index);
+        f[1] = static_cast<float>(count);
+        for (uint32_t k = 0; k < 64u; ++k) {
+            const uint32_t bits = k < count * 4u ? GuestWordAt(base, frustum + k * 4u) : 0u;
+            std::memcpy(f + 2 + k, &bits, sizeof(float));
+        }
+        used += kRecord;
+        ++spots;
+    }
+    out[0] = static_cast<float>(spots);
+    return used;
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLights(float* out, uint32_t capacity) {
+    constexpr uint32_t kStride = 20u;
+    if (out == nullptr || capacity < kStride) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_float = [base](uint32_t at) {
+        const uint32_t bits = GuestWordAt(base, at);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return 0;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    const uint32_t manager = read32(scene + 3684u);
+    if (!plausible(manager)) {
+        return 0;
+    }
+    const uint32_t entries = read32(manager + 8u);
+    const uint64_t mask = (static_cast<uint64_t>(read32(manager + 24u)) << 32) | read32(manager + 28u);
+    if (!plausible(entries) || mask == 0u) {
+        return 0;
+    }
+
+    const uint32_t max_lights = capacity / kStride;
+    uint32_t written = 0;
+    for (uint32_t index = 0; index < 64u && written < max_lights; ++index) {
+        // Bit i is entry i: live, the mask read 1 with the sun in entry 0 and entry 63 empty.
+        if ((mask & (1ull << index)) == 0u) {
+            continue;
+        }
+        const uint32_t entry = entries + index * 32u;
+        const uint32_t light = read32(entry + 16u);
+        if (!plausible(light)) {
+            continue;
+        }
+        float* o = out + written * kStride;
+        o[0] = read_float(entry);
+        o[1] = read_float(entry + 4u);
+        o[2] = read_float(entry + 8u);
+        o[3] = read_float(entry + 12u);
+        o[4] = read_float(light + 208u);
+        o[5] = read_float(light + 212u);
+        o[6] = read_float(light + 216u);
+        o[7] = read_float(light + 448u);
+        o[8] = read_float(light + 304u);
+        o[9] = read_float(light + 308u);
+        o[10] = read_float(light + 312u);
+        o[11] = static_cast<float>(read32(light + 4u));
+        o[12] = read_float(light + 320u);
+        o[13] = read_float(light + 324u);
+        o[14] = read_float(light + 452u);
+        const uint32_t flag_word = read32(light + 336u);  // bytes +336..+339
+        uint32_t flags = 0;
+        flags |= ((flag_word >> 24) & 0xFFu) != 0u ? 1u : 0u;
+        flags |= ((flag_word >> 16) & 0xFFu) != 0u ? 2u : 0u;
+        flags |= ((flag_word >> 8) & 0xFFu) != 0u ? 4u : 0u;
+        flags |= (read32(light + 484u) >> 24) != 0u ? 8u : 0u;
+        o[15] = static_cast<float>(flags);
+        // The lighting zone id, bit for bit: a zone is a hash and a float cast would round it.
+        const uint32_t zone = read32(light + 416u);
+        std::memcpy(o + 16, &zone, sizeof(zone));
+        o[17] = static_cast<float>(index);
+        o[18] = 0.0f;
+        o[19] = 0.0f;
+        ++written;
+    }
+    return written;
+}
+
+/// The render scene's MIST VOLUMES: the type-27 objects of the scene's typed list (O+3412:
+/// nodes of 24 bytes between *(L+4) and *(L+8), keyed by type at +0, objects at *(node+12)..
+/// *(node+16); `sub_82A8B998`, `sub_821F4480`), as the per-draw test and the binder read them
+/// (`sub_82B1DE38`, `sub_82A6DD30`, `Render_BindHighSamplersAndPixelBool` 0x82A6EAA8). Per
+/// mist, 36 floats:
+///   [0..2] bounds min (V+80), [3..5] bounds max (V+96), [6..9] colour (V+192) -> c72,
+///   [10] density (V+184), [11] noise offset (V+216) -> the evolve pass's c46,
+///   [12] time speed (V+220), [13..14] noise tiling (V+264/268) -> the evolve pass's c31.xy,
+///   [15] V+316 (c76.w = 1/it), [16..19] V+320 -> c75, [20] global-strength weight (V+344),
+///   [21..24] V+352 -> c73, [25..28] V+368 -> c74, [29..31] extents (V+224), [32..34] origin
+///   (V+240), [35] 1 when the height texture (V+276) is set.
+/// Returns the mists written (at most capacity / 36), or 0 when the scene is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicMists(float* out, uint32_t capacity) {
+    constexpr uint32_t kStride = 36u;
+    if (out == nullptr || capacity < kStride) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return 0;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    const uint32_t list = scene + 3412u;
+    const uint32_t nodes_begin = read32(list + 4u);
+    const uint32_t nodes_end = read32(list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || nodes_end - nodes_begin > 48u * 24u) {
+        return 0;
+    }
+
+    const uint32_t max_mists = capacity / kStride;
+    uint32_t written = 0;
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+        if (read32(node) != 27u) {
+            continue;
+        }
+        const uint32_t objects_begin = read32(node + 12u);
+        const uint32_t objects_end = read32(node + 16u);
+        if (!plausible(objects_begin) || objects_end < objects_begin) {
+            break;
+        }
+        const uint32_t count = (objects_end - objects_begin) / 4u;
+        for (uint32_t i = 0; i < count && written < max_mists; ++i) {
+            const uint32_t mist = read32(objects_begin + i * 4u);
+            if (!plausible(mist)) {
+                continue;
+            }
+            float* o = out + written * kStride;
+            read_floats(mist + 80u, o, 3u);
+            read_floats(mist + 96u, o + 3, 3u);
+            read_floats(mist + 192u, o + 6, 4u);
+            read_floats(mist + 184u, o + 10, 1u);
+            read_floats(mist + 216u, o + 11, 1u);
+            read_floats(mist + 220u, o + 12, 1u);
+            read_floats(mist + 264u, o + 13, 2u);
+            read_floats(mist + 316u, o + 15, 1u);
+            read_floats(mist + 320u, o + 16, 4u);
+            read_floats(mist + 344u, o + 20, 1u);
+            read_floats(mist + 352u, o + 21, 4u);
+            read_floats(mist + 368u, o + 25, 4u);
+            read_floats(mist + 224u, o + 29, 3u);
+            read_floats(mist + 240u, o + 32, 3u);
+            o[35] = plausible(read32(mist + 276u)) ? 1.0f : 0.0f;
+            ++written;
+        }
+        break;
+    }
+    return written;
+}
+
+/// THE PARTICLE-SYSTEM INSTANCE BEHIND EACH QUAD AND TRAIL TWIN, so the host can tell which
+/// effects the guest is drawing itself. The twin keeps no pointer back to the sim, so the link is
+/// walked from the sim side: every live instance (the vector at dword_8349E48C, {instance,
+/// refnode} stride 8) whose class carries the render component at +0x150 (`sub_8322F600`
+/// 0x8322F6C8 `addi r3,r31,0x150` -> `sub_83228588`) holds the renderer holder at component +28
+/// (`*(a1+28) = v39`), i.e. instance +0x16C; the holder (vtable off_82001AC0) keeps the quad/trail
+/// proxy at +24 and the proxy its twin handle at +4, -1 when none (`sub_82456E60`); the handle
+/// indexes the twin table dword_8349F7AC and the twin repeats it at +16 (`sub_821E1F40`
+/// `v24[4] = v21`). A class without the component reads past its end here, so a link counts
+/// only when the holder's vtable and the table's twin both agree. Child components (the 496-byte
+/// class's map at +460) are not walked: their twins have no owner.
+static void ParticleTwinOwners(uint8_t* base, std::unordered_map<uint32_t, uint32_t>& owners) {
+    owners.clear();
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const uint32_t begin = read32(refii::guest::Address(0x8349E490u));
+    const uint32_t end = read32(refii::guest::Address(0x8349E494u));
+    const uint32_t table = read32(refii::guest::Address(0x8349F7ACu));
+    const uint32_t table_end = read32(refii::guest::Address(0x8349F7B0u));
+    const uint32_t holder_vtable = refii::guest::Address(0x82001AC0u);
+    if (!plausible(begin) || end < begin || end - begin > 8u * 8192u || !plausible(table) || table_end < table) {
+        return;
+    }
+    const uint32_t handles = (table_end - table) / 4u;
+    for (uint32_t at = begin; at + 8u <= end; at += 8u) {
+        const uint32_t instance = read32(at);
+        if (!plausible(instance)) {
+            continue;
+        }
+        const uint32_t holder = read32(instance + 0x16Cu);
+        if (!plausible(holder) || read32(holder) != holder_vtable) {
+            continue;
+        }
+        const uint32_t proxy = read32(holder + 24u);
+        if (!plausible(proxy)) {
+            continue;
+        }
+        const uint32_t handle = read32(proxy + 4u);
+        if (handle >= handles) {
+            continue;
+        }
+        const uint32_t twin = read32(table + handle * 4u);
+        if (plausible(twin) && read32(twin + 16u) == handle) {
+            owners[twin] = instance;
+        }
+    }
+}
+
+/// The render scene's PARTICLE GROUPS as their render-side twins hold them: the data the sim
+/// states to the renderer through the twin's receivers (`sub_821D8EA8` the records, material
+/// and bounds; `sub_821D9D40` the transform), which the title's point-sprite draw
+/// (`sub_821CA790`) turns into FACE_ME quads. Walks the scene's typed object list (O+3412) for
+/// the two particle classes (types 12 and 30, `sub_82A43EA0` / `sub_82A449A8`) and writes, per
+/// group whose +240 kind is 1 (quads; trails are 2 and 3):
+///   a 320-float header, then count x 12 floats of 48-byte records as the stream holds them.
+/// Header (R = the render object, D = *(*(R+180)+4) its render data, M = *(D+48) its material):
+///   [0] R (bits) [1] R+240 kind [2] count R+176 [3] R+244
+///   [4..6] bounds min R+80 [7] the owning particle-system instance (bits; 0 unknown,
+///   ParticleTwinOwners) [8..10] bounds max R+96
+///   [12..16] fade distances R+384..400 (in near, in far, out near, out far, alpha)
+///   [17] scale R+404 [18] R+408 [19] R+409 [20] R+412
+///   [21..36] the current transform R+320, row-major as the title lerps it (`sub_8288F408`)
+///   [37] M (bits) [38] texture count M+180 [39..41] blend src/dst/op M+36..44 (engine enums:
+///       0 ZERO 1 ONE 2 SRCCOLOR 3 INVSRCCOLOR 4 SRCALPHA 5 INVSRCALPHA 6 DESTCOLOR
+///       7 INVDESTCOLOR 8 DESTALPHA 9 INVDESTALPHA; ops 0 ADD 1 SUB 2 REVSUB 3 MIN 4 MAX)
+///   [42] soft fade distance M+48 [43] M+52 displacement [44] M+53 alpha ref 16 [45] M+56 fixed axes
+///   [46..49] D+32 the fixed-axis quaternion [50] keyframe count (at most 19)
+///   [51..53] the lighting object's +496 (the ambient the lit particle adds) [54] probe count
+///   [64..253] 19 keyframes x 10: colour(4) size x, size y, global scale x, y, self-illum, start
+///       (M+8 vector, stride 40: +0 colour, +16/+20 sizes, +24/+28 global scales, +32, +36)
+///   [254..333] 4 textures x 20: key word, start time, x divisions, y divisions, 16 words of the
+///       key's text when the key is a pointer to one (M+80 + 24 i: +4 key, +8 start, +20/+21);
+///       the draw takes up to four (`sub_821CA790`, blend index clamp(M+180 - 1, 0, 3))
+/// out[0] = groups written, out[1] = floats used; returns the floats used, 0 when the scene is
+/// not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t capacity) {
+    constexpr uint32_t kHeader = 340u;
+    constexpr uint32_t kRecord = 12u;
+    constexpr uint32_t kMaxRecords = 8192u;
+    if (out == nullptr || capacity < 2u + kHeader) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read8 = [&read32](uint32_t at) {
+        return (read32(at & ~3u) >> (8u * (3u - (at & 3u)))) & 0xFFu;
+    };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+    const auto put_bits = [](float* to, uint32_t bits) { std::memcpy(to, &bits, sizeof(float)); };
+
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    if (!plausible(mode)) {
+        return 0;
+    }
+    const uint32_t a = read32(mode + 12u);
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    const uint32_t list = scene + 3412u;
+    const uint32_t nodes_begin = read32(list + 4u);
+    const uint32_t nodes_end = read32(list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || nodes_end - nodes_begin > 48u * 24u) {
+        return 0;
+    }
+    const uint32_t lighting = read32(refii::guest::Address(0x834A4D60u));
+    // The probe container the lit particle's ambient asks (`sub_821907F8`): *(scene+3408), read
+    // at 0x821CA98C..A0 as *(*(view+4)+20)+0xD50. Its +72/+76 vector holds 12-byte entries.
+    const uint32_t container = read32(scene + 3408u);
+    const uint32_t probes = plausible(container)
+        ? (read32(container + 76u) - read32(container + 72u)) / 12u
+        : 0u;
+
+    uint32_t used = 2u;
+    static thread_local std::unordered_map<uint32_t, uint32_t> owners;
+    ParticleTwinOwners(base, owners);
+    uint32_t groups = 0u;
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+        const uint32_t type = read32(node);
+        if (type != 12u && type != 30u) {
+            continue;
+        }
+        const uint32_t objects_begin = read32(node + 12u);
+        const uint32_t objects_end = read32(node + 16u);
+        if (!plausible(objects_begin) || objects_end < objects_begin) {
+            continue;
+        }
+        const uint32_t count_objects = (objects_end - objects_begin) / 4u;
+        for (uint32_t i = 0; i < count_objects; ++i) {
+            const uint32_t r = read32(objects_begin + i * 4u);
+            if (!plausible(r) || read32(r + 240u) != 1u) {
+                continue;
+            }
+            uint32_t count = read32(r + 176u);
+            if (count == 0u || count > kMaxRecords) {
+                continue;
+            }
+            const uint32_t shared = read32(r + 180u);
+            const uint32_t data = plausible(shared) ? read32(shared + 4u) : 0u;
+            if (!plausible(data)) {
+                continue;
+            }
+            const uint32_t records = read32(data + 8u);
+            const uint32_t material = read32(data + 48u);
+            if (!plausible(records) || !plausible(material)) {
+                continue;
+            }
+            if (used + kHeader + count * kRecord > capacity) {
+                break;
+            }
+            float* h = out + used;
+            for (uint32_t k = 0; k < kHeader; ++k) {
+                h[k] = 0.0f;
+            }
+            put_bits(h + 0, r);
+            { const auto owner = owners.find(r); put_bits(h + 7, owner != owners.end() ? owner->second : 0u); }
+            h[1] = 1.0f;
+            h[2] = static_cast<float>(count);
+            h[3] = static_cast<float>(static_cast<int32_t>(read32(r + 244u)));
+            read_floats(r + 80u, h + 4, 3u);
+            read_floats(r + 96u, h + 8, 3u);
+            read_floats(r + 384u, h + 12, 5u);
+            read_floats(r + 404u, h + 17, 1u);
+            h[18] = static_cast<float>(read8(r + 408u));
+            h[19] = static_cast<float>(read8(r + 409u));
+            read_floats(r + 412u, h + 20, 1u);
+            read_floats(r + 320u, h + 21, 16u);
+            put_bits(h + 37, material);
+            const uint32_t textures = read32(material + 180u);
+            h[38] = static_cast<float>(textures > 4u ? 4u : textures);
+            h[39] = static_cast<float>(read32(material + 36u));
+            h[40] = static_cast<float>(read32(material + 40u));
+            h[41] = static_cast<float>(read32(material + 44u));
+            read_floats(material + 48u, h + 42, 1u);
+            h[43] = static_cast<float>(read8(material + 52u));
+            h[44] = static_cast<float>(read8(material + 53u));
+            h[45] = static_cast<float>(read8(material + 56u));
+            read_floats(data + 32u, h + 46, 4u);
+            const uint32_t keys_begin = read32(material + 8u);
+            const uint32_t keys_end = read32(material + 12u);
+            uint32_t keys = plausible(keys_begin) && keys_end >= keys_begin ? (keys_end - keys_begin) / 40u : 0u;
+            if (keys > 19u) {
+                keys = 19u;
+            }
+            h[50] = static_cast<float>(keys);
+            if (plausible(lighting)) {
+                read_floats(lighting + 496u, h + 51, 3u);
+            }
+            h[54] = static_cast<float>(probes);
+            for (uint32_t k = 0; k < keys; ++k) {
+                const uint32_t key = keys_begin + k * 40u;
+                float* o = h + 64 + k * 10;
+                read_floats(key, o, 4u);
+                read_floats(key + 16u, o + 4, 2u);
+                read_floats(key + 24u, o + 6, 2u);
+                read_floats(key + 32u, o + 8, 2u);
+            }
+            for (uint32_t t = 0; t < textures && t < 4u; ++t) {
+                const uint32_t entry = material + 80u + t * 24u;
+                float* o = h + 254 + t * 20;
+                const uint32_t key = read32(entry + 4u);
+                put_bits(o, key);
+                read_floats(entry + 8u, o + 1, 1u);
+                o[2] = static_cast<float>(static_cast<int8_t>(read8(entry + 20u)));
+                o[3] = static_cast<float>(static_cast<int8_t>(read8(entry + 21u)));
+                // A key that points at printable text is the texture's path; carry it.
+                if (plausible(key)) {
+                    bool text = true;
+                    for (uint32_t c = 0; c < 4u && text; ++c) {
+                        const uint32_t ch = read8(key + c);
+                        text = ch >= 0x20u && ch < 0x7Fu;
+                    }
+                    if (text) {
+                        for (uint32_t w = 0; w < 16u; ++w) {
+                            put_bits(o + 4 + w, read32(key + w * 4u));
+                        }
+                    }
+                }
+            }
+            read_floats(records, h + kHeader, count * kRecord);
+            used += kHeader + count * kRecord;
+            ++groups;
+        }
+    }
+    out[0] = static_cast<float>(groups);
+    out[1] = static_cast<float>(used);
+    return groups == 0u ? 0u : used;
+}
+
+/// The render scene's TRAILS (R+240 == 2) and DOUBLE TRAILS (3), as their render twins hold them,
+/// for the title's TRAILS / DOUBLE_TRAILS vertex shaders. The draw (`sub_821CA5E8` 0x821CA6A4)
+/// takes D = *(*(R+0xB4)+4) and the material TM = *(D+0x40) (trails) or DM = *(D+0x2C) (double),
+/// drawing into the displacement target instead when TM+0x34 / DM+0x28 (IsDisplacementTexture) is
+/// set (`Render_EffectStripDraw` 0x82A597B0 / `Render_EffectStripDraw2` 0x82A5A818: VS 0041 / 0043,
+/// PS 0037, the renderer's ONE / ONE; header [55]).
+/// The stream it draws is the ring at D (+8 base, +20 head, +32 mask, +36 count c) unrolled with
+/// a point either side, as `sub_82179C00` / `sub_82A592F0` fill it: c + 3 points of 8 floats.
+/// Per group a 288-float header, then the points:
+///   [0] R (bits) [1] kind [2] n = R+176 [3] c [4] s (TM+0x20 / DM+0x14, int) [5] vertices
+///   2((n-1)s+1) [6] closed loop (kind 2) [7] TM or DM (bits) [8..11] c366 (s, 1/((n-1)s), 1/s, 0)
+///   [12..16] fades R+384..400 [17..32] transform R+320 [33] fixed axis TM+0x38 [34..37] D+48
+///   quaternion [38] the owning particle-system instance (bits; 0 unknown, ParticleTwinOwners)
+///   [42..44] blend src/dst/op (B+0/4/8; B = TM+0x24 / DM+0x18) [45] soft distance B+12
+///   [46] B+16 [47] B+17 (alpha ref 16) [48] texture count [50] keyframes (<= 19)
+///   [51..53] the lighting object's +496 [54] probe count
+///   [56..207] 19 keyframes x 8: K+0..12 colour, K+16, K+20, K+24, 0 (TM/DM+8, stride 28)
+///   [208..287] 4 textures x 20 as the quad export's [254..333] (block TM+0x50 / DM+0x2C)
+/// out[0] = groups, out[1] = floats used; returns the floats used, 0 when none.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t capacity) {
+    constexpr uint32_t kHeader = 288u;
+    constexpr uint32_t kPoint = 8u;
+    constexpr uint32_t kMaxPoints = 4096u;
+    if (out == nullptr || capacity < 2u + kHeader) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read8 = [&read32](uint32_t at) {
+        return (read32(at & ~3u) >> (8u * (3u - (at & 3u)))) & 0xFFu;
+    };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+    const auto put_bits = [](float* to, uint32_t bits) { std::memcpy(to, &bits, sizeof(float)); };
+
+    const uint32_t scene = ClassicThemeScene(base);
+    if (scene == 0u) {
+        return 0;
+    }
+    const uint32_t list = scene + 3412u;
+    const uint32_t nodes_begin = read32(list + 4u);
+    const uint32_t nodes_end = read32(list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || nodes_end - nodes_begin > 48u * 24u) {
+        return 0;
+    }
+    const uint32_t lighting = read32(refii::guest::Address(0x834A4D60u));
+    const uint32_t container = read32(scene + 3408u);
+    const uint32_t probes = plausible(container)
+        ? (read32(container + 76u) - read32(container + 72u)) / 12u
+        : 0u;
+
+    uint32_t used = 2u;
+    static thread_local std::unordered_map<uint32_t, uint32_t> owners;
+    ParticleTwinOwners(base, owners);
+    uint32_t groups = 0u;
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+        const uint32_t type = read32(node);
+        if (type != 12u && type != 30u) {
+            continue;
+        }
+        const uint32_t objects_begin = read32(node + 12u);
+        const uint32_t objects_end = read32(node + 16u);
+        if (!plausible(objects_begin) || objects_end < objects_begin) {
+            continue;
+        }
+        for (uint32_t at = objects_begin; at + 4u <= objects_end; at += 4u) {
+            const uint32_t r = read32(at);
+            if (!plausible(r)) {
+                continue;
+            }
+            const uint32_t kind = read32(r + 240u);
+            if (kind != 2u && kind != 3u) {
+                continue;
+            }
+            const uint32_t shared = read32(r + 180u);
+            const uint32_t d = plausible(shared) ? read32(shared + 4u) : 0u;
+            if (!plausible(d)) {
+                continue;
+            }
+            const uint32_t m = read32(d + (kind == 2u ? 0x40u : 0x2Cu));
+            if (!plausible(m)) {
+                continue;
+            }
+            // IsDisplacementTexture (the key's +0x34 / +0x28): drawn into the displacement target.
+            const bool displaces = read8(m + (kind == 2u ? 0x34u : 0x28u)) != 0u;
+            const uint32_t n = read32(r + 176u);
+            const uint32_t c = read32(d + 36u);
+            if (n < 2u || c < n || c > kMaxPoints) {
+                continue;  // `sub_82179C00`'s own exit
+            }
+            const uint32_t points = c + 3u;
+            if (used + kHeader + points * kPoint > capacity) {
+                break;
+            }
+            const int32_t sub = static_cast<int32_t>(read32(m + (kind == 2u ? 0x20u : 0x14u)));
+            if (sub <= 0) {
+                continue;
+            }
+
+            float* h = out + used;
+            for (uint32_t k = 0; k < kHeader; ++k) {
+                h[k] = 0.0f;
+            }
+            put_bits(h + 0, r);
+            { const auto owner = owners.find(r); put_bits(h + 38, owner != owners.end() ? owner->second : 0u); }
+            h[1] = static_cast<float>(kind);
+            h[2] = static_cast<float>(n);
+            h[3] = static_cast<float>(c);
+            h[4] = static_cast<float>(sub);
+            h[5] = static_cast<float>(2u * ((n - 1u) * static_cast<uint32_t>(sub) + 1u));
+            put_bits(h + 7, m);
+            h[55] = displaces ? 1.0f : 0.0f;
+            const float span = static_cast<float>(n - 1u) * static_cast<float>(sub);
+            h[8] = static_cast<float>(sub);
+            h[9] = span > 0.0f ? 1.0f / span : 0.0f;
+            h[10] = 1.0f / static_cast<float>(sub);
+            read_floats(r + 384u, h + 12, 5u);
+            read_floats(r + 320u, h + 17, 16u);
+            if (kind == 2u) {
+                h[33] = static_cast<float>(read8(m + 0x38u));
+            }
+            read_floats(d + 48u, h + 34, 4u);
+            const uint32_t blend = m + (kind == 2u ? 0x24u : 0x18u);
+            h[42] = static_cast<float>(read32(blend));
+            h[43] = static_cast<float>(read32(blend + 4u));
+            h[44] = static_cast<float>(read32(blend + 8u));
+            read_floats(blend + 12u, h + 45, 1u);
+            h[46] = static_cast<float>(read8(blend + 16u));
+            h[47] = static_cast<float>(read8(blend + 17u));
+            const uint32_t block = m + (kind == 2u ? 0x50u : 0x2Cu);
+            const uint32_t textures = read32(block + 100u);
+            h[48] = static_cast<float>(textures > 4u ? 4u : textures);
+            const uint32_t keys_begin = read32(m + 8u);
+            const uint32_t keys_end = read32(m + 12u);
+            uint32_t keys = plausible(keys_begin) && keys_end >= keys_begin ? (keys_end - keys_begin) / 28u : 0u;
+            if (keys > 19u) {
+                keys = 19u;
+            }
+            h[50] = static_cast<float>(keys);
+            if (plausible(lighting)) {
+                read_floats(lighting + 496u, h + 51, 3u);
+            }
+            h[54] = static_cast<float>(probes);
+            for (uint32_t k = 0; k < keys; ++k) {
+                read_floats(keys_begin + k * 28u, h + 56 + k * 8, 7u);
+            }
+            for (uint32_t t = 0; t < textures && t < 4u; ++t) {
+                const uint32_t entry = block + t * 24u;
+                float* o = h + 208 + t * 20;
+                const uint32_t key = read32(entry + 4u);
+                put_bits(o, key);
+                read_floats(entry + 8u, o + 1, 1u);
+                o[2] = static_cast<float>(static_cast<int8_t>(read8(entry + 20u)));
+                o[3] = static_cast<float>(static_cast<int8_t>(read8(entry + 21u)));
+                if (plausible(key)) {
+                    bool text = true;
+                    for (uint32_t ch = 0; ch < 4u && text; ++ch) {
+                        const uint32_t value = read8(key + ch);
+                        text = value >= 0x20u && value < 0x7Fu;
+                    }
+                    if (text) {
+                        for (uint32_t w = 0; w < 16u; ++w) {
+                            put_bits(o + 4 + w, read32(key + w * 4u));
+                        }
+                    }
+                }
+            }
+
+            // The stream: the ring unrolled from its head, with the points either side.
+            const uint32_t ring = read32(d + 8u);
+            const uint32_t head = read32(d + 20u);
+            const uint32_t mask = read32(d + 32u);
+            float* p = h + kHeader;
+            const auto point = [&](uint32_t i, float* to) {
+                read_floats(ring + ((head + i) & mask) * 32u, to, kPoint);
+            };
+            for (uint32_t i = 0; i < c; ++i) {
+                point(i, p + (1u + i) * kPoint);
+            }
+            const float* first = p + kPoint;
+            const float* second = p + 2u * kPoint;
+            const float* last = p + c * kPoint;
+            const float* before_last = p + (c - 1u) * kPoint;
+            float* pre = p;
+            float* post1 = p + (c + 1u) * kPoint;
+            float* post2 = p + (c + 2u) * kPoint;
+            bool closed = false;
+            if (kind == 2u && c > 2u) {
+                closed = true;
+                for (uint32_t i = 0; i < 3u && closed; ++i) {
+                    closed = std::fabs(first[i] - last[i]) < 0.003f;
+                }
+            }
+            if (closed) {
+                // A closed loop wraps: the neighbours are the ring's own (0x82179CB0..D38).
+                std::memcpy(pre, p + (c - 1u) * kPoint, kPoint * sizeof(float));
+                std::memcpy(post1, second, kPoint * sizeof(float));
+                std::memcpy(post2, p + 3u * kPoint, kPoint * sizeof(float));
+            } else {
+                // Extrapolated: a trail its first float4 (its second the end point's), a double
+                // trail its first seven floats (its eighth the end point's).
+                const uint32_t lanes = kind == 2u ? 4u : 7u;
+                for (uint32_t i = 0; i < kPoint; ++i) {
+                    if (i < lanes) {
+                        pre[i] = 2.0f * first[i] - second[i];
+                        post1[i] = 2.0f * last[i] - before_last[i];
+                        post2[i] = 3.0f * last[i] - 2.0f * before_last[i];
+                    } else {
+                        pre[i] = first[i];
+                        post1[i] = last[i];
+                        post2[i] = last[i];
+                    }
+                }
+            }
+            h[6] = closed ? 1.0f : 0.0f;
+            used += kHeader + points * kPoint;
+            ++groups;
+        }
+    }
+    out[0] = static_cast<float>(groups);
+    out[1] = static_cast<float>(used);
+    return groups == 0u ? 0u : used;
+}
+
+/// THE DECALS the guest stated (`sub_82A40610`, taken by src/hooks/decals.cpp), oldest first, 27
+/// words each: [0..14] as core/payload_bridge.h states them (serial, owner twin, texture name
+/// hash, position, direction, half sizes, life, flag), [15..26] the owner twin's world matrix as
+/// `sub_8220B490` loads it from twin+336: three rows (axis.xyz, translation) of floats, zeros when
+/// the decal has no owner. `out_serial` moves whenever the set changed. Returns the count.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDecals(uint32_t* out, uint32_t capacity, uint32_t* out_serial) {
+    constexpr uint32_t kOut = kDecalWords + 12u;
+    uint32_t stated[50u * kDecalWords];
+    const uint32_t count = refii::vfs::StatedDecals(stated, 50u * kDecalWords, out_serial);
+    if (out == nullptr) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    uint32_t written = 0u;
+    for (uint32_t i = 0u; i < count && (written + 1u) * kOut <= capacity; ++i) {
+        uint32_t* row = out + written * kOut;
+        std::memcpy(row, stated + i * kDecalWords, kDecalWords * sizeof(uint32_t));
+        const uint32_t owner = row[1];
+        for (uint32_t k = 0u; k < 12u; ++k) {
+            row[kDecalWords + k] =
+                (base != nullptr && owner >= 0x10000u && owner < 0xC0000000u) ? GuestWordAt(base, owner + 336u + k * 4u) : 0u;
+        }
+        ++written;
+    }
+    return written;
+}
+
+/// What the title's RAIN (`0x822803D0`) and SNOW (`0x821BDE68`) draws read beyond the theme block
+/// and the wind, which the frame export already carries. Out, floats:
+///   [0] 1 when the light-zone stack (`0x834A4D68` begin, `0x834A4D6C` end) has a top zone Z
+///       [1..3] its colour Z+0xD0 — the rain's diffuse and specular are 0.25 x it, the snow's
+///       colour 0.75 + 0.25 x it (0x82281474, 0x821BEE20); without one, 0.1 and 1.
+///   [4] the clock the snow animates by, `(float)dbl_83496E18` (0x821BEC30, binding 397)
+///   [5] n, the scene's lights the rain may take: `*(scene+0xE64)`, a vector at +8 / +0xC of
+///       32-byte entries whose light is at +0x10, kept when L+0xC0 == 1 (0x8228074C..0x822807B4).
+///       The draw keeps those within 20 of the camera and drops the farthest down to three;
+///       which camera is the host's, so the cut is the caller's.
+///   [8..71] the snow's spell pushes, g_PushVector (binding 0x17A, 16 registers, 0x821BEC78): the
+///       weather primitive's (scene list type 25, vtable 0x82004BC8) 8 slots at +0x50, each
+///       (start xyz, clock + t1) and (end xyz, clock + t2), as message 24 states them
+///       (`sub_82A77F60`, from the game's `sub_8260E100`: strikes, shots, spells)
+///   [72..79] g_PushVectorOverDist (0x17B, 0x821BEC8C): 1 / d per slot at +0x150
+///   [80 + 8i ..] position L+0x120 xyz, radius L+0x140, colour L+0xD0 rgb, 0.
+/// Returns the floats written, 0 when the scene is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicWeather(float* out, uint32_t capacity) {
+    constexpr uint32_t kHeader = 80u;
+    constexpr uint32_t kLight = 8u;
+    if (out == nullptr || capacity < kHeader) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const uint32_t scene = ClassicThemeScene(base);
+    if (scene == 0u) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+    for (uint32_t i = 0; i < kHeader; ++i) {
+        out[i] = 0.0f;
+    }
+
+    const uint32_t zones_begin = GuestWordAt(base, refii::guest::Address(0x834A4D68u));
+    const uint32_t zones_end = GuestWordAt(base, refii::guest::Address(0x834A4D6Cu));
+    if (plausible(zones_end) && zones_end > zones_begin && zones_end - zones_begin < 0x10000u) {
+        const uint32_t zone = GuestWordAt(base, zones_end - 4u);
+        if (plausible(zone)) {
+            out[0] = 1.0f;
+            read_floats(zone + 0xD0u, out + 1, 3u);
+        }
+    }
+
+    const uint32_t clock_at = refii::guest::Address(0x83496E18u);
+    const uint64_t clock_bits = (static_cast<uint64_t>(GuestWordAt(base, clock_at)) << 32) |
+        GuestWordAt(base, clock_at + 4u);
+    double clock = 0.0;
+    std::memcpy(&clock, &clock_bits, sizeof(clock));
+    out[4] = std::isfinite(clock) ? static_cast<float>(clock) : 0.0f;
+
+    // The snow's push slots: the weather primitive in the scene's typed list (type 25).
+    for (uint32_t k = 0; k < 8u; ++k) {
+        out[72u + k] = 0.0f;
+    }
+    {
+        const uint32_t list = scene + 3412u;
+        const uint32_t nodes_begin = GuestWordAt(base, list + 4u);
+        const uint32_t nodes_end = GuestWordAt(base, list + 8u);
+        if (plausible(nodes_begin) && nodes_end >= nodes_begin && nodes_end - nodes_begin <= 48u * 24u) {
+            for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+                if (GuestWordAt(base, node) != 25u) {
+                    continue;
+                }
+                const uint32_t objects_begin = GuestWordAt(base, node + 12u);
+                const uint32_t objects_end = GuestWordAt(base, node + 16u);
+                const uint32_t weather = plausible(objects_begin) && objects_end > objects_begin
+                    ? GuestWordAt(base, objects_begin) : 0u;
+                if (plausible(weather)) {
+                    read_floats(weather + 0x50u, out + 8, 64u);
+                    read_floats(weather + 0x150u, out + 72, 8u);
+                }
+                break;
+            }
+        }
+    }
+
+    uint32_t lights = 0u;
+    const uint32_t list = GuestWordAt(base, scene + 0xE64u);
+    if (plausible(list)) {
+        const uint32_t begin = GuestWordAt(base, list + 8u);
+        const uint32_t end = GuestWordAt(base, list + 0xCu);
+        if (plausible(begin) && end >= begin && end - begin < 0x40000u) {
+            for (uint32_t at = begin; at + 32u <= end; at += 32u) {
+                if (kHeader + (lights + 1u) * kLight > capacity) {
+                    break;
+                }
+                const uint32_t light = GuestWordAt(base, at + 0x10u);
+                if (!plausible(light) || GuestWordAt(base, light + 0xC0u) != 1u) {
+                    continue;
+                }
+                float* row = out + kHeader + lights * kLight;
+                read_floats(light + 0x120u, row, 3u);
+                read_floats(light + 0x140u, row + 3, 1u);
+                read_floats(light + 0xD0u, row + 4, 3u);
+                row[7] = 0.0f;
+                ++lights;
+            }
+        }
+    }
+    out[5] = static_cast<float>(lights);
+    return kHeader + lights * kLight;
+}
+
+/// The FX MESH PARTICLES the guest's effects state (src/hooks/fx_meshes.cpp): per descriptor its
+/// render twin (descriptor +4 -> `dword_8349F7AC[handle]`) as the effect's mesh renderer
+/// (`sub_821CEA80` kind 4) keeps it with its messages. Per mesh 24 floats:
+///   [0] descriptor (bits) [1] model hash (descriptor +128) [2] flags (descriptor +20: 0x800
+///   displacement) [3..14] the world rows twin+336 (3 x vec4, translation in w, `sub_8220B6A8`)
+///   [15..18] the tint twin+240 (message 17 -> PS c49, `sub_82220CA8`) [19] alpha, the state
+///   block's (*(twin+176)) +104 -> +108 at its +16 (message 16; `sub_8221E5F0`) [20..22] the
+///   distance fade twin+284 (full within), +288 (slope), +292 (gone beyond) [23] twin type (+4).
+/// out[0] = meshes; returns the floats written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxMeshes(float* out, uint32_t capacity) {
+    if (out == nullptr || capacity < 1u) {
+        return 0u;
+    }
+    out[0] = 0.0f;
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read_floats = [base](uint32_t at, float* to, uint32_t count) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t bits = GuestWordAt(base, at + i * 4u);
+            std::memcpy(to + i, &bits, sizeof(float));
+        }
+    };
+    const uint32_t table = GuestWordAt(base, refii::guest::Address(0x8349F7ACu));
+    if (!plausible(table)) {
+        return 1u;
+    }
+    uint32_t descriptors[1024];
+    const uint32_t stated = refii::vfs::StatedFxMeshes(descriptors, 1024u);
+    uint32_t used = 1u;
+    uint32_t meshes = 0u;
+    for (uint32_t i = 0; i < stated && used + 24u <= capacity; ++i) {
+        const uint32_t descriptor = descriptors[i];
+        const uint32_t handle = GuestWordAt(base, descriptor + 4u);
+        if (handle == 0u || handle == 0xFFFFFFFFu || handle > 0x100000u) {
+            continue;
+        }
+        const uint32_t twin = GuestWordAt(base, table + handle * 4u);
+        if (!plausible(twin)) {
+            continue;
+        }
+        float* m = out + used;
+        std::memcpy(m + 0, &descriptor, sizeof(float));
+        const uint32_t hash = GuestWordAt(base, descriptor + 128u);
+        std::memcpy(m + 1, &hash, sizeof(float));
+        m[2] = static_cast<float>(GuestWordAt(base, descriptor + 20u));
+        read_floats(twin + 336u, m + 3, 12u);
+        read_floats(twin + 240u, m + 15, 4u);
+        const uint32_t state = GuestWordAt(base, twin + 176u);
+        float alpha = 1.0f;
+        if (plausible(state)) {
+            float lanes[3];
+            read_floats(state + 104u, lanes, 2u);
+            read_floats(state + 16u, lanes + 2, 1u);
+            alpha = lanes[0] + (lanes[1] - lanes[0]) * lanes[2];
+        }
+        m[19] = alpha;
+        read_floats(twin + 284u, m + 20, 3u);
+        m[23] = static_cast<float>(GuestWordAt(base, twin + 4u));
+        used += 24u;
+        ++meshes;
+    }
+    out[0] = static_cast<float>(meshes);
+    return used;
+}
+
+/// The render scene's DISPLACEMENT QUADS (typed list type 29, ctor `sub_82A4B9A8`, vtable
+/// 0x820F72F0): screen-space quads the displacement renderer draws with VS 176 / PS 177 (a textured
+/// quad) — as shipped only the drunk warp (`sub_822B62F0`: "Art\GUI\HUD\FXT_Fullscreen_Drunk",
+/// full screen, while the drunkenness stat is past its threshold). Per quad 16 floats, from the
+/// fields message 35 sets (`sub_82A81FB0`): [0..3] x0 y0 x1 y1 pixels (+76..+88), [4] z (+92),
+/// [5] rotation (+96), [6..13] the corners' uv (+100..+128, in the draw's v0..v3 order), [14..15]
+/// the guest's screen size (`0x834A5FE8` / +4, what the draw's g_ScreenToViewportTransform divides
+/// by). out[0] = quads; returns the floats written, 0 when the scene is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDisplacementQuads(float* out, uint32_t capacity) {
+    if (out == nullptr || capacity < 1u) {
+        return 0u;
+    }
+    out[0] = 0.0f;
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+    const uint32_t scene = ClassicThemeScene(base);
+    if (scene == 0u) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const uint32_t screen = refii::guest::Address(0x834A5FE8u);
+    const float width = static_cast<float>(static_cast<int32_t>(GuestWordAt(base, screen)));
+    const float height = static_cast<float>(static_cast<int32_t>(GuestWordAt(base, screen + 4u)));
+    const uint32_t list = scene + 3412u;
+    const uint32_t nodes_begin = GuestWordAt(base, list + 4u);
+    const uint32_t nodes_end = GuestWordAt(base, list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || nodes_end - nodes_begin > 48u * 24u) {
+        return 1u;
+    }
+    uint32_t quads = 0u;
+    uint32_t used = 1u;
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+        if (GuestWordAt(base, node) != 29u) {
+            continue;
+        }
+        const uint32_t objects_begin = GuestWordAt(base, node + 12u);
+        const uint32_t objects_end = GuestWordAt(base, node + 16u);
+        if (!plausible(objects_begin) || objects_end < objects_begin || objects_end - objects_begin > 4096u) {
+            continue;
+        }
+        for (uint32_t at = objects_begin; at + 4u <= objects_end && used + 16u <= capacity; at += 4u) {
+            const uint32_t quad = GuestWordAt(base, at);
+            if (!plausible(quad)) {
+                continue;
+            }
+            float* q = out + used;
+            for (uint32_t k = 0; k < 6u; ++k) {
+                const uint32_t bits = GuestWordAt(base, quad + 76u + k * 4u);
+                std::memcpy(q + k, &bits, sizeof(float));
+            }
+            for (uint32_t k = 0; k < 8u; ++k) {
+                const uint32_t bits = GuestWordAt(base, quad + 100u + k * 4u);
+                std::memcpy(q + 6u + k, &bits, sizeof(float));
+            }
+            q[14] = width;
+            q[15] = height;
+            used += 16u;
+            ++quads;
+        }
+    }
+    out[0] = static_cast<float>(quads);
+    return used;
+}
+
 /// Fills 4 slots x 6 words: object, capacity, write cursor (+32), write consumed (+36),
 /// reader consumed (+64), last read (+24). A zero object means the slot is empty.
 REFII_HOST_ABI_EXPORT void RefiiHostGetSceneStreams(uint32_t* out) {

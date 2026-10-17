@@ -24,6 +24,20 @@ public static class Engine_MdlMesh
     public const string SurfaceRegionsMeta = "mdl_surface_regions";
 
     /// <summary>
+    /// The header's bounding sphere {x, y, z, radius} in the file's own (Z-up) axes: the model's
+    /// bound the title's tree billboards normalise by (Engine_ClassicBillboards).
+    /// </summary>
+    public const string BoundSphereMeta = "mdl_bound_sphere";
+
+    /// <summary>
+    /// The model's fur, one Dictionary per furred primitive (<see cref="MdlFurBlock"/>):
+    /// "base" (the primitive's first vertex in the model's numbering, <see cref="SourceVertexMapMeta"/>'s),
+    /// "count", "fur" (the fur material's 17 file values), "colour" (Color per vertex, the record's
+    /// D3DCOLOR) and "lanes" (float4 per vertex, the record's four floats).
+    /// </summary>
+    public const string FurMeta = "mdl_fur";
+
+    /// <summary>
     /// Cached per mesh: the names are fixed when the mesh is built, and the cluster pass asks
     /// per entity on every reconcile. Callers only read the result.
     /// </summary>
@@ -110,6 +124,27 @@ public static int SurfacesWithLods;
     /// models from the viewers and the game alike, and a missing model teaches nothing.
     /// </remarks>
     private const float MaxVertexReach = 1_000_000f;
+
+    private static readonly HashSet<string> _fallbacksReported = new();
+
+    /// <summary>
+    /// A surface drawn untextured: its record named no texture that loaded. Once per model and
+    /// surface, with what the record states, so the missing texture is named rather than seen.
+    /// </summary>
+    private static void ReportFallback(string model, string surface, MdlMaterial? record)
+    {
+        lock (_fallbacksReported)
+        {
+            if (_fallbacksReported.Count >= 256 || !_fallbacksReported.Add($"{model}|{surface}"))
+            {
+                return;
+            }
+        }
+        GD.Print(record is null
+            ? $"[material] UNTEXTURED {model} '{surface}': no material record"
+            : $"[material] UNTEXTURED {model} '{surface}': diffuse '{record.Diffuse}' normal '{record.Normal}' " +
+              $"specular '{record.Specular}' self-illum '{record.SelfIllumination}' envmap '{record.EnvironmentMap}'");
+    }
 
     /// <summary>Surfaces refused for a non-finite or absurd vertex. Run total.</summary>
     public static int NonFiniteSurfaces;
@@ -358,7 +393,46 @@ public static int SurfacesWithLods;
             // model that ships none, where the shader keeps its lookup along the normal.
             // Read by the FABLE model alone: under the unified model Godot carries the fill and
             // these 48 bytes a vertex would be uploaded for nothing.
-            if (!Refii.Lighting.Engine_LightingFrame.ModernModel &&
+            // Under the classic renderer the title's own AMB2 shader takes the transfer as the
+            // file carries it: the PCA weights in CUSTOM0 and the cluster offset in CUSTOM3.x
+            // (the position's w), with the cluster table on the mesh for the constants.
+            // A tree part's wind lanes for the title's tree shaders: the colours in CUSTOM1 and
+            // CUSTOM2, POSITION1's xyz in CUSTOM3.yzw beside the cluster offset (Engine_MdlTreeStreams).
+            float[] treePivots = System.Array.Empty<float>(), treeColour1 = treePivots, treeColour2 = treePivots;
+            // The modern renderer takes them for a tree alone, whose surfaces all draw the tree
+            // shader (standard_material_tree): anywhere else CUSTOM1/2 are read as transfer.
+            bool treeStreams = (Engine_ClassicMaterial.Active || info.MovementMode == 2) &&
+                geo.SourceVertices.Length == geo.VertexCount &&
+                Engine_MdlTreeStreams.TryRead(
+                    data, info, geo.SourceVertices, out treePivots, out treeColour1, out treeColour2);
+            if (treeStreams)
+            {
+                arrays[(int)Mesh.ArrayType.Custom1] = treeColour1;
+                arrays[(int)Mesh.ArrayType.Custom2] = treeColour2;
+                arrays[(int)Mesh.ArrayType.Custom3] = treePivots;
+            }
+            if (Engine_ClassicMaterial.Active &&
+                geo.SourceVertices.Length == geo.VertexCount &&
+                Engine_MdlTransfer.TryRaw(
+                    data, info, geo.SourceVertices, out float[] rawWeights, out float[] rawClusters))
+            {
+                arrays[(int)Mesh.ArrayType.Custom0] = rawWeights;
+                if (treeStreams)
+                {
+                    for (int v = 0; v < geo.VertexCount; v++)
+                    {
+                        treePivots[v * 4] = rawClusters[v * 4];
+                    }
+                }
+                else
+                {
+                    arrays[(int)Mesh.ArrayType.Custom3] = rawClusters;
+                }
+                mesh.SetMeta(Engine_MdlTransfer.DescriptorMeta, System.Array.ConvertAll(info.ShDescriptor, v => (int)v));
+                mesh.SetMeta(Engine_MdlTransfer.TableMeta, info.ShProbeData);
+                ++SurfacesWithTransfer;
+            }
+            else if (!treeStreams && !Refii.Lighting.Engine_LightingFrame.ModernModel &&
                 geo.SourceVertices.Length == geo.VertexCount &&
                 Engine_MdlTransfer.TryExpand(
                     data, info, geo.SourceVertices, out float[] tr, out float[] tg, out float[] tb))
@@ -402,8 +476,12 @@ public static int SurfacesWithLods;
             // (src/tools/WindGate.cs). So the mesh's statement is part of the shared material's
             // identity, never a mutation of a material another surface also holds.
             Material? material =
-                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis)
-                ?? Engine_MdlMaterial.Fallback();
+                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis);
+            if (material is null)
+            {
+                ReportFallback(virtualPath, geo.Name, geo.Material);
+                material = Engine_MdlMaterial.Fallback();
+            }
             if (material is not null)
             {
                 mesh.SurfaceSetMaterial(added, material);
@@ -422,6 +500,14 @@ public static int SurfacesWithLods;
         mesh.SetMeta(SourceVertexMapMeta, sourceVertices.ToArray());
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
         mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
+        if (info.FileBoundingSphere.Length == 4)
+        {
+            mesh.SetMeta(BoundSphereMeta, info.FileBoundingSphere);
+        }
+        if (FurOf(data, info) is { } fur)
+        {
+            mesh.SetMeta(FurMeta, fur);
+        }
 
         LodLevelsAttached += lodsAttached;
         LodLevelsDropped += lodsDropped;
@@ -500,6 +586,54 @@ public static int SurfacesWithLods;
     }
 
     /// <summary>Metadata key: the model's bone parent indices, in the order BONES indexes.</summary>
+    /// <summary>The fur blocks as <see cref="FurMeta"/> carries them; null for a model without fur.</summary>
+    private static Godot.Collections.Array? FurOf(byte[] data, MdlInfo info)
+    {
+        if (info.FurBlocks.Count == 0)
+        {
+            return null;
+        }
+        var blocks = new Godot.Collections.Array();
+        foreach (MdlFurBlock block in info.FurBlocks)
+        {
+            if (block.FurMaterial >= info.Meshes.Count || info.Meshes[(int)block.FurMaterial].Fur is not { } furValues ||
+                block.DataOffset < 0 || block.DataOffset + block.Count * 20L > data.Length)
+            {
+                continue;
+            }
+            int bufferBase = 0;
+            for (int b = 0; b < block.RecordIndex && b < info.MeshBuffers.Count; b++)
+            {
+                bufferBase += (int)info.MeshBuffers[b].VertexCount;
+            }
+            int count = (int)block.Count;
+            var colours = new Color[count];
+            var lanes = new float[count * 4];
+            var span = new System.ReadOnlySpan<byte>(data);
+            for (int v = 0; v < count; v++)
+            {
+                int at = block.DataOffset + v * 20;
+                // D3DCOLOR, ARGB in the word: the stage reads (r, g, b, a).
+                uint argb = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(span.Slice(at, 4));
+                colours[v] = new Color(((argb >> 16) & 0xFF) / 255f, ((argb >> 8) & 0xFF) / 255f,
+                    (argb & 0xFF) / 255f, (argb >> 24) / 255f);
+                for (int k = 0; k < 4; k++)
+                {
+                    lanes[v * 4 + k] = System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(span.Slice(at + 4 + k * 4, 4));
+                }
+            }
+            blocks.Add(new Godot.Collections.Dictionary
+            {
+                ["base"] = bufferBase,
+                ["count"] = count,
+                ["fur"] = furValues,
+                ["colour"] = colours,
+                ["lanes"] = lanes,
+            });
+        }
+        return blocks.Count != 0 ? blocks : null;
+    }
+
     public const string BoneParentsMeta = "bone_parents";
 
     /// <summary>Metadata key: the model's bone names, same order.</summary>

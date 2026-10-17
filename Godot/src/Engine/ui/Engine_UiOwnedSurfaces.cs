@@ -107,6 +107,28 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 			$"selected {_box.Selected}, enabled 0x{_box.EnabledMask:X}");
 	}
 
+	/// <summary>
+	/// A click on an option answers it, the way a select then A would; the cancel prompt is B.
+	/// Disabled options are offered to the guest regardless — it re-checks the enabled byte.
+	/// </summary>
+	protected override Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at)
+	{
+		int option = View?.OptionAt(at) ?? -1;
+		if (option == -2)
+		{
+			return input with { Back = true };
+		}
+
+		if (option >= 0 && option < _box.Count)
+		{
+			Engine_UiSource.Current.PostFrontEndAction($"MenuBoxSelect:{option}");
+			Engine_UiSource.Current.PostFrontEndAction($"MenuBoxAnswer:{option + 1}");
+			GD.Print($"[game-ui] menu box option {option} clicked");
+		}
+
+		return input;
+	}
+
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
 		// One clock for every action, as `sub_823DBC70` keeps it: nothing — step, A or B — is
@@ -396,6 +418,15 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 			$"({row.Name}) — {View.LastReport}");
 	}
 
+	/// <summary>A click on the A choice confirms, on the B choice cancels; elsewhere nothing.</summary>
+	protected override Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at) =>
+		View?.AnswerAt(at) switch
+		{
+			1 => input with { Accept = true },
+			-1 => input with { Back = true },
+			_ => input,
+		};
+
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
 		if (_display)
@@ -513,6 +544,12 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 
 		View!.ShowStated(body, value, up, down);
 	}
+
+	/// <summary>A click on an arrow steps; anywhere else on the box commits the value.</summary>
+	protected override Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at) =>
+		View?.ArrowAt(at) is { } step && step != 0
+			? input with { Direction = step }
+			: base.Point(input, at);
 
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
@@ -650,9 +687,22 @@ public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_
 			$"{(usable ? "usable" : "NOT usable")})");
 	}
 
+	/// <summary>A click on a prompt is its button; the card itself answers nothing.</summary>
+	protected override Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at) =>
+		View?.PromptAt(at) switch
+		{
+			"Done" => input with { Accept = true },
+			"Info" => input with { Flip = true },
+			"Action" => input with { Equip = true },
+			_ => input,
+		};
+
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
-		View?.ScrollBack(input.Scroll, input.Delta);
+		// The wheel scrolls the description, a notch a step; the card takes every notch while it
+		// stands, so none falls through to the guest as a D-pad press.
+		int notches = Engine_UiPointer.TakeWheel();
+		View?.ScrollBack(input.Scroll, input.Delta, notches);
 
 		if (input.Accept)
 		{

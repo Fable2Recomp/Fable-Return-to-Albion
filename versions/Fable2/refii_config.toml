@@ -11083,6 +11083,11 @@
 0x821C7D88 = { name = "rex_lhHeroStats_GetRenown" }
 0x8220DFC0 = { name = "rex_lhGraphicAppearanceMorph_ApplyTextureLayers" }
 0x8222AB20 = { name = "rex_lhRenderCommandStream_PostModelCommand" }
+0x82A3A820 = { name = "rex_lhDecal_ExecuteRenderCommand" }
+0x82A3A8F8 = { name = "rex_lhDecal_ExecuteClearCommand" }
+0x82A997F0 = { name = "rex_lhRenderTwin_ReleaseDecals" }
+0x8241BE78 = { name = "rex_lhFx_CreateMeshDescriptor" }
+0x821756E0 = { name = "rex_lhRenderTwin_Destroy" }
 0x8223D308 = { name = "rex_lhHeroStats_GetMorality" }
 0x8223D8F8 = { name = "rex_lhHeroStats_GetPurity" }
 0x82284300 = { name = "rex_lhGuiAttributeService_SetElementAttribute" }
@@ -11203,8 +11208,10 @@
 0x82547FC0 = { name = "rex_CECGraphicAppearance_ReplicateAppearance" }
 0x82548598 = { name = "rex_CECGraphicAppearance_SetHighlightColour" }
 0x82465E20 = { name = "rex_lhSetTextureLayersCommand_Ctor" }
+0x825110E8 = { name = "rex_lhObjectAttachment_ResolveLoaded" }
 0x82468500 = { name = "rex_CECCompositeModel_ApplyCharacterCreationRecord" }
 0x823D2D28 = { name = "rex_lhPodVector_FreeStorage" }
+0x82469850 = { name = "rex_lhTextureMorph_StateWildcard" }
 0x824B8428 = { name = "rex_lhFx_SpawnFromDefProperty" }
 0x8240EAA0 = { name = "rex_lhGuiPauseRootScreen_OnMenuEvent" }
 0x82591B50 = { name = "rex_lhGuiCrimeScreen_OnMenuEvent", size = 0x3E0 }

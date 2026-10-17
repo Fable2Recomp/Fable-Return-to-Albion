@@ -13,12 +13,38 @@ public static class Engine_TexPathIndex
 
     private static Dictionary<uint, string>? _byPathHash;
 
+    private static readonly Dictionary<uint, string> _registeredPaths = new();
+
     public static void SetPathSource(Func<IEnumerable<string>>? source)
     {
         lock (IndexLock)
         {
             _paths = source;
+            if (source is null)
+            {
+                _registeredPaths.Clear();
+            }
             _byPathHash = null;
+        }
+    }
+
+    public static void RegisterPath(string virtualPath)
+    {
+        if (string.IsNullOrWhiteSpace(virtualPath))
+        {
+            return;
+        }
+
+        string normalized = virtualPath.Trim().Replace('/', '\\');
+        uint hash = PathHash(normalized);
+
+        lock (IndexLock)
+        {
+            _registeredPaths[hash] = normalized;
+            if (_byPathHash is not null)
+            {
+                _byPathHash[hash] = normalized;
+            }
         }
     }
 
@@ -88,6 +114,11 @@ public static class Engine_TexPathIndex
             {
                 index.TryAdd(PathHash(path), path);
             }
+        }
+
+        foreach ((uint regHash, string regPath) in _registeredPaths)
+        {
+            index[regHash] = regPath;
         }
 
         _byPathHash = index;

@@ -45,6 +45,7 @@ public partial class GameWorld : Node3D
 		};
 
 		AddChild(_camera);
+		Refii.Lighting.Engine_DepthPrepassMarker.Attach(_camera);
 
 		// After the add, and explicitly. Godot renders a viewport through exactly one
 		// current camera, and this is the window's — the front end renders into a viewport
@@ -110,67 +111,38 @@ public partial class GameWorld : Node3D
 		// The guest renders only at alpha 0.5 and 1.0, where that is harmless; we render through
 		// the window. The drawn value is still the guest's; only the history is ours.
 		bool snap = pair is { } snapping && snapping.Live.Flag;
-		bool changed = !_haveStatedCamera ||
-			!stated.Origin.IsEqualApprox(_statedCamera.Origin) ||
-			!stated.Basis.IsEqualApprox(_statedCamera.Basis) ||
-			!Mathf.IsEqualApprox(fov, _statedCameraFov);
+		uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
+		bool changed = _cameraLine.Empty ||
+			!stated.Origin.IsEqualApprox(_cameraLine.Newest.Origin) ||
+			!stated.Basis.IsEqualApprox(_cameraLine.Newest.Basis) ||
+			!Mathf.IsEqualApprox(fov, _cameraLine.NewestScalar);
 		if (changed)
 		{
-			_previousCamera = _haveStatedCamera ? _statedCamera : stated;
-			_previousCameraFov = _haveStatedCamera ? _statedCameraFov : fov;
-			_statedCamera = stated;
-			_statedCameraFov = fov;
-			_haveStatedCamera = true;
-
-			// The camera has its own anchor: it is read in this node, the bodies in GameEntities,
-			// so its pair lands at a different point in the tick. The period is shared.
-			// The pair's width is the interval the guest's clock states, not a tick count (some
-			// ticks advance the clock by half the nominal period). The tick span, as for every
-			// body (see GameEntities.Drawn), is the fallback when the clock is unavailable or
-			// has re-based.
-			double statedUsec = Refii.Entities.Engine_DrawnFrame.StatedIntervalUsec(_cameraGuestSeconds);
-			_cameraGuestSeconds = Refii.Entities.Engine_DrawnFrame.GuestSeconds;
-			uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
-			int cameraSteps = _cameraTick != 0u && cameraTick > _cameraTick
-				? (int)System.Math.Clamp((long)cameraTick - (long)_cameraTick, 1L, 8L)
-				: 1;
-			_cameraTick = cameraTick;
-			if (statedUsec > 0.0)
-			{
-				_cameraPlayhead.SwapStated(Refii.Entities.Engine_DrawnFrame.NowUsec, statedUsec);
-			}
-			else
-			{
-				_cameraPlayhead.Swap(Refii.Entities.Engine_DrawnFrame.NowUsec, cameraSteps);
-			}
-
-			_lastCameraSteps = cameraSteps;
 			Refii.Entities.Engine_DrawnFrame.NoteRestated();
 		}
 
 		Transform3D drawn = stated;
 		float drawnFov = fov;
-		if (!snap && _haveStatedCamera && _cameraPlayhead.Ready)
+		if (snap || _cameraLine.Empty ||
+			_cameraLine.Newest.Origin.DistanceSquaredTo(stated.Origin) >
+				Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres)
 		{
-			// Same frame instant (NowUsec) and period as the bodies, measured from when the
-			// camera last restated.
-			float alpha = (float)_cameraPlayhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec);
-			drawn = Refii.Entities.Engine_DrawnFrame.Blend(_previousCamera, _statedCamera, alpha);
-
-			// The fov rides the same alpha as the transform; the guest blends it in the same
-			// call, `stfs f10, 0x30(r31)` at `0x82290058`.
-			drawnFov = Mathf.Lerp(_previousCameraFov, _statedCameraFov, alpha);
-			++BlendedCameras;
+			// A stated snap (`live+0x34`) restarts the history rather than gliding across it, and
+			// so does a jump the bodies treat as a teleport — the two restart together.
+			_cameraLine.Reset(cameraTick, stated, fov);
+			++LiveOnlyCameras;
 		}
 		else
 		{
-			// A stated snap (`live+0x34`) restarts the history rather than gliding across it.
-			_previousCamera = stated;
-			_previousCameraFov = fov;
-			_cameraPlayhead.Reset();
-			_cameraTick = 0u;
-			_cameraGuestSeconds = double.NaN;
-			++LiveOnlyCameras;
+			// On the bodies' clock and rule (Engine_TickTimeline): moved by the stated motion
+			// every frame, steered toward the guest's blend at the world's draw point. The fov
+			// rides the same timeline; the guest blends it in the same call, `stfs f10, 0x30(r31)`
+			// at `0x82290058`.
+			_cameraLine.Observe(cameraTick, stated, fov);
+			drawn = _cameraLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
+				Refii.Entities.Engine_DrawnFrame.DrawTick);
+			drawnFov = _cameraLine.DrawnScalar;
+			++BlendedCameras;
 		}
 
 		_camera.GlobalTransform = drawn;
@@ -284,12 +256,15 @@ public partial class GameWorld : Node3D
 		// hold the guest.
 		int done = 0;
 		int total = 0;
+		int settling = 0;
 		if (_region is not null)
 		{
-			SumPropProgress(_region, ref done, ref total);
+			SumPropProgress(_region, ref done, ref total, ref settling);
 		}
 
-		bool propsPending = total > 0 && done < total;
+		// Placed is not finished: a prop's vertex bake and its ambient variant land after its
+		// step, and either one left for play is a main-thread apply in the middle of it.
+		bool propsPending = (total > 0 && done < total) || settling > 0;
 
 		// AND THE ENTITIES, AND THEN A FEW FRAMES. Props streamed is not "the world is there":
 		// entity meshes build off-thread, the static copies reconcile against them, and the
@@ -301,7 +276,10 @@ public partial class GameWorld : Node3D
 		}
 
 		bool entitiesPending = _entities is { } feed && !feed.ReadyForRelease;
-		bool pending = propsPending || entitiesPending;
+		// THE CLASSIC SHADERS, last: every composition compiled and every light-group shape the
+		// placed fixtures can produce built, so play composes and compiles nothing.
+		string classicWait = Refii.Models.Engine_ClassicLoad.Pump(!propsPending && !entitiesPending);
+		bool pending = propsPending || entitiesPending || classicWait.Length != 0;
 		_readyFrames = pending ? 0 : _readyFrames + 1;
 		if (!pending && _readyFrames < ReleaseSettleFrames)
 		{
@@ -318,7 +296,8 @@ public partial class GameWorld : Node3D
 			if (_propHoldFrames % PropHoldReportFrames == 0)
 			{
 				GD.Print($"[game-world] still holding the guest for {_standing}: " +
-					$"{done}/{total} prop(s) streamed, entities waiting on " +
+					$"{done}/{total} prop(s) streamed ({settling} bake(s) or variant(s) to apply), " +
+					$"classic waiting on {(classicWait.Length != 0 ? classicWait : "nothing")}, entities waiting on " +
 					$"{(_entities is { } e ? e.ReleaseWait : "no feed")}, {_readyFrames} settle frame(s) " +
 					$"after {_propHoldFrames} frame(s)");
 			}
@@ -328,12 +307,14 @@ public partial class GameWorld : Node3D
 				return;
 			}
 
-			GD.PrintErr($"[game-world] props for {_standing} did not finish streaming " +
-				$"({done}/{total}) after {_propHoldFrames} frame(s) — releasing the guest " +
+			GD.PrintErr($"[game-world] {_standing} did not finish loading " +
+				$"({done}/{total} props, {settling} bake(s) or variant(s), classic waiting on " +
+				$"{(classicWait.Length != 0 ? classicWait : "nothing")}) after {_propHoldFrames} frame(s) — releasing the guest " +
 				"anyway. A world that fills in late is worse than one the player cannot leave.");
 		}
 
 		_holdingForProps = false;
+		Refii.Models.Engine_ClassicLoad.End();
 		SetWorldBuildHeld(false);
 		if (_entities is { } released)
 		{
@@ -349,7 +330,7 @@ public partial class GameWorld : Node3D
 		{
 			double heldSeconds = (System.Diagnostics.Stopwatch.GetTimestamp() - _heldSince) /
 				(double)System.Diagnostics.Stopwatch.Frequency;
-			GD.Print($"[game-world] {_standing} loaded in {heldSeconds:0.00} s — finished streaming its props, built every entity " +
+			GD.Print($"[game-world] {_standing} loaded in {heldSeconds:0.00} s — finished streaming its props and their bakes, compiled its classic shaders, built every entity " +
 				$"mesh, reconciled its copies and drew {ReleaseSettleFrames} settled frame(s) after " +
 				$"{_propHoldFrames} frame(s) — releasing the guest; " +
 				(_entities?.DescribeHero() ?? "no entity feed"));
@@ -401,35 +382,8 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>The last two cameras the guest stated; the playhead is shared.</summary>
-	private Transform3D _previousCamera = Transform3D.Identity;
-	private Transform3D _statedCamera = Transform3D.Identity;
-	private float _previousCameraFov;
-	private float _statedCameraFov;
-	/// <summary>The camera's own anchor; the period comes from the world's shared clock.</summary>
-	/// <remarks>
-	/// Swapped with the guest's exact stated interval for each pair, which is not an estimate
-	/// and so cannot drift; the shared period is the fallback when the clock is unavailable.
-	/// </remarks>
-	private readonly Refii.Core.Engine_PairPlayhead _cameraPlayhead =
-		new(Refii.Core.Engine_TickClock.TickUsec, carry: true);
-
-	/// <summary>The guest tick the camera's pair was last stated on; 0 before the first.</summary>
-	private uint _cameraTick;
-
-	/// <summary>The guest's stated clock when the camera's pair was last latched.</summary>
-	private double _cameraGuestSeconds = double.NaN;
-
-	private int _lastCameraSteps = 1;
-
-	/// <summary>The camera playhead's swap health, for the debug channel.</summary>
-	public (long Restarts, double LastSwapAlpha, int LastSteps) CameraSwapHealth =>
-		(_cameraPlayhead.Restarts, _cameraPlayhead.LastSwapAlpha, _lastCameraSteps);
-
-	/// <summary>Camera swaps taken on the stated-width path, and the furthest one landed from alpha 1.</summary>
-	public (long StatedSwaps, double WorstSwapError) CameraStatedSwapHealth =>
-		(_cameraPlayhead.StatedSwaps, _cameraPlayhead.WorstSwapError);
-
-	private bool _haveStatedCamera;
+	/// <summary>The camera's stated history, on the bodies' clock and rule.</summary>
+	private readonly Refii.Core.Engine_TickTimeline _cameraLine = new();
 
 	private int _cameraTraceRemaining;
 	private readonly System.Collections.Generic.List<(ulong Usec, uint Tick, Vector3 Position)> _cameraTrace = new();
@@ -483,17 +437,18 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>Adds up every prop streamer beneath one node. Recursive: a region nests them.</summary>
-	private static void SumPropProgress(Node node, ref int done, ref int total)
+	private static void SumPropProgress(Node node, ref int done, ref int total, ref int settling)
 	{
 		if (node is Refii.Level.Engine_PropStreamer streamer)
 		{
 			done += streamer.Done;
 			total += streamer.Total;
+			settling += streamer.Settling;
 		}
 
 		foreach (Node child in node.GetChildren())
 		{
-			SumPropProgress(child, ref done, ref total);
+			SumPropProgress(child, ref done, ref total, ref settling);
 		}
 	}
 
@@ -985,17 +940,22 @@ public partial class GameWorld : Node3D
 		_propHoldFrames = 0;
 		_readyFrames = 0;
 		AddChild(region);
+		Refii.Models.Engine_ClassicLoad.Begin(region);
 
 		SetStreamBudget(region, HeldStreamMsPerFrame);
 
 		MountWaterReflections(region);
 
 		// The sun's far cascades exist for the landscape; this stops every crate in 300 metres
-		// riding along in them.
-		region.AddChild(new Refii.Lighting.Engine_ShadowReach
+		// riding along in them. Godot's sun casts nothing under classic (the guest's cascades
+		// take the casters, each with its own stated reach), so there it has nothing to do.
+		if (!Refii.Models.Engine_ClassicMaterial.Active)
 		{
-			Name = Refii.Lighting.Engine_ShadowReach.NodeName,
-		});
+			region.AddChild(new Refii.Lighting.Engine_ShadowReach
+			{
+				Name = Refii.Lighting.Engine_ShadowReach.NodeName,
+			});
+		}
 
 		// NOT RELEASED HERE. Mounting is not the same as being ready to look at.
 		//
@@ -1110,6 +1070,9 @@ public partial class GameWorld : Node3D
 		_standingKey = 0u;
 		_waitingForGuest = false;
 		_holdingForProps = false;
+		Refii.Models.Engine_ClassicLoad.End();
+		Refii.Models.Engine_ClassicVertexBakes.Clear();
+		Refii.Models.Engine_ClassicPrtRows.Clear();
 		if (_entities is { } tornDown)
 		{
 			tornDown.LoadHold = false;

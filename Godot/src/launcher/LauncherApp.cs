@@ -21,7 +21,7 @@ public partial class LauncherApp : Control
 
 	private static readonly string[] DebugTabs =
 	{
-		"Settings", "Modding", "Reinstall",
+		"Settings", "Modding", "Install",
 	};
 	private static readonly string[] FileMenuItems =
 	{
@@ -40,26 +40,12 @@ public partial class LauncherApp : Control
 	private bool _contributorsLoaded;
 	private List<GitContributor> _contributors = new();
 
-	private bool _installInProgress;
-	private string _installLabel = string.Empty;
-	private string _installStatus = string.Empty;
-	private string _installError = string.Empty;
-
-	/// <summary>The running game code build's pause and stop, while one runs.</summary>
-	private Recompile.BuildControl? _buildControl;
-	private long _installCopiedBytes;
-	private long _installTotalBytes;
-	private int _installCompletedFiles;
-	private int _installTotalFiles;
-	private string _installCurrentFile = string.Empty;
-	private bool _installExtractingIso;
-
-	// Set while the game code is being generated and compiled. The byte-based fraction
-	// cannot describe that phase — nothing is being copied — so it reports its own.
-	private float _installStepFraction = -1.0f;
+	/// <summary>
+	/// Everything derived from the player's game — data, game code, classic shaders, modernized
+	/// assets — runs through this one runner; the UI reads its label, status and fraction.
+	/// </summary>
+	private readonly Install.InstallPipeline _pipeline = new();
 	private ManagedDownloadProgress? _downloadProgress;
-	private LauncherOps? _ops;
-	private string _opsStatus = string.Empty;
 
 	private readonly List<string> _consoleLines = new();
 
@@ -153,9 +139,18 @@ public partial class LauncherApp : Control
 		// upscaler weights.
 		Refii.Core.Engine_AppRoot.EnsureLayout();
 		Recompile.GameCodeBuild.BinDirectory = Refii.Core.Engine_AppRoot.BinDirectory;
-		if (!Engine.IsEditorHint())
+
+		// THIS PROCESS IS THE ELEVATED RELAY, headless: it starts the game as Administrator and
+		// exits with it (see GameElevatedLaunch). Nothing of the launcher is built here either.
+		if (Refii.Game.GameElevatedLaunch.IsRelay)
 		{
-			LauncherOps.Initialize(LauncherPaths.OverrideLauncherDirectory);
+			foreach (Node child in GetChildren())
+			{
+				child.QueueFree();
+			}
+
+			Refii.Game.GameElevatedLaunch.RunRelay(this);
+			return;
 		}
 
 		// THIS PROCESS IS THE GAME, not the launcher. Spawned by the launcher's Play with the
@@ -1126,12 +1121,11 @@ public partial class LauncherApp : Control
 		_settingsTab.Visible = false; // hidden while debug drawer is open
 
 		_reinstallPanel.ReinstallRequested += StartInstallFlow;
-		_reinstallPanel.UnpackBanksRequested += () => StartOps(ops => ops.ExtractGameBanks());
 		_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
 		_reinstallPanel.PauseBuildRequested += OnPauseBuildPressed;
 		_reinstallPanel.ResumeBuildRequested += OnPauseBuildPressed;
 		_reinstallPanel.StopBuildRequested += OnStopBuildPressed;
-		_reinstallPanel.CompileShadersRequested += () => StartOps(ops => ops.CompileShaders());
+		_reinstallPanel.CompileShadersRequested += StartShaderBuild;
 		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
 
 		ApplyScale();
@@ -1468,7 +1462,7 @@ public partial class LauncherApp : Control
 		bool installedBuildExists = Installer.InstalledBuildExists();
 		bool canDownloadBuild = ManagedDownloads.HasDownloadSource();
 		bool updateAvailable = _updates.UpdateAvailable;
-		bool isoInProgress = _installInProgress || _ops is not null;
+		bool isoInProgress = _pipeline.Running;
 
 		if (_downloadProgress is not null && _downloadProgress.IsComplete &&
 			!_downloadProgress.HasError)
@@ -1486,7 +1480,7 @@ public partial class LauncherApp : Control
 
 		if (isoInProgress)
 		{
-			label = ProgressLabel.BuildButtonLabel(_installLabel, DisplayStatus());
+			label = ProgressLabel.BuildButtonLabel(_pipeline.Label, _pipeline.DisplayStatus());
 			enabled = false;
 			compactFont = true;
 		}
@@ -1535,7 +1529,7 @@ public partial class LauncherApp : Control
 		_progressTrack.Position = _primaryButton.Position;
 		_progressTrack.Size = _primaryButton.Size;
 
-		float fraction = InstallProgressFraction();
+		float fraction = Mathf.Clamp(_pipeline.Fraction, 0.0f, 1.0f);
 		_progressClip.Visible = !enabled && fraction > 0.0f;
 		_progressClip.Position = _primaryButton.Position;
 		_progressClip.Size = new Vector2(_primaryButton.Size.X * fraction, _primaryButton.Size.Y);
@@ -1545,32 +1539,30 @@ public partial class LauncherApp : Control
 			? LauncherScale.Font(LauncherTokens.BodySize)
 			: LauncherScale.Font(LauncherTokens.DisplaySize));
 
+		if (_warningLabel is not null && _warningPanel is not null)
+		{
+			if (_pipeline.Error.Length != 0 && !_pipeline.Running)
+			{
+				_warningLabel.Text = _pipeline.Error;
+				_warningPanel.Visible = true;
+			}
+			else if (LauncherTheme.WarningText.Length != 0)
+			{
+				_warningLabel.Text = LauncherTheme.WarningText;
+				_warningPanel.Visible = true;
+			}
+			else
+			{
+				_warningLabel.Text = string.Empty;
+				_warningPanel.Visible = false;
+			}
+		}
+
 		RefreshBuildControls();
 		RefreshInfoBody();
-	}
-
-	/// <summary>
-	/// The install status as shown, which says so when the game code build is held or
-	/// stopping: the status line itself only moves when the build does.
-	/// </summary>
-	private string DisplayStatus()
-	{
-		if (_buildControl is null)
-		{
-			return _installStatus;
-		}
-
-		if (_buildControl.IsStopping)
-		{
-			return "Stopping... " + _installStatus;
-		}
-
-		if (_buildControl.IsPaused)
-		{
-			return "Paused... " + _installStatus;
-		}
-
-		return _installStatus;
+		// The Install tab shows the running step and the last failure; it has to follow the
+		// state, not only the tab change.
+		RefreshDebugDrawer();
 	}
 
 	/// <summary>
@@ -1621,7 +1613,7 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		Recompile.BuildControl? control = _buildControl;
+		Recompile.BuildControl? control = _pipeline.Control;
 		_buildControls.Visible = control is not null;
 		if (control is null)
 		{
@@ -1636,36 +1628,13 @@ public partial class LauncherApp : Control
 
 	private void OnPauseBuildPressed()
 	{
-		Recompile.BuildControl? control = _buildControl;
-		if (control is null)
-		{
-			return;
-		}
-
-		if (control.IsPaused)
-		{
-			control.Resume();
-			Log("Game code build resumed.");
-		}
-		else
-		{
-			control.Pause();
-			Log("Game code build paused.");
-		}
-
+		_pipeline.TogglePause(Log);
 		RefreshState();
 	}
 
 	private void OnStopBuildPressed()
 	{
-		Recompile.BuildControl? control = _buildControl;
-		if (control is null || control.IsStopping)
-		{
-			return;
-		}
-
-		control.Stop();
-		Log("Game code build stop requested.");
+		_pipeline.Stop(Log);
 		RefreshState();
 	}
 
@@ -1679,7 +1648,7 @@ public partial class LauncherApp : Control
 		string tab = DebugTabs[Mathf.Clamp(_settingsTabs.CurrentTab, 0, DebugTabs.Length - 1)];
 		bool isSettings = tab == "Settings";
 		bool isModding = tab == "Modding";
-		bool isReinstall = tab == "Reinstall";
+		bool isReinstall = tab == "Install";
 
 		_settingsPanel.Visible = isSettings;
 		_moddingPanel.Visible = isModding;
@@ -1687,24 +1656,17 @@ public partial class LauncherApp : Control
 
 		if (isReinstall)
 		{
-			_reinstallPanel.Refresh(
-				_installInProgress || _ops is not null || _prebuilding, _launch.GameIsRunning);
+			bool running = _pipeline.Running;
+			_reinstallPanel.Refresh(running, _launch.GameIsRunning);
 			_reinstallPanel.SetBuildControls(
-				_buildControl is not null,
-				_buildControl?.IsPaused ?? false,
-				_buildControl?.IsStopping ?? false);
-
-			if (_prebuilding || _prebuildLabel.Length != 0)
-			{
-				_reinstallPanel.SetProgress(_prebuildLabel, _prebuildStatus);
-			}
-			else
-			{
-				_reinstallPanel.SetProgress(
-					_ops is not null ? _ops.OperationLabel : _installLabel,
-					_ops is not null ? _ops.StatusMessage : DisplayStatus(),
-					_ops is not null ? string.Empty : _installError);
-			}
+				_pipeline.Control is not null,
+				_pipeline.Control?.IsPaused ?? false,
+				_pipeline.Control?.IsStopping ?? false);
+			_reinstallPanel.SetProgress(
+				running ? _pipeline.Label : string.Empty,
+				running ? _pipeline.DisplayStatus()
+						: (_pipeline.Error.Length != 0 ? _pipeline.Status : string.Empty),
+				_pipeline.Error);
 		}
 	}
 
@@ -1883,8 +1845,42 @@ public partial class LauncherApp : Control
 			return;
 		}
 
+		// TRACY'S ADVANCED DATA NEEDS AN ELEVATED GAME on Windows (kernel event tracing), and the
+		// launcher never runs elevated or runs Tracy itself — so the question is put here, as the
+		// player commits to the launch. Unattended, nobody can answer a permission prompt.
+		if (Refii.Game.GameElevatedLaunch.Wanted(Refii.Core.Engine_RefiiConfig.Read(out _)))
+		{
+			if (Unattended)
+			{
+				Log("Unattended: starting the game without Tracy's advanced data (it needs Administrator).");
+				StartGame(elevated: false);
+				return;
+			}
+
+			AskChoice("Run the game as Administrator?",
+				"Tracy's advanced data is on (tracy_advanced): CPU sampling with call stacks and " +
+				"context switches for the game's threads. On Windows that comes from the kernel's " +
+				"event tracing, which only an Administrator may start. Windows will ask for " +
+				"permission next. Without it the game runs normally and those parts of a capture " +
+				"stay empty.",
+				new ChoiceDialog.Choice("Run as Administrator", () => StartGame(elevated: true)),
+				new ChoiceDialog.Choice("Run without the advanced data", () => StartGame(elevated: false)));
+			return;
+		}
+
+		StartGame(elevated: false);
+	}
+
+	private void StartGame(bool elevated)
+	{
+		if (_launch.GameIsRunning)
+		{
+			Log("The game is already running.");
+			return;
+		}
+
 		if (!Refii.Game.GameChildProcess.Spawn(
-				out Refii.Launcher.Core.ProcessHandle handle, out string spawnError))
+				elevated, out Refii.Launcher.Core.ProcessHandle handle, out string spawnError))
 		{
 			Log("Failed to start the game. " + spawnError);
 			return;
@@ -1900,7 +1896,8 @@ public partial class LauncherApp : Control
 		DisplayServer.WindowSetMode(
 			DisplayServer.WindowMode.Minimized, (int)DisplayServer.MainWindowId);
 		_standingDownForGame = true;
-		Log($"Started the game (pid {handle.ProcessId}); the launcher will return when it closes.");
+		Log($"Started the game{(elevated ? " as Administrator" : string.Empty)} (pid {handle.ProcessId}); " +
+			"the launcher will return when it closes.");
 		RefreshState();
 	}
 
@@ -1941,186 +1938,6 @@ public partial class LauncherApp : Control
 		RefreshState();
 	}
 
-	private async void StartInstall(string isoPath, string xexpPath)
-	{
-		_installInProgress = true;
-		_installLabel = "Installing";
-		_installStatus = "Starting installation...";
-		_installError = string.Empty;
-		RefreshState();
-
-		if (!Installer.InstallBasePathLeavesWindowsPathRoom(
-				Installer.GetInstallBasePath(), out string pathError))
-		{
-			FailInstall("Install path is too long.", pathError);
-			return;
-		}
-
-		string destination = Installer.GetGameDataDirectoryPath();
-		_installStatus = "Extracting ISO...";
-		RefreshState();
-		Log("Extracting " + isoPath + " to " + destination);
-
-		System.Threading.Interlocked.Exchange(ref _installCopiedBytes, 0);
-		System.Threading.Interlocked.Exchange(ref _installTotalBytes, 0);
-		Volatile.Write(ref _installCompletedFiles, 0);
-		Volatile.Write(ref _installTotalFiles, 0);
-		_installCurrentFile = string.Empty;
-		_installExtractingIso = true;
-
-		var result = await System.Threading.Tasks.Task.Run(() =>
-		{
-			bool ok = Xiso.XisoExtractor.ExtractImage(
-				isoPath,
-				destination,
-				out string error,
-				progress =>
-				{
-					System.Threading.Interlocked.Exchange(ref _installCopiedBytes, progress.CopiedBytes);
-					System.Threading.Interlocked.Exchange(ref _installTotalBytes, progress.TotalBytes);
-					Volatile.Write(ref _installCompletedFiles, progress.CompletedFiles);
-					Volatile.Write(ref _installTotalFiles, progress.TotalFiles);
-					_installCurrentFile = progress.CurrentFile;
-				});
-			return (ok, error);
-		});
-
-		_installExtractingIso = false;
-
-		if (!result.ok)
-		{
-			FailInstall(_installStatus, result.error);
-			return;
-		}
-
-		_installStatus = xexpPath.Length == 0
-			? "Finishing the game install..."
-			: "Installing title update...";
-		RefreshState();
-
-		if (!Installer.InstallTitleUpdate(
-				xexpPath, Installer.GetGameMarkerPath(), out string updateError))
-		{
-			FailInstall(_installStatus, updateError);
-			return;
-		}
-
-		Installer.InvalidateReinstallStepStatus();
-		Log(Installer.CheckInstalledTitleUpdate(out string pair) ? pair : "Title update check: " + pair);
-
-		// The game code, generated and compiled from the executable just installed. This is
-		// the longest part of an install by a wide margin — it is a compiler building
-		// roughly 150,000 functions — but it is not optional: the recompiled guest is
-		// derived from the player's own image and cannot ship with the app.
-		if (!await BuildGameCodeAsync())
-		{
-			return;
-		}
-
-		_installInProgress = false;
-		_installLabel = string.Empty;
-		_installStatus = string.Empty;
-		_installError = string.Empty;
-		Log("Installation complete.");
-		RefreshState();
-	}
-
-	/// <summary>Runs the game code build on its own, from the Reinstall tab.</summary>
-	private void StartGameCodeBuild()
-	{
-		if (_installInProgress || _ops is not null)
-		{
-			return;
-		}
-
-		AskBuildSpeed("Build Game Code", useAllCores =>
-		{
-			Recompile.GameCodeBuild.UseAllCores = useAllCores;
-			RunGameCodeBuild();
-		});
-	}
-
-	private async void RunGameCodeBuild()
-	{
-
-		_installInProgress = true;
-		_installError = string.Empty;
-
-		bool ok = await BuildGameCodeAsync();
-
-		Recompile.GameCodeBuild.InvalidateStatus();
-
-		if (ok)
-		{
-			_installInProgress = false;
-			_installLabel = string.Empty;
-			_installStatus = string.Empty;
-			Log("Game code build complete.");
-		}
-		else if (Unattended)
-		{
-			_unattendedHalted = true;
-			Log("Unattended: the game code build failed; not pressing again.");
-		}
-
-		RefreshState();
-	}
-
-	/// <summary>
-	/// Generates and compiles the game code, reporting into the install progress UI.
-	/// </summary>
-	/// <returns>False when it failed and the install has already been marked failed.</returns>
-	private async System.Threading.Tasks.Task<bool> BuildGameCodeAsync()
-	{
-		_installLabel = "Building game code";
-		_installStatus = "Preparing game code...";
-		_installStepFraction = 0.0f;
-		RefreshState();
-		Log("Building the recompiled game module from the installed executable.");
-
-		using var control = new Recompile.BuildControl();
-		_buildControl = control;
-		Recompile.GameCodeBuild.Result result;
-		try
-		{
-			result = await Recompile.GameCodeBuild.RunAsync(
-				progress =>
-				{
-					_installStatus = progress.Status;
-					_installStepFraction = progress.Fraction;
-				},
-				control);
-		}
-		finally
-		{
-			_buildControl = null;
-		}
-
-		_installStepFraction = -1.0f;
-
-		// The player's choice, not a failure: nothing to report in red, and the primary
-		// button goes back to offering the build.
-		if (result.Stopped)
-		{
-			_installInProgress = false;
-			_installLabel = string.Empty;
-			_installStatus = string.Empty;
-			_installError = string.Empty;
-			Log("Game code build stopped.");
-			RefreshState();
-			return false;
-		}
-
-		if (!result.Ok)
-		{
-			FailInstall("Building game code failed.", result.Error);
-			return false;
-		}
-
-		Log("Game code built: " + Recompile.GameCodeBuild.ModulePath);
-		return true;
-	}
-
 	private void UpdateArtCredit()
 	{
 		string credit = _backgrounds.CurrentCredit;
@@ -2136,82 +1953,100 @@ public partial class LauncherApp : Control
 		_artCredit.Modulate = new Color(1, 1, 1, alpha);
 	}
 
-	private static float ParseCountedFraction(string status)
+	/// <summary>The whole install: the disc, the game code, and the classic shaders when asked.</summary>
+	private void StartInstall(string isoPath, string xexpPath, bool classicShaders)
 	{
-		int slash = status.LastIndexOf('/');
-		if (slash <= 0)
+		var steps = new List<Install.InstallPipeline.Step>
 		{
-			return 0.0f;
-		}
-
-		int start = slash - 1;
-		while (start >= 0 && char.IsDigit(status[start]))
+			new(Install.InstallPipeline.StepKind.GameData, isoPath, xexpPath),
+			new(Install.InstallPipeline.StepKind.GameCode),
+		};
+		if (classicShaders)
 		{
-			start--;
+			steps.Add(new(Install.InstallPipeline.StepKind.ClassicShaders));
 		}
-
-		int end = slash + 1;
-		while (end < status.Length && char.IsDigit(status[end]))
-		{
-			end++;
-		}
-
-		if (start + 1 >= slash || end <= slash + 1)
-		{
-			return 0.0f;
-		}
-
-		if (!int.TryParse(status[(start + 1)..slash], out int completed) ||
-			!int.TryParse(status[(slash + 1)..end], out int total) ||
-			total <= 0)
-		{
-			return 0.0f;
-		}
-
-		return Mathf.Clamp((float)completed / total, 0.0f, 1.0f);
+		StartSteps(steps);
 	}
 
-	private float InstallProgressFraction()
+	/// <summary>Runs the game code build on its own, from the primary button or the Install tab.</summary>
+	private void StartGameCodeBuild()
 	{
-		if (_installStepFraction >= 0.0f)
+		if (_pipeline.Running || _launch.GameIsRunning)
 		{
-			return Mathf.Clamp(_installStepFraction, 0.0f, 1.0f);
+			return;
 		}
 
-		if (_ops is not null)
+		AskBuildSpeed("Build Game Code", useAllCores =>
 		{
-			return ParseCountedFraction(_ops.StatusMessage);
-		}
-
-		long total = System.Threading.Interlocked.Read(ref _installTotalBytes);
-		if (!_installInProgress || total <= 0)
-		{
-			return 0.0f;
-		}
-
-		long copied = System.Threading.Interlocked.Read(ref _installCopiedBytes);
-		return Mathf.Clamp((float)copied / total, 0.0f, 1.0f);
+			Recompile.GameCodeBuild.UseAllCores = useAllCores;
+			StartSteps(new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.GameCode) });
+		});
 	}
 
-	private string BuildIsoStatus()
+	private void StartShaderBuild() =>
+		StartSteps(new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.ClassicShaders) });
+
+	private void StartAssetPrebuild() =>
+		StartSteps(new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.ModernizedAssets) });
+
+	private void StartSteps(IReadOnlyList<Install.InstallPipeline.Step> steps)
 	{
-		int total = Volatile.Read(ref _installTotalFiles);
-		if (total <= 0)
+		if (_pipeline.Running || _launch.GameIsRunning)
 		{
-			return "Extracting ISO...";
+			return;
 		}
 
-		string status = "Extracting ISO... " + Volatile.Read(ref _installCompletedFiles) + "/" + total;
-		string file = _installCurrentFile;
-		return file.Length == 0 ? status : status + " (" + file + ")";
+		_ = RunPipelineAsync(steps);
 	}
 
-	private void FailInstall(string stage, string error)
+	/// <summary>
+	/// Runs the steps and settles the launcher afterwards: the step ticks, the mounted assets
+	/// after a fresh install, and the unattended run's halt on a failed game code build.
+	/// </summary>
+	private async System.Threading.Tasks.Task RunPipelineAsync(IReadOnlyList<Install.InstallPipeline.Step> steps)
 	{
-		_installInProgress = false;
-		_installStatus = stage;
-		_installError = error.Length == 0 ? "Game installation failed" : error;
-		Log(_installError);
+		// THE SETTINGS AS THEY ARE ON DISK. The player has very likely just chosen a look in the
+		// settings panel, and building for the settings they abandoned would be a long wait for
+		// the wrong artefacts.
+		_settingsPanel.SaveIfDirty();
+		RefreshState();
+
+		Install.InstallPipeline.Outcome outcome = await _pipeline.RunAsync(steps, Log);
+
+		Installer.InvalidateReinstallStepStatus();
+		Recompile.GameCodeBuild.InvalidateStatus();
+
+		bool installed = false;
+		foreach (Install.InstallPipeline.Step step in steps)
+		{
+			installed |= step.Kind == Install.InstallPipeline.StepKind.GameData;
+		}
+
+		if (outcome.Ok)
+		{
+			Log(installed ? "Installation complete." : "Done.");
+			if (installed)
+			{
+				MountGameAssets();
+			}
+		}
+		else
+		{
+			if (!outcome.Stopped)
+			{
+				string stepName = outcome.FailedStep.HasValue ? outcome.FailedStep.Value.ToString() : "Install";
+				Log($"{stepName} failed: {outcome.Error}");
+			}
+
+			if (!outcome.Stopped && Unattended &&
+				outcome.FailedStep == Install.InstallPipeline.StepKind.GameCode)
+			{
+				// Pressing again would only re-run the same generator on the same inputs.
+				_unattendedHalted = true;
+				Log("Unattended: the game code build failed; not pressing again.");
+			}
+		}
+
 		RefreshState();
 	}
 
@@ -2222,12 +2057,12 @@ public partial class LauncherApp : Control
 		// ISO and title update, then the one build decision, then the whole pipeline runs unattended:
 		// extract, generate, compile. Asking again afterwards would strand the install
 		// half-done behind a second button nobody knows to press.
-		dialog.InstallRequested += (iso, xexp) => AskBuildSpeed(
+		dialog.InstallRequested += (iso, xexp, classicShaders) => AskBuildSpeed(
 			"Install " + Installer.GetGameTitle(),
 			useAllCores =>
 			{
 				Recompile.GameCodeBuild.UseAllCores = useAllCores;
-				StartInstall(iso, xexp);
+				StartInstall(iso, xexp, classicShaders);
 			});
 
 		AddChild(dialog);
@@ -2270,8 +2105,7 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		if (_installInProgress || _ops is not null || _prebuilding || _launch.GameIsRunning ||
-			_downloadProgress is not null)
+		if (_pipeline.Running || _launch.GameIsRunning || _downloadProgress is not null)
 		{
 			// Something is running. Hold the clock at zero so the next press waits a full
 			// interval after it finishes rather than firing the instant it does.
@@ -2303,182 +2137,33 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		var dialog = new BuildSpeedDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle, heading);
-		dialog.Chosen += useAllCores => proceed(useAllCores);
+		// The only thing about a long build the player can usefully choose, asked as they commit
+		// to it rather than found in Settings after the wait.
+		int threads = System.Environment.ProcessorCount;
+		int half = Math.Max(1, threads / 2);
+		AskChoice(heading,
+			"Your game's code has to be compiled on this machine — around 150,000 " +
+			"functions. It takes a while, and it is only done once.",
+			new ChoiceDialog.Choice(
+				"Use " + half + " of " + threads + " threads  —  slower, PC stays usable", () => proceed(false)),
+			new ChoiceDialog.Choice(
+				"Use all " + threads + " threads  —  fastest, PC will be sluggish", () => proceed(true)));
+	}
+
+	private void AskChoice(string heading, string text, params ChoiceDialog.Choice[] choices)
+	{
+		var dialog = new ChoiceDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle, heading, text, choices);
 		AddChild(dialog);
 		AnimateIn(dialog);
-	}
-
-	/// <summary>Set while the managed asset prebuild is running on its own thread.</summary>
-	private volatile bool _prebuilding;
-
-	/// <summary>The line the reinstall panel shows for it. Written by the worker, read here.</summary>
-	private volatile string _prebuildLabel = string.Empty;
-
-	private volatile string _prebuildStatus = string.Empty;
-
-	/// <summary>
-	/// Builds every modernized texture and material up front.
-	/// </summary>
-	/// <remarks>
-	/// NOT THROUGH <see cref="StartOps"/>, and it cannot be. That path creates a native
-	/// <see cref="LauncherOps"/> handle and polls it; this work is managed C# in
-	/// <see cref="Refii.Textures.Engine_TexPrebuild"/> — the decoder, the upscaler and the cache
-	/// all live on the Godot side. So it gets its own flag and its own two status strings, and
-	/// <c>RefreshState</c> prefers them while it runs.
-	///
-	/// A BACKGROUND THREAD, because this is minutes of work: on the main thread the launcher would
-	/// freeze solid, with no progress, no window, and an operating system offering to kill it.
-	/// Background so that closing the launcher mid-run cannot leave a thread holding the cache
-	/// open — the entries already written stay written, and the next run skips them.
-	///
-	/// THE WORKER NEVER TOUCHES A CONTROL. Godot's UI is main-thread only; a worker setting a
-	/// Label's text is the fault that works on the developer's machine and crashes on somebody
-	/// else's. It writes strings here and <c>RefreshState</c> paints them.
-	/// </remarks>
-	private void StartAssetPrebuild()
-	{
-		if (_prebuilding || _ops is not null || _installInProgress)
-		{
-			return;
-		}
-
-		string directory = Refii.Core.Engine_GameData.Resolve();
-		if (directory.Length == 0)
-		{
-			Log("No game data found to build modernized assets from.");
-			return;
-		}
-
-		// THE SETTINGS AS THEY ARE ON DISK. The player has very likely just chosen a look in the
-		// settings panel, and building the cache for the settings they abandoned would be a long
-		// wait for the wrong artefacts.
-		_settingsPanel.SaveIfDirty();
-
-		// REGISTERED HERE, because the launcher process has never touched a texture and so has
-		// never configured the pipeline. Without it the backend is null and the whole run silently
-		// does base decodes only — which looks exactly like a successful prebuild.
-		Refii.Textures.Engine_TexEnhance.RegisterDefault();
-
-		_prebuilding = true;
-		_prebuildLabel = "Build Modernized Assets";
-		_prebuildStatus = "Finding what to build...";
-		Log($"Building modernized assets from {directory}");
-		RefreshState();
-
-		var thread = new System.Threading.Thread(() =>
-		{
-			try
-			{
-				Refii.Textures.Engine_TexPrebuild.Progress result =
-					Refii.Textures.Engine_TexPrebuild.Run(
-						directory,
-						progress => _prebuildStatus = progress.Total == 0
-							? "Finding what to build..."
-							: $"{progress.Done:N0} of {progress.Total:N0} " +
-							  $"({100.0 * progress.Done / progress.Total:F0}%) — " +
-							  $"built {progress.Built:N0}, failed {progress.Failed:N0}");
-
-				_prebuildStatus = result.Total == 0
-					? "Nothing to build — no material records were found."
-					: $"Done: built {result.Built:N0} of {result.Total:N0}" +
-					  (result.Failed > 0 ? $", {result.Failed:N0} could not be read." : ".");
-			}
-			catch (Exception e)
-			{
-				_prebuildStatus = "Failed: " + e.Message;
-			}
-			finally
-			{
-				_prebuilding = false;
-			}
-		})
-		{
-			IsBackground = true,
-			Name = "refii-prebuild",
-			Priority = System.Threading.ThreadPriority.BelowNormal,
-		};
-
-		thread.Start();
-	}
-
-	private void StartOps(Action<LauncherOps> action)
-	{
-		if (_ops is not null)
-		{
-			return;
-		}
-
-		if (!LauncherOps.Available)
-		{
-			Log("Launcher operations library is unavailable.");
-			return;
-		}
-
-		_ops = LauncherOps.Create();
-		if (_ops is null)
-		{
-			Log("Failed to create a launcher operations handle.");
-			return;
-		}
-
-		action(_ops);
-		_opsStatus = string.Empty;
-		RefreshState();
-	}
-
-	private void PumpOps()
-	{
-		if (_ops is null)
-		{
-			return;
-		}
-
-		string status = _ops.StatusMessage;
-		if (status != _opsStatus)
-		{
-			_opsStatus = status;
-			if (status.Length != 0)
-			{
-				Log(status);
-			}
-		}
-
-		if (!_ops.IsComplete && !_ops.HasError)
-		{
-			_reinstallPanel.SetProgress(_ops.OperationLabel, status);
-			return;
-		}
-
-		if (_ops.HasError)
-		{
-			_installLabel = _ops.OperationLabel;
-			_installStatus = _ops.StatusMessage;
-			_installError = _ops.ErrorMessage;
-			Log(_ops.ErrorMessage);
-		}
-		else
-		{
-			_installLabel = string.Empty;
-			_installStatus = string.Empty;
-			_installError = string.Empty;
-			Log(_ops.OperationLabel + " complete.");
-		}
-
-		_ops.Dispose();
-		_ops = null;
-		_opsStatus = string.Empty;
-		Installer.InvalidateReinstallStepStatus();
-		MountGameAssets();
-		RefreshState();
 	}
 
 	public override void _Process(double delta)
 	{
 		// NOTHING TO DRIVE IN THE CHILD. `_Ready` returns before the launcher is built there,
 		// so `_launch`, `_patches` and every panel are still null — this whole method would
-		// dereference them. The game's own nodes do the work in that process.
-		if (Refii.Game.GameChildProcess.IsChild)
+		// dereference them. The game's own nodes do the work in that process. The same holds
+		// for the elevated relay.
+		if (Refii.Game.GameChildProcess.IsChild || Refii.Game.GameElevatedLaunch.IsRelay)
 		{
 			return;
 		}
@@ -2490,16 +2175,8 @@ public partial class LauncherApp : Control
 		{
 			_standingDownForGame = false;
 
-			// QUIT TO DESKTOP TAKES THE LAUNCHER WITH IT. Coming back is right for every other
-			// way the game can end — quit to title, a close, a crash — but a player who asked
-			// for the desktop has not reached it while this window is up. The child states which
-			// it meant through its exit status; see Refii.Game.GameExit.
-			if (_launch.GameProcess?.ExitCode == Refii.Game.GameExit.ToDesktopStatus)
-			{
-				Log("The game quit to the desktop; the launcher is closing too.");
-				GetTree().Quit();
-				return;
-			}
+			// However the game ended (quit to desktop, a window close, a crash), only the child
+			// process ends: the launcher always comes back.
 
 			DisplayServer.WindowSetMode(_launcherModeBeforePlay, (int)DisplayServer.MainWindowId);
 			DisplayServer.WindowMoveToForeground((int)DisplayServer.MainWindowId);
@@ -2516,11 +2193,9 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		PumpOps();
-
-		if (_installInProgress && _installExtractingIso)
+		// A running step moves its status from worker threads; the label is painted here.
+		if (_pipeline.Running)
 		{
-			_installStatus = BuildIsoStatus();
 			RefreshState();
 		}
 

@@ -55,12 +55,23 @@ NATIVE = [
     dict(name="JSON for Modern C++ (via inja)", url="https://github.com/nlohmann/json", spdx="MIT",
          files=["tools/licenses/texts/nlohmann-json-LICENSE.MIT"]),
     dict(name="CLI11", url="https://github.com/CLIUtils/CLI11", spdx="BSD-3-Clause", files=[f"{RX}/cli11/LICENSE"]),
+    # Shipped as bin/dxc: the compiler the shader pipeline runs on the player's banks. The
+    # vendored binaries (src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin) carry no licence
+    # file, so the text was fetched from upstream.
+    dict(name="DirectX Shader Compiler (dxc, in bin/dxc)",
+         url="https://github.com/microsoft/DirectXShaderCompiler", spdx="NCSA",
+         files=["tools/licenses/texts/DirectXShaderCompiler-LICENSE.TXT"]),
     dict(name="UTF8-CPP", url="https://github.com/nemtrif/utfcpp", spdx="BSL-1.0", files=[f"{RX}/utfcpp/LICENSE"]),
     dict(name="o1heap", url="https://github.com/pavel-kirienko/o1heap", spdx="MIT", files=[f"{RX}/o1heap/LICENSE"]),
     dict(name="SIMDe", url="https://github.com/simd-everywhere/simde", spdx="MIT", files=[f"{RX}/simde/COPYING"]),
     dict(name="xxHash", url="https://github.com/Cyan4973/xxHash", spdx="BSD-2-Clause", files=[f"{RX}/xxHash/LICENSE"]),
     dict(name="SDL 3", url="https://github.com/libsdl-org/SDL", spdx="Zlib", files=[f"{RX}/sdl3/LICENSE.txt"]),
     dict(name="Tracy Profiler", url="https://github.com/wolfpld/tracy", spdx="BSD-3-Clause", files=[f"{RX}/tracy/LICENSE"]),
+    # In the Tracy library: the in-game Worker disassembles the code a capture transfers.
+    dict(name="Capstone (x86 and AArch64, in the Tracy library)", url="https://github.com/capstone-engine/capstone",
+         spdx="BSD-3-Clause AND NCSA",
+         files=["rexglue-net/shadow/rexglue-sdk/thirdparty/capstone/LICENSES/LICENSE.TXT",
+                "rexglue-net/shadow/rexglue-sdk/thirdparty/capstone/LICENSES/LICENSE_LLVM.TXT"]),
     dict(name="disruptorplus", url="https://github.com/lewissbaker/disruptorplus", spdx="MIT",
          files=["tools/licenses/texts/disruptorplus-LICENSE.txt"]),
     dict(name="tiny-AES-c", url="https://github.com/kokke/tiny-AES-c", spdx="Unlicense",
@@ -102,7 +113,7 @@ NATIVE = [
          files=["src/shader/thirdparty/XenosRecomp/thirdparty/smol-v/license.txt"]),
     dict(name="xxHash (via XenosRecomp)", url="https://github.com/Cyan4973/xxHash", spdx="BSD-2-Clause",
          files=["src/shader/thirdparty/XenosRecomp/thirdparty/xxHash/LICENSE"]),
-    dict(name="Zstandard (via XenosRecomp)", url="https://github.com/facebook/zstd", spdx="BSD-3-Clause",
+    dict(name="Zstandard (via XenosRecomp; also in the Tracy library)", url="https://github.com/facebook/zstd", spdx="BSD-3-Clause",
          files=["src/shader/thirdparty/XenosRecomp/thirdparty/zstd/LICENSE"]),
     dict(name="extract-xiso (logic in Godot/src/xiso)", url="https://github.com/XboxDev/extract-xiso",
          spdx="BSD-4-Clause-style, see text", files=["Godot/src/xiso/extract-xiso-LICENSE.txt"]),

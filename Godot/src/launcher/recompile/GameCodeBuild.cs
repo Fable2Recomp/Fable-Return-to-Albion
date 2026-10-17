@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -355,6 +356,38 @@ public static class GameCodeBuild
 				}
 			}
 
+			// The compile flags are an input too: a module built for instructions this CPU
+			// lacks would otherwise stay until some source happened to change. Paths are left
+			// out, as above, so moving the install does not move the fingerprint.
+			List<string> compileFlags = CompileFlags(Array.Empty<string>());
+			var options = new StringBuilder();
+			for (int i = 0; i < compileFlags.Count; i++)
+			{
+				if (compileFlags[i] == "-include")
+				{
+					i++;
+					continue;
+				}
+				if (compileFlags[i].StartsWith("-I", StringComparison.Ordinal))
+				{
+					continue;
+				}
+				options.Append(compileFlags[i]).Append('\n');
+			}
+			// -march=native ties the module to this CPU, so its feature bits are an input as
+			// well: an install copied to a machine without, say, AVX2 rebuilds instead of
+			// loading instructions it cannot run. Leaf 1 EBX is left out; it carries the APIC
+			// id of whichever core this thread is on.
+			if (X86Base.IsSupported)
+			{
+				(_, _, int ecx1, int edx1) = X86Base.CpuId(1, 0);
+				(_, int ebx7, int ecx7, int edx7) = X86Base.CpuId(7, 0);
+				(_, _, int ecxExt, int edxExt) = X86Base.CpuId(unchecked((int)0x80000001), 0);
+				options.Append($"cpu {ecx1:X8} {edx1:X8} {ebx7:X8} {ecx7:X8} {edx7:X8} {ecxExt:X8} {edxExt:X8}\n");
+			}
+			byte[] optionBytes = Encoding.UTF8.GetBytes(options.ToString());
+			sha.TransformBlock(optionBytes, 0, optionBytes.Length, null, 0);
+
 			sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
 			return Convert.ToHexString(sha.Hash ?? Array.Empty<byte>());
 		}
@@ -515,8 +548,10 @@ public static class GameCodeBuild
 			};
 			if (string.Equals(arch, "x86_64", StringComparison.OrdinalIgnoreCase))
 			{
-				configureArguments.Add("-DCMAKE_C_FLAGS=-march=x86-64-v3");
-				configureArguments.Add("-DCMAKE_CXX_FLAGS=-march=x86-64-v3");
+				// The same target as the shipped Windows libraries (windows-base in
+				// CMakePresets.json): x86-64-v2, so a CPU without AVX2 or FMA3 runs them.
+				configureArguments.Add("-DCMAKE_C_FLAGS=-march=x86-64-v2");
+				configureArguments.Add("-DCMAKE_CXX_FLAGS=-march=x86-64-v2");
 			}
 
 			LogPhase("prepare-windows-install-inputs");
@@ -1508,11 +1543,13 @@ public static class GameCodeBuild
 
 		if (RuntimeInformation.OSArchitecture == Architecture.X64)
 		{
+			// -march=native: the module is built on the machine that runs it, so it targets this
+			// CPU. Stated outright because zig only defaults to the host CPU when no -m feature
+			// flag is given; -msse4.1 alone drops it to baseline x86-64, and std::fma then calls
+			// compiler-rt's software fma (66% of the XAudio render thread, measured). Forcing
+			// -mfma instead would not start on a CPU without FMA3.
+			flags.Add("-march=native");
 			flags.Add("-msse4.1");
-			// // The recompiler lowers every PPC fmadd to std::fma; without -mfma that is a
-			// // library call. Same flag as refii_apply_recompiled_module_compile_options in the
-			// // dev build.
-			flags.Add("-mfma");
 		}
 
 		if (!OperatingSystem.IsWindows())

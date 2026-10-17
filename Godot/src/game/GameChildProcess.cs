@@ -38,7 +38,9 @@ public static class GameChildProcess
 	/// side is identical — spawn, minimise, restore on exit — rather than the editor keeping a
 	/// second, in-process code path that would then be the one nobody tests.
 	/// </summary>
-	public static bool Spawn(out Refii.Launcher.Core.ProcessHandle handle, out string error)
+	/// <param name="elevated">Run the game as Administrator, through <see cref="GameElevatedLaunch"/>
+	/// (Windows; Tracy's advanced data). The handle is then the relay's, which exits with the game.</param>
+	public static bool Spawn(bool elevated, out Refii.Launcher.Core.ProcessHandle handle, out string error)
 	{
 		var arguments = new List<string>();
 		if (OS.HasFeature("editor"))
@@ -60,6 +62,8 @@ public static class GameChildProcess
 		// line too. Direct3D 12 is Windows-only; everywhere else the driver is Vulkan whatever
 		// refii.toml says. HDR output on Windows requires Direct3D 12 (Godot's Windows display
 		// server does not support HDR swapchains under Vulkan).
+		WriteRendererSettings(config);
+
 		string driver = ResolveRenderingDriver(config, System.OperatingSystem.IsWindows());
 		if (System.OperatingSystem.IsWindows()
 			&& Refii.Core.Engine_RefiiConfig.Bool(config, "hdr_output", false)
@@ -119,7 +123,13 @@ public static class GameChildProcess
 		}
 
 		GD.Print($"[launch] {OS.GetExecutablePath()} {string.Join(' ', arguments)} env " +
-			string.Join(' ', environment.Select(kv => kv.Key + "=" + kv.Value)));
+			string.Join(' ', environment.Select(kv => kv.Key + "=" + kv.Value)) +
+			(elevated ? " (as Administrator)" : string.Empty));
+
+		if (elevated)
+		{
+			return GameElevatedLaunch.Launch(OS.GetExecutablePath(), arguments, environment, out handle, out error);
+		}
 
 		return Refii.Launcher.Core.Platform.LaunchProcess(
 			string.Empty,
@@ -128,6 +138,38 @@ public static class GameChildProcess
 			environment,
 			out handle,
 			out error);
+	}
+
+	/// <summary>Where `application/config/project_settings_override` points (project.godot).</summary>
+	private const string RendererSettingsPath = "user://renderer.cfg";
+
+	/// <summary>
+	/// Project settings that differ per lighting model, read by Godot before the child's code runs.
+	/// Classic turns the depth pre-pass off: its cascades then draw each caster once, and the main
+	/// world keeps its pre-pass through <c>Engine_DepthPrepassMarker</c>. Modern keeps the project
+	/// default, because its picture depends on the setting itself, not only on the pre-pass.
+	/// </summary>
+	private static void WriteRendererSettings(IReadOnlyDictionary<string, string> config)
+	{
+		string forced = OS.GetEnvironment("REFII_LIGHTING_MODEL");
+		bool classic = Refii.Lighting.Engine_LightingFrame.IsClassic(
+			forced.Length != 0 ? forced : Refii.Core.Engine_RefiiConfig.String(config, "lighting_model", "modern"));
+		string path = ProjectSettings.GlobalizePath(RendererSettingsPath);
+		try
+		{
+			if (classic)
+			{
+				System.IO.File.WriteAllText(path, "[rendering]\n\ndriver/depth_prepass/enable=false\n");
+			}
+			else if (System.IO.File.Exists(path))
+			{
+				System.IO.File.Delete(path);
+			}
+		}
+		catch (System.Exception ex) when (ex is System.IO.IOException or System.UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[launch] renderer settings not written to {path}: {ex.Message}");
+		}
 	}
 
 	/// <summary>

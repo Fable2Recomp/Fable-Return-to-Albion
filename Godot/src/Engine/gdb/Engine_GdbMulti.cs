@@ -24,6 +24,7 @@ public sealed class GdbMulti
 
     private readonly Dictionary<uint, GdbCursor> _index = new();
     private readonly Dictionary<uint, List<GdbCursor>> _cursorsByHash = new();
+    private readonly Dictionary<uint, uint> _aliasesByTarget = new();
 
     public IReadOnlyList<GdbView> Views => _views;
 
@@ -76,6 +77,70 @@ public sealed class GdbMulti
                     multi._index.TryGetValue(target, out GdbCursor cursor))
                 {
                     multi._index.TryAdd(alias, cursor);
+                    multi._aliasesByTarget.TryAdd(target, alias);
+                }
+            }
+        }
+
+        return multi;
+    }
+
+    /// <summary>
+    /// Builds a new <see cref="GdbMulti"/> by reusing the already-parsed <see cref="GdbView"/> instances
+    /// from <paramref name="baseMulti"/> and layering one or more <c>.gdb.tu</c> overlay blobs on top.
+    /// Avoids re-parsing the large base GDB files on disk.
+    /// </summary>
+    public static GdbMulti BuildWithOverlays(GdbMulti baseMulti, IEnumerable<byte[]?> overlayGdbs)
+    {
+        var multi = new GdbMulti();
+        if (baseMulti is not null)
+        {
+            multi._views.AddRange(baseMulti._views);
+        }
+
+        if (overlayGdbs is not null)
+        {
+            foreach (byte[]? bytes in overlayGdbs)
+            {
+                if (bytes is not null && bytes.Length != 0 &&
+                    GdbView.TryParse(bytes, out GdbView view, out _))
+                {
+                    multi._views.Add(view);
+                }
+            }
+        }
+
+        foreach (GdbView view in multi._views)
+        {
+            for (int i = 0; i < view.RecordCount; i++)
+            {
+                uint hash = view.RecordHash(i);
+                if (hash == 0 || hash == GdbHash.Null)
+                {
+                    continue;
+                }
+
+                var cursor = new GdbCursor(view, i);
+                multi._index[hash] = cursor;
+
+                if (!multi._cursorsByHash.TryGetValue(hash, out var list))
+                {
+                    list = new List<GdbCursor>();
+                    multi._cursorsByHash[hash] = list;
+                }
+                list.Add(cursor);
+            }
+        }
+
+        foreach (GdbView view in multi._views)
+        {
+            foreach ((uint alias, uint target) in view.AliasPairs())
+            {
+                if (alias != 0 && alias != GdbHash.Null &&
+                    multi._index.TryGetValue(target, out GdbCursor cursor))
+                {
+                    multi._index.TryAdd(alias, cursor);
+                    multi._aliasesByTarget.TryAdd(target, alias);
                 }
             }
         }
@@ -212,6 +277,17 @@ public sealed class GdbMulti
             if (view.Names.TryGetValue(hash, out string? text) && text.Length != 0)
             {
                 return text;
+            }
+        }
+
+        if (_aliasesByTarget.TryGetValue(hash, out uint alias))
+        {
+            foreach (GdbView view in _views)
+            {
+                if (view.Names.TryGetValue(alias, out string? aliasText) && aliasText.Length != 0)
+                {
+                    return aliasText;
+                }
             }
         }
 

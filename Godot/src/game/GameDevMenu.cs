@@ -100,6 +100,17 @@ public partial class GameDevMenu : CanvasLayer
 		Add(new GameDevTabErrors());
 		Add(new GameDevTabLog());
 		Add(new GameDevTabCvars());
+
+		// The game's own Tracy capture. With `tracy` off the one tab says how to turn it on;
+		// GameSession, an earlier sibling, has already read the setting by now.
+		Add(new GameDevTabTracy());
+		if (GameTracy.Enabled)
+		{
+			Add(new GameDevTabTracyZones());
+			Add(new GameDevTabTracySamples());
+			Add(new GameDevTabTracyPlots());
+			Add(new GameDevTabTracyLocks());
+		}
 	}
 
 	private void Add(GameDevTab tab)

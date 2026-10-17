@@ -42,6 +42,9 @@ public partial class Engine_PostFxHalos : Node
 	/// HaloTextureHash in the FX bank) replaces this once decoded.
 	/// </summary>
 	public const float HalfPerRange = 0.15f;
+
+	private const int GuestHaloFloats = 12;
+	private readonly float[] _guestHalos = new float[GuestHaloFloats * 1024];
 	public const float HalfMin = 0.25f;
 	public const float HalfMax = 1.5f;
 
@@ -61,7 +64,7 @@ public partial class Engine_PostFxHalos : Node
 	/// </summary>
 	public readonly record struct SkyHalo(Vector3 Direction, float Distance, float WorldHalf, Vector3 Colour, Texture2D? Sprite, bool Active);
 
-	private static readonly object Gate = new();
+	private static readonly Refii.Core.Engine_TracedLock Gate = new("post-FX halos");
 	private static readonly List<Halo> Entries = new();
 	private static readonly Dictionary<string, SkyHalo> Sky = new();
 	private static readonly Dictionary<string, float> SkyVisibility = new();
@@ -83,7 +86,7 @@ public partial class Engine_PostFxHalos : Node
 			return;
 		}
 
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Entries.Add(new Halo(light, textureHash));
 		}
@@ -92,7 +95,7 @@ public partial class Engine_PostFxHalos : Node
 	/// <summary>Publishes (or replaces) a sky halo under <paramref name="key"/>.</summary>
 	public static void PublishSky(string key, SkyHalo halo)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Sky[key] = halo;
 		}
@@ -102,7 +105,7 @@ public partial class Engine_PostFxHalos : Node
 	/// guest's fade² (0x82279a94..0x82279ac4).</summary>
 	public static void SetSkyVisibility(string key, float visibility)
 	{
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			SkyVisibility[key] = Math.Clamp(visibility, 0f, 1f);
 		}
@@ -112,7 +115,7 @@ public partial class Engine_PostFxHalos : Node
 	public static void Snapshot(List<WorldHalo> into, out Rid spriteArray)
 	{
 		into.Clear();
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			into.AddRange(Published);
 			spriteArray = _publishedArray;
@@ -131,11 +134,11 @@ public partial class Engine_PostFxHalos : Node
 			return;
 		}
 
-		SceneTree? tree = context.GetTree();
-		if (tree is null)
+		if (!context.IsInsideTree())
 		{
 			return;
 		}
+		SceneTree tree = context.GetTree();
 
 		var node = new Engine_PostFxHalos { Name = NodeName };
 		_current = node;
@@ -161,7 +164,7 @@ public partial class Engine_PostFxHalos : Node
 			_current = null;
 		}
 
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Published.Clear();
 			_publishedArray = default;
@@ -173,7 +176,7 @@ public partial class Engine_PostFxHalos : Node
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("postfxhalos");
 		_live.Clear();
 		_sky.Clear();
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			for (int i = Entries.Count - 1; i >= 0; i--)
 			{
@@ -235,6 +238,27 @@ public partial class Engine_PostFxHalos : Node
 				light.GlobalPosition, colour, half, LayerFor(halo.TextureHash)));
 		}
 
+		// Under classic, the guest's own halo list: the lights `sub_82274370` draws LIGHTHALO for
+		// this frame, with the quad's half-extent and the c123 colour as it states them. The
+		// placed Godot lights are hidden there and the modern FX do not run.
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			uint halos = Refii.Host.HostBridge.GetLightHalos(_guestHalos);
+			for (uint i = 0; i < halos; i++)
+			{
+				int o = (int)i * GuestHaloFloats;
+				var colour = new Vector3(_guestHalos[o + 4], _guestHalos[o + 5], _guestHalos[o + 6]);
+				if (MathF.Max(MathF.Max(colour.X, colour.Y), colour.Z) <= 1e-4f)
+				{
+					continue;
+				}
+				// Guest axes to the classic world's: (-x, z, y), as every classic feed places.
+				var position = new Vector3(-_guestHalos[o], _guestHalos[o + 2], _guestHalos[o + 1]);
+				uint hash = System.BitConverter.SingleToUInt32Bits(_guestHalos[o + 10]);
+				_build.Add(new WorldHalo(position, colour, _guestHalos[o + 3], LayerFor(hash)));
+			}
+		}
+
 		foreach ((SkyHalo halo, float visibility) in _sky)
 		{
 			Vector3 direction = halo.Direction;
@@ -255,7 +279,7 @@ public partial class Engine_PostFxHalos : Node
 				LayerForSprite(halo.Sprite)));
 		}
 
-		lock (Gate)
+		using (Gate.Hold())
 		{
 			Published.Clear();
 			Published.AddRange(_build);

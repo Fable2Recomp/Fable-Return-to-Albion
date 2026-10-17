@@ -407,17 +407,23 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 	int slot = int(specular_amount * 0.5 + 0.5) - 2;
 	if (slot >= 0 && slot < textureSize(fable_light_table, 0).x) {
 		vec4 record = texelFetch(fable_light_table, ivec2(slot, 0), 0);
-		float ratio = clamp(distance(world, record.xyz) / max(record.w, 1e-3), 0.0, 1.0);
-		float window = 1.0 - (ratio * ratio * ratio * ratio);
-		window *= window;
-		float rest = window > 1e-3 ? clamp(godot_attenuation / window, 0.0, 1.0) : 1.0;
+		float d = distance(world, record.xyz);
 
-		// TWO RADII. record.w is the NODE's range: it is what Godot's window above was computed
+		// TWO RADII. record.w is the NODE's range: it is what Godot's window below was computed
 		// with, so it is what undoes it. The guest's ramp runs over the radius it STATES, which for
 		// a flickering torch breathes every step and lives in the table's second row — the node
 		// keeps the flicker's envelope so its bounds never move (see Engine_LightTable.Stated).
+		// Past the stated radius the ramp is zero and so is the product: no window to undo.
 		float stated = texelFetch(fable_light_table, ivec2(slot, 1), 0).x;
-		float ramp = clamp(1.0 - distance(world, record.xyz) / max(stated, 1e-3), 0.0, 1.0);
+		float ramp = clamp(1.0 - d / max(stated, 1e-3), 0.0, 1.0);
+		if (ramp <= 0.0) {
+			return 0.0;
+		}
+
+		float ratio = clamp(d / max(record.w, 1e-3), 0.0, 1.0);
+		float window = 1.0 - (ratio * ratio * ratio * ratio);
+		window *= window;
+		float rest = window > 1e-3 ? clamp(godot_attenuation / window, 0.0, 1.0) : 1.0;
 		return ramp * rest;
 	}
 

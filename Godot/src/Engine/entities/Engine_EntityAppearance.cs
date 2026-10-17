@@ -28,6 +28,22 @@ public static class Engine_EntityAppearance
 
     private static readonly StringName TintParameter = "entity_tint";
 
+    /// <summary>The 7e3 scene ceiling over the exposure at rest: 31.875 / 4.</summary>
+    private const float SceneCeilingTint = 31.875f / 4f;
+
+    /// <summary>Nodes drawing the saturation-mask overlay; read by the post-process to skip its pass.</summary>
+    private static readonly HashSet<MeshInstance3D> Masked = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The overlay each node carries: 0 none, else <see cref="OverlayMask"/> | <see cref="OverlayDepth"/>.</summary>
+    private static readonly Dictionary<MeshInstance3D, int> Overlays = new(ReferenceEqualityComparer.Instance);
+
+    private const int OverlayMask = 1;
+    private const int OverlayDepth = 2;
+    private static readonly ShaderMaterial?[] OverlayMaterials = new ShaderMaterial?[4];
+
+    /// <summary>How many entity nodes carry the saturation mask right now.</summary>
+    public static int MaskedCount { get; private set; }
+
     /// <summary>Opacity at or above which the guest draws without blending (`flt_83320A70`).</summary>
     private const float OpaqueFrom = 0.999f;
 
@@ -54,6 +70,27 @@ public static class Engine_EntityAppearance
     /// common case — a constructed look on a node that never had another — touches no engine
     /// state. The caller has already taken the node out of any batch and any twin marriage.
     /// </summary>
+    private static readonly StringName ClassicTintParameter = "ps_g_StandardMaterialTintColour";
+
+    /// <summary>
+    /// The body's fade and tint onto its cloth. The guest draws the cloth as part of the body, so
+    /// it takes the same c49 tint and the same blend; here the cloth is a child node of its own
+    /// and would otherwise stay untinted and opaque under a fading, tinted body.
+    /// </summary>
+    public static void MirrorToCloth(GeometryInstance3D node)
+    {
+        if (node.GetNodeOrNull(Refii.Physics.Engine_ClothBody.NodeName) is not GeometryInstance3D cloth)
+        {
+            return;
+        }
+        cloth.Transparency = node.Transparency;
+        cloth.SetInstanceShaderParameter(TintParameter, node.GetInstanceShaderParameter(TintParameter));
+        if (Refii.Models.Engine_ClassicMaterial.Active)
+        {
+            cloth.SetInstanceShaderParameter(ClassicTintParameter, node.GetInstanceShaderParameter(ClassicTintParameter));
+        }
+    }
+
     public static void Apply(MeshInstance3D node, in HostBridge.EntityAppearance look, bool principal)
     {
         bool had = Applied.TryGetValue(node, out HostBridge.EntityAppearance was);
@@ -96,8 +133,61 @@ public static class Engine_EntityAppearance
         // to c49 in order), and `.w` is read by no shader. A corpse is {103,103,103,255}: grey.
         if (!had || was.TintLanes != look.TintLanes)
         {
+            // THE MODERN TINT IS CAPPED AT THE XBOX'S SCENE CEILING. The title's scene target is
+            // 7e3 (`"1280x720 2xMSAA Horizontal Split (PIXEL_FORMAT_A2B10G10R10F_EDRAM)"`), whose
+            // largest value is 31.875, and its materials write lit × tint × exposure (c20.w,
+            // 4 at rest). qo240's ghosts state (0, 1000, 100000)/255 — blue 392 — and read as a
+            // faint blue only because the target saturates; our FP16 scene does not, and the
+            // ghost became a blinding glow. Capping the lane at 31.875 / 4 keeps every tint the
+            // title can actually show and touches only the over-range ones (qo240, qo900 ghosts,
+            // qo860/qo170/qo890 at 9..12). Classic clamps the export itself instead.
             node.SetInstanceShaderParameter(TintParameter,
-                new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f));
+                new Vector4(
+                    Mathf.Min(look.TintLanes.X, SceneCeilingTint),
+                    Mathf.Min(look.TintLanes.Y, SceneCeilingTint),
+                    Mathf.Min(look.TintLanes.Z, SceneCeilingTint), 1f));
+            // The classic shaders read the same tint as the title's PS c49 (the instance's
+            // +240, which this appearance setter fills).
+            if (Refii.Models.Engine_ClassicMaterial.Active)
+            {
+                node.SetInstanceShaderParameter(ClassicTintParameter,
+                    new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f));
+            }
+        }
+
+        MirrorToCloth(node);
+
+        // THE OVERLAY: SetSaturationMask (+196) marks the node's pixels for the post-process,
+        // and a faded node writes the depth its blend tests against (entity_fade_depth). One
+        // material carries whichever the look needs.
+        bool masked = drawn && look.SaturationMask;
+        if (masked != Masked.Contains(node))
+        {
+            if (masked)
+            {
+                Masked.Add(node);
+            }
+            else
+            {
+                Masked.Remove(node);
+            }
+
+            MaskedCount = Masked.Count;
+        }
+
+        int overlay = (masked ? OverlayMask : 0) | (node.Transparency > 0f ? OverlayDepth : 0);
+        Overlays.TryGetValue(node, out int carried);
+        if (overlay != carried)
+        {
+            node.MaterialOverlay = OverlayMaterial(overlay);
+            if (overlay == 0)
+            {
+                Overlays.Remove(node);
+            }
+            else
+            {
+                Overlays[node] = overlay;
+            }
         }
 
         if (look.IsConstructed)
@@ -129,8 +219,46 @@ public static class Engine_EntityAppearance
     }
 
     /// <summary>The node is going away.</summary>
-    public static void Forget(MeshInstance3D node) => Applied.Remove(node);
+    /// <summary>
+    /// The overlay for a combination. The depth writer draws ahead of every other transparent
+    /// surface (render priority -128), so the faded body's own surfaces then pass only where they
+    /// are nearest; the mask alone draws with the rest.
+    /// </summary>
+    private static ShaderMaterial? OverlayMaterial(int overlay)
+    {
+        if (overlay == 0)
+        {
+            return null;
+        }
+
+        return OverlayMaterials[overlay] ??= new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>(overlay switch
+            {
+                OverlayMask => "res://src/Engine/entities/entity_saturation_mask.gdshader",
+                OverlayDepth => "res://src/Engine/entities/entity_fade_depth.gdshader",
+                _ => "res://src/Engine/entities/entity_fade_depth_mask.gdshader",
+            }),
+            RenderPriority = (overlay & OverlayDepth) != 0 ? (int)Material.RenderPriorityMin : 0,
+        };
+    }
+
+    public static void Forget(MeshInstance3D node)
+    {
+        Applied.Remove(node);
+        Overlays.Remove(node);
+        if (Masked.Remove(node))
+        {
+            MaskedCount = Masked.Count;
+        }
+    }
 
     /// <summary>Every node is going away (a level change).</summary>
-    public static void ForgetAll() => Applied.Clear();
+    public static void ForgetAll()
+    {
+        Applied.Clear();
+        Masked.Clear();
+        Overlays.Clear();
+        MaskedCount = 0;
+    }
 }

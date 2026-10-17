@@ -10,6 +10,8 @@ uniform vec4 area;
 uniform mat4 shelter_box = mat4(1.0);
 uniform float shelter_on = 0.0;
 
+#include "res://src/Engine/level/environment/fable_roofs.gdshaderinc"
+
 varying vec2 v_meta;
 
 float wx_hash(float n) {
@@ -85,6 +87,9 @@ void vertex() {
 		vec3 q = abs((shelter_box * (MODEL_MATRIX * vec4(center, 1.0))).xyz);
 		live = live && max(q.x, max(q.y, q.z)) > 1.0;
 	}
+
+	// Under any building's roof, as the title cuts its rain and snow.
+	live = live && !fable_under_roof((MODEL_MATRIX * vec4(center, 1.0)).xyz);
 
 	VERTEX = live ? center + off : vec3(0.0);
 	v_meta = vec2(is_rain ? 0.0 : 1.0, live ? fade : 0.0);

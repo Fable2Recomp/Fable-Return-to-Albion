@@ -44,8 +44,14 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Each renderable's stated appearance (alpha, tint, scale, drawable): same rule, filled by
     # src/hooks/entity_appearance.cpp.
     ${REFII_VFS_ROOT}/src/core/entity_appearance_state.cpp
+    # The debug channel's guest-render switch: the host sets it, the DrawScene hook reads it.
+    ${REFII_VFS_ROOT}/src/core/guest_render_state.cpp
     # Each character's texture composites, filled by src/hooks/texture_layers.cpp.
     ${REFII_VFS_ROOT}/src/core/texture_layer_state.cpp
+    # The decals the guest states, filled by src/hooks/decals.cpp.
+    ${REFII_VFS_ROOT}/src/core/decal_state.cpp
+    # The FX mesh particle descriptors, filled by src/hooks/fx_meshes.cpp.
+    ${REFII_VFS_ROOT}/src/core/fx_mesh_state.cpp
     ${REFII_VFS_ROOT}/src/core/item_dye_layer_state.cpp
     ${REFII_VFS_ROOT}/src/core/part_morph_state.cpp
     # Which of the hero's garments are dyed, sampled from the guest's own test.
@@ -125,6 +131,9 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/target_highlight.cpp
     ${REFII_VFS_ROOT}/src/hooks/entity_appearance.cpp
     ${REFII_VFS_ROOT}/src/hooks/texture_layers.cpp
+    ${REFII_VFS_ROOT}/src/hooks/decals.cpp
+    ${REFII_VFS_ROOT}/src/hooks/fx_meshes.cpp
+    ${REFII_VFS_ROOT}/src/hooks/attached_particle_restore.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_open.cpp
     ${REFII_VFS_ROOT}/src/hooks/resource_manager_streams.cpp

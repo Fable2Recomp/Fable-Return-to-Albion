@@ -179,7 +179,7 @@ public static class Engine_EhfPages
             var mesh = new ArrayMesh();
             mesh.AddSurfaceFromArrays(
                 Mesh.PrimitiveType.Triangles, arrays, null, null, CustomRectFormat);
-            mesh.SurfaceSetMaterial(0, PageMaterial(page, heights));
+            mesh.SurfaceSetMaterial(0, ClassicPageMaterial(ehf, patch, heights) ?? PageMaterial(page, heights));
             meshes.Add(mesh);
         }
 
@@ -229,6 +229,25 @@ public static class Engine_EhfPages
     /// page as albedo. The bake mapping is the grid's: one lightmap texel per cell over
     /// (W−1)x(H−1) cells from the origin, which `chunk_origin_extent` states in 32-cell chunks.
     /// </summary>
+    /// <summary>
+    /// Under the classic renderer, the title's background shader over the page the title loads:
+    /// the LAST record of the patch's page set (`sub_82A90628` 0x82A90D18..D20).
+    /// </summary>
+    private static ShaderMaterial? ClassicPageMaterial(byte[] ehf, EhfBackgroundPatch patch, GhfHeights heights)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active ||
+            !Engine_EhfAtlas.TryDecodeAt(ehf, (int)patch.Pages[^1].Offset, out EhfAtlasImage page, out _))
+        {
+            return null;
+        }
+        Image image = Image.CreateFromData(
+            page.Width, page.Height, false, Image.Format.Rgba8,
+            Engine_EhfAtlas.Bc1ToRgba(page.Blocks, page.Width, page.Height));
+        ShaderMaterial? material = Engine_ClassicVista.PageMaterial(ImageTexture.CreateFromImage(image));
+        material?.SetMeta(Engine_ClassicVista.GridMeta, new Vector3(heights.OriginX, heights.OriginZ, heights.Spacing));
+        return material;
+    }
+
     private static ShaderMaterial PageMaterial(EhfAtlasImage page, GhfHeights heights)
     {
         Image image = Image.CreateFromData(
@@ -240,7 +259,10 @@ public static class Engine_EhfPages
             Shader = GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath),
         };
         material.SetShaderParameter("page_mode", true);
-        material.SetShaderParameter("page_albedo", ImageTexture.CreateFromImage(image));
+        if (!image.IsEmpty())
+        {
+            material.SetShaderParameter("page_albedo", ImageTexture.CreateFromImage(image));
+        }
         material.SetShaderParameter("chunk_origin_extent",
             new Vector4(heights.OriginX, heights.OriginZ, chunk, chunk));
         material.SetShaderParameter("chunk_grid_size",

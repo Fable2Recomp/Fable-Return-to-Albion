@@ -35,6 +35,7 @@
 #include <rex/system/xmemory.h>
 
 #include "core/payload_bridge.h"
+#include "core/traced_mutex.h"
 #include "core/hero_derived.h"
 #include "core/guest_build.h"
 
@@ -68,7 +69,7 @@ extern "C" void refii_bridge_ensure_alternate_signal_stack() {
 
 namespace {
 
-std::mutex g_mutex;
+refii::TracedMutex g_mutex{"guest tick pump"};
 std::vector<std::string> g_pending;
 
 /// The queue's ceiling. Past it the OLDEST action is dropped and counted: a pump that is not
@@ -193,7 +194,7 @@ uint32_t PostGuestTickAction(const char* name) {
 
   std::string action(name);
   const std::string key = CoalesceKey(action);
-  std::lock_guard<std::mutex> lock(g_mutex);
+  std::lock_guard lock(g_mutex);
   if (!key.empty()) {
     for (std::string& queued : g_pending) {
       if (CoalesceKey(queued) == key) {
@@ -242,7 +243,7 @@ void GuestTickPumpCounters(uint64_t* out_ticks, uint64_t* out_drained, uint32_t*
     *out_drained = g_drained.load(std::memory_order_relaxed);
   }
   if (out_queued != nullptr) {
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::lock_guard lock(g_mutex);
     *out_queued = static_cast<uint32_t>(g_pending.size());
   }
 }
@@ -412,7 +413,7 @@ struct MenuRow {
   int32_t rating = 0;
 };
 
-std::mutex g_menu_mutex;
+refii::TracedMutex g_menu_mutex{"guest menu state"};
 
 /// The list being built by the population currently running.
 std::vector<MenuRow> g_menu_building;
@@ -452,7 +453,7 @@ std::atomic<bool> g_menu_populating{false};
 
 namespace {
 
-std::mutex g_hero_mutex;
+refii::TracedMutex g_hero_mutex{"guest hero snapshot"};
 HeroDerived g_hero;
 
 std::mutex g_region_mutex;
@@ -485,7 +486,7 @@ extern "C" void refii_bridge_publish_hero_derived(const void* sampled) {
   if (sampled == nullptr) {
     return;
   }
-  std::lock_guard<std::mutex> lock(g_hero_mutex);
+  std::lock_guard lock(g_hero_mutex);
   g_hero = *static_cast<const HeroDerived*>(sampled);
 }
 
@@ -493,7 +494,7 @@ extern "C" void refii_bridge_hero_derived_snapshot(void* out) {
   if (out == nullptr) {
     return;
   }
-  std::lock_guard<std::mutex> lock(g_hero_mutex);
+  std::lock_guard lock(g_hero_mutex);
   *static_cast<HeroDerived*>(out) = g_hero;
 }
 
@@ -630,12 +631,12 @@ uint32_t FamilySnapshot(FamilyMember* out, uint32_t capacity) {
 
 /// The screen the published capture belongs to. See `g_menu_screen_id`.
 uint32_t MenuScreenId() {
-  std::lock_guard<std::mutex> lock(g_menu_mutex);
+  std::lock_guard lock(g_menu_mutex);
   return g_menu_screen_id;
 }
 
 uint32_t MenuRowLabel(uint32_t index, char* out_label, size_t label_capacity) {
-  std::lock_guard<std::mutex> lock(g_menu_mutex);
+  std::lock_guard lock(g_menu_mutex);
   if (out_label != nullptr && label_capacity > 0) {
     out_label[0] = '\0';
     if (index < g_menu_rows.size()) {
@@ -653,7 +654,7 @@ uint32_t MenuRowLabel(uint32_t index, char* out_label, size_t label_capacity) {
 uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* out_parent,
                   size_t parent_capacity, uint32_t* out_id, int32_t* out_event_type,
                   uint64_t* out_generation, int32_t* out_rating) {
-  std::lock_guard<std::mutex> lock(g_menu_mutex);
+  std::lock_guard lock(g_menu_mutex);
   if (out_generation != nullptr) {
     *out_generation = g_menu_generation.load(std::memory_order_relaxed);
   }
@@ -706,7 +707,7 @@ void refii_bridge_note_pause_tabs(uint32_t mask) {
 }
 
 void refii_bridge_menu_spawn_begin_for(uint32_t screen_id) {
-  std::lock_guard<std::mutex> lock(refii::vfs::g_menu_mutex);
+  std::lock_guard lock(refii::vfs::g_menu_mutex);
   refii::vfs::g_menu_building.clear();
   refii::vfs::g_menu_screen_id = screen_id;
 
@@ -743,7 +744,7 @@ void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, 
   row.event_type = event_type;
   row.rating = rating;
 
-  std::lock_guard<std::mutex> lock(refii::vfs::g_menu_mutex);
+  std::lock_guard lock(refii::vfs::g_menu_mutex);
 
   // Ceiling: nothing tells the payload a population has finished, so a screen that spawns
   // without ever clearing would grow this without bound. The guest's pool is 26 buttons.
@@ -785,7 +786,7 @@ uint32_t refii_bridge_guest_tick_pump_begin_drain(void) {
   refii::vfs::g_taken.clear();
   refii::vfs::g_deferred.clear();
   {
-    std::lock_guard<std::mutex> lock(refii::vfs::g_mutex);
+    std::lock_guard lock(refii::vfs::g_mutex);
     refii::vfs::g_taken.swap(refii::vfs::g_pending);
   }
   return static_cast<uint32_t>(refii::vfs::g_taken.size());
@@ -807,7 +808,7 @@ void refii_bridge_guest_tick_pump_defer_action(const char* name, size_t length) 
 
 void refii_bridge_guest_tick_pump_end_drain(void) {
   if (!refii::vfs::g_deferred.empty()) {
-    std::lock_guard<std::mutex> lock(refii::vfs::g_mutex);
+    std::lock_guard lock(refii::vfs::g_mutex);
     // Front of the queue: an action posted while this one was waiting must not overtake it.
     refii::vfs::g_pending.insert(refii::vfs::g_pending.begin(), refii::vfs::g_deferred.begin(),
                                  refii::vfs::g_deferred.end());

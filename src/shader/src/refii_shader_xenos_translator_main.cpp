@@ -1,6 +1,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -38,6 +40,80 @@
 #ifndef REFII_XENOS_DXC_LIB_DIR
 #error "REFII_XENOS_DXC_LIB_DIR must be defined"
 #endif
+
+namespace {
+
+/// The directory this library was loaded from, or empty when the platform cannot say.
+std::filesystem::path LibraryDirectory() {
+#if defined(_WIN32)
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(&LibraryDirectory), &module) ||
+        module == nullptr) {
+        return {};
+    }
+    char path[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameA(module, path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) {
+        return {};
+    }
+    return std::filesystem::path(path).parent_path();
+#else
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void*>(&LibraryDirectory), &info) == 0 ||
+        info.dli_fname == nullptr) {
+        return {};
+    }
+    return std::filesystem::path(info.dli_fname).parent_path();
+#endif
+}
+
+/// Where the compiler, its libraries and shader_common.h are at runtime.
+///
+/// BESIDE THE LIBRARY FIRST. A shipped app stages them as bin/dxc (see
+/// src/hostbridge/CMakeLists.txt); the compile-time paths below name the dev tree's vendored
+/// copies, which exist on no player's machine. A dev tree has no bin/dxc until it is staged,
+/// so it falls through to them.
+const std::filesystem::path& BundledToolDirectory() {
+    static const std::filesystem::path directory = [] {
+        const std::filesystem::path library = LibraryDirectory();
+        if (library.empty()) {
+            return std::filesystem::path{};
+        }
+        const std::filesystem::path candidate = library / "dxc";
+        const std::filesystem::path tool =
+            candidate / std::filesystem::path(REFII_XENOS_DXC_TOOL_PATH).filename();
+        std::error_code ignored;
+        return std::filesystem::exists(tool, ignored) ? candidate : std::filesystem::path{};
+    }();
+    return directory;
+}
+
+std::string DxcToolPath() {
+    const std::filesystem::path& bundled = BundledToolDirectory();
+    if (bundled.empty()) {
+        return REFII_XENOS_DXC_TOOL_PATH;
+    }
+    return (bundled / std::filesystem::path(REFII_XENOS_DXC_TOOL_PATH).filename()).string();
+}
+
+// The compiler's libraries sit beside this library (bin/), where XenosRecomp, which links
+// them, is loaded from; the tool under bin/dxc is launched with that directory on its path.
+std::string DxcLibraryDirectory() {
+    const std::filesystem::path& bundled = BundledToolDirectory();
+    return bundled.empty() ? std::string(REFII_XENOS_DXC_LIB_DIR) : bundled.parent_path().string();
+}
+
+std::string ShaderCommonPath() {
+    const std::filesystem::path& bundled = BundledToolDirectory();
+    if (bundled.empty()) {
+        return REFII_XENOSRECOMP_SHADER_COMMON_PATH;
+    }
+    return (bundled / "shader_common.h").string();
+}
+
+}  // namespace
 
 struct Options {
     std::filesystem::path input;
@@ -98,6 +174,11 @@ bool TryWriteFablePixRenderVideoFramePixelShader(
     const std::filesystem::path& input_path,
     const std::filesystem::path& hlsl_output_path,
     std::string* error);
+bool TryWriteFableBinkGodotShader(
+    const Options& options,
+    const std::filesystem::path& input_path,
+    const std::filesystem::path& output_path,
+    std::string* error);
 
 void WriteTranslatorLog(const std::filesystem::path& log_path, const std::string& message) {
     if (log_path.empty()) {
@@ -140,6 +221,53 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
     if (!dxc_profile.has_value()) {
         set_error("unsupported stage (expected vertex or pixel): " + options.stage);
         return false;
+    }
+
+    if (options.target == "godot") {
+        // Godot's shading language, straight from the recompiler: no HLSL, no dxc. The output
+        // is the artifact itself, a .gdshaderinc the classic renderer's materials include.
+        try {
+            std::filesystem::create_directories(output_path.parent_path());
+        } catch (const std::exception& exception) {
+            set_error("unable to create output directory: " + std::string(exception.what()));
+            return false;
+        }
+        // The inline Bink shaders are not Xenos microcode; they have a hand-written form here
+        // as they do for HLSL.
+        std::string inline_error;
+        const bool wrote_inline =
+            TryWriteFableBinkGodotShader(options, input_path, output_path, &inline_error);
+        if (!inline_error.empty()) {
+            set_error(inline_error);
+            return false;
+        }
+        if (wrote_inline) {
+            WriteTranslatorLog(log_path, "phase: fable_bink_godot_complete");
+            return true;
+        }
+
+        const char* xenos_error = nullptr;
+        XenosRecompTranslationStats xenos_stats{};
+        WriteTranslatorLog(log_path, "phase: xenos_translate_godot_start");
+        if (!XenosRecompTranslateEx(input_path.string().c_str(), output_path.string().c_str(), "",
+                                    XENOSRECOMP_DIALECT_GODOT, &xenos_stats, &xenos_error)) {
+            set_error(std::string("XenosRecomp failed: ") +
+                      (xenos_error != nullptr ? xenos_error : "failed to run"));
+            return false;
+        }
+        if (memexport_stats != nullptr) {
+            memexport_stats->reported = true;
+            memexport_stats->enabled = xenos_stats.memexportEnabled != 0;
+            memexport_stats->streams = xenos_stats.memexportStreams;
+            memexport_stats->data_register_mask = xenos_stats.memexportDataRegisterMask;
+            memexport_stats->unresolved_address_writes = xenos_stats.memexportUnresolvedAddressWrites;
+        }
+        WriteTranslatorLog(log_path, "phase: xenos_translate_godot_complete");
+        if (!std::filesystem::exists(output_path)) {
+            set_error("XenosRecomp did not write the Godot shader: " + output_path.string());
+            return false;
+        }
+        return true;
     }
 
     if (options.target != "vulkan" && options.target != "d3d12" &&
@@ -188,9 +316,10 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
         const char* xenos_error = nullptr;
         XenosRecompTranslationStats xenos_stats{};
         WriteTranslatorLog(log_path, "phase: xenos_translate_start");
+        const std::string shader_common_path = ShaderCommonPath();
         if (!XenosRecompTranslateToHlslEx(input_path.string().c_str(),
                                           hlsl_output_path.string().c_str(),
-                                          REFII_XENOSRECOMP_SHADER_COMMON_PATH,
+                                          shader_common_path.c_str(),
                                           &xenos_stats,
                                           &xenos_error)) {
             set_error(std::string("XenosRecomp failed: ") +
@@ -226,7 +355,7 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
     const auto run_dxc = [&](const std::filesystem::path& artifact_path,
                              bool tess_variant) -> bool {
         std::vector<std::string> dxc_args;
-        dxc_args.push_back(REFII_XENOS_DXC_TOOL_PATH);
+        dxc_args.push_back(DxcToolPath());
         dxc_args.push_back("-T");
         dxc_args.push_back(*dxc_profile);
         dxc_args.push_back("-E");
@@ -410,8 +539,49 @@ bool RunProcess(const std::vector<std::string>& args,
     }
     return true;
 #elif defined(_WIN32)
-    (void)env_overrides;
-    WriteTranslatorLog(log_path, "phase: process_set_environment_skipped_windows");
+    // The tool's libraries are in bin/, one directory above it, so the child needs PATH with
+    // that directory first. CreateProcess takes a whole environment block, not a delta: the
+    // parent's block is copied with the overridden variables replaced.
+    std::string environment_block;
+    {
+        std::vector<std::pair<std::string, std::string>> variables;
+        if (LPCH strings = GetEnvironmentStringsA(); strings != nullptr) {
+            for (const char* cursor = strings; *cursor != '\0';
+                 cursor += std::strlen(cursor) + 1) {
+                const std::string_view entry(cursor);
+                // "=C:=C:\\dir" entries record per-drive directories; their name starts at
+                // the leading '='.
+                const std::size_t equals = entry.find('=', entry.front() == '=' ? 1 : 0);
+                if (equals == std::string_view::npos) {
+                    continue;
+                }
+                variables.emplace_back(std::string(entry.substr(0, equals)),
+                                       std::string(entry.substr(equals + 1)));
+            }
+            FreeEnvironmentStringsA(strings);
+        }
+        for (const auto& [key, value] : env_overrides) {
+            bool replaced = false;
+            for (auto& [existing_key, existing_value] : variables) {
+                if (_stricmp(existing_key.c_str(), key.c_str()) == 0) {
+                    existing_value = value;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                variables.emplace_back(key, value);
+            }
+        }
+        for (const auto& [key, value] : variables) {
+            environment_block += key;
+            environment_block.push_back('=');
+            environment_block += value;
+            environment_block.push_back('\0');
+        }
+        environment_block.push_back('\0');
+    }
+    WriteTranslatorLog(log_path, "phase: process_set_environment_complete");
 
     std::string command;
     for (std::size_t index = 0; index < args.size(); ++index) {
@@ -438,7 +608,7 @@ bool RunProcess(const std::vector<std::string>& args,
         nullptr,
         FALSE,
         0,
-        nullptr,
+        environment_block.data(),
         working_directory_string.empty() ? nullptr : working_directory_string.c_str(),
         &startup_info,
         &process_info);
@@ -530,7 +700,7 @@ std::string QuoteProcessArgument(const std::string& argument) {
 
 std::vector<std::pair<std::string, std::string>> BuildDxcEnvironment() {
     std::vector<std::pair<std::string, std::string>> environment;
-    const std::string lib_dir = REFII_XENOS_DXC_LIB_DIR;
+    const std::string lib_dir = DxcLibraryDirectory();
     if (lib_dir.empty()) {
         return environment;
     }
@@ -628,22 +798,33 @@ bool ReadBinaryFile(const std::filesystem::path& path,
     return true;
 }
 
-bool TryWriteFablePixRenderVideoFramePixelShader(
-    const Options& options,
-    const std::filesystem::path& input_path,
-    const std::filesystem::path& hlsl_output_path,
-    std::string* error) {
+// The three inline Bink shaders Fable draws video with. They are not Xenos microcode (the
+// PixRenderVideoFrame payload is a 36-byte stub the engine recognises by content), so every
+// dialect writes them by hand. Returns false with `error` empty when the blob is not one of them.
+enum class FableBinkInline {
+    kNone,
+    kPixRenderVideo,
+    kMovie,
+    kMovieWithAlpha,
+};
+
+bool DetectFableBinkInlineShader(const Options& options,
+                                 const std::filesystem::path& input_path,
+                                 FableBinkInline* kind,
+                                 std::string* error) {
     constexpr std::uint8_t kExpectedPayload[] = {
         0x00, 0x00, 0x00, 0x00, 0x10, 0x01, 0xc4, 0x00, 0x22, 0x00, 0x00, 0x00,
         0xc8, 0x0f, 0x80, 0x00, 0x02, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
-    const bool is_pix_render_video =
-        options.name == "PSHADER_FABLE_PIXRENDER_VIDEO";
-    const bool is_bink_movie = options.name == "SHADER_BINK_MOVIE";
-    const bool is_bink_movie_with_alpha =
-        options.name == "SHADER_BINK_MOVIE_WITH_ALPHA";
-    if (!is_pix_render_video && !is_bink_movie && !is_bink_movie_with_alpha) {
+    *kind = FableBinkInline::kNone;
+    if (options.name == "PSHADER_FABLE_PIXRENDER_VIDEO") {
+        *kind = FableBinkInline::kPixRenderVideo;
+    } else if (options.name == "SHADER_BINK_MOVIE") {
+        *kind = FableBinkInline::kMovie;
+    } else if (options.name == "SHADER_BINK_MOVIE_WITH_ALPHA") {
+        *kind = FableBinkInline::kMovieWithAlpha;
+    } else {
         return false;
     }
     if (options.stage != "pixel") {
@@ -653,7 +834,7 @@ bool TryWriteFablePixRenderVideoFramePixelShader(
         return false;
     }
 
-    if (is_pix_render_video) {
+    if (*kind == FableBinkInline::kPixRenderVideo) {
         std::vector<std::uint8_t> bytes;
         std::string read_error;
         if (!ReadBinaryFile(input_path, &bytes, &read_error)) {
@@ -670,6 +851,64 @@ bool TryWriteFablePixRenderVideoFramePixelShader(
             return false;
         }
     }
+    return true;
+}
+
+// The Godot form: the same YUV to RGB combine over the three planes (four with alpha), bound as
+// the unnamed pixel samplers s0..s3 the way the Godot dialect names them.
+bool TryWriteFableBinkGodotShader(
+    const Options& options,
+    const std::filesystem::path& input_path,
+    const std::filesystem::path& output_path,
+    std::string* error) {
+    FableBinkInline kind = FableBinkInline::kNone;
+    if (!DetectFableBinkInlineShader(options, input_path, &kind, error)) {
+        return false;
+    }
+    const bool with_alpha = kind == FableBinkInline::kMovieWithAlpha;
+
+    std::string shader =
+        "// Fable's inline Bink video pixel shader, written by hand for Godot: the blob is not Xenos\n"
+        "// microcode. Planes: s0 = Y, s1 = Cr, s2 = Cb" +
+        std::string(with_alpha ? ", s3 = alpha" : "") + ".\n"
+        "#include \"res://src/Engine/material/xenos_common.gdshaderinc\"\n"
+        "#ifndef XR_V_TEXCOORD0\n#define XR_V_TEXCOORD0\nvarying vec4 v_texcoord0;\n#endif\n"
+        "uniform sampler2D ps_s0;\n"
+        "uniform sampler2D ps_s1;\n"
+        "uniform sampler2D ps_s2;\n";
+    if (with_alpha) {
+        shader += "uniform sampler2D ps_s3;\n";
+    }
+    shader +=
+        "\nvoid fragment()\n{\n"
+        "\tvec2 uv = v_texcoord0.xy;\n"
+        "\tfloat cb = texture(ps_s2, uv).r;\n"
+        "\tfloat y = texture(ps_s0, uv).r;\n"
+        "\tfloat cr = texture(ps_s1, uv).r;\n"
+        "\tvec4 color;\n"
+        "\tcolor.r = y * 1.1641235 + cr * 1.5957947 - 0.8706551;\n"
+        "\tfloat green_base = y * 1.1641235 + cr * -0.81347656;\n"
+        "\tcolor.g = green_base + cb * -0.3914490 + 0.5297050;\n"
+        "\tcolor.b = y * 1.1641235 + cb * 2.0178223 - 1.081669;\n";
+    shader += with_alpha ? "\tcolor.a = texture(ps_s3, uv).r;\n" : "\tcolor.a = 1.0;\n";
+    shader +=
+        "\tALBEDO = color.rgb;\n"
+        "\tALPHA = color.a;\n"
+        "}\n";
+
+    return WriteTextFile(output_path, shader, error);
+}
+
+bool TryWriteFablePixRenderVideoFramePixelShader(
+    const Options& options,
+    const std::filesystem::path& input_path,
+    const std::filesystem::path& hlsl_output_path,
+    std::string* error) {
+    FableBinkInline kind = FableBinkInline::kNone;
+    if (!DetectFableBinkInlineShader(options, input_path, &kind, error)) {
+        return false;
+    }
+    const bool is_bink_movie_with_alpha = kind == FableBinkInline::kMovieWithAlpha;
 
     constexpr std::string_view kHlsl = R"(#define REFII_SHADER_STAGE_PIXEL 1
 #define REFII_BINK_ALPHA 0

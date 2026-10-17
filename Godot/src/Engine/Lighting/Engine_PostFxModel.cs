@@ -500,7 +500,7 @@ public static class Engine_PostFxModel
         float r = Clampf((0.75f * Range) / m, 0.1f, 10.0f);
         float prev = s.Exposure;
         float target = Clampf(prev * r, ExposureMin, ExposureMax);
-        float step = 1.0f - MathF.Pow(1.0f - ExposureBlend, MathF.Max(dt, 0.0f) * 30.0f);
+        float step = 1.0f - MathF.Pow(1.0f - ExposureBlend, Clampf(dt * 30.0f, 0.0f, 1.0f));
         float e = Clampf(prev + (step * (target - prev)), ExposureMin, ExposureMax);
         s.Prev = prev;
         s.Exposure = e;

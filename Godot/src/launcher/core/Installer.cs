@@ -138,8 +138,16 @@ public static class Installer
         {
             try
             {
-                File.Delete(destinationPath);
-                File.Delete(dataBankPath);
+                if (File.Exists(destinationPath))
+                {
+                    File.Delete(destinationPath);
+                }
+
+                if (File.Exists(dataBankPath))
+                {
+                    File.Delete(dataBankPath);
+                }
+
                 error = string.Empty;
                 return true;
             }
@@ -180,7 +188,11 @@ public static class Installer
             File.WriteAllBytes(destinationPath, update.Patch);
 
             // A bank from an earlier package never outlives the patch it came with.
-            File.Delete(dataBankPath);
+            if (File.Exists(dataBankPath))
+            {
+                File.Delete(dataBankPath);
+            }
+
             if (update.HasDataBank)
             {
                 string? bankParent = Path.GetDirectoryName(dataBankPath);
@@ -230,6 +242,24 @@ public static class Installer
     private static bool CheckInstalledTitleUpdateNow(out string summary)
     {
         string gameData = GetActiveGameDataDirectoryPath();
+        string failedMarker = Path.Combine(gameData, InstallFailedFileName);
+        if (File.Exists(failedMarker))
+        {
+            string detail = string.Empty;
+            try
+            {
+                detail = File.ReadAllText(failedMarker).Trim();
+            }
+            catch
+            {
+            }
+
+            summary = detail.Length != 0
+                ? "Game install failed: " + detail
+                : "Game install failed or incomplete. Reinstall from your disc image.";
+            return false;
+        }
+
         string executablePath = Path.Combine(gameData, "default.xex");
         string patchPath = Path.Combine(gameData, "default.xexp");
 
@@ -349,7 +379,8 @@ public static class Installer
     public static string GetGeneratedCodeDirectoryPath() =>
         Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "generated");
 
-    public readonly record struct ReinstallStepStatus(bool Banks, bool Shaders);
+    /// <summary>Which derived artefacts the Install tab tracks by a file the pipeline writes.</summary>
+    public readonly record struct ReinstallStepStatus(bool Shaders);
 
     private const long StepStatusTtlMs = 1000;
     private static ReinstallStepStatus _stepStatus;
@@ -373,7 +404,6 @@ public static class Installer
 
         string workspace = GetLuaWorkspacePath();
         _stepStatus = new ReinstallStepStatus(
-            File.Exists(Path.Combine(workspace, "dir.manifest")),
             File.Exists(Path.Combine(workspace, "shaders", "compile_report.tsv")));
         _stepStatusValid = true;
         _stepStatusStamp = now;
@@ -386,6 +416,15 @@ public static class Installer
     public static bool EnsureRuntimeConfigFile(out string error) =>
         RuntimeConfig.EnsureDefaults(GetRuntimeConfigPath(), out error);
 
+    public const string InstallOkFileName = ".install-ok";
+    public const string InstallFailedFileName = ".install-failed";
+
+    public static string GetGameInstallReceiptPath() =>
+        Path.Combine(GetGameDataDirectoryPath(), InstallOkFileName);
+
+    public static string GetGameInstallFailedPath() =>
+        Path.Combine(GetGameDataDirectoryPath(), InstallFailedFileName);
+
     /// <summary>
     /// True when a directory really holds an extracted install.
     ///
@@ -395,9 +434,21 @@ public static class Installer
     /// downstream then tries to mount nothing and reports 0 files instead of saying the
     /// game is missing. The banks are the payload, so the banks are the test.
     /// </summary>
-    public static bool HasExtractedAssets(string gameDataDirectory, string markerPath) =>
-        Directory.Exists(gameDataDirectory) && File.Exists(markerPath) &&
-        HasBanks(gameDataDirectory);
+    public static bool HasExtractedAssets(string gameDataDirectory, string markerPath)
+    {
+        if (!Directory.Exists(gameDataDirectory) || !File.Exists(markerPath) || !HasBanks(gameDataDirectory))
+        {
+            return false;
+        }
+
+        string failedMarker = Path.Combine(gameDataDirectory, InstallFailedFileName);
+        if (File.Exists(failedMarker))
+        {
+            return false;
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// True when a tree carries at least one <c>.bnk</c>.

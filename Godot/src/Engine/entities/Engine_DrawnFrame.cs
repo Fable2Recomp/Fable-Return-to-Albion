@@ -32,6 +32,20 @@ public static class Engine_DrawnFrame
 	public static float Alpha => (float)Playhead.Alpha(NowUsec);
 
 	/// <summary>
+	/// The point on the guest's game-tick timeline this frame is drawn at: the shared pair runs
+	/// from its stated tick − 1 (alpha 0) to the stated tick (alpha 1), carrying past either end
+	/// as the playhead does. NaN before anything has been stated.
+	/// </summary>
+	/// <remarks>
+	/// Everything stamped with a game tick is sampled HERE — clip times, clip weights, bone
+	/// poses — so limbs and the camera share one instant and one rate. A per-series anchor set
+	/// when the walk noticed a value restarts at each arrival: a value noticed early jumps the
+	/// part of the segment not yet drawn, one noticed late holds. That was the limb stepping.
+	/// </remarks>
+	public static double DrawTick =>
+		_statedTick == 0u || !Playhead.Ready ? double.NaN : _statedTick - 1.0 + Playhead.Alpha(NowUsec);
+
+	/// <summary>
 	/// The instant this frame is drawn for, latched once per frame. Every draw point (camera,
 	/// entity transforms, pose blends, clip times) reads it so one displayed image shows one moment
 	/// of the guest's world; sampling the wall clock per subject would spread them across the
@@ -121,7 +135,11 @@ public static class Engine_DrawnFrame
 		// Histogram of ticks each swap claims to cover. The anchor advances by this many whole
 		// periods; read beside `pairFloored` (draw point clamped at the floor) for diagnostics.
 		SwapIntervals[intervals & 15] += 1;
-		Playhead.Swap(Godot.Time.GetTicksUsec(), intervals);
+
+		// At the frame's instant, as every entity pair swaps: the world and the bodies then
+		// anchor on identical arrivals, and the swap time no longer depends on which feed
+		// noticed first or how far into the frame it ran.
+		Playhead.Swap(NowUsec, intervals);
 	}
 
 	/// <summary>The transform to draw for a stated pair, at this frame's alpha.</summary>

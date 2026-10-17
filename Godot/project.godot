@@ -17,6 +17,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="Fable 2 Launcher"
 config/description="Rebuild of the refii launcher. Dependencies remain native DLLs."
 run/main_scene="res://main.tscn"
+config/project_settings_override="user://renderer.cfg"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 run/flush_stdout_on_print=true
 config/icon="res://assets/launcher/icon.png"
@@ -78,6 +79,10 @@ rendering_device/d3d12/max_misc_descriptors_per_frame=2048
 
 [shader_globals]
 
+ui_keyboard_mode={
+"type": "bool",
+"value": false
+}
 fx_scene_depth={
 "type": "sampler2D",
 "value": ""
@@ -182,6 +187,50 @@ fable_darkening={
 "type": "vec3",
 "value": Vector3(1, 1, 1)
 }
+fable_wind_direction={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+fable_wind_factors={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
+fable_tree_wind={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+fable_tree_clock={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
+fable_roofs={
+"type": "sampler2D",
+"value": ""
+}
+fable_roof_count={
+"type": "int",
+"value": 0
+}
+fable_snow_pushes={
+"type": "sampler2D",
+"value": ""
+}
+fable_snow_push={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
+fable_sky_overlay0={
+"type": "sampler2D",
+"value": ""
+}
+fable_sky_overlay1={
+"type": "sampler2D",
+"value": ""
+}
+fable_sky_overlay={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
 fable_sun_toward={
 "type": "vec3",
 "value": Vector3(0, 1, 0)
@@ -195,6 +244,22 @@ fable_prop_lightmaps={
 "value": ""
 }
 fable_light_table={
+"type": "sampler2D",
+"value": ""
+}
+xr_ps_constants={
+"type": "sampler2D",
+"value": ""
+}
+xr_vs_constants={
+"type": "sampler2D",
+"value": ""
+}
+xr_vertex_bakes={
+"type": "sampler2D",
+"value": ""
+}
+xr_prt_constants={
 "type": "sampler2D",
 "value": ""
 }

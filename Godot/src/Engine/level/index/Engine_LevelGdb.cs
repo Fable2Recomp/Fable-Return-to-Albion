@@ -27,7 +27,7 @@ public static class Engine_LevelGdb
             if (statedBytes is not null)
             {
                 path = stated;
-                return statedBytes;
+                return MaybeApplyTuOverlay(statedBytes, path, read);
             }
         }
 
@@ -63,7 +63,7 @@ public static class Engine_LevelGdb
                 if (bytes is not null)
                 {
                     path = candidate;
-                    return bytes;
+                    return MaybeApplyTuOverlay(bytes, path, read);
                 }
             }
 
@@ -77,6 +77,26 @@ public static class Engine_LevelGdb
         }
 
         return null;
+    }
+
+    private static byte[] MaybeApplyTuOverlay(
+        byte[] baseGdbBytes,
+        string gdbPath,
+        Func<string, byte[]?> read)
+    {
+        if (string.IsNullOrEmpty(gdbPath))
+        {
+            return baseGdbBytes;
+        }
+
+        string tuPath = gdbPath + ".tu";
+        byte[]? tuBytes = read(tuPath) ?? read("data/" + tuPath);
+        if (tuBytes is null || tuBytes.Length == 0)
+        {
+            return baseGdbBytes;
+        }
+
+        return Refii.Gdb.GdbPatchBuilder.ApplyOverlayToBaseGdb(baseGdbBytes, tuBytes);
     }
 
     public static string EngineLevelPath(

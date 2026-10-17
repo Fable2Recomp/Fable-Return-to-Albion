@@ -137,6 +137,14 @@ public static class Engine_BodyVariants
 		}
 
 		var variant = new ArrayMesh { ResourceName = source.ResourceName };
+		// The classic transfer data rides per surface, so it follows the kept surfaces (a joined
+		// group is only ever a mergeable modern shader, which reads none).
+		Godot.Collections.Array? prtDescriptors = source.HasMeta(Refii.Models.Engine_MdlTransfer.SurfaceDescriptorsMeta)
+			? source.GetMeta(Refii.Models.Engine_MdlTransfer.SurfaceDescriptorsMeta).AsGodotArray() : null;
+		Godot.Collections.Array? prtTables = source.HasMeta(Refii.Models.Engine_MdlTransfer.SurfaceTablesMeta)
+			? source.GetMeta(Refii.Models.Engine_MdlTransfer.SurfaceTablesMeta).AsGodotArray() : null;
+		var keptDescriptors = new Godot.Collections.Array();
+		var keptTables = new Godot.Collections.Array();
 		foreach (List<int> group in groups)
 		{
 			int first = group[0];
@@ -150,6 +158,21 @@ public static class Engine_BodyVariants
 				variant, source.SurfaceGetPrimitiveType(first), arrays, lods);
 			variant.SurfaceSetName(added, source.SurfaceGetName(first));
 			variant.SurfaceSetMaterial(added, source.SurfaceGetMaterial(first));
+			bool single = group.Count == 1;
+			keptDescriptors.Add(single && prtDescriptors is not null && first < prtDescriptors.Count ? prtDescriptors[first] : System.Array.Empty<int>());
+			keptTables.Add(single && prtTables is not null && first < prtTables.Count ? prtTables[first] : System.Array.Empty<float>());
+		}
+		if (prtDescriptors is not null && prtTables is not null)
+		{
+			variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceDescriptorsMeta, keptDescriptors);
+			variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceTablesMeta, keptTables);
+		}
+		foreach (Godot.StringName whole in new[] { Refii.Models.Engine_MdlTransfer.DescriptorMeta, Refii.Models.Engine_MdlTransfer.TableMeta })
+		{
+			if (source.HasMeta(whole))
+			{
+				variant.SetMeta(whole, source.GetMeta(whole));
+			}
 		}
 
 		// The rig and the regions ride on the source; the variant is only ever drawn.

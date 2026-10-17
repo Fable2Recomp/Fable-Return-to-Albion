@@ -31,6 +31,8 @@ layout(set = 0, binding = 2, std140) uniform PostFxParams {
 layout(set = 0, binding = 3) uniform sampler2D bloom_tex;
 layout(set = 0, binding = 4) uniform sampler2D dof_tex;
 layout(set = 0, binding = 5) uniform sampler2D depth_tex;
+// g_SaturationMaskSampler (Engine_PostFxSaturationMask): 1 where a SetSaturationMask entity drew.
+layout(set = 0, binding = 6) uniform sampler2D satmask_tex;
 
 layout(push_constant, std430) uniform Params {
 	ivec2 size;
@@ -42,6 +44,18 @@ layout(push_constant, std430) uniform Params {
 const int S_APPLIED_FRAME = 16;
 const int S_CURVE_SCALE = 29;
 const int S_INV_WHITE_SQ = 30;
+const int S_LUT = 544;
+const int LUT_SIZE = 512;
+
+/// The title's tone map texture T(L)/L (`sub_8217E428`, 512 x 1, built into the state by the
+/// reduce pass) as its 1D fetch reads it: linear between texel centres, clamped.
+float classic_tone(float t) {
+	float x = clamp(t, 0.0, 1.0) * float(LUT_SIZE) - 0.5;
+	int i0 = clamp(int(floor(x)), 0, LUT_SIZE - 1);
+	int i1 = min(i0 + 1, LUT_SIZE - 1);
+	float f = clamp(x - floor(x), 0.0, 1.0);
+	return mix(state.v[S_LUT + i0], state.v[S_LUT + i1], f);
+}
 const vec3 LUMINANCE_WEIGHTS = vec3(0.2125, 0.7154, 0.0721);
 
 float linear_depth(float z) {
@@ -132,7 +146,9 @@ void main() {
 	// luminance — highlights clip, mids compress, and the frame reads flat and milky. Applying
 	// the scalar after the curve restores the headroom, which is what the pre-rewrite
 	// `fable_exposure_apply` did as `texel.rgb * gain * state.v[7]`.
-	float applied = max(state.v[S_APPLIED_FRAME], 1e-4);
+	// The classic look's scene was exposed by its materials (c20.w = E), as the title's was.
+	bool classic = params.reserved1.z > 0.5;
+	float applied = classic ? 1.0 : max(state.v[S_APPLIED_FRAME], 1e-4);
 	vec3 c = texel.rgb;
 	vec2 uv = (vec2(coord) + 0.5) / vec2(push.size);
 	// THE CEILING IS THE DISPLAY'S (params.reserved0.z): 1 in SDR, where everything below is
@@ -153,7 +169,39 @@ void main() {
 		c = mix(c, blurred, w);
 	}
 
+	// THE MASKED PAIR IS A DELTA (shader 0505): m = mask >= 0.5, then Brightness + 1 + m x
+	// BrightnessMasked and Saturation + m x SaturationMasked. The Cursed Snowglobe states -1 and
+	// +1: the world grey, its masked Shadows, hero and weapons in their own colour.
+	float m = (params.reserved1.w > 0.5 && texelFetch(satmask_tex, coord, 0).r >= 0.5) ? 1.0 : 0.0;
+	float brightness = params.sat.y + (m * params.sat.w);
+	float saturation = params.sat.x + (m * params.sat.z);
+
 	vec3 col = c;
+	if (classic && params.bits.x > 0.5) {
+		// PSHADER_POSTPROCESSINGMATERIAL_TONEMAP1 (shader 0500), instruction for instruction:
+		// lum = dot(hdr, (.2125, .7154, .0721)); s = T(lum * c46.x) * c77.y; bloom =
+		// saturate(bloom * c31.x); k = saturate(lum * c47.x); c = saturate(s * (lum + k * (hdr -
+		// lum))); c = bloom + c - bloom * c; c += (c - lum(c)) * c77.x; then the gamma power.
+		// c46.x = 1/range (misc.w), c47.x = 1/ColourSensitivityThreshold (misc.x), c77 =
+		// (Saturation, Brightness + 1) (sat.xy), c31.x = the bloom factor (composite.x).
+		float lum = dot(c, LUMINANCE_WEIGHTS);
+		float s = classic_tone(lum * params.misc.w) * brightness;
+		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, 1.0);
+		float k = clamp(lum * params.misc.x, 0.0, 1.0);
+		col = clamp(s * (vec3(lum) + k * (c - vec3(lum))), 0.0, 1.0);
+		col = bloom + col - bloom * col;
+		float l2 = dot(col, LUMINANCE_WEIGHTS);
+		col = (col - vec3(l2)) * saturation + col;
+		// c78.x = GAMMA * 0.45454544 (`sub_821E5DB8`, 0x821E6404): the title writes
+		// pow(col, c78.x) straight to its 8-bit back buffer. Godot sRGB-encodes this target on
+		// output, so the power is decoded through sRGB here and the screen shows the power
+		// exactly, toe included.
+		float gamma = params.misc.y > 0.0 ? params.misc.y : 1.0;
+		col = pow(clamp(col, 0.0, 1.0), vec3(0.45454544 * gamma));
+		col = mix(col / 12.92, pow((col + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), col));
+		imageStore(color_image, coord, vec4(clamp(col, 0.0, 1.0), texel.a));
+		return;
+	}
 	if (params.bits.x > 0.5) {
 		float l = dot(c, LUMINANCE_WEIGHTS);
 		float x = l * state.v[S_CURVE_SCALE];
@@ -175,7 +223,7 @@ void main() {
 		// a lit exterior meters around 0.02 before the exposure scalar is applied.
 		float s = clamp(l * applied * params.misc.x, 0.0, 1.0);
 		col = vec3(l) + s * (c - vec3(l));
-		col = clamp(gain * params.sat.y * applied * col, 0.0, headroom);
+		col = clamp(gain * brightness * applied * col, 0.0, headroom);
 		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, headroom);
 		col = col + bloom * max(headroom - col, 0.0) / headroom;
 	} else {
@@ -184,7 +232,7 @@ void main() {
 
 	if (params.bits.z > 0.5) {
 		float lc = dot(col, LUMINANCE_WEIGHTS);
-		col = col + params.sat.x * (col - vec3(lc));
+		col = col + saturation * (col - vec3(lc));
 	}
 
 	col *= params.misc.z;

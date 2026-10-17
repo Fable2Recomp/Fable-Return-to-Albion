@@ -41,6 +41,11 @@ public static class PubGameInput
         int buttons = KeyboardButtons(out int leftTrigger, out int rightTrigger,
             out int leftX, out int leftY, out int rightX, out int rightY);
 
+        // The mouse's two buttons are the pad's A and B — the pub games' only answers are
+        // confirm and back, and their own art carries the prompts.
+        buttons |= Godot.Input.IsMouseButtonPressed(MouseButton.Left) ? GamePad.AButton : 0;
+        buttons |= Godot.Input.IsMouseButtonPressed(MouseButton.Right) ? GamePad.BButton : 0;
+
         if (!IgnorePads)
         {
             foreach (int pad in Godot.Input.GetConnectedJoypads())

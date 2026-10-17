@@ -75,24 +75,48 @@ public partial class GameSession : Node
 	{
 		Current = this;
 
-		// EVERY FRAME PHASE BECOMES A TRACY ZONE, installed once here. The engine already
-		// measures 28 phases for its own report; wiring the profiler to the same annotation
-		// means a zone cannot drift from the phase it names, and nothing has to be annotated
-		// twice. A no-op until the bridge is up — TraceZoneBegin answers 0 and the scope skips.
-		// STARTED, not just linked. `TRACY_MANUAL_LIFETIME` leaves the client inert until this
-		// runs, so without it every zone below is emitted into nothing.
-		if (Refii.Host.HostBridge.TraceStartup())
+		// Frame lifecycle boundaries: FrameStart (priority int.MinValue) samples GPU passes,
+		// clocks, and advances FramePhases.FrameIndex; FrameEnd (priority int.MaxValue) marks frame end.
+		// These must run every frame unconditionally in all configurations so guest liveness caching,
+		// entity bone rigging, animation playheads, and UI carousels operate properly.
+		AddChild(new Refii.Core.Engine_FrameStartNode { Name = "FrameStart" });
+		AddChild(new Refii.Core.Engine_FrameEndNode { Name = "FrameEnd" });
+
+		// THE GRANT GOES LAST IN THE FRAME, after every reader. A granted step starts on the
+		// guest's own thread at once, so granted at the top of the frame it ran under the camera
+		// read, the walk and the rig reads, and a read could take the next step's state under
+		// this frame's stamp (Engine_TickClock.FrameStamp, read at frame start). The guest
+		// finishes a step with the HF pass `sub_821A61B0` and then only publishes the render
+		// (`sub_82278DD0`) and spins in SwitchToThread until the next grant (sub_82276D10,
+		// 0x822772a4 onward), so a frame that saw a new guest frame now reads a parked guest,
+		// and the step computes while Godot renders. Before Engine_FrameEndNode, which closes
+		// the frame's measurements.
+		ProcessPriority = int.MaxValue - 1;
+
+		// The classic renderer's shadow cascades, up before any level builds its materials
+		// so every classic material can bind the maps as it is made.
+		Refii.Models.Engine_ClassicPath.Ensure(this);
+
+		// THE GAME'S OWN PROFILER, when `tracy` is on (restart only; see GameTracy). Tracy runs
+		// whole inside the process — client and analysis connected in memory, no socket — and a
+		// capture is started from the dev menu. Until then the client collects nothing
+		// (`TRACY_ON_DEMAND`) and sampling is off.
+		//
+		// EVERY FRAME PHASE BECOMES A TRACY ZONE, installed once here: the profiler carries the
+		// same 28 phases the engine measures for its own report, so a zone cannot drift from the
+		// phase it names. Godot's pass timestamps go onto the same timeline as GPU zones while
+		// the engine captures them (`gpu_profile = true` passes `--gpu-profile`).
+		GameTracy.Start(Refii.Core.Engine_RefiiConfig.Read(out _));
+		if (GameTracy.Enabled)
 		{
-			GD.Print("[game] Tracy is up — connect a profiler to see the frame");
+			GD.Print("[game] Tracy is up — capture from the dev menu" +
+				(GameTracy.Advanced ? " (advanced data on)" : string.Empty));
+			Refii.Core.Engine_FramePhases.ZoneBegin = Refii.Host.HostBridge.TraceZoneBegin;
+			Refii.Core.Engine_FramePhases.ZoneEnd = Refii.Host.HostBridge.TraceZoneEnd;
+			Refii.Core.Engine_FramePhases.Plot = Refii.Host.HostBridge.TracePlot;
+			Refii.Core.Engine_GpuPasses.Sink = Refii.Host.HostBridge.TraceGpuPasses;
+			AddChild(new GameTracyFeed { Name = "GameTracyFeed" });
 		}
-
-		Refii.Core.Engine_FramePhases.ZoneBegin = Refii.Host.HostBridge.TraceZoneBegin;
-		Refii.Core.Engine_FramePhases.ZoneEnd = Refii.Host.HostBridge.TraceZoneEnd;
-		Refii.Core.Engine_FramePhases.Plot = Refii.Host.HostBridge.TracePlot;
-
-		// Godot's pass timestamps go onto the same timeline as GPU zones. They exist only while
-		// the engine captures them (`gpu_profile = true` in refii.toml passes `--gpu-profile`).
-		Refii.Core.Engine_GpuPasses.Sink = Refii.Host.HostBridge.TraceGpuPasses;
 
 		// RenderDoc, when the launcher armed its Vulkan layer for this run (`renderdoc = true`):
 		// takes the in-application API so the debug channel can trigger captures into user://captures.
@@ -295,8 +319,58 @@ public partial class GameSession : Node
 		}
 	}
 
+	private double _classicStatusTimer;
+
 	private void session_processBody(double delta)
 	{
+		// The modern renderer's decals: the guest's stated ring as Godot decals.
+		if (!Refii.Models.Engine_ClassicMaterial.Active && Refii.Host.HostBridge.IsGuestUp)
+		{
+			Refii.Fx.Engine_ModernDecals.Ensure(this).Pump();
+			Refii.Level.Engine_ModernMist.Ensure(this).Pump();
+			Refii.Lighting.Engine_LightZones.Pump();
+			// The guest's live theme block: its texture slots give the modern dome its overlays.
+			Refii.Models.Engine_ClassicTheme.Pump();
+			Refii.Level.Engine_SkyOverlay.Pump();
+			if (GetViewport()?.GetCamera3D() is { } modernEye)
+			{
+				Refii.Level.Engine_RoofCut.Pump(modernEye.GlobalPosition);
+				Refii.Level.Engine_SnowPushes.Pump();
+				// The guest's FX mesh twins, drawn on the modern materials; FableFx's simulated copies stand down.
+				if (Refii.Fx.Engine_FxMeshTwins.Instance is null)
+				{
+					AddChild(new Refii.Fx.Engine_FxMeshTwins());
+				}
+				Refii.Fx.Engine_FxMeshTwins.Instance?.Pump(modernEye);
+				Refii.Fx.FableFx.GuestMeshTwins = Refii.Fx.Engine_FxMeshTwins.FeedLive;
+				// The guest's particle groups and trails on our own shaders; GameFx stands down only
+				// the effects whose groups are drawn here (FableFx.GuestDrawn), every other keeps its own.
+				if (Refii.Models.Engine_ClassicParticles.Instance is null)
+				{
+					AddChild(new Refii.Models.Engine_ClassicParticles { Name = "GuestParticles" });
+				}
+				Refii.Models.Engine_ClassicParticles.Instance?.Pump(modernEye);
+				Refii.Models.Engine_ModernFur.Pump(modernEye);
+				Refii.Fx.Engine_ModernDrunk.Pump(this);
+				Refii.Fx.Engine_DisplacementMeshes.Pump();
+			}
+		}
+
+		// The classic renderer's frame constants: registered once, pushed when they changed.
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			Camera3D? camera = GetViewport()?.GetCamera3D();
+			Refii.Models.Engine_ClassicPath.Pump(this, camera, GetViewport()?.GetVisibleRect().Size ?? new Vector2(1920f, 1080f));
+
+			// The path's liveness, every ten seconds: which feeds ran and what they drew.
+			_classicStatusTimer += delta;
+			if (_classicStatusTimer >= 10.0)
+			{
+				_classicStatusTimer = 0.0;
+				GD.Print(Refii.Models.Engine_ClassicPath.Status());
+			}
+		}
+
 		if (!_booted)
 		{
 			if (_bootDirectory.Length == 0 || !Refii.Models.Engine_ShaderWarmup.Done)
@@ -427,10 +501,6 @@ public partial class GameSession : Node
 		if (guestTick != 0u)
 		{
 			Refii.Core.Engine_TickClock.ObserveCounterPair(HostBridge.SimTick, guestTick);
-
-			// The stamp. Published before anything poses this frame, so every sample rides the
-			// same counter the pacing loop does.
-			Refii.Core.Engine_TickClock.PublishGuestGameTick(guestTick);
 
 			// The draw point's terms are the display's: `sub_82388380` sizes its draw time from
 			// the refresh rate and present interval (`XGetVideoMode`), never a measured frame

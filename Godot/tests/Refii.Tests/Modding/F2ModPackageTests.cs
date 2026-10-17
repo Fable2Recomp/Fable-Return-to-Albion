@@ -270,4 +270,290 @@ public class F2ModPackageTests
         AssertThat(loserTally.ConflictDetails.Count).IsEqual(1);
         AssertThat(loserTally.ConflictDetails[0]).Contains("BasePrice on ToyGun");
     }
+
+    [TestCase]
+    public void TestCalculateZombieBytesOnFreshPackageReturnsZero()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "Fresh.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "FreshMod", Version = "1.0.0", Author = "Tester" };
+            byte[] f1 = new byte[1024];
+            byte[] f2 = new byte[2048];
+            Array.Fill(f1, (byte)0xAA);
+            Array.Fill(f2, (byte)0xBB);
+
+            AssertThat(F2ModPackage.Create(pkgPath, meta, new[] { ("a.bin", f1), ("b.bin", f2) }, out _)).IsTrue();
+
+            ulong zombies = F2ModPackage.CalculateZombieBytes(pkgPath);
+            AssertThat(zombies).IsEqual(0UL);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestCase]
+    public void TestCalculateZombieBytesDetectsOrphanedBytesAfterDelete()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "ZombieDelete.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "ZombieDelete", Version = "1.0.0" };
+            byte[] keep = new byte[100_000];
+            byte[] del = new byte[200_000];
+            Array.Fill(keep, (byte)0x11);
+            Array.Fill(del, (byte)0x22);
+
+            AssertThat(F2ModPackage.Create(pkgPath, meta, new[] { ("keep.bin", keep), ("del.bin", del) }, out _)).IsTrue();
+            long initialSize = new FileInfo(pkgPath).Length;
+
+            // Delete del.bin without defrag
+            AssertThat(F2ModPackage.IncrementalSync(pkgPath, Array.Empty<(string, byte[])>(), new[] { "del.bin" }, defrag: false)).IsTrue();
+
+            long sizeAfterDelete = new FileInfo(pkgPath).Length;
+            // The 200,000 bytes of del.bin are still stranded in the payload section
+            AssertThat(sizeAfterDelete > 250_000).IsTrue();
+
+            ulong zombies = F2ModPackage.CalculateZombieBytes(pkgPath);
+            AssertThat(zombies >= 200_000UL).IsTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestCase]
+    public void TestDefragmentReclaimsSpaceFromDeletedEntries()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "ReclaimDelete.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "ReclaimDelete", Version = "2.5.0", Author = "RefiiDev" };
+            byte[] f1 = new byte[150_000];
+            byte[] f2 = new byte[250_000];
+            for (int i = 0; i < f1.Length; i++) f1[i] = (byte)(i & 0xFF);
+            for (int i = 0; i < f2.Length; i++) f2[i] = (byte)((i * 3) & 0xFF);
+
+            AssertThat(F2ModPackage.Create(pkgPath, meta, new[] { ("survivor.dat", f1), ("victim.dat", f2) }, out _)).IsTrue();
+
+            // Delete victim.dat
+            AssertThat(F2ModPackage.IncrementalSync(pkgPath, Array.Empty<(string, byte[])>(), new[] { "victim.dat" }, defrag: false)).IsTrue();
+
+            long bloatedSize = new FileInfo(pkgPath).Length;
+            AssertThat(F2ModPackage.CalculateZombieBytes(pkgPath) >= 250_000UL).IsTrue();
+
+            // Defragment
+            AssertThat(F2ModPackage.Defragment(pkgPath, out string error)).IsTrue();
+            AssertThat(error).IsEqual(string.Empty);
+
+            long compactedSize = new FileInfo(pkgPath).Length;
+            AssertThat(compactedSize < bloatedSize - 200_000).IsTrue();
+            AssertThat(F2ModPackage.CalculateZombieBytes(pkgPath)).IsEqual(0UL);
+
+            // Verify package integrity & data bit-for-bit
+            AssertThat(F2ModPackage.TryOpen(pkgPath, out F2ModPackage? pkg, out string openErr)).IsTrue();
+            AssertThat(openErr).IsEqual(string.Empty);
+            using (pkg)
+            {
+                AssertThat(pkg!.Metadata.Title).IsEqual("ReclaimDelete");
+                AssertThat(pkg.Metadata.Version).IsEqual("2.5.0");
+                AssertThat(pkg.Metadata.Author).IsEqual("RefiiDev");
+                AssertThat(pkg.Entries.Count).IsEqual(1);
+                AssertThat(pkg.TryGetEntry("survivor.dat", out var entry)).IsTrue();
+                AssertThat(entry!.Size).IsEqual((ulong)f1.Length);
+                AssertThat(pkg.ReadEntryBytes(entry)).IsEqual(f1);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestCase]
+    public void TestDefragmentReclaimsSpaceFromMultipleOverwrites()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "Overwrites.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "OverwritesMod", Version = "1.0.0" };
+            byte[] dataV1 = new byte[100_000];
+            Array.Fill(dataV1, (byte)1);
+            AssertThat(F2ModPackage.Create(pkgPath, meta, new[] { ("model.mdl", dataV1) }, out _)).IsTrue();
+
+            // Overwrite 4 times with different data
+            byte[] latestData = Array.Empty<byte>();
+            for (int v = 2; v <= 5; v++)
+            {
+                latestData = new byte[100_000];
+                Array.Fill(latestData, (byte)v);
+                AssertThat(F2ModPackage.IncrementalSync(pkgPath, new[] { ("model.mdl", latestData) }, defrag: false)).IsTrue();
+            }
+
+            long bloatedSize = new FileInfo(pkgPath).Length;
+            // 5 versions of 100KB payload means > 400KB of dead zombie payload
+            AssertThat(bloatedSize >= 500_000).IsTrue();
+            AssertThat(F2ModPackage.CalculateZombieBytes(pkgPath) >= 350_000UL).IsTrue();
+
+            // Defragment
+            AssertThat(F2ModPackage.Defragment(pkgPath, out string error)).IsTrue();
+            AssertThat(error).IsEqual(string.Empty);
+
+            long compactedSize = new FileInfo(pkgPath).Length;
+            AssertThat(compactedSize <= 120_000).IsTrue();
+            AssertThat(F2ModPackage.CalculateZombieBytes(pkgPath)).IsEqual(0UL);
+
+            // Verify content is latest version
+            AssertThat(F2ModPackage.TryOpen(pkgPath, out F2ModPackage? pkg, out _)).IsTrue();
+            using (pkg)
+            {
+                AssertThat(pkg!.Entries.Count).IsEqual(1);
+                AssertThat(pkg.TryGetEntry("model.mdl", out var entry)).IsTrue();
+                AssertThat(pkg.ReadEntryBytes(entry!)).IsEqual(latestData);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestCase]
+    public void TestIncrementalSyncWithDefragFlagDirectlyCompacts()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "AutoDefrag.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "AutoDefrag", Version = "1.0.0" };
+            byte[] fileA = new byte[80_000];
+            byte[] fileB = new byte[80_000];
+            Array.Fill(fileA, (byte)0xA);
+            Array.Fill(fileB, (byte)0xB);
+
+            AssertThat(F2ModPackage.Create(pkgPath, meta, new[] { ("a.bin", fileA), ("b.bin", fileB) }, out _)).IsTrue();
+
+            // Delete fileB with defrag: true
+            AssertThat(F2ModPackage.IncrementalSync(
+                pkgPath,
+                Array.Empty<(string, byte[])>(),
+                deletes: new[] { "b.bin" },
+                defrag: true)).IsTrue();
+
+            long finalSize = new FileInfo(pkgPath).Length;
+            AssertThat(finalSize < 100_000).IsTrue();
+            AssertThat(F2ModPackage.CalculateZombieBytes(pkgPath)).IsEqual(0UL);
+
+            AssertThat(F2ModPackage.TryOpen(pkgPath, out F2ModPackage? pkg, out _)).IsTrue();
+            using (pkg)
+            {
+                AssertThat(pkg!.Entries.Count).IsEqual(1);
+                AssertThat(pkg.TryGetEntry("a.bin", out var entryA)).IsTrue();
+                AssertThat(pkg.ReadEntryBytes(entryA!)).IsEqual(fileA);
+                AssertThat(pkg.TryGetEntry("b.bin", out _)).IsFalse();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestCase]
+    public void TestDefragmentPreserves16ByteAlignmentAndArbitrarySizes()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "Alignment.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "AlignmentMod", Version = "3.0.0" };
+            byte[] s1 = new byte[17];   // Odd size
+            byte[] s2 = new byte[333];  // Odd size
+            byte[] s3 = new byte[4099]; // Prime/odd
+            new Random(42).NextBytes(s1);
+            new Random(43).NextBytes(s2);
+            new Random(44).NextBytes(s3);
+
+            AssertThat(F2ModPackage.Create(pkgPath, meta, new[]
+            {
+                ("odd17.bin", s1),
+                ("odd333.bin", s2),
+                ("odd4099.bin", s3)
+            }, out _)).IsTrue();
+
+            // Force a defragment
+            AssertThat(F2ModPackage.Defragment(pkgPath, out string err)).IsTrue();
+            AssertThat(err).IsEqual(string.Empty);
+
+            AssertThat(F2ModPackage.TryOpen(pkgPath, out F2ModPackage? pkg, out _)).IsTrue();
+            using (pkg)
+            {
+                AssertThat(pkg!.Entries.Count).IsEqual(3);
+                foreach (var entry in pkg.Entries)
+                {
+                    AssertThat(entry.Offset % 16).IsEqual(0UL);
+                }
+
+                AssertThat(pkg.TryGetEntry("odd17.bin", out var e1)).IsTrue();
+                AssertThat(pkg.ReadEntryBytes(e1!)).IsEqual(s1);
+
+                AssertThat(pkg.TryGetEntry("odd333.bin", out var e2)).IsTrue();
+                AssertThat(pkg.ReadEntryBytes(e2!)).IsEqual(s2);
+
+                AssertThat(pkg.TryGetEntry("odd4099.bin", out var e3)).IsTrue();
+                AssertThat(pkg.ReadEntryBytes(e3!)).IsEqual(s3);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [TestCase]
+    public void TestDefragmentEmptyPackage()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string pkgPath = Path.Combine(tempDir, "Empty.f2mod");
+
+        try
+        {
+            var meta = new ModMetadata { Title = "EmptyMod", Version = "1.0.0", Description = "No files" };
+            AssertThat(F2ModPackage.Create(pkgPath, meta, Array.Empty<(string, byte[])>(), out _)).IsTrue();
+
+            AssertThat(F2ModPackage.Defragment(pkgPath, out string err)).IsTrue();
+            AssertThat(err).IsEqual(string.Empty);
+
+            AssertThat(F2ModPackage.TryOpen(pkgPath, out F2ModPackage? pkg, out _)).IsTrue();
+            using (pkg)
+            {
+                AssertThat(pkg!.Metadata.Title).IsEqual("EmptyMod");
+                AssertThat(pkg.Entries.Count).IsEqual(0);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
 }

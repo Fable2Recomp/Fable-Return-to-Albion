@@ -101,6 +101,14 @@ public sealed partial class Engine_WaterReflection : Node
 
             surface.Layers = WaterLayer;
 
+            // ONLY A SURFACE THAT SAMPLES A MIRROR GETS ONE: the classic water and the guest-mode
+            // branch of water.gdshader. The modern branch reflects the dome and the screen and never
+            // reads `reflection_tex`, so a mirror for it re-rendered the world for nothing.
+            if (!material.HasMeta(Engine_ClassicWater.Meta) && !material.GetShaderParameter("guest_water").AsBool())
+            {
+                continue;
+            }
+
             // ONE MIRROR PER PLANE. A planar reflection depends only on the plane, so a surface
             // within SharePlaneMetres of a mirror already made reads that one — the vista ocean
             // sits 0.1 below the body it extends, and a level's bodies often share a level.
@@ -120,6 +128,7 @@ public sealed partial class Engine_WaterReflection : Node
             if (same is not null)
             {
                 material.SetShaderParameter("reflection_tex", same.Viewport.GetTexture());
+                BindMirror(material, same.Viewport.GetTexture());
                 material.SetShaderParameter("planar_reflection", true);
                 if (!ocean)
                 {
@@ -149,6 +158,12 @@ public sealed partial class Engine_WaterReflection : Node
                 GuiDisableInput = true,
                 HandleInputLocally = false,
                 Msaa3D = Viewport.Msaa.Disabled,
+
+                // LINEAR, NOT DISPLAY-ENCODED. An LDR viewport's 3D output is clamped to 1 and
+                // sRGB-encoded into RGBA8; the water samples it as the linear colour the title's
+                // reflection tile holds, so every reflected mid-tone read about 2.4x too bright and
+                // the classic water's `oC0 *= c20.w` took it to white.
+                UseHdr2D = true,
 
                 // A 256-pixel mirror: the coarser LOD of anything whose detail is under four
                 // of its pixels.
@@ -183,6 +198,8 @@ public sealed partial class Engine_WaterReflection : Node
             AddChild(viewport);
 
             material.SetShaderParameter("reflection_tex", viewport.GetTexture());
+
+            BindMirror(material, viewport.GetTexture());
             material.SetShaderParameter("planar_reflection", true);
 
             _bodies.Add(new Body
@@ -259,6 +276,16 @@ public sealed partial class Engine_WaterReflection : Node
         }
 
         chosen.Camera.Fov = fov;
+        // THE SCREEN'S ASPECT. Both water shaders address the mirror by the screen position, so
+        // it has to cover what the screen covers: square, it held only the middle of a 16:9 view
+        // stretched across the whole width. The height stays the title's 256.
+        Vector2 screen = _view.GetViewport()?.GetVisibleRect().Size ?? new Vector2(TileSize, TileSize);
+        var size = new Vector2I(
+            Mathf.Clamp(Mathf.RoundToInt(TileSize * screen.X / Mathf.Max(screen.Y, 1f)), 1, 4 * TileSize), TileSize);
+        if (chosen.Viewport.Size != size)
+        {
+            chosen.Viewport.Size = size;
+        }
         chosen.Camera.GlobalTransform = Mirror(eye, chosen.Height);
         chosen.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
         chosen.RenderedEye = eye;
@@ -355,5 +382,17 @@ public sealed partial class Engine_WaterReflection : Node
         }
 
         return new Transform3D(Basis.LookingAt(forward, up), origin);
+    }
+
+    /// <summary>
+    /// The mirror as g_ReflectionSampler on every pass of a classic water material: the core
+    /// and the blended fringe it chains (Engine_ClassicWater) both sample it.
+    /// </summary>
+    private static void BindMirror(ShaderMaterial material, Texture2D mirror)
+    {
+        for (Material? pass = material; pass is ShaderMaterial shader; pass = shader.NextPass)
+        {
+            shader.SetShaderParameter("ps_g_ReflectionSampler", mirror);
+        }
     }
 }

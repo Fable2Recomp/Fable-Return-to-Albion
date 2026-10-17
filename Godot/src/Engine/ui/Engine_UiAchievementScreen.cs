@@ -186,6 +186,11 @@ public sealed class Engine_UiAchievementScreen
 			return false;
 		}
 
+		if (_view is not null)
+		{
+			_view.Book = _book;
+		}
+
 		if (_drawn is null)
 		{
 			if (Host.DocumentFor(Presentation) is not { } document)
@@ -245,6 +250,7 @@ public sealed class Engine_UiAchievementScreen
 		};
 
 		Host.AddChild(_view);
+		_view.Book = _book;
 		_view.Bind(_menu);
 		_view.ClipRect = Engine_UiButtonPool.ListClip(Host.DocumentFor(Presentation));
 

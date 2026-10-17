@@ -116,14 +116,12 @@ public static class Engine_LevelMesh
         // array the frame degenerates and the perturbed normal collapses back to the geometric
         // one, so every layer normal map was decoded, blended and then thrown away before
         // light() ran. The frame is analytic because the projection is: u runs along local +X
-        // and v along local +Z (Engine_GhfTerrain.BuildMesh), so the tangent is +X everywhere,
-        // and w = -1 makes Godot's `cross(NORMAL, TANGENT) * w` come out +Z to match v.
+        // and v along local -Z (terrain_splat's ground_uv), so the tangent is +X everywhere,
+        // and w = +1 makes Godot's `cross(NORMAL, TANGENT) * w` come out -Z to match v.
         //
-        // THE HANDEDNESS IS PROVEN, NOT GUESSED — against the guest's own landscape vertex
-        // shader (blob 0173): it builds T = Gram-Schmidt(+X), B = T x n = guest -Y, and its
-        // ground V is ALSO negated (v = -worldY), so the invariant is "+sample.y tilts toward
-        // +v". Our v runs along +Z with B along +Z — the same invariant, mirrored consistently
-        // with the co-sampled diffuse. The broken combination is v and B disagreeing.
+        // THE GUEST'S OWN FRAME (landscape VS, blob 0173): T = Gram-Schmidt(+X), B = T x n =
+        // guest -Y, and its ground V negated (v = -worldY). Our local Z is guest Y, so this is
+        // that frame exactly; v and B disagreeing is the broken combination.
         for (int n = 0; n < count; n++)
         {
             int v = vertexIds[n];
@@ -151,7 +149,7 @@ public static class Engine_LevelMesh
             tangents[(n * 4) + 0] = tangent.X;
             tangents[(n * 4) + 1] = tangent.Y;
             tangents[(n * 4) + 2] = tangent.Z;
-            tangents[(n * 4) + 3] = -1f;
+            tangents[(n * 4) + 3] = 1f;
         }
 
         var arrays = new Godot.Collections.Array();
@@ -194,6 +192,9 @@ public static class Engine_LevelScene
 
     public const string WaterNodeName = "Water";
 
+    /// <summary>Allows testing the Editor-specific build pipeline in headless CLI runs.</summary>
+    public static bool ForceEditorMode { get; set; }
+
     public static bool TryBuild(
         LevelEntry level, Func<string, byte[]?>? source, out string scenePath, out string error) =>
         TryBuild(level, source, null, out scenePath, out error);
@@ -214,6 +215,10 @@ public static class Engine_LevelScene
         out string error)
     {
         scenePath = level.ScenePath;
+
+        Refii.Models.Engine_MdlMaterial.WarmShaders();
+        Refii.Entities.Engine_ShadowProxy.WarmShader();
+        _ = GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath);
 
         if (!EnsureDirectory(level, out error))
         {
@@ -457,14 +462,14 @@ public static class Engine_LevelScene
         foreach ((StatedLandscape landscape, GhfHeights? grid) in grids)
         {
             bool isGrid = landscape.Ghf.Length != 0;
-            Material? material = landscape.Ehf.Length != 0 && isGrid ? LoadTerrainMaterial(landscape.Ehf) : null;
+            Material? material = landscape.Ehf.Length != 0 && isGrid ? LoadTerrainMaterial(landscape.Ehf, source, null) : null;
             Engine_EhfPages.Built? pagedBuild = null;
             bool pagedOk = !isGrid && grid is not null && landscape.Ehf.Length != 0 &&
                 source(landscape.Ehf) is { } pageBytes &&
                 Engine_EhfPages.TryBuild(pageBytes, grid, out pagedBuild, out _);
             if (!isGrid && !pagedOk && landscape.Ehf.Length != 0)
             {
-                material = LoadTerrainMaterial(landscape.Ehf, vista: true);
+                material = LoadTerrainMaterial(landscape.Ehf, source, null, vista: true);
             }
 
             bool drawn = grid is not null && (isGrid || pagedOk || material is not null);
@@ -674,7 +679,7 @@ public static class Engine_LevelScene
 
                 // A vista's material is its fallback only; the colour pages come first.
                 Material? material = landscape.Ehf.Length != 0 && landscape.Ghf.Length != 0
-                    ? LoadTerrainMaterial(landscape.Ehf)
+                    ? LoadTerrainMaterial(landscape.Ehf, source, findByName)
                     : null;
 
                 if (landscape.Ghf.Length != 0)
@@ -685,7 +690,30 @@ public static class Engine_LevelScene
                     if (terrainRead?.Invoke(landscape.Ghf) is { } ghfBytes &&
                         Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
                     {
-                        chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), name);
+                        // Under the classic renderer the main landscape is the title's own
+                        // patches on its own shaders, each patch's layers as its materials.
+                        string classicError = "no .ehf";
+                        List<ArrayMesh>? patches = null;
+                        if (Refii.Models.Engine_ClassicMaterial.Active && landscape.Ehf.Length != 0 &&
+                            terrainRead(landscape.Ehf) is { } classicEhf &&
+                            !Refii.Level.Engine_ClassicTerrain.TryBuild(classicEhf, heights, name, out patches, out classicError))
+                        {
+                            patches = null;
+                        }
+                        if (patches is not null)
+                        {
+                            chunks = patches;
+                            material = null;
+                            GD.Print($"[classic] {level}: terrain on the title's landscape shaders, {patches.Count} patch(es)");
+                        }
+                        else
+                        {
+                            if (Refii.Models.Engine_ClassicMaterial.Active)
+                            {
+                                GD.Print($"[classic] {level}: terrain stays on the modern splat ({classicError})");
+                            }
+                            chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), name);
+                        }
                     }
                     else if (main && terrainRead is null &&
                         ResourceLoader.Load<ArrayMesh>(meshPath, "ArrayMesh") is { } whole)
@@ -738,7 +766,7 @@ public static class Engine_LevelScene
                     GD.Print($"[vista] {level}: {vistaName} colour pages not built ({pageError}) — falling back");
                 }
 
-                material = LoadTerrainMaterial(landscape.Ehf, vista: true);
+                material = LoadTerrainMaterial(landscape.Ehf, source, findByName, vista: true);
 
                 if (Engine_EhfHeights.TryDecode(ehfBytes, out vistaHeights, out heightError))
                 {
@@ -783,6 +811,13 @@ public static class Engine_LevelScene
             Name = level.SceneNodeName,
             Scale = new Vector3(-1f, 1f, 1f),
         };
+        if (Refii.Models.Engine_ClassicMaterial.Active)
+        {
+            // The classic look's editor drive; inert in the game, which pumps the path itself.
+            var driver = new Refii.Models.Engine_ClassicEditorDriver { Name = Refii.Models.Engine_ClassicEditorDriver.NodeName };
+            root.AddChild(driver);
+            driver.Owner = root;
+        }
 
         AddWater(level, stated, source, findByName, root);
         Mark("water");
@@ -909,6 +944,57 @@ public static class Engine_LevelScene
                         $"[inspect] {level}: {markers.GetChildCount()} " +
                         "container marker(s) without a placed prop");
                 }
+            }
+
+            if (Engine.IsEditorHint() || ForceEditorMode)
+            {
+                var spawnedHashes = new HashSet<uint>();
+                LevelRecordMetadata.CollectRecordHashes(props, spawnedHashes, includeCulled: true);
+                LevelRecordMetadata.CollectRecordHashes(entities, spawnedHashes, includeCulled: true);
+
+                Node3D? levelMarkers = Engine_LevelMarkers.Build(
+                    level, p => source(p), spawnedHashes, out MarkerBuildStats markerStats);
+                if (levelMarkers is not null)
+                {
+                    root.AddChild(levelMarkers);
+                    SetOwnerRecursive(levelMarkers, root);
+                    LevelRecordMetadata.CollectRecordHashes(levelMarkers, spawnedHashes, includeCulled: true);
+                    GD.Print($"[markers] {level}: {markerStats}");
+                }
+
+                if (!string.IsNullOrEmpty(bakedGdbPath))
+                {
+                    MeshInstance3D? navGraph = Engine_KynapseGraph.Build(level, p => source(p), bakedGdbPath);
+                    if (navGraph is not null)
+                    {
+                        root.AddChild(navGraph);
+                        SetOwnerRecursive(navGraph, root);
+                    }
+
+                    root.SetMeta(LevelRecordMetadata.LevelGdbPathMeta, bakedGdbPath);
+                    root.SetMeta(
+                        LevelRecordMetadata.LevelSavePathMeta,
+                        Engine_LevelGdb.SiblingWithExtension(bakedGdbPath, ".save"));
+                }
+
+                root.SetMeta(LevelRecordMetadata.LevelNameMeta, level.Name);
+                root.SetMeta(LevelRecordMetadata.ScenarioNameMeta, level.Scenario);
+                string[] scenarios = level.Scenarios.Length > 0
+                    ? level.Scenarios
+                    : !string.IsNullOrEmpty(level.Scenario)
+                        ? new[] { level.Scenario }
+                        : new[] { Engine_LevelManifest.DefaultScenario };
+                root.SetMeta(LevelRecordMetadata.AvailableScenariosMeta, scenarios);
+
+                var spawnedArray = new long[spawnedHashes.Count];
+                int idx = 0;
+                foreach (uint h in spawnedHashes)
+                {
+                    spawnedArray[idx++] = h;
+                }
+
+                root.SetMeta(LevelRecordMetadata.SpawnedRecordHashesMeta, spawnedArray);
+                Mark("editor-overlays");
             }
         }
 
@@ -1059,7 +1145,7 @@ public static class Engine_LevelScene
                     Node3D? clouds = Engine_Clouds.Build(
                         cloudTheme,
                         gdbs,
-                        frame.SunDirection,
+                        frame.MainLightDirection,
                         frame.MainLightColour,
                         p => source(p),
                         findByName is null ? null : n => findByName(n));
@@ -1112,6 +1198,10 @@ public static class Engine_LevelScene
                 if (material is not null)
                 {
                     chunk.MaterialOverride = material;
+                    if (chunks[i].GetSurfaceCount() > 0)
+                    {
+                        chunks[i].SurfaceSetMaterial(0, material);
+                    }
                 }
 
                 container.AddChild(chunk);
@@ -1158,6 +1248,21 @@ public static class Engine_LevelScene
                 foreach (MeshInstance3D node in nodes)
                 {
                     node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                    surfaces.Add((built.Landscape.Ehf, node));
+                    if (node.Mesh is { } pageMesh && pageMesh.GetSurfaceCount() > 0 &&
+                        pageMesh.SurfaceGetMaterial(0) is ShaderMaterial pageMaterial &&
+                        pageMaterial.HasMeta(Engine_ClassicVista.VistaMeta))
+                    {
+                        Engine_ClassicVistaMist.Track(node);
+                    }
+                }
+            }
+            else if (nodes[0].MaterialOverride is null)
+            {
+                // The classic look's patches each carry their own layer chain, so each takes the
+                // bake (one lightmap per heightfield, decoded once).
+                foreach (MeshInstance3D node in nodes)
+                {
                     surfaces.Add((built.Landscape.Ehf, node));
                 }
             }
@@ -1217,6 +1322,8 @@ public static class Engine_LevelScene
 
         EngineLevelFile engineLevel = Engine_EngineLevelFile.Parse(bytes);
         var bound = new HashSet<ulong>();
+        var decoded = new Dictionary<ulong, ImageTexture?>();
+        var reported = new HashSet<ulong>();
 
         foreach ((string surfacePath, MeshInstance3D node) in surfaces)
         {
@@ -1264,7 +1371,11 @@ public static class Engine_LevelScene
                     break;
                 }
 
-                ImageTexture? texture = Engine_LevelBakedLighting.DecodeTexture(bake.Blob);
+                if (!decoded.TryGetValue(heightfield.LightmapKey, out ImageTexture? texture))
+                {
+                    texture = Engine_LevelBakedLighting.DecodeTexture(bake.Blob);
+                    decoded[heightfield.LightmapKey] = texture;
+                }
                 if (texture is null)
                 {
                     GD.Print($"[baked] {level}: lightmap 0x{heightfield.LightmapKey:X16} did not decode");
@@ -1275,6 +1386,69 @@ public static class Engine_LevelScene
                 {
                     target.SetShaderParameter("lightmap", texture);
                     target.SetShaderParameter("has_lightmap", true);
+                }
+                // A classic vista page takes the background's lightmapped variant, the bake on
+                // sampler 3 (`sub_822AA878`) at (position - origin) * (1 / (W s), 1 / (H s)).
+                if (node.MaterialOverride is null && node.Mesh is { } vistaMesh)
+                {
+                    for (int i = 0; i < vistaMesh.GetSurfaceCount(); i++)
+                    {
+                        if (vistaMesh.SurfaceGetMaterial(i) is ShaderMaterial page &&
+                            page.HasMeta(Engine_ClassicVista.VistaMeta) && page.HasMeta(Engine_ClassicVista.GridMeta))
+                        {
+                            Vector3 grid = page.GetMeta(Engine_ClassicVista.GridMeta).AsVector3();
+                            if (Engine_ClassicVista.Lightmapped(page, texture, new Vector2(grid.X, grid.Y),
+                                    new Vector2(1f / (texture.GetWidth() * grid.Z), 1f / (texture.GetHeight() * grid.Z))) is { } litPage)
+                            {
+                                vistaMesh.SurfaceSetMaterial(i, litPage);
+                            }
+                        }
+                    }
+                }
+                // The title's patches take the lightmapped (AMB1) pair with the map on sampler 3,
+                // for EVERY layer: each layer pass carries its weighted share of the ambient,
+                // which on the title's terrain is the bake.
+                if (node.MaterialOverride is null && node.Mesh is { } patchMesh)
+                {
+                    for (int i = 0; i < patchMesh.GetSurfaceCount(); i++)
+                    {
+                        if (patchMesh.SurfaceGetMaterial(i) is not ShaderMaterial own ||
+                            !own.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta))
+                        {
+                            continue;
+                        }
+                        ShaderMaterial? head = null, tail = null;
+                        for (Material? pass = own; pass is ShaderMaterial layer; pass = layer.NextPass)
+                        {
+                            ShaderMaterial lit = Refii.Models.Engine_ClassicMaterial.WithAmbient(layer, 1, texture, wait: true) ?? layer;
+                            if (ReferenceEquals(lit, layer))
+                            {
+                                lit = (ShaderMaterial)layer.Duplicate();
+                            }
+                            // g_LandscapeLightmapUVFactor (VS c14), per landscape (`sub_82A8EA50`):
+                            // (1 / (W * s), 1 / (H * s), 1, 1), the bake's texel size over the
+                            // heightfield's metres per cell.
+                            float cell = layer.HasMeta(Engine_ClassicTerrain.CellSizeMeta)
+                                ? layer.GetMeta(Engine_ClassicTerrain.CellSizeMeta).AsSingle()
+                                : Engine_GhfTerrain.CellSize;
+                            lit.SetShaderParameter("vs_g_LandscapeLightmapUVFactor", new Vector4(
+                                1f / (texture.GetWidth() * cell), 1f / (texture.GetHeight() * cell), 1f, 1f));
+                            lit.NextPass = null;
+                            if (head is null)
+                            {
+                                head = lit;
+                            }
+                            else
+                            {
+                                tail!.NextPass = lit;
+                            }
+                            tail = lit;
+                        }
+                        if (head is not null)
+                        {
+                            patchMesh.SurfaceSetMaterial(i, head);
+                        }
+                    }
                 }
 
                 bound.Add(heightfield.LightmapKey);
@@ -1287,6 +1461,10 @@ public static class Engine_LevelScene
                     texture.GetWidth() == bake.SamplesX - 1 &&
                     texture.GetHeight() == bake.SamplesY - 1;
 
+                if (!reported.Add(heightfield.LightmapKey))
+                {
+                    break;
+                }
                 GD.Print(
                     $"[baked] {level}: terrain lightmap 0x{heightfield.LightmapKey:X16} " +
                     $"({texture.GetWidth()}x{texture.GetHeight()} over " +
@@ -1341,11 +1519,27 @@ public static class Engine_LevelScene
     /// palette is an editor default nobody sees (`art\editor\invalid_texture.tex` on a market
     /// vista, painted magenta wherever no layer covers).
     /// </summary>
-    private static Material? LoadTerrainMaterial(string ehfPath, bool vista = false)
+    private static Material? LoadTerrainMaterial(
+        string ehfPath,
+        Func<string, byte[]?>? source = null,
+        Func<string, string?>? findByName = null,
+        bool vista = false)
     {
         if (vista && LoadPageMaterial(ehfPath) is { } pages)
         {
             return pages;
+        }
+
+        if (source?.Invoke(ehfPath) is { } ehfBytes &&
+            Engine_TerrainSplatMaterial.TryBuild(
+                ehfBytes,
+                p => source(p),
+                findByName is null ? null : n => findByName(n),
+                out ShaderMaterial builtSplat,
+                out _))
+        {
+            builtSplat.ResourceName = ehfPath[(ehfPath.LastIndexOf('/') + 1)..];
+            return builtSplat;
         }
 
         string materialPath =
@@ -1358,7 +1552,23 @@ public static class Engine_LevelScene
             return splat;
         }
 
-        return vista ? null : LoadPageMaterial(ehfPath);
+        if (LoadPageMaterial(ehfPath) is { } fallbackPage)
+        {
+            return fallbackPage;
+        }
+
+        if (GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath) is { } shader)
+        {
+            return new ShaderMaterial { Shader = shader };
+        }
+
+        return new StandardMaterial3D
+        {
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            Roughness = 0.9f,
+            Metallic = 0f,
+            SpecularMode = BaseMaterial3D.SpecularModeEnum.Disabled,
+        };
     }
 
     /// <summary>The landscape's pre-baked colour pages as one albedo.</summary>
@@ -1380,6 +1590,7 @@ public static class Engine_LevelScene
             // No built-in highlight: a placed light's specular scalar is its light-table slot
             // (Engine_LightTable), not a strength.
             SpecularMode = BaseMaterial3D.SpecularModeEnum.Disabled,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
         };
     }
 
@@ -1538,7 +1749,10 @@ public static class Engine_LevelScene
                 Buffer.BlockCopy(heights.Values, 0, data, 0, data.Length);
                 Image image = Image.CreateFromData(
                     heights.Width, heights.Height, false, Image.Format.Rf, data);
-                terrainTexture = ImageTexture.CreateFromImage(image);
+                if (!image.IsEmpty())
+                {
+                    terrainTexture = ImageTexture.CreateFromImage(image);
+                }
                 terrainBounds = new Vector4(
                     heights.OriginX,
                     heights.OriginZ,
@@ -1577,21 +1791,40 @@ public static class Engine_LevelScene
                 }
 
                 string name = $"WaterBody{emitted}";
+
+                // The classic renderer draws the body with the title's own pair; the mesh's
+                // texture coordinates become the body mask's before the mesh is built.
+                string classicError = string.Empty;
+                ShaderMaterial? classic = Engine_ClassicWater.Available
+                    ? Engine_ClassicWater.Build(
+                        body, mesh, p => source(p), findByName is null ? null : n => findByName(n), out classicError)
+                    : null;
+                if (Engine_ClassicWater.Available && classic is null)
+                {
+                    GD.Print($"[water] {level}: {classicError}; the modern water shader stands in");
+                }
+
                 var node = new MeshInstance3D
                 {
                     Name = name,
                     Mesh = Engine_LevelMesh.ToArrayMesh(mesh, name),
                 };
 
-                ShaderMaterial? material = Engine_WaterMaterial.Build(
+                string materialError = string.Empty;
+                ShaderMaterial? material = classic ?? Engine_WaterMaterial.Build(
                     body,
                     p => source(p),
                     findByName is null ? null : n => findByName(n),
-                    out string materialError);
+                    out materialError);
 
                 if (material is null)
                 {
                     GD.Print($"[water] {level}: {materialError}");
+                }
+                else if (classic is not null)
+                {
+                    node.MaterialOverride = classic;
+                    Engine_ClassicWater.Attach(classic, node);
                 }
                 else
                 {
@@ -1716,6 +1949,22 @@ public static class Engine_LevelScene
         Func<string, byte[]?> source,
         Func<string, string?>? findByName)
     {
+        if (Engine_ClassicWater.VistaAvailable)
+        {
+            float guestHeight = body.BaseHeight - 0.1f;
+            Texture2D? normal = Engine_WaterMaterial.LoadTexture(
+                body.NormalMapPath, p => source(p), findByName is null ? null : n => findByName(n));
+            MeshInstance3D? classic = Engine_ClassicWater.BuildVista(guestHeight, normal, out string classicError);
+            if (classic is not null)
+            {
+                classic.Name = VistaOceanNodeName;
+                container.AddChild(classic);
+                GD.Print($"[water] {level}: vista ocean on SKY_OCEANWATER at {guestHeight:0.###} from {waterPath}");
+                return;
+            }
+            GD.Print($"[water] {level}: classic vista ocean failed ({classicError}); the modern sheet stands in");
+        }
+
         ShaderMaterial? material = Engine_WaterMaterial.Build(
             body,
             p => source(p),
@@ -1780,7 +2029,14 @@ public static class Engine_LevelScene
             if (child is MeshInstance3D mesh &&
                 mesh.MaterialOverride is ShaderMaterial material)
             {
-                Engine_WaterMaterial.Apply(material, theme);
+                if (material.HasMeta(Engine_ClassicWater.Meta))
+                {
+                    Engine_ClassicWater.Apply(material, theme);
+                }
+                else
+                {
+                    Engine_WaterMaterial.Apply(material, theme);
+                }
             }
         }
 
@@ -1797,7 +2053,9 @@ public static class Engine_LevelScene
         Func<string, byte[]?>? source,
         Node3D root)
     {
-        if (source is null)
+        // Under classic the mist is the title's own (Engine_ClassicMist, the guest's volumes on
+        // its shaders), and every title shader is fog_disabled: Godot's volumes would only cost.
+        if (source is null || Refii.Models.Engine_ClassicMaterial.Active)
         {
             return false;
         }
@@ -1866,6 +2124,7 @@ public static class Engine_LevelScene
 
         root.AddChild(container);
         container.Owner = root;
+        BakedMist = container;
 
         foreach (Node child in container.GetChildren())
         {
@@ -1877,6 +2136,9 @@ public static class Engine_LevelScene
 
         return true;
     }
+
+    /// <summary>The level's .mist volumes as baked at load; Engine_ModernMist hides them while the guest states its own.</summary>
+    public static Node3D? BakedMist { get; private set; }
 
     private static string ReplaceExtension(string path, string extension)
     {

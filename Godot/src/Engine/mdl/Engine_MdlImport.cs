@@ -22,6 +22,20 @@ public sealed class MdlImportedMesh
 	public int TriangleCount => Indices.Length / 3;
 }
 
+/// <summary>An individual surface sampled out of a glTF/Godot mesh, with its material index preserved.</summary>
+public sealed class MdlImportedSurface
+{
+	public int MaterialIndex { get; set; }
+	public string MaterialName { get; set; } = string.Empty;
+	public float[] Positions = Array.Empty<float>();
+	public float[] Uvs = Array.Empty<float>();
+	public float[] Normals = Array.Empty<float>();
+	public float[] Tangents = Array.Empty<float>();
+	public ushort[] Indices = Array.Empty<ushort>();
+	public int VertexCount => Positions.Length / 3;
+	public int TriangleCount => Indices.Length / 3;
+}
+
 /// <summary>
 /// Turns a Godot mesh — which is what a glTF import produces — into the arrays a `.mdl` is
 /// written from.
@@ -41,7 +55,7 @@ public static class Engine_MdlImport
 	/// Godot's own vertex colours and second UV set have nowhere to go in this layout.
 	/// </summary>
 	public static bool TryFromSurface(
-		Mesh mesh, int surface, out MdlImportedMesh imported, out string error)
+		Mesh mesh, int surface, out MdlImportedMesh imported, out string error, Transform3D? sceneTransform = null)
 	{
 		imported = new MdlImportedMesh();
 		error = string.Empty;
@@ -90,10 +104,15 @@ public static class Engine_MdlImport
 		var uvs = arrays[(int)Mesh.ArrayType.TexUV].As<Vector2[]>();
 		var indices = arrays[(int)Mesh.ArrayType.Index].As<int[]>();
 
+		bool hasSceneXform = sceneTransform.HasValue && !sceneTransform.Value.IsEqualApprox(Transform3D.Identity);
+		Transform3D xform = sceneTransform ?? Transform3D.Identity;
+		Basis normalBasis = hasSceneXform ? xform.Basis.Orthonormalized() : Basis.Identity;
+
 		imported.Positions = new float[vertices.Length * 3];
 		for (int v = 0; v < vertices.Length; v++)
 		{
-			Vector3 rotated = ToModelSpace(vertices[v]);
+			Vector3 pos = hasSceneXform ? (xform * vertices[v]) : vertices[v];
+			Vector3 rotated = ToModelSpace(pos);
 			imported.Positions[v * 3] = rotated.X;
 			imported.Positions[(v * 3) + 1] = rotated.Y;
 			imported.Positions[(v * 3) + 2] = rotated.Z;
@@ -104,7 +123,8 @@ public static class Engine_MdlImport
 			imported.Normals = new float[normals.Length * 3];
 			for (int v = 0; v < normals.Length; v++)
 			{
-				Vector3 rotated = ToModelSpace(normals[v]);
+				Vector3 nrm = hasSceneXform ? (normalBasis * normals[v]).Normalized() : normals[v];
+				Vector3 rotated = ToModelSpace(nrm);
 				imported.Normals[v * 3] = rotated.X;
 				imported.Normals[(v * 3) + 1] = rotated.Y;
 				imported.Normals[(v * 3) + 2] = rotated.Z;
@@ -116,8 +136,12 @@ public static class Engine_MdlImport
 			imported.Tangents = new float[(tangents.Length / 4) * 4];
 			for (int v = 0; v * 4 + 3 < tangents.Length; v++)
 			{
-				Vector3 rotated = ToModelSpace(
-					new Vector3(tangents[v * 4], tangents[(v * 4) + 1], tangents[(v * 4) + 2]));
+				var tVec = new Vector3(tangents[v * 4], tangents[(v * 4) + 1], tangents[(v * 4) + 2]);
+				if (hasSceneXform)
+				{
+					tVec = (normalBasis * tVec).Normalized();
+				}
+				Vector3 rotated = ToModelSpace(tVec);
 				imported.Tangents[v * 4] = rotated.X;
 				imported.Tangents[(v * 4) + 1] = rotated.Y;
 				imported.Tangents[(v * 4) + 2] = rotated.Z;

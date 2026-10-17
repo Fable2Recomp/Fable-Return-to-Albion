@@ -317,8 +317,6 @@ public partial class GameDebugServer : Node
 
 	public override void _Ready()
 	{
-		AddChild(new Refii.Core.Engine_FrameStartNode { Name = "FrameStart" });
-		AddChild(new Refii.Core.Engine_FrameEndNode { Name = "FrameEnd" });
 		if (!Wanted)
 		{
 			return;
@@ -1182,6 +1180,24 @@ public partial class GameDebugServer : Node
 					});
 				}
 
+				if (what == "snapshot")
+				{
+					// Arm (`arm`: true) or read the slot's constant snapshot: the guest device's
+					// VS and PS shadows as they stood when the probed function last returned.
+					int snapSlot = root.TryGetProperty("slot", out JsonElement ss) ? ss.GetInt32() : -1;
+					if (root.TryGetProperty("arm", out JsonElement armValue) && armValue.ValueKind == JsonValueKind.True)
+					{
+						return Ok(new Dictionary<string, object?> { ["armed"] = Refii.Host.HostBridge.ProbeSnapshotArm(snapSlot) });
+					}
+					float[]? snap = Refii.Host.HostBridge.ProbeSnapshotRead(snapSlot);
+					return Ok(new Dictionary<string, object?>
+					{
+						["ready"] = snap is not null,
+						["vs"] = snap?.Take(1024).Select(v => (double)v).ToArray(),
+						["ps"] = snap?.Skip(1024).Select(v => (double)v).ToArray(),
+					});
+				}
+
 				if (what == "clear")
 				{
 					int slot = root.TryGetProperty("slot", out JsonElement s)
@@ -1265,6 +1281,9 @@ public partial class GameDebugServer : Node
 				return Ok(new Dictionary<string, object?> { ["dir"] = logs, ["lines"] = kept });
 			}
 
+			case "tracy":
+				return AnswerTracy(root);
+
 			case "mark":
 			{
 				string text = root.TryGetProperty("text", out JsonElement t)
@@ -1304,7 +1323,8 @@ public partial class GameDebugServer : Node
 						$"{light.Name} d={distance:0.0} at=({p.X:0.0},{p.Y:0.0},{p.Z:0.0}) range={range:0.0} " +
 						$"energy={light.LightEnergy:0.00} colour=({light.LightColor.R:0.00},{light.LightColor.G:0.00},{light.LightColor.B:0.00}) " +
 						$"fade={(light.DistanceFadeEnabled ? $"{light.DistanceFadeBegin:0}+{light.DistanceFadeLength:0}" : "off")} " +
-						$"visible={light.Visible} shadow={light.ShadowEnabled}");
+						$"visible={light.Visible} shadow={light.ShadowEnabled} cull=0x{light.LightCullMask:X8} " +
+						$"host={(light.HasMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta) ? $"0x{(uint)light.GetMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta).AsInt64():X8}" : "-")}");
 				}
 
 				return Ok(new Dictionary<string, object?>
@@ -1798,6 +1818,174 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "guestrender":
+			{
+				// The guest's own scene draw on or off (diagnostic): with it on, the title's
+				// constant setters fill the device shadow the classic feed is checked against.
+				bool? on = root.TryGetProperty("on", out JsonElement onValue)
+					? onValue.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null }
+					: null;
+				return Ok(new Dictionary<string, object?> { ["applied"] = Refii.Host.HostBridge.SetGuestRender(on), ["on"] = on });
+			}
+
+			case "classic":
+			{
+				// THE CLASSIC RENDERER'S FEED, read back: the frame row's registers by name, the
+				// lights the manager stated, the counts of every feed. `shadowMaps` is a lever:
+				// "capture" (the light's depth), "black" or "white" (a constant map) to tell the
+				// cascade lookup's two outcomes apart on screen.
+				// `cullHide` / `cullShow`: a render layer (1-based, as the inspector numbers them) off
+				// or back on for the drawn camera, to tell which layer draws something on screen.
+				if (GetViewport().GetCamera3D() is { } cullCamera)
+				{
+					if (root.TryGetProperty("cullHide", out JsonElement ch) && ch.ValueKind == JsonValueKind.Number)
+					{
+						cullCamera.SetCullMaskValue(ch.GetInt32(), false);
+					}
+					if (root.TryGetProperty("cullShow", out JsonElement cs) && cs.ValueKind == JsonValueKind.Number)
+					{
+						cullCamera.SetCullMaskValue(cs.GetInt32(), true);
+					}
+				}
+				// `hideNode` / `showNode`: one node by path off or back on, to find what draws a thing.
+				if (root.TryGetProperty("hideNode", out JsonElement hn) && hn.ValueKind == JsonValueKind.String &&
+					GetTree().Root.GetNodeOrNull(hn.GetString()) is Node3D hideTarget)
+				{
+					hideTarget.Visible = false;
+				}
+				if (root.TryGetProperty("showNode", out JsonElement sn) && sn.ValueKind == JsonValueKind.String &&
+					GetTree().Root.GetNodeOrNull(sn.GetString()) is Node3D showTarget)
+				{
+					showTarget.Visible = true;
+				}
+				if (root.TryGetProperty("shadowMaps", out JsonElement sm) && sm.ValueKind == JsonValueKind.String)
+				{
+					string mode = sm.GetString() ?? "capture";
+					if (mode is "capture" or "black" or "white")
+					{
+						Refii.Models.Engine_ClassicShadows.MapMode = mode;
+					}
+				}
+
+				static Dictionary<string, object?> Registers(bool pixel, (string Name, int Register, int Count)[] list)
+				{
+					var block = new Dictionary<string, object?>();
+					foreach ((string name, int register, int count) in list)
+					{
+						float[] values = Refii.Models.Engine_ClassicConstants.ReadFrame(pixel, register, count);
+						block[$"c{register} {name}"] = values.Select(v => (double)v).ToArray();
+					}
+					return block;
+				}
+
+				var lights = new List<Dictionary<string, object?>>();
+				foreach (Refii.Models.Engine_ClassicLights.Light light in Refii.Models.Engine_ClassicLights.Lights.Take(12))
+				{
+					lights.Add(new Dictionary<string, object?>
+					{
+						["index"] = light.Index,
+						["type"] = light.Type,
+						["position"] = new[] { light.Position.X, light.Position.Y, light.Position.Z },
+						["radius"] = light.Radius,
+						["colour"] = new[] { light.Colour.X, light.Colour.Y, light.Colour.Z },
+						["intensity"] = light.Intensity,
+						["direction"] = new[] { light.Direction.X, light.Direction.Y, light.Direction.Z },
+						["range"] = light.Range,
+						["flags"] = light.Flags,
+						["zone"] = $"{light.Zone:X8}",
+					});
+				}
+				bool haveSun = Refii.Models.Engine_ClassicFeed.TrySun(out Vector3 sunColour, out Vector3 sunDirection, out float sunIntensity);
+				(long feedFrames, long fed) = Refii.Models.Engine_ClassicFeed.Counts;
+				(int attached, int lit) = Refii.Models.Engine_ClassicLitInstances.Counts;
+				(int built, int fellBack) = Refii.Models.Engine_ClassicMaterial.Counts;
+				var particles = Refii.Models.Engine_ClassicParticles.Instance?.Counts ?? (0, 0, 0);
+				return Ok(new Dictionary<string, object?>
+				{
+					["active"] = Refii.Models.Engine_ClassicMaterial.Active,
+					// The raw exports, so a run's frame can be saved and replayed in the level viewer
+					// (Engine_ClassicPath.LoadReplay).
+					["frame"] = Refii.Models.Engine_ClassicFeed.RawFrame.Select(v => (double)v).ToArray(),
+					// Our whole frame row, both stages, for a register-by-register diff against
+					// the device shadow of a `guestrender` run.
+					["psRow"] = Refii.Models.Engine_ClassicConstants.ReadFrame(true, 0, 256).Select(v => (double)v).ToArray(),
+					["vsRow"] = Refii.Models.Engine_ClassicConstants.ReadFrame(false, 0, 256).Select(v => (double)v).ToArray(),
+					["lightsRaw"] = Refii.Models.Engine_ClassicLights.RawLights().Select(v => (double)v).ToArray(),
+					["mistsRaw"] = Refii.Models.Engine_ClassicMist.RawMists().Select(v => (double)v).ToArray(),
+					["feedFrames"] = feedFrames,
+					["fed"] = fed,
+					["seconds"] = Refii.Models.Engine_ClassicFeed.Seconds,
+					["lights"] = lights,
+					["lightCount"] = Refii.Models.Engine_ClassicLights.Lights.Count,
+					["litInstances"] = lit,
+					["attachedInstances"] = attached,
+					["liveRows"] = Refii.Models.Engine_ClassicConstants.LiveRows,
+					["sharedLightRows"] = Refii.Models.Engine_ClassicLitInstances.SharedRows,
+					["mists"] = Refii.Models.Engine_ClassicMist.Volumes.Count,
+					["particles"] = particles.Item2,
+					["particleGroups"] = particles.Item1,
+					["waterSurfaces"] = Refii.Level.Engine_ClassicWater.Count,
+					["materialsBuilt"] = built,
+					["materialsFellBack"] = fellBack,
+					["shadowMaps"] = Refii.Models.Engine_ClassicShadows.MapMode,
+					["shadowsUp"] = Refii.Models.Engine_ClassicShadows.Instance is not null,
+					["sun"] = haveSun ? new Dictionary<string, object?>
+					{
+						["colour"] = new[] { sunColour.X, sunColour.Y, sunColour.Z },
+						["direction"] = new[] { sunDirection.X, sunDirection.Y, sunDirection.Z },
+						["intensity"] = sunIntensity,
+					} : null,
+					// The sky elements' inputs as the title reads them (Engine_ClassicSkyElements):
+					// SUN_INTENSITY p7 gates, SUN_GLARE_INTENSITY p100 x facing^2 x visibility^2
+					// scales the sky object's colour, SUN_GLARE_SIZE p101 sizes; the visibilities are
+					// the sun disc's and moon bloom's counted pixels (GPU readback).
+					["sky"] = Refii.Level.Engine_ClassicSkyElements.Active ? SkyReadout() : null,
+					["water"] = Refii.Level.Engine_ClassicWater.Describe(),
+					["particleGroups"] = Refii.Models.Engine_ClassicParticles.Instance?.Describe(),
+					["casters"] = Refii.Models.Engine_ClassicCasters.Census(),
+					["litAssigned"] = Refii.Models.Engine_ClassicLitInstances.LastAssigned,
+					["litSkipped"] = Refii.Models.Engine_ClassicLitInstances.LastSkipped,
+					["ambient"] = new[]
+					{
+						Refii.Models.Engine_ClassicFeed.GlobalAmbient.X,
+						Refii.Models.Engine_ClassicFeed.GlobalAmbient.Y,
+						Refii.Models.Engine_ClassicFeed.GlobalAmbient.Z,
+					},
+					["ps"] = Registers(true, new[]
+					{
+						("ShadowRangeConstants", 12, 1), ("ShadowMapResolution", 13, 2), ("FadeBeginDistanceAndRange", 15, 1),
+						("SimulationTime", 17, 1), ("PerspectiveConstants", 18, 1), ("EyePosition", 19, 1),
+						("GlobalAmbientAndBrightness", 20, 1), ("LightmapFactorAndGamma", 21, 1),
+						("AmbientNormalMapDarkeningColour", 22, 1), ("NormalMapLightAngleConstants", 23, 1),
+						("AtmosphericFactors", 28, 1), ("GlobalTextureGammaRamp", 30, 1),
+						("DirectionalLightShadowTransform0", 36, 4), ("DirectionalLightShadowTransform1", 40, 4),
+						("Atmosphere", 64, 5), ("Mist", 72, 5),
+						("LightPositions", 80, 2), ("LightColors", 87, 2), ("LightType", 94, 1), ("LightInvRadii", 96, 1),
+						("LightSpotDirections", 98, 1), ("LightSpotParameters", 105, 1), ("LightPrimaryDirection", 109, 1),
+						("LightScreenSpaceShadowMask", 112, 1), ("LightSpotShadowMask", 114, 1),
+					}),
+					["vs"] = Registers(false, new[]
+					{
+						("AtmosphericAdditiveFactor", 8, 1), ("EyePosition", 9, 1), ("SimulationTime", 10, 1),
+						("TreeConstants", 15, 3), ("LightmapFactorAndGamma", 18, 1), ("AmbientLightReferenceDirection", 19, 1),
+						("GlobalAmbientAndBrightness", 54, 1), ("LightPositions", 76, 2), ("LightColors", 83, 2),
+						("LightType", 90, 1), ("LightPrimaryDirection", 105, 1), ("Atmosphere", 108, 5),
+					}),
+				});
+			}
+
+			case "looks":
+			{
+				// The drawn entities nearest the eye and what the guest states for their look.
+				int take = root.TryGetProperty("count", out JsonElement lk) && lk.ValueKind == JsonValueKind.Number
+					? System.Math.Clamp(lk.GetInt32(), 1, 64) : 12;
+				Vector3 eye = GetViewport()?.GetCamera3D()?.GlobalPosition ?? Vector3.Zero;
+				return Ok(new Dictionary<string, object?>
+				{
+					["looks"] = GameEntities.Current?.DescribeLooks(eye, take),
+				});
+			}
+
 			case "entity":
 			{
 				// One drawn entity, as the feed sees it: stated parts with their model names, the
@@ -2003,6 +2191,17 @@ public partial class GameDebugServer : Node
 				return Ok(GameEntities.Current?.DescribeDoubles(radius) ?? new Dictionary<string, object?>());
 			}
 
+			case "drawcensus":
+			{
+				// The main view's surfaces and material passes by owner and family, and the draws
+				// left once equal (mesh, surface, material) keys merge: `{"op":"drawcensus"}`.
+				Node? world = GameEntities.Current?.GetTree()?.Root;
+				Camera3D? camera = GameEntities.Current?.GetViewport()?.GetCamera3D();
+				return Ok(world is null || camera is null
+					? new Dictionary<string, object?>()
+					: Refii.Core.Engine_DrawCensus.Describe(world, camera));
+			}
+
 			case "lodcensus":
 			{
 				// The main view's triangles by owner and mesh, at the level Godot picks and at the
@@ -2204,6 +2403,7 @@ public partial class GameDebugServer : Node
 						["animNoComponentBit"] = Refii.Host.HostBridge.AnimWalkStats()?.NoBit,
 						["animComponentUnresolved"] = Refii.Host.HostBridge.AnimWalkStats()?.Unresolved,
 						["animControllerFound"] = Refii.Host.HostBridge.AnimWalkStats()?.Found,
+						["animLinked"] = Refii.Host.HostBridge.AnimWalkStats()?.Linked,
 						["animControllerEmpty"] = Refii.Host.HostBridge.AnimWalkStats()?.Empty,
 						["heldNoPrimary"] = Refii.Animations.Engine_ClipAnimator.HeldNoPrimaryFrames,
 						["fallbackUnknownClip"] = Refii.Animations.Engine_ClipAnimator.FallbackUnknownClip,
@@ -2737,12 +2937,14 @@ public partial class GameDebugServer : Node
 
 			case "alpha":
 			{
-				// The blend alpha as a per-frame sequence, for both paths: pose-blended rigs and
-				// clip-driven rigs.
+				// The pose-blended rigs' alpha as a per-frame sequence; for clip-driven rigs, how
+				// often a playhead re-timed and how often its correction ran at the speed limit
+				// (Engine_ClipPlayhead) — both should stay near zero while a clip plays on.
 				return Ok(new Dictionary<string, object?>
 				{
 					["trace"] = Refii.Entities.Engine_EntitySkeleton.AlphaTrace(),
-					["clip"] = Refii.Core.Engine_TickScalar.AlphaTrace(),
+					["clipRestarts"] = Refii.Animations.Engine_ClipPlayhead.Restarts,
+					["clipSaturated"] = Refii.Animations.Engine_ClipPlayhead.Saturated,
 				});
 			}
 
@@ -2755,19 +2957,20 @@ public partial class GameDebugServer : Node
 					return Ok(new Dictionary<string, object?> { ["tracing"] = world is not null });
 				}
 
-				(long restarts, double swapAlpha, int steps) = world?.CameraSwapHealth ?? (0L, 0.0, 0);
-				(long statedSwaps, double worstSwapError) = world?.CameraStatedSwapHealth ?? (0L, 0.0);
+				// The camera, bodies and live effects share one timeline type (Engine_TickTimeline):
+				// how often any of them re-placed past the snap bounds, and how often a correction
+				// ran at its speed limit. Both should stay near zero while things move normally.
+				Camera3D? drawn = GetViewport().GetCamera3D();
 				return Ok(new Dictionary<string, object?>
 				{
+					["position"] = drawn is null ? null : new[] { drawn.GlobalPosition.X, drawn.GlobalPosition.Y, drawn.GlobalPosition.Z },
+					["forward"] = drawn is null ? null : new[] { -drawn.GlobalBasis.Z.X, -drawn.GlobalBasis.Z.Y, -drawn.GlobalBasis.Z.Z },
+					["up"] = drawn is null ? null : new[] { drawn.GlobalBasis.Y.X, drawn.GlobalBasis.Y.Y, drawn.GlobalBasis.Y.Z },
+					["fov"] = drawn?.Fov,
 					["trace"] = world?.CameraTraceReport(),
-					["restarts"] = restarts,
-
-					// Written by BOTH swap paths. 1.0 is on time; the distance from 1 is how far
-					// the draw point had carried past (or fallen short of) the pair it left.
-					["lastSwapAlpha"] = swapAlpha,
-					["statedSwaps"] = statedSwaps,
-					["worstSwapError"] = worstSwapError,
-					["lastSteps"] = steps,
+					["timelineSnaps"] = Refii.Core.Engine_TickTimeline.Snaps,
+					["timelineSaturated"] = Refii.Core.Engine_TickTimeline.Saturated,
+					["pace"] = Refii.Core.Engine_DrawAdvance.Pace,
 				});
 			}
 
@@ -2902,6 +3105,50 @@ public partial class GameDebugServer : Node
 	/// from the previous one on the same port, and a stale answer looks exactly like a current
 	/// one — the failure this whole handshake exists to prevent.
 	/// </summary>
+	private static Dictionary<string, object?> SkyReadout()
+	{
+		Vector3 sun = Refii.Models.Engine_ClassicTheme.SunDirection;
+		Vector3 colour = Refii.Models.Engine_ClassicTheme.SunColour;
+		Camera3D? camera = ((SceneTree)Engine.GetMainLoop()).Root.GetViewport().GetCamera3D();
+		// The guest's axes to Godot's: (-x, z, y).
+		float facing = camera is null ? -2f : (-camera.GlobalBasis.Z).Dot(new Vector3(-sun.X, sun.Z, sun.Y));
+		float[] visibility = { -1f, -1f };
+		if (Refii.Lighting.Engine_ClassicSkyLayers.Visibility?.GetImage() is { } image && image.GetWidth() >= 2)
+		{
+			visibility[0] = image.GetPixel(0, 0).R;
+			visibility[1] = image.GetPixel(1, 0).R;
+		}
+		float Param(int index) => Refii.Models.Engine_ClassicTheme.Param(index);
+		return new Dictionary<string, object?>
+		{
+			["sunIntensity"] = Param(7),
+			["glareIntensity"] = Param(100),
+			["glareSize"] = Param(101),
+			["discSize"] = Param(92),
+			["discIntensity"] = Param(94),
+			["sunColour"] = new[] { colour.X, colour.Y, colour.Z },
+			["sunDirection"] = new[] { sun.X, sun.Y, sun.Z },
+			["facing"] = facing,
+			["sunVisibility"] = visibility[0],
+			["moonVisibility"] = visibility[1],
+			["glareColour"] = new[]
+			{
+				colour.X * Param(100) * facing * facing * System.MathF.Max(visibility[0], 0f) * System.MathF.Max(visibility[0], 0f),
+				colour.Y * Param(100) * facing * facing * System.MathF.Max(visibility[0], 0f) * System.MathF.Max(visibility[0], 0f),
+				colour.Z * Param(100) * facing * facing * System.MathF.Max(visibility[0], 0f) * System.MathF.Max(visibility[0], 0f),
+			},
+			["glareTexture"] = $"{Refii.Models.Engine_ClassicTheme.TopHash(Refii.Models.Engine_ClassicTheme.SlotSunGlare):X8}",
+			// Where the camera says the sun is (sign-free, as the halo layer projects) against
+			// where the post chain's sprites put it, and the projection those sprites read.
+			["sunScreenCamera"] = camera is not null && Refii.Lighting.Engine_PostFxParams.ProjectSun(new Vector3(-sun.X, sun.Z, sun.Y), camera, out Vector2 uv, out _)
+				? new[] { uv.X, uv.Y } : null,
+			["sunScreenSprites"] = new[] { Refii.Lighting.Engine_PostFxEffect.LastSunDisc.X, Refii.Lighting.Engine_PostFxEffect.LastSunDisc.Y },
+			["spriteProjection"] = new[] { Refii.Lighting.Engine_PostFxEffect.LastProjection.X, Refii.Lighting.Engine_PostFxEffect.LastProjection.Y,
+				Refii.Lighting.Engine_PostFxEffect.LastProjection.Z, Refii.Lighting.Engine_PostFxEffect.LastProjection.W },
+			["cameraFov"] = camera?.Fov ?? -1f,
+		};
+	}
+
 	private static Dictionary<string, object?> Ok(Dictionary<string, object?> body)
 	{
 		body["ok"] = true;

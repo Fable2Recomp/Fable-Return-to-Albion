@@ -158,6 +158,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private Rid _linearSampler;
     private Rid _nearestSampler;
     private Rid _exposureRd;
+    private Engine_PostFxSaturationMask? _satMask;
+
+    /// <summary>This frame composites with the saturation mask: masked entities are up and the theme states a masked pair.</summary>
+    private bool _maskWanted;
 
     private Rid _quarter;
     private Rid _occl;
@@ -388,6 +392,14 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _trapUnitState = _rd.StorageBufferCreate((uint)unit.Length, unit);
         }
 
+        // The saturation mask is the one pass the chain runs without: unbuilt, masked entities
+        // take the plain saturation.
+        _satMask = new Engine_PostFxSaturationMask(_rd);
+        if (!_satMask.Initialise())
+        {
+            _satMask = null;
+        }
+
         bool ready = _histogramBuffer.IsValid && _stateBuffer.IsValid && _paramsBuffer.IsValid &&
             _haloBuffer.IsValid && _highlightBuffer.IsValid && _haloFallbackArray.IsValid && _linearSampler.IsValid &&
             _nearestSampler.IsValid && _exposureRd.IsValid;
@@ -498,6 +510,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _halfSize = new Vector2I(Math.Max(size.X / 2, 1), Math.Max(size.Y / 2, 1));
 
         _quarter = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
+        _satMask?.Resize(size);
         _occl = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
         for (int i = 0; i < 2; i++)
         {
@@ -564,6 +577,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void FreeTargets()
     {
+        FreeClassicTargets();
         FreeSet(ref _histogramSet);
         FreeSet(ref _brightcutSet);
         for (int i = 0; i < 2; i++)
@@ -596,15 +610,34 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         _trapRingColour = default;
-        Free(ref _staging);
-        Free(ref _quarter);
-        Free(ref _occl);
-        for (int i = 0; i < 2; i++)
+        if (!_disposed)
         {
-            Free(ref _rays[i]);
-            Free(ref _bloom[i]);
-            Free(ref _dof[i]);
-            Free(ref _glow[i]);
+            Free(ref _staging);
+            Free(ref _quarter);
+            Free(ref _occl);
+            for (int i = 0; i < 2; i++)
+            {
+                Free(ref _rays[i]);
+                Free(ref _bloom[i]);
+                Free(ref _dof[i]);
+                Free(ref _glow[i]);
+            }
+        }
+        else
+        {
+            // During effect disposal (NotificationPredelete), the rendering device / compositor
+            // has already torn down the viewport texture allocations; clear local RIDs to avoid
+            // attempting to free already-reclaimed IDs.
+            _staging = default;
+            _quarter = default;
+            _occl = default;
+            for (int i = 0; i < 2; i++)
+            {
+                _rays[i] = default;
+                _bloom[i] = default;
+                _dof[i] = default;
+                _glow[i] = default;
+            }
         }
 
         _glowSize = default;
@@ -684,6 +717,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
+        FreeClassicPost();
         FreeTargets();
         FreeSet(ref _reduceSet);
         Free(ref _exposureRd);
@@ -711,6 +745,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Free(ref _histogramPipeline);
         Free(ref _reducePipeline);
         Free(ref _compositeShader);
+        _satMask?.Release();
+        _satMask = null;
         Free(ref _gaussShader);
         Free(ref _dofDownscaleShader);
         Free(ref _brightcutShader);
@@ -781,7 +817,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             camProjection = sceneData.GetCamProjection();
         }
 
+        // `Render_LitMaterialSubmit` takes the SaturationMask variant only when the theme states a
+        // masked pair (|SaturationMasked| or |BrightnessMasked| over 0.01, 0x821e5e60).
+        _maskWanted = _satMask is not null && Refii.Entities.Engine_EntityAppearance.MaskedCount > 0 &&
+            (MathF.Abs(_derived.SaturationMasked) > 0.01f || MathF.Abs(_derived.BrightnessMasked) > 0.01f);
         UpdateParams(dt, sun.SunDirection, camBasis, camProjection, bloomOn, raysOn, dofOn);
+        _frameProjection = camProjection;
+        _frameDof = dofOn;
         Reduce();
         _rd.BufferClear(_histogramBuffer, 0, HistogramBytes);
 
@@ -847,7 +889,20 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // buffer feeds the bright pass. SunLayer is the layer's content with the guest's
             // own per-pixel Z test, so a hill in front of the sun kills the rays exactly as
             // far as it covers.
-            if (raysOn && sunOnScreen && sun.Disc.Active && sun.Disc.Texture.IsValid)
+            // Under classic the layer holds what the title draws there, the SUN BEAMS (PS 0121,
+            // `sub_821CB750` 0x821CB958), and the glow layer takes the moon bloom and the sun disc
+            // (Engine_ClassicSkyLayers).
+            bool classicSky = Refii.Models.Engine_ClassicMaterial.Active && Engine_ClassicSkyLayers.Snapshot(_skyFrame);
+            if (classicSky)
+            {
+                Clear(_rays[0]);
+                if (raysOn && ClassicBeams(depth, camBasis, camOrigin, projection, out Vector2 beamsUv))
+                {
+                    Radial(0, beamsUv);
+                    Radial(1, beamsUv);
+                }
+            }
+            else if (raysOn && sunOnScreen && sun.Disc.Active && sun.Disc.Texture.IsValid)
             {
                 SunLayer(depth, sunUv, sun.Disc, projection);
                 Radial(0, sunUv);
@@ -865,12 +920,22 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 Clear(_occl);
             }
+            if (Refii.Models.Engine_ClassicMaterial.Active)
+            {
+                ClassicDecals(depth, camBasis, camOrigin, projection);
+            }
+            if (classicSky)
+            {
+                // Drawn even with bloom off: the sun disc's and moon bloom's pixels are the
+                // glares' occlusion queries.
+                ClassicGlow(depth, camBasis, camOrigin, projection);
+            }
 
             if (bloomOn)
             {
                 Brightcut();
-                Gauss(_gaussBloomHSet, new Vector2I(1, 0), _bloomWeightsH);
-                Gauss(_gaussBloomVSet, new Vector2I(0, 1), _bloomWeightsV);
+                Gauss(_gaussBloomHSet, _bloom[0], _bloom[1], new Vector2I(1, 0), _bloomWeightsH);
+                Gauss(_gaussBloomVSet, _bloom[1], _bloom[0], new Vector2I(0, 1), _bloomWeightsV);
             }
             else
             {
@@ -880,8 +945,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             if (dofOn)
             {
                 DofDownscale(colour, depth, size, projection.Inverse());
-                Gauss(_gaussDofHSet, new Vector2I(1, 0), _dofWeightsH);
-                Gauss(_gaussDofVSet, new Vector2I(0, 1), _dofWeightsV);
+                Gauss(_gaussDofHSet, _quarter, _dof[0], new Vector2I(1, 0), _dofWeightsH);
+                Gauss(_gaussDofVSet, _dof[0], _dof[1], new Vector2I(0, 1), _dofWeightsV);
+            }
+
+            if (_maskWanted && !_satMask!.Build(depth))
+            {
+                Clear(_satMask.Texture);
             }
 
             Composite(colour, depth, size, projection.Inverse());
@@ -1017,10 +1087,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             d.DofNearFocal,
             d.DofFarFocal,
             1.0f / MathF.Max(d.DofFarPlane - d.DofFarFocal, 1e-4f));
-        Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, Engine_PostFxParams.DarkLift);
+        // The classic look is the title's chain: its own operator (PSHADER_POSTPROCESSINGMATERIAL
+        // _TONEMAP1) on a scene the materials already exposed, and none of the remaster's lift.
+        bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+        Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, classic ? 1.0f : Engine_PostFxParams.DarkLift);
         Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f,
             Engine_PostFxParams.OutputHeadroom, 0.0f);
-        Set(p, 14, (float)_frameIndex, _trapRatio, 0.0f, 0.0f);
+        Set(p, 14, (float)_frameIndex, _trapRatio, classic ? 1.0f : 0.0f, _maskWanted ? 1.0f : 0.0f);
         Set(p, 8, d.Saturation, d.Brightness + 1.0f, d.SaturationMasked, d.BrightnessMasked);
 
         float gammaRatio = d.Gamma > 0.0f && MathF.Abs(d.Gamma - 1.0f) > 1e-4f ? d.Gamma : 0.0f;
@@ -1037,8 +1110,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
         Projection inverse = camProjection.Inverse();
         Set(p, 11, inverse.Z.Z, inverse.W.Z, inverse.Z.W, inverse.W.W);
+        // c31.x for the title's operator is 2 x TONE_MAPPING_BLOOM_FACTOR (`Render_LitMaterialSubmit_INFERRED`
+        // 0x821E5FC0: lfs P+0x4C; fmuls by 2.0); the modern composite keeps its own gain.
         Set(p, 12,
-            d.BloomFactor * Engine_PostFxParams.BloomGain,
+            classic ? 2.0f * d.BloomFactor : d.BloomFactor * Engine_PostFxParams.BloomGain,
             d.RadialFactor,
             Engine_PostFxParams.MaterialExposureFollowsApplied ? 1.0f : 0.0f,
             Engine_PostFxParams.BloomThresholdScale);
@@ -1065,7 +1140,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// colour += min(layer, 1) × gain, the layer sampled bilinearly from its half-res
     /// viewport. The clamp IS the guest's A8R8G8B8 target; the gain is 1.0 in the host's units,
     /// where a scene value is the guest's exposed value over the exposure — see
-    /// <see cref="Refii.Fx.Engine_FxAdditiveLayer"/>.
+    /// <see cref="Refii.Fx.Engine_FxAdditiveLayer"/>. The classic look's scene is already
+    /// exposed, so there the shader multiplies the gain by E as 0162 does (c31.x).
     /// </summary>
     private void AddLayer(Rid colour, Vector2I size, Rid layer) =>
         AddLayer(colour, size, layer, _addlayerSet, Refii.Fx.Engine_FxAdditiveLayer.Gain);
@@ -1084,6 +1160,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 Image(colour, 0),
                 Sampler(_linearSampler, layer, 1),
+                Buffer(_stateBuffer, 2),
             });
         }
 
@@ -1093,7 +1170,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         BitConverter.TryWriteBytes(push.AsSpan(0), size.X);
         BitConverter.TryWriteBytes(push.AsSpan(4), size.Y);
         BitConverter.TryWriteBytes(push.AsSpan(8), effectiveGain);
-        BitConverter.TryWriteBytes(push.AsSpan(12), 0.0f);
+        BitConverter.TryWriteBytes(push.AsSpan(12), Refii.Models.Engine_ClassicMaterial.Active ? 1.0f : 0.0f);
         Dispatch(_addlayerPipeline, set.Set, push, (size.X + 7) / 8, (size.Y + 7) / 8);
     }
 
@@ -1344,6 +1421,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Downscale4(Rid colour, Vector2I size)
     {
+        if (ClassicPost)
+        {
+            ClassicDownscale4(colour);
+            return;
+        }
         RenderingDevice rd = _rd!;
         if (!_downscale4Set.Matches(rd, colour, default))
         {
@@ -1358,7 +1440,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Dispatch(
             _downscale4Pipeline,
             _downscale4Set.Set,
-            PushSizes(size, _quarterSize),
+            PushDownscale(size, _quarterSize, Refii.Models.Engine_ClassicMaterial.Active),
             (_quarterSize.X + 7) / 8,
             (_quarterSize.Y + 7) / 8);
     }
@@ -1535,6 +1617,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Radial(int src, Vector2 centre)
     {
+        if (ClassicPost)
+        {
+            ClassicRadial(src, centre);
+            return;
+        }
         Dispatch(
             _radialPipeline,
             _radialSets[src],
@@ -1545,6 +1632,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Brightcut()
     {
+        if (ClassicPost)
+        {
+            ClassicBrightcut();
+            return;
+        }
         Dispatch(
             _brightcutPipeline,
             _brightcutSet,
@@ -1553,29 +1645,21 @@ public partial class Engine_PostFxEffect : CompositorEffect
             (_quarterSize.Y + 7) / 8);
     }
 
-    private void DofDownscale(Rid colour, Rid depth, Vector2I size, Projection inverse)
-    {
-        RenderingDevice rd = _rd!;
-        if (!_dofDownscaleSet.Matches(rd, colour, depth))
-        {
-            _dofDownscaleSet.Replace(rd, colour, depth, _dofDownscaleShader, new Array<RDUniform>
-            {
-                Image(colour, 0),
-                Image(_dof[1], 1),
-                Buffer(_stateBuffer, 2),
-                Sampler(_nearestSampler, depth, 3),
-            });
-        }
-
-        byte[] push = PushSizeDepth(size, inverse);
-        BitConverter.TryWriteBytes(push.AsSpan(8), _quarterSize.X);
-        BitConverter.TryWriteBytes(push.AsSpan(12), _quarterSize.Y);
-        Dispatch(_dofDownscalePipeline, _dofDownscaleSet.Set, push,
-            (_quarterSize.X + 7) / 8, (_quarterSize.Y + 7) / 8);
-    }
-
     private void Gauss(Rid set, Vector2I direction, float[] weights)
     {
+        Gauss(set, _quarter, _dof[0], direction, weights);
+    }
+
+    private void Gauss(Rid set, Rid src, Rid dst, Vector2I direction, float[] weights)
+    {
+        if (ClassicPost)
+        {
+    {
+        if (ClassicPost)
+        {
+            ClassicGauss(src, dst, direction, weights);
+            return;
+        }
         Dispatch(
             _gaussPipeline,
             set,
@@ -1586,6 +1670,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Composite(Rid colour, Rid depth, Vector2I size, Projection inverse)
     {
+        if (ClassicPost)
+        {
+            ClassicComposite(colour, depth, size);
+            return;
+        }
         RenderingDevice rd = _rd!;
         if (!_compositeSet.Matches(rd, colour, depth))
         {
@@ -1597,6 +1686,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 Sampler(_linearSampler, _bloom[0], 3),
                 Sampler(_linearSampler, _dof[1], 4),
                 Sampler(_nearestSampler, depth, 5),
+                Sampler(_nearestSampler, _satMask?.Texture ?? _exposureRd, 6),
             });
         }
 
@@ -1610,6 +1700,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Histogram()
     {
+        if (ClassicPost)
+        {
+            ClassicHistogram();
+            return;
+        }
         Dispatch(
             _histogramPipeline,
             _histogramSet,
@@ -1675,7 +1770,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Dispatch(
             _downscale4Pipeline,
             _trapRingSets[slot],
-            PushSizes(size, _quarterSize),
+            PushDownscale(size, _quarterSize, false),
             (_quarterSize.X + 7) / 8,
             (_quarterSize.Y + 7) / 8);
     }
@@ -1868,6 +1963,21 @@ public partial class Engine_PostFxEffect : CompositorEffect
         BitConverter.TryWriteBytes(bytes.AsSpan(4), a.Y);
         BitConverter.TryWriteBytes(bytes.AsSpan(8), b.X);
         BitConverter.TryWriteBytes(bytes.AsSpan(12), b.Y);
+        return bytes;
+    }
+
+    /// <summary>The quarter pass's push: the two sizes, then whether the scene is already exposed.</summary>
+    private byte[] PushDownscale(Vector2I full, Vector2I quarter, bool sceneExposed)
+    {
+        byte[] bytes = _pushWide;
+        BitConverter.TryWriteBytes(bytes.AsSpan(0), full.X);
+        BitConverter.TryWriteBytes(bytes.AsSpan(4), full.Y);
+        BitConverter.TryWriteBytes(bytes.AsSpan(8), quarter.X);
+        BitConverter.TryWriteBytes(bytes.AsSpan(12), quarter.Y);
+        BitConverter.TryWriteBytes(bytes.AsSpan(16), sceneExposed ? 1.0f : 0.0f);
+        BitConverter.TryWriteBytes(bytes.AsSpan(20), 0.0f);
+        BitConverter.TryWriteBytes(bytes.AsSpan(24), 0.0f);
+        BitConverter.TryWriteBytes(bytes.AsSpan(28), 0.0f);
         return bytes;
     }
 

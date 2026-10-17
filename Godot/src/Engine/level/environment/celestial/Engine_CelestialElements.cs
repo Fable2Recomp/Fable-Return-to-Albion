@@ -111,8 +111,40 @@ public static class Engine_CelestialElements
     /// sources. A theme is a class and changes only when the region re-evaluates, so reference
     /// identity is the key.
     /// </remarks>
+    private static readonly float[] _liveElement = new float[16];
+
+    /// <summary>
+    /// Under the classic renderer with the guest's theme block up: the same sixteen values read
+    /// from it (MOON_* 65..70, SUN_DISC_* 92..94, SUN_BEAMS_* 95..97, SUN_GLARE_* 100..101).
+    /// </summary>
+    private static float[]? LiveElementParams()
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || !Refii.Models.Engine_ClassicTheme.Live)
+        {
+            return null;
+        }
+        int[] index = { 65, 66, 67, 68, 69, 70, 92, 94 };
+        for (int i = 0; i < index.Length; i++)
+        {
+            _liveElement[i] = Refii.Models.Engine_ClassicTheme.Param(index[i]);
+        }
+        _liveElement[8] = Refii.Models.Engine_ClassicTheme.Param(93, 0);
+        _liveElement[9] = Refii.Models.Engine_ClassicTheme.Param(93, 1);
+        _liveElement[10] = Refii.Models.Engine_ClassicTheme.Param(93, 2);
+        _liveElement[11] = Refii.Models.Engine_ClassicTheme.Param(95);
+        _liveElement[12] = Refii.Models.Engine_ClassicTheme.Param(96);
+        _liveElement[13] = Refii.Models.Engine_ClassicTheme.Param(97);
+        _liveElement[14] = Refii.Models.Engine_ClassicTheme.Param(100);
+        _liveElement[15] = Refii.Models.Engine_ClassicTheme.Param(101);
+        return _liveElement;
+    }
+
     public static float[] ElementParams(SkyTheme theme)
     {
+        if (LiveElementParams() is { } live)
+        {
+            return live;
+        }
         if (_elementCache is { } cached && ReferenceEquals(_elementCacheFor, theme))
         {
             return cached;
@@ -169,6 +201,7 @@ public static class Engine_CelestialElements
 
         Vector3 sun = ToGodot(frame.SunDirection);
         Vector3 moon = ToGodot(frame.MoonDirection);
+        Stated(ref sun, ref moon, ref sunTint);
 
         var container = new Node3D { Name = NodeName };
         EnsureElements(container, theme, read, moonPhase);
@@ -196,12 +229,21 @@ public static class Engine_CelestialElements
         return container;
     }
 
+    public const string InitializedMeta = "celestial_elements_initialized";
+
     public static void EnsureElements(
         Node3D container,
         SkyTheme theme,
         Func<string, byte[]?> read,
         int moonPhase = DefaultMoonPhase)
     {
+        if (container.HasMeta(InitializedMeta))
+        {
+            return;
+        }
+
+        container.SetMeta(InitializedMeta, true);
+
         Shader? mixShader = GD.Load<Shader>(MixShaderPath);
         Shader? additiveShader = GD.Load<Shader>(AdditiveShaderPath);
         if (mixShader is null || additiveShader is null)
@@ -231,10 +273,16 @@ public static class Engine_CelestialElements
             Texture2D? disc = Load(theme.SunDiscTextureHash, read, "sun disc");
             if (disc is not null)
             {
-                container.AddChild(Billboard(
+                MeshInstance3D discNode = Billboard(
                     "SunDisc", mixShader, disc, Vector3.Up, SunDiscDistance,
                     element[6] * SunDiscSizeScale, element[6] * SunDiscSizeScale,
-                    Vector3.Zero, 1f, 0f, 0f, 1f, priority++, 1));
+                    Vector3.Zero, 1f, 0f, 0f, 1f, priority++, 1);
+                // The title's disc (`0x821D8658`): PS SUNDISC, additive ONE/ONE, alpha tested,
+                // no depth write — its colour times c20.w like every classic surface.
+                Classic(discNode, "PSHADER_SUNDISC", "g_SunDiscTexture", disc,
+                    "unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled, fog_disabled",
+                    "#define XR_WRITE_ALPHA(a) ALPHA = 1.0", 0.5f / 255f);
+                container.AddChild(discNode);
             }
         }
 
@@ -263,10 +311,16 @@ public static class Engine_CelestialElements
             Texture2D? moonDisc = Load(theme.MoonTextureHash, read, "moon");
             if (moonDisc is not null)
             {
-                container.AddChild(Billboard(
+                MeshInstance3D moonNode = Billboard(
                     "Moon", mixShader, moonDisc, Vector3.Up, MoonBillboardDistance,
                     element[1] * MoonSizeScale, element[1] * MoonSizeScale,
-                    Vector3.Zero, element[4], 0f, u0, u1, priority++, 2));
+                    Vector3.Zero, element[4], 0f, u0, u1, priority++, 2);
+                // The title's moon (`0x821D3B80`): PS MOONDISC, SRCALPHA / INVSRCALPHA, alpha
+                // ref 1, no depth write.
+                Classic(moonNode, "PSHADER_MOONDISC", "g_MoonTexture", moonDisc,
+                    "unshaded, blend_mix, depth_draw_never, cull_disabled, shadows_disabled, fog_disabled",
+                    string.Empty, 1.5f / 255f);
+                container.AddChild(moonNode);
             }
         }
 
@@ -311,6 +365,7 @@ public static class Engine_CelestialElements
 
         Vector3 sun = ToGodot(frame.SunDirection);
         Vector3 moon = ToGodot(frame.MoonDirection);
+        Stated(ref sun, ref moon, ref sunTint);
         bool sunActive = frame.SkyParams[0] >= IntensityGate;
 
         if (OS.GetEnvironment("REFII_CELESTIAL_DEBUG").Length != 0)
@@ -376,10 +431,13 @@ public static class Engine_CelestialElements
                     // zenith angle — the same tint the beams and glare take here. Without it
                     // the disc is the authored colour at full intensity whenever it is above
                     // the horizon: the huge flat white ball in the night sky.
-                    material.SetShaderParameter(Param_element_colour, new Vector4(
+                    var discColour = new Vector4(
                         sunTint[0] * element[8] * element[7],
                         sunTint[1] * element[9] * element[7],
-                        sunTint[2] * element[10] * element[7], 1f));
+                        sunTint[2] * element[10] * element[7], 1f);
+                    material.SetShaderParameter(Param_element_colour, discColour);
+                    ClassicColour(material, discColour);
+                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotSunDisc, "ps_g_SunDiscTexture");
                     mesh.Visible = sunActive && element[7] >= IntensityGate;
                     break;
                 case "SunGlare":
@@ -397,15 +455,28 @@ public static class Engine_CelestialElements
                     mesh.Visible = sunActive && element[14] >= IntensityGate;
                     break;
                 case "Moon":
+                    // The guest's own phase (sky M+20) under the classic renderer.
+                    if (Refii.Models.Engine_ClassicMaterial.Active && Refii.Models.Engine_ClassicTheme.Live)
+                    {
+                        int livePhase = Math.Clamp(Refii.Models.Engine_ClassicTheme.MoonPhase, 0, 7);
+                        if (!mesh.HasMeta(MoonPhaseMeta) || mesh.GetMeta(MoonPhaseMeta).AsInt32() != livePhase)
+                        {
+                            mesh.Mesh = QuadMesh("Moon", livePhase * MoonPhaseUStep, (livePhase + 1) * MoonPhaseUStep);
+                            mesh.SetMeta(MoonPhaseMeta, livePhase);
+                        }
+                    }
                     material.SetShaderParameter(Param_element_dir, moon);
                     material.SetShaderParameter(Param_element_half, new Vector2(
                         element[1] * MoonSizeScale,
                         element[1] * MoonSizeScale));
-                    material.SetShaderParameter(Param_element_colour, new Vector4(
+                    var moonColour = new Vector4(
                         0.5f * element[0],
                         0.5f * element[0],
                         0.5f * element[0],
-                        element[4]));
+                        element[4]);
+                    material.SetShaderParameter(Param_element_colour, moonColour);
+                    ClassicColour(material, moonColour);
+                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotMoon, "ps_g_MoonTexture");
                     mesh.Visible = element[0] >= IntensityGate;
                     break;
                 case "MoonGlare":
@@ -448,6 +519,23 @@ public static class Engine_CelestialElements
                     mesh.Visible = element[5] >= IntensityGate;
                     break;
             }
+        }
+
+        // Under classic the title's own draws take the sun's beams, disc and glare, the moon's
+        // glare and bloom and the stars (Engine_ClassicSkyElements); the moon disc above is
+        // already on its shader.
+        if (Engine_ClassicSkyElements.Active)
+        {
+            foreach (NodePath hostDrawn in new[] { Path_SunBeams, Path_SunDisc, Path_SunGlare, Path_Stars })
+            {
+                if (container.GetNodeOrNull<MeshInstance3D>(hostDrawn) is { } node)
+                {
+                    node.Visible = false;
+                }
+            }
+            Refii.Fx.Engine_PostFxHalos.PublishSky("MoonGlare", default);
+            Engine_ClassicSkyElements.Update(container, container.GetViewport()?.GetCamera3D());
+            return;
         }
 
         PublishMoonGlare(container, theme, element, moon, read ?? Refii.Models.Engine_BnkMeshLoader.ReadBytes);
@@ -500,13 +588,111 @@ public static class Engine_CelestialElements
     private static Vector3 ToGodot(float[] direction) =>
         Refii.Level.Engine_SkyFrame.ToGodot(direction);
 
+    private static readonly StringName SlotHashMeta = "xenos_slot_hash";
+
+    /// <summary>
+    /// Under classic, a classic disc's texture follows the theme's live slot (`sub_821D0BA0`, the
+    /// heaviest of the slot's textures), as the guest binds it each draw. Rebound only when the
+    /// hash moves; a hash that does not resolve keeps what is bound.
+    /// </summary>
+    private static void FollowSlot(ShaderMaterial material, int slot, string parameter)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || !Refii.Models.Engine_ClassicTheme.TexturesLive ||
+            !material.HasMeta(ClassicColourMeta))
+        {
+            return;
+        }
+        uint hash = Refii.Models.Engine_ClassicTheme.TopHash(slot);
+        if (hash == 0u || (material.HasMeta(SlotHashMeta) && (uint)material.GetMeta(SlotHashMeta).AsInt64() == hash))
+        {
+            return;
+        }
+        material.SetMeta(SlotHashMeta, (long)hash);
+        if (Engine_EnvironmentTextures.Load(hash, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out _) is { } texture)
+        {
+            material.SetShaderParameter(parameter, texture);
+        }
+    }
+
+    private static readonly float[] _statedSunColour = new float[3];
+
+    /// <summary>
+    /// Under classic, the guest's own sun and moon: `sub_82263570` writes the directions to
+    /// sky+160 and sky+208 and the attenuated sun colour to sky+144 every frame, and its disc,
+    /// beams and glare constants are built from those. Recomputing them from the theme would be
+    /// a second derivation of what the guest already states.
+    /// </summary>
+    private static void Stated(ref Vector3 sun, ref Vector3 moon, ref float[] sunTint)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || !Refii.Models.Engine_ClassicTheme.Live)
+        {
+            return;
+        }
+
+        sun = ToGodot(Refii.Models.Engine_ClassicTheme.SunDirection);
+        moon = ToGodot(Refii.Models.Engine_ClassicTheme.MoonDirection);
+        Vector3 colour = Refii.Models.Engine_ClassicTheme.SunColour;
+        _statedSunColour[0] = colour.X;
+        _statedSunColour[1] = colour.Y;
+        _statedSunColour[2] = colour.Z;
+        sunTint = _statedSunColour;
+    }
+
+    /// <summary>A stated sky direction: a guest world vector (Z-up), so (-x, z, y) — not the host
+    /// sky frame's Y-up layout (Engine_ClassicSkyElements.ToGodot).</summary>
+    private static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
+
     private static Vector3 Scaled(float[] rgb, float scale) =>
         new(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
+
+    private static readonly HashSet<uint> _loggedHashes = new();
+
+    private static readonly StringName MoonPhaseMeta = "xenos_moon_phase";
+
+    private const string ClassicVertex = "res://src/Engine/level/environment/celestial/classic_celestial_vertex.gdshaderinc";
+
+    /// <summary>Marks an element on the title's pixel shader; its colour constant is named in the meta.</summary>
+    private static readonly StringName ClassicColourMeta = "xenos_element_colour";
+
+    /// <summary>
+    /// Under the classic renderer, the element on the title's own pixel shader, keeping the
+    /// modern placement uniforms (the guest's billboard) so Update drives both.
+    /// </summary>
+    private static void Classic(
+        MeshInstance3D node, string pixelEntry, string textureName, Texture2D texture,
+        string renderMode, string defines, float alphaThreshold)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || node.MaterialOverride is not ShaderMaterial modern)
+        {
+            return;
+        }
+        Shader? shader = Refii.Models.Engine_ClassicShaders.Compose(ClassicVertex, pixelEntry, renderMode, 0, defines);
+        if (shader is null)
+        {
+            return;
+        }
+        var material = (ShaderMaterial)modern.Duplicate();
+        material.Shader = shader;
+        material.SetShaderParameter(PsName + textureName, texture);
+        material.SetShaderParameter(XrSpecConstantsName, 2u);
+        material.SetShaderParameter(XrAlphaThresholdName, alphaThreshold);
+        material.SetMeta(ClassicColourMeta, pixelEntry == "PSHADER_MOONDISC" ? "ps_g_MoonColour" : "ps_g_SunDiscColour");
+        node.MaterialOverride = material;
+    }
+
+    /// <summary>The element colour to the title's own constant as well, when the element is on its shader.</summary>
+    private static void ClassicColour(ShaderMaterial material, Vector4 colour)
+    {
+        if (material.HasMeta(ClassicColourMeta))
+        {
+            material.SetShaderParameter(material.GetMeta(ClassicColourMeta).AsString(), colour);
+        }
+    }
 
     private static Texture2D? Load(uint hash, Func<string, byte[]?> read, string label)
     {
         Texture2D? texture = Engine_EnvironmentTextures.Load(hash, read, out string path);
-        if (texture is null)
+        if (texture is null && _loggedHashes.Add(hash))
         {
             GD.Print(path.Length == 0
                 ? $"[celestial] {label} texture 0x{hash:X8} unresolved"
@@ -640,4 +826,9 @@ public static class Engine_CelestialElements
             new Vector3(CullExtent * 2f, CullExtent * 2f, CullExtent * 2f));
         return mesh;
     }
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName PsName = "ps_";
+    private static readonly StringName XrSpecConstantsName = "xr_spec_constants";
+    private static readonly StringName XrAlphaThresholdName = "xr_alpha_threshold";
 }

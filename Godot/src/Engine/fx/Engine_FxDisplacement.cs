@@ -33,6 +33,9 @@ public partial class Engine_FxDisplacement : Node
 
     public static Engine_FxDisplacement? Current => _current;
 
+    /// <summary>The layer's own viewport, for 2D drawn into it (Engine_ModernDrunk); null until ready.</summary>
+    public SubViewport? Target => _viewport;
+
     /// <summary>The layer world's scenario for its instances; invalid until the layer is up.</summary>
     public static Rid Scenario =>
         _current is not null && GodotObject.IsInstanceValid(_current) && _current._viewport is not null

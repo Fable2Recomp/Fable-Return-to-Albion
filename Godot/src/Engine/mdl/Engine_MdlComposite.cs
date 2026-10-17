@@ -96,11 +96,14 @@ public static class Engine_MdlComposite
         var pending =
             new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
                 string Name, Material Material, string? Bare, bool? Left, string Region, int Part,
-                Godot.Collections.Dictionary? Lods)>();
+                Godot.Collections.Dictionary? Lods, int[]? PrtDescriptor, float[]? PrtTable)>();
         var surfaceRegions = new List<string>();
         var surfaceParts = new List<int>();
         var surfaceLods = new Godot.Collections.Array();
         bool anyLods = false;
+        var prtDescriptors = new Godot.Collections.Array();
+        var prtTables = new Godot.Collections.Array();
+        bool anyPrt = false;
 
         var partPaths = new List<string>();
         var partSpans = new List<int>();
@@ -213,13 +216,34 @@ public static class Engine_MdlComposite
                     eyeSides.TryGetValue(partIndex, out bool left) ? left : null,
                     surface < partRegions.Length ? partRegions[surface] : string.Empty,
                     partIndex,
-                    Engine_MdlMesh.SurfaceLods(part, surface)));
+                    Engine_MdlMesh.SurfaceLods(part, surface),
+                    part.HasMeta(Engine_MdlTransfer.DescriptorMeta) ? part.GetMeta(Engine_MdlTransfer.DescriptorMeta).AsInt32Array() : null,
+                    part.HasMeta(Engine_MdlTransfer.TableMeta) ? part.GetMeta(Engine_MdlTransfer.TableMeta).AsFloat32Array() : null));
             }
+        }
+
+        // THE GUEST'S EYE BONES, WHERE THE PARTS DO NOT CARRY THEM. `sub_82209480` hangs each eye
+        // on `Shadow_L_Eye` / `Shadow_R_Eye` of the runtime rig and draws it with that bone's pose
+        // (rotation and translation); those bones come from the animation skeleton, not from any
+        // part — a hero's `.mdl.gmd` has 28 nodes and only the `Focal_Eye_DummyObject` pair.
+        // Hung on the dummy instead, the eye never took the guest's eye pose at all. Each bone is
+        // added at its dummy's rest under the same parent; the rig maps it to the guest's bone by
+        // name and drives it with the guest's pose (see Anchor for the eye's own turn).
+        bool anyEye = false;
+        foreach (var entry in pending)
+        {
+            anyEye |= entry.Bare is { } eyePath && IsEyePart(eyePath);
+        }
+
+        if (anyEye)
+        {
+            AddEyeBone("Shadow_L_Eye", "focal_eye_dummyobject1", boneIndex, names, parents, rest);
+            AddEyeBone("Shadow_R_Eye", "focal_eye_dummyobject", boneIndex, names, parents, rest);
         }
 
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
                   Material material, string? bare, bool? forcedLeft, string region, int fromPart,
-                  Godot.Collections.Dictionary? lods) in pending)
+                  Godot.Collections.Dictionary? lods, int[]? prtDescriptor, float[]? prtTable) in pending)
         {
             if (bare is not null && !Anchor(arrays, boneIndex, parents, rest, bare, forcedLeft))
             {
@@ -234,6 +258,11 @@ public static class Engine_MdlComposite
             mesh.SurfaceSetMaterial(added, material);
             surfaceRegions.Add(region);
             surfaceParts.Add(fromPart);
+            // Each part's own transfer header and cluster table: the title uploads a part's
+            // g_PRTConstants from its own model (`sub_8225DC80`), so they ride per surface.
+            prtDescriptors.Add(prtDescriptor ?? System.Array.Empty<int>());
+            prtTables.Add(prtTable ?? System.Array.Empty<float>());
+            anyPrt |= prtDescriptor is { Length: > 0 } && prtTable is { Length: > 0 };
             surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
             anyLods |= lods is not null;
         }
@@ -261,6 +290,11 @@ public static class Engine_MdlComposite
 
         mesh.SetMeta(Engine_MdlMesh.SurfaceRegionsMeta, surfaceRegions.ToArray());
         mesh.SetMeta(SurfacePartsMeta, surfaceParts.ToArray());
+        if (anyPrt)
+        {
+            mesh.SetMeta(Engine_MdlTransfer.SurfaceDescriptorsMeta, prtDescriptors);
+            mesh.SetMeta(Engine_MdlTransfer.SurfaceTablesMeta, prtTables);
+        }
         if (anyLods)
         {
             mesh.SetMeta(Engine_MdlMesh.SurfaceLodsMeta, surfaceLods);
@@ -321,27 +355,59 @@ public static class Engine_MdlComposite
         {
             anchor = eye;
 
-            Vector3 offset = ToMeshSpace(GlobalOrigin(eye, parents, rest));
+            // THE GUEST'S EYE TRANSFORM: the eye bone's model-space pose times a FIXED quarter turn.
+            // `sub_82209480` (CECGraphicAppearanceEyes, secondary vtable 0x82002D54 slot +4)
+            // rebuilds each eye's matrix from the bone's as [row1; -row0; row2] (0x82209d18..
+            // 0x82209d98) — Rz(+90) about the raw up axis on the mesh side — and sends that with
+            // the bone's position; no rest pose or inverse bind enters it. The live hero's poses
+            // (L -98, R -81 degrees) then cancel the models' own ~10 degree outward splay and both
+            // irises land within two degrees of the head's forward. Placed here at the bone's
+            // rest x the turn, skinning `pose x rest^-1 x (rest x turn x v)` is that formula.
+            Transform3D toBone = ToMeshSpace(GlobalRest(eye, parents, rest)) * new Transform3D(EyeTurn, Vector3.Zero);
 
-            // NaN COMPARES UNEQUAL TO EVERYTHING, so a non-finite offset passes the test below
-            // and is then added to EVERY vertex of the part — one bad bone rest translation
-            // becomes a whole surface of NaN, and a NaN vertex hangs Godot's render-list sort.
-            // This path bypasses the guard in Engine_MdlMesh: those vertices were accepted
-            // there and are being MOVED afterwards. GlobalOrigin only checks quaternion length;
-            // the translation it reads is a raw f32 straight off disk.
-            if (!offset.IsFinite())
+            // NaN COMPARES UNEQUAL TO EVERYTHING, so a non-finite transform would move EVERY
+            // vertex of the part to NaN, and a NaN vertex hangs Godot's render-list sort. This
+            // path bypasses the guard in Engine_MdlMesh: those vertices were accepted there and
+            // are being MOVED afterwards. The rest it reads is raw f32 straight off disk.
+            if (!toBone.Origin.IsFinite() || !toBone.Basis.X.IsFinite() ||
+                !toBone.Basis.Y.IsFinite() || !toBone.Basis.Z.IsFinite())
             {
-                offset = Vector3.Zero;
+                toBone = new Transform3D(EyeTurn, Vector3.Zero);
             }
 
-            if (offset != Vector3.Zero)
+            for (int v = 0; v < vertices.Length; v++)
             {
-                for (int v = 0; v < vertices.Length; v++)
+                vertices[v] = toBone * vertices[v];
+            }
+
+            arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+
+            Basis turn = toBone.Basis.Orthonormalized();
+            if (arrays.Count > (int)Mesh.ArrayType.Normal &&
+                arrays[(int)Mesh.ArrayType.Normal].VariantType == Variant.Type.PackedVector3Array)
+            {
+                Vector3[] normals = arrays[(int)Mesh.ArrayType.Normal].AsVector3Array();
+                for (int v = 0; v < normals.Length; v++)
                 {
-                    vertices[v] += offset;
+                    normals[v] = turn * normals[v];
                 }
 
-                arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+                arrays[(int)Mesh.ArrayType.Normal] = normals;
+            }
+
+            if (arrays.Count > (int)Mesh.ArrayType.Tangent &&
+                arrays[(int)Mesh.ArrayType.Tangent].VariantType == Variant.Type.PackedFloat32Array)
+            {
+                float[] tangents = arrays[(int)Mesh.ArrayType.Tangent].AsFloat32Array();
+                for (int t = 0; t + 3 < tangents.Length; t += 4)
+                {
+                    Vector3 turned = turn * new Vector3(tangents[t], tangents[t + 1], tangents[t + 2]);
+                    tangents[t] = turned.X;
+                    tangents[t + 1] = turned.Y;
+                    tangents[t + 2] = turned.Z;
+                }
+
+                arrays[(int)Mesh.ArrayType.Tangent] = tangents;
             }
         }
 
@@ -374,22 +440,29 @@ public static class Engine_MdlComposite
             !leaf.Contains("eyelash", StringComparison.Ordinal);
     }
 
-    private static Vector3 GlobalOrigin(
+    private static Vector3 ToMeshSpace(Vector3 origin) => new(origin.X, origin.Z, -origin.Y);
+
+    /// <summary>The eye's fixed quarter turn: raw Rz(+90), which in the mesh's axes is +90 degrees about +Y.</summary>
+    private static readonly Basis EyeTurn = new(Vector3.Up, Mathf.Pi / 2f);
+
+    /// <summary>The guest's (x, y, z) as the mesh's (x, z, -y): a proper rotation, so a transform conjugates.</summary>
+    private static readonly Basis GuestToMesh = new(new Vector3(1f, 0f, 0f), new Vector3(0f, 0f, -1f), new Vector3(0f, 1f, 0f));
+
+    private static Transform3D ToMeshSpace(Transform3D guest) =>
+        new(GuestToMesh * guest.Basis * GuestToMesh.Transposed(), ToMeshSpace(guest.Origin));
+
+    /// <summary>
+    /// The bone's whole rest transform in model space, guest axes: each link scale, then rotate,
+    /// then translate, composed up the parent chain.
+    /// </summary>
+    private static Transform3D GlobalRest(
         int bone, IReadOnlyList<int> parents, IReadOnlyList<float> rest)
     {
-        var chain = new List<int>();
+        var global = Transform3D.Identity;
         var seen = new HashSet<int>();
-
         for (int current = bone;
              current >= 0 && current < parents.Count && seen.Add(current);
              current = parents[current])
-        {
-            chain.Add(current);
-        }
-
-        var origin = Vector3.Zero;
-
-        foreach (int current in chain)
         {
             int at = current * Engine_MdlMesh.BoneRestStride;
             if (at + Engine_MdlMesh.BoneRestStride > rest.Count)
@@ -397,24 +470,14 @@ public static class Engine_MdlComposite
                 continue;
             }
 
-            origin = new Vector3(
-                origin.X * rest[at + 7], origin.Y * rest[at + 8], origin.Z * rest[at + 9]);
-
-            var rotation = new Quaternion(
-                rest[at + 0], rest[at + 1], rest[at + 2], rest[at + 3]);
-
-            if (rotation.LengthSquared() > 1e-16f)
-            {
-                origin = rotation.Normalized() * origin;
-            }
-
-            origin += new Vector3(rest[at + 4], rest[at + 5], rest[at + 6]);
+            var rotation = new Quaternion(rest[at + 0], rest[at + 1], rest[at + 2], rest[at + 3]);
+            Basis basis = rotation.LengthSquared() > 1e-16f ? new Basis(rotation.Normalized()) : Basis.Identity;
+            basis *= Basis.FromScale(new Vector3(rest[at + 7], rest[at + 8], rest[at + 9]));
+            global = new Transform3D(basis, new Vector3(rest[at + 4], rest[at + 5], rest[at + 6])) * global;
         }
 
-        return origin;
+        return global;
     }
-
-    private static Vector3 ToMeshSpace(Vector3 origin) => new(origin.X, origin.Z, -origin.Y);
 
     private static bool TryEyeBone(
         Dictionary<string, int> boneIndex, string path, out int bone, bool? forcedLeft = null)
@@ -460,6 +523,66 @@ public static class Engine_MdlComposite
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Adds <paramref name="name"/> at <paramref name="dummy"/>'s rest and parent, unless the table
+    /// already holds it or has no such dummy to stand it on.
+    /// </summary>
+    private static void AddEyeBone(
+        string name, string dummy, Dictionary<string, int> boneIndex,
+        List<string> names, List<int> parents, List<float> rest)
+    {
+        string flat = Flatten(name);
+        int anchor = -1;
+        foreach (KeyValuePair<string, int> entry in boneIndex)
+        {
+            string key = Flatten(entry.Key);
+            if (key == flat)
+            {
+                return;
+            }
+
+            if (key == dummy)
+            {
+                anchor = entry.Value;
+            }
+        }
+
+        int stride = Engine_MdlMesh.BoneRestStride;
+        if (anchor < 0 || anchor >= parents.Count || (anchor + 1) * stride > rest.Count)
+        {
+            return;
+        }
+
+        int added = names.Count;
+        names.Add(name);
+        parents.Add(parents[anchor]);
+        for (int lane = 0; lane < stride; lane++)
+        {
+            rest.Add(rest[(anchor * stride) + lane]);
+        }
+
+        // AT REST THE TURN IS UNDONE: the bone rests at the dummy's rotation times the inverse of
+        // the eye's quarter turn (raw Rz(-90)), so where no guest poses the rig — the editor, the
+        // viewers — `rest x turn` is the identity and the eye shows its authored forward. A live
+        // pose replaces the rest, and the eye takes the guest's `pose x turn`.
+        var dummyRotation = new Quaternion(
+            rest[(anchor * stride) + 0], rest[(anchor * stride) + 1],
+            rest[(anchor * stride) + 2], rest[(anchor * stride) + 3]);
+        if (dummyRotation.LengthSquared() < 1e-16f)
+        {
+            dummyRotation = Quaternion.Identity;
+        }
+
+        Quaternion eyeRest = dummyRotation.Normalized() * new Quaternion(Vector3.Back, -Mathf.Pi / 2f);
+        int at = added * stride;
+        rest[at + 0] = eyeRest.X;
+        rest[at + 1] = eyeRest.Y;
+        rest[at + 2] = eyeRest.Z;
+        rest[at + 3] = eyeRest.W;
+
+        boneIndex[name] = added;
     }
 
     private static string Flatten(string name)

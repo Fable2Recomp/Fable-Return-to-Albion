@@ -10,11 +10,11 @@ uniform float horizon_distance = 1900.0;
 
 void sky() {
 	// EYEDIR is Godot's (x, up, z); the guest's dome works in (x, y, up).
-	COLOR = fable_sky_inscatter(
+	COLOR = fable_sky_overlaid(EYEDIR, fable_sky_inscatter(
 		vec3(EYEDIR.x, EYEDIR.z, EYEDIR.y),
 		sun_engine,
 		in_scatter_lut,
 		beta_rayleigh,
 		beta_mie,
-		horizon_distance);
+		horizon_distance));
 }

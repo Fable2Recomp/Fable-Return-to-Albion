@@ -39,6 +39,9 @@ public static class RuntimeCVarsGodot
     /// <summary>Discord Rich Presence: the game's name and the player's level, on their profile.</summary>
     public const string PresenceCategory = "Discord";
 
+    /// <summary>The camera and the keyboard and mouse: how the player's hands reach the game.</summary>
+    public const string ControlsCategory = "Controls";
+
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
         {
@@ -118,14 +121,13 @@ public static class RuntimeCVarsGodot
                 + "fixed step and only the drawing rate changes."),
 
             new("vsync_mode", DisplayCategory, RuntimeCVarType.String, "mailbox",
-                "How frames meet the display when vsync is on. 'mailbox' shows the newest "
-                + "finished frame at each refresh with no tearing and no cap at a fraction of "
-                + "the refresh rate; 'on' waits for every refresh, so a frame that misses one "
-                + "shows at half the rate; 'adaptive' waits when the frame is fast and tears "
-                + "when it is slow. Where the driver has no mailbox it falls back to 'adaptive', "
-                + "and to 'on' only if that is missing too. "
-                + "vsync = false turns all of it off.",
-                "mailbox,on,adaptive"),
+                "How frames meet the display. 'mailbox' shows the newest finished frame at each "
+                + "refresh with no tearing and no cap at a fraction of the refresh rate; 'on' "
+                + "waits for every refresh, so a frame that misses one shows at half the rate; "
+                + "'adaptive' waits when the frame is fast and tears when it is slow; 'off' "
+                + "draws as fast as it can and may tear. Where the driver has no mailbox it falls "
+                + "back to 'adaptive', and to 'on' only if that is missing too.",
+                "mailbox|Mailbox,on|On,adaptive|Adaptive,off|Off"),
 
             new("draw_latency_ticks", DisplayCategory, RuntimeCVarType.Double, "0",
                 "How far behind the game's simulation the picture is drawn, in 1/15 s ticks. "
@@ -387,10 +389,13 @@ public static class RuntimeCVarsGodot
                 + "throw modest pools — a tall lamp post barely reaches the ground — "
                 + "so the remaster brightens them. 1.0 follows the shipped data exactly."),
             new("lighting_model", LightingCategory, RuntimeCVarType.String, "modern",
-                "Where the world's ambient light comes from. 'modern' derives it live from "
-                + "the sky dome, so every surface breathes with the visible sky — golden at "
-                + "sunset, blue at night — one source for baked, probe-lit and bare objects "
-                + "alike. 'fable' reads the authored day-set ambient exactly as the 360 did."),
+                "How the world is lit. 'modern' is the remaster: Godot's lighting, with the "
+                + "ambient derived live from the sky dome so every surface breathes with the "
+                + "visible sky. 'classic' is the original: the game's own shaders, translated "
+                + "and drawn with the constants the game states each frame — built by Compile "
+                + "Shaders on the Reinstall tab, or ticked during install — and, where a shader "
+                + "has not been built, the authored day-set ambient exactly as the 360 read it.",
+                "modern|Modern,classic|Classic"),
             new("ambient_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "The one fill dial. In the modern model it scales both halves of the fill: the flat "
                 + "floor every surface keeps in shadow, and the sky light Godot's global illumination "
@@ -465,6 +470,16 @@ public static class RuntimeCVarsGodot
             new("debug_channel", DeveloperCategory, RuntimeCVarType.Bool, "false",
                 "Open the loopback debug channel at launch and publish its handshake file, "
                 + "the same as launching with REFII_DEBUG_PORT=1. Off for players."),
+            new("tracy", DeveloperCategory, RuntimeCVarType.Bool, "false",
+                "The game's own Tracy profiler: captures are started, read and saved in the dev "
+                + "menu (F4). It records the game and its threads only, inside the game: no "
+                + "network, no other programs. Off, Tracy never starts. Takes effect at the next "
+                + "launch."),
+            new("tracy_advanced", DeveloperCategory, RuntimeCVarType.Bool, "false",
+                "Adds CPU sampling with call stacks and context switches for the game's threads "
+                + "to Tracy captures (needs tracy). On Windows that data needs the game to run as "
+                + "Administrator, so Play asks first. On Linux sampling works as is; context "
+                + "switches need kernel.perf_event_paranoid at -1. Takes effect at the next launch."),
             new("fx_additive_gain", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "How strongly the additive particle layer (fire, sparkles, spell cores — every "
                 + "ONE/ONE effect) joins the scene before the bloom extract and the tonemap. "
@@ -483,10 +498,31 @@ public static class RuntimeCVarsGodot
                 + "Costs one quarter-resolution copy per frame and a small readback every 20 "
                 + "frames; read at launch."),
 
+            new("camera_invert_y", ControlsCategory, RuntimeCVarType.Bool, "false",
+                "Invert the camera's up and down, as the console's own profile setting: a new " +
+                "game starts from it, and the game's Controls page overrides it per save."),
+            new("camera_invert_x", ControlsCategory, RuntimeCVarType.Bool, "false",
+                "Invert the camera's left and right, on the stick and the mouse. The game has no " +
+                "setting of its own for this."),
+            new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
+                "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
+                "turns twice as far."),
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
                 "Show \"Playing Fable 2: Return to Albion\" and the level you are in on your "
                 + "Discord profile while Discord is running."),
-        };
+        }
+        .Concat(KeyBindings())
+        .ToList();
+
+    /// <summary>
+    /// One setting per keyboard and mouse action, from the game's own table so the defaults live
+    /// in one place: a comma list of key names, or MouseLeft / MouseRight / MouseMiddle /
+    /// Mouse4 / Mouse5.
+    /// </summary>
+    private static IEnumerable<RuntimeCVarDefinition> KeyBindings() =>
+        Refii.Game.GameInput.KeyActions.Select(action => new RuntimeCVarDefinition(
+            "key_" + action.Name, ControlsCategory, RuntimeCVarType.String, action.Defaults,
+            action.Description + " Default: " + action.Defaults + "."));
 }
 
 /// <summary>

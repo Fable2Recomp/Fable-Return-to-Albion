@@ -179,12 +179,14 @@ std::vector<std::string> SplitCommaList(std::string_view text) {
     return fields;
 }
 
+// "godot" is on every platform: it is the classic renderer's material source, Godot's shading
+// language straight from the recompiler, and it needs no backend compiler.
 std::vector<std::string> BuildDefaultTranslateTargets() {
 #if defined(__APPLE__)
-    return {"vulkan", "metal"};
+    return {"vulkan", "metal", "godot"};
 #elif defined(_WIN32)
     // Windows can run either backend, so it produces both.
-    return {"vulkan", "d3d12"};
+    return {"vulkan", "d3d12", "godot"};
 #else
     // BY DESIGN (project owner, 2026-07-26): Linux has no D3D12 backend — Plume
     // reports `Vulkan=1 Metal= D3D12=` on this host — so a DXIL artifact can
@@ -196,7 +198,7 @@ std::vector<std::string> BuildDefaultTranslateTargets() {
     // used that to argue for cross-producing the Windows artifact set from a
     // Linux run.  That argument was rejected: "capable of" is not "should".
     // Windows builds produce their own D3D12 artifacts.
-    return {"vulkan"};
+    return {"vulkan", "godot"};
 #endif
 }
 
@@ -236,10 +238,10 @@ bool ResolveTranslateTargets(std::string_view requested_targets,
             continue;
         }
 
-        if (part != "vulkan" && part != "d3d12" && part != "metal") {
+        if (part != "vulkan" && part != "d3d12" && part != "metal" && part != "godot") {
             if (error != nullptr) {
                 *error = "Unsupported compile target: " + part +
-                         " (allowed: vulkan, d3d12, metal, auto)";
+                         " (allowed: vulkan, d3d12, metal, godot, auto)";
             }
             return false;
         }
@@ -1568,10 +1570,13 @@ std::filesystem::path BuildTranslatedArtifactPath(const std::filesystem::path& t
                                                   std::string_view target,
                                                   std::string_view bank_name,
                                                   const std::filesystem::path& input_path) {
+    // The Godot artifact is source, not a compiled binary: Godot's shader preprocessor includes
+    // it, and the extension is what Godot's resource loader recognises.
+    const char* extension = target == "godot" ? ".gdshaderinc" : ".bin";
     return translate_root /
            BuildCompileTargetOutputStem(target) /
            BuildBankOutputStem(bank_name) /
-           (BuildTranslatedOutputStem(input_path, target) + ".bin");
+           (BuildTranslatedOutputStem(input_path, target) + extension);
 }
 
 // Hardware-tessellation variant of a VERTEX shader: same directory, same
@@ -1923,7 +1928,15 @@ bool CheckTranslatedBinary(const std::filesystem::path& path,
         return false;
     }
 
-    if (target == "vulkan") {
+    if (target == "godot") {
+        // Source text: a stage function must be in it.
+        const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        if (text.find("void fragment()") == std::string_view::npos &&
+            text.find("void vertex()") == std::string_view::npos) {
+            failures->push_back(std::string(label) + ": not a Godot stage " + path.string());
+            return false;
+        }
+    } else if (target == "vulkan") {
         if (bytes.size() < kSpirvMagic.size() ||
             std::memcmp(bytes.data(), kSpirvMagic.data(), kSpirvMagic.size()) != 0) {
             failures->push_back(std::string(label) + ": not a SPIR-V module " + path.string());
@@ -1968,7 +1981,7 @@ void CheckTranslatedSidecar(const std::filesystem::path& path,
                             std::string_view target,
                             std::string_view label,
                             std::vector<std::string>* failures) {
-    if (target == "metal") {
+    if (target == "metal" || target == "godot") {
         return;
     }
 
@@ -2258,13 +2271,17 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
                 active_summary->translate_out_dir, target, blob.bank_name, blob.input_path);
             // Vertex shaders additionally get the hardware-tessellation variant
             // artifact (same HLSL, tess entry seeding). No whitelist.
+            // The Godot target has neither: it is the shader source itself, and Godot has no
+            // hardware-tessellation path for a material.
+            const bool godot_target = target == "godot";
             const std::filesystem::path tess_output_path =
-                blob.stage == ShaderStage::kVertex
+                blob.stage == ShaderStage::kVertex && !godot_target
                     ? BuildTranslatedTessArtifactPath(active_summary->translate_out_dir,
                                                       target, blob.bank_name,
                                                       blob.input_path)
                     : std::filesystem::path{};
-            const std::filesystem::path hlsl_path = BuildTranslatedHlslPath(output_path);
+            const std::filesystem::path hlsl_path =
+                godot_target ? std::filesystem::path{} : BuildTranslatedHlslPath(output_path);
             const std::filesystem::path stderr_path = BuildTranslatorLogPath(
                 active_summary->translate_out_dir, target, blob.bank_name, output_stem);
             const std::filesystem::path crash_breadcrumb_path =
@@ -2724,7 +2741,7 @@ bool VerifyTranslatedShaderCoverage(const ShaderSbkCoverageOptions& options,
             // ("<stem>.tess.<target>.bin"). It is compiled from the SAME HLSL
             // (dxc -D REFII_TESSELLATION_VARIANT=1) and shares the normal
             // artifact's sidecar, so only the binary itself is checked.
-            if (blob.stage == ShaderStage::kVertex) {
+            if (blob.stage == ShaderStage::kVertex && target != "godot") {
                 const std::filesystem::path tess_path = BuildTranslatedTessArtifactPath(
                     active_summary->shader_root, target, blob.bank_name, blob.input_path);
                 (void)CheckTranslatedBinary(tess_path, target,

@@ -119,6 +119,9 @@ void refii_bridge_note_dye_states(const uint32_t* words, uint32_t count);
 // `kind` 0 is a composite stated to `sub_825B38B0`, layer 0 the base. `kind` 1 is the OVERLAY
 // list sent as command type 14 through `sub_8222AAC8`: scars and blend-mode-0 morphs, drawn
 // over the finished material; texture id is the overlay's diffuse.
+// `kind` 2 is a WHOLE-ENTITY SWAP (`sub_825B7100`, the shadow creature's and component 192's):
+// original 0 every diffuse map, 1 every specular map, 2 every normal map; one layer, the
+// replacement at weight 1.
 // `begin` drops what the entity stated before.
 enum {
   kTextureLayerWords = 7,
@@ -130,6 +133,23 @@ void refii_bridge_begin_texture_layers(uint32_t entity);
 void refii_bridge_end_texture_layers(uint32_t entity);
 void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32_t kind,
                                       const uint32_t* layers, uint32_t count);
+
+// The decals the guest states (src/hooks/decals.cpp, table in src/core/decal_state.cpp): a ring
+// of 50, the oldest replaced. kDecalWords words each: 0 serial (the host's), 1 owner render
+// twin or 0, 2 texture name hash, 3..6 position, 7..10 direction (float bits, guest world),
+// 11 / 12 half sizes, 13 life, 14 flag.
+enum {
+  kDecalWords = 15,
+};
+void refii_bridge_note_decal(const uint32_t* words);
+void refii_bridge_clear_decals(void);
+void refii_bridge_drop_decals_of(uint32_t owner);
+
+// The FX mesh particle descriptors the guest's effects state (src/hooks/fx_meshes.cpp, table in
+// src/core/fx_mesh_state.cpp): noted at `sub_82456D58`, dropped when their twin is destroyed.
+void refii_bridge_note_fx_mesh(uint32_t descriptor);
+void refii_bridge_drop_fx_mesh(uint32_t descriptor);
+uint32_t refii_bridge_fx_meshes(uint32_t* out, uint32_t capacity);
 
 // The layers the guest's own dye builder states for ONE inventory item, keyed by the item's
 // record hash and written as a character's composites are (kTextureLayerWords per layer); the
@@ -282,6 +302,10 @@ void refii_bridge_stage_menu_attribute(const char* name, size_t name_length,
 void refii_bridge_run_menu_chunk(const char* chunk, size_t length, uint32_t presentation);
 
 void refii_bridge_ensure_alternate_signal_stack(void);
+
+// The debug channel's switch for the guest's own scene draw: -1 follows REFII_GUEST_RENDER,
+// 0 off, 1 on. Read by the DrawScene hook; the state is in src/core/guest_render_state.cpp.
+int32_t refii_bridge_guest_render_override(void);
 
 #ifdef __cplusplus
 }  // extern "C"

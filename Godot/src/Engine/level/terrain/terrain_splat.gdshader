@@ -41,6 +41,9 @@ uniform bool has_height = false;
 uniform float parallax_scale : hint_range(0.0, 0.1) = 0.02;
 
 uniform sampler2DArray material_weight : filter_linear, repeat_disable;
+// Which material planes are painted near each weight texel, 32 bits as RGBA8
+// (Engine_TerrainSplatMaterial). Unbound it is white: every layer, the full loop.
+uniform sampler2D material_mask : filter_nearest, repeat_disable, hint_default_white;
 
 // THE BAKE TAKES TWO DECODES, AND BOTH ARE REAL. This looks like a mistake and is not.
 //
@@ -104,6 +107,9 @@ uniform vec4 mesh_xform;
 
 uniform vec4 weight_size;
 
+// g_CliffBlendOffsetAndScale (offset, scale): ground weight = saturate(|n.up| x scale + offset).
+// The default is the band this shader used before the level's own pair was read.
+uniform vec2 cliff_blend = vec2(-8.0, 10.0);
 uniform vec4 material_params[32];
 
 varying vec3 v_local;
@@ -131,43 +137,56 @@ void vertex() {
 /// simply `v_local.y`, and the guest's two horizontal axes are our x and z.
 void cliff_projection(
 		vec3 local, vec3 n, float scale, out vec2 uv_x, out vec2 uv_z, out vec2 w) {
-	uv_x = vec2(local.z, local.y) * scale;
-	uv_z = vec2(local.x, local.y) * scale;
+	// V RUNS DOWN THE FACE, as the title's (0176: TC0 = (Y, -height), TC1 = (X, -height)).
+	uv_x = vec2(local.z, -local.y) * scale;
+	uv_z = vec2(local.x, -local.y) * scale;
 
 	float wx = abs(n.x);
 	float wz = abs(n.z);
 	w = vec2(wx, wz) / (wx + wz + 0.0001);
 }
 
-vec3 sample_material(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, vec2 par_dir) {
+/// The ground's UV: (X, -Y) x scale, the title's (0176 1401: v = groundF x -Y). The mesh frame
+/// matches (B along -Y; Engine_LevelScene's tangent w).
+vec2 ground_uv(vec2 world_xy, float scale) {
+	return vec2(world_xy.x, -world_xy.y) * scale;
+}
+
+/// One layer's colour, tangent-space normal and cavity, through ONE parallax/cavity fetch and ONE
+/// cliff projection. `cliff_live` is false only where the layer's cliff weight is exactly zero
+/// across the whole pixel quad, and there `mix(x, cliff, 0)` is x — so skipping the six cliff
+/// fetches leaves every output bit for bit as it was, and the lanes that do fetch are the same
+/// ones, with the same derivatives.
+void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, vec2 par_dir,
+		bool cliff_live, out vec3 colour, out vec3 normal, out float cavity) {
 	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
 	int s = min(max(slice, 0), max_slice);
+	float fs = float(s);
 	vec4 mp = material_params[s];
 
 	// PER MATERIAL, not one global scale for the whole landscape. mp.x is the layer's
 	// UVGroundFactor and mp.y its UVCliffFactor — two different authored numbers that the guest
-	// hands to two different sampler pairs. Using `splat_params.y` for both tiled every layer
-	// at the same rate and ignored what the .ehf actually states for each.
+	// hands to two different sampler pairs. Each normal map rides its colour partner's UV and
+	// projection — the guest passes the same scale float to s0/s2 and the same one to s13/s14.
 	float base_scale = mp.x > 0.0 ? mp.x : splat_params.y;
 	float cliff_scale = mp.y > 0.0 ? mp.y : base_scale;
 
-	vec2 uv_x;
-	vec2 uv_z;
-	vec2 pw;
-	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
+	// mp.w is NOT part of the cliff weight. It is the layer's UVCliffMacroMapFactor — a UV scale
+	// for a macro map the guest samples elsewhere.
+	float cliff_w = slope_w * clamp(mp.z, 0.0, 1.0);
+	bool live = cliff_live && mp.z > 0.0;
+
+	// The cavity's R and the height's B share the undisplaced ground coordinate: one fetch.
+	// has_height implies has_ao (Engine_TerrainSplatMaterial binds them together).
+	vec2 buv = ground_uv(world_xy, base_scale);
+	vec4 aoh = has_ao ? texture(lod_ao_array, vec3(buv, fs)) : vec4(0.0);
 
 	// One-tap offset mapping in this layer's own UV space, exactly the props' line. The cliff
 	// projections stay unoffset — a near-vertical face under the ground's tangent frame would
-	// smear, not displace.
-	vec2 buv = world_xy * base_scale;
+	// smear, not displace. The normal uses the same displaced coordinate as the colour.
 	if (dot(par_dir, par_dir) > 0.0) {
-		buv += par_dir * (texture(lod_ao_array, vec3(buv, float(s))).b - 0.5);
+		buv += par_dir * (aoh.b - 0.5);
 	}
-
-	vec3 base = texture(lod_array, vec3(buv, float(s))).rgb;
-	vec3 cliff =
-		texture(lod_detail_array, vec3(uv_x, float(s))).rgb * pw.x +
-		texture(lod_detail_array, vec3(uv_z, float(s))).rgb * pw.y;
 
 	// Gamma 2.0 by squaring, PER SAMPLE — the position matters. The guest squares each fetch
 	// the instant it lands, `r11.xyz = r11.zxy * r11.zxy` straight after the tfetch, and it
@@ -175,76 +194,58 @@ vec3 sample_material(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w
 	// weighted sum of SQUARED colours. Squaring the blended result instead computes
 	// (sum w*c)^2 where the guest computes sum w*c^2, and those differ wherever two layers
 	// overlap — which is every transition in the region.
+	vec3 base = texture(lod_array, vec3(buv, fs)).rgb;
 	base *= base;
-	cliff *= cliff;
+	colour = base;
 
-	// mp.w is NOT part of this. It is the layer's UVCliffMacroMapFactor — a UV scale for a
-	// macro map the guest samples elsewhere — and multiplying the cliff's share of the blend by
-	// it was thinning every slope by an unrelated authored number.
-	float cliff_w = slope_w * clamp(mp.z, 0.0, 1.0);
-	return mix(base, cliff, cliff_w);
-}
-
-/// This layer's tangent-space normal, blended by the same slope weight as its colour.
-///
-/// Z IS RECONSTRUCTED rather than read. The guest's landscape normals are two-channel — it
-/// decodes `n.xy = sample.xy * 2 - 1` and then `n.z = sqrt(1 - x*x - y*y)` — and reconstructing
-/// gives the same answer for a three-channel map, so this is correct either way and does not
-/// depend on knowing which compressed format a given .tex shipped in.
-vec3 sample_material_normal(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, vec2 par_dir) {
-	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
-	int s = min(max(slice, 0), max_slice);
-	vec4 mp = material_params[s];
-
-	// Each normal map rides its colour partner's UV and projection — the guest passes the same
-	// scale float to s0/s2 and the same one to s13/s14.
-	float base_scale = mp.x > 0.0 ? mp.x : splat_params.y;
-	float cliff_scale = mp.y > 0.0 ? mp.y : base_scale;
-
-	vec2 uv_x;
-	vec2 uv_z;
-	vec2 pw;
-	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
-
-	// The same displaced coordinate the colour used — a normal sampled off its own colour's
-	// texel slides the shading off the relief.
-	vec2 buv = world_xy * base_scale;
-	if (dot(par_dir, par_dir) > 0.0) {
-		buv += par_dir * (texture(lod_ao_array, vec3(buv, float(s))).b - 0.5);
+	// Z IS RECONSTRUCTED rather than read. The guest's landscape normals are two-channel — it
+	// decodes `n.xy = sample.xy * 2 - 1` and then `n.z = sqrt(1 - x*x - y*y)` — and reconstructing
+	// gives the same answer for a three-channel map.
+	normal = vec3(0.0, 0.0, 1.0);
+	if (has_normals) {
+		vec2 gxy = texture(lod_normal_array, vec3(buv, fs)).xy * 2.0 - 1.0;
+		normal = vec3(gxy, sqrt(max(1.0 - dot(gxy, gxy), 0.0)));
 	}
+	cavity = aoh.r;
 
-	vec2 base_xy = texture(lod_normal_array, vec3(buv, float(s))).xy;
-	vec2 cliff_xy =
-		texture(lod_detail_normal_array, vec3(uv_x, float(s))).xy * pw.x +
-		texture(lod_detail_normal_array, vec3(uv_z, float(s))).xy * pw.y;
+	if (live) {
+		vec2 uv_x;
+		vec2 uv_z;
+		vec2 pw;
+		cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
 
-	float cliff_w = slope_w * clamp(mp.z, 0.0, 1.0);
-	vec2 xy = mix(base_xy, cliff_xy, cliff_w) * 2.0 - 1.0;
-	return vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
-}
+		vec3 cliff =
+			texture(lod_detail_array, vec3(uv_x, fs)).rgb * pw.x +
+			texture(lod_detail_array, vec3(uv_z, fs)).rgb * pw.y;
+		cliff *= cliff;
+		colour = mix(base, cliff, cliff_w);
 
-/// This layer's cavity, through the SAME projections and weights as its colour and normal —
-/// the R channel rides the ground's downward projection, the G channel the cliff's two planes.
-float sample_material_ao(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w) {
-	int max_slice = max(int(chunk_grid_size.z) - 1, 0);
-	int s = min(max(slice, 0), max_slice);
-	vec4 mp = material_params[s];
+		if (has_normals) {
+			// EACH CLIFF PLANE DECODED ON ITS OWN, then turned into the ground's frame by its own
+			// swizzle (blob 0197 1337-1417): the plane facing X (a, on (Y, -h)) and the plane
+			// facing Y (b, on (X, -h)) give
+			//     x = -wA a.x - sign(n.y) wB b.y,   y = -wA a.y + wB b.x,   z = wA a.z + wB b.z
+			// and only the mix with the ground is normalised.
+			vec2 axy = texture(lod_detail_normal_array, vec3(uv_x, fs)).xy * 2.0 - 1.0;
+			vec2 bxy = texture(lod_detail_normal_array, vec3(uv_z, fs)).xy * 2.0 - 1.0;
+			vec3 a = vec3(axy, sqrt(max(1.0 - dot(axy, axy), 0.0)));
+			vec3 b = vec3(bxy, sqrt(max(1.0 - dot(bxy, bxy), 0.0)));
+			float facing = n.z >= 0.0 ? 1.0 : -1.0;
+			vec3 cliff_n = vec3(
+				-(pw.x * a.x) - (facing * pw.y * b.y),
+				-(pw.x * a.y) + (pw.y * b.x),
+				(pw.x * a.z) + (pw.y * b.z));
+			normal = mix(normal, cliff_n, cliff_w);
+		}
 
-	float base_scale = mp.x > 0.0 ? mp.x : splat_params.y;
-	float cliff_scale = mp.y > 0.0 ? mp.y : base_scale;
-
-	vec2 uv_x;
-	vec2 uv_z;
-	vec2 pw;
-	cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
-
-	float base = texture(lod_ao_array, vec3(world_xy * base_scale, float(s))).r;
-	float cliff =
-		texture(lod_ao_array, vec3(uv_x, float(s))).g * pw.x +
-		texture(lod_ao_array, vec3(uv_z, float(s))).g * pw.y;
-
-	float cliff_w = slope_w * clamp(mp.z, 0.0, 1.0);
-	return mix(base, cliff, cliff_w);
+		if (has_ao) {
+			// The cavity's G channel rides the cliff's two planes.
+			float cliff_ao =
+				texture(lod_ao_array, vec3(uv_x, fs)).g * pw.x +
+				texture(lod_ao_array, vec3(uv_z, fs)).g * pw.y;
+			cavity = mix(aoh.r, cliff_ao, cliff_w);
+		}
+	}
 }
 
 void fragment() {
@@ -271,10 +272,16 @@ void fragment() {
 	vec2 chunk_clamped = clamp(chunk_co, vec2(0.0), vec2(cw - 0.001, ch - 0.001));
 
 	vec3 geom_normal = normalize(v_local_normal);
-	float slope_w = clamp((0.90 - abs(geom_normal.y)) / 0.10, 0.0, 1.0);
+	float slope_w = 1.0 - clamp(abs(geom_normal.y) * cliff_blend.y + cliff_blend.x, 0.0, 1.0);
+
+	// Whether ANY lane of this pixel quad has a slope: slope_w is never negative, so
+	// x + |dx| > 0 exactly when x or its horizontal neighbour is, and the same again vertically
+	// covers all four. One answer per quad keeps the cliff fetches' derivatives what they were.
+	float quad_x = slope_w + abs(dFdxFine(slope_w));
+	bool quad_cliff = (quad_x + abs(dFdyFine(quad_x))) > 0.0;
 
 	// The view direction in the mesh's tangent frame, once per fragment — the analytic frame
-	// ToArrayMesh emits (T = local +X, B = local +Z via w = -1) maps tangent xy straight onto
+	// ToArrayMesh emits (T = local +X, B = local -Z via w = +1) maps tangent xy straight onto
 	// the ground UV's axes, so this IS the props' offset-mapping line on the ground's UVs.
 	vec2 par_dir = vec2(0.0);
 	if (has_height && parallax_scale > 0.0) {
@@ -293,23 +300,47 @@ void fragment() {
 	vec2 edge_uv = 0.5 * inv_weight_size;
 	weight_uv = clamp(weight_uv, edge_uv, vec2(1.0) - edge_uv);
 
+	// The layers that can weigh anything here: bit m is set when material m is painted in the
+	// 3x3 weight texels around this one, which holds every texel the bilinear fetch can touch.
+	// A layer outside it fetches exactly zero and was skipped below anyway.
+	ivec2 mask_texel = clamp(
+		ivec2(round(weight_uv * weight_size.xy - 0.5)), ivec2(0), textureSize(material_mask, 0) - 1);
+	uvec4 mask_bytes = uvec4(round(texelFetch(material_mask, mask_texel, 0) * 255.0));
+	uint layer_mask = mask_bytes.r | (mask_bytes.g << 8u) | (mask_bytes.b << 16u) | (mask_bytes.a << 24u);
+
 	for (int mat = 0; mat < 32; mat++) {
 		if (page_mode || mat >= int(chunk_grid_size.z)) {
 			break;
 		}
-
-		float w = textureLod(material_weight, vec3(weight_uv, float(mat)), 0.0).r;
-		if (w <= 0.001) {
+		uint rest = layer_mask >> uint(mat);
+		if (rest == 0u) {
+			break;
+		}
+		if ((rest & 1u) == 0u) {
 			continue;
 		}
 
-		final += sample_material(mat, world_xy, v_local, geom_normal, slope_w, par_dir) * w;
+		// R the layer weight, G the share of it whose layer states the cliff: the title draws a
+		// layer on the CLF1 pair only where its quadrant gate's bit 1 is set (`sub_8221FC40`
+		// 0x8221FE6C); elsewhere it is ground at every slope.
+		vec2 ws = textureLod(material_weight, vec3(weight_uv, float(mat)), 0.0).rg;
+		float w = ws.r;
+		if (w <= 0.001) {
+			continue;
+		}
+		float layer_slope = slope_w * ws.g;
+
+		vec3 layer_colour;
+		vec3 layer_normal;
+		float layer_cavity;
+		sample_layer(mat, world_xy, v_local, geom_normal, layer_slope, par_dir, quad_cliff,
+			layer_colour, layer_normal, layer_cavity);
+		final += layer_colour * w;
 		if (has_normals) {
-			mapped_normal += sample_material_normal(
-				mat, world_xy, v_local, geom_normal, slope_w, par_dir) * w;
+			mapped_normal += layer_normal * w;
 		}
 		if (has_ao) {
-			ao += sample_material_ao(mat, world_xy, v_local, geom_normal, slope_w) * w;
+			ao += layer_cavity * w;
 		}
 		weight_sum += w;
 	}
@@ -324,17 +355,15 @@ void fragment() {
 		mapped_normal = vec3(0.0, 0.0, 1.0);
 		ao = 1.0;
 	} else if (weight_sum > 0.001) {
-		final /= weight_sum;
+		// The colour is NOT renormalised: the title sums weight x layer (Engine_EhfSplat's bake),
+		// so paint that sums under one is darker there too. Direction and occlusion are averages.
 		mapped_normal /= weight_sum;
 		ao /= weight_sum;
 	} else {
-		final = sample_material(0, world_xy, v_local, geom_normal, slope_w, par_dir);
-		mapped_normal = has_normals
-			? sample_material_normal(0, world_xy, v_local, geom_normal, slope_w, par_dir)
-			: vec3(0.0, 0.0, 1.0);
-		ao = has_ao
-			? sample_material_ao(0, world_xy, v_local, geom_normal, slope_w)
-			: 1.0;
+		float cavity;
+		sample_layer(0, world_xy, v_local, geom_normal, slope_w, par_dir, quad_cliff,
+			final, mapped_normal, cavity);
+		ao = has_ao ? cavity : 1.0;
 	}
 
 	if (!has_ao) {
@@ -343,7 +372,7 @@ void fragment() {
 
 	mapped_normal = has_normals ? normalize(mapped_normal) : vec3(0.0, 0.0, 1.0);
 
-	// `final` is already squared — `sample_material` does it per fetch, where the guest does.
+	// `final` is already squared — `sample_layer` does it per fetch, where the guest does.
 	//
 	// That decode is what the ground was missing, and it is why the theme's LightmapFactor
 	// could not be applied before: an unsquared albedo is roughly the square root of the
@@ -441,12 +470,12 @@ void fragment() {
 	// t = 0.5·(dot(N, AmbRef)+1); bent = lerp(N, AmbRef, t)), and the ground's ambient darkens
 	// by the same rule as the bridge standing on it. The tangent frame is the analytic one
 	// ToArrayMesh emits:
-	// T = local +X, B = cross(N, T) × w with w = −1.
+	// T = local +X, B = cross(N, T) × w with w = +1 (local -Z, the ground's v).
 	vec3 darken = vec3(1.0);
 	if (has_normals) {
 		vec3 world_geom = normalize((MODEL_MATRIX * vec4(geom_normal, 0.0)).xyz);
 		vec3 world_t = normalize((MODEL_MATRIX * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
-		vec3 world_b = cross(world_geom, world_t) * -1.0;
+		vec3 world_b = cross(world_geom, world_t);
 		vec3 mapped_world = normalize(
 			(world_t * mapped_normal.x) + (world_b * mapped_normal.y) +
 			(world_geom * mapped_normal.z));
@@ -576,7 +605,8 @@ void light() {
 		if (LIGHT_IS_DIRECTIONAL) {
 			DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
 		}
-	} else {
+	} else if (dot(NORMAL, LIGHT) > 0.0) {
+		// Facing away the term is exactly zero (saturate(NdotL) scales finite factors): skipped.
 		float gate = LIGHT_IS_DIRECTIONAL
 			? clamp(8.0 * dot(NORMAL, LIGHT), 0.0, 1.0)
 			: 1.0;

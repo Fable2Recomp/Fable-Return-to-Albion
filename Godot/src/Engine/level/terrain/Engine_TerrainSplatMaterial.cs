@@ -82,6 +82,7 @@ public static class Engine_TerrainSplatMaterial
         material.SetShaderParameter("lod_array", baseArray);
         material.SetShaderParameter("lod_detail_array", detailArray);
         material.SetShaderParameter("material_weight", weightArray);
+        material.SetShaderParameter("material_mask", BuildLayerMask(data));
 
         // The layers' normal maps, which the .ehf has always named and nothing has ever loaded.
         // A missing pair leaves the shader's flat default, which costs a sample and nothing else.
@@ -141,6 +142,20 @@ public static class Engine_TerrainSplatMaterial
                 parsed.SplatHeight > 0 ? 32f / parsed.SplatHeight : 0f));
 
         material.SetShaderParameter("mesh_xform", new Vector4(1f, 1f, 0f, 0f));
+
+        // g_CliffBlendOffsetAndScale, the level's own: the two header floats after the spacing
+        // (res+84, res+88; Engine_ClassicTerrain reads the same pair). The landscape pixel shader
+        // takes ground = saturate(|n.up| x scale + offset) (blob 0197 1285) — a per-level slope,
+        // not one hard-coded band.
+        if (ehf.Length >= 55)
+        {
+            float cliffOffset = BitConverter.Int32BitsToSingle((ehf[47] << 24) | (ehf[48] << 16) | (ehf[49] << 8) | ehf[50]);
+            float cliffScale = BitConverter.Int32BitsToSingle((ehf[51] << 24) | (ehf[52] << 16) | (ehf[53] << 8) | ehf[54]);
+            if (float.IsFinite(cliffOffset) && float.IsFinite(cliffScale) && cliffScale != 0f)
+            {
+                material.SetShaderParameter("cliff_blend", new Vector2(cliffOffset, cliffScale));
+            }
+        }
 
         material.SetShaderParameter(
             "weight_size",
@@ -643,28 +658,87 @@ public static class Engine_TerrainSplatMaterial
         int planes = Math.Min(data.MaterialCount, Engine_EhfSplat.MaxMaterials);
         var images = new Godot.Collections.Array<Image>();
 
-        // EIGHT BITS, NOT THIRTY-TWO. `BakeWeights` normalises every texel's layers to sum to
-        // one and writes a flat 1 where nothing was painted, so the value is always in [0,1] —
-        // a blend weight, at four bytes a texel, for what a byte carries with no visible
-        // difference. At 1024 square across 32 planes that is 134 MB against 33 MB, and the
-        // shader reads `.r` as a normalised float either way.
+        // EIGHT BITS A CHANNEL, NOT THIRTY-TWO: every value is in [0,1], and a byte carries a
+        // blend weight with no visible difference.
+        // R the weight, G the share of it from layers that state the cliff.
+        static byte Unit(float v) => v <= 0f ? (byte)0 : v >= 1f ? (byte)255 : (byte)((v * 255f) + 0.5f);
         for (int plane = 0; plane < planes; plane++)
         {
-            var bytes = new byte[area];
+            var bytes = new byte[area * 2];
             long baseIndex = plane * area;
             for (long t = 0; t < area; t++)
             {
-                float weight = data.Weights[baseIndex + t];
-                bytes[t] = weight <= 0f
-                    ? (byte)0
-                    : weight >= 1f ? (byte)255 : (byte)((weight * 255f) + 0.5f);
+                bytes[t * 2] = Unit(data.Weights[baseIndex + t]);
+                bytes[(t * 2) + 1] = data.CliffShares.Length > baseIndex + t ? Unit(data.CliffShares[baseIndex + t]) : (byte)255;
             }
 
             images.Add(Image.CreateFromData(
-                data.WeightWidth, data.WeightHeight, false, Image.Format.R8, bytes));
+                data.WeightWidth, data.WeightHeight, false, Image.Format.Rg8, bytes));
         }
 
         var array = new Texture2DArray();
         return array.CreateFromImages(images) == Error.Ok ? array : null;
+    }
+
+    /// <summary>
+    /// Bit m of a texel = material m's weight byte is non-zero somewhere in the 3x3 texels around
+    /// it, as RGBA8 (bits 0-7 in R). The shader's bilinear weight fetch reads at most the 2x2
+    /// around its nearest texel, so a layer outside the mask fetches exactly zero there and the
+    /// loop skips it without the fetch.
+    /// </summary>
+    private static ImageTexture? BuildLayerMask(TerrainSplatData data)
+    {
+        int width = data.WeightWidth;
+        int height = data.WeightHeight;
+        long area = (long)width * height;
+        if (area == 0)
+        {
+            return null;
+        }
+
+        int planes = Math.Min(data.MaterialCount, Engine_EhfSplat.MaxMaterials);
+        var own = new uint[area];
+        for (int plane = 0; plane < planes; plane++)
+        {
+            long baseIndex = plane * area;
+            for (long t = 0; t < area; t++)
+            {
+                // The same test as the weight byte: anything that rounds to a non-zero byte.
+                if (data.Weights[baseIndex + t] * 255f + 0.5f >= 1f)
+                {
+                    own[t] |= 1u << plane;
+                }
+            }
+        }
+
+        var bytes = new byte[area * 4];
+        long layers = 0;
+        int widest = 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                uint bits = 0;
+                for (int dy = Math.Max(y - 1, 0); dy <= Math.Min(y + 1, height - 1); dy++)
+                {
+                    for (int dx = Math.Max(x - 1, 0); dx <= Math.Min(x + 1, width - 1); dx++)
+                    {
+                        bits |= own[((long)dy * width) + dx];
+                    }
+                }
+
+                long t = ((long)y * width) + x;
+                bytes[t * 4] = (byte)bits;
+                bytes[(t * 4) + 1] = (byte)(bits >> 8);
+                bytes[(t * 4) + 2] = (byte)(bits >> 16);
+                bytes[(t * 4) + 3] = (byte)(bits >> 24);
+                int count = System.Numerics.BitOperations.PopCount(bits);
+                layers += count;
+                widest = Math.Max(widest, count);
+            }
+        }
+
+        GD.Print($"[terrain] layer mask: {layers / (double)area:0.00} layers a texel on average, at most {widest} of {planes}");
+        return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, bytes));
     }
 }

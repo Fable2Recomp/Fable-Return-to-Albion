@@ -54,8 +54,26 @@ public static class Engine_LevelEntities
             return null;
         }
 
-        List<KeyValuePair<uint, string>> saveMap = Engine_GdbSaveMap.Parse(
-            read(Engine_LevelGdb.SiblingWithExtension(gdbPath, ".save")));
+        string savePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ".save");
+        byte[]? saveBytes = read(savePath);
+        bool isEditor = Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode;
+        GdbSaveDocument? editorSaveDoc = null;
+        List<KeyValuePair<uint, string>> saveMap;
+
+        if (isEditor)
+        {
+            editorSaveDoc = Engine_GdbSaveMap.ParseDocument(saveBytes, out _);
+            IReadOnlyList<GdbSaveEntityEntry> allEntries = editorSaveDoc.GetAllEntities(includeInitiallyOff: true);
+            saveMap = new List<KeyValuePair<uint, string>>(allEntries.Count);
+            foreach (GdbSaveEntityEntry e in allEntries)
+            {
+                saveMap.Add(new KeyValuePair<uint, string>(e.RecordHash, e.EntityName));
+            }
+        }
+        else
+        {
+            saveMap = Engine_GdbSaveMap.Parse(saveBytes);
+        }
 
         stats.SaveEntities = saveMap.Count;
         if (saveMap.Count == 0)
@@ -64,14 +82,47 @@ public static class Engine_LevelEntities
         }
 
         var blobs = new List<byte[]?> { levelGdb };
+        var supplementalViews = new List<(string Path, GdbView View)>();
         foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
         {
-            blobs.Add(read(path) ?? read("data/" + path));
+            byte[]? suppBytes = read(path) ?? read("data/" + path);
+            blobs.Add(suppBytes);
+            if (suppBytes is not null && GdbView.TryParse(suppBytes, out GdbView suppView, out _))
+            {
+                supplementalViews.Add(("data/" + path, suppView));
+            }
         }
 
         GdbMulti multi = GdbMulti.Build(blobs);
         var container = new Node3D { Name = NodeName };
         var used = new HashSet<string>();
+
+        Node3D? editorLayersRoot = null;
+        var editorLayerContainers = new Dictionary<string, Node3D>(StringComparer.Ordinal);
+
+        Node3D GetOrCreateEditorLayerContainer(string layerName, string layerTag, GdbSaveLoadState loadState)
+        {
+            string effectiveName = string.IsNullOrWhiteSpace(layerName)
+                ? Engine_LevelProps.UnassignedLayerName
+                : layerName;
+            if (editorLayerContainers.TryGetValue(effectiveName, out Node3D? existing) &&
+                GodotObject.IsInstanceValid(existing))
+            {
+                return existing;
+            }
+
+            if (editorLayersRoot is null || !GodotObject.IsInstanceValid(editorLayersRoot))
+            {
+                editorLayersRoot = new Node3D { Name = Engine_LevelProps.LayersContainerName };
+                container.AddChild(editorLayersRoot);
+            }
+
+            var layerNode = new Node3D { Name = UniqueName(used, effectiveName) };
+            LevelRecordMetadata.StampLayerContainer(layerNode, effectiveName, layerTag, loadState);
+            editorLayersRoot.AddChild(layerNode);
+            editorLayerContainers[effectiveName] = layerNode;
+            return layerNode;
+        }
 
         foreach (KeyValuePair<uint, string> saved in saveMap)
         {
@@ -84,8 +135,27 @@ public static class Engine_LevelEntities
             stats.Creatures++;
 
             int beforeRecord = Refii.Gdb.Engine_GdbPlacements.MissingRecord;
-            if (!Engine_GdbPlacements.TryLookupPlacement(
-                    levelView, saved.Key, saved.Value, true, out GdbPlacement placement))
+            string sourceGdbPath = gdbPath;
+            bool foundPlacement = Engine_GdbPlacements.TryLookupPlacement(
+                levelView, saved.Key, saved.Value, true, out GdbPlacement placement);
+
+            if (!foundPlacement)
+            {
+                // Global NPCs (e.g., QO135_BardEntity, QO170_SaltyJack, QC180_Reaver) are referenced
+                // in <level>.save but defined in Globals/globals.gdb rather than <level>.gdb.
+                foreach ((string suppPath, GdbView suppView) in supplementalViews)
+                {
+                    if (Engine_GdbPlacements.TryLookupPlacement(
+                            suppView, saved.Key, saved.Value, true, out placement))
+                    {
+                        foundPlacement = true;
+                        sourceGdbPath = suppPath;
+                        break;
+                    }
+                }
+            }
+
+            if (!foundPlacement)
             {
                 stats.NoTransform++;
                 if (Refii.Gdb.Engine_GdbPlacements.MissingRecord != beforeRecord)
@@ -121,9 +191,12 @@ public static class Engine_LevelEntities
                 entry.Name = saved.Value;
             }
 
+            string displayName = saved.Value.Length != 0 ? saved.Value : entry.Name;
             var node = new Engine_EntityInstance
             {
-                Name = UniqueName(used, saved.Value.Length != 0 ? saved.Value : entry.Name),
+                Name = UniqueName(
+                    used,
+                    isEditor ? $"{displayName} [0x{saved.Key:X8}]" : displayName),
                 Transform = Engine_LevelProps.BuildTransform(placement),
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.On,
             };
@@ -152,6 +225,7 @@ public static class Engine_LevelEntities
                 node.AddChild(new Refii.Animations.Engine_EntityAnimator
                 {
                     Name = Refii.Animations.Engine_EntityAnimator.NodeName,
+                    ClipLimit = isEditor ? 1 : Refii.Animations.Engine_EntityAnimator.DefaultClipLimit,
                 });
 
                 stats.Animated++;
@@ -174,7 +248,40 @@ public static class Engine_LevelEntities
                 Engine_EntityInspect.Annotate(node, saved.Key, inspect);
             }
 
-            container.AddChild(node);
+            if (isEditor && editorSaveDoc is not null)
+            {
+                bool inSave = editorSaveDoc.TryGetEntity(
+                    saved.Key, out _, out GdbSaveLayer? saveLayer);
+                string layerName = inSave && saveLayer is not null
+                    ? saveLayer.LayerName
+                    : Engine_LevelProps.UnassignedLayerName;
+                string layerTag = inSave && saveLayer is not null ? saveLayer.LayerTag : "id_5A4CBED4";
+                GdbSaveLoadState loadState = inSave && saveLayer is not null
+                    ? saveLayer.LoadState
+                    : GdbSaveLoadState.AlwaysOn;
+
+                Node3D layerContainer = GetOrCreateEditorLayerContainer(layerName, layerTag, loadState);
+                layerContainer.AddChild(node);
+
+                LevelRecordMetadata.StampRecordNode(
+                    node,
+                    saved.Key,
+                    placement.ParentHash,
+                    displayName,
+                    layerName,
+                    layerTag,
+                    loadState,
+                    sourceGdbPath,
+                    node.Transform,
+                    LevelNodeCategory.CreatureOrNpc);
+
+                Engine_LevelProps.ApplyEditorLoadStateVisuals(node, loadState, ghostInitiallyOff: true);
+            }
+            else
+            {
+                container.AddChild(node);
+            }
+
             stats.Placed++;
         }
 

@@ -60,6 +60,18 @@ public static class Engine_UiScreenInput
 	public const uint Right = 31;
 
 	/// <summary>
+	/// The releases. The page gate `sub_828818E8` resets its last direction and repeat clocks on
+	/// any of 32..35, so a press followed by its release always lands — the pointer's bursts.
+	/// </summary>
+	public const uint UpReleased = 32;
+
+	public const uint DownReleased = 33;
+
+	public const uint LeftReleased = 34;
+
+	public const uint RightReleased = 35;
+
+	/// <summary>
 	/// The page level's repeat, matched to the widget's gate, not the menu's. `sub_82881B28`
 	/// swallows a directional unless `gate+16/20` (0.3s) has passed, dropping to `gate+24/28`
 	/// (0.01s) once repeating — so sit just past the first delay and above the floor.

@@ -165,3 +165,41 @@ REX_EXTERN(rex_lhSetTextureLayersCommand_Ctor) {
   }
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhSetTextureLayersCommand_Ctor);
 }
+
+// WHOLE-ENTITY SWAPS. Instead of composites, `sub_8220DE88` first asks two components for one
+// texture each per map kind and skips the composite path entirely when either answers
+// (0x8220eb28, 0x8220eb44): component 192 (`sub_825B6E90`, not for a "Mannequin") and the
+// SHADOW CREATURE, component 229 (`sub_825B7270`: the def's Diffuse/Specular/NormalTexture, else
+// Art\Environment\_SharedTextures\Spire_Rock_V1). Each is stated here:
+//
+//   sub_825B7100(morph, renderInstance, cmd, &texture, &slot)
+//
+// a full-weight morph (+8 = 1.0) sent to the render proxy, `texture` the resource hash of the
+// replacement and `slot` one of three wildcard keys — "TEXTURE_MORPH_WILDCARD_ALL_DIFFUSE_MAPS"
+// (dword_8349F774), "..._SPECULAR_MAPS" (+778) and "..._NORMAL_MAPS" (+77C), told apart by WHICH
+// global the caller passed. Stated as kind 2: original = 0 diffuse, 1 specular, 2 normal; one
+// opaque layer at weight 1.
+REX_EXTERN(rex_lhTextureMorph_StateWildcard) {
+  refii::vfs::EnsureAlternateSignalStack();
+  REX_FUNC_PROLOGUE();
+  const uint32_t texture_at = ctx.r6.u32;
+  const uint32_t slot_at = ctx.r7.u32;
+  if (t_entity != 0u && texture_at != 0u && slot_at != 0u) {
+    uint32_t slot = ~0u;
+    if (slot_at == refii::guest::Address(0x8349F774u)) {
+      slot = 0u;
+    } else if (slot_at == refii::guest::Address(0x8349F778u)) {
+      slot = 1u;
+    } else if (slot_at == refii::guest::Address(0x8349F77Cu)) {
+      slot = 2u;
+    }
+    const uint32_t texture = refii::vfs::LoadGuestU32(base, texture_at);
+    if (slot != ~0u && texture != 0u) {
+      constexpr uint32_t kOne = 0x3F800000u;
+      const uint32_t words[kTextureLayerWords] = {texture, 0u, kOne, 0u, 0u, 0u, 0u};
+      Begin();
+      refii::vfs::NoteTextureLayers(t_entity, slot, 2u, words, 1u);
+    }
+  }
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhTextureMorph_StateWildcard);
+}

@@ -349,16 +349,20 @@ public sealed class Engine_UiScreenMenu
 				anyUnviewed |= child.Unviewed;
 			}
 
-			if (sourcedChildren == 0 || !Strings.TryGetString(tag, out string caption) ||
-				caption.Length == 0)
+			if (!Strings.TryGetString(tag, out string caption) || caption.Length == 0)
 			{
 				continue;
 			}
 
+			// A count of zero is the BARE caption (`sub_829A52F8`: `if (a2 <= 0)` copies the
+			// caption alone), written rather than skipped: skipping left the spawn-time label up,
+			// so buying the last upgradeable ability kept "Will (1)" on the folder.
 			// The second suffix, `sub_826CF098`'s `word_820AEFF0` — appended when the count
 			// pair's `[1]` is above zero, and that is the number of unviewed items.
-			string decorated = $"{caption} ({sourcedChildren})" +
-				(anyUnviewed ? "<exclamation.img>" : string.Empty);
+			string decorated = sourcedChildren == 0
+				? caption
+				: $"{caption} ({sourcedChildren})" +
+					(anyUnviewed ? "<exclamation.img>" : string.Empty);
 			if (!string.Equals(row.StatedLabel, decorated, System.StringComparison.Ordinal))
 			{
 				row.StatedLabel = decorated;

@@ -102,7 +102,13 @@ public partial class BnkMountPlugin : EditorPlugin
     private static readonly Color MeshlessItemColor = new(0.62f, 0.62f, 0.62f);
 
     private EntityInspectorPlugin? _entityInspector;
+    private static readonly Color MeshlessItemColor = new(0.62f, 0.62f, 0.62f);
+
+    private EntityInspectorPlugin? _entityInspector;
     private readonly EditorScanRequest _extensionScan = new();
+    private Refii.Assets.UI.ModdingHubPanel? _modStudioMainPanel;
+    private Refii.Assets.UI.ModStudioDockPanel? _modStudioDockPanel;
+    private Refii.Assets.UI.LevelPerspectiveToolbar? _levelToolbar;
 
     public override void _EnterTree()
     {
@@ -136,11 +142,14 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         StartMount();
-        EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged += OnFilesystemChanged;
+        EditorFileSystem resFs = EditorInterface.Singleton.GetResourceFilesystem();
+        resFs.FilesystemChanged += OnFilesystemChanged;
+        resFs.SourcesChanged += OnSourcesChanged;
         AddStreamingLabel();
         _entityInspector = new EntityInspectorPlugin();
         AddInspectorPlugin(_entityInspector);
         SetupContextMenu();
+        SetupModStudio();
         EnsureFileExtensionsRecognized();
     }
 
@@ -154,12 +163,18 @@ public partial class BnkMountPlugin : EditorPlugin
             _entityInspector = null;
         }
 
-        EditorInterface.Singleton.GetResourceFilesystem().FilesystemChanged -= OnFilesystemChanged;
+        EditorFileSystem? resFs = EditorInterface.Singleton?.GetResourceFilesystem();
+        if (resFs is not null && GodotObject.IsInstanceValid(resFs))
+        {
+            resFs.FilesystemChanged -= OnFilesystemChanged;
+            resFs.SourcesChanged -= OnSourcesChanged;
+        }
         RemoveStreamingLabel();
         RemoveGameRoot();
         RemoveLoaders();
         Refii.FlashGames.Engine_SwfAssets.RemoveLoaders();
         RemoveContextMenu();
+        RemoveModStudio();
 
         if (Instance == this)
         {
@@ -300,7 +315,61 @@ public partial class BnkMountPlugin : EditorPlugin
         _streamingLabel = null;
     }
 
-    private void OnFilesystemChanged() => CallDeferred(nameof(Inject));
+    private void OnFilesystemChanged()
+    {
+        if (!IsGameRootMounted())
+        {
+            CallDeferred(nameof(Inject));
+        }
+    }
+
+    private void OnSourcesChanged(bool _)
+    {
+        if (!IsGameRootMounted())
+        {
+            CallDeferred(nameof(Inject));
+        }
+    }
+
+    private bool _injectRetryPending;
+
+    private bool IsGameRootMounted() =>
+        _gameRoot is not null && GodotObject.IsInstanceValid(_gameRoot) && _gameRoot.GetTree() is not null;
+
+    private async void ScheduleInjectRetry()
+    {
+        if (_injectRetryPending)
+        {
+            return;
+        }
+
+        _injectRetryPending = true;
+        try
+        {
+            for (int i = 0; i < 25; i++)
+            {
+                await ToSignal(GetTree().CreateTimer(0.20), SceneTreeTimer.SignalName.Timeout);
+                if (IsGameRootMounted())
+                {
+                    break;
+                }
+
+                Inject();
+                if (IsGameRootMounted())
+                {
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[bnk_mount] Inject retry error: {ex.Message}");
+        }
+        finally
+        {
+            _injectRetryPending = false;
+        }
+    }
 
     private void StartMount()
     {
@@ -349,7 +418,7 @@ public partial class BnkMountPlugin : EditorPlugin
                     }
                 }
 
-                // Compose multi-mod GDB Title Updates in load order (or purge if no overlays enabled):
+                // Compose multi-mod GDB Title Updates and .save layer maps in load order (or purge if no overlays enabled):
                 if (overlays.Count == 0)
                 {
                     Refii.Gdb.GdbPatchCompositor.PurgeCache(modsRoot);
@@ -357,6 +426,7 @@ public partial class BnkMountPlugin : EditorPlugin
                 else
                 {
                     Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, modsRoot);
+                    Refii.Gdb.SaveMapCompositor.Apply(mounted, overlays);
                 }
             }
             catch (Exception exception)
@@ -391,21 +461,39 @@ public partial class BnkMountPlugin : EditorPlugin
         return _tree;
     }
 
+    /// <summary>Gets the currently mounted virtual bank filesystem, if available.</summary>
+    public BnkFileSystem? FileSystem => _filesystem;
+
     private byte[]? ResolveBytes(string virtualPath)
     {
-        if (_filesystem is null || !_filesystem.TryGetFile(virtualPath, out BnkFile file))
+        if (string.IsNullOrWhiteSpace(virtualPath))
         {
             return null;
         }
 
-        try
+        string normalized = virtualPath.Replace('\\', '/').TrimStart('/');
+        if (normalized.StartsWith("mods/", StringComparison.OrdinalIgnoreCase))
         {
-            return file.ReadAllBytes();
+            byte[]? modBytes = EditorModValueService.TryReadFromActiveModPackage(normalized);
+            if (modBytes is not null && modBytes.Length > 0)
+            {
+                return modBytes;
+            }
         }
-        catch (Exception)
+
+        if (_filesystem is not null && _filesystem.TryGetFile(normalized, out BnkFile file))
         {
-            return null;
+            try
+            {
+                return file.ReadAllBytes();
+            }
+            catch (Exception)
+            {
+                return null;
+            }
         }
+
+        return null;
     }
 
     public byte[]? ResolveBaseBytes(string virtualPath)
@@ -835,6 +923,10 @@ public partial class BnkMountPlugin : EditorPlugin
         TreeItem? root = tree?.GetRoot();
         if (tree is null || root is null)
         {
+            if (_filesystem is not null)
+            {
+                ScheduleInjectRetry();
+            }
             return;
         }
 
@@ -1151,6 +1243,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private const int MenuEditItemValues = 107;
     private const int MenuInspectModTu = 108;
     private const int MenuInspectTu = 109;
+    private const int MenuOpenModStudioWorkspace = 110;
 
     private Refii.Equipment.ItemDetail? _contextItemDetail;
     private ModItemEditorDialog? _itemEditorDialog;
@@ -1221,6 +1314,664 @@ public partial class BnkMountPlugin : EditorPlugin
         }
     }
 
+    public override bool _HasMainScreen() => true;
+
+    public override string _GetPluginName() => "Mod Studio";
+
+    public override Texture2D? _GetPluginIcon()
+    {
+        try
+        {
+            return EditorInterface.Singleton?.GetBaseControl()?.GetThemeIcon("Tools", "EditorIcons");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public override void _MakeVisible(bool visible)
+    {
+        if (_modStudioMainPanel is not null && GodotObject.IsInstanceValid(_modStudioMainPanel))
+        {
+            _modStudioMainPanel.Visible = visible;
+            if (visible)
+            {
+                _modStudioMainPanel.RefreshModList();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Initializes and mounts the Fable 2 Mod Studio into both the Godot main screen workspace
+    /// and the left dock bar. Defaults the editor to the main screen workspace on startup.
+    /// </summary>
+    private void SetupModStudio()
+    {
+        if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            // 1. Mount as Main Screen workspace
+            _modStudioMainPanel = new Refii.Assets.UI.ModdingHubPanel();
+            _modStudioMainPanel.Visible = false;
+            EditorInterface.Singleton.GetEditorMainScreen().AddChild(_modStudioMainPanel);
+
+            // 2. Mount as Right Bar Dock (alongside Inspector, collapsed by default)
+            _modStudioDockPanel = new Refii.Assets.UI.ModStudioDockPanel();
+            _modStudioDockPanel.Name = "Mod Studio";
+            AddControlToDock(DockSlot.RightUl, _modStudioDockPanel);
+
+            // 3. Mount 3D Level Perspective & Save Layer Toolbar in SpatialEditorMenu
+            _levelToolbar = new Refii.Assets.UI.LevelPerspectiveToolbar();
+            AddControlToContainer(CustomControlContainer.SpatialEditorMenu, _levelToolbar);
+            SceneChanged += OnEditorSceneChanged;
+            SceneSaved += OnEditorSceneSaved;
+
+            // Subscribe after initial panel construction so startup does not trigger premature filesystem scans
+            EditorModExporter.ActiveModChanged += OnActiveModChanged;
+            EditorModExporter.ModContentChanged += OnModContentChangedFor3DPreview;
+
+            // Ensure the active mod's creator directory and favorite entry are prepared before Godot's initial scan
+            SyncActiveModCreatorFavorite(EditorModExporter.ActiveModName, triggerScan: false);
+
+            // 4. Switch by default to the Main Screen workspace on editor startup
+            Callable.From(() =>
+            {
+                if (_modStudioMainPanel is not null && GodotObject.IsInstanceValid(_modStudioMainPanel))
+                {
+                    EditorInterface.Singleton.SetMainScreenEditor("Mod Studio");
+                    _modStudioMainPanel.RefreshModList();
+                }
+                if (_modStudioDockPanel is not null && GodotObject.IsInstanceValid(_modStudioDockPanel))
+                {
+                    _modStudioDockPanel.RefreshModList();
+                }
+                _levelToolbar?.RefreshForScene(EditorInterface.Singleton.GetEditedSceneRoot());
+            }).CallDeferred();
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[bnk_mount] Could not initialize Mod Studio: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Cleans up both the Main Screen and Dock instances of Mod Studio on plugin exit.
+    /// </summary>
+    private void RemoveModStudio()
+    {
+        if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        EditorModExporter.ActiveModChanged -= OnActiveModChanged;
+        EditorModExporter.ModContentChanged -= OnModContentChangedFor3DPreview;
+        SceneChanged -= OnEditorSceneChanged;
+        SceneSaved -= OnEditorSceneSaved;
+
+        if (_levelToolbar is not null && GodotObject.IsInstanceValid(_levelToolbar))
+        {
+            RemoveControlFromContainer(CustomControlContainer.SpatialEditorMenu, _levelToolbar);
+            _levelToolbar.QueueFree();
+            _levelToolbar = null;
+        }
+
+        if (_modStudioDockPanel is not null && GodotObject.IsInstanceValid(_modStudioDockPanel))
+        {
+            RemoveControlFromDocks(_modStudioDockPanel);
+            _modStudioDockPanel.QueueFree();
+            _modStudioDockPanel = null;
+        }
+
+        if (_modStudioMainPanel is not null && GodotObject.IsInstanceValid(_modStudioMainPanel))
+        {
+            if (_modStudioMainPanel.GetParent() is not null)
+            {
+                _modStudioMainPanel.GetParent().RemoveChild(_modStudioMainPanel);
+            }
+            _modStudioMainPanel.QueueFree();
+            _modStudioMainPanel = null;
+        }
+    }
+
+    private void OnEditorSceneChanged(Node? sceneRoot)
+    {
+        _levelToolbar?.RefreshForScene(sceneRoot);
+    }
+
+    private void OnEditorSceneSaved(string filepath)
+    {
+        try
+        {
+            Node? editedRoot = EditorInterface.Singleton?.GetEditedSceneRoot();
+            Node3D? levelRoot = Refii.Level.LevelRecordMetadata.FindLevelRootNode(editedRoot);
+            if (levelRoot is null)
+            {
+                return;
+            }
+
+            string activeMod = EditorModExporter.ActiveModName;
+            if (string.IsNullOrWhiteSpace(activeMod))
+            {
+                return;
+            }
+
+            if (EditorModValueService.SaveActiveLevelSceneToMod(
+                    levelRoot,
+                    activeMod,
+                    out Refii.Level.LevelPatchCompileResult result,
+                    out string error))
+            {
+                if (result.HasAnyChanges)
+                {
+                    GD.Print(
+                        $"[level_edit] Auto-compiled saved scene '{filepath}' into '{activeMod}.f2mod': " +
+                        $"{result.ModifiedTransformCount} moved, {result.NewPlacementCount} added, " +
+                        $"{result.DeletedRecordCount} removed, {result.LayerStateOverrideCount} layer state(s).");
+                }
+            }
+            else if (!string.IsNullOrEmpty(error))
+            {
+                GD.PushWarning($"[level_edit] Could not compile saved level scene '{filepath}' to mod: {error}");
+            }
+
+            _levelToolbar?.RefreshForScene(editedRoot);
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[level_edit] Error during SceneSaved level compilation: {ex.Message}");
+        }
+    }
+
+    private void OnActiveModChanged(string newModName)
+    {
+        SyncActiveModCreatorFavorite(newModName, triggerScan: true);
+    }
+
+    /// <summary>
+    /// Ensures the active mod's creator folder (<c>res://creator/&lt;ActiveMod&gt;/</c>) exists on disk,
+    /// pins it into Godot's FileSystemDock Favorites (removing stale creator folders from other mods),
+    /// and optionally triggers a filesystem scan so new files appear immediately.
+    /// </summary>
+    /// <param name="modName">Optional mod name; defaults to <see cref="EditorModExporter.ActiveModName"/>.</param>
+    /// <param name="triggerScan">Whether to trigger an immediate <see cref="EditorFileSystem.Scan"/> when idle.</param>
+    public void SyncActiveModCreatorFavorite(string? modName = null, bool triggerScan = false)
+    {
+        if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            string targetMod = !string.IsNullOrWhiteSpace(modName) ? modName.Trim() : EditorModExporter.ActiveModName;
+            if (!string.IsNullOrWhiteSpace(targetMod))
+            {
+                string creatorDir = EditorModExporter.GetCreatorDirectory(targetMod);
+                if (!string.IsNullOrEmpty(creatorDir))
+                {
+                    Directory.CreateDirectory(creatorDir);
+                }
+            }
+
+            EditorSettings? settings = EditorInterface.Singleton?.GetEditorSettings();
+            if (settings is not null)
+            {
+                const string favKey = "filesystem/file_dialog/favorites";
+                var favList = new List<string>();
+                if (settings.HasSetting(favKey))
+                {
+                    string[] existing = settings.GetSetting(favKey).AsStringArray();
+                    if (existing is not null)
+                    {
+                        foreach (string entry in existing)
+                        {
+                            if (!entry.StartsWith("res://creator/", StringComparison.OrdinalIgnoreCase))
+                            {
+                                favList.Add(entry);
+                            }
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(targetMod))
+                {
+                    string targetRes = EditorModExporter.GetCreatorResPath(targetMod);
+                    favList.Insert(0, targetRes);
+                }
+
+                settings.SetSetting(favKey, favList.ToArray());
+            }
+
+            if (triggerScan)
+            {
+                EditorFileSystem? efs = EditorInterface.Singleton?.GetResourceFilesystem();
+                if (efs is not null && !efs.IsScanning())
+                {
+                    efs.Scan();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[bnk_mount] Could not sync creator folder favorite: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Scans the Godot resource filesystem and navigates the FileSystemDock to the specified file or folder inside <c>res://creator/</c>.
+    /// </summary>
+    /// <param name="diskOrResPath">Absolute disk path or <c>res://</c> path.</param>
+    public void RefreshAndNavigateCreatorFile(string diskOrResPath)
+    {
+        if (string.IsNullOrWhiteSpace(diskOrResPath) ||
+            DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            string resPath = diskOrResPath.StartsWith("res://", StringComparison.OrdinalIgnoreCase)
+                ? diskOrResPath
+                : ProjectSettings.LocalizePath(diskOrResPath);
+
+            if (!resPath.StartsWith("res://", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (Directory.Exists(diskOrResPath) && !resPath.EndsWith("/"))
+            {
+                resPath += "/";
+            }
+
+            EditorInterface.Singleton?.GetResourceFilesystem()?.Scan();
+            string targetRes = resPath;
+            Callable.From(() =>
+            {
+                try
+                {
+                    EditorInterface.Singleton?.GetFileSystemDock()?.NavigateToPath(targetRes);
+                }
+                catch
+                {
+                }
+            }).CallDeferred();
+        }
+        catch
+        {
+        }
+    }
+
+    private const string GdbPreviewStageResPath = "res://creator/.gdb_preview_stage.tscn";
+    private const string GdbPreviewSubjectNodeName = "GdbPreviewSubject";
+    private const string GdbPreviewNodeHashMeta = "gdb_node_hash";
+
+    /// <summary>
+    /// Opens or updates a 3D preview of the specified GDB record in Godot's 3D viewport,
+    /// creating a lit preview stage scene if no 3D scene is currently open, selecting the spawned mesh,
+    /// and switching the editor main screen to the 3D viewport.
+    /// </summary>
+    /// <param name="nodeHash">FNV-1 hash of the GDB record to inspect.</param>
+    /// <param name="overrideModelPath">Optional explicit virtual <c>.mdl</c> path to preview.</param>
+    /// <param name="switchTo3DView">If true, switches the main screen editor to the 3D viewport.</param>
+    /// <returns>True if the 3D preview was spawned/updated; false if no model could be resolved.</returns>
+    public bool InspectGdbRecordIn3D(uint nodeHash, string? overrideModelPath = null, bool switchTo3DView = true)
+    {
+        string modelPath = !string.IsNullOrWhiteSpace(overrideModelPath)
+            ? overrideModelPath.Trim()
+            : EditorModValueService.ResolveNodeEffectiveModelPath(nodeHash);
+
+        if (string.IsNullOrWhiteSpace(modelPath))
+        {
+            GD.PushWarning($"[mod_studio] Record 0x{nodeHash:X8} does not resolve to a 3D model (.mdl).");
+            return false;
+        }
+
+        string normalized = modelPath.Replace('\\', '/').TrimStart('/');
+
+        // Clear texture and material caches so any newly linked .f2mod assets render fresh
+        Refii.Textures.Engine_TexLibrary.Clear();
+        Refii.Models.Engine_MdlMaterial.ClearSharedCache();
+
+        byte[]? mdlBytes = EditorModValueService.ReadVirtualAssetBytes(normalized, _filesystem);
+        ArrayMesh? mesh = null;
+        if (mdlBytes is not null && mdlBytes.Length > 0)
+        {
+            mesh = Refii.Models.Engine_MdlMesh.TryCreateMesh(mdlBytes, normalized, out _);
+        }
+
+        if (mesh is null || mesh.GetSurfaceCount() == 0)
+        {
+            try
+            {
+                mesh = ResourceLoader.Load<ArrayMesh>(
+                    "game://" + normalized, "ArrayMesh", ResourceLoader.CacheMode.Ignore);
+            }
+            catch
+            {
+            }
+        }
+
+        if (mesh is null || mesh.GetSurfaceCount() == 0)
+        {
+            GD.PushWarning($"[mod_studio] Could not build 3D mesh for '{normalized}' (Record 0x{nodeHash:X8}).");
+            return false;
+        }
+
+        Node? editedRoot = EditorInterface.Singleton.GetEditedSceneRoot();
+        if (editedRoot is not Node3D)
+        {
+            EnsureAndOpen3DPreviewStageScene();
+            editedRoot = EditorInterface.Singleton.GetEditedSceneRoot();
+        }
+
+        if (editedRoot is not Node3D root3D)
+        {
+            // Fallback: inspect the ArrayMesh directly in the Inspector if scene opening is deferred
+            EditorInterface.Singleton.InspectObject(mesh);
+            return true;
+        }
+
+        Node3D? subjectHolder = root3D.GetNodeOrNull<Node3D>(GdbPreviewSubjectNodeName);
+        if (subjectHolder is null)
+        {
+            subjectHolder = new Node3D { Name = GdbPreviewSubjectNodeName };
+            root3D.AddChild(subjectHolder);
+            subjectHolder.Owner = root3D;
+        }
+
+        subjectHolder.SetMeta(GdbPreviewNodeHashMeta, (long)nodeHash);
+
+        foreach (Node child in subjectHolder.GetChildren())
+        {
+            subjectHolder.RemoveChild(child);
+            child.Free();
+        }
+
+        string label = $"Record_0x{nodeHash:X8}";
+        if (Refii.Equipment.Engine_RecordNameCatalog.TryGetCuratedNodeName(nodeHash, out string curated) &&
+            !string.IsNullOrWhiteSpace(curated))
+        {
+            label = $"{curated.Replace(' ', '_')}_0x{nodeHash:X8}";
+        }
+
+        var meshInstance = new MeshInstance3D
+        {
+            Name = label,
+            Mesh = mesh
+        };
+        meshInstance.SetMeta(GdbPreviewNodeHashMeta, (long)nodeHash);
+
+        subjectHolder.AddChild(meshInstance);
+        meshInstance.Owner = root3D;
+
+        AttachGmdSocketPreviewGizmos(meshInstance, root3D, normalized);
+
+        EditorInterface.Singleton.GetSelection().Clear();
+        EditorInterface.Singleton.GetSelection().AddNode(meshInstance);
+        EditorInterface.Singleton.InspectObject(meshInstance);
+
+        if (switchTo3DView)
+        {
+            EditorInterface.Singleton.SetMainScreenEditor("3D");
+        }
+
+        GD.Print($"[mod_studio] Inspecting 0x{nodeHash:X8} in 3D view -> {normalized} ({mesh.GetSurfaceCount()} surface(s))");
+        return true;
+    }
+
+    private void AttachGmdSocketPreviewGizmos(Node3D meshInstance, Node3D ownerRoot, string normalizedModelPath)
+    {
+        try
+        {
+            string activeMod = EditorModExporter.GetActiveModName();
+            byte[]? gmdBytes = EditorModValueService.ReadVirtualAssetBytes(
+                normalizedModelPath + ".gmd",
+                activeMod,
+                includeActiveModPackage: true,
+                FileSystem);
+            if (gmdBytes is null || gmdBytes.Length == 0)
+            {
+                return;
+            }
+
+            var gmd = Refii.Models.Engine_GmdSkeleton.TryParse(gmdBytes);
+            if (gmd is null || gmd.Attachments.Length == 0)
+            {
+                return;
+            }
+
+            var dummiesHolder = new Node3D { Name = "GmdDummies" };
+            meshInstance.AddChild(dummiesHolder);
+            dummiesHolder.Owner = ownerRoot;
+
+            var unlitMat = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                VertexColorUseAsAlbedo = true,
+                NoDepthTest = true
+            };
+
+            foreach (var att in gmd.Attachments)
+            {
+                Transform3D godotXform = gmd.ComposeAttachment(att);
+
+                var socketNode = new Node3D
+                {
+                    Name = att.Name.Replace('.', '_'),
+                    Transform = godotXform
+                };
+                socketNode.SetMeta("gmd_dummy_name", att.Name);
+                dummiesHolder.AddChild(socketNode);
+                socketNode.Owner = ownerRoot;
+
+                var gizmoMesh = new ImmediateMesh();
+                gizmoMesh.SurfaceBegin(Mesh.PrimitiveType.Lines, unlitMat);
+
+                const float axisLen = 0.08f;
+                // X axis (Red)
+                gizmoMesh.SurfaceSetColor(new Color(1.0f, 0.25f, 0.25f));
+                gizmoMesh.SurfaceAddVertex(Vector3.Zero);
+                gizmoMesh.SurfaceAddVertex(new Vector3(axisLen, 0f, 0f));
+
+                // Y axis (Green)
+                gizmoMesh.SurfaceSetColor(new Color(0.25f, 1.0f, 0.35f));
+                gizmoMesh.SurfaceAddVertex(Vector3.Zero);
+                gizmoMesh.SurfaceAddVertex(new Vector3(0f, axisLen, 0f));
+
+                // Z axis (Blue)
+                gizmoMesh.SurfaceSetColor(new Color(0.30f, 0.55f, 1.0f));
+                gizmoMesh.SurfaceAddVertex(Vector3.Zero);
+                gizmoMesh.SurfaceAddVertex(new Vector3(0f, 0f, axisLen));
+
+                // Highlight forward direction for projectile muzzle or carry/weapon grip
+                if (att.Name.Contains("Projectile", StringComparison.OrdinalIgnoreCase))
+                {
+                    var tip = new Vector3(0f, 0f, -0.22f);
+                    gizmoMesh.SurfaceSetColor(new Color(1.0f, 0.65f, 0.1f));
+                    gizmoMesh.SurfaceAddVertex(Vector3.Zero);
+                    gizmoMesh.SurfaceAddVertex(tip);
+                    gizmoMesh.SurfaceAddVertex(tip);
+                    gizmoMesh.SurfaceAddVertex(tip + new Vector3(0.025f, 0f, 0.04f));
+                    gizmoMesh.SurfaceAddVertex(tip);
+                    gizmoMesh.SurfaceAddVertex(tip + new Vector3(-0.025f, 0f, 0.04f));
+                }
+                else if (att.Name.Equals("Weapon.Weapon.Hold", StringComparison.OrdinalIgnoreCase) ||
+                         att.Name.Equals("Weapon.Weapon.UpperHold", StringComparison.OrdinalIgnoreCase) ||
+                         att.Name.StartsWith("Prop.Carry.", StringComparison.OrdinalIgnoreCase) ||
+                         att.Name.StartsWith("Character.Carry.", StringComparison.OrdinalIgnoreCase))
+                {
+                    var tip = new Vector3(-0.16f, 0f, 0f);
+                    gizmoMesh.SurfaceSetColor(new Color(0.2f, 0.95f, 0.85f));
+                    gizmoMesh.SurfaceAddVertex(Vector3.Zero);
+                    gizmoMesh.SurfaceAddVertex(tip);
+                }
+
+                gizmoMesh.SurfaceEnd();
+
+                var gizmoInstance = new MeshInstance3D
+                {
+                    Name = "SocketGizmo",
+                    Mesh = gizmoMesh,
+                    CastShadow = GeometryInstance3D.ShadowCastingSetting.Off
+                };
+                socketNode.AddChild(gizmoInstance);
+                gizmoInstance.Owner = ownerRoot;
+
+                Color labelColor = new(0.92f, 0.94f, 1.0f);
+                if (att.Name.Equals("Weapon.Weapon.Hold", StringComparison.OrdinalIgnoreCase) ||
+                    att.Name.StartsWith("Prop.Carry.", StringComparison.OrdinalIgnoreCase) ||
+                    att.Name.StartsWith("Character.Carry.", StringComparison.OrdinalIgnoreCase))
+                {
+                    labelColor = new Color(0.35f, 0.95f, 0.85f);
+                }
+                else if (att.Name.Equals("Weapon.Weapon.UpperHold", StringComparison.OrdinalIgnoreCase))
+                {
+                    labelColor = new Color(0.45f, 0.98f, 0.55f);
+                }
+                else if (att.Name.Contains("Projectile", StringComparison.OrdinalIgnoreCase))
+                {
+                    labelColor = new Color(1.0f, 0.72f, 0.25f);
+                }
+                else if (att.Name.Equals("Weapon.Weapon.Top", StringComparison.OrdinalIgnoreCase))
+                {
+                    labelColor = new Color(0.95f, 0.50f, 1.0f);
+                }
+                else if (att.Name.Equals("Weapon.Weapon.Sheath", StringComparison.OrdinalIgnoreCase))
+                {
+                    labelColor = new Color(0.55f, 0.80f, 1.0f);
+                }
+
+                var label3D = new Label3D
+                {
+                    Name = "SocketLabel",
+                    Text = att.Name,
+                    PixelSize = 0.0014f,
+                    FontSize = 26,
+                    OutlineSize = 6,
+                    Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+                    NoDepthTest = true,
+                    Modulate = labelColor,
+                    Position = new Vector3(0f, 0.03f, 0f)
+                };
+                socketNode.AddChild(label3D);
+                label3D.Owner = ownerRoot;
+            }
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[mod_studio] Could not attach GMD socket gizmos for '{normalizedModelPath}': {ex.Message}");
+        }
+    }
+
+    private void EnsureAndOpen3DPreviewStageScene()
+    {
+        try
+        {
+            string diskPath = ProjectSettings.GlobalizePath(GdbPreviewStageResPath);
+            string? dir = Path.GetDirectoryName(diskPath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            if (!File.Exists(diskPath))
+            {
+                var stageRoot = new Node3D { Name = "GdbPreviewStage" };
+
+                var worldEnv = new WorldEnvironment { Name = "PreviewEnvironment" };
+                var env = new Godot.Environment
+                {
+                    BackgroundMode = Godot.Environment.BGMode.Color,
+                    BackgroundColor = new Color(0.14f, 0.16f, 0.20f),
+                    AmbientLightSource = Godot.Environment.AmbientSource.Color,
+                    AmbientLightColor = new Color(0.75f, 0.78f, 0.85f),
+                    AmbientLightEnergy = 0.65f,
+                    TonemapMode = Godot.Environment.ToneMapper.Linear
+                };
+                worldEnv.Environment = env;
+                stageRoot.AddChild(worldEnv);
+                worldEnv.Owner = stageRoot;
+
+                var keyLight = new DirectionalLight3D
+                {
+                    Name = "KeyLight",
+                    LightEnergy = 1.2f,
+                    ShadowEnabled = true,
+                    RotationDegrees = new Vector3(-45f, -35f, 0f)
+                };
+                stageRoot.AddChild(keyLight);
+                keyLight.Owner = stageRoot;
+
+                var fillLight = new DirectionalLight3D
+                {
+                    Name = "FillLight",
+                    LightEnergy = 0.45f,
+                    ShadowEnabled = false,
+                    RotationDegrees = new Vector3(-25f, 145f, 0f)
+                };
+                stageRoot.AddChild(fillLight);
+                fillLight.Owner = stageRoot;
+
+                var subjectHolder = new Node3D { Name = GdbPreviewSubjectNodeName };
+                stageRoot.AddChild(subjectHolder);
+                subjectHolder.Owner = stageRoot;
+
+                var packed = new PackedScene();
+                if (packed.Pack(stageRoot) == Error.Ok)
+                {
+                    ResourceSaver.Save(packed, GdbPreviewStageResPath);
+                }
+                stageRoot.Free();
+            }
+
+            EditorInterface.Singleton.OpenSceneFromPath(GdbPreviewStageResPath);
+        }
+        catch (Exception ex)
+        {
+            GD.PushWarning($"[mod_studio] Could not open 3D preview stage scene: {ex.Message}");
+        }
+    }
+
+    private void OnModContentChangedFor3DPreview(string modName)
+    {
+        if (DisplayServer.GetName().Equals("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            Node? editedRoot = EditorInterface.Singleton?.GetEditedSceneRoot();
+            if (editedRoot is not Node3D root3D)
+            {
+                return;
+            }
+
+            Node3D? subjectHolder = root3D.GetNodeOrNull<Node3D>(GdbPreviewSubjectNodeName);
+            if (subjectHolder is null || !subjectHolder.HasMeta(GdbPreviewNodeHashMeta))
+            {
+                return;
+            }
+
+            uint nodeHash = (uint)subjectHolder.GetMeta(GdbPreviewNodeHashMeta).AsInt64();
+            if (nodeHash != 0)
+            {
+                InspectGdbRecordIn3D(nodeHash, overrideModelPath: null, switchTo3DView: false);
+            }
+        }
+        catch
+        {
+        }
+    }
+
     /// <summary>
     /// Initializes and attaches the modal dialog used to switch or create active mod workspaces.
     /// </summary>
@@ -1273,11 +2024,8 @@ public partial class BnkMountPlugin : EditorPlugin
                     if (ModWorkspace.CreateModPackage(modsRoot, newName, out _, out string err))
                     {
                         var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
-                        if (!order.Enabled.Contains(newName))
-                        {
-                            order.Enabled.Insert(0, newName);
-                            order.Write(modsRoot, out _);
-                        }
+                        order.RegisterMod(newName, enabled: true);
+                        order.Write(modsRoot, out _);
                         EditorModExporter.ActiveModName = newName;
                         EditorModExporter.EnsureActiveModWorkspace();
                         _modNameEdit.Text = string.Empty;
@@ -1315,11 +2063,8 @@ public partial class BnkMountPlugin : EditorPlugin
                     }
                     ModWorkspace.CreateModPackage(modsRoot, newName, out _, out _);
                     var order = Refii.Mods.ModLoadOrder.Read(modsRoot);
-                    if (!order.Enabled.Contains(newName))
-                    {
-                        order.Enabled.Insert(0, newName);
-                        order.Write(modsRoot, out _);
-                    }
+                    order.RegisterMod(newName, enabled: true);
+                    order.Write(modsRoot, out _);
                     EditorModExporter.ActiveModName = newName;
                     EditorModExporter.EnsureActiveModWorkspace();
                     ReloadModOverlays();
@@ -1569,6 +2314,7 @@ public partial class BnkMountPlugin : EditorPlugin
             _contextMenu.AddSeparator();
         }
 
+        _contextMenu.AddItem("🛠️ Open in Mod Studio Workspace", MenuOpenModStudioWorkspace);
         _contextMenu.AddItem($"Active Mod: {activeMod} (Change...)", MenuChangeActiveMod);
         _contextMenu.AddItem("Inspect Active Mod Title Updates (.tu)", MenuInspectModTu);
         _contextMenu.AddItem("Reload Mod Overlays", MenuReloadOverlays);
@@ -1589,6 +2335,11 @@ public partial class BnkMountPlugin : EditorPlugin
     {
         switch (id)
         {
+            case MenuOpenModStudioWorkspace:
+            {
+                EditorInterface.Singleton.SetMainScreenEditor("Mod Studio");
+                break;
+            }
             case MenuEditItemValues:
             {
                 if (_contextItemDetail is not null)
@@ -1846,6 +2597,7 @@ public partial class BnkMountPlugin : EditorPlugin
         Refii.Models.Engine_MdlMaterial.ClearSharedCache();
         Refii.Level.Engine_PropStreamer.ClearCache();
         StartMount();
+        _modStudioMainPanel?.RefreshModList();
     }
 
     private bool IsOurs(TreeItem item)
@@ -2216,6 +2968,25 @@ public partial class BnkMountPlugin : EditorPlugin
         GD.Print($"[bnk_mount] fx '{effect}' added from bank -> {root.Name}");
     }
 
+    public void RebuildLevelWithScenario(string levelName, string scenarioName)
+    {
+        if (string.IsNullOrWhiteSpace(levelName) || string.IsNullOrWhiteSpace(scenarioName))
+        {
+            return;
+        }
+
+        Refii.Level.LevelEntry? level = Levels().Find(l =>
+            l.Name.Equals(levelName, StringComparison.OrdinalIgnoreCase) ||
+            l.SceneNodeName.Equals(levelName, StringComparison.OrdinalIgnoreCase));
+        if (level is null)
+        {
+            return;
+        }
+
+        level.Scenario = scenarioName.Trim();
+        ActivateLevel(level.HeightfieldPath);
+    }
+
     private void ActivateLevel(string heightfieldPath)
     {
         Refii.Level.LevelEntry? level = Levels()
@@ -2241,24 +3012,19 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         EditorFileSystem filesystem = EditorInterface.Singleton.GetResourceFilesystem();
-        if (sceneExisted)
-        {
-            filesystem.UpdateFile(scenePath);
-        }
-        else
-        {
-            filesystem.Scan();
-        }
+        filesystem.UpdateFile(scenePath);
 
         GD.Print($"[bnk_mount] {level} -> {scenePath}");
 
         if (Array.IndexOf(EditorInterface.Singleton.GetOpenScenes(), level.ScenePath) >= 0)
         {
             EditorInterface.Singleton.ReloadSceneFromPath(level.ScenePath);
+            Callable.From(() => _levelToolbar?.RefreshForScene(EditorInterface.Singleton.GetEditedSceneRoot())).CallDeferred();
             return;
         }
 
         EditorInterface.Singleton.OpenSceneFromPath(level.ScenePath);
+        Callable.From(() => _levelToolbar?.RefreshForScene(EditorInterface.Singleton.GetEditedSceneRoot())).CallDeferred();
     }
 
     private void OnItemCollapsed(TreeItem item)
@@ -3220,7 +3986,32 @@ public partial class BnkMountPlugin : EditorPlugin
         }
     }
 
-    private ImageTexture? EquipmentIcon(string iconTex)
+    public static ImageTexture? GetEquipmentIcon(string iconTex)
+    {
+        if (string.IsNullOrWhiteSpace(iconTex)) return null;
+
+        if (Instance is not null)
+        {
+            var tex = Instance.EquipmentIcon(iconTex);
+            if (tex is not null) return tex;
+        }
+
+        var assets = Engine_GameAssets.Instance;
+        if (assets is not null)
+        {
+            string normalized = iconTex.Replace('\\', '/');
+            if (assets.TryGetFile(iconTex, out BnkFile file) ||
+                assets.TryGetFile(normalized, out file) ||
+                (!normalized.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) && assets.TryGetFile(normalized + ".tex", out file)))
+            {
+                return BuildThumbnail(file);
+            }
+        }
+
+        return null;
+    }
+
+    public ImageTexture? EquipmentIcon(string iconTex)
     {
         if (iconTex.Length == 0 || _filesystem is null)
         {
@@ -3233,8 +4024,10 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         ImageTexture? built = null;
+        string normalized = iconTex.Replace('\\', '/');
         if (_filesystem.TryGetFile(iconTex, out BnkFile file) ||
-            _filesystem.TryGetFile(iconTex.Replace('\\', '/'), out file))
+            _filesystem.TryGetFile(normalized, out file) ||
+            (!normalized.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) && _filesystem.TryGetFile(normalized + ".tex", out file)))
         {
             built = BuildThumbnail(file);
         }

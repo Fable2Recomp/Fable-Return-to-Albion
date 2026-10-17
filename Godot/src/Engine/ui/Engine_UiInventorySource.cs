@@ -339,7 +339,12 @@ public static class Engine_UiInventorySource
 				Group: grouped ? Category.NameOf(record.Category) : string.Empty,
 				GroupTag: grouped ? Category.TagOf(record.Category) : string.Empty,
 				IsHeader: false,
-				Emphasised: false,
+
+				// A worn clothing piece is emphasised: `sub_826D0890` states `Float1 = 1` for a
+				// category 17..23 item `sub_824C4258` finds on component 15, then runs
+				// `g_Menu:SetItemEmphasisByIndex()` (0x826D0BE4). Matched by record, the guest by
+				// instance, so a second copy of a worn record shares the tint.
+				Emphasised: record.Category is >= 17 and <= 23 && worn.Contains(record.RecordId),
 
 				// An inventory record IS what the header counts, and the new-item marker follows
 				// `*(item + 20) == 0` — the export states that byte as `Viewed`.

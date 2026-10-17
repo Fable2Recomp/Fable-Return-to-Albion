@@ -154,7 +154,11 @@ public readonly struct GameWindowSettings
 			Size = new Vector2I(Math.Max(320, width), Math.Max(240, height)),
 			Fullscreen = Engine_RefiiConfig.Bool(values, "fullscreen", false),
 			Monitor = Math.Max(0, Engine_RefiiConfig.Int(values, "monitor", 0)),
-			Vsync = Engine_RefiiConfig.Bool(values, "vsync", true),
+			// One switch in the panel: vsync_mode = "off". The runtime's `vsync` bool is no
+			// longer offered, but a file that already says false is still honoured.
+			Vsync = Engine_RefiiConfig.Bool(values, "vsync", true)
+				&& !Engine_RefiiConfig.String(values, "vsync_mode", "mailbox").Trim()
+					.Equals("off", StringComparison.OrdinalIgnoreCase),
 			VsyncMode = Engine_RefiiConfig.String(values, "vsync_mode", "mailbox").Trim().ToLowerInvariant(),
 			MaxFps = Math.Max(0, Engine_RefiiConfig.Int(values, "max_fps", 0)),
 			DrawLatencyTicks = Engine_RefiiConfig.Float(values, "draw_latency_ticks", 0f),

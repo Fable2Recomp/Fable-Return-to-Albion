@@ -840,6 +840,8 @@ public sealed partial class Engine_HudView : Node3D
         }
     }
 
+    private static readonly StringName OpacityParameter = "opacity";
+
     /// <summary>A visible, non-empty label's bounds in the HUD's space, or null.</summary>
     private static Rect2? TextBounds(MeshInstance3D label)
     {
@@ -851,7 +853,7 @@ public sealed partial class Engine_HudView : Node3D
         // An unset uniform reads back as nil, which is the shader's default 1 — a freshly
         // painted label has never had its opacity written and is fully visible.
         if (label.MaterialOverride is ShaderMaterial m &&
-            m.GetShaderParameter("opacity") is { VariantType: Variant.Type.Float } op &&
+            m.GetShaderParameter(OpacityParameter) is { VariantType: Variant.Type.Float } op &&
             op.AsSingle() < 0.05f)
         {
             return null;
@@ -975,8 +977,9 @@ public sealed partial class Engine_HudView : Node3D
             }
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             bounds = Union(bounds, SubtreeBounds(child, ref behind));
         }
 
@@ -988,18 +991,40 @@ public sealed partial class Engine_HudView : Node3D
 
     private static readonly StringName[] PromptNameNames = { "LeftButton", "RightButton" };
 
+    /// <summary>
+    /// Each node's answer, by instance id. HUD node names never change, and reading `Name` makes
+    /// a tracked StringName per call; the per-frame walks asked it of every child.
+    /// </summary>
+    private static readonly Dictionary<(ulong Node, StringName[] Names), bool> NameMatches = new();
+
     private static bool NameIn(Node node, StringName[] names)
     {
-        StringName name = node.Name;
-        foreach (StringName candidate in names)
+        (ulong, StringName[]) key = (node.GetInstanceId(), names);
+        if (NameMatches.TryGetValue(key, out bool known))
         {
-            if (name == candidate)
+            return known;
+        }
+
+        if (NameMatches.Count >= 8192)
+        {
+            NameMatches.Clear();
+        }
+
+        bool found = false;
+        using (StringName name = node.Name)
+        {
+            foreach (StringName candidate in names)
             {
-                return true;
+                if (name == candidate)
+                {
+                    found = true;
+                    break;
+                }
             }
         }
 
-        return false;
+        NameMatches[key] = found;
+        return found;
     }
 
     /// <summary>
@@ -1020,7 +1045,7 @@ public sealed partial class Engine_HudView : Node3D
     private const float PromptDrop = 16f;
 
     /// <summary>Latches a prompt's authored height, so the drop is applied once and not per frame.</summary>
-    private const string PromptBaseMeta = "hud_prompt_base_y";
+    private static readonly StringName PromptBaseMeta = "hud_prompt_base_y";
 
     /// <summary>
     /// Brings the targeted readout's button prompts onto the widget's centre line, so they sit
@@ -1077,8 +1102,9 @@ public sealed partial class Engine_HudView : Node3D
             Engine_UiSceneBuilder.SetQuadTint(mesh, colour, 1f);
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             TintSubtree(child, colour);
         }
     }
@@ -1097,8 +1123,9 @@ public sealed partial class Engine_HudView : Node3D
             Engine_UiSceneBuilder.SetQuadOpacity(mesh, opacity);
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             LightSubtree(child, opacity);
         }
     }
@@ -1385,8 +1412,9 @@ public sealed partial class Engine_HudView : Node3D
 
         Values.Advance((float)delta);
 
-        // On the guest's frame, or while a stated meter is still gliding: the guest publishes
-        // per HF tick, and the walk below crosses into every piece's node.
+        // On the guest's frame, or while anything is moving on Godot's clock (a gliding meter, a
+        // running pulser): the guest publishes per HF tick, and the walk below crosses into
+        // every piece's node.
         // A resized window re-places every piece even while the guest is not stepping.
         if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking &&
             Window == _placedWindow)
@@ -1394,11 +1422,18 @@ public sealed partial class Engine_HudView : Node3D
             return;
         }
 
+        // The guest's channels change only on its frames; between them the walk re-places the
+        // pieces from the values gliding on Godot's clock (Engine_HudValues.Advance).
+        bool read = !_refreshed || Refii.Core.Engine_GuestFrame.Changed;
         _placedWindow = Window;
         _refreshed = true;
         ++Walks;
         long walkMark = System.Diagnostics.Stopwatch.GetTimestamp();
-        Values.Read();
+        if (read)
+        {
+            Values.Read();
+        }
+
         TicksValues += System.Diagnostics.Stopwatch.GetTimestamp() - walkMark;
 
         // Nothing before the first publish: an empty registry means "the hero has not spawned",
@@ -1929,9 +1964,6 @@ public sealed partial class Engine_HudView : Node3D
         return at - baseline;
     }
 
-    /// <summary>The widest a subtitle line runs, in canvas units — inside the 4:3 canvas.</summary>
-    private const float SubtitleWrapWidth = 800f;
-
     private void DriveText(Built built)
     {
         if (built.Node is not MeshInstance3D label || Theme is null)
@@ -1962,20 +1994,16 @@ public sealed partial class Engine_HudView : Node3D
         var colour = record is not null
             ? new Color(record.R, record.G, record.B, 1f)
             : new Color(1f, 224f / 255f, 128f / 255f, 1f);
-        // The record's own wrap box. A SUBTITLE ALWAYS WRAPS: it is a sentence of any length
-        // and must stay on screen at 4:3 (952 units visible), whatever the record says.
-        float boxWidth = record?.BoxWidth ?? 0f;
-        int wrapMode = record?.WrapMode ?? 0;
-        if (built.Piece.Id == "text.Subtitles.Text")
-        {
-            boxWidth = boxWidth > 0f ? Mathf.Min(boxWidth, SubtitleWrapWidth) : SubtitleWrapWidth;
-            wrapMode = 1;
-        }
-
+        // The record's own wrap box. A subtitle arrives ALREADY WRAPPED: the subtitler
+        // (`sub_827E8560`) wraps each line at the Subtitles layout box (`sub_82803138` at
+        // 0x827E8814), breaks it with U+000A and publishes three lines a page, and places the
+        // measured block's left edge. Its record says no wrap; re-wrapping at the record's
+        // 240-unit box stacked five lines down the left of the screen.
         Theme.Paint(
             label, live, record?.Size is > 0 and var size ? size : TextSize, colour,
             horizontalAlign: record?.HorzAlign ?? 0, verticalAlign: record?.VertAlign ?? 1,
-            boxWidth: boxWidth, boxHeight: record?.BoxHeight ?? 0f, wrapMode: wrapMode);
+            boxWidth: record?.BoxWidth ?? 0f, boxHeight: record?.BoxHeight ?? 0f,
+            wrapMode: record?.WrapMode ?? 0);
     }
 
     /// <summary>Point size for HUD text, at the layout's reference height.</summary>
@@ -1993,8 +2021,9 @@ public sealed partial class Engine_HudView : Node3D
             geometry.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
         {
+            Node child = node.GetChild(i);
             NoShadow(child);
         }
     }

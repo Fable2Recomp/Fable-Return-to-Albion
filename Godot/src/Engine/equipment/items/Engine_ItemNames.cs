@@ -10,12 +10,33 @@ public static class Engine_ItemNames
 
     public static string DisplayNameOf(ItemDetail detail)
     {
+        bool hasCurated =
+            Engine_RecordNameCatalog.TryGetCuratedNodeName(detail.RecordHash, out string curated) ||
+            (detail.DefinitionHash != 0 && Engine_RecordNameCatalog.TryGetCuratedNodeName(detail.DefinitionHash, out curated));
+
         if (detail.NameTag != 0 &&
             Engine_BnkTextBankLoader.TryLookup(detail.NameTag, out string localised) &&
-            localised.Length != 0 &&
-            !localised.Equals(Placeholder, StringComparison.Ordinal))
+            !Engine_RecordNameCatalog.IsGenericPlaceholderName(localised))
         {
+            if (hasCurated)
+            {
+                // If an active mod explicitly overrode the vanilla localized text, honor the mod's text;
+                // otherwise use the curated node name for known base/archetype records.
+                if (Engine_BnkTextBankLoader.TryLookupVanilla(detail.NameTag, out string vanillaLoc) &&
+                    !string.Equals(localised, vanillaLoc, StringComparison.Ordinal))
+                {
+                    return localised;
+                }
+
+                return curated;
+            }
+
             return localised;
+        }
+
+        if (hasCurated)
+        {
+            return curated;
         }
 
         return detail.Label;
@@ -32,10 +53,15 @@ public static class Engine_ItemNames
     /// </summary>
     public static string VanillaDisplayNameOf(ItemDetail detail)
     {
+        if (Engine_RecordNameCatalog.TryGetCuratedNodeName(detail.RecordHash, out string curated) ||
+            (detail.DefinitionHash != 0 && Engine_RecordNameCatalog.TryGetCuratedNodeName(detail.DefinitionHash, out curated)))
+        {
+            return curated;
+        }
+
         if (detail.NameTag != 0 &&
             Engine_BnkTextBankLoader.TryLookupVanilla(detail.NameTag, out string localised) &&
-            localised.Length != 0 &&
-            !localised.Equals(Placeholder, StringComparison.Ordinal))
+            !Engine_RecordNameCatalog.IsGenericPlaceholderName(localised))
         {
             return localised;
         }

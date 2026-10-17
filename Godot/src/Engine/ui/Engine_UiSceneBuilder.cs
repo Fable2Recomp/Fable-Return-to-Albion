@@ -787,6 +787,13 @@ public sealed class Engine_UiSceneBuilder
 		mat.SetShaderParameter("uv1_scale", new Vector2(q.UMax - q.UMin, q.VMax - q.VMin));
 		mat.SetShaderParameter("uv1_offset", new Vector2(q.UMin, q.VMin));
 
+		// A controller button cut from the shared atlas carries its keycap, for the keyboard.
+		if (Engine_UiKeyGlyphs.AtlasButton(q.TexturePath, n, q.UMin, q.VMax) is { } button)
+		{
+			mat.SetShaderParameter("keycap_tex", Engine_UiKeyGlyphs.KeycapFor(button));
+			mat.SetShaderParameter("has_keycap", true);
+		}
+
 		ApplyDetailMap(mat, q, n);
 		ApplyClip(mat, n);
 

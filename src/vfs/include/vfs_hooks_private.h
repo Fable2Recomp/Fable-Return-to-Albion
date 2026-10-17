@@ -281,6 +281,15 @@ inline void NotePartMorph(uint32_t entity, uint32_t base_model, const uint32_t* 
   refii_bridge_note_part_morph(entity, base_model, pairs, count);
 }
 
+/// A decal as the guest stated it, kDecalWords words (core/payload_bridge.h).
+constexpr uint32_t kDecalWordCount = kDecalWords;
+inline void NoteDecal(const uint32_t* words) { refii_bridge_note_decal(words); }
+inline void ClearDecals() { refii_bridge_clear_decals(); }
+inline void DropDecalsOf(uint32_t twin) { refii_bridge_drop_decals_of(twin); }
+inline void NoteFxMesh(uint32_t descriptor) { refii_bridge_note_fx_mesh(descriptor); }
+inline void DropFxMesh(uint32_t descriptor) { refii_bridge_drop_fx_mesh(descriptor); }
+inline uint32_t FxMeshes(uint32_t* out, uint32_t capacity) { return refii_bridge_fx_meshes(out, capacity); }
+
 /// The entity's texture composites are about to be restated.
 inline void BeginTextureLayers(uint32_t entity) { refii_bridge_begin_texture_layers(entity); }
 inline void EndTextureLayers(uint32_t entity) { refii_bridge_end_texture_layers(entity); }

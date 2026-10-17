@@ -216,8 +216,16 @@ public sealed class Engine_StaticTwins
 
         if (adoption.Instance < 0)
         {
+            // An unchanged transform is not written: Node3D has no equality check, so the write
+            // would update the instance and redraw every shadow map it is paired with.
+            if (adoption.Node.GlobalTransform.IsEqualApprox(world))
+            {
+                return;
+            }
+
             Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.TwinDriven);
             adoption.Node.GlobalTransform = world;
+            Refii.Models.Engine_ClassicCasters.Moved(adoption.Node);
             return;
         }
 

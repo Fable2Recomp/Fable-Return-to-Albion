@@ -53,7 +53,7 @@ public sealed class BnkArchive : IDisposable
 		FileStream? stream = null;
 		try
 		{
-			stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+			stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 			archive = Parse(path, stream);
 			return true;
 		}

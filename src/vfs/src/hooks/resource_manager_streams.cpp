@@ -175,19 +175,37 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
     caller_resource_hash =
         refii::vfs::LoadGuestU32(base, original_ctx.r1.u32 + 124);
   }
+
+  std::string resolved_hash_name;
+  if (name.empty() &&
+      original_ctx.lr == refii::guest::Address(0x82C68EB0u) &&
+      caller_resource_hash != 0) {
+    std::string candidate = refii::vfs::HostAssetNameForHash(caller_resource_hash);
+    if (!candidate.empty() && refii::vfs::HostAssetIsOverride(candidate)) {
+      resolved_hash_name = std::move(candidate);
+    }
+  }
+  const std::string& effective_name =
+      !name.empty() ? name : resolved_hash_name;
+
+  if (refii::vfs::IsStartupBikAssetName(effective_name)) {
+    __imp__rex_lhResourceManager_GetCached(ctx, base);
+    return;
+  }
+
   const bool trace =
       refii::vfs::LooseAssetOverrideTracingEnabled() ||
       refii::vfs::ShouldLogVfsTraceOperation("ResourceManager_GetCached");
   const std::string_view direct_bypass_reason =
-      refii::vfs::GetResourceManagerCachedDirectBypassReason(name);
+      refii::vfs::GetResourceManagerCachedDirectBypassReason(effective_name);
   refii::vfs::RefiiVfsOwnershipDecision ownership;
   refii::vfs::RecordRefiiGetCachedHandoffEvent(
-      name, original_ctx.lr, 0);
+      effective_name, original_ctx.lr, 0);
 
   if (trace) {
     REXLOG_INFO("ResourceManager GetCached enter caller_lr=0x{:08X} "
                 "caller_ctr=0x{:08X} out=0x{:08X} manager=0x{:08X} "
-                "name_obj=0x{:08X} name={} mode=0x{:08X} "
+                "name_obj=0x{:08X} name={} effective_name={} mode=0x{:08X} "
                 "caller_resource_hash=0x{:08X}",
                 original_ctx.lr,
                 original_ctx.ctr.u32,
@@ -195,18 +213,19 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
                 resource_manager_guest,
                 name_guest,
                 name,
+                effective_name,
                 mode,
                 caller_resource_hash);
   }
 
-  if (!name.empty()) {
+  if (!effective_name.empty()) {
     refii::vfs::RefiiVfsOpenResult open_result;
     const bool bik_object_open_stream =
         original_ctx.lr == refii::guest::Address(0x82C6F534u) &&
-        refii::vfs::IsStartupBikAssetName(name);
+        refii::vfs::IsStartupBikAssetName(effective_name);
     const refii::vfs::RefiiVfsOpenShape shape =
         bik_object_open_stream ? refii::vfs::RefiiVfsOpenShape::RawStream
-        : refii::vfs::IsLuaScriptAssetKey(name)
+        : refii::vfs::IsLuaScriptAssetKey(effective_name)
             ? refii::vfs::RefiiVfsOpenShape::NativeGenerated
         : !direct_bypass_reason.empty()
             ? refii::vfs::RefiiVfsOpenShape::NativeGenerated
@@ -217,7 +236,7 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
       REXLOG_INFO("Refii VFS startup BIK GetCached raw-stream shape "
                   "lr=0x{:08X} name={} reason=native_constructor_buffers_after_open",
                   original_ctx.lr,
-                  name);
+                  effective_name);
     }
     refii::vfs::TryOpenRefiiVfsAsset(
         ctx,
@@ -226,7 +245,7 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
         shape,
         refii::vfs::RefiiVfsOpenRequest{
             .api = "ResourceManager_GetCached",
-            .request_name = name,
+            .request_name = effective_name,
             .resource_hash = caller_resource_hash,
             .out_guest = out_guest,
             .manager_guest = resource_manager_guest,
@@ -240,14 +259,14 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
       const uint32_t opened_stream_guest =
           refii::vfs::TryReadOutputPointer(base, out_guest);
       refii::vfs::RecordRefiiGetCachedHandoffEvent(
-          name, original_ctx.lr, opened_stream_guest);
-      if (refii::vfs::IsTextureAssetCandidate(name)) {
+          effective_name, original_ctx.lr, opened_stream_guest);
+      if (refii::vfs::IsTextureAssetCandidate(effective_name)) {
         refii::vfs::LogRefiiOwnedTextureStreamBuilt(
             base,
             "ResourceManager_GetCached",
             static_cast<uint32_t>(original_ctx.lr),
             caller_resource_hash,
-            name,
+            effective_name,
             open_result.resolution,
             open_result.candidate,
             open_result.source,
@@ -259,7 +278,7 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
     }
     if (refii::vfs::IsHandledRefiiVfsOpenDisposition(
             open_result.disposition)) {
-      refii::vfs::RecordRefiiGetCachedHandoffEvent(name, original_ctx.lr, 0);
+      refii::vfs::RecordRefiiGetCachedHandoffEvent(effective_name, original_ctx.lr, 0);
       return;
     }
     if (open_result.disposition ==

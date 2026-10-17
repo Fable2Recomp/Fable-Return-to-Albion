@@ -318,3 +318,59 @@ REX_EXTERN(rex_lhStream_DiskStream_Dtor) {
 
   __imp__rex_lhStream_DiskStream_Dtor(ctx, base);
 }
+
+REX_EXTERN(rex_lhBank_OpenStreamByName) {
+  REX_FUNC_PROLOGUE();
+
+  // Arguments:
+  // r3: int* out_guest (sret pointer for returned stream)
+  // r4: CBankFile* bank_guest
+  // r5: const FableString* name_obj_guest
+  // r6: int mode
+  const PPCContext original_ctx = ctx;
+  const uint32_t out_guest = original_ctx.r3.u32;
+  const uint32_t bank_guest = original_ctx.r4.u32;
+  const uint32_t name_obj_guest = original_ctx.r5.u32;
+  const uint32_t mode = original_ctx.r6.u32;
+
+  if (out_guest != 0 && name_obj_guest != 0) {
+    std::string path =
+        refii::vfs::ReadGuestWideStringObject(base, name_obj_guest, 4096);
+    if (!path.empty()) {
+      std::string normalized = refii::vfs::NormalizeLooseAssetKey(path);
+      std::string override_key;
+      if (refii::vfs::HostAssetIsOverride(path)) {
+        override_key = path;
+      } else if (refii::vfs::HostAssetIsOverride(normalized)) {
+        override_key = normalized;
+      } else if (normalized.starts_with("data/") &&
+                 refii::vfs::HostAssetIsOverride(normalized.substr(5))) {
+        override_key = normalized.substr(5);
+      } else if (!normalized.starts_with("data/") &&
+                 refii::vfs::HostAssetIsOverride("data/" + normalized)) {
+        override_key = "data/" + normalized;
+      }
+
+      if (normalized.ends_with(".save")) {
+        REXLOG_INFO("[vfs_bank] Bank file query for .save: '{}' (key: '{}') is_override={}",
+                    path, override_key, !override_key.empty());
+      }
+
+      if (!override_key.empty()) {
+        PPCContext open_ctx = original_ctx;
+        const uint32_t stream_guest = refii::vfs::CreateRefiiHostMemoryStream(
+            open_ctx, base, mode != 0 ? mode : 1, override_key, override_key);
+        if (stream_guest != 0) {
+          refii::vfs::StoreGuestU32(base, out_guest, stream_guest);
+          ctx.r3.u32 = out_guest;
+          REXLOG_INFO("[vfs_bank] Bank file intercepted: '{}' (key: '{}') -> serving Godot memory stream 0x{:08X}",
+                      path, override_key, stream_guest);
+          return;
+        }
+      }
+    }
+  }
+
+  __imp__rex_lhBank_OpenStreamByName(ctx, base);
+}
+

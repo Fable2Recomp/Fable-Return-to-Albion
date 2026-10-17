@@ -41,6 +41,10 @@ uniform vec4 w_edge = vec4(0.0, 1.0, 0.0, 0.0);
 
 uniform vec4 w_bias;
 uniform vec4 w_speed;
+// The two normal maps' scroll, ACCUMULATED as speed x dt (`sub_822B9D70`; Engine_WaterMaterial
+// advances it every frame). TIME x speed jumped whenever the theme blend moved the speed, and
+// popped at TIME's rollover.
+uniform vec4 w_phase;
 uniform vec4 w_scale;
 uniform vec4 w_surface;
 uniform vec4 w_deep;
@@ -206,20 +210,29 @@ void vertex() {
 // The reflected sky is THE SAME DOME the sky shader draws, so it comes from the same function.
 // A second copy of the arithmetic here would have to tonemap too, and then the water reflects
 // a compressed sky while the sky above it is not compressed at all.
+// The mirror is a linear HDR viewport (Engine_WaterReflection); this shader's look was set
+// against the LDR one, whose 3D output was clamped and sRGB-encoded. Encoded the same way here so
+// the modern picture is unchanged.
+vec3 mirror_as_ldr(vec3 c) {
+	c = clamp(c, vec3(0.0), vec3(1.0));
+	return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, vec3(lessThan(c, vec3(0.0031308))));
+}
+
 vec3 dome_reflect(vec3 r) {
-	return fable_sky_inscatter(
+	return fable_sky_overlaid(r, fable_sky_inscatter(
 		vec3(r.x, r.z, r.y),
 		sun_engine,
 		in_scatter_lut,
 		beta_rayleigh,
 		beta_mie,
-		horizon_distance);
+		horizon_distance));
 }
 
+// Only the z and w rows: a perspective inverse has no x/y term in either (jitter and the depth
+// correction live in the other rows), so this is the full product without its exact zeros.
 float linear_depth(vec2 uv, mat4 inv_proj) {
 	float d = texture(depth_tex, uv).r;
-	vec4 v = inv_proj * vec4((uv * 2.0) - 1.0, d, 1.0);
-	return -v.z / v.w;
+	return -((inv_proj[2].z * d) + inv_proj[3].z) / ((inv_proj[2].w * d) + inv_proj[3].w);
 }
 
 void fragment() {
@@ -256,8 +269,8 @@ void fragment() {
 		}
 	}
 
-	vec2 phase01 = fract(TIME * w_speed.xy);
-	vec2 phase23 = fract(TIME * w_speed.zw);
+	vec2 phase01 = w_phase.xy;
+	vec2 phase23 = w_phase.zw;
 
 	vec2 uv0 = ((v_local.xz + w_warp) * w_scale.xy) + phase01;
 	vec2 uv1 = ((v_local.xz + w_warp) * w_scale.zw) + phase23;
@@ -305,7 +318,7 @@ void fragment() {
 		vec3 dome = has_dome ? dome_reflect(Rg) : sky_constant;
 
 		vec3 Rf = min(planar_reflection
-			? texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb
+			? mirror_as_ldr(texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb)
 			: dome, vec3(1.0));
 
 		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y);
@@ -327,19 +340,24 @@ void fragment() {
 		float fres_s = 0.02 + (0.98 * pow(1.0 - ndv, 5.0));
 
 		float water_lin = -VERTEX.z;
-		float depth_here = max(linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX) - water_lin, 0.0);
+		float scene_here = linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX);
+		float depth_here = max(scene_here - water_lin, 0.0);
 
-		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y * clamp(depth_here, 0.0, 1.0));
-		float refr_lin = linear_depth(refr_uv, INV_PROJECTION_MATRIX);
-		if (refr_lin < water_lin) {
-			refr_uv = SCREEN_UV;
-			refr_lin = linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX);
+		// The vista ocean refracts nothing (`sky_oceanwater` binds no refraction sampler).
+		vec3 under = watercol;
+		if (!ocean_mode) {
+			vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y * clamp(depth_here, 0.0, 1.0));
+			float refr_lin = linear_depth(refr_uv, INV_PROJECTION_MATRIX);
+			if (refr_lin < water_lin) {
+				refr_uv = SCREEN_UV;
+				refr_lin = scene_here;
+			}
+			vec3 Rr = texture(screen_tex, refr_uv).rgb;
+
+			float depth_w = max(refr_lin - water_lin, 0.0);
+			float absorb = 1.0 - exp(-depth_w * (6.0 / max(w_bias.w, 1.0)));
+			under = mix(Rr, watercol, absorb);
 		}
-		vec3 Rr = texture(screen_tex, refr_uv).rgb;
-
-		float depth_w = max(refr_lin - water_lin, 0.0);
-		float absorb = 1.0 - exp(-depth_w * (6.0 / max(w_bias.w, 1.0)));
-		vec3 under = ocean_mode ? watercol : mix(Rr, watercol, absorb);
 
 		vec3 R = reflect(-V, Nr);
 		R.y = abs(R.y);
@@ -365,9 +383,12 @@ void fragment() {
 			float hit = 0.0;
 			vec2 hit_uv = vec2(0.0);
 			float t_ray = 0.35;
+			// The projection is linear along the ray: clip(t) = P ro + t P rd.
+			vec4 clip_ro = PROJECTION_MATRIX * vec4(ro, 1.0);
+			vec4 clip_rd = PROJECTION_MATRIX * vec4(rd, 0.0);
 			for (int i = 0; i < 24; i++) {
 				vec3 pos = ro + (rd * t_ray);
-				vec4 clip = PROJECTION_MATRIX * vec4(pos, 1.0);
+				vec4 clip = clip_ro + (clip_rd * t_ray);
 				if (clip.w <= 0.01) {
 					break;
 				}

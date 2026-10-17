@@ -3,6 +3,8 @@ set(REFII_SHADER_ROOT ${CMAKE_CURRENT_LIST_DIR})
 set(REFII_SHADER_WORKSPACE_SOURCES
     ${REFII_SHADER_ROOT}/src/sha256.cpp
     ${REFII_SHADER_ROOT}/src/shader_sbk_pipeline.cpp
+    # The C ABI the launcher P/Invokes (include/shader/refii_shader_build.h).
+    ${REFII_SHADER_ROOT}/src/refii_shader_build.cpp
 )
 
 set(REFII_SHADER_EXTRACTOR_ZLIB_ROOT "${REFII_SHADER_ROOT}/../extractor/thirdparty/zlib")
@@ -61,8 +63,10 @@ target_link_libraries(refii-shader-sbk
         ZLIB::ZLIB
 )
 
+# UNDERSCORED FILE NAMES, like every other refii library: the Godot side resolves only
+# `refii_*` names into bin/ (Engine_NativeLibraries), so a dashed file was never found there.
 set_target_properties(refii-shader-sbk PROPERTIES
-    OUTPUT_NAME refii-shader-sbk
+    OUTPUT_NAME refii_shader_sbk
     POSITION_INDEPENDENT_CODE ON
     BUILD_RPATH "$ORIGIN"
     INSTALL_RPATH "$ORIGIN"
@@ -180,6 +184,38 @@ if(NOT EXISTS "${REFII_SHADER_DXC_TOOL}")
     message(FATAL_ERROR "Missing vendored DXC tool at ${REFII_SHADER_DXC_TOOL}")
 endif()
 
+# What the translator needs beside itself at runtime, in two places. refii_stage_godot
+# (src/hostbridge/CMakeLists.txt) stages them; the translator looks for bin/dxc before the
+# compile-time paths above, which name this tree's vendored copies and exist on no player's
+# machine.
+#
+# THE COMPILER'S LIBRARIES GO IN bin/ ITSELF: XenosRecomp links libdxcompiler, so the loader
+# has to find it where XenosRecomp is (RPATH $ORIGIN on Linux, the DLL's own directory on
+# Windows). The dxc tool and the common header go under bin/dxc, and the tool is launched with
+# bin/ on its library path.
+set(_refii_shader_tool_files
+    "${REFII_SHADER_DXC_TOOL}"
+    "${REFII_SHADER_XENOSRECOMP_ROOT}/XenosRecomp/shader_common.h"
+)
+if(WIN32)
+    set(_refii_shader_library_files
+        "${REFII_SHADER_DXC_LIB_DIR}/dxcompiler.dll"
+        "${REFII_SHADER_DXC_LIB_DIR}/dxil.dll"
+    )
+elseif(APPLE)
+    set(_refii_shader_library_files
+        "${REFII_SHADER_DXC_LIB_DIR}/libdxcompiler.dylib"
+    )
+else()
+    set(_refii_shader_library_files
+        "${REFII_SHADER_DXC_LIB_DIR}/libdxcompiler.so"
+        "${REFII_SHADER_DXC_LIB_DIR}/libdxil.so"
+    )
+endif()
+set(REFII_SHADER_TOOL_FILES "${_refii_shader_tool_files}" PARENT_SCOPE)
+set(REFII_SHADER_LIBRARY_FILES "${_refii_shader_library_files}" PARENT_SCOPE)
+
+
 add_library(refii-shader-xenos-translator SHARED
     ${REFII_SHADER_ROOT}/src/refii_shader_xenos_translator_main.cpp
 )
@@ -200,7 +236,7 @@ target_compile_definitions(refii-shader-xenos-translator
         REFII_XENOS_DXC_LIB_DIR="${REFII_SHADER_DXC_LIB_DIR}"
 )
 set_target_properties(refii-shader-xenos-translator PROPERTIES
-    OUTPUT_NAME refii-shader-xenos-translator
+    OUTPUT_NAME refii_shader_xenos_translator
     RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
@@ -212,6 +248,19 @@ if(WIN32)
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
 endif()
+
+# And beside XenosRecomp in the build tree as well. Its RPATH is $ORIGIN alone, so without this
+# the build tree's copy cannot load — and the Godot resolver takes the NEWEST copy it finds
+# across the staging directory and every out/build/*/lib, so an unloadable build-tree copy is
+# one it can pick. Hung off the translator, which this directory defines and which links
+# XenosRecomp: add_custom_command(TARGET) can only name a target of its own directory.
+add_custom_command(TARGET refii-shader-xenos-translator POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${_refii_shader_library_files} "$<TARGET_FILE_DIR:XenosRecomp>"
+    COMMENT "Placing the DirectX Shader Compiler beside XenosRecomp"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+)
 
 target_link_libraries(refii-shader-sbk
     PUBLIC

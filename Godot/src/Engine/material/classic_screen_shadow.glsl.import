@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c8ufl2sn3dfan"
+path="res://.godot/imported/classic_screen_shadow.glsl-2b1c68f11d696d47615305296708312d.res"
+
+[deps]
+
+source_file="res://src/Engine/material/classic_screen_shadow.glsl"
+dest_files=["res://.godot/imported/classic_screen_shadow.glsl-2b1c68f11d696d47615305296708312d.res"]
+
+[params]
+

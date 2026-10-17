@@ -82,7 +82,8 @@ public partial class Engine_ShadowReach : Node
 	/// <summary>Offers this policy a guest-drawn prop. Main thread only.</summary>
 	public static void Adopt(GeometryInstance3D instance)
 	{
-		if (GodotObject.IsInstanceValid(instance))
+		// Not mounted under classic (GameWorld): nothing would drain the list.
+		if (!Refii.Models.Engine_ClassicMaterial.Active && GodotObject.IsInstanceValid(instance))
 		{
 			_offered.Add(instance);
 		}

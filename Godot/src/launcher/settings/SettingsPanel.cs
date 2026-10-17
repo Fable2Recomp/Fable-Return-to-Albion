@@ -25,6 +25,8 @@ public partial class SettingsPanel : VBoxContainer
 	private Label _editingLabel = null!;
 	private Label _statusLabel = null!;
 	private LineEdit _filterEdit = null!;
+	private OptionButton _lookOption = null!;
+	private CheckBox _advancedCheck = null!;
 	private VBoxContainer _list = null!;
 	private bool _built;
 
@@ -101,14 +103,51 @@ public partial class SettingsPanel : VBoxContainer
 		AddChild(_editingLabel);
 
 		Label explain = MakeLabel(
-			"Changes are written to refii.toml immediately. " +
-			"Restart-only CVars still require relaunching the game.");
+			"Changes are saved as you make them; some take effect when the game next starts.");
 		explain.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		AddChild(explain);
+
+		// THE ONE DECISION ABOVE THE DIALS: which game to draw. It sets the lighting model and
+		// the materials switch together; the rows below show each on its own.
+		var lookRow = new HBoxContainer();
+		lookRow.AddThemeConstantOverride("separation", 6);
+		AddChild(lookRow);
+		Label lookLabel = MakeLabel("Look");
+		lookLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
+		lookLabel.TooltipText =
+			"Modern is the remaster: Godot's lighting and the modernized materials. Classic is the " +
+			"original: the game's own lighting and shaders (built on the Install tab) over its " +
+			"shipped textures.";
+		lookRow.AddChild(lookLabel);
+		_lookOption = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		Apply(_lookOption);
+		_lookOption.AddItem("Modern (remaster)", 0);
+		_lookOption.AddItem("Classic (original)", 1);
+		_lookOption.AddItem("Custom", 2);
+		_lookOption.ItemSelected += index =>
+		{
+			if (index == 2)
+			{
+				return;
+			}
+			_model.ApplyLook(index == 1 ? "classic" : "modern");
+			Rebuild();
+		};
+		lookRow.AddChild(_lookOption);
 
 		var row = new HBoxContainer();
 		row.AddThemeConstantOverride("separation", 6);
 		AddChild(row);
+
+		_advancedCheck = new CheckBox { Text = "Advanced", ButtonPressed = _model.ShowAdvanced };
+		Apply(_advancedCheck);
+		_advancedCheck.TooltipText = "Show the tuning dials, the developer switches and the runtime's own settings.";
+		_advancedCheck.Toggled += pressed =>
+		{
+			_model.ShowAdvanced = pressed;
+			Rebuild();
+		};
+		row.AddChild(_advancedCheck);
 
 		_filterEdit = new LineEdit
 		{
@@ -178,6 +217,7 @@ public partial class SettingsPanel : VBoxContainer
 	{
 		_editingLabel.Text = "Editing: " + _model.ConfigPath;
 		_statusLabel.Text = _model.StatusMessage;
+		RefreshLook();
 
 		foreach (Node child in _list.GetChildren())
 		{
@@ -203,6 +243,19 @@ public partial class SettingsPanel : VBoxContainer
 
 			_list.AddChild(new HSeparator());
 		}
+	}
+
+	/// <summary>The Look dropdown follows the two switches; "Custom" shows only while they disagree.</summary>
+	private void RefreshLook()
+	{
+		if (_lookOption is null)
+		{
+			return;
+		}
+		string look = _model.CurrentLook();
+		int index = look == "modern" ? 0 : look == "classic" ? 1 : 2;
+		_lookOption.SetItemDisabled(2, look != "custom");
+		_lookOption.Selected = index;
 	}
 
 	private void AddRow(GridContainer grid, RuntimeCVarDefinition definition)

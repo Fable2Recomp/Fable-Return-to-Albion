@@ -1,13 +1,14 @@
 # Host bridge — a C ABI over the guest runtime for the Godot shell.
 #
 # SHARED and C-linkage on purpose: Godot reaches this through P/Invoke, the same
-# arrangement as refii_launcher_ops and refii_bnk_extractor. It carries no game logic;
+# arrangement as refii_recompiler and refii_shader_sbk. It carries no game logic;
 # everything it exposes is a thin call into the runtime.
 
 set(REFII_HOSTBRIDGE_ROOT ${CMAKE_CURRENT_LIST_DIR})
 
 add_library(refii_hostbridge SHARED
     ${REFII_HOSTBRIDGE_ROOT}/src/host_bridge.cpp
+    ${REFII_HOSTBRIDGE_ROOT}/src/host_tracy.cpp
 )
 
 # refii_host carries RunRefiiEmbedded and pulls in refii_core and refii_generated —
@@ -52,11 +53,9 @@ set_target_properties(refii_hostbridge PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
 )
 
-# Stage into Godot/build/bin, beside refii_launcher_ops.
-#
-# Same convention the launcher already uses, and it is what makes the Godot app
-# self-contained: without it the app only finds these because NativeLibraries walks
-# out/build, which is a DEV-tree accident and does not survive an export.
+# Stage into Godot/build/<arch>/bin, the one directory the Godot resolver finds in a dev
+# tree and an export alike: without it the app only finds these because NativeLibraries
+# walks out/build, which is a DEV-tree accident and does not survive an export.
 #
 # The whole dependency closure has to come, not just the bridge: it pulls in the
 # recompiled guest (refii_generated), the runtime (rexruntime) and the host libraries.
@@ -77,6 +76,12 @@ if(REFII_STAGE_GODOT_BUILD)
         refii_xmadecode
         rexruntime
         TracyClient
+        # The shader pipeline, loaded by the launcher to compile the player's shader banks:
+        # the bank extractor with its C ABI, the translator it links, and XenosRecomp under
+        # that. The compiler the translator runs is staged as bin/dxc below.
+        refii-shader-sbk
+        refii-shader-xenos-translator
+        XenosRecomp
     )
 
     set(_refii_hostbridge_stage_commands
@@ -105,6 +110,24 @@ if(REFII_STAGE_GODOT_BUILD)
             )
         endif()
     endforeach()
+
+    # The DirectX Shader Compiler the translator runs: its libraries beside XenosRecomp, which
+    # links them, and the tool with the header the generated HLSL includes under bin/dxc
+    # (src/shader/CMakeLists.txt names the files; the translator resolves bin/dxc before its
+    # compile-time paths).
+    if(REFII_SHADER_LIBRARY_FILES)
+        list(APPEND _refii_hostbridge_stage_commands
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${REFII_SHADER_LIBRARY_FILES} "${REFII_GODOT_BUILD_BIN_DIR}"
+        )
+    endif()
+    if(REFII_SHADER_TOOL_FILES)
+        list(APPEND _refii_hostbridge_stage_commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${REFII_GODOT_BUILD_BIN_DIR}/dxc"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${REFII_SHADER_TOOL_FILES} "${REFII_GODOT_BUILD_BIN_DIR}/dxc"
+        )
+    endif()
 
     # A staging TARGET rather than a POST_BUILD on the bridge alone.
     #

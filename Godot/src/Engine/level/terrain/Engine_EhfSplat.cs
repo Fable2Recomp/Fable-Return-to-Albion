@@ -78,6 +78,10 @@ public sealed class TerrainSplatData
 
     public float[] Weights { get; init; } = Array.Empty<float>();
 
+    /// <summary>Per plane and texel, the share of the weight from layers whose quadrant gate
+    /// states the cliff (bit 1 of +36..+39, which picks the CLF1 pair in `sub_8221FC40`).</summary>
+    public float[] CliffShares { get; init; } = Array.Empty<float>();
+
     public int SliceSize { get; init; }
 
     public byte[][] BaseSlices { get; init; } = Array.Empty<byte[]>();
@@ -269,7 +273,7 @@ public static class Engine_EhfSplat
         int weightHeight = (chunkHeight * WeightPerChunk) + 1;
         float[] weights = BakeWeights(
             parsed, chunkWidth, chunkHeight, planes, weightWidth, weightHeight,
-            out long painted, out long fallback, out long contributions);
+            out float[] cliffShares, out long painted, out long fallback, out long contributions);
 
         data = new TerrainSplatData
         {
@@ -285,6 +289,7 @@ public static class Engine_EhfSplat
             WeightWidth = weightWidth,
             WeightHeight = weightHeight,
             Weights = weights,
+            CliffShares = cliffShares,
             SliceSize = CommonLodSize,
             BaseSlices = baseSlices,
             DetailSlices = detailSlices,
@@ -307,6 +312,7 @@ public static class Engine_EhfSplat
         int planes,
         int weightWidth,
         int weightHeight,
+        out float[] cliffShares,
         out long painted,
         out long fallback,
         out long contributions)
@@ -317,6 +323,7 @@ public static class Engine_EhfSplat
 
         long area = (long)weightWidth * weightHeight;
         var weights = new float[planes * area];
+        var cliffWeights = new float[planes * area];
 
         long expected = (long)chunkWidth * chunkHeight;
         int chunkCount = (int)Math.Min(parsed.Chunks.Count, expected);
@@ -332,12 +339,15 @@ public static class Engine_EhfSplat
             {
                 EhfChunkLayer layer = chunk.Layers[li];
                 int material = Math.Clamp((int)layer.MaterialIndex, 0, planes - 1);
+                bool cliff = ((layer.Blend[0] | layer.Blend[1] | layer.Blend[2] | layer.Blend[3]) & 2) != 0;
 
                 for (int py = 0; py <= WeightPerChunk; py++)
                 {
                     for (int px = 0; px <= WeightPerChunk; px++)
                     {
-                        float coverage = SampleMask(parsed, layer, px, py);
+                        // THE TITLE'S REMAP (landscape VS 0173-0176): (w - 1/15) x 15/14, the SRCALPHA
+                        // of the layer's pass — paint under 1/15 is no paint at all.
+                        float coverage = MathF.Max((SampleMask(parsed, layer, px, py) - (1f / 15f)) * (15f / 14f), 0f);
                         if (coverage <= 0.0001f)
                         {
                             continue;
@@ -350,36 +360,52 @@ public static class Engine_EhfSplat
                             continue;
                         }
 
-                        weights[(material * area) + (gy * (long)weightWidth) + gx] += coverage;
+                        long at = (material * area) + (gy * (long)weightWidth) + gx;
+                        weights[at] += coverage;
+                        if (cliff)
+                        {
+                            cliffWeights[at] += coverage;
+                        }
                         contributions++;
                     }
                 }
             }
         }
 
+        // NOT NORMALISED. The title blends its layers as Σ weight x lit layer — the base quadrant
+        // over dest ZERO, the rest over dest ONE (`sub_8221FC40` 0x822203A8) — so a texel whose
+        // authored paint sums under one is darker there too. Only an unpainted texel takes the
+        // first material whole.
+        long underOne = 0;
+        cliffShares = cliffWeights;
         for (long p = 0; p < area; p++)
         {
             float sum = 0f;
             for (int m = 0; m < planes; m++)
             {
-                sum += weights[(m * area) + p];
+                long at = (m * area) + p;
+                sum += weights[at];
+                cliffWeights[at] = weights[at] > 0f ? Math.Clamp(cliffWeights[at] / weights[at], 0f, 1f) : 0f;
             }
 
             if (sum > 0.00001f)
             {
-                float inverse = 1f / sum;
-                for (int m = 0; m < planes; m++)
-                {
-                    weights[(m * area) + p] *= inverse;
-                }
-
                 painted++;
+                if (sum < 0.9f)
+                {
+                    underOne++;
+                }
             }
             else
             {
                 weights[p] = 1f;
                 fallback++;
             }
+        }
+
+        if (painted != 0)
+        {
+            Godot.GD.Print($"[terrain] splat paint: {100.0 * underOne / painted:0.#}% of painted texels sum under 0.9 after the title's remap");
         }
 
         return weights;

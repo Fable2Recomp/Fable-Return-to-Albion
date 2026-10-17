@@ -146,22 +146,10 @@ public partial class Engine_PropStreamer : Node3D
         _failed = 0;
         _reported = false;
 
-        foreach (Node child in GetChildren())
-        {
-            if (child is MultiMeshInstance3D multi &&
-                multi.Multimesh is not null &&
-                multi.Multimesh.Mesh is null &&
-                multi.HasMeta(ModelPathMeta))
-            {
-                _pending.Add(multi);
-            }
-            else if (child is MeshInstance3D single &&
-                single.Mesh is null &&
-                single.HasMeta(ModelPathMeta))
-            {
-                _pending.Add(single);
-            }
-        }
+        Engine_MdlMaterial.WarmShaders();
+        Refii.Entities.Engine_ShadowProxy.WarmShader();
+
+        CollectPendingInstances(this, _pending, recursive: Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode);
 
         _pending.Sort((a, b) => InstanceCount(b).CompareTo(InstanceCount(a)));
         _remaining.AddRange(_pending);
@@ -246,7 +234,7 @@ public partial class Engine_PropStreamer : Node3D
         // What the guest states outranks this rule: a placement with a stated range was stamped
         // at build, an entity with one when its node was made (Engine_PropDrawRange), and the
         // screen-size cull is only for what neither describes.
-        if (Engine_PropDrawRange.Apply(instance) || CullMinPixels <= 0f)
+        if (Engine_PropDrawRange.Apply(instance, mesh) || CullMinPixels <= 0f)
         {
             return;
         }
@@ -309,6 +297,9 @@ public partial class Engine_PropStreamer : Node3D
             return PrefetchJob.Empty;
         }
 
+        Engine_MdlMaterial.WarmShaders();
+        Refii.Entities.Engine_ShadowProxy.WarmShader();
+
         var job = new PrefetchJob(distinct.Count);
 
         int workers = Math.Min(Math.Max(2, System.Environment.ProcessorCount - 1), 8);
@@ -340,7 +331,10 @@ public partial class Engine_PropStreamer : Node3D
                         // or a single prop's proxy) and that merge reads every surface back. The
                         // merge is cached per mesh, so building it on this worker makes the step's
                         // own call a lookup. A plant that sways casts nothing: skipped.
-                        if (Resolve(distinct[i]) is { } resolved && !SwaysInWind(resolved))
+                        // Classic casts through its own joined mesh (Engine_ClassicCasterMerge),
+                        // built on the main thread: it reads the shared materials' metadata.
+                        if (!Refii.Models.Engine_ClassicMaterial.Active &&
+                            Resolve(distinct[i]) is { } resolved && !SwaysInWind(resolved))
                         {
                             Refii.Entities.Engine_ShadowProxy.MergedCaster(resolved, out _);
                         }
@@ -359,29 +353,65 @@ public partial class Engine_PropStreamer : Node3D
         return job;
     }
 
-    public static List<string> PendingModelPaths(Node container)
+    private static void CollectPendingInstances(
+        Node container, List<GeometryInstance3D> list, bool recursive)
     {
-        var paths = new List<string>();
         foreach (Node child in container.GetChildren())
         {
             if (child is MultiMeshInstance3D multi &&
-                multi.Visible &&
                 multi.Multimesh is not null &&
                 multi.Multimesh.Mesh is null &&
                 multi.HasMeta(ModelPathMeta))
             {
-                paths.Add(multi.GetMeta(ModelPathMeta).AsString());
+                list.Add(multi);
             }
             else if (child is MeshInstance3D single &&
-                single.Visible &&
                 single.Mesh is null &&
                 single.HasMeta(ModelPathMeta))
             {
-                paths.Add(single.GetMeta(ModelPathMeta).AsString());
+                list.Add(single);
+            }
+
+            if (recursive && child.GetChildCount() > 0)
+            {
+                CollectPendingInstances(child, list, recursive: true);
             }
         }
+    }
 
+    public static List<string> PendingModelPaths(Node container)
+    {
+        var paths = new List<string>();
+        bool recursive = Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode;
+        CollectPaths(container, paths, recursive);
         return paths;
+
+        static void CollectPaths(Node parent, List<string> result, bool recurse)
+        {
+            foreach (Node child in parent.GetChildren())
+            {
+                if (child is MultiMeshInstance3D multi &&
+                    multi.Visible &&
+                    multi.Multimesh is not null &&
+                    multi.Multimesh.Mesh is null &&
+                    multi.HasMeta(ModelPathMeta))
+                {
+                    result.Add(multi.GetMeta(ModelPathMeta).AsString());
+                }
+                else if (child is MeshInstance3D single &&
+                    single.Visible &&
+                    single.Mesh is null &&
+                    single.HasMeta(ModelPathMeta))
+                {
+                    result.Add(single.GetMeta(ModelPathMeta).AsString());
+                }
+
+                if (recurse && child.GetChildCount() > 0)
+                {
+                    CollectPaths(child, result, recurse: true);
+                }
+            }
+        }
     }
 
     public override void _ExitTree()
@@ -405,7 +435,7 @@ public partial class Engine_PropStreamer : Node3D
             (System.Diagnostics.Stopwatch.GetTimestamp() - drainFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency, plot: false);
         _watch.Restart();
 
-        double budget = Engine.IsEditorHint() ? double.PositiveInfinity : MillisecondsPerFrame;
+        double budget = (Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode) ? 16.0 : MillisecondsPerFrame;
         bool poolDone = _prefetch is null || _prefetch.IsComplete;
         int untouched = 0;
         while (_remaining.Count != 0 && untouched < _remaining.Count)
@@ -425,17 +455,25 @@ public partial class Engine_PropStreamer : Node3D
             if (!settled)
             {
                 string path = _remainingPaths[_scan];
-                if (TryPeek(path, out ArrayMesh? ready, out bool knownFailure))
+                bool peeked = TryPeek(path, out ArrayMesh? ready, out bool knownFailure);
+                if (peeked && !knownFailure && !Refii.Models.Engine_ClassicMaterial.MeshSettled(ready))
+                {
+                    // Loaded, its classic shaders still compiling on the pool: it waits its
+                    // turn rather than stall this frame on the compile (Engine_ClassicMaterial.MeshSettled).
+                }
+                else if (peeked)
                 {
                     long stepFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+                    TimeSpan stepPause = GC.GetTotalPauseDuration();
                     Step(instance, ready, knownFailure);
                     double stepMs = (System.Diagnostics.Stopwatch.GetTimestamp() - stepFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                     Refii.Core.Engine_FramePhases.Record("props.step", stepMs, plot: false);
-                    if (stepMs > 8.0 && _slowStepsLogged++ < 16)
+                    if (stepMs > 8.0 && _slowStepsLogged++ < 48)
                     {
                         GD.Print($"[props] one step took {stepMs:0.0} ms on the main thread " +
-                            $"(assign {_stepAssignMs:0.0}, bake {_stepBakeMs:0.0}, range {_stepRangeMs:0.0}, " +
-                            $"sway {_stepSwayMs:0.0}, light {_stepLightMs:0.0}): {path}");
+                            $"(gc pause {(GC.GetTotalPauseDuration() - stepPause).TotalMilliseconds:0.0}) " +
+                            $"(resolve {_stepResolveMs:0.0}, multimesh {_stepMultiMs:0.0}, bounds {_stepBoundsMs:0.0}, assign {_stepAssignMs:0.0}, bake {_stepBakeMs:0.0}, range {_stepRangeMs:0.0}, " +
+                            $"sway {_stepSwayMs:0.0}, light {_stepLightMs:0.0} [{Refii.Lighting.Engine_LevelBakedLighting.LastLightSplit}]): {path}");
                     }
 
                     settled = true;
@@ -506,9 +544,10 @@ public partial class Engine_PropStreamer : Node3D
 
         PublishProgress();
 
-        // Keep processing until every bake has drained: the applied/ambient/misfit counts are
-        // incremented in the drain, so reporting earlier undercounts.
-        if (_bakesInFlight != 0)
+        // Keep processing until every bake has drained and every ambient variant is bound: the
+        // applied/ambient/misfit counts are incremented in the drain, so reporting earlier
+        // undercounts, and a retry left queued would keep its prop on the base for good.
+        if (_bakesInFlight != 0 || _ambientRetries.Count != 0)
         {
             return;
         }
@@ -577,7 +616,9 @@ public partial class Engine_PropStreamer : Node3D
     private int _syncLoadsLogged;
     private int _slowStepsLogged;
     private int _slowDrainsLogged;
-    private double _stepAssignMs, _stepBakeMs, _stepRangeMs, _stepSwayMs, _stepLightMs;
+    private int _readbacksLogged;
+    private double _stepBoundsMs;
+    private double _stepResolveMs, _stepMultiMs, _stepAssignMs, _stepBakeMs, _stepRangeMs, _stepSwayMs, _stepLightMs;
 
     private static double Ms(long from) =>
         (System.Diagnostics.Stopwatch.GetTimestamp() - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -632,9 +673,7 @@ public partial class Engine_PropStreamer : Node3D
     {
         // HasMeta first — a nil default makes `GetMeta` take its ERR_FAIL path rather than return
         // the fallback, and most nodes reaching here carry no bake key at all.
-        if (!node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta) ||
-            node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta)
-                is not { VariantType: Variant.Type.Int } stored)
+        if (!node.HasMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta))
         {
             // No bake key at all. If the probe sample also failed this node renders at mode 0 —
             // flat global ambient, the blue-grey slab in every dawn screenshot. Aggregated by
@@ -651,24 +690,44 @@ public partial class Engine_PropStreamer : Node3D
             return;
         }
 
+        Variant stored = node.GetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta);
+        ulong key = 0;
+        if (stored.VariantType == Variant.Type.String)
+        {
+            string s = stored.AsString();
+            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                s = s[2..];
+            }
+            ulong.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out key);
+        }
+        else if (stored.VariantType == Variant.Type.Int)
+        {
+            key = (ulong)stored.AsInt64();
+        }
+
+        if (key == 0)
+        {
+            return;
+        }
+
         string gdbPath = GetMeta(
             Refii.Lighting.Engine_LevelBakedLighting.LevelGdbMeta, string.Empty).AsString();
-        ulong key = (ulong)stored.AsInt64();
 
-        // Built on a worker: a bake is a copy of the whole mesh with per-vertex colours. The
-        // node shows the shared mesh until the copy lands; the fallbacks and the accounting run
-        // in the completion on the main thread.
+        // Built on a worker: the bake's per-vertex colours in the shared mesh's order. The
+        // node shows the shared mesh unbaked until they land; the fallbacks and the accounting
+        // run in the completion on the main thread.
         ulong nodeId = node.GetInstanceId();
         ++_bakesInFlight;
         System.Threading.Tasks.Task.Run(() =>
         {
-            ArrayMesh? built = null;
+            Color[][]? built = null;
             Refii.Lighting.LightmapContainer? container = null;
             try
             {
                 // On the worker: resolving the container parses the level's .lmp on first call.
                 container = Refii.Lighting.Engine_LevelBakedLighting.ContainerFor(gdbPath);
-                built = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexBake(container, key, mesh);
+                built = Refii.Lighting.Engine_LevelBakedLighting.TryBuildVertexColours(container, key, mesh);
             }
             catch (Exception e)
             {
@@ -679,9 +738,12 @@ public partial class Engine_PropStreamer : Node3D
         });
     }
 
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(ulong NodeId, Refii.Lighting.LightmapContainer? Container, ulong Key, ArrayMesh Mesh, ArrayMesh? Baked)> _bakeCompletions = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(ulong NodeId, Refii.Lighting.LightmapContainer? Container, ulong Key, ArrayMesh Mesh, Color[][]? Baked)> _bakeCompletions = new();
 
     private int _bakesInFlight;
+
+    /// <summary>Vertex bakes not yet applied and ambient variants not yet bound (the load hold waits for none).</summary>
+    public int Settling => _bakesInFlight + _ambientRetries.Count;
 
     /// <summary>Bakes built and not yet applied; reported.</summary>
     public int BakesInFlight => _bakesInFlight;
@@ -691,13 +753,38 @@ public partial class Engine_PropStreamer : Node3D
     /// instance-lighting write, so the drain is bounded by time rather than count.
     /// </summary>
     private const double DrainMillisecondsPerFrame = 2.0;
+    private double _finishSwapMs, _finishAmbientMs;
+    private string _ambientSplit = string.Empty;
+    private readonly Queue<(ulong Id, int Ambient, Texture2D? Lightmap, int[]? BakeStarts)> _ambientRetries = new();
 
     private void DrainVertexBakes()
     {
         long drainStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        double drainLimit = DrainMillisecondsPerFrame * System.Diagnostics.Stopwatch.Frequency / 1000.0;
-        while (_bakeCompletions.TryDequeue(out (ulong NodeId, Refii.Lighting.LightmapContainer? Container, ulong Key, ArrayMesh Mesh, ArrayMesh? Baked) done))
+        // Under the load hold nothing is on screen: the drain takes the streamer's held budget.
+        double drainMs = Refii.Models.Engine_ClassicLoad.Holding ? Math.Max(MillisecondsPerFrame, DrainMillisecondsPerFrame) : DrainMillisecondsPerFrame;
+        double drainLimit = drainMs * System.Diagnostics.Stopwatch.Frequency / 1000.0;
+
+        // Ambient variants that waited for their shader's compile: asked again, each once a frame.
+        for (int pending = _ambientRetries.Count; pending > 0; pending--)
         {
+            (ulong id, int ambient, Texture2D? lightmap, int[]? bakeStarts) = _ambientRetries.Dequeue();
+            if (GodotObject.InstanceFromId(id) is MeshInstance3D retry && GodotObject.IsInstanceValid(retry) &&
+                !ApplyClassicAmbient(retry, ambient, lightmap, bakeStarts))
+            {
+                _ambientRetries.Enqueue((id, ambient, lightmap, bakeStarts));
+            }
+        }
+
+        int held = 0, queued = _bakeCompletions.Count;
+        while (held < queued && _bakeCompletions.TryDequeue(out (ulong NodeId, Refii.Lighting.LightmapContainer? Container, ulong Key, ArrayMesh Mesh, Color[][]? Baked) done))
+        {
+            if (!Refii.Models.Engine_ClassicMaterial.MeshSettled(done.Mesh))
+            {
+                // Its shaders are still compiling: the completion waits a frame (see MeshSettled).
+                _bakeCompletions.Enqueue(done);
+                ++held;
+                continue;
+            }
             --_bakesInFlight;
             if (GodotObject.InstanceFromId(done.NodeId) is not MeshInstance3D node ||
                 !GodotObject.IsInstanceValid(node))
@@ -706,6 +793,8 @@ public partial class Engine_PropStreamer : Node3D
             }
 
             long itemFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            TimeSpan itemPause = GC.GetTotalPauseDuration();
+            _finishSwapMs = _finishAmbientMs = 0;
             FinishVertexBake(node, done.Container, done.Key, done.Mesh, done.Baked);
             double finishMs = Ms(itemFrom);
 
@@ -719,10 +808,11 @@ public partial class Engine_PropStreamer : Node3D
 
             // The budget below can only stop the next item, so a single slow apply is logged
             // with its mesh/light split.
-            if (finishMs + lightMs > 8.0 && _slowDrainsLogged++ < 16)
+            if (finishMs + lightMs > 8.0 && _slowDrainsLogged++ < 48)
             {
                 GD.Print($"[props] one bake applied in {finishMs + lightMs:0.0} ms " +
-                    $"(mesh {finishMs:0.0}, light {lightMs:0.0}): " +
+                    $"(gc pause {(GC.GetTotalPauseDuration() - itemPause).TotalMilliseconds:0.0}) " +
+                    $"(mesh {finishMs:0.0} = swap {_finishSwapMs:0.0} + classic ambient {_finishAmbientMs:0.0} [{_ambientSplit}], light {lightMs:0.0} [{Refii.Lighting.Engine_LevelBakedLighting.LastLightSplit}]): " +
                     node.GetMeta(ModelPathMeta, string.Empty).AsString());
             }
 
@@ -735,14 +825,36 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
-    private void FinishVertexBake(MeshInstance3D node, Refii.Lighting.LightmapContainer? container, ulong key, ArrayMesh mesh, ArrayMesh? baked)
+    private void FinishVertexBake(MeshInstance3D node, Refii.Lighting.LightmapContainer? container, ulong key, ArrayMesh mesh, Color[][]? baked)
     {
 
         if (baked is not null)
         {
-            node.Mesh = baked;
+            long swapFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            // The colours into the shared texture; each surface's start inside the block is its material's.
+            int bakeBase = Refii.Models.Engine_ClassicVertexBakes.Add(baked);
+            var bakeStarts = new int[baked.Length];
+            for (int s = 1; s < baked.Length; s++)
+            {
+                bakeStarts[s] = bakeStarts[s - 1] + baked[s - 1].Length;
+            }
+            node.SetMeta(BakeBaseMeta, bakeBase);
             node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 3);
             ++_bakeApplied;
+            _finishSwapMs = Ms(swapFrom);
+            // The title's shader for a vertex-baked instance is the AMB1 pair, reading the bake
+            // as its vertex colour: here from the placement's block of the shared texture.
+            long ambientFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+            long f0 = Refii.Models.Engine_ClassicMaterial.AmbientFindTicks, c0 = Refii.Models.Engine_ClassicMaterial.AmbientComposeTicks,
+                d0 = Refii.Models.Engine_ClassicMaterial.AmbientDuplicateTicks, b0 = Refii.Models.Engine_ClassicMaterial.AmbientBindTicks;
+            if (!ApplyClassicAmbient(node, 1, null, bakeStarts))
+            {
+                _ambientRetries.Enqueue((node.GetInstanceId(), 1, null, bakeStarts));
+            }
+            _finishAmbientMs = Ms(ambientFrom);
+            double k = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            _ambientSplit = $"find {(Refii.Models.Engine_ClassicMaterial.AmbientFindTicks - f0) * k:0.0}, compose {(Refii.Models.Engine_ClassicMaterial.AmbientComposeTicks - c0) * k:0.0}, " +
+                $"duplicate {(Refii.Models.Engine_ClassicMaterial.AmbientDuplicateTicks - d0) * k:0.0}, bind {(Refii.Models.Engine_ClassicMaterial.AmbientBindTicks - b0) * k:0.0}";
             return;
         }
 
@@ -758,6 +870,13 @@ public partial class Engine_PropStreamer : Node3D
             node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.BakeModeMeta, 4);
             ++_bakeApplied;
             ++_bakeTextured;
+            // The AMB3 pair with this object's own lightmap bound, as the title binds it
+            // (`sub_82225100`, sampler 3) — one texture per drawable, no atlas.
+            Texture2D? objectLightmap = Refii.Lighting.Engine_LevelBakedLighting.ObjectLightmapTexture(container, key);
+            if (!ApplyClassicAmbient(node, 3, objectLightmap, null))
+            {
+                _ambientRetries.Enqueue((node.GetInstanceId(), 3, objectLightmap, null));
+            }
             return;
         }
 
@@ -796,6 +915,60 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
+    /// <summary>
+    /// Under the classic renderer, re-keys this instance's surfaces to the ambient source the
+    /// title would pick for it, as per-surface overrides over the shared material; with
+    /// <paramref name="bakeStarts"/> the vertex bake's pair (Engine_ClassicMaterial.WithVertexBake)
+    /// and the placement's block named on the node. False when a pair's shader is still
+    /// compiling: nothing is applied, the caller asks again.
+    /// </summary>
+    private static bool ApplyClassicAmbient(MeshInstance3D node, int ambient, Texture2D? lightmap, int[]? bakeStarts)
+    {
+        if (!Refii.Models.Engine_ClassicMaterial.Active || node.Mesh is null)
+        {
+            return true;
+        }
+        int surfaces = node.Mesh.GetSurfaceCount();
+        Refii.Models.Engine_ClassicMaterial.AmbientPending = false;
+        var variants = new ShaderMaterial?[surfaces];
+        for (int i = 0; i < surfaces; i++)
+        {
+            if (node.Mesh.SurfaceGetMaterial(i) is not ShaderMaterial shared ||
+                !shared.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta) ||
+                shared.GetMeta(Refii.Models.Engine_ClassicMaterial.FamilyMetaName, string.Empty).AsString() == "TREEMATERIAL")
+            {
+                // A tree keeps its AMB2 pair whatever the placement baked (`sub_822092B0`).
+                continue;
+            }
+            variants[i] = bakeStarts is not null && i < bakeStarts.Length
+                ? Refii.Models.Engine_ClassicMaterial.WithVertexBake(shared, bakeStarts[i])
+                : Refii.Models.Engine_ClassicMaterial.WithAmbient(shared, ambient, lightmap);
+        }
+        // A variant whose shader is still compiling: nothing is applied, the caller asks again.
+        if (Refii.Models.Engine_ClassicMaterial.AmbientPending)
+        {
+            Refii.Models.Engine_ClassicMaterial.AmbientPending = false;
+            return false;
+        }
+        for (int i = 0; i < surfaces; i++)
+        {
+            if (variants[i] is { } variant)
+            {
+                node.SetSurfaceOverrideMaterial(i, variant);
+            }
+        }
+        // After the overrides: an instance parameter needs a material that declares it.
+        if (bakeStarts is not null && node.HasMeta(BakeBaseMeta))
+        {
+            node.SetInstanceShaderParameter(Refii.Models.Engine_ClassicVertexBakes.BaseUniform,
+                node.GetMeta(BakeBaseMeta).AsInt32());
+        }
+        return true;
+    }
+
+    /// <summary>A vertex-baked placement's block in the shared bake texture.</summary>
+    private static readonly StringName BakeBaseMeta = "classic_bake_base";
+
     private int _bakeApplied;
 
     private int _bakeKeyless;
@@ -824,9 +997,14 @@ public partial class Engine_PropStreamer : Node3D
             bool present;
             string why;
             ArrayMesh? mesh = ready;
+            _stepResolveMs = 0.0;
+            _stepMultiMs = 0.0;
+            _stepBoundsMs = 0.0;
             if (mesh is null && !knownFailure)
             {
+                long tr = System.Diagnostics.Stopwatch.GetTimestamp();
                 mesh = Resolve(path, out present, out why);
+                _stepResolveMs = Ms(tr);
             }
             else
             {
@@ -861,7 +1039,10 @@ public partial class Engine_PropStreamer : Node3D
 
             if (instance is MultiMeshInstance3D multi && multi.Multimesh is not null)
             {
+                long tm = System.Diagnostics.Stopwatch.GetTimestamp();
                 multi.Multimesh.Mesh = mesh;
+                _stepMultiMs = Ms(tm);
+                tm = System.Diagnostics.Stopwatch.GetTimestamp();
 
                 // The provisional bounds give way to the union of every instance's transformed
                 // mesh box. ONE buffer read, not a transform read per instance: each is a
@@ -885,6 +1066,11 @@ public partial class Engine_PropStreamer : Node3D
                     count = 0;
                 }
 
+                if (count > 0 && _readbacksLogged++ < 8)
+                {
+                    GD.Print($"[props] batch bounds read back from the render thread ({count} instance(s), " +
+                        $"{(Engine_PropShadow.HasRecord(multi.Multimesh) ? "record length differs" : "no record")}): {path}");
+                }
                 float[] buffer = count > 0 ? multi.Multimesh.Buffer : Array.Empty<float>();
                 int stride = count > 0 ? buffer.Length / count : 0;
                 if (stride >= 12)
@@ -908,6 +1094,7 @@ public partial class Engine_PropStreamer : Node3D
                     multi.Multimesh.CustomAabb = bounds.Grow(SwaysInWind(mesh)
                         ? Engine_LevelProps.ModelReach : 1f);
                 }
+                _stepBoundsMs = Ms(tm);
             }
             else if (instance is MeshInstance3D single)
             {
@@ -922,7 +1109,8 @@ public partial class Engine_PropStreamer : Node3D
                 // Godot merges neighbouring draws into one instanced draw only when they share
                 // mesh and material (`_fill_render_list`, equal sort keys) — so no two copies of a
                 // model ever merged. The lighting model is fixed for the run.
-                if (!Refii.Lighting.Engine_LightingFrame.ModernModel)
+                // In Editor mode, skip private mesh clones to keep RAM lean and UI responsive.
+                if (!Engine.IsEditorHint() && !Engine_LevelScene.ForceEditorMode && !Refii.Lighting.Engine_LightingFrame.ModernModel)
                 {
                     ApplyVertexBake(single, mesh);
                 }
@@ -932,6 +1120,15 @@ public partial class Engine_PropStreamer : Node3D
 
             long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
             ApplyVisibilityRange(instance, mesh);
+            Refii.Models.Engine_ClassicBillboards.Register(instance, mesh);
+            if (instance is MeshInstance3D displaced && displaced.HasMeta(RecordMeta))
+            {
+                uint displacedRecord = (uint)displaced.GetMeta(RecordMeta).AsInt64();
+                if (!Refii.Models.Engine_ClassicDisplacement.AdoptRecord(displacedRecord, displaced, mesh))
+                {
+                    Refii.Fx.Engine_DisplacementMeshes.Adopt(displacedRecord, displaced, mesh);
+                }
+            }
             _stepRangeMs = Ms(t2);
 
             // A SWAYING PLANT CASTS NO SUN SHADOW. Its leaf cards are alpha-tested slivers
@@ -941,14 +1138,21 @@ public partial class Engine_PropStreamer : Node3D
             // is the remaster's). Trees are unaffected — they do not sway (mode 2 holds still
             // until treematerial exists) and their canopy shadows are stable and worth having.
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (instance.CastShadow == GeometryInstance3D.ShadowCastingSetting.ShadowsOnly)
+            if (Refii.Models.Engine_ClassicMaterial.Active)
+            {
+                // Under classic Godot's lights cast nothing; the guest's casters go into the
+                // cascades' own scene, as the node was marked when it was built.
+                Refii.Models.Engine_ClassicCasters.Register(instance);
+            }
+            else if (instance.CastShadow == GeometryInstance3D.ShadowCastingSetting.ShadowsOnly)
             {
                 // Already cast-only — a tree's `_shadow` model. Every hand-off below turns the
                 // node's own casting Off so something else can cast for it, and Off on a
                 // shadows-only node would make it drawn and not casting.
             }
-            else if (SwaysInWind(mesh))
+            else if (SwaysInWind(mesh) || Refii.Models.Engine_ClassicCasters.NeverCasts(instance))
             {
+                // A swaying plant, or a prop the guest states casts nothing.
                 Refii.Lighting.Engine_ShadowReach.Exclude(instance);
             }
             else if (instance is MultiMeshInstance3D castingBatch)
@@ -961,7 +1165,17 @@ public partial class Engine_PropStreamer : Node3D
             {
                 // Built from the shared mesh: a vertex bake later swaps in a per-instance copy of
                 // the same shape, which would merge once per prop instead of once per model.
-                Refii.Entities.Engine_ShadowProxy.Sync(castingProp);
+                // In Editor mode, skip attaching ShadowProxy child nodes to keep the scene hierarchy clean.
+                if (!Engine.IsEditorHint() && !Engine_LevelScene.ForceEditorMode)
+                {
+                    Refii.Entities.Engine_ShadowProxy.Sync(castingProp);
+                }
+            }
+
+            // Modern: the prop's light zone, once the walk has joined its record to an entity.
+            if (Refii.Lighting.Engine_LightZones.Active && instance.HasMeta(RecordMeta))
+            {
+                Refii.Lighting.Engine_LightZones.AddProp(instance, (uint)instance.GetMeta(RecordMeta).AsInt64());
             }
 
             _stepSwayMs = Ms(t3);  // "sway": the shadow-caster hand-off above, named for its first branch

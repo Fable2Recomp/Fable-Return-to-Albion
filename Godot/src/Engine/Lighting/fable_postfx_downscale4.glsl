@@ -13,6 +13,7 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer StateBuffer {
 layout(push_constant, std430) uniform Params {
 	ivec2 full_size;
 	ivec2 quarter_size;
+	vec4 flags;     // x: the scene is already exposed (the classic look's materials apply E)
 } params;
 
 const int S_APPLIED_FRAME = 16;
@@ -32,7 +33,9 @@ void main() {
 	}
 
 	// The bright pass and the histogram both measure the EXPOSED image: the adapted bounds are
-	// floored at 0.1/0.3/0.6 around a middle grey of 0.36, which are display-space numbers.
-	float applied = state.v[S_APPLIED_FRAME];
+	// floored at 0.1/0.3/0.6 around a middle grey of 0.36, which are display-space numbers. The
+	// classic look's materials already multiplied E in (PS c20.w), as the title's did, so its
+	// HDR target is downscaled as it stands.
+	float applied = params.flags.x > 0.5 ? 1.0 : state.v[S_APPLIED_FRAME];
 	imageStore(quarter_image, coord, vec4(total * (1.0 / 16.0) * applied, 1.0));
 }

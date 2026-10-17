@@ -188,9 +188,14 @@ public partial class VideoViewer : Node
 		_lumaImage!.SetData(_video.Width, _video.Height, false, Image.Format.R8, _y);
 		_chromaUImage!.SetData(cw, chh, false, Image.Format.R8, _u);
 		_chromaVImage!.SetData(cw, chh, false, Image.Format.R8, _v);
-		_luma!.Update(_lumaImage);
-		_chromaU!.Update(_chromaUImage);
-		_chromaV!.Update(_chromaVImage);
+
+		if (_luma is not null && _chromaU is not null && _chromaV is not null &&
+			!_lumaImage.IsEmpty() && !_chromaUImage.IsEmpty() && !_chromaVImage.IsEmpty())
+		{
+			_luma.Update(_lumaImage);
+			_chromaU.Update(_chromaUImage);
+			_chromaV.Update(_chromaVImage);
+		}
 
 		if (++_frame == 30 && _shot.Length != 0)
 		{
@@ -208,6 +213,11 @@ public partial class VideoViewer : Node
 
 	private void Allocate(Engine_BinkDecoder decoder)
 	{
+		if (decoder.Width <= 0 || decoder.Height <= 0)
+		{
+			return;
+		}
+
 		int cw = (decoder.Width + 1) / 2;
 		int ch = (decoder.Height + 1) / 2;
 

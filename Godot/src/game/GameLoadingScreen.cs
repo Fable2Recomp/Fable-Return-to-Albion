@@ -164,6 +164,9 @@ public partial class GameLoadingScreen : Node
 	/// </summary>
 	private Texture2D? _source;
 
+	/// <summary>The last game frame before this screen came up — a fixed-art screen's picture.</summary>
+	private Texture2D? _frameAtOpen;
+
 	/// <summary>Opaque black behind the art, so fitting it whole shows nothing through.</summary>
 	private ColorRect? _backdrop;
 
@@ -293,11 +296,14 @@ public partial class GameLoadingScreen : Node
 		{
 			_loaded = art.Name;
 			_layout = HostBridge.GetLoadingScreenLayout();
+			// Before anything of this screen is drawn: the layout can settle frames later, and a
+			// capture taken then would be of the loading screen itself.
+			_frameAtOpen = CaptureFrame();
 
 			// RESOLVED ONCE PER NAME, MEASURED EVERY FRAME. The lookup is the expensive half
 			// and the name changes a handful of times a session; the SIZE is the half that moves
 			// under us, and it is read at draw time instead — see the drawing code.
-			_source = Resolve(art.Name);
+			_source = PickSource(art.Name, _layout);
 
 			Report(_source is null
 				? $"[game-loading] the guest picked '{art.Name}' and it did not resolve — " +
@@ -321,6 +327,11 @@ public partial class GameLoadingScreen : Node
 		if (_layout is null && HostBridge.GetLoadingScreenLayout() is { } settled)
 		{
 			_layout = settled;
+			if (!settled.IsSplit)
+			{
+				_source = PickSource(_loaded, settled);
+			}
+
 			Report($"[game-loading] guest layout for '{_loaded}' settled late: " +
 				$"{(settled.IsSplit ? "two-piece" : settled.FixedArt ? "fixed-art" : "quit-fade")}" +
 				(settled.Narrow ? ", 4:3 inset" : string.Empty));
@@ -960,7 +971,41 @@ public partial class GameLoadingScreen : Node
 		_loaded = string.Empty;
 		// The painting goes too, or the next load's cover would show this region's art.
 		_source = null;
+		_frameAtOpen = null;
 		Report(why);
+	}
+
+	/// <summary>The quit-without-save fade's art, `sub_82360EC0`'s first choice.</summary>
+	private const string QuitFadeTexture = @"Art\GUI\HUD\BackgroundFade.tex";
+
+	/// <summary>
+	/// The painting, chosen the way `sub_82360EC0` chooses it: the quit fade (`screen+310`)
+	/// draws `BackgroundFade.tex`; a fixed-art screen (`screen+315`, every save) draws
+	/// `Art\GUI\Persistant\Screenshot.tex` (`dword_8349AA04`, hashed at 0x8325A478), a texture
+	/// the guest renders from the game frame (`sub_82677468`); only a level load draws the
+	/// `screen+272` sheet. Drawing that sheet for a save put a folded region map behind
+	/// "Saving content". Godot owns the frame, so the fixed art is our own last frame, taken
+	/// when the screen first appears.
+	/// </summary>
+	private Texture2D? PickSource(string guestName, HostBridge.LoadingLayout? layout)
+	{
+		if (layout is { QuitFade: true })
+		{
+			return Resolve(QuitFadeTexture);
+		}
+
+		if (layout is { FixedArt: true })
+		{
+			return _frameAtOpen ?? Resolve(guestName);
+		}
+
+		return Resolve(guestName);
+	}
+
+	private Texture2D? CaptureFrame()
+	{
+		Image? frame = GetViewport()?.GetTexture()?.GetImage();
+		return frame is null || frame.IsEmpty() ? null : ImageTexture.CreateFromImage(frame);
 	}
 
 	/// <summary>

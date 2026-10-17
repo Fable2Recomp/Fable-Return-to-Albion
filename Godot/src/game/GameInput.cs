@@ -70,12 +70,169 @@ public partial class GameInput : Node
 		// (`ev+40`). A START on a pad that is not player one's is the local drop-in
 		// (`sub_82402F70` 0x824031ec → `Coop_SetSharedScreenMode(game+140, 1, pad)`), and player
 		// two's handler takes only `ev.pad == Player+40` (`sub_829C1C08` 0x829c1c88).
+		_frameDelta = delta;
+		ReadControlSettings(delta);
+		AdvancePointerButtons(delta);
+
 		bool devices = HasInputFocus();
+		UpdateKeyboardMouse(devices);
 		AssignPads(devices);
 		for (int pad = 0; pad < MaxControllers; ++pad)
 		{
 			PublishPad(pad, devices);
 		}
+	}
+
+	/// <summary>Mouse events go to the UI pointer, which resolves them against the UI camera.</summary>
+	public override void _Input(InputEvent @event)
+	{
+		Engine_UiPointer.Feed(@event);
+		FeedMouseMotion(@event);
+		DetectDevice(@event);
+	}
+
+	/// <summary>
+	/// THE DEVICE SWITCH. Whatever was touched last is the device: a key, a mouse button or a
+	/// real mouse movement makes it the keyboard and mouse; a pad button or a stick or trigger
+	/// pushed past a deliberate threshold makes it the controller, at once. Joypads Godot has no
+	/// mapping for are ignored — a keyboard's or mouse's own HID interface can enumerate as one.
+	/// </summary>
+	private static void DetectDevice(InputEvent @event)
+	{
+		switch (@event)
+		{
+			case InputEventKey { Pressed: true }:
+			case InputEventMouseButton { Pressed: true }:
+				Engine_UiInputMode.KeyboardMouse = true;
+				break;
+			case InputEventMouseMotion motion when motion.Relative.LengthSquared() > 4f:
+				Engine_UiInputMode.KeyboardMouse = true;
+				break;
+			case InputEventJoypadButton { Pressed: true } button when Input.IsJoyKnown(button.Device):
+				Engine_UiInputMode.KeyboardMouse = false;
+				break;
+			case InputEventJoypadMotion axis when Input.IsJoyKnown(axis.Device) &&
+				Mathf.Abs(axis.AxisValue) > 0.5f:
+				Engine_UiInputMode.KeyboardMouse = false;
+				break;
+		}
+	}
+
+	/// <summary>This frame's length, for the devices that integrate over it (the mouse).</summary>
+	private static double _frameDelta;
+
+	/// <summary>
+	/// How long a pointer-made press is held. The guest reads the pad on its own 30 Hz step and
+	/// edge-detects, so a one-frame pulse at a high display rate can fall between two reads:
+	/// three guest steps is a press it cannot miss.
+	/// </summary>
+	private const double PointerHold = 0.1;
+
+	private static double _pointerB;
+
+	/// <summary>Any other pad buttons a pointer target presses (a tab arrow is a shoulder), and how
+	/// long they stay held.</summary>
+	private static uint _pointerExtra;
+	private static double _pointerExtraFor;
+
+	/// <summary>Presses pad buttons for a clicked target — held long enough for the guest's read.</summary>
+	public static void QueuePointerPress(uint buttons)
+	{
+		_pointerExtra |= buttons;
+		_pointerExtraFor = PointerHold;
+	}
+
+	/// <summary>The XInput bits a pointer target can press, for callers outside this class.</summary>
+	public const uint PadLeftShoulder = LeftShoulder;
+	public const uint PadRightShoulder = RightShoulder;
+	public const uint PadA = ButtonA;
+	public const uint PadB = ButtonB;
+	public const uint PadX = ButtonX;
+	public const uint PadY = ButtonY;
+	public const uint PadLeft = DpadLeft;
+	public const uint PadRight = DpadRight;
+
+	/// <summary>Wheel notches still to be played out as D-pad steps, signed (negative up).</summary>
+	private static int _wheelPending;
+	private static double _wheelClock;
+	private static uint _wheelBit;
+
+	/// <summary>The pad bits the pointer holds this frame.</summary>
+	private static uint _pointerBits;
+
+	/// <summary>
+	/// The UI's leftovers: a right click and wheel notches, played out as B and D-pad steps so a
+	/// screen the guest drives itself answers them like the pad. A stray left click is not one.
+	/// </summary>
+	public static void QueuePointerButtons(bool right, int wheel)
+	{
+		if (right)
+		{
+			_pointerB = PointerHold;
+		}
+
+		_wheelPending = System.Math.Clamp(_wheelPending + wheel, -8, 8);
+	}
+
+	private static void AdvancePointerButtons(double delta)
+	{
+		_pointerB = System.Math.Max(0.0, _pointerB - delta);
+
+		// One notch = a held step, then a released gap of the same length: every press needs its
+		// release, or the guest sees one long hold.
+		_wheelClock -= delta;
+		if (_wheelClock <= 0.0)
+		{
+			if (_wheelBit != 0u)
+			{
+				_wheelBit = 0u;
+				_wheelClock = PointerHold;
+			}
+			else if (_wheelPending != 0)
+			{
+				_wheelBit = _wheelPending < 0 ? DpadUp : DpadDown;
+				_wheelPending -= System.Math.Sign(_wheelPending);
+				_wheelClock = PointerHold;
+			}
+		}
+
+		_pointerExtraFor = System.Math.Max(0.0, _pointerExtraFor - delta);
+		if (_pointerExtraFor <= 0.0)
+		{
+			_pointerExtra = 0u;
+		}
+
+		_pointerBits = (_pointerB > 0.0 ? ButtonB : 0u) |
+			_wheelBit | _pointerExtra;
+	}
+
+	/// <summary>`camera_invert_x` in refii.toml — the horizontal invert the guest lacks.</summary>
+	public static bool InvertCameraX { get; private set; }
+
+	/// <summary>`mouse_sensitivity` in refii.toml, 1.0 by default.</summary>
+	public static float MouseSensitivity { get; private set; } = 1f;
+
+	private static double _settingsClock;
+
+	/// <summary>
+	/// The player's control settings, re-read twice a second: the launcher writes refii.toml
+	/// while the game runs, and the reader caches by write time, so a change lands within
+	/// half a second without a restart.
+	/// </summary>
+	private static void ReadControlSettings(double delta)
+	{
+		_settingsClock -= delta;
+		if (_settingsClock > 0.0)
+		{
+			return;
+		}
+
+		_settingsClock = 0.5;
+		var values = Refii.Core.Engine_RefiiConfig.Read(out _);
+		InvertCameraX = Refii.Core.Engine_RefiiConfig.Bool(values, "camera_invert_x", false);
+		ReadKeyBindings(values);
+		MouseSensitivity = Mathf.Clamp(
+			Refii.Core.Engine_RefiiConfig.Float(values, "mouse_sensitivity", 1f), 0.05f, 10f);
 	}
 
 	/// <summary>
@@ -220,8 +377,13 @@ public partial class GameInput : Node
 		// driven; the title-to-world and menu-walking scripts that lived here are gone.
 		var state = new PadState
 		{
-			Buttons = (devices ? KeyboardButtons() : 0u) | GameDebugServer.Buttons(0),
+			Buttons = (devices ? _pointerBits : 0u) | GameDebugServer.Buttons(0),
 		};
+
+		if (devices)
+		{
+			KeyboardMouseState(ref state, _frameDelta);
+		}
 
 		if (devices)
 		{
@@ -365,7 +527,12 @@ public partial class GameInput : Node
 			// The card takes the right stick — it turns the model on the front and scrolls the
 			// description on the back — so the camera does not swing under it. The left stick
 			// stays live: the card does not pause the game.
-			cardMasked ? 0 : state.RightX, cardMasked ? 0 : state.RightY);
+			//
+			// Invert X is ours: the guest has a vertical invert (CameraLookInverted, record33+0x2A,
+			// negated at 0x825ADD28) and nothing for the horizontal. Applied only while the stick
+			// is the camera's — never under a menu, which reads it as a direction.
+			cardMasked ? 0 : (InvertCameraX && !menuMask ? -state.RightX : state.RightX),
+			cardMasked ? 0 : state.RightY);
 	}
 
 	/// <summary>
@@ -775,30 +942,6 @@ public partial class GameInput : Node
 		buttons |= Bit(pad, JoyButton.B, ButtonB);
 		buttons |= Bit(pad, JoyButton.X, ButtonX);
 		buttons |= Bit(pad, JoyButton.Y, ButtonY);
-		return buttons;
-	}
-
-	/// <summary>
-	/// The keyboard, in Xbox terms. Always live: Enter/Space is A, Escape/Backspace is B,
-	/// the arrows are the D-pad.
-	/// </summary>
-	private static uint KeyboardButtons()
-	{
-		// Typing into the dev menu is not play.
-		if (GameDevMenu.KeyboardCaptured)
-		{
-			return 0u;
-		}
-
-		uint buttons = 0;
-		if (Input.IsKeyPressed(Key.Up)) buttons |= DpadUp;
-		if (Input.IsKeyPressed(Key.Down)) buttons |= DpadDown;
-		if (Input.IsKeyPressed(Key.Left)) buttons |= DpadLeft;
-		if (Input.IsKeyPressed(Key.Right)) buttons |= DpadRight;
-		if (Input.IsKeyPressed(Key.Enter) || Input.IsKeyPressed(Key.Space)) buttons |= ButtonA;
-		if (Input.IsKeyPressed(Key.Escape) || Input.IsKeyPressed(Key.Backspace)) buttons |= ButtonB;
-		if (Input.IsKeyPressed(Key.Tab)) buttons |= Start;
-		if (Input.IsKeyPressed(Key.Q)) buttons |= Back;
 		return buttons;
 	}
 

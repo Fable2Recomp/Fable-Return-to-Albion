@@ -210,13 +210,31 @@ public sealed class Engine_BabelDatabase
 		return db;
 	}
 
+	/// <summary>
+	/// The hero's text suffix, <c>_HM</c>, <c>_HF</c> or empty — what <c>sub_8230FC40</c> reads
+	/// off the hero's component 12 (<c>+12</c>: 2 is <c>_HM</c>, 1 is <c>_HF</c>). Set by the game
+	/// from the guest; empty in the editor.
+	/// </summary>
+	public static string HeroTextSuffix { get; set; } = string.Empty;
+
 	/// <summary>Look up by tag, e.g. <c>GUI_BACK</c> (or hex <c>0x1234ABCD</c>). Case sensitive.</summary>
+	/// <remarks>
+	/// A tag is tried with the hero's suffix first, as every guest lookup is: `sub_8230E3A0`
+	/// takes `tag + suffix` when that key exists and the bare tag otherwise. Some strings exist
+	/// ONLY suffixed — `INV_ITEM_GIFT_TOY_DOLL_HERO_NAME` is absent, `_NAME_HM`/`_NAME_HF` are not.
+	/// </remarks>
 	public bool TryGetString(string tag, out string value)
 	{
 		if (tag.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
 			uint.TryParse(tag.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out uint hexKey))
 		{
 			return TryGetString(hexKey, out value);
+		}
+
+		string suffix = HeroTextSuffix;
+		if (suffix.Length != 0 && TryGetString(Engine_GameHash.Fnv1(tag + suffix), out value))
+		{
+			return true;
 		}
 
 		return TryGetString(Engine_GameHash.Fnv1(tag), out value);

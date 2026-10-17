@@ -195,8 +195,15 @@ PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_ScalarDtor); // CECGraphicAppear
 PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_ApplyTextureLayers); // CECGraphicAppearanceMorph: the composite submit
 PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_RebuildParts); // CECGraphicAppearanceMorph: rebuilds the part records
 PPC_EXTERN_FUNC(__imp__rex_lhSetTextureLayersCommand_Ctor); // texture composite command: one original, its layers
+PPC_EXTERN_FUNC(__imp__rex_lhTextureMorph_StateWildcard); // a whole-entity texture swap: every diffuse/specular/normal map
+PPC_EXTERN_FUNC(__imp__rex_lhObjectAttachment_ResolveLoaded); // component 22 resolving loaded AttachedEntity records
 PPC_EXTERN_FUNC(__imp__rex_lhMorphDescriptor_Ctor); // morph descriptor constructor: a part and its weighted targets
 PPC_EXTERN_FUNC(__imp__rex_lhRenderCommandStream_PostModelCommand); // render command to one model handle; type 14 = overlays
+PPC_EXTERN_FUNC(__imp__rex_lhDecal_ExecuteRenderCommand); // decal render command: owner, texture, pos, dir, sizes
+PPC_EXTERN_FUNC(__imp__rex_lhDecal_ExecuteClearCommand); // decal clear-all command (region teardown)
+PPC_EXTERN_FUNC(__imp__rex_lhRenderTwin_ReleaseDecals); // render twin releasing its decal slots
+PPC_EXTERN_FUNC(__imp__rex_lhFx_CreateMeshDescriptor); // FX mesh particle descriptor (sub_82456D58)
+PPC_EXTERN_FUNC(__imp__rex_lhRenderTwin_Destroy); // render twin destroy by handle (sub_82175918)
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetPositionAndVelocity); // CParticleSystemEntityInstance: states the world position
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetOrientation); // CParticleSystemEntityInstance: states the orientation
 PPC_EXTERN_FUNC(__imp__rex_lhFx_SpawnFromDefProperty); // spell FX: create from <Spell>SpellParticleFXInfo.<slot>

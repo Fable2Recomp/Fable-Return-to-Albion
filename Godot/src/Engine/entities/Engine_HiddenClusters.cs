@@ -64,6 +64,43 @@ public static class Engine_HiddenClusters
 		Present(node, source, state);
 	}
 
+	/// <summary>
+	/// Per node, the surfaces the classic renderer draws only as distortion (a composite's
+	/// displacement parts, GDB DisplacementMeshes): another node draws them on the displacement
+	/// layer, so the body hides them as it hides the cloth's.
+	/// </summary>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MeshInstance3D, System.Runtime.CompilerServices.StrongBox<UInt128>> _displacedSurfaces = new();
+
+	/// <summary>Sets, or with zero clears, the displacement-drawn surfaces of <paramref name="node"/> and re-presents it.</summary>
+	public static void SetDisplacedSurfaces(MeshInstance3D node, UInt128 mask)
+	{
+		if (mask == UInt128.Zero)
+		{
+			_displacedSurfaces.Remove(node);
+		}
+		else
+		{
+			_displacedSurfaces.AddOrUpdate(node, new System.Runtime.CompilerServices.StrongBox<UInt128>(mask));
+		}
+		if (Engine_BodyVariants.SourceMesh(node) is not ArrayMesh source)
+		{
+			return;
+		}
+		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		{
+			state = new SurfaceState();
+			_collapsedSurfaces.Add(node, state);
+		}
+		Present(node, source, state);
+	}
+
+	/// <summary>Surfaces another node draws for this one: the cloth body's and the displacement parts'.</summary>
+	private static UInt128 ElsewhereMask(MeshInstance3D node) =>
+		ClothMask(node) |
+		(_displacedSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? displaced)
+			? displaced.Value
+			: UInt128.Zero);
+
 	/// <summary>The surfaces a cloth body draws for <paramref name="node"/>; zero when none.</summary>
 	public static UInt128 ClothMask(MeshInstance3D node) =>
 		_clothSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? mask)
@@ -206,7 +243,7 @@ public static class Engine_HiddenClusters
 	/// </summary>
 	public static UInt128 CollapsedMask(MeshInstance3D node)
 	{
-		UInt128 cloth = ClothMask(node);
+		UInt128 cloth = ElsewhereMask(node);
 		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
 		{
 			return cloth;
@@ -232,7 +269,7 @@ public static class Engine_HiddenClusters
 		}
 
 		string[] regions = Engine_MdlMesh.SurfaceRegions(mesh);
-		if (regions.Length == 0 && ClothMask(node) == UInt128.Zero)
+		if (regions.Length == 0 && ElsewhereMask(node) == UInt128.Zero)
 		{
 			return 0;
 		}
@@ -297,7 +334,7 @@ public static class Engine_HiddenClusters
 	/// </summary>
 	private static void Present(MeshInstance3D node, ArrayMesh? source, SurfaceState state)
 	{
-		UInt128 hidden = MaskOf(state) | ClothMask(node);
+		UInt128 hidden = MaskOf(state) | ElsewhereMask(node);
 		ArrayMesh? variant = source is null ? null : Engine_BodyVariants.For(source, hidden);
 		if (variant is not null)
 		{
@@ -306,6 +343,8 @@ public static class Engine_HiddenClusters
 				WriteOverrides(node, state, UInt128.Zero);
 				node.Mesh = variant;
 				Engine_BodyVariants.NoteShown(node, source!, variant);
+				// The classic transfer pair is per surface index: rebuilt for the new mesh.
+				Refii.Models.Engine_ClassicTransfer.Apply(node);
 			}
 
 			return;
@@ -315,6 +354,7 @@ public static class Engine_HiddenClusters
 		{
 			node.Mesh = source;
 			state.Written = UInt128.Zero;
+			Refii.Models.Engine_ClassicTransfer.Apply(node);
 		}
 
 		WriteOverrides(node, state, hidden);
@@ -328,7 +368,11 @@ public static class Engine_HiddenClusters
 			UInt128 bit = UInt128.One << s;
 			if ((changed & bit) != UInt128.Zero)
 			{
-				node.SetSurfaceOverrideMaterial(s, (wanted & bit) != UInt128.Zero ? Collapsed : null);
+				// Unhidden, a surface goes back to whatever lit it before: the classic transfer
+				// pair when the classic renderer gave it one, else its own material.
+				node.SetSurfaceOverrideMaterial(s, (wanted & bit) != UInt128.Zero
+					? Collapsed
+					: Refii.Models.Engine_ClassicTransfer.SurfaceOverride(node, s));
 				changed &= ~bit;
 			}
 		}

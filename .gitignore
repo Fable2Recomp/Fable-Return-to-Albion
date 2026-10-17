@@ -31,6 +31,8 @@ x64/
 x86/
 [Ww][Ii][Nn]32/
 [Aa][Rr][Mm]/
+!rexglue-net/shadow/rexglue-sdk/thirdparty/capstone/arch/ARM/
+!rexglue-net/shadow/rexglue-sdk/thirdparty/capstone/arch/ARM/**
 [Aa][Rr][Mm]64/
 [Aa][Rr][Mm]64[Ee][Cc]/
 bld/
@@ -463,6 +465,7 @@ Godot/assets/gui/
 /Godot/t1.txt
 
 /Godot/levels/
+/Godot/creator/
 
 # Godot/debug/ is SOURCE — diagnostic scenes — not a build configuration. The
 # [Dd]ebug/ rule far above targets CMake/MSVC output directories and swallows it

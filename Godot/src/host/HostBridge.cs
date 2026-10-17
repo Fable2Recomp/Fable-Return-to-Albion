@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 172;
+	public const int ExpectedAbiVersion = 183;
 
 	private const int MessageCapacity = 512;
 
@@ -68,9 +68,16 @@ public static class HostBridge
 	/// </summary>
 	public static int? TryGetRawAbiVersion()
 	{
+		// The loaded library cannot change under a running process: the first answer stands.
+		// Every guarded accessor asks, thousands of times a frame.
+		if (_rawAbiVersion is { } known)
+		{
+			return known;
+		}
 		try
 		{
-			return RefiiHostBridgeAbiVersion();
+			_rawAbiVersion = RefiiHostBridgeAbiVersion();
+			return _rawAbiVersion;
 		}
 		catch (DllNotFoundException)
 		{
@@ -81,6 +88,8 @@ public static class HostBridge
 			return null;
 		}
 	}
+
+	private static int? _rawAbiVersion;
 
 	/// <summary>Outcome of <see cref="ProbeGuestMemory"/>.</summary>
 	public readonly struct ProbeResult
@@ -176,9 +185,21 @@ public static class HostBridge
 				}
 			}
 
-			return _hasGuestUpProbe == true ? RefiiHostIsGuestUp() == 1 : IsRunning;
+			// Once a frame: thousands of guarded accessors ask, and the answer moves only when the
+			// guest starts or stops.
+			long frame = Refii.Core.Engine_FramePhases.FrameIndex;
+			if (frame == _guestUpFrame && _guestUp)
+			{
+				return _guestUp;
+			}
+			_guestUp = _hasGuestUpProbe == true ? RefiiHostIsGuestUp() == 1 : IsRunning;
+			_guestUpFrame = frame;
+			return _guestUp;
 		}
 	}
+
+	private static long _guestUpFrame = -1;
+	private static bool _guestUp;
 
 	/// <summary>Whether the native library exports the liveness probe. Asked once — see above.</summary>
 	private static bool? _hasGuestUpProbe;
@@ -453,6 +474,56 @@ public static class HostBridge
 		}
 	}
 
+	private static bool _lightZoneMissing;
+	private static bool _casterFlagsMissing;
+
+	/// <summary>
+	/// An entity's stated sun-shadow casting: its renderable's flag word (0x40 casts nothing, 0x80
+	/// no distant cascade) with 0x100 for a caster drawn with culling off. Null when the entity has
+	/// no renderable or the bridge does not export it.
+	/// </summary>
+	public static uint? GetEntityCasterFlags(uint entity)
+	{
+		if (entity == 0 || _casterFlagsMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			uint flags = RefiiHostGetEntityCasterFlags(entity);
+			return flags == 0xFFFFFFFFu ? null : flags;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_casterFlagsMissing = true;
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// The lighting zone an entity's geometry is drawn in (a building's own geometry: its
+	/// definition hash; anything else: its renderable's zone). 1, outdoors, when the guest is not
+	/// up or the native library predates the call.
+	/// </summary>
+	public static uint GetEntityLightZone(uint entity)
+	{
+		if (entity == 0 || _lightZoneMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 1u;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityLightZone(entity);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_lightZoneMissing = true;
+			return 1u;
+		}
+	}
+
 	/// <summary>One built part of a composite character: its model hash, its cluster sort
 	/// layer, whether it is a body part, and the cluster names it covers.</summary>
 	public readonly record struct GuestPartHides(uint Hash, int Layer, bool Body, string[] Covers);
@@ -610,10 +681,12 @@ public static class HostBridge
 	/// <summary>
 	/// An original texture and the layers the guest composites in its place, base first; or,
 	/// with <paramref name="Overlay"/>, the scars and mode-0 morphs it draws over the finished
-	/// material whose diffuse is that texture.
+	/// material whose diffuse is that texture; or, with <paramref name="Wildcard"/>, a swap of
+	/// EVERY map of one kind on the entity (`sub_825B7100`: the shadow creature's Spire Rock) —
+	/// Original 0 diffuse, 1 specular, 2 normal, one layer.
 	/// </summary>
 	public readonly record struct GuestTextureComposite(
-		uint Original, GuestTextureLayer[] Layers, bool Overlay = false);
+		uint Original, GuestTextureLayer[] Layers, bool Overlay = false, bool Wildcard = false);
 
 	private const int TextureLayerWords = 7;
 
@@ -691,7 +764,7 @@ public static class HostBridge
 		{
 			uint original = words[at];
 			int count = (int)(words[at + 1] & 0xFFFF);
-			bool overlay = (words[at + 1] >> 16) != 0;
+			uint kind = words[at + 1] >> 16;
 			at += 2;
 			if (count <= 0 || at + count * TextureLayerWords > written)
 			{
@@ -713,7 +786,7 @@ public static class HostBridge
 			}
 
 			at += count * TextureLayerWords;
-			composites.Add(new GuestTextureComposite(original, layers, overlay));
+			composites.Add(new GuestTextureComposite(original, layers, kind == 1u, kind == 2u));
 		}
 
 		return composites.ToArray();
@@ -806,6 +879,53 @@ public static class HostBridge
 
 	private static byte[]? _attachmentNames;
 
+	private static readonly ByteStrings AttachmentDummies = new(Encoding.ASCII);
+
+	/// <summary>
+	/// Strings decoded from a host byte buffer, kept across reads. The same bone name or sprite
+	/// title arrives every frame, and a fresh string per row per frame was among the largest
+	/// allocators in a live trace. One instance per caller: not thread-safe.
+	/// </summary>
+	private sealed class ByteStrings
+	{
+		private const int Capacity = 4096;
+
+		private readonly Encoding _encoding;
+		private readonly Dictionary<ulong, (byte[] Bytes, string Text)> _known = new();
+
+		public ByteStrings(Encoding encoding) => _encoding = encoding;
+
+		public string Get(byte[] buffer, int at, int length)
+		{
+			if (length == 0)
+			{
+				return string.Empty;
+			}
+
+			ReadOnlySpan<byte> bytes = buffer.AsSpan(at, length);
+			ulong hash = 14695981039346656037UL;
+			foreach (byte value in bytes)
+			{
+				hash = (hash ^ value) * 1099511628211UL;
+			}
+
+			if (_known.TryGetValue(hash, out (byte[] Bytes, string Text) known) &&
+				bytes.SequenceEqual(known.Bytes))
+			{
+				return known.Text;
+			}
+
+			if (_known.Count >= Capacity)
+			{
+				_known.Clear();
+			}
+
+			string text = _encoding.GetString(bytes);
+			_known[hash] = (bytes.ToArray(), text);
+			return text;
+		}
+	}
+
 	/// <summary>
 	/// Every live attachment in the world (see RefiiHostGetAttachments). The guest places an
 	/// attached entity from ITS OWN pose; the host reads the statement instead and hangs the
@@ -839,10 +959,57 @@ public static class HostBridge
 				_attachmentWords[at + 1],
 				(int)_attachmentWords[at + 2],
 				_attachmentWords[at + 3],
-				System.Text.Encoding.ASCII.GetString(_attachmentNames, nameAt, length)));
+				AttachmentDummies.Get(_attachmentNames, nameAt, length)));
 		}
 
 		return into.Count;
+	}
+
+	private const int AttachmentGripWords = 18;
+
+	private static uint[]? _gripWords;
+
+	private static bool _gripExportMissing;
+
+	/// <summary>
+	/// The offset each attached child hangs at, as the guest states it (see
+	/// RefiiHostGetAttachmentGrips): record+0x50, the rigid inverse of the child's own grip
+	/// dummy, by child, with the attachment's ticket. Row-major, row vectors, translation in row
+	/// 3, in the child model's raw space. False when the library predates the export.
+	/// </summary>
+	public static bool GetAttachmentGrips(Dictionary<uint, (uint Ticket, float[] Matrix)> into)
+	{
+		into.Clear();
+		if (_gripExportMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		_gripWords ??= new uint[MaxAttachments * AttachmentGripWords];
+		uint count;
+		try
+		{
+			count = RefiiHostGetAttachmentGrips(_gripWords, MaxAttachments);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_gripExportMissing = true;
+			return false;
+		}
+
+		for (uint i = 0; i < count; ++i)
+		{
+			int at = (int)(i * AttachmentGripWords);
+			var matrix = new float[16];
+			for (int k = 0; k < 16; ++k)
+			{
+				matrix[k] = System.BitConverter.Int32BitsToSingle(unchecked((int)_gripWords[at + 2 + k]));
+			}
+
+			into[_gripWords[at]] = (_gripWords[at + 1], matrix);
+		}
+
+		return true;
 	}
 
 	private static uint[]? _animWords;
@@ -1945,6 +2112,149 @@ public static class HostBridge
 
 	private static ulong[]? _deadUids;
 
+	private static bool _spotFrustumsMissing;
+
+	/// <summary>
+	/// The spots' receive frustums: out[0] the count, then 66 floats each — the manager entry
+	/// index, the plane count, 16 planes (n.xyz, w; inside is dot(n, p) + w &gt;= 0). Returns the
+	/// floats written.
+	/// </summary>
+	public static uint GetSpotFrustums(float[] into)
+	{
+		if (_spotFrustumsMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetSpotFrustums(into, (uint)into.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_spotFrustumsMissing = true;
+			return 0;
+		}
+	}
+
+	private static bool _fxMeshesMissing;
+
+	/// <summary>Floats per FX mesh in <see cref="GetFxMeshes"/>.</summary>
+	public const int FxMeshFloats = 24;
+
+	/// <summary>
+	/// The effects' mesh particles the guest states: out[0] the count, then 24 floats each —
+	/// descriptor and model hash (bits), flags (0x800 displacement), the twin's world rows (3 x
+	/// vec4, translation in w), tint, alpha, distance fade (full within, slope, gone beyond), twin
+	/// type. Returns the floats written.
+	/// </summary>
+	public static uint GetFxMeshes(float[] into)
+	{
+		if (_fxMeshesMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetFxMeshes(into, (uint)into.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_fxMeshesMissing = true;
+			return 0;
+		}
+	}
+
+	private static bool _quadsMissing;
+
+	/// <summary>
+	/// The render scene's displacement quads (the drunk warp): out[0] the count, then 16 floats
+	/// each — x0 y0 x1 y1 (pixels), z, rotation, the corners' uv, the guest's screen size. Returns
+	/// the floats written, 0 without a scene or the export.
+	/// </summary>
+	public static uint GetDisplacementQuads(float[] into)
+	{
+		if (_quadsMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetDisplacementQuads(into, (uint)into.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_quadsMissing = true;
+			return 0;
+		}
+	}
+
+	private static uint[]? _displacementParts;
+	private static bool _displacementPartsMissing;
+
+	/// <summary>
+	/// A composite character's displacement-only parts (component 17's built records with +0x15,
+	/// from GDB DisplacementMeshes): drawn only as distortion. Empty when none.
+	/// </summary>
+	public static uint[] GetEntityDisplacementParts(uint entity)
+	{
+		if (_displacementPartsMissing || TryGetAbiVersion() is null)
+		{
+			return System.Array.Empty<uint>();
+		}
+		_displacementParts ??= new uint[64];
+		uint written;
+		try
+		{
+			written = RefiiHostGetEntityDisplacementParts(entity, _displacementParts, (uint)_displacementParts.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_displacementPartsMissing = true;
+			return System.Array.Empty<uint>();
+		}
+		if (written == 0)
+		{
+			return System.Array.Empty<uint>();
+		}
+		var hashes = new uint[written];
+		System.Array.Copy(_displacementParts, hashes, written);
+		return hashes;
+	}
+
+	private static uint[]? _interiorParts;
+	private static bool _interiorMissing;
+
+	/// <summary>
+	/// The INTERIOR records of a multi-mesh appearance (component 5): the model hashes the guest
+	/// marks 0x2000 from the record's GDB `Interior`, which its rain and snow treat as roofs.
+	/// Empty when none, or the bridge does not export it.
+	/// </summary>
+	public static uint[] GetEntityInteriorMeshes(uint entity)
+	{
+		if (_interiorMissing || TryGetAbiVersion() is null)
+		{
+			return System.Array.Empty<uint>();
+		}
+		_interiorParts ??= new uint[64];
+		uint written;
+		try
+		{
+			written = RefiiHostGetEntityInteriorMeshes(entity, _interiorParts, (uint)_interiorParts.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_interiorMissing = true;
+			return System.Array.Empty<uint>();
+		}
+		if (written == 0)
+		{
+			return System.Array.Empty<uint>();
+		}
+		var hashes = new uint[written];
+		System.Array.Copy(_interiorParts, hashes, written);
+		return hashes;
+	}
+
 	/// <summary>
 	/// The meshes a multi-mesh appearance component (id 5) draws, or empty.
 	/// </summary>
@@ -2089,18 +2399,21 @@ public static class HostBridge
 
 	/// <summary>
 	/// Why rigs are not clip-driven: no component bit, component unresolved, controller found,
-	/// controller found but empty. See RefiiHostGetAnimWalkStats.
+	/// controller found but empty — and rigs a linked animation posed. See RefiiHostGetAnimWalkStats.
 	/// </summary>
-	public static (uint NoBit, uint Unresolved, uint Found, uint Empty)? AnimWalkStats()
+	public static (uint NoBit, uint Unresolved, uint Found, uint Empty, uint Linked)? AnimWalkStats()
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return null;
 		}
 
-		_animStatWords ??= new uint[4];
-		return RefiiHostGetAnimWalkStats(_animStatWords, 4u) == 4u
-			? (_animStatWords[0], _animStatWords[1], _animStatWords[2], _animStatWords[3])
+		// Five words from a bridge that counts linked animations, four from one that does not.
+		_animStatWords ??= new uint[5];
+		uint words = RefiiHostGetAnimWalkStats(_animStatWords, 5u);
+		return words >= 4u
+			? (_animStatWords[0], _animStatWords[1], _animStatWords[2], _animStatWords[3],
+				words >= 5u ? _animStatWords[4] : 0u)
 			: null;
 	}
 
@@ -2227,10 +2540,14 @@ public static class HostBridge
 	private static readonly uint[] _spriteWords = new uint[MaxSprites * SpriteWords];
 	private static readonly float[] _spriteValues = new float[MaxSprites * 6];
 	private static readonly byte[] _spriteText = new byte[32768];
+	private static readonly List<WorldSprite> _sprites = new();
+	private static readonly ByteStrings SpriteTexts = new(Encoding.UTF8);
 
+	/// <remarks>The list is reused: it is valid until the next call.</remarks>
 	public static List<WorldSprite> GetWorldSprites()
 	{
-		var sprites = new List<WorldSprite>();
+		List<WorldSprite> sprites = _sprites;
+		sprites.Clear();
 		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return sprites;
@@ -2257,7 +2574,7 @@ public static class HostBridge
 				++textAt;
 			}
 
-			string value = System.Text.Encoding.UTF8.GetString(_spriteText, start, textAt - start);
+			string value = SpriteTexts.Get(_spriteText, start, textAt - start);
 			if (textAt < _spriteText.Length)
 			{
 				++textAt;
@@ -2959,6 +3276,16 @@ public static class HostBridge
 			}
 		}
 
+		// THE FRAME'S STAMP, read in the same instant as the frame counter: every sample this
+		// frame reads is stamped from this one pair (Engine_TickClock.FrameStamp), never from a
+		// read taken later while the guest may already be in its next step.
+		uint tick = SimClock() is { } clock ? clock.Tick : 0u;
+		Engine_TickClock.PublishGuestGameTick(tick);
+		if (!_guestFrameExportMissing)
+		{
+			Engine_TickClock.PublishGuestFrame(frame, tick);
+		}
+
 		if (_guestFrameExportMissing)
 		{
 			frame = SyntheticGuestFrame();
@@ -3285,7 +3612,19 @@ public static class HostBridge
 	/// rest, so a host blending these over its own tone map changes nothing until the guest
 	/// states a push.
 	/// </summary>
-	public static void ThemeStack(System.Collections.Generic.List<GuestThemeLayer> into)
+	public static void ThemeStack(System.Collections.Generic.List<GuestThemeLayer> into) =>
+		ReadThemeLayers(into, stack: true);
+
+	/// <summary>
+	/// The themes scripts have blended in with `EnvironmentTheme.BlendToEnvironmentTheme` — the
+	/// Cursed Snowglobe's monochrome, combat failure, XP, the balverine poison — see
+	/// RefiiHostGetThemeBlends. The guest folds these as one layer BEFORE the stack. Empty unless
+	/// a script states one.
+	/// </summary>
+	public static void ThemeBlends(System.Collections.Generic.List<GuestThemeLayer> into) =>
+		ReadThemeLayers(into, stack: false);
+
+	private static void ReadThemeLayers(System.Collections.Generic.List<GuestThemeLayer> into, bool stack)
 	{
 		into.Clear();
 		try
@@ -3296,7 +3635,9 @@ public static class HostBridge
 			}
 
 			uint[] words = _themeStackWords ??= new uint[ThemeStackMax * 3];
-			uint count = RefiiHostGetThemeStack(words, ThemeStackMax);
+			uint count = stack
+				? RefiiHostGetThemeStack(words, ThemeStackMax)
+				: RefiiHostGetThemeBlends(words, ThemeStackMax);
 			for (int i = 0; i < count; ++i)
 			{
 				into.Add(new GuestThemeLayer(
@@ -3341,6 +3682,69 @@ public static class HostBridge
 		}
 
 		return 0;
+	}
+
+	/// <summary>
+	/// The hero's text suffix as `sub_8230FC40` states it: component 12's word at +12, 2 for
+	/// <c>_HM</c> and 1 for <c>_HF</c> (0x8230FDD8..0x8230FE14); empty without a hero or a value.
+	/// </summary>
+	public static string HeroTextSuffix()
+	{
+		uint record = EntityComponentAddress(HeroEntityAddress(), 12);
+		if (record == 0 || Peek(record + 12, 1) is not [uint sex])
+		{
+			return string.Empty;
+		}
+
+		return sex switch
+		{
+			2 => "_HM",
+			1 => "_HF",
+			_ => string.Empty,
+		};
+	}
+
+	/// <summary>
+	/// The brightness the guest's camera holds, `G = 1.4 − 0.8·slider` (0.6..1.4, 1.0 at rest):
+	/// the Video page writes it at `S+0x14` (0x829C08A4 commit, plus preview, revert and the
+	/// profile restores), the camera publishes it every frame (0x821A6188) and the tonemap takes
+	/// `pow(colour, G × 0.45454544)` as c78. Null when no camera is up.
+	/// </summary>
+	/// <remarks>
+	/// Six guest sites write the field and none carries it as an argument, so it is read where
+	/// the camera keeps it. Which camera follows `sub_823893C0`: the front end's
+	/// (`dword_83496AC0`, `vt[5]` = `+0xC` → `+0x1C`) while `byte_83496AC4` is set, else the
+	/// game's (`dword_83496AB8`, `vt[5]` = `+0xC` → `+0x6C`); either way `S = *(R+4)`.
+	/// </remarks>
+	public static float? GuestBrightness()
+	{
+		uint frontEnd = PickByBuild(0x83496AC0u, 0x83496928u);
+		uint frontEndUp = PickByBuild(0x83496AC4u, 0x83496925u);
+		uint game = PickByBuild(0x83496AB8u, 0x83496920u);
+
+		uint Word(uint address) => Peek(address, 1) is [uint value] ? value : 0u;
+		static bool Plausible(uint address) => address >= 0x10000u && address < 0xC0000000u;
+
+		uint aligned = frontEndUp & ~3u;
+		int shift = 24 - (int)((frontEndUp & 3u) * 8u);
+		bool useFrontEnd = Word(frontEnd) != 0 && ((Word(aligned) >> shift) & 0xFFu) != 0;
+
+		uint root = Word(useFrontEnd ? frontEnd : game);
+		if (!Plausible(root))
+		{
+			return null;
+		}
+
+		uint inner = Word(root + 0xC);
+		uint wrapper = Plausible(inner) ? Word(inner + (useFrontEnd ? 0x1Cu : 0x6Cu)) : 0u;
+		uint camera = Plausible(wrapper) ? Word(wrapper + 4) : 0u;
+		if (!Plausible(camera))
+		{
+			return null;
+		}
+
+		float g = System.BitConverter.Int32BitsToSingle((int)Word(camera + 0x14));
+		return float.IsFinite(g) && g is >= 0.5f and <= 1.5f ? g : null;
 	}
 
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
@@ -4625,8 +5029,8 @@ public static class HostBridge
 	/// <remarks>
 	/// REQUIRED BEFORE ANY ZONE MEANS ANYTHING: the runtime is built with
 	/// `TRACY_MANUAL_LIFETIME`, so the client is inert until it is started explicitly. With
-	/// `TRACY_ON_DEMAND` also set it collects nothing until something connects, so starting it
-	/// costs a listen socket and no more.
+	/// `TRACY_ON_DEMAND` also set it collects nothing until the game's own in-process capture
+	/// connects, so starting it costs its idle threads and no more.
 	/// </remarks>
 	public static bool TraceStartup() =>
 		TryGetAbiVersion() is not null && RefiiHostTraceStartup() != 0;
@@ -4716,6 +5120,35 @@ public static class HostBridge
 		}
 
 		return new ProbeState(addr, hits, lastLr, args);
+	}
+
+	/// <summary>Arms a one-shot snapshot of the device constant shadows on a probe's next return.</summary>
+	public static bool ProbeSnapshotArm(int slot)
+	{
+		try
+		{
+			return TryGetAbiVersion() is not null && RefiiHostProbeSnapshotArm(slot) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>The snapshot: VS c0..c255 then PS c0..c255 (2048 floats), or null before one is taken.</summary>
+	public static float[]? ProbeSnapshotRead(int slot)
+	{
+		var values = new float[2048];
+		try
+		{
+			return TryGetAbiVersion() is not null && RefiiHostProbeSnapshotRead(slot, values, (uint)values.Length) != 0
+				? values
+				: null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
 	}
 
 	/// <summary>The last debug-call/debug-lua outcome the tick pump recorded, with the
@@ -7339,7 +7772,7 @@ public static class HostBridge
 	private static extern uint RefiiHostGetActiveFx(uint[]? outWords, uint maxEffects);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetSaveCards(out uint cursor, out uint baseSlot, byte[]? text, uint capacity);
+	private static extern uint RefiiHostGetSaveCards(out uint cursor, out uint baseSlot, [Out] byte[]? text, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudMeters([Out] uint[]? hashes, [Out] float[]? values, uint capacity);
@@ -7536,6 +7969,12 @@ public static class HostBridge
 	private static extern uint RefiiHostProbeClear(int slot);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostProbeSnapshotArm(int slot);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostProbeSnapshotRead(int slot, [Out] float[] outValues, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostProbeRead(
 		int slot, out uint addr, out ulong hits, out uint lastLr, [Out] ulong[] outArgs,
 		uint argsCapacity);
@@ -7563,6 +8002,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetThemeStack(uint[] outWords, uint maxEntries);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetThemeBlends(uint[] outWords, uint maxEntries);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetRenderFence(
@@ -7633,6 +8075,276 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostGetSceneStreams(uint[] outWords);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicFrame(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicLights(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicMists(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicParticles(float[] outValues, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetGuestRender(int on);
+
+	/// <summary>
+	/// Runs (true) or skips (false) the guest's own scene draw, or hands it back to
+	/// REFII_GUEST_RENDER (null): a reference instrument for the classic renderer, whose constant
+	/// setters then fill the device shadow. False when the native build predates the export.
+	/// </summary>
+	public static bool SetGuestRender(bool? on)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return false;
+		}
+		try
+		{
+			RefiiHostSetGuestRender(on is null ? -1 : on.Value ? 1 : 0);
+			return true;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Floats in a particle group's header, and per record (see the native export).</summary>
+	public const int ClassicParticleHeader = 340;
+
+	/// <summary>Floats of a trail group's header (RefiiHostGetClassicTrails); its points follow, 8 floats each.</summary>
+	public const int ClassicTrailHeader = 288;
+
+	private static bool _classicTrailsMissing;
+
+	/// <summary>
+	/// The render scene's trails and double trails: out[0] groups, out[1] floats used, then per group
+	/// a <see cref="ClassicTrailHeader"/>-float header and (c + 3) x 8 control-point floats.
+	/// </summary>
+	public static uint GetClassicTrails(float[] values)
+	{
+		if (_classicTrailsMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicTrails(values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_classicTrailsMissing = true;
+			return 0;
+		}
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicTrails([Out] float[] outValues, uint capacity);
+
+	/// <summary>Words per decal in <see cref="GetDecals"/>: 15 stated, 12 of the owner's matrix.</summary>
+	public const int DecalWords = 27;
+
+	private static bool _decalsMissing;
+
+	/// <summary>
+	/// The decals the guest stated, oldest first (RefiiHostGetDecals): per decal [0] serial, [1]
+	/// owner twin, [2] texture name hash, [3..6] position, [7..10] direction, [11]/[12] half sizes,
+	/// [13] life, [14] flag (float bits where a float), [15..26] the owner's matrix rows.
+	/// <paramref name="serial"/> moves when the set changed.
+	/// </summary>
+	public static uint GetDecals(uint[] words, out uint serial)
+	{
+		serial = 0;
+		if (_decalsMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetDecals(words, (uint)words.Length, out serial);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_decalsMissing = true;
+			return 0;
+		}
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDecals([Out] uint[] outWords, uint capacity, out uint outSerial);
+
+	/// <summary>Floats before the lights in <see cref="GetClassicWeather"/>; each light is 8.</summary>
+	public const int ClassicWeatherHeader = 80;
+
+	private static bool _classicWeatherMissing;
+
+	/// <summary>
+	/// What the title's rain and snow draws read past the theme and wind: [0] a light zone is up,
+	/// [1..3] its colour, [4] the guest clock, [5] n lights, then per light position xyz, radius,
+	/// colour rgb, 0 — guest axes (RefiiHostGetClassicWeather).
+	/// </summary>
+	public static uint GetClassicWeather(float[] values)
+	{
+		if (_classicWeatherMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicWeather(values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_classicWeatherMissing = true;
+			return 0;
+		}
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicWeather([Out] float[] outValues, uint capacity);
+	public const int ClassicParticleRecord = 12;
+
+	/// <summary>
+	/// The render scene's particle groups as their twins hold them: [0] groups, [1] floats
+	/// used, then per group a header and its records. Returns the floats used, 0 when none.
+	/// </summary>
+	public static uint GetClassicParticles(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicParticles(values, (uint)values.Length);
+	}
+
+	/// <summary>Floats per mist in <see cref="GetClassicMists"/>.</summary>
+	public const int ClassicMistStride = 36;
+
+	/// <summary>The render scene's mist volumes, 36 floats each (see the native export).</summary>
+	public static uint GetClassicMists(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicMists(values, (uint)values.Length);
+	}
+
+	/// <summary>Floats per light in <see cref="GetClassicLights"/>.</summary>
+	public const int ClassicLightStride = 20;
+
+	/// <summary>
+	/// The render scene's active lights as the light manager holds them, 20 floats each (see
+	/// the native export for the layout). Returns the lights written, or 0 before the scene is up.
+	/// </summary>
+	public static uint GetClassicLights(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicLights(values, (uint)values.Length);
+	}
+
+	/// <summary>
+	/// The frame-constant sources the title's render passes read — ambient, sun direction,
+	/// lightmap factor, normal-map darkening, the five-row atmosphere block, the scene's theme
+	/// block, the sun light and the wind — as 148 floats (see the native export for the layout). Returns
+	/// the floats written, or 0 before the lighting object exists.
+	/// </summary>
+	public static uint GetClassicFrame(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		return RefiiHostGetClassicFrame(values, (uint)values.Length);
+	}
+
+	private static bool _classicThemeMissing;
+
+	/// <summary>
+	/// The scene's whole theme block (194 parameters x 4) and the sky object's sun colour and
+	/// direction, moon direction and phase, as 789 floats (see the native export). 0 before the
+	/// scene is up or when the native library predates the call.
+	/// </summary>
+	public static uint GetClassicTheme(float[] values)
+	{
+		if (_classicThemeMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicTheme(values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_classicThemeMissing = true;
+			return 0;
+		}
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicTheme([Out] float[] outValues, uint capacity);
+
+	private static bool _classicThemeTexturesMissing;
+
+	/// <summary>
+	/// The theme's texture slots, raw: per slot 17 words, the element count then up to eight
+	/// (weight bits, hash) pairs in the vector's order (RefiiHostGetClassicThemeTextures). Words
+	/// written, or 0 when the scene is not up.
+	/// </summary>
+	public static uint GetClassicThemeTextures(uint[] words)
+	{
+		if (_classicThemeTexturesMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicThemeTextures(words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_classicThemeTexturesMissing = true;
+			return 0;
+		}
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicThemeTextures([Out] uint[] outWords, uint capacity);
+
+	private static bool _lightHalosMissing;
+
+	/// <summary>
+	/// The light halos the guest draws this frame (RefiiHostGetLightHalos), 12 floats each:
+	/// centre (guest axes), half-extent, colour, water factor and aspect, texture hash bits, light.
+	/// Halos written, or 0.
+	/// </summary>
+	public static uint GetLightHalos(float[] values)
+	{
+		if (_lightHalosMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetLightHalos(values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_lightHalosMissing = true;
+			return 0;
+		}
+	}
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetLightHalos([Out] float[] outValues, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostPostFrontEndAction([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
@@ -8422,11 +9134,35 @@ public static class HostBridge
 	private static extern int RefiiHostGetEntityDrawRange(uint entity, out float distance, out float fadeFactor);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityLightZone(uint entity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityCasterFlags(uint entity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityInteriorMeshes(uint entity, [Out] uint[] outHashes, uint maxHashes);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDisplacementQuads([Out] float[] outFloats, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetFxMeshes([Out] float[] outFloats, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetSpotFrustums([Out] float[] outFloats, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityDisplacementParts(uint entity, [Out] uint[] outHashes, uint maxHashes);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityWornItems(uint entity, [Out] uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAnimMask(
 		uint node, [Out] byte[] outBytes, uint capacity, out uint outSkeletonId);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetAttachmentGrips([Out] uint[] outWords, uint maxRecords);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAttachments(

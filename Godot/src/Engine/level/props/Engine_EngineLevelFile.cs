@@ -14,6 +14,13 @@ public sealed class EngineLevelInstance
 
     public byte Flag2 { get; set; }
 
+    /// <summary>
+    /// Which sun cascades the instance casts into (Engine_ClassicShadows.Casts*), from the three
+    /// flag bytes as `sub_82AB9CF8` folds them (0x82ABA570): a zero first byte is 0x40 (no
+    /// cast), a non-zero second 0x80 (no distant cast), a non-zero third 0x100 (both faces).
+    /// </summary>
+    public byte Casting { get; set; } = Refii.Models.Engine_ClassicShadows.CastsDefault;
+
     public float[] Values { get; } = new float[20];
 
     /// <summary>
@@ -31,6 +38,9 @@ public sealed class EngineLevelInstance
 public sealed class EngineLevelBlock
 {
     public int Offset { get; set; }
+
+    /// <summary>Which sun cascades a type-21 block's instances cast into (Engine_ClassicShadows.Casts*).</summary>
+    public byte Casting { get; set; } = Refii.Models.Engine_ClassicShadows.CastsDefault;
 
     public uint Type { get; set; }
 
@@ -58,6 +68,9 @@ public sealed class EngineLevelBlock
     /// distances are per instance.
     /// </summary>
     public float DrawDistance { get; set; }
+
+    /// <summary>A type-21 block's fade fraction f (header float 5, a[0]): it fades over [D(1-f), D].</summary>
+    public float FadeFraction { get; set; }
 
     public List<EngineLevelInstance> Instances { get; } = new();
 
@@ -309,6 +322,8 @@ public static class Engine_EngineLevelFile
             instance.Flag0 = f0;
             instance.Flag1 = f1;
             instance.Flag2 = f2;
+            instance.Casting = Refii.Models.Engine_ClassicShadows.CastingOf(0x30u |
+                (f0 == 0 ? 0x40u : 0u) | (f1 != 0 ? 0x80u : 0u) | (f2 != 0 ? 0x100u : 0u));
             instance.Hash = hash;
 
             for (int v = 0; v < Type2InstanceFloats; v++)
@@ -342,13 +357,17 @@ public static class Engine_EngineLevelFile
         block.ModelPath = modelPath;
         block.LodModelPath = lodPath;
 
-        if (!reader.U64(out ulong blockHash) || !reader.Skip(1 + 1))
+        if (!reader.U64(out ulong blockHash) || !reader.U8(out byte casts) ||
+            !reader.U8(out byte noDistant))
         {
             file.Error = "truncated reading type-21 hash+flags";
             return false;
         }
 
         block.Hash = blockHash;
+        // The block's two flag bytes (0x82ABA9AC): a zero first is 0x40, a non-zero second 0x80.
+        block.Casting = Refii.Models.Engine_ClassicShadows.CastingOf(0x10u |
+            (casts == 0 ? 0x40u : 0u) | (noDistant != 0 ? 0x80u : 0u));
 
         if (!reader.U32(out uint loop1Count))
         {
@@ -357,8 +376,8 @@ public static class Engine_EngineLevelFile
         }
 
         // Seven floats (`sub_82B202C0`): two to msg+0xA0/+0xA4, a[7], a[8], the draw distance
-        // a[1], the fade fraction a[0] — which foliage uses only as an `a > 0` gate, so the cut
-        // is hard — and a[2].
+        // a[1], the fade fraction a[0] and a[2]. The CPU cull at D is hard; the pixel shader
+        // stipples the last fraction away (`sub_821FCCB0`: c15 = (D(1-f), 1/(fD), D(1-f), 0)).
         float[] header = new float[7];
         for (int f = 0; f < header.Length; f++)
         {
@@ -370,6 +389,7 @@ public static class Engine_EngineLevelFile
         }
 
         block.DrawDistance = header[4];
+        block.FadeFraction = header[5];
 
         if (!reader.Skip(12 + 4 + 24))
         {

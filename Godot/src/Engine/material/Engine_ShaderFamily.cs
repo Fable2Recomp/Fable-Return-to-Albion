@@ -52,6 +52,14 @@ public static class Engine_ShaderFamily
     public const string StandardCulledPath =
         "res://src/Engine/material/standard_material_culled.gdshader";
 
+    /// <summary>The blended shader for a translucent diffuse (texture header flag 0x80).</summary>
+    public const string StandardTranslucentPath =
+        "res://src/Engine/material/standard_material_translucent.gdshader";
+
+    /// <summary>The two-sided shader with the title's tree wind, for every surface of a tree (.mdl byte 77 == 2).</summary>
+    public const string StandardTreePath =
+        "res://src/Engine/material/standard_material_tree.gdshader";
+
     /// <summary>The two-sided shader with the wind bend: the only one that reads TIME, for surfaces that sway.</summary>
     public const string StandardWindPath =
         "res://src/Engine/material/standard_material_wind.gdshader";

@@ -355,7 +355,7 @@ public sealed class Engine_EntitySkeleton
 	public void ForgetLastPose()
 	{
 		_lastTranslationValid = false;
-		_havePrevious = false;
+		_poses.Clear();
 
 		// The skeleton is about to be written by something else — the clip animator — so what
 		// this rig last wrote is no longer what the bones hold, nor what the shadow holds.
@@ -962,7 +962,16 @@ public sealed class Engine_EntitySkeleton
 	/// Cheap when there is nothing to do: the settled check inside returns immediately once the
 	/// blend has finished.
 	/// </remarks>
-	public void Reblend() => WriteBlended();
+	public void Reblend()
+	{
+		// The walk's write this frame already drew this instant.
+		if (_blendedFrame != Godot.Engine.GetProcessFrames())
+		{
+			WriteBlended();
+		}
+	}
+
+	private ulong _blendedFrame = ulong.MaxValue;
 
 	public void Follow(uint entity) => Follow(entity, write: true);
 
@@ -1284,23 +1293,17 @@ public sealed class Engine_EntitySkeleton
 		bool first = !_lastTranslationValid;
 		_lastTranslationValid = true;
 
-		// TWO POSES AND A CLOCK. The guest evaluates animation on its own tick (measured
-		// 2026-09-04: ~22 poses/s for the hero against 24–60 drawn frames), so a display that
-		// samples the newest pose repeats one every few frames — the beat the entities report
-		// calls out, and its answer is interpolation. An accepted pose that DIFFERS from the
-		// newest becomes the newest of two, stamped with the host clock; WriteBlended() draws
-		// the blend between the two on every drawn frame, one guest interval behind.
-		_newest ??= new Transform3D[_rig.BoneCount];
-		_previous ??= new Transform3D[_rig.BoneCount];
+		// A RING OF STAMPED POSES, DRAWN AT THE WORLD'S DRAW POINT. The guest publishes a pose
+		// every HF step (30 Hz) and we draw faster, so the drawn pose is interpolated between
+		// the two stamped around `Engine_DrawnFrame.DrawTick` — the point the camera and every
+		// clip time are drawn at. Looked up by stamp, so when the walk noticed a pose does not
+		// enter. Every read is a sample: an unchanged pose is stamped as a hold of the newest
+		// buffer (no copy), so a rig that stood still and then moves blends from where it stood
+		// at the tick it started, not across the whole silence.
 		if (_newestScale.Length != _rig.BoneCount)
 		{
 			_newestScale = new Vector3[_rig.BoneCount];
 			System.Array.Fill(_newestScale, Vector3.One);
-		}
-
-		if (!changed && !first && _haveNewest)
-		{
-			return;  // the same pose again: the blend keeps moving on the clock
 		}
 
 		// Stamped with the guest's game tick (Engine_TickClock.GuestGameTick), not arrival time and
@@ -1308,34 +1311,38 @@ public sealed class Engine_EntitySkeleton
 		// tick as a placement does; but `dword_83319650` skips: `sub_821D4628` branches past its own
 		// increment when its object is not the head element (`821d46e8 beq cr6, loc_821D4AC8`,
 		// target past the store at `821d4ac4`), which would put two distinct poses on one tick.
-		//
-		// Tested before the swap: returning after it would leave the pose buffers exchanged and
-		// `_previousTick` overwritten with a stamp that was never published.
 		uint sim = Engine_TickClock.GuestGameTick;
 		if (sim == 0u)
 		{
 			return;  // no world yet: nothing to stamp a pose against
 		}
 
-		(_previous, _newest) = (_newest, _previous);
-		_previousTick = _newestTick;
-		_newestTick = StampHalfTick(sim);
+		// The frame's stated stamp: which HF step of which tick left this pose in memory
+		// (Engine_TickClock.FrameStamp). The same guest frame read again — the feed walking on
+		// a frame with no new guest frame — is not a new sample. Only without a stated stamp is
+		// the order of arrival used.
+		double stamp = Engine_TickClock.FrameStamp;
+		if (double.IsNaN(stamp))
+		{
+			stamp = _poses.NextHalfTick(sim);
+		}
+		else if (_poses.Count != 0 && stamp <= _poses.NewestStamp)
+		{
+			return;
+		}
 
-		// Shared arithmetic (Engine_PairPlayhead): anchored to the swap, carried past a late pose,
-		// never restarted. The stamps state the width; do not estimate it. `_newestTick -
-		// _previousTick` is the pair's span in game ticks (half a tick when the walk caught one
-		// publish, a whole tick when it caught two), and its wall time is that times the tick
-		// period. This per-rig playhead is aligned only to its own two samples; accounting for
-		// unobserved ticks belongs to the shared playhead.
-		ulong swappedAt = Godot.Time.GetTicksUsec();
-		double spanTicks = _havePrevious && _newestTick > _previousTick
-			? _newestTick - _previousTick
-			: 0.5;
-		_playhead.SwapStated(swappedAt, spanTicks * Engine_TickClock.TickUsec);
-		_newestUsec = swappedAt;
-		Engine_TickClock.Observe(sim, _newestUsec);
-		_havePrevious = _haveNewest;
-		_haveNewest = true;
+		if (!changed && !first && _poses.Count != 0)
+		{
+			int held = _slotBuffer[_poses.Slot(0)];
+			_slotBuffer[_poses.Push(stamp)] = held;
+			return;
+		}
+
+		int buffer = FreeBuffer();
+		Transform3D[] fill = _buffers![buffer] ??= new Transform3D[_rig.BoneCount];
+		++_bufferVersion[buffer];
+		_slotBuffer[_poses.Push(stamp)] = buffer;
+		Engine_TickClock.Observe(sim, Godot.Time.GetTicksUsec());
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
@@ -1349,121 +1356,108 @@ public sealed class Engine_EntitySkeleton
 			Vector3 guestScale = modelSpace ? pose.Scale(g) : _scale![g];
 			var scale = modelSpace ? new Vector3(guestScale.X, guestScale.Z, guestScale.Y) : guestScale;
 			_newestScale[m] = scale.IsFinite() ? scale : Vector3.One;
-			_newest[m] = modelSpace
+			fill[m] = modelSpace
 				? ToGodot(pose.Rotation(g), pose.Translation(g), Vector3.One)
 				: _composed![g];
 		}
+	}
+
+	/// <summary>
+	/// Stamped poses held: enough that a draw point a tick and a half behind the newest still
+	/// finds its pair (two poses a tick, plus the playhead's floor of one tick).
+	/// </summary>
+	private const int PoseSlots = 6;
+
+	/// <summary>One more buffer than slots, so a new pose never overwrites one still in use.</summary>
+	private const int PoseBuffers = PoseSlots + 1;
+
+	private Transform3D[]?[]? _buffers;
+	private readonly int[] _bufferVersion = new int[PoseBuffers];
+	private readonly Engine_StampRing _poses = new(PoseSlots);
+	private readonly int[] _slotBuffer = new int[PoseSlots];
+
+	/// <summary>A buffer no slot that survives the next push refers to.</summary>
+	private int FreeBuffer()
+	{
+		_buffers ??= new Transform3D[]?[PoseBuffers];
+
+		// The oldest slot is evicted by the push when the ring is full, so its buffer is free.
+		int surviving = System.Math.Min(_poses.Count, PoseSlots - 1);
+		for (int b = 0; b < PoseBuffers; ++b)
+		{
+			bool used = false;
+			for (int back = 0; back < surviving; ++back)
+			{
+				if (_slotBuffer[_poses.Slot(back)] == b)
+				{
+					used = true;
+					break;
+				}
+			}
+
+			if (!used)
+			{
+				return b;
+			}
+		}
+
+		return 0;
 	}
 
 	/// <summary>Each model bone's own scale from the newest pose, in the mesh's axes.</summary>
 	private Vector3[] _newestScale = System.Array.Empty<Vector3>();
 
 	private Transform3D[]? _globals;
-	private Transform3D[]? _newest;
-	private Transform3D[]? _previous;
-	private ulong _newestUsec;
-	private readonly Engine_PairPlayhead _playhead = new(PoseIntervalUsec);
-	private double _newestTick;
-	private double _previousTick;
-	private uint _stampSim = uint.MaxValue;
-	private int _stampPhase;
 
 	/// <summary>
-	/// Two poses per game tick. The guest evaluates the pose every HF tick (30 Hz) at alpha 0.5 on
-	/// the iteration the game tick ran (the counter is already T; the pose is halfway between T−1
-	/// and T) and at alpha 1.0 on the next (`(HFindex % 2 + 1) / 2`, see the anim timing
-	/// contract). So the first pose accepted under a new counter is stamped T − 0.5, the next T. A
-	/// stamp never sits at or before the previous one.
-	/// </summary>
-	private double StampHalfTick(uint sim)
-	{
-		if (sim != _stampSim)
-		{
-			_stampSim = sim;
-			_stampPhase = 0;
-		}
-
-		double stamp = sim - 0.5 + (0.5 * System.Math.Min(_stampPhase, 1));
-		++_stampPhase;
-		if (_haveNewest && stamp <= _newestTick)
-		{
-			stamp = _newestTick + 0.25;
-		}
-
-		return stamp;
-	}
-	private bool _haveNewest;
-	private bool _havePrevious;
-
-	/// <summary>
-	/// Writes the drawn pose: the blend of the two newest accepted poses at the host clock,
-	/// every drawn frame — the display owns the clock, the guest's poses are its keyframes.
+	/// Writes the drawn pose: the stamped poses around the world's draw point, blended, every
+	/// drawn frame — the display owns the clock, the guest's poses are its keyframes.
 	/// LOCAL POSES, ONE PARENT INVERSE PER BONE: SetBoneGlobalPose recomputes the chain per
 	/// call (quadratic per skeleton, ~25 ms of draw with every rig on screen). Unmapped bones
 	/// keep their rest, composed under their parents so the inverses stay right.
 	/// </summary>
 	private void WriteBlended()
 	{
-		if (!_haveNewest || _newest is null || _previous is null)
+		if (_poses.Count == 0 || _buffers is null)
 		{
 			return;
 		}
 
-		// ON THE GUEST'S CLOCK, AT THE SAME LATENCY AS THE BODY.
+		_blendedFrame = Godot.Engine.GetProcessFrames();
+
+		// AT THE WORLD'S DRAW POINT, BY STAMP. The guest does not blend a pair: `sub_82A75720`
+		// assigns the same block to both `renderObj+0x200` and `+0x204` (`r4 = r29` at
+		// `0x82a759f8` and `0x82a75a04`), so `sub_8222E2B8`'s lerp is the identity and it draws the
+		// newest published block at the 30 Hz it publishes at. We draw faster, so blending
+		// consecutive blocks is ours, and the draw point is the one the camera and the clip
+		// times use (`Engine_DrawnFrame.DrawTick`). Never extrapolated: past the newest stamp the
+		// newest is held, since a bone carried past its pose invents a limb position.
 		//
-		// This used to blend across the WALL GAP between the two arrivals — `since / interval`
-		// where both were host timestamps — which is precisely the mistake Engine_TickTimeline
-		// was written to undo for placements: it re-times every segment by when the host
-		// happened to see it, so a scheduling hiccup that delivers two poses close together
-		// runs the blend to completion in a few milliseconds and the rig snaps and then holds.
-		//
-		// AND IT PUT THE BONES ON A DIFFERENT CLOCK FROM THE BODY THEY HANG OFF. The entity's
-		// transform is drawn at `now - 1.5 ticks`; the pose was drawn one ARRIVAL INTERVAL
-		// behind its newest sample, roughly half that. The skeleton ran ahead of the thing
-		// carrying it, which is a foot planted on ground that is still sliding underneath it.
-		//
-		// Both go away by asking the one fitted clock where the frame is: alpha is simply how
-		// far the draw point has travelled from the tick the previous pose was stated on to
-		// the tick the newest was.
+		// A rig that was not read for many ticks and then moves: the span across that silence is
+		// not a segment it animated over (Stale), so the later pose stands.
+		double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
+		Engine_StampRing.Where where = _poses.Locate(drawTick, StaleSpanTicks, out int earlier, out int later, out double t);
+		int from = _slotBuffer[later];
+		int to = from;
 		float alpha = 1f;
-		if (_havePrevious && _newestTick > _previousTick)
+		switch (where)
 		{
-			double span = _newestTick - _previousTick;
-
-			// A rig that was idle, or out of write range, states nothing for many ticks and
-			// then moves; the span across that silence is not a segment it animated over. Draw
-			// the newest and let the next tick start a real one.
-			//
-			// The guest does not blend a pair: `sub_82A75720` assigns the same block to both
-			// `renderObj+0x200` and `+0x204` (`r4 = r29` at `0x82a759f8` and `0x82a75a04`), so
-			// `sub_8222E2B8`'s lerp is the identity and it draws the newest published block at the
-			// 30 Hz it publishes at. We draw faster, so blending consecutive blocks is ours.
-			//
-			// Alpha comes from this rig's own playhead, anchored to the instant this pair swapped
-			// and running over the interval such pairs last: 0 at the swap, 1 by the next, so the end
-			// of one pair and the start of the next draw the same pose. Not a free-running sawtooth
-			// over the HF step, and not the shared playhead (which drifts against the guest's
-			// counter); same correction as Engine_TickClock.PairAlpha. Used for a current pair only;
-			// a stale pair holds the newest.
-			if (span <= StaleSpanTicks && _playhead.Ready)
-			{
-				alpha = (float)_playhead.Alpha(Refii.Entities.Engine_DrawnFrame.NowUsec);
+			case Engine_StampRing.Where.Between:
+				from = _slotBuffer[earlier];
+				alpha = (float)t;
 				++BlendedPoses;
-				NoteAlpha(alpha, span);
-				if (alpha > 1f)
-				{
-					Engine_TickClock.NoteStarved(_newestTick);
-				}
-			}
-			else
-			{
-				// Nothing was stated across that span — an idle rig, or one out of write range.
-				// Draw the newest and let the next pose start a real segment.
-				alpha = 1f;
+				NoteAlpha(alpha, _poses.Stamp(0) - _poses.Stamp(1));
+				break;
+			case Engine_StampRing.Where.Stale:
 				++HeldPoses;
-			}
+				break;
+			case Engine_StampRing.Where.After when _poses.Count >= 2 && drawTick > _poses.NewestStamp:
+				Engine_TickClock.NoteStarved(_poses.NewestStamp);
+				break;
+		}
 
-			// Where alpha lands, for diagnostics.
+		if (_poses.Count >= 2 && !double.IsNaN(drawTick))
+		{
 			if (alpha <= 0.001f)
 			{
 				++AlphaAtZero;
@@ -1478,6 +1472,21 @@ public sealed class Engine_EntitySkeleton
 			}
 		}
 
+		// Blending a buffer with itself (a hold) is the buffer.
+		if (from == to || alpha >= 1f)
+		{
+			from = to;
+			alpha = 1f;
+		}
+		else if (alpha <= 0f)
+		{
+			to = from;
+			alpha = 1f;
+		}
+
+		Transform3D[] previous = _buffers[from]!;
+		Transform3D[] target = _buffers[to]!;
+
 		// NOTHING TO WRITE WHEN NOTHING WOULD CHANGE. A settled rig — one whose newest pose is
 		// the one already on the skeleton, with the interpolation finished — would write the
 		// same transform into every bone it wrote last frame. This is NOT the frustum gate that
@@ -1487,8 +1496,8 @@ public sealed class Engine_EntitySkeleton
 		// Settled at the playhead's ceiling, not at 1: the blend carries past 1 while the guest is
 		// late, so skipping at 1 would freeze the pose the carry exists to move. It settles once
 		// alpha stops moving: at the ceiling or on a held pair.
-		bool settled = alpha >= (float)_playhead.TopAlpha && _wroteSettled &&
-			_wroteUsec == _newestUsec;
+		bool settled = alpha >= 1f && _wroteSettled &&
+			_wroteBuffer == to && _wroteVersion == _bufferVersion[to];
 
 		// THE SHADOW SKELETON TAKES THE SAME BONES, ON GUEST FRAMES (every frame for a principal).
 		// A settled rig whose shadow already holds this pose has nothing to write either way; a
@@ -1520,9 +1529,9 @@ public sealed class Engine_EntitySkeleton
 			Transform3D global;
 			if (g >= 0)
 			{
-				global = _havePrevious && alpha < 1f
-					? _previous[m].InterpolateWith(_newest[m], alpha)
-					: _newest[m];
+				global = alpha < 1f
+					? previous[m].InterpolateWith(target[m], alpha)
+					: target[m];
 			}
 			else
 			{
@@ -1571,8 +1580,9 @@ public sealed class Engine_EntitySkeleton
 			// is the one the skin binds with (a morph record changes between rebuilds, not
 			// between frames), and a settled rig has already written it.
 			SetBoneScales(_newestScale);
-			_wroteUsec = _newestUsec;
-			_wroteSettled = alpha >= (float)_playhead.TopAlpha;
+			_wroteBuffer = to;
+			_wroteVersion = _bufferVersion[to];
+			_wroteSettled = alpha >= 1f;
 			// The shadow trails this write unless it took it too.
 			_shadowSynced = shadowNow;
 		}
@@ -1654,15 +1664,10 @@ public sealed class Engine_EntitySkeleton
 	/// <summary>Ticks of silence past which two accepted poses are not one segment.</summary>
 	private const uint StaleSpanTicks = 4u;
 
-	/// <summary>
-	/// The interval a pose pair nominally lasts: one HF step, 1/30 s, because the guest
-	/// publishes a finished pose every step (`dbl_83319668` = 30.0). The seed for the smoothed
-	/// estimate, never used raw once a rig has swapped twice.
-	/// </summary>
-	private const double PoseIntervalUsec = 1e6 / 30.0;
+	/// <summary>The pose buffer, and its fill, the skeleton currently holds.</summary>
+	private int _wroteBuffer = -1;
 
-	/// <summary>The pose timestamp the skeleton currently holds.</summary>
-	private ulong _wroteUsec;
+	private int _wroteVersion;
 
 	/// <summary>Whether that write was the finished pose rather than a step toward it.</summary>
 	private bool _wroteSettled;

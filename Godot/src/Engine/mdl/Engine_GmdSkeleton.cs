@@ -64,23 +64,69 @@ public sealed class Engine_GmdSkeleton
 
     public const int MaxAttachments = 64;
 
+    private static readonly byte[] DefaultHeaderBytes = CreateDefaultHeaderBytes();
+    private static readonly byte[] DefaultTrailingBytes = new byte[4];
+
+    private static byte[] CreateDefaultHeaderBytes()
+    {
+        var header = new byte[0x2C];
+        Encoding.ASCII.GetBytes("GameMesh", 0, 8, header, 0);
+        // Version = 3 at 0x08 (big-endian)
+        header[0x0B] = 3;
+        return header;
+    }
+
     private Engine_GmdSkeleton(
-        string[] names, int[] parents, Transform3D[] locals, GmdAttachment[] attachments)
+        string[] names,
+        int[] parents,
+        Transform3D[] locals,
+        GmdAttachment[] attachments,
+        byte[]? headerBytes = null,
+        Vector3[]? nodeScales = null,
+        float[]? nodePads = null,
+        byte[]? trailingBytes = null)
     {
         Names = names;
         Parents = parents;
         Locals = locals;
         Attachments = attachments;
+        HeaderBytes = headerBytes is { Length: 0x2C } ? headerBytes : (byte[])DefaultHeaderBytes.Clone();
+        if (nodeScales is not null && nodeScales.Length == names.Length)
+        {
+            NodeScales = nodeScales;
+        }
+        else
+        {
+            NodeScales = new Vector3[names.Length];
+            for (int i = 0; i < NodeScales.Length; i++)
+            {
+                NodeScales[i] = Vector3.One;
+            }
+        }
+        NodePads = nodePads is not null && nodePads.Length == names.Length ? nodePads : new float[names.Length];
+        TrailingBytes = trailingBytes ?? (byte[])DefaultTrailingBytes.Clone();
     }
 
     public string[] Names { get; }
 
     public int[] Parents { get; }
 
-    /// <summary>Each node's transform relative to its parent.</summary>
+    /// <summary>Each node's transform relative to its parent (in Godot Y-up space).</summary>
     public Transform3D[] Locals { get; }
 
     public GmdAttachment[] Attachments { get; }
+
+    /// <summary>The 44-byte <c>GameMesh</c> header (<c>0x00..0x2B</c>).</summary>
+    public byte[] HeaderBytes { get; }
+
+    /// <summary>Per-node raw scale vectors from the 44-byte node transform records.</summary>
+    public Vector3[] NodeScales { get; }
+
+    /// <summary>Per-node raw trailing float from the 44-byte node transform records.</summary>
+    public float[] NodePads { get; }
+
+    /// <summary>Trailing Section 3 bytes following the attachment table.</summary>
+    public byte[] TrailingBytes { get; }
 
     /// <summary>
     /// The skeleton a <c>.mdl.gmd</c> holds, or null when the bytes are not one or do not
@@ -92,7 +138,7 @@ public sealed class Engine_GmdSkeleton
     /// </summary>
     public static Engine_GmdSkeleton? TryParse(byte[]? bytes)
     {
-        if (bytes is null || bytes.Length < 0x3C ||
+        if (bytes is null || bytes.Length < 0x34 ||
             Encoding.ASCII.GetString(bytes, 0, 8) != "GameMesh")
         {
             return null;
@@ -103,6 +149,9 @@ public sealed class Engine_GmdSkeleton
         {
             return null;
         }
+
+        var headerBytes = new byte[0x2C];
+        Array.Copy(bytes, 0, headerBytes, 0, 0x2C);
 
         var names = new string[nodeCount];
         var parents = new int[nodeCount];
@@ -120,6 +169,8 @@ public sealed class Engine_GmdSkeleton
         }
 
         var locals = new Transform3D[nodeCount];
+        var nodeScales = new Vector3[nodeCount];
+        var nodePads = new float[nodeCount];
         if (nodeCount != 0)
         {
             if (at + 4 > bytes.Length)
@@ -145,15 +196,34 @@ public sealed class Engine_GmdSkeleton
                     new Vector3(
                         ReadF32(bytes, at + 16), ReadF32(bytes, at + 20),
                         ReadF32(bytes, at + 24))));
+                nodeScales[i] = new Vector3(
+                    ReadF32(bytes, at + 28), ReadF32(bytes, at + 32), ReadF32(bytes, at + 36));
+                nodePads[i] = ReadF32(bytes, at + 40);
                 at += NodeTransformStride;
             }
         }
 
-        if (!TryFindAttachmentCount(bytes, at, out uint attachmentCount, out at))
+        if (!TryFindAttachmentCount(bytes, at, out uint attachmentCount, out int attachStart))
         {
-            return new Engine_GmdSkeleton(names, parents, locals, Array.Empty<GmdAttachment>());
+            // When nodeCount == 0, transformCount (0) is at 0x30 and attachmentCount (0) is at 0x34.
+            int trailingOffset = at;
+            if (nodeCount == 0 && at + 4 <= bytes.Length && ReadU32(bytes, at) == 0)
+            {
+                trailingOffset += 4;
+            }
+            if (trailingOffset + 4 <= bytes.Length && ReadU32(bytes, trailingOffset) == 0)
+            {
+                trailingOffset += 4;
+            }
+            byte[] emptyTrailing = trailingOffset <= bytes.Length
+                ? bytes[trailingOffset..]
+                : (byte[])DefaultTrailingBytes.Clone();
+            return new Engine_GmdSkeleton(
+                names, parents, locals, Array.Empty<GmdAttachment>(),
+                headerBytes, nodeScales, nodePads, emptyTrailing);
         }
 
+        at = attachStart;
         var attachments = new List<GmdAttachment>((int)attachmentCount);
         for (uint i = 0; i < attachmentCount; i++)
         {
@@ -173,7 +243,10 @@ public sealed class Engine_GmdSkeleton
             at += 32;
         }
 
-        return new Engine_GmdSkeleton(names, parents, locals, attachments.ToArray());
+        byte[] trailingBytes = at <= bytes.Length ? bytes[at..] : (byte[])DefaultTrailingBytes.Clone();
+        return new Engine_GmdSkeleton(
+            names, parents, locals, attachments.ToArray(),
+            headerBytes, nodeScales, nodePads, trailingBytes);
     }
 
     /// <summary>
@@ -224,9 +297,25 @@ public sealed class Engine_GmdSkeleton
     ///
     /// Returns -1 in <paramref name="node"/> for a dummy that hangs from the model root.
     /// </summary>
-    public bool TryResolveNode(string dummy, int index, out int node)
+    public bool TryResolveNode(string dummy, int index, out int node) =>
+        TryResolveEntry(dummy, index, out node, out _);
+
+    /// <summary>
+    /// <see cref="TryResolveNode"/>, with the dummy's own transform RELATIVE TO THAT NODE — what the
+    /// guest's runtime entry holds (`sub_82265100`: quaternion at +0x20, translation at +0x30) and
+    /// composes under the node's live pose — or the identity when the dummy is a node itself.
+    /// </summary>
+    /// <remarks>
+    /// THE FILE'S ATTACHMENT TRANSFORM IS IN MODEL SPACE. Composed under the node as if it were
+    /// relative, every sheathed weapon landed 1.2-1.7 m from where the guest put it — the height
+    /// of the back dummy above the model root, counted twice. Relative = inverse(node's bind in
+    /// model space) x model-space local. <see cref="TryResolve"/> keeps the model-space value,
+    /// which is what a static prop composes directly onto its placement.
+    /// </remarks>
+    public bool TryResolveEntry(string dummy, int index, out int node, out Transform3D local)
     {
         node = -1;
+        local = Transform3D.Identity;
         if (dummy.Length == 0)
         {
             return false;
@@ -246,6 +335,9 @@ public sealed class Engine_GmdSkeleton
             }
 
             node = attachment.Node;
+            local = node >= 0 && node < Locals.Length
+                ? Compose(node).AffineInverse() * attachment.Local
+                : attachment.Local;
             return true;
         }
 
@@ -263,10 +355,37 @@ public sealed class Engine_GmdSkeleton
     }
 
     /// <summary>
-    /// A node's transform in model space — its own local with every ancestor's applied outside
+    /// A node's transform in model space (Godot Y-up) — its own local with every ancestor's applied outside
     /// it, which is what makes a dummy hanging off bone 4 land at the lamp's head rather than at
     /// its foot.
     /// </summary>
+    public Transform3D ComposeNode(int node) => Compose(node);
+
+    /// <summary>
+    /// Computes an attachment's full model-space transform (in Godot Y-up space), composing its parent
+    /// node chain when <see cref="GmdAttachment.Node"/> is non-negative.
+    /// </summary>
+    public Transform3D ComposeAttachment(int attachmentIndex)
+    {
+        if (attachmentIndex < 0 || attachmentIndex >= Attachments.Length)
+        {
+            return Transform3D.Identity;
+        }
+
+        return ComposeAttachment(Attachments[attachmentIndex]);
+    }
+
+    /// <summary>
+    /// Computes an attachment's full model-space transform (in Godot Y-up space), composing its parent
+    /// node chain when <see cref="GmdAttachment.Node"/> is non-negative.
+    /// </summary>
+    public Transform3D ComposeAttachment(GmdAttachment att)
+    {
+        return att.Node >= 0 && att.Node < Locals.Length
+            ? Compose(att.Node) * att.Local
+            : att.Local;
+    }
+
     private Transform3D Compose(int node)
     {
         var world = Transform3D.Identity;
@@ -280,6 +399,16 @@ public sealed class Engine_GmdSkeleton
         }
 
         return world;
+    }
+
+    /// <summary>Converts a transform from raw GameMesh Z-up space into Godot / glTF Y-up space.</summary>
+    public static Transform3D ToGodotSpace(Transform3D game) => ToGodot(game);
+
+    /// <summary>Converts a transform from Godot / glTF Y-up space back into raw GameMesh Z-up space.</summary>
+    public static Transform3D ToGameSpace(Transform3D godot)
+    {
+        Basis inv = ZUpToYUp.Inverse();
+        return new Transform3D(inv * godot.Basis * ZUpToYUp, inv * godot.Origin);
     }
 
     private static Transform3D ToGodot(Transform3D game) =>

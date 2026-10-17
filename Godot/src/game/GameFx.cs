@@ -58,6 +58,9 @@ public partial class GameFx : Node3D
     /// <summary>The effect hash each drawn node was built for — guest handles RECYCLE.</summary>
     private readonly Dictionary<uint, uint> _effectOf = new();
 
+    /// <summary>This walk's effects the guest draws itself (<see cref="FableFx.GuestDrawn"/>).</summary>
+    private readonly HashSet<uint> _guestDrawn = new();
+
     /// <summary>Every effect hash the guest has played, and how many instances carried it.</summary>
     private readonly Dictionary<uint, int> _census = new();
 
@@ -231,9 +234,15 @@ public partial class GameFx : Node3D
             _draw = forced == "1";
         }
 
+        // Under classic the title's particle path (Engine_ClassicParticles) draws every live
+        // effect with its own shaders; drawing them here as well drew each one twice.
+        bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+        _draw &= !classic;
+
         GD.Print(
             $"[game-fx] live effect feed up; drawing is {(_draw ? "ON" : "OFF")} " +
-            $"({DrawSettingKey} in {(path.Length != 0 ? path : "refii.toml")})");
+            (classic ? "(classic renderer: the title's particles draw them)"
+                : $"({DrawSettingKey} in {(path.Length != 0 ? path : "refii.toml")})"));
 
         // A child, so its step follows this node's _Process in tree order — after the live
         // nodes are placed — and leaves with it on a level change; see Engine_FxDriver.
@@ -317,6 +326,21 @@ public partial class GameFx : Node3D
                 float.IsFinite(fx.Fade))
             {
                 _emitterState[rootKey] = (fx.Scale, Math.Clamp(fx.Fade, 0f, 1f));
+            }
+        }
+
+        // The effects whose particle groups the guest is drawing itself (modern renderer): one
+        // owned group is enough, the guest draws an effect's groups together.
+        _guestDrawn.Clear();
+        System.Collections.Generic.HashSet<uint> owners = Refii.Models.Engine_ClassicParticles.DrawnOwners;
+        if (owners.Count != 0)
+        {
+            foreach (HostBridge.ActiveFx fx in live)
+            {
+                if (owners.Contains(fx.Instance))
+                {
+                    _guestDrawn.Add(fx.Handle != 0 ? fx.Handle : fx.Instance);
+                }
             }
         }
 
@@ -480,6 +504,7 @@ public partial class GameFx : Node3D
             node.Intensity = fx.Intensity * fade;
             node.LightFade = fade;
             node.SizeScale = scale;
+            node.GuestDrawn = _guestDrawn.Contains(key);
         }
 
         // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the
@@ -556,30 +581,23 @@ public partial class GameFx : Node3D
     /// </summary>
     private Transform3D Smoothed(uint key, Transform3D stated)
     {
-        double now = Godot.Time.GetTicksUsec();
         if (!_timelines.TryGetValue(key, out Refii.Core.Engine_TickTimeline? timeline))
         {
-            timeline = new Refii.Core.Engine_TickTimeline();
+            timeline = new Refii.Core.Engine_TickTimeline(stillWhenUnchanged: false);
             timeline.Reset(_tickNow, stated);
             _timelines[key] = timeline;
             return stated;
         }
 
-        bool moved = timeline.Newest.Origin.DistanceSquaredTo(stated.Origin) > 1e-8f
-            || !timeline.Newest.Basis.IsEqualApprox(stated.Basis);
-        if (moved)
+        if (timeline.Newest.Origin.DistanceTo(stated.Origin) > 4f ||
+            (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
         {
-            if (timeline.Newest.Origin.DistanceTo(stated.Origin) > 4f ||
-                (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
-            {
-                timeline.Reset(_tickNow, stated);
-                return stated;
-            }
-
-            timeline.Push(_tickNow, stated, now);
+            timeline.Reset(_tickNow, stated);
+            return stated;
         }
 
-        return timeline.Sample(now);
+        timeline.Observe(_tickNow, stated);
+        return timeline.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, Refii.Entities.Engine_DrawnFrame.DrawTick);
     }
 
     /// <summary>The census, printed only when the distinct-effect count moves.</summary>

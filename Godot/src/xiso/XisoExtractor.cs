@@ -559,11 +559,11 @@ public static class XisoExtractor
 			FileStream output;
 			try
 			{
-				output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
+				output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
 			}
-			catch (Exception)
+			catch (Exception exception)
 			{
-				return Fail("Failed to create " + outputPath + ".", out error);
+				return Fail("Failed to create " + outputPath + ": " + exception.Message, out error);
 			}
 
 			using (output)
@@ -596,9 +596,9 @@ public static class XisoExtractor
 						_progress.CopiedBytes += chunkSize;
 						Report();
 					}
-					catch (Exception)
+					catch (Exception exception)
 					{
-						return Fail("Failed to write " + outputPath + ".", out error);
+						return Fail("Failed to write " + outputPath + ": " + exception.Message, out error);
 					}
 
 					remaining -= (uint)chunkSize;

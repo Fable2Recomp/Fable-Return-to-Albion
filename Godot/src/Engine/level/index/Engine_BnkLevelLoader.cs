@@ -23,7 +23,7 @@ public partial class Engine_BnkTerrainLoader : ResourceFormatLoader
 
     public override bool _RecognizePath(string path, StringName type) => Recognises(path);
 
-    public override bool _Exists(string path) => Recognises(path);
+    public override bool _Exists(string path) => Recognises(path) && _resolver is not null;
 
     public override bool _HandlesType(StringName type)
     {
@@ -85,7 +85,7 @@ public partial class Engine_BnkTerrainAlbedoLoader : ResourceFormatLoader
 
     public override bool _RecognizePath(string path, StringName type) => Recognises(path);
 
-    public override bool _Exists(string path) => Recognises(path);
+    public override bool _Exists(string path) => Recognises(path) && _resolver is not null;
 
     public override bool _HandlesType(StringName type)
     {
@@ -142,6 +142,11 @@ public partial class Engine_BnkTerrainAlbedoLoader : ResourceFormatLoader
         Image image = Image.CreateFromData(
             albedo.Width, albedo.Height, false, Image.Format.Rgba8, albedo.Rgba);
 
+        if (image.IsEmpty())
+        {
+            return Variant.CreateFrom((int)Error.FileCorrupt);
+        }
+
         ImageTexture texture = ImageTexture.CreateFromImage(image);
         texture.ResourceName = virtualPath[(virtualPath.LastIndexOf('/') + 1)..];
         texture.ResourcePath = path;
@@ -171,7 +176,7 @@ public partial class Engine_BnkTerrainMaterialLoader : ResourceFormatLoader
 
     public override bool _RecognizePath(string path, StringName type) => Recognises(path);
 
-    public override bool _Exists(string path) => Recognises(path);
+    public override bool _Exists(string path) => Recognises(path) && _resolver is not null;
 
     public override bool _HandlesType(StringName type)
     {

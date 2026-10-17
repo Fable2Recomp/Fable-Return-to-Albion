@@ -53,6 +53,30 @@ public partial class Engine_FrontEndWarning : Node3D
 	public bool HasShippedArt { get; private set; }
 
 	/// <summary>
+	/// The frame's click on the box: +1 on the accept button, -1 on the cancel button or its
+	/// glyph (two-button form only), 0 for none. Takes every click while the box is up, so one
+	/// beside the buttons cannot fall through as A.
+	/// </summary>
+	public int Click()
+	{
+		if (!Visible || !Engine_UiPointer.TakeLeft() || Engine_UiPointer.Canvas is not { } at)
+		{
+			return 0;
+		}
+
+		if (On(ButtonName, at))
+		{
+			return 1;
+		}
+
+		return AllowCancel && (On(CancelName, at) || On(IconName, at)) ? -1 : 0;
+	}
+
+	private bool On(string name, Vector2 at) =>
+		Engine_UiTheme.FindByName(this, name) is Node3D node && node.IsVisibleInTree() &&
+		Engine_UiPointer.CanvasBounds(node) is { } bounds && bounds.Grow(8f).HasPoint(at);
+
+	/// <summary>
 	/// The screen the ACCEPT button proceeds to, or null when accepting only dismisses.
 	///
 	/// THE BUTTON COUNT DOES NOT DECIDE THIS, which is the opposite of how it first read. Every

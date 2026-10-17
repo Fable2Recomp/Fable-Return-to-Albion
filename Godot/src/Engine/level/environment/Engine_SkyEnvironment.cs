@@ -6,6 +6,14 @@ namespace Refii.Level;
 
 public static class Engine_SkyEnvironment
 {
+    private static readonly StringName BetaMieName = "beta_mie";
+    private static readonly StringName BetaRayleighName = "beta_rayleigh";
+    private static readonly StringName HasDomeName = "has_dome";
+    private static readonly StringName HorizonDistanceName = "horizon_distance";
+    private static readonly StringName SunEngineName = "sun_engine";
+    private static readonly StringName WLightName = "w_light";
+    private static readonly StringName WSunName = "w_sun";
+
     public const string ShaderPath = "res://src/Engine/level/environment/sky.gdshader";
 
     /// <summary>
@@ -91,7 +99,13 @@ public static class Engine_SkyEnvironment
 
         var environment = new Godot.Environment
         {
-            BackgroundMode = Godot.Environment.BGMode.Sky,
+            // Under classic the title's own dome (Engine_ClassicSkyDome) is the sky and covers the
+            // whole view; Godot's would be drawn and radiance-filtered behind it for nothing. The
+            // material stays bound: the sky node still feeds it.
+            BackgroundMode = Refii.Models.Engine_ClassicMaterial.Active
+                ? Godot.Environment.BGMode.Color
+                : Godot.Environment.BGMode.Sky,
+            BackgroundColor = Colors.Black,
             Sky = new Sky { SkyMaterial = material },
             AmbientLightSource = Godot.Environment.AmbientSource.Sky,
         };
@@ -160,12 +174,12 @@ public static class Engine_SkyEnvironment
             material.SetShaderParameter(Param_in_scatter_lut, lut);
         }
 
-        material.SetShaderParameter("beta_rayleigh", new Vector3(
+        material.SetShaderParameter(BetaRayleighName, new Vector3(
             state.BetaRayleigh[0], state.BetaRayleigh[1], state.BetaRayleigh[2]));
-        material.SetShaderParameter("beta_mie", new Vector3(
+        material.SetShaderParameter(BetaMieName, new Vector3(
             state.BetaMie[0], state.BetaMie[1], state.BetaMie[2]));
-        material.SetShaderParameter("sun_engine", Engine_SkyFrame.ToDome(frame.SunDirection));
-        material.SetShaderParameter("horizon_distance",
+        material.SetShaderParameter(SunEngineName, Engine_SkyFrame.ToDome(frame.SunDirection));
+        material.SetShaderParameter(HorizonDistanceName,
             Engine_SkyAtmosphere.HorizonDistance);
     }
 
@@ -200,41 +214,41 @@ public static class Engine_SkyEnvironment
         // 15 Hz that held the render thread at ~50 ms a frame. The table is updated in place.
         if (!ReferenceEquals(lut, _publishedLut))
         {
-            RenderingServer.GlobalShaderParameterSet("atmos_inscatter", lut);
+            RenderingServer.GlobalShaderParameterSet(AtmosInscatterName, lut);
             _publishedLut = lut;
         }
 
         // The sum, because the sum is what the guest's LUT baker exponentiates — it loads both
         // registers of the atmospheric constant block and adds them per channel before the exp.
-        RenderingServer.GlobalShaderParameterSet("atmos_beta", new Vector3(
+        RenderingServer.GlobalShaderParameterSet(AtmosBetaName, new Vector3(
             state.BetaRayleigh[0] + state.BetaMie[0],
             state.BetaRayleigh[1] + state.BetaMie[1],
             state.BetaRayleigh[2] + state.BetaMie[2]));
 
         // The same axes and the same X flip `ApplyDomeUniforms` sends the dome, because the fog
         // samples the dome's table and has to agree with it about where the sun is.
-        RenderingServer.GlobalShaderParameterSet("atmos_sun",
+        RenderingServer.GlobalShaderParameterSet(AtmosSunName,
             Engine_SkyFrame.ToDome(frame.SunDirection));
 
         // Off the STATE, which has already resolved it against the guest's default of white —
         // reading `theme.FogColour` here instead would let SkyTheme's own blue-grey stand-in
         // through on a theme that states no colour.
-        RenderingServer.GlobalShaderParameterSet("atmos_close_fog", new Vector3(
+        RenderingServer.GlobalShaderParameterSet(AtmosCloseFogName, new Vector3(
             state.FogCloseColour[0], state.FogCloseColour[1], state.FogCloseColour[2]));
 
-        RenderingServer.GlobalShaderParameterSet("atmos_range", new Vector4(
+        RenderingServer.GlobalShaderParameterSet(AtmosRangeName, new Vector4(
             state.ScatteringMisc[0],
             Engine_SkyAtmosphere.MaxFogDistance,
             state.ScatteringMisc[2],
             0f));
 
-        RenderingServer.GlobalShaderParameterSet("atmos_curve", new Vector3(
+        RenderingServer.GlobalShaderParameterSet(AtmosCurveName, new Vector3(
             state.FogOpticalDepthAtFar, state.FogRecipFarRange, state.FogExponent));
 
-        RenderingServer.GlobalShaderParameterSet("atmos_factors", new Vector2(
+        RenderingServer.GlobalShaderParameterSet(AtmosFactorsName, new Vector2(
             Engine_SkyAtmosphere.FogBlendFactor, Engine_SkyAtmosphere.FogColourFactor));
 
-        RenderingServer.GlobalShaderParameterSet("atmos_fog_on", state.HasFog);
+        RenderingServer.GlobalShaderParameterSet(AtmosFogOnName, state.HasFog);
 
         if (report)
         {
@@ -335,7 +349,7 @@ public static class Engine_SkyEnvironment
         ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
     {
         ApplyDomeUniforms(material, frame, state, lut);
-        material.SetShaderParameter("has_dome", true);
+        material.SetShaderParameter(HasDomeName, true);
 
         Vector3 sun = Engine_SkyFrame.ToGodot(frame.SunDirection);
         if (sun.LengthSquared() > 1e-8f)
@@ -344,8 +358,8 @@ public static class Engine_SkyEnvironment
         }
 
         float sunUp = Math.Clamp(sun.Y * 3f, 0f, 1f);
-        material.SetShaderParameter("w_light", new Vector4(sun.X, sun.Y, sun.Z, 0f));
-        material.SetShaderParameter("w_sun", new Vector4(
+        material.SetShaderParameter(WLightName, new Vector4(sun.X, sun.Y, sun.Z, 0f));
+        material.SetShaderParameter(WSunName, new Vector4(
             1f, 0.55f + (0.42f * sunUp), 0.30f + (0.60f * sunUp), sun.Y));
     }
 
@@ -398,4 +412,14 @@ public static class Engine_SkyEnvironment
 
     private static Vector4 ToVector4(float[] values, float w) =>
         new(values[0], values[1], values[2], w);
+
+    // Made once: a string literal converts to a new StringName on every call.
+    private static readonly StringName AtmosInscatterName = "atmos_inscatter";
+    private static readonly StringName AtmosBetaName = "atmos_beta";
+    private static readonly StringName AtmosSunName = "atmos_sun";
+    private static readonly StringName AtmosCloseFogName = "atmos_close_fog";
+    private static readonly StringName AtmosRangeName = "atmos_range";
+    private static readonly StringName AtmosCurveName = "atmos_curve";
+    private static readonly StringName AtmosFactorsName = "atmos_factors";
+    private static readonly StringName AtmosFogOnName = "atmos_fog_on";
 }

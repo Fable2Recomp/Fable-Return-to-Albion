@@ -352,4 +352,207 @@ public static class Engine_GdbSaveMap
         ++stats.Entities;
         return resume;
     }
+
+    /// <summary>
+    /// Parses the complete <see cref="GdbSaveDocument"/> including all layers
+    /// (<c>AlwaysOn</c>, <c>InitiallyOn</c>, and <c>InitiallyOff</c>) and all entity entries.
+    /// Used by the 3D Level Editor and <c>SaveMapCompositor</c>.
+    /// </summary>
+    public static GdbSaveDocument ParseDocument(byte[]? saveBytes) =>
+        ParseDocument(saveBytes, out _);
+
+    public static GdbSaveDocument ParseDocument(byte[]? saveBytes, out SaveLayerStats stats)
+    {
+        stats = new SaveLayerStats();
+        var doc = new GdbSaveDocument();
+        if (saveBytes is null || saveBytes.Length == 0)
+        {
+            return doc;
+        }
+
+        string xml = Encoding.UTF8.GetString(saveBytes);
+        GdbSaveLayer? currentLayer = null;
+
+        int cursor = 0;
+        while (true)
+        {
+            int open = xml.IndexOf('<', cursor);
+            if (open < 0 || open + 1 >= xml.Length)
+            {
+                break;
+            }
+
+            int close = xml.IndexOf('>', open + 1);
+            if (close < 0)
+            {
+                break;
+            }
+
+            if (xml[open + 1] == '/')
+            {
+                if (currentLayer is not null &&
+                    currentLayer.LayerTag.Length != 0 &&
+                    string.CompareOrdinal(
+                        xml, open + 2, currentLayer.LayerTag, 0, currentLayer.LayerTag.Length) == 0)
+                {
+                    currentLayer = null;
+                }
+
+                cursor = close + 1;
+                continue;
+            }
+
+            if (xml[open + 1] is '?' or '!')
+            {
+                cursor = close + 1;
+                continue;
+            }
+
+            int nameEnd = open + 1;
+            while (nameEnd < close && !char.IsWhiteSpace(xml[nameEnd]) && xml[nameEnd] != '/')
+            {
+                ++nameEnd;
+            }
+
+            string tag = xml[(open + 1)..nameEnd];
+
+            if (tag.Equals("Save", StringComparison.Ordinal))
+            {
+                string ver = ReadAttribute(xml, nameEnd, close, "version=\"");
+                if (ver.Length != 0)
+                {
+                    doc.SaveVersion = ver;
+                }
+                cursor = close + 1;
+                continue;
+            }
+
+            if (tag.Equals("Level", StringComparison.Ordinal))
+            {
+                string lvlName = ReadAttribute(xml, nameEnd, close, "name=\"");
+                if (lvlName.Length != 0)
+                {
+                    doc.LevelName = lvlName;
+                }
+                string lvlVer = ReadAttribute(xml, nameEnd, close, "version=\"");
+                if (lvlVer.Length != 0)
+                {
+                    doc.LevelVersion = lvlVer;
+                }
+                cursor = close + 1;
+                continue;
+            }
+
+            if (tag.Equals("Entity", StringComparison.Ordinal))
+            {
+                cursor = ReadDocumentEntity(xml, open, close, currentLayer, stats);
+                continue;
+            }
+
+            string loadValue = ReadAttribute(xml, nameEnd, close, "load=\"");
+            if (loadValue.Length != 0)
+            {
+                string layerName = ReadAttribute(xml, nameEnd, close, "name=\"");
+                GdbSaveLoadState loadState = GdbSaveLoadStateExtensions.ParseLoadState(loadValue);
+
+                ++stats.Layers;
+                if (loadState.SpawnsByDefault())
+                {
+                    ++stats.LayersOn;
+                }
+                else
+                {
+                    ++stats.LayersOff;
+                }
+
+                var layer = new GdbSaveLayer(tag, layerName, loadState);
+                doc.Layers.Add(layer);
+
+                if (xml[close - 1] != '/')
+                {
+                    currentLayer = layer;
+                }
+            }
+
+            cursor = close + 1;
+        }
+
+        doc.RebuildIndices();
+        return doc;
+    }
+
+    private static string ReadAttribute(string xml, int start, int close, string attrPrefix)
+    {
+        int at = xml.IndexOf(attrPrefix, start, StringComparison.Ordinal);
+        if (at < 0 || at > close)
+        {
+            return string.Empty;
+        }
+
+        at += attrPrefix.Length;
+        int end = xml.IndexOf('"', at);
+        return end < 0 || end > close ? string.Empty : xml[at..end];
+    }
+
+    private static int ReadDocumentEntity(
+        string xml,
+        int open,
+        int close,
+        GdbSaveLayer? currentLayer,
+        SaveLayerStats stats)
+    {
+        int end = xml.IndexOf("</Entity>", close, StringComparison.Ordinal);
+        int resume = end < 0 ? close + 1 : end + "</Entity>".Length;
+
+        if (currentLayer is null)
+        {
+            ++stats.Unlayered;
+            return resume;
+        }
+
+        string name = ReadAttribute(xml, open, close, "name=\"");
+        if (name.Length == 0 || end < 0)
+        {
+            return resume;
+        }
+
+        int hashStart = xml.IndexOf("0x", close, StringComparison.Ordinal);
+        if (hashStart < 0 || hashStart > end)
+        {
+            return resume;
+        }
+
+        uint hash = 0;
+        for (int i = hashStart + 2; i < end; i++)
+        {
+            char c = xml[i];
+            int digit;
+            if (c is >= '0' and <= '9') digit = c - '0';
+            else if (c is >= 'A' and <= 'F') digit = c - 'A' + 10;
+            else if (c is >= 'a' and <= 'f') digit = c - 'a' + 10;
+            else continue;
+
+            hash = unchecked((hash << 4) | (uint)digit);
+        }
+
+        var entry = new GdbSaveEntityEntry(
+            hash,
+            name,
+            currentLayer.LayerTag,
+            currentLayer.LayerName,
+            currentLayer.LayerHash,
+            currentLayer.LoadState);
+
+        currentLayer.Entities.Add(entry);
+        if (currentLayer.SpawnsByDefault)
+        {
+            ++stats.Entities;
+        }
+        else
+        {
+            ++stats.Gated;
+        }
+
+        return resume;
+    }
 }

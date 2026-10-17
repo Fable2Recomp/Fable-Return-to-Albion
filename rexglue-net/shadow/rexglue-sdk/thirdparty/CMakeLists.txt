@@ -380,23 +380,104 @@ endif()
 if(REXGLUE_ENABLE_TRACY)
     set(TRACY_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/tracy)
     set(TRACY_PUBLIC_DIR ${TRACY_ROOT}/public)
+    set(REFII_TRACY_INGAME_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tracy-ingame)
 
     find_package(Threads REQUIRED)
 
-    add_library(TracyClient SHARED ${TRACY_PUBLIC_DIR}/TracyClient.cpp)
+    # THE GAME PROFILES ITSELF. Tracy 0.13.1 is pinned and runs whole inside this library: the
+    # client, and the analysis Worker the profiler GUI would normally host, connected by the
+    # in-process transport that replaces TracySocket (shadowed). No socket, no port, nothing
+    # leaves the process; the dev menu reads captures through refii_tracy_capture.h.
+    #
+    # The Worker's three downloaded dependencies are replaced here: zstd (saving a .tracy file,
+    # and the Worker's own compression) from the copy the shader pipeline already carries;
+    # capstone, vendored (disassembling the code the client transfers, so a capture can show
+    # the instructions around a hot spot or a crash); and PPQSort, a parallel sort that
+    # tracy-ingame/shim forwards to Tracy's own pdqsort.
+
+    # zstd 1.5.7: the tree's one copy, compiled here as portable C (no x86 Huffman assembly).
+    # The files are in the repo whether or not the shader pipeline is built.
+    set(REFII_ZSTD_DIR ${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/zstd/lib)
+    if(NOT EXISTS ${REFII_ZSTD_DIR}/zstd.h)
+        message(FATAL_ERROR "Tracy's in-game Worker needs zstd at ${REFII_ZSTD_DIR}")
+    endif()
+    file(GLOB REFII_ZSTD_SOURCES
+        ${REFII_ZSTD_DIR}/common/*.c
+        ${REFII_ZSTD_DIR}/compress/*.c
+        ${REFII_ZSTD_DIR}/decompress/*.c
+        ${REFII_ZSTD_DIR}/dictBuilder/*.c)
+    add_library(refii_tracy_zstd STATIC ${REFII_ZSTD_SOURCES})
+    target_include_directories(refii_tracy_zstd PUBLIC ${REFII_ZSTD_DIR})
+    target_compile_definitions(refii_tracy_zstd PRIVATE ZSTD_DISABLE_ASM ZSTD_LEGACY_SUPPORT=0)
+    set_target_properties(refii_tracy_zstd PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_compile_options(refii_tracy_zstd PRIVATE -w)
+
+    # capstone 6.0.0-Alpha5 with the options Tracy's own build uses: x86 (Intel syntax) and
+    # AArch64, full tables.
+    set(REFII_CAPSTONE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/capstone)
+    add_library(refii_tracy_capstone STATIC
+        ${REFII_CAPSTONE_DIR}/cs.c
+        ${REFII_CAPSTONE_DIR}/Mapping.c
+        ${REFII_CAPSTONE_DIR}/MCInst.c
+        ${REFII_CAPSTONE_DIR}/MCInstrDesc.c
+        ${REFII_CAPSTONE_DIR}/MCInstPrinter.c
+        ${REFII_CAPSTONE_DIR}/MCRegisterInfo.c
+        ${REFII_CAPSTONE_DIR}/SStream.c
+        ${REFII_CAPSTONE_DIR}/utils.c
+        ${REFII_CAPSTONE_DIR}/arch/X86/X86Disassembler.c
+        ${REFII_CAPSTONE_DIR}/arch/X86/X86DisassemblerDecoder.c
+        ${REFII_CAPSTONE_DIR}/arch/X86/X86IntelInstPrinter.c
+        ${REFII_CAPSTONE_DIR}/arch/X86/X86InstPrinterCommon.c
+        ${REFII_CAPSTONE_DIR}/arch/X86/X86Mapping.c
+        ${REFII_CAPSTONE_DIR}/arch/X86/X86Module.c
+        ${REFII_CAPSTONE_DIR}/arch/AArch64/AArch64BaseInfo.c
+        ${REFII_CAPSTONE_DIR}/arch/AArch64/AArch64Disassembler.c
+        ${REFII_CAPSTONE_DIR}/arch/AArch64/AArch64DisassemblerExtension.c
+        ${REFII_CAPSTONE_DIR}/arch/AArch64/AArch64InstPrinter.c
+        ${REFII_CAPSTONE_DIR}/arch/AArch64/AArch64Mapping.c
+        ${REFII_CAPSTONE_DIR}/arch/AArch64/AArch64Module.c)
+    target_include_directories(refii_tracy_capstone
+        PRIVATE ${REFII_CAPSTONE_DIR} ${REFII_CAPSTONE_DIR}/include
+        PUBLIC ${REFII_CAPSTONE_DIR}/include/capstone)
+    target_compile_definitions(refii_tracy_capstone PRIVATE
+        CAPSTONE_HAS_X86 CAPSTONE_HAS_AARCH64 CAPSTONE_X86_ATT_DISABLE CAPSTONE_USE_SYS_DYN_MEM)
+    set_target_properties(refii_tracy_capstone PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_compile_options(refii_tracy_capstone PRIVATE -w)
+
+    set(REFII_TRACY_WORKER_SOURCES
+        ${TRACY_PUBLIC_DIR}/common/tracy_lz4hc.cpp
+        ${TRACY_ROOT}/server/TracyMemory.cpp
+        ${TRACY_ROOT}/server/TracyMmap.cpp
+        ${TRACY_ROOT}/server/TracyPrint.cpp
+        ${TRACY_ROOT}/server/TracySysUtil.cpp
+        ${TRACY_ROOT}/server/TracyTaskDispatch.cpp
+        ${TRACY_ROOT}/server/TracyTextureCompression.cpp
+        ${TRACY_ROOT}/server/TracyThreadCompress.cpp
+        ${TRACY_ROOT}/server/TracyWorker.cpp
+        # The stack-frame tables wherever the client's unity build does not compile them.
+        ${REFII_TRACY_INGAME_DIR}/refii_tracy_stackframes.cpp)
+
+    add_library(TracyClient SHARED
+        ${TRACY_PUBLIC_DIR}/TracyClient.cpp
+        ${REFII_TRACY_WORKER_SOURCES}
+        ${REFII_TRACY_INGAME_DIR}/refii_tracy_capture.cpp
+        ${REFII_TRACY_INGAME_DIR}/refii_tracy_query.cpp)
     add_library(Tracy::TracyClient ALIAS TracyClient)
 
-    target_compile_features(TracyClient PUBLIC cxx_std_11)
+    target_compile_features(TracyClient PUBLIC cxx_std_11 PRIVATE cxx_std_20)
 
     target_include_directories(TracyClient SYSTEM PUBLIC
         $<BUILD_INTERFACE:${TRACY_PUBLIC_DIR}>
+        $<BUILD_INTERFACE:${REFII_TRACY_INGAME_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/tracy>
     )
+    target_include_directories(TracyClient PRIVATE ${TRACY_ROOT} ${TRACY_ROOT}/server ${REFII_TRACY_INGAME_DIR}/shim)
 
     target_link_libraries(TracyClient PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+    target_link_libraries(TracyClient PRIVATE refii_tracy_zstd refii_tracy_capstone)
 
     if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_link_libraries(TracyClient PUBLIC ws2_32 dbghelp)
+        target_link_libraries(TracyClient PUBLIC dbghelp)
     endif()
 
     target_compile_definitions(TracyClient
@@ -409,6 +490,14 @@ if(REXGLUE_ENABLE_TRACY)
             TRACY_DELAYED_INIT
             TRACY_MANUAL_LIFETIME
             TRACY_FIBERS
+            # No broadcast: there is no network to announce on. No crash handler: the runtime
+            # owns SIGSEGV and the Windows exception filters (guest memory access and
+            # refii_crash.log), and Tracy's would replace them and freeze every thread,
+            # the in-process Worker's included. A crash capture is saved from our own handler.
+            TRACY_NO_BROADCAST
+            TRACY_NO_CRASH_HANDLER
+            # Sampling and context-switch tracing start with a capture, not with the client.
+            TRACY_SAMPLING_PROFILER_MANUAL_START
     )
 
     target_compile_options(TracyClient PRIVATE -w)

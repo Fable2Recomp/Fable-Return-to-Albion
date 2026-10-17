@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b5hfftrdmmilo"
+path="res://.godot/imported/classic_impostor_mips.glsl-1b904985454b60a3a71c553e3823bb57.res"
+
+[deps]
+
+source_file="res://src/Engine/material/classic_impostor_mips.glsl"
+dest_files=["res://.godot/imported/classic_impostor_mips.glsl-1b904985454b60a3a71c553e3823bb57.res"]
+
+[params]
+

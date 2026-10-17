@@ -226,7 +226,7 @@ public static class Engine_TexLibrary
 			enhanced = true;
 		}
 
-		ImageTexture? texture = image is null ? null : ImageTexture.CreateFromImage(image);
+		ImageTexture? texture = image is null || image.IsEmpty() ? null : ImageTexture.CreateFromImage(image);
 
 		lock (Gate)
 		{
@@ -241,6 +241,7 @@ public static class Engine_TexLibrary
 			}
 
 			FailedUntil.Remove(memKey);
+			Held(texture, image);
 			Live[memKey] = new Entry
 			{
 				Texture = texture,
@@ -386,6 +387,20 @@ public static class Engine_TexLibrary
 			Live.Clear();
 			LiveCubes.Clear();
 			LiveOrm.Clear();
+		}
+
+		Refii.Core.Engine_TracedMemory.FreeAll(TracedPool);
+	}
+
+	/// <summary>The in-game Tracy capture's name for what this cache holds strongly.</summary>
+	private const string TracedPool = "texture cache";
+
+	/// <summary>A texture the cache now holds, for Tracy's memory view: its RID and decoded size.</summary>
+	private static void Held(ImageTexture? texture, Image? image)
+	{
+		if (texture is not null && image is not null)
+		{
+			Refii.Core.Engine_TracedMemory.Alloc(TracedPool, texture.GetRid().Id, (ulong)image.GetDataSize());
 		}
 	}
 
@@ -744,6 +759,8 @@ public static class Engine_TexLibrary
 		"_orm.tex.png",
 		"_orm.tex",
 		"_orm",
+		".tex.orm",
+		".orm",
 	};
 
 	/// <summary>
@@ -868,11 +885,16 @@ public static class Engine_TexLibrary
 				bool height = CheckHasHeight(img);
 				img.GenerateMipmaps();
 				Engine_TexImage.CompressBlocks(img, isNormalMap: false);
+				if (img.IsEmpty())
+				{
+					return false;
+				}
 				texture = ImageTexture.CreateFromImage(img);
 				hasHeight = height;
 
 				lock (Gate)
 				{
+					Held(texture, img);
 					LiveOrm[cacheKey] = (texture, height);
 				}
 
@@ -1000,7 +1022,7 @@ public static class Engine_TexLibrary
 		Image? packed = BuildOrmImage(
 			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
 			read, out bool packedHeight);
-		ImageTexture? built = packed is null ? null : ImageTexture.CreateFromImage(packed);
+		ImageTexture? built = packed is null || packed.IsEmpty() ? null : ImageTexture.CreateFromImage(packed);
 
 		lock (Gate)
 		{
@@ -1010,6 +1032,7 @@ public static class Engine_TexLibrary
 				return raced.Texture;
 			}
 
+			Held(built, packed);
 			LiveOrm[memKey] = (built, packedHeight);
 		}
 
@@ -1060,7 +1083,7 @@ public static class Engine_TexLibrary
 		packed.GenerateMipmaps();
 		CompressOrReport(packed, isNormalMap: false, "orm");
 		hasHeight = packedHeight;
-		return ImageTexture.CreateFromImage(packed);
+		return packed.IsEmpty() ? null : ImageTexture.CreateFromImage(packed);
 	}
 
 	/// <summary>
@@ -1375,7 +1398,7 @@ public static class Engine_TexLibrary
 				InFlight.Remove(job.MemKey);
 			}
 
-			if (produced is null)
+			if (produced is null || produced.IsEmpty())
 			{
 				// Settled, so the next material naming this texture does not queue it again. A
 				// declined texture would otherwise be a permanent source of work that never
@@ -1398,7 +1421,7 @@ public static class Engine_TexLibrary
 			Completions.Enqueue(() =>
 			{
 				ImageTexture? target = entry.Target;
-				if (target is null || !GodotObject.IsInstanceValid(target))
+				if (target is null || !GodotObject.IsInstanceValid(target) || image.IsEmpty())
 				{
 					// The UI texture was freed by Godot between the request and the apply. Not a
 					// fault: the work is in the cache, so if it is loaded again the re-request
@@ -1410,6 +1433,7 @@ public static class Engine_TexLibrary
 				// holding this Texture2D is holding THIS object, so replacing its image updates
 				// all of them at once. SetImage rather than Update because the size changes.
 				target.SetImage(image);
+				Refii.Core.Engine_TracedMemory.Resize(TracedPool, target.GetRid().Id, (ulong)image.GetDataSize());
 				lock (Gate)
 				{
 					entry.State = kind == JobKind.Enhance
@@ -1564,4 +1588,31 @@ public static class Engine_TexLibrary
 
 	private static string MemKey(string path, TexSemantic semantic) =>
 		$"{path} {(int)semantic}";
+
+
+	/// <summary>
+	/// The title's translucency marker for a texture: header flag 0x80 (the flags dword the
+	/// header parser `sub_82B8BA38` reads into a1[3]; `sub_82AA04A0` turns it into the
+	/// texture set's +154 byte, which routes the draw to the blended bucket). Cached per path.
+	/// </summary>
+	public static bool IsTranslucent(string virtualPath, Func<string, byte[]?> read) =>
+		(HeaderFlags(virtualPath, read) & 0x80) != 0;
+
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> FlagsByPath = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// A texture header's flags dword (`sub_82B8BA38`'s a1[3]), whose alpha bits the title turns
+	/// into the texture set's draw bytes (`sub_82AA04A0`): +152 alpha test (0x20), +153 cutout
+	/// only ((flags &amp; 0xA0) == 0x20, ALPHAREF 128 instead of 254), +154 translucent (0x80).
+	/// 0 when the texture does not resolve. Cached per path.
+	/// </summary>
+	public static int HeaderFlags(string virtualPath, Func<string, byte[]?> read)
+	{
+		if (string.IsNullOrWhiteSpace(virtualPath))
+		{
+			return 0;
+		}
+		return FlagsByPath.GetOrAdd(virtualPath, path =>
+			read(path) is { } bytes && TexHeader.TryParse(bytes, out TexHeader header, out _) ? header.Flags : 0);
+	}
 }

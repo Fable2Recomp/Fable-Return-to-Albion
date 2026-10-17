@@ -118,6 +118,14 @@ public static class Engine_ShadowProxy
 	});
 
 	/// <summary>
+	/// Eagerly initializes the caster material on the main thread to prevent worker thread GD.Load deadlocks.
+	/// </summary>
+	public static void WarmShader()
+	{
+		_ = CasterMaterial.Value;
+	}
+
+	/// <summary>
 	/// What the merged surface is drawn with: two-sided, as the bodies' own materials are, and
 	/// INVISIBLE OUTSIDE THE SHADOW PASS (`shadow_caster.gdshader` discards there), so a cast-only
 	/// mesh is never seen even if something switches its cast setting.
@@ -218,6 +226,32 @@ public static class Engine_ShadowProxy
 	{
 		if (!GodotObject.IsInstanceValid(body) || !body.IsInsideTree())
 		{
+			return;
+		}
+
+		// Under classic Godot's lights cast nothing: the body casts into the guest's cascades
+		// through its classic caster, which shares its mesh, skeleton and surface overrides.
+		if (Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			// Recorded as the proxy is, so SyncHidden re-registers only when the collapse changed.
+			BuiltFor.GetOrCreateValue(body).Value = (Engine_HiddenClusters.CollapsedMask(body), Enabled);
+			Refii.Models.Engine_ClassicCasters.Register(body, dynamic: true);
+			return;
+		}
+
+		// The guest states this renderable casts nothing (flag 0x40): no proxy, and the reach
+		// policy never hands it a shadow.
+		if (Refii.Models.Engine_ClassicCasters.NeverCasts(body))
+		{
+			if (ProxyOf(body) is { } unwanted)
+			{
+				Engine_ShadowSkeletons.Forget(body);
+				Proxies.Remove(body);
+				unwanted.QueueFree();
+				Proxied.Remove(body.GetInstanceId());
+			}
+			body.SetMeta(StateMeta, "never");
+			Refii.Lighting.Engine_ShadowReach.Exclude(body);
 			return;
 		}
 
@@ -546,7 +580,7 @@ public static class Engine_ShadowProxy
 	/// full index list where it has none; keyed by the largest edge length among them. Null when
 	/// no source has any.
 	/// </summary>
-	private static Godot.Collections.Dictionary? MergedLods(List<(int At, int[] Full, List<(float Edge, int[] Indices)> Lods)> sources)
+	internal static Godot.Collections.Dictionary? MergedLods(List<(int At, int[] Full, List<(float Edge, int[] Indices)> Lods)> sources)
 	{
 		int depth = 0;
 		foreach ((_, _, List<(float Edge, int[] Indices)> lods) in sources)

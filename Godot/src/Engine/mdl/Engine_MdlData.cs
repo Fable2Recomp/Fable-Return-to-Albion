@@ -71,6 +71,13 @@ public sealed class MdlMaterial
     public float[] MaterialFloats { get; set; } = Array.Empty<float>();
 
     /// <summary>
+    /// The five floats of the scalar block between the specular range and the self-illumination
+    /// scale, in file order: the guest's RC+88..+104, which it packs as c24.w and c25.xyz of
+    /// its standard material block. Shared by every texture set of the material.
+    /// </summary>
+    public float[] BlockFloats { get; set; } = Array.Empty<float>();
+
+    /// <summary>
     /// The specular exponent this material uses where its specular map's alpha is 0.
     /// </summary>
     /// <remarks>
@@ -108,6 +115,13 @@ public sealed class MdlMaterial
 public sealed class MdlMesh
 {
     public string Name { get; set; } = string.Empty;
+
+    /// <summary>
+    /// A fur material record (type 2), as 17 values in file order, or null: +0 vec3, +12 f32,
+    /// +16 vec3, +28 discarded, +32 fur length, +36 local occlusion, +40 vec3, +52 vec3, +64 strand
+    /// alpha (`sub_82B29168`). Such a mesh has no name and no other material.
+    /// </summary>
+    public float[]? Fur { get; set; }
 
     public List<MdlMaterial> Materials { get; } = new();
 }
@@ -263,6 +277,12 @@ public sealed class MdlInfo
     /// <summary>Wind skew speed; 1.0 across every shipped mesh that has one.</summary>
     public float WindSpeed { get; set; }
 
+    /// <summary>The repeated family's normal gradient at the mesh's top (.mdl +90).</summary>
+    public float NormalGradientTop { get; set; }
+
+    /// <summary>The repeated family's normal gradient at the mesh's bottom (.mdl +94).</summary>
+    public float NormalGradientBottom { get; set; }
+
     /// <summary>True when the header says this mesh bends in wind at all.</summary>
     public bool SwaysInWind => MovementMode is 1 or 2;
 
@@ -297,7 +317,8 @@ public sealed class MdlInfo
 
     public List<MdlClothBlock> ClothBlocks { get; } = new();
 
-    public List<MdlMorphTarget> MorphTargets { get; } = new();
+    /// <summary>The skinned primitives that carry fur, one block each.</summary>
+    public List<MdlFurBlock> FurBlocks { get; } = new();
 }
 
 /// <summary>
@@ -409,14 +430,24 @@ public sealed class MdlClothBlock
     public uint BoneVertexCount { get; set; }
 }
 
-public sealed class MdlMorphTarget
+/// <summary>
+/// A skinned primitive's fur block, the record's last field (`sub_82B26460` 0x82B27474 ->
+/// `sub_82B8FD28`): the primitive's own material, the FUR material (the nameless type-2 record in
+/// the material list, which no primitive names as its material), and one 20-byte record
+/// {u32, 4 x f32} per vertex of the primitive. The shells extrude this primitive.
+/// </summary>
+public sealed class MdlFurBlock
 {
+    /// <summary>The primitive (skinned record) it belongs to.</summary>
     public uint RecordIndex { get; set; }
 
-    public uint Header0 { get; set; }
+    /// <summary>furdata+0: the primitive's skin material index.</summary>
+    public uint BaseMaterial { get; set; }
 
-    public uint Header1 { get; set; }
+    /// <summary>furdata+0x10: the fur material index.</summary>
+    public uint FurMaterial { get; set; }
 
+    /// <summary>furdata+0x18: per-vertex records, the primitive's vertex count.</summary>
     public uint Count { get; set; }
 
     public int DataOffset { get; set; }
@@ -827,6 +858,13 @@ public static class Engine_MdlData
         info.SphereCollisions = data[Block + 3] != 0;
         info.WindAmplitude = BigEndianSingle(data, Block + 4);
         info.WindSpeed = BigEndianSingle(data, Block + 8);
+        // The stream's second float pair (+90, +94; `sub_82B8F568` -> resource +120, +124): the
+        // normal gradient's values at the top and the bottom of the mesh (`sub_82233570`).
+        if (data.Length >= Block + 22)
+        {
+            info.NormalGradientTop = BigEndianSingle(data, Block + 14);
+            info.NormalGradientBottom = BigEndianSingle(data, Block + 18);
+        }
     }
 
     /// <summary>The file is big endian, as everything shipped for this console is.</summary>

@@ -16,6 +16,8 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 
 	public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
 
+	public static byte[]? ReadBytes(string virtualPath) => _resolver?.Invoke(virtualPath);
+
 	private static Engine_BnkTextureLoader? _registered;
 
 	/// <summary>
@@ -87,7 +89,7 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 		// FREES what it caches, so the texture must not also be pinned in the library's live map.
 		Image? image = Engine_TexLibrary.Decode(
 			path[PathPrefix.Length..], TexSemantic.Ui, read, out _);
-		if (image is null)
+		if (image is null || image.IsEmpty())
 		{
 			// The library has already said why, in its own warning.
 			return Variant.CreateFrom((int)Error.FileNotFound);

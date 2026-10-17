@@ -89,7 +89,7 @@ public sealed class Engine_HudArt
     private static Texture2D? LoadImage(string path)
     {
         var image = new Image();
-        return image.Load(path) == Error.Ok ? ImageTexture.CreateFromImage(image) : null;
+        return image.Load(path) == Error.Ok && !image.IsEmpty() ? ImageTexture.CreateFromImage(image) : null;
     }
 
     /// <summary>

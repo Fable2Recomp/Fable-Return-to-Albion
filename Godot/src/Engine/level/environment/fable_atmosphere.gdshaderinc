@@ -91,9 +91,13 @@ global uniform vec2 atmos_factors;
 ///
 /// `view_vertex` is the fragment's VIEW-space position, so its length is already the guest's
 /// radial distance and no world transform is needed to recover it.
-bool fable_atmosphere_terms(
+///
+/// `close_fog` false is the TREE line: the tree vertex shader (blob 0536 1379-1411) takes the
+/// in-scatter table times the additive factor and never reads the close-fog colour.
+bool fable_atmosphere_terms_for(
 		vec3 view_vertex,
 		mat4 inv_view,
+		bool close_fog_blend,
 		out vec3 transmittance,
 		out vec3 fog_colour) {
 	transmittance = vec3(1.0);
@@ -127,8 +131,13 @@ bool fable_atmosphere_terms(
 	// against the FAR CONTROL POINT, which is usually nearer than that, so it legitimately exceeds
 	// one and the fog keeps thickening beyond the far distance. Clamping it to one instead caps
 	// the fog at whatever the theme happened to state as its far density.
-	float t = min(d, atmos_range.y) * atmos_curve.y;
-	float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z);
+	//
+	// HALF A KNOT LATE, as the guest reads its table: each texel holds the curve at its LEFT edge
+	// (i x 7.8125, Engine_ClassicAtmosphere) and the fetch filters about texel CENTRES, so the
+	// guest's fog at distance d is the curve at d - 3.906 — exactly clear for the first 3.9 units
+	// past FoggingStart, where the unshifted curve already put up to a fifth too much depth.
+	const float knot = 7.8125;
+	float dl = max(d - (0.5 * knot), 0.0);
 
 	// THE GUEST'S FIRST LUT KNOTS, reproduced because the look needs them. `sub_821FE040` bakes
 	// the curve at `i * 7.8125` units past FoggingStart (0x821FE21C..0x821FE234: the integer texel
@@ -137,14 +146,17 @@ bool fable_atmosphere_terms(
 	// itself climbs half of its first knot's depth within the first 0.7 units — drawn as stated it
 	// is a ring around the eye at FoggingStart, plain at night against an unfogged floor. Past a
 	// few knots the line and the curve agree and the curve is cheaper.
-	const float knot = 7.8125;
-	vec3 raw = exp(-atmos_beta * optical_depth);
-	if (d < knot * 4.0) {
+	vec3 raw;
+	if (dl < knot * 4.0) {
 		// Interpolated as the LUT is: in transmittance, between the knots either side.
-		float below = floor(d / knot) * knot;
+		float below = floor(dl / knot) * knot;
 		float depth_below = atmos_curve.x * pow(min(below, atmos_range.y) * atmos_curve.y, atmos_curve.z);
 		float depth_above = atmos_curve.x * pow(min(below + knot, atmos_range.y) * atmos_curve.y, atmos_curve.z);
-		raw = mix(exp(-atmos_beta * depth_below), exp(-atmos_beta * depth_above), (d - below) / knot);
+		raw = mix(exp(-atmos_beta * depth_below), exp(-atmos_beta * depth_above), (dl - below) / knot);
+	} else {
+		float t = min(dl, atmos_range.y) * atmos_curve.y;
+		float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z);
+		raw = exp(-atmos_beta * optical_depth);
 	}
 
 	// Fx AND Fy FOLDED IN HERE, so that `transmittance` is the EFFECTIVE one and every caller —
@@ -157,8 +169,16 @@ bool fable_atmosphere_terms(
 	// so the surface's factor is `1 - Fx*(1-T)` and the added term carries Fy. Written this way the
 	// apply below is a plain lerp and no caller has to know the algebra.
 	transmittance = vec3(1.0) - (atmos_factors.x * fable_interior_fog * (vec3(1.0) - raw));
-	fog_colour = mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) * atmos_factors.y;
+	fog_colour = (close_fog_blend ? mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) : sky) * atmos_factors.y;
 	return true;
+}
+
+bool fable_atmosphere_terms(
+		vec3 view_vertex,
+		mat4 inv_view,
+		out vec3 transmittance,
+		out vec3 fog_colour) {
+	return fable_atmosphere_terms_for(view_vertex, inv_view, true, transmittance, fog_colour);
 }
 
 /// Applies those terms as the guest's `colour*T + (1-T)*C*alpha`.

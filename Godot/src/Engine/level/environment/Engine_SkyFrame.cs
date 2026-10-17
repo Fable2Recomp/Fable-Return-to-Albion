@@ -11,8 +11,9 @@ public sealed class SkyFrame
     /// Where the sun DISC is — the sky's vector, not the light's.
     /// </summary>
     /// <remarks>
-    /// This is what the atmosphere, the disc, the glare and the clouds want, because it is the
-    /// direction the guest hands to the sky object. It carries SunAxisXYRotationOffset and
+    /// This is what the atmosphere, the disc and the glare want, because it is the direction the
+    /// guest hands to the sky object. NOT the clouds: their pixel shader (0114) is lit by the
+    /// rig's main light, colour and direction together (Engine_ClassicFeed's cloud pump). It carries SunAxisXYRotationOffset and
     /// SunAxisZOffset, neither of which reaches the main light. For lighting a surface use
     /// <see cref="MainLightDirection"/>; the two genuinely disagree.
     /// </remarks>

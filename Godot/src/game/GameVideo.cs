@@ -730,11 +730,16 @@ public partial class GameVideo : Node
 		_chromaUImage!.SetData(chromaWidth, chromaHeight, false, Image.Format.R8, _u);
 		_chromaVImage!.SetData(chromaWidth, chromaHeight, false, Image.Format.R8, _v);
 
-		// Updated in place — a fresh texture per frame would churn three VRAM allocations
-		// at video rate.
-		_luma!.Update(_lumaImage);
-		_chromaU!.Update(_chromaUImage);
-		_chromaV!.Update(_chromaVImage);
+		if (_luma is null || _chromaU is null || _chromaV is null ||
+			_lumaImage is null || _chromaUImage is null || _chromaVImage is null ||
+			_lumaImage.IsEmpty() || _chromaUImage.IsEmpty() || _chromaVImage.IsEmpty())
+		{
+			return;
+		}
+
+		_luma.Update(_lumaImage);
+		_chromaU.Update(_chromaUImage);
+		_chromaV.Update(_chromaVImage);
 
 		// An embedded movie must not also paint the screen — the two share one material. A
 		// hosting element keeps it off unless the guest's live player states a fullscreen
@@ -792,6 +797,11 @@ public partial class GameVideo : Node
 
 	private void Allocate(Engine_BinkDecoder decoder)
 	{
+		if (decoder.Width <= 0 || decoder.Height <= 0)
+		{
+			return;
+		}
+
 		// Buffers sized exactly to their planes: Image.SetData requires the byte count to match
 		// the image's dimensions, and an over-sized chroma buffer is rejected silently.
 		int chromaWidth = (decoder.Width + 1) / 2;

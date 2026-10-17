@@ -48,13 +48,6 @@ public static class Engine_MdlMaterial
             return;
         }
 
-        // A TREE IS LIT AS A CANOPY, whether or not it moves. `treematerial`'s canopy permutation
-        // takes no `dot` against a normal at all; drawing it as a solid is what flattens it.
-        if (info.MovementMode == 2)
-        {
-            shader.SetShaderParameter("foliage", true);
-        }
-
         float authored = Mathf.Clamp(info.WindAmplitude, 0.0f, 0.5f);
         if (authored <= 0.0f)
         {
@@ -88,8 +81,8 @@ public static class Engine_MdlMaterial
                 shader.Shader = wind;
             }
         }
-        shader.SetShaderParameter("wind_speed", Mathf.Clamp(info.WindSpeed, 0.1f, 8.0f));
-        shader.SetShaderParameter("wind_direction", WindDirection);
+        shader.SetShaderParameter("wind_speed", info.WindSpeed);
+        Engine_SceneWind.NoteAmplitude(info.WindAmplitude);
     }
 
     public static void ApplyVegetation(
@@ -101,6 +94,30 @@ public static class Engine_MdlMaterial
         }
 
         shader.SetShaderParameter("premultiplied_alpha", true);
+
+        // THE FAMILY BYTE PICKS THE PAIR (Engine_ShaderFamily.Resolve), not the wind byte: kind 1
+        // draws `treematerial_trunk1` (Lambert, no specular), kind 4 the GRASS1 pair, which has
+        // neither a specular sampler nor the ambient normal-map darkening.
+        if (info.MeshKind == 1)
+        {
+            shader.SetShaderParameter("foliage", true);
+        }
+        else if (info.MeshKind == 4)
+        {
+            shader.SetShaderParameter("grass", true);
+            shader.SetShaderParameter("has_specular", false);
+
+            // VS c45 as the classic builds it (`sub_82233570`): a ramp in model height from the
+            // header's gradient at the bottom to the top over the file box's height range.
+            if ((info.NormalGradientTop > 0f || info.NormalGradientBottom > 0f) &&
+                info.FileBoundingBox.Length >= 6 && info.FileBoundingBox[5] != info.FileBoundingBox[2])
+            {
+                float z0 = info.FileBoundingBox[2], z1 = info.FileBoundingBox[5];
+                float slope = (info.NormalGradientTop - info.NormalGradientBottom) / (z1 - z0);
+                shader.SetShaderParameter("grass_normal_gradient",
+                    new Vector3(1f, slope, info.NormalGradientBottom - (z0 * slope)));
+            }
+        }
         if (authoredNormals)
         {
             shader.SetShaderParameter("foliage_normals", true);
@@ -152,6 +169,20 @@ public static class Engine_MdlMaterial
     }
 
     /// <summary>
+    /// Preloads and caches all shared shader resources on the main thread.
+    /// This prevents background prefetch worker threads from invoking GD.Load and waiting
+    /// on the main thread's MessageQueue while the main thread is busy with scene opening.
+    /// </summary>
+    public static void WarmShaders()
+    {
+        LoadShared(Engine_ShaderFamily.StandardPath);
+        LoadShared(Engine_ShaderFamily.StandardCulledPath);
+        LoadShared(Engine_ShaderFamily.StandardWindPath);
+        LoadShared(Engine_ShaderFamily.StandardTreePath);
+        LoadShared(Engine_ShaderFamily.TreeCanopyPath);
+    }
+
+    /// <summary>
     /// The one shader every surface shares, loaded once.
     ///
     /// LOCKED because a level change has two threads building materials at once, and `??=` is
@@ -168,17 +199,13 @@ public static class Engine_MdlMaterial
     /// </summary>
     private static Shader? SharedWind()
     {
-        lock (ShaderLock)
-        {
-            if (_shaders.TryGetValue(Engine_ShaderFamily.StandardWindPath, out Shader? cached))
-            {
-                return cached;
-            }
+        return LoadShared(Engine_ShaderFamily.StandardWindPath);
+    }
 
-            Shader? loaded = GD.Load<Shader>(Engine_ShaderFamily.StandardWindPath);
-            _shaders[Engine_ShaderFamily.StandardWindPath] = loaded;
-            return loaded;
-        }
+    /// <summary>The two-sided shader moved by the title's tree wind (fable_tree_sway.gdshaderinc).</summary>
+    private static Shader? SharedTree()
+    {
+        return LoadShared(Engine_ShaderFamily.StandardTreePath);
     }
 
     /// <summary>The standard shader with back faces culled, or the two-sided one when `cull_back_faces` is off.</summary>
@@ -189,17 +216,7 @@ public static class Engine_MdlMaterial
             return Shared();
         }
 
-        lock (ShaderLock)
-        {
-            if (_shaders.TryGetValue(Engine_ShaderFamily.StandardCulledPath, out Shader? cached))
-            {
-                return cached;
-            }
-
-            Shader? loaded = GD.Load<Shader>(Engine_ShaderFamily.StandardCulledPath);
-            _shaders[Engine_ShaderFamily.StandardCulledPath] = loaded;
-            return loaded;
-        }
+        return LoadShared(Engine_ShaderFamily.StandardCulledPath);
     }
 
     /// <summary>
@@ -213,16 +230,62 @@ public static class Engine_MdlMaterial
     /// </remarks>
     private static Shader? Shared(ShaderFamily family)
     {
-        string path = Engine_ShaderFamily.PathFor(family);
+        return LoadShared(Engine_ShaderFamily.PathFor(family));
+    }
 
+    /// <summary>
+    /// One shared shader per path. THE LOAD RUNS OUTSIDE THE LOCK: a shader resource load on a
+    /// worker can wait on the main thread, and the main thread building an entity reaches this
+    /// lock too — holding it across `GD.Load` deadlocked every run that built a level and its
+    /// entities at once (the level viewer hung after the build).
+    ///
+    /// BUT TWO WORKERS MAY NOT RACE ONE FIRST LOAD: both creating the managed wrapper of the
+    /// same new resource is a FATAL in the interop (`gchandle ... != p_old_gchandle`), which killed
+    /// the level viewer as the prefetch workers met the first translucent material together.
+    /// Workers serialise on <see cref="WorkerLoadLock"/>; the main thread never takes it, so the
+    /// deadlock above cannot come back through it.
+    /// </summary>
+    private static Shader? LoadShared(string path)
+    {
         lock (ShaderLock)
         {
             if (_shaders.TryGetValue(path, out Shader? cached))
             {
                 return cached;
             }
+        }
 
-            Shader? loaded = GD.Load<Shader>(path);
+        Shader? loaded;
+        if (Godot.OS.GetThreadCallerId() == Godot.OS.GetMainThreadId())
+        {
+            loaded = GD.Load<Shader>(path);
+        }
+        else
+        {
+            lock (WorkerLoadLock)
+            {
+                lock (ShaderLock)
+                {
+                    if (_shaders.TryGetValue(path, out Shader? first))
+                    {
+                        return first;
+                    }
+                }
+                loaded = GD.Load<Shader>(path);
+                lock (ShaderLock)
+                {
+                    _shaders.TryAdd(path, loaded);
+                    return _shaders[path];
+                }
+            }
+        }
+        lock (ShaderLock)
+        {
+            if (_shaders.TryGetValue(path, out Shader? raced))
+            {
+                return raced;
+            }
+
             _shaders[path] = loaded;
             return loaded;
         }
@@ -231,6 +294,9 @@ public static class Engine_MdlMaterial
     private static readonly Dictionary<string, Shader?> _shaders = new();
 
     private static readonly object ShaderLock = new();
+
+    private static readonly object WorkerLoadLock = new();
+
 
     private static int _built;
     private static int _withNormal;
@@ -270,6 +336,13 @@ public static class Engine_MdlMaterial
             $"{Volatile.Read(ref _withOrm):N0} orm; " +
             $"shared {Interlocked.Read(ref SharedHits):N0} hits / " +
             $"{Interlocked.Read(ref SharedBuilt):N0} distinct");
+        // The classic path returns before the counters above, so under the classic model they
+        // read zero; its own tally is the one that says what reached the screen.
+        (int classic, int fellBack) = Engine_ClassicMaterial.Counts;
+        if (classic != 0 || fellBack != 0)
+        {
+            GD.Print($"[classic] {classic:N0} materials on the title's shaders, {fellBack:N0} fell back to the modern material");
+        }
     }
 
     /// <summary>Finished materials by stated identity; a region-scoped cache, never an owner.</summary>
@@ -334,21 +407,31 @@ public static class Engine_MdlMaterial
             return hit;
         }
 
-        Material? built = TryCreate(material, out bool overridden);
+        Material? built = TryCreate(material, out bool overridden, info);
         if (built is null)
         {
             return null;
         }
 
-        ApplyWind(built, info);
-        ApplyVegetation(built, info, authoredNormals);
-
-        // Vegetation keeps both sides whatever its alpha: leaves and blades are single cards. A
-        // surface ApplyWind gave an amplitude keeps the wind shader; it is the one that sways.
-        if (built is ShaderMaterial plant && (info.SwaysInWind || info.MovementMode != 0 || IsVegetationDrawPath(info)) &&
-            Shared() is { } twoSided)
+        // A classic material is the guest's own shader over its own record; the remaster's
+        // post-build steps (wind, vegetation, the shared shader swap, the tangent guard) belong
+        // to the modern shaders and do not apply to it.
+        bool classic = built.HasMeta(Engine_ClassicMaterial.ClassicMeta);
+        if (!classic)
         {
-            plant.Shader = plant.HasMeta(WindMetaName) ? SharedWind() ?? twoSided : twoSided;
+            ApplyWind(built, info);
+            ApplyVegetation(built, info, authoredNormals);
+
+            // Vegetation keeps both sides whatever its alpha: leaves and blades are single cards. A
+            // surface ApplyWind gave an amplitude keeps the wind shader; it is the one that sways.
+            if (built is ShaderMaterial plant && (info.SwaysInWind || info.MovementMode != 0 || IsVegetationDrawPath(info)) &&
+                Shared() is { } twoSided)
+            {
+                // A tree takes the title's tree wind on every surface; a swaying plant its WIND1 bend.
+                plant.Shader = info.MovementMode == 2
+                    ? SharedTree() ?? twoSided
+                    : plant.HasMeta(WindMetaName) ? SharedWind() ?? twoSided : twoSided;
+            }
         }
 
         Interlocked.Increment(ref SharedBuilt);
@@ -357,7 +440,7 @@ public static class Engine_MdlMaterial
         // bind one over a zero TEXCOORD1 (`VertexAudit`). The guest's basis is then T = B = 0 and
         // `normalize(T*nx + B*ny + N*nz)` is N exactly, so the map does nothing there; Godot
         // instead decodes a zero tangent to an arbitrary axis and bends the normal along it.
-        if (!tangentBasis && built is ShaderMaterial flat)
+        if (!tangentBasis && !classic && built is ShaderMaterial flat)
         {
             flat.SetShaderParameter("has_normal", false);
         }
@@ -381,7 +464,9 @@ public static class Engine_MdlMaterial
     /// A sampler resolved through <see cref="TextureOverride"/> — the hero's morphed maps, which
     /// belong to one body. Such a material is not shareable by record key.
     /// </param>
-    public static Material? TryCreate(MdlMaterial? material, out bool overridden)
+    /// <param name="info">The model the record belongs to, when known: the classic material
+    /// chooses its ambient permutation from the model's lightmap and transfer data.</param>
+    public static Material? TryCreate(MdlMaterial? material, out bool overridden, MdlInfo? info = null)
     {
         overridden = false;
         if (material is null)
@@ -418,10 +503,27 @@ public static class Engine_MdlMaterial
         Cubemap? envmap = Engine_TexLibrary.GetCubemap(
             material.EnvironmentMap, Engine_BnkMeshLoader.ReadBytes);
 
+        // A record that names no texture at all is still drawn by the title, on its loader's
+        // default textures (Engine_ClassicMaterial.DefaultDiffuse); only the modern look has
+        // nothing to build from.
         if (albedo is null && normal is null && emissive is null && specular is null &&
-            envmap is null)
+            envmap is null && !Engine_ClassicMaterial.Active)
         {
             return null;
+        }
+
+        // THE CLASSIC RENDERER: the title's own shader for this record, when the player has the
+        // remaster off and the launcher has translated the shader bank. It is a separate material
+        // over the same textures; when its pair is not available the modern material stands in.
+        if (Engine_ClassicMaterial.Active)
+        {
+            Material? classic = Engine_ClassicMaterial.TryCreate(
+                material, info, albedoHasAlpha, albedo, normal, emissive, specular, envmap);
+            if (classic is not null)
+            {
+                Interlocked.Increment(ref _built);
+                return classic;
+            }
         }
 
         Shader? shader = Shared();
@@ -435,8 +537,28 @@ public static class Engine_MdlMaterial
         // two of them at once, so these are interlocked rather than incremented.
         Interlocked.Increment(ref _built);
 
-        // A solid surface shows one side; a card cut out by its alpha is seen from both.
-        var result = new ShaderMaterial { Shader = albedoHasAlpha ? shader : SharedCulled() ?? shader };
+        // A solid surface shows one side; a card cut out by its alpha is seen from both; a
+        // translucent diffuse (the title's texture flag 0x80: glass, panes, hair) draws as the
+        // title draws it, TWICE: an opaque pass alpha-tested GREATER 254 that writes depth, then
+        // the blended pass over it (`sub_82B31D80`, `sub_822251D8`; see Engine_ClassicMaterial).
+        // Blended alone, the surface wrote no depth, and every transparent layer drawn after it
+        // painted over it: the child hero's boots (mhero_child_legs_01, flags 0xF0, alpha 255
+        // over 96% of the map) showed the cobble blend straight through them.
+        bool translucent = albedo is not null &&
+            Refii.Textures.Engine_TexLibrary.IsTranslucent(material.Diffuse, Engine_BnkMeshLoader.ReadBytes);
+
+        // THE TEXTURE STATES THE CUTOUT, not its format. A standard surface is alpha tested only
+        // when the diffuse header carries 0x20 (texture-set +152 = ALPHATESTENABLE), GREATER 128
+        // for a cutout-only texture and 254 otherwise (`sub_822251D8` 0x82225290). Guessing from
+        // the pixel format left alpha 64..128 that the title cuts, and punched holes in BC3
+        // diffuses the title draws solid. Trees and scatter keep their own coverage rule.
+        bool vegetation = info is not null && IsVegetationDrawPath(info);
+        int diffuseFlags = albedo is not null && !vegetation
+            ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadBytes)
+            : 0;
+        bool cutout = vegetation ? albedoHasAlpha : (diffuseFlags & 0x20) != 0;
+        Shader? chosen = cutout || translucent ? shader : SharedCulled();
+        var result = new ShaderMaterial { Shader = chosen ?? shader };
         result.SetMeta(TextureNamesMeta, new[]
         {
             material.Diffuse, material.Normal, material.Specular, material.SelfIllumination,
@@ -444,9 +566,18 @@ public static class Engine_MdlMaterial
         if (albedo is not null)
         {
             result.SetShaderParameter("albedo_tex", albedo);
-            if (albedoHasAlpha)
+            if (cutout || translucent)
             {
                 result.SetShaderParameter("alpha_scissor_on", true);
+            }
+            if (translucent)
+            {
+                result.SetShaderParameter("alpha_scissor_threshold", OpaquePassAlpha);
+            }
+            else if (cutout && !vegetation)
+            {
+                result.SetShaderParameter("alpha_scissor_threshold",
+                    (diffuseFlags & 0xA0) == 0x20 ? CutoutAlpha : OpaquePassAlpha);
             }
         }
 
@@ -533,8 +664,14 @@ public static class Engine_MdlMaterial
         // The exponent range the material states, not a constant. It is per material rather than
         // per texture set: the guest reads one scalar block and then N texture-set records under
         // it, so every record shares the pair, and Engine_MdlEngine copies it down.
-        result.SetShaderParameter("spec_power_min", material.SpecularPowerMin);
-        result.SetShaderParameter("spec_power_max", material.SpecularPowerMax);
+        // SP1 OR SP2, BY THE SPECULAR TEXTURE (`sub_82AA04A0` 0x82AA04F4): only a specular map
+        // whose header carries 0x80 draws the SP2 pair, whose exponent spans the material's range
+        // by the map's alpha. Every other surface draws SP1, a fixed cos^4 (blob 0343 1637-1643
+        // squares saturate(V.R) twice and never reads the range).
+        bool rangedExponent = !string.IsNullOrEmpty(material.Specular) &&
+            (Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadBytes) & 0x80) != 0;
+        result.SetShaderParameter("spec_power_min", rangedExponent ? material.SpecularPowerMin : FixedSpecularPower);
+        result.SetShaderParameter("spec_power_max", rangedExponent ? material.SpecularPowerMax : FixedSpecularPower);
         result.SetShaderParameter("self_illum_scale", material.SelfIlluminationScale);
 
         // The §6 second pass, and it touches nothing built above.
@@ -550,8 +687,25 @@ public static class Engine_MdlMaterial
         RequestEnhanced(material.SelfIllumination, TexSemantic.SelfIllumination, emissive);
         RequestEnhanced(material.Specular, TexSemantic.Specular, specular);
 
+        if (translucent && LoadShared(Engine_ShaderFamily.StandardTranslucentPath) is { } blended)
+        {
+            var second = (ShaderMaterial)result.Duplicate();
+            second.Shader = blended;
+            second.SetShaderParameter("alpha_scissor_on", false);
+            result.NextPass = second;
+        }
+
         return result;
     }
+
+    /// <summary>The translucent surface's opaque pass keeps alpha GREATER 254 (ref 254 of 255).</summary>
+    private const float OpaquePassAlpha = 254.5f / 255.0f;
+
+    /// <summary>A cutout-only texture's ALPHAREF 128, GREATER.</summary>
+    private const float CutoutAlpha = 128.5f / 255.0f;
+
+    /// <summary>The SP1 pair's exponent: saturate(V.R) squared twice.</summary>
+    private const float FixedSpecularPower = 4.0f;
 
     /// <summary>
     /// The texture names a material was built from, in <see cref="TextureParameters"/> order;

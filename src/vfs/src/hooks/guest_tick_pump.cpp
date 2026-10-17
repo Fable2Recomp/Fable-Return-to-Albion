@@ -245,6 +245,13 @@ PPC_EXTERN_FUNC(rex_lhPodVector_FreeStorage);  // frees that list, as sub_826C69
 PPC_EXTERN_FUNC(rex_lhGui_RunLuaString);
 PPC_EXTERN_FUNC(rex_lhCharString_CtorFromCStr);
 
+// `lhLua_RunScriptBuffer(lua_State* L, const char* buf, size, LHString* name, -)` (TU1
+// 0x82451F18, base 0x824155C8) — `lua_load(L, getS, {buf, size}, "@" + name)` at 0x82451fb8,
+// then `luaD_pcall` with no handler, the stack restored either way; 1 on success. `lua_load`'s
+// `f_parser` takes a first byte other than 0x1B as SOURCE (0x82a34060), so plain text runs. r7
+// is never read.
+PPC_EXTERN_FUNC(rex_lhLua_RunScriptBuffer);
+
 // `sub_824E2F28(CECStats*, abilityId, rank, forceReplicate)` — the rank writer the purchase
 // wrappers call once they have charged experience and raised their box. It CLAMPS for us
 // (`sub_824E2D40` gives the ceiling, 0x824E2F48) and stores at 0x824E3240; `a4` forces the
@@ -917,6 +924,27 @@ constexpr const char* kActionMenuSelect = "MenuSelect";
 // (`setAttribute(getElement(...), "textstring", tostring(<expr>))`). Behaviour gets a named
 // action instead.
 constexpr const char* kActionGuiLuaPrefix = "GuiLua:";
+
+// "CameraFeel:pointer" / "CameraFeel:pad" — which device the camera answers.
+//
+// The camera's feel is the scripts' own constants. SACCamera turns by
+// `RotateRight = -x * RotateSpeed / TickRate * (0.5 + sensitivity)` (stringandcagecamera.lua
+// 2977) and rolls that through `GetRollingAverage(Smooth, RotateRight, RotateDamp)` — 0.6 of the
+// last tick plus 0.4 of this one at RotateDamp 1.5 (2237) — and the height offset the same way
+// through HeightDamp (1723). FirstPersonCamera smooths by RotateSmoothAmount and turns
+// RotateSpeed degrees a tick at full stick (firstpersoncamera.lua 168..173). A stick wants the
+// smoothing; a mouse has already been moved exactly as far as the player meant, so under the
+// pointer the smoothing is off and full deflection is six times the stick's rate, leaving room
+// for a flick. The host scales its stick by the same six. The pad gets the shipped values back.
+constexpr const char* kActionCameraFeelPrefix = "CameraFeel:";
+constexpr const char* kCameraFeelPointer =
+    "if SACCamera then SACCamera.RotateDamp=0 SACCamera.HeightDamp=0 SACCamera.RotateSpeed=720 end "
+    "if FirstPersonCamera then FirstPersonCamera.RotateSmoothAmount=0 "
+    "FirstPersonCamera.RotateSpeed=36 end";
+constexpr const char* kCameraFeelPad =
+    "if SACCamera then SACCamera.RotateDamp=1.5 SACCamera.HeightDamp=1.5 SACCamera.RotateSpeed=120 end "
+    "if FirstPersonCamera then FirstPersonCamera.RotateSmoothAmount=1.5 "
+    "FirstPersonCamera.RotateSpeed=6 end";
 
 /// "SpellAssign:<slot>:<spell>" — put a will on one of the five d-pad slots.
 ///
@@ -1937,6 +1965,67 @@ bool RunGuestLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
 
   step("done");
   return true;
+}
+
+/// Runs one Lua source chunk in the GAME script VM — the state the startup scripts, the camera
+/// among them, run in. False when there is no game VM. Not the GUI's: Gameface links a second
+/// Lua build with its own states and a different `lua_State` layout (`luaD_pcall` reads
+/// `errfunc` at +96 there, +100 here), so the two must never be crossed.
+///
+/// The state is `Game+0xAC`, written by `Game_InitDatabases` (`stw r3, 0xAC(r27)` at 0x82310e30)
+/// and closed by the game's teardown, so it is re-read on every call. The game itself reaches it
+/// as `*(*(*(0x83496AB8)+0xC)+0x78)+4)` — the script system holding the same pointer
+/// (`World_LoadLevel_Execute` 0x8231c78c).
+bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 0xCu) : 0u;
+  const uint32_t state = plausible(game) ? LoadGuestU32(base, game + 0xACu) : 0u;
+  if (!plausible(state)) {
+    return false;
+  }
+
+  const uint32_t sp = ctx.r1.u32;
+  const uint32_t frame = (sp - 0x400u) & ~0xFu;
+  const uint32_t text = frame + 0x20u;
+  const uint32_t name = frame + 0x3E0u;
+  const uint32_t nameHandle = frame + 0x3F0u;
+
+  constexpr uint32_t kMaxChunk = 0x3B0u;
+  if (chunk.size() + 1u > kMaxChunk) {
+    REXLOG_INFO("Refii guest-tick pump: game Lua chunk is too long ({} bytes) — dropped",
+                chunk.size());
+    return false;
+  }
+
+  std::memcpy(base + text, chunk.data(), chunk.size());
+  base[text + chunk.size()] = 0;
+  std::memcpy(base + name, "refii", 6);
+  StoreGuestU32(base, nameHandle, 0u);
+
+  PPCContext work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = nameHandle;
+  work.r4.u32 = name;
+  work.r5.u32 = 0xFFFFFFFFu;
+  rex_lhCharString_CtorFromCStr(work, base);
+
+  work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = state;
+  work.r4.u32 = text;
+  work.r5.u32 = static_cast<uint32_t>(chunk.size());
+  work.r6.u32 = nameHandle;
+  work.r7.u32 = 0u;
+  rex_lhLua_RunScriptBuffer(work, base);
+  const bool ok = work.r3.u32 != 0u;
+
+  work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = nameHandle;
+  rex_lhCharString_Dtor(work, base);
+  return ok;
 }
 
 /// One commit waiting to be confirmed on the NEXT tick — see DispatchMenuEvent.
@@ -5812,12 +5901,10 @@ void SampleSpellDamage(uint8_t* base, uint32_t hero, HeroDerived& sampled) {
 /// the shape `sub_82B3F898` reads — `v4 = *a2; length = *(v4 + 4); chars = *(wchar_t**)*a2`,
 /// then `*(_WORD *)&chars[i]` per character at 0x82B3F910.
 ///
-/// Distinct from `ReadGuestWideLhString` below, and deliberately: that one PROBES, chasing up to
-/// three hops and rejecting a hop whose first units are not Latin, because it is handed labels
-/// whose indirection depth is not known in advance. Here the depth is stated by the function
-/// that built the record, so guessing it would only add ways to be wrong — and the length is
-/// read rather than scanned for a NUL. `ReadGuestLhString` is the ASCII reader for the same two
-/// hops and would return the high bytes as text.
+/// Never probe the depth. A reader that chased up to three hops and rejected non-Latin text
+/// skipped a Cyrillic label ("Русский", units 0x0420 0x0443), loaded those two units as the
+/// pointer 0x04200443 and faulted on the Windows reserved arena. `ReadGuestLhString` is the
+/// ASCII reader for the same two hops and would return the high bytes as text.
 std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   if (base == nullptr || !plausible(handle)) {
@@ -7852,6 +7939,13 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       NoteDebugCallResult(0, luaRan ? 1u : 0u,
                           luaRan ? "ok" : "no live presentation to run Lua in");
       ran = true;
+    } else if (name.rfind(kActionCameraFeelPrefix, 0) == 0) {
+      const bool pointer = name.substr(std::strlen(kActionCameraFeelPrefix)) == "pointer";
+      const bool luaRan = RunGameLua(ctx, base, pointer ? kCameraFeelPointer : kCameraFeelPad);
+      REXLOG_INFO("Refii guest-tick pump: camera feel '{}' {}", pointer ? "pointer" : "pad",
+                  luaRan ? "set in the game VM" : "NOT set — no game VM yet, or the chunk failed");
+      NoteDebugCallResult(0, luaRan ? 1u : 0u, luaRan ? "ok" : "no game VM");
+      ran = true;
     } else if (name.rfind(kActionGuiLuaPrefix, 0) == 0) {
       const std::string chunk = name.substr(std::strlen(kActionGuiLuaPrefix));
       ran = RunGuestLua(ctx, base, chunk);
@@ -8002,10 +8096,12 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       // `onUpdate` polling `GUI:IsPushingUp()`, hence MenuScroll), but the OPTIONS page answers
       // them natively — 28/29 move the row, 30/31 change its VALUE (pickbox index or slider
       // float). 6 is the one-off panels' DISMISS: the minigame tally (`sub_823CDC08`) and the
-      // quest completion card (`sub_823D3F98`) answer only it.
+      // quest completion card (`sub_823D3F98`) answer only it. 32..35 are the RELEASES: the
+      // direction gate `sub_828818E8` resets its last direction and both repeat clocks on them
+      // (the `case 32..35` arm), so a `31, 35` pair lands every time — a mouse moving a slider
+      // several steps posts its steps as press/release pairs in one drain.
       if (end == codeText.c_str() || *end != '\0' ||
-          (code != 6u && code != 28u && code != 29u && code != 30u && code != 31u &&
-           code != 36u && code != 37u && code != 39u && code != 59u &&
+          (code != 6u && !(code >= 28u && code <= 37u) && code != 39u && code != 59u &&
            code != 72u && code != 73u)) {
         REXLOG_INFO("Refii guest-tick pump: '{}' has no screen action — dropped", name);
         GuestTickPumpNoteRan();
@@ -8522,68 +8618,20 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
 // `ReadGuestLhString` lives in core/guest_state.h — one implementation, shared with the
 // menu-chunk hooks that need the same handle chase.
 
-std::string ReadGuestWideLhString(uint8_t* base, uint32_t handle) {
-  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-
-  uint32_t at = handle;
-  for (int hop = 0; hop < 3; ++hop) {
-    if (!plausible(at)) {
-      return std::string();
-    }
-
-    const uint32_t next = LoadGuestU32(base, at);
-    if (plausible(next)) {
-      std::string utf8;
-      for (uint32_t i = 0; i < 192u; ++i) {
-        const uint32_t unit = (static_cast<uint32_t>(base[next + (2u * i)]) << 8) |
-                              base[next + (2u * i) + 1u];
-        if (unit == 0u) {
-          break;
-        }
-
-        // Is this hop characters or pointers? The handle chain holds guest addresses until the
-        // last hop, and a 32-bit address read as two big-endian UTF-16 units lands in the CJK
-        // block (0x404E3DF0 decodes as U+404E U+3DF0). Menu labels are Latin — every unit sits
-        // below U+0250 — so requiring that of the first two units rejects a pointer table and
-        // makes the loop take the next hop.
-        if (i < 2u && (unit < 0x20u || unit >= 0x0250u)) {
-          utf8.clear();
-          break;
-        }
-
-        if (unit < 0x80u) {
-          utf8 += static_cast<char>(unit);
-        } else if (unit < 0x800u) {
-          utf8 += static_cast<char>(0xC0u | (unit >> 6));
-          utf8 += static_cast<char>(0x80u | (unit & 0x3Fu));
-        } else {
-          utf8 += static_cast<char>(0xE0u | (unit >> 12));
-          utf8 += static_cast<char>(0x80u | ((unit >> 6) & 0x3Fu));
-          utf8 += static_cast<char>(0x80u | (unit & 0x3Fu));
-        }
-      }
-
-      if (!utf8.empty()) {
-        return utf8;
-      }
-    }
-
-    at = next;
-  }
-
-  return std::string();
-}
-
 /// One spawned row. `stack_rating` says whether this emitter HAS a ninth argument.
 ///
 /// The two emitters do NOT share a signature. `sub_826CE8D0` takes nine arguments, the ninth
 /// (the rating) on the stack at caller_SP + 0x54 — which is why this runs before the recompiled
 /// prologue. `sub_826E4798` takes exactly eight in r3..r10 and no stack arguments, hard-coding
 /// `Float4 = 0.0`; reading r1+0x54 for it reads the caller's frame.
+///
+/// The label (r5) is a wide LHString handle in both emitters and both pressings:
+/// `lwz r11, 0(r5)`, empty literal if zero, else `lwz r4, 0(r11)` into the wide-to-UTF-8
+/// conversion (0x826E4804 / 0x826CE930 on TU1).
 void OnMenuSpawn(PPCContext& ctx, uint8_t* base, bool stack_rating) {
   const std::string name = ReadGuestLhString(base, ctx.r4.u32);
   const std::string parent = ReadGuestLhString(base, ctx.r7.u32);
-  const std::string label = ReadGuestWideLhString(base, ctx.r5.u32);
+  const std::string label = ReadStatedWideLhString(base, ctx.r5.u32);
   const int32_t rating =
       stack_rating ? static_cast<int32_t>(LoadGuestU32(base, ctx.r1.u32 + 0x54u)) : 0;
   refii_bridge_menu_spawn_row_labelled(name.c_str(), parent.c_str(), ctx.r8.u32,

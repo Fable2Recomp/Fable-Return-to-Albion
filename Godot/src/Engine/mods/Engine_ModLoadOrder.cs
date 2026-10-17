@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 namespace Refii.Mods;
@@ -61,6 +62,78 @@ public sealed class ModLoadOrder
 	}
 
 	/// <summary>
+	/// Synchronizes <see cref="Enabled"/> so that enabled mods strictly follow the authoritative sequence of <see cref="Order"/>.
+	/// </summary>
+	public void SyncEnabledWithOrder()
+	{
+		if (Order.Count == 0)
+		{
+			return;
+		}
+
+		var newEnabled = new List<string>();
+		foreach (string name in Order)
+		{
+			if (Enabled.Contains(name, StringComparer.OrdinalIgnoreCase) &&
+				!newEnabled.Contains(name, StringComparer.OrdinalIgnoreCase))
+			{
+				newEnabled.Add(name);
+			}
+		}
+
+		// Preserve any enabled mod that might not have been in Order yet:
+		foreach (string name in Enabled)
+		{
+			if (!newEnabled.Contains(name, StringComparer.OrdinalIgnoreCase))
+			{
+				newEnabled.Add(name);
+				Order.Add(name);
+			}
+		}
+
+		Enabled.Clear();
+		Enabled.AddRange(newEnabled);
+	}
+
+	/// <summary>
+	/// Registers a newly installed or created mod at the end of the load order,
+	/// keeping <see cref="Order"/> and <see cref="Enabled"/> strictly synchronized.
+	/// </summary>
+	public void RegisterMod(string modName, bool enabled = true)
+	{
+		if (string.IsNullOrWhiteSpace(modName) || !ModWorkspace.IsSafeModFolderName(modName))
+		{
+			return;
+		}
+
+		if (!Order.Contains(modName, StringComparer.OrdinalIgnoreCase))
+		{
+			Order.Add(modName);
+		}
+
+		if (enabled && !Enabled.Contains(modName, StringComparer.OrdinalIgnoreCase))
+		{
+			Enabled.Add(modName);
+		}
+
+		SyncEnabledWithOrder();
+	}
+
+	/// <summary>
+	/// Removes a mod from both <see cref="Order"/> and <see cref="Enabled"/>.
+	/// </summary>
+	public void UnregisterMod(string modName)
+	{
+		if (string.IsNullOrWhiteSpace(modName))
+		{
+			return;
+		}
+
+		Order.RemoveAll(m => string.Equals(m, modName, StringComparison.OrdinalIgnoreCase));
+		Enabled.RemoveAll(m => string.Equals(m, modName, StringComparison.OrdinalIgnoreCase));
+	}
+
+	/// <summary>
 	/// Writes the order, and retires <c>enabled.txt</c> by renaming it.
 	///
 	/// Renamed rather than deleted: its content is carried into the new file, and a rename says
@@ -77,6 +150,7 @@ public sealed class ModLoadOrder
 
 		try
 		{
+			SyncEnabledWithOrder();
 			Directory.CreateDirectory(modsRoot);
 
 			var text = new StringBuilder();
@@ -218,14 +292,7 @@ public sealed class ModLoadOrder
 		}
 		else
 		{
-			// Ensure any enabled mods not yet in Order are appended:
-			foreach (string name in order.Enabled)
-			{
-				if (!order.Order.Contains(name))
-				{
-					order.Order.Add(name);
-				}
-			}
+			order.SyncEnabledWithOrder();
 		}
 	}
 

@@ -17,6 +17,9 @@ namespace Refii.Ui;
 /// </remarks>
 public static class Engine_UiHudTextStyle
 {
+	private static readonly StringName TextColourName = "text_colour";
+	private static readonly StringName TextSizeName = "text_size";
+
 	public static bool Captured { get; private set; }
 
 	public static int TitleSize { get; private set; } = 22;
@@ -31,14 +34,14 @@ public static class Engine_UiHudTextStyle
 	/// <summary>Reads one of the TopBox's live text nodes; the node's name says which role it has.</summary>
 	public static void Capture(MeshInstance3D node)
 	{
-		if (!GodotObject.IsInstanceValid(node) || !node.HasMeta("text_size"))
+		if (!GodotObject.IsInstanceValid(node) || !node.HasMeta(TextSizeName))
 		{
 			return;
 		}
 
 		string name = node.Name.ToString();
-		int size = (int)node.GetMeta("text_size");
-		Color? colour = node.HasMeta("text_colour") ? (Color)node.GetMeta("text_colour") : null;
+		int size = (int)node.GetMeta(TextSizeName);
+		Color? colour = node.HasMeta(TextColourName) ? (Color)node.GetMeta(TextColourName) : null;
 		if (name.Contains("Title", System.StringComparison.OrdinalIgnoreCase))
 		{
 			TitleSize = size;

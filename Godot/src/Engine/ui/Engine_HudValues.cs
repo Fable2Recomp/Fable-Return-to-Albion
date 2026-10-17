@@ -225,7 +225,10 @@ public sealed class Engine_HudValues
         Read();
     }
 
-    /// <summary>The stated meters' glide, every frame; the polled values keep what the last read gave.</summary>
+    /// <summary>
+    /// Every value on Godot's clock, every frame: the stated meters' glide, the polled meters'
+    /// glide onto what the guest last published, and each pulser's own phase.
+    /// </summary>
     public void Advance(float dt)
     {
         AdvanceMeters(dt);
@@ -236,9 +239,91 @@ public sealed class Engine_HudValues
                 _meters[hash] = seek.Current;
             }
         }
+
+        AdvanceSeeks(_polledMeters.Values, dt);
+        foreach ((uint hash, Seek seek) in _polledMeters)
+        {
+            if (!_statedMeters.ContainsKey(hash) && _meters.ContainsKey(hash))
+            {
+                _meters[hash] = seek.Current;
+            }
+        }
+
+        foreach ((uint hash, Pulse pulse) in _pulses)
+        {
+            pulse.Phase = Wrap01(pulse.Phase + (pulse.Rate * dt));
+            if (_pulsers.ContainsKey(hash))
+            {
+                _pulsers[hash] = pulse.Phase;
+            }
+        }
     }
 
-    /// <summary>Whether any stated meter is still gliding toward its target.</summary>
+    /// <summary>
+    /// The C++ registry's meters, glided onto each published value over one guest frame. The
+    /// guest seeks them itself (`sub_82265D20`, per HF frame) and publishes the result; drawn as
+    /// read, a draining bar stepped at 30 Hz under a display drawing faster.
+    /// </summary>
+    private readonly Dictionary<uint, Seek> _polledMeters = new();
+
+    /// <summary>The guest's frame interval, which a published change is glided over.</summary>
+    private const float GuestFrameSeconds = 1f / 30f;
+
+    /// <summary>
+    /// A pulser on Godot's clock: its phase advances at the rate measured between the guest's
+    /// statements and is pulled toward each one; a jump of more than a quarter cycle is a
+    /// restart and is taken at once.
+    /// </summary>
+    private sealed class Pulse
+    {
+        public float Phase;
+        public float Rate;
+        public float Stated;
+        public ulong StatedUsec;
+    }
+
+    private readonly Dictionary<uint, Pulse> _pulses = new();
+
+    private static float Wrap01(float phase)
+    {
+        phase -= System.MathF.Floor(phase);
+        return phase;
+    }
+
+    /// <summary>The shortest signed distance between two phases on the unit loop.</summary>
+    private static float PhaseGap(float gap)
+    {
+        gap -= System.MathF.Round(gap);
+        return gap;
+    }
+
+    private static void AdvanceSeeks(IEnumerable<Seek> seeks, float dt)
+    {
+        foreach (Seek seek in seeks)
+        {
+            if (seek.Current == seek.Target)
+            {
+                continue;
+            }
+
+            if (seek.Rate == 0f)
+            {
+                seek.Current = seek.Target;
+                continue;
+            }
+
+            float next = seek.Current + (seek.Rate * dt);
+            if ((seek.Rate > 0f && next > seek.Target) || (seek.Rate < 0f && next < seek.Target))
+            {
+                next = seek.Target;
+                seek.Rate = 0f;
+            }
+
+            seek.Current = next;
+        }
+    }
+
+    /// <summary>Whether anything is still moving on Godot's clock: a gliding meter or a running pulser.</summary>
     public bool Seeking
     {
         get
@@ -246,6 +331,22 @@ public sealed class Engine_HudValues
             foreach (Seek seek in _statedMeters.Values)
             {
                 if (seek.Current != seek.Target)
+                {
+                    return true;
+                }
+            }
+
+            foreach (Seek seek in _polledMeters.Values)
+            {
+                if (seek.Current != seek.Target)
+                {
+                    return true;
+                }
+            }
+
+            foreach (Pulse pulse in _pulses.Values)
+            {
+                if (pulse.Rate != 0f)
                 {
                     return true;
                 }
@@ -263,6 +364,7 @@ public sealed class Engine_HudValues
         _meters = Engine_UiSource.Current.GetHudMeters();
         _pulsers = Engine_UiSource.Current.GetHudPulsers();
         _texts = Engine_UiSource.Current.GetHudTexts();
+        FollowPolled();
 
         // The registry wins where both channels hold a name.
         foreach ((uint hash, float value) in Engine_UiSource.Current.GetHudScriptMeters())
@@ -310,6 +412,84 @@ public sealed class Engine_HudValues
             _meters[hash] = seek.Current;
         }
     }
+
+    /// <summary>
+    /// Takes this read's published meters and pulser phases as targets for the glides that draw
+    /// them every frame, and puts the glided values in their place.
+    /// </summary>
+    private void FollowPolled()
+    {
+        foreach ((uint hash, float value) in _meters)
+        {
+            if (!_polledMeters.TryGetValue(hash, out Seek? seek))
+            {
+                _polledMeters[hash] = new Seek { Current = value, Target = value };
+                continue;
+            }
+
+            if (value != seek.Target)
+            {
+                seek.Target = value;
+                seek.Rate = (value - seek.Current) / GuestFrameSeconds;
+            }
+        }
+
+        foreach ((uint hash, Seek seek) in _polledMeters)
+        {
+            if (_meters.ContainsKey(hash))
+            {
+                _meters[hash] = seek.Current;
+            }
+        }
+
+        ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
+        foreach ((uint hash, float phase) in _pulsers)
+        {
+            if (!_pulses.TryGetValue(hash, out Pulse? pulse))
+            {
+                _pulses[hash] = new Pulse { Phase = phase, Stated = phase, StatedUsec = now };
+                continue;
+            }
+
+            if (phase == pulse.Stated)
+            {
+                continue;
+            }
+
+            float seconds = (now - pulse.StatedUsec) * 1e-6f;
+            float moved = PhaseGap(phase - pulse.Stated);
+            if (seconds > 0f && seconds < 0.5f)
+            {
+                pulse.Rate += ((moved / seconds) - pulse.Rate) * 0.5f;
+            }
+
+            pulse.Stated = phase;
+            pulse.StatedUsec = now;
+            float error = PhaseGap(phase - pulse.Phase);
+            pulse.Phase = System.MathF.Abs(error) > 0.25f ? phase : Wrap01(pulse.Phase + (error * 0.3f));
+        }
+
+        _gonePulses.Clear();
+        foreach ((uint hash, Pulse pulse) in _pulses)
+        {
+            if (_pulsers.ContainsKey(hash))
+            {
+                _pulsers[hash] = pulse.Phase;
+            }
+            else
+            {
+                _gonePulses.Add(hash);
+            }
+        }
+
+        // A pulser the guest no longer holds stops running here too.
+        foreach (uint hash in _gonePulses)
+        {
+            _pulses.Remove(hash);
+        }
+    }
+
+    private readonly List<uint> _gonePulses = new();
 
     /// <summary>
     /// The localised string book, for resolving the tag ids the Lua route states; null drops
