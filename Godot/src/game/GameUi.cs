@@ -2520,6 +2520,7 @@ public partial class GameUi : Node
 			// The star and pip states, read out of THIS screen's document — every screen
 			// authors its own button pool, so the slides differ per file.
 			Ratings = Engine_UiRowRating.Resolve(drawn.Screen),
+			Book = _books.Book(screenId),
 			Visible = false,
 		};
 

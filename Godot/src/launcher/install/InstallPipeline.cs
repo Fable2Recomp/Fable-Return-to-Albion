@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Refii.Launcher.Core;
@@ -198,6 +199,25 @@ public sealed class InstallPipeline
 		}
 
 		string destination = Installer.GetGameDataDirectoryPath();
+		string failedMarker = Path.Combine(destination, Installer.InstallFailedFileName);
+		string okMarker = Path.Combine(destination, Installer.InstallOkFileName);
+
+		try
+		{
+			Directory.CreateDirectory(destination);
+			if (File.Exists(okMarker))
+			{
+				File.Delete(okMarker);
+			}
+
+			File.WriteAllText(failedMarker, "Installation in progress or incomplete.");
+		}
+		catch
+		{
+		}
+
+		Refii.Assets.Engine_GameAssets.Instance?.Unmount();
+
 		_status = "Extracting ISO...";
 		log("Extracting " + step.IsoPath + " to " + destination);
 
@@ -226,6 +246,15 @@ public sealed class InstallPipeline
 
 		if (!ok)
 		{
+			try
+			{
+				File.WriteAllText(failedMarker, error);
+			}
+			catch
+			{
+			}
+
+			Installer.InvalidateReinstallStepStatus();
 			return Fail(StepKind.GameData, _status, error, log);
 		}
 
@@ -237,7 +266,29 @@ public sealed class InstallPipeline
 		if (!Installer.InstallTitleUpdate(
 				step.TitleUpdatePath, Installer.GetGameMarkerPath(), out string updateError))
 		{
+			try
+			{
+				File.WriteAllText(failedMarker, updateError);
+			}
+			catch
+			{
+			}
+
+			Installer.InvalidateReinstallStepStatus();
 			return Fail(StepKind.GameData, _status, updateError, log);
+		}
+
+		try
+		{
+			if (File.Exists(failedMarker))
+			{
+				File.Delete(failedMarker);
+			}
+
+			File.WriteAllText(okMarker, "Installed: " + DateTime.UtcNow.ToString("O"));
+		}
+		catch
+		{
 		}
 
 		Installer.InvalidateReinstallStepStatus();

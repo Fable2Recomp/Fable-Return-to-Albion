@@ -188,7 +188,7 @@ public static class HostBridge
 			// Once a frame: thousands of guarded accessors ask, and the answer moves only when the
 			// guest starts or stops.
 			long frame = Refii.Core.Engine_FramePhases.FrameIndex;
-			if (frame == _guestUpFrame)
+			if (frame == _guestUpFrame && _guestUp)
 			{
 				return _guestUp;
 			}
@@ -7772,7 +7772,7 @@ public static class HostBridge
 	private static extern uint RefiiHostGetActiveFx(uint[]? outWords, uint maxEffects);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetSaveCards(out uint cursor, out uint baseSlot, byte[]? text, uint capacity);
+	private static extern uint RefiiHostGetSaveCards(out uint cursor, out uint baseSlot, [Out] byte[]? text, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudMeters([Out] uint[]? hashes, [Out] float[]? values, uint capacity);

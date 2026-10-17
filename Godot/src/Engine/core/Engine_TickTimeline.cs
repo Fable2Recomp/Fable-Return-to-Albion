@@ -126,6 +126,7 @@ public sealed class Engine_TickTimeline
 		Newest = sample;
 		NewestScalar = scalar;
 		_previousRotation = sample.Basis.GetRotationQuaternion();
+		_spinAxis = Vector3.Up;
 		_spinAngle = 0f;
 		_velocity = Vector3.Zero;
 		_spinRate = 0.0;
@@ -177,10 +178,23 @@ public sealed class Engine_TickTimeline
 
 		double seconds = (_stamp - _previousStamp) / TicksPerSecond;
 		_spinAngle = delta.GetAngle();
-		_spinAxis = _spinAngle > 1e-6f ? delta.GetAxis() : Vector3.Up;
+		_spinAxis = _spinAngle > 1e-6f && !delta.GetAxis().IsZeroApprox()
+			? delta.GetAxis().Normalized()
+			: Vector3.Up;
 		_velocity = (sample.Origin - _previous.Origin) / (float)seconds;
 		_spinRate = _spinAngle / seconds;
 		_scalarRate = (scalar - _previousScalar) / seconds;
+	}
+
+	/// <summary>Constructs an angle-axis quaternion safely without throwing when unnormalized or near-zero.</summary>
+	private static Quaternion SafeAngleAxis(Vector3 axis, float angle)
+	{
+		if (Mathf.Abs(angle) < 1e-6f || axis.IsZeroApprox())
+		{
+			return Quaternion.Identity;
+		}
+
+		return new Quaternion(axis.Normalized(), angle);
 	}
 
 	/// <summary>Whether the drawn transform has come to rest on the newest stated one.</summary>
@@ -214,7 +228,7 @@ public sealed class Engine_TickTimeline
 		_position += _velocity * (float)stated;
 		if (_spinRate > 0.0)
 		{
-			_rotation = (_rotation * new Quaternion(_spinAxis, (float)(_spinRate * stated))).Normalized();
+			_rotation = (_rotation * SafeAngleAxis(_spinAxis, (float)(_spinRate * stated))).Normalized();
 		}
 
 		_drawnScalar += (float)(_scalarRate * stated);
@@ -227,7 +241,7 @@ public sealed class Engine_TickTimeline
 			: System.Math.Clamp((drawTick - _previousStamp) / span, -1.0 / span,
 				1.0 + (_stillWhenUnchanged ? Lead / span : Lead));
 		Vector3 target = _previous.Origin.Lerp(Newest.Origin, (float)alpha);
-		Quaternion turn = _previousRotation * new Quaternion(_spinAxis, (float)(_spinAngle * alpha));
+		Quaternion turn = _previousRotation * SafeAngleAxis(_spinAxis, (float)(_spinAngle * alpha));
 		float scalarTarget = Mathf.Lerp(_previousScalar, NewestScalar, (float)alpha);
 
 		double pull = 1.0 - System.Math.Exp(-Gain * seconds);

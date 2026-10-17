@@ -75,6 +75,13 @@ public partial class GameSession : Node
 	{
 		Current = this;
 
+		// Frame lifecycle boundaries: FrameStart (priority int.MinValue) samples GPU passes,
+		// clocks, and advances FramePhases.FrameIndex; FrameEnd (priority int.MaxValue) marks frame end.
+		// These must run every frame unconditionally in all configurations so guest liveness caching,
+		// entity bone rigging, animation playheads, and UI carousels operate properly.
+		AddChild(new Refii.Core.Engine_FrameStartNode { Name = "FrameStart" });
+		AddChild(new Refii.Core.Engine_FrameEndNode { Name = "FrameEnd" });
+
 		// THE GRANT GOES LAST IN THE FRAME, after every reader. A granted step starts on the
 		// guest's own thread at once, so granted at the top of the frame it ran under the camera
 		// read, the walk and the rig reads, and a read could take the next step's state under

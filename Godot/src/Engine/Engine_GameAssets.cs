@@ -79,6 +79,21 @@ public partial class Engine_GameAssets : Node
 		previous?.Dispose();
 	}
 
+	public void Unmount()
+	{
+		BnkFileSystem? previous;
+		lock (MountLock)
+		{
+			previous = _filesystem;
+			_filesystem = null;
+			_byFileName = null;
+			_levels = null;
+			_activeOverlays = Array.Empty<Refii.Mods.ModOverlay>();
+		}
+
+		previous?.Dispose();
+	}
+
 	public void Mount(string gameDirectory)
 	{
 		lock (MountLock)

@@ -1539,6 +1539,25 @@ public partial class LauncherApp : Control
 			? LauncherScale.Font(LauncherTokens.BodySize)
 			: LauncherScale.Font(LauncherTokens.DisplaySize));
 
+		if (_warningLabel is not null && _warningPanel is not null)
+		{
+			if (_pipeline.Error.Length != 0 && !_pipeline.Running)
+			{
+				_warningLabel.Text = _pipeline.Error;
+				_warningPanel.Visible = true;
+			}
+			else if (LauncherTheme.WarningText.Length != 0)
+			{
+				_warningLabel.Text = LauncherTheme.WarningText;
+				_warningPanel.Visible = true;
+			}
+			else
+			{
+				_warningLabel.Text = string.Empty;
+				_warningPanel.Visible = false;
+			}
+		}
+
 		RefreshBuildControls();
 		RefreshInfoBody();
 		// The Install tab shows the running step and the last failure; it has to follow the
@@ -2011,12 +2030,21 @@ public partial class LauncherApp : Control
 				MountGameAssets();
 			}
 		}
-		else if (!outcome.Stopped && Unattended &&
-			outcome.FailedStep == Install.InstallPipeline.StepKind.GameCode)
+		else
 		{
-			// Pressing again would only re-run the same generator on the same inputs.
-			_unattendedHalted = true;
-			Log("Unattended: the game code build failed; not pressing again.");
+			if (!outcome.Stopped)
+			{
+				string stepName = outcome.FailedStep.HasValue ? outcome.FailedStep.Value.ToString() : "Install";
+				Log($"{stepName} failed: {outcome.Error}");
+			}
+
+			if (!outcome.Stopped && Unattended &&
+				outcome.FailedStep == Install.InstallPipeline.StepKind.GameCode)
+			{
+				// Pressing again would only re-run the same generator on the same inputs.
+				_unattendedHalted = true;
+				Log("Unattended: the game code build failed; not pressing again.");
+			}
 		}
 
 		RefreshState();

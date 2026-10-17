@@ -345,7 +345,7 @@ public partial class ReinstallPanel : VBoxContainer
 		bool pairOk = Installer.CheckInstalledTitleUpdate(out string pair);
 		SetState(_gameData, assets, assets
 			? (pairOk ? pair : "Title update: " + pair)
-			: "Not installed. Install from your disc image.");
+			: (pairOk ? "Not installed. Install from your disc image." : pair));
 		_gameData.Action.Disabled = !idle;
 
 		// Game code: tracked on the MODULE, which goes stale when the executable changes.

@@ -317,8 +317,6 @@ public partial class GameDebugServer : Node
 
 	public override void _Ready()
 	{
-		AddChild(new Refii.Core.Engine_FrameStartNode { Name = "FrameStart" });
-		AddChild(new Refii.Core.Engine_FrameEndNode { Name = "FrameEnd" });
 		if (!Wanted)
 		{
 			return;

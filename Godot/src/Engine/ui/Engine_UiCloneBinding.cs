@@ -312,8 +312,8 @@ public sealed class Engine_UiCloneBinding
 	{
 		float cx = node.PositionX;
 		float cy = node.PositionY;
-		float halfW = 50f * node.ScaleX;
-		float halfH = 50f * node.ScaleY;
+		float halfW = 50f * Mathf.Abs(node.ScaleX);
+		float halfH = 50f * Mathf.Abs(node.ScaleY);
 		for (UiNode? up = node.Parent; up is not null; up = up.Parent)
 		{
 			cx = (cx * up.ScaleX) + up.PositionX;
@@ -331,8 +331,11 @@ public sealed class Engine_UiCloneBinding
 		int applied = 0;
 		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
 		{
-			material.SetShaderParameter("clip_rect", new Vector4(
-				rect.Position.X, rect.Position.Y, rect.End.X, rect.End.Y));
+			float minX = Mathf.Min(rect.Position.X, rect.End.X);
+			float minY = Mathf.Min(rect.Position.Y, rect.End.Y);
+			float maxX = Mathf.Max(rect.Position.X, rect.End.X);
+			float maxY = Mathf.Max(rect.Position.Y, rect.End.Y);
+			material.SetShaderParameter("clip_rect", new Vector4(minX, minY, maxX, maxY));
 			++applied;
 		}
 
