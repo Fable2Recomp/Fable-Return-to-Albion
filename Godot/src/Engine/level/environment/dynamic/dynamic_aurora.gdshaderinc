@@ -38,10 +38,13 @@ vec3 aurora_curtain(vec2 p, float time, float seed, float altitude, float streng
     float glow = exp(-abs(h) * 8.0) * 0.10;
     float extent = exp(-pow(abs((x + 0.3) / 2.9), 4.0));
     float brightness = smoothstep(0.28, 0.72, activity) * extent * strength;
-    vec3 green = vec3(0.21, 1.0, 0.38);
-    vec3 upper = vec3(0.50, 0.19, 0.43);
-    vec3 tint = mix(green, upper, smoothstep(0.10, 0.62, h) * 0.85);
-    return (tint * curtain * rays + green * (edge + glow)) * brightness;
+    float palette = aurora_noise(warp * 0.75 + seed * 2.0 + time * 0.003);
+    float warmth = aurora_noise(warp * 0.45 + seed * 5.3 - time * 0.002);
+    vec3 lower = mix(vec3(0.16, 1.0, 0.32), vec3(0.10, 0.72, 1.0), smoothstep(0.25, 0.70, palette));
+    lower = mix(lower, vec3(0.38, 0.20, 1.0), smoothstep(0.70, 0.95, palette) * 0.8);
+    vec3 upper = mix(vec3(0.55, 0.14, 1.0), vec3(1.0, 0.18, 0.48), smoothstep(0.25, 0.75, warmth));
+    vec3 tint = mix(lower, upper, smoothstep(0.025, length * 0.65, h));
+    return (tint * curtain * rays + lower * (edge + glow)) * brightness;
 }
 
 vec3 aurora_terms(vec3 dir, float day) {

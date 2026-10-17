@@ -348,13 +348,11 @@ public static class Engine_DynamicSky
 
     public static void ApplyCelestialTextures(ShaderMaterial material)
     {
-        const string root = "res://assets/dynamic_sky/";
-        foreach (var pair in new[] { ("moon", "lroc_color_2k.jpg"), ("star", "starmap_2020_4k.exr") })
-        {
-            Texture2D? texture = ResourceLoader.Exists(root + pair.Item2) ? GD.Load<Texture2D>(root + pair.Item2) : null;
-            material.SetShaderParameter(pair.Item1 + "_use_texture", texture is not null);
-            if (texture is not null) material.SetShaderParameter(pair.Item1 + "_texture", texture);
-        }
+        const string moon = "res://assets/dynamic_sky/lroc_color_2k.jpg";
+        Texture2D? texture = ResourceLoader.Exists(moon) ? GD.Load<Texture2D>(moon) : null;
+        material.SetShaderParameter("moon_use_texture", texture is not null);
+        if (texture is not null) material.SetShaderParameter("moon_texture", texture);
+        material.SetShaderParameter("star_use_texture", false);
     }
 
     public static void ApplyFrame(ShaderMaterial material, SkyFrame frame, SkyTheme? theme)

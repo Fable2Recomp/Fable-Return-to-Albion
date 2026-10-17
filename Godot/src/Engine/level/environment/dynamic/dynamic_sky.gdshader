@@ -37,12 +37,13 @@ uniform bool moon_use_texture = false;
 uniform sampler2D moon_texture : source_color, filter_linear_mipmap, repeat_enable;
 
 uniform float star_brightness = 1.0;
-uniform float star_density = 0.35;
+uniform float star_density = 0.28;
 uniform bool star_use_texture = false;
 uniform sampler2D star_texture : filter_linear_mipmap, repeat_enable;
 uniform float star_rotation = 0.0;
 uniform float star_glow = 1.0;
 uniform float aurora_strength = 0.0;
+uniform float nebula_strength = 0.18;
 
 uniform bool volumetric_clouds = false;
 uniform sampler3D cloud_volume_shape : filter_linear, repeat_enable;
@@ -88,6 +89,13 @@ vec2 hash22(vec2 p) {
 
 float daylight(vec3 sun) {
 	return smoothstep(-0.14, 0.10, sun.y);
+}
+
+vec3 moon_world(vec3 sun) {
+	vec3 moon = normalize(moon_dir_world);
+	float lift = (1.0 - smoothstep(0.0, 0.2, moon.y)) * (1.0 - daylight(sun));
+	moon.y = mix(moon.y, max(moon.y, -sun.y), lift);
+	return normalize(moon);
 }
 
 float sun_low(vec3 sun) {
@@ -213,6 +221,36 @@ vec3 moon_terms(vec3 dir, vec3 moon, vec3 sun, float day) {
 	return col * night;
 }
 
+vec3 nebula_terms(vec3 dir, vec3 moon, vec3 sun, float day) {
+	if (nebula_strength <= 0.001 || day >= 0.99 || dir.y <= 0.02) {
+		return vec3(0.0);
+	}
+	vec3 centre = normalize(vec3(0.38, 0.66, -0.65));
+	float facing = dot(dir, centre);
+	if (facing <= 0.25) { return vec3(0.0); }
+	vec3 right = normalize(cross(centre, vec3(0.0, 1.0, 0.0)));
+	vec3 up = cross(right, centre);
+	vec2 p = vec2(dot(dir, right), dot(dir, up)) / facing;
+	p = mat2(vec2(0.8, -0.6), vec2(0.6, 0.8)) * p;
+	vec2 warp = vec2(texture(cloud_shape, p * 0.18 + vec2(0.37, 0.11)).r,
+		texture(cloud_shape, p * 0.18 + vec2(0.71, 0.53)).r) - 0.5;
+	vec2 q = p + warp * 0.65;
+	float shape = texture(cloud_shape, q * vec2(0.30, 0.75) + vec2(0.10, 0.40)).r;
+	float filaments = texture(cloud_shape, q * 1.7 + vec2(0.57, 0.21)).r;
+	float detail = texture(cloud_detail, q * 2.8 + vec2(0.31, 0.71)).r;
+	vec2 spread = q * vec2(0.65, 1.8);
+	float envelope = exp(-dot(spread, spread) * 2.0);
+	float dust = smoothstep(0.25, 0.75, filaments);
+	float wisps = pow(max(shape - 0.18, 0.0), 1.4) * (0.35 + detail * 0.65) * (1.0 - dust * 0.7);
+	vec3 colour = mix(vec3(0.38, 0.16, 0.58), vec3(0.14, 0.32, 0.38),
+		clamp(0.5 + q.x * 0.28 + warp.y * 0.5, 0.0, 1.0));
+	colour = mix(colour, vec3(0.62, 0.18, 0.32), smoothstep(0.55, 0.80, filaments) * 0.3);
+	float moonlight = moon_illumination(sun, moon) * smoothstep(-0.05, 0.20, moon.y);
+	float fade = pow(1.0 - day, 3.0) * smoothstep(0.02, 0.25, dir.y)
+		* smoothstep(0.25, 0.50, facing) * (1.0 - moonlight * 0.7);
+	return colour * wisps * envelope * fade * nebula_strength;
+}
+
 vec3 star_terms(vec3 dir, float day, float cloud_cover) {
 	float night = 1.0 - day;
 	if (night <= 0.001 || dir.y < -0.05) {
@@ -248,11 +286,16 @@ vec3 star_terms(vec3 dir, float day, float cloud_cover) {
 	float present = step(1.0 - star_density, hash12(cell + 7.1));
 	vec2 centre = 0.2 + h * 0.6;
 	float d = length(f - centre);
-	float twinkle = 0.65 + 0.35 * sin(dynamic_sky_time * (2.0 + h.x * 4.0) + h.y * 6.283);
-	float star = present * (1.0 - smoothstep(0.0, 0.07 + h.y * 0.05, d)) * twinkle;
-	vec3 tint = mix(vec3(0.85, 0.9, 1.0), vec3(1.0, 0.92, 0.80), h.x);
-	float bright_glow = present * step(0.93, h.y) * exp(-d * 14.0) * star_glow * 0.45;
-	return tint * (star * (0.35 + h.y * 0.65) + bright_glow) * fade;
+	float size = hash12(cell + 19.8);
+	float bright = smoothstep(0.88, 1.0, h.y);
+	float radius = mix(0.035, 0.11, size * size) + bright * 0.025;
+	float twinkle = 0.86 + 0.14 * sin(dynamic_sky_time * (1.2 + h.x * 2.0) + h.y * TAU);
+	float star = 1.0 - smoothstep(0.0, radius, d);
+	vec3 tint = mix(vec3(0.55, 0.72, 1.0), vec3(1.0, 0.96, 0.90), smoothstep(0.0, 0.55, h.x));
+	tint = mix(tint, vec3(1.0, 0.62, 0.38), smoothstep(0.65, 1.0, h.x));
+	float glow_radius = radius * 2.5;
+	float glow = exp(-d * d / (glow_radius * glow_radius)) * (0.025 + bright * 0.28) * star_glow;
+	return tint * present * (star * (0.35 + size * 0.65 + bright * 1.8) + glow) * twinkle * fade;
 }
 
 #include "res://src/Engine/level/environment/dynamic/dynamic_cloud_layers.gdshaderinc"
@@ -433,7 +476,7 @@ void sky() {
 				horizon_distance);
 		}
 	} else {
-		vec3 moon = normalize(moon_dir_world);
+		vec3 moon = moon_world(sun);
 		float day = daylight(sun);
 
 		if (AT_QUARTER_RES_PASS) {
@@ -456,6 +499,7 @@ void sky() {
 
 			vec3 col = sky_gradient(dir, sun, day);
 			float moon_mask = smoothstep(cos(moon_size * 1.02), cos(moon_size * 0.98), dot(dir, moon));
+			col += nebula_terms(dir, moon, sun, day) * (1.0 - moon_mask);
 			col += star_terms(dir, day, 0.0) * (1.0 - moon_mask);
 			col += moon_terms(dir, moon, sun, day);
 			col += sun_terms(dir, sun, day, 0.0);
