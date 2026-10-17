@@ -345,6 +345,7 @@ inline void GuestTickPumpRequestSaveCount() {
 /// Runs one Lua source chunk (at most 943 bytes) in the GAME VM; false when there is none.
 /// Defined in hooks/guest_tick_pump.cpp.
 bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk);
+bool RunNewGameTransition(PPCContext& ctx, uint8_t* base);
 
 /// Re-applies the camera feel the host last chose. The camera scripts run again whenever a
 /// CameraManager is built (a save load, a co-op join) and restore the shipped values.

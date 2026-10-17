@@ -815,6 +815,8 @@ public static class Engine_LevelScene
             Name = level.SceneNodeName,
             Scale = new Vector3(-1f, 1f, 1f),
         };
+        root.SetMeta(Refii.Save.Engine_GoldenCockPlacements.WorldMeta, level.World);
+        root.SetMeta(Refii.Save.Engine_GoldenCockPlacements.PathMeta, level.LevelPath);
         if (Refii.Models.Engine_ClassicMaterial.Active)
         {
             // The classic look's editor drive; inert in the game, which pumps the path itself.
@@ -1293,6 +1295,8 @@ public static class Engine_LevelScene
         }
 
         Mark("terrain-join");
+
+        Refii.Save.Engine_GoldenCockPlacements.AddToLevel(root, level);
 
         GD.Print($"[level-build] {level}: {clock.ElapsedMilliseconds} ms of construction — " +
             string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")));

@@ -41,6 +41,23 @@
 
 namespace refii::vfs {
 
+static std::atomic<uint64_t> g_newGameResult{0};
+static std::atomic<uint32_t> g_newGameGeneration{0};
+
+extern "C" void refii_bridge_new_game_result(uint32_t success) {
+  const uint64_t sequence = (g_newGameResult.load(std::memory_order_relaxed) >> 1) + 1;
+  g_newGameResult.store((sequence << 1) | (success ? 1u : 0u), std::memory_order_release);
+}
+
+extern "C" void refii_bridge_new_game_generation(void) {
+  g_newGameGeneration.fetch_add(1u, std::memory_order_release);
+}
+
+uint64_t NewGameTransitionResult(uint32_t* generation) {
+  if (generation) *generation = g_newGameGeneration.load(std::memory_order_acquire);
+  return g_newGameResult.load(std::memory_order_acquire);
+}
+
 /// An alternate signal stack for the calling thread, once. A fault on a thread whose stack has
 /// overflowed cannot have a handler frame pushed onto it, so the kernel kills the process with
 /// no handler run and no dmesg line. Guest threads are created without one; the tick pump and

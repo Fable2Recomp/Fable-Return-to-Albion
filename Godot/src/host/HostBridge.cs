@@ -23,7 +23,33 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 184;
+	public const int ExpectedAbiVersion = 186;
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
+
+	public static string? GetSaveRoot()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp) return null;
+		var buffer = new byte[32768];
+		return RefiiHostGetSaveRoot(buffer, (uint)buffer.Length) != 0 ? Decode(buffer) : null;
+	}
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern ulong RefiiHostGetNewGameState(out uint generation);
+
+	public static (uint Generation, ulong Result) GetNewGameState()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp) return default;
+		ulong result = RefiiHostGetNewGameState(out uint generation);
+		return (generation, result);
+	}
+
+	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+	private static extern uint RefiiHostGetGoldenCockInteraction();
+
+	public static uint GetGoldenCockInteraction() =>
+		TryGetAbiVersion() is not null && IsGuestUp ? RefiiHostGetGoldenCockInteraction() : 0u;
 
 	private const int MessageCapacity = 512;
 

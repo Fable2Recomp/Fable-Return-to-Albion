@@ -197,7 +197,7 @@ public partial class GameInput
 	/// </summary>
 	private void UpdateKeyboardMouse(bool devices)
 	{
-		bool menuOwns = ScreenMenuOwnsInput || ModalBoxOwnsInput || MenuBoxOwnsInput ||
+		bool menuOwns = GameGoldenCock.OwnsInput || ScreenMenuOwnsInput || ModalBoxOwnsInput || MenuBoxOwnsInput ||
 			ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp;
 		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
 			HostBridge.GetPauseState() is not { ModalMode: not 1 };

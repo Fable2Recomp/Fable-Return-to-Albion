@@ -7940,6 +7940,10 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
         }
       }
       ran = true;
+    } else if (name == "RefiiNewGame") {
+      const bool luaRan = RunNewGameTransition(ctx, base);
+      NoteDebugCallResult(0, luaRan ? 1u : 0u, "RefiiNewGame");
+      ran = true;
     } else if (name.rfind("debug-gamelua:", 0) == 0) {
       // The same probe against the GAME VM, where the shipped game scripts and mods' own Lua
       // live. It answers one bit: whether the chunk ran without error -- so

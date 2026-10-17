@@ -164,7 +164,11 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 				if (label is not null)
 				{
 					label.Scale *= ChoiceTextScale;
+					if (label is MeshInstance3D { MaterialOverride: ShaderMaterial material } text)
+						text.MaterialOverride = (ShaderMaterial)material.Duplicate();
 				}
+				if (clone.GetNodeOrNull<Node3D>(P("Choices/Multiplayer_Button") + $"{i + 1}/" + P("Choice1/RimSelect")) is { } rim)
+					RevealSelectionArt(rim);
 			}
 
 			panel.AddChild(clone);
@@ -174,6 +178,14 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 
 		panel.LastReport = panel.HasShippedArt ? "authored group cloned" : "group NOT found";
 		return panel;
+	}
+
+	private static void RevealSelectionArt(Node node)
+	{
+		if (node is Node3D visible) visible.Show();
+		if (node is MeshInstance3D mesh && Engine_UiSceneBuilder.SetQuadOpacity(mesh, 1f))
+			mesh.SetMeta(Engine_UiSceneBuilder.AuthoredAlphaMeta, 1f);
+		foreach (Node child in node.GetChildren()) RevealSelectionArt(child);
 	}
 
 	/// <summary>
@@ -218,11 +230,14 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 				continue;
 			}
 
-			if (labels[i] is { Length: > 0 } label &&
-				(button.GetNodeOrNull<MeshInstance3D>(P("Choice1/Frame/Choice1")) ??
+			bool enabled = (enabledMask & (1u << i)) != 0;
+			float opacity = !enabled ? 0.35f : i == selected ? 1f : 0.7f;
+			if ((button.GetNodeOrNull<MeshInstance3D>(P("Choice1/Frame/Choice1")) ??
 				 button.GetNodeOrNull<MeshInstance3D>(P("Choice1/Choice1"))) is { } labelNode)
 			{
-				Theme.SetMeshText(labelNode, label);
+				if (labels[i] is { Length: > 0 } label) Theme.SetMeshText(labelNode, label);
+				if (labelNode.MaterialOverride is ShaderMaterial material)
+					material.SetShaderParameter("opacity", opacity);
 			}
 
 			// THE SELECTION RIM — `Choice1/RimSelect` and its `sliderframe` quad, authored OFF on
@@ -235,9 +250,7 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 
 			// Host-owned highlight: the selected row at full strength, the rest dimmed, a
 			// disabled option dimmer still.
-			bool enabled = (enabledMask & (1u << i)) != 0;
-			Engine_UiSceneBuilder.FadeSubtree(
-				button, !enabled ? 0.35f : i == selected ? 1f : 0.7f);
+			Engine_UiSceneBuilder.FadeSubtree(button, opacity);
 		}
 
 		if (_group.GetNodeOrNull<Node3D>(P("OK/CANCEL/Negative")) is { } cancel)

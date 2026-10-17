@@ -488,6 +488,7 @@ public partial class GameInput : Node
 	{
 		uint buttons = state.Buttons;
 		bool masked = MaskMenuInput;
+		bool goldenMenu = GameGoldenCock.OwnsInput;
 		bool pauseMasked = !masked && MaskPauseInput;
 		bool queryMasked = !masked && !pauseMasked && MaskPauseQueryInput;
 		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the
@@ -497,9 +498,10 @@ public partial class GameInput : Node
 			MaskMenuBoxInput;
 		bool listMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
 			!boxMasked && MaskScreenMenuInput;
-		bool menuMask = masked || pauseMasked || queryMasked || boxMasked || listMasked;
+		bool menuMask = goldenMenu || masked || pauseMasked || queryMasked || boxMasked || listMasked;
 		System.Func<uint, uint> filter =
-			masked ? WithoutMenuInput
+			goldenMenu ? static _ => 0u
+			: masked ? WithoutMenuInput
 			: pauseMasked ? WithoutPauseInput
 			: queryMasked ? WithoutQueryInput
 			: cardMasked ? WithoutCardInput
@@ -519,7 +521,7 @@ public partial class GameInput : Node
 		HostBridge.SetControllerState(
 			pad, connected,
 			filter(buttons) & ~_heldAcrossUnmask[pad],
-			state.LeftTrigger, state.RightTrigger,
+			goldenMenu ? (byte)0 : state.LeftTrigger, goldenMenu ? (byte)0 : state.RightTrigger,
 			// The stick is masked with the buttons: `sub_826E39C0` dead-zones the left stick
 			// against ±0.75 and emits the same codes the D-pad does — 28/29 for Y at
 			// 0x826E3C04/0x826E3C58, 30/31 for X at 0x826E3B50/0x826E3BAC.
@@ -531,8 +533,8 @@ public partial class GameInput : Node
 			// Invert X is ours: the guest has a vertical invert (CameraLookInverted, record33+0x2A,
 			// negated at 0x825ADD28) and nothing for the horizontal. Applied only while the stick
 			// is the camera's — never under a menu, which reads it as a direction.
-			cardMasked ? 0 : (InvertCameraX && !menuMask ? -state.RightX : state.RightX),
-			cardMasked ? 0 : state.RightY);
+			goldenMenu || cardMasked ? 0 : (InvertCameraX && !menuMask ? -state.RightX : state.RightX),
+			goldenMenu || cardMasked ? 0 : state.RightY);
 	}
 
 	/// <summary>

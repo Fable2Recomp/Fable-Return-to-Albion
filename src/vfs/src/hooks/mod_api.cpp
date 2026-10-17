@@ -20,7 +20,10 @@ uint32_t HeroEntity(uint8_t* base);
 
 std::atomic<uint32_t> g_lua_generation{0};
 
-void BumpLuaGeneration() { g_lua_generation.fetch_add(1u, std::memory_order_relaxed); }
+void BumpLuaGeneration() {
+  g_lua_generation.fetch_add(1u, std::memory_order_relaxed);
+  refii_bridge_new_game_generation();
+}
 }  // namespace refii::vfs
 
 namespace {

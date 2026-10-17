@@ -133,6 +133,7 @@ uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
 // write cannot do this job, and that state file for why the queue is in refii_vfs and not
 // beside the pump hook that drains it.
 uint32_t PostGuestTickAction(const char* name);
+uint64_t NewGameTransitionResult(uint32_t* generation);
 uint32_t GuestTickPumpHeroStateApplied(uint32_t player);
 uint32_t DebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3,
                          char* out_note, uint32_t note_capacity);
@@ -2303,7 +2304,21 @@ extern "C" {
 ///     RefiiHostTracyLive, and guest stack sampling (RefiiHostGuestSamplerStart/Stop).
 /// 184 adds hard mods' named values: RefiiHostGetModValue (what a mod's hook published) and
 ///     RefiiHostSetModSetting (what Godot hands it), over src/vfs/src/core/mod_values.cpp.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 184; }
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 186; }
+
+REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetNewGameState(uint32_t* generation) {
+    return refii::vfs::NewGameTransitionResult(generation);
+}
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
+    auto* state = rex::system::kernel_state();
+    if (!output || capacity == 0 || !state || !state->emulator()) return 0;
+    const auto path = state->emulator()->user_data_root().u8string();
+    if (path.empty() || path.size() >= capacity) return 0;
+    std::memcpy(output, path.data(), path.size());
+    output[path.size()] = 0;
+    return 1;
+}
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }
 
@@ -15854,6 +15869,31 @@ bool LuaMenuWaitingForInput(const uint8_t* base, uint32_t presentation, uint32_t
 }  // namespace
 }  // extern "C++"
 
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGoldenCockInteraction(void) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+    const uint32_t root = GuestWordAt(base, refii::guest::Address(0x83496AB8u));
+    const uint32_t game = LuaPlausible(root) ? GuestWordAt(base, root + 0xCu) : 0;
+    const uint32_t state = LuaPlausible(game) ? GuestWordAt(base, game + 0xACu) : 0;
+    if (!LuaPlausible(state)) return 0;
+    const LuaValue globals = LuaRead(base, state + 72u);
+    if (globals.tt != kLuaTTable || !LuaPlausible(globals.value)) return 0;
+    const uint32_t count = GuestWordAt(base, globals.value + 8u);
+    const uint32_t nodes = GuestWordAt(base, globals.value + 20u);
+    if (!LuaPlausible(nodes) || count > 65536u) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t node = nodes + i * 20u;
+        if (LuaText(base, LuaRead(base, node + 8u)) != "RefiiGoldenCockInteraction") continue;
+        const LuaValue value = LuaRead(base, node);
+        const float sequence = value.tt == kLuaTNumber ? LuaNumber(value) : 0.0f;
+        return std::isfinite(sequence) && sequence >= 0.0f && sequence < 1000000.0f
+            ? static_cast<uint32_t>(sequence) : 0u;
+    }
+    return 0;
+}
 
 /// The live expandable-menu model, straight out of the presentation's Lua. What is read, and
 /// where it is stated:

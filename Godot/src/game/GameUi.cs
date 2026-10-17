@@ -5928,8 +5928,12 @@ public partial class GameUi : Node
 		return true;
 	}
 
+	public static bool WorldInteractionAllowed { get; private set; }
+
 	private void ui_processBody(double delta)
 	{
+		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene;
+		if (DriveGoldenCockMenu(delta)) return;
 		// THE QUIT LATCH. The guest is still running its confirmation, save and teardown; the
 		// front end coming up is it reporting all three done, and the only point at which
 		// ending the process cannot interrupt a save in flight.

@@ -125,6 +125,9 @@ public partial class Engine_GameAssets : Node
 					overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays),
 					updateRoot: Refii.Core.Engine_GameData.UpdateRootFor(GameDirectory));
 				ApplyModOrder(mounted, overlays, order);
+				try { Refii.Save.Engine_GoldenCockRuntime.Attach(mounted, Refii.Save.Engine_GoldenCockPlacements.Load()); }
+				catch (Exception exception) { GD.PushError("[golden-cock] " + exception.Message); }
+				Refii.Save.Engine_NewGameRuntime.Attach(mounted);
 			}
 			catch (Exception exception)
 			{

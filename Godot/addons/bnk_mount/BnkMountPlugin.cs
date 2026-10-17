@@ -140,8 +140,7 @@ public partial class BnkMountPlugin : EditorPlugin
 
         StartMount();
         EditorFileSystem resFs = EditorInterface.Singleton.GetResourceFilesystem();
-        resFs.FilesystemChanged += OnFilesystemChanged;
-        resFs.SourcesChanged += OnSourcesChanged;
+        ConnectFilesystemSignals(resFs);
         AddStreamingLabel();
         _entityInspector = new EntityInspectorPlugin();
         AddInspectorPlugin(_entityInspector);
@@ -163,8 +162,7 @@ public partial class BnkMountPlugin : EditorPlugin
         EditorFileSystem? resFs = EditorInterface.Singleton?.GetResourceFilesystem();
         if (resFs is not null && GodotObject.IsInstanceValid(resFs))
         {
-            resFs.FilesystemChanged -= OnFilesystemChanged;
-            resFs.SourcesChanged -= OnSourcesChanged;
+            DisconnectFilesystemSignals(resFs);
         }
         RemoveStreamingLabel();
         RemoveGameRoot();
@@ -310,6 +308,26 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         _streamingLabel = null;
+    }
+
+    private void ConnectFilesystemSignals(GodotObject filesystem)
+    {
+        var changed = new Callable(this, MethodName.OnFilesystemChanged);
+        var sources = new Callable(this, MethodName.OnSourcesChanged);
+        if (!filesystem.IsConnected(EditorFileSystem.SignalName.FilesystemChanged, changed))
+            filesystem.Connect(EditorFileSystem.SignalName.FilesystemChanged, changed);
+        if (!filesystem.IsConnected(EditorFileSystem.SignalName.SourcesChanged, sources))
+            filesystem.Connect(EditorFileSystem.SignalName.SourcesChanged, sources);
+    }
+
+    private void DisconnectFilesystemSignals(GodotObject filesystem)
+    {
+        var changed = new Callable(this, MethodName.OnFilesystemChanged);
+        var sources = new Callable(this, MethodName.OnSourcesChanged);
+        if (filesystem.IsConnected(EditorFileSystem.SignalName.FilesystemChanged, changed))
+            filesystem.Disconnect(EditorFileSystem.SignalName.FilesystemChanged, changed);
+        if (filesystem.IsConnected(EditorFileSystem.SignalName.SourcesChanged, sources))
+            filesystem.Disconnect(EditorFileSystem.SignalName.SourcesChanged, sources);
     }
 
     private void OnFilesystemChanged()
@@ -1459,6 +1477,9 @@ public partial class BnkMountPlugin : EditorPlugin
             {
                 return;
             }
+
+            if (Refii.Save.Engine_GoldenCockPlacements.Capture(levelRoot))
+                GD.Print("[golden-cock] Saved level placement for the installed game.");
 
             string activeMod = EditorModExporter.ActiveModName;
             if (string.IsNullOrWhiteSpace(activeMod))

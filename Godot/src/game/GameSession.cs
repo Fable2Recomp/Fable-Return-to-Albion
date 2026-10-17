@@ -242,6 +242,8 @@ public partial class GameSession : Node
 
 		// Input starts only once the guest is running.
 		AddChild(new GameInput { Name = "GameInput" });
+		AddChild(new GameGoldenCock { Name = "GoldenCockInteraction" });
+		AddChild(new GameGoldenCockCollision { Name = "GoldenCockCollision" });
 
 		// The pub games watch the guest's published table state; they are not launched from here.
 		_pubGames = new GamePubGames { Name = "GamePubGames" };

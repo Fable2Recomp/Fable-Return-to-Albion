@@ -306,6 +306,7 @@ public partial class GameEntities : Node3D
         _guestPositions.Clear();
         foreach (HostBridge.GuestEntity entity in entities)
         {
+            if (GameGoldenCock.ObserveGuest(entity)) continue;
             long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             Refii.Models.Engine_ClassicZones.NoteEntity(entity.RecordHash, entity.Address);
             if (IsUsablePlacement(entity.Position))
@@ -320,6 +321,7 @@ public partial class GameEntities : Node3D
                 HeroPosition = ToGodot(entity.Position, entity.Rotation).Origin;
                 HeroGuestPosition = entity.Position;
                 HeroGuestRotation = entity.Rotation;
+                GameGoldenCockCollision.ObserveHero(entity, Refii.Core.Engine_GuestFrame.Frame);
             }
 
             // NOTHING TO DRAW, ALREADY KNOWN. Most entities are triggers, markers and

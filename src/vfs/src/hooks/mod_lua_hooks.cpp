@@ -103,6 +103,15 @@ bool RunComposedChunk(PPCContext& ctx, uint8_t* base, uint32_t state, const char
 
 }  // namespace
 
+bool refii::vfs::RunNewGameTransition(PPCContext& ctx, uint8_t* base) {
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = Plausible(root) ? LoadGuestU32(base, root + 0xCu) : 0u;
+  const uint32_t state = Plausible(game) ? LoadGuestU32(base, game + 0xACu) : 0u;
+  const bool ran = RunComposedChunk(ctx, base, state, "refii/new_game.lua");
+  refii_bridge_new_game_result(ran ? 1u : 0u);
+  return ran;
+}
+
 REX_EXTERN(rex_lhLuaScriptSystem_LoadStartupScripts) {
   REX_FUNC_PROLOGUE();
   static std::atomic<bool> traced{false};

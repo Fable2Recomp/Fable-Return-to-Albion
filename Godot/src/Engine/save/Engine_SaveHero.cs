@@ -52,6 +52,14 @@ public static class Engine_SaveHero
 		public uint Melee, Ranged;
 		public List<uint> Worn = new();
 		public List<(uint Record, int Count)> Inventory = new();
+		public float ChapterProgress;
+		public HashSet<string> CompletedQuests = new(StringComparer.OrdinalIgnoreCase);
+		public bool HasInventoryInstanceData;
+		public List<uint> UnlockedExpressions = new();
+		public List<(int Direction, int Slot, int Spell)> AssignedSpells = new();
+		public List<string> UnlockedTitles = new();
+		public List<string> FreeTitles = new();
+		public uint Title;
 	}
 
 	/// <summary>
@@ -106,7 +114,7 @@ public static class Engine_SaveHero
 			LastError = LastError.Length != 0 ? LastError : "mainsave.bin holds no hero entity";
 			return null;
 		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or XmlException or IndexOutOfRangeException or ArgumentException)
+		catch (Exception exception) when (exception is IOException or InvalidDataException or XmlException or IndexOutOfRangeException or ArgumentException or InvalidOperationException or UnauthorizedAccessException or OverflowException)
 		{
 			LastError = $"{exception.GetType().Name}: {exception.Message}";
 			return null;
@@ -122,21 +130,28 @@ public static class Engine_SaveHero
 			return;
 		}
 
+		if (new FileInfo(path).Length > 1024 * 1024)
+			throw new InvalidDataException("herosave.bin exceeds the supported size limit");
 		byte[] file = File.ReadAllBytes(path);
 		if (file.Length < 4)
 		{
-			return;
+			throw new InvalidDataException("herosave.bin is truncated");
 		}
 
 		int length = (file[0] << 24) | (file[1] << 16) | (file[2] << 8) | file[3];
-		length = Math.Min(length, file.Length - 4);
+		if (length <= 0 || length > file.Length - 4 || length > 1024 * 1024)
+			throw new InvalidDataException("herosave.bin has an invalid XML length");
 		string xml = Encoding.UTF8.GetString(file, 4, length);
-		var doc = new XmlDocument();
-		doc.LoadXml(xml);
-		XmlElement? root = doc.DocumentElement;
-		if (root is null)
+		var doc = new XmlDocument { XmlResolver = null };
+		using var xmlReader = XmlReader.Create(new StringReader(xml), new XmlReaderSettings
 		{
-			return;
+			DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 1024 * 1024,
+		});
+		doc.Load(xmlReader);
+		XmlElement? root = doc.DocumentElement;
+		if (root is null || root.Name != "HeroSave")
+		{
+			throw new InvalidDataException("herosave.bin does not contain HeroSave");
 		}
 
 		hero.Money = Int(root, "Money");
@@ -215,6 +230,8 @@ public static class Engine_SaveHero
 			if (index == _strings.Count)
 			{
 				int length = (int)U32();
+				if (length < 1 || length > 1024 * 1024 || length > _b.Length - _p)
+					throw new InvalidDataException("invalid save string length");
 				string text = Encoding.Latin1.GetString(_b, _p, length).TrimEnd('\0');
 				_p += length;
 				_strings.Add(text);
@@ -250,6 +267,7 @@ public static class Engine_SaveHero
 				{
 					case 0:
 					{
+						if (stack.Count >= 128) throw new InvalidDataException("save nesting limit exceeded");
 						var node = new Node { Name = Name() };
 						if (stack.Count == 0) root = node; else stack.Peek().Children.Add(node);
 						stack.Push(node);
@@ -281,6 +299,8 @@ public static class Engine_SaveHero
 
 	private static byte[] Inflate(string path)
 	{
+		if (new FileInfo(path).Length > 64 * 1024 * 1024)
+			throw new InvalidDataException("save exceeds the supported size limit");
 		byte[] file = File.ReadAllBytes(path);
 		// The chunks are one zlib stream: strip the two length words from each and feed the
 		// payloads to a single inflater.
@@ -290,7 +310,8 @@ public static class Engine_SaveHero
 		{
 			int compressed = (file[pos] << 24) | (file[pos + 1] << 16) | (file[pos + 2] << 8) | file[pos + 3];
 			pos += 8;
-			if (compressed < 0 || pos + compressed > file.Length) break;
+			if (compressed <= 0 || compressed > file.Length - pos)
+				throw new InvalidDataException("save compression chunk is truncated");
 			joined.Write(file, pos, compressed);
 			pos += compressed;
 		}
@@ -309,6 +330,8 @@ public static class Engine_SaveHero
 			while ((read = inflater.Read(buffer, 0, buffer.Length)) > 0)
 			{
 				output.Write(buffer, 0, read);
+				if (output.Length > 128 * 1024 * 1024)
+					throw new IOException("save exceeds the supported decompressed size limit");
 			}
 		}
 		catch (InvalidDataException) when (output.Length > 0)
@@ -387,6 +410,8 @@ public static class Engine_SaveHero
 				{
 					hero.Inventory.Add((record, Math.Max(1, count)));
 				}
+				if (item.Child("NumInstanceData")?.Text is int and > 0 or uint and > 0)
+					hero.HasInventoryInstanceData = true;
 			}
 		}
 
@@ -409,6 +434,7 @@ public static class Engine_SaveHero
 
 		if (byHash.TryGetValue(Fnv1("StatsComponent"), out Node? stats))
 		{
+			hero.ChapterProgress = stats.Child("ChapterProgress")?.Text is float chapter ? chapter : 0f;
 			hero.Morality = stats.Child("Morality")?.Text is float mo ? mo : hero.Morality;
 			hero.Purity = stats.Child("Purity")?.Text is float pu ? pu : hero.Purity;
 			hero.Renown = stats.Child("Renown")?.Text is int re ? re : hero.Renown;
@@ -426,11 +452,48 @@ public static class Engine_SaveHero
 					hero.AbilityLevels[index] = level;
 				}
 			}
+			hero.Title = stats.Child("TitleRecordID")?.Text is uint title ? title : 0u;
+			foreach (Node titleNode in stats.All("UnlockedTitleRecordName"))
+				if (titleNode.Child("Name")?.Text is string titleName) hero.UnlockedTitles.Add(titleName);
+			foreach (Node titleNode in stats.All("FreeToBuyTitleRecordName"))
+				if (titleNode.Child("Name")?.Text is string titleName) hero.FreeTitles.Add(titleName);
 		}
+
+		if (byHash.TryGetValue(Fnv1("ExperienceComponent"), out Node? experience))
+		{
+			string[] types = { "General", "Strength", "Skill", "Will" };
+			for (int i = 0; i < types.Length; i++)
+			{
+				if (experience.Child(types[i] + "Exp")?.Text is float value) hero.Experience[i] = value;
+				if (experience.Child("Total" + types[i] + "ExpEarned")?.Text is float total) hero.TotalExperience[i] = total;
+			}
+		}
+
+		if (byHash.TryGetValue(Fnv1("ExpressionPerformerComponent"), out Node? expressions))
+			foreach (Node info in expressions.All("ExpressionInfo"))
+				if (info.Child("Expression") is { } expression && expression.Child("Locked")?.Text is false &&
+					expression.Child("RecordId")?.Text is uint record && record != 0)
+					hero.UnlockedExpressions.Add(record);
+
+		if (byHash.TryGetValue(Fnv1("SpellManagerComponent"), out Node? spells))
+			for (int direction = 0; direction < 2; direction++)
+				for (int slot = 0; slot < 5; slot++)
+					if (spells.Child($"AssignedSpells{direction}_{slot}")?.Text is int spell)
+						hero.AssignedSpells.Add((direction, slot, spell));
 
 		if (byHash.TryGetValue(Fnv1("GraphicAppearanceMorphComponent"), out Node? morph))
 		{
 			hero.Face = morph.Child("CharacterUID")?.Text is uint face ? face : 0u;
+		}
+
+		if (byHash.TryGetValue(Fnv1("QuestTrackerComponent"), out Node? quests))
+		{
+			foreach (Node quest in quests.All("Quest"))
+			{
+				Node? info = quest.Child("QuestInfo");
+				if (info?.Child("Completed")?.Text is true && info.Child("QuestName")?.Text is string name)
+					hero.CompletedQuests.Add(name);
+			}
 		}
 
 		return true;

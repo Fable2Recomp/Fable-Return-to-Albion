@@ -551,6 +551,14 @@ public partial class GameDebugServer : Node
 			case "state":
 				return Ok(State());
 
+			case "goldencock":
+			{
+				var state = GameGoldenCockCollision.Diagnostics();
+				state["interaction"] = Refii.Host.HostBridge.GetGoldenCockInteraction();
+				state["menuOpen"] = GameGoldenCock.OwnsInput;
+				return Ok(state);
+			}
+
 			case "rows":
 				return Ok(Rows());
 
@@ -3117,7 +3125,7 @@ public partial class GameDebugServer : Node
 						"menu", "action", "call", "lua", "call-result", "poke", "heap",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
 						"wait", "log", "shot", "flicker", "press", "gdb", "achievements",
-						"gpuprofile", "capture",
+						"gpuprofile", "capture", "goldencock",
 					},
 				};
 		}
