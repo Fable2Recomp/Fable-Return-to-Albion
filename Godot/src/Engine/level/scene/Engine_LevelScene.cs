@@ -664,6 +664,7 @@ public static class Engine_LevelScene
         Mark("engine-level");
 
         Func<string, byte[]?>? terrainRead = source;
+        var interactionGround = new Engine_LandscapeGround();
         List<BuiltLandscape> TerrainWork()
         {
             // Every landscape the .engine_level states is built: the guest gives each type-4
@@ -690,6 +691,7 @@ public static class Engine_LevelScene
                     if (terrainRead?.Invoke(landscape.Ghf) is { } ghfBytes &&
                         Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
                     {
+                        interactionGround.Add(heights);
                         // Under the classic renderer the main landscape is the title's own
                         // patches on its own shaders, each patch's layers as its materials.
                         string classicError = "no .ehf";
@@ -751,6 +753,7 @@ public static class Engine_LevelScene
                 if (Engine_EhfHeights.TryDecode(ehfBytes, out GhfHeights vistaHeights, out string heightError) &&
                     Engine_EhfPages.TryBuild(ehfBytes, vistaHeights, out Engine_EhfPages.Built paged, out pageError))
                 {
+                    interactionGround.Add(vistaHeights);
                     // The guest's own background draw: chunks textured from the colour pages.
                     GD.Print(
                         $"[vista] {level}: {vistaName} from {landscape.Ehf} " +
@@ -770,6 +773,7 @@ public static class Engine_LevelScene
 
                 if (Engine_EhfHeights.TryDecode(ehfBytes, out vistaHeights, out heightError))
                 {
+                    interactionGround.Add(vistaHeights);
                     TerrainMesh gridMesh = Engine_GhfTerrain.BuildMesh(vistaHeights);
                     GD.Print(
                         $"[vista] {level}: {vistaName} from {landscape.Ehf} " +
@@ -1172,6 +1176,8 @@ public static class Engine_LevelScene
 
         List<BuiltLandscape> landscapes =
             terrainTask is not null ? terrainTask.GetAwaiter().GetResult() : TerrainWork();
+        if (root.GetNodeOrNull<Engine_SkyEnvironmentNode>(Engine_SkyEnvironment.NodeName) is { } interactionSky)
+            interactionSky.InteractionGround = interactionGround;
 
         if (landscapes.Count == 0 || !landscapes[0].Grid || landscapes[0].Chunks.Count == 0)
         {

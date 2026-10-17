@@ -30,6 +30,7 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
     private Engine_DynamicSkyDriver? _driver;
     private Engine_DynamicPrecipitation? _precipitation;
     private Engine_DynamicThunder? _thunder;
+    private Engine_DynamicSurfaceInteractions? _interactions;
     private readonly Engine_DynamicNightSky _nights = new();
     private int _day;
 
@@ -223,6 +224,11 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
             _thunder = new Engine_DynamicThunder { Name = "DynamicThunder" };
             AddChild(_thunder);
             _thunder.Bind(_driver);
+            var ground = new Engine_LandscapeGround();
+            ground.Add(new GhfHeights { Width = 2, Height = 2, OriginX = -200f, OriginZ = -200f,
+                Spacing = 400f, Values = new float[4] });
+            _interactions = new Engine_DynamicSurfaceInteractions { Name = "DynamicSurfaceInteractions", Ground = ground };
+            AddChild(_interactions);
         }
         var initialWeather = _preset == DynamicWeatherPreset.Theme ? DynamicWeatherPreset.PartlyCloudy : _preset;
         _driver.SetWeather(initialWeather, 0.01f);
@@ -245,6 +251,7 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
 
     public override void _Process(double delta)
     {
+        if (!SurfaceWeather) _interactions?.Disable();
         if (_material is null || _driver is null)
         {
             return;
@@ -255,6 +262,8 @@ public partial class Engine_DynamicSkyPreview : WorldEnvironment
             _driver.SetNightClock(_timeOfDay, _day, Aurora, _nights);
             _thunder?.Advance((float)delta);
             _driver.Tick((float)delta, _material, _precipitation, Environment, _volumetricClouds, SurfaceWeather);
+            _interactions?.Advance((float)delta, null, GetViewport().GetCamera3D()?.GlobalPosition ?? Vector3.Zero,
+                _driver.Weather, _driver.SurfaceState, SurfaceWeather, _daylight);
         }
 
         if (_dayLengthSeconds > 0f && _animate)

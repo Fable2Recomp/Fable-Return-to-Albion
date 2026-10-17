@@ -230,10 +230,28 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(
                     Engine_DynamicPrecipitation.NodeName),
                 Environment);
+            if (Current == this && !Engine.IsEditorHint())
+            {
+                if (_surfaceInteractions is null && Engine_DynamicSurfaceWeather.Enabled)
+                {
+                    _surfaceInteractions = new Engine_DynamicSurfaceInteractions { Name = "DynamicSurfaceInteractions" };
+                    AddChild(_surfaceInteractions);
+                }
+                if (_surfaceInteractions is { } interactions)
+                {
+                    interactions.Ground = InteractionGround;
+                    interactions.GroundRoot = GetParent() as Node3D;
+                    interactions.Advance((float)delta, Refii.Game.GameEntities.HeroPosition,
+                        ResolveCamera()?.GlobalPosition ?? Vector3.Zero, _dynamicSky.Weather,
+                        _dynamicSky.SurfaceState, Engine_DynamicSurfaceWeather.Enabled,
+                        _frame is { } contactFrame ? Engine_DynamicSky.Daylight(contactFrame) : 0f);
+                }
+            }
         }
         else
         {
             _dynamicThunder?.Bind(null);
+            _surfaceInteractions?.Disable();
             if (Current == this) Engine_DynamicSurfaceWeather.Reset();
         }
 
@@ -932,6 +950,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private SkyFrame? _frame;
     private ToneMapTheme? _toneMapTheme;
     private Engine_DynamicSkyDriver? _dynamicSky;
+    public Engine_LandscapeGround? InteractionGround { get; set; }
+    private Engine_DynamicSurfaceInteractions? _surfaceInteractions;
     private Engine_DynamicThunder? _dynamicThunder;
     private Engine_DynamicCloudShadows? _dynamicCloudShadowCaster;
     private Vector3 _lastMoon = new(float.NaN, 0, 0);

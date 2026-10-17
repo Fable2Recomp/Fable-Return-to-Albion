@@ -271,6 +271,18 @@ dynamic_surface_time={
 "type": "float",
 "value": 0.0
 }
+dynamic_surface_rain={
+"type": "float",
+"value": 0.0
+}
+dynamic_track_map={
+"type": "sampler2D",
+"value": ""
+}
+dynamic_track_projection={
+"type": "vec4",
+"value": Vector4(0, 0, 24, 0)
+}
 dynamic_sun_toward={
 "type": "vec3",
 "value": Vector3(0, 1, 0)

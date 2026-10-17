@@ -735,7 +735,7 @@ public sealed class Engine_DynamicSkyDriver
         TickLightning(delta);
         bool surfaces = surfaceWeather ?? Engine_DynamicSurfaceWeather.Enabled;
         _surface.Advance(delta, _now, _day, surfaces);
-        Engine_DynamicSurfaceWeather.Publish(_surface, _time, surfaces);
+        Engine_DynamicSurfaceWeather.Publish(_surface, _time, surfaces, _now.Rain);
         _aurora = Mathf.MoveToward(_aurora, _auroraWanted ? 1f : 0f, delta / 6f);
         material.SetShaderParameter("aurora_strength", _aurora);
         precipitation?.AdvanceMotion(delta, _lightning);
