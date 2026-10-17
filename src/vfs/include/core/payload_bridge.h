@@ -28,6 +28,9 @@
 extern "C" {
 #endif
 
+void refii_bridge_new_game_result(uint32_t success);
+void refii_bridge_new_game_generation(void);
+
 // Stage 2 voice capture. Wrappers: refii::vfs::NoteVoice* in core/audio_state.h.
 void refii_bridge_note_voice_created(uint32_t handle, uint32_t sample_rate,
                                      uint32_t channels);

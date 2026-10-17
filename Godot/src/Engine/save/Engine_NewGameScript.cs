@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -7,29 +8,78 @@ namespace Refii.Save;
 
 public static class Engine_NewGameScript
 {
-    public static string Build(NewGameSelection selection, Engine_SaveHero.Hero? hero, Func<uint, string?> recordName, bool live = false)
+    public static string Build(NewGameSelection selection, Engine_SaveHero.Hero? hero, Func<uint, string?> recordName, bool live = false,
+        Func<uint, IReadOnlyList<Engine_SaveHero.Augmentation>>? initialAugments = null,
+        Func<Engine_SaveHero.Augmentation, string?>? augmentationName = null)
     {
         if (selection.Start == NewGameStart.Childhood) return string.Empty;
         if (selection.Posters is null) throw new InvalidOperationException("The wanted-poster choice is required.");
         var apply = new StringBuilder();
+        var required = new HashSet<string>(StringComparer.Ordinal);
         if (selection.Start == NewGameStart.NewGamePlus)
         {
             if (hero is null || !hero.CompletedQuests.Contains("QC240_Endgame"))
                 throw new InvalidOperationException("The source save has not completed the main story.");
-            if (hero.HasInventoryInstanceData)
-                throw new InvalidOperationException("This save contains individual item data that cannot yet be transferred safely. Your save has not been changed.");
+            if (hero.HasInventoryInstanceData && hero.InventoryInstances.Count == 0 ||
+                hero.InventoryInstances.Any(p => p.Key < 0 || p.Key >= hero.Inventory.Count || p.Value.Unsupported))
+                throw new InvalidOperationException("This save contains an unsupported item customization. Your save has not been changed.");
             if (hero.Inventory.Count > 10000 || hero.Inventory.Any(i => i.Count <= 0 || i.Count > 100000) ||
                 hero.Inventory.Sum(i => (long)i.Count) > 100000)
                 throw new InvalidOperationException("The saved inventory is not valid for carryover.");
             apply.AppendLine("local h = GetPlayerHero()");
-            foreach (var item in hero.Inventory.GroupBy(i => i.Record).Select(g => (Record: g.Key, Count: g.Sum(i => i.Count))))
+            var ordinary = new Dictionary<uint, int>();
+            var customized = new StringBuilder();
+            for (int index = 0; index < hero.Inventory.Count; index++)
             {
+                var item = hero.Inventory[index];
                 string name = recordName(item.Record) ?? string.Empty;
                 if (string.IsNullOrEmpty(name))
                     throw new InvalidOperationException($"The installed game cannot resolve inventory item {item.Record:X8}. Install the source save's DLC and mods first.");
                 string quoted = Quote(name);
-                apply.AppendLine($"do local n = Inventory.GetNumberOfItemsOfType(h, {quoted}) for i = n + 1, {item.Count} do Inventory.AddItemOfType(h, {quoted}) end end");
+                required.Add(name);
+                hero.InventoryInstances.TryGetValue(index, out var instance);
+                var extra = new List<string>();
+                if (instance?.Augmentations is { } augments)
+                {
+                    var initial = initialAugments?.Invoke(item.Record) ?? throw new InvalidOperationException("The installed augmentation definitions are unavailable.");
+                    if (augments.Count > 32 || initial.Count > augments.Count || !initial.SequenceEqual(augments.Take(initial.Count)))
+                        throw new InvalidOperationException($"Item {item.Record:X8} has augmentations that differ from the installed game definitions.");
+                    foreach (var augment in augments.Skip(initial.Count))
+                    {
+                        string augmentItem = augmentationName?.Invoke(augment) ?? throw new InvalidOperationException($"The installed game is missing augmentation {augment.Primary:X8}/{augment.Secondary:X8}.");
+                        extra.Add(augmentItem);
+                        required.Add(augmentItem);
+                    }
+                }
+                if (extra.Count == 0 && instance?.Dyes is null)
+                {
+                    ordinary[item.Record] = ordinary.GetValueOrDefault(item.Record) + item.Count;
+                    continue;
+                }
+                customized.AppendLine($"for i = 1, {item.Count} do");
+                if (extra.Count == 0) customized.AppendLine($"local item = Inventory.AddItemOfType(h, {quoted})");
+                else
+                {
+                    customized.AppendLine($"local entity = Debug.CreateEntityAtPosition({quoted}, \"RefiiCarryover\", h:GetPosition())");
+                    customized.AppendLine("assert(entity and entity:IsAlive() and Augmentable.IsAvailable(entity), \"Cannot create the saved augmented item\")");
+                    foreach (string augment in extra) customized.AppendLine($"Augmentable.AddAugmentationOfType(entity, {Quote(augment)})");
+                    customized.AppendLine("local item = Inventory.AddEntity(h, entity, true, true)");
+                }
+                if (instance?.Dyes is { } dyes)
+                {
+                    if (dyes.Length != 2) throw new InvalidOperationException("The saved item dye data is invalid.");
+                    for (int slot = 0; slot < dyes.Length; slot++)
+                    {
+                        var dye = dyes[slot];
+                        if (dye.Red == 0 && dye.Green == 0 && dye.Blue == 0 && dye.Brightness == 0) continue;
+                        customized.AppendLine($"AppearanceModifierManager.SetClothingItemDyeColour(h, item, {(slot == 0 ? "true" : "false")}, {dye.Red}, {dye.Green}, {dye.Blue}, {Number(dye.Brightness)})");
+                    }
+                }
+                customized.AppendLine("end");
             }
+            foreach (var item in ordinary)
+                apply.AppendLine($"do local n = Inventory.GetNumberOfItemsOfType(h, {Quote(recordName(item.Key)!)}) for i = n + 1, {item.Value} do Inventory.AddItemOfType(h, {Quote(recordName(item.Key)!)}) end end");
+            apply.Append(customized);
             int gold = Math.Max(0, hero.Money);
             apply.AppendLine($"Money.Set(h, {gold & ~0xFFFFFF})");
             apply.AppendLine($"Money.Modify(h, {gold & 0xFFFFFF})");
@@ -54,6 +104,7 @@ public static class Engine_NewGameScript
             {
                 string name = recordName(expression) ?? string.Empty;
                 if (name.Length == 0) throw new InvalidOperationException("A saved expression needs unavailable game content.");
+                required.Add(name);
                 apply.AppendLine($"ExpressionPerformer.SetExpressionAsAvailable(h, {Quote(name)}, true)");
             }
             foreach (var spell in hero.AssignedSpells)
@@ -71,13 +122,8 @@ public static class Engine_NewGameScript
             {
                 string name = recordName(hero.Title) ?? string.Empty;
                 if (name.Length == 0) throw new InvalidOperationException("The saved hero title needs unavailable game content.");
+                required.Add(name);
                 apply.AppendLine($"Stats.SetTitleRecord(h, {Quote(name)})");
-            }
-            foreach (uint worn in hero.Worn)
-            {
-                string name = recordName(worn) ?? string.Empty;
-                if (name.Length == 0) throw new InvalidOperationException("The saved outfit needs unavailable game content.");
-                apply.AppendLine($"AppearanceModifierManager.AddAndReplaceItemOfType(h, {Quote(name)})");
             }
         }
         string evil = selection.Posters == WantedPosterRecipient.Arfur ? "true" : "false";
@@ -89,7 +135,7 @@ public static class Engine_NewGameScript
             assert(Gameflow.ChildhoodVars and childhood.ClearScriptRules and childhood.Terminate,
                 "Unsupported childhood quest")
             assert(Gameflow.GameflowMode, "The childhood transition requires the story gameflow")
-            local male = {{(hero is null ? "Gameflow.ChildhoodVars.Male" : hero.Female ? "false" : "true")}}
+            local male = Gameflow.ChildhoodVars.Male
             childhood:ClearLookAtCamera()
             childhood:SetDefaultCamera()
             childhood:ClearScriptRules()
@@ -125,6 +171,7 @@ public static class Engine_NewGameScript
             do
                 if {{(live ? "true" : "not IsLoadedFromSaveGame() and not RefiiNewGameStarted")}} then
                     assert(Gameflow and Gameflow.SetGameflowPosition and ScriptEnum.DebugQC060, "Refii: unsupported gameflow")
+                    {{string.Join("\n", required.Select(name => $"assert(GDB.RecordExists({Quote(name)}), {Quote("Missing carryover record: " + name)})"))}}
                     {{prepare}}
                     RefiiNewGameStarted = true
                     Gameflow.ChildhoodResolutionEvil = {{evil}}

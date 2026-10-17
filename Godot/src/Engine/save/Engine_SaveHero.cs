@@ -55,11 +55,21 @@ public static class Engine_SaveHero
 		public float ChapterProgress;
 		public HashSet<string> CompletedQuests = new(StringComparer.OrdinalIgnoreCase);
 		public bool HasInventoryInstanceData;
+		public Dictionary<int, InventoryInstance> InventoryInstances = new();
 		public List<uint> UnlockedExpressions = new();
 		public List<(int Direction, int Slot, int Spell)> AssignedSpells = new();
 		public List<string> UnlockedTitles = new();
 		public List<string> FreeTitles = new();
 		public uint Title;
+	}
+
+	public sealed record Augmentation(uint Primary, uint Secondary);
+	public sealed record Dye(byte Red, byte Green, byte Blue, float Brightness);
+	public sealed class InventoryInstance
+	{
+		public List<Augmentation>? Augmentations;
+		public Dye[]? Dyes;
+		public bool Unsupported;
 	}
 
 	/// <summary>
@@ -408,10 +418,14 @@ public static class Engine_SaveHero
 				int count = item.Child("Count")?.Text is int c ? c : 1;
 				if (record != 0u)
 				{
+					var instance = ReadInventoryInstance(item);
+					if (instance is not null)
+					{
+						hero.HasInventoryInstanceData = true;
+						hero.InventoryInstances.Add(hero.Inventory.Count, instance);
+					}
 					hero.Inventory.Add((record, Math.Max(1, count)));
 				}
-				if (item.Child("NumInstanceData")?.Text is int and > 0 or uint and > 0)
-					hero.HasInventoryInstanceData = true;
 			}
 		}
 
@@ -498,6 +512,49 @@ public static class Engine_SaveHero
 
 		return true;
 	}
+
+	private static InventoryInstance? ReadInventoryInstance(Node item)
+	{
+		uint declared = Unsigned(item.Child("NumInstanceData"), 0);
+		var data = new InventoryInstance();
+		int found = 0;
+		foreach (Node instance in item.All("InstanceData"))
+		{
+			found++;
+			switch (Unsigned(instance.Child("InstanceType")))
+			{
+				case 1 when data.Augmentations is null:
+					data.Augmentations = new();
+					foreach (Node augment in instance.All("Augmentation"))
+						data.Augmentations.Add(new(Unsigned(augment.Child("Primary")), Unsigned(augment.Child("Secondary"))));
+					break;
+				case 2 when data.Dyes is null:
+					data.Dyes = new Dye[2];
+					for (int i = 0; i < 2; i++)
+					{
+						Node colour = instance.Child("Colour" + (i + 1)) ?? throw new InvalidDataException("Missing item dye colour.");
+						if (instance.Child("Brightness" + (i + 1))?.Text is not float brightness || !float.IsFinite(brightness))
+							throw new InvalidDataException("Invalid item dye brightness.");
+						data.Dyes[i] = new(checked((byte)Unsigned(colour.Child("Red"))), checked((byte)Unsigned(colour.Child("Green"))),
+							checked((byte)Unsigned(colour.Child("Blue"))), brightness);
+					}
+					break;
+				default:
+					data.Unsupported = true;
+					break;
+			}
+		}
+		if (found != declared) throw new InvalidDataException("The saved item instance count does not match its data.");
+		return found == 0 ? null : data;
+	}
+
+	private static uint Unsigned(Node? node, uint? fallback = null) => node?.Text switch
+	{
+		uint value => value,
+		int value when value >= 0 => (uint)value,
+		null when fallback.HasValue => fallback.Value,
+		_ => throw new InvalidDataException("Invalid saved inventory value.")
+	};
 
 	private static uint? ItemAtUnit(List<(uint Record, int Count)> inventory, int unit)
 	{

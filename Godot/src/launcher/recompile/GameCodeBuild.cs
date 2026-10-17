@@ -751,6 +751,10 @@ public static class GameCodeBuild
 		{
 			await WindowsInstallInputsGate.WaitAsync(cancellation).ConfigureAwait(false);
 			acquired = true;
+			if (!WindowsInstallInputsMissing())
+			{
+				return new Result(true, string.Empty);
+			}
 
 			if (!TryResolveWindowsSourceRoot(out string sourceRoot, out string sourceError))
 			{
