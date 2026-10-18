@@ -33,6 +33,7 @@ public partial class Engine_ClassicParticles
         public ShaderMaterial? Material;
         public string Key = string.Empty;
         public long Shape = -1;
+        public ulong TextureSignature;
         public int Vertices;
         public ImageTexture? Stream;
         /// <summary>The control-point image, refilled in place; and its bytes.</summary>
@@ -46,6 +47,12 @@ public partial class Engine_ClassicParticles
         public long Seen;
         /// <summary>Drawn into the displacement target (IsDisplacementTexture).</summary>
         public bool Displaces;
+        /// <summary>True when single-trail camera-aligned billboarding requires vs_g_CameraZVector on camera rotation.</summary>
+        public bool CameraAligned;
+        /// <summary>True when depth-fade (soft trails) requires ps_g_InverseViewProjection on camera motion.</summary>
+        public bool Soft;
+        public float[] Snapshot = Array.Empty<float>();
+        public int SnapshotLength;
     }
 
     private readonly float[] _trailBuffer = new float[1 << 19];
@@ -56,19 +63,54 @@ public partial class Engine_ClassicParticles
     private readonly Vector4[] _trailWorld = new Vector4[3];
     private readonly Vector4[] _trailUvScales = new Vector4[4];
     private bool _reportedStaleTrails;
+    private uint _lastTrailUsed;
+    private Vector3 _lastTrailCameraZ;
 
     /// <summary>Trails drawn at the last pump.</summary>
     public int TrailCount => _trails.Count;
 
-    private void PumpTrails(Camera3D camera, Vector2 viewport)
+    private void PumpTrails(Camera3D camera, Vector2 viewport, bool guestStepped, bool inverseVpChanged)
     {
-        uint used = Refii.Host.HostBridge.GetClassicTrails(_trailBuffer);
+        Vector3 cameraZ = camera.GlobalTransform.Basis.Z;
+        bool cameraZChanged = cameraZ != _lastTrailCameraZ;
+        _lastTrailCameraZ = cameraZ;
+
+        if (!guestStepped)
+        {
+            if (!cameraZChanged && !inverseVpChanged)
+            {
+                return;
+            }
+            Vector3 guestAxis = ToGuest(cameraZ);
+            var axisVec = new Vector4(guestAxis.X, guestAxis.Y, guestAxis.Z, 0f);
+            foreach (Trail trail in _trails.Values)
+            {
+                ShaderMaterial? m = trail.Material;
+                if (m is null)
+                {
+                    continue;
+                }
+                if (cameraZChanged && trail.CameraAligned)
+                {
+                    m.SetShaderParameter(TrailCameraZVectorName, axisVec);
+                }
+                if (inverseVpChanged && trail.Soft && trail.InverseVpSent != _inverseVp.Version)
+                {
+                    trail.InverseVpSent = _inverseVp.Version;
+                    m.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
+                }
+            }
+            return;
+        }
+
+        uint used = _lastTrailUsed = Refii.Host.HostBridge.GetClassicTrails(_trailBuffer);
         int groups = used == 0 ? 0 : (int)_trailBuffer[0];
         int at = 2;
         for (int g = 0; g < groups && at + TrailHeader <= used; g++)
         {
             int points = (int)_trailBuffer[at + 3] + 3;
-            if (at + TrailHeader + points * TrailPoint > used)
+            int length = TrailHeader + points * TrailPoint;
+            if (at + length > used)
             {
                 break;
             }
@@ -79,7 +121,17 @@ public partial class Engine_ClassicParticles
                 _trails[address] = trail;
             }
             trail.Seen = _frames;
-            if (ComposeTrail(trail, at))
+            bool changed = trail.SnapshotLength != length || !Same(trail.Snapshot, _trailBuffer, at, length);
+            if (changed)
+            {
+                if (trail.Snapshot.Length < length)
+                {
+                    trail.Snapshot = new float[Math.Max(length, trail.Snapshot.Length * 2)];
+                }
+                Array.Copy(_trailBuffer, at, trail.Snapshot, 0, length);
+                trail.SnapshotLength = length;
+            }
+            if (ComposeTrail(trail, at, changed))
             {
                 // The trail's particle-system instance (header [38]): its effect stands down in FableFx.
                 uint owner = BitConverter.SingleToUInt32Bits(_trailBuffer[at + 38]);
@@ -91,11 +143,14 @@ public partial class Engine_ClassicParticles
                 {
                     ++Engine_ClassicDisplacement.Drawn;
                 }
-                StripMesh(trail, (int)_trailBuffer[at + 5]);
-                StreamTexture(trail, at + TrailHeader, points);
-                TrailConstants(trail, at, camera, viewport);
+                if (changed || trail.Vertices != (int)_trailBuffer[at + 5] || trail.Stream is null)
+                {
+                    StripMesh(trail, (int)_trailBuffer[at + 5]);
+                    StreamTexture(trail, at + TrailHeader, points);
+                }
+                TrailConstants(trail, at, camera, viewport, changed);
             }
-            at += TrailHeader + points * TrailPoint;
+            at += length;
         }
 
         _trailsGone.Clear();
@@ -192,10 +247,38 @@ public partial class Engine_ClassicParticles
         }
     }
 
-    private bool ComposeTrail(Trail trail, int at)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static ulong TrailTextureSignature(float[] buffer, int at, int textures)
     {
+        ulong hash = 14695981039346656037UL;
+        uint material = BitConverter.SingleToUInt32Bits(buffer[at + 7]);
+        hash = (hash ^ material) * 1099511628211UL;
+        for (int t = 0; t < textures; t++)
+        {
+            int o = at + 208 + t * 20;
+            uint key = BitConverter.SingleToUInt32Bits(buffer[o]);
+            hash = (hash ^ key) * 1099511628211UL;
+            for (int w = 0; w < 16; w++)
+            {
+                uint word = BitConverter.SingleToUInt32Bits(buffer[o + 4 + w]);
+                if (word == 0u) break;
+                hash = (hash ^ word) * 1099511628211UL;
+            }
+        }
+        return hash;
+    }
+
+    private bool ComposeTrail(Trail trail, int at, bool changed)
+    {
+        if (!changed && trail.Material is not null)
+        {
+            return true;
+        }
         bool doubled = _trailBuffer[at + 1] == 3f;
         int textures = Math.Clamp((int)_trailBuffer[at + 48], 0, 4);
+        ulong texSig = TrailTextureSignature(_trailBuffer, at, textures);
+        bool sameTex = texSig == trail.TextureSignature;
+        trail.TextureSignature = texSig;
         bool soft = _trailBuffer[at + 45] > 0f;
         bool anim = false;
         for (int t = 0; t < textures; t++)
@@ -211,14 +294,14 @@ public partial class Engine_ClassicParticles
         // IsDisplacementTexture: the strip draws into the displacement target (header [55]).
         bool displaces = _trailBuffer[at + 55] != 0f;
         long shape = ShapeOf(textures, soft, anim, alphaRef16, doubled, displaces, src, dst, op);
-        if (shape == trail.Shape)
+        if (shape == trail.Shape && sameTex)
         {
             return trail.Material is not null;
         }
         trail.Shape = shape;
         string blend = BlendMode(src, dst, op, out bool oneOne);
         string key = $"{doubled}|{textures}|{soft}|{anim}|{blend}|{oneOne}|{alphaRef16}|{displaces}";
-        if (key == trail.Key)
+        if (key == trail.Key && sameTex)
         {
             return trail.Material is not null;
         }
@@ -319,7 +402,7 @@ public partial class Engine_ClassicParticles
         return true;
     }
 
-    private void TrailConstants(Trail trail, int at, Camera3D camera, Vector2 viewport)
+    private void TrailConstants(Trail trail, int at, Camera3D camera, Vector2 viewport, bool changed)
     {
         ShaderMaterial? m = trail.Material;
         if (m is null)
@@ -330,59 +413,100 @@ public partial class Engine_ClassicParticles
         bool fresh = !ReferenceEquals(trail.SentTo, m);
         trail.SentTo = m;
 
-        float f0 = _trailBuffer[at + 12], f1 = _trailBuffer[at + 13], f2 = _trailBuffer[at + 14],
-            f3 = _trailBuffer[at + 15], f4 = _trailBuffer[at + 16];
-        m.SetShaderParameter(TrailFadeInDistanceInfoName, new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f));
-        m.SetShaderParameter(TrailFadeOutDistanceInfoName, new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f));
-        // The modern shader adds the scene's ambient itself; it takes the material's own here.
-        Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
-        if (_trailBuffer[at + 54] == 0f)
+        if (changed || fresh)
         {
-            ambient += new Vector3(_trailBuffer[at + 51], _trailBuffer[at + 52], _trailBuffer[at + 53]);
-        }
-        m.SetShaderParameter(TrailGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
-
-        // c337 / c340 from the stride-28 keyframes (K+0..12 colour, K+16 the double trail's
-        // scale, K+20 self-illum, K+24 start time), 19 at most into the shader's 20.
-        int keys = Math.Clamp((int)_trailBuffer[at + 50], 0, 19);
-        for (int k = 0; k < _trailColours.Length; k++)
-        {
-            if (k < keys)
+            float f0 = _trailBuffer[at + 12], f1 = _trailBuffer[at + 13], f2 = _trailBuffer[at + 14],
+                f3 = _trailBuffer[at + 15], f4 = _trailBuffer[at + 16];
+            m.SetShaderParameter(TrailFadeInDistanceInfoName, new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f));
+            m.SetShaderParameter(TrailFadeOutDistanceInfoName, new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f));
+            // The modern shader adds the scene's ambient itself; it takes the material's own here.
+            Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
+            if (_trailBuffer[at + 54] == 0f)
             {
-                int o = at + 56 + k * 8;
-                _trailColours[k] = new Vector4(_trailBuffer[o], _trailBuffer[o + 1], _trailBuffer[o + 2], _trailBuffer[o + 3]);
-                _trailSelfIllum[k] = new Vector4(_trailBuffer[o + 5], _trailBuffer[o + 6],
-                    doubled ? _trailBuffer[o + 4] : 1f, 0f);
+                ambient += new Vector3(_trailBuffer[at + 51], _trailBuffer[at + 52], _trailBuffer[at + 53]);
             }
-            else
+            m.SetShaderParameter(TrailGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
+
+            // c337 / c340 from the stride-28 keyframes (K+0..12 colour, K+16 the double trail's
+            // scale, K+20 self-illum, K+24 start time), 19 at most into the shader's 20.
+            int keys = Math.Clamp((int)_trailBuffer[at + 50], 0, 19);
+            for (int k = 0; k < _trailColours.Length; k++)
             {
-                _trailColours[k] = Vector4.Zero;
-                _trailSelfIllum[k] = Vector4.Zero;
+                if (k < keys)
+                {
+                    int o = at + 56 + k * 8;
+                    _trailColours[k] = new Vector4(_trailBuffer[o], _trailBuffer[o + 1], _trailBuffer[o + 2], _trailBuffer[o + 3]);
+                    _trailSelfIllum[k] = new Vector4(_trailBuffer[o + 5], _trailBuffer[o + 6],
+                        doubled ? _trailBuffer[o + 4] : 1f, 0f);
+                }
+                else
+                {
+                    _trailColours[k] = Vector4.Zero;
+                    _trailSelfIllum[k] = Vector4.Zero;
+                }
+            }
+            if (trail.Colours.Take(_trailColours) || fresh)
+            {
+                m.SetShaderParameter(VsKeyFrameColorsName, trail.Colours.Value);
+            }
+            if (trail.SelfIllum.Take(_trailSelfIllum) || fresh)
+            {
+                m.SetShaderParameter(TrailSelfIllumName, trail.SelfIllum.Value);
+            }
+            m.SetShaderParameter(TrailParticleTrailPropertiesName,
+                new Vector4(_trailBuffer[at + 8], _trailBuffer[at + 9], _trailBuffer[at + 10], 0f));
+
+            // g_MatWorld: the columns of the row-major transform R+320, as for the quads.
+            for (int i = 0; i < 3; i++)
+            {
+                _trailWorld[i] = new Vector4(_trailBuffer[at + 17 + i], _trailBuffer[at + 21 + i],
+                    _trailBuffer[at + 25 + i], _trailBuffer[at + 29 + i]);
+            }
+            if (trail.World.Take(_trailWorld) || fresh)
+            {
+                m.SetShaderParameter(VsMatWorldName, trail.World.Value);
+            }
+
+            // The pixel side, as for the quads.
+            int textures = Math.Clamp((int)_trailBuffer[at + 48], 0, 4);
+            var starts = Vector4.Zero;
+            var invDeltas = Vector4.Zero;
+            var divisions = Vector4.Zero;
+            for (int t = 0; t < 4; t++)
+            {
+                _trailUvScales[t] = Vector4.Zero;
+                if (t >= textures)
+                {
+                    continue;
+                }
+                int o = at + 208 + t * 20;
+                float start = _trailBuffer[o + 1];
+                float x = _trailBuffer[o + 2], y = _trailBuffer[o + 3];
+                starts[t] = start;
+                divisions[t] = x;
+                if (t > 0)
+                {
+                    float previous = _trailBuffer[at + 208 + (t - 1) * 20 + 1];
+                    // Lane t - 1: the blend stages weigh texture t by (age - start[t - 1]) * invDelta[t - 1]
+                    // (`sub_821ABC60` stores it at +96 + 4 (t - 1)); lane t left blending off.
+                    invDeltas[t - 1] = start != previous ? 1f / (start - previous) : 0f;
+                }
+                if (Math.Max(x, y) > 1f)
+                {
+                    _trailUvScales[t] = new Vector4(x > 0f ? 1f / x : 0f, y > 0f ? 1f / y : 0f, 0f, 0f);
+                }
+            }
+            m.SetShaderParameter(TrailTextureStartTimesName, starts);
+            m.SetShaderParameter(TrailTextureStartTimesInvDeltaName, invDeltas);
+            m.SetShaderParameter(TrailTextureNumXDivsName, divisions);
+            if (trail.UvScales.Take(_trailUvScales) || fresh)
+            {
+                m.SetShaderParameter(PsTextureUVScalesName, trail.UvScales.Value);
             }
         }
-        if (trail.Colours.Take(_trailColours) || fresh)
-        {
-            m.SetShaderParameter(VsKeyFrameColorsName, trail.Colours.Value);
-        }
-        if (trail.SelfIllum.Take(_trailSelfIllum) || fresh)
-        {
-            m.SetShaderParameter(TrailSelfIllumName, trail.SelfIllum.Value);
-        }
-        m.SetShaderParameter(TrailParticleTrailPropertiesName,
-            new Vector4(_trailBuffer[at + 8], _trailBuffer[at + 9], _trailBuffer[at + 10], 0f));
 
-        // g_MatWorld: the columns of the row-major transform R+320, as for the quads.
-        for (int i = 0; i < 3; i++)
-        {
-            _trailWorld[i] = new Vector4(_trailBuffer[at + 17 + i], _trailBuffer[at + 21 + i],
-                _trailBuffer[at + 25 + i], _trailBuffer[at + 29 + i]);
-        }
-        if (trail.World.Take(_trailWorld) || fresh)
-        {
-            m.SetShaderParameter(VsMatWorldName, trail.World.Value);
-        }
-
-        if (!doubled)
+        trail.CameraAligned = !doubled && _trailBuffer[at + 33] == 0f;
+        if (!doubled && (changed || fresh || _trailBuffer[at + 33] == 0f))
         {
             // c299: the trail's own axis (y turned by its quaternion, `sub_822A1640`) when it is
             // fixed (TM+0x38), else the camera's z, guest axes.
@@ -399,47 +523,15 @@ public partial class Engine_ClassicParticles
             m.SetShaderParameter(TrailCameraZVectorName, new Vector4(axis.X, axis.Y, axis.Z, 0f));
         }
 
-        // The pixel side, as for the quads.
-        int textures = Math.Clamp((int)_trailBuffer[at + 48], 0, 4);
-        var starts = Vector4.Zero;
-        var invDeltas = Vector4.Zero;
-        var divisions = Vector4.Zero;
-        for (int t = 0; t < 4; t++)
-        {
-            _trailUvScales[t] = Vector4.Zero;
-            if (t >= textures)
-            {
-                continue;
-            }
-            int o = at + 208 + t * 20;
-            float start = _trailBuffer[o + 1];
-            float x = _trailBuffer[o + 2], y = _trailBuffer[o + 3];
-            starts[t] = start;
-            divisions[t] = x;
-            if (t > 0)
-            {
-                float previous = _trailBuffer[at + 208 + (t - 1) * 20 + 1];
-                // Lane t - 1: the blend stages weigh texture t by (age - start[t - 1]) * invDelta[t - 1]
-                    // (`sub_821ABC60` stores it at +96 + 4 (t - 1)); lane t left blending off.
-                    invDeltas[t - 1] = start != previous ? 1f / (start - previous) : 0f;
-            }
-            if (Math.Max(x, y) > 1f)
-            {
-                _trailUvScales[t] = new Vector4(x > 0f ? 1f / x : 0f, y > 0f ? 1f / y : 0f, 0f, 0f);
-            }
-        }
-        m.SetShaderParameter(TrailTextureStartTimesName, starts);
-        m.SetShaderParameter(TrailTextureStartTimesInvDeltaName, invDeltas);
-        m.SetShaderParameter(TrailTextureNumXDivsName, divisions);
-        if (trail.UvScales.Take(_trailUvScales) || fresh)
-        {
-            m.SetShaderParameter(PsTextureUVScalesName, trail.UvScales.Value);
-        }
         float softDistance = _trailBuffer[at + 45];
+        trail.Soft = softDistance > 0f;
         if (softDistance > 0f)
         {
-            float depthFade = 1f / softDistance;
-            m.SetShaderParameter(TrailDepthFadeScaleName, new Vector4(depthFade, depthFade, depthFade, depthFade));
+            if (changed || fresh)
+            {
+                float depthFade = 1f / softDistance;
+                m.SetShaderParameter(TrailDepthFadeScaleName, new Vector4(depthFade, depthFade, depthFade, depthFade));
+            }
             if (fresh || trail.InverseVpSent != _inverseVp.Version)
             {
                 trail.InverseVpSent = _inverseVp.Version;

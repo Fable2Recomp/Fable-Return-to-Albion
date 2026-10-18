@@ -155,7 +155,7 @@ public partial class GameVideo : Node
 		_embedded = new SubViewport
 		{
 			Name = "VideoEmbed",
-			RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+			RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled,
 			RenderTargetClearMode = SubViewport.ClearMode.Always,
 			TransparentBg = false,
 			Disable3D = true,
@@ -262,6 +262,13 @@ public partial class GameVideo : Node
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamevideo");
 		// Mirrored here so no site that toggles _view can miss the backdrop.
 		_backdrop.Visible = _view.Visible;
+		SubViewport.UpdateMode embedMode = _decoder is not null && EmbedOrdinal >= 0
+			? SubViewport.UpdateMode.Always
+			: SubViewport.UpdateMode.Disabled;
+		if (_embedded.RenderTargetUpdateMode != embedMode)
+		{
+			_embedded.RenderTargetUpdateMode = embedMode;
+		}
 
 		if (HostBridge.TryGetAbiVersion() is null)
 		{

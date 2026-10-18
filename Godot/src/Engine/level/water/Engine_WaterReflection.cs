@@ -256,8 +256,19 @@ public sealed partial class Engine_WaterReflection : Node
         for (int i = 0; i < _bodies.Count; ++i)
         {
             Body body = _bodies[(_turn + i) % _bodies.Count];
-            if (!Seen(body.Surface, frustum, eye.Origin) &&
-                !body.Sharers.Exists(sharer => Seen(sharer, frustum, eye.Origin)))
+            bool seen = Seen(body.Surface, frustum, eye.Origin);
+            if (!seen)
+            {
+                for (int s = 0; s < body.Sharers.Count; ++s)
+                {
+                    if (Seen(body.Sharers[s], frustum, eye.Origin))
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+            }
+            if (!seen)
             {
                 continue;
             }

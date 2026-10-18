@@ -117,6 +117,21 @@ public partial class FableFx : Node3D
 	private readonly Dictionary<string, Engine_FxLayerInstance> _meshInstances = new();
 	private bool _built;
 	private string _builtName = string.Empty;
+	private bool _hasDisplacement;
+	private bool _hasMeshParticles;
+
+	private struct FxLightCache
+	{
+		public bool Applied;
+		public bool Visible;
+		public Vector3 Position;
+		public float OmniRange;
+		public Color Colour;
+		public float LightEnergy;
+		public bool DistanceFadeEnabled;
+		public float DistanceFadeBegin;
+		public float DistanceFadeLength;
+	}
 
 	/// <summary>
 	/// One <see cref="OmniLight3D"/> per <c>CPointLightEntityType</c> the effect carries.
@@ -125,6 +140,7 @@ public partial class FableFx : Node3D
 	/// and every one was parsed and discarded before — the flame drew and lit nothing.
 	/// </summary>
 	private readonly List<OmniLight3D> _lights = new();
+	private readonly List<FxLightCache> _lightCache = new();
 
 	private string _effectName = string.Empty;
 
@@ -406,6 +422,27 @@ public partial class FableFx : Node3D
 			return;
 		}
 
+		bool lightsOnly = GuestDrawn && !_hasDisplacement && (GuestMeshTwins || !_hasMeshParticles);
+		if (lightsOnly)
+		{
+			if (!_emitGuest)
+			{
+				if (_mesh.GetSurfaceCount() > 0) _mesh.ClearSurfaces();
+				if (_addMesh is not null && _addMesh.GetSurfaceCount() > 0) _addMesh.ClearSurfaces();
+				foreach (MultiMeshInstance3D node in _meshNodes.Values)
+				{
+					if (node.Multimesh is MultiMesh multi) multi.VisibleInstanceCount = 0;
+				}
+				_emitAddActive = false;
+				_emitDispActive = false;
+				_emitGuest = true;
+			}
+			if (_lights.Count == 0)
+			{
+				return;
+			}
+		}
+
 		// THE GUEST FREEZES WHAT THE CAMERA CANNOT SEE: `sub_83233EF0` tests each instance's
 		// distance against its stated cull radius and the view cone, and both update branches
 		// gate on the result — no simulation, no aging, lights left as they are (they are never
@@ -414,7 +451,7 @@ public partial class FableFx : Node3D
 		Camera3D? cullCamera = sharedCamera ?? GetViewport()?.GetCamera3D();
 		// A far effect in view freezes only once it has something to show: one that has never
 		// been near would otherwise keep its empty first frame however long it is looked at.
-		if (cullCamera is not null && !InView(cullCamera, out bool farOnly) && (!farOnly || HasGeometry))
+		if (cullCamera is not null && !InView(cullCamera, out bool farOnly) && (!farOnly || HasGeometry || lightsOnly))
 		{
 			++FrozenThisFrame;
 			return;
@@ -425,11 +462,14 @@ public partial class FableFx : Node3D
 		_system.SetSizeScale(SizeScale * RecipeSize);
 		_system.SetTint(Tint.R, Tint.G, Tint.B);
 		Engine_FxSystem.FadeOut = !Refii.Lighting.Engine_LightingFrame.ModernModel;
-		ApplyLit();
+		if (!lightsOnly)
+		{
+			ApplyLit();
+		}
 		// The node's world transform goes in so the system can hold world-space particles still
 		// when this effect moves — see AttachToRoot. A node bolted to a wall passes the same
 		// transform every frame and the system does nothing with it.
-		_system.Update((float)delta, GlobalTransform);
+		_system.Update((float)delta, lightsOnly ? null : GlobalTransform, lightsOnly);
 
 		// THE LIGHTS FOLLOW THE SAME CLOCK AS THE PARTICLES, so a brazier's glow breathes with
 		// its flame instead of sitting at a constant. The colour and the energy stay SEPARATE —
@@ -440,12 +480,19 @@ public partial class FableFx : Node3D
 		{
 			Engine_FxSystem.FxLightState state = _system.LightAt(i);
 			OmniLight3D light = _lights[i];
+			FxLightCache cache = _lightCache[i];
 
 			float range = state.Range;
 			float energy = state.Energy;
 			if (!(range > 0f) || !float.IsFinite(range) || !float.IsFinite(energy))
 			{
-				light.Visible = false;
+				if (!cache.Applied || cache.Visible)
+				{
+					light.Visible = false;
+					cache.Applied = true;
+					cache.Visible = false;
+					_lightCache[i] = cache;
+				}
 				continue;
 			}
 
@@ -453,19 +500,17 @@ public partial class FableFx : Node3D
 			// placed light through one path (`sub_821F0A50`: the same range, cutoff and ramp
 			// slots, the same falloff), so `placed_light_range` and `placed_light_scale` apply
 			// to both. 1.0 on both is the shipped data.
-			light.Visible = true;
-			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
-			light.Position = state.Position;
-			light.OmniRange = range * Refii.Lighting.Engine_LevelLights.PlacedRange;
-			// Encoded, because Godot decodes it (see Engine_LightColour).
-			Refii.Lighting.Engine_LightColour.Apply(light, state.Colour);
-			light.LightEnergy = energy * LightFade * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
+			float omniRange = range * Refii.Lighting.Engine_LevelLights.PlacedRange;
+			float lightEnergy = energy * LightFade * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
 
 			// THE GUEST REACHES ZERO AT Cutoff, ramping over the Ramp metres inside it —
 			// intensity × clamp((min(Cutoff, 1000) − dist) / Ramp, 0, 1) in `sub_821F0A50`
 			// (0x821f0d38) — the same window shape as the placed fixtures, so the same Godot
 			// mapping: begin = cutoff − ramp, length = ramp. The modern model doubles the
 			// reach because its live lights carry what the bakes used to.
+			bool fadeEnabled = false;
+			float fadeBegin = 0f;
+			float fadeLength = 0f;
 			if (state.Cutoff > 0f)
 			{
 				float cutoff = MathF.Min(state.Cutoff, 1000f);
@@ -476,17 +521,89 @@ public partial class FableFx : Node3D
 					ramp = MathF.Max(ramp * 2f, cutoff * 0.5f);
 				}
 
-				light.DistanceFadeEnabled = true;
-				light.DistanceFadeBegin = MathF.Max(cutoff - ramp, 0f);
-				light.DistanceFadeLength = ramp;
+				fadeEnabled = true;
+				fadeBegin = MathF.Max(cutoff - ramp, 0f);
+				fadeLength = ramp;
 			}
-			else
+
+			bool changed = false;
+			if (!cache.Applied || !cache.Visible)
 			{
-				light.DistanceFadeEnabled = false;
+				light.Visible = true;
+				cache.Visible = true;
+				changed = true;
+			}
+
+			if (!cache.Applied || cache.Position.DistanceSquaredTo(state.Position) > 1e-6f)
+			{
+				light.Position = state.Position;
+				cache.Position = state.Position;
+				changed = true;
+			}
+
+			if (!cache.Applied || MathF.Abs(cache.OmniRange - omniRange) > 1e-4f)
+			{
+				light.OmniRange = omniRange;
+				cache.OmniRange = omniRange;
+				changed = true;
+			}
+
+			if (!cache.Applied ||
+				MathF.Abs(cache.Colour.R - state.Colour.R) > 1e-4f ||
+				MathF.Abs(cache.Colour.G - state.Colour.G) > 1e-4f ||
+				MathF.Abs(cache.Colour.B - state.Colour.B) > 1e-4f)
+			{
+				// Encoded, because Godot decodes it (see Engine_LightColour).
+				Refii.Lighting.Engine_LightColour.Apply(light, state.Colour);
+				cache.Colour = state.Colour;
+				changed = true;
+			}
+
+			if (!cache.Applied || MathF.Abs(cache.LightEnergy - lightEnergy) > 1e-4f)
+			{
+				light.LightEnergy = lightEnergy;
+				cache.LightEnergy = lightEnergy;
+				changed = true;
+			}
+
+			if (!cache.Applied || cache.DistanceFadeEnabled != fadeEnabled)
+			{
+				light.DistanceFadeEnabled = fadeEnabled;
+				cache.DistanceFadeEnabled = fadeEnabled;
+				changed = true;
+			}
+
+			if (fadeEnabled)
+			{
+				if (!cache.Applied || MathF.Abs(cache.DistanceFadeBegin - fadeBegin) > 1e-4f)
+				{
+					light.DistanceFadeBegin = fadeBegin;
+					cache.DistanceFadeBegin = fadeBegin;
+					changed = true;
+				}
+
+				if (!cache.Applied || MathF.Abs(cache.DistanceFadeLength - fadeLength) > 1e-4f)
+				{
+					light.DistanceFadeLength = fadeLength;
+					cache.DistanceFadeLength = fadeLength;
+					changed = true;
+				}
+			}
+
+			if (changed)
+			{
+				cache.Applied = true;
+				_lightCache[i] = cache;
+				Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
 			}
 		}
 
-		Camera3D? camera = GetViewport()?.GetCamera3D();
+		if (lightsOnly)
+		{
+			return;
+		}
+
+		Camera3D? camera = cullCamera ?? GetViewport()?.GetCamera3D();
 #if TOOLS
 		// EDITOR ONLY, and compiled out of an export rather than merely skipped.
 		// EditorInterface does not exist in an export template build, so referencing it
@@ -715,10 +832,10 @@ public partial class FableFx : Node3D
 	{
 		float r = 1f, g = 1f, b = 1f;
 
-		// Asked every 30 frames, not every step (each query allocates a wrapper); the answer only
-		// changes when something stores a probe on this node, which the cadence still catches.
+		// Asked every 30 frames while absent, not every step (each query allocates a wrapper);
+		// once present on a level-spawned effect, the probe metadata stays for the life of the node.
 		ulong askFrame = Engine.GetProcessFrames();
-		if (_hasProbe is null || askFrame - _probeAskedFrame >= 30)
+		if (_hasProbe is null || (_hasProbe == false && askFrame - _probeAskedFrame >= 30))
 		{
 			_hasProbe = HasMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta);
 			_probeAskedFrame = askFrame;
@@ -746,16 +863,13 @@ public partial class FableFx : Node3D
 		}
 
 		// The meta is an Array behind a Variant: reading it builds wrappers every call, and
-		// the sample under it only changes when the node is re-lit, so it is re-read on a
-		// cadence and the folded band kept.
-		ulong now = Engine.GetProcessFrames();
-		if (!_probeFolded || now - _probeReadFrame >= 30)
+		// a static level FX node's baked probe SH coefficients do not change once stored.
+		if (!_probeFolded)
 		{
-			_probeReadFrame = now;
-			_probeFolded = false;
-			if (GetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta) is { VariantType: Variant.Type.Array } probeMeta)
+			using Variant probeMeta = GetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta);
+			if (probeMeta.VariantType == Variant.Type.Array)
 			{
-				var sample = probeMeta.AsGodotArray<Vector4>();
+				Godot.Collections.Array<Vector4> sample = probeMeta.AsGodotArray<Vector4>();
 				if (sample.Count == 3)
 				{
 					var basis = new Vector4(0.2820948f, 0f, 0.4886025f, 0f);
@@ -817,16 +931,22 @@ public partial class FableFx : Node3D
 
 		_publishedAlpha = alpha;
 		_publishedAlphaHalf = half;
-		if (_surface is not null && IsInstanceValid(_surface))
+		if (_surface is not null && IsInstanceValid(_surface) && _mesh is not null && _mesh.GetSurfaceCount() > 0)
 		{
 			_surface.SetInstanceShaderParameter(StepAlphaParam, alpha);
 			_surface.SetInstanceShaderParameter(StepAlphaHalfParam, half);
 		}
 
-		_addInstance?.SetShaderParameter(StepAlphaParam, alpha);
-		_addInstance?.SetShaderParameter(StepAlphaHalfParam, half);
-		_dispInstance?.SetShaderParameter(StepAlphaParam, alpha);
-		_dispInstance?.SetShaderParameter(StepAlphaHalfParam, half);
+		if (_emitAddActive && _addInstance is not null)
+		{
+			_addInstance.SetShaderParameter(StepAlphaParam, alpha);
+			_addInstance.SetShaderParameter(StepAlphaHalfParam, half);
+		}
+		if (_emitDispActive && _dispInstance is not null)
+		{
+			_dispInstance.SetShaderParameter(StepAlphaParam, alpha);
+			_dispInstance.SetShaderParameter(StepAlphaHalfParam, half);
+		}
 	}
 
 	/// <summary>
@@ -980,6 +1100,7 @@ public partial class FableFx : Node3D
 		}
 
 		_lights.Clear();
+		_lightCache.Clear();
 
 		var placement = new FxPlacement { Scale = EffectScale };
 		if (Engine_BnkFxLoader.TryParseHashToken(_effectName, out uint hash))
@@ -992,6 +1113,8 @@ public partial class FableFx : Node3D
 		}
 
 		_system.Build(bank, new[] { placement });
+		_hasDisplacement = _system.HasDisplacement;
+		_hasMeshParticles = _system.HasMeshParticles;
 
 		if (_surface is null)
 		{
@@ -1019,7 +1142,7 @@ public partial class FableFx : Node3D
 			Engine_FxAdditiveLayer.Ensure(this);
 		}
 
-		if (_dispMesh is null && _system.HasDisplacement)
+		if (_dispMesh is null && _hasDisplacement)
 		{
 			_dispMesh = new ArrayMesh();
 			Engine_FxDisplacement.Ensure(this);
@@ -1043,6 +1166,7 @@ public partial class FableFx : Node3D
 				ShadowEnabled = false,
 			};
 			_lights.Add(light);
+			_lightCache.Add(default);
 			AddChild(light);
 
 			// THE GLOW LAYER. The guest gives every in-range, in-frustum, non-black light a
@@ -1072,27 +1196,39 @@ public partial class FableFx : Node3D
 		}
 	}
 
-	private readonly HashSet<string> _materialsMissingTexture = new();
-	private ulong _textureRetryAtMsec;
+	private static readonly Dictionary<string, Shader?> SharedShaders = new(StringComparer.Ordinal);
+	private static readonly Dictionary<string, Texture2D> SharedTextures = new(StringComparer.OrdinalIgnoreCase);
+	private static readonly HashSet<string> MissingTextures = new(StringComparer.OrdinalIgnoreCase);
+	private static readonly Dictionary<string, VisualBatchMaterial> SharedMaterials = new(StringComparer.Ordinal);
+	private static readonly Dictionary<string, ArrayMesh?> SharedMeshes = new(StringComparer.OrdinalIgnoreCase);
+
+	private static Shader? LoadSharedShader(string shaderPath)
+	{
+		if (SharedShaders.TryGetValue(shaderPath, out Shader? shader) &&
+			(shader is null || IsInstanceValid(shader)))
+		{
+			return shader;
+		}
+
+		shader = GD.Load<Shader>(shaderPath);
+		SharedShaders[shaderPath] = shader;
+		return shader;
+	}
 
 	private VisualBatchMaterial? LookupMaterial(string key)
 	{
 		if (_materials.TryGetValue(key, out VisualBatchMaterial? cached))
 		{
-			if (_materialsMissingTexture.Contains(key) &&
-				Time.GetTicksMsec() >= _textureRetryAtMsec)
-			{
-				_textureRetryAtMsec = Time.GetTicksMsec() + 2000;
-				int retrySplit = key.IndexOf('|');
-				Texture2D? late = LoadTexture(retrySplit >= 0 ? key[..retrySplit] : key);
-				if (late is not null && cached.Material is ShaderMaterial sm)
-				{
-					sm.SetShaderParameter(FxTexName, late);
-					_materialsMissingTexture.Remove(key);
-				}
-			}
-
 			return cached;
+		}
+
+		bool canShare = MathF.Abs(ExposureScale - 1.0f) < 1e-4f &&
+						MathF.Abs(Engine_FxSystem.Exposure - (10f / 3f)) < 1e-4f;
+		if (canShare && SharedMaterials.TryGetValue(key, out VisualBatchMaterial? shared) &&
+			IsInstanceValid(shared.Material))
+		{
+			_materials[key] = shared;
+			return shared;
 		}
 
 		string[] segments = key.Split('|');
@@ -1120,7 +1256,7 @@ public partial class FableFx : Node3D
 			_ => MixShaderPath,
 		};
 
-		Shader? shader = GD.Load<Shader>(shaderPath);
+		Shader? shader = LoadSharedShader(shaderPath);
 		if (shader is null)
 		{
 			return null;
@@ -1149,18 +1285,28 @@ public partial class FableFx : Node3D
 		{
 			material.SetShaderParameter(FxTexName, tex);
 		}
-		else
-		{
-			_materialsMissingTexture.Add(key);
-		}
 
 		var batch = new VisualBatchMaterial { Material = material };
 		_materials[key] = batch;
+		if (canShare)
+		{
+			SharedMaterials[key] = batch;
+		}
 		return batch;
 	}
 
 	private static Texture2D? LoadTexture(string name)
 	{
+		if (SharedTextures.TryGetValue(name, out Texture2D? cached) && IsInstanceValid(cached))
+		{
+			return cached;
+		}
+
+		if (MissingTextures.Contains(name))
+		{
+			return null;
+		}
+
 		string leaf = name.Replace('\\', '/');
 		int slash = leaf.LastIndexOf('/');
 		if (slash >= 0)
@@ -1193,10 +1339,12 @@ public partial class FableFx : Node3D
 			Texture2D? texture = Engine_TexImage.TryCreateTexture(bytes, out _);
 			if (texture is not null)
 			{
+				SharedTextures[name] = texture;
 				return texture;
 			}
 		}
 
+		MissingTextures.Add(name);
 		GD.Print($"[fx] texture '{name}' unresolved");
 		return null;
 	}
@@ -1206,19 +1354,29 @@ public partial class FableFx : Node3D
 	private static MultiMeshInstance3D? BuildMeshNode(string meshPath, bool displacement = false)
 	{
 		string virtualPath = meshPath.Replace('\\', '/');
-		byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath) ??
-						Engine_BnkMeshLoader.ReadBytes("data/" + virtualPath);
-		if (bytes is null)
+		if (!SharedMeshes.TryGetValue(virtualPath, out ArrayMesh? mesh) || (mesh is not null && !IsInstanceValid(mesh)))
 		{
-			GD.Print($"[fx] mesh '{meshPath}' unresolved");
-			return null;
+			byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath) ??
+							Engine_BnkMeshLoader.ReadBytes("data/" + virtualPath);
+			if (bytes is null)
+			{
+				SharedMeshes[virtualPath] = null;
+				GD.Print($"[fx] mesh '{meshPath}' unresolved");
+				return null;
+			}
+
+			mesh = Engine_MdlMesh.TryCreateMesh(
+				bytes, virtualPath, out string error, out _);
+			SharedMeshes[virtualPath] = mesh;
+			if (mesh is null)
+			{
+				GD.Print($"[fx] mesh '{meshPath}' failed: {error}");
+				return null;
+			}
 		}
 
-		ArrayMesh? mesh = Engine_MdlMesh.TryCreateMesh(
-			bytes, virtualPath, out string error, out _);
 		if (mesh is null)
 		{
-			GD.Print($"[fx] mesh '{meshPath}' failed: {error}");
 			return null;
 		}
 
@@ -1240,7 +1398,7 @@ public partial class FableFx : Node3D
 		};
 		if (displacement)
 		{
-			var dispMat = new ShaderMaterial { Shader = GD.Load<Shader>(MeshDispShaderPath) };
+			var dispMat = new ShaderMaterial { Shader = LoadSharedShader(MeshDispShaderPath) };
 			if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial src && (src.GetShaderParameter(AlbedoTexName).As<Texture2D>() ?? Refii.Models.Engine_ClassicMaterial.Albedo(src)) is Texture2D albedo)
 			{
 				dispMat.SetShaderParameter(AlbedoTexName, albedo);

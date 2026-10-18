@@ -532,42 +532,49 @@ public static class Engine_LevelScene
 
         if (float.IsFinite(oceanHeight))
         {
-            // The theme's switch across the day: the ocean draws only where it reads exactly 0.
-            List<byte[]> gdbs = Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
-            var gate = new List<string>();
-            foreach (float tod in new[] { 0.0f, 0.25f, 0.5f, 0.75f })
+            if (!AllowsVistaOcean(level))
             {
-                gate.Add(gdbs.Count != 0 &&
-                    Engine_ThemeTimeline.TryExtractWaterBlended(gdbs, tod, out WaterTheme water)
-                    ? (water.Stated[WaterThemeParam.DisableVistaWater]
-                        ? water[WaterThemeParam.DisableVistaWater].ToString("0.##")
-                        : "unstated")
-                    : "no theme");
+                lines.Add($"{level}: inland level ({level.LevelPath}) — vista ocean not applicable");
             }
-
-            lines.Add($"{level}: ocean DisableVistaWater at 0/6/12/18h: {string.Join(" ", gate)}");
-
-            int samples = 0;
-            int above = 0;
-            foreach ((_, GhfHeights? grid) in grids)
+            else
             {
-                if (grid is null)
+                // The theme's switch across the day: the ocean draws only where it reads exactly 0.
+                List<byte[]> gdbs = Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
+                var gate = new List<string>();
+                foreach (float tod in new[] { 0.0f, 0.25f, 0.5f, 0.75f })
                 {
-                    continue;
+                    gate.Add(gdbs.Count != 0 &&
+                        Engine_ThemeTimeline.TryExtractWaterBlended(gdbs, tod, out WaterTheme water)
+                        ? (water.Stated[WaterThemeParam.DisableVistaWater]
+                            ? water[WaterThemeParam.DisableVistaWater].ToString("0.##")
+                            : "unstated")
+                        : "no theme");
                 }
 
-                foreach (float h in grid.Values)
+                lines.Add($"{level}: ocean DisableVistaWater at 0/6/12/18h: {string.Join(" ", gate)}");
+
+                int samples = 0;
+                int above = 0;
+                foreach ((_, GhfHeights? grid) in grids)
                 {
-                    samples++;
-                    if (h < oceanHeight)
+                    if (grid is null)
                     {
-                        above++;
+                        continue;
+                    }
+
+                    foreach (float h in grid.Values)
+                    {
+                        samples++;
+                        if (h < oceanHeight)
+                        {
+                            above++;
+                        }
                     }
                 }
-            }
 
-            lines.Add($"{level}: ocean at {oceanHeight:0.###}: above the ground on " +
-                $"{(samples == 0 ? 0 : 100.0 * above / samples):0.#}% of mapped samples");
+                lines.Add($"{level}: ocean at {oceanHeight:0.###}: above the ground on " +
+                    $"{(samples == 0 ? 0 : 100.0 * above / samples):0.#}% of mapped samples");
+            }
         }
 
         return lines;
@@ -1875,9 +1882,13 @@ public static class Engine_LevelScene
             return;
         }
 
-        if (oceanBody is not null && waterBounds is { } bounds)
+        if (oceanBody is not null && waterBounds is { } bounds && AllowsVistaOcean(level))
         {
             AddVistaOcean(level, container, oceanBody, oceanFile, bounds, source, findByName);
+        }
+        else if (oceanBody is not null && !AllowsVistaOcean(level))
+        {
+            GD.Print($"[water] {level}: inland level ({level.LevelPath}) — vista ocean omitted");
         }
 
         root.AddChild(container);
@@ -1891,6 +1902,63 @@ public static class Engine_LevelScene
         GD.Print(
             $"[water] {level}: {emitted} body(s), {tiles} tiles from {stated.Water.Count} stated file(s)" +
             (buried != 0 ? $"; {buried} body(s) entirely under the ground not built" : string.Empty));
+    }
+
+    /// <summary>
+    /// Whether a level features an open coastal ocean horizon that should receive the vista ocean sheet.
+    /// Inland cities (e.g. Bowerstone Market/Slums), inland landscapes (Brightwood, Bower Lake, Fairfax,
+    /// Oakfield), and enclosed dungeons/caves do not feature an ocean horizon and must not receive the 5.7 km sheet,
+    /// which would otherwise slice through topography and flood low-lying streets and valleys.
+    /// </summary>
+    public static bool AllowsVistaOcean(LevelEntry level)
+    {
+        string path = (level.LevelPath ?? string.Empty).ToLowerInvariant().Replace('\\', '/');
+        string name = (level.Name ?? string.Empty).ToLowerInvariant();
+        string group = (level.Group ?? string.Empty).ToLowerInvariant();
+
+        // Strip any leading world prefix ("albion/", etc.) for clean prefix matching
+        string localPath = path.StartsWith("albion/") ? path["albion/".Length..] : path;
+
+        // Enclosed caves, tombs, and demon doors never feature an open ocean horizon,
+        // with the exception of coastal exterior transitional paths.
+        bool isEnclosed = localPath.StartsWith("caves/") || localPath.StartsWith("tombs/") || localPath.StartsWith("demondoors/") ||
+                          path.Contains("/caves/") || path.Contains("/tombs/") || path.Contains("/demondoors/");
+        if (isEnclosed && !path.Contains("westcliffexterior") && !path.Contains("bloodstone_assault"))
+        {
+            return false;
+        }
+
+        // Inland landlocked cities, estates, and regions
+        if (path.Contains("bwsmarket") || path.Contains("bwsslums") || path.Contains("bwscemetary") ||
+            path.Contains("bowerstone") || path.Contains("cemetery") ||
+            path.Contains("fairfax") || path.Contains("brightwood") || path.Contains("bowerlake") ||
+            path.Contains("oakfield") || path.Contains("crucible") || path.Contains("dreamworld") ||
+            path.Contains("chamberofseasons") || path.Contains("shrine") || path.Contains("dlc2") ||
+            name.Contains("bwsmarket") || name.Contains("bwsslums") || name.Contains("bowerstone") ||
+            name.Contains("fairfax") || name.Contains("brightwood") || name.Contains("bowerlake") ||
+            group.Contains("bwsmarket") || group.Contains("bwsslums") || group.Contains("fairfax"))
+        {
+            return false;
+        }
+
+        // Coastal maritime regions featuring an open ocean horizon
+        return path.Contains("bloodstone") ||
+               path.Contains("bloodtsone") ||
+               path.Contains("reaver beach") ||
+               path.Contains("ravenscar") ||
+               path.Contains("spire") ||
+               path.Contains("mysteryisland") ||
+               path.Contains("dunecrest") ||
+               path.Contains("westcliff") ||
+               path.Contains("wraithmarsh") ||
+               path.Contains("rookridge") ||
+               name.Contains("bloodstone") ||
+               name.Contains("bloodtsone") ||
+               name.Contains("reaver beach") ||
+               name.Contains("ravenscar") ||
+               name.Contains("spire") ||
+               name.Contains("westcliff") ||
+               name.Contains("wraithmarsh");
     }
 
     /// <summary>Each stated landscape with its height grid: the stated .ghf, else the .ehf's own.</summary>

@@ -77,13 +77,22 @@ public partial class Engine_FxMeshTwins : Node
     /// <summary>Follows the effects' mesh twins. Main thread, before the displacement pump.</summary>
     public void Pump(Camera3D camera)
     {
-        ++_frames;
+        bool meshArrived = false;
         while (_loaded.TryDequeue(out (uint Hash, Mesh? Mesh) done))
         {
             _loading.Remove(done.Hash);
             _meshes[done.Hash] = done.Mesh;
+            meshArrived = true;
         }
 
+        // Guest FX mesh twins only advance on 30 Hz guest frames; skip the P/Invoke and
+        // transform/material rebuild on intermediate display frames unless a mesh just loaded.
+        if (!Refii.Core.Engine_GuestFrame.Changed && FeedLive && !meshArrived)
+        {
+            return;
+        }
+
+        ++_frames;
         uint got = HostBridge.GetFxMeshes(_buffer);
         // The export answers with at least its count word; a bridge without it answers nothing.
         FeedLive |= got >= 1;

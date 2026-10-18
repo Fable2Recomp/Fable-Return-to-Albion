@@ -26,6 +26,8 @@ public static class Engine_GuestFrame
 	/// </summary>
 	public static bool HalfRate { get; private set; } = true;
 
+	private static uint _lastGameTick;
+
 	public static void Publish(uint frame)
 	{
 		Changed = frame == 0u || frame != Frame;
@@ -34,7 +36,18 @@ public static class Engine_GuestFrame
 			++Unchanged;
 		}
 
-		HalfRate = Changed && (frame & 1u) == 0u;
+		// Drive the 15 Hz half-rate cadence from the guest's actual 15 Hz game tick
+		// (Engine_TickClock.GuestGameTick) rather than raw render-frame even/odd parity:
+		// 1. `dword_83319650` can skip a single increment (`0x821D46E8`), shifting game ticks onto
+		//    odd render frames; raw `(frame & 1u) == 0u` then fires 180 degrees out of phase with
+		//    `_tickCompletedThisWalk` (`FarRigPosesThisStep`), causing distant rigs to pose on odd
+		//    frames while `Engine_ShadowSkeletons.WriteNow` only accepts even frames.
+		// 2. If two guest render frames elapse during a single host frame (e.g. odd -> odd),
+		//    checking `tickAdvanced` guarantees the 15 Hz pulse is never dropped.
+		uint gameTick = Engine_TickClock.GuestGameTick;
+		bool tickAdvanced = gameTick != 0u && gameTick != _lastGameTick;
+		_lastGameTick = gameTick;
+		HalfRate = Changed && (tickAdvanced || (gameTick == 0u && (frame & 1u) == 0u));
 		Frame = frame;
 	}
 }

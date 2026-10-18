@@ -216,6 +216,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private readonly byte[] _pushSmall = new byte[SmallPushBytes];
     private readonly byte[] _pushWide = new byte[WidePushBytes];
     private readonly byte[] _pushGauss = new byte[GaussPushBytes];
+    private readonly byte[] _pushSun = new byte[48];
 
     private readonly float[] _bloomWeightsH = new float[Engine_PostFxModel.GaussianTaps];
     private readonly float[] _bloomWeightsV = new float[Engine_PostFxModel.GaussianTaps];
@@ -1481,24 +1482,24 @@ public partial class Engine_PostFxEffect : CompositorEffect
         float farValue = -projection.Z.Z >= 0.5f ? 1.0f : 0.0f;
         float boost = Math.Max(Engine_PostFxParams.EmissionBoost, 1.0f);
 
-        var push = new byte[48];
-        BitConverter.GetBytes(_quarterSize.X).CopyTo(push, 0);
-        BitConverter.GetBytes(_quarterSize.Y).CopyTo(push, 4);
-        BitConverter.GetBytes(farValue).CopyTo(push, 8);
-        BitConverter.GetBytes(0.0f).CopyTo(push, 12);
-        BitConverter.GetBytes(sunUv.X).CopyTo(push, 16);
-        BitConverter.GetBytes(sunUv.Y).CopyTo(push, 20);
-        BitConverter.GetBytes(halfUv.X).CopyTo(push, 24);
-        BitConverter.GetBytes(halfUv.Y).CopyTo(push, 28);
-        BitConverter.GetBytes(disc.Colour.X * boost).CopyTo(push, 32);
-        BitConverter.GetBytes(disc.Colour.Y * boost).CopyTo(push, 36);
-        BitConverter.GetBytes(disc.Colour.Z * boost).CopyTo(push, 40);
-        BitConverter.GetBytes(1.0f).CopyTo(push, 44);
+        System.Span<byte> push = _pushSun;
+        BitConverter.TryWriteBytes(push.Slice(0, 4), _quarterSize.X);
+        BitConverter.TryWriteBytes(push.Slice(4, 4), _quarterSize.Y);
+        BitConverter.TryWriteBytes(push.Slice(8, 4), farValue);
+        BitConverter.TryWriteBytes(push.Slice(12, 4), 0.0f);
+        BitConverter.TryWriteBytes(push.Slice(16, 4), sunUv.X);
+        BitConverter.TryWriteBytes(push.Slice(20, 4), sunUv.Y);
+        BitConverter.TryWriteBytes(push.Slice(24, 4), halfUv.X);
+        BitConverter.TryWriteBytes(push.Slice(28, 4), halfUv.Y);
+        BitConverter.TryWriteBytes(push.Slice(32, 4), disc.Colour.X * boost);
+        BitConverter.TryWriteBytes(push.Slice(36, 4), disc.Colour.Y * boost);
+        BitConverter.TryWriteBytes(push.Slice(40, 4), disc.Colour.Z * boost);
+        BitConverter.TryWriteBytes(push.Slice(44, 4), 1.0f);
 
         Dispatch(
             _sunlayerPipeline,
             _sunlayerSet.Set,
-            push,
+            _pushSun,
             (_quarterSize.X + 7) / 8,
             (_quarterSize.Y + 7) / 8);
     }

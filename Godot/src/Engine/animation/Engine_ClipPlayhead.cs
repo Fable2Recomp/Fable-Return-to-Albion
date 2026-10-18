@@ -40,7 +40,7 @@ public sealed class Engine_ClipPlayhead
 	public const double MaxCorrection = 0.25;
 
 	/// <summary>How far past its stated pair the reference runs on before it holds, in ticks.</summary>
-	private const double MaxLeadTicks = 1.5;
+	private const double MaxLeadTicks = 2.5;
 
 	/// <summary>The drawn clip time, unwrapped: it only ever moves by the frame's advance or a re-time.</summary>
 	public double Time { get; private set; }
@@ -87,27 +87,47 @@ public sealed class Engine_ClipPlayhead
 	public void Observe(double previous, double current, uint tick, double length, bool loop, bool cut,
 		double drawTick)
 	{
-		if (Started && !cut && previous == _statedPrevious && current == _current)
+		if (Started && previous == _statedPrevious && current == _current)
 		{
 			return;
 		}
 
 		_length = length;
 		_loop = loop && length > 0.0;
+		double rawPrevious = previous;
 		double stamp = tick;
-		if (Started && !cut && System.Math.Abs(Gap(previous - _current)) < 1e-4)
+		double span = 1.0;
+		if (Started && cut && previous == current && tick > _stamp)
 		{
-			stamp = System.Math.Clamp(_stamp + 1.0, tick, tick + 1.0);
+			double elapsed = System.Math.Clamp(tick - _stamp, 1.0, 4.0);
+			double inferred = Gap(current - _current) / elapsed;
+			if (inferred >= -RestartSeconds && inferred < RestartSeconds)
+			{
+				cut = false;
+				previous = _current;
+				span = elapsed;
+			}
+		}
+		else if (Started && !cut && System.Math.Abs(Gap(previous - _current)) < 1e-4)
+		{
+			if (tick > _stamp + 1.0)
+			{
+				span = System.Math.Clamp(tick - _stamp, 1.0, 4.0);
+			}
+			else
+			{
+				stamp = System.Math.Clamp(_stamp + 1.0, tick, tick + 1.0);
+			}
 		}
 
-		double step = Gap(current - previous);
+		double step = Gap(current - previous) / span;
 		if (!(step >= -RestartSeconds) || step >= RestartSeconds)
 		{
 			step = 0.0;
 			cut = true;
 		}
 
-		_statedPrevious = previous;
+		_statedPrevious = rawPrevious;
 		_previous = current - step;
 		_current = current;
 		_stamp = stamp;

@@ -57,6 +57,7 @@ public partial class Engine_EntityHighlightLayer : Node
     private static bool _publishedActive;
     private static float _publishedScale = 1f;
     private static readonly Target[] _published = new Target[Slots];
+    private readonly Target[] _targets = new Target[Slots];
 
     /// <summary>The guest's blur width this frame, in half-res texels; 0 until it has stated
     /// one. Reported on the debug channel beside the silhouette counts.</summary>
@@ -235,8 +236,8 @@ public partial class Engine_EntityHighlightLayer : Node
 
         // Active while any slot has a target, not while the walk last touched one: the walk
         // need not run every frame, and a highlight lasts until the guest clears it.
-        var targets = new Target[Slots];
-        bool active = _enabled && Gather(main.GlobalPosition, targets);
+        Array.Clear(_targets, 0, Slots);
+        bool active = _enabled && Gather(main.GlobalPosition, _targets);
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
 
         // The stated width, read here because this is the main thread; the post chain runs on
@@ -272,7 +273,7 @@ public partial class Engine_EntityHighlightLayer : Node
         {
             _publishedRd = rd;
             _publishedScale = scale;
-            System.Array.Copy(targets, _published, Slots);
+            System.Array.Copy(_targets, _published, Slots);
             _publishedActive = active && rd.IsValid;
         }
     }

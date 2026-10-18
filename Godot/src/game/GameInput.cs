@@ -213,11 +213,12 @@ public partial class GameInput : Node
 	public static float MouseSensitivity { get; private set; } = 1f;
 
 	private static double _settingsClock;
+	private static System.Collections.Generic.IReadOnlyDictionary<string, string>? _lastControlValues;
 
 	/// <summary>
-	/// The player's control settings, re-read twice a second: the launcher writes refii.toml
-	/// while the game runs, and the reader caches by write time, so a change lands within
-	/// half a second without a restart.
+	/// The player's control settings, re-checked periodically: the launcher writes refii.toml
+	/// while the game runs, and the reader caches by write time, so key bindings are only
+	/// re-parsed when the returned dictionary instance actually changes.
 	/// </summary>
 	private static void ReadControlSettings(double delta)
 	{
@@ -227,8 +228,13 @@ public partial class GameInput : Node
 			return;
 		}
 
-		_settingsClock = 0.5;
+		_settingsClock = 2.0;
 		var values = Refii.Core.Engine_RefiiConfig.Read(out _);
+		if (ReferenceEquals(values, _lastControlValues))
+		{
+			return;
+		}
+		_lastControlValues = values;
 		InvertCameraX = Refii.Core.Engine_RefiiConfig.Bool(values, "camera_invert_x", false);
 		ReadKeyBindings(values);
 		MouseSensitivity = Mathf.Clamp(
@@ -245,12 +251,69 @@ public partial class GameInput : Node
 	/// </summary>
 	private static readonly int[] _padDevice = { -1, -1, -1, -1 };
 
-	private static void AssignPads(bool devices)
+	private static (int Id, bool Known)[] _connectedJoypads = System.Array.Empty<(int, bool)>();
+	private static bool _joypadsHooked;
+
+	private static void EnsureJoypadsHooked()
+	{
+		if (_joypadsHooked)
+		{
+			return;
+		}
+
+		_joypadsHooked = true;
+		Input.JoyConnectionChanged += OnJoyConnectionChanged;
+		RefreshConnectedJoypads();
+	}
+
+	private static void OnJoyConnectionChanged(long device, bool connected) =>
+		RefreshConnectedJoypads();
+
+	private static void RefreshConnectedJoypads()
 	{
 		Godot.Collections.Array<int> connected = Input.GetConnectedJoypads();
+		try
+		{
+			if (connected.Count == 0)
+			{
+				_connectedJoypads = System.Array.Empty<(int, bool)>();
+				return;
+			}
+
+			var list = new (int Id, bool Known)[connected.Count];
+			for (int i = 0; i < connected.Count; ++i)
+			{
+				int id = connected[i];
+				list[i] = (id, Input.IsJoyKnown(id));
+			}
+
+			_connectedJoypads = list;
+		}
+		finally
+		{
+			((Godot.Collections.Array)connected).Dispose();
+		}
+	}
+
+	private static bool IsJoypadConnected(int id)
+	{
+		foreach ((int connectedId, _) in _connectedJoypads)
+		{
+			if (connectedId == id)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static void AssignPads(bool devices)
+	{
+		EnsureJoypadsHooked();
 		for (int pad = 0; pad < MaxControllers; ++pad)
 		{
-			if (_padDevice[pad] >= 0 && !connected.Contains(_padDevice[pad]))
+			if (_padDevice[pad] >= 0 && !IsJoypadConnected(_padDevice[pad]))
 			{
 				GD.Print($"[input] joypad {_padDevice[pad]} disconnected — guest pad {pad} is free");
 				_padDevice[pad] = -1;
@@ -262,9 +325,9 @@ public partial class GameInput : Node
 			return;
 		}
 
-		foreach (int joypad in connected)
+		foreach ((int joypad, bool known) in _connectedJoypads)
 		{
-			if (!Input.IsJoyKnown(joypad) || System.Array.IndexOf(_padDevice, joypad) >= 0 ||
+			if (!known || System.Array.IndexOf(_padDevice, joypad) >= 0 ||
 				JoypadButtons(joypad) == 0)
 			{
 				continue;
@@ -387,9 +450,9 @@ public partial class GameInput : Node
 
 		if (devices)
 		{
-			foreach (int joypad in Input.GetConnectedJoypads())
+			foreach ((int joypad, bool known) in _connectedJoypads)
 			{
-				if (joypad == _padDevice[0] || !Input.IsJoyKnown(joypad))
+				if (joypad == _padDevice[0] || !known)
 				{
 					state.Merge(joypad);
 				}

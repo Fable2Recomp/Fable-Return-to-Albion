@@ -50,6 +50,7 @@ public partial class Engine_ClassicParticles : Node
         public string Key = string.Empty;
         /// <summary>The inputs <see cref="Key"/> is built from, packed; the string is rebuilt only when they change.</summary>
         public long Shape = -1;
+        public ulong TextureSignature;
         /// <summary>The <see cref="_inverseVp"/> version its materials hold.</summary>
         public int InverseVpSent = -1;
         public int Capacity;
@@ -67,6 +68,8 @@ public partial class Engine_ClassicParticles : Node
         public ShaderMaterial? Live;
         /// <summary>A displacement group: drawn into the displacement target, not the scene.</summary>
         public bool Displacement;
+        /// <summary>True when depth-fade (soft particles) is active, requiring ps_g_InverseViewProjection updates on camera motion.</summary>
+        public bool Soft;
         /// <summary>Quads the mesh's surface holds now (a multiple of <see cref="QuadStep"/>); 0 = none.</summary>
         public int Allocated;
         /// <summary>The surface's streams as uploaded in place, when its layout is the one packed here.</summary>
@@ -238,12 +241,13 @@ public partial class Engine_ClassicParticles : Node
         }
     }
 
+    private uint _lastUsed;
+    private bool _lastModern;
+
     /// <summary>Reads the groups and rebuilds their meshes and constants. Main thread, once a frame, after the lit instances.</summary>
     public void Pump(Camera3D camera)
     {
         ++_frames;
-        _particles = 0;
-        _skippedDisplacement = 0;
         bool modern = !Engine_ClassicMaterial.Active;
         if (modern)
         {
@@ -263,11 +267,47 @@ public partial class Engine_ClassicParticles : Node
             return;
         }
 
-        uint used = Refii.Host.HostBridge.GetClassicParticles(_buffer);
+        bool guestStepped = Refii.Core.Engine_GuestFrame.Changed || _frames <= 1 || modern != _lastModern;
+        _lastModern = modern;
+        bool inverseVpChanged = InverseViewProjection(camera);
+        if (!guestStepped)
+        {
+            // Between 30 Hz guest frames, the particle buffer and group membership are invariant.
+            // Only soft-particle groups need their ps_g_InverseViewProjection uniform refreshed if
+            // the interpolated Godot camera moved since last frame.
+            if (inverseVpChanged)
+            {
+                foreach (Group group in _groups.Values)
+                {
+                    if (!group.Soft || group.InverseVpSent == _inverseVp.Version)
+                    {
+                        continue;
+                    }
+                    group.InverseVpSent = _inverseVp.Version;
+                    if (modern)
+                    {
+                        group.Material?.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
+                    }
+                    else
+                    {
+                        Chain(group);
+                        foreach (ShaderMaterial m in _chain)
+                        {
+                            m.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
+                        }
+                    }
+                }
+            }
+            PumpTrails(camera, default, guestStepped: false, inverseVpChanged);
+            return;
+        }
+
+        _particles = 0;
+        _skippedDisplacement = 0;
+        uint used = _lastUsed = Refii.Host.HostBridge.GetClassicParticles(_buffer);
         DrawnOwners.Clear();
         int groups = used == 0 ? 0 : (int)_buffer[0];
         Vector2 viewport = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1920f, 1080f);
-        InverseViewProjection(camera);
 
         int at = 2;
         int displaced = 0;
@@ -296,13 +336,14 @@ public partial class Engine_ClassicParticles : Node
                 group.Displacement = displacement;
                 group.Key = string.Empty;
                 group.Shape = -1;
+                group.TextureSignature = 0;
                 group.Node.Layers = displacement ? Engine_ClassicDisplacement.Layer : Layer;
             }
             group.Seen = _frames;
             // The sim states a group at its own rate; a frame that repeats the last records
             // rebuilds nothing.
             int length = Header + count * Record;
-            bool changed = group.SnapshotLength != length || !Same(group.Snapshot, _buffer, at, length);
+            bool changed = guestStepped && (group.SnapshotLength != length || !Same(group.Snapshot, _buffer, at, length));
             if (changed)
             {
                 if (group.Snapshot.Length < length)
@@ -313,12 +354,12 @@ public partial class Engine_ClassicParticles : Node
                 group.SnapshotLength = length;
                 Fill(group, at, count);
             }
-            if (Compose(group, at))
+            if (Compose(group, at, changed))
             {
-                Constants(group, at, viewport);
+                Constants(group, at, viewport, changed);
                 _particles += count;
                 uint owner = BitConverter.SingleToUInt32Bits(_buffer[at + 7]);
-                if (modern && owner != 0u && count > 0)
+                if (guestStepped && modern && owner != 0u && count > 0)
                 {
                     DrawnOwners.Add(owner);
                 }
@@ -330,22 +371,25 @@ public partial class Engine_ClassicParticles : Node
             at += Header + count * Record;
         }
 
-        _gone.Clear();
-        foreach (KeyValuePair<uint, Group> pair in _groups)
+        if (guestStepped)
         {
-            if (pair.Value.Seen != _frames)
+            _gone.Clear();
+            foreach (KeyValuePair<uint, Group> pair in _groups)
             {
-                pair.Value.Node.QueueFree();
-                _gone.Add(pair.Key);
+                if (pair.Value.Seen != _frames)
+                {
+                    pair.Value.Node.QueueFree();
+                    _gone.Add(pair.Key);
+                }
             }
-        }
-        foreach (uint address in _gone)
-        {
-            _groups.Remove(address);
+            foreach (uint address in _gone)
+            {
+                _groups.Remove(address);
+            }
         }
 
         Engine_ClassicDisplacement.Drawn = displaced;
-        PumpTrails(camera, viewport);
+        PumpTrails(camera, viewport, guestStepped, inverseVpChanged);
     }
 
     private Group Create(uint address)
@@ -494,15 +538,44 @@ public partial class Engine_ClassicParticles : Node
             group.Custom1.AsSpan(v * 4, 4).CopyTo(attributes.Slice(v * 8 + 4, 4));
         }
         Rid mesh = group.Mesh.GetRid();
-        RenderingServer.MeshSurfaceUpdateVertexRegion(mesh, 0, 0, group.VertexBytes);
-        RenderingServer.MeshSurfaceUpdateAttributeRegion(mesh, 0, 0, group.AttributeBytes);
+        RenderingServer.MeshSurfaceUpdateVertexRegion(mesh, 0, 0, (ReadOnlySpan<byte>)group.VertexBytes.AsSpan(0, vertexCount * 12));
+        RenderingServer.MeshSurfaceUpdateAttributeRegion(mesh, 0, 0, (ReadOnlySpan<byte>)group.AttributeBytes.AsSpan(0, vertexCount * 32));
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static ulong ComputeTextureSignature(float[] buffer, int at, int textures)
+    {
+        ulong hash = 14695981039346656037UL;
+        uint material = BitConverter.SingleToUInt32Bits(buffer[at + 37]);
+        hash = (hash ^ material) * 1099511628211UL;
+        for (int t = 0; t < textures; t++)
+        {
+            int o = at + 254 + t * 20;
+            uint key = BitConverter.SingleToUInt32Bits(buffer[o]);
+            hash = (hash ^ key) * 1099511628211UL;
+            for (int w = 0; w < 16; w++)
+            {
+                uint word = BitConverter.SingleToUInt32Bits(buffer[o + 4 + w]);
+                if (word == 0u) break;
+                hash = (hash ^ word) * 1099511628211UL;
+            }
+        }
+        return hash;
     }
 
     /// <summary>The material for the group's variant, rebuilt when the variant changes.</summary>
-    private bool Compose(Group group, int at)
+    private bool Compose(Group group, int at, bool changed)
     {
+        if (!changed && group.Material is not null)
+        {
+            return true;
+        }
         int textures = Math.Clamp((int)_buffer[at + 38], 0, 4);
+        ulong texSig = ComputeTextureSignature(_buffer, at, textures);
+        bool sameTex = texSig == group.TextureSignature;
+        group.TextureSignature = texSig;
         bool soft = _buffer[at + 42] > 0f;
+        group.Soft = soft;
         bool anim = false;
         for (int t = 0; t < textures; t++)
         {
@@ -515,14 +588,14 @@ public partial class Engine_ClassicParticles : Node
         int src = (int)_buffer[at + 39], dst = (int)_buffer[at + 40], op = (int)_buffer[at + 41];
         bool alphaRef16 = _buffer[at + 44] != 0f;
         long shape = ShapeOf(textures, soft, anim, alphaRef16, false, false, src, dst, op);
-        if (shape == group.Shape && group.Material is not null)
+        if (shape == group.Shape && sameTex && group.Material is not null)
         {
             return true;
         }
         group.Shape = shape;
         string blend = BlendMode(src, dst, op, out bool oneOne);
         string key = $"{textures}|{soft}|{anim}|{blend}|{oneOne}|{alphaRef16}";
-        if (key == group.Key && group.Material is not null)
+        if (key == group.Key && sameTex && group.Material is not null)
         {
             return true;
         }
@@ -738,131 +811,144 @@ public partial class Engine_ClassicParticles : Node
     /// are written when they change; the transform when it moves; a soft group's view inverse
     /// when the camera moves. A fixed-axis group (M+56) takes its own axes (XR_VS_CONST).
     /// </summary>
-    private void Constants(Group group, int at, Vector2 viewport)
+    private void Constants(Group group, int at, Vector2 viewport, bool changed)
     {
+        if (!changed && !Engine_ClassicMaterial.Active && ReferenceEquals(group.Live, group.Material) && group.Material is not null)
+        {
+            if (_buffer[at + 42] > 0f && group.InverseVpSent != _inverseVp.Version)
+            {
+                group.InverseVpSent = _inverseVp.Version;
+                group.Material.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
+            }
+            return;
+        }
+
         ShaderMaterial? liveBefore = group.Live;
         Chain(group);
         bool liveChanged = !ReferenceEquals(liveBefore, group.Live);
 
-        int staticHash = HashRange(at + 12, 9) ^ (HashRange(at + 38, 16) * 3) ^ (HashRange(at + 64, 270) * 7);
-        if (staticHash != group.StaticHash || liveChanged)
+        if (changed || liveChanged)
         {
-            group.StaticHash = staticHash;
-            float f0 = _buffer[at + 12], f1 = _buffer[at + 13], f2 = _buffer[at + 14], f3 = _buffer[at + 15], f4 = _buffer[at + 16];
-            var fadeIn = new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f);
-            var fadeOut = new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f);
-            // The modern shader adds the scene's ambient itself; it takes the material's own here.
-            Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
-            if (_buffer[at + 54] == 0f)
+            int staticHash = HashRange(at + 12, 9) ^ (HashRange(at + 38, 16) * 3) ^ (HashRange(at + 64, 270) * 7) ^ (int)group.TextureSignature ^ (int)(group.TextureSignature >> 32);
+            if (staticHash != group.StaticHash || liveChanged)
             {
-                ambient += new Vector3(_buffer[at + 51], _buffer[at + 52], _buffer[at + 53]);
+                group.StaticHash = staticHash;
+                float f0 = _buffer[at + 12], f1 = _buffer[at + 13], f2 = _buffer[at + 14], f3 = _buffer[at + 15], f4 = _buffer[at + 16];
+                var fadeIn = new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f);
+                var fadeOut = new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f);
+                // The modern shader adds the scene's ambient itself; it takes the material's own here.
+                Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
+                if (_buffer[at + 54] == 0f)
+                {
+                    ambient += new Vector3(_buffer[at + 51], _buffer[at + 52], _buffer[at + 53]);
+                }
+                float scale = _buffer[at + 17];
+                int keys = Math.Clamp((int)_buffer[at + 50], 0, 19);
+                for (int k = 0; k < MaxKeyframes; k++)
+                {
+                    if (k < keys)
+                    {
+                        int o = at + 64 + k * 10;
+                        _colours[k] = new Vector4(_buffer[o], _buffer[o + 1], _buffer[o + 2], _buffer[o + 3]);
+                        _scales[k] = new Vector4(_buffer[o + 4], _buffer[o + 5], _buffer[o + 8], _buffer[o + 9]);
+                        _globalScales[k] = new Vector4(_buffer[o + 6] * scale, _buffer[o + 7] * scale, 0f, 0f);
+                    }
+                    else
+                    {
+                        _colours[k] = Vector4.Zero;
+                        _scales[k] = Vector4.Zero;
+                        _globalScales[k] = Vector4.Zero;
+                    }
+                }
+                int textures = Math.Clamp((int)_buffer[at + 38], 0, 4);
+                var starts = Vector4.Zero;
+                var invDeltas = Vector4.Zero;
+                var divisions = Vector4.Zero;
+                for (int t = 0; t < 4; t++)
+                {
+                    _uvScales[t] = Vector4.Zero;
+                    if (t >= textures)
+                    {
+                        continue;
+                    }
+                    int o = at + 254 + t * 20;
+                    float start = _buffer[o + 1];
+                    float x = _buffer[o + 2], y = _buffer[o + 3];
+                    starts[t] = start;
+                    divisions[t] = x;
+                    if (t > 0)
+                    {
+                        float previous = _buffer[at + 254 + (t - 1) * 20 + 1];
+                        // Lane t - 1: the blend stages weigh texture t by (age - start[t - 1]) * invDelta[t - 1]
+                        // (`sub_821ABC60` stores it at +96 + 4 (t - 1)); lane t left blending off.
+                        invDeltas[t - 1] = start != previous ? 1f / (start - previous) : 0f;
+                    }
+                    if (Math.Max(x, y) > 1f)
+                    {
+                        _uvScales[t] = new Vector4(x > 0f ? 1f / x : 0f, y > 0f ? 1f / y : 0f, 0f, 0f);
+                    }
+                }
+                float softDistance = _buffer[at + 42];
+                float depthFade = softDistance > 0f ? 1f / softDistance : 0f;
+                // A fixed-axis group (M+56): its up and right are the quaternion D+32 applied to y and
+                // x (`sub_821CA108` 0x821CA388..0x821CA40C, `sub_822A1640` = rotate), not the camera's.
+                bool fixedAxes = _buffer[at + 45] != 0f;
+                var q = new Quaternion(_buffer[at + 46], _buffer[at + 47], _buffer[at + 48], _buffer[at + 49]);
+                Vector3 up = Vector3.Up, right = Vector3.Right;
+                if (fixedAxes && q.LengthSquared() > 1e-8f)
+                {
+                    q = q.Normalized();
+                    up = q * new Vector3(0f, 1f, 0f);
+                    right = q * new Vector3(1f, 0f, 0f);
+                }
+                using Variant colours = Variant.CreateFrom(_colours);
+                using Variant scales = Variant.CreateFrom(_scales);
+                using Variant globalScales = Variant.CreateFrom(_globalScales);
+                using Variant uvScales = Variant.CreateFrom(_uvScales);
+                foreach (ShaderMaterial m in _chain)
+                {
+                    m.SetShaderParameter(FixedAxesName, fixedAxes);
+                    m.SetShaderParameter(FixedUpName, new Vector4(up.X, up.Y, up.Z, 0f));
+                    m.SetShaderParameter(FixedRightName, new Vector4(right.X, right.Y, right.Z, 0f));
+                    m.SetShaderParameter(VsFadeInDistanceInfoName, fadeIn);
+                    m.SetShaderParameter(VsFadeOutDistanceInfoName, fadeOut);
+                    m.SetShaderParameter(VsGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
+                    m.SetShaderParameter(VsKeyFrameColorsName, colours);
+                    m.SetShaderParameter(VsKeyFrameScalesSelfIllumFactorStartTimesName, scales);
+                    m.SetShaderParameter(VsKeyFrameGlobalScalesName, globalScales);
+                    m.SetShaderParameter(PsTextureStartTimesName, starts);
+                    m.SetShaderParameter(PsTextureStartTimesInvDeltaName, invDeltas);
+                    m.SetShaderParameter(PsTextureNumXDivsName, divisions);
+                    m.SetShaderParameter(PsTextureUVScalesName, uvScales);
+                    if (softDistance > 0f)
+                    {
+                        m.SetShaderParameter(PsDepthFadeScaleName, new Vector4(depthFade, depthFade, depthFade, depthFade));
+                    }
+                }
             }
-            float scale = _buffer[at + 17];
-            int keys = Math.Clamp((int)_buffer[at + 50], 0, 19);
-            for (int k = 0; k < MaxKeyframes; k++)
-            {
-                if (k < keys)
-                {
-                    int o = at + 64 + k * 10;
-                    _colours[k] = new Vector4(_buffer[o], _buffer[o + 1], _buffer[o + 2], _buffer[o + 3]);
-                    _scales[k] = new Vector4(_buffer[o + 4], _buffer[o + 5], _buffer[o + 8], _buffer[o + 9]);
-                    _globalScales[k] = new Vector4(_buffer[o + 6] * scale, _buffer[o + 7] * scale, 0f, 0f);
-                }
-                else
-                {
-                    _colours[k] = Vector4.Zero;
-                    _scales[k] = Vector4.Zero;
-                    _globalScales[k] = Vector4.Zero;
-                }
-            }
-            int textures = Math.Clamp((int)_buffer[at + 38], 0, 4);
-            var starts = Vector4.Zero;
-            var invDeltas = Vector4.Zero;
-            var divisions = Vector4.Zero;
-            for (int t = 0; t < 4; t++)
-            {
-                _uvScales[t] = Vector4.Zero;
-                if (t >= textures)
-                {
-                    continue;
-                }
-                int o = at + 254 + t * 20;
-                float start = _buffer[o + 1];
-                float x = _buffer[o + 2], y = _buffer[o + 3];
-                starts[t] = start;
-                divisions[t] = x;
-                if (t > 0)
-                {
-                    float previous = _buffer[at + 254 + (t - 1) * 20 + 1];
-                    // Lane t - 1: the blend stages weigh texture t by (age - start[t - 1]) * invDelta[t - 1]
-                    // (`sub_821ABC60` stores it at +96 + 4 (t - 1)); lane t left blending off.
-                    invDeltas[t - 1] = start != previous ? 1f / (start - previous) : 0f;
-                }
-                if (Math.Max(x, y) > 1f)
-                {
-                    _uvScales[t] = new Vector4(x > 0f ? 1f / x : 0f, y > 0f ? 1f / y : 0f, 0f, 0f);
-                }
-            }
-            float softDistance = _buffer[at + 42];
-            float depthFade = softDistance > 0f ? 1f / softDistance : 0f;
-            // A fixed-axis group (M+56): its up and right are the quaternion D+32 applied to y and
-            // x (`sub_821CA108` 0x821CA388..0x821CA40C, `sub_822A1640` = rotate), not the camera's.
-            bool fixedAxes = _buffer[at + 45] != 0f;
-            var q = new Quaternion(_buffer[at + 46], _buffer[at + 47], _buffer[at + 48], _buffer[at + 49]);
-            Vector3 up = Vector3.Up, right = Vector3.Right;
-            if (fixedAxes && q.LengthSquared() > 1e-8f)
-            {
-                q = q.Normalized();
-                up = q * new Vector3(0f, 1f, 0f);
-                right = q * new Vector3(1f, 0f, 0f);
-            }
-            using Variant colours = Variant.CreateFrom(_colours);
-            using Variant scales = Variant.CreateFrom(_scales);
-            using Variant globalScales = Variant.CreateFrom(_globalScales);
-            using Variant uvScales = Variant.CreateFrom(_uvScales);
-            foreach (ShaderMaterial m in _chain)
-            {
-                m.SetShaderParameter(FixedAxesName, fixedAxes);
-                m.SetShaderParameter(FixedUpName, new Vector4(up.X, up.Y, up.Z, 0f));
-                m.SetShaderParameter(FixedRightName, new Vector4(right.X, right.Y, right.Z, 0f));
-                m.SetShaderParameter(VsFadeInDistanceInfoName, fadeIn);
-                m.SetShaderParameter(VsFadeOutDistanceInfoName, fadeOut);
-                m.SetShaderParameter(VsGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
-                m.SetShaderParameter(VsKeyFrameColorsName, colours);
-                m.SetShaderParameter(VsKeyFrameScalesSelfIllumFactorStartTimesName, scales);
-                m.SetShaderParameter(VsKeyFrameGlobalScalesName, globalScales);
-                m.SetShaderParameter(PsTextureStartTimesName, starts);
-                m.SetShaderParameter(PsTextureStartTimesInvDeltaName, invDeltas);
-                m.SetShaderParameter(PsTextureNumXDivsName, divisions);
-                m.SetShaderParameter(PsTextureUVScalesName, uvScales);
-                if (softDistance > 0f)
-                {
-                    m.SetShaderParameter(PsDepthFadeScaleName, new Vector4(depthFade, depthFade, depthFade, depthFade));
-                }
-            }
-        }
 
-        // g_MatWorld: the columns of the group's row-major transform (R+320), as the title
-        // transposes it (sub_82270CD0) for the shader's dot(c72+i, position).
-        bool moved = liveChanged;
-        for (int i = 0; i < 16; i++)
-        {
-            if (group.World[i] != _buffer[at + 21 + i])
+            // g_MatWorld: the columns of the group's row-major transform (R+320), as the title
+            // transposes it (sub_82270CD0) for the shader's dot(c72+i, position).
+            bool moved = liveChanged;
+            for (int i = 0; i < 16; i++)
             {
-                moved = true;
-                group.World[i] = _buffer[at + 21 + i];
+                if (group.World[i] != _buffer[at + 21 + i])
+                {
+                    moved = true;
+                    group.World[i] = _buffer[at + 21 + i];
+                }
             }
-        }
-        if (moved)
-        {
-            for (int i = 0; i < 3; i++)
+            if (moved)
             {
-                _world[i] = new Vector4(group.World[i], group.World[4 + i], group.World[8 + i], group.World[12 + i]);
-            }
-            using Variant world = Variant.CreateFrom(_world);
-            foreach (ShaderMaterial m in _chain)
-            {
-                m.SetShaderParameter(VsMatWorldName, world);
+                for (int i = 0; i < 3; i++)
+                {
+                    _world[i] = new Vector4(group.World[i], group.World[4 + i], group.World[8 + i], group.World[12 + i]);
+                }
+                using Variant world = Variant.CreateFrom(_world);
+                foreach (ShaderMaterial m in _chain)
+                {
+                    m.SetShaderParameter(VsMatWorldName, world);
+                }
             }
         }
 
@@ -900,7 +986,7 @@ public partial class Engine_ClassicParticles : Node
     /// [0, 1] depth, which is 2z - 1 in the camera's GL projection; the rows are those of
     /// (Godot world to guest world) x inverse(projection x view) x (that z remap).
     /// </summary>
-    private void InverseViewProjection(Camera3D camera)
+    private bool InverseViewProjection(Camera3D camera)
     {
         Projection view = new Projection(camera.GlobalTransform.AffineInverse());
         Projection projection = camera.GetCameraProjection();
@@ -915,7 +1001,7 @@ public partial class Engine_ClassicParticles : Node
         {
             _inverseViewProjection[i] = new Vector4(m.X[i], m.Y[i], m.Z[i], m.W[i]);
         }
-        _inverseVp.Take(_inverseViewProjection);
+        return _inverseVp.Take(_inverseViewProjection);
     }
 
     /// <summary>A material texture: by the path the key points at, else by the key as a hash.</summary>

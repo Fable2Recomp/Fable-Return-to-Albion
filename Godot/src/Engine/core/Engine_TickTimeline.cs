@@ -46,15 +46,15 @@ public sealed class Engine_TickTimeline
 	public const double Lead = Engine_PairPlayhead.Ceiling - 1.0;
 
 	/// <summary>How fast an error is closed: the fraction left after one second is e^-Gain.</summary>
-	private const double Gain = 6.0;
+	private const double Gain = 14.0;
 
 	/// <summary>The most the drawn motion may differ from the stated one while closing an error, as a fraction of it.</summary>
-	private const double MaxCorrection = 0.25;
+	private const double MaxCorrection = 1.0;
 
 	/// <summary>Floors under that fraction, so something standing still still settles on its place.</summary>
-	private const double MinSpeed = 0.5;
+	private const double MinSpeed = 1.5;
 
-	private const double MinTurn = 0.5;
+	private const double MinTurn = 1.5;
 
 	private const double MinScalarRate = 1.0;
 
@@ -160,7 +160,7 @@ public sealed class Engine_TickTimeline
 			// last was until then (the guest latches a placement only when it changes, and the
 			// walk skips what it found unchanged). For a source written only on some ticks, the
 			// gap is judged against its own last interval.
-			double gapLimit = _stillWhenUnchanged ? 2.0 : (2.0 * System.Math.Max(_stamp - _previousStamp, 1.0)) + 1.0;
+			double gapLimit = _stillWhenUnchanged ? 4.0 : (2.0 * System.Math.Max(_stamp - _previousStamp, 1.0)) + 1.0;
 			_previousStamp = tick - _stamp > gapLimit ? tick - 1.0 : _stamp;
 			_previous = Newest;
 			_previousScalar = NewestScalar;
@@ -211,6 +211,11 @@ public sealed class Engine_TickTimeline
 			return Newest;
 		}
 
+		if (_lastUsec != 0UL && nowUsec == _lastUsec)
+		{
+			return new Transform3D(new Basis(_rotation) * Basis.FromScale(Newest.Basis.Scale), _position);
+		}
+
 		double seconds = _lastUsec == 0UL || nowUsec <= _lastUsec
 			? 0.0
 			: System.Math.Min((nowUsec - _lastUsec) * 1e-6, 0.25);
@@ -219,11 +224,19 @@ public sealed class Engine_TickTimeline
 		// Moved by the frame's time at the guest's own pace — slower than real time under load —
 		// and the stated motion (Engine_DrawAdvance).
 		double span = _stamp - _previousStamp;
+		double maxSpan = System.Math.Max(span, 1.0);
 
 		// A source written only on some ticks has stopped once its next change is overdue: past
 		// half its own interval beyond where that change was due, plus the draw latency's tick.
-		bool overdue = !_stillWhenUnchanged && !double.IsNaN(drawTick) &&
-			drawTick - _stamp > (1.5 * span) + 1.0;
+		bool overdue = !double.IsNaN(drawTick) &&
+			drawTick - _stamp > (_stillWhenUnchanged ? maxSpan + Lead : (1.5 * maxSpan) + 1.0);
+		if (overdue)
+		{
+			_velocity = Vector3.Zero;
+			_spinAngle = 0f;
+			_spinRate = 0.0;
+			_scalarRate = 0.0;
+		}
 		double stated = overdue ? 0.0 : Engine_DrawAdvance.Ticks(seconds, nowUsec, drawTick) / TicksPerSecond;
 		_position += _velocity * (float)stated;
 		if (_spinRate > 0.0)
@@ -235,11 +248,11 @@ public sealed class Engine_TickTimeline
 
 		// The reference: the guest's blend of its pair at the draw point — run back along the
 		// segment by up to a tick when the shared playhead's floor holds the draw point before it,
-		// exactly as a clip's reference is (Engine_ClipPlayhead), so a body and its legs agree.
+		// and forward by up to Lead (0.5) so a 2-tick (7.5 Hz) mover reaches alpha=1.5 on the
+		// intermediate tick before seamlessly handing off to alpha=0.5 on the next 2-tick pair.
 		double alpha = double.IsNaN(drawTick) || overdue
 			? 1.0
-			: System.Math.Clamp((drawTick - _previousStamp) / span, -1.0 / span,
-				1.0 + (_stillWhenUnchanged ? Lead / span : Lead));
+			: System.Math.Clamp((drawTick - _previousStamp) / span, -1.0 / span, 1.0 + Lead);
 		Vector3 target = _previous.Origin.Lerp(Newest.Origin, (float)alpha);
 		Quaternion turn = _previousRotation * SafeAngleAxis(_spinAxis, (float)(_spinAngle * alpha));
 		float scalarTarget = Mathf.Lerp(_previousScalar, NewestScalar, (float)alpha);

@@ -53,4 +53,21 @@ public class HostSystemsExampleTests
         bool valid = SafePath.IsSafeRelativePath("assets\\mods\\mymod\\files", out error);
         AssertThat(valid).IsTrue();
     }
+
+    [TestCase]
+    public void TestFramePhasesResetMetrics()
+    {
+        Refii.Core.Engine_FramePhases.Record("propstreamer", 125.0, false);
+        AssertThat(Refii.Core.Engine_FramePhases.Last("propstreamer")).IsEqualApprox(125.0, 0.01);
+
+        using (Refii.Core.Engine_FramePhases.Measure("test_phase"))
+        {
+        }
+        AssertThat(Refii.Core.Engine_FramePhases.Report().ContainsKey("test_phase")).IsTrue();
+
+        Refii.Core.Engine_FramePhases.ResetMetrics();
+        AssertThat(Refii.Core.Engine_FramePhases.Last("propstreamer")).IsEqual(0.0);
+        AssertThat(Refii.Core.Engine_FramePhases.Report().Count).IsEqual(0);
+        AssertThat(Refii.Core.Engine_FramePhases.Hitches.Count).IsEqual(0);
+    }
 }

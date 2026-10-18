@@ -176,8 +176,10 @@ public partial class GameUi : Node
 	private static bool GuestMessageBoxOpen(uint box)
 	{
 		const uint MessageBoxVtable = 0x820AE668u;
-		uint[] words = HostBridge.Peek(box, 4);
-		return words.Length == 4 && HostBridge.GuestAddressToTu1(words[0]) == MessageBoxVtable && (words[3] >> 24) != 0u;
+		System.Span<uint> words = stackalloc uint[4];
+		return HostBridge.Peek(box, words) == 4 &&
+			HostBridge.GuestAddressToTu1(words[0]) == MessageBoxVtable &&
+			(words[3] >> 24) != 0u;
 	}
 
 	/// <summary>This frame's press, in the form an owned surface takes it.</summary>
@@ -2850,26 +2852,23 @@ public partial class GameUi : Node
 		uint at = HostBridge.GuestAddress(0x83496AB8u);
 		foreach (uint offset in FlowListChain)
 		{
-			uint[] word = HostBridge.Peek(at + offset, 1);
-			if (word.Length != 1 || word[0] < 0x10000u)
+			if (!HostBridge.TryPeekWord(at + offset, out uint word) || word < 0x10000u)
 			{
 				return false;
 			}
 
-			at = word[0];
+			at = word;
 		}
 
-		uint[] node = HostBridge.Peek(at + 4u, 1);
-		if (node.Length != 1 || node[0] == at || node[0] < 0x10000u)
+		if (!HostBridge.TryPeekWord(at + 4u, out uint node) || node == at || node < 0x10000u)
 		{
 			return false;
 		}
 
-		uint[] state = HostBridge.Peek(node[0] + 8u, 1);
-		uint[] vtable = state.Length == 1 && state[0] >= 0x10000u
-			? HostBridge.Peek(state[0], 1)
-			: System.Array.Empty<uint>();
-		return vtable.Length == 1 && HostBridge.GuestAddressToTu1(vtable[0]) == FullCutsceneStateVtable;
+		return HostBridge.TryPeekWord(node + 8u, out uint state) &&
+			state >= 0x10000u &&
+			HostBridge.TryPeekWord(state, out uint vtable) &&
+			HostBridge.GuestAddressToTu1(vtable) == FullCutsceneStateVtable;
 	}
 
 	/// <summary>
@@ -2935,12 +2934,15 @@ public partial class GameUi : Node
 			return;
 		}
 
-		uint[] gui = HostBridge.IsInGame ? HostBridge.Peek(HostBridge.GuestAddress(0x83496B08u), 1) : System.Array.Empty<uint>();
-		uint[] root = gui.Length == 1 ? HostBridge.Peek(gui[0], 9) : System.Array.Empty<uint>();
-		uint[] hud = root.Length == 9 && HostBridge.GuestAddressToTu1(root[0]) == 0x82001610u
-			? HostBridge.Peek(root[8] + 72u, 1)
-			: System.Array.Empty<uint>();
-		if (hud.Length != 1 || hud[0] == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
+		System.Span<uint> root = stackalloc uint[9];
+		uint hud = HostBridge.IsInGame &&
+			HostBridge.TryPeekWord(HostBridge.GuestAddress(0x83496B08u), out uint gui) &&
+			HostBridge.Peek(gui, root) == 9 &&
+			HostBridge.GuestAddressToTu1(root[0]) == 0x82001610u &&
+			HostBridge.TryPeekWord(root[8] + 72u, out uint hudAddr)
+			? hudAddr
+			: 0u;
+		if (hud == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
 		{
 			_reticule.Feed(0, null);
 			_reticule.Feed(1, null);
@@ -2948,8 +2950,9 @@ public partial class GameUi : Node
 		}
 
 		// The guest's backbuffer, `qword_834A5FE8` — the pixels its petal sizes are stated in.
-		uint[] backbuffer = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), 2);
-		float guestHeight = backbuffer.Length == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
+		System.Span<uint> backbuffer = stackalloc uint[2];
+		int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
+		float guestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
 		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
 		_reticule.CanvasHalfExtent = extent * 0.5f;
 		_reticule.UnitsPerGuestPixel = extent.Y / guestHeight;
@@ -2957,13 +2960,15 @@ public partial class GameUi : Node
 
 		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
 
+		System.Span<uint> record = stackalloc uint[14];
+		System.Span<uint> anchor = stackalloc uint[3];
 		for (int player = 0; player < 2; ++player)
 		{
-			uint[] record = HostBridge.Peek(hud[0] + (64u * (uint)player), 14);
-			uint[] anchor = _reticuleObject[player] != 0u
-				? HostBridge.Peek(_reticuleObject[player] + 0x90u, 3)
-				: System.Array.Empty<uint>();
-			if (record.Length != 14 || (record[0] >> 24) == 0u || anchor.Length != 3)
+			int recCount = HostBridge.Peek(hud + (64u * (uint)player), record);
+			int ancCount = _reticuleObject[player] != 0u
+				? HostBridge.Peek(_reticuleObject[player] + 0x90u, anchor)
+				: 0;
+			if (recCount != 14 || (record[0] >> 24) == 0u || ancCount != 3)
 			{
 				_reticule.Feed(player, null);
 				continue;
@@ -3001,44 +3006,46 @@ public partial class GameUi : Node
 
 		// Dial +0..+108: words 1 (active byte high), 3 (alpha), then per segment i at word
 		// 8 + 10i: prim, top, left, bottom, right, texture, angle.
-		uint[] dial = HostBridge.Peek(spells + 484u, 28);
-		if (dial.Length != 28 || (dial[1] >> 24) == 0u)
+		System.Span<uint> dial = stackalloc uint[28];
+		if (HostBridge.Peek(spells + 484u, dial) != 28 || (dial[1] >> 24) == 0u)
 		{
 			_slowTimeDial.Feed(null);
 			return;
 		}
 
-		uint[] backbuffer = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), 2);
-		float guestWidth = backbuffer.Length == 2 && backbuffer[0] != 0u ? backbuffer[0] : 1280f;
-		float guestHeight = backbuffer.Length == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
+		System.Span<uint> backbuffer = stackalloc uint[2];
+		int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
+		float guestWidth = bbCount == 2 && backbuffer[0] != 0u ? backbuffer[0] : 1280f;
+		float guestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
 		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
 		_slowTimeDial.UnitsPerGuestPixel = extent.Y / guestHeight;
 
 		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
 
-		Engine_HudSlowTimeDial.Segment? Segment(int i)
+		Engine_HudSlowTimeDial.Segment? Segment(System.ReadOnlySpan<uint> d, int i)
 		{
 			int at = 8 + (10 * i);
-			if (dial[at] == 0xFFFFFFFFu)
+			if (d[at] == 0xFFFFFFFFu)
 			{
 				return null;
 			}
 
-			float top = unchecked((int)dial[at + 1]);
-			float left = unchecked((int)dial[at + 2]);
-			float bottom = unchecked((int)dial[at + 3]);
-			float right = unchecked((int)dial[at + 4]);
+			float top = unchecked((int)d[at + 1]);
+			float left = unchecked((int)d[at + 2]);
+			float bottom = unchecked((int)d[at + 3]);
+			float right = unchecked((int)d[at + 4]);
 			return new Engine_HudSlowTimeDial.Segment(
 				new Vector2(((left + right) * 0.5f) - (guestWidth * 0.5f), ((top + bottom) * 0.5f) - (guestHeight * 0.5f)),
 				(right - left) * 0.5f,
-				dial[at + 5],
-				F(dial[at + 6]));
+				d[at + 5],
+				F(d[at + 6]));
 		}
 
-		_slowTimeDial.Feed(new Engine_HudSlowTimeDial.Dial(F(dial[3]), Segment(0), Segment(1)));
+		_slowTimeDial.Feed(new Engine_HudSlowTimeDial.Dial(F(dial[3]), Segment(dial, 0), Segment(dial, 1)));
 	}
 
 	private bool _worldSpritesCleared;
+	private System.Collections.Generic.List<HostBridge.WorldSprite>? _lastRawWorldSprites;
 
 	/// <summary>This frame's projected canvas point per pooled icon slot.</summary>
 	private System.Collections.Generic.Dictionary<int, Vector2>? _pooledCanvas;
@@ -3048,7 +3055,7 @@ public partial class GameUi : Node
 	/// camera onto the HUD canvas. The anchor is guest space; entities go through the same
 	/// handedness flip `Engine_MdlPlacement.FromGuest` applies to their transforms.
 	/// </summary>
-	private void DriveWorldSprites()
+	private void DriveWorldSprites(bool guestFrame = true)
 	{
 		if (_worldSprites is null || !GodotObject.IsInstanceValid(_worldSprites))
 		{
@@ -3062,6 +3069,7 @@ public partial class GameUi : Node
 			if (!_worldSpritesCleared)
 			{
 				_worldSpritesCleared = true;
+				_lastRawWorldSprites = null;
 				_worldSprites.Feed(
 					new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>());
 			}
@@ -3098,9 +3106,18 @@ public partial class GameUi : Node
 			_worldSpriteList ??= new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>();
 		System.Collections.Generic.Dictionary<int, Vector2> pooled =
 			_pooledCanvas ??= new System.Collections.Generic.Dictionary<int, Vector2>();
-		sprites.Clear();
 		pooled.Clear();
-		foreach (HostBridge.WorldSprite sprite in HostBridge.GetWorldSprites())
+		System.Collections.Generic.List<HostBridge.WorldSprite> rawSprites =
+			guestFrame || _lastRawWorldSprites is null
+				? (_lastRawWorldSprites = HostBridge.GetWorldSprites())
+				: _lastRawWorldSprites;
+		bool rebuildSprites = guestFrame || sprites.Count == 0;
+		if (rebuildSprites)
+		{
+			sprites.Clear();
+		}
+
+		foreach (HostBridge.WorldSprite sprite in rawSprites)
 		{
 			if (sprite.Pooled)
 			{
@@ -3118,13 +3135,19 @@ public partial class GameUi : Node
 				continue;
 			}
 
-			sprites.Add(new Engine_HudWorldSprites.Sprite(
-				sprite.Type, sprite.TextureHash, sprite.Colour, sprite.Entity, sprite.Anchor,
-				sprite.Scale, sprite.Title, sprite.Opinion, sprite.Object));
+			if (rebuildSprites)
+			{
+				sprites.Add(new Engine_HudWorldSprites.Sprite(
+					sprite.Type, sprite.TextureHash, sprite.Colour, sprite.Entity, sprite.Anchor,
+					sprite.Scale, sprite.Title, sprite.Opinion, sprite.Object));
+			}
 		}
 
 		_worldSprites.Place ??= PlaceWorldSprite;
-		_worldSprites.Feed(sprites);
+		if (rebuildSprites)
+		{
+			_worldSprites.Feed(sprites);
+		}
 	}
 
 	/// <summary>
@@ -3140,11 +3163,9 @@ public partial class GameUi : Node
 			return null;
 		}
 
-		Vector3 world = GameWorld.GuestToGodot(guest);
-		if (entity != 0u && GameEntities.Current is { } entities)
-		{
-			world += entities.DrawnLead(entity);
-		}
+		Vector3 world = entity != 0u && GameEntities.Current is { } entities
+			? entities.WorldAnchorFor(entity, guest)
+			: GameWorld.GuestToGodot(guest);
 
 		if (camera.IsPositionBehind(world))
 		{
@@ -3585,13 +3606,17 @@ public partial class GameUi : Node
 	/// changes when the player equips something, and stays on the icons' cadence with the lit
 	/// set and the titles.
 	/// </summary>
-	private void DriveWorldIcons()
+	private void DriveWorldIcons(bool guestFrame = true)
 	{
-		DriveWorldSprites();
+		DriveWorldSprites(guestFrame);
 		DriveReticule();
-		DriveSlowTimeDial();
-		DriveFullCutscene();
-		DriveCreditsRoll();
+		if (guestFrame)
+		{
+			DriveSlowTimeDial();
+			DriveFullCutscene();
+			DriveCreditsRoll();
+		}
+
 		if (_worldIcons is null || _hudAddress == 0 ||
 			!GodotObject.IsInstanceValid(_worldIcons))
 		{
@@ -3634,8 +3659,11 @@ public partial class GameUi : Node
 		// says the seed is holding; a gate that climbs back towards its old cost means something
 		// is marking the HUD stale every frame. Averaged over the cadence, so the line is one
 		// number a second rather than noise.
+		bool hudValid = _hud is not null && GodotObject.IsInstanceValid(_hud);
+		bool needHudFeed = guestFrame || cadence || GameInput.QuickWheelHeld ||
+			GameInput.SpellsMenuHeld || (hudValid && _hud!.ElementActive is null);
 		long began = System.Diagnostics.Stopwatch.GetTimestamp();
-		if (Engine_UiElementState.Current.Elements(_hudAddress) is { Count: > 0 } elements)
+		if (needHudFeed && Engine_UiElementState.Current.Elements(_hudAddress) is { Count: > 0 } elements)
 		{
 			if (cadence)
 			{
@@ -3655,7 +3683,7 @@ public partial class GameUi : Node
 			// The chain is the engine's own accumulation — parent product times own, live
 			// value where stated, authored where not — and document order is parents-first,
 			// so one forward pass computes every element.
-			if (_hud is not null && GodotObject.IsInstanceValid(_hud))
+			if (hudValid)
 			{
 				// REUSED, NOT REALLOCATED. This walks the WHOLE hud document — 3431 elements —
 				// and three fresh arrays a pass (bool, int and a nullable float each per
@@ -3729,7 +3757,7 @@ public partial class GameUi : Node
 					long resolveBegan = System.Diagnostics.Stopwatch.GetTimestamp();
 					_hudResolve.Apply(slides, active, stated);
 					_hudResolveTicks += System.Diagnostics.Stopwatch.GetTimestamp() - resolveBegan;
-					_hud.Resolve = _hudResolve;
+					_hud!.Resolve = _hudResolve;
 					_hud.LiveSlides = slides;
 
 					// THE ART, ON THE ICONS' CADENCE. A slot's texture changes when the player
@@ -3763,159 +3791,6 @@ public partial class GameUi : Node
 
 					_hud.LiveTexts = _hudTexts;
 
-					// THE EXPRESSION WHEEL, through the guest's own open/close/select — the
-					// GameAction chain that would run them from the pad does not fire here.
-					// Hold to open, release to close (the shipped default; the toggle option
-					// `GUIQuickAccessMenuOnToggle` is not read yet). The pump gates every call
-					// on the guest's own tests, so a press it cannot honour is refused there.
-					if (GameInput.QuickWheelPressed)
-					{
-						HostBridge.PostFrontEndAction("QuickWheel:open");
-						_wheelSector = -1;
-					}
-					else if (GameInput.QuickWheelReleased)
-					{
-						HostBridge.PostFrontEndAction("QuickWheel:close");
-					}
-					else if (GameInput.QuickWheelHeld)
-					{
-						// A accepts (`sub_826AA230`: enter a group / start the item), its release
-						// ends a held expression (`sub_826AA5D8`), B backs out (`sub_826AA510`).
-						if (GameInput.MenuAcceptPressed)
-						{
-							HostBridge.PostFrontEndAction("QuickWheel:select");
-						}
-						else if (GameInput.MenuAcceptReleased)
-						{
-							HostBridge.PostFrontEndAction("QuickWheel:release");
-						}
-						else if (GameInput.MenuBackPressed)
-						{
-							HostBridge.PostFrontEndAction("QuickWheel:back");
-						}
-
-						// THE CURSOR, as `sub_826AA060` computes it from the stick: dead zone
-						// |v|² < 0.1, then the nearest of eight unit vectors at 3π/4 − iπ/4 (0 =
-						// NE, clockwise). The guest's own raw-stick route feeds the same routine
-						// when it is alive; this posts only on a sector change, so the two agree.
-						// THE POINTER AS THE STICK: its offset from the wheel's centre, inside a
-						// dead ring of a third of the wheel, is the same direction the stick
-						// would hold. Left press selects, its release ends a held expression.
-						Vector2 stick = GameInput.LeftStick;
-						if (Engine_UiPointer.Canvas is { } wheelAt &&
-							Engine_UiTheme.FindByName(_hud, "ExpressionWheel") is Node3D wheelNode &&
-							Engine_UiPointer.CanvasBounds(wheelNode) is { } wheelBox)
-						{
-							Vector2 offset = wheelAt - wheelBox.GetCenter();
-							float radius = Mathf.Min(wheelBox.Size.X, wheelBox.Size.Y) * 0.5f;
-							if (radius > 0f && offset.Length() > radius / 3f)
-							{
-								stick = offset.Normalized();
-							}
-
-							if (Engine_UiPointer.TakeLeft())
-							{
-								_wheelMouseDown = true;
-								HostBridge.PostFrontEndAction("QuickWheel:select");
-							}
-							else if (_wheelMouseDown && !Input.IsMouseButtonPressed(MouseButton.Left))
-							{
-								_wheelMouseDown = false;
-								HostBridge.PostFrontEndAction("QuickWheel:release");
-							}
-						}
-
-						if (stick.LengthSquared() >= 0.1f)
-						{
-							int best = -1;
-							float bestDistance = float.MaxValue;
-							for (int i = 0; i < 8; ++i)
-							{
-								float angle = 2.3561945f - (i * 0.7853982f);
-								float dx = stick.X - Mathf.Sin(angle);
-								float dy = -stick.Y - Mathf.Cos(angle);
-								float distance = (dx * dx) + (dy * dy);
-								if (distance < bestDistance)
-								{
-									bestDistance = distance;
-									best = i;
-								}
-							}
-
-							if (best != _wheelSector)
-							{
-								_wheelSector = best;
-								HostBridge.PostFrontEndAction($"QuickWheel:point:{best}");
-							}
-						}
-					}
-
-					// THE SPELLS MENU. The comment here used to say "no GameAction reaches the
-					// consumer that would run 42 and 43, so the guest never sees the press" —
-					// THAT IS FALSE. `sub_8236F788` has one code caller, the guest's own
-					// GameAction dispatcher, and it is what sets the open flag in a live run
-					// while the host lever logs only refusals. The guest sees the trigger.
-					//
-					// These posts are kept as a debug lever, and the pump now refuses to CLOSE a
-					// blade it did not open — closing the guest's own clears the flag at
-					// 0x8236f9b8 before the id-5 GuiBlock pop at 0x8236fa00 can run, and an
-					// orphaned GuiBlock costs movement and camera for the rest of the session.
-					if (GameInput.SpellsMenuPressed)
-					{
-						HostBridge.PostFrontEndAction("SpellsMenu:open");
-					}
-					else if (GameInput.SpellsMenuReleased)
-					{
-						HostBridge.PostFrontEndAction("SpellsMenu:close");
-					}
-					else if (GameInput.SpellsMenuHeld)
-					{
-						// THE HELD DIRECTION, AS THE GUEST'S OWN IDS, EVERY FRAME. The widget
-						// moves on GameAction 28 UP / 29 DOWN / 30 LEFT / 31 RIGHT and nothing
-						// else: its stick resolution is compiled off (`widget+165` is left 0 by
-						// `sub_826B4358` at 0x826b4410, and `sub_828818E8` drops a 26 while it is
-						// clear), which is why the old `stick` post never moved the box. The
-						// cadence is the widget's own latch — first press at once, then 0.3 s,
-						// then 0.1 s — so no clock here; `release` resets it when the pad lets go.
-						//
-						// 28 is UP = `++row` = the higher power level, drawn higher on screen; the
-						// host's menu direction is a LIST direction (down = +1), so up is < 0.
-						string? direction = GameInput.MenuDirection < 0 ? "up"
-							: GameInput.MenuDirection > 0 ? "down"
-							: GameInput.MenuHorizontal < 0 ? "left"
-							: GameInput.MenuHorizontal > 0 ? "right"
-							: null;
-						if (direction is not null)
-						{
-							HostBridge.PostFrontEndAction("SpellBlade:" + direction);
-							_spellBladeHeld = true;
-						}
-						else if (_spellBladeHeld)
-						{
-							HostBridge.PostFrontEndAction("SpellBlade:release");
-							_spellBladeHeld = false;
-						}
-
-						// A copies this power level's will down into every later level that also
-						// offers it (`sub_826B4EF8`). B is the guest's own GameAction 43 and is
-						// never ours — see DispatchSpellsMenu on the orphaned GuiBlock.
-						if (GameInput.MenuAcceptPressed)
-						{
-							HostBridge.PostFrontEndAction("SpellBlade:copydown");
-						}
-
-						// A mod's secondary pick (Engine_UiSpellAssignSecondary): Y or X on the
-						// highlighted will, written to the mod's setting.
-						Engine_UiSpellAssign.SecondaryAction partnerAction =
-							Engine_UiSpellAssign.SecondaryPressed(GameInput.MenuFlipPressed, GameInput.MenuEquipPressed);
-						if (partnerAction != Engine_UiSpellAssign.SecondaryAction.None)
-						{
-							_spells.WheelSecondary(partnerAction);
-						}
-
-						_spells.WheelPointer();
-					}
-
 					for (int i = 0; i < elements.Count; ++i)
 					{
 						// A piece is dark when the guest says so, when its SLIDE says so, or when the
@@ -3924,12 +3799,12 @@ public partial class GameUi : Node
 					}
 				}
 
-				_hud.ElementActive = active;
+				_hud!.ElementActive = active;
 			}
 
 			_hudFeedTicks += System.Diagnostics.Stopwatch.GetTimestamp() - began;
 			++_hudFeedFrames;
-			if (cadence && _hudFeedFrames > 0)
+			if (cadence && _hudFeedFrames >= 1800)
 			{
 				double ms = _hudFeedTicks * 1000.0
 					/ System.Diagnostics.Stopwatch.Frequency / _hudFeedFrames;
@@ -3946,6 +3821,162 @@ public partial class GameUi : Node
 					$"{elements.Count} element(s)");
 				_hudFeedTicks = 0;
 				_hudFeedFrames = 0;
+			}
+		}
+
+		if (hudValid && _hudScreen is not null)
+		{
+			// THE EXPRESSION WHEEL, through the guest's own open/close/select — the
+			// GameAction chain that would run them from the pad does not fire here.
+			// Hold to open, release to close (the shipped default; the toggle option
+			// `GUIQuickAccessMenuOnToggle` is not read yet). The pump gates every call
+			// on the guest's own tests, so a press it cannot honour is refused there.
+			if (GameInput.QuickWheelPressed)
+			{
+				HostBridge.PostFrontEndAction("QuickWheel:open");
+				_wheelSector = -1;
+			}
+			else if (GameInput.QuickWheelReleased)
+			{
+				HostBridge.PostFrontEndAction("QuickWheel:close");
+			}
+			else if (GameInput.QuickWheelHeld)
+			{
+				// A accepts (`sub_826AA230`: enter a group / start the item), its release
+				// ends a held expression (`sub_826AA5D8`), B backs out (`sub_826AA510`).
+				if (GameInput.MenuAcceptPressed)
+				{
+					HostBridge.PostFrontEndAction("QuickWheel:select");
+				}
+				else if (GameInput.MenuAcceptReleased)
+				{
+					HostBridge.PostFrontEndAction("QuickWheel:release");
+				}
+				else if (GameInput.MenuBackPressed)
+				{
+					HostBridge.PostFrontEndAction("QuickWheel:back");
+				}
+
+				// THE CURSOR, as `sub_826AA060` computes it from the stick: dead zone
+				// |v|² < 0.1, then the nearest of eight unit vectors at 3π/4 − iπ/4 (0 =
+				// NE, clockwise). The guest's own raw-stick route feeds the same routine
+				// when it is alive; this posts only on a sector change, so the two agree.
+				// THE POINTER AS THE STICK: its offset from the wheel's centre, inside a
+				// dead ring of a third of the wheel, is the same direction the stick
+				// would hold. Left press selects, its release ends a held expression.
+				Vector2 stick = GameInput.LeftStick;
+				if (Engine_UiPointer.Canvas is { } wheelAt &&
+					Engine_UiTheme.FindByName(_hud!, "ExpressionWheel") is Node3D wheelNode &&
+					Engine_UiPointer.CanvasBounds(wheelNode) is { } wheelBox)
+				{
+					Vector2 offset = wheelAt - wheelBox.GetCenter();
+					float radius = Mathf.Min(wheelBox.Size.X, wheelBox.Size.Y) * 0.5f;
+					if (radius > 0f && offset.Length() > radius / 3f)
+					{
+						stick = offset.Normalized();
+					}
+
+					if (Engine_UiPointer.TakeLeft())
+					{
+						_wheelMouseDown = true;
+						HostBridge.PostFrontEndAction("QuickWheel:select");
+					}
+					else if (_wheelMouseDown && !Input.IsMouseButtonPressed(MouseButton.Left))
+					{
+						_wheelMouseDown = false;
+						HostBridge.PostFrontEndAction("QuickWheel:release");
+					}
+				}
+
+				if (stick.LengthSquared() >= 0.1f)
+				{
+					int best = -1;
+					float bestDistance = float.MaxValue;
+					for (int i = 0; i < 8; ++i)
+					{
+						float angle = 2.3561945f - (i * 0.7853982f);
+						float dx = stick.X - Mathf.Sin(angle);
+						float dy = -stick.Y - Mathf.Cos(angle);
+						float distance = (dx * dx) + (dy * dy);
+						if (distance < bestDistance)
+						{
+							bestDistance = distance;
+							best = i;
+						}
+					}
+
+					if (best != _wheelSector)
+					{
+						_wheelSector = best;
+						HostBridge.PostFrontEndAction($"QuickWheel:point:{best}");
+					}
+				}
+			}
+
+			// THE SPELLS MENU. The comment here used to say "no GameAction reaches the
+			// consumer that would run 42 and 43, so the guest never sees the press" —
+			// THAT IS FALSE. `sub_8236F788` has one code caller, the guest's own
+			// GameAction dispatcher, and it is what sets the open flag in a live run
+			// while the host lever logs only refusals. The guest sees the trigger.
+			//
+			// These posts are kept as a debug lever, and the pump now refuses to CLOSE a
+			// blade it did not open — closing the guest's own clears the flag at
+			// 0x8236f9b8 before the id-5 GuiBlock pop at 0x8236fa00 can run, and an
+			// orphaned GuiBlock costs movement and camera for the rest of the session.
+			if (GameInput.SpellsMenuPressed)
+			{
+				HostBridge.PostFrontEndAction("SpellsMenu:open");
+			}
+			else if (GameInput.SpellsMenuReleased)
+			{
+				HostBridge.PostFrontEndAction("SpellsMenu:close");
+			}
+			else if (GameInput.SpellsMenuHeld)
+			{
+				// THE HELD DIRECTION, AS THE GUEST'S OWN IDS, EVERY FRAME. The widget
+				// moves on GameAction 28 UP / 29 DOWN / 30 LEFT / 31 RIGHT and nothing
+				// else: its stick resolution is compiled off (`widget+165` is left 0 by
+				// `sub_826B4358` at 0x826b4410, and `sub_828818E8` drops a 26 while it is
+				// clear), which is why the old `stick` post never moved the box. The
+				// cadence is the widget's own latch — first press at once, then 0.3 s,
+				// then 0.1 s — so no clock here; `release` resets it when the pad lets go.
+				//
+				// 28 is UP = `++row` = the higher power level, drawn higher on screen; the
+				// host's menu direction is a LIST direction (down = +1), so up is < 0.
+				string? direction = GameInput.MenuDirection < 0 ? "up"
+					: GameInput.MenuDirection > 0 ? "down"
+					: GameInput.MenuHorizontal < 0 ? "left"
+					: GameInput.MenuHorizontal > 0 ? "right"
+					: null;
+				if (direction is not null)
+				{
+					HostBridge.PostFrontEndAction("SpellBlade:" + direction);
+					_spellBladeHeld = true;
+				}
+				else if (_spellBladeHeld)
+				{
+					HostBridge.PostFrontEndAction("SpellBlade:release");
+					_spellBladeHeld = false;
+				}
+
+				// A copies this power level's will down into every later level that also
+				// offers it (`sub_826B4EF8`). B is the guest's own GameAction 43 and is
+				// never ours — see DispatchSpellsMenu on the orphaned GuiBlock.
+				if (GameInput.MenuAcceptPressed)
+				{
+					HostBridge.PostFrontEndAction("SpellBlade:copydown");
+				}
+
+				// A mod's secondary pick (Engine_UiSpellAssignSecondary): Y or X on the
+				// highlighted will, written to the mod's setting.
+				Engine_UiSpellAssign.SecondaryAction partnerAction =
+					Engine_UiSpellAssign.SecondaryPressed(GameInput.MenuFlipPressed, GameInput.MenuEquipPressed);
+				if (partnerAction != Engine_UiSpellAssign.SecondaryAction.None)
+				{
+					_spells.WheelSecondary(partnerAction);
+				}
+
+				_spells.WheelPointer();
 			}
 		}
 
@@ -6192,21 +6223,26 @@ public partial class GameUi : Node
 		// THE HUD'S TOPBOX AND TIMING METER, stated by name for the slide fold above: the
 		// guest publishes their strings and meters into registries the host reads, and only
 		// their visibility has to be re-derived here.
-		if (guestFrame && _hud is not null && GodotObject.IsInstanceValid(_hud))
+		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
 		{
-			Engine_UiHudTopBox.Publish(
-				HostBridge.GetTopBoxFront(), GameInput.AHeld, GameInput.YHeld, _hud.Values,
-				_presentation?.Strings);
+			if (guestFrame)
+			{
+				Engine_UiHudTopBox.Publish(
+					HostBridge.GetTopBoxFront(), GameInput.AHeld, GameInput.YHeld, _hud.Values,
+					_presentation?.Strings);
+				Engine_UiHudTargetedQuery.Publish(HostBridge.GetTargetedQuery(), _hud.Values);
+			}
+
 			// THE PEER'S EXPRESSION STAYS ON THE PEER'S SCREEN. The guest starts the local meter
 			// for a remote expression too (net message 136); in a network session only the local
 			// player's pip is drawn here — pip A is player one's, pip B player two's
 			// (`sub_824143F8`: 1 when the expressing entity is `*(EM+108)`). Split screen and a
 			// job's bar fill (mode 3) are one screen's business and draw as they are.
+			// Run every display frame so Smoothed() extrapolates the timing meter at full monitor Hz.
 			HostBridge.ExpressionMeter meter = HostBridge.GetExpressionMeter();
 			bool mine = !CoopSession.PeerStanding || CoopSession.LocalCoop || meter.Mode == 3 ||
 				(CoopSession.IsClient ? meter.ArmedB : meter.ArmedA);
 			Engine_UiHudExpressionMeter.Publish(meter, _hud, mine);
-			Engine_UiHudTargetedQuery.Publish(HostBridge.GetTargetedQuery(), _hud.Values);
 		}
 
 		if (guestFrame && _boxes.GuestMessageBox is not 0u and uint stated &&
@@ -6234,8 +6270,8 @@ public partial class GameUi : Node
 			ReportCamera();
 			TracePresentations();
 			TraceWorldIcons();
-			DriveWorldIcons();
 		}
+		DriveWorldIcons(guestFrame);
 		DriveCoopHeroChannel(delta);
 		if (guestFrame) DriveOwnedScreenProvider();
 		if (guestFrame) _books.Drive(_drawn, IsRevealed);

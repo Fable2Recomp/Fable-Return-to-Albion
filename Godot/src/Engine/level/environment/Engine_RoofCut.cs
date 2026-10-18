@@ -25,13 +25,21 @@ public static class Engine_RoofCut
     private static Image? _image;
     private static ImageTexture? _texture;
     private static int _count = -1;
+    private static Vector3 _lastEyeGodot = new(float.NaN, float.NaN, float.NaN);
+    private static int _lastVersion = -1;
 
     /// <summary>Builds the roof list around the eye and publishes it when it changed. Main thread, once a frame.</summary>
     public static void Pump(Vector3 eyeGodot)
     {
+        if (_texture is not null && _lastVersion == Engine_ClassicRoofs.Version && eyeGodot.DistanceSquaredTo(_lastEyeGodot) < 0.04f)
+        {
+            return;
+        }
+        _lastEyeGodot = eyeGodot;
         var eye = new Vector3(-eyeGodot.X, eyeGodot.Z, eyeGodot.Y);
         var reach = new Vector3(Reach, Reach, Reach);
         Engine_ClassicRoofs.Build(eye - reach, eye + reach, eye);
+        _lastVersion = Engine_ClassicRoofs.Version;
         int count = System.Math.Min(Engine_ClassicRoofs.Roofs.Count, Slots);
         System.Array.Clear(_texels);
         for (int i = 0; i < count; i++)

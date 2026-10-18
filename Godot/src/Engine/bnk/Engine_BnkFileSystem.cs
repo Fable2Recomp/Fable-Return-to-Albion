@@ -1026,6 +1026,9 @@ public sealed class BnkFile
     /// <summary>Whether this name is served by more than one bank entry; see ReadAllBytes.</summary>
     public bool HasAlternates => _alternates is { Count: > 0 };
 
+    /// <summary>Cached combined length once <see cref="ReadAllBytes"/> has joined alternates.</summary>
+    public long CachedResolvedSize { get; private set; } = -1;
+
     /// <summary>Everything this file shadows, nearest first. The master list reads it.</summary>
     public IReadOnlyList<BnkFile> Shadowed => (IReadOnlyList<BnkFile>?)_alternates ?? System.Array.Empty<BnkFile>();
 
@@ -1038,6 +1041,13 @@ public sealed class BnkFile
     /// The header is identified by magic, not by which entry won <see cref="BnkFileSystem.Insert"/>.
     /// </summary>
     public byte[] ReadAllBytes()
+    {
+        byte[] result = ReadAllBytesCore();
+        CachedResolvedSize = result.LongLength;
+        return result;
+    }
+
+    private byte[] ReadAllBytesCore()
     {
         // AN OVERRIDE REPLACES; IT NEVER REJOINS. The join below reunites a header entry with a
         // payload entry, which is a BANK-PACKING artefact — one logical file stored as two. A

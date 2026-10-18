@@ -101,4 +101,24 @@ public class EngineTickTimelineTests
         // After advancing to drawTick ~ 1.0, origin should move towards 2.0
         AssertThat(lastDrawn.Origin.X).IsGreater(0.5f);
     }
+
+    [TestCase]
+    public void TestMultiTickCivilianMovementDoesNotStallBetweenStrides()
+    {
+        var timeline = new Engine_TickTimeline(stillWhenUnchanged: true);
+        timeline.Reset(10.0, Transform3D.Identity);
+
+        // Civilian NPC updates every 3 game ticks (5 Hz): tick 10 -> tick 13 -> tick 16
+        timeline.Observe(13.0, new Transform3D(Basis.Identity, new Vector3(0.6f, 0f, 0f)));
+
+        ulong usec = 1_000_000UL;
+        // Advance across the 3-tick interval up to drawTick = 14.4 (1.4 ticks past stamp=13, within maxSpan+Lead = 3.5)
+        Transform3D mid1 = timeline.Advance(usec + 66_666UL, 12.5);
+        Transform3D mid2 = timeline.Advance(usec + 133_333UL, 13.5);
+        Transform3D mid3 = timeline.Advance(usec + 200_000UL, 14.4);
+
+        AssertThat(timeline.Settled).IsFalse();
+        AssertThat(mid2.Origin.X).IsGreater(mid1.Origin.X);
+        AssertThat(mid3.Origin.X).IsGreater(mid2.Origin.X);
+    }
 }

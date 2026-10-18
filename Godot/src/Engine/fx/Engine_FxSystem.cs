@@ -515,6 +515,18 @@ public sealed class Engine_FxSystem
         }
     }
 
+    public bool HasMeshParticles
+    {
+        get
+        {
+            foreach (InstanceState inst in _instances)
+                foreach (EmitterRuntime rt in inst.Emitters)
+                    foreach (VisualRuntime v in rt.Visuals)
+                        if (v.IsMesh) return true;
+            return false;
+        }
+    }
+
     public void SetAmbient(float r, float g, float b)
     {
         foreach (InstanceState inst in _instances)
@@ -1326,29 +1338,48 @@ public sealed class Engine_FxSystem
     private readonly float[] _tickV0W = new float[3];
     private readonly float[] _tickAcc = new float[3];
 
-    private void Tick(InstanceState inst)
+    private void Tick(InstanceState inst, bool lightsOnly = false)
     {
         int istep = inst.Step;
         float step = istep;
         float dts = inst.DtSec;
         inst.Frame += istep;
 
-        // The step's starting point, for the draw between steps.
-        foreach (EmitterRuntime held in inst.Emitters)
+        if (lightsOnly)
         {
-            foreach (ParticleState live in held.Particles)
+            foreach (EmitterRuntime held in inst.Emitters)
             {
-                live.PrevPos[0] = live.Pos[0]; live.PrevPos[1] = live.Pos[1]; live.PrevPos[2] = live.Pos[2];
-                live.HasPrev = true;
+                for (int i = 0; i < held.Particles.Count; i++)
+                {
+                    ReturnParticle(held.Particles[i]);
+                }
+
+                held.Particles.Clear();
             }
         }
+        else
+        {
+            // The step's starting point, for the draw between steps.
+            foreach (EmitterRuntime held in inst.Emitters)
+            {
+                foreach (ParticleState live in held.Particles)
+                {
+                    live.PrevPos[0] = live.Pos[0]; live.PrevPos[1] = live.Pos[1]; live.PrevPos[2] = live.Pos[2];
+                    live.HasPrev = true;
+                }
+            }
+        }
+
         if (inst.SharedRand < 0f) inst.SharedRand = Frand();
 
         float[] rotTmp = _tickRot;
-        foreach (AttractorRuntime at in inst.Attractors)
+        if (!lightsOnly)
         {
-            at.Age += step;
-            UpdateChain(at.Chain, inst, inst.PlacePos, inst.PlaceRot, inst.Scale, at.WorldPos, rotTmp);
+            foreach (AttractorRuntime at in inst.Attractors)
+            {
+                at.Age += step;
+                UpdateChain(at.Chain, inst, inst.PlacePos, inst.PlaceRot, inst.Scale, at.WorldPos, rotTmp);
+            }
         }
 
         foreach (LightRuntime lt in inst.Lights)
@@ -1376,6 +1407,11 @@ public sealed class Engine_FxSystem
                     lt.Phase = Math.Clamp(lt.Phase + ((target - lt.Phase) * rate * step), -1f, 1f);
                 }
             }
+        }
+
+        if (lightsOnly)
+        {
+            return;
         }
 
         float[] v0l = _tickV0L;
@@ -1582,10 +1618,10 @@ public sealed class Engine_FxSystem
     /// <summary>Simulation steps taken by the last <see cref="Update"/>, over every instance.</summary>
     public int LastSteps { get; private set; }
 
-    public void Update(float dt, Transform3D? nodeGlobal = null)
+    public void Update(float dt, Transform3D? nodeGlobal = null, bool lightsOnly = false)
     {
         LastSteps = 0;
-        if (nodeGlobal is { } current)
+        if (!lightsOnly && nodeGlobal is { } current)
         {
             if (_previousGlobal is { } previous && _detachedParticles)
             {
@@ -1634,7 +1670,7 @@ public sealed class Engine_FxSystem
             {
                 if (inst.Step <= 1 || _baseSteps % inst.Step == 0)
                 {
-                    Tick(inst);
+                    Tick(inst, lightsOnly);
                     ++LastSteps;
                 }
             }
@@ -2215,14 +2251,25 @@ public sealed class Engine_FxSystem
         // Written only when it changed: every write is an instance update to the renderer (a BVH
         // move and a re-pair) and most effects are frozen most frames.
         Aabb box = slots.HasBounds ? slots.Bounds.Grow(slots.MaxOffset) : default;
-        if (slots.StatedBox is { } stated && stated == box)
+        if (slots.StatedBox is { } stated)
         {
-            return;
+            if (!slots.HasBounds)
+            {
+                if (stated == default)
+                {
+                    return;
+                }
+            }
+            else if (stated != default && stated.Encloses(box))
+            {
+                return;
+            }
         }
 
-        slots.StatedBox = box;
+        Aabb nextBox = slots.HasBounds ? box.Grow(0.5f) : default;
+        slots.StatedBox = nextBox;
         Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-        mesh.CustomAabb = box;
+        mesh.CustomAabb = nextBox;
     }
 
     private static void TrimSurfaces(ArrayMesh mesh, SurfaceSlots slots, int keep)

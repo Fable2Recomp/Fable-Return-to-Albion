@@ -550,10 +550,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 }
             }
 
-            if (report)
-            {
-                Engine_LevelScene.ApplyVistaOceanGate(water, waterTheme);
-            }
+            Engine_LevelScene.ApplyVistaOceanGate(water, waterTheme);
         }
 
         if (_cloudStepStart is { } cloudStart)

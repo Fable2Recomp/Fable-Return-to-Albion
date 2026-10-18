@@ -65,13 +65,19 @@ public partial class Engine_LightShadowBudget : Node
 	private const float FadeSeconds = 0.4f;
 
 	/// <summary>Metres from the eye to a light's SPHERE beyond which its shadow is not worth a map.</summary>
-	private const float MaxShadowDistance = 45.0f;
+	private const float MaxShadowDistance = 35.0f;
 
-	/// <summary>Added to the score of a light outside the view: past every score inside it.</summary>
-	private const float OffViewRank = MaxShadowDistance + 1.0f;
+	/// <summary>Milliseconds to hold a light's shadow in view after leaving the frustum to prevent edge pop during camera rotation.</summary>
+	private const ulong ShadowHoldMs = 600;
 
 	/// <summary>Ranks past the budget a fixture may hold before its map is taken away.</summary>
-	private const int Slack = 2;
+	private const int Slack = 4;
+
+	/// <summary>Ranks past the light visibility budget a fixture may hold before being hidden (prevents edge thrashing).</summary>
+	private const int LightSlack = 12;
+
+	/// <summary>Milliseconds to hold a light in view after leaving the frustum to prevent edge pop during camera rotation.</summary>
+	private const ulong LightHoldMs = 1500;
 
 	private readonly List<Light3D> _lights = new();
 	private readonly List<(float Score, Light3D Light)> _ranked = new();
@@ -79,6 +85,9 @@ public partial class Engine_LightShadowBudget : Node
 	private readonly Dictionary<Light3D, float> _fading = new();
 	private readonly List<Light3D> _settled = new();
 	private readonly HashSet<Light3D> _wanted = new();
+	private readonly HashSet<Light3D> _visibleWanted = new();
+	private readonly Dictionary<Light3D, ulong> _lightSeenMs = new();
+	private readonly Dictionary<Light3D, ulong> _shadowSeenMs = new();
 	private double _since = double.MaxValue;
 
 	private static ulong _tableFrame = ulong.MaxValue;
@@ -130,6 +139,10 @@ public partial class Engine_LightShadowBudget : Node
 		// light set (Engine_ClassicLitInstances), so a placed Godot light lights nothing there and
 		// still costs its cull, cluster and shadow work. Hidden, it never competes for a map.
 		bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+		bool viewerIndoors = Engine_LightZones.IsViewerIndoors;
+		uint heroZone = Engine_LightZones.HeroZone;
+		ulong nowMs = Time.GetTicksMsec();
+		Godot.Collections.Array<Plane> frustum = camera.GetFrustum();
 		_reach.Clear();
 		foreach (Light3D light in _lights)
 		{
@@ -140,26 +153,76 @@ public partial class Engine_LightShadowBudget : Node
 
 			float range = RangeOf(light);
 			float fadeEnd = light.DistanceFadeEnabled ? light.DistanceFadeBegin + light.DistanceFadeLength : float.MaxValue;
-			float distance = eye.DistanceTo(light.GlobalPosition);
+			Vector3 at = light.GlobalPosition;
+			float distance = eye.DistanceTo(at);
 
-			bool reaches = LightsEnabled && !classic && distance <= fadeEnd + range;
+			// Lights within 45m of the camera stay eligible regardless of camera frustum rotation so
+			// panning the camera never pops nearby building lights on/off at the budget boundary.
+			bool inFrustum = distance <= 45.0f || distance <= range + 4.0f || SphereInView(frustum, at, range + 6.0f);
+			if (inFrustum)
+			{
+				_lightSeenMs[light] = nowMs;
+			}
+			bool seenRecently = _lightSeenMs.TryGetValue(light, out ulong seenMs) && (nowMs - seenMs <= LightHoldMs);
+			bool inView = inFrustum || seenRecently;
+
+			uint lightZone = Engine_LightZones.ZoneOf(light);
+			bool otherBuilding = false;
+			if (!viewerIndoors && Engine_LightZones.IsIndoorLight(light) && distance > range + 8.0f)
+			{
+				otherBuilding = true;
+			}
+			else if (viewerIndoors && lightZone != 0u && lightZone != Refii.Models.Engine_ClassicZones.Outdoors &&
+				lightZone != heroZone && distance > range + 4.0f)
+			{
+				otherBuilding = true;
+			}
+
+			bool reaches = LightsEnabled && !classic && !otherBuilding && inView && distance <= fadeEnd + range;
 			_reach.Add((reaches ? distance : float.MaxValue, light));
 		}
 
 		_reach.Sort((a, b) => a.DistanceSq.CompareTo(b.DistanceSq));
+		_visibleWanted.Clear();
+		int budgetLimit = LightBudget > 0 ? Mathf.Min(LightBudget, _reach.Count) : _reach.Count;
+
+		// STICKY: lights that are currently visible within LightBudget + LightSlack keep visibility first
+		if (LightBudget > 0)
+		{
+			for (int i = 0; i < _reach.Count && _visibleWanted.Count < budgetLimit; i++)
+			{
+				if (_reach[i].DistanceSq != float.MaxValue && i < LightBudget + LightSlack && _reach[i].Light.Visible)
+				{
+					_visibleWanted.Add(_reach[i].Light);
+				}
+			}
+		}
+
+		// Fill remaining budget
+		for (int i = 0; i < _reach.Count && _visibleWanted.Count < budgetLimit; i++)
+		{
+			if (_reach[i].DistanceSq != float.MaxValue)
+			{
+				_visibleWanted.Add(_reach[i].Light);
+			}
+		}
+
 		for (int i = 0; i < _reach.Count; i++)
 		{
-			bool show = _reach[i].DistanceSq != float.MaxValue && (LightBudget <= 0 || i < LightBudget);
+			bool show = _visibleWanted.Contains(_reach[i].Light);
 			if (_reach[i].Light.Visible != show)
 			{
 				_reach[i].Light.Visible = show;
 			}
 		}
 
-		// Candidates: visible, allowed to cast, with a pool near the eye. Lights inside the view
-		// rank first, so one outside it only ever takes a map no light in view wants.
+		// Candidates: visible, allowed to cast, with a pool near the eye.
+		// Static objects cast at most 1 shadow (the strongest authored/world light, or the directional sun);
+		// moving objects (NPCs/Hero) cast at most 2 dynamic shadows (the 2 strongest entity-caster lights).
+		const int MaxStaticWorldShadowLights = 1;
+		const int MaxDynamicEntityShadowLights = 2;
+		Vector3 referenceAt = Refii.Game.GameEntities.HeroPosition ?? eye;
 		bool remaster = Engine_LevelLights.PlacedShadowsEnabled;
-		Godot.Collections.Array<Plane> frustum = camera.GetFrustum();
 		_ranked.Clear();
 		foreach (Light3D light in _lights)
 		{
@@ -175,44 +238,94 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
+			uint lightZone = Engine_LightZones.ZoneOf(light);
+			if (!viewerIndoors)
+			{
+				// When outdoors, do not allocate shadow maps to indoor building lights.
+				if (Engine_LightZones.IsIndoorLight(light))
+				{
+					continue;
+				}
+			}
+			else
+			{
+				// When inside a building, allow lights in the SAME building zone (or unzoned) to cast shadows;
+				// skip lights belonging to other buildings and skip outdoor entity-only lights.
+				if (lightZone != 0u && lightZone != Refii.Models.Engine_ClassicZones.Outdoors && lightZone != heroZone)
+				{
+					continue;
+				}
+				if (Engine_LightZones.IsOutdoorLight(light) &&
+					light.ShadowCasterMask == Engine_LevelLights.EntityCasterLayerMask)
+				{
+					continue;
+				}
+			}
+
 			float range = RangeOf(light);
 			Vector3 at = light.GlobalPosition;
-			float score = Mathf.Max(eye.DistanceTo(at) - range, 0.0f);
-			if (score > MaxShadowDistance)
+			float eyeDist = eye.DistanceTo(at);
+			float edgeDist = Mathf.Max(eyeDist - range, 0.0f);
+			if (edgeDist > MaxShadowDistance)
 			{
 				continue;
 			}
 
-			// OUT OF VIEW RANKS LAST, IT IS NOT REFUSED. Godot redraws no shadow for a light
-			// whose volume misses the camera (renderer_scene_cull.cpp, "Dirty shadows have no
-			// need to be drawn"), so a map held behind the eye costs nothing, and the fixture
-			// turns into view already shadowed instead of fading in a pass later.
-			if (!SphereInView(frustum, at, range))
+			// Lights near the hero/eye stay eligible regardless of camera rotation so shadows on nearby
+			// buildings and characters never flicker when panning the camera.
+			float refDist = referenceAt.DistanceTo(at);
+			bool inFrustumShadow = refDist <= range + 10.0f || eyeDist <= range + 6.0f || SphereInView(frustum, at, range + 2.0f);
+			if (inFrustumShadow)
 			{
-				score += OffViewRank;
+				_shadowSeenMs[light] = nowMs;
+			}
+			bool seenRecentlyShadow = _shadowSeenMs.TryGetValue(light, out ulong shadowSeen) && (nowMs - shadowSeen <= ShadowHoldMs);
+			if (!inFrustumShadow && !seenRecentlyShadow)
+			{
+				continue;
 			}
 
+			// Rank by distance from the reference position weighted by light strength so the strongest
+			// lights win. Hysteresis slightly favours lights already casting a settled shadow map.
+			float strength = Mathf.Max(light.LightEnergy, 0.25f) * Mathf.Max(range, 1.0f);
+			float score = refDist / Mathf.Sqrt(strength);
+			if (light.ShadowEnabled && TargetOf(light) > 0.5f)
+			{
+				score -= 0.75f;
+			}
 			_ranked.Add((score, light));
 		}
 
 		Eligible = _ranked.Count;
 		_ranked.Sort((a, b) => a.Score.CompareTo(b.Score));
 
-		// STICKY: holders within the slack keep their maps first, then the best of the rest
-		// fill what is left, in rank order.
 		_wanted.Clear();
-		int limit = Mathf.Min(Budget, _ranked.Count);
-		for (int i = 0; i < _ranked.Count && _wanted.Count < limit; i++)
-		{
-			if (i < Budget + Slack && _ranked[i].Light.ShadowEnabled && TargetOf(_ranked[i].Light) > 0.5f)
-			{
-				_wanted.Add(_ranked[i].Light);
-			}
-		}
+		int totalLimit = Mathf.Min(Budget, _ranked.Count);
+		int staticLimit = Mathf.Min(MaxStaticWorldShadowLights, totalLimit);
+		int entityLimit = Mathf.Min(MaxDynamicEntityShadowLights, totalLimit);
+		int staticCount = 0;
+		int entityCount = 0;
 
-		for (int i = 0; i < _ranked.Count && _wanted.Count < limit; i++)
+		for (int i = 0; i < _ranked.Count && _wanted.Count < totalLimit; i++)
 		{
-			_wanted.Add(_ranked[i].Light);
+			Light3D candidate = _ranked[i].Light;
+			bool entitiesOnly = candidate.ShadowCasterMask == Engine_LevelLights.EntityCasterLayerMask;
+			if (entitiesOnly)
+			{
+				if (entityCount < entityLimit)
+				{
+					_wanted.Add(candidate);
+					entityCount++;
+				}
+			}
+			else
+			{
+				if (staticCount < staticLimit)
+				{
+					_wanted.Add(candidate);
+					staticCount++;
+				}
+			}
 		}
 
 		int casting = 0;
@@ -285,6 +398,11 @@ public partial class Engine_LightShadowBudget : Node
 
 	private static void ApplyMode(Light3D light)
 	{
+		if (light.DistanceFadeShadow <= 0f || light.DistanceFadeShadow > MaxShadowDistance)
+		{
+			light.DistanceFadeShadow = MaxShadowDistance;
+		}
+
 		if (light is not OmniLight3D omni)
 		{
 			return;

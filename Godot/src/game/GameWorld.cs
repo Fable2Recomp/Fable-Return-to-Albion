@@ -335,6 +335,7 @@ public partial class GameWorld : Node3D
 				$"{_propHoldFrames} frame(s) — releasing the guest; " +
 				(_entities?.DescribeHero() ?? "no entity feed"));
 			CompactLargeObjectHeap();
+			Refii.Core.Engine_FramePhases.ResetMetrics();
 		}
 	}
 

@@ -655,11 +655,11 @@ public static class Engine_LevelLights
 				try
 				{
 					_placedFade = Refii.Core.Engine_RefiiConfig.Bool(
-						Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_fade", false);
+						Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_fade", true);
 				}
 				catch (Exception)
 				{
-					_placedFade = false;
+					_placedFade = true;
 				}
 			}
 
@@ -667,7 +667,7 @@ public static class Engine_LevelLights
 		}
 	}
 
-	/// <summary>`placed_light_budget`: fixtures kept visible at once; 0 is every fixture — the remaster's setting.</summary>
+	/// <summary>`placed_light_budget`: fixtures kept visible at once; 64 default, 0 is every fixture.</summary>
 	public static int PlacedLightBudget()
 	{
 		try
@@ -675,11 +675,11 @@ public static class Engine_LevelLights
 			return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue("placed_light_budget", out string? v) &&
 				int.TryParse(v.Trim(), out int budget)
 				? budget
-				: 0;
+				: 42;
 		}
 		catch (Exception)
 		{
-			return 0;
+			return 42;
 		}
 	}
 
@@ -773,14 +773,14 @@ public static class Engine_LevelLights
 
 	public static float PlacedShadowBias = float.NaN;
 
-	public static float PlacedShadowNormalBias = 1.0f;
+	public static float PlacedShadowNormalBias = 2.0f;
 
 	private static void ApplyShadowTuning(Light3D node)
 	{
 		node.ShadowBlur = PlacedShadowBlur;
 		node.ShadowNormalBias = PlacedShadowNormalBias;
 		node.ShadowBias = float.IsNaN(PlacedShadowBias)
-			? (node is SpotLight3D ? 0.03f : 0.1f)
+			? (node is SpotLight3D ? 0.03f : 0.05f)
 			: PlacedShadowBias;
 	}
 
@@ -885,20 +885,24 @@ public static class Engine_LevelLights
 		// ALL LIGHTS ON, ALL THE TIME, in the modern model unless `placed_light_fade` asks for
 		// the cutoff: a fixture switching off as the camera walks away reads as a fault on a
 		// machine that can afford every fixture in the region.
-		if (light.FadeDistance > 0.0f && (!Engine_LightingFrame.ModernModel || PlacedFadeEnabled))
+		if (!Engine_LightingFrame.ModernModel || PlacedFadeEnabled)
 		{
-			float cutoff = MathF.Min(light.FadeDistance, 1000.0f);
-			float ramp = MathF.Max(light.FadeRange, 0.01f);
-			if (Engine_LightingFrame.ModernModel)
+			bool authored = light.FadeDistance > 0.0f;
+			if (authored || (Engine_LightingFrame.ModernModel && PlacedFadeEnabled))
 			{
-				cutoff *= 2.0f;
-				ramp = MathF.Max(light.FadeRange * 2.0f, cutoff * 0.5f);
-			}
+				float cutoff = authored ? MathF.Min(light.FadeDistance, 1000.0f) : 40.0f;
+				float ramp = authored ? MathF.Max(light.FadeRange, 0.01f) : 15.0f;
+				if (Engine_LightingFrame.ModernModel)
+				{
+					cutoff *= 2.0f;
+					ramp = MathF.Max(ramp * 2.0f, cutoff * 0.4f);
+				}
 
-			node.DistanceFadeEnabled = true;
-			node.DistanceFadeBegin = MathF.Max(cutoff - ramp, 0.0f);
-			node.DistanceFadeLength = ramp;
-			node.DistanceFadeShadow = cutoff;
+				node.DistanceFadeEnabled = true;
+				node.DistanceFadeBegin = MathF.Max(cutoff - ramp, 0.0f);
+				node.DistanceFadeLength = ramp;
+				node.DistanceFadeShadow = cutoff;
+			}
 		}
 
 		return node;

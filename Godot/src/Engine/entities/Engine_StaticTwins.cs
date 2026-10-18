@@ -233,6 +233,13 @@ public sealed class Engine_StaticTwins
             adoption.Instance < mesh.InstanceCount)
         {
             Transform3D local = batched.GlobalTransform.AffineInverse() * world;
+            if (Refii.Level.Engine_PropShadow.StatedTransforms(mesh) is { } stated &&
+                (uint)adoption.Instance < (uint)stated.Length &&
+                stated[adoption.Instance].IsEqualApprox(local))
+            {
+                return;
+            }
+
             Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.TwinDriven);
             Refii.Level.Engine_PropShadow.SetInstanceTransform(mesh, adoption.Instance, local);
             Refii.Level.Engine_LevelProps.CoverInstance(mesh, local);
@@ -669,6 +676,11 @@ public sealed class Engine_StaticTwins
     /// cannot be asked. THIS IS THE GATE — see <see cref="GatedOff"/> for why it is this list
     /// and not the activated one.
     /// </param>
+    private readonly HashSet<ulong> _destroyed = new();
+    private readonly Dictionary<string, int> _standing = new();
+    private readonly List<KeyValuePair<string, int>> _ranked = new();
+    private (int Live, int Layer, int Destroyed, int Restored) _lastStandingCounts = (-1, -1, -1, -1);
+
     public void Reconcile(
         HashSet<uint> live,
         HashSet<uint> drawn,
@@ -686,9 +698,11 @@ public sealed class Engine_StaticTwins
         // READ FRESH EVERY PASS, never cached. Deactivating a layer purges that layer's entries
         // from the guest's set, which is how broken props legitimately come back when a layer
         // cycles; a cached copy would keep them hidden for the rest of the session.
-        var destroyed = new HashSet<ulong>(Refii.Host.HostBridge.GetDeadEntities());
-
-        var standing = new Dictionary<string, int>();
+        _destroyed.Clear();
+        foreach (ulong deadId in Refii.Host.HostBridge.GetDeadEntities())
+        {
+            _destroyed.Add(deadId);
+        }
 
         foreach (KeyValuePair<uint, List<Twin>> pair in _byRecord)
         {
@@ -721,7 +735,7 @@ public sealed class Engine_StaticTwins
             // and DeadEntities by `0:record` for every `.save` placement (entity+0x14 == 0,
             // +0x18 == +0x1C). The set persists in the save, so a placement can be dead before
             // any live entity for it was ever reported — the join cannot wait to be learned.
-            bool gone = destroyed.Contains(pair.Key);
+            bool gone = _destroyed.Contains(pair.Key);
 
             bool shouldShow = !ours && !gated && !gone;
 
@@ -757,19 +771,6 @@ public sealed class Engine_StaticTwins
                 continue;
             }
 
-            // Standing: shown, and thus the only copy of this record on screen.
-            foreach (Twin twin in pair.Value)
-            {
-                if (!GodotObject.IsInstanceValid(twin.Node))
-                {
-                    continue;
-                }
-
-                string name = NameOf(twin.Node);
-                standing.TryGetValue(name, out int seen);
-                standing[name] = seen + 1;
-            }
-
             if (_hidden.Contains(pair.Key))
             {
                 // A RESTORE NEEDS TWO PASSES TO AGREE. Picking an item up puts the record in
@@ -800,15 +801,40 @@ public sealed class Engine_StaticTwins
             }
         }
 
-        var ranked = new List<KeyValuePair<string, int>>(standing);
-        ranked.Sort((a, b) => b.Value.CompareTo(a.Value));
-        var sample = new List<string>();
-        for (int i = 0; i < ranked.Count && i < 12; i++)
+        var currentCounts = (HiddenForLive, HiddenByLayer, HiddenAsDestroyed, Restored);
+        if (currentCounts != _lastStandingCounts)
         {
-            sample.Add($"{ranked[i].Key}x{ranked[i].Value}");
-        }
+            _lastStandingCounts = currentCounts;
+            _standing.Clear();
+            foreach (KeyValuePair<uint, List<Twin>> pair in _byRecord)
+            {
+                if (_hidden.Contains(pair.Key))
+                {
+                    continue;
+                }
+                foreach (Twin twin in pair.Value)
+                {
+                    if (!GodotObject.IsInstanceValid(twin.Node))
+                    {
+                        continue;
+                    }
+                    string name = NameOf(twin.Node);
+                    _standing.TryGetValue(name, out int seen);
+                    _standing[name] = seen + 1;
+                }
+            }
 
-        StandingSample = sample;
+            _ranked.Clear();
+            _ranked.AddRange(_standing);
+            _ranked.Sort((a, b) => b.Value.CompareTo(a.Value));
+            var sample = new List<string>(Math.Min(_ranked.Count, 12));
+            for (int i = 0; i < _ranked.Count && i < 12; i++)
+            {
+                sample.Add($"{_ranked[i].Key}x{_ranked[i].Value}");
+            }
+
+            StandingSample = sample;
+        }
     }
 
     private void Hide(uint record)

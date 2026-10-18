@@ -994,6 +994,7 @@ public static class HostBridge
 	private const int AttachmentGripWords = 18;
 
 	private static uint[]? _gripWords;
+	private static readonly List<float[]> _gripMatrices = new();
 
 	private static bool _gripExportMissing;
 
@@ -1026,7 +1027,12 @@ public static class HostBridge
 		for (uint i = 0; i < count; ++i)
 		{
 			int at = (int)(i * AttachmentGripWords);
-			var matrix = new float[16];
+			while (_gripMatrices.Count <= (int)i)
+			{
+				_gripMatrices.Add(new float[16]);
+			}
+
+			float[] matrix = _gripMatrices[(int)i];
 			for (int k = 0; k < 16; ++k)
 			{
 				matrix[k] = System.BitConverter.Int32BitsToSingle(unchecked((int)_gripWords[at + 2 + k]));
@@ -3728,7 +3734,7 @@ public static class HostBridge
 	public static string HeroTextSuffix()
 	{
 		uint record = EntityComponentAddress(HeroEntityAddress(), 12);
-		if (record == 0 || Peek(record + 12, 1) is not [uint sex])
+		if (record == 0 || !TryPeekWord(record + 12, out uint sex))
 		{
 			return string.Empty;
 		}
@@ -3759,7 +3765,7 @@ public static class HostBridge
 		uint frontEndUp = PickByBuild(0x83496AC4u, 0x83496925u);
 		uint game = PickByBuild(0x83496AB8u, 0x83496920u);
 
-		uint Word(uint address) => Peek(address, 1) is [uint value] ? value : 0u;
+		static uint Word(uint address) => TryPeekWord(address, out uint value) ? value : 0u;
 		static bool Plausible(uint address) => address >= 0x10000u && address < 0xC0000000u;
 
 		uint aligned = frontEndUp & ~3u;
@@ -4612,7 +4618,7 @@ public static class HostBridge
 	/// </remarks>
 	public static uint? HeroBuilding()
 	{
-		static uint Word(uint at) => at >= 0x10000u && Peek(at, 1) is { Length: 1 } w ? w[0] : 0u;
+		static uint Word(uint at) => at >= 0x10000u && TryPeekWord(at, out uint w) ? w : 0u;
 
 		uint root = Word(GuestAddress(0x83496AB8u));
 		uint world = Word(Word(Word(root + 12u) + 88u) + 4u);
@@ -4635,9 +4641,10 @@ public static class HostBridge
 			return null;
 		}
 
-		uint[] cache = Peek(component + 16u, 2);
+		Span<uint> cache = stackalloc uint[2];
+		int cacheCount = Peek(component + 16u, cache);
 		uint frame = Word(GuestAddress(0x83319650u));
-		if (cache.Length != 2 || frame - cache[1] > 2u)
+		if (cacheCount != 2 || frame - cache[1] > 2u)
 		{
 			return null;
 		}
@@ -4717,6 +4724,43 @@ public static class HostBridge
 	/// <summary>A value that is not an address and differs between the two builds.</summary>
 	public static T PickByBuild<T>(T tu1, T unpatched) => IsUnpatchedBuild ? unpatched : tu1;
 
+	[ThreadStatic]
+	private static uint[]? _peekScratch;
+
+	public static int Peek(uint addr, Span<uint> into)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp || into.IsEmpty || into.Length > 64)
+		{
+			return 0;
+		}
+
+		uint[] scratch = _peekScratch ??= new uint[64];
+		try
+		{
+			uint got = RefiiHostPeek(addr, scratch, (uint)into.Length);
+			int count = (int)Math.Min(got, (uint)into.Length);
+			scratch.AsSpan(0, count).CopyTo(into);
+			return count;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
+	public static bool TryPeekWord(uint addr, out uint value)
+	{
+		Span<uint> one = stackalloc uint[1];
+		if (Peek(addr, one) == 1)
+		{
+			value = one[0];
+			return true;
+		}
+
+		value = 0u;
+		return false;
+	}
+
 	public static uint[] Peek(uint addr, uint count)
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp || count == 0 || count > 64)
@@ -4758,8 +4802,9 @@ public static class HostBridge
 	/// </remarks>
 	public static int HighlightWidthTexels()
 	{
-		uint[] words = Peek(GuestAddress(0x83318558u), 1);
-		return words.Length == 1 ? (int)Math.Clamp(words[0], 1u, 16u) : 0;
+		return TryPeekWord(GuestAddress(0x83318558u), out uint word)
+			? (int)Math.Clamp(word, 1u, 16u)
+			: 0;
 	}
 
 	// =================== ReXGlue runtime introspection (debug channel) ===================
@@ -6195,9 +6240,12 @@ public static class HostBridge
 			words[5], words[6], words[7], literal);
 	}
 
+	[ThreadStatic]
+	private static uint[]? _topBoxFrontWords;
+
 	public static TopBoxFront GetTopBoxFront()
 	{
-		var words = new uint[9];
+		uint[] words = _topBoxFrontWords ??= new uint[9];
 		uint count;
 		try
 		{
@@ -6234,9 +6282,12 @@ public static class HostBridge
 		int SlideSet, bool Divorce, float DivorceValue, bool Marry, float MarryValue,
 		float Opinion);
 
+	[ThreadStatic]
+	private static uint[]? _targetedQueryWords;
+
 	public static TargetedQuery GetTargetedQuery()
 	{
-		var words = new uint[12];
+		uint[] words = _targetedQueryWords ??= new uint[12];
 		uint count;
 		try
 		{
@@ -6259,9 +6310,12 @@ public static class HostBridge
 			Bits(words[10]), Bits(words[11]));
 	}
 
+	[ThreadStatic]
+	private static float[]? _expressionMeterValues;
+
 	public static ExpressionMeter GetExpressionMeter()
 	{
-		var values = new float[11];
+		float[] values = _expressionMeterValues ??= new float[11];
 		uint count;
 		try
 		{
@@ -7577,6 +7631,12 @@ public static class HostBridge
 		return new FrontEndInit(words[0], words[1], words[2], words[3], words[4], words[5] != 0u);
 	}
 
+	[System.ThreadStatic]
+	private static uint[]? _presentationWords;
+
+	[System.ThreadStatic]
+	private static byte[]? _presentationNames;
+
 	/// <summary>
 	/// Every presentation the guest has live — the HUD, whichever menus are open, and the front
 	/// end — all from one registry. The front end's own "active screen" field sees only one
@@ -7592,21 +7652,31 @@ public static class HostBridge
 
 		// Headroom: the guest mutates the registry while this reads, so the second call can find
 		// more than the probe. Stride 5 since ABI 38 — two words say whether it is on screen.
-		var words = new uint[count * 5 + 32];
-		var names = new byte[count * 96 + 512];
+		int neededWords = (int)(count * 5 + 32);
+		int neededNames = (int)(count * 96 + 512);
+		if (_presentationWords is null || _presentationWords.Length < neededWords)
+		{
+			_presentationWords = new uint[Math.Max(neededWords, 128)];
+		}
+		if (_presentationNames is null || _presentationNames.Length < neededNames)
+		{
+			_presentationNames = new byte[Math.Max(neededNames, 2048)];
+		}
+		uint[] words = _presentationWords;
+		byte[] names = _presentationNames;
 		uint written = RefiiHostGetPresentations(
-			words, (uint)words.Length, names, (uint)names.Length);
+			words, (uint)neededWords, names, (uint)neededNames);
 
-		int usable = (int)Math.Min(written, (uint)(words.Length / 5));
+		int usable = (int)Math.Min(written, (uint)(neededWords / 5));
 		var live = new List<Presentation>(usable);
 		for (int i = 0; i < usable; ++i)
 		{
 			uint offset = words[i * 5 + 2];
 			string name = string.Empty;
-			if (offset != 0xFFFFFFFFu && offset < names.Length)
+			if (offset != 0xFFFFFFFFu && offset < neededNames)
 			{
 				int end = (int)offset;
-				while (end < names.Length && names[end] != 0)
+				while (end < neededNames && names[end] != 0)
 				{
 					++end;
 				}
@@ -7656,6 +7726,12 @@ public static class HostBridge
 		}
 	}
 
+	[System.ThreadStatic]
+	private static uint[]? _uiElementWords;
+
+	[System.ThreadStatic]
+	private static ushort[]? _uiElementChars;
+
 	public static List<UiElement>? GetUiElements(uint presentation = 0)
 	{
 		uint count = RefiiHostGetUiElements(presentation, null, 0, null, 0);
@@ -7667,34 +7743,41 @@ public static class HostBridge
 		// Sized from the probe, with headroom: the guest mutates the tree, so the second walk
 		// can find more than the first. Stride 6 since ABI 84 — type byte, flags halfword,
 		// element ADDRESS.
-		var words = new uint[count * 6 + 64];
+		int neededWords = (int)(count * 6 + 64);
 		// Room for the long strings too: a description is up to 4096 units (the native cap),
 		// and text past the buffer's end comes back as no text at all.
-		var chars = new ushort[count * 24 + 16384];
+		int neededChars = (int)(count * 24 + 16384);
+		if (_uiElementWords is null || _uiElementWords.Length < neededWords)
+		{
+			_uiElementWords = new uint[Math.Max(neededWords, 4096)];
+		}
+		if (_uiElementChars is null || _uiElementChars.Length < neededChars)
+		{
+			_uiElementChars = new ushort[Math.Max(neededChars, 65536)];
+		}
+		uint[] words = _uiElementWords;
+		ushort[] chars = _uiElementChars;
 		uint written = RefiiHostGetUiElements(
-			presentation, words, (uint)words.Length, chars, (uint)chars.Length);
+			presentation, words, (uint)neededWords, chars, (uint)neededChars);
 
-		int usable = (int)Math.Min(written, (uint)(words.Length / 6));
+		int usable = (int)Math.Min(written, (uint)(neededWords / 6));
 		var elements = new List<UiElement>(usable);
 		for (int i = 0; i < usable; ++i)
 		{
 			uint offset = words[i * 6 + 2];
 			string? text = null;
-			if (offset != 0xFFFFFFFFu && offset < chars.Length)
+			if (offset != 0xFFFFFFFFu && offset < neededChars)
 			{
 				int end = (int)offset;
-				while (end < chars.Length && chars[end] != 0)
+				while (end < neededChars && chars[end] != 0)
 				{
 					++end;
 				}
 
-				var span = new char[end - (int)offset];
-				for (int c = 0; c < span.Length; ++c)
-				{
-					span[c] = (char)chars[offset + c];
-				}
-
-				text = new string(span);
+				int len = end - (int)offset;
+				text = len == 0
+					? string.Empty
+					: new string(MemoryMarshal.Cast<ushort, char>(chars.AsSpan((int)offset, len)));
 			}
 
 			elements.Add(new UiElement(words[i * 6], (int)words[i * 6 + 1], text,
@@ -9008,6 +9091,15 @@ public static class HostBridge
 			return list;
 		}
 
+		[System.ThreadStatic]
+		private static uint[]? _hudMeterHashes;
+
+		[System.ThreadStatic]
+		private static float[]? _hudMeterValues;
+
+		[System.ThreadStatic]
+		private static uint[]? _hudScriptIds;
+
 		public static Dictionary<uint, float> GetHudMeters()
 		{
 			Dictionary<uint, float> dictionary = new Dictionary<uint, float>();
@@ -9015,21 +9107,22 @@ public static class HostBridge
 			{
 				return dictionary;
 			}
-			uint[] array = new uint[128];
-			float[] array2 = new float[128];
+			uint[] array = _hudMeterHashes ??= new uint[256];
+			float[] array2 = _hudMeterValues ??= new float[256];
+			const uint cap = 128u;
 			uint num;
 			try
 			{
-				num = RefiiHostGetHudMeters(array, array2, (uint)array.Length);
+				num = RefiiHostGetHudMeters(array, array2, cap);
 			}
 			catch (EntryPointNotFoundException)
 			{
 				return dictionary;
 			}
-			if (num > array.Length)
+			if (num > cap)
 			{
-				GD.PushWarning($"[host] the guest holds {num} HUD meters, more than the {array.Length} asked for — the tail was not read");
-				num = (uint)array.Length;
+				GD.PushWarning($"[host] the guest holds {num} HUD meters, more than the {cap} asked for — the tail was not read");
+				num = cap;
 			}
 			for (uint num2 = 0u; num2 < num; num2++)
 			{
@@ -9049,20 +9142,21 @@ public static class HostBridge
 			{
 				return dictionary;
 			}
-			uint[] array = new uint[64];
-			float[] array2 = new float[64];
+			uint[] array = _hudMeterHashes ??= new uint[256];
+			float[] array2 = _hudMeterValues ??= new float[256];
+			const uint cap = 64u;
 			uint num;
 			try
 			{
-				num = RefiiHostGetHudPulsers(array, array2, (uint)array.Length);
+				num = RefiiHostGetHudPulsers(array, array2, cap);
 			}
 			catch (EntryPointNotFoundException)
 			{
 				return dictionary;
 			}
-			if (num > array.Length)
+			if (num > cap)
 			{
-				num = (uint)array.Length;
+				num = cap;
 			}
 			for (uint i = 0u; i < num; i++)
 			{
@@ -9088,8 +9182,8 @@ public static class HostBridge
 				return values;
 			}
 
-			uint[] hashes = new uint[256];
-			float[] ratios = new float[256];
+			uint[] hashes = _hudMeterHashes ??= new uint[256];
+			float[] ratios = _hudMeterValues ??= new float[256];
 			uint found;
 			try
 			{
@@ -9127,8 +9221,8 @@ public static class HostBridge
 				return values;
 			}
 
-			uint[] hashes = new uint[256];
-			uint[] ids = new uint[256];
+			uint[] hashes = _hudMeterHashes ??= new uint[256];
+			uint[] ids = _hudScriptIds ??= new uint[256];
 			uint found;
 			try
 			{

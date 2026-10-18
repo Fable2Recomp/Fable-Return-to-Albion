@@ -39,6 +39,7 @@ public static class Engine_SceneWind
         if (Refii.Level.Engine_GuestAtmosphere.SceneUp)
         {
             direction = new Vector3(wind.X, wind.Y, wind.Z);
+            Refii.Level.Engine_Weather.WindWorld = Engine_GmdSkeleton.ZUpToYUp * (direction * wind.W);
             if (_scale is null && _amplitude is { } amplitude)
             {
                 _scale = wind.W * amplitude;

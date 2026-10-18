@@ -153,7 +153,7 @@ public static class Engine_ShadowSkeletons
 	/// <summary>A follower's holder became, or stopped being, a principal.</summary>
 	public static void SetFollowerEveryFrame(MeshInstance3D body, bool everyFrame)
 	{
-		if (ByBody.TryGetValue(body, out Entry? entry) && entry.Shadow is null)
+		if (ByBody.TryGetValue(body, out Entry? entry))
 		{
 			entry.EveryFrame = everyFrame;
 		}
@@ -205,9 +205,17 @@ public static class Engine_ShadowSkeletons
 	}
 
 	/// <summary>
-	/// The body was just placed: the proxy follows now if this rig is due, else at the next guest
-	/// frame. Cheap for a body with no proxy.
+	/// The body was just placed: lock the shadow proxy's transform to the body immediately.
 	/// </summary>
+	/// <remarks>
+	/// <c>GameEntities.Place</c> only calls <see cref="Placed"/> when the body's transform actually
+	/// changed (stationary NPCs and props return early and never call this). When an NPC is moving
+	/// via display-rate interpolation (<c>ResampleMovers</c>), leaving the cast-only shadow proxy
+	/// frozen at the previous 15 Hz tick position while the shadow-receiving visible body glides
+	/// 10–15 cm ahead causes the proxy mesh to stand behind/inside the visible mesh and cast a 15 Hz
+	/// self-shadowing strobe onto the character's back and limbs. Locking the proxy transform to the
+	/// body whenever the body moves eliminates self-shadowing flicker without polling the guest.
+	/// </remarks>
 	public static void Placed(MeshInstance3D body)
 	{
 		if (!ByBody.TryGetValue(body, out Entry? entry))
@@ -215,27 +223,20 @@ public static class Engine_ShadowSkeletons
 			return;
 		}
 
-		if (DueNow(entry))
+		Place(entry);
+		if ((entry.EveryFrame && PrincipalEveryFrame) || !GuestRate)
 		{
-			Place(entry);
-			if ((entry.EveryFrame && PrincipalEveryFrame) || !GuestRate)
-			{
-				++EveryFramePlacements;
-			}
-			else
-			{
-				++GuestFramePlacements;
-			}
+			++EveryFramePlacements;
 		}
 		else
 		{
-			entry.PlacePending = true;
+			++GuestFramePlacements;
 		}
 	}
 
 	/// <summary>
-	/// Once per frame after the walk: a proxy whose body moved between guest frames catches up on
-	/// this one, and every proxy shows exactly when its body does (a sibling inherits nothing).
+	/// Once per frame after the walk: a proxy that was created before entering the tree catches up,
+	/// and every proxy shows exactly when its body does (a sibling inherits nothing).
 	/// </summary>
 	public static void EndWalk()
 	{
@@ -244,7 +245,6 @@ public static class Engine_ShadowSkeletons
 			return;
 		}
 
-		bool guestFrame = Refii.Core.Engine_GuestFrame.HalfRate || !GuestRate;
 		foreach (Entry entry in ByBody.Values)
 		{
 			if (!GodotObject.IsInstanceValid(entry.Body) || !GodotObject.IsInstanceValid(entry.Proxy))
@@ -252,7 +252,7 @@ public static class Engine_ShadowSkeletons
 				continue;
 			}
 
-			if (entry.PlacePending && (guestFrame || (entry.EveryFrame && PrincipalEveryFrame)))
+			if (entry.PlacePending)
 			{
 				Place(entry);
 				++CaughtUpPlacements;

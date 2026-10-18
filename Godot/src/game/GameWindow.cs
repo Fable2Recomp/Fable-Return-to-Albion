@@ -392,10 +392,13 @@ public partial class GameWindow : Node
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamewindow");
 
-		// FIRST THING IN THE FRAME: the guest frame is sampled, and on a new one the entity
-		// walk runs on its worker while the UI and the world process; GameEntities takes it
-		// later in this same frame.
-		HostBridge.SampleGuestFrame();
+		// The guest frame is sampled at frame start by Engine_FrameStartNode (int.MinValue);
+		// on a new guest frame the entity walk runs on its worker while the UI and the world
+		// process, and GameEntities takes it later in this same frame.
+		if (Refii.Core.Engine_GuestFrame.Frame == 0u)
+		{
+			HostBridge.SampleGuestFrame();
+		}
 		if (Refii.Core.Engine_GuestFrame.Changed || GameEntities.FeedEveryFrame)
 		{
 			HostEntityWalk.Kick();
@@ -535,12 +538,16 @@ public partial class GameWindow : Node
 		}
 		HostBridge.InitMarkers markers = HostBridge.GetInitMarkers();
 
-		// Sim time is in the signature, quantised to a second: everything else here is resting
-		// state, and a raw sim time would move every frame and defeat the gate.
+		// Sim time and submitted climb every second in steady gameplay: include them only while
+		// out of game or while a level load or loading screen is active so steady gameplay does
+		// not re-log every 60 frames.
 		HostBridge.GameLoopPacer pacer = HostBridge.GetGameLoopPacer();
-		string signature = $"{fence.Busy}/{fence.BlocksLevelLoad}/{fence.Submitted:F1}|{loadingKey}|{ringKey}|" +
+		bool steadyInGame = inGame && !fence.BlocksLevelLoad && !fence.Busy && loadingKey == "none";
+		string fenceProgress = steadyInGame ? "steady" : $"{fence.Submitted:F1}";
+		string simProgress = steadyInGame ? "steady" : $"{(int)pacer.SimTime}";
+		string signature = $"{fence.Busy}/{fence.BlocksLevelLoad}/{fenceProgress}|{loadingKey}|{ringKey}|" +
 			$"{markers.GdbManager:X8}/{markers.InGame}/{markers.GameMode:X8}/{markers.FrontEndMode:X8}|" +
-			$"{pacer.Known}/{(int)pacer.SimTime}/{pacer.SimulationGate}/{pacer.WorldGate}";
+			$"{pacer.Known}/{simProgress}/{pacer.SimulationGate}/{pacer.WorldGate}";
 		if (signature == _lastLoadTrace)
 		{
 			return;

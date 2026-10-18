@@ -338,6 +338,7 @@ public static class Engine_FramePhases
 
 		_markCount = 0;
 		++_frameIndex;
+		SampleSteadyGc(now);
 
 		// Everything between the renderer finishing and the next frame's first callback:
 		// swap/present wait, OS events, physics, deferred calls.
@@ -347,6 +348,78 @@ public static class Engine_FramePhases
 		}
 
 		_frameStart = now;
+	}
+
+	private static long _steadyWindowStart;
+	private static long _steadyStartAllocBytes;
+	private static int _steadyStartGen0;
+	private static int _steadyStartGen2;
+
+	/// <summary>Rolling 5-second steady-state managed allocation rate in MB/sec.</summary>
+	public static double SteadyAllocMBPerSec { get; private set; }
+
+	/// <summary>Rolling 5-second steady-state Gen0 collections per minute.</summary>
+	public static double SteadyGen0PerMin { get; private set; }
+
+	/// <summary>Rolling 5-second steady-state Gen2 collections per minute.</summary>
+	public static double SteadyGen2PerMin { get; private set; }
+
+	private static void ResetSteadyGc(long now)
+	{
+		_steadyWindowStart = now;
+		_steadyStartAllocBytes = System.GC.GetTotalAllocatedBytes();
+		_steadyStartGen0 = System.GC.CollectionCount(0);
+		_steadyStartGen2 = System.GC.CollectionCount(2);
+		SteadyAllocMBPerSec = 0.0;
+		SteadyGen0PerMin = 0.0;
+		SteadyGen2PerMin = 0.0;
+	}
+
+	private static void SampleSteadyGc(long now)
+	{
+		if (_steadyWindowStart == 0)
+		{
+			ResetSteadyGc(now);
+			return;
+		}
+
+		double elapsedSec = (now - _steadyWindowStart) / (double)Stopwatch.Frequency;
+		if (elapsedSec < 1.0)
+		{
+			return;
+		}
+
+		long allocNow = System.GC.GetTotalAllocatedBytes();
+		int gen0Now = System.GC.CollectionCount(0);
+		int gen2Now = System.GC.CollectionCount(2);
+		SteadyAllocMBPerSec = System.Math.Max(0L, allocNow - _steadyStartAllocBytes) / 1048576.0 / elapsedSec;
+		SteadyGen0PerMin = System.Math.Max(0, gen0Now - _steadyStartGen0) * 60.0 / elapsedSec;
+		SteadyGen2PerMin = System.Math.Max(0, gen2Now - _steadyStartGen2) * 60.0 / elapsedSec;
+
+		if (elapsedSec >= 5.0)
+		{
+			_steadyWindowStart = now;
+			_steadyStartAllocBytes = allocNow;
+			_steadyStartGen0 = gen0Now;
+			_steadyStartGen2 = gen2Now;
+		}
+	}
+
+	/// <summary>
+	/// Clears loading-screen spikes and stale one-shot phase averages once the world hold releases.
+	/// </summary>
+	public static void ResetMetrics()
+	{
+		using (Gate.Hold())
+		{
+			Phases.Clear();
+			Hitches.Clear();
+			_haveCounters = false;
+			_frameStart = 0;
+			_processEnd = 0;
+			_drawEnd = 0;
+			ResetSteadyGc(Stopwatch.GetTimestamp());
+		}
 	}
 
 	/// <summary>The last process callback of the frame (highest priority node).</summary>
@@ -473,6 +546,10 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 
 		double now = Godot.Time.GetTicksUsec();
 
+		// Sample the guest frame and true game tick once at the very start of the frame
+		// (ProcessPriority = int.MinValue) before any clock discipline or reader runs.
+		Refii.Host.HostBridge.SampleGuestFrame();
+
 		// The guest's own clock first: it states its simulation time every iteration at
 		// `game+0x110` (0x82276F18). It cannot be fitted from sample arrivals because the guest
 		// does not catch up — more than one step behind, it takes one step and re-bases.
@@ -490,6 +567,11 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 		// Engine_DrawnFrame.GuestSeconds).
 		Refii.Entities.Engine_DrawnFrame.BeginFrame((ulong)now,
 			Refii.Host.HostBridge.SimClock() is { } stated ? stated.Seconds : double.NaN);
+
+		// Advance the shared playhead on a new game tick here at frame start so DrawTick is
+		// already current for every reader (camera, entity walk, clip animators, UI, FX),
+		// whether or not the camera moved this tick.
+		Refii.Entities.Engine_DrawnFrame.NoteRestated();
 	}
 }
 

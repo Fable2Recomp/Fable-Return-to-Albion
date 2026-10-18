@@ -35,10 +35,12 @@ public static class Engine_LightZones
     private const uint OutdoorOnly = ~(IndoorMask | Refii.Level.Engine_ReflectionLayer.Mask | Engine_LevelLights.EntityCasterLayerMask);
 
     /// <summary>
-    /// What an indoor light with no wall-stopping map lights: interiors, lamp posts, and the guest's
-    /// particles, which carry no zone (a fire's smoke inside takes the room's light).
+    /// What an indoor light with no wall-stopping map lights: interiors (including characters zoned
+    /// to the interior via Zoned()), and the guest's particles, which carry no zone.
+    /// Does not include EntityCasterLayerMask or LampHostLayerMask so indoor lights do not leak
+    /// through walls onto outdoor NPCs or outdoor street-lamp fixtures.
     /// </summary>
-    private const uint IndoorOnly = IndoorMask | Engine_LevelLights.LampHostLayerMask | Refii.Models.Engine_ClassicParticles.Layer;
+    private const uint IndoorOnly = IndoorMask | Refii.Models.Engine_ClassicParticles.Layer;
 
     private const uint All = uint.MaxValue;
 
@@ -54,10 +56,12 @@ public static class Engine_LightZones
         public required uint Record;
         /// <summary>0 (every zone) until the walk has joined its host to an entity.</summary>
         public uint Zone;
+        public uint StatedMask;
         public int Stagger;
     }
 
     private static readonly List<Lit> Lights = new();
+    private static readonly Dictionary<Light3D, uint> LightZoneByNode = new();
     private static readonly List<(GeometryInstance3D Node, uint Record, long Until)> Pending = new();
 
     /// <summary>Frames a prop waits for the walk to join its record; one that never joins stays as it is.</summary>
@@ -68,14 +72,31 @@ public static class Engine_LightZones
     /// <summary>Whether the modern renderer is up (the classic one keeps its own zones).</summary>
     public static bool Active => !Refii.Models.Engine_ClassicMaterial.Active;
 
+    /// <summary>The hero's current CECBuilding light zone (0 if unknown, 1 if outdoors, >1 if inside a building).</summary>
+    public static uint HeroZone { get; private set; } = Refii.Models.Engine_ClassicZones.Outdoors;
+
+    /// <summary>Whether the hero is currently inside a building zone.</summary>
+    public static bool IsViewerIndoors => IsIndoors(HeroZone);
+
+    /// <summary>The resolved CECBuilding zone of <paramref name="light"/> (0 if unzoned, 1 if outdoors, >1 if inside a building).</summary>
+    public static uint ZoneOf(Light3D light) => LightZoneByNode.TryGetValue(light, out uint z) ? z : 0u;
+
     /// <summary>
     /// <paramref name="layers"/> for a draw in <paramref name="zone"/>: an interior's world bit
     /// becomes the indoor bit. Draws without the world bit are left as they are.
     /// </summary>
     public static uint Zoned(uint layers, uint zone) =>
-        Active && IsIndoors(zone) && (layers & 1u) != 0u ? (layers & ~1u) | IndoorMask : layers;
+        Active && IsIndoors(zone) && (layers & (1u | Engine_LevelLights.LampHostLayerMask)) != 0u
+            ? (layers & ~1u) | IndoorMask
+            : layers;
 
     private static bool IsIndoors(uint zone) => zone != 0u && zone != Refii.Models.Engine_ClassicZones.Outdoors;
+
+    /// <summary>Whether <paramref name="light"/> has been zoned strictly to an interior building.</summary>
+    public static bool IsIndoorLight(Light3D light) => Active && (light.LightCullMask & 1u) == 0u;
+
+    /// <summary>Whether <paramref name="light"/> has been zoned strictly to the outdoors.</summary>
+    public static bool IsOutdoorLight(Light3D light) => Active && (light.LightCullMask & IndoorMask) == 0u;
 
     /// <summary>A placed light, hosted by placement <paramref name="record"/>. Main thread.</summary>
     public static void AddLight(Light3D node, uint record)
@@ -101,44 +122,79 @@ public static class Engine_LightZones
     public static void Clear()
     {
         Lights.Clear();
+        LightZoneByNode.Clear();
         Pending.Clear();
         _cursor = 0;
+        HeroZone = Refii.Models.Engine_ClassicZones.Outdoors;
     }
 
     /// <summary>Zones waiting props and sets each light's mask. Main thread, once a frame.</summary>
     public static void Pump()
     {
+        if (!Refii.Core.Engine_GuestFrame.Changed && Pending.Count == 0 && _frame > 0)
+        {
+            return;
+        }
+
         ++_frame;
+        if (Refii.Core.Engine_GuestFrame.Changed)
+        {
+            uint hero = Refii.Host.HostBridge.HeroEntityAddress();
+            if (hero != 0u)
+            {
+                uint z = Refii.Host.HostBridge.GetEntityLightZone(hero);
+                if (z != 0u)
+                {
+                    HeroZone = z;
+                }
+            }
+        }
         ZoneProps();
         for (int i = Lights.Count - 1; i >= 0; i--)
         {
             Lit lit = Lights[i];
+            if (lit.Zone != 0u && lit.StatedMask == MaskFor(lit))
+            {
+                if ((_frame + lit.Stagger) % LightZoneFrames == 0 && !GodotObject.IsInstanceValid(lit.Node))
+                {
+                    Lights.RemoveAt(i);
+                }
+                continue;
+            }
             if (!GodotObject.IsInstanceValid(lit.Node))
             {
                 Lights.RemoveAt(i);
                 continue;
             }
-            if ((_frame + lit.Stagger) % LightZoneFrames == 0)
+            if (lit.Zone == 0u && (_frame + lit.Stagger) % LightZoneFrames == 0)
             {
-                // An unjoined host lights every zone, as before: never guess "outdoors" for it.
-                lit.Zone = Refii.Models.Engine_ClassicZones.TryEntityOf(lit.Record, out uint host)
-                    ? Refii.Host.HostBridge.GetEntityLightZone(host)
-                    : 0u;
+                // Static placed lights never move between buildings; once resolved, hold it.
+                if (Refii.Models.Engine_ClassicZones.TryEntityOf(lit.Record, out uint host))
+                {
+                    uint resolved = Refii.Host.HostBridge.GetEntityLightZone(host);
+                    if (resolved != 0u)
+                    {
+                        lit.Zone = resolved;
+                        LightZoneByNode[lit.Node] = resolved;
+                    }
+                }
             }
             uint mask = MaskFor(lit);
-            if (lit.Node.LightCullMask != mask)
+            if (lit.StatedMask != mask)
             {
-                lit.Node.LightCullMask = mask;
+                lit.StatedMask = mask;
+                if (lit.Node.LightCullMask != mask)
+                {
+                    lit.Node.LightCullMask = mask;
+                }
             }
         }
     }
 
-    /// <summary>All for a light whose map stops at walls or which lights every zone; else its own side.</summary>
+    /// <summary>Lights its own zone; unzoned lights light all zones.</summary>
     private static uint MaskFor(Lit lit)
     {
-        Light3D light = lit.Node;
-        bool walled = light.ShadowEnabled && (light.ShadowCasterMask & 1u) != 0u;
-        if (walled || lit.Zone == 0u)
+        if (lit.Zone == 0u)
         {
             return All;
         }

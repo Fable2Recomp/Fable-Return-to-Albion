@@ -322,12 +322,12 @@ public static class RuntimeCVarsGodot
                 + "direct sun mild against the baked lighting, so people and ground barely "
                 + "react to it — raising this makes characters and terrain visibly sun-lit "
                 + "and deepens their shadows. 1.0 follows the shipped energy exactly."),
-            new("placed_light_budget", LightingCategory, RuntimeCVarType.Int, "0",
+            new("placed_light_budget", LightingCategory, RuntimeCVarType.Int, "64",
                 "How many placed lights stay visible at once, nearest to the eye first. 0 keeps "
                 + "every fixture in the region lit all the time, which is the remaster's setting: "
                 + "a budget makes lamps switch on and off as the camera moves. Every fixture "
                 + "lit measured 13 ms of draw in Bowerstone Market with every shadow off."),
-            new("placed_light_fade", LightingCategory, RuntimeCVarType.Bool, "false",
+            new("placed_light_fade", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Whether a placed light fades out and stops drawing past its authored camera "
                 + "cutoff, as the 360 did. Off keeps every fixture lit at any distance; its "
                 + "range still bounds what it reaches. The fable model always fades."),
@@ -384,7 +384,7 @@ public static class RuntimeCVarsGodot
                 + "moves, which is nearly free. On: the level itself as well, so walls and "
                 + "furniture block fixture light; each shadowed fixture then redraws everything "
                 + "in its reach six times a frame."),
-            new("placed_light_shadow_budget", LightingCategory, RuntimeCVarType.Int, "8",
+            new("placed_light_shadow_budget", LightingCategory, RuntimeCVarType.Int, "4",
                 "How many placed lights cast shadows at once. Each one redraws everything in "
                 + "its reach into its own shadow map every frame, so this is the lighting dial "
                 + "with the most direct cost: 4 cost about 3 fps in Bowerstone Market. 0 turns "

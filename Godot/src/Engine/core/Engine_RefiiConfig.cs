@@ -27,7 +27,15 @@ public static class Engine_RefiiConfig
     /// <summary>The path to <c>refii.toml</c>, or empty when there is not one.</summary>
     public static string ResolvePath()
     {
-        var candidates = new List<string>();
+        lock (_cacheGate)
+        {
+            if (_cachedPath.Length != 0)
+            {
+                return _cachedPath;
+            }
+        }
+
+        var candidates = new List<string>(4);
 
         try
         {
@@ -48,6 +56,10 @@ public static class Engine_RefiiConfig
         {
             if (!string.IsNullOrEmpty(candidate) && System.IO.File.Exists(candidate))
             {
+                lock (_cacheGate)
+                {
+                    _cachedPath = candidate;
+                }
                 return candidate;
             }
         }

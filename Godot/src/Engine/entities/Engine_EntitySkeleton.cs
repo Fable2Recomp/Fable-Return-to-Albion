@@ -1672,6 +1672,16 @@ public sealed class Engine_EntitySkeleton
 	/// <summary>Whether that write was the finished pose rather than a step toward it.</summary>
 	private bool _wroteSettled;
 
+	/// <summary>
+	/// True when this skeleton's newest raw pose has already been written and mirrored to its
+	/// shadow skeleton (or when no valid pose samples exist to blend), so between-walk frames
+	/// do not need to re-run <see cref="Reblend"/>.
+	/// </summary>
+	public bool IsSettled =>
+		_poses.Count == 0 ||
+		(_wroteSettled && _wroteBuffer == _slotBuffer[_poses.Slot(0)] &&
+		 _wroteVersion == _bufferVersion[_wroteBuffer] && _shadowSynced);
+
 	/// <summary>Writes skipped because the skeleton already held the result.</summary>
 	public static long WritesSkipped;
 

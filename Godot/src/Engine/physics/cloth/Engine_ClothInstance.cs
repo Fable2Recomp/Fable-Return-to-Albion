@@ -156,6 +156,7 @@ public sealed class ClothInstance
 
         Array.Clear(CollidedFlags, 0, CollidedFlags.Length);
         Engine_ClothSolver.ComputeNormals(this);
+        Engine_ClothSolver.Finalise(this);
         PrevDt = 0.0f;
         XformPrev = XformCur;
     }

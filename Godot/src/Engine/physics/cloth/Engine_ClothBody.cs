@@ -197,11 +197,20 @@ public partial class Engine_ClothBody : MeshInstance3D
             Layers = node.Layers,
             CastShadow = node.CastShadow,
             GIMode = node.GIMode,
+            VisibilityRangeBegin = node.VisibilityRangeBegin,
+            VisibilityRangeEnd = node.VisibilityRangeEnd,
+            VisibilityRangeBeginMargin = node.VisibilityRangeBeginMargin,
+            VisibilityRangeEndMargin = node.VisibilityRangeEndMargin,
+            VisibilityRangeFadeMode = node.VisibilityRangeFadeMode,
         };
 
         body.Bind(source, pieces, patch);
         node.AddChild(body);
         body.Owner = node.Owner ?? node;
+        if (Refii.Models.Engine_MdlRig.TryFrom(source) is null)
+        {
+            Refii.Lighting.Engine_ShadowReach.Adopt(body);
+        }
         // The body's tint and fade as they stand; later changes arrive with the body's look.
         Refii.Entities.Engine_EntityAppearance.MirrorToCloth(node);
         // Under classic the cloth casts into the guest's cascades with the body it is part of.
@@ -332,8 +341,8 @@ public partial class Engine_ClothBody : MeshInstance3D
     private static int _lagged;
 
     /// <summary>
-    /// Writes a FINISHED solve to the surface; a solve still running is left to land on a later
-    /// frame, so a slow step costs a frame of cloth lag and never frame time. Main thread only.
+    /// Writes the solve to the surface before the frame draws so cloth never lags one frame
+    /// behind the character's skeleton and world transform. Main thread only.
     /// </summary>
     private void Land()
     {
@@ -345,7 +354,6 @@ public partial class Engine_ClothBody : MeshInstance3D
         if (!_job.IsCompleted)
         {
             System.Threading.Interlocked.Increment(ref _lagged);
-            return;
         }
 
         Collect();
@@ -412,15 +420,47 @@ public partial class Engine_ClothBody : MeshInstance3D
             return;
         }
 
-        Visible = parent.Visible;
+        Visible = parent.IsVisibleInTree();
         if (!Visible)
         {
             return;
         }
 
+        EnsureSkeleton(parent);
+        bool inView = true;
+        float weight = Simulate ? FadeWeight(parent, out inView) : 0.0f;
+        bool step = weight > 0.0f;
+
+        if (!step)
+        {
+            // Unrigged props (banners, bunting, cobwebs) have no skeleton to follow when out of
+            // cloth range or off-screen, and rigged characters behind the camera need no upload.
+            if (_skeleton is null || !inView)
+            {
+                System.Threading.Interlocked.Increment(ref _slept);
+                return;
+            }
+
+            // The guest draws the GPU-skinned submesh instead; ours refreshes the skinned pose
+            // on a cadence so a far character still wears its coat in the right place.
+            if (++_farFrames < FarRefreshFrames)
+            {
+                return;
+            }
+
+            _farFrames = 0;
+        }
+
         PhysMat4 world = Engine_PhysicsMatrix.FromTransform3D(parent.GlobalTransform);
         Vector3 wind = Refii.Level.Engine_Weather.WindWorld;
-        EnsureSkeleton(parent);
+        if (step && wind.LengthSquared() > 1e-4f && HasWindResponse())
+        {
+            float t = (float)(Time.GetTicksMsec() * 0.001);
+            Vector3 p = parent.GlobalPosition;
+            float phase = (p.X * 0.17f) + (p.Z * 0.23f);
+            float gust = 1.0f + (0.35f * MathF.Sin((t * 2.3f) + phase) * MathF.Cos((t * 1.1f) + (phase * 0.7f)));
+            wind *= gust;
+        }
 
         if (_sleeping)
         {
@@ -431,21 +471,6 @@ public partial class Engine_ClothBody : MeshInstance3D
             }
 
             _sleeping = false;
-        }
-
-        float weight = Simulate ? FadeWeight(parent) : 0.0f;
-        bool step = weight > 0.0f;
-
-        if (!step)
-        {
-            // The guest draws the GPU-skinned submesh instead; ours refreshes the skinned pose
-            // on a cadence so a far character still wears its coat in the right place.
-            if (++_farFrames < FarRefreshFrames)
-            {
-                return;
-            }
-
-            _farFrames = 0;
         }
 
         // dt = min(frame, 0.2) / max(1, ceil(dt * 20)), one step (sub_821E3180).
@@ -468,6 +493,19 @@ public partial class Engine_ClothBody : MeshInstance3D
         _job = Task.Run(Solve);
         System.Threading.Interlocked.Increment(ref _stepped);
         System.Threading.Interlocked.Add(ref _mainTicks, System.Diagnostics.Stopwatch.GetTimestamp() - mainFrom);
+    }
+
+    private bool HasWindResponse()
+    {
+        for (int i = 0; i < _instances.Count; i++)
+        {
+            if (_instances[i].Asset is { WindStrength: > 0.0f })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>The whole step for every piece, on a worker: pure C# over this body's own arrays.</summary>
@@ -597,16 +635,39 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
 
         var bounds = new Aabb(min, (max - min).Max(new Vector3(0.01f, 0.01f, 0.01f)));
-        if (bounds != _bounds)
+        if (_bounds.Size != Vector3.Zero && _bounds.Encloses(bounds))
         {
-            _bounds = bounds;
-            CustomAabb = bounds;
+            return;
         }
+
+        _bounds = bounds.Grow(0.25f);
+        CustomAabb = _bounds;
+    }
+
+    private static ulong _frustumFrame = ulong.MaxValue;
+    private static ulong _frustumCamera;
+    private static Plane[] _frustum = Array.Empty<Plane>();
+
+    private static Plane[] FrameFrustum(Camera3D camera)
+    {
+        ulong frame = Engine.GetProcessFrames();
+        ulong id = camera.GetInstanceId();
+        if (frame != _frustumFrame || id != _frustumCamera)
+        {
+            Godot.Collections.Array<Plane> planes = camera.GetFrustum();
+            if (_frustum.Length != planes.Count) _frustum = new Plane[planes.Count];
+            for (int i = 0; i < planes.Count; i++) _frustum[i] = planes[i];
+            _frustumFrame = frame;
+            _frustumCamera = id;
+        }
+
+        return _frustum;
     }
 
     /// <summary><c>sub_821E34B0</c>: 0 beyond the distance or out of view, 1 inside 85% of it, a ramp between.</summary>
-    private float FadeWeight(MeshInstance3D parent)
+    private float FadeWeight(MeshInstance3D parent, out bool inView)
     {
+        inView = true;
         Camera3D? camera = GetViewport()?.GetCamera3D();
         if (camera is null)
         {
@@ -614,14 +675,22 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
 
         float max = MaxClothDistance;
+        Vector3 eye = camera.GlobalPosition;
         Vector3 origin = parent.GlobalPosition;
-        float distance = origin.DistanceTo(camera.GlobalPosition);
-        if (distance >= max)
+        float distance = origin.DistanceTo(eye);
+        if (distance >= max + 6.0f)
         {
+            inView = false;
             return 0.0f;
         }
 
-        if (!InView(camera, parent))
+        inView = InView(camera, parent, eye, out float pieceDistance);
+        if (pieceDistance < distance)
+        {
+            distance = pieceDistance;
+        }
+
+        if (!inView || distance >= max)
         {
             return 0.0f;
         }
@@ -631,33 +700,62 @@ public partial class Engine_ClothBody : MeshInstance3D
     }
 
     /// <summary>The union of the pieces' bounding spheres against the camera's frustum.</summary>
-    private bool InView(Camera3D camera, MeshInstance3D parent)
+    private bool InView(Camera3D camera, MeshInstance3D parent, Vector3 eye, out float minDistance)
     {
+        minDistance = float.MaxValue;
         Transform3D world = parent.GlobalTransform;
-        Basis view = camera.GlobalTransform.Basis;
+        float scale = world.Basis.Scale.Length() * 0.577350269f;
+        Plane[] planes = FrameFrustum(camera);
+        bool anyVisible = false;
         foreach (ClothInstance inst in _instances)
         {
             PhysVec4 sphere = inst.BoundsSphere;
             Vector3 center = world * new Vector3(sphere.X, sphere.Y, sphere.Z);
-            float radius = sphere.W * world.Basis.Scale.Length();
-            if (camera.IsPositionInFrustum(center) ||
-                camera.IsPositionInFrustum(center + (view.X * radius)) ||
-                camera.IsPositionInFrustum(center - (view.X * radius)) ||
-                camera.IsPositionInFrustum(center + (view.Y * radius)) ||
-                camera.IsPositionInFrustum(center - (view.Y * radius)))
+            float radius = MathF.Max(sphere.W * scale, 0.5f);
+            float d = MathF.Max(0.0f, center.DistanceTo(eye) - radius);
+            if (d < minDistance)
             {
-                return true;
+                minDistance = d;
+            }
+
+            bool inside = true;
+            for (int p = 0; p < planes.Length; p++)
+            {
+                if (planes[p].DistanceTo(center) > radius)
+                {
+                    inside = false;
+                    break;
+                }
+            }
+
+            if (inside)
+            {
+                anyVisible = true;
             }
         }
 
-        return false;
+        return anyVisible;
     }
+
+    private bool _skeletonChecked;
 
     private void EnsureSkeleton(MeshInstance3D parent)
     {
-        Skeleton3D? skeleton = parent.Skeleton.IsEmpty
+        if (_skeleton is not null && IsInstanceValid(_skeleton))
+        {
+            return;
+        }
+
+        if (_skeletonChecked && _skeleton is null && (Refii.Core.Engine_FramePhases.FrameIndex & 31) != 0)
+        {
+            return;
+        }
+
+        _skeletonChecked = true;
+        using NodePath skeletonPath = parent.Skeleton;
+        Skeleton3D? skeleton = skeletonPath.IsEmpty
             ? null
-            : parent.GetNodeOrNull<Skeleton3D>(parent.Skeleton);
+            : parent.GetNodeOrNull<Skeleton3D>(skeletonPath);
 
         if (ReferenceEquals(skeleton, _skeleton))
         {

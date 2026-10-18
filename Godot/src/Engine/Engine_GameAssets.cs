@@ -761,8 +761,24 @@ public partial class Engine_GameAssets : Node
 		return fs is not null && fs.TryGetFile(Strip(virtualPath), out file);
 	}
 
-	public byte[]? ReadAllBytes(string virtualPath) =>
-		TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
+	[ThreadStatic]
+	private static (BnkFile? File, byte[]? Bytes) _lastRead;
+
+	public byte[]? ReadAllBytes(string virtualPath)
+	{
+		if (!TryGetFile(virtualPath, out BnkFile file))
+		{
+			return null;
+		}
+
+		if (ReferenceEquals(_lastRead.File, file) && _lastRead.Bytes is { } cached)
+		{
+			_lastRead = default;
+			return cached;
+		}
+
+		return file.ReadAllBytes();
+	}
 
 	public bool FileExists(string virtualPath) => TryGetFile(virtualPath, out _);
 
@@ -795,7 +811,19 @@ public partial class Engine_GameAssets : Node
 			return -1;
 		}
 
-		return file.HasAlternates && !file.IsOverride ? file.ReadAllBytes().LongLength : file.Size;
+		if (!file.HasAlternates || file.IsOverride)
+		{
+			return file.Size;
+		}
+
+		if (file.CachedResolvedSize >= 0)
+		{
+			return file.CachedResolvedSize;
+		}
+
+		byte[] bytes = file.ReadAllBytes();
+		_lastRead = (file, bytes);
+		return bytes.LongLength;
 	}
 
 	public bool DirectoryExists(string virtualDirectory) =>

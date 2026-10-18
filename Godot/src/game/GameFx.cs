@@ -38,7 +38,7 @@ public partial class GameFx : Node3D
     private readonly Dictionary<uint, Refii.Core.Engine_TickTimeline> _timelines = new();
 
     /// <summary>The guest's sim tick as of this frame's walk, read once.</summary>
-    private uint _tickNow;
+    private double _tickNow;
 
     private readonly HashSet<uint> _seen = new();
 

@@ -38,7 +38,16 @@ public sealed class Engine_AnimDecoder
         public float[] Data = Array.Empty<float>();
     }
 
+    private sealed class HeaderSlot
+    {
+        public int ClipOffset = -1;
+
+        public Engine_AnimDataFile.ClipHeader? Header;
+    }
+
     private readonly Block[] _cache = new Block[CacheBuckets];
+
+    private readonly HeaderSlot[] _headers = new HeaderSlot[256];
 
     private readonly Engine_AnimDataFile _file;
 
@@ -49,13 +58,28 @@ public sealed class Engine_AnimDecoder
         {
             _cache[i] = new Block();
         }
+        for (int i = 0; i < _headers.Length; i++)
+        {
+            _headers[i] = new HeaderSlot();
+        }
     }
 
     public void ClearCache()
     {
         for (int i = 0; i < _cache.Length; i++)
         {
-            _cache[i] = new Block();
+            lock (_cache[i])
+            {
+                _cache[i].ClipOffset = -1;
+            }
+        }
+        for (int i = 0; i < _headers.Length; i++)
+        {
+            lock (_headers[i])
+            {
+                _headers[i].ClipOffset = -1;
+                _headers[i].Header = null;
+            }
         }
     }
 
@@ -63,23 +87,38 @@ public sealed class Engine_AnimDecoder
     {
         pose.Ok = false;
 
-        if (!_file.IsOpen)
+        if (!_file.IsOpen || clip.Fps <= 0.0f)
         {
             return false;
         }
 
-        Engine_AnimDataFile.ClipHeader header = _file.ParseClipHeader(clip);
+        if (!_file.TryGetClipSpan(clip, out int offset, out int length))
+        {
+            return false;
+        }
+
+        HeaderSlot hSlot = _headers[((uint)offset >> 5) & 255u];
+        Engine_AnimDataFile.ClipHeader header;
+        lock (hSlot)
+        {
+            if (hSlot.ClipOffset == offset && hSlot.Header is not null)
+            {
+                header = hSlot.Header;
+            }
+            else
+            {
+                header = _file.ParseClipHeader(clip);
+                hSlot.ClipOffset = offset;
+                hSlot.Header = header;
+            }
+        }
+
         if (!header.Ok || header.BoneCount == 0)
         {
             return false;
         }
 
         if (header.BoneCount > 4096 || header.FrameCount > 65536)
-        {
-            return false;
-        }
-
-        if (clip.Fps <= 0.0f)
         {
             return false;
         }
@@ -102,32 +141,31 @@ public sealed class Engine_AnimDecoder
         uint blockIndex = frameInt >> 3;
         float fracInBlock = frame - (blockIndex << 3);
 
-        if (!_file.TryGetClipSpan(clip, out int offset, out int length))
-        {
-            return false;
-        }
-
         int bucket = (int)((((uint)offset >> 4) ^ blockIndex) & (CacheBuckets - 1));
         Block slot = _cache[bucket];
 
-        bool hit = slot.ClipOffset == offset &&
-                   slot.BlockIndex == blockIndex &&
-                   slot.BoneCount == header.BoneCount;
-
-        if (!hit)
+        lock (slot)
         {
-            if (!DecodeBlock(header, offset, length, header.BoneCount, blockIndex, slot))
+            bool hit = slot.ClipOffset == offset &&
+                       slot.BlockIndex == blockIndex &&
+                       slot.BoneCount == header.BoneCount;
+
+            if (!hit)
             {
-                _cache[bucket] = new Block();
-                return false;
+                if (!DecodeBlock(header, offset, length, header.BoneCount, blockIndex, slot))
+                {
+                    slot.ClipOffset = -1;
+                    return false;
+                }
+
+                slot.ClipOffset = offset;
+                slot.BlockIndex = blockIndex;
+                slot.BoneCount = header.BoneCount;
             }
 
-            slot.ClipOffset = offset;
-            slot.BlockIndex = blockIndex;
-            slot.BoneCount = header.BoneCount;
+            Interpolate(slot, fracInBlock, pose);
         }
 
-        Interpolate(slot, fracInBlock, pose);
         pose.Ok = true;
         return true;
     }

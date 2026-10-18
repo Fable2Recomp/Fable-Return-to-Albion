@@ -45,6 +45,10 @@ public partial class GameDebugServer : Node
 		(System.Environment.GetEnvironmentVariable("REFII_DEBUG_PORT") ?? string.Empty).Length != 0 ||
 		ConfigWants();
 
+	private Dictionary<string, int>? _cachedProcessingCensus;
+	private List<SubViewport>? _cachedSubViewports;
+	private ulong _cachedProcessingCensusUntilMs;
+
 	private static bool ConfigWants()
 	{
 		try
@@ -2338,11 +2342,41 @@ public partial class GameDebugServer : Node
 					shadowObjects = render.ShadowObjects;
 				}
 
+				// WHAT ELSE RUNS ON THE MAIN THREAD: node classes with process, physics process or
+				// INTERNAL process enabled — Skeleton3D, AnimationPlayer and particles do their
+				// per-frame work as internal process, which no callback of ours can time.
+				ulong censusNowMs = Time.GetTicksMsec();
+				if (_cachedProcessingCensus is null || _cachedSubViewports is null || censusNowMs >= _cachedProcessingCensusUntilMs)
+				{
+					var freshCensus = new Dictionary<string, int>();
+					var freshSubViewports = new List<SubViewport>();
+					foreach (Node found in GetTree().Root.FindChildren("*", "", true, false))
+					{
+						if (found is SubViewport sv)
+						{
+							freshSubViewports.Add(sv);
+						}
+
+						string kind = found.IsProcessingInternal() ? "internal:" : found.IsProcessing() ? "process:" : found.IsPhysicsProcessing() ? "physics:" : string.Empty;
+						if (kind.Length == 0)
+						{
+							continue;
+						}
+
+						string key = kind + found.GetType().Name;
+						freshCensus[key] = freshCensus.TryGetValue(key, out int have) ? have + 1 : 1;
+					}
+					_cachedProcessingCensus = freshCensus;
+					_cachedSubViewports = freshSubViewports;
+					_cachedProcessingCensusUntilMs = censusNowMs + 2000;
+				}
+				Dictionary<string, int> census = _cachedProcessingCensus;
+
 				// EVERY viewport, because the process total is far more than the main one draws.
 				var viewports = new List<object?>();
-				foreach (Node found in GetTree().Root.FindChildren("*", "SubViewport", true, false))
+				foreach (SubViewport sub in _cachedSubViewports)
 				{
-					if (found is not SubViewport sub)
+					if (!GodotObject.IsInstanceValid(sub) || !sub.IsInsideTree())
 					{
 						continue;
 					}
@@ -2361,22 +2395,6 @@ public partial class GameDebugServer : Node
 						["shadowCalls"] = subRender.ShadowCalls,
 						["shadowPrims"] = subRender.ShadowPrims,
 					});
-				}
-
-				// WHAT ELSE RUNS ON THE MAIN THREAD: node classes with process, physics process or
-				// INTERNAL process enabled — Skeleton3D, AnimationPlayer and particles do their
-				// per-frame work as internal process, which no callback of ours can time.
-				var census = new Dictionary<string, int>();
-				foreach (Node found in GetTree().Root.FindChildren("*", "", true, false))
-				{
-					string kind = found.IsProcessingInternal() ? "internal:" : found.IsProcessing() ? "process:" : found.IsPhysicsProcessing() ? "physics:" : string.Empty;
-					if (kind.Length == 0)
-					{
-						continue;
-					}
-
-					string key = kind + found.GetType().Name;
-					census[key] = census.TryGetValue(key, out int have) ? have + 1 : 1;
 				}
 
 				var lights = new List<Light3D>();
@@ -2544,6 +2562,9 @@ public partial class GameDebugServer : Node
 						["gen2"] = System.GC.CollectionCount(2),
 						["pauseMsTotal"] = System.GC.GetTotalPauseDuration().TotalMilliseconds,
 						["allocatedMB"] = System.GC.GetTotalAllocatedBytes() / 1048576.0,
+						["steadyAllocMBPerSec"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyAllocMBPerSec, 2),
+						["steadyGen0PerMin"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyGen0PerMin, 1),
+						["steadyGen2PerMin"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyGen2PerMin, 2),
 						["heapMB"] = System.GC.GetGCMemoryInfo().HeapSizeBytes / 1048576.0,
 						["gen0MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[0].SizeAfterBytes / 1048576.0,
 						["gen1MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[1].SizeAfterBytes / 1048576.0,

@@ -423,7 +423,7 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 		float ratio = clamp(d / max(record.w, 1e-3), 0.0, 1.0);
 		float window = 1.0 - (ratio * ratio * ratio * ratio);
 		window *= window;
-		float rest = window > 1e-3 ? clamp(godot_attenuation / window, 0.0, 1.0) : 1.0;
+		float rest = clamp(godot_attenuation / max(window, 1e-4), 0.0, 1.0);
 		return ramp * rest;
 	}
 

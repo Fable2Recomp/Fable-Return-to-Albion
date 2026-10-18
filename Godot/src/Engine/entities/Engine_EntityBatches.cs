@@ -78,10 +78,11 @@ public partial class Engine_EntityBatches : Node3D
 			return false;
 		}
 
-		float cellMetres = Refii.Level.Engine_LevelProps.BatchCellMetres;
+		float cellMetres = Refii.Level.Engine_LevelProps.BatchCellMetres * 2f;
 		var cell = new Vector3I(Mathf.FloorToInt(local.Origin.X / cellMetres),
-			Mathf.FloorToInt(local.Origin.Y / cellMetres), Mathf.FloorToInt(local.Origin.Z / cellMetres));
-		var key = (mesh, layers, cell, range is null ? -1 : Mathf.RoundToInt(range[2]));
+			0, Mathf.FloorToInt(local.Origin.Z / cellMetres));
+		int rangeKey = range is null ? -1 : Mathf.RoundToInt(range[2] / 16f) * 16;
+		var key = (mesh, layers, cell, rangeKey);
 		if (!_batches.TryGetValue(key, out Batch? batch))
 		{
 			batch = Create(mesh, layers);

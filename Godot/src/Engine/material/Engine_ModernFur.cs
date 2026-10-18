@@ -43,6 +43,8 @@ public static class Engine_ModernFur
         public required float Length;
         public int Linked = -1;
         public int Stagger;
+        public int LastShells = -1;
+        public float LastLength = -1f;
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentQueue<MeshInstance3D> Pending = new();
@@ -101,8 +103,17 @@ public static class Engine_ModernFur
             float radius = box.Size.Length() * 0.5f;
             float d = MathF.Max((eye - box.GetCenter()).Length() - radius, camera.Near);
             int n = Math.Clamp((int)((furred.Length / d) / halfTan * 142.85713f + 1f), 16, Engine_ClassicFur.MaxShells);
-            furred.Shell.SetInstanceShaderParameter(ShellsName, (float)n);
-            furred.Shell.SetInstanceShaderParameter(LengthName, furred.Length * (1f + 0.1f * d));
+            if (furred.LastShells != n)
+            {
+                furred.LastShells = n;
+                furred.Shell.SetInstanceShaderParameter(ShellsName, (float)n);
+            }
+            float reach = furred.Length * (1f + 0.1f * d);
+            if (MathF.Abs(furred.LastLength - reach) > 1e-4f)
+            {
+                furred.LastLength = reach;
+                furred.Shell.SetInstanceShaderParameter(LengthName, reach);
+            }
             Link(furred, n - 1);
             if ((_frame + furred.Stagger) % ShareFrames == 0)
             {

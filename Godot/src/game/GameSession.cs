@@ -331,33 +331,46 @@ public partial class GameSession : Node
 		// The modern renderer's decals: the guest's stated ring as Godot decals.
 		if (!Refii.Models.Engine_ClassicMaterial.Active && Refii.Host.HostBridge.IsGuestUp)
 		{
-			Refii.Fx.Engine_ModernDecals.Ensure(this).Pump();
-			Refii.Level.Engine_ModernMist.Ensure(this).Pump();
-			Refii.Lighting.Engine_LightZones.Pump();
-			// The guest's live theme block: its texture slots give the modern dome its overlays.
-			Refii.Models.Engine_ClassicTheme.Pump();
-			Refii.Level.Engine_SkyOverlay.Pump();
-			if (GetViewport()?.GetCamera3D() is { } modernEye)
+			using (Refii.Core.Engine_FramePhases.Measure("session.modern"))
 			{
-				Refii.Level.Engine_RoofCut.Pump(modernEye.GlobalPosition);
-				Refii.Level.Engine_SnowPushes.Pump();
-				// The guest's FX mesh twins, drawn on the modern materials; FableFx's simulated copies stand down.
-				if (Refii.Fx.Engine_FxMeshTwins.Instance is null)
+				bool guestFrame = Refii.Core.Engine_GuestFrame.Changed;
+				Refii.Fx.Engine_ModernDecals.Ensure(this).Pump();
+				Refii.Level.Engine_ModernMist.Ensure(this).Pump();
+				Refii.Lighting.Engine_LightZones.Pump();
+				if (guestFrame)
 				{
-					AddChild(new Refii.Fx.Engine_FxMeshTwins());
+					// The guest's live theme block: its texture slots give the modern dome its overlays.
+					Refii.Models.Engine_ClassicTheme.Pump();
+					Refii.Level.Engine_SkyOverlay.Pump();
 				}
-				Refii.Fx.Engine_FxMeshTwins.Instance?.Pump(modernEye);
-				Refii.Fx.FableFx.GuestMeshTwins = Refii.Fx.Engine_FxMeshTwins.FeedLive;
-				// The guest's particle groups and trails on our own shaders; GameFx stands down only
-				// the effects whose groups are drawn here (FableFx.GuestDrawn), every other keeps its own.
-				if (Refii.Models.Engine_ClassicParticles.Instance is null)
+				if (GetViewport()?.GetCamera3D() is { } modernEye)
 				{
-					AddChild(new Refii.Models.Engine_ClassicParticles { Name = "GuestParticles" });
+					Refii.Level.Engine_RoofCut.Pump(modernEye.GlobalPosition);
+					if (guestFrame)
+					{
+						Refii.Level.Engine_SnowPushes.Pump();
+					}
+					// The guest's FX mesh twins, drawn on the modern materials; FableFx's simulated copies stand down.
+					if (Refii.Fx.Engine_FxMeshTwins.Instance is null)
+					{
+						AddChild(new Refii.Fx.Engine_FxMeshTwins());
+					}
+					Refii.Fx.Engine_FxMeshTwins.Instance?.Pump(modernEye);
+					Refii.Fx.FableFx.GuestMeshTwins = Refii.Fx.Engine_FxMeshTwins.FeedLive;
+					// The guest's particle groups and trails on our own shaders; GameFx stands down only
+					// the effects whose groups are drawn here (FableFx.GuestDrawn), every other keeps its own.
+					if (Refii.Models.Engine_ClassicParticles.Instance is null)
+					{
+						AddChild(new Refii.Models.Engine_ClassicParticles { Name = "GuestParticles" });
+					}
+					Refii.Models.Engine_ClassicParticles.Instance?.Pump(modernEye);
+					Refii.Models.Engine_ModernFur.Pump(modernEye);
+					if (guestFrame)
+					{
+						Refii.Fx.Engine_ModernDrunk.Pump(this);
+						Refii.Fx.Engine_DisplacementMeshes.Pump();
+					}
 				}
-				Refii.Models.Engine_ClassicParticles.Instance?.Pump(modernEye);
-				Refii.Models.Engine_ModernFur.Pump(modernEye);
-				Refii.Fx.Engine_ModernDrunk.Pump(this);
-				Refii.Fx.Engine_DisplacementMeshes.Pump();
 			}
 		}
 

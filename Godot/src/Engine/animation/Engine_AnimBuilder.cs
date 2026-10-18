@@ -156,17 +156,13 @@ public static class Engine_AnimBuilder
 
         int frameCount = (int)Math.Min(clip.TocFrameCount, (uint)MaxFrames);
         int tracks = clip.TrackMap.Count;
-        var times = new List<float>[tracks];
-        var rotations = new List<Quaternion>[tracks];
-        var positions = new List<Vector3>[tracks];
-        for (int i = 0; i < tracks; i++)
-        {
-            times[i] = new List<float>(frameCount);
-            rotations[i] = new List<Quaternion>(frameCount);
-            positions[i] = new List<Vector3>(frameCount);
-        }
-
         var pose = new DecodedPose();
+        int activeTracks = 0;
+        var sharedTimes = new float[frameCount];
+        Quaternion[][]? rotations = null;
+        Vector3[][]? positions = null;
+        int validFrames = 0;
+
         for (int frame = 0; frame < frameCount; frame++)
         {
             float time = frame / clip.Fps;
@@ -176,7 +172,30 @@ public static class Engine_AnimBuilder
             }
 
             int n = Math.Min(tracks, pose.BoneCount);
-            for (int i = 0; i < n; i++)
+            if (rotations is null)
+            {
+                activeTracks = n;
+                rotations = new Quaternion[tracks][];
+                positions = new Vector3[tracks][];
+                for (int i = 0; i < activeTracks; i++)
+                {
+                    rotations[i] = new Quaternion[frameCount];
+                    positions[i] = new Vector3[frameCount];
+                }
+                for (int i = activeTracks; i < tracks; i++)
+                {
+                    rotations[i] = Array.Empty<Quaternion>();
+                    positions[i] = Array.Empty<Vector3>();
+                }
+            }
+            else if (n < activeTracks)
+            {
+                activeTracks = n;
+            }
+
+            int f = validFrames++;
+            sharedTimes[f] = time;
+            for (int i = 0; i < activeTracks; i++)
             {
                 var rotation = new Quaternion(
                     pose.BoneQuats[i * 4 + 0],
@@ -193,12 +212,11 @@ public static class Engine_AnimBuilder
                     rotation = rotation.Normalized();
                 }
 
-                times[i].Add(time);
-                rotations[i].Add(Engine_AnimSkeleton.ToYUp(rotation));
-                positions[i].Add(Engine_AnimSkeleton.ToYUp(new Vector3(
+                rotations[i][f] = Engine_AnimSkeleton.ToYUp(rotation);
+                positions![i][f] = Engine_AnimSkeleton.ToYUp(new Vector3(
                     pose.BoneTrans[i * 3 + 0],
                     pose.BoneTrans[i * 3 + 1],
-                    pose.BoneTrans[i * 3 + 2])));
+                    pose.BoneTrans[i * 3 + 2]));
             }
         }
 
@@ -206,14 +224,43 @@ public static class Engine_AnimBuilder
         {
             Length = MathF.Max(frameCount - 1, 1) / clip.Fps,
             Times = new float[tracks][],
-            Rotations = new Quaternion[tracks][],
-            Positions = new Vector3[tracks][],
+            Rotations = rotations ?? new Quaternion[tracks][],
+            Positions = positions ?? new Vector3[tracks][],
         };
+
+        if (rotations is null)
+        {
+            for (int i = 0; i < tracks; i++)
+            {
+                keys.Times[i] = Array.Empty<float>();
+                keys.Rotations[i] = Array.Empty<Quaternion>();
+                keys.Positions[i] = Array.Empty<Vector3>();
+            }
+            return keys;
+        }
+
+        if (validFrames < frameCount)
+        {
+            Array.Resize(ref sharedTimes, validFrames);
+            for (int i = 0; i < activeTracks; i++)
+            {
+                Array.Resize(ref keys.Rotations[i], validFrames);
+                Array.Resize(ref keys.Positions[i], validFrames);
+            }
+        }
+
         for (int i = 0; i < tracks; i++)
         {
-            keys.Times[i] = times[i].ToArray();
-            keys.Rotations[i] = rotations[i].ToArray();
-            keys.Positions[i] = positions[i].ToArray();
+            if (i < activeTracks)
+            {
+                keys.Times[i] = sharedTimes;
+            }
+            else
+            {
+                keys.Times[i] = Array.Empty<float>();
+                keys.Rotations[i] = Array.Empty<Quaternion>();
+                keys.Positions[i] = Array.Empty<Vector3>();
+            }
         }
 
         return keys;

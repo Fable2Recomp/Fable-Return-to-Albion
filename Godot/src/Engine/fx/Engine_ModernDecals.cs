@@ -28,24 +28,49 @@ public partial class Engine_ModernDecals : Node3D
     private readonly (uint Serial, Godot.Decal? Node)[] _drawn = new (uint, Godot.Decal?)[Engine_DecalFeed.Slots];
     private readonly Dictionary<uint, Texture2D?> _textures = new();
 
+    private bool _pumpedOnce;
+
+    /// <summary>The live instance.</summary>
+    public static Engine_ModernDecals? Instance { get; private set; }
+
     /// <summary>Decals placed at the last pump.</summary>
     public int Drawn { get; private set; }
+
+    public override void _ExitTree()
+    {
+        if (ReferenceEquals(Instance, this))
+        {
+            Instance = null;
+        }
+    }
 
     /// <summary>The modern decals under <paramref name="host"/>, made on first use.</summary>
     public static Engine_ModernDecals Ensure(Node host)
     {
+        if (Instance is { } cached && IsInstanceValid(cached) && cached.GetParent() == host)
+        {
+            return cached;
+        }
         if (host.GetNodeOrNull<Engine_ModernDecals>(nameof(Engine_ModernDecals)) is { } existing)
         {
+            Instance = existing;
             return existing;
         }
         var decals = new Engine_ModernDecals { Name = nameof(Engine_ModernDecals) };
         host.AddChild(decals);
+        Instance = decals;
         return decals;
     }
 
     /// <summary>Follows the guest's decals. Main thread, once a frame.</summary>
     public void Pump()
     {
+        if (_pumpedOnce && !Refii.Core.Engine_GuestFrame.Changed)
+        {
+            return;
+        }
+        _pumpedOnce = true;
+
         _feed.Pump();
         System.ReadOnlySpan<Engine_DecalFeed.Decal?> ring = _feed.Ring;
         int drawn = 0;

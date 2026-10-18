@@ -44,6 +44,12 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		public Keys[] PositionKeys = System.Array.Empty<Keys>();
 
 		public bool KeysLifted;
+
+		/// <summary>
+		/// True when every bone track mapped to this rig contains at most one keyframe (e.g., static
+		/// prop Idle or marker poses), so advancing playhead time never changes the sampled bone pose.
+		/// </summary>
+		public bool IsStatic;
 	}
 
 	/// <summary>
@@ -57,6 +63,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		public Keys[] Rotations = System.Array.Empty<Keys>();
 		public Keys[] Positions = System.Array.Empty<Keys>();
 		public long LastTaken;
+		public bool IsStatic;
 	}
 
 	private readonly record struct SharedKey(Engine_AnimDecoder Decoder, uint Clip);
@@ -258,22 +265,34 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		public readonly Engine_ClipPlayhead Playhead = new();
 
 		/// <summary>
-		/// The record's OWN weight pair as the guest states it: latched at the tick start and
-		/// live. Summed across the leaves of one record, as <see cref="TargetWeight"/> is.
+		/// The record's OWN weight pair: joined continuously across ticks so steady-state
+		/// civilian mood overlays (`MoodPose*Loop`, whose guest `record+24u` stays parked one
+		/// ramp step below `record+28u`) never sawtooth at 15 Hz.
 		/// </summary>
 		public float RecordPrevious;
 
 		public float RecordCurrent;
 
 		/// <summary>
-		/// The record's pair one tick earlier, and the tick the current pair was read on. A draw
-		/// point that the world's playhead carries back across a tick that landed early is still
-		/// inside the earlier pair; drawn from the newer one at a clamped 0 it jumped to that
-		/// pair's start.
+		/// The leaf's intra-record blend-tree share (`TargetWeight / RecordCurrent`), interpolated
+		/// across each tick so locomotion steering blends (`WalkFootstep` + `WalkFootstepTurn*`)
+		/// do not step in a 15 Hz staircase when the parent record's weight is a constant 1.0.
+		/// </summary>
+		public float SharePrevious = 1f;
+
+		public float ShareCurrent = 1f;
+
+		/// <summary>
+		/// The record's and leaf-share's pairs one tick earlier, and the tick the current pair was
+		/// read on. A draw point that the world's playhead carries back across a tick that landed
+		/// early is still inside the earlier pair; drawn from the newer one at a clamped 0 it
+		/// jumped to that pair's start.
 		/// </summary>
 		public float OlderPrevious;
 
 		public float OlderCurrent;
+		public float OlderSharePrevious = 1f;
+		public float OlderShareCurrent = 1f;
 		public bool HasOlder;
 		public uint WeightPairTick = uint.MaxValue;
 
@@ -287,12 +306,29 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		/// <summary>Position in this tick's export, front to back: the guest's list order.</summary>
 		public int Order;
+
+		/// <summary>State last committed in <see cref="Write"/>, for static/clamped prop culling.</summary>
+		public float WrittenTime = float.NaN;
+		public float WrittenWeight = float.NaN;
+		public int WrittenOrder = -1;
+		public bool HasWritten;
 	}
 
 	private readonly Skeleton3D _skeleton;
 
 	/// <summary>The shadow skeleton missed a bone write since it was last mirrored, so the next mirror writes every bone.</summary>
 	private bool _shadowStale = true;
+
+	/// <summary>Number of channels present when <see cref="Write"/> last committed a pose.</summary>
+	private int _writtenChannelCount = -1;
+
+	/// <summary>
+	/// True when every active channel's sampled pose and weight are identical to the pose already
+	/// written to the skeleton (e.g., stationary doors, chests, signs, or 1-keyframe prop idles).
+	/// When true, <see cref="GameEntities"/> omits this rig from per-frame <c>_animating</c>
+	/// resampling until the guest changes its animation state on a subsequent walk.
+	/// </summary>
+	public bool IsSettled { get; private set; }
 	private readonly string _skeletonName;
 	private readonly Dictionary<uint, Built> _clips = new();
 	private Dictionary<string, List<int>>? _boneCandidates;
@@ -392,11 +428,13 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		_layerPositionWeight = new float[bones];
 		_restRotation = new Quaternion[bones];
 		_restPosition = new Vector3[bones];
+		_parents = new int[bones];
 		for (int b = 0; b < bones; ++b)
 		{
 			Transform3D rest = skeleton.GetBoneRest(b);
 			_restRotation[b] = rest.Basis.GetRotationQuaternion();
 			_restPosition[b] = rest.Origin;
+			_parents[b] = skeleton.GetBoneParent(b);
 			if (skeleton.GetBoneName(b) == "Shadow_Hip")
 			{
 				_hipBone = b;
@@ -407,12 +445,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		{
 			for (int b = 0; b < bones; ++b)
 			{
-				if (skeleton.GetBoneParent(b) == _hipBone && skeleton.GetBoneName(b) != "Shadow_SpineControl")
+				if (_parents[b] == _hipBone && skeleton.GetBoneName(b) != "Shadow_SpineControl")
 				{
 					_hipChildren.Add(b);
 				}
 			}
 		}
+
+		_boneCandidates = Engine_AnimBuilder.BoneCandidates(skeleton);
 	}
 
 	/// <summary>Whether this animator drives that skeleton — the identity a re-created rig fails.</summary>
@@ -425,6 +465,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// here; when true the bones were written and the pose feed must not run this frame.</summary>
 	/// <summary>The skeleton's parent table, read once — see Apply.</summary>
 	private int[]? _parents;
+
+	private int _emptyControllerStreak;
+	private int _emptySkipRemaining;
 
 	/// <summary>
 	/// Advances this rig's clips and, when <paramref name="writeBones"/>, poses the skeleton.
@@ -461,6 +504,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	public bool Begin(uint entity, bool writeBones, out bool fold)
 	{
 		fold = false;
+		IsSettled = false;
 		// Already in this pass's batch (its fold may be running): the same pose is on its way.
 		if (_inBatch)
 		{
@@ -481,9 +525,29 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		uint guestFrame = Refii.Core.Engine_GuestFrame.Frame;
 		if (guestFrame == 0u || guestFrame != _readFrame || entity != _readEntity)
 		{
-			_readCount = HostBridge.GetEntityAnimState(entity, _read, out _readFlags);
-			_readFrame = guestFrame;
-			_readEntity = entity;
+			if (entity == _readEntity && _emptySkipRemaining > 0)
+			{
+				--_emptySkipRemaining;
+				_readFrame = guestFrame;
+			}
+			else
+			{
+				_readCount = HostBridge.GetEntityAnimState(entity, _read, out _readFlags);
+				_readFrame = guestFrame;
+				_readEntity = entity;
+				if (_readCount == 0 && (_readFlags & 10u) == 0u)
+				{
+					if (++_emptyControllerStreak >= 3)
+					{
+						_emptySkipRemaining = 15;
+					}
+				}
+				else
+				{
+					_emptyControllerStreak = 0;
+					_emptySkipRemaining = 0;
+				}
+			}
 		}
 
 		_leaves.Clear();
@@ -521,7 +585,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// One counter for every stamp: the clip playhead rides the same game tick the poses and
 		// placements do. `dword_83319650` skips (`821d46e8` branches past its own increment).
 		uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
-		int bones = _skeleton.GetBoneCount();
+		int bones = _parents?.Length ?? _skeleton.GetBoneCount();
 
 		// THE PARENT TABLE IS TOPOLOGY, NOT STATE. `GetBoneParent` is a crossing into the engine
 		// and it was called once per bone in four separate loops of this method, every apply, for
@@ -589,8 +653,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 				// Assigned, not summed: both leaves belong to the same record and carry the same
 				// pair. Summing it would double the denominator and halve every share.
-				channel.RecordPrevious = leaf.RecordPrevious;
 				channel.RecordCurrent = leaf.RecordCurrent;
+				channel.ShareCurrent = channel.RecordCurrent > 1e-5f
+					? channel.TargetWeight / channel.RecordCurrent
+					: 1f;
+				if (!channel.HasOlder)
+				{
+					channel.SharePrevious = channel.ShareCurrent;
+				}
 				if (leaf.Weight > channel.Leaf.Weight)
 				{
 					channel.Leaf = leaf;
@@ -603,16 +673,64 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			channel.Seen = true;
 			channel.Order = order;
 			channel.TargetWeight = leaf.Weight;
-			if (tick != channel.WeightPairTick)
+			float leafShare = leaf.RecordCurrent > 1e-5f ? leaf.Weight / leaf.RecordCurrent : 1f;
+
+			// CONTINUOUS WEIGHT & INTRA-RECORD SHARE INTERPOLATION (DO NOT REVERT TO RAW leaf.RecordPrevious):
+			//
+			// 1. Civilian NPC MoodPose*Loop Stale `record+24u` Bug in Guest (`default.xex`):
+			//    Every civilian NPC carries a 160-bone `MoodPose*Loop` overlay (`MoodPoseScared1Loop`,
+			//    `MoodPoseAngry1Loop`, `MoodPoseHappy1Loop`) on `controller+108u` (Track 3), whereas
+			//    Guards and the Hero do not. In the Xbox 360 engine, when a mood overlay's ramp object
+			//    (`step = 2/15 = 0.133333`) reaches its steady-state target weight (e.g. `record+28u =
+			//    0.387514`), the guest stops stepping the ramp and leaves `record+24u` (`leaf.RecordPrevious`)
+			//    permanently parked one step lower (`0.254181`) on every single subsequent game tick.
+			//    Blindly assigning `channel.RecordPrevious = leaf.RecordPrevious` every tick caused the
+			//    host to ramp `MoodPose*Loop` from `0.254 -> 0.388` across each 66.7 ms tick (`pairAt: 0 -> 1`)
+			//    and then snap-jump backward by `-0.1333` on every 15 Hz tick boundary (`pairAt = 0.0`).
+			//    While standing idle, either a full-weight overlay overrides Track 3 or the pose delta
+			//    between `Idle` and `MoodPose*Loop` is negligible; while walking (`WalkFootstep`),
+			//    `MoodPose*Loop` blends directly over 93 spine/limb bones, producing a 6x bone-motion
+			//    spike every 66.7 ms (the civilian walking stutter).
+			//    Joining `channel.RecordPrevious = channel.RecordCurrent` on each new tick enforces C0
+			//    continuity across tick boundaries: when a ramp is genuinely moving (`0.254 -> 0.388 -> 0.521`),
+			//    the previous tick's `RecordCurrent` (`0.388`) already equals the new tick's `leaf.RecordPrevious`;
+			//    when the ramp is at steady state (`0.388` on both ticks), `RecordPrevious` and `RecordCurrent`
+			//    both equal `0.388`, completely eliminating the 15 Hz sawtooth snap.
+			//
+			// 2. Intra-Record Locomotion Blend Tree Share (`SharePrevious -> ShareCurrent`):
+			//    When a character steers while walking, multiple clips inside the same primary record
+			//    (`WalkFootstep` + `WalkFootstepMirror` / `WalkFootstepTurn*`, blend node types 1/2/6)
+			//    trade `leaf.Weight` at 15 Hz while the parent record's weight stays `1.0`. Joining and
+			//    interpolating `SharePrevious -> ShareCurrent` across the tick prevents 15 Hz stepping
+			//    between locomotion blend-tree children.
+			if (channel.WeightPairTick == uint.MaxValue)
 			{
-				channel.HasOlder = channel.WeightPairTick != uint.MaxValue && tick == channel.WeightPairTick + 1u;
+				channel.WeightPairTick = tick;
+				channel.HasOlder = false;
+				channel.RecordPrevious = leaf.RecordPrevious;
+				channel.RecordCurrent = leaf.RecordCurrent;
+				channel.SharePrevious = leafShare;
+				channel.ShareCurrent = leafShare;
+			}
+			else if (tick != channel.WeightPairTick)
+			{
+				channel.HasOlder = tick == channel.WeightPairTick + 1u;
 				channel.OlderPrevious = channel.RecordPrevious;
 				channel.OlderCurrent = channel.RecordCurrent;
+				channel.OlderSharePrevious = channel.SharePrevious;
+				channel.OlderShareCurrent = channel.ShareCurrent;
+				channel.RecordPrevious = channel.RecordCurrent;
+				channel.RecordCurrent = leaf.RecordCurrent;
+				channel.SharePrevious = channel.ShareCurrent;
+				channel.ShareCurrent = leafShare;
 				channel.WeightPairTick = tick;
 			}
+			else
+			{
+				channel.RecordCurrent = leaf.RecordCurrent;
+				channel.ShareCurrent = leafShare;
+			}
 
-			channel.RecordPrevious = leaf.RecordPrevious;
-			channel.RecordCurrent = leaf.RecordCurrent;
 			if (leaf.BlendIn > 0f) channel.BlendIn = leaf.BlendIn;
 			if (leaf.BlendOut > 0f) channel.BlendOut = leaf.BlendOut;
 			ObservePlayhead(channel, leaf, tick, drawTick);
@@ -633,16 +751,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			c.LastUsec = now;
 			if (c.Seen)
 			{
-				// The guest states both ends of this blend. `sub_82211660` draws the weight as
-				// `(1 - alpha) * record.weight_previous + alpha * record.weight_current`
-				// (0x82211B08..0x82211B24); the pair is read, never rebuilt on the host.
-				//
-				// The leaf's own share of its record is preserved: `TargetWeight` is the record
-				// weight already scaled by the blend tree above the leaf, so the share is
-				// `TargetWeight / RecordCurrent` and the drawn weight is that share of the
-				// blended record weight.
 				float drawn = RecordWeightAt(c, pairAt);
-				float share = c.RecordCurrent > 1e-5f ? c.TargetWeight / c.RecordCurrent : 1f;
+				float share = LeafShareAt(c, pairAt);
 				c.Weight = share * drawn;
 			}
 			else
@@ -741,6 +851,38 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			++HeldNoPrimaryFrames;
 			LastFallback = string.Empty;
 			return true;
+		}
+
+		// SETTLED PROP & ONE-SHOT CLIP FAST PATH:
+		// In crowded regions like Bowerstone Market, ~55 of the ~69 active animators are stationary
+		// 4–8 bone props (doors, chests, shop signs, market stalls) holding either a non-looping
+		// `Open`/`Close` clip clamped at its final keyframe or a 1-keyframe static `Idle` clip.
+		// Once their pose has been written to both the live skeleton and (when present) its shadow
+		// skeleton, and no channel's sampled time, weight, or list order has changed, folding on the
+		// ThreadPool and calling Write() at display rate produces zero bone changes.
+		if (_hasWritten && !_scaleDirty && !_hasMorph && _postKinds == 0 &&
+			_channels.Count == _writtenChannelCount && _channels.Count > 0 &&
+			!(Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out _) && _shadowStale))
+		{
+			bool allSettled = true;
+			foreach (Channel c in _channels.Values)
+			{
+				if (!c.HasWritten || c.WrittenOrder != c.Order ||
+					Mathf.Abs(c.Weight - c.WrittenWeight) > 1e-5f ||
+					(!c.Built.IsStatic && Mathf.Abs(c.Time - c.WrittenTime) > 1e-5f))
+				{
+					allSettled = false;
+					break;
+				}
+			}
+
+			if (allSettled)
+			{
+				IsSettled = true;
+				LastMovedBones = 0;
+				_wroteFrame = Godot.Engine.GetProcessFrames();
+				return true;
+			}
 		}
 
 		// What the fold reads from the guest, read now: the reads share static buffers. The mask
@@ -1313,6 +1455,15 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		}
 
 		_hasWritten = true;
+		_writtenChannelCount = _channels.Count;
+		foreach (Channel c in _channels.Values)
+		{
+			c.WrittenTime = c.Time;
+			c.WrittenWeight = c.Weight;
+			c.WrittenOrder = c.Order;
+			c.HasWritten = true;
+		}
+
 		LastMovedBones = movedBones;
 		_wroteFrame = Godot.Engine.GetProcessFrames();
 		BoneWrites += movedBones;
@@ -1861,9 +2012,16 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// </summary>
 	public void ForgetWrittenPose()
 	{
-		// Another writer (the feed) is about to pose the body; the shadow's next mirror is a full one.
+		// Only mark the shadow skeleton stale if this animator actually wrote to the live skeleton;
+		// rigs with zero clip leaves (which immediately fall back to the raw bone feed) never wrote
+		// here and should not force a full shadow catch-up.
+		if (_hasWritten)
+		{
+			_shadowStale = true;
+		}
 		_hasWritten = false;
-		_shadowStale = true;
+		_writtenChannelCount = -1;
+		IsSettled = false;
 	}
 
 	/// <summary>The last pose written per bone, so an unchanged bone is not written again.</summary>
@@ -1990,6 +2148,16 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			? Mathf.Lerp(c.OlderPrevious, c.OlderCurrent, (float)System.Math.Clamp(pairAt + 1.0, 0.0, 1.0))
 			: Mathf.Lerp(c.RecordPrevious, c.RecordCurrent, (float)System.Math.Clamp(pairAt, 0.0, 1.0));
 
+	/// <summary>
+	/// The leaf's intra-record blend-tree share at the draw point, interpolated across the tick
+	/// exactly like <see cref="RecordWeightAt"/> so locomotion steering trees (`WalkFootstep` +
+	/// `WalkFootstepTurn*`) blend smoothly instead of stepping at 15 Hz.
+	/// </summary>
+	private static float LeafShareAt(Channel c, double pairAt) =>
+		pairAt < 0.0 && c.HasOlder
+			? Mathf.Lerp(c.OlderSharePrevious, c.OlderShareCurrent, (float)System.Math.Clamp(pairAt + 1.0, 0.0, 1.0))
+			: Mathf.Lerp(c.SharePrevious, c.ShareCurrent, (float)System.Math.Clamp(pairAt, 0.0, 1.0));
+
 	/// <summary>The clip time to sample now: the playhead moved by this frame's real time, wrapped
 	/// for a looping clip and clamped short of the end otherwise.</summary>
 	private static void Advance(Channel c, double seconds, double drawTick)
@@ -2100,7 +2268,19 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 		}
 
-		built = ManagedClipSampling ? BuildShared(key) : BuildFromResource(key);
+		if (ManagedClipSampling)
+		{
+			built = BuildShared(key, out bool pending);
+			if (pending)
+			{
+				return null;
+			}
+		}
+		else
+		{
+			built = BuildFromResource(key);
+		}
+
 		_clips[key] = built;
 		return built.Failed ? null : built;
 	}
@@ -2110,12 +2290,13 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// The same assignment <see cref="Engine_AnimBuilder.Build"/> + <c>FindTrack</c> made: a bone
 	/// takes the FIRST clip track mapped to it, and only a bone with a parent takes translation.
 	/// </remarks>
-	private Built BuildShared(uint key)
+	private Built BuildShared(uint key, out bool pending)
 	{
+		pending = false;
 		var built = new Built { KeysLifted = true };
 		AnimClip? clip = Engine_AnimCatalog.Find(key);
-		SharedClip? shared = clip is null ? null : SharedFor(clip, key);
-		if (clip is null || shared is null)
+		SharedClip? shared = clip is null ? null : SharedFor(clip, key, out pending);
+		if (pending || clip is null || shared is null)
 		{
 			built.Failed = true;
 			return built;
@@ -2129,14 +2310,16 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			return built;
 		}
 
-		int bones = _skeleton.GetBoneCount();
+		int bones = _parents?.Length ?? _skeleton.GetBoneCount();
 		built.Length = shared.Length;
+		built.IsStatic = shared.IsStatic;
 		built.RotationTrack = new int[bones];
 		built.PositionTrack = new int[bones];
 		built.RotationKeys = new Keys[bones];
 		built.PositionKeys = new Keys[bones];
 		System.Array.Fill(built.RotationTrack, -1);
 		System.Array.Fill(built.PositionTrack, -1);
+		bool mappedStatic = true;
 		for (int track = 0; track < map.Length; ++track)
 		{
 			int b = map[track];
@@ -2147,55 +2330,132 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 			built.RotationTrack[b] = track;
 			built.RotationKeys[b] = shared.Rotations[track];
-			if (_skeleton.GetBoneParent(b) >= 0)
+			if (shared.Rotations[track].Times.Length > 1)
+			{
+				mappedStatic = false;
+			}
+
+			int parent = _parents is not null && b < _parents.Length ? _parents[b] : _skeleton.GetBoneParent(b);
+			if (parent >= 0)
 			{
 				built.PositionTrack[b] = track;
 				built.PositionKeys[b] = shared.Positions[track];
+				if (shared.Positions[track].Times.Length > 1)
+				{
+					mappedStatic = false;
+				}
 			}
 		}
 
+		built.IsStatic |= mappedStatic;
 		return built;
 	}
 
-	private static SharedClip? SharedFor(AnimClip clip, uint key)
+	private static readonly HashSet<SharedKey> SharedPending = new();
+	private static long _decodeBudgetFrame = -1L;
+	private static long _decodeBudgetTicks;
+	private static readonly long MaxSyncDecodeTicksPerFrame =
+		(long)(0.00035 * System.Diagnostics.Stopwatch.Frequency);
+
+	private static SharedClip? DecodeToSharedClip(AnimClip clip, Engine_AnimDecoder decoder)
 	{
-		var id = new SharedKey(Engine_AnimCatalog.ActiveDecoder, key);
-		if (SharedClips.TryGetValue(id, out SharedClip? shared))
+		Engine_AnimBuilder.DecodedKeys? decoded = Engine_AnimBuilder.DecodeKeys(clip, decoder);
+		if (decoded is null)
 		{
-			if (shared is not null)
+			return null;
+		}
+
+		int tracks = decoded.Times.Length;
+		bool isStatic = true;
+		var shared = new SharedClip
+		{
+			Length = decoded.Length,
+			Rotations = new Keys[tracks],
+			Positions = new Keys[tracks],
+			LastTaken = System.Environment.TickCount64,
+		};
+		for (int i = 0; i < tracks; ++i)
+		{
+			if (decoded.Times[i].Length > 1)
 			{
-				shared.LastTaken = System.Environment.TickCount64;
+				isStatic = false;
 			}
 
-			return shared;
+			shared.Rotations[i] = new Keys { Times = decoded.Times[i], Rotations = decoded.Rotations[i] };
+			shared.Positions[i] = new Keys { Times = decoded.Times[i], Positions = decoded.Positions[i] };
 		}
 
-		if (SharedClips.Count >= SharedClipCap)
-		{
-			TrimSharedClips();
-		}
-
-		Engine_AnimBuilder.DecodedKeys? decoded = Engine_AnimBuilder.DecodeKeys(clip, id.Decoder);
-		if (decoded is not null)
-		{
-			int tracks = decoded.Times.Length;
-			shared = new SharedClip
-			{
-				Length = decoded.Length,
-				Rotations = new Keys[tracks],
-				Positions = new Keys[tracks],
-				LastTaken = System.Environment.TickCount64,
-			};
-			for (int i = 0; i < tracks; ++i)
-			{
-				shared.Rotations[i] = new Keys { Times = decoded.Times[i], Rotations = decoded.Rotations[i] };
-				shared.Positions[i] = new Keys { Times = decoded.Times[i], Positions = decoded.Positions[i] };
-			}
-		}
-
-		// A decode failure is the clip's, not the rig's: it is cached too.
-		SharedClips[id] = shared;
+		shared.IsStatic = isStatic;
 		return shared;
+	}
+
+	private static SharedClip? SharedFor(AnimClip clip, uint key, out bool pending)
+	{
+		pending = false;
+		var id = new SharedKey(Engine_AnimCatalog.ActiveDecoder, key);
+		lock (SharedClips)
+		{
+			if (SharedClips.TryGetValue(id, out SharedClip? shared))
+			{
+				if (shared is not null)
+				{
+					shared.LastTaken = System.Environment.TickCount64;
+				}
+
+				return shared;
+			}
+
+			if (SharedPending.Contains(id))
+			{
+				pending = true;
+				return null;
+			}
+
+			long frame = Refii.Entities.Engine_DrawnFrame.Frames;
+			if (frame != _decodeBudgetFrame)
+			{
+				_decodeBudgetFrame = frame;
+				_decodeBudgetTicks = 0;
+			}
+
+			if (_decodeBudgetTicks >= MaxSyncDecodeTicksPerFrame)
+			{
+				SharedPending.Add(id);
+				pending = true;
+				_ = System.Threading.Tasks.Task.Run(() =>
+				{
+					SharedClip? asyncShared = DecodeToSharedClip(clip, id.Decoder);
+					lock (SharedClips)
+					{
+						if (SharedClips.Count >= SharedClipCap)
+						{
+							TrimSharedClips();
+						}
+
+						SharedClips[id] = asyncShared;
+						SharedPending.Remove(id);
+					}
+				});
+				return null;
+			}
+		}
+
+		long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+		SharedClip? builtShared = DecodeToSharedClip(clip, id.Decoder);
+		long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+
+		lock (SharedClips)
+		{
+			_decodeBudgetTicks += elapsed;
+			if (SharedClips.Count >= SharedClipCap)
+			{
+				TrimSharedClips();
+			}
+
+			// A decode failure is the clip's, not the rig's: it is cached too.
+			SharedClips[id] = builtShared;
+			return builtShared;
+		}
 	}
 
 	/// <summary>The per-rig resource path, kept for <see cref="ManagedClipSampling"/> = false.</summary>

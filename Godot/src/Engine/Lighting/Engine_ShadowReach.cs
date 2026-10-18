@@ -44,6 +44,9 @@ public partial class Engine_ShadowReach : Node
 
 	private const float MidReach = 150.0f;
 
+	/// <summary>Buffer distance to prevent boundary flickering when camera moves near cutoff.</summary>
+	private const float HysteresisMetres = 10.0f;
+
 	/// <summary>Seconds a full pass over the region takes: the work is a slice per frame.</summary>
 	private const double PassSeconds = 0.5;
 
@@ -212,8 +215,12 @@ public partial class Engine_ShadowReach : Node
 			}
 
 			float distance = eye.Clamp(entry.Bounds.Position, entry.Bounds.End).DistanceTo(eye);
+			float reachThreshold = entry.Applied != GeometryInstance3D.ShadowCastingSetting.Off &&
+				entry.Applied != (GeometryInstance3D.ShadowCastingSetting)(-1)
+				? entry.Reach + HysteresisMetres
+				: entry.Reach;
 			GeometryInstance3D.ShadowCastingSetting wanted =
-				!Enabled || distance <= entry.Reach
+				!Enabled || distance <= reachThreshold
 					? entry.Granted
 					: GeometryInstance3D.ShadowCastingSetting.Off;
 

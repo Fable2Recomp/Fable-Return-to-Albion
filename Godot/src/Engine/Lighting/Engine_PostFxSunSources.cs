@@ -98,11 +98,11 @@ public partial class Engine_PostFxSunSources : Node
         if (sky is not null && frame is not null)
         {
             bool changed = !ReferenceEquals(sky, _lastSky) || !ReferenceEquals(frame, _lastFrame);
-            bool pending = _attempts < TextureAttempts &&
+            bool pending = _attempts < TextureAttempts && Refii.Core.Engine_GuestFrame.HalfRate &&
                 ((sky.HasSunBeamsTexture && !_beams.Texture.IsValid) ||
                     (sky.HasSunDiscTexture && !_disc.Texture.IsValid));
 
-            if (changed)
+            if (!ReferenceEquals(sky, _lastSky))
             {
                 _attempts = 0;
             }
@@ -131,7 +131,7 @@ public partial class Engine_PostFxSunSources : Node
         }
     }
 
-    private const int TextureAttempts = 600;
+    private const int TextureAttempts = 60;
 
     private int _attempts;
 
@@ -181,7 +181,16 @@ public partial class Engine_PostFxSunSources : Node
     {
         if (_textures.TryGetValue(hash, out (Texture2D? Texture, Rid Rd) cached))
         {
-            return cached.Rd;
+            if (cached.Rd.IsValid || cached.Texture is null)
+            {
+                return cached.Rd;
+            }
+            Rid cachedRd = RenderingServer.TextureGetRdTexture(cached.Texture.GetRid());
+            if (cachedRd.IsValid)
+            {
+                _textures[hash] = (cached.Texture, cachedRd);
+            }
+            return cachedRd;
         }
 
         Texture2D? texture = Engine_EnvironmentTextures.Load(
@@ -190,21 +199,16 @@ public partial class Engine_PostFxSunSources : Node
         if (texture is not null)
         {
             rd = RenderingServer.TextureGetRdTexture(texture.GetRid());
-        }
-
-        if (rd.IsValid)
-        {
             _textures[hash] = (texture, rd);
             return rd;
         }
 
-        if (_attempts >= TextureAttempts - 1 && _reported.Add(hash))
+        if ((path.Length != 0 || _attempts >= TextureAttempts - 1) && _reported.Add(hash))
         {
-            GD.Print(texture is null
-                ? (path.Length == 0
-                    ? $"[postfx] sun source texture 0x{hash:X8} unresolved after {TextureAttempts} frame(s)"
-                    : $"[postfx] sun source texture '{path}' did not decode")
-                : $"[postfx] sun source texture '{path}' has no rendering-device texture");
+            _textures[hash] = (null, default);
+            GD.Print(path.Length == 0
+                ? $"[postfx] sun source texture 0x{hash:X8} unresolved after {TextureAttempts} attempt(s)"
+                : $"[postfx] sun source texture '{path}' did not decode");
         }
 
         return rd;
