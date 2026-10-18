@@ -22,22 +22,82 @@ public static class ModSettings
 {
 	public const string ModSettingsPath = "settings.json";
 
+	/// <summary>
+	/// THE PLAYER'S CHOICES, from the options screen's Mods pages: a flat object of the keys
+	/// they changed. Applied over the files' values whenever they are loaded, so every reader of
+	/// <see cref="All"/> — the push, the Lua table — sees the player's value; written on every
+	/// change. A key a mod no longer states is kept, so a mod disabled and enabled again keeps
+	/// its tuning.
+	/// </summary>
+	public const string PlayerSettingsPath = "user://mod_settings.json";
+
 	private static Dictionary<string, float>? _values;
+
+	private static Dictionary<string, float>? _defaults;
+
+	private static Dictionary<string, float>? _player;
 
 	/// <summary>Values set live this session, pushed over the files' on every push.</summary>
 	private static readonly Dictionary<string, float> _overrides = new(StringComparer.Ordinal);
 
 	private static bool _pushed;
 
-	/// <summary>Every setting the enabled mods state, by key.</summary>
+	/// <summary>Every setting the enabled mods state, by key, with the player's choices over the files'.</summary>
 	public static IReadOnlyDictionary<string, float> All => _values ??= Load();
+
+	/// <summary>The files' values alone — a mod's defaults, for a page to size a range around.</summary>
+	public static IReadOnlyDictionary<string, float> Defaults
+	{
+		get
+		{
+			_ = All;
+			return _defaults!;
+		}
+	}
+
+	/// <summary>The player's saved choices, by key.</summary>
+	public static IReadOnlyDictionary<string, float> Player => _player ??= LoadPlayer();
+
+	/// <summary>Which mod stated each key — the last in the load order to, when several do.</summary>
+	public static IReadOnlyDictionary<string, string> Owners
+	{
+		get
+		{
+			_ = All;
+			return _owners;
+		}
+	}
+
+	private static readonly Dictionary<string, string> _owners = new(StringComparer.Ordinal);
 
 	/// <summary>Drops the loaded set; the next push reads the files again (the live overrides stay).</summary>
 	public static void Reload()
 	{
 		_values = null;
+		_defaults = null;
 		_pushed = false;
 	}
+
+	/// <summary>
+	/// The player's choice: in force now like <see cref="Set"/>, and saved to
+	/// <see cref="PlayerSettingsPath"/> so it stands over the file's value in every later session.
+	/// </summary>
+	public static void Persist(string key, float value)
+	{
+		_ = Player;
+		_player![key] = value;
+		if (_values is not null)
+		{
+			_values[key] = value;
+		}
+
+		Set(key, value);
+		SavePlayer();
+	}
+
+	/// <summary>The value in force for a key: the live override first, then the files'.</summary>
+	public static bool TryGet(string key, out float value) =>
+		_overrides.TryGetValue(key, out value) || All.TryGetValue(key, out value);
 
 	/// <summary>Sets a mod setting in the running game and keeps it over the file's value for the session.</summary>
 	public static void Set(string key, float value)
@@ -83,6 +143,7 @@ public static class ModSettings
 	private static Dictionary<string, float> Load()
 	{
 		var values = new Dictionary<string, float>(StringComparer.Ordinal);
+		_owners.Clear();
 		foreach ((string mod, string text) in ModEntries.ReadEnabledText(ModSettingsPath))
 		{
 			Variant parsed = Json.ParseString(text);
@@ -109,10 +170,64 @@ public static class ModSettings
 			}
 		}
 
+		// The files' values are the defaults; the player's choices stand over them.
+		_defaults = new Dictionary<string, float>(values, StringComparer.Ordinal);
+		foreach ((string key, float value) in Player)
+		{
+			values[key] = value;
+		}
+
 		return values;
 	}
 
-	private static void Take(Dictionary<string, float> values, string mod, string key, Variant value)
+	private static Dictionary<string, float> LoadPlayer()
+	{
+		var values = new Dictionary<string, float>(StringComparer.Ordinal);
+		if (!FileAccess.FileExists(PlayerSettingsPath))
+		{
+			return values;
+		}
+
+		using FileAccess? file = FileAccess.Open(PlayerSettingsPath, FileAccess.ModeFlags.Read);
+		if (file is null)
+		{
+			return values;
+		}
+
+		Variant parsed = Json.ParseString(file.GetAsText());
+		if (parsed.VariantType != Variant.Type.Dictionary)
+		{
+			GD.PushWarning($"[mod-settings] {PlayerSettingsPath} is not a JSON object; ignored");
+			return values;
+		}
+
+		foreach (KeyValuePair<Variant, Variant> entry in parsed.AsGodotDictionary())
+		{
+			Take(values, "player", entry.Key.AsString(), entry.Value, owned: false);
+		}
+
+		return values;
+	}
+
+	private static void SavePlayer()
+	{
+		var root = new Godot.Collections.Dictionary();
+		foreach ((string key, float value) in Player)
+		{
+			root[key] = value;
+		}
+
+		using FileAccess? file = FileAccess.Open(PlayerSettingsPath, FileAccess.ModeFlags.Write);
+		if (file is null)
+		{
+			GD.PushWarning($"[mod-settings] cannot write '{PlayerSettingsPath}': {FileAccess.GetOpenError()}");
+			return;
+		}
+
+		file.StoreString(Json.Stringify(root, "\t"));
+	}
+
+	private static void Take(Dictionary<string, float> values, string mod, string key, Variant value, bool owned = true)
 	{
 		switch (value.VariantType)
 		{
@@ -128,7 +243,13 @@ public static class ModSettings
 				break;
 			default:
 				GD.PushWarning($"[mod-settings] {mod}: '{key}' is not a number; ignored");
-				break;
+				return;
+		}
+
+		// The player's file states no owner; a mod's does.
+		if (owned)
+		{
+			_owners[key] = mod;
 		}
 	}
 }

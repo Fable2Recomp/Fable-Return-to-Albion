@@ -2313,7 +2313,14 @@ extern "C" {
 ///     emitter component's owner at comp85+4, reached handle+0x28 -> &comp85+12) and the entity
 ///     it is ATTACHED to (comp85+0x20's box), so the host binds an effect to the cast it belongs
 ///     to by entity rather than by where it stands.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 187; }
+/// 188 adds the mod event bus for Godot scripts and mod input: RefiiHostDrainModEvents and
+///     RefiiHostSetModEventMask (events the payload posts for the kinds the host asked for),
+///     RefiiHostPostModInput (a mod's input.json action edge into the guest's InputAction event),
+///     RefiiHostPostModCommand (a script's helper call or query, run in the guest tick),
+///     RefiiHostDrainModErrors (the mods' Lua errors), RefiiHostModHandleAddress (a handle's entity).
+/// 189 adds Godot script verdicts: RefiiHostSetModVerdictHandler (a host function the payload
+///     calls on the guest thread inside a seam) and RefiiHostSetModVerdictMask (which kinds).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 189; }
 
 REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetNewGameState(uint32_t* generation) {
     return refii::vfs::NewGameTransitionResult(generation);
@@ -3339,6 +3346,54 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetModSetting(const char* key, uint32_t key_
                                                   float value) {
     if (key != nullptr) {
         refii::mods::SetSetting(std::string_view(key, key_length), value);
+    }
+}
+
+/// Moves the mod events queued for the host into `out` as "<kind>\t<fields>\n" records (the
+/// fields as the bus states them for Lua: numbers, true/false, 'strings'). Returns the bytes
+/// written; an event that does not fit waits for the next call.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostDrainModEvents(char* out, uint32_t capacity) {
+    return static_cast<uint32_t>(refii::mods::DrainEventsForHost(out, capacity));
+}
+
+/// Which event kinds the host wants posted (bit = kind). 0 clears the queue.
+REFII_HOST_ABI_EXPORT void RefiiHostSetModEventMask(uint64_t mask) {
+    refii::mods::SetHostEventMask(mask);
+}
+
+/// A helper call or a query for the guest tick (the grammar is src/hooks/mod_commands.cpp); a
+/// query's reply comes back through RefiiHostDrainModEvents under kind 1000 with its id.
+REFII_HOST_ABI_EXPORT void RefiiHostPostModCommand(const char* line, uint32_t line_length) {
+    if (line != nullptr) {
+        refii::mods::PostCommandFromHost(std::string_view(line, line_length));
+    }
+}
+
+/// The mods' Lua errors since the last call, one per line, oldest first. Returns the bytes written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostDrainModErrors(char* out, uint32_t capacity) {
+    return static_cast<uint32_t>(refii::mods::DrainErrorsForHost(out, capacity));
+}
+
+/// The host's verdict handler for Godot scripts (null to remove), called on the guest thread.
+REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictHandler(refii_mod_verdict_fn handler) {
+    refii_bridge_mod_set_verdict_handler(handler);
+}
+
+/// Which event kinds the verdict handler is asked about (bit = kind).
+REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictMask(uint64_t mask) {
+    refii_bridge_mod_set_verdict_mask(mask);
+}
+
+/// The entity a mod handle stands for (what a Godot script holds), or 0.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostModHandleAddress(uint32_t handle) {
+    return refii_bridge_mod_handle_address(handle);
+}
+
+/// A mod input action's edge for player 1 or 2; the guest raises InputAction on its next tick.
+REFII_HOST_ABI_EXPORT void RefiiHostPostModInput(const char* action, uint32_t action_length,
+                                                 int32_t player, int32_t pressed) {
+    if (action != nullptr) {
+        refii::mods::PostInputFromHost(std::string_view(action, action_length), player, pressed != 0);
     }
 }
 

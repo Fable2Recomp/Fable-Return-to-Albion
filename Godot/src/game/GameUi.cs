@@ -1777,17 +1777,17 @@ public partial class GameUi : Node
 		}
 
 		_screenMenuDeclined = null;
-		if (state.ScreenId != Engine_UiDetailPages.OptionsScreenId && Engine_UiWeatherOptions.Open)
+		if (state.ScreenId != Engine_UiDetailPages.OptionsScreenId && Engine_UiHostOptionsPage.Open)
 			Engine_UiOptionsPending.Leave();
 
 		// The options page level is not a list and must not be drawn as one: the owned view comes
 		// down, the guest's page stays mirrored, and input becomes the page's own vocabulary.
-		if (ScreenPageOpen(state.ScreenId, drawn) || Engine_UiWeatherOptions.Open)
+		if (ScreenPageOpen(state.ScreenId, drawn) || Engine_UiHostOptionsPage.Open)
 		{
-			bool weatherPage = Engine_UiWeatherOptions.Open;
+			bool hostPage = Engine_UiHostOptionsPage.Open;
 			if (_screenMenuView is not null)
 			{
-				_screenMenuView.Visible = weatherPage;
+				_screenMenuView.Visible = hostPage;
 			}
 
 			// The captions are the guest's while the page is open — every LEFT/RIGHT rewrites
@@ -1798,7 +1798,7 @@ public partial class GameUi : Node
 			// declared a page element reaches here at all, and only one that needs the sliders
 			// pays for reading them.
 			// THE PAGE'S PENDING CHOICES START FROM THE COMMITTED ONES the moment it opens.
-			if (!Engine_UiWeatherOptions.Open)
+			if (!hostPage)
 				Engine_UiOptionsPending.Enter(
 					_screenMenu?.Script.Highlighted?.Name ?? string.Empty,
 					HostBridge.GetOptions(), HostBridge.GetOptionSliders());
@@ -1825,7 +1825,7 @@ public partial class GameUi : Node
 				pageBook.HostOpacity = Engine_UiDetailPages.Opacities(state.ScreenId, pageRow);
 				pageBook.HostRotations = Engine_UiDetailPages.Rotations(state.ScreenId, pageRow);
 				if (state.ScreenId == Engine_UiDetailPages.OptionsScreenId)
-					Engine_UiWeatherOptions.Apply(pageBook, pageRow);
+					Engine_UiHostOptionsPage.Apply(pageBook, pageRow);
 				_providerFilledThisFrame = true;
 			}
 
@@ -1836,8 +1836,7 @@ public partial class GameUi : Node
 				_screenLevel.Pointer(optionsBook, delta);
 			}
 
-			if (!weatherPage || Engine_UiWeatherOptions.Open)
-				_screenLevel.Drive(SurfaceInput(delta));
+			_screenLevel.Drive(SurfaceInput(delta));
 			return true;
 		}
 
@@ -1954,7 +1953,7 @@ public partial class GameUi : Node
 			abilityBook.HostRotations =
 				Engine_UiDetailPages.Rotations(state.ScreenId, _screenMenu?.Script.Highlighted);
 			if (state.ScreenId == Engine_UiDetailPages.OptionsScreenId)
-				Engine_UiWeatherOptions.Apply(abilityBook, _screenMenu?.Script.Highlighted);
+				Engine_UiHostOptionsPage.Apply(abilityBook, _screenMenu?.Script.Highlighted);
 			DriveMinimap(state.ScreenId, abilityBook, worldMap, _screenMenu?.Script.Highlighted, delta);
 
 			// THIS PATH FILLS THE BOOK TOO. DriveOwnedScreenProvider stands down on this flag,
@@ -5290,7 +5289,8 @@ public partial class GameUi : Node
 		_coopStatePostedTwo = 0u;
 		CoopHeroKit.ResetSession();
 		CoopHeroState.Reset();
-		GD.Print($"[game-ui] co-op — {why}; remote hero, chosen save, own-hero bit, versions and acks dropped");
+		ResetCoopMods();
+		GD.Print($"[game-ui] co-op — {why}; remote hero, chosen save, own-hero bit, versions, acks and the peer's mods dropped");
 	}
 
 	/// <summary>
@@ -5426,6 +5426,12 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// The peer's mods record; compared below once the peer stands (GameUiCoopMods).
+			if (TakeCoopMods(message))
+			{
+				continue;
+			}
+
 			if (message.StartsWith(CoopHeroToggleMessage, System.StringComparison.Ordinal))
 			{
 				// Only the joiner answers a toggle; a host that echoed one would ping-pong. The
@@ -5477,6 +5483,10 @@ public partial class GameUi : Node
 			}
 		}
 
+		// THE MODS MUST AGREE. Checked every frame once a peer stands; a mismatch is refused on
+		// this machine whichever side it is.
+		CheckCoopMods(role);
+
 		if (role == 0u)
 		{
 			// Nothing to apply outside a session; the record goes out while the co-op screen is
@@ -5488,6 +5498,7 @@ public partial class GameUi : Node
 			}
 
 			_coopHeroRestate = CoopHeroRestateSeconds;
+			SendCoopMods();
 			CoopHeroState.Send(CoopHeroKit.Local, CoopHeroRestateSeconds);
 			return;
 		}
@@ -5520,6 +5531,9 @@ public partial class GameUi : Node
 		}
 
 		_coopHeroRestate = CoopHeroRestateSeconds;
+
+		// THE MODS RECORD FIRST, both ways: the peer compares it with its own the moment it stands.
+		SendCoopMods();
 
 		// THE BIT IS THE JOINER'S TO STATE; THE KIT GOES BOTH WAYS. The joiner's kit dresses
 		// player two on the host; the host's kit dresses player one on the joiner, whose copy of

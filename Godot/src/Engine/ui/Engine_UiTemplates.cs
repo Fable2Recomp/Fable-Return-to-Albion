@@ -1410,6 +1410,20 @@ public static class Engine_UiTemplates
 					},
 				},
 			};
+
+			// MODS: a fold with one row per enabled mod that ships settings, each opening that
+			// mod's host options page (Engine_UiHostOptionsPage) on the same page furniture the
+			// sky's switches use. Sourced, so the fold follows the load order and an empty one
+			// leaves the list; host-only, because the guest has no screen behind any of it.
+			options.Entries.Insert(videoIndex + 1, new Engine_UiMenuEntry
+			{
+				Name = "ModSettings",
+				Tag = "Mods",
+				Icon = gamma.Icon,
+				HostOnly = true,
+				Counted = false,
+				Source = Refii.Mods.ModSettingsUi.SourceName,
+			});
 		}
 
 		if (_menus!.TryGetValue("LogbookMenu", out Engine_UiMenuTemplate? logbook))

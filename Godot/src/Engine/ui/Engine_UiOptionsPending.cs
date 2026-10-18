@@ -124,30 +124,36 @@ public static class Engine_UiOptionsPending
 		_index = Array.Empty<int>();
 		_count = Array.Empty<int>();
 		_slider = Array.Empty<float>();
+		Engine_UiHostOptionsPage.Current = null;
 	}
 
-	public static void EnterWeather(Func<string, string>? read = null)
+	/// <summary>
+	/// Enter a HOST page — one with no guest page behind it (<see cref="Engine_UiHostOptionsPage"/>).
+	/// Seeded from the page's committed indices the way a guest page is seeded from the stored
+	/// options; the codes that follow are tracked here and never sent to the guest.
+	/// </summary>
+	public static void EnterHost(Engine_UiHostOptionsPage page)
 	{
-		if (Engine_UiWeatherOptions.Open) return;
-		Page = Engine_UiWeatherOptions.PageName;
+		if (Engine_UiHostOptionsPage.Current == page) return;
+		Page = page.Name;
 		Row = 0;
-		_index = Engine_UiWeatherOptions.Read(read ?? Engine_UiWeatherOptions.ReadCurrent);
+		_index = page.Read();
 		_count = new int[_index.Length];
-		for (int i = 0; i < _count.Length; i++) _count[i] = Engine_UiWeatherOptions.Count(i);
+		for (int i = 0; i < _count.Length; i++) _count[i] = page.Choices(i);
 		_slider = Array.Empty<float>();
+		Engine_UiHostOptionsPage.Current = page;
 	}
 
 	/// <summary>One screen action the host just sent to the page.</summary>
-	public static void Track(uint code,
-		Func<System.Collections.Generic.IReadOnlyDictionary<string, string>, bool>? writeWeather = null)
+	public static void Track(uint code)
 	{
 		if (!Open)
 		{
 			return;
 		}
 
-		if (Engine_UiWeatherOptions.Open && code == Engine_UiScreenInput.Select &&
-			!(writeWeather ?? Engine_UiScreenActions.WriteSettings)(Engine_UiWeatherOptions.Settings(IndexOf)))
+		Engine_UiHostOptionsPage? host = Engine_UiHostOptionsPage.Current;
+		if (host is not null && code == Engine_UiScreenInput.Select && !host.Commit(IndexOf))
 		{
 			return;
 		}
@@ -164,6 +170,7 @@ public static class Engine_UiOptionsPending
 				if (Row < _index.Length && _index[Row] > 0)
 				{
 					--_index[Row];
+					host?.Changed(Row, _index[Row]);
 				}
 				Nudge(-1f / SliderSteps);
 				break;
@@ -171,6 +178,7 @@ public static class Engine_UiOptionsPending
 				if (Row < _index.Length && _index[Row] >= 0 && _index[Row] < _count[Row] - 1)
 				{
 					++_index[Row];
+					host?.Changed(Row, _index[Row]);
 				}
 				Nudge(1f / SliderSteps);
 				break;

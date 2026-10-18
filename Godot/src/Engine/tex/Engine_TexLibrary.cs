@@ -392,6 +392,128 @@ public static class Engine_TexLibrary
 		Refii.Core.Engine_TracedMemory.FreeAll(TracedPool);
 	}
 
+	/// <summary>
+	/// Decodes <paramref name="virtualPaths"/> again through each live entry's own reader and puts
+	/// the image into the texture already handed out, in place, so every material and menu that
+	/// holds it shows the new bytes. The ORM packs and cubes built from those paths, and their
+	/// remembered failures, are dropped and rebuilt on their next request; a material keeps the
+	/// pack it already has. Main thread: it uploads. Returns the textures refreshed.
+	/// </summary>
+	public static List<ImageTexture> Refresh(IEnumerable<string> virtualPaths)
+	{
+		// Ignoring case: a material names its texture as the record spells it, the mount as the
+		// bank does, and both resolve to the same file.
+		var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (string path in virtualPaths)
+		{
+			if (!string.IsNullOrWhiteSpace(path))
+			{
+				wanted.Add(Normalise(path));
+			}
+		}
+
+		var refreshed = new List<ImageTexture>();
+		if (wanted.Count == 0)
+		{
+			return refreshed;
+		}
+
+		bool Names(string key)
+		{
+			foreach (string path in wanted)
+			{
+				if (key.StartsWith(path + " ", StringComparison.OrdinalIgnoreCase) ||
+					key.EndsWith("-" + path, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		var targets = new List<Entry>();
+		lock (Gate)
+		{
+			foreach (Entry entry in Live.Values)
+			{
+				if (wanted.Contains(entry.Path))
+				{
+					targets.Add(entry);
+				}
+			}
+
+			var dropped = new List<string>();
+			foreach (string key in FailedUntil.Keys)
+			{
+				if (Names(key))
+				{
+					dropped.Add(key);
+				}
+			}
+
+			foreach (string key in dropped)
+			{
+				FailedUntil.Remove(key);
+			}
+
+			dropped.Clear();
+			foreach (string key in LiveOrm.Keys)
+			{
+				if (Names(key))
+				{
+					dropped.Add(key);
+				}
+			}
+
+			foreach (string key in dropped)
+			{
+				LiveOrm.Remove(key);
+			}
+
+			dropped.Clear();
+			foreach (string key in LiveCubes.Keys)
+			{
+				if (wanted.Contains(key))
+				{
+					dropped.Add(key);
+				}
+			}
+
+			foreach (string key in dropped)
+			{
+				LiveCubes.Remove(key);
+			}
+		}
+
+		foreach (Entry entry in targets)
+		{
+			if (entry.Target is not { } texture)
+			{
+				continue;
+			}
+
+			Image? image = Decode(entry.Path, entry.Semantic, entry.Read, out bool hasAlpha);
+			if (image is null || image.IsEmpty())
+			{
+				continue;
+			}
+
+			texture.SetImage(image);
+			lock (Gate)
+			{
+				entry.HasAlpha = hasAlpha;
+				entry.State = EnhancementState.None;
+			}
+
+			refreshed.Add(texture);
+			RequestEnhanced(entry.Path, entry.Semantic,
+				entry.Semantic == TexSemantic.Ui ? TexPriority.Ui : TexPriority.Scene, entry.Read);
+		}
+
+		return refreshed;
+	}
+
 	/// <summary>The in-game Tracy capture's name for what this cache holds strongly.</summary>
 	private const string TracedPool = "texture cache";
 

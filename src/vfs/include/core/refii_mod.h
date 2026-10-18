@@ -85,7 +85,7 @@ extern "C" uint32_t refii_mod_component(uint8_t* base, uint32_t entity, uint32_t
 /// read; `out_xyz` takes three floats. Guest tick thread only (a tick callback or a hook).
 extern "C" int32_t refii_mod_entity_position(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out_xyz);
 
-/// Runs a Lua source chunk (under 944 bytes) in the GAME VM — the shipped game scripts' and
+/// Runs a Lua source chunk of any length in the GAME VM — the shipped game scripts' and
 /// mods' Lua. True when it ran without error. Guest tick thread only (a tick callback or a hook).
 extern "C" int32_t refii_mod_run_game_lua(PPCContext* ctx, uint8_t* base, const char* chunk);
 
@@ -157,6 +157,9 @@ inline bool IsPlayerHero(uint8_t* base, uint32_t entity) {
 /// with `ctx` as the caller set it up. False when the address is not a known function.
 inline bool CallGuest(PPCContext& ctx, uint8_t* base, uint32_t address) {
   using GuestFn = void (*)(PPCContext&, uint8_t*);
+  if (address == 0 || refii_bridge_rex_has_function(address) == 0) {
+    return false;
+  }
   auto fn = reinterpret_cast<GuestFn>(refii_bridge_rex_resolve_indirect_function(address));
   if (fn == nullptr) {
     return false;
@@ -325,6 +328,55 @@ extern "C" int32_t refii_mod_item_count(uint8_t* base, uint32_t entity, uint32_t
 /// item's count rises when it is already held; the "item added" notifications run; the
 /// ItemAdded event fires). Returns the item object, or 0. Guest tick thread only.
 extern "C" uint32_t refii_mod_add_item(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t definition);
+
+/// LUA AND GODOT SEE HANDLES, NOT ADDRESSES. The game's Lua number is a 32-bit float, so a
+/// guest address above 2^24 is not exact there; every entity or object the bus hands to Lua or
+/// to a Godot script is a HANDLE: a small integer assigned to that address for the session (0 for
+/// 0). These convert both ways; a native mod needs them only to talk to those two sides.
+extern "C" uint32_t refii_mod_handle(uint32_t address);
+extern "C" uint32_t refii_mod_handle_address(uint32_t handle);
+
+/// The game's own 32-bit FNV-1 of a name (basis 0x811C9DC5): a GDB record's hash from its name,
+/// a text tag's hash as the TextManager keys it.
+extern "C" uint32_t refii_mod_fnv1(const char* text);
+
+/// The hero stats the game's own getters report (stats component 57): renown (base +28 plus the
+/// active bonus), morality and purity (base +16 / +36 plus bonuses, clamped by the game). True when
+/// the entity has stats. Guest tick thread only.
+extern "C" int32_t refii_mod_renown(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t* out);
+extern "C" int32_t refii_mod_morality(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out);
+extern "C" int32_t refii_mod_purity(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out);
+
+/// Physique from the stats component: fatness (+56) and height (+60). True when read.
+extern "C" int32_t refii_mod_physique(uint8_t* base, uint32_t entity, float* out_fat, float* out_height);
+
+/// Age in years from the age component (122, +12). True when read.
+extern "C" int32_t refii_mod_age(uint8_t* base, uint32_t entity, float* out);
+
+/// Stack `index` of `entity`'s inventory (component 13: the list head at +16, node +0 next, +8 the
+/// item; item +4 definition hash, +12 stack count), in the game's own order. False past the end.
+extern "C" int32_t refii_mod_inventory_stack(uint8_t* base, uint32_t entity, int32_t index, uint32_t* out_definition,
+                                             int32_t* out_count);
+
+/// The definition hashes in `entity`'s weapon set (component 28: +84 melee, +88 ranged; 0 for none).
+/// True when it has a weapon set.
+extern "C" int32_t refii_mod_equipped(uint8_t* base, uint32_t entity, uint32_t* out_melee, uint32_t* out_ranged);
+
+/// Entities in the world within `radius` of `xyz` (the world entity manager's list, in-world ones
+/// with a placement, measured by their own position getter), nearest first, up to `max` into `out`.
+/// `creatures_only` keeps those with a creature component (20). Returns how many were written.
+/// Guest tick thread only.
+extern "C" int32_t refii_mod_entities_near(PPCContext* ctx, uint8_t* base, const float* xyz, float radius,
+                                           int32_t creatures_only, uint32_t* out, int32_t max);
+
+/// Whether the game's physics sees nothing between `from` and `to` (the raycast the village AI's
+/// IsLineOfSight makes: filter 20, every hit collected). Guest tick thread only.
+extern "C" int32_t refii_mod_line_of_sight(PPCContext* ctx, uint8_t* base, const float* from, const float* to);
+
+/// Creates an entity of definition `definition` at `xyz` through the game's own
+/// CreateEntityFromIDAtPosition (a fresh entity id, the components, the activation), refused by the
+/// game while it does not allow script creation. Returns the entity, or 0. Guest tick thread only.
+extern "C" uint32_t refii_mod_spawn(PPCContext* ctx, uint8_t* base, uint32_t definition, const float* xyz);
 
 // The events — one include gives a mod the whole surface.
 #include "core/refii_mod_events.h"

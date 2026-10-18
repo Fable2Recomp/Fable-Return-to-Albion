@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 187;
+	public const int ExpectedAbiVersion = 189;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -6378,6 +6378,205 @@ public static class HostBridge
 		}
 	}
 
+	private static byte[]? _modEventBuffer;
+
+	/// <summary>
+	/// Every mod event the payload posted since the last drain, oldest first: the kind
+	/// (<c>Refii.Mods.ModApi.Events[kind]</c>) and the fields as the bus states them for Lua
+	/// (<c>victim=123,damage=4.5,name='x'</c>). Only kinds in the mask set by
+	/// <see cref="SetModEventMask"/> are ever posted.
+	/// </summary>
+	public static List<(int Kind, string Fields)> DrainModEvents()
+	{
+		var events = new List<(int, string)>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return events;
+		}
+
+		_modEventBuffer ??= new byte[64 * 1024];
+		try
+		{
+			for (int round = 0; round < 64; round++)
+			{
+				uint written = RefiiHostDrainModEvents(_modEventBuffer, (uint)_modEventBuffer.Length);
+				if (written == 0)
+				{
+					break;
+				}
+
+				string text = System.Text.Encoding.UTF8.GetString(_modEventBuffer, 0, (int)written);
+				foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+				{
+					int tab = line.IndexOf('\t');
+					if (tab > 0 && int.TryParse(line.AsSpan(0, tab), out int kind))
+					{
+						events.Add((kind, line[(tab + 1)..]));
+					}
+				}
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+
+		return events;
+	}
+
+	/// <summary>Which event kinds the payload posts for <see cref="DrainModEvents"/> (bit = kind); 0 posts nothing.</summary>
+	public static void SetModEventMask(ulong mask)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetModEventMask(mask);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>
+	/// One edge of a mod's input action ("mod.action", player 1 or 2, pressed or released); the
+	/// guest raises the InputAction event on its next tick. Edges only, never per-frame state.
+	/// </summary>
+	public static void PostModInput(string action, int player, bool pressed)
+	{
+		if (TryGetAbiVersion() is null || string.IsNullOrEmpty(action) || (player != 1 && player != 2))
+		{
+			return;
+		}
+
+		byte[] bytes = System.Text.Encoding.UTF8.GetBytes(action);
+		try
+		{
+			RefiiHostPostModInput(bytes, (uint)bytes.Length, player, pressed ? 1 : 0);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>
+	/// A helper call or a query for the guest tick, one line: <c>give_gold 123 50</c>,
+	/// <c>query 7 health 123</c> (the grammar is src/vfs/src/hooks/mod_commands.cpp). A query's
+	/// reply arrives through <see cref="DrainModEvents"/> under kind 1000 as
+	/// <c>id=7,ok=true,current=80,max=120</c>.
+	/// </summary>
+	public static void PostModCommand(string line)
+	{
+		if (TryGetAbiVersion() is null || string.IsNullOrEmpty(line))
+		{
+			return;
+		}
+
+		byte[] bytes = System.Text.Encoding.UTF8.GetBytes(line);
+		try
+		{
+			RefiiHostPostModCommand(bytes, (uint)bytes.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	private static byte[]? _modErrorBuffer;
+
+	/// <summary>The mods' Lua errors (init and handlers) since the last drain, oldest first.</summary>
+	public static List<string> DrainModErrors()
+	{
+		var errors = new List<string>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return errors;
+		}
+
+		_modErrorBuffer ??= new byte[32 * 1024];
+		try
+		{
+			for (int round = 0; round < 8; round++)
+			{
+				uint written = RefiiHostDrainModErrors(_modErrorBuffer, (uint)_modErrorBuffer.Length);
+				if (written == 0)
+				{
+					break;
+				}
+
+				string text = System.Text.Encoding.UTF8.GetString(_modErrorBuffer, 0, (int)written);
+				errors.AddRange(text.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+
+		return errors;
+	}
+
+	/// <summary>
+	/// A Godot script verdict handler: called by the payload ON THE GUEST THREAD, inside a seam,
+	/// with the event's kind and table text; writes "cancel=1,&lt;field&gt;=&lt;number&gt;,…" into
+	/// <c>output</c> and returns its length (0 for no change).
+	/// </summary>
+	[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+	public delegate int ModVerdictFn(int kind, IntPtr fields, UIntPtr length, IntPtr output, UIntPtr capacity);
+
+	/// <summary>Installs (or with null removes) the verdict handler; keep the delegate alive while installed.</summary>
+	public static void SetModVerdictHandler(ModVerdictFn? handler)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetModVerdictHandler(handler);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>Which event kinds the verdict handler is asked about (bit = kind); 0 asks about none.</summary>
+	public static void SetModVerdictMask(ulong mask)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetModVerdictMask(mask);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>The guest entity a mod HANDLE stands for (what Lua and Godot scripts hold), or 0.</summary>
+	public static uint ModHandleAddress(uint handle)
+	{
+		if (TryGetAbiVersion() is null || handle == 0)
+		{
+			return 0;
+		}
+
+		try
+		{
+			return RefiiHostModHandleAddress(handle);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
 	/// <summary>Reads the hero's derived state. See <see cref="HeroDerived"/>.</summary>
 	public static HeroDerived GetHeroDerived()
 	{
@@ -8690,6 +8889,30 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetModSetting(byte[] key, uint keyLength, float value);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostDrainModEvents(byte[] outBuffer, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetModEventMask(ulong mask);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostPostModInput(byte[] action, uint actionLength, int player, int pressed);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostPostModCommand(byte[] line, uint lineLength);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostDrainModErrors(byte[] outBuffer, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostModHandleAddress(uint handle);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetModVerdictHandler(ModVerdictFn? handler);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetModVerdictMask(ulong mask);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetHeroDerived(

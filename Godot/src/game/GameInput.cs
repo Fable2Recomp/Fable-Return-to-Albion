@@ -81,7 +81,15 @@ public partial class GameInput : Node
 		{
 			PublishPad(pad, devices);
 		}
+
+		// The mods' own actions, on the keyboard and on the pads as just assigned, under the
+		// same focus gate: edges only, posted to the mod event bus.
+		Refii.Mods.ModInput.Pump(devices);
 	}
+
+	/// <summary>The joypad holding guest pad <paramref name="pad"/> (0..3), or -1 while it is free.</summary>
+	public static int JoypadForPad(int pad) =>
+		pad >= 0 && pad < MaxControllers ? _padDevice[pad] : -1;
 
 	/// <summary>Mouse events go to the UI pointer, which resolves them against the UI camera.</summary>
 	public override void _Input(InputEvent @event)

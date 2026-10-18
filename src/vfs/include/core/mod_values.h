@@ -30,4 +30,25 @@ inline float Setting(std::string_view key, float fallback) {
   return refii_bridge_mod_setting_f32(key.data(), key.size(), fallback);
 }
 
+/// Posts an event to the host when its mask wants `kind` (the bus calls this after the native
+/// and Lua handlers ran, so the fields are the verdict).
+inline void PostEvent(int32_t kind, std::string_view fields) {
+  refii_bridge_mod_event_post(kind, fields.data(), fields.size());
+}
+
+inline bool HostWantsEvent(int32_t kind) {
+  return kind >= 0 && kind < 64 && ((refii_bridge_mod_host_event_mask() >> kind) & 1u) != 0u;
+}
+
+// THE HOST'S SIDE of the same state (src/core/mod_values.cpp; linked by the host bridge, never
+// by a mod): what RefiiHostDrainModEvents, RefiiHostSetModEventMask and RefiiHostPostModInput do.
+/// Moves queued events into `out` as "<kind>\t<fields>\n" records up to `capacity` bytes;
+/// an event that does not fit stays queued. Returns the bytes written.
+size_t DrainEventsForHost(char* out, size_t capacity);
+void SetHostEventMask(uint64_t mask);
+void PostInputFromHost(std::string_view action, int32_t player, bool pressed);
+void PostCommandFromHost(std::string_view line);
+/// Moves the queued mod errors into `out`, one per line, oldest first. Returns the bytes written.
+size_t DrainErrorsForHost(char* out, size_t capacity);
+
 }  // namespace refii::mods

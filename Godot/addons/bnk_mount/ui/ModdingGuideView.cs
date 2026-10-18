@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Godot;
 using Refii.EditorTools;
 using Refii.Models;
@@ -726,6 +727,9 @@ public partial class ModdingGuideView : MarginContainer
         };
         page.AddThemeConstantOverride("separation", 10);
 
+        _eventsEntries.Clear();
+        page.AddChild(BuildEventsToolbar());
+
         page.AddChild(CreateSectionCard(
             $"⚡ The mod API, version {ModApi.Version} — events first, hooks second",
             new Color(1.0f, 0.85f, 0.40f),
@@ -744,46 +748,25 @@ public partial class ModdingGuideView : MarginContainer
             "    if e.victim_player ~= 0 and e.spell_type == 2 then return true end   -- true cancels\n" +
             "  end)\n\n" +
             "In the editor: RefiiModApi.ListEvents(), DescribeEvent(name), NewNativeHandler(event, \"file.cpp\") writes a filled-in native handler, AddLuaHandler(event) appends a Lua one to init.lua. " +
-            "A hook on a game function (tab 6) stays for a seam no event covers; it chains with other owners as before."));
+            "A hook on a game function (tab 6) stays for a seam no event covers; it chains with other owners as before.\n\n" +
+            "Full reference: docs/mod_api.md"));
 
         foreach (ModApiEvent e in ModApi.Events)
         {
-            var body = new System.Text.StringBuilder();
-            body.Append(e.Summary).Append("\n\n");
-            body.Append("Native: refii::mods::").Append(e.Name).Append("Event — REFII_MOD_ON(").Append(e.Name).Append(", fn)\n");
-            body.Append("Lua: Refii.on(\"").Append(e.LuaName).Append("\", function(e) ... end)\n");
-            body.Append("Cancel: ").Append(e.Cancellable ? e.Cancel : "not cancellable").Append("\n");
-            body.Append("Seam: ").Append(e.Seam).Append("\n\nFields:\n");
-            foreach (ModApiField f in e.Fields)
-            {
-                body.Append("  • ").Append(f.Name).Append(" (").Append(f.Type).Append(f.Writable ? ", writable" : string.Empty)
-                    .Append(") — ").Append(f.Meaning).Append('\n');
-            }
-
-            body.Append("  • ctx, base — the guest context (a copy) and memory (native only); cancel — see above");
-            page.AddChild(CreateSectionCard(
-                $"{e.Kind}. {e.Name}  ·  \"{e.LuaName}\"",
-                e.Cancellable ? new Color(0.95f, 0.70f, 0.45f) : new Color(0.55f, 0.80f, 0.95f),
-                body.ToString()));
+            page.AddChild(BuildEventCard(e));
         }
 
-        var helpers = new System.Text.StringBuilder();
-        helpers.Append("What a handler (or a hook) calls to read and change the game. All in core/refii_mod.h; C linkage, usable from any mod.\n\n");
-        foreach (ModApiHelper h in ModApi.Helpers)
-        {
-            helpers.Append("  ").Append(h.Signature).Append("\n      ").Append(h.Meaning).Append('\n');
-        }
+        page.AddChild(BuildHelpersCard(
+            "🧰 Native helpers", new Color(0.60f, 0.90f, 0.60f),
+            "What a handler (or a hook) calls to read and change the game. All in core/refii_mod.h; C linkage, usable from any mod.",
+            ModApi.Helpers, EventsEntryKind.NativeHelper));
 
-        page.AddChild(CreateSectionCard("🧰 Native helpers", new Color(0.60f, 0.90f, 0.60f), helpers.ToString()));
+        page.AddChild(BuildHelpersCard(
+            "📜 Lua helpers", new Color(0.85f, 0.65f, 1.0f),
+            "Composed ahead of every mod's init.lua. Entities are HANDLES in Lua (small integers for an object this session; the game's Lua number is a 32-bit float): compare them, key tables by them, pass them to Refii.* calls. Hashes (definitions, text) are \"0x…\" strings. Assigning a writable field in a handler (e.damage, e.delta, e.amount, e.level, e.type, e.relation) changes what the game gets.",
+            ModApi.LuaHelpers, EventsEntryKind.LuaHelper));
 
-        var lua = new System.Text.StringBuilder();
-        lua.Append("Composed ahead of every mod's init.lua. Entities are numbers (ids) in Lua; compare them with Refii.hero(1) / Refii.hero(2). A Lua handler can cancel but not change a number — that is native.\n\n");
-        foreach (ModApiHelper h in ModApi.LuaHelpers)
-        {
-            lua.Append("  ").Append(h.Signature).Append("\n      ").Append(h.Meaning).Append('\n');
-        }
-
-        page.AddChild(CreateSectionCard("📜 Lua helpers", new Color(0.85f, 0.65f, 1.0f), lua.ToString()));
+        ApplyEventsFilter();
 
         page.AddChild(CreateSectionCard(
             "🗡️ Worked examples: Souls Combat and Spell Weaving",
@@ -792,6 +775,294 @@ public partial class ModdingGuideView : MarginContainer
             "What each still hooks by name is a seam no event covers yet (the look-at writer, the vortex component, the fireball's impact)."));
 
         return page;
+    }
+
+    private enum EventsEntryKind { Event, NativeHelper, LuaHelper }
+
+    /// <summary>One filterable node of the events page: a card or a helper row, with the text the search matches.</summary>
+    private sealed record EventsEntry(Control Node, EventsEntryKind Kind, string Haystack, bool Cancellable, bool Writable, bool Lua);
+
+    private readonly List<EventsEntry> _eventsEntries = new();
+    private LineEdit? _eventsSearch;
+    private CheckBox? _eventsCancellableChip;
+    private CheckBox? _eventsWritableChip;
+    private CheckBox? _eventsLuaChip;
+    private Label? _eventsCountLabel;
+    private Control? _nativeHelpersCard;
+    private Control? _luaHelpersCard;
+
+    /// <summary>The search box, the filter chips, the count line and the docs button; the rows wrap at narrow widths.</summary>
+    private Control BuildEventsToolbar()
+    {
+        var bar = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        bar.AddThemeConstantOverride("separation", 6);
+
+        var searchRow = new HBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        searchRow.AddThemeConstantOverride("separation", 8);
+
+        _eventsSearch = new LineEdit
+        {
+            PlaceholderText = "Search events, fields, helpers…",
+            ClearButtonEnabled = true,
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(160, 0)
+        };
+        _eventsSearch.AddThemeFontSizeOverride("font_size", 13);
+        _eventsSearch.TextChanged += _ => ApplyEventsFilter();
+        searchRow.AddChild(_eventsSearch);
+
+        if (FindModApiDocs() is string docsPath)
+        {
+            var docsBtn = new Button
+            {
+                Text = "📖 docs/mod_api.md",
+                TooltipText = docsPath
+            };
+            docsBtn.AddThemeFontSizeOverride("font_size", 13);
+            docsBtn.Pressed += () =>
+            {
+                OS.ShellOpen(docsPath);
+                FlashToast("Opened docs/mod_api.md");
+            };
+            searchRow.AddChild(docsBtn);
+        }
+
+        bar.AddChild(searchRow);
+
+        var chipRow = new HFlowContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        chipRow.AddThemeConstantOverride("h_separation", 12);
+        chipRow.AddThemeConstantOverride("v_separation", 4);
+
+        _eventsCancellableChip = CreateFilterChip(chipRow, "Cancellable", "Events a handler can refuse");
+        _eventsWritableChip = CreateFilterChip(chipRow, "Has writable fields", "Events with a field a native handler can change");
+        _eventsLuaChip = CreateFilterChip(chipRow, "Lua", "Events whose table carries at least one non-pointer field");
+
+        _eventsCountLabel = new Label
+        {
+            Modulate = new Color(0.75f, 0.80f, 0.88f),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        _eventsCountLabel.AddThemeFontSizeOverride("font_size", 13);
+        chipRow.AddChild(_eventsCountLabel);
+
+        bar.AddChild(chipRow);
+        return bar;
+    }
+
+    private CheckBox CreateFilterChip(Container row, string text, string tooltip)
+    {
+        var chip = new CheckBox
+        {
+            Text = text,
+            TooltipText = tooltip
+        };
+        chip.AddThemeFontSizeOverride("font_size", 13);
+        chip.Toggled += _ => ApplyEventsFilter();
+        row.AddChild(chip);
+        return chip;
+    }
+
+    /// <summary>One event's card, with its template copy buttons, registered for the filter.</summary>
+    private Control BuildEventCard(ModApiEvent e)
+    {
+        var body = new System.Text.StringBuilder();
+        body.Append(e.Summary).Append("\n\n");
+        body.Append("Native: refii::mods::").Append(e.Name).Append("Event — REFII_MOD_ON(").Append(e.Name).Append(", fn)\n");
+        body.Append("Lua: Refii.on(\"").Append(e.LuaName).Append("\", function(e) ... end)\n");
+        body.Append("Cancel: ").Append(e.Cancellable ? e.Cancel : "not cancellable").Append("\n");
+        body.Append("Seam: ").Append(e.Seam).Append("\n\nFields:\n");
+        foreach (ModApiField f in e.Fields)
+        {
+            body.Append("  • ").Append(f.Name).Append(" (").Append(f.Type).Append(f.Writable ? ", writable" : string.Empty)
+                .Append(") — ").Append(f.Meaning).Append('\n');
+        }
+
+        body.Append("  • ctx, base — the guest context (a copy) and memory (native only); cancel — see above");
+
+        Control card = CreateSectionCard(
+            $"{e.Kind}. {e.Name}  ·  \"{e.LuaName}\"",
+            e.Cancellable ? new Color(0.95f, 0.70f, 0.45f) : new Color(0.55f, 0.80f, 0.95f),
+            body.ToString());
+
+        var buttons = new HFlowContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        buttons.AddThemeConstantOverride("h_separation", 8);
+        buttons.AddChild(CreateCopyButton("📋 Copy native", $"Copied the {e.Name} native handler", () => ModApi.NativeTemplate(e, "my_mod")));
+        buttons.AddChild(CreateCopyButton("📋 Copy Lua", $"Copied the \"{e.LuaName}\" Lua handler", () => ModApi.LuaTemplate(e)));
+        CardBody(card).AddChild(buttons);
+
+        var haystack = new System.Text.StringBuilder();
+        haystack.Append(e.Name).Append('\n').Append(e.LuaName).Append('\n').Append(e.Summary).Append('\n')
+            .Append(e.Seam).Append('\n').Append(e.Cancel).Append('\n');
+        foreach (ModApiField f in e.Fields)
+        {
+            haystack.Append(f.Name).Append('\n').Append(f.Type).Append('\n').Append(f.Meaning).Append('\n');
+        }
+
+        _eventsEntries.Add(new EventsEntry(
+            card, EventsEntryKind.Event, haystack.ToString().ToLowerInvariant(),
+            e.Cancellable,
+            e.Fields.Any(f => f.Writable),
+            e.Fields.Any(f => !f.Type.Contains('*'))));
+        return card;
+    }
+
+    /// <summary>A helpers card: one row per helper (each registered for the filter) and a copy of the signature list.</summary>
+    private Control BuildHelpersCard(string title, Color accent, string intro, IReadOnlyList<ModApiHelper> helpers, EventsEntryKind kind)
+    {
+        Control card = CreateSectionCard(title, accent, intro);
+        VBoxContainer vbox = CardBody(card);
+
+        foreach (ModApiHelper h in helpers)
+        {
+            var row = new Label
+            {
+                Text = $"  {h.Signature}\n      {h.Meaning}",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                Modulate = new Color(0.84f, 0.88f, 0.94f)
+            };
+            row.AddThemeFontSizeOverride("font_size", 13);
+            vbox.AddChild(row);
+            _eventsEntries.Add(new EventsEntry(
+                row, kind, (h.Signature + "\n" + h.Meaning).ToLowerInvariant(),
+                Cancellable: false, Writable: false, Lua: kind == EventsEntryKind.LuaHelper));
+        }
+
+        var buttons = new HFlowContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        buttons.AddChild(CreateCopyButton("📋 Copy", $"Copied the {title.Substring(title.IndexOf(' ') + 1).ToLowerInvariant()} signatures",
+            () => string.Join("\n", helpers.Select(h => h.Signature)) + "\n"));
+        vbox.AddChild(buttons);
+
+        if (kind == EventsEntryKind.LuaHelper)
+        {
+            _luaHelpersCard = card;
+        }
+        else
+        {
+            _nativeHelpersCard = card;
+        }
+
+        return card;
+    }
+
+    private Button CreateCopyButton(string text, string flash, Func<string> content)
+    {
+        var btn = new Button
+        {
+            Text = text,
+            CustomMinimumSize = new Vector2(0, 24)
+        };
+        btn.AddThemeFontSizeOverride("font_size", 12);
+        btn.Pressed += () =>
+        {
+            DisplayServer.ClipboardSet(content());
+            FlashToast(flash);
+        };
+        return btn;
+    }
+
+    /// <summary>The column CreateSectionCard lays its title and body in; extra rows go after the body.</summary>
+    private static VBoxContainer CardBody(Control card) => card.GetChild<VBoxContainer>(0);
+
+    /// <summary>
+    /// Hides every entry the search or the chips exclude. The search is a case-insensitive substring
+    /// match of each whitespace-separated word over an event's name, Lua name, summary, seam, cancel text,
+    /// field names, types and meanings, and over a helper's signature and meaning. The chips apply to
+    /// events only; a helpers card hides when the search leaves it no row.
+    /// </summary>
+    private void ApplyEventsFilter()
+    {
+        string[] words = (_eventsSearch?.Text ?? string.Empty)
+            .ToLowerInvariant()
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        bool cancellable = _eventsCancellableChip?.ButtonPressed ?? false;
+        bool writable = _eventsWritableChip?.ButtonPressed ?? false;
+        bool lua = _eventsLuaChip?.ButtonPressed ?? false;
+
+        int events = 0, eventsShown = 0, native = 0, nativeShown = 0, luaHelpers = 0, luaShown = 0;
+        foreach (EventsEntry entry in _eventsEntries)
+        {
+            bool show = words.All(w => entry.Haystack.Contains(w, StringComparison.Ordinal));
+            if (entry.Kind == EventsEntryKind.Event)
+            {
+                show &= (!cancellable || entry.Cancellable) && (!writable || entry.Writable) && (!lua || entry.Lua);
+            }
+
+            entry.Node.Visible = show;
+            switch (entry.Kind)
+            {
+                case EventsEntryKind.Event: events++; if (show) eventsShown++; break;
+                case EventsEntryKind.NativeHelper: native++; if (show) nativeShown++; break;
+                default: luaHelpers++; if (show) luaShown++; break;
+            }
+        }
+
+        if (_nativeHelpersCard is not null) _nativeHelpersCard.Visible = nativeShown != 0;
+        if (_luaHelpersCard is not null) _luaHelpersCard.Visible = luaShown != 0;
+        if (_eventsCountLabel is not null)
+        {
+            _eventsCountLabel.Text = $"{eventsShown} of {events} events  ·  {nativeShown} of {native} native helpers  ·  {luaShown} of {luaHelpers} Lua helpers";
+        }
+    }
+
+    /// <summary>Shows a toast that clears itself after a moment, unless another has replaced it.</summary>
+    private void FlashToast(string text)
+    {
+        ShowToast(text);
+        if (!IsInsideTree())
+        {
+            return;
+        }
+
+        GetTree().CreateTimer(1.8).Timeout += () =>
+        {
+            if (_statusToastLabel is not null && _statusToastLabel.Text == text)
+            {
+                _statusToastLabel.Text = string.Empty;
+            }
+        };
+    }
+
+    /// <summary>docs/mod_api.md in the repo that holds the project: the nearest ancestor of res:// that has it, or null.</summary>
+    private static string? FindModApiDocs()
+    {
+        string? dir;
+        try
+        {
+            dir = Path.GetFullPath(ProjectSettings.GlobalizePath("res://"));
+        }
+        catch
+        {
+            return null;
+        }
+
+        while (dir is not null)
+        {
+            string candidate = Path.Combine(dir, "docs", "mod_api.md");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            dir = Directory.GetParent(dir)?.FullName;
+        }
+
+        return null;
     }
 
     private static Control CreateSectionCard(string title, Color accentColor, string bodyText)

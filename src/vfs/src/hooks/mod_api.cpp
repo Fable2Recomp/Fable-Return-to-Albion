@@ -3,8 +3,10 @@
 // module, so nothing here crosses the payload/host line.
 
 #include <chrono>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 #include <rex/logging.h>
@@ -30,8 +32,17 @@ PPC_EXTERN_FUNC(rex_CSpellRegistry_Create);
 PPC_EXTERN_FUNC(rex_CECHealth_Modify);
 PPC_EXTERN_FUNC(rex_CECMoney_Modify);
 PPC_EXTERN_FUNC(rex_CECInventory_AddOneOfRecord);
+PPC_EXTERN_FUNC(rex_lhTrackedObject_RemoveHandleRef);
+PPC_EXTERN_FUNC(rex_GDBManager_FindEntryByHash);
+PPC_EXTERN_FUNC(rex_lhHeroStats_GetRenown);
+PPC_EXTERN_FUNC(rex_lhHeroStats_GetMorality);
+PPC_EXTERN_FUNC(rex_lhHeroStats_GetPurity);
+PPC_EXTERN_FUNC(rex_Village_IsLineOfSight);
+PPC_EXTERN_FUNC(rex_lhLuaScriptSystem_CreateEntityAtPosition);
 
 namespace refii::vfs {
+/// The script system the startup scripts ran on (mod_lua_hooks.cpp), or 0 before a session.
+uint32_t ModScriptSystem();
 uint32_t HeroEntity(uint8_t* base);
 void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds);
 
@@ -162,7 +173,11 @@ extern "C" int32_t refii_mod_entity_position(PPCContext* ctx, uint8_t* base, uin
   using refii::vfs::LoadGuestU32;
   const uint32_t placement = LoadGuestU32(base, entity + 0x7Cu);
   const uint32_t vtable = plausible(placement) ? LoadGuestU32(base, placement) : 0u;
-  PPCFunc* getter = plausible(vtable) ? refii::vfs::FindGuestFunction(LoadGuestU32(base, vtable + 64u)) : nullptr;
+  const uint32_t target = plausible(vtable) ? LoadGuestU32(base, vtable + 64u) : 0u;
+  // The function table, not a scan of every mapping: this runs once per entity in a radius query.
+  PPCFunc* getter = target != 0 && refii_bridge_rex_has_function(target) != 0
+                        ? reinterpret_cast<PPCFunc*>(refii_bridge_rex_resolve_indirect_function(target))
+                        : nullptr;
   if (getter == nullptr) {
     return 0;
   }
@@ -243,7 +258,7 @@ extern "C" int32_t refii_mod_game_lua_int(PPCContext* ctx, uint8_t* base, const 
 
   // The greatest integer m with v >= m: `v >= mid` halves the range each run.
   while (lo < hi) {
-    const int32_t mid = lo + (hi - lo + 1) / 2;
+    const int32_t mid = static_cast<int32_t>(static_cast<int64_t>(lo) + (static_cast<int64_t>(hi) - lo + 1) / 2);
     if (holds(">=", mid)) {
       lo = mid;
     } else {
@@ -290,6 +305,18 @@ void RunModTicks(PPCContext& ctx, uint8_t* base) {
 // ---------------------------------------------------------------------------------------------
 // Entities, stats, spells, the save
 // ---------------------------------------------------------------------------------------------
+
+extern "C" uint32_t refii_mod_handle(uint32_t address) { return refii_bridge_mod_handle(address); }
+
+extern "C" uint32_t refii_mod_handle_address(uint32_t handle) { return refii_bridge_mod_handle_address(handle); }
+
+extern "C" uint32_t refii_mod_fnv1(const char* text) {
+  uint32_t hash = 0x811C9DC5u;
+  for (const char* c = text; c != nullptr && *c != 0; ++c) {
+    hash = (hash * 0x01000193u) ^ static_cast<uint8_t>(*c);
+  }
+  return hash;
+}
 
 extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity) {
   if (entity == 0) {
@@ -552,8 +579,10 @@ extern "C" int32_t refii_mod_level_name(uint8_t* base, char* out, uint32_t size)
   if (out != nullptr && size != 0) {
     out[0] = 0;
   }
+  // The world manager is *(*(world+8)+4), as the game reaches it (0x824DA760, sub_82446928).
   const uint32_t world = refii_mod_world(base);
-  const uint32_t manager = world != 0 ? refii::vfs::LoadGuestU32(base, world + 8u) : 0u;
+  const uint32_t holder8 = world != 0 ? refii::vfs::LoadGuestU32(base, world + 8u) : 0u;
+  const uint32_t manager = Plausible(holder8) ? refii::vfs::LoadGuestU32(base, holder8 + 4u) : 0u;
   const uint32_t holder = Plausible(manager) ? refii::vfs::LoadGuestU32(base, manager + 0x24u) : 0u;
   const uint32_t level = Plausible(holder) ? refii::vfs::LoadGuestU32(base, holder + 4u) : 0u;
   if (!Plausible(level)) {
@@ -624,5 +653,249 @@ extern "C" uint32_t refii_mod_add_item(PPCContext* ctx, uint8_t* base, uint32_t 
   work.r6.u64 = 1;
   rex_CECInventory_AddOneOfRecord(work, base);
   const uint32_t item = refii::mods::LoadU32(base, out);
-  return Plausible(item) ? item : 0u;
+  if (!Plausible(item)) {
+    return 0u;
+  }
+  // The add registered the out slot as a reference holder on the item (+40); every game caller
+  // releases it before its frame goes (0x823B815C), or the item keeps a pointer into a dead frame.
+  PPCContext release = refii::mods::Frame(*ctx);
+  release.r3.u32 = item;
+  release.r4.u32 = out;
+  rex_lhTrackedObject_RemoveHandleRef(release, base);
+  return item;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hero stats, physique, inventory, weapons, space, spawning (v2 helpers)
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kAgeComponent = 122;
+constexpr uint32_t kWeaponSetComponent = 28;
+constexpr uint32_t kCreatureComponent = 20;
+constexpr uint32_t kStatsFat = 56;
+constexpr uint32_t kStatsHeight = 60;
+constexpr uint32_t kAgeYears = 12;
+constexpr uint32_t kInventoryList = 16;
+constexpr uint32_t kWeaponMelee = 84;
+constexpr uint32_t kWeaponRanged = 88;
+/// The world's entity manager (TU1 0x83496B28): +8 the intrusive list's head (each node is
+/// entity+8, node +0 the next node), the link rex_lhEntityManager_Add makes.
+constexpr uint32_t kEntityManager = 0x83496B28u;
+constexpr uint32_t kManagerList = 8;
+constexpr uint32_t kEntityNode = 8;
+constexpr uint32_t kEntityFlags = 0x90;
+constexpr uint8_t kInWorld = 0x40;
+/// Presence of component 2 (the placement the sphere test reads: entity+0x24 bit 2), as
+/// sub_822000E8 checks before it asks for a position.
+constexpr uint32_t kPresenceWord = 0x24;
+constexpr uint32_t kHasPlacementBit = 1u << 2;
+constexpr int32_t kNearScanLimit = 20000;
+
+uint32_t StatsOf(uint8_t* base, uint32_t entity) {
+  return Plausible(entity) ? refii_mod_component(base, entity, kStatsComponent) : 0u;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_renown(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t* out) {
+  const uint32_t stats = ctx != nullptr ? StatsOf(base, entity) : 0u;
+  if (stats == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = stats;
+  rex_lhHeroStats_GetRenown(work, base);
+  if (out != nullptr) {
+    *out = static_cast<int32_t>(work.r3.u32);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_morality(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out) {
+  const uint32_t stats = ctx != nullptr ? StatsOf(base, entity) : 0u;
+  if (stats == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = stats;
+  rex_lhHeroStats_GetMorality(work, base);
+  if (out != nullptr) {
+    *out = static_cast<float>(work.f1.f64);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_purity(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out) {
+  const uint32_t stats = ctx != nullptr ? StatsOf(base, entity) : 0u;
+  if (stats == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = stats;
+  rex_lhHeroStats_GetPurity(work, base);
+  if (out != nullptr) {
+    *out = static_cast<float>(work.f1.f64);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_physique(uint8_t* base, uint32_t entity, float* out_fat, float* out_height) {
+  const uint32_t stats = StatsOf(base, entity);
+  if (stats == 0) {
+    return 0;
+  }
+  if (out_fat != nullptr) {
+    *out_fat = refii::mods::LoadF32(base, stats + kStatsFat);
+  }
+  if (out_height != nullptr) {
+    *out_height = refii::mods::LoadF32(base, stats + kStatsHeight);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_age(uint8_t* base, uint32_t entity, float* out) {
+  const uint32_t age = Plausible(entity) ? refii_mod_component(base, entity, kAgeComponent) : 0u;
+  if (age == 0) {
+    return 0;
+  }
+  if (out != nullptr) {
+    *out = refii::mods::LoadF32(base, age + kAgeYears);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_inventory_stack(uint8_t* base, uint32_t entity, int32_t index, uint32_t* out_definition,
+                                             int32_t* out_count) {
+  const uint32_t inventory = Plausible(entity) ? refii_mod_component(base, entity, kInventoryComponent) : 0u;
+  if (inventory == 0 || index < 0) {
+    return 0;
+  }
+  const uint32_t head = refii::vfs::LoadGuestU32(base, inventory + kInventoryList);
+  if (!Plausible(head)) {
+    return 0;
+  }
+  uint32_t node = refii::vfs::LoadGuestU32(base, head);
+  for (int32_t i = 0; Plausible(node) && node != head && i < 4096; ++i, node = refii::vfs::LoadGuestU32(base, node)) {
+    if (i != index) {
+      continue;
+    }
+    const uint32_t item = refii::vfs::LoadGuestU32(base, node + 8u);
+    if (!Plausible(item)) {
+      return 0;
+    }
+    if (out_definition != nullptr) {
+      *out_definition = refii::vfs::LoadGuestU32(base, item + 4u);
+    }
+    if (out_count != nullptr) {
+      *out_count = static_cast<int32_t>(refii::vfs::LoadGuestU32(base, item + 12u));
+    }
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int32_t refii_mod_equipped(uint8_t* base, uint32_t entity, uint32_t* out_melee, uint32_t* out_ranged) {
+  const uint32_t set = Plausible(entity) ? refii_mod_component(base, entity, kWeaponSetComponent) : 0u;
+  if (set == 0) {
+    return 0;
+  }
+  if (out_melee != nullptr) {
+    *out_melee = refii::vfs::LoadGuestU32(base, set + kWeaponMelee);
+  }
+  if (out_ranged != nullptr) {
+    *out_ranged = refii::vfs::LoadGuestU32(base, set + kWeaponRanged);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_entities_near(PPCContext* ctx, uint8_t* base, const float* xyz, float radius,
+                                           int32_t creatures_only, uint32_t* out, int32_t max) {
+  if (ctx == nullptr || xyz == nullptr || out == nullptr || max <= 0 || !(radius > 0.0f)) {
+    return 0;
+  }
+  const uint32_t manager = refii::vfs::LoadGuestU32(base, refii::guest::Address(kEntityManager));
+  if (!Plausible(manager)) {
+    return 0;
+  }
+  struct Found {
+    uint32_t entity;
+    float distance2;
+  };
+  std::vector<Found> found;
+  const float limit = radius * radius;
+  uint32_t node = refii::vfs::LoadGuestU32(base, manager + kManagerList);
+  for (int32_t i = 0; Plausible(node) && i < kNearScanLimit; ++i, node = refii::vfs::LoadGuestU32(base, node)) {
+    const uint32_t entity = node - kEntityNode;
+    if ((base[entity + kEntityFlags] & kInWorld) == 0 ||
+        (refii::vfs::LoadGuestU32(base, entity + kPresenceWord) & kHasPlacementBit) == 0) {
+      continue;
+    }
+    if (creatures_only != 0 && refii_mod_component(base, entity, kCreatureComponent) == 0) {
+      continue;
+    }
+    float at[3];
+    if (refii_mod_entity_position(ctx, base, entity, at) == 0) {
+      continue;
+    }
+    const float dx = at[0] - xyz[0], dy = at[1] - xyz[1], dz = at[2] - xyz[2];
+    const float d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < limit) {
+      found.push_back(Found{entity, d2});
+    }
+  }
+  std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) { return a.distance2 < b.distance2; });
+  const int32_t n = static_cast<int32_t>(found.size()) < max ? static_cast<int32_t>(found.size()) : max;
+  for (int32_t i = 0; i < n; ++i) {
+    out[i] = found[static_cast<size_t>(i)].entity;
+  }
+  return n;
+}
+
+extern "C" int32_t refii_mod_line_of_sight(PPCContext* ctx, uint8_t* base, const float* from, const float* to) {
+  if (ctx == nullptr || from == nullptr || to == nullptr) {
+    return 0;
+  }
+  // The physics object the raycast is made on (*(world+0x18)): none before a session.
+  const uint32_t world = refii_mod_world(base);
+  if (world == 0 || !Plausible(refii::vfs::LoadGuestU32(base, world + 0x18u))) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x800u);
+  refii::mods::SetVector(work, 1, from);
+  refii::mods::SetVector(work, 2, to);
+  rex_Village_IsLineOfSight(work, base);
+  return (work.r3.u32 & 0xFFu) != 0 ? 1 : 0;
+}
+
+extern "C" uint32_t refii_mod_spawn(PPCContext* ctx, uint8_t* base, uint32_t definition, const float* xyz) {
+  const uint32_t system = refii::vfs::ModScriptSystem();
+  if (ctx == nullptr || xyz == nullptr || definition == 0 || !Plausible(system)) {
+    return 0;
+  }
+  // The game creates an entity even for a hash its database lacks; refuse that here. The manager
+  // is g_GDBManager (TU1 0x83496DA0), its lookup GDBManager_FindEntryByHash (r3 manager, r4 hash).
+  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496DA0u));
+  if (!Plausible(gdb)) {
+    return 0;
+  }
+  PPCContext lookup = refii::mods::Frame(*ctx);
+  lookup.r3.u32 = gdb;
+  lookup.r4.u32 = definition;
+  rex_GDBManager_FindEntryByHash(lookup, base);
+  if (!Plausible(lookup.r3.u32)) {
+    return 0;
+  }
+  // The name argument is an LHString handle the entity's name is copied from: an empty handle,
+  // on our own frame, names nothing.
+  PPCContext work = refii::mods::Frame(*ctx, 0x400u);
+  const uint32_t name = work.r1.u32 + 0x80u;
+  refii::mods::StoreU32(base, name, 0u);
+  work.r3.u32 = system;
+  work.r4.u32 = definition;
+  work.r5.u32 = name;
+  refii::mods::SetVector(work, 1, xyz);
+  rex_lhLuaScriptSystem_CreateEntityAtPosition(work, base);
+  return Plausible(work.r3.u32) ? work.r3.u32 : 0u;
 }

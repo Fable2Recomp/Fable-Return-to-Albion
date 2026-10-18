@@ -89,6 +89,9 @@ PPC_EXTERN_FUNC(rex_lhGui_FrontendTitle_OnScreenAction);
 // Safe to block here: our XamShowDeviceSelectorUI returns X_ERROR_IO_PENDING and completes on
 // the kernel dispatch thread via CompleteOverlappedDeferred. Costs 100ms, once, at New Game.
 PPC_EXTERN_FUNC(rex_lhSaveManager_SelectStorageDevice);
+PPC_EXTERN_FUNC(rex_CNetworkManager_LeaveSession);
+PPC_EXTERN_FUNC(rex_XboxLive_Instance);
+PPC_EXTERN_FUNC(rex_XboxLive_RestoreAfterLeave);
 
 PPC_EXTERN_FUNC(rex_lhSaveManager_CountSavedGamesAllDevices);
 
@@ -2007,15 +2010,22 @@ bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
 
   const uint32_t sp = ctx.r1.u32;
   const uint32_t frame = (sp - 0x400u) & ~0xFu;
-  const uint32_t text = frame + 0x20u;
   const uint32_t name = frame + 0x3E0u;
   const uint32_t nameHandle = frame + 0x3F0u;
 
-  constexpr uint32_t kMaxChunk = 0x3B0u;
-  if (chunk.size() + 1u > kMaxChunk) {
-    REXLOG_INFO("Refii guest-tick pump: game Lua chunk is too long ({} bytes) — dropped",
-                chunk.size());
-    return false;
+  // A chunk that fits goes on the frame; a longer one (a mod's live run, a Godot script's
+  // run_lua) in a guest heap block for the length of the call, as the composed init chunk does.
+  constexpr uint32_t kFrameChunk = 0x3B0u;
+  uint32_t text = frame + 0x20u;
+  uint32_t heap = 0u;
+  if (chunk.size() + 1u > kFrameChunk) {
+    heap = CallLhMalloc(ctx, base, static_cast<uint32_t>(chunk.size()) + 1u);
+    if (!plausible(heap)) {
+      REXLOG_INFO("Refii guest-tick pump: no guest memory for a {}-byte game Lua chunk — dropped",
+                  chunk.size());
+      return false;
+    }
+    text = heap;
   }
 
   std::memcpy(base + text, chunk.data(), chunk.size());
@@ -2044,6 +2054,9 @@ bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
   work.r1.u32 = frame;
   work.r3.u32 = nameHandle;
   rex_lhCharString_Dtor(work, base);
+  if (heap != 0u) {
+    CallLhFree(ctx, base, heap);
+  }
   return ok;
 }
 
@@ -8205,6 +8218,39 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
 
       ran = DispatchFrontEndDialog(ctx, base, static_cast<uint32_t>(value));
+    } else if (name == "CoopLeave") {
+      // The game's own leave, as its co-op Reject runs it (sub_8236E458, box 44 answer 36): r3 =
+      // the CNetworkManager g_XrnmNetContext (read directly; game+140 can be empty), r4 = 1 — the
+      // quiet leave, no "disconnected" notice (r4 = 0 shows one). With a peer it drops the link;
+      // with no peer and no join in flight it does nothing. A joiner then gets back the state it
+      // saved when it joined (rex_XboxLive_RestoreAfterLeave on the XboxLive singleton), as the
+      // Reject does. TU1 0x8233E668.
+      const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83497490u));
+      if (manager >= 0x10000u && manager < 0xC0000000u) {
+        const bool joiner = base[manager + 54u] != 0;
+        PPCContext work = ctx;
+        work.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
+        work.r3.u32 = manager;
+        work.r4.u32 = 1u;
+        rex_CNetworkManager_LeaveSession(work, base);
+        if (joiner) {
+          PPCContext live = ctx;
+          live.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
+          rex_XboxLive_Instance(live, base);
+          const uint32_t xbox_live = live.r3.u32;
+          if (xbox_live >= 0x10000u && xbox_live < 0xC0000000u) {
+            live = ctx;
+            live.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
+            live.r3.u32 = xbox_live;
+            rex_XboxLive_RestoreAfterLeave(live, base);
+          }
+        }
+        ran = true;
+      } else {
+        REXLOG_INFO("Refii guest-tick pump: CoopLeave with no network manager — dropped");
+        GuestTickPumpNoteRan();
+        continue;
+      }
     } else if (name == "SubtitlesOn" || name == "SubtitlesOff" ||
                name == "Downloadable Content") {
       // Through the guest's own dispatcher: its id-2 branch compares the item name and does the

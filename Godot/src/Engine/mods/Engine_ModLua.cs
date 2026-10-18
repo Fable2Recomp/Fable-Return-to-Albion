@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Godot;
 using Refii.Bnk;
@@ -72,14 +73,31 @@ public static class ModLua
 		text.Append("Refii = Refii or {}\n");
 		text.Append("Refii.api_version = ").Append(ModApi.Version).Append('\n');
 		text.Append("Refii._handlers = Refii._handlers or {}\n");
-		text.Append("Refii._mask = Refii._mask or 0\n");
-		text.Append("Refii._mask2 = Refii._mask2 or 0\n");
+		// THE SUBSCRIPTION MASKS ARE GROUPS OF 20 BITS: this Lua's number is a 32-bit float, exact
+		// only to 24 bits, so a 31-bit sum loses its low bits once a high one is set. Group g holds
+		// kinds 20*(g-1) .. 20*g-1; the payload reads each (mod_events.cpp ReadLuaMask).
+		text.Append("Refii._masks = Refii._masks or {}\n");
 		text.Append("Refii._dirty = false\n");
 		text.Append("Refii._hero = Refii._hero or {}\n");
 		text.Append("Refii._kinds = {");
 		foreach (ModApiEvent e in ModApi.Events)
 		{
 			text.Append(e.LuaName).Append('=').Append(e.Kind).Append(',');
+		}
+
+		text.Append("}\n");
+		// The writable numbers per kind: a handler's change to one goes back through the native
+		// Refii._write while the chunk runs (mod_events.cpp WriteLuaField).
+		text.Append("Refii._writable = {");
+		foreach (IGrouping<int, (int Kind, string Field)> kind in ModApi.WritableFields.GroupBy(w => w.Kind))
+		{
+			text.Append('[').Append(kind.Key).Append("]={");
+			foreach ((_, string field) in kind)
+			{
+				text.Append('\'').Append(field).Append("',");
+			}
+
+			text.Append("},");
 		}
 
 		text.Append("}\n");
@@ -91,25 +109,40 @@ public static class ModLua
 			"\tlocal list = Refii._handlers[kind]\n" +
 			"\tif list == nil then list = {} Refii._handlers[kind] = list end\n" +
 			"\tlist[#list + 1] = fn\n" +
-			"\tif kind < 31 then\n" +
-			"\t\tlocal bit = 2 ^ kind\n" +
-			"\t\tif math.floor(Refii._mask / bit) % 2 == 0 then Refii._mask = Refii._mask + bit end\n" +
-			"\telse\n" +
-			"\t\tlocal bit = 2 ^ (kind - 31)\n" +
-			"\t\tif math.floor(Refii._mask2 / bit) % 2 == 0 then Refii._mask2 = Refii._mask2 + bit end\n" +
-			"\tend\n" +
+			"\tlocal group = math.floor(kind / 20) + 1\n" +
+			"\tlocal bit = 2 ^ (kind % 20)\n" +
+			"\tlocal mask = Refii._masks[group] or 0\n" +
+			"\tif math.floor(mask / bit) % 2 == 0 then Refii._masks[group] = mask + bit end\n" +
 			"\tRefii._dirty = true\n" +
 			"end\n" +
 			"function Refii._fire(kind, e)\n" +
 			"\tlocal list = Refii._handlers[kind]\n" +
 			"\tif list == nil then return true end\n" +
+			"\tlocal writable = Refii._writable[kind]\n" +
+			"\tlocal before = nil\n" +
+			"\tif writable then before = {} for i = 1, #writable do before[i] = e[writable[i]] end end\n" +
 			"\tlocal keep = true\n" +
 			"\tfor i = 1, #list do\n" +
 			"\t\tlocal ok, cancel = pcall(list[i], e)\n" +
-			"\t\tif not ok then RefiiModErrors = (RefiiModErrors or '') .. 'event ' .. tostring(kind) .. ': ' .. tostring(cancel) .. '\\n'\n" +
+			"\t\tif not ok then Refii._report('event ' .. tostring(kind), cancel)\n" +
 			"\t\telseif cancel == true then keep = false end\n" +
 			"\tend\n" +
+			"\tif writable and Refii._write then\n" +
+			"\t\tfor i = 1, #writable do\n" +
+			"\t\t\tlocal v = e[writable[i]]\n" +
+			"\t\t\tif v ~= before[i] then\n" +
+			"\t\t\t\tif type(v) == 'number' then Refii._write(kind, writable[i], v)\n" +
+			"\t\t\t\telseif type(v) == 'boolean' then Refii._write(kind, writable[i], v and 1 or 0) end\n" +
+			"\t\t\tend\n" +
+			"\t\tend\n" +
+			"\tend\n" +
 			"\treturn keep\n" +
+			"end\n" +
+			"function Refii._report(where, err)\n" +
+			"\tlocal text = tostring(where) .. ': ' .. tostring(err)\n" +
+			"\tRefiiModErrors = (RefiiModErrors or '') .. text .. '\\n'\n" +
+			"\tif #RefiiModErrors > 4096 then RefiiModErrors = string.sub(RefiiModErrors, -4096) end\n" +
+			"\tif Refii._error then Refii._error(text) end\n" +
 			"end\n" +
 			"function Refii.setting(key, default)\n" +
 			"\tlocal v = RefiiSettings and RefiiSettings[key]\n" +
@@ -130,6 +163,27 @@ public static class ModLua
 		}
 
 		text.Append("}\n");
+		return text.ToString();
+	}
+
+	/// <summary>
+	/// Lua that OTHER composers contribute to the init chunk, after every mod's own init.lua:
+	/// the spells kind's generated handlers (Engine_ModSpells), a template's glue. Each entry is
+	/// (a label for errors, the source); it is wrapped like a mod's file and runs in the game VM.
+	/// Cleared and refilled on every mount by whoever contributes (register before
+	/// <see cref="Apply"/> runs, i.e. during the overlay pass).
+	/// </summary>
+	public static readonly List<(string Label, string Source)> ExtraInitSources = new();
+
+	/// <summary>
+	/// A mod's Lua text as it runs in the init chunk: the body of a protected function, its error
+	/// appended to <c>RefiiModErrors</c>. The Studio's live run sends this through the debug
+	/// channel so a chunk run live behaves exactly as it does at session start.
+	/// </summary>
+	public static string Wrap(string mod, string source)
+	{
+		var text = new StringBuilder();
+		AppendWrapped(text, mod, source);
 		return text.ToString();
 	}
 
@@ -193,6 +247,22 @@ public static class ModLua
 			included.Add(overlay.Name);
 		}
 
+		if (key == InitKey)
+		{
+			foreach ((string label, string source) in ExtraInitSources)
+			{
+				if (!Refii.Lua.Engine_LuaDecompiler.TryCheckSource(source, "@" + label, out string extraError) &&
+					!extraError.Contains("not available", StringComparison.Ordinal))
+				{
+					GD.PushWarning($"[mods] lua: {label} does not compile and is NOT run: {extraError}");
+					continue;
+				}
+
+				AppendWrapped(text, label, source);
+				included.Add(label);
+			}
+		}
+
 		// THE PREAMBLES STAND WHENEVER A MOD IS ENABLED, init.lua or not: a native-only mod keeps
 		// its state in RefiiModSave and subscribes nothing in Lua, and without the preamble that
 		// table was never carried through the save — Spell Weaving alone lost its level and its
@@ -221,8 +291,10 @@ public static class ModLua
 		string label = mod.Replace("\\", "\\\\").Replace("\"", "\\\"");
 		text.Append("do local ok, err = pcall(function()\n");
 		text.Append(source);
-		text.Append("\nend) if not ok then RefiiModErrors = (RefiiModErrors or \"\") .. \"")
+		text.Append("\nend) if not ok then if Refii and Refii._report then Refii._report(\"")
 			.Append(label)
-			.Append(": \" .. tostring(err) .. \"\\n\" end end\n");
+			.Append("\", err) else RefiiModErrors = (RefiiModErrors or \"\") .. \"")
+			.Append(label)
+			.Append(": \" .. tostring(err) .. \"\\n\" end end end\n");
 	}
 }

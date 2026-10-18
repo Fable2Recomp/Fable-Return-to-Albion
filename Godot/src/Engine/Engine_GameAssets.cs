@@ -110,29 +110,7 @@ public partial class Engine_GameAssets : Node
 
 		Task.Run(() =>
 		{
-			BnkFileSystem? mounted = null;
-			string failure = string.Empty;
-			try
-			{
-				// THE MODS ARE PART OF THE MOUNT. Resolving them here, on the worker, keeps one
-				// answer to "what is installed": the tree the guest reads through
-				// `host_asset_reader.h` and the tree Godot's own loaders read are the same one,
-				// mods included, because there is only one of them.
-				var overlays = Refii.Mods.ModIndex.ResolveOverlays(
-					ModsRoot, out Refii.Mods.ModLoadOrder order);
-				mounted = BnkFileSystem.Mount(
-					GameDirectory,
-					overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays),
-					updateRoot: Refii.Core.Engine_GameData.UpdateRootFor(GameDirectory));
-				ApplyModOrder(mounted, overlays, order);
-				try { Refii.Save.Engine_GoldenCockRuntime.Attach(mounted, Refii.Save.Engine_GoldenCockPlacements.Load()); }
-				catch (Exception exception) { GD.PushError("[golden-cock] " + exception.Message); }
-				Refii.Save.Engine_NewGameRuntime.Attach(mounted);
-			}
-			catch (Exception exception)
-			{
-				failure = exception.Message;
-			}
+			BnkFileSystem? mounted = BuildMount(live: false, out _, out string failure);
 
 			BnkFileSystem? previous;
 			lock (MountLock)
@@ -164,6 +142,166 @@ public partial class Engine_GameAssets : Node
 	}
 
 	/// <summary>
+	/// The banks with every enabled mod folded in, built off the main thread. <paramref name="live"/>
+	/// leaves the readers that live on the main thread (input bindings, FX recipes, the spell
+	/// pages) to the caller, for a session already running. Null when the mount itself failed;
+	/// a failure in a later pass is returned with the mount.
+	/// </summary>
+	private BnkFileSystem? BuildMount(
+		bool live, out IReadOnlyList<Refii.Mods.ModOverlay> overlays, out string failure)
+	{
+		BnkFileSystem? mounted = null;
+		overlays = Array.Empty<Refii.Mods.ModOverlay>();
+		failure = string.Empty;
+		try
+		{
+			// THE MODS ARE PART OF THE MOUNT. Resolving them here, on the worker, keeps one
+			// answer to "what is installed": the tree the guest reads through
+			// `host_asset_reader.h` and the tree Godot's own loaders read are the same one,
+			// mods included, because there is only one of them.
+			overlays = Refii.Mods.ModIndex.ResolveOverlays(
+				ModsRoot, out Refii.Mods.ModLoadOrder order);
+			mounted = BnkFileSystem.Mount(
+				GameDirectory,
+				overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays),
+				updateRoot: Refii.Core.Engine_GameData.UpdateRootFor(GameDirectory));
+			ApplyModOrder(mounted, overlays, order, live);
+			try { Refii.Save.Engine_GoldenCockRuntime.Attach(mounted, Refii.Save.Engine_GoldenCockPlacements.Load()); }
+			catch (Exception exception) { GD.PushError("[golden-cock] " + exception.Message); }
+			Refii.Save.Engine_NewGameRuntime.Attach(mounted);
+		}
+		catch (Exception exception)
+		{
+			failure = exception.Message;
+		}
+
+		return mounted;
+	}
+
+	/// <summary>How long a replaced tree stays open after a live remount: a reader on another
+	/// thread (the guest's asset reads, a level or texture worker) may have taken it just before
+	/// the swap, and each holds it for one read or one walk.</summary>
+	private const double RetireSeconds = 30.0;
+
+	/// <summary>What a live remount produced.</summary>
+	/// <param name="Ok">A tree was built and is now served.</param>
+	/// <param name="Failure">Why the mount, or one of its passes, failed; empty when none did.</param>
+	/// <param name="Mods">The enabled mods folded in, lowest priority first.</param>
+	/// <param name="Changed">Mod-contributed paths, in the old tree or the new, whose bytes differ between them.</param>
+	public sealed record RemountOutcome(
+		bool Ok, string Failure, IReadOnlyList<string> Mods, int FileCount, IReadOnlyList<string> Changed);
+
+	/// <summary>
+	/// Builds the mount again from the mods installed now, for a session that is running: the
+	/// same passes as <see cref="Mount"/> on a worker, the old tree serving until the new one is
+	/// swapped in and closed <see cref="RetireSeconds"/> later. Then, on the main thread, the
+	/// loaders are bound to the new tree, <see cref="Mounted"/> is emitted and
+	/// <paramref name="completed"/> runs. False, and nothing starts, while a mount is running or
+	/// when nothing is mounted.
+	/// </summary>
+	public bool Remount(Action<RemountOutcome> completed)
+	{
+		BnkFileSystem? before;
+		lock (MountLock)
+		{
+			if (_mounting || _filesystem is null)
+			{
+				return false;
+			}
+
+			_mounting = true;
+			before = _filesystem;
+		}
+
+		Task.Run(() =>
+		{
+			BnkFileSystem? mounted = BuildMount(
+				live: true, out IReadOnlyList<Refii.Mods.ModOverlay> overlays, out string failure);
+			IReadOnlyList<string> changed = mounted is null
+				? Array.Empty<string>()
+				: ChangedModPaths(before, mounted);
+
+			lock (MountLock)
+			{
+				if (mounted is not null)
+				{
+					_filesystem = mounted;
+					_byFileName = null;
+					_levels = null;
+				}
+
+				_mounting = false;
+			}
+
+			if (mounted is not null)
+			{
+				_ = Task.Delay(TimeSpan.FromSeconds(RetireSeconds)).ContinueWith(_ => before.Dispose());
+			}
+
+			var outcome = new RemountOutcome(
+				mounted is not null, failure, overlays.Select(o => o.Name).ToList(),
+				mounted?.FileCount ?? 0, changed);
+			Callable.From(() => FinishRemount(outcome, completed)).CallDeferred();
+		});
+
+		return true;
+	}
+
+	private void FinishRemount(RemountOutcome outcome, Action<RemountOutcome> completed)
+	{
+		if (outcome.Ok)
+		{
+			EnsureTextureLoader();
+			EmitSignal(SignalName.Mounted, outcome.FileCount);
+		}
+
+		completed(outcome);
+	}
+
+	/// <summary>Every path a mod contributes in either tree whose content is not the same in both.</summary>
+	private static List<string> ChangedModPaths(BnkFileSystem before, BnkFileSystem after)
+	{
+		var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (BnkFileSystem tree in new[] { before, after })
+		{
+			foreach (BnkFile file in tree.EnumerateAllFiles())
+			{
+				if (file.SourceMod.Length != 0)
+				{
+					candidates.Add(file.VirtualPath);
+				}
+			}
+		}
+
+		var changed = new List<string>();
+		foreach (string path in candidates)
+		{
+			byte[]? old = ReadOrNull(before, path);
+			byte[]? now = ReadOrNull(after, path);
+			if (old is null != now is null ||
+				(old is not null && now is not null && !old.AsSpan().SequenceEqual(now)))
+			{
+				changed.Add(path);
+			}
+		}
+
+		changed.Sort(StringComparer.OrdinalIgnoreCase);
+		return changed;
+	}
+
+	private static byte[]? ReadOrNull(BnkFileSystem tree, string path)
+	{
+		try
+		{
+			return tree.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
 	/// Installed mods, beside the player's game data.
 	///
 	/// By convention rather than by config: <c>&lt;app root&gt;/assets/mods</c>, the folder the
@@ -181,17 +319,37 @@ public partial class Engine_GameAssets : Node
 	///
 	/// The report is DERIVED from the finished mount, so it describes what the game will
 	/// actually serve rather than what the load order intended.
+	///
+	/// <paramref name="live"/>: a session is running, so the readers the main thread walks every
+	/// frame are not reset here; <see cref="Refii.Mods.ModRemount"/> resets them on that thread.
 	/// </summary>
 	private static void ApplyModOrder(
 		BnkFileSystem mounted,
 		IReadOnlyList<Refii.Mods.ModOverlay> overlays,
-		Refii.Mods.ModLoadOrder order)
+		Refii.Mods.ModLoadOrder order,
+		bool live)
 	{
 		_activeOverlays = overlays;
 		if (overlays.Count == 0)
 		{
 			Refii.Gdb.GdbPatchCompositor.PurgeCache(ModsRoot);
 			return;
+		}
+
+		// EVERY CONTENT KIND AGAINST ITS LOADER'S SCHEMA, once per mount and before any loader
+		// reads it (ModValidate): an error is content a loader refuses or misreads, a warning
+		// content it ignores.
+		foreach ((string mod, Refii.Mods.ModIssue issue) in Refii.Mods.ModValidate.ValidateOverlays(overlays))
+		{
+			string line = $"[mods] {mod}/{issue}";
+			if (issue.Error)
+			{
+				GD.PushError(line);
+			}
+			else
+			{
+				GD.PushWarning(line);
+			}
 		}
 
 		foreach ((string path, string owner) in order.Pins)
@@ -247,12 +405,24 @@ public partial class Engine_GameAssets : Node
 			}
 		}
 
+		// CUSTOM SPELLS before the Lua composition: spells/*.json stands in for one of the eight
+		// spell types — its Lua joins the init chunk, its name rows go over the book the row pass
+		// left, its icon and look are a file overlay and a recipe.
+		foreach (string line in Refii.Mods.ModSpells.Apply(mounted, overlays))
+		{
+			GD.Print($"[mods] spell {line}");
+		}
+
 		// MOD LUA: every enabled mod's mod/init.lua and mod/camera.lua, composed for the payload hook
 		// that runs them after the shipped scripts.
 		Refii.Mods.ModLua.Apply(mounted, overlays);
-		Refii.Mods.ModSettings.Reload();
-		Refii.Fx.Engine_FxRecipes.Reload();
-		Refii.Ui.Engine_UiSpellAssign.ReloadSecondary();
+		if (!live)
+		{
+			Refii.Mods.ModSettings.Reload();
+			Refii.Mods.ModInput.Reload();
+			Refii.Fx.Engine_FxRecipes.Reload();
+			Refii.Ui.Engine_UiSpellAssign.ReloadSecondary();
+		}
 
 		// Ensure GDB resolvers are bound so composite synthesis can access the unpatched base database:
 		Refii.Gdb.Engine_GameGdb.SetResolver(p => mounted.TryGetFile(p, out var f) ? f.ReadAllBytes() : null);

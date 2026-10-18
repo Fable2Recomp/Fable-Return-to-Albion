@@ -167,7 +167,9 @@ public static class Engine_NativeLibraries
 		// while sitting in a build directory nobody is looking in.
 		try
 		{
-			string projectDir = Godot.ProjectSettings.GlobalizePath("res://");
+			string? projectDir = ProjectDirectory();
+			if (projectDir is null)
+				return;
 
 			// The STAGED copy first — Godot/build/<arch>/bin, where the native build puts
 			// the launcher ops, the host bridge and the guest runtime. This is the only
@@ -213,6 +215,47 @@ public static class Engine_NativeLibraries
 			// Godot not up yet, or no project — the environment override and the
 			// assembly's own directory still apply.
 		}
+	}
+
+	/// <summary>
+	/// The Godot project directory. From the engine when one is running; otherwise — the test
+	/// host, a tool — by walking up from the assembly to the folder holding project.godot. A
+	/// Godot API call with no engine behind it is a native crash, not an exception, so the engine
+	/// is asked only when this process IS the engine (its main module, never dotnet's test host).
+	/// </summary>
+	private static string? ProjectDirectory()
+	{
+		string module = string.Empty;
+		try
+		{
+			module = System.Diagnostics.Process.GetCurrentProcess().MainModule?.ModuleName ?? string.Empty;
+		}
+		catch (Exception)
+		{
+		}
+
+		bool hostedByDotnet = module.StartsWith("dotnet", StringComparison.OrdinalIgnoreCase) ||
+			module.StartsWith("testhost", StringComparison.OrdinalIgnoreCase);
+		if (!hostedByDotnet)
+		{
+			try
+			{
+				return Godot.ProjectSettings.GlobalizePath("res://");
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		string? at = AppContext.BaseDirectory;
+		for (int i = 0; i < 12 && at is not null; i++)
+		{
+			if (File.Exists(Path.Combine(at, "project.godot")))
+				return at;
+			at = Path.GetDirectoryName(at);
+		}
+
+		return null;
 	}
 
 	private static IEnumerable<string> CandidateDirectories()

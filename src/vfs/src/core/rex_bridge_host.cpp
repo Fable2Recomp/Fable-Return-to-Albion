@@ -361,6 +361,24 @@ extern "C" void* refii_bridge_rex_resolve_indirect_function(uint32_t guest_addre
   return reinterpret_cast<void*>(::rex::runtime::ResolveIndirectFunction(guest_address));
 }
 
+extern "C" int32_t refii_bridge_rex_has_function(uint32_t guest_address) {
+  ::rex::Runtime* runtime = ::rex::Runtime::instance();
+  auto* dispatcher = runtime != nullptr ? runtime->function_dispatcher() : nullptr;
+  return dispatcher != nullptr && dispatcher->GetFunction(guest_address) != nullptr ? 1 : 0;
+}
+
+extern "C" uint32_t refii_bridge_rex_allocate_thunk(void* host_function, uint32_t caller_address) {
+  ::rex::Runtime* runtime = ::rex::Runtime::instance();
+  if (runtime == nullptr || host_function == nullptr) {
+    return 0;
+  }
+  auto* dispatcher = runtime->function_dispatcher();
+  if (dispatcher == nullptr) {
+    return 0;
+  }
+  return dispatcher->AllocateThunk(reinterpret_cast<PPCFunc*>(host_function), caller_address);
+}
+
 extern "C" void refii_bridge_rex_increment_counter(uint32_t counter_id, int64_t delta) {
   ::rex::perf::IncrementCounter(static_cast<::rex::perf::CounterId>(counter_id), delta);
 }

@@ -159,9 +159,10 @@ public static class Engine_UiScreenActions
 	/// <summary>Runs a named action. An empty or unknown name does nothing.</summary>
 	public static bool Run(string action)
 	{
-		if (action == Engine_UiWeatherOptions.OpenCommand)
+		// A HOST OPTIONS PAGE — the dynamic sky's switches, a mod's settings: the row opens the
+		// page the registry maps its command to, on the options screen's own furniture.
+		if (Engine_UiHostOptionsPage.Run(action))
 		{
-			Engine_UiOptionsPending.EnterWeather();
 			return true;
 		}
 

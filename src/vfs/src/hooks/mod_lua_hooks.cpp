@@ -40,6 +40,10 @@ PPC_EXTERN_FUNC(rex_lhLua_RunScriptBuffer);
 namespace refii::vfs {
 /// The mod events LuaReady / SaveLoaded (hooks/mod_events.cpp).
 void DispatchLuaEvent(PPCContext& ctx, uint8_t* base, bool save_loaded);
+/// The Refii.* natives into the game VM (hooks/mod_lua_natives.cpp), before any mod's init runs.
+void RegisterModLuaNatives(PPCContext& ctx, uint8_t* base, uint32_t state);
+/// The script system the startup scripts last ran on, or 0 (refii_mod_spawn's binding).
+uint32_t ModScriptSystem();
 }  // namespace refii::vfs
 
 namespace {
@@ -48,6 +52,10 @@ constexpr const char* kInitKey = "refii/mod_init.lua";
 constexpr const char* kCameraKey = "refii/mod_camera.lua";
 
 bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
+
+/// The script system the startup scripts last ran on (r3 of LoadStartupScripts): what the game's
+/// own script natives are bound to.
+std::atomic<uint32_t> g_script_system{0u};
 
 /// Runs the host's composed chunk at `key` in the VM `state`. False when there is none to run.
 bool RunComposedChunk(PPCContext& ctx, uint8_t* base, uint32_t state, const char* key) {
@@ -134,8 +142,10 @@ REX_EXTERN(rex_lhLuaScriptSystem_LoadStartupScripts) {
 
   const uint32_t system = entry.r3.u32;
   if (Plausible(system)) {
+    g_script_system.store(system, std::memory_order_relaxed);
     PPCContext work = entry;
     const uint32_t state = refii::vfs::LoadGuestU32(base, system);
+    refii::vfs::RegisterModLuaNatives(work, base, state);
     RunComposedChunk(work, base, state, kInitKey);
     RunComposedChunk(work, base, state, kCameraKey);
   }
@@ -172,3 +182,5 @@ REX_EXTERN(rex_lhLuaScriptSystem_RunCameraScripts) {
     refii::vfs::ReapplyCameraFeel(work, base);
   }
 }
+
+uint32_t refii::vfs::ModScriptSystem() { return g_script_system.load(std::memory_order_relaxed); }

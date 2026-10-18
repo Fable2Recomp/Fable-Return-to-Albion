@@ -94,9 +94,11 @@ public sealed class ModManifest
 					{
 						string normalized = ModLoadOrder.Normalize(f2Entry.Path);
 						// Native sources are owned per function (ModNative), never per file: two
-						// mods may each ship native/combat.cpp and both compile.
+						// mods may each ship native/combat.cpp and both compile. Mod Lua is
+						// composed (ModLua) and mod GDScript is run by the host (ModGodot):
+						// neither is an asset overlay.
 						if (normalized.Length == 0 || ModNative.IsNativePath(normalized) ||
-							ModLua.IsModLuaPath(normalized))
+							ModLua.IsModLuaPath(normalized) || ModGodot.IsGodotScriptPath(normalized))
 						{
 							continue;
 						}

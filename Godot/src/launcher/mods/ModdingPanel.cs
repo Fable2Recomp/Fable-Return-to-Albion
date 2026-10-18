@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Godot;
 using Refii.Launcher.Core;
 using Refii.Launcher.Editing;
@@ -68,11 +70,28 @@ public partial class ModdingPanel : VBoxContainer
 		AddChild(_rootLabel);
 
 		Label help = MakeLabel(
-			"Install mods by dropping .f2mod packages directly into this folder. Enabled mods " +
-			"override matching game records; higher in the list wins a conflict. Changes " +
-			"apply the next time the game starts.");
+			"Install a mod package (.f2mod) from a file or a link, or drop packages into this " +
+			"folder. A mod is installed disabled: tick it to turn it on. Enabled mods override " +
+			"matching game records; higher in the list wins a conflict. Changes apply the next " +
+			"time the game starts.");
 		help.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		AddChild(help);
+
+		var installRow = new HBoxContainer();
+		installRow.AddThemeConstantOverride("separation", 6);
+		AddChild(installRow);
+
+		var installFile = new Button { Text = "Install from file…" };
+		Apply(installFile);
+		installFile.TooltipText = "Install a .f2mod package from this computer.";
+		installFile.Pressed += OnInstallFromFile;
+		installRow.AddChild(installFile);
+
+		var installUrl = new Button { Text = "Install from URL…" };
+		Apply(installUrl);
+		installUrl.TooltipText = "Download and install a .f2mod package from an https link.";
+		installUrl.Pressed += OnInstallFromUrl;
+		installRow.AddChild(installUrl);
 
 		var row = new HBoxContainer();
 		row.AddThemeConstantOverride("separation", 6);
@@ -247,7 +266,13 @@ public partial class ModdingPanel : VBoxContainer
 		}
 	}
 
-	private void SaveEnabledMods()
+	private void SaveEnabledMods() => WriteOrder(null);
+
+	/// <summary>
+	/// Writes <see cref="_order"/> and recomposes the record overlays. <paramref name="status"/>
+	/// replaces the default status line when the write succeeds.
+	/// </summary>
+	private void WriteOrder(string? status)
 	{
 		// Synchronize _order.Enabled to strictly follow _order.Order
 		var newEnabled = new List<string>();
@@ -262,7 +287,7 @@ public partial class ModdingPanel : VBoxContainer
 		_order.Enabled.AddRange(newEnabled);
 
 		_statusMessage = _order.Write(_modsRoot, out string error)
-			? "Updated enabled mods."
+			? status ?? "Updated enabled mods."
 			: "Failed to update enabled mods: " + error;
 
 		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
@@ -278,6 +303,261 @@ public partial class ModdingPanel : VBoxContainer
 		RefreshState();
 	}
 
+
+	/// <summary>Picks a .f2mod on this computer and shows what it is before installing it.</summary>
+	private void OnInstallFromFile()
+	{
+		var picker = new FileDialog
+		{
+			FileMode = FileDialog.FileModeEnum.OpenFile,
+			Access = FileDialog.AccessEnum.Filesystem,
+			Title = "Install Mod Package",
+			Filters = new[] { "*.f2mod ; Refii mod package" },
+			Size = new Vector2I(820, 560),
+		};
+		picker.FileSelected += path => ConfirmInstall(ModInstaller.Inspect(path, _modsRoot), downloaded: false);
+		picker.VisibilityChanged += () =>
+		{
+			if (!picker.Visible)
+			{
+				picker.QueueFree();
+			}
+		};
+		DialogHost().AddChild(picker);
+		picker.PopupCentered();
+	}
+
+	/// <summary>
+	/// Downloads an https link into the mods folder's <c>.cache/downloads/</c> with progress, then
+	/// shows what it is before installing it. Cancel stops the download and removes the file.
+	/// </summary>
+	private void OnInstallFromUrl()
+	{
+		var dialog = new ConfirmationDialog
+		{
+			Title = "Install Mod from URL",
+			OkButtonText = "Download",
+			CancelButtonText = "Cancel",
+			DialogHideOnOk = false,
+			MinSize = new Vector2I(560, 0),
+		};
+
+		var box = new VBoxContainer();
+		box.AddThemeConstantOverride("separation", 6);
+		var prompt = new Label { Text = "Paste an https link to a .f2mod package:" };
+		Apply(prompt);
+		box.AddChild(prompt);
+		var link = new LineEdit
+		{
+			PlaceholderText = "https://example.com/my_mod.f2mod",
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+		};
+		Apply(link);
+		box.AddChild(link);
+		var bar = new ProgressBar
+		{
+			MinValue = 0,
+			MaxValue = 1,
+			Step = 0.001,
+			Visible = false,
+			CustomMinimumSize = new Vector2(0, 20),
+		};
+		box.AddChild(bar);
+		var status = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
+		Apply(status);
+		box.AddChild(status);
+		dialog.AddChild(box);
+
+		CancellationTokenSource? running = null;
+		bool closed = false;
+
+		void Finished(ModInstallResult result)
+		{
+			running?.Dispose();
+			running = null;
+			if (closed || !GodotObject.IsInstanceValid(dialog))
+			{
+				ModInstaller.DiscardDownload(result.Path, _modsRoot);
+				return;
+			}
+
+			if (!result.Ok)
+			{
+				ModInstaller.DiscardDownload(result.Path, _modsRoot);
+				status.Text = result.Error;
+				bar.Visible = false;
+				link.Editable = true;
+				dialog.GetOkButton().Disabled = false;
+				return;
+			}
+
+			dialog.Hide();
+			ConfirmInstall(result, downloaded: true);
+		}
+
+		void Start()
+		{
+			if (running is not null)
+			{
+				return;
+			}
+
+			string url = link.Text.Trim();
+			if (url.Length == 0)
+			{
+				status.Text = "Paste a link first.";
+				return;
+			}
+
+			running = new CancellationTokenSource();
+			CancellationToken token = running.Token;
+			link.Editable = false;
+			dialog.GetOkButton().Disabled = true;
+			bar.Visible = true;
+			bar.Value = 0;
+			status.Text = "Downloading…";
+
+			var progress = new DeferredProgress(value =>
+			{
+				if (!GodotObject.IsInstanceValid(bar))
+				{
+					return;
+				}
+
+				bar.Indeterminate = value < 0;
+				if (value >= 0)
+				{
+					bar.Value = value;
+				}
+			});
+			string root = _modsRoot;
+			_ = Task.Run(async () =>
+			{
+				ModInstallResult result = await ModInstaller.DownloadAsync(url, progress, token, root);
+				Callable.From(() => Finished(result)).CallDeferred();
+			});
+		}
+
+		dialog.Confirmed += Start;
+		link.TextSubmitted += _ => Start();
+		dialog.Canceled += () =>
+		{
+			closed = true;
+			running?.Cancel();
+		};
+		dialog.VisibilityChanged += () =>
+		{
+			if (!dialog.Visible)
+			{
+				dialog.QueueFree();
+			}
+		};
+		DialogHost().AddChild(dialog);
+		dialog.PopupCentered();
+		link.GrabFocus();
+	}
+
+	/// <summary>
+	/// Shows the inspection — hard mod, unmet requirements, warnings — and installs only on
+	/// Install. A downloaded package is removed from <c>.cache/downloads/</c> either way.
+	/// </summary>
+	private void ConfirmInstall(ModInstallResult preview, bool downloaded)
+	{
+		if (!preview.Ok)
+		{
+			if (downloaded)
+			{
+				ModInstaller.DiscardDownload(preview.Path, _modsRoot);
+			}
+
+			_statusMessage = "Could not install: " + preview.Error;
+			Rebuild();
+			return;
+		}
+
+		var dialog = new ConfirmationDialog
+		{
+			Title = preview.HardMod ? "Install a hard mod (native code)" : "Install mod",
+			DialogText = ModInstaller.Describe(preview),
+			OkButtonText = "Install",
+			CancelButtonText = "Cancel",
+			DialogAutowrap = true,
+			MinSize = new Vector2I(560, 0),
+		};
+		dialog.Confirmed += () => Install(preview.Path, downloaded);
+		dialog.Canceled += () =>
+		{
+			if (downloaded)
+			{
+				ModInstaller.DiscardDownload(preview.Path, _modsRoot);
+			}
+		};
+		dialog.VisibilityChanged += () =>
+		{
+			if (!dialog.Visible)
+			{
+				dialog.QueueFree();
+			}
+		};
+		DialogHost().AddChild(dialog);
+		dialog.PopupCentered();
+	}
+
+	private void Install(string packagePath, bool downloaded)
+	{
+		ModInstallResult result = ModInstaller.InstallFromFile(packagePath, _modsRoot);
+		if (downloaded)
+		{
+			ModInstaller.DiscardDownload(packagePath, _modsRoot);
+		}
+
+		if (!result.Ok)
+		{
+			_statusMessage = "Could not install: " + result.Error;
+			RefreshState();
+			return;
+		}
+
+		var message = new System.Text.StringBuilder();
+		message.Append($"Installed '{result.Title}'");
+		if (result.Version.Length != 0)
+		{
+			message.Append(' ').Append(result.Version);
+		}
+
+		message.Append(" (disabled — tick it to turn it on).");
+		if (result.HardMod)
+		{
+			message.Append(" It is a hard mod: enabling it asks you to allow its native code.");
+		}
+
+		if (result.MissingDependencies.Count != 0)
+		{
+			message.Append(" It needs: ").Append(string.Join("; ", result.MissingDependencies)).Append('.');
+		}
+
+		foreach (string warning in result.Warnings)
+		{
+			message.Append(' ').Append(warning);
+		}
+
+		// The installer wrote the order; read it back so the save below recomposes from it.
+		_order = ModLoadOrder.Read(_modsRoot);
+		WriteOrder(message.ToString());
+	}
+
+	private Node DialogHost() =>
+		(Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
+
+	/// <summary>Progress from a worker thread, delivered on the main thread.</summary>
+	private sealed class DeferredProgress : IProgress<float>
+	{
+		private readonly Action<float> _report;
+
+		public DeferredProgress(Action<float> report) => _report = report;
+
+		public void Report(float value) => Callable.From(() => _report(value)).CallDeferred();
+	}
 
 	/// <summary>
 	/// Installs the editor if it is not here, otherwise opens it.

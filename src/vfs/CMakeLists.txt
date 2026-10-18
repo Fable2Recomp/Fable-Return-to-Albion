@@ -132,6 +132,10 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/mod_api.cpp
     # The mod event bus: typed events on the game's seams, and the mods' Lua handlers.
     ${REFII_VFS_ROOT}/src/hooks/mod_events.cpp
+    # The host's queued helper calls and queries (Godot scripts), run in the guest tick.
+    ${REFII_VFS_ROOT}/src/hooks/mod_commands.cpp
+    # The Refii.* natives registered into the game VM for mods' Lua.
+    ${REFII_VFS_ROOT}/src/hooks/mod_lua_natives.cpp
     ${REFII_VFS_ROOT}/src/hooks/lua_gc_slice.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/particle_transform.cpp

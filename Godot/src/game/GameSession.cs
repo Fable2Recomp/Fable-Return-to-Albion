@@ -327,6 +327,10 @@ public partial class GameSession : Node
 	{
 		// The mods' settings.json values reach the game once per guest.
 		Refii.Mods.ModSettings.Pump(Refii.Host.HostBridge.IsGuestUp);
+		Refii.Mods.ModErrors.Pump();
+
+		// The mods' godot/*.gd scripts run under this node while the guest is up and driven.
+		Refii.Mods.ModGodot.Pump(this, _driving && Refii.Host.HostBridge.IsGuestUp);
 
 		// The modern renderer's decals: the guest's stated ring as Godot decals.
 		if (!Refii.Models.Engine_ClassicMaterial.Active && Refii.Host.HostBridge.IsGuestUp)
@@ -730,6 +734,9 @@ public partial class GameSession : Node
 
 		Engine_TexLibrary.Report();
 		Refii.Models.Engine_MdlMaterial.ReportIfChanged();
+
+		// The mod scripts and their singleton go before the guest does.
+		Refii.Mods.ModGodot.Stop();
 
 		// Guest threads left live at process exit abort the process. Raw version, not
 		// `TryGetAbiVersion`: that one reports the refusal latch, set exactly when the guest

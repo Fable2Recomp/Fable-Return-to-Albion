@@ -190,7 +190,7 @@
 0x82227C70 = { size = 0xB8 }
 0x82227D28 = { size = 0x3C }
 0x82227DA0 = { name = "rex_lhStringTableLookup", size = 0x184 }
-0x82228388 = { name = "rex_lhStringTableFind", size = 0x90 }
+0x82228388 = { name = "rex_lua_getfield", size = 0x90 }
 0x82229368 = { size = 0x88 }
 0x822297A0 = { size = 0x3C }
 0x8222A800 = { size = 0xA4 }
@@ -1460,7 +1460,7 @@
 0x82434B88 = { size = 0xCC }
 0x8243D080 = { size = 0x8 }
 0x8243D0F0 = { size = 0x5C }
-0x8243D5A8 = { size = 0x18C }
+0x8243D5A8 = { name = "rex_SleepMenu_Show", size = 0x18C }
 0x8243D738 = { size = 0x10 }
 0x8243E3B8 = { size = 0x40 }
 0x8243E3F8 = { size = 0x178 }
@@ -1552,7 +1552,7 @@
 0x8245E038 = { size = 0x168 }
 0x8245E1A0 = { size = 0xE8 }
 0x8245E340 = { size = 0x104 }
-0x8245E448 = { size = 0xA4 }
+0x8245E448 = { name = "rex_lhLuaScriptSystem_CreateEntityAtPosition", size = 0xA4 }
 0x8245E4F0 = { size = 0x128 }
 0x8245E618 = { size = 0x128 }
 0x8245E740 = { size = 0x1BC }
@@ -1735,7 +1735,7 @@
 0x82496E58 = { size = 0x8 }
 0x82496E60 = { size = 0x8 }
 0x824977D8 = { size = 0x58 }
-0x82497830 = { size = 0x1C }
+0x82497830 = { name = "rex_Village_IsLineOfSight", size = 0x1C }
 0x82497850 = { size = 0x204 }
 0x82498110 = { size = 0x20C }
 0x82498320 = { size = 0x7C }
@@ -4784,7 +4784,7 @@
 0x82A1E230 = { size = 0xA4 }
 0x82A1FD00 = { size = 0x1D8 }
 0x82A240E0 = { name = "rex_lua_index2adr", size = 0xC8 }
-0x82A241D0 = { name = "rex_lua_newtable", size = 0x64 }
+0x82A241D0 = { name = "rex_lua_newthread_api", size = 0x64 }
 0x82A24238 = { name = "rex_lua_replace", size = 0x178 }
 0x82A243B0 = { name = "rex_lua_isstring", size = 0x5C }
 0x82A24410 = { name = "rex_lua_equal", size = 0x8C }
@@ -4796,22 +4796,22 @@
 0x82A246C8 = { name = "rex_lua_setfield", size = 0x94 }
 0x82A24760 = { name = "rex_lua_settable", size = 0xA8 }
 0x82A24808 = { size = 0xC }
-0x82A24818 = { name = "rex_lua_pushcclosure", size = 0xB8 }
+0x82A24818 = { name = "rex_lua_f_Ccall", size = 0xB8 }
 0x82A248D0 = { name = "rex_lua_load_internal", size = 0xB0 }
 0x82A24980 = { name = "rex_lua_dump", size = 0xD8 }
 0x82A24A58 = { name = "rex_lua_error", size = 0x24 }
 0x82A24A80 = { name = "rex_lua_concat", size = 0xC4 }
-0x82A24B48 = { name = "rex_lua_next", size = 0x70 }
+0x82A24B48 = { name = "rex_lua_getupvalue", size = 0x70 }
 0x82A24BB8 = { name = "rex_lua_rawset", size = 0xD4 }
 0x82A24C90 = { name = "rex_luaL_argerror", size = 0x100 }
 0x82A24D90 = { name = "rex_luaL_typerror", size = 0x90 }
 0x82A24E20 = { name = "rex_luaL_where", size = 0x94 }
 0x82A24EB8 = { name = "rex_luaL_error", size = 0xE0 }
 0x82A24F98 = { name = "rex_luaB_checkoption", size = 0xD4 }
-0x82A25070 = { name = "rex_lua_getfield", size = 0xB4 }
+0x82A25070 = { name = "rex_luaL_newmetatable", size = 0xB4 }
 0x82A25128 = { name = "rex_luaL_optlstring", size = 0xCC }
 0x82A251F8 = { name = "rex_luaI_openlib", size = 0x8 }
-0x82A25200 = { name = "rex_luaL_register", size = 0x160 }
+0x82A25200 = { name = "rex_luaI_openlib_body", size = 0x160 }
 0x82A25360 = { name = "rex_luaL_gsub", size = 0x168 }
 0x82A254C8 = { name = "rex_luaL_findtable", size = 0x240 }
 0x82A25708 = { name = "rex_luaL_pushresult", size = 0x6C }
@@ -11266,11 +11266,9 @@
 0x821FC178 = { }
 0x82202D10 = { }
 0x822059E8 = { }
-0x8220A4B0 = { }
 0x8221A880 = { }
 0x8221FC40 = { }
 0x82220CA8 = { }
-0x82227A50 = { }
 0x82229218 = { }
 0x8222ABE0 = { name = "rex_lhRenderCommandStream_Reserve" }
 0x8222C568 = { }
@@ -11340,7 +11338,6 @@
 0x82B90048 = { }
 0x82BA2500 = { }
 0x82BA4AF8 = { }
-0x82BCBD08 = { }
 0x82D00278 = { name = "rex_XStorageEnumerate" }
 0x82EF2A90 = { }
 0x8300F7E8 = { }
@@ -11554,3 +11551,68 @@
 0x82BB5760 = { name = "rex_lhGuiAnimation_GotoSlide" }
 0x83231C40 = { name = "rex_CParticleSystemEntityInstance_SetOrientation" }
 0x832325A8 = { name = "rex_CParticleSystemEntityInstance_SetPositionAndVelocity" }
+
+# The mod API's quest and dialogue seams (hooks/mod_events.cpp) and the game VM's Lua 5.1 C API
+# the Refii.* natives call (hooks/mod_lua_natives.cpp). Two Lua runtimes are linked; these are
+# the GAME's (index2adr 0x82A240E0), never the UI's.
+0x8251C618 = { name = "rex_CECQuestTracker_SetAsActive" }
+0x8251D0D8 = { name = "rex_CECQuestTracker_OnQuestEnded" }
+0x8251D480 = { name = "rex_CECQuestTracker_SetObjectiveTagSilently" }
+0x825D7F78 = { name = "rex_CECTalk_PlayLine" }
+0x8219AA80 = { name = "rex_lua_pushcclosure", size = 0xD4 }
+0x821E1BA8 = { name = "rex_lua_createtable", size = 0x64 }
+0x82227D88 = { name = "rex_lua_gettop", size = 0x14 }
+0x82BCBD08 = { name = "rex_lua_settop", size = 0x74 }
+0x82228200 = { name = "rex_lua_type", size = 0x48 }
+0x822279F8 = { name = "rex_lua_tonumber", size = 0x58 }
+0x82207848 = { name = "rex_lua_toboolean", size = 0x58 }
+0x8222C3D0 = { name = "rex_lua_tolstring", size = 0xA4 }
+0x82235C88 = { name = "rex_lua_pushnil", size = 0x1C }
+0x8220A4B0 = { name = "rex_lua_pushnumber", size = 0x20 }
+0x82227A50 = { name = "rex_lua_pushboolean", size = 0x2C }
+0x8222A4C0 = { name = "rex_lua_pushstring", size = 0x48 }
+# The game's Entity userdata (FableType_CEntity) for the Refii.entity / Refii.handle natives, and
+# the world entity manager's add (EntitySpawned).
+0x823A2FC0 = { name = "rex_lhLua_PushEntity", size = 0x70 }
+0x82227FC8 = { name = "rex_lhLua_IsFableType", size = 0xBC }
+0x82227560 = { name = "rex_lhScriptEntityRef_Resolve", size = 0x68 }
+0x822280F8 = { name = "rex_lua_touserdata", size = 0x64 }
+0x82363BA0 = { name = "rex_lhEntityManager_Add", size = 0x11C }
+0x82241890 = { name = "rex_lua_rawseti", size = 0xA4 }
+# The mod API's social, combat-detail, world and menu seams (hooks/mod_events.cpp).
+0x82413698 = { name = "rex_CECExpressionPerformer_StartExpression" }
+0x824D62A0 = { name = "rex_lhHeroStats_ModifyRenown" }
+0x824D5BC0 = { name = "rex_lhHeroStats_ModifyMorality" }
+0x824D6BE0 = { name = "rex_lhHeroStats_ModifyPurity" }
+0x827AEFD8 = { name = "rex_CECPlayerFamily_Marry" }
+0x82810FE0 = { name = "rex_CECDog_PerformCommand" }
+0x82728730 = { name = "rex_CECFirearm_Fire" }
+0x8238CDC8 = { name = "rex_lhEntity_AddComponent" }
+0x8238CB78 = { name = "rex_lhEntity_RemoveComponent" }
+0x82845120 = { name = "rex_CECTargetingPlayer_SetTarget" }
+0x82844F80 = { name = "rex_CECTargetingPlayer_ClearTarget" }
+0x82786F58 = { name = "rex_CECOpinionReaction_OnDeed" }
+0x827915D8 = { name = "rex_CECOpinionReaction_ModifyAxisValue" }
+0x82298460 = { name = "rex_lhGameTimeManager_Update" }
+0x82549B80 = { name = "rex_lhEnvironmentThemeManager_BlendToTheme" }
+0x823D5760 = { name = "rex_CmdLevelChange_Start" }
+0x82519B08 = { name = "rex_FastTravelManager_TravelToStop" }
+0x8236EB68 = { name = "rex_lhGuiManager_EnterGuiMode" }
+0x8236E388 = { name = "rex_lhGuiManager_SetActiveScreen" }
+0x8233E668 = { name = "rex_CNetworkManager_LeaveSession", size = 0x114 }
+
+0x822D6A20 = { name = "rex_lhPaintMap_DaySetAt", size = 0x1A8 }
+0x827ECA38 = { name = "rex_SpellSlowTime_SetWorldScale", size = 0x1A4 }
+0x82756F28 = { name = "rex_SpellRaiseDead_BindSummoner", size = 0x38C }
+0x825A6198 = { name = "rex_SpellDamoclesSword_Create", size = 0x20C }
+0x82688D40 = { name = "rex_lhRagdoll_GoFloppy", size = 0xE4 }
+0x82688E28 = { name = "rex_lhRagdoll_Recover", size = 0xA0 }
+0x823A4520 = { name = "rex_CECCreature_SetUnconscious", size = 0x21C }
+0x82770A00 = { name = "rex_HollowMan_SetCrumbled", size = 0x374 }
+0x8236E630 = { name = "rex_lhGuiManager_SetScreen", size = 0x534 }
+0x821ECA30 = { name = "rex_lhGameFlow_IsGuiActive", size = 0xA4 }
+0x82370050 = { name = "rex_lhGuiManager_EnterGuiModeQuiet", size = 0x128 }
+0x823A4290 = { name = "rex_CECCreature_FinishDeath" }
+0x8217EB08 = { name = "rex_XboxLive_Instance", size = 0x7C }
+0x822EA848 = { name = "rex_XboxLive_RestoreAfterLeave", size = 0x7C }
+0x821E4250 = { name = "rex_GDBManager_FindEntryByHash", size = 0x64 }

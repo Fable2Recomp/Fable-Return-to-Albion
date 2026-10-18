@@ -30,6 +30,8 @@
 //
 // VERSIONING. REFII_MOD_API_VERSION rises when an event's fields change meaning or an event is
 // removed; new events and new trailing fields do not bump it. A mod may test it at compile time.
+// Version 2: Lua and Godot receive entities and objects as HANDLES (refii_mod_handle) and
+// hashes (definitions, text) as hex strings; native structs are unchanged.
 
 #pragma once
 
@@ -37,7 +39,7 @@
 
 #include <rex/ppc/context.h>
 
-#define REFII_MOD_API_VERSION 1
+#define REFII_MOD_API_VERSION 2
 
 /// The numeric kinds. Stable within an API version; the names are what mods use.
 enum refii_mod_event_kind : int32_t {
@@ -74,14 +76,49 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_WEAPON_EQUIPPED = 30,
   REFII_EVENT_ABILITY_LEVEL = 31,
   REFII_EVENT_GOLD = 32,
-  REFII_EVENT_COUNT = 33,
+  REFII_EVENT_RELATION = 33,
+  REFII_EVENT_INPUT_ACTION = 34,
+  REFII_EVENT_QUEST_STARTED = 35,
+  REFII_EVENT_QUEST_ENDED = 36,
+  REFII_EVENT_QUEST_OBJECTIVE = 37,
+  REFII_EVENT_DIALOGUE = 38,
+  REFII_EVENT_ENTITY_SPAWNED = 39,
+  REFII_EVENT_ENTITY_REMOVED = 40,
+  REFII_EVENT_EXPRESSION_STARTED = 41,
+  REFII_EVENT_RENOWN = 42,
+  REFII_EVENT_MORALITY = 43,
+  REFII_EVENT_PURITY = 44,
+  REFII_EVENT_MARRIAGE = 45,
+  REFII_EVENT_DOG_TRICK = 46,
+  REFII_EVENT_RANGED_SHOT = 47,
+  REFII_EVENT_STATUS_EFFECT = 48,
+  REFII_EVENT_TARGET_CHANGED = 49,
+  REFII_EVENT_OPINION_DEED = 50,
+  REFII_EVENT_OPINION_MODIFIED = 51,
+  REFII_EVENT_TIME_OF_DAY = 52,
+  REFII_EVENT_WEATHER_THEME = 53,
+  REFII_EVENT_SLEEP_MENU = 54,
+  REFII_EVENT_TRAVEL = 55,
+  REFII_EVENT_FAST_TRAVEL = 56,
+  REFII_EVENT_MENU_OPENED = 57,
+  REFII_EVENT_MENU_CLOSED = 58,
+  REFII_EVENT_MENU_SCREEN = 59,
+  REFII_EVENT_WEATHER_REGION = 60,
+  REFII_EVENT_SLEEP_CHOSEN = 61,
+  REFII_EVENT_SLOW_TIME = 62,
+  REFII_EVENT_SUMMONED = 63,
+  REFII_EVENT_COUNT = 64,
 };
+
+/// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
+#define REFII_MOD_HOST_REPLY_KIND 1000
 
 /// A subscriber: `event` is the kind's struct (below), `user` is what was registered with it.
 typedef void (*refii_mod_event_fn)(void* event, void (*user)(void));
 
 /// Subscribes `fn` to `kind` at `priority` (higher runs first). `owner` is the mod's name, for
-/// the log. Returns the subscription's index, or -1 for an unknown kind.
+/// the log. A kind at or above REFII_EVENT_COUNT is a mod's own (raised with refii_mod_dispatch).
+/// Returns the subscription's index, or -1 for a negative kind or no function.
 extern "C" int32_t refii_mod_subscribe(int32_t kind, refii_mod_event_fn fn, void (*user)(void), int32_t priority,
                                        const char* owner);
 
@@ -192,8 +229,9 @@ struct RollStartedEvent : RollEvent {
 };
 
 /// A block is taking a hit. `cancel` BREAKS THE GUARD: the hit lands in full, as if there were
-/// no block. Fired once per hit (the game runs two block listeners per hit, pose and response;
-/// the second takes the first's verdict). `unblockable` hits bypass blocks in the game already
+/// no block. Fired once per hit (two block classes each register one listener — pose and response;
+/// when both are live on a victim the second takes the first's verdict). Refusing a response-class
+/// block also drops a parry it would make (hit +0x1A). `unblockable` hits bypass blocks in the game already
 /// and are reported with cancel ignored. Seams: rex_CActionBlock_OnHitBlockPose /
 /// _OnHitBlockedResponse (r3 listener at action+0x54, r4 hit, r5 result word).
 struct BlockEvent : Event {
@@ -237,6 +275,9 @@ struct HitEvent : Event {
   int32_t spell_type;
   int32_t spell_level;
   uint32_t spell_serial;
+  /// The hit asks for a knockdown (hit +0x18; force push sets it, as do heavy blows). Writable
+  /// before delivery: the victim's hit response reads it to choose the knockdown.
+  bool knockdown;
 };
 
 struct HitLandedEvent : HitEvent {
@@ -338,12 +379,17 @@ struct ExperienceEvent : Event {
   int32_t pool;
   float amount;
   bool spend;
+  /// Raised inside another Experience event: a Spend's own payments, or the game's co-op share of
+  /// a change already reported. A handler that scales `amount` acts only when this is false;
+  /// a nested event cannot be cancelled (it would half-apply its outer change).
+  bool nested;
 };
 
-/// A creature is dying: the one function every creature death goes through, from damage (the
-/// health component at zero), from a script kill, from a fall. `cancel` keeps it alive: the
-/// death is not started and the creature's health is set to 1 so the next hit asks again (the
-/// game's own CantDie answer). Heroes never come here from damage — see HeroDowned. Seam:
+/// A creature is dying, from damage (the health component at zero), a script kill, a fall, or a
+/// death finished without the dying step (rex_CECCreature_FinishDeath: knockdown ends, scripts).
+/// `cancel` keeps it alive only for a death by damage (health at zero): the death is not started
+/// and health is set to 1 so the next hit asks again; other deaths cannot be refused — their
+/// callers act on the death regardless. Heroes never come here from damage — see HeroDowned. Seam:
 /// rex_CECCreature_Die (r3 creature component 20, owner at +4, alive byte +0x18; r4 killer or 0).
 struct EntityDiedEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_ENTITY_DIED;
@@ -414,9 +460,11 @@ struct GameSavingEvent : Event {
   const char* file;
 };
 
-/// An item is being added to an entity's inventory (component 13): a pickup, a purchase, a gift,
+/// An item was added to an entity's inventory (component 13): a pickup, a purchase, a gift,
 /// a quest reward, a script, the starting kit — by its definition's hash (the GDB record). One
-/// more of an item already held raises its count. `cancel` adds nothing. Seam:
+/// more of an item already held raises its count. After the add, not cancellable: several callers
+/// use the new item at once and cannot take a refusal (verified: two crash on it, one destroys the
+/// picked-up entity regardless). Seam:
 /// rex_CECInventory_AddOneOfRecord (r3 out, r4 inventory, owner at +4; r5 definition hash; r6
 /// notify), the funnel every add goes through.
 struct ItemAddedEvent : Event {
@@ -452,7 +500,8 @@ struct HeldItemEvent : Event {
   uint32_t entity;
   int32_t player;
   const char* slot;
-  /// The item entity: known on an attach, 0 on a release until the game has done it.
+  /// The item entity: known on an attach, 0 on a release until the game has done it. Only a
+  /// release can be refused: an attach's callers record the drawn weapon regardless.
   uint32_t item;
   bool attached;
 };
@@ -495,6 +544,352 @@ struct GoldEvent : Event {
   int32_t gold;
   int32_t delta;
   bool passive;
+  /// The game's co-op split of a change already reported (forwarded to player one, or the
+  /// partner's share): a handler that scales `delta` acts only when this is false.
+  bool share;
+};
+
+/// The game asked how `entity` stands to `other` — its faction rule, asked by the AI, the
+/// targeting, the HUD's colours, many times a tick. `relation` (writable) is the answer: 1
+/// neutral, 2 ally, 4 enemy; a handler makes two creatures friends or foes. Not cancellable. Seam:
+/// rex_CECFaction_RelationTo (r3 faction component 133, owner at +4; r4 the other entity; returns
+/// the relation), after it. refii_mod_relation calls the game's body directly and never raises this.
+struct RelationEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_RELATION;
+  uint32_t entity;
+  int32_t player;
+  uint32_t other;
+  int32_t other_player;
+  int32_t relation;
+};
+
+/// A mod's own input action changed state: `name` is "<mod>.<action>" from the mod's input.json,
+/// `player` 1 or 2 (player 1 is the keyboard and the first pad, player 2 the second pad), `pressed`
+/// true on the press and false on the release. Edges only, raised in the guest tick from the
+/// host's queue (Godot reads the devices; RefiiHostPostModInput). Not cancellable.
+struct InputActionEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_INPUT_ACTION;
+  const char* name;
+  int32_t player;
+  bool pressed;
+};
+
+/// A quest is being activated on a hero's quest tracker (component, owner at +4): `quest` is the
+/// quest's name (the GDB record's, the one the shipped scripts pass), `make_primary` whether it
+/// becomes the tracked quest. `cancel` leaves it inactive. Seam: rex_CECQuestTracker_SetAsActive
+/// (r3 tracker, r4 name, r5 flag, r6 make-primary; the record's +13 active and +14 activated bytes).
+struct QuestStartedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_QUEST_STARTED;
+  const char* quest;
+  uint32_t hero;
+  int32_t player;
+  bool make_primary;
+};
+
+/// A quest ended: `completed` (the rewards were just given) or `failed`. After the fact, so not
+/// cancellable. Seam: rex_CECQuestTracker_OnQuestEnded (r3 tracker, r4 record: +0 name LHString,
+/// +21 completed, +22 failed), the one function both the completion and the failure reach.
+struct QuestEndedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_QUEST_ENDED;
+  const char* quest;
+  uint32_t hero;
+  int32_t player;
+  bool completed;
+  bool failed;
+};
+
+/// An objective is being added to a quest: `tag` is its text tag (the quest log's line). `cancel`
+/// adds nothing. Seam: rex_CECQuestTracker_SetObjectiveTagSilently (r3 tracker, r4 quest name, r5
+/// tag), the record write behind SetObjectiveTag, SetObjectiveTagFinal and a quest's default.
+struct QuestObjectiveEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_QUEST_OBJECTIVE;
+  const char* quest;
+  const char* tag;
+  uint32_t hero;
+  int32_t player;
+};
+
+/// A creature is about to speak a line: `text` is the line's text hash (the TextManager key, the
+/// final tag after the voice and variant suffixes), `listener` the entity it is said to or 0,
+/// `subtitle` whether the subtitle is forced. `cancel` keeps the line unspoken (no audio, no
+/// subtitle, no speech animation). Seam: rex_CECTalk_PlayLine (r3 talk component, owner at +4;
+/// r4 text hash; r5 force subtitle; r6 listener), the one function every line reaches.
+struct DialogueEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DIALOGUE;
+  uint32_t speaker;
+  int32_t speaker_player;
+  uint32_t text;
+  uint32_t listener;
+  int32_t listener_player;
+  bool subtitle;
+};
+
+/// An entity joined the world: created by a script or a generator, or loaded with a level or a
+/// save. Raised on the first tick after the world's entity manager took it, when its components
+/// exist (the manager's add comes before they are built), at most 64 a tick, oldest first, so a
+/// level load's burst spreads over a few ticks. Not cancellable. Seam: rex_lhEntityManager_Add
+/// (r3 the manager, r4 the entity: +0x14 its 64-bit id; the one add every constructor path reaches).
+struct EntitySpawnedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ENTITY_SPAWNED;
+  uint32_t entity;
+  int32_t player;
+  uint32_t definition;
+};
+
+/// An entity is leaving the world (killed and cleaned up, destroyed by a script, unloaded with its
+/// level): the last moment it is whole. Not cancellable. Seam: rex_lhEntity_Destroy (r3 the entity),
+/// before it — the one function that clears the in-world bit (+0x90 & 0x40).
+struct EntityRemovedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ENTITY_REMOVED;
+  uint32_t entity;
+  int32_t player;
+  uint32_t definition;
+};
+
+/// A creature starts an expression (the wheel, a script's PerformExpression, a trophy): `expression`
+/// is the expression record's hash. `cancel` refuses it. Seam:
+/// rex_CECExpressionPerformer_StartExpression (r3 performer component, owner at +4; r4 the record
+/// pair {hash, entry}; returns 1 when started), before it.
+/// (Raised before the game's own can-perform check, which may still refuse it.)
+struct ExpressionStartedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_EXPRESSION_STARTED;
+  uint32_t entity;
+  int32_t player;
+  uint32_t expression;
+};
+
+/// Renown is changing on an entity's stats (57; +28). `delta` is writable; `cancel` leaves it.
+/// `share` marks the co-op partner's share (the game's own recursion, a second event). Seam:
+/// rex_lhHeroStats_ModifyRenown (r3 stats, owner at +4; r4 delta; r5 share), before it.
+struct RenownEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_RENOWN;
+  uint32_t entity;
+  int32_t player;
+  int32_t delta;
+  bool share;
+};
+
+/// Morality (good/evil, stats +16) or purity (pure/corrupt, stats +36) is changing: `delta`
+/// writable, `cancel` leaves it; the game clamps afterwards. Seams: rex_lhHeroStats_ModifyMorality /
+/// rex_lhHeroStats_ModifyPurity (r3 stats, owner at +4; f1 delta), before them.
+struct MoralityEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MORALITY;
+  uint32_t entity;
+  int32_t player;
+  float delta;
+};
+
+struct PurityEvent : MoralityEvent {
+  static constexpr int32_t kKind = REFII_EVENT_PURITY;
+};
+
+/// A hero marries (the wedding ceremony or a script). `cancel` refuses it. Seam:
+/// rex_CECPlayerFamily_Marry (r3 the hero's family component, owner at +4; r4 the spouse; r5 the
+/// ceremony), before it.
+struct MarriageEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MARRIAGE;
+  uint32_t hero;
+  int32_t player;
+  uint32_t spouse;
+};
+
+/// The dog is told a trick (an expression's completion, a gift, an item, a script): `trick` is the
+/// command record's hash. `cancel` refuses it. Seam: rex_CECDog_PerformCommand (r3 dog component,
+/// owner at +4; r4 the record pair; r5 force), before it.
+struct DogTrickEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DOG_TRICK;
+  uint32_t dog;
+  uint32_t trick;
+};
+
+/// A ranged weapon is about to fire (hero and AI alike): `target` the entity aimed at or 0, `aimed`
+/// an aimed rather than a hip shot. `cancel` stops the shot. The game may still refuse it (no
+/// ammunition). Seam: rex_CECFirearm_Fire (r3 firearm component, owner at +4; r4 target; r5 aimed).
+struct RangedShotEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_RANGED_SHOT;
+  /// The creature holding the weapon (the weapon's held-item component 83, its holder's weak
+  /// reference at +12), or 0.
+  uint32_t shooter;
+  int32_t player;
+  uint32_t target;
+  bool aimed;
+  /// The weapon's own item entity (the firearm component's owner).
+  uint32_t weapon;
+};
+
+/// A status effect started or ended on an entity: `effect` 1 electrified (component 205),
+/// 2 chaos (206), 3 burning (208), 4 caught in a vortex (209), 5 knocked down (every ragdoll fall:
+/// a knockdown, a vortex throw, a kicked chicken, the co-op partner's replica), 6 mauled by the dog
+/// (245), 7 unconscious (the hero downed, a script's SetAsUnconscious; ended by waking), 8 a hollow
+/// man crumbled to bones (ended when it rises). After the fact. Seams: rex_lhEntity_AddComponent
+/// (r3 entity; the new component's id from its own GetECType), rex_lhEntity_RemoveComponent (r3
+/// entity, r4 id), rex_lhRagdoll_GoFloppy / _Recover (r3 entity), rex_CECCreature_SetUnconscious
+/// (r3 creature component, r4 down), rex_HollowMan_SetCrumbled (r3 action, r4 crumbled).
+struct StatusEffectEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_STATUS_EFFECT;
+  uint32_t entity;
+  int32_t player;
+  int32_t effect;
+  bool started;
+};
+
+/// A player's target changed: `target` is the new one, 0 when it was cleared. After the fact.
+/// Seams: rex_CECTargetingPlayer_SetTarget (r3 targeting component 77, owner at +4; r4 target) and
+/// _ClearTarget (r3), the player targeting's vtable slots 19 and 18.
+struct TargetChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_TARGET_CHANGED;
+  uint32_t hero;
+  int32_t player;
+  uint32_t target;
+};
+
+/// A villager reacts to a deed, an expression or a gift it saw: `deed` the deed record's hash,
+/// `kind` the message kind (0..4), `doer` who did it. `cancel` makes the villager ignore it (no
+/// opinion change, no renown, morality or purity from it). Seam: rex_CECOpinionReaction_OnDeed
+/// (r3 opinion component, owner at +4; r4 the deed message: +32 record, +52 kind, +72 doer weak ref).
+struct OpinionDeedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_OPINION_DEED;
+  uint32_t villager;
+  uint32_t doer;
+  int32_t doer_player;
+  uint32_t deed;
+  int32_t kind;
+};
+
+/// A villager's opinion axis is changed directly, not through a deed (0 love, 1 fear, 2 attractiveness,
+/// 3 morality, 4 respect): `delta` writable, `cancel` leaves it. Seam:
+/// rex_CECOpinionReaction_ModifyAxisValue (r3 component, owner at +4; r4 axis; f1 delta).
+struct OpinionModifiedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_OPINION_MODIFIED;
+  uint32_t villager;
+  int32_t axis;
+  float delta;
+};
+
+/// The world clock reached a new hour (`hour` 0..23) or a new day (`day`): natural time, a fast
+/// forward, sleeping, travel time and a script's set all show here, a set one tick late. `time` is
+/// the day fraction 0..1. Seam: rex_lhGameTimeManager_Update (r3 the time manager: +4 time,
+/// +8 day count), after it.
+struct TimeOfDayEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_TIME_OF_DAY;
+  int32_t hour;
+  int32_t day;
+  float time;
+  bool new_day;
+};
+
+/// An environment theme (the weather and the look of the sky) is blended to: `theme` its name,
+/// `weight` and `seconds` writable. `cancel` skips the blend. Position-painted blending never comes
+/// here. Seam: rex_lhEnvironmentThemeManager_BlendToTheme (r3 manager; r4 name; f1 weight; f2 seconds).
+struct WeatherThemeEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_WEATHER_THEME;
+  const char* theme;
+  float weight;
+  float seconds;
+};
+
+/// The bed's sleep menu is about to open (the time skip that follows is the shipped Lua's).
+/// `cancel` keeps it closed. Seam: rex_SleepMenu_Show.
+struct SleepMenuEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SLEEP_MENU;
+  /// Always true: the event itself is the news.
+  bool seen;
+};
+
+/// A travel started: a door, a level exit, a fast travel, a script. `full_load` is false for a
+/// change inside the loaded level (a new entrance in the same region), which LevelLoaded never
+/// reports. After the game decided. Seam: rex_CmdLevelChange_Start (r3 the command: +20 world,
+/// +24 level, +28 entrance names, +36 travel type, +50 full load), after it.
+struct TravelEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_TRAVEL;
+  const char* world;
+  const char* level;
+  const char* entrance;
+  int32_t type;
+  bool full_load;
+};
+
+/// The hero chose a fast-travel stop (the world map, a script): `level` and `stop`, `paid`.
+/// `cancel` stays put (nothing is paid). Seam: rex_FastTravelManager_TravelToStop (r3 manager;
+/// r4 level name; r5 stop, +4 its marker name; r6 paid), before it.
+struct FastTravelEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_FAST_TRAVEL;
+  const char* level;
+  const char* stop;
+  bool paid;
+};
+
+/// The game entered its menu mode (the world pauses behind it) or left it — real transitions only;
+/// MenuScreen states each screen a menu changes to (0 pause, 2 spells, 14 abilities, 16 equipment,
+/// 17 logbook, 18 options, 22 shop, 23 world map, 24 co-op, …; TU1 numbering on both builds).
+/// Seams: rex_lhGuiManager_EnterGuiMode / _EnterGuiModeQuiet (when menu mode was off),
+/// rex_lhGuiManager_ExitScreen (when it really leaves), rex_lhGuiManager_SetScreen (r4 the id).
+struct MenuOpenedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MENU_OPENED;
+  /// Always true: the event itself is the news.
+  bool seen;
+};
+
+struct MenuClosedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MENU_CLOSED;
+  /// Always true: the event itself is the news.
+  bool seen;
+};
+
+struct MenuScreenEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MENU_SCREEN;
+  int32_t screen;
+};
+
+/// The hero walked into a different PAINTED weather region: `day_set` is the region's
+/// environment day set (a GDB record hash; the day set picks the theme by time of day), 0 outside
+/// every painted region; `previous` the one before. Read-only. A scripted blend is WeatherTheme.
+/// Seam: rex_lhPaintMap_DaySetAt (r3 the paint map, v1 the hero's position; returns the day set
+/// hash or -1), called once a frame by the painted-weight pass while the hero is in the world.
+struct WeatherRegionEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_WEATHER_REGION;
+  uint32_t day_set;
+  uint32_t previous;
+  /// The hero is inside a painted region (day_set is only meaningful then).
+  bool inside;
+};
+
+/// The player answered a bed's sleep menu: `choice` 0..3, `cancelled`, the `bed`. What each choice
+/// does is the shipped SleepFunction.Sleep's (sleepfunctions.lua, reading Bed.GetSleepType = choice
+/// + 1, 0 cancelled): 0 fast-forwards six hours, 1 twelve hours, 2 adds one day without moving the
+/// clock, 3 adds seven days (its enum is named SLEEP_FORTY_EIGHT_HOURS). `choice` is writable and
+/// `cancel` refuses the sleep; a length the menu does not offer is a Lua mod wrapping
+/// SleepFunction.Sleep. Seam: rex_lhMenuBox_Close (r3 the
+/// shared choice menu: +0 the selected index, +13 cancelled), while the sleep menu is the one open.
+struct SleepChosenEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SLEEP_CHOSEN;
+  uint32_t bed;
+  int32_t choice;
+  bool cancelled;
+};
+
+/// Slow Time changed the world's time scale: `scale` (1 is normal; writable before the game
+/// applies it) and whether it is now `active` (scale < 1). Every creature but the caster slows —
+/// the game slows the world and gives the caster (and the co-op partner) the inverse rate.
+/// Seam: rex_SpellSlowTime_SetWorldScale (r3 the caster; f1 the scale; world +128 the scale).
+struct SlowTimeEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SLOW_TIME;
+  uint32_t caster;
+  int32_t player;
+  float scale;
+  bool active;
+};
+
+/// A spell summoned a creature or a weapon: `kind` 1 a Raise Dead minion, 2 a Blades sword (an
+/// entity of its own). The summon leaves the world through EntityRemoved. After the fact. Seams:
+/// rex_SpellRaiseDead_BindSummoner (r3 summoner, r4 the summoned entity) and
+/// rex_SpellDamoclesSword_Create (r3 the sword object, its entity's weak ref at +0; r5 the caster).
+struct SummonedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SUMMONED;
+  uint32_t summoner;
+  int32_t player;
+  uint32_t summon;
+  int32_t kind;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

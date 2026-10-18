@@ -118,6 +118,10 @@ public static class Engine_UiMenuSources
 			[Engine_UiNetworkSource.FriendsSource] = Engine_UiNetworkSource.Friends,
 			[Engine_UiNetworkSource.RequestsSource] = Engine_UiNetworkSource.Requests,
 			[Engine_UiNetworkSource.InvitesSource] = Engine_UiNetworkSource.Invites,
+
+			// The options screen's Mods fold: one row per enabled mod that ships settings, each
+			// opening that mod's host options page.
+			[Refii.Mods.ModSettingsUi.SourceName] = Refii.Mods.ModSettingsUi.Rows,
 			[Engine_UiNetworkSource.GamesSource] = Engine_UiNetworkSource.Games,
 			[Engine_UiNetworkSource.AllSource] = Engine_UiNetworkSource.All,
 			[Engine_UiNetworkSource.HostingSource] = Engine_UiNetworkSource.Hosting,

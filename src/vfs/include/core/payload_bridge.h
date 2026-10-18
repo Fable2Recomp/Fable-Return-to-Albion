@@ -318,6 +318,39 @@ int32_t refii_bridge_mod_value_f32(const char* key, size_t key_length, float* ou
 void refii_bridge_mod_set_setting_f32(const char* key, size_t key_length, float value);
 float refii_bridge_mod_setting_f32(const char* key, size_t key_length, float fallback);
 
+// The mod event bus, both ways across the bridge (state in src/core/mod_values.cpp):
+// - the payload POSTS an event the host asked for (`fields` is the Lua-table-literal body the
+//   bus builds for Lua handlers) and the host drains them in order (Godot scripts' RefiiHost);
+// - the host's MASK says which kinds it wants (bit = kind; nothing is queued otherwise);
+// - the host POSTS an input edge (a mod's input.json action, pressed or released, for player 1
+//   or 2) and the payload's tick polls them into InputAction events.
+void refii_bridge_mod_event_post(int32_t kind, const char* fields, size_t length);
+uint64_t refii_bridge_mod_host_event_mask(void);
+int32_t refii_bridge_mod_input_poll(char* out_name, size_t capacity, int32_t* out_player,
+                                    int32_t* out_pressed);
+// - the host POSTS a command line (a helper call or a query from a Godot script, the grammar in
+//   src/hooks/mod_commands.cpp) and the payload's tick runs it with the real guest context; a
+//   query's reply is posted back as an event of kind REFII_MOD_HOST_REPLY_KIND, mask or not.
+int32_t refii_bridge_mod_command_poll(char* out_line, size_t capacity);
+// - a mod's Lua ERROR (init or handler) is posted as text; the host keeps them for the Studio and
+//   the debug channel (RefiiHostDrainModErrors), independent of the event mask.
+void refii_bridge_mod_error_post(const char* text, size_t length);
+// - the HANDLE table (refii_mod_handle): one per session, shared by the payload, which assigns
+//   handles, and the host, which turns a script's handle back into its entity.
+uint32_t refii_bridge_mod_handle(uint32_t address);
+uint32_t refii_bridge_mod_handle_address(uint32_t handle);
+/// The entity at `address` is gone: its handle now resolves to 0, and an object that later takes
+/// the address gets a new handle.
+void refii_bridge_mod_handle_forget(uint32_t address);
+// - a Godot script's VERDICT: the host registers a handler the payload calls synchronously, on the
+//   guest thread inside the seam, for the kinds in the verdict mask. `fields` is the event's table
+//   text; the handler writes "cancel=1,<field>=<number>,…" into `out` and returns its length.
+typedef int32_t (*refii_mod_verdict_fn)(int32_t kind, const char* fields, size_t length, char* out, size_t capacity);
+void refii_bridge_mod_set_verdict_handler(refii_mod_verdict_fn handler);
+refii_mod_verdict_fn refii_bridge_mod_verdict_handler(void);
+void refii_bridge_mod_set_verdict_mask(uint64_t mask);
+uint64_t refii_bridge_mod_verdict_mask(void);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

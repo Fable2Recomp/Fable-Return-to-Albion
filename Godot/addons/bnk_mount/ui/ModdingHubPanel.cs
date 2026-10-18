@@ -334,6 +334,7 @@ public partial class ModdingHubPanel : MarginContainer
         AddNavButton("📖 Modding Guide", 1);
         AddNavButton("🗂️ GDB Hierarchy & Components", 2);
         AddNavButton("✨ FX Lab", 3);
+        AddNavButton("🎮 Live Game", 4);
 
         var navScroll = new ScrollContainer
         {
@@ -405,6 +406,11 @@ public partial class ModdingHubPanel : MarginContainer
         _fxLabView = new FxLabView();
         _views.Add(_fxLabView);
         _contentContainer.AddChild(_fxLabView);
+
+        // Tab 4: the running game — reload the mods into it, and its mods' Lua errors.
+        var liveGameView = new LiveGameView();
+        _views.Add(liveGameView);
+        _contentContainer.AddChild(liveGameView);
 
         _mainVBox?.AddChild(_contentContainer);
         SwitchTab(0);

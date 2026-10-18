@@ -39,6 +39,15 @@ void refii_bridge_rex_time_base_real_slice(int on);
 void refii_bridge_rex_time_base_stats(uint64_t* out_capped, uint64_t* out_granted,
                                       uint64_t* out_watchdog);
 void* refii_bridge_rex_resolve_indirect_function(uint32_t guest_address);
+/// Whether a guest address is a known function (the dispatcher's own table). The resolver above
+/// never fails: an unknown address resolves to a trap that ends the process.
+int32_t refii_bridge_rex_has_function(uint32_t guest_address);
+
+/// Gives `host_function` (a PPCFunc: void(PPCContext&, uint8_t*)) a GUEST address the guest can
+/// call through its function table — what a Lua C function registered into the game VM needs.
+/// `caller_address` is any address inside the game module (the thunk is allocated from that
+/// module's pool). 0 when the pool is exhausted.
+uint32_t refii_bridge_rex_allocate_thunk(void* host_function, uint32_t caller_address);
 void refii_bridge_rex_increment_counter(uint32_t counter_id, int64_t delta);
 
 uint32_t refii_bridge_rex_system_heap_alloc(void* memory, uint32_t size, uint32_t alignment,

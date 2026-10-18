@@ -1170,6 +1170,61 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "mod-errors":
+			{
+				// The mods' Lua errors numbered after `since` (0: every one kept), oldest first;
+				// `seq` is the newest number, the `since` of the next ask.
+				long since = root.TryGetProperty("since", out JsonElement s) && s.TryGetInt64(out long after)
+					? after
+					: 0;
+				var errors = new List<Dictionary<string, object?>>();
+				foreach (Refii.Mods.ModErrors.Entry entry in Refii.Mods.ModErrors.Recent(since))
+				{
+					errors.Add(new Dictionary<string, object?>
+					{
+						["seq"] = entry.Seq,
+						["time"] = entry.Time.ToString("O"),
+						["mod"] = entry.Mod,
+						["text"] = entry.Text,
+					});
+				}
+
+				return Ok(new Dictionary<string, object?>
+				{
+					["seq"] = Refii.Mods.ModErrors.Sequence,
+					["errors"] = errors,
+				});
+			}
+
+			case "mods-remount":
+			{
+				// The mods folded in again for this session (Refii.Mods.ModRemount); `lua: true` also
+				// runs the composed init chunk in the game VM. Answered when the remount finishes —
+				// the mount's passes run on its worker — with what refreshed and what needs a relaunch.
+				bool lua = root.TryGetProperty("lua", out JsonElement l) && l.ValueKind == JsonValueKind.True;
+				if (!Refii.Mods.ModRemount.Start(lua, report =>
+					{
+						Dictionary<string, object?> body = report.ToJson();
+						if (report.Ok)
+						{
+							body = Ok(body);
+						}
+
+						if (client.GetStatus() == StreamPeerTcp.Status.Connected)
+						{
+							client.PutData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body) + "\n"));
+						}
+					}, out string refused))
+				{
+					return new Dictionary<string, object?>
+					{
+						["ok"] = false, ["error"] = refused,
+					};
+				}
+
+				return Deferred;
+			}
+
 			case "poke":
 			{
 				uint addr = root.TryGetProperty("addr", out JsonElement a)

@@ -49,7 +49,7 @@ public sealed class Engine_UiScreenLevel
 	/// <summary>To the guest, and to the host's own record of the page's pending choices.</summary>
 	private static void Send(uint code)
 	{
-		if (!Engine_UiWeatherOptions.Open) Engine_UiSource.Current.ScreenAction(code);
+		if (!Engine_UiHostOptionsPage.Open) Engine_UiSource.Current.ScreenAction(code);
 		Engine_UiOptionsPending.Track(code);
 	}
 
@@ -67,7 +67,6 @@ public sealed class Engine_UiScreenLevel
 	/// <summary>Each page's rows, top to bottom, as the guest orders them.</summary>
 	private static readonly System.Collections.Generic.Dictionary<string, string[]> Rows = new()
 	{
-		[Engine_UiWeatherOptions.PageName] = Engine_UiWeatherOptions.Rows,
 		["Game"] = new[]
 		{
 			"Options.Subtitles_pickbox", "Options.BreadcrumbSize_pickbox",
@@ -102,7 +101,14 @@ public sealed class Engine_UiScreenLevel
 		}
 
 		_openFor += delta;
-		if (!Rows.TryGetValue(page, out string[]? rows) || Engine_UiPointer.Canvas is not { } at)
+		// A host page stands on the shared five rows whatever it is called.
+		string[]? rows = Engine_UiHostOptionsPage.Open ? Engine_UiHostOptionsPage.Rows : null;
+		if (rows is null && !Rows.TryGetValue(page, out rows))
+		{
+			return;
+		}
+
+		if (Engine_UiPointer.Canvas is not { } at)
 		{
 			return;
 		}
@@ -132,9 +138,9 @@ public sealed class Engine_UiScreenLevel
 			return;
 		}
 
-		if (Engine_UiWeatherOptions.Open && wheel != 0)
+		if (Engine_UiHostOptionsPage.Current is { } host && wheel != 0)
 		{
-			WalkTo(System.Math.Clamp(Engine_UiOptionsPending.Row - wheel, 0, Engine_UiWeatherOptions.Keys.Length - 1));
+			WalkTo(System.Math.Clamp(Engine_UiOptionsPending.Row - wheel, 0, host.Count - 1));
 			return;
 		}
 		int row = RowAt(book, rows, at);
@@ -145,7 +151,7 @@ public sealed class Engine_UiScreenLevel
 
 		if (Engine_UiPointer.Moved || left || wheel != 0)
 		{
-			WalkTo(row + (Engine_UiWeatherOptions.Open ? Engine_UiWeatherOptions.VisibleStart : 0));
+			WalkTo(row + Engine_UiHostOptionsPage.VisibleStart);
 		}
 
 		bool slider = Engine_UiOptionsPending.SliderValue(row) is not null;
@@ -181,7 +187,7 @@ public sealed class Engine_UiScreenLevel
 			bool up = row < Engine_UiOptionsPending.Row;
 			int before = Engine_UiOptionsPending.Row;
 			Send(up ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
-			if (!Engine_UiWeatherOptions.Open)
+			if (!Engine_UiHostOptionsPage.Open)
 				Engine_UiSource.Current.ScreenAction(
 					up ? Engine_UiScreenInput.UpReleased : Engine_UiScreenInput.DownReleased);
 			if (Engine_UiOptionsPending.Row == before)
@@ -195,7 +201,7 @@ public sealed class Engine_UiScreenLevel
 	private static void Step(int direction)
 	{
 		Send(direction < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
-		if (!Engine_UiWeatherOptions.Open)
+		if (!Engine_UiHostOptionsPage.Open)
 			Engine_UiSource.Current.ScreenAction(
 				direction < 0 ? Engine_UiScreenInput.LeftReleased : Engine_UiScreenInput.RightReleased);
 	}
@@ -246,12 +252,12 @@ public sealed class Engine_UiScreenLevel
 	/// <summary>The code a drawn A or B prompt on the page stands for, under the pointer.</summary>
 	private static uint? PromptAt(Engine_UiOwnedBook book, Godot.Vector2 at)
 	{
-		if (Engine_UiWeatherOptions.Open)
+		if (Engine_UiHostOptionsPage.Open)
 		{
 			foreach ((string path, uint code) in new[]
 				{ ("Learn", Engine_UiScreenInput.Select), ("Unlearn", Engine_UiScreenInput.Back) })
 			{
-				if (book.NodeFor(Engine_UiWeatherOptions.Buttons + "." + path) is { } node &&
+				if (book.NodeFor(Engine_UiHostOptionsPage.Buttons + "." + path) is { } node &&
 					node.IsVisibleInTree() && Engine_UiPointer.CanvasBounds(node) is { } bounds &&
 					bounds.Grow(4f).HasPoint(at)) return code;
 			}

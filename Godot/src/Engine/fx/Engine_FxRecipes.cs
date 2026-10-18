@@ -475,6 +475,28 @@ public static class Engine_FxRecipes
 
 	public static IReadOnlyList<Recipe> All => _all ??= Load();
 
+	/// <summary>Recipes handed over from code rather than a file, by contributor (see <see cref="Contribute"/>).</summary>
+	private static readonly Dictionary<string, List<Recipe>> _contributed = new(StringComparer.Ordinal);
+
+	/// <summary>Guards <see cref="_contributed"/>: a live re-mount contributes from its worker thread.</summary>
+	private static readonly object ContributedLock = new();
+
+	/// <summary>
+	/// Recipes a composer builds from another kind of mod content — the spells kind's looks
+	/// (<see cref="Refii.Mods.ModSpells"/>). <paramref name="source"/>'s previous set is replaced
+	/// whole; they load after every mod's <c>fx/recipes.json</c> and a recipe's id wins the same
+	/// way. The next frame loads again.
+	/// </summary>
+	public static void Contribute(string source, IReadOnlyList<Recipe> recipes)
+	{
+		lock (ContributedLock)
+		{
+			_contributed[source] = new List<Recipe>(recipes);
+		}
+
+		_all = null;
+	}
+
 	/// <summary>Drops the loaded set; the next frame loads it again and re-dresses.</summary>
 	public static void Reload()
 	{
@@ -904,6 +926,21 @@ public static class Engine_FxRecipes
 			}
 
 			foreach (Recipe recipe in Parse(mod, chosen))
+			{
+				recipes.RemoveAll(existing => existing.Id == recipe.Id);
+				recipes.Add(recipe);
+			}
+		}
+
+		List<List<Recipe>> contributedSets;
+		lock (ContributedLock)
+		{
+			contributedSets = new List<List<Recipe>>(_contributed.Values);
+		}
+
+		foreach (List<Recipe> contributed in contributedSets)
+		{
+			foreach (Recipe recipe in contributed)
 			{
 				recipes.RemoveAll(existing => existing.Id == recipe.Id);
 				recipes.Add(recipe);

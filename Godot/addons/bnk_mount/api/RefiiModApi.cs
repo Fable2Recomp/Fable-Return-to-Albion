@@ -323,26 +323,34 @@ public partial class RefiiModApi : RefCounted
 	}
 
 	// ---------------------------------------------------------------------------------------
-	// The game's own Lua natives — res://modding_tools/game_lua_api.tsv
+	// The game's own Lua natives — res://modding_tools/game_lua_api.tsv, with signatures from
+	// res://modding_tools/game_lua_signatures.tsv (derived statically from the TU1 binary)
 	// ---------------------------------------------------------------------------------------
 
 	public const string GameLuaApiPath = "res://modding_tools/game_lua_api.tsv";
+	public const string GameLuaSignaturesPath = "res://modding_tools/game_lua_signatures.tsv";
 
 	/// <summary>The tables the game registers natives under (_G, Player, Dog, GUI, EntityMetatable ...).</summary>
 	public string[] ListGameLuaTables() =>
 		GameLuaApi().Select(row => row.Table).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToArray();
 
-	/// <summary>The natives of one table, by name; a mod's init.lua can call every one of them.</summary>
+	/// <summary>
+	/// The natives of one table as "Name(args) -> results"; a mod's init.lua can call every one of them.
+	/// The signature part is absent when game_lua_signatures.tsv has no row for the native.
+	/// </summary>
 	public string[] ListGameLuaNatives(string table) =>
 		GameLuaApi().Where(row => string.Equals(row.Table, table, StringComparison.OrdinalIgnoreCase))
-			.Select(row => row.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+			.OrderBy(row => row.Name, StringComparer.Ordinal)
+			.Select(row => row.Name + GameLuaSignature(row.Table, row.Name)).ToArray();
 
-	/// <summary>Natives whose name contains <paramref name="text"/>, as "Table.Name".</summary>
+	/// <summary>Natives whose name contains <paramref name="text"/>, as "Table.Name(args) -> results".</summary>
 	public string[] FindGameLuaNatives(string text) =>
 		GameLuaApi().Where(row => row.Name.Contains(text, StringComparison.OrdinalIgnoreCase))
-			.Select(row => row.Table + "." + row.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+			.OrderBy(row => row.Table + "." + row.Name, StringComparer.Ordinal)
+			.Select(row => row.Table + "." + row.Name + GameLuaSignature(row.Table, row.Name)).ToArray();
 
 	private static List<(string Table, string Name)>? _gameLuaApi;
+	private static Dictionary<string, (string Args, string Results)>? _gameLuaSignatures;
 
 	private static List<(string Table, string Name)> GameLuaApi()
 	{
@@ -352,25 +360,60 @@ public partial class RefiiModApi : RefCounted
 		}
 
 		var rows = new List<(string, string)>();
-		using Godot.FileAccess? file = Godot.FileAccess.Open(GameLuaApiPath, Godot.FileAccess.ModeFlags.Read);
-		if (file != null)
+		foreach (string[] parts in ReadGameLuaTsv(GameLuaApiPath))
 		{
-			foreach (string line in file.GetAsText().Split('\n'))
+			if (parts.Length >= 2)
 			{
-				if (line.Length == 0 || line[0] == '#')
-				{
-					continue;
-				}
-
-				string[] parts = line.Split('\t');
-				if (parts.Length >= 2)
-				{
-					rows.Add((parts[0], parts[1]));
-				}
+				rows.Add((parts[0], parts[1]));
 			}
 		}
 
 		return _gameLuaApi = rows;
+	}
+
+	/// <summary>"(entity, number) -> 1:boolean" for a native, or empty when no signature row exists.</summary>
+	private static string GameLuaSignature(string table, string name)
+	{
+		if (_gameLuaSignatures == null)
+		{
+			var signatures = new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+			foreach (string[] parts in ReadGameLuaTsv(GameLuaSignaturesPath))
+			{
+				if (parts.Length >= 5)
+				{
+					signatures[parts[0] + "." + parts[1]] = (parts[3], parts[4]);
+				}
+			}
+
+			_gameLuaSignatures = signatures;
+		}
+
+		if (!_gameLuaSignatures.TryGetValue(table + "." + name, out (string Args, string Results) sig))
+		{
+			return string.Empty;
+		}
+
+		return "(" + sig.Args.Replace(",", ", ") + ") -> " + sig.Results;
+	}
+
+	private static IEnumerable<string[]> ReadGameLuaTsv(string path)
+	{
+		using Godot.FileAccess? file = Godot.FileAccess.Open(path, Godot.FileAccess.ModeFlags.Read);
+		if (file == null)
+		{
+			yield break;
+		}
+
+		foreach (string line in file.GetAsText().Split('\n'))
+		{
+			string row = line.TrimEnd('\r');
+			if (row.Length == 0 || row[0] == '#')
+			{
+				continue;
+			}
+
+			yield return row.Split('\t');
+		}
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -615,6 +658,22 @@ public partial class RefiiModApi : RefCounted
 		if (package.Length == 0)
 		{
 			return NoActiveMod;
+		}
+
+		// A content kind the game reads is held to its loader's schema (ModValidate): an error
+		// refuses the write with the first one, warnings reach the editor's output.
+		if (ModValidate.KindOf(path).Length != 0)
+		{
+			IReadOnlyList<ModIssue> issues = ModValidate.Validate(path, Encoding.UTF8.GetString(bytes));
+			if (issues.FirstOrDefault(issue => issue.Error) is { } refused)
+			{
+				return refused.ToString();
+			}
+
+			foreach (ModIssue warning in issues)
+			{
+				GD.PushWarning($"[mods] {GetActiveMod()}/{warning}");
+			}
 		}
 
 		if (!File.Exists(package))

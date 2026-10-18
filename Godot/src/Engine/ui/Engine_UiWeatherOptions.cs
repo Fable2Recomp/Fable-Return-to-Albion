@@ -4,12 +4,33 @@ using Refii.Level;
 
 namespace Refii.Ui;
 
+/// <summary>
+/// The dynamic sky's switches as a host options page — one <see cref="Engine_UiHostOptionsPage"/>
+/// whose rows are the launcher settings the sky reads, committed to the config on A.
+/// </summary>
 public static class Engine_UiWeatherOptions
 {
     public const string PageName = "DynamicSkyAndWeather";
     public const string OpenCommand = "options:weather";
     public const string Title = "Dynamic Sky and Weather";
-    public const string Buttons = "Page1.Contents.Buttons.Buttons";
+
+    /// <summary>The page the options row opens; registered by the host page kind under <see cref="OpenCommand"/>.</summary>
+    public static readonly Engine_UiHostOptionsPage Page = new WeatherPage();
+
+    private sealed class WeatherPage : Engine_UiHostOptionsPage
+    {
+        public override string Name => PageName;
+        public override string Title => Engine_UiWeatherOptions.Title;
+        public override int Count => Keys.Length;
+        public override string RowTitle(int row) => Titles[row];
+        public override int Choices(int row) => Engine_UiWeatherOptions.Count(row);
+        public override string Caption(int row, int index) => Engine_UiWeatherOptions.Caption(row, index);
+        public override int[] Read() => Engine_UiWeatherOptions.Read(ReadCurrent);
+
+        /// <summary>Written together on A, as one config write; a refused write keeps the page open.</summary>
+        public override bool Commit(Func<int, int> index) =>
+            Engine_UiScreenActions.WriteSettings(Settings(index));
+    }
 
     public static readonly string[] Keys =
     {
@@ -27,13 +48,6 @@ public static class Engine_UiWeatherOptions
         "Surface Weather",
     };
 
-    public static readonly string[] Rows =
-    {
-        "Options.Subtitles_pickbox", "Options.BreadcrumbSize_pickbox",
-        "Options.TutorialBoxes_pickbox", "Options.MultiplayerOrbs_pickbox",
-        "Options.Auto_joinable_pickbox",
-    };
-
     private static readonly string[] Weather = Engine_UiScreenActions.WeatherOverrideValues.Split(',');
     private static readonly string[] Aurora = { "auto", "on", "off" };
     private static readonly string[] WeatherTitles =
@@ -41,12 +55,6 @@ public static class Engine_UiWeatherOptions
         "Auto", "Clear", "Partly Cloudy", "Cloudy", "Overcast", "Rain", "Storm", "Snow", "Fog",
         "Light Rain", "Light Snow", "Blizzard",
     };
-
-    public static bool Open => Engine_UiOptionsPending.Page == PageName;
-
-    public static int VisibleStart => Open ? WindowStart(Engine_UiOptionsPending.Row) : 0;
-
-    public static int WindowStart(int selected) => Math.Clamp(selected - Rows.Length + 1, 0, Keys.Length - Rows.Length);
 
     public static int[] Read(Func<string, string> read) => new[]
     {
@@ -85,39 +93,6 @@ public static class Engine_UiWeatherOptions
                 _ => index(row) == 0 ? "false" : "true",
             };
         return values;
-    }
-
-    public static Dictionary<string, string> Text(Func<int, int> index, int first = 0)
-    {
-        var values = new Dictionary<string, string>();
-        for (int row = 0; row < Rows.Length; row++)
-        {
-            int setting = row + Math.Clamp(first, 0, Keys.Length - Rows.Length);
-            values[Rows[row] + ".grp.text"] = Caption(setting, index(setting));
-            values[Rows[row][..^"_pickbox".Length]] = Titles[setting];
-        }
-        values["Page1.Contents.OptionName"] = Title + $" ({first + 1}-{first + Rows.Length}/{Keys.Length})";
-        return values;
-    }
-
-    public static void Apply(Engine_UiOwnedBook book, Engine_UiExpandableMenu.Item? row)
-    {
-        if (!Open && row?.Name != PageName) return;
-        int[] committed = Read(ReadCurrent);
-        int Index(int at) => Open ? Engine_UiOptionsPending.IndexOf(at) : committed[at];
-        book.HostValues = Text(Index, VisibleStart);
-        var active = new Dictionary<string, bool>(book.HostActive ?? new Dictionary<string, bool>());
-        active["Foreground.Book.Pages.Page1"] = true;
-        active[Buttons] = Open;
-        active[Buttons + ".Learn.Edit"] = false;
-        active[Buttons + ".Learn.Done"] = Open;
-        foreach (string path in Rows) active[path] = true;
-        book.HostActive = active;
-        var opacity = new Dictionary<string, float>(book.HostOpacity ?? new Dictionary<string, float>());
-        opacity[Buttons] = 1f;
-        for (int i = 0; i < Rows.Length; i++)
-            opacity[Rows[i]] = !Open || Engine_UiOptionsPending.Row == i + VisibleStart ? 1f : 0.6f;
-        book.HostOpacity = opacity;
     }
 
     private static bool IsOn(string value) => value.Trim().Trim('"').ToLowerInvariant() is "true" or "1";

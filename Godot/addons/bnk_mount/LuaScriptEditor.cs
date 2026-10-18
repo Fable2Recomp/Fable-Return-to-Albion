@@ -30,7 +30,12 @@ public sealed partial class LuaScriptEditor : Window
 	private LineEdit _newMod = null!;
 	private Label _header = null!;
 	private Label _status = null!;
+	private Button _run = null!;
+	private Button _rerunInit = null!;
 	private List<ModInstall> _installed = new();
+
+	/// <summary>How often the live buttons re-check for a running game; a cheap file read.</summary>
+	private const double LivePollSeconds = 2.0;
 
 	public LuaScriptEditor(BnkFile file, string virtualPath, Action remount)
 	{
@@ -93,11 +98,93 @@ public sealed partial class LuaScriptEditor : Window
 		reload.Pressed += () => Load(preferMod: false);
 		bar.AddChild(reload);
 
+		// The running game, through its debug channel: no relaunch between an edit and seeing it.
+		_run = new Button { Text = "▶ Run in game" };
+		_run.Pressed += RunInGame;
+		bar.AddChild(_run);
+		_rerunInit = new Button { Text = "↻ Re-run as mod init" };
+		_rerunInit.Pressed += RerunAsModInit;
+		bar.AddChild(_rerunInit);
+
 		_status = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
 		root.AddChild(_status);
 
+		var livePoll = new Timer { WaitTime = LivePollSeconds, Autostart = true };
+		livePoll.Timeout += RefreshLive;
+		AddChild(livePoll);
+		RefreshLive();
+
 		RefreshMods();
 		Load(preferMod: true);
+	}
+
+	// ---- the running game ------------------------------------------------------
+
+	/// <summary>Enables the live buttons only while a game publishes its channel and is alive.</summary>
+	private void RefreshLive()
+	{
+		bool live = Refii.EditorTools.LiveGameChannel.IsGameRunning();
+		_run.Disabled = !live;
+		_rerunInit.Disabled = !live;
+		string offline = "No game is running — launch one from the launcher first.";
+		_run.TooltipText = live
+			? "Run the selection (or the whole text) in the running game's Lua VM, as it is"
+			: offline;
+		_rerunInit.TooltipText = live
+			? "Run the chosen mod's mod/init.lua in the running game exactly as session start does"
+			: offline;
+	}
+
+	/// <summary>The selection if there is one, else the whole buffer, as-is in the game VM.</summary>
+	private void RunInGame()
+	{
+		string chunk = _code.HasSelection() ? _code.GetSelectedText() : _code.Text;
+		string what = _code.HasSelection() ? "selection" : "text";
+		(bool ok, string note) = Refii.EditorTools.LiveGameChannel.RunGameLua(chunk);
+		SetStatus(ok ? $"Ran the {what} in the game: {note}" : $"The {what} did not run in the game: {note}");
+	}
+
+	/// <summary>
+	/// The chosen mod's <c>mod/init.lua</c> — read from its package, as the mount composes it —
+	/// run under <see cref="ModLua.Wrap"/> so the live run equals the session-start run.
+	/// </summary>
+	private void RerunAsModInit()
+	{
+		ModInstall? mod = ResolveTargetMod(create: false);
+		if (mod is null)
+		{
+			return;
+		}
+
+		string source;
+		try
+		{
+			if (!F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? package, out string error) || package is null)
+			{
+				SetStatus($"Could not open '{mod.Name}': {error}");
+				return;
+			}
+
+			using (package)
+			{
+				if (!package.TryGetEntry(ModLua.ModInitPath, out F2ModEntry? entry) || entry is null)
+				{
+					SetStatus($"'{mod.Name}' has no {ModLua.ModInitPath}.");
+					return;
+				}
+				source = Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
+			}
+		}
+		catch (Exception exception)
+		{
+			SetStatus($"Could not read {ModLua.ModInitPath} from '{mod.Name}': {exception.Message}");
+			return;
+		}
+
+		(bool ok, string note) = Refii.EditorTools.LiveGameChannel.RunGameLua(ModLua.Wrap(mod.Name, source));
+		SetStatus(ok
+			? $"Re-ran '{mod.Name}' {ModLua.ModInitPath} in the game: {note}"
+			: $"'{mod.Name}' {ModLua.ModInitPath} did not run in the game (wrapped as at session start): {note}");
 	}
 
 	// ---- loading -------------------------------------------------------------

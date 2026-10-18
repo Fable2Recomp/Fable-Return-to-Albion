@@ -34,6 +34,7 @@ public partial class ModdingHubHomeView : VBoxContainer
     private Tree? _traversalTree;
     private Button? _editButton;
     private Button? _revertButton;
+    private NewModFromTemplateDialog? _templateDialog;
 
     public ModdingHubHomeView()
     {
@@ -43,7 +44,42 @@ public partial class ModdingHubHomeView : VBoxContainer
 
         BuildSummaryCards();
         BuildConflictBanner();
+        BuildTemplateRow();
         BuildTraversalTreeSection();
+    }
+
+    /// <summary>
+    /// One click to a working mod: the template dialog writes a starter package and the panel
+    /// re-lists its mods, which selects the new one (it is the active mod) and refreshes here.
+    /// </summary>
+    private void BuildTemplateRow()
+    {
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 8);
+        row.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+
+        var button = new Button
+        {
+            Text = "✨ New mod from template…",
+            TooltipText = "Create a mod from a working example: a combat tweak, a HUD piece, a custom spell, quest hooks or a native handler"
+        };
+        button.Pressed += () => _templateDialog?.Open();
+        row.AddChild(button);
+        AddChild(row);
+
+        _templateDialog = new NewModFromTemplateDialog();
+        _templateDialog.ModCreated += name =>
+        {
+            if (ModdingHubPanel.Instance is { } panel)
+            {
+                panel.RefreshModList();
+            }
+            else
+            {
+                Refresh(name);
+            }
+        };
+        AddChild(_templateDialog);
     }
 
     private void BuildSummaryCards()

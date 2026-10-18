@@ -25,6 +25,7 @@ public partial class ModStudioDockPanel : MarginContainer
     private const int MenuActionCreatorFolder = 3;
     private const int MenuActionRefresh = 4;
     private const int MenuActionDeleteMod = 5;
+    private const int MenuActionShare = 6;
 
     // Home view (dock version presents the central home dashboard)
     private ModdingHubHomeView? _homeView;
@@ -135,6 +136,7 @@ public partial class ModStudioDockPanel : MarginContainer
         popup.AddItem("✎ Edit Metadata", MenuActionEditMeta);
         popup.AddItem("📁 Open Creator Folder", MenuActionCreatorFolder);
         popup.AddItem("🔄 Refresh Content", MenuActionRefresh);
+        popup.AddItem("📦 Share package…", MenuActionShare);
         popup.AddSeparator();
         popup.AddItem("🗑️ Delete Mod...", MenuActionDeleteMod);
         popup.IdPressed += OnHamburgerMenuIdPressed;
@@ -165,7 +167,54 @@ public partial class ModStudioDockPanel : MarginContainer
             case MenuActionDeleteMod:
                 OnDeleteModPressed();
                 break;
+            case MenuActionShare:
+                OnSharePressed();
+                break;
         }
+    }
+
+    /// <summary>
+    /// Asks for a folder and writes the active mod there as one .f2mod a player installs from the
+    /// launcher (<see cref="RefiiModApi.SharePackage"/>), which opens the folder; a refusal is shown.
+    /// </summary>
+    private void OnSharePressed()
+    {
+        string active = EditorModExporter.ActiveModName;
+        if (string.IsNullOrWhiteSpace(active)) return;
+
+        var picker = new FileDialog
+        {
+            FileMode = FileDialog.FileModeEnum.OpenDir,
+            Access = FileDialog.AccessEnum.Filesystem,
+            Title = $"Share '{active}' — choose a folder for {active}{ModWorkspace.PackageExtension}",
+            CurrentDir = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile),
+            Size = new Vector2I(760, 520),
+        };
+        picker.DirSelected += dir =>
+        {
+            string error = new RefiiModApi().SharePackage(dir);
+            if (error.Length == 0) return;
+
+            var refusal = new AcceptDialog
+            {
+                Title = "Share package",
+                DialogText = $"'{active}' was not shared: {error}",
+                DialogAutowrap = true,
+                MinSize = new Vector2I(420, 0),
+            };
+            refusal.VisibilityChanged += () =>
+            {
+                if (!refusal.Visible) refusal.QueueFree();
+            };
+            AddChild(refusal);
+            refusal.PopupCentered();
+        };
+        picker.VisibilityChanged += () =>
+        {
+            if (!picker.Visible) picker.QueueFree();
+        };
+        AddChild(picker);
+        picker.PopupCentered();
     }
 
     private void BuildContentArea(VBoxContainer parent)
@@ -297,6 +346,7 @@ public partial class ModStudioDockPanel : MarginContainer
         popup.SetItemDisabled(popup.GetItemIndex(MenuActionEditMeta), !hasMod);
         popup.SetItemDisabled(popup.GetItemIndex(MenuActionCreatorFolder), !hasMod);
         popup.SetItemDisabled(popup.GetItemIndex(MenuActionDeleteMod), !hasMod);
+        popup.SetItemDisabled(popup.GetItemIndex(MenuActionShare), !hasMod);
     }
 
     private void SelectModByName(string modName)
