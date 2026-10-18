@@ -33,6 +33,12 @@ namespace Refii.Ui;
 /// <item><c>follow</c> / <c>followElement</c> — hang beneath a shipped piece's element as it is
 /// actually drawn, every frame; <c>offset</c> is then from its bottom-left corner and a width
 /// of 0 takes the element's width. The first drawn of a comma list wins.</item>
+/// <item><c>textures</c> + <c>index</c> — a picture that shows ONE of a list, chosen by a value
+/// source: the value's integer part is the index; hidden while the source states nothing or an
+/// index outside the list (-1 is the usual "none"). Spell Weaving's partner glyph beside the
+/// charge meter is <c>{ "kind": "picture", "follow": "group.SpellCharging.SpellCharging",
+/// "textures": ["game://art/gui/wheelicons/abilities/will_shock.tex", ...],
+/// "index": "mod:spell_weaving.hud_partner" }</c>.</item>
 /// </list>
 /// <para>Value sources: <c>mod:&lt;mod&gt;.&lt;name&gt;</c> is what a hard mod's hook published
 /// (<see cref="HostBridge.TryGetModValue"/>); <c>hero:health</c> and <c>hero:health_max</c> are
@@ -75,7 +81,9 @@ public sealed partial class Engine_HudModPieces : Node3D
 		Color? Chip = null,
 		Color? Border = null,
 		float BorderWidth = 0f,
-		float Corner = -1f);
+		float Corner = -1f,
+		List<string>? Textures = null,
+		string Index = "");
 
 	/// <summary>
 	/// A COPY of a shipped piece — the guest's own widget, built again beside the original, so it
@@ -126,6 +134,9 @@ public sealed partial class Engine_HudModPieces : Node3D
 		public Engine_UiRoundedPanel? Chip;
 		public Engine_UiRoundedPanel? Fill;
 		public MeshInstance3D? Picture;
+		/// <summary>The picture's choices, loaded once; a null entry is a path that did not load.</summary>
+		public List<Texture2D?>? Textures;
+		public int Shown = -2;
 		public float ChipFraction = -1f;
 		public float ChipHeld;
 	}
@@ -152,7 +163,28 @@ public sealed partial class Engine_HudModPieces : Node3D
 			string name = piece.Id.Replace('.', '_');
 			if (piece.Kind == Kind.Picture)
 			{
-				if (LoadTexture(piece.Texture) is not { } texture)
+				Texture2D? texture = null;
+				if (piece.Textures is { Count: > 0 } choices)
+				{
+					built.Textures = new List<Texture2D?>(choices.Count);
+					foreach (string path in choices)
+					{
+						Texture2D? loaded = LoadTexture(path);
+						if (loaded is null)
+						{
+							GD.PushWarning($"[hud-mods] '{piece.Id}' ({piece.Mod}): no texture at '{path}'");
+						}
+
+						built.Textures.Add(loaded);
+						texture ??= loaded;
+					}
+				}
+				else
+				{
+					texture = LoadTexture(piece.Texture);
+				}
+
+				if (texture is null)
 				{
 					GD.PushWarning($"[hud-mods] '{piece.Id}' ({piece.Mod}): no texture at '{piece.Texture}'");
 					continue;
@@ -259,6 +291,22 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 			if (built.Picture is { } picture)
 			{
+				if (built.Textures is { } choices)
+				{
+					int index = Resolve(piece.Index, ref vitals) is { } chosen ? (int)Mathf.Floor(chosen) : -1;
+					if (index < 0 || index >= choices.Count || choices[index] is not { } shown)
+					{
+						Hide(built);
+						continue;
+					}
+
+					if (built.Shown != index && picture.MaterialOverride is StandardMaterial3D material)
+					{
+						material.AlbedoTexture = shown;
+						built.Shown = index;
+					}
+				}
+
 				picture.Scale = new Vector3(scale, scale, 1f);
 				picture.Position = new Vector3(centre.X, centre.Y, Depth);
 				picture.Visible = true;
@@ -659,7 +707,9 @@ public sealed partial class Engine_HudModPieces : Node3D
 				ColourOf(record, "chip", null),
 				ColourOf(record, "border", null),
 				Number(record, "borderWidth", 1f),
-				Number(record, "corner", -1f)));
+				Number(record, "corner", -1f),
+				record.ContainsKey("textures") ? Strings(record, "textures") : null,
+				Text(record, "index")));
 		}
 
 		return pieces;

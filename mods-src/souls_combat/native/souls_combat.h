@@ -1,10 +1,14 @@
 // Souls Combat — the shared state of the native parts and the knobs, tuned in a run.
+//
+// Built on the mod API's events (core/refii_mod_events.h): every seam the mod uses is an event,
+// so another mod on the same seam needs no chain. The one function still hooked by name is the
+// player's look-at writer (lockon.cpp), which no event covers.
 
 #pragma once
 
 #include <cstdint>
 
-#include "core/mod_values.h"
+#include "core/refii_mod.h"
 
 namespace souls_combat {
 
@@ -52,15 +56,18 @@ inline float MaxStamina(int level) {
 }
 
 /// Each player's live committed strike action (the clone the action manager runs), 0 when none:
-/// recorded by the CommitSwing hook (stamina.cpp), consumed by commitment.cpp.
+/// recorded from the MeleeSwing event (stamina.cpp), consumed by commitment.cpp.
 extern uint32_t g_committed_strike[2];
 
 /// A tunable: the mod's settings.json value under `key` (pushed by the host, changeable live with
 /// the debug channel's `mod-setting`), or the constant it replaces.
 inline float Knob(const char* key, float fallback) { return refii::mods::Setting(key, fallback); }
 
+/// The pool index of an event's `player` field (1 or 2): 0 or 1, and -1 for anything else.
+inline int Index(int32_t player) { return player == 1 ? 0 : (player == 2 ? 1 : -1); }
+
 /// 0 for player 1's hero, 1 for player 2's, -1 for anything else.
-int PlayerOf(uint8_t* base, uint32_t entity);
+inline int PlayerOf(uint8_t* base, uint32_t entity) { return Index(refii_mod_player_of(base, entity)); }
 
 void Spend(int player, float cost);
 

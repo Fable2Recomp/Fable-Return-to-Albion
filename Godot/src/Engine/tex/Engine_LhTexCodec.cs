@@ -177,7 +177,9 @@ public static class Engine_LhTexCodec
 			{
 				if (length <= TableBits)
 				{
-					var entry = (ushort)(0x8000 | (length << 8) | (_sym[node] & 0xFF));
+					// Symbol in the low 10 bits (Fable 3's alpha C table has 512 symbols),
+					// code length in the next four, the flag on top.
+					var entry = (ushort)(0x8000 | (length << 10) | (_sym[node] & 0x3FF));
 					uint step = 1u << length;
 					for (uint j = code; j < (1u << TableBits); j += step)
 					{
@@ -212,7 +214,10 @@ public static class Engine_LhTexCodec
 			return i;
 		}
 
-		public static HuffTree Build(uint[] freqs)
+		public static HuffTree Build(uint[] freqs) => Build(freqs, false);
+
+		/// <summary><paramref name="skipZero"/>: Fable 3 leaves zero-frequency symbols out of the heap.</summary>
+		public static HuffTree Build(uint[] freqs, bool skipZero)
 		{
 			int count = freqs.Length;
 			var tree = new HuffTree(count * 2 + 1);
@@ -271,6 +276,11 @@ public static class Engine_LhTexCodec
 
 			for (int s = 0; s < count; ++s)
 			{
+				if (skipZero && freqs[s] == 0)
+				{
+					continue;
+				}
+
 				Push(tree.Alloc(freqs[s], s, -1, -1));
 			}
 
@@ -293,8 +303,8 @@ public static class Engine_LhTexCodec
 			ushort entry = _table![reader.Peek(TableBits)];
 			if (entry != TableSlow)
 			{
-				reader.Skip((entry >> 8) & 0x7F);
-				return entry & 0xFF;
+				reader.Skip((entry >> 10) & 0xF);
+				return entry & 0x3FF;
 			}
 
 			int n = Root;
@@ -348,10 +358,78 @@ public static class Engine_LhTexCodec
 		int width,
 		int height,
 		out byte[] blocks,
+		out string error) =>
+		TryDecodeVariant(body, offset, length, mode, width, height, TexScheme.Auto, out blocks, out error);
+
+	/// <summary>
+	/// <paramref name="scheme"/> <see cref="TexScheme.Auto"/> tries Fable 2's layout and then
+	/// Fable 3's; a caller that decoded the colour plane passes what it learnt there instead.
+	/// </summary>
+	public static bool TryDecodeVariant(
+		byte[] body,
+		int offset,
+		int length,
+		int mode,
+		int width,
+		int height,
+		TexScheme scheme,
+		out byte[] blocks,
 		out string error)
+	{
+		if (scheme != TexScheme.Auto)
+		{
+			return DecodeVariant(body, offset, length, mode, width, height, scheme, out blocks, out error, out _, out _);
+		}
+
+		bool fable2Ok = DecodeVariant(body, offset, length, mode, width, height, TexScheme.Fable2, out blocks, out error, out long consumed, out long total);
+		if (fable2Ok && EndsAtBody(consumed, total))
+		{
+			return true;
+		}
+
+		string fable2Error = fable2Ok ? $"stream ended {total - consumed} bits short" : error;
+		byte[] fable2Blocks = blocks;
+		bool fable3Ok = DecodeVariant(body, offset, length, mode, width, height, TexScheme.Fable3, out blocks, out error, out consumed, out total);
+		if (fable3Ok && EndsAtBody(consumed, total))
+		{
+			return true;
+		}
+
+		if (fable2Ok)
+		{
+			blocks = fable2Blocks;
+			error = string.Empty;
+			return true;
+		}
+
+		if (fable3Ok)
+		{
+			error = string.Empty;
+			return true;
+		}
+
+		error = $"as Fable 2: {fable2Error}; as Fable 3: {error}";
+		return false;
+	}
+
+	private static bool DecodeVariant(
+		byte[] body,
+		int offset,
+		int length,
+		int mode,
+		int width,
+		int height,
+		TexScheme scheme,
+		out byte[] blocks,
+		out string error,
+		out long bitsConsumed,
+		out long bitsTotal)
 	{
 		blocks = Array.Empty<byte>();
 		error = string.Empty;
+		bitsConsumed = 0;
+		bitsTotal = (long)length * 8;
+		bool fable3 = scheme == TexScheme.Fable3;
 
 		if (length < 32)
 		{
@@ -373,23 +451,26 @@ public static class Engine_LhTexCodec
 
 		var freqA = new uint[64];
 		var freqB = new uint[32];
-		var freqC = new uint[64];
+		var freqC = new uint[fable3 ? 512 : 64];
 		var freqOp = new uint[32];
-		for (int i = 0; i < 64; ++i) freqA[i] = DecodeFreqByte((byte)reader.Read(8));
-		for (int i = 0; i < 32; ++i) freqB[i] = DecodeFreqByte((byte)reader.Read(8));
-		for (int i = 0; i < 64; ++i) freqC[i] = DecodeFreqByte((byte)reader.Read(8));
-		for (int i = 0; i < 32; ++i) freqOp[i] = DecodeFreqByte((byte)reader.Read(8));
+		ReadFrequencies(reader, freqA, scheme);
+		ReadFrequencies(reader, freqB, scheme);
+		ReadFrequencies(reader, freqC, scheme);
+		ReadFrequencies(reader, freqOp, scheme);
 
-		HuffTree treeA = HuffTree.Build(freqA);
-		HuffTree treeB = HuffTree.Build(freqB);
-		HuffTree treeC = HuffTree.Build(freqC);
-		HuffTree treeOp = HuffTree.Build(freqOp);
+		HuffTree treeA = HuffTree.Build(freqA, fable3);
+		HuffTree treeB = HuffTree.Build(freqB, fable3);
+		HuffTree treeC = HuffTree.Build(freqC, fable3);
+		HuffTree treeOp = HuffTree.Build(freqOp, fable3);
 
-		if (treeA.Root < 0 || treeB.Root < 0 || treeC.Root < 0 || treeOp.Root < 0)
+		// Fable 3 leaves an unused table empty (no leaves at all); decoding from it is the error.
+		if (treeOp.Root < 0 || (!fable3 && (treeA.Root < 0 || treeB.Root < 0 || treeC.Root < 0)))
 		{
 			error = "variant: tree build failed";
 			return false;
 		}
+
+		Span<int> ramp = stackalloc int[16];
 
 		int bxCount = width / 4;
 		int byCount = height / 4;
@@ -487,20 +568,64 @@ public static class Engine_LhTexCodec
 						int a0 = Dq6To8[Clamp6(symA + symB)];
 						int a1 = Dq6To8[Clamp6(symA - symB)];
 
-						for (int iter = 0; iter < 4; ++iter)
+						if (fable3)
 						{
-							int c1 = treeC.Decode(reader);
-							int c2 = treeC.Decode(reader);
-							if (c1 < 0 || c2 < 0)
+							// FABLE 3 (sub_82D6DB58, 0x82d6e0a0..0x82d6e218): three raw bits start
+							// column 0; the first C symbol's three 3-bit deltas walk it down; the next
+							// four C symbols walk each row left to right; every step is mod 8. The
+							// result is a ramp level 0 (lo) .. 7 (hi), not a BC3 index: the BC3 path
+							// maps it through byte_820EB2B0. When lo == hi the indices stay 0, but the
+							// symbols are consumed all the same.
+							int raw = (int)reader.Read(3);
+							Span<int> sym = stackalloc int[5];
+							for (int k = 0; k < 5; ++k)
 							{
-								error = "variant: C tree decode failed";
-								return false;
+								sym[k] = treeC.Decode(reader);
+								if (sym[k] < 0)
+								{
+									error = "variant: C tree decode failed";
+									return false;
+								}
 							}
 
-							indices[iter * 4] = (byte)(c1 & 7);
-							indices[iter * 4 + 1] = (byte)((c1 >> 3) & 7);
-							indices[iter * 4 + 2] = (byte)(c2 & 7);
-							indices[iter * 4 + 3] = (byte)((c2 >> 3) & 7);
+							static int Delta(int symbol, int i) => (symbol >> (3 * i)) & 7;
+							int column = raw;
+							for (int y = 0; y < 4; ++y)
+							{
+								if (y > 0)
+								{
+									column = (column + Delta(sym[0], y - 1)) & 7;
+								}
+
+								ramp[y * 4] = column;
+								for (int x = 1; x < 4; ++x)
+								{
+									ramp[y * 4 + x] = (ramp[y * 4 + x - 1] + Delta(sym[y + 1], x - 1)) & 7;
+								}
+							}
+
+							for (int i = 0; i < 16; ++i)
+							{
+								indices[i] = a0 == a1 ? (byte)0 : RampToBc3Index[ramp[i]];
+							}
+						}
+						else
+						{
+							for (int iter = 0; iter < 4; ++iter)
+							{
+								int c1 = treeC.Decode(reader);
+								int c2 = treeC.Decode(reader);
+								if (c1 < 0 || c2 < 0)
+								{
+									error = "variant: C tree decode failed";
+									return false;
+								}
+
+								indices[iter * 4] = (byte)(c1 & 7);
+								indices[iter * 4 + 1] = (byte)((c1 >> 3) & 7);
+								indices[iter * 4 + 2] = (byte)(c2 & 7);
+								indices[iter * 4 + 3] = (byte)((c2 >> 3) & 7);
+							}
 						}
 
 						if (mode == 2)
@@ -537,10 +662,62 @@ public static class Engine_LhTexCodec
 			}
 		}
 
+		bitsConsumed = reader.CurrentBit;
+		if (reader.CurrentBit > reader.TotalBits + 32)
+		{
+			error = $"variant: ran past end of body: bit={reader.CurrentBit} of {reader.TotalBits}";
+			return false;
+		}
+
 		return true;
 	}
 
 	private static uint DecodeFreqByte(byte b) => (uint)(b & 0x0F) << ((b >> 4) & 0x0F);
+
+	/// <summary>
+	/// Which game wrote the body. FABLE 3 changed two things in every codec here, read from its
+	/// binary (frequency reader sub_82D6D338, tree build sub_82D6CAC0): a frequency is a
+	/// variable-length field instead of a byte — <c>0</c> → 0; <c>1 0 mmmm</c> → m;
+	/// <c>1 1 mmmm eeee</c> → m &lt;&lt; e — and zero-frequency symbols are not pushed into the
+	/// Huffman heap, which changes the tree shape. The alpha plane also grew its C table from 64
+	/// to 512 symbols and recoded op 3 (see <see cref="TryDecodeVariant"/>). The record chain
+	/// around the bodies is unchanged, so a caller that does not know asks for
+	/// <see cref="TexScheme.Auto"/> and the colour plane's decode tells it which one held.
+	/// </summary>
+	public enum TexScheme
+	{
+		Auto,
+		Fable2,
+		Fable3,
+	}
+
+	private static void ReadFrequencies(BitReader reader, uint[] freqs, TexScheme scheme)
+	{
+		for (int i = 0; i < freqs.Length; ++i)
+		{
+			if (scheme == TexScheme.Fable2)
+			{
+				freqs[i] = DecodeFreqByte((byte)reader.Read(8));
+			}
+			else if (reader.Read(1) == 0)
+			{
+				freqs[i] = 0;
+			}
+			else if (reader.Read(1) == 0)
+			{
+				freqs[i] = reader.Read(4);
+			}
+			else
+			{
+				uint m = reader.Read(4);
+				int e = (int)reader.Read(4);
+				freqs[i] = m << e;
+			}
+		}
+	}
+
+	/// <summary>Fable 3's BC3 index for a monotone ramp level 0 (lo) .. 7 (hi): byte_820EB2B0.</summary>
+	private static readonly byte[] RampToBc3Index = { 1, 7, 6, 5, 4, 3, 2, 0 };
 
 	private static int Clamp(int v, int lo, int hi) => v < lo ? lo : v > hi ? hi : v;
 
@@ -576,18 +753,105 @@ public static class Engine_LhTexCodec
 		out byte[] blocks,
 		out long bitsConsumed,
 		out long bitsTotal,
+		out string error) =>
+		TryDecodeCompressedMip(body, offset, length, comp11Layout, TexScheme.Auto, out width, out height, out blocks,
+			out bitsConsumed, out bitsTotal, out _, out error);
+
+	/// <summary>
+	/// <paramref name="scheme"/> <see cref="TexScheme.Auto"/> tries Fable 2's layout and then
+	/// Fable 3's; <paramref name="used"/> says which one decoded, for the alpha plane beside it.
+	/// </summary>
+	public static bool TryDecodeCompressedMip(
+		byte[] body,
+		int offset,
+		int length,
+		bool comp11Layout,
+		TexScheme scheme,
+		out int width,
+		out int height,
+		out byte[] blocks,
+		out long bitsConsumed,
+		out long bitsTotal,
+		out TexScheme used,
 		out string error)
 	{
+		if (scheme != TexScheme.Auto)
+		{
+			used = scheme;
+			return DecodeCompressedMip(body, offset, length, comp11Layout, scheme, out width, out height, out blocks,
+				out bitsConsumed, out bitsTotal, out error);
+		}
+
+		// A real stream ends inside the body's last padding word; a wrong scheme that happens not
+		// to overrun still stops far short of it, so the slack decides, not success alone.
+		used = TexScheme.Fable2;
+		bool fable2Ok = DecodeCompressedMip(body, offset, length, comp11Layout, TexScheme.Fable2, out width, out height,
+			out blocks, out bitsConsumed, out bitsTotal, out error);
+		if (fable2Ok && EndsAtBody(bitsConsumed, bitsTotal))
+		{
+			return true;
+		}
+
+		string fable2Error = fable2Ok ? $"stream ended {bitsTotal - bitsConsumed} bits short" : error;
+		int fable2Width = width;
+		int fable2Height = height;
+		byte[] fable2Blocks = blocks;
+		used = TexScheme.Fable3;
+		bool fable3Ok = DecodeCompressedMip(body, offset, length, comp11Layout, TexScheme.Fable3, out width, out height,
+			out blocks, out bitsConsumed, out bitsTotal, out error);
+		if (fable3Ok && EndsAtBody(bitsConsumed, bitsTotal))
+		{
+			return true;
+		}
+
+		if (fable2Ok)
+		{
+			// Neither scheme lands on the end; keep Fable 2's reading, as before this detection.
+			used = TexScheme.Fable2;
+			width = fable2Width;
+			height = fable2Height;
+			blocks = fable2Blocks;
+			error = string.Empty;
+			return true;
+		}
+
+		if (fable3Ok)
+		{
+			error = string.Empty;
+			return true;
+		}
+
+		error = $"as Fable 2: {fable2Error}; as Fable 3: {error}";
+		return false;
+	}
+
+	/// <summary>Both games' streams finish within the last padding word; 64 bits of slack covers it.</summary>
+	private static bool EndsAtBody(long consumed, long total) => consumed <= total + 32 && total - consumed < 64;
+
+	private static bool DecodeCompressedMip(
+		byte[] body,
+		int offset,
+		int length,
+		bool comp11Layout,
+		TexScheme scheme,
+		out int width,
+		out int height,
+		out byte[] blocks,
+		out long bitsConsumed,
+		out long bitsTotal,
+		out string error)
+	{
+		bool fable3 = scheme == TexScheme.Fable3;
 		bitsConsumed = 0;
 		bitsTotal = (long)length * 8;
 		width = 0;
 		height = 0;
 		blocks = Array.Empty<byte>();
 		error = string.Empty;
-
-		if (length < 444)
+		// Fable 2's tables alone are 440 bytes; Fable 3's are variable-length and can be far shorter.
+		if (length < (fable3 ? 8 : 444))
 		{
-			error = $"body too small (<444 bytes): {length}";
+			error = $"body too small: {length}";
 			return false;
 		}
 
@@ -613,15 +877,16 @@ public static class Engine_LhTexCodec
 		var freqIdx = new uint[256];
 		var freqOp = new uint[62];
 		var freqDel = new uint[122];
-		for (int i = 0; i < 256; ++i) freqIdx[i] = DecodeFreqByte((byte)reader.Read(8));
-		for (int i = 0; i < 62; ++i) freqOp[i] = DecodeFreqByte((byte)reader.Read(8));
-		for (int i = 0; i < 122; ++i) freqDel[i] = DecodeFreqByte((byte)reader.Read(8));
+		ReadFrequencies(reader, freqIdx, scheme);
+		ReadFrequencies(reader, freqOp, scheme);
+		ReadFrequencies(reader, freqDel, scheme);
 
-		HuffTree treeIdx = HuffTree.Build(freqIdx);
-		HuffTree treeOp = HuffTree.Build(freqOp);
-		HuffTree treeDel = HuffTree.Build(freqDel);
+		HuffTree treeIdx = HuffTree.Build(freqIdx, fable3);
+		HuffTree treeOp = HuffTree.Build(freqOp, fable3);
+		HuffTree treeDel = HuffTree.Build(freqDel, fable3);
 
-		if (treeIdx.Root < 0 || treeOp.Root < 0 || treeDel.Root < 0)
+		// Fable 3 leaves an unused table empty (no leaves at all); decoding from it is the error.
+		if (treeOp.Root < 0 || (!fable3 && (treeIdx.Root < 0 || treeDel.Root < 0)))
 		{
 			error = "Huffman tree build failed";
 			return false;

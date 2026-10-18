@@ -35,17 +35,63 @@ public class ModNativeTests
     }
 
     [TestCase]
-    public void ConflictsAgainstRefiiAndBetweenMods()
+    public void DerivesReplacementsFromHooksThatNeverCallTheOriginal()
     {
+        List<string> overrides = ModNative.DeriveOverrides(Hook).ToList();
+        HashSet<string> replaces = ModNative.DeriveReplacements(overrides, new[] { Hook });
+
+        AssertThat(replaces.Count).IsEqual(1);
+        AssertThat(replaces.Contains("sub_826F57E8")).IsTrue();
+        AssertThat(replaces.Contains("rex_StaminaGate")).IsFalse();
+    }
+
+    [TestCase]
+    public void WrappingHooksChainAndOnlyReplacersConflict()
+    {
+        // souls is highest priority (outermost); other replaces rex_C, which refii also hooks.
         var first = new ModNativeSources { ModName = "souls", Overrides = { "rex_A", "rex_B" } };
-        var second = new ModNativeSources { ModName = "other", Overrides = { "rex_B", "rex_C" } };
-        var refii = new Dictionary<string, string> { ["rex_C"] = ModNative.RefiiOwner };
+        var second = new ModNativeSources { ModName = "other", Overrides = { "rex_B", "rex_C" }, Replaces = { "rex_C" } };
+        var refii = new Dictionary<string, string> { ["rex_B"] = ModNative.RefiiOwner, ["rex_C"] = ModNative.RefiiOwner };
+        var mods = new[] { first, second };
 
-        List<ModNativeConflict> conflicts = ModNative.FindConflicts(new[] { first, second }, refii);
+        List<ModNativeConflict> conflicts = ModNative.FindConflicts(mods, refii);
+        AssertThat(conflicts.Count).IsEqual(1);
+        AssertThat(conflicts[0].Function).IsEqual("rex_C");
+        AssertThat(conflicts[0].First).IsEqual("other");
+        AssertThat(conflicts[0].Second).IsEqual(ModNative.RefiiOwner);
 
-        AssertThat(conflicts.Count).IsEqual(2);
-        AssertThat(conflicts.Any(c => c.Function == "rex_B" && c.First == "souls" && c.Second == "other")).IsTrue();
-        AssertThat(conflicts.Any(c => c.Function == "rex_C" && c.First == ModNative.RefiiOwner && c.Second == "other")).IsTrue();
+        List<ModNativeChain> chains = ModNative.PlanChains(mods, refii);
+        AssertThat(chains.Count).IsEqual(2);
+        ModNativeChain b = chains.First(c => c.Function == "rex_B");
+        AssertThat(b.Owners.SequenceEqual(new[] { "souls", "other", ModNative.RefiiOwner })).IsTrue();
+
+        List<string> defines = ModNative.ChainDefines(chains, "other");
+        AssertThat(defines.Contains("-Drex_B=rex_B__other")).IsTrue();
+        AssertThat(defines.Contains("-D__imp__rex_B=rex_B__refii")).IsTrue();
+        AssertThat(defines.Contains("-Drex_C=rex_C__other")).IsTrue();
+        AssertThat(defines.Contains("-D__imp__rex_C=rex_C__refii")).IsTrue();
+
+        List<string> outer = ModNative.ChainDefines(chains, "souls");
+        AssertThat(outer.Contains("-Drex_B=rex_B__souls")).IsTrue();
+        AssertThat(outer.Contains("-D__imp__rex_B=rex_B__other")).IsTrue();
+        AssertThat(outer.Any(d => d.Contains("rex_A"))).IsFalse();
+
+        List<string> innermost = ModNative.ChainDefines(chains, ModNative.RefiiOwner);
+        AssertThat(innermost.Contains("-Drex_B=rex_B__refii")).IsTrue();
+        AssertThat(innermost.Any(d => d.StartsWith("-D__imp__"))).IsFalse();
+
+        string source = ModNative.ChainSource(chains);
+        AssertThat(source.Contains("REX_EXTERN(rex_B__souls);")).IsTrue();
+        AssertThat(source.Contains("REX_EXTERN(rex_B) {")).IsTrue();
+        AssertThat(source.Contains("return rex_B__souls(ctx, base);")).IsTrue();
+        AssertThat(source.Contains("return rex_C__other(ctx, base);")).IsTrue();
+        AssertThat(ModNative.ChainSource(new List<ModNativeChain>())).IsEqual(string.Empty);
+    }
+
+    [TestCase]
+    public void ChainSymbolsAreIdentifiers()
+    {
+        AssertThat(ModNative.ChainSymbol("rex_X", "hd-ui 2")).IsEqual("rex_X__hd_ui_2");
     }
 
     [TestCase]

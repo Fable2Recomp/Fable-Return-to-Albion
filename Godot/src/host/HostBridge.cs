@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 186;
+	public const int ExpectedAbiVersion = 187;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -3368,7 +3368,7 @@ public static class HostBridge
 	/// <c>kStride</c> — both sides index one flat buffer and a disagreement is an ABI break the
 	/// compiler cannot see.
 	/// </summary>
-	public const int ActiveFxStride = 20;
+	public const int ActiveFxStride = 22;
 
 	/// <summary>
 	/// How many live particle NODES are read in one frame. The guest's vector holds every node,
@@ -3446,7 +3446,16 @@ public static class HostBridge
 		/// <summary>
 		/// The element's fade-out fraction, +196/+192 while a kill-with-fade runs, else 1.
 		/// </summary>
-		float Fade);
+		float Fade,
+
+		/// <summary>
+		/// The entity whose emitter component plays this effect (the vortex entity, the
+		/// fireball's shot, a sword's effect entity); 0 for a spell-owned trail or an unknown.
+		/// </summary>
+		uint Owner = 0,
+
+		/// <summary>The entity the effect's own entity was attached to, or 0.</summary>
+		uint Attached = 0);
 
 	/// <summary>
 	/// Every particle effect the guest is currently playing, in world space — the only route
@@ -3499,7 +3508,9 @@ public static class HostBridge
 				(flags & 8u) != 0,
 				Bits(_activeFx[at + 17]),
 				Bits(_activeFx[at + 18]),
-				Bits(_activeFx[at + 19])));
+				Bits(_activeFx[at + 19]),
+				_activeFx[at + 20],
+				_activeFx[at + 21]));
 		}
 
 		return effects;
@@ -7222,6 +7233,39 @@ public static class HostBridge
 			return default;
 		}
 
+		return DecodeSpellWidget(words);
+	}
+
+	/// <summary>
+	/// The abilities book's own spell blade (screen 14 + 200), read while the abilities screen
+	/// is up and its blade is open — RefiiHostGetSpellBlade. The same words as the wheel's, so the
+	/// one owned widget follows either.
+	/// </summary>
+	public static Engine_UiModel.SpellWheelState GetSpellBlade()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] words = _spellWheelWords ??= new uint[53];
+		try
+		{
+			if (RefiiHostGetSpellBlade(words, (uint)words.Length) == 0)
+			{
+				return default;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		return DecodeSpellWidget(words);
+	}
+
+	private static Engine_UiModel.SpellWheelState DecodeSpellWidget(uint[] words)
+	{
 		var counts = new int[Engine_UiModel.SpellAssignState.Slots];
 		var cells = new int[Engine_UiModel.SpellAssignState.Slots];
 		var lists = new int[Engine_UiModel.SpellAssignState.Slots][];
@@ -7252,8 +7296,8 @@ public static class HostBridge
 	/// The writer validates nothing, so only send a pair
 	/// <see cref="SpellAssignState.Offers"/> admits.
 	/// </summary>
-	public static uint AssignSpell(int slot, int spell) =>
-		PostFrontEndAction($"SpellAssign:{slot}:{spell}");
+	public static uint AssignSpell(int slot, int spell, int player = 1) =>
+		PostFrontEndAction(player == 2 ? $"SpellAssign:{slot}:{spell}:2" : $"SpellAssign:{slot}:{spell}");
 
 	/// <summary>
 	/// What the guest would gate its own New Game and Load Game entries on. Two of the three
@@ -7865,6 +7909,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetSpellWheel(uint player, [Out] uint[] outWords, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetSpellBlade([Out] uint[] outWords, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetMenuRow(

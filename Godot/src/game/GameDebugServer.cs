@@ -1049,6 +1049,14 @@ public partial class GameDebugServer : Node
 					};
 				}
 
+				// The mods' fx/recipes.json re-read and every dressed effect re-dressed, so a look
+				// saved from the FX Lab shows in the running game without a restart.
+				if (name == "fx-recipes-reload")
+				{
+					Refii.Fx.Engine_FxRecipes.Reload();
+					return Ok(new Dictionary<string, object?> { ["recipes"] = Refii.Fx.Engine_FxRecipes.All.Count });
+				}
+
 				// A mod's tunable, live: "mod-setting <key> <value>" (Engine_ModSettings pushes the
 				// files' values; this holds until the next push).
 				if (name.StartsWith("mod-setting ", System.StringComparison.Ordinal))
@@ -1063,8 +1071,21 @@ public partial class GameDebugServer : Node
 						};
 					}
 
-					Refii.Host.HostBridge.SetModSetting(parts[1], setting);
+					Refii.Mods.ModSettings.Set(parts[1], setting);
 					return Ok(new Dictionary<string, object?> { ["setting"] = parts[1], ["value"] = setting });
+				}
+
+				// What a mod's native code has published, live: "mod-value <key> [<key> ...]" —
+				// what the HUD, the abilities page and the recipes are reading right now.
+				if (name.StartsWith("mod-value ", System.StringComparison.Ordinal))
+				{
+					var values = new Dictionary<string, object?>();
+					foreach (string key in name.Split(' ', System.StringSplitOptions.RemoveEmptyEntries).Skip(1))
+					{
+						values[key] = Refii.Host.HostBridge.TryGetModValue(key, out float value) ? value : null;
+					}
+
+					return Ok(new Dictionary<string, object?> { ["values"] = values });
 				}
 
 				return Ok(new Dictionary<string, object?>
@@ -1380,6 +1401,8 @@ public partial class GameDebugServer : Node
 				return Ok(new Dictionary<string, object?>
 				{
 					["drawn"] = feed?.DrawnCount ?? 0,
+					["recipesActive"] = Refii.Fx.Engine_FxRecipes.ActiveCount,
+					["recipesLoaded"] = Refii.Fx.Engine_FxRecipes.All.Count,
 
 					// The walk's saturation. The guest appends new nodes at the end of its vector, so a full
 					// buffer means the NEWEST effects were cut.

@@ -51,6 +51,11 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 		public required Node3D Node { get; init; }
 		public MeshInstance3D? Icon { get; set; }
 
+		/// <summary>The smaller copy of <see cref="Icon"/> showing a mod's secondary pick (Engine_UiSpellAssignSecondary).</summary>
+		public MeshInstance3D? Mini { get; set; }
+
+		public int MiniShown { get; set; } = -2;
+
 		/// <summary>`Surround` — the segment ring; opacity 0 on slide 2, 100 on slide 3.</summary>
 		public Node3D? Surround { get; set; }
 
@@ -457,6 +462,8 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 				FitLabelPlate(display);
 			}
 		}
+
+		PaintSecondary();
 	}
 
 	/// <summary>

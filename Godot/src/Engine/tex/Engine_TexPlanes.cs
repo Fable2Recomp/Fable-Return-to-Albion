@@ -140,9 +140,10 @@ public static class Engine_TexPlanes
         }
 
         var output = new byte[blocks * stride];
-
         bool wroteAnything = false;
-
+        // The colour plane finds out which game wrote the record; the alpha plane beside it is
+        // the same game's, and its layout cannot be told apart as safely on its own.
+        Engine_LhTexCodec.TexScheme scheme = Engine_LhTexCodec.TexScheme.Auto;
         for (int p = 0; p < planeCount; p++)
         {
             TexPlane plane = planes[p];
@@ -168,8 +169,8 @@ public static class Engine_TexPlanes
                     }
 
                     if (!Engine_LhTexCodec.TryDecodeCompressedMip(d, bodyOffset, bodySize,
-                            plane.CompFlag == CompHuffmanNoSwap,
-                            out int w, out int h, out byte[] bc1, out string err))
+                            plane.CompFlag == CompHuffmanNoSwap, scheme,
+                            out int w, out int h, out byte[] bc1, out _, out _, out scheme, out string err))
                     {
                         error = $"plane {p}: {err}";
                         return false;
@@ -191,7 +192,7 @@ public static class Engine_TexPlanes
                 {
                     int mode = (int)plane.CompFlag - 1;
                     if (!Engine_LhTexCodec.TryDecodeVariant(d, bodyOffset, bodySize, mode,
-                            width, height, out byte[] vb, out string verr))
+                            width, height, scheme, out byte[] vb, out string verr))
                     {
                         error = $"plane {p}: {verr}";
                         return false;

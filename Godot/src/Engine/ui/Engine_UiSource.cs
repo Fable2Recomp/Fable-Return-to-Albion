@@ -103,6 +103,9 @@ public abstract class Engine_UiSource
 	/// <summary>The quick wheel's guest-held cursor — see <see cref="Engine_UiModel.SpellWheelState"/>.</summary>
 	public virtual Engine_UiModel.SpellWheelState GetSpellWheel(int player) => default;
 
+	/// <summary>The abilities book's blade widget, while that screen is up and the blade is open.</summary>
+	public virtual Engine_UiModel.SpellWheelState GetSpellBlade() => default;
+
 	// ---- THE HUD -----------------------------------------------------------------------
 
 	/// <summary>Meter values by FNV-1 name hash.</summary>
@@ -257,6 +260,6 @@ public abstract class Engine_UiSource
 	/// <summary>Selects a pause tab. False when the source refused it.</summary>
 	public virtual bool PauseTabSelect(uint tab) => false;
 
-	/// <summary>Commits one spell into one slot on the assignment blade.</summary>
-	public virtual uint AssignSpell(int slot, int spell) => 0;
+	/// <summary>Commits one spell into one slot on the assignment blade of <paramref name="player"/>'s hero (1 or 2).</summary>
+	public virtual uint AssignSpell(int slot, int spell, int player = 1) => 0;
 }

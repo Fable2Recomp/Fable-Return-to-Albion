@@ -65,6 +65,9 @@ public static class Engine_UiAbilitySource
 		[Will] = 22,
 	};
 
+	/// <summary>The event a mod-declared category's rows carry: Will's, the nearest of the three.</summary>
+	private const int ModCategoryEvent = 22;
+
 	/// <summary>`dword_8349D3AC` — every one of the fourteen states this icon.</summary>
 	private const string AbilityIcon = @"Art\GUI\WheelIcons\icon_abilities.tga";
 
@@ -81,9 +84,31 @@ public static class Engine_UiAbilitySource
 	/// <summary>The abilities of one category — `abilities:Strength` and its two siblings.</summary>
 	public static IReadOnlyList<Engine_UiMenuSources.Row> Rows(string category)
 	{
-		if (category.Length == 0 || !CategoryEvent.TryGetValue(category, out int eventType))
+		if (category.Length == 0)
 		{
 			return None;
+		}
+
+		if (!CategoryEvent.TryGetValue(category, out int eventType))
+		{
+			// A category only mods declare (a hybrid tree): its row comes from a mod's templates,
+			// its abilities act host-side, and they carry Will's event like any mod row would.
+			bool declared = false;
+			foreach (Engine_UiModAbilities.Ability mod in Engine_UiModAbilities.All)
+			{
+				if (mod.Category == category)
+				{
+					declared = true;
+					break;
+				}
+			}
+
+			if (!declared)
+			{
+				return None;
+			}
+
+			eventType = ModCategoryEvent;
 		}
 
 		Refii.Host.HostBridge.HeroVitals vitals = Refii.Host.HostBridge.GetHeroVitals();
@@ -194,7 +219,8 @@ public static class Engine_UiAbilitySource
 				Id: 0x10000u + (uint)modIndex,
 				Rating: maxed ? 2 * level : (2 * level) + 1,
 				Committable: false,
-				Counted: !maxed && cost is { } price && price <= Affordable(vitals, category),
+				Counted: !maxed && cost is { } price &&
+					Engine_UiModAbilities.Affordable(mod, vitals.ExperienceAvailable, price),
 				Ghosted: false,
 				Command: Engine_UiModAbilities.BuyAction + mod.BuyKey));
 		}

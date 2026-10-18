@@ -112,6 +112,7 @@ public partial class ModdingGuideView : MarginContainer
         AddSubTabButton(subNavRow, "🗺️ 4. Levels & 3D Placements", 3);
         AddSubTabButton(subNavRow, "📜 5. Lua Scripts & Quests", 4);
         AddSubTabButton(subNavRow, "🧩 6. Script API & Hard Mods", 5);
+        AddSubTabButton(subNavRow, "⚡ 7. Events & the Mod API", 6);
 
         topVBox.AddChild(subNavRow);
         topPanel.AddChild(topVBox);
@@ -137,6 +138,7 @@ public partial class ModdingGuideView : MarginContainer
         _subTabPages.Add(BuildLevelsPage());
         _subTabPages.Add(BuildLuaPage());
         _subTabPages.Add(BuildScriptApiPage());
+        _subTabPages.Add(BuildEventsPage());
 
         foreach (Control page in _subTabPages)
         {
@@ -612,9 +614,18 @@ public partial class ModdingGuideView : MarginContainer
             new Color(0.85f, 0.65f, 1.0f),
             "Fable II uses an embedded Lua 5.1 virtual machine to drive quest logic, NPC schedules, combat abilities, and world triggers.\n\n" +
             "How Lua Modding Works in .f2mod Packages:\n" +
-            "  • Entrypoint Script: A mod package can include 'scripts/mod_init.lua' (or custom script files under 'scripts/') to execute custom Lua code when the session starts.\n" +
-            "  • GDB Script References: Many GDB components (such as EntityScriptComponent or QuestComponent) reference Lua script names or state machines that can be inspected and overridden in the GDB Hierarchy tab.\n" +
-            "  • Dedicated visual level placement and interactive Lua script template tools are being expanded in upcoming Mod Studio updates."));
+            "  • Entrypoint Script: mod/init.lua runs in the game's VM once per session after the shipped scripts (RefiiModApi.SetModLua); mod/camera.lua after every camera-script load. Patch the shipped tables, never ship an edited copy of a shipped script.\n" +
+            "  • Events: Refii.on(\"hit\", function(e) ... end) subscribes to the mod API's events from Lua — see tab 7 for every event and its fields. return true cancels where the event allows it.\n" +
+            "  • GDB Script References: Many GDB components (such as EntityScriptComponent or QuestComponent) reference Lua script names or state machines that can be inspected and overridden in the GDB Hierarchy tab."));
+
+        page.AddChild(CreateSectionCard(
+            "🧠 The game's own Lua API — 3,602 natives in 234 tables",
+            new Color(0.55f, 0.85f, 1.0f),
+            "Everything the shipped scripts can call, a mod's init.lua can call: the game registers its natives one by one at session start (the binary's own registrars), and the whole list — read from the game's code — is res://modding_tools/game_lua_api.tsv (table, name, native address).\n\n" +
+            "  • Globals (_G, 122): CreateEntityFromIDAtPosition, GetDistanceBetweenEntities, AutoSaveGame, FNVHash, Entity(...), CVector3(...) ...\n" +
+            "  • Component classes as tables: Player (110), Dog (140), Creature (40), Stats (70), Combat (76), SpellManager (48), Village (66), QuestTracker (57), Villager (56), PlayerFamily (54), Camera (64), Navigation (63), GUI (120), Debug (485) ...\n" +
+            "  • Userdata methods: EntityMetatable (Destroy, GetPosition ...), CVector3Metatable, InventoryItemPtrMetatable, RecordPtrMetatable, MessageEventMetatable, AnimControl metatables.\n\n" +
+            "In the editor: RefiiModApi.ListGameLuaTables(), ListGameLuaNatives(\"Player\"), FindGameLuaNatives(\"Gold\"). The shipped scripts (ai/*.lua, quests) show each call's arguments; the live debug channel's refii_lua '@game <chunk>' tries one in a running game."));
 
         return page;
     }
@@ -660,11 +671,13 @@ public partial class ModdingGuideView : MarginContainer
             new Color(0.95f, 0.80f, 0.45f),
             "HUD (ui/hud.json):\n" +
             "  • SetHudClone({id, of, offset, hue, hueElements, icon, values, bars}) — a copy of a shipped piece, recoloured, with its own icon and fed by mod values. Souls Combat's mana and stamina bars are copies of the health bar.\n" +
-            "  • SetHudPiece({id, kind: meter|panel|picture, ...}) — a piece of the mod's own; follow, widthFrom and chip place it against shipped pieces.\n" +
+            "  • SetHudPiece({id, kind: meter|panel|picture, ...}) — a piece of the mod's own; follow, widthFrom and chip place it against shipped pieces; a picture with textures + index shows one of a list chosen by a mod value (Spell Weaving's partner glyph beside the charge meter).\n" +
             "  • HideHudPiece(id), ShowHudPiece(id), SetHudScale(id, factor), RemoveHudEntry(id); ListShippedHudPieces() names what can be copied, followed or hidden.\n\n" +
             "Abilities (ui/abilities.json): SetAbility({name, category, nameTag, descriptionTag, maxLevel, level, cost, stat, buy, refund, refundValue, image}), RemoveAbility(name). " +
             "The row sits after its category's own abilities and reads the mod values its keys name; A buys and Y unlearns through the game's own boxes, and the mod's native code does the spending.\n\n" +
-            "Menus and screens (ui/templates.json): PatchMenu(menu, entries) adds, replaces or removes entries by name (after/before/parent/remove), composing with other mods; SetScreen(id, record) replaces a screen; ListMenus() names the menus."));
+            "Menus and screens (ui/templates.json): PatchMenu(menu, entries) adds, replaces or removes entries by name (after/before/parent/remove), composing with other mods; SetScreen(id, record) replaces a screen; ListMenus() names the menus.\n\n" +
+            "Spell selectors (ui/spellwheel.json): { \"secondary\": { \"setting\": \"my_mod.pick\", \"value\": \"mod:my_mod.pick_active\", \"unlocked\": \"mod:my_mod.level\", \"apply\": \"MY_MOD_SET\", \"remove\": \"MY_MOD_CLEAR\" } } — on the quick wheel and the abilities blade X on the highlighted will writes its type to the setting and Y writes -1; the will the mod states back is drawn smaller under every assigned slot's icon, and once the unlocked value is positive the abilities blade shows an X prompt and a Y prompt with those tags' text beside the page's own. Spell Weaving's partner pick.\n\n" +
+            "Effects (fx/recipes.json): while a mod value equals a recipe's number, the live effects it names take a tint, intensity and size, authored pieces and attached effects on a turning ring — Spell Weaving's merged looks. everyNode dresses every live anchor; entities names entity definitions (the Blades' swords) so every live one carries the pieces on a node that follows it."));
 
         page.AddChild(CreateSectionCard(
             "⚙ Hard mods — native code",
@@ -672,7 +685,8 @@ public partial class ModdingGuideView : MarginContainer
             "A hard mod ships C++ under native/. The launcher compiles it into the game code when the mod is enabled, after the player allows that mod's native code once per version.\n\n" +
             "SetNativeSource(fileName, source) — writes native/<fileName>.\n" +
             "GetNativeOverrides() — the game functions the mod overrides, read from its sources.\n" +
-            "CheckNativeConflicts() — functions refii or another enabled mod also overrides; any one refuses the build, so resolve them before shipping.\n" +
+            "CheckNativeConflicts() — functions this mod replaces (its hook never calls the original) while refii or another enabled mod hooks them too; any one refuses the build.\n" +
+            "GetNativeChains() — functions shared with other owners and the order their hooks run in.\n" +
             "GetNativeHeaderPath() — core/refii_mod.h, the header native mods compile against.\n\n" +
             "In the source:\n" +
             "  #include \"core/refii_mod.h\"\n" +
@@ -681,6 +695,8 @@ public partial class ModdingGuideView : MarginContainer
             "  static void Tick(PPCContext* ctx, uint8_t* base, float seconds) { ... }\n" +
             "  REFII_MOD_ON_TICK(Tick);   // runs Tick once per game step\n\n" +
             "  • Hook functions by their config names (versions/*/refii_config.toml), never sub_ addresses — the names hold for both game builds.\n" +
+            "  • Shared functions chain. When two mods (or a mod and refii) hook one function, the launcher compiles each hook under its own symbol and links them in load order: the higher mod's __imp__<name> call reaches the lower mod's hook, and the lowest reaches the game. A hook that returns without calling the original stops the chain, which is what a gate means. A hook that never calls the original replaces the body and must be the only owner of that function.\n" +
+            "  • Depend on another mod with requires = [\"souls_combat >= 0.1\"] in mod.toml. The required mod is placed beneath this one and its native/include/ is on this mod's include path, so its exported C functions and its published values (refii::mods::Published) are directly usable. after = [\"hd-ui\"] orders without requiring.\n" +
             "  • Helpers: refii_mod_player_hero, refii_mod_local_hero, refii_mod_component, refii_mod_run_game_lua, refii_mod_game_lua_int, refii_mod_lua_generation, refii::mods::LoadU32/LoadF32/StoreU8/StoreU32/StoreF32, IsPlayerHero, CallGuest, CallVirtual.\n" +
             "  • Mod values join native code to the UI: refii::mods::Publish(\"my_mod.mana\", v) is read as \"mod:my_mod.mana\" by HUD pieces and abilities; the UI hands a setting back with SetModSetting, read by refii::mods::Setting(key, fallback)."));
 
@@ -695,6 +711,85 @@ public partial class ModdingGuideView : MarginContainer
             "  api.SetText(\"SOULS_COMBAT_STAMINA_NAME\", \"Endurance\")\n" +
             "  print(api.ReadText(\"ui/hud.json\"))   # a Set* call replaces the whole record it names, so start from what is there\n\n" +
             "Then enable it in the launcher's Mods panel; the game code is rebuilt with its native sources on the next Play."));
+
+        return page;
+    }
+
+    // =========================================================================
+    // SUB-TAB 6: THE EVENTS API — generated from the catalog (Engine_ModApi)
+    // =========================================================================
+    private Control BuildEventsPage()
+    {
+        var page = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        page.AddThemeConstantOverride("separation", 10);
+
+        page.AddChild(CreateSectionCard(
+            $"⚡ The mod API, version {ModApi.Version} — events first, hooks second",
+            new Color(1.0f, 0.85f, 0.40f),
+            "The game's seams are named EVENTS a mod subscribes to: a hit, a swing, a block, a spell launch, experience changing, the tick. " +
+            "An event never conflicts with another mod and needs no game function's name; refii hooks the function once, reads the fields, and hands every subscribed mod a struct (native) or a table (Lua). " +
+            "Where the seam allows a refusal the event says what cancelling means; writable fields change what the game gets. Every handler sees every event, in priority order then load order (refii's own last); the state after the last handler is the verdict.\n\n" +
+            "Native (native/*.cpp, compiled into the game code):\n" +
+            "  #include \"core/refii_mod.h\"\n" +
+            "  static void OnHit(refii::mods::HitEvent& e) {\n" +
+            "    if (e.attacker_player != 0) e.damage *= 2.0f;                 // either hero hits twice as hard\n" +
+            "    if (e.victim_player != 0 && e.spell_type == 2) e.cancel = true; // heroes ignore slow-time hits\n" +
+            "  }\n" +
+            "  REFII_MOD_ON(Hit, OnHit);            // REFII_MOD_ON_PRIORITY(Hit, OnHit, 10) runs earlier\n\n" +
+            "Lua (mod/init.lua, no compiler needed):\n" +
+            "  Refii.on(\"hit\", function(e)\n" +
+            "    if e.victim_player ~= 0 and e.spell_type == 2 then return true end   -- true cancels\n" +
+            "  end)\n\n" +
+            "In the editor: RefiiModApi.ListEvents(), DescribeEvent(name), NewNativeHandler(event, \"file.cpp\") writes a filled-in native handler, AddLuaHandler(event) appends a Lua one to init.lua. " +
+            "A hook on a game function (tab 6) stays for a seam no event covers; it chains with other owners as before."));
+
+        foreach (ModApiEvent e in ModApi.Events)
+        {
+            var body = new System.Text.StringBuilder();
+            body.Append(e.Summary).Append("\n\n");
+            body.Append("Native: refii::mods::").Append(e.Name).Append("Event — REFII_MOD_ON(").Append(e.Name).Append(", fn)\n");
+            body.Append("Lua: Refii.on(\"").Append(e.LuaName).Append("\", function(e) ... end)\n");
+            body.Append("Cancel: ").Append(e.Cancellable ? e.Cancel : "not cancellable").Append("\n");
+            body.Append("Seam: ").Append(e.Seam).Append("\n\nFields:\n");
+            foreach (ModApiField f in e.Fields)
+            {
+                body.Append("  • ").Append(f.Name).Append(" (").Append(f.Type).Append(f.Writable ? ", writable" : string.Empty)
+                    .Append(") — ").Append(f.Meaning).Append('\n');
+            }
+
+            body.Append("  • ctx, base — the guest context (a copy) and memory (native only); cancel — see above");
+            page.AddChild(CreateSectionCard(
+                $"{e.Kind}. {e.Name}  ·  \"{e.LuaName}\"",
+                e.Cancellable ? new Color(0.95f, 0.70f, 0.45f) : new Color(0.55f, 0.80f, 0.95f),
+                body.ToString()));
+        }
+
+        var helpers = new System.Text.StringBuilder();
+        helpers.Append("What a handler (or a hook) calls to read and change the game. All in core/refii_mod.h; C linkage, usable from any mod.\n\n");
+        foreach (ModApiHelper h in ModApi.Helpers)
+        {
+            helpers.Append("  ").Append(h.Signature).Append("\n      ").Append(h.Meaning).Append('\n');
+        }
+
+        page.AddChild(CreateSectionCard("🧰 Native helpers", new Color(0.60f, 0.90f, 0.60f), helpers.ToString()));
+
+        var lua = new System.Text.StringBuilder();
+        lua.Append("Composed ahead of every mod's init.lua. Entities are numbers (ids) in Lua; compare them with Refii.hero(1) / Refii.hero(2). A Lua handler can cancel but not change a number — that is native.\n\n");
+        foreach (ModApiHelper h in ModApi.LuaHelpers)
+        {
+            lua.Append("  ").Append(h.Signature).Append("\n      ").Append(h.Meaning).Append('\n');
+        }
+
+        page.AddChild(CreateSectionCard("📜 Lua helpers", new Color(0.85f, 0.65f, 1.0f), lua.ToString()));
+
+        page.AddChild(CreateSectionCard(
+            "🗡️ Worked examples: Souls Combat and Spell Weaving",
+            new Color(0.60f, 0.90f, 0.60f),
+            "Both bundled hard mods are built on these events (mods-src/souls_combat, mods-src/spell_weaving in the refii tree): stamina spends on MeleeSwing and RollStarted and refuses on AbilityRequest and Roll; the guard breaks through Block; poise absorbs through HitResponse; the lock-on toggles through GameAction; mana charges through SpellCharge, SpellChargeLevel and SpellLaunched; the weave stands its base in through SpellLaunch and casts the partner from HitLanded with refii_mod_cast_spell. " +
+            "What each still hooks by name is a seam no event covers yet (the look-at writer, the vortex component, the fireball's impact)."));
 
         return page;
     }

@@ -1880,6 +1880,7 @@ public partial class GameUi : Node
 			GameInput.ScreenMenuOwnsInput = true;
 			if (_books.Book(state.ScreenId) is { } pointedBlade)
 			{
+				_spells.FollowBlade(pointedBlade);
 				_spells.BladePointer(pointedBlade, delta);
 			}
 
@@ -3901,6 +3902,15 @@ public partial class GameUi : Node
 						if (GameInput.MenuAcceptPressed)
 						{
 							HostBridge.PostFrontEndAction("SpellBlade:copydown");
+						}
+
+						// A mod's secondary pick (Engine_UiSpellAssignSecondary): Y or X on the
+						// highlighted will, written to the mod's setting.
+						Engine_UiSpellAssign.SecondaryAction partnerAction =
+							Engine_UiSpellAssign.SecondaryPressed(GameInput.MenuFlipPressed, GameInput.MenuEquipPressed);
+						if (partnerAction != Engine_UiSpellAssign.SecondaryAction.None)
+						{
+							_spells.WheelSecondary(partnerAction);
 						}
 
 						_spells.WheelPointer();

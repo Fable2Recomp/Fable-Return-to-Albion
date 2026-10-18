@@ -30,6 +30,8 @@ public partial class ModdingPanel : VBoxContainer
 	private ModLoadOrder _order = new();
 	private readonly Dictionary<string, ModNativeSources> _native = new(StringComparer.OrdinalIgnoreCase);
 	private List<ModNativeConflict> _nativeConflicts = new();
+	private List<ModNativeChain> _nativeChains = new();
+	private List<ModDependencyProblem> _dependencyProblems = new();
 	private readonly Dictionary<string, ModTally> _tallies = new();
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
@@ -164,6 +166,16 @@ public partial class ModdingPanel : VBoxContainer
 			}
 		}
 
+		// A required mod sits beneath the mod that needs it (ModDependencies).
+		if (ModDependencies.Sort(_order, _mods, out string cycle))
+		{
+			orderChanged = true;
+		}
+		else if (cycle.Length != 0)
+		{
+			_statusMessage = "Mods require each other in a circle, so their order was left alone: " + cycle;
+		}
+
 		if (orderChanged)
 		{
 			_order.Write(_modsRoot, out _);
@@ -193,9 +205,16 @@ public partial class ModdingPanel : VBoxContainer
 			.Where(name => _native.ContainsKey(name))
 			.Select(name => _native[name])
 			.ToList();
+		Dictionary<string, string> refiiOverrides = enabledNative.Count == 0
+			? new Dictionary<string, string>()
+			: NativeModConsent.RefiiOverrides();
 		_nativeConflicts = enabledNative.Count == 0
 			? new List<ModNativeConflict>()
-			: ModNative.FindConflicts(enabledNative, NativeModConsent.RefiiOverrides());
+			: ModNative.FindConflicts(enabledNative, refiiOverrides);
+		_nativeChains = enabledNative.Count == 0
+			? new List<ModNativeChain>()
+			: ModNative.PlanChains(enabledNative, refiiOverrides);
+		_dependencyProblems = ModDependencies.Check(_order, _mods);
 
 		var recordConflicts = Refii.Gdb.GdbPatchCompositor.DetectRecordConflicts(_modsRoot, _order, _mods);
 		var rowConflicts = Refii.Mods.ModRowOverlays.DetectRowConflicts(_order, _mods);
@@ -423,6 +442,19 @@ public partial class ModdingPanel : VBoxContainer
 		ModInstall captured = mod;
 		check.Toggled += pressed =>
 		{
+			if (pressed)
+			{
+				List<ModDependencyProblem> needs = ModDependencies.CheckOne(captured, _order, _mods);
+				if (needs.Count > 0)
+				{
+					check.SetPressedNoSignal(false);
+					_statusMessage = $"'{captured.Name}' cannot be enabled: " +
+						string.Join("; ", needs.Select(need => need.Message)) + ".";
+					Rebuild();
+					return;
+				}
+			}
+
 			if (pressed && _native.TryGetValue(captured.Name, out ModNativeSources? native) &&
 				!NativeModConsent.IsGranted(native))
 			{
@@ -523,13 +555,27 @@ public partial class ModdingPanel : VBoxContainer
 			sb.AppendLine();
 			sb.AppendLine(mod.Metadata.Description);
 		}
+		if (mod.Metadata.Requires.Count != 0)
+		{
+			sb.AppendLine("Requires: " + string.Join(", ", mod.Metadata.Requires.Select(r => r.ToString())));
+		}
 		if (nativeSources != null)
 		{
 			sb.AppendLine();
-			sb.AppendLine("Native code — replaces these game functions:");
+			sb.AppendLine("Native code — hooks these game functions:");
 			foreach (string function in nativeSources.Overrides)
 			{
-				sb.AppendLine("  • " + function);
+				string line = "  • " + function;
+				if (nativeSources.Replaces.Contains(function))
+				{
+					line += " (replaces the game's body)";
+				}
+				ModNativeChain? chain = _nativeChains.FirstOrDefault(c => c.Function == function);
+				if (chain != null)
+				{
+					line += " — shared: " + string.Join(" → ", chain.Owners) + " → game";
+				}
+				sb.AppendLine(line);
 			}
 		}
 		nameLabel.TooltipText = sb.ToString().TrimEnd();
@@ -556,21 +602,41 @@ public partial class ModdingPanel : VBoxContainer
 			allow.Pressed += () => AskNativeConsent(pending, SaveEnabledMods);
 			statusControl = allow;
 		}
+		else if (enabled && _dependencyProblems.Any(problem =>
+			string.Equals(problem.Mod, mod.Name, StringComparison.OrdinalIgnoreCase)))
+		{
+			var needsLabel = MakeLabel("⛔ needs");
+			needsLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
+			needsLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			needsLabel.CustomMinimumSize = new Vector2(60, 0);
+			needsLabel.MouseFilter = MouseFilterEnum.Pass;
+			var tip = new System.Text.StringBuilder();
+			tip.AppendLine("This mod needs another mod that is not there. Its content still loads, but");
+			tip.AppendLine("the game code build refuses while a native mod's requirement is unmet:");
+			foreach (ModDependencyProblem problem in _dependencyProblems.Where(problem =>
+				string.Equals(problem.Mod, mod.Name, StringComparison.OrdinalIgnoreCase)))
+			{
+				tip.AppendLine("  • " + problem.Message);
+			}
+			needsLabel.TooltipText = tip.ToString().TrimEnd();
+			statusControl = needsLabel;
+		}
 		else if (nativeConflicts.Count > 0)
 		{
-			// A FUNCTION HAS ONE BODY. Unlike a record or a file, no order resolves this: the game
-			// code build refuses, so the row says so before Play does.
+			// A hook that never calls the game's body swallows every hook beneath it. Sharing a
+			// function is otherwise a chain (ModNative), but this no order resolves: the game code
+			// build refuses, so the row says so before Play does.
 			var blockedLabel = MakeLabel("⛔ native");
 			blockedLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
 			blockedLabel.HorizontalAlignment = HorizontalAlignment.Center;
 			blockedLabel.CustomMinimumSize = new Vector2(60, 0);
 			blockedLabel.MouseFilter = MouseFilterEnum.Pass;
 			var tip = new System.Text.StringBuilder();
-			tip.AppendLine("Two enabled mods (or a mod and refii itself) replace the same game function.");
-			tip.AppendLine("The game code cannot be built until one of them is disabled:");
+			tip.AppendLine("A mod replaces the body of a game function that another enabled mod (or refii) also hooks,");
+			tip.AppendLine("so that hook would never run. The game code cannot be built until one of them is disabled:");
 			foreach (ModNativeConflict conflict in nativeConflicts)
 			{
-				tip.AppendLine($"  • {conflict.Function}: {conflict.First} and {conflict.Second}");
+				tip.AppendLine($"  • {conflict.Function}: {conflict.First} replaces it over {conflict.Second}");
 			}
 			blockedLabel.TooltipText = tip.ToString().TrimEnd();
 			statusControl = blockedLabel;

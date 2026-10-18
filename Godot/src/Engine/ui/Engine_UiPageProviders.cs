@@ -379,10 +379,29 @@ public static class Engine_UiPageProviders
 				up = pages[BookPage];
 			}
 
-			return up is null
-				? NoPositions
-				: new Dictionary<string, Vector3>(1) { [$"{up}.Contents"] = Vector3.Zero };
+			if (up is null)
+			{
+				return NoPositions;
+			}
+
+			var placed = new Dictionary<string, Vector3>(2) { [$"{up}.Contents"] = Vector3.Zero };
+			if (up.EndsWith(BladePage, System.StringComparison.Ordinal))
+			{
+				// THE INSTRUCTIONS SIT UNDER THE WILL'S NAME. The blade's own text is authored
+				// at y -109, and the widget's name plate (`WillName`, under the bottom slot) ends
+				// at -134 on the page, so the authored first line ran under the plate. Godot
+				// owns the placement: the text starts at -140, three wrapped lines reach -206,
+				// and the prompt band at -230 is untouched.
+				placed[BladeInstructions] = new Vector3(float.NaN, BladeInstructionsY, float.NaN);
+			}
+
+			return placed;
 		}
+
+		/// <summary>`Page4.Contents.Blade.Same` (ordinal 304) — the page's instructions text, not the A prompt's `Blade.Buttons.Same`.</summary>
+		private const string BladeInstructions = "Foreground.Book.Pages.Page4.Contents.Blade.Same";
+
+		private const float BladeInstructionsY = -140f;
 
 		/// <summary>Which experience orb is lit — see <see cref="Engine_UiAbilityPage.Slides"/>.</summary>
 		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>

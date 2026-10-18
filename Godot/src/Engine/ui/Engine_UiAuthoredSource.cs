@@ -117,6 +117,6 @@ public sealed class Engine_UiAuthoredSource : Engine_UiSource
 		return false;
 	}
 
-	public override uint AssignSpell(int slot, int spell) =>
-		PostFrontEndAction($"SpellAssign:{slot}:{spell}");
+	public override uint AssignSpell(int slot, int spell, int player = 1) =>
+		PostFrontEndAction(player == 2 ? $"SpellAssign:{slot}:{spell}:2" : $"SpellAssign:{slot}:{spell}");
 }

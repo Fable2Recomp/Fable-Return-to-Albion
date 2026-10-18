@@ -20,14 +20,27 @@
 //   on one build only; the launcher refuses a name the build does not declare, and says which
 //   config name it has when there is one.
 //
-//   ONE BODY PER FUNCTION. Two mods, or a mod and refii, defining the same function is refused at
-//   build time with both named. It is never resolved by load order.
+//   SHARED FUNCTIONS CHAIN. When more than one owner (a mod, refii) hooks a function, the launcher
+//   compiles each hook under its own symbol and links them in load order: this hook's
+//   __imp__name call reaches the next owner inward, and the innermost reaches the game. A hook
+//   that returns without calling __imp__name stops the chain (a gate). A hook that NEVER calls
+//   __imp__name replaces the body and must be the only owner of that function; otherwise the
+//   build is refused with both names.
+//
+//   ANOTHER MOD'S API. `requires = ["that_mod"]` in mod.toml puts that mod beneath this one and
+//   its native/include/ on this mod's include path; its extern "C" functions link directly, and
+//   its published values are read with refii::mods::Published.
 //
 //   GUEST MEMORY is big-endian at `base + address`; use the helpers below. A raw TU1 address
 //   goes through refii::guest::Address() so it is right on the disc build too.
 //
 //   TALK TO GODOT with refii::mods::Publish("<mod>.<name>", value) and read settings with
 //   refii::mods::Setting(...). A mod's HUD piece binds to "mod:<mod>.<name>".
+//
+//   EVENTS FIRST, HOOKS SECOND. core/refii_mod_events.h (included below) names the game's seams
+//   as typed events — a hit, a swing, a block, a spell launch, experience changing, the tick —
+//   that a mod subscribes to with REFII_MOD_ON(Hit, fn). An event never conflicts with another
+//   mod and needs no function name. Hook a function directly only for a seam no event covers.
 //
 //   INCLUDE NOTHING ELSE FROM REFII. Anything else is C++ that the game module must not import
 //   from refii's libraries; the platform's own C/C++ headers are fine.
@@ -66,6 +79,11 @@ extern "C" uint32_t refii_mod_player_hero(uint8_t* base, int32_t player);
 /// {id, component} pairs at +0x48..+0x4C, the index table at +0x8C). Ids: 33 the player
 /// controller, 36 health, 57 stats, 164 experience.
 extern "C" uint32_t refii_mod_component(uint8_t* base, uint32_t entity, uint32_t id);
+
+/// `entity`'s world position, through its placement component's own getter (the object at
+/// entity+0x7C, vtable slot 16) — the call the game itself makes for a cast's origin. True when
+/// read; `out_xyz` takes three floats. Guest tick thread only (a tick callback or a hook).
+extern "C" int32_t refii_mod_entity_position(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out_xyz);
 
 /// Runs a Lua source chunk (under 944 bytes) in the GAME VM — the shipped game scripts' and
 /// mods' Lua. True when it ran without error. Guest tick thread only (a tick callback or a hook).
@@ -157,4 +175,156 @@ inline bool CallVirtual(PPCContext& ctx, uint8_t* base, uint32_t object, uint32_
   return CallGuest(ctx, base, LoadU32(base, vtable + slot * 4u));
 }
 
+/// A copy of `ctx` with the stack pointer moved below the caller's frame: what a guest call
+/// that takes stack arguments or scratch is given.
+inline PPCContext Frame(const PPCContext& ctx, uint32_t bytes = 0x200u) {
+  PPCContext work = ctx;
+  work.r1.u32 = (ctx.r1.u32 - bytes) & ~0xFu;
+  return work;
+}
+
+/// Three floats from guest vector register v1 or v2 (`which` 1 or 2) — a position or a
+/// direction as the game passes them.
+inline void GetVector(const PPCContext& ctx, int which, float* xyz) {
+  const uint8_t* lanes = which == 1 ? ctx.v1.u8 : ctx.v2.u8;
+  for (int i = 0; i < 3; ++i) {
+    const uint32_t bits = (static_cast<uint32_t>(lanes[15 - 4 * i]) << 24) |
+                          (static_cast<uint32_t>(lanes[14 - 4 * i]) << 16) |
+                          (static_cast<uint32_t>(lanes[13 - 4 * i]) << 8) |
+                          static_cast<uint32_t>(lanes[12 - 4 * i]);
+    std::memcpy(&xyz[i], &bits, sizeof(bits));
+  }
+}
+
+/// Puts three floats into guest vector register v1 or v2. The recompiler keeps a vector
+/// byte-reversed against its memory image, so the big-endian image is written backwards.
+inline void SetVector(PPCContext& ctx, int which, const float* xyz) {
+  uint8_t image[16] = {0};
+  for (int i = 0; i < 3; ++i) {
+    uint32_t bits;
+    std::memcpy(&bits, &xyz[i], sizeof(bits));
+    image[4 * i] = static_cast<uint8_t>(bits >> 24);
+    image[4 * i + 1] = static_cast<uint8_t>(bits >> 16);
+    image[4 * i + 2] = static_cast<uint8_t>(bits >> 8);
+    image[4 * i + 3] = static_cast<uint8_t>(bits);
+  }
+  uint8_t* lanes = which == 1 ? ctx.v1.u8 : ctx.v2.u8;
+  for (int i = 0; i < 16; ++i) {
+    lanes[15 - i] = image[i];
+  }
+}
+
 }  // namespace refii::mods
+
+// ---------------------------------------------------------------------------------------------
+// Entities, the heroes' stats, spells and the save: the helpers behind the events.
+// ---------------------------------------------------------------------------------------------
+
+/// 1 or 2 when `entity` is that player's hero, 0 otherwise. Both players are principals.
+extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity);
+
+/// Whether `entity` is in the world: the flag the game's own target selector tests
+/// ((entity+0x90) & 0x40). False for 0.
+extern "C" int32_t refii_mod_entity_alive(uint8_t* base, uint32_t entity);
+
+/// The world object (the game's W), or 0 before a session.
+extern "C" uint32_t refii_mod_world(uint8_t* base);
+
+/// `entity`'s current and maximum health, from its health component (36: +0x14, +0x1C). True
+/// when the component exists.
+extern "C" int32_t refii_mod_health(uint8_t* base, uint32_t entity, float* out_current, float* out_max);
+
+/// Writes `entity`'s current health, clamped to [0, max]. A direct write of the field the game
+/// reads; the game's own health-changed event is not raised. Returns true when written.
+extern "C" int32_t refii_mod_set_health(uint8_t* base, uint32_t entity, float value);
+
+/// The level of ability `type` (1..14 — 1 Toughness .. 7 Lightning .. 14 Raise Dead: the stats
+/// component's table at +0x110 + 4*type) on `entity`, or -1 without a stats component (57).
+extern "C" int32_t refii_mod_ability_level(uint8_t* base, uint32_t entity, int32_t type);
+
+/// The experience in `pool` (0 General, 1 Strength, 2 Skill, 3 Will) of `entity`'s experience
+/// component (164: the pools' float array at +0x10). True when read.
+extern "C" int32_t refii_mod_experience(uint8_t* base, uint32_t entity, int32_t pool, float* out);
+
+/// The game's own cost of level `level` of ability `type` for `entity`
+/// (rex_CECStats_AbilityExperienceCost), or -1.
+extern "C" int32_t refii_mod_ability_cost(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t type, int32_t level);
+
+/// Adds `amount` (negative to take) to `pool` of `entity`'s experience through the game's own
+/// Modify, flags zero (outside the lifetime-earned total), raising its XP-changed event and the
+/// Experience mod event. True when done.
+extern "C" int32_t refii_mod_give_experience(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t pool, float amount);
+
+/// Spends `amount` from `pool` of `entity`'s experience through the game's own Spend: a
+/// shortfall comes out of General WITHOUT a check, so test affordability first. True when done.
+extern "C" int32_t refii_mod_spend_experience(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t pool, float amount);
+
+/// Casts spell `type` (0 Lightning .. 7 Dead Rising) with `caster` as the caster through the
+/// game's own spell factory (rex_CSpellRegistry_Create): targeted at `target` (an entity, or 0
+/// for a targeted cast with no target), or an area cast when `targeted` is 0; at power `level`
+/// 0..4; starting at `pos` facing `dir` (three floats each; the caster's own position and
+/// facing when null). No will cost, no cast state, no animation — the spell object only. Returns
+/// the spell object, or 0. Guest tick thread only.
+extern "C" uint32_t refii_mod_cast_spell(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type, int32_t targeted,
+                                         uint32_t target, int32_t level, const float* pos, const float* dir);
+
+/// The cast serial of a spell object (+0x44): the number its hits carry as spell_serial.
+extern "C" uint32_t refii_mod_spell_serial(uint8_t* base, uint32_t spell);
+
+/// `caster`'s live, unfinished spell object of `type` from the world's registry, or 0. Never a
+/// Vortex: the vortex spell object marks itself finished once its entity exists.
+extern "C" uint32_t refii_mod_live_spell(PPCContext* ctx, uint8_t* base, int32_t type, uint32_t caster);
+
+/// Writes `RefiiModSave.<key> = value` in the game VM: an integer that persists with the save
+/// game (Engine_ModLua's preamble carries the table through GetSaveTable / LoadScriptSave).
+/// `key` is a Lua identifier. True when written. Guest tick thread only.
+extern "C" int32_t refii_mod_save_set_int(PPCContext* ctx, uint8_t* base, const char* key, int32_t value);
+
+/// Reads `RefiiModSave.<key>` in [lo, hi] (a binary search of chunk runs — read it on a
+/// refii_mod_lua_generation change, not every tick). False when absent or out of range.
+extern "C" int32_t refii_mod_save_get_int(PPCContext* ctx, uint8_t* base, const char* key, int32_t lo, int32_t hi,
+                                          int32_t* out);
+
+/// The GDB record hash of `entity`'s definition (entity+0x1C): what the entity is.
+extern "C" uint32_t refii_mod_entity_definition(uint8_t* base, uint32_t entity);
+
+/// `entity`'s instance name (the string at entity+0x80, the one SetName writes) copied into
+/// `out`; false (and an empty string) when it has none.
+extern "C" int32_t refii_mod_entity_name(uint8_t* base, uint32_t entity, char* out, uint32_t size);
+
+/// How `entity` stands to `other` by the game's own faction rule (component 133; explicit
+/// lists first, then the faction table): 1 neutral, 2 ally, 4 enemy; 0 without a faction
+/// component. The game's Lua IsMyEnemy is this == 4. Guest tick thread only.
+extern "C" int32_t refii_mod_relation(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t other);
+
+/// Moves `entity` to `xyz` through its placement's own setter (vtable slot 25), which raises the
+/// game's moved event. True when done. Guest tick thread only.
+extern "C" int32_t refii_mod_set_position(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* xyz);
+
+/// Changes `entity`'s health by `delta` (negative to hurt) through the game's own Modify, the
+/// function every heal and damage goes through: clamps, stats, the death at zero with
+/// `attacker` (or 0) as the killer, the mod's Damage/EntityDied events. True when done.
+extern "C" int32_t refii_mod_modify_health(PPCContext* ctx, uint8_t* base, uint32_t entity, float delta, uint32_t attacker);
+
+/// The current level's name (the world manager's current level, +0xAC) into `out`; false and
+/// an empty string when no level is loaded.
+extern "C" int32_t refii_mod_level_name(uint8_t* base, char* out, uint32_t size);
+
+/// `entity`'s gold (purse component 81, +12). True when it has a purse.
+extern "C" int32_t refii_mod_gold(uint8_t* base, uint32_t entity, int32_t* out);
+
+/// Gives (or takes, negative) gold through the game's own Modify — the HUD's "ModifyMoney"
+/// message, the stats, the co-op share, the Gold event. True when done.
+extern "C" int32_t refii_mod_give_gold(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t delta);
+
+/// How many of definition `definition` (a GDB record hash) `entity`'s inventory (component 13)
+/// holds: the items' counts summed, 0 for none or no inventory.
+extern "C" int32_t refii_mod_item_count(uint8_t* base, uint32_t entity, uint32_t definition);
+
+/// Adds one of definition `definition` to `entity`'s inventory through the game's own add (the
+/// item's count rises when it is already held; the "item added" notifications run; the
+/// ItemAdded event fires). Returns the item object, or 0. Guest tick thread only.
+extern "C" uint32_t refii_mod_add_item(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t definition);
+
+// The events — one include gives a mod the whole surface.
+#include "core/refii_mod_events.h"

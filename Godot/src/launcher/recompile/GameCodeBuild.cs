@@ -320,10 +320,11 @@ public static class GameCodeBuild
 	/// appends the compiled ones to <paramref name="sources"/>.
 	/// </summary>
 	/// <remarks>
-	/// Three refusals, all before a single unit compiles, each naming the mod:
+	/// Four refusals, all before a single unit compiles, each naming the mod:
 	/// <list type="bullet">
-	/// <item>two owners define one function — a duplicate-symbol link error otherwise, found
-	/// twenty minutes later;</item>
+	/// <item>a native mod requires a mod that is missing, disabled or too old;</item>
+	/// <item>a hook replaces a function's body while another owner hooks it beneath (two owners
+	/// that both wrap are chained instead, see <see cref="ModNative"/>);</item>
 	/// <item>a mod overrides a name the generator never declared — otherwise its hook defines a
 	/// symbol nothing calls and the mod silently does nothing. The usual cause is a
 	/// <c>sub_XXXXXXXX</c> the config has named, so the config's name is offered;</item>
@@ -332,7 +333,8 @@ public static class GameCodeBuild
 	/// Runs after generation, so the declared set is this install's own.
 	/// </remarks>
 	private static Result AddNativeModSources(
-		List<string> sources, Dictionary<string, string> includeDirectories, out string modsHash)
+		List<string> sources, Dictionary<string, List<string>> arguments, IReadOnlyList<string> hookSources,
+		out string modsHash)
 	{
 		modsHash = string.Empty;
 		List<ModNativeSources> mods;
@@ -357,13 +359,27 @@ public static class GameCodeBuild
 			return new Result(true, string.Empty);
 		}
 
-		List<ModNativeConflict> conflicts = ModNative.FindConflicts(mods, NativeModConsent.RefiiOverrides());
+		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+		List<ModDependencyProblem> unmet = ModDependencies.Check(
+			ModLoadOrder.Read(modsRoot), ModWorkspace.DiscoverModInstalls(modsRoot),
+			mods.Select(mod => mod.ModName));
+		if (unmet.Count > 0)
+		{
+			return new Result(false,
+				"A mod with native code needs another mod that is not there:\n" +
+				string.Join("\n", unmet.Select(problem => $"  {problem.Mod}: {problem.Message}")) +
+				"\nEnable or install what it needs in the launcher's Mods panel.");
+		}
+
+		Dictionary<string, string> refiiOverrides = NativeModConsent.RefiiOverrides();
+		List<ModNativeConflict> conflicts = ModNative.FindConflicts(mods, refiiOverrides);
 		if (conflicts.Count > 0)
 		{
 			return new Result(false,
-				"Two owners replace the same game function, and a function can only have one:\n" +
+				"A mod replaces the body of a game function that another owner also hooks, so that " +
+				"hook would never run:\n" +
 				string.Join("\n", conflicts.Select(conflict =>
-					$"  {conflict.Function}: {conflict.First} and {conflict.Second}")) +
+					$"  {conflict.Function}: {conflict.First} replaces it over {conflict.Second}")) +
 				"\nDisable one of the mods named in the launcher's Mods panel.");
 		}
 
@@ -402,10 +418,12 @@ public static class GameCodeBuild
 				"would never run:\n" + string.Join("\n", unknown));
 		}
 
-		string modsRoot = Path.Combine(GeneratedDirectory, "mods");
+		string extracted = Path.Combine(GeneratedDirectory, "mods");
+		var compiledBy = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 		foreach (ModNativeSources mod in mods)
 		{
-			string root = Path.Combine(modsRoot, mod.ModName);
+			string root = Path.Combine(extracted, mod.ModName);
+			List<string> compiled = compiledBy[mod.ModName] = new List<string>();
 			foreach (ModNativeFile file in mod.Files)
 			{
 				string target = Path.GetFullPath(Path.Combine(root, file.Path));
@@ -429,16 +447,114 @@ public static class GameCodeBuild
 				if (ModNative.IsCompiled(file.Path))
 				{
 					sources.Add(target);
-					includeDirectories[target] = root;
+					compiled.Add(target);
+					// A hard mod's own headers, for its own sources only: two mods may each ship a
+					// "combat.h" and neither may see the other's. REFII_MOD_NAME is what the event
+					// bus logs the mod's handlers under (core/refii_mod_events.h).
+					AddArguments(arguments, target, new[] { "-I" + root, $"-DREFII_MOD_NAME=\"{mod.ModName}\"" });
 				}
 			}
 
 			LogWrite($"mod '{mod.ModName}': compiling {mod.CompiledFiles.Count()} native source(s), " +
-				$"replacing {string.Join(", ", mod.Overrides)}");
+				$"hooking {string.Join(", ", mod.Overrides)}");
+		}
+
+		// A REQUIRED MOD'S PUBLIC HEADERS. What a mod puts under native/include/ is its API to the
+		// mods that require it; nothing else of it is visible to them.
+		Dictionary<string, ModInstall> installs = ModWorkspace.DiscoverModInstalls(modsRoot)
+			.ToDictionary(mod => mod.Name, StringComparer.OrdinalIgnoreCase);
+		foreach (ModNativeSources mod in mods)
+		{
+			if (!installs.TryGetValue(mod.ModName, out ModInstall? install))
+			{
+				continue;
+			}
+
+			foreach (ModRequirement requirement in install.Metadata.Requires)
+			{
+				ModNativeSources? required = mods.FirstOrDefault(other =>
+					string.Equals(other.ModName, requirement.Name, StringComparison.OrdinalIgnoreCase));
+				if (required == null)
+				{
+					continue;
+				}
+
+				string include = Path.Combine(extracted, required.ModName, "include");
+				foreach (string source in compiledBy[mod.ModName])
+				{
+					AddArguments(arguments, source, new[] { "-I" + include });
+				}
+			}
+		}
+
+		// CHAINS. A function hooked by more than one owner gets each owner's hook under its own
+		// symbol and one generated entry; see ModNative.
+		List<ModNativeChain> chains = ModNative.PlanChains(mods, refiiOverrides);
+		if (chains.Count > 0)
+		{
+			foreach (ModNativeSources mod in mods)
+			{
+				List<string> defines = ModNative.ChainDefines(chains, mod.ModName);
+				foreach (string source in compiledBy[mod.ModName])
+				{
+					AddArguments(arguments, source, defines);
+				}
+			}
+
+			foreach (string hookSource in hookSources)
+			{
+				List<string> defined;
+				try
+				{
+					defined = ModNative.DeriveOverrides(File.ReadAllText(hookSource)).ToList();
+				}
+				catch (Exception)
+				{
+					continue;
+				}
+
+				List<string> defines = ModNative.ChainDefines(
+					chains.Where(chain => defined.Contains(chain.Function)).ToList(), ModNative.RefiiOwner);
+				AddArguments(arguments, hookSource, defines);
+			}
+
+			string chainFile = Path.Combine(extracted, "refii_mod_chains.cpp");
+			try
+			{
+				Directory.CreateDirectory(extracted);
+				File.WriteAllText(chainFile, ModNative.ChainSource(chains));
+			}
+			catch (Exception exception)
+			{
+				return new Result(false, $"could not write '{chainFile}': {exception.Message}");
+			}
+
+			sources.Add(chainFile);
+			foreach (ModNativeChain chain in chains)
+			{
+				LogWrite($"chain {chain.Function}: {string.Join(" -> ", chain.Owners)} -> game");
+			}
 		}
 
 		modsHash = ModNative.HashSet(mods);
 		return new Result(true, string.Empty);
+	}
+
+	private static void AddArguments(
+		Dictionary<string, List<string>> arguments, string source, IEnumerable<string> extra)
+	{
+		if (!arguments.TryGetValue(source, out List<string>? list))
+		{
+			arguments[source] = list = new List<string>();
+		}
+
+		foreach (string argument in extra)
+		{
+			if (!list.Contains(argument, StringComparer.Ordinal))
+			{
+				list.Add(argument);
+			}
+		}
 	}
 
 	/// <summary>Every function the generator emitted, from its <c>DECLARE_REX_FUNC(name)</c> lines.</summary>
@@ -1358,8 +1474,8 @@ public static class GameCodeBuild
 
 		// HARD MODS: their native sources compile in this same step, after refii's hooks, with the
 		// same compiler and flags. The link takes every object by index, so it needs nothing more.
-		var modIncludeDirectories = new Dictionary<string, string>(StringComparer.Ordinal);
-		Result modded = AddNativeModSources(sources, modIncludeDirectories, out string compiledModsHash);
+		var modArguments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+		Result modded = AddNativeModSources(sources, modArguments, hookSources, out string compiledModsHash);
 		if (!modded.Ok)
 		{
 			return modded;
@@ -1450,7 +1566,7 @@ public static class GameCodeBuild
 		//    Explicitly limited: left unbounded this takes every core for however long the
 		//    build runs, and the player cannot use their machine meanwhile. See JobCount.
 		Result compiled = await CompileAllAsync(
-			resolved, sources, flags, modIncludeDirectories, pchUsed, progress, control, cancellation);
+			resolved, sources, flags, modArguments, pchUsed, progress, control, cancellation);
 		if (!compiled.Ok)
 		{
 			return new Result(false, "Compiling the game code failed: " + compiled.Error);
@@ -1954,7 +2070,7 @@ public static class GameCodeBuild
 		Toolchain zig,
 		IReadOnlyList<string> sources,
 		IReadOnlyList<string> flags,
-		IReadOnlyDictionary<string, string> sourceIncludeDirectories,
+		IReadOnlyDictionary<string, List<string>> sourceArguments,
 		string precompiledHeader,
 		Action<Progress> progress,
 		BuildControl control,
@@ -2034,11 +2150,11 @@ public static class GameCodeBuild
 							arguments.Add("-fvisibility=hidden");
 						}
 
-						// A hard mod's own headers, for its own sources only: two mods may each
-						// ship a "combat.h" and neither may see the other's.
-						if (sourceIncludeDirectories.TryGetValue(sources[slot], out string? modInclude))
+						// Per-source: a hard mod's own and required headers, and the chain defines
+						// that rename a hook shared with another owner (AddNativeModSources).
+						if (sourceArguments.TryGetValue(sources[slot], out List<string>? extra))
 						{
-							arguments.Add("-I" + modInclude);
+							arguments.AddRange(extra);
 						}
 
 						arguments.Add("-c");

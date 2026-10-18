@@ -1,0 +1,17 @@
+{
+	"menus": {
+		"AbilitiesMenu": {
+			"patch": true,
+			"entries": [
+				{
+					"name": "Hybrid",
+					"after": "Will",
+					"tag": "SPELL_WEAVING_HYBRID",
+					"icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_strength.tga",
+					"eventType": 301,
+					"source": "abilities:Hybrid"
+				}
+			]
+		}
+	}
+}

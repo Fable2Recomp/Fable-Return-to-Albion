@@ -2304,7 +2304,16 @@ extern "C" {
 ///     RefiiHostTracyLive, and guest stack sampling (RefiiHostGuestSamplerStart/Stop).
 /// 184 adds hard mods' named values: RefiiHostGetModValue (what a mod's hook published) and
 ///     RefiiHostSetModSetting (what Godot hands it), over src/vfs/src/core/mod_values.cpp.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 186; }
+/// 185 adds RefiiHostGetSpellBlade — the abilities book's own copy of the spell-assignment
+///     widget (screen 14 + 200), read exactly as the quick wheel's is, so the host draws ONE
+///     owned widget for both trays.
+/// 186 adds RefiiHostGetNewGameState, RefiiHostGetSaveRoot and RefiiHostGetGoldenCockInteraction
+///     (NG+ and the golden cock).
+/// 187 widens RefiiHostGetActiveFx to 22 words: the entity that OWNS each effect node (the
+///     emitter component's owner at comp85+4, reached handle+0x28 -> &comp85+12) and the entity
+///     it is ATTACHED to (comp85+0x20's box), so the host binds an effect to the cast it belongs
+///     to by entity rather than by where it stands.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 187; }
 
 REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetNewGameState(uint32_t* generation) {
     return refii::vfs::NewGameTransitionResult(generation);
@@ -5870,11 +5879,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
 
     const uint32_t kReservedRootName = refii::guest::Address(0x8349E678u);
 
-    /// 20 words per node: instance pointer, name hash, flags, live-particle count, the world
+    /// 22 words per node: instance pointer, name hash, flags, live-particle count, the world
     /// position (3 floats), the world basis rows 0..2 (9 floats), the effect handle, the
-    /// effect's intensity (float), the element's scale (float, +412) and its fade-out
-    /// fraction (float). Must match `HostBridge.ActiveFxStride`; no compiler checks it.
-    constexpr uint32_t kStride = 20u;
+    /// effect's intensity (float), the element's scale (float, +412), its fade-out fraction
+    /// (float), the entity that owns the effect and the entity it is attached to (0 when
+    /// none). Must match `HostBridge.ActiveFxStride`; no compiler checks it.
+    constexpr uint32_t kStride = 22u;
 
     // Both ends re-read together: the vector reallocates as it grows and no lock is taken.
     const uint32_t begin = read32(kVectorBegin);
@@ -6066,6 +6076,33 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
             row[18] = bits;
             std::memcpy(&bits, &fade, sizeof(bits));
             row[19] = bits;
+        }
+
+        // WHOSE EFFECT. The handle (the ParticleSystemEntityInstance) keeps at +0x28 a pointer
+        // to its emitter component's interface sub-object (`*(PSEI+40) = comp + 12`,
+        // sub_82569C28 0x82569cbc; 0 when the emitter is spell-owned or disabled), whose first
+        // word is the interface vtable the component's constructor writes (off_820C3158,
+        // sub_82569900 0x82569948). The component (12 before it) keeps its owner entity at +4
+        // (0x82569928) and, when the effect entity was attached to another, that target's
+        // weak-ref box at +0x20 (sub_8256A0F0 0x8256a150). A vortex's orb reports the vortex
+        // entity, a fireball's shot effects the shot entity.
+        {
+            uint32_t owner = 0u;
+            uint32_t attached = 0u;
+            if (plausible(handle)) {
+                const uint32_t iface = read32(handle + 0x28u);
+                if (plausible(iface) && iface >= 12u &&
+                    read32(iface) == refii::guest::Address(0x820C3158u)) {
+                    const uint32_t component = iface - 12u;
+                    const uint32_t stated = read32(component + 4u);
+                    owner = plausible(stated) ? stated : 0u;
+                    const uint32_t box = read32(component + 0x20u);
+                    const uint32_t target = plausible(box) ? read32(box) : 0u;
+                    attached = plausible(target) ? target : 0u;
+                }
+            }
+            row[20] = owner;
+            row[21] = attached;
         }
 
         const float* translation = world + 12;
@@ -15289,10 +15326,48 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetSpellAssign(uint32_t* out) {
 /// `[8+r]` cell, `[13 + 8r + c]` list — 53 words. Returns 1 when the widget resolved and the
 /// wheel's open flag (`QM+36`/`+37`) is set, else 0 with the tail zeroed: a closed wheel's
 /// tables are uninitialised heap (`sub_826B4848` runs only on open).
-REFII_HOST_ABI_EXPORT int RefiiHostGetSpellWheel(uint32_t player, uint32_t* out, uint32_t capacity) {
-    constexpr uint32_t kWords = 53u;
+namespace {
+
+/// The spell-assignment widget's cursor and lists, as the guest keeps them: row +176, max row
+/// +412, per-row count +180+4r, per-row cell +200+4r, per-row list +220+32r+4c. The same
+/// 420-byte controller serves the quick wheel and the abilities blade (`sub_826B4358`).
+/// 53 words out: widget, row, max row, 5 counts, 5 cells, 5x8 lists. 0 when the widget is not
+/// plausible.
+int ReadSpellWidget(const uint8_t* base, uint32_t widget, uint32_t* out) {
     constexpr uint32_t kRows = 5u;
     constexpr uint32_t kCells = 8u;
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    if (!plausible(widget)) {
+        return 0;
+    }
+
+    const uint32_t row = read32(widget + 176u);
+    const int32_t max_row = static_cast<int32_t>(read32(widget + 412u));
+    if (row >= kRows || max_row < -1 || max_row >= static_cast<int32_t>(kRows)) {
+        return 0;
+    }
+
+    out[0] = widget;
+    out[1] = row;
+    out[2] = static_cast<uint32_t>(max_row);
+    for (uint32_t r = 0; r < kRows; ++r) {
+        const uint32_t count = read32(widget + 180u + (4u * r));
+        const uint32_t cell = read32(widget + 200u + (4u * r));
+        out[3u + r] = count <= kCells ? count : 0u;
+        out[8u + r] = cell < kCells ? cell : 0u;
+        for (uint32_t c = 0; c < out[3u + r]; ++c) {
+            out[13u + (kCells * r) + c] = read32(widget + 220u + (32u * r) + (4u * c));
+        }
+    }
+
+    return 1;
+}
+
+}  // namespace
+
+REFII_HOST_ABI_EXPORT int RefiiHostGetSpellWheel(uint32_t player, uint32_t* out, uint32_t capacity) {
+    constexpr uint32_t kWords = 53u;
     if (out == nullptr || capacity < kWords) {
         return 0;
     }
@@ -15323,31 +15398,72 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetSpellWheel(uint32_t player, uint32_t* out,
         return 0;
     }
 
-    const uint32_t widget = read32(hud + (two ? 96u : 92u));
-    if (!plausible(widget)) {
+    return ReadSpellWidget(base, read32(hud + (two ? 96u : 92u)), out);
+}
+
+/// The abilities book's spell blade: screen 14's embedded widget at `screen + 200`
+/// (`sub_826B4358` from the screen-14 ctor `sub_826C1E80`), read only while the abilities screen
+/// is the active one and its assignment mode byte (`screen + 620`, the blade's open state) is set.
+/// The screen object comes off the owner's screen map, keyed by TU1 screen id, as the co-op
+/// mannequin's does. Same 53 words as RefiiHostGetSpellWheel.
+REFII_HOST_ABI_EXPORT int RefiiHostGetSpellBlade(uint32_t* out, uint32_t capacity) {
+    constexpr uint32_t kWords = 53u;
+    constexpr uint32_t kAbilitiesScreen = 14u;
+    if (out == nullptr || capacity < kWords) {
         return 0;
     }
 
-    const uint32_t row = read32(widget + 176u);
-    const int32_t max_row = static_cast<int32_t>(read32(widget + 412u));
-    if (row >= kRows || max_row < -1 || max_row >= static_cast<int32_t>(kRows)) {
+    for (uint32_t i = 0; i < kWords; ++i) {
+        out[i] = 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
         return 0;
     }
 
-    out[0] = widget;
-    out[1] = row;
-    out[2] = static_cast<uint32_t>(max_row);
-    for (uint32_t r = 0; r < kRows; ++r) {
-        const uint32_t count = read32(widget + 180u + (4u * r));
-        const uint32_t cell = read32(widget + 200u + (4u * r));
-        out[3u + r] = count <= kCells ? count : 0u;
-        out[8u + r] = cell < kCells ? cell : 0u;
-        for (uint32_t c = 0; c < out[3u + r]; ++c) {
-            out[13u + (kCells * r) + c] = read32(widget + 220u + (32u * r) + (4u * c));
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto read8 = [base](uint32_t at) -> uint8_t { return GuestByteAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) {
+        return 0;
+    }
+
+    const uint32_t manager = read32(gui + 56u);
+    const uint32_t owner = read32(gui + 28u);
+    if (!plausible(manager) || !plausible(owner) ||
+        refii::guest::ScreenIdToTu1(read32(manager + 4u)) != kAbilitiesScreen) {
+        return 0;
+    }
+
+    const uint32_t end_node = read32(owner + 72u);
+    if (!plausible(end_node)) {
+        return 0;
+    }
+
+    uint32_t node = read32(end_node + 4u);
+    uint32_t screen = 0;
+    for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
+        const uint32_t key = refii::guest::ScreenIdToTu1(read32(node + 12u));
+        if (key == kAbilitiesScreen) {
+            screen = read32(node + 16u);
+            break;
         }
+        node = read32(node + (kAbilitiesScreen < key ? 0u : 8u));
     }
 
-    return 1;
+    if (!plausible(screen) || read8(screen + 620u) == 0u) {
+        return 0;
+    }
+
+    return ReadSpellWidget(base, screen + 200u, out);
 }
 
 /// Every HUD value the shipped LUA has set, keyed by `FNV-1(name)` — the other fifty meters.

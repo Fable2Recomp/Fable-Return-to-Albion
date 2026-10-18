@@ -5,21 +5,22 @@
 // both stuck locked: that flag is set only by a camera event on LT down, which is not delivered
 // again while the lock holds, so no second press was ever seen.
 //
-// The seams, from the binary (TU1 / disc, named in versions/*/refii_config.toml):
-//   rex_CPlayerActionReceiver_ProcessAction (0x826E5B30 / 0x827428B0): the hero's GameAction
-//     receiver, r3 = the receiver, r4 = the 24-byte action message whose first word is the
-//     GameAction (`lwz r11,0(r4)`, switched on `- 0x14`). LT is 49, TARGET_LOCK_SET, on press
-//     and 50, TARGET_LOCK_RELEASE, on release; case 50 clears the look-at flag. The receiver's
-//     entity is a weak handle at +8 resolved as `*(*(r3+0xC))` (sub_82173E38: `v1 = a1[1]; if
-//     (v1 && *v1) return *v1`).
+// The event (core/refii_mod_events.h): GameAction, a GameAction reaching a player hero's
+// receiver — LT is 49, TARGET_LOCK_SET, on press and 50, TARGET_LOCK_RELEASE, on release. The
+// receiver (sub_826E5B30) has no case for 49 at all, and its case 50 already skips the lock
+// removal while the force byte is set (`if (v6[20]) goto LABEL_29` 0x826e5db4) before clearing
+// two bytes on the player's handle object (0x826e5fe0): neither action is cancelled here — the
+// press flips our lock, and the game's own handling runs unchanged.
+//
+// The one function hooked by name, which no event covers (TU1 / disc, named in
+// versions/*/refii_config.toml):
 //   rex_CPlayer_SetLookAtButtonDown (0x823E9F10 / 0x823C8940): the only writer of the player's
 //     look-at flag (`stb r29,0x20(r30)`), the byte every lock-camera script reads. Hooked so the
-//     flag always equals our lock, whoever asks.
+//     flag always equals our lock, whoever asks. The player object is the hero's component 33,
+//     which keeps its owner entity at +4 (`stw r4,4(r31)` in its constructor, 0x823e0110).
 //   The FORCE byte, targeting component 77 +0x14 (Targeting.SetForceTargetLock, sub_8290F078
 //     `stb r4,0x14(r3)`): while it is set and a target exists the component's update adds player
-//     mode 4, TARGET_LOCK — the mode that outlined the target when the first version forced it.
-// The player object is the hero's component 33, which keeps its owner entity at +4 (`stw
-// r4,4(r31)` in its constructor, 0x823e0110).
+//     mode 4, TARGET_LOCK — the mode that outlines the target.
 //
 // THE LOCK ENDS WHEN THERE IS NOTHING TO LOCK. The game never clears the force byte itself: with
 // it set, the targeting component's update (sub_82181EA0 / sub_821818E8) re-selects a target
@@ -35,13 +36,11 @@
 #include "core/refii_mod.h"
 #include "souls_combat.h"
 
-REFII_MOD_ORIGINAL(rex_CPlayerActionReceiver_ProcessAction);
 REFII_MOD_ORIGINAL(rex_CPlayer_SetLookAtButtonDown);
 
 namespace {
 
 constexpr uint32_t kTargetLockSet = 49;
-constexpr uint32_t kTargetLockRelease = 50;
 constexpr uint32_t kPlayerComponent = 33;
 constexpr uint32_t kTargetingComponent = 77;
 constexpr uint32_t kForceLock = 0x14;
@@ -81,16 +80,11 @@ bool HasValidTarget(uint8_t* base, uint32_t hero) {
   const uint32_t strategy = refii::mods::LoadU32(base, targeting + 12u);
   const uint32_t block = strategy != 0 ? refii::mods::LoadU32(base, strategy + 28u) : 0u;
   const uint32_t target = block != 0 ? refii::mods::LoadU32(base, block) : 0u;
-  if (target == 0 || (refii::mods::LoadU8(base, target + 0x90u) & 0x40u) == 0) {
+  if (!refii_mod_entity_alive(base, target)) {
     return false;
   }
   const uint32_t creature = refii_mod_component(base, target, kCreatureComponent);
   return creature == 0 || refii::mods::LoadU8(base, creature + 0x18u) != 0;
-}
-
-uint32_t ReceiverHero(uint8_t* base, uint32_t receiver) {
-  const uint32_t control = refii::mods::LoadU32(base, receiver + 0xCu);
-  return control != 0 ? refii::mods::LoadU32(base, control) : 0u;
 }
 
 /// Puts the game's two lock switches where our lock says: the force byte, then the look-at flag
@@ -107,56 +101,44 @@ void Apply(PPCContext& ctx, uint8_t* base, uint32_t hero, bool on) {
   }
 }
 
-void DropLostLocks(PPCContext* ctx, uint8_t* base, float seconds) {
+void DropLostLocks(refii::mods::TickEvent& e) {
   for (int i = 0; i < 2; ++i) {
     const uint32_t hero = g_locked[i];
     if (hero == 0) {
       continue;
     }
-    if (!refii::mods::IsPlayerHero(base, hero)) {
+    if (!refii::mods::IsPlayerHero(e.base, hero)) {
       // The hero itself is gone (a level change); nothing to release on.
       g_locked[i] = 0;
       continue;
     }
-    if (HasValidTarget(base, hero)) {
+    if (HasValidTarget(e.base, hero)) {
       g_without_target[i] = 0.0f;
       continue;
     }
-    g_without_target[i] += seconds;
+    g_without_target[i] += e.seconds;
     if (g_without_target[i] >= souls_combat::Knob("souls_combat.lock_drop_seconds", kDropAfterSeconds)) {
       g_locked[i] = 0;
-      Apply(*ctx, base, hero, false);
+      Apply(*e.ctx, e.base, hero, false);
       REXLOG_INFO("Souls Combat: lock-on OFF (no target)");
     }
   }
 }
-REFII_MOD_ON_TICK(DropLostLocks);
+REFII_MOD_ON(Tick, DropLostLocks);
+
+void OnGameAction(refii::mods::GameActionEvent& e) {
+  if (e.action == kTargetLockSet) {
+    const bool on = !IsLocked(e.hero);
+    SetLocked(e.hero, on);
+    Apply(*e.ctx, e.base, e.hero, on);
+    REXLOG_INFO("Souls Combat: lock-on {}", on ? "ON" : "OFF");
+  }
+  // The release (50) ends nothing while locked: the game's own case honours the force byte, and
+  // the look-at flag is held by the hook below.
+}
+REFII_MOD_ON(GameAction, OnGameAction);
 
 }  // namespace
-
-REX_EXTERN(rex_CPlayerActionReceiver_ProcessAction) {
-  REX_FUNC_PROLOGUE();
-  const uint32_t action = refii::mods::LoadU32(base, ctx.r4.u32);
-  if (action == kTargetLockSet || action == kTargetLockRelease) {
-    const uint32_t hero = ReceiverHero(base, ctx.r3.u32);
-    if (refii::mods::IsPlayerHero(base, hero)) {
-      if (action == kTargetLockSet) {
-        const bool on = !IsLocked(hero);
-        SetLocked(hero, on);
-        Apply(ctx, base, hero, on);
-        REXLOG_INFO("Souls Combat: lock-on {}", on ? "ON" : "OFF");
-        return;
-      }
-      // While locked the release ends nothing — the next press does. Unlocked, the game's own
-      // release handling runs (it does more than clear the flag, which the hook below holds at 0).
-      if (IsLocked(hero)) {
-        return;
-      }
-    }
-  }
-
-  __imp__rex_CPlayerActionReceiver_ProcessAction(ctx, base);
-}
 
 REX_EXTERN(rex_CPlayer_SetLookAtButtonDown) {
   REX_FUNC_PROLOGUE();

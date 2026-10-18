@@ -129,6 +129,8 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override Engine_UiModel.SpellWheelState GetSpellWheel(int player) => HostBridge.GetSpellWheel(player);
 
+	public override Engine_UiModel.SpellWheelState GetSpellBlade() => HostBridge.GetSpellBlade();
+
 	public override Dictionary<uint, float> GetHudMeters() => HostBridge.GetHudMeters();
 
 	public override Dictionary<uint, float> GetHudPulsers() => HostBridge.GetHudPulsers();
@@ -198,5 +200,5 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override bool PauseTabSelect(uint tab) => HostBridge.PauseTabSelect(tab);
 
-	public override uint AssignSpell(int slot, int spell) => HostBridge.AssignSpell(slot, spell);
+	public override uint AssignSpell(int slot, int spell, int player = 1) => HostBridge.AssignSpell(slot, spell, player);
 }

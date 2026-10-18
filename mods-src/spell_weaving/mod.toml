@@ -1,0 +1,4 @@
+name = "Spell Weaving"
+version = "0.1.0"
+author = "Refii"
+description = "Fable 3's spell weaving in Fable 2: a second spell, the partner, is cast together with the one on the charged slot, at the same power and at the same target. One cast at the charged power by default, as Fable 3 paces it, instead of Fable 2's cascade through every lower slot."

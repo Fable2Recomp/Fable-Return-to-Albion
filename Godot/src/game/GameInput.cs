@@ -513,14 +513,23 @@ public partial class GameInput : Node
 		// pad read (`sub_821894A8`), so a held button that reappears is a fresh down edge, and
 		// A's down edge emits GameAction 46/36/6 — which `sub_824047E8` hands to any box then
 		// up. A button held across its unmask stays hidden until it is physically released.
-		uint maskBits = ~filter(uint.MaxValue);
+		// THE SPELL WHEEL'S PICK BUTTON IS THE HOST'S while the wheel is held. The shipped combat
+		// scheme binds every button under the held trigger — X (code 13) is the on-release attack,
+		// parry and block, Y (14) the ranged aim — so a mod's secondary pick
+		// (Engine_UiSpellAssignSecondary) is withheld from the guest for the hold, and a press
+		// still down when the trigger lifts stays hidden until released, like any lifted mask.
+		// X applies a partner and Y removes one, so both are the host's under the held trigger.
+		uint wheelBits = SpellsMenuHeld && Refii.Ui.Engine_UiSpellAssign.Secondary is not null
+			? (ButtonX | ButtonY)
+			: 0u;
+		uint maskBits = ~filter(uint.MaxValue) | wheelBits;
 		_heldAcrossUnmask[pad] |= _maskBits[pad] & ~maskBits & buttons;
 		_heldAcrossUnmask[pad] &= buttons;
 		_maskBits[pad] = maskBits;
 
 		HostBridge.SetControllerState(
 			pad, connected,
-			filter(buttons) & ~_heldAcrossUnmask[pad],
+			filter(buttons) & ~wheelBits & ~_heldAcrossUnmask[pad],
 			goldenMenu ? (byte)0 : state.LeftTrigger, goldenMenu ? (byte)0 : state.RightTrigger,
 			// The stick is masked with the buttons: `sub_826E39C0` dead-zones the left stick
 			// against ±0.75 and emits the same codes the D-pad does — 28/29 for Y at

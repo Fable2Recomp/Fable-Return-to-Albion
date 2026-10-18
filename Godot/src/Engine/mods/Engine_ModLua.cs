@@ -55,6 +55,84 @@ public static class ModLua
 		"\tend\n" +
 		"end\n";
 
+	/// <summary>
+	/// THE LUA SIDE OF THE MOD API, ahead of every mod's init: <c>Refii.on(event, fn)</c>
+	/// subscribes a handler to a named event (the names and fields are
+	/// <c>core/refii_mod_events.h</c>'s, lower-case: "hit", "spell_launch", "tick" ...), run by
+	/// the payload's event bus as <c>Refii._fire(kind, fields)</c>; a handler that returns
+	/// <c>true</c> cancels where the event allows it. <c>Refii.setting(key, default)</c> reads the
+	/// mods' settings.json values composed in as <c>RefiiSettings</c>; <c>Refii.hero(player)</c>
+	/// is the player's hero id as the bus last stated it. A handler's error lands in
+	/// <c>RefiiModErrors</c> and never stops the others. The kinds table mirrors
+	/// <see cref="ModApi.Events"/>, which is checked by a test.
+	/// </summary>
+	private static string RuntimePreamble()
+	{
+		var text = new StringBuilder();
+		text.Append("Refii = Refii or {}\n");
+		text.Append("Refii.api_version = ").Append(ModApi.Version).Append('\n');
+		text.Append("Refii._handlers = Refii._handlers or {}\n");
+		text.Append("Refii._mask = Refii._mask or 0\n");
+		text.Append("Refii._mask2 = Refii._mask2 or 0\n");
+		text.Append("Refii._dirty = false\n");
+		text.Append("Refii._hero = Refii._hero or {}\n");
+		text.Append("Refii._kinds = {");
+		foreach (ModApiEvent e in ModApi.Events)
+		{
+			text.Append(e.LuaName).Append('=').Append(e.Kind).Append(',');
+		}
+
+		text.Append("}\n");
+		text.Append(
+			"function Refii.on(name, fn)\n" +
+			"\tlocal kind = Refii._kinds[name]\n" +
+			"\tif kind == nil then error('Refii.on: no event \"' .. tostring(name) .. '\"') end\n" +
+			"\tif type(fn) ~= 'function' then error('Refii.on: a function is needed for \"' .. name .. '\"') end\n" +
+			"\tlocal list = Refii._handlers[kind]\n" +
+			"\tif list == nil then list = {} Refii._handlers[kind] = list end\n" +
+			"\tlist[#list + 1] = fn\n" +
+			"\tif kind < 31 then\n" +
+			"\t\tlocal bit = 2 ^ kind\n" +
+			"\t\tif math.floor(Refii._mask / bit) % 2 == 0 then Refii._mask = Refii._mask + bit end\n" +
+			"\telse\n" +
+			"\t\tlocal bit = 2 ^ (kind - 31)\n" +
+			"\t\tif math.floor(Refii._mask2 / bit) % 2 == 0 then Refii._mask2 = Refii._mask2 + bit end\n" +
+			"\tend\n" +
+			"\tRefii._dirty = true\n" +
+			"end\n" +
+			"function Refii._fire(kind, e)\n" +
+			"\tlocal list = Refii._handlers[kind]\n" +
+			"\tif list == nil then return true end\n" +
+			"\tlocal keep = true\n" +
+			"\tfor i = 1, #list do\n" +
+			"\t\tlocal ok, cancel = pcall(list[i], e)\n" +
+			"\t\tif not ok then RefiiModErrors = (RefiiModErrors or '') .. 'event ' .. tostring(kind) .. ': ' .. tostring(cancel) .. '\\n'\n" +
+			"\t\telseif cancel == true then keep = false end\n" +
+			"\tend\n" +
+			"\treturn keep\n" +
+			"end\n" +
+			"function Refii.setting(key, default)\n" +
+			"\tlocal v = RefiiSettings and RefiiSettings[key]\n" +
+			"\tif v == nil then return default end\n" +
+			"\treturn v\n" +
+			"end\n" +
+			"function Refii.hero(player)\n" +
+			"\tlocal h = Refii._hero[player or 1]\n" +
+			"\tif h == nil or h == 0 then return nil end\n" +
+			"\treturn h\n" +
+			"end\n");
+
+		text.Append("RefiiSettings = {");
+		foreach ((string key, float value) in ModSettings.All)
+		{
+			text.Append("[\"").Append(key.Replace("\\", "\\\\").Replace("\"", "\\\""))
+				.Append("\"]=").Append(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append(',');
+		}
+
+		text.Append("}\n");
+		return text.ToString();
+	}
+
 	/// <summary>The keys the payload hook reads the composed chunks from.</summary>
 	public const string InitKey = "refii/mod_init.lua";
 	public const string CameraKey = "refii/mod_camera.lua";
@@ -115,20 +193,23 @@ public static class ModLua
 			included.Add(overlay.Name);
 		}
 
-		if (included.Count == 0)
+		// THE PREAMBLES STAND WHENEVER A MOD IS ENABLED, init.lua or not: a native-only mod keeps
+		// its state in RefiiModSave and subscribes nothing in Lua, and without the preamble that
+		// table was never carried through the save — Spell Weaving alone lost its level and its
+		// partners on every load.
+		if (key == InitKey && overlays.Count != 0)
+		{
+			text.Insert(0, SavePreamble + RuntimePreamble());
+		}
+		else if (included.Count == 0)
 		{
 			return;
 		}
 
-		if (key == InitKey)
-		{
-			text.Insert(0, SavePreamble);
-		}
-
 		byte[] bytes = Encoding.UTF8.GetBytes(text.ToString());
 		mounted.AddVirtualFile(key, key, bytes.Length, () => bytes, string.Join(",", included));
-		GD.Print($"[mods] lua: {modPath} from {string.Join(", ", included)} composed into {key} " +
-			$"({bytes.Length} bytes)");
+		GD.Print($"[mods] lua: {modPath} from {(included.Count == 0 ? "the preamble only" : string.Join(", ", included))} " +
+			$"composed into {key} ({bytes.Length} bytes)");
 	}
 
 	/// <summary>

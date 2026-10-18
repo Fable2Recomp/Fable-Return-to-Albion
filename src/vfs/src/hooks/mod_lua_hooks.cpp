@@ -37,6 +37,11 @@ PPC_EXTERN_FUNC(__imp__rex_lhLuaScriptSystem_RunCameraScripts);
 PPC_EXTERN_FUNC(__imp__rex_lhLuaScriptSystem_LoadScriptSave);
 PPC_EXTERN_FUNC(rex_lhLua_RunScriptBuffer);
 
+namespace refii::vfs {
+/// The mod events LuaReady / SaveLoaded (hooks/mod_events.cpp).
+void DispatchLuaEvent(PPCContext& ctx, uint8_t* base, bool save_loaded);
+}  // namespace refii::vfs
+
 namespace {
 
 constexpr const char* kInitKey = "refii/mod_init.lua";
@@ -135,6 +140,10 @@ REX_EXTERN(rex_lhLuaScriptSystem_LoadStartupScripts) {
     RunComposedChunk(work, base, state, kCameraKey);
   }
   refii::vfs::BumpLuaGeneration();
+  if (Plausible(system)) {
+    PPCContext work = entry;
+    refii::vfs::DispatchLuaEvent(work, base, false);
+  }
 }
 
 // A save's Lua state loaded into the VM: TU1 0x8245CC90 / disc 0x825B0EA8 unpersists the saved
@@ -143,8 +152,11 @@ REX_EXTERN(rex_lhLuaScriptSystem_LoadStartupScripts) {
 // init.lua) re-read it when refii_mod_lua_generation changes.
 REX_EXTERN(rex_lhLuaScriptSystem_LoadScriptSave) {
   REX_FUNC_PROLOGUE();
+  const PPCContext entry = ctx;
   __imp__rex_lhLuaScriptSystem_LoadScriptSave(ctx, base);
   refii::vfs::BumpLuaGeneration();
+  PPCContext work = entry;
+  refii::vfs::DispatchLuaEvent(work, base, true);
 }
 
 REX_EXTERN(rex_lhLuaScriptSystem_RunCameraScripts) {

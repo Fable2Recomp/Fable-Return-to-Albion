@@ -190,8 +190,10 @@ public partial class RefiiModApi : RefCounted
 			: Array.Empty<string>();
 
 	/// <summary>
-	/// Functions the active mod overrides that refii or another enabled mod also overrides — each
-	/// one would refuse the game code build. Empty when there is none.
+	/// Functions the active mod hooks without ever calling the original while refii or another
+	/// enabled mod hooks them beneath it — each one would refuse the game code build. A hook that
+	/// calls <c>__imp__name</c> shares its function in a chain and is never listed here. Empty when
+	/// there is none.
 	/// </summary>
 	public string[] CheckNativeConflicts()
 	{
@@ -206,7 +208,28 @@ public partial class RefiiModApi : RefCounted
 			Path.Combine(Engine_AppRoot.BinDirectory, "recompile", "hooks"), ModNative.RefiiOwner);
 		return ModNative.FindConflicts(all, refii)
 			.Where(c => c.First == own.ModName || c.Second == own.ModName)
-			.Select(c => $"{c.Function}: {c.First} and {c.Second}")
+			.Select(c => $"{c.Function}: {c.First} replaces it over {c.Second}")
+			.ToArray();
+	}
+
+	/// <summary>
+	/// Functions the active mod hooks that refii or another enabled mod also hooks, each with its
+	/// owners outermost first (<c>rex_X: a → b → refii</c>). The hooks run as a chain in load order.
+	/// </summary>
+	public string[] GetNativeChains()
+	{
+		if (Install() is not { } install || ModNative.Read(install) is not { } own)
+		{
+			return Array.Empty<string>();
+		}
+
+		var all = ModNative.ReadEnabled(GetModsRoot()).Where(s => s.ModName != own.ModName).ToList();
+		all.Add(own);
+		Dictionary<string, string> refii = ModNative.ReadOverridesInDirectory(
+			Path.Combine(Engine_AppRoot.BinDirectory, "recompile", "hooks"), ModNative.RefiiOwner);
+		return ModNative.PlanChains(all, refii)
+			.Where(chain => chain.Owners.Contains(own.ModName))
+			.Select(chain => $"{chain.Function}: {string.Join(" → ", chain.Owners)}")
 			.ToArray();
 	}
 
@@ -217,6 +240,137 @@ public partial class RefiiModApi : RefCounted
 		return Directory.Exists(include)
 			? Directory.EnumerateFiles(include, "refii_mod.h", SearchOption.AllDirectories).FirstOrDefault() ?? string.Empty
 			: string.Empty;
+	}
+
+	// ---------------------------------------------------------------------------------------
+	// The event API — core/refii_mod_events.h, described by Engine_ModApi
+	// ---------------------------------------------------------------------------------------
+
+	/// <summary><c>REFII_MOD_API_VERSION</c>: the events and helpers this app's payload offers.</summary>
+	public int GetApiVersion() => ModApi.Version;
+
+	/// <summary>Every event's C++ name (<c>REFII_MOD_ON(Name, fn)</c>), in kind order.</summary>
+	public string[] ListEvents() => ModApi.Events.Select(e => e.Name).ToArray();
+
+	/// <summary>
+	/// One event by its C++ or Lua name: name, lua_name, kind, seam, summary, cancel (empty when
+	/// it cannot be cancelled) and fields (name, type, meaning, writable). Empty for an unknown name.
+	/// </summary>
+	public Godot.Collections.Dictionary DescribeEvent(string name)
+	{
+		var result = new Godot.Collections.Dictionary();
+		if (ModApi.Find(name) is not { } e)
+		{
+			return result;
+		}
+
+		result["name"] = e.Name;
+		result["lua_name"] = e.LuaName;
+		result["kind"] = e.Kind;
+		result["seam"] = e.Seam;
+		result["summary"] = e.Summary;
+		result["cancel"] = e.Cancel;
+		var fields = new Godot.Collections.Array();
+		foreach (ModApiField f in e.Fields)
+		{
+			fields.Add(new Godot.Collections.Dictionary
+			{
+				["name"] = f.Name,
+				["type"] = f.Type,
+				["meaning"] = f.Meaning,
+				["writable"] = f.Writable,
+			});
+		}
+
+		result["fields"] = fields;
+		return result;
+	}
+
+	/// <summary>The native helper calls, each as "signature — meaning".</summary>
+	public string[] ListNativeHelpers() => ModApi.Helpers.Select(h => $"{h.Signature} — {h.Meaning}").ToArray();
+
+	/// <summary>The Lua-side calls a mod's init.lua can make, each as "call — meaning".</summary>
+	public string[] ListLuaHelpers() => ModApi.LuaHelpers.Select(h => $"{h.Signature} — {h.Meaning}").ToArray();
+
+	/// <summary>
+	/// Writes <c>native/&lt;fileName&gt;</c>: a handler for <paramref name="eventName"/> with every
+	/// field listed, ready to fill in. Returns an error for an unknown event.
+	/// </summary>
+	public string NewNativeHandler(string eventName, string fileName)
+	{
+		if (ModApi.Find(eventName) is not { } e)
+		{
+			return $"no event '{eventName}' — ListEvents() names them";
+		}
+
+		return SetNativeSource(fileName, ModApi.NativeTemplate(e, GetActiveMod()));
+	}
+
+	/// <summary>
+	/// Appends a <c>Refii.on("&lt;event&gt;", ...)</c> handler to the mod's init.lua, with the
+	/// event's fields listed. Returns an error for an unknown event.
+	/// </summary>
+	public string AddLuaHandler(string eventName)
+	{
+		if (ModApi.Find(eventName) is not { } e)
+		{
+			return $"no event '{eventName}' — ListEvents() names them";
+		}
+
+		string current = ReadText(ModLua.ModInitPath);
+		string source = (current.Length == 0 ? string.Empty : current.TrimEnd() + "\n\n") + ModApi.LuaTemplate(e);
+		return WriteLua(ModLua.ModInitPath, source);
+	}
+
+	// ---------------------------------------------------------------------------------------
+	// The game's own Lua natives — res://modding_tools/game_lua_api.tsv
+	// ---------------------------------------------------------------------------------------
+
+	public const string GameLuaApiPath = "res://modding_tools/game_lua_api.tsv";
+
+	/// <summary>The tables the game registers natives under (_G, Player, Dog, GUI, EntityMetatable ...).</summary>
+	public string[] ListGameLuaTables() =>
+		GameLuaApi().Select(row => row.Table).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToArray();
+
+	/// <summary>The natives of one table, by name; a mod's init.lua can call every one of them.</summary>
+	public string[] ListGameLuaNatives(string table) =>
+		GameLuaApi().Where(row => string.Equals(row.Table, table, StringComparison.OrdinalIgnoreCase))
+			.Select(row => row.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+
+	/// <summary>Natives whose name contains <paramref name="text"/>, as "Table.Name".</summary>
+	public string[] FindGameLuaNatives(string text) =>
+		GameLuaApi().Where(row => row.Name.Contains(text, StringComparison.OrdinalIgnoreCase))
+			.Select(row => row.Table + "." + row.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+
+	private static List<(string Table, string Name)>? _gameLuaApi;
+
+	private static List<(string Table, string Name)> GameLuaApi()
+	{
+		if (_gameLuaApi != null)
+		{
+			return _gameLuaApi;
+		}
+
+		var rows = new List<(string, string)>();
+		using Godot.FileAccess? file = Godot.FileAccess.Open(GameLuaApiPath, Godot.FileAccess.ModeFlags.Read);
+		if (file != null)
+		{
+			foreach (string line in file.GetAsText().Split('\n'))
+			{
+				if (line.Length == 0 || line[0] == '#')
+				{
+					continue;
+				}
+
+				string[] parts = line.Split('\t');
+				if (parts.Length >= 2)
+				{
+					rows.Add((parts[0], parts[1]));
+				}
+			}
+		}
+
+		return _gameLuaApi = rows;
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -277,7 +431,10 @@ public partial class RefiiModApi : RefCounted
 	// HUD — ui/hud.json, read by Engine_HudModPieces and Engine_HudView
 	// ---------------------------------------------------------------------------------------
 
-	/// <summary>A HUD piece of the mod's own — meter, panel or picture — keyed by its <c>id</c>.</summary>
+	/// <summary>
+	/// A HUD piece of the mod's own — meter, panel or picture — keyed by its <c>id</c>. A picture
+	/// may carry <c>textures</c> (a list) and <c>index</c> (a value source) to show one of them.
+	/// </summary>
 	public string SetHudPiece(Godot.Collections.Dictionary piece) =>
 		Upsert(Engine_HudModPieces.ModHudPath, "pieces", "id", piece);
 
@@ -372,14 +529,48 @@ public partial class RefiiModApi : RefCounted
 		["save"] = "Lua: what a mod puts in the table RefiiModSave persists with the save game (numbers, " +
 			"strings, tables). Native code reads it back with refii_mod_game_lua_int when " +
 			"refii_mod_lua_generation() changes.",
+		["events"] = "core/refii_mod_events.h (included by core/refii_mod.h): the game's seams as typed events. " +
+			"Native: static void OnHit(refii::mods::HitEvent& e) { ... } REFII_MOD_ON(Hit, OnHit); — e.cancel refuses " +
+			"where the event allows it, writable fields (damage, type, level, amount) change what the game gets, " +
+			"every handler sees every event in priority then load order. Lua (mod/init.lua): Refii.on(\"hit\", " +
+			"function(e) ... return true end) — the same fields as a table, return true to cancel. " +
+			"ListEvents(), DescribeEvent(name), NewNativeHandler(event, file), AddLuaHandler(event). Events: " +
+			string.Join(", ", ModApi.Events.Select(e => e.Name)) + ".",
 		["native"] = "core/refii_mod.h: REX_EXTERN(<config name>) { ... } overrides a guest function, " +
 			"REFII_MOD_ORIGINAL(name) declares the game's own body as __imp__name; REFII_MOD_ON_TICK, " +
 			"refii_mod_player_hero, refii_mod_local_hero, refii_mod_component, refii_mod_run_game_lua, " +
 			"refii::mods::CallGuest/CallVirtual and the Load/Store helpers. Hook functions by their " +
-			"config names, never sub_ addresses.",
+			"config names, never sub_ addresses. Two mods hooking one function run as a chain in load " +
+			"order (the higher mod's hook calls the lower's through __imp__name, the lowest calls the " +
+			"game); a hook that never calls __imp__name must be the only one on its function.",
+		["spellwheel"] = "ui/spellwheel.json: { \"secondary\": { \"setting\": <key>, " +
+			"\"settingPlayerTwo\": <key>, \"value\": \"mod:<key>\", \"valuePlayerTwo\": \"mod:<key>\", \"chosen\": \"mod:<key>\", \"scale\": 0.55, \"exclude\": [2, 7], " +
+			"\"unlocked\": \"mod:<key>\", \"apply\": <babel tag>, \"remove\": <babel tag> } } " +
+			"— on both spell selectors X on the highlighted will writes its type (0 Lightning .. 7 " +
+			"Dead Rising) to the setting and Y writes -1; the will the mod states back in " +
+			"value is drawn smaller under every assigned slot's icon; exclude lists the will types X ignores; a {slot} in a key is the highlighted slot's number 1..5, for one pick per slot; " +
+			"while the unlocked value is not positive the spell page says nothing of the pick; once it is, the abilities blade shows two prompt rows beside the page's own, X with the apply tag's text and Y with the remove tag's.",
+		["fx"] = "fx/recipes.json: while a mod value equals a recipe's number, every live effect named in its " +
+			"base list is dressed — a tint on each particle, intensity and size multipliers, and attached " +
+			"effects (count copies on a ring of radius at height, turning at turnsPerSecond), and authored " +
+			"pieces drawn with the game's own effect textures and meshes: embers (a spiral cone of particles), " +
+			"arcs (re-struck lightning ribbons), ring (a repeating shockwave), blades (the cutlass mesh orbiting). " +
+			"everyNode dresses every live anchor effect; entities (definition names or #hashes) dresses every live " +
+			"entity of those definitions on a node that follows it; instances (a mod value prefix) binds each effect " +
+			"and entity to the nearest stated instance of its look, so every cast carries its own. " +
+			"The guest still states which effect plays and where; Godot changes the look. See Engine_FxRecipes " +
+			"and Engine_FxRecipePieces.",
+		["dependencies"] = "mod.toml: requires = [\"souls_combat >= 0.1\"] places that mod beneath this one " +
+			"(mounted, composed and hooked inside it) and makes its native/include/ visible to this mod's " +
+			"native code; after = [\"hd-ui\"] orders without requiring. A mod cannot be enabled while a " +
+			"requirement is missing or off.",
 		["lua"] = "mod/init.lua runs in the game VM after the shipped scripts, once per session; " +
 			"mod/camera.lua after every camera-script load. Each mod runs in its own pcall; errors " +
 			"land in the global RefiiModErrors.",
+		["game_lua"] = "The game's own 3602 Lua natives in 234 tables (res://modding_tools/game_lua_api.tsv: " +
+			"Player, Dog, Creature, GUI, Stats, Combat, Camera, SpellManager, Village, QuestTracker, the entity " +
+			"userdata's EntityMetatable, the globals ...) are all callable from mod/init.lua. ListGameLuaTables(), " +
+			"ListGameLuaNatives(table), FindGameLuaNatives(text).",
 		["probe"] = "The live debug channel's refii_lua runs '@game <chunk>' in the game VM and reports " +
 			"whether it ran; assert(<expr>) reads a value out.",
 		["settings"] = "settings.json: a flat object of numbers keyed <mod>.<name> (one nesting level is " +

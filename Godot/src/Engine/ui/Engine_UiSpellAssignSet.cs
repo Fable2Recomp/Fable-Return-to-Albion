@@ -28,6 +28,17 @@ public sealed class Engine_UiSpellAssignSet
 	/// <summary>The owned assignment widget, one per host — the blade and the quick wheel.</summary>
 	private Engine_UiSpellAssign? _wheel;
 
+	/// <summary>
+	/// THE BOOK'S TRAY IS THE SAME WIDGET. The abilities book's own `SpellAssigning` element used to
+	/// be the guest's presentation mirrored, so the two trays were two templates and nothing the
+	/// host adds to one (a mod's secondary pick, for one) reached the other. This copy is cloned
+	/// from the wheel's pattern book, stands where the book authored its element, and follows the
+	/// guest's blade widget (screen 14 + 200) through RefiiHostGetSpellBlade; the book's own element
+	/// is hidden while it stands. The levers still go to the guest (DriveBlade), whose widget commits.
+	/// </summary>
+	private Engine_UiSpellAssign? _blade;
+	private Node3D? _bladeElement;
+
 	/// <summary>This frame's assignment sample, taken once and shared by both hosts.</summary>
 	private Engine_UiModel.SpellAssignState _spells;
 
@@ -88,6 +99,7 @@ public sealed class Engine_UiSpellAssignSet
 		}
 
 		_spells = Engine_UiSource.Current.GetSpellAssign();
+		TrackAssigned();
 
 		// THE BLADE IS THE GUEST'S. Its widget (`screen14+200`, bound by `sub_826C2480` at
 		// 0x826c2510) writes every slide, icon texture and adjuster position onto the live
@@ -136,6 +148,16 @@ public sealed class Engine_UiSpellAssignSet
 			}
 		}
 
+		// THE CAROUSEL COMMITS ON MOVE (the guest's widget writes as it turns), so a partner pick
+		// is made by turning to the partner and pressing X — which has just re-assigned the slot
+		// to that will. The wills each slot held when the selector came up are kept, and a pick
+		// puts the slot's own will back. Picking without turning is a clear.
+		if (wheelUp && !_wheelWasUp)
+		{
+			_wheelOpenedWills = OpenedWills();
+		}
+
+		_wheelWasUp = wheelUp;
 		if (wheelUp && (_wheel is null || !GodotObject.IsInstanceValid(_wheel)))
 		{
 			_wheel = Ensure(WheelPresentation);
@@ -157,8 +179,9 @@ public sealed class Engine_UiSpellAssignSet
 			{
 				// THE CURSOR IS THE GUEST'S. Its widget at `*(*(GUI+32)+92)` moves row and cell
 				// itself (the pump feeds it the stick every held frame); this copy follows them.
-				_wheel.FollowGuest(Engine_UiSource.Current.GetSpellWheel(
-					_spells.WheelOpenPlayerTwo && !_spells.WheelOpen ? 2 : 1));
+				int player = _spells.WheelOpenPlayerTwo && !_spells.WheelOpen ? 2 : 1;
+				_wheel.Player = player;
+				_wheel.FollowGuest(Engine_UiSource.Current.GetSpellWheel(player));
 				_wheel.SetLive(_spells);
 			}
 			else
@@ -183,11 +206,80 @@ public sealed class Engine_UiSpellAssignSet
 	/// with its release (32..35) so a burst lands. The copy-down stays on A — a click is not a
 	/// confirm here. Every click on the screen is taken.
 	/// </summary>
+	/// <summary>Stands the owned widget in the book's blade place and feeds it the guest's blade state.</summary>
+	public void FollowBlade(Engine_UiOwnedBook book)
+	{
+		if (Host is null || book.Find("SpellAssigning") is not { } element)
+		{
+			return;
+		}
+
+		if (_blade is null || !GodotObject.IsInstanceValid(_blade) || !ReferenceEquals(_bladeElement, element))
+		{
+			if (_blade is not null && GodotObject.IsInstanceValid(_blade))
+			{
+				_blade.QueueFree();
+			}
+
+			if (_bladeElement is not null && GodotObject.IsInstanceValid(_bladeElement))
+			{
+				_bladeElement.Visible = true;
+			}
+
+			_blade = Ensure(WheelPresentation);
+			_bladeElement = element;
+			if (_blade is null)
+			{
+				return;
+			}
+
+			// Out of the HUD host and into the book, at the book's own authored place and scale:
+			// the clone inside the widget carries the HUD's canvas transform (Build), which is
+			// dropped so only the book's element transform places it. The book's own element is
+			// SUPPRESSED, not hidden: the binding re-applies the presentation's slides to it every
+			// frame, and a plain Visible = false was undone on the next one.
+			_blade.Name = "SpellAssign_book";
+			_blade.GetParent()?.RemoveChild(_blade);
+			element.GetParent()?.AddChild(_blade);
+			_blade.Transform = element.Transform;
+			if (_blade.GetNodeOrNull<Node3D>(Engine_UiSpellAssign.ElementName) is { } inner)
+			{
+				inner.Transform = Transform3D.Identity;
+			}
+
+			book.Suppressed.Add(Engine_UiSpellAssign.ElementName);
+			element.Visible = false;
+		}
+
+		Engine_UiModel.SpellWheelState state = Engine_UiSource.Current.GetSpellBlade();
+		if (state.Known && !_bladeWasKnown)
+		{
+			_bladeOpenedWills = OpenedWills();
+		}
+
+		_bladeWasKnown = state.Known;
+		_blade.Visible = state.Known;
+		_blade.EnsurePrompts(book);
+		_blade.ShowPrompts(state.Known && Engine_UiSpellAssign.SecondaryUnlocked());
+		if (state.Known)
+		{
+			_blade.Player = 1;
+			_blade.FollowGuest(state);
+			_blade.SetLive(_spells);
+		}
+		else
+		{
+			_blade.FollowGuest(default);
+		}
+	}
+
 	public void BladePointer(Engine_UiOwnedBook book, double delta)
 	{
 		_predictedFor = System.Math.Max(0.0, _predictedFor - delta);
-		if (!Engine_UiPointer.TakeLeft() || Engine_UiPointer.Canvas is not { } at ||
-			book.Find("SpellAssigning") is not { } blade ||
+		Node3D? blade = _blade is { } own && GodotObject.IsInstanceValid(own) && own.Visible
+			? own
+			: book.Find("SpellAssigning");
+		if (!Engine_UiPointer.TakeLeft() || Engine_UiPointer.Canvas is not { } at || blade is null ||
 			Engine_UiTheme.FindByName(blade, "Adjuster") is not Node3D adjuster)
 		{
 			return;
@@ -293,6 +385,170 @@ public sealed class Engine_UiSpellAssignSet
 		}
 	}
 
+	/// <summary>A mod's secondary pick on the quick wheel: the will under the guest's own cursor.</summary>
+	public void WheelSecondary(Engine_UiSpellAssign.SecondaryAction action)
+	{
+		int player = _spells.WheelOpenPlayerTwo && !_spells.WheelOpen ? 2 : 1;
+		Engine_UiModel.SpellWheelState state = Engine_UiSource.Current.GetSpellWheel(player);
+		if (action == Engine_UiSpellAssign.SecondaryAction.Remove)
+		{
+			if (state.Known)
+			{
+				Engine_UiSpellAssign.RemoveSecondary(player, state.Row);
+			}
+
+			return;
+		}
+
+		PickSecondary(player, state, _wheelOpenedWills,
+			_wheel is { } wheel && GodotObject.IsInstanceValid(wheel) ? wheel.CursorWill() : null);
+	}
+
+	private bool _wheelWasUp;
+	private bool _bladeWasKnown;
+	private int[]? _wheelOpenedWills;
+	private int[]? _bladeOpenedWills;
+
+	/// <summary>
+	/// Each slot's will as last sampled, and the will it held BEFORE the carousel turned it. The
+	/// carousel commits as it turns, and a turn that ends without a pick leaves the slot on
+	/// the will turned to; the next open then reads that will as the slot's own, and a pick on
+	/// it was refused ("is the slot's own spell") — the shock pick that never took. The will
+	/// before the turn is what the pick puts back in that case.
+	///
+	/// ONLY A TURN COUNTS. The record is taken only while a selector is up (the carousel's
+	/// commit is the only writer then), never from the pick's own restore (<see cref="_restoring"/>),
+	/// and it is dropped when the assignment changes with no selector up (the abilities book,
+	/// a load): taken from those, a deliberate assignment read as a stray turn and a later pick
+	/// on the slot's own will SWAPPED the pair — the new spell became the partner and the old
+	/// one came back as the slot's spell.
+	/// </summary>
+	private readonly int[] _lastAssigned = Filled(-1);
+	private readonly int[] _prevAssigned = Filled(-1);
+	private readonly int[] _restoring = Filled(-1);
+
+	private static int[] Filled(int value)
+	{
+		var wills = new int[Engine_UiModel.SpellAssignState.Slots];
+		System.Array.Fill(wills, value);
+		return wills;
+	}
+
+	private void TrackAssigned()
+	{
+		if (!_spells.Known)
+		{
+			return;
+		}
+
+		bool selectorUp = _wheelWasUp || _bladeWasKnown;
+		for (int slot = 0; slot < _lastAssigned.Length; ++slot)
+		{
+			int now = _spells.On(slot) ?? -1;
+			if (now == _lastAssigned[slot])
+			{
+				continue;
+			}
+
+			if (now >= 0 && now == _restoring[slot])
+			{
+				// The pick put the slot's own will back: the slot is on its own will again.
+				_restoring[slot] = -1;
+				_prevAssigned[slot] = -1;
+			}
+			else if (selectorUp && _lastAssigned[slot] >= 0)
+			{
+				_prevAssigned[slot] = _lastAssigned[slot];
+			}
+			else
+			{
+				_prevAssigned[slot] = -1;
+			}
+
+			_lastAssigned[slot] = now;
+		}
+	}
+
+	/// <summary>The will on each slot right now: what a pick restores after the carousel's commit.</summary>
+	private int[] OpenedWills()
+	{
+		var wills = new int[Engine_UiModel.SpellAssignState.Slots];
+		for (int slot = 0; slot < wills.Length; ++slot)
+		{
+			wills[slot] = _spells.On(slot) ?? -1;
+		}
+
+		return wills;
+	}
+
+	/// <summary>
+	/// A pick on a selector: the will under the cursor becomes the row's partner, and the row's
+	/// own will — the one it held when the selector came up — is put back, since turning the
+	/// carousel to the partner committed the partner as the row's spell.
+	///
+	/// THE CURSOR IS THE HOST WIDGET'S. The quick wheel's carousel is Godot's: `Move` steps the
+	/// widget's own cell and commits with `AssignSpell`, and the guest's widget words never move
+	/// their cell for it — so reading `state.CellOf(row)` named the will the slot held when the
+	/// wheel came up, every time, and the pick was refused as "the slot's own spell" (seven in a
+	/// row in one log). The widget's <see cref="Engine_UiSpellAssign.CursorWill"/> is the will
+	/// under its centre; the guest's cell stands in only when there is no widget.
+	///
+	/// THE RESTORE IS THE GUEST'S OWN TURN ON THE BLADE. The blade's carousel is the guest's
+	/// widget: its cell is what the centre, the flanking icons and the label are read from, so
+	/// putting the own will back through the slot writer alone left the cell parked on the
+	/// partner — the centre showed the own will over the partner's neighbours and label, and
+	/// the next turn started from the partner. Turning the guest's carousel back to the own
+	/// will (the same LEFT/RIGHT levers the stick uses) commits it and moves the cell in one
+	/// go. The quick wheel's carousel is Godot's and follows the assignment (SetLive), so its
+	/// restore goes through the slot writer, for either player.
+	/// </summary>
+	private void PickSecondary(int player, Engine_UiModel.SpellWheelState state, int[]? opened, int? cursor, bool guestCarousel = false)
+	{
+		if (!state.Known)
+		{
+			return;
+		}
+
+		int row = state.Row;
+		int? will = cursor ?? state.WillAt(row, state.CellOf(row));
+		int primary = opened is not null && row >= 0 && row < opened.Length ? opened[row] : -1;
+		if (will is { } picked && picked == primary && row >= 0 && row < _prevAssigned.Length &&
+			_prevAssigned[row] >= 0 && _prevAssigned[row] != picked)
+		{
+			// The slot shows the will under the cursor because an earlier turn committed it
+			// there: the will the slot held before that turn is its own, and is put back.
+			primary = _prevAssigned[row];
+		}
+
+		Engine_UiSpellAssign.ChooseSecondary(player, row, will, primary);
+		if (primary < 0 || will is not { } chosen || chosen == primary)
+		{
+			return;
+		}
+
+		_restoring[row] = primary;
+		if (guestCarousel)
+		{
+			System.Collections.Generic.List<int> choices = _spells.Choices(row);
+			int steps = choices.IndexOf(primary) - choices.IndexOf(chosen);
+			if (choices.IndexOf(primary) < 0 || choices.IndexOf(chosen) < 0)
+			{
+				Engine_UiSource.Current.AssignSpell(row, primary, player);
+				return;
+			}
+
+			for (int i = 0; i < System.Math.Abs(steps); ++i)
+			{
+				Engine_UiSource.Current.PostFrontEndAction(steps < 0 ? "SpellBlade:left" : "SpellBlade:right");
+				Engine_UiSource.Current.PostFrontEndAction("SpellBlade:release");
+			}
+		}
+		else
+		{
+			Engine_UiSource.Current.AssignSpell(row, primary, player);
+		}
+	}
+
 	public void DriveBlade(Engine_UiSurfaceInput input)
 	{
 		_vertical ??= PageClock();
@@ -310,7 +566,23 @@ public sealed class Engine_UiSpellAssignSet
 				input.Horizontal < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
 		}
 
-		if (input.Accept)
+		Engine_UiSpellAssign.SecondaryAction action = Engine_UiSpellAssign.SecondaryPressed(input.Flip, input.Equip);
+		if (action != Engine_UiSpellAssign.SecondaryAction.None)
+		{
+			// A mod's secondary pick on the blade: X applies the will under the carousel's
+			// centre, Y removes the row's partner.
+			Engine_UiModel.SpellWheelState state = Engine_UiSource.Current.GetSpellBlade();
+			if (state.Known && action == Engine_UiSpellAssign.SecondaryAction.Remove)
+			{
+				Engine_UiSpellAssign.RemoveSecondary(1, state.Row);
+			}
+			else if (state.Known)
+			{
+				PickSecondary(1, state, _bladeOpenedWills,
+					_blade is { } blade && GodotObject.IsInstanceValid(blade) ? blade.CursorWill() : null, guestCarousel: true);
+			}
+		}
+		else if (input.Accept)
 		{
 			Engine_UiSource.Current.ScreenAction(Engine_UiScreenInput.Select);
 		}

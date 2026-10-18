@@ -10,9 +10,13 @@ namespace Refii.Mods;
 /// A mod's tunables: <c>settings.json</c> in the package, a flat object of number values keyed
 /// <c>&lt;mod&gt;.&lt;name&gt;</c> (one level of nesting is folded with a dot). Pushed to the game as
 /// mod settings once the guest is up, and again after the mods are re-mounted, so a mod's
-/// native code reads <c>refii::mods::Setting(key, fallback)</c> and sees the file's value; a
-/// value changed live (the debug channel's <c>mod-setting</c> action) holds until the next push.
-/// Later mods in the load order override earlier ones' keys.
+/// native code reads <c>refii::mods::Setting(key, fallback)</c> and sees the file's value. A
+/// value set LIVE through <see cref="Set"/> (a partner pick, the abilities page's purchase
+/// counter, the debug channel's <c>mod-setting</c> action) is an override: it is pushed over the
+/// file's value on every push, so a re-mount or a reload never puts the file's default back over
+/// the player's choice — a mod that treats a change of the setting as the choice (Spell
+/// Weaving's partners) would otherwise see every partner cleared. Later mods in the load order
+/// override earlier ones' keys.
 /// </summary>
 public static class ModSettings
 {
@@ -20,16 +24,26 @@ public static class ModSettings
 
 	private static Dictionary<string, float>? _values;
 
+	/// <summary>Values set live this session, pushed over the files' on every push.</summary>
+	private static readonly Dictionary<string, float> _overrides = new(StringComparer.Ordinal);
+
 	private static bool _pushed;
 
 	/// <summary>Every setting the enabled mods state, by key.</summary>
 	public static IReadOnlyDictionary<string, float> All => _values ??= Load();
 
-	/// <summary>Drops the loaded set; the next push reads the files again.</summary>
+	/// <summary>Drops the loaded set; the next push reads the files again (the live overrides stay).</summary>
 	public static void Reload()
 	{
 		_values = null;
 		_pushed = false;
+	}
+
+	/// <summary>Sets a mod setting in the running game and keeps it over the file's value for the session.</summary>
+	public static void Set(string key, float value)
+	{
+		_overrides[key] = value;
+		HostBridge.SetModSetting(key, value);
 	}
 
 	/// <summary>Pushes the settings once per guest; call every frame with whether the guest is up.</summary>
@@ -48,7 +62,15 @@ public static class ModSettings
 
 		foreach ((string key, float value) in All)
 		{
-			HostBridge.SetModSetting(key, value);
+			HostBridge.SetModSetting(key, _overrides.TryGetValue(key, out float live) ? live : value);
+		}
+
+		foreach ((string key, float value) in _overrides)
+		{
+			if (!All.ContainsKey(key))
+			{
+				HostBridge.SetModSetting(key, value);
+			}
 		}
 
 		_pushed = true;

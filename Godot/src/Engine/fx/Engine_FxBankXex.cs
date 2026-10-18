@@ -38,6 +38,13 @@ public static class XexConst
 
 public sealed class XexStream
 {
+    /// <summary>
+    /// FABLE 3's bank layout: the same header and versions as Fable 2's, but every emitter
+    /// carries five more bytes (a byte and a u32) between its attach flag and the shared entity
+    /// block. Detected by the parser when the Fable 2 layout misreads the second entity.
+    /// </summary>
+    public bool Fable3Layout;
+
     public byte[] Base;
     public int Pos;
     public bool Overrun;
@@ -171,6 +178,10 @@ public class XexEntityType
 
 public class XexEmitterType : XexEntityType
 {
+    /// <summary>Fable 3 only (see <see cref="XexStream.Fable3Layout"/>); meaning not yet read from its binary.</summary>
+    public byte Fable3Flag;
+    public uint Fable3Value;
+
     public bool PositionalInteractable;
     public int MaxActiveParticles = -1;
     public float InitialNumParticles = 1.0f;
@@ -391,6 +402,8 @@ public struct XexEntityRef { public uint TypeId; public uint EntityId; public ui
 
 public sealed class XexBank
 {
+    public bool Fable3Layout;
+
     public bool Ok;
     public string Error = string.Empty;
     public uint BankVersion;
@@ -647,6 +660,11 @@ public static class XexBankParser
         e.ForceFullSizeRenderBuffer = false;
         if (bankVersion >= 2) e.ForceFullSizeRenderBuffer = s.U8() != 0;
         e.AttachToRoot = s.U8() != 0;
+        if (s.Fable3Layout)
+        {
+            e.Fable3Flag = s.U8();
+            e.Fable3Value = s.U32();
+        }
         EntityTypeLoadBin(s, e);
     }
 
@@ -1173,7 +1191,35 @@ public static class XexBankParser
 
     public static bool ParseBank(byte[] data, XexBank o)
     {
-        var s = new XexStream(data);
+        if (ParseBank(data, o, false))
+        {
+            return true;
+        }
+
+        // Fable 2's layout misreads the second entity's type in a Fable 3 bank; try that layout.
+        if (o.Error.Contains("unsupported type", StringComparison.Ordinal))
+        {
+            var again = new XexBank();
+            if (ParseBank(data, again, true))
+            {
+                foreach (System.Reflection.FieldInfo field in typeof(XexBank).GetFields())
+                {
+                    field.SetValue(o, field.GetValue(again));
+                }
+
+                return true;
+            }
+
+            o.Error += $"; as Fable 3 layout: {again.Error}";
+        }
+
+        return false;
+    }
+
+    public static bool ParseBank(byte[] data, XexBank o, bool fable3Layout)
+    {
+        var s = new XexStream(data) { Fable3Layout = fable3Layout };
+        o.Fable3Layout = fable3Layout;
         if (data.Length < 24 || System.Text.Encoding.ASCII.GetString(data, 0, 16) != "ParticleBankFile") { o.Error = "bad magic"; return false; }
         s.Pos = 16;
         o.BankVersion = s.U32();
@@ -1268,7 +1314,8 @@ public static class XexBankParser
                     case 8: { var e = new XexSpotLightEntityType(); SpotLightLoadBin(s, e); Finish(e, o.SpotLights.Count); o.SpotLights.Add(e); break; }
                     case 9: { var e = new XexSplineEmitterType(); SplineEmitterLoadBin(s, e, bv); Finish(e, o.SplineEmitters.Count); o.SplineEmitters.Add(e); break; }
                     default:
-                        o.Error = $"entity #{i} unsupported type {typeId}";
+                        o.Error = $"entity #{i} unsupported type {typeId} at 0x{begin:X} (section 4 at 0x{o.Section4Offset:X}, {o.Materials.Count} materials from 0x{o.Section2Offset:X}, {o.Systems.Count} systems from 0x{o.Section3Offset:X}, previous entity " +
+                            (o.EntityOrder.Count != 0 ? $"type {o.EntityOrder[^1].TypeId} sub {o.EntityOrder[^1].SubType} id 0x{o.EntityOrder[^1].EntityId:X8}" : "none") + ")";
                         return false;
                 }
 

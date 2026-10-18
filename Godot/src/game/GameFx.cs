@@ -98,7 +98,11 @@ public partial class GameFx : Node3D
     /// <summary>The feed in the tree, for the debug channel.</summary>
     public static GameFx? Current { get; private set; }
 
-    public override void _EnterTree() => Current = this;
+    public override void _EnterTree()
+    {
+        Current = this;
+        Engine_FxRecipes.AnchorParent = this;
+    }
 
     public override void _ExitTree()
     {
@@ -291,6 +295,7 @@ public partial class GameFx : Node3D
         }
 
         FxBank? bank = FableFx.SharedBank();
+        Engine_FxRecipes.Begin();
         _seen.Clear();
         _counted.Clear();
         RefreshStated();
@@ -505,6 +510,7 @@ public partial class GameFx : Node3D
             node.LightFade = fade;
             node.SizeScale = scale;
             node.GuestDrawn = _guestDrawn.Contains(key);
+            Engine_FxRecipes.Apply(node, effect, fx.Owner, fx.Attached);
         }
 
         // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the

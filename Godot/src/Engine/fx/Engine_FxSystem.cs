@@ -283,6 +283,16 @@ public sealed class Engine_FxSystem
     public void SetIntensity(float intensity) =>
         _intensity = float.IsFinite(intensity) ? MathF.Max(intensity, 0f) : 1f;
 
+    /// <summary>A multiplier on every particle's colour after lighting — an FX recipe's tint.</summary>
+    private readonly float[] _tint = { 1f, 1f, 1f };
+
+    public void SetTint(float r, float g, float b)
+    {
+        _tint[0] = float.IsFinite(r) ? MathF.Max(r, 0f) : 1f;
+        _tint[1] = float.IsFinite(g) ? MathF.Max(g, 0f) : 1f;
+        _tint[2] = float.IsFinite(b) ? MathF.Max(b, 0f) : 1f;
+    }
+
     private float _sizeScale = 1f;
 
     /// <summary>The live size scale — the guest's element+412: folded into the keyframe global
@@ -1968,6 +1978,9 @@ public sealed class Engine_FxSystem
                     col[0] = inst.Lit[0] + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - inst.Lit[0]) * si);
                     col[1] = inst.Lit[1] + (((vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1]) - inst.Lit[1]) * si);
                     col[2] = inst.Lit[2] + (((vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2]) - inst.Lit[2]) * si);
+                    col[0] *= _tint[0];
+                    col[1] *= _tint[1];
+                    col[2] *= _tint[2];
                     float a = vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha;
                     // The instance intensity is an alpha term: 0038 `r5.w = fade × FadeOut.z`
                     // (binding 321.z = the batch's intensity), `oColor0.w = r5.w × keyframe.a`;

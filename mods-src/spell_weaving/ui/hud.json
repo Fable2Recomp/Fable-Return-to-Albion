@@ -1,0 +1,52 @@
+{
+	"pieces": [
+		{
+			"id": "spell_weaving.partner",
+			"kind": "picture",
+			"follow": "group.SpellCharging.SpellCharging",
+			"offset": [
+				-34,
+				-2
+			],
+			"size": [
+				30,
+				30
+			],
+			"textures": [
+				"game://art/gui/wheelicons/abilities/will_shock.tex",
+				"game://art/gui/wheelicons/abilities/will_blast.tex",
+				"game://art/gui/wheelicons/abilities/icon_will_time_control.tex",
+				"game://art/gui/wheelicons/abilities/will_sword_of_damocles.tex",
+				"game://art/gui/wheelicons/abilities/will_vortex.tex",
+				"game://art/gui/wheelicons/abilities/will_chaos.tex",
+				"game://art/gui/wheelicons/abilities/will_force_push.tex",
+				"game://art/gui/wheelicons/abilities/will_dead_rising.tex"
+			],
+			"index": "mod:spell_weaving.hud_partner"
+		},
+		{
+			"id": "spell_weaving.partner2",
+			"kind": "picture",
+			"follow": "group.SpellCharging2.SpellCharging2",
+			"offset": [
+				-34,
+				-2
+			],
+			"size": [
+				30,
+				30
+			],
+			"textures": [
+				"game://art/gui/wheelicons/abilities/will_shock.tex",
+				"game://art/gui/wheelicons/abilities/will_blast.tex",
+				"game://art/gui/wheelicons/abilities/icon_will_time_control.tex",
+				"game://art/gui/wheelicons/abilities/will_sword_of_damocles.tex",
+				"game://art/gui/wheelicons/abilities/will_vortex.tex",
+				"game://art/gui/wheelicons/abilities/will_chaos.tex",
+				"game://art/gui/wheelicons/abilities/will_force_push.tex",
+				"game://art/gui/wheelicons/abilities/will_dead_rising.tex"
+			],
+			"index": "mod:spell_weaving.hud_partner2"
+		}
+	]
+}

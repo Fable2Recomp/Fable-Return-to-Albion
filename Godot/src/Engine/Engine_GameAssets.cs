@@ -251,6 +251,8 @@ public partial class Engine_GameAssets : Node
 		// that runs them after the shipped scripts.
 		Refii.Mods.ModLua.Apply(mounted, overlays);
 		Refii.Mods.ModSettings.Reload();
+		Refii.Fx.Engine_FxRecipes.Reload();
+		Refii.Ui.Engine_UiSpellAssign.ReloadSecondary();
 
 		// Ensure GDB resolvers are bound so composite synthesis can access the unpatched base database:
 		Refii.Gdb.Engine_GameGdb.SetResolver(p => mounted.TryGetFile(p, out var f) ? f.ReadAllBytes() : null);

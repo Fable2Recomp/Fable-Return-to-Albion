@@ -29,6 +29,13 @@ namespace Refii.Ui;
 /// setting <c>buy</c> as an incrementing count (a setting holds one value, so a purchase is an
 /// edge the mod sees as a change). The mod spends the experience and raises the level; the row
 /// and page follow what it publishes next.</para>
+/// <para>A HYBRID ability draws on more than one discipline: <c>"category": "Hybrid",
+/// "disciplines": ["Will", "Skill"]</c>. Its cost is split evenly across those pools, the first
+/// named taking the odd point, each share drawn from its own pool and then from General as the
+/// shipped purchase draws one; the page lights every one of its orbs, and <c>totalXpTag</c> names
+/// the heading over their sum. A category only mods declare gets its row on the abilities screen
+/// from the mod's <c>ui/templates.json</c> (a patch entry on <c>AbilitiesMenu</c> with source
+/// <c>abilities:&lt;category&gt;</c>).</para>
 /// </remarks>
 public static class Engine_UiModAbilities
 {
@@ -50,9 +57,78 @@ public static class Engine_UiModAbilities
 		string BuyKey,
 		string RefundKey = "",
 		string RefundValueKey = "",
-		string Image = "");
+		string Image = "",
+		IReadOnlyList<string>? Disciplines = null,
+		string TotalXpTag = "");
 
 	private static List<Ability>? _all;
+
+	/// <summary>The disciplines an ability draws on: those it names, else its category.</summary>
+	public static IReadOnlyList<string> DisciplinesOf(Ability ability) =>
+		ability.Disciplines is { Count: > 0 } named ? named : new[] { ability.Category };
+
+	/// <summary>
+	/// A discipline's pool in hero component 164 — 1 Strength, 2 Skill, 3 Will, 0 for anything
+	/// else (General is 0). `sub_824E4DD8`'s numbering.
+	/// </summary>
+	public static int Pool(string discipline) => discipline switch
+	{
+		"Strength" => 1,
+		"Skill" => 2,
+		"Will" => 3,
+		_ => 0,
+	};
+
+	/// <summary>
+	/// Whether <paramref name="orbs"/> (component 164's pools, General first) pay <paramref name="cost"/>
+	/// split evenly across the ability's disciplines, the first named taking the odd point, each
+	/// share from its own pool and the shortfall from General — the shipped rule for one discipline
+	/// (0x824E4E28: <c>cost &lt;= (int)orbs[pool] + (int)orbs[0]</c>, truncated per term) applied
+	/// share by share.
+	/// </summary>
+	public static bool Affordable(Ability ability, float[]? orbs, int cost)
+	{
+		if (cost <= 0)
+		{
+			return true;
+		}
+
+		if (orbs is not { Length: > 3 })
+		{
+			return false;
+		}
+
+		var pools = new List<int>();
+		foreach (string discipline in DisciplinesOf(ability))
+		{
+			int pool = Pool(discipline);
+			if (pool > 0 && !pools.Contains(pool))
+			{
+				pools.Add(pool);
+			}
+		}
+
+		int general = (int)orbs[0];
+		if (pools.Count == 0)
+		{
+			return cost <= general;
+		}
+
+		int share = cost / pools.Count;
+		int odd = cost % pools.Count;
+		for (int i = 0; i < pools.Count; i++)
+		{
+			int need = share + (i < odd ? 1 : 0);
+			int have = (int)orbs[pools[i]];
+			general -= need > have ? need - have : 0;
+			if (general < 0)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
 
 	private static readonly Dictionary<string, int> _purchases = new(System.StringComparer.Ordinal);
 
@@ -183,7 +259,7 @@ public static class Engine_UiModAbilities
 	{
 		_purchases.TryGetValue(key, out int count);
 		_purchases[key] = ++count;
-		HostBridge.SetModSetting(key, count);
+		Refii.Mods.ModSettings.Set(key, count);
 		GD.Print($"[mod-abilities] {what} '{key}' (press {count})");
 	}
 
@@ -210,11 +286,26 @@ public static class Engine_UiModAbilities
 
 				var record = value.AsGodotDictionary();
 				string Text(string key) => record.TryGetValue(key, out Variant v) ? v.AsString() : string.Empty;
+				List<string>? disciplines = null;
+				if (record.TryGetValue("disciplines", out Variant named) &&
+					named.VariantType == Variant.Type.Array)
+				{
+					disciplines = new List<string>();
+					foreach (Variant discipline in named.AsGodotArray())
+					{
+						string label = discipline.AsString();
+						if (label.Length != 0)
+						{
+							disciplines.Add(label);
+						}
+					}
+				}
+
 				var ability = new Ability(
 					Text("name"), mod, Text("category"), Text("nameTag"), Text("descriptionTag"),
 					record.TryGetValue("maxLevel", out Variant max) ? max.AsInt32() : 5,
 					Text("level"), Text("cost"), Text("stat"), Text("buy"),
-					Text("refund"), Text("refundValue"), Text("image"));
+					Text("refund"), Text("refundValue"), Text("image"), disciplines, Text("totalXpTag"));
 				if (ability.Name.Length == 0 || ability.Category.Length == 0 || ability.BuyKey.Length == 0)
 				{
 					GD.PushWarning($"[mod-abilities] {mod}: an ability needs name, category and buy; skipped");

@@ -1,0 +1,20 @@
+{
+	"abilities": [
+		{
+			"name": "SpellWeaving",
+			"category": "Hybrid",
+			"disciplines": ["Will", "Skill"],
+			"nameTag": "SPELL_WEAVING_NAME",
+			"descriptionTag": "SPELL_WEAVING_DESCRIPTION",
+			"totalXpTag": "SPELL_WEAVING_TOTAL_XP",
+			"maxLevel": 5,
+			"level": "spell_weaving.level",
+			"cost": "spell_weaving.cost",
+			"stat": "spell_weaving.next",
+			"buy": "spell_weaving.buy",
+			"refund": "spell_weaving.refund",
+			"refundValue": "spell_weaving.refund_value",
+			"image": "art/gui/abilitytarot/spell_weaving.tex"
+		}
+	]
+}

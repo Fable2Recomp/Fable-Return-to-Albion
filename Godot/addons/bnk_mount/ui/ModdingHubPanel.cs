@@ -46,6 +46,7 @@ public partial class ModdingHubPanel : MarginContainer
     // Views
     private ModdingHubHomeView? _homeView;
     private ModdingGuideView? _moddingGuideView;
+    private FxLabView? _fxLabView;
     private PolymorphicItemGraphView? _itemGraphView;
 
     private readonly List<Control> _views = new();
@@ -332,6 +333,7 @@ public partial class ModdingHubPanel : MarginContainer
         AddNavButton("🏠 Home", 0);
         AddNavButton("📖 Modding Guide", 1);
         AddNavButton("🗂️ GDB Hierarchy & Components", 2);
+        AddNavButton("✨ FX Lab", 3);
 
         var navScroll = new ScrollContainer
         {
@@ -398,6 +400,11 @@ public partial class ModdingHubPanel : MarginContainer
         _itemGraphView = new PolymorphicItemGraphView();
         _views.Add(_itemGraphView);
         _contentContainer.AddChild(_itemGraphView);
+
+        // Tab 3: the FX Lab — the active mod's fx/recipes.json against a live preview.
+        _fxLabView = new FxLabView();
+        _views.Add(_fxLabView);
+        _contentContainer.AddChild(_fxLabView);
 
         _mainVBox?.AddChild(_contentContainer);
         SwitchTab(0);

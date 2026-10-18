@@ -128,8 +128,10 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
     # Mods' own Lua, run in the game VM after the startup and camera scripts.
     ${REFII_VFS_ROOT}/src/hooks/mod_lua_hooks.cpp
-    # The API a hard mod's native code calls into: tick callbacks, the hero.
+    # The API a hard mod's native code calls into: tick callbacks, the hero, stats, spells.
     ${REFII_VFS_ROOT}/src/hooks/mod_api.cpp
+    # The mod event bus: typed events on the game's seams, and the mods' Lua handlers.
+    ${REFII_VFS_ROOT}/src/hooks/mod_events.cpp
     ${REFII_VFS_ROOT}/src/hooks/lua_gc_slice.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/particle_transform.cpp

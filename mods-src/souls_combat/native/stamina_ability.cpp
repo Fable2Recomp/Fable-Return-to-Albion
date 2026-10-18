@@ -8,26 +8,18 @@
 // souls_combat.buy_stamina as an incrementing count.
 //
 // A purchase is the shipped one, step for step (TU1 sub_8246C970): the next level's cost from
-// rex_CECStats_AbilityExperienceCost (0x824E49D0 / disc 0x824AB140; r4 = ability type, r5 = level,
-// the cost in r3 — Toughness's table, type 3: Stamina is priced and paced as Toughness is), affordable
-// when (int)Strength + (int)General covers it, spent through rex_CECExperience_Spend (0x8256E2F0 /
-// disc 0x8251C920; r3 = the experience component 164, r4 = the pool, f1 = the cost), which takes
-// a shortfall out of General and raises the guest's own XP-changed event.
+// the game's own price table (refii_mod_ability_cost, Toughness's table, type 3: Stamina is
+// priced and paced as Toughness is), affordable when (int)Strength + (int)General covers it,
+// spent through the game's own Spend (refii_mod_spend_experience), which takes a shortfall out
+// of General and raises the guest's own XP-changed event.
 //
 // An unlearn is the shipped one too (TU1 sub_8246D510): the level drops by one and half the
-// cost of the level given up comes back — into GENERAL, through rex_CECExperience_Modify
-// (0x8256DA78 / disc 0x8251C0A8) with r4 = 0, f1 = the refund and r6 = r7 = r8 = 0 (0x8246d95c..
-// 0x8246d980), the zeroes keeping it out of the lifetime-earned total. Y on the row hands this
-// file souls_combat.refund_stamina as an incrementing count.
-
-#include <cstdio>
+// cost of the level given up comes back — into GENERAL, through the game's own Modify
+// (refii_mod_give_experience), outside the lifetime-earned total. Y on the row hands this file
+// souls_combat.refund_stamina as an incrementing count.
 
 #include "core/refii_mod.h"
 #include "souls_combat.h"
-
-REFII_MOD_ORIGINAL(rex_CECStats_AbilityExperienceCost);
-REFII_MOD_ORIGINAL(rex_CECExperience_Spend);
-REFII_MOD_ORIGINAL(rex_CECExperience_Modify);
 
 namespace souls_combat {
 
@@ -39,27 +31,24 @@ using namespace souls_combat;
 
 namespace {
 
-constexpr uint32_t kStatsComponent = 57;
-constexpr uint32_t kExperienceComponent = 164;
-constexpr uint32_t kToughnessType = 3;
-constexpr uint32_t kStrengthPool = 1;
-constexpr uint32_t kGeneralPool = 0;
+constexpr int kToughnessType = 3;
+constexpr int kStrengthPool = 1;
+constexpr int kGeneralPool = 0;
+constexpr const char* kSaveKey = "SoulsStamina";
 
-uint32_t g_seen_generation = 0xFFFFFFFFu;
 float g_seen_buy = 0.0f;
 float g_seen_refund = 0.0f;
 
-int CostOf(PPCContext* ctx, uint8_t* base, uint32_t stats, int level) {
-  PPCContext work = *ctx;
-  work.r3.u32 = stats;
-  work.r4.u32 = kToughnessType;
-  work.r5.u32 = static_cast<uint32_t>(level);
-  __imp__rex_CECStats_AbilityExperienceCost(work, base);
-  return static_cast<int32_t>(work.r3.u32);
+int CostOf(PPCContext* ctx, uint8_t* base, uint32_t hero, int level) {
+  return refii_mod_ability_cost(ctx, base, hero, kToughnessType, level);
 }
 
 /// Writes the level into the save's RefiiModSave table.
-void Record(PPCContext* ctx, uint8_t* base);
+void Record(PPCContext* ctx, uint8_t* base) {
+  if (refii_mod_save_set_int(ctx, base, kSaveKey, g_stamina_level) == 0) {
+    REXLOG_WARN("Souls Combat: Stamina {} NOT recorded for the save: the game Lua refused it", g_stamina_level);
+  }
+}
 
 void Buy(PPCContext* ctx, uint8_t* base, uint32_t hero) {
   if (g_stamina_level >= kStaminaMaxLevel) {
@@ -67,42 +56,25 @@ void Buy(PPCContext* ctx, uint8_t* base, uint32_t hero) {
     return;
   }
 
-  const uint32_t stats = refii_mod_component(base, hero, kStatsComponent);
-  const uint32_t experience = refii_mod_component(base, hero, kExperienceComponent);
-  const uint32_t pools = experience != 0 ? refii::mods::LoadU32(base, experience + 0x10u) : 0u;
-  if (stats == 0 || pools == 0) {
+  float strength = 0.0f;
+  float general = 0.0f;
+  if (refii_mod_experience(base, hero, kStrengthPool, &strength) == 0 ||
+      refii_mod_experience(base, hero, kGeneralPool, &general) == 0) {
     REXLOG_WARN("Souls Combat: no stats or experience component on the hero; Stamina not bought");
     return;
   }
 
-  const int cost = CostOf(ctx, base, stats, g_stamina_level + 1);
-  const int wallet = static_cast<int>(refii::mods::LoadF32(base, pools + 4u * kStrengthPool)) +
-                     static_cast<int>(refii::mods::LoadF32(base, pools + 4u * kGeneralPool));
+  const int cost = CostOf(ctx, base, hero, g_stamina_level + 1);
+  const int wallet = static_cast<int>(strength) + static_cast<int>(general);
   if (cost <= 0 || wallet < cost) {
-    REXLOG_INFO("Souls Combat: Stamina {} costs {}, the hero has {}", g_stamina_level + 1, cost,
-                wallet);
+    REXLOG_INFO("Souls Combat: Stamina {} costs {}, the hero has {}", g_stamina_level + 1, cost, wallet);
     return;
   }
 
-  PPCContext work = *ctx;
-  work.r3.u32 = experience;
-  work.r4.u32 = kStrengthPool;
-  work.f1.f64 = static_cast<double>(cost);
-  __imp__rex_CECExperience_Spend(work, base);
-
+  refii_mod_spend_experience(ctx, base, hero, kStrengthPool, static_cast<float>(cost));
   ++g_stamina_level;
   Record(ctx, base);
   REXLOG_INFO("Souls Combat: bought Stamina {} for {} experience", g_stamina_level, cost);
-}
-
-void Record(PPCContext* ctx, uint8_t* base) {
-  char chunk[96];
-  std::snprintf(chunk, sizeof(chunk), "RefiiModSave = RefiiModSave or {} RefiiModSave.SoulsStamina = %d",
-                g_stamina_level);
-  if (refii_mod_run_game_lua(ctx, base, chunk) == 0) {
-    REXLOG_WARN("Souls Combat: Stamina {} NOT recorded for the save: the game Lua refused it",
-                g_stamina_level);
-  }
 }
 
 void Refund(PPCContext* ctx, uint8_t* base, uint32_t hero) {
@@ -110,76 +82,68 @@ void Refund(PPCContext* ctx, uint8_t* base, uint32_t hero) {
     return;
   }
 
-  const uint32_t stats = refii_mod_component(base, hero, kStatsComponent);
-  const uint32_t experience = refii_mod_component(base, hero, kExperienceComponent);
-  if (stats == 0 || experience == 0) {
+  const int cost = CostOf(ctx, base, hero, g_stamina_level);
+  if (cost <= 0) {
+    return;  // no price table (no stats component): nothing to give back, nothing to unlearn
+  }
+  const int refund = cost / 2;
+  if (refii_mod_give_experience(ctx, base, hero, kGeneralPool, static_cast<float>(refund)) == 0) {
     return;
   }
 
-  const int refund = CostOf(ctx, base, stats, g_stamina_level) / 2;
-  PPCContext work = *ctx;
-  work.r3.u32 = experience;
-  work.r4.u32 = kGeneralPool;
-  work.f1.f64 = static_cast<double>(refund);
-  work.r6.u64 = 0;
-  work.r7.u64 = 0;
-  work.r8.u64 = 0;
-  __imp__rex_CECExperience_Modify(work, base);
-
   --g_stamina_level;
   Record(ctx, base);
-  REXLOG_INFO("Souls Combat: unlearned Stamina {}, {} experience back to General", g_stamina_level + 1,
-              refund);
+  REXLOG_INFO("Souls Combat: unlearned Stamina {}, {} experience back to General", g_stamina_level + 1, refund);
 }
 
-void Tick(PPCContext* ctx, uint8_t* base, float seconds) {
-  (void)seconds;
-  const uint32_t hero = refii_mod_player_hero(base, 1);
+/// The level lives in the save. The Lua and SaveLoaded events say the save's table changed; the
+/// read itself waits for the next tick with the hero present, where the game VM is up and a
+/// chunk can run (refii_mod_save_get_int goes through the game's VM pointer).
+bool g_reread = true;
+
+void SaveChanged(refii::mods::LuaEvent& e) {
+  (void)e;
+  g_reread = true;
+}
+REFII_MOD_ON(Lua, SaveChanged);
+
+void SaveLoaded(refii::mods::SaveLoadedEvent& e) { SaveChanged(e); }
+REFII_MOD_ON(SaveLoaded, SaveLoaded);
+
+void OnTick(refii::mods::TickEvent& e) {
+  const uint32_t hero = refii_mod_player_hero(e.base, 1);
   if (hero == 0) {
     return;
   }
 
-  // The level lives in the save: re-read it whenever the game's Lua state was rebuilt or loaded.
-  const uint32_t generation = refii_mod_lua_generation();
-  if (generation != g_seen_generation) {
-    g_seen_generation = generation;
+  if (g_reread) {
+    g_reread = false;
     int32_t level = 0;
-    g_stamina_level = refii_mod_game_lua_int(
-                          ctx, base, "RefiiModSave and RefiiModSave.SoulsStamina or 0", 0,
-                          kStaminaMaxLevel, &level) != 0
-                          ? level
-                          : 0;
+    g_stamina_level = refii_mod_save_get_int(e.ctx, e.base, kSaveKey, 0, kStaminaMaxLevel, &level) != 0 ? level : 0;
   }
 
   const float buy = refii::mods::Setting("souls_combat.buy_stamina", 0.0f);
   if (buy != g_seen_buy) {
     g_seen_buy = buy;
-    Buy(ctx, base, hero);
+    Buy(e.ctx, e.base, hero);
   }
 
   const float refund = refii::mods::Setting("souls_combat.refund_stamina", 0.0f);
   if (refund != g_seen_refund) {
     g_seen_refund = refund;
-    Refund(ctx, base, hero);
+    Refund(e.ctx, e.base, hero);
   }
 
   refii::mods::Publish("souls_combat.stamina_level", static_cast<float>(g_stamina_level));
   refii::mods::Publish("souls_combat.stamina_next",
-                       MaxStamina(g_stamina_level < kStaminaMaxLevel ? g_stamina_level + 1
-                                                                     : g_stamina_level));
-  if (const uint32_t stats = refii_mod_component(base, hero, kStatsComponent)) {
-    if (g_stamina_level < kStaminaMaxLevel) {
-      refii::mods::Publish("souls_combat.stamina_cost",
-                           static_cast<float>(CostOf(ctx, base, stats, g_stamina_level + 1)));
-    }
-    // What Y would hand back: half the level held, as the shipped unlearn refunds.
-    refii::mods::Publish("souls_combat.stamina_refund",
-                         g_stamina_level > 0
-                             ? static_cast<float>(CostOf(ctx, base, stats, g_stamina_level) / 2)
-                             : 0.0f);
+                       MaxStamina(g_stamina_level < kStaminaMaxLevel ? g_stamina_level + 1 : g_stamina_level));
+  if (g_stamina_level < kStaminaMaxLevel) {
+    refii::mods::Publish("souls_combat.stamina_cost", static_cast<float>(CostOf(e.ctx, e.base, hero, g_stamina_level + 1)));
   }
+  // What Y would hand back: half the level held, as the shipped unlearn refunds.
+  refii::mods::Publish("souls_combat.stamina_refund",
+                       g_stamina_level > 0 ? static_cast<float>(CostOf(e.ctx, e.base, hero, g_stamina_level) / 2) : 0.0f);
 }
-
-REFII_MOD_ON_TICK(Tick);
+REFII_MOD_ON(Tick, OnTick);
 
 }  // namespace

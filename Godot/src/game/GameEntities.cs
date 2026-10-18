@@ -223,6 +223,11 @@ public partial class GameEntities : Node3D
         }
 
         Refii.Core.Engine_FramePhases.Lap("ent.walk", ref lap);
+
+        // Entities a mod's FX recipe dresses (the Blades' swords): placed from this walk's
+        // records, dropped when they leave it.
+        Refii.Fx.Engine_FxRecipes.ApplyEntities(entities, e => ToGodot(e.Position, e.Rotation), (Node3D?)GameFx.Current ?? this);
+
         if (entities.Count == 0)
         {
             return;

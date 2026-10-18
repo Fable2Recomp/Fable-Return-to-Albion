@@ -45,6 +45,40 @@ public partial class FableFx : Node3D
 	private static FxBank? _bank;
 	private static bool _bankTried;
 
+	/// <summary>
+	/// A reference folder of loose <c>.tex</c> files tried before the mount for effect textures,
+	/// and a particle bank taken over the mount's: the weave lab's way of drawing another
+	/// title's effects (Fable 3's weave twisters) as the look to match. Unset in the game.
+	/// </summary>
+	public static string ReferenceTextureDirectory { get; set; } = string.Empty;
+
+	/// <summary>Replaces the shared particle bank with <paramref name="bytes"/>; false when it does not parse.</summary>
+	public static bool UseBank(byte[] bytes, out string error)
+	{
+		var bank = new FxBank();
+		if (!Engine_FxBank.Parse(bytes, bank))
+		{
+			error = bank.Error;
+			return false;
+		}
+
+		_bank = bank;
+		_bankTried = true;
+		error = string.Empty;
+		GD.Print($"[fx] reference bank loaded: {bank.Effects.Count} effects, {bank.Emitters.Count} emitters, {bank.Systems.Count} systems");
+		if (bank.ExactModel is { } x)
+		{
+			GD.Print($"[fx] bank sections: materials 0x{x.Section2Offset:X} ({x.Materials.Count}), systems 0x{x.Section3Offset:X} ({x.Systems.Count}), entities 0x{x.Section4Offset:X} ({x.EntityOrder.Count}), section5 0x{x.Section5Offset:X}");
+			for (int i = 0; i < Math.Min(4, x.EntityOrder.Count); i++)
+			{
+				Xex.XexEntityRef r = x.EntityOrder[i];
+				Xex.XexEntityType? e = r.TypeId switch { 0 => x.StdEmitters[r.Index], 3 => x.Orbitals[r.Index], 4 => x.Attractors[r.Index], 5 => x.SplineEntities[r.Index], 6 => x.Roots[r.Index], 7 => x.PointLights[r.Index], 8 => x.SpotLights[r.Index], 9 => x.SplineEmitters[r.Index], _ => null };
+				GD.Print($"[fx]   entity {i}: type {r.TypeId} sub {r.SubType} id 0x{r.EntityId:X8} bytes 0x{e?.FileBegin:X}..0x{e?.FileEnd:X}");
+			}
+		}
+		return true;
+	}
+
 	private readonly Engine_FxSystem _system = new();
 	private readonly Dictionary<string, VisualBatchMaterial> _materials = new();
 	private readonly Dictionary<string, Engine_FxSystem.MeshInstanceData> _meshData = new();
@@ -126,6 +160,14 @@ public partial class FableFx : Node3D
 	/// untouched): a multiplier on every keyframe's global scale, so it applies live.
 	/// </summary>
 	public float SizeScale { get; set; } = 1f;
+
+	/// <summary>An FX recipe's dressing (<see cref="Engine_FxRecipes"/>): a colour multiplier
+	/// on every particle, and multipliers on the stated intensity and size. White and 1 untouched.</summary>
+	public Color Tint { get; set; } = Colors.White;
+
+	public float RecipeIntensity { get; set; } = 1f;
+
+	public float RecipeSize { get; set; } = 1f;
 
 	/// <summary>
 	/// The kill fade, frames left over frames total (1.0 until a fade-out kill). The guest's FX
@@ -379,8 +421,9 @@ public partial class FableFx : Node3D
 		}
 
 		_system.SetLoop(Loop);
-		_system.SetIntensity(Intensity);
-		_system.SetSizeScale(SizeScale);
+		_system.SetIntensity(Intensity * RecipeIntensity);
+		_system.SetSizeScale(SizeScale * RecipeSize);
+		_system.SetTint(Tint.R, Tint.G, Tint.B);
 		Engine_FxSystem.FadeOut = !Refii.Lighting.Engine_LightingFrame.ModernModel;
 		ApplyLit();
 		// The node's world transform goes in so the system can hold world-space particles still
@@ -854,6 +897,47 @@ public partial class FableFx : Node3D
 	/// <summary>Emitters, visuals and particles this effect actually holds — see Census.</summary>
 	public (int Emitters, int Visuals, int TrailVisuals, int Particles) DebugCensus => _system.Census();
 
+	/// <summary>What the surfaces hold this frame, for the lab: quads, their box, their colour.</summary>
+	public string DebugSurfaceStats()
+	{
+		var parts = new System.Collections.Generic.List<string>();
+		foreach ((string label, ArrayMesh? mesh) in new[] { ("main", _mesh), ("add", _addMesh), ("disp", _dispMesh) })
+		{
+			if (mesh is null || mesh.GetSurfaceCount() == 0)
+			{
+				parts.Add($"{label}: none");
+				continue;
+			}
+
+			Godot.Collections.Array arrays = mesh.SurfaceGetArrays(0);
+			var vertices = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+			var colours = arrays[(int)Mesh.ArrayType.Color].AsColorArray();
+			if (vertices.Length == 0)
+			{
+				parts.Add($"{label}: 0 vertices");
+				continue;
+			}
+
+			var box = new Aabb(vertices[0], Vector3.Zero);
+			float alphaSum = 0f, alphaMax = 0f, lumaSum = 0f, lumaMax = 0f;
+			foreach (Vector3 v in vertices)
+			{
+				box = box.Expand(v);
+			}
+
+			foreach (Color c in colours)
+			{
+				alphaSum += c.A; alphaMax = Math.Max(alphaMax, c.A);
+				float luma = (c.R + c.G + c.B) / 3f; lumaSum += luma; lumaMax = Math.Max(lumaMax, luma);
+			}
+
+			int n = Math.Max(1, colours.Length);
+			parts.Add($"{label}: {vertices.Length} vertices, box {box.Position} size {box.Size}, alpha mean {alphaSum / n:0.###} max {alphaMax:0.###}, luma mean {lumaSum / n:0.###} max {lumaMax:0.###}");
+		}
+
+		return string.Join(" | ", parts);
+	}
+
 	/// <summary>Whether Build resolved the effect at all; false means the bank had no such key.</summary>
 	public bool DebugBuilt => _built;
 
@@ -1082,6 +1166,15 @@ public partial class FableFx : Node3D
 		if (slash >= 0)
 		{
 			leaf = leaf[(slash + 1)..];
+		}
+
+		if (ReferenceTextureDirectory.Length != 0)
+		{
+			string loose = System.IO.Path.Combine(ReferenceTextureDirectory, leaf.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) ? leaf : leaf + ".tex");
+			if (System.IO.File.Exists(loose) && Engine_TexImage.TryCreateTexture(System.IO.File.ReadAllBytes(loose), out _) is { } reference)
+			{
+				return reference;
+			}
 		}
 
 		foreach (string candidate in new[]

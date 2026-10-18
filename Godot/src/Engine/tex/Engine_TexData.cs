@@ -44,10 +44,18 @@ public sealed class TexMip
 	public int BodySize { get; init; }
 
 	public bool HasSize { get; init; }
-
 	public int Width { get; init; }
-
 	public int Height { get; init; }
+
+	/// <summary>
+	/// THE ALPHA SIBLING. A colour record's words 3..5 (u3, u4, u5) name a second body beside it:
+	/// its compFlag (3 = the BC3 alpha plane), its offset from the record, its size. The planes
+	/// path reads it through the header bank; a bare chain used to step over it and lose the
+	/// alpha. 0 when the record has none.
+	/// </summary>
+	public uint AlphaCompFlag { get; init; }
+	public int AlphaOffset { get; init; }
+	public int AlphaSize { get; init; }
 }
 
 public static class Engine_TexData
@@ -93,6 +101,11 @@ public static class Engine_TexData
 			}
 
 			int bodyStart = off + RecordSize;
+			bool hasSibling = u3 <= 24 && u4 == RecordSize + dataSize && u5 > 0 &&
+				off + (long)u4 + u5 <= (long)d.Length + 32;
+			uint alphaFlag = hasSibling ? u3 : 0u;
+			int alphaOffset = hasSibling ? off + (int)u4 : 0;
+			int alphaSize = hasSibling ? (int)Math.Min(u5, (uint)Math.Max(0, d.Length - (off + (int)u4))) : 0;
 			if (compFlag == 7)
 			{
 				int available = Math.Max(0, d.Length - bodyStart);
@@ -102,6 +115,9 @@ public static class Engine_TexData
 					BodyOffset = bodyStart,
 					BodySize = (int)Math.Min(dataSize, (uint)available),
 					HasSize = false,
+					AlphaCompFlag = alphaFlag,
+					AlphaOffset = alphaOffset,
+					AlphaSize = alphaSize,
 				});
 			}
 			else
@@ -119,6 +135,9 @@ public static class Engine_TexData
 					HasSize = true,
 					Width = BinaryPrimitives.ReadUInt16BigEndian(d.AsSpan(bodyStart)),
 					Height = BinaryPrimitives.ReadUInt16BigEndian(d.AsSpan(bodyStart + 2)),
+					AlphaCompFlag = alphaFlag,
+					AlphaOffset = alphaOffset,
+					AlphaSize = alphaSize,
 				});
 			}
 
@@ -408,6 +427,51 @@ public static class Engine_TexData
 		}
 	}
 
+	/// <summary>
+	/// A colour record decoded with its BC3 alpha sibling when it has one: BC3 blocks (alpha
+	/// first, colour second, as the planes path lays them) in the game's own scheme; otherwise
+	/// BC1. The alpha plane is decoded in the scheme the colour plane turned out to use.
+	/// </summary>
+	private static bool TryDecodeColourRecord(
+		byte[] d, TexMip mip, out int width, out int height, out byte[] data, out TexSurfaceFormat format, out string error)
+	{
+		data = Array.Empty<byte>();
+		format = TexSurfaceFormat.Unsupported;
+		if (!Engine_LhTexCodec.TryDecodeCompressedMip(
+				d, mip.BodyOffset, mip.BodySize, mip.CompFlag == 11, Engine_LhTexCodec.TexScheme.Auto,
+				out width, out height, out byte[] colour, out _, out _, out Engine_LhTexCodec.TexScheme scheme, out error))
+		{
+			return false;
+		}
+
+		format = TexSurfaceFormat.Bc1;
+		data = colour;
+		if (mip.AlphaCompFlag != 3 || mip.AlphaSize <= 0)
+		{
+			return true;
+		}
+
+		if (!Engine_LhTexCodec.TryDecodeVariant(
+				d, mip.AlphaOffset, mip.AlphaSize, 2, width, height, scheme, out byte[] alpha, out string alphaError))
+		{
+			// The colour stands on its own; the alpha is reported, not fatal.
+			error = alphaError;
+			return true;
+		}
+
+		int blocks = colour.Length / 8;
+		var joined = new byte[blocks * 16];
+		for (int i = 0; i < blocks; ++i)
+		{
+			Buffer.BlockCopy(alpha, i * 8, joined, i * 16, 8);
+			Buffer.BlockCopy(colour, i * 8, joined, (i * 16) + 8, 8);
+		}
+
+		data = joined;
+		format = TexSurfaceFormat.Bc3;
+		return true;
+	}
+
 	private static bool TryDecodePyramid(byte[] d, out TexSurface surface, out string error)
 	{
 		surface = default!;
@@ -433,16 +497,13 @@ public static class Engine_TexData
 
 			if (mip.CompFlag is 1 or 11)
 			{
-				if (!Engine_LhTexCodec.TryDecodeCompressedMip(
-						d, mip.BodyOffset, mip.BodySize, mip.CompFlag == 11,
-						out levelWidth, out levelHeight, out byte[] blocks, out _))
+				if (!TryDecodeColourRecord(d, mip, out levelWidth, out levelHeight, out byte[] blocks, out TexSurfaceFormat levelFormat, out _))
 				{
 					break;
 				}
-
 				data = blocks;
-				if (format == TexSurfaceFormat.Unsupported) format = TexSurfaceFormat.Bc1;
-				else if (format != TexSurfaceFormat.Bc1) break;
+				if (format == TexSurfaceFormat.Unsupported) format = levelFormat;
+				else if (format != levelFormat) break;
 			}
 			else if (mip.CompFlag is 2 or 3 or 4 && mip.HasSize)
 			{
@@ -491,7 +552,7 @@ public static class Engine_TexData
 				break;
 			}
 
-			int expected = LevelBytes(levelWidth, levelHeight);
+			int expected = LevelBytes(levelWidth, levelHeight) * (format == TexSurfaceFormat.Bc3 ? 2 : 1);
 			if (data.Length != expected)
 			{
 				if (data.Length < expected)
@@ -526,7 +587,8 @@ public static class Engine_TexData
 		}
 
 		int expectedLevels = ExpectedLevelCount(width, height);
-		if (levels.Count < expectedLevels)
+		// A BC3 chain keeps the levels it has; the image builder extends a short chain itself.
+		if (levels.Count < expectedLevels && format != TexSurfaceFormat.Bc3)
 		{
 			bool bc4 = format == TexSurfaceFormat.Bc4;
 			int channels = bc4 ? 1 : 4;
@@ -591,20 +653,17 @@ public static class Engine_TexData
 		{
 			if (mip.CompFlag is 1 or 11)
 			{
-				if (Engine_LhTexCodec.TryDecodeCompressedMip(
-						d, mip.BodyOffset, mip.BodySize, mip.CompFlag == 11,
-						out int w, out int h, out byte[] colour, out string decodeError))
+				if (TryDecodeColourRecord(d, mip, out int w, out int h, out byte[] colour, out TexSurfaceFormat single, out string decodeError))
 				{
 					surface = new TexSurface
 					{
 						Width = w,
 						Height = h,
-						Format = TexSurfaceFormat.Bc1,
+						Format = single,
 						Data = colour,
 					};
 					return true;
 				}
-
 				error = decodeError;
 				continue;
 			}

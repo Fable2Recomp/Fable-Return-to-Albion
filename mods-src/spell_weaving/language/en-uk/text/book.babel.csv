@@ -1,0 +1,7 @@
+key,value
+SPELL_WEAVING_HYBRID,Hybrid
+SPELL_WEAVING_NAME,Spell Weaving
+SPELL_WEAVING_DESCRIPTION,"The art of casting two spells as one. Choose a partner spell and it is woven into every cast up to power level %1, striking the same target at the same moment. Paid for with Will and Skill experience in equal measure."
+SPELL_WEAVING_TOTAL_XP,Will and Skill experience available:
+SPELL_WEAVING_SET_PARTNER,Set Partner
+SPELL_WEAVING_REMOVE_PARTNER,Remove Partner

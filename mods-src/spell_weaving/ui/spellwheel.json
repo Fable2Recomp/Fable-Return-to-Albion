@@ -1,0 +1,16 @@
+{
+	"secondary": {
+		"setting": "spell_weaving.partner_{slot}",
+		"settingPlayerTwo": "spell_weaving.partner2_{slot}",
+		"value": "mod:spell_weaving.partner_active_{slot}",
+		"valuePlayerTwo": "mod:spell_weaving.partner2_active_{slot}",
+		"chosen": "mod:spell_weaving.partner_chosen_{slot}",
+		"chosenPlayerTwo": "mod:spell_weaving.partner2_chosen_{slot}",
+		"empty": "art/gui/hud/spell_weaving_slot.tex",
+		"scale": 0.55,
+		"exclude": [2, 7],
+		"unlocked": "mod:spell_weaving.level",
+		"apply": "SPELL_WEAVING_SET_PARTNER",
+		"remove": "SPELL_WEAVING_REMOVE_PARTNER"
+	}
+}

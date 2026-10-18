@@ -348,7 +348,7 @@ public static class Engine_UiAbilityPage
 		values[Page2Name] = values[Page1Name];
 		values[Page2Description] = Babel(strings, mod.DescriptionTag)
 			.Replace(StatToken, maxed ? string.Empty : Engine_UiModAbilities.Stat(mod), System.StringComparison.Ordinal);
-		values[Page1TotalXp] = TotalXp(strings, ModDisciplineType(mod.Category), wallet);
+		values[Page1TotalXp] = ModTotalXp(strings, mod, wallet);
 
 		bool priced = cost is not null;
 		values[LearnLabel] = Button(
@@ -372,6 +372,40 @@ public static class Engine_UiAbilityPage
 		Report($"'{mod.Name}' -> mod ability ({mod.Mod}) level {level}{(maxed ? " MAXED" : string.Empty)}" +
 			$" | name '{values[Page1Name]}' | learn '{values[LearnLabel]}'");
 		return values;
+	}
+
+	/// <summary>
+	/// A mod ability's TotalXP: one discipline's heading and sum as the game shows them; for an
+	/// ability drawing on several, General plus each of its pools under the mod's own heading
+	/// (<c>totalXpTag</c>), or the bare number when it names none.
+	/// </summary>
+	private static string ModTotalXp(
+		Refii.Text.Engine_BabelDatabase? strings, Engine_UiModAbilities.Ability mod, float[]? wallet)
+	{
+		IReadOnlyList<string> disciplines = Engine_UiModAbilities.DisciplinesOf(mod);
+		if (disciplines.Count == 1)
+		{
+			return TotalXp(strings, ModDisciplineType(disciplines[0]), wallet);
+		}
+
+		if (wallet is null || wallet.Length < 4)
+		{
+			return string.Empty;
+		}
+
+		int total = (int)wallet[0];
+		foreach (string discipline in disciplines)
+		{
+			int pool = Engine_UiModAbilities.Pool(discipline);
+			if (pool > 0)
+			{
+				total += (int)wallet[pool];
+			}
+		}
+
+		string heading = mod.TotalXpTag.Length == 0 ? string.Empty : Babel(strings, mod.TotalXpTag);
+		string number = total.ToString(CultureInfo.InvariantCulture);
+		return heading.Length == 0 ? number : $"{heading} {number}";
 	}
 
 	/// <summary>A type in the category's discipline, for <see cref="TotalXp"/>.</summary>
@@ -889,16 +923,14 @@ public static class Engine_UiAbilityPage
 				return slides;
 			}
 
-			int modDiscipline = mod.Category switch
+			// Every discipline it draws on: one orb for a plain ability, two for a hybrid.
+			foreach (string named in Engine_UiModAbilities.DisciplinesOf(mod))
 			{
-				Engine_UiAbilitySource.Strength => 1,
-				Engine_UiAbilitySource.Skill => 2,
-				Engine_UiAbilitySource.Will => 3,
-				_ => 0,
-			};
-			if (modDiscipline > 0)
-			{
-				slides[OrbGroupPaths[modDiscipline]] = OrbHighlighted;
+				int modDiscipline = Engine_UiModAbilities.Pool(named);
+				if (modDiscipline > 0)
+				{
+					slides[OrbGroupPaths[modDiscipline]] = OrbHighlighted;
+				}
 			}
 
 			if ((int)orbs[0] > 0)

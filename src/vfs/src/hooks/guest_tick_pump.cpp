@@ -946,7 +946,8 @@ constexpr const char* kCameraFeelPad =
     "if FirstPersonCamera then FirstPersonCamera.RotateSmoothAmount=1.5 "
     "FirstPersonCamera.RotateSpeed=6 end";
 
-/// "SpellAssign:<slot>:<spell>" — put a will on one of the five d-pad slots.
+/// "SpellAssign:<slot>:<spell>[:<player>]" — put a will on one of the five d-pad slots, of
+/// player 1's hero or (player 2) the co-op partner's.
 ///
 /// The guest's widget commits on LEFT/RIGHT, not on A: `sub_826B5330` (code 31) moves the cell
 /// cursor and calls the writer in the same breath, `sub_826B5240` (code 30) mirrors it. A
@@ -1689,7 +1690,10 @@ bool DispatchScreenAction(PPCContext& ctx, uint8_t* base, uint32_t code, bool at
 /// a frame old, and a level change frees the hero underneath it. The RANGE check is ours — the
 /// writer validates nothing, so slot > 4 scribbles past the assignment array and spell > 7 puts
 /// an index with no icon-table entry on the d-pad.
-bool DispatchSpellAssign(PPCContext& ctx, uint8_t* base, uint32_t slot, uint32_t spell) {
+extern "C" uint32_t refii_mod_player_hero(uint8_t* base, int32_t player);
+
+bool DispatchSpellAssign(PPCContext& ctx, uint8_t* base, uint32_t slot, uint32_t spell,
+                         uint32_t player) {
   constexpr uint32_t kSlots = 5u;
   constexpr uint32_t kSpells = 8u;
   constexpr uint32_t kSpellManagerComponent = 56u;
@@ -1697,21 +1701,27 @@ bool DispatchSpellAssign(PPCContext& ctx, uint8_t* base, uint32_t slot, uint32_t
 
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
-  if (slot >= kSlots || spell >= kSpells) {
-    REXLOG_INFO("Refii guest-tick pump: SpellAssign:{}:{} is out of range — dropped", slot,
-                spell);
+  if (slot >= kSlots || spell >= kSpells || player > 2u) {
+    REXLOG_INFO("Refii guest-tick pump: SpellAssign:{}:{}:{} is out of range — dropped", slot,
+                spell, player);
     return true;
   }
 
   // `dword_83496AB8` is IDA's name for the WORD AT 0x83496AB8 — the game root is behind one
-  // load, and `+12` is measured from that (the rule every other reader here follows).
-  const uint32_t root = LoadGuestU32(base, kGameRoot);
-  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
-  const uint32_t holder = plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
-  const uint32_t party = plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
-  const uint32_t roster = plausible(party) ? LoadGuestU32(base, party) : 0u;
-  const uint32_t entry = plausible(roster) ? LoadGuestU32(base, roster + 108u) : 0u;
-  const uint32_t hero = plausible(entry) ? LoadGuestU32(base, entry) : 0u;
+  // load, and `+12` is measured from that (the rule every other reader here follows). Player 2's
+  // hero is the co-op partner's, by the same roster walk the mod helpers use.
+  uint32_t hero = 0u;
+  if (player == 2u) {
+    hero = refii_mod_player_hero(base, 2);
+  } else {
+    const uint32_t root = LoadGuestU32(base, kGameRoot);
+    const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+    const uint32_t holder = plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
+    const uint32_t party = plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
+    const uint32_t roster = plausible(party) ? LoadGuestU32(base, party) : 0u;
+    const uint32_t entry = plausible(roster) ? LoadGuestU32(base, roster + 108u) : 0u;
+    hero = plausible(entry) ? LoadGuestU32(base, entry) : 0u;
+  }
 
   if (!plausible(hero) || (LoadGuestU8(base, hero + 144u) & 0x40u) == 0u ||
       (LoadGuestU8(base, hero + 40u) & 0x01u) == 0u) {
@@ -7850,16 +7860,28 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
       ran = DispatchQuestSelect(ctx, base, static_cast<uint32_t>(value));
     } else if (name.rfind(kActionSpellAssignPrefix, 0) == 0) {
-      // Two numbers, `slot:spell` — see kActionSpellAssignPrefix.
+      // Two numbers, `slot:spell`, and an optional third, the player (1 by default; 2 the co-op
+      // partner) — see kActionSpellAssignPrefix.
       const std::string pair = name.substr(std::strlen(kActionSpellAssignPrefix));
       const std::size_t colon = pair.find(':');
       char* slotEnd = nullptr;
       char* spellEnd = nullptr;
       unsigned long slot = 0;
       unsigned long spell = 0;
+      unsigned long player = 1;
       if (colon != std::string::npos) {
         const std::string slotText = pair.substr(0, colon);
-        const std::string spellText = pair.substr(colon + 1);
+        std::string spellText = pair.substr(colon + 1);
+        const std::size_t second = spellText.find(':');
+        if (second != std::string::npos) {
+          char* playerEnd = nullptr;
+          const std::string playerText = spellText.substr(second + 1);
+          player = std::strtoul(playerText.c_str(), &playerEnd, 10);
+          if (playerEnd == playerText.c_str() || *playerEnd != '\0') {
+            player = 0;  // out of range: dropped below
+          }
+          spellText = spellText.substr(0, second);
+        }
         slot = std::strtoul(slotText.c_str(), &slotEnd, 10);
         spell = std::strtoul(spellText.c_str(), &spellEnd, 10);
         if (slotEnd == slotText.c_str() || *slotEnd != '\0' ||
@@ -7869,13 +7891,13 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
 
       if (colon == std::string::npos || slotEnd == nullptr) {
-        REXLOG_INFO("Refii guest-tick pump: '{}' is not slot:spell — dropped", name);
+        REXLOG_INFO("Refii guest-tick pump: '{}' is not slot:spell[:player] — dropped", name);
         GuestTickPumpNoteRan();
         continue;
       }
 
       ran = DispatchSpellAssign(ctx, base, static_cast<uint32_t>(slot),
-                                static_cast<uint32_t>(spell));
+                                static_cast<uint32_t>(spell), static_cast<uint32_t>(player));
     } else if (name == kActionMenuSelect) {
       // `SelectMenuItem` minus its first line. The shipped body
       // (`expandablemenuinput.dis main.5`) is the ghost test, `GUI:PushButtonEvent`, and the
