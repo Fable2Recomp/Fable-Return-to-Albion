@@ -9,7 +9,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
-    <RunSettingsFilePath>$(MSBuildThisFileDirectory)test.runsettings</RunSettingsFilePath>
+    <RunSettingsFilePath Condition="Exists('$(MSBuildThisFileDirectory)test.runsettings')">$(MSBuildThisFileDirectory)test.runsettings</RunSettingsFilePath>
     <RunSettingsFilePath Condition="'$(GODOT_BIN)' == '' and Exists('$(MSBuildThisFileDirectory)test.local.runsettings')">$(MSBuildThisFileDirectory)test.local.runsettings</RunSettingsFilePath>
   </PropertyGroup>
 
