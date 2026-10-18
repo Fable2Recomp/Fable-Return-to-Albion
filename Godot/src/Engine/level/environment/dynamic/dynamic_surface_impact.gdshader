@@ -1,8 +1,6 @@
 shader_type spatial;
 render_mode blend_mix, cull_disabled, depth_draw_never, unshaded, shadows_disabled;
 
-#include "res://src/Engine/level/environment/fable_roofs.gdshaderinc"
-
 uniform float impact_time = 0.0;
 uniform float brightness = 1.0;
 varying vec2 impact_uv;
@@ -26,8 +24,7 @@ void vertex() {
     impact_part = part;
     impact_seed = fract(seed * 13.7 + part * 0.618);
     impact_alpha = 0.0;
-    vec3 base = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-    if (life < 0.0 || life >= 1.0 || strength <= 0.0 || fable_under_roof(base)) {
+    if (life < 0.0 || life >= 1.0 || strength <= 0.0) {
         POSITION = vec4(0.0, 0.0, 2.0, 1.0);
     } else {
         vec3 world;

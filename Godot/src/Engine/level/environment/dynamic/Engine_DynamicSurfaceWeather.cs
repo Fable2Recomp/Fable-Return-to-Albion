@@ -41,6 +41,9 @@ public static class Engine_DynamicSurfaceWeather
             ("dynamic_surface_rain", RenderingServer.GlobalShaderParameterType.Float, 0f),
             ("dynamic_track_map", RenderingServer.GlobalShaderParameterType.Sampler2D, default),
             ("dynamic_track_projection", RenderingServer.GlobalShaderParameterType.Vec4, Vector4.Zero),
+            ("dynamic_track_height", RenderingServer.GlobalShaderParameterType.Float, 0f),
+            ("dynamic_roof_map", RenderingServer.GlobalShaderParameterType.Sampler2D, default),
+            ("dynamic_roof_projection", RenderingServer.GlobalShaderParameterType.Vec4, Vector4.Zero),
             ("dynamic_sun_toward", RenderingServer.GlobalShaderParameterType.Vec3, Vector3.Up),
             ("dynamic_sun_radiance", RenderingServer.GlobalShaderParameterType.Vec3, Vector3.Zero),
             ("dynamic_cloud_mask", RenderingServer.GlobalShaderParameterType.Sampler2D, default),
@@ -66,5 +69,6 @@ public static class Engine_DynamicSurfaceWeather
         RenderingServer.GlobalShaderParameterSet("dynamic_surface_weather", Vector4.Zero);
         RenderingServer.GlobalShaderParameterSet("dynamic_surface_rain", 0f);
         RenderingServer.GlobalShaderParameterSet("dynamic_track_projection", Vector4.Zero);
+        RenderingServer.GlobalShaderParameterSet("dynamic_roof_projection", Vector4.Zero);
     }
 }

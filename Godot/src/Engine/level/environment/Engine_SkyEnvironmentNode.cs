@@ -234,15 +234,14 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             {
                 if (_surfaceInteractions is null && Engine_DynamicSurfaceWeather.Enabled)
                 {
-                    _surfaceInteractions = new Engine_DynamicSurfaceInteractions { Name = "DynamicSurfaceInteractions" };
+                    _surfaceInteractions = new Engine_DynamicSurfaceInteractions { Name = "DynamicSurfaceInteractions", ProcessPriority = 100 };
                     AddChild(_surfaceInteractions);
                 }
                 if (_surfaceInteractions is { } interactions)
                 {
                     interactions.Ground = InteractionGround;
                     interactions.GroundRoot = GetParent() as Node3D;
-                    interactions.Advance((float)delta, Refii.Game.GameEntities.HeroPosition,
-                        ResolveCamera()?.GlobalPosition ?? Vector3.Zero, _dynamicSky.Weather,
+                    interactions.QueueAdvance(ResolveCamera()?.GlobalPosition ?? Vector3.Zero, _dynamicSky.Weather,
                         _dynamicSky.SurfaceState, Engine_DynamicSurfaceWeather.Enabled,
                         _frame is { } contactFrame ? Engine_DynamicSky.Daylight(contactFrame) : 0f);
                 }

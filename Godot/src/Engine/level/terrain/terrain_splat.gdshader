@@ -5,7 +5,7 @@ render_mode cull_disabled;
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 #include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
-varying float v_weather_exposure;
+varying vec3 v_weather_normal;
 varying float v_weather_specular;
 varying float v_weather_power;
 
@@ -125,7 +125,7 @@ void vertex() {
 	v_page_rect = CUSTOM0;
 	v_local_normal = NORMAL;
 	fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	v_weather_exposure = surface_exposure(fable_world);
+	v_weather_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 }
 
 /// The two vertical projections a cliff layer is sampled through, and their weights.
@@ -384,8 +384,7 @@ void fragment() {
 	// guest's, about twice as bright through the midtones, so a factor authored against the
 	// darker operand drove the whole surface to white. The ground reading visibly hotter than
 	// the props standing on it was the same defect seen from the other end.
-	vec3 weather_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-	vec3 weather_weights = surface_weights(fable_world, weather_normal, v_weather_exposure);
+	vec3 weather_weights = surface_weights(fable_world, normalize(v_weather_normal));
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
 	SPECULAR = 0.0;

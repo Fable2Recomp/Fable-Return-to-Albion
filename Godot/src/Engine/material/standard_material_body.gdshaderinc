@@ -6,7 +6,6 @@
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 #include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
-varying float v_weather_exposure;
 #ifdef FABLE_TREE_WIND
 #include "res://src/Engine/material/fable_tree_sway.gdshaderinc"
 #endif
@@ -160,7 +159,6 @@ instance uniform vec3 xr_tree_centre = vec3(0.0);
 varying float v_tree_fade;
 
 void vertex() {
-    v_weather_exposure = surface_exposure((MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz);
 #ifdef FABLE_TREE_WIND
     // A tree carries its wind lanes in CUSTOM1..3 (Engine_MdlTreeStreams), not transfer.
     v_transfer = vec4(0.0);
@@ -404,7 +402,7 @@ void fragment() {
     }
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
-    vec3 weather_weights = surface_weights(fable_world, world_normal, v_weather_exposure);
+    vec3 weather_weights = surface_weights(fable_world, world_normal);
     surface_material(weather_weights, fable_world, alb.rgb, ROUGHNESS, METALLIC);
     ALBEDO = alb.rgb;
     float weather_wet = weather_weights.x * (1.0 - weather_weights.y);

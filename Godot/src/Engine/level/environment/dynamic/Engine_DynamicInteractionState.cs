@@ -12,6 +12,8 @@ public sealed class Engine_DynamicInteractionState
     public const int TrackLimit = 128;
     public const float MapExtent = 24f;
     public const int MapSize = 512;
+    public const int InstanceStride = 12;
+    public const float FootprintSize = 0.64f;
     public const float StepSpacing = 0.65f;
     private readonly List<DynamicSnowTrack> _tracks = new();
     private Vector3? _previous;
@@ -20,9 +22,13 @@ public sealed class Engine_DynamicInteractionState
     private float _rainBudget;
 
     public IReadOnlyList<DynamicSnowTrack> Tracks => _tracks;
+    public int Revision { get; private set; }
+    public float Erosion { get; private set; }
 
     public void Reset()
     {
+        Revision++;
+        Erosion = 0f;
         _tracks.Clear();
         _previous = null;
         _travel = 0f;
@@ -33,14 +39,21 @@ public sealed class Engine_DynamicInteractionState
     public void Fade(float delta, float snowfall, float snow)
     {
         if (!float.IsFinite(delta) || delta <= 0f) return;
-        if (snow < 0.02f) { _tracks.Clear(); return; }
+        if (snow < 0.02f || _tracks.Count == 0)
+        {
+            if (_tracks.Count > 0) { _tracks.Clear(); Revision++; }
+            Erosion = 0f;
+            return;
+        }
         float loss = delta * (1f / 90f + Unit(snowfall) / 22f);
+        Erosion += loss;
         for (int i = _tracks.Count - 1; i >= 0; i--)
         {
             var track = _tracks[i] with { Strength = _tracks[i].Strength - loss };
-            if (track.Strength <= 0f) _tracks.RemoveAt(i);
+            if (track.Strength <= 0f) { _tracks.RemoveAt(i); Revision++; }
             else _tracks[i] = track;
         }
+        if (Erosion > 32f) { Erosion = 0f; Revision++; }
     }
 
     public void Move(Vector3? actor, bool grounded, Action<Vector3, Vector2> step)
@@ -82,6 +95,39 @@ public sealed class Engine_DynamicInteractionState
             !forward.IsFinite() || forward.LengthSquared() < 0.001f || Unit(strength) <= 0f) return;
         if (_tracks.Count == TrackLimit) _tracks.RemoveAt(0);
         _tracks.Add(new DynamicSnowTrack(contact, forward.Normalized(), Unit(strength)));
+        Revision++;
+    }
+
+    public int WriteInstances(float[] buffer, Vector3 origin)
+    {
+        if (buffer.Length != TrackLimit * InstanceStride) throw new ArgumentException(nameof(buffer));
+        if (!origin.IsFinite()) return 0;
+        float scale = MapSize / MapExtent;
+        float half = MapExtent * 0.5f;
+        int count = 0;
+        foreach (var track in _tracks)
+        {
+            Vector3 p = track.Contact.Position - origin;
+            if (MathF.Abs(p.X) > half + FootprintSize || MathF.Abs(p.Z) > half + FootprintSize) continue;
+            Vector2 forward = track.Forward;
+            Vector2 right = new(-forward.Y, forward.X);
+            int i = count++ * InstanceStride;
+            buffer[i] = right.X * FootprintSize * scale;
+            buffer[i + 1] = forward.X * FootprintSize * scale;
+            buffer[i + 2] = 0f;
+            buffer[i + 3] = (p.X + half) * scale;
+            buffer[i + 4] = right.Y * FootprintSize * scale;
+            buffer[i + 5] = forward.Y * FootprintSize * scale;
+            buffer[i + 6] = 0f;
+            buffer[i + 7] = (p.Z + half) * scale;
+            buffer[i + 8] = track.Strength + Erosion;
+            buffer[i + 9] = p.Y;
+            Vector3 n = track.Contact.Normal;
+            Vector2 slope = new Vector2(-n.X, -n.Z) / n.Y;
+            buffer[i + 10] = slope.Dot(right);
+            buffer[i + 11] = slope.Dot(forward);
+        }
+        return count;
     }
 
     public int RainCount(float delta, float rain, bool enabled)

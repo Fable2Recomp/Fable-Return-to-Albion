@@ -137,25 +137,33 @@ public partial class Engine_DynamicPrecipitation : Node3D
 
     private static ArrayMesh BuildQuads(int particles)
     {
-        int vertexCount = particles * 6;
+        int vertexCount = particles * 4;
         var vertices = new Vector3[vertexCount];
         var uvs = new Vector2[vertexCount];
         var ids = new Vector2[vertexCount];
-        var corners = new Vector2[6]
+        var indices = new int[particles * 6];
+        var corners = new Vector2[4]
         {
-            new(0f, 0f), new(1f, 0f), new(0f, 1f),
-            new(1f, 0f), new(1f, 1f), new(0f, 1f),
+            new(0f, 0f), new(1f, 0f), new(0f, 1f), new(1f, 1f),
         };
 
         for (int p = 0; p < particles; p++)
         {
-            for (int c = 0; c < 6; c++)
+            for (int c = 0; c < 4; c++)
             {
-                int v = (p * 6) + c;
+                int v = (p * 4) + c;
                 vertices[v] = Vector3.Zero;
                 uvs[v] = corners[c];
                 ids[v] = new Vector2(p, 0f);
             }
+            int i = p * 6;
+            int first = p * 4;
+            indices[i] = first;
+            indices[i + 1] = first + 1;
+            indices[i + 2] = first + 2;
+            indices[i + 3] = first + 1;
+            indices[i + 4] = first + 3;
+            indices[i + 5] = first + 2;
         }
 
         var arrays = new Godot.Collections.Array();
@@ -163,6 +171,7 @@ public partial class Engine_DynamicPrecipitation : Node3D
         arrays[(int)Mesh.ArrayType.Vertex] = vertices;
         arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         arrays[(int)Mesh.ArrayType.TexUV2] = ids;
+        arrays[(int)Mesh.ArrayType.Index] = indices;
 
         var mesh = new ArrayMesh();
         mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
