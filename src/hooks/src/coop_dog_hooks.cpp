@@ -42,6 +42,9 @@ extern "C" void RefiiCoopSetPartnerDog(uint32_t dog);
 extern "C" int RefiiCoopPartnerDogRole(uint32_t dog);
 extern "C" int RefiiCoopDressPartnerDog(PPCContext* ctx, uint8_t* base, uint32_t dog);
 extern "C" int RefiiCoopPartnerDogName(char* out, uint32_t capacity);
+extern "C" void RefiiCoopPartnerScreen(int on);
+extern "C" REX_FUNC(__imp__rex_CECDog_Update);
+extern "C" REX_FUNC(__imp__rex_CECDog_TeleportNearMasterOffScreen);
 extern "C" uint32_t RefiiCoopPartnerDogKit(uint32_t* definition, int32_t* searching, int32_t* combat,
                                            char* tricks, uint32_t capacity);
 
@@ -72,6 +75,12 @@ std::atomic<bool> g_said_bind{false};
 std::atomic<bool> g_said_global{false};
 
 /// Whose master a dog gets at a hero-one pick: player two for player two's dog, else `hero_one`.
+///
+/// NEVER NO MASTER. The update goes on to `sub_822AEAC0` (0x822ae2c8), which dereferences the
+/// master; shipped, hero one always exists, so a pick never came back empty. Player two's dog
+/// whose player has gone (it outlives them by up to kGoneTicks before the tick destroys it),
+/// and a second dog awaiting destruction, follow hero one meanwhile. Answering 0 crashed player
+/// one the moment player two left (2026-10-20).
 uint32_t MasterFor(uint32_t dog_comp, uint32_t hero_one) {
   uint8_t* base = RefiiGuestBase();
   if (base == nullptr || !Plausible(dog_comp)) {
@@ -81,6 +90,9 @@ uint32_t MasterFor(uint32_t dog_comp, uint32_t hero_one) {
   switch (RefiiCoopPartnerDogRole(dog)) {
     case 1: {
       const uint32_t hero_two = refii_mod_player_hero(base, 2);
+      if (hero_two == 0u || refii_mod_entity_alive(base, hero_two) == 0) {
+        return hero_one;
+      }
       if (!g_said_bind.exchange(true)) {
         REXLOG_INFO("coop dogs: player two's dog binds to player two (0x{:08X})", hero_two);
       }
@@ -88,12 +100,15 @@ uint32_t MasterFor(uint32_t dog_comp, uint32_t hero_one) {
     }
     case 2:
       for (uint32_t& slot : g_doomed) {
+        if (slot == refii_mod_handle(dog)) {
+          break;
+        }
         if (slot == 0u) {
           slot = refii_mod_handle(dog);
           break;
         }
       }
-      return 0u;
+      return hero_one;
     default:
       return hero_one;
   }
@@ -147,8 +162,11 @@ void Spawn(PPCContext* ctx, uint8_t* base) {
     }
   }
 
-  // A Lua number here is a float: a record id past 2^24 would not survive, so it is not passed.
-  const uint32_t stated = definition < (1u << 24) ? definition : 0u;
+  // Record ids are large (a breed's is ~4.8e8) and a Lua number here is a float, so the stated
+  // id only ever SELECTS among the four breed records by equality: both sides round the same id
+  // the same way, and the game's own breed change passes `record:GetID()` the same way
+  // (ApplyDogChange). A guard dropping ids past 2^24 made every breed the plain dog (2026-10-20).
+  const uint32_t stated = definition;
   const std::string chunk =
       "local hero = GetPlayerHenchman and GetPlayerHenchman()\n"
       "if hero == nil or not hero:IsAlive() then return end\n"
@@ -270,4 +288,27 @@ bool RefiiCoopDogKeepsGlobalSlot(PPCRegister& r30) {
     REXLOG_INFO("coop dogs: player two's dog leaves GetDog() to hero one's");
   }
   return true;
+}
+
+// PLAYER TWO'S DOG SEES PLAYER TWO'S SCREEN. Its update and its off-screen teleport ask "is it on
+// screen" of player one's camera (coop_hero_hooks.cpp, rex_lhCamera_ScreenBlock), so out of
+// player one's view player two's dog kept teleporting to player two. Both run with player two's
+// view for player two's dog (r3 = the dog component, its entity at +4).
+namespace {
+void AsPartnerDog(PPCContext& ctx, uint8_t* base, PPCFunc* original) {
+  const uint32_t dog = Plausible(ctx.r3.u32) ? refii::vfs::LoadGuestU32(base, ctx.r3.u32 + 4u) : 0u;
+  if (RefiiCoopPartnerDogRole(dog) == 0) {
+    original(ctx, base);
+    return;
+  }
+  RefiiCoopPartnerScreen(1);
+  original(ctx, base);
+  RefiiCoopPartnerScreen(0);
+}
+}  // namespace
+
+REX_EXTERN(rex_CECDog_Update) { AsPartnerDog(ctx, base, __imp__rex_CECDog_Update); }
+
+REX_EXTERN(rex_CECDog_TeleportNearMasterOffScreen) {
+  AsPartnerDog(ctx, base, __imp__rex_CECDog_TeleportNearMasterOffScreen);
 }

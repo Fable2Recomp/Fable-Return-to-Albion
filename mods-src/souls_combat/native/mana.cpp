@@ -11,6 +11,10 @@
 // it with. Published as souls_combat.mana / mana_max (player 1) and mana2 / mana2_max (player 2)
 // for the FP bar in ui/hud.json.
 //
+// THE POOL IS IN THE PLAYER STORE (souls_combat.mana, mana_rest; souls_combat.h), so both co-op
+// machines read the same pool: a launch spends on whichever machine it happens, the refill runs
+// where the hero is played, and a hero arriving there starts full.
+//
 // The events (core/refii_mod_events.h):
 //   SpellCharge — the B press; cancelling refuses the charge, with no side effects.
 //   SpellChargeLevel — the charge time became the top slot (0..4); writing `level` caps the
@@ -35,14 +39,15 @@ constexpr int kFirstSpell = 7;
 constexpr int kLastSpell = 14;
 constexpr int kMaxChargeLevel = 5;
 
-struct Mana {
-  float value = 0.0f;
-  float max = 0.0f;
-  float since_spend = 99.0f;
-  bool known = false;
-};
+constexpr const char* kManaKey = "souls_combat.mana";
+constexpr const char* kManaRestKey = "souls_combat.mana_rest";
+constexpr float kRestCap = 10.0f;
 
-Mana g_mana[2];
+/// Each player's maximum, as the last tick found it from their learned spells.
+float g_max[2] = {0.0f, 0.0f};
+
+/// A player's mana now (by index); none stated yet is full.
+float ManaOf(int index) { return refii_mod_player_value(index + 1, kManaKey, g_max[index]); }
 
 float Cost(int level) { return Knob("souls_combat.mana_per_level", kManaPerLevel) * static_cast<float>(level); }
 
@@ -58,48 +63,47 @@ float MaxMana(uint8_t* base, uint32_t hero) {
   return AlongHealthCurve(600.0f * static_cast<float>(ranks) / static_cast<float>(kAllRanks));
 }
 
-/// The charge levels the pool can pay for, 0..5.
-int AffordableLevels(const Mana& mana) {
-  int levels = static_cast<int>(mana.value / Knob("souls_combat.mana_per_level", kManaPerLevel));
+/// The charge levels a player's pool can pay for, 0..5.
+int AffordableLevels(int index) {
+  int levels = static_cast<int>(ManaOf(index) / Knob("souls_combat.mana_per_level", kManaPerLevel));
   return levels < 0 ? 0 : (levels > kMaxChargeLevel ? kMaxChargeLevel : levels);
 }
 
 void OnTick(refii::mods::TickEvent& e) {
-  for (int player = 0; player < 2; ++player) {
-    Mana& mana = g_mana[player];
-    const uint32_t hero = refii_mod_player_hero(e.base, player + 1);
+  float value[2] = {0.0f, 0.0f};
+  for (int index = 0; index < 2; ++index) {
+    const int32_t player = index + 1;
+    const uint32_t hero = refii_mod_player_hero(e.base, player);
     if (hero == 0) {
-      mana = Mana{};
+      g_max[index] = 0.0f;
       continue;
     }
 
-    mana.max = MaxMana(e.base, hero);
-    if (!mana.known) {
-      // A hero arriving (a load, a join) starts full.
-      mana.value = mana.max;
-      mana.known = true;
-    }
-
-    mana.since_spend += e.seconds;
-    if (mana.since_spend >= Knob("souls_combat.mana_regen_delay", kManaRegenDelay)) {
-      mana.value += Knob("souls_combat.mana_regen_per_second", kManaRegenPerSecond) * e.seconds;
-    }
-    if (mana.value > mana.max) {
-      mana.value = mana.max;
+    g_max[index] = MaxMana(e.base, hero);
+    value[index] = ManaOf(index);
+    if (refii_mod_player_here(player) != 0) {
+      // A hero arriving (a load, a join) starts full: ManaOf is the maximum until stated.
+      const float rest = refii_mod_player_value(player, kManaRestKey, kRestCap) + e.seconds;
+      if (rest >= Knob("souls_combat.mana_regen_delay", kManaRegenDelay)) {
+        value[index] += Knob("souls_combat.mana_regen_per_second", kManaRegenPerSecond) * e.seconds;
+      }
+      value[index] = value[index] > g_max[index] ? g_max[index] : (value[index] < 0.0f ? 0.0f : value[index]);
+      refii_mod_player_set(player, kManaKey, value[index]);
+      refii_mod_player_set(player, kManaRestKey, rest > kRestCap ? kRestCap : rest);
     }
   }
 
   refii::mods::Publish("souls_combat.bar_cap", kBarCap);
-  refii::mods::Publish("souls_combat.mana", g_mana[0].value);
-  refii::mods::Publish("souls_combat.mana_max", g_mana[0].max);
-  refii::mods::Publish("souls_combat.mana2", g_mana[1].value);
-  refii::mods::Publish("souls_combat.mana2_max", g_mana[1].max);
+  refii::mods::Publish("souls_combat.mana", value[0]);
+  refii::mods::Publish("souls_combat.mana_max", g_max[0]);
+  refii::mods::Publish("souls_combat.mana2", value[1]);
+  refii::mods::Publish("souls_combat.mana2_max", g_max[1]);
 }
 REFII_MOD_ON(Tick, OnTick);
 
 void OnSpellCharge(refii::mods::SpellChargeEvent& e) {
   const int player = Index(e.player);
-  if (player >= 0 && AffordableLevels(g_mana[player]) == 0) {
+  if (player >= 0 && AffordableLevels(player) == 0) {
     e.cancel = true;
   }
 }
@@ -113,7 +117,7 @@ void OnSpellChargeLevel(refii::mods::SpellChargeLevelEvent& e) {
   if (player < 0) {
     return;
   }
-  const int affordable = AffordableLevels(g_mana[player]);
+  const int affordable = AffordableLevels(player);
   if (affordable > 0 && e.level + 1 > affordable) {
     e.level = affordable - 1;
   }
@@ -126,15 +130,15 @@ void OnSpellLaunch(refii::mods::SpellLaunchEvent& e) {
   if (player < 0 || e.slot < 0 || e.slot >= kMaxChargeLevel) {
     return;
   }
-  const Mana& mana = g_mana[player];
+  const float mana = ManaOf(player);
   const float cost = Cost(e.slot + 1);
   if (e.cascading) {
     // A lower slot of the cascade: skipped when paying it would leave the top slot unpaid.
     const int top = g_top[player] >= e.slot ? g_top[player] : e.slot;
-    if (mana.value - cost < Cost(top + 1)) {
+    if (mana - cost < Cost(top + 1)) {
       e.cancel = true;
     }
-  } else if (mana.value < cost) {
+  } else if (mana < cost) {
     e.cancel = true;
   }
 }
@@ -146,12 +150,14 @@ void OnSpellLaunched(refii::mods::SpellLaunchedEvent& e) {
   if (player < 0 || level < 1 || level > kMaxChargeLevel) {
     return;
   }
-  Mana& mana = g_mana[player];
-  mana.value -= Cost(level);
-  if (mana.value < 0.0f) {
-    mana.value = 0.0f;
+  // A pool nobody has stated yet is full, and the first statement comes from the tick where the
+  // hero is played, so a launch before it has nothing to come off. The owner's tick keeps the pool
+  // at or above zero.
+  if (refii_mod_player_get(player + 1, kManaKey, nullptr) == 0) {
+    return;
   }
-  mana.since_spend = 0.0f;
+  refii_mod_player_add(player + 1, kManaKey, -Cost(level), 0);
+  refii_mod_player_set(player + 1, kManaRestKey, 0.0f);
 }
 REFII_MOD_ON(SpellLaunched, OnSpellLaunched);
 

@@ -20,7 +20,8 @@
 // The event (core/refii_mod_events.h): SpellLaunched, once a launch really made a spell. Every
 // slot of a charged release's cascade fires it; each refreshes the timer. The override is taken
 // only when no script holds it (byte clear), and given back only while it still holds the values
-// written here — a script that took it meanwhile keeps it.
+// written here — a script that took it meanwhile keeps it. In co-op only the machine that plays
+// the hero plants it (refii_mod_event_replica).
 
 #include "core/refii_mod.h"
 #include "souls_combat.h"
@@ -53,8 +54,10 @@ void Release(uint8_t* base, Plant& plant) {
 }
 
 void OnSpellLaunched(refii::mods::SpellLaunchedEvent& e) {
+  // The plant holds the body still, so it is made where the hero is played; the other co-op
+  // machine runs a copy of the cast and leaves the body to the replication.
   const int index = souls_combat::Index(e.player);
-  if (index < 0) {
+  if (index < 0 || refii_mod_event_replica() != 0) {
     return;
   }
   const float seconds = souls_combat::Knob("souls_combat.cast_recovery_seconds", kRecoverySeconds);

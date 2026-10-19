@@ -388,6 +388,33 @@ public static class CoopHeroLua
 			BehaviourDogVariables.Reload = C.ReloadDogVariables
 		end
 
+		-- LEADING ITS OWN PLAYER (dig spots, chests, quest objectives). The lead behaviour waits,
+		-- barking, until "the player can see the dog/destination": IsEntityVisibleOnScreen /
+		-- IsPositionVisibleOnScreen, which ask player one's camera. For player two's dog they ask
+		-- player two's view (Refii._partner_screen; the host's copy of player two's camera).
+		for _, method in ipairs({ "GetPlayerCanSeeDestination", "GetPlayerCanSeeDog" }) do
+			local class = BehaviourDogLeadHeroBase
+			if type(class) == "table" and type(class[method]) == "function"
+				and rawget(class, "RefiiShippedScreen" .. method) == nil then
+				local shipped = class[method]
+				rawset(class, "RefiiShippedScreen" .. method, shipped)
+				class[method] = C.Permanent(function(self, ...)
+					local partner = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+					if partner == nil or self == nil or Refii == nil or Refii._partner_screen == nil
+						or Dog.GetMaster(self.Entity) ~= partner then
+						return shipped(self, ...)
+					end
+					Refii._partner_screen(true)
+					local ok, result = pcall(shipped, self, ...)
+					Refii._partner_screen(false)
+					if not ok then
+						error(result, 0)
+					end
+					return result
+				end, "DogLead." .. method)
+			end
+		end
+
 		-- INJURED is this dog's injury (shipped: GetDog()'s).
 		if BehaviourDogInjured ~= nil and BehaviourDogInjured.IsStillRunnable ~= C.DogInjuredRunnable then
 			C.DogInjuredRunnable = C.Permanent(function(self)

@@ -844,9 +844,73 @@ void RunGodotVerdict(int32_t kind, void* event) {
 
 }  // namespace
 
+/// WHETHER THIS RUN IS THE GAME'S COPY of something the other co-op machine decides. In an online
+/// session the game runs these seams on both machines for one occurrence (read in the binary, TU1):
+///   - CAction::OnAnimEvent: every replicated action is cloned and ticks on the other machine too;
+///   - the spell manager's charge level, launch and launched, and the spell factory: a cast
+///     action's Start (sent as 0x5B/0x5C, rebuilt by the receiver) reaches them on both
+///     (sub_8260A150 0x82739af4; LaunchSlot from the manager's update, 0x8253ea60);
+///   - CECHitResponsePlayAction::OnHit: the host's full run, and the joiner's run for hits on or by
+///     player two through the hit router's listener slot 1 (sub_8295CEB8, masked);
+///   - CECExperience::Modify: the delta, applied again by the receiver of msg 0x34 inside the
+///     receive (comp91+0x6B set, tested at 0x8256dbc0).
+/// The copy is the run on the machine NOT authoritative for the subject — the game's own test,
+/// sub_82214AF8(comp91): no session, the host for anything not player two's, the joiner for player
+/// two's, local co-op for all — and, for experience, the run inside the receive. Every other seam
+/// runs on one machine only (an ability request where the hero's CPlayer is; a hit and a block on
+/// the host), so it is never a copy.
+bool ReplicaRun(int32_t kind, void* event) {
+  using namespace refii::mods;
+  const Event& base_event = *static_cast<const Event*>(event);
+  uint8_t* base = base_event.base;
+  if (base == nullptr || base_event.ctx == nullptr) {
+    return false;
+  }
+  constexpr uint32_t kNetworkComponent = 91;
+  uint32_t subject = 0;
+  switch (kind) {
+    case REFII_EVENT_ANIM_EVENT:
+      subject = static_cast<const AnimEventEvent*>(event)->entity;
+      break;
+    case REFII_EVENT_HIT_RESPONSE:
+      subject = static_cast<const HitResponseEvent*>(event)->victim;
+      break;
+    case REFII_EVENT_SPELL_CHARGE_LEVEL:
+      subject = static_cast<const SpellChargeLevelEvent*>(event)->caster;
+      break;
+    case REFII_EVENT_SPELL_LAUNCH:
+      subject = static_cast<const SpellLaunchEvent*>(event)->caster;
+      break;
+    case REFII_EVENT_SPELL_LAUNCHED:
+      subject = static_cast<const SpellLaunchedEvent*>(event)->caster;
+      break;
+    case REFII_EVENT_SPELL_CREATED:
+      subject = static_cast<const SpellCreatedEvent*>(event)->caster;
+      break;
+    case REFII_EVENT_EXPERIENCE: {
+      const uint32_t entity = static_cast<const ExperienceEvent*>(event)->entity;
+      const uint32_t network = entity != 0 ? refii_mod_component(base, entity, kNetworkComponent) : 0u;
+      return network != 0 && Load8(base, network + 0x6Bu) != 0;
+    }
+    default:
+      return false;
+  }
+  const uint32_t network = subject != 0 ? refii_mod_component(base, subject, kNetworkComponent) : 0u;
+  if (network == 0) {
+    return false;
+  }
+  PPCContext work = Frame(*base_event.ctx);
+  work.r3.u32 = network;
+  return CallGuest(work, base, refii::guest::Address(0x82214AF8u)) && work.r3.u32 == 0u;
+}
+
 extern "C" void refii_mod_dispatch(int32_t kind, void* event) {
   if (event == nullptr) {
     return;
+  }
+  const bool replica = ReplicaRun(kind, event);
+  if (replica) {
+    refii_bridge_player_replica(1);
   }
   for (const Subscription& s : Subscriptions()) {
     if (s.kind == kind) {
@@ -855,6 +919,9 @@ extern "C" void refii_mod_dispatch(int32_t kind, void* event) {
   }
   DispatchLua(kind, event);
   RunGodotVerdict(kind, event);
+  if (replica) {
+    refii_bridge_player_replica(0);
+  }
   // Godot's scripts see the verdict, after every handler, as the same table text Lua gets.
   if (refii::mods::HostWantsEvent(kind)) {
     char fields[640];

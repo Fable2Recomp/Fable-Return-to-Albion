@@ -58,12 +58,27 @@ public sealed partial class Engine_HudView : Node3D
     /// </summary>
     public bool HidesPartner { get; set; }
 
+    /// <summary>
+    /// This machine's player is player two (an online joiner). The guest's one HUD still states
+    /// both heroes by slot — hero one's health and will as `PlayerHealth`/`SpellCharging`, hero
+    /// two's as `CoopHealth`/`SpellCharging2` — and hero one is the HOST here, so the joiner's
+    /// own numbers are player two's pieces. They stand where player one's stand, and player
+    /// one's (the partner's) stay off this screen.
+    /// </summary>
+    public bool LocalPlayerTwo { get; set; }
+
     /// <summary>Whether a piece is drawn in this view's seat.</summary>
     private bool Admits(Engine_HudLayout.Piece piece)
     {
         if (Seat == Engine_UiSeats.Seat.Whole)
         {
-            return !HidesPartner || Engine_HudLayout.OwnerOf(piece) != Engine_UiSeats.Seat.PlayerTwo;
+            Engine_UiSeats.Seat whose = Engine_HudLayout.OwnerOf(piece);
+            if (LocalPlayerTwo)
+            {
+                return whose != Engine_UiSeats.Seat.PlayerOne;
+            }
+
+            return !HidesPartner || whose != Engine_UiSeats.Seat.PlayerTwo;
         }
 
         if (Engine_HudLayout.IsExpressionMeter(piece))
@@ -204,6 +219,16 @@ public sealed partial class Engine_HudView : Node3D
         public required Engine_HudLayout.Piece Piece { get; init; }
         public required Node3D Node { get; init; }
 
+        /// <summary>
+        /// A mod clone's original (<see cref="Engine_HudModPieces.Clone"/>), or null. A copy is
+        /// its original's player's: it is admitted to that player's seat and stands where the
+        /// original stands, its own offset kept.
+        /// </summary>
+        public Engine_HudLayout.Piece? Origin { get; set; }
+
+        /// <summary>The piece whose owner and counterpart rules apply: the original for a clone.</summary>
+        public Engine_HudLayout.Piece Rules => Origin ?? Piece;
+
         /// <summary>The authored animation tracks this piece's meter scrubs.</summary>
         public List<BoundTrack> Tracks { get; } = new();
 
@@ -329,10 +354,11 @@ public sealed partial class Engine_HudView : Node3D
         Engine_HudModPieces.ModLayout modLayout = Engine_HudModPieces.LoadFromMods();
 
         // Pieces mods define (ui/hud.json), beside the ones cut from hud.bgf; children of this view
-        // so they show and hide with the HUD. Player one's view only: a mod piece reads the
-        // published values, which are player one's.
+        // so they show and hide with the HUD. A piece that FOLLOWS a shipped piece is that
+        // piece's player's and is drawn wherever it is (player two's half included); a free
+        // piece is the screen's and stays in player one's view.
         bool ownsMods = Seat != Engine_UiSeats.Seat.PlayerTwo;
-        if (ownsMods && _modPieces is null)
+        if (_modPieces is null)
         {
             _modPieces = new Engine_HudModPieces { Name = "ModPieces" };
             _modPieces.FindPiece = id =>
@@ -353,7 +379,9 @@ public sealed partial class Engine_HudView : Node3D
         if (_modPieces is not null)
         {
             _modPieces.Window = SeatFrame.Window;
-            _modPieces.Build(modLayout.Pieces);
+            _modPieces.Build(ownsMods
+                ? modLayout.Pieces
+                : modLayout.Pieces.FindAll(piece => piece.Follow.Length != 0));
         }
 
         if (ownsMods && modLayout.Hidden.Count != 0)
@@ -392,10 +420,11 @@ public sealed partial class Engine_HudView : Node3D
 
             built.ExtraScale = modLayout.Scales.TryGetValue(piece.Id, out float factor) ? factor : 1f;
 
-            // Mods' copies of this piece, built right after it from the same art.
+            // Mods' copies of this piece, built right after it from the same art, in every view
+            // that builds the original.
             foreach (Engine_HudModPieces.Clone clone in modLayout.Clones)
             {
-                if (!ownsMods || clone.Of != piece.Id)
+                if (clone.Of != piece.Id)
                 {
                     continue;
                 }
@@ -403,6 +432,7 @@ public sealed partial class Engine_HudView : Node3D
                 Engine_HudLayout.Piece copy = piece with { Id = clone.Id, Offset = piece.Offset + clone.Offset };
                 if (BuildPiece(copy, missing) is { } cloned)
                 {
+                    cloned.Origin = piece;
                     cloned.ExtraScale = modLayout.Scales.TryGetValue(clone.Id, out float own) ? own : built.ExtraScale;
                     ApplyClone(cloned, clone);
                     GD.Print($"[hud-mods] '{clone.Id}' ({clone.Mod}) is a copy of '{piece.Id}'");
@@ -1862,7 +1892,7 @@ public sealed partial class Engine_HudView : Node3D
             long mark = System.Diagnostics.Stopwatch.GetTimestamp();
 
             // Another seat's piece: player two's health in player one's half, or the reverse.
-            if (!Admits(built.Piece))
+            if (!Admits(built.Rules))
             {
                 built.Node.Visible = false;
                 continue;
@@ -2000,10 +2030,16 @@ public sealed partial class Engine_HudView : Node3D
             mark = now;
 
             // Player two's own half stands their health and will where player one's stand.
+            // A clone keeps its own offset from its original.
             Engine_HudLayout.Piece placed = built.Piece;
-            if (Seat == Engine_UiSeats.Seat.PlayerTwo && Layout.CounterpartOf(built.Piece) is { } mirror)
+            if ((Seat == Engine_UiSeats.Seat.PlayerTwo || LocalPlayerTwo) &&
+                Layout.CounterpartOf(built.Rules) is { } mirror)
             {
-                placed = built.Piece with { Anchor = mirror.Anchor, Offset = mirror.Offset };
+                placed = built.Piece with
+                {
+                    Anchor = mirror.Anchor,
+                    Offset = mirror.Offset + (built.Piece.Offset - built.Rules.Offset),
+                };
             }
 
             Vector2 at = Engine_HudLayout.Place(placed, extent);

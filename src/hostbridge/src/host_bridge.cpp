@@ -108,6 +108,7 @@ void FlushLogging();
 #include "core/audio_state.h"
 #include "core/hero_derived.h"
 #include "core/mod_values.h"
+#include "core/player_state.h"
 
 // The alternate signal stack lives in the vfs library behind a C entry point since the
 // payload-bridge change (adarec1994, 3f9784ae): `EnsureAlternateSignalStack` is now an inline
@@ -2331,7 +2332,11 @@ extern "C" {
 ///     and RefiiHostGetExitWaiting — online, this machine's player waits at an exit for the partner.
 /// 193 adds RefiiHostGetExitRequest — the online joiner's newest region-exit use (sequence and
 ///     guest position), restated to the host, whose exit update fires the exit standing there.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 193; }
+/// 194 adds player state (src/vfs/src/core/player_state.cpp): RefiiHostPlayerStateOutgoing (what
+///     this machine owes the co-op peer about the players' mod values), RefiiHostPlayerStateReceive
+///     (one message from the peer) and RefiiHostPlayerStateDescribe (both players' values, for the
+///     debug channel).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 194; }
 
 /// The player who owns the open in-game GUI: 2 when player two opened it (the guest routes their
 /// pause to the henchman root and only they may close it), else 1. Sampled once per guest tick;
@@ -2364,6 +2369,48 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capac
     std::memcpy(output, path.data(), path.size());
     output[path.size()] = 0;
     return 1;
+}
+
+namespace {
+
+/// The emulator's user_data_root, where the game's saves are, for the player state's save files.
+std::string PlayerStateSaveRoot() {
+    auto* state = rex::system::kernel_state();
+    if (!state || !state->emulator()) {
+        return {};
+    }
+    const auto path = state->emulator()->user_data_root().u8string();
+    return std::string(path.begin(), path.end());
+}
+
+const bool g_player_state_rooted = [] {
+    refii::players::SetSaveRootResolver(&PlayerStateSaveRoot);
+    return true;
+}();
+
+}  // namespace
+
+/// The players' mod values this machine owes the co-op peer, one message per line (see
+/// core/player_state.h). Called every frame; the caller sends them only inside a session.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostPlayerStateOutgoing(char* out, uint32_t capacity) {
+    return static_cast<uint32_t>(refii::players::TakeOutgoing(out, capacity));
+}
+
+/// One co-op channel message; 1 when it was player state (taken), 0 for anything else.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostPlayerStateReceive(const char* message, uint32_t length) {
+    return message != nullptr && refii::players::Receive(std::string_view(message, length)) ? 1 : 0;
+}
+
+/// Both players' mod values and who owns them, as one line. Returns the bytes written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostPlayerStateDescribe(char* out, uint32_t capacity) {
+    if (out == nullptr || capacity == 0) {
+        return 0;
+    }
+    const std::string text = refii::players::Describe();
+    const size_t length = std::min<size_t>(text.size(), capacity - 1);
+    std::memcpy(out, text.data(), length);
+    out[length] = 0;
+    return static_cast<uint32_t>(length);
 }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) { return refii_guest_build(); }

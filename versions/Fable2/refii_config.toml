@@ -3734,7 +3734,7 @@
 0x827879B0 = { size = 0x14 }
 0x827879C8 = { size = 0x10 }
 0x827879D8 = { size = 0x60 }
-0x82787A38 = { size = 0x138 }
+0x82787A38 = { name = "rex_CECDog_TeleportNearMasterOffScreen", size = 0x138 }
 0x82787B70 = { size = 0x14 }
 0x82787B88 = { size = 0xC }
 0x82787BA0 = { size = 0x10 }
@@ -10756,6 +10756,10 @@
 0x825B4DA8 = { name = "rex_lhLuaScriptSystem_OnLevelLoad" }
 0x8233F450 = { name = "rex_lhWorld_UnloadLevel" }
 0x824E93A8 = { name = "rex_lhSaveManager_WriteSave" }
+0x824E8DE0 = { name = "rex_lhSaveManager_WritePackage" }
+0x824E9020 = { name = "rex_lhSaveManager_WriteHeroPackage" }
+0x824EA150 = { name = "rex_lhSaveManager_LoadFromDevice" }
+0x824EB910 = { name = "rex_lhSaveManager_LoadCoopHero" }
 0x8239E698 = { name = "rex_CECMoney_Modify" }
 0x822040D0 = { name = "rex_CECFaction_RelationTo" }
 0x82174150 = { name = "rex_CSpellRegistry_FindLive" }
@@ -11245,6 +11249,8 @@
 0x826E6F28 = { name = "rex_ActionStunned_Start" }
 0x826E0708 = { name = "rex_ActionStrikeRecoil_Clone" }
 0x826CC768 = { name = "rex_ActionKnockdownStabResponse_Start" }
+0x821DCF10 = { name = "rex_lhCamera_ScreenBlock" }
+0x822AE048 = { name = "rex_CECDog_Update" }
 0x826E0780 = { name = "rex_ActionStunned_Clone" }
 0x8237DE18 = { name = "rex_lhNetEntity_ProcessMessage" }
 0x82608518 = { name = "rex_lhRegionManager_FindRegionOwningLevel" }
@@ -15124,6 +15130,38 @@ name = "RefiiNetQueueReplaceOnce"
 address = 0x823183AC
 registers = ["r1", "r31"]
 jump_address_on_true = 0x823183D0
+
+# Experience orbs fly to, and pay, the hero who earned them (coop_ui_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopOrbEarner"
+address = 0x82864500
+registers = ["r31", "r14"]
+
+[[midasm_hook]]
+name = "RefiiCoopOrbTarget"
+address = 0x825241DC
+registers = ["r31", "r30", "r21"]
+
+# A joiner has no Player 1: its user index is this machine's own player's (coop_ui_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopPlayerOneOrLocal"
+address = 0x824E8364
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopPlayerOneOrLocal"
+address = 0x824ECC2C
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopPlayerOneOrLocal"
+address = 0x825822F4
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopPlayerOneOrLocal"
+address = 0x828D1AFC
+registers = ["r3"]
 
 # Player two works a job's meter and buys property as themselves (coop_ui_hooks.cpp).
 [[midasm_hook]]

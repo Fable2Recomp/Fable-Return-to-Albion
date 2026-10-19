@@ -60,6 +60,9 @@ set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/core/pubgame_state.cpp
     # Hard mods' named values: a mod's hook publishes, Godot reads; Godot sets, the hook reads.
     ${REFII_VFS_ROOT}/src/core/mod_values.cpp
+    # Mods' per-player values: owned by the machine that plays the hero, the same on both co-op
+    # machines, the saved ones kept beside that hero's save.
+    ${REFII_VFS_ROOT}/src/core/player_state.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
     # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
     # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the
@@ -132,6 +135,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/mod_api.cpp
     # The mod event bus: typed events on the game's seams, and the mods' Lua handlers.
     ${REFII_VFS_ROOT}/src/hooks/mod_events.cpp
+    # Player state's saves: a hero's saved mod values beside the save the game writes it into.
+    ${REFII_VFS_ROOT}/src/hooks/player_state_hooks.cpp
     # The host's queued helper calls and queries (Godot scripts), run in the guest tick.
     ${REFII_VFS_ROOT}/src/hooks/mod_commands.cpp
     # The Refii.* natives registered into the game VM for mods' Lua.

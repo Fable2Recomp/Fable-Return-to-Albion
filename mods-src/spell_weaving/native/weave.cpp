@@ -49,8 +49,7 @@ namespace {
 constexpr int kFirstSpellAbility = 7;
 constexpr int kSlots = 5;
 
-/// Each player's chosen partner per slot, -1 for none. Read from the save, written by a setting change.
-int g_partner[2][kSlots] = {{-1, -1, -1, -1, -1}, {-1, -1, -1, -1, -1}};
+/// The setting values last seen per player and slot: a CHANGE is a choice made on this machine.
 bool g_setting_seen[2][kSlots] = {};
 float g_setting_value[2][kSlots] = {};
 
@@ -58,41 +57,53 @@ void SettingKey(char* out, size_t size, int player, int slot) {
   std::snprintf(out, size, "spell_weaving.partner%s_%d", player == 0 ? "" : "2", slot + 1);
 }
 
-void SaveKey(char* out, size_t size, int player, int slot) {
+/// Where saves from before kept the choices: the world save's Lua table.
+void LegacyKey(char* out, size_t size, int player, int slot) {
   std::snprintf(out, size, "SpellWeavingPartner%s%d", player == 0 ? "" : "2_", slot + 1);
+}
+
+/// The player value holding a slot's partner (spell_weaving.h).
+void PartnerKey(char* out, size_t size, int slot) { std::snprintf(out, size, "spell_weaving.partner_%d", slot + 1); }
+
+/// A player's chosen partner on a slot (by index), -1 for none.
+int Partner(int player, int slot) {
+  char key[40];
+  PartnerKey(key, sizeof(key), slot);
+  const int type = static_cast<int>(refii_mod_player_value(player + 1, key, -1.0f));
+  return Weavable(type) ? type : -1;
+}
+
+bool HasPartnerValue(int player, int slot) {
+  char key[40];
+  PartnerKey(key, sizeof(key), slot);
+  return refii_mod_player_get(player + 1, key, nullptr) != 0;
 }
 
 /// The slot's partner if the hero has learned at least one rank of it, else -1.
 int LearnedPartner(uint8_t* base, int player, uint32_t hero, int slot) {
-  const int type = g_partner[player][slot];
+  const int type = Partner(player, slot);
   if (!Weavable(type)) {
     return -1;
   }
   return refii_mod_ability_level(base, hero, kFirstSpellAbility + type) > 0 ? type : -1;
 }
 
-void Choose(PPCContext* ctx, uint8_t* base, int player, int slot, int type) {
+void Choose(int player, int slot, int type) {
   // -1 clears. Slow Time and Raise Dead can never be woven: a request for either changes nothing.
   if (type >= 0 && !Weavable(type)) {
     REXLOG_INFO("Spell Weaving: {} cannot be a partner; player {} slot {} keeps {}", type, player + 1, slot + 1,
-                g_partner[player][slot]);
+                Partner(player, slot));
     return;
   }
-  g_partner[player][slot] = type >= 0 ? type : -1;
   char key[40];
-  SaveKey(key, sizeof(key), player, slot);
-  if (refii_mod_save_set_int(ctx, base, key, g_partner[player][slot]) == 0) {
-    REXLOG_WARN("Spell Weaving: partner {} on slot {} for player {} NOT recorded for the save: the game Lua refused it",
-                g_partner[player][slot], slot + 1, player + 1);
-  } else {
-    REXLOG_INFO("Spell Weaving: partner {} chosen on slot {} for player {}", g_partner[player][slot], slot + 1,
-                player + 1);
-  }
+  PartnerKey(key, sizeof(key), slot);
+  refii_mod_player_save(player + 1, key, static_cast<float>(type >= 0 ? type : -1));
+  REXLOG_INFO("Spell Weaving: partner {} chosen on slot {} for player {}", type >= 0 ? type : -1, slot + 1, player + 1);
 }
 
-/// The choices live in the save. The Lua and SaveLoaded events say the save's table changed; the
-/// read itself waits for the next tick with the hero present, where the game VM is up and a
-/// chunk can run.
+/// A save from before keeps the choices in its Lua table, and settings.json may state defaults. The
+/// Lua and SaveLoaded events say the table changed; the read waits for the next tick with the hero
+/// present, where the game VM is up and a chunk can run.
 bool g_reread = true;
 
 void SaveChanged(refii::mods::LuaEvent& e) {
@@ -104,24 +115,28 @@ REFII_MOD_ON(Lua, SaveChanged);
 void SaveLoaded(refii::mods::SaveLoadedEvent& e) { SaveChanged(e); }
 REFII_MOD_ON(SaveLoaded, SaveLoaded);
 
-/// Reads the save's choices; a slot the save leaves empty takes settings.json's value as its
-/// default (the file ships -1 everywhere; an edited file chooses). Run after every Lua rebuild
-/// and save load, so a default never races the save's own table.
+/// For each player played here, a slot the hero's saved values leave empty takes the old Lua
+/// table's choice, else settings.json's (the file ships -1 everywhere; an edited file chooses). Run
+/// after every Lua rebuild and save load, so a default never races the save's own values. The
+/// settings' current values are taken as seen, so only a later change of one is a choice.
 void ReadSaved(PPCContext* ctx, uint8_t* base) {
   for (int player = 0; player < 2; ++player) {
     for (int slot = 0; slot < kSlots; ++slot) {
-      char key[40];
-      SaveKey(key, sizeof(key), player, slot);
-      int32_t saved = -1;
-      g_partner[player][slot] =
-          refii_mod_save_get_int(ctx, base, key, -1, kSpellTypes - 1, &saved) != 0 && Weavable(saved) ? saved : -1;
       char setting[48];
       SettingKey(setting, sizeof(setting), player, slot);
       const float value = Knob(setting, -1.0f);
       g_setting_seen[player][slot] = true;
       g_setting_value[player][slot] = value;
-      if (g_partner[player][slot] < 0 && value >= 0.0f) {
-        Choose(ctx, base, player, slot, static_cast<int>(value));
+      if (refii_mod_player_here(player + 1) == 0 || HasPartnerValue(player, slot)) {
+        continue;
+      }
+      char legacy[40];
+      LegacyKey(legacy, sizeof(legacy), player, slot);
+      int32_t saved = -1;
+      if (refii_mod_save_get_int(ctx, base, legacy, 0, kSpellTypes - 1, &saved) != 0 && Weavable(saved)) {
+        Choose(player, slot, saved);
+      } else if (value >= 0.0f) {
+        Choose(player, slot, static_cast<int>(value));
       }
     }
   }
@@ -146,16 +161,16 @@ void OnTick(refii::mods::TickEvent& e) {
       if (g_setting_seen[player][slot] && value != g_setting_value[player][slot]) {
         // A CHANGE of the setting is a choice (the picker, the debug channel, a re-mount).
         g_setting_value[player][slot] = value;
-        Choose(e.ctx, e.base, player, slot, static_cast<int>(value));
+        Choose(player, slot, static_cast<int>(value));
       }
 
       // Two statements per slot: what was chosen, and what is in effect (chosen, learned, and the
       // slot within the Spell Weaving level). The selectors draw the first faint when it is not the second.
       char published[48];
       std::snprintf(published, sizeof(published), "spell_weaving.partner%s_chosen_%d", player == 0 ? "" : "2", slot + 1);
-      refii::mods::Publish(published, static_cast<float>(g_partner[player][slot]));
+      refii::mods::Publish(published, static_cast<float>(Partner(player, slot)));
       std::snprintf(published, sizeof(published), "spell_weaving.partner%s_active_%d", player == 0 ? "" : "2", slot + 1);
-      const int active = hero != 0 && slot < g_level ? LearnedPartner(e.base, player, hero, slot) : -1;
+      const int active = hero != 0 && slot < Level(player) ? LearnedPartner(e.base, player, hero, slot) : -1;
       refii::mods::Publish(published, static_cast<float>(active));
     }
   }
@@ -208,7 +223,7 @@ void PublishHudPartner(refii::mods::TickEvent& e) {
     const uint32_t hero = refii_mod_player_hero(e.base, player + 1);
     const int slot = g_charging_slot[player];
     int partner = -1;
-    if (hero != 0 && slot >= 0 && slot < kSlots && g_charging_age[player] <= kChargeHoldSeconds && slot < g_level &&
+    if (hero != 0 && slot >= 0 && slot < kSlots && g_charging_age[player] <= kChargeHoldSeconds && slot < Level(player) &&
         Knob("spell_weaving.woven", 1.0f) != 0.0f) {
       const int primary = SlotSpell(e.base, hero, slot);
       partner = LearnedPartner(e.base, player, hero, slot);
@@ -237,7 +252,7 @@ void OnSpellLaunch(refii::mods::SpellLaunchEvent& e) {
 
   const int primary = e.type;
   const int partner = LearnedPartner(e.base, player, e.caster, e.slot);
-  const bool weave = Knob("spell_weaving.woven", 1.0f) != 0.0f && e.slot + 1 <= g_level && Weavable(primary) &&
+  const bool weave = Knob("spell_weaving.woven", 1.0f) != 0.0f && e.slot + 1 <= Level(player) && Weavable(primary) &&
                      partner >= 0 && (primary != partner || Knob("spell_weaving.allow_same", 0.0f) != 0.0f);
   if (!weave) {
     return;

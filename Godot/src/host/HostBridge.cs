@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 193;
+	public const int ExpectedAbiVersion = 194;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -3220,6 +3220,89 @@ public static class HostBridge
 			return 0u;
 		}
 	}
+
+	/// <summary>
+	/// The players' mod values this machine owes the co-op peer (core/player_state.h), one channel
+	/// message each; empty when nothing is due. Call every frame: the bridge also learns the save
+	/// root here. Send them only inside a session.
+	/// </summary>
+	public static string[] PlayerStateOutgoing()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return System.Array.Empty<string>();
+		}
+
+		uint written;
+		try
+		{
+			written = RefiiHostPlayerStateOutgoing(PlayerStateBuffer, (uint)PlayerStateBuffer.Length);
+		}
+		catch (DllNotFoundException)
+		{
+			return System.Array.Empty<string>();
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return System.Array.Empty<string>();
+		}
+
+		return written == 0 || written > PlayerStateBuffer.Length
+			? System.Array.Empty<string>()
+			: System.Text.Encoding.UTF8.GetString(PlayerStateBuffer, 0, (int)written)
+				.Split('\n', System.StringSplitOptions.RemoveEmptyEntries);
+	}
+
+	/// <summary>One co-op channel message offered to the player state; true when it was one (taken).</summary>
+	public static bool PlayerStateReceive(string message)
+	{
+		if (!message.StartsWith("ps.", System.StringComparison.Ordinal) || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		byte[] bytes = System.Text.Encoding.UTF8.GetBytes(message);
+		try
+		{
+			return RefiiHostPlayerStateReceive(bytes, (uint)bytes.Length) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Both players' mod values and their owners as one line, or empty.</summary>
+	public static string PlayerStateDescribe()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return string.Empty;
+		}
+
+		try
+		{
+			uint written = RefiiHostPlayerStateDescribe(PlayerStateBuffer, (uint)PlayerStateBuffer.Length);
+			return written == 0 || written > PlayerStateBuffer.Length
+				? string.Empty
+				: System.Text.Encoding.UTF8.GetString(PlayerStateBuffer, 0, (int)written);
+		}
+		catch (DllNotFoundException)
+		{
+			return string.Empty;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return string.Empty;
+		}
+	}
+
+	/// <summary>Staging for the player state's messages; main thread only.</summary>
+	private static readonly byte[] PlayerStateBuffer = new byte[16384];
 
 	/// <summary>
 	/// Takes the oldest message the peer sent, or null when nothing is waiting. Drain it every
@@ -9025,6 +9108,15 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostDrainModErrors(byte[] outBuffer, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostPlayerStateOutgoing(byte[] outBuffer, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostPlayerStateReceive(byte[] message, uint length);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostPlayerStateDescribe(byte[] outBuffer, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostModHandleAddress(uint handle);

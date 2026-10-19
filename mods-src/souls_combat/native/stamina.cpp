@@ -5,6 +5,11 @@
 // souls_combat.stamina / stamina_max (player 1) and stamina2 / stamina2_max (player 2) for the
 // HUD meters in ui/hud.json.
 //
+// THE POOL IS IN THE PLAYER STORE (souls_combat.h), so both co-op machines read the same pool: a
+// spend is an add on whichever machine the swing, roll or block happens, the refill runs only
+// where the hero is played (refii_mod_player_here), and that machine keeps the pool within
+// [floor, max].
+//
 // The events (core/refii_mod_events.h):
 //   AbilityRequest — every ability request any creature makes, with its AbilityType (16 = melee
 //     pressed, 17 = melee released). Cancelling refuses it. A refused PRESS also refuses the
@@ -20,17 +25,16 @@
 
 namespace souls_combat {
 
-Pool g_pools[2];
 uint32_t g_committed_strike[2] = {0, 0};
 
-void Spend(int player, float cost) {
-  Pool& pool = g_pools[player];
-  pool.value -= cost;
-  const float floor = Knob("souls_combat.stamina_floor", kFloor);
-  if (pool.value < floor) {
-    pool.value = floor;
+void Spend(int index, float cost) {
+  // A pool nobody has stated yet is full; the first statement comes from the tick where the hero
+  // is played, so a spend before it has nothing to come off.
+  if (refii_mod_player_get(index + 1, kStaminaKey, nullptr) == 0) {
+    return;
   }
-  pool.since_spend = 0.0f;
+  refii_mod_player_add(index + 1, kStaminaKey, -cost, 0);
+  refii_mod_player_set(index + 1, kStaminaRestKey, 0.0f);
 }
 
 }  // namespace souls_combat
@@ -42,32 +46,39 @@ namespace {
 constexpr uint32_t kMeleePressed = 16;
 constexpr uint32_t kMeleeReleased = 17;
 
+constexpr float kRestCap = 10.0f;
+
 bool g_press_refused[2] = {false, false};
 
 void OnTick(refii::mods::TickEvent& e) {
-  for (int player = 0; player < 2; ++player) {
-    Pool& pool = g_pools[player];
-    if (refii_mod_player_hero(e.base, player + 1) == 0) {
-      pool = Pool{};
+  float value[2] = {0.0f, 0.0f};
+  float max[2] = {kBaseStamina, kBaseStamina};
+  for (int index = 0; index < 2; ++index) {
+    const int32_t player = index + 1;
+    if (refii_mod_player_hero(e.base, player) == 0) {
       continue;
     }
 
-    // Player 1's maximum grows with the Stamina ability; the partner's progression is their own
-    // game's, which this one cannot see, so theirs stays at the base.
-    pool.max = player == 0 ? MaxStamina(g_stamina_level) : kBaseStamina;
-    pool.since_spend += e.seconds;
-    if (pool.since_spend >= Knob("souls_combat.stamina_regen_delay", kRegenDelay) && pool.value < pool.max) {
-      pool.value += Knob("souls_combat.stamina_regen_per_second", kRegenPerSecond) * e.seconds;
-    }
-    if (pool.value > pool.max) {
-      pool.value = pool.max;
+    // Each player's maximum grows with their own Stamina ability.
+    max[index] = StaminaMax(index);
+    value[index] = Stamina(index);
+    if (refii_mod_player_here(player) != 0) {
+      const float rest = refii_mod_player_value(player, kStaminaRestKey, kRestCap) + e.seconds;
+      if (rest >= Knob("souls_combat.stamina_regen_delay", kRegenDelay) && value[index] < max[index]) {
+        value[index] += Knob("souls_combat.stamina_regen_per_second", kRegenPerSecond) * e.seconds;
+      }
+      const float floor = Knob("souls_combat.stamina_floor", kFloor);
+      value[index] = value[index] > max[index] ? max[index] : (value[index] < floor ? floor : value[index]);
+      refii_mod_player_set(player, kStaminaKey, value[index]);
+      // Held at kRestCap once past any refill delay, so a full, rested pool stops changing.
+      refii_mod_player_set(player, kStaminaRestKey, rest > kRestCap ? kRestCap : rest);
     }
   }
 
-  refii::mods::Publish("souls_combat.stamina", g_pools[0].value < 0.0f ? 0.0f : g_pools[0].value);
-  refii::mods::Publish("souls_combat.stamina_max", g_pools[0].max);
-  refii::mods::Publish("souls_combat.stamina2", g_pools[1].value < 0.0f ? 0.0f : g_pools[1].value);
-  refii::mods::Publish("souls_combat.stamina2_max", g_pools[1].max);
+  refii::mods::Publish("souls_combat.stamina", value[0] < 0.0f ? 0.0f : value[0]);
+  refii::mods::Publish("souls_combat.stamina_max", max[0]);
+  refii::mods::Publish("souls_combat.stamina2", value[1] < 0.0f ? 0.0f : value[1]);
+  refii::mods::Publish("souls_combat.stamina2_max", max[1]);
 }
 REFII_MOD_ON(Tick, OnTick);
 
@@ -77,7 +88,7 @@ void OnAbilityRequest(refii::mods::AbilityRequestEvent& e) {
     return;
   }
   if (e.type == kMeleePressed) {
-    g_press_refused[player] = g_pools[player].value <= 0.0f;
+    g_press_refused[player] = Stamina(player) <= 0.0f;
     if (g_press_refused[player]) {
       e.cancel = true;
     }

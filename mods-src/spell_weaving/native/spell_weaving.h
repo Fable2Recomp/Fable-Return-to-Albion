@@ -10,9 +10,18 @@ namespace spell_weaving {
 
 constexpr int kMaxLevel = 5;
 
-/// Player 1's Spell Weaving level, 0..kMaxLevel (weaving_ability.cpp). Level N weaves casts up
-/// to power N; 0 weaves nothing.
-extern int g_level;
+/// EACH PLAYER'S CHOICES LIVE IN THE PLAYER STORE (refii_mod_player_*, core/refii_mod.h), SAVED with
+/// the hero, so they go home with that hero's save and are the same on both co-op machines:
+///   spell_weaving.ability       the Spell Weaving level, 0..kMaxLevel (weaving_ability.cpp); level N
+///                               weaves casts up to power N, 0 weaves nothing
+///   spell_weaving.partner_1..5  the partner chosen for each slot, -1 for none (weave.cpp)
+inline constexpr const char* kAbilityKey = "spell_weaving.ability";
+
+/// A player's Spell Weaving level, by player index (0 player 1, 1 player 2).
+inline int Level(int index) {
+  const int level = static_cast<int>(refii_mod_player_value(index + 1, kAbilityKey, 0.0f));
+  return level < 0 ? 0 : (level > kMaxLevel ? kMaxLevel : level);
+}
 
 constexpr int kSpellTypes = 8;
 constexpr int kLightning = 0;

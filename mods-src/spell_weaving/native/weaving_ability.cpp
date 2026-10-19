@@ -1,11 +1,14 @@
 // Spell Weaving — the ability: a Hybrid tree of one, bought with Will AND Skill experience.
 //
 // MOD STATE, NOT A GUEST ABILITY. The guest's ability types are a fixed 1..14 enum written into
-// its switches, so the level lives here and in the save (RefiiModSave.SpellWeaving, persisted by
-// refii's init preamble through the game's own GetSaveTable / LoadScriptSave). The row on the
-// Hybrid page is declared in ui/abilities.json with disciplines ["Will", "Skill"]; the page itself
-// is a patch entry in ui/templates.json. Pressing A hands this file spell_weaving.buy as an
-// incrementing count, Y spell_weaving.refund.
+// its switches, so each player's level is a SAVED player value (spell_weaving.ability, through
+// refii_mod_player_save): it goes home with the hero, into the save the game writes that hero
+// into, and is the same on both co-op machines. The row on the Hybrid page is declared in
+// ui/abilities.json with
+// disciplines ["Will", "Skill"]; the page itself is a patch entry in ui/templates.json. Pressing A
+// hands this file spell_weaving.buy as an incrementing count, Y spell_weaving.refund. The row acts
+// for, and shows, the player whose book is open (refii_mod_menu_player); so does the partner
+// picker's unlock, which reads spell_weaving.level.
 //
 // THE PRICE IS SPLIT EVENLY BETWEEN WILL AND SKILL, General filling each half's gap as it fills
 // a whole in Fable 2. A purchase is the shipped one (TU1 sub_8246C970) done twice: the level's
@@ -19,17 +22,14 @@
 // the level given up comes back into GENERAL through the game's own Modify
 // (refii_mod_give_experience), outside the lifetime total.
 //
+// SAVES FROM BEFORE: the level used to live in the world save's Lua (RefiiModSave.SpellWeaving).
+// A player-one hero with no saved level takes that one, once, after each Lua rebuild or load.
+//
 // Setting spell_weaving.cost_like (default 8, Fireball): the ability whose experience table prices
 // the levels. The eight spells share one curve, so any of 7..14 reads the same.
 
 #include "core/refii_mod.h"
 #include "spell_weaving.h"
-
-namespace spell_weaving {
-
-int g_level = 0;
-
-}  // namespace spell_weaving
 
 using namespace spell_weaving;
 
@@ -39,7 +39,8 @@ constexpr int kGeneralPool = 0;
 constexpr int kSkillPool = 2;
 constexpr int kWillPool = 3;
 constexpr int kDefaultCostTable = 8;
-constexpr const char* kSaveKey = "SpellWeaving";
+/// Where saves from before kept player one's level.
+constexpr const char* kLegacyKey = "SpellWeaving";
 
 float g_seen_buy = 0.0f;
 float g_seen_refund = 0.0f;
@@ -68,30 +69,24 @@ bool Affordable(uint8_t* base, uint32_t hero, int cost) {
   return general >= 0;
 }
 
-/// Writes the level into the save's RefiiModSave table.
-void Record(PPCContext* ctx, uint8_t* base) {
-  if (refii_mod_save_set_int(ctx, base, kSaveKey, g_level) == 0) {
-    REXLOG_WARN("Spell Weaving: level {} NOT recorded for the save: the game Lua refused it", g_level);
-  }
-}
-
-void Buy(PPCContext* ctx, uint8_t* base, uint32_t hero) {
-  if (g_level >= kMaxLevel) {
-    REXLOG_INFO("Spell Weaving: already at level {}", g_level);
+void Buy(PPCContext* ctx, uint8_t* base, int player, uint32_t hero) {
+  const int level = Level(player);
+  if (level >= kMaxLevel) {
+    REXLOG_INFO("Spell Weaving: player {} already at level {}", player + 1, level);
     return;
   }
 
   float probe = 0.0f;
   if (refii_mod_experience(base, hero, kGeneralPool, &probe) == 0) {
-    REXLOG_WARN("Spell Weaving: no stats or experience component on the hero; not bought");
+    REXLOG_WARN("Spell Weaving: no stats or experience component on player {}'s hero; not bought", player + 1);
     return;
   }
 
-  const int cost = CostOf(ctx, base, hero, g_level + 1);
+  const int cost = CostOf(ctx, base, hero, level + 1);
   if (cost <= 0 || !Affordable(base, hero, cost)) {
-    REXLOG_INFO("Spell Weaving {} costs {} ({} Will + {} Skill); Will {}, Skill {}, General {}", g_level + 1, cost,
-                WillShare(cost), SkillShare(cost), PoolOf(base, hero, kWillPool), PoolOf(base, hero, kSkillPool),
-                PoolOf(base, hero, kGeneralPool));
+    REXLOG_INFO("Spell Weaving {} costs {} ({} Will + {} Skill); player {} has Will {}, Skill {}, General {}", level + 1,
+                cost, WillShare(cost), SkillShare(cost), player + 1, PoolOf(base, hero, kWillPool),
+                PoolOf(base, hero, kSkillPool), PoolOf(base, hero, kGeneralPool));
     return;
   }
 
@@ -102,30 +97,30 @@ void Buy(PPCContext* ctx, uint8_t* base, uint32_t hero) {
     refii_mod_spend_experience(ctx, base, hero, kSkillPool, static_cast<float>(SkillShare(cost)));
   }
 
-  ++g_level;
-  Record(ctx, base);
-  REXLOG_INFO("Spell Weaving: bought level {} for {} experience ({} Will, {} Skill)", g_level, cost, WillShare(cost),
-              SkillShare(cost));
+  refii_mod_player_save(player + 1, kAbilityKey, static_cast<float>(level + 1));
+  REXLOG_INFO("Spell Weaving: player {} bought level {} for {} experience ({} Will, {} Skill)", player + 1, level + 1, cost,
+              WillShare(cost), SkillShare(cost));
 }
 
-void Refund(PPCContext* ctx, uint8_t* base, uint32_t hero) {
-  if (g_level <= 0) {
+void Refund(PPCContext* ctx, uint8_t* base, int player, uint32_t hero) {
+  const int level = Level(player);
+  if (level <= 0) {
     return;
   }
 
-  const int refund = CostOf(ctx, base, hero, g_level) / 2;
+  const int refund = CostOf(ctx, base, hero, level) / 2;
   if (refund < 0 || refii_mod_give_experience(ctx, base, hero, kGeneralPool, static_cast<float>(refund)) == 0) {
     return;
   }
 
-  --g_level;
-  Record(ctx, base);
-  REXLOG_INFO("Spell Weaving: unlearned level {}, {} experience back to General", g_level + 1, refund);
+  refii_mod_player_save(player + 1, kAbilityKey, static_cast<float>(level - 1));
+  REXLOG_INFO("Spell Weaving: player {} unlearned level {}, {} experience back to General", player + 1, level,
+              refund);
 }
 
-/// The level lives in the save. The Lua and SaveLoaded events say the save's table changed; the
-/// read itself waits for the next tick with the hero present, where the game VM is up and a
-/// chunk can run.
+/// A save from before keeps player one's level in its Lua table. The Lua and SaveLoaded events say
+/// the table changed; the read waits for the next tick with the hero present, where the game VM is
+/// up and a chunk can run.
 bool g_reread = true;
 
 void SaveChanged(refii::mods::LuaEvent& e) {
@@ -138,37 +133,53 @@ void SaveLoaded(refii::mods::SaveLoadedEvent& e) { SaveChanged(e); }
 REFII_MOD_ON(SaveLoaded, SaveLoaded);
 
 void OnTick(refii::mods::TickEvent& e) {
-  const uint32_t hero = refii_mod_player_hero(e.base, 1);
-  if (hero == 0) {
+  if (refii_mod_player_hero(e.base, 1) == 0) {
     return;
   }
 
   if (g_reread) {
     g_reread = false;
-    int32_t level = 0;
-    g_level = refii_mod_save_get_int(e.ctx, e.base, kSaveKey, 0, kMaxLevel, &level) != 0 ? level : 0;
+    int32_t legacy = 0;
+    if (refii_mod_player_here(1) != 0 && refii_mod_player_get(1, kAbilityKey, nullptr) == 0 &&
+        refii_mod_save_get_int(e.ctx, e.base, kLegacyKey, 1, kMaxLevel, &legacy) != 0) {
+      refii_mod_player_save(1, kAbilityKey, static_cast<float>(legacy));
+      REXLOG_INFO("Spell Weaving: player 1's level {} taken from the save's Lua table", legacy);
+    }
   }
+
+  // The book's player: the row's presses act for them and its numbers are theirs.
+  const int player = refii_mod_menu_player(e.base) == 2 ? 1 : 0;
+  const uint32_t hero = refii_mod_player_hero(e.base, player + 1);
 
   const float buy = refii::mods::Setting("spell_weaving.buy", 0.0f);
   if (buy != g_seen_buy) {
     g_seen_buy = buy;
-    Buy(e.ctx, e.base, hero);
+    if (hero != 0) {
+      Buy(e.ctx, e.base, player, hero);
+    }
   }
 
   const float refund = refii::mods::Setting("spell_weaving.refund", 0.0f);
   if (refund != g_seen_refund) {
     g_seen_refund = refund;
-    Refund(e.ctx, e.base, hero);
+    if (hero != 0) {
+      Refund(e.ctx, e.base, player, hero);
+    }
   }
 
-  refii::mods::Publish("spell_weaving.level", static_cast<float>(g_level));
+  if (hero == 0) {
+    return;
+  }
+
+  const int level = Level(player);
+  refii::mods::Publish("spell_weaving.level", static_cast<float>(level));
   // The description's %1: the power a cast may weave at once the next level is bought.
-  refii::mods::Publish("spell_weaving.next", static_cast<float>(g_level < kMaxLevel ? g_level + 1 : g_level));
-  if (g_level < kMaxLevel) {
-    refii::mods::Publish("spell_weaving.cost", static_cast<float>(CostOf(e.ctx, e.base, hero, g_level + 1)));
+  refii::mods::Publish("spell_weaving.next", static_cast<float>(level < kMaxLevel ? level + 1 : level));
+  if (level < kMaxLevel) {
+    refii::mods::Publish("spell_weaving.cost", static_cast<float>(CostOf(e.ctx, e.base, hero, level + 1)));
   }
   refii::mods::Publish("spell_weaving.refund_value",
-                       g_level > 0 ? static_cast<float>(CostOf(e.ctx, e.base, hero, g_level) / 2) : 0.0f);
+                       level > 0 ? static_cast<float>(CostOf(e.ctx, e.base, hero, level) / 2) : 0.0f);
 }
 REFII_MOD_ON(Tick, OnTick);
 

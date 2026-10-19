@@ -20,7 +20,7 @@ init and shutdown, and the targeted fireball's impact.
 | The picker | `ui/spellwheel.json`, `language/en-uk/text/book.babel.csv` | X on a highlighted spell in either selector makes it the highlighted slot's partner; Y removes the partner. Its icon sits small under that slot's icon, and goes with it on Y. Once Spell Weaving is learned, the spell selection page shows two prompts beside its own, X "Set Partner" and Y "Remove Partner" (`SPELL_WEAVING_SET_PARTNER`, `SPELL_WEAVING_REMOVE_PARTNER`). |
 | The pair | `native/weave.cpp`, `native/woven.cpp` | One combined cast, as Fable 3 has it. Of the slot's spell and the partner, the higher in the hierarchy below is the base and is the one spell launched, through the game's own launch with the base's type in the slot for the length of the call. The lower spell, the overlay, is never launched by the player: at the base's own moment — every victim it hits (for the Vortex, every creature its shudder hits reach); for a Fireball that strikes nothing alive, the impact point itself — a real Targeted cast of the overlay is made `shot_delay` seconds later (0.25, ±5 %) by the game's own spell factory with the hero as caster, exactly how Fable III's primary casts its partner. The partner's hits land at `weave_damage` (0.7) of their damage. One partner cast per victim per base cast; a weave-side spell never casts a partner of its own. The partner must be a spell the hero has learned. Slow Time and Raise Dead are never partners. |
 | Fable 3 pacing | `native/weave.cpp` | By default only the charged slot casts. Fable 2's cascade, which fires slots 1, 2, 3 in turn up to the charge, is skipped slot by slot; `top_only = 0` restores it, pair included. |
-| The Hybrid tree | `native/weaving_ability.cpp`, `ui/abilities.json`, `ui/templates.json`, `language/en-uk/text/book.babel.csv` | A fourth page on the abilities screen, **Hybrid**, holding the Spell Weaving ability: five levels, level N weaves casts up to power N. Priced like a spell (Fireball's experience table) and **paid half from Will, half from Skill**, General filling each half's gap as Fable 2 fills one pool's. The page lights both orbs and shows their combined total. Y unlearns a level through the game's own confirm, refunding half the level's cost to General. The level persists in the save as `RefiiModSave.SpellWeaving`. |
+| The Hybrid tree | `native/weaving_ability.cpp`, `ui/abilities.json`, `ui/templates.json`, `language/en-uk/text/book.babel.csv` | A fourth page on the abilities screen, **Hybrid**, holding the Spell Weaving ability: five levels, level N weaves casts up to power N. Priced like a spell (Fireball's experience table) and **paid half from Will, half from Skill**, General filling each half's gap as Fable 2 fills one pool's. The page lights both orbs and shows their combined total. Y unlearns a level through the game's own confirm, refunding half the level's cost to General. The level is a saved player value (`spell_weaving.ability`) that goes home with the hero's own save (see below). |
 | The HUD glyph | `ui/hud.json`, `native/weave.cpp` | While a hero charges, the partner the charged slot would weave is drawn beside the charge meter: the native code publishes `spell_weaving.hud_partner` (and `hud_partner2`) from the charge level each frame, -1 when the slot has no partner in effect or nothing is charging, and the HUD picture piece shows the matching will icon from the list in `ui/hud.json` (`textures` chosen by `index`). |
 | Ability card, slot frame | `art/gui/abilitytarot/spell_weaving.tex.png`, `art/gui/hud/spell_weaving_slot.tex.png` | The still the abilities book shows for Spell Weaving, and the partner slot's empty frame on the selectors (`tools/spell_weaving_icons.py`, our own art). |
 | Woven effects | `native/woven.cpp` | When a hit from the base lands on a victim, a Targeted cast of the overlay is queued on that victim — the game's own spell factory, the hero as caster, the victim as target, placed on the victim, `shot_delay` later at the base's power. The partner spell then does what it always does: burns, shocks, shoves, turns, or sends blades. Its hits are scaled by `weave_damage`. The one place every hit arrives is hooked; the attacker, the victim, the serial, the level, the spell type and the damage are read from the hit. |
@@ -199,9 +199,11 @@ while the slot's own spell is Slow Time or Raise Dead, which can take no partner
 held the host withholds X from the game, so the press never reaches the attack or parry the combat
 scheme binds to it. The partner must be learned to take effect; an unlearned pick simply waits.
 
-The choices live in the save (`RefiiModSave.SpellWeavingPartner1..5`, `Partner2_1..5` for player 2)
-and are made through the settings `spell_weaving.partner_1..5` / `partner2_1..5`: changing a value
-chooses. A spell type id, or -1 for none.
+The choices are saved player values (`spell_weaving.partner_1..5`, each player their own) and are
+made through the settings `spell_weaving.partner_1..5` / `partner2_1..5`: changing a value chooses.
+A spell type id, or -1 for none. Saves from before kept them in the world save's Lua
+(`RefiiModSave.SpellWeavingPartner1..5`, `Partner2_1..5`); a slot with no saved choice takes that
+one, then settings.json's.
 
 | id | spell | id | spell |
 |---|---|---|---|
@@ -233,8 +235,17 @@ published as `mod:spell_weaving.partner_active_1..5` (-1 when none).
 | `shot_delay_vortex` | 0.25 | The same for a vortex base (Fable 3's vortex records). |
 | `weave_damage` | 0.7 | The share of their damage the partner's hits land at (Fable 3's general damage multiplier). |
 
-The Spell Weaving level is player 1's (the ability lives in player 1's save); the co-op partner
-weaves at that level with their own partner choices.
+Each player has their own Spell Weaving level and their own partner choices. The ability row in
+the book acts for, and shows, the player whose book is open (`refii_mod_menu_player`): player
+two's own book in local co-op, the joiner's book on the joiner's machine. The partner picker's
+prompts unlock from that same player's level. The level and the choices are SAVED player values
+in Refii's player store (`refii_mod_player_*`, `docs/mod_api.md`): the same on both machines of an
+online session, written beside the save the game writes that hero into (`refii_player.txt`) —
+player one's main save, a local player two's own save, an online joiner's own save on the
+joiner's machine — and read back when the game loads that hero. So player two keeps their level
+and partners when they go home. Saves from before kept player one's level in the world save's Lua
+(`RefiiModSave.SpellWeaving`); it is taken from there once.
+The HUD glyph follows each player's charge meter, in their own half on split screen.
 
 ## Next
 

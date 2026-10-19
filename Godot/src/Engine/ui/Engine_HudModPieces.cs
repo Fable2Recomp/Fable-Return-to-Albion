@@ -32,7 +32,9 @@ namespace Refii.Ui;
 /// <item><c>chip</c> — the recently-lost part of the bar, held briefly and then drained.</item>
 /// <item><c>follow</c> / <c>followElement</c> — hang beneath a shipped piece's element as it is
 /// actually drawn, every frame; <c>offset</c> is then from its bottom-left corner and a width
-/// of 0 takes the element's width. The first drawn of a comma list wins.</item>
+/// of 0 takes the element's width. The first drawn of a comma list wins. A follower is the
+/// followed piece's player's: it is drawn wherever that piece is, player two's half included.
+/// A piece with no <c>follow</c> is the screen's and stays in player one's view.</item>
 /// <item><c>textures</c> + <c>index</c> — a picture that shows ONE of a list, chosen by a value
 /// source: the value's integer part is the index; hidden while the source states nothing or an
 /// index outside the list (-1 is the usual "none"). Spell Weaving's partner glyph beside the
@@ -94,7 +96,9 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// or green), and <see cref="IconTextures"/> replaces one element's picture — the first that
 	/// loads. <see cref="Bars"/> names the elements a meter FILLS (element → meter name): a bar's
 	/// fill is the guest's stated scale on that element, not a playhead, so the copy redraws it at
-	/// the meter's own value.
+	/// the meter's own value. A copy is its original's player's: a copy of <c>CoopHealth</c> is
+	/// player two's, drawn in their half on split screen and standing where player one's copy
+	/// stands, its own offset kept.
 	/// </summary>
 	public sealed record Clone(
 		string Id,

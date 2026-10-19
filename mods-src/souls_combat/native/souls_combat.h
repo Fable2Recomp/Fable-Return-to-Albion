@@ -12,15 +12,17 @@
 
 namespace souls_combat {
 
-/// One player's stamina in points, 0..max. It may dip below zero by up to kFloor: the swing that
-/// empties the pool still lands, and the next one waits for the refill.
-struct Pool {
-  float value = 100.0f;
-  float max = 100.0f;
-  float since_spend = 99.0f;
-};
-
-extern Pool g_pools[2];
+/// EACH PLAYER'S STATE LIVES IN THE PLAYER STORE (refii_mod_player_*, core/refii_mod.h), not in
+/// arrays here, so it is the same on both machines of an online session: a spend on either reaches
+/// the hero's owner, and the refill runs where the hero is played. Keys:
+///   souls_combat.stamina        the pool in points, 0..max; it may dip below zero by up to kFloor:
+///                               the swing that empties it still lands, and the next one waits
+///   souls_combat.stamina_rest   seconds since the last spend (the refill waits for kRegenDelay)
+///   souls_combat.mana / mana_rest   the same for mana (mana.cpp)
+///   souls_combat.stamina_ability    the Stamina ability's level, SAVED with the hero
+inline constexpr const char* kStaminaKey = "souls_combat.stamina";
+inline constexpr const char* kStaminaRestKey = "souls_combat.stamina_rest";
+inline constexpr const char* kStaminaAbilityKey = "souls_combat.stamina_ability";
 
 constexpr float kBaseStamina = 100.0f;
 constexpr float kSwingCost = 18.0f;
@@ -31,8 +33,6 @@ constexpr float kFloor = -25.0f;
 constexpr float kRegenDelay = 0.7f;
 constexpr float kRegenPerSecond = 55.0f;
 
-/// The Stamina ability (stamina_ability.cpp): player 1's level, 0..kStaminaMaxLevel.
-extern int g_stamina_level;
 constexpr int kStaminaMaxLevel = 5;
 
 /// THE HEALTH CURVE, so stamina and mana grow exactly as health does. From globals.gdb:
@@ -55,6 +55,18 @@ inline float MaxStamina(int level) {
   return AlongHealthCurve(kToughnessBonus[level < 0 ? 0 : (level > kStaminaMaxLevel ? kStaminaMaxLevel : level)]);
 }
 
+/// A player's Stamina ability level, 0..kStaminaMaxLevel, by pool index (0 player 1, 1 player 2).
+inline int StaminaLevel(int index) {
+  const int level = static_cast<int>(refii_mod_player_value(index + 1, kStaminaAbilityKey, 0.0f));
+  return level < 0 ? 0 : (level > kStaminaMaxLevel ? kStaminaMaxLevel : level);
+}
+
+/// A player's maximum stamina: their own Stamina level along the health curve.
+inline float StaminaMax(int index) { return MaxStamina(StaminaLevel(index)); }
+
+/// A player's stamina now; a player with none stated yet is full.
+inline float Stamina(int index) { return refii_mod_player_value(index + 1, kStaminaKey, StaminaMax(index)); }
+
 /// Each player's live committed strike action (the clone the action manager runs), 0 when none:
 /// recorded from the MeleeSwing event (stamina.cpp), consumed by commitment.cpp.
 extern uint32_t g_committed_strike[2];
@@ -69,6 +81,7 @@ inline int Index(int32_t player) { return player == 1 ? 0 : (player == 2 ? 1 : -
 /// 0 for player 1's hero, 1 for player 2's, -1 for anything else.
 inline int PlayerOf(uint8_t* base, uint32_t entity) { return Index(refii_mod_player_of(base, entity)); }
 
-void Spend(int player, float cost);
+/// Takes `cost` from a player's pool (by index), on whichever machine the spend happens.
+void Spend(int index, float cost);
 
 }  // namespace souls_combat

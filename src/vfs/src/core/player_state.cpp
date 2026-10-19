@@ -1,0 +1,711 @@
+// refii — PLAYER STATE. The contract is in core/player_state.h; the payload's C entries are
+// declared in core/payload_bridge.h.
+//
+// THE WIRE (the co-op channel, one datagram per line; the host bridge sends and receives):
+//   ps.s=<p>,<epoch>,<version>,<op epoch>,<op seq>,<part>,<parts>|<entries>
+//       the owner's values for player p. Entries are `;`-separated `<v|s><key>=<value>` (v a
+//       session value, s a saved one). <op epoch>/<op seq> is the last operation it applied from
+//       the peer. A set too long for one datagram goes in parts, applied once all have arrived.
+//   ps.o=<p>,<op epoch>|<seq>:<s|a><v|s><key>=<value>;...
+//       the peer's pending operations on player p (set or add), restated until the owner's state
+//       says it applied them.
+
+#include "core/player_state.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <system_error>
+#include <vector>
+
+#include <rex/logging.h>
+
+#include "core/payload_bridge.h"
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+constexpr size_t kMaxKeyLength = 128;
+/// A datagram's line, kept well under the channel's limit.
+constexpr size_t kMaxMessage = 900;
+constexpr auto kChangedInterval = std::chrono::milliseconds(50);
+constexpr auto kRestateInterval = std::chrono::milliseconds(500);
+constexpr auto kOperationInterval = std::chrono::milliseconds(100);
+
+struct Entry {
+  float value = 0.0f;
+  bool saved = false;
+};
+
+using Entries = std::map<std::string, Entry>;
+
+struct Operation {
+  uint32_t seq = 0;
+  bool add = false;
+  bool saved = false;
+  std::string key;
+  float value = 0.0f;
+};
+
+struct Assembly {
+  uint32_t epoch = 0;
+  uint32_t version = 0;
+  uint32_t op_epoch = 0;
+  uint32_t op_seq = 0;
+  uint32_t parts = 0;
+  std::vector<bool> have;
+  Entries entries;
+};
+
+struct Store {
+  /// What this machine reads: the owner's values (with this machine's unapplied operations on
+  /// top when it is not the owner).
+  Entries entries;
+  /// Not the owner: the owner's last complete statement, the base pending operations replay on.
+  Entries received;
+  uint32_t epoch = 0;
+  uint32_t version = 0;
+  /// Whether the saved values are this hero's and may be written into its save: true from the
+  /// start (a new game), after a load, and after a new game; false once the store has changed
+  /// owner, until a load says whose hero this is.
+  bool trusted = true;
+  /// The save the saved values were last loaded from, or empty.
+  std::string loaded_from;
+  // The owner's side.
+  uint32_t sent_version = 0;
+  Clock::time_point sent_at{};
+  bool sent_once = false;
+  uint32_t peer_op_epoch = 0;
+  uint32_t peer_op_seq = 0;
+  // The writer's side.
+  std::deque<Operation> pending;
+  Clock::time_point ops_sent_at{};
+  Assembly assembly;
+};
+
+struct State {
+  std::mutex mutex;
+  Store stores[2];
+  uint32_t owned = 3u;
+  uint32_t op_epoch = 0;
+  uint32_t op_seq = 0;
+  std::string root;
+  refii::players::SaveRootResolver resolver = nullptr;
+};
+
+uint32_t NewEpoch() {
+  static uint32_t counter = 0;
+  const auto now = static_cast<uint64_t>(Clock::now().time_since_epoch().count());
+  const uint32_t epoch = static_cast<uint32_t>(now ^ (now >> 32)) + (++counter * 0x9E3779B9u);
+  return epoch != 0u ? epoch : 1u;
+}
+
+State& Tables() {
+  static State state;
+  static const bool seeded = [] {
+    state.op_epoch = NewEpoch();
+    state.stores[0].epoch = NewEpoch();
+    state.stores[1].epoch = NewEpoch();
+    return true;
+  }();
+  (void)seeded;
+  return state;
+}
+
+bool KeyChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' ||
+         c == '-';
+}
+
+bool ValidKey(std::string_view key) {
+  return !key.empty() && key.size() <= kMaxKeyLength && std::all_of(key.begin(), key.end(), KeyChar);
+}
+
+int Index(int32_t player) { return player == 1 ? 0 : (player == 2 ? 1 : -1); }
+
+bool Owns(const State& s, int index) { return ((s.owned >> index) & 1u) != 0u; }
+
+void Apply(Entries& entries, const Operation& op) {
+  Entry& entry = entries[op.key];
+  entry.value = op.add ? entry.value + op.value : op.value;
+  entry.saved = entry.saved || op.saved;
+}
+
+/// Not the owner: the owner's statement with what has not landed yet on top.
+void Rebuild(Store& store) {
+  store.entries = store.received;
+  for (const Operation& op : store.pending) {
+    Apply(store.entries, op);
+  }
+}
+
+std::string Number(float value) {
+  char text[32];
+  std::snprintf(text, sizeof(text), "%.9g", static_cast<double>(value));
+  return text;
+}
+
+bool ParseFloat(std::string_view text, float& out) {
+  const std::string copy(text);
+  char* end = nullptr;
+  const float value = std::strtof(copy.c_str(), &end);
+  if (end == copy.c_str() || *end != '\0') {
+    return false;
+  }
+  out = value;
+  return true;
+}
+
+bool ParseU32(std::string_view text, uint32_t& out) {
+  const std::string copy(text);
+  char* end = nullptr;
+  const unsigned long value = std::strtoul(copy.c_str(), &end, 10);
+  if (end == copy.c_str() || *end != '\0') {
+    return false;
+  }
+  out = static_cast<uint32_t>(value);
+  return true;
+}
+
+std::vector<std::string_view> Split(std::string_view text, char separator) {
+  std::vector<std::string_view> parts;
+  size_t start = 0;
+  while (start <= text.size()) {
+    const size_t at = text.find(separator, start);
+    const size_t end = at == std::string_view::npos ? text.size() : at;
+    parts.push_back(text.substr(start, end - start));
+    if (at == std::string_view::npos) {
+      break;
+    }
+    start = at + 1;
+  }
+  return parts;
+}
+
+/// `<v|s><key>=<value>`.
+bool ParseEntry(std::string_view text, std::string& key, Entry& entry) {
+  const size_t equals = text.find('=');
+  if (text.size() < 3 || (text[0] != 'v' && text[0] != 's') || equals == std::string_view::npos) {
+    return false;
+  }
+  key = std::string(text.substr(1, equals - 1));
+  entry.saved = text[0] == 's';
+  return ValidKey(key) && ParseFloat(text.substr(equals + 1), entry.value);
+}
+
+void Append(char* out, size_t capacity, size_t& written, std::string_view line) {
+  if (written + line.size() + 1 > capacity) {
+    return;
+  }
+  std::memcpy(out + written, line.data(), line.size());
+  written += line.size();
+  out[written++] = '\n';
+}
+
+/// The owner's statement of one player, in as many parts as it takes.
+void StateMessages(const Store& store, int index, std::vector<std::string>& lines) {
+  std::vector<std::string> bodies(1);
+  for (const auto& [key, entry] : store.entries) {
+    std::string item = std::string(1, entry.saved ? 's' : 'v') + key + "=" + Number(entry.value);
+    if (!bodies.back().empty() && bodies.back().size() + item.size() + 1 > kMaxMessage - 96) {
+      bodies.emplace_back();
+    }
+    if (!bodies.back().empty()) {
+      bodies.back() += ';';
+    }
+    bodies.back() += item;
+  }
+  for (size_t part = 0; part < bodies.size(); ++part) {
+    char head[128];
+    std::snprintf(head, sizeof(head), "ps.s=%d,%u,%u,%u,%u,%zu,%zu|", index + 1, store.epoch, store.version,
+                  store.peer_op_epoch, store.peer_op_seq, part, bodies.size());
+    lines.push_back(std::string(head) + bodies[part]);
+  }
+}
+
+void OperationMessages(const State& s, const Store& store, int index, std::vector<std::string>& lines) {
+  char head[64];
+  std::snprintf(head, sizeof(head), "ps.o=%d,%u|", index + 1, s.op_epoch);
+  std::string line = head;
+  bool any = false;
+  for (const Operation& op : store.pending) {
+    char seq[24];
+    std::snprintf(seq, sizeof(seq), "%u:", op.seq);
+    std::string item = std::string(seq) + (op.add ? 'a' : 's') + (op.saved ? 's' : 'v') + op.key + "=" + Number(op.value);
+    if (any && line.size() + item.size() + 1 > kMaxMessage) {
+      lines.push_back(line);
+      line = head;
+      any = false;
+    }
+    if (any) {
+      line += ';';
+    }
+    line += item;
+    any = true;
+  }
+  if (any) {
+    lines.push_back(line);
+  }
+}
+
+void TakeState(State& s, int index, std::string_view head, std::string_view body) {
+  const std::vector<std::string_view> fields = Split(head, ',');
+  uint32_t epoch = 0, version = 0, op_epoch = 0, op_seq = 0, part = 0, parts = 0;
+  if (fields.size() != 7 || !ParseU32(fields[1], epoch) || !ParseU32(fields[2], version) ||
+      !ParseU32(fields[3], op_epoch) || !ParseU32(fields[4], op_seq) || !ParseU32(fields[5], part) ||
+      !ParseU32(fields[6], parts) || parts == 0 || parts > 64 || part >= parts) {
+    return;
+  }
+  if (Owns(s, index)) {
+    return;  // this machine plays the hero; the peer's copy is a stale one
+  }
+
+  Store& store = s.stores[index];
+  if (epoch == store.epoch && version <= store.version) {
+    return;
+  }
+
+  Assembly& assembly = store.assembly;
+  if (assembly.epoch != epoch || assembly.version != version || assembly.parts != parts) {
+    assembly = Assembly{};
+    assembly.epoch = epoch;
+    assembly.version = version;
+    assembly.op_epoch = op_epoch;
+    assembly.op_seq = op_seq;
+    assembly.parts = parts;
+    assembly.have.assign(parts, false);
+  }
+  if (assembly.have[part]) {
+    return;
+  }
+  assembly.have[part] = true;
+  if (!body.empty()) {
+    for (std::string_view item : Split(body, ';')) {
+      std::string key;
+      Entry entry;
+      if (ParseEntry(item, key, entry)) {
+        assembly.entries[key] = entry;
+      }
+    }
+  }
+  if (std::find(assembly.have.begin(), assembly.have.end(), false) != assembly.have.end()) {
+    return;
+  }
+
+  store.received = std::move(assembly.entries);
+  store.epoch = epoch;
+  store.version = version;
+  if (assembly.op_epoch == s.op_epoch) {
+    while (!store.pending.empty() && store.pending.front().seq <= assembly.op_seq) {
+      store.pending.pop_front();
+    }
+  }
+  assembly = Assembly{};
+  Rebuild(store);
+}
+
+void TakeOperations(State& s, int index, std::string_view head, std::string_view body) {
+  const std::vector<std::string_view> fields = Split(head, ',');
+  uint32_t op_epoch = 0;
+  if (fields.size() != 2 || !ParseU32(fields[1], op_epoch) || !Owns(s, index)) {
+    return;
+  }
+  Store& store = s.stores[index];
+  if (op_epoch != store.peer_op_epoch) {
+    store.peer_op_epoch = op_epoch;
+    store.peer_op_seq = 0;
+  }
+  bool changed = false;
+  for (std::string_view item : Split(body, ';')) {
+    const size_t colon = item.find(':');
+    uint32_t seq = 0;
+    if (colon == std::string_view::npos || !ParseU32(item.substr(0, colon), seq) || seq <= store.peer_op_seq) {
+      continue;
+    }
+    const std::string_view rest = item.substr(colon + 1);
+    if (rest.size() < 4 || (rest[0] != 's' && rest[0] != 'a')) {
+      continue;
+    }
+    std::string key;
+    Entry entry;
+    if (!ParseEntry(rest.substr(1), key, entry)) {
+      continue;
+    }
+    Operation op;
+    op.seq = seq;
+    op.add = rest[0] == 'a';
+    op.saved = entry.saved;
+    op.key = std::move(key);
+    op.value = entry.value;
+    Apply(store.entries, op);
+    store.peer_op_seq = seq;
+    changed = true;
+  }
+  if (changed) {
+    ++store.version;
+  }
+}
+
+bool SafeName(std::string_view name) {
+  return !name.empty() && name.size() < 64 && name != "." && name != ".." &&
+         name.find_first_of("/\\") == std::string_view::npos;
+}
+
+const std::string& Root(State& s) {
+  if (s.root.empty() && s.resolver != nullptr) {
+    s.root = s.resolver();
+  }
+  return s.root;
+}
+
+/// The folder of the save named `name`: `<root>/<user>/4D5307F1/00000001/<name>/`, the newest when
+/// more than one user holds that name.
+std::filesystem::path SaveFolder(const std::string& root, std::string_view name) {
+  namespace fs = std::filesystem;
+  std::error_code error;
+  if (root.empty() || !SafeName(name) || !fs::is_directory(root, error)) {
+    return {};
+  }
+  fs::path best;
+  fs::file_time_type best_time{};
+  for (const fs::directory_entry& user : fs::directory_iterator(root, error)) {
+    const fs::path candidate = user.path() / "4D5307F1" / "00000001" / std::string(name);
+    if (!fs::is_directory(candidate, error)) {
+      continue;
+    }
+    const fs::file_time_type when = fs::last_write_time(candidate, error);
+    if (best.empty() || when > best_time) {
+      best = candidate;
+      best_time = when;
+    }
+  }
+  return best;
+}
+
+/// Nesting depth of replica dispatches on this thread (the guest tick thread runs every event).
+thread_local int g_replica = 0;
+
+}  // namespace
+
+extern "C" void refii_bridge_player_replica(int32_t on) {
+  g_replica += on != 0 ? 1 : (g_replica > 0 ? -1 : 0);
+}
+
+extern "C" int32_t refii_bridge_player_in_replica(void) { return g_replica > 0 ? 1 : 0; }
+
+extern "C" int32_t refii_bridge_player_get(int32_t player, const char* key, size_t key_length, float* out) {
+  const int index = Index(player);
+  if (index < 0 || key == nullptr || key_length > kMaxKeyLength) {
+    return 0;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  const auto found = s.stores[index].entries.find(std::string(key, key_length));
+  if (found == s.stores[index].entries.end()) {
+    return 0;
+  }
+  if (out != nullptr) {
+    *out = found->second.value;
+  }
+  return 1;
+}
+
+extern "C" void refii_bridge_player_write(int32_t player, const char* key, size_t key_length, float value,
+                                          int32_t add, int32_t saved) {
+  const int index = Index(player);
+  if (index < 0 || key == nullptr || !ValidKey(std::string_view(key, key_length)) || g_replica > 0) {
+    return;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  Store& store = s.stores[index];
+  Operation op;
+  op.add = add != 0;
+  op.saved = saved != 0;
+  op.key = std::string(key, key_length);
+  op.value = value;
+  if (Owns(s, index)) {
+    const auto found = store.entries.find(op.key);
+    if (!op.add && found != store.entries.end() && found->second.value == value && found->second.saved == op.saved) {
+      return;
+    }
+    if (op.add && value == 0.0f) {
+      return;
+    }
+    Apply(store.entries, op);
+    ++store.version;
+    return;
+  }
+  op.seq = ++s.op_seq;
+  store.pending.push_back(std::move(op));
+  Rebuild(store);
+}
+
+extern "C" void refii_bridge_player_set_owned(uint32_t mask) {
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  mask &= 3u;
+  if (mask == s.owned) {
+    return;
+  }
+  for (int index = 0; index < 2; ++index) {
+    const bool was = Owns(s, index);
+    const bool now = ((mask >> index) & 1u) != 0u;
+    Store& store = s.stores[index];
+    if (now && !was) {
+      // Played here from now on (the peer left): what it held was the peer's hero's, so it
+      // starts empty, under a new epoch, and is not written into a save until a load says
+      // whose hero this is.
+      store = Store{};
+      store.epoch = NewEpoch();
+      store.trusted = false;
+    } else if (was && !now) {
+      // The peer plays it now: nothing is known until the peer says.
+      store = Store{};
+      store.trusted = false;
+    }
+  }
+  REXLOG_INFO("Refii player state: this machine plays {}{}", (mask & 1u) != 0u ? "player one " : "",
+              (mask & 2u) != 0u ? "player two" : (mask == 0u ? "no player" : ""));
+  s.owned = mask;
+}
+
+extern "C" uint32_t refii_bridge_player_owned(void) {
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  return s.owned;
+}
+
+extern "C" void refii_bridge_player_new_hero(int32_t player) {
+  const int index = Index(player);
+  if (index < 0) {
+    return;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  if (!Owns(s, index)) {
+    return;
+  }
+  Entries& entries = s.stores[index].entries;
+  const size_t before = entries.size();
+  std::erase_if(entries, [](const auto& item) { return !item.second.saved; });
+  if (entries.size() != before) {
+    ++s.stores[index].version;
+  }
+}
+
+extern "C" void refii_bridge_player_clear(int32_t player, int32_t fresh) {
+  const int index = Index(player);
+  if (index < 0) {
+    return;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  Store& store = s.stores[index];
+  if (!Owns(s, index)) {
+    return;
+  }
+  store.trusted = fresh != 0;
+  store.loaded_from.clear();
+  if (store.entries.empty()) {
+    return;
+  }
+  store.entries.clear();
+  ++store.version;
+  REXLOG_INFO("Refii player state: player {}'s values cleared here ({})", player,
+              fresh != 0 ? "a new hero" : "the player left");
+}
+
+extern "C" void refii_bridge_player_load_saved(int32_t player, const char* save_name) {
+  const int index = Index(player);
+  if (index < 0 || save_name == nullptr) {
+    return;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  Entries loaded;
+  const std::filesystem::path folder = SaveFolder(Root(s), save_name);
+  if (folder.empty()) {
+    REXLOG_WARN("Refii player state: no folder for save '{}' under '{}'; player {} keeps its saved values", save_name,
+                s.root, player);
+    return;
+  }
+  std::ifstream file(folder / std::string(refii::players::kSaveFileName));
+  std::string line;
+  while (file && std::getline(file, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    const size_t equals = line.find('=');
+    float value = 0.0f;
+    if (line.empty() || line[0] == '#' || equals == std::string::npos ||
+        !ValidKey(std::string_view(line).substr(0, equals)) ||
+        !ParseFloat(std::string_view(line).substr(equals + 1), value)) {
+      continue;
+    }
+    loaded[line.substr(0, equals)] = Entry{value, true};
+  }
+  Store& store = s.stores[index];
+  std::erase_if(store.entries, [](const auto& item) { return item.second.saved; });
+  for (const auto& [key, entry] : loaded) {
+    store.entries[key] = entry;
+  }
+  ++store.version;
+  store.trusted = true;
+  store.loaded_from = save_name;
+  REXLOG_INFO("Refii player state: player {} loaded {} saved value(s) from save '{}'", player, loaded.size(),
+              save_name);
+}
+
+extern "C" int32_t refii_bridge_player_loaded_from(int32_t player, const char* save_name) {
+  const int index = Index(player);
+  if (index < 0 || save_name == nullptr) {
+    return 0;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  return s.stores[index].loaded_from == save_name ? 1 : 0;
+}
+
+extern "C" int32_t refii_bridge_player_write_saved(int32_t player, const char* save_name) {
+  namespace fs = std::filesystem;
+  const int index = Index(player);
+  if (index < 0 || save_name == nullptr) {
+    return 0;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  if (!s.stores[index].trusted) {
+    REXLOG_WARN("Refii player state: player {}'s values are not known to be this hero's (its owner changed and "
+                "no save was loaded since); NOT written into save '{}'",
+                player, save_name);
+    return 0;
+  }
+  const fs::path folder = SaveFolder(Root(s), save_name);
+  if (folder.empty()) {
+    REXLOG_WARN("Refii player state: no folder for save '{}' under '{}'; player {}'s saved values NOT written",
+                save_name, s.root, player);
+    return 0;
+  }
+  std::ostringstream text;
+  text << "# Refii: this save's hero's mod values (refii_mod_player_*), key=value\n";
+  size_t count = 0;
+  for (const auto& [key, entry] : s.stores[index].entries) {
+    if (entry.saved) {
+      text << key << '=' << Number(entry.value) << '\n';
+      ++count;
+    }
+  }
+  const fs::path target = folder / std::string(refii::players::kSaveFileName);
+  const fs::path temporary = folder / (std::string(refii::players::kSaveFileName) + ".tmp");
+  {
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    file << text.str();
+    if (!file) {
+      REXLOG_WARN("Refii player state: could not write '{}'", temporary.string());
+      return 0;
+    }
+  }
+  std::error_code error;
+  fs::rename(temporary, target, error);
+  if (error) {
+    REXLOG_WARN("Refii player state: could not replace '{}': {}", target.string(), error.message());
+    return 0;
+  }
+  REXLOG_INFO("Refii player state: player {} wrote {} saved value(s) into save '{}'", player, count, save_name);
+  return 1;
+}
+
+namespace refii::players {
+
+void SetSaveRootResolver(SaveRootResolver resolver) {
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  s.resolver = resolver;
+  s.root.clear();
+}
+
+size_t TakeOutgoing(char* out, size_t capacity) {
+  if (out == nullptr || capacity == 0) {
+    return 0;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  const Clock::time_point now = Clock::now();
+  std::vector<std::string> lines;
+  for (int index = 0; index < 2; ++index) {
+    Store& store = s.stores[index];
+    if (Owns(s, index)) {
+      const bool changed = !store.sent_once || store.version != store.sent_version;
+      const auto since = now - store.sent_at;
+      if ((changed && since >= kChangedInterval) || since >= kRestateInterval) {
+        StateMessages(store, index, lines);
+        store.sent_version = store.version;
+        store.sent_at = now;
+        store.sent_once = true;
+      }
+    } else if (!store.pending.empty() && now - store.ops_sent_at >= kOperationInterval) {
+      OperationMessages(s, store, index, lines);
+      store.ops_sent_at = now;
+    }
+  }
+  size_t written = 0;
+  for (const std::string& line : lines) {
+    Append(out, capacity, written, line);
+  }
+  return written;
+}
+
+bool Receive(std::string_view message) {
+  const bool state = message.starts_with("ps.s=");
+  if (!state && !message.starts_with("ps.o=")) {
+    return false;
+  }
+  const std::string_view rest = message.substr(5);
+  const size_t bar = rest.find('|');
+  if (bar == std::string_view::npos) {
+    return true;
+  }
+  const std::string_view head = rest.substr(0, bar);
+  const std::string_view body = rest.substr(bar + 1);
+  const int index = head.starts_with("1,") ? 0 : (head.starts_with("2,") ? 1 : -1);
+  if (index < 0) {
+    return true;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  if (state) {
+    TakeState(s, index, head, body);
+  } else {
+    TakeOperations(s, index, head, body);
+  }
+  return true;
+}
+
+std::string Describe() {
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  std::string text = "owned=" + std::to_string(s.owned);
+  for (int index = 0; index < 2; ++index) {
+    const Store& store = s.stores[index];
+    text += " p" + std::to_string(index + 1) + "{v" + std::to_string(store.version) + " pending " +
+            std::to_string(store.pending.size());
+    for (const auto& [key, entry] : store.entries) {
+      text += " " + key + (entry.saved ? "*" : "") + "=" + Number(entry.value);
+    }
+    text += "}";
+  }
+  return text;
+}
+
+}  // namespace refii::players

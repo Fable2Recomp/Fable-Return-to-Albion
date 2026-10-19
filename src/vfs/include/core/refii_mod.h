@@ -226,6 +226,47 @@ inline void SetVector(PPCContext& ctx, int which, const float* xyz) {
 /// 1 or 2 when `entity` is that player's hero, 0 otherwise. Both players are principals.
 extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity);
 
+/// The player whose menus are open on this machine, 1 or 2: 2 on an online joiner's machine, and
+/// in local co-op while player two owns the pause; 1 otherwise. The book's pages read and act
+/// for this player, so a mod's ability row publishes and buys for them.
+extern "C" int32_t refii_mod_menu_player(uint8_t* base);
+
+// ---------------------------------------------------------------------------------------------
+// PLAYER STATE: a mod's values for one player, right on both co-op machines.
+// ---------------------------------------------------------------------------------------------
+//
+// Keep anything that belongs to a player here rather than in a mod's own array: a pool, a level,
+// a cooldown. `player` is 1 or 2, `key` "<mod>.<name>". The values are THE SAME ON BOTH MACHINES
+// of an online session: each player's are owned by the machine that plays that hero, and a write
+// on either machine reaches the owner (an add merges, so a spend on the host and a refill on the
+// joiner both count). SAVED values go home with the hero: they are written beside the save the
+// game writes that hero into — player one's main save, a local player two's own save, an online
+// joiner's own save on the joiner's machine — and come back when the game loads the hero from it.
+// So a mod written as if for one player is right for both, in every co-op mode.
+
+/// The value, or `fallback` when the player has none under `key`.
+extern "C" float refii_mod_player_value(int32_t player, const char* key, float fallback);
+/// Whether the player has a value under `key` (written to `out` when not null).
+extern "C" int32_t refii_mod_player_get(int32_t player, const char* key, float* out);
+/// Sets a session value (kept while the hero is in play, never saved).
+extern "C" void refii_mod_player_set(int32_t player, const char* key, float value);
+/// Adds to a value (a missing one counts as 0). `saved` keeps the key with the hero's save.
+extern "C" void refii_mod_player_add(int32_t player, const char* key, float delta, int32_t saved);
+/// Sets a SAVED value: kept with the hero's own save and back when it loads.
+extern "C" void refii_mod_player_save(int32_t player, const char* key, float value);
+/// Whether this machine plays that player's hero (both outside an online session; the host plays
+/// player one and the joiner player two inside one). Work that runs on its own every tick for a
+/// player — a refill, a timer — runs where the hero is played, so it runs once per session.
+extern "C" int32_t refii_mod_player_here(int32_t player);
+/// Whether the event being handled is the game's COPY of something the other co-op machine
+/// decides — a cloned action's animation event, a replicated cast's charge or launch, a hit
+/// response predicted for a body played elsewhere, a received experience change. The game runs
+/// those on both machines, so a handler runs on both: its verdict (cancel, a written field) applies
+/// on both, from the same player values, but PLAYER-STATE WRITES ARE DROPPED during the copy — the
+/// deciding machine makes them, so a spend counts once. A handler with an effect on the body itself
+/// (holding the hero in place) skips it during the copy; nothing else needs this.
+extern "C" int32_t refii_mod_event_replica(void);
+
 /// Whether `entity` is in the world: the flag the game's own target selector tests
 /// ((entity+0x90) & 0x40). False for 0.
 extern "C" int32_t refii_mod_entity_alive(uint8_t* base, uint32_t entity);

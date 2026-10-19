@@ -2831,6 +2831,7 @@ public partial class GameUi : Node
 		{
 			_hud.Seat = split ? Engine_UiSeats.Seat.PlayerOne : Engine_UiSeats.Seat.Whole;
 			_hud.HidesPartner = CoopSession.Side != CoopSession.Role.Solo && !CoopSession.LocalCoop;
+			_hud.LocalPlayerTwo = CoopSession.IsClient && !CoopSession.LocalCoop;
 		}
 
 		if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
@@ -6143,6 +6144,13 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// The players' mod values (core/player_state.h): the peer's statement of the player it
+			// plays, or its writes to the one this machine plays.
+			if (HostBridge.PlayerStateReceive(message))
+			{
+				continue;
+			}
+
 			// The peer's mods record; compared below once the peer stands (GameUiCoopMods).
 			if (TakeCoopMods(message))
 			{
@@ -6234,6 +6242,17 @@ public partial class GameUi : Node
 		// THE MODS MUST AGREE. Checked every frame once a peer stands; a mismatch is refused on
 		// this machine whichever side it is.
 		CheckCoopMods(role);
+
+		// THE PLAYERS' MOD VALUES, every frame: what changed goes at once (the store paces itself,
+		// and restates every half second), but only to a standing peer.
+		string[] playerState = HostBridge.PlayerStateOutgoing();
+		if (CoopSession.PeerStanding)
+		{
+			foreach (string line in playerState)
+			{
+				HostBridge.CoopSend(line);
+			}
+		}
 
 		if (role == 0u)
 		{

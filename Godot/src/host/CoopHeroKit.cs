@@ -331,7 +331,16 @@ public static class CoopHeroKit
 			Experience: hero.Experience,
 			TotalExperience: hero.TotalExperience,
 			Face: hero.Face, Fat: hero.Fat, Height: hero.Height, Tan: hero.Tan,
-			MeleeId: hero.Melee, RangedId: hero.Ranged);
+			MeleeId: hero.Melee, RangedId: hero.Ranged,
+			// The save's own dog: its breed, levels, tricks (named through this instance's GDB
+			// view, which a joiner in a world has), collar and name.
+			DogDefinition: hero.DogRecord,
+			DogSearching: hero.DogSniffing,
+			DogCombat: hero.DogCombat,
+			DogTricks: hero.DogTricks.ConvertAll(id => RecordName?.Invoke(id) ?? string.Empty)
+				.FindAll(name => name.Length != 0).ToArray(),
+			DogWorn: hero.DogWorn.ToArray(),
+			DogName: hero.DogName);
 
 		Godot.GD.Print($"[coop-kit] chosen save '{name}' read: {hero.Worn.Count} worn, " +
 			$"{hero.Inventory.Count} inventory record(s), melee '{Name(hero.Melee)}' (0x{hero.Melee:X8}), " +

@@ -19,7 +19,7 @@ namespace {
 
 void OnRoll(refii::mods::RollEvent& e) {
   const int player = Index(e.player);
-  if (player >= 0 && g_pools[player].value <= 0.0f) {
+  if (player >= 0 && Stamina(player) <= 0.0f) {
     e.cancel = true;
   }
 }

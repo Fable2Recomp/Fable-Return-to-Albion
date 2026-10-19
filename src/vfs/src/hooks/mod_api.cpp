@@ -44,6 +44,9 @@ namespace refii::vfs {
 /// The script system the startup scripts ran on (mod_lua_hooks.cpp), or 0 before a session.
 uint32_t ModScriptSystem();
 uint32_t HeroEntity(uint8_t* base);
+bool IsCoopJoiner(uint8_t* base);
+bool CoopSessionLive(uint8_t* base);
+bool MenusActForPlayerTwo(uint8_t* base);
 void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds);
 
 std::atomic<uint32_t> g_lua_generation{0};
@@ -278,9 +281,71 @@ extern "C" uint32_t refii_mod_lua_generation(void) {
 
 namespace refii::vfs {
 
+/// PLAYER STATE'S OWNERS AND HEROES (core/player_state.h), stated before the mods tick.
+///
+/// - Who plays which hero: both here outside an online session; inside one (a peer standing,
+///   CoopSessionLive) the host plays player one and the joiner player two (IsCoopJoiner). A
+///   joiner's player two came from the save it picked on the co-op screen (the co-op hero load
+///   fills it, player_state_hooks.cpp).
+/// - A new hero entity for a player drops that player's session values (a pool belongs to a
+///   body); the saved ones stay until a save load replaces them.
+/// - Player two leaving — the game's partner mode (game+0x11C: 1 online, 2 local co-op) dropping to
+///   none — empties player two here: those values were the partner's and went home with them.
+/// - A NEW GAME: player one's save name (SaveMgr+0, game+148, the LHString the save driver names
+///   player one's package by, sub_82444C40 0x82444D14) changing to a name no load gave it. New Game
+///   (sub_82379628) creates a fresh package and assigns its name there (sub_82445050, 0x82445358);
+///   the only other writers are the load (0x82446b34, which player_state_hooks.cpp sees) and the
+///   driver's first save of a game with no name (0x824455a4). Player one's values were the old
+///   save's hero's; the new hero starts with none.
+void DrivePlayerState(uint8_t* base) {
+  static uint32_t heroes[2] = {0u, 0u};
+  static uint32_t partner_mode = 0u;
+  static std::string named;
+
+  const bool live = CoopSessionLive(base);
+  refii_bridge_player_set_owned(!live ? 3u : (IsCoopJoiner(base) ? 2u : 1u));
+
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(kGameRoot));
+  const uint32_t game = Plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  if (!Plausible(game)) {
+    return;
+  }
+
+  const uint32_t mode = LoadGuestU32(base, game + 0x11Cu);
+  if (partner_mode != 0u && mode == 0u) {
+    refii_bridge_player_clear(2, 0);
+  }
+  partner_mode = mode;
+
+  constexpr uint32_t kSaveManager = 148u;
+  const uint32_t rep = LoadGuestU32(base, game + kSaveManager);
+  const uint32_t text = Plausible(rep) ? LoadGuestU32(base, rep) : 0u;
+  const uint32_t length = Plausible(rep) ? LoadGuestU32(base, rep + 4u) : 0u;
+  const std::string name = Plausible(text) && length != 0u && length <= 64u
+                               ? std::string(reinterpret_cast<const char*>(base + text), length)
+                               : std::string();
+  if (name != named) {
+    if (!named.empty() && !name.empty() && refii_bridge_player_loaded_from(1, name.c_str()) == 0) {
+      refii_bridge_player_clear(1, 1);
+    }
+    named = name;
+  }
+
+  for (int32_t player = 1; player <= 2; ++player) {
+    const uint32_t hero = refii_mod_player_hero(base, player);
+    if (hero != 0u && hero != heroes[player - 1]) {
+      refii_bridge_player_new_hero(player);
+    }
+    if (hero != 0u) {
+      heroes[player - 1] = hero;
+    }
+  }
+}
+
 /// Runs every mod's tick callback with the real seconds since the last guest tick. Called from
 /// OnGuestTick, on the guest tick thread, where guest calls are legal.
 void RunModTicks(PPCContext& ctx, uint8_t* base) {
+  DrivePlayerState(base);
   std::vector<refii_mod_tick_fn>& ticks = Ticks();
 
   using Clock = std::chrono::steady_clock;
@@ -329,6 +394,45 @@ extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity) {
     return 2;
   }
   return 0;
+}
+
+extern "C" int32_t refii_mod_menu_player(uint8_t* base) {
+  return refii::vfs::IsCoopJoiner(base) || refii::vfs::MenusActForPlayerTwo(base) ? 2 : 1;
+}
+
+// --- player state (core/player_state.h) -------------------------------------------------------
+
+extern "C" float refii_mod_player_value(int32_t player, const char* key, float fallback) {
+  float value = fallback;
+  return key != nullptr && refii_bridge_player_get(player, key, std::strlen(key), &value) != 0 ? value : fallback;
+}
+
+extern "C" int32_t refii_mod_player_get(int32_t player, const char* key, float* out) {
+  return key != nullptr ? refii_bridge_player_get(player, key, std::strlen(key), out) : 0;
+}
+
+extern "C" void refii_mod_player_set(int32_t player, const char* key, float value) {
+  if (key != nullptr) {
+    refii_bridge_player_write(player, key, std::strlen(key), value, 0, 0);
+  }
+}
+
+extern "C" void refii_mod_player_add(int32_t player, const char* key, float delta, int32_t saved) {
+  if (key != nullptr) {
+    refii_bridge_player_write(player, key, std::strlen(key), delta, 1, saved);
+  }
+}
+
+extern "C" void refii_mod_player_save(int32_t player, const char* key, float value) {
+  if (key != nullptr) {
+    refii_bridge_player_write(player, key, std::strlen(key), value, 0, 1);
+  }
+}
+
+extern "C" int32_t refii_mod_event_replica(void) { return refii_bridge_player_in_replica(); }
+
+extern "C" int32_t refii_mod_player_here(int32_t player) {
+  return (player == 1 || player == 2) && ((refii_bridge_player_owned() >> (player - 1)) & 1u) != 0u ? 1 : 0;
 }
 
 extern "C" int32_t refii_mod_entity_alive(uint8_t* base, uint32_t entity) {

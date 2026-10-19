@@ -23,7 +23,8 @@ void OnBlock(refii::mods::BlockEvent& e) {
     return;
   }
   const float cost = (e.damage > 0.0f ? e.damage : 0.0f) * Knob("souls_combat.block_cost_per_damage", kBlockCostPerDamage);
-  const bool holds = g_pools[player].value >= cost && g_pools[player].value > 0.0f;
+  const float stamina = Stamina(player);
+  const bool holds = stamina >= cost && stamina > 0.0f;
   if (!holds) {
     e.cancel = true;  // The guard breaks and the hit lands in full: that is the whole price.
     return;

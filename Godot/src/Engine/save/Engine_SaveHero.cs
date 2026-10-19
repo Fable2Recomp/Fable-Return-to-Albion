@@ -61,6 +61,15 @@ public static class Engine_SaveHero
 		public List<string> UnlockedTitles = new();
 		public List<string> FreeTitles = new();
 		public uint Title;
+
+		/// <summary>The hero's dog, from its own entity in the same save: its definition (the
+		/// breed; 0 when the save has no dog), levels, learned tricks (record ids), given name
+		/// and what it wears.</summary>
+		public uint DogRecord;
+		public int DogSniffing, DogCombat;
+		public List<uint> DogTricks = new();
+		public string DogName = string.Empty;
+		public List<uint> DogWorn = new();
 	}
 
 	public sealed record Augmentation(uint Primary, uint Secondary);
@@ -392,6 +401,8 @@ public static class Engine_SaveHero
 			}
 		}
 
+		ReadDog(entities, hero);
+
 		if (heroEntity?.Child("EntityComponents") is not { } components)
 		{
 			int total = 0;
@@ -511,6 +522,79 @@ public static class Engine_SaveHero
 		}
 
 		return true;
+	}
+
+	/// <summary>
+	/// The hero's dog: the entity whose components include the dog's own (the one that saves
+	/// `SniffingLevel`), skipping a co-op partner's dog (`RefiiPartnerDog`). Its `RecordID` is
+	/// the definition — the breed — in the same record-id space the inventory uses.
+	/// </summary>
+	private static void ReadDog(Node entities, Hero hero)
+	{
+		foreach (Node entity in entities.All("Entity"))
+		{
+			if (entity.Child("Name")?.Text is "RefiiPartnerDog" ||
+				entity.Child("EntityComponents") is not { } components)
+			{
+				continue;
+			}
+
+			Node? dog = null;
+			foreach (Node ec in components.All("EC"))
+			{
+				if (ec.Child("SniffingLevel") is not null)
+				{
+					dog = ec;
+					break;
+				}
+			}
+
+			if (dog is null)
+			{
+				continue;
+			}
+
+			hero.DogRecord = entity.Child("RecordID")?.Text is uint record ? record : 0u;
+			hero.DogSniffing = dog.Child("SniffingLevel")?.Text is int sniffing ? sniffing : 0;
+			hero.DogCombat = dog.Child("CombatLevel")?.Text is int combat ? combat : 0;
+			foreach (Node trick in dog.All("TrickRecordID"))
+			{
+				if (trick.Text is uint id && id != 0u)
+				{
+					hero.DogTricks.Add(id);
+				}
+			}
+
+			var inventory = new List<(uint Record, int Count)>();
+			foreach (Node ec in components.All("EC"))
+			{
+				if (ec.Child("PlayerDefinedName")?.Text is string name)
+				{
+					hero.DogName = name;
+				}
+
+				foreach (Node item in ec.All("InventoryItem"))
+				{
+					if (item.Child("RecordID")?.Text is uint r && r != 0u)
+					{
+						inventory.Add((r, 1));
+					}
+				}
+			}
+
+			foreach (Node ec in components.All("EC"))
+			{
+				foreach (Node modifier in ec.All("Modifier"))
+				{
+					if (modifier.Child("InventoryIndex")?.Text is int index && ItemAtUnit(inventory, index) is uint worn)
+					{
+						hero.DogWorn.Add(worn);
+					}
+				}
+			}
+
+			return;
+		}
 	}
 
 	private static InventoryInstance? ReadInventoryInstance(Node item)

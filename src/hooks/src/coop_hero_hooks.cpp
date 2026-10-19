@@ -648,6 +648,28 @@ void RefiiCoopNoCameraReceive(PPCRegister& r1) {
   g_peer_have = true;
 }
 
+// PLAYER TWO'S SCREEN. "On screen" for the guest is player one's camera: `sub_821DD3B0(out,
+// manager)` copies the manager's block (`sub_82265F90`) and the screen tests, the dog's
+// off-screen teleport (`sub_82811A70`) and IsEntity/PositionVisibleOnScreen take it from
+// `sub_821F87C8`'s manager. While code runs for player two (their dog), the block is player
+// two's view — the same block the host keeps for the free-roam peer view (split screen: player
+// two's manager; online: the joiner's streamed camera). Without one, the shipped block.
+namespace {
+thread_local int t_partner_screen = 0;
+}  // namespace
+
+extern "C" void RefiiCoopPartnerScreen(int on) { t_partner_screen += on != 0 ? 1 : -1; }
+
+extern "C" REX_FUNC(__imp__rex_lhCamera_ScreenBlock);
+
+REX_EXTERN(rex_lhCamera_ScreenBlock) {
+  if (t_partner_screen > 0 && PeerCone(ctx, base) != 0u && g_peer_guest != 0u) {
+    std::memmove(base + ctx.r3.u32, base + g_peer_guest, kCameraBlockBytes);
+    return;
+  }
+  __imp__rex_lhCamera_ScreenBlock(ctx, base);
+}
+
 REX_EXTERN(rex_lhCamera_CurrentBlock) {
   if (t_peer_view && g_peer_guest != 0u) {
     ctx.r3.u64 = g_peer_guest;

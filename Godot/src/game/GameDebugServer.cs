@@ -2257,6 +2257,8 @@ public partial class GameDebugServer : Node
 						["two"] = Refii.Ui.Engine_UiPageProviders.CoopPlayerTwoName,
 					},
 					["held"] = held,
+					// The players' mod values (core/player_state.h): owners, versions, pending writes, keys.
+					["playerState"] = Refii.Host.HostBridge.PlayerStateDescribe(),
 					["heroState"] = new Dictionary<string, object?>
 					{
 						["localKnown"] = Refii.Host.CoopHeroKit.Local.Known,

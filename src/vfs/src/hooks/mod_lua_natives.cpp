@@ -19,7 +19,10 @@
 //   experience(e, pool) · give_experience(e, pool, amount) · spend_experience(e, pool, amount)
 //   ability_level(e, type) · cast_spell(caster, type, targeted, target, level)
 //   relation(a, b) · alive(e) · definition(e) · name(e) · player_of(e) · level_name()
-//   player_hero(p) · local_hero() · renown(e) · morality(e) · purity(e) · physique(e) -> fat, height
+//   player_hero(p) · local_hero() · menu_player() · player_value(p, key [, fallback])
+//   player_set(p, key, v) · player_add(p, key, d [, saved]) · player_save(p, key, v) · player_here(p)
+//   event_replica()
+//   renown(e) · morality(e) · purity(e) · physique(e) -> fat, height
 //   age(e) · inventory(e) · equipped(e) -> melee, ranged · near(x, y, z, r [, creatures])
 //   line_of_sight(x1, y1, z1, x2, y2, z2) · spawn(def, x, y, z) · entity(handle) · handle(entity)
 //   _write(kind, field, value) · _error(text)
@@ -43,6 +46,7 @@ extern "C" int RefiiCoopSplitScreen(void);
 extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
 extern "C" void RefiiCoopSetPartnerDog(uint32_t dog);
 extern "C" void RefiiCoopSetJobWorker(int player);
+extern "C" void RefiiCoopPartnerScreen(int on);
 extern "C" void RefiiCoopSetEstateBuyer(int player);
 
 PPC_EXTERN_FUNC(rex_lua_pushcclosure);
@@ -491,6 +495,12 @@ REFII_LUA_NATIVE(NativeJobWorker) {
   RESULTS(0);
 }
 
+// Refii._partner_screen(on): "on screen" answers player two's view until turned off (nests).
+REFII_LUA_NATIVE(NativePartnerScreen) {
+  RefiiCoopPartnerScreen(lua.Boolean(1) ? 1 : 0);
+  RESULTS(0);
+}
+
 REFII_LUA_NATIVE(NativeEstateBuyer) {
   RefiiCoopSetEstateBuyer(lua.Int(1));
   RESULTS(0);
@@ -498,6 +508,64 @@ REFII_LUA_NATIVE(NativeEstateBuyer) {
 
 REFII_LUA_NATIVE(NativeLocalHero) {
   lua.PushHandle(refii_mod_local_hero(lua.base));
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeMenuPlayer) {
+  lua.PushNumber(refii_mod_menu_player(lua.base));
+  RESULTS(1);
+}
+
+// PLAYER STATE (core/refii_mod.h refii_mod_player_*): per-player values, the same on both co-op
+// machines, the saved ones kept with the hero's own save.
+REFII_LUA_NATIVE(NativePlayerValue) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  float value = 0.0f;
+  if (key[0] != 0 && refii_mod_player_get(lua.Int(1), key, &value) != 0) {
+    lua.PushNumber(value);
+  } else if (lua.Type(3) == kTypeNumber) {
+    lua.PushNumber(lua.Number(3));
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativePlayerSet) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  if (key[0] != 0) {
+    refii_mod_player_set(lua.Int(1), key, static_cast<float>(lua.Number(3)));
+  }
+  RESULTS(0);
+}
+
+REFII_LUA_NATIVE(NativePlayerAdd) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  if (key[0] != 0) {
+    refii_mod_player_add(lua.Int(1), key, static_cast<float>(lua.Number(3)), lua.Boolean(4) ? 1 : 0);
+  }
+  RESULTS(0);
+}
+
+REFII_LUA_NATIVE(NativePlayerSave) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  if (key[0] != 0) {
+    refii_mod_player_save(lua.Int(1), key, static_cast<float>(lua.Number(3)));
+  }
+  RESULTS(0);
+}
+
+REFII_LUA_NATIVE(NativePlayerHere) {
+  lua.PushBoolean(refii_mod_player_here(lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeEventReplica) {
+  lua.PushBoolean(refii_mod_event_replica() != 0);
   RESULTS(1);
 }
 
@@ -728,11 +796,19 @@ Native g_natives[] = {
     {"level_name", &NativeLevelName, 0},
     {"player_hero", &NativePlayerHero, 0},
     {"local_hero", &NativeLocalHero, 0},
+    {"menu_player", &NativeMenuPlayer, 0},
+    {"player_value", &NativePlayerValue, 0},
+    {"player_set", &NativePlayerSet, 0},
+    {"player_add", &NativePlayerAdd, 0},
+    {"player_save", &NativePlayerSave, 0},
+    {"player_here", &NativePlayerHere, 0},
+    {"event_replica", &NativeEventReplica, 0},
     {"split_screen", &NativeSplitScreen, 0},
     {"player_dog", &NativePlayerDog, 0},
     {"_set_partner_dog", &NativeSetPartnerDog, 0},
     {"_job_worker", &NativeJobWorker, 0},
     {"_estate_buyer", &NativeEstateBuyer, 0},
+    {"_partner_screen", &NativePartnerScreen, 0},
     {"renown", &NativeRenown, 0},
     {"morality", &NativeMorality, 0},
     {"purity", &NativePurity, 0},

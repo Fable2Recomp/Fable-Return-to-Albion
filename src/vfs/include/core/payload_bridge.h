@@ -373,6 +373,38 @@ refii_mod_verdict_fn refii_bridge_mod_verdict_handler(void);
 void refii_bridge_mod_set_verdict_mask(uint64_t mask);
 uint64_t refii_bridge_mod_verdict_mask(void);
 
+// PLAYER STATE (state in src/core/player_state.cpp, the contract in core/player_state.h): a mod's
+// per-player values, owned by the machine that plays the hero and the same on both machines.
+// `player` is 1 or 2; a key is "<mod>.<name>".
+// - read: 1 and the value when the key is set for that player, else 0;
+int32_t refii_bridge_player_get(int32_t player, const char* key, size_t key_length, float* out);
+// - write: `add` adds `value` instead of setting it; `saved` keeps the key with the player's save;
+void refii_bridge_player_write(int32_t player, const char* key, size_t key_length, float value, int32_t add,
+                               int32_t saved);
+// - the payload states which players this machine plays (bit 0 player one, bit 1 player two),
+//   every tick; a player gaining an owner here keeps what it holds, one losing it waits for the peer;
+void refii_bridge_player_set_owned(uint32_t mask);
+uint32_t refii_bridge_player_owned(void);
+// - a new hero for `player`: its session values go; its saved values stay until a save load
+//   replaces them;
+void refii_bridge_player_new_hero(int32_t player);
+// - everything the player held goes: `fresh` for a new hero not loaded from a save (a new game —
+//   its values may be written into the save it makes), 0 for a player who left;
+void refii_bridge_player_clear(int32_t player, int32_t fresh);
+// - the mod event bus is running handlers for the game's COPY of something the other co-op
+//   machine decides (on 1, off 0, nested): writes are dropped meanwhile, since the deciding machine
+//   makes the same ones;
+void refii_bridge_player_replica(int32_t on);
+int32_t refii_bridge_player_in_replica(void);
+// - the game loaded `player`'s hero from the save named `save_name` (its content file name):
+//   the saved values become that folder's, or none when it keeps none;
+void refii_bridge_player_load_saved(int32_t player, const char* save_name);
+// - whether `player`'s saved values were last loaded from the save named `save_name`;
+int32_t refii_bridge_player_loaded_from(int32_t player, const char* save_name);
+// - the game has just written `player`'s hero into the save named `save_name`: its saved values
+//   go into that folder. Returns 1 when written.
+int32_t refii_bridge_player_write_saved(int32_t player, const char* save_name);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

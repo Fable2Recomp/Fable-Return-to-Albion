@@ -581,7 +581,9 @@ public partial class RefiiModApi : RefCounted
 			string.Join(", ", ModApi.Events.Select(e => e.Name)) + ".",
 		["native"] = "core/refii_mod.h: REX_EXTERN(<config name>) { ... } overrides a guest function, " +
 			"REFII_MOD_ORIGINAL(name) declares the game's own body as __imp__name; REFII_MOD_ON_TICK, " +
-			"refii_mod_player_hero, refii_mod_local_hero, refii_mod_component, refii_mod_run_game_lua, " +
+			"refii_mod_player_hero, refii_mod_local_hero, refii_mod_menu_player, refii_mod_player_value/set/add/save/here " +
+			"(per-player values, the same on both co-op machines, saved ones kept with the hero's own save), " +
+			"refii_mod_component, refii_mod_run_game_lua, " +
 			"refii::mods::CallGuest/CallVirtual and the Load/Store helpers. Hook functions by their " +
 			"config names, never sub_ addresses. Two mods hooking one function run as a chain in load " +
 			"order (the higher mod's hook calls the lower's through __imp__name, the lowest calls the " +
