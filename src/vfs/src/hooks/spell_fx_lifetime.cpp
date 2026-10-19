@@ -138,8 +138,7 @@ uint32_t CallGuest(PPCContext& ctx, uint8_t* base, uint32_t address, uint32_t r3
   work.r1.u32 = (ctx.r1.u32 - 0x400u) & ~0xFu;
   work.r3.u32 = r3;
   work.r4.u32 = r4;
-  function(work, base);
-  return work.r3.u32;
+  return refii::vfs::SafeInvokeGuestCall(function, work, base) ? work.r3.u32 : 0u;
 }
 
 }  // namespace

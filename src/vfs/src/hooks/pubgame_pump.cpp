@@ -89,7 +89,7 @@ void Call(PPCContext& ctx, uint8_t* base, uint32_t address, Setup setup) {
 
   const PPCContext saved = ctx;
   setup(ctx);
-  function(ctx, base);
+  refii::vfs::SafeInvokeGuestCall(function, ctx, base);
   ctx = saved;
 }
 

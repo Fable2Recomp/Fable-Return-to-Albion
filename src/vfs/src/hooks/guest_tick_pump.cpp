@@ -39,7 +39,12 @@
 #include <cstring>
 #include <map>
 #include <mutex>
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <signal.h>
 #endif
 #include <optional>
@@ -371,6 +376,23 @@ PPC_EXTERN_FUNC(rex_lhGuiPresentation_GetFloatParam);
 PPC_EXTERN_FUNC(rex_lhGuiPresentation_SetFloatParam);
 
 namespace refii::vfs {
+
+static bool ReadEnvFlag(const char* name, bool default_value) {
+#if defined(_WIN32)
+  char buf[32];
+  const DWORD len = ::GetEnvironmentVariableA(name, buf, static_cast<DWORD>(sizeof(buf)));
+  if (len == 0 || len >= sizeof(buf)) {
+    return default_value;
+  }
+  return default_value ? (buf[0] != '0') : (buf[0] == '1');
+#else
+  const char* value = std::getenv(name);
+  if (value == nullptr) {
+    return default_value;
+  }
+  return default_value ? (value[0] != '0') : (value[0] == '1');
+#endif
+}
 
 // Defined with the co-op helpers further down; the dispatchers above them need these.
 // (A declaration OUTSIDE this namespace named a different, undefined function — and the
@@ -5943,21 +5965,31 @@ std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle) {
     return std::string();
   }
 
-  const uint32_t block = LoadGuestU32(base, handle);
-  if (!plausible(block)) {
+  uint32_t block = 0;
+  if (!TryLoadGuestU32(base, handle, &block) || !plausible(block)) {
     return std::string();
   }
 
-  const uint32_t chars = LoadGuestU32(base, block);
-  const uint32_t length = LoadGuestU32(base, block + 4u);
-  if (!plausible(chars) || length == 0u || length > 256u) {
+  uint32_t chars = 0;
+  uint32_t length = 0;
+  if (!TryLoadGuestU32(base, block, &chars) ||
+      !TryLoadGuestU32(base, block + 4u, &length) ||
+      !plausible(chars) || length == 0u || length > 256u) {
     return std::string();
   }
+
+  uint8_t raw[512];
+  const size_t readable = TryCopyGuestBytes(base, chars, raw, length * 2u);
+  if (readable < 2u) {
+    return std::string();
+  }
+  const uint32_t max_units = std::min<uint32_t>(length, static_cast<uint32_t>(readable / 2u));
 
   std::string value;
-  value.reserve(length);
-  for (uint32_t i = 0; i < length; ++i) {
-    const uint16_t unit = LoadGuestU16(base, chars + (i * 2u));
+  value.reserve(max_units);
+  for (uint32_t i = 0; i < max_units; ++i) {
+    const uint16_t unit = static_cast<uint16_t>(
+        (static_cast<uint32_t>(raw[i * 2u]) << 8) | raw[i * 2u + 1u]);
     if (unit == 0) {
       break;
     }
@@ -5980,12 +6012,16 @@ std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle) {
 void SampleFamily(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kWorldMapScreenId = 23u;
 
+  static uint32_t s_family_cadence = 0u;
   uint32_t owner = 0;
   uint32_t screen_id = 0;
   if (!InGameScreenRoots(base, &owner, &screen_id) || screen_id != kWorldMapScreenId) {
+    s_family_cadence = 0u;
     return;
   }
-
+  if ((s_family_cadence++ % 4u) != 0u) {
+    return;
+  }
 
   // Claimed by lowering r1, so the collector's own frames land below the vector it is handed.
   const PPCContext saved = ctx;
@@ -5998,7 +6034,10 @@ void SampleFamily(PPCContext& ctx, uint8_t* base) {
   ctx = saved;
   ctx.r1.u32 = frame;
   ctx.r3.u32 = vector;
-  rex_lhWorldMap_BuildFamilyList(ctx, base);
+  if (!SafeInvokeGuestCall(rex_lhWorldMap_BuildFamilyList, ctx, base)) {
+    ctx = saved;
+    return;
+  }
   ctx = saved;
 
   const uint32_t begin = LoadGuestU32(base, vector + 4u);
@@ -6071,8 +6110,7 @@ void SampleFamily(PPCContext& ctx, uint8_t* base) {
           ctx.r1.u32 = frame;
           ctx.r3.u32 = r3;
           ctx.r4.u32 = r4;
-          fn(ctx, base);
-          const uint32_t answer = ctx.r3.u32;
+          const uint32_t answer = SafeInvokeGuestCall(fn, ctx, base) ? ctx.r3.u32 : 0u;
           ctx = saved;
           return answer;
         };
@@ -6119,8 +6157,10 @@ void SampleFamily(PPCContext& ctx, uint8_t* base) {
         ctx.r1.u32 = frame;
         ctx.r3.u32 = manager;
         ctx.r4.u32 = at + 16u;
-        rex_lhRegionManager_FindRegionOwningLevel(ctx, base);
-        const uint32_t region = ctx.r3.u32;
+        const uint32_t region =
+            SafeInvokeGuestCall(rex_lhRegionManager_FindRegionOwningLevel, ctx, base)
+                ? ctx.r3.u32
+                : 0u;
         ctx = saved;
 
         std::snprintf(member.region, sizeof(member.region), "%s",
@@ -6136,7 +6176,7 @@ void SampleFamily(PPCContext& ctx, uint8_t* base) {
   ctx = saved;
   ctx.r1.u32 = frame;
   ctx.r3.u32 = vector;
-  rex_lhFamilyMemberVector_Destroy(ctx, base);
+  SafeInvokeGuestCall(rex_lhFamilyMemberVector_Destroy, ctx, base);
   ctx = saved;
 }
 
@@ -6145,9 +6185,16 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   const uint32_t kGameRoot = refii::guest::Address(0x83496AB8u);
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
+  static uint32_t s_last_world_map_region = ~0u;
   uint32_t owner = 0;
   uint32_t screen_id = 0;
   if (!InGameScreenRoots(base, &owner, &screen_id) || screen_id != kWorldMapScreenId) {
+    s_last_world_map_region = ~0u;
+    return;
+  }
+
+  const uint32_t wanted = RequestedWorldMapRegion();
+  if (wanted == s_last_world_map_region) {
     return;
   }
 
@@ -6205,7 +6252,6 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   }
 
   WorldMapRegion region;
-  uint32_t wanted = RequestedWorldMapRegion();
   uint32_t seen = 0;
   uint32_t name_handle = 0;
   for (uint32_t at = begin; at < end; at += 8u) {
@@ -6281,6 +6327,7 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
 
   const auto provider = [&](void (*call)(PPCContext&, uint8_t*), char* into, std::size_t cap,
                            uint32_t r5 = 0u) {
+    into[0] = '\0';
     StoreGuestU32(base, out, 0u);
 
     ctx = saved;
@@ -6288,7 +6335,14 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = out;
     ctx.r4.u32 = level;
     ctx.r5.u32 = r5;
-    call(ctx, base);
+    if (!SafeInvokeGuestCall(call, ctx, base)) {
+      static std::atomic<bool> warned{false};
+      if (!warned.exchange(true)) {
+        REXLOG_WARN("Refii: guest provider call trapped or faulted; stat will be blank");
+      }
+      ctx = saved;
+      return;
+    }
 
     // WIDE, not ASCII. `out` holds the inner and the characters hang off inner+0 — that part
     // was right — but this is the guest's DISPLAY-TEXT class, UTF-16 big-endian, and the ASCII
@@ -6315,7 +6369,7 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
     ctx = saved;
     ctx.r1.u32 = frame;
     ctx.r3.u32 = out;
-    rex_lhWideString_Dtor(ctx, base);
+    SafeInvokeGuestCall(rex_lhWideString_Dtor, ctx, base);
     ctx = saved;
   };
 
@@ -6327,7 +6381,19 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   provider(rex_lhRegionStats_FormatChestsText, region.chests, sizeof(region.chests));
   provider(rex_lhRegionStats_FormatDigSpotsText, region.digspots, sizeof(region.digspots));
   provider(rex_lhRegionStats_FormatDiveSpotsText, region.divespots, sizeof(region.divespots));
-  provider(rex_lhRegionStats_FormatGargoylesText, region.gargoyles, sizeof(region.gargoyles));
+
+  // The original game (sub_829AB0E0) only calls rex_lhRegionStats_FormatGargoylesText if the
+  // region is "MysteryIsland". Calling it on any other region violates the DLC component's
+  // expectations and triggers MSVC iterator debug assertions (__trap).
+  const bool is_mystery_island =
+      (std::strcmp(region.name, "MysteryIsland") == 0) ||
+      (std::strstr(region.name, "MysteryIsland") != nullptr);
+  if (is_mystery_island) {
+    provider(rex_lhRegionStats_FormatGargoylesText, region.gargoyles, sizeof(region.gargoyles));
+  } else {
+    region.gargoyles[0] = '\0';
+  }
+
   provider(rex_lhRegionStats_FormatSilverKeysText, region.silver_keys, sizeof(region.silver_keys));
   provider(rex_lhRegionStats_FormatMerchantsText, region.merchants, sizeof(region.merchants));
 
@@ -6338,8 +6404,11 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
   ctx = saved;
   ctx.r1.u32 = frame;
   ctx.r3.u32 = level;
-  rex_lhRegionStats_GetEconomyRating(ctx, base);
-  region.stars = static_cast<int32_t>(ctx.r3.u32);
+  if (SafeInvokeGuestCall(rex_lhRegionStats_GetEconomyRating, ctx, base)) {
+    region.stars = static_cast<int32_t>(ctx.r3.u32);
+  } else {
+    region.stars = 0;
+  }
   ctx = saved;
 
   // THE MINIMAP PAGE'S KEYS, taken the way `sub_829ABFC0` takes them: the region's first level
@@ -6370,36 +6439,40 @@ void SampleWorldMapRegion(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = world_handle;
     ctx.r4.u32 = world_text;
     ctx.r5.u32 = 0xFFFFFFFFu;  // NUL-terminated, as the event constructor is handed it
-    rex_lhCharString_CtorFromCStr(ctx, base);
+    if (SafeInvokeGuestCall(rex_lhCharString_CtorFromCStr, ctx, base)) {
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = inner;
+      ctx.r4.u32 = world_handle;
+      ctx.r5.u32 = level;
+      if (SafeInvokeGuestCall(rex_lhWorld_ComputeWorldLevelFnv1Key, ctx, base)) {
+        region.level_key = ctx.r3.u32;
+      }
 
-    ctx = saved;
-    ctx.r1.u32 = frame;
-    ctx.r3.u32 = inner;
-    ctx.r4.u32 = world_handle;
-    ctx.r5.u32 = level;
-    rex_lhWorld_ComputeWorldLevelFnv1Key(ctx, base);
-    region.level_key = ctx.r3.u32;
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = world_handle;
+      SafeInvokeGuestCall(rex_lhCharString_Dtor, ctx, base);
 
-    ctx = saved;
-    ctx.r1.u32 = frame;
-    ctx.r3.u32 = world_handle;
-    rex_lhCharString_Dtor(ctx, base);
-
-    ctx = saved;
-    ctx.r1.u32 = frame;
-    ctx.r3.u32 = inner;
-    ctx.r4.u32 = region.level_key;
-    rex_lhWorld_LookupScenarioNameByLevelKey(ctx, base);
-    const uint32_t scenario_slot = ctx.r3.u32;
-    const uint32_t scenario_handle =
-        plausible(scenario_slot) ? LoadGuestU32(base, scenario_slot) : 0u;
-    std::snprintf(region.scenario, sizeof(region.scenario), "%s",
-                  plausible(scenario_handle) ? ReadGuestLhString(base, scenario_handle).c_str()
-                                             : "");
-    ctx = saved;
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = inner;
+      ctx.r4.u32 = region.level_key;
+      if (SafeInvokeGuestCall(rex_lhWorld_LookupScenarioNameByLevelKey, ctx, base)) {
+        // `rex_lhWorld_LookupScenarioNameByLevelKey` (`0x8231E258`) returns the `LHString*`
+        // handle slot address directly (`v7 + 4` in `World+88`, or `&dword_834A5E78`).
+        // Do NOT dereference `scenario_slot` before passing it to `ReadGuestLhString`.
+        const uint32_t scenario_slot = ctx.r3.u32;
+        std::snprintf(region.scenario, sizeof(region.scenario), "%s",
+                      plausible(scenario_slot) ? ReadGuestLhString(base, scenario_slot).c_str()
+                                               : "");
+      }
+      ctx = saved;
+    }
   }
 
   PublishWorldMapRegion(region);
+  s_last_world_map_region = wanted;
 }
 
 /// ONE JOB'S DISTANCE AND TRAVEL TIME — the world map's job page.
@@ -6418,13 +6491,18 @@ void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kQuestLogComponent = 102u;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
+  static uint32_t s_last_quest = ~0u;
   uint32_t owner = 0;
   uint32_t screen_id = 0;
   if (!InGameScreenRoots(base, &owner, &screen_id) || screen_id != kWorldMapScreenId) {
+    s_last_quest = ~0u;
     return;
   }
 
   const uint32_t wanted = RequestedQuestTravel();
+  if (wanted == s_last_quest) {
+    return;
+  }
   QuestTravel journey;
   journey.record = wanted;
   if (wanted == 0u) {
@@ -6482,13 +6560,17 @@ void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
 
   const auto provider = [&](void (*call)(PPCContext&, uint8_t*), char* into, std::size_t cap,
                             uint32_t r5) {
+    into[0] = '\0';
     StoreGuestU32(base, out, 0u);
     ctx = saved;
     ctx.r1.u32 = frame;
     ctx.r3.u32 = out;
     ctx.r4.u32 = level;
     ctx.r5.u32 = r5;
-    call(ctx, base);
+    if (!SafeInvokeGuestCall(call, ctx, base)) {
+      ctx = saved;
+      return;
+    }
 
     // WIDE, like every display string the guest builds — see ReadGuestWideString.
     std::snprintf(into, cap, "%s", ReadGuestWideString(base, out).c_str());
@@ -6496,7 +6578,7 @@ void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
     ctx = saved;
     ctx.r1.u32 = frame;
     ctx.r3.u32 = out;
-    rex_lhWideString_Dtor(ctx, base);
+    SafeInvokeGuestCall(rex_lhWideString_Dtor, ctx, base);
     ctx = saved;
   };
 
@@ -6518,14 +6600,16 @@ void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
     ctx.r1.u32 = frame;
     ctx.r3.u32 = out;
     ctx.f1.f64 = static_cast<double>(remaining);
-    rex_lhGuiText_FormatDaysRemaining(ctx, base);
-    std::snprintf(journey.days, sizeof(journey.days), "%s",
-                  ReadGuestWideString(base, out).c_str());
-
-    ctx = saved;
-    ctx.r1.u32 = frame;
-    ctx.r3.u32 = out;
-    rex_lhWideString_Dtor(ctx, base);
+    if (SafeInvokeGuestCall(rex_lhGuiText_FormatDaysRemaining, ctx, base)) {
+      std::snprintf(journey.days, sizeof(journey.days), "%s",
+                    ReadGuestWideString(base, out).c_str());
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = out;
+      SafeInvokeGuestCall(rex_lhWideString_Dtor, ctx, base);
+    } else {
+      journey.days[0] = '\0';
+    }
     ctx = saved;
   }
 
@@ -6556,14 +6640,15 @@ void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
     ctx.r1.u32 = frame;
     ctx.r3.u32 = manager;
     ctx.r4.u32 = level;
-    rex_lhRegionManager_FindRegionOwningLevel(ctx, base);
-
-    const uint32_t region = ctx.r3.u32;
+    if (SafeInvokeGuestCall(rex_lhRegionManager_FindRegionOwningLevel, ctx, base)) {
+      const uint32_t region = ctx.r3.u32;
+      // NARROW. The filler releases it with `sub_82214DD8`, not the wide destructor.
+      std::snprintf(journey.region, sizeof(journey.region), "%s",
+                    ReadGuestLhString(base, region).c_str());
+    } else {
+      journey.region[0] = '\0';
+    }
     ctx = saved;
-
-    // NARROW. The filler releases it with `sub_82214DD8`, not the wide destructor.
-    std::snprintf(journey.region, sizeof(journey.region), "%s",
-                  ReadGuestLhString(base, region).c_str());
   }
 
   // THE A-BUTTON PROMPT IS A DECISION, NOT A STRING. `sub_824708D8` picks between three tags
@@ -6592,8 +6677,10 @@ void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
     ctx.r1.u32 = frame;
     ctx.r3.u32 = r3;
     ctx.r4.u32 = r4;
-    fn(ctx, base);
-    const bool answer = (ctx.r3.u32 & 0xFFu) != 0u;
+    bool answer = false;
+    if (SafeInvokeGuestCall(fn, ctx, base)) {
+      answer = (ctx.r3.u32 & 0xFFu) != 0u;
+    }
     ctx = saved;
     return answer;
   };
@@ -6643,6 +6730,7 @@ void SampleQuestTravel(PPCContext& ctx, uint8_t* base) {
                 "'{}', region '{}'", wanted, journey.distance, journey.days, journey.region);
   }
   PublishQuestTravel(journey);
+  s_last_quest = wanted;
 }
 
 /// ONE SHOP ROW'S ASKING PRICE — screen 22.
@@ -6666,9 +6754,15 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kShopScreenId = 22u;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
+  static uint32_t s_last_screen = 0u;
+  static uint32_t s_last_ticket = 0u;
+  static bool s_last_sell = false;
+
   uint32_t owner_screen = 0;
   uint32_t screen_id = 0;
   if (!InGameScreenRoots(base, &owner_screen, &screen_id) || screen_id != kShopScreenId) {
+    s_last_screen = 0u;
+    s_last_ticket = 0u;
     return;
   }
 
@@ -6678,14 +6772,22 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
   ShopPrice answer;
   answer.ticket = ticket;
   if (ticket == 0u) {
-    PublishShopPrice(answer);
+    if (s_last_ticket != 0u) {
+      s_last_ticket = 0u;
+      PublishShopPrice(answer);
+    }
     return;
   }
 
   const uint32_t screen = ScreenObjectRO(base, kShopScreenId);
+  if (screen == s_last_screen && ticket == s_last_ticket && sell == s_last_sell) {
+    return;
+  }
+
   const uint32_t holder = plausible(screen) ? LoadGuestU32(base, screen + 404u) : 0u;
   const uint32_t shopkeeper = plausible(holder) ? LoadGuestU32(base, holder) : 0u;
   if (!plausible(shopkeeper) || (LoadGuestU8(base, shopkeeper + 144u) & 0x40u) == 0u) {
+    s_last_ticket = 0u;
     PublishShopPrice(answer);
     return;
   }
@@ -6695,6 +6797,7 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
   const uint32_t owner = plausible(root) ? LoadGuestU32(base, root + 28u) : 0u;
   const uint32_t registry = plausible(owner) ? LoadGuestU32(base, owner + 60u) : 0u;
   if (shop_component == 0u || !plausible(registry)) {
+    s_last_ticket = 0u;
     PublishShopPrice(answer);
     return;
   }
@@ -6702,6 +6805,7 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
   PPCFunc* lookup = FindGuestFunction(refii::guest::Address(0x82880BC0u));
   PPCFunc* price = FindGuestFunction(sell ? refii::guest::Address(0x828727B8u) : refii::guest::Address(0x82872910u));
   if (lookup == nullptr || price == nullptr) {
+    s_last_ticket = 0u;
     PublishShopPrice(answer);
     return;
   }
@@ -6718,12 +6822,12 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
   ctx.r3.u32 = registry + 4u;
   ctx.r4.u32 = ticket;
   ctx.r5.u32 = item;
-  lookup(ctx, base);
-  const bool found = (ctx.r3.u32 & 0xFFu) != 0u;
+  const bool found = SafeInvokeGuestCall(lookup, ctx, base) && (ctx.r3.u32 & 0xFFu) != 0u;
   ctx = saved;
 
   const uint32_t object = found ? LoadGuestU32(base, item) : 0u;
   if (!plausible(object)) {
+    s_last_ticket = 0u;
     PublishShopPrice(answer);
     return;
   }
@@ -6736,11 +6840,19 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
   ctx.r1.u32 = frame;
   ctx.r3.u32 = shop_component;
   ctx.r4.u32 = item;
-  price(ctx, base);
+  if (!SafeInvokeGuestCall(price, ctx, base)) {
+    ctx = saved;
+    s_last_ticket = 0u;
+    PublishShopPrice(answer);
+    return;
+  }
   answer.price = static_cast<int32_t>(ctx.r3.u32);
   ctx = saved;
 
   answer.known = true;
+  s_last_screen = screen;
+  s_last_ticket = ticket;
+  s_last_sell = sell;
   PublishShopPrice(answer);
 }
 
@@ -6804,8 +6916,7 @@ void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
     ctx.r1.u32 = frame;
     ctx.r3.u32 = r3;
     ctx.r4.u32 = r4;
-    fn(ctx, base);
-    const uint32_t result = ctx.r3.u32;
+    const uint32_t result = SafeInvokeGuestCall(fn, ctx, base) ? ctx.r3.u32 : 0u;
     ctx = saved;
     return result;
   };
@@ -6908,7 +7019,7 @@ void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
       ctx = saved;
       ctx.r1.u32 = frame;
       ctx.r3.u32 = out;
-      rex_lhWideString_Dtor(ctx, base);
+      SafeInvokeGuestCall(rex_lhWideString_Dtor, ctx, base);
       ctx = saved;
     }
   }
@@ -7050,8 +7161,7 @@ uint32_t BuildItemDyeLayers(PPCContext& ctx, uint8_t* base, const PPCContext& sa
     ctx.r3.u32 = r3;
     ctx.r4.u32 = r4;
     ctx.r5.u32 = r5;
-    fn(ctx, base);
-    return ctx.r3.u32;
+    return SafeInvokeGuestCall(fn, ctx, base) ? ctx.r3.u32 : 0u;
   };
 
   uint32_t written = 0u;
@@ -7167,6 +7277,12 @@ uint32_t BuildItemDyeLayers(PPCContext& ctx, uint8_t* base, const PPCContext& sa
 /// hash at item+4, category at item+16; only what the dye list offers is asked about —
 /// categories 9..11 and 17..24 (`sub_829B2168`).
 void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
+  uint32_t screen_owner = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &screen_owner, &screen_id) || (screen_id != 15u && screen_id != 16u)) {
+    return;
+  }
+
   const uint32_t hero = HeroEntity(base);
   const uint32_t inventory = hero != 0u ? HeroComponent(base, hero, 13u) : 0u;
   const uint32_t appearance = hero != 0u ? HeroComponent(base, hero, 15u) : 0u;
@@ -7218,8 +7334,7 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
       ctx.r3.u32 = 0u;
       ctx.r4.u32 = ref;
       ctx.r5.u32 = slot;
-      is_dyed(ctx, base);
-      if ((ctx.r3.u32 & 0xFFu) != 0u) {
+      if (SafeInvokeGuestCall(is_dyed, ctx, base) && (ctx.r3.u32 & 0xFFu) != 0u) {
         flags |= 1u << slot;
       }
     }
@@ -7286,7 +7401,13 @@ void SamplePauseTabs(PPCContext& ctx, uint8_t* base) {
   constexpr uint32_t kFirstTab = 2u;
   constexpr uint32_t kLastTab = 8u;
 
-  // THE PREDICATE'S OWN PRECONDITION, checked here because we call it from outside the
+  uint32_t screen_owner = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &screen_owner, &screen_id)) {
+    return;
+  }
+
+  // THE PREDICATE'S CARDINAL PRECONDITION, checked here because we call it from outside the
   // game's flow. `sub_8240B2A0` (TU1 `sub_826B83D0`) picks the local player from the player
   // table -- id 1 when the net context's bytes +52 and +53 are both set, else id 2 -- takes
   // that player's entity handle at +12, and reads a flag byte at entity+144 with no null
@@ -7319,9 +7440,10 @@ void SamplePauseTabs(PPCContext& ctx, uint8_t* base) {
     ctx = saved;
     ctx.r3.u32 = 0u;
     ctx.r4.u32 = tab;
-    rex_lhGuiPauseMenu_IsTabAvailable(ctx, base);
-    if (ctx.r3.u32 != 0u) {
-      mask |= 1u << tab;
+    if (SafeInvokeGuestCall(rex_lhGuiPauseMenu_IsTabAvailable, ctx, base)) {
+      if (ctx.r3.u32 != 0u) {
+        mask |= 1u << tab;
+      }
     }
   }
 
@@ -7372,8 +7494,9 @@ void SampleAttractiveness(PPCContext& ctx, uint8_t* base, uint32_t hero, HeroDer
     ctx = saved;
     ctx.r3.u32 = look;
     ctx.r4.u32 = kind;
-    rex_CECAppearanceModifiers_GetModifierEffectTerm(ctx, base);
-    return static_cast<float>(ctx.f1.f64);
+    return SafeInvokeGuestCall(rex_CECAppearanceModifiers_GetModifierEffectTerm, ctx, base)
+        ? static_cast<float>(ctx.f1.f64)
+        : 0.0f;
   };
 
   // `sub_824C3AF8(c15, axis)` — one preference axis.
@@ -7381,8 +7504,9 @@ void SampleAttractiveness(PPCContext& ctx, uint8_t* base, uint32_t hero, HeroDer
     ctx = saved;
     ctx.r3.u32 = look;
     ctx.r4.u32 = axis;
-    rex_CECAppearanceModifiers_GetPreferenceTerm(ctx, base);
-    return static_cast<float>(ctx.f1.f64);
+    return SafeInvokeGuestCall(rex_CECAppearanceModifiers_GetPreferenceTerm, ctx, base)
+        ? static_cast<float>(ctx.f1.f64)
+        : 0.0f;
   };
 
   // Clothing is the sum of kinds 17..23, as `sub_829BA860` stores at `screen+92`. Each kind is
@@ -7402,8 +7526,10 @@ void SampleAttractiveness(PPCContext& ctx, uint8_t* base, uint32_t hero, HeroDer
 
   ctx = saved;
   ctx.r3.u32 = look;
-  rex_CECAppearanceModifiers_GetPurityOpinionTerm(ctx, base);
-  sampled.attractiveness[6] = static_cast<float>(ctx.f1.f64);   // purity/corruption
+  sampled.attractiveness[6] =
+      SafeInvokeGuestCall(rex_CECAppearanceModifiers_GetPurityOpinionTerm, ctx, base)
+          ? static_cast<float>(ctx.f1.f64)
+          : 0.0f;  // purity/corruption
 
   sampled.attractiveness[7] = preference(3u);  // muscle
   sampled.attractiveness[8] = preference(1u);  // fatness
@@ -7411,8 +7537,10 @@ void SampleAttractiveness(PPCContext& ctx, uint8_t* base, uint32_t hero, HeroDer
 
   ctx = saved;
   ctx.r3.u32 = look;
-  rex_CECAppearanceModifiers_GetHomeBonusTerm(ctx, base);
-  sampled.attractiveness[10] = static_cast<float>(ctx.f1.f64);  // home bonus
+  sampled.attractiveness[10] =
+      SafeInvokeGuestCall(rex_CECAppearanceModifiers_GetHomeBonusTerm, ctx, base)
+          ? static_cast<float>(ctx.f1.f64)
+          : 0.0f;  // home bonus
 
   ctx = saved;
 
@@ -7422,6 +7550,38 @@ void SampleAttractiveness(PPCContext& ctx, uint8_t* base, uint32_t hero, HeroDer
     const uint32_t bits = g_attractiveness_total_bits.load(std::memory_order_relaxed);
     std::memcpy(&sampled.attractiveness_fraction, &bits, sizeof(float));
   }
+}
+
+void SampleLogbookAttractiveness(PPCContext& ctx, uint8_t* base, bool logbook_active) {
+  static uint32_t s_last_screen = 0u;
+  static uint32_t s_last_total_bits = 0u;
+  static bool s_last_total_known = false;
+
+  if (!logbook_active) {
+    s_last_screen = 0u;
+    return;
+  }
+
+  const uint32_t screen = ScreenObjectRO(base, 17u);
+  const bool total_known = g_attractiveness_total_known.load(std::memory_order_relaxed);
+  const uint32_t total_bits = g_attractiveness_total_bits.load(std::memory_order_relaxed);
+  if (screen != 0u && screen == s_last_screen && total_known == s_last_total_known &&
+      total_bits == s_last_total_bits) {
+    return;
+  }
+
+  const uint32_t hero = HeroEntity(base);
+  if (hero == 0u) {
+    return;
+  }
+
+  HeroDerived sampled = HeroDerivedSnapshot();
+  SampleAttractiveness(ctx, base, hero, sampled);
+  PublishHeroDerived(sampled);
+
+  s_last_screen = screen;
+  s_last_total_known = total_known;
+  s_last_total_bits = total_bits;
 }
 
 void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
@@ -7439,18 +7599,21 @@ void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
   const PPCContext saved = ctx;
 
   ctx.r3.u32 = stats;
-  rex_lhHeroStats_GetMorality(ctx, base);
-  sampled.morality = static_cast<float>(ctx.f1.f64);
+  if (SafeInvokeGuestCall(rex_lhHeroStats_GetMorality, ctx, base)) {
+    sampled.morality = static_cast<float>(ctx.f1.f64);
+  }
 
   ctx = saved;
   ctx.r3.u32 = stats;
-  rex_lhHeroStats_GetPurity(ctx, base);
-  sampled.purity = static_cast<float>(ctx.f1.f64);
+  if (SafeInvokeGuestCall(rex_lhHeroStats_GetPurity, ctx, base)) {
+    sampled.purity = static_cast<float>(ctx.f1.f64);
+  }
 
   ctx = saved;
   ctx.r3.u32 = stats;
-  rex_lhHeroStats_GetRenown(ctx, base);
-  sampled.renown = static_cast<int32_t>(ctx.r3.u32);
+  if (SafeInvokeGuestCall(rex_lhHeroStats_GetRenown, ctx, base)) {
+    sampled.renown = static_cast<int32_t>(ctx.r3.u32);
+  }
 
   ctx = saved;
 
@@ -7482,8 +7645,6 @@ void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
 
   SampleDog(base, sampled);
   SampleQuests(base, hero);
-  SampleWorldMapRegion(ctx, base);
-  SampleFamily(ctx, base);
   SampleSpellDamage(base, hero, sampled);
 
   // The attractiveness block only while the logbook is up: it is the one sampler that allocates
@@ -7491,20 +7652,13 @@ void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
   // any guard, appends the axis name and grows and frees a vector — three heap round-trips per
   // axis — and `sub_824C4030` allocates unconditionally; all of it through `sub_8222CED0` ->
   // 0x8221F258 -> `sub_8221F2C0`. The page samples on activate, so a half-second delay after
-  // opening is invisible.
+  // opening is invisible. When the logbook is closed, `sampled` already holds the previous
+  // attractiveness snapshot from `HeroDerivedSnapshot()` above.
   constexpr uint32_t kLogbookScreenId = 17u;
   uint32_t screen_owner = 0;
   uint32_t screen_id = 0;
   if (InGameScreenRoots(base, &screen_owner, &screen_id) && screen_id == kLogbookScreenId) {
     SampleAttractiveness(ctx, base, hero, sampled);
-  } else {
-    // Keep what was already published rather than zeroing: the store is a snapshot, and a page
-    // reading it a frame after closing should see the last real answer.
-    const HeroDerived previous = HeroDerivedSnapshot();
-    for (uint32_t i = 0; i < HeroDerived::kAttractivenessCount; ++i) {
-      sampled.attractiveness[i] = previous.attractiveness[i];
-    }
-    sampled.attractiveness_fraction = previous.attractiveness_fraction;
   }
 
   PublishHeroDerived(sampled);
@@ -7718,10 +7872,11 @@ HeapViolation WalkGuestHeap(uint8_t* base, uint32_t heap_global, uint32_t heap_i
 }
 
 void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
+  static const bool enabled = ReadEnvFlag("REFII_CHECK_GUEST_HEAPS", false);
   static bool reported = false;
   static HeapViolation pending;
   static uint32_t pending_tick = 0u;
-  if (reported || refii_guest_build() != 0) {
+  if (!enabled || reported || refii_guest_build() != 0) {
     return;
   }
 
@@ -8470,10 +8625,7 @@ void MaybeFinishInGameLoadingScreen(PPCContext& ctx, uint8_t* base) {
     return;
   }
 
-  static const bool enabled = [] {
-    const char* value = std::getenv("REFII_FINISH_INGAME_LOADSCREEN");
-    return value == nullptr || value[0] != '0';
-  }();
+  static const bool enabled = ReadEnvFlag("REFII_FINISH_INGAME_LOADSCREEN", true);
   if (!enabled || !InGameWorldActive(base)) {
     return;
   }
@@ -8573,10 +8725,7 @@ void MaybeArmInGameSimulation(PPCContext& ctx, uint8_t* base) {
   // faults within about half a second (0xC0000005). The clear flag is a SYMPTOM — the game
   // object has not completed its transition into gameplay, and the code behind the gate
   // dereferences state that transition builds. Opt in with `REFII_ARM_INGAME_SIM=1`.
-  static const bool enabled = [] {
-    const char* value = std::getenv("REFII_ARM_INGAME_SIM");
-    return value != nullptr && value[0] == '1';
-  }();
+  static const bool enabled = ReadEnvFlag("REFII_ARM_INGAME_SIM", false);
   if (!enabled || !InGameWorldActive(base)) {
     return;
   }
@@ -8758,14 +8907,31 @@ REX_EXTERN(rex_lhGuiManager_TickUpdate) {
 
   static std::atomic<uint32_t> gui_ticks{0};
   if ((gui_ticks.fetch_add(1, std::memory_order_relaxed) % 8u) == 0u) {
-    refii::vfs::SampleWorldMapRegion(ctx, base);
-    refii::vfs::SampleFamily(ctx, base);
-    refii::vfs::SampleRealEstate(ctx, base);
-    refii::vfs::SampleQuestTravel(ctx, base);
-    refii::vfs::SampleShopPrice(ctx, base);
-    refii::vfs::SamplePauseTabs(ctx, base);
-
-    refii::vfs::SampleDyeStates(ctx, base);
+    uint32_t owner = 0;
+    uint32_t screen_id = 0;
+    if (refii::vfs::InGameScreenRoots(base, &owner, &screen_id)) {
+      refii::vfs::SamplePauseTabs(ctx, base);
+      refii::vfs::SampleLogbookAttractiveness(ctx, base, screen_id == 17u);
+      switch (screen_id) {
+        case 15u:
+        case 16u:
+          refii::vfs::SampleDyeStates(ctx, base);
+          break;
+        case 22u:
+          refii::vfs::SampleShopPrice(ctx, base);
+          break;
+        case 23u:
+          refii::vfs::SampleWorldMapRegion(ctx, base);
+          refii::vfs::SampleFamily(ctx, base);
+          refii::vfs::SampleQuestTravel(ctx, base);
+          break;
+        case 28u:
+          refii::vfs::SampleRealEstate(ctx, base);
+          break;
+        default:
+          break;
+      }
+    }
   }
 
   __imp__rex_lhGuiManager_TickUpdate(ctx, base);

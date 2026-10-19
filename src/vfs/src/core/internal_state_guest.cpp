@@ -1,7 +1,12 @@
 #include "vfs_hooks_private.h"
 #if defined(_WIN32)
 #include <windows.h>
+#if !defined(_MSC_VER)
+#include <setjmp.h>
+#endif
 #else
+#include <setjmp.h>
+#include <signal.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #endif
@@ -332,6 +337,151 @@ PPCFunc* FindGuestFunction(uint32_t guest_address) {
 
   return nullptr;
 }
+
+#if defined(_MSC_VER)
+__declspec(noinline) bool SafeInvokeGuestCall(
+    PPCFunc* call, PPCContext& ctx, uint8_t* base) {
+  if (call == nullptr) {
+    return false;
+  }
+  __try {
+    call(ctx, base);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+#elif defined(_WIN32)
+namespace {
+thread_local jmp_buf t_guest_call_jmp_buf;
+thread_local bool t_in_safe_guest_call = false;
+
+LONG CALLBACK GuestSafeVectoredHandler(PEXCEPTION_POINTERS info) {
+  if (!t_in_safe_guest_call || info == nullptr || info->ExceptionRecord == nullptr) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  static constexpr DWORD kStatusHeapCorruption = 0xC0000374u;
+  const DWORD code = info->ExceptionRecord->ExceptionCode;
+  if (code == EXCEPTION_ACCESS_VIOLATION ||
+      code == EXCEPTION_IN_PAGE_ERROR ||
+      code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+      code == EXCEPTION_PRIV_INSTRUCTION ||
+      code == EXCEPTION_BREAKPOINT ||
+      code == kStatusHeapCorruption) {
+    t_in_safe_guest_call = false;
+    longjmp(t_guest_call_jmp_buf, 1);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void EnsureGuestSafeHandlerInstalled() {
+  static std::once_flag s_once;
+  std::call_once(s_once, []() {
+    // First = 0 places this handler at the back of the VEH chain so ReXGlue's
+    // MMIOHandler (First = 1) always services GPU write-watch and MMIO faults first.
+    AddVectoredExceptionHandler(0, GuestSafeVectoredHandler);
+  });
+}
+}  // namespace
+
+__attribute__((noinline)) bool SafeInvokeGuestCall(
+    PPCFunc* call, PPCContext& ctx, uint8_t* base) {
+  if (call == nullptr) {
+    return false;
+  }
+  EnsureGuestSafeHandlerInstalled();
+  jmp_buf saved_buf;
+  std::memcpy(&saved_buf, &t_guest_call_jmp_buf, sizeof(jmp_buf));
+  const bool saved_active = t_in_safe_guest_call;
+  t_in_safe_guest_call = true;
+  if (setjmp(t_guest_call_jmp_buf) == 0) {
+    call(ctx, base);
+    t_in_safe_guest_call = saved_active;
+    std::memcpy(&t_guest_call_jmp_buf, &saved_buf, sizeof(jmp_buf));
+    return true;
+  }
+  t_in_safe_guest_call = saved_active;
+  std::memcpy(&t_guest_call_jmp_buf, &saved_buf, sizeof(jmp_buf));
+  return false;
+}
+#else
+namespace {
+thread_local sigjmp_buf t_guest_call_jmp_buf;
+thread_local volatile sig_atomic_t t_in_safe_guest_call = 0;
+
+struct SignalSlot {
+  int sig;
+  struct sigaction old_action;
+};
+
+SignalSlot g_old_signals[] = {
+    {SIGILL, {}},
+    {SIGTRAP, {}},
+    {SIGABRT, {}},
+    {SIGBUS, {}},
+    {SIGSEGV, {}},
+};
+
+void GuestSafeSignalHandler(int sig, siginfo_t* info, void* ucontext) {
+  if (t_in_safe_guest_call) {
+    t_in_safe_guest_call = 0;
+    siglongjmp(t_guest_call_jmp_buf, 1);
+  }
+  for (const auto& slot : g_old_signals) {
+    if (slot.sig == sig) {
+      if ((slot.old_action.sa_flags & SA_SIGINFO) &&
+          slot.old_action.sa_sigaction != nullptr) {
+        slot.old_action.sa_sigaction(sig, info, ucontext);
+        return;
+      }
+      if (slot.old_action.sa_handler != SIG_DFL &&
+          slot.old_action.sa_handler != SIG_IGN &&
+          slot.old_action.sa_handler != nullptr) {
+        slot.old_action.sa_handler(sig);
+        return;
+      }
+      break;
+    }
+  }
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
+void EnsureGuestSafeHandlerInstalled() {
+  static std::once_flag s_once;
+  std::call_once(s_once, []() {
+    struct sigaction sa = {};
+    sa.sa_sigaction = GuestSafeSignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    for (auto& slot : g_old_signals) {
+      sigaction(slot.sig, &sa, &slot.old_action);
+    }
+  });
+}
+}  // namespace
+
+__attribute__((noinline)) bool SafeInvokeGuestCall(
+    PPCFunc* call, PPCContext& ctx, uint8_t* base) {
+  if (call == nullptr) {
+    return false;
+  }
+  EnsureGuestSafeHandlerInstalled();
+  sigjmp_buf saved_buf;
+  std::memcpy(&saved_buf, &t_guest_call_jmp_buf, sizeof(sigjmp_buf));
+  const sig_atomic_t saved_active = t_in_safe_guest_call;
+  t_in_safe_guest_call = 1;
+  if (sigsetjmp(t_guest_call_jmp_buf, 1) == 0) {
+    call(ctx, base);
+    t_in_safe_guest_call = saved_active;
+    std::memcpy(&t_guest_call_jmp_buf, &saved_buf, sizeof(sigjmp_buf));
+    return true;
+  }
+  t_in_safe_guest_call = saved_active;
+  std::memcpy(&t_guest_call_jmp_buf, &saved_buf, sizeof(sigjmp_buf));
+  return false;
+}
+#endif
 
 bool CopyToStreamDestination(PPCContext& source_ctx,
                              uint8_t* base,
@@ -703,18 +853,25 @@ std::string ReadGuestWideStringObject(uint8_t* base,
       return {};
     }
 
-    std::vector<uint8_t> scratch(size_t(length) * 2u);
+    const size_t byte_len = size_t(length) * 2u;
+    uint8_t stack_buf[512];
+    std::vector<uint8_t> heap_buf;
+    uint8_t* buf = stack_buf;
+    if (byte_len > sizeof(stack_buf)) {
+      heap_buf.resize(byte_len);
+      buf = heap_buf.data();
+    }
     const size_t readable =
-        TryCopyGuestBytes(base, data_guest, scratch.data(), scratch.size());
+        TryCopyGuestBytes(base, data_guest, buf, byte_len);
     std::string value;
-    value.reserve(length);
+    value.reserve(std::min<size_t>(length, readable / 2u));
     for (uint32_t index = 0; index < length; ++index) {
       if (size_t(index) * 2u + 1u >= readable) {
         break;
       }
       const uint16_t code_unit =
-          static_cast<uint16_t>((uint16_t(scratch[index * 2u]) << 8) |
-                                uint16_t(scratch[index * 2u + 1u]));
+          static_cast<uint16_t>((uint16_t(buf[index * 2u]) << 8) |
+                                uint16_t(buf[index * 2u + 1u]));
       if (code_unit == 0) {
         break;
       }
@@ -737,9 +894,16 @@ std::string ReadGuestWideStringObject(uint8_t* base,
 
     const size_t bounded_chars = std::min<size_t>(
         max_chars, (kGuestStringDataCeiling - data_guest) / 2u);
-    std::vector<uint8_t> scratch(std::min<size_t>(bounded_chars, 4096) * 2u);
+    const size_t byte_len = std::min<size_t>(bounded_chars, 4096) * 2u;
+    uint8_t stack_buf[512];
+    std::vector<uint8_t> heap_buf;
+    uint8_t* buf = stack_buf;
+    if (byte_len > sizeof(stack_buf)) {
+      heap_buf.resize(byte_len);
+      buf = heap_buf.data();
+    }
     const size_t readable =
-        TryCopyGuestBytes(base, data_guest, scratch.data(), scratch.size());
+        TryCopyGuestBytes(base, data_guest, buf, byte_len);
     std::string value;
     value.reserve(std::min<size_t>(bounded_chars, 256));
     for (size_t index = 0; index < bounded_chars; ++index) {
@@ -747,8 +911,8 @@ std::string ReadGuestWideStringObject(uint8_t* base,
         break;
       }
       const uint16_t code_unit =
-          static_cast<uint16_t>((uint16_t(scratch[index * 2u]) << 8) |
-                                uint16_t(scratch[index * 2u + 1u]));
+          static_cast<uint16_t>((uint16_t(buf[index * 2u]) << 8) |
+                                uint16_t(buf[index * 2u + 1u]));
       if (code_unit == 0) {
         break;
       }
@@ -838,10 +1002,23 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
       return {};
     }
 
+    char stack_buf[512];
+    std::vector<char> heap_buf;
+    char* buf = stack_buf;
+    if (length > sizeof(stack_buf)) {
+      heap_buf.resize(length);
+      buf = heap_buf.data();
+    }
+    const size_t readable =
+        TryCopyGuestBytes(base, data_guest, buf, length);
+    if (readable == 0) {
+      return {};
+    }
+
     std::string value;
-    value.reserve(length);
-    for (uint32_t index = 0; index < length; ++index) {
-      const char ch = static_cast<char>(LoadGuestU8(base, data_guest + index));
+    value.reserve(readable);
+    for (size_t index = 0; index < readable; ++index) {
+      const char ch = buf[index];
       if (ch == '\0') {
         break;
       }
@@ -860,13 +1037,20 @@ std::string ReadGuestAsciiStringObject(uint8_t* base,
 
     const size_t bounded_chars =
         std::min<size_t>(max_chars, kGuestStringDataCeiling - data_guest);
-    std::vector<char> scratch(std::min<size_t>(bounded_chars, 4096));
+    const size_t byte_len = std::min<size_t>(bounded_chars, 4096);
+    char stack_buf[512];
+    std::vector<char> heap_buf;
+    char* buf = stack_buf;
+    if (byte_len > sizeof(stack_buf)) {
+      heap_buf.resize(byte_len);
+      buf = heap_buf.data();
+    }
     const size_t readable =
-        TryCopyGuestBytes(base, data_guest, scratch.data(), scratch.size());
+        TryCopyGuestBytes(base, data_guest, buf, byte_len);
     std::string value;
     value.reserve(std::min<size_t>(readable, 256));
     for (size_t index = 0; index < readable; ++index) {
-      const char ch = scratch[index];
+      const char ch = buf[index];
       if (ch == '\0') {
         break;
       }
@@ -970,16 +1154,29 @@ std::string FormatGuestAsciiBytes(uint8_t* base,
                                   uint32_t guest,
                                   uint32_t max_chars) {
   if (base == nullptr || guest < 0x10000u ||
-      guest >= kGuestStringDataCeiling) {
+      guest >= kGuestStringDataCeiling || max_chars == 0) {
     return {};
   }
 
   const uint32_t bounded_chars =
       std::min<uint32_t>(max_chars, kGuestStringDataCeiling - guest);
+  char stack_buf[512];
+  std::vector<char> heap_buf;
+  char* buf = stack_buf;
+  if (bounded_chars > sizeof(stack_buf)) {
+    heap_buf.resize(bounded_chars);
+    buf = heap_buf.data();
+  }
+  const size_t readable =
+      TryCopyGuestBytes(base, guest, buf, bounded_chars);
+  if (readable == 0) {
+    return {};
+  }
+
   std::string value;
-  value.reserve(bounded_chars);
-  for (uint32_t index = 0; index < bounded_chars; ++index) {
-    const char ch = static_cast<char>(LoadGuestU8(base, guest + index));
+  value.reserve(readable);
+  for (size_t index = 0; index < readable; ++index) {
+    const char ch = buf[index];
     if (ch == '\0') {
       break;
     }
@@ -1004,13 +1201,13 @@ std::string ReadGuestLhString(uint8_t* base, uint32_t handle) {
   // way. Probing one to three levels returns the pointer bytes whenever they are printable.
   // A zero inner pointer is an empty string, not a failure: the guest substitutes its own
   // empty literal there.
-  const uint32_t inner = LoadGuestU32(base, handle);
-  if (inner == 0 || !plausible(inner)) {
+  uint32_t inner = 0;
+  if (!TryLoadGuestU32(base, handle, &inner) || inner == 0 || !plausible(inner)) {
     return std::string();
   }
 
-  const uint32_t characters = LoadGuestU32(base, inner);
-  if (!plausible(characters)) {
+  uint32_t characters = 0;
+  if (!TryLoadGuestU32(base, inner, &characters) || !plausible(characters)) {
     return std::string();
   }
 
@@ -1036,23 +1233,29 @@ std::string ReadGuestWideString(uint8_t* base, uint32_t handle) {
   // world map's eleven region fields read empty for exactly this reason while the region NAME
   // beside them read fine — that one really is narrow, being what `sub_82519DF8` hands to
   // `strcmpi`.
-  const uint32_t inner = LoadGuestU32(base, handle);
-  if (inner == 0 || !plausible(inner)) {
+  uint32_t inner = 0;
+  if (!TryLoadGuestU32(base, handle, &inner) || inner == 0 || !plausible(inner)) {
     return std::string();
   }
 
-  const uint32_t characters = LoadGuestU32(base, inner);
-  if (!plausible(characters)) {
+  uint32_t characters = 0;
+  if (!TryLoadGuestU32(base, inner, &characters) || !plausible(characters)) {
     return std::string();
   }
 
   // Big-endian, NUL-terminated. Anything outside ASCII becomes '?' rather than being dropped:
   // a field that is present but unrenderable must not read as an absent field.
+  uint8_t raw[512];
+  const size_t readable = TryCopyGuestBytes(base, characters, raw, sizeof(raw));
+  if (readable < 2u) {
+    return std::string();
+  }
+  const size_t max_units = readable / 2u;
   std::string value;
-  for (uint32_t i = 0; i < 256u; ++i) {
-    const uint32_t at = characters + i * 2u;
+  value.reserve(std::min<size_t>(max_units, 64u));
+  for (size_t i = 0; i < max_units; ++i) {
     const uint16_t unit = static_cast<uint16_t>(
-        (static_cast<uint32_t>(LoadGuestU8(base, at)) << 8) | LoadGuestU8(base, at + 1u));
+        (static_cast<uint32_t>(raw[i * 2u]) << 8) | raw[i * 2u + 1u]);
     if (unit == 0u) {
       break;
     }

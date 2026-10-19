@@ -20,6 +20,7 @@ extern uint32_t g_refii_resource_wrapper_interface_vtable;
 
 bool TrySilentLargePageReserve(PPCContext& ctx, uint8_t* base);
 PPCFunc* FindGuestFunction(uint32_t guest_address);
+bool SafeInvokeGuestCall(PPCFunc* fn, PPCContext& ctx, uint8_t* base);
 
 void ConfigureRefiiVfsTracyPlots();
 LooseAssetRuntimeStats& LooseStats();
@@ -47,6 +48,11 @@ void ReleaseGuestObject(PPCContext& source_ctx,
                         uint8_t* base,
                         uint32_t guest_object);
 
+size_t TryCopyGuestBytes(uint8_t* base,
+                         uint32_t guest_address,
+                         void* dst,
+                         size_t length);
+bool TryLoadGuestU32(uint8_t* base, uint32_t guest_address, uint32_t* out);
 uint8_t LoadGuestU8(uint8_t* base, uint32_t guest_address);
 uint16_t LoadGuestU16(uint8_t* base, uint32_t guest_address);
 uint32_t LoadGuestU32(uint8_t* base, uint32_t guest_address);
