@@ -433,6 +433,12 @@ public partial class GameInput : Node
 		bool connected = joypad >= 0 || GameDebugServer.PadConnected(pad);
 		SetMasked(pad, connected, state);
 
+		// Local player two's own expression wheel, off their own pad.
+		if (pad == PlayerTwoPad)
+		{
+			PublishWheelTwo(state.Buttons, state.LeftX, state.LeftY);
+		}
+
 		// Player two's pad drives the host-owned menu the guest says player two opened.
 		if (pad == HostMenuPad)
 		{
@@ -654,6 +660,14 @@ public partial class GameInput : Node
 			(pad == 0 || !Refii.Core.Engine_Views.Split)
 			? (ButtonX | ButtonY)
 			: 0u;
+
+		// LOCAL PLAYER TWO'S BACK IS THE HOST'S: it holds their expression wheel (the pump's
+		// QuickWheel:2: levers). Shipped, the henchman's Back teleported them to the hero — the
+		// leash's crutch, which free roam retires (Fable 3 has none).
+		if (pad == PlayerTwoPad && PlayerTwoPad >= 1)
+		{
+			wheelBits |= Back;
+		}
 		uint maskBits = ~filter(uint.MaxValue) | wheelBits;
 		_heldAcrossUnmask[pad] |= _maskBits[pad] & ~maskBits & buttons;
 		_heldAcrossUnmask[pad] &= buttons;
@@ -1009,6 +1023,40 @@ public partial class GameInput : Node
 		QuickWheelHeld = wheel;
 		_wheelWasDown = wheel;
 	}
+
+	/// <summary>
+	/// Local player two's expression-wheel levers, edge-detected off their own pad: Back holds
+	/// the wheel, A selects (its release ends a held expression), B backs out, the left stick
+	/// points. The pump's <c>QuickWheel:2:</c> levers open it for player two.
+	/// </summary>
+	private static void PublishWheelTwo(uint buttons, int leftX, int leftY)
+	{
+		bool wheel = (buttons & Back) != 0;
+		bool a = (buttons & ButtonA) != 0;
+		bool b = (buttons & ButtonB) != 0;
+		QuickWheelTwoPressed = wheel && !_wheelTwoWasDown;
+		QuickWheelTwoReleased = !wheel && _wheelTwoWasDown;
+		QuickWheelTwoHeld = wheel;
+		WheelTwoAcceptPressed = a && !_acceptTwoWasDown;
+		WheelTwoAcceptReleased = !a && _acceptTwoWasDown;
+		WheelTwoBackPressed = b && !_backTwoWasDown;
+		LeftStickTwo = new Vector2(leftX / 32767f, leftY / 32767f);
+		_wheelTwoWasDown = wheel;
+		_acceptTwoWasDown = a;
+		_backTwoWasDown = b;
+	}
+
+	private static bool _wheelTwoWasDown;
+	private static bool _acceptTwoWasDown;
+	private static bool _backTwoWasDown;
+
+	public static bool QuickWheelTwoPressed { get; private set; }
+	public static bool QuickWheelTwoReleased { get; private set; }
+	public static bool QuickWheelTwoHeld { get; private set; }
+	public static bool WheelTwoAcceptPressed { get; private set; }
+	public static bool WheelTwoAcceptReleased { get; private set; }
+	public static bool WheelTwoBackPressed { get; private set; }
+	public static Vector2 LeftStickTwo { get; private set; }
 
 	/// <summary>
 	/// One direction's stick hysteresis, as `guistateandconstants.lua` states it: engages above

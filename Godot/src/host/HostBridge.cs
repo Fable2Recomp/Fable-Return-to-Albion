@@ -5550,7 +5550,9 @@ public static class HostBridge
 		uint DogNameKey,
 		uint[] DogTrickIds,
 		int[] Stats, bool StatsKnown,
-		float[] SpellDamage)
+		float[] SpellDamage,
+		uint DogDefinition = 0u,
+		uint DogEntity = 0u)
 	{
 		/// <summary>Morality as a 0..1 position in its own range — what the bands are tested on.</summary>
 		public float MoralityFraction => Span(Morality, MoralityMin, MoralityMax);
@@ -6679,9 +6681,9 @@ public static class HostBridge
 			return default;
 		}
 
-		// Nine words: the bridge fills slots 0..8 and clamps to the capacity given, so a
+		// Twelve words: the bridge fills slots 0..11 and clamps to the capacity given, so a
 		// shorter buffer silently drops the trick count and the flags read below.
-		var words = new uint[10];
+		var words = new uint[12];
 		var values = new float[26];
 		var title = new byte[64];
 		var dog = new byte[64];
@@ -6723,7 +6725,9 @@ public static class HostBridge
 			unchecked((int)words[3]), Utf8(dog), words[9],
 			Trim(tricks, words[7]),
 			stats, words[8] != 0u,
-			spell);
+			spell,
+			words[10],
+			words[11]);
 	}
 
 	/// <summary>The used prefix of a fixed buffer — the bridge reports how many it filled.</summary>

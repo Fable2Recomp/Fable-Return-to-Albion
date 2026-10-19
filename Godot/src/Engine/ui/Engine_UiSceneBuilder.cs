@@ -740,6 +740,9 @@ public sealed class Engine_UiSceneBuilder
 		return material;
 	}
 
+	/// <summary>Whether a material draws through the UI quad or text shader (the clipped ones).</summary>
+	public static bool IsUiShader(Shader? shader) => shader == QuadShader || shader == TextShader;
+
 	/// <summary>The text shader, loaded once — see <see cref="QuadShader"/> for why it is shared.</summary>
 	private static readonly Shader TextShader =
 		GD.Load<Shader>("res://src/Engine/ui/ui_text.gdshader");
@@ -1066,7 +1069,7 @@ public sealed class Engine_UiSceneBuilder
 				continue;
 			}
 
-			Transform3D world = node.GlobalTransform;
+			Transform3D world = Engine_UiSeats.LayoutTransform(node);
 			float halfW = 0.5f * QuadBaseSize * world.Basis.X.Length();
 			float halfH = 0.5f * QuadBaseSize * world.Basis.Y.Length();
 

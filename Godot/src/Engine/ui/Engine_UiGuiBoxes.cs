@@ -645,6 +645,23 @@ public sealed class Engine_UiGuiBoxes
 		}
 	}
 
+	/// <summary>
+	/// The oldest timed box under one of <paramref name="names"/> — Refii's own notices, which no
+	/// guest manager holds and so only the host can put on screen. Null when none is up.
+	/// </summary>
+	public string? FrontOf(IReadOnlySet<string> names)
+	{
+		foreach (Box box in _boxes)
+		{
+			if (!box.Persistent && names.Contains(box.Name) && box.Text.Length != 0)
+			{
+				return box.Text;
+			}
+		}
+
+		return null;
+	}
+
 	/// <summary>Drops everything — a level change, or the UI going away.</summary>
 	public void Clear()
 	{

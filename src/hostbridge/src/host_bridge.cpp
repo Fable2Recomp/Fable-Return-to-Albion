@@ -3470,6 +3470,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetHeroDerived(uint32_t* words, uint32_t word
     word(7, hero.dog_trick_count);
     word(8, hero.stats_known ? 1u : 0u);
     word(9, hero.dog_name_key);
+    word(10, hero.dog_definition);
+    word(11, hero.dog_entity);
 
     for (uint32_t i = 0; i < 6u; ++i) {
         real(20u + i, hero.spell_damage[i]);
@@ -4341,10 +4343,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMinimapLive(uint32_t* out, uint32_t c
     out[3] = load_be32(level + 160u);
     out[4] = load_be32(level + 164u);
 
-    const uint32_t roster = plausible(party) ? load_be32(party) : 0u;
-    if (plausible(roster)) {
-        const uint32_t dog_holder = load_be32(roster + 196u);
-        const uint32_t dog = plausible(dog_holder) ? load_be32(dog_holder) : 0u;
+    // The LOCAL player's dog, as the pump's dog sample found it: hero one's (players+196) or,
+    // on a joiner, player two's own co-op dog.
+    {
+        const uint32_t dog = refii::vfs::HeroDerivedSnapshot().dog_entity;
         if (plausible(dog) && (GuestByteAt(base, dog + 144u) & 0x40u) != 0u) {
             out[5] = dog;
         }

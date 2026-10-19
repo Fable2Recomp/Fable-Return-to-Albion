@@ -606,7 +606,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 			}
 
 			float margin = bottom - canvas.Position.Y;
-			float firstTop = GlobalPosition.Y + Slots[HighlightSlot - 1].Y -
+			float firstTop = LayoutOrigin.Y + Slots[HighlightSlot - 1].Y -
 				((2 - HighlightSlot) * RowPitch) + (RowPitch * 0.5f);
 			return Mathf.Max(0f, firstTop - (canvas.End.Y - margin));
 		}
@@ -614,7 +614,18 @@ public partial class Engine_FrontEndMenuView : Node3D
 
 	/// <summary>The canvas y of a PC slot's row origin.</summary>
 	private float PcSlotY(int slot) =>
-		GlobalPosition.Y + Slots[HighlightSlot - 1].Y - ((slot - HighlightSlot) * RowPitch) - PcDrop;
+		LayoutOrigin.Y + Slots[HighlightSlot - 1].Y - ((slot - HighlightSlot) * RowPitch) - PcDrop;
+
+	/// <summary>
+	/// This view's origin in the laid-out canvas — its global origin with any menu seat taken
+	/// out (<see cref="Engine_UiSeats.LayoutTransform"/>), so slot offsets in the view's own units
+	/// add to it on a split-screen seat as on the whole window.
+	/// </summary>
+	private Vector3 LayoutOrigin => Engine_UiSeats.LayoutTransform(this).Origin;
+
+	/// <summary>A laid-out canvas point as a global one: the seat put back.</summary>
+	private Vector3 LayoutToGlobal(Vector3 laidOut) =>
+		GlobalTransform * Engine_UiSeats.LayoutTransform(this).AffineInverse() * laidOut;
 
 	/// <summary>Rows the PC list shows at once: slots 2 on, as many as clear the footer.</summary>
 	public int PcRows
@@ -740,7 +751,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 		for (int slot = 2; slot <= 1 + PcRows; ++slot)
 		{
 			float bow = Slots[slot - 1].X - Slots[HighlightSlot - 1].X;
-			float y = ring.Y + (PcSlotY(slot) - (GlobalPosition.Y + restSlotY));
+			float y = ring.Y + (PcSlotY(slot) - (LayoutOrigin.Y + restSlotY));
 			_barPoints.Add(new Vector2(ring.X + bow, y));
 		}
 
@@ -751,7 +762,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 		Vector2 at = PointAlong(position);
 		_barThumb!.Visible = true;
 		((QuadMesh)_barThumb.Mesh).Size = new Vector2(_thumbSize, _thumbSize);
-		_barThumb.GlobalPosition = new Vector3(at.X, at.Y, GlobalPosition.Z + 6f);
+		_barThumb.GlobalPosition = LayoutToGlobal(new Vector3(at.X, at.Y, LayoutOrigin.Z + 6f));
 	}
 
 	/// <summary>The cursor ring's centre in the cursor's own units, measured once.</summary>
@@ -765,7 +776,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return null;
 		}
 
-		Vector3 atRest = ToGlobal(_cursorRest * local);
+		Vector3 atRest = Engine_UiSeats.LayoutTransform(this) * (_cursorRest * local);
 		return new Vector2(atRest.X, atRest.Y);
 	}
 
@@ -787,7 +798,10 @@ public partial class Engine_FrontEndMenuView : Node3D
 		var mesh = (ImmediateMesh)_barTrack!.Mesh;
 		mesh.ClearSurfaces();
 		mesh.SurfaceBegin(Mesh.PrimitiveType.TriangleStrip);
-		float z = GlobalPosition.Z + 5f;
+		// The points are laid-out canvas units; the track (top level) takes the menu seat as its
+		// own transform, identity on the whole window.
+		_barTrack.GlobalTransform = GlobalTransform * Engine_UiSeats.LayoutTransform(this).AffineInverse();
+		float z = LayoutOrigin.Z + 5f;
 		for (int i = 0; i < _barPoints.Count; ++i)
 		{
 			Vector2 here = _barPoints[i];

@@ -249,7 +249,7 @@ public sealed class Engine_UiAchievementScreen
 			Visible = false,
 		};
 
-		Host.AddChild(_view);
+		Host.MenuLayer.AddChild(_view);
 		_view.Book = _book;
 		_view.Bind(_menu);
 		_view.ClipRect = Engine_UiButtonPool.ListClip(Host.DocumentFor(Presentation));

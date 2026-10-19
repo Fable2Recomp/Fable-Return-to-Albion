@@ -25,16 +25,21 @@ public static class Engine_UiHudTopBox
 
 	/// <param name="front">The manager's front record, read out of the guest.</param>
 	/// <param name="strings">Babel, for `TextManager_HasKey` on the title tag.</param>
+	/// <param name="hostNotice">
+	/// Refii's own notice (co-op joined/left, a partner waiting at an exit), shown as a body-only
+	/// box while the guest's own box is down. The guest's boxes keep the box whenever they stand.
+	/// </param>
 	public static void Publish(
 		Refii.Host.HostBridge.TopBoxFront front, bool aHeld, bool yHeld,
-		Engine_HudValues values, Refii.Text.Engine_BabelDatabase? strings)
+		Engine_HudValues values, Refii.Text.Engine_BabelDatabase? strings, string? hostNotice = null)
 	{
 		if (!front.Known)
 		{
 			return;
 		}
 
-		bool up = front.Present;
+		bool hostUp = !front.Present && !string.IsNullOrEmpty(hostNotice);
+		bool up = front.Present || hostUp;
 		State(values, "TopBox", up);
 		if (up != _wasUp)
 		{
@@ -56,6 +61,25 @@ public static class Engine_UiHudTopBox
 				State(values, name, false);
 			}
 
+			_shown = 0u;
+			return;
+		}
+
+		if (hostUp)
+		{
+			foreach (string name in new[]
+				{
+					"ButtonOnly", "TopTitle", "RightTopButtonVisible", "LeftTopButtonVisible",
+					"RightTopButtonIsY", "RightTopButtonMeterVisible", "LeftTopButtonMeterVisible",
+					"RightTopButtonHeld", "LeftTopButtonHeld",
+				})
+			{
+				State(values, name, false);
+			}
+
+			State(values, "TopMain", true);
+			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopTitle"), string.Empty);
+			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopMain"), hostNotice!);
 			_shown = 0u;
 			return;
 		}

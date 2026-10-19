@@ -40,6 +40,10 @@
 
 /// The local co-op screen mode (guest_tick_pump.cpp).
 extern "C" int RefiiCoopSplitScreen(void);
+extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
+extern "C" void RefiiCoopSetPartnerDog(uint32_t dog);
+extern "C" void RefiiCoopSetJobWorker(int player);
+extern "C" void RefiiCoopSetEstateBuyer(int player);
 
 PPC_EXTERN_FUNC(rex_lua_pushcclosure);
 PPC_EXTERN_FUNC(rex_lua_getfield);
@@ -466,6 +470,32 @@ REFII_LUA_NATIVE(NativeSplitScreen) {
   RESULTS(1);
 }
 
+// Refii.player_dog(p): player p's dog — hero one's is the game's own GetDog, player two's the
+// co-op dog bound to them.
+REFII_LUA_NATIVE(NativePlayerDog) {
+  lua.PushHandle(RefiiCoopPlayerDog(lua.base, lua.Int(1)));
+  RESULTS(1);
+}
+
+// Refii._set_partner_dog([dog]): records player two's dog; with none, clears the record (the
+// core Lua's breed change, so the replacement is recorded by its first bind).
+REFII_LUA_NATIVE(NativeSetPartnerDog) {
+  RefiiCoopSetPartnerDog(lua.Type(1) == kTypeNumber ? lua.Entity(1) : 0u);
+  RESULTS(0);
+}
+
+// Refii._job_worker(p) / Refii._estate_buyer(p): the core Lua's statements of who works the
+// running job and who the real-estate screen about to open buys for (0 none, 1, 2).
+REFII_LUA_NATIVE(NativeJobWorker) {
+  RefiiCoopSetJobWorker(lua.Int(1));
+  RESULTS(0);
+}
+
+REFII_LUA_NATIVE(NativeEstateBuyer) {
+  RefiiCoopSetEstateBuyer(lua.Int(1));
+  RESULTS(0);
+}
+
 REFII_LUA_NATIVE(NativeLocalHero) {
   lua.PushHandle(refii_mod_local_hero(lua.base));
   RESULTS(1);
@@ -699,6 +729,10 @@ Native g_natives[] = {
     {"player_hero", &NativePlayerHero, 0},
     {"local_hero", &NativeLocalHero, 0},
     {"split_screen", &NativeSplitScreen, 0},
+    {"player_dog", &NativePlayerDog, 0},
+    {"_set_partner_dog", &NativeSetPartnerDog, 0},
+    {"_job_worker", &NativeJobWorker, 0},
+    {"_estate_buyer", &NativeEstateBuyer, 0},
     {"renown", &NativeRenown, 0},
     {"morality", &NativeMorality, 0},
     {"purity", &NativePurity, 0},

@@ -1584,12 +1584,18 @@ public static class Engine_UiTemplates
 		_menus!["pause-root-coop"] = new Engine_UiMenuTemplate
 		{
 			Name = "pause-root-coop",
-			Highlight = "Abilities",
+			Highlight = "Map",
 			Entries =
 			{
+				// PLAYER TWO IS A HERO: the hero's book, Fable 3's own menus per player (user,
+				// 2026-10-19). Saving stays the host's — the world is theirs; player two's HeroSave
+				// is written by the guest on leave and autosave.
+				HostTab("Map", "GUI_SCREEN_PAUSE_WORLD_MAP", Engine_PauseMenu.TabMap),
 				HostTab("Abilities", "GUI_SCREEN_PAUSE_ABILITIES", Engine_PauseMenu.TabAbilities),
+				HostTab("Items", "GUI_SCREEN_PAUSE_ITEMS", Engine_PauseMenu.TabItems),
 				HostTab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", Engine_PauseMenu.TabWeapons),
 				HostTab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", Engine_PauseMenu.TabClothing),
+				HostTab("Logbook", "GUI_SCREEN_PAUSE_LOGBOOK", Engine_PauseMenu.TabLogbook),
 
 				new Engine_UiMenuEntry
 				{
@@ -1613,7 +1619,7 @@ public static class Engine_UiTemplates
 				// "don't save" pair below quits this machine's whole game, as before.
 				new Engine_UiMenuEntry
 				{
-					Name = "HenchmanQuit", Tag = "GUI_SCREEN_PAUSE_HENCHMAN_QUIT",
+					Name = "HenchmanQuit", Tag = "Leave or Quit", HostOnly = true,
 					Children =
 					{
 						new Engine_UiMenuEntry

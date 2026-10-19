@@ -1381,7 +1381,7 @@ public partial class GameUi : Node
 				_pauseBanner.Name = "PauseBanner";
 				_pauseBanner.Position = new Vector3(0f, 0f, 600f);
 				_pauseBanner.Visible = false;
-				_presentation.AddChild(_pauseBanner);
+				_presentation.MenuLayer.AddChild(_pauseBanner);
 				GD.Print("[game-ui] the pause banner is owned — cloned from 'menucycler'");
 			}
 		}
@@ -1477,7 +1477,7 @@ public partial class GameUi : Node
 
 			// Parented to the HOST rather than to the built tree, which is freed on every
 			// guest state change — same lifetime split as the front-end view.
-			_presentation.AddChild(_pauseView);
+			_presentation.MenuLayer.AddChild(_pauseView);
 			_pauseView.Bind(_pauseMenu);
 			_pauseView.ClipRect = Engine_UiButtonPool.ListClip(_presentation.DocumentFor(PausePresentation));
 
@@ -2560,9 +2560,9 @@ public partial class GameUi : Node
 			Visible = false,
 		};
 
-		// Parented to the HOST, not the built tree: that tree is freed whenever the guest
-		// changes the screen's state, and a view inside it would go with it.
-		_presentation.AddChild(_screenMenuView);
+		// Parented to the HOST's menu layer, not the built tree: that tree is freed whenever the
+		// guest changes the screen's state, and a view inside it would go with it.
+		_presentation.MenuLayer.AddChild(_screenMenuView);
 		_screenMenuView.Bind(_screenMenu.Menu);
 		_screenMenuView.Position = new Vector3(
 			_screenMenuAnchor.X - Engine_UiTemplates.WideListShift(screenId), _screenMenuAnchor.Y,
@@ -2706,7 +2706,9 @@ public partial class GameUi : Node
 			Art = _hud.Art,
 			ResolveTexture = _hud.ResolveTexture,
 			Layout = _hud.Layout,
-			Values = _hud.Values,
+			// Player one's feed, with player two's own numbers stated over it where the guest's
+			// one HUD states only the local player's (DrivePlayerTwoHud).
+			Values = new Engine_HudValues { Under = _hud.Values },
 			ReadsValues = false,
 			Seat = Engine_UiSeats.Seat.PlayerTwo,
 			Suppressed = true,
@@ -2800,6 +2802,16 @@ public partial class GameUi : Node
 		};
 		_presentation.AddChild(_slowTimeDial);
 
+		// Player two's, in their half on split screen: their own component 118's record.
+		_slowTimeDialTwo = new Engine_HudSlowTimeDial
+		{
+			Name = "SlowTimeDialTwo",
+			Position = new Vector3(0f, 0f, 50f),
+			ResolveTexture = _slowTimeDial.ResolveTexture,
+			Visible = false,
+		};
+		_presentation.AddChild(_slowTimeDialTwo);
+
 		BuildAchievementToast();
 	}
 
@@ -2809,7 +2821,8 @@ public partial class GameUi : Node
 	/// one's HUD in the left half, laid out as on a screen that size, and player two's view of the
 	/// same HUD in the right half; the spells wheel in the half of whoever opened it; the menu
 	/// input and masks on the pad of whoever owns the open menu. A shared screen and solo play take
-	/// none of this — every seat is the whole window and the menu owner is not stated.
+	/// none of this — every seat is the whole window and the menu owner is not stated. The menus
+	/// stand in the half of whoever opened them (<see cref="Engine_UiPresentationHost.MenuLayer"/>).
 	/// </summary>
 	private void SeatPlayerUi(Vector2 window)
 	{
@@ -2817,6 +2830,7 @@ public partial class GameUi : Node
 		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
 		{
 			_hud.Seat = split ? Engine_UiSeats.Seat.PlayerOne : Engine_UiSeats.Seat.Whole;
+			_hud.HidesPartner = CoopSession.Side != CoopSession.Role.Solo && !CoopSession.LocalCoop;
 		}
 
 		if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
@@ -2828,7 +2842,29 @@ public partial class GameUi : Node
 		_spells.Window = window;
 
 		GameInput.PlayerTwoPad = CoopSession.LocalCoop ? CoopSession.LocalPadTwo : -1;
-		GameInput.MenuOwner = split && CoopSession.LocalCoop ? StatedMenuOwner() : 0;
+		// The owner's pad drives the host menu in all local co-op: on a shared screen player two's
+		// pause is player two's too.
+		GameInput.MenuOwner = CoopSession.LocalCoop ? StatedMenuOwner() : 0;
+
+		// THE MENUS IN THE OPENER'S HALF. The book is laid out for the whole window; on split
+		// screen it is drawn whole inside the half of the player who opened it, scaled to fit,
+		// so the other player keeps their view of the world.
+		if (_presentation is not null && GodotObject.IsInstanceValid(_presentation))
+		{
+			int owner = split ? GameInput.MenuOwner : 0;
+			if (owner != 0)
+			{
+				Engine_UiSeats.Frame half = Engine_UiSeats.Of(window, Engine_UiSeats.For(owner, true));
+				Vector2 full = Engine_HudLayout.CanvasExtent(window);
+				Vector2 room = half.Extent * half.Scale;
+				float fit = full.X > 0f && full.Y > 0f ? Mathf.Min(room.X / full.X, room.Y / full.Y) : 1f;
+				_presentation.SeatMenus(fit, half.Centre);
+			}
+			else
+			{
+				_presentation.SeatMenus(1f, Vector2.Zero);
+			}
+		}
 		if (GameInput.MenuOwner != _menuOwnerSaid)
 		{
 			_menuOwnerSaid = GameInput.MenuOwner;
@@ -2840,6 +2876,61 @@ public partial class GameUi : Node
 	}
 
 	private int _menuOwnerSaid;
+
+	/// <summary>
+	/// The expression wheel's owner as the guest states it: `sub_826A9A60` stores the opener's
+	/// player id at wheel+24, the wheel being `*(*(GUI+32)+60)` with GUI at 0x83496B08. 1 when
+	/// unread.
+	/// </summary>
+	private static readonly uint[] WheelOwnerChain = { 32u, 60u, 24u };
+
+	private int _wheelSectorTwo = -1;
+
+	/// <summary>
+	/// The wheel sector a stick points at, as `sub_826AA060` computes it: dead zone |v|² < 0.1,
+	/// then the nearest of eight unit vectors at 3π/4 − iπ/4 (0 = NE, clockwise). −1 at rest.
+	/// </summary>
+	private static int WheelSector(Vector2 stick)
+	{
+		if (stick.LengthSquared() < 0.1f)
+		{
+			return -1;
+		}
+
+		int best = -1;
+		float bestDistance = float.MaxValue;
+		for (int i = 0; i < 8; ++i)
+		{
+			float angle = 2.3561945f - (i * 0.7853982f);
+			float dx = stick.X - Mathf.Sin(angle);
+			float dy = -stick.Y - Mathf.Cos(angle);
+			float distance = (dx * dx) + (dy * dy);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				best = i;
+			}
+		}
+
+		return best;
+	}
+
+	private static int ExpressionWheelOwner()
+	{
+		System.Span<uint> word = stackalloc uint[1];
+		uint at = HostBridge.GuestAddress(0x83496B08u);
+		foreach (uint offset in WheelOwnerChain)
+		{
+			if (at == 0u || HostBridge.Peek(at, word) != 1 || word[0] < 0x10000u)
+			{
+				return 1;
+			}
+
+			at = word[0] + offset;
+		}
+
+		return HostBridge.Peek(at, word) == 1 && word[0] < 0x10000u ? (int)word[0] == 2 ? 2 : 1 : 1;
+	}
 
 	/// <summary>
 	/// Whether the pause standing is player two's: the online client's own, or local player two's
@@ -2869,6 +2960,10 @@ public partial class GameUi : Node
 	}
 
 	private const string ExitRefusedBox = "RefiiCoopExitRefused";
+
+	/// <summary>Refii's own notice boxes: no guest manager holds them, so the HUD box shows them.</summary>
+	private static readonly System.Collections.Generic.HashSet<string> RefiiNoticeBoxes =
+		new() { Engine_UiCoopNotices.BoxName, ExitRefusedBox };
 
 	private static bool PauseIsPlayerTwos() =>
 		CoopSession.IsClient || (CoopSession.LocalCoop && HostBridge.GetMenuOwner() == 2);
@@ -2905,12 +3000,182 @@ public partial class GameUi : Node
 		}
 
 		_hudTwo.Resolve = _hud.Resolve;
-		_hudTwo.LiveSlides = _hud.LiveSlides;
-		_hudTwo.LiveTextures = _hud.LiveTextures;
+		_hudTwo.LiveSlides = SlidesForPlayerTwo(_hud.LiveSlides);
+		_hudTwo.LiveTextures = TexturesForPlayerTwo(_hud.LiveTextures);
 		_hudTwo.LiveTransform = _hud.LiveTransform;
 		_hudTwo.LiveTexts = _hud.LiveTexts;
 		_hudTwo.ElementActive = _hud.ElementActive;
 	}
+
+	/// <summary>Player two's own element slides over the shared ones (ordinal → slide).</summary>
+	private readonly System.Collections.Generic.Dictionary<int, int> _hudTwoSlides = new();
+
+	private int[]? _hudTwoSlideBuffer;
+
+	private System.Collections.Generic.IReadOnlyList<int>? SlidesForPlayerTwo(
+		System.Collections.Generic.IReadOnlyList<int>? shared)
+	{
+		if (shared is null || _hudTwoSlides.Count == 0)
+		{
+			return shared;
+		}
+
+		if (_hudTwoSlideBuffer is null || _hudTwoSlideBuffer.Length != shared.Count)
+		{
+			_hudTwoSlideBuffer = new int[shared.Count];
+		}
+
+		for (int i = 0; i < shared.Count; ++i)
+		{
+			_hudTwoSlideBuffer[i] = shared[i];
+		}
+
+		foreach ((int ordinal, int slide) in _hudTwoSlides)
+		{
+			if (ordinal >= 0 && ordinal < _hudTwoSlideBuffer.Length)
+			{
+				_hudTwoSlideBuffer[ordinal] = slide;
+			}
+		}
+
+		return _hudTwoSlideBuffer;
+	}
+
+	/// <summary>Player two's own element textures over the shared ones (ordinal → texture hash).</summary>
+	private readonly System.Collections.Generic.Dictionary<int, uint> _hudTwoTextures = new();
+
+	private uint[]? _hudTwoTextureBuffer;
+
+	private uint[]? TexturesForPlayerTwo(uint[]? shared)
+	{
+		if (shared is null || _hudTwoTextures.Count == 0)
+		{
+			return shared;
+		}
+
+		if (_hudTwoTextureBuffer is null || _hudTwoTextureBuffer.Length != shared.Length)
+		{
+			_hudTwoTextureBuffer = new uint[shared.Length];
+		}
+
+		System.Array.Copy(shared, _hudTwoTextureBuffer, shared.Length);
+		foreach ((int ordinal, uint texture) in _hudTwoTextures)
+		{
+			if (ordinal >= 0 && ordinal < _hudTwoTextureBuffer.Length)
+			{
+				_hudTwoTextureBuffer[ordinal] = texture;
+			}
+		}
+
+		return _hudTwoTextureBuffer;
+	}
+
+	/// <summary>One guest word, or 0 when the address does not read.</summary>
+	private static uint PeekWord(uint address)
+	{
+		System.Span<uint> word = stackalloc uint[1];
+		return address != 0u && HostBridge.Peek(address, word) == 1 ? word[0] : 0u;
+	}
+
+	/// <summary>The HUD object `*(GUI+32)` (GUI at 0x83496B08), or 0.</summary>
+	private static uint GuestHudObject()
+	{
+		uint gui = PeekWord(HostBridge.GuestAddress(0x83496B08u));
+		return gui >= 0x10000u ? PeekWord(gui + 32u) : 0u;
+	}
+
+	private static readonly Engine_HudValues.Handle[] ExperienceTexts =
+	{
+		Engine_HudValues.Handle.For("GenericExpText"), Engine_HudValues.Handle.For("StrengthExpText"),
+		Engine_HudValues.Handle.For("SkillExpText"), Engine_HudValues.Handle.For("WillExpText"),
+	};
+
+	private readonly int[] _experienceShownTwo = new int[4];
+	private bool _experienceUpTwo;
+	private double _experienceLingerTwo;
+	private double _experienceStepClock;
+	private ulong _experienceClockUsec;
+
+	/// <summary>
+	/// PLAYER TWO'S EXPERIENCE COUNTER, in their half. The guest keeps one counter (HUD+0x68,
+	/// `sub_82185718`) for the local player, but decides visibility for BOTH heroes: hero one's
+	/// at counter+64, hero two's at +65 (`sub_82539F38`: authority and an expression of type 17).
+	/// Its numbers are each pool's spendable balance, component 164 +16 float[4], snapped when the
+	/// counter appears (`sub_82539318`) and stepped toward the balance once per guest frame
+	/// (`sub_82539648`: +1 within ten, else up to nineteen); it lingers five seconds
+	/// (counter+8). Player two's half shows the same from player two's +65 and balances.
+	/// </summary>
+	private void DrivePlayerTwoExperience()
+	{
+		ulong now = Time.GetTicksUsec();
+		double delta = _experienceClockUsec == 0ul ? 0.0 : System.Math.Min((now - _experienceClockUsec) * 1e-6, 0.25);
+		_experienceClockUsec = now;
+
+		var overlay = _hudTwo?.Values;
+		bool split = Engine_Views.Split && overlay is not null && overlay.Under is not null;
+		uint hero = split && CoopSession.LocalCoop && HostBridge.CoopSessionRaw() is { } coop ? coop.PlayerTwo : 0u;
+		uint pools = hero != 0u ? HostBridge.EntityComponentAddress(hero, 164u) : 0u;
+		uint hud = pools != 0u ? GuestHudObject() : 0u;
+		uint counter = hud >= 0x10000u ? PeekWord(hud + 0x68u) : 0u;
+		if (counter < 0x10000u || _hud?.Bindings is not { } bindings)
+		{
+			foreach (Engine_HudValues.Handle handle in ExperienceTexts)
+			{
+				overlay?.Override(handle, null);
+			}
+
+			_hudTwoSlides.Clear();
+			_experienceUpTwo = false;
+			return;
+		}
+
+		// +64 and +65 are the two bytes after the word at +64's high byte, big-endian.
+		bool visible = ((PeekWord(counter + 64u) >> 16) & 0xFFu) != 0u;
+		System.Span<uint> balance = stackalloc uint[4];
+		bool read = HostBridge.Peek(pools + 16u, balance) == 4;
+
+		if (visible && !_experienceUpTwo && read)
+		{
+			for (int i = 0; i < 4; ++i)
+			{
+				_experienceShownTwo[i] = (int)System.BitConverter.Int32BitsToSingle(unchecked((int)balance[i]));
+			}
+		}
+
+		_experienceUpTwo = visible;
+		_experienceLingerTwo = visible ? 5.0 : System.Math.Max(0.0, _experienceLingerTwo - delta);
+		bool shown = visible || _experienceLingerTwo > 0.0;
+
+		// The guest's own step, once per guest frame (30 a second).
+		_experienceStepClock += delta;
+		while (read && _experienceStepClock >= 1.0 / 30.0)
+		{
+			_experienceStepClock -= 1.0 / 30.0;
+			for (int i = 0; i < 4; ++i)
+			{
+				int target = (int)System.BitConverter.Int32BitsToSingle(unchecked((int)balance[i]));
+				int diff = target - _experienceShownTwo[i];
+				if (diff > 0)
+				{
+					_experienceShownTwo[i] += diff <= 10 ? 1 : System.Math.Min(diff, 19);
+				}
+			}
+		}
+
+		for (int i = 0; i < 4; ++i)
+		{
+			overlay!.Override(ExperienceTexts[i], ExperienceText(_experienceShownTwo[i]));
+		}
+
+		// SlideFader2 `ExpAmounts`: 2 in, 3 out fast.
+		foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideFader2, Refii.Core.Engine_GameHash.Fnv1("ExpAmounts")))
+		{
+			_hudTwoSlides[ordinal] = shown ? 2 : 3;
+		}
+	}
+
+	/// <summary>An experience pool's value as the counter writes it (`sub_8253A028`).</summary>
+	private static string ExperienceText(int value) => value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
 	/// <summary>Where the edited arrangement lives — the editor writes it, every boot reads it.</summary>
 	public const string HudLayoutPath = Engine_HudLayout.LayoutPath;
@@ -2930,6 +3195,7 @@ public partial class GameUi : Node
 	private Engine_HudReticule? _reticuleTwo;
 
 	private Engine_HudSlowTimeDial? _slowTimeDial;
+	private Engine_HudSlowTimeDial? _slowTimeDialTwo;
 
 	/// <summary>`GUI.PlayFullCutscene`'s game-flow state (`sub_82305FE8` builds it; its type
 	/// slot is `li r3,7`).</summary>
@@ -3177,16 +3443,31 @@ public partial class GameUi : Node
 	/// </summary>
 	private void DriveSlowTimeDial()
 	{
-		if (_slowTimeDial is null || !GodotObject.IsInstanceValid(_slowTimeDial))
+		// Local co-op: each dial is its own player's (the local hero follows the menu owner,
+		// which is no answer for whose dial this is). Online: the local hero's.
+		uint one = 0u, two = 0u;
+		if (HostBridge.IsInGame)
+		{
+			HostBridge.CoopSessionWords? coop = CoopSession.LocalCoop ? HostBridge.CoopSessionRaw() : null;
+			one = coop is { } words ? words.PlayerOne : HostBridge.HeroEntityAddress();
+			two = coop is { } both && Engine_Views.Split ? both.PlayerTwo : 0u;
+		}
+
+		DriveSlowTimeDial(_slowTimeDial, one, 0);
+		DriveSlowTimeDial(_slowTimeDialTwo, two, 1);
+	}
+
+	private void DriveSlowTimeDial(Engine_HudSlowTimeDial? view, uint hero, int seat)
+	{
+		if (view is null || !GodotObject.IsInstanceValid(view))
 		{
 			return;
 		}
 
-		uint hero = HostBridge.IsInGame ? HostBridge.HeroEntityAddress() : 0u;
 		uint spells = hero != 0u ? HostBridge.EntityComponentAddress(hero, 118u) : 0u;
 		if (spells == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
 		{
-			_slowTimeDial.Feed(null);
+			view.Feed(null);
 			return;
 		}
 
@@ -3195,7 +3476,7 @@ public partial class GameUi : Node
 		System.Span<uint> dial = stackalloc uint[28];
 		if (HostBridge.Peek(spells + 484u, dial) != 28 || (dial[1] >> 24) == 0u)
 		{
-			_slowTimeDial.Feed(null);
+			view.Feed(null);
 			return;
 		}
 
@@ -3203,7 +3484,7 @@ public partial class GameUi : Node
 		int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
 		float guestWidth = bbCount == 2 && backbuffer[0] != 0u ? backbuffer[0] : 1280f;
 		float guestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
-		_slowTimeDial.UnitsPerGuestPixel = _spriteViews[0].Frame.UnitsPerGuestPixel(guestHeight);
+		view.UnitsPerGuestPixel = _spriteViews[seat].Frame.UnitsPerGuestPixel(guestHeight);
 
 		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
 
@@ -3226,7 +3507,7 @@ public partial class GameUi : Node
 				F(d[at + 6]));
 		}
 
-		_slowTimeDial.Feed(new Engine_HudSlowTimeDial.Dial(F(dial[3]), Segment(dial, 0), Segment(dial, 1)));
+		view.Feed(new Engine_HudSlowTimeDial.Dial(F(dial[3]), Segment(dial, 0), Segment(dial, 1)));
 	}
 
 	private bool _worldSpritesCleared;
@@ -3466,6 +3747,7 @@ public partial class GameUi : Node
 			Seat(_slowTimeDial, mine.Frame, 50f);
 			Seat(_worldSpritesTwo, theirs.Frame, 52f);
 			Seat(_reticuleTwo, theirs.Frame, 54f);
+			Seat(_slowTimeDialTwo, theirs.Frame, 50f);
 			if (_reticule is not null && GodotObject.IsInstanceValid(_reticule))
 			{
 				_reticule.OnlyPlayer = split ? 0 : -1;
@@ -3475,6 +3757,7 @@ public partial class GameUi : Node
 		bool theirsShown = split && !_fullCutscene;
 		ShowLayer(_worldSpritesTwo, theirsShown);
 		ShowLayer(_reticuleTwo, theirsShown);
+		ShowLayer(_slowTimeDialTwo, theirsShown);
 		return split;
 
 		static void Seat(Node3D? layer, Engine_UiSeats.Frame frame, float z)
@@ -4160,6 +4443,7 @@ public partial class GameUi : Node
 				}
 
 				_hud!.ElementActive = active;
+				DrivePlayerTwoExperience();
 				ShareHudFeed();
 			}
 
@@ -4270,6 +4554,44 @@ public partial class GameUi : Node
 					{
 						_wheelSector = best;
 						HostBridge.PostFrontEndAction($"QuickWheel:point:{best}");
+					}
+				}
+			}
+
+			// LOCAL PLAYER TWO'S WHEEL: the same guest routines, opened for player two
+			// (`QuickWheel:2:` — the wheel stores its owner, lists the owner's expressions and,
+			// accepted with the owner's flag, performs on player two), off player two's pad.
+			if (CoopSession.LocalCoop && GameInput.PlayerTwoPad >= 1)
+			{
+				if (GameInput.QuickWheelTwoPressed)
+				{
+					HostBridge.PostFrontEndAction("QuickWheel:2:open");
+					_wheelSectorTwo = -1;
+				}
+				else if (GameInput.QuickWheelTwoReleased)
+				{
+					HostBridge.PostFrontEndAction("QuickWheel:2:close");
+				}
+				else if (GameInput.QuickWheelTwoHeld)
+				{
+					if (GameInput.WheelTwoAcceptPressed)
+					{
+						HostBridge.PostFrontEndAction("QuickWheel:2:select");
+					}
+					else if (GameInput.WheelTwoAcceptReleased)
+					{
+						HostBridge.PostFrontEndAction("QuickWheel:2:release");
+					}
+					else if (GameInput.WheelTwoBackPressed)
+					{
+						HostBridge.PostFrontEndAction("QuickWheel:2:back");
+					}
+
+					int sector = WheelSector(GameInput.LeftStickTwo);
+					if (sector >= 0 && sector != _wheelSectorTwo)
+					{
+						_wheelSectorTwo = sector;
+						HostBridge.PostFrontEndAction($"QuickWheel:2:point:{sector}");
 					}
 				}
 			}
@@ -6710,7 +7032,7 @@ public partial class GameUi : Node
 			{
 				Engine_UiHudTopBox.Publish(
 					HostBridge.GetTopBoxFront(), GameInput.AHeld, GameInput.YHeld, _hud.Values,
-					_presentation?.Strings);
+					_presentation?.Strings, _boxes.FrontOf(RefiiNoticeBoxes));
 				Engine_UiHudTargetedQuery.Publish(HostBridge.GetTargetedQuery(), _hud.Values);
 			}
 
@@ -6730,8 +7052,12 @@ public partial class GameUi : Node
 			// (a job's bar fill) is player one's screen, as the guest's one HUD is.
 			int armed = (meter.ArmedA ? 1 : 0) | (meter.ArmedB ? 2 : 0);
 			_hud.ExpressionPlayers = armed == 0 ? 1 : armed;
+
+			// THE EXPRESSION WHEEL STANDS IN ITS OWNER'S HALF, as the guest states the owner.
+			_hud.WheelPlayer = ExpressionWheelOwner();
 			if (Engine_Views.Split && _hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
 			{
+				_hudTwo.WheelPlayer = _hud.WheelPlayer;
 				_hudTwo.ExpressionPlayers = _hud.ExpressionPlayers;
 				Engine_UiHudExpressionMeter.Publish(meter, _hudTwo, mine);
 			}

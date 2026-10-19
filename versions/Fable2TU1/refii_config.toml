@@ -11466,6 +11466,12 @@
 0x822BCA68 = { name = "rex_CECNetwork_SendTransform" }
 0x8239E9E0 = { name = "rex_CECNetwork_PushReceivedTransform" }
 0x8239ED30 = { name = "rex_CECNetwork_ApplyReplicaTarget" }
+0x827110F8 = { name = "rex_ActionStrikeRecoil_Start" }
+0x827115A0 = { name = "rex_ActionStunned_Start" }
+0x8270AD80 = { name = "rex_ActionStrikeRecoil_Clone" }
+0x826F9A50 = { name = "rex_ActionKnockdownStabResponse_Start" }
+0x8270ADF8 = { name = "rex_ActionStunned_Clone" }
+0x82392250 = { name = "rex_lhNetEntity_ProcessMessage" }
 0x82518490 = { name = "rex_lhRegionManager_FindRegionOwningLevel" }
 0x82537128 = { name = "rex_lhGuiReceiveItemsScreen_OnScreenAction" }
 0x82541F30 = { name = "rex_CECSpellManager_SetSpellSlot" }
@@ -11771,6 +11777,86 @@ name = "RefiiNetQueueReplaceOnce"
 address = 0x823359D4
 registers = ["r1", "r31"]
 jump_address_on_true = 0x823359F8
+
+# Player two works a job's meter and buys property as themselves (coop_ui_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopJobMeterPlayer"
+address = 0x823D122C
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopEstateBuyer"
+address = 0x826B1A6C
+registers = ["r6"]
+
+# Player two's own expression wheel, and a joiner's own tutorials (coop_ui_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopWheelHero"
+address = 0x826ABD84
+registers = ["r3", "r27"]
+
+[[midasm_hook]]
+name = "RefiiCoopWheelHero"
+address = 0x826AA81C
+registers = ["r3", "r24"]
+
+[[midasm_hook]]
+name = "RefiiCoopWheelHero"
+address = 0x826AB244
+registers = ["r10", "r30"]
+
+[[midasm_hook]]
+name = "RefiiCoopWheelHero"
+address = 0x826A9AB0
+registers = ["r9", "r30"]
+
+[[midasm_hook]]
+name = "RefiiCoopTutorialsHere"
+address = 0x821B52BC
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiCoopTutorialsHere"
+address = 0x8227C008
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiCoopTutorialHero"
+address = 0x8227C098
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopTutorialHero"
+address = 0x8227C3E4
+registers = ["r3"]
+
+# Player two's book asks the guest's page questions about player two (guest_tick_pump.cpp).
+[[midasm_hook]]
+name = "RefiiCoopMenuPlayer"
+address = 0x826B8434
+registers = ["r4"]
+
+[[midasm_hook]]
+name = "RefiiCoopMenuPlayer"
+address = 0x8246F080
+registers = ["r4"]
+
+# Player two's dog binds to player two and leaves GetDog() to hero one's (coop_dog_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopDogInitMaster"
+address = 0x8280AF0C
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+name = "RefiiCoopDogUpdateMaster"
+address = 0x822AE28C
+registers = ["r3", "r26"]
+
+[[midasm_hook]]
+name = "RefiiCoopDogKeepsGlobalSlot"
+address = 0x82814F40
+registers = ["r30"]
+jump_address_on_true = 0x82814F84
 
 # A partner's pause leaves this player roaming (coop_hero_hooks.cpp).
 [[midasm_hook]]

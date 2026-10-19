@@ -94,8 +94,10 @@ struct HeroDerived {
     float attractiveness[kAttractivenessCount] = {};
     float attractiveness_fraction = 0.0f;
 
-    /// The dog, when one exists: `dog_known` gates the whole page.
+    /// The dog, when one exists: `dog_known` gates the whole page. The local player's: hero
+    /// one's, or on a joiner player two's own.
     bool dog_known = false;
+    uint32_t dog_entity = 0;
 
     /// Levels 1..5, int32 not float: the constructor stores `1` with `stw` (`0x82808130`) and
     /// `sub_829D75F0` uses combat as a one-based index into a five-float table.
@@ -107,6 +109,10 @@ struct HeroDerived {
     /// The Babel key the guest resolves when no custom name is set: `c20+48`, 0xD1E14CE2 ('Dog')
     /// on an unnamed dog. `dog_name` carries the custom LHString at `c20+52` when it has a length.
     uint32_t dog_name_key = 0;
+
+    /// The dog's definition (entity+0x1C): its breed, `CreatureDogHero` or one of the three
+    /// breed defs `OnCarriedActionUseBase:ApplyDogChange` swaps in.
+    uint32_t dog_definition = 0;
 
     /// GDB record ids of learned tricks, not name hashes: `sub_8219C5E8` maps `FNV1(name)`
     /// through a hash -> record-id table before storing.

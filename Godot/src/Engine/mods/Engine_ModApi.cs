@@ -731,6 +731,7 @@ public static class ModApi
 		new ModApiHelper("Refii.relation(a, b) / Refii.alive(e) / Refii.definition(e) / Refii.name(e) / Refii.player_of(e)", "the faction rule (1 neutral 2 ally 4 enemy), liveness, the definition hash, the instance name, 1/2/0"),
 		new ModApiHelper("Refii.level_name() / Refii.player_hero(p) / Refii.local_hero()", "the loaded level, a player's hero, the local hero"),
 		new ModApiHelper("Refii.split_screen()", "true when local co-op runs on split screen (each local player their own camera)"),
+		new ModApiHelper("Refii.player_dog(p)", "a player's dog: player one's is the game's own GetDog, player two's the co-op dog bound to them; nil when none"),
 		new ModApiHelper("Refii.renown(e) / Refii.morality(e) / Refii.purity(e) / Refii.age(e) / Refii.physique(e) -> fat, height", "the hero stats the game reports"),
 		new ModApiHelper("Refii.inventory(e)", "{ {definition = \"0x…\", count = n}, … } in the game's order"),
 		new ModApiHelper("Refii.equipped(e) -> melee, ranged", "the weapon set's definition hashes, nil for an empty hand"),

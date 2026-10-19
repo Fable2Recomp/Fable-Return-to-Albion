@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -740,6 +741,9 @@ constexpr const char* kActionPauseSavingPrefix = "PauseSaving:";
 /// STICK needs no lever — `sub_82402F70` routes the raw left-stick event to `sub_826AA060`
 /// itself, gated on `QM+35`; `point:<i>` is the fallback that feeds the same routine the unit
 /// vector of sector i (angle 3π/4 − iπ/4, 0 = NE clockwise to 7 = N).
+/// "QuickWheel:2:<verb>" is local player two's: the wheel opens with player two's Player (it
+/// stores the opener's id at W+24, `sub_826A9A60`), and every other verb acts only on a wheel
+/// that player owns — each pad drives its own wheel, never the other's.
 constexpr const char* kActionQuickWheelPrefix = "QuickWheel:";
 
 /// "SpellsMenu:open|close" — a DEBUG VERB, not the mechanism.
@@ -833,7 +837,10 @@ constexpr const char* kActionCoopExitUsePrefix = "CoopExitUse:";
 ///   f32 strength, skill, will; f32 morality, purity; i32 renown, money;
 ///   u8 rankCount, i32[rankCount] ability ranks, ids 0..14 in order; u8 expCount, f32[expCount];
 ///   u8 totalCount, f32[totalCount]; u32 melee, u32 ranged (drawn weapon records, 0 none);
-///   u16 wornCount, u32[wornCount] worn def hashes; u16 invCount, (u32 record, u16 count)[].
+///   u16 wornCount, u32[wornCount] worn def hashes; u16 invCount, (u32 record, u16 count)[];
+///   then, when present, the dog: u32 definition (0 none), u8 searching, u8 combat,
+///   u8 trickCount, (u8 len, len bytes of a trick's GDB name)[trickCount],
+///   u8 wornCount, u32[wornCount] the dog's worn def hashes, u8 nameLen, its given name (UTF-8).
 /// A malformed payload (bad magic, short buffer, a count past the end, version 0) is logged
 /// once and ignored; the stores keep the last good version.
 constexpr const char* kActionHeroStatePrefix = "HeroState:";
@@ -1727,6 +1734,12 @@ bool DispatchScreenAction(PPCContext& ctx, uint8_t* base, uint32_t code, bool at
 /// writer validates nothing, so slot > 4 scribbles past the assignment array and spell > 7 puts
 /// an index with no icon-table entry on the d-pad.
 extern "C" uint32_t refii_mod_player_hero(uint8_t* base, int32_t player);
+extern "C" uint32_t refii_mod_handle(uint32_t address);
+extern "C" uint32_t refii_mod_handle_address(uint32_t handle);
+extern "C" int32_t refii_mod_entity_alive(uint8_t* base, uint32_t entity);
+extern "C" int32_t refii_mod_entity_name(uint8_t* base, uint32_t entity, char* out, uint32_t size);
+extern "C" uint32_t refii_mod_component(uint8_t* base, uint32_t entity, uint32_t id);
+extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
 
 bool DispatchSpellAssign(PPCContext& ctx, uint8_t* base, uint32_t slot, uint32_t spell,
                          uint32_t player) {
@@ -2981,7 +2994,9 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
 /// `screen+4 == 0` — `lwz r11, 4(r31); cntlzw r10, r11; extrwi r29, r10, 1,26` at 0x826C2D58,
 /// which is the "player index is zero" BIT, not the index. `sub_8246C970` then branches
 /// `if (a2) hero = sub_8222C1B8(...) else hero = sub_828E5A78(...)`, so 0 would fetch the other
-/// hero entirely.
+/// hero entirely. The guest's screen states it from the OPENER's index, so player two's book —
+/// a joiner's, or local player two's (MenusActForPlayerTwo) — passes 0: player two's hero
+/// (`sub_828E5A78`) spends player two's experience.
 ///
 /// The guest puts up its own result box (`sub_8236FA68`, `guiMgr+40 = 2`) either way — the
 /// tutorial text on success, `GUI_SCREEN_ABILITY_YOU_DO_NOT_HAVE_ENOUGH_EXPERIENCE` or
@@ -3010,16 +3025,17 @@ bool DispatchAbilityAction(PPCContext& ctx, uint8_t* base, const std::string& bo
     return true;
   }
 
+  const bool player_two = IsCoopJoiner(base) || MenusActForPlayerTwo(base);
   const PPCContext saved = ctx;
   ctx.r3.u32 = static_cast<uint32_t>(index);
-  ctx.r4.u32 = 1u;
+  ctx.r4.u32 = player_two ? 0u : 1u;
   ctx.ctr.u32 = entry;
   function(ctx, base);
   const bool bought = (ctx.r3.u32 & 0xFFu) != 0u;
   ctx = saved;
 
-  REXLOG_INFO("Refii guest-tick pump: Ability:learn:{} ran 0x{:08X}(index {}, hero 1) — {}",
-              index, entry, index,
+  REXLOG_INFO("Refii guest-tick pump: Ability:learn:{} ran 0x{:08X}(index {}, hero {}) — {}",
+              index, entry, index, player_two ? 2 : 1,
               bought ? "bought" : "refused (maxed, or not enough experience)");
   return true;
 }
@@ -3284,6 +3300,31 @@ std::atomic<bool> g_coop_own_hero{false};
 /// Read when player two's Player is built.
 std::atomic<bool> g_coop_split_screen{false};
 
+/// Player two's dog, as a mod handle (it resolves to nothing once the dog is destroyed). The
+/// guest keeps one "the dog" slot (players+192, hero one's); Fable 3 keeps a record per owner.
+/// The dog itself says whose it is: the host creates it with the instance name
+/// kCoopPartnerDogName, which the create message carries to the joiner's replica (the name
+/// string in `sub_82337A98`'s spawn message, rebuilt by the client at 0x8232EB18). Recorded by
+/// the first bind that sees it; cleared by Lua before a breed change replaces it.
+/// Guest tick thread only.
+uint32_t g_coop_partner_dog = 0u;
+
+/// Set while the pump asks a guest page question for player two's book (local co-op, player
+/// two's pause). The tab predicate (`sub_826B83D0`) and the family list (`sub_8246F020`) inline
+/// the guest's local-player rule — id 1 when net+52 and +53 are set, else 2, then
+/// `sub_82264230(pm, id)` (0x826B8434 / 0x8246F080) — which is always player one in local
+/// co-op. RefiiCoopMenuPlayer states id 2 there while this is set. Guest tick thread only.
+bool g_menu_player_two = false;
+
+/// The player working a job (core Lua, `Refii._job_worker`): 2 while player two works one, so
+/// the job's meter takes player two's pad (coop_ui_hooks.cpp). Guest tick thread only.
+int g_coop_job_worker = 0;
+
+/// Who the next real-estate screen buys for (core Lua, `Refii._estate_buyer`, stated as the sale
+/// sign opens it): 2 for player two. Taken by the screen's resolve. Guest tick thread only.
+int g_coop_estate_buyer = 0;
+constexpr const char* kCoopPartnerDogName = "RefiiPartnerDog";
+
 /// The guest's memory base, for the C entry points the hooks payload calls without one. Set on
 /// the first guest tick; it never moves.
 std::atomic<uint8_t*> g_guest_base{nullptr};
@@ -3394,6 +3435,12 @@ struct CoopHeroRecord {
   std::string build;          // body-shape text, player two only
   uint32_t face = 0u;         // character-creation record, player two only
   std::string name;           // display name, logged only
+  uint32_t dog_definition = 0u;  // the dog's breed (definition), 0 none
+  int32_t dog_searching = 0;     // its two levels
+  int32_t dog_combat = 0;
+  std::string dog_tricks;        // learned tricks, GDB names, comma-separated
+  std::vector<uint32_t> dog_worn;  // what the dog wears (its collar), def hashes
+  std::string dog_name;          // the name its player gave it, empty for none
 };
 CoopHeroRecord g_coop_record[2];
 std::map<uint32_t, std::string> g_coop_skills_applied;  // body -> ranks last applied
@@ -3629,6 +3676,9 @@ bool CoopGivePlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity)
   return true;
 }
 
+void WearHashes(PPCContext& ctx, uint8_t* base, uint32_t inventory, uint32_t modifiers,
+                const std::vector<uint32_t>& hashes, uint32_t* worn_out, uint32_t* given_out);
+
 /// Dresses one player's current body, once per (entity, outfit): each hash is given only when
 /// the inventory does not already hold it (HeldCount, keyed by the def hash, which is the
 /// record an AddItemByDefHash lands under), and always worn. Returns true when dressed (or no
@@ -3667,13 +3717,27 @@ bool CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t enti
   g_coop_dressed_entity[slot] = entity;
   g_coop_dressed_set[slot] = set;
 
+  uint32_t worn = 0u;
+  uint32_t given = 0u;
+  WearHashes(ctx, base, inventory, modifiers, g_coop_wear[slot], &worn, &given);
+
+  REXLOG_INFO("Refii guest-tick pump: CoopRedress — player {} 0x{:08X} dressed: {} of {} outfit "
+              "item(s) given and worn ({} newly given)", player, entity, worn,
+              g_coop_wear[slot].size(), given);
+  return true;
+}
+
+/// Gives each def hash the inventory does not already hold (HeldCount, keyed by the def hash,
+/// which is the record an AddItemByDefHash lands under) and wears it.
+void WearHashes(PPCContext& ctx, uint8_t* base, uint32_t inventory, uint32_t modifiers,
+                const std::vector<uint32_t>& hashes, uint32_t* worn_out, uint32_t* given_out) {
   // Scratch above the callee's argument-save area: frame+0x60 and up.
   const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
   const uint32_t ref = frame + 0x60u;
 
   uint32_t worn = 0u;
   uint32_t given = 0u;
-  for (uint32_t hash : g_coop_wear[slot]) {
+  for (uint32_t hash : hashes) {
     if (HeldCount(base, inventory, hash) == 0u) {
       for (uint32_t i = 0; i < 4u; ++i) StoreGuestU32(base, ref + 4u * i, 0u);
 
@@ -3704,11 +3768,8 @@ bool CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t enti
     rex_CECAppearanceModifiers_WearItemByDefHash(wear, base);
     ++worn;
   }
-
-  REXLOG_INFO("Refii guest-tick pump: CoopRedress — player {} 0x{:08X} dressed: {} of {} outfit "
-              "item(s) given and worn ({} newly given)", player, entity, worn,
-              g_coop_wear[slot].size(), given);
-  return true;
+  *worn_out = worn;
+  *given_out = given;
 }
 
 /// Both players, whenever a body exists that has not been dressed with the current outfit.
@@ -4968,6 +5029,39 @@ bool DispatchHeroState(const std::string& text) {
     const uint16_t count = in.u16();
     if (record != 0u && count != 0u) give.emplace_back(record, count);
   }
+  uint32_t dog_definition = 0u;
+  int32_t dog_searching = 0;
+  int32_t dog_combat = 0;
+  std::string dog_tricks;
+  if (!in.bad && in.at < bytes.size()) {
+    dog_definition = in.u32();
+    dog_searching = in.u8();
+    dog_combat = in.u8();
+    const uint8_t trick_count = in.u8();
+    for (uint8_t i = 0; i < trick_count && !in.bad; ++i) {
+      const uint8_t length = in.u8();
+      std::string trick(length, '\0');
+      if (length != 0u) in.take(&trick[0], length);
+      // A trick name goes into a Lua literal and a comma-separated list: GDB names only.
+      bool plain = !trick.empty();
+      for (char c : trick) plain = plain && (std::isalnum(static_cast<unsigned char>(c)) || c == '_');
+      if (plain) dog_tricks += (dog_tricks.empty() ? "" : ",") + trick;
+    }
+  }
+  std::vector<uint32_t> dog_worn;
+  std::string dog_name;
+  if (!in.bad && in.at < bytes.size()) {
+    const uint8_t worn_count = in.u8();
+    for (uint8_t i = 0; i < worn_count && !in.bad; ++i) {
+      const uint32_t hash = in.u32();
+      if (hash != 0u) dog_worn.push_back(hash);
+    }
+    const uint8_t name_length = in.u8();
+    if (!in.bad && name_length <= kNameLimit) {
+      dog_name.assign(name_length, '\0');
+      if (name_length != 0u) in.take(&dog_name[0], name_length);
+    }
+  }
   if (in.bad) {
     return reject("short buffer");
   }
@@ -5027,6 +5121,12 @@ bool DispatchHeroState(const std::string& text) {
   record.build = has_looks ? std::move(build) : std::string();
   record.face = face;
   record.name = std::move(name);
+  record.dog_definition = dog_definition;
+  record.dog_searching = dog_searching;
+  record.dog_combat = dog_combat;
+  record.dog_tricks = std::move(dog_tricks);
+  record.dog_worn = std::move(dog_worn);
+  record.dog_name = std::move(dog_name);
   if (player == 2) {
     g_coop_wear[2] = worn;
     g_coop_give[2] = give;
@@ -5036,9 +5136,9 @@ bool DispatchHeroState(const std::string& text) {
 
   REXLOG_INFO("Refii guest-tick pump: HeroState v{} for player {}: {} worn, {} record(s), "
               "melee 0x{:08X} ranged 0x{:08X}, face 0x{:08X}, {} rank(s), looks {}, known {}, "
-              "name '{}'", version, player, g_coop_wear[slot].size(), g_coop_give[slot].size(),
-              melee, ranged, face, ranks.size(), has_looks ? "yes" : "no", known ? "yes" : "no",
-              record.name);
+              "name '{}', dog 0x{:08X}", version, player, g_coop_wear[slot].size(),
+              g_coop_give[slot].size(), melee, ranged, face, ranks.size(), has_looks ? "yes" : "no",
+              known ? "yes" : "no", record.name, record.dog_definition);
   return true;
 }
 
@@ -5239,19 +5339,25 @@ bool DispatchRegisterPlayer(PPCContext& ctx, uint8_t* base) {
 /// QM is `*(GUI+28)`; the controller W is `*(*(GUI+32)+60)`; the player object is the one
 /// `sub_824040B8` hands the same routines (`a1[3]`, the consumer's bound player), which is the
 /// party's first player — `PlayerObject`.
-bool DispatchQuickWheel(PPCContext& ctx, uint8_t* base, const std::string& verb) {
+bool DispatchQuickWheel(PPCContext& ctx, uint8_t* base, const std::string& lever) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const bool two = lever.rfind("2:", 0) == 0;
+  const std::string verb = two ? lever.substr(2) : lever;
   const uint32_t gui = LoadGuestU32(base, kGuiObject);
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
   const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
   const uint32_t wheel = plausible(hud) ? LoadGuestU32(base, hud + 60u) : 0u;
-  const uint32_t player = LocalPlayer(base);
+  const uint32_t player = two ? PlayerWithId(base, 2u) : LocalPlayer(base);
   if (!plausible(quick) || !plausible(wheel) || player == 0u) {
-    REXLOG_INFO("Refii guest-tick pump: QuickWheel:{} with no quick menu / player — dropped", verb);
+    REXLOG_INFO("Refii guest-tick pump: QuickWheel:{} with no quick menu / player — dropped", lever);
     return true;
   }
 
-  const bool open = LoadGuestU8(base, quick + refii::guest::GuiOwnerField(35u)) != 0u;
+  // The open wheel's owner (W+24). A lever acts only on its own player's wheel; Accept's flag
+  // is "the owner is player one" — 0 performs on player two (`sub_826AAD88`, 0x826aae1c).
+  const uint32_t owner = LoadGuestU32(base, wheel + 24u);
+  const bool open = LoadGuestU8(base, quick + refii::guest::GuiOwnerField(35u)) != 0u &&
+                    (verb == "open" || owner == (two ? 2u : LoadGuestU32(base, player + 36u)));
   const PPCContext saved = ctx;
   if (verb == "open") {
     if (open) {
@@ -5291,7 +5397,7 @@ bool DispatchQuickWheel(PPCContext& ctx, uint8_t* base, const std::string& verb)
   if (verb == "select") {
     if (open) {
       ctx.r3.u32 = wheel;
-      ctx.r4.u32 = 1u;  // primary player
+      ctx.r4.u32 = owner == 1u ? 1u : 0u;
       rex_lhGuiExpressionWheel_Accept(ctx, base);
       ctx = saved;
       REXLOG_INFO("Refii guest-tick pump: QuickWheel:select — cursor {}/{} state {}",
@@ -6004,17 +6110,19 @@ uint32_t PlayerObject(uint8_t* base) {
 }
 
 /// The dog page's numbers — all plain reads off component 97, plus the name off component 20.
+/// THE LOCAL PLAYER'S DOG: hero one's is the guest's own slot (players+196), player two's the
+/// co-op dog bound to them (RefiiCoopPlayerDog), so a joiner's page shows the joiner's dog.
 void SampleDog(uint8_t* base, HeroDerived& sampled) {
-  constexpr uint32_t kDogHandle = 196u;
   constexpr uint32_t kDogStatsComponent = 97u;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
   sampled.dog_known = false;
+  sampled.dog_entity = 0u;
 
-  const uint32_t player = PlayerObject(base);
-  const uint32_t handle = player != 0u ? LoadGuestU32(base, player + kDogHandle) : 0u;
-  const uint32_t dog = plausible(handle) ? LoadGuestU32(base, handle) : 0u;
-  if (!plausible(dog) || (LoadGuestU8(base, dog + 144u) & 0x40u) == 0u) {
+  const uint32_t hero = HeroEntity(base);
+  const int owner = hero != 0u && hero == refii_mod_player_hero(base, 2) ? 2 : 1;
+  const uint32_t dog = RefiiCoopPlayerDog(base, owner);
+  if (!plausible(dog)) {
     return;
   }
 
@@ -6024,6 +6132,8 @@ void SampleDog(uint8_t* base, HeroDerived& sampled) {
   }
 
   sampled.dog_known = true;
+  sampled.dog_entity = dog;
+  sampled.dog_definition = LoadGuestU32(base, dog + 0x1Cu);  // the definition, i.e. the breed
   sampled.dog_searching = static_cast<int32_t>(LoadGuestU32(base, stats + 184u));
   sampled.dog_combat = static_cast<int32_t>(LoadGuestU32(base, stats + 188u));
 
@@ -6211,7 +6321,11 @@ void SampleFamily(PPCContext& ctx, uint8_t* base) {
   ctx = saved;
   ctx.r1.u32 = frame;
   ctx.r3.u32 = vector;
-  if (!SafeInvokeGuestCall(rex_lhWorldMap_BuildFamilyList, ctx, base)) {
+  // Player two's map lists player two's family.
+  g_menu_player_two = MenusActForPlayerTwo(base);
+  const bool built = SafeInvokeGuestCall(rex_lhWorldMap_BuildFamilyList, ctx, base);
+  g_menu_player_two = false;
+  if (!built) {
     ctx = saved;
     return;
   }
@@ -7602,7 +7716,7 @@ void SamplePauseTabs(PPCContext& ctx, uint8_t* base) {
       return;
     }
     const bool both = base[net + 52u] != 0u && base[net + 53u] != 0u;
-    const uint32_t player = PlayerWithId(base, both ? 1u : 2u);
+    const uint32_t player = PlayerWithId(base, both && !MenusActForPlayerTwo(base) ? 1u : 2u);
     const uint32_t block = plausible(player) ? LoadGuestU32(base, player + 12u + 4u) : 0u;
     const uint32_t entity = plausible(block) ? LoadGuestU32(base, block) : 0u;
     if (!plausible(entity)) {
@@ -7612,6 +7726,8 @@ void SamplePauseTabs(PPCContext& ctx, uint8_t* base) {
 
   const PPCContext saved = ctx;
 
+  // Player two's book asks about player two's tabs (their own restriction flags).
+  g_menu_player_two = MenusActForPlayerTwo(base);
   uint32_t mask = 0u;
   for (uint32_t tab = kFirstTab; tab <= kLastTab; ++tab) {
     ctx = saved;
@@ -7623,6 +7739,7 @@ void SamplePauseTabs(PPCContext& ctx, uint8_t* base) {
       }
     }
   }
+  g_menu_player_two = false;
 
   ctx = saved;
 
@@ -9351,6 +9468,132 @@ uint8_t* RefiiGuestBase(void) {
   return refii::vfs::g_guest_base.load(std::memory_order_relaxed);
 }
 
+void RefiiCoopSetPartnerDog(uint32_t dog);
+
+/// Player `player`'s dog: hero one's is the guest's own slot (players+196, the one Lua GetDog
+/// reads), player two's the co-op record. 0 when there is none or it is dead.
+uint32_t RefiiCoopPlayerDog(uint8_t* base, int player) {
+  if (base == nullptr) return 0u;
+  if (player == 2) {
+    const uint32_t handle = refii::vfs::g_coop_partner_dog;
+    const uint32_t dog = handle != 0u ? refii::vfs::refii_mod_handle_address(handle) : 0u;
+    if (dog != 0u && refii::vfs::refii_mod_entity_alive(base, dog) != 0) {
+      return dog;
+    }
+    // NOT RECORDED: a joiner's replica (a client skips the create's activation, so no bind
+    // records it) or a dog loaded with a level. Found by its name in the world's entity list
+    // (the manager at 0x83496B28, +8 the head, node = entity+8), at most every 16th miss.
+    static uint32_t misses = 0u;
+    if ((misses++ % 16u) != 0u) {
+      return 0u;
+    }
+    const uint32_t manager = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496B28u));
+    uint32_t node = manager >= 0x10000u && manager < 0xC0000000u
+                        ? refii::vfs::LoadGuestU32(base, manager + 8u)
+                        : 0u;
+    char name[32];
+    for (uint32_t i = 0; i < 20000u && node >= 0x10000u && node < 0xC0000000u;
+         ++i, node = refii::vfs::LoadGuestU32(base, node)) {
+      const uint32_t entity = node - 8u;
+      if (refii::vfs::refii_mod_entity_alive(base, entity) == 0 ||
+          refii::vfs::refii_mod_component(base, entity, 97u) == 0u ||
+          refii::vfs::refii_mod_entity_name(base, entity, name, sizeof(name)) == 0 ||
+          std::strcmp(name, refii::vfs::kCoopPartnerDogName) != 0) {
+        continue;
+      }
+      RefiiCoopSetPartnerDog(entity);
+      return entity;
+    }
+    return 0u;
+  }
+  if (player != 1) return 0u;
+  const uint32_t players = refii::vfs::PlayerObject(base);
+  const uint32_t holder = players != 0u ? refii::vfs::LoadGuestU32(base, players + 196u) : 0u;
+  const uint32_t dog = holder >= 0x10000u && holder < 0xC0000000u ? refii::vfs::LoadGuestU32(base, holder) : 0u;
+  return dog >= 0x10000u && dog < 0xC0000000u && refii::vfs::refii_mod_entity_alive(base, dog) != 0 ? dog : 0u;
+}
+
+/// Records `dog` (0 clears) as player two's.
+void RefiiCoopSetPartnerDog(uint32_t dog) {
+  refii::vfs::g_coop_partner_dog = dog != 0u ? refii::vfs::refii_mod_handle(dog) : 0u;
+}
+
+/// Whose `dog` is, by its instance name: 0 not player two's, 1 player two's (recorded now when
+/// none is), 2 a second dog of player two's while the recorded one lives — a stale copy (a
+/// level's saved state, a lost destroy) that is not to be bound.
+int RefiiCoopPartnerDogRole(uint32_t dog) {
+  uint8_t* base = refii::vfs::g_guest_base.load(std::memory_order_relaxed);
+  if (base == nullptr || dog == 0u) return 0;
+  char name[32];
+  if (refii::vfs::refii_mod_entity_name(base, dog, name, sizeof(name)) == 0 ||
+      std::strcmp(name, refii::vfs::kCoopPartnerDogName) != 0) {
+    return 0;
+  }
+  const uint32_t recorded = RefiiCoopPlayerDog(base, 2);
+  if (recorded == 0u) {
+    RefiiCoopSetPartnerDog(dog);
+    return 1;
+  }
+  return recorded == dog ? 1 : 2;
+}
+
+/// Player two's dog as their HeroState states it: the definition (0 when they have none or no
+/// state has arrived), its two levels, and the learned tricks as comma-separated GDB names into
+/// `tricks`. Returns the state's version (0 = none). Guest tick thread only, as the record is.
+uint32_t RefiiCoopPartnerDogKit(uint32_t* definition, int32_t* searching, int32_t* combat,
+                                char* tricks, uint32_t capacity) {
+  const refii::vfs::CoopHeroRecord& record = refii::vfs::g_coop_record[1];
+  if (definition != nullptr) *definition = record.dog_definition;
+  if (searching != nullptr) *searching = record.dog_searching;
+  if (combat != nullptr) *combat = record.dog_combat;
+  if (tricks != nullptr && capacity != 0u) {
+    std::snprintf(tricks, capacity, "%s", record.dog_tricks.c_str());
+  }
+  return record.generation;
+}
+
+/// Dresses player two's dog in what their HeroState says it wore (its collar), once per dog:
+/// given by def hash and worn, as player two's own outfit is. True when dressed or nothing to
+/// dress; false when the dog has no inventory or appearance component yet.
+int RefiiCoopDressPartnerDog(PPCContext* ctx, uint8_t* base, uint32_t dog) {
+  static uint32_t dressed = 0u;
+  const refii::vfs::CoopHeroRecord& record = refii::vfs::g_coop_record[1];
+  if (ctx == nullptr || base == nullptr || dog == 0u || dog == dressed || record.dog_worn.empty()) {
+    return 1;
+  }
+  const uint32_t inventory = refii::vfs::EntityComponent(base, dog, 13u);
+  const uint32_t modifiers = refii::vfs::EntityComponent(base, dog, 15u);
+  if (inventory == 0u || modifiers == 0u) {
+    return 0;
+  }
+  dressed = dog;
+  uint32_t worn = 0u;
+  uint32_t given = 0u;
+  refii::vfs::WearHashes(*ctx, base, inventory, modifiers, record.dog_worn, &worn, &given);
+  REXLOG_INFO("Refii guest-tick pump: player two's dog 0x{:08X} wears {} item(s) ({} newly given)",
+              dog, worn, given);
+  return 1;
+}
+
+/// The name player two gave their dog, into `out`; false when they gave none.
+int RefiiCoopPartnerDogName(char* out, uint32_t capacity) {
+  const std::string& name = refii::vfs::g_coop_record[1].dog_name;
+  if (out != nullptr && capacity != 0u) std::snprintf(out, capacity, "%s", name.c_str());
+  return name.empty() ? 0 : 1;
+}
+
+/// The Player for an id 1/2 (the PlayerManager's map), or 0.
+uint32_t RefiiCoopPlayerWithId(uint8_t* base, uint32_t id) { return refii::vfs::PlayerWithId(base, id); }
+
+void RefiiCoopSetJobWorker(int player) { refii::vfs::g_coop_job_worker = player; }
+int RefiiCoopJobWorker(void) { return refii::vfs::g_coop_job_worker; }
+void RefiiCoopSetEstateBuyer(int player) { refii::vfs::g_coop_estate_buyer = player; }
+int RefiiCoopTakeEstateBuyer(void) {
+  const int buyer = refii::vfs::g_coop_estate_buyer;
+  refii::vfs::g_coop_estate_buyer = 0;
+  return buyer;
+}
+
 void RefiiCoopSetOwnHero(int on) {
   refii::vfs::g_coop_own_hero.store(on != 0, std::memory_order_relaxed);
 }
@@ -9424,3 +9667,12 @@ void RefiiCoopForgetBody(uint32_t entity) { refii::vfs::CoopForgetBody(entity); 
 uint32_t RefiiCoopPlayerTwoEntity(uint8_t* base) { return refii::vfs::CoopPlayerTwoEntity(base); }
 
 }  // extern "C"
+
+// The local-player pick inlined in the pause-tab predicate and the family list (see
+// g_menu_player_two): `li r4, 1` / `li r4, 2` by the session bytes, then `bl sub_82264230`.
+// Player two's book states player two.
+void RefiiCoopMenuPlayer(PPCRegister& r4) {
+  if (refii::vfs::g_menu_player_two) {
+    r4.u64 = 2u;
+  }
+}

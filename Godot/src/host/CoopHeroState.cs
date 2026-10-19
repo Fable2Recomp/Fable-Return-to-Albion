@@ -12,7 +12,7 @@ namespace Refii.Host;
 /// </summary>
 /// <remarks>
 /// The record (`HST1`, little-endian) is the whole <see cref="CoopHeroKit.Kit"/>: identity, looks,
-/// outfit, inventory, equipped records, stats. The pump takes the same bytes, base64, as
+/// outfit, inventory, equipped records, stats, the dog. The pump takes the same bytes, base64, as
 /// <c>HeroState:&lt;player&gt;:&lt;base64&gt;</c>.
 ///
 /// Wire grammar, one datagram each, on <see cref="HostBridge.CoopSend"/>:
@@ -106,6 +106,30 @@ public static class CoopHeroState
 			w.Write((ushort)Math.Clamp(inventory[i].Count, 0, ushort.MaxValue));
 		}
 
+		// The dog: definition (0 none), the two levels, then the tricks by name.
+		w.Write(kit.DogDefinition);
+		w.Write((byte)Math.Clamp(kit.DogSearching, 0, byte.MaxValue));
+		w.Write((byte)Math.Clamp(kit.DogCombat, 0, byte.MaxValue));
+		string[] tricks = kit.DogTricks ?? Array.Empty<string>();
+		int trickCount = Math.Min(tricks.Length, byte.MaxValue);
+		w.Write((byte)trickCount);
+		for (int i = 0; i < trickCount; ++i)
+		{
+			byte[] trick = Encoding.UTF8.GetBytes(tricks[i]);
+			int length = Math.Min(trick.Length, byte.MaxValue);
+			w.Write((byte)length);
+			w.Write(trick, 0, length);
+		}
+
+		uint[] dogWorn = kit.DogWorn ?? Array.Empty<uint>();
+		int dogWornCount = Math.Min(dogWorn.Length, byte.MaxValue);
+		w.Write((byte)dogWornCount);
+		for (int i = 0; i < dogWornCount; ++i) w.Write(dogWorn[i]);
+
+		byte[] dogName = NameBytes(kit.DogName ?? string.Empty);
+		w.Write((byte)dogName.Length);
+		w.Write(dogName);
+
 		w.Flush();
 		return stream.ToArray();
 	}
@@ -170,6 +194,22 @@ public static class CoopHeroState
 				inventory[i] = (record, count);
 			}
 
+			uint dogDefinition = r.ReadUInt32();
+			int dogSearching = r.ReadByte();
+			int dogCombat = r.ReadByte();
+			var dogTricks = new string[r.ReadByte()];
+			for (int i = 0; i < dogTricks.Length; ++i)
+			{
+				int length = r.ReadByte();
+				dogTricks[i] = Encoding.UTF8.GetString(r.ReadBytes(length), 0, length);
+			}
+
+			var dogWorn = new uint[r.ReadByte()];
+			for (int i = 0; i < dogWorn.Length; ++i) dogWorn[i] = r.ReadUInt32();
+
+			int dogNameLength = r.ReadByte();
+			string dogName = Encoding.UTF8.GetString(r.ReadBytes(dogNameLength), 0, dogNameLength);
+
 			var kit = new CoopHeroKit.Kit(
 				Known: known,
 				Female: female,
@@ -192,7 +232,13 @@ public static class CoopHeroState
 				Height: height,
 				Tan: tan,
 				MeleeId: melee,
-				RangedId: ranged);
+				RangedId: ranged,
+				DogDefinition: dogDefinition,
+				DogSearching: dogSearching,
+				DogCombat: dogCombat,
+				DogTricks: dogTricks,
+				DogWorn: dogWorn,
+				DogName: dogName);
 			return (kit, version);
 		}
 		catch (EndOfStreamException)

@@ -295,7 +295,7 @@ public sealed class Engine_UiCloneBinding
 			return null;
 		}
 
-		Transform3D world = node.GlobalTransform;
+		Transform3D world = Engine_UiSeats.LayoutTransform(node);
 		float halfW = 0.5f * Engine_UiSceneBuilder.QuadBaseSize * world.Basis.X.Length();
 		float halfH = 0.5f * Engine_UiSceneBuilder.QuadBaseSize * world.Basis.Y.Length();
 		if (halfW <= 0f || halfH <= 0f)

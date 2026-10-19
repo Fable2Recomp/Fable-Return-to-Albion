@@ -214,6 +214,38 @@ public sealed class Engine_HudLayout
                 : Engine_UiSeats.Seat.Whole;
 
     /// <summary>
+    /// The screen's pieces each half draws from its OWN values on split screen: the experience
+    /// counter, which the guest keeps for the local player and the host states for player two
+    /// over the shared feed (Engine_HudValues.Under).
+    /// </summary>
+    public static bool EachPlayerOnSplit(Piece piece) =>
+        piece.Id == "slidefader2.ExpAmounts.ExperienceAmounts" ||
+        piece.Id == "meter.TopBoxY.ExperienceAmounts" ||
+        piece.Id == "text.GenericExpText.GeneralExperience" ||
+        piece.Id == "text.StrengthExpText.StrengthExperience" ||
+        piece.Id == "text.SkillExpText.SkillExperience" ||
+        piece.Id == "text.WillExpText.WillExperience";
+
+    /// <summary>
+    /// The expression wheel — one widget, opened by either player (the guest keeps its owner at
+    /// wheel+24, stated by `sub_826A9A60`), so on split screen it stands in its owner's half.
+    /// </summary>
+    public static bool IsExpressionWheel(Piece piece) =>
+        piece.Art == ExpressionWheelName ||
+        piece.Id.StartsWith("group.ExpressionWheel.", System.StringComparison.Ordinal);
+
+    /// <summary>
+    /// The screen's pieces both players read on split screen: the quest/info box (tutorials,
+    /// quest offers, the co-op notices) and the subtitles. They speak of the one shared world, and
+    /// each half shows them from the same feed; the rest of the screen's pieces (the targeted
+    /// villager, the experience gains, the d-pad) are the guest's for the local player only.
+    /// </summary>
+    public static bool SharedOnSplit(Piece piece) =>
+        piece.Id == "group.QuestBox.TopBox" ||
+        piece.Id == "text.Subtitles.Text" ||
+        piece.Id == "slidefader2.Subtitles.Subtitles";
+
+    /// <summary>
     /// The timing meter, whose owner changes with each use: one meter, three pips — the hero's,
     /// the henchman's and both (`sub_823D0E10`) — so it belongs to whichever player armed it.
     /// </summary>
@@ -224,6 +256,38 @@ public sealed class Engine_HudLayout
     private readonly List<Piece> _pieces = new();
 
     public IReadOnlyList<Piece> Pieces => _pieces;
+
+    /// <summary>
+    /// Player one's piece that player two's piece mirrors: `CoopHealth` is the same widget as
+    /// `PlayerHealth` (orb, heart, bar and cap, the same materials in `hud.bgf`) and
+    /// `SpellCharging2` the same column as `SpellCharging`, each authored on the right for the
+    /// shared screen. In player two's own half they stand where player one's stand in theirs,
+    /// so each player sees one full hero HUD. Null for a piece with no counterpart.
+    /// </summary>
+    public Piece? CounterpartOf(Piece piece)
+    {
+        string id = piece.Id;
+        string? mirrored =
+            id.StartsWith("group.CoopHealth.", System.StringComparison.Ordinal)
+                ? id.Replace("CoopHealth", "PlayerHealth", System.StringComparison.Ordinal)
+                : id.StartsWith("group.SpellCharging2.", System.StringComparison.Ordinal)
+                    ? id.Replace("SpellCharging2", "SpellCharging", System.StringComparison.Ordinal)
+                    : null;
+        if (mirrored is null)
+        {
+            return null;
+        }
+
+        foreach (Piece candidate in _pieces)
+        {
+            if (candidate.Id == mirrored)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
 
     public Engine_HudLayout Add(Piece piece)
     {

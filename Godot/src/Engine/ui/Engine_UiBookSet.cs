@@ -72,7 +72,7 @@ public sealed class Engine_UiBookSet
 
 		book.Build();
 		book.DriveFrames();
-		Host.AddChild(book);
+		Host.MenuLayer.AddChild(book);
 		return book;
 	}
 

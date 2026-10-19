@@ -50,7 +50,13 @@ public static class CoopHeroKit
 		float Height,
 		float Tan,
 		uint MeleeId = 0u,
-		uint RangedId = 0u)
+		uint RangedId = 0u,
+		uint DogDefinition = 0u,
+		int DogSearching = 0,
+		int DogCombat = 0,
+		string[]? DogTricks = null,
+		uint[]? DogWorn = null,
+		string? DogName = null)
 	{
 		/// <summary>The creature this hero's body is, in the guest's own naming.</summary>
 		public string Creature => Female ? "CreatureHeroFemale" : "CreatureHero";
@@ -184,6 +190,42 @@ public static class CoopHeroKit
 
 		bool keep = appearanceOnly && before.Known;
 
+		// THE DOG, as Fable 3 carries the visitor's own into the host's world: its breed (the
+		// definition), its two levels and its tricks BY NAME — the trick store holds record ids,
+		// and only this instance's GDB view names them. Taken with the stats: once the joiner is
+		// in the host's world, the dog it reads is the host's.
+		HostBridge.HeroDerived derived = HostBridge.GetHeroDerived();
+		uint dogDefinition = 0u;
+		int dogSearching = 0, dogCombat = 0;
+		string[]? dogTricks = null;
+		uint[]? dogWorn = null;
+		string? dogName = null;
+		if (derived.Known && derived.DogKnown)
+		{
+			dogDefinition = derived.DogDefinition;
+			// Its collar (the worn key item) and the name the player gave it, if any.
+			List<HostBridge.GuestWornItem> dogItems = HostBridge.GetEntityWornItems(derived.DogEntity);
+			dogWorn = new uint[dogItems.Count];
+			for (int i = 0; i < dogItems.Count; ++i)
+			{
+				dogWorn[i] = dogItems[i].Hash;
+			}
+
+			dogName = derived.DogName;
+			dogSearching = derived.DogSearching;
+			dogCombat = derived.DogCombat;
+			var names = new List<string>();
+			foreach (uint id in derived.DogTrickIds ?? Array.Empty<uint>())
+			{
+				if (RecordName?.Invoke(id) is { Length: > 0 } trick)
+				{
+					names.Add(trick);
+				}
+			}
+
+			dogTricks = names.ToArray();
+		}
+
 		// An empty worn walk or inventory read on a standing hero is a read that missed (the
 		// body mid-rebuild, the component not yet populated), not a hero that owns nothing:
 		// the previous capture stands until a non-empty one replaces it.
@@ -220,7 +262,13 @@ public static class CoopHeroKit
 			// Appearance is the outfit, the weapons and the inventory; an empty slot keeps the
 			// record's weapon (see the parameter note).
 			MeleeId: keep && meleeId == 0u ? before.MeleeId : meleeId,
-			RangedId: keep && rangedId == 0u ? before.RangedId : rangedId);
+			RangedId: keep && rangedId == 0u ? before.RangedId : rangedId,
+			DogDefinition: keep ? before.DogDefinition : dogDefinition,
+			DogSearching: keep ? before.DogSearching : dogSearching,
+			DogCombat: keep ? before.DogCombat : dogCombat,
+			DogTricks: keep ? before.DogTricks : dogTricks,
+			DogWorn: keep ? before.DogWorn : dogWorn,
+			DogName: keep ? before.DogName : dogName);
 	}
 
 	/// <summary>

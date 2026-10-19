@@ -67,10 +67,18 @@ uniform sampler2D keycap_tex : source_color, filter_linear_mipmap, repeat_disabl
 uniform bool has_keycap = false;
 global uniform bool ui_keyboard_mode;
 
+// A menu seated in one player's half on split screen (Engine_UiPresentationHost.MenuLayer):
+// scale in xy, offset in zw. The clip compares in the menu's own laid-out space, so the seat
+// comes back out of the world position. Identity everywhere else. A MATERIAL uniform, not an
+// `instance uniform`: with the separate render thread, an instance uniform's property list is
+// fetched through the render command queue into the caller's stack, and Node.duplicate (the
+// UI's template clones) crashed in InstanceUniforms::get_property_list (2026-10-20).
+uniform vec4 clip_seat = vec4(1.0, 1.0, 0.0, 0.0);
+
 varying vec2 clip_world;
 
 void vertex() {
-	clip_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xy;
+	clip_world = ((MODEL_MATRIX * vec4(VERTEX, 1.0)).xy - clip_seat.zw) / clip_seat.xy;
 }
 
 void fragment() {

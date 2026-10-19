@@ -127,7 +127,7 @@ public sealed class Engine_UiInfoPanel
 
 			// Parented to the HOST, not the built tree: `drawn.Node` is freed whenever the guest
 			// changes a slide, which would take the panel with it.
-			Host.AddChild(_panel);
+			Host.MenuLayer.AddChild(_panel);
 			Address = address;
 			Screen = screenId;
 			_reported = null;

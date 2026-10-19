@@ -31,6 +31,35 @@ public static class Engine_UiSeats
         PlayerTwo,
     }
 
+    /// <summary>
+    /// The group of the node that seats the menus (<c>Engine_UiPresentationHost.MenuLayer</c>):
+    /// identity on the whole window, one player's half while that player's menu is open on split
+    /// screen.
+    /// </summary>
+    public const string MenuLayerGroup = "refii_ui_menu_layer";
+
+    /// <summary>
+    /// A node's transform in the laid-out UI space: its global transform with any menu seat
+    /// taken back out. Clip rects are measured in this space (the UI shaders un-seat the
+    /// fragment the same way), so a list opened while its menu is seated clips where it is laid
+    /// out, not where the seat moved it.
+    /// </summary>
+    public static Transform3D LayoutTransform(Node3D node)
+    {
+        Transform3D world = node.GlobalTransform;
+        for (Node? up = node.GetParent(); up is not null; up = up.GetParent())
+        {
+            if (up is Node3D layer && layer.IsInGroup(MenuLayerGroup))
+            {
+                // world = H * L * local, with H the layer's parent: laid out = H * local.
+                Transform3D parent = layer.GetParent() is Node3D above ? above.GlobalTransform : Transform3D.Identity;
+                return parent * layer.Transform.AffineInverse() * parent.AffineInverse() * world;
+            }
+        }
+
+        return world;
+    }
+
     /// <summary>The seat a player's own UI takes: their half while split, else the whole window.</summary>
     public static Seat For(int player, bool split) =>
         !split ? Seat.Whole : player == 2 ? Seat.PlayerTwo : Seat.PlayerOne;

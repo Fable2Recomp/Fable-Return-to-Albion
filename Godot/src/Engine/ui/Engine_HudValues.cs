@@ -21,6 +21,53 @@ public sealed class Engine_HudValues
     private Dictionary<uint, float> _meters = new();
     private Dictionary<uint, string> _texts = new();
 
+    /// <summary>
+    /// The feed this one overlays, or null for a feed of its own. An overlay is a view's own
+    /// statement over the shared feed — player two's half on split screen, which shows player
+    /// two's numbers where the guest's one HUD states only the local player's: what it states
+    /// (<see cref="Override"/>) wins, everything else reads through.
+    /// </summary>
+    public Engine_HudValues? Under { get; init; }
+
+    /// <summary>States a text field on this overlay (null withdraws it, reading through again).</summary>
+    public void Override(Handle handle, string? text)
+    {
+        if (text is null)
+        {
+            _texts.Remove(handle.Hash);
+        }
+        else
+        {
+            _texts[handle.Hash] = text;
+        }
+    }
+
+    /// <summary>States a meter on this overlay, 0..100 (null withdraws it).</summary>
+    public void OverrideMeter(Handle handle, float? percent)
+    {
+        if (percent is { } value)
+        {
+            _meters[handle.Hash] = value;
+        }
+        else
+        {
+            _meters.Remove(handle.Hash);
+        }
+    }
+
+    /// <summary>States an element's visibility on this overlay (null withdraws it).</summary>
+    public void OverrideVisible(Handle handle, bool? visible)
+    {
+        if (visible is { } shown)
+        {
+            _toggled[handle.Hash] = shown;
+        }
+        else
+        {
+            _toggled.Remove(handle.Hash);
+        }
+    }
+
     /// <summary>How many meters and text fields the guest published on the last read.</summary>
     public int MeterCount => _meters.Count;
 
@@ -133,7 +180,13 @@ public sealed class Engine_HudValues
     /// the `setCenterOn` / `setCenterOff` logic event on the `UIContract` presentation, not the
     /// bool at `dpadObject+0x22`. Null until stated.
     /// </summary>
-    public bool? DpadCentered { get; private set; }
+    public bool? DpadCentered
+    {
+        get => _dpadCentered ?? Under?.DpadCentered;
+        private set => _dpadCentered = value;
+    }
+
+    private bool? _dpadCentered;
 
     /// <summary>`GUI.SetDPadCenter(bool)`.</summary>
     public void StateDpadCentered(bool centered) => DpadCentered = centered;
@@ -143,7 +196,13 @@ public sealed class Engine_HudValues
     /// (`HeroOffscreenIconHandle` type 52, `HenchmanOffscreenIconHandle` type 53). Flag at
     /// `*(elemMgr+100)+16`; does not affect quest markers. Null until stated.
     /// </summary>
-    public bool? PlayerIconsDrawn { get; private set; }
+    public bool? PlayerIconsDrawn
+    {
+        get => _playerIconsDrawn ?? Under?.PlayerIconsDrawn;
+        private set => _playerIconsDrawn = value;
+    }
+
+    private bool? _playerIconsDrawn;
 
     /// <summary>`GUI.SetShouldDrawPlayerIcons(bool)`.</summary>
     public void StatePlayerIconsDrawn(bool drawn) => PlayerIconsDrawn = drawn;
@@ -215,7 +274,7 @@ public sealed class Engine_HudValues
 
     /// <summary>Whether the guest has hidden an element, or null when it never said.</summary>
     public bool? Visible(Handle handle) =>
-        _toggled.TryGetValue(handle.Hash, out bool visible) ? visible : null;
+        _toggled.TryGetValue(handle.Hash, out bool visible) ? visible : Under?.Visible(handle);
 
     /// <summary>One snapshot of everything the guest publishes; one walk for the whole HUD.</summary>
     /// <param name="dt">Seconds since the last sample; the seek clock of the stated meters.</param>
@@ -352,7 +411,7 @@ public sealed class Engine_HudValues
                 }
             }
 
-            return false;
+            return Under?.Seeking == true;
         }
     }
 
@@ -502,11 +561,11 @@ public sealed class Engine_HudValues
     /// never written and genuinely at zero are different states.
     /// </summary>
     public float? Meter(Handle handle) =>
-        _meters.TryGetValue(handle.Hash, out float value) ? value : null;
+        _meters.TryGetValue(handle.Hash, out float value) ? value : Under?.Meter(handle);
 
     /// <summary>A pulser's loop phase 0..1, or null when the guest holds none by that name.</summary>
     public float? Pulser(Handle handle) =>
-        _pulsers.TryGetValue(handle.Hash, out float phase) ? phase : null;
+        _pulsers.TryGetValue(handle.Hash, out float phase) ? phase : Under?.Pulser(handle);
 
     private Dictionary<uint, float> _pulsers = new();
 
@@ -516,12 +575,12 @@ public sealed class Engine_HudValues
 
     /// <summary>A published text field, or null when the guest has not written it.</summary>
     public string? Text(Handle handle) =>
-        _texts.TryGetValue(handle.Hash, out string? value) ? value : null;
+        _texts.TryGetValue(handle.Hash, out string? value) ? value : Under?.Text(handle);
 
     /// <summary>
     /// Whether the guest has published anything at all; the HUD draws nothing until it has.
     /// </summary>
-    public bool Live => _meters.Count != 0 || _texts.Count != 0;
+    public bool Live => _meters.Count != 0 || _texts.Count != 0 || Under?.Live == true;
 
     /// <summary>One line for the run, naming what is missing.</summary>
     /// <summary>

@@ -1,0 +1,273 @@
+// Co-op: a dog for each player, bound to them, as Fable 3 gives the visiting hero their own.
+//
+// THE GUEST'S ONE DOG. The dog component (97) holds its master as a weak reference at comp+300
+// (Dog.GetMaster, `sub_82174410`). Its only writer, SetMaster `sub_82814DD8(dogComp, hero)`,
+// also stores the dog into the one global "the dog" slot players+192 (Lua GetDog,
+// `sub_8222C148`, and the logbook / menu readers). Both places that pick a master pick hero one
+// (`sub_8222C1B8`, players+104): the init `sub_8280AB90` (vtable slot 11, run synchronously
+// inside the create, 0x8238B984) and the per-frame update `sub_822AE210`, which rebinds any dog
+// whose master is gone.
+//
+// PLAYER TWO'S DOG is the one named kPartnerDogName. The host creates it with that instance
+// name, and the name travels in the create message (`sub_82337A98` copies it beside the record
+// id; the client rebuilds it at 0x8232EB18 into its replica), so both machines tell it apart
+// the same way (RefiiCoopPartnerDogRole, guest_tick_pump.cpp). For that dog:
+//   - both master picks answer player two (0 while player two is absent: no bind at all);
+//   - SetMaster leaves the global slot alone, so GetDog() stays hero one's dog.
+//
+// THE HOST MAKES IT, as Fable 3 does (`sub_8243A190` → `sub_823A0AF8(mgr, 1)` when the remote
+// hero is created), through the game's own CreateEntityFromIDAtPosition in game Lua: the breed,
+// both levels and the tricks come from player two's HeroState (the dog they were playing with),
+// the plain CreatureDogHero when it states none; its collar is worn and its name restated. It exists while player two does and hero one
+// has a dog; the host destroys it when player two leaves (`entity:Destroy()`, `sub_8238D828`,
+// which sends DestroyEntity to the joiner). A joiner never creates or destroys one.
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+#include <rex/logging.h>
+#include <rex/ppc/context.h>
+
+#include "core/guest_build.h"
+#include "core/guest_state.h"
+#include "core/refii_mod.h"
+
+extern "C" uint8_t* RefiiGuestBase(void);
+extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
+extern "C" void RefiiCoopSetPartnerDog(uint32_t dog);
+extern "C" int RefiiCoopPartnerDogRole(uint32_t dog);
+extern "C" int RefiiCoopDressPartnerDog(PPCContext* ctx, uint8_t* base, uint32_t dog);
+extern "C" int RefiiCoopPartnerDogName(char* out, uint32_t capacity);
+extern "C" uint32_t RefiiCoopPartnerDogKit(uint32_t* definition, int32_t* searching, int32_t* combat,
+                                           char* tricks, uint32_t capacity);
+
+namespace {
+
+constexpr const char* kPartnerDogName = "RefiiPartnerDog";
+
+/// Ticks between looks at the dog (the guest steps 30 a second).
+constexpr uint32_t kCadence = 30u;
+
+/// How long a new player two waits for their HeroState to state a dog before the plain breed.
+constexpr uint32_t kKitWaitTicks = 10u * 30u;
+
+/// How long after an attempt that made no dog before the next.
+constexpr uint32_t kRetryTicks = 5u * 30u;
+
+/// How long player two must be gone before their dog is: a body the guest rebuilds (a retype, a
+/// level change) is briefly out of the world.
+constexpr uint32_t kGoneTicks = 3u * 30u;
+
+bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
+
+/// Second dogs of player two's a bind refused, as mod handles, for the host's tick to destroy.
+/// Guest tick thread only.
+std::array<uint32_t, 4> g_doomed{};
+
+std::atomic<bool> g_said_bind{false};
+std::atomic<bool> g_said_global{false};
+
+/// Whose master a dog gets at a hero-one pick: player two for player two's dog, else `hero_one`.
+uint32_t MasterFor(uint32_t dog_comp, uint32_t hero_one) {
+  uint8_t* base = RefiiGuestBase();
+  if (base == nullptr || !Plausible(dog_comp)) {
+    return hero_one;
+  }
+  const uint32_t dog = refii::vfs::LoadGuestU32(base, dog_comp + 4u);
+  switch (RefiiCoopPartnerDogRole(dog)) {
+    case 1: {
+      const uint32_t hero_two = refii_mod_player_hero(base, 2);
+      if (!g_said_bind.exchange(true)) {
+        REXLOG_INFO("coop dogs: player two's dog binds to player two (0x{:08X})", hero_two);
+      }
+      return hero_two;
+    }
+    case 2:
+      for (uint32_t& slot : g_doomed) {
+        if (slot == 0u) {
+          slot = refii_mod_handle(dog);
+          break;
+        }
+      }
+      return 0u;
+    default:
+      return hero_one;
+  }
+}
+
+/// This machine in an online session as the joiner (net manager +52 and +54).
+bool IsJoiner(uint8_t* base) {
+  const uint32_t root = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = Plausible(root) ? refii::vfs::LoadGuestU32(base, root + 0xCu) : 0u;
+  const uint32_t session = Plausible(game) ? refii::vfs::LoadGuestU32(base, game + 0x8Cu) : 0u;
+  return Plausible(session) && refii::vfs::LoadGuestU8(base, session + 0x34u) != 0u &&
+         refii::vfs::LoadGuestU8(base, session + 0x36u) != 0u;
+}
+
+void Destroy(PPCContext* ctx, uint8_t* base, uint32_t dog) {
+  char chunk[160];
+  std::snprintf(chunk, sizeof(chunk),
+                "local d = Refii.entity(%u) if d ~= nil and d:IsAlive() then d:Destroy() end",
+                refii_mod_handle(dog));
+  refii_mod_run_game_lua(ctx, base, chunk);
+}
+
+/// Creates player two's dog near them from their HeroState's dog. The breed must be one of the
+/// game's own hero dogs; anything else (or none) makes the plain one.
+void Spawn(PPCContext* ctx, uint8_t* base) {
+  uint32_t definition = 0u;
+  int32_t searching = 0;
+  int32_t combat = 0;
+  char tricks[1024] = {};
+  RefiiCoopPartnerDogKit(&definition, &searching, &combat, tricks, sizeof(tricks));
+
+  // The trick names are GDB names (the pump keeps only [A-Za-z0-9_]); quoted for a Lua table.
+  std::string list;
+  for (const char* at = tricks; *at != '\0';) {
+    const char* end = std::strchr(at, ',');
+    const std::size_t length = end != nullptr ? static_cast<std::size_t>(end - at) : std::strlen(at);
+    if (length != 0u) {
+      list += (list.empty() ? "\"" : ",\"") + std::string(at, length) + "\"";
+    }
+    at += length + (end != nullptr ? 1u : 0u);
+  }
+
+  // The name its player gave it, as a Lua string literal: quotes, backslashes and control bytes
+  // are dropped rather than escaped (a name is letters).
+  char given[64] = {};
+  std::string name;
+  if (RefiiCoopPartnerDogName(given, sizeof(given)) != 0) {
+    for (const char* at = given; *at != '\0'; ++at) {
+      const unsigned char c = static_cast<unsigned char>(*at);
+      if (c >= 0x20u && c != '"' && c != '\\') name += *at;
+    }
+  }
+
+  // A Lua number here is a float: a record id past 2^24 would not survive, so it is not passed.
+  const uint32_t stated = definition < (1u << 24) ? definition : 0u;
+  const std::string chunk =
+      "local hero = GetPlayerHenchman and GetPlayerHenchman()\n"
+      "if hero == nil or not hero:IsAlive() then return end\n"
+      "local id\n"
+      "for _, name in ipairs({ \"CreatureDogHero\", \"CreatureDogHeroBloodhound\", "
+      "\"CreatureDogHeroDalmation\", \"CreatureDogHeroHusky\" }) do\n"
+      "  local record = GDB.GetRecord(name)\n"
+      "  if record ~= nil and not record:IsNull() then\n"
+      "    if id == nil or record:GetID() == " + std::to_string(stated) + " then id = record:GetID() end\n"
+      "  end\n"
+      "end\n"
+      "if id == nil then return end\n"
+      "local dog = CreateEntityFromIDAtPosition(id, \"" + std::string(kPartnerDogName) + "\", hero:GetPosition())\n"
+      "if dog == nil or not dog:IsAlive() then return end\n"
+      "Refii._set_partner_dog(Refii.handle(dog))\n" +
+      (name.empty() ? std::string()
+                    : "Creature.SetPlayerDefinedName(dog, \"" + name + "\")\n") +
+      "if " + std::to_string(searching) + " > 1 then Dog.RaiseSniffingLevelTo(dog, " +
+      std::to_string(searching) + ") end\n"
+      "if " + std::to_string(combat) + " > 1 then Dog.RaiseCombatLevelTo(dog, " +
+      std::to_string(combat) + ") end\n"
+      "for _, name in ipairs({ " + list + " }) do\n"
+      "  local record = GDB.GetRecord(name)\n"
+      "  if record ~= nil and not record:IsNull() then Dog.UnlockTrickIfNecessary(dog, record) end\n"
+      "end\n";
+  const bool ran = refii_mod_run_game_lua(ctx, base, chunk.c_str()) != 0;
+  const uint32_t dog = RefiiCoopPlayerDog(base, 2);
+  REXLOG_INFO("coop dogs: player two's dog {} (stated breed 0x{:08X}, levels {}/{}, tricks [{}]){}",
+              dog != 0u ? "created" : "NOT created", definition, searching, combat, tricks,
+              ran ? "" : " — the chunk failed");
+}
+
+void Tick(PPCContext* ctx, uint8_t* base, float) {
+  static uint32_t tick = 0u;
+  static uint32_t hero_two_ticks = 0u;
+  static uint32_t gone_ticks = 0u;
+  static uint32_t next_attempt = 0u;
+  ++tick;
+  if ((tick % kCadence) != 0u || base == nullptr) {
+    return;
+  }
+
+  // The host owns every dog; a joiner's copies come and go with the host's.
+  if (IsJoiner(base)) {
+    g_doomed.fill(0u);
+    return;
+  }
+
+  for (uint32_t& slot : g_doomed) {
+    const uint32_t dog = slot != 0u ? refii_mod_handle_address(slot) : 0u;
+    slot = 0u;
+    if (dog != 0u && refii_mod_entity_alive(base, dog) != 0) {
+      REXLOG_INFO("coop dogs: a second dog of player two's is destroyed");
+      Destroy(ctx, base, dog);
+    }
+  }
+
+  const uint32_t hero_two = refii_mod_player_hero(base, 2);
+  const bool partner_here = hero_two != 0u && refii_mod_entity_alive(base, hero_two) != 0;
+  const uint32_t dog = RefiiCoopPlayerDog(base, 2);
+
+  if (!partner_here) {
+    hero_two_ticks = 0u;
+    gone_ticks += kCadence;
+    if (dog != 0u && gone_ticks >= kGoneTicks) {
+      REXLOG_INFO("coop dogs: player two left; their dog goes with them");
+      Destroy(ctx, base, dog);
+      RefiiCoopSetPartnerDog(0u);
+    }
+    return;
+  }
+
+  gone_ticks = 0u;
+  hero_two_ticks += kCadence;
+  if (dog != 0u) {
+    RefiiCoopDressPartnerDog(ctx, base, dog);
+    return;
+  }
+  if (RefiiCoopPlayerDog(base, 1) == 0u || tick < next_attempt) {
+    return;
+  }
+
+  uint32_t definition = 0u;
+  const uint32_t version = RefiiCoopPartnerDogKit(&definition, nullptr, nullptr, nullptr, 0u);
+  if (version == 0u && hero_two_ticks < kKitWaitTicks) {
+    return;
+  }
+
+  next_attempt = tick + kRetryTicks;
+  Spawn(ctx, base);
+}
+
+REFII_MOD_ON_TICK(Tick);
+
+}  // namespace
+
+// The init's master pick (`mr r31, r3` right after `bl sub_8222C1B8`; r30 the dog component).
+void RefiiCoopDogInitMaster(PPCRegister& r3, PPCRegister& r30) {
+  r3.u64 = MasterFor(r30.u32, r3.u32);
+}
+
+// The update's rebind (`mr r4, r3` right after `bl sub_8222C1B8`; r26 the dog component).
+void RefiiCoopDogUpdateMaster(PPCRegister& r3, PPCRegister& r26) {
+  r3.u64 = MasterFor(r26.u32, r3.u32);
+}
+
+// SetMaster's global store (players+192 = this dog) is skipped for player two's dog: GetDog()
+// and every reader of that slot stay on hero one's. r30 is the dog component.
+bool RefiiCoopDogKeepsGlobalSlot(PPCRegister& r30) {
+  uint8_t* base = RefiiGuestBase();
+  if (base == nullptr || !Plausible(r30.u32)) {
+    return false;
+  }
+  const uint32_t dog = refii::vfs::LoadGuestU32(base, r30.u32 + 4u);
+  if (RefiiCoopPartnerDogRole(dog) == 0) {
+    return false;
+  }
+  if (!g_said_global.exchange(true)) {
+    REXLOG_INFO("coop dogs: player two's dog leaves GetDog() to hero one's");
+  }
+  return true;
+}

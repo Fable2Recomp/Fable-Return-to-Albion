@@ -47,17 +47,38 @@ public sealed partial class Engine_HudView : Node3D
     /// </summary>
     public int ExpressionPlayers { get; set; } = 1;
 
+    /// <summary>Whose expression wheel is open (the guest's wheel+24): 1 or 2. Split screen draws
+    /// it in that player's half only.</summary>
+    public int WheelPlayer { get; set; } = 1;
+
+    /// <summary>
+    /// The whole window belongs to ONE player (an online session): the partner's pieces — the
+    /// guest's co-op health and second will column — stay off it. Only the shared co-op screen,
+    /// where one window serves both players, shows them.
+    /// </summary>
+    public bool HidesPartner { get; set; }
+
     /// <summary>Whether a piece is drawn in this view's seat.</summary>
     private bool Admits(Engine_HudLayout.Piece piece)
     {
         if (Seat == Engine_UiSeats.Seat.Whole)
         {
-            return true;
+            return !HidesPartner || Engine_HudLayout.OwnerOf(piece) != Engine_UiSeats.Seat.PlayerTwo;
         }
 
         if (Engine_HudLayout.IsExpressionMeter(piece))
         {
             return (ExpressionPlayers & (Seat == Engine_UiSeats.Seat.PlayerTwo ? 2 : 1)) != 0;
+        }
+
+        if (Engine_HudLayout.SharedOnSplit(piece) || Engine_HudLayout.EachPlayerOnSplit(piece))
+        {
+            return true;
+        }
+
+        if (Engine_HudLayout.IsExpressionWheel(piece))
+        {
+            return (WheelPlayer == 2) == (Seat == Engine_UiSeats.Seat.PlayerTwo);
         }
 
         Engine_UiSeats.Seat owner = Engine_HudLayout.OwnerOf(piece);
@@ -66,11 +87,15 @@ public sealed partial class Engine_HudView : Node3D
             : owner != Engine_UiSeats.Seat.PlayerTwo;
     }
 
-    /// <summary>Player two's view holds only the pieces that can ever be player two's.</summary>
+    /// <summary>Player two's view holds only the pieces that can ever be player two's, and the
+    /// screen's pieces both halves show.</summary>
     private bool Builds(Engine_HudLayout.Piece piece) =>
         Seat != Engine_UiSeats.Seat.PlayerTwo ||
         Engine_HudLayout.OwnerOf(piece) == Engine_UiSeats.Seat.PlayerTwo ||
-        Engine_HudLayout.IsExpressionMeter(piece);
+        Engine_HudLayout.IsExpressionMeter(piece) ||
+        Engine_HudLayout.IsExpressionWheel(piece) ||
+        Engine_HudLayout.SharedOnSplit(piece) ||
+        Engine_HudLayout.EachPlayerOnSplit(piece);
 
     /// <summary>This view's seat on the current <see cref="Window"/>.</summary>
     private Engine_UiSeats.Frame SeatFrame => Engine_UiSeats.Of(Window, Seat);
@@ -1974,7 +1999,14 @@ public sealed partial class Engine_HudView : Node3D
             TicksTexts += now - mark;
             mark = now;
 
-            Vector2 at = Engine_HudLayout.Place(built.Piece, extent);
+            // Player two's own half stands their health and will where player one's stand.
+            Engine_HudLayout.Piece placed = built.Piece;
+            if (Seat == Engine_UiSeats.Seat.PlayerTwo && Layout.CounterpartOf(built.Piece) is { } mirror)
+            {
+                placed = built.Piece with { Anchor = mirror.Anchor, Offset = mirror.Offset };
+            }
+
+            Vector2 at = Engine_HudLayout.Place(placed, extent);
 
             // The guest's own move of a piece root. A layout offset derives from the authored
             // canvas position, but the guest restates a root's position (quest text, the health
