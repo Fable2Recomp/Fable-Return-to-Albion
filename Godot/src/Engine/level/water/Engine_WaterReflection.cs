@@ -269,8 +269,9 @@ public sealed partial class Engine_WaterReflection : Node
 
     /// <summary>
     /// Builds player two's mirror on every body when the screen splits and frees it when the
-    /// screen rejoins. Only a water.gdshader material takes a second mirror: the classic water's
-    /// translated shaders read one sampler, and the split view does not run under classic.
+    /// screen rejoins. A water.gdshader material takes it as its second mirror and picks by eye;
+    /// a classic water material takes it as its reflection sampler's second-view twin, which its
+    /// composition fetches in player two's view (Engine_ClassicWater).
     /// </summary>
     private void SyncViews()
     {
@@ -289,6 +290,10 @@ public sealed partial class Engine_WaterReflection : Node
                         reader.SetShaderParameter(SecondTextureName, second.Viewport.GetTexture());
                         reader.SetShaderParameter(SecondEnabledName, true);
                     }
+                    else
+                    {
+                        BindMirror(reader, second.Viewport.GetTexture(), Engine_ClassicWater.ReflectionSamplerSecond);
+                    }
                 }
             }
             else if (!split && second is not null)
@@ -299,6 +304,10 @@ public sealed partial class Engine_WaterReflection : Node
                     {
                         reader.SetShaderParameter(SecondEnabledName, false);
                         reader.SetShaderParameter(SecondTextureName, default(Variant));
+                    }
+                    else
+                    {
+                        BindMirror(reader, null, Engine_ClassicWater.ReflectionSamplerSecond);
                     }
                 }
 
@@ -598,11 +607,15 @@ public sealed partial class Engine_WaterReflection : Node
     /// The mirror as g_ReflectionSampler on every pass of a classic water material: the core
     /// and the blended fringe it chains (Engine_ClassicWater) both sample it.
     /// </summary>
-    private static void BindMirror(ShaderMaterial material, Texture2D mirror)
+    private static void BindMirror(ShaderMaterial material, Texture2D mirror) =>
+        BindMirror(material, mirror, Engine_ClassicWater.ReflectionSampler);
+
+    /// <summary>The same for a named sampler: the reflection's second-view twin takes player two's mirror.</summary>
+    private static void BindMirror(ShaderMaterial material, Texture2D? mirror, string sampler)
     {
         for (Material? pass = material; pass is ShaderMaterial shader; pass = shader.NextPass)
         {
-            shader.SetShaderParameter("ps_g_ReflectionSampler", mirror);
+            shader.SetShaderParameter(sampler, mirror is null ? default(Variant) : mirror);
         }
     }
 }

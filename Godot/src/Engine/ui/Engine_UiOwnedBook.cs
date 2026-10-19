@@ -2562,8 +2562,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		// Where the page sits on screen, for the pointer: the painted clip, which carries the
 		// wide-layout shift the document's mask does not.
+		// The clip is laid out; the pointer is the window's, so a seated book's rect is moved there.
 		ScrollRegionRect = range > 1f && FirstClipRect(content) is { } clip
-			? new Rect2(clip.X, clip.Y, clip.Z - clip.X, clip.W - clip.Y)
+			? Engine_UiSeats.RectToWindow(content, new Rect2(clip.X, clip.Y, clip.Z - clip.X, clip.W - clip.Y))
 			: null;
 		_scrollBarSpan = null;
 

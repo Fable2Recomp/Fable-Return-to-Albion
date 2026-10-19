@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 194;
+	public const int ExpectedAbiVersion = 198;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -3301,6 +3301,92 @@ public static class HostBridge
 		}
 	}
 
+	/// <summary>
+	/// The next question a co-op script put to the partner (core/coop_consent.cpp): its ticket,
+	/// kind (1 sleep, 2 sex), asking player (1 or 2) and detail (the sleep type); null when none.
+	/// </summary>
+	[ThreadStatic]
+	private static byte[]? _consentText;
+
+	public static (uint Ticket, int Kind, int Asker, int Detail, string Text)? ConsentTake()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			byte[] text = _consentText ??= new byte[256];
+			if (RefiiHostConsentTake(out uint ticket, out int kind, out int asker, out int detail, text, (uint)text.Length) == 0)
+			{
+				return null;
+			}
+
+			int length = Array.IndexOf(text, (byte)0);
+			return (ticket, kind, asker, detail,
+				System.Text.Encoding.UTF8.GetString(text, 0, length < 0 ? text.Length : length));
+		}
+		catch (DllNotFoundException)
+		{
+			return null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// The silver keys in the world a player has already taken (core/coop_collectables.cpp): entity
+	/// address → mask (bit 0 player one, bit 1 player two). Filled into <paramref name="into"/>.
+	/// </summary>
+	public static void CollectedKeys(System.Collections.Generic.Dictionary<uint, uint> into)
+	{
+		into.Clear();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return;
+		}
+
+		try
+		{
+			uint pairs = RefiiHostGetCollectedKeys(CollectedKeysBuffer, (uint)CollectedKeysBuffer.Length);
+			for (uint i = 0; i < pairs; ++i)
+			{
+				into[CollectedKeysBuffer[i * 2]] = CollectedKeysBuffer[(i * 2) + 1];
+			}
+		}
+		catch (DllNotFoundException)
+		{
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	private static readonly uint[] CollectedKeysBuffer = new uint[512];
+
+	/// <summary>The partner's answer to a question from <see cref="ConsentTake"/>.</summary>
+	public static void ConsentGive(uint ticket, bool yes)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostConsentGive(ticket, yes ? 1 : 0);
+		}
+		catch (DllNotFoundException)
+		{
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
 	/// <summary>Staging for the player state's messages; main thread only.</summary>
 	private static readonly byte[] PlayerStateBuffer = new byte[16384];
 
@@ -6490,6 +6576,74 @@ public static class HostBridge
 	}
 
 	[ThreadStatic]
+	private static uint[]? _playerTwoQueryWords;
+
+	/// <summary>
+	/// PLAYER TWO'S targeted-citizen readout on split screen, in <see cref="TargetedQuery"/>'s
+	/// shape: hero two's own focus target, the guest's gift reads, and the villager's opinion OF
+	/// PLAYER TWO. Marry and divorce are hero one's questions in the guest and are never set.
+	/// </summary>
+	public static TargetedQuery GetPlayerTwoTargetedQuery()
+	{
+		uint[] words = _playerTwoQueryWords ??= new uint[12];
+		uint count;
+		try
+		{
+			count = RefiiHostGetPlayerTwoTargetedQuery(words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		if (count < 12u)
+		{
+			return default;
+		}
+
+		static float Bits(uint value) => BitConverter.Int32BitsToSingle(unchecked((int)value));
+		return new TargetedQuery(
+			true, words[0] != 0u, words[1], words[3] != 0u, Bits(words[4]), words[5] != 0u,
+			unchecked((int)words[6]), words[7] != 0u, Bits(words[8]), words[9] != 0u,
+			Bits(words[10]), Bits(words[11]));
+	}
+
+	/// <summary>Player two's split-screen HUD as the guest's own builders state it for hero two.</summary>
+	/// <param name="Target">The entity the title names, 0 when none.</param>
+	/// <param name="Title">The targeted readout's title (`sub_823C87B0`).</param>
+	/// <param name="Icons">The d-pad's four icon paths: up, left, down, right; empty for none.</param>
+	public readonly record struct PlayerTwoHud(uint Target, string Title, string[] Icons);
+
+	[ThreadStatic]
+	private static byte[]? _playerTwoHudText;
+
+	public static PlayerTwoHud? GetPlayerTwoHud()
+	{
+		byte[] text = _playerTwoHudText ??= new byte[2048];
+		uint target = 0u;
+		try
+		{
+			if (RefiiHostGetPlayerTwoHud(ref target, text, (uint)text.Length) == 0u)
+			{
+				return null;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		int length = Array.IndexOf(text, (byte)0);
+		string[] lines = System.Text.Encoding.UTF8.GetString(text, 0, length < 0 ? text.Length : length).Split('\n');
+		if (lines.Length < 5)
+		{
+			return null;
+		}
+
+		return new PlayerTwoHud(target, lines[0], new[] { lines[1], lines[2], lines[3], lines[4] });
+	}
+
+	[ThreadStatic]
 	private static float[]? _expressionMeterValues;
 
 	public static ExpressionMeter GetExpressionMeter()
@@ -8384,6 +8538,12 @@ public static class HostBridge
 	private static extern uint RefiiHostGetTargetedQuery([Out] uint[] words, uint capacity);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetPlayerTwoTargetedQuery([Out] uint[] words, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetPlayerTwoHud(ref uint target, [Out] byte[] text, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudPulsers([Out] uint[]? hashes, [Out] float[]? phases, uint capacity);
 
 
@@ -9111,6 +9271,16 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostPlayerStateOutgoing(byte[] outBuffer, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCollectedKeys(uint[] outPairs, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostConsentTake(out uint ticket, out int kind, out int asker, out int detail,
+		[Out] byte[] text, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostConsentGive(uint ticket, int yes);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostPlayerStateReceive(byte[] message, uint length);

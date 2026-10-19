@@ -164,6 +164,7 @@ public partial class GameEntities : Node3D
 	{
 		using (Refii.Core.Engine_FramePhases.Measure("entities_process"))
 		{
+			RefreshCollectedKeys(delta);
 			entities_processBody(delta);
 		}
 	}
@@ -4372,6 +4373,13 @@ public partial class GameEntities : Node3D
     /// </summary>
     private uint EntityLayers(HostBridge.GuestEntity entity)
     {
+        uint layers = ZonedEntityLayers(entity);
+        return _collectedKeys.TryGetValue(entity.Address, out uint taken) ? CollectedLayers(layers, taken) : layers;
+    }
+
+    /// <summary>The entity's layers from its record, its dynamic-caster standing and its light zone.</summary>
+    private uint ZonedEntityLayers(HostBridge.GuestEntity entity)
+    {
         bool isDynamic = _skeletons.ContainsKey(entity.Address) ||
             IsPrincipal(entity.Address) ||
             _attachments.ParentOf(entity.Address) != 0u ||
@@ -4419,6 +4427,45 @@ public partial class GameEntities : Node3D
         }
 
         return Refii.Lighting.Engine_LightZones.Zoned(layers, zone);
+    }
+
+    /// <summary>Silver keys a player has taken (HostBridge.CollectedKeys), refreshed once a second.</summary>
+    private readonly Dictionary<uint, uint> _collectedKeys = new();
+
+    private double _collectedKeysAge = double.MaxValue;
+
+    private void RefreshCollectedKeys(double delta)
+    {
+        _collectedKeysAge += delta;
+        if (_collectedKeysAge >= 1.0)
+        {
+            _collectedKeysAge = 0.0;
+            HostBridge.CollectedKeys(_collectedKeys);
+        }
+    }
+
+    /// <summary>
+    /// A ONE-TIME COLLECTABLE IS SHOWN ONLY TO WHOEVER STILL NEEDS IT (Fable 3's ghosting): on split
+    /// screen the key a player has taken is drawn in the other player's view alone; online each
+    /// machine hides what its own player has; a shared screen hides it only once both have it
+    /// (Fable 3's DoNotGhostInCouchUnlessBothCollected).
+    /// </summary>
+    private static uint CollectedLayers(uint layers, uint taken)
+    {
+        if (Refii.Core.Engine_Views.Split)
+        {
+            return taken switch
+            {
+                1u => Refii.Models.Engine_ClassicViews.SecondViewOnlyLayer,
+                2u => Refii.Models.Engine_ClassicViews.FirstViewOnlyLayer,
+                _ => 0u,
+            };
+        }
+
+        bool hidden = CoopSession.LocalCoop
+            ? taken == 3u
+            : (taken & (CoopSession.IsClient ? 2u : 1u)) != 0u;
+        return hidden ? 0u : layers;
     }
 
     /// <summary>

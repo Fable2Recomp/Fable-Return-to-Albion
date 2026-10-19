@@ -2978,6 +2978,12 @@ public partial class GameUi : Node
 	/// </summary>
 	private int StatedMenuOwner()
 	{
+		// A consent question is the partner's to answer, on their pad and in their half.
+		if (_consentOwner != 0)
+		{
+			return _consentOwner;
+		}
+
 		int wheel = _spells.WheelPlayer;
 		if (wheel != 0)
 		{
@@ -3016,7 +3022,7 @@ public partial class GameUi : Node
 	private System.Collections.Generic.IReadOnlyList<int>? SlidesForPlayerTwo(
 		System.Collections.Generic.IReadOnlyList<int>? shared)
 	{
-		if (shared is null || _hudTwoSlides.Count == 0)
+		if (shared is null || (_hudTwoSlides.Count == 0 && _hudTwoQuerySlides.Count == 0))
 		{
 			return shared;
 		}
@@ -3032,6 +3038,14 @@ public partial class GameUi : Node
 		}
 
 		foreach ((int ordinal, int slide) in _hudTwoSlides)
+		{
+			if (ordinal >= 0 && ordinal < _hudTwoSlideBuffer.Length)
+			{
+				_hudTwoSlideBuffer[ordinal] = slide;
+			}
+		}
+
+		foreach ((int ordinal, int slide) in _hudTwoQuerySlides)
 		{
 			if (ordinal >= 0 && ordinal < _hudTwoSlideBuffer.Length)
 			{
@@ -4445,6 +4459,7 @@ public partial class GameUi : Node
 
 				_hud!.ElementActive = active;
 				DrivePlayerTwoExperience();
+				DrivePlayerTwoHud();
 				ShareHudFeed();
 			}
 
@@ -5889,7 +5904,7 @@ public partial class GameUi : Node
 	/// </summary>
 	private void PressCoopHeroToggle()
 	{
-		if (SessionRole == 1u)
+		if (SessionRole == 1u && !CoopSession.LocalCoop)
 		{
 			bool wanted = !_coopHeroApplied;
 			GD.Print($"[game-ui] co-op X — asking the joiner to put player two in their " +
@@ -5978,6 +5993,14 @@ public partial class GameUi : Node
 
 	private CoopSession.Role _coopSideSeen = CoopSession.Role.Solo;
 
+	/// <summary>Whether local co-op was up last frame, so its end resets player two's hero.</summary>
+	private bool _coopLocalHeroSeen;
+
+	/// <summary>Local player two's record, read from their save: the version and its base64.</summary>
+	private uint _localTwoVersion;
+
+	private string? _localTwoBase64;
+
 	/// <summary>
 	/// Drops every piece of co-op state on both sides of the bridge: the pump's stored state
 	/// (`CoopHeroReset`), the own-hero bit, the applied body, the live-sampling latch, the
@@ -5998,6 +6021,7 @@ public partial class GameUi : Node
 		_coopHeroApplied = false;
 		_coopLiveSampling = false;
 		_coopBodyPosted = string.Empty;
+		_localTwoBase64 = null;
 		_coopHeroRestate = 0.0;
 		_coopStatePostedOne = 0u;
 		_coopStatePostedTwo = 0u;
@@ -6036,6 +6060,8 @@ public partial class GameUi : Node
 		// The same transitions, told to the player (GameUiCoopNotices) — before the reset drops
 		// what they need.
 		TellCoopTransitions(_coopPhaseSeen);
+		reset ??= _coopLocalHeroSeen && !CoopSession.LocalCoop ? "local co-op ended" : null;
+		_coopLocalHeroSeen = CoopSession.LocalCoop;
 		if (reset is not null)
 		{
 			ResetCoopHero(reset);
@@ -6102,6 +6128,21 @@ public partial class GameUi : Node
 				CoopHeroKit.Sample(appearanceOnly: true);
 			}
 
+			// LOCAL CO-OP: player two's kit is the save they picked on the co-op screen, read the
+			// joiner's way; a new pick is a new version of their record. Fable 3's couch rule: with a
+			// save they play as their own hero (the body goes to it once the kit is read), without
+			// one as the henchman.
+			if (CoopSession.LocalCoop && CoopHeroKit.SampleLocalPlayerTwo())
+			{
+				_localTwoBase64 = System.Convert.ToBase64String(
+					CoopHeroState.Serialize(CoopHeroKit.Remote, ++_localTwoVersion));
+				GD.Print($"[game-ui] local co-op — player two's hero read from their save (v{_localTwoVersion})");
+				if (!Engine_UiPageProviders.CoopOwnHero)
+				{
+					SetCoopHeroBody(true);
+				}
+			}
+
 			if (SessionRole == 2u && (!CoopHeroKit.Local.Known || CoopHeroKit.ChosenSaveRead))
 			{
 				// No capture, or the kit came from a pick: the pick names the hero, and a
@@ -6147,6 +6188,12 @@ public partial class GameUi : Node
 			// The players' mod values (core/player_state.h): the peer's statement of the player it
 			// plays, or its writes to the one this machine plays.
 			if (HostBridge.PlayerStateReceive(message))
+			{
+				continue;
+			}
+
+			// A bed's question for this machine's player, or the answer to this machine's (GameUiCoopConsent).
+			if (TakeConsentMessage(message))
 			{
 				continue;
 			}
@@ -6376,7 +6423,10 @@ public partial class GameUi : Node
 	{
 		if (Engine_UiPageProviders.CoopOwnHero)
 		{
-			(uint version, string? record, bool known) = role == 1u
+			// Local co-op: player two's record is the one read from their save on this machine.
+			(uint version, string? record, bool known) = CoopSession.LocalCoop
+				? (_localTwoVersion, _localTwoBase64, CoopHeroKit.Remote.Known)
+				: role == 1u
 				? (CoopHeroState.ReceivedVersion, CoopHeroState.ReceivedBase64, CoopHeroKit.Remote.Known)
 				: (CoopHeroState.Version, CoopHeroState.LocalBase64, CoopHeroKit.Local.Known);
 			if (known && version != 0u && version != _coopStatePostedTwo && record is not null)
@@ -6708,7 +6758,7 @@ public partial class GameUi : Node
 			_screenMenuView?.EntryAt(at) is not null || _screenMenuView?.ScrollBarAt(at) is not null ||
 			(book.NodeFor("Foreground.Book.Pages") ?? book.Find("Pages")) is not { } pages ||
 			Engine_UiPointer.CanvasBounds(pages) is not { } bounds || !bounds.HasPoint(at) ||
-			at.X < 0f)
+			Engine_UiSeats.PointToLayout(pages, at).X < 0f)
 		{
 			return;
 		}
@@ -6779,7 +6829,7 @@ public partial class GameUi : Node
 			_screenMenuView?.ScrollBarAt(at) is not null ||
 			(book.NodeFor("Foreground.Book.Pages") ?? book.Find("Pages")) is not { } pages ||
 			Engine_UiPointer.CanvasBounds(pages) is not { } bounds || !bounds.HasPoint(at) ||
-			at.X < 0f)
+			Engine_UiSeats.PointToLayout(pages, at).X < 0f)
 		{
 			return false;
 		}
@@ -7111,6 +7161,7 @@ public partial class GameUi : Node
 		DriveWorldIcons(guestFrame);
 		DriveCoopHeroChannel(delta);
 		DriveCoopNotices(delta);
+		DriveCoopConsent(delta);
 		if (guestFrame) DriveOwnedScreenProvider();
 		if (guestFrame) _books.Drive(_drawn, IsRevealed);
 		if (guestFrame) _spells.Follow(IsRevealed);
@@ -7879,6 +7930,35 @@ public partial class GameUi : Node
 
 				break;
 
+			case "status":
+				Engine_UiJoinRequests.StatusIndex = int.TryParse(argument, out int status) ? status : 0;
+				Engine_UiNetworkSource.Say($"Your status is now: {Engine_UiJoinRequests.Statuses[Engine_UiJoinRequests.StatusIndex]}.");
+				break;
+
+			case "greet":
+				{
+					int greeting = int.TryParse(argument, out int id) ? id : 0;
+					Answer(greeting >= 1 && greeting <= Engine_UiJoinRequests.Greetings.Length && NetBridge.SendPlayerSignal(greeting),
+						"Sent to your friends.", "That could not be sent — RexNet is not up.");
+					break;
+				}
+
+			case "joinmode":
+				{
+					var mode = (Engine_UiJoinRequests.JoinMode)System.Math.Clamp(
+						int.TryParse(argument, out int wanted) ? wanted : 0, 0, 2);
+					Engine_UiJoinRequests.Mode = mode;
+					Answer(NetBridge.SetJoinable(mode == Engine_UiJoinRequests.JoinMode.Anyone),
+						mode switch
+						{
+							Engine_UiJoinRequests.JoinMode.Anyone => "Friends can now join your game.",
+							Engine_UiJoinRequests.JoinMode.InvitesOnly => "Only someone you invite can join now.",
+							_ => "No one can join now; asks to join are declined.",
+						},
+						"That could not be changed — no game is hosted yet.");
+					break;
+				}
+
 			case "joinable":
 				// The row states the CURRENT setting, so its command carries the one it wants.
 				Answer(NetBridge.SetJoinable(argument == "1"),
@@ -7919,6 +7999,11 @@ public partial class GameUi : Node
 				break;
 
 			case "accept-invite":
+				if (!ConfirmLeavingGame(command, argument))
+				{
+					break;
+				}
+
 				Answer(NetBridge.PeerAction(argument, NetBridge.Act.AcceptInvite),
 					"Invitation accepted.\n\nThe game joins when the host is ready.",
 					"That invitation could not be accepted.", hold: true);
@@ -7928,6 +8013,11 @@ public partial class GameUi : Node
 				// THE SAME PATH AN INVITE TAKES. The guest joins from an accepted invite, and the
 				// material that needs — host peer plus session id — is what presence carries for
 				// a friend who is hosting. The node raises the accept for us.
+				if (!ConfirmLeavingGame(command, argument))
+				{
+					break;
+				}
+
 				Answer(NetBridge.PeerAction(argument, NetBridge.Act.Join),
 					"Joining.\n\nThe game loads when the host answers.",
 					"They are not hosting a game you can join right now.", hold: true);
@@ -7955,6 +8045,42 @@ public partial class GameUi : Node
 
 	private static void Answer(bool ok, string good, string bad, bool hold = false) =>
 		Engine_UiNetworkSource.Say(ok ? good : bad, hold: ok && hold);
+
+	/// <summary>The join a first press armed, and when; a second press of the same row joins.</summary>
+	private string _joinConfirmArmed = string.Empty;
+
+	private ulong _joinConfirmAt;
+
+	private const ulong JoinConfirmMsec = 10_000;
+
+	/// <summary>
+	/// FABLE 3'S JOIN WARNING (`GUI_JOIN_DESTRUCTIVE_ACTION_*`): joining someone leaves the game you
+	/// are in, and what you have not saved goes with it. Said on the row's page — never a box over
+	/// the book — and the join goes ahead on a second press of the same row within ten seconds. No
+	/// warning from the title or the front end, where there is nothing to lose, or once already
+	/// joined to someone.
+	/// </summary>
+	private bool ConfirmLeavingGame(string command, string argument)
+	{
+		if (!HostBridge.IsInGame || CoopSession.IsClient)
+		{
+			return true;
+		}
+
+		string key = command + ":" + argument;
+		ulong now = Time.GetTicksMsec();
+		if (_joinConfirmArmed == key && now - _joinConfirmAt <= JoinConfirmMsec)
+		{
+			_joinConfirmArmed = string.Empty;
+			return true;
+		}
+
+		_joinConfirmArmed = key;
+		_joinConfirmAt = now;
+		Engine_UiNetworkSource.Say("Joining another game leaves this one, and anything you have not saved is lost." +
+			"\n\nPress again to join.");
+		return false;
+	}
 
 	private void OpenScreen(string screen)
 	{

@@ -59,7 +59,9 @@ public static class NetBridge
 		string TitleName,
 		bool HasSession,
 		string SessionId,
-		int PresenceState)
+		int PresenceState,
+		string Status = "",
+		uint Signal = 0u)
 	{
 		/// <summary>Joinable means they are hosting AND we can reach them.</summary>
 		public bool Joinable => Online && HasSession;
@@ -90,6 +92,43 @@ public static class NetBridge
 	}
 
 	/// <summary>Opens or closes our session to joiners.</summary>
+	/// <summary>
+	/// States this player's status to everyone who sees their presence (Fable 3's orb status:
+	/// looking for co-op, trading…); empty clears it.
+	/// </summary>
+	public static bool SetPlayerStatus(string status)
+	{
+		try
+		{
+			return RefiiNetSetPlayerStatus(status) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Sends a greeting (id 1..255) to everyone who sees this player's presence (Fable 3's orb emotes).</summary>
+	public static bool SendPlayerSignal(int id)
+	{
+		try
+		{
+			return RefiiNetSendPlayerSignal(id) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
 	public static bool SetJoinable(bool on)
 	{
 		try
@@ -122,10 +161,10 @@ public static class NetBridge
 	public static List<Friend> Friends()
 	{
 		var list = new List<Friend>();
-		foreach (string[] f in Records(RefiiNetFriends, 8))
+		foreach (string[] f in Records(RefiiNetFriends, 10))
 		{
 			list.Add(new Friend(
-				f[0], f[1], f[2] == "1", Num(f[3]), f[4], f[5] == "1", f[6], (int)Num(f[7])));
+				f[0], f[1], f[2] == "1", Num(f[3]), f[4], f[5] == "1", f[6], (int)Num(f[7]), f[8], Num(f[9])));
 		}
 
 		return list;
@@ -494,6 +533,12 @@ public static class NetBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetFriends(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiNetSetPlayerStatus([MarshalAs(UnmanagedType.LPUTF8Str)] string status);
+
+	[DllImport(Library)]
+	private static extern int RefiiNetSendPlayerSignal(int id);
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetRequests(byte[] outText, uint capacity);

@@ -12,6 +12,7 @@
 #include <rex/logging.h>
 
 #include "core/guest_state.h"
+#include "core/payload_bridge.h"
 #include "core/refii_mod.h"
 #include "hooks/ppc_externs.h"
 #include "vfs_hooks_private.h"
@@ -398,6 +399,43 @@ extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity) {
 
 extern "C" int32_t refii_mod_menu_player(uint8_t* base) {
   return refii::vfs::IsCoopJoiner(base) || refii::vfs::MenusActForPlayerTwo(base) ? 2 : 1;
+}
+
+// A villager's opinion of either hero (core/coop_opinion.cpp): player one's is the opinion
+// component's own current axes (+44, five floats); player two's the set kept for them, its current
+// axes at block+20 in guest byte order, or the villager's base attitudes (+24) before player two
+// has done anything there.
+extern "C" int32_t refii_mod_opinion(uint8_t* base, uint32_t villager, int32_t player, float* out) {
+  const uint32_t opinion = villager != 0u ? refii_mod_component(base, villager, 47u) : 0u;
+  if (opinion == 0u || out == nullptr || (player != 1 && player != 2)) {
+    return 0;
+  }
+  uint8_t two[REFII_OPINION_BLOCK_BYTES];
+  const bool kept = player == 2 && refii_bridge_opinion_two_load(opinion, two) != 0;
+  for (uint32_t axis = 0; axis < 5u; ++axis) {
+    if (kept) {
+      uint32_t raw = 0u;
+      std::memcpy(&raw, two + 20u + (4u * axis), sizeof(raw));
+      raw = __builtin_bswap32(raw);
+      std::memcpy(&out[axis], &raw, sizeof(float));
+    } else {
+      out[axis] = refii::mods::LoadF32(base, opinion + (player == 1 ? 44u : 24u) + (4u * axis));
+    }
+  }
+  return 1;
+}
+
+// The entity a hero is focused on: component 77's target (`GetFocusTarget` `sub_82843C40`,
+// `*(*(comp + 0xC8))`), when it is alive (+144 & 0x40).
+extern "C" uint32_t refii_mod_focus(uint8_t* base, int32_t player) {
+  const uint32_t hero = refii_mod_player_hero(base, player);
+  const uint32_t targeting = hero != 0u ? refii_mod_component(base, hero, 77u) : 0u;
+  const uint32_t holder = targeting != 0u ? refii::mods::LoadU32(base, targeting + 0xC8u) : 0u;
+  const uint32_t target = holder >= 0x10000u && holder < 0xC0000000u ? refii::mods::LoadU32(base, holder) : 0u;
+  if (target < 0x10000u || target >= 0xC0000000u || (refii::mods::LoadU8(base, target + 144u) & 0x40u) == 0u) {
+    return 0u;
+  }
+  return target;
 }
 
 // --- player state (core/player_state.h) -------------------------------------------------------

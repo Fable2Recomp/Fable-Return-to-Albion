@@ -85,7 +85,21 @@ std::atomic<bool> g_said_reaction{false};
 /// use runs on the game thread only.
 bool g_shop_for_local_player_two = false;
 
+/// The same call's user is player two in LOCAL co-op (both heroes on this machine).
+bool g_shop_user_is_local_two = false;
+
+/// Local player two's shop is up: set when the shopkeeper path opens it for them, dropped on the
+/// first read after the shop screen is gone.
+std::atomic<bool> g_shopping_player_two{false};
+
 bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
+
+/// The guest's IsLocalCoopGame: game+0x11C == 2.
+bool LocalCoopGame(uint8_t* base) {
+  const uint32_t root = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = Plausible(root) ? refii::vfs::LoadGuestU32(base, root + 0xCu) : 0u;
+  return Plausible(game) && refii::vfs::LoadGuestU32(base, game + 0x11Cu) == 2u;
+}
 
 /// sub_821C7CE0's rule: the local player is player one when this machine is the session host
 /// (net +0x34 and +0x35 — every solo and local co-op game reads as host), else player two.
@@ -108,10 +122,115 @@ void RefiiCoopUseByRealUser() { Once(g_said_use, "an object used by player two r
 // True: open the shop for player two (jump to the shopkeeper path); false: the shipped test.
 bool RefiiCoopShopForLocalPlayerTwo() {
   if (g_shop_for_local_player_two) {
-    Once(g_said_shop, "a shop serves player two as the local player");
+    Once(g_said_shop, "a shop serves player two");
+    if (g_shop_user_is_local_two) {
+      g_shopping_player_two.store(true, std::memory_order_relaxed);
+    }
     return true;
   }
   return false;
+}
+
+extern "C" uint8_t* RefiiGuestBase(void);
+
+extern "C" uint8_t* RefiiGuestBase(void);
+
+// CRIME IS THE CRIMINAL'S. AddCrime (`sub_827C9C10`) records a crime against the criminal, but
+// for a player criminal that is not hero one it then makes hero one the criminal: `bl
+// sub_8222C1B8` (0x827C9F64), `cmplw r28, r3`, `mr r29, r3` (0x827C9F9C) — r29 already holds the
+// real criminal (`mr r29, r28`, 0x827C9F50), and everything after uses r29. True skips the remap
+// for hero two, so the alarm, the arrest, the fine and the crime screen (which already picks
+// player two's, `DisplayCrimeScreen` 0x827CFF08) are player two's own.
+bool RefiiCoopCrimeIsTheirs(PPCRegister& r28) {
+  uint8_t* base = RefiiGuestBase();
+  return base != nullptr && r28.u32 != 0u && r28.u32 == refii_mod_player_hero(base, 2);
+}
+
+// A DEED'S ALIGNMENT AND RENOWN ARE THE DOER'S. The villager's deed handler
+// (`rex_CECOpinionReaction_OnDeed`, `sub_82786F58`) credits morality, purity and renown to hero
+// one's stats whoever did the deed (`bl sub_8222C1B8` at 0x8278809C, then `sub_824D62A0`,
+// `sub_824D6BE0`, `sub_824D5BC0`). The deed message is copied to the frame at r1+0xC0
+// (`sub_82619EA8`, 0x82787F24), its doer the weak reference at message+72 — r1+0x108, {vtable,
+// holder} with the entity at *holder. After the call: a deed by hero two credits hero two.
+void RefiiCoopDeedDoer(PPCRegister& r1, PPCRegister& r3) {
+  using refii::vfs::LoadGuestU32;
+  uint8_t* base = RefiiGuestBase();
+  if (base == nullptr) {
+    return;
+  }
+  const uint32_t holder = LoadGuestU32(base, r1.u32 + 0x108u + 4u);
+  const uint32_t doer = Plausible(holder) ? LoadGuestU32(base, holder) : 0u;
+  if (doer != 0u && doer == refii_mod_player_hero(base, 2)) {
+    r3.u64 = doer;
+  }
+}
+
+// EACH PLAYER HEARS WHAT IS AROUND THEM ON SPLIT SCREEN. The mixer hears a sound from the nearest of
+// its primary listener (player one's camera) and its secondary listeners — one at each player's body,
+// which every Player keeps (CECPlayer +348, `sub_823ED9F0`, moved each frame by `sub_823EDF80`) —
+// but only for a sound whose definition says AudibleToSecondaryListeners: the distance test
+// `sub_82C5B8D8` takes the flag in r4 (`clrlwi r9, r4, 24` at 0x82C5B8E0) and otherwise measures from
+// the camera alone. On split screen every sound takes the nearest listener, so player two hears the
+// world around them in their half.
+extern "C" int RefiiCoopSplitScreen(void);
+
+void RefiiCoopAudibleToBoth(PPCRegister& r4) {
+  if (RefiiCoopSplitScreen() != 0) {
+    r4.u64 = 1u;
+  }
+}
+
+// LOCAL PLAYER TWO SHOPS AS THEMSELVES. The shop screen (22) acts for "the local player"
+// (`sub_821C7CE0`, record 1 on one machine; every buy, sell and tattoo removal: sub_826B0768
+// 0x826B0948, sub_826AFCF0 0x826AFEA4, sub_826B0D10 0x826B0D6C, sub_826AF430) and judges price and
+// tattoos on hero one outright (`sub_8222C1B8` at 0x8246DBB0 in sub_8246DB30, 0x8246E0E8 in
+// sub_8246DE50). While player two's shop is up those answer player two and hero two; the flag
+// drops on the first read after the shop screen is gone.
+namespace {
+
+bool ShopScreenUp(uint8_t* base) {
+  using refii::vfs::LoadGuestU32;
+  const uint32_t gui = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
+  const uint32_t screens = Plausible(gui) ? LoadGuestU32(base, gui + 56u) : 0u;
+  const uint32_t id = Plausible(screens) ? LoadGuestU32(base, screens + 4u) : 0xFFFFFFFFu;
+  return id != 0xFFFFFFFFu && refii::guest::ScreenIdToTu1(id) == 22u;
+}
+
+bool Shopping(uint8_t* base) {
+  if (!g_shopping_player_two.load(std::memory_order_relaxed)) {
+    return false;
+  }
+  if (!ShopScreenUp(base)) {
+    g_shopping_player_two.store(false, std::memory_order_relaxed);
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+extern "C" int RefiiCoopShoppingPlayerTwo(void) {
+  return g_shopping_player_two.load(std::memory_order_relaxed) ? 1 : 0;
+}
+
+// `sub_821C7CE0`'s tail (`li r4, 1` then `b sub_82264230`): r4 is the local player's number.
+void RefiiCoopShopPlayer(PPCRegister& r4) {
+  uint8_t* base = RefiiGuestBase();
+  if (base != nullptr && r4.u32 == 1u && Shopping(base)) {
+    r4.u64 = 2u;
+  }
+}
+
+// After `bl sub_8222C1B8` in the price and tattoo checks: r3 is hero one; player two's shop asks
+// about hero two.
+void RefiiCoopShopHero(PPCRegister& r3) {
+  uint8_t* base = RefiiGuestBase();
+  if (base != nullptr && Shopping(base)) {
+    const uint32_t two = refii_mod_player_hero(base, 2);
+    if (two != 0u) {
+      r3.u64 = two;
+    }
+  }
 }
 
 void RefiiCoopExperienceOwnPool() { Once(g_said_experience, "experience credited to its earner"); }
@@ -126,10 +245,13 @@ void RefiiCoopReactToPlayerTwo() { Once(g_said_reaction, "a villager reaction ac
 REX_EXTERN(rex_CECVillager_OnUse) {
   const uint32_t user = ctx.r4.u32;
   const bool previous = g_shop_for_local_player_two;
-  g_shop_for_local_player_two =
-      Plausible(user) && user == refii_mod_player_hero(base, 2) && LocalPlayerIsPlayerTwo(base);
+  const bool previous_local = g_shop_user_is_local_two;
+  const bool two = Plausible(user) && user == refii_mod_player_hero(base, 2);
+  g_shop_user_is_local_two = two && LocalCoopGame(base);
+  g_shop_for_local_player_two = two && (LocalPlayerIsPlayerTwo(base) || g_shop_user_is_local_two);
   __imp__rex_CECVillager_OnUse(ctx, base);
   g_shop_for_local_player_two = previous;
+  g_shop_user_is_local_two = previous_local;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -219,6 +341,13 @@ bool RefiiCoopOwnCameraUpdate(PPCRegister& r26) {
 }
 
 bool RefiiCoopActivateCameraAsJoiner() { return g_activate_as_joiner; }
+
+// PLAYER TWO'S D-PAD FILL LEAVES THE DIG HINT ALONE. `sub_823E51A0`'s third argument also shows
+// and dismisses the shared tutorial hints 14 and 15 (`bl sub_821B5260` 0x823E5EE0, `bl
+// sub_8244DC88` 0x823E5F18 and 0x823E5F34); the pump fills player two's d-pad through it
+// (SamplePlayerTwoHud), and those three calls are skipped while it does, so the hint stays the
+// local hero's. Each next instruction reloads what it reads.
+bool RefiiCoopDpadQuerySkip() { return refii_bridge_dpad_query_two() != 0; }
 
 void RefiiCoopOwnLiveCamera() {}
 

@@ -23,6 +23,9 @@ public partial class GameUi
 {
 	private readonly Engine_UiCoopNotices _coopNotices = new();
 
+	/// <summary>Whether this run has stated the player's status to RexNet.</summary>
+	private bool _playerStatusStated;
+
 	/// <summary>Local player two's presence as last seen, beside <c>_coopPhaseSeen</c>.</summary>
 	private bool _coopLocalSeen;
 
@@ -69,6 +72,19 @@ public partial class GameUi
 				!CoopSession.IsClient;
 			_coopNotices.Pads(new List<int>(Input.GetConnectedJoypads()), open);
 			DriveJoinQuestion(inGame);
+
+			// Friends' greetings (their orb emotes), told as they arrive; the stated status goes
+			// out once a run so friends see it without the page ever being opened.
+			if (!_playerStatusStated && NetBridge.Available)
+			{
+				_playerStatusStated = true;
+				NetBridge.SetPlayerStatus(Engine_UiJoinRequests.Statuses[Engine_UiJoinRequests.StatusIndex]);
+			}
+
+			foreach (string greeting in Engine_UiJoinRequests.TakeGreetings(NetBridge.Friends()))
+			{
+				_coopNotices.Tell(greeting);
+			}
 		}
 
 		if (_coopNotices.Tick(delta, CoopHeroKit.Remote.Name ?? string.Empty, inGame) is { } text)

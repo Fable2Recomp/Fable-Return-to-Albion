@@ -284,6 +284,203 @@ public static class CoopHeroLua
 		ServePlayerTwo("BehaviourBarmanOpenShopUI", "Update")
 		ServePlayerTwo("BehaviourTownCrierOpenGUI", "Update")
 
+		-- BED CONSENT (Fable 3): sleeping moves the clock for both players and sex fades both
+		-- screens, so the other player is asked first, on their own screen (GameUiCoopConsent).
+		-- The script waits for the answer; a refusal (or no answer) is the bed not used.
+		function C.AskPartner(user, kind, detail)
+			local henchman = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+			if henchman == nil or not henchman:IsAlive() or Refii == nil or Refii._consent_ask == nil then
+				return true
+			end
+			local hero = C.ShippedGetPlayerHero and C.ShippedGetPlayerHero() or nil
+			local asker = (user ~= nil and user == henchman) and 2 or 1
+			if user ~= nil and user ~= henchman and user ~= hero then
+				return true
+			end
+			local ticket = Refii._consent_ask(kind, asker, detail or 0)
+			while true do
+				local answer = Refii._consent_answer(ticket)
+				if answer ~= nil and answer >= 0 then
+					return answer == 1
+				end
+				coroutine.yield()
+			end
+		end
+
+		-- Sleep: the type the sleep menu chose is read right after it closes, before the fade
+		-- (SleepFunction.Sleep); the partner is asked there, and a refusal reads as no sleep.
+		C.SleepUser = C.SleepUser or setmetatable({}, { __mode = "k" })
+		if SleepFunction ~= nil and SleepFunction.Sleep ~= nil and SleepFunction.Sleep ~= C.Sleep then
+			local shipped = SleepFunction.Sleep
+			C.Sleep = C.Permanent(function(entity, bed, ...)
+				local co = coroutine.running()
+				if co ~= nil then
+					C.SleepUser[co] = entity or false
+				end
+				local results = { shipped(entity, bed, ...) }
+				if co ~= nil then
+					C.SleepUser[co] = nil
+				end
+				return unpack(results)
+			end, "SleepFunction.Sleep")
+			SleepFunction.Sleep = C.Sleep
+		end
+		if Bed ~= nil and Bed.GetSleepType ~= nil and Bed.GetSleepType ~= C.GetSleepType then
+			local shipped = Bed.GetSleepType
+			C.GetSleepType = C.Permanent(function(bed, ...)
+				local sleep_type = shipped(bed, ...)
+				local co = coroutine.running()
+				local user = co ~= nil and C.SleepUser[co] or nil
+				if user ~= nil and sleep_type ~= nil and ESleepType ~= nil and sleep_type ~= ESleepType.SLEEP_NONE then
+					C.SleepUser[co] = nil
+					if not C.AskPartner(user or nil, 1, sleep_type) then
+						Bed.SetSleepType(bed, ESleepType.SLEEP_NONE)
+						return ESleepType.SLEEP_NONE
+					end
+				end
+				return sleep_type
+			end, "Bed.GetSleepType")
+			Bed.GetSleepType = C.GetSleepType
+		end
+
+		-- CRIME IS THE CRIMINAL'S. The crime manager records player two's crimes as player two's
+		-- (coop_hero_hooks.cpp RefiiCoopCrimeIsTheirs; shipped AddCrime made every player criminal
+		-- hero one). A village's guards act on "the hero" resisting arrest (GuardGroupMind:Update:
+		-- IsResistingArrest(village, GetPlayerHero()) then AttackCriminal(GetPlayerHero())); when
+		-- player two is the one resisting, the rest of that pass names player two.
+		C.ArrestActing = C.ArrestActing or setmetatable({}, { __mode = "k" })
+		if VillageCrimeManager ~= nil and VillageCrimeManager.IsResistingArrest ~= nil and
+			VillageCrimeManager.IsResistingArrest ~= C.IsResistingArrest then
+			local shipped = VillageCrimeManager.IsResistingArrest
+			C.IsResistingArrest = C.Permanent(function(village, hero, ...)
+				local co = coroutine.running()
+				if co ~= nil and C.ArrestActing[co] then
+					C.ArrestActing[co] = nil
+					C.ActingHero[co] = nil
+				end
+				local resisting = shipped(village, hero, ...)
+				if resisting or co == nil then
+					return resisting
+				end
+				local one = C.ShippedGetPlayerHero and C.ShippedGetPlayerHero()
+				local two = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+				if hero ~= nil and hero == one and two ~= nil and two:IsAlive() and C.ActingHero[co] == nil and
+					shipped(village, two, ...) then
+					C.ArrestActing[co] = true
+					C.ActingHero[co] = two
+					return true
+				end
+				return false
+			end, "VillageCrimeManager.IsResistingArrest")
+			VillageCrimeManager.IsResistingArrest = C.IsResistingArrest
+		end
+
+		-- ONE-TIME COLLECTABLES PER PLAYER (Fable 3): a silver key one player has taken stays for the
+		-- other (coop_world_hooks.cpp keeps it). The player who has it cannot take it again;
+		-- with no partner in the game, a key its only player already has is simply cleared away.
+		if OnActionUsePickUp ~= nil and OnActionUsePickUp.Update ~= nil and OnActionUsePickUp.Update ~= C.PickUp then
+			local shipped = OnActionUsePickUp.Update
+			C.PickUp = C.Permanent(function(self, ...)
+				local item = self and self.ItemBeingUsed
+				local user = self and self.EntityUsingItem
+				if item ~= nil and user ~= nil and item:IsAlive() and Refii ~= nil and Refii._key_taken ~= nil then
+					local henchman = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+					local player = (henchman ~= nil and user == henchman) and 2 or 1
+					if Refii._key_taken(Refii.handle(item), player) == 1 then
+						if henchman == nil or not henchman:IsAlive() then
+							item:Destroy()
+						end
+						return
+					end
+				end
+				return shipped(self, ...)
+			end, "OnActionUsePickUp.Update")
+			OnActionUsePickUp.Update = C.PickUp
+		end
+
+		-- SILVER-KEY CHESTS PER PLAYER (Fable 3's one-time chests): the first player to open one takes
+		-- its loot as shipped; the partner, if they hold the keys it asks for too, is given the same
+		-- loot then, as their own. Snapshot before the opening, given after it emptied.
+		if OnActionUseTakeItems ~= nil and OnActionUseTakeItems.Update ~= nil and OnActionUseTakeItems.Update ~= C.TakeItems then
+			local shipped = OnActionUseTakeItems.Update
+			C.TakeItems = C.Permanent(function(self, ...)
+				local chest = self and self.ItemBeingUsed
+				local user = self and self.EntityUsingItem
+				local one = C.ShippedGetPlayerHero and C.ShippedGetPlayerHero()
+				local two = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+				local partner = (user ~= nil and user == two) and one or two
+				local needed, loot, money = 0, nil, 0
+				if chest ~= nil and chest:IsAlive() and partner ~= nil and partner:IsAlive() and partner ~= user and
+					Chest.IsAvailable(chest) and not Chest.IsOpen(chest) and Refii ~= nil and Refii.inventory ~= nil then
+					needed = Chest.GetNumberOfSilverKeysNeeded(chest)
+					if needed > 0 then
+						loot = Refii.inventory(Refii.handle(chest))
+						money = Money.IsAvailable(chest) and Money.Get(chest) or 0
+					end
+				end
+				local results = { shipped(self, ...) }
+				if loot ~= nil and chest:IsAlive() and Chest.IsOpen(chest) and partner:IsAlive() and
+					Inventory.IsAvailable(partner) and
+					Inventory.GetNumberOfItemsOfType(partner, "ObjectInventorySilverKey") >= needed then
+					local who = Refii.handle(partner)
+					for _, stack in ipairs(loot) do
+						for i = 1, (stack.count or 1) do
+							Refii.add_item(who, stack.definition)
+						end
+					end
+					if money > 0 and Money.IsAvailable(partner) then
+						Money.Modify(partner, money)
+					end
+				end
+				return unpack(results)
+			end, "OnActionUseTakeItems.Update")
+			OnActionUseTakeItems.Update = C.TakeItems
+		end
+
+		-- KNOCKED DOWN, PLAYER TWO TAKES THE HERO'S PENALTY (Fable 3: one death tracker per hero).
+		-- Shipped, Henchman_DeathTracker (gameflow.lua) revives player two with
+		-- MESSAGE_EVENT_REVIVING_HENCHMAN and no scars, where Hero_DeathTracker gives hero one a
+		-- scar (+1 with the scar augment, -1 with stoneskin). Player two is a hero now: the same
+		-- scars land when their tracker revives them. The trackers are running coroutines, so the
+		-- revive message is where the rule goes in.
+		if MessageEvents ~= nil and MessageEvents.PostMessage ~= nil and MessageEvents.PostMessage ~= C.PostMessage then
+			local shipped = MessageEvents.PostMessage
+			C.PostMessage = C.Permanent(function(message, ...)
+				local results = { shipped(message, ...) }
+				if type(message) == "table" and EMessageEventType ~= nil and
+					message.type == EMessageEventType.MESSAGE_EVENT_REVIVING_HENCHMAN then
+					local two = message.to
+					local henchman = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+					if two ~= nil and two == henchman and two:IsAlive() and Morph ~= nil and Morph.AddRandomScar ~= nil then
+						local scars = 1
+						if Creature.IsAugmentedWithType(two, EAugmentationType.AUGMENTATION_SCAR) then
+							scars = scars + 1
+						end
+						if Creature.IsAugmentedWithType(two, EAugmentationType.AUGMENTATION_STONESKIN) then
+							scars = scars - 1
+						end
+						for i = 1, scars do
+							Morph.AddRandomScar(two)
+						end
+					end
+				end
+				return unpack(results)
+			end, "MessageEvents.PostMessage")
+			MessageEvents.PostMessage = C.PostMessage
+		end
+
+		-- Sex: asked before it starts (OnActionUseBed:Sex); a refusal uses neither bed nor partner.
+		if OnActionUseBed ~= nil and OnActionUseBed.Sex ~= nil and OnActionUseBed.Sex ~= C.BedSex then
+			local shipped = OnActionUseBed.Sex
+			C.BedSex = C.Permanent(function(self, ...)
+				if not C.AskPartner(self and self.EntityUsingItem, 2, 0) then
+					return false, false
+				end
+				return shipped(self, ...)
+			end, "OnActionUseBed.Sex")
+			OnActionUseBed.Sex = C.BedSex
+		end
+
 		-- DOGS, ONE PER PLAYER. Shipped, GetDog() is the one global "the dog" slot (hero one's);
 		-- player two's dog is the co-op one (coop_dog_hooks.cpp), Refii.player_dog(2). Each dog
 		-- serves Dog.GetMaster(dog), so a behaviour that names GetDog() or GetPlayerHero() where

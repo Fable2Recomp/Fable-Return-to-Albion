@@ -10760,6 +10760,7 @@
 0x824E9020 = { name = "rex_lhSaveManager_WriteHeroPackage" }
 0x824EA150 = { name = "rex_lhSaveManager_LoadFromDevice" }
 0x824EB910 = { name = "rex_lhSaveManager_LoadCoopHero" }
+0x8261AAD0 = { name = "rex_CECInventory_AddEntity" }
 0x8239E698 = { name = "rex_CECMoney_Modify" }
 0x822040D0 = { name = "rex_CECFaction_RelationTo" }
 0x82174150 = { name = "rex_CSpellRegistry_FindLive" }
@@ -11245,14 +11246,9 @@
 0x822BC788 = { name = "rex_CECNetwork_SendTransform" }
 0x8238A2D8 = { name = "rex_CECNetwork_PushReceivedTransform" }
 0x8238A628 = { name = "rex_CECNetwork_ApplyReplicaTarget" }
-0x826E6A80 = { name = "rex_ActionStrikeRecoil_Start" }
-0x826E6F28 = { name = "rex_ActionStunned_Start" }
-0x826E0708 = { name = "rex_ActionStrikeRecoil_Clone" }
 0x826CC768 = { name = "rex_ActionKnockdownStabResponse_Start" }
 0x821DCF10 = { name = "rex_lhCamera_ScreenBlock" }
 0x822AE048 = { name = "rex_CECDog_Update" }
-0x826E0780 = { name = "rex_ActionStunned_Clone" }
-0x8237DE18 = { name = "rex_lhNetEntity_ProcessMessage" }
 0x82608518 = { name = "rex_lhRegionManager_FindRegionOwningLevel" }
 0x824028C8 = { name = "rex_lhGuiReceiveItemsScreen_OnScreenAction" }
 0x8242C970 = { name = "rex_CECSpellManager_SetSpellSlot" }
@@ -15004,6 +15000,37 @@ address = 0x827A8298
 jump_address_on_true = 0x827A82CC
 
 [[midasm_hook]]
+name = "RefiiCoopCrimeIsTheirs"
+address = 0x8284F884
+registers = ["r28"]
+jump_address_on_true = 0x8284F888
+
+[[midasm_hook]]
+name = "RefiiCoopDeedDoer"
+address = 0x8275A6B0
+registers = ["r1", "r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopAudibleToBoth"
+address = 0x82C55920
+registers = ["r4"]
+
+[[midasm_hook]]
+name = "RefiiCoopShopPlayer"
+address = 0x821C7D7C
+registers = ["r4"]
+
+[[midasm_hook]]
+name = "RefiiCoopShopHero"
+address = 0x828397D4
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopShopHero"
+address = 0x82839D0C
+registers = ["r3"]
+
+[[midasm_hook]]
 name = "RefiiCoopExperienceOwnPool"
 address = 0x8251C2EC
 jump_address = 0x8251C498
@@ -15034,6 +15061,21 @@ jump_address_on_true = 0x821B93D4
 name = "RefiiCoopActivateCameraAsJoiner"
 address = 0x82422FFC
 jump_address_on_true = 0x8242302C
+
+[[midasm_hook]]
+name = "RefiiCoopDpadQuerySkip"
+address = 0x823C48A8
+jump_address_on_true = 0x823C48AC
+
+[[midasm_hook]]
+name = "RefiiCoopDpadQuerySkip"
+address = 0x823C48E0
+jump_address_on_true = 0x823C48E4
+
+[[midasm_hook]]
+name = "RefiiCoopDpadQuerySkip"
+address = 0x823C48FC
+jump_address_on_true = 0x823C4900
 
 [[midasm_hook]]
 name = "RefiiCoopOwnLiveCamera"

@@ -16,6 +16,124 @@ namespace Refii.Ui;
 /// </remarks>
 public static class Engine_UiJoinRequests
 {
+	/// <summary>Who can join this player's game — Fable 3's join options.</summary>
+	public enum JoinMode
+	{
+		/// <summary>Anyone they are friends with, uninvited (the game is joinable).</summary>
+		Anyone,
+
+		/// <summary>Only someone they invite (the game is not joinable; asks still come in).</summary>
+		InvitesOnly,
+
+		/// <summary>No one: not joinable, and asks to join are declined as they arrive.</summary>
+		NoOne,
+	}
+
+	private const string SettingsPath = "user://coop_join.cfg";
+
+	private static JoinMode? _mode;
+
+	/// <summary>The player's join option, kept for them across runs.</summary>
+	public static JoinMode Mode
+	{
+		get
+		{
+			if (_mode is null)
+			{
+				var file = new Godot.ConfigFile();
+				_mode = file.Load(SettingsPath) == Godot.Error.Ok
+					? (JoinMode)System.Math.Clamp(file.GetValue("join", "mode", 0).AsInt32(), 0, 2)
+					: JoinMode.Anyone;
+			}
+
+			return _mode.Value;
+		}
+		set
+		{
+			_mode = value;
+			var file = new Godot.ConfigFile();
+			file.Load(SettingsPath);
+			file.SetValue("join", "mode", (int)value);
+			file.Save(SettingsPath);
+		}
+	}
+
+	/// <summary>The statuses a player can state (Fable 3's orb status), index 0 none.</summary>
+	public static readonly string[] Statuses =
+	{
+		"Exploring",
+		"Looking for co-op",
+		"Trading",
+		"Giving gifts",
+	};
+
+	/// <summary>The greetings a player can send (Fable 3's orb emotes): signal id = index + 1.</summary>
+	public static readonly (string Label, string Heard)[] Greetings =
+	{
+		("Wave", "{0} waves to you."),
+		("Come and join me", "{0} would like you to join them."),
+		("Thank you", "{0} says thank you."),
+		("Well met", "{0} says well met, hero."),
+	};
+
+	private static int? _status;
+
+	/// <summary>The player's stated status, kept for them across runs; stated to RexNet when set.</summary>
+	public static int StatusIndex
+	{
+		get
+		{
+			if (_status is null)
+			{
+				var file = new Godot.ConfigFile();
+				_status = file.Load(SettingsPath) == Godot.Error.Ok
+					? System.Math.Clamp(file.GetValue("join", "status", 0).AsInt32(), 0, Statuses.Length - 1)
+					: 0;
+			}
+
+			return _status.Value;
+		}
+		set
+		{
+			_status = System.Math.Clamp(value, 0, Statuses.Length - 1);
+			var file = new Godot.ConfigFile();
+			file.Load(SettingsPath);
+			file.SetValue("join", "status", _status.Value);
+			file.Save(SettingsPath);
+			NetBridge.SetPlayerStatus(Statuses[_status.Value]);
+		}
+	}
+
+	/// <summary>Each friend's last signal seen, so a new one is told once.</summary>
+	private static readonly Dictionary<string, uint> _signalsSeen = new();
+
+	/// <summary>
+	/// The greetings friends sent since the last call, as the line to tell: a friend's signal
+	/// whose sequence moved. The first read of each friend only learns where they are.
+	/// </summary>
+	public static List<string> TakeGreetings(IEnumerable<NetBridge.Friend> friends)
+	{
+		var heard = new List<string>();
+		foreach (NetBridge.Friend friend in friends)
+		{
+			bool known = _signalsSeen.TryGetValue(friend.PeerId, out uint seen);
+			_signalsSeen[friend.PeerId] = friend.Signal;
+			if (!known || friend.Signal == seen || friend.Signal == 0u)
+			{
+				continue;
+			}
+
+			int id = (int)(friend.Signal & 0xFFu);
+			if (id >= 1 && id <= Greetings.Length)
+			{
+				string name = friend.DisplayName.Length == 0 ? "A friend" : friend.DisplayName;
+				heard.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, Greetings[id - 1].Heard, name));
+			}
+		}
+
+		return heard;
+	}
+
 	/// <summary>How long an unanswered ask stays listed; Discord's own ask lapses sooner.</summary>
 	public const ulong LifetimeMs = 60_000;
 
@@ -36,6 +154,13 @@ public static class Engine_UiJoinRequests
 	{
 		foreach (NetBridge.JoinRequest ask in NetBridge.JoinRequests())
 		{
+			// "No one" (Fable 3's join option Off): an ask is declined as it arrives.
+			if (Mode == JoinMode.NoOne)
+			{
+				NetBridge.JoinRequestReply(ask.UserId, false);
+				continue;
+			}
+
 			_pending.RemoveAll(entry => entry.Request.UserId == ask.UserId);
 			_pending.Add((ask, nowMs));
 			_arrived.RemoveAll(entry => entry.UserId == ask.UserId);

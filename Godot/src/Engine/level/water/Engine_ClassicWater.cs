@@ -49,8 +49,17 @@ public static class Engine_ClassicWater
     /// `oC0 *= c20.w`. Ours is Godot's screen texture, the main scene already times E, so the
     /// read is divided by E. The mirror needs nothing: its camera already takes 1.0.
     /// </summary>
-    private const string UnexposedRefraction =
-        "#define XR_SCREEN_SCALE vec4(vec3(1.0 / max(xr_exposure(XR_SECOND_VIEW), 1e-4)), 1.0)";
+    private static readonly string UnexposedRefraction =
+        "#define XR_SCREEN_SCALE vec4(vec3(1.0 / max(xr_exposure(XR_SECOND_VIEW), 1e-4)), 1.0)\n" +
+        // PLAYER TWO'S MIRROR on split screen: the second view fetches the reflection's twin,
+        // which Engine_WaterReflection binds to the mirror rendered for player two's camera.
+        Engine_ClassicShaders.ViewSampler(ReflectionSampler);
+
+    /// <summary>The mirror's sampler in the title's water stages (g_ReflectionSampler).</summary>
+    public const string ReflectionSampler = "ps_g_ReflectionSampler";
+
+    /// <summary>Its second-view twin, which takes player two's mirror on split screen.</summary>
+    public static readonly string ReflectionSamplerSecond = Engine_ClassicShaders.SecondViewSampler(ReflectionSampler);
 
     private sealed class Surface
     {

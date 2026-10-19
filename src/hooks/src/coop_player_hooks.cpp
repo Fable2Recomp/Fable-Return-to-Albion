@@ -830,23 +830,11 @@ REX_EXTERN(rex_CECNetwork_ApplyReplicaTarget) {
   const uint32_t net = ctx.r3.u32;
   const uint32_t entity = Plausible(net) ? LoadGuestU32(base, net + 4u) : 0u;
 
-  // A KNOCKED-DOWN REPLICA RAGDOLLS WHERE IT LIES. Knockdown adds ModeManager (component 21)
-  // mode 6 (`sub_8241F9A8(modes, 6)` at 0x82689AEC) and ragdolls every machine's copy locally
-  // (`sub_82688D40`); the owner keeps sending transforms, and this mover would drag the
-  // non-owner's ragdoll toward them every frame. Fable 3 switches its replica mover off for a
-  // replicated knockdown (netComp+176, `sub_82743960`); here a replica in mode 6 is left to its
-  // ragdoll, and the mover takes it back once recovery removes the mode.
-  static PPCFunc* const has_mode = refii::vfs::FindGuestFunction(refii::guest::Address(0x821FF5C8u));
-  const uint32_t modes = Plausible(entity) ? refii_mod_component(base, entity, 21u) : 0u;
-  if (has_mode != nullptr && Plausible(modes)) {
-    PPCContext test = ctx;
-    test.r3.u32 = modes;
-    test.r4.u64 = 6u;
-    has_mode(test, base);
-    if ((test.r3.u32 & 0xFFu) != 0u) {
-      return;
-    }
-  }
+  // A KNOCKED-DOWN REPLICA IS PLACED TOO, as shipped: each machine simulates its own copy of the
+  // ragdoll (the network knockdown `sub_8268D970` snaps the placement to the sender and enables
+  // the same ragdoll, `sub_82689FC8` → `sub_826F1080`), the owner's impulse (msg 11), root keyframe
+  // (msg 15, every 5th frame) and end (msg 14) keep the copies together, and the transform stream
+  // keeps running — the shipped mover has no knockdown test (TU1 / disc).
   const uint32_t placement = Plausible(entity) ? LoadGuestU32(base, entity + 124u) : 0u;
   const uint32_t vtable = Plausible(placement) ? LoadGuestU32(base, placement) : 0u;
   const bool snaps = Plausible(entity) && ((LoadGuestU32(base, entity + 64u) >> 10) & 1u) != 0u;
@@ -914,48 +902,17 @@ REX_EXTERN(rex_CECNetwork_ApplyReplicaTarget) {
   set_orientation(call, base);
 }
 
-// PLAYER TWO'S HIT REACTIONS REACH THE BODY'S OWNER. The host resolves combat (a joiner forwards
-// any hit on its own hero, `sub_825C7358` → `sub_8233AEA0` at 0x825C76F0) and its hit response
-// (`sub_8295CF08`) starts the reaction on its copy of player two: strike recoil (Start
-// `sub_827110F8`, message 77) and stunned (`sub_827115A0`, 78). Each Start broadcasts only
-// `if (sub_82214AF8(netComp))` (0x82711258 / 0x82711708) — false on the host for a body the joiner
-// owns (netComp+104 = 1) — so the joiner, whose body it is, never played one, and its animation
-// stream then overwrote the host's copy too. The knockdown family is host-gated and arrives.
-//
-// The receiver builds the SAME class (the entity dispatcher `sub_82392250` calls the recoil
-// constructor at 0x82397124) and its Start is authoritative on the owner, so a received reaction
-// would be sent back. Reactions are therefore marked by origin: the action manager clones the
-// template it is handed (recoil `sub_8270AD80`, stun `sub_8270ADF8`; the new action at handle[0],
-// `sub_822BFF18`), and a clone made inside the entity dispatcher is a received one — its Start
-// sends nothing on either machine. A clone made anywhere else on the host for player two's body
-// sends as the host: netComp+104 reads 0 for the length of its Start.
-extern "C" REX_FUNC(__imp__rex_ActionStrikeRecoil_Start);
-extern "C" REX_FUNC(__imp__rex_ActionStunned_Start);
+// PLAYER TWO'S STAB RESPONSE REACHES THE BODY'S OWNER. The host decides a knockdown on player two's
+// body (the joiner's predicted hit response runs with the knockdown bit masked: `sub_8295CEB8` sets
+// listener+36 = 0x3FFD), so the stab response that follows it starts on the host's copy, and its
+// Start sends only `if (sub_82214AF8(netComp))` — false on the host for the joiner's body. Recoil
+// and stun need nothing: the joiner's own predicted run plays them and, being authoritative for
+// its body, broadcasts them (0x82711258 / 0x82711708).
 extern "C" REX_FUNC(__imp__rex_ActionKnockdownStabResponse_Start);
-extern "C" REX_FUNC(__imp__rex_ActionStrikeRecoil_Clone);
-extern "C" REX_FUNC(__imp__rex_ActionStunned_Clone);
-extern "C" REX_FUNC(__imp__rex_lhNetEntity_ProcessMessage);
 
 namespace {
 
 std::atomic<bool> g_said_host_reaction{false};
-
-/// Inside the entity message dispatcher on this thread.
-thread_local int t_net_receive = 0;
-
-/// Reactions cloned by the entity dispatcher: started without sending. Guest tick thread only.
-std::array<uint32_t, 32> g_received_reactions{};
-uint32_t g_received_next = 0;
-
-bool TakeReceived(uint32_t action) {
-  for (uint32_t& slot : g_received_reactions) {
-    if (slot == action) {
-      slot = 0u;
-      return true;
-    }
-  }
-  return false;
-}
 
 /// The session's role bytes: in a session, and the host.
 bool SessionRole(uint8_t* base, bool* host) {
@@ -977,65 +934,25 @@ uint32_t PerformerNet(uint8_t* base, uint32_t action, uint32_t* entity_out) {
   return Plausible(entity) ? refii_mod_component(base, entity, 91u) : 0u;
 }
 
-void StartReaction(PPCContext& ctx, uint8_t* base, PPCFunc* start) {
-  const uint32_t action = ctx.r3.u32;
-  bool host = false;
-  uint32_t entity = 0u;
-  const uint32_t net = SessionRole(base, &host) ? PerformerNet(base, action, &entity) : 0u;
-  if (!Plausible(net)) {
-    start(ctx, base);
-    return;
-  }
-  const uint8_t owned_by_joiner = refii::vfs::LoadGuestU8(base, net + 104u);
-  if (TakeReceived(action)) {
-    // Not authoritative here, whichever machine this is: host reads +104 set, a client clear.
-    refii::vfs::StoreGuestU8(base, net + 104u, host ? 1u : 0u);
-    start(ctx, base);
-    refii::vfs::StoreGuestU8(base, net + 104u, owned_by_joiner);
-    return;
-  }
-  if (host && owned_by_joiner != 0u && entity == refii_mod_player_hero(base, 2)) {
-    refii::vfs::StoreGuestU8(base, net + 104u, 0u);
-    start(ctx, base);
-    refii::vfs::StoreGuestU8(base, net + 104u, owned_by_joiner);
-    if (!g_said_host_reaction.exchange(true)) {
-      REXLOG_INFO("coop hooks: player two's hit reactions are sent to the joiner that owns the body");
-    }
-    return;
-  }
-  start(ctx, base);
-}
-
-void CloneReaction(PPCContext& ctx, uint8_t* base, PPCFunc* clone) {
-  const uint32_t handle = ctx.r3.u32;
-  clone(ctx, base);
-  if (t_net_receive > 0 && Plausible(handle)) {
-    const uint32_t action = refii::vfs::LoadGuestU32(base, handle);
-    if (Plausible(action)) {
-      g_received_reactions[g_received_next++ % g_received_reactions.size()] = action;
-    }
-  }
-}
-
 }  // namespace
-
-REX_EXTERN(rex_lhNetEntity_ProcessMessage) {
-  ++t_net_receive;
-  __imp__rex_lhNetEntity_ProcessMessage(ctx, base);
-  --t_net_receive;
-}
-
-REX_EXTERN(rex_ActionStrikeRecoil_Clone) { CloneReaction(ctx, base, __imp__rex_ActionStrikeRecoil_Clone); }
-
-REX_EXTERN(rex_ActionStunned_Clone) { CloneReaction(ctx, base, __imp__rex_ActionStunned_Clone); }
-
-REX_EXTERN(rex_ActionStrikeRecoil_Start) { StartReaction(ctx, base, __imp__rex_ActionStrikeRecoil_Start); }
-
-REX_EXTERN(rex_ActionStunned_Start) { StartReaction(ctx, base, __imp__rex_ActionStunned_Start); }
 
 // The stab response (message 20, Start `sub_826F9A50`, sent only under authority at 0x826f9f60):
 // the receiver's dispatcher builds a different class (`sub_826FA240`, vtable off_820D1088) that
 // never sends, so the host speaks for player two's body with no echo to guard against.
 REX_EXTERN(rex_ActionKnockdownStabResponse_Start) {
-  StartReaction(ctx, base, __imp__rex_ActionKnockdownStabResponse_Start);
+  const uint32_t action = ctx.r3.u32;
+  bool host = false;
+  uint32_t entity = 0u;
+  const uint32_t net = SessionRole(base, &host) ? PerformerNet(base, action, &entity) : 0u;
+  const uint8_t owned_by_joiner = Plausible(net) ? refii::vfs::LoadGuestU8(base, net + 104u) : 0u;
+  if (!host || owned_by_joiner == 0u || entity != refii_mod_player_hero(base, 2)) {
+    __imp__rex_ActionKnockdownStabResponse_Start(ctx, base);
+    return;
+  }
+  refii::vfs::StoreGuestU8(base, net + 104u, 0u);
+  __imp__rex_ActionKnockdownStabResponse_Start(ctx, base);
+  refii::vfs::StoreGuestU8(base, net + 104u, owned_by_joiner);
+  if (!g_said_host_reaction.exchange(true)) {
+    REXLOG_INFO("coop hooks: player two's stab response is sent to the joiner that owns the body");
+  }
 }

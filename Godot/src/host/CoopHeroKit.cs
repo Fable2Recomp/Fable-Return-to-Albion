@@ -300,23 +300,64 @@ public static class CoopHeroKit
 			return;
 		}
 
-		string? directory = Refii.Save.Engine_SaveHero.FindSaveDirectory(UserDataRoot, name);
+		_sampledSave = name;
+		_pendingMelee = 0u;
+		_pendingRanged = 0u;
+		if (KitFromSave(name, LocalName) is not { } kit)
+		{
+			ChosenSaveRead = false;
+			return;
+		}
+
+		ChosenSaveRead = true;
+		Local = kit;
+	}
+
+	/// <summary>
+	/// LOCAL CO-OP: player two's kit from the save they picked on the co-op screen (the guest
+	/// holds its name where it saves player two's hero, SaveMgr+4), into <see cref="Remote"/> —
+	/// the kit that describes player two on a host, as a joiner's does online. Fable 3's couch
+	/// rule: a player two with a save plays as their hero, one without as the henchman. True when
+	/// the kit changed (a new pick read).
+	/// </summary>
+	public static bool SampleLocalPlayerTwo()
+	{
+		string? name = HostBridge.CoopHeroSaveName();
+		if (name is null || name == _sampledLocalTwo || UserDataRoot is null)
+		{
+			return false;
+		}
+
+		_sampledLocalTwo = name;
+		if (KitFromSave(name, "Player 2") is not { } kit)
+		{
+			return false;
+		}
+
+		Remote = kit;
+		return true;
+	}
+
+	/// <summary>The save local player two's kit was last read from, or empty.</summary>
+	private static string _sampledLocalTwo = string.Empty;
+
+	/// <summary>
+	/// A kit read off a save's OWN FILES by <see cref="Refii.Save.Engine_SaveHero"/>, never by
+	/// loading its world: body, clothes, weapons, inventory, stats, experience, money, face, dog.
+	/// Null when the save cannot be read.
+	/// </summary>
+	private static Kit? KitFromSave(string name, string heroName)
+	{
+		string? directory = Refii.Save.Engine_SaveHero.FindSaveDirectory(UserDataRoot!, name);
 		Refii.Save.Engine_SaveHero.Hero? hero = directory is null ? null : Refii.Save.Engine_SaveHero.Read(directory);
 		if (hero is null)
 		{
 			Godot.GD.Print($"[coop-kit] chosen save '{name}' could not be read " +
 				$"({(directory is null ? "no directory under " + UserDataRoot : directory)})");
-			_sampledSave = name;
-			ChosenSaveRead = false;
-			return;
+			return null;
 		}
 
-		_sampledSave = name;
-		ChosenSaveRead = true;
-		_pendingMelee = 0u;
-		_pendingRanged = 0u;
-
-		Local = new Kit(
+		var kit = new Kit(
 			Known: true,
 			Female: hero.Female,
 			Morality: hero.Morality,
@@ -326,19 +367,19 @@ public static class CoopHeroKit
 			AbilityLevels: hero.AbilityLevels,
 			Worn: hero.Worn.ToArray(),
 			Inventory: hero.Inventory.ToArray(),
-			Name: LocalName,
+			Name: heroName,
 			Money: hero.Money,
 			Experience: hero.Experience,
 			TotalExperience: hero.TotalExperience,
 			Face: hero.Face, Fat: hero.Fat, Height: hero.Height, Tan: hero.Tan,
 			MeleeId: hero.Melee, RangedId: hero.Ranged,
 			// The save's own dog: its breed, levels, tricks (named through this instance's GDB
-			// view, which a joiner in a world has), collar and name.
+			// view), collar and name.
 			DogDefinition: hero.DogRecord,
 			DogSearching: hero.DogSniffing,
 			DogCombat: hero.DogCombat,
 			DogTricks: hero.DogTricks.ConvertAll(id => RecordName?.Invoke(id) ?? string.Empty)
-				.FindAll(name => name.Length != 0).ToArray(),
+				.FindAll(trick => trick.Length != 0).ToArray(),
 			DogWorn: hero.DogWorn.ToArray(),
 			DogName: hero.DogName);
 
@@ -346,6 +387,7 @@ public static class CoopHeroKit
 			$"{hero.Inventory.Count} inventory record(s), melee '{Name(hero.Melee)}' (0x{hero.Melee:X8}), " +
 			$"ranged '{Name(hero.Ranged)}' (0x{hero.Ranged:X8}), " +
 			$"money {hero.Money}, renown {hero.Renown}, face 0x{hero.Face:X8}");
+		return kit;
 	}
 
 	/// <summary>A record's def name for a log line; empty without a GDB view.</summary>
@@ -405,6 +447,7 @@ public static class CoopHeroKit
 		}
 
 		_sampledSave = string.Empty;
+		_sampledLocalTwo = string.Empty;
 		ChosenSaveRead = false;
 		_pendingMelee = 0u;
 		_pendingRanged = 0u;

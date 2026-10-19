@@ -63,6 +63,12 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Mods' per-player values: owned by the machine that plays the hero, the same on both co-op
     # machines, the saved ones kept beside that hero's save.
     ${REFII_VFS_ROOT}/src/core/player_state.cpp
+    # Partner consent: a co-op script asks the other player (beds); the host bridge carries it.
+    ${REFII_VFS_ROOT}/src/core/coop_consent.cpp
+    # One-time collectables per player: silver keys each player takes for themselves.
+    ${REFII_VFS_ROOT}/src/core/coop_collectables.cpp
+    # A villager's opinion of player two, swapped in for their deeds.
+    ${REFII_VFS_ROOT}/src/core/coop_opinion.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
     # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
     # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the

@@ -2401,10 +2401,47 @@ REX_EXTERN(rex_CECExpressionPerformer_StartExpression) {
   __imp__rex_CECExpressionPerformer_StartExpression(ctx, base);
 }
 
+// FABLE 3'S CO-OP RENOWN (its followers modify, `sub_823B81C8` / `sub_823B8FF0`): while a partner
+// is present a gain is scaled by BalancingFollowers.MultiplayerMultiplier (1.05), and every change
+// is mirrored to the partner × RemoteHeroMultiplier (1.0) — any partner, not only a spouse
+// (Fable 3 `Fable 3/unpacked/gdb/globals.csv`, entry #fe1c60a6). Applied once, at the top of a
+// change, on the machine that decides it: not on a joiner and not inside a network receive (the
+// stats owner's comp91+0x6B, the flag this function itself tests). The partner's share goes
+// through the same function with the share flag set, which our pool skip
+// (`RefiiCoopRenownOwnPool`) credits as it stands.
+constexpr float kMultiplayerRenownMultiplier = 1.05f;
+constexpr float kRemoteHeroRenownMultiplier = 1.0f;
+
+bool RenownDecidedHere(uint8_t* base, uint32_t owner) {
+  const uint32_t root = Load32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = root >= 0x10000u && root < 0xC0000000u ? Load32(base, root + 12u) : 0u;
+  const uint32_t net = game >= 0x10000u && game < 0xC0000000u ? Load32(base, game + 140u) : 0u;
+  if (net >= 0x10000u && net < 0xC0000000u && Load8(base, net + 52u) != 0 && Load8(base, net + 54u) != 0) {
+    return false;  // a joiner: the host decides and replicates
+  }
+  const uint32_t network = refii_mod_component(base, owner, 91u);
+  return network == 0u || Load8(base, network + 0x6Bu) == 0;
+}
+
 // r3 = stats (57), r4 = the int delta, r5 = the partner-share flag (the body recurses for the co-op
 // partner with it set). +28 is the renown, clamped at 0. TU1 0x824D62A0.
 REX_EXTERN(rex_lhHeroStats_ModifyRenown) {
   REX_FUNC_PROLOGUE();
+  const bool top = g_renown_depth == 0 && (ctx.r5.u32 & 0xFFu) == 0;
+  uint32_t partner_stats = 0u;
+  if (top) {
+    const uint32_t owner = Owner(base, ctx.r3.u32);
+    const int32_t player = PlayerOf(base, owner);
+    const uint32_t partner = player == 1 ? refii_mod_player_hero(base, 2) : (player == 2 ? refii_mod_player_hero(base, 1) : 0u);
+    if (partner != 0u && RenownDecidedHere(base, owner)) {
+      partner_stats = refii_mod_component(base, partner, 57u);
+      const int32_t delta = static_cast<int32_t>(ctx.r4.u32);
+      if (delta > 0) {
+        ctx.r4.u64 = static_cast<uint32_t>(
+            static_cast<int32_t>(std::lround(static_cast<double>(delta) * kMultiplayerRenownMultiplier)));
+      }
+    }
+  }
   if (AnySubscriber(REFII_EVENT_RENOWN)) {
     RenownEvent e{};
     PPCContext e_ctx = ctx;
@@ -2420,8 +2457,18 @@ REX_EXTERN(rex_lhHeroStats_ModifyRenown) {
     }
     ctx.r4.u64 = static_cast<uint32_t>(e.delta);
   }
+  const int32_t credited = static_cast<int32_t>(ctx.r4.u32);
+  const PPCContext saved = ctx;
   ++g_renown_depth;
   __imp__rex_lhHeroStats_ModifyRenown(ctx, base);
+  if (partner_stats != 0u && credited != 0) {
+    PPCContext mirror = saved;
+    mirror.r3.u64 = partner_stats;
+    mirror.r4.u64 = static_cast<uint32_t>(
+        static_cast<int32_t>(std::lround(static_cast<double>(credited) * kRemoteHeroRenownMultiplier)));
+    mirror.r5.u64 = 1u;
+    __imp__rex_lhHeroStats_ModifyRenown(mirror, base);
+  }
   --g_renown_depth;
 }
 
@@ -2616,8 +2663,56 @@ REX_EXTERN(rex_CECTargetingPlayer_ClearTarget) {
 // (villager at +4), r4 = the message (+32 the deed record pair, +52 the kind, +72 the doer's weak
 // ref), r5 = the player-manager accessor's argument. It adds the opinion effects and the renown, morality and purity the deed
 // earns. TU1 0x82786F58.
+// THE VILLAGER'S OPINION OF EACH HERO (core/coop_opinion.cpp): for a deed of player two's, player
+// two's set is swapped into the component for the call — the deed's modifiers, its reaction and
+// its effect land on how the villager sees player two — and the main set put back after. A
+// villager player two never dealt with starts from the villager's own base attitudes, with no
+// deeds remembered. The two ranges are the component's +24..+64 and +176..+236.
+void OpinionBlock(uint8_t* base, uint32_t component, uint8_t* out) {
+  std::memcpy(out, base + component + 24u, 40u);
+  std::memcpy(out + 40u, base + component + 176u, 60u);
+}
+
+void OpinionWrite(uint8_t* base, uint32_t component, const uint8_t* in) {
+  std::memcpy(base + component + 24u, in, 40u);
+  std::memcpy(base + component + 176u, in + 40u, 60u);
+}
+
+struct OpinionSwap {
+  uint8_t* base = nullptr;
+  uint32_t component = 0u;
+  uint8_t main[REFII_OPINION_BLOCK_BYTES] = {};
+
+  OpinionSwap(PPCContext& ctx, uint8_t* guest, uint32_t comp, uint32_t message) {
+    const uint32_t doer = message != 0u ? Deref(ctx, guest, message + 72u) : 0u;
+    if (comp == 0u || doer == 0u || doer != refii_mod_player_hero(guest, 2) || refii_mod_player_hero(guest, 1) == 0u) {
+      return;
+    }
+    base = guest;
+    component = comp;
+    OpinionBlock(base, component, main);
+    uint8_t two[REFII_OPINION_BLOCK_BYTES] = {};
+    if (refii_bridge_opinion_two_load(component, two) == 0) {
+      std::memcpy(two, main, 20u);       // base axes: the villager's own attitudes
+      std::memcpy(two + 20u, main, 20u); // current = base: no deeds remembered yet
+    }
+    OpinionWrite(base, component, two);
+  }
+
+  ~OpinionSwap() {
+    if (base == nullptr) {
+      return;
+    }
+    uint8_t two[REFII_OPINION_BLOCK_BYTES];
+    OpinionBlock(base, component, two);
+    refii_bridge_opinion_two_store(component, two);
+    OpinionWrite(base, component, main);
+  }
+};
+
 REX_EXTERN(rex_CECOpinionReaction_OnDeed) {
   REX_FUNC_PROLOGUE();
+  OpinionSwap swap(ctx, base, ctx.r3.u32, ctx.r4.u32);
   if (AnySubscriber(REFII_EVENT_OPINION_DEED) && ctx.r4.u32 != 0) {
     OpinionDeedEvent e{};
     PPCContext e_ctx = ctx;

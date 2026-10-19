@@ -98,6 +98,8 @@ PPC_EXTERN_FUNC(rex_lhSaveManager_SelectStorageDevice);
 PPC_EXTERN_FUNC(rex_CNetworkManager_LeaveSession);
 PPC_EXTERN_FUNC(rex_XboxLive_Instance);
 PPC_EXTERN_FUNC(rex_XboxLive_RestoreAfterLeave);
+extern "C" int RefiiCoopShoppingPlayerTwo(void);
+extern "C" int RefiiCoopSplitScreen(void);
 
 PPC_EXTERN_FUNC(rex_lhSaveManager_CountSavedGamesAllDevices);
 
@@ -4029,15 +4031,20 @@ void CoopRedress(PPCContext& ctx, uint8_t* base) {
   CoopRepairNetworkSlot(base);
   CoopDressMannequin(ctx, base);
   CoopAnimatePreview(ctx, base);
+  // A peer standing online, or LOCAL CO-OP (game+0x11C == 2, the guest's IsLocalCoopGame): local
+  // player two is their own hero too, from the save they picked (GameUi posts their record).
   static bool was_live = false;
-  const bool live = CoopSessionLive(base);
+  const uint32_t game_root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = LooksLikeGuestPointer(game_root) ? LoadGuestU32(base, game_root + 12u) : 0u;
+  const bool local = LooksLikeGuestPointer(game) && LoadGuestU32(base, game + 0x11Cu) == 2u;
+  const bool live = CoopSessionLive(base) || local;
   if (was_live && !live) {
     CoopResetSession();
-    REXLOG_INFO("Refii guest-tick pump: co-op — the peer is gone; every per-body latch dropped");
+    REXLOG_INFO("Refii guest-tick pump: co-op — the partner is gone; every per-body latch dropped");
   }
   was_live = live;
   if (!live) {
-    return;  // no peer standing: player two is being torn down or never existed
+    return;  // no partner: player two is being torn down or never existed
   }
 
   // Player one's record applies only on the joiner (its copy of the host's hero); player
@@ -5949,7 +5956,11 @@ bool DispatchCoopLeave(PPCContext& ctx, uint8_t* base) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
   const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
-  const uint32_t net = plausible(game) ? LoadGuestU32(base, game + 140u) : 0u;
+  // The manager itself (g_XrnmNetContext); the game object's copy at +140 can be empty.
+  uint32_t net = LoadGuestU32(base, refii::guest::Address(0x83497490u));
+  if (!plausible(net) && plausible(game)) {
+    net = LoadGuestU32(base, game + 140u);
+  }
   const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
   const uint32_t gui = plausible(manager) ? LoadGuestU32(base, manager + 28u) : 0u;
   if (!plausible(game) || !plausible(net) || !plausible(gui)) {
@@ -5961,13 +5972,30 @@ bool DispatchCoopLeave(PPCContext& ctx, uint8_t* base) {
   const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
   const bool joiner = LoadGuestU8(base, net + 52u) != 0u && LoadGuestU8(base, net + 54u) != 0u;
   if (joiner) {
+    // The game's own leave as its co-op Reject runs it (sub_8236E458, box 44 answer 36): r4 = 1 is
+    // the quiet leave, no "disconnected" notice. The joiner then gets back the state it saved when
+    // it joined (XboxLive::RestoreAfterLeave on the XboxLive singleton), as the Reject does.
     CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8233E668u), net, 1u);
     CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8236ED98u), gui, 1u);
+    PPCContext live = saved;
+    live.r1.u32 = frame;
+    rex_XboxLive_Instance(live, base);
+    const uint32_t xbox_live = live.r3.u32;
+    if (plausible(xbox_live)) {
+      live = saved;
+      live.r1.u32 = frame;
+      live.r3.u32 = xbox_live;
+      rex_XboxLive_RestoreAfterLeave(live, base);
+    }
+    ctx = saved;
     REXLOG_INFO("Refii guest-tick pump: CoopLeave — the joiner left the session (its hero saved)");
     return true;
   }
   if (LoadGuestU32(base, game + 0x11Cu) != 2u) {
-    REXLOG_INFO("Refii guest-tick pump: CoopLeave — not local co-op and not a joiner; ignored");
+    // ONLINE HOST: the same quiet leave drops the link to the joiner (a mods refusal, the pause's
+    // Leave). With no peer and no join in flight it does nothing.
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8233E668u), net, 1u);
+    REXLOG_INFO("Refii guest-tick pump: CoopLeave — the host left the session (the joiner dropped)");
     return true;
   }
 
@@ -8715,39 +8743,6 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
 
       ran = DispatchFrontEndDialog(ctx, base, static_cast<uint32_t>(value));
-    } else if (name == "CoopLeave") {
-      // The game's own leave, as its co-op Reject runs it (sub_8236E458, box 44 answer 36): r3 =
-      // the CNetworkManager g_XrnmNetContext (read directly; game+140 can be empty), r4 = 1 — the
-      // quiet leave, no "disconnected" notice (r4 = 0 shows one). With a peer it drops the link;
-      // with no peer and no join in flight it does nothing. A joiner then gets back the state it
-      // saved when it joined (rex_XboxLive_RestoreAfterLeave on the XboxLive singleton), as the
-      // Reject does. TU1 0x8233E668.
-      const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83497490u));
-      if (manager >= 0x10000u && manager < 0xC0000000u) {
-        const bool joiner = base[manager + 54u] != 0;
-        PPCContext work = ctx;
-        work.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
-        work.r3.u32 = manager;
-        work.r4.u32 = 1u;
-        rex_CNetworkManager_LeaveSession(work, base);
-        if (joiner) {
-          PPCContext live = ctx;
-          live.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
-          rex_XboxLive_Instance(live, base);
-          const uint32_t xbox_live = live.r3.u32;
-          if (xbox_live >= 0x10000u && xbox_live < 0xC0000000u) {
-            live = ctx;
-            live.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
-            live.r3.u32 = xbox_live;
-            rex_XboxLive_RestoreAfterLeave(live, base);
-          }
-        }
-        ran = true;
-      } else {
-        REXLOG_INFO("Refii guest-tick pump: CoopLeave with no network manager — dropped");
-        GuestTickPumpNoteRan();
-        continue;
-      }
     } else if (name == "SubtitlesOn" || name == "SubtitlesOff" ||
                name == "Downloadable Content") {
       // Through the guest's own dispatcher: its id-2 branch compares the item name and does the
@@ -9203,6 +9198,137 @@ void ConfirmPendingMenuEvent(PPCContext& ctx, uint8_t* base) {
 /// `sub_821ECA30`, then the context keyed 0 in the GUI's map at +0x44 (`sub_8236FFC0(gui, 0)`),
 /// whose +4 is 1 when PLAYER TWO opened it. Run as its two parts rather than whole: the lookup
 /// answers 0 when the map holds no key 0, and the predicate would then read address 4.
+/// Player two's d-pad icons and targeted title, as the pump last stated them.
+struct PlayerTwoHud {
+  std::mutex mutex;
+  bool known = false;
+  uint32_t target = 0u;
+  std::string title;
+  std::string icons[4];
+};
+
+PlayerTwoHud& TwoHud() {
+  static PlayerTwoHud hud;
+  return hud;
+}
+
+/// Set across player two's d-pad fill, so the shared tutorial calls inside it are skipped.
+std::atomic<bool> g_dpad_two_querying{false};
+
+/// A NUL-terminated guest string, at most `cap` bytes.
+std::string GuestCString(uint8_t* base, uint32_t at, uint32_t cap = 260u) {
+  std::string text;
+  for (uint32_t i = 0; i < cap; ++i) {
+    const uint8_t c = LoadGuestU8(base, at + i);
+    if (c == 0u) {
+      break;
+    }
+    text.push_back(static_cast<char>(c));
+  }
+  return text;
+}
+
+/// PLAYER TWO'S D-PAD AND TARGETED TITLE on split screen. The guest's HUD keeps one d-pad and one
+/// targeted readout, both for the local hero; player two's half is stated from the SAME calls,
+/// made for hero two:
+///   d-pad — `sub_823D28F8` builds four slots (`sub_823D3650`, 28 bytes each), fills them with
+///           `sub_823E51A0(component 33, slots, 1)` (`sub_822D1B48`, 0x822d1eb8), and
+///           `sub_823D2C98` gives each slot's element (up, left, down, right — `sub_823D34B8`)
+///           the `IconGraphic` of the slot's definition (`sub_82805258`, `sub_82323540`), or
+///           `Art\GUI\WheelIcons\expressions.tex` when the slot is empty (type 1 at +4, types
+///           2..4 at +20). The fill also drives the shared dig-hint tutorial (ids 14 and 15,
+///           0x823e5ee0..0x823e5f34); those calls are skipped for player two's fill
+///           (RefiiCoopDpadQuerySkip), so the tutorial stays the local hero's.
+///   title — `sub_823FD410` writes `sub_823C87B0(entity, occupation)` to `TargetedQueryTitle`;
+///           the occupation is component 26's +160 when its +164 byte is clear, else empty, and
+///           `TEXT_OCCUPATION_VILLAGER` when that is empty (`sub_82176808`, 0x82176a20..0x82176ab8).
+///           The target is hero two's focus target (component 77, `*(*(comp + 0xC8))`).
+void SamplePlayerTwoHud(PPCContext& ctx, uint8_t* base) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  PlayerTwoHud& hud = TwoHud();
+  const uint32_t hero = RefiiCoopSplitScreen() != 0 ? refii_mod_player_hero(base, 2) : 0u;
+  const uint32_t pad = plausible(hero) && (LoadGuestU8(base, hero + 144u) & 0x40u) != 0u
+                           ? EntityComponent(base, hero, 33u) : 0u;
+  if (!plausible(pad)) {
+    std::lock_guard lock(hud.mutex);
+    hud.known = false;
+    return;
+  }
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (saved.r1.u32 - 0x400u) & ~0xFu;
+  const uint32_t slots = frame + 0x20u;      // the vector object (16 bytes)
+  const uint32_t proto = frame + 0x40u;      // the empty slot it is filled with (28 bytes)
+  const uint32_t occupation = frame + 0x70u; // char LHString handle
+  const uint32_t title = frame + 0x74u;      // wide LHString handle
+  const uint32_t prop = PlaceGuestString(base, frame + 0x80u, "IconGraphic");
+  for (uint32_t at = slots; at < frame + 0x78u; at += 4u) {
+    StoreGuestU32(base, at, 0u);
+  }
+
+  std::string icons[4];
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x823D3650u), slots, 4u, proto);
+  if (plausible(LoadGuestU32(base, slots + 4u))) {
+    g_dpad_two_querying.store(true, std::memory_order_relaxed);
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x823E51A0u), pad, slots, 1u);
+    g_dpad_two_querying.store(false, std::memory_order_relaxed);
+    const uint32_t begin = LoadGuestU32(base, slots + 4u);
+    const uint32_t end = LoadGuestU32(base, slots + 8u);
+    for (uint32_t i = 0; i < 4u && begin + (28u * (i + 1u)) <= end; ++i) {
+      const uint32_t slot = begin + (28u * i);
+      const uint32_t type = LoadGuestU32(base, slot);
+      const bool filled = type == 1u ? LoadGuestU32(base, slot + 4u) != 0u
+                                     : (type > 1u && type <= 4u && LoadGuestU32(base, slot + 20u) != 0u);
+      icons[i] = "Art\\GUI\\WheelIcons\\expressions.tex";
+      if (filled) {
+        const uint32_t def = CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82805258u), slot);
+        if (plausible(def)) {
+          const uint32_t text = CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82323540u), def, prop);
+          icons[i] = plausible(text) ? GuestCString(base, text) : std::string();
+        }
+      }
+    }
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x823D3808u), slots);
+  }
+
+  // The targeted title, for a living citizen in hero two's focus.
+  const uint32_t targeting = EntityComponent(base, hero, 77u);
+  const uint32_t holder = plausible(targeting) ? LoadGuestU32(base, targeting + 0xC8u) : 0u;
+  uint32_t target = plausible(holder) ? LoadGuestU32(base, holder) : 0u;
+  if (!plausible(target) || (LoadGuestU8(base, target + 144u) & 0x40u) == 0u ||
+      (((LoadGuestU32(base, target + 36u) >> 26) & 1u) == 0u && ((LoadGuestU32(base, target + 48u) >> 1) & 1u) == 0u)) {
+    target = 0u;
+  }
+  std::string said;
+  if (target != 0u) {
+    std::string job;
+    if (((LoadGuestU32(base, target + 36u) >> 26) & 1u) != 0u) {
+      const uint32_t work = EntityComponent(base, target, 26u);
+      if (plausible(work) && LoadGuestU8(base, work + 164u) == 0u) {
+        const uint32_t rep = LoadGuestU32(base, work + 160u);
+        const uint32_t chars = plausible(rep) ? LoadGuestU32(base, rep) : 0u;
+        job = plausible(chars) ? GuestCString(base, chars, 120u) : std::string();
+        if (job.empty()) {
+          job = "TEXT_OCCUPATION_VILLAGER";
+        }
+      }
+    }
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82275438u), occupation,
+                PlaceGuestString(base, frame + 0x100u, job.c_str()));
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x823C87B0u), title, target, occupation);
+    said = ReadStatedWideLhString(base, title);
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x821C67F8u), title);
+  }
+
+  std::lock_guard lock(hud.mutex);
+  hud.known = true;
+  hud.target = target;
+  hud.title = std::move(said);
+  for (uint32_t i = 0; i < 4u; ++i) {
+    hud.icons[i] = std::move(icons[i]);
+  }
+}
+
 void SampleMenuOwner(PPCContext& ctx, uint8_t* base) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
@@ -9215,6 +9341,10 @@ void SampleMenuOwner(PPCContext& ctx, uint8_t* base) {
       const uint32_t context = CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8236FFC0u), gui, 0u);
       two = plausible(context) && LoadGuestU32(base, context + 4u) == 1u ? 1 : 0;
     }
+  }
+  // Local player two's shop (coop_hero_hooks.cpp) is theirs: their pad, their half.
+  if (RefiiCoopShoppingPlayerTwo() != 0) {
+    two = 1;
   }
   refii_bridge_set_menu_owner_two(two);
 }
@@ -9269,6 +9399,7 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   ++g_coop_ticks;
   CheckGuestHeaps(base, g_coop_ticks);
   CoopRedress(ctx, base);
+  SamplePlayerTwoHud(ctx, base);
 
   MaybeArmInGameSimulation(ctx, base);
 
@@ -9606,6 +9737,31 @@ int RefiiCoopIsHostWeapon(uint32_t body, uint32_t item) {
     return 0;
   }
   return found->second[0] == item || found->second[1] == item ? 1 : 0;
+}
+
+/// Player two's split-screen HUD, as SamplePlayerTwoHud stated it: `out` takes the targeted
+/// title then the four d-pad icon paths (up, left, down, right), one per line. 1 when stated.
+uint32_t refii_bridge_player_two_hud(uint32_t* target, char* out, uint32_t capacity) {
+  auto& hud = refii::vfs::TwoHud();
+  std::lock_guard lock(hud.mutex);
+  if (!hud.known || out == nullptr || capacity == 0u) {
+    return 0u;
+  }
+  if (target != nullptr) {
+    *target = hud.target;
+  }
+  std::string text = hud.title;
+  for (const std::string& icon : hud.icons) {
+    text += '\n';
+    text += icon;
+  }
+  std::snprintf(out, capacity, "%s", text.c_str());
+  return 1u;
+}
+
+/// Whether player two's d-pad fill is running (coop_hero_hooks.cpp skips the shared tutorial).
+int32_t refii_bridge_dpad_query_two(void) {
+  return refii::vfs::g_dpad_two_querying.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 /// Split screen, and LOCAL co-op (game+0x11C == 2). The host states the switch whatever the

@@ -192,6 +192,11 @@ public static class Engine_UiNetworkSource
 				? (friend.TitleName.Length == 0 ? "in a game" : $"in {friend.TitleName}")
 				: friend.Online ? "online" : "offline";
 
+			if (friend.Online && friend.Status.Length != 0)
+			{
+				state += $" — {friend.Status}";
+			}
+
 			rows.Add(Row(
 				$"friend:{friend.PeerId}",
 				$"{name} — {state}",
@@ -415,13 +420,34 @@ public static class Engine_UiNetworkSource
 
 		// GHOSTED WHEN NOT HOSTING, because the byte is read only while a session is up: the
 		// admit test checks hosting FIRST and refuses before it ever looks at joinable.
+		// FABLE 3'S JOIN OPTIONS: Anyone, Invites only, No one — A steps to the next.
+		Engine_UiJoinRequests.JoinMode mode = Engine_UiJoinRequests.Mode;
+		string label = mode switch
+		{
+			Engine_UiJoinRequests.JoinMode.Anyone => "Who can join: Anyone",
+			Engine_UiJoinRequests.JoinMode.InvitesOnly => "Who can join: Invites only",
+			_ => "Who can join: No one",
+		};
 		rows.Add(Row(
 			"host:joinable",
-			state.Hosting
-				? state.Joinable ? "Friends can join: ON" : "Friends can join: OFF"
-				: "Friends can join — no game is hosted yet",
-			$"{CommandPrefix}joinable:{(state.Joinable ? "0" : "1")}",
+			state.Hosting ? label : label + " — no game is hosted yet",
+			$"{CommandPrefix}joinmode:{(((int)mode + 1) % 3).ToString(System.Globalization.CultureInfo.InvariantCulture)}",
 			ghosted: !state.Hosting));
+
+		// FABLE 3'S ORB STATUS AND ORB EMOTES, over presence: what this player is here for, said to
+		// everyone who sees them, and a greeting sent to all of them.
+		int status = Engine_UiJoinRequests.StatusIndex;
+		rows.Add(Row(
+			"host:status",
+			"My status: " + Engine_UiJoinRequests.Statuses[status],
+			$"{CommandPrefix}status:{((status + 1) % Engine_UiJoinRequests.Statuses.Length).ToString(System.Globalization.CultureInfo.InvariantCulture)}"));
+		for (int i = 0; i < Engine_UiJoinRequests.Greetings.Length; ++i)
+		{
+			rows.Add(Row(
+				$"host:greet{i + 1}",
+				"Send: " + Engine_UiJoinRequests.Greetings[i].Label,
+				$"{CommandPrefix}greet:{(i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)}"));
+		}
 
 		return rows;
 	}
@@ -490,11 +516,12 @@ public static class Engine_UiNetworkSource
 					}
 
 					string where = friend.TitleName.Length == 0 ? "a game" : friend.TitleName;
-					return friend.Joinable
+					string stated = friend.Status.Length == 0 ? string.Empty : $"\"{friend.Status}\"\n\n";
+					return stated + (friend.Joinable
 						? $"In {where}, and hosting.\n\nA asks them for an invitation."
 						: friend.Online
 							? "Online, not in a game.\n\nA asks them for an invitation."
-							: "Offline.\n\nThey appear here again when they next play.";
+							: "Offline.\n\nThey appear here again when they next play.");
 				}
 
 				// A game row can name a stranger's session off the last search.
@@ -616,8 +643,13 @@ public static class Engine_UiNetworkSource
 	/// <summary>What the page says about a row that is an action rather than a subject.</summary>
 	public static string ActionDetail(string rowName) => rowName switch
 	{
+		"host:status" =>
+			"What you are here for, shown to your friends beside your name.\n\nA steps to the next.",
+		_ when rowName.StartsWith("host:greet", System.StringComparison.Ordinal) =>
+			"A greeting your friends see wherever they are playing.\n\nA sends it.",
 		"Hosting" or "host:joinable" =>
-			"Whether people can join the game you are playing.\n\nA turns it on and off.",
+			"Who can join the game you are playing: anyone you are friends with, only someone you " +
+			"invite, or no one (asks to join are declined).\n\nA steps to the next.",
 		// A PENDING CONFIRM HOLDS THE PAGE until it is answered; a plain outcome fades back to
 		// the offer so the row does not keep shouting about a paste from minutes ago.
 		"AddFriend" => _addPending.Length != 0 || Godot.Time.GetTicksMsec() - _addAt < CopiedShownMs

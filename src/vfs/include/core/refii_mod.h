@@ -231,6 +231,16 @@ extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity);
 /// for this player, so a mod's ability row publishes and buys for them.
 extern "C" int32_t refii_mod_menu_player(uint8_t* base);
 
+/// How `villager` feels about player `player`'s hero, its five current opinion axes into `out`:
+/// love, fear, attractiveness, morality, respect (-1..1). Each villager keeps a set per hero:
+/// player two's deeds move how it sees player two (and only that). False when `villager` holds
+/// no opinions. Inside an OpinionDeed handler for a deed of player two's, the component itself
+/// holds player two's set for the call.
+extern "C" int32_t refii_mod_opinion(uint8_t* base, uint32_t villager, int32_t player, float* out);
+
+/// The living entity player `player`'s hero is focused on (their targeting's target), or 0.
+extern "C" uint32_t refii_mod_focus(uint8_t* base, int32_t player);
+
 // ---------------------------------------------------------------------------------------------
 // PLAYER STATE: a mod's values for one player, right on both co-op machines.
 // ---------------------------------------------------------------------------------------------

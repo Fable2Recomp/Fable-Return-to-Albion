@@ -569,6 +569,77 @@ REFII_LUA_NATIVE(NativeEventReplica) {
   RESULTS(1);
 }
 
+// Core co-op only: a script asks the partner (kind, asker 1|2, detail) and polls the answer.
+extern "C" int32_t RefiiCoopKeyTaken(uint32_t entity, int32_t player);
+
+// Core co-op only: whether player p has taken the per-player collectable e already (1) or not (0).
+REFII_LUA_NATIVE(NativeKeyTaken) {
+  lua.PushNumber(RefiiCoopKeyTaken(lua.Entity(1), lua.Int(2)));
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeConsentAsk) {
+  lua.PushNumber(static_cast<double>(refii_bridge_consent_ask(lua.Int(1), lua.Int(2), lua.Int(3))));
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeConsentAnswer) {
+  lua.PushNumber(refii_bridge_consent_answer(static_cast<uint32_t>(lua.Int(1))));
+  RESULTS(1);
+}
+
+// Refii.ask_partner(asker, question): a mod's own question for the other player (a box on their
+// screen, or the peer's online); a ticket for Refii.partner_answer. Unanswered in 30 s is a no.
+REFII_LUA_NATIVE(NativeAskPartner) {
+  char text[256];
+  lua.String(2, text, sizeof(text));
+  const int32_t asker = lua.Int(1);
+  if (text[0] == 0 || (asker != 1 && asker != 2)) {
+    lua.PushNil();
+  } else {
+    lua.PushNumber(static_cast<double>(refii_bridge_consent_ask_text(asker, text)));
+  }
+  RESULTS(1);
+}
+
+// Refii.partner_answer(ticket): nil while pending, then true or false.
+REFII_LUA_NATIVE(NativePartnerAnswer) {
+  const int32_t answer = refii_bridge_consent_answer(static_cast<uint32_t>(lua.Int(1)));
+  if (answer < 0) {
+    lua.PushNil();
+  } else {
+    lua.PushBoolean(answer == 1);
+  }
+  RESULTS(1);
+}
+
+// Refii.key_taken(e, p): whether player p has taken the per-player collectable e (a silver key).
+REFII_LUA_NATIVE(NativeKeyTakenPublic) {
+  lua.PushBoolean(RefiiCoopKeyTaken(lua.Entity(1), lua.Int(2)) != 0);
+  RESULTS(1);
+}
+
+// Refii.opinion(villager, p) -> love, fear, attractiveness, morality, respect: how the villager
+// feels about player p's hero; nil when it holds no opinions.
+REFII_LUA_NATIVE(NativeOpinion) {
+  float axes[5] = {};
+  if (refii_mod_opinion(lua.base, lua.Entity(1), lua.Int(2), axes) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+  } else {
+    for (const float axis : axes) {
+      lua.PushNumber(axis);
+    }
+    RESULTS(5);
+  }
+}
+
+// Refii.focus(p): the living entity player p's hero is focused on, or nil.
+REFII_LUA_NATIVE(NativeFocus) {
+  lua.PushHandle(refii_mod_focus(lua.base, lua.Int(1)));
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativeError) {
   char text[512];
   lua.String(1, text, sizeof(text));
@@ -809,6 +880,14 @@ Native g_natives[] = {
     {"_job_worker", &NativeJobWorker, 0},
     {"_estate_buyer", &NativeEstateBuyer, 0},
     {"_partner_screen", &NativePartnerScreen, 0},
+    {"_consent_ask", &NativeConsentAsk, 0},
+    {"_key_taken", &NativeKeyTaken, 0},
+    {"_consent_answer", &NativeConsentAnswer, 0},
+    {"ask_partner", &NativeAskPartner, 0},
+    {"partner_answer", &NativePartnerAnswer, 0},
+    {"key_taken", &NativeKeyTakenPublic, 0},
+    {"opinion", &NativeOpinion, 0},
+    {"focus", &NativeFocus, 0},
     {"renown", &NativeRenown, 0},
     {"morality", &NativeMorality, 0},
     {"purity", &NativePurity, 0},

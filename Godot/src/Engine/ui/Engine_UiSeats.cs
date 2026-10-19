@@ -60,6 +60,40 @@ public static class Engine_UiSeats
         return world;
     }
 
+    /// <summary>
+    /// The seat a node's menu stands in, as the map from laid-out space to the window: identity
+    /// unless the node is under a seated menu layer.
+    /// </summary>
+    public static Transform3D SeatOf(Node3D node)
+    {
+        for (Node? up = node.GetParent(); up is not null; up = up.GetParent())
+        {
+            if (up is Node3D layer && layer.IsInGroup(MenuLayerGroup))
+            {
+                Transform3D parent = layer.GetParent() is Node3D above ? above.GlobalTransform : Transform3D.Identity;
+                return parent * layer.Transform * parent.AffineInverse();
+            }
+        }
+
+        return Transform3D.Identity;
+    }
+
+    /// <summary>A window point (the pointer) in the laid-out space of <paramref name="node"/>'s menu.</summary>
+    public static Vector2 PointToLayout(Node3D node, Vector2 point)
+    {
+        Vector3 laid = SeatOf(node).AffineInverse() * new Vector3(point.X, point.Y, 0f);
+        return new Vector2(laid.X, laid.Y);
+    }
+
+    /// <summary>A laid-out rect of <paramref name="node"/>'s menu (a clip) where it stands on the window.</summary>
+    public static Rect2 RectToWindow(Node3D node, Rect2 rect)
+    {
+        Transform3D seat = SeatOf(node);
+        Vector3 a = seat * new Vector3(rect.Position.X, rect.Position.Y, 0f);
+        Vector3 b = seat * new Vector3(rect.End.X, rect.End.Y, 0f);
+        return new Rect2(Mathf.Min(a.X, b.X), Mathf.Min(a.Y, b.Y), Mathf.Abs(b.X - a.X), Mathf.Abs(b.Y - a.Y));
+    }
+
     /// <summary>The seat a player's own UI takes: their half while split, else the whole window.</summary>
     public static Seat For(int player, bool split) =>
         !split ? Seat.Whole : player == 2 ? Seat.PlayerTwo : Seat.PlayerOne;

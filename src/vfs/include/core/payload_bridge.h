@@ -405,6 +405,44 @@ int32_t refii_bridge_player_loaded_from(int32_t player, const char* save_name);
 //   go into that folder. Returns 1 when written.
 int32_t refii_bridge_player_write_saved(int32_t player, const char* save_name);
 
+// PARTNER CONSENT (src/core/coop_consent.cpp): a co-op script asks the other player before doing
+// something that changes both players' game. `kind` 1 sleep (detail: the sleep type), 2 sex,
+// 0 a mod's own question (its text); `asker` the asking player, 1 or 2.
+// - the payload asks (a ticket) and polls the answer: -1 pending, 0 no, 1 yes;
+uint32_t refii_bridge_consent_ask(int32_t kind, int32_t asker, int32_t detail);
+uint32_t refii_bridge_consent_ask_text(int32_t asker, const char* text);
+int32_t refii_bridge_consent_answer(uint32_t ticket);
+// - the host takes each new question once (with its text, empty for kinds 1 and 2) and gives its
+//   answer.
+int32_t refii_bridge_consent_take(uint32_t* ticket, int32_t* kind, int32_t* asker, int32_t* detail,
+                                  char* text, uint32_t capacity);
+void refii_bridge_consent_give(uint32_t ticket, int32_t yes);
+
+// ONE-TIME COLLECTABLES PER PLAYER (src/core/coop_collectables.cpp): silver keys by entity address and
+// UniqueID; a player's taking is a saved player value. The mask is bit 0 player one, bit 1 player two.
+void refii_bridge_collectable_track(uint32_t address, uint64_t uid);
+void refii_bridge_collectable_forget(uint32_t address);
+uint32_t refii_bridge_collectable_mask(uint64_t uid);
+void refii_bridge_collectable_take(int32_t player, uint64_t uid);
+// - the host reads (address, mask) pairs of the tracked keys someone has taken; returns the pairs.
+uint32_t refii_bridge_collectable_masks(uint32_t* out, uint32_t capacity);
+
+// A VILLAGER'S OPINION OF PLAYER TWO (src/core/coop_opinion.cpp), by the opinion component's
+// address: the block is the component's bytes +24..+64 (base and current axes, guest byte order)
+// then +176..+236 (the five modifier vectors).
+#define REFII_OPINION_BLOCK_BYTES 100
+int32_t refii_bridge_opinion_two_load(uint32_t component, uint8_t* out);
+void refii_bridge_opinion_two_store(uint32_t component, const uint8_t* in);
+void refii_bridge_opinion_two_forget(uint32_t component);
+
+// PLAYER TWO'S SPLIT-SCREEN HUD (hooks/guest_tick_pump.cpp, SamplePlayerTwoHud): their targeted
+// title and d-pad icons, from the guest's own builders called for hero two.
+// - the host reads the title then four icon paths (up, left, down, right), newline-separated,
+//   and the targeted entity; returns 1 when stated.
+uint32_t refii_bridge_player_two_hud(uint32_t* target, char* out, uint32_t capacity);
+// - nonzero while player two's d-pad fill runs (the shared tutorial calls are skipped).
+int32_t refii_bridge_dpad_query_two(void);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

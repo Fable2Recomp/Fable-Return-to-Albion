@@ -2336,7 +2336,39 @@ extern "C" {
 ///     this machine owes the co-op peer about the players' mod values), RefiiHostPlayerStateReceive
 ///     (one message from the peer) and RefiiHostPlayerStateDescribe (both players' values, for the
 ///     debug channel).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 194; }
+/// 195 adds partner consent (src/vfs/src/core/coop_consent.cpp): RefiiHostConsentTake (a co-op
+///     script's question for the partner — sleep or sex on a bed, or a mod's own question with its
+///     text) and RefiiHostConsentGive (the answer).
+/// 196 adds RefiiHostGetCollectedKeys — the silver keys in the world a player has already taken
+///     (core/coop_collectables.cpp): (entity address, mask) pairs, bit 0 player one, bit 1 player two.
+/// 197 adds the player's stated status and signals over RexNet presence (Fable 3's orb status
+///     and orb emotes): RefiiNetSetPlayerStatus, RefiiNetSendPlayerSignal, and RefiiNetFriends'
+///     records gain each friend's status and last signal (10 fields).
+/// 198 adds player two's HUD on split screen: RefiiHostGetPlayerTwoTargetedQuery (their own
+///     targeted-citizen readout, from the villager's opinion of player two) and
+///     RefiiHostGetPlayerTwoHud (their readout's title and d-pad icons, from the guest's own
+///     builders called for hero two).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 198; }
+
+/// The taken silver keys still in the world: (address, mask) pairs into `out`, at most `capacity`
+/// words. Returns the pairs written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCollectedKeys(uint32_t* out, uint32_t capacity) {
+    return out != nullptr ? refii_bridge_collectable_masks(out, capacity) : 0u;
+}
+
+/// The next question a co-op script put to the partner: 1 with its ticket, kind (1 sleep, 2 sex,
+/// 0 a mod's own question, its words in `text`), asking player and detail (the sleep type); 0 when
+/// none is waiting.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostConsentTake(uint32_t* ticket, int32_t* kind, int32_t* asker, int32_t* detail,
+                                                   char* text, uint32_t capacity) {
+    if (ticket == nullptr || kind == nullptr || asker == nullptr || detail == nullptr) {
+        return 0;
+    }
+    return refii_bridge_consent_take(ticket, kind, asker, detail, text, capacity);
+}
+
+/// The partner's answer to a question taken with RefiiHostConsentTake.
+REFII_HOST_ABI_EXPORT void RefiiHostConsentGive(uint32_t ticket, int32_t yes) { refii_bridge_consent_give(ticket, yes); }
 
 /// The player who owns the open in-game GUI: 2 when player two opened it (the guest routes their
 /// pause to the henchman root and only they may close it), else 1. Sampled once per guest tick;
@@ -15218,6 +15250,108 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTargetedQuery(uint32_t* out_words, ui
     return 12u;
 }
 
+/// PLAYER TWO'S TARGETED READOUT on split screen. The guest keeps ONE readout, for the local hero
+/// (`sub_82176808` on the block at `*(*(GUI+32)+112)`, its target set from hero one's targeting
+/// only, `sub_8218FC60`), so player two's is built here from the SAME reads the guest's driver
+/// makes, for hero two's own focus target (component 77, `GetFocusTarget` `sub_82843C40`:
+/// `*(*(comp77 + 0xC8))`):
+///   raised       — the target alive (+144 & 0x40) and a citizen (+36 bit 26 or +48 bit 1);
+///   gift / axis  — component 131's first pending record (0x82176c4c..0x82176cd8): `axis = rec+4`,
+///                  value `(rec+8 ± 1) × ±0.5`, behind the driver's one gate, the bytes +73/+75 of
+///                  `*(*(*(game+88)+4)+104)` (0x82176c10) — read as the driver reads it; the button
+///                  (`sub_825DD3C8`, a call) is not stated here;
+///   opinion      — the opinion component's current axis (+44 + 4·axis), from the VILLAGER'S
+///                  OPINION OF PLAYER TWO (core/coop_opinion.cpp) — their base attitudes until
+///                  player two has done something there;
+///   marry/divorce— the guest asks hero one's family and eligibility only; not stated.
+/// The title is the guest's own composition, called for this target in the pump
+/// (RefiiHostGetPlayerTwoHud). Words as RefiiHostGetTargetedQuery's; returns 12.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPlayerTwoTargetedQuery(uint32_t* out_words, uint32_t capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr || out_words == nullptr || capacity < 12u) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    for (uint32_t i = 0; i < 12u; ++i) {
+        out_words[i] = 0u;
+    }
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    const auto word = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto f32 = [&](uint32_t at) {
+        const uint32_t bits = word(at);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const auto bits = [](float value) {
+        uint32_t out = 0u;
+        std::memcpy(&out, &value, sizeof(out));
+        return out;
+    };
+
+    const uint32_t hero = PlayerEntityForKey(base, 2u);
+    const uint32_t targeting = plausible(hero) ? EntityComponent(base, hero, 77u) : 0u;
+    const uint32_t holder = plausible(targeting) ? word(targeting + 0xC8u) : 0u;
+    const uint32_t target = plausible(holder) ? word(holder) : 0u;
+    const bool alive = plausible(target) && (GuestByteAt(base, target + 144u) & 0x40u) != 0u;
+    const bool citizen = alive && (((word(target + 36u) >> 26) & 1u) != 0u || ((word(target + 48u) >> 1) & 1u) != 0u);
+    if (!citizen) {
+        return 12u;
+    }
+    out_words[0] = 1u;
+    out_words[1] = target;
+    out_words[2] = target;
+
+    // Gift and axis, behind the driver's gate (0x82176c10..0x82176c28).
+    uint32_t axis = 0u;
+    const uint32_t game = word(word(refii::guest::Address(0x83496AB8u)) + 12u);
+    const uint32_t players = plausible(game) ? word(word(game + 88u) + 4u) : 0u;
+    const uint32_t gate_object = plausible(players) ? word(players + 104u) : 0u;
+    const bool gate = plausible(gate_object) && GuestByteAt(base, gate_object + 75u) == 0u &&
+                      GuestByteAt(base, gate_object + 73u) != 0u;
+    const uint32_t wants = EntityComponent(base, target, 131u);
+    if (gate && plausible(wants) && GuestByteAt(base, wants + 32u) != 0u && word(wants + 20u) != 0u) {
+        const uint32_t list = word(wants + 16u);
+        const uint32_t node = plausible(list) ? word(list) : 0u;
+        const uint32_t record = plausible(node) && node != list ? word(node + 8u) : 0u;
+        if (plausible(record)) {
+            axis = word(record + 4u);
+            const float raw = f32(record + 8u);
+            out_words[3] = 1u;
+            out_words[4] = bits(axis == 1u ? (raw - 1.0f) * -0.5f : (raw + 1.0f) * 0.5f);
+        }
+    }
+    out_words[6] = axis + 1u;
+
+    // Opinion: the villager's opinion of player two.
+    const uint32_t opinion = EntityComponent(base, target, 47u);
+    if (plausible(opinion) && axis < 5u) {
+        uint8_t two[REFII_OPINION_BLOCK_BYTES];
+        float value = 0.0f;
+        if (refii_bridge_opinion_two_load(opinion, two) != 0) {
+            uint32_t raw = 0u;
+            std::memcpy(&raw, two + 20u + (4u * axis), sizeof(raw));
+            raw = __builtin_bswap32(raw);
+            std::memcpy(&value, &raw, sizeof(value));
+        } else {
+            value = f32(opinion + 24u + (4u * axis));
+        }
+        out_words[11] = bits(axis == 1u ? (value - 1.0f) * -0.5f : (value + 1.0f) * 0.5f);
+    }
+    return 12u;
+}
+
+/// PLAYER TWO'S D-PAD AND TARGETED TITLE on split screen, from the guest's own builders called
+/// for hero two each tick (guest_tick_pump.cpp, SamplePlayerTwoHud). `out` takes the title, then
+/// the four d-pad icon paths (up, left, down, right), newline-separated; `out_target` the entity
+/// the title is for (0 when none). Returns 1 when stated, 0 off split screen.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPlayerTwoHud(uint32_t* out_target, char* out, uint32_t capacity) {
+    return refii_bridge_player_two_hud(out_target, out, capacity);
+}
+
 /// Every live PULSER the in-game HUD is holding — registry 4, `PulserName` — as its PHASE.
 ///
 
@@ -19758,7 +19892,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetFriends(char* out, uint32_t capacity) {
         Field(text, friend_info.title_name, '\t');
         FieldNum(text, friend_info.has_session ? 1u : 0u, '\t');
         Field(text, friend_info.has_session ? HexOf(friend_info.session_id) : std::string(), '\t');
-        FieldNum(text, friend_info.presence_state, '\n');
+        FieldNum(text, friend_info.presence_state, '\t');
+        Field(text, friend_info.status, '\t');
+        FieldNum(text, friend_info.signal, '\n');
     }
 
     return Emit(text, out, capacity);
@@ -19971,6 +20107,42 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetHostState(char* out, uint32_t capacity) {
 /// WRITTEN WHERE THE GAME READS IT rather than through the native: `sub_8232CD28` takes the
 /// context bound at native registration, and that binding is not proved to be
 /// `g_XrnmNetContext`. The admit test's own base is, so the byte is set there.
+/// States this player's status to everyone who sees their presence (empty clears it).
+REFII_HOST_ABI_EXPORT int RefiiNetSetPlayerStatus(const char* status) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    if (net == nullptr) {
+        return 0;
+    }
+    std::string text = status != nullptr ? status : "";
+    for (char& c : text) {
+        if (c == '\t' || c == '\n' || c == '\r') {
+            c = ' ';
+        }
+    }
+    net->SetPlayerStatus(text);
+    return 1;
+#else
+    (void)status;
+    return 0;
+#endif
+}
+
+/// Sends a signal (a greeting, by id 1..255) to everyone who sees this player's presence.
+REFII_HOST_ABI_EXPORT int RefiiNetSendPlayerSignal(int id) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    if (net == nullptr || id <= 0 || id > 255) {
+        return 0;
+    }
+    net->SendPlayerSignal(static_cast<uint8_t>(id));
+    return 1;
+#else
+    (void)id;
+    return 0;
+#endif
+}
+
 REFII_HOST_ABI_EXPORT int RefiiNetSetJoinable(int on) {
 #if defined(REXGLUE_ENABLE_REXNET)
     rex::memory::Memory* memory = SafeKernelMemory();
