@@ -181,7 +181,7 @@ public partial class GameInput
 		{
 			if (input.Key != Key.None
 				? Godot.Input.IsKeyPressed(input.Key) || Godot.Input.IsPhysicalKeyPressed(input.Key)
-				: !Engine_UiPointer.Free && Godot.Input.IsMouseButtonPressed(input.Mouse))
+				: MouseInput && !Engine_UiPointer.Free && Godot.Input.IsMouseButtonPressed(input.Mouse))
 			{
 				return true;
 			}
@@ -189,6 +189,12 @@ public partial class GameInput
 
 		return false;
 	}
+
+	/// <summary>
+	/// The expression wheel and the spell blade are pointed at: the cursor is free while one
+	/// is held, and the camera stands still under it.
+	/// </summary>
+	public static bool InOverlay => QuickWheelHeld || SpellsMenuHeld;
 
 	/// <summary>
 	/// The play state, the mouse capture and the attack mode, once per frame. The cursor is
@@ -204,10 +210,7 @@ public partial class GameInput
 
 		// An open embedded window (the F4 dev menu, its Tracy panels) wants the cursor.
 		bool windowOpen = GetTree()?.Root?.GetEmbeddedSubwindows().Count > 0;
-		// The expression wheel and the spell blade are pointed at: the cursor is free while one
-		// is held, and the camera stands still under it.
-		bool overlay = QuickWheelHeld || SpellsMenuHeld;
-		bool capture = devices && Playing && !overlay && !windowOpen && !GameDevMenu.KeyboardCaptured;
+		bool capture = MouseInput && MouseLock && devices && Playing && !InOverlay && !windowOpen && !GameDevMenu.KeyboardCaptured;
 		Godot.Input.MouseModeEnum wanted =
 			capture ? Godot.Input.MouseModeEnum.Captured : Godot.Input.MouseModeEnum.Visible;
 		if (Godot.Input.MouseMode != wanted)
@@ -251,7 +254,7 @@ public partial class GameInput
 			return;
 		}
 
-		bool pointer = Engine_UiInputMode.KeyboardMouse;
+		bool pointer = Engine_UiInputMode.KeyboardMouse && MouseInput;
 		_cameraFeelRetry -= GetProcessDeltaTime();
 		if (_cameraFeelPosted != pointer && _cameraFeelRetry <= 0.0)
 		{
@@ -335,8 +338,13 @@ public partial class GameInput
 	/// <summary>Captured mouse motion, for the camera.</summary>
 	private static void FeedMouseMotion(InputEvent @event)
 	{
+		if (!MouseInput)
+		{
+			return;
+		}
+
 		if (@event is InputEventMouseMotion motion &&
-			Godot.Input.MouseMode == Godot.Input.MouseModeEnum.Captured)
+			(Godot.Input.MouseMode == Godot.Input.MouseModeEnum.Captured || (!MouseLock && Playing)))
 		{
 			_mouseMotion += motion.Relative;
 		}
@@ -418,6 +426,13 @@ public partial class GameInput
 	/// </summary>
 	private static void MouseCamera(ref PadState state, double delta)
 	{
+		if (!MouseInput)
+		{
+			_mouseMotion = Vector2.Zero;
+			_mouseWindow.Clear();
+			return;
+		}
+
 		Vector2 motion = _mouseMotion;
 		_mouseMotion = Vector2.Zero;
 		if (delta <= 0.0)

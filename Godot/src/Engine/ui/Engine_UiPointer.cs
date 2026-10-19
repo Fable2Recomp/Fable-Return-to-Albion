@@ -1,4 +1,5 @@
 using Godot;
+using Refii.Game;
 
 namespace Refii.Ui;
 
@@ -34,7 +35,10 @@ public static class Engine_UiPointer
 	public static Rect2? VisibleCanvas { get; private set; }
 
 	/// <summary>Whether the cursor is free for the menus (not captured for the camera).</summary>
-	public static bool Free => Input.MouseMode != Input.MouseModeEnum.Captured;
+	public static bool Free =>
+		GameInput.MouseInput &&
+		Input.MouseMode != Input.MouseModeEnum.Captured &&
+		(!GameInput.Playing || GameInput.InOverlay);
 
 	private static Vector2 _window;
 	private static bool _motion;
@@ -42,6 +46,10 @@ public static class Engine_UiPointer
 	/// <summary>One input event. Mouse events only; the rest are ignored.</summary>
 	public static void Feed(InputEvent @event)
 	{
+		if (!GameInput.MouseInput)
+		{
+			return;
+		}
 		switch (@event)
 		{
 			case InputEventMouseMotion motion:

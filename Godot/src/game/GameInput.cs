@@ -94,6 +94,19 @@ public partial class GameInput : Node
 	/// <summary>Mouse events go to the UI pointer, which resolves them against the UI camera.</summary>
 	public override void _Input(InputEvent @event)
 	{
+		if (@event is InputEventMouse)
+		{
+			if (!MouseInput)
+			{
+				return;
+			}
+
+			Engine_UiPointer.Feed(@event);
+			FeedMouseMotion(@event);
+			DetectDevice(@event);
+			return;
+		}
+
 		Engine_UiPointer.Feed(@event);
 		FeedMouseMotion(@event);
 		DetectDevice(@event);
@@ -110,10 +123,10 @@ public partial class GameInput : Node
 		switch (@event)
 		{
 			case InputEventKey { Pressed: true }:
-			case InputEventMouseButton { Pressed: true }:
 				Engine_UiInputMode.KeyboardMouse = true;
 				break;
-			case InputEventMouseMotion motion when motion.Relative.LengthSquared() > 4f:
+			case InputEventMouseButton { Pressed: true } when MouseInput:
+			case InputEventMouseMotion motion when MouseInput && motion.Relative.LengthSquared() > 4f:
 				Engine_UiInputMode.KeyboardMouse = true;
 				break;
 			case InputEventJoypadButton { Pressed: true } button when Input.IsJoyKnown(button.Device):
@@ -220,6 +233,12 @@ public partial class GameInput : Node
 	/// <summary>`mouse_sensitivity` in refii.toml, 1.0 by default.</summary>
 	public static float MouseSensitivity { get; private set; } = 1f;
 
+	/// <summary>`mouse_input` in refii.toml — whether mouse input is processed at all.</summary>
+	public static bool MouseInput { get; private set; } = true;
+
+	/// <summary>`mouse_lock` in refii.toml — whether the mouse cursor is captured during play.</summary>
+	public static bool MouseLock { get; private set; } = true;
+
 	private static double _settingsClock;
 	private static System.Collections.Generic.IReadOnlyDictionary<string, string>? _lastControlValues;
 
@@ -242,8 +261,15 @@ public partial class GameInput : Node
 		{
 			return;
 		}
+		bool prevMouseInput = MouseInput;
 		_lastControlValues = values;
 		InvertCameraX = Refii.Core.Engine_RefiiConfig.Bool(values, "camera_invert_x", false);
+		MouseInput = Refii.Core.Engine_RefiiConfig.Bool(values, "mouse_input", true);
+		MouseLock = Refii.Core.Engine_RefiiConfig.Bool(values, "mouse_lock", true);
+		if (prevMouseInput && !MouseInput)
+		{
+			Engine_UiInputMode.KeyboardMouse = false;
+		}
 		ReadKeyBindings(values);
 		MouseSensitivity = Mathf.Clamp(
 			Refii.Core.Engine_RefiiConfig.Float(values, "mouse_sensitivity", 1f), 0.05f, 10f);

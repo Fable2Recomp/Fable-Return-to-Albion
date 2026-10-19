@@ -523,6 +523,13 @@ public static class RuntimeCVarsGodot
             new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
                 "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
                 "turns twice as far."),
+            new("mouse_input", ControlsCategory, RuntimeCVarType.Bool, "true",
+                "Allow the mouse to control the camera, menus and actions. Off completely disables " +
+                "mouse look, clicks and pointer navigation, keeping the cursor free and input on the " +
+                "controller or keyboard."),
+            new("mouse_lock", ControlsCategory, RuntimeCVarType.Bool, "true",
+                "Lock the mouse cursor inside the game window during play. Off keeps the cursor visible " +
+                "and free to move outside the window (convenient for multi-monitor setups or while developing)."),
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
                 "Show \"Playing Fable 2: Return to Albion\" and the level you are in on your "
                 + "Discord profile while Discord is running."),
