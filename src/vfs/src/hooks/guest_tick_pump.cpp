@@ -402,6 +402,7 @@ bool CoopSessionLive(uint8_t* base);
 uint32_t CoopNetworkManager(uint8_t* base);
 void CoopRepairNetworkSlot(uint8_t* base);
 void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity);
+void HeapCheckAfter(uint8_t* base, const char* step);
 bool EquipRecord(PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t id, std::string& report);
 void CoopAttachHeld(PPCContext& ctx, uint8_t* base, int player, uint32_t entity);
 void CoopKeepHostWeapons(PPCContext& ctx, uint8_t* base, uint32_t entity);
@@ -811,6 +812,16 @@ constexpr const char* kActionRegisterPlayer = "RegisterPlayer";
 /// cleanly. Player one is EntityUID 1 and player two would be 2 through the same GDB path, and
 /// the shipped game never spawns two.
 constexpr const char* kActionCoopHeroBodyPrefix = "CoopHeroBody:";
+/// "CoopSplitScreen:<0|1>" — the local co-op screen mode (the host's coop_split_screen switch),
+/// read by the co-op hooks when player two's Player is built (coop_hero_hooks.cpp).
+constexpr const char* kActionCoopSplitScreenPrefix = "CoopSplitScreen:";
+/// `CoopLeave` — player two leaves the game (Fable 3's "Leave"): see DispatchCoopLeave.
+constexpr const char* kActionCoopLeave = "CoopLeave";
+/// `CoopKick` — the online host removes player two (Fable 3's "Kick"): see DispatchCoopKick.
+constexpr const char* kActionCoopKick = "CoopKick";
+/// `CoopExitUse:<x>:<y>:<z>` — the online joiner used the region exit standing at that guest
+/// position; the host's exit update fires it (coop_hero_hooks.cpp, RefiiCoopTakeExitUse).
+constexpr const char* kActionCoopExitUsePrefix = "CoopExitUse:";
 
 /// "HeroState:<1|2>:<base64>" — one player's WHOLE hero as the HeroState binary v1
 /// (little-endian, magic "HST1"), standard base64 with padding, in ONE action. The pump
@@ -2257,6 +2268,7 @@ uint32_t PlayerObject(uint8_t* base);
 /// Both are defined further down this file; the inventory dispatch below needs them here.
 uint32_t HeroEntity(uint8_t* base);
 uint32_t HeroComponent(uint8_t* base, uint32_t entity, uint32_t id);
+bool MenusActForPlayerTwo(uint8_t* base);
 std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle);
 
 /// `Inventory:<op>:<recordHash>` — WEAR, GIFT or USE an item the hero already has, by its GDB record
@@ -2500,7 +2512,7 @@ void WearSuitPieces(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uin
 /// that faulted for `unequip` on a client. It runs the same inner pair on its own hero instead.
 void DressOutfit(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uint32_t frame,
                  uint32_t suit, uint32_t hero, uint32_t suit_hash) {
-  if (!IsCoopJoiner(base)) {
+  if (!IsCoopJoiner(base) && !MenusActForPlayerTwo(base)) {
     const uint32_t dressed = CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x826CBF10u), 0u, suit) & 0xFFu;
     REXLOG_INFO("Refii guest-tick pump: Inventory:outfit — sub_826CBF10 on suit 0x{:08X}: {}",
                 suit_hash, dressed != 0u ? "pieces equipped" : "the hero owns none of its pieces");
@@ -2655,7 +2667,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   //
   // The screen calls around it (`sub_826D48F0`, `sub_826D7F90`) drive the 3D preview and the
   // presentation; both are Godot's now.
-  if (op == "unequip" && IsCoopJoiner(base)) {
+  if (op == "unequip" && (IsCoopJoiner(base) || MenusActForPlayerTwo(base))) {
     // THE INNER CALL, on the joiner's own hero. `sub_826CC430` picks the player through the
     // `game+140` chooser and faulted at 0x34 on a client (see CoopRepairNetworkSlot); what it
     // does after that is `sub_824BF4D8(comp15, slot)` with slot = `sub_826CC340(type - 91)`,
@@ -2789,7 +2801,9 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   // 0x826ca278. `sub_823E0FF8` alone uses the item without that close; any confirmation is the
   // item's own use script (`OnCarriedActionUse*` :Update()).
   const uint32_t activate = refii::guest::Address(0x826C9AB8u);
-  const bool joiner = IsCoopJoiner(base);
+  // Player two's own hero, acted on directly: an online joiner's, or local player two's while
+  // their pause is open (the guest's pending records land on player one either way).
+  const bool joiner = IsCoopJoiner(base) || MenusActForPlayerTwo(base);
   const bool switched = op == "equip" || (op == "use" && !joiner);
   PPCFunc* find = FindGuestFunction(refii::guest::Address(0x824F1C90u));
   PPCFunc* release = FindGuestFunction(refii::guest::Address(0x82764DC0u));
@@ -3263,6 +3277,29 @@ uint32_t LocalPlayer(uint8_t* base) {
 /// without us racing any of them. The two Refii instances agree over Refii's own co-op channel;
 /// the guest has no concept of this, so there is nothing of the title's to keep in step.
 std::atomic<bool> g_coop_own_hero{false};
+
+/// Local co-op on split screen (each local player their own camera) rather than one shared
+/// screen. Off until the host states it: the host turns it on only when it draws a view per
+/// player, since a second guest camera with one drawn view would leave player two off screen.
+/// Read when player two's Player is built.
+std::atomic<bool> g_coop_split_screen{false};
+
+/// The guest's memory base, for the C entry points the hooks payload calls without one. Set on
+/// the first guest tick; it never moves.
+std::atomic<uint8_t*> g_guest_base{nullptr};
+
+/// The joiner's last exit use, waiting for the host's exit at that position to update. Guest
+/// tick thread only (posted and taken there).
+struct CoopExitUse {
+  bool pending = false;
+  float at[3] = {0.0f, 0.0f, 0.0f};
+  uint32_t frame = 0;  // the guest's frame counter (0x83319650) when it arrived
+};
+CoopExitUse g_coop_exit_use;
+
+/// Guest ticks until a kick's disconnect: the pause screen's own countdown (`+0x118` = 5, set at
+/// 0x826A2A3C, run down by `sub_826A23F8`) so the queued 0x121 is flushed before the drop.
+int g_coop_kick_ticks = 0;
 
 /// Defined at the foot of this file, outside `refii::vfs`, so the hooks payload can reach it.
 extern "C" void RefiiCoopSetOwnHero(int on);
@@ -4043,14 +4080,30 @@ bool ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::stri
     return bits;
   };
 
+  // THE GUEST'S WHOLE HEROSAVE BLOCK, 0x3E0 bytes: 120 bytes of fields, then at +120 the
+  // 872-byte hero struct `sub_82440BB8` / `sub_82449060` fill (vptr first). Two slot-40 methods
+  // read the second part: CECStats copies block+0x78 into stats+0x500 (`sub_824DEA68` 0x824DEEAC
+  // → `sub_82449118`: three 128-wchar arrays, qwords, a flag) and CECMoney reads its value from
+  // block+0x180 (`sub_8242E380` → `sub_82EE8630`, `ld r3,0x108(r3)` on block+0x78). A 0x80-byte
+  // block handed them ~870 bytes of the pump's live stack — unterminated strings in player two's
+  // hero struct and a garbage purse. The struct part is player two's OWN (stats+0x500, so that
+  // copy changes nothing) and the money sits where CECMoney reads it.
   // Scratch above the callee's argument-save area: frame+0x60 and up.
-  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
-  const uint32_t block = frame + 0x60u;      // 0x80 bytes
-  const uint32_t pools = frame + 0xE0u;      // 4 floats
-  const uint32_t totals = frame + 0xF0u;     // 4 floats
-  for (uint32_t i = 0; i < 0x80u; i += 4u) StoreGuestU32(base, block + i, 0u);
+  const uint32_t frame = (ctx.r1.u32 - 0x600u) & ~0xFu;
+  const uint32_t block = frame + 0x60u;      // 0x3E0 bytes
+  const uint32_t pools = frame + 0x440u;     // 4 floats
+  const uint32_t totals = frame + 0x450u;    // 4 floats
+  for (uint32_t i = 0; i < 0x3E0u; i += 4u) StoreGuestU32(base, block + i, 0u);
+  const uint32_t stats = EntityComponent(base, entity, 57u);
+  if (stats != 0u) {
+    for (uint32_t i = 0; i < 872u; i += 4u) {
+      StoreGuestU32(base, block + 120u + i, LoadGuestU32(base, stats + 0x500u + i));
+    }
+  }
 
   StoreGuestU32(base, block + 0u, as_int(0));            // Money
+  StoreGuestU32(base, block + 0x180u, 0u);               // the hero struct's money, high word
+  StoreGuestU32(base, block + 0x184u, as_int(0));        // and low word — what CECMoney reads
   StoreGuestU32(base, block + 4u, as_int(1));            // Gender, 2 = male
   StoreGuestU32(base, block + 8u, as_float_bits(2));     // Morality
   StoreGuestU32(base, block + 12u, as_float_bits(3));    // Purity
@@ -5008,14 +5061,22 @@ void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) 
     return;
   }
 
+  // Each step is guest work on a body; the heap walk after each names the one that breaks it.
   bool done = CoopGivePlayer(ctx, base, player, entity);
+  HeapCheckAfter(base, player == 2 ? "CoopApplyHero give (player two)" : "CoopApplyHero give (player one)");
   done = CoopRedressPlayer(ctx, base, player, entity) && done;
+  HeapCheckAfter(base, "CoopApplyHero redress");
   done = ApplyEquip(ctx, base, player, entity, record.melee, record.ranged) && done;
+  HeapCheckAfter(base, "CoopApplyHero equip");
   if (player == 2) {
     done = ApplyStats(ctx, base, entity, record.stats) && done;
+    HeapCheckAfter(base, "CoopApplyHero stats");
     done = ApplySkills(ctx, base, entity, record.skills) && done;
+    HeapCheckAfter(base, "CoopApplyHero skills");
     done = ApplyBuild(ctx, base, entity, record.build) && done;
+    HeapCheckAfter(base, "CoopApplyHero build");
     done = ApplyFace(ctx, base, entity, record.face) && done;
+    HeapCheckAfter(base, "CoopApplyHero face");
   }
 
   if (!done) {
@@ -5725,9 +5786,10 @@ uint32_t HeroEntity(uint8_t* base) {
   }
 
   const uint32_t player_key =
-      (LoadGuestU8(base, session + 0x34u) != 0u && LoadGuestU8(base, session + 0x35u) != 0u)
-          ? 1u
-          : 2u;
+      MenusActForPlayerTwo(base) ||
+              !(LoadGuestU8(base, session + 0x34u) != 0u && LoadGuestU8(base, session + 0x35u) != 0u)
+          ? 2u
+          : 1u;
 
   const uint32_t player_map = LoadGuestU32(base, game + 0x9Cu);
   if (!plausible(player_map)) {
@@ -5765,6 +5827,121 @@ uint32_t HeroEntity(uint8_t* base) {
   const uint32_t control = LoadGuestU32(base, record + 16u);
   const uint32_t hero = plausible(control) ? LoadGuestU32(base, control) : 0u;
   return plausible(hero) ? hero : 0u;
+}
+
+/// PLAYER TWO LEAVES, as the guest's own answer to its drop-out boxes does (`sub_826A6E70` on
+/// "yes", 0x826A6EB8..0x826A6FA0), without the box (Godot asked):
+///   - an online joiner disconnects: `sub_8233E668(net, 1)` — HandleLostConnection saves the
+///     joiner's HeroSave (`sub_82445398`, 0x8232DEC0) and returns to the front end;
+///   - local player two (game+0x11C == 2), after `sub_8236ED98(gui, 1)` closes the pause: with a
+///     save named at SaveMgr+4 (box 27) `sub_82445680(SaveMgr, 1, 0, 0)` writes their HeroSave, the
+///     name is cleared and SaveMgr+2024 = -1; without one (box 26) `sub_826A6FD8` / `sub_826A73D0`
+///     merge their experience and gold into player one (neither reads its argument); then
+///     `sub_8233C2A0(net, 0, -1)` drops them (`sub_823168D8` destroys the entity and erases the
+///     slot).
+bool DispatchCoopLeave(PPCContext& ctx, uint8_t* base) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t net = plausible(game) ? LoadGuestU32(base, game + 140u) : 0u;
+  const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
+  const uint32_t gui = plausible(manager) ? LoadGuestU32(base, manager + 28u) : 0u;
+  if (!plausible(game) || !plausible(net) || !plausible(gui)) {
+    REXLOG_INFO("Refii guest-tick pump: CoopLeave — no game, session or GUI");
+    return true;
+  }
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
+  const bool joiner = LoadGuestU8(base, net + 52u) != 0u && LoadGuestU8(base, net + 54u) != 0u;
+  if (joiner) {
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8233E668u), net, 1u);
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8236ED98u), gui, 1u);
+    REXLOG_INFO("Refii guest-tick pump: CoopLeave — the joiner left the session (its hero saved)");
+    return true;
+  }
+  if (LoadGuestU32(base, game + 0x11Cu) != 2u) {
+    REXLOG_INFO("Refii guest-tick pump: CoopLeave — not local co-op and not a joiner; ignored");
+    return true;
+  }
+
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8236ED98u), gui, 1u);
+  const uint32_t saves = LoadGuestU32(base, game + 148u);
+  const uint32_t name = plausible(saves) ? LoadGuestU32(base, saves + 4u) : 0u;
+  const bool has_save = plausible(name) && static_cast<int32_t>(LoadGuestU32(base, name + 4u)) > 0;
+  if (has_save) {
+    PPCContext four = saved;
+    four.r6.u64 = 0u;
+    CallGuestAt(ctx, base, four, frame, refii::guest::Address(0x82445680u), saves, 1u, 0u);
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x822651A0u), saves + 4u,
+                refii::guest::Address(0x834A5E78u));
+    StoreGuestU32(base, saves + 2024u, 0xFFFFFFFFu);
+  } else {
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x826A6FD8u), 0u);
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x826A73D0u), 0u);
+  }
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8233C2A0u), net, 0u, 0xFFFFFFFFu);
+  REXLOG_INFO("Refii guest-tick pump: CoopLeave — local player two dropped out ({}; mode now {})",
+              has_save ? "their hero saved" : "no save: progress merged into player one",
+              LoadGuestU32(base, game + 0x11Cu));
+  return true;
+}
+
+/// THE ONLINE HOST KICKS PLAYER TWO, as the guest's own "Kick" box does on "yes" (`sub_826A2950`
+/// case 0x1C, 0x826A2A04..0x826A2A44): `sub_8233AC68(net)` queues message 0x121 (the joiner's
+/// "kicked" flag, net+321 → GUI_SCREEN_COOP_KICKED), `sub_822C3F50(net, 1)` and
+/// `sub_82182C30(net, 1)` flush the reliable and unreliable lists, and five ticks later
+/// `sub_8233E668(net, 0)` drops the connection (the pause screen's countdown, OnGuestTick here).
+bool DispatchCoopKick(PPCContext& ctx, uint8_t* base) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t net = plausible(game) ? LoadGuestU32(base, game + 140u) : 0u;
+  if (!plausible(net) || LoadGuestU32(base, game + 0x11Cu) != 1u ||
+      LoadGuestU8(base, net + 52u) == 0u || LoadGuestU8(base, net + 53u) == 0u ||
+      LoadGuestU32(base, net + 100u) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: CoopKick — not an online host with a peer; ignored");
+    return true;
+  }
+  const PPCContext saved = ctx;
+  const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8233AC68u), net);
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x822C3F50u), net, 1u);
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82182C30u), net, 1u);
+  g_coop_kick_ticks = 5;
+  REXLOG_INFO("Refii guest-tick pump: CoopKick — player two told; dropping them in 5 ticks");
+  return true;
+}
+
+/// The kick's disconnect, `g_coop_kick_ticks` guest ticks after the message.
+void RunCoopKickCountdown(PPCContext& ctx, uint8_t* base) {
+  if (g_coop_kick_ticks <= 0 || --g_coop_kick_ticks > 0) {
+    return;
+  }
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = root >= 0x10000u && root < 0xC0000000u ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t net = game >= 0x10000u && game < 0xC0000000u ? LoadGuestU32(base, game + 140u) : 0u;
+  if (net < 0x10000u || net >= 0xC0000000u) {
+    return;
+  }
+  const PPCContext saved = ctx;
+  const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8233E668u), net, 0u);
+  REXLOG_INFO("Refii guest-tick pump: CoopKick — player two dropped");
+}
+
+/// LOCAL CO-OP, AND PLAYER TWO OWNS THE OPEN PAUSE: the menus are player two's. The guest states
+/// the owner (`sub_8236FFC0`, sampled each tick by SampleMenuOwner) and opens player two's root
+/// for them (`sub_826A2C88(…, 0)`), but its pages read "the local player" — record 1 on one
+/// machine (`sub_821C7CE0`, and inline in `sub_829B1968` at 0x829B19B4). So while this holds,
+/// the hero the menus read and act on is player two's, as it is on an online joiner's machine.
+bool MenusActForPlayerTwo(uint8_t* base) {
+  if (refii_bridge_menu_owner_two() == 0) {
+    return false;
+  }
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = root >= 0x10000u && root < 0xC0000000u ? LoadGuestU32(base, root + 12u) : 0u;
+  return game >= 0x10000u && game < 0xC0000000u && LoadGuestU32(base, game + 0x11Cu) == 2u;
 }
 
 /// One component of an entity, by id, or 0.
@@ -7871,9 +8048,34 @@ HeapViolation WalkGuestHeap(uint8_t* base, uint32_t heap_global, uint32_t heap_i
   return none;
 }
 
+/// The first step a walk found the heaps broken after, and the node it saw — attribution for the
+/// tick report below. A walk takes no heap lock, so a suspect is reported only when the confirmed
+/// node is the same one.
+std::string g_heap_suspect;
+uint32_t g_heap_suspect_node = 0u;
+bool g_heap_reported = false;
+
+/// Walks the heaps after one step of guest work (a pump action, a hero-apply step) and records
+/// the first step after which they are broken. TU1 only, like the tick check.
+void HeapCheckAfter(uint8_t* base, const char* step) {
+  if (g_heap_reported || !g_heap_suspect.empty() || refii_guest_build() != 0) {
+    return;
+  }
+  static const uint32_t kHeaps[3] = {0x83496DB0u, 0x83496DB4u, 0x83496DB8u};
+  uint32_t steps = 200000u;
+  HeapViolation found;
+  for (uint32_t i = 0; i < 3u && found.what[0] == '\0'; ++i) {
+    found = WalkGuestHeap(base, kHeaps[i], i, steps);
+  }
+  if (found.what[0] != '\0') {
+    g_heap_suspect = std::string(step).substr(0, 96u);
+    g_heap_suspect_node = found.node;
+  }
+}
+
 void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
   static const bool enabled = ReadEnvFlag("REFII_CHECK_GUEST_HEAPS", false);
-  static bool reported = false;
+  bool& reported = g_heap_reported;
   static HeapViolation pending;
   static uint32_t pending_tick = 0u;
   if (!enabled || reported || refii_guest_build() != 0) {
@@ -7908,9 +8110,11 @@ void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
   const uint32_t node = found.node;
   const auto word = [&](uint32_t at) { return LooksLikeGuestPointer(at) || at < 0x10000u ? LoadGuestU32(base, at) : 0u; };
   REXLOG_INFO("Refii HEAP CORRUPTION at tick {} — heap {} bucket {} node 0x{:08X}: {} (node words "
-              "{:08X} {:08X} {:08X} {:08X}); last actions ran:{}",
+              "{:08X} {:08X} {:08X} {:08X}); first seen after: {}; last actions ran:{}",
               tick, found.heap, found.bucket, node, found.what, word(node), word(node + 4u),
-              word(node + 8u), word(node + 12u), actions.empty() ? " (none)" : actions.c_str());
+              word(node + 8u), word(node + 12u),
+              g_heap_suspect_node == node ? g_heap_suspect.c_str() : "(no step walk saw this node)",
+              actions.empty() ? " (none)" : actions.c_str());
 }
 
 void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
@@ -8204,6 +8408,27 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       ran = DispatchHeroState(name.substr(std::strlen(kActionHeroStatePrefix)));
     } else if (name.rfind(kActionCoopHeroHeldPrefix, 0) == 0) {
       ran = DispatchCoopHeroHeld(name.substr(std::strlen(kActionCoopHeroHeldPrefix)));
+    } else if (name == kActionCoopLeave) {
+      ran = DispatchCoopLeave(ctx, base);
+    } else if (name == kActionCoopKick) {
+      ran = DispatchCoopKick(ctx, base);
+    } else if (name.rfind(kActionCoopExitUsePrefix, 0) == 0) {
+      float at[3] = {0.0f, 0.0f, 0.0f};
+      const std::string rest = name.substr(std::strlen(kActionCoopExitUsePrefix));
+      if (std::sscanf(rest.c_str(), "%f:%f:%f", &at[0], &at[1], &at[2]) == 3) {
+        g_coop_exit_use.pending = true;
+        std::memcpy(g_coop_exit_use.at, at, sizeof(at));
+        g_coop_exit_use.frame = LoadGuestU32(base, refii::guest::Address(0x83319650u));
+        REXLOG_INFO("Refii guest-tick pump: the joiner used the exit at ({:.1f}, {:.1f}, {:.1f})",
+                    at[0], at[1], at[2]);
+      }
+      ran = true;
+    } else if (name.rfind(kActionCoopSplitScreenPrefix, 0) == 0) {
+      const bool on = name.substr(std::strlen(kActionCoopSplitScreenPrefix)) == "1";
+      if (on != g_coop_split_screen.exchange(on, std::memory_order_relaxed)) {
+        REXLOG_INFO("Refii guest-tick pump: local co-op on {} screen", on ? "split" : "a shared");
+      }
+      ran = true;
     } else if (name.rfind(kActionCoopHeroBodyPrefix, 0) == 0) {
       ran = DispatchCoopHeroBody(ctx, base,
                                  name.substr(std::strlen(kActionCoopHeroBodyPrefix)));
@@ -8435,6 +8660,7 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       }
       GuestTickPumpNoteRan();
       HeapCheckNoteAction(name);
+      HeapCheckAfter(base, name.c_str());
     } else {
       // The world is not ready — no front-end state, or the event ids are not interned yet.
       // Held rather than dropped or forced: the pump runs from the boot movies onward, so
@@ -8603,6 +8829,72 @@ void MaybeFadeInCoopScreen(PPCContext& ctx, uint8_t* base) {
   REXLOG_INFO("Refii co-op: the joiner's own screen 24 is up behind the host's fade — faded in "
               "here, because FadeScreenIn is the HOST's to broadcast (0x82305C64) and a client "
               "never calls it for itself");
+}
+
+/// Armed while a joiner's co-op screen is up; cleared once the joiner is in game.
+std::atomic<bool> g_joiner_gui_exit_armed{false};
+
+/// THE JOINER LEAVES THE CO-OP SCREEN'S PAUSE. Opening screen 24 runs GUI:OnEnter
+/// (`sub_8232CBA8` → `sub_8236EB68`), which pushes the GUI's GameFlow mode 1 (`sub_823D4C48`)
+/// over the in-game mode and suspends it (`sub_823D7FC8`: +60 = 0, control states off). Only
+/// GUI:OnExit (`sub_8236ED98` / disc `sub_82336F98`) pops it, and only while that mode is the top
+/// command (`sub_821ECA30`). On a joiner the screen closes and the mode stays: measured live, the
+/// joiner's GameFlow held [in-game (+60 0), mode 1] with no screen up, so none of player two's
+/// controls — movement, camera — were active. Calling the guest's own exit there (live, through
+/// the debug channel) popped it, entered the in-game mode and activated all twelve. Armed by the
+/// co-op screen; run when no screen is up and mode 1 is on top; disarmed once in game.
+void MaybeExitJoinerCoopPause(PPCContext& ctx, uint8_t* base) {
+  if (base == nullptr || !IsCoopJoiner(base)) {
+    g_joiner_gui_exit_armed.store(false, std::memory_order_relaxed);
+    return;
+  }
+  const uint32_t app = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
+  const uint32_t owner = LooksLikeGuestPointer(app) ? LoadGuestU32(base, app + 56u) : 0u;
+  const uint32_t gui = LooksLikeGuestPointer(app) ? LoadGuestU32(base, app + 28u) : 0u;
+  if (!LooksLikeGuestPointer(owner) || !LooksLikeGuestPointer(gui)) {
+    return;
+  }
+  const uint32_t current = refii::guest::ScreenIdToTu1(LoadGuestU32(base, owner + 4u));
+  if (current == 24u) {
+    g_joiner_gui_exit_armed.store(true, std::memory_order_relaxed);
+    return;
+  }
+  if (!g_joiner_gui_exit_armed.load(std::memory_order_relaxed) || current != 31u) {
+    return;
+  }
+
+  // The top GameFlow command and its type (vt+4), read as sub_821ECA30 reads them:
+  // *(*(game+128)+4) the list, its sentinel's +4 the top node, node+8 the command.
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = LooksLikeGuestPointer(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t holder = LooksLikeGuestPointer(game) ? LoadGuestU32(base, game + 128u) : 0u;
+  const uint32_t flow = LooksLikeGuestPointer(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
+  const uint32_t sentinel = LooksLikeGuestPointer(flow) ? LoadGuestU32(base, flow + 4u) : 0u;
+  const uint32_t node = LooksLikeGuestPointer(sentinel) ? LoadGuestU32(base, sentinel + 4u) : 0u;
+  const uint32_t command = LooksLikeGuestPointer(node) && node != sentinel ? LoadGuestU32(base, node + 8u) : 0u;
+  const uint32_t vtable = LooksLikeGuestPointer(command) ? LoadGuestU32(base, command) : 0u;
+  PPCFunc* const type_of = LooksLikeGuestPointer(vtable) ? FindGuestFunction(LoadGuestU32(base, vtable + 4u)) : nullptr;
+  static PPCFunc* const gui_exit = FindGuestFunction(refii::guest::Address(0x8236ED98u));
+  if (type_of == nullptr || gui_exit == nullptr) {
+    return;
+  }
+  PPCContext test = ctx;
+  test.r3.u32 = command;
+  type_of(test, base);
+  const uint32_t type = test.r3.u32;
+  if (type == 6u) {  // the in-game mode is on top: the join is through
+    g_joiner_gui_exit_armed.store(false, std::memory_order_relaxed);
+    return;
+  }
+  if (type != 1u) {
+    return;
+  }
+  PPCContext work = ctx;
+  work.r3.u32 = gui;
+  work.r4.u64 = 1u;
+  gui_exit(work, base);
+  REXLOG_INFO("Refii co-op: the joiner's co-op screen closed under the GUI's pause mode — ran the "
+              "guest's GUI exit (sub_8236ED98) so player two's controls and camera come back");
 }
 
 /// The screen already brought down, so the finish fires once per load. Cleared when no screen
@@ -8788,7 +9080,31 @@ void ConfirmPendingMenuEvent(PPCContext& ctx, uint8_t* base) {
       pending.name, pending.type, pending.id, pending.depth_after_push, now);
 }
 
+/// Who owns the open in-game GUI, sampled for the host (split screen routes that player's pad to
+/// the menu and seats it in their half). The guest's own test is `sub_8236E400(gui)`, gui =
+/// `*(*(0x83496B08)+0x1C)` (sub_826D5AF0 passes it at 0x826d5b38): the game-state gate
+/// `sub_821ECA30`, then the context keyed 0 in the GUI's map at +0x44 (`sub_8236FFC0(gui, 0)`),
+/// whose +4 is 1 when PLAYER TWO opened it. Run as its two parts rather than whole: the lookup
+/// answers 0 when the map holds no key 0, and the predicate would then read address 4.
+void SampleMenuOwner(PPCContext& ctx, uint8_t* base) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t manager = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
+  const uint32_t gui = plausible(manager) ? LoadGuestU32(base, manager + 0x1Cu) : 0u;
+  int32_t two = 0;
+  if (plausible(gui)) {
+    const PPCContext saved = ctx;
+    const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
+    if ((CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x821ECA30u), 0u) & 0xFFu) != 0u) {
+      const uint32_t context = CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8236FFC0u), gui, 0u);
+      two = plausible(context) && LoadGuestU32(base, context + 4u) == 1u ? 1 : 0;
+    }
+  }
+  refii_bridge_set_menu_owner_two(two);
+}
+
 void OnGuestTick(PPCContext& ctx, uint8_t* base) {
+  g_guest_base.store(base, std::memory_order_relaxed);
+  RunCoopKickCountdown(ctx, base);
   ConfirmPendingMenuEvent(ctx, base);
 
   const uint64_t tick = GuestTickPumpObserveTick();
@@ -8814,6 +9130,7 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // began it, so by the next tick the captured rows are whole. There is no end marker to use
   // instead — the in-game lists never call `UpdateAfterSpawning`.
   refii_bridge_menu_settle();
+  SampleMenuOwner(ctx, base);
 
   DrainOnGuestThread(ctx, base);
 
@@ -8831,6 +9148,7 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   // in-game tick, once the world it was loading is up.
   MaybeFinishInGameLoadingScreen(ctx, base);
   MaybeFadeInCoopScreen(ctx, base);
+  MaybeExitJoinerCoopPause(ctx, base);
   ++g_coop_ticks;
   CheckGuestHeaps(base, g_coop_ticks);
   CoopRedress(ctx, base);
@@ -9029,9 +9347,55 @@ REFII_MENU_BOUNDARY_HOOK(rex_lhGui_FrontendRoot_PopulateMainMenu)
 #undef REFII_MENU_BOUNDARY_HOOK
 
 extern "C" {
+uint8_t* RefiiGuestBase(void) {
+  return refii::vfs::g_guest_base.load(std::memory_order_relaxed);
+}
+
 void RefiiCoopSetOwnHero(int on) {
   refii::vfs::g_coop_own_hero.store(on != 0, std::memory_order_relaxed);
 }
+
+/// Whether `item` is a weapon the host's EquipRecord put on `body` (CoopKeepHostWeapons' list).
+/// Guest tick thread only, as the list is.
+int RefiiCoopIsHostWeapon(uint32_t body, uint32_t item) {
+  const auto found = refii::vfs::g_coop_host_weapon.find(body);
+  if (item == 0u || found == refii::vfs::g_coop_host_weapon.end()) {
+    return 0;
+  }
+  return found->second[0] == item || found->second[1] == item ? 1 : 0;
+}
+
+/// Split screen, and LOCAL co-op (game+0x11C == 2). The host states the switch whatever the
+/// session; an online joiner's Player must not take player two's split-screen camera — that
+/// ticked a second manager on the joiner and redirected its own camera's activations.
+int RefiiCoopSplitScreen(void) {
+  if (!refii::vfs::g_coop_split_screen.load(std::memory_order_relaxed)) {
+    return 0;
+  }
+  uint8_t* base = refii::vfs::g_guest_base.load(std::memory_order_relaxed);
+  if (base == nullptr) {
+    return 0;
+  }
+  const uint32_t root = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = root >= 0x10000u && root < 0xC0000000u ? refii::vfs::LoadGuestU32(base, root + 12u) : 0u;
+  return game >= 0x10000u && game < 0xC0000000u && refii::vfs::LoadGuestU32(base, game + 0x11Cu) == 2u ? 1 : 0;
+}
+
+/// The joiner's pending exit use, if it is not older than 300 guest frames: its guest position.
+int RefiiCoopPeekExitUse(uint8_t* base, float* out_xyz) {
+  auto& use = refii::vfs::g_coop_exit_use;
+  if (!use.pending || out_xyz == nullptr || base == nullptr) {
+    return 0;
+  }
+  if (refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u)) - use.frame > 300u) {
+    use.pending = false;
+    return 0;
+  }
+  std::memcpy(out_xyz, use.at, sizeof(use.at));
+  return 1;
+}
+
+void RefiiCoopClearExitUse(void) { refii::vfs::g_coop_exit_use.pending = false; }
 
 int RefiiCoopGetOwnHero(void) {
   return refii::vfs::g_coop_own_hero.load(std::memory_order_relaxed) ? 1 : 0;

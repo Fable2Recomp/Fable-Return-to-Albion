@@ -40,11 +40,22 @@ public static class Engine_WeatherShelter
 
     public static bool HasBox => _boxOf != 0;
 
+    /// <summary>
+    /// <see cref="ToBox"/> for player two's view on split screen: the building player two stands
+    /// in (<see cref="HostBridge.PlayerTwoBuilding"/>). The precipitation shaders take it in player
+    /// two's view.
+    /// </summary>
+    public static Transform3D ToBoxTwo { get; private set; } = Transform3D.Identity;
+
+    public static bool HasBoxTwo => _boxOfTwo != 0;
+
     /// <summary>Bumped whenever <see cref="ToBox"/> or <see cref="HasBox"/> changes.</summary>
     public static int Version { get; private set; }
 
     private static uint _building;
     private static uint _boxOf;
+    private static uint _buildingTwo;
+    private static uint _boxOfTwo;
     private static float _untilSample;
 
     public static void Tick(float delta)
@@ -67,21 +78,56 @@ public static class Engine_WeatherShelter
                 _boxOf = _building;
                 Version++;
             }
+
+            SamplePlayerTwo();
         }
 
         Exposure = Mathf.MoveToward(Exposure, _building != 0 ? 0f : 1f, delta / FadeSeconds);
     }
 
+    /// <summary>Player two's dry volume while the screen is split; forgotten when it rejoins.</summary>
+    private static void SamplePlayerTwo()
+    {
+        if (!Refii.Core.Engine_Views.Split)
+        {
+            if (_boxOfTwo != 0)
+            {
+                _boxOfTwo = 0;
+                Version++;
+            }
+
+            _buildingTwo = 0;
+            return;
+        }
+
+        if (HostBridge.PlayerTwoBuilding() is { } building && building != _buildingTwo)
+        {
+            _buildingTwo = building;
+            GD.Print(building != 0
+                ? $"[weather] player two entered building 0x{building:X8}"
+                : "[weather] player two left the building");
+        }
+
+        if (_buildingTwo != 0 && _boxOfTwo != _buildingTwo && TryBox(_buildingTwo, out Transform3D toBox))
+        {
+            ToBoxTwo = toBox;
+            _boxOfTwo = _buildingTwo;
+            Version++;
+        }
+    }
+
     /// <summary>Forgets the dry volume; a level's buildings do not outlive it.</summary>
     public static void Reset()
     {
-        if (_boxOf != 0)
+        if (_boxOf != 0 || _boxOfTwo != 0)
         {
             _boxOf = 0;
+            _boxOfTwo = 0;
             Version++;
         }
 
         _building = 0;
+        _buildingTwo = 0;
         Exposure = 1f;
     }
 

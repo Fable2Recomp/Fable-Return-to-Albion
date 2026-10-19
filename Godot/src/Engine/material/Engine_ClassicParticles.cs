@@ -107,7 +107,8 @@ public partial class Engine_ClassicParticles : Node
     /// material states them; the translated particle stages read those registers through
     /// XR_VS_CONST.
     /// </summary>
-    private const string FixedAxesDefines =
+    private static readonly string FixedAxesDefines =
+        ViewDefines + "\n" +
         "uniform bool xr_fixed_axes = false;\n" +
         "uniform vec4 xr_fixed_up = vec4(0.0, 0.0, 1.0, 0.0);\n" +
         "uniform vec4 xr_fixed_right = vec4(1.0, 0.0, 0.0, 0.0);\n" +
@@ -116,8 +117,10 @@ public partial class Engine_ClassicParticles : Node
 
     private const string DisplacementDefines =
         "global uniform sampler2D " + Engine_ClassicDisplacement.SceneDepthName + ";\n" +
+        "global uniform sampler2D " + Engine_ClassicDisplacement.SceneDepthSecondName + ";\n" +
         "#define XR_ALPHA_OUT(a) 0.0\n" +
-        "#define XR_BEFORE_OUTPUT(c) if (texture(" + Engine_ClassicDisplacement.SceneDepthName + ", SCREEN_UV).r > FRAGCOORD.z) { discard; }";
+        "#define XR_BEFORE_OUTPUT(c) if ((XR_SECOND_VIEW ? texture(" + Engine_ClassicDisplacement.SceneDepthSecondName +
+        ", SCREEN_UV).r : texture(" + Engine_ClassicDisplacement.SceneDepthName + ", SCREEN_UV).r) > FRAGCOORD.z) { discard; }";
 
     private static readonly List<ShaderMaterial> _chain = new();
 
@@ -648,7 +651,10 @@ public partial class Engine_ClassicParticles : Node
         };
         if (!group.Displacement)
         {
-            Engine_ClassicMaterial.RegisterSinglePass(material, Family, VertexEntry, tokens, renderMode, defines);
+            // Its light-group variants are composed from these defines: they read the view's own
+            // inverse view-projection too.
+            Engine_ClassicMaterial.RegisterSinglePass(material, Family, VertexEntry, tokens, renderMode,
+                (defines.Length != 0 ? defines + "\n" : string.Empty) + ViewDefines);
         }
         material.SetShaderParameter("xr_spec_constants", 2u);
         material.SetShaderParameter("xr_alpha_threshold", (alphaRef16 ? 16f : 1f) / 255f);
@@ -986,23 +992,23 @@ public partial class Engine_ClassicParticles : Node
     /// [0, 1] depth, which is 2z - 1 in the camera's GL projection; the rows are those of
     /// (Godot world to guest world) x inverse(projection x view) x (that z remap).
     /// </summary>
+    /// <remarks>
+    /// The material's rows are the first view's, from the camera that draws it (on split screen
+    /// player one's, whose projection is not the window camera's); the second view reads its own
+    /// from the host register the composition names (<see cref="ViewDefines"/>).
+    /// </remarks>
     private bool InverseViewProjection(Camera3D camera)
     {
-        Projection view = new Projection(camera.GlobalTransform.AffineInverse());
-        Projection projection = camera.GetCameraProjection();
-        Projection remap = Projection.Identity;
-        remap.Z = new Vector4(0f, 0f, 2f, 0f);
-        remap.W = new Vector4(0f, 0f, -1f, 1f);
-        // Godot (x, y, z) is the guest's (-x, z, y) (XR_GODOT_TO_GUEST_WORLD).
-        var toGuest = new Projection(
-            new Vector4(-1f, 0f, 0f, 0f), new Vector4(0f, 0f, 1f, 0f), new Vector4(0f, 1f, 0f, 0f), new Vector4(0f, 0f, 0f, 1f));
-        Projection m = toGuest * (projection * view).Inverse() * remap;
-        for (int i = 0; i < 4; i++)
-        {
-            _inverseViewProjection[i] = new Vector4(m.X[i], m.Y[i], m.Z[i], m.W[i]);
-        }
+        Engine_ClassicViews.InverseViewProjection(Engine_ClassicViews.Camera(0) ?? camera, _inverseViewProjection);
         return _inverseVp.Take(_inverseViewProjection);
     }
+
+    /// <summary>
+    /// The particle and trail stages' material constants that belong to the view: the soft
+    /// groups' g_InverseViewProjection (Engine_ClassicShaders reads the directive).
+    /// </summary>
+    private static string ViewDefines =>
+        Engine_ClassicShaders.ViewParam("ps_g_InverseViewProjection", true, Engine_ClassicRegisters.Ps.HostInverseViewProjection);
 
     /// <summary>A material texture: by the path the key points at, else by the key as a hash.</summary>
     private Texture2D? Texture(int o) => Texture(_buffer, o);

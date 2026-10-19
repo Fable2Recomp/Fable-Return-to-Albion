@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 189;
+	public const int ExpectedAbiVersion = 193;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -2481,6 +2481,80 @@ public static class HostBridge
 
 	private static float[]? _cameraPairValues;
 
+	/// <summary>
+	/// One player's own live camera (1 or 2), or null when that player has no camera manager —
+	/// local player two has one only on split screen. Not blended by the guest: the caller keeps
+	/// its own timeline, as it does for player one's.
+	/// </summary>
+	public static GuestCamera? GetPlayerCamera(int player)
+	{
+		if (player != 1 && player != 2)
+		{
+			return null;
+		}
+
+		_playerCameraValues ??= new float[11];
+		float[] v = _playerCameraValues;
+		if (RefiiHostGetPlayerCamera(player, v) == 0)
+		{
+			return null;
+		}
+
+		return new GuestCamera(
+			new Vector3(v[0], v[1], v[2]),
+			new Vector3(v[3], v[4], v[5]),
+			new Vector3(v[6], v[7], v[8]),
+			v[9],
+			v[10] != 0f);
+	}
+
+	private static float[]? _playerCameraValues;
+
+	/// <summary>
+	/// The player who owns the open in-game GUI (1 or 2) — the guest's own owner of its pause and
+	/// what opens from it, sampled every guest tick. Meaningful while a menu is open.
+	/// </summary>
+	public static int GetMenuOwner() => TryGetAbiVersion() is null ? 1 : RefiiHostGetMenuOwner();
+
+	/// <summary>
+	/// The players a region exit refused since the last call because their partner was out of
+	/// range (bit 0 player one, bit 1 player two) — the co-op travel rule, once per approach.
+	/// Read-and-clear.
+	/// </summary>
+	public static int TakeExitRefused() => TryGetAbiVersion() is null ? 0 : RefiiHostTakeExitRefused();
+
+	/// <summary>
+	/// Online: this machine's player stands at a region exit waiting for the partner (the co-op
+	/// travel rule) — restated to the peer, which tells its player.
+	/// </summary>
+	public static bool ExitWaiting() => TryGetAbiVersion() is not null && IsGuestUp && RefiiHostGetExitWaiting() != 0;
+
+	/// <summary>
+	/// The online joiner's newest region-exit use: a sequence (0 = none yet) and the exit's guest
+	/// position. Restated to the host, which fires the exit standing there.
+	/// </summary>
+	public static (uint Sequence, float X, float Y, float Z) ExitRequest()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return (0u, 0f, 0f, 0f);
+		}
+
+		float[] at = _exitRequestAt ??= new float[3];
+		uint sequence = RefiiHostGetExitRequest(at);
+		return (sequence, at[0], at[1], at[2]);
+	}
+
+	private static float[]? _exitRequestAt;
+
+	/// <summary>
+	/// The things whose use prompt answers player two this frame — the nearer player's, in co-op
+	/// (coop_hero_hooks.cpp) — into <paramref name="into"/>; returns the count. A pooled world
+	/// icon's <see cref="WorldSprite.Entity"/> is its prompted thing.
+	/// </summary>
+	public static int GetPlayerTwoPrompts(uint[] into) =>
+		TryGetAbiVersion() is null || !IsGuestUp ? 0 : RefiiHostGetPlayerTwoPrompts(into, into.Length);
+
 	/// <summary>Whether the guest still wants the movie the host is showing.</summary>
 	public enum MoviePlayback { None = 0, Wanted = 1, EndedByGuest = 2 }
 
@@ -4623,7 +4697,27 @@ public static class HostBridge
 		uint root = Word(GuestAddress(0x83496AB8u));
 		uint world = Word(Word(Word(root + 12u) + 88u) + 4u);
 		uint hero = Word(Word(Word(world) + 108u));
-		if (root == 0 || world == 0 || hero == 0 || (Word(hero + 52u) & 1u) == 0)
+		return root == 0 || world == 0 ? null : BuildingOf(hero);
+	}
+
+	/// <summary>
+	/// <see cref="HeroBuilding"/> for player two: the same cached answer on player two's own
+	/// component 128, which the guest fills for either player (`sub_821CC460`, gated by
+	/// `sub_82232778` on P+104 and P+112, queries the owner's component 128 through
+	/// `sub_821D8508`). Null without a player two or an answer this frame.
+	/// </summary>
+	public static uint? PlayerTwoBuilding()
+	{
+		(_, uint two) = CoopPlayerEntities();
+		return two == 0 ? null : BuildingOf(two);
+	}
+
+	/// <summary>The building cached on <paramref name="hero"/>'s component 128 within the last two frames.</summary>
+	private static uint? BuildingOf(uint hero)
+	{
+		static uint Word(uint at) => at >= 0x10000u && TryPeekWord(at, out uint w) ? w : 0u;
+
+		if (hero == 0 || (Word(hero + 52u) & 1u) == 0)
 		{
 			return null;
 		}
@@ -8089,6 +8183,24 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetCameraPair(float[] outValues);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetPlayerCamera(int player, float[] outValues);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetMenuOwner();
+
+	[DllImport(Library)]
+	private static extern int RefiiHostTakeExitRefused();
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetPlayerTwoPrompts(uint[] outThings, int capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetExitWaiting();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetExitRequest(float[] outXyz);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAnimWalkStats(uint[] outWords, uint capacity);

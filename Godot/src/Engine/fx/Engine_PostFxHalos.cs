@@ -150,6 +150,9 @@ public partial class Engine_PostFxHalos : Node
 	private readonly List<(SkyHalo Halo, float Visibility)> _sky = new();
 	private readonly Dictionary<ulong, float> _spriteLayers = new();
 
+	/// <summary>Every view's eye this frame (Engine_Views.Cameras), the window's first.</summary>
+	private readonly Vector3[] _eyes = new Vector3[2];
+
 	private readonly Dictionary<uint, float> _layers = new();
 	private readonly List<Image> _sprites = new();
 	private readonly List<Texture2DArray> _retained = new();
@@ -199,8 +202,22 @@ public partial class Engine_PostFxHalos : Node
 		}
 
 		// Sampled OUTSIDE the gate: GlobalPosition and IsVisibleInTree walk the scene tree.
+		// ONE LIST FOR EVERY VIEW. The post-FX projects each halo through the camera it is
+		// rendering, but what is published here is shared: the distance fade is taken from the
+		// nearest view's eye, and a sky halo hangs off the window camera's.
 		Camera3D? camera = GetViewport()?.GetCamera3D();
 		Vector3 eye = camera?.GlobalPosition ?? Vector3.Zero;
+		int eyes = 0;
+		foreach (Camera3D view in Refii.Core.Engine_Views.Cameras(camera))
+		{
+			if (eyes == _eyes.Length)
+			{
+				break;
+			}
+
+			_eyes[eyes++] = view.GlobalPosition;
+		}
+
 		_build.Clear();
 		foreach (Halo halo in _live)
 		{
@@ -216,10 +233,16 @@ public partial class Engine_PostFxHalos : Node
 			// +0x1C0 product — so the sprite dies with its light instead of outliving the
 			// renderer's cull. Godot's distance fade happens inside the renderer where this
 			// feed cannot see it, so the same window is applied here.
-			if (camera is not null && light.DistanceFadeEnabled)
+			if (eyes > 0 && light.DistanceFadeEnabled)
 			{
 				float end = light.DistanceFadeBegin + light.DistanceFadeLength;
-				float dist = eye.DistanceTo(light.GlobalPosition);
+				Vector3 at = light.GlobalPosition;
+				float dist = float.MaxValue;
+				for (int e = 0; e < eyes; e++)
+				{
+					dist = MathF.Min(dist, _eyes[e].DistanceTo(at));
+				}
+
 				energy *= Math.Clamp(
 					(end - dist) / MathF.Max(light.DistanceFadeLength, 0.01f), 0f, 1f);
 			}

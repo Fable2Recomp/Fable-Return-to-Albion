@@ -27,6 +27,12 @@ namespace Refii.Entities;
 /// Native shape, the same as <see cref="Refii.Fx.Engine_FxAdditiveLayer"/>: a SubViewport sharing
 /// the world at half the host's size, a camera copying the main camera, a render layer only this
 /// viewport's camera sees, and the texture published for the post chain on the render thread.
+///
+/// ONE INSTANCE PER VIEW (<see cref="Refii.Core.Engine_Views"/>). View 0 mirrors the window's
+/// camera, or player one's view while the screen is split; view 1 exists only while split and
+/// mirrors player two's. Each is half its own view's size, takes its alpha from its own camera's
+/// distance, and is read by its own view's post chain
+/// (<see cref="TrySnapshot(int, out Rid, out float, Target[])"/>).
 /// </remarks>
 public partial class Engine_EntityHighlightLayer : Node
 {
@@ -51,12 +57,15 @@ public partial class Engine_EntityHighlightLayer : Node
     /// <summary>`flt_8209B650`: the alpha floor.</summary>
     private const float AlphaFloor = 0.1f;
 
+    /// <summary>Views a layer can be drawn for: the window or player one's, and player two's.</summary>
+    public const int Views = 2;
+
     private static readonly object Gate = new();
     private static Engine_EntityHighlightLayer? _current;
-    private static Rid _publishedRd;
-    private static bool _publishedActive;
-    private static float _publishedScale = 1f;
-    private static readonly Target[] _published = new Target[Slots];
+    private static readonly Rid[] _publishedRd = new Rid[Views];
+    private static readonly bool[] _publishedActive = new bool[Views];
+    private static readonly float[] _publishedScale = { 1f, 1f };
+    private static readonly Target[][] _published = { new Target[Slots], new Target[Slots] };
     private readonly Target[] _targets = new Target[Slots];
 
     /// <summary>The guest's blur width this frame, in half-res texels; 0 until it has stated
@@ -66,6 +75,16 @@ public partial class Engine_EntityHighlightLayer : Node
     private SubViewport _viewport = null!;
     private Camera3D _camera = null!;
     private Viewport? _host;
+
+    /// <summary>The viewport Ensure was called from; view 0's host whenever the screen is whole.</summary>
+    private Viewport? _windowHost;
+
+    /// <summary>Which view this instance draws for.</summary>
+    private int _view;
+
+    /// <summary>View 1's instance while the screen is split; held by view 0's.</summary>
+    private Engine_EntityHighlightLayer? _second;
+
     private Vector2I _size;
     private bool _enabled = true;
     private bool _usable;
@@ -96,14 +115,29 @@ public partial class Engine_EntityHighlightLayer : Node
     /// The layer texture for the post chain, valid only when something was drawn on it this
     /// frame. Render-thread safe: plain values under a lock.
     /// </summary>
-    public static bool TrySnapshot(out Rid layer, out float scale, Target[] targets)
+    public static bool TrySnapshot(out Rid layer, out float scale, Target[] targets) =>
+        TrySnapshot(0, out layer, out scale, targets);
+
+    /// <summary>
+    /// <paramref name="view"/>'s layer for that view's post chain: 0 the window or player one's
+    /// view, 1 player two's. Render-thread safe.
+    /// </summary>
+    public static bool TrySnapshot(int view, out Rid layer, out float scale, Target[] targets)
     {
         lock (Gate)
         {
-            layer = _publishedRd;
-            scale = _publishedScale;
-            System.Array.Copy(_published, targets, Slots);
-            return layer.IsValid && _publishedActive;
+            if (view < 0 || view >= Views)
+            {
+                layer = default;
+                scale = 1f;
+                System.Array.Clear(targets, 0, Slots);
+                return false;
+            }
+
+            layer = _publishedRd[view];
+            scale = _publishedScale[view];
+            System.Array.Copy(_published[view], targets, Slots);
+            return layer.IsValid && _publishedActive[view];
         }
     }
 
@@ -114,6 +148,11 @@ public partial class Engine_EntityHighlightLayer : Node
         {
             _viewport.RenderTargetUpdateMode = on ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
         }
+
+        if (_second is not null && GodotObject.IsInstanceValid(_second))
+        {
+            _second.SetEnabled(on);
+        }
     }
 
     public static void Ensure(Node context)
@@ -123,7 +162,7 @@ public partial class Engine_EntityHighlightLayer : Node
         SceneTree? tree = context.GetTree();
         if (tree is null) return;
         Viewport host = context.GetViewport() ?? tree.Root;
-        var node = new Engine_EntityHighlightLayer { Name = "EntityHighlightLayer", _host = host };
+        var node = new Engine_EntityHighlightLayer { Name = "EntityHighlightLayer", _host = host, _windowHost = host };
         _current = node;
         tree.Root.CallDeferred(Node.MethodName.AddChild, node);
     }
@@ -131,6 +170,7 @@ public partial class Engine_EntityHighlightLayer : Node
     public override void _Ready()
     {
         _host ??= GetViewport();
+        _windowHost ??= _host;
 
         // Cleared to zero, the guest's own clear (`sub_82A6A1D0`, 0x82a6a28c..0x82a6a2a4). Only
         // R and G are read — the slot and the silhouette — so the alpha channel never matters.
@@ -158,7 +198,7 @@ public partial class Engine_EntityHighlightLayer : Node
             GlowEnabled = false,
         };
 
-        _camera = new Camera3D { Name = "HighlightCamera", CullMask = LayerMask, Environment = env };
+        _camera = new Camera3D { Name = "HighlightCamera", CullMask = LayerMask | (_view == 1 ? Refii.Models.Engine_ClassicViews.SecondViewLayer : 0u), Environment = env };
         _viewport.AddChild(_camera);
         AddChild(_viewport);
         _camera.Current = true;
@@ -172,6 +212,61 @@ public partial class Engine_EntityHighlightLayer : Node
         {
             GD.Print("[highlight] layer: the viewport texture has no render-device texture; " +
                 "the targeting glow stays off");
+        }
+
+        if (_view == 0)
+        {
+            Refii.Core.Engine_Views.ViewsChanged += FollowViews;
+            FollowViews();
+        }
+    }
+
+    /// <summary>
+    /// View 0's: hosts this instance on player one's view and builds view 1's while the screen is
+    /// split; back on the window, and view 1's freed, when it rejoins.
+    /// </summary>
+    private void FollowViews()
+    {
+        if (!GodotObject.IsInstanceValid(this) || !IsInsideTree())
+        {
+            return;
+        }
+
+        if (Refii.Core.Engine_Views.Split &&
+            Refii.Core.Engine_Views.FirstViewport is { } first && GodotObject.IsInstanceValid(first) &&
+            Refii.Core.Engine_Views.SecondViewport is { } second && GodotObject.IsInstanceValid(second))
+        {
+            _host = first;
+            if (_second is null || !GodotObject.IsInstanceValid(_second))
+            {
+                _second = new Engine_EntityHighlightLayer
+                {
+                    Name = "EntityHighlightLayerSecondView",
+                    _view = 1,
+                    _host = second,
+                    _enabled = _enabled,
+                };
+                AddChild(_second);
+            }
+            else
+            {
+                _second._host = second;
+            }
+
+            return;
+        }
+
+        _host = _windowHost;
+        if (_second is not null && GodotObject.IsInstanceValid(_second))
+        {
+            _second.QueueFree();
+        }
+
+        _second = null;
+        lock (Gate)
+        {
+            _publishedRd[1] = default;
+            _publishedActive[1] = false;
         }
     }
 
@@ -199,10 +294,15 @@ public partial class Engine_EntityHighlightLayer : Node
             _current = null;
         }
 
+        if (_view == 0)
+        {
+            Refii.Core.Engine_Views.ViewsChanged -= FollowViews;
+        }
+
         lock (Gate)
         {
-            _publishedRd = default;
-            _publishedActive = false;
+            _publishedRd[_view] = default;
+            _publishedActive[_view] = false;
         }
     }
 
@@ -271,10 +371,10 @@ public partial class Engine_EntityHighlightLayer : Node
 
         lock (Gate)
         {
-            _publishedRd = rd;
-            _publishedScale = scale;
-            System.Array.Copy(_targets, _published, Slots);
-            _publishedActive = active && rd.IsValid;
+            _publishedRd[_view] = rd;
+            _publishedScale[_view] = scale;
+            System.Array.Copy(_targets, _published[_view], Slots);
+            _publishedActive[_view] = active && rd.IsValid;
         }
     }
 

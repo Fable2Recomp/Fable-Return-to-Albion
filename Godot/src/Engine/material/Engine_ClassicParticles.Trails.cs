@@ -49,6 +49,8 @@ public partial class Engine_ClassicParticles
         public bool Displaces;
         /// <summary>True when single-trail camera-aligned billboarding requires vs_g_CameraZVector on camera rotation.</summary>
         public bool CameraAligned;
+        /// <summary>The <see cref="CameraAligned"/> its material's xr_camera_axis holds; null for a new material.</summary>
+        public bool? CameraAxisSent;
         /// <summary>True when depth-fade (soft trails) requires ps_g_InverseViewProjection on camera motion.</summary>
         public bool Soft;
         public float[] Snapshot = Array.Empty<float>();
@@ -361,7 +363,8 @@ public partial class Engine_ClassicParticles
         }
         trail.Node.Layers = displaces ? Engine_ClassicDisplacement.Layer : Layer;
         trail.Displaces = displaces;
-        Shader? shader = Engine_ClassicShaders.Compose(vertexEntry, pixelEntry, renderMode, 0, defines);
+        Shader? shader = Engine_ClassicShaders.Compose(vertexEntry, pixelEntry, renderMode, 0,
+            (defines.Length != 0 ? defines + "\n" : string.Empty) + TrailViewDefines);
         // A translation from before the trail fetch read the current vertex for every control
         // point and would draw the strip collapsed: until the shaders are rebuilt, no trail.
         if (shader is null || !shader.Code.Contains("xr_vertex_stream", StringComparison.Ordinal))
@@ -388,8 +391,19 @@ public partial class Engine_ClassicParticles
         return UseTrailMaterial(trail, material);
     }
 
+    /// <summary>
+    /// The trail stages' material constants that belong to the view: a soft trail's
+    /// g_InverseViewProjection, and g_CameraZVector when it is the camera's z (a fixed trail's
+    /// axis is its own: xr_camera_axis gates it).
+    /// </summary>
+    private static string TrailViewDefines =>
+        Engine_ClassicShaders.ViewParam("ps_g_InverseViewProjection", true, Engine_ClassicRegisters.Ps.HostInverseViewProjection) + "\n" +
+        "uniform bool xr_camera_axis = false;\n" +
+        Engine_ClassicShaders.ViewParam("vs_g_CameraZVector", false, Engine_ClassicRegisters.Vs.HostCameraZ, "xr_camera_axis");
+
     private static bool UseTrailMaterial(Trail trail, ShaderMaterial material)
     {
+        trail.CameraAxisSent = null;
         if (trail.Stream is not null)
         {
             material.SetShaderParameter(VertexStreamName, trail.Stream);
@@ -506,6 +520,11 @@ public partial class Engine_ClassicParticles
         }
 
         trail.CameraAligned = !doubled && _trailBuffer[at + 33] == 0f;
+        if (trail.CameraAxisSent != trail.CameraAligned)
+        {
+            trail.CameraAxisSent = trail.CameraAligned;
+            m.SetShaderParameter(CameraAxisName, trail.CameraAligned);
+        }
         if (!doubled && (changed || fresh || _trailBuffer[at + 33] == 0f))
         {
             // c299: the trail's own axis (y turned by its quaternion, `sub_822A1640`) when it is
@@ -547,6 +566,7 @@ public partial class Engine_ClassicParticles
     private static readonly StringName TrailSelfIllumName = "vs_g_KeyFrameSelfIllumFactorStartTimesScale";
     private static readonly StringName TrailParticleTrailPropertiesName = "vs_g_ParticleTrailProperties";
     private static readonly StringName TrailCameraZVectorName = "vs_g_CameraZVector";
+    private static readonly StringName CameraAxisName = "xr_camera_axis";
     private static readonly StringName TrailTextureStartTimesName = "ps_g_TextureStartTimes";
     private static readonly StringName TrailTextureStartTimesInvDeltaName = "ps_g_TextureStartTimesInvDelta";
     private static readonly StringName TrailTextureNumXDivsName = "ps_g_TextureNumXDivs";

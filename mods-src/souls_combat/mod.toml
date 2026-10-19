@@ -1,4 +1,4 @@
 name = "Souls Combat"
 version = "0.1.0"
 author = "Refii"
-description = "Committed, stamina-driven combat in the style of Elden Ring: enemies take turns and pace their swings, LT toggles the lock-on, swings, rolls and blocks spend stamina, spells spend mana, and a Stamina ability joins Strength. Refii's worked example of a hard mod."
+description = "Committed, stamina-driven combat in the style of Elden Ring: a hero who pivots on the spot under a fixed orbit camera, enemies that gang up, commit to their combos and punish openings, LT toggles the lock-on, swings, rolls and blocks spend stamina, spells spend mana, and a Stamina ability joins Strength. Refii's worked example of a hard mod."

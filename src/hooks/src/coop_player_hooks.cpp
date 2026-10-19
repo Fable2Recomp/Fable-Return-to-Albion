@@ -580,6 +580,8 @@ uint32_t DestroyLocalHeldItems(const PPCContext& saved, uint8_t* base, uint32_t 
 // itself; a local item has no CECNetwork, carries no id there, or is not in the map.
 // Entity+144 bit 0x40 is ALIVE (set by the constructor `sub_8238B320`, cleared only by
 // `sub_8238D828`), not "activated".
+extern "C" int RefiiCoopIsHostWeapon(uint32_t body, uint32_t item);
+
 REX_EXTERN(rex_CECHeldItems_OnNetMessage) {
   using refii::vfs::LoadGuestU32;
   using refii::vfs::LoadGuestU8;
@@ -600,11 +602,62 @@ REX_EXTERN(rex_CECHeldItems_OnNetMessage) {
   if (host && Plausible(message) && Plausible(carrying)) {
     const uint32_t owner = LoadGuestU32(base, carrying + 4u);
     if (Plausible(owner) && owner == RefiiCoopPlayerTwoEntity(base)) {
+      const uint32_t type = LoadGuestU32(base, message + 4u);
       static uint32_t logged = 0u;
       if (logged < 64u) {
         ++logged;
         REXLOG_INFO("coop hooks: held-items message type {} from the joiner for player two's "
-                    "body 0x{:08X}", LoadGuestU32(base, message + 4u), owner);
+                    "body 0x{:08X}", type, owner);
+      }
+
+      // AN ATTACH OF SOMETHING THAT IS NOT PLAYER TWO'S WEAPON IS REFUSED. The joiner's own
+      // items carry ids from the JOINER's counter; resolved on the host (`sub_82334A60`) such an
+      // id can name an unrelated host entity, which the attach would then take into player two's
+      // hand — destroying the weapon in the slot (`sub_824FDB70`) and tearing the entity off its
+      // owner. Only the weapons the host itself armed player two with (EquipRecord's list,
+      // RefiiCoopIsHostWeapon) are attached; the host re-arms a loose one (CoopKeepHostWeapons).
+      //
+      // AN ATTACH OF WHAT THE SLOT ALREADY HOLDS IS ALREADY TRUE. `sub_824FB5D8` empties an
+      // occupied slot first (`sub_824F9AC8` false → `sub_824FDB70`, 0x824FB860..0x824FB878),
+      // and on the host that DESTROYS the occupant (`sub_8238D828`, 0x824FDB90..0x824FDBE8) —
+      // the very item about to be attached when the joiner names the weapon the host already
+      // armed player two with (CoopHeroEquip). The attach then holds a destroyed entity and the
+      // allocator's lists break within a second (runs 2026-10-19 15:35 and 16:10: InsertFreeNode
+      // and HeapPool_Alloc, each ~0.5 s after this message). Nothing to do: the state is the
+      // message's already.
+      if (type == 1u) {
+        const uint64_t id = (static_cast<uint64_t>(LoadGuestU32(base, message + 0x48u)) << 32) |
+                            LoadGuestU32(base, message + 0x4Cu);
+        PPCContext find = ctx;
+        find.r3.u32 = cm;
+        find.r4.u64 = id;
+        __imp__rex_lhNetManager_FindEntityByNetId(find, base);
+        const uint32_t item = find.r3.u32;
+        std::array<uint32_t, 16> held{};
+        const std::size_t count = HeldItems(base, carrying, held);
+        for (std::size_t i = 0; Plausible(item) && i < count; ++i) {
+          if (held[i] == item) {
+            static uint32_t skipped = 0u;
+            if (skipped < 16u) {
+              ++skipped;
+              REXLOG_INFO("coop hooks: the joiner's attach of item 0x{:08X} to player two's body "
+                          "is already true — not re-attached (re-attaching destroys it)", item);
+            }
+            return;
+          }
+        }
+        if (RefiiCoopIsHostWeapon(owner, item) == 0) {
+          static uint32_t refused = 0u;
+          if (refused < 16u) {
+            ++refused;
+            REXLOG_INFO("coop hooks: the joiner's attach to player two's body names net id "
+                        "{:016X} → entity 0x{:08X} (record {:08X}, alive {}), not a weapon the host "
+                        "armed player two with — refused",
+                        id, item, Plausible(item) ? LoadGuestU32(base, item + 28u) : 0u,
+                        Plausible(item) && (LoadGuestU8(base, item + 144u) & 0x40u) != 0u);
+          }
+          return;
+        }
       }
     }
   }
@@ -735,6 +788,33 @@ REX_EXTERN(rex_CECNetwork_SendTransform) {
   }
 
   __imp__rex_CECNetwork_SendTransform(ctx, base);
+}
+
+// THE OUTBOUND QUEUE'S REPLACE, done once. `sub_823355C0` (disc `sub_82317F98`) queues a
+// message; types 5, 6, 0x35, 0x8B, 0xAF-0xBF replace a pending node with the same key. The node
+// is {next, prev, key[3], buffer{ptr, size, c, d}}, 36 bytes (`sub_82341470`). The replace
+// builds an empty temp buffer at r1+0x8C (`sub_8255B920`; an empty buffer still owns a block,
+// `Render_AllocD3DObject` never returns null), copies key+temp as 7 words into node+8
+// (0x823359D4..F4) so the node's ptr IS the temp's, frees the temp (0x823359FC), then
+// `sub_8255B7D0(node+0x14)` frees that pointer again before refilling it (0x82335A60). The
+// shipped game double-frees here; the old payload also leaks. Reached whenever a transform is
+// queued while the last one for that object is still pending, which the paced sender above
+// does every tick. Here: the key and the temp's c/d into the node, its own ptr/size kept for
+// `sub_8255B7D0` to free once; then the temp's own destruction at 0x823359F8.
+extern "C" uint8_t* RefiiGuestBase(void);
+
+bool RefiiNetQueueReplaceOnce(PPCRegister& r1, PPCRegister& r31) {
+  using refii::vfs::LoadGuestU32;
+  using refii::vfs::StoreGuestU32;
+  uint8_t* base = RefiiGuestBase();
+  if (base == nullptr) return false;
+  const uint32_t node = r31.u32;
+  const uint32_t key = r1.u32 + 0x80u;
+  const uint32_t temp = r1.u32 + 0x8Cu;
+  for (uint32_t i = 0; i < 3u; ++i) StoreGuestU32(base, node + 8u + 4u * i, LoadGuestU32(base, key + 4u * i));
+  StoreGuestU32(base, node + 0x1Cu, LoadGuestU32(base, temp + 8u));
+  StoreGuestU32(base, node + 0x20u, LoadGuestU32(base, temp + 12u));
+  return true;
 }
 
 // THE REPLICA MOVER: the original's two gates, then the target itself

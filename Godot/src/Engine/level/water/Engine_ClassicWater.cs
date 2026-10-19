@@ -50,7 +50,7 @@ public static class Engine_ClassicWater
     /// read is divided by E. The mirror needs nothing: its camera already takes 1.0.
     /// </summary>
     private const string UnexposedRefraction =
-        "#define XR_SCREEN_SCALE vec4(vec3(1.0 / max(texelFetch(fable_exposure_tex, ivec2(0, 0), 0).r, 1e-4)), 1.0)";
+        "#define XR_SCREEN_SCALE vec4(vec3(1.0 / max(xr_exposure(XR_SECOND_VIEW), 1e-4)), 1.0)";
 
     private sealed class Surface
     {

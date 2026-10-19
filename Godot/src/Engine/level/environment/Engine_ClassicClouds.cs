@@ -19,9 +19,20 @@ namespace Refii.Level;
 ///
 /// MIST (`Render_MaterialQuadPass_INFERRED` 0x8223A3C4..E8): on the main view the pixel shader is
 /// CLOUDS + 1 = CLOUDS_MIST while the eye (view+1680) is inside a mist volume (`sub_82296290`),
-/// with that volume's five registers and samplers bound as for every MIST1 draw. The layers
-/// are materials, not instances, so the misted composition reads its row from a material
-/// uniform of its own (<c>XR_ROW_UNIFORM</c>).
+/// with that volume's five registers and samplers bound as for every MIST1 draw, and with them
+/// pixel boolean b1, g_EnableMist (`Render_BindHighSamplersAndPixelBool_INFERRED`, as for the
+/// fur shells' PS 128; the bit stands once any mist has existed, byte_8335CBD2, so it is set
+/// whenever a volume is): CLOUDS_MIST applies its mist only under b1. The layers are materials,
+/// not instances, so the misted composition reads its row from a material uniform of its own
+/// (<c>XR_ROW_UNIFORM</c>).
+///
+/// The viewer and light positions belong to the view: on split screen the second view reads its
+/// own from host registers (<see cref="PumpView"/>, Engine_ClassicViews). So does the mist: each
+/// view's eye picks its volume, the layers take the misted composition while either eye is in
+/// one, each view's copy of the row holds its own volume's registers, and the second view reads
+/// its own density map and b1 (<see cref="Engine_ClassicShaders.ViewSampler"/>,
+/// <see cref="Engine_ClassicShaders.ViewBooleans"/>); a view whose eye is in no volume, which the
+/// title draws on PS CLOUDS, has b1 clear and so draws unmisted.
 /// </remarks>
 public static class Engine_ClassicClouds
 {
@@ -31,12 +42,23 @@ public static class Engine_ClassicClouds
     public static readonly StringName ClassicCloudMeta = "xenos_cloud";
 
     private static readonly List<System.WeakReference<ShaderMaterial>> _materials = new();
-    private const string MistedDefines = "uniform int xr_cloud_row = 0;\n#define XR_ROW_UNIFORM xr_cloud_row";
+    private static string MistedDefines => "uniform int xr_cloud_row = 0;\n#define XR_ROW_UNIFORM xr_cloud_row\n" + ViewDefines + "\n" +
+        Engine_ClassicShaders.ViewSampler("ps_g_MistDensitySampler") + "\n" + Engine_ClassicShaders.ViewBooleans();
+
+    /// <summary>Pixel boolean b1, g_EnableMist (booleans 16.. are the pixel stage's).</summary>
+    private const uint EnableMist = 1u << (16 + 1);
+
+    /// <summary>The cloud stage's view-space constants, read per view (Engine_ClassicShaders).</summary>
+    private static string ViewDefines =>
+        Engine_ClassicShaders.ViewParam("ps_g_ViewerPosition", true, Engine_ClassicRegisters.Ps.HostCloudViewer) + "\n" +
+        Engine_ClassicShaders.ViewParam("ps_g_ViewerDirection", true, Engine_ClassicRegisters.Ps.HostCloudDirection) + "\n" +
+        Engine_ClassicShaders.ViewParam("ps_g_LightPosition", true, Engine_ClassicRegisters.Ps.HostCloudLight);
     private static Shader? _plain;
     private static Shader? _misted;
     private static bool _mistedTried;
     private static int _row;
     private static Engine_ClassicMist.Volume? _mist;
+    private static Engine_ClassicMist.Volume? _secondMist;
 
     /// <summary>The layer's material on VSHADER_CLOUDS + PSHADER_CLOUDS, or null without the pair.</summary>
     /// <summary>The theme's layer (0..3) a material draws.</summary>
@@ -48,19 +70,23 @@ public static class Engine_ClassicClouds
         {
             return null;
         }
-        Shader? shader = Engine_ClassicShaders.Compose("VSHADER_CLOUDS", "PSHADER_CLOUDS", RenderMode);
+        Shader? shader = Engine_ClassicShaders.Compose("VSHADER_CLOUDS", "PSHADER_CLOUDS", RenderMode, 0, ViewDefines);
         if (shader is null)
         {
             return null;
         }
         _plain = shader;
-        var material = new ShaderMaterial { Shader = _mist is not null && Misted() is { } misted ? misted : shader };
+        var material = new ShaderMaterial { Shader = (_mist ?? _secondMist) is not null && Misted() is { } misted ? misted : shader };
         material.SetMeta(ClassicCloudMeta, true);
         material.SetShaderParameter(PsCloudsSamplerName, density);
         material.SetShaderParameter(XrSpecConstantsName, 2u);
         material.SetShaderParameter(XrAlphaThresholdName, 5.5f / 255f);
         SetLayer(material, layer);
         SetScroll(material, 0f, 0f);
+        if ((_mist ?? _secondMist) is not null)
+        {
+            ApplyMist(material);
+        }
         lock (_materials)
         {
             _materials.Add(new System.WeakReference<ShaderMaterial>(material));
@@ -99,24 +125,48 @@ public static class Engine_ClassicClouds
     /// <summary>The frame's viewer and main light, guest axes. Main thread, once a frame.</summary>
     public static void Pump(Vector3 eye, Vector3 viewerDirection, Vector3 lightColour, Vector3 lightDirection)
     {
-        // The eye in a mist volume (guest (x, y, z) is Godot (-x, z, y)).
+        // The eye in a mist volume (guest (x, y, z) is Godot (-x, z, y)); on split screen the
+        // second view's eye too, each written into its view's copy of the row.
         Engine_ClassicMist.Volume? mist = Misted() is null
             ? null
             : Engine_ClassicMist.VolumeFor(new Aabb(new Vector3(-eye.X, eye.Z, eye.Y), Vector3.Zero));
-        if (mist is not null && _row == 0)
+        bool split = Engine_ClassicViews.Count > 1 && Engine_ClassicViews.Camera(1) is not null;
+        Engine_ClassicMist.Volume? secondMist = split && Misted() is not null
+            ? Engine_ClassicMist.VolumeFor(new Aabb(Engine_ClassicViews.Eye(1), Vector3.Zero))
+            : null;
+        bool any = mist is not null || secondMist is not null;
+        if (any && _row == 0)
         {
             _row = Engine_ClassicConstants.AcquireRow();
         }
-        if (mist is not null && _row != 0)
+        if (any && _row != 0)
         {
-            Engine_ClassicMist.WriteRegisters(mist, _row);
+            if (!split)
+            {
+                Engine_ClassicMist.WriteRegisters(mist!, _row);
+            }
+            else
+            {
+                if (mist is not null)
+                {
+                    Engine_ClassicMist.WriteRegisters(mist, _row, 0);
+                }
+                if (secondMist is not null)
+                {
+                    Engine_ClassicMist.WriteRegisters(secondMist, _row, 1);
+                }
+            }
         }
         else
         {
             mist = null;
+            secondMist = null;
+            any = false;
         }
-        bool changed = !ReferenceEquals(mist, _mist);
+        bool changed = !ReferenceEquals(mist, _mist) || !ReferenceEquals(secondMist, _secondMist);
         _mist = mist;
+        _secondMist = secondMist;
+        Engine_ClassicMist.Volume? bound = mist ?? secondMist;
         var position = new Vector4(eye.X, eye.Y, eye.Z, 1f);
         var direction = new Vector4(viewerDirection.X, viewerDirection.Y, viewerDirection.Z, 0f);
         var colour = new Vector4(lightColour.X, lightColour.Y, lightColour.Z, 1f);
@@ -133,16 +183,14 @@ public static class Engine_ClassicClouds
                 }
                 if (changed)
                 {
-                    Shader? want = mist is not null ? _misted : _plain;
+                    Shader? want = bound is not null ? _misted : _plain;
                     if (want is not null && material.Shader != want)
                     {
                         material.Shader = want;
                     }
-                    if (mist is not null)
+                    if (bound is not null)
                     {
-                        material.SetShaderParameter(XrCloudRowName, _row);
-                        material.SetShaderParameter(PsMistDensitySamplerName, mist.Density64);
-                        material.SetShaderParameter(PsMistHeightSamplerName, Engine_ClassicMist.FlatHeight);
+                        ApplyMist(material);
                     }
                 }
                 material.SetShaderParameter(PsViewerPositionName, position);
@@ -151,11 +199,53 @@ public static class Engine_ClassicClouds
                 material.SetShaderParameter(PsLightPositionName, lightPosition);
             }
         }
-        if (mist is null && _row != 0)
+        if (!any && _row != 0)
         {
             Engine_ClassicConstants.ReleaseRow(_row);
             _row = 0;
         }
+    }
+
+    /// <summary>
+    /// The misted composition's binding for the volumes the views' eyes stand in: the row, each
+    /// view's density map and b1 set for exactly the views whose eye is in a volume.
+    /// </summary>
+    private static void ApplyMist(ShaderMaterial material)
+    {
+        Engine_ClassicMist.Volume? bound = _mist ?? _secondMist;
+        if (bound is null)
+        {
+            return;
+        }
+        material.SetShaderParameter(XrCloudRowName, _row);
+        material.SetShaderParameter(PsMistDensitySamplerName, bound.Density64);
+        material.SetShaderParameter(PsMistHeightSamplerName, Engine_ClassicMist.FlatHeight);
+        material.SetShaderParameter(XrBooleansName, _mist is not null ? EnableMist : 0u);
+        if (_secondMist is not null)
+        {
+            material.SetShaderParameter(PsMistDensitySecondName, _secondMist.Density64);
+        }
+        material.SetShaderParameter(XrSecondBooleansName, _secondMist is not null ? EnableMist : 0u);
+    }
+
+    /// <summary>
+    /// A view's viewer, direction and light position into its host registers (guest axes), for
+    /// split screen's second view. Main thread, after <see cref="Pump"/>.
+    /// </summary>
+    public static void PumpView(int view, Vector3 eye, Vector3 viewerDirection, Vector3 lightDirection)
+    {
+        Vector3 at = eye - lightDirection * 2000f;
+        Four(view, Engine_ClassicRegisters.Ps.HostCloudViewer, eye.X, eye.Y, eye.Z, 1f);
+        Four(view, Engine_ClassicRegisters.Ps.HostCloudDirection, viewerDirection.X, viewerDirection.Y, viewerDirection.Z, 0f);
+        Four(view, Engine_ClassicRegisters.Ps.HostCloudLight, at.X, at.Y, at.Z, 1f);
+    }
+
+    private static readonly float[] _four = new float[4];
+
+    private static void Four(int view, int register, float x, float y, float z, float w)
+    {
+        _four[0] = x; _four[1] = y; _four[2] = z; _four[3] = w;
+        Engine_ClassicConstants.SetFrameView(view, true, register, _four);
     }
 
     /// <summary>The CLOUDS_MIST composition, or null when the bank has none.</summary>
@@ -209,6 +299,9 @@ public static class Engine_ClassicClouds
     private static readonly StringName PsAccumulatedUVOffsetName = "ps_g_AccumulatedUVOffset";
     private static readonly StringName XrCloudRowName = "xr_cloud_row";
     private static readonly StringName PsMistDensitySamplerName = "ps_g_MistDensitySampler";
+    private static readonly StringName XrBooleansName = "xr_booleans";
+    private static readonly StringName XrSecondBooleansName = Engine_ClassicShaders.SecondViewBooleans;
+    private static readonly StringName PsMistDensitySecondName = Engine_ClassicShaders.SecondViewSampler("ps_g_MistDensitySampler");
     private static readonly StringName PsMistHeightSamplerName = "ps_g_MistHeightSampler";
     private static readonly StringName PsViewerPositionName = "ps_g_ViewerPosition";
     private static readonly StringName PsViewerDirectionName = "ps_g_ViewerDirection";

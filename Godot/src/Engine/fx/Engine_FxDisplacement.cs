@@ -3,6 +3,17 @@ using Godot;
 
 namespace Refii.Fx;
 
+/// <summary>
+/// The displacement pass: FX surfaces write screen-space offsets into this layer's own viewport,
+/// and a full-view canvas rect at layer -100 redraws the view's 3D image through them.
+/// </summary>
+/// <remarks>
+/// ONE INSTANCE PER VIEW (<see cref="Refii.Core.Engine_Views"/>). View 0 mirrors the window's
+/// camera and draws over the window, or over player one's view while the screen is split; view 1
+/// exists only while split and mirrors and draws over player two's. Both draw the one layer world
+/// — the FX instances live in view 0's scenario — each at its own view's size; the apply rect is
+/// a canvas layer of that view's viewport, so its screen texture is that view's image.
+/// </remarks>
 public partial class Engine_FxDisplacement : Node
 {
     public const int Layer = 20;
@@ -17,6 +28,20 @@ public partial class Engine_FxDisplacement : Node
     private ColorRect _rect = null!;
     private ShaderMaterial? _apply;
     private Viewport? _host;
+
+    /// <summary>The viewport Ensure was called from; view 0's host whenever the screen is whole.</summary>
+    private Viewport? _windowHost;
+
+    /// <summary>Which view this instance draws for: 0 the window or player one's, 1 player two's.</summary>
+    private int _view;
+
+    /// <summary>View 1's layer world: view 0's, so both views draw the same instances.</summary>
+    private World3D? _world;
+
+    /// <summary>View 1's instance while the screen is split; held by view 0's.</summary>
+    private Engine_FxDisplacement? _second;
+
+    private bool _enabled = true;
 
     /// <summary>True only when the host window is BOTH assigned and still alive.</summary>
     /// <remarks>
@@ -42,11 +67,13 @@ public partial class Engine_FxDisplacement : Node
             ? _current._viewport.World3D.Scenario
             : default;
 
-    /// <summary>Live lever: stop or resume the displacement pass.</summary>
+    /// <summary>Live lever: stop or resume the displacement pass, in every view.</summary>
     public void SetEnabled(bool on)
     {
+        _enabled = on;
         if (_viewport is not null) _viewport.RenderTargetUpdateMode = on ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
         if (_layer is not null) _layer.Visible = on;
+        if (_second is not null && GodotObject.IsInstanceValid(_second)) _second.SetEnabled(on);
     }
 
     private static ulong _activeFrame;
@@ -61,7 +88,7 @@ public partial class Engine_FxDisplacement : Node
         SceneTree? tree = context.GetTree();
         if (tree is null) return;
         Viewport host = context.GetViewport() ?? tree.Root;
-        var node = new Engine_FxDisplacement { Name = "FxDisplacement", _host = host };
+        var node = new Engine_FxDisplacement { Name = "FxDisplacement", _host = host, _windowHost = host };
         _current = node;
         tree.Root.CallDeferred(Node.MethodName.AddChild, node);
     }
@@ -69,6 +96,7 @@ public partial class Engine_FxDisplacement : Node
     public override void _Ready()
     {
         _host ??= GetViewport();
+        _windowHost ??= _host;
         _viewport = new SubViewport
         {
             Name = "DispViewport",
@@ -82,7 +110,8 @@ public partial class Engine_FxDisplacement : Node
             // ITS OWN WORLD. The layer's surfaces are rendering-server instances in this world
             // (Engine_FxLayerInstance), so the main scene's index never holds them and this
             // viewport culls only them; the scene depth arrives through the depth-capture global.
-            World3D = new World3D(),
+            // View 1 draws view 0's world.
+            World3D = _world ?? new World3D(),
         };
         var env = new Godot.Environment
         {
@@ -93,20 +122,98 @@ public partial class Engine_FxDisplacement : Node
             AmbientLightSource = Godot.Environment.AmbientSource.Disabled,
             GlowEnabled = false,
         };
-        _camera = new Camera3D { Name = "DispCamera", CullMask = LayerMask, Environment = env };
+        _camera = new Camera3D { Name = "DispCamera", CullMask = LayerMask | (_view == 1 ? Refii.Models.Engine_ClassicViews.SecondViewLayer : 0u), Environment = env };
         _viewport.AddChild(_camera);
         AddChild(_viewport);
         _camera.Current = true;
 
         _apply = new ShaderMaterial { Shader = GD.Load<Shader>(ApplyShaderPath) };
         _apply.SetShaderParameter("disp_tex", _viewport.GetTexture());
-        _layer = new CanvasLayer { Name = "DispApply", Layer = -100 };
+        // The rect is sized to the host in Resize rather than anchored: a Control under a
+        // CanvasLayer anchors to the viewport its NODE is in (the window), not the layer's
+        // custom viewport, which is a half-width view while split.
+        _layer = new CanvasLayer { Name = "DispApply", Layer = -100, Visible = _enabled };
         _rect = new ColorRect { Name = "DispRect", Material = _apply, MouseFilter = Control.MouseFilterEnum.Ignore };
-        _rect.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         _layer.AddChild(_rect);
         AddChild(_layer);
-        _layer.CustomViewport = _host as Viewport;
+        _layer.CustomViewport = _host;
         ProcessPriority = 1000;
+        Resize();
+
+        if (_view == 0)
+        {
+            Refii.Core.Engine_Views.ViewsChanged += FollowViews;
+            FollowViews();
+        }
+    }
+
+    public override void _ExitTree()
+    {
+        if (_view == 0)
+        {
+            Refii.Core.Engine_Views.ViewsChanged -= FollowViews;
+        }
+    }
+
+    /// <summary>
+    /// View 0's: draws over player one's view and builds view 1's while the screen is split; back
+    /// over the window, and view 1's freed, when it rejoins. The re-host happens before the split
+    /// view frees its viewports, so the apply layer never points at a freed one.
+    /// </summary>
+    private void FollowViews()
+    {
+        if (!GodotObject.IsInstanceValid(this) || !IsInsideTree())
+        {
+            return;
+        }
+
+        if (Refii.Core.Engine_Views.Split &&
+            Refii.Core.Engine_Views.FirstViewport is { } first && GodotObject.IsInstanceValid(first) &&
+            Refii.Core.Engine_Views.SecondViewport is { } second && GodotObject.IsInstanceValid(second))
+        {
+            Host(first);
+            if (_second is null || !GodotObject.IsInstanceValid(_second))
+            {
+                _second = new Engine_FxDisplacement
+                {
+                    Name = "FxDisplacementSecondView",
+                    _view = 1,
+                    _host = second,
+                    _world = _viewport.World3D,
+                    _enabled = _enabled,
+                };
+                AddChild(_second);
+            }
+            else
+            {
+                _second.Host(second);
+            }
+
+            return;
+        }
+
+        if (_windowHost is not null && GodotObject.IsInstanceValid(_windowHost))
+        {
+            Host(_windowHost);
+        }
+
+        if (_second is not null && GodotObject.IsInstanceValid(_second))
+        {
+            _second.QueueFree();
+        }
+
+        _second = null;
+    }
+
+    /// <summary>Draws over <paramref name="host"/> from now on, at its size.</summary>
+    private void Host(Viewport host)
+    {
+        _host = host;
+        if (_layer is not null && _layer.CustomViewport != host)
+        {
+            _layer.CustomViewport = host;
+        }
+
         Resize();
     }
 
@@ -116,6 +223,12 @@ public partial class Engine_FxDisplacement : Node
         Vector2 v = _host!.GetVisibleRect().Size;
         var size = new Vector2I((int)MathF.Ceiling(v.X), (int)MathF.Ceiling(v.Y));
         if (size.X <= 0 || size.Y <= 0) return;
+        if (_rect is not null && _rect.Size != v)
+        {
+            _rect.Position = Vector2.Zero;
+            _rect.Size = v;
+        }
+
         if (size == _size) return;
         _size = size;
         _viewport.Size = size;

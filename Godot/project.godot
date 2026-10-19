@@ -87,6 +87,10 @@ fx_scene_depth={
 "type": "sampler2D",
 "value": ""
 }
+fx_scene_depth_second={
+"type": "sampler2D",
+"value": ""
+}
 fx_scene_depth_valid={
 "type": "float",
 "value": 0.0
@@ -140,6 +144,10 @@ fable_bake_weight={
 "value": 1.0
 }
 fable_exposure_tex={
+"type": "sampler2D",
+"value": ""
+}
+fable_exposure_tex_second={
 "type": "sampler2D",
 "value": ""
 }

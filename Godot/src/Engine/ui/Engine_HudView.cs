@@ -22,7 +22,61 @@ public sealed partial class Engine_HudView : Node3D
 
     public Engine_HudArt Art { get; set; } = new();
 
-    public Engine_HudValues Values { get; } = new();
+    /// <summary>
+    /// The guest's published values. A second seat's view SHARES the first view's values — the
+    /// guest publishes one set for the one `hud.bgf` presentation — and leaves reading and gliding
+    /// them to their owner (<see cref="ReadsValues"/>), or the glides would advance twice a frame.
+    /// </summary>
+    public Engine_HudValues Values { get; init; } = new();
+
+    /// <summary>False on a view that shares another view's <see cref="Values"/>.</summary>
+    public bool ReadsValues { get; init; } = true;
+
+    /// <summary>
+    /// Where this view draws: the whole window, or one player's half on split screen. Player
+    /// one's view moves between <see cref="Engine_UiSeats.Seat.Whole"/> and
+    /// <see cref="Engine_UiSeats.Seat.PlayerOne"/> as the screen splits; player two's view is
+    /// <see cref="Engine_UiSeats.Seat.PlayerTwo"/> for its whole life and builds only player two's
+    /// pieces.
+    /// </summary>
+    public Engine_UiSeats.Seat Seat { get; set; }
+
+    /// <summary>
+    /// Which players' views the timing meter stands in while split: bit 0 player one, bit 1
+    /// player two — whose pip the guest armed. Ignored on the whole window.
+    /// </summary>
+    public int ExpressionPlayers { get; set; } = 1;
+
+    /// <summary>Whether a piece is drawn in this view's seat.</summary>
+    private bool Admits(Engine_HudLayout.Piece piece)
+    {
+        if (Seat == Engine_UiSeats.Seat.Whole)
+        {
+            return true;
+        }
+
+        if (Engine_HudLayout.IsExpressionMeter(piece))
+        {
+            return (ExpressionPlayers & (Seat == Engine_UiSeats.Seat.PlayerTwo ? 2 : 1)) != 0;
+        }
+
+        Engine_UiSeats.Seat owner = Engine_HudLayout.OwnerOf(piece);
+        return Seat == Engine_UiSeats.Seat.PlayerTwo
+            ? owner == Engine_UiSeats.Seat.PlayerTwo
+            : owner != Engine_UiSeats.Seat.PlayerTwo;
+    }
+
+    /// <summary>Player two's view holds only the pieces that can ever be player two's.</summary>
+    private bool Builds(Engine_HudLayout.Piece piece) =>
+        Seat != Engine_UiSeats.Seat.PlayerTwo ||
+        Engine_HudLayout.OwnerOf(piece) == Engine_UiSeats.Seat.PlayerTwo ||
+        Engine_HudLayout.IsExpressionMeter(piece);
+
+    /// <summary>This view's seat on the current <see cref="Window"/>.</summary>
+    private Engine_UiSeats.Frame SeatFrame => Engine_UiSeats.Of(Window, Seat);
+
+    /// <summary>Whether the node carries a seat transform that a return to the whole window must undo.</summary>
+    private bool _seated;
 
     /// <summary>The shipped look, for text pieces.</summary>
     public Engine_UiTheme? Theme { get; set; }
@@ -250,8 +304,10 @@ public sealed partial class Engine_HudView : Node3D
         Engine_HudModPieces.ModLayout modLayout = Engine_HudModPieces.LoadFromMods();
 
         // Pieces mods define (ui/hud.json), beside the ones cut from hud.bgf; children of this view
-        // so they show and hide with the HUD.
-        if (_modPieces is null)
+        // so they show and hide with the HUD. Player one's view only: a mod piece reads the
+        // published values, which are player one's.
+        bool ownsMods = Seat != Engine_UiSeats.Seat.PlayerTwo;
+        if (ownsMods && _modPieces is null)
         {
             _modPieces = new Engine_HudModPieces { Name = "ModPieces" };
             _modPieces.FindPiece = id =>
@@ -269,9 +325,13 @@ public sealed partial class Engine_HudView : Node3D
             AddChild(_modPieces);
         }
 
-        _modPieces.Window = Window;
-        _modPieces.Build(modLayout.Pieces);
-        if (modLayout.Hidden.Count != 0)
+        if (_modPieces is not null)
+        {
+            _modPieces.Window = SeatFrame.Window;
+            _modPieces.Build(modLayout.Pieces);
+        }
+
+        if (ownsMods && modLayout.Hidden.Count != 0)
         {
             GD.Print($"[hud-mods] shipped piece(s) replaced by mods: {string.Join(", ", modLayout.Hidden)}");
         }
@@ -295,6 +355,11 @@ public sealed partial class Engine_HudView : Node3D
                 continue;
             }
 
+            if (!Builds(piece))
+            {
+                continue;
+            }
+
             if (BuildPiece(piece, missing) is not { } built)
             {
                 continue;
@@ -305,7 +370,7 @@ public sealed partial class Engine_HudView : Node3D
             // Mods' copies of this piece, built right after it from the same art.
             foreach (Engine_HudModPieces.Clone clone in modLayout.Clones)
             {
-                if (clone.Of != piece.Id)
+                if (!ownsMods || clone.Of != piece.Id)
                 {
                     continue;
                 }
@@ -476,7 +541,7 @@ public sealed partial class Engine_HudView : Node3D
     private Built? BuildPiece(Engine_HudLayout.Piece piece, List<string> missing)
     {
         {
-            float scale = Engine_HudLayout.Scale(Engine_HudLayout.CanvasExtent(Window));
+            float scale = Engine_HudLayout.Scale(SeatFrame.Extent);
 
             Node3D? node = piece.Driven == Engine_HudLayout.Drive.Text
                 ? new MeshInstance3D { Name = piece.Id.Replace('.', '_') }
@@ -1183,6 +1248,19 @@ public sealed partial class Engine_HudView : Node3D
             _panels[key] = panel;
         }
 
+        // The bounds are measured in world space and the panel is this view's child: on a seat
+        // the two differ by the seat transform, so the rectangle is brought into the view first.
+        if (_seated)
+        {
+            Transform3D local = GlobalTransform.AffineInverse();
+            Vector3 a = local * new Vector3(rect.Position.X, rect.Position.Y, z);
+            Vector3 b = local * new Vector3(rect.End.X, rect.End.Y, z);
+            rect = new Rect2(
+                Mathf.Min(a.X, b.X), Mathf.Min(a.Y, b.Y),
+                Mathf.Abs(b.X - a.X), Mathf.Abs(b.Y - a.Y));
+            z = a.Z;
+        }
+
         // Just behind the text it backs; the world sits far below every HUD depth.
         panel.Fit(rect, z);
         used.Add(key);
@@ -1665,7 +1743,12 @@ public sealed partial class Engine_HudView : Node3D
 
     public override void _Process(double delta)
     {
-        Current = this;
+        // Player one's view is the one the debug channel reads.
+        if (Seat != Engine_UiSeats.Seat.PlayerTwo)
+        {
+            Current = this;
+        }
+
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("hudview");
 
         // A bisect lever, like `render lights=` and `render entities=`: switching the walk off
@@ -1676,9 +1759,18 @@ public sealed partial class Engine_HudView : Node3D
             return;
         }
 
+        // The seat's window is what every anchor resolves against; the node's own transform puts
+        // that seat canvas on its half. The whole window writes nothing, as it never has.
+        Engine_UiSeats.Frame frame = SeatFrame;
+        if (!frame.IsWhole || _seated)
+        {
+            Transform = frame.IsWhole ? Transform3D.Identity : frame.Transform(0f);
+            _seated = !frame.IsWhole;
+        }
+
         if (_modPieces is not null)
         {
-            _modPieces.Window = Window;
+            _modPieces.Window = frame.Window;
         }
 
         if (_built.Count == 0)
@@ -1686,14 +1778,19 @@ public sealed partial class Engine_HudView : Node3D
             return;
         }
 
-        Values.Advance((float)delta);
+        if (ReadsValues)
+        {
+            Values.Advance((float)delta);
+        }
 
         // On the guest's frame, or while anything is moving on Godot's clock (a gliding meter, a
         // running pulser): the guest publishes per HF tick, and the walk below crosses into
         // every piece's node.
         // A resized window re-places every piece even while the guest is not stepping.
         if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking &&
-            Window == _placedWindow)
+            Window == _placedWindow && Seat == _placedSeat &&
+            (Seat == Engine_UiSeats.Seat.Whole ||
+                (Suppressed == _placedSuppressed && ExpressionPlayers == _placedExpression)))
         {
             return;
         }
@@ -1702,10 +1799,13 @@ public sealed partial class Engine_HudView : Node3D
         // pieces from the values gliding on Godot's clock (Engine_HudValues.Advance).
         bool read = !_refreshed || Refii.Core.Engine_GuestFrame.Changed;
         _placedWindow = Window;
+        _placedSeat = Seat;
+        _placedSuppressed = Suppressed;
+        _placedExpression = ExpressionPlayers;
         _refreshed = true;
         ++Walks;
         long walkMark = System.Diagnostics.Stopwatch.GetTimestamp();
-        if (read)
+        if (read && ReadsValues)
         {
             Values.Read();
         }
@@ -1720,7 +1820,7 @@ public sealed partial class Engine_HudView : Node3D
             return;
         }
 
-        Vector2 extent = Engine_HudLayout.CanvasExtent(Window);
+        Vector2 extent = frame.Extent;
         float scale = Engine_HudLayout.Scale(extent);
 
         // Counted over this pass; reset here rather than beside the report, which would zero them
@@ -1735,6 +1835,13 @@ public sealed partial class Engine_HudView : Node3D
         {
             ++WalkedPieces;
             long mark = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            // Another seat's piece: player two's health in player one's half, or the reverse.
+            if (!Admits(built.Piece))
+            {
+                built.Node.Visible = false;
+                continue;
+            }
 
             // The slide toggle first, for a group: its authored `Off`/`TurnOff…` slide is the
             // guest's statement that the box is down, and the fold cannot say so on its own.
@@ -2017,7 +2124,7 @@ public sealed partial class Engine_HudView : Node3D
                 }
             }
 
-            GD.Print($"[hud] visible ({visible.Count} of {_built.Count}): {string.Join("  ", visible)}");
+            GD.Print($"{Tag} visible ({visible.Count} of {_built.Count}): {string.Join("  ", visible)}");
 
             // The reasons are gathered and printed on the next pass only, so they are not
             // formatted every frame.
@@ -2029,7 +2136,7 @@ public sealed partial class Engine_HudView : Node3D
 
             // Why the rest are not: the state gate is the guest's answer, the value gate is
             // host-side, and the count alone cannot tell a parked element from a broken join.
-            GD.Print($"[hud] hidden — {_hiddenByState} by the guest's element state, " +
+            GD.Print($"{Tag} hidden — {_hiddenByState} by the guest's element state, " +
                 $"{_hiddenByValue} by an unpublished channel before the drive (should be 0), " +
                 $"{_hiddenByDrive} by the drive itself; " +
                 $"{(_why.Count < WhyCap ? "all" : $"first {WhyCap}")} {_why.Count}: " +
@@ -2062,6 +2169,15 @@ public sealed partial class Engine_HudView : Node3D
     private bool _refreshed;
 
     private Vector2 _placedWindow;
+
+    private Engine_UiSeats.Seat _placedSeat;
+
+    private bool _placedSuppressed;
+
+    private int _placedExpression = 1;
+
+    /// <summary>The log tag: player two's view says so, or its lines read as player one's.</summary>
+    private string Tag => Seat == Engine_UiSeats.Seat.PlayerTwo ? "[hud p2]" : "[hud]";
 
     /// <summary>Held hidden by the owner (the full cutscene replaces the whole GUI) — the walk
     /// restates <see cref="Node3D.Visible"/> every guest frame, so a bare hide does not hold.</summary>

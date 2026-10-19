@@ -19,6 +19,9 @@ namespace Refii.Lighting;
 /// before the buildings do, and the terrain and the big geometry that motivated the 300 m keep
 /// casting all the way out. Nothing is hidden — only its shadow stops being drawn — and the
 /// cascades near the camera, which is all anyone inspects, are untouched.
+///
+/// The distance is to the NEAREST view's eye (<see cref="Refii.Core.Engine_Views"/>): on split
+/// screen the cascades are drawn for both players, so a prop near either keeps its shadow.
 /// </remarks>
 public partial class Engine_ShadowReach : Node
 {
@@ -160,6 +163,7 @@ public partial class Engine_ShadowReach : Node
 	private int _cursor;
 	private double _recollectSince = double.MaxValue;
 	private int _suppressedThisPass;
+	private readonly Vector3[] _eyes = new Vector3[2];
 
 	/// <summary>
 	/// A slice of the region per frame, never the whole of it. Bounds are measured once — the
@@ -169,7 +173,7 @@ public partial class Engine_ShadowReach : Node
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("shadowreach");
-		Camera3D? camera = GetViewport()?.GetCamera3D();
+		Camera3D? camera = Refii.Core.Engine_Views.Primary(GetViewport()?.GetCamera3D());
 		if (camera is null || GetParent() is not Node region)
 		{
 			return;
@@ -204,7 +208,16 @@ public partial class Engine_ShadowReach : Node
 			return;
 		}
 
-		Vector3 eye = camera.GlobalPosition;
+		// THE NEAREST EYE. On split screen a prop casts while it is within reach of either view.
+		int eyes = 0;
+		foreach (Camera3D view in Refii.Core.Engine_Views.Cameras(camera))
+		{
+			if (eyes < _eyes.Length)
+			{
+				_eyes[eyes++] = view.GlobalPosition;
+			}
+		}
+
 		float reachScale = ReadShadowReachScale();
 		int slice = System.Math.Max(1, (int)System.Math.Ceiling(_entries.Count * delta / PassSeconds));
 		for (int n = 0; n < slice && _entries.Count != 0; n++)
@@ -245,7 +258,13 @@ public partial class Engine_ShadowReach : Node
 			}
 
 			float baseReach = CalculateShadowReach(entry.ItemExtent, reachScale);
-			float distance = eye.Clamp(entry.Bounds.Position, entry.Bounds.End).DistanceTo(eye);
+			float distance = float.PositiveInfinity;
+			for (int e = 0; e < eyes; e++)
+			{
+				Vector3 eye = _eyes[e];
+				distance = Mathf.Min(distance, eye.Clamp(entry.Bounds.Position, entry.Bounds.End).DistanceTo(eye));
+			}
+
 			float reachThreshold = entry.Applied != GeometryInstance3D.ShadowCastingSetting.Off &&
 				entry.Applied != (GeometryInstance3D.ShadowCastingSetting)(-1)
 				? baseReach + HysteresisMetres

@@ -33,6 +33,9 @@ public static class CoopSession
 	/// <summary>Player two's guest pad in local co-op, else −1; only the change is reported.</summary>
 	private static int _localPadTwo = -1;
 
+	/// <summary>Player two's guest pad in local co-op (`Player+40` of player two), else −1.</summary>
+	public static int LocalPadTwo => _localPadTwo;
+
 	private static HostBridge.CoopSessionWords _last;
 
 	/// <summary>Polls the bridge and advances the state machine. Call once per frame.</summary>
@@ -40,6 +43,7 @@ public static class CoopSession
 	{
 		if (HostBridge.CoopSessionRaw() is not { } words)
 		{
+			_managerWas = false;
 			SetLocalCoop(false, -1);
 			Transition(Phase.Solo, Role.Solo);
 			return;
@@ -47,6 +51,7 @@ public static class CoopSession
 
 		_last = words;
 		SetLocalCoop(words.LocalCoop, words.LocalCoop ? (int)words.PlayerTwoPad : -1);
+		StateSplitScreen(words.ManagerPresent);
 
 		// ROLE: the guest's own reading of its bytes. Note a solo game carries {session, host}
 		// too (Frontend_SetStartGameTarget sets them on every start), so "host" alone is not
@@ -62,6 +67,40 @@ public static class CoopSession
 			: side == Role.Host && words.Session ? Phase.Hosting
 			: Phase.Solo;
 		Transition(next, side);
+	}
+
+	/// <summary>What was last stated to the guest: 1 split, 0 shared, -1 nothing yet this game.</summary>
+	private static int _splitStated = -1;
+
+	private static bool _managerWas;
+
+	/// <summary>
+	/// States the local co-op screen mode to the guest (<c>CoopSplitScreen:</c>), on every game
+	/// start and whenever it changes (<see cref="Refii.Game.GameSplitView.Wanted"/>): the guest gives
+	/// local player two a camera of their own on it, read when their Player is built.
+	/// </summary>
+	private static void StateSplitScreen(bool managerPresent)
+	{
+		if (managerPresent && !_managerWas)
+		{
+			_splitStated = -1;
+		}
+
+		_managerWas = managerPresent;
+		if (!managerPresent)
+		{
+			return;
+		}
+
+		int want = Refii.Game.GameSplitView.Wanted ? 1 : 0;
+		if (want == _splitStated)
+		{
+			return;
+		}
+
+		_splitStated = want;
+		HostBridge.PostFrontEndAction("CoopSplitScreen:" + want);
+		Godot.GD.Print($"[coop-session] local co-op screen: {(want == 1 ? "split" : "shared")}");
 	}
 
 	private static void SetLocalCoop(bool local, int pad)

@@ -2,6 +2,7 @@ shader_type spatial;
 render_mode blend_add, cull_disabled, depth_draw_never, unshaded, shadows_disabled, fog_disabled;
 
 #include "res://src/Engine/level/environment/dynamic/dynamic_precip.gdshaderinc"
+#include "res://src/Engine/core/views.gdshaderinc"
 
 varying vec4 v_col;
 varying vec2 v_uv;
@@ -13,7 +14,7 @@ void vertex() {
 	float bokeh;
 	float view_depth;
 	POSITION = precip_place(true, UV2.x, UV, PROJECTION_MATRIX, VIEW_MATRIX, INV_VIEW_MATRIX,
-		CAMERA_POSITION_WORLD, VIEWPORT_SIZE, TIME, col, bokeh, view_depth);
+		CAMERA_POSITION_WORLD, VIEWPORT_SIZE, TIME, REFII_SECOND_VIEW, col, bokeh, view_depth);
 	v_depth = view_depth;
 	v_col = col;
 	v_uv = UV;

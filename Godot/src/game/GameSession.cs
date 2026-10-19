@@ -332,6 +332,9 @@ public partial class GameSession : Node
 		// The mods' godot/*.gd scripts run under this node while the guest is up and driven.
 		Refii.Mods.ModGodot.Pump(this, _driving && Refii.Host.HostBridge.IsGuestUp);
 
+		// The views drawn this frame (split screen's two cameras), for the feeds that follow a camera.
+		Refii.Models.Engine_ClassicViews.Begin(GetViewport()?.GetCamera3D());
+
 		// The modern renderer's decals: the guest's stated ring as Godot decals.
 		if (!Refii.Models.Engine_ClassicMaterial.Active && Refii.Host.HostBridge.IsGuestUp)
 		{
@@ -349,7 +352,9 @@ public partial class GameSession : Node
 				}
 				if (GetViewport()?.GetCamera3D() is { } modernEye)
 				{
-					Refii.Level.Engine_RoofCut.Pump(modernEye.GlobalPosition);
+					// The roofs around every view's eye: a drop under any of them is dry in either view.
+					Refii.Level.Engine_RoofCut.Pump(modernEye.GlobalPosition,
+						Refii.Models.Engine_ClassicViews.Count > 1 ? (Vector3?)Refii.Models.Engine_ClassicViews.Eye(1) : null);
 					if (guestFrame)
 					{
 						Refii.Level.Engine_SnowPushes.Pump();
@@ -622,6 +627,20 @@ public partial class GameSession : Node
 					return;
 				}
 			}
+
+			// THE HOST'S CHORES RUN EVERY FRAME, granted time or not. `RefiiHostStep` does not
+			// advance the guest (`AdvanceTimeBase` above grants time); it services it — frame
+			// completions, stream retirement, the world-build hold, and the in-game loading
+			// screen's take-down event (`FinishStuckInGameLoadingScreenFromHost`). A guest whose
+			// game thread is blocked on one of those never advances its tick, so the lead cap
+			// above withheld every step from it for good: a co-op joiner sat on "Loading
+			// Bowerstone Market" with its game thread in `sub_82361458`'s infinite wait and the
+			// pace line at 0.0 steps/s (2026-10-19). Only for a STALLED guest — no time granted and
+			// its tick still for half a second — so ordinary play keeps one service per step.
+			if (steps == 0 && GuestStalled(guestTick, delta) && !StepGuest())
+			{
+				return;
+			}
 		}
 
 		// SWAP IN ENHANCED TEXTURES BEFORE THE STEP GATE, NOT AFTER IT. Each queued completion
@@ -679,6 +698,27 @@ public partial class GameSession : Node
 		TraceCamera();
 	}
 
+	/// <summary>
+	/// Whether the guest's tick has not moved for <see cref="StallSeconds"/> — a game thread
+	/// blocked, not merely between ticks (it ticks at 15 Hz). Fed once per frame.
+	/// </summary>
+	private bool GuestStalled(uint guestTick, double delta)
+	{
+		if (guestTick != _stallTick)
+		{
+			_stallTick = guestTick;
+			_stallSeconds = 0.0;
+			return false;
+		}
+
+		_stallSeconds += delta;
+		return _stallSeconds >= StallSeconds;
+	}
+
+	private const double StallSeconds = 0.5;
+	private uint _stallTick;
+	private double _stallSeconds;
+
 	/// <summary>One slice of the guest's loop. False once it has stopped.</summary>
 	private bool StepGuest()
 	{
@@ -708,7 +748,7 @@ public partial class GameSession : Node
 	/// cameraManager+0xE0 position, +0xF0 up, +0x100 forward, +0x110 fov, +0x114 bool, written by
 	/// sub_821B8FD8 once per sim tick from sub_8233B6B0. Manager pointer: Game = *(0x83496AB8+12),
 	/// binary-search the 12-byte entries between *(Game+0x9C)+8 and +12 for key 1 (key 2 when
-	/// *(Game+0x8C)+0x34 and +0x36 say split screen), then *(entry+4), then *(view+4).
+	/// *(Game+0x8C)+0x34 and +0x36 say an online joiner), then *(entry+4), then *(view+4).
 	/// </summary>
 	private void TraceCamera()
 	{

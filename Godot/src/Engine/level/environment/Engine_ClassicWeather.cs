@@ -97,8 +97,26 @@ public partial class Engine_ClassicWeather : Node3D
     private readonly Plane[] _planes = new Plane[6];
     private readonly Vector3[] _corners = new Vector3[8];
 
-    /// <summary>The live instance.</summary>
+    /// <summary>The live instance: the window's view, player one's on split screen.</summary>
     public static Engine_ClassicWeather? Instance { get; private set; }
+
+    /// <summary>Player two's view's instance while the screen is split.</summary>
+    public static Engine_ClassicWeather? Second { get; private set; }
+
+    /// <summary>
+    /// The view this instance draws for (Engine_ClassicViews): its curtains stand across that
+    /// view's camera and its snow blocks fill that view's frustum.
+    /// </summary>
+    public int View { get; init; }
+
+    /// <summary>
+    /// The layers this instance's geometry draws on. One view: the particle layer, as the title's
+    /// draws. Split: a layer only this view's camera sees (Engine_ClassicViews keeps the masks),
+    /// since rain curtains built across one camera would hang in the other's picture.
+    /// </summary>
+    private uint DrawLayers => Engine_ClassicViews.Count > 1
+        ? (View == 0 ? Engine_ClassicViews.FirstViewOnlyLayer : Engine_ClassicViews.SecondViewOnlyLayer)
+        : Engine_ClassicParticles.Layer;
 
     /// <summary>Snow blocks drawn at the last pump.</summary>
     public int SnowBlocks { get; private set; }
@@ -111,8 +129,16 @@ public partial class Engine_ClassicWeather : Node3D
 
     public override void _Ready()
     {
-        Instance = this;
-        Name = "ClassicWeather";
+        if (View == 0)
+        {
+            Instance = this;
+            Name = "ClassicWeather";
+        }
+        else
+        {
+            Second = this;
+            Name = "ClassicWeatherSecondView";
+        }
         // The translated stages compose XR_FILE_TO_MODEL, which takes a guest point to Godot as
         // (x, z, -y); the world is (-x, z, y), so the node is that half-turn about Y and a
         // vertex is written as (x, z, -y) of its guest position (as Engine_ClassicSkyDome).
@@ -130,6 +156,11 @@ public partial class Engine_ClassicWeather : Node3D
         {
             Instance = null;
         }
+
+        if (Second == this)
+        {
+            Second = null;
+        }
     }
 
     /// <summary>Draws this frame's rain and snow. Main thread, after the frame feed.</summary>
@@ -140,6 +171,20 @@ public partial class Engine_ClassicWeather : Node3D
             HideRain();
             HideSnow(0);
             return;
+        }
+
+        uint layers = DrawLayers;
+        if (_rain is not null && _rain.Layers != layers)
+        {
+            _rain.Layers = layers;
+        }
+
+        foreach (MeshInstance3D? block in _blocks)
+        {
+            if (block is not null && block.Layers != layers)
+            {
+                block.Layers = layers;
+            }
         }
 
         uint got = HostBridge.GetClassicWeather(_weather);
@@ -604,7 +649,7 @@ public partial class Engine_ClassicWeather : Node3D
             Name = "ClassicRain",
             Mesh = mesh,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-            Layers = Engine_ClassicParticles.Layer,
+            Layers = DrawLayers,
             // The curtains move with the eye every frame; the mesh's own box is the empty one.
             ExtraCullMargin = 16384f,
             Visible = false,
@@ -813,7 +858,7 @@ public partial class Engine_ClassicWeather : Node3D
                 Name = $"ClassicSnow{index}",
                 Mesh = _snowMesh,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                Layers = Engine_ClassicParticles.Layer,
+                Layers = DrawLayers,
                 // The vertex shader places every flake from its index and the block's origin.
                 ExtraCullMargin = 16384f,
             };

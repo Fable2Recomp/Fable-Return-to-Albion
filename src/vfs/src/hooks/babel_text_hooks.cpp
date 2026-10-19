@@ -3,7 +3,13 @@
 // (8237e068 selects the allocating branch, 8237e0d8 allocates unmodified). On a garbage field
 // `operator new` returns 0 and the guest runs `DbgBreakPoint`, stopping the tick thread.
 
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <string>
+#include <mutex>
+#include <unordered_map>
 
 #include <rex/logging.h>
 
@@ -72,6 +78,8 @@ REX_EXTERN(rex_lhBabel_MaterializeString) {
 // `0x8221f298`). `refii_config.toml` names `0x8221F2C0` as `rex_lh_malloc_impl`, so codegen emits
 // that name and no `sub_8221F2C0` pair — hooking the numeric name fails the module's dlopen.
 PPC_EXTERN_FUNC(__imp__rex_lh_malloc_impl);
+PPC_EXTERN_FUNC(__imp__rex_lhHeap_Free);
+PPC_EXTERN_FUNC(__imp__rex_lhHeap_Alloc);
 
 namespace {
 
@@ -102,4 +110,112 @@ REX_EXTERN(rex_lh_malloc_impl) {
     }
 
     __imp__rex_lh_malloc_impl(ctx, base);
+}
+
+// ---------------------------------------------------------------------------
+// THE DOUBLE-FREE GUARD. Every co-op crash since 2026-10-07 is one corruption surfacing wherever
+// the broken allocator lists are next walked: `InsertFreeNode` reading 0x9, `HeapPool_Alloc`
+// reading 0x1, a write to 0x820018C3 — and twice the allocator has handed out a VTABLE
+// (0x82001770, 0x820018C0) as a block. Both vtables belong to the animation blend ramps made in
+// `sub_8219B598` / `sub_821B7BA0`: a live ramp freed a second time puts its vtable word on the
+// free list. This names the code that does it. The guard sits on the two functions every path
+// reaches — `sub_83238460` (free: under `operator delete` 0x8221BD38, realloc `sub_82BF1170` and
+// the allocator table at 0x8215A8A0) and `sub_83238598` (allocate: under `sub_8221F2C0`, realloc
+// and the same table): a free records the pointer with its caller chain, an allocation clears a
+// pointer handed out again, and a second free of a pointer still recorded logs BOTH chains
+// (first free, second free) — the double free itself, at the moment it happens.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr std::size_t kGuardFrames = 8u;
+constexpr std::size_t kGuardMaxEntries = 1u << 21;
+
+struct FreeRecord {
+    std::array<uint32_t, kGuardFrames> chain{};
+    uint64_t seq = 0u;
+};
+
+std::mutex g_guard_mutex;
+std::unordered_map<uint32_t, FreeRecord> g_guard_freed;
+uint64_t g_guard_seq = 0u;
+std::atomic<uint32_t> g_guard_reports{0};
+
+/// The guest caller chain: the return address, then the title's own back chain (word at [r1],
+/// saved LR at back-chain - 8), as the thread dumper walks it — ONLY inside this thread's stack.
+/// The bounds are the PCR's (r13): stack base (high) at +0x70, stack end (low) at +0x74. The
+/// outermost frame's back chain is the stack's top, an unmapped word; reading it faulted every
+/// thread at boot (run 2026-10-19 17:36, read of 0x700E0000).
+std::array<uint32_t, kGuardFrames> GuestChain(const PPCContext& ctx, uint8_t* base) {
+    std::array<uint32_t, kGuardFrames> chain{};
+    chain[0] = static_cast<uint32_t>(ctx.lr);
+    const uint32_t pcr = ctx.r13.u32;
+    if (pcr < 0x10000u || pcr >= 0xC0000000u) {
+        return chain;
+    }
+    const uint32_t high = refii::vfs::LoadGuestU32(base, pcr + 0x70u);
+    const uint32_t low = refii::vfs::LoadGuestU32(base, pcr + 0x74u);
+    if (low < 0x10000u || high <= low || high - low > 64u * 1024u * 1024u) {
+        return chain;
+    }
+    uint32_t sp = ctx.r1.u32;
+    for (std::size_t i = 1; i < kGuardFrames; ++i) {
+        if (sp < low || sp + 4u > high) break;
+        const uint32_t back = refii::vfs::LoadGuestU32(base, sp);
+        if (back <= sp || back >= high || back - 8u < low) break;
+        chain[i] = refii::vfs::LoadGuestU32(base, back - 8u);
+        sp = back;
+    }
+    return chain;
+}
+
+std::string ChainText(const std::array<uint32_t, kGuardFrames>& chain) {
+    std::string text;
+    for (uint32_t lr : chain) {
+        if (lr == 0u) break;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), " %08X", lr);
+        text += buf;
+    }
+    return text;
+}
+
+}  // namespace
+
+REX_EXTERN(rex_lhHeap_Alloc) {
+    REX_FUNC_PROLOGUE();
+    __imp__rex_lhHeap_Alloc(ctx, base);
+    const uint32_t block = ctx.r3.u32;
+    if (block != 0u) {
+        std::lock_guard<std::mutex> lock(g_guard_mutex);
+        g_guard_freed.erase(block);
+    }
+}
+
+REX_EXTERN(rex_lhHeap_Free) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t block = ctx.r3.u32;
+    if (block != 0u) {
+        const std::array<uint32_t, kGuardFrames> chain = GuestChain(ctx, base);
+        std::unique_lock<std::mutex> lock(g_guard_mutex);
+        auto found = g_guard_freed.find(block);
+        if (found != g_guard_freed.end()) {
+            const FreeRecord first = found->second;
+            lock.unlock();
+            if (g_guard_reports.fetch_add(1, std::memory_order_relaxed) < 16u) {
+                REXLOG_ERROR("Refii DOUBLE FREE of guest block 0x{:08X} (first word 0x{:08X}) — "
+                             "first freed (#{}) from{}; freed AGAIN from{} (build {} addresses, "
+                             "innermost first). The second free is skipped.",
+                             block, refii::vfs::LoadGuestU32(base, block), first.seq,
+                             ChainText(first.chain), ChainText(chain), refii_guest_build());
+            }
+            // A second free corrupts the allocator for good; refusing it keeps the run alive
+            // long enough to read the report, and leaks one block.
+            return;
+        }
+        if (g_guard_freed.size() >= kGuardMaxEntries) {
+            g_guard_freed.clear();
+        }
+        g_guard_freed[block] = FreeRecord{chain, ++g_guard_seq};
+    }
+    __imp__rex_lhHeap_Free(ctx, base);
 }

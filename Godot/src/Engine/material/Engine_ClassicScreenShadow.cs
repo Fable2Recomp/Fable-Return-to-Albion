@@ -16,6 +16,14 @@ namespace Refii.Models;
 /// Godot's depth prepass, which the classic opaque materials are in. Until the first mask is
 /// written, and whenever there is no sun caster, the texture is white — the title's own
 /// fallback (`sub_822965E0`, the 16x16 white texture).
+///
+/// ONE MASK, WRITTEN PER VIEW. Every camera's compositor has its own instance of this pass, and
+/// on split screen both views run it. They share one target, the texture the materials bind:
+/// each view writes it from its own depth, eye and cascades at its pre-opaque callback and reads
+/// it in its own opaque and transparent passes; the rendering device's graph orders the second
+/// view's write after the first view's reads. The views of a split screen are the same size, so
+/// the target is too. On split screen the pass first copies its view's cascade captures into the
+/// pair the materials bind (<see cref="Engine_ClassicShadows.CopyForView"/>).
 /// </remarks>
 [Tool]
 [GlobalClass]
@@ -76,9 +84,15 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
     public static Vector2I Size { get; private set; }
 
     private RenderingDevice? _rd;
-    private Rid _shader, _pipeline, _nearest, _target, _params;
-    private Vector2I _targetSize;
+    private Rid _shader, _pipeline, _nearest, _params;
+    /// <summary>The mask every instance writes (render thread): one per process, see the remarks.</summary>
+    private static Rid _target;
+    private static Vector2I _targetSize;
     private bool _ready;
+    private readonly float[] _row = new float[32];
+
+    /// <summary>The view this instance's camera draws (Engine_ClassicViews tags it); 0 for a single view.</summary>
+    public int View;
     private readonly byte[] _bytes = new byte[ParamsBytes];
     private readonly float[] _floats = new float[ParamsBytes / 4];
 
@@ -161,6 +175,11 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             return;
         }
         EnsureTarget(size);
+        int view = Engine_ClassicViews.Count > 1 ? View : 0;
+        if (Engine_ClassicViews.Count > 1)
+        {
+            shadows.CopyForView(_rd, view);
+        }
 
         // Godot view -> Godot world -> guest world ((x, y, z) -> (-x, z, y)).
         Projection inverse = scene.GetCamProjection().Inverse();
@@ -180,14 +199,16 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         Column(viewToGuest.Basis.Column1.X, viewToGuest.Basis.Column1.Y, viewToGuest.Basis.Column1.Z, 0f);
         Column(viewToGuest.Basis.Column2.X, viewToGuest.Basis.Column2.Y, viewToGuest.Basis.Column2.Z, 0f);
         Column(viewToGuest.Origin.X, viewToGuest.Origin.Y, viewToGuest.Origin.Z, 1f);
-        // The cascade rows exactly as the materials read them (PS c36..c43), and c12, c19.
-        float[] cascades = Engine_ClassicConstants.ReadFrame(true, Engine_ClassicRegisters.Ps.DirectionalLightShadowTransform0, 8);
-        System.Array.Copy(cascades, 0, _floats, at, 32);
+        // The cascade rows exactly as the materials read them (PS c36..c43), and c12, c19: the
+        // view's own block.
+        Span<float> row = _row;
+        Engine_ClassicConstants.ReadFrameView(view, true, Engine_ClassicRegisters.Ps.DirectionalLightShadowTransform0, row);
+        row.CopyTo(_floats.AsSpan(at, 32));
         at += 32;
-        float[] eye = Engine_ClassicConstants.ReadFrame(true, Engine_ClassicRegisters.Ps.EyePosition, 1);
-        Column(eye[0], eye[1], eye[2], 1f);
-        float[] ranges = Engine_ClassicConstants.ReadFrame(true, Engine_ClassicRegisters.Ps.ShadowRangeConstants, 1);
-        Column(ranges[0], ranges[1], ranges[2], ranges[3]);
+        Engine_ClassicConstants.ReadFrameView(view, true, Engine_ClassicRegisters.Ps.EyePosition, row.Slice(0, 4));
+        Column(row[0], row[1], row[2], 1f);
+        Engine_ClassicConstants.ReadFrameView(view, true, Engine_ClassicRegisters.Ps.ShadowRangeConstants, row.Slice(0, 4));
+        Column(row[0], row[1], row[2], row[3]);
         Column(size.X, size.Y, 1f / Engine_ClassicShadows.MapSize, 0f);
         Buffer.BlockCopy(_floats, 0, _bytes, 0, ParamsBytes);
         _rd.BufferUpdate(_params, 0, ParamsBytes, _bytes);
@@ -230,12 +251,11 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         {
             return;
         }
-        if (_target.IsValid) _rd.FreeRid(_target);
         if (_params.IsValid) _rd.FreeRid(_params);
         if (_nearest.IsValid) _rd.FreeRid(_nearest);
         if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
         if (_shader.IsValid) _rd.FreeRid(_shader);
-        _target = _params = _nearest = _pipeline = _shader = default;
+        _params = _nearest = _pipeline = _shader = default;
         _ready = false;
         _rd = null;
     }

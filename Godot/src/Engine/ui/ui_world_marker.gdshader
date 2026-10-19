@@ -14,6 +14,11 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_never;
 
 global uniform sampler2D fx_scene_depth;
 global uniform float fx_scene_depth_valid;
+// Player two's view's depth on split screen (Engine_FxDepthCaptureEffect.GlobalTextureSecondName).
+// The marker draws on the HUD layer, not through the view, so the view it was projected through
+// is stated: `sight_view` 1 for player two's half.
+global uniform sampler2D fx_scene_depth_second;
+uniform int sight_view = 0;
 
 uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_disable;
 uniform vec4 tint = vec4(1.0);
@@ -33,7 +38,10 @@ const vec2 TAP = vec2(0.0035, 0.006);
 varying float seen;
 
 float tap(vec2 uv) {
-	float scene = textureLod(fx_scene_depth, clamp(uv, vec2(0.001), vec2(0.999)), 0.0).r;
+	vec2 at = clamp(uv, vec2(0.001), vec2(0.999));
+	float scene = sight_view == 1
+		? textureLod(fx_scene_depth_second, at, 0.0).r
+		: textureLod(fx_scene_depth, at, 0.0).r;
 	return sight.z >= scene * (1.0 - SLACK) ? 1.0 : 0.0;
 }
 

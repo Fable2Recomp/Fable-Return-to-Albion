@@ -3,6 +3,19 @@ using Godot;
 
 namespace Refii.Level;
 
+/// <summary>
+/// The planar mirror each water body reflects: a SubViewport over the shared world, rendered from
+/// the eye reflected about the body's plane, one mirror per view.
+/// </summary>
+/// <remarks>
+/// A MIRROR PER VIEW. Both water shaders address the mirror by the screen position, so a mirror
+/// is only right for the camera it was rendered for. On split screen
+/// (<see cref="Refii.Core.Engine_Views"/>) each body gets a second mirror for player two's camera,
+/// and player one's follows the camera that actually draws their half (FirstViewport's, at the
+/// stated horizontal angle) rather than the window's. A material is shared by both views, so it
+/// carries both mirrors and the eyes they were rendered for; water.gdshader takes the mirror of
+/// the eye it is drawn from. Each view keeps the full cadence of its own.
+/// </remarks>
 public sealed partial class Engine_WaterReflection : Node
 {
     public const string NodeName = "WaterReflections";
@@ -20,6 +33,16 @@ public sealed partial class Engine_WaterReflection : Node
     /// </summary>
     public const uint WaterLayer = 2;
 
+    private sealed class MirrorRig
+    {
+        public SubViewport Viewport = null!;
+        public Camera3D Camera = null!;
+
+        /// <summary>The eye the mirror was last rendered from, and when.</summary>
+        public Transform3D RenderedEye;
+        public int RenderedFrame = int.MinValue;
+    }
+
     private sealed class Body
     {
         public MeshInstance3D Surface = null!;
@@ -27,14 +50,19 @@ public sealed partial class Engine_WaterReflection : Node
         /// <summary>Surfaces on the same plane, drawn with this body's mirror.</summary>
         public readonly List<MeshInstance3D> Sharers = new();
 
-        public SubViewport Viewport = null!;
-        public Camera3D Camera = null!;
-        public float Height;
+        /// <summary>Every material that reads this body's mirror: its own, its sharers', the vista ocean's.</summary>
+        public readonly List<ShaderMaterial> Readers = new();
 
-        /// <summary>The eye the mirror was last rendered from, and when.</summary>
-        public Transform3D RenderedEye;
-        public int RenderedFrame = int.MinValue;
+        /// <summary>The primary view's mirror, then player two's while the screen is split.</summary>
+        public readonly MirrorRig?[] Mirrors = new MirrorRig?[2];
+
+        public float Height;
     }
+
+    private static readonly StringName SecondTextureName = "reflection_tex_second";
+    private static readonly StringName SecondEnabledName = "second_reflection";
+    private static readonly StringName FirstEyeName = "first_eye";
+    private static readonly StringName SecondEyeName = "second_eye";
 
     private readonly List<Body> _bodies = new();
 
@@ -55,7 +83,7 @@ public sealed partial class Engine_WaterReflection : Node
     /// <summary>How far a reflection camera sees. Not the main camera's range — see its use.</summary>
     private const float ReflectionFar = 50f;
 
-    private int _turn;
+    private readonly int[] _turn = new int[2];
     private int _frame;
 
     /// <summary>Live levers: off, or one mirror every <see cref="Cadence"/> frames.</summary>
@@ -127,9 +155,11 @@ public sealed partial class Engine_WaterReflection : Node
 
             if (same is not null)
             {
-                material.SetShaderParameter("reflection_tex", same.Viewport.GetTexture());
-                BindMirror(material, same.Viewport.GetTexture());
+                Texture2D shared = same.Mirrors[0]!.Viewport.GetTexture();
+                material.SetShaderParameter("reflection_tex", shared);
+                BindMirror(material, shared);
                 material.SetShaderParameter("planar_reflection", true);
+                same.Readers.Add(material);
                 if (!ocean)
                 {
                     same.Sharers.Add(surface);
@@ -139,82 +169,146 @@ public sealed partial class Engine_WaterReflection : Node
                 continue;
             }
 
-            var viewport = new SubViewport
-            {
-                Size = new Vector2I(TileSize, TileSize),
+            MirrorRig mirror = NewMirror(view);
+            material.SetShaderParameter("reflection_tex", mirror.Viewport.GetTexture());
 
-                // SHARED WORLD, which is the opposite of what the front end's viewport wants. The
-                // UI sets OwnWorld3D so its cameras cannot see the world; a reflection is nothing
-                // BUT the world, so it must render into the same World3D the main camera does.
-                RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled,
-                RenderTargetClearMode = SubViewport.ClearMode.Always,
-                TransparentBg = false,
-
-                // NO POSITIONAL SHADOWS IN A REFLECTION. Each viewport re-renders the region's
-                // eight shadowed lamps for a 256-pixel mirror; measured 2026-09-04 in the
-                // market at night, three reflections drew 230M of the frame's 328M primitives
-                // and held the game at 8 fps with no water on screen.
-                PositionalShadowAtlasSize = 0,
-                GuiDisableInput = true,
-                HandleInputLocally = false,
-                Msaa3D = Viewport.Msaa.Disabled,
-
-                // LINEAR, NOT DISPLAY-ENCODED. An LDR viewport's 3D output is clamped to 1 and
-                // sRGB-encoded into RGBA8; the water samples it as the linear colour the title's
-                // reflection tile holds, so every reflected mid-tone read about 2.4x too bright and
-                // the classic water's `oC0 *= c20.w` took it to white.
-                UseHdr2D = true,
-
-                // A 256-pixel mirror: the coarser LOD of anything whose detail is under four
-                // of its pixels.
-                MeshLodThreshold = ReflectionLodPixels,
-            };
-
-            var camera = new Camera3D
-            {
-                // ONLY THE REFLECTED LAYER (Engine_ReflectionLayer): terrain, vista, props, lamps,
-                // clouds and the celestial elements opt in; entities, FX, HUD sprites and the
-                // water itself never do, and no light's caster mask includes the bit, so a mirror
-                // renders no sun cascades. The A/B lever restores "everything except the water".
-                CullMask = Engine_ReflectionLayer.MirrorCullMask,
-                Near = view.Near,
-
-                // A 256-PIXEL MIRROR DOES NOT NEED THE HORIZON. Inheriting the main camera's
-                // far plane made every reflection a full-range scene traversal: measured in the
-                // market, one 256x256 mirror drew 8.6M visible primitives and 26M shadow
-                // primitives, because the sun's cascades cover whatever the view frustum covers.
-                // Everything a player can actually make out in a rippling 256-pixel reflection
-                // is within a few dozen metres of the water.
-                Far = Mathf.Min(view.Far, ReflectionFar),
-                KeepAspect = Camera3D.KeepAspectEnum.Height,
-                Current = true,
-
-                // No Compositor and no Attributes on purpose — see the class comment. This camera
-                // renders linear HDR for the water shader to compose; the main camera's exposure
-                // pass tone-maps the result once, with the frame it lands in.
-            };
-
-            viewport.AddChild(camera);
-            AddChild(viewport);
-
-            material.SetShaderParameter("reflection_tex", viewport.GetTexture());
-
-            BindMirror(material, viewport.GetTexture());
+            BindMirror(material, mirror.Viewport.GetTexture());
             material.SetShaderParameter("planar_reflection", true);
 
-            _bodies.Add(new Body
+            var body = new Body
             {
                 Surface = surface,
-                Viewport = viewport,
-                Camera = camera,
                 Height = height,
-            });
+            };
+            body.Mirrors[0] = mirror;
+            body.Readers.Add(material);
+            _bodies.Add(body);
         }
 
         if (_bodies.Count != 0)
         {
             GD.Print($"[water] {_bodies.Count} planar reflection(s) at {TileSize}x{TileSize}, " +
                 $"{_shared} surface(s) sharing one");
+        }
+
+        SyncViews();
+    }
+
+    public override void _EnterTree()
+    {
+        Refii.Core.Engine_Views.ViewsChanged += SyncViews;
+    }
+
+    public override void _ExitTree()
+    {
+        Refii.Core.Engine_Views.ViewsChanged -= SyncViews;
+    }
+
+    /// <summary>One mirror's viewport and camera, parented here; <paramref name="view"/> seeds its range.</summary>
+    private MirrorRig NewMirror(Camera3D view)
+    {
+        var viewport = new SubViewport
+        {
+            Size = new Vector2I(TileSize, TileSize),
+
+            // SHARED WORLD, which is the opposite of what the front end's viewport wants. The
+            // UI sets OwnWorld3D so its cameras cannot see the world; a reflection is nothing
+            // BUT the world, so it must render into the same World3D the main camera does.
+            RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled,
+            RenderTargetClearMode = SubViewport.ClearMode.Always,
+            TransparentBg = false,
+
+            // NO POSITIONAL SHADOWS IN A REFLECTION. Each viewport re-renders the region's
+            // eight shadowed lamps for a 256-pixel mirror; measured 2026-09-04 in the
+            // market at night, three reflections drew 230M of the frame's 328M primitives
+            // and held the game at 8 fps with no water on screen.
+            PositionalShadowAtlasSize = 0,
+            GuiDisableInput = true,
+            HandleInputLocally = false,
+            Msaa3D = Viewport.Msaa.Disabled,
+
+            // LINEAR, NOT DISPLAY-ENCODED. An LDR viewport's 3D output is clamped to 1 and
+            // sRGB-encoded into RGBA8; the water samples it as the linear colour the title's
+            // reflection tile holds, so every reflected mid-tone read about 2.4x too bright and
+            // the classic water's `oC0 *= c20.w` took it to white.
+            UseHdr2D = true,
+
+            // A 256-pixel mirror: the coarser LOD of anything whose detail is under four
+            // of its pixels.
+            MeshLodThreshold = ReflectionLodPixels,
+        };
+
+        var camera = new Camera3D
+        {
+            // ONLY THE REFLECTED LAYER (Engine_ReflectionLayer): terrain, vista, props, lamps,
+            // clouds and the celestial elements opt in; entities, FX, HUD sprites and the
+            // water itself never do, and no light's caster mask includes the bit, so a mirror
+            // renders no sun cascades. The A/B lever restores "everything except the water".
+            CullMask = Engine_ReflectionLayer.MirrorCullMask,
+            Near = view.Near,
+
+            // A 256-PIXEL MIRROR DOES NOT NEED THE HORIZON. Inheriting the main camera's
+            // far plane made every reflection a full-range scene traversal: measured in the
+            // market, one 256x256 mirror drew 8.6M visible primitives and 26M shadow
+            // primitives, because the sun's cascades cover whatever the view frustum covers.
+            // Everything a player can actually make out in a rippling 256-pixel reflection
+            // is within a few dozen metres of the water.
+            Far = Mathf.Min(view.Far, ReflectionFar),
+            KeepAspect = Camera3D.KeepAspectEnum.Height,
+            Current = true,
+
+            // No Compositor and no Attributes on purpose — see the class comment. This camera
+            // renders linear HDR for the water shader to compose; the main camera's exposure
+            // pass tone-maps the result once, with the frame it lands in.
+        };
+
+        viewport.AddChild(camera);
+        AddChild(viewport);
+        return new MirrorRig { Viewport = viewport, Camera = camera };
+    }
+
+    /// <summary>
+    /// Builds player two's mirror on every body when the screen splits and frees it when the
+    /// screen rejoins. Only a water.gdshader material takes a second mirror: the classic water's
+    /// translated shaders read one sampler, and the split view does not run under classic.
+    /// </summary>
+    private void SyncViews()
+    {
+        bool split = Refii.Core.Engine_Views.Split && _view is not null && GodotObject.IsInstanceValid(_view);
+        foreach (Body body in _bodies)
+        {
+            MirrorRig? second = body.Mirrors[1];
+            if (split && second is null)
+            {
+                second = NewMirror(_view!);
+                body.Mirrors[1] = second;
+                foreach (ShaderMaterial reader in body.Readers)
+                {
+                    if (!reader.HasMeta(Engine_ClassicWater.Meta))
+                    {
+                        reader.SetShaderParameter(SecondTextureName, second.Viewport.GetTexture());
+                        reader.SetShaderParameter(SecondEnabledName, true);
+                    }
+                }
+            }
+            else if (!split && second is not null)
+            {
+                foreach (ShaderMaterial reader in body.Readers)
+                {
+                    if (!reader.HasMeta(Engine_ClassicWater.Meta))
+                    {
+                        reader.SetShaderParameter(SecondEnabledName, false);
+                        reader.SetShaderParameter(SecondTextureName, default(Variant));
+                    }
+                }
+
+                if (GodotObject.IsInstanceValid(second.Viewport))
+                {
+                    second.Viewport.QueueFree();
+                }
+
+                body.Mirrors[1] = null;
+            }
         }
     }
 
@@ -223,9 +317,12 @@ public sealed partial class Engine_WaterReflection : Node
     {
         foreach (Body body in _bodies)
         {
-            if (GodotObject.IsInstanceValid(body.Camera))
+            foreach (MirrorRig? mirror in body.Mirrors)
             {
-                body.Camera.CullMask = Engine_ReflectionLayer.MirrorCullMask;
+                if (mirror is not null && GodotObject.IsInstanceValid(mirror.Camera))
+                {
+                    mirror.Camera.CullMask = Engine_ReflectionLayer.MirrorCullMask;
+                }
             }
         }
     }
@@ -238,24 +335,109 @@ public sealed partial class Engine_WaterReflection : Node
             return;
         }
 
+        bool split = Refii.Core.Engine_Views.Split;
+        if (split)
+        {
+            PublishEyes();
+        }
+
         if (!Enabled || (++_frame % System.Math.Max(Cadence, 1)) != 0)
         {
             return;
         }
 
-        Transform3D eye = _view.GlobalTransform;
-        float fov = _view.Fov;
-        Godot.Collections.Array<Plane> frustum = _view.GetFrustum();
+        for (int view = 0; view < (split ? 2 : 1); ++view)
+        {
+            if (TrySource(view, out Camera3D camera, out Vector2 screen))
+            {
+                RenderTurn(view, camera, screen);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The camera a view is drawn through and its screen size: the window's camera and visible
+    /// rect, or on split screen each player's own camera and half.
+    /// </summary>
+    private bool TrySource(int view, out Camera3D camera, out Vector2 screen)
+    {
+        camera = null!;
+        screen = new Vector2(TileSize, TileSize);
+        if (view == 0)
+        {
+            if (Refii.Core.Engine_Views.FirstViewport is { } first && first.GetCamera3D() is { } own)
+            {
+                camera = own;
+                screen = first.Size;
+                return true;
+            }
+
+            camera = _view!;
+            screen = _view!.GetViewport()?.GetVisibleRect().Size ?? screen;
+            return true;
+        }
+
+        if (Refii.Core.Engine_Views.Second is not { } second || !GodotObject.IsInstanceValid(second) ||
+            Refii.Core.Engine_Views.SecondViewport is not { } secondView)
+        {
+            return false;
+        }
+
+        camera = second;
+        screen = secondView.Size;
+        return true;
+    }
+
+    /// <summary>The eyes the two mirrors are rendered for, which water.gdshader chooses between per draw.</summary>
+    private void PublishEyes()
+    {
+        if (!TrySource(0, out Camera3D first, out _) || !TrySource(1, out Camera3D second, out _))
+        {
+            return;
+        }
+
+        Vector3 firstEye = first.GlobalPosition;
+        Vector3 secondEye = second.GlobalPosition;
+        foreach (Body body in _bodies)
+        {
+            if (body.Mirrors[1] is null)
+            {
+                continue;
+            }
+
+            foreach (ShaderMaterial reader in body.Readers)
+            {
+                if (!reader.HasMeta(Engine_ClassicWater.Meta))
+                {
+                    reader.SetShaderParameter(FirstEyeName, firstEye);
+                    reader.SetShaderParameter(SecondEyeName, secondEye);
+                }
+            }
+        }
+    }
+
+    /// <summary>One view's turn: re-renders at most one of its mirrors that is in view, in reach and stale.</summary>
+    private void RenderTurn(int view, Camera3D source, Vector2 screen)
+    {
+        Transform3D eye = source.GlobalTransform;
+        float fov = source.Fov;
+        Godot.Collections.Array<Plane> frustum = source.GetFrustum();
 
         // ONE MIRROR PER FRAME, and only one that is in view and in reach. Each is a full
         // scene traversal with the sun's cascades; a region carries several bodies, and
         // rendering them all every frame cost more than the frame itself. `Once` renders on
         // the next frame and keeps the texture, so the others show their last mirror.
         int candidates = 0;
-        Body? chosen = null;
+        MirrorRig? chosen = null;
+        Body? chosenBody = null;
         for (int i = 0; i < _bodies.Count; ++i)
         {
-            Body body = _bodies[(_turn + i) % _bodies.Count];
+            Body body = _bodies[(_turn[view] + i) % _bodies.Count];
+            if (body.Mirrors[view] is not { } mirror)
+            {
+                continue;
+            }
+
             bool seen = Seen(body.Surface, frustum, eye.Origin);
             if (!seen)
             {
@@ -274,30 +456,47 @@ public sealed partial class Engine_WaterReflection : Node
             }
 
             ++candidates;
-            if (chosen is null && Stale(body, eye))
+            if (chosen is null && Stale(mirror, eye))
             {
-                chosen = body;
+                chosen = mirror;
+                chosenBody = body;
             }
         }
 
-        _turn = candidates == 0 ? _turn : (_turn + 1) % _bodies.Count;
-        if (chosen is null)
+        _turn[view] = candidates == 0 ? _turn[view] : (_turn[view] + 1) % _bodies.Count;
+        if (chosen is null || chosenBody is null)
         {
             return;
         }
 
+        // THE VIEW'S OWN PROJECTION: its angle, the axis that angle is measured on, and its range.
         chosen.Camera.Fov = fov;
+        if (chosen.Camera.KeepAspect != source.KeepAspect)
+        {
+            chosen.Camera.KeepAspect = source.KeepAspect;
+        }
+
+        if (chosen.Camera.Near != source.Near)
+        {
+            chosen.Camera.Near = source.Near;
+        }
+
+        float far = Mathf.Min(source.Far, ReflectionFar);
+        if (chosen.Camera.Far != far)
+        {
+            chosen.Camera.Far = far;
+        }
+
         // THE SCREEN'S ASPECT. Both water shaders address the mirror by the screen position, so
         // it has to cover what the screen covers: square, it held only the middle of a 16:9 view
         // stretched across the whole width. The height stays the title's 256.
-        Vector2 screen = _view.GetViewport()?.GetVisibleRect().Size ?? new Vector2(TileSize, TileSize);
         var size = new Vector2I(
             Mathf.Clamp(Mathf.RoundToInt(TileSize * screen.X / Mathf.Max(screen.Y, 1f)), 1, 4 * TileSize), TileSize);
         if (chosen.Viewport.Size != size)
         {
             chosen.Viewport.Size = size;
         }
-        chosen.Camera.GlobalTransform = Mirror(eye, chosen.Height);
+        chosen.Camera.GlobalTransform = Mirror(eye, chosenBody.Height);
         chosen.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
         chosen.RenderedEye = eye;
         chosen.RenderedFrame = _frame;
@@ -306,14 +505,14 @@ public sealed partial class Engine_WaterReflection : Node
     private static bool Seen(MeshInstance3D surface, Godot.Collections.Array<Plane> frustum, Vector3 eye) =>
         GodotObject.IsInstanceValid(surface) && surface.IsVisibleInTree() && InView(surface, frustum, eye);
 
-    private bool Stale(Body body, in Transform3D eye)
+    private bool Stale(MirrorRig mirror, in Transform3D eye)
     {
-        if (_frame - body.RenderedFrame >= HoldFrames)
+        if (_frame - mirror.RenderedFrame >= HoldFrames)
         {
             return true;
         }
 
-        Transform3D last = body.RenderedEye;
+        Transform3D last = mirror.RenderedEye;
         bool moved = last.Origin.DistanceSquaredTo(eye.Origin) > MoveMetres * MoveMetres ||
             last.Basis.Column2.Dot(eye.Basis.Column2) < TurnCosine ||
             last.Basis.Column1.Dot(eye.Basis.Column1) < TurnCosine;

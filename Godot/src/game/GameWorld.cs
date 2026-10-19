@@ -26,6 +26,7 @@ public partial class GameWorld : Node3D
 	public static long LiveOnlyCameras;
 
 	private Camera3D _camera = null!;
+	private GameSplitView _split = null!;
 	private bool _reported;
 
 	public override void _Ready()
@@ -52,6 +53,10 @@ public partial class GameWorld : Node3D
 		// of its own precisely so that it cannot take this one away, which it used to do
 		// every time a widget changed state.
 		_camera.MakeCurrent();
+
+		// Local co-op on split screen: a view per player over this world (GameSplitView).
+		_split = new GameSplitView { Name = "SplitView" };
+		AddChild(_split);
 	}
 
 	public override void _Process(double delta)
@@ -154,6 +159,7 @@ public partial class GameWorld : Node3D
 		}
 
 		_camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
+		_split.Follow(_camera);
 
 		if (!_reported)
 		{
@@ -181,7 +187,7 @@ public partial class GameWorld : Node3D
 	/// stores a NaN. `VerticalFovDegrees` is `Atan(Tan(h * 0.5))`, so an infinite horizontal fov
 	/// arrives as NaN.
 	/// </remarks>
-	private bool TryStatedCamera(
+	internal static bool TryStatedCamera(
 		HostBridge.GuestCamera camera, out Transform3D stated, out float verticalFov)
 	{
 		stated = Transform3D.Identity;

@@ -390,7 +390,9 @@ public static class Engine_LevelLighting
 	/// here rather than shared as a singleton — a level change disposes the camera and the effect
 	/// frees its pipelines with it.
 	/// </remarks>
-	public static Compositor? BuildCompositor()
+	/// <param name="view">The view the chain draws (<see cref="Engine_PostFxEffect.View"/>): 0 the
+	/// window's or player one's, 1 player two's on split screen.</param>
+	public static Compositor? BuildCompositor(int view = 0)
 	{
 		if (RenderingServer.GetRenderingDevice() is null)
 		{
@@ -400,7 +402,7 @@ public static class Engine_LevelLighting
 
 		var effects = new Godot.Collections.Array<CompositorEffect>
 		{
-			new Refii.Fx.Engine_FxDepthCaptureEffect(),
+			new Refii.Fx.Engine_FxDepthCaptureEffect { View = view },
 		};
 		if (Refii.Models.Engine_ClassicMaterial.Active)
 		{
@@ -411,7 +413,7 @@ public static class Engine_LevelLighting
 
 		if (Engine_PostFxParams.ChainRequested)
 		{
-			effects.Add(new Engine_PostFxEffect());
+			effects.Add(new Engine_PostFxEffect { View = view });
 		}
 		else
 		{

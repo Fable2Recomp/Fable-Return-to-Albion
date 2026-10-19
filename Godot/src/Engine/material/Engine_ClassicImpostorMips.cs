@@ -8,7 +8,7 @@ namespace Refii.Models;
 /// The impostor atlas with the title's four mips: at the end of the capture's own render, the
 /// atlas it drew is copied into mip 0 of a texture of its own and each further mip is the box of
 /// the one above (<c>classic_impostor_mips.glsl</c>). The billboard material samples it through
-/// <see cref="Texture"/>.
+/// <see cref="Texture"/> (one per atlas: split screen's second view captures its own).
 /// </summary>
 /// <remarks>
 /// It runs on the capture camera's compositor, not the main view's: the main view's depth
@@ -25,10 +25,8 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
     public const string ShaderPath = "res://src/Engine/material/classic_impostor_mips.glsl";
     private const int Mips = 4;
 
-    private static Texture2Drd? _texture;
-
     /// <summary>What the billboards sample; empty until the first frame that captured.</summary>
-    public static Texture2Drd Texture => _texture ??= new Texture2Drd();
+    public Texture2Drd Texture { get; } = new();
 
     private RenderingDevice? _rd;
     private Rid _shader, _pipeline, _linear, _target;
@@ -39,7 +37,6 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
     public Engine_ClassicImpostorMips()
     {
         EffectCallbackType = EffectCallbackTypeEnum.PostTransparent;
-        _ = Texture;
         RenderingServer.CallOnRenderThread(Callable.From(Initialise));
     }
 
@@ -98,7 +95,8 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
         }
         _targetSize = size;
         Rid rid = _target;
-        Callable.From(() => Texture.TextureRdRid = rid).CallDeferred();
+        Texture2Drd texture = Texture;
+        Callable.From(() => texture.TextureRdRid = rid).CallDeferred();
     }
 
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)

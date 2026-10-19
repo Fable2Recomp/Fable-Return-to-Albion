@@ -97,7 +97,13 @@ public static class Engine_UiPageProviders
 	/// </summary>
 	private sealed class CoopProvider : Engine_UiPageProvider
 	{
-		private const string LeftSliders = "Foreground.LeftPage.Sliders.";
+		/// <summary>
+		/// THE GOLD AND EXPERIENCE SHARE SLIDERS, HIDDEN. Each player keeps their own progression
+		/// (Fable 3's rule), so the guest's split (`coopMgr+176`/`+172`) decides nothing and a
+		/// slider for it would offer a choice that does not exist. The whole group goes: switched
+		/// off, and its subtree stated at 0 so no slide can bring a child back.
+		/// </summary>
+		private const string Sliders = "Foreground.LeftPage.Sliders";
 
 		/// <summary>
 		/// XBOX LIVE VESTIGES, OFF BY DECISION. Reputation and Gamerscore are console-profile
@@ -121,35 +127,8 @@ public static class Engine_UiPageProviders
 
 		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
 		{
-			Refii.Host.HostBridge.CoopShare share = Refii.Host.HostBridge.CoopShares();
-
-			// The manager holds ONE fraction per slider; the two ends are the two players' halves.
-			// Both read 50% at the default 0.5, which is what the shipped screen shows.
-			float gold = share.Known ? share.Gold : 0.5f;
-			float experience = share.Known ? share.Experience : 0.5f;
-
-			// Lifted out of `page` first: it is an `in` parameter and a local function cannot
-			// capture one.
-			Refii.Text.Engine_BabelDatabase? strings = page.Strings;
-
-			string Tag(string key, string fallback) =>
-				strings is { } bank && bank.TryGetString(key, out string value) && value.Length != 0
-					? value
-					: fallback;
-
-			static string Percent(float fraction) =>
-				$"{Mathf.RoundToInt(Mathf.Clamp(fraction, 0f, 1f) * 100f)}%";
-
-			var values = new Dictionary<string, string>(System.StringComparer.Ordinal)
-			{
-				[LeftSliders + "slider1.grp.text"] = Tag("GUI_SCREEN_COOP_GOLD", "Share of Gold"),
-				[LeftSliders + "slider1.grp.textleft"] = Percent(1f - gold),
-				[LeftSliders + "slider1.grp.textright"] = Percent(gold),
-				[LeftSliders + "slider2.grp.text"] =
-					Tag("GUI_SCREEN_COOP_EXPERIENCE", "Share of Experience"),
-				[LeftSliders + "slider2.grp.textleft"] = Percent(1f - experience),
-				[LeftSliders + "slider2.grp.textright"] = Percent(experience),
-			};
+			// No slider values: the share sliders are hidden (see `Sliders`).
+			var values = new Dictionary<string, string>(System.StringComparer.Ordinal);
 
 			// OUR OWN NAME, ON OUR OWN SIDE OF THE SPREAD. The left page is player one and the
 			// right is player two, so which one carries this player's name is the co-op role.
@@ -235,6 +214,7 @@ public static class Engine_UiPageProviders
 				["Foreground.RightPage.ProfileSelector.Buttons"] = 1f,
 				["Foreground.RightPage.ProfileSelector.Buttons.*"] = 1f,
 				["Foreground.LeftPage.ProfileSelector"] = 1f,
+				[Sliders + ".*"] = 0f,
 			};
 
 		/// <summary>
@@ -291,6 +271,7 @@ public static class Engine_UiPageProviders
 				active[$"Foreground.{side}.ProfileSelector.gamertag.gamerpic"] = false;
 			}
 
+			active[Sliders] = false;
 			active["Foreground.LeftPage.ProfileSelector.Buttons.Title2"] = false;
 			active["Foreground.LeftPage.ProfileSelector.Buttons.icon_button_x2"] = false;
 

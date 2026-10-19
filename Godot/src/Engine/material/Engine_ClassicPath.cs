@@ -66,20 +66,77 @@ public static class Engine_ClassicPath
     }
 
     /// <summary>
+    /// The rain and snow, one instance per view: each stands across its own view's camera.
+    /// Player two's is built when the screen splits and freed when it rejoins.
+    /// </summary>
+    private static void PumpWeather(Node host, Camera3D camera, Vector2 viewport)
+    {
+        bool split = Engine_ClassicViews.Count > 1 && Engine_ClassicViews.Camera(1) is not null;
+        Camera3D first = split ? Engine_ClassicViews.Camera(0) ?? camera : camera;
+        Vector2 firstSize = split && Refii.Core.Engine_Views.FirstViewport is { } one ? (Vector2)one.Size : viewport;
+        Refii.Level.Engine_ClassicWeather.Instance?.Pump(first, firstSize);
+
+        if (!split)
+        {
+            Refii.Level.Engine_ClassicWeather.Second?.QueueFree();
+            return;
+        }
+
+        if (Refii.Level.Engine_ClassicWeather.Second is not { } second)
+        {
+            host.AddChild(new Refii.Level.Engine_ClassicWeather { View = 1 });
+            return;
+        }
+
+        Vector2 secondSize = Refii.Core.Engine_Views.SecondViewport is { } two ? (Vector2)two.Size : viewport;
+        second.Pump(Engine_ClassicViews.Camera(1)!, secondSize);
+    }
+
+    /// <summary>
+    /// The sky dome, one per view: each takes the mist volume its own view's eye stands in.
+    /// Player two's is built when the screen splits and freed when it rejoins.
+    /// </summary>
+    private static void PumpSky(Node host, Camera3D camera)
+    {
+        Refii.Level.Engine_ClassicSkyDome.Instance?.Pump(camera);
+        if (Engine_ClassicViews.Count < 2 || Engine_ClassicViews.Camera(1) is not { } secondCamera)
+        {
+            Refii.Level.Engine_ClassicSkyDome.Second?.QueueFree();
+            return;
+        }
+
+        if (Refii.Level.Engine_ClassicSkyDome.Second is not { } second)
+        {
+            second = new Refii.Level.Engine_ClassicSkyDome { View = 1 };
+            host.AddChild(second);
+        }
+
+        second.Pump(secondCamera);
+    }
+
+    /// <summary>
     /// Pumps every feed for the frame drawn from <paramref name="camera"/> and publishes the
     /// constant file. Main thread, once a frame.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="camera"/> is the window's camera, which player one's view follows; on
+    /// split screen the feeds that belong to a view take each view's own camera from
+    /// <see cref="Engine_ClassicViews"/> (the frame constants, the cascades, the view-space
+    /// material constants, the displacement target).
+    /// </remarks>
     public static void Pump(Node host, Camera3D? camera, Vector2 viewport)
     {
         if (!Engine_ClassicMaterial.Active)
         {
             return;
         }
+        Engine_ClassicViews.Begin(camera);
         Engine_ClassicConstants.EnsureRegistered();
         using (Refii.Core.Engine_FramePhases.Measure("classic.feed"))
         {
             Engine_ClassicFeed.Pump(camera);
             Engine_ClassicLights.Pump(camera);
+            Engine_ClassicViews.WriteHostRegisters();
         }
         using (Refii.Core.Engine_FramePhases.Measure("classic.mist"))
         {
@@ -98,7 +155,7 @@ public static class Engine_ClassicPath
                 Engine_ClassicDisplacement.Instance?.Pump(camera, viewport);
                 Engine_ClassicDecals.Instance?.Pump(camera);
             }
-            Refii.Level.Engine_ClassicWeather.Instance?.Pump(camera, viewport);
+            PumpWeather(host, camera, viewport);
             using (Refii.Core.Engine_FramePhases.Measure("classic.billboards"))
             {
                 Engine_ClassicBillboards.Instance?.Pump(camera);
@@ -131,7 +188,7 @@ public static class Engine_ClassicPath
             }
             using (Refii.Core.Engine_FramePhases.Measure("classic.sky"))
             {
-                Refii.Level.Engine_ClassicSkyDome.Instance?.Pump(camera);
+                PumpSky(host, camera);
             }
         }
         using (Refii.Core.Engine_FramePhases.Measure("classic.publish"))

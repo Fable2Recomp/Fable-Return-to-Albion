@@ -29,6 +29,13 @@ namespace Refii.Models;
 /// All of it is computed in the guest's axes; only the Godot camera is placed in Godot's,
 /// which are the guest's rotated ((x, y, z) -> (-x, z, y)), so the rendered map is the guest's
 /// as it is and the copy applies only the biases (classic_shadow_capture.glsl).
+///
+/// A PAIR OF CASCADES PER VIEW. The cascades are fitted to the eye, so split screen's second
+/// view has its own pair (a second set of cascade viewports) and its own transforms in its block
+/// of the constant file. The materials bind ONE pair of maps (<see cref="CascadeTexture"/>): while
+/// split, each set captures into a map of its own and each view's screen-shadow pass copies its
+/// set into the bound pair before the view draws (<see cref="CopyForView"/>, render thread),
+/// which the rendering device orders after the other view's reads.
 /// </remarks>
 [Tool]
 public partial class Engine_ClassicShadows : Node
@@ -79,9 +86,12 @@ public partial class Engine_ClassicShadows : Node
 
     private static readonly Godot.Environment DepthOnly = new();
 
-    private readonly SubViewport[] _viewports = new SubViewport[Cascades];
-    private readonly Camera3D[] _cameras = new Camera3D[Cascades];
-    private readonly Capture[] _captures = new Capture[Cascades];
+    // Set s, cascade k at [s * Cascades + k]: set 0 draws view 0 (and is what the materials bind),
+    // set 1 view 1 while the screen is split.
+    private readonly SubViewport?[] _viewports = new SubViewport?[Engine_ClassicViews.Max * Cascades];
+    private readonly Camera3D?[] _cameras = new Camera3D?[Engine_ClassicViews.Max * Cascades];
+    private readonly Capture?[] _captures = new Capture?[Engine_ClassicViews.Max * Cascades];
+    private int _activeSets = 1;
     private readonly float[] _registers = new float[16];
     private readonly float[] _four = new float[4];
 
@@ -89,24 +99,47 @@ public partial class Engine_ClassicShadows : Node
     public static Engine_ClassicShadows? Instance { get; private set; }
 
     /// <summary>The map a cascade's sampler reads; valid for the life of the node.</summary>
-    public Texture2D CascadeTexture(int cascade) => _captures[cascade].Texture;
+    public Texture2D CascadeTexture(int cascade) => _captures[cascade]!.Texture;
 
-    /// <summary>The Godot camera that renders cascade <paramref name="cascade"/>.</summary>
-    public Camera3D CascadeCamera(int cascade) => _cameras[cascade];
+    /// <summary>
+    /// The map holding view <paramref name="view"/>'s cascade for a draw outside that view's own
+    /// passes (an offscreen target), where the bound pair holds whichever view copied last. View
+    /// 0: the bound pair, or while split the first set's own map once it stands. View 1: the
+    /// second set's map (it captures into its published one; null before the first split).
+    /// </summary>
+    public Texture2D? CascadeTextureFor(int view, int cascade)
+    {
+        if (view != 0)
+        {
+            return _captures[Cascades + cascade]?.Texture;
+        }
+        Capture first = _captures[cascade]!;
+        return first.Own && first.OwnReady ? first.OwnTexture : first.Texture;
+    }
+
+    /// <summary>The Godot camera that renders cascade <paramref name="cascade"/> (of the first view).</summary>
+    public Camera3D CascadeCamera(int cascade) => _cameras[cascade]!;
 
     public override void _Ready()
     {
         Instance = this;
+        BuildSet(0);
+    }
+
+    /// <summary>One view's pair of cascade viewports, cameras and captures.</summary>
+    private void BuildSet(int set)
+    {
         for (int k = 0; k < Cascades; k++)
         {
-            _captures[k] = new Capture { BiasConstant = Biases[k].Constant, BiasSlope = Biases[k].Slope };
+            int at = set * Cascades + k;
+            var capture = new Capture { BiasConstant = Biases[k].Constant, BiasSlope = Biases[k].Slope };
             var compositor = new Compositor
             {
-                CompositorEffects = new Array<CompositorEffect> { _captures[k] },
+                CompositorEffects = new Array<CompositorEffect> { capture },
             };
             var viewport = new SubViewport
             {
-                Name = "ClassicShadow" + k,
+                Name = set == 0 ? "ClassicShadow" + k : $"ClassicShadow{k}View{set}",
                 Size = new Vector2I(MapSize, MapSize),
                 // The main world, drawn from the light: the same objects the player sees.
                 RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
@@ -137,8 +170,65 @@ public partial class Engine_ClassicShadows : Node
             };
             viewport.AddChild(camera);
             AddChild(viewport);
-            _viewports[k] = viewport;
-            _cameras[k] = camera;
+            _viewports[at] = viewport;
+            _cameras[at] = camera;
+            _captures[at] = capture;
+        }
+    }
+
+    /// <summary>
+    /// Draws a pair of cascades per view: builds the second view's set the first time the screen
+    /// splits, and stops drawing it when the screen rejoins. Main thread.
+    /// </summary>
+    private void Sets(int views)
+    {
+        if (views == _activeSets)
+        {
+            return;
+        }
+        if (views > 1 && _captures[Cascades] is null)
+        {
+            BuildSet(1);
+        }
+        _activeSets = views;
+        for (int k = 0; k < Cascades; k++)
+        {
+            // While split, the first set captures into a map of its own as well; the bound pair
+            // takes each view's copy (CopyForView).
+            _captures[k]!.Own = views > 1;
+            if (_viewports[Cascades + k] is { } second)
+            {
+                second.RenderTargetUpdateMode = views > 1 ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Copies view <paramref name="view"/>'s cascade captures into the pair the materials bind.
+    /// Render thread, from that view's compositor before it draws its opaque pass (the screen
+    /// shadow mask's pre-opaque callback); only while the screen is split.
+    /// </summary>
+    public void CopyForView(RenderingDevice rd, int view)
+    {
+        for (int k = 0; k < Cascades; k++)
+        {
+            int at = Math.Clamp(view, 0, Engine_ClassicViews.Max - 1) * Cascades + k;
+            if (_captures[at] is not { } from || _captures[k] is not { } bound)
+            {
+                continue;
+            }
+            Rid source = from.Source, target = bound.Bound;
+            if (!source.IsValid || !target.IsValid || source == target)
+            {
+                continue;
+            }
+            Vector2I size = from.SourceSize, boundSize = bound.BoundSize;
+            int w = Math.Min(size.X, boundSize.X), h = Math.Min(size.Y, boundSize.Y);
+            if (w <= 0 || h <= 0)
+            {
+                continue;
+            }
+            rd.TextureCopy(source, target, Vector3.Zero, Vector3.Zero, new Vector3(w, h, 1), 0, 0, 0, 0);
         }
     }
 
@@ -159,19 +249,42 @@ public partial class Engine_ClassicShadows : Node
     /// <param name="sunTravelGuest">The sun light's travel direction, guest axes (twin+304).</param>
     public void Pump(Camera3D main, Vector3 sunTravelGuest)
     {
-        // The casters follow their drawn nodes and take the guest's eye-distance cut first.
+        int views = Engine_ClassicViews.Count;
+        Sets(views);
+        // The casters follow their drawn nodes and take the guest's eye-distance cut first: on
+        // split screen a caster within its reach of either eye casts (both sets draw one world).
         using (Refii.Core.Engine_FramePhases.Measure("classic.shadows.casters"))
         {
-            Engine_ClassicCasters.Update(main.GlobalPosition);
+            if (views > 1 && Engine_ClassicViews.Camera(1) is { } secondEye)
+            {
+                Engine_ClassicCasters.Update(main.GlobalPosition, secondEye.GlobalPosition);
+            }
+            else
+            {
+                Engine_ClassicCasters.Update(main.GlobalPosition);
+            }
         }
-        Vector3 eye = ToGuest(main.GlobalPosition);
-        Vector3 forward = ToGuest(-main.GlobalTransform.Basis.Z).Normalized();
         Vector3 travel = sunTravelGuest.Normalized();
         if (!travel.IsFinite() || travel.IsZeroApprox())
         {
             return;
         }
+        for (int v = 0; v < views; v++)
+        {
+            Camera3D view = v == 0 ? main : Engine_ClassicViews.Camera(v) ?? main;
+            PlaceSet(v, view, travel);
+        }
+        if ((main.CullMask & Engine_ClassicParticles.Layer) == 0)
+        {
+            main.CullMask |= Engine_ClassicParticles.Layer;
+        }
+    }
 
+    /// <summary>One view's two cascades: fitted to its eye, its registers into its block.</summary>
+    private void PlaceSet(int set, Camera3D main, Vector3 travel)
+    {
+        Vector3 eye = ToGuest(main.GlobalPosition);
+        Vector3 forward = ToGuest(-main.GlobalTransform.Basis.Z).Normalized();
         for (int k = 0; k < Cascades; k++)
         {
             (float extent, float back, float ahead) = Params[k];
@@ -199,20 +312,19 @@ public partial class Engine_ClassicShadows : Node
             int register = k == 0
                 ? Engine_ClassicRegisters.Ps.DirectionalLightShadowTransform0
                 : Engine_ClassicRegisters.Ps.DirectionalLightShadowTransform1;
-            Engine_ClassicConstants.SetFrame(true, register, _registers);
+            Engine_ClassicConstants.SetFrameView(set, true, register, _registers);
             _four[0] = 1f / MapSize; _four[1] = 1f / MapSize; _four[2] = 0f; _four[3] = 0f;
             Engine_ClassicConstants.SetFrame(true,
                 k == 0 ? Engine_ClassicRegisters.Ps.ShadowMapResolution0 : Engine_ClassicRegisters.Ps.ShadowMapResolution0 + 1,
                 _four);
 
             // The Godot camera on the same basis: position, target and up carried over.
-            Camera3D camera = _cameras[k];
+            if (_cameras[set * Cascades + k] is not { } camera)
+            {
+                continue;
+            }
             // This cascade's casters plus the shadow-pass marker the shaders test.
             camera.CullMask = (k == 0 ? NearCasterLayer : FarCasterLayer) | ShadowPassLayer;
-            if ((main.CullMask & Engine_ClassicParticles.Layer) == 0)
-            {
-                main.CullMask |= Engine_ClassicParticles.Layer;
-            }
             Vector3 eyeG = ToGodot(lightEye), centreG = ToGodot(centre), upG = ToGodot(up);
             camera.GlobalTransform = new Transform3D(Godot.Basis.LookingAt(centreG - eyeG, upG), eyeG);
         }
@@ -325,6 +437,34 @@ public partial class Engine_ClassicShadows : Node
         public float BiasConstant;
         public float BiasSlope;
 
+        /// <summary>
+        /// Capture into a map of its own instead of the published one: the first view's set while
+        /// the screen is split, whose published map takes each view's copy (CopyForView).
+        /// </summary>
+        public volatile bool Own;
+
+        private Rid _own;
+        private Vector2I _ownSize;
+        private readonly Texture2Drd _ownTexture = new();
+
+        /// <summary>The capture's own map as a texture (<see cref="Own"/>), for offscreen readers of its view.</summary>
+        public Texture2D OwnTexture => _ownTexture;
+
+        /// <summary>Whether <see cref="OwnTexture"/> points at a map yet. Main thread.</summary>
+        public bool OwnReady { get; private set; }
+
+        /// <summary>The map the last capture wrote. Render thread.</summary>
+        internal Rid Source { get; private set; }
+
+        /// <summary>The size of <see cref="Source"/>. Render thread.</summary>
+        internal Vector2I SourceSize { get; private set; }
+
+        /// <summary>The published map (what <see cref="Texture"/> samples). Render thread.</summary>
+        internal Rid Bound => _target;
+
+        /// <summary>The size of <see cref="Bound"/>. Render thread.</summary>
+        internal Vector2I BoundSize => _targetSize;
+
         /// <summary>Points the published texture at the capture or at a constant map.</summary>
         private void Bind(string mode)
         {
@@ -408,13 +548,39 @@ public partial class Engine_ClassicShadows : Node
                 UsageBits = RenderingDevice.TextureUsageBits.SamplingBit
                     | RenderingDevice.TextureUsageBits.StorageBit
                     | RenderingDevice.TextureUsageBits.CanUpdateBit
-                    | RenderingDevice.TextureUsageBits.CanCopyFromBit,
+                    | RenderingDevice.TextureUsageBits.CanCopyFromBit
+                    | RenderingDevice.TextureUsageBits.CanCopyToBit,
             }, new RDTextureView());
             Refii.Core.Engine_TracedMemory.Alloc(Refii.Core.Engine_RdRetire.TracedPool, _target.Id, (ulong)size.X * (ulong)size.Y * 4);
             _targetSize = size;
             Rid rid = _target;
             _bound = "capture";
             Callable.From(() => _texture.TextureRdRid = rid).CallDeferred();
+        }
+
+        /// <summary>The capture's own map (<see cref="Own"/>), made on first use.</summary>
+        private void EnsureOwn(Vector2I size)
+        {
+            if (_own.IsValid && size == _ownSize) return;
+            Refii.Core.Engine_RdRetire.Retire(_own);
+            _own = _rd!.TextureCreate(new RDTextureFormat
+            {
+                Width = (uint)size.X,
+                Height = (uint)size.Y,
+                Format = RenderingDevice.DataFormat.R32Sfloat,
+                TextureType = RenderingDevice.TextureType.Type2D,
+                UsageBits = RenderingDevice.TextureUsageBits.SamplingBit
+                    | RenderingDevice.TextureUsageBits.StorageBit
+                    | RenderingDevice.TextureUsageBits.CanCopyFromBit,
+            }, new RDTextureView());
+            Refii.Core.Engine_TracedMemory.Alloc(Refii.Core.Engine_RdRetire.TracedPool, _own.Id, (ulong)size.X * (ulong)size.Y * 4);
+            _ownSize = size;
+            Rid rid = _own;
+            Callable.From(() =>
+            {
+                _ownTexture.TextureRdRid = rid;
+                OwnReady = true;
+            }).CallDeferred();
         }
 
         public override void _Notification(int what)
@@ -424,6 +590,7 @@ public partial class Engine_ClassicShadows : Node
                 return;
             }
             _texture.TextureRdRid = default;
+            _ownTexture.TextureRdRid = default;
             if (_black.IsValid) _rd.FreeRid(_black);
             if (_white.IsValid) _rd.FreeRid(_white);
             if (_target.IsValid)
@@ -431,6 +598,13 @@ public partial class Engine_ClassicShadows : Node
                 Refii.Core.Engine_TracedMemory.Free(Refii.Core.Engine_RdRetire.TracedPool, _target.Id);
                 _rd.FreeRid(_target);
             }
+            if (_own.IsValid)
+            {
+                Refii.Core.Engine_TracedMemory.Free(Refii.Core.Engine_RdRetire.TracedPool, _own.Id);
+                _rd.FreeRid(_own);
+            }
+            _own = default;
+            Source = default;
             if (_sampler.IsValid) _rd.FreeRid(_sampler);
             if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
             if (_shader.IsValid) _rd.FreeRid(_shader);
@@ -465,15 +639,23 @@ public partial class Engine_ClassicShadows : Node
                 return;
             }
             Bind("capture");
+            Rid output = _target;
+            if (Own)
+            {
+                EnsureOwn(size);
+                output = _own;
+            }
+            Source = output;
+            SourceSize = size;
             Rid depth = buffers.GetDepthLayer(0);
-            Rid set = _set.For(_rd, stackalloc Rid[] { depth, _target });
+            Rid set = _set.For(_rd, stackalloc Rid[] { depth, output });
             if (!set.IsValid)
             {
                 var depthUniform = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
                 depthUniform.AddId(_sampler);
                 depthUniform.AddId(depth);
                 var outUniform = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
-                outUniform.AddId(_target);
+                outUniform.AddId(output);
                 set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, new Array<RDUniform> { depthUniform, outUniform }));
             }
             byte[] push = _push;

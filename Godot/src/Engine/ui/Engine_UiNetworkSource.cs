@@ -28,15 +28,6 @@ public static class Engine_UiNetworkSource
 	public const string FriendsSource = "friends";
 	public const string RequestsSource = "requests";
 
-	/// <summary>Discord asks the node handed over, kept until answered or stale.</summary>
-	private static readonly List<(NetBridge.JoinRequest Request, ulong SeenMs)> _joinRequests = new();
-
-	/// <summary>How long an unanswered Discord ask stays listed; Discord's own ask lapses sooner.</summary>
-	private const ulong JoinRequestLifetimeMs = 60_000;
-
-	/// <summary>Drops an ask once it has been answered.</summary>
-	public static void ForgetJoinRequest(string userId) =>
-		_joinRequests.RemoveAll(entry => entry.Request.UserId == userId);
 	public const string InvitesSource = "invites";
 	public const string GamesSource = "games";
 
@@ -253,19 +244,14 @@ public static class Engine_UiNetworkSource
 
 		var rows = new List<Engine_UiMenuSources.Row>();
 
-		// DISCORD "ASK TO JOIN", answered here. The node queues each ask for the title under its
-		// default policy (a stranger is never let in unless the player says so); the bridge read
-		// DRAINS the queue, so what it handed over is kept here until answered or stale.
-		ulong nowMs = Godot.Time.GetTicksMsec();
-		foreach (NetBridge.JoinRequest ask in NetBridge.JoinRequests())
+		// DISCORD "ASK TO JOIN", answered here or by the in-world question. The node queues each
+		// ask for the title under its default policy (a stranger is never let in unless the
+		// player says so); both places read the one store, so an ask answered in either leaves
+		// both (Engine_UiJoinRequests).
+		Engine_UiJoinRequests.Refresh(Godot.Time.GetTicksMsec());
+		foreach (NetBridge.JoinRequest ask in Engine_UiJoinRequests.Pending())
 		{
-			_joinRequests.RemoveAll(entry => entry.Request.UserId == ask.UserId);
-			_joinRequests.Add((ask, nowMs));
-		}
-		_joinRequests.RemoveAll(entry => nowMs - entry.SeenMs > JoinRequestLifetimeMs);
-		foreach ((NetBridge.JoinRequest ask, ulong _) in _joinRequests)
-		{
-			string who = ask.UserName.Length == 0 ? "A Discord player" : ask.UserName;
+			string who = Engine_UiJoinRequests.Who(ask);
 			rows.Add(Row(
 				$"joinask:{ask.UserId}", $"{who} asks to join your game",
 				$"{CommandPrefix}join-allow:{ask.UserId}"));

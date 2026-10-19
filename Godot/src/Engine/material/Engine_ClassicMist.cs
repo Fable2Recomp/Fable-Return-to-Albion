@@ -153,20 +153,38 @@ public partial class Engine_ClassicMist : Node
         v.Origin = new Vector3(raw[at + 32], raw[at + 33], raw[at + 34]);
     }
 
-    /// <summary>Writes a volume's five mist registers (c72..c76) into a draw's row.</summary>
-    public static void WriteRegisters(Volume v, int row)
+    /// <summary>Writes a volume's five mist registers (c72..c76) into a draw's row, every view's copy.</summary>
+    public static void WriteRegisters(Volume v, int row) => WriteRegisters(v, row, -1);
+
+    /// <summary>
+    /// As <see cref="WriteRegisters(Volume, int)"/> into one view's copy of the row only
+    /// (<paramref name="view"/> &gt;= 0): a draw both views see whose volume is each view's eye's.
+    /// </summary>
+    public static void WriteRegisters(Volume v, int row, int view)
     {
         Set(v.Colour.X, v.Colour.Y, v.Colour.Z, 1f);
-        Engine_ClassicConstants.SetRowBlock(true, row, Engine_ClassicRegisters.Ps.MistColour, _four);
+        Row(row, view, Engine_ClassicRegisters.Ps.MistColour);
         Set(v.Remap352.X, v.Remap352.Y, v.Remap352.Z, v.Remap352.W);
-        Engine_ClassicConstants.SetRowBlock(true, row, Engine_ClassicRegisters.Ps.MistDensityTextureScaleAndOffset, _four);
+        Row(row, view, Engine_ClassicRegisters.Ps.MistDensityTextureScaleAndOffset);
         Set(v.Remap368.X, v.Remap368.Y, v.Remap368.Z, v.Remap368.W);
-        Engine_ClassicConstants.SetRowBlock(true, row, Engine_ClassicRegisters.Ps.MistHeightTextureScaleAndOffset, _four);
+        Row(row, view, Engine_ClassicRegisters.Ps.MistHeightTextureScaleAndOffset);
         Set(v.Params320.X, v.Params320.Y, v.Params320.Z, v.Params320.W);
-        Engine_ClassicConstants.SetRowBlock(true, row, Engine_ClassicRegisters.Ps.MistAnimationConstants, _four);
+        Row(row, view, Engine_ClassicRegisters.Ps.MistAnimationConstants);
         float factor = (_globalStrength - 1f) * v.Weight + 1f;
         Set(v.Extents.Z, v.Origin.Z, -1.442695f * v.Density * factor, v.Inv316);
-        Engine_ClassicConstants.SetRowBlock(true, row, Engine_ClassicRegisters.Ps.MistHeightScaleAndOffsetDensityFallOff, _four);
+        Row(row, view, Engine_ClassicRegisters.Ps.MistHeightScaleAndOffsetDensityFallOff);
+    }
+
+    private static void Row(int row, int view, int register)
+    {
+        if (view < 0)
+        {
+            Engine_ClassicConstants.SetRowBlock(true, row, register, _four);
+        }
+        else
+        {
+            Engine_ClassicConstants.SetRowBlockView(view, true, row, register, _four);
+        }
     }
 
     /// <summary>

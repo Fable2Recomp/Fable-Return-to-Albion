@@ -31,11 +31,21 @@ namespace Refii.Models;
 /// HERE the shells are a mesh of their own bound to the same skeleton (the furred surface's
 /// triangles, with the record in COLOR and CUSTOM0), drawn as a NextPass chain, each pass on its
 /// own constant row.
+///
+/// A PRELIT PAIR PER VIEW. The prelit passes are lit from the eye (the FURMATERIAL specular, the
+/// skin's) with the sun cascades fitted to it, and culled by the camera they follow, so split
+/// screen's second view renders its own pair from its camera, its copy of the instance's rows and
+/// its cascade set, on a layer of its own (<see cref="PrelitSecondLayer"/>); the shells sample it
+/// in that view (<see cref="Engine_ClassicShaders.ViewSampler"/>). Built when the screen splits,
+/// freed when it rejoins.
 /// </remarks>
 public partial class Engine_ClassicFur : Node
 {
     /// <summary>The layer the prelit draws are on: only the prelit targets' cameras see it.</summary>
     public const uint PrelitLayer = 1u << 27;
+
+    /// <summary>Layer 23: the second view's prelit draws, seen only by its prelit targets' cameras.</summary>
+    public const uint PrelitSecondLayer = 1u << 22;
 
     private const string PrelitVertex = "res://src/Engine/material/classic_fur_prelit_vertex.gdshaderinc";
     private const string DilateVertex = "VSHADER_BORDER_DILATE";
@@ -50,6 +60,18 @@ public partial class Engine_ClassicFur : Node
     private const int SliceSize = 128;
 
     private static readonly StringName ShellRow = "xr_fur_row";
+    private static readonly StringName PrelitFurName = "ps_g_PrelitFurTexture";
+    private static readonly StringName PrelitSkinName = "ps_g_PrelitSkinTexture";
+    private static readonly StringName PrelitFurSecondName = Engine_ClassicShaders.SecondViewSampler("ps_g_PrelitFurTexture");
+    private static readonly StringName PrelitSkinSecondName = Engine_ClassicShaders.SecondViewSampler("ps_g_PrelitSkinTexture");
+    private static readonly StringName Cascade0Name = "ps_g_DirectionalLightShadowMapSampler0";
+    private static readonly StringName Cascade1Name = "ps_g_DirectionalLightShadowMapSampler1";
+
+    /// <summary>The shells' compositions: each pass reads its own row; the prelit pair is the view's.</summary>
+    private static readonly string ShellDefines =
+        "uniform int xr_fur_row = 0;\n#define XR_ROW_UNIFORM xr_fur_row\n" +
+        Engine_ClassicShaders.ViewSampler("ps_g_PrelitFurTexture") + "\n" +
+        Engine_ClassicShaders.ViewSampler("ps_g_PrelitSkinTexture");
 
     /// <summary>
     /// One prelit texture: the furred surface drawn in uv space, one pass per light group of the
@@ -64,6 +86,10 @@ public partial class Engine_ClassicFur : Node
         public MeshInstance3D Source = null!;
         public ShaderMaterial Skin = null!;
         public bool Fur;
+        /// <summary>The view whose camera, rows and cascades it is lit from.</summary>
+        public int View;
+        /// <summary>The first cascade map its passes bind (<see cref="BindCascades"/>).</summary>
+        public Texture2D? Cascades;
         public readonly int[] Rows = new int[3];
         public string Shape = string.Empty;
         public readonly Dictionary<string, ShaderMaterial> Cache = new();
@@ -72,6 +98,8 @@ public partial class Engine_ClassicFur : Node
     private sealed class Furred
     {
         public Prelit? FurPass, SkinPass;
+        /// <summary>The second view's pair while the screen is split.</summary>
+        public Prelit? SecondFurPass, SecondSkinPass;
         public MeshInstance3D Source = null!;
         public MeshInstance3D Shell = null!;
         public readonly ShaderMaterial[] Passes = new ShaderMaterial[MaxShells - 1];
@@ -138,25 +166,80 @@ public partial class Engine_ClassicFur : Node
         {
             Engine_ClassicConstants.ReleaseRow(row);
         }
-        foreach (Prelit? prelit in new[] { furred.FurPass, furred.SkinPass })
+        foreach (Prelit? prelit in new[] { furred.FurPass, furred.SkinPass, furred.SecondFurPass, furred.SecondSkinPass })
         {
-            if (prelit is null)
+            FreePrelit(prelit);
+        }
+    }
+
+    /// <summary>A prelit target's rows and viewports.</summary>
+    private static void FreePrelit(Prelit? prelit)
+    {
+        if (prelit is null)
+        {
+            return;
+        }
+        foreach (int row in prelit.Rows)
+        {
+            Engine_ClassicConstants.ReleaseRow(row);
+        }
+        if (GodotObject.IsInstanceValid(prelit.Target))
+        {
+            prelit.Target.QueueFree();
+        }
+        if (GodotObject.IsInstanceValid(prelit.Dilated))
+        {
+            prelit.Dilated.QueueFree();
+        }
+    }
+
+    /// <summary>
+    /// Builds the second view's prelit pair of a furred instance and binds it to the shells' second
+    /// view samplers; once the second view's cascades stand (the pair is lit with them).
+    /// </summary>
+    private void SplitPrelit(Furred furred)
+    {
+        if (furred.FurPass is null || furred.SecondFurPass is not null || furred.SecondSkinPass is not null ||
+            Engine_ClassicShadows.Instance?.CascadeTextureFor(1, 0) is null ||
+            furred.Shell.Mesh is not ArrayMesh shellMesh)
+        {
+            return;
+        }
+        MeshInstance3D mesh = furred.Source;
+        ShaderMaterial skinSource = furred.FurPass.Skin;
+        Node? skeleton = mesh.GetNodeOrNull(mesh.Skeleton);
+        furred.SecondFurPass = MakePrelit(mesh, shellMesh, skeleton, skinSource, fur: true, "FurPrelitSecondView", 1);
+        furred.SecondSkinPass = MakePrelit(mesh, shellMesh, skeleton, skinSource, fur: false, "SkinPrelitSecondView", 1);
+        foreach (ShaderMaterial pass in furred.Passes)
+        {
+            if (furred.SecondFurPass is not null)
             {
-                continue;
+                pass.SetShaderParameter(PrelitFurSecondName, furred.SecondFurPass.Dilated.GetTexture());
             }
-            foreach (int row in prelit.Rows)
+            if (furred.SecondSkinPass is not null)
             {
-                Engine_ClassicConstants.ReleaseRow(row);
-            }
-            if (GodotObject.IsInstanceValid(prelit.Target))
-            {
-                prelit.Target.QueueFree();
-            }
-            if (GodotObject.IsInstanceValid(prelit.Dilated))
-            {
-                prelit.Dilated.QueueFree();
+                pass.SetShaderParameter(PrelitSkinSecondName, furred.SecondSkinPass.Dilated.GetTexture());
             }
         }
+    }
+
+    /// <summary>Frees the second view's prelit pair when the screen rejoins; its samplers take the first's again.</summary>
+    private static void JoinPrelit(Furred furred)
+    {
+        if (furred.SecondFurPass is null && furred.SecondSkinPass is null)
+        {
+            return;
+        }
+        BindPrelit(furred);
+        foreach (Prelit? prelit in new[] { furred.SecondFurPass, furred.SecondSkinPass })
+        {
+            FreePrelit(prelit);
+            if (prelit is not null && GodotObject.IsInstanceValid(prelit.Node))
+            {
+                prelit.Node.QueueFree();
+            }
+        }
+        furred.SecondFurPass = furred.SecondSkinPass = null;
     }
 
     /// <summary>Renders a prelit pair while its instance is drawn.</summary>
@@ -234,21 +317,34 @@ public partial class Engine_ClassicFur : Node
         ShaderMaterial? skinSource = SkinOf(mesh, shellMesh);
         if (skinSource is not null)
         {
-            furred.FurPass = MakePrelit(mesh, shellMesh, skeleton, skinSource, fur: true, "FurPrelit");
-            furred.SkinPass = MakePrelit(mesh, shellMesh, skeleton, skinSource, fur: false, "SkinPrelit");
+            furred.FurPass = MakePrelit(mesh, shellMesh, skeleton, skinSource, fur: true, "FurPrelit", 0);
+            furred.SkinPass = MakePrelit(mesh, shellMesh, skeleton, skinSource, fur: false, "SkinPrelit", 0);
         }
+        BindPrelit(furred);
+        self._furred[node.GetInstanceId()] = furred;
+    }
+
+    /// <summary>
+    /// The shells' prelit samplers: the first view's pair, which the second view's samplers also
+    /// take until (and after) its own pair stands.
+    /// </summary>
+    private static void BindPrelit(Furred furred)
+    {
         foreach (ShaderMaterial pass in furred.Passes)
         {
             if (furred.FurPass is not null)
             {
-                pass.SetShaderParameter("ps_g_PrelitFurTexture", furred.FurPass.Dilated.GetTexture());
+                Texture2D fur = furred.FurPass.Dilated.GetTexture();
+                pass.SetShaderParameter(PrelitFurName, fur);
+                pass.SetShaderParameter(PrelitFurSecondName, fur);
             }
             if (furred.SkinPass is not null)
             {
-                pass.SetShaderParameter("ps_g_PrelitSkinTexture", furred.SkinPass.Dilated.GetTexture());
+                Texture2D skin = furred.SkinPass.Dilated.GetTexture();
+                pass.SetShaderParameter(PrelitSkinName, skin);
+                pass.SetShaderParameter(PrelitSkinSecondName, skin);
             }
         }
-        self._furred[node.GetInstanceId()] = furred;
     }
 
     /// <summary>The skin material: the one the furred primitive's source surface draws with.</summary>
@@ -274,7 +370,7 @@ public partial class Engine_ClassicFur : Node
     /// slot, `sub_821A5220` -> `sub_8221BB18`) and the sun's cascades. A later group adds
     /// (SrcBlend = DestBlend = ONE when the pass index is 1, `sub_821A5220`).
     /// </summary>
-    private ShaderMaterial? FurPrelitMaterial(ShaderMaterial skin, int blt, int pass)
+    private ShaderMaterial? FurPrelitMaterial(ShaderMaterial skin, int blt, int pass, int view)
     {
         if (!_prelitShaders.TryGetValue((blt, pass), out Shader? shader))
         {
@@ -294,8 +390,8 @@ public partial class Engine_ClassicFur : Node
         m.SetShaderParameter("ps_g_DiffuseTextureUVMatrix", uv.VariantType == Variant.Type.Nil ? new Vector4(1f, 1f, 0f, 0f) : uv);
         if (Engine_ClassicShadows.Instance is { } shadows)
         {
-            m.SetShaderParameter("ps_g_DirectionalLightShadowMapSampler0", shadows.CascadeTexture(0));
-            m.SetShaderParameter("ps_g_DirectionalLightShadowMapSampler1", shadows.CascadeTexture(1));
+            m.SetShaderParameter(Cascade0Name, shadows.CascadeTextureFor(view, 0));
+            m.SetShaderParameter(Cascade1Name, shadows.CascadeTextureFor(view, 1));
         }
         return m;
     }
@@ -328,7 +424,7 @@ public partial class Engine_ClassicFur : Node
         ShaderMaterial? made;
         if (prelit.Fur)
         {
-            made = FurPrelitMaterial(prelit.Skin, blt, pass);
+            made = FurPrelitMaterial(prelit.Skin, blt, pass, prelit.View);
         }
         else
         {
@@ -346,17 +442,23 @@ public partial class Engine_ClassicFur : Node
     }
 
     /// <summary>
-    /// A prelit target sharing the world (its camera the main one's, seeing only the prelit
+    /// A prelit target sharing the world (its camera the view's, seeing only the view's prelit
     /// layer, with no environment or post chain of its own), its draw bound to the source's
     /// skeleton, and the dilate target that reads it.
     /// </summary>
-    private Prelit? MakePrelit(MeshInstance3D source, ArrayMesh shellMesh, Node? skeleton, ShaderMaterial skin, bool fur, string name)
+    private Prelit? MakePrelit(MeshInstance3D source, ArrayMesh shellMesh, Node? skeleton, ShaderMaterial skin, bool fur, string name, int view)
     {
         if (!EnsurePrelitShaders() || source.GetViewport()?.World3D is not { } world)
         {
             return null;
         }
-        var prelit = new Prelit { Source = source, Skin = skin, Fur = fur };
+        uint layer = view == 0 ? PrelitLayer : PrelitSecondLayer;
+        // The first view's passes are made on the bound pair (the skin's own and FurPrelitMaterial's).
+        var prelit = new Prelit
+        {
+            Source = source, Skin = skin, Fur = fur, View = view,
+            Cascades = view == 0 ? Engine_ClassicShadows.Instance?.CascadeTexture(0) : null,
+        };
         prelit.Target = new SubViewport
         {
             Name = name,
@@ -371,7 +473,7 @@ public partial class Engine_ClassicFur : Node
         };
         prelit.Camera = new Camera3D
         {
-            CullMask = PrelitLayer,
+            CullMask = layer,
             Current = true,
             Environment = PlainEnvironment(),
             Compositor = new Compositor(),
@@ -383,7 +485,7 @@ public partial class Engine_ClassicFur : Node
             Name = name,
             Mesh = shellMesh,
             Skin = source.Skin,
-            Layers = PrelitLayer,
+            Layers = layer,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
         };
         source.AddChild(prelit.Node);
@@ -466,6 +568,7 @@ public partial class Engine_ClassicFur : Node
         float b = Engine_ClassicBillboards.BillboardBrightness();
         float near = camera.Near;
         float halfTan = MathF.Tan(Mathf.DegToRad(camera.Fov) * 0.5f);
+        Camera3D? secondCamera = Engine_ClassicViews.Count > 1 ? Engine_ClassicViews.Camera(1) : null;
         foreach ((ulong id, Furred furred) in _furred)
         {
             if (!GodotObject.IsInstanceValid(furred.Source) || !furred.Source.IsInsideTree())
@@ -474,9 +577,19 @@ public partial class Engine_ClassicFur : Node
                 _gone.Add(id);
                 continue;
             }
+            if (secondCamera is not null)
+            {
+                SplitPrelit(furred);
+            }
+            else
+            {
+                JoinPrelit(furred);
+            }
             bool visible = furred.Source.IsVisibleInTree();
             Update(furred.FurPass, visible);
             Update(furred.SkinPass, visible);
+            Update(furred.SecondFurPass, visible);
+            Update(furred.SecondSkinPass, visible);
             if (!visible)
             {
                 continue;
@@ -485,35 +598,69 @@ public partial class Engine_ClassicFur : Node
             float radius = box.Size.Length() * 0.5f;
             float d = MathF.Max((camera.GlobalPosition - box.GetCenter()).Length() - radius, near);
             int n = Math.Clamp((int)((furred.Length / d) / halfTan * 142.85713f + 1f), 16, MaxShells);
+            // The shells are the node's: on split screen each view's count from the camera that
+            // draws it, and the nearer view's (the finer) wins.
+            for (int v = 0; v < Engine_ClassicViews.Count && Engine_ClassicViews.Count > 1; v++)
+            {
+                if (Engine_ClassicViews.Camera(v) is not { } other)
+                {
+                    continue;
+                }
+                float dv = MathF.Max((other.GlobalPosition - box.GetCenter()).Length() - radius, other.Near);
+                float tv = MathF.Tan(Mathf.DegToRad(other.Fov) * 0.5f);
+                n = Math.Max(n, Math.Clamp((int)((furred.Length / dv) / tv * 142.85713f + 1f), 16, MaxShells));
+                d = MathF.Min(d, dv);
+            }
             float length = furred.Length * (1f + 0.1f * d);
             Link(furred, n - 1);
             Mist(furred, Engine_ClassicMist.VolumeFor(box));
 
             PrelitFrame(furred.FurPass, camera, b);
             PrelitFrame(furred.SkinPass, camera, b);
-
-            Engine_ClassicConstants.CopyFrame(true, FramePs);
-            Engine_ClassicConstants.CopyFrame(false, FrameVs);
-            Set(FrameVs, 8, length);
-            Set(FrameVs, 47, furred.Occlusion);
-            Set(FrameVs, 113, 1f / MathF.Max(length * 200f, 1e-6f));
-            Set(FramePs, 31, 0.3f * b);
-            for (int layer = 1; layer < n; layer++)
+            if (secondCamera is not null)
             {
-                float t = layer / (float)n;
-                Set(FrameVs, 46, t);
-                int row = furred.Rows[layer - 1];
-                Engine_ClassicConstants.SetRowBlock(true, row, 0, FramePs);
-                Engine_ClassicConstants.SetRowBlock(false, row, 0, FrameVs);
-                if (furred.Mist is not null)
+                PrelitFrame(furred.SecondFurPass, secondCamera, b);
+                PrelitFrame(furred.SecondSkinPass, secondCamera, b);
+            }
+
+            for (int v = 0; v < Engine_ClassicViews.Count; v++)
+            {
+                ShellRows(furred, v, n, length, b);
+            }
+            if (furred.Mist is not null)
+            {
+                // The volume's registers over the frame's, in every view's copy (SetRowBlock).
+                for (int layer = 1; layer < n; layer++)
                 {
-                    Engine_ClassicMist.WriteRegisters(furred.Mist, row);
+                    Engine_ClassicMist.WriteRegisters(furred.Mist, furred.Rows[layer - 1]);
                 }
             }
         }
         foreach (ulong id in _gone)
         {
             _furred.Remove(id);
+        }
+    }
+
+    /// <summary>
+    /// The shell rows of one view (each view's copy of a row holds its own frame: the eye the
+    /// shells' lighting reads), with the furred instance's own registers.
+    /// </summary>
+    private static void ShellRows(Furred furred, int view, int n, float length, float b)
+    {
+        Engine_ClassicConstants.CopyFrameView(view, true, FramePs);
+        Engine_ClassicConstants.CopyFrameView(view, false, FrameVs);
+        Set(FrameVs, 8, length);
+        Set(FrameVs, 47, furred.Occlusion);
+        Set(FrameVs, 113, 1f / MathF.Max(length * 200f, 1e-6f));
+        Set(FramePs, 31, 0.3f * b);
+        for (int layer = 1; layer < n; layer++)
+        {
+            float t = layer / (float)n;
+            Set(FrameVs, 46, t);
+            int row = furred.Rows[layer - 1];
+            Engine_ClassicConstants.SetRowBlockView(view, true, row, 0, FramePs);
+            Engine_ClassicConstants.SetRowBlockView(view, false, row, 0, FrameVs);
         }
     }
 
@@ -546,7 +693,8 @@ public partial class Engine_ClassicFur : Node
         int groups = Engine_ClassicLitInstances.GroupsOf(prelit.Source, GroupRows, GroupCounts, GroupSingle);
         int passes = Math.Max(groups, 1);
         string shape = groups == 0 ? "frame" : $"{groups}:{GroupCounts[0]}{GroupSingle[0]}:{GroupCounts[1]}{GroupSingle[1]}:{GroupCounts[2]}{GroupSingle[2]}";
-        if (shape != prelit.Shape)
+        bool made = shape != prelit.Shape;
+        if (made)
         {
             prelit.Shape = shape;
             ShaderMaterial? first = null, previous = null;
@@ -570,6 +718,7 @@ public partial class Engine_ClassicFur : Node
             }
             prelit.Node.MaterialOverride = first;
         }
+        BindCascades(prelit, made);
 
         float exposure = 1f / MathF.Max(0.3f * b, 1e-4f);
         for (int g = 0; g < passes; g++)
@@ -579,9 +728,10 @@ public partial class Engine_ClassicFur : Node
                 prelit.Rows[g] = Engine_ClassicConstants.AcquireRow();
                 prelit.Node.SetInstanceShaderParameter(RowUniforms[g], prelit.Rows[g]);
             }
+            // The view's copy of the group's row: its eye and its cascades.
             int from = groups == 0 ? 0 : GroupRows[g];
-            Engine_ClassicConstants.CopyRow(true, from, FramePs);
-            Engine_ClassicConstants.CopyRow(false, from, FrameVs);
+            Engine_ClassicConstants.CopyRowView(prelit.View, true, from, FramePs);
+            Engine_ClassicConstants.CopyRowView(prelit.View, false, from, FrameVs);
             FramePs[Engine_ClassicRegisters.Ps.GlobalAmbientAndBrightness * 4 + 3] = exposure;
             FrameVs[Engine_ClassicRegisters.Vs.GlobalAmbientAndBrightness * 4 + 3] = exposure;
             if (prelit.Fur)
@@ -592,6 +742,39 @@ public partial class Engine_ClassicFur : Node
             }
             Engine_ClassicConstants.SetRowBlock(true, prelit.Rows[g], 0, FramePs);
             Engine_ClassicConstants.SetRowBlock(false, prelit.Rows[g], 0, FrameVs);
+        }
+    }
+
+    /// <summary>
+    /// Keeps a prelit target's passes on its view's cascade maps (Engine_ClassicShadows
+    /// CascadeTextureFor): the bound pair holds whichever view copied last, so while split each
+    /// view's passes read that view's own maps. Rebinds when the maps move, and when new passes
+    /// were made (<paramref name="made"/>) on other maps than the bound pair they start on.
+    /// </summary>
+    private static void BindCascades(Prelit prelit, bool made)
+    {
+        if (Engine_ClassicShadows.Instance is not { } shadows)
+        {
+            return;
+        }
+        Texture2D? first = shadows.CascadeTextureFor(prelit.View, 0);
+        bool moved = !ReferenceEquals(first, prelit.Cascades);
+        if (!moved && !(made && !ReferenceEquals(first, shadows.CascadeTexture(0))))
+        {
+            return;
+        }
+        prelit.Cascades = first;
+        Texture2D? second = shadows.CascadeTextureFor(prelit.View, 1);
+        foreach (ShaderMaterial pass in prelit.Cache.Values)
+        {
+            if (pass.GetShaderParameter(Cascade0Name).VariantType != Variant.Type.Nil)
+            {
+                pass.SetShaderParameter(Cascade0Name, first);
+            }
+            if (pass.GetShaderParameter(Cascade1Name).VariantType != Variant.Type.Nil)
+            {
+                pass.SetShaderParameter(Cascade1Name, second);
+            }
         }
     }
 
@@ -619,8 +802,7 @@ public partial class Engine_ClassicFur : Node
         if (volume is not null && _mistShader is null)
         {
             _mistShader = Engine_ClassicShaders.Compose(ShellVertex, ShellMistPixel,
-                "unshaded, depth_draw_opaque, cull_back, shadows_disabled, fog_disabled", 0,
-                "uniform int xr_fur_row = 0;\n#define XR_ROW_UNIFORM xr_fur_row");
+                "unshaded, depth_draw_opaque, cull_back, shadows_disabled, fog_disabled", 0, ShellDefines);
         }
         if (volume is not null && _mistShader is null)
         {
@@ -681,9 +863,8 @@ public partial class Engine_ClassicFur : Node
         }
         _shaderTried = true;
         // Each shell pass reads its own row: the pass's layer and the frame's constants.
-        const string defines = "uniform int xr_fur_row = 0;\n#define XR_ROW_UNIFORM xr_fur_row";
         _shader = Engine_ClassicShaders.Compose(ShellVertex, ShellPixel,
-            "unshaded, depth_draw_opaque, cull_back, shadows_disabled, fog_disabled", 0, defines);
+            "unshaded, depth_draw_opaque, cull_back, shadows_disabled, fog_disabled", 0, ShellDefines);
         // Before the translator carried TEXCOORD2 whole the stage read the fur uv's drift as zero.
         if (_shader is null || !_shader.Code.Contains("CUSTOM0", StringComparison.Ordinal))
         {

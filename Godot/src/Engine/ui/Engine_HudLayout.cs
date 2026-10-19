@@ -197,6 +197,30 @@ public sealed class Engine_HudLayout
         ("LookAt", "LookAt", null, 0f),
     };
 
+    /// <summary>
+    /// Whose piece this is. `hud.bgf` is ONE presentation carrying both players: `PlayerHealth`
+    /// and `SpellCharging` are player one's, `CoopHealth` and `SpellCharging2` (the henchman's
+    /// column, mirrored at +390) player two's, and the guest drives each pair from its own
+    /// player. Everything else is the screen's — the quest box, subtitles, prompts, the d-pad —
+    /// and answers <see cref="Engine_UiSeats.Seat.Whole"/>.
+    /// </summary>
+    public static Engine_UiSeats.Seat OwnerOf(Piece piece) =>
+        piece.Id.StartsWith("group.CoopHealth.", System.StringComparison.Ordinal) ||
+        piece.Id.StartsWith("group.SpellCharging2.", System.StringComparison.Ordinal)
+            ? Engine_UiSeats.Seat.PlayerTwo
+            : piece.Id.StartsWith("group.PlayerHealth.", System.StringComparison.Ordinal) ||
+              piece.Id.StartsWith("group.SpellCharging.", System.StringComparison.Ordinal)
+                ? Engine_UiSeats.Seat.PlayerOne
+                : Engine_UiSeats.Seat.Whole;
+
+    /// <summary>
+    /// The timing meter, whose owner changes with each use: one meter, three pips — the hero's,
+    /// the henchman's and both (`sub_823D0E10`) — so it belongs to whichever player armed it.
+    /// </summary>
+    public static bool IsExpressionMeter(Piece piece) =>
+        piece.Art == ExpressionMeterName ||
+        piece.Id.StartsWith("group.ExpressionMeter.", System.StringComparison.Ordinal);
+
     private readonly List<Piece> _pieces = new();
 
     public IReadOnlyList<Piece> Pieces => _pieces;

@@ -432,7 +432,49 @@ public partial class GameInput : Node
 
 		bool connected = joypad >= 0 || GameDebugServer.PadConnected(pad);
 		SetMasked(pad, connected, state);
+
+		// Player two's pad drives the host-owned menu the guest says player two opened.
+		if (pad == HostMenuPad)
+		{
+			PublishMenu(pad, state.Buttons, state.LeftX, state.LeftY, state.RightX, state.RightY);
+		}
 	}
+
+	/// <summary>
+	/// The player whose menu is open, as the guest states it: 0 not stated, 1 player one, 2
+	/// player two. Set by <c>GameUi</c> every frame, and only ever non-zero on split screen.
+	/// </summary>
+	/// <remarks>
+	/// <para>Not stated is the shared-screen rule, unchanged: the host-owned menus read pad 0 and
+	/// the menu masks hold every pad. Stated, the menu belongs to ONE player — the guest's pause is
+	/// owned by the player who opened it, and player two's START opens their own reduced root —
+	/// so that player's pad drives the host menu and only that pad is masked; the other player's
+	/// pad reaches the guest as it would on the console, where nothing masked it.</para>
+	/// <para>The hold levers stay on pad 0 whoever owns the menu — the quick wheel (Back), the
+	/// spells menu (RT), <see cref="AHeld"/>/<see cref="YHeld"/> and <see cref="LeftStick"/>: the
+	/// pump's <c>QuickWheel:</c>, <c>SpellsMenu:</c> and <c>SpellBlade:</c> levers act for the
+	/// local player, who is player one in local co-op, and the TopBox's hold prompt is player
+	/// one's HUD.</para>
+	/// </remarks>
+	public static int MenuOwner { get; set; }
+
+	/// <summary>Local player two's guest pad (1..3) while local co-op runs, else −1. Set by <c>GameUi</c>.</summary>
+	public static int PlayerTwoPad { get; set; } = -1;
+
+	/// <summary>The pad of the player <see cref="MenuOwner"/> names, or −1 while none is stated.</summary>
+	private static int MenuPad => MenuOwner switch
+	{
+		1 => 0,
+		2 when PlayerTwoPad is >= 1 and < MaxControllers => PlayerTwoPad,
+		_ => -1,
+	};
+
+	/// <summary>The pad the host-owned menus read: the owner's, or pad 0 while no owner is stated.</summary>
+	private static int HostMenuPad => MenuPad < 0 ? 0 : MenuPad;
+
+	/// <summary>Whether the menu masks hold <paramref name="pad"/>: every pad until an owner is
+	/// stated, then the owner's alone.</summary>
+	private static bool MasksPad(int pad) => MenuPad < 0 || pad == MenuPad;
 
 	/// <summary>
 	/// Whether the DEVICES reach the guest this frame. No exemption for unattended runs: they
@@ -458,7 +500,8 @@ public partial class GameInput : Node
 	/// released exactly once and stays released — the guest edge-detects, and a publish skipped
 	/// would leave a stick mid-push forever.
 	///
-	/// The host-owned menus read pad 0 only: every one of them acts for player one.
+	/// The host-owned menus read pad 0 unless the guest states that player two owns the open
+	/// menu — see <see cref="MenuOwner"/>.
 	/// </summary>
 	private static void Publish0(bool devices)
 	{
@@ -549,24 +592,11 @@ public partial class GameInput : Node
 
 		SetMasked(0, connected: true, state);
 
-		// The deadzone is ours here: `page.lua` reads `GUI.State.RightThumbStickY` raw (page.dis
-		// main.1 pc18..21) because the guest has already dead-zoned it before firing the contract
-		// event, and our page reads the pad instead. XInput's right-thumb constant is 8689 of
-		// 32767, rescaled so travel starts at zero on the deadzone edge.
-		const float RightThumbDeadzone = 8689f;
-		float magnitude = System.Math.Abs(rightY);
-		RightStickY = magnitude <= RightThumbDeadzone
-			? 0f
-			: System.Math.Sign(rightY) *
-				((magnitude - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
-
-		float sideways = System.Math.Abs(rightX);
-		RightStickX = sideways <= RightThumbDeadzone
-			? 0f
-			: System.Math.Sign(rightX) *
-				((sideways - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
-
-		PublishToHost(buttons, leftX, leftY);
+		PublishHolds(buttons);
+		if (HostMenuPad == 0)
+		{
+			PublishMenu(0, buttons, leftX, leftY, rightX, rightY);
+		}
 	}
 
 	/// <summary>
@@ -584,16 +614,19 @@ public partial class GameInput : Node
 	private static void SetMasked(int pad, bool connected, PadState state)
 	{
 		uint buttons = state.Buttons;
-		bool masked = MaskMenuInput;
+
+		// The owned menus' masks hold the menu owner's pad — every pad until an owner is stated.
+		bool owned = MasksPad(pad);
+		bool masked = owned && MaskMenuInput;
 		bool goldenMenu = GameGoldenCock.OwnsInput;
-		bool pauseMasked = !masked && MaskPauseInput;
-		bool queryMasked = !masked && !pauseMasked && MaskPauseQueryInput;
+		bool pauseMasked = owned && !masked && MaskPauseInput;
+		bool queryMasked = owned && !masked && !pauseMasked && MaskPauseQueryInput;
 		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the
 		// game, so the stick-zeroing below must not apply to it.
-		bool cardMasked = !masked && !pauseMasked && !queryMasked && MaskReceiveItemsInput;
-		bool boxMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
+		bool cardMasked = owned && !masked && !pauseMasked && !queryMasked && MaskReceiveItemsInput;
+		bool boxMasked = owned && !masked && !pauseMasked && !queryMasked && !cardMasked &&
 			MaskMenuBoxInput;
-		bool listMasked = !masked && !pauseMasked && !queryMasked && !cardMasked &&
+		bool listMasked = owned && !masked && !pauseMasked && !queryMasked && !cardMasked &&
 			!boxMasked && MaskScreenMenuInput;
 		bool menuMask = goldenMenu || masked || pauseMasked || queryMasked || boxMasked || listMasked;
 		System.Func<uint, uint> filter =
@@ -616,7 +649,9 @@ public partial class GameInput : Node
 		// (Engine_UiSpellAssignSecondary) is withheld from the guest for the hold, and a press
 		// still down when the trigger lifts stays hidden until released, like any lifted mask.
 		// X applies a partner and Y removes one, so both are the host's under the held trigger.
-		uint wheelBits = SpellsMenuHeld && Refii.Ui.Engine_UiSpellAssign.Secondary is not null
+		// The trigger is pad 0's, so on split screen the pick is withheld from pad 0 alone.
+		uint wheelBits = SpellsMenuHeld && Refii.Ui.Engine_UiSpellAssign.Secondary is not null &&
+			(pad == 0 || !Refii.Core.Engine_Views.Split)
 			? (ButtonX | ButtonY)
 			: 0u;
 		uint maskBits = ~filter(uint.MaxValue) | wheelBits;
@@ -850,8 +885,38 @@ public partial class GameInput : Node
 	/// cannot drift. The stick folds into the direction on the shipped threshold —
 	/// `THUMBSTICK_RELEASE_THRESHOLD` 0.65, from `guistateandconstants.lua`.
 	/// </summary>
-	private static void PublishToHost(uint buttons, int leftX, int leftY)
+	private static void PublishMenu(int pad, uint buttons, int leftX, int leftY, int rightX, int rightY)
 	{
+		// A NEW SOURCE HANDS THE MENU NO PRESS. When the menu changes hands, a button already down
+		// on the new pad is taken as held, not as a fresh edge.
+		if (pad != _menuSourcePad)
+		{
+			_menuSourcePad = pad;
+			_acceptWasDown = (buttons & ButtonA) != 0;
+			_backWasDown = (buttons & ButtonB) != 0;
+			_flipWasDown = (buttons & ButtonY) != 0;
+			_tabPrevWasDown = (buttons & LeftShoulder) != 0;
+			_tabNextWasDown = (buttons & RightShoulder) != 0;
+			_equipWasDown = (buttons & ButtonX) != 0;
+		}
+
+		// The deadzone is ours here: `page.lua` reads `GUI.State.RightThumbStickY` raw (page.dis
+		// main.1 pc18..21) because the guest has already dead-zoned it before firing the contract
+		// event, and our page reads the pad instead. XInput's right-thumb constant is 8689 of
+		// 32767, rescaled so travel starts at zero on the deadzone edge.
+		const float RightThumbDeadzone = 8689f;
+		float magnitude = System.Math.Abs(rightY);
+		RightStickY = magnitude <= RightThumbDeadzone
+			? 0f
+			: System.Math.Sign(rightY) *
+				((magnitude - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
+
+		float sideways = System.Math.Abs(rightX);
+		RightStickX = sideways <= RightThumbDeadzone
+			? 0f
+			: System.Math.Sign(rightX) *
+				((sideways - RightThumbDeadzone) / (32767f - RightThumbDeadzone));
+
 		int direction = 0;
 		if ((buttons & DpadUp) != 0)
 		{
@@ -913,7 +978,6 @@ public partial class GameInput : Node
 		bool y = (buttons & ButtonY) != 0;
 		bool lb = (buttons & LeftShoulder) != 0;
 		bool rb = (buttons & RightShoulder) != 0;
-		bool wheel = (buttons & Back) != 0;
 		bool x = (buttons & ButtonX) != 0;
 		MenuAcceptPressed = a && !_acceptWasDown;
 		MenuAcceptReleased = !a && _acceptWasDown;
@@ -922,16 +986,28 @@ public partial class GameInput : Node
 		MenuTabPrevPressed = lb && !_tabPrevWasDown;
 		MenuTabNextPressed = rb && !_tabNextWasDown;
 		MenuEquipPressed = x && !_equipWasDown;
-		QuickWheelPressed = wheel && !_wheelWasDown;
-		QuickWheelReleased = !wheel && _wheelWasDown;
-		QuickWheelHeld = wheel;
 		_acceptWasDown = a;
 		_backWasDown = b;
 		_flipWasDown = y;
 		_tabPrevWasDown = lb;
 		_tabNextWasDown = rb;
-		_wheelWasDown = wheel;
 		_equipWasDown = x;
+	}
+
+	/// <summary>The pad the host menu read last frame — see <see cref="PublishMenu"/>.</summary>
+	private static int _menuSourcePad;
+
+	/// <summary>
+	/// The quick wheel's hold, edge-detected off pad 0 alone: the pump's quick-wheel levers act
+	/// for the local player, who is player one in local co-op (see <see cref="MenuOwner"/>).
+	/// </summary>
+	private static void PublishHolds(uint buttons)
+	{
+		bool wheel = (buttons & Back) != 0;
+		QuickWheelPressed = wheel && !_wheelWasDown;
+		QuickWheelReleased = !wheel && _wheelWasDown;
+		QuickWheelHeld = wheel;
+		_wheelWasDown = wheel;
 	}
 
 	/// <summary>

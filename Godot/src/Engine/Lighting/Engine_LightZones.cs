@@ -172,7 +172,8 @@ public static class Engine_LightZones
         return rawZone;
     }
 
-    private static bool IsIndoors(uint zone) => zone != 0u && zone != Refii.Models.Engine_ClassicZones.Outdoors;
+    /// <summary>Whether a light zone is a building's (not 0, not outdoors).</summary>
+    public static bool IsIndoors(uint zone) => zone != 0u && zone != Refii.Models.Engine_ClassicZones.Outdoors;
 
     /// <summary>Whether <paramref name="light"/> has been zoned strictly to an interior building.</summary>
     public static bool IsIndoorLight(Light3D light) => Active && (light.LightCullMask & 1u) == 0u;

@@ -233,6 +233,13 @@ public static class Engine_PostFxParams
 
     public static SkyFrame? Frame { get; private set; }
 
+    /// <summary>
+    /// The sun on the PRIMARY view's screen — <c>Publish</c>'s camera, the window's — for readers on
+    /// the main thread. The chain does not read it: each camera's own Engine_PostFxEffect projects
+    /// the sun through the view it is rendering (<c>RenderSceneData</c>), so on split screen each
+    /// view's rays and sun layer follow its own camera. The theme and sky frame are world state
+    /// and serve every view.
+    /// </summary>
     public static Vector2 SunUv { get; private set; } = new(0.5f, 0.5f);
 
     public static bool SunOnScreen { get; private set; }

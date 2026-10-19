@@ -205,6 +205,28 @@ void refii_bridge_guest_tick_pump_note_result(uint32_t addr, uint64_t r3,
 // deferred ones back at the FRONT so a later post cannot overtake them.
 // Menu capture settle bracket: `spawn_begin` marks the rows partial, `_settle` clears it.
 void refii_bridge_menu_settle(void);
+// The open GUI's owner: 1 when PLAYER TWO owns it (the guest's `sub_8236E400`), else 0. Set by the
+// payload once per guest tick, read by the host bridge (RefiiHostGetMenuOwner).
+void refii_bridge_set_menu_owner_two(int32_t two);
+int32_t refii_bridge_menu_owner_two(void);
+// A region exit refused `player` (1 or 2) because their partner was out of range (the travel
+// rule, coop_hero_hooks.cpp). Once per approach; read-and-cleared by the host
+// (RefiiHostTakeExitRefused) as a mask, bit 0 player one, bit 1 player two.
+void refii_bridge_note_exit_refused(int32_t player);
+int32_t refii_bridge_take_exit_refused(void);
+// The things whose use prompt answers player two (coop_hero_hooks.cpp), published by the payload
+// once a frame; the host copies them out (RefiiHostGetPlayerTwoPrompts). Returns the count.
+void refii_bridge_set_prompts_two(const uint32_t* things, int32_t count);
+// Online: this machine's player stands waiting at a region exit for their partner (the travel
+// rule). Set by the payload once a frame; the host restates it to the peer (RefiiHostGetExitWaiting).
+void refii_bridge_set_exit_waiting(int32_t waiting);
+// The online joiner used a region exit at this guest position (coop_hero_hooks.cpp, the exit's
+// fire on a joiner). Each use bumps the sequence; the host restates the newest to the peer
+// (RefiiHostGetExitRequest), whose exit update fires the exit standing there.
+void refii_bridge_set_exit_request(float x, float y, float z);
+uint32_t refii_bridge_exit_request(float* out_xyz);
+int32_t refii_bridge_exit_waiting(void);
+int32_t refii_bridge_prompts_two(uint32_t* out, int32_t capacity);
 int32_t refii_bridge_menu_populating(void);
 
 uint32_t refii_bridge_guest_tick_pump_begin_drain(void);

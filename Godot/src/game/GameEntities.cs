@@ -275,13 +275,9 @@ public partial class GameEntities : Node3D
         int posed = 0;
 
         // ONE CAMERA READ FOR THE WHOLE WALK. `GetCamera3D` is a viewport query; asking it per
-        // entity would be 2900 crossings to answer the same question.
-        Camera3D? eye = GetViewport()?.GetCamera3D();
-        Vector3 eyeAt = eye is not null && IsInstanceValid(eye)
-            ? eye.GlobalTransform.Origin
-            : Vector3.Zero;
-        bool haveEye = eye is not null && IsInstanceValid(eye);
-        Plane[] frustum = haveEye ? Frustum(eye!) : System.Array.Empty<Plane>();
+        // entity would be 2900 crossings to answer the same question. Every view is read: on
+        // split screen a rig in player two's view is in view.
+        bool haveEye = ReadPoseViews() > 0;
         ulong nowMs = Time.GetTicksMsec();
 
         _seen.Clear();
@@ -333,6 +329,14 @@ public partial class GameEntities : Node3D
         _principals = (heroAddress, playerOne, playerTwo, dogAddress);
         uint heroZone = heroAddress != 0u ? HostBridge.GetEntityLightZone(heroAddress) : Refii.Models.Engine_ClassicZones.Outdoors;
         _heroZone = heroZone;
+        _secondViewZone = Refii.Core.Engine_Views.Split && playerTwo != 0u
+            ? HostBridge.GetEntityLightZone(playerTwo)
+            : heroZone;
+        SecondViewZone = _secondViewZone;
+        if (playerTwo == 0u)
+        {
+            PlayerTwoPosition = null;
+        }
         _createdThisFrame = 0;
         _dynamicCasterPositions.Clear();
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -348,6 +352,10 @@ public partial class GameEntities : Node3D
                 HeroGuestPosition = entity.Position;
                 HeroGuestRotation = entity.Rotation;
                 GameGoldenCockCollision.ObserveHero(entity, Refii.Core.Engine_GuestFrame.Frame);
+            }
+            else if (entity.Address == playerTwo && playerTwo != 0u && IsUsablePlacement(entity.Position))
+            {
+                PlayerTwoPosition = ToGodot(entity.Position, entity.Rotation).Origin;
             }
 
             // NOTHING TO DRAW, ALREADY KNOWN. Most entities are triggers, markers and
@@ -1061,7 +1069,7 @@ public partial class GameEntities : Node3D
                             rigAt = toWorld * node.Transform.Origin;
                         }
                     }
-                    float eyeDistanceSq = measurable ? eyeAt.DistanceSquaredTo(rigAt) : 0f;
+                    float eyeDistanceSq = measurable ? NearestEyeDistanceSq(rigAt) : 0f;
 
                     // Distance is a RATE, never a cutoff. `sub_822142E8` gates on the view cone
                     // and on `MaxDrawDistance`, whose default is `flt_82096028` = 10000.0 times a
@@ -1087,11 +1095,11 @@ public partial class GameEntities : Node3D
                     }
 
                     float reach = DrawnReach(entity.Address) + ReachSlackMetres;
-                    bool withinReach = !measurable || float.IsPositiveInfinity(reach) || eyeDistanceSq <= reach * reach;
-                    bool buildingOccluded = measurable && !principal &&
-                        IsBuildingOccluded(entity.Address, eyeDistanceSq);
+                    int reaching = measurable && !principal
+                        ? ViewsReaching(entity.Address, rigAt, reach)
+                        : EveryView;
                     bool inView = principal ||
-                        (withinReach && !buildingOccluded && RigInView(entity.Address, measurable, rigAt, frustum, nowMs));
+                        (reaching != 0 && RigInView(entity.Address, measurable, rigAt, reaching, nowMs));
 
                     if (inView || principal)
                     {
@@ -4017,6 +4025,18 @@ public partial class GameEntities : Node3D
     /// <summary>The hero's newest stated position in Godot space; null before the first walk.</summary>
     public static Vector3? HeroPosition { get; private set; }
 
+    /// <summary>
+    /// Player two's newest stated position in Godot space (the co-op partner, local or online);
+    /// null without one. The other principal's counterpart of <see cref="HeroPosition"/>.
+    /// </summary>
+    public static Vector3? PlayerTwoPosition { get; private set; }
+
+    /// <summary>
+    /// The light zone player two's view stands in: player two's own on split screen, else the
+    /// hero's (one view). Read once a guest frame.
+    /// </summary>
+    public static uint SecondViewZone { get; private set; } = Refii.Models.Engine_ClassicZones.Outdoors;
+
     /// <summary>The same position in the GUEST's own space, for readers that reproduce the guest's
     /// arithmetic on it — the world map's minimap among them.</summary>
     public static Vector3? HeroGuestPosition { get; private set; }
@@ -4101,12 +4121,8 @@ public partial class GameEntities : Node3D
         // waited for the guest's next frame stepped at 30 Hz under a display drawing faster.
         // Out of view the pose holds, as the guest's own gate holds it (`sub_822142E8`). A rig
         // the walk already posed this frame is not posed twice.
-        Camera3D? eye = GetViewport()?.GetCamera3D();
-        bool haveEye = eye is not null && IsInstanceValid(eye);
-        Vector3 eyeAt = haveEye ? eye!.GlobalPosition : Vector3.Zero;
+        ReadPoseViews();
         Transform3D toWorld = GlobalTransform;
-
-        Plane[] frustum = haveEye ? Frustum(eye!) : System.Array.Empty<Plane>();
         ulong nowMs = Time.GetTicksMsec();
 
         _arrived.Clear();
@@ -4119,7 +4135,7 @@ public partial class GameEntities : Node3D
                 continue;
             }
 
-            if (InViewForRepose(address, haveEye, eyeAt, toWorld, frustum, nowMs))
+            if (InViewForRepose(address, toWorld, nowMs))
             {
                 rig.Reblend();
                 if (rig.IsSettled)
@@ -4138,7 +4154,7 @@ public partial class GameEntities : Node3D
         foreach (uint address in _animating)
         {
             if (!_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) ||
-                !InViewForRepose(address, haveEye, eyeAt, toWorld, frustum, nowMs))
+                !InViewForRepose(address, toWorld, nowMs))
             {
                 continue;
             }
@@ -4180,6 +4196,12 @@ public partial class GameEntities : Node3D
     /// <summary>The hero's light zone as of the latest walk, for building-boundary occlusion.</summary>
     private uint _heroZone = Refii.Models.Engine_ClassicZones.Outdoors;
 
+    /// <summary>
+    /// The light zone of the player looking through the second view as of the latest walk: player
+    /// two's on split screen, else the hero's.
+    /// </summary>
+    private uint _secondViewZone = Refii.Models.Engine_ClassicZones.Outdoors;
+
     private readonly Dictionary<uint, uint> _entityLightZone = new();
     private readonly Dictionary<uint, uint> _entityLayers = new();
 
@@ -4196,22 +4218,23 @@ public partial class GameEntities : Node3D
     }
 
     /// <summary>
-    /// Building occlusion: only cull non-principal rigs if they are occluded by building boundaries:
+    /// Building occlusion, from one view: only cull non-principal rigs if they are occluded by
+    /// building boundaries between them and the player looking (<paramref name="viewerZone"/>):
     /// 1. Outside looking into a building: cull beyond 35m (1225m²).
     /// 2. Inside a building looking into a DIFFERENT building: cull unconditionally (cannot see through solid walls).
     /// 3. Inside a building looking out into the open world: allow up to 45m (2025m²),
     ///    ensuring town square NPCs visible through open doors and windows remain animated.
     /// </summary>
-    private bool IsBuildingOccluded(uint address, float eyeDistanceSq)
+    private bool IsBuildingOccluded(uint address, float eyeDistanceSq, uint viewerZone)
     {
         uint entityZone = EntityLightZoneOf(address);
         bool indoors = entityZone != 0u && entityZone != Refii.Models.Engine_ClassicZones.Outdoors;
-        bool heroIndoors = _heroZone != 0u && _heroZone != Refii.Models.Engine_ClassicZones.Outdoors;
+        bool heroIndoors = viewerZone != 0u && viewerZone != Refii.Models.Engine_ClassicZones.Outdoors;
         if (!heroIndoors && indoors && eyeDistanceSq > 1225f)
         {
             return true;
         }
-        if (heroIndoors && indoors && entityZone != _heroZone)
+        if (heroIndoors && indoors && entityZone != viewerZone)
         {
             return true;
         }
@@ -4222,35 +4245,63 @@ public partial class GameEntities : Node3D
         return false;
     }
 
-    private bool InViewForRepose(
-        uint address, bool haveEye, Vector3 eyeAt, Transform3D toWorld, Plane[] frustum, ulong nowMs)
+    private bool InViewForRepose(uint address, Transform3D toWorld, ulong nowMs)
     {
-        if (!haveEye || IsPrincipal(address) ||
+        if (_poseViewCount == 0 || IsPrincipal(address) ||
             !_written.TryGetValue(address, out (MeshInstance3D Node, Transform3D Drawn) last))
         {
             return true;
         }
 
         Vector3 rigAt = toWorld * last.Drawn.Origin;
-        float eyeDistanceSq = eyeAt.DistanceSquaredTo(rigAt);
-        // Rigs beyond PoseFullRateRadius pose only on the guest's 15 Hz tick step (FarRigPosesThisStep),
-        // not on intermediate between-walk frames.
-        if (eyeDistanceSq > PoseFullRateRadius * PoseFullRateRadius)
+        // Rigs beyond PoseFullRateRadius of every eye pose only on the guest's 15 Hz tick step
+        // (FarRigPosesThisStep), not on intermediate between-walk frames.
+        if (NearestEyeDistanceSq(rigAt) > PoseFullRateRadius * PoseFullRateRadius)
         {
             return false;
         }
 
         float reach = DrawnReach(address) + ReachSlackMetres;
-        if (!float.IsPositiveInfinity(reach) && eyeDistanceSq > reach * reach)
+        int reaching = ViewsReaching(address, rigAt, reach);
+        return reaching != 0 && RigInView(address, true, rigAt, reaching, nowMs);
+    }
+
+    /// <summary>
+    /// The views a measurable non-principal rig is visible from, before the frustum: a bit per
+    /// view whose eye is within the rig's drawn <paramref name="reach"/> and not walled off from
+    /// it by a building (<see cref="IsBuildingOccluded"/>, with that view's player's zone).
+    /// </summary>
+    private int ViewsReaching(uint address, Vector3 rigAt, float reach)
+    {
+        int reaching = 0;
+        for (int i = 0; i < _poseViewCount; ++i)
         {
-            return false;
-        }
-        if (IsBuildingOccluded(address, eyeDistanceSq))
-        {
-            return false;
+            float eyeDistanceSq = _poseViews[i].Eye.DistanceSquaredTo(rigAt);
+            bool withinReach = float.IsPositiveInfinity(reach) || eyeDistanceSq <= reach * reach;
+            bool occluded = IsBuildingOccluded(address, eyeDistanceSq, i == 0 ? _heroZone : _secondViewZone);
+            if (withinReach && !occluded)
+            {
+                reaching |= 1 << i;
+            }
         }
 
-        return RigInView(address, true, rigAt, frustum, nowMs);
+        return reaching;
+    }
+
+    /// <summary>The squared distance from <paramref name="at"/> to the nearest view's eye.</summary>
+    private float NearestEyeDistanceSq(Vector3 at)
+    {
+        float nearest = float.MaxValue;
+        for (int i = 0; i < _poseViewCount; ++i)
+        {
+            float d = _poseViews[i].Eye.DistanceSquaredTo(at);
+            if (d < nearest)
+            {
+                nearest = d;
+            }
+        }
+
+        return nearest;
     }
 
     /// <summary>
@@ -4272,25 +4323,35 @@ public partial class GameEntities : Node3D
     private bool _tickCompletedThisWalk = true;
 
     /// <summary>
-    /// The guest's visibility gate for posing (`sub_822142E8`): in the frustum now, or seen
-    /// within <see cref="RigHoldMs"/>. An unmeasurable rig (not in the tree yet) and a rig never
-    /// written both count as in view. A margin covers a body whose origin is just off screen.
+    /// The guest's visibility gate for posing (`sub_822142E8`): in the frustum of one of the
+    /// <paramref name="views"/> (a bit per view) now, or seen within <see cref="RigHoldMs"/>. An
+    /// unmeasurable rig (not in the tree yet) and a rig never written both count as in view. A
+    /// margin covers a body whose origin is just off screen.
     /// </summary>
-    private bool RigInView(uint address, bool measurable, Vector3 at, Plane[] frustum, ulong nowMs)
+    private bool RigInView(uint address, bool measurable, Vector3 at, int views, ulong nowMs)
     {
-        if (!measurable || frustum.Length == 0 || !_rigSeenMs.ContainsKey(address))
+        if (!measurable || _poseViewCount == 0 || !_rigSeenMs.ContainsKey(address))
         {
             _rigSeenMs[address] = nowMs;
             return true;
         }
 
-        bool inside = true;
-        foreach (Plane plane in frustum)
+        bool inside = false;
+        for (int i = 0; i < _poseViewCount && !inside; ++i)
         {
-            if (plane.DistanceTo(at) > RigViewMargin)
+            if ((views & (1 << i)) == 0)
             {
-                inside = false;
-                break;
+                continue;
+            }
+
+            inside = true;
+            foreach (Plane plane in _poseViews[i].Planes)
+            {
+                if (plane.DistanceTo(at) > RigViewMargin)
+                {
+                    inside = false;
+                    break;
+                }
             }
         }
 
@@ -4360,33 +4421,65 @@ public partial class GameEntities : Node3D
         return Refii.Lighting.Engine_LightZones.Zoned(layers, zone);
     }
 
-    private Plane[] Frustum(Camera3D eye)
+    /// <summary>
+    /// Reads every view drawing the world (Engine_Views) into <see cref="_poseViews"/>: its eye
+    /// now, and its frustum planes once per drawn frame. Returns the number of views.
+    /// </summary>
+    private int ReadPoseViews()
     {
+        IReadOnlyList<Camera3D> cameras = Refii.Core.Engine_Views.Cameras(GetViewport()?.GetCamera3D());
+        int count = System.Math.Min(cameras.Count, _poseViews.Length);
         ulong frame = Engine.GetProcessFrames();
-        if (frame != _frustumFrame)
+        for (int i = 0; i < count; ++i)
         {
-            // `GetFrustum` allocates a fresh wrapper every call and takes no buffer, so it is
-            // called once per drawn frame (the walk and ResampleAnimation both ask) and copied
-            // into `_frustum`.
-            Godot.Collections.Array<Plane> planes = eye.GetFrustum();
-            if (_frustum.Length != planes.Count)
+            Camera3D camera = cameras[i];
+            PoseView view = _poseViews[i];
+            view.Eye = camera.GlobalPosition;
+            if (frame == view.PlanesFrame && ReferenceEquals(view.Camera, camera))
             {
-                _frustum = new Plane[planes.Count];
+                continue;
             }
 
-            for (int i = 0; i < planes.Count; i++)
+            // `GetFrustum` allocates a fresh wrapper every call and takes no buffer, so it is
+            // called once per view per drawn frame (the walk and ResampleAnimation both ask) and
+            // copied into the view's planes.
+            Godot.Collections.Array<Plane> planes = camera.GetFrustum();
+            if (view.Planes.Length != planes.Count)
             {
-                _frustum[i] = planes[i];
+                view.Planes = new Plane[planes.Count];
+            }
+
+            for (int p = 0; p < planes.Count; p++)
+            {
+                view.Planes[p] = planes[p];
             }
 
             // Disposed, not left to the finalizer: an undisposed wrapper survives its first GC.
             ((Godot.Collections.Array)planes).Dispose();
 
-            _frustumFrame = frame;
+            view.Camera = camera;
+            view.PlanesFrame = frame;
         }
 
-        return _frustum;
+        _poseViewCount = count;
+        return count;
     }
+
+    /// <summary>One view as the pose gates read it: its eye and its frustum (planes face outward).</summary>
+    private sealed class PoseView
+    {
+        public Vector3 Eye;
+        public Plane[] Planes = System.Array.Empty<Plane>();
+        public Camera3D? Camera;
+        public ulong PlanesFrame = ulong.MaxValue;
+    }
+
+    /// <summary>The views read by the latest <see cref="ReadPoseViews"/>; the window's first.</summary>
+    private readonly PoseView[] _poseViews = { new(), new() };
+    private int _poseViewCount;
+
+    /// <summary>A view mask that passes every view: an unmeasurable rig or a principal.</summary>
+    private const int EveryView = ~0;
 
     /// <summary>Last time each rig was inside the frustum.</summary>
     private readonly Dictionary<uint, ulong> _rigSeenMs = new();
@@ -4408,8 +4501,6 @@ public partial class GameEntities : Node3D
     /// <summary>Metres past a frustum plane a rig's origin may sit and still count as in view.</summary>
     private const float RigViewMargin = 2.5f;
 
-    private Plane[] _frustum = System.Array.Empty<Plane>();
-    private ulong _frustumFrame = ulong.MaxValue;
 
     /// <summary>
     /// Re-drives the static twin of every entity that is moving, on the frames between walks.
@@ -4478,11 +4569,8 @@ public partial class GameEntities : Node3D
             return;
         }
 
-        Camera3D? eye = GetViewport()?.GetCamera3D();
-        bool haveEye = eye is not null && IsInstanceValid(eye);
-        Vector3 eyeAt = haveEye ? eye!.GlobalPosition : Vector3.Zero;
+        ReadPoseViews();
         Transform3D toWorld = GlobalTransform;
-        Plane[] frustum = haveEye ? Frustum(eye!) : System.Array.Empty<Plane>();
         ulong nowMs = Time.GetTicksMsec();
 
         _arrived.Clear();
@@ -4504,7 +4592,7 @@ public partial class GameEntities : Node3D
             }
 
             Transform3D advanced = body.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, drawTick);
-            if (InViewForRepose(address, haveEye, eyeAt, toWorld, frustum, nowMs))
+            if (InViewForRepose(address, toWorld, nowMs))
             {
                 if (_lastLook.TryGetValue(address, out HostBridge.EntityAppearance look))
                 {

@@ -8,6 +8,14 @@ namespace Refii.Lighting;
 [Tool]
 public partial class Engine_PostFxEffect : CompositorEffect
 {
+    /// <summary>
+    /// Which view this chain draws: 0 the window's (player one's on split screen), 1 player two's.
+    /// The per-view layers (Engine_FxAdditiveLayer, Engine_EntityHighlightLayer) publish a
+    /// snapshot per view, and this is how the render callback — which cannot tell two
+    /// same-sized views apart — picks its own.
+    /// </summary>
+    public int View { get; set; }
+
     public const string ReduceShaderPath = "res://src/Engine/Lighting/fable_postfx_reduce.glsl";
     public const string HistogramShaderPath = "res://src/Engine/Lighting/fable_postfx_histogram.glsl";
     public const string Downscale4ShaderPath = "res://src/Engine/Lighting/fable_postfx_downscale4.glsl";
@@ -25,6 +33,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
     public const string HaloLayerShaderPath = "res://src/Engine/Lighting/fable_postfx_halolayer.glsl";
 
     public const string GlobalExposureName = "fable_exposure_tex";
+
+    /// <summary>
+    /// Player two's exposure on split screen. Globals are one value per frame for every view, so
+    /// each view's chain publishes its own and the readers pick by the second view's layer
+    /// (<see cref="Refii.Models.Engine_ClassicViews.SecondViewLayer"/>); a single view never reads it.
+    /// </summary>
+    public const string GlobalExposureSecondName = "fable_exposure_tex_second";
     public const string GlobalExposureValidName = "fable_exposure_valid";
     public const float DisabledMaterialExposure = 1.0f;
     public const float ElementDepthBias = 0.000001f;
@@ -54,7 +69,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private static bool _globalsRegistered;
     private static Texture2Drd? _placeholderTexture;
-    private static Engine_PostFxEffect? _publisher;
+    private static readonly Engine_PostFxEffect?[] _publishers = new Engine_PostFxEffect?[2];
+
+    /// <summary>The exposure global this chain's view reads.</summary>
+    private string ExposureGlobal => View == 0 ? GlobalExposureName : GlobalExposureSecondName;
 
     private sealed class KeyedSet
     {
@@ -256,6 +274,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _globalsRegistered = true;
         _placeholderTexture ??= new Texture2Drd();
         RenderingServer.GlobalShaderParameterSet(GlobalExposureName, _placeholderTexture);
+        RenderingServer.GlobalShaderParameterSet(GlobalExposureSecondName, _placeholderTexture);
         RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 0.0f);
     }
 
@@ -435,9 +454,12 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
             _exposureTexture ??= new Texture2Drd();
             _exposureTexture.TextureRdRid = exposureRid;
-            _publisher = this;
-            RenderingServer.GlobalShaderParameterSet(GlobalExposureName, _exposureTexture);
-            RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 1.0f);
+            _publishers[View] = this;
+            RenderingServer.GlobalShaderParameterSet(ExposureGlobal, _exposureTexture);
+            if (View == 0)
+            {
+                RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 1.0f);
+            }
         }).CallDeferred();
     }
 
@@ -675,19 +697,25 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _disposed = true;
         _ready = false;
 
-        if (ReferenceEquals(_publisher, this))
+        if (View is >= 0 and < 2 && ReferenceEquals(_publishers[View], this))
         {
-            _publisher = null;
-            RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 0.0f);
+            _publishers[View] = null;
+            if (View == 0)
+            {
+                RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 0.0f);
+            }
+
             if (_placeholderTexture is not null)
             {
-                RenderingServer.GlobalShaderParameterSet(GlobalExposureName, _placeholderTexture);
+                RenderingServer.GlobalShaderParameterSet(ExposureGlobal, _placeholderTexture);
             }
             else
             {
-                RenderingServer.GlobalShaderParameterSet(GlobalExposureName, default(Variant));
+                RenderingServer.GlobalShaderParameterSet(ExposureGlobal, default(Variant));
             }
         }
+
+        WithdrawClassicSky();
 
         if (_exposureTexture is not null)
         {
@@ -862,7 +890,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // runs when nothing is targeted or every target is off screen, which is the guest
             // bailing on an empty list or an empty rect union at 0x82197ba8 / 0x82197bb4.
             if (Refii.Entities.Engine_EntityHighlightLayer.TrySnapshot(
-                    out Rid layer, out float scale, _highlightTargets) &&
+                    View, out Rid layer, out float scale, _highlightTargets) &&
                 EnsureGlow(layer) &&
                 HighlightTargets(camBasis, camOrigin, projection))
             {
@@ -876,7 +904,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // guest's bucket-5 surface (off_8331AA14) is added to the scene in the bloom
             // downscale (0162) and in the tonemap (0509) — one sum, consumed by both, which
             // adding it into the colour buffer once reproduces for the whole chain.
-            if (Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(out Rid additive))
+            if (Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(View, out Rid additive))
             {
                 AddLayer(colour, size, additive);
             }

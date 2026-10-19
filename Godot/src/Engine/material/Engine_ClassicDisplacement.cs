@@ -17,6 +17,10 @@ namespace Refii.Models;
 /// seeing only <see cref="Layer"/>. A second view of the world has no scene depth of its own, so
 /// the displacement materials test against the main view's depth as the post chain publishes it
 /// (<see cref="SceneDepthName"/>), the previous frame's: the viewport renders before the main view.
+///
+/// A TARGET PER VIEW. On split screen the second view has its own target following its own
+/// camera (<see cref="TextureFor"/>); its camera carries the second view's layer, so the
+/// displacement stages read that view's registers.
 /// </remarks>
 public partial class Engine_ClassicDisplacement : Node
 {
@@ -26,8 +30,16 @@ public partial class Engine_ClassicDisplacement : Node
     /// <summary>The main view's depth as the post chain copies it, for the displacement materials.</summary>
     public const string SceneDepthName = "fable_scene_depth";
 
+    /// <summary>Player two's view's depth on split screen (the stage picks it by <see cref="Engine_ClassicViews.SecondViewLayer"/>).</summary>
+    public const string SceneDepthSecondName = "fable_scene_depth_second";
+
+    /// <summary>The scene-depth global view <paramref name="view"/>'s post chain publishes.</summary>
+    public static string SceneDepthFor(int view) => view == 0 ? SceneDepthName : SceneDepthSecondName;
+
     private SubViewport? _viewport;
     private Camera3D? _camera;
+    private SubViewport? _secondViewport;
+    private Camera3D? _secondCamera;
 
     /// <summary>The live instance.</summary>
     public static Engine_ClassicDisplacement? Instance { get; private set; }
@@ -38,14 +50,27 @@ public partial class Engine_ClassicDisplacement : Node
     /// <summary>The target's RenderingServer texture, for the composite.</summary>
     public static Rid Texture { get; private set; }
 
+    private static Rid _secondTexture;
+
+    /// <summary>The target of view <paramref name="view"/> (Engine_ClassicViews): the second view's own while split.</summary>
+    public static Rid TextureFor(int view) =>
+        view > 0 && Engine_ClassicViews.Count > 1 && _secondTexture.IsValid ? _secondTexture : Texture;
+
     public override void _Ready()
     {
         Instance = this;
         Name = "ClassicDisplacement";
         EnsureRegistered();
-        _viewport = new SubViewport
+        (_viewport, _camera) = Target("DisplacementTarget", "DisplacementCamera", Layer);
+        Texture = _viewport.GetTexture().GetRid();
+    }
+
+    /// <summary>A displacement target and its camera, seeing <paramref name="mask"/>.</summary>
+    private (SubViewport, Camera3D) Target(string name, string cameraName, uint mask)
+    {
+        var viewport = new SubViewport
         {
-            Name = "DisplacementTarget",
+            Name = name,
             TransparentBg = true,
             // Linear values: the composite reads byte-scaled offsets, not a picture.
             UseHdr2D = true,
@@ -54,10 +79,10 @@ public partial class Engine_ClassicDisplacement : Node
             RenderTargetClearMode = SubViewport.ClearMode.Always,
             ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled,
         };
-        _camera = new Camera3D
+        var camera = new Camera3D
         {
-            Name = "DisplacementCamera",
-            CullMask = Layer,
+            Name = cameraName,
+            CullMask = mask,
             Current = true,
             Environment = new Environment
             {
@@ -66,9 +91,9 @@ public partial class Engine_ClassicDisplacement : Node
                 TonemapMode = Environment.ToneMapper.Linear,
             },
         };
-        _viewport.AddChild(_camera);
-        AddChild(_viewport);
-        Texture = _viewport.GetTexture().GetRid();
+        viewport.AddChild(camera);
+        AddChild(viewport);
+        return (viewport, camera);
     }
 
     public override void _ExitTree()
@@ -77,6 +102,7 @@ public partial class Engine_ClassicDisplacement : Node
         {
             Instance = null;
             Texture = default;
+            _secondTexture = default;
         }
     }
 
@@ -102,21 +128,46 @@ public partial class Engine_ClassicDisplacement : Node
                 ++Drawn;
             }
         }
-        var size = new Vector2I(Mathf.Max((int)viewport.X / 2, 1), Mathf.Max((int)viewport.Y / 2, 1));
-        if (_viewport.Size != size)
+        if (Engine_ClassicViews.Count > 1 && Engine_ClassicViews.Camera(0) is { } first && Engine_ClassicViews.Camera(1) is { } second)
         {
-            _viewport.Size = size;
+            // Split: each view's target at half that view's size, on that view's camera.
+            Follow(_viewport, _camera, first, first.GetViewport()?.GetVisibleRect().Size ?? viewport);
+            if (_secondViewport is null)
+            {
+                (_secondViewport, _secondCamera) = Target("DisplacementTargetView1", "DisplacementCameraView1",
+                    Layer | Engine_ClassicViews.SecondViewLayer);
+                _secondTexture = _secondViewport.GetTexture().GetRid();
+            }
+            Follow(_secondViewport, _secondCamera!, second, second.GetViewport()?.GetVisibleRect().Size ?? viewport);
         }
-        _camera.GlobalTransform = main.GlobalTransform;
-        _camera.Projection = main.Projection;
-        _camera.Fov = main.Fov;
-        _camera.Size = main.Size;
-        _camera.Near = main.Near;
-        _camera.Far = main.Far;
-        _camera.KeepAspect = main.KeepAspect;
-        _camera.HOffset = main.HOffset;
-        _camera.VOffset = main.VOffset;
-        _viewport.RenderTargetUpdateMode = Drawn > 0 ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
+        else
+        {
+            Follow(_viewport, _camera, main, viewport);
+            if (_secondViewport is not null)
+            {
+                _secondViewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            }
+        }
+    }
+
+    /// <summary>A target on a view's camera at half its size; drawn only while anything displaces.</summary>
+    private static void Follow(SubViewport target, Camera3D camera, Camera3D main, Vector2 viewport)
+    {
+        var size = new Vector2I(Mathf.Max((int)viewport.X / 2, 1), Mathf.Max((int)viewport.Y / 2, 1));
+        if (target.Size != size)
+        {
+            target.Size = size;
+        }
+        camera.GlobalTransform = main.GlobalTransform;
+        camera.Projection = main.Projection;
+        camera.Fov = main.Fov;
+        camera.Size = main.Size;
+        camera.Near = main.Near;
+        camera.Far = main.Far;
+        camera.KeepAspect = main.KeepAspect;
+        camera.HOffset = main.HOffset;
+        camera.VOffset = main.VOffset;
+        target.RenderTargetUpdateMode = Drawn > 0 ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
     }
 
     private static bool _registered;
@@ -345,6 +396,8 @@ public partial class Engine_ClassicDisplacement : Node
         _registered = true;
         var image = Image.CreateEmpty(1, 1, false, Image.Format.Rf);
         RenderingServer.GlobalShaderParameterAdd(SceneDepthName,
+            RenderingServer.GlobalShaderParameterType.Sampler2D, ImageTexture.CreateFromImage(image));
+        RenderingServer.GlobalShaderParameterAdd(SceneDepthSecondName,
             RenderingServer.GlobalShaderParameterType.Sampler2D, ImageTexture.CreateFromImage(image));
     }
 }

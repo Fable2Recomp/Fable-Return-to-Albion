@@ -2320,7 +2320,37 @@ extern "C" {
 ///     RefiiHostDrainModErrors (the mods' Lua errors), RefiiHostModHandleAddress (a handle's entity).
 /// 189 adds Godot script verdicts: RefiiHostSetModVerdictHandler (a host function the payload
 ///     calls on the guest thread inside a seam) and RefiiHostSetModVerdictMask (which kinds).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 189; }
+/// 190 adds RefiiHostGetPlayerCamera — one player's own live camera (their camera manager's
+///     +0x90 block), for split screen: local player two has a camera manager of their own there
+///     (coop_hero_hooks.cpp); and RefiiHostGetMenuOwner — which player owns the open in-game GUI,
+///     the guest's own `sub_8236E400` sampled each guest tick (guest_tick_pump.cpp).
+/// 191 adds RefiiHostTakeExitRefused — the players a region exit refused because their
+///     partner was out of range since the last call (coop_hero_hooks.cpp, the travel rule).
+/// 192 adds RefiiHostGetPlayerTwoPrompts — the things whose use prompt answers player two; and a
+///     pooled world icon's entity is now its prompted thing (it was the weak reference's first word);
+///     and RefiiHostGetExitWaiting — online, this machine's player waits at an exit for the partner.
+/// 193 adds RefiiHostGetExitRequest — the online joiner's newest region-exit use (sequence and
+///     guest position), restated to the host, whose exit update fires the exit standing there.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 193; }
+
+/// The player who owns the open in-game GUI: 2 when player two opened it (the guest routes their
+/// pause to the henchman root and only they may close it), else 1. Sampled once per guest tick;
+/// meaningful while a menu is open.
+REFII_HOST_ABI_EXPORT int RefiiHostGetMenuOwner(void) { return refii_bridge_menu_owner_two() != 0 ? 2 : 1; }
+
+REFII_HOST_ABI_EXPORT int RefiiHostTakeExitRefused(void) { return refii_bridge_take_exit_refused(); }
+
+/// The things whose use prompt answers player two this frame (coop_hero_hooks.cpp, the nearer
+/// player rule), for seating their prompt icons in player two's half. Returns the count written.
+REFII_HOST_ABI_EXPORT int RefiiHostGetExitWaiting(void) { return refii_bridge_exit_waiting(); }
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetExitRequest(float* out_xyz) {
+    return refii_bridge_exit_request(out_xyz);
+}
+
+REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerTwoPrompts(uint32_t* out, int capacity) {
+    return refii_bridge_prompts_two(out, capacity);
+}
 
 REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetNewGameState(uint32_t* generation) {
     return refii::vfs::NewGameTransitionResult(generation);
@@ -2745,8 +2775,11 @@ uint32_t ResolvePlayerHero(const uint8_t* base) {
     uint32_t session = read32(refii::guest::Address(0x83497490u));
     if (!plausible(session)) session = read32(game + 0x8Cu);
     if (!plausible(session)) return refuse(3, session);
+    // Local co-op with player two's pause open: the menus are player two's (the payload's
+    // MenusActForPlayerTwo, the same owner sample).
+    const bool menus_for_two = refii_bridge_menu_owner_two() != 0 && read32(game + 0x11Cu) == 2u;
     const uint32_t player_key =
-        (read8(session + 0x34u) != 0u && read8(session + 0x35u) != 0u) ? 1u : 2u;
+        menus_for_two || !(read8(session + 0x34u) != 0u && read8(session + 0x35u) != 0u) ? 2u : 1u;
 
     // In a session at all: +0x34 is the "in a session" byte, +0x36 the joiner bit. Solo reads
     // as host (+0x34 and +0x35 set, +0x36 clear), so this is false for a single-player run.
@@ -17726,7 +17759,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_prese
 ///
 /// mode = *(0x83496AB8) -> game = *(mode+0x0C) -> the container *(game+0x9C), whose 12-byte
 /// {key, value, _} entries run from *(container+8) to *(container+0x0C); take the one keyed 1
-/// (2 in split screen, when *(game+0x8C)+0x34 and +0x36 are both set). 0 when the chain is not
+/// (2 on an online joiner, when *(game+0x8C)+0x34 and +0x36 — in a session, the joiner — are both
+/// set: the joiner's own player, whose camera manager is the one that machine runs). 0 when the chain is not
 /// up yet — the ordinary case out of game, and why the caller keeps the pull cache as a
 /// fallback. Every hop is a guarded read, so a half-built chain reads back 0 rather than faults.
 static uint32_t resolve_camera_manager(const uint8_t* base) {
@@ -17792,8 +17826,9 @@ static uint32_t resolve_camera_manager(const uint8_t* base) {
 /// `game+0x10`, the two basis vectors to `+0x20`/`+0x30`, the fov to `+0x40`, the snap byte to
 /// `+0x44`.
 ///
-/// Live is what `sub_82265F90` returns: `manager+0x90` normally, `manager+0x130` in split
-/// screen (`*(game+0x11C) == 1` with both `*(game+0x8C)+0x34` and `+0x36` set). It is memoised
+/// Live is what `sub_82265F90` returns: `manager+0x90`. Shipped, an online joiner
+/// (`*(game+0x11C) == 1` with `*(game+0x8C)+0x34` and `+0x36` set) got `manager+0x130`, the host's
+/// streamed camera; each machine now runs its own and the getter always returns `+0x90`. It is memoised
 /// against KeTickCount at `manager+0xD0` (at most once a millisecond), unlike the pull cache at
 /// 0x8331A230, which refreshes only when a Lua frustum native runs.
 ///
@@ -17819,18 +17854,11 @@ static bool resolve_camera_pair(const uint8_t* base, uint32_t* out_prev, uint32_
         return false;
     }
 
-    // The split-screen block, on the guest's own test rather than ours.
-    uint32_t live = manager + 0x90u;
-    if (u32(game + 0x11Cu) == 1u) {
-        const uint32_t split = u32(game + 0x8Cu);
-        if (plausible(split) && GuestByteAt(base, split + 0x34u) != 0 &&
-            GuestByteAt(base, split + 0x36u) != 0) {
-            live = manager + 0x130u;
-        }
-    }
-
+    // The live block is +0x90 on every machine. The guest's getter returned +0x130 — the host's
+    // camera, streamed as net message 0xBD — on an online joiner; each machine now runs its own
+    // camera and the getter always takes its +0x90 path (coop_hero_hooks.cpp, 0x82265FB0).
     *out_prev = game + 0x10u;
-    *out_live = live;
+    *out_live = manager + 0x90u;
     return true;
 }
 
@@ -18029,6 +18057,83 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* out) {
 /// eleven for the previous camera. The snap flag is the guest's override: `lbz r11, 0x34(r30)`
 /// on the live block at `0x8228ff40` forces alpha to 1.0 (a cut). Returns 1 when both blocks
 /// read coherently, 0 otherwise, and the caller falls back to `RefiiHostGetCamera`.
+/// The camera manager of the player keyed `key` in the guest's player map (1 or 2), or 0 — the
+/// same hops as resolve_camera_manager with the key stated rather than chosen.
+static uint32_t resolve_player_camera_manager(const uint8_t* base, uint32_t key) {
+    const auto u32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t pointer) {
+        return pointer >= 0x10000u && pointer < 0xC0000000u;
+    };
+    const uint32_t mode = u32(refii::guest::Address(0x83496AB8u));
+    const uint32_t game = plausible(mode) ? u32(mode + 0x0Cu) : 0u;
+    const uint32_t container = plausible(game) ? u32(game + 0x9Cu) : 0u;
+    if (!plausible(container)) {
+        return 0;
+    }
+    const uint32_t begin = u32(container + 0x08u);
+    const uint32_t end = u32(container + 0x0Cu);
+    if (!plausible(begin) || end <= begin || (end - begin) > 0x1000u) {
+        return 0;
+    }
+    for (uint32_t entry = begin; entry + 12u <= end; entry += 12u) {
+        if (u32(entry) != key) {
+            continue;
+        }
+        const uint32_t player = u32(entry + 4u);
+        const uint32_t view = plausible(player) ? u32(player + 4u) : 0u;
+        const uint32_t manager = plausible(view) ? u32(view + 4u) : 0u;
+        return plausible(manager) ? manager : 0u;
+    }
+    return 0;
+}
+
+/// One player's own live camera — `manager+0x90` of the camera manager their Player owns — as
+/// 11 floats (position, up, forward, horizontal fov, snap), or 0 when that player has no camera
+/// manager or the block is not a camera yet. Split screen draws player two's view from this.
+REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerCamera(int key, float* out) {
+    if (out == nullptr || (key != 1 && key != 2)) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const uint32_t manager = resolve_player_camera_manager(base, static_cast<uint32_t>(key));
+    if (manager == 0u) {
+        return 0;
+    }
+    const uint32_t live_at = manager + 0x90u;
+    uint8_t first[0x38];
+    uint8_t second[0x38];
+    bool coherent = false;
+    for (int attempt = 0; attempt < 4 && !coherent; ++attempt) {
+        CopyGuest(base, live_at, first, sizeof(first));
+        CopyGuest(base, live_at, second, sizeof(second));
+        coherent = std::memcmp(first, second, sizeof(first)) == 0;
+    }
+    if (!coherent) {
+        return 0;
+    }
+    const auto read_float = [&first](uint32_t offset) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, first + offset, sizeof(bits));
+        bits = __builtin_bswap32(bits);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    for (uint32_t lane = 0; lane < 3u; ++lane) {
+        out[lane] = read_float(0x00u + lane * 4u);
+        out[3u + lane] = read_float(0x10u + lane * 4u);
+        out[6u + lane] = read_float(0x20u + lane * 4u);
+    }
+    out[9] = read_float(0x30u);
+    out[10] = first[0x34u] != 0 ? 1.0f : 0.0f;
+    const float forward2 = out[6] * out[6] + out[7] * out[7] + out[8] * out[8];
+    return forward2 > 1e-4f ? 1 : 0;
+}
+
 REFII_HOST_ABI_EXPORT int RefiiHostGetCameraPair(float* out) {
     if (out == nullptr) {
         return 0;
@@ -18646,7 +18751,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
             w[0] = read32(obj + 20u);
             w[1] = 0u;
             w[2] = 0xFFFFFFFFu;
-            w[3] = read32(obj + 24u);
+            // The prompted thing: the icon's weak reference at +24 (sub_828203B8, from the
+            // prompt's descriptor, sub_823DD1D0), whose block at +28 holds the entity first.
+            const uint32_t block = read32(obj + 28u);
+            w[3] = plausible(block) ? read32(block) : 0u;
             w[4] = 0u;
             w[5] = 2u;  // pooled
             w[6] = slot_record >= kPoolBase ? (slot_record - kPoolBase) / 64u : 0xFFFFFFFFu;

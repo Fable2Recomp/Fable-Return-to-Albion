@@ -22,11 +22,18 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	private static readonly StringName Param_tex = "tex";
 	private static readonly StringName Param_glyphs = "glyphs";
 	private static readonly StringName Param_atlas = "atlas";
+	private static readonly StringName Param_sight_view = "sight_view";
 
 	/// <summary>Resolves a lowercase resource hash to a texture, or null.</summary>
 	public Func<uint, Texture2D?>? ResolveTexture { get; set; }
 
 	public Engine_UiTheme? Theme { get; set; }
+
+	/// <summary>
+	/// The view the icons are projected through, for the line-of-sight depth: 0 the window's or
+	/// player one's, 1 player two's on split screen. Set before the first feed.
+	/// </summary>
+	public int SightView { get; set; }
 
 	/// <summary>One live icon.</summary>
 	/// <param name="Object">
@@ -192,6 +199,7 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		var material = new ShaderMaterial { Shader = MarkerShader };
 		material.SetShaderParameter(Param_tex, painted.GetShaderParameter(Param_atlas));
 		material.SetShaderParameter(Param_glyphs, true);
+		material.SetShaderParameter(Param_sight_view, SightView);
 		label.MaterialOverride = material;
 		return material;
 	}
@@ -258,6 +266,7 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		AddChild(node);
 
 		var material = new ShaderMaterial { Shader = MarkerShader };
+		material.SetShaderParameter(Param_sight_view, SightView);
 		if (TextureFor(sprite.TextureHash) is { } texture)
 		{
 			material.SetShaderParameter(Param_tex, texture);

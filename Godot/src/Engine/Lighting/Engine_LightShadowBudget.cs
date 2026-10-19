@@ -22,6 +22,10 @@ namespace Refii.Lighting;
 /// With <c>placed_light_shadows</c> off only fixtures whose data states CastShadows compete —
 /// the 83 shipped spots — so the authored behaviour survives under the remaster switch. What
 /// a map draws is the light's own mask: <see cref="Engine_LevelLights.CasterMaskOf"/>.
+///
+/// EACH VIEW HAS THE WHOLE BUDGET. On split screen every view (<see cref="Refii.Core.Engine_Views"/>)
+/// ranks visibility and maps from its own eye with its own limits, and the union is applied: a
+/// lamp in either player's view is in view, and neither player's share shrinks for the other's.
 /// </remarks>
 public partial class Engine_LightShadowBudget : Node
 {
@@ -95,12 +99,19 @@ public partial class Engine_LightShadowBudget : Node
 	private readonly List<Light3D> _settled = new();
 	private readonly HashSet<Light3D> _wanted = new();
 	private readonly HashSet<Light3D> _visibleWanted = new();
-	private readonly Dictionary<Light3D, ulong> _lightSeenMs = new();
+	private readonly Camera3D[] _views = new Camera3D[2];
+
+	/// <summary>When each light was last in each view, so one view's hold never keeps another's.</summary>
+	private readonly Dictionary<Light3D, ulong>[] _lightSeenMs = { new(), new() };
+	private readonly Dictionary<Light3D, float> _score = new();
 	private double _since = double.MaxValue;
-	private Vector3 _lastCameraPos = new(float.MaxValue, float.MaxValue, float.MaxValue);
-	private Vector3 _lastCameraDir = Vector3.Zero;
-	private Plane[] _frustumPlanes = new Plane[6];
-	private int _frustumCount;
+	private readonly Vector3[] _lastCameraPos =
+	{
+		new(float.MaxValue, float.MaxValue, float.MaxValue), new(float.MaxValue, float.MaxValue, float.MaxValue),
+	};
+	private readonly Vector3[] _lastCameraDir = new Vector3[2];
+	private readonly Plane[][] _frustumPlanes = { new Plane[6], new Plane[6] };
+	private readonly int[] _frustumCount = new int[2];
 
 	private static ulong _tableFrame = ulong.MaxValue;
 
@@ -138,24 +149,44 @@ public partial class Engine_LightShadowBudget : Node
 
 		_since = 0;
 
-		Camera3D? camera = GetViewport()?.GetCamera3D();
+		// The world's primary camera: the window's under one view, the first split view's under
+		// two; player two's is Engine_Views.Second.
+		Camera3D? camera = Refii.Core.Engine_Views.Primary(GetViewport()?.GetCamera3D());
 		if (camera is null)
 		{
 			return;
 		}
 
-		Vector3 eye = camera.GlobalPosition;
-		Vector3 cameraDir = -camera.GlobalBasis.Z;
-		bool cameraMoved = eye.DistanceSquaredTo(_lastCameraPos) > 0.04f ||
-			cameraDir.DistanceSquaredTo(_lastCameraDir) > 0.005f;
+		int views = 0;
+		foreach (Camera3D view in Refii.Core.Engine_Views.Cameras(camera))
+		{
+			if (views < _views.Length)
+			{
+				_views[views++] = view;
+			}
+		}
+
+		for (int v = views; v < _views.Length; v++)
+		{
+			_lightSeenMs[v].Clear();
+			_lastCameraPos[v] = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+		}
+
+		bool cameraMoved = false;
+		for (int v = 0; v < views; v++)
+		{
+			Vector3 eye = _views[v].GlobalPosition;
+			Vector3 cameraDir = -_views[v].GlobalBasis.Z;
+			cameraMoved |= eye.DistanceSquaredTo(_lastCameraPos[v]) > 0.04f ||
+				cameraDir.DistanceSquaredTo(_lastCameraDir[v]) > 0.005f;
+			_lastCameraPos[v] = eye;
+			_lastCameraDir[v] = cameraDir;
+		}
 
 		if (!cameraMoved && _lights.Count > 0 && _wanted.Count > 0)
 		{
 			return;
 		}
-
-		_lastCameraPos = eye;
-		_lastCameraDir = cameraDir;
 
 		Engine_LevelLights.SnapshotLights(_lights);
 		if (_lights.Count == 0)
@@ -171,53 +202,27 @@ public partial class Engine_LightShadowBudget : Node
 		// light set (Engine_ClassicLitInstances), so a placed Godot light lights nothing there and
 		// still costs its cull, cluster and shadow work. Hidden, it never competes for a map.
 		bool classic = Refii.Models.Engine_ClassicMaterial.Active;
-		bool viewerIndoors = Engine_LightZones.IsViewerIndoors;
-		uint heroZone = Engine_LightZones.HeroZone;
 		ulong nowMs = Time.GetTicksMsec();
 
-		Godot.Collections.Array<Plane> frustum = camera.GetFrustum();
-		if (_frustumPlanes.Length < frustum.Count)
+		for (int v = 0; v < views; v++)
 		{
-			_frustumPlanes = new Plane[frustum.Count];
+			Godot.Collections.Array<Plane> frustum = _views[v].GetFrustum();
+			if (_frustumPlanes[v].Length < frustum.Count)
+			{
+				_frustumPlanes[v] = new Plane[frustum.Count];
+			}
+			_frustumCount[v] = frustum.Count;
+			for (int p = 0; p < frustum.Count; p++)
+			{
+				_frustumPlanes[v][p] = frustum[p];
+			}
+			((Godot.Collections.Array)frustum).Dispose();
 		}
-		_frustumCount = frustum.Count;
-		for (int p = 0; p < frustum.Count; p++)
-		{
-			_frustumPlanes[p] = frustum[p];
-		}
-		((Godot.Collections.Array)frustum).Dispose();
 
 		_visibleWanted.Clear();
-		foreach (Light3D light in _lights)
+		for (int v = 0; v < views; v++)
 		{
-			if (!light.IsInsideTree())
-			{
-				continue;
-			}
-
-			float range = RangeOf(light);
-			float fadeEnd = light.DistanceFadeEnabled ? light.DistanceFadeBegin + light.DistanceFadeLength : float.MaxValue;
-			Vector3 at = light.GlobalPosition;
-			float distance = eye.DistanceTo(at);
-
-			if (distance > MaxLightDistance + range || distance > fadeEnd)
-			{
-				continue;
-			}
-
-			bool inFrustum = SphereInView(_frustumPlanes, _frustumCount, at, range + 1.5f);
-			if (inFrustum)
-			{
-				_lightSeenMs[light] = nowMs;
-			}
-			bool seenRecently = _lightSeenMs.TryGetValue(light, out ulong seenMs) && (nowMs - seenMs <= LightHoldMs);
-			bool inView = inFrustum || seenRecently;
-
-			float baseEnergy = BaseEnergyOf(light);
-			if (LightsEnabled && !classic && baseEnergy > 0.0001f && inView)
-			{
-				_visibleWanted.Add(light);
-			}
+			ChooseVisible(_views[v].GlobalPosition, _frustumPlanes[v], _frustumCount[v], _lightSeenMs[v], classic, nowMs);
 		}
 
 		for (int i = 0; i < _lights.Count; i++)
@@ -261,12 +266,124 @@ public partial class Engine_LightShadowBudget : Node
 
 		// Shadows: range and view-frustum governed. Placed lights cast dynamic entities only (static world is baked).
 		// Lights with no characters/entities in their pool cannot cast dynamic shadows and are culled.
-		bool remaster = Engine_LevelLights.PlacedShadowsEnabled;
+		// Each view ranks from its own player — player one's from the hero, player two's from player
+		// two — and takes the whole budget; the union casts.
 		_wanted.Clear();
-		int eligible = 0;
-		Vector3 refPos = Refii.Game.GameEntities.HeroPosition ?? eye;
+		_score.Clear();
+		var cubeLights = new HashSet<Light3D>();
 		var candidates = new List<(Light3D Light, float Score)>();
+		int maxShadows = Budget > 0 ? Budget : (MaxDynamicEntityShadowLights > 0 ? MaxDynamicEntityShadowLights : int.MaxValue);
+		int cubeBudget = System.Math.Min(MaxCubeShadowLights, maxShadows);
+		for (int v = 0; v < views; v++)
+		{
+			Vector3 eye = _views[v].GlobalPosition;
+			Vector3 refPos = (v == 0 ? Refii.Game.GameEntities.HeroPosition : Refii.Game.GameEntities.PlayerTwoPosition) ?? eye;
+			uint zone = ZoneOfView(v);
+			candidates.Clear();
+			ChooseShadowed(eye, refPos, _frustumPlanes[v], _frustumCount[v], Engine_LightingFrame.CurrentInterior || Engine_LightZones.IsIndoors(zone), zone, candidates);
 
+			candidates.Sort((a, b) => a.Score.CompareTo(b.Score));
+			int count = System.Math.Min(candidates.Count, maxShadows);
+			for (int i = 0; i < count; i++)
+			{
+				Light3D l = candidates[i].Light;
+				_wanted.Add(l);
+				if (i < cubeBudget)
+				{
+					cubeLights.Add(l);
+				}
+			}
+		}
+
+		Eligible = _score.Count;
+
+		int casting = 0;
+		foreach (Light3D light in _lights)
+		{
+			if (_wanted.Contains(light))
+			{
+				casting++;
+				uint desiredMask = Engine_LevelLights.CasterMaskOf(
+					includeDynamicEntities: true,
+					isIndoorLight: Engine_LightZones.IsIndoorLight(light),
+					includeStaticWorld: Refii.Models.Engine_ClassicMaterial.Active);
+
+				if (light.ShadowCasterMask != desiredMask)
+				{
+					light.ShadowCasterMask = desiredMask;
+				}
+
+				if (!light.ShadowEnabled)
+				{
+					light.ShadowOpacity = 0.0f;
+					light.ShadowEnabled = true;
+				}
+
+				ApplyMode(light, cubeLights.Contains(light));
+				_fading[light] = 1.0f;
+			}
+			else if (light.ShadowEnabled)
+			{
+				_fading[light] = 0.0f;
+			}
+		}
+
+		Casting = casting;
+	}
+
+	/// <summary>The light zone view <paramref name="view"/>'s player stands in.</summary>
+	private static uint ZoneOfView(int view) =>
+		view == 0 ? Engine_LightZones.HeroZone : Refii.Game.GameEntities.SecondViewZone;
+
+	/// <summary>
+	/// One view's visible lights: those within <see cref="MaxLightDistance"/> of its eye that are in
+	/// its frustum or were within <see cref="LightHoldMs"/>, added to <see cref="_visibleWanted"/>.
+	/// </summary>
+	private void ChooseVisible(Vector3 eye, Plane[] frustum, int planeCount, Dictionary<Light3D, ulong> seen,
+		bool classic, ulong nowMs)
+	{
+		foreach (Light3D light in _lights)
+		{
+			if (!light.IsInsideTree())
+			{
+				continue;
+			}
+
+			float range = RangeOf(light);
+			float fadeEnd = light.DistanceFadeEnabled ? light.DistanceFadeBegin + light.DistanceFadeLength : float.MaxValue;
+			Vector3 at = light.GlobalPosition;
+			float distance = eye.DistanceTo(at);
+
+			if (distance > MaxLightDistance + range || distance > fadeEnd)
+			{
+				continue;
+			}
+
+			bool inFrustum = SphereInView(frustum, planeCount, at, range + 1.5f);
+			if (inFrustum)
+			{
+				seen[light] = nowMs;
+			}
+			bool seenRecently = seen.TryGetValue(light, out ulong seenMs) && (nowMs - seenMs <= LightHoldMs);
+			bool inView = inFrustum || seenRecently;
+
+			float baseEnergy = BaseEnergyOf(light);
+			if (LightsEnabled && !classic && baseEnergy > 0.0001f && inView)
+			{
+				_visibleWanted.Add(light);
+			}
+		}
+	}
+
+	/// <summary>
+	/// One view's shadow candidates: visible, allowed to cast, within <see cref="MaxShadowDistance"/>
+	/// of its eye, in its frustum, with a dynamic caster in reach, scored from its player's position.
+	/// A light scored by any view counts as eligible once (<see cref="_score"/>).
+	/// </summary>
+	private void ChooseShadowed(Vector3 eye, Vector3 refPos, Plane[] frustum, int planeCount, bool viewerIndoors,
+		uint heroZone, List<(Light3D Light, float Score)> candidates)
+	{
+		bool remaster = Engine_LevelLights.PlacedShadowsEnabled;
 		foreach (Light3D light in _lights)
 		{
 			if (!light.IsInsideTree() || !light.Visible || !_visibleWanted.Contains(light))
@@ -301,8 +418,8 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
-			// Shadows are strictly culled to the camera view frustum:
-			if (!SphereInView(_frustumPlanes, _frustumCount, at, range + 1.5f))
+			// Shadows are strictly culled to the view's frustum:
+			if (!SphereInView(frustum, planeCount, at, range + 1.5f))
 			{
 				continue;
 			}
@@ -314,7 +431,6 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
-			eligible++;
 			float score = ScoreDynamicEntityShadowLight(
 				at,
 				refPos,
@@ -327,59 +443,9 @@ public partial class Engine_LightShadowBudget : Node
 				heroZone,
 				light.ShadowEnabled);
 
+			_score[light] = score;
 			candidates.Add((light, score));
 		}
-
-		Eligible = eligible;
-
-		var cubeLights = new HashSet<Light3D>();
-		int maxShadows = Budget > 0 ? Budget : (MaxDynamicEntityShadowLights > 0 ? MaxDynamicEntityShadowLights : int.MaxValue);
-		int cubeBudget = System.Math.Min(MaxCubeShadowLights, maxShadows);
-
-		candidates.Sort((a, b) => a.Score.CompareTo(b.Score));
-		int count = System.Math.Min(candidates.Count, maxShadows);
-		for (int i = 0; i < count; i++)
-		{
-			Light3D l = candidates[i].Light;
-			_wanted.Add(l);
-			if (i < cubeBudget)
-			{
-				cubeLights.Add(l);
-			}
-		}
-
-		int casting = 0;
-		foreach (Light3D light in _lights)
-		{
-			if (_wanted.Contains(light))
-			{
-				casting++;
-				uint desiredMask = Engine_LevelLights.CasterMaskOf(
-					includeDynamicEntities: true,
-					isIndoorLight: Engine_LightZones.IsIndoorLight(light),
-					includeStaticWorld: Refii.Models.Engine_ClassicMaterial.Active);
-
-				if (light.ShadowCasterMask != desiredMask)
-				{
-					light.ShadowCasterMask = desiredMask;
-				}
-
-				if (!light.ShadowEnabled)
-				{
-					light.ShadowOpacity = 0.0f;
-					light.ShadowEnabled = true;
-				}
-
-				ApplyMode(light, cubeLights.Contains(light));
-				_fading[light] = 1.0f;
-			}
-			else if (light.ShadowEnabled)
-			{
-				_fading[light] = 0.0f;
-			}
-		}
-
-		Casting = casting;
 	}
 
 	/// <summary>Steps every map and light visibility transition toward its target opacity/energy.</summary>

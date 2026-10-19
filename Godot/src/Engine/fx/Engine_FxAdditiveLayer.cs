@@ -25,6 +25,12 @@ namespace Refii.Fx;
 /// <c>fable_postfx_addlayer.glsl</c>. Without the post chain the layer would never reach the
 /// screen, so <see cref="Present"/> is false then and FableFx draws ONE/ONE particles into
 /// the scene.
+///
+/// ONE INSTANCE PER VIEW (<see cref="Refii.Core.Engine_Views"/>). View 0 mirrors the window's
+/// camera, or player one's view while the screen is split; view 1 exists only while split and
+/// mirrors player two's. Both draw the one layer world — the FX instances live in view 0's
+/// scenario — each through its own camera at half its own view's size, and each view's post
+/// chain reads its own texture (<see cref="TrySnapshot(int, out Rid)"/>).
 /// </remarks>
 public partial class Engine_FxAdditiveLayer : Node
 {
@@ -37,15 +43,30 @@ public partial class Engine_FxAdditiveLayer : Node
 
     public const string GainSettingKey = "fx_additive_gain";
 
+    /// <summary>Views a layer can be drawn for: the window or player one's, and player two's.</summary>
+    public const int Views = 2;
+
     private static readonly object Gate = new();
     private static Engine_FxAdditiveLayer? _current;
-    private static Rid _publishedRd;
-    private static bool _publishedActive;
+    private static readonly Rid[] _publishedRd = new Rid[Views];
+    private static readonly bool[] _publishedActive = new bool[Views];
     private static ulong _activeFrame;
 
     private SubViewport _viewport = null!;
     private Camera3D _camera = null!;
     private Viewport? _host;
+
+    /// <summary>The viewport Ensure was called from; view 0's host whenever the screen is whole.</summary>
+    private Viewport? _windowHost;
+
+    /// <summary>Which view this instance draws for.</summary>
+    private int _view;
+
+    /// <summary>View 1's layer world: view 0's, so both views draw the same instances.</summary>
+    private World3D? _world;
+
+    /// <summary>View 1's instance while the screen is split; held by view 0's.</summary>
+    private Engine_FxAdditiveLayer? _second;
     private Vector2I _size;
     private bool _enabled = true;
 
@@ -87,12 +108,24 @@ public partial class Engine_FxAdditiveLayer : Node
     /// The layer texture for the post chain, valid only when something was drawn on it this
     /// frame. Render-thread safe: plain values under a lock.
     /// </summary>
-    public static bool TrySnapshot(out Rid layer)
+    public static bool TrySnapshot(out Rid layer) => TrySnapshot(0, out layer);
+
+    /// <summary>
+    /// <paramref name="view"/>'s layer texture for that view's post chain: 0 the window or player
+    /// one's view, 1 player two's. Render-thread safe.
+    /// </summary>
+    public static bool TrySnapshot(int view, out Rid layer)
     {
         lock (Gate)
         {
-            layer = _publishedRd;
-            return layer.IsValid && _publishedActive;
+            if (view < 0 || view >= Views)
+            {
+                layer = default;
+                return false;
+            }
+
+            layer = _publishedRd[view];
+            return layer.IsValid && _publishedActive[view];
         }
     }
 
@@ -103,6 +136,11 @@ public partial class Engine_FxAdditiveLayer : Node
         {
             _viewport.RenderTargetUpdateMode = on ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
         }
+
+        if (_second is not null && GodotObject.IsInstanceValid(_second))
+        {
+            _second.SetEnabled(on);
+        }
     }
 
     public static void Ensure(Node context)
@@ -112,7 +150,7 @@ public partial class Engine_FxAdditiveLayer : Node
         SceneTree? tree = context.GetTree();
         if (tree is null) return;
         Viewport host = context.GetViewport() ?? tree.Root;
-        var node = new Engine_FxAdditiveLayer { Name = "FxAdditiveLayer", _host = host };
+        var node = new Engine_FxAdditiveLayer { Name = "FxAdditiveLayer", _host = host, _windowHost = host };
         _current = node;
         tree.Root.CallDeferred(Node.MethodName.AddChild, node);
     }
@@ -120,6 +158,7 @@ public partial class Engine_FxAdditiveLayer : Node
     public override void _Ready()
     {
         _host ??= GetViewport();
+        _windowHost ??= _host;
         // Opaque black, not transparent: only colour is read (the guest clears to (0,0,0,0) and
         // adds into it), and blend_add never writes alpha, so a transparent viewport would only
         // bring in Godot's alpha handling of the 3D-to-texture copy.
@@ -136,11 +175,16 @@ public partial class Engine_FxAdditiveLayer : Node
             // ITS OWN WORLD. The layer's surfaces are rendering-server instances in this world
             // (Engine_FxLayerInstance), so the main scene's index never holds them and this
             // viewport culls only them; the scene depth arrives through the depth-capture global.
-            World3D = new World3D(),
+            // View 1 draws view 0's world.
+            World3D = _world ?? new World3D(),
         };
-        Gain = Math.Clamp(
-            Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), GainSettingKey, 1f),
-            0f, 64f);
+        if (_view == 0)
+        {
+            Gain = Math.Clamp(
+                Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), GainSettingKey, 1f),
+                0f, 64f);
+        }
+
         var env = new Godot.Environment
         {
             BackgroundMode = Godot.Environment.BGMode.Color,
@@ -150,7 +194,7 @@ public partial class Engine_FxAdditiveLayer : Node
             AmbientLightSource = Godot.Environment.AmbientSource.Disabled,
             GlowEnabled = false,
         };
-        _camera = new Camera3D { Name = "AdditiveCamera", CullMask = LayerMask, Environment = env };
+        _camera = new Camera3D { Name = "AdditiveCamera", CullMask = LayerMask | (_view == 1 ? Refii.Models.Engine_ClassicViews.SecondViewLayer : 0u), Environment = env };
         _viewport.AddChild(_camera);
         AddChild(_viewport);
         _camera.Current = true;
@@ -163,6 +207,62 @@ public partial class Engine_FxAdditiveLayer : Node
         if (!_usable)
         {
             GD.Print("[fx] additive layer: the viewport texture has no render-device texture; ONE/ONE particles stay in the scene");
+        }
+
+        if (_view == 0)
+        {
+            Refii.Core.Engine_Views.ViewsChanged += FollowViews;
+            FollowViews();
+        }
+    }
+
+    /// <summary>
+    /// View 0's: hosts this instance on player one's view and builds view 1's while the screen is
+    /// split; back on the window, and view 1's freed, when it rejoins.
+    /// </summary>
+    private void FollowViews()
+    {
+        if (!GodotObject.IsInstanceValid(this) || !IsInsideTree())
+        {
+            return;
+        }
+
+        if (Refii.Core.Engine_Views.Split &&
+            Refii.Core.Engine_Views.FirstViewport is { } first && GodotObject.IsInstanceValid(first) &&
+            Refii.Core.Engine_Views.SecondViewport is { } second && GodotObject.IsInstanceValid(second))
+        {
+            _host = first;
+            if (_second is null || !GodotObject.IsInstanceValid(_second))
+            {
+                _second = new Engine_FxAdditiveLayer
+                {
+                    Name = "FxAdditiveLayerSecondView",
+                    _view = 1,
+                    _host = second,
+                    _world = _viewport.World3D,
+                    _enabled = _enabled,
+                };
+                AddChild(_second);
+            }
+            else
+            {
+                _second._host = second;
+            }
+
+            return;
+        }
+
+        _host = _windowHost;
+        if (_second is not null && GodotObject.IsInstanceValid(_second))
+        {
+            _second.QueueFree();
+        }
+
+        _second = null;
+        lock (Gate)
+        {
+            _publishedRd[1] = default;
+            _publishedActive[1] = false;
         }
     }
 
@@ -193,9 +293,15 @@ public partial class Engine_FxAdditiveLayer : Node
             _current = null;
         }
 
+        if (_view == 0)
+        {
+            Refii.Core.Engine_Views.ViewsChanged -= FollowViews;
+        }
+
         lock (Gate)
         {
-            _publishedRd = default;
+            _publishedRd[_view] = default;
+            _publishedActive[_view] = false;
         }
     }
 
@@ -243,8 +349,8 @@ public partial class Engine_FxAdditiveLayer : Node
 
         lock (Gate)
         {
-            _publishedRd = rd;
-            _publishedActive = active && rd.IsValid;
+            _publishedRd[_view] = rd;
+            _publishedActive[_view] = active && rd.IsValid;
         }
     }
 }

@@ -5,7 +5,7 @@ using Godot;
 namespace Refii.Models;
 
 /// <summary>
-/// What the main view's triangles are made of: every geometry instance the camera would draw,
+/// What each view's triangles are made of: every geometry instance the camera would draw,
 /// the level Godot picks for each surface, and the triangles that costs — by owning node and by
 /// mesh — beside what the guest's own per-object rule would have drawn.
 /// </summary>
@@ -51,8 +51,28 @@ public static class Engine_MdlLodCensus
 		public required uint CullMask;
 	}
 
-	/// <summary>Walks <paramref name="root"/> against the viewport's current camera.</summary>
+	/// <summary>
+	/// Walks <paramref name="root"/> against the viewport's current camera; on split screen against
+	/// each player's view, since Godot picks every view's levels from its own camera and width.
+	/// Player one's census is the top level and player two's is under <c>secondView</c>.
+	/// </summary>
 	public static Dictionary<string, object?> Describe(Node root, Viewport viewport)
+	{
+		if (!Refii.Core.Engine_Views.Split ||
+			Refii.Core.Engine_Views.FirstViewport is not { } first || !GodotObject.IsInstanceValid(first) ||
+			Refii.Core.Engine_Views.SecondViewport is not { } second || !GodotObject.IsInstanceValid(second))
+		{
+			return DescribeView(root, viewport);
+		}
+
+		Dictionary<string, object?> census = DescribeView(root, first);
+		census["split"] = true;
+		census["secondView"] = DescribeView(root, second);
+		return census;
+	}
+
+	/// <summary>Walks <paramref name="root"/> against one viewport's current camera.</summary>
+	private static Dictionary<string, object?> DescribeView(Node root, Viewport viewport)
 	{
 		if (viewport.GetCamera3D() is not { } camera)
 		{

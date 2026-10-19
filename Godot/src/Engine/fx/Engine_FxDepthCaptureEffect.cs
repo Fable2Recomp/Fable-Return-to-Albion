@@ -12,8 +12,20 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     public const string GlobalTextureName = "fx_scene_depth";
     public const string GlobalValidName = "fx_scene_depth_valid";
 
+    /// <summary>
+    /// Player two's view's depth on split screen. A global is one value for every view, so each
+    /// view's capture publishes its own and the readers pick by the second view's layer
+    /// (<see cref="Refii.Models.Engine_ClassicViews.SecondViewLayer"/>).
+    /// </summary>
+    public const string GlobalTextureSecondName = "fx_scene_depth_second";
+
     private static bool _globalsRegistered;
-    private static Texture2Drd? _texture;
+    private static readonly Texture2Drd?[] _textures = new Texture2Drd?[2];
+
+    /// <summary>Which view this capture runs in: 0 the window's (player one's on split screen), 1 player two's.</summary>
+    public int View { get; set; }
+
+    private static string TextureGlobal(int view) => view == 0 ? GlobalTextureName : GlobalTextureSecondName;
 
     private RenderingDevice? _rd;
     private Rid _shader;
@@ -47,8 +59,12 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         if (_globalsRegistered) return;
         _globalsRegistered = true;
 
-        _texture ??= new Texture2Drd();
-        RenderingServer.GlobalShaderParameterSet(GlobalTextureName, _texture);
+        for (int view = 0; view < _textures.Length; ++view)
+        {
+            _textures[view] ??= new Texture2Drd();
+            RenderingServer.GlobalShaderParameterSet(TextureGlobal(view), _textures[view]!);
+        }
+
         RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
     }
 
@@ -90,12 +106,16 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         _target = _rd!.TextureCreate(format, new RDTextureView());
         _targetSize = size;
         Rid rid = _target;
+        int view = View;
         Callable.From(() =>
         {
-            _texture ??= new Texture2Drd();
-            _texture.TextureRdRid = rid;
-            RenderingServer.GlobalShaderParameterSet(GlobalTextureName, _texture);
-            RenderingServer.GlobalShaderParameterSet(GlobalValidName, 1.0f);
+            Texture2Drd texture = _textures[view] ??= new Texture2Drd();
+            texture.TextureRdRid = rid;
+            RenderingServer.GlobalShaderParameterSet(TextureGlobal(view), texture);
+            if (view == 0)
+            {
+                RenderingServer.GlobalShaderParameterSet(GlobalValidName, 1.0f);
+            }
         }).CallDeferred();
     }
 
@@ -124,14 +144,18 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
 
         if (_globalsRegistered)
         {
-            RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
-            RenderingServer.GlobalShaderParameterSet(GlobalTextureName, default(Variant));
+            if (View == 0)
+            {
+                RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
+            }
+
+            RenderingServer.GlobalShaderParameterSet(TextureGlobal(View), default(Variant));
         }
 
-        if (_texture is not null)
+        if (View is >= 0 and < 2 && _textures[View] is { } texture)
         {
-            _texture.TextureRdRid = default;
-            _texture = null;
+            texture.TextureRdRid = default;
+            _textures[View] = null;
         }
 
         if (_rd is null)

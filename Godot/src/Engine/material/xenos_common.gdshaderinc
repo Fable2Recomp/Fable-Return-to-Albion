@@ -16,6 +16,11 @@
 // The render layer the classic shadow cameras carry in their cull mask and nothing else does:
 // a pixel shader reads CAMERA_VISIBLE_LAYERS against it to know it is drawing a shadow map.
 #define XR_SHADOW_PASS_LAYER (1u << 23u)
+// The render layer split screen's second camera carries in its cull mask and no node is on
+// (Engine_ClassicViews.SecondViewLayer): a stage drawing for that camera reads that view's
+// registers (xr_const_at). Readable only in the stage bodies, like every CAMERA_ built-in.
+#define XR_SECOND_VIEW_LAYER (1u << 28u)
+#define XR_SECOND_VIEW ((CAMERA_VISIBLE_LAYERS & XR_SECOND_VIEW_LAYER) != 0u)
 
 // The guest's 32 boolean constants in one word: vertex b0..15 in the low half, pixel b0..15 at
 // bit 16 up. The emitted `#define ps_g_Name (1u << Nu)` masks index into it.
@@ -96,7 +101,15 @@ instance uniform int xr_light_row3 = 0;
 // chain's reduce pass computes on the GPU from the frame's own histogram and publishes as
 // `fable_exposure_tex`. The feed writes this marker into those lanes and the fetch takes E.
 global uniform sampler2D fable_exposure_tex;
+// Player two's on split screen: each view's chain publishes its own.
+global uniform sampler2D fable_exposure_tex_second;
 const float XR_EXPOSURE_LANE = -12345.0;
+
+float xr_exposure(bool second_view) {
+	return second_view
+		? texelFetch(fable_exposure_tex_second, ivec2(0, 0), 0).r
+		: texelFetch(fable_exposure_tex, ivec2(0, 0), 0).r;
+}
 
 //
 // THE MAIN VIEW ONLY. The frame setup (`sub_82282320`, 0x8228268C..0x822826CC) loads E into the
@@ -105,15 +118,39 @@ const float XR_EXPOSURE_LANE = -12345.0;
 // camera sees layer 1; a mirror camera sees only the reflected layer and a cascade only its own,
 // which is how a stage tells them apart (CAMERA_VISIBLE_LAYERS is readable only in the stage
 // bodies, so `xr_const` is a macro over `xr_const_view`).
-vec4 xr_const_view(sampler2D registers, int index, bool main_view) {
-	vec4 value = texelFetch(registers, ivec2(index, XR_ROW_UNIFORM), 0);
+//
+// A BLOCK PER VIEW. On split screen both views draw from the one upload, so the second view's
+// registers sit beside the first's: the file is 512 texels wide and register r of the second
+// view is column 256 + r of the same row (Engine_ClassicConstants). A single view's file is 256
+// wide, and the second view's block is read only while it is there.
+const int XR_VIEW_COLUMNS = 256;
+
+vec4 xr_const_at(sampler2D registers, int index, bool main_view, bool second_view) {
+	int column = index;
+	if (second_view && textureSize(registers, 0).x > XR_VIEW_COLUMNS) {
+		column += XR_VIEW_COLUMNS;
+	}
+	vec4 value = texelFetch(registers, ivec2(column, XR_ROW_UNIFORM), 0);
 	if (value.w == XR_EXPOSURE_LANE) {
-		value.w = main_view ? texelFetch(fable_exposure_tex, ivec2(0, 0), 0).r : 1.0;
+		value.w = main_view ? xr_exposure(second_view) : 1.0;
 	}
 	return value;
 }
 
-#define xr_const(registers, index) xr_const_view(registers, index, (CAMERA_VISIBLE_LAYERS & 1u) != 0u)
+// A read that is the same in every view (the trees' clock and wind): the first view's block.
+vec4 xr_const_view(sampler2D registers, int index, bool main_view) {
+	return xr_const_at(registers, index, main_view, false);
+}
+
+#define xr_const(registers, index) xr_const_at(registers, index, (CAMERA_VISIBLE_LAYERS & 1u) != 0u, XR_SECOND_VIEW)
+
+// A material constant that belongs to the view drawing it (a soft particle's inverse
+// view-projection, a decal's view-projection): the first view reads the material's own uniform,
+// the second view the host register its owner writes per view (Engine_ClassicViews). The
+// composer rewrites the stage's reads of a name its composition lists into these
+// (Engine_ClassicShaders, `// xr_view_param`); `gate` is a material bool, or true.
+#define XR_VIEW_PARAM(name, registers, base, gate) ((XR_SECOND_VIEW && (gate)) ? xr_const_at(registers, (base), false, true) : name)
+#define XR_VIEW_PARAM_AT(name, registers, base, slot, gate) ((XR_SECOND_VIEW && (gate)) ? xr_const_at(registers, (base) + (slot), false, true) : name[slot])
 
 // A vertex-baked placement's bake stream (Engine_ClassicVertexBakes): its block of the shared
 // texture, one texel per vertex in the mesh's order, the surface's start a material uniform.

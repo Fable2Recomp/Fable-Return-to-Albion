@@ -21,6 +21,11 @@ namespace Refii.Level;
 /// Drawn first among the blended materials with depth test on and no depth write, so it
 /// fills exactly the background the opaque scene left, as the title's ZWrite-off dome does.
 /// The celestial elements, clouds and stars keep the host's ported draws.
+///
+/// A DOME PER VIEW. The mist volume the dome takes is the one the eye stands in, so split
+/// screen's second view has a dome of its own (<see cref="Second"/>) on the layer only that view
+/// draws. The first keeps its layers (the mirrors draw it) and, while split, a composition that
+/// the second view does not rasterise (<see cref="FirstViewDepth"/>).
 /// </remarks>
 [Tool]
 public partial class Engine_ClassicSkyDome : MeshInstance3D
@@ -36,8 +41,19 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
     private const string MirrorDepth =
         "#define XR_POSITION_OUT(p) (((CAMERA_VISIBLE_LAYERS & 1u) != 0u) ? (p) : vec4((p).xy, (p).w * 1e-6, (p).w))";
 
-    private readonly Dictionary<uint, Texture2D?> _overlays = new();
+    /// <summary>
+    /// <see cref="MirrorDepth"/> for the first view's dome while split: the second view's camera
+    /// (Engine_ClassicViews.SecondViewLayer) places it outside the clip volume.
+    /// </summary>
+    private const string FirstViewDepth =
+        "#define XR_POSITION_OUT(p) (XR_SECOND_VIEW ? vec4(0.0, 0.0, -10.0, 1.0) : ((CAMERA_VISIBLE_LAYERS & 1u) != 0u) ? (p) : vec4((p).xy, (p).w * 1e-6, (p).w))";
+
+    private const string RenderMode = "unshaded, blend_mix, depth_draw_never, cull_disabled";
+
+    private static readonly Dictionary<uint, Texture2D?> _overlays = new();
     private ShaderMaterial? _material;
+    private Shader? _shader;
+    private Shader? _firstView;
     private uint _overlayHash;
     private uint _overlayHash1;
     private float _overlayBlend = -1f;
@@ -45,13 +61,27 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
     private int _row;
     private bool _inMist;
 
-    /// <summary>The live instance.</summary>
+    /// <summary>The live instance: the window's view, player one's on split screen.</summary>
     public static Engine_ClassicSkyDome? Instance { get; private set; }
+
+    /// <summary>Player two's view's dome while the screen is split.</summary>
+    public static Engine_ClassicSkyDome? Second { get; private set; }
+
+    /// <summary>The view this dome draws for (Engine_ClassicViews): its mist is that view's eye's.</summary>
+    public int View { get; init; }
 
     public override void _Ready()
     {
-        Instance = this;
-        Name = "ClassicSkyDome";
+        if (View == 0)
+        {
+            Instance = this;
+            Name = "ClassicSkyDome";
+        }
+        else
+        {
+            Second = this;
+            Name = "ClassicSkyDomeSecondView";
+        }
         // The vertex shader rotates its input into the file's axes and composes the object
         // matrix with XR_FILE_TO_MODEL, which takes a guest point to Godot as (x, z, -y); the
         // world is (-x, z, y). The node's own transform is that half-turn about Y, so the eye
@@ -62,20 +92,20 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
         ExtraCullMargin = 16384f;
         // The title's reflection tile draws the sky (Engine_ReflectionLayer): without the bit the
         // mirrors showed the environment's own background, exposed by the water a second time.
-        Layers = Engine_ReflectionLayer.ReflectedLayers;
+        // Player two's dome is drawn by their view alone.
+        Layers = View == 0 ? Engine_ReflectionLayer.ReflectedLayers : Engine_ClassicViews.SecondViewOnlyLayer;
         CastShadow = ShadowCastingSetting.Off;
         if (!Engine_ClassicShaders.HasEntry(PixelEntry) || !Engine_ClassicShaders.HasEntry(VertexEntry))
         {
             GD.Print("[classic] no SKYCOLOUR pair in the bank; the sky dome stays modern");
             return;
         }
-        Shader? shader = Engine_ClassicShaders.Compose(
-            VertexEntry, PixelEntry, "unshaded, blend_mix, depth_draw_never, cull_disabled", 0, MirrorDepth);
-        if (shader is null)
+        _shader = Engine_ClassicShaders.Compose(VertexEntry, PixelEntry, RenderMode, 0, MirrorDepth);
+        if (_shader is null)
         {
             return;
         }
-        _material = new ShaderMaterial { Shader = shader, RenderPriority = -127 };
+        _material = new ShaderMaterial { Shader = _shader, RenderPriority = -127 };
         _material.SetShaderParameter("ps_g_InScattering", Engine_ClassicAtmosphere.InScatteringTexture);
         _material.SetShaderParameter("ps_g_TzenithR", new Vector4(150f, 150f, 150f, 150f));
         _material.SetShaderParameter("ps_g_TzenithM", new Vector4(100f, 100f, 100f, 100f));
@@ -92,6 +122,10 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
         {
             Instance = null;
         }
+        if (Second == this)
+        {
+            Second = null;
+        }
         if (_row != 0)
         {
             Engine_ClassicConstants.ReleaseRow(_row);
@@ -99,12 +133,22 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
         }
     }
 
-    /// <summary>Follows the live sky theme and the camera's mist volume. Main thread, once a frame.</summary>
+    /// <summary>Follows the live sky theme and the mist volume of its view's camera. Main thread, once a frame.</summary>
     public void Pump(Camera3D camera)
     {
         if (_material is null)
         {
             return;
+        }
+        if (View == 0)
+        {
+            Shader? want = Engine_ClassicViews.Count > 1
+                ? _firstView ??= Engine_ClassicShaders.Compose(VertexEntry, PixelEntry, RenderMode, 0, FirstViewDepth)
+                : _shader;
+            if (want is not null && _material.Shader != want)
+            {
+                _material.Shader = want;
+            }
         }
         // THE GUEST'S TWO OVERLAYS. `Render_MeshMaterialSubmit_6` (0x821DB9F4) takes the theme's
         // two heaviest SKY_OVERLAY textures (`sub_821D0C00`), binds them as the dome's overlay pair
@@ -144,7 +188,10 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
             _overlayBlend = blend;
             _material.SetShaderParameter("ps_g_SkyOverlayTextureBlend", new Vector4(blend, blend, blend, blend));
         }
-        Engine_ClassicWater.ApplyVistaOverlay(_currentOverlay ?? NoOverlay(), _currentOverlay1 ?? NoOverlay(), blend);
+        if (View == 0)
+        {
+            Engine_ClassicWater.ApplyVistaOverlay(_currentOverlay ?? NoOverlay(), _currentOverlay1 ?? NoOverlay(), blend);
+        }
 
         // Inside a mist volume the dome takes the volume's registers, as the title binds them.
         Engine_ClassicMist.Volume? mist = Engine_ClassicMist.VolumeFor(new Aabb(camera.GlobalPosition, Vector3.Zero));

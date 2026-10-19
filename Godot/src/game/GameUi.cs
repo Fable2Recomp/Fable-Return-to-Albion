@@ -273,6 +273,12 @@ public partial class GameUi : Node
 			_hud.Values.Reset();
 		}
 
+		if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
+		{
+			_hudTwo.ElementActive = null;
+			_hudTwo.Visible = false;
+		}
+
 		if (_worldIcons is not null && GodotObject.IsInstanceValid(_worldIcons))
 		{
 			_worldIcons.Clear();
@@ -1400,11 +1406,12 @@ public partial class GameUi : Node
 
 		// THE SIDE CHANGED UNDER A STANDING VIEW: a join, a disconnect or a quit moves the
 		// player between the hero's list and the joiner's, and the view is rebuilt for it.
+		bool playerTwosPause = PauseIsPlayerTwos();
 		if (_pauseView is not null && _pauseMenu is not null &&
-			_pauseMenuJoiner != CoopSession.IsClient)
+			_pauseMenuJoiner != playerTwosPause)
 		{
 			GD.Print($"[game-ui] pause menu rebuilt — now " +
-				(CoopSession.IsClient ? "the joiner's variant" : "the hero's variant"));
+				(playerTwosPause ? "the joiner's variant" : "the hero's variant"));
 			if (GodotObject.IsInstanceValid(_pauseView))
 			{
 				_pauseView.QueueFree();
@@ -1447,7 +1454,7 @@ public partial class GameUi : Node
 			// Weapons/Clothing are host tabs over the henchman's list); a menu built once and kept
 			// across a join, a disconnect or a quit would keep the wrong variant for the rest of
 			// the process.
-			bool joiner = CoopSession.IsClient;
+			bool joiner = playerTwosPause;
 			if (_pauseMenu is null || _pauseMenuJoiner != joiner)
 			{
 				_pauseMenu = Engine_PauseMenu.BuildHero(joiner);
@@ -2591,6 +2598,12 @@ public partial class GameUi : Node
 	/// <summary>The rebuilt, Godot-authored HUD. There is no mirrored one.</summary>
 	private Engine_HudView? _hud;
 
+	/// <summary>
+	/// Player two's HUD on split screen: the same view, sharing <see cref="_hud"/>'s values and
+	/// element feed, holding player two's pieces only.
+	/// </summary>
+	private Engine_HudView? _hudTwo;
+
 	/// <summary>The presentation the rebuilt HUD replaces. Never mirrored.</summary>
 	private const string HudPresentation = "hud";
 
@@ -2681,6 +2694,27 @@ public partial class GameUi : Node
 		GD.Print($"[hud] {bindings.Describe()}; {replaced} piece(s) replaced from user://hud" +
 			(arranged == 0 ? string.Empty : $"; {arranged} piece(s) moved by {HudLayoutPath}"));
 
+		// PLAYER TWO'S HALF, for split screen. The same view over the same layout, art and
+		// published values — `hud.bgf` is one presentation carrying both players' pieces — built
+		// with player two's pieces alone (Engine_HudLayout.OwnerOf) and laid out in the right
+		// half. Down until the screen splits; see SeatPlayerUi.
+		_hudTwo = new Engine_HudView
+		{
+			Name = "HudPlayerTwo",
+			Theme = _presentation.Theme,
+			Screen = screen,
+			Art = _hud.Art,
+			ResolveTexture = _hud.ResolveTexture,
+			Layout = _hud.Layout,
+			Values = _hud.Values,
+			ReadsValues = false,
+			Seat = Engine_UiSeats.Seat.PlayerTwo,
+			Suppressed = true,
+			Visible = false,
+		};
+		_presentation.AddChild(_hudTwo);
+		_hudTwo.Build();
+
 		// THE WORLD ICONS, beside the layout-driven pieces. Their positions are the guest's —
 		// a projection of world space, restated every frame — so they are a reader, not a
 		// layout entry. A step in front of the HUD pieces so a marker is never under a bar.
@@ -2715,6 +2749,18 @@ public partial class GameUi : Node
 		};
 		_presentation.AddChild(_worldSprites);
 
+		// The same sprites through player two's camera, in player two's half, on split screen.
+		_worldSpritesTwo = new Engine_HudWorldSprites
+		{
+			Name = "WorldSpritesPlayerTwo",
+			Theme = _presentation.Theme,
+			Position = new Vector3(0f, 0f, 52f),
+			ResolveTexture = _worldSprites.ResolveTexture,
+			SightView = 1,
+			Visible = false,
+		};
+		_presentation.AddChild(_worldSpritesTwo);
+
 		// THE AIM RETICULE, which the guest pushed as 2D sprites from a record, never as an
 		// element — see Engine_HudReticule. In front of the world sprites.
 		_reticule = new Engine_HudReticule
@@ -2728,6 +2774,17 @@ public partial class GameUi : Node
 					: null,
 		};
 		_presentation.AddChild(_reticule);
+
+		// Player two's petals in player two's half, on split screen.
+		_reticuleTwo = new Engine_HudReticule
+		{
+			Name = "ReticulePlayerTwo",
+			Position = new Vector3(0f, 0f, 54f),
+			ResolveTexture = _reticule.ResolveTexture,
+			OnlyPlayer = 1,
+			Visible = false,
+		};
+		_presentation.AddChild(_reticuleTwo);
 
 		// TIME CONTROL'S DIAL, which the guest keeps as a sprite record on the hero's component
 		// 118 and never as an element — see Engine_HudSlowTimeDial. Behind the reticule.
@@ -2746,6 +2803,115 @@ public partial class GameUi : Node
 		BuildAchievementToast();
 	}
 
+	/// <summary>
+	/// SPLIT SCREEN, PER PLAYER. While the world is drawn through two views
+	/// (<see cref="Engine_Views.Split"/>), each local player's UI stands in their own half: player
+	/// one's HUD in the left half, laid out as on a screen that size, and player two's view of the
+	/// same HUD in the right half; the spells wheel in the half of whoever opened it; the menu
+	/// input and masks on the pad of whoever owns the open menu. A shared screen and solo play take
+	/// none of this — every seat is the whole window and the menu owner is not stated.
+	/// </summary>
+	private void SeatPlayerUi(Vector2 window)
+	{
+		bool split = Engine_Views.Split;
+		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
+		{
+			_hud.Seat = split ? Engine_UiSeats.Seat.PlayerOne : Engine_UiSeats.Seat.Whole;
+		}
+
+		if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
+		{
+			_hudTwo.Window = window;
+			_hudTwo.Suppressed = !split || _fullCutscene || _hudAddress == 0;
+		}
+
+		_spells.Window = window;
+
+		GameInput.PlayerTwoPad = CoopSession.LocalCoop ? CoopSession.LocalPadTwo : -1;
+		GameInput.MenuOwner = split && CoopSession.LocalCoop ? StatedMenuOwner() : 0;
+		if (GameInput.MenuOwner != _menuOwnerSaid)
+		{
+			_menuOwnerSaid = GameInput.MenuOwner;
+			GD.Print(_menuOwnerSaid == 0
+				? "[split-ui] no menu owner stated — host menus read pad 0, masks hold every pad"
+				: $"[split-ui] the open menu is player {_menuOwnerSaid}'s — host menus read " +
+					$"pad {(_menuOwnerSaid == 2 ? GameInput.PlayerTwoPad : 0)}, only that pad is masked");
+		}
+	}
+
+	private int _menuOwnerSaid;
+
+	/// <summary>
+	/// Whether the pause standing is player two's: the online client's own, or local player two's
+	/// — the guest opens player two's reduced pause root for whoever is player two (the henchman
+	/// receiver's pause, `sub_826A2C88(…, 0)`) and states the owner (<see cref="HostBridge.GetMenuOwner"/>).
+	/// </summary>
+	/// <summary>
+	/// The co-op travel rule's notice: a region exit waits until both players are at it, and the
+	/// one who walked in is told once per approach (coop_hero_hooks.cpp; Fable 3's
+	/// TEXT_TUTORIAL_EXIT_LEVEL_BLOCKED_BY_PLAYER_DISTANCE, which Fable 2's text banks do not
+	/// carry), for five seconds as Fable 3 shows it.
+	/// </summary>
+	private void TellExitRefused()
+	{
+		int refused = HostBridge.TakeExitRefused();
+		if (refused == 0)
+		{
+			return;
+		}
+
+		string text = !CoopSession.LocalCoop
+			? "Your partner must be with you to travel."
+			: (refused & 1) != 0
+				? "Player two must be with you to travel."
+				: "Player one must be with you to travel.";
+		_boxes.InfoBoxEx(ExitRefusedBox, 5f, text);
+	}
+
+	private const string ExitRefusedBox = "RefiiCoopExitRefused";
+
+	private static bool PauseIsPlayerTwos() =>
+		CoopSession.IsClient || (CoopSession.LocalCoop && HostBridge.GetMenuOwner() == 2);
+
+	/// <summary>
+	/// Which player owns the open menu, as the guest states it: 0 when no menu is open. The spells
+	/// wheel's open flags are per player (`QM+36` one, `QM+37` two). The pause and every screen
+	/// opened from it carry their owner in the guest (`sub_8236E400`, "player two owns the menu",
+	/// sampled each guest tick: <see cref="HostBridge.GetMenuOwner"/>), read while the guest says a
+	/// pause screen is up — the root, or a screen opened from it.
+	/// </summary>
+	private int StatedMenuOwner()
+	{
+		int wheel = _spells.WheelPlayer;
+		if (wheel != 0)
+		{
+			return wheel;
+		}
+
+		return HostBridge.GetPauseState() is { } pause && (pause.RootActive || pause.ModalMode == 1)
+			? HostBridge.GetMenuOwner()
+			: 0;
+	}
+
+	/// <summary>
+	/// Hands player two's HUD the element feed player one's was just given: one `hud.bgf`
+	/// presentation, one read, two views.
+	/// </summary>
+	private void ShareHudFeed()
+	{
+		if (_hud is null || _hudTwo is null || !GodotObject.IsInstanceValid(_hudTwo))
+		{
+			return;
+		}
+
+		_hudTwo.Resolve = _hud.Resolve;
+		_hudTwo.LiveSlides = _hud.LiveSlides;
+		_hudTwo.LiveTextures = _hud.LiveTextures;
+		_hudTwo.LiveTransform = _hud.LiveTransform;
+		_hudTwo.LiveTexts = _hud.LiveTexts;
+		_hudTwo.ElementActive = _hud.ElementActive;
+	}
+
 	/// <summary>Where the edited arrangement lives — the editor writes it, every boot reads it.</summary>
 	public const string HudLayoutPath = Engine_HudLayout.LayoutPath;
 
@@ -2755,7 +2921,13 @@ public partial class GameUi : Node
 	private Engine_HudWorldIcons? _worldIcons;
 	private Engine_HudWorldSprites? _worldSprites;
 
+	/// <summary>Player two's copy of the world sprites, drawn only while the screen is split.</summary>
+	private Engine_HudWorldSprites? _worldSpritesTwo;
+
 	private Engine_HudReticule? _reticule;
+
+	/// <summary>Player two's reticule layer, drawn only while the screen is split.</summary>
+	private Engine_HudReticule? _reticuleTwo;
 
 	private Engine_HudSlowTimeDial? _slowTimeDial;
 
@@ -2945,6 +3117,8 @@ public partial class GameUi : Node
 		{
 			_reticule.Feed(0, null);
 			_reticule.Feed(1, null);
+			_reticuleTwo?.Feed(0, null);
+			_reticuleTwo?.Feed(1, null);
 			return;
 		}
 
@@ -2952,10 +3126,20 @@ public partial class GameUi : Node
 		System.Span<uint> backbuffer = stackalloc uint[2];
 		int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
 		float guestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
-		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
-		_reticule.CanvasHalfExtent = extent * 0.5f;
-		_reticule.UnitsPerGuestPixel = extent.Y / guestHeight;
-		_reticule.Place ??= guest => PlaceWorldSprite(guest, 0u)?.Canvas;
+		// Each layer in its own seat: player one's (the whole window's) and, while split, player
+		// two's. The petals clamp inside their own half, and an aim outside it is clamped rather
+		// than dropped — so the projection is unclipped.
+		Engine_UiSeats.Frame seat = _spriteViews[0].Frame;
+		_reticule.CanvasHalfExtent = seat.Extent * 0.5f;
+		_reticule.UnitsPerGuestPixel = seat.UnitsPerGuestPixel(guestHeight);
+		_reticule.Place ??= guest => PlaceIn(_spriteViews[0], guest, 0u, clip: false)?.Canvas;
+		if (_reticuleTwo is not null && GodotObject.IsInstanceValid(_reticuleTwo))
+		{
+			Engine_UiSeats.Frame theirs = _spriteViews[1].Frame;
+			_reticuleTwo.CanvasHalfExtent = theirs.Extent * 0.5f;
+			_reticuleTwo.UnitsPerGuestPixel = theirs.UnitsPerGuestPixel(guestHeight);
+			_reticuleTwo.Place ??= guest => PlaceIn(_spriteViews[1], guest, 0u, clip: false)?.Canvas;
+		}
 
 		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
 
@@ -2970,15 +3154,18 @@ public partial class GameUi : Node
 			if (recCount != 14 || (record[0] >> 24) == 0u || ancCount != 3)
 			{
 				_reticule.Feed(player, null);
+				_reticuleTwo?.Feed(player, null);
 				continue;
 			}
 
-			_reticule.Feed(player, new Engine_HudReticule.Aim(
+			var aim = new Engine_HudReticule.Aim(
 				new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2])),
 				F(record[3]),
 				new Color(F(record[4]), F(record[5]), F(record[6]), F(record[7])),
 				record[8],
-				unchecked((int)record[13])));
+				unchecked((int)record[13]));
+			_reticule.Feed(player, aim);
+			_reticuleTwo?.Feed(player, aim);
 		}
 	}
 
@@ -3016,8 +3203,7 @@ public partial class GameUi : Node
 		int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
 		float guestWidth = bbCount == 2 && backbuffer[0] != 0u ? backbuffer[0] : 1280f;
 		float guestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
-		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
-		_slowTimeDial.UnitsPerGuestPixel = extent.Y / guestHeight;
+		_slowTimeDial.UnitsPerGuestPixel = _spriteViews[0].Frame.UnitsPerGuestPixel(guestHeight);
 
 		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
 
@@ -3071,6 +3257,12 @@ public partial class GameUi : Node
 				_lastRawWorldSprites = null;
 				_worldSprites.Feed(
 					new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>());
+				if (_worldSpritesTwoFed && _worldSpritesTwo is not null &&
+					GodotObject.IsInstanceValid(_worldSpritesTwo))
+				{
+					_worldSpritesTwo.Feed(System.Array.Empty<Engine_HudWorldSprites.Sprite>());
+					_worldSpritesTwoFed = false;
+				}
 			}
 
 			return;
@@ -3091,10 +3283,7 @@ public partial class GameUi : Node
 
 		// The projection's inputs live in fields and the projector is one cached delegate, so
 		// the per-frame feed allocates no closure (GC pauses stall the guest's sim thread).
-		Vector2 extent = Engine_HudLayout.CanvasExtent(window);
-		_spriteCamera = camera;
-		_spriteWindow = window;
-		_spriteUnitsPerPixel = extent.Y / window.Y;
+		bool split = SeatSpriteViews(camera, window);
 		_spriteProject ??= ProjectWorldSprite;
 
 		// Reused, not reallocated — and cleared here rather than on entry, because the early
@@ -3116,16 +3305,41 @@ public partial class GameUi : Node
 			sprites.Clear();
 		}
 
+		if (guestFrame)
+		{
+			_promptsTwo.Clear();
+			if (split)
+			{
+				int prompts = HostBridge.GetPlayerTwoPrompts(_promptsTwoBuffer);
+				for (int i = 0; i < prompts; ++i)
+				{
+					_promptsTwo.Add(_promptsTwoBuffer[i]);
+				}
+			}
+		}
+
 		foreach (HostBridge.WorldSprite sprite in rawSprites)
 		{
 			if (sprite.Pooled)
 			{
 				// A prompt on a pooled HUD element: the element draws it, Godot places it. The
 				// off-screen hero and henchman markers (types 52/53, the guest's own test in
-				// `sub_82824D60`) are pinned inside the edge.
-				Vector2? placed = sprite.Type is 52u or 53u
-					? ProjectOffScreenMarker(sprite.Anchor)
-					: ProjectWorldSprite(sprite.Anchor);
+				// `sub_82824D60`) are pinned inside the edge. On split screen the hero's marker
+				// is for player two, so it is pinned inside player two's half through player
+				// two's camera; the icons layer stands in player one's seat, so the point is
+				// carried into that seat's canvas. A use prompt answering player two (the guest's
+				// nearer-player rule, HostBridge.GetPlayerTwoPrompts) goes the same way.
+				Vector2? placed = split && sprite.Type == 52u
+					? ProjectOffScreenMarker(_spriteViews[1], sprite.Anchor) is { } theirs
+						? (Vector2?)_spriteViews[0].Frame.FromCanvas(_spriteViews[1].Frame.ToCanvas(theirs))
+						: null
+					: sprite.Type is 52u or 53u
+						? ProjectOffScreenMarker(_spriteViews[0], sprite.Anchor)
+						: split && _promptsTwo.Contains(sprite.Entity)
+							? ProjectWorldSpriteIn(_spriteViews[1], sprite.Anchor) is { } prompt
+								? _spriteViews[0].Frame.FromCanvas(_spriteViews[1].Frame.ToCanvas(prompt))
+								: null
+							: ProjectWorldSprite(sprite.Anchor);
 				if (sprite.Slot >= 0 && placed is { } canvas)
 				{
 					pooled[sprite.Slot] = canvas;
@@ -3147,6 +3361,137 @@ public partial class GameUi : Node
 		{
 			_worldSprites.Feed(sprites);
 		}
+
+		// Player two's copy is fed only while it is drawn, and emptied once when the split ends.
+		if (_worldSpritesTwo is not null && GodotObject.IsInstanceValid(_worldSpritesTwo))
+		{
+			_worldSpritesTwo.Place ??= PlaceWorldSpriteTwo;
+			if (split && rebuildSprites)
+			{
+				_worldSpritesTwo.Feed(sprites);
+				_worldSpritesTwoFed = true;
+			}
+			else if (!split && _worldSpritesTwoFed)
+			{
+				_worldSpritesTwo.Feed(System.Array.Empty<Engine_HudWorldSprites.Sprite>());
+				_worldSpritesTwoFed = false;
+			}
+		}
+	}
+
+	/// <summary>Whether player two's sprite layer holds this split's sprites.</summary>
+	private bool _worldSpritesTwoFed;
+
+	/// <summary>The things whose use prompt answers player two, read once a guest frame.</summary>
+	private readonly System.Collections.Generic.HashSet<uint> _promptsTwo = new();
+	private readonly uint[] _promptsTwoBuffer = new uint[64];
+
+	/// <summary>
+	/// One camera the world sprites are projected through, and the seat they land in: the
+	/// window's camera on the whole window, or one player's view camera and half on split screen.
+	/// </summary>
+	private sealed class SpriteView
+	{
+		public Camera3D? Camera;
+
+		/// <summary>The camera's own viewport, in pixels — what <c>UnprojectPosition</c> answers in.</summary>
+		public Vector2 Viewport;
+
+		public Engine_UiSeats.Frame Frame;
+
+		/// <summary>
+		/// Whether the scene-depth line of sight applies: a view whose depth is captured (each
+		/// view's own, Engine_FxDepthCaptureEffect.View).
+		/// </summary>
+		public bool TestSight = true;
+
+		/// <summary>The frame <see cref="View"/> and <see cref="Projection"/> were taken on.</summary>
+		public ulong ViewFrame = ulong.MaxValue;
+
+		public Transform3D View;
+
+		public Projection Projection;
+
+		/// <summary>A pixel on the camera's viewport, in the seat's own pixels.</summary>
+		public Vector2 SeatPixel(Vector2 pixel) =>
+			Viewport == Frame.Window || Viewport.X <= 0f || Viewport.Y <= 0f
+				? pixel
+				: pixel * (Frame.Window / Viewport);
+
+		/// <summary>Whether a viewport pixel lies inside the view.</summary>
+		public bool Shows(Vector2 pixel) =>
+			pixel.X >= 0f && pixel.Y >= 0f && pixel.X <= Viewport.X && pixel.Y <= Viewport.Y;
+	}
+
+	/// <summary>[0] player one's (or the whole window's), [1] player two's while split.</summary>
+	private readonly SpriteView[] _spriteViews = { new(), new() };
+
+	/// <summary>Whether the sprite layers carry seat transforms a shared screen must undo.</summary>
+	private bool _spriteLayersSeated;
+
+	/// <summary>
+	/// Points both sprite views at this frame's cameras, and seats the layers drawn through them:
+	/// on the whole window everything is exactly as it always was; split, player one's layers
+	/// (sprites, pooled icons, their reticule, the slow-time dial) take the left half and player
+	/// two's (their sprites and reticule) the right. Returns whether the screen is split.
+	/// </summary>
+	private bool SeatSpriteViews(Camera3D windowCamera, Vector2 window)
+	{
+		Camera3D? one = Engine_Views.FirstViewport is { } first && GodotObject.IsInstanceValid(first)
+			? first.GetCamera3D()
+			: null;
+		bool split = Engine_Views.Split && one is not null &&
+			Engine_Views.SecondViewport is { } second && GodotObject.IsInstanceValid(second);
+
+		SpriteView mine = _spriteViews[0];
+		mine.Camera = split ? one : windowCamera;
+		mine.Viewport = split ? (Vector2)Engine_Views.FirstViewport!.Size : window;
+		mine.Frame = Engine_UiSeats.Of(window, split ? Engine_UiSeats.Seat.PlayerOne : Engine_UiSeats.Seat.Whole);
+		mine.TestSight = true;
+
+		SpriteView theirs = _spriteViews[1];
+		theirs.Camera = split ? Engine_Views.Second : null;
+		theirs.Viewport = split ? (Vector2)Engine_Views.SecondViewport!.Size : Vector2.Zero;
+		theirs.Frame = Engine_UiSeats.Of(window, Engine_UiSeats.Seat.PlayerTwo);
+		theirs.TestSight = split;
+
+		_spriteWindow = mine.Frame.Window;
+
+		if (split || _spriteLayersSeated)
+		{
+			_spriteLayersSeated = split;
+			Seat(_worldSprites, mine.Frame, 52f);
+			Seat(_worldIcons, mine.Frame, 50f);
+			Seat(_reticule, mine.Frame, 54f);
+			Seat(_slowTimeDial, mine.Frame, 50f);
+			Seat(_worldSpritesTwo, theirs.Frame, 52f);
+			Seat(_reticuleTwo, theirs.Frame, 54f);
+			if (_reticule is not null && GodotObject.IsInstanceValid(_reticule))
+			{
+				_reticule.OnlyPlayer = split ? 0 : -1;
+			}
+		}
+
+		bool theirsShown = split && !_fullCutscene;
+		ShowLayer(_worldSpritesTwo, theirsShown);
+		ShowLayer(_reticuleTwo, theirsShown);
+		return split;
+
+		static void Seat(Node3D? layer, Engine_UiSeats.Frame frame, float z)
+		{
+			if (layer is not null && GodotObject.IsInstanceValid(layer))
+			{
+				layer.Transform = frame.Transform(z);
+			}
+		}
+
+		static void ShowLayer(Node3D? layer, bool visible)
+		{
+			if (layer is not null && GodotObject.IsInstanceValid(layer) && layer.Visible != visible)
+			{
+				layer.Visible = visible;
+			}
+		}
 	}
 
 	/// <summary>
@@ -3154,10 +3499,22 @@ public partial class GameUi : Node
 	/// IT STANDS WHEN ASKED — the sprite layer asks from its own late process, after GameWorld
 	/// has moved the camera. The anchor rides its entity's drawn body (`DrawnLead`).
 	/// </summary>
-	private Engine_HudWorldSprites.Placed? PlaceWorldSprite(Vector3 guest, uint entity)
+	private Engine_HudWorldSprites.Placed? PlaceWorldSprite(Vector3 guest, uint entity) =>
+		PlaceIn(_spriteViews[0], guest, entity, clip: true);
+
+	/// <summary><see cref="PlaceWorldSprite"/> through player two's camera, into their half.</summary>
+	private Engine_HudWorldSprites.Placed? PlaceWorldSpriteTwo(Vector3 guest, uint entity) =>
+		PlaceIn(_spriteViews[1], guest, entity, clip: true);
+
+	/// <summary>
+	/// A sprite's place in <paramref name="view"/>'s seat. A half has a neighbour, so with
+	/// <paramref name="clip"/> an anchor outside the half's view is not drawn rather than drawn
+	/// over the other player's picture; the whole window keeps no such test, as before.
+	/// </summary>
+	private Engine_HudWorldSprites.Placed? PlaceIn(SpriteView view, Vector3 guest, uint entity, bool clip)
 	{
-		if (_spriteCamera is not { } camera || !GodotObject.IsInstanceValid(camera) ||
-			_spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
+		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera) ||
+			view.Viewport.X <= 0f || view.Viewport.Y <= 0f)
 		{
 			return null;
 		}
@@ -3173,43 +3530,47 @@ public partial class GameUi : Node
 
 		// Once a frame: the view and projection the depth buffer was written with.
 		ulong frame = Engine.GetProcessFrames();
-		if (frame != _spriteViewFrame)
+		if (frame != view.ViewFrame)
 		{
-			_spriteViewFrame = frame;
-			_spriteView = camera.GlobalTransform.AffineInverse();
-			_spriteProjection = camera.GetCameraProjection();
+			view.ViewFrame = frame;
+			view.View = camera.GlobalTransform.AffineInverse();
+			view.Projection = camera.GetCameraProjection();
 		}
 
-		Vector3 view = _spriteView * world;
-		Vector4 clip = _spriteProjection * new Vector4(view.X, view.Y, view.Z, 1f);
-		if (clip.W <= 0.0001f)
+		Vector3 eye = view.View * world;
+		Vector4 clipSpace = view.Projection * new Vector4(eye.X, eye.Y, eye.Z, 1f);
+		if (clipSpace.W <= 0.0001f)
+		{
+			return null;
+		}
+
+		Vector2 pixel = camera.UnprojectPosition(world);
+		if (clip && !view.Frame.IsWhole && !view.Shows(pixel))
 		{
 			return null;
 		}
 
 		// Godot's depth buffer is REVERSED: 1 at the near plane, 0 at the far one.
-		float depth = 0.5f - (0.5f * (clip.Z / clip.W));
-		Vector2 pixel = camera.UnprojectPosition(world);
+		float depth = 0.5f - (0.5f * (clipSpace.Z / clipSpace.W));
 		return new Engine_HudWorldSprites.Placed(
-			new Vector2(
-				(pixel.X - (_spriteWindow.X * 0.5f)) * _spriteUnitsPerPixel,
-				((_spriteWindow.Y * 0.5f) - pixel.Y) * _spriteUnitsPerPixel),
-			new Vector3(pixel.X / _spriteWindow.X, pixel.Y / _spriteWindow.Y, depth));
+			view.Frame.FromPixel(view.SeatPixel(pixel)),
+			view.TestSight
+				? new Vector3(pixel.X / view.Viewport.X, pixel.Y / view.Viewport.Y, depth)
+				: new Vector3(-1f, 0f, 0f));
 	}
-
-	private ulong _spriteViewFrame = ulong.MaxValue;
-
-	private Transform3D _spriteView;
-
-	private Projection _spriteProjection;
 
 	/// <summary>
 	/// A guest world anchor in canvas units, or null when it is behind the camera — the
-	/// projector <see cref="DriveWorldSprites"/> hands to the sprite feed.
+	/// projector <see cref="DriveWorldSprites"/> hands to the sprite feed. On a half, an anchor
+	/// outside player one's view is parked far off the canvas: the pooled icon it places would
+	/// otherwise fall back to the guest's own projection, which is for the whole screen.
 	/// </summary>
-	private Vector2? ProjectWorldSprite(Vector3 guest)
+	private Vector2? ProjectWorldSprite(Vector3 guest) => ProjectWorldSpriteIn(_spriteViews[0], guest);
+
+	/// <summary><see cref="ProjectWorldSprite"/> through one view's camera, into that view's seat.</summary>
+	private static Vector2? ProjectWorldSpriteIn(SpriteView view, Vector3 guest)
 	{
-		if (_spriteCamera is null)
+		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera))
 		{
 			return null;
 		}
@@ -3217,15 +3578,18 @@ public partial class GameUi : Node
 		// The WORLD's conversion, not the model handedness: the anchor is a guest world
 		// point with its up-lift on guest Z, and `(x, y, -z)` put that lift into depth.
 		Vector3 world = GameWorld.GuestToGodot(guest);
-		if (_spriteCamera.IsPositionBehind(world))
+		if (camera.IsPositionBehind(world))
 		{
 			return null;
 		}
 
-		Vector2 pixel = _spriteCamera.UnprojectPosition(world);
-		return new Vector2(
-			(pixel.X - (_spriteWindow.X * 0.5f)) * _spriteUnitsPerPixel,
-			((_spriteWindow.Y * 0.5f) - pixel.Y) * _spriteUnitsPerPixel);
+		Vector2 pixel = camera.UnprojectPosition(world);
+		if (!view.Frame.IsWhole && !view.Shows(pixel))
+		{
+			return new Vector2(100000f, 100000f);
+		}
+
+		return view.Frame.FromPixel(view.SeatPixel(pixel));
 	}
 
 	/// <summary>
@@ -3234,35 +3598,35 @@ public partial class GameUi : Node
 	/// `sub_82824BD0`, which pins the point inside the viewport less 10% (plus 10 px) at the
 	/// left, 10% plus 40 px at the top, and 9% (plus 10 px) right / 9% bottom, in its 720-line
 	/// pixels. Behind the camera the guest pushes the point outward before clamping; its exact
-	/// vector math is not reproduced — the reflected point is extended to the edge instead.
+	/// vector math is not reproduced — the reflected point is extended to the edge instead. On
+	/// a half, "the screen" is that half.
 	/// </summary>
-	private Vector2? ProjectOffScreenMarker(Vector3 guest)
+	private Vector2? ProjectOffScreenMarker(SpriteView view, Vector3 guest)
 	{
-		if (_spriteCamera is null || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
+		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera) ||
+			view.Viewport.X <= 0f || view.Viewport.Y <= 0f)
 		{
 			return null;
 		}
 
 		Vector3 world = GameWorld.GuestToGodot(guest);
-		Transform3D camera = _spriteCamera.GlobalTransform;
-		Vector3 local = camera.AffineInverse() * world;
+		Transform3D eye = camera.GlobalTransform;
+		Vector3 local = eye.AffineInverse() * world;
 		bool behind = local.Z > -0.01f;
 		if (behind)
 		{
 			local.Z = -Mathf.Max(Mathf.Abs(local.Z), 0.01f);
-			world = camera * local;
+			world = eye * local;
 		}
 
-		Vector2 pixel = _spriteCamera.UnprojectPosition(world);
-		var canvas = new Vector2(
-			(pixel.X - (_spriteWindow.X * 0.5f)) * _spriteUnitsPerPixel,
-			((_spriteWindow.Y * 0.5f) - pixel.Y) * _spriteUnitsPerPixel);
+		Vector2 pixel = camera.UnprojectPosition(world);
+		Vector2 canvas = view.Frame.FromPixel(view.SeatPixel(pixel));
 		if (behind && canvas.LengthSquared() > 0.0001f)
 		{
 			canvas = canvas.Normalized() * 100000f;
 		}
 
-		Vector2 extent = Engine_HudLayout.CanvasExtent(_spriteWindow);
+		Vector2 extent = view.Frame.Extent;
 		float unit = extent.Y / 720f;
 		float left = (-extent.X * 0.5f) + (extent.X * 0.1f) + (10f * unit);
 		float right = (extent.X * 0.5f) - (extent.X * 0.09f) - (10f * unit);
@@ -3271,12 +3635,9 @@ public partial class GameUi : Node
 		return new Vector2(Mathf.Clamp(canvas.X, left, right), Mathf.Clamp(canvas.Y, bottom, top));
 	}
 
-	/// <summary>This frame's projection inputs — see <see cref="ProjectWorldSprite"/>.</summary>
-	private Camera3D? _spriteCamera;
-
+	/// <summary>Player one's seat window — the whole window, or the left half while split — for
+	/// the layers that size themselves off it. See <see cref="SeatSpriteViews"/>.</summary>
 	private Vector2 _spriteWindow;
-
-	private float _spriteUnitsPerPixel;
 
 	private System.Func<Vector3, Vector2?>? _spriteProject;
 
@@ -3799,6 +4160,7 @@ public partial class GameUi : Node
 				}
 
 				_hud!.ElementActive = active;
+				ShareHudFeed();
 			}
 
 			_hudFeedTicks += System.Diagnostics.Stopwatch.GetTimestamp() - began;
@@ -4318,6 +4680,14 @@ public partial class GameUi : Node
 			tabs = 0xFFFFFFFFu;
 		}
 
+		// Fable 3's Kick: the online host's, while a partner stands (game+0x11C == 1 in the guest).
+		bool kick = CoopSession.Side == CoopSession.Role.Host && CoopSession.PeerStanding &&
+			!CoopSession.LocalCoop;
+		if (_pauseMenu.SetAvailable(Engine_PauseMenu.KickRow, kick))
+		{
+			_pauseView.Refresh();
+		}
+
 		if (tabs != _pauseTabsMask)
 		{
 			_pauseTabsMask = tabs;
@@ -4385,6 +4755,24 @@ public partial class GameUi : Node
 			GD.Print($"[game-ui] pause entry '{_pauseMenu.Highlighted?.Name}' posted " +
 				$"'{Engine_PauseMenu.SavingCommandPrefix}{saving}' and armed the quit to the " +
 				"desktop; the app ends when the guest reaches the front end");
+			return true;
+		}
+
+		if (action.StartsWith(Engine_PauseMenu.CoopCommandPrefix, System.StringComparison.Ordinal))
+		{
+			// Fable 3's Leave / Kick: the pump runs the guest's own answer on its tick thread.
+			string coop = action[Engine_PauseMenu.CoopCommandPrefix.Length..] switch
+			{
+				"leave" => "CoopLeave",
+				"kick" => "CoopKick",
+				_ => string.Empty,
+			};
+			if (coop.Length != 0)
+			{
+				HostBridge.PostFrontEndAction(coop);
+				GD.Print($"[game-ui] pause co-op row '{_pauseMenu.Highlighted?.Name}' posted '{coop}'");
+			}
+
 			return true;
 		}
 
@@ -5277,6 +5665,9 @@ public partial class GameUi : Node
 	private void ResetCoopHero(string why)
 	{
 		HostBridge.PostFrontEndAction("CoopHeroReset");
+		_coopPartnerWaiting = false;
+		_coopExitUseTaken = 0u;
+		_coopExitRequestRestates = 0;
 		Engine_UiPageProviders.CoopOwnHero = false;
 		Engine_UiPageProviders.CoopHeroAvailable = false;
 		Engine_UiPageProviders.CoopPlayerOneName = string.Empty;
@@ -5318,6 +5709,10 @@ public partial class GameUi : Node
 			: _coopSideSeen != CoopSession.Side
 				? $"the side changed ({_coopSideSeen} → {CoopSession.Side})"
 			: null;
+
+		// The same transitions, told to the player (GameUiCoopNotices) — before the reset drops
+		// what they need.
+		TellCoopTransitions(_coopPhaseSeen);
 		if (reset is not null)
 		{
 			ResetCoopHero(reset);
@@ -5460,6 +5855,37 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			if (message.StartsWith(CoopExitUsePrefix, System.StringComparison.Ordinal))
+			{
+				// The joiner used an exit: `seq:x:y:z`, the exit's guest position. The host's exit
+				// update fires the exit standing there, once per sequence.
+				string[] parts = message[CoopExitUsePrefix.Length..].Split(':');
+				if (role == 1u && parts.Length == 4 &&
+					uint.TryParse(parts[0], System.Globalization.NumberStyles.Integer,
+						System.Globalization.CultureInfo.InvariantCulture, out uint sequence) &&
+					sequence != _coopExitUseTaken)
+				{
+					_coopExitUseTaken = sequence;
+					HostBridge.PostFrontEndAction($"CoopExitUse:{parts[1]}:{parts[2]}:{parts[3]}");
+				}
+
+				continue;
+			}
+
+			if (message.StartsWith(CoopExitWaitingPrefix, System.StringComparison.Ordinal))
+			{
+				// The partner stands at an exit waiting for this machine's player: told once as
+				// it begins (Fable 3's TEXT_..._BLOCKED_BY_PLAYER_DISTANCE_REMOTE).
+				bool waiting = message[CoopExitWaitingPrefix.Length..] == "1";
+				if (waiting && !_coopPartnerWaiting)
+				{
+					_boxes.InfoBoxEx(ExitRefusedBox, 5f, "Your partner is waiting for you at the exit.");
+				}
+
+				_coopPartnerWaiting = waiting;
+				continue;
+			}
+
 			if (message.StartsWith("CoopHeroHeld:", System.StringComparison.Ordinal))
 			{
 				// The host's held weapons as net ids; the pump attaches the replicas here.
@@ -5534,6 +5960,28 @@ public partial class GameUi : Node
 
 		// THE MODS RECORD FIRST, both ways: the peer compares it with its own the moment it stands.
 		SendCoopMods();
+
+		// Whether this machine's player waits at an exit for the partner (the travel rule).
+		HostBridge.CoopSend(CoopExitWaitingPrefix + (HostBridge.ExitWaiting() ? "1" : "0"));
+
+		// THE JOINER'S EXIT USE, restated for a few seconds so a dropped datagram costs nothing; the
+		// host fires each sequence once.
+		if (role == 2u)
+		{
+			(uint sequence, float x, float y, float z) = HostBridge.ExitRequest();
+			if (sequence != 0u && sequence != _coopExitRequestSeq)
+			{
+				_coopExitRequestSeq = sequence;
+				_coopExitRequestRestates = CoopExitRequestRestates;
+			}
+
+			if (_coopExitRequestRestates > 0)
+			{
+				--_coopExitRequestRestates;
+				HostBridge.CoopSend(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+					$"{CoopExitUsePrefix}{sequence}:{x:R}:{y:R}:{z:R}"));
+			}
+		}
 
 		// THE BIT IS THE JOINER'S TO STATE; THE KIT GOES BOTH WAYS. The joiner's kit dresses
 		// player two on the host; the host's kit dresses player one on the joiner, whose copy of
@@ -5637,6 +6085,22 @@ public partial class GameUi : Node
 
 	/// <summary>The host's request for a body, `=1` own hero / `=0` henchman; bare, an older peer's flip.</summary>
 	private const string CoopHeroToggleMessage = "coop.hero.toggle";
+
+	/// <summary>`coop.exit.waiting=0|1`: the sender's player waits at a region exit for the partner.</summary>
+	private const string CoopExitWaitingPrefix = "coop.exit.waiting=";
+
+	/// <summary>The partner's last stated <see cref="CoopExitWaitingPrefix"/>.</summary>
+	private bool _coopPartnerWaiting;
+
+	/// <summary>`coop.exit.use=seq:x:y:z`: the joiner used the region exit at that guest position.</summary>
+	private const string CoopExitUsePrefix = "coop.exit.use=";
+
+	/// <summary>Restatements of one exit use (0.5 s apart).</summary>
+	private const int CoopExitRequestRestates = 6;
+
+	private uint _coopExitRequestSeq;
+	private int _coopExitRequestRestates;
+	private uint _coopExitUseTaken;
 
 	/// <summary>How often the joiner restates it. Often enough that a drop is invisible.</summary>
 	private const double CoopHeroRestateSeconds = 0.5;
@@ -6153,6 +6617,8 @@ public partial class GameUi : Node
 			_hud.Window = GetViewport().GetVisibleRect().Size;
 		}
 
+		SeatPlayerUi(GetViewport().GetVisibleRect().Size);
+
 		// The toast works in display pixels; the mount maps them onto the canvas — see
 		// BuildAchievementToast for why the two stay in different units.
 		if (_toast is not null && _toastMount is not null &&
@@ -6232,6 +6698,7 @@ public partial class GameUi : Node
 			GD.Print($"[menu-model] the g_Menu capture has recorded {recorded} statement(s), " +
 				$"{pending} pending, {dropped} dropped — applied {_menuModel.Applied}");
 		}
+		TellExitRefused();
 		_boxes.Tick(delta);
 
 		// THE HUD'S TOPBOX AND TIMING METER, stated by name for the slide fold above: the
@@ -6257,6 +6724,17 @@ public partial class GameUi : Node
 			bool mine = !CoopSession.PeerStanding || CoopSession.LocalCoop || meter.Mode == 3 ||
 				(CoopSession.IsClient ? meter.ArmedB : meter.ArmedA);
 			Engine_UiHudExpressionMeter.Publish(meter, _hud, mine);
+
+			// ON SPLIT SCREEN THE METER STANDS IN THE HALF OF WHOEVER ARMED IT: pip A is the
+			// hero's, pip B the henchman's, both is both (`sub_823D0E10`). A meter with no pip
+			// (a job's bar fill) is player one's screen, as the guest's one HUD is.
+			int armed = (meter.ArmedA ? 1 : 0) | (meter.ArmedB ? 2 : 0);
+			_hud.ExpressionPlayers = armed == 0 ? 1 : armed;
+			if (Engine_Views.Split && _hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
+			{
+				_hudTwo.ExpressionPlayers = _hud.ExpressionPlayers;
+				Engine_UiHudExpressionMeter.Publish(meter, _hudTwo, mine);
+			}
 		}
 
 		if (guestFrame && _boxes.GuestMessageBox is not 0u and uint stated &&
@@ -6287,6 +6765,7 @@ public partial class GameUi : Node
 		}
 		DriveWorldIcons(guestFrame);
 		DriveCoopHeroChannel(delta);
+		DriveCoopNotices(delta);
 		if (guestFrame) DriveOwnedScreenProvider();
 		if (guestFrame) _books.Drive(_drawn, IsRevealed);
 		if (guestFrame) _spells.Follow(IsRevealed);
@@ -7082,15 +7561,15 @@ public partial class GameUi : Node
 				break;
 
 			case "join-allow":
-				Engine_UiNetworkSource.ForgetJoinRequest(argument);
-				Answer(NetBridge.JoinRequestReply(argument, true),
+				WithdrawJoinQuestion(argument);
+				Answer(Engine_UiJoinRequests.Answer(argument, true),
 					"Invite sent through Discord.\n\nThe game joins when they accept it.",
 					"That ask could not be answered; it may have lapsed.");
 				break;
 
 			case "join-deny":
-				Engine_UiNetworkSource.ForgetJoinRequest(argument);
-				Answer(NetBridge.JoinRequestReply(argument, false),
+				WithdrawJoinQuestion(argument);
+				Answer(Engine_UiJoinRequests.Answer(argument, false),
 					"Declined.", "That ask could not be answered; it may have lapsed.");
 				break;
 

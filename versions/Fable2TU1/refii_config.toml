@@ -11616,3 +11616,164 @@
 0x8217EB08 = { name = "rex_XboxLive_Instance", size = 0x7C }
 0x822EA848 = { name = "rex_XboxLive_RestoreAfterLeave", size = 0x7C }
 0x821E4250 = { name = "rex_GDBManager_FindEntryByHash", size = 0x64 }
+0x827E1178 = { name = "rex_CECVillager_OnUse" }
+0x82481760 = { name = "rex_lhCameraManager_ActivateCamera" }
+0x82481670 = { name = "rex_lhCameraManager_SpawnCameraEntities" }
+0x82211598 = { name = "rex_lhCamera_CurrentBlock" }
+0x822141A8 = { name = "rex_lhVisibility_Refresh" }
+0x822A1710 = { name = "rex_lhCreature_LodTier" }
+0x82211DF8 = { name = "rex_lhAnim_WithinLodDistance" }
+0x827C1190 = { name = "rex_CECCreatureGenerator_InCreateRange" }
+0x827C12C0 = { name = "rex_CECCreatureGenerator_OutOfDestroyRange" }
+0x821B9258 = { name = "rex_lhCameraManager_Update" }
+0x821ED378 = { name = "rex_CECLevelExit_Update" }
+0x8283BEF8 = { name = "rex_CECLevelExit_Fire" }
+0x82821E88 = { name = "rex_CECOnActionUse_Update" }
+0x823DD318 = { name = "rex_lhPromptManager_HoldInput" }
+0x821C5BB0 = { name = "rex_lhPromptManager_Update" }
+
+# Co-op heroes (src/hooks/src/coop_hero_hooks.cpp): each hook runs before its instruction and
+# skips one henchman test. Same offsets in both builds.
+[[midasm_hook]]
+name = "RefiiCoopUseByRealUser"
+address = 0x82821B88
+jump_address = 0x82821CF4
+
+[[midasm_hook]]
+name = "RefiiCoopShopForLocalPlayerTwo"
+address = 0x827E12F0
+jump_address_on_true = 0x827E1324
+
+[[midasm_hook]]
+name = "RefiiCoopExperienceOwnPool"
+address = 0x8256DCBC
+jump_address = 0x8256DE68
+
+[[midasm_hook]]
+name = "RefiiCoopGoldOwnPurse"
+address = 0x8242E73C
+jump_address = 0x8242E93C
+
+[[midasm_hook]]
+name = "RefiiCoopRenownOwnPool"
+address = 0x824D6450
+jump_address = 0x824D6630
+
+[[midasm_hook]]
+name = "RefiiCoopReactToPlayerTwo"
+address = 0x8278D998
+jump_address = 0x8278D9A0
+
+# Each online player their own camera; the world alive around both (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopOwnCameraUpdate"
+address = 0x821B92B0
+registers = ["r26"]
+jump_address_on_true = 0x821B930C
+
+[[midasm_hook]]
+name = "RefiiCoopActivateCameraAsJoiner"
+address = 0x824817BC
+jump_address_on_true = 0x824817EC
+
+[[midasm_hook]]
+name = "RefiiCoopOwnLiveCamera"
+address = 0x82265FB0
+jump_address = 0x82266004
+
+[[midasm_hook]]
+name = "RefiiCoopNoCameraSend"
+address = 0x821B922C
+jump_address_on_true = 0x821B9230
+
+[[midasm_hook]]
+name = "RefiiCoopNoCameraReceive"
+address = 0x82332604
+registers = ["r1"]
+jump_address = 0x82334954
+
+[[midasm_hook]]
+name = "RefiiCoopLodPair"
+address = 0x822906A0
+registers = ["v11", "v12"]
+
+[[midasm_hook]]
+name = "RefiiCoopLodCamera"
+address = 0x822906B8
+
+[[midasm_hook]]
+name = "RefiiCoopLodNearer"
+address = 0x822906D0
+registers = ["f1", "v127"]
+after_instruction = true
+
+# Local split screen: player two's own camera (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopSplitPlayerCamera"
+address = 0x823899A4
+registers = ["r31"]
+jump_address_on_true = 0x823899E0
+
+[[midasm_hook]]
+name = "RefiiCoopSplitPlayerCameraEntities"
+address = 0x82389F6C
+registers = ["r27"]
+jump_address_on_true = 0x82389FA4
+
+[[midasm_hook]]
+name = "RefiiCoopNoCameraPostSend"
+address = 0x82175EC8
+jump_address = 0x82175ECC
+
+# Travel: a region exit waits for both players (coop_hero_hooks.cpp). Before `clrlwi r8,r11,24`,
+# r11 = the hero is inside the exit's radius.
+# Before `cmplwi r11,0; bne return` at the exit update's joiner test (r11 = this machine is the
+# online joiner): a joiner runs an interaction exit for its own player.
+[[midasm_hook]]
+name = "RefiiCoopJoinerRunsExit"
+address = 0x821ED3C4
+registers = ["r11"]
+
+# Before `mr r22,r3` after the hero getter: the player an interaction exit tests (the nearer).
+[[midasm_hook]]
+name = "RefiiCoopExitTester"
+address = 0x821ED42C
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiCoopExitWaitsForPartner"
+address = 0x821ED4D4
+registers = ["r11"]
+
+# Interaction: use prompts and hold-to-use answer player two (coop_hero_hooks.cpp).
+# Before `mr r31,r3` after the hero getter: the player a usable thing tests.
+[[midasm_hook]]
+name = "RefiiCoopPromptForNearerPlayer"
+address = 0x82822520
+registers = ["r3"]
+
+# Before `li r11,1` in the prompt manager's A handler (r31 = the press is player record 1's).
+[[midasm_hook]]
+name = "RefiiCoopHoldByEitherPlayer"
+address = 0x823DD42C
+registers = ["r31"]
+jump_address_on_true = 0x823DD338
+
+# Before `mr r31,r3` after the hero getter in the prompt manager's update: who a full hold uses as.
+[[midasm_hook]]
+name = "RefiiCoopHoldUsesHolder"
+address = 0x821C6018
+registers = ["r3"]
+
+# The outbound queue replaces a pending node without the shipped double free (coop_player_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiNetQueueReplaceOnce"
+address = 0x823359D4
+registers = ["r1", "r31"]
+jump_address_on_true = 0x823359F8
+
+# A partner's pause leaves this player roaming (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopPartnerPauseRoams"
+address = 0x8232C2E8
+jump_address_on_true = 0x8232C378

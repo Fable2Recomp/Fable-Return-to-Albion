@@ -38,6 +38,9 @@
 #include "core/rex_payload_bridge.h"
 #include "hooks/ppc_externs.h"
 
+/// The local co-op screen mode (guest_tick_pump.cpp).
+extern "C" int RefiiCoopSplitScreen(void);
+
 PPC_EXTERN_FUNC(rex_lua_pushcclosure);
 PPC_EXTERN_FUNC(rex_lua_getfield);
 PPC_EXTERN_FUNC(rex_lua_setfield);
@@ -458,6 +461,11 @@ REFII_LUA_NATIVE(NativePlayerHero) {
   RESULTS(1);
 }
 
+REFII_LUA_NATIVE(NativeSplitScreen) {
+  lua.PushBoolean(RefiiCoopSplitScreen() != 0);
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativeLocalHero) {
   lua.PushHandle(refii_mod_local_hero(lua.base));
   RESULTS(1);
@@ -690,6 +698,7 @@ Native g_natives[] = {
     {"level_name", &NativeLevelName, 0},
     {"player_hero", &NativePlayerHero, 0},
     {"local_hero", &NativeLocalHero, 0},
+    {"split_screen", &NativeSplitScreen, 0},
     {"renown", &NativeRenown, 0},
     {"morality", &NativeMorality, 0},
     {"purity", &NativePurity, 0},

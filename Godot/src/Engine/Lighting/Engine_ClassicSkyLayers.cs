@@ -25,6 +25,12 @@ public static class Engine_ClassicSkyLayers
     /// <summary>The global the glare materials read: texel 0 the sun's visibility, texel 1 the moon's.</summary>
     public const string VisibilityName = "fable_celestial_visibility";
 
+    /// <summary>Player two's on split screen: each view's chain counts its own (the glares pick by the second view's layer).</summary>
+    public const string VisibilitySecondName = "fable_celestial_visibility_second";
+
+    /// <summary>The visibility global view <paramref name="view"/>'s post chain publishes.</summary>
+    public static string VisibilityFor(int view) => view == 0 ? VisibilityName : VisibilitySecondName;
+
     /// <summary>The title's half-res target the query counts were measured on.</summary>
     public const float QueryPixels = 640f * 360f;
 
@@ -54,8 +60,41 @@ public static class Engine_ClassicSkyLayers
     private static readonly Frame _published = new();
     private static bool _any;
 
-    /// <summary>The visibility texture once the post chain made it.</summary>
-    public static Texture2Drd? Visibility { get; set; }
+    /// <summary>The first view's visibility texture once its post chain made it.</summary>
+    public static Texture2Drd? Visibility { get; private set; }
+
+    private static readonly Texture2Drd?[] _visibilities = new Texture2Drd?[2];
+    private static ImageTexture? _placeholder;
+
+    /// <summary>A view's chain publishes its visibility texture into the view's global. Main thread.</summary>
+    public static void PublishVisibility(int view, Texture2Drd texture)
+    {
+        EnsureRegistered();
+        _visibilities[view] = texture;
+        if (view == 0)
+        {
+            Visibility = texture;
+        }
+        RenderingServer.GlobalShaderParameterSet(VisibilityFor(view), texture);
+    }
+
+    /// <summary>
+    /// A chain going away puts its view's global back on the placeholder (the second view's chain
+    /// goes with every rejoin, and the glares bind both globals).
+    /// </summary>
+    public static void WithdrawVisibility(int view, Texture2Drd texture)
+    {
+        if (view is < 0 or > 1 || !ReferenceEquals(_visibilities[view], texture))
+        {
+            return;
+        }
+        _visibilities[view] = null;
+        if (view == 0)
+        {
+            Visibility = null;
+        }
+        RenderingServer.GlobalShaderParameterSet(VisibilityFor(view), _placeholder ?? default(Variant));
+    }
 
     /// <summary>States this frame's draws. Main thread.</summary>
     public static void Publish(in Sprite beams, in Sprite bloom, in Sprite disc, float sunDiscSize, float moonSize)
@@ -91,7 +130,7 @@ public static class Engine_ClassicSkyLayers
 
     private static bool _registered;
 
-    /// <summary>Registers the visibility global (a placeholder until the chain publishes). Main thread.</summary>
+    /// <summary>Registers the visibility globals (a placeholder until each view's chain publishes). Main thread.</summary>
     public static void EnsureRegistered()
     {
         // Once per process: the server's global list is editor-only and reads empty in the game.
@@ -102,7 +141,10 @@ public static class Engine_ClassicSkyLayers
         _registered = true;
         var image = Image.CreateEmpty(2, 1, false, Image.Format.Rf);
         image.Fill(new Color(1f, 0f, 0f));
+        _placeholder = ImageTexture.CreateFromImage(image);
         RenderingServer.GlobalShaderParameterAdd(VisibilityName,
-            RenderingServer.GlobalShaderParameterType.Sampler2D, ImageTexture.CreateFromImage(image));
+            RenderingServer.GlobalShaderParameterType.Sampler2D, _placeholder);
+        RenderingServer.GlobalShaderParameterAdd(VisibilitySecondName,
+            RenderingServer.GlobalShaderParameterType.Sampler2D, _placeholder);
     }
 }

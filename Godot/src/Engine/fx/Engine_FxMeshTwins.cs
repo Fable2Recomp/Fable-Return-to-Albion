@@ -151,7 +151,10 @@ public partial class Engine_FxMeshTwins : Node
             // Alpha x the twin's distance fade.
             float alpha = _buffer[at + 19];
             float full = _buffer[at + 20], slope = _buffer[at + 21], end = _buffer[at + 22];
-            float distance = eye.DistanceTo(Guest(Vector3.Zero));
+            // The fade is the node's: on split screen the nearer player's eye decides it.
+            float distance = Refii.Models.Engine_ClassicViews.Count > 1
+                ? Refii.Models.Engine_ClassicViews.NearestEyeDistance(origin)
+                : eye.DistanceTo(Guest(Vector3.Zero));
             if (end > 0f && distance > end)
             {
                 alpha = 0f;

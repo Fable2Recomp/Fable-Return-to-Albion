@@ -67,6 +67,34 @@ public static class Engine_ClassicRegisters
         public const int LightScreenSpaceShadowMask = 112;
         public const int LightSpotShadowMask = 114;
         public const int LightBlockEnd = 116;
+
+        /// <summary>
+        /// The host's: a soft particle's g_InverseViewProjection (four rows) for the view drawing it,
+        /// which the composition reads in place of the material's (Engine_ClassicViews). No title PS
+        /// reads past c123.
+        /// </summary>
+        public const int HostInverseViewProjection = 224;
+        /// <summary>The host's: the cloud layers' g_ViewerPosition (eye, 1), g_ViewerDirection (forward, 0) and g_LightPosition for the view.</summary>
+        public const int HostCloudViewer = 228;
+        public const int HostCloudDirection = 229;
+        public const int HostCloudLight = 230;
+        /// <summary>The host's: the sun glare's c244 for the view (its facing term is the view's camera's).</summary>
+        public const int HostSunGlareColour = 231;
+
+        /// <summary>
+        /// The registers that belong to the view, not the frame: the screen addressing, the depth
+        /// terms, the eye, the sun cascades fitted to it, the stipple's target size and the host's
+        /// view-space by-id params. On split screen each view holds its own (Engine_ClassicConstants).
+        /// </summary>
+        public static readonly int[] ViewRegisters =
+        {
+            TileOffsetSize, PerspectiveConstants, EyePosition,
+            DirectionalLightShadowTransform0, DirectionalLightShadowTransform0 + 1, DirectionalLightShadowTransform0 + 2, DirectionalLightShadowTransform0 + 3,
+            DirectionalLightShadowTransform1, DirectionalLightShadowTransform1 + 1, DirectionalLightShadowTransform1 + 2, DirectionalLightShadowTransform1 + 3,
+            AlphaStippleScreenUVFactor,
+            HostInverseViewProjection, HostInverseViewProjection + 1, HostInverseViewProjection + 2, HostInverseViewProjection + 3,
+            HostCloudViewer, HostCloudDirection, HostCloudLight, HostSunGlareColour,
+        };
     }
 
     /// <summary>Vertex-stage registers (<c>xr_vs_constants</c>).</summary>
@@ -104,6 +132,25 @@ public static class Engine_ClassicRegisters
         public const int AtmosphereSunDirection = 110;
         public const int AtmosphereRanges = 111;
         public const int AtmosphereCloseFogColour = 112;
+
+        /// <summary>The host's: a decal's g_MatViewProj (four rows, guest world to the view's clip) for the view drawing it.</summary>
+        public const int HostDecalViewProjection = 224;
+        /// <summary>The host's: the view camera's z axis, guest axes (a camera-aligned trail's g_CameraZVector).</summary>
+        public const int HostCameraZ = 228;
+        /// <summary>The host's: the eye, w = 1 (the billboard cards' g_CameraPos).</summary>
+        public const int HostBillboardEye = 229;
+        /// <summary>The host's: the view's horizontal forward, normalised (the billboard cards' g_CameraZVector).</summary>
+        public const int HostBillboardForward = 230;
+        /// <summary>The host's: the eye, w = 0 (the stars' g_CamPos).</summary>
+        public const int HostStarsEye = 231;
+
+        /// <summary>The registers that belong to the view (see Ps.ViewRegisters): the eye and the particle camera.</summary>
+        public static readonly int[] ViewRegisters =
+        {
+            EyePosition, CameraPosition, CameraUpVector, CameraRightVector,
+            HostDecalViewProjection, HostDecalViewProjection + 1, HostDecalViewProjection + 2, HostDecalViewProjection + 3,
+            HostCameraZ, HostBillboardEye, HostBillboardForward, HostStarsEye,
+        };
     }
 
     /// <summary>Lights the block holds per draw.</summary>

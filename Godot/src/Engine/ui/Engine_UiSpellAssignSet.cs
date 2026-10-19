@@ -25,6 +25,23 @@ public sealed class Engine_UiSpellAssignSet
 	/// <summary>The presentation the QUICK WHEEL's copy is authored in.</summary>
 	public const string WheelPresentation = "hud";
 
+	/// <summary>
+	/// The window the wheel's seat resolves against, fed by the owner. On split screen the wheel
+	/// stands in the half of the player whose flag opened it (<see cref="WheelPlayer"/>), laid out
+	/// as it is on a whole screen of that size; on a shared screen it is where it always was.
+	/// </summary>
+	public Vector2 Window { get; set; }
+
+	/// <summary>
+	/// Whose spells wheel is up, as the guest states it: 1 player one (`QM+36`), 2 player two
+	/// (`QM+37`), 0 none. Both up reads as player one, the cursor's own rule.
+	/// </summary>
+	public int WheelPlayer =>
+		_spells.WheelOpen ? 1 : _spells.WheelOpenPlayerTwo ? 2 : 0;
+
+	/// <summary>Whether the wheel's node carries a seat transform a shared screen must undo.</summary>
+	private bool _wheelSeated;
+
 	/// <summary>The owned assignment widget, one per host — the blade and the quick wheel.</summary>
 	private Engine_UiSpellAssign? _wheel;
 
@@ -183,6 +200,16 @@ public sealed class Engine_UiSpellAssignSet
 				_wheel.Player = player;
 				_wheel.FollowGuest(Engine_UiSource.Current.GetSpellWheel(player));
 				_wheel.SetLive(_spells);
+
+				// In its owner's half while split. The widget's own node is untransformed (its
+				// clone carries the HUD's authored canvas transform), so the seat goes on it.
+				Engine_UiSeats.Frame seat = Engine_UiSeats.Of(
+					Window, Engine_UiSeats.For(player, Refii.Core.Engine_Views.Split));
+				if (!seat.IsWhole || _wheelSeated)
+				{
+					_wheel.Transform = seat.IsWhole ? Transform3D.Identity : seat.Transform(0f);
+					_wheelSeated = !seat.IsWhole;
+				}
 			}
 			else
 			{

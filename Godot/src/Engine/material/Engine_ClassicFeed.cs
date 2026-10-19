@@ -41,36 +41,23 @@ public static class Engine_ClassicFeed
 
     /// <summary>Writes this frame's constants. Main thread, once a frame, before Publish.</summary>
     /// <param name="camera">The drawn camera, which follows the guest's stated one.</param>
+    /// <remarks>
+    /// The registers that belong to the view (<see cref="Engine_ClassicRegisters.Ps.ViewRegisters"/>)
+    /// are written once per view into its own block (<see cref="Engine_ClassicViews"/>); view 0's
+    /// camera is <paramref name="camera"/> on a single view.
+    /// </remarks>
     public static void Pump(Camera3D? camera)
     {
         ++_frames;
 
         if (camera is not null)
         {
-            Vector3 eye = ToGuest(camera.GlobalPosition);
-            // PS c19.w is 0 and VS c9.w is 1 in the title's own banks (REFII_GUEST_RENDER run).
-            Ps(Engine_ClassicRegisters.Ps.EyePosition, eye.X, eye.Y, eye.Z, 0f);
-            Vs(Engine_ClassicRegisters.Vs.EyePosition, eye.X, eye.Y, eye.Z, 1f);
-
-            // g_PerspectiveConstants: the projection's m[2][2] and m[3][2], the D3D depth
-            // terms, from the camera's near and far.
-            float near = camera.Near, far = camera.Far;
-            float q = far / MathF.Max(far - near, 1e-6f);
-            Ps(Engine_ClassicRegisters.Ps.PerspectiveConstants, q, -near * q, 0f, 0f);
-
-            // PS c0 g_TileOffsetSize: the screen-space shadow mask's (and screen textures')
-            // addressing, pixel * (1/W, 1/H) at the internal 3D resolution the mask is drawn at.
-            Vector2 screen = Engine_ClassicScreenShadow.Size is { X: > 0, Y: > 0 } mask
-                ? new Vector2(mask.X, mask.Y)
-                : camera.GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280f, 720f);
-            Ps(Engine_ClassicRegisters.Ps.TileOffsetSize, 0f, 0f, 1f / MathF.Max(screen.X, 1f), 1f / MathF.Max(screen.Y, 1f));
-
-            // The particle draw's camera (`sub_821CA108`): position, and the view's right and
-            // up columns with w = 10, in the guest's axes.
-            Vector3 right = ToGuest(camera.GlobalBasis.X), up = ToGuest(camera.GlobalBasis.Y);
-            Vs(Engine_ClassicRegisters.Vs.CameraPosition, eye.X, eye.Y, eye.Z, 1f);
-            Vs(Engine_ClassicRegisters.Vs.CameraRightVector, right.X, right.Y, right.Z, 10f);
-            Vs(Engine_ClassicRegisters.Vs.CameraUpVector, up.X, up.Y, up.Z, 10f);
+            int views = Engine_ClassicViews.Count;
+            for (int v = 0; v < views; v++)
+            {
+                Camera3D view = views == 1 ? camera : Engine_ClassicViews.Camera(v) ?? camera;
+                ViewConstants(v, view, views == 1);
+            }
         }
 
         float time = Refii.Level.Engine_GuestAtmosphere.Seconds();
@@ -162,8 +149,9 @@ public static class Engine_ClassicFeed
         }
 
         // PS c50 g_AlphaStippleScreenUVFactor (`sub_82A73050`): the scene colour target's size
-        // over 32, so the 32-texel stipple tiles the screen pixel for pixel.
-        if (Godot.Engine.GetMainLoop() is SceneTree tree)
+        // over 32, so the 32-texel stipple tiles the screen pixel for pixel. A split view's target
+        // is its own viewport (ViewConstants).
+        if (Engine_ClassicViews.Count == 1 && Godot.Engine.GetMainLoop() is SceneTree tree)
         {
             Vector2 size = tree.Root.GetVisibleRect().Size;
             Ps(Engine_ClassicRegisters.Ps.AlphaStippleScreenUVFactor, size.X / 32f, size.Y / 32f, 0f, 0f);
@@ -180,6 +168,17 @@ public static class Engine_ClassicFeed
             Refii.Level.Engine_ClassicClouds.Pump(
                 new Vector3(-eye.X, eye.Z, eye.Y), new Vector3(-forward.X, forward.Z, forward.Y),
                 new Vector3(_frame[132], _frame[133], _frame[134]), new Vector3(_frame[136], _frame[137], _frame[138]));
+            for (int v = 1; v < Engine_ClassicViews.Count; v++)
+            {
+                if (Engine_ClassicViews.Camera(v) is { } viewCamera)
+                {
+                    Vector3 viewEye = viewCamera.GlobalPosition;
+                    Vector3 viewForward = -viewCamera.GlobalTransform.Basis.Z;
+                    Refii.Level.Engine_ClassicClouds.PumpView(v,
+                        new Vector3(-viewEye.X, viewEye.Z, viewEye.Y), new Vector3(-viewForward.X, viewForward.Z, viewForward.Y),
+                        new Vector3(_frame[136], _frame[137], _frame[138]));
+                }
+            }
         }
 
         // The atmosphere block, five registers in both stages, and the two tables built from it.
@@ -247,6 +246,58 @@ public static class Engine_ClassicFeed
         direction = Refii.Level.Engine_DynamicSkyLighting.ResolveGuestTravel(new Vector3(_frame[SunDirection], _frame[SunDirection + 1], _frame[SunDirection + 2]));
         intensity = _frame[141];
         return _frame[SunColour + 3] != 0f;
+    }
+
+    /// <summary>
+    /// One view's own registers from the camera that draws it: the eye, the depth terms, the
+    /// screen addressing, the particle camera, and on split screen the stipple's target size.
+    /// </summary>
+    private static void ViewConstants(int view, Camera3D camera, bool single)
+    {
+        Vector3 eye = ToGuest(camera.GlobalPosition);
+        // PS c19.w is 0 and VS c9.w is 1 in the title's own banks (REFII_GUEST_RENDER run).
+        PsView(view, Engine_ClassicRegisters.Ps.EyePosition, eye.X, eye.Y, eye.Z, 0f);
+        VsView(view, Engine_ClassicRegisters.Vs.EyePosition, eye.X, eye.Y, eye.Z, 1f);
+
+        // g_PerspectiveConstants: the projection's m[2][2] and m[3][2], the D3D depth
+        // terms, from the camera's near and far.
+        float near = camera.Near, far = camera.Far;
+        float q = far / MathF.Max(far - near, 1e-6f);
+        PsView(view, Engine_ClassicRegisters.Ps.PerspectiveConstants, q, -near * q, 0f, 0f);
+
+        // PS c0 g_TileOffsetSize: the screen-space shadow mask's (and screen textures')
+        // addressing, pixel * (1/W, 1/H) at the internal 3D resolution the mask is drawn at. The
+        // views of a split screen are the same size and share the one mask target.
+        Vector2 screen = Engine_ClassicScreenShadow.Size is { X: > 0, Y: > 0 } mask
+            ? new Vector2(mask.X, mask.Y)
+            : camera.GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280f, 720f);
+        PsView(view, Engine_ClassicRegisters.Ps.TileOffsetSize, 0f, 0f, 1f / MathF.Max(screen.X, 1f), 1f / MathF.Max(screen.Y, 1f));
+
+        // The particle draw's camera (`sub_821CA108`): position, and the view's right and
+        // up columns with w = 10, in the guest's axes.
+        Vector3 right = ToGuest(camera.GlobalBasis.X), up = ToGuest(camera.GlobalBasis.Y);
+        VsView(view, Engine_ClassicRegisters.Vs.CameraPosition, eye.X, eye.Y, eye.Z, 1f);
+        VsView(view, Engine_ClassicRegisters.Vs.CameraRightVector, right.X, right.Y, right.Z, 10f);
+        VsView(view, Engine_ClassicRegisters.Vs.CameraUpVector, up.X, up.Y, up.Z, 10f);
+
+        // PS c50 on split screen: the view's own target.
+        if (!single && camera.GetViewport() is { } target)
+        {
+            Vector2 size = target.GetVisibleRect().Size;
+            PsView(view, Engine_ClassicRegisters.Ps.AlphaStippleScreenUVFactor, size.X / 32f, size.Y / 32f, 0f, 0f);
+        }
+    }
+
+    private static void PsView(int view, int register, float x, float y, float z, float w)
+    {
+        _four[0] = x; _four[1] = y; _four[2] = z; _four[3] = w;
+        Engine_ClassicConstants.SetFrameView(view, true, register, _four);
+    }
+
+    private static void VsView(int view, int register, float x, float y, float z, float w)
+    {
+        _four[0] = x; _four[1] = y; _four[2] = z; _four[3] = w;
+        Engine_ClassicConstants.SetFrameView(view, false, register, _four);
     }
 
     private static void Ps(int register, float x, float y, float z, float w)

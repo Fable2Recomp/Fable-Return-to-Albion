@@ -24,6 +24,14 @@ uniform bool ocean_mode = false;
 uniform sampler2D reflection_tex : filter_linear, repeat_disable;
 uniform bool planar_reflection = false;
 
+// PLAYER TWO'S MIRROR on split screen: the same plane reflected for the second view's camera. A
+// material serves both views, so a draw takes the mirror of the eye it is drawn from — the nearer
+// of the two eyes Engine_WaterReflection states each frame. Off, it is the one mirror above.
+uniform sampler2D reflection_tex_second : filter_linear, repeat_disable;
+uniform bool second_reflection = false;
+uniform vec3 first_eye = vec3(0.0);
+uniform vec3 second_eye = vec3(0.0);
+
 // The authored coverage mask. BILINEAR AND CLAMPED, both proven rather than chosen:
 // `Render_BindMaterialTextures_INFERRED` sets MagFilter/MinFilter from *(0x83316FC4) = 1 and
 // AddressU/V from *(0x83316F40) = 2, which decode through the D3D layer as k_Linear and
@@ -317,8 +325,13 @@ void fragment() {
 		Rg.y = abs(Rg.y);
 		vec3 dome = has_dome ? dome_reflect(Rg) : sky_constant;
 
+		vec2 mirror_uv = clamp(refl_uv, vec2(0.0), vec2(1.0));
+		bool second_view = second_reflection &&
+			distance(CAMERA_POSITION_WORLD, second_eye) < distance(CAMERA_POSITION_WORLD, first_eye);
 		vec3 Rf = min(planar_reflection
-			? mirror_as_ldr(texture(reflection_tex, clamp(refl_uv, vec2(0.0), vec2(1.0))).rgb)
+			? mirror_as_ldr(second_view
+				? texture(reflection_tex_second, mirror_uv).rgb
+				: texture(reflection_tex, mirror_uv).rgb)
 			: dome, vec3(1.0));
 
 		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y);

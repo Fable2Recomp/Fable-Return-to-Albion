@@ -29,6 +29,12 @@ public partial class Engine_ClassicDecals : Node
     /// <summary>The projected points: row 2s positions (NaN when off the surface), row 2s+1 normals.</summary>
     public const string PointsName = "fable_decal_points";
 
+    /// <summary>Player two's view's projected points on split screen (the stage picks by <see cref="Engine_ClassicViews.SecondViewLayer"/>).</summary>
+    public const string PointsSecondName = "fable_decal_points_second";
+
+    /// <summary>The points global view <paramref name="view"/>'s post chain publishes.</summary>
+    public static string PointsFor(int view) => view == 0 ? PointsName : PointsSecondName;
+
     public const int Slots = Refii.Fx.Engine_DecalFeed.Slots;
     public const int Points = 289;
     private const string VertexEntry = "VSHADER_DECAL";
@@ -89,11 +95,18 @@ public partial class Engine_ClassicDecals : Node
         }
     }
 
-    /// <summary>Follows the guest's decals and their owners. Main thread, once a frame.</summary>
+    /// <summary>
+    /// Follows the guest's decals and their owners. Main thread, once a frame. The 64 m cut and
+    /// the distance fade are the node's, so on split screen they go by the nearer player's eye;
+    /// the view-projection is each view's own (the material's for the first, the host register
+    /// for the second, <see cref="Engine_ClassicViews"/>).
+    /// </summary>
     public void Pump(Camera3D camera)
     {
         _feed.Pump();
         ReadOnlySpan<Refii.Fx.Engine_DecalFeed.Decal?> ring = _feed.Ring;
+        Camera3D view = Engine_ClassicViews.Camera(0) ?? camera;
+        bool split = Engine_ClassicViews.Count > 1;
         Vector3 eye = ToGuest(camera.GlobalPosition);
         int drawn = 0;
         lock (Gate)
@@ -116,7 +129,9 @@ public partial class Engine_ClassicDecals : Node
                 {
                     continue;
                 }
-                float distance = eye.DistanceTo(decal.Position);
+                float distance = split
+                    ? Engine_ClassicViews.NearestEyeDistance(ToGodot(decal.Position))
+                    : eye.DistanceTo(decal.Position);
                 // `Render_ParticlePoolDraw_INFERRED`: a decal past 64 m is not drawn.
                 bool shown = distance * distance <= 4096f;
                 slot.Node!.Visible = shown;
@@ -131,7 +146,7 @@ public partial class Engine_ClassicDecals : Node
                     Direction = decal.Direction,
                     Half = decal.Half,
                 };
-                Constants(decal, slot, camera, distance);
+                Constants(decal, slot, view, distance);
                 ++drawn;
             }
         }
@@ -203,14 +218,17 @@ public partial class Engine_ClassicDecals : Node
         // the surface, which kills the triangle as the title's NaN write does), NORMAL, and
         // TEXCOORD0 = (c / 16, r / 16). The stage reads them in the file's axes (xr_file_pos /
         // xr_file_dir take model (x, y, z) to (x, -z, y)), so the guest point p is model (x, z, -y).
-        const string defines =
+        string defines =
             "global uniform sampler2D " + PointsName + ";\n" +
+            "global uniform sampler2D " + PointsSecondName + ";\n" +
             "instance uniform int xr_decal_slot = 0;\n" +
-            "#define XR_DECAL_AT(row) texelFetch(" + PointsName + ", ivec2(VERTEX_ID, xr_decal_slot + (row)), 0)\n" +
+            "#define XR_DECAL_AT(row) (XR_SECOND_VIEW ? texelFetch(" + PointsSecondName + ", ivec2(VERTEX_ID, xr_decal_slot + (row)), 0) : " +
+            "texelFetch(" + PointsName + ", ivec2(VERTEX_ID, xr_decal_slot + (row)), 0))\n" +
             "#define VERTEX vec3(XR_DECAL_AT(0).x, XR_DECAL_AT(0).z, -XR_DECAL_AT(0).y)\n" +
             "#define NORMAL vec3(XR_DECAL_AT(1).x, XR_DECAL_AT(1).z, -XR_DECAL_AT(1).y)\n" +
             "#define UV vec2(float(VERTEX_ID % 17) / 16.0, float(VERTEX_ID / 17) / 16.0)\n" +
-            "#define XR_POSITION_OUT(p) (p)";
+            "#define XR_POSITION_OUT(p) (p)\n" +
+            ViewDefines;
         _shader = Engine_ClassicShaders.Compose(VertexEntry, PixelEntry,
             "unshaded, blend_premul_alpha, depth_draw_never, cull_disabled, shadows_disabled, fog_disabled", 0, defines);
         // Before the decal stages' own constants were named they read frame registers.
@@ -268,6 +286,10 @@ public partial class Engine_ClassicDecals : Node
 
     private static bool _registered;
 
+    /// <summary>The decal stage's g_MatViewProj belongs to the view (Engine_ClassicShaders reads the directive).</summary>
+    private static string ViewDefines =>
+        Engine_ClassicShaders.ViewParam("vs_g_MatViewProj", false, Engine_ClassicRegisters.Vs.HostDecalViewProjection);
+
     /// <summary>Registers the points global (a placeholder until the chain publishes). Main thread.</summary>
     public static void EnsureRegistered()
     {
@@ -280,6 +302,8 @@ public partial class Engine_ClassicDecals : Node
         var image = Image.CreateEmpty(Points, Slots * 2, false, Image.Format.Rgbaf);
         image.Fill(new Color(float.NaN, float.NaN, float.NaN, 0f));
         RenderingServer.GlobalShaderParameterAdd(PointsName,
+            RenderingServer.GlobalShaderParameterType.Sampler2D, ImageTexture.CreateFromImage(image));
+        RenderingServer.GlobalShaderParameterAdd(PointsSecondName,
             RenderingServer.GlobalShaderParameterType.Sampler2D, ImageTexture.CreateFromImage(image));
     }
 

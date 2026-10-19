@@ -380,7 +380,6 @@ public partial class FableFx : Node3D
 				Engine_FxAdditiveLayer.LayerMask, 1f, world, visible) is { } add)
 		{
 			_addInstance = add;
-			_axesPublished = false;  // a new surface has never been told where the camera is
 		}
 
 		if (_dispMesh is not null && _dispInstance is null &&
@@ -388,7 +387,6 @@ public partial class FableFx : Node3D
 				Engine_FxDisplacement.LayerMask, 1f, world, visible) is { } disp)
 		{
 			_dispInstance = disp;
-			_axesPublished = false;
 		}
 
 		foreach ((string path, MultiMeshInstance3D node) in _meshNodes)
@@ -487,10 +485,11 @@ public partial class FableFx : Node3D
 		// gate on the result — no simulation, no aging, lights left as they are (they are never
 		// view-culled). 209 systems in the market cost ~20 ms a frame simulating and rebuilding
 		// billboards for effects behind the camera. A frozen system keeps its last geometry.
+		// Every view counts: on split screen an effect in either player's view simulates.
 		Camera3D? cullCamera = sharedCamera ?? GetViewport()?.GetCamera3D();
 		// A far effect in view freezes only once it has something to show: one that has never
 		// been near would otherwise keep its empty first frame however long it is looked at.
-		if (cullCamera is not null && !InView(cullCamera, sharedCameraPos, out bool farOnly) && (!farOnly || HasGeometry || lightsOnly))
+		if (cullCamera is not null && !InAnyView(cullCamera, sharedCameraPos, out bool farOnly) && (!farOnly || HasGeometry || lightsOnly))
 		{
 			++FrozenThisFrame;
 			return;
@@ -666,10 +665,10 @@ public partial class FableFx : Node3D
 		Vector3 cameraRight = local.Basis.X.Normalized();
 		Vector3 cameraUp = local.Basis.Y.Normalized();
 
-		// The camera axes (in this node's space) go to the shader; `fx_billboard.gdshaderinc`
-		// expands each camera-facing quad from its centre along them, so a turn does not
-		// rebuild geometry.
-		PublishCameraAxes(cameraRight, cameraUp);
+		// Facing is the shader's: `fx_billboard.gdshaderinc` expands each camera-facing quad from
+		// its centre along the axes of the view it is drawn through, so a turn does not rebuild
+		// geometry and each split-screen view faces its own camera. The axes here still build
+		// what depends on the camera's position (ribbon sides, the back-to-front sort).
 		PublishStepAlpha();
 
 		// The additive layer takes the ONE/ONE batches only while it can reach the screen —
@@ -805,35 +804,61 @@ public partial class FableFx : Node3D
 	/// of the view keeps simulating.</summary>
 	public const float FreezeRadius = 14f;
 
-	private static ulong _frustumFrame = ulong.MaxValue;
-	private static ulong _frustumCamera;
-	private static Plane[] _frustum = System.Array.Empty<Plane>();
+	/// <summary>Each view's frustum (a view is a slot of Engine_Views.Cameras), read once per frame.</summary>
+	private static readonly ulong[] _frustumFrame = { ulong.MaxValue, ulong.MaxValue };
+	private static readonly ulong[] _frustumCamera = new ulong[2];
+	private static readonly Plane[][] _frustum = { System.Array.Empty<Plane>(), System.Array.Empty<Plane>() };
 
-	/// <summary>The camera's frustum planes, read once per frame for every system: the query
+	/// <summary>One view's frustum planes, read once per frame for every system: the query
 	/// marshals a fresh array each call.</summary>
-	private static Plane[] FrameFrustum(Camera3D camera)
+	private static Plane[] FrameFrustum(Camera3D camera, int view)
 	{
 		ulong frame = Engine.GetProcessFrames();
 		ulong id = camera.GetInstanceId();
-		if (frame != _frustumFrame || id != _frustumCamera)
+		if (frame != _frustumFrame[view] || id != _frustumCamera[view])
 		{
 			Godot.Collections.Array<Plane> planes = camera.GetFrustum();
-			if (_frustum.Length != planes.Count) _frustum = new Plane[planes.Count];
-			for (int i = 0; i < planes.Count; i++) _frustum[i] = planes[i];
-			_frustumFrame = frame;
-			_frustumCamera = id;
+			if (_frustum[view].Length != planes.Count) _frustum[view] = new Plane[planes.Count];
+			for (int i = 0; i < planes.Count; i++) _frustum[view][i] = planes[i];
+			_frustumFrame[view] = frame;
+			_frustumCamera[view] = id;
 		}
 
-		return _frustum;
+		return _frustum[view];
 	}
 
-	/// <summary>In the frustum and within <see cref="FreezeDistance"/>; <paramref name="farOnly"/> when
-	/// it is in the frustum and only too far.</summary>
-	private bool InView(Camera3D camera, Vector3? cameraPos, out bool farOnly)
+	/// <summary>
+	/// <see cref="InView"/> for any view drawing the world (<paramref name="primary"/>, then player
+	/// two's on split screen); <paramref name="farOnly"/> when no view sees it near and one has it
+	/// in its frustum and only too far. <paramref name="primaryPos"/> is the primary's position
+	/// when the caller already read it this frame.
+	/// </summary>
+	private bool InAnyView(Camera3D primary, Vector3? primaryPos, out bool farOnly)
+	{
+		farOnly = false;
+		IReadOnlyList<Camera3D> cameras = Refii.Core.Engine_Views.Cameras(primary);
+		int views = Math.Min(cameras.Count, _frustum.Length);
+		for (int v = 0; v < views; v++)
+		{
+			if (InView(cameras[v], v, v == 0 ? primaryPos : null, out bool far))
+			{
+				farOnly = false;
+				return true;
+			}
+
+			farOnly |= far;
+		}
+
+		return false;
+	}
+
+	/// <summary>In one view's frustum and within <see cref="FreezeDistance"/> of its eye;
+	/// <paramref name="farOnly"/> when it is in the frustum and only too far.</summary>
+	private bool InView(Camera3D camera, int view, Vector3? cameraPos, out bool farOnly)
 	{
 		farOnly = false;
 		Vector3 origin = CachedGlobalTransform.Origin;
-		foreach (Plane plane in FrameFrustum(camera))
+		foreach (Plane plane in FrameFrustum(camera, view))
 		{
 			if (plane.DistanceTo(origin) > FreezeRadius)
 			{
@@ -850,8 +875,6 @@ public partial class FableFx : Node3D
 
 		return true;
 	}
-
-	private bool InView(Camera3D camera, out bool farOnly) => InView(camera, null, out farOnly);
 
 	/// <summary>Whether the last emit left anything to draw, in the scene or the additive layer.</summary>
 	private bool HasGeometry =>
@@ -946,12 +969,6 @@ public partial class FableFx : Node3D
 		_system.SetAmbient(r, g, b);
 	}
 
-	private Vector3 _axisRight;
-	private Vector3 _axisUp;
-	private bool _axesPublished;
-
-	private static readonly StringName CamRightParam = new("fx_cam_right");
-	private static readonly StringName CamUpParam = new("fx_cam_up");
 	private static readonly StringName StepAlphaParam = new("fx_step_alpha");
 	private static readonly StringName StepAlphaHalfParam = new("fx_step_alpha_half");
 
@@ -992,46 +1009,6 @@ public partial class FableFx : Node3D
 		}
 	}
 
-	/// <summary>
-	/// Hands the shader this node's view of the camera. Instance parameters, because one
-	/// material is shared by every effect on screen while each effect's mesh is built in its
-	/// own node's space.
-	/// </summary>
-	/// <remarks>
-	/// Checks validity, not just null: a freed Godot object leaves a disposed C# wrapper whose
-	/// every member throws.
-	/// </remarks>
-	private void PublishCameraAxes(Vector3 right, Vector3 up)
-	{
-		// Only when they moved: each write marks the instance dirty for the render server.
-		if (_axesPublished &&
-			right.Dot(_axisRight) > 0.9999f && up.Dot(_axisUp) > 0.9999f)
-		{
-			return;
-		}
-
-		_axesPublished = true;
-		_axisRight = right;
-		_axisUp = up;
-
-		if (_surface is not null && IsInstanceValid(_surface) && (_mesh?.GetSurfaceCount() ?? 0) > 0)
-		{
-			_surface.SetInstanceShaderParameter(CamRightParam, right);
-			_surface.SetInstanceShaderParameter(CamUpParam, up);
-		}
-
-		if (_addInstance is not null && (_addMesh?.GetSurfaceCount() ?? 0) > 0)
-		{
-			_addInstance.SetShaderParameter(CamRightParam, right);
-			_addInstance.SetShaderParameter(CamUpParam, up);
-		}
-
-		if (_dispInstance is not null && (_dispMesh?.GetSurfaceCount() ?? 0) > 0)
-		{
-			_dispInstance.SetShaderParameter(CamRightParam, right);
-			_dispInstance.SetShaderParameter(CamUpParam, up);
-		}
-	}
 
 	private readonly float[] _litScratch = new float[3];
 	private System.Func<string, Refii.Fx.VisualBatchMaterial?>? _lookupMaterial;
@@ -1173,7 +1150,6 @@ public partial class FableFx : Node3D
 				ExtraCullMargin = 1f,
 			};
 			AddChild(_surface);
-			_axesPublished = false;  // a new surface has never been told where the camera is
 		}
 
 		// The additive and displacement surfaces live in the layers' own worlds as server

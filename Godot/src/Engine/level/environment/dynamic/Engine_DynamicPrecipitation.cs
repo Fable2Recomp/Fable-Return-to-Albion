@@ -237,6 +237,8 @@ public partial class Engine_DynamicPrecipitation : Node3D
             {
                 material.SetShaderParameter("shelter_on", Engine_WeatherShelter.HasBox ? 1f : 0f);
                 material.SetShaderParameter("shelter_box", Engine_WeatherShelter.ToBox);
+                material.SetShaderParameter("shelter_on_second", Engine_WeatherShelter.HasBoxTwo ? 1f : 0f);
+                material.SetShaderParameter("shelter_box_second", Engine_WeatherShelter.ToBoxTwo);
             }
         }
     }

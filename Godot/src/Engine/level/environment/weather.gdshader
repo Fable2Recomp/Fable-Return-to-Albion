@@ -9,6 +9,11 @@ uniform vec4 area;
 // World to the dry volume's unit box (Engine_WeatherShelter): nothing falls inside it.
 uniform mat4 shelter_box = mat4(1.0);
 uniform float shelter_on = 0.0;
+// Player two's view's (split screen): the building player two stands in.
+uniform mat4 shelter_box_second = mat4(1.0);
+uniform float shelter_on_second = 0.0;
+
+#include "res://src/Engine/core/views.gdshaderinc"
 
 #include "res://src/Engine/level/environment/fable_roofs.gdshaderinc"
 
@@ -83,8 +88,9 @@ void vertex() {
 		fade = clamp(1.5 - (length(to_cam) / R), 0.0, 1.0);
 	}
 
-	if (shelter_on > 0.5) {
-		vec3 q = abs((shelter_box * (MODEL_MATRIX * vec4(center, 1.0))).xyz);
+	bool second = REFII_SECOND_VIEW;
+	if ((second ? shelter_on_second : shelter_on) > 0.5) {
+		vec3 q = abs(((second ? shelter_box_second : shelter_box) * (MODEL_MATRIX * vec4(center, 1.0))).xyz);
 		live = live && max(q.x, max(q.y, q.z)) > 1.0;
 	}
 

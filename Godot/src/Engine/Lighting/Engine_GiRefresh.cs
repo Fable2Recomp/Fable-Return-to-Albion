@@ -20,6 +20,10 @@ namespace Refii.Lighting;
 /// of the fill, so it is spent only where it shows: arrivals NEAR the camera, after they have
 /// gone quiet, and no more often than <see cref="MinSecondsBetween"/>. The far streaming
 /// frontier lands in coarse cascades and is picked up as they scroll.
+///
+/// NEAR ANY VIEW. SDFGI is per viewport, centred on that viewport's camera, but the switch is the
+/// one shared Environment: on split screen an arrival near either player's eye rebuilds both
+/// views' cascades, which is the only invalidation there is.
 /// </remarks>
 public static class Engine_GiRefresh
 {
@@ -80,7 +84,10 @@ public static class Engine_GiRefresh
 		}
 	}
 
-	/// <summary>Once per frame from the environment's owner. Main thread.</summary>
+	/// <summary>
+	/// Once per frame from the environment's owner. Main thread. <paramref name="camera"/> is the
+	/// window's; the split view's second camera is added through <see cref="Refii.Core.Engine_Views"/>.
+	/// </summary>
 	public static void Tick(Godot.Environment? environment, Camera3D? camera, double delta)
 	{
 		if (environment is null)
@@ -118,9 +125,9 @@ public static class Engine_GiRefresh
 		{
 			if (_arrived.Count != 0)
 			{
-				if (camera is not null)
+				foreach (Camera3D view in Refii.Core.Engine_Views.Cameras(camera))
 				{
-					Vector3 eye = camera.GlobalPosition;
+					Vector3 eye = view.GlobalPosition;
 					foreach (Aabb bounds in _arrived)
 					{
 						Vector3 closest = eye.Clamp(bounds.Position, bounds.End);
@@ -129,6 +136,11 @@ public static class Engine_GiRefresh
 							near = true;
 							break;
 						}
+					}
+
+					if (near)
+					{
+						break;
 					}
 				}
 

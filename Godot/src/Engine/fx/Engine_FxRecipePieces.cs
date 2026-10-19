@@ -334,8 +334,20 @@ public partial class Engine_FxArcs : MeshInstance3D
 	private void Strike()
 	{
 		_mesh.ClearSurfaces();
-		Camera3D? camera = GetViewport()?.GetCamera3D();
-		Vector3 eye = camera is not null ? ToLocal(camera.GlobalPosition) : new Vector3(0f, 1f, 10f);
+		// The ribbons are one mesh for every view, so they face the nearest view's eye: the view
+		// that sees them largest.
+		Vector3 eye = new(0f, 1f, 10f);
+		float nearest = float.MaxValue;
+		foreach (Camera3D camera in Refii.Core.Engine_Views.Cameras(GetViewport()?.GetCamera3D()))
+		{
+			float d = camera.GlobalPosition.DistanceSquaredTo(GlobalPosition);
+			if (d < nearest)
+			{
+				nearest = d;
+				eye = ToLocal(camera.GlobalPosition);
+			}
+		}
+
 		int arcs = Math.Max(1, _piece.Count);
 		for (int n = 0; n < arcs; n++)
 		{

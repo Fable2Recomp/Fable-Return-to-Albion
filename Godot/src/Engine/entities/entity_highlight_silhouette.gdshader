@@ -14,6 +14,7 @@ render_mode unshaded, cull_disabled, fog_disabled, shadows_disabled, ambient_lig
 
 global uniform sampler2D fx_scene_depth;
 global uniform float fx_scene_depth_valid;
+#include "res://src/Engine/core/views.gdshaderinc"
 
 uniform float slot = 0.0;
 
@@ -23,7 +24,7 @@ const float OcclusionTolerance = 0.15;
 void fragment() {
 	float visible = 1.0;
 	if (fx_scene_depth_valid > 0.5) {
-		float z = texture(fx_scene_depth, SCREEN_UV).r;
+		float z = REFII_SCENE_DEPTH(SCREEN_UV).r;
 		vec4 view = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, z, 1.0);
 		float scene = -view.z / view.w;
 		if (-VERTEX.z > scene + OcclusionTolerance) {

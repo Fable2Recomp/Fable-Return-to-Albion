@@ -99,7 +99,8 @@ public sealed partial class Engine_FxDriver : Node
     {
         using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fablefx");
 
-        // Resolved once for the whole list; every system shares the same camera.
+        // The window's camera, resolved once for the whole list; every system shares it, and
+        // each culls against it and every other view drawing the world (Engine_Views).
         Camera3D? camera = GetViewport()?.GetCamera3D();
         Vector3? cameraPos = null;
         Transform3D? cameraTransform = null;

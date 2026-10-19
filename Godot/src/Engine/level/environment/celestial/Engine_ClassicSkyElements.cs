@@ -47,6 +47,7 @@ public static class Engine_ClassicSkyElements
     private static readonly StringName GlareTexture = "ps_g_SunGlareTexture";
 
     private static readonly Dictionary<uint, Texture2D?> Textures = new();
+    private static readonly float[] _four = new float[4];
 
     /// <summary>The classic sky is on and the guest's sky is stated.</summary>
     public static bool Active => Engine_ClassicMaterial.Active && Engine_ClassicTheme.Live;
@@ -67,12 +68,21 @@ public static class Engine_ClassicSkyElements
         int phase = Math.Clamp(Engine_ClassicTheme.MoonPhase, 0, 7);
         var phaseUv = new Vector4(phase * 0.125f, 0f, (phase + 1) * 0.125f, 1f);
 
-        // The glares, main scene.
+        // The glares, main scene. The sun's facing is the view's camera's: on split screen the
+        // second view's c244 is its host register, and the glare draws while either view faces it.
         float facing = (-camera.GlobalBasis.Z).Dot(sun);
         float sunGlare = Engine_ClassicTheme.Param(100);
+        Camera3D? second = Engine_ClassicViews.Count > 1 ? Engine_ClassicViews.Camera(1) : null;
+        float secondFacing = second is null ? -1f : (-second.GlobalBasis.Z).Dot(sun);
         Glare(container, SunGlarePath, 0, sun, 1999f, Engine_ClassicTheme.Param(101) * 2000f,
-            sunColour * sunGlare * facing * facing, Engine_ClassicTheme.SlotSunGlare,
-            sunGate >= Gate && facing >= 0f);
+            facing >= 0f ? sunColour * sunGlare * facing * facing : Vector3.Zero, Engine_ClassicTheme.SlotSunGlare,
+            sunGate >= Gate && (facing >= 0f || secondFacing >= 0f));
+        if (second is not null)
+        {
+            Vector3 c = secondFacing >= 0f ? sunColour * sunGlare * secondFacing * secondFacing : Vector3.Zero;
+            _four[0] = c.X; _four[1] = c.Y; _four[2] = c.Z; _four[3] = 0f;
+            Engine_ClassicConstants.SetFrameView(1, true, Engine_ClassicRegisters.Ps.HostSunGlareColour, _four);
+        }
         float moonGlare = Engine_ClassicTheme.Param(67);
         Glare(container, MoonGlarePath, 1, moon, 1000f, Engine_ClassicTheme.Param(68) * 300f,
             Vector3.One * (0.025f * moonGlare), Engine_ClassicTheme.SlotMoonGlare, moonGlare >= Gate);
@@ -124,11 +134,14 @@ public static class Engine_ClassicSkyElements
         MeshInstance3D? node = container.GetNodeOrNull<MeshInstance3D>(path);
         if (node is null)
         {
+            // c244's visibility^2 term, taken from the layer draw's occlusion count of the view
+            // drawing it (each view's post chain counts its own).
             string defines =
                 $"global uniform sampler2D {Engine_ClassicSkyLayers.VisibilityName};\n" +
-                // c244's visibility^2 term, taken from the layer draw's occlusion count.
-                $"#define XR_BEFORE_OUTPUT(c) {{ float xr_v = texelFetch({Engine_ClassicSkyLayers.VisibilityName}, ivec2({visibility}, 0), 0).r; (c).rgb *= xr_v * xr_v; }}\n" +
-                "#define XR_ALPHA_OUT(a) 0.0";
+                $"global uniform sampler2D {Engine_ClassicSkyLayers.VisibilitySecondName};\n" +
+                $"#define XR_BEFORE_OUTPUT(c) {{ float xr_v = XR_SECOND_VIEW ? texelFetch({Engine_ClassicSkyLayers.VisibilitySecondName}, ivec2({visibility}, 0), 0).r : texelFetch({Engine_ClassicSkyLayers.VisibilityName}, ivec2({visibility}, 0), 0).r; (c).rgb *= xr_v * xr_v; }}\n" +
+                "#define XR_ALPHA_OUT(a) 0.0" +
+                (visibility == 0 ? "\n" + Engine_ClassicShaders.ViewParam("ps_g_SunColour", true, Engine_ClassicRegisters.Ps.HostSunGlareColour) : string.Empty);
             Shader? shader = Engine_ClassicShaders.Compose(GlareVertex, GlarePixel,
                 "unshaded, blend_premul_alpha, depth_draw_never, depth_test_disabled, cull_disabled, shadows_disabled, fog_disabled",
                 0, defines);
@@ -173,10 +186,13 @@ public static class Engine_ClassicSkyElements
         MeshInstance3D? node = container.GetNodeOrNull<MeshInstance3D>(StarsPath);
         if (node is null)
         {
-            const string defines =
+            // The stars stand around the eye of the view drawing them (split screen's second view
+            // reads its own, Engine_ClassicViews).
+            string defines =
                 "#define XR_ALPHA_OUT(a) 0.0\n" +
                 "uniform vec2 xr_point_range = vec2(0.1, 64.0);\n" +
-                "#define XR_POINT_SIZE(s) clamp((s), xr_point_range.x, xr_point_range.y)";
+                "#define XR_POINT_SIZE(s) clamp((s), xr_point_range.x, xr_point_range.y)\n" +
+                Engine_ClassicShaders.ViewParam("vs_g_CamPos", false, Engine_ClassicRegisters.Vs.HostStarsEye);
             Shader? shader = Engine_ClassicShaders.Compose(StarsVertex, StarsPixel,
                 "unshaded, blend_premul_alpha, depth_draw_never, cull_disabled, shadows_disabled, fog_disabled", 0, defines);
             if (shader is null || !shader.Code.Contains("POINT_SIZE", StringComparison.Ordinal))
@@ -214,8 +230,9 @@ public static class Engine_ClassicSkyElements
         Vector3 eye = ToGuest(camera.GlobalPosition);
         m.SetShaderParameter(VsStarParamsName, new Vector4(clock, brightness, 1.5f, 2.5f));
         m.SetShaderParameter(VsCamPosName, new Vector4(eye.X, eye.Y, eye.Z, 0f));
-        // POINTSIZE_MIN / MAX were pixels of the title's 1280-wide target.
-        float scale = camera.GetViewport().GetVisibleRect().Size.X / 1280f;
+        // POINTSIZE_MIN / MAX were pixels of the title's 1280-wide target: the view's own (a split
+        // view is half the window).
+        float scale = (Engine_ClassicViews.Camera(0) ?? camera).GetViewport().GetVisibleRect().Size.X / 1280f;
         m.SetShaderParameter(XrPointRangeName, new Vector2(0.1f * scale, 64f * scale));
     }
 

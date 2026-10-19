@@ -190,6 +190,26 @@ public static class Engine_ClassicCasters
     /// </summary>
     public static void Update(Vector3 eye)
     {
+        _hasSecondEye = false;
+        UpdateFrom(eye);
+    }
+
+    /// <summary>
+    /// As <see cref="Update(Vector3)"/> for split screen: a caster within its reach of either eye
+    /// casts, since both views' cascades draw this one scene.
+    /// </summary>
+    public static void Update(Vector3 eye, Vector3 secondEye)
+    {
+        _hasSecondEye = true;
+        _secondEye = secondEye;
+        UpdateFrom(eye);
+    }
+
+    private static bool _hasSecondEye;
+    private static Vector3 _secondEye;
+
+    private static void UpdateFrom(Vector3 eye)
+    {
         if (Entries.Count == 0)
         {
             return;
@@ -416,7 +436,8 @@ public static class Engine_ClassicCasters
 
             // The guest's cut: a hard one at the reach, from the eye to the drawn box's centre
             // (a batch's origin is not where its copies stand), kept from the last placement.
-            shown = entry.Reach <= 0f || eye.DistanceSquaredTo(entry.Centre) <= entry.Reach * entry.Reach;
+            shown = entry.Reach <= 0f || eye.DistanceSquaredTo(entry.Centre) <= entry.Reach * entry.Reach ||
+                (_hasSecondEye && _secondEye.DistanceSquaredTo(entry.Centre) <= entry.Reach * entry.Reach);
         }
         if (shown != entry.Shown)
         {

@@ -14,6 +14,7 @@ uniform float fx_alpha_ref = 1.0;
 uniform float fx_soft_inv = 0.0;
 global uniform sampler2D fx_scene_depth;
 global uniform float fx_scene_depth_valid;
+#include "res://src/Engine/core/views.gdshaderinc"
 
 float soft_fade(float out_alpha, vec3 view_pos, vec2 screen_uv, float scene_z, mat4 inv_proj, mat4 inv_view) {
 	if (fx_soft_inv <= 0.0) {
@@ -40,7 +41,7 @@ float soft_fade(float out_alpha, vec3 view_pos, vec2 screen_uv, float scene_z, m
 void fragment() {
 	float scene_z = 0.0;
 	if (fx_scene_depth_valid > 0.5) {
-		scene_z = texture(fx_scene_depth, SCREEN_UV).r;
+		scene_z = REFII_SCENE_DEPTH(SCREEN_UV).r;
 		// Reversed Z: a smaller value is farther. Behind the scene surface is discarded.
 		if (FRAGCOORD.z < scene_z - 0.00001) {
 			discard;

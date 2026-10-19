@@ -116,6 +116,8 @@ public partial class Engine_WeatherNode : MeshInstance3D
             _shelterVersion = Engine_WeatherShelter.Version;
             _material.SetShaderParameter("shelter_on", Engine_WeatherShelter.HasBox ? 1f : 0f);
             _material.SetShaderParameter("shelter_box", Engine_WeatherShelter.ToBox);
+            _material.SetShaderParameter("shelter_on_second", Engine_WeatherShelter.HasBoxTwo ? 1f : 0f);
+            _material.SetShaderParameter("shelter_box_second", Engine_WeatherShelter.ToBoxTwo);
         }
 
         float open = Engine_WeatherShelter.Falling;

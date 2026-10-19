@@ -36,6 +36,9 @@ float precip_depth_fade(vec2 screen_uv, mat4 inverse_projection, float particle_
 #include "res://src/Engine/level/environment/fable_roofs.gdshaderinc"
 uniform mat4 shelter_box = mat4(1.0);
 uniform float shelter_on = 0.0;
+// Player two's view's (split screen): the building player two stands in.
+uniform mat4 shelter_box_second = mat4(1.0);
+uniform float shelter_on_second = 0.0;
 
 vec3 precip_hash31(float n) {
 	return fract(sin(vec3(n, n + 1.3, n + 2.7)) * vec3(43758.5453, 22578.1459, 19642.3490));
@@ -94,7 +97,7 @@ vec3 precip_pushed(vec3 p, vec3 r, float lifetime) {
 vec4 precip_place(
 		bool streak, float pid, vec2 corner,
 		mat4 projection, mat4 view, mat4 inv_view,
-		vec3 cam, vec2 viewport, float t, out vec4 col, out float bokeh, out float view_depth) {
+		vec3 cam, vec2 viewport, float t, bool second_view, out vec4 col, out float bokeh, out float view_depth) {
 	vec4 clip;
 	view_depth = 0.0;
 	if (pid >= float(particle_count)) {
@@ -178,8 +181,8 @@ vec4 precip_place(
 		clip = projection * (view * vec4(pos, 1.0));
 		view_depth = -(view * vec4(pos, 1.0)).z;
 
-		if (shelter_on > 0.5) {
-			vec3 q = abs((shelter_box * vec4(world, 1.0)).xyz);
+		if ((second_view ? shelter_on_second : shelter_on) > 0.5) {
+			vec3 q = abs(((second_view ? shelter_box_second : shelter_box) * vec4(world, 1.0)).xyz);
 			if (max(q.x, max(q.y, q.z)) <= 1.0) {
 				clip = vec4(0.0, 0.0, 2.0, 1.0);
 				col = vec4(0.0);

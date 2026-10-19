@@ -34,6 +34,11 @@ namespace Refii.Models;
 /// (the frame's, with the capture's exposure and eye), and on copies of the tree materials whose
 /// screen-space shadow mask is white: the mask is the main view's, and the billboard applies its
 /// own shadow-range term.
+///
+/// AN ATLAS PER VIEW. The impostor is the tree seen along the view's forward at its pitch, lit
+/// from that side, so split screen's second view captures its own atlas (the same cells, its own
+/// camera, models and capture row) and its cards sample it (<see cref="Engine_ClassicShaders.ViewSampler"/>).
+/// It is built on the first split and stops drawing when the screen rejoins.
 /// </remarks>
 public partial class Engine_ClassicBillboards : Node
 {
@@ -67,18 +72,35 @@ public partial class Engine_ClassicBillboards : Node
         public bool Dirty = true;
         public int Placements;
         public int Signature;
-        public int CaptureRow;
-        public Vector4 Ambient = new(float.NaN, 0f, 0f, 0f);
-        public Vector4 StatedX = new(float.NaN, 0f, 0f, 0f), StatedY;
         /// <summary>The capture's ambient and tree lanes, as the last card rebuild took them.</summary>
         public Vector4 CaptureAmbient, CaptureStatedX, CaptureStatedY;
         /// <summary>The source and stated ambient <see cref="CaptureAmbient"/> was taken from.</summary>
         public GeometryInstance3D? AmbientFrom;
         public Vector4 AmbientHeld;
         public MeshInstance3D? Draw;
-        public MeshInstance3D? Capture;
+        /// <summary>The kind's model in each view's atlas.</summary>
+        public readonly Impostor?[] Impostors = new Impostor?[Engine_ClassicViews.Max];
         public int Row;
         public int CellIndex = -1;
+    }
+
+    /// <summary>A kind's model standing in one atlas, with the instance uniforms it was last given.</summary>
+    private sealed class Impostor
+    {
+        public MeshInstance3D Node = null!;
+        public int Row;
+        public Vector4 Ambient = new(float.NaN, 0f, 0f, 0f);
+        public Vector4 StatedX = new(float.NaN, 0f, 0f, 0f), StatedY;
+    }
+
+    /// <summary>One view's capture: its viewport, orthographic camera, mips, row and horizontal forward.</summary>
+    private sealed class Atlas
+    {
+        public SubViewport Viewport = null!;
+        public Camera3D Camera = null!;
+        public Engine_ClassicImpostorMips Mips = null!;
+        public int Row;
+        public Vector3 Forward = new(0f, 0f, -1f);
     }
 
     private readonly Dictionary<string, Kind> _kinds = new(StringComparer.OrdinalIgnoreCase);
@@ -86,17 +108,17 @@ public partial class Engine_ClassicBillboards : Node
     private readonly List<Vector3> _points = new();
     private readonly List<float> _radii = new();
     private readonly Dictionary<ulong, ShaderMaterial> _captureMaterials = new();
-    private SubViewport? _atlas;
-    private Camera3D? _capture;
+    private readonly Atlas?[] _atlases = new Atlas?[Engine_ClassicViews.Max];
     private Shader? _shader;
     private ShaderMaterial? _cards;
     private bool _shaderTried;
-    private int _captureRow;
-    private Vector3 _forward = new(0f, 0f, -1f);
     private int _rebuildCursor;
 
     private static readonly float[] FramePs = new float[Engine_ClassicConstants.Floats];
     private static readonly float[] FrameVs = new float[Engine_ClassicConstants.Floats];
+    // The second view's card constants on split screen (FrameRows): its own view and projection rows.
+    private static readonly float[] SecondPs = new float[Engine_ClassicConstants.Floats];
+    private static readonly float[] SecondVs = new float[Engine_ClassicConstants.Floats];
 
     /// <summary>The live instance.</summary>
     public static Engine_ClassicBillboards? Instance { get; private set; }
@@ -147,9 +169,16 @@ public partial class Engine_ClassicBillboards : Node
     {
         Instance = this;
         Name = "ClassicBillboards";
-        _atlas = new SubViewport
+        _atlases[0] = MakeAtlas("ImpostorAtlas", "ImpostorCamera");
+    }
+
+    /// <summary>A capture viewport of its own world, its camera and the mips its cards sample.</summary>
+    private Atlas MakeAtlas(string name, string cameraName)
+    {
+        var mips = new Engine_ClassicImpostorMips();
+        var viewport = new SubViewport
         {
-            Name = "ImpostorAtlas",
+            Name = name,
             OwnWorld3D = true,
             TransparentBg = true,
             // The impostor holds unexposed linear colour; the card's stage scales it back.
@@ -162,9 +191,9 @@ public partial class Engine_ClassicBillboards : Node
             // The impostor is the model's full detail, not the LOD Godot would pick for 256 pixels.
             MeshLodThreshold = 0f,
         };
-        _capture = new Camera3D
+        var camera = new Camera3D
         {
-            Name = "ImpostorCamera",
+            Name = cameraName,
             Projection = Camera3D.ProjectionType.Orthogonal,
             KeepAspect = Camera3D.KeepAspectEnum.Height,
             Near = 0.05f,
@@ -179,19 +208,23 @@ public partial class Engine_ClassicBillboards : Node
             // The mips are made inside the capture's render, ahead of the main view's depth pre-pass.
             Compositor = new Compositor
             {
-                CompositorEffects = new Godot.Collections.Array<CompositorEffect> { new Engine_ClassicImpostorMips() },
+                CompositorEffects = new Godot.Collections.Array<CompositorEffect> { mips },
             },
         };
-        _atlas.AddChild(_capture);
-        AddChild(_atlas);
+        viewport.AddChild(camera);
+        AddChild(viewport);
+        return new Atlas { Viewport = viewport, Camera = camera, Mips = mips };
     }
 
     public override void _ExitTree()
     {
-        if (_captureRow != 0)
+        foreach (Atlas? atlas in _atlases)
         {
-            Engine_ClassicConstants.ReleaseRow(_captureRow);
-            _captureRow = 0;
+            if (atlas is not null && atlas.Row != 0)
+            {
+                Engine_ClassicConstants.ReleaseRow(atlas.Row);
+                atlas.Row = 0;
+            }
         }
         foreach (Kind kind in _kinds.Values)
         {
@@ -247,18 +280,19 @@ public partial class Engine_ClassicBillboards : Node
     /// <summary>Captures and draws this frame's distant trees. Main thread, after the feed and the weather.</summary>
     public void Pump(Camera3D camera)
     {
-        if (_atlas is null || _capture is null || !Engine_ClassicTheme.Live || !EnsureShader())
+        if (_atlases[0] is not { } atlas || !Engine_ClassicTheme.Live || !EnsureShader())
         {
             Hide();
             return;
         }
         Brightness = BillboardBrightness();
         Vector3 eye = camera.GlobalPosition;
-        Vector3 forward = -camera.GlobalBasis.Z;
-        var flat = new Vector3(forward.X, 0f, forward.Z);
-        if (flat.LengthSquared() > 1e-6f)
+        Follow(atlas, camera);
+        Camera3D? secondCamera = Engine_ClassicViews.Count > 1 ? Engine_ClassicViews.Camera(1) : null;
+        Atlas? second = SecondAtlas(secondCamera is not null);
+        if (second is not null)
         {
-            _forward = flat.Normalized();
+            Follow(second, secondCamera!);
         }
 
         using (Refii.Core.Engine_FramePhases.Measure("classic.billboards.cards"))
@@ -272,16 +306,20 @@ public partial class Engine_ClassicBillboards : Node
         _visible.Clear();
         foreach (Kind kind in _kinds.Values)
         {
-            bool any = kind.Draw is not null && kind.Placements > 0 && InRange(kind, eye);
+            bool any = kind.Draw is not null && kind.Placements > 0 &&
+                (InRange(kind, eye) || (Engine_ClassicViews.Count > 1 && InRange(kind, Engine_ClassicViews.Eye(1))));
             if (!any)
             {
                 if (kind.Draw is not null)
                 {
                     kind.Draw.Visible = false;
                 }
-                if (kind.Capture is not null)
+                foreach (Impostor? impostor in kind.Impostors)
                 {
-                    kind.Capture.Visible = false;
+                    if (impostor is not null)
+                    {
+                        impostor.Node.Visible = false;
+                    }
                 }
                 kind.CellIndex = -1;
                 continue;
@@ -291,21 +329,21 @@ public partial class Engine_ClassicBillboards : Node
         }
         if (_visible.Count == 0)
         {
-            _atlas.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            atlas.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            if (second is not null)
+            {
+                second.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            }
             return;
         }
 
         Refii.Core.Engine_FramePhases.Lap("classic.billboards.range", ref mark);
         int rows = (_visible.Count + Columns - 1) / Columns;
-        var size = new Vector2I(Columns * Cell, rows * Cell);
-        if (_atlas.Size != size)
+        Stand(atlas, camera, rows);
+        if (second is not null)
         {
-            _atlas.Size = size;
+            Stand(second, secondCamera!, rows);
         }
-        _atlas.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
-        _capture.GlobalTransform = new Transform3D(camera.GlobalBasis.Orthonormalized(), Vector3.Zero);
-        _capture.Size = rows * 2f;
-        CaptureRow(camera);
         FrameRows(camera);
         Refii.Core.Engine_FramePhases.Lap("classic.billboards.setup", ref mark);
 
@@ -313,7 +351,11 @@ public partial class Engine_ClassicBillboards : Node
         foreach (Kind kind in _visible)
         {
             long from = System.Diagnostics.Stopwatch.GetTimestamp();
-            Place(kind, rows);
+            Place(kind, rows, 0);
+            if (second is not null)
+            {
+                Place(kind, rows, 1);
+            }
             kind.Draw!.Visible = true;
             long middle = System.Diagnostics.Stopwatch.GetTimestamp();
             KindRow(kind, rows);
@@ -325,11 +367,62 @@ public partial class Engine_ClassicBillboards : Node
         Refii.Core.Engine_FramePhases.Record("classic.billboards.rows", rowTicks * tickMs, false);
     }
 
+    /// <summary>The atlas's horizontal forward from its view's camera.</summary>
+    private static void Follow(Atlas atlas, Camera3D camera)
+    {
+        Vector3 forward = -camera.GlobalBasis.Z;
+        var flat = new Vector3(forward.X, 0f, forward.Z);
+        if (flat.LengthSquared() > 1e-6f)
+        {
+            atlas.Forward = flat.Normalized();
+        }
+    }
+
+    /// <summary>Sizes the atlas to the frame's cells, turns its camera to its view's and writes its row.</summary>
+    private void Stand(Atlas atlas, Camera3D camera, int rows)
+    {
+        var size = new Vector2I(Columns * Cell, rows * Cell);
+        if (atlas.Viewport.Size != size)
+        {
+            atlas.Viewport.Size = size;
+        }
+        atlas.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        atlas.Camera.GlobalTransform = new Transform3D(camera.GlobalBasis.Orthonormalized(), Vector3.Zero);
+        atlas.Camera.Size = rows * 2f;
+        CaptureRow(atlas);
+    }
+
+    /// <summary>
+    /// The second view's atlas while the screen is split (built on the first split, its mips bound
+    /// to the cards' second-view sampler); when it rejoins the atlas stops drawing and is kept.
+    /// </summary>
+    private Atlas? SecondAtlas(bool split)
+    {
+        Atlas? second = _atlases[1];
+        if (!split)
+        {
+            if (second is not null && second.Viewport.RenderTargetUpdateMode != SubViewport.UpdateMode.Disabled)
+            {
+                second.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            }
+            return null;
+        }
+        if (second is null)
+        {
+            second = _atlases[1] = MakeAtlas("ImpostorAtlasSecondView", "ImpostorCameraSecondView");
+            _cards?.SetShaderParameter(PsDiffuseTextureSamplerSecondName, second.Mips.Texture);
+        }
+        return second;
+    }
+
     private void Hide()
     {
-        if (_atlas is not null)
+        foreach (Atlas? atlas in _atlases)
         {
-            _atlas.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            if (atlas is not null)
+            {
+                atlas.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+            }
         }
         foreach (Kind kind in _kinds.Values)
         {
@@ -543,7 +636,9 @@ public partial class Engine_ClassicBillboards : Node
         material.SetShaderParameter(XrAlphaThresholdName, AlphaThreshold);
         // Set once: the mipped atlas (Engine_ClassicImpostorMips) keeps its object through
         // resizes, and a sampler set queues a uniform-set rebuild.
-        material.SetShaderParameter(PsDiffuseTextureSamplerName, Engine_ClassicImpostorMips.Texture);
+        // The second view's sampler takes the first's atlas until its own stands.
+        material.SetShaderParameter(PsDiffuseTextureSamplerName, _atlases[0]!.Mips.Texture);
+        material.SetShaderParameter(PsDiffuseTextureSamplerSecondName, (_atlases[1] ?? _atlases[0]!).Mips.Texture);
         return material;
     }
 
@@ -567,9 +662,13 @@ public partial class Engine_ClassicBillboards : Node
         _shaderTried = true;
         // The tier's far cut, per placement: the cards stand from 0.75 F to the cull, and the
         // stage draws every card of the model whatever its distance.
-        const string defines =
+        // The cards' camera uniforms belong to the view (split screen's second view reads its own).
+        string defines =
             "instance uniform float xr_billboard_cull = 1.0e9;\n" +
-            "#define XR_BEFORE_OUTPUT(c) if (distance(v_texcoord0.xyz, xr_const(xr_ps_constants, 19).xyz) >= xr_billboard_cull) { discard; }";
+            "#define XR_BEFORE_OUTPUT(c) if (distance(v_texcoord0.xyz, xr_const(xr_ps_constants, 19).xyz) >= xr_billboard_cull) { discard; }\n" +
+            Engine_ClassicShaders.ViewParam("vs_g_CameraPos", false, Engine_ClassicRegisters.Vs.HostBillboardEye) + "\n" +
+            Engine_ClassicShaders.ViewParam("vs_g_CameraZVector", false, Engine_ClassicRegisters.Vs.HostBillboardForward) + "\n" +
+            Engine_ClassicShaders.ViewSampler("ps_g_DiffuseTextureSampler");
         _shader = Engine_ClassicShaders.Compose(VertexEntry, PixelEntry,
             "unshaded, depth_draw_opaque, cull_disabled, shadows_disabled, fog_disabled", 0, defines);
         // Before the translator carried the record's radius the stage read w = 1.
@@ -583,12 +682,12 @@ public partial class Engine_ClassicBillboards : Node
     }
 
     /// <summary>The capture's row: the frame's constants with the capture's exposure and eye.</summary>
-    private void CaptureRow(Camera3D camera)
+    private void CaptureRow(Atlas atlas)
     {
-        if (_captureRow == 0)
+        if (atlas.Row == 0)
         {
-            _captureRow = Engine_ClassicConstants.AcquireRow();
-            if (_captureRow == 0)
+            atlas.Row = Engine_ClassicConstants.AcquireRow();
+            if (atlas.Row == 0)
             {
                 return;
             }
@@ -598,19 +697,20 @@ public partial class Engine_ClassicBillboards : Node
         // PS c20.w and VS c54.w = 1 / (0.25 B) (`sub_82A85AE0`): the impostor holds the unexposed colour.
         FramePs[Engine_ClassicRegisters.Ps.GlobalAmbientAndBrightness * 4 + 3] = 1f / (0.25f * Brightness);
         FrameVs[Engine_ClassicRegisters.Vs.GlobalAmbientAndBrightness * 4 + 3] = 1f / (0.25f * Brightness);
-        Vector3 eye = ToGuest(_capture!.GlobalPosition);
+        Vector3 eye = ToGuest(atlas.Camera.GlobalPosition);
         SetVec(FramePs, Engine_ClassicRegisters.Ps.EyePosition, eye, 1f);
         SetVec(FrameVs, Engine_ClassicRegisters.Vs.EyePosition, eye, 1f);
-        Engine_ClassicConstants.SetRowBlock(true, _captureRow, 0, FramePs);
-        Engine_ClassicConstants.SetRowBlock(false, _captureRow, 0, FrameVs);
+        Engine_ClassicConstants.SetRowBlock(true, atlas.Row, 0, FramePs);
+        Engine_ClassicConstants.SetRowBlock(false, atlas.Row, 0, FrameVs);
     }
 
-    /// <summary>Stands the kind's impostor model in its atlas cell, facing the capture camera.</summary>
-    private void Place(Kind kind, int rows)
+    /// <summary>Stands the kind's impostor model in its cell of view <paramref name="view"/>'s atlas, facing its camera.</summary>
+    private void Place(Kind kind, int rows, int view)
     {
-        if (kind.Capture is null)
+        Atlas atlas = _atlases[view]!;
+        if (kind.Impostors[view] is not { } impostor)
         {
-            kind.Capture = new MeshInstance3D
+            var node = new MeshInstance3D
             {
                 Name = "Impostor",
                 Mesh = kind.Mesh,
@@ -620,44 +720,46 @@ public partial class Engine_ClassicBillboards : Node
             {
                 if (kind.Mesh.SurfaceGetMaterial(s) is ShaderMaterial own && CaptureMaterial(own) is { } capture)
                 {
-                    kind.Capture.SetSurfaceOverrideMaterial(s, capture);
+                    node.SetSurfaceOverrideMaterial(s, capture);
                 }
             }
-            _capture!.AddChild(kind.Capture);
-            kind.Capture.TopLevel = true;
+            atlas.Camera.AddChild(node);
+            node.TopLevel = true;
+            impostor = kind.Impostors[view] = new Impostor { Node = node };
         }
-        kind.Capture.Visible = true;
+        MeshInstance3D model = impostor.Node;
+        model.Visible = true;
         // Instance uniforms only when they move: each set is a server call per kind per frame.
-        if (kind.CaptureRow != _captureRow)
+        if (impostor.Row != atlas.Row)
         {
-            kind.CaptureRow = _captureRow;
-            kind.Capture.SetInstanceShaderParameter(RowUniform, _captureRow);
+            impostor.Row = atlas.Row;
+            model.SetInstanceShaderParameter(RowUniform, atlas.Row);
         }
         // Taken when the kind's cards are rebuilt (BuildCards), never here: reading an instance
         // uniform back is a synchronous trip to the render thread, ~0.8 ms a kind a frame.
-        if (kind.CaptureAmbient != kind.Ambient)
+        if (kind.CaptureAmbient != impostor.Ambient)
         {
-            kind.Ambient = kind.CaptureAmbient;
-            kind.Capture.SetInstanceShaderParameter(TreeAmbient, kind.Ambient);
+            impostor.Ambient = kind.CaptureAmbient;
+            model.SetInstanceShaderParameter(TreeAmbient, impostor.Ambient);
         }
-        if (kind.CaptureStatedX != kind.StatedX || kind.CaptureStatedY != kind.StatedY)
+        if (kind.CaptureStatedX != impostor.StatedX || kind.CaptureStatedY != impostor.StatedY)
         {
-            kind.StatedX = kind.CaptureStatedX;
-            kind.StatedY = kind.CaptureStatedY;
-            kind.Capture.SetInstanceShaderParameter(TreeStatedX, kind.StatedX);
-            kind.Capture.SetInstanceShaderParameter(TreeStatedY, kind.StatedY);
+            impostor.StatedX = kind.CaptureStatedX;
+            impostor.StatedY = kind.CaptureStatedY;
+            model.SetInstanceShaderParameter(TreeStatedX, impostor.StatedX);
+            model.SetInstanceShaderParameter(TreeStatedY, impostor.StatedY);
         }
 
-        Basis view = _capture!.GlobalBasis;
+        Basis basis = atlas.Camera.GlobalBasis;
         int col = kind.CellIndex % Columns, row = kind.CellIndex / Columns;
-        Vector3 centre = _capture.GlobalPosition - view.Z * CaptureDepth
-            + view.X * (2f * col - (Columns - 1)) + view.Y * ((rows - 1) - 2f * row);
+        Vector3 centre = atlas.Camera.GlobalPosition - basis.Z * CaptureDepth
+            + basis.X * (2f * col - (Columns - 1)) + basis.Y * ((rows - 1) - 2f * row);
         // The model's file +Y (Godot model -Z) along the camera's horizontal forward, scaled to
         // a unit sphere about the sphere's centre.
         float r = MathF.Max(kind.Sphere.W, 1e-3f);
-        Basis turn = Basis.LookingAt(_forward, Vector3.Up).Scaled(Vector3.One / r);
+        Basis turn = Basis.LookingAt(atlas.Forward, Vector3.Up).Scaled(Vector3.One / r);
         var sphereCentre = new Vector3(kind.Sphere.X, kind.Sphere.Z, -kind.Sphere.Y);
-        kind.Capture.GlobalTransform = new Transform3D(turn, centre - turn * sphereCentre);
+        model.GlobalTransform = new Transform3D(turn, centre - turn * sphereCentre);
     }
 
     /// <summary>
@@ -793,13 +895,13 @@ public partial class Engine_ClassicBillboards : Node
     /// </summary>
     private void FrameRows(Camera3D camera)
     {
-        Engine_ClassicConstants.CopyFrame(true, FramePs);
-        Engine_ClassicConstants.CopyFrame(false, FrameVs);
-        // VS c114 g_ControlPointWeightingData: (1.5, 2), `sub_82204500(0x131, ...)`.
-        Set(FrameVs, 114, 1.5f, 2f, 0f, 0f);
-        ViewRows(camera, FrameVs);
-        // PS c31.x: 0.25 B.
-        Set(FramePs, 31, 0.25f * Brightness, 0f, 0f, 0f);
+        // The rows are the view's: on split screen the first view's from the camera that draws it
+        // and the second view's into its own copy of each kind's row (KindRow).
+        CardRows(0, Engine_ClassicViews.Camera(0) ?? camera, FramePs, FrameVs);
+        if (Engine_ClassicViews.Count > 1 && Engine_ClassicViews.Camera(1) is { } second)
+        {
+            CardRows(1, second, SecondPs, SecondVs);
+        }
         // c47 the eye (view+0x50); c46 the view's z column with its z dropped, normalised: the
         // camera's horizontal forward (0x821C4DB4..0x821C4E7C).
         Vector3 eye = ToGuest(camera.GlobalPosition);
@@ -810,27 +912,48 @@ public partial class Engine_ClassicBillboards : Node
         _cards?.SetShaderParameter(VsCameraZVectorName, new Vector4(flat.X, flat.Y, 0f, 0f));
     }
 
-    /// <summary>The kind's own card constants onto the frame's (see VS 0092 / PS 0093), into its row.</summary>
+    /// <summary>One view's card rows: its frame, c114, its view and projection rows, c31.</summary>
+    private void CardRows(int view, Camera3D camera, float[] ps, float[] vs)
+    {
+        Engine_ClassicConstants.CopyFrameView(view, true, ps);
+        Engine_ClassicConstants.CopyFrameView(view, false, vs);
+        // VS c114 g_ControlPointWeightingData: (1.5, 2), `sub_82204500(0x131, ...)`.
+        Set(vs, 114, 1.5f, 2f, 0f, 0f);
+        ViewRows(camera, vs);
+        // PS c31.x: 0.25 B.
+        Set(ps, 31, 0.25f * Brightness, 0f, 0f, 0f);
+    }
+
+    /// <summary>The kind's own card constants onto each view's frame (see VS 0092 / PS 0093), into its row.</summary>
     private void KindRow(Kind kind, int rows)
     {
         if (kind.Row == 0)
         {
             return;
         }
+        KindRow(kind, rows, 0, FramePs, FrameVs);
+        if (Engine_ClassicViews.Count > 1)
+        {
+            KindRow(kind, rows, 1, SecondPs, SecondVs);
+        }
+    }
+
+    private void KindRow(Kind kind, int rows, int view, float[] ps, float[] vs)
+    {
         float r = MathF.Max(kind.Sphere.W, 1e-3f);
 
         // VS c8 g_NormalizedSphereCentre: the model sphere's centre over its radius (the stage lifts
         // a card by radius x c8.z).
-        SetVec(FrameVs, 8, new Vector3(kind.Sphere.X / r, kind.Sphere.Y / r, kind.Sphere.Z / r), 1f);
+        SetVec(vs, 8, new Vector3(kind.Sphere.X / r, kind.Sphere.Y / r, kind.Sphere.Z / r), 1f);
         // VS c113 g_TreeBillboardUVData: uv = corner x (x, w) + (y, z), corner (0, 0) the card's
         // top left. The title's is the impostor's projected extent within its own 256^2 texture, the
         // whole of it give or take half a texel; here the kind's cell of the atlas.
         float u0 = (kind.CellIndex % Columns) / (float)Columns, v0 = (kind.CellIndex / Columns) / (float)rows;
-        Set(FrameVs, 113, 1f / Columns, u0, v0, 1f / rows);
+        Set(vs, 113, 1f / Columns, u0, v0, 1f / rows);
         // PS c29: the fade in over [0.75, 0.875] F.
-        Set(FramePs, 29, 0.75f * kind.F, 1f / MathF.Max(0.125f * kind.F, 1e-3f), 0f, 0f);
-        Engine_ClassicConstants.SetRowBlock(true, kind.Row, 0, FramePs);
-        Engine_ClassicConstants.SetRowBlock(false, kind.Row, 0, FrameVs);
+        Set(ps, 29, 0.75f * kind.F, 1f / MathF.Max(0.125f * kind.F, 1e-3f), 0f, 0f);
+        Engine_ClassicConstants.SetRowBlockView(view, true, kind.Row, 0, ps);
+        Engine_ClassicConstants.SetRowBlockView(view, false, kind.Row, 0, vs);
     }
 
     /// <summary>
@@ -881,6 +1004,7 @@ public partial class Engine_ClassicBillboards : Node
     private static readonly StringName XrSpecConstantsName = "xr_spec_constants";
     private static readonly StringName XrAlphaThresholdName = "xr_alpha_threshold";
     private static readonly StringName PsDiffuseTextureSamplerName = "ps_g_DiffuseTextureSampler";
+    private static readonly StringName PsDiffuseTextureSamplerSecondName = Engine_ClassicShaders.SecondViewSampler("ps_g_DiffuseTextureSampler");
     private static readonly StringName XrBooleansName = "xr_booleans";
     private static readonly StringName VsCameraPosName = "vs_g_CameraPos";
     private static readonly StringName VsCameraZVectorName = "vs_g_CameraZVector";

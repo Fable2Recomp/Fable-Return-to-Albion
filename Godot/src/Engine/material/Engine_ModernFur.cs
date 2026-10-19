@@ -110,6 +110,18 @@ public static class Engine_ModernFur
             float radius = box.Size.Length() * 0.5f;
             float d = MathF.Max((eye - box.GetCenter()).Length() - radius, camera.Near);
             int n = Math.Clamp((int)((furred.Length / d) / halfTan * 142.85713f + 1f), 16, Engine_ClassicFur.MaxShells);
+            // The shells are the node's: on split screen the nearer view's (the finer) count and length.
+            for (int v = 0; v < Engine_ClassicViews.Count && Engine_ClassicViews.Count > 1; v++)
+            {
+                if (Engine_ClassicViews.Camera(v) is not { } view)
+                {
+                    continue;
+                }
+                float dv = MathF.Max((view.GlobalPosition - box.GetCenter()).Length() - radius, view.Near);
+                float tv = MathF.Tan(Mathf.DegToRad(view.Fov) * 0.5f);
+                n = Math.Max(n, Math.Clamp((int)((furred.Length / dv) / tv * 142.85713f + 1f), 16, Engine_ClassicFur.MaxShells));
+                d = MathF.Min(d, dv);
+            }
             if (furred.LastShells != n)
             {
                 furred.LastShells = n;

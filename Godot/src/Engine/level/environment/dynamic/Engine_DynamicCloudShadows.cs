@@ -42,10 +42,42 @@ public partial class Engine_DynamicCloudShadows : Node
             owner.AddChild(caster);
             caster.BuildDensityMap();
         }
-        Vector3 origin = camera?.GlobalPosition ?? Vector3.Zero;
         Vector3 towardSun = new Vector3(sunEngine.X, sunEngine.Z, sunEngine.Y).Normalized();
-        Vector3 centre = origin + towardSun * ((CloudBase - origin.Y) / towardSun.Y);
         float extent = MathF.Max(4000f, (sun?.DirectionalShadowMaxDistance ?? 600f) * 3f);
+
+        // ONE MAP FOR EVERY VIEW. The mask is world-space (dynamic_cloud_receiver), so both split
+        // views read the same texture; it is centred between the views' cloud-base points and only
+        // grows, in quarter-extent steps, once they are too far apart for each to keep a quarter
+        // of the map around it. One view is the camera's own point at the base extent.
+        Vector3 low = Vector3.Zero;
+        Vector3 high = Vector3.Zero;
+        int views = 0;
+        foreach (Camera3D view in Refii.Core.Engine_Views.Cameras(camera))
+        {
+            Vector3 eye = view.GlobalPosition;
+            Vector3 at = eye + towardSun * ((CloudBase - eye.Y) / towardSun.Y);
+            low = views == 0 ? at : low.Min(at);
+            high = views == 0 ? at : high.Max(at);
+            ++views;
+        }
+
+        Vector3 centre = views switch
+        {
+            0 => towardSun * (CloudBase / towardSun.Y),
+            1 => low,
+            _ => (low + high) * 0.5f,
+        };
+        if (views > 1)
+        {
+            Vector3 span = high - low;
+            float needed = MathF.Max(span.X, span.Z) + (extent * 0.5f);
+            if (needed > extent)
+            {
+                float step = extent * 0.25f;
+                extent = MathF.Ceiling(needed / step) * step;
+            }
+        }
+
         float texel = extent / MapSize;
         var mapCentre = new Vector2(SnapMapCoordinate(centre.X, texel), SnapMapCoordinate(centre.Z, texel));
         var projection = new Vector4(mapCentre.X, mapCentre.Y, extent, 1f);

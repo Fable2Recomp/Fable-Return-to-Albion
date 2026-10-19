@@ -53,6 +53,13 @@ public sealed partial class Engine_HudReticule : Node3D
 	/// <summary>Half the HUD canvas, for the guest's ±0.8 clamp.</summary>
 	public Vector2 CanvasHalfExtent { get; set; }
 
+	/// <summary>
+	/// The one player (0 or 1) this layer draws, or −1 for both. On split screen each player's
+	/// petals belong in their own half, so a layer per half draws one player each, its node
+	/// carrying that half's seat transform (<see cref="Engine_UiSeats.Frame.Transform"/>).
+	/// </summary>
+	public int OnlyPlayer { get; set; } = -1;
+
 	private const int Petals = 4;
 
 	/// <summary>`sub_822939B0`: player one's phase is 0 (`flt_82099484`), player two's π/4
@@ -126,7 +133,7 @@ public sealed partial class Engine_HudReticule : Node3D
 	{
 		for (int player = 0; player < 2; ++player)
 		{
-			if (_aims[player] is not { } aim)
+			if (_aims[player] is not { } aim || (OnlyPlayer >= 0 && player != OnlyPlayer))
 			{
 				_last[player] = null;
 				Hide(player);

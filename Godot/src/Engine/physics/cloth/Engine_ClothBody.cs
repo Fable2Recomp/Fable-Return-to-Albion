@@ -645,47 +645,56 @@ public partial class Engine_ClothBody : MeshInstance3D
         CustomAabb = _bounds;
     }
 
-    private static ulong _frustumFrame = ulong.MaxValue;
-    private static ulong _frustumCamera;
-    private static Plane[] _frustum = Array.Empty<Plane>();
+    /// <summary>Each view's frustum, read once per drawn frame (a view is a slot of Engine_Views.Cameras).</summary>
+    private static readonly ulong[] _frustumFrame = { ulong.MaxValue, ulong.MaxValue };
+    private static readonly ulong[] _frustumCamera = new ulong[2];
+    private static readonly Plane[][] _frustum = { Array.Empty<Plane>(), Array.Empty<Plane>() };
 
-    private static Plane[] FrameFrustum(Camera3D camera)
+    private static Plane[] FrameFrustum(Camera3D camera, int view)
     {
         ulong frame = Engine.GetProcessFrames();
         ulong id = camera.GetInstanceId();
-        if (frame != _frustumFrame || id != _frustumCamera)
+        if (frame != _frustumFrame[view] || id != _frustumCamera[view])
         {
             Godot.Collections.Array<Plane> planes = camera.GetFrustum();
-            if (_frustum.Length != planes.Count) _frustum = new Plane[planes.Count];
-            for (int i = 0; i < planes.Count; i++) _frustum[i] = planes[i];
-            _frustumFrame = frame;
-            _frustumCamera = id;
+            if (_frustum[view].Length != planes.Count) _frustum[view] = new Plane[planes.Count];
+            for (int i = 0; i < planes.Count; i++) _frustum[view][i] = planes[i];
+            _frustumFrame[view] = frame;
+            _frustumCamera[view] = id;
         }
 
-        return _frustum;
+        return _frustum[view];
     }
 
-    /// <summary><c>sub_821E34B0</c>: 0 beyond the distance or out of view, 1 inside 85% of it, a ramp between.</summary>
+    /// <summary>
+    /// <c>sub_821E34B0</c>: 0 beyond the distance or out of view, 1 inside 85% of it, a ramp
+    /// between. Every view counts: in view is in any view's frustum, distance is to the nearest eye.
+    /// </summary>
     private float FadeWeight(MeshInstance3D parent, out bool inView)
     {
         inView = true;
-        Camera3D? camera = GetViewport()?.GetCamera3D();
-        if (camera is null)
+        IReadOnlyList<Camera3D> cameras = Refii.Core.Engine_Views.Cameras(GetViewport()?.GetCamera3D());
+        if (cameras.Count == 0)
         {
             return 1.0f;
         }
 
         float max = MaxClothDistance;
-        Vector3 eye = camera.GlobalPosition;
         Vector3 origin = parent.GlobalPosition;
-        float distance = origin.DistanceTo(eye);
+        float distance = float.MaxValue;
+        int views = Math.Min(cameras.Count, _frustum.Length);
+        for (int v = 0; v < views; v++)
+        {
+            distance = MathF.Min(distance, origin.DistanceTo(cameras[v].GlobalPosition));
+        }
+
         if (distance >= max + 6.0f)
         {
             inView = false;
             return 0.0f;
         }
 
-        inView = InView(camera, parent, eye, out float pieceDistance);
+        inView = InView(cameras, views, parent, out float pieceDistance);
         if (pieceDistance < distance)
         {
             distance = pieceDistance;
@@ -700,38 +709,46 @@ public partial class Engine_ClothBody : MeshInstance3D
         return distance <= start ? 1.0f : (max - distance) / (max - start);
     }
 
-    /// <summary>The union of the pieces' bounding spheres against the camera's frustum.</summary>
-    private bool InView(Camera3D camera, MeshInstance3D parent, Vector3 eye, out float minDistance)
+    /// <summary>
+    /// The union of the pieces' bounding spheres against every view's frustum; the distance is
+    /// the nearest piece's to the nearest eye.
+    /// </summary>
+    private bool InView(IReadOnlyList<Camera3D> cameras, int views, MeshInstance3D parent, out float minDistance)
     {
         minDistance = float.MaxValue;
         Transform3D world = parent.GlobalTransform;
         float scale = world.Basis.Scale.Length() * 0.577350269f;
-        Plane[] planes = FrameFrustum(camera);
         bool anyVisible = false;
-        foreach (ClothInstance inst in _instances)
+        for (int v = 0; v < views; v++)
         {
-            PhysVec4 sphere = inst.BoundsSphere;
-            Vector3 center = world * new Vector3(sphere.X, sphere.Y, sphere.Z);
-            float radius = MathF.Max(sphere.W * scale, 0.5f);
-            float d = MathF.Max(0.0f, center.DistanceTo(eye) - radius);
-            if (d < minDistance)
+            Camera3D camera = cameras[v];
+            Vector3 eye = camera.GlobalPosition;
+            Plane[] planes = FrameFrustum(camera, v);
+            foreach (ClothInstance inst in _instances)
             {
-                minDistance = d;
-            }
-
-            bool inside = true;
-            for (int p = 0; p < planes.Length; p++)
-            {
-                if (planes[p].DistanceTo(center) > radius)
+                PhysVec4 sphere = inst.BoundsSphere;
+                Vector3 center = world * new Vector3(sphere.X, sphere.Y, sphere.Z);
+                float radius = MathF.Max(sphere.W * scale, 0.5f);
+                float d = MathF.Max(0.0f, center.DistanceTo(eye) - radius);
+                if (d < minDistance)
                 {
-                    inside = false;
-                    break;
+                    minDistance = d;
                 }
-            }
 
-            if (inside)
-            {
-                anyVisible = true;
+                bool inside = true;
+                for (int p = 0; p < planes.Length; p++)
+                {
+                    if (planes[p].DistanceTo(center) > radius)
+                    {
+                        inside = false;
+                        break;
+                    }
+                }
+
+                if (inside)
+                {
+                    anyVisible = true;
+                }
             }
         }
 

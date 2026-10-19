@@ -1536,6 +1536,24 @@ public static class Engine_UiTemplates
 				},
 
 				Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", Engine_PauseMenu.TabOptions),
+
+				// FABLE 3'S KICK, the online host's (the guest's own root adds "Kick" only when
+				// game+0x11C == 1 and the henchman exists, `sub_8298DF98`). Offered by GameUi only
+				// while an online partner stands; the child is the confirmation, worded as Fable 3's
+				// GUI_SCREEN_PAUSE_CONFIRM_KICK_HENCHMAN.
+				new Engine_UiMenuEntry
+				{
+					Name = Engine_PauseMenu.KickRow, Tag = "Kick", HostOnly = true,
+					Children =
+					{
+						new Engine_UiMenuEntry
+						{
+							Name = "KickConfirm", HostOnly = true,
+							Tag = "Kick the other Hero out of your game (they lose unsaved progress)",
+							Command = $"{Engine_PauseMenu.CoopCommandPrefix}kick",
+						},
+					},
+				},
 			},
 		};
 
@@ -1588,14 +1606,22 @@ public static class Engine_UiTemplates
 
 				Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", Engine_PauseMenu.TabOptions),
 
-				// LEAVING, with the solo menu's own known-good commands rather than invented ones.
-				// A visitor has no save of their own in this world, so the two SAVE rows are absent
-				// and only the "don't save" pair remains.
+				// LEAVING, as Fable 3's "Leave": player two leaves the game, the partner plays on.
+				// `PauseCoop:leave` runs the guest's own drop-out answer (`sub_826A6E70`): an online
+				// joiner's HeroSave is written on the way out; local player two's is written when
+				// they loaded one (box 27), else their earnings go to player one (box 26). The
+				// "don't save" pair below quits this machine's whole game, as before.
 				new Engine_UiMenuEntry
 				{
 					Name = "HenchmanQuit", Tag = "GUI_SCREEN_PAUSE_HENCHMAN_QUIT",
 					Children =
 					{
+						new Engine_UiMenuEntry
+						{
+							Name = "LeaveGame", HostOnly = true,
+							Tag = "Leave this co-op game (your Hero is saved)",
+							Command = $"{Engine_PauseMenu.CoopCommandPrefix}leave",
+						},
 						new Engine_UiMenuEntry
 						{
 							Name = "QuitDontSave",
@@ -2624,7 +2650,8 @@ public static class Engine_UiTemplates
 			// hold: a run showed all six reading `tag='Text' shows='Text'`, the authored
 			// placeholder, once the guest stopped writing them — the exact failure this field's
 			// own contract warns about ("a field the guest stopped writing went quietly
-			// stale"). `CoopProvider` owns them outright now, off `coopMgr+176`/`+172`.
+			// stale"). `CoopProvider` hides them now: progression is per player, so there is no
+			// share to show.
 			// `loadgame` too: the save picker Y opens (`sub_8243B070`) writes each card's quest line
 			// and the description into that unit, and without it the authored placeholder
 			// ("fdggdf dfg …") stood where the guest's text was.

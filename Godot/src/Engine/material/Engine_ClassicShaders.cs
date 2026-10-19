@@ -330,6 +330,29 @@ public static class Engine_ClassicShaders
             }
         }
 
+        // THE VIEW'S OWN MATERIAL CONSTANTS (split screen): the reads of each name the composition
+        // lists (ViewParam) take the second view's host register in that view, the uniform in the first.
+        if (defines.Contains(ViewParamDirective, StringComparison.Ordinal))
+        {
+            RewriteViewParams(defines, ref vertex, ref pixel);
+        }
+
+        // THE VIEW'S OWN TEXTURES (split screen): the fetches of each sampler the composition lists
+        // (ViewSampler) read its second-view twin in that view.
+        if (defines.Contains(ViewSamplerDirective, StringComparison.Ordinal))
+        {
+            RewriteViewSamplers(defines, ref pixel);
+        }
+
+        // THE VIEW'S OWN PIXEL BOOLEANS (split screen, ViewBooleans): the stage's reads of
+        // xr_booleans take the second view's value in that view.
+        if (defines.Contains(ViewBooleansDirective, StringComparison.Ordinal))
+        {
+            pixel = System.Text.RegularExpressions.Regex.Replace(pixel, @"\bxr_booleans\b",
+                "(XR_SECOND_VIEW ? " + SecondViewBooleans + " : xr_booleans)");
+            pixel = "uniform uint " + SecondViewBooleans + " = 0u;\n" + pixel;
+        }
+
         // XR_PRT_ROW_FETCH: the AMB2 stage's g_PRTConstants come from the placement's row of the
         // shared texture instead of a material per placement (Engine_ClassicPrtRows).
         if (defines.Contains("XR_PRT_ROW_FETCH", StringComparison.Ordinal))
@@ -404,6 +427,152 @@ public static class Engine_ClassicShaders
 
     private static int _built;
     private static double _buildMs;
+
+    private const string ViewParamDirective = "// xr_view_param ";
+
+    /// <summary>
+    /// A composition's directive naming a material constant that belongs to the view drawing it:
+    /// the first view reads the material's uniform, the second the host register
+    /// <paramref name="register"/> of its own block (xenos_common.gdshaderinc XR_VIEW_PARAM), which
+    /// its owner writes per view. <paramref name="gate"/>, a material bool, limits it to the
+    /// materials whose value is the view's (a trail's z axis is the camera's only when not fixed).
+    /// A comment in the shader; <see cref="RewriteViewParams"/> applies it.
+    /// </summary>
+    public static string ViewParam(string name, bool pixel, int register, string gate = "true") =>
+        ViewParamDirective + name + (pixel ? " ps " : " vs ") + register + " " + gate;
+
+    /// <summary>Rewrites the stages' reads of each name a directive lists (the declaration stays).</summary>
+    private static void RewriteViewParams(string defines, ref string vertex, ref string pixel)
+    {
+        foreach (string line in defines.Split('\n'))
+        {
+            int at = line.IndexOf(ViewParamDirective, StringComparison.Ordinal);
+            if (at < 0)
+            {
+                continue;
+            }
+            string[] parts = line.Substring(at + ViewParamDirective.Length)
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length < 3 || !int.TryParse(parts[2], out int register))
+            {
+                continue;
+            }
+            string name = parts[0];
+            bool pixelStage = parts[1] == "ps";
+            string gate = parts.Length > 3 ? parts[3] : "true";
+            string registers = pixelStage ? "xr_ps_constants" : "xr_vs_constants";
+            string stage = pixelStage ? pixel : vertex;
+            string escaped = System.Text.RegularExpressions.Regex.Escape(name);
+            bool array = System.Text.RegularExpressions.Regex.IsMatch(stage, @"\buniform\s+vec4\s+" + escaped + @"\s*\[");
+            stage = array
+                ? System.Text.RegularExpressions.Regex.Replace(stage,
+                    @"(?<!uniform\s+vec4\s+)\b" + escaped + @"\[([^\]]*)\]",
+                    "XR_VIEW_PARAM_AT(" + name + ", " + registers + ", " + register + ", ($1), " + gate + ")")
+                : System.Text.RegularExpressions.Regex.Replace(stage,
+                    @"(?<!uniform\s+vec4\s+)\b" + escaped + @"\b",
+                    "XR_VIEW_PARAM(" + name + ", " + registers + ", " + register + ", " + gate + ")");
+            if (pixelStage)
+            {
+                pixel = stage;
+            }
+            else
+            {
+                vertex = stage;
+            }
+        }
+    }
+
+    private const string ViewSamplerDirective = "// xr_view_sampler ";
+
+    /// <summary>
+    /// A composition's directive naming a pixel-stage sampler whose texture belongs to the view
+    /// drawing it: the first view fetches the material's <paramref name="name"/>, the second its
+    /// twin <see cref="SecondViewSampler"/> (declared beside it with the same hints), which the
+    /// owner binds per view. A comment in the shader; <see cref="RewriteViewSamplers"/> applies it.
+    /// </summary>
+    public static string ViewSampler(string name) => ViewSamplerDirective + name;
+
+    private const string ViewBooleansDirective = "// xr_view_booleans";
+
+    /// <summary>
+    /// A composition's directive making the pixel stage's booleans (xenos_common's
+    /// <c>xr_booleans</c>, the b registers) the view's: the first view reads the material's
+    /// <c>xr_booleans</c>, the second <see cref="SecondViewBooleans"/>, which the owner sets per view.
+    /// </summary>
+    public static string ViewBooleans() => ViewBooleansDirective;
+
+    /// <summary>The material uniform holding the second view's pixel booleans (<see cref="ViewBooleans"/>).</summary>
+    public const string SecondViewBooleans = "xr_second_booleans";
+
+    /// <summary>The second view's twin of a sampler a composition lists with <see cref="ViewSampler"/>.</summary>
+    public static string SecondViewSampler(string name) => "xr_second_" + name;
+
+    /// <summary>
+    /// Declares each listed sampler's twin and rewrites its fetches into
+    /// <c>(XR_SECOND_VIEW ? xr_tfetch2D(twin, ...) : xr_tfetch2D(name, ...))</c>.
+    /// </summary>
+    private static void RewriteViewSamplers(string defines, ref string pixel)
+    {
+        foreach (string line in defines.Split('\n'))
+        {
+            int at = line.IndexOf(ViewSamplerDirective, StringComparison.Ordinal);
+            if (at < 0)
+            {
+                continue;
+            }
+            string name = line.Substring(at + ViewSamplerDirective.Length).Trim();
+            if (name.Length == 0)
+            {
+                continue;
+            }
+            string twin = SecondViewSampler(name);
+            string escaped = System.Text.RegularExpressions.Regex.Escape(name);
+            System.Text.RegularExpressions.Match declaration = System.Text.RegularExpressions.Regex.Match(
+                pixel, @"uniform\s+sampler2D\s+" + escaped + @"\b([^;]*);");
+            if (!declaration.Success)
+            {
+                continue;
+            }
+            pixel = pixel.Insert(declaration.Index + declaration.Length,
+                "\nuniform sampler2D " + twin + declaration.Groups[1].Value + ";");
+
+            string call = "xr_tfetch2D(" + name + ",";
+            var rewritten = new System.Text.StringBuilder(pixel.Length + 256);
+            int from = 0;
+            while (true)
+            {
+                int start = pixel.IndexOf(call, from, StringComparison.Ordinal);
+                if (start < 0)
+                {
+                    break;
+                }
+                int open = start + "xr_tfetch2D".Length, depth = 0, end = -1;
+                for (int i = open; i < pixel.Length; i++)
+                {
+                    if (pixel[i] == '(')
+                    {
+                        depth++;
+                    }
+                    else if (pixel[i] == ')' && --depth == 0)
+                    {
+                        end = i;
+                        break;
+                    }
+                }
+                if (end < 0)
+                {
+                    break;
+                }
+                string args = pixel.Substring(start + call.Length, end - (start + call.Length));
+                rewritten.Append(pixel, from, start - from)
+                    .Append("(XR_SECOND_VIEW ? xr_tfetch2D(").Append(twin).Append(',').Append(args)
+                    .Append(") : xr_tfetch2D(").Append(name).Append(',').Append(args).Append("))");
+                from = end + 1;
+            }
+            rewritten.Append(pixel, from, pixel.Length - from);
+            pixel = rewritten.ToString();
+        }
+    }
 
     /// <summary>Compositions built and the milliseconds their shader compiles took, for the log.</summary>
     public static (int Built, double Milliseconds) BuildCounts => (_built, _buildMs);

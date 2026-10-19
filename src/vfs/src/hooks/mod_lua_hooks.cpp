@@ -48,6 +48,10 @@ uint32_t ModScriptSystem();
 
 namespace {
 
+/// Refii's own Lua (co-op heroes: Godot/src/host/CoopHeroLua.cs), run before any mod's so a mod
+/// patches on top of it. Mounted on every session, mods or not.
+constexpr const char* kCoreKey = "refii/core_init.lua";
+constexpr const char* kCoreCameraKey = "refii/core_camera.lua";
 constexpr const char* kInitKey = "refii/mod_init.lua";
 constexpr const char* kCameraKey = "refii/mod_camera.lua";
 
@@ -146,7 +150,9 @@ REX_EXTERN(rex_lhLuaScriptSystem_LoadStartupScripts) {
     PPCContext work = entry;
     const uint32_t state = refii::vfs::LoadGuestU32(base, system);
     refii::vfs::RegisterModLuaNatives(work, base, state);
+    RunComposedChunk(work, base, state, kCoreKey);
     RunComposedChunk(work, base, state, kInitKey);
+    RunComposedChunk(work, base, state, kCoreCameraKey);
     RunComposedChunk(work, base, state, kCameraKey);
   }
   refii::vfs::BumpLuaGeneration();
@@ -177,6 +183,7 @@ REX_EXTERN(rex_lhLuaScriptSystem_RunCameraScripts) {
   const uint32_t system = entry.r3.u32;
   if (Plausible(system)) {
     PPCContext work = entry;
+    RunComposedChunk(work, base, refii::vfs::LoadGuestU32(base, system), kCoreCameraKey);
     RunComposedChunk(work, base, refii::vfs::LoadGuestU32(base, system), kCameraKey);
     // The camera scripts just restored their shipped constants over the host's chosen feel.
     refii::vfs::ReapplyCameraFeel(work, base);

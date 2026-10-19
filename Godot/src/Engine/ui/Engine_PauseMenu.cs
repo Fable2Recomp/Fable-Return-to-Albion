@@ -60,6 +60,16 @@ public static class Engine_PauseMenu
 	/// </summary>
 	public const string OwnedCommandPrefix = "PauseOwned:";
 
+	/// <summary>
+	/// Command prefix of a co-op row (Fable 3's Leave / Kick): `PauseCoop:leave` posts the pump's
+	/// `CoopLeave`, `PauseCoop:kick` its `CoopKick` — the guest's own drop-out and kick answers,
+	/// without the guest's boxes (the confirmation is the row's own child).
+	/// </summary>
+	public const string CoopCommandPrefix = "PauseCoop:";
+
+	/// <summary>The host's Kick row, offered only while an online partner stands.</summary>
+	public const string KickRow = "Kick";
+
 	/// <summary>Tab ids as `sub_826B89E0`'s switch numbers them.</summary>
 	public const uint TabMap = 2;
 	public const uint TabAbilities = 3;

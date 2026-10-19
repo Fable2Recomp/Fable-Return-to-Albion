@@ -287,7 +287,7 @@ public partial class Engine_PostFxEffect
         // The DISPLACEMENT bit (`sub_821E5DB8`: 4 x byte_83496E23): anything was drawn into the
         // displacement target this frame.
         Rid displacement = Refii.Models.Engine_ClassicDisplacement.Drawn > 0
-            ? RenderingServer.TextureGetRdTexture(Refii.Models.Engine_ClassicDisplacement.Texture)
+            ? RenderingServer.TextureGetRdTexture(Refii.Models.Engine_ClassicDisplacement.TextureFor(View))
             : default;
         bool displaced = displacement.IsValid;
         if (Refii.Models.Engine_ClassicDisplacement.Drawn > 0)
@@ -413,6 +413,7 @@ public partial class Engine_PostFxEffect
     private Rid _cFrameBuffer;
     private Rid _cCounters;
     private Rid _cVisibility;
+    private Texture2Drd? _cVisibilityTexture;
     private Rid _cVisShader;
     private Rid _cVisPipeline;
     private Rid _cVisSet;
@@ -457,17 +458,17 @@ public partial class Engine_PostFxEffect
         _cVisSet = rd.UniformSetCreate(new Array<RDUniform> { Image(_cVisibility, 0), Buffer(_cCounters, 1) }, _cVisShader, 0);
         _cSunDisc = disc;
 
+        // Each view's chain counts its own sun and moon, so each publishes into its view's global.
         Rid visibility = _cVisibility;
+        int view = View;
         Callable.From(() =>
         {
             if (_disposed || _cVisibility != visibility)
             {
                 return;
             }
-            Engine_ClassicSkyLayers.EnsureRegistered();
-            var texture = new Texture2Drd { TextureRdRid = visibility };
-            Engine_ClassicSkyLayers.Visibility = texture;
-            RenderingServer.GlobalShaderParameterSet(Engine_ClassicSkyLayers.VisibilityName, texture);
+            _cVisibilityTexture = new Texture2Drd { TextureRdRid = visibility };
+            Engine_ClassicSkyLayers.PublishVisibility(view, _cVisibilityTexture);
         }).CallDeferred();
         GD.Print("[postfx] the classic sky draws its beams, disc and moon bloom into the post layers");
         return true;
@@ -495,7 +496,7 @@ public partial class Engine_PostFxEffect
             return;
         }
         RenderingDevice rd = _rd!;
-        Refii.Models.Engine_ClassicConstants.CopyFrame(true, _cFrameFloats);
+        Refii.Models.Engine_ClassicConstants.CopyFrameView(View, true, _cFrameFloats);
         System.Buffer.BlockCopy(_cFrameFloats, 0, _cFrameBytes, 0, _cFrameBytes.Length);
         rd.BufferUpdate(_cFrameBuffer, 0, (uint)_cFrameBytes.Length, _cFrameBytes);
         rd.BufferClear(_cCounters, 0, 8);
@@ -596,6 +597,16 @@ public partial class Engine_PostFxEffect
     /// <summary>For the debug channel: the sun disc's last screen (u, v, depth), or -1s.</summary>
     public static Vector3 LastSunDisc { get; private set; } = new(-1f, -1f, -1f);
 
+    /// <summary>Puts this chain's view's visibility global back on the placeholder. Main thread, at predelete.</summary>
+    private void WithdrawClassicSky()
+    {
+        if (_cVisibilityTexture is { } texture)
+        {
+            _cVisibilityTexture = null;
+            Engine_ClassicSkyLayers.WithdrawVisibility(View, texture);
+        }
+    }
+
     private void FreeClassicSky()
     {
         if (_rd is null)
@@ -670,7 +681,7 @@ public partial class Engine_PostFxEffect
                     return;
                 }
                 Refii.Models.Engine_ClassicDisplacement.EnsureRegistered();
-                RenderingServer.GlobalShaderParameterSet(Refii.Models.Engine_ClassicDisplacement.SceneDepthName,
+                RenderingServer.GlobalShaderParameterSet(Refii.Models.Engine_ClassicDisplacement.SceneDepthFor(View),
                     new Texture2Drd { TextureRdRid = published });
             }).CallDeferred();
         }
@@ -880,7 +891,7 @@ public partial class Engine_PostFxEffect
                 return;
             }
             Refii.Models.Engine_ClassicDecals.EnsureRegistered();
-            RenderingServer.GlobalShaderParameterSet(Refii.Models.Engine_ClassicDecals.PointsName,
+            RenderingServer.GlobalShaderParameterSet(Refii.Models.Engine_ClassicDecals.PointsFor(View),
                 new Texture2Drd { TextureRdRid = published });
         }).CallDeferred();
         return true;

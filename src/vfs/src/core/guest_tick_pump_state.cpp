@@ -19,6 +19,8 @@
 // PAYLOAD reaches them through the C entries in core/payload_bridge.h, because its side of
 // that call is the player's compiler — see that header for the contract.
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -738,6 +740,87 @@ void refii_bridge_menu_spawn_begin_for(uint32_t screen_id) {
   // Mark it partial from here: "empty" and "this screen has no rows" are otherwise the same
   // value, and a consumer would rebuild its model from a list it is about to be given again.
   refii::vfs::g_menu_populating.store(true, std::memory_order_release);
+}
+
+namespace {
+/// 1 while player two owns the open in-game GUI (pause book and what it opens), else 0.
+std::atomic<int32_t> g_menu_owner_two{0};
+}  // namespace
+
+/// The payload's per-tick sample of the GUI's owner (guest_tick_pump.cpp SampleMenuOwner).
+void refii_bridge_set_menu_owner_two(int32_t two) {
+  g_menu_owner_two.store(two != 0 ? 1 : 0, std::memory_order_relaxed);
+}
+
+int32_t refii_bridge_menu_owner_two(void) { return g_menu_owner_two.load(std::memory_order_relaxed); }
+
+namespace {
+/// Players a region exit refused since the host last asked (bit 0 player one, bit 1 player two).
+std::atomic<int32_t> g_exit_refused{0};
+}  // namespace
+
+void refii_bridge_note_exit_refused(int32_t player) {
+  if (player == 1 || player == 2) {
+    g_exit_refused.fetch_or(player == 1 ? 1 : 2, std::memory_order_relaxed);
+  }
+}
+
+int32_t refii_bridge_take_exit_refused(void) { return g_exit_refused.exchange(0, std::memory_order_relaxed); }
+
+namespace {
+constexpr int32_t kPromptsTwo = 64;
+std::mutex g_prompts_two_mutex;
+std::array<uint32_t, kPromptsTwo> g_prompts_two{};
+int32_t g_prompts_two_count = 0;
+}  // namespace
+
+void refii_bridge_set_prompts_two(const uint32_t* things, int32_t count) {
+  std::lock_guard<std::mutex> lock(g_prompts_two_mutex);
+  g_prompts_two_count = things == nullptr ? 0 : std::clamp(count, 0, kPromptsTwo);
+  for (int32_t i = 0; i < g_prompts_two_count; ++i) {
+    g_prompts_two[static_cast<std::size_t>(i)] = things[i];
+  }
+}
+
+namespace {
+std::atomic<int32_t> g_exit_waiting{0};
+}  // namespace
+
+void refii_bridge_set_exit_waiting(int32_t waiting) {
+  g_exit_waiting.store(waiting != 0 ? 1 : 0, std::memory_order_relaxed);
+}
+
+int32_t refii_bridge_exit_waiting(void) { return g_exit_waiting.load(std::memory_order_relaxed); }
+
+namespace {
+std::mutex g_exit_request_mutex;
+uint32_t g_exit_request_seq = 0;
+float g_exit_request_at[3] = {0.0f, 0.0f, 0.0f};
+}  // namespace
+
+void refii_bridge_set_exit_request(float x, float y, float z) {
+  std::lock_guard<std::mutex> lock(g_exit_request_mutex);
+  ++g_exit_request_seq;
+  g_exit_request_at[0] = x;
+  g_exit_request_at[1] = y;
+  g_exit_request_at[2] = z;
+}
+
+uint32_t refii_bridge_exit_request(float* out_xyz) {
+  std::lock_guard<std::mutex> lock(g_exit_request_mutex);
+  if (out_xyz != nullptr) {
+    std::memcpy(out_xyz, g_exit_request_at, sizeof(g_exit_request_at));
+  }
+  return g_exit_request_seq;
+}
+
+int32_t refii_bridge_prompts_two(uint32_t* out, int32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_prompts_two_mutex);
+  const int32_t count = out == nullptr ? 0 : std::min(capacity, g_prompts_two_count);
+  for (int32_t i = 0; i < count; ++i) {
+    out[i] = g_prompts_two[static_cast<std::size_t>(i)];
+  }
+  return count;
 }
 
 /// Clears the partial-population flag. Called once per guest tick.
