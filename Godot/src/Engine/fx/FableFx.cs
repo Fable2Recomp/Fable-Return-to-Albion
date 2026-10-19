@@ -991,7 +991,7 @@ public partial class FableFx : Node3D
 	}
 
 	private readonly float[] _litScratch = new float[3];
-	private System.Func<string, Refii.Fx.VisualBatchMaterial>? _lookupMaterial;
+	private System.Func<string, Refii.Fx.VisualBatchMaterial?>? _lookupMaterial;
 	private readonly float[] _probeBand = new float[3];
 	private bool? _hasProbe;
 	private ulong _probeAskedFrame;

@@ -304,7 +304,7 @@ public class ModPbrPipelineTests
     {
         string tempRoot = Path.Combine(Path.GetTempPath(), "refii_pbr_probe_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
-        string prevModsRoot = EditorModValueService.ModsRootOverride;
+        string? prevModsRoot = EditorModValueService.ModsRootOverride;
 
         try
         {
@@ -344,7 +344,7 @@ public class ModPbrPipelineTests
     {
         string tempRoot = Path.Combine(Path.GetTempPath(), "refii_pbr_slots_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
-        string prevModsRoot = EditorModValueService.ModsRootOverride;
+        string? prevModsRoot = EditorModValueService.ModsRootOverride;
 
         try
         {
@@ -382,7 +382,7 @@ public class ModPbrPipelineTests
     {
         string tempRoot = Path.Combine(Path.GetTempPath(), "refii_pbr_link_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
-        string prevModsRoot = EditorModValueService.ModsRootOverride;
+        string? prevModsRoot = EditorModValueService.ModsRootOverride;
         string prevActiveMod = EditorModExporter.ActiveModName;
 
         try
@@ -587,7 +587,7 @@ public class ModPbrPipelineTests
     {
         string tempRoot = Path.Combine(Path.GetTempPath(), "refii_add_slot_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
-        string prevModsRoot = EditorModValueService.ModsRootOverride;
+        string? prevModsRoot = EditorModValueService.ModsRootOverride;
         string prevActiveMod = EditorModExporter.ActiveModName;
 
         try

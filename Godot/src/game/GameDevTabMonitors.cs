@@ -54,7 +54,7 @@ public partial class GameDevTabMonitors : GameDevTab
 	{
 		if (_monitor is { } monitor)
 		{
-			_graph.Push((float)Scale(monitor, Performance.GetMonitor(monitor)));
+			_graph.Push((float)ScaleValue(monitor, Performance.GetMonitor(monitor)));
 		}
 		else if (_custom is { } custom)
 		{
@@ -86,7 +86,7 @@ public partial class GameDevTabMonitors : GameDevTab
 	private static string Label(Performance.Monitor monitor) => monitor.ToString();
 
 	/// <summary>Times in ms, memory in MB, everything else as the engine counts it.</summary>
-	private static double Scale(Performance.Monitor monitor, double value)
+	private static double ScaleValue(Performance.Monitor monitor, double value)
 	{
 		string name = monitor.ToString();
 		return name.StartsWith("Time", System.StringComparison.Ordinal) && name != "TimeFps"
@@ -99,7 +99,7 @@ public partial class GameDevTabMonitors : GameDevTab
 	private static string Format(Performance.Monitor monitor, double value)
 	{
 		string name = monitor.ToString();
-		double scaled = Scale(monitor, value);
+		double scaled = ScaleValue(monitor, value);
 		return name.StartsWith("Time", System.StringComparison.Ordinal) && name != "TimeFps"
 			? $"{scaled:0.00} ms"
 			: name.Contains("Mem", System.StringComparison.Ordinal)

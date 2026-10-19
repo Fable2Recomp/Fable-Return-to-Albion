@@ -230,8 +230,8 @@ public partial class Engine_ClassicMist : Node
         }
         EnsureTables();
         var material = new ShaderMaterial { Shader = shader };
-        material.SetShaderParameter("ps_g_PermTexture", _permutation);
-        material.SetShaderParameter("ps_g_GradTexture", _gradients);
+        material.SetShaderParameter("ps_g_PermTexture", _permutation!);
+        material.SetShaderParameter("ps_g_GradTexture", _gradients!);
 
         var viewport = new SubViewport
         {

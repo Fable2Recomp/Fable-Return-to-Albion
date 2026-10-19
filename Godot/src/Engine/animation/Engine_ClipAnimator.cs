@@ -1776,11 +1776,11 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 			int[] chain = kind == 0 ? post.AimBones : post.LookBones;
 			int n = System.Math.Min(chain.Length, chosen.Targets.Length);
-			_postChain[kind] ??= new int[6];
-			_postTarget[kind] ??= new Quaternion[6];
+			int[] dstChain = _postChain[kind] ??= new int[6];
+			Quaternion[] dstTarget = _postTarget[kind] ??= new Quaternion[6];
 			n = System.Math.Min(n, 6);
-			System.Array.Copy(chain, _postChain[kind], n);
-			System.Array.Copy(chosen.Targets, _postTarget[kind], n);
+			System.Array.Copy(chain, dstChain, n);
+			System.Array.Copy(chosen.Targets, dstTarget, n);
 			_postCount[kind] = n;
 			_postMode[kind] = chosen.Mode;
 			_postWeight[kind] = chosen.Weight;

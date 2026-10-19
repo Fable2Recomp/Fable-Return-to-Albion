@@ -79,11 +79,13 @@ public partial class HudEditorPlugin : EditorPlugin
 		_dock.AddChild(Labelled("Offset X", _offsetX));
 		_dock.AddChild(Labelled("Offset Y", _offsetY));
 
+#pragma warning disable CS0618 // AddControlToDock is deprecated in Godot 4.4+ in favor of AddDock(EditorDock)
 		AddControlToDock(DockSlot.RightUl, _dock);
 
 		// Menu-template editor over `user://ui/templates.json`.
 		_menus = new MenuEditorDock();
 		AddControlToDock(DockSlot.RightBl, _menus);
+#pragma warning restore CS0618
 
 		Reload();
 	}
@@ -92,6 +94,7 @@ public partial class HudEditorPlugin : EditorPlugin
 
 	public override void _ExitTree()
 	{
+#pragma warning disable CS0618 // RemoveControlFromDocks is deprecated in Godot 4.4+ in favor of RemoveDock(EditorDock)
 		if (_dock is not null)
 		{
 			RemoveControlFromDocks(_dock);
@@ -105,6 +108,7 @@ public partial class HudEditorPlugin : EditorPlugin
 			_menus.QueueFree();
 			_menus = null;
 		}
+#pragma warning restore CS0618
 	}
 
 	private static HBoxContainer Labelled(string text, Control control)

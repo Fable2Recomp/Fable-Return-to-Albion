@@ -1113,11 +1113,11 @@ public static class HostBridge
 			return 0;
 		}
 
-		_statedFxWords ??= new uint[StatedFxWords * 512];
+		uint[] words = _statedFxWords ??= new uint[StatedFxWords * 512];
 		uint rows;
 		try
 		{
-			rows = RefiiHostGetStatedFx(_statedFxWords, (uint)_statedFxWords.Length);
+			rows = RefiiHostGetStatedFx(words, (uint)words.Length);
 		}
 		catch (System.EntryPointNotFoundException)
 		{
@@ -1127,9 +1127,9 @@ public static class HostBridge
 		for (int i = 0; i < rows; ++i)
 		{
 			int at = i * StatedFxWords;
-			float F(int k) => System.BitConverter.Int32BitsToSingle((int)_statedFxWords[at + k]);
+			float F(int k) => System.BitConverter.Int32BitsToSingle((int)words[at + k]);
 			into.Add(new GuestStatedFx(
-				_statedFxWords[at], _statedFxWords[at + 1],
+				words[at], words[at + 1],
 				F(2), F(3), F(4), F(5), F(6), F(7), F(8), F(9)));
 		}
 

@@ -54,7 +54,7 @@ public sealed class ChipStack : Action
 
     public int Num50000s { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<ChipStack>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<ChipStack>.Preallocate(size);
 
     public static ChipStack Timed(
         IPubClip theChipTotal, int player, double finalChips, double betAmount,

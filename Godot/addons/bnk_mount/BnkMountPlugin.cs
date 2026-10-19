@@ -1386,7 +1386,9 @@ public partial class BnkMountPlugin : EditorPlugin
             // 2. Mount as Right Bar Dock (alongside Inspector, collapsed by default)
             _modStudioDockPanel = new Refii.Assets.UI.ModStudioDockPanel();
             _modStudioDockPanel.Name = "Mod Studio";
+#pragma warning disable CS0618 // AddControlToDock is deprecated in Godot 4.4+ in favor of AddDock(EditorDock)
             AddControlToDock(DockSlot.RightUl, _modStudioDockPanel);
+#pragma warning restore CS0618
 
             // 3. Mount 3D Level Perspective & Save Layer Toolbar in SpatialEditorMenu
             _levelToolbar = new Refii.Assets.UI.LevelPerspectiveToolbar();
@@ -1446,7 +1448,9 @@ public partial class BnkMountPlugin : EditorPlugin
 
         if (_modStudioDockPanel is not null && GodotObject.IsInstanceValid(_modStudioDockPanel))
         {
+#pragma warning disable CS0618 // RemoveControlFromDocks is deprecated in Godot 4.4+ in favor of RemoveDock(EditorDock)
             RemoveControlFromDocks(_modStudioDockPanel);
+#pragma warning restore CS0618
             _modStudioDockPanel.QueueFree();
             _modStudioDockPanel = null;
         }
@@ -1646,7 +1650,7 @@ public partial class BnkMountPlugin : EditorPlugin
     /// <returns>True if the 3D preview was spawned/updated; false if no model could be resolved.</returns>
     public bool InspectGdbRecordIn3D(uint nodeHash, string? overrideModelPath = null, bool switchTo3DView = true)
     {
-        string modelPath = !string.IsNullOrWhiteSpace(overrideModelPath)
+        string? modelPath = !string.IsNullOrWhiteSpace(overrideModelPath)
             ? overrideModelPath.Trim()
             : EditorModValueService.ResolveNodeEffectiveModelPath(nodeHash);
 

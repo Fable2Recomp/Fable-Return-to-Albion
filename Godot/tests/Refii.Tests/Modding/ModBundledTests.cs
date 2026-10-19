@@ -49,7 +49,7 @@ public class ModBundledTests
             AssertThat(F2ModPackage.TryOpen(package, out F2ModPackage? packed, out _)).IsTrue();
             using (packed!)
             {
-                AssertThat(packed.Metadata.Title).IsEqual("Demo");
+                AssertThat(packed!.Metadata.Title).IsEqual("Demo");
                 AssertThat(packed.Entries.Count).IsEqual(1);
                 AssertThat(packed.TryGetEntry("mod/init.lua", out _)).IsTrue();
             }
@@ -88,7 +88,7 @@ public class ModBundledTests
             AssertThat(F2ModPackage.TryOpen(Path.Combine(mods, "demo.f2mod"), out F2ModPackage? packed, out _)).IsTrue();
             using (packed!)
             {
-                AssertThat(packed.TryGetEntry("mod/init.lua", out _)).IsTrue();
+                AssertThat(packed!.TryGetEntry("mod/init.lua", out _)).IsTrue();
                 AssertThat(packed.TryGetEntry("mod/camera.lua", out _)).IsFalse();
             }
         }

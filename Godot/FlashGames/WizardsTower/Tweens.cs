@@ -21,7 +21,7 @@ public sealed class MoveTo : Action
 
     public double? Speed { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<MoveTo>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<MoveTo>.Preallocate(size);
 
     public static MoveTo To(
         IPubClip thingToMove, double finalX, double finalY, double? finalDepth, double? duration,
@@ -161,7 +161,7 @@ public sealed class Rotate : Action
 
     public int ForcedDirection { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<Rotate>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<Rotate>.Preallocate(size);
 
     public static Rotate To(
         IPubClip thingToRotate, double finalAngle, double? duration, object? group = null)
@@ -301,7 +301,7 @@ public sealed class Scale : Action
 
     public double? FinalYScale { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<Scale>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<Scale>.Preallocate(size);
 
     public static Scale By(
         IPubClip thingToScale, double finalScale, double? duration, object? group = null)
@@ -461,7 +461,7 @@ public sealed class Tint : Action
 
     public double FinalBlueTint { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<Tint>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<Tint>.Preallocate(size);
 
     public static Tint Apply(
         IPubClip thingToTint, double red, double green, double blue, double? duration,
@@ -540,7 +540,7 @@ public sealed class SetText : Action
 
     public Dictionary<string, string>? LocVariables { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<SetText>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<SetText>.Preallocate(size);
 
     public static SetText Replace(IPubClip field, string text, object? group = null)
     {

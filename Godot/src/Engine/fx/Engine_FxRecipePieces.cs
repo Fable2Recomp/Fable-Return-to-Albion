@@ -180,7 +180,10 @@ public static class Engine_FxRecipePieces
 	{
 		_glow ??= new Shader { Code = GlowShader };
 		var material = new ShaderMaterial { Shader = _glow };
-		material.SetShaderParameter("tex", texture);
+		if (texture is not null)
+		{
+			material.SetShaderParameter("tex", texture);
+		}
 		material.SetShaderParameter("tint", tint);
 		material.SetShaderParameter("billboard", billboard);
 		return material;

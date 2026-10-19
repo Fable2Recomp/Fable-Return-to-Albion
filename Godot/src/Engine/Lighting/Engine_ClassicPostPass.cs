@@ -75,7 +75,9 @@ public sealed class Engine_ClassicPostPass
     private Rid _set;
     private readonly byte[] _push = new byte[16];
     private readonly byte[] _spritePush = new byte[64];
-    private Kind _kind;
+
+    /// <summary>The post pass kind.</summary>
+    public Kind PassKind { get; }
 
     /// <summary>The pixel shader's entry name.</summary>
     public string Entry { get; }
@@ -83,8 +85,9 @@ public sealed class Engine_ClassicPostPass
     /// <summary>The samplers the pass declares, in binding order (3 up).</summary>
     public IReadOnlyList<string> Samplers => _samplers;
 
-    private Engine_ClassicPostPass(string entry, int samplerCount)
+    private Engine_ClassicPostPass(Kind kind, string entry, int samplerCount)
     {
+        PassKind = kind;
         Entry = entry;
         _bound = new Rid[8 + samplerCount * 2];
     }
@@ -127,7 +130,7 @@ public sealed class Engine_ClassicPostPass
             return null;
         }
 
-        var pass = new Engine_ClassicPostPass(pixelEntry, samplers.Count) { _kind = kind };
+        var pass = new Engine_ClassicPostPass(kind, pixelEntry, samplers.Count);
         pass._samplers.AddRange(samplers);
         int register = 0;
         foreach ((string name, int count) in constants)

@@ -140,7 +140,7 @@ public partial class GameUi
 			string element = call.Argument(0).Text;
 			if (element.Length != 0)
 			{
-				_hud.Values.StateMeter(
+				_hud?.Values.StateMeter(
 					Engine_GameHash.Fnv1(element), call.Argument(1).Number * 100f,
 					call.Argument(2).Number);
 			}
@@ -151,7 +151,7 @@ public partial class GameUi
 			string element = call.Argument(0).Text;
 			if (element.Length != 0)
 			{
-				_hud.Values.StateMeter(
+				_hud?.Values.StateMeter(
 					Engine_GameHash.Fnv1(element), call.Argument(1).Number,
 					call.Argument(2).Number);
 			}
@@ -378,7 +378,7 @@ public partial class GameUi
 		// `UIContract` presentation — `setCenterOn`/`setCenterOff`, `dword_83497B78` /
 		// `dword_83497B7C`, hashes initialised at 0x8324CF9C — which is the visible effect.
 		_guiNatives.Register("SetDPadCenter", call =>
-			_hud.Values.StateDpadCentered(call.Argument(0).Boolean));
+			_hud?.Values.StateDpadCentered(call.Argument(0).Boolean));
 
 		// ---- THE TIMERS ---------------------------------------------------------------------
 		//
@@ -469,7 +469,7 @@ public partial class GameUi
 		// henchman markers (request types 52 and 53), the only records in the vector at
 		// `elemMgr+100`. Nothing else in the world-icon manager reads the flag.
 		_guiNatives.Register("SetShouldDrawPlayerIcons", call =>
-			_hud.Values.StatePlayerIconsDrawn(call.Argument(0).Boolean));
+			_hud?.Values.StatePlayerIconsDrawn(call.Argument(0).Boolean));
 
 		// ---- THE EXPRESSION METER ------------------------------------------------------------
 		//
@@ -817,7 +817,7 @@ public partial class GameUi
 			string element = call.Argument(0).Text;
 			if (element.Length != 0)
 			{
-				_hud.Values.StateFade(Engine_GameHash.Fnv1(element), slide);
+				_hud?.Values.StateFade(Engine_GameHash.Fnv1(element), slide);
 			}
 		}
 

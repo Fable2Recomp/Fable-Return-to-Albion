@@ -111,13 +111,12 @@ public sealed class Engine_UiBookSet
 		// would be inherited dark by the next screen that has no book of its own.
 		// THE GUEST'S TREE IS NEVER DRAWN. Godot owns every screen; a screen with no chrome yet
 		// shows nothing rather than the guest's picture.
-		bool standing = book is not null && GodotObject.IsInstanceValid(book);
 		if (GodotObject.IsInstanceValid(drawn.Node))
 		{
 			drawn.Node.Visible = false;
 		}
 
-		if (!standing)
+		if (book is null || !GodotObject.IsInstanceValid(book))
 		{
 			return;
 		}
@@ -126,7 +125,7 @@ public sealed class Engine_UiBookSet
 		// across that frame rather than reading a disposed node.
 		if (GodotObject.IsInstanceValid(drawn.Node))
 		{
-			book!.Position = new Vector3(0f, 0f, drawn.Node.Position.Z + (Engine_UiPresentationDepth.Step / 4f));
+			book.Position = new Vector3(0f, 0f, drawn.Node.Position.Z + (Engine_UiPresentationDepth.Step / 4f));
 		}
 
 		book.Visible = true;

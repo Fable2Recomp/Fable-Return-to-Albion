@@ -1129,8 +1129,6 @@ public partial class Engine_FrontEndMenuView : Node3D
 			}
 		}
 
-		static Color Rgb(float r, float g, float b) => new(r / 255f, g / 255f, b / 255f);
-
 		static void Tint(Node node, Color colour, float amount)
 		{
 			if (node is MeshInstance3D mesh)

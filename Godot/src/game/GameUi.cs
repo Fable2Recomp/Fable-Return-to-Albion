@@ -1062,7 +1062,7 @@ public partial class GameUi : Node
 		// EVERY instance — the screen ships its furniture twice, the authored 4:3 layout and the
 		// 16:9 copy on a marker child — and the count goes in the takeover line.
 		int highlightsHidden = 0;
-		foreach (Engine_UiTheme catalogue in new[] { _presentation?.Templates, theme })
+		foreach (Engine_UiTheme? catalogue in new[] { _presentation?.Templates, theme })
 		{
 			if (catalogue is null)
 			{
@@ -8394,7 +8394,7 @@ public partial class GameUi : Node
 	/// one without making the line unreadable. Capped, because a fault that hits every quad
 	/// would otherwise print three thousand names.
 	/// </summary>
-	private static void Name(System.Collections.Generic.List<string> into, Node node, string why)
+	private static new void Name(System.Collections.Generic.List<string> into, Node node, string why)
 	{
 		const int limit = 8;
 		if (into.Count >= limit)
@@ -9735,7 +9735,7 @@ public partial class GameUi : Node
 		built.Position = new Vector3(0f, 0f, depth * Engine_UiPresentationDepth.Step);
 		// BUILT HIDDEN. The tree is sampled for text, slides and values; it is never the picture.
 		built.Visible = false;
-		_presentation.AddChild(built);
+		_presentation?.AddChild(built);
 
 		// AFTER the attach, which is the contract `ApplyCameraAiming` states and the one
 		// `BuildDetached` cannot keep: the aim rides through the camera's parent GLOBAL
@@ -9771,7 +9771,7 @@ public partial class GameUi : Node
 					// The same theme the front end draws with — the HUD's live text has to be
 					// laid out in the game's own fonts, and without it a bound field simply
 					// keeps whatever the file left in it.
-					Theme = _presentation.Theme,
+					Theme = _presentation?.Theme,
 				};
 
 				values.Bind(screen.Document, bindings, stats.ByOrdinal);

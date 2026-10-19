@@ -310,21 +310,24 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		// Every text element inside a cloned unit is a live field, derived from the binding, not
 		// listed. Wrap mode, size, alignment and colour are stamped on the node.
-		foreach ((MeshInstance3D mesh, int ordinal) in _binding.TextNodes(Document))
+		if (Document is not null)
 		{
-			_textMeshes.Add(mesh);
-			_fields.Add(new Field
+			foreach ((MeshInstance3D mesh, int ordinal) in _binding.TextNodes(Document))
 			{
-				Path = DocumentPath(Document.Nodes[ordinal]),
-				Ordinal = ordinal,
-				Node = mesh,
-				Authored = Document.Nodes[ordinal].Text?.Tag ?? string.Empty,
+				_textMeshes.Add(mesh);
+				_fields.Add(new Field
+				{
+					Path = DocumentPath(Document.Nodes[ordinal]),
+					Ordinal = ordinal,
+					Node = mesh,
+					Authored = Document.Nodes[ordinal].Text?.Tag ?? string.Empty,
 
-				// The FILE's own resolved caption — the fallback for any element the host does
-				// not state. A document whose tag and display are the same string never
-				// resolved through Babel, and that is what marks a placeholder.
-				AuthoredDisplay = Document.Nodes[ordinal].Text?.Display ?? string.Empty,
-			});
+					// The FILE's own resolved caption — the fallback for any element the host does
+					// not state. A document whose tag and display are the same string never
+					// resolved through Babel, and that is what marks a placeholder.
+					AuthoredDisplay = Document.Nodes[ordinal].Text?.Display ?? string.Empty,
+				});
+			}
 		}
 
 		int units = Template.ChromeUnits.Count - CountMissingUnits();
@@ -734,7 +737,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 
 		_pageStackShown = key.ToString();
-		GD.Print($"[owned-book] '{Template.Name}' page stack: {report}");
+		GD.Print($"[owned-book] '{Template?.Name}' page stack: {report}");
 	}
 
 	private int _masked;

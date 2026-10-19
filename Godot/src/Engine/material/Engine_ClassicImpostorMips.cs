@@ -1,3 +1,4 @@
+using System;
 using Godot;
 using Godot.Collections;
 
@@ -121,12 +122,15 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
         EnsureTarget(size);
         // Mip 0 sampled from the capture's colour at its own texel centres (a render buffer is not
         // copyable), each further mip the box of the one above.
+        Span<Rid> rids = stackalloc Rid[2];
         for (int mip = 0; mip < Mips; mip++)
         {
             int w = System.Math.Max(size.X >> mip, 1), h = System.Math.Max(size.Y >> mip, 1);
             Rid read = mip == 0 ? source : _views[mip - 1];
             Refii.Core.Engine_UniformSetKey key = _sets[mip] ??= new Refii.Core.Engine_UniformSetKey(2);
-            Rid set = key.For(_rd, stackalloc Rid[] { read, _views[mip] });
+            rids[0] = read;
+            rids[1] = _views[mip];
+            Rid set = key.For(_rd, rids);
             if (!set.IsValid)
             {
                 var above = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };

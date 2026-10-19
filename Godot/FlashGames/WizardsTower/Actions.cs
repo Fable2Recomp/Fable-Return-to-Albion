@@ -14,7 +14,7 @@ public sealed class Animate : Action
 
     public bool Looping { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<Animate>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<Animate>.Preallocate(size);
 
     public static Animate Once(
         IPubClip thingToAnimate, double finalFrame, double? duration, object? group = null)
@@ -160,7 +160,7 @@ public sealed class Fade : Action
 
     public double FinalAlpha { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<Fade>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<Fade>.Preallocate(size);
 
     public static Fade Exact(
         IPubClip thingToFade, double finalAlpha, double? duration, object? group = null)
@@ -237,7 +237,7 @@ public sealed class Wait : Action
 {
     public bool RunOnlyWhileActive { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<Wait>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<Wait>.Preallocate(size);
 
     public static Wait Seconds(double duration, object? group = null)
     {
@@ -289,7 +289,7 @@ public sealed class PlaySound : Action
 {
     public string? Cue { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<PlaySound>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<PlaySound>.Preallocate(size);
 
     public static PlaySound Once(string cue, object? group = null)
     {

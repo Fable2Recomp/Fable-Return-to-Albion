@@ -412,13 +412,15 @@ public static partial class Engine_LevelProps
 
         foreach (GdbPlacement placement in placements)
         {
+            string entityName = placement.EntityName ?? string.Empty;
+
             if (placement.SkeletonFileHash != 0 || placement.RetargetSkeletonFileHash != 0)
             {
                 stats.Skeletal++;
                 continue;
             }
 
-            if (placement.ModelPathHash == 0 && placement.EntityName.Length == 0)
+            if (placement.ModelPathHash == 0 && entityName.Length == 0)
             {
                 stats.Unnamed++;
                 continue;
@@ -426,7 +428,7 @@ public static partial class Engine_LevelProps
 
             bool RejectSubstitute(string candidate, bool containerGuard)
             {
-                if (IsBadMarketSubstitution(placement.EntityName, candidate))
+                if (IsBadMarketSubstitution(entityName, candidate))
                 {
                     return true;
                 }
@@ -446,7 +448,7 @@ public static partial class Engine_LevelProps
 
             if (modelPath is null)
             {
-                string entityKey = Engine_PropModelIndex.EntityKey(placement.EntityName);
+                string entityKey = Engine_PropModelIndex.EntityKey(entityName);
                 string? curated =
                     Engine_GdbModelHashlist.LookupParentHash(placement.ParentHash) ??
                     Engine_GdbModelHashlist.LookupEntityKey(entityKey);
@@ -509,7 +511,7 @@ public static partial class Engine_LevelProps
                         stats.NoModelHashWithAppearance++;
                     }
 
-                    string shellKey = Engine_PropModelIndex.EntityKey(placement.EntityName);
+                    string shellKey = Engine_PropModelIndex.EntityKey(entityName);
                     if (IsNoHashShellKey(shellKey) && HasWorldishPosition(placement))
                     {
                         shellCandidates.Add(new ShellCandidate(shellKey, placement));
@@ -525,11 +527,11 @@ public static partial class Engine_LevelProps
 
             {
                 string want = OS.GetEnvironment("REFII_PROPS_DUMP");
-                if (want.Length != 0 && placement.EntityName is not null &&
-                    placement.EntityName.Contains(want, StringComparison.OrdinalIgnoreCase))
+                if (want.Length != 0 && entityName.Length != 0 &&
+                    entityName.Contains(want, StringComparison.OrdinalIgnoreCase))
                 {
                     GD.Print(
-                        $"[props-dump] {placement.EntityName} hash={placement.Hash:X8} " +
+                        $"[props-dump] {entityName} hash={placement.Hash:X8} " +
                         $"modelHash={placement.ModelPathHash:X8} filled={placement.ModelPathFilled} " +
                         $"authored={authoredHash} byHash={matchedByHash} " +
                         $"parent={placement.ParentHash:X8} at=({placement.X:F2},{placement.Y:F2},{placement.Z:F2}) -> {modelPath}");
@@ -564,7 +566,7 @@ public static partial class Engine_LevelProps
 
             string? clocktowerPlatformCompanion = null;
             bool clocktowerAudit = placement.ParentHash == ClocktowerParentHash ||
-                Engine_PropModelIndex.EntityKey(placement.EntityName)
+                Engine_PropModelIndex.EntityKey(entityName)
                     .Contains("clocktower", StringComparison.Ordinal);
             if (clocktowerAudit && !hasExplicitClocktowerBase &&
                 NormalisePath(modelPath).Contains(

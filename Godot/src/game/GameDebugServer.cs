@@ -1962,12 +1962,12 @@ public partial class GameDebugServer : Node
 				}
 				// `hideNode` / `showNode`: one node by path off or back on, to find what draws a thing.
 				if (root.TryGetProperty("hideNode", out JsonElement hn) && hn.ValueKind == JsonValueKind.String &&
-					GetTree().Root.GetNodeOrNull(hn.GetString()) is Node3D hideTarget)
+					hn.GetString() is { } hidePath && GetTree().Root.GetNodeOrNull(hidePath) is Node3D hideTarget)
 				{
 					hideTarget.Visible = false;
 				}
 				if (root.TryGetProperty("showNode", out JsonElement sn) && sn.ValueKind == JsonValueKind.String &&
-					GetTree().Root.GetNodeOrNull(sn.GetString()) is Node3D showTarget)
+					sn.GetString() is { } showPath && GetTree().Root.GetNodeOrNull(showPath) is Node3D showTarget)
 				{
 					showTarget.Visible = true;
 				}

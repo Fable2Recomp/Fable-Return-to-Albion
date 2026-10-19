@@ -737,7 +737,7 @@ public partial class Engine_ClassicParticles : Node
     /// </summary>
     /// <summary>A composition's inputs as one number, compared each frame instead of its key string.</summary>
     private static long ShapeOf(int textures, bool soft, bool anim, bool alphaRef16, bool doubled, bool displaces, int src, int dst, int op) =>
-        textures | (soft ? 8L : 0L) | (anim ? 16L : 0L) | (alphaRef16 ? 32L : 0L) | (doubled ? 64L : 0L) | (displaces ? 128L : 0L) |
+        (uint)textures | (soft ? 8L : 0L) | (anim ? 16L : 0L) | (alphaRef16 ? 32L : 0L) | (doubled ? 64L : 0L) | (displaces ? 128L : 0L) |
         ((long)(src & 0xFFFF) << 8) | ((long)(dst & 0xFFFF) << 24) | ((long)(op & 0xFFFF) << 40);
 
     private static string BlendMode(int src, int dst, int op, out bool oneOne)

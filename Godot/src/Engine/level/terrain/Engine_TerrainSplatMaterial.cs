@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Textures;
@@ -82,7 +82,10 @@ public static class Engine_TerrainSplatMaterial
         material.SetShaderParameter("lod_array", baseArray);
         material.SetShaderParameter("lod_detail_array", detailArray);
         material.SetShaderParameter("material_weight", weightArray);
-        material.SetShaderParameter("material_mask", BuildLayerMask(data));
+        if (BuildLayerMask(data) is { } mask)
+        {
+            material.SetShaderParameter("material_mask", mask);
+        }
 
         // The layers' normal maps, which the .ehf has always named and nothing has ever loaded.
         // A missing pair leaves the shader's flat default, which costs a sample and nothing else.

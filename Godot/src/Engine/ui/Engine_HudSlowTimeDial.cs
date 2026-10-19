@@ -106,7 +106,7 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 	{
 		if (_dial is not { } dial || dial.Alpha <= 0.004f)
 		{
-			Hide();
+			HideSegments();
 			return;
 		}
 
@@ -138,7 +138,7 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 		}
 	}
 
-	private void Hide()
+	private void HideSegments()
 	{
 		for (int i = 0; i < Segments; ++i)
 		{

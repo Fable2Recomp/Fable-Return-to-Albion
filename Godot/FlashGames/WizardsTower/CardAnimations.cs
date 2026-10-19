@@ -125,7 +125,7 @@ public sealed class DealCard : Action
 
     public double Blue { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<DealCard>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<DealCard>.Preallocate(size);
 
     public static DealCard ToBoard(
         IPubClip thingToDeal, string cardName, int cardValue, double finalX, double finalY,
@@ -281,7 +281,7 @@ public sealed class SweepCard : Action
 
     public string? CardName { get; set; }
 
-    public static void Preallocate(int size) => ActionPool<SweepCard>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<SweepCard>.Preallocate(size);
 
     public static SweepCard ToDeck(
         IPubClip thingToSweep, string cardName, double finalX, double finalY, double finalAngle,
@@ -380,7 +380,7 @@ public sealed class SwitchCard : Action
 
     public string CardAnimation { get; set; } = string.Empty;
 
-    public static void Preallocate(int size) => ActionPool<SwitchCard>.Preallocate(size);
+    public static new void Preallocate(int size) => ActionPool<SwitchCard>.Preallocate(size);
 
     public static SwitchCard Synched(
         IPubClip thingToSwitch, string cardName, int cardValue, string cardAnimation, Action synch,
