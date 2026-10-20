@@ -159,6 +159,41 @@ REFII_LUADEC_EXPORT int32_t RefiiLuadecCheckSource(const char* text,
     return ok ? 1 : 0;
 }
 
+/// Compiles `text` as chunk `chunk_name` with the game's compiler and hands
+/// back the guest chunk (free with RefiiLuadecFree). `strip` 0 keeps the debug
+/// info (line numbers, local and upvalue names) a bytecode check reads.
+/// Returns 0 with the compiler's message otherwise.
+REFII_LUADEC_EXPORT int32_t RefiiLuadecCompile(const char* text,
+                                               uint32_t size,
+                                               const char* chunk_name,
+                                               int32_t strip,
+                                               char** out_bytes,
+                                               uint32_t* out_size,
+                                               char* message,
+                                               uint32_t message_capacity) {
+    if (out_bytes != nullptr) *out_bytes = nullptr;
+    if (out_size != nullptr) *out_size = 0;
+    CopyMessage("", message, message_capacity);
+    if (text == nullptr || out_bytes == nullptr) {
+        CopyMessage("no source", message, message_capacity);
+        return 0;
+    }
+    std::vector<unsigned char> chunk;
+    std::string error;
+    if (!refii::luadec::CompileSourceToGuestChunk(std::string_view(text, size),
+                                                  chunk_name != nullptr ? chunk_name : "=source", strip != 0,
+                                                  /*compat_vararg=*/false, &chunk, &error)) {
+        CopyMessage(error, message, message_capacity);
+        return 0;
+    }
+    *out_bytes = AllocateText(std::string(chunk.begin(), chunk.end()), out_size);
+    if (*out_bytes == nullptr) {
+        CopyMessage("out of memory", message, message_capacity);
+        return 0;
+    }
+    return 1;
+}
+
 /// Verifies `text` against the chunk it was decompiled from. Returns the
 /// verification code; `message` carries the first divergence or the compiler
 /// error.

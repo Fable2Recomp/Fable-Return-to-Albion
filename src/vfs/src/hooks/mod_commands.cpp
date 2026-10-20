@@ -40,6 +40,8 @@
 //   query ID player_value P KEY [FALLBACK] -> value,has · player_here P -> here
 //   query ID player_dog P -> dog · focus P -> entity · opinion E P -> love,fear,attractiveness,
 //     morality,respect · uid E -> uid='0x…'
+//   query ID discovered_crime E P -> discovered · perceived_renown E P -> renown
+//   forgive_crimes E P   (refii_mod_forgive_crimes: player P's crimes the villager E knows of)
 // A command that does nothing (no such entity, no component) is silent; a query always replies,
 // with ok=false when it could not be answered.
 
@@ -287,6 +289,17 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     std::snprintf(fields, sizeof(fields), "love=%.9g,fear=%.9g,attractiveness=%.9g,morality=%.9g,respect=%.9g",
                   static_cast<double>(axes[0]), static_cast<double>(axes[1]), static_cast<double>(axes[2]),
                   static_cast<double>(axes[3]), static_cast<double>(axes[4]));
+  } else if (what == "discovered_crime") {
+    // Refii.discovered_crime(villager, p): the villager has discovered a crime of player p's hero.
+    const uint32_t hero = refii_mod_player_hero(base, I(w, 4));
+    ok = hero != 0;
+    std::snprintf(fields, sizeof(fields), "discovered=%s",
+                  ok && refii_mod_discovered_crime(&ctx, base, E(w, 3), hero) != 0 ? "true" : "false");
+  } else if (what == "perceived_renown") {
+    // Refii.perceived_renown(villager, p): the renown the villager credits player p's hero with.
+    int32_t renown = 0;
+    ok = refii_mod_perceived_renown(&ctx, base, E(w, 3), refii_mod_player_hero(base, I(w, 4)), &renown) != 0;
+    std::snprintf(fields, sizeof(fields), "renown=%d", renown);
   } else if (what == "uid") {
     // Refii.uid(e): the entity's own 64-bit UniqueID (+0x14 high, +0x18 low).
     const uint32_t entity = E(w, 3);
@@ -339,6 +352,8 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_player_save(I(w, 1), w[2].c_str(), F(w, 3));
   } else if (op == "save_set" && w.size() >= 3) {
     refii_mod_save_set_int(&ctx, base, w[1].c_str(), I(w, 2));
+  } else if (op == "forgive_crimes") {
+    refii_mod_forgive_crimes(&ctx, base, E(w, 1), refii_mod_player_hero(base, I(w, 2)));
   } else if (op == "run_lua" && w.size() >= 2) {
     refii_mod_run_game_lua(&ctx, base, w[1].c_str());
   }

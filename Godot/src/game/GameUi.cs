@@ -3081,6 +3081,18 @@ public partial class GameUi : Node
 			return _consentOwner;
 		}
 
+		// A box built for one player (the core co-op Lua's @Box.Seat): the showing box's player.
+		int boxed = _boxes.SeatOf(_boxes.GuestMessageBox);
+		if (boxed == 0 && HostBridge.GetDisplayBox() is { } display)
+		{
+			boxed = _boxes.SeatOf(display.Box);
+		}
+
+		if (boxed != 0)
+		{
+			return boxed;
+		}
+
 		int wheel = _spells.WheelPlayer;
 		if (wheel != 0)
 		{

@@ -163,6 +163,51 @@ public static class Engine_LuaDecompiler
 		}
 	}
 
+	/// <summary>
+	/// Compiles <paramref name="text"/> with the game's compiler into the guest chunk; with
+	/// <paramref name="strip"/> false it keeps the line numbers and the local and upvalue names a
+	/// bytecode check reads. The error names the line, or says the library is missing or older.
+	/// </summary>
+	public static bool TryCompile(string text, string chunkName, bool strip, out byte[] chunk, out string error)
+	{
+		chunk = Array.Empty<byte>();
+		error = string.Empty;
+		byte[] utf8 = Encoding.UTF8.GetBytes(text ?? string.Empty);
+		var buffer = new byte[MessageCapacity];
+		IntPtr native = IntPtr.Zero;
+		try
+		{
+			int ok = RefiiLuadecCompile(
+				utf8, (uint)utf8.Length, chunkName, strip ? 1 : 0, out native, out uint size, buffer, (uint)buffer.Length);
+			error = ReadMessage(buffer);
+			if (ok == 0 || native == IntPtr.Zero)
+			{
+				return false;
+			}
+
+			chunk = new byte[size];
+			Marshal.Copy(native, chunk, 0, (int)size);
+			return true;
+		}
+		catch (DllNotFoundException)
+		{
+			error = "the refii_luadec library is not available";
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			error = "the refii_luadec library is out of date";
+			return false;
+		}
+		finally
+		{
+			if (native != IntPtr.Zero)
+			{
+				RefiiLuadecFree(native);
+			}
+		}
+	}
+
 	/// <summary>Verifies an edited text against the chunk it was decompiled from.</summary>
 	public static LuaVerifyResult Verify(byte[] chunk, string text, out string message)
 	{
@@ -206,6 +251,11 @@ public static class Engine_LuaDecompiler
 	private static extern int RefiiLuadecCheckSource(
 		byte[] text, uint size, [MarshalAs(UnmanagedType.LPUTF8Str)] string chunkName,
 		byte[] message, uint messageCapacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiLuadecCompile(
+		byte[] text, uint size, [MarshalAs(UnmanagedType.LPUTF8Str)] string chunkName, int strip,
+		out IntPtr bytes, out uint byteCount, byte[] message, uint messageCapacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiLuadecVerify(

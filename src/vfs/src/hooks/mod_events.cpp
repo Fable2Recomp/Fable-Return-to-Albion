@@ -5483,6 +5483,175 @@ extern "C" void refii_mod_opinion_leave(void) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// A VILLAGER'S CRIMES AND RENOWN, PER HERO. Three Villager natives answer for player one only:
+//   ForgiveHerosCrimes (`sub_827DE260`, r3 the villager component 26) takes the villager's village
+//     (the weak reference at comp+20, its component 170), walks the crime ids at comp+0xC0 — else,
+//     when that list is empty, comp+0xD0 — calling `sub_827D0770(village, id)` for each (it finds
+//     the village's record with record+60 == id in the list at village+24 and erases it), then
+//     clears the list (`sub_821B1BA8`, 0x827de4b0). Every crime, whoever committed it.
+//   HasHeroCommittedCrimeIHaveDiscovered (`sub_827DDD40`) walks the ids at comp+0xE0, finds each
+//     record and compares its criminal (the weak reference at record+0) with players+108 — hero one.
+//   GetPerceivedRenownOfHero (`sub_827DEBE8`) reads the renown of players+108's stats (57).
+// These take the hero: the same walks, with the criminal compared against the hero given, and the
+// renown read with that hero in the slot for the one call. A list is `{?, begin +4, end +8,
+// capacity +12}` of u32 ids.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kVillagerComponent = 26;   // the Villager natives' binding (`sub_827E5A80`: entity+0x24 bit 26)
+constexpr uint32_t kVillageComponent = 170;   // the village crime records
+constexpr uint32_t kVillagerVillage = 20;     // villager comp: the village's weak reference
+constexpr uint32_t kVillageCrimes = 24;       // village comp: the crime list's head node; node+8 the record
+constexpr uint32_t kCrimeId = 60;             // record: the crime's id (record+0 the criminal's reference)
+constexpr uint32_t kForgiveLists[] = {0xC0u, 0xD0u};
+constexpr uint32_t kDiscoveredList = 0xE0u;
+constexpr uint32_t kMaxCrimeIds = 512u;
+constexpr uint32_t kMaxCrimeRecords = 4096u;
+
+/// The villager's component and its village's crime component, or false.
+bool CrimeComponents(PPCContext& ctx, uint8_t* base, uint32_t villager, uint32_t& comp, uint32_t& village) {
+  comp = villager != 0u ? refii_mod_component(base, villager, kVillagerComponent) : 0u;
+  const uint32_t entity = comp != 0u ? Deref(ctx, base, comp + kVillagerVillage) : 0u;
+  village = entity >= 0x10000u ? refii_mod_component(base, entity, kVillageComponent) : 0u;
+  return comp != 0u && village != 0u;
+}
+
+/// The ids of one villager list.
+std::vector<uint32_t> CrimeIds(uint8_t* base, uint32_t list) {
+  std::vector<uint32_t> ids;
+  const uint32_t begin = Load32(base, list + 4u);
+  const uint32_t end = Load32(base, list + 8u);
+  if (begin < 0x10000u || end <= begin || (end - begin) / 4u > kMaxCrimeIds) {
+    return ids;
+  }
+  for (uint32_t at = begin; at < end; at += 4u) {
+    ids.push_back(Load32(base, at));
+  }
+  return ids;
+}
+
+/// The criminal of the village's crime `id`; false when no record has it.
+bool CrimeCriminal(PPCContext& ctx, uint8_t* base, uint32_t village, uint32_t id, uint32_t& criminal) {
+  const uint32_t head = Load32(base, village + kVillageCrimes);
+  if (head < 0x10000u) {
+    return false;
+  }
+  uint32_t node = Load32(base, head);
+  for (uint32_t n = 0; node >= 0x10000u && node != head && n < kMaxCrimeRecords; ++n, node = Load32(base, node)) {
+    const uint32_t record = Load32(base, node + 8u);
+    if (record >= 0x10000u && Load32(base, record + kCrimeId) == id) {
+      criminal = Deref(ctx, base, record);
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_forgive_crimes(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero) {
+  uint32_t comp = 0u;
+  uint32_t village = 0u;
+  if (ctx == nullptr || hero == 0u || !CrimeComponents(*ctx, base, villager, comp, village)) {
+    return 0;
+  }
+  for (const uint32_t offset : kForgiveLists) {
+    const uint32_t list = comp + offset;
+    std::vector<uint32_t> forgive;
+    std::vector<uint32_t> drop;
+    for (const uint32_t id : CrimeIds(base, list)) {
+      uint32_t criminal = 0u;
+      if (!CrimeCriminal(*ctx, base, village, id, criminal)) {
+        drop.push_back(id);  // no record: the shipped walk forgives nothing for it and clears it
+      } else if (criminal == hero) {
+        forgive.push_back(id);
+      }
+    }
+    if (forgive.empty() && drop.empty()) {
+      continue;  // nothing of this hero's here: the hero's own view of the lists goes on
+    }
+    for (const uint32_t id : forgive) {
+      PPCContext work = Frame(*ctx);
+      work.r3.u64 = village;
+      work.r4.u64 = id;
+      CallGuest(work, base, refii::guest::Address(0x827D0770u));
+    }
+    // What is left: the other hero's crimes, in their order.
+    const uint32_t begin = Load32(base, list + 4u);
+    uint32_t write = begin;
+    for (const uint32_t id : CrimeIds(base, list)) {
+      bool gone = false;
+      for (const uint32_t g : forgive) {
+        gone = gone || g == id;
+      }
+      for (const uint32_t g : drop) {
+        gone = gone || g == id;
+      }
+      if (!gone) {
+        refii::mods::StoreU32(base, write, id);
+        write += 4u;
+      }
+    }
+    if (begin >= 0x10000u) {
+      refii::mods::StoreU32(base, list + 8u, write);
+    }
+    return static_cast<int32_t>(forgive.size());
+  }
+  return 0;
+}
+
+extern "C" int32_t refii_mod_discovered_crime(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero) {
+  uint32_t comp = 0u;
+  uint32_t village = 0u;
+  if (ctx == nullptr || hero == 0u || !CrimeComponents(*ctx, base, villager, comp, village)) {
+    return 0;
+  }
+  for (const uint32_t id : CrimeIds(base, comp + kDiscoveredList)) {
+    uint32_t criminal = 0u;
+    if (CrimeCriminal(*ctx, base, village, id, criminal) && criminal == hero) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+extern "C" int32_t refii_mod_perceived_renown(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero,
+                                              int32_t* out) {
+  const uint32_t comp = villager != 0u ? refii_mod_component(base, villager, kVillagerComponent) : 0u;
+  const uint32_t players = OpinionPlayers(base);
+  const uint32_t one_hero = refii_mod_player_hero(base, 1);
+  const uint32_t two_hero = refii_mod_player_hero(base, 2);
+  if (ctx == nullptr || comp == 0u || players < 0x10000u || hero == 0u || (hero != one_hero && hero != two_hero)) {
+    return 0;
+  }
+  // The slot holds hero one's reference, or hero two's while a scope lends it (lends do not nest).
+  const uint32_t now = Load32(base, players + 108u);
+  const uint32_t one = refii_bridge_hero_one_holder(base, players);
+  const uint32_t want = hero == two_hero && hero != one_hero ? Load32(base, players + 116u) : one;
+  const bool lend = want != now && now == one;
+  if (want != now) {
+    if (lend) {
+      refii_bridge_hero_slot_lend(one);
+    }
+    refii::mods::StoreU32(base, players + 108u, want);
+  }
+  PPCContext work = Frame(*ctx);
+  work.r3.u64 = comp;
+  CallGuest(work, base, refii::guest::Address(0x827DEBE8u));
+  if (want != now) {
+    refii::mods::StoreU32(base, players + 108u, now);
+    if (lend) {
+      refii_bridge_hero_slot_return();
+    }
+  }
+  if (out != nullptr) {
+    *out = static_cast<int32_t>(work.r3.u32);
+  }
+  return 1;
+}
+
 namespace refii::vfs {
 
 // PLAYER TWO'S FEELINGS KEPT WITH THEIR HOUSEHOLD (household_persist.cpp). The opinion component's

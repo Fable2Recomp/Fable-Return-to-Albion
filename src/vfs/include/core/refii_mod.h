@@ -260,6 +260,19 @@ extern "C" int32_t refii_mod_menu_player(uint8_t* base);
 /// holds player two's set for the call.
 extern "C" int32_t refii_mod_opinion(uint8_t* base, uint32_t villager, int32_t player, float* out);
 
+/// A VILLAGER'S CRIMES AND RENOWN FOR ONE HERO (`hero`, either player's). The shipped
+/// Villager.ForgiveHerosCrimes / HasHeroCommittedCrimeIHaveDiscovered / GetPerceivedRenownOfHero
+/// name no hero (they forgive everyone's crimes, ask about hero one, read hero one's renown).
+/// forgive_crimes: the crimes of `hero` the villager knows of (the game's own lists and order) are
+/// forgiven — the village's records erased — and the other hero's stay; returns how many.
+/// discovered_crime: 1 when the villager has discovered a crime `hero` committed. perceived_renown:
+/// the renown the villager credits `hero` with (their own plus the village's regional fame), into
+/// `out`; false when `villager` is no villager. Guest tick thread only.
+extern "C" int32_t refii_mod_forgive_crimes(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero);
+extern "C" int32_t refii_mod_discovered_crime(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero);
+extern "C" int32_t refii_mod_perceived_renown(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero,
+                                              int32_t* out);
+
 /// How this game is shared: 0 alone, 1 local co-op (split or shared screen), 2 online and this
 /// machine hosts, 3 online and this machine joined. A partner counts once their hero exists.
 extern "C" int32_t refii_mod_coop_mode(uint8_t* base);

@@ -81,6 +81,21 @@ public static class Engine_GoldenCockRuntime
             throw new InvalidOperationException("The Golden Cock level name is invalid.");
         Vector3 p = placement.Pose.Origin;
         string position = FormattableString.Invariant($"CVector3({p.X:R},{p.Z:R},{p.Y:R})");
+        return ScriptFor(level, position);
+    }
+
+    /// <summary>
+    /// The bootstrap Lua for <paramref name="level"/> at <paramref name="position"/> (a Lua
+    /// <c>CVector3(...)</c> expression). SAVED WITH THE GAME: the use script is an action-use
+    /// script (GeneralScriptManager.AddScript keeps its coroutine in GeneralScriptSave, created
+    /// over <c>OnActionUseGoldenCock.Update</c>), and that function and the quest update are
+    /// Pluto permanents written BY NAME (<c>Lua_RefiiGoldenCockUse.Update</c>,
+    /// <c>RefiiGoldenCockQuestUpdate</c>) and resolved by name on load. So the names never change
+    /// or go, and the use script never yields (a body that yields would be a saved frame, resumed
+    /// into whatever body then carries the name) — CoopLuaSaveSafeTests holds it to that.
+    /// </summary>
+    public static string ScriptFor(string level, string position)
+    {
         return $$"""
             if not RefiiGoldenCockInstalled then
                 RefiiGoldenCockInstalled = true

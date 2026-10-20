@@ -189,6 +189,17 @@ public partial class GameUi
 			}
 		});
 
+		// A box the core co-op Lua built for one player on split screen (display_box_hooks.cpp):
+		// argument 0 the box's address, argument 1 the player. It stands in their half, on their pad.
+		_guiNatives.Register("@Box.Seat", call =>
+		{
+			if (GuestAddress(call) is { } box && int.TryParse(call.Argument(1).Text, out int player) &&
+				player is 1 or 2)
+			{
+				_boxes.SeatBox(box, player);
+			}
+		});
+
 		// The aim reticule's setter stating which object a player aims with — not a native
 		// (hooks/reticule_hooks.cpp). Arguments: player 0/1, the object's address, active. The
 		// record's own active byte decides what is drawn; the object is kept for its aim point.

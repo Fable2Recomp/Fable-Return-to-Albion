@@ -194,19 +194,19 @@ public class ModApiTests
         // The co-op primitives the core layer and the mods share (Forge/Fabric style): each is
         // documented on every surface that has it.
         string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
-        foreach (string call in new[] { "Refii.player_for(", "Refii.acting_player(", "Refii.run_as_player(", "Refii.combat_state(", "Refii.world_here(", "Refii.player_of(", "Refii.event_replica(" })
+        foreach (string call in new[] { "Refii.player_for(", "Refii.acting_player(", "Refii.run_as_player(", "Refii.combat_state(", "Refii.world_here(", "Refii.player_of(", "Refii.event_replica(", "Refii.show_to_player(", "Refii.forgive_crimes(", "Refii.discovered_crime(", "Refii.perceived_renown(" })
         {
             AssertThat(lua.Contains(call, StringComparison.Ordinal)).OverrideFailureMessage($"{call} is not in ModApi.LuaHelpers").IsTrue();
         }
 
         string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
-        foreach (string call in new[] { "refii_mod_player_for(", "refii_mod_world_here(", "refii_mod_player_of(", "refii_mod_event_replica(" })
+        foreach (string call in new[] { "refii_mod_player_for(", "refii_mod_world_here(", "refii_mod_player_of(", "refii_mod_event_replica(", "refii_mod_forgive_crimes(", "refii_mod_discovered_crime(", "refii_mod_perceived_renown(" })
         {
             AssertThat(native.Contains(call, StringComparison.Ordinal)).OverrideFailureMessage($"{call} is not in ModApi.Helpers").IsTrue();
         }
 
         string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
-        foreach (string verb in new[] { "player_for", "combat_state", "world_here", "replica" })
+        foreach (string verb in new[] { "player_for", "combat_state", "world_here", "replica", "forgive_crimes", "discovered_crime", "perceived_renown" })
         {
             AssertThat(Regex.IsMatch(godot, @"\b" + verb + @"\b")).OverrideFailureMessage($"'{verb}' is not in ModApi.GodotHelpers").IsTrue();
         }
@@ -220,11 +220,35 @@ public class ModApiTests
         }
 
         string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
-        foreach (string call in new[] { "refii_mod_player_for(PPCContext* ctx, uint8_t* base, uint32_t entity)", "refii_mod_world_here(uint8_t* base)" })
+        foreach (string call in new[] { "refii_mod_player_for(PPCContext* ctx, uint8_t* base, uint32_t entity)", "refii_mod_world_here(uint8_t* base)",
+                     "refii_mod_forgive_crimes(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero)",
+                     "refii_mod_discovered_crime(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero)" })
         {
             AssertThat(header.Contains("extern \"C\" int32_t " + call, StringComparison.Ordinal))
                 .OverrideFailureMessage($"{call} is not declared in core/refii_mod.h").IsTrue();
         }
+    }
+
+    [TestCase]
+    public void TheRouteIsTheCoreLuasAndSaveSafe()
+    {
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        // The route (player two's boxes, questions, cameras and Player calls on player two's screen)
+        // is defined once, in the core co-op Lua, and exposed as Refii.show_to_player; a question
+        // waits through the frozen trampolines only (a saved coroutine resumes into them by name).
+        string lua = File.ReadAllText(Path.Combine(root, "Godot", "src", "host", "CoopHeroLua.cs"));
+        AssertThat(lua.Contains("\"Api.show_to_player\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("C.Call1 = C.Permanent(function(after, state, fn, ...) return after(state, fn(...)) end, \"Call1\")", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("C.Wait1 = C.Permanent(function(poll, state, yield) while true do local done, value = poll(state) if done then return value end yield() end end, \"Wait1\")", StringComparison.Ordinal)).IsTrue();
+        AssertThat(Regex.Matches(lua, @"return C\.Call1\(C\.RouteUnpack, nil, C\.Wait1, C\.RouteAnswerPoll, out, coroutine\.yield\)").Count).IsEqual(2);
+
+        string wire = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "event_relay.h"));
+        AssertThat(wire.Contains("ps.r=", StringComparison.Ordinal)).IsTrue();
     }
 
     [TestCase]

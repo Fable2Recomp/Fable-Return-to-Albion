@@ -14,6 +14,17 @@
 // nothing; the receiver keeps the highest <seq> it took per <epoch> and takes only newer ones. An
 // <event> is the payload's own text (`<kind>:<field>,<field>,...`): no ';', '|' or newline.
 //
+// THE ROUTE (the same channel, its own prefix): the core co-op Lua's calls for the player the peer
+// plays and their answers (CoopHeroLua.cs, C.Route), which must arrive exactly once and in order —
+// a box shown twice, or a camera cleared before it was set, is wrong where a restated swing is not.
+//   ps.r=<epoch>,<ack epoch>,<ack seq>,<first>|<seq>:<line>;<seq>:<line>;...
+// <epoch>/<seq> are the sender's; <ack epoch>,<ack seq> the last line it took from the peer, in
+// order; <first> its oldest line not yet acknowledged. Unacknowledged lines are restated every
+// kRouteRestate (oldest first) until the peer's ack covers them, and dropped after kRouteLife (the
+// peer is gone). The receiver takes only the line after the last it took; anything before <first>
+// was abandoned by the sender, so it moves on from there. An ack with nothing to send goes on its
+// own (an empty body) when it changed, and with every restatement.
+//
 // The state lives here, in refii_vfs, because the payload posts and takes (core/payload_bridge.h)
 // and the host bridge carries the lines (its player-state exports, which the Godot side already
 // sends and receives on the co-op channel while a peer stands).

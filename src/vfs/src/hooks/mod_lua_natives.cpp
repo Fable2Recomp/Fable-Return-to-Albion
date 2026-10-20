@@ -25,6 +25,7 @@
 //   renown(e) · morality(e) · purity(e) · physique(e) -> fat, height
 //   age(e) · inventory(e) · equipped(e) -> melee, ranged · near(x, y, z, r [, creatures])
 //   line_of_sight(x1, y1, z1, x2, y2, z2) · spawn(def, x, y, z) · entity(handle) · handle(entity)
+//   forgive_crimes(villager, p) · discovered_crime(villager, p) · perceived_renown(villager, p)
 //   _write(kind, field, value) · _error(text)
 
 #include <cmath>
@@ -79,6 +80,8 @@ PPC_EXTERN_FUNC(rex_lhScriptEntityRef_Resolve);
 namespace refii::vfs {
 bool WriteModEventField(int32_t kind, const char* field, double value);
 void NoteLuaCancelled();
+void BoxSeatEnter(uint8_t* base, int32_t player);
+void BoxSeatLeave(uint8_t* base);
 }
 
 namespace {
@@ -89,6 +92,8 @@ constexpr int32_t kTypeTable = 5;
 /// A guest function inside the game module, for the thunk pool (RunScriptBuffer, TU1).
 constexpr uint32_t kModuleAnchor = 0x82451F18u;
 constexpr uint32_t kScratchBytes = 0x100u;
+/// The frame's scratch as a whole (the native's frame is 0x400 bytes, scratch from +0x40).
+constexpr uint32_t kLongScratchBytes = 0x300u;
 /// The LHString holding "FableType_CEntity", the Entity userdata's metatable name in the registry
 /// (set by sub_8324BD18; rex_lhLua_PushEntity reads it, TU1 0x823A2FEC).
 constexpr uint32_t kEntityTypeName = 0x834979B0u;
@@ -190,6 +195,19 @@ struct Lua {
   void PushString(const char* text) {
     PPCContext w = Work();
     w.r4.u32 = Stage(text);
+    rex_lua_pushstring(w, base);
+  }
+  /// A string of up to kLongScratchBytes - 1 bytes (the route's lines): staged across the frame's
+  /// whole scratch, which nothing else holds while it is pushed.
+  void PushLongString(const char* text) {
+    size_t n = std::strlen(text);
+    if (n >= kLongScratchBytes - 1) {
+      n = kLongScratchBytes - 1;
+    }
+    std::memcpy(base + scratch, text, n);
+    base[scratch + n] = 0;
+    PPCContext w = Work();
+    w.r4.u32 = scratch;
     rex_lua_pushstring(w, base);
   }
   void PushClosure(uint32_t function) {
@@ -739,6 +757,68 @@ REFII_LUA_NATIVE(NativeOpinionLeave) {
   RESULTS(0);
 }
 
+// Core co-op only: Refii._route_post(line) / Refii._route_take() -> line or nil — the route, the
+// ordered and acknowledged co-op channel the core Lua's calls for the peer's player and their
+// answers travel on (core/event_relay.h ps.r; the line is the Lua's own text).
+REFII_LUA_NATIVE(NativeRoutePost) {
+  char text[768];
+  lua.String(1, text, sizeof(text));
+  if (text[0] != 0) {
+    refii_bridge_route_post(text);
+  }
+  RESULTS(0);
+}
+
+REFII_LUA_NATIVE(NativeRouteTake) {
+  char text[768];
+  if (refii_bridge_route_take(text, sizeof(text)) != 0) {
+    lua.PushLongString(text);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Core co-op only: Refii._ui_seat(p) before a guest call that builds a box for player p (1 or 2),
+// Refii._ui_seat(0) after it: every box that call queued is stated as p's (display_box_hooks.cpp),
+// so on split screen it opens in p's half on p's pad. The call between must not yield.
+REFII_LUA_NATIVE(NativeUiSeat) {
+  const int32_t player = lua.Int(1);
+  if (player == 1 || player == 2) {
+    refii::vfs::BoxSeatEnter(lua.base, player);
+  } else {
+    refii::vfs::BoxSeatLeave(lua.base);
+  }
+  RESULTS(0);
+}
+
+// Refii.forgive_crimes(villager, p) -> n: the crimes of player p's hero the villager knows of are
+// forgiven (the other hero's stand); how many. Refii.discovered_crime(villager, p): whether the
+// villager has discovered a crime of player p's. Refii.perceived_renown(villager, p): the renown the
+// villager credits player p's hero with, or nil (refii_mod_forgive_crimes / _discovered_crime /
+// _perceived_renown: the shipped Villager natives name no hero).
+REFII_LUA_NATIVE(NativeForgiveCrimes) {
+  lua.PushNumber(refii_mod_forgive_crimes(&lua.ctx, lua.base, lua.Entity(1), refii_mod_player_hero(lua.base, lua.Int(2))));
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeDiscoveredCrime) {
+  lua.PushBoolean(
+      refii_mod_discovered_crime(&lua.ctx, lua.base, lua.Entity(1), refii_mod_player_hero(lua.base, lua.Int(2))) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativePerceivedRenown) {
+  int32_t renown = 0;
+  if (refii_mod_perceived_renown(&lua.ctx, lua.base, lua.Entity(1), refii_mod_player_hero(lua.base, lua.Int(2)),
+                                 &renown) != 0) {
+    lua.PushNumber(renown);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
 // Refii.uid(e): the entity's own 64-bit UniqueID (+0x14 high, +0x18 low) as "0x…": the same on
 // both co-op machines and across saves, unlike a handle; nil for no entity.
 REFII_LUA_NATIVE(NativeUid) {
@@ -1096,6 +1176,12 @@ Native g_natives[] = {
     {"_chest_money", &NativeChestMoney, 0},
     {"_opinion_enter", &NativeOpinionEnter, 0},
     {"_opinion_leave", &NativeOpinionLeave, 0},
+    {"_route_post", &NativeRoutePost, 0},
+    {"_route_take", &NativeRouteTake, 0},
+    {"_ui_seat", &NativeUiSeat, 0},
+    {"forgive_crimes", &NativeForgiveCrimes, 0},
+    {"discovered_crime", &NativeDiscoveredCrime, 0},
+    {"perceived_renown", &NativePerceivedRenown, 0},
     {"renown", &NativeRenown, 0},
     {"morality", &NativeMorality, 0},
     {"purity", &NativePurity, 0},

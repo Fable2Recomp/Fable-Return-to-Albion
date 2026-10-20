@@ -66,7 +66,8 @@ public static class ModApi
 		"EVERY API SERVES BOTH PLAYERS; NEVER ASSUME PLAYER ONE. Events carry the player they are about (1 or 2), every helper takes a player or an entity, " +
 		"and the \"which hero\" questions have one answer each, the one the base game's own co-op fixes use: player_of (is it a hero), player_for (who \"the hero\" is for an NPC or a dog), " +
 		"acting_player / run_as_player (the hero a script stands for), combat_state(p), player_here(p) (where a hero's own effects are made) and world_here (where the world's are). " +
-		"An event decided on one machine reaches the other when its effect belongs there (RELAYED: player two's swings reach the host's AI; the host's hits reach the joiner's looks), so a mod needs no co-op channel of its own.";
+		"An event decided on one machine reaches the other when its effect belongs there (RELAYED: player two's swings reach the host's AI; the host's hits reach the joiner's looks), so a mod needs no co-op channel of its own. " +
+		"What is shown follows the player it is for: a box, question, tutorial, fade, camera or Player.* call made while acting as player p appears on p's screen and acts on p's hero (online on p's machine, the answer coming back; split screen in p's half) — show_to_player(p, ...) asks for it outright.";
 
 	/// <summary>The note a player-decided relayed event carries.</summary>
 	private const string RelayedFromPlayer =
@@ -943,6 +944,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_world_here(base)", "whether this machine runs the shared world (AI, hits, NPCs): alone, local co-op, the online host; make world effects only here"),
 		new ModApiHelper("int32_t refii_mod_menu_player(base)", "the player whose menus are open here, 1 or 2: an ability row publishes and buys for them"),
 		new ModApiHelper("int32_t refii_mod_opinion(base, villager, player, float out[5])", "how a villager feels about that hero: love, fear, attractiveness, morality, respect; a set per hero, player two's moved only by player two's deeds"),
+		new ModApiHelper("int32_t refii_mod_forgive_crimes(ctx, base, villager, hero) / refii_mod_discovered_crime(ctx, base, villager, hero) / refii_mod_perceived_renown(ctx, base, villager, hero, int32_t* out)", "a villager's crimes and renown for one hero: forgives only that hero's crimes the villager knows of (how many; the other hero's stand), whether it discovered one of theirs, the renown it credits them with — the shipped Villager natives name no hero"),
 		new ModApiHelper("int32_t refii_mod_coop_mode(base)", "0 alone, 1 local co-op, 2 online hosting, 3 online joined"),
 		new ModApiHelper("uint32_t refii_mod_focus(base, player)", "the living entity that hero is focused on (their targeting), or 0; meaningful only where that hero is played (refii_mod_player_here)"),
 		new ModApiHelper("float refii_mod_player_value(player, key, fallback)", "a player's value, the same on both co-op machines (fallback when unset)"),
@@ -1020,6 +1022,8 @@ public static class ModApi
 		new ModApiHelper("Refii.acting_player()", "1 or 2: who \"the hero\" (GetPlayerHero) means right now — 2 inside Refii.run_as_player(2, …) and in AI acting for player two, else 1"),
 		new ModApiHelper("Refii.run_as_player(p, fn, ...)", "runs fn with GetPlayerHero(), GetPlayerHenchman() and QuestManager.HeroEntity as player p's (the partner as the henchman): a shipped script acts for either hero"),
 		new ModApiHelper("Refii.combat_state(p) -> midst, close_to_combat, in_any_combat", "player p's combat state, kept per hero (the shipped global is one state)"),
+		new ModApiHelper("Refii.show_to_player(p, name, ...)", "runs the function a global path names (\"GUI.DisplayMessageBox\", \"GUI.AskYesNoQuestion\", \"TutorialManager.DisplayTutorial\", any) for player p on player p's screen: on the other machine when p is played there (a question waits and returns p's answer), else here as p (split screen: p's half). The game's own box, camera, HUD and Player.* calls made while acting as player p (Refii.run_as_player) follow p by themselves"),
+		new ModApiHelper("Refii.forgive_crimes(villager, p) / Refii.discovered_crime(villager, p) / Refii.perceived_renown(villager, p)", "a villager's crimes and renown for player p's hero: forgives only p's crimes it knows of (how many), whether it discovered one of p's, the renown it credits p with (nil for no villager). Villager.ForgiveHerosCrimes / HasHeroCommittedCrimeIHaveDiscovered / GetPerceivedRenownOfHero answer for the acting player through these"),
 		new ModApiHelper("Refii.world_here()", "true where the shared world runs (alone, local co-op, the online host): make world effects only there"),
 		new ModApiHelper("Refii.split_screen()", "true when local co-op runs on split screen (each local player their own camera)"),
 		new ModApiHelper("Refii.player_dog(p)", "a player's dog: player one's, or player two's co-op dog bound to them; nil when none. Use this, never the game's GetDog(): inside player two's dog's own AI and item use, GetDog() answers that dog"),
@@ -1067,6 +1071,7 @@ public static class ModApi
 		new ModApiHelper("query local_hero / coop_mode / menu_player / coop_state", "hero · mode · player · local_hero, coop_mode, menu_player: Refii.local_hero / coop_mode / menu_player, asked now"),
 		new ModApiHelper("query player_value P KEY [FALLBACK] / player_here P", "value, has (ok false when neither the value nor a fallback is there) · here: Refii.player_value / player_here"),
 		new ModApiHelper("query player_dog P / focus P / opinion E P / uid E", "dog · entity · love, fear, attractiveness, morality, respect · uid (\"0x…\"): Refii.player_dog / focus / opinion / uid"),
+		new ModApiHelper("query discovered_crime E P / perceived_renown E P · forgive_crimes E P", "discovered · renown: Refii.discovered_crime / perceived_renown for villager E and player P · the command forgives player P's crimes villager E knows of (Refii.forgive_crimes); show_to_player is Lua's — reach it with run_lua"),
 	};
 
 	/// <summary>The writable numeric fields of each event, as the Lua preamble's write-back needs them.</summary>

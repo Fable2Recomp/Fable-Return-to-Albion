@@ -467,6 +467,14 @@ void refii_bridge_player_blob_set(int32_t player, const char* key, const uint8_t
 void refii_bridge_event_relay_post(const char* text);
 int32_t refii_bridge_event_relay_take(char* out, uint32_t capacity);
 
+// THE ROUTE (src/core/event_relay.cpp, the wire in core/event_relay.h): the core co-op Lua's calls
+// for the player the peer plays (a box, a question, a camera or HUD change, a Player.* command) and
+// the answers coming back, as the Lua's own text (no ';', '|' or newline). Unlike the relay it is
+// ordered and acknowledged: every line arrives once, in the order posted, or (the peer gone for
+// kRouteLife) not at all. take: 1 and the text in `out` while one waits, 0 when none does.
+void refii_bridge_route_post(const char* text);
+int32_t refii_bridge_route_take(char* out, uint32_t capacity);
+
 // HERO IDENTITY AND PARTNERSHIPS (src/core/hero_partners.cpp), Fable 3's player-to-player marriage
 // and business partnership: a hero's id (48 bits, kept with its save; 0 not yet known), made once by
 // the machine that plays the hero; a partnership in both partners' stores (1 business, 2 married);

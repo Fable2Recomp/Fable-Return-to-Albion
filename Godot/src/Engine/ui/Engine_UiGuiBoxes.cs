@@ -686,6 +686,27 @@ public sealed class Engine_UiGuiBoxes
 	/// <summary>The newest open guest MessageBox's address, 0 when none is open.</summary>
 	public uint GuestMessageBox => _guestMessages.Count == 0 ? 0u : _guestMessages[^1].Box;
 
+	/// <summary>
+	/// The player each guest box was built for, by its address — stated as `@Box.Seat` when the core
+	/// co-op Lua builds a box for player two on split screen (display_box_hooks.cpp BoxSeatLeave).
+	/// The box classes name no player of their own; an unstated box is nobody's in particular.
+	/// </summary>
+	private readonly Dictionary<uint, int> _seats = new();
+
+	/// <summary>A box was built for <paramref name="player"/> (1 or 2).</summary>
+	public void SeatBox(uint box, int player)
+	{
+		if (_seats.Count > 64)
+		{
+			_seats.Clear();
+		}
+
+		_seats[box] = player;
+	}
+
+	/// <summary>The player a guest box was built for, 0 when none was stated.</summary>
+	public int SeatOf(uint box) => box != 0u && _seats.TryGetValue(box, out int player) ? player : 0;
+
 	/// <summary>The guest opened a MessageBox — it now holds GameFlow state 8, both players'
 	/// movement, until action 36 closes it.</summary>
 	public void GuestMessageOpened(uint box, string identity)
@@ -702,6 +723,7 @@ public sealed class Engine_UiGuiBoxes
 	public void GuestMessageClosed(uint box, string identity)
 	{
 		_guestMessages.RemoveAll(m => m.Box == box);
+		_seats.Remove(box);
 		_boxes.RemoveAll(b => b.Kind == BoxKind.Message && b.Persistent && b.Name == identity);
 		++Generation;
 	}
