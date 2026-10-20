@@ -18,6 +18,16 @@ public sealed class Engine_UiCloneBinding
 	{
 		public required Node3D Node { get; init; }
 		public required int Ordinal { get; init; }
+
+		/// <summary>
+		/// The element whose live state the node shows: its own, or the same widget's element as
+		/// the guest states it for another player (<see cref="Key"/>); -1 for none.
+		/// </summary>
+		public int Source { get; set; }
+
+		/// <summary>The node's authored position less its source's, in guest units.</summary>
+		public Vector3 Shift { get; set; }
+
 		public required bool IsQuad { get; init; }
 
 		/// <summary>
@@ -190,6 +200,7 @@ public sealed class Engine_UiCloneBinding
 			{
 				Node = spatial,
 				Ordinal = element.Ordinal,
+				Source = element.Ordinal,
 				IsQuad = element.Quad is not null,
 				IsRoot = isRoot,
 				// WHAT THE NODE SHOWS NOW, not an assumption. A clone of art the builder parked
@@ -416,6 +427,33 @@ public sealed class Engine_UiCloneBinding
 		}
 	}
 
+	/// <summary>
+	/// Keys the bound nodes to other elements' live state: the same widget as the guest states it
+	/// for another player. <paramref name="sources"/> maps a bound element to the element whose
+	/// draw gate, opacity, picture and stated transform it shows; an element it does not map shows
+	/// nothing. A position moves by its source's move from the source's authored position, so the
+	/// node keeps its own place in its own art.
+	/// </summary>
+	public void Key(Engine_UiScreen screen, IReadOnlyDictionary<int, int> sources)
+	{
+		foreach (Bound bound in _bound)
+		{
+			if (bound.Ordinal < 0 || bound.Ordinal >= screen.Nodes.Length ||
+				!sources.TryGetValue(bound.Ordinal, out int source) ||
+				source < 0 || source >= screen.Nodes.Length)
+			{
+				bound.Source = -1;
+				continue;
+			}
+
+			UiNode own = screen.Nodes[bound.Ordinal];
+			UiNode from = screen.Nodes[source];
+			bound.Source = source;
+			bound.Shift = new Vector3(
+				own.PositionX - from.PositionX, own.PositionY - from.PositionY, own.PositionZ - from.PositionZ);
+		}
+	}
+
 	public Node3D? NodeFor(int ordinal)
 	{
 		foreach (Bound bound in _bound)
@@ -456,8 +494,16 @@ public sealed class Engine_UiCloneBinding
 		foreach (Bound bound in _bound)
 		{
 			if (!GodotObject.IsInstanceValid(bound.Node) ||
-				bound.Ordinal >= resolve.Drawn.Length)
+				bound.Source >= resolve.Drawn.Length)
 			{
+				continue;
+			}
+
+			// Keyed to nothing: the other player's widget has no such element.
+			if (bound.Source < 0)
+			{
+				bound.Stated = false;
+				Show(bound);
 				continue;
 			}
 
@@ -468,7 +514,7 @@ public sealed class Engine_UiCloneBinding
 			TicksTransform += now - mark;
 			mark = now;
 
-			bool stated = resolve.Drawn[bound.Ordinal];
+			bool stated = resolve.Drawn[bound.Source];
 			if (stated)
 			{
 				++DrawnCount;
@@ -501,7 +547,7 @@ public sealed class Engine_UiCloneBinding
 				continue;
 			}
 
-			float alpha = resolve.Opacity[bound.Ordinal];
+			float alpha = resolve.Opacity[bound.Source];
 			if (!Mathf.IsEqualApprox(alpha, bound.Faded))
 			{
 				bound.Faded = alpha;
@@ -515,9 +561,9 @@ public sealed class Engine_UiCloneBinding
 
 			// A hash of zero is "unstated", not a change: the guest drops a stated hash to zero
 			// mid-write, and the file's own texture stands meanwhile.
-			if (bound.IsQuad && textures is not null && bound.Ordinal < textures.Count)
+			if (bound.IsQuad && textures is not null && bound.Source < textures.Count)
 			{
-				uint hash = textures[bound.Ordinal];
+				uint hash = textures[bound.Source];
 				if (hash != 0 && hash != bound.Pictured &&
 					ResolveTexture?.Invoke(hash) is { } picture)
 				{
@@ -658,7 +704,8 @@ public sealed class Engine_UiCloneBinding
 	private static void ApplyTransform(Bound bound, Engine_UiElementResolve resolve,
 		IReadOnlyList<float?[]?>? transform)
 	{
-		if (bound.IsRoot || bound.Ordinal >= resolve.SlidPosition.Length)
+		int source = bound.Source;
+		if (bound.IsRoot || source < 0 || source >= resolve.SlidPosition.Length)
 		{
 			return;
 		}
@@ -668,12 +715,12 @@ public sealed class Engine_UiCloneBinding
 		// The base is the SLIDE's, not the cloned node's own transform (which bakes the preview
 		// slide). Order is the engine's: element attributes at load, slide on switch, stated
 		// runtime write last.
-		Vector3 slid = resolve.SlidPosition[bound.Ordinal];
-		Vector3 scale = resolve.SlidScale[bound.Ordinal];
+		Vector3 slid = resolve.SlidPosition[source] + bound.Shift;
+		Vector3 scale = resolve.SlidScale[source];
 		var position = new Vector3(slid.X, slid.Y, Engine_UiSceneBuilder.ToGodotZ(slid.Z));
 
-		float?[]? values = transform is not null && bound.Ordinal < transform.Count
-			? transform[bound.Ordinal]
+		float?[]? values = transform is not null && source < transform.Count
+			? transform[source]
 			: null;
 
 		if (values is not null)
@@ -681,11 +728,11 @@ public sealed class Engine_UiCloneBinding
 			// A NaN in the stated transform is never a pose — the guest's frozen mirror carries
 			// them (the item book's paper backdrop stated `x = NaN` and vanished), and one NaN
 			// poisons the basis. Each axis falls back to the slide/authored value instead.
-			if (values.Length > 0 && values[0] is { } x && !float.IsNaN(x)) position.X = x;
-			if (values.Length > 1 && values[1] is { } y && !float.IsNaN(y)) position.Y = y;
+			if (values.Length > 0 && values[0] is { } x && !float.IsNaN(x)) position.X = x + bound.Shift.X;
+			if (values.Length > 1 && values[1] is { } y && !float.IsNaN(y)) position.Y = y + bound.Shift.Y;
 			if (values.Length > 2 && values[2] is { } z && !float.IsNaN(z))
 			{
-				position.Z = Engine_UiSceneBuilder.ToGodotZ(z);
+				position.Z = Engine_UiSceneBuilder.ToGodotZ(z + bound.Shift.Z);
 			}
 
 			if (values.Length > 3 && values[3] is { } sx && !float.IsNaN(sx)) scale.X = sx;

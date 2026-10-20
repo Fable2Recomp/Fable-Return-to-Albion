@@ -36,8 +36,8 @@ public sealed partial class Engine_HudView : Node3D
     /// Where this view draws: the whole window, or one player's half on split screen. Player
     /// one's view moves between <see cref="Engine_UiSeats.Seat.Whole"/> and
     /// <see cref="Engine_UiSeats.Seat.PlayerOne"/> as the screen splits; player two's view is
-    /// <see cref="Engine_UiSeats.Seat.PlayerTwo"/> for its whole life and builds only player two's
-    /// pieces.
+    /// <see cref="Engine_UiSeats.Seat.PlayerTwo"/> for its whole life and is player one's HUD keyed
+    /// to player two (<see cref="ForPlayerTwo"/>).
     /// </summary>
     public Engine_UiSeats.Seat Seat { get; set; }
 
@@ -62,10 +62,38 @@ public sealed partial class Engine_HudView : Node3D
     /// This machine's player is player two (an online joiner). The guest's one HUD still states
     /// both heroes by slot — hero one's health and will as `PlayerHealth`/`SpellCharging`, hero
     /// two's as `CoopHealth`/`SpellCharging2` — and hero one is the HOST here, so the joiner's
-    /// own numbers are player two's pieces. They stand where player one's stand, and player
-    /// one's (the partner's) stay off this screen.
+    /// own numbers are player two's. The view is drawn for player two (<see cref="ForPlayerTwo"/>);
+    /// a change rebuilds it.
     /// </summary>
-    public bool LocalPlayerTwo { get; set; }
+    public bool LocalPlayerTwo
+    {
+        get => _localPlayerTwo;
+        set
+        {
+            if (_localPlayerTwo == value)
+            {
+                return;
+            }
+
+            _localPlayerTwo = value;
+            if (_builtOnce)
+            {
+                Build();
+            }
+        }
+    }
+
+    private bool _localPlayerTwo;
+
+    private bool _builtOnce;
+
+    /// <summary>
+    /// The view is player two's: their half on split screen, or the joiner's whole window. It is
+    /// player one's HUD — the same pieces, art and layout — keyed to player two: a player-one
+    /// piece with a player-two source (<see cref="Engine_HudLayout.PlayerTwoSourceOf"/>) takes
+    /// that source's element state and values, and the source is not drawn.
+    /// </summary>
+    private bool ForPlayerTwo => Seat == Engine_UiSeats.Seat.PlayerTwo || LocalPlayerTwo;
 
     /// <summary>Whether a piece is drawn in this view's seat.</summary>
     private bool Admits(Engine_HudLayout.Piece piece)
@@ -75,7 +103,7 @@ public sealed partial class Engine_HudView : Node3D
             Engine_UiSeats.Seat whose = Engine_HudLayout.OwnerOf(piece);
             if (LocalPlayerTwo)
             {
-                return whose != Engine_UiSeats.Seat.PlayerOne;
+                return whose != Engine_UiSeats.Seat.PlayerTwo;
             }
 
             return !HidesPartner || whose != Engine_UiSeats.Seat.PlayerTwo;
@@ -98,19 +126,33 @@ public sealed partial class Engine_HudView : Node3D
 
         Engine_UiSeats.Seat owner = Engine_HudLayout.OwnerOf(piece);
         return Seat == Engine_UiSeats.Seat.PlayerTwo
-            ? owner == Engine_UiSeats.Seat.PlayerTwo
+            ? owner == Engine_UiSeats.Seat.PlayerOne
             : owner != Engine_UiSeats.Seat.PlayerTwo;
     }
 
-    /// <summary>Player two's view holds only the pieces that can ever be player two's, and the
-    /// screen's pieces both halves show.</summary>
-    private bool Builds(Engine_HudLayout.Piece piece) =>
-        Seat != Engine_UiSeats.Seat.PlayerTwo ||
-        Engine_HudLayout.OwnerOf(piece) == Engine_UiSeats.Seat.PlayerTwo ||
-        Engine_HudLayout.IsExpressionMeter(piece) ||
-        Engine_HudLayout.IsExpressionWheel(piece) ||
-        Engine_HudLayout.SharedOnSplit(piece) ||
-        Engine_HudLayout.EachPlayerOnSplit(piece);
+    /// <summary>
+    /// A view for player two holds player one's own pieces (keyed to player two) and not their
+    /// player-two sources; player two's half adds only the screen's pieces both halves show.
+    /// </summary>
+    private bool Builds(Engine_HudLayout.Piece piece)
+    {
+        if (!ForPlayerTwo)
+        {
+            return true;
+        }
+
+        Engine_UiSeats.Seat owner = Engine_HudLayout.OwnerOf(piece);
+        if (owner != Engine_UiSeats.Seat.Whole)
+        {
+            return owner == Engine_UiSeats.Seat.PlayerOne && Layout.PlayerTwoSourceOf(piece) is not null;
+        }
+
+        return Seat != Engine_UiSeats.Seat.PlayerTwo ||
+            Engine_HudLayout.IsExpressionMeter(piece) ||
+            Engine_HudLayout.IsExpressionWheel(piece) ||
+            Engine_HudLayout.SharedOnSplit(piece) ||
+            Engine_HudLayout.EachPlayerOnSplit(piece);
+    }
 
     /// <summary>This view's seat on the current <see cref="Window"/>.</summary>
     private Engine_UiSeats.Frame SeatFrame => Engine_UiSeats.Of(Window, Seat);
@@ -226,8 +268,21 @@ public sealed partial class Engine_HudView : Node3D
         /// </summary>
         public Engine_HudLayout.Piece? Origin { get; set; }
 
-        /// <summary>The piece whose owner and counterpart rules apply: the original for a clone.</summary>
+        /// <summary>The piece whose owner rules apply: the original for a clone.</summary>
         public Engine_HudLayout.Piece Rules => Origin ?? Piece;
+
+        /// <summary>
+        /// A keyed piece's elements to their player-two source's (<see cref="KeyOrdinals"/>); null
+        /// for a piece that shows its own.
+        /// </summary>
+        public Dictionary<int, int>? Keys { get; set; }
+
+        /// <summary>The element whose live state stands for <paramref name="ordinal"/>: its source when keyed, -1 for none.</summary>
+        public int StateOf(int ordinal) =>
+            Keys is null ? ordinal : Keys.TryGetValue(ordinal, out int source) ? source : -1;
+
+        /// <summary>The element whose live state gates the whole piece.</summary>
+        public int StateOrdinal => StateOf(Piece.ElementOrdinal);
 
         /// <summary>The authored animation tracks this piece's meter scrubs.</summary>
         public List<BoundTrack> Tracks { get; } = new();
@@ -348,6 +403,7 @@ public sealed partial class Engine_HudView : Node3D
         }
 
         _built.Clear();
+        _builtOnce = true;
         BindCentreToggle();
 
         // What mods put on the HUD, and which shipped pieces they replace (not built).
@@ -355,24 +411,13 @@ public sealed partial class Engine_HudView : Node3D
 
         // Pieces mods define (ui/hud.json), beside the ones cut from hud.bgf; children of this view
         // so they show and hide with the HUD. A piece that FOLLOWS a shipped piece is that
-        // piece's player's and is drawn wherever it is (player two's half included); a free
-        // piece is the screen's and stays in player one's view.
+        // piece's player's and is drawn wherever it is (FindDrawn); a free piece is the screen's
+        // and stays out of player two's half.
         bool ownsMods = Seat != Engine_UiSeats.Seat.PlayerTwo;
         if (_modPieces is null)
         {
             _modPieces = new Engine_HudModPieces { Name = "ModPieces" };
-            _modPieces.FindPiece = id =>
-            {
-                foreach (Built built in _built)
-                {
-                    if (built.Piece.Id == id && GodotObject.IsInstanceValid(built.Node))
-                    {
-                        return built.Node;
-                    }
-                }
-
-                return null;
-            };
+            _modPieces.FindPiece = FindDrawn;
             AddChild(_modPieces);
         }
 
@@ -394,7 +439,12 @@ public sealed partial class Engine_HudView : Node3D
 
         foreach (Engine_HudLayout.Piece piece in Layout.Pieces)
         {
-            if (modLayout.Hidden.Contains(piece.Id))
+            // The piece mods address: in a view for player two, player one's piece stands for
+            // its player-two source, so a mod's statement about player two's widget (hide, scale,
+            // copies) lands on it, and one about player one's does not.
+            Engine_HudLayout.Piece? source = ForPlayerTwo ? Layout.PlayerTwoSourceOf(piece) : null;
+            string declared = source?.Id ?? piece.Id;
+            if (modLayout.Hidden.Contains(declared))
             {
                 continue;
             }
@@ -413,29 +463,31 @@ public sealed partial class Engine_HudView : Node3D
                 continue;
             }
 
-            if (BuildPiece(piece, missing) is not { } built)
+            if (BuildPiece(piece, missing, source) is not { } built)
             {
                 continue;
             }
 
-            built.ExtraScale = modLayout.Scales.TryGetValue(piece.Id, out float factor) ? factor : 1f;
+            built.ExtraScale = modLayout.Scales.TryGetValue(declared, out float factor) ? factor : 1f;
 
             // Mods' copies of this piece, built right after it from the same art, in every view
-            // that builds the original.
+            // that builds the original. A copy of player two's widget is built from player one's
+            // in a view for player two, keyed as the original is.
             foreach (Engine_HudModPieces.Clone clone in modLayout.Clones)
             {
-                if (clone.Of != piece.Id)
+                if (clone.Of != declared)
                 {
                     continue;
                 }
 
                 Engine_HudLayout.Piece copy = piece with { Id = clone.Id, Offset = piece.Offset + clone.Offset };
-                if (BuildPiece(copy, missing) is { } cloned)
+                if (BuildPiece(copy, missing, source) is { } cloned)
                 {
                     cloned.Origin = piece;
                     cloned.ExtraScale = modLayout.Scales.TryGetValue(clone.Id, out float own) ? own : built.ExtraScale;
                     ApplyClone(cloned, clone);
-                    GD.Print($"[hud-mods] '{clone.Id}' ({clone.Mod}) is a copy of '{piece.Id}'");
+                    GD.Print($"[hud-mods] '{clone.Id}' ({clone.Mod}) is a copy of '{piece.Id}'" +
+                        (source is { } keyed ? $" keyed to '{keyed.Id}'" : string.Empty));
                 }
             }
         }
@@ -592,8 +644,78 @@ public sealed partial class Engine_HudView : Node3D
         return owned;
     }
 
-    /// <summary>Builds one piece's node, binding and tracks; null (and named) when it has no art.</summary>
-    private Built? BuildPiece(Engine_HudLayout.Piece piece, List<string> missing)
+    /// <summary>
+    /// Pairs a player-one widget's elements with its player-two copy's: the same element by name
+    /// under paired parents, then the copy's renamed ones in order (`HealthAndMana` /
+    /// `CoopHealthAndMana`). An element the copy lacks (the column's `charged` rings) is left out.
+    /// </summary>
+    private static Dictionary<int, int> KeyOrdinals(UiNode own, UiNode source)
+    {
+        var keys = new Dictionary<int, int>();
+        Pair(own, source, keys);
+        return keys;
+
+        static void Pair(UiNode own, UiNode source, Dictionary<int, int> keys)
+        {
+            keys[own.Ordinal] = source.Ordinal;
+            var left = new List<UiNode>(source.Children);
+            var renamed = new List<UiNode>();
+            foreach (UiNode child in own.Children)
+            {
+                int at = left.FindIndex(candidate => candidate.Name == child.Name);
+                if (at < 0)
+                {
+                    renamed.Add(child);
+                    continue;
+                }
+
+                Pair(child, left[at], keys);
+                left.RemoveAt(at);
+            }
+
+            for (int i = 0; i < renamed.Count && i < left.Count; ++i)
+            {
+                Pair(renamed[i], left[i], keys);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The drawn node of a shipped piece, for a mod piece that follows it. In a view for player
+    /// two, player two's widget is drawn as player one's piece, and player one's own is not here.
+    /// </summary>
+    private Node3D? FindDrawn(string id)
+    {
+        string drawn = id;
+        if (ForPlayerTwo)
+        {
+            if (Engine_HudLayout.PlayerOneIdOf(id) is { } one)
+            {
+                drawn = one;
+            }
+            else if (Engine_HudLayout.PlayerTwoSourceId(id) is not null)
+            {
+                return null;
+            }
+        }
+
+        foreach (Built built in _built)
+        {
+            if (built.Piece.Id == drawn && GodotObject.IsInstanceValid(built.Node))
+            {
+                return built.Node;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Builds one piece's node, binding and tracks; null (and named) when it has no art. With a
+    /// <paramref name="source"/>, the piece is keyed to it (<see cref="ForPlayerTwo"/>).
+    /// </summary>
+    private Built? BuildPiece(
+        Engine_HudLayout.Piece piece, List<string> missing, Engine_HudLayout.Piece? source = null)
     {
         {
             float scale = Engine_HudLayout.Scale(SeatFrame.Extent);
@@ -628,6 +750,13 @@ public sealed partial class Engine_HudView : Node3D
             {
                 built.Binding.ResolveTexture = ResolveTexture;
                 built.Binding.Bind(node, document);
+                if (source is { } from && piece.ElementOrdinal >= 0 && from.ElementOrdinal >= 0 &&
+                    piece.ElementOrdinal < document.Nodes.Length && from.ElementOrdinal < document.Nodes.Length)
+                {
+                    built.Keys = KeyOrdinals(document.Nodes[piece.ElementOrdinal], document.Nodes[from.ElementOrdinal]);
+                    built.Binding.Key(document, built.Keys);
+                }
+
                 if (piece.LiveText)
                 {
                     built.LiveTextNodes.AddRange(built.Binding.TextNodes(document));
@@ -1521,6 +1650,29 @@ public sealed partial class Engine_HudView : Node3D
         }
     }
 
+    /// <summary>
+    /// The value a nested meter or pulser reads: on a keyed piece, the one its source element
+    /// binds (`PlayerHealth` → `CoopHealth`, `PlayerSpellcharge1` → `HenchmanSpellcharge1`).
+    /// </summary>
+    private string KeyedName(Built built, Engine_UiBindings.Binding binding)
+    {
+        if (built.Keys is null || _bindings is null ||
+            !built.Keys.TryGetValue(binding.ElementOrdinal, out int source))
+        {
+            return binding.Name;
+        }
+
+        foreach (Engine_UiBindings.Binding candidate in _bindings.All)
+        {
+            if (candidate.ElementOrdinal == source && candidate.Kind == binding.Kind)
+            {
+                return candidate.Name;
+            }
+        }
+
+        return binding.Name;
+    }
+
     private void BindTracks(Built built)
     {
         if (Screen is not { } screen || built.Piece.ElementOrdinal < 0)
@@ -1559,7 +1711,7 @@ public sealed partial class Engine_HudView : Node3D
                 }
 
                 BindOwnedTracks(built, screen, binding.ElementOrdinal,
-                    Engine_HudValues.Handle.For(binding.Name), pulse);
+                    Engine_HudValues.Handle.For(KeyedName(built, binding)), pulse);
             }
 
             return;
@@ -1623,7 +1775,8 @@ public sealed partial class Engine_HudView : Node3D
             built.Tracks.Add(new BoundTrack(animation, node, target, baseline, value, pulse));
         }
 
-        int stated = LiveSlides is { } live && element < live.Count ? live[element] : 0;
+        int source = built.StateOf(element);
+        int stated = LiveSlides is { } live && source >= 0 && source < live.Count ? live[source] : 0;
         BgfSlide? playing = Engine_UiTimeline.PlayingSlide(screen.Document, element, stated);
         foreach (Engine_UiTimeline.Window window in Engine_UiTimeline.Windows(screen, element, playing))
         {
@@ -1843,7 +1996,7 @@ public sealed partial class Engine_HudView : Node3D
         // every piece's node.
         // A resized window re-places every piece even while the guest is not stepping.
         if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking &&
-            Window == _placedWindow && Seat == _placedSeat &&
+            Window == _placedWindow && Seat == _placedSeat && frame == _placedFrame &&
             (Seat == Engine_UiSeats.Seat.Whole ||
                 (Suppressed == _placedSuppressed && ExpressionPlayers == _placedExpression)))
         {
@@ -1855,6 +2008,7 @@ public sealed partial class Engine_HudView : Node3D
         bool read = !_refreshed || Refii.Core.Engine_GuestFrame.Changed;
         _placedWindow = Window;
         _placedSeat = Seat;
+        _placedFrame = frame;
         _placedSuppressed = Suppressed;
         _placedExpression = ExpressionPlayers;
         _refreshed = true;
@@ -1898,6 +2052,9 @@ public sealed partial class Engine_HudView : Node3D
                 continue;
             }
 
+            // A keyed piece is up and down as its player-two source is.
+            int state = built.StateOrdinal;
+
             // The slide toggle first, for a group: its authored `Off`/`TurnOff…` slide is the
             // guest's statement that the box is down, and the fold cannot say so on its own.
             // A GROUP IS DOWN WHEN ITS ROOT RESOLVES DARK, not when its slide is NAMED Off: the
@@ -1905,27 +2062,27 @@ public sealed partial class Engine_HudView : Node3D
             // 'Off' and only stops the flash — the meter's own visibility is the frame's toggle
             // beneath it. The name test hid the meter for every job. The fold and the played-
             // slide release make the root's opacity say what the slide meant.
-            if (built.Piece.ElementOrdinal >= 0 &&
+            if (state >= 0 &&
                 built.Piece.Id.StartsWith("group.", System.StringComparison.Ordinal) &&
-                Resolve is { } rootResolve && built.Piece.ElementOrdinal < rootResolve.Opacity.Length &&
-                rootResolve.Opacity[built.Piece.ElementOrdinal] <= 0.001f)
+                Resolve is { } rootResolve && state < rootResolve.Opacity.Length &&
+                rootResolve.Opacity[state] <= 0.001f)
             {
                 built.Node.Visible = false;
                 ++_hiddenByState;
                 if (_explain)
                 {
-                    Note(built, $"element {built.Piece.ElementOrdinal} resolves dark on slide " +
-                        $"'{LiveSlideName(built.Piece.ElementOrdinal)}'");
+                    Note(built, $"element {state} resolves dark on slide " +
+                        $"'{LiveSlideName(state)}'");
                 }
                 continue;
             }
 
             // The state gate first: the guest says whether this piece exists right now, and an
             // off piece takes no drive at all.
-            if (built.Piece.ElementOrdinal >= 0 &&
+            if (state >= 0 &&
                 (ElementActive is not { } active ||
-                 built.Piece.ElementOrdinal >= active.Length ||
-                 !active[built.Piece.ElementOrdinal]))
+                 state >= active.Length ||
+                 !active[state]))
             {
                 built.Node.Visible = false;
                 ++_hiddenByState;
@@ -1935,12 +2092,12 @@ public sealed partial class Engine_HudView : Node3D
                 if (_explain)
                 {
                     Note(built, Resolve is { } r &&
-                            built.Piece.ElementOrdinal < r.Drawn.Length
-                        ? $"element {built.Piece.ElementOrdinal} INACTIVE " +
-                            $"(drawn={r.Drawn[built.Piece.ElementOrdinal]} " +
-                            $"opacity={r.Opacity[built.Piece.ElementOrdinal]:0.00})" +
-                            Culprit(built.Piece.ElementOrdinal, r)
-                        : $"element {built.Piece.ElementOrdinal} INACTIVE (no resolve)");
+                            state < r.Drawn.Length
+                        ? $"element {state} INACTIVE " +
+                            $"(drawn={r.Drawn[state]} " +
+                            $"opacity={r.Opacity[state]:0.00})" +
+                            Culprit(state, r)
+                        : $"element {state} INACTIVE (no resolve)");
                 }
                 continue;
             }
@@ -1991,8 +2148,9 @@ public sealed partial class Engine_HudView : Node3D
             {
                 foreach ((MeshInstance3D label, int ordinal) in built.LiveTextNodes)
                 {
-                    string live = ordinal >= 0 && ordinal < texts.Length
-                        ? texts[ordinal] ?? string.Empty
+                    int stated = built.StateOf(ordinal);
+                    string live = stated >= 0 && stated < texts.Length
+                        ? texts[stated] ?? string.Empty
                         : string.Empty;
 
                     // A LABEL THE GUEST NEVER WRITES KEEPS THE ONE THE FILE GAVE IT. Not a
@@ -2029,20 +2187,7 @@ public sealed partial class Engine_HudView : Node3D
             TicksTexts += now - mark;
             mark = now;
 
-            // Player two's own half stands their health and will where player one's stand.
-            // A clone keeps its own offset from its original.
-            Engine_HudLayout.Piece placed = built.Piece;
-            if ((Seat == Engine_UiSeats.Seat.PlayerTwo || LocalPlayerTwo) &&
-                Layout.CounterpartOf(built.Rules) is { } mirror)
-            {
-                placed = built.Piece with
-                {
-                    Anchor = mirror.Anchor,
-                    Offset = mirror.Offset + (built.Piece.Offset - built.Rules.Offset),
-                };
-            }
-
-            Vector2 at = Engine_HudLayout.Place(placed, extent);
+            Vector2 at = Engine_HudLayout.Place(built.Piece, extent);
 
             // The guest's own move of a piece root. A layout offset derives from the authored
             // canvas position, but the guest restates a root's position (quest text, the health
@@ -2240,6 +2385,10 @@ public sealed partial class Engine_HudView : Node3D
 
     private Engine_UiSeats.Seat _placedSeat;
 
+    /// <summary>The seat's frame the pieces were last placed in: a split that changes from side by
+    /// side to stacked moves the half without changing the seat or the window.</summary>
+    private Engine_UiSeats.Frame _placedFrame;
+
     private bool _placedSuppressed;
 
     private int _placedExpression = 1;
@@ -2397,7 +2546,7 @@ public sealed partial class Engine_HudView : Node3D
     /// </summary>
     private Vector2 StatedDelta(Built built)
     {
-        int ordinal = built.Piece.ElementOrdinal;
+        int ordinal = built.StateOrdinal;
         if (Screen is not { } doc || ordinal < 0 || ordinal >= doc.Nodes.Length ||
             LiveTransform is null || ordinal >= LiveTransform.Count ||
             LiveTransform[ordinal] is not { } stated || stated.Length < 2 ||

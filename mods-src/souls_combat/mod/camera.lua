@@ -14,9 +14,10 @@
 --     GetHeight decays back to 0 every update — the pitch springs back to level;
 --   * a lock frames the target through AlignToDirection, inside a cone of cos 0.9 at 250 deg/s.
 --
--- The souls camera, single player only: a fixed orbit distance round a hero-centred focus, no
--- combat camera, no foe or villager pull, a pitch that stays where the stick puts it, and a
--- tighter lock. Co-op keeps the shipped camera, which has to frame two heroes.
+-- The souls camera, for every camera that frames one hero (single player, online co-op, split
+-- screen): a fixed orbit distance round a hero-centred focus, no combat camera, no foe or
+-- villager pull, a pitch that stays where the stick puts it, and a tighter lock. A shared screen
+-- keeps the shipped camera, which has to frame two heroes.
 --
 -- Every override is a wrap of a method FrameUpdate calls by name, so it holds from the next
 -- update whether or not a camera is already active.

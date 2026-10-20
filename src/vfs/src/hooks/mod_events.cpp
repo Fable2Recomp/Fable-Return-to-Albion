@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <memory>
@@ -154,9 +155,16 @@ PPC_EXTERN_FUNC(__imp__rex_CECCreature_SetUnconscious);
 PPC_EXTERN_FUNC(__imp__rex_HollowMan_SetCrumbled);
 PPC_EXTERN_FUNC(__imp__rex_SpellRaiseDead_BindSummoner);
 PPC_EXTERN_FUNC(__imp__rex_SpellDamoclesSword_Create);
+PPC_EXTERN_FUNC(__imp__rex_CECOnActionUse_Use);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiWorldMap_FastTravel);
 // Called, never overridden here: the game's own bodies by their config names.
 PPC_EXTERN_FUNC(__imp__rex_lhSmartPtr_Deref);
 PPC_EXTERN_FUNC(__imp__rex_CECHealth_CalculateDamage);
+
+// guest_tick_pump.cpp: a player's dog (players+196's for player one, the co-op record for two).
+extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
+// coop_hero_hooks.cpp: local player two's shop is up (set by the shopkeeper path that opens it).
+extern "C" int RefiiCoopShoppingPlayerTwo(void);
 
 using namespace refii::mods;
 
@@ -207,6 +215,17 @@ inline uint8_t Load8(const uint8_t* base, uint32_t at) { return refii::mods::Loa
 inline float LoadF(const uint8_t* base, uint32_t at) { return refii::mods::LoadF32(base, at); }
 
 int32_t PlayerOf(uint8_t* base, uint32_t entity) { return refii_mod_player_of(base, entity); }
+
+/// THE EVENT RELAY (the end of this file; core/event_relay.h): an event of the relay table decided
+/// on this machine is sent to the co-op peer after its dispatch, and the peer's are dispatched here
+/// in the tick as replicas. `g_relay_replaying` is set while one is.
+thread_local bool g_relay_replaying = false;
+/// Whether the seams must raise `kind` for the relay although no handler here wants it (online).
+bool RelayWants(int32_t kind);
+/// After every dispatch: sends the event on when it is a relayed kind decided here.
+void RelayAfterDispatch(int32_t kind, void* event, bool replica);
+/// From the tick: dispatches the peer's relayed events.
+void DrainRelay(PPCContext& ctx, uint8_t* base);
 
 // ---------------------------------------------------------------------------------------------
 // Lua handlers
@@ -573,7 +592,7 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_DOG_TRICK: {
       const auto& e = *static_cast<const DogTrickEvent*>(event);
-      std::snprintf(out, size, "dog=%u,trick='0x%08x'", H(e.dog), e.trick);
+      std::snprintf(out, size, "dog=%u,trick='0x%08x',player=%d", H(e.dog), e.trick, e.player);
       return;
     }
     case REFII_EVENT_RANGED_SHOT: {
@@ -601,7 +620,7 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_OPINION_MODIFIED: {
       const auto& e = *static_cast<const OpinionModifiedEvent*>(event);
-      std::snprintf(out, size, "villager=%u,axis=%d,delta=%.9g", H(e.villager), e.axis, Fin(e.delta));
+      std::snprintf(out, size, "villager=%u,axis=%d,delta=%.9g,player=%d", H(e.villager), e.axis, Fin(e.delta), e.player);
       return;
     }
     case REFII_EVENT_TIME_OF_DAY: {
@@ -618,14 +637,24 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
                     Fin(e.seconds));
       return;
     }
-    case REFII_EVENT_SLEEP_MENU:
-    case REFII_EVENT_MENU_OPENED:
-    case REFII_EVENT_MENU_CLOSED:
-      std::snprintf(out, size, "seen=true");
+    case REFII_EVENT_SLEEP_MENU: {
+      const auto& e = *static_cast<const SleepMenuEvent*>(event);
+      std::snprintf(out, size, "seen=true,player=%d", e.player);
       return;
+    }
+    case REFII_EVENT_MENU_OPENED: {
+      const auto& e = *static_cast<const MenuOpenedEvent*>(event);
+      std::snprintf(out, size, "seen=true,player=%d", e.player);
+      return;
+    }
+    case REFII_EVENT_MENU_CLOSED: {
+      const auto& e = *static_cast<const MenuClosedEvent*>(event);
+      std::snprintf(out, size, "seen=true,player=%d", e.player);
+      return;
+    }
     case REFII_EVENT_MENU_SCREEN: {
       const auto& e = *static_cast<const MenuScreenEvent*>(event);
-      std::snprintf(out, size, "screen=%d", e.screen);
+      std::snprintf(out, size, "screen=%d,player=%d", e.screen, e.player);
       return;
     }
     case REFII_EVENT_TRAVEL: {
@@ -634,8 +663,8 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       LuaString(e.world, world, sizeof(world));
       LuaString(e.level, level, sizeof(level));
       LuaString(e.entrance, entrance, sizeof(entrance));
-      std::snprintf(out, size, "world='%s',level='%s',entrance='%s',type=%d,full_load=%s", world, level, entrance, e.type,
-                    e.full_load ? "true" : "false");
+      std::snprintf(out, size, "world='%s',level='%s',entrance='%s',type=%d,full_load=%s,player=%d", world, level, entrance,
+                    e.type, e.full_load ? "true" : "false", e.player);
       return;
     }
     case REFII_EVENT_FAST_TRAVEL: {
@@ -643,12 +672,13 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       char level[96], stop[96];
       LuaString(e.level, level, sizeof(level));
       LuaString(e.stop, stop, sizeof(stop));
-      std::snprintf(out, size, "level='%s',stop='%s',paid=%s", level, stop, e.paid ? "true" : "false");
+      std::snprintf(out, size, "level='%s',stop='%s',paid=%s,player=%d", level, stop, e.paid ? "true" : "false", e.player);
       return;
     }
     case REFII_EVENT_SLEEP_CHOSEN: {
       const auto& e = *static_cast<const SleepChosenEvent*>(event);
-      std::snprintf(out, size, "bed=%u,choice=%d,cancelled=%s", H(e.bed), e.choice, e.cancelled ? "true" : "false");
+      std::snprintf(out, size, "bed=%u,choice=%d,cancelled=%s,player=%d", H(e.bed), e.choice,
+                    e.cancelled ? "true" : "false", e.player);
       return;
     }
     case REFII_EVENT_SLOW_TIME: {
@@ -783,8 +813,18 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_WEATHER_REGION: {
       const auto& e = *static_cast<const WeatherRegionEvent*>(event);
-      std::snprintf(out, size, "day_set='0x%08x',previous='0x%08x',inside=%s", e.day_set, e.previous,
-                    e.inside ? "true" : "false");
+      std::snprintf(out, size, "day_set='0x%08x',previous='0x%08x',inside=%s,player=%d", e.day_set, e.previous,
+                    e.inside ? "true" : "false", e.player);
+      return;
+    }
+    case REFII_EVENT_DYNAMIC_WEATHER: {
+      const auto& e = *static_cast<const DynamicWeatherEvent*>(event);
+      char level[96], weather[48], previous[48];
+      LuaString(e.level, level, sizeof(level));
+      LuaString(e.weather, weather, sizeof(weather));
+      LuaString(e.previous, previous, sizeof(previous));
+      std::snprintf(out, size, "level='%s',weather='%s',previous='%s',seconds=%.9g,from_host=%s", level, weather, previous,
+                    Fin(e.seconds), e.from_host ? "true" : "false");
       return;
     }
     case REFII_EVENT_DIALOGUE: {
@@ -919,7 +959,7 @@ uint32_t g_tick = 0;
 uint32_t g_hit_sequence = 0;
 
 bool AnySubscriber(int32_t kind) {
-  if (LuaWants(kind) || refii::mods::HostWantsEvent(kind)) {
+  if (LuaWants(kind) || refii::mods::HostWantsEvent(kind) || RelayWants(kind)) {
     return true;
   }
   for (const Subscription& s : Subscriptions()) {
@@ -969,6 +1009,16 @@ namespace {
 /// one (a script cannot raise a game event synchronously, but a hook it reaches could).
 bool g_verdict_running = false;
 
+/// The table text a Godot script gets: Lua's, and `replica=true` for a copy (a Godot handler cannot
+/// ask refii_mod_event_replica: its signal arrives after the dispatch).
+void HostFields(int32_t kind, void* event, bool replica, char* out, size_t size) {
+  LuaFields(kind, event, out, size);
+  const size_t length = std::strlen(out);
+  if (replica && length + 16 < size) {
+    std::snprintf(out + length, size - length, "%sreplica=true", length != 0 ? "," : "");
+  }
+}
+
 void RunGodotVerdict(int32_t kind, void* event) {
   const uint64_t verdict_word = kind < 64 ? refii_bridge_mod_verdict_mask() : refii_bridge_mod_verdict_mask_high();
   if (g_verdict_running || kind < 0 || kind >= 128 || ((verdict_word >> (kind % 64)) & 1u) == 0u) {
@@ -979,7 +1029,7 @@ void RunGodotVerdict(int32_t kind, void* event) {
     return;
   }
   char fields[640];
-  LuaFields(kind, event, fields, sizeof(fields));
+  HostFields(kind, event, refii_mod_event_replica() != 0, fields, sizeof(fields));
   char answer[512];
   g_verdict_running = true;
   const int32_t length = handler(kind, fields, std::strlen(fields), answer, sizeof(answer) - 1);
@@ -1030,9 +1080,13 @@ void RunGodotVerdict(int32_t kind, void* event) {
 /// sub_82214AF8(comp91): no session, the host for anything not player two's, the joiner for player
 /// two's, local co-op for all — and, for experience, the run inside the receive. Every other seam
 /// runs on one machine only (an ability request where the hero's CPlayer is; a hit and a block on
-/// the host), so it is never a copy.
+/// the host), so it is never the game's copy — but a RELAYED kind (the relay at the end of this
+/// file) is dispatched again on the other machine, and that dispatch is a copy too.
 bool ReplicaRun(int32_t kind, void* event) {
   using namespace refii::mods;
+  if (g_relay_replaying) {
+    return true;  // the peer's event, relayed (the end of this file)
+  }
   const Event& base_event = *static_cast<const Event*>(event);
   uint8_t* base = base_event.base;
   if (base == nullptr || base_event.ctx == nullptr) {
@@ -1097,9 +1151,10 @@ extern "C" void refii_mod_dispatch(int32_t kind, void* event) {
   // Godot's scripts see the verdict, after every handler, as the same table text Lua gets.
   if (refii::mods::HostWantsEvent(kind)) {
     char fields[640];
-    LuaFields(kind, event, fields, sizeof(fields));
+    HostFields(kind, event, replica, fields, sizeof(fields));
     refii::mods::PostEvent(kind, fields);
   }
+  RelayAfterDispatch(kind, event, replica);
 }
 
 /// Refii._write(kind, field, value) from a Lua handler: the writable numbers of the event the
@@ -1334,6 +1389,7 @@ void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds) {
 
   RunModCommands(ctx, base);
   DispatchSpawned(ctx, base);
+  DrainRelay(ctx, base);
 
   TickEvent tick{};
   PPCContext tick_ctx = ctx;
@@ -1867,6 +1923,7 @@ bool ExperienceEventOf(PPCContext& ctx, uint8_t* base, bool spend, ExperienceEve
 
 REX_EXTERN(rex_CECExperience_Modify) {
   REX_FUNC_PROLOGUE();
+  refii_bridge_ui_data_changed();
   if (AnySubscriber(REFII_EVENT_EXPERIENCE)) {
     ExperienceEvent e{};
     if (!ExperienceEventOf(ctx, base, false, e)) {
@@ -1880,6 +1937,7 @@ REX_EXTERN(rex_CECExperience_Modify) {
 
 REX_EXTERN(rex_CECExperience_Spend) {
   REX_FUNC_PROLOGUE();
+  refii_bridge_ui_data_changed();
   if (AnySubscriber(REFII_EVENT_EXPERIENCE)) {
     ExperienceEvent e{};
     if (!ExperienceEventOf(ctx, base, true, e)) {
@@ -2111,6 +2169,7 @@ REX_EXTERN(rex_lhSaveManager_WriteSave) {
 // TU1 0x824F0820.
 REX_EXTERN(rex_CECInventory_AddOneOfRecord) {
   REX_FUNC_PROLOGUE();
+  refii_bridge_ui_data_changed();
   const uint32_t inventory = ctx.r4.u32;
   const uint32_t definition = ctx.r5.u32;
   const bool notify = ctx.r6.u8 != 0;
@@ -2134,6 +2193,7 @@ REX_EXTERN(rex_CECInventory_AddOneOfRecord) {
 // TU1 0x823E0FF8.
 REX_EXTERN(rex_lhEntity_UseInventoryItem) {
   REX_FUNC_PROLOGUE();
+  refii_bridge_ui_data_changed();
   const uint32_t holder = ctx.r4.u32;
   const uint32_t item = holder != 0 ? Load32(base, holder) : 0u;
   if (item != 0 && AnySubscriber(REFII_EVENT_ITEM_USED)) {
@@ -2200,6 +2260,7 @@ REX_EXTERN(rex_CECHeldItems_ReleaseSlot) {
 // the item entity (definition at +0x1C). At equip time only. TU1 0x824AD108.
 REX_EXTERN(rex_CECWeaponSet_RecordDrawnItem) {
   REX_FUNC_PROLOGUE();
+  refii_bridge_ui_data_changed();
   if (ctx.r3.u32 != 0 && ctx.r4.u32 != 0 && refii_mod_component(base, ctx.r4.u32, kWeaponComponent) != 0 &&
       AnySubscriber(REFII_EVENT_WEAPON_EQUIPPED)) {
     WeaponEquippedEvent e{};
@@ -2219,6 +2280,7 @@ REX_EXTERN(rex_CECWeaponSet_RecordDrawnItem) {
 // r4 = the type 1..14, r5 = the level (clamped inside), r6 = force. TU1 0x824E2F28.
 REX_EXTERN(rex_CECStats_SetAbilityLevel) {
   REX_FUNC_PROLOGUE();
+  refii_bridge_ui_data_changed();
   const uint32_t stats = ctx.r3.u32;
   const int32_t type = static_cast<int32_t>(ctx.r4.u32);
   if (stats != 0 && type >= 0 && type <= 14 && AnySubscriber(REFII_EVENT_ABILITY_LEVEL)) {
@@ -2254,6 +2316,7 @@ int32_t g_renown_depth = 0;
 
 REX_EXTERN(rex_CECMoney_Modify) {
   REX_FUNC_PROLOGUE();
+  refii_bridge_ui_data_changed();
   const uint32_t purse = ctx.r3.u32;
   struct Depth {
     Depth() { ++g_gold_depth; }
@@ -2748,7 +2811,9 @@ REX_EXTERN(rex_CECPlayerFamily_Marry) {
 }
 
 // r3 = the dog component, r4 = {command hash, entry}, r5 = force (skips the unlocked list at
-// +740..+744). TU1 0x82810FE0.
+// +740..+744). The dog's master is the component's weak reference at +300 (Dog.GetMaster
+// `sub_82174410`: `v1 = comp+300; return *v1[1]`; written only by SetMaster `sub_82814DD8`).
+// TU1 0x82810FE0.
 REX_EXTERN(rex_CECDog_PerformCommand) {
   REX_FUNC_PROLOGUE();
   if (AnySubscriber(REFII_EVENT_DOG_TRICK) && ctx.r4.u32 != 0) {
@@ -2758,6 +2823,11 @@ REX_EXTERN(rex_CECDog_PerformCommand) {
     e.base = base;
     e.dog = Owner(base, ctx.r3.u32);
     e.trick = Load32(base, ctx.r4.u32);
+    e.player = ctx.r3.u32 != 0u ? PlayerOf(base, Deref(ctx, base, ctx.r3.u32 + 300u)) : 0;
+    if (e.player == 0 && e.dog != 0u) {
+      // A dog with no master yet (an online joiner's replica is never bound): the players' records.
+      e.player = e.dog == RefiiCoopPlayerDog(base, 1) ? 1 : (e.dog == RefiiCoopPlayerDog(base, 2) ? 2 : 0);
+    }
     Dispatch(e);
     if (e.cancel) {
       ctx.r3.u64 = 0;
@@ -2983,6 +3053,17 @@ thread_local bool t_slot_lent = false;
 thread_local int32_t t_opinion_depth = 0;
 thread_local uint32_t t_opinion_holder = 0u;
 thread_local uint32_t t_opinion_players = 0u;
+
+/// Whether opinion component `comp` holds player two's set now: an opinion scope on this thread
+/// wrote their block into it (OpinionHeroScope).
+bool OpinionScopedTwo(uint32_t comp) {
+  for (int32_t i = 0; i < t_opinion_depth; ++i) {
+    if (t_opinion_scoped[i] == comp) {
+      return true;
+    }
+  }
+  return false;
+}
 
 struct OpinionHeroScope {
   uint8_t* base = nullptr;
@@ -4083,11 +4164,7 @@ REX_EXTERN(rex_CECOpinionReaction_SetEngaged) {
     e.ctx = &e_ctx;
     e.base = base;
     e.villager = ComponentOwner(base, ctx.r3.u32);
-    bool two = false;
-    for (int32_t i = 0; i < t_opinion_depth; ++i) {
-      two = two || t_opinion_scoped[i] == ctx.r3.u32;
-    }
-    e.player = two ? 2 : 1;
+    e.player = OpinionScopedTwo(ctx.r3.u32) ? 2 : 1;
     e.engaged = ctx.r4.u8 != 0;
     Dispatch(e);
     if (e.cancel) {
@@ -4562,7 +4639,9 @@ REX_EXTERN(rex_CECStats_UnlockAchievement) {
 }
 
 // A script's direct opinion change: r3 = the component, r4 = the axis, f1 = the delta; the axis
-// value at +24 + 4*axis, clamped to [-1, 1]. TU1 0x827915D8.
+// value at +24 + 4*axis (`addi r11,r4,6; slwi r11,r11,2; add r11,r11,r3`, then `stfs f13,0(r11)`),
+// clamped to [-1, 1]. Inside player two's opinion scope for this component the block it writes is
+// player two's. TU1 0x827915D8.
 REX_EXTERN(rex_CECOpinionReaction_ModifyAxisValue) {
   REX_FUNC_PROLOGUE();
   if (AnySubscriber(REFII_EVENT_OPINION_MODIFIED)) {
@@ -4573,6 +4652,7 @@ REX_EXTERN(rex_CECOpinionReaction_ModifyAxisValue) {
     e.villager = Owner(base, ctx.r3.u32);
     e.axis = static_cast<int32_t>(ctx.r4.u32);
     e.delta = static_cast<float>(ctx.f1.f64);
+    e.player = OpinionScopedTwo(ctx.r3.u32) ? 2 : 1;
     Dispatch(e);
     if (e.cancel) {
       return;
@@ -4642,16 +4722,65 @@ REX_EXTERN(rex_lhEnvironmentThemeManager_BlendToTheme) {
   __imp__rex_lhEnvironmentThemeManager_BlendToTheme(ctx, base);
 }
 
-// SleepMenu.ShowSleepMenu: builds the SLEEP_LENGTH choices and marks the menu visible.
-// TU1 0x8243D5A8.
+namespace {
+
+/// The newest uses of things, by thing: who the game's use routine ran the thing's script for.
+struct UseRecord {
+  uint32_t thing = 0u;
+  uint32_t user = 0u;
+};
+constexpr size_t kUseRecords = 16;
+UseRecord g_uses[kUseRecords];
+size_t g_use_next = 0;
+
+/// The player of the newest use of `thing`, or 0 when no player used it.
+int32_t PlayerWhoUsed(uint8_t* base, uint32_t thing) {
+  if (thing == 0u) {
+    return 0;
+  }
+  for (size_t i = 1; i <= kUseRecords; ++i) {
+    const UseRecord& r = g_uses[(g_use_next + kUseRecords - i) % kUseRecords];
+    if (r.thing == thing) {
+      return PlayerOf(base, r.user);
+    }
+  }
+  return 0;
+}
+
+/// The player sleeping in the open sleep menu (SleepMenu states it; SleepChosen repeats it).
+int32_t g_sleeper = 0;
+
+}  // namespace
+
+// THE USE OF A THING: the OnActionUse use routine runs the thing's script as `Create(thing, user)`
+// (`sub_828236A8` at 0x82821E00: r6 = *(r24+4) the thing, r7 = r27 the user). r3 = the use
+// component (r24), r4 = the user (`mr r27,r4` at 0x82821A14, never reassigned on the way to the
+// Create once RefiiCoopUseByRealUser lets player two's uses through). Its callers: the interact
+// action (0x82977900), a full hold (0x821C62C4), and 0x828289BC. TU1 0x828219F8.
+REX_EXTERN(rex_CECOnActionUse_Use) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t thing = Owner(base, ctx.r3.u32);
+  if (thing != 0u && ctx.r4.u32 != 0u) {
+    g_uses[g_use_next] = UseRecord{thing, ctx.r4.u32};
+    g_use_next = (g_use_next + 1u) % kUseRecords;
+  }
+  __imp__rex_CECOnActionUse_Use(ctx, base);
+}
+
+// SleepMenu.ShowSleepMenu(bed): builds the SLEEP_LENGTH choices and marks the menu visible; r3 =
+// the bed. Its one caller in the shipped scripts is SleepFunction.Sleep(entity, bed, …), which
+// OnActionUseBed calls with its EntityUsingItem — the user the use routine passed its Create — so
+// the sleeper is the newest user of the bed. TU1 0x8243D5A8.
 REX_EXTERN(rex_SleepMenu_Show) {
   REX_FUNC_PROLOGUE();
+  g_sleeper = PlayerWhoUsed(base, ctx.r3.u32);
   if (AnySubscriber(REFII_EVENT_SLEEP_MENU)) {
     SleepMenuEvent e{};
     PPCContext e_ctx = ctx;
     e.ctx = &e_ctx;
     e.base = base;
     e.seen = true;
+    e.player = g_sleeper;
     Dispatch(e);
     if (e.cancel) {
       ctx.r3.u64 = 0;
@@ -4661,12 +4790,50 @@ REX_EXTERN(rex_SleepMenu_Show) {
   __imp__rex_SleepMenu_Show(ctx, base);
 }
 
+namespace {
+
+/// Who asked for the travel about to start: noted where the request is made (a level exit's fire,
+/// coop_hero_hooks.cpp; the world map's fast travel, below), taken by the level change's Start.
+/// A note older than kTravellerFrames guest frames was a request that queued no level change.
+struct TravellerNote {
+  int32_t player = 0;
+  uint32_t frame = 0u;
+  bool set = false;
+};
+TravellerNote g_traveller;
+constexpr uint32_t kTravellerFrames = 600u;
+
+uint32_t GuestFrame(uint8_t* base) { return Load32(base, refii::guest::Address(0x83319650u)); }
+
+int32_t TakeTraveller(uint8_t* base) {
+  const TravellerNote note = g_traveller;
+  g_traveller = TravellerNote{};
+  return note.set && GuestFrame(base) - note.frame <= kTravellerFrames ? note.player : 0;
+}
+
+}  // namespace
+
+/// coop_hero_hooks.cpp: a level exit fired (or, on an online joiner, was asked of the host) for
+/// `player` (0: no player asked).
+extern "C" void RefiiModNoteTraveller(uint8_t* base, int32_t player) {
+  if (base != nullptr) {
+    g_traveller = TravellerNote{player, GuestFrame(base), true};
+  }
+}
+
+/// coop_hero_hooks.cpp: the player of the newest use of `thing` (a level exit's entity), or 0.
+extern "C" int32_t RefiiModPlayerWhoUsed(uint8_t* base, uint32_t thing) {
+  return base != nullptr ? PlayerWhoUsed(base, thing) : 0;
+}
+
 // The level-change command's Start (vtable slot 5): r3 = the command (+20 world, +24 level,
 // +28 entrance as LHString handles; +36 travel type; +50 full load, cleared here when the
-// destination is the loaded level). TU1 0x823D5760.
+// destination is the loaded level). The command names no traveller — both heroes go
+// (rex_CmdLevelChange_PlaceTravellers) — so the player is the noted request's. TU1 0x823D5760.
 REX_EXTERN(rex_CmdLevelChange_Start) {
   REX_FUNC_PROLOGUE();
   const uint32_t command = ctx.r3.u32;
+  const int32_t traveller = command != 0 ? TakeTraveller(base) : 0;
   __imp__rex_CmdLevelChange_Start(ctx, base);
   if (command == 0 || !AnySubscriber(REFII_EVENT_TRAVEL)) {
     return;
@@ -4684,13 +4851,20 @@ REX_EXTERN(rex_CmdLevelChange_Start) {
   e.entrance = entrance;
   e.type = static_cast<int32_t>(Load32(base, command + 36u));
   e.full_load = Load8(base, command + 50u) != 0;
+  e.player = traveller;
   Dispatch(e);
 }
+
+namespace {
+/// The player whose world map is travelling, for the map's call (0 outside it).
+int32_t g_world_map_traveller = 0;
+}  // namespace
 
 // r3 = the fast-travel manager, r4 = the destination level (an LHString handle), r5 = the stop
 // (+4 its marker's name), r6 = paid. Returns 1 when the travel was queued. TU1 0x82519B08.
 REX_EXTERN(rex_FastTravelManager_TravelToStop) {
   REX_FUNC_PROLOGUE();
+  const int32_t chooser = g_world_map_traveller;
   if (AnySubscriber(REFII_EVENT_FAST_TRAVEL)) {
     char level[96], stop[96];
     LhText(base, ctx.r4.u32, level, sizeof(level));
@@ -4706,13 +4880,18 @@ REX_EXTERN(rex_FastTravelManager_TravelToStop) {
     e.level = level;
     e.stop = stop;
     e.paid = (ctx.r6.u32 & 0xFFu) != 0;
+    e.player = chooser;
     Dispatch(e);
     if (e.cancel) {
       ctx.r3.u64 = 0;
       return;
     }
   }
+  RefiiModNoteTraveller(base, chooser);
   __imp__rex_FastTravelManager_TravelToStop(ctx, base);
+  if ((ctx.r3.u32 & 0xFFu) == 0u) {
+    g_traveller = TravellerNote{};  // nothing was queued
+  }
 }
 
 namespace {
@@ -4731,15 +4910,60 @@ int32_t CurrentScreen(uint8_t* base) {
   return screens >= 0x10000u && screens < 0xC0000000u ? static_cast<int32_t>(Load32(base, screens + 4u)) : -1;
 }
 
+/// Whose menu it is now, 1 or 2. refii_mod_menu_player is the owner sampled at the tick's start
+/// (SampleMenuOwner: the guest's own `sub_8236E400`, which answers only while the GUI command is
+/// up); this also answers while a menu is being entered. In local co-op the pause screen's owner
+/// is its +4 (map[gui+68][0] by `sub_8236FFC0`; written by its vtable slot 8, `stw r4,4(r3)`
+/// `sub_82EC34C8`, which `sub_826A2C88` calls BEFORE SetScreen and EnterGuiMode — 1 from player
+/// two's opener `sub_829C1DB0`, 0 from player one's `sub_82403308`), or local player two's shop.
+int32_t MenuOwnerNow(PPCContext& ctx, uint8_t* base) {
+  if (refii_mod_menu_player(base) == 2) {
+    return 2;
+  }
+  if (refii_mod_coop_mode(base) != 1) {
+    return 1;
+  }
+  if (RefiiCoopShoppingPlayerTwo() != 0) {
+    return 2;
+  }
+  const uint32_t manager = Load32(base, refii::guest::Address(0x83496B08u));
+  const uint32_t gui = manager >= 0x10000u && manager < 0xC0000000u ? Load32(base, manager + 0x1Cu) : 0u;
+  if (gui < 0x10000u || gui >= 0xC0000000u) {
+    return 1;
+  }
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u64 = gui;
+  work.r4.u64 = 0u;
+  if (!CallGuest(work, base, refii::guest::Address(0x8236FFC0u))) {
+    return 1;
+  }
+  const uint32_t pause = work.r3.u32;
+  return pause >= 0x10000u && pause < 0xC0000000u && Load32(base, pause + 4u) == 1u ? 2 : 1;
+}
+
 void RaiseMenuOpened(PPCContext& ctx, uint8_t* base) {
   MenuOpenedEvent e{};
   PPCContext e_ctx = ctx;
   e.ctx = &e_ctx;
   e.base = base;
   e.seen = true;
+  e.player = MenuOwnerNow(ctx, base);
   Dispatch(e);
 }
 }  // namespace
+
+// The world map's travel to a stop (its screen handlers `sub_826C81D0` … `sub_826C8C98`): it
+// leaves the GUI (`sub_8236ED98(gui, 1)`) and calls TravelToStop (0x8246BB04). The other two
+// callers of TravelToStop are the Lua bindings (`sub_823BBB00`, `sub_82519D58`): a script's travel.
+// The map is a page of the pause book, so its player is the menu's owner. r3 the destination
+// level, r4 the stop. TU1 0x8246B9E0.
+REX_EXTERN(rex_lhGuiWorldMap_FastTravel) {
+  REX_FUNC_PROLOGUE();
+  const int32_t previous = g_world_map_traveller;
+  g_world_map_traveller = MenuOwnerNow(ctx, base);
+  __imp__rex_lhGuiWorldMap_FastTravel(ctx, base);
+  g_world_map_traveller = previous;
+}
 
 // The GUI manager entering menu mode (the PAUSE_GAME sound state, GUI:OnEnter(), the GUI gameflow
 // command that pauses the world): r3 = the manager. Called again for screen switches inside a
@@ -4779,6 +5003,7 @@ REX_EXTERN(rex_lhGuiManager_ExitScreen) {
   const uint32_t manager = ctx.r3.u32;
   const bool closing = AnySubscriber(REFII_EVENT_MENU_CLOSED) && manager != 0 &&
                        Load32(base, manager + 40u) == 1u && GuiActive(ctx, base);
+  const int32_t player = closing ? MenuOwnerNow(ctx, base) : 0;
   __imp__rex_lhGuiManager_ExitScreen(ctx, base);
   if (closing) {
     MenuClosedEvent e{};
@@ -4786,6 +5011,7 @@ REX_EXTERN(rex_lhGuiManager_ExitScreen) {
     e.ctx = &e_ctx;
     e.base = base;
     e.seen = true;
+    e.player = player;
     Dispatch(e);
   }
 }
@@ -4805,32 +5031,56 @@ REX_EXTERN(rex_lhGuiManager_SetScreen) {
     e.ctx = &e_ctx;
     e.base = base;
     e.screen = static_cast<int32_t>(refii::guest::ScreenIdToTu1(static_cast<uint32_t>(screen)));
+    e.player = MenuOwnerNow(ctx, base);
     Dispatch(e);
   }
 }
 
 namespace {
-uint32_t g_painted_day_set = 0;
-bool g_painted_seen = false;
-bool g_painted_inside = false;
+/// Each player's painted region as last seen (index 0: a hero of neither player).
+struct PaintedRegion {
+  uint32_t day_set = 0;
+  bool seen = false;
+  bool inside = false;
+};
+PaintedRegion g_painted[3];
+
+/// The hero the painted-weight pass tests: the entity in player one's slot (0x821AC060..0x821AC084:
+/// `lwz r11,0xC` · `lwz r10,0x58` · `lwz r9,4` · `lwz r11,0(r9)` · `lwz r11,0x6C(r11)` ·
+/// `lwz r10,0(r11)`; its position through the entity's +0x7C vtable+0x40, 0x821AC0D0..0x821AC0E0),
+/// read as it stands — a co-op scope that lends the slot to hero two lends it here too.
+uint32_t PaintedHero(uint8_t* base) {
+  uint32_t at = Load32(base, refii::guest::Address(0x83496AB8u));
+  for (const uint32_t offset : {0xCu, 0x58u, 0x4u, 0x0u, 0x6Cu, 0x0u}) {
+    if (at < 0x10000u || at >= 0xC0000000u) {
+      return 0u;
+    }
+    at = Load32(base, at + offset);
+  }
+  return at >= 0x10000u && at < 0xC0000000u ? at : 0u;
+}
 }  // namespace
 
 // The painted weather map's lookup at the hero's position: r3 = the paint map, v1 = the position;
 // returns the region's environment day-set hash, or -1 outside every painted region. Its one
-// caller is the painted-weight pass (sub_821ABFD8), once a frame. TU1 0x822D6A20.
+// caller is the painted-weight pass (sub_821ABFD8, 0x821AC10C), which tests the hero in player
+// one's slot once a frame; its one caller is the environment update (sub_82275F68), once a frame
+// whatever the number of views. TU1 0x822D6A20.
 REX_EXTERN(rex_lhPaintMap_DaySetAt) {
   REX_FUNC_PROLOGUE();
   __imp__rex_lhPaintMap_DaySetAt(ctx, base);
   const bool inside = ctx.r3.u32 != 0xFFFFFFFFu;
   const uint32_t day_set = inside ? ctx.r3.u32 : 0u;
-  if (g_painted_seen && day_set == g_painted_day_set && inside == g_painted_inside) {
+  const int32_t player = PlayerOf(base, PaintedHero(base));
+  PaintedRegion& region = g_painted[player == 1 || player == 2 ? player : 0];
+  if (region.seen && day_set == region.day_set && inside == region.inside) {
     return;
   }
-  g_painted_inside = inside;
-  const uint32_t previous = g_painted_day_set;
-  const bool first = !g_painted_seen;
-  g_painted_seen = true;
-  g_painted_day_set = day_set;
+  region.inside = inside;
+  const uint32_t previous = region.day_set;
+  const bool first = !region.seen;
+  region.seen = true;
+  region.day_set = day_set;
   if (first || !AnySubscriber(REFII_EVENT_WEATHER_REGION)) {
     return;
   }
@@ -4841,6 +5091,7 @@ REX_EXTERN(rex_lhPaintMap_DaySetAt) {
   e.day_set = day_set;
   e.previous = previous;
   e.inside = inside;
+  e.player = player;
   Dispatch(e);
 }
 
@@ -4868,6 +5119,7 @@ REX_EXTERN(rex_lhMenuBox_Close) {
     e.bed = Deref(ctx, base, state + 8u);
     e.choice = static_cast<int32_t>(Load32(base, menu));
     e.cancelled = Load8(base, menu + 13u) != 0;
+    e.player = g_sleeper;
     Dispatch(e);
     if (e.cancel || e.cancelled) {
       base[menu + 13u] = 1u;
@@ -5276,3 +5528,341 @@ bool SeedPlayerTwoOpinion(PPCContext& ctx, uint8_t* base, uint32_t component, co
 }
 
 }  // namespace refii::vfs
+
+namespace refii::vfs {
+
+// THE DYNAMIC WEATHER IN EFFECT CHANGED. Godot decides it (Engine_DynamicWeatherChoice: the host's
+// decision, or an online joiner adopting the host's statement) and posts
+// "ModWeather:<from_host 0|1>|<seconds>|<level>|<weather>|<previous>" to the pump, which raises it
+// here on the guest thread for native, Lua and Godot alike.
+void RaiseDynamicWeather(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  if (!AnySubscriber(REFII_EVENT_DYNAMIC_WEATHER)) {
+    return;
+  }
+  std::string parts[5];
+  size_t at = 0;
+  for (size_t i = 0; i < 5; ++i) {
+    const size_t bar = i < 4 ? body.find('|', at) : std::string::npos;
+    parts[i] = body.substr(at, bar == std::string::npos ? std::string::npos : bar - at);
+    if (bar == std::string::npos) {
+      break;
+    }
+    at = bar + 1u;
+  }
+  DynamicWeatherEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.from_host = parts[0] == "1";
+  e.seconds = std::strtof(parts[1].c_str(), nullptr);
+  e.level = parts[2].c_str();
+  e.weather = parts[3].c_str();
+  e.previous = parts[4].c_str();
+  Dispatch(e);
+}
+
+}  // namespace refii::vfs
+
+// ---------------------------------------------------------------------------------------------
+// THE EVENT RELAY (core/event_relay.h): an event decided on one co-op machine, dispatched on the other
+// ---------------------------------------------------------------------------------------------
+//
+// Online, some events fire on one machine only while their effect belongs on both: the host's AI
+// must see player two's swings, rolls and item uses, which fire where player two is PLAYED (the
+// joiner); the joiner's looks must follow the victims of hits, which land on the HOST. Each kind in
+// the table below is sent, after its dispatch on the machine that decides it, to the peer, which
+// dispatches it again as a REPLICA (refii_mod_event_replica: verdicts and player-state writes have
+// no effect, it already happened). Who decides:
+//   kPlayer — where the event's player is played (refii_mod_player_here): a hero's own action, in
+//             either direction (the joiner's player two to the host, the host's player one to the
+//             joiner);
+//   kWorld  — the machine that runs the world (refii_mod_world_here): the host, to the joiner.
+// Only events with a hero in them travel (the actor below: 1 or 2). Heroes are carried as their
+// player number and anything else as its UniqueID (Refii.uid, the same on both machines), resolved
+// on arrival to this machine's copy; the deciding machine's own objects (an ability, an action, a
+// hit record, an item) arrive as 0.
+//
+// A relay must never double what the game already delivers here: if this machine ever raises a
+// relayed kind itself for an actor it does not decide (a seam the game turned out to run on both
+// machines), that kind's relay for that actor is dropped from then on, and the log says so once.
+//
+// ADDING A KIND is one row of kRelayed; a kind with fields beyond `entity` and `player` also states
+// its RelayWrite / RelayRead pair (ItemUsed, HitLanded below).
+
+namespace {
+
+enum class Decider { kPlayer, kWorld };
+
+void PutText(std::string& out, const char* text) {
+  if (!out.empty()) {
+    out += ',';
+  }
+  out += text;
+}
+
+void PutNumber(std::string& out, double value) {
+  char text[32];
+  std::snprintf(text, sizeof(text), "%.9g", Fin(value));
+  PutText(out, text);
+}
+
+void PutUnsigned(std::string& out, uint32_t value) {
+  char text[16];
+  std::snprintf(text, sizeof(text), "%u", value);
+  PutText(out, text);
+}
+
+/// A hero as its player number, anything else as its UniqueID, 0 for none.
+void PutEntity(std::string& out, uint8_t* base, uint32_t entity) {
+  const int32_t player = PlayerOf(base, entity);
+  char text[24];
+  if (player != 0) {
+    std::snprintf(text, sizeof(text), "p%d", player);
+  } else if (const uint64_t uid = EntityUid(base, entity); uid != 0u) {
+    std::snprintf(text, sizeof(text), "u%016llx", static_cast<unsigned long long>(uid));
+  } else {
+    std::snprintf(text, sizeof(text), "0");
+  }
+  PutText(out, text);
+}
+
+/// The fields of a relayed event, in the order RelayWrite put them.
+struct RelayReader {
+  const char* at;
+
+  std::string Next() {
+    std::string token;
+    while (at != nullptr && *at != 0 && *at != ',') {
+      token += *at++;
+    }
+    if (at != nullptr && *at == ',') {
+      ++at;
+    }
+    return token;
+  }
+
+  double Number() { return std::strtod(Next().c_str(), nullptr); }
+  uint32_t Unsigned() { return static_cast<uint32_t>(std::strtoul(Next().c_str(), nullptr, 10)); }
+
+  /// This machine's copy: a player's hero, or the living entity with that UniqueID; 0 when none.
+  uint32_t Entity(PPCContext& ctx, uint8_t* base) {
+    const std::string token = Next();
+    if (token == "p1" || token == "p2") {
+      return refii_mod_player_hero(base, token[1] - '0');
+    }
+    if (token.size() > 1 && token[0] == 'u') {
+      return ResolveUid(ctx, base, std::strtoull(token.c_str() + 1, nullptr, 16));
+    }
+    return 0u;
+  }
+};
+
+// The player an event is about, and its fields on the wire. The default is an event of a hero's own
+// (`entity`, `player`); a kind with more states its own.
+template <typename E>
+int32_t RelayActor(const E& e) {
+  return e.player;
+}
+
+template <typename E>
+void RelayWrite(uint8_t* base, const E& e, std::string& out) {
+  PutEntity(out, base, e.entity);
+}
+
+template <typename E>
+bool RelayRead(PPCContext& ctx, uint8_t* base, RelayReader& in, E& e) {
+  e.entity = in.Entity(ctx, base);
+  e.player = PlayerOf(base, e.entity);
+  return e.entity != 0u;
+}
+
+template <>
+void RelayWrite<ItemUsedEvent>(uint8_t* base, const ItemUsedEvent& e, std::string& out) {
+  PutEntity(out, base, e.entity);
+  PutUnsigned(out, e.definition);
+  PutNumber(out, e.count);
+}
+
+template <>
+bool RelayRead<ItemUsedEvent>(PPCContext& ctx, uint8_t* base, RelayReader& in, ItemUsedEvent& e) {
+  e.entity = in.Entity(ctx, base);
+  e.player = PlayerOf(base, e.entity);
+  e.definition = in.Unsigned();
+  e.count = ClampInt(in.Number());
+  return e.entity != 0u;
+}
+
+/// A hit is about the hero who dealt it, else the hero who took it.
+template <>
+int32_t RelayActor<HitLandedEvent>(const HitLandedEvent& e) {
+  return e.attacker_player != 0 ? e.attacker_player : e.victim_player;
+}
+
+template <>
+void RelayWrite<HitLandedEvent>(uint8_t* base, const HitLandedEvent& e, std::string& out) {
+  PutEntity(out, base, e.victim);
+  PutEntity(out, base, e.attacker);
+  PutNumber(out, e.damage);
+  PutNumber(out, e.spell_type);
+  PutNumber(out, e.spell_level);
+  PutUnsigned(out, e.spell_serial);
+  PutNumber(out, e.knockdown ? 1 : 0);
+}
+
+template <>
+bool RelayRead<HitLandedEvent>(PPCContext& ctx, uint8_t* base, RelayReader& in, HitLandedEvent& e) {
+  e.victim = in.Entity(ctx, base);
+  e.victim_player = PlayerOf(base, e.victim);
+  e.attacker = in.Entity(ctx, base);
+  e.attacker_player = PlayerOf(base, e.attacker);
+  e.damage = static_cast<float>(in.Number());
+  e.spell_type = ClampInt(in.Number());
+  e.spell_level = ClampInt(in.Number());
+  e.spell_serial = in.Unsigned();
+  e.knockdown = in.Number() != 0.0;
+  return e.victim != 0u || e.attacker != 0u;
+}
+
+struct RelayKind {
+  int32_t kind;
+  Decider decider;
+  const char* name;
+  int32_t (*actor)(const void* event);
+  void (*write)(uint8_t* base, const void* event, std::string& out);
+  void (*replay)(PPCContext& ctx, uint8_t* base, RelayReader& in, int32_t row);
+};
+
+template <typename E>
+int32_t ActorOf(const void* event) {
+  return RelayActor(*static_cast<const E*>(event));
+}
+
+template <typename E>
+void WriteOf(uint8_t* base, const void* event, std::string& out) {
+  RelayWrite(base, *static_cast<const E*>(event), out);
+}
+
+template <typename E>
+void ReplayOf(PPCContext& ctx, uint8_t* base, RelayReader& in, int32_t row);
+
+#define REFII_RELAY(Kind, decider) \
+  RelayKind { Kind##Event::kKind, Decider::decider, #Kind, &ActorOf<Kind##Event>, &WriteOf<Kind##Event>, &ReplayOf<Kind##Event> }
+
+/// THE RELAYED KINDS. One row each.
+const RelayKind kRelayed[] = {
+    REFII_RELAY(MeleeSwing, kPlayer),
+    REFII_RELAY(RollStarted, kPlayer),
+    REFII_RELAY(ItemUsed, kPlayer),
+    REFII_RELAY(HitLanded, kWorld),
+};
+
+#undef REFII_RELAY
+
+constexpr int32_t kRelayRows = static_cast<int32_t>(sizeof(kRelayed) / sizeof(kRelayed[0]));
+
+/// refii_mod_coop_mode as the tick last saw it: the relay runs only online (2 or 3).
+int32_t g_relay_mode = 0;
+/// [row][player - 1]: this machine raised that kind itself for that player without deciding it.
+bool g_relay_native_elsewhere[kRelayRows][2] = {};
+
+int32_t RelayRow(int32_t kind) {
+  for (int32_t row = 0; row < kRelayRows; ++row) {
+    if (kRelayed[row].kind == kind) {
+      return row;
+    }
+  }
+  return -1;
+}
+
+bool DecidedHere(const RelayKind& row, uint8_t* base, int32_t actor) {
+  return row.decider == Decider::kPlayer ? refii_mod_player_here(actor) != 0 : refii_mod_world_here(base) != 0;
+}
+
+template <typename E>
+void ReplayOf(PPCContext& ctx, uint8_t* base, RelayReader& in, int32_t row) {
+  E e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  if (!RelayRead(ctx, base, in, e)) {
+    return;
+  }
+  const int32_t actor = RelayActor(e);
+  // A copy of an event this machine decides itself is a misroute; one the game already raises
+  // here would be a double.
+  if ((actor != 1 && actor != 2) || DecidedHere(kRelayed[row], base, actor) || g_relay_native_elsewhere[row][actor - 1]) {
+    return;
+  }
+  g_relay_replaying = true;
+  Dispatch(e);
+  g_relay_replaying = false;
+}
+
+bool RelayWants(int32_t kind) {
+  if (g_relay_mode < 2) {
+    return false;
+  }
+  const int32_t row = RelayRow(kind);
+  // A world kind is sent by the host only; a player kind by either machine.
+  return row >= 0 && (kRelayed[row].decider == Decider::kPlayer || g_relay_mode == 2);
+}
+
+void RelayAfterDispatch(int32_t kind, void* event, bool replica) {
+  if (g_relay_mode < 2 || replica) {
+    return;  // alone, local co-op, or a copy: nothing is sent on
+  }
+  const int32_t row = RelayRow(kind);
+  if (row < 0) {
+    return;
+  }
+  const RelayKind& relayed = kRelayed[row];
+  const auto& e = *static_cast<const Event*>(event);
+  const int32_t actor = relayed.actor(event);
+  if ((actor != 1 && actor != 2) || e.base == nullptr) {
+    return;
+  }
+  if (!DecidedHere(relayed, e.base, actor)) {
+    if (!g_relay_native_elsewhere[row][actor - 1]) {
+      g_relay_native_elsewhere[row][actor - 1] = true;
+      REXLOG_WARN("[mods] relay: {} for player {} fired here although the peer decides it; its relay is dropped "
+                  "here from now on (the game already delivers it on both machines)",
+                  relayed.name, actor);
+    }
+    return;
+  }
+  if (e.cancel) {
+    return;  // refused: it did not happen
+  }
+  std::string fields;
+  relayed.write(e.base, event, fields);
+  char head[16];
+  std::snprintf(head, sizeof(head), "%d:", kind);
+  refii_bridge_event_relay_post((head + fields).c_str());
+}
+
+void DrainRelay(PPCContext& ctx, uint8_t* base) {
+  const int32_t mode = refii_mod_coop_mode(base);
+  if (mode != g_relay_mode) {
+    if (mode < 2) {
+      std::memset(g_relay_native_elsewhere, 0, sizeof(g_relay_native_elsewhere));
+    }
+    g_relay_mode = mode;
+  }
+  char text[512];
+  // Bounded per tick, as the host's commands are.
+  for (int n = 0; n < 64 && refii_bridge_event_relay_take(text, sizeof(text)) != 0; ++n) {
+    if (mode < 2) {
+      continue;
+    }
+    char* end = nullptr;
+    const long kind = std::strtol(text, &end, 10);
+    const int32_t row = end != nullptr && *end == ':' ? RelayRow(static_cast<int32_t>(kind)) : -1;
+    if (row < 0) {
+      continue;
+    }
+    RelayReader in{end + 1};
+    kRelayed[row].replay(ctx, base, in, row);
+  }
+}
+
+}  // namespace

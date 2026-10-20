@@ -144,6 +144,116 @@ public class ModApiTests
     }
 
     [TestCase]
+    public void CoopEventsStateTheirPlayerLast()
+    {
+        // Added after the API shipped: a trailing field, so a mod built against the old struct
+        // keeps every offset it reads.
+        foreach (string name in new[]
+                 {
+                     "dog_trick", "opinion_modified", "sleep_menu", "travel", "fast_travel", "menu_opened",
+                     "menu_closed", "menu_screen", "weather_region", "sleep_chosen",
+                 })
+        {
+            ModApiEvent e = ModApi.Find(name)!;
+            AssertThat(e.Fields[^1].Name).OverrideFailureMessage($"{e.Name}: player is not the last field").IsEqual("player");
+            AssertThat(e.Fields[^1].Type).IsEqual("int32_t");
+        }
+
+        ModApiEvent weather = ModApi.Find("dynamic_weather")!;
+        AssertThat(weather.Kind).IsEqual(86);
+        AssertThat(string.Join(",", weather.Fields.Select(f => f.Name))).IsEqual("level,weather,previous,seconds,from_host");
+    }
+
+    [TestCase]
+    public void GodotHelpersNameEveryCommandAndQuery()
+    {
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        // Every verb the guest tick answers (mod_commands.cpp) is in the catalog's Godot section,
+        // which the Guide and RefiiModApi.ListGodotHelpers show.
+        string grammar = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        List<string> verbs = Regex.Matches(grammar, "(?:what|op) == \"([a-z_]+)\"")
+            .Select(m => m.Groups[1].Value).Distinct().ToList();
+        AssertThat(verbs.Count > 30).IsTrue();
+        foreach (string verb in verbs)
+        {
+            AssertThat(Regex.IsMatch(godot, @"\b" + verb + @"\b"))
+                .OverrideFailureMessage($"'{verb}' is answered by mod_commands.cpp but missing from ModApi.GodotHelpers")
+                .IsTrue();
+        }
+    }
+
+    [TestCase]
+    public void CatalogListsTheSharedPlayerPrimitives()
+    {
+        // The co-op primitives the core layer and the mods share (Forge/Fabric style): each is
+        // documented on every surface that has it.
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        foreach (string call in new[] { "Refii.player_for(", "Refii.acting_player(", "Refii.run_as_player(", "Refii.combat_state(", "Refii.world_here(", "Refii.player_of(", "Refii.event_replica(" })
+        {
+            AssertThat(lua.Contains(call, StringComparison.Ordinal)).OverrideFailureMessage($"{call} is not in ModApi.LuaHelpers").IsTrue();
+        }
+
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        foreach (string call in new[] { "refii_mod_player_for(", "refii_mod_world_here(", "refii_mod_player_of(", "refii_mod_event_replica(" })
+        {
+            AssertThat(native.Contains(call, StringComparison.Ordinal)).OverrideFailureMessage($"{call} is not in ModApi.Helpers").IsTrue();
+        }
+
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        foreach (string verb in new[] { "player_for", "combat_state", "world_here", "replica" })
+        {
+            AssertThat(Regex.IsMatch(godot, @"\b" + verb + @"\b")).OverrideFailureMessage($"'{verb}' is not in ModApi.GodotHelpers").IsTrue();
+        }
+
+        AssertThat(ModApi.PlayerAgnostic.Contains("NEVER ASSUME PLAYER ONE", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        foreach (string call in new[] { "refii_mod_player_for(PPCContext* ctx, uint8_t* base, uint32_t entity)", "refii_mod_world_here(uint8_t* base)" })
+        {
+            AssertThat(header.Contains("extern \"C\" int32_t " + call, StringComparison.Ordinal))
+                .OverrideFailureMessage($"{call} is not declared in core/refii_mod.h").IsTrue();
+        }
+    }
+
+    [TestCase]
+    public void RelayedEventsAgreeWithTheBus()
+    {
+        // The catalog marks exactly the kinds mod_events.cpp's relay table carries.
+        foreach (string name in new[] { "MeleeSwing", "ItemUsed", "RollStarted", "HitLanded" })
+        {
+            AssertThat(ModApi.Find(name)!.IsRelayed).OverrideFailureMessage($"{name} is not marked relayed").IsTrue();
+        }
+
+        foreach (ModApiEvent e in ModApi.Events.Where(e => e.IsRelayed))
+        {
+            AssertThat(e.Relayed.StartsWith("RELAYED:", StringComparison.Ordinal)).IsTrue();
+        }
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string[] rows = Regex.Matches(bus, @"REFII_RELAY\((\w+), k(?:Player|World)\)")
+            .Select(m => m.Groups[1].Value).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        AssertThat(rows).IsEqual(ModApi.Events.Where(e => e.IsRelayed).Select(e => e.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
+    }
+
+    [TestCase]
     public void GodotDeclaresASignalPerEvent()
     {
         AssertThat(string.Join(",", RefiiHost.SignalNames)).IsEqual(string.Join(",", ModApi.Events.Select(e => e.LuaName)));

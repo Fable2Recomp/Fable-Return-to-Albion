@@ -516,6 +516,21 @@ bool RefiiCoopPartnerLookAtStaysTheirs() {
   return true;
 }
 
+// THE TARGETED READOUT IS THIS SCREEN'S PLAYER'S. The readout writer `sub_823FD410` sends what it
+// writes to the peer in a session (message 221, `off_820A63D8` through `sub_823FDDA8`, when
+// world+140 bytes 52 and 53 are set) and then fills the HUD's TargetedQuery elements; the
+// receiver's case 221 (`sub_8232E398` 0x82332278) copies the peer's readout (`sub_823349C8`) and
+// runs the same writer — one shared screen, shipped. With a screen each, the peer's write replaced
+// this player's: the host showed player two's target, and the joiner held player one's target,
+// off its screen, in place of its own. The hook at the copy (0x82332320) goes past the writer
+// (0x82332334), skipping the copy and its release together.
+std::atomic<bool> g_said_peer_readout{false};
+
+bool RefiiCoopPeerReadoutIgnored() {
+  Once(g_said_peer_readout, "the other player's targeted readout stays on their screen");
+  return true;
+}
+
 // THE LOOK-AT TARGET IS THE LOCAL PLAYER'S. The HUD's look-at readout (`sub_8219C098`, GUI manager
 // slot +76: the target's name and outline, SE_LOOKAT_NOTIFICATION) reads hero one only
 // (players+104, 0x8219C0B4..0x8219C0C8) and asks its comp33 and comp77 (`sub_822C7D50`); the
@@ -982,6 +997,10 @@ extern "C" REX_FUNC(__imp__rex_CECLevelExit_Update);
 extern "C" REX_FUNC(__imp__rex_CECLevelExit_Fire);
 extern "C" int RefiiCoopPeekExitUse(uint8_t* base, float* out_xyz);
 extern "C" void RefiiCoopClearExitUse(void);
+// mod_events.cpp: who asked for the travel a fire queues (the Travel mod event's `player`), and the
+// player of the newest use of a thing.
+extern "C" void RefiiModNoteTraveller(uint8_t* base, int32_t player);
+extern "C" int32_t RefiiModPlayerWhoUsed(uint8_t* base, uint32_t thing);
 
 namespace {
 
@@ -1000,6 +1019,11 @@ uint32_t g_exit_tester = 0u;
 bool g_joiner_runs_exit = false;
 
 std::atomic<bool> g_said_joiner_exit{false};
+
+/// Set by the exit-update wrapper for its call: the player the exit fires for when it fires
+/// inside the update (the Travel event's asker), and that the update is running.
+int32_t g_exit_fire_player = 0;
+bool g_in_exit_update = false;
 
 /// The frame an interaction exit last raised its prompt for player two (their hold is its own).
 uint32_t g_exit_prompt_two_frame = 0xFFFFFFF0u;
@@ -1149,21 +1173,36 @@ bool ExitRefused(PPCContext& ctx, uint8_t* base, uint32_t exit) {
 /// position is marked interacted (+0x3D, what its Lua `Interact` sets), so this update fires it
 /// at its top (0x821ED3EC). The joiner already applied the partner rule, as Fable 3's host trusts
 /// its client's (`sub_829BF5F8` re-checks only the region lock, which the update keeps).
-void FireRequestedExit(PPCContext& ctx, uint8_t* base, uint32_t exit) {
+bool FireRequestedExit(PPCContext& ctx, uint8_t* base, uint32_t exit) {
   float wanted[3];
   if (!Plausible(exit) || RefiiCoopPeekExitUse(base, wanted) == 0) {
-    return;
+    return false;
   }
   const uint32_t entity = refii::vfs::LoadGuestU32(base, exit + 4u);
   float at[3];
   if (!Plausible(entity) || refii_mod_entity_position(&ctx, base, entity, at) == 0 ||
       DistanceSquared3(at, wanted) > 1.0f) {
-    return;
+    return false;
   }
   refii::vfs::StoreGuestU8(base, exit + 0x3Du, 1u);
   RefiiCoopClearExitUse();
   REXLOG_INFO("Refii co-op heroes: the joiner's exit at ({:.1f}, {:.1f}, {:.1f}) fires on the host",
               at[0], at[1], at[2]);
+  return true;
+}
+
+/// The player an exit fires for inside its update (0x821ED3CC..0x821ED400): +0x3E set queues the
+/// level change itself (`sub_8283C7F8`, no fire); +0x3D set — what its Lua `Interact` or the
+/// joiner's request sets — fires at once for whoever used it; otherwise the walk-in test fires
+/// for the player it tested (the hero, or player two by the travel rule).
+int32_t ExitFirePlayer(uint8_t* base, uint32_t exit, bool joiner_request) {
+  if (joiner_request) {
+    return 2;
+  }
+  if (refii::vfs::LoadGuestU8(base, exit + 0x3Du) != 0u) {
+    return RefiiModPlayerWhoUsed(base, refii::vfs::LoadGuestU32(base, exit + 4u));
+  }
+  return g_exit_tester != 0u ? 2 : 1;
 }
 
 }  // namespace
@@ -1193,32 +1232,41 @@ REX_EXTERN(rex_CECLevelExit_Update) {
   const bool previous = g_exit_refused;
   const uint32_t previous_tester = g_exit_tester;
   const bool previous_joiner = g_joiner_runs_exit;
+  const int32_t previous_fire_player = g_exit_fire_player;
+  const bool previous_in_update = g_in_exit_update;
   g_exit_tester = 0u;
   g_joiner_runs_exit = false;
   g_exit_refused = ExitRefused(ctx, base, exit);
-  if (!IsJoiner(base)) {
-    FireRequestedExit(ctx, base, exit);
-  }
+  const bool requested = !IsJoiner(base) && FireRequestedExit(ctx, base, exit);
+  g_exit_fire_player = Plausible(exit) ? ExitFirePlayer(base, exit, requested) : 0;
+  g_in_exit_update = true;
   __imp__rex_CECLevelExit_Update(ctx, base);
   g_exit_refused = previous;
   g_exit_tester = previous_tester;
   g_joiner_runs_exit = previous_joiner;
+  g_exit_fire_player = previous_fire_player;
+  g_in_exit_update = previous_in_update;
 }
 
 // The level exit's fire (r3 the CECLevelExit component). On an online joiner it is a request:
 // Fable 2 never fires an exit there (the update returns at its joiner test), and Fable 3's client
 // sends net message 0x145 for the host to fire. Here the exit's position goes to the host on
 // our channel (refii_bridge_set_exit_request) and the host's update fires the exit standing there.
+// The asker of the travel a fire queues is noted for the Travel event: inside the update, the
+// player it fires for; outside it (the interact action's `sub_8283B928`, the exit's message
+// handler `sub_82849870`), the exit's newest user, or none.
 REX_EXTERN(rex_CECLevelExit_Fire) {
   const uint32_t exit = ctx.r3.u32;
+  const uint32_t entity = Plausible(exit) ? refii::vfs::LoadGuestU32(base, exit + 4u) : 0u;
   if (!IsJoiner(base)) {
+    RefiiModNoteTraveller(base, g_in_exit_update ? g_exit_fire_player : RefiiModPlayerWhoUsed(base, entity));
     __imp__rex_CECLevelExit_Fire(ctx, base);
     return;
   }
-  const uint32_t entity = Plausible(exit) ? refii::vfs::LoadGuestU32(base, exit + 4u) : 0u;
   float at[3];
   if (Plausible(entity) && refii_mod_entity_position(&ctx, base, entity, at) != 0) {
     refii_bridge_set_exit_request(at[0], at[1], at[2]);
+    RefiiModNoteTraveller(base, 2);
     Once(g_said_joiner_exit, "the joiner's exit use goes to the host");
   }
 }

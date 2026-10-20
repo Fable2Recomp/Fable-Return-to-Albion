@@ -1808,6 +1808,18 @@ public partial class Engine_FrontEndMenuView : Node3D
 		// ability count, the new-item marker — composed at spawn time.
 		string display = item.StatedLabel ?? Resolve(item.TextTag);
 
+		// AN UNVIEWED ITEM ROW CARRIES THE "!" — `sub_826CE230` appends `<exclamation.img>` at
+		// spawn when `*(item+20) == 0` (0x826CE378); the screen's highlight tick strips it when
+		// the row is seen. Drawn from the row's restated flag rather than baked into its label,
+		// so marking a row viewed restates it in place instead of respawning it under the
+		// cursor. Quest and job rows (42/43) take no marker of their own — only their headers.
+		if (item.Unviewed && !heading && item.Children.Count == 0 &&
+			item.EventType != 42 && item.EventType != 43 &&
+			!display.Contains("<exclamation.img>", System.StringComparison.Ordinal))
+		{
+			display += "<exclamation.img>";
+		}
+
 		// The SLOT's own style, not slot 4's for everything: `SetAttributesToVisibleIndex`
 		// (`expandablemenuformatting.dis main.33` pc67..92) writes `Icon.Title.size` and, where the
 		// element has it, `Icon.Title.truncate` from the style the CURRENT slot names, and the

@@ -63,6 +63,9 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Mods' per-player values: owned by the machine that plays the hero, the same on both co-op
     # machines, the saved ones kept beside that hero's save.
     ${REFII_VFS_ROOT}/src/core/player_state.cpp
+    # Mod events decided on one co-op machine, carried to the other (the payload posts and takes,
+    # the host bridge carries the lines beside the player state's).
+    ${REFII_VFS_ROOT}/src/core/event_relay.cpp
     # Partner consent: a co-op script asks the other player (beds); the host bridge carries it.
     ${REFII_VFS_ROOT}/src/core/coop_consent.cpp
     # One-time collectables per player: silver keys each player takes for themselves.

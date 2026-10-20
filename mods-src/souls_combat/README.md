@@ -21,7 +21,7 @@ it never replaces a script; the icons and the card are our own art (`tools/souls
 | Camera | `mod/camera.lua` | Every camera that frames one hero: single player, online co-op and split screen, where each player's camera follows their own hero. A shared screen keeps the shipped camera, which has to frame both heroes. The camera orbits the hero at a fixed 4 m (shipped: anywhere from 3.4 to 5 m), centred on the hero, without the shipped slot the hero may wander in. Nearby foes and villagers no longer pull the frame, and there is no high combat camera (the shipped one blends in with a foe inside 10 m). Stick Y pitch stays where it is put; the shipped pitch springs back to level. A lock keeps the target within a cos 0.97 cone (shipped 0.9) and turns at 420°/s (shipped 250). The camera is all Lua (`camera/stringandcagecamera.lua`), and each override wraps a method `FrameUpdate` calls by name. |
 | Enemy pacing | `mod/init.lua` | The shipped wheel grants one attack token per defender. Each defender now has 2 tokens and 4 inner-ring slots (shipped 3), and a token held without attacking lapses after 1.5 s (shipped 3). `NonFormation`, the game's own aggro mode, is kept. Swing gaps and the courtesy waits after anyone hits the target are capped by tier: fodder 2 s, elite 1.2 s, boss 0.7 s; a style that ships quicker keeps its own. Attack combos are `Uninterruptable`, so a roll away leaves the enemy finishing its string. Right after a hero heals or whiffs a swing, up to two enemies in reach attack as if they held a token. |
 | Enemy defence | `mod/init.lua` | Every unblocked hit rolls a tier chance to raise the guard (15/35/50%). The shipped styles block only after N hits. Bandit-like styles that are pushed back by a block get a two-strike riposte. The shipped name typo that kept the balverines from ever dodging (`BLOCK_MELEE_DODGE`) is aliased. Waiting enemies circle with the shipped strafes instead of standing and taunting. Kiting is answered: a token holder sprints to within 3 m before it strafes (shipped: strafe-walks from 5 m, slower than a hero backs off), a spell launch hands one more enemy a token for 1.5 s, and the shipped anti-spam rush (the group breaks formation for 8 s) fires on 2 spells or 3 shots in 6 s on every grouped style (shipped 4 in 4 s, bandits only). Boss-tier styles with an `Enrage` table now enrage below half health; no shipped style ever ran `UpdateEnrage`. Trolls wait at most 3 s after landing a hit. |
-| Lock-on | `native/lockon.cpp` | LT TOGGLES the lock instead of being held. The lock is the mod's own state per hero, flipped by the LT press (GameAction 49) and written into the game's two switches — the targeting component's force byte and the player's look-at flag — through the game's own setter; the release (50) is swallowed while locked. While locked the game adds player mode 4, which outlines the target and aims guns and spells at it, and re-targets the next enemy when the locked one dies. Half a second with nothing valid to lock (dead, gone, or nothing in range) releases the lock. |
+| Lock-on | `native/lockon.cpp` | LT TOGGLES the lock instead of being held. The lock is the mod's own state per hero, flipped by the LT press (GameAction 49) and written into the game's two switches — the targeting component's force byte and the player's look-at flag — through the game's own setter; while locked the release (50) ends nothing, since the game's own case honours the force byte and the look-at flag is held by the look-at writer hook. While locked the game adds player mode 4, which outlines the target and aims guns and spells at it, and re-targets the next enemy when the locked one dies. Half a second with nothing valid to lock (dead, gone, or nothing in range) releases the lock. |
 | Stamina | `native/stamina.cpp`, `native/roll.cpp`, `native/guard.cpp` | A pool per player hero. A committed swing costs 18, a roll 22, a blocked hit 1.2 per point of damage; at an empty pool the next swing, roll or block is refused (the pool may dip to −25 so the emptying swing still lands), and a block the pool cannot pay for breaks and the hit lands in full. Refills at 55/s after 0.7 s without spending. |
 | Stamina ability | `native/stamina_ability.cpp`, `ui/abilities.json`, `language/en-uk/text/book.babel.csv` | A sixth Strength ability, five levels, priced exactly as Toughness (the same experience costs, bought through the game's own spend, Strength then General). Max stamina follows Toughness's health steps: 100 untrained, then along the same curve to 271 — so a full stamina bar is as long as a maxed health bar. Y unlearns a level through the game's own confirm and result boxes, refunding what the game would. Each player has their own level: the row acts for, and shows, the player whose book is open. The level is a saved player value (`souls_combat.stamina_ability`): it goes home with the hero's own save (see Co-op). |
 | Poise | `native/poise.cpp` | A hit staggers its victim only once 30% of their maximum health has landed within 3 s; lesser hits are absorbed without a flinch. Enemies and the hero alike. A parried or blocked hit, a knockdown, a ranged hit and a killing blow keep the game's own response. |
@@ -53,6 +53,19 @@ Both players are principals, in every co-op mode (shared screen, split screen, o
   played. A cast runs on both machines (the host's copy is the spell that deals the damage), so
   the mana cap applies on both, from the same pool, and the launch is paid once. Casting plants
   the hero where the hero is played.
+- Enemies punish either hero's heal or whiff. The AI runs only on the host, and a swing or an
+  item use fires where the hero is played; the mod API relays both to the other machine, so the
+  host receives player two's `melee_swing` and `item_used` as replicas (`Refii.event_replica()`)
+  and the mod simply times each window from the event it receives, for `e.player`, on any machine
+  — no co-op code of its own. A hit by that hero landing on the host at or after the swing cancels
+  the whiff; a relayed swing arrives a network moment after it was made, so for one a hit up to
+  0.25 s before its arrival counts too. Heroes are told apart with `Refii.player_of`, since player
+  two's body on the host is not a `Player` there.
+- Poise is decided where the hit's response is authoritative. The host runs every hit's response,
+  so it keeps every pool, player two's included (from the same hits the joiner sees, so its copy
+  agrees). The joiner runs only hits on or by player two: it decides player two's own pool, and
+  its copy of a hit by player two on an enemy (`refii_mod_event_replica`) leaves the pool alone
+  and plays the game's own predicted response; the host decides that enemy's stagger.
 - The Stamina level is a SAVED player value: it is written beside the save the game writes that
   hero into (`refii_player.txt` in the save's folder) — player one's main save, a local player
   two's own save, an online joiner's own save on the joiner's machine — and read back when the
@@ -68,8 +81,9 @@ Both players are principals, in every co-op mode (shared screen, split screen, o
   is charged once); poise absorbs through `HitResponse`; the lock-on toggles through
   `GameAction`; mana gates `SpellCharge`, caps `SpellChargeLevel`, skips unpaid cascade slots
   through `SpellLaunch` and spends on `SpellLaunched`; the Stamina ability buys and refunds through `refii_mod_ability_cost`,
-  `refii_mod_spend_experience` and `refii_mod_give_experience`, and keeps its level in the save
-  through `refii_mod_save_set_int`, re-read on `Lua` and `SaveLoaded`. The one function still
+  `refii_mod_spend_experience` and `refii_mod_give_experience`, and keeps each player's level as a
+  saved player value (`refii_mod_player_save`, `souls_combat.stamina_ability`), which goes home
+  with that hero's own save. The one function still
   hooked by name is the player's look-at writer (`lockon.cpp`), which no event covers.
 - Native code publishes floats (`refii::mods::Publish("souls_combat.stamina", v)`); the HUD and
   the ability row read them as `mod:souls_combat.<name>`.

@@ -135,7 +135,7 @@ public partial class Engine_FxDisplacement : Node
         _apply.SetShaderParameter("disp_tex", _viewport.GetTexture());
         // The rect is sized to the host in Resize rather than anchored: a Control under a
         // CanvasLayer anchors to the viewport its NODE is in (the window), not the layer's
-        // custom viewport, which is a half-width view while split.
+        // custom viewport, which is one player's half while split.
         _layer = new CanvasLayer { Name = "DispApply", Layer = -100, Visible = _enabled };
         _rect = new ColorRect { Name = "DispRect", Material = _apply, MouseFilter = Control.MouseFilterEnum.Ignore };
         _layer.AddChild(_rect);

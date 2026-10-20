@@ -20,8 +20,8 @@
 // 7 DeadRising. Slow Time and Raise Dead are never partners. Learned ranks: the stats
 // component's ability levels 7 + type (refii_mod_ability_level).
 //
-// EACH SLOT HAS ITS OWN PARTNER, as each slot has its own spell. The partners are kept in the
-// save (RefiiModSave.SpellWeavingPartner1..5, Partner2_1..5 for player 2) and chosen through the
+// EACH SLOT HAS ITS OWN PARTNER, as each slot has its own spell. The partners are kept as
+// saved player values (per player, going home with that hero's own save) and chosen through the
 // settings spell_weaving.partner_1..5 / partner2_1..5: a CHANGE of a setting is the choice (-1
 // clears; Slow Time and Raise Dead are refused). The partner in effect per slot is published as
 // spell_weaving.partner_active_1..5 / partner2_active_1..5. Settings (settings.json, live through
@@ -143,8 +143,8 @@ void ReadSaved(PPCContext* ctx, uint8_t* base) {
 }
 
 void OnTick(refii::mods::TickEvent& e) {
-  if (refii_mod_player_hero(e.base, 1) == 0) {
-    return;
+  if (refii_mod_player_hero(e.base, 1) == 0 && refii_mod_player_hero(e.base, 2) == 0) {
+    return;  // no session: neither hero exists
   }
 
   if (g_reread) {

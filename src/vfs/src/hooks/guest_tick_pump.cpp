@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -50,6 +51,7 @@
 #endif
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <rex/kernel/xboxkrnl/threading.h>
@@ -831,6 +833,10 @@ constexpr const char* kActionCoopKick = "CoopKick";
 /// `CoopExitUse:<x>:<y>:<z>` — the online joiner used the region exit standing at that guest
 /// position; the host's exit update fires it (coop_hero_hooks.cpp, RefiiCoopTakeExitUse).
 constexpr const char* kActionCoopExitUsePrefix = "CoopExitUse:";
+/// `ModWeather:<from_host 0|1>|<seconds>|<level>|<weather>|<previous>` — the dynamic weather in
+/// effect changed on the host side (Engine_DynamicWeatherChoice); raised as the DynamicWeather mod
+/// event (mod_events.cpp RaiseDynamicWeather).
+constexpr const char* kActionModWeatherPrefix = "ModWeather:";
 
 /// "HeroState:<1|2>:<base64>" — one player's WHOLE hero as the HeroState binary v1
 /// (little-endian, magic "HST1"), standard base64 with padding, in ONE action. The pump
@@ -2673,6 +2679,28 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     return true;
   }
 
+  // A ROW SEEN IS VIEWED. The "!" on an item row, its category and its pause tab is an unviewed
+  // item (`item+20 == 0`: `sub_826CE230` 0x826CE378, counted by `sub_826CF6A8`); the screen's
+  // highlight tick clears it on the row its cursor stands on (`sub_829B5160`: `*(item+20) = 1`
+  // at 0x829B55BC), and that cursor stops once Godot owns it — so the host states the row it
+  // highlights. Every record of the hero's inventory (component 13, the list at +0x10) with
+  // that id.
+  if (op == "viewed") {
+    const uint32_t entity = HeroEntity(base);
+    const uint32_t inventory = entity != 0u ? HeroComponent(base, entity, 13u) : 0u;
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    const uint32_t sentinel = inventory != 0u ? LoadGuestU32(base, inventory + 0x10u) : 0u;
+    uint32_t node = plausible(sentinel) ? LoadGuestU32(base, sentinel) : 0u;
+    for (uint32_t n = 0; plausible(node) && node != sentinel && n < 4096u; ++n, node = LoadGuestU32(base, node)) {
+      const uint32_t item = LoadGuestU32(base, node + 8u);
+      if (plausible(item) && LoadGuestU32(base, item + 4u) == static_cast<uint32_t>(hash) &&
+          LoadGuestU8(base, item + 0x14u) == 0u) {
+        StoreGuestU8(base, item + 0x14u, 1u);
+      }
+    }
+    return true;
+  }
+
   // TAKING SOMETHING OFF IS A CATEGORY, NOT A RECORD, and it resolves everything itself.
   //
   // The clothing screen spawns one `INV_ITEM_CLOTHES_NONE_<CAT>` row per slot with event types
@@ -3007,7 +3035,67 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
 /// tutorial text on success, `GUI_SCREEN_ABILITY_YOU_DO_NOT_HAVE_ENOUGH_EXPERIENCE` or
 /// `GUI_SCREEN_ABILITIES_MAXED` on refusal. That is the feedback, and it arrives through the
 /// message-box path the host already mirrors.
+/// THE ABILITY SCREEN'S VOICE-OVER — `Ability:hover:<0..14>`, the row the host's cursor stands on.
+///
+/// The narration over the previews is the TUTORIAL system, not the movies (the 352x264 `.bik`s
+/// carry no audio track). The screen's highlight edge `sub_826C3C78` (0x826c3d9c..0x826c3e0c)
+/// arms a 2.0 s timer at `screen+0x274` (`sub_828C36D0`, `flt_8209B480`) when the row is an
+/// ability AND `tutorials+0x38` is set — `PlayAbilityScreenTutorials`, saved state that
+/// `qc060_newbeginning.lua` turns on at the Guild seal and `qc080_monksquest.lua` turns off. A
+/// row that is not an ability clears the timer (0x826c3e20). When it runs out, the screen's
+/// update `sub_826C23A8` waits while `screen+0xC5` is set and `sub_8244DE40` reports a line on
+/// the hero's TUTORIAL channel — the open handler `sub_826C2118` sets that latch over its own
+/// category intro (tutorial 120) — then `sub_826C3FD0` maps the ability Type through the table at
+/// 0x826c3f58 to `ETutorialType.TUTORIAL_ABILITY_SCREEN_*`, and, if that differs from the last
+/// one it queued (`screen+0x280`), stops the channel (`sub_8244DAD8`) and queues it
+/// (`sub_8219AE90`). The tutorial processor speaks `TEXT_<name>` on the TUTORIAL channel.
+///
+/// The edge reads the GUEST's `g_Menu` highlight, which no longer moves once the host owns the
+/// cursor, so the host states the row and this runs the same arm and the same firing body.
+struct AbilityTutorialTimer {
+  bool armed = false;
+  uint32_t type = 0u;
+  std::chrono::steady_clock::time_point due{};
+};
+AbilityTutorialTimer g_ability_tutorial;
+
+/// `sub_826C3F08`'s table: ability Type 1..14 to its ETutorialType (tutorialtypes.lua).
+constexpr uint32_t kAbilityTutorials[14] = {0x8Fu, 0x83u, 0x8Bu, 0x90u, 0x91u, 0x87u, 0x85u,
+                                            0x80u, 0x8Au, 0x89u, 0x8Cu, 0x79u, 0x7Cu, 0x7Au};
+
+/// `*(*(*(dword_83496AB8 + 12) + 168) + 4)` — the tutorial state both screen paths pass on.
+uint32_t TutorialState(uint8_t* base) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t world = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
+  const uint32_t manager = plausible(world) ? LoadGuestU32(base, world + 168u) : 0u;
+  const uint32_t state = plausible(manager) ? LoadGuestU32(base, manager + 4u) : 0u;
+  return plausible(state) ? state : 0u;
+}
+
+bool ArmAbilityTutorial(uint8_t* base, const std::string& index_text) {
+  char* end = nullptr;
+  const unsigned long type = std::strtoul(index_text.c_str(), &end, 10);
+  if (end == index_text.c_str() || *end != '\0' || type > 14u) {
+    REXLOG_INFO("Refii guest-tick pump: 'Ability:hover:{}' names no row 0..14 — dropped",
+                index_text);
+    return true;
+  }
+
+  const uint32_t tutorials = TutorialState(base);
+  g_ability_tutorial.armed =
+      type != 0u && tutorials != 0u && LoadGuestU8(base, tutorials + 0x38u) != 0u;
+  g_ability_tutorial.type = static_cast<uint32_t>(type);
+  g_ability_tutorial.due = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  return true;
+}
+
 bool DispatchAbilityAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  constexpr std::string_view kHover = "hover:";
+  if (body.compare(0, kHover.size(), kHover) == 0) {
+    return ArmAbilityTutorial(base, body.substr(kHover.size()));
+  }
+
   const std::size_t colon = body.rfind(':');
   if (colon == std::string::npos || body.compare(0, colon, "learn") != 0) {
     REXLOG_INFO("Refii guest-tick pump: 'Ability:{}' is not learn:<index> — dropped", body);
@@ -3078,6 +3166,64 @@ uint32_t ScreenObjectRO(uint8_t* base, uint32_t screen_id) {
   }
 
   return 0u;
+}
+
+/// The armed ability voice-over, fired the way `sub_826C23A8` fires it — see ArmAbilityTutorial.
+void ServiceAbilityTutorial(PPCContext& ctx, uint8_t* base) {
+  if (!g_ability_tutorial.armed || std::chrono::steady_clock::now() < g_ability_tutorial.due) {
+    return;
+  }
+
+  const uint32_t screen = ScreenObjectRO(base, 14u);
+  const uint32_t tutorials = TutorialState(base);
+  if (screen == 0u || tutorials == 0u) {
+    g_ability_tutorial.armed = false;
+    return;
+  }
+
+  // `sub_826C23A8` returns before the timer while +620 is set.
+  if (LoadGuestU8(base, screen + 620u) != 0u) {
+    return;
+  }
+
+  PPCFunc* speaking = FindGuestFunction(refii::guest::Address(0x8244DE40u));
+  PPCFunc* stop = FindGuestFunction(refii::guest::Address(0x8244DAD8u));
+  PPCFunc* queue = FindGuestFunction(refii::guest::Address(0x8219AE90u));
+  if (speaking == nullptr || stop == nullptr || queue == nullptr) {
+    g_ability_tutorial.armed = false;
+    return;
+  }
+
+  const PPCContext saved = ctx;
+  if (LoadGuestU8(base, screen + 0xC5u) != 0u) {
+    ctx.r3.u32 = tutorials;
+    speaking(ctx, base);
+    const bool busy = (ctx.r3.u32 & 0xFFu) != 0u;
+    ctx = saved;
+    if (busy) {
+      return;
+    }
+
+    StoreGuestU8(base, screen + 0xC5u, 0u);
+  }
+
+  g_ability_tutorial.armed = false;
+  const uint32_t tutorial = kAbilityTutorials[g_ability_tutorial.type - 1u];
+  if (LoadGuestU32(base, screen + 0x280u) == tutorial) {
+    return;
+  }
+
+  ctx.r3.u32 = tutorials;
+  stop(ctx, base);
+  ctx = saved;
+  ctx.r3.u32 = tutorials;
+  ctx.r4.u32 = tutorial;
+  queue(ctx, base);
+  ctx = saved;
+  StoreGuestU32(base, screen + 0x280u, tutorial);
+
+  REXLOG_INFO("Refii guest-tick pump: ability {} — queued tutorial {} (its voice-over)",
+              g_ability_tutorial.type, tutorial);
 }
 
 /// `Shop:<buy|sell>:<ticket>` — the guest's own transaction, run on its own thread.
@@ -8417,6 +8563,30 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       // `select:<record>` — see kActionQuestPrefix. The record is the quest definition's GDB
       // hash, decimal or 0x-hex, as the host's row carries it.
       const std::string rest = name.substr(std::strlen(kActionQuestPrefix));
+      // `viewed:<record>` — the "!" of an unviewed quest or job (`Quest+78 == 0`, counted by
+      // `sub_826CFD48`) clears on the row highlighted, as the world map's own ticks write
+      // `Quest+78 = 1` (`sub_829AF638` 0x829AF7D0, `sub_829AFE58` 0x829B01A4) on THEIR cursor,
+      // which no longer moves. The quest log is component 102, its records 12 apart from +0x10
+      // to +0x14, the quest at +4 of each, its definition at quest+4.
+      if (rest.rfind("viewed:", 0) == 0) {
+        const unsigned long record = std::strtoul(rest.c_str() + 7, nullptr, 0);
+        const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+        const uint32_t entity = HeroEntity(base);
+        const uint32_t log = entity != 0u ? HeroComponent(base, entity, 102u) : 0u;
+        const uint32_t begin = log != 0u ? LoadGuestU32(base, log + 0x10u) : 0u;
+        const uint32_t end = log != 0u ? LoadGuestU32(base, log + 0x14u) : 0u;
+        if (plausible(begin) && plausible(end) && end >= begin && (end - begin) / 12u <= 512u) {
+          for (uint32_t at = begin; at < end; at += 12u) {
+            const uint32_t quest = LoadGuestU32(base, at + 4u);
+            if (plausible(quest) && LoadGuestU32(base, quest + 4u) == static_cast<uint32_t>(record)) {
+              StoreGuestU8(base, quest + 78u, 1u);
+            }
+          }
+        }
+        refii_bridge_ui_data_changed();
+        GuestTickPumpNoteRan();
+        continue;
+      }
       const std::string verb = "select:";
       if (rest.rfind(verb, 0) != 0) {
         REXLOG_INFO("Refii guest-tick pump: '{}' is not a quest verb — dropped", name);
@@ -8623,6 +8793,7 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
         const uint32_t hero = refii_mod_player_hero(base, static_cast<int32_t>(player));
         const int32_t outcome = hero != 0u ? RefiiPropertyRepair(ctx, base, hero, uid) : 0;
         refii_bridge_property_notice_post_kind(outcome > 0 ? 1 : outcome < 0 ? 2 : 3, uid);
+        refii_bridge_ui_data_changed();
         REXLOG_INFO("Refii guest-tick pump: Property:repair player {} building {:016X} — {}", player, uid,
                     outcome > 0 ? "repaired" : outcome < 0 ? "not enough gold" : "nothing to repair");
       }
@@ -8646,6 +8817,7 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
                                 (static_cast<uint64_t>(std::min(repaired, 65535)) << 32) |
                                 static_cast<uint32_t>(spent);
         refii_bridge_property_notice_post_kind(7, packed);
+        refii_bridge_ui_data_changed();
         REXLOG_INFO("Refii guest-tick pump: Property:repairall player {} — {} repaired for {} gold, {} left", player,
                     repaired, spent, left);
       }
@@ -8654,6 +8826,9 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       // `Estate:<action>:<sign uid hex>:<value>` — an online joiner's real-estate action for its
       // hero two, run here on the host's (mod_events.cpp ReplayEstateIntent).
       refii::vfs::ReplayEstateIntent(ctx, base, name.substr(std::strlen("Estate:")));
+      ran = true;
+    } else if (name.rfind(kActionModWeatherPrefix, 0) == 0) {
+      refii::vfs::RaiseDynamicWeather(ctx, base, name.substr(std::strlen(kActionModWeatherPrefix)));
       ran = true;
     } else if (name.rfind(kActionCoopExitUsePrefix, 0) == 0) {
       float at[3] = {0.0f, 0.0f, 0.0f};
@@ -8684,11 +8859,14 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
     } else if (name.rfind(kActionInventoryPrefix, 0) == 0) {
       ran = DispatchInventoryAction(ctx, base,
                                     name.substr(std::strlen(kActionInventoryPrefix)));
+      refii_bridge_ui_data_changed();
     } else if (name.rfind(kActionAbilityPrefix, 0) == 0) {
       ran = DispatchAbilityAction(ctx, base,
                                   name.substr(std::strlen(kActionAbilityPrefix)));
+      refii_bridge_ui_data_changed();
     } else if (name.rfind(kActionShopPrefix, 0) == 0) {
       ran = DispatchShopAction(ctx, base, name.substr(std::strlen(kActionShopPrefix)));
+      refii_bridge_ui_data_changed();
     } else if (name == kActionRegisterPlayer) {
       ran = DispatchRegisterPlayer(ctx, base);
     } else if (name.rfind(kActionPauseSavingPrefix, 0) == 0) {
@@ -8850,6 +9028,58 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       if (ran && name[0] == 'S') {
         g_sample_subtitles_after_drain = true;
       }
+    } else if (name.rfind("UiCue:", 0) == 0) {
+      // `UiCue:<fe|game>:<cue>` — a sound the guest's own screen code plays for a press Godot
+      // handled itself (the gender card, a host-made fold or commit), so the arm that states it
+      // never ran. Played exactly as the guest's arms do: `sub_82371E80(buf, emitter, &name, 0)`
+      // then `sub_82C05EF8(buf)` (0x826DFBDC/0x826DFBE4 on the front end; 0x826D59B0/0x826D59B8
+      // in game). The emitter is the front end's `*(*(0x83496AC0+8)+0x50)` or the in-game GUI
+      // `*(0x83496B08)`; the name one of the guest's own string globals, from a closed table.
+      static constexpr std::pair<const char*, uint32_t> kCues[] = {
+          {"slideup", 0x83497DD8u},  {"slidedown", 0x83497DDCu}, {"page", 0x83497DE8u},
+          {"bladein", 0x83497DF0u},  {"bladeout", 0x83497DF4u},  {"select", 0x83497E50u},
+          {"cancel", 0x83497E4Cu},   {"newgame", 0x8349B60Cu},   {"boy", 0x8349B610u},
+          {"girl", 0x8349B614u},
+      };
+      const std::string rest = name.substr(std::strlen("UiCue:"));
+      const std::size_t colon = rest.find(':');
+      const bool front = colon != std::string::npos && rest.compare(0, colon, "fe") == 0;
+      const std::string cue = colon != std::string::npos ? rest.substr(colon + 1) : std::string();
+      uint32_t global = 0u;
+      for (const auto& [key, address] : kCues) {
+        if (cue == key) {
+          global = refii::guest::Address(address);
+        }
+      }
+      const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+      uint32_t emitter = 0u;
+      if (front) {
+        const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AC0u));
+        const uint32_t inner = plausible(root) ? LoadGuestU32(base, root + 8u) : 0u;
+        emitter = plausible(inner) ? LoadGuestU32(base, inner + 0x50u) : 0u;
+      } else {
+        emitter = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
+      }
+      PPCFunc* play = FindGuestFunction(refii::guest::Address(0x82371E80u));
+      PPCFunc* release = FindGuestFunction(refii::guest::Address(0x82C05EF8u));
+      if (global != 0u && plausible(emitter) && play != nullptr && release != nullptr) {
+        const PPCContext saved = ctx;
+        const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+        const uint32_t buffer = frame + 0x80u;
+        ctx.r1.u32 = frame;
+        ctx.r3.u32 = buffer;
+        ctx.r4.u32 = emitter;
+        ctx.r5.u32 = global;
+        ctx.r6.u32 = 0u;
+        play(ctx, base);
+        ctx = saved;
+        ctx.r1.u32 = frame;
+        ctx.r3.u32 = buffer;
+        release(ctx, base);
+        ctx = saved;
+      }
+      quiet = true;
+      ran = true;
     } else if (name == kActionSlideUp) {
       // Name empty on purpose: the switch takes the id before the name chain is reached, so
       // the string is never dereferenced on this path.
@@ -9495,14 +9725,22 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   SampleMenuOwner(ctx, base);
 
   DrainOnGuestThread(ctx, base);
+  ServiceAbilityTutorial(ctx, base);
 
   // Hard mods' per-tick callbacks (core/refii_mod.h).
   RunModTicks(ctx, base);
 
-  // The hero sample, on a cadence — see SampleHeroDerived.
+  // The hero sample, on a cadence — see SampleHeroDerived — and on the tick after a change an
+  // open menu lists, bumping the UI generation again once the changed values are published.
+  const bool ui_dirty = refii_bridge_ui_data_take_dirty() != 0;
   if ((tick % 15u) == 0u) {
     SampleHeroDerived(ctx, base);
     ArmHudShow(ctx, base);
+  } else if (ui_dirty) {
+    SampleHeroDerived(ctx, base);
+  }
+  if (ui_dirty) {
+    refii_bridge_ui_data_published();
   }
 
   // The present loop that would normally fade the in-game loading screen out is off in this
@@ -9730,9 +9968,19 @@ uint32_t RefiiCoopPlayerDog(uint8_t* base, int player) {
     }
     // NOT RECORDED: a joiner's replica (a client skips the create's activation, so no bind
     // records it) or a dog loaded with a level. Found by its name in the world's entity list
-    // (the manager at 0x83496B28, +8 the head, node = entity+8), at most every 16th miss.
-    static uint32_t misses = 0u;
-    if ((misses++ % 16u) != 0u) {
+    // (the manager at 0x83496B28, +8 the head, node = entity+8), and recorded, so it is the
+    // answer until it dies. The walk runs at most once every 16 guest frames (the frame counter
+    // at 0x83319650): every call between two walks gets the last walk's answer, so callers in
+    // one frame agree.
+    static uint32_t walked_frame = 0u;
+    static bool walked = false;
+    const uint32_t frame = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u));
+    if (walked && frame - walked_frame < 16u) {
+      return 0u;
+    }
+    walked = true;
+    walked_frame = frame;
+    if (refii::vfs::refii_mod_player_hero(base, 2) == 0u) {
       return 0u;
     }
     const uint32_t manager = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496B28u));

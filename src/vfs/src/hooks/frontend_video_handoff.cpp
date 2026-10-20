@@ -875,3 +875,15 @@ REX_EXTERN(rex_lhBinkPlayer_Dtor) {
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBinkPlayer_Dtor);
 }
+
+// THE CLOSE EVERY PLAYER DIES THROUGH (`sub_82A41CA0`, BinkClose at 0x82A41D60). The hook above sits
+// on the front-end players' non-deleting destructor (`sub_82A41B00`); the UI sprite movie and the
+// cutscene player are deleted through the vtable's slot 0, `sub_82A41A98`, which closes here and
+// frees the player straight after — so `g_bink_player` and its rect outlived them, and a later
+// finish wrote `+221` into freed heap. Retired FIRST, before the close (idempotent: the note is a
+// compare-exchange on the published handle).
+REX_EXTERN(rex_lhBinkPlayer_Close) {
+  REX_FUNC_PROLOGUE();
+  refii::vfs::NoteBinkMovieClosed(ctx.r3.u32);
+  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhBinkPlayer_Close);
+}

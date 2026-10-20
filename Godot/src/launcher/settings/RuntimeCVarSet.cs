@@ -42,6 +42,9 @@ public static class RuntimeCVarsGodot
     /// <summary>The camera and the keyboard and mouse: how the player's hands reach the game.</summary>
     public const string ControlsCategory = "Controls";
 
+    /// <summary>Co-op, beside the runtime's RexNet settings: the panel lists both as one group.</summary>
+    public const string MultiplayerCategory = "Multiplayer";
+
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
         {
@@ -544,6 +547,15 @@ public static class RuntimeCVarsGodot
             new("mouse_lock", ControlsCategory, RuntimeCVarType.Bool, "true",
                 "Lock the mouse cursor inside the game window during play. Off keeps the cursor visible " +
                 "and free to move outside the window (convenient for multi-monitor setups or while developing)."),
+            new(Refii.Game.GameSplitView.SwitchKey, MultiplayerCategory, RuntimeCVarType.Bool, "true",
+                "Local co-op on split screen: each player gets their own camera and their own half "
+                + "of the screen, HUD and menus. Off shares one screen and one camera, as the "
+                + "original game does. Read at launch."),
+            new(Refii.Game.GameSplitView.OrientationKey, MultiplayerCategory, RuntimeCVarType.String, "vertical",
+                "How split screen divides the window. Vertical puts player one on the left and "
+                + "player two on the right; horizontal puts player one on top and player two "
+                + "below. Read at launch.",
+                "vertical|Vertical (side by side),horizontal|Horizontal (top and bottom)"),
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
                 "Show \"Playing Fable 2: Return to Albion\" and the level you are in on your "
                 + "Discord profile while Discord is running."),

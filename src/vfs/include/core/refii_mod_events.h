@@ -129,7 +129,8 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_TRACKED_STAT = 83,
   REFII_EVENT_PARTNERSHIP = 84,
   REFII_EVENT_HOUSEHOLD_RESTORED = 85,
-  REFII_EVENT_COUNT = 86,
+  REFII_EVENT_DYNAMIC_WEATHER = 86,
+  REFII_EVENT_COUNT = 87,
 };
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
@@ -722,6 +723,9 @@ struct DogTrickEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_DOG_TRICK;
   uint32_t dog;
   uint32_t trick;
+  /// Whose dog: 1 or 2 by its master (the dog component's weak reference at +300, Dog.GetMaster),
+  /// else by the players' dog records (refii's Refii.player_dog); 0 for a dog of neither.
+  int32_t player;
 };
 
 /// A ranged weapon is about to fire (hero and AI alike): `target` the entity aimed at or 0, `aimed`
@@ -786,6 +790,9 @@ struct OpinionModifiedEvent : Event {
   uint32_t villager;
   int32_t axis;
   float delta;
+  /// Whose opinion set moves: 2 while the component holds player two's set (their opinion scope
+  /// for this villager), else 1.
+  int32_t player;
 };
 
 /// The world clock reached a new hour (`hour` 0..23) or a new day (`day`): natural time, a fast
@@ -816,6 +823,10 @@ struct SleepMenuEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_SLEEP_MENU;
   /// Always true: the event itself is the news.
   bool seen;
+  /// The player who is sleeping: the user the game's use of the bed passed to its script
+  /// (rex_CECOnActionUse_Use, r4; OnActionUseBed hands it to SleepFunction.Sleep); 0 when no
+  /// player used it.
+  int32_t player;
 };
 
 /// A travel started: a door, a level exit, a fast travel, a script. `full_load` is false for a
@@ -829,6 +840,10 @@ struct TravelEvent : Event {
   const char* entrance;
   int32_t type;
   bool full_load;
+  /// The player who asked for it (both heroes travel): the one a level exit fired for (its user,
+  /// the player its walk-in test tested, an online joiner's request) or the world map's owner for
+  /// a fast travel; 0 for a script's travel, or one this machine did not see asked for.
+  int32_t player;
 };
 
 /// The hero chose a fast-travel stop (the world map, a script): `level` and `stop`, `paid`.
@@ -839,6 +854,9 @@ struct FastTravelEvent : Event {
   const char* level;
   const char* stop;
   bool paid;
+  /// The player who chose it: the world map's owner (rex_lhGuiWorldMap_FastTravel, the map's
+  /// travel, around the call); 0 for a script's.
+  int32_t player;
 };
 
 /// The game entered its menu mode (the world pauses behind it) or left it — real transitions only;
@@ -846,34 +864,43 @@ struct FastTravelEvent : Event {
 /// 17 logbook, 18 options, 22 shop, 23 world map, 24 co-op, …; TU1 numbering on both builds).
 /// Seams: rex_lhGuiManager_EnterGuiMode / _EnterGuiModeQuiet (when menu mode was off),
 /// rex_lhGuiManager_ExitScreen (when it really leaves), rex_lhGuiManager_SetScreen (r4 the id).
+/// `player` (all three) is whose menu it is: 2 on an online joiner, in local co-op while player
+/// two owns the pause (the pause screen's +4, set by its vtable slot 8 before the screen and the
+/// menu mode are entered) or their shop; 1 otherwise.
 struct MenuOpenedEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_MENU_OPENED;
   /// Always true: the event itself is the news.
   bool seen;
+  int32_t player;
 };
 
 struct MenuClosedEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_MENU_CLOSED;
   /// Always true: the event itself is the news.
   bool seen;
+  int32_t player;
 };
 
 struct MenuScreenEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_MENU_SCREEN;
   int32_t screen;
+  int32_t player;
 };
 
 /// The hero walked into a different PAINTED weather region: `day_set` is the region's
 /// environment day set (a GDB record hash; the day set picks the theme by time of day), 0 outside
 /// every painted region; `previous` the one before. Read-only. A scripted blend is WeatherTheme.
 /// Seam: rex_lhPaintMap_DaySetAt (r3 the paint map, v1 the hero's position; returns the day set
-/// hash or -1), called once a frame by the painted-weight pass while the hero is in the world.
+/// hash or -1), called once a frame by the painted-weight pass (sub_821ABFD8, its one caller) for
+/// the hero in player one's slot (players+0x6C) — never once per split-screen view.
 struct WeatherRegionEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_WEATHER_REGION;
   uint32_t day_set;
   uint32_t previous;
   /// The hero is inside a painted region (day_set is only meaningful then).
   bool inside;
+  /// The player whose hero the pass tested (1 as shipped); `previous` is that player's own.
+  int32_t player;
 };
 
 /// The player answered a bed's sleep menu: `choice` 0..3, `cancelled`, the `bed`. What each choice
@@ -888,6 +915,8 @@ struct SleepChosenEvent : Event {
   uint32_t bed;
   int32_t choice;
   bool cancelled;
+  /// The player who is sleeping, as SleepMenu stated it for this menu.
+  int32_t player;
 };
 
 /// Slow Time changed the world's time scale: `scale` (1 is normal; writable before the game
@@ -1149,6 +1178,27 @@ struct HouseholdRestoredEvent : Event {
   uint32_t hero;
   int32_t player;
   int32_t spouses;
+};
+
+/// The dynamic weather in effect changed (Godot's dynamic sky decides it: the player's override,
+/// else the level's rule — fixed, interior, the game's own theme, or a roll that drifts). One
+/// weather per co-op session: the host decides it, an online joiner adopts the host's statement
+/// for its level; each player's sky switch only changes whether it is drawn. Fires on both
+/// machines: the host when it decides, the joiner when it adopts. After the fact. Seam: the guest
+/// tick, from the host's "ModWeather:" pump action (Engine_DynamicWeatherChoice's change).
+struct DynamicWeatherEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DYNAMIC_WEATHER;
+  /// The level the weather is for, "<level>/<scenario>" lower-case, as the statement names it.
+  const char* level;
+  /// The weather: a preset's name (Clear, PartlyCloudy, Cloudy, Overcast, Rain, Storm, Snow, Fog,
+  /// LightRain, LightSnow, Blizzard), "theme" (the game's own theme weather) or "interior".
+  const char* weather;
+  /// The weather before, the same way; empty for the first one of a session.
+  const char* previous;
+  /// How long the change blends over (0: at once).
+  float seconds;
+  /// An online joiner adopting the host's statement; false where this machine decided it.
+  bool from_host;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

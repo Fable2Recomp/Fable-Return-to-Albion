@@ -308,6 +308,7 @@ PPC_EXTERN_FUNC(__imp__rex_lhRenderer_ClearColorScoped);
 PPC_EXTERN_FUNC(__imp__rex_lhStreamedTextureDesc_Ctor);
 PPC_EXTERN_FUNC(__imp__rex_lhStreamedTextureDesc_CloneToCommandBuffer);
 PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_Dtor);
+PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_Close);
 PPC_EXTERN_FUNC(rex_stdListDword_InsertWithLengthCheck);
 PPC_EXTERN_FUNC(rex_lhGuiPresentation_GetRootElement);
 PPC_EXTERN_FUNC(rex_lhGuiElement_GoToSlideAndRestart);

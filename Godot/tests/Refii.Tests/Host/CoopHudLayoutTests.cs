@@ -12,7 +12,7 @@ public class CoopHudLayoutTests
 		new(id, art, new Engine_HudLayout.Anchor(x, y), new Vector2(ox, 0f));
 
 	[TestCase]
-	public void TestPlayerTwoPiecesMirrorPlayerOnes()
+	public void TestPlayerOnePiecesAreKeyedToPlayerTwosSources()
 	{
 		var layout = new Engine_HudLayout()
 			.Add(Piece("group.PlayerHealth.PlayerHealth", "PlayerHealth", 0f, 0f, 69f))
@@ -20,15 +20,16 @@ public class CoopHudLayoutTests
 			.Add(Piece("group.SpellCharging.SpellCharging", "SpellCharging", 0f, 0.5f, 110f))
 			.Add(Piece("group.SpellCharging2.SpellCharging2", "SpellCharging2", 1f, 0.5f, -110f));
 
-		Engine_HudLayout.Piece? health = layout.CounterpartOf(layout.Pieces[1]);
+		Engine_HudLayout.Piece? health = layout.PlayerTwoSourceOf(layout.Pieces[0]);
 		AssertThat(health.HasValue).IsTrue();
-		AssertThat(health!.Value.Id).IsEqual("group.PlayerHealth.PlayerHealth");
+		AssertThat(health!.Value.Id).IsEqual("group.CoopHealth.CoopHealth");
 
-		Engine_HudLayout.Piece? will = layout.CounterpartOf(layout.Pieces[3]);
+		Engine_HudLayout.Piece? will = layout.PlayerTwoSourceOf(layout.Pieces[2]);
 		AssertThat(will.HasValue).IsTrue();
-		AssertThat(will!.Value.Id).IsEqual("group.SpellCharging.SpellCharging");
+		AssertThat(will!.Value.Id).IsEqual("group.SpellCharging2.SpellCharging2");
 
-		AssertThat(layout.CounterpartOf(layout.Pieces[0]).HasValue).IsFalse();
+		AssertThat(layout.PlayerTwoSourceOf(layout.Pieces[1]).HasValue).IsFalse();
+		AssertThat(Engine_HudLayout.PlayerOneIdOf("group.CoopHealth.CoopHealth")).IsEqual("group.PlayerHealth.PlayerHealth");
 	}
 
 	[TestCase]

@@ -68,7 +68,11 @@ typedef void (*refii_mod_tick_fn)(PPCContext* ctx, uint8_t* base, float seconds)
 
 extern "C" void refii_mod_register_tick(refii_mod_tick_fn fn);
 
-/// The local player's hero entity, or 0 when there is none (front end, loading).
+/// The local player's hero entity, or 0 when there is none (front end, loading): the guest's own
+/// local-player rule — player two's hero on an online joiner, player one's on a host or alone, and
+/// in LOCAL co-op the hero of whoever owns the open menus (refii_mod_menu_player): player two's
+/// while player two owns the pause, else player one's. Both players are local there; name a
+/// player (refii_mod_player_hero) when the answer must not follow the menus.
 extern "C" uint32_t refii_mod_local_hero(uint8_t* base);
 
 /// Player `player`'s hero entity (1 = the hero, 2 = the co-op partner), or 0. Both players are
@@ -223,8 +227,26 @@ inline void SetVector(PPCContext& ctx, int which, const float* xyz) {
 // Entities, the heroes' stats, spells and the save: the helpers behind the events.
 // ---------------------------------------------------------------------------------------------
 
+/// EVERY API SERVES BOTH PLAYERS; NEVER ASSUME PLAYER ONE. The calls below answer "which hero"
+/// questions the way the core co-op layer answers them, so a mod and the base game's own co-op
+/// fixes ask the same question the same way.
+
 /// 1 or 2 when `entity` is that player's hero, 0 otherwise. Both players are principals.
 extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity);
+
+/// The player `entity` deals with, 1 or 2 — who "the hero" is for it: a hero is its own player; a
+/// player's dog is its master's (the game's own dog for player one, the co-op dog bound to player
+/// two — Refii.player_dog's answers); anything else answers to the nearer living hero, keeping its last answer until the
+/// other hero is more than 3 m nearer (so an NPC between the two does not flicker). One hero alone
+/// is everyone's. 0 only while neither hero exists. Lua's Refii.player_for is the same rule. Guest
+/// tick thread only (a tick callback or a hook).
+extern "C" int32_t refii_mod_player_for(PPCContext* ctx, uint8_t* base, uint32_t entity);
+
+/// Whether this machine runs the shared world — the AI, every hit's outcome, the NPCs: alone, in
+/// local co-op and on an online host; false on an online joiner, whose world is the host's copy.
+/// An effect on the world (casting a spell on a victim, spawning, changing an NPC) is made where
+/// this holds; an effect on a hero is made where refii_mod_player_here holds for that hero.
+extern "C" int32_t refii_mod_world_here(uint8_t* base);
 
 /// The player whose menus are open on this machine, 1 or 2: 2 on an online joiner's machine, and
 /// in local co-op while player two owns the pause; 1 otherwise. The book's pages read and act
@@ -244,7 +266,10 @@ extern "C" int32_t refii_mod_coop_mode(uint8_t* base);
 /// 1 while code on this thread runs in an opinion scope for hero two (mod_events.cpp).
 extern "C" int32_t refii_mod_opinion_scope_two(void);
 
-/// The living entity player `player`'s hero is focused on (their targeting's target), or 0.
+/// The living entity player `player`'s hero is focused on (their targeting's target), or 0. The
+/// targeting (component 77) is driven where that hero is PLAYED, so the answer is only meaningful
+/// where refii_mod_player_here(player) holds: on an online joiner focus(1) reads the host hero's
+/// copy, not the host player's choice.
 extern "C" uint32_t refii_mod_focus(uint8_t* base, int32_t player);
 
 // ---------------------------------------------------------------------------------------------
@@ -281,6 +306,15 @@ extern "C" int32_t refii_mod_player_here(int32_t player);
 /// on both, from the same player values, but PLAYER-STATE WRITES ARE DROPPED during the copy — the
 /// deciding machine makes them, so a spend counts once. A handler with an effect on the body itself
 /// (holding the hero in place) skips it during the copy; nothing else needs this.
+///
+/// RELAYED events are copies too. An event the game raises on one machine only, but whose effect
+/// belongs on the other — a swing, a roll or an item use where that hero is played (the host's AI
+/// must see player two's), a hit landing on the host (the joiner's looks follow its victims) — is
+/// sent by refii over the co-op channel and dispatched on the other machine as a replica, its
+/// actor that machine's copy of the hero (or the entity of the same UniqueID). Its objects of the
+/// deciding machine's own (a hit record, an ability, an action, an item) are 0, cancel and writes
+/// do nothing (it already happened), and it arrives a network moment later. The catalog marks
+/// each relayed event; a handler that makes a world or body effect skips the copy.
 extern "C" int32_t refii_mod_event_replica(void);
 
 /// Whether `entity` is in the world: the flag the game's own target selector tests

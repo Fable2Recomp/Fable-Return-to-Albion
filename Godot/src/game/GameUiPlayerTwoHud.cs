@@ -6,10 +6,11 @@ namespace Refii.Game;
 
 /// <summary>
 /// PLAYER TWO'S TARGETED READOUT AND D-PAD on split screen. The guest's HUD holds one of each, for
-/// the local hero; player two's half shows theirs from the same reads and the same builders, called
-/// for hero two (host_bridge.cpp RefiiHostGetPlayerTwoTargetedQuery, guest_tick_pump.cpp
-/// SamplePlayerTwoHud), stated over the shared feed the way player one's publisher states it
-/// (<see cref="Engine_UiHudTargetedQuery"/>).
+/// the local hero; player two's half draws player one's pieces (Engine_HudLayout.EachPlayerOnSplit)
+/// from the same reads and the same builders, called for hero two (host_bridge.cpp
+/// RefiiHostGetPlayerTwoTargetedQuery, guest_tick_pump.cpp SamplePlayerTwoHud), stated over the
+/// shared feed the way player one's publisher states it (<see cref="Engine_UiHudTargetedQuery"/>)
+/// and folded into a resolve of player two's own (<see cref="ResolvePlayerTwo"/>).
 /// </summary>
 public partial class GameUi
 {
@@ -34,6 +35,22 @@ public partial class GameUi
 		"dpad.dpad.dpadmenu.group.up.up", "dpad.dpad.dpadmenu.group.left.left",
 		"dpad.dpad.dpadmenu.group.down.down", "dpad.dpad.dpadmenu.group.right.right",
 	};
+
+	/// <summary>
+	/// The d-pad's per-slot toggles in the same slot order. Hero one's are stated by the shipped
+	/// scripts (`GUI.ToggleElement`) for the one HUD; nothing states them for hero two, so player
+	/// two's slot is on while their fill gives it art.
+	/// </summary>
+	private static readonly string[] DpadSlotToggles = { "DPadUp", "DPadLeft", "DPadDown", "DPadRight" };
+
+	/// <summary>Player two's d-pad slot toggles over the shared ones (ordinal → slide).</summary>
+	private readonly System.Collections.Generic.Dictionary<int, int> _hudTwoDpadSlides = new();
+
+	private Engine_UiElementResolve? _hudTwoResolve;
+	private Engine_UiScreen? _hudTwoResolveScreen;
+	private bool[]? _hudTwoActiveIn;
+	private float?[]? _hudTwoStatedIn;
+	private bool[]? _hudTwoActive;
 
 	private int[][]? _dpadSlotOrdinals;
 	private Engine_UiScreen? _dpadSlotScreen;
@@ -117,12 +134,23 @@ public partial class GameUi
 		overlay.Override(TargetedTitle, _twoTitle);
 		overlay.OverrideMeter(TargetedGiftMeter, _twoGift);
 
-		DriveDpadTwo(stated.Icons);
+		DriveDpadTwo(stated.Icons, bindings);
 	}
 
-	/// <summary>Player two's d-pad icons onto the four slot elements of their half.</summary>
-	private void DriveDpadTwo(string[] icons)
+	/// <summary>
+	/// Player two's d-pad icons onto the four slot elements of their half, and each slot's toggle:
+	/// on (2) while the fill gave it art, off (1) when it gave none, as `sub_823FE848` folds a toggle.
+	/// </summary>
+	private void DriveDpadTwo(string[] icons, Engine_UiBindings bindings)
 	{
+		for (int i = 0; i < DpadSlotToggles.Length && i < icons.Length; ++i)
+		{
+			foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideToggle, Refii.Core.Engine_GameHash.Fnv1(DpadSlotToggles[i])))
+			{
+				_hudTwoDpadSlides[ordinal] = icons[i].Length != 0 ? 2 : 1;
+			}
+		}
+
 		int[][] slots = DpadSlotOrdinals();
 		Refii.Textures.Engine_TextureNameTable? names = _presentation?.TextureNames;
 		for (int i = 0; i < slots.Length && i < icons.Length; ++i)
@@ -143,11 +171,65 @@ public partial class GameUi
 
 	private void ClearDpadTwo()
 	{
+		_hudTwoDpadSlides.Clear();
 		foreach (int[] slot in _dpadSlotOrdinals ?? System.Array.Empty<int[]>())
 		{
 			foreach (int ordinal in slot)
 			{
 				_hudTwoTextures.Remove(ordinal);
+			}
+		}
+	}
+
+	/// <summary>
+	/// PLAYER TWO'S OWN RESOLVE. Player one's pass folds the guest's slides, active bits and stated
+	/// opacity for the one HUD; player two's half takes that same input, folds player two's own
+	/// slides over it (experience, targeted readout, d-pad) with the same owner release player
+	/// one's stated slides take, and resolves it again — so a piece in their half is up and down as
+	/// player two's state says, not player one's. False when player two states nothing of their
+	/// own, and their half shares player one's resolve.
+	/// </summary>
+	private bool ResolvePlayerTwo()
+	{
+		if (_hudScreen is not { } doc || _hudResolve is not { } shared || _hudStated is not { } stated ||
+			_hud?.LiveSlides is not { } live || live.Count != doc.Nodes.Length ||
+			stated.Length != live.Count || shared.Active.Length != live.Count ||
+			SlidesForPlayerTwo(live) is not int[] slides || ReferenceEquals(slides, live))
+		{
+			return false;
+		}
+
+		bool[] active = Buffer(ref _hudTwoActiveIn, live.Count);
+		System.Array.Copy(shared.Active, active, live.Count);
+		float?[] own = Buffer(ref _hudTwoStatedIn, live.Count);
+		System.Array.Copy(stated, own, live.Count);
+		Release(_hudTwoSlides);
+		Release(_hudTwoQuerySlides);
+		Release(_hudTwoDpadSlides);
+
+		if (_hudTwoResolve is null || !ReferenceEquals(_hudTwoResolveScreen, doc))
+		{
+			_hudTwoResolve = new Engine_UiElementResolve(doc);
+			_hudTwoResolveScreen = doc;
+		}
+
+		_hudTwoResolve.Apply(slides, active, own);
+		bool[] drawn = Buffer(ref _hudTwoActive, live.Count);
+		for (int i = 0; i < live.Count; ++i)
+		{
+			drawn[i] = _hudTwoResolve.Drawn[i] && _hudTwoResolve.Opacity[i] > 0.01f;
+		}
+
+		return true;
+
+		void Release(System.Collections.Generic.Dictionary<int, int> overrides)
+		{
+			foreach ((int ordinal, int slide) in overrides)
+			{
+				if (ordinal >= 0 && ordinal < live.Count)
+				{
+					ReleaseHudOwnerSlide(doc, ordinal, slide, active, own);
+				}
 			}
 		}
 	}

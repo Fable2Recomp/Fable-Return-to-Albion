@@ -251,7 +251,20 @@ public partial class GameVideo : Node
 
 	/// <summary>Where the frame goes: the video layer, or the element hosting it.</summary>
 	private bool OnVideoLayer() =>
-		EmbedOrdinal < 0 ? StatedFullscreen() : GuestStatesFullscreen();
+		!_decoderIsHost && (EmbedOrdinal < 0 ? StatedFullscreen() : GuestStatesFullscreen());
+
+	/// <summary>
+	/// The decoder holds a movie the HOST chose (<see cref="PlayEmbedded"/>): it belongs in its
+	/// element and nowhere else. With no live guest player <see cref="StatedFullscreen"/> answers
+	/// true, so a detached preview read as fullscreen, skipped the "element gone" stop and drew on
+	/// the video layer over everything until it ended — the rogue fullscreen ability movie.
+	/// </summary>
+	private bool _decoderIsHost;
+
+	/// <summary>A guest open that arrived while the host's preview played, held until its rect says
+	/// what it is: fullscreen replaces the preview, a UI sprite's movie (the guest's own frozen
+	/// choice for the same card) is dropped.</summary>
+	private byte[]? _heldGuestOpen;
 
 	/// <summary>The decoded frame as a texture a UI quad can sample, or null when not playing.</summary>
 	public Texture2D? FrameTexture =>
@@ -291,7 +304,27 @@ public partial class GameVideo : Node
 				requested = byName;
 			}
 
-			StartVideo(requested);
+			if (_decoderIsHost && HasHostMovie)
+			{
+				_heldGuestOpen = requested;
+			}
+			else
+			{
+				StartVideo(requested);
+			}
+		}
+
+		if (_heldGuestOpen is { } held && StatedFullscreenIfKnown() is { } fullscreen)
+		{
+			_heldGuestOpen = null;
+			if (fullscreen || !HasHostMovie)
+			{
+				StartVideo(held);
+			}
+			else
+			{
+				GD.Print("[game-video] the guest's own preview open is dropped — the host names the card's movie");
+			}
 		}
 
 		AdvanceVideo(delta);
@@ -329,7 +362,8 @@ public partial class GameVideo : Node
 		// The host of an embedded movie is gone — the sprite no longer states a movie, or its
 		// presentation is down — so the decoder goes with it; a fullscreen movie ends on its own.
 		bool embedded = EmbedOrdinal >= 0;
-		if (_wasEmbedded && !embedded && _decoder is not null && !StatedFullscreen())
+		if (_decoder is not null &&
+			((_decoderIsHost && !HasHostMovie) || (_wasEmbedded && !embedded && !_decoderIsHost && !StatedFullscreen())))
 		{
 			GD.Print("[game-video] the element hosting the movie is gone — stopped");
 			StopVideo();
@@ -381,6 +415,7 @@ public partial class GameVideo : Node
 		_hostMovie = path;
 		EmbedOrdinal = ordinal;
 		StartVideo(bytes);
+		_decoderIsHost = _decoder is not null;
 		_view.Visible = false;
 	}
 
@@ -462,6 +497,7 @@ public partial class GameVideo : Node
 
 		_decoder?.Dispose();
 		_decoder = null;
+		_decoderIsHost = false;
 		_view.Visible = false;
 		StopSound();
 
@@ -494,6 +530,7 @@ public partial class GameVideo : Node
 	{
 		_decoder?.Dispose();
 		_decoder = null;
+		_decoderIsHost = false;
 		_view.Visible = false;
 		StopSound();
 		EmitSignal(SignalName.MovieFinished);
@@ -665,7 +702,7 @@ public partial class GameVideo : Node
 			_frameClock = 0.0;
 		}
 
-		if (ended && HasHostMovie)
+		if (ended && (HasHostMovie || _decoderIsHost))
 		{
 			// THE HOST'S PREVIEW PLAYS ONCE and hands the still back — the original's own
 			// behaviour on the abilities page. `_hostMovie` stays latched so the per-frame
@@ -674,6 +711,7 @@ public partial class GameVideo : Node
 			// the startup bookkeeping is not this movie's.
 			_decoder.Dispose();
 			_decoder = null;
+			_decoderIsHost = false;
 			_view.Visible = false;
 			GD.Print("[game-video] embedded preview finished — the still stands");
 			return;

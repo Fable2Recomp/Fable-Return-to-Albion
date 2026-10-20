@@ -268,7 +268,7 @@ public sealed class RuntimeSettingsModel
     };
 
     /// <summary>The panel's name for the runtime's RexNet group: what it is to a player.</summary>
-    private const string MultiplayerCategory = "Multiplayer";
+    private const string MultiplayerCategory = RuntimeCVarsGodot.MultiplayerCategory;
 
     private static string DisplayCategory(RuntimeCVarDefinition definition)
     {

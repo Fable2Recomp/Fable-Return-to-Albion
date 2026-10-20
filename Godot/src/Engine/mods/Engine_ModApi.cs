@@ -17,7 +17,8 @@ public readonly record struct ModApiField(string Name, string Type, string Meani
 /// <summary>
 /// One event of the mod API: its name in C++ (<c>&lt;Name&gt;Event</c>, <c>REFII_MOD_ON(Name, fn)</c>)
 /// and in Lua (<c>Refii.on("lua_name", fn)</c>), the numeric kind the bus carries, the game
-/// seam it is raised from, its fields, and what cancelling means (empty when it cannot be).
+/// seam it is raised from, its fields, what cancelling means (empty when it cannot be), and — for
+/// a RELAYED event — who decides it and what the other co-op machine receives (empty otherwise).
 /// </summary>
 public sealed record ModApiEvent(
 	string Name,
@@ -26,8 +27,15 @@ public sealed record ModApiEvent(
 	string Seam,
 	string Summary,
 	string Cancel,
-	IReadOnlyList<ModApiField> Fields)
+	IReadOnlyList<ModApiField> Fields,
+	string Relayed = "")
 {
+	/// <summary>
+	/// The event is relayed: decided on one co-op machine and dispatched on the other as a replica
+	/// (mod_events.cpp's relay table, <c>kRelayed</c>).
+	/// </summary>
+	public bool IsRelayed => Relayed.Length != 0;
+
 	/// <summary>The config names of the guest functions behind <see cref="Seam"/>, if any.</summary>
 	public IEnumerable<string> SeamFunctions =>
 		Seam.Split(new[] { ' ', ',', '/', '(', ')' }, StringSplitOptions.RemoveEmptyEntries)
@@ -49,6 +57,24 @@ public static class ModApi
 {
 	/// <summary><c>REFII_MOD_API_VERSION</c>.</summary>
 	public const int Version = 2;
+
+	/// <summary>
+	/// THE RULE THE WHOLE SURFACE KEEPS, shown at the top of the Guide's API page: the API is the
+	/// shared layer the base game's own co-op fixes and the mods both stand on, Forge/Fabric style.
+	/// </summary>
+	public const string PlayerAgnostic =
+		"EVERY API SERVES BOTH PLAYERS; NEVER ASSUME PLAYER ONE. Events carry the player they are about (1 or 2), every helper takes a player or an entity, " +
+		"and the \"which hero\" questions have one answer each, the one the base game's own co-op fixes use: player_of (is it a hero), player_for (who \"the hero\" is for an NPC or a dog), " +
+		"acting_player / run_as_player (the hero a script stands for), combat_state(p), player_here(p) (where a hero's own effects are made) and world_here (where the world's are). " +
+		"An event decided on one machine reaches the other when its effect belongs there (RELAYED: player two's swings reach the host's AI; the host's hits reach the joiner's looks), so a mod needs no co-op channel of its own.";
+
+	/// <summary>The note a player-decided relayed event carries.</summary>
+	private const string RelayedFromPlayer =
+		"RELAYED: decided where the hero is played; online, the other machine receives a copy as a replica (refii_mod_event_replica / Refii.event_replica(); Godot's e.replica) with the actor as its own copy of that hero and the deciding machine's objects 0 — the host's AI sees player two's, the joiner sees player one's";
+
+	/// <summary>Player and entity helpers every co-op rule is written with.</summary>
+	private const string PlayerForMeaning =
+		"the player an entity deals with, 1 or 2 (0 only with no hero): a hero its own, a dog its master's, anything else the nearer living hero with 3 m of hysteresis";
 
 	private static ModApiField F(string name, string type, string meaning, bool writable = false) =>
 		new(name, type, meaning, writable);
@@ -136,9 +162,10 @@ public static class ModApi
 			{
 				F("entity", "uint32_t", "the striker"),
 				F("player", "int32_t", "1 or 2 for a hero, else 0"),
-				F("ability", "uint32_t", "the strike ability (native)"),
-				F("action", "uint32_t", "the live strike action the action manager (component 49) now runs, or 0 (native)"),
-			}),
+				F("ability", "uint32_t", "the strike ability (native; 0 in a relayed copy)"),
+				F("action", "uint32_t", "the live strike action the action manager (component 49) now runs, or 0 (native; 0 in a relayed copy)"),
+			},
+			RelayedFromPlayer),
 		new ModApiEvent("Roll", "roll_can_start", 8, "rex_CAbilityActionStrafeRoll_CanStart (r4 entity)",
 			"The dodge roll asks whether it may start; asked once per matching roll record, so it gates without spending.",
 			"the roll does not start",
@@ -146,7 +173,8 @@ public static class ModApi
 		new ModApiEvent("RollStarted", "roll_started", 9, "rex_CAbilityActionStrafeRoll_Start (r4 entity), when it returned 1",
 			"A roll was queued. Rolls are invulnerable for their whole length in the game already.",
 			string.Empty,
-			new[] { F("entity", "uint32_t", "the roller"), F("player", "int32_t", "1 or 2 for a hero, else 0") }),
+			new[] { F("entity", "uint32_t", "the roller"), F("player", "int32_t", "1 or 2 for a hero, else 0") },
+			RelayedFromPlayer),
 		new ModApiEvent("Block", "block", 10, "rex_CActionBlock_OnHitBlockPose / rex_CActionBlock_OnHitBlockedResponse (r3 listener at action+0x54, r4 hit)",
 			"A block is taking a hit. Fired once per hit although the game runs two block listeners (the second takes the first's verdict).",
 			"the guard BREAKS: the hit lands in full, as if there were no block (never for an unblockable hit)",
@@ -175,7 +203,8 @@ public static class ModApi
 		new ModApiEvent("HitLanded", "hit_landed", 13, "rex_CECHitReceiver_OnHit, after delivery",
 			"A hit was delivered, with the damage it carried in. Read-only.",
 			string.Empty,
-			HitAfter),
+			HitAfter,
+			"RELAYED: decided where the world runs (the host); online, a hit with a hero on either side reaches the joiner as a replica (refii_mod_event_replica / Refii.event_replica(); Godot's e.replica) with the heroes as the joiner's copies, other entities by UniqueID, hit 0 and spell_serial the host's number — follow it for looks, never act on the world from it"),
 		new ModApiEvent("HitResponse", "hit_response", 14, "rex_CECHitResponsePlayAction_OnHit (r3 listener, entity at r3-8; r4 hit; r5 result word), priority 20 on the dispatch",
 			"The victim is about to flinch or be knocked down by a hit. The game's own early-outs (a blocked or parried hit, a ranged hit, a knockdown request, a killing blow) come first, so a lethal hit's fall always plays. A second response the listener can play (its +28 branch) is cancelled with it; a flinch played by a knockdown-flagged hit without the listener's response raises nothing.",
 			"the hit is absorbed: no animation, no state left behind",
@@ -323,10 +352,11 @@ public static class ModApi
 			{
 				F("entity", "uint32_t", "the user"),
 				F("player", "int32_t", "1 or 2 for a hero, else 0"),
-				F("item", "uint32_t", "the item object (native)"),
+				F("item", "uint32_t", "the item object (native; 0 in a relayed copy)"),
 				F("definition", "uint32_t", "the item definition's GDB record hash"),
 				F("count", "int32_t", "how many the stack holds"),
-			}),
+			},
+			RelayedFromPlayer),
 		new ModApiEvent("HeldItem", "held_item", 29, "rex_CECHeldItems_AttachItemToSlot (r3 component 24, owner at +4; r4 slot name; r5 item) / rex_CECHeldItems_ReleaseSlot (r3, r4)",
 			"An item entity is attached to or released from one of an entity's holding slots: a weapon drawn (release from the holding slot, attach to the hand), sheathed, or picked up.",
 			"a release is refused (the attach after it then sees nothing); an attach cannot be refused — its callers record the drawn weapon regardless",
@@ -505,6 +535,7 @@ public static class ModApi
 			{
 				F("dog", "uint32_t", "the dog"),
 				F("trick", "uint32_t", "the command record's hash"),
+				F("player", "int32_t", "whose dog: 1 or 2 by its master (Dog.GetMaster, the dog component's +300), else by the players' dog records (Refii.player_dog); 0 for neither"),
 			}),
 		new ModApiEvent("RangedShot", "ranged_shot", 47, "rex_CECFirearm_Fire (r3 firearm component, owner at +4; r4 target; r5 aimed)",
 			"A ranged weapon is about to fire, the hero's or anyone's. The game may still refuse it (no ammunition, the hero busy).",
@@ -555,6 +586,7 @@ public static class ModApi
 				F("villager", "uint32_t", "the villager"),
 				F("axis", "int32_t", "0 love, 1 fear, 2 attractiveness, 3 morality, 4 respect"),
 				F("delta", "float", "the change, clamped to [-1, 1] after (writable)", true),
+				F("player", "int32_t", "whose opinion set moves: 2 while the villager holds player two's set (their opinion scope), else 1"),
 			}),
 		new ModApiEvent("TimeOfDay", "time_of_day", 52, "rex_lhGameTimeManager_Update (r3 the time manager: +4 day fraction, +8 day count), after it",
 			"The world clock reached a new hour or a new day: natural time, a fast forward, sleeping, travel time and a script's set all show here (a set one tick late).",
@@ -575,12 +607,13 @@ public static class ModApi
 				F("weight", "float", "the target weight (writable)", true),
 				F("seconds", "float", "the blend time (writable)", true),
 			}),
-		new ModApiEvent("SleepMenu", "sleep_menu", 54, "rex_SleepMenu_Show",
+		new ModApiEvent("SleepMenu", "sleep_menu", 54, "rex_SleepMenu_Show (r3 the bed; the sleeper: the bed's newest user, rex_CECOnActionUse_Use r4)",
 			"A bed's sleep menu is about to open; the time skip after it is the shipped scripts'.",
 			"the menu stays closed",
 			new[]
 			{
 				F("seen", "bool", "always true"),
+				F("player", "int32_t", "the player sleeping: the bed's user as the game's use routine passed it to the bed's script (rex_CECOnActionUse_Use); 0 when no player used it"),
 			}),
 		new ModApiEvent("Travel", "travel", 55, "rex_CmdLevelChange_Start (r3 command: +20 world, +24 level, +28 entrance, +36 type, +50 full load), after it",
 			"A travel started: a door, a level exit, a fast travel, a script. full_load is false for a change inside the loaded level, which LevelLoaded never reports.",
@@ -592,8 +625,9 @@ public static class ModApi
 				F("entrance", "const char* / string", "the entrance marker"),
 				F("type", "int32_t", "the travel type (3 free fast travel, 4 paid, 5 level exit)"),
 				F("full_load", "bool", "a full level load follows"),
+				F("player", "int32_t", "who asked for it (both heroes travel): the player a level exit fired for (its user, the player its walk-in test tested, an online joiner's request) or the world map's owner for a fast travel; 0 for a script's travel or one this machine did not see asked for"),
 			}),
-		new ModApiEvent("FastTravel", "fast_travel", 56, "rex_FastTravelManager_TravelToStop (r3 manager; r4 level; r5 stop, +4 marker; r6 paid)",
+		new ModApiEvent("FastTravel", "fast_travel", 56, "rex_FastTravelManager_TravelToStop (r3 manager; r4 level; r5 stop, +4 marker; r6 paid); the chooser: inside rex_lhGuiWorldMap_FastTravel, the world map's owner",
 			"The hero chose a fast-travel stop: the world map or a script. From the world map the map has already closed when this fires; a refusal leaves the hero there with the map shut.",
 			"the hero stays put and pays nothing",
 			new[]
@@ -601,6 +635,7 @@ public static class ModApi
 				F("level", "const char* / string", "the destination level"),
 				F("stop", "const char* / string", "the stop's marker"),
 				F("paid", "bool", "the travel costs gold"),
+				F("player", "int32_t", "who chose it: the world map's owner (rex_lhGuiWorldMap_FastTravel); 0 for a script's"),
 			}),
 		new ModApiEvent("MenuOpened", "menu_opened", 57, "rex_lhGuiManager_EnterGuiMode / rex_lhGuiManager_EnterGuiModeQuiet (r3 the GUI manager), when menu mode was off",
 			"The game entered its menu mode; the world pauses behind it.",
@@ -608,6 +643,7 @@ public static class ModApi
 			new[]
 			{
 				F("seen", "bool", "always true"),
+				F("player", "int32_t", MenuPlayerMeaning),
 			}),
 		new ModApiEvent("MenuClosed", "menu_closed", 58, "rex_lhGuiManager_ExitScreen (r3 the GUI manager), when it really leaves menu mode",
 			"The game left its menu mode.",
@@ -615,6 +651,7 @@ public static class ModApi
 			new[]
 			{
 				F("seen", "bool", "always true"),
+				F("player", "int32_t", MenuPlayerMeaning),
 			}),
 		new ModApiEvent("MenuScreen", "menu_screen", 59, "rex_lhGuiManager_SetScreen (r3 the GUI manager; r4 the screen id), when it changes; TU1 numbering on both builds",
 			"A menu shows a screen: 0 pause, 2 spells, 14 abilities, 16 equipment, 17 logbook, 18 options, 22 shop, 23 world map, 24 co-op.",
@@ -622,15 +659,17 @@ public static class ModApi
 			new[]
 			{
 				F("screen", "int32_t", "the screen id the game states"),
+				F("player", "int32_t", MenuPlayerMeaning),
 			}),
 		new ModApiEvent("WeatherRegion", "weather_region", 60, "rex_lhPaintMap_DaySetAt (r3 paint map, v1 the hero's position; returns the day set hash or -1), after it",
-			"The hero walked into a different painted weather region: the region's environment day set, which picks the theme by time of day. A scripted blend is WeatherTheme.",
+			"The hero walked into a different painted weather region: the region's environment day set, which picks the theme by time of day. A scripted blend is WeatherTheme. The game tests one hero, the one in player one's slot, once a frame — not once per split-screen view.",
 			string.Empty,
 			new[]
 			{
 				F("day_set", "uint32_t", "the region's day set (a GDB record hash; Lua and Godot: a \"0x…\" string), 0 outside every painted region"),
-				F("previous", "uint32_t", "the day set before"),
+				F("previous", "uint32_t", "that player's day set before"),
 				F("inside", "bool", "the hero is inside a painted region"),
+				F("player", "int32_t", "the player whose hero the game tested (1 as shipped)"),
 			}),
 		new ModApiEvent("SleepChosen", "sleep_chosen", 61, "rex_lhMenuBox_Close (r3 the choice menu: +0 index, +13 cancelled), while the sleep menu is open",
 			"The player answered a bed's sleep menu. A mod can change the choice or refuse the sleep; the shipped SleepFunction.Sleep applies it. A length the menu does not offer is a Lua mod wrapping SleepFunction.Sleep.",
@@ -640,6 +679,7 @@ public static class ModApi
 				F("bed", "uint32_t", "the bed"),
 				F("choice", "int32_t", "0 fast-forwards six hours, 1 twelve hours, 2 adds a day (the clock stays), 3 adds seven days (writable)", true),
 				F("cancelled", "bool", "the player backed out"),
+				F("player", "int32_t", "the player sleeping, as SleepMenu stated it"),
 			}),
 		new ModApiEvent("SlowTime", "slow_time", 62, "rex_SpellSlowTime_SetWorldScale (r3 the caster; f1 the scale; world +128)",
 			"Slow Time changed the world's time scale. Every creature but the caster slows: the game slows the world and gives the caster (and the co-op partner) the inverse rate.",
@@ -876,23 +916,44 @@ public static class ModApi
 				F("player", "int32_t", "2"),
 				F("spouses", "int32_t", "the spouses found in the world"),
 			}),
+		new ModApiEvent("DynamicWeather", "dynamic_weather", 86, "the guest tick, from the host's \"ModWeather:\" pump action (Engine_DynamicWeatherChoice's change)",
+			"The dynamic weather in effect changed: the player's override, else the level's rule (fixed, interior, the game's own theme, or a roll that drifts every few minutes). One weather per co-op session: the host decides, an online joiner adopts the host's statement for its level; each player's sky switch only changes whether it is drawn. Fires on both machines.",
+			string.Empty,
+			new[]
+			{
+				F("level", "const char* / string", "the level the weather is for, \"<level>/<scenario>\" lower-case, as the statement names it"),
+				F("weather", "const char* / string", "a preset (Clear, PartlyCloudy, Cloudy, Overcast, Rain, Storm, Snow, Fog, LightRain, LightSnow, Blizzard), \"theme\" (the game's own theme weather) or \"interior\""),
+				F("previous", "const char* / string", "the weather before, the same way; empty for the session's first"),
+				F("seconds", "float", "how long the change blends over (0: at once)"),
+				F("from_host", "bool", "an online joiner adopting the host's statement; false where this machine decided it"),
+			}),
 	};
+
+	/// <summary>The menu events' player: whose menu it is.</summary>
+	private const string MenuPlayerMeaning =
+		"whose menu: 2 on an online joiner, and in local co-op while player two owns the pause (the pause screen's owner) or their shop; 1 otherwise";
 
 	/// <summary>The native helpers of <c>core/refii_mod.h</c>, for the Guide and the editor API.</summary>
 	public static readonly IReadOnlyList<ModApiHelper> Helpers = new[]
 	{
 		new ModApiHelper("uint32_t refii_mod_player_hero(base, player)", "player 1's or 2's hero entity, or 0"),
-		new ModApiHelper("uint32_t refii_mod_local_hero(base)", "the local player's hero, or 0"),
+		new ModApiHelper("uint32_t refii_mod_local_hero(base)", "the local player's hero, or 0: player two's on an online joiner, player one's on a host or alone, and in local co-op the hero of whoever owns the open menus (both are local there: name a player when the answer must not follow the menus)"),
 		new ModApiHelper("int32_t refii_mod_player_of(base, entity)", "1 or 2 when the entity is that player's hero, else 0"),
+		new ModApiHelper("int32_t refii_mod_player_for(ctx, base, entity)", PlayerForMeaning + " — Lua's Refii.player_for, natively"),
+		new ModApiHelper("int32_t refii_mod_world_here(base)", "whether this machine runs the shared world (AI, hits, NPCs): alone, local co-op, the online host; make world effects only here"),
 		new ModApiHelper("int32_t refii_mod_menu_player(base)", "the player whose menus are open here, 1 or 2: an ability row publishes and buys for them"),
 		new ModApiHelper("int32_t refii_mod_opinion(base, villager, player, float out[5])", "how a villager feels about that hero: love, fear, attractiveness, morality, respect; a set per hero, player two's moved only by player two's deeds"),
 		new ModApiHelper("int32_t refii_mod_coop_mode(base)", "0 alone, 1 local co-op, 2 online hosting, 3 online joined"),
-		new ModApiHelper("uint32_t refii_mod_focus(base, player)", "the living entity that hero is focused on (their targeting), or 0"),
+		new ModApiHelper("uint32_t refii_mod_focus(base, player)", "the living entity that hero is focused on (their targeting), or 0; meaningful only where that hero is played (refii_mod_player_here)"),
 		new ModApiHelper("float refii_mod_player_value(player, key, fallback)", "a player's value, the same on both co-op machines (fallback when unset)"),
+		new ModApiHelper("int32_t refii_mod_player_get(player, key, float* out)", "whether the player has a value under key, written to out when not null"),
 		new ModApiHelper("void refii_mod_player_set(player, key, v) / refii_mod_player_add(player, key, d, saved)", "writes a player's value on either machine; the hero's owner applies it (an add merges)"),
 		new ModApiHelper("void refii_mod_player_save(player, key, v)", "a SAVED player value: kept with that hero's own save, back when it loads"),
 		new ModApiHelper("int32_t refii_mod_player_here(player)", "whether this machine plays that hero: run a per-player refill or timer only there"),
-		new ModApiHelper("int32_t refii_mod_event_replica()", "the event is the game's copy of something the other co-op machine decides: verdicts apply, player-state writes are dropped"),
+		new ModApiHelper("int32_t refii_mod_event_replica()", "the event is a copy of something the other co-op machine decides — the game's own copy (verdicts apply) or a RELAYED one (it already happened): player-state writes are dropped; skip world and body effects"),
+		new ModApiHelper("int32_t refii_mod_opinion_scope_two()", "1 while the game is moving player two's opinions on this thread (an OpinionModified for hero two)"),
+		new ModApiHelper("refii::mods::IsPlayerHero(base, entity)", "whether the entity is either player's hero"),
+		new ModApiHelper("int32_t refii_mod_subscribe(kind, fn, user, priority, ...) / void refii_mod_dispatch(kind, event)", "the bus underneath REFII_MOD_ON; a kind at or above REFII_EVENT_COUNT is a mod's own, raised with refii_mod_dispatch"),
 		new ModApiHelper("uint32_t refii_mod_component(base, entity, id)", "component id of an entity (33 player, 36 health, 56 spells, 57 stats, 164 experience), or 0"),
 		new ModApiHelper("int32_t refii_mod_entity_alive(base, entity)", "whether the entity is in the world"),
 		new ModApiHelper("int32_t refii_mod_entity_position(ctx, base, entity, float out[3])", "the entity's position through its own placement getter"),
@@ -953,14 +1014,19 @@ public static class ModApi
 		new ModApiHelper("Refii.ability_level(e, type)", "the level of ability 1..14, or nil"),
 		new ModApiHelper("Refii.cast_spell(caster, type, targeted, target, level)", "a real spell through the game's spell factory, no will cost; the spell object's handle or nil"),
 		new ModApiHelper("Refii.relation(a, b) / Refii.alive(e) / Refii.definition(e) / Refii.name(e) / Refii.player_of(e)", "the faction rule (1 neutral 2 ally 4 enemy), liveness, the definition hash, the instance name, 1/2/0"),
-		new ModApiHelper("Refii.level_name() / Refii.player_hero(p) / Refii.local_hero() / Refii.menu_player()", "the loaded level, a player's hero, the local hero, whose menus are open (1/2)"),
+		new ModApiHelper("Refii.level_name() / Refii.player_hero(p) / Refii.local_hero() / Refii.menu_player()", "the loaded level, a player's hero, the local hero (in local co-op: the hero of whoever owns the open menus), whose menus are open (1/2)"),
 		new ModApiHelper("Refii.player_value(p, key [, fallback]) / Refii.player_set(p, key, v) / Refii.player_add(p, key, d [, saved]) / Refii.player_save(p, key, v) / Refii.player_here(p) / Refii.event_replica()", "per-player values, the same on both co-op machines; saved ones go home with the hero"),
+		new ModApiHelper("Refii.player_for(e)", PlayerForMeaning + " — the core co-op layer's own rule for who an NPC acts toward"),
+		new ModApiHelper("Refii.acting_player()", "1 or 2: who \"the hero\" (GetPlayerHero) means right now — 2 inside Refii.run_as_player(2, …) and in AI acting for player two, else 1"),
+		new ModApiHelper("Refii.run_as_player(p, fn, ...)", "runs fn with GetPlayerHero(), GetPlayerHenchman() and QuestManager.HeroEntity as player p's (the partner as the henchman): a shipped script acts for either hero"),
+		new ModApiHelper("Refii.combat_state(p) -> midst, close_to_combat, in_any_combat", "player p's combat state, kept per hero (the shipped global is one state)"),
+		new ModApiHelper("Refii.world_here()", "true where the shared world runs (alone, local co-op, the online host): make world effects only there"),
 		new ModApiHelper("Refii.split_screen()", "true when local co-op runs on split screen (each local player their own camera)"),
-		new ModApiHelper("Refii.player_dog(p)", "a player's dog: player one's is the game's own GetDog, player two's the co-op dog bound to them; nil when none"),
+		new ModApiHelper("Refii.player_dog(p)", "a player's dog: player one's, or player two's co-op dog bound to them; nil when none. Use this, never the game's GetDog(): inside player two's dog's own AI and item use, GetDog() answers that dog"),
 		new ModApiHelper("Refii.opinion(villager, p) -> love, fear, attractiveness, morality, respect", "how a villager feels about player p's hero (-1..1); a set per hero; nil when it holds no opinions"),
 		new ModApiHelper("Refii.uid(e)", "the entity's own 64-bit UniqueID as \"0x…\": the same on both co-op machines and across saves (a handle is neither) — a key for per-thing player values"),
 		new ModApiHelper("Refii.coop_mode()", "0 alone, 1 local co-op, 2 online and this machine hosts, 3 online and this machine joined"),
-		new ModApiHelper("Refii.focus(p) / Refii.key_taken(e, p)", "the living entity player p is focused on, or nil; whether player p has taken the per-player collectable e (silver keys)"),
+		new ModApiHelper("Refii.focus(p) / Refii.key_taken(e, p)", "the living entity player p is focused on, or nil — meaningful only where that hero is played (Refii.player_here(p)); whether player p has taken the per-player collectable e (silver keys)"),
 		new ModApiHelper("Refii.ask_partner(asker, question) -> ticket / Refii.partner_answer(ticket) -> nil, true, false", "your own yes/no question for the other player, on their screen; nil while pending, 30 s unanswered is no; no partner answers yes"),
 		new ModApiHelper("Refii.renown(e) / Refii.morality(e) / Refii.purity(e) / Refii.age(e) / Refii.physique(e) -> fat, height", "the hero stats the game reports"),
 		new ModApiHelper("Refii.inventory(e)", "{ {definition = \"0x…\", count = n}, … } in the game's order"),
@@ -974,6 +1040,33 @@ public static class ModApi
 		new ModApiHelper("Refii.api_version", "the API version the chunk was composed for"),
 		new ModApiHelper("RefiiModSave.<key>", "state that persists with the save game"),
 		new ModApiHelper("RefiiModErrors", "every handler and init error, appended"),
+	};
+
+	/// <summary>
+	/// The Godot script surface, <c>Engine.get_singleton("RefiiHost")</c> (Engine_RefiiHost.cs): its
+	/// members and the <c>query</c> verbs (mod_commands.cpp's grammar), each answering on
+	/// <c>reply(id, result)</c> with <c>ok</c> and the named fields. Entities are handles, as in Lua.
+	/// </summary>
+	public static readonly IReadOnlyList<ModApiHelper> GodotHelpers = new[]
+	{
+		new ModApiHelper("signal <event>(e) / signal mod_event(name, e)", "every catalog event, by its Lua name, with a Dictionary of its fields"),
+		new ModApiHelper("on_verdict(event, handler) / remove_verdict(event, handler)", "a handler run inside the game's seam: change a writable field of e or set e.cancel (return true) to refuse"),
+		new ModApiHelper("hero(player)", "the player's hero handle as the bus last stated it (hero_ready / hero_gone), or 0 — player 1 is the host's hero on BOTH machines, so on a joiner hero(1) is the partner"),
+		new ModApiHelper("local_hero() / coop_mode() / menu_player() / world_here()", "the guest's last answers (asked every frame while a script is loaded, one guest tick behind): the local player's hero handle (in local co-op the menu owner's), 0 alone 1 local co-op 2 hosting 3 joined, whose menus are open (1/2), whether this machine runs the shared world"),
+		new ModApiHelper("e.replica", "true in a signal's (or verdict's) dictionary when the event is a copy of the other co-op machine's — the game's own copy or a RELAYED one; absent otherwise"),
+		new ModApiHelper("player_set(p, key, v) / player_add(p, key, d, saved) / player_save(p, key, v)", "per-player values, written to the store Refii.player_set / _add / _save write: the same on both co-op machines; saved ones go home with the hero"),
+		new ModApiHelper("node_for(handle)", "the Node3D Godot draws that entity with, or null: parent to it, never move it"),
+		new ModApiHelper("get_value(key) / setting(key, default) / set_setting(key, v) / run_lua(chunk) / mods()", "a mod's published value, a settings.json value, a live override, a Lua chunk in the game VM, the enabled mods"),
+		new ModApiHelper("give_gold / modify_health / set_health / add_item / give_experience / spend_experience / cast_spell / set_position / save_set", "helper calls, run in the guest tick with the real context; silent when there is nothing to act on"),
+		new ModApiHelper("query(what, args) -> id / signal reply(id, result)", "asks the guest; the answer comes on a later frame with ok and the fields below"),
+		new ModApiHelper("query health E / position E / gold E / item_count E DEF / experience E POOL / ability_level E T", "current, max · x, y, z · gold · count · amount · level"),
+		new ModApiHelper("query relation A B / alive E / definition E / name E / level_name / hero P / player_of E", "relation · alive · definition · name · level · hero · player"),
+		new ModApiHelper("query player_for E / world_here / combat_state P", "player (refii_mod_player_for: who \"the hero\" is for E) · here · midst, close_to_combat, in_any_combat (Refii.combat_state, asked of the game VM); acting_player and run_as_player are Lua's — reach them with run_lua"),
+		new ModApiHelper("query renown E / morality E / purity E / physique E / age E / equipped E / inventory_stack E I", "renown · value · value · fat, height · age · melee, ranged · definition, count"),
+		new ModApiHelper("query near X Y Z R [CREATURES [OFFSET]] / line_of_sight X1 Y1 Z1 X2 Y2 Z2 / spawn DEF X Y Z / lua_int EXPR LO HI", "total, offset, count, e1..eN (100 a reply) · clear · entity · value"),
+		new ModApiHelper("query local_hero / coop_mode / menu_player / coop_state", "hero · mode · player · local_hero, coop_mode, menu_player: Refii.local_hero / coop_mode / menu_player, asked now"),
+		new ModApiHelper("query player_value P KEY [FALLBACK] / player_here P", "value, has (ok false when neither the value nor a fallback is there) · here: Refii.player_value / player_here"),
+		new ModApiHelper("query player_dog P / focus P / opinion E P / uid E", "dog · entity · love, fear, attractiveness, morality, respect · uid (\"0x…\"): Refii.player_dog / focus / opinion / uid"),
 	};
 
 	/// <summary>The writable numeric fields of each event, as the Lua preamble's write-back needs them.</summary>

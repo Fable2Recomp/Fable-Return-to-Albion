@@ -366,6 +366,9 @@ void HouseholdChanged();
 /// A joiner's estate intent (`<action>:<sign uid hex>:<value>`) run on the host for hero two.
 /// Defined in hooks/mod_events.cpp.
 bool ReplayEstateIntent(PPCContext& ctx, uint8_t* base, const std::string& text);
+/// The DynamicWeather mod event, from the host's "ModWeather:" pump action (the body after the
+/// prefix: `<from_host 0|1>|<seconds>|<level>|<weather>|<previous>`). Defined in hooks/mod_events.cpp.
+void RaiseDynamicWeather(PPCContext& ctx, uint8_t* base, const std::string& body);
 
 /// Player two's base opinion axes of a villager (comp47), and a seed of them (their first block
 /// made when they have none). Defined in hooks/mod_events.cpp.

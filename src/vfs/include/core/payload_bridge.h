@@ -333,6 +333,15 @@ void refii_bridge_publish_family(const void* members, uint32_t count);
 void refii_bridge_publish_real_estate(const void* estate);
 /// The world map's property row: the UID the host wants sampled, and the page's numbers for it.
 uint64_t refii_bridge_requested_property_estate(void);
+/// The UI data generation: bumped when something an open menu lists changes (an ability level,
+/// experience, an item, gold, a drawn weapon); Godot re-reads its open list when it moves.
+/// A change also marks the data dirty: the pump takes the hero sample on its next tick rather
+/// than at its cadence and bumps again once it is published (`_published`), so the re-read
+/// that follows a change sees the changed values.
+void refii_bridge_ui_data_changed(void);
+int32_t refii_bridge_ui_data_take_dirty(void);
+void refii_bridge_ui_data_published(void);
+uint32_t refii_bridge_ui_data_generation(void);
 void refii_bridge_publish_property_estate(uint64_t uid, const void* estate);
 uint32_t refii_bridge_requested_quest_travel(void);
 void refii_bridge_publish_quest_travel(const void* travel);
@@ -450,6 +459,13 @@ int32_t refii_bridge_player_write_saved(int32_t player, const char* save_name);
 //   the key.
 int32_t refii_bridge_player_blob_get(int32_t player, const char* key, uint8_t* out, uint32_t capacity);
 void refii_bridge_player_blob_set(int32_t player, const char* key, const uint8_t* data, uint32_t size);
+
+// THE EVENT RELAY (state in src/core/event_relay.cpp, the wire in core/event_relay.h): a mod event
+// decided on this co-op machine, posted for the peer as the payload's own text (`<kind>:<fields>`,
+// no ';', '|' or newline), and the peer's events taken back one at a time (1 and the text in `out`
+// while one waits, 0 when none does). The payload decides what is relayed (mod_events.cpp).
+void refii_bridge_event_relay_post(const char* text);
+int32_t refii_bridge_event_relay_take(char* out, uint32_t capacity);
 
 // HERO IDENTITY AND PARTNERSHIPS (src/core/hero_partners.cpp), Fable 3's player-to-player marriage
 // and business partnership: a hero's id (48 bits, kept with its save; 0 not yet known), made once by

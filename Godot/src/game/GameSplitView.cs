@@ -4,7 +4,8 @@ using Refii.Host;
 namespace Refii.Game;
 
 /// <summary>
-/// Local co-op on split screen: each local player's view of the one world, side by side.
+/// Local co-op on split screen: each local player's view of the one world, side by side or
+/// stacked, as the player chooses (<see cref="OrientationKey"/>).
 /// </summary>
 /// <remarks>
 /// <para>THE GUEST STATES BOTH CAMERAS. With the host's <c>coop_split_screen</c> switch on, local
@@ -17,10 +18,15 @@ namespace Refii.Game;
 /// so each view is a <see cref="SubViewport"/> sharing the window's <see cref="World3D"/>, with its
 /// own exposure and tone compositor. While split, the window's own 3D pass is disabled so the world
 /// is drawn twice, not three times.</para>
-/// <para>EACH HALF KEEPS THE GUEST'S HORIZONTAL FIELD OF VIEW. The guest states a horizontal fov
-/// for a 4:3 screen; a half of a widescreen is tall and narrow, so the views keep the stated
-/// horizontal angle (<see cref="Camera3D.KeepAspectEnum.Width"/>) rather than the 4:3-derived
-/// vertical one the full window uses.</para>
+/// <para>EACH HALF KEEPS THE GUEST'S 4:3 FRAME IN VIEW. The guest states a horizontal fov for a
+/// 4:3 screen. The full window keeps the 4:3-derived vertical angle and widens with the window; a
+/// half narrower than 4:3 (side by side on a widescreen) keeps the stated horizontal angle
+/// instead (<see cref="Camera3D.KeepAspectEnum.Width"/>) and grows taller; a half wider than 4:3
+/// (stacked) keeps the vertical angle, as the window does.</para>
+/// <para>SIDE BY SIDE OR STACKED. Player one left and player two right, or player one top and
+/// player two bottom. The setting is read every frame, so a change re-lays the open split out in
+/// place, and the layout is stated to <see cref="Refii.Core.Engine_Views.Stacked"/> for every half
+/// of the UI.</para>
 /// <para>THE GUEST IS TOLD ONLY WHAT IS DRAWN. <see cref="CoopSession"/> states split screen to the
 /// guest (<c>CoopSplitScreen:1</c>) only when this can draw it — a second guest camera with one
 /// drawn view would leave player two walking off the screen. Both renderers draw a view per player:
@@ -35,6 +41,13 @@ public partial class GameSplitView : CanvasLayer
 
 	/// <summary>Split screen, unless the player has chosen a shared screen.</summary>
 	public static bool Wanted => Refii.Core.Engine_Switches.Flag(SwitchKey, true);
+
+	/// <summary>The player's choice of split: <c>vertical</c> (side by side) or <c>horizontal</c> (stacked).</summary>
+	public const string OrientationKey = "coop_split_screen_orientation";
+
+	/// <summary>Stacked — player one top, player two bottom — when the player has chosen a horizontal split.</summary>
+	public static bool WantsStacked =>
+		Refii.Core.Engine_Switches.String(OrientationKey, "vertical").Equals("horizontal", System.StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>Whether the screen is split right now.</summary>
 	public static bool Active { get; private set; }
@@ -77,8 +90,19 @@ public partial class GameSplitView : CanvasLayer
 			Open();
 		}
 
+		bool stacked = WantsStacked;
+		if (_frame is BoxContainer box && box.Vertical != stacked)
+		{
+			box.Vertical = stacked;
+			_reported = false;
+		}
+
+		Refii.Core.Engine_Views.SetStacked(stacked);
+
 		Vector2 size = GetViewport().GetVisibleRect().Size;
-		var half = new Vector2I(Mathf.Max(1, (int)size.X / 2), Mathf.Max(1, (int)size.Y));
+		var half = stacked
+			? new Vector2I(Mathf.Max(1, (int)size.X), Mathf.Max(1, (int)size.Y / 2))
+			: new Vector2I(Mathf.Max(1, (int)size.X / 2), Mathf.Max(1, (int)size.Y));
 		foreach (SubViewport? view in _views)
 		{
 			if (view is not null && view.Size != half)
@@ -87,11 +111,13 @@ public partial class GameSplitView : CanvasLayer
 			}
 		}
 
-		// Player one: the window camera's placement, at the stated horizontal angle.
+		bool narrow = half.X * 3 < half.Y * 4;
+
+		// Player one: the window camera's placement, at the stated angle.
 		if (_cameras[0] is { } one)
 		{
 			one.GlobalTransform = first.GlobalTransform;
-			one.Fov = HorizontalFromVertical(first.Fov);
+			Aim(one, HorizontalFromVertical(first.Fov), narrow);
 		}
 
 		// Player two: their own stated camera, on the same clock and rule as player one's.
@@ -118,16 +144,36 @@ public partial class GameSplitView : CanvasLayer
 			two.GlobalTransform = drawn;
 			if (float.IsFinite(drawnFov) && drawnFov >= 1f && drawnFov <= 179f)
 			{
-				two.Fov = drawnFov;
+				Aim(two, drawnFov, narrow);
 			}
 		}
 
 		if (!_reported)
 		{
 			_reported = true;
-			GD.Print($"[split-view] split: {half.X}x{half.Y} per player");
+			GD.Print($"[split-view] split {(stacked ? "top and bottom" : "side by side")}: " +
+				$"{half.X}x{half.Y} per player, {(narrow ? "horizontal" : "vertical")} angle kept");
 		}
 	}
+
+	/// <summary>
+	/// Points a view at the stated horizontal angle: kept as stated in a half narrower than 4:3,
+	/// else as the 4:3-derived vertical angle the window keeps.
+	/// </summary>
+	private static void Aim(Camera3D camera, float horizontalDegrees, bool narrow)
+	{
+		Camera3D.KeepAspectEnum keep = narrow ? Camera3D.KeepAspectEnum.Width : Camera3D.KeepAspectEnum.Height;
+		if (camera.KeepAspect != keep)
+		{
+			camera.KeepAspect = keep;
+		}
+
+		camera.Fov = narrow ? horizontalDegrees : VerticalFromHorizontal(horizontalDegrees);
+	}
+
+	/// <summary>The window camera's vertical angle for a stated horizontal one: <c>2·atan(0.75·tan(h/2))</c>.</summary>
+	private static float VerticalFromHorizontal(float horizontalDegrees) =>
+		Mathf.RadToDeg(2f * Mathf.Atan(0.75f * Mathf.Tan(Mathf.DegToRad(horizontalDegrees) * 0.5f)));
 
 	/// <summary>
 	/// The horizontal angle the guest stated, from the vertical one the window camera carries:
@@ -141,13 +187,15 @@ public partial class GameSplitView : CanvasLayer
 		Viewport window = GetViewport();
 		World3D world = window.World3D;
 
-		_frame = new HBoxContainer
+		var box = new BoxContainer
 		{
 			Name = "SplitViews",
+			Vertical = WantsStacked,
 			MouseFilter = Control.MouseFilterEnum.Ignore,
 		};
-		_frame.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-		((HBoxContainer)_frame).AddThemeConstantOverride("separation", 0);
+		box.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		box.AddThemeConstantOverride("separation", 0);
+		_frame = box;
 		AddChild(_frame);
 
 		for (int player = 0; player < 2; ++player)
@@ -205,6 +253,7 @@ public partial class GameSplitView : CanvasLayer
 
 		window.Disable3D = true;
 		Active = true;
+		Refii.Core.Engine_Views.SetStacked(box.Vertical);
 		Refii.Core.Engine_Views.SetSplit(_views[0], _views[1], _cameras[1]);
 		_reported = false;
 		GD.Print("[split-view] local co-op split screen: a view per player");

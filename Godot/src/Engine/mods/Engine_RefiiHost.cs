@@ -124,6 +124,7 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void tracked_statEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void partnershipEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void household_restoredEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void dynamic_weatherEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -141,6 +142,7 @@ public partial class RefiiHost : Node
 		"menu_opened", "menu_closed", "menu_screen", "weather_region", "sleep_chosen", "slow_time", "summoned",
 		"crime", "achievement", "collectable_taken", "partner_consent",
 		"property_bought", "property_sold", "rent_paid", "property_rented", "property_condition", "divorce", "widowed", "child_born", "gift_given", "gift_accepted", "engaged", "follow", "furniture_upgraded", "redecorating", "household_budget", "tracked_stat", "partnership", "household_restored",
+		"dynamic_weather",
 	};
 
 	public const string SingletonName = "RefiiHost";
@@ -163,6 +165,18 @@ public partial class RefiiHost : Node
 	private readonly Dictionary<long, long> _hero = new();
 	private UInt128 _mask;
 	private bool _maskSent;
+
+	/// <summary>The guest's last <c>coop_state</c> answer: <see cref="local_hero"/>, <see cref="coop_mode"/>, <see cref="menu_player"/>.</summary>
+	private long _localHero;
+	private int _coopMode;
+	private int _menuPlayer = 1;
+
+	/// <summary>The id of the <c>coop_state</c> query in flight, answered into the fields above (0: none).</summary>
+	private long _coopStateQuery;
+
+	/// <summary>Frames the query in flight has waited; a line the guest never ran (a session change) is asked again.</summary>
+	private int _coopStateWait;
+	private const int CoopStateRetryFrames = 120;
 
 	/// <summary>The node the loaded scripts live under; no children means no script is loaded.</summary>
 	public Node? ScriptsRoot { get; set; }
@@ -440,6 +454,13 @@ public partial class RefiiHost : Node
 			HostBridge.SetModEventMask(mask);
 		}
 
+		// One question a frame while a script is loaded: the co-op state the sync getters answer.
+		if (mask != 0 && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
+		{
+			_coopStateQuery = query("coop_state", new Godot.Collections.Array());
+			_coopStateWait = 0;
+		}
+
 		List<(int Kind, string Fields)> events = HostBridge.DrainModEvents();
 		foreach ((int kind, string fields) in events)
 		{
@@ -449,6 +470,15 @@ public partial class RefiiHost : Node
 				Godot.Collections.Dictionary result = ParseFields(fields);
 				long id = result.TryGetValue("id", out Variant idValue) ? idValue.AsInt64() : 0;
 				result.Remove("id");
+				if (id != 0 && id == _coopStateQuery)
+				{
+					_coopStateQuery = 0;
+					_localHero = result.TryGetValue("local_hero", out Variant local) ? local.AsInt64() : 0;
+					_coopMode = result.TryGetValue("coop_mode", out Variant mode) ? mode.AsInt32() : 0;
+					_menuPlayer = result.TryGetValue("menu_player", out Variant owner) ? owner.AsInt32() : 1;
+					continue;
+				}
+
 				if (_heroSeedQueries.Remove(id, out long seededPlayer))
 				{
 					long seeded = result.TryGetValue("hero", out Variant heroValue) ? heroValue.AsInt64() : 0;
@@ -594,6 +624,21 @@ public partial class RefiiHost : Node
 	public void set_position(long entity, float x, float y, float z) =>
 		Post($"set_position {entity} {Num(x)} {Num(y)} {Num(z)}");
 
+	/// <summary>
+	/// Sets a player's SESSION value (<c>Refii.player_set</c>): the player store refii_mod_player_*
+	/// keeps, the same on both co-op machines. <paramref name="key"/> is "&lt;mod&gt;.&lt;name&gt;", no spaces.
+	/// </summary>
+	public void player_set(int player, string key, float value) =>
+		Post($"player_set {player} {key.Replace(' ', '_')} {Num(value)}");
+
+	/// <summary>Adds to a player's value (<c>Refii.player_add</c>; missing counts as 0); <paramref name="saved"/> keeps the key with the hero's save.</summary>
+	public void player_add(int player, string key, float delta, bool saved) =>
+		Post($"player_add {player} {key.Replace(' ', '_')} {Num(delta)} {(saved ? 1 : 0)}");
+
+	/// <summary>Sets a player's SAVED value (<c>Refii.player_save</c>): kept with that hero's own save, back when it loads.</summary>
+	public void player_save(int player, string key, float value) =>
+		Post($"player_save {player} {key.Replace(' ', '_')} {Num(value)}");
+
 	/// <summary>Sets an integer under <c>RefiiModSave.&lt;key&gt;</c>, persisted with the save; the key carries no spaces.</summary>
 	public void save_set(string key, long value) =>
 		Post($"save_set {key.Replace(' ', '_')} {value}");
@@ -601,9 +646,13 @@ public partial class RefiiHost : Node
 	/// <summary>
 	/// Asks the guest a question (<c>health</c>, <c>position</c>, <c>gold</c>, <c>item_count</c>,
 	/// <c>experience</c>, <c>ability_level</c>, <c>relation</c>, <c>alive</c>, <c>definition</c>,
-	/// <c>name</c>, <c>level_name</c>, <c>hero</c>, <c>player_of</c>, <c>lua_int</c>) with its
-	/// arguments, and returns the id the answer will carry on <c>reply(id, result)</c>; 0 when
-	/// the line could not be posted. The answer comes on a later frame, after the guest's tick.
+	/// <c>name</c>, <c>level_name</c>, <c>hero</c>, <c>player_of</c>, <c>lua_int</c>, and the co-op
+	/// surface the Lua side answers: <c>player_for E</c> (who "the hero" is for E: a dog its master,
+	/// else the nearer hero), <c>world_here</c>, <c>combat_state P</c>, <c>local_hero</c>, <c>coop_mode</c>, <c>menu_player</c>,
+	/// <c>coop_state</c>, <c>player_value P KEY [FALLBACK]</c>, <c>player_here P</c>,
+	/// <c>player_dog P</c>, <c>focus P</c>, <c>opinion E P</c>, <c>uid E</c> — ModApi.GodotHelpers)
+	/// with its arguments, and returns the id the answer will carry on <c>reply(id, result)</c>; 0
+	/// when the line could not be posted. The answer comes on a later frame, after the guest's tick.
 	/// </summary>
 	public long query(string what, Godot.Collections.Array args)
 	{
@@ -641,8 +690,34 @@ public partial class RefiiHost : Node
 		_ => arg.AsString(),
 	};
 
-	/// <summary>The player's hero entity as the bus last stated it (hero_ready / hero_gone), or 0.</summary>
+	/// <summary>
+	/// The player's hero entity as the bus last stated it (hero_ready / hero_gone), or 0. Player 1 is
+	/// the host's hero on both machines: on an online joiner <c>hero(1)</c> is the partner, and
+	/// "this machine's hero" is <see cref="local_hero"/>.
+	/// </summary>
 	public long hero(int player) => _hero.TryGetValue(player, out long id) ? id : 0;
+
+	/// <summary>
+	/// The local player's hero handle, as the guest last answered (Refii.local_hero; asked every
+	/// frame while a script is loaded, so one guest tick behind), or 0: player two's on an online
+	/// joiner, player one's on a host or alone, and in local co-op the hero of whoever owns the
+	/// open menus. Name a player with <see cref="hero"/> when it must not follow the menus.
+	/// </summary>
+	public long local_hero() => _localHero;
+
+	/// <summary>Refii.coop_mode as the guest last answered: 0 alone, 1 local co-op, 2 online hosting, 3 online joined.</summary>
+	public int coop_mode() => _coopMode;
+
+	/// <summary>Refii.menu_player as the guest last answered: whose menus are open on this machine, 1 or 2.</summary>
+	public int menu_player() => _menuPlayer;
+
+	/// <summary>
+	/// Refii.world_here as the guest last answered: whether this machine runs the shared world (the
+	/// AI, every hit's outcome, the NPCs) — alone, in local co-op and on an online host; false on an
+	/// online joiner. A script's world effects (give_gold to an NPC, spawn, cast_spell on a victim)
+	/// belong where this holds; an event dictionary with <c>replica = true</c> is the other machine's.
+	/// </summary>
+	public bool world_here() => _coopMode != 3;
 
 	/// <summary>
 	/// The node Godot draws an entity with, by the HANDLE an event gave the script, or null when

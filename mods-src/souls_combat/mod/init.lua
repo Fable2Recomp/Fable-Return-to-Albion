@@ -313,40 +313,69 @@ if CombatSequences and SequencePriorities then
 end
 
 -- Punish windows: right after a hero drinks or eats, or swings and misses, up to two enemies in
--- reach look for one of their own attack sequences as if they held the token.
+-- reach look for one of their own attack sequences as if they held the token. Keyed by player
+-- (Refii.player_of): player two's body on an online host is not a Player there.
+--
+-- Online, the AI runs only on the host while a swing or an item use fires where that hero is
+-- played. The mod API relays both to the host, where player two's arrive as replicas
+-- (Refii.event_replica()), so every machine times a window from the copy it receives. Hits land
+-- on the host, so a hit landed at or after the swing cancels the whiff; a relayed swing reaches
+-- the host a network moment after the joiner swung, so for one a hit up to arrival_slack before
+-- its arrival counts too. Alone and in local co-op every event fires on the one machine.
 S.Punish = {
 	heal = Setting("ai_punish_heal_seconds", 1.6),
 	whiff_from = 0.25,
 	whiff_to = Setting("ai_punish_whiff_seconds", 1.1),
 	per_window = 2,
 	own_gap = 0.8,
+	arrival_slack = 0.25,
 }
 S.Used = {}
 S.Swung = {}
+S.SwungRelayed = {}
 S.Landed = {}
 S.Claims = {}
 
-Refii.on("item_used", function(e)
-	if e.player ~= 0 then
-		S.Used[e.entity] = Timing.GetWorldFrame()
-		S.Claims = {}
+local function HeroActed(player, times)
+	if player ~= 1 and player ~= 2 then
+		return
 	end
+	times[player] = Timing.GetWorldFrame()
+	S.Claims = {}
+end
+
+Refii.on("item_used", function(e)
+	HeroActed(e.player, S.Used)
 end)
 Refii.on("melee_swing", function(e)
-	if e.player ~= 0 then
-		S.Swung[e.entity] = Timing.GetWorldFrame()
-		S.Claims = {}
+	if e.player == 1 or e.player == 2 then
+		S.SwungRelayed[e.player] = Refii.event_replica() or nil
 	end
+	HeroActed(e.player, S.Swung)
 end)
 Refii.on("hit_landed", function(e)
-	if e.attacker_player ~= 0 then
-		S.Landed[e.attacker] = Timing.GetWorldFrame()
+	if e.attacker_player == 1 or e.attacker_player == 2 then
+		S.Landed[e.attacker_player] = Timing.GetWorldFrame()
 	end
 end)
 
+-- Whether the hero's last swing has a landed hit of its own: one at or after the swing, or, for a
+-- relayed swing, one up to arrival_slack before it arrived.
+local function SwingLanded(player, swung)
+	local landed = S.Landed[player]
+	if landed == nil then
+		return false
+	end
+	if landed >= swung then
+		return true
+	end
+	return S.SwungRelayed[player] == true
+		and Timing.GetSecondsSince(landed) - Timing.GetSecondsSince(swung) <= S.Punish.arrival_slack
+end
+
 local function PunishWindow(info)
 	local target = info.Target
-	if target == nil or not Player.IsAvailable(target) then
+	if target == nil then
 		return nil
 	end
 	if info.Zone ~= CombatZones.Near and info.Zone ~= CombatZones.Middle then
@@ -355,16 +384,19 @@ local function PunishWindow(info)
 	if info.LastAttackTime and Timing.GetSecondsSince(info.LastAttackTime) < S.Punish.own_gap then
 		return nil
 	end
-	local hero = Refii.handle(target)
-	local used = S.Used[hero]
-	if used and Timing.GetSecondsSince(used) < S.Punish.heal then
-		return "used" .. used
+	local player = Refii.player_of(Refii.handle(target))
+	if player ~= 1 and player ~= 2 then
+		return nil
 	end
-	local swung = S.Swung[hero]
-	if swung and (S.Landed[hero] or -1) < swung then
+	local used = S.Used[player]
+	if used and Timing.GetSecondsSince(used) < S.Punish.heal then
+		return "used" .. player .. ":" .. used
+	end
+	local swung = S.Swung[player]
+	if swung and not SwingLanded(player, swung) then
 		local age = Timing.GetSecondsSince(swung)
 		if age > S.Punish.whiff_from and age < S.Punish.whiff_to then
-			return "swung" .. swung
+			return "swung" .. player .. ":" .. swung
 		end
 	end
 	return nil

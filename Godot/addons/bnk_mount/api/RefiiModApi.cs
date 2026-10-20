@@ -270,6 +270,7 @@ public partial class RefiiModApi : RefCounted
 		result["seam"] = e.Seam;
 		result["summary"] = e.Summary;
 		result["cancel"] = e.Cancel;
+		result["relayed"] = e.Relayed;
 		var fields = new Godot.Collections.Array();
 		foreach (ModApiField f in e.Fields)
 		{
@@ -291,6 +292,9 @@ public partial class RefiiModApi : RefCounted
 
 	/// <summary>The Lua-side calls a mod's init.lua can make, each as "call — meaning".</summary>
 	public string[] ListLuaHelpers() => ModApi.LuaHelpers.Select(h => $"{h.Signature} — {h.Meaning}").ToArray();
+
+	/// <summary>What a mod's godot/*.gd can call on the RefiiHost singleton, and its query verbs, each as "call — meaning".</summary>
+	public string[] ListGodotHelpers() => ModApi.GodotHelpers.Select(h => $"{h.Signature} — {h.Meaning}").ToArray();
 
 	/// <summary>
 	/// Writes <c>native/&lt;fileName&gt;</c>: a handler for <paramref name="eventName"/> with every

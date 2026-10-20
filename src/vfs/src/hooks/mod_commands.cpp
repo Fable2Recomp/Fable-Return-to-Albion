@@ -11,6 +11,8 @@
 //   give_experience E POOL AMOUNT · spend_experience E POOL AMOUNT
 //   cast_spell CASTER TYPE TARGETED TARGET LEVEL · set_position E X Y Z
 //   save_set KEY INT · run_lua CHUNK...
+//   player_set P KEY V · player_add P KEY D [SAVED] · player_save P KEY V   (the player store
+//     Refii.player_set / _add / _save write: refii_mod_player_*)
 //   query ID health E            -> id,ok,current,max
 //   query ID position E          -> id,ok,x,y,z
 //   query ID gold E              -> id,ok,gold
@@ -24,12 +26,20 @@
 //   query ID level_name          -> id,ok,level='..'
 //   query ID hero P              -> id,ok,hero
 //   query ID player_of E         -> id,ok,player
+//   query ID player_for E        -> id,ok,player  (refii_mod_player_for: who "the hero" is for E)
+//   query ID world_here          -> id,ok,here    (refii_mod_world_here)
+//   query ID combat_state P      -> id,ok,midst,close_to_combat,in_any_combat (Refii.combat_state)
 //   query ID lua_int EXPR... (last two tokens LO HI) -> id,ok,value
 //   query ID renown E -> renown · morality E / purity E -> value · physique E -> fat,height
 //   query ID age E -> age · equipped E -> melee,ranged · inventory_stack E I -> definition,count
 //   query ID near X Y Z R [CREATURES [OFFSET]] -> total,offset,count,e1..ecount (100 a page)
 //   query ID line_of_sight X1 Y1 Z1 X2 Y2 Z2 -> clear
 //   query ID spawn DEF X Y Z -> entity
+//   query ID local_hero -> hero · coop_mode -> mode · menu_player -> player
+//   query ID coop_state -> local_hero,coop_mode,menu_player (the three at once)
+//   query ID player_value P KEY [FALLBACK] -> value,has · player_here P -> here
+//   query ID player_dog P -> dog · focus P -> entity · opinion E P -> love,fear,attractiveness,
+//     morality,respect · uid E -> uid='0x…'
 // A command that does nothing (no such entity, no component) is silent; a query always replies,
 // with ok=false when it could not be answered.
 
@@ -42,6 +52,9 @@
 
 #include "core/mod_values.h"
 #include "core/refii_mod.h"
+
+// guest_tick_pump.cpp: a player's dog (Refii.player_dog's answer).
+extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
 
 namespace {
 
@@ -156,6 +169,29 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
   } else if (what == "player_of") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "player=%d", refii_mod_player_of(base, E(w, 3)));
+  } else if (what == "player_for") {
+    // refii_mod_player_for: the player the entity deals with (a dog its master's, else the nearer hero).
+    const int32_t player = refii_mod_player_for(&ctx, base, E(w, 3));
+    ok = player != 0;
+    std::snprintf(fields, sizeof(fields), "player=%d", player);
+  } else if (what == "world_here") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "here=%s", refii_mod_world_here(base) != 0 ? "true" : "false");
+  } else if (what == "combat_state") {
+    // The core co-op Lua's Refii.combat_state(p) -> midst, close_to_combat, in_any_combat: asked of
+    // the game VM, the one place the rule lives.
+    const int32_t player = I(w, 3);
+    int32_t state[3] = {0, 0, 0};
+    ok = player == 1 || player == 2;
+    for (int i = 0; ok && i < 3; ++i) {
+      char expr[160];
+      std::snprintf(expr, sizeof(expr),
+                    "Refii and Refii.combat_state and ((select(%d, Refii.combat_state(%d))) and 1 or 0) or 0", i + 1,
+                    player);
+      ok = refii_mod_game_lua_int(&ctx, base, expr, 0, 1, &state[i]) != 0;
+    }
+    std::snprintf(fields, sizeof(fields), "midst=%s,close_to_combat=%s,in_any_combat=%s", state[0] != 0 ? "true" : "false",
+                  state[1] != 0 ? "true" : "false", state[2] != 0 ? "true" : "false");
   } else if (what == "renown") {
     int32_t renown = 0;
     ok = refii_mod_renown(&ctx, base, E(w, 3), &renown) != 0;
@@ -210,6 +246,53 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     const uint32_t entity = refii_mod_spawn(&ctx, base, U(w, 3), xyz);
     ok = entity != 0;
     std::snprintf(fields, sizeof(fields), "entity=%u", refii_mod_handle(entity));
+  } else if (what == "local_hero") {
+    const uint32_t hero = refii_mod_local_hero(base);
+    ok = hero != 0;
+    std::snprintf(fields, sizeof(fields), "hero=%u", refii_mod_handle(hero));
+  } else if (what == "coop_mode") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "mode=%d", refii_mod_coop_mode(base));
+  } else if (what == "menu_player") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "player=%d", refii_mod_menu_player(base));
+  } else if (what == "coop_state") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "local_hero=%u,coop_mode=%d,menu_player=%d",
+                  refii_mod_handle(refii_mod_local_hero(base)), refii_mod_coop_mode(base), refii_mod_menu_player(base));
+  } else if (what == "player_value") {
+    // Refii.player_value(p, key [, fallback]): the value, else the fallback, else nothing.
+    float value = 0.0f;
+    const bool has = w.size() > 4 && refii_mod_player_get(I(w, 3), w[4].c_str(), &value) != 0;
+    const bool fallback = w.size() > 5;
+    if (!has && fallback) {
+      value = F(w, 5);
+    }
+    ok = has || fallback;
+    std::snprintf(fields, sizeof(fields), "value=%.9g,has=%s", static_cast<double>(value), has ? "true" : "false");
+  } else if (what == "player_here") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "here=%s", refii_mod_player_here(I(w, 3)) != 0 ? "true" : "false");
+  } else if (what == "player_dog") {
+    const uint32_t dog = RefiiCoopPlayerDog(base, I(w, 3));
+    ok = dog != 0;
+    std::snprintf(fields, sizeof(fields), "dog=%u", refii_mod_handle(dog));
+  } else if (what == "focus") {
+    const uint32_t target = refii_mod_focus(base, I(w, 3));
+    ok = target != 0;
+    std::snprintf(fields, sizeof(fields), "entity=%u", refii_mod_handle(target));
+  } else if (what == "opinion") {
+    float axes[5] = {0, 0, 0, 0, 0};
+    ok = refii_mod_opinion(base, E(w, 3), I(w, 4), axes) != 0;
+    std::snprintf(fields, sizeof(fields), "love=%.9g,fear=%.9g,attractiveness=%.9g,morality=%.9g,respect=%.9g",
+                  static_cast<double>(axes[0]), static_cast<double>(axes[1]), static_cast<double>(axes[2]),
+                  static_cast<double>(axes[3]), static_cast<double>(axes[4]));
+  } else if (what == "uid") {
+    // Refii.uid(e): the entity's own 64-bit UniqueID (+0x14 high, +0x18 low).
+    const uint32_t entity = E(w, 3);
+    ok = entity != 0;
+    std::snprintf(fields, sizeof(fields), "uid='0x%08x%08x'", ok ? refii::mods::LoadU32(base, entity + 0x14u) : 0u,
+                  ok ? refii::mods::LoadU32(base, entity + 0x18u) : 0u);
   } else if (what == "lua_int" && w.size() >= 6) {
     // query ID lua_int <expr words...> LO HI
     std::string expr;
@@ -248,6 +331,12 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
   } else if (op == "set_position") {
     const float xyz[3] = {F(w, 2), F(w, 3), F(w, 4)};
     refii_mod_set_position(&ctx, base, E(w, 1), xyz);
+  } else if (op == "player_set" && w.size() >= 4) {
+    refii_mod_player_set(I(w, 1), w[2].c_str(), F(w, 3));
+  } else if (op == "player_add" && w.size() >= 4) {
+    refii_mod_player_add(I(w, 1), w[2].c_str(), F(w, 3), I(w, 4) != 0 ? 1 : 0);
+  } else if (op == "player_save" && w.size() >= 4) {
+    refii_mod_player_save(I(w, 1), w[2].c_str(), F(w, 3));
   } else if (op == "save_set" && w.size() >= 3) {
     refii_mod_save_set_int(&ctx, base, w[1].c_str(), I(w, 2));
   } else if (op == "run_lua" && w.size() >= 2) {

@@ -356,7 +356,9 @@ public static class ModSpells
 		{
 			text.Append(
 				"Refii.on('hit_landed', function(e)\n" +
-				"\tif e.spell_type ~= SPELL_TYPE then return end\n" +
+				// The spell's on_hit acts on the world where the hit was decided; a relayed copy
+				// (an online joiner's) is the same hit again.
+				"\tif e.spell_type ~= SPELL_TYPE or (Refii.event_replica and Refii.event_replica()) then return end\n" +
 				"\tlocal ok, err = pcall(on_hit, e)\n" +
 				"\tif not ok then fail('on_hit', err) end\n" +
 				"end)\n");

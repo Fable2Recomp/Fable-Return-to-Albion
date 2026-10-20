@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 209;
+	public const int ExpectedAbiVersion = 210;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -6649,6 +6649,28 @@ public static class HostBridge
 			: 5;
 	}
 
+	/// <summary>
+	/// Moves whenever something an open menu lists changes (an ability level, experience, an item,
+	/// gold, a drawn weapon, or the pump's own item/ability/shop/repair actions): the open list
+	/// re-reads its sources when it does. 0 before the bridge answers.
+	/// </summary>
+	public static uint UiDataGeneration()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return 0u;
+		}
+
+		try
+		{
+			return RefiiHostUiDataGeneration();
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0u;
+		}
+	}
+
 	/// <summary>Names the property under the world map's cursor (0 for none); the pump samples it.</summary>
 	public static void RequestPropertyEstate(ulong uid)
 	{
@@ -9699,6 +9721,9 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetRealEstate(
 		uint[] words, uint wordCapacity, byte[] occupant, uint occupantCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostUiDataGeneration();
 
 	[DllImport(Library)]
 	private static extern void RefiiHostRequestPropertyEstate(ulong uid);

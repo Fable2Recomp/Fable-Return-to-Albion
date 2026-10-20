@@ -169,6 +169,21 @@ void Apply(Entries& entries, const Operation& op) {
   entry.saved = entry.saved || op.saved;
 }
 
+/// Whether the saved values differ — what a mod's menus list (a level, a pick). A change to one
+/// moves the UI data generation like the game's own levels do; the per-tick pools do not.
+bool SavedDiffer(const Entries& before, const Entries& after) {
+  const auto saved_only = [](const Entries& entries) {
+    std::vector<std::pair<std::string_view, float>> out;
+    for (const auto& [key, entry] : entries) {
+      if (entry.saved) {
+        out.emplace_back(key, entry.value);
+      }
+    }
+    return out;
+  };
+  return saved_only(before) != saved_only(after);
+}
+
 /// Not the owner: the owner's statement with what has not landed yet on top.
 void Rebuild(Store& store) {
   store.entries = store.received;
@@ -454,7 +469,11 @@ void TakeState(State& s, int index, std::string_view head, std::string_view body
     }
   }
   assembly = Assembly{};
+  const Entries before = store.entries;
   Rebuild(store);
+  if (SavedDiffer(before, store.entries)) {
+    refii_bridge_ui_data_changed();
+  }
 }
 
 void TakeOperations(State& s, int index, std::string_view head, std::string_view body) {
@@ -493,6 +512,9 @@ void TakeOperations(State& s, int index, std::string_view head, std::string_view
     Apply(store.entries, op);
     store.peer_op_seq = seq;
     changed = true;
+    if (op.saved) {
+      refii_bridge_ui_data_changed();
+    }
   }
   if (changed) {
     ++store.version;
@@ -587,11 +609,18 @@ extern "C" void refii_bridge_player_write(int32_t player, const char* key, size_
     }
     Apply(store.entries, op);
     ++store.version;
+    if (op.saved) {
+      refii_bridge_ui_data_changed();
+    }
     return;
   }
+  const bool saved_op = op.saved;
   op.seq = ++s.op_seq;
   store.pending.push_back(std::move(op));
   Rebuild(store);
+  if (saved_op) {
+    refii_bridge_ui_data_changed();
+  }
 }
 
 extern "C" void refii_bridge_player_set_owned(uint32_t mask) {

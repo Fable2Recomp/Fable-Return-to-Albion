@@ -109,6 +109,7 @@ void FlushLogging();
 #include "core/audio_state.h"
 #include "core/hero_derived.h"
 #include "core/mod_values.h"
+#include "core/event_relay.h"
 #include "core/player_state.h"
 
 // The alternate signal stack lives in the vfs library behind a C entry point since the
@@ -2383,7 +2384,12 @@ extern "C" {
 ///     for the property under the world map's cursor — RefiiHostSetPlayerValue (a saved player
 ///     value written from the host, e.g. a tip shown once), and each property's purchase price as an
 ///     eighth RefiiHostGetProperties field.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 209; }
+/// 210 adds RefiiHostUiDataGeneration — bumped when anything an open menu lists changes (an ability
+///     level, experience, an item, gold, a drawn weapon, the pump's own item/ability/shop/repair
+///     actions); Godot re-reads the open list when it moves.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 210; }
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
 /// The taken silver keys still in the world: (address, mask) pairs into `out`, at most `capacity`
 /// words. Returns the pairs written.
@@ -2489,15 +2495,26 @@ const bool g_player_state_rooted = [] {
 
 }  // namespace
 
-/// The players' mod values this machine owes the co-op peer, one message per line (see
-/// core/player_state.h). Called every frame; the caller sends them only inside a session.
+/// The players' mod values and the relayed mod events this machine owes the co-op peer, one
+/// message per line (see core/player_state.h, core/event_relay.h). Called every frame; the caller
+/// sends them only inside a session.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostPlayerStateOutgoing(char* out, uint32_t capacity) {
-    return static_cast<uint32_t>(refii::players::TakeOutgoing(out, capacity));
+    if (out == nullptr || capacity == 0) {
+        return 0;
+    }
+    size_t written = refii::players::TakeOutgoing(out, capacity);
+    written += refii::relay::TakeOutgoing(out + written, capacity - written);
+    return static_cast<uint32_t>(written);
 }
 
-/// One co-op channel message; 1 when it was player state (taken), 0 for anything else.
+/// One co-op channel message; 1 when it was player state or a relayed event (taken), 0 for
+/// anything else.
 REFII_HOST_ABI_EXPORT int32_t RefiiHostPlayerStateReceive(const char* message, uint32_t length) {
-    return message != nullptr && refii::players::Receive(std::string_view(message, length)) ? 1 : 0;
+    if (message == nullptr) {
+        return 0;
+    }
+    const std::string_view text(message, length);
+    return refii::relay::Receive(text) || refii::players::Receive(text) ? 1 : 0;
 }
 
 /// Both players' mod values and who owns them, as one line. Returns the bytes written.

@@ -11020,6 +11020,7 @@
 0x82A415C0 = { name = "rex_lhStreamedTextureDesc_Ctor" }
 0x82A41758 = { name = "rex_lhStreamedTextureDesc_CloneToCommandBuffer" }
 0x82A41B00 = { name = "rex_lhBinkPlayer_Dtor" }
+0x82A41CA0 = { name = "rex_lhBinkPlayer_Close" }
 0x82A41B48 = { name = "rex_lhBinkPlayer_Open" }
 0x82A41F10 = { }
 0x82A42D20 = { }
@@ -11618,6 +11619,8 @@
 0x823D5760 = { name = "rex_CmdLevelChange_Start" }
 0x823D6E18 = { name = "rex_CmdLevelChange_PlaceTravellers" }
 0x82519B08 = { name = "rex_FastTravelManager_TravelToStop" }
+0x8246B9E0 = { name = "rex_lhGuiWorldMap_FastTravel" }
+0x828219F8 = { name = "rex_CECOnActionUse_Use" }
 0x8236EB68 = { name = "rex_lhGuiManager_EnterGuiMode" }
 0x8236E388 = { name = "rex_lhGuiManager_SetActiveScreen" }
 0x8233E668 = { name = "rex_CNetworkManager_LeaveSession", size = 0x114 }
@@ -12046,6 +12049,12 @@ jump_address_on_true = 0x8232C378
 name = "RefiiCoopPartnerLookAtStaysTheirs"
 address = 0x8239AF54
 jump_address_on_true = 0x8239CBCC
+
+# The other player's targeted readout (network message 221) is not applied here (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopPeerReadoutIgnored"
+address = 0x82332320
+jump_address_on_true = 0x82332334
 
 # A joiner's look-at readout and target panel are its own hero's (coop_hero_hooks.cpp).
 [[midasm_hook]]

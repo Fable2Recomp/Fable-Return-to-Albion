@@ -215,8 +215,9 @@ public sealed class Engine_HudLayout
 
     /// <summary>
     /// The screen's pieces each half draws from its OWN values on split screen: the experience
-    /// counter, which the guest keeps for the local player and the host states for player two
-    /// over the shared feed (Engine_HudValues.Under).
+    /// counter, the targeted-citizen readout and the d-pad, which the guest keeps for the local
+    /// player and the host states for player two over the shared feed (Engine_HudValues.Under,
+    /// GameUi's player-two resolve).
     /// </summary>
     public static bool EachPlayerOnSplit(Piece piece) =>
         piece.Id == "slidefader2.ExpAmounts.ExperienceAmounts" ||
@@ -224,7 +225,20 @@ public sealed class Engine_HudLayout
         piece.Id == "text.GenericExpText.GeneralExperience" ||
         piece.Id == "text.StrengthExpText.StrengthExperience" ||
         piece.Id == "text.SkillExpText.SkillExperience" ||
-        piece.Id == "text.WillExpText.WillExperience";
+        piece.Id == "text.WillExpText.WillExperience" ||
+        piece.Id.StartsWith("group.TargetedQuery.", System.StringComparison.Ordinal) ||
+        IsDpad(piece);
+
+    /// <summary>
+    /// The d-pad: its four slots (`dpad.dpad.dpadmenu.group.{up,left,down,right}`, toggled by
+    /// `DPadUp`..`DPadRight`) and the component and ring they sit in (`dpad`, `dpadmenu`), which
+    /// ride the subtitles' `SubtitlesY` and `Subtitles`.
+    /// </summary>
+    public static bool IsDpad(Piece piece) =>
+        piece.Id.StartsWith("slidetoggle.DPad", System.StringComparison.Ordinal) ||
+        piece.Id == "meter.SubtitlesY.dpad" ||
+        piece.Id == "meter.SubtitlesY.dpadmenu" ||
+        piece.Id == "slidetoggle.Subtitles.dpad";
 
     /// <summary>
     /// The expression wheel — one widget, opened by either player (the guest keeps its owner at
@@ -237,8 +251,9 @@ public sealed class Engine_HudLayout
     /// <summary>
     /// The screen's pieces both players read on split screen: the quest/info box (tutorials,
     /// quest offers, the co-op notices) and the subtitles. They speak of the one shared world, and
-    /// each half shows them from the same feed; the rest of the screen's pieces (the targeted
-    /// villager, the experience gains, the d-pad) are the guest's for the local player only.
+    /// each half shows them from the same feed. The targeted villager, the experience gains and the
+    /// d-pad are each player's own (<see cref="EachPlayerOnSplit"/>); the rest of the screen's
+    /// pieces are the guest's for the local player only.
     /// </summary>
     public static bool SharedOnSplit(Piece piece) =>
         piece.Id == "group.QuestBox.TopBox" ||
@@ -258,29 +273,59 @@ public sealed class Engine_HudLayout
     public IReadOnlyList<Piece> Pieces => _pieces;
 
     /// <summary>
-    /// Player one's piece that player two's piece mirrors: `CoopHealth` is the same widget as
-    /// `PlayerHealth` (orb, heart, bar and cap, the same materials in `hud.bgf`) and
-    /// `SpellCharging2` the same column as `SpellCharging`, each authored on the right for the
-    /// shared screen. In player two's own half they stand where player one's stand in theirs,
-    /// so each player sees one full hero HUD. Null for a piece with no counterpart.
+    /// Player one's widgets and the guest's copies of them that state player two: `CoopHealth` is
+    /// `PlayerHealth` (orb, heart, bar and cap) and `SpellCharging2` (the henchman's column) is
+    /// `SpellCharging`, each laid out for the right of the shared screen and driven from hero two.
     /// </summary>
-    public Piece? CounterpartOf(Piece piece)
+    private static readonly (string One, string Two)[] PlayerTwoSources =
     {
-        string id = piece.Id;
-        string? mirrored =
-            id.StartsWith("group.CoopHealth.", System.StringComparison.Ordinal)
-                ? id.Replace("CoopHealth", "PlayerHealth", System.StringComparison.Ordinal)
-                : id.StartsWith("group.SpellCharging2.", System.StringComparison.Ordinal)
-                    ? id.Replace("SpellCharging2", "SpellCharging", System.StringComparison.Ordinal)
-                    : null;
-        if (mirrored is null)
+        ("PlayerHealth", "CoopHealth"),
+        ("SpellCharging", "SpellCharging2"),
+    };
+
+    /// <summary>
+    /// The id of the piece that states player two's version of player one's piece
+    /// <paramref name="id"/>, or null. A view drawn for player two draws player one's piece and
+    /// takes its state and values from this one, which is not drawn there.
+    /// </summary>
+    public static string? PlayerTwoSourceId(string id)
+    {
+        foreach ((string one, string two) in PlayerTwoSources)
+        {
+            if (id.StartsWith($"group.{one}.", System.StringComparison.Ordinal))
+            {
+                return $"group.{two}.{id[$"group.{one}.".Length..].Replace(one, two, System.StringComparison.Ordinal)}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The id of player one's piece that player two's source <paramref name="id"/> keys, or null.</summary>
+    public static string? PlayerOneIdOf(string id)
+    {
+        foreach ((string one, string two) in PlayerTwoSources)
+        {
+            if (id.StartsWith($"group.{two}.", System.StringComparison.Ordinal))
+            {
+                return $"group.{one}.{id[$"group.{two}.".Length..].Replace(two, one, System.StringComparison.Ordinal)}";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The piece <see cref="PlayerTwoSourceId"/> names, or null.</summary>
+    public Piece? PlayerTwoSourceOf(Piece piece)
+    {
+        if (PlayerTwoSourceId(piece.Id) is not { } id)
         {
             return null;
         }
 
         foreach (Piece candidate in _pieces)
         {
-            if (candidate.Id == mirrored)
+            if (candidate.Id == id)
             {
                 return candidate;
             }

@@ -309,7 +309,11 @@ public static class Engine_UiQuestSource
 					? Engine_UiMenuConstants.Emphasis.PrimaryQuest
 					: quest.Active
 						? Engine_UiMenuConstants.Emphasis.ActiveQuest
-						: Engine_UiMenuConstants.Emphasis.None));
+						: Engine_UiMenuConstants.Emphasis.None,
+
+				// A quest or job not yet seen (`Quest+78 == 0`) puts `<exclamation.img>` on its
+				// header — `sub_826CFD48` counts these two lists only; the row itself takes none.
+				Unviewed: !quest.Viewed));
 		}
 
 		Report = $"{rows.Count} {(jobs ? "job" : "quest")}(s) of {log.Count} log entr(y/ies)";

@@ -80,6 +80,8 @@ public static class Engine_UiAbilitySource
 	private static readonly List<Engine_UiMenuSources.Row> None = new();
 
 	public static string Report { get; private set; } = "not read yet";
+	/// <summary>The last report per category, so a re-read that changes nothing says nothing.</summary>
+	private static readonly System.Collections.Generic.Dictionary<string, string> Reported = new();
 
 	/// <summary>The abilities of one category — `abilities:Strength` and its two siblings.</summary>
 	public static IReadOnlyList<Engine_UiMenuSources.Row> Rows(string category)
@@ -236,7 +238,12 @@ public static class Engine_UiAbilitySource
 
 		Report = $"{rows.Count} {category} abilit(y/ies), {buyable} upgradeable now" +
 			(unnamed == 0 ? string.Empty : $", {unnamed} with no NameTextTag");
-		Godot.GD.Print($"[ability-source] {Report}");
+		if (!Reported.TryGetValue(category, out string? said) || said != Report)
+		{
+			Reported[category] = Report;
+			Godot.GD.Print($"[ability-source] {Report}");
+		}
+
 		return rows;
 	}
 

@@ -133,8 +133,8 @@ void SaveLoaded(refii::mods::SaveLoadedEvent& e) { SaveChanged(e); }
 REFII_MOD_ON(SaveLoaded, SaveLoaded);
 
 void OnTick(refii::mods::TickEvent& e) {
-  if (refii_mod_player_hero(e.base, 1) == 0) {
-    return;
+  if (refii_mod_player_hero(e.base, 1) == 0 && refii_mod_player_hero(e.base, 2) == 0) {
+    return;  // no session: neither hero exists
   }
 
   if (g_reread) {

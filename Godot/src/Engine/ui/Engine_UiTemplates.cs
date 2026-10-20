@@ -3030,6 +3030,13 @@ public static class Engine_UiTemplates
 		Tag = tag,
 		Command = $"{Engine_PauseMenu.TabCommandPrefix}{tab}",
 		Source = "spawn",
+
+		// A TAB ENTERS A SCREEN — `sub_8298DF98` spawns every tab with event type 300
+		// (0x8298e438 …). Left 0, the source made it a submenu (301) with no children, and the
+		// automatic submenu ghosting greyed Map, Items, Weapons, Clothing, Logbook and Options
+		// for good. The guest's only tab ghosting is `sub_8298F648`'s availability, which
+		// Engine_PauseMenu.ApplyTabAvailability states.
+		EventType = (int)Engine_UiMenuConstants.EventType.EnterScreen,
 	};
 
 	/// <summary>

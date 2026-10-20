@@ -14,8 +14,10 @@ namespace Refii.Ui;
 /// rule, same proportions — and <see cref="Frame.Transform"/> then maps that seat canvas onto the
 /// half's rectangle of the real canvas: one uniform scale, one offset. A layer under that
 /// transform needs no knowledge of the split at all.</para>
-/// <para>The halves match <c>Refii.Game.GameSplitView</c>: player one LEFT, player two RIGHT, each
-/// half the window's width and all of its height.</para>
+/// <para>The halves match <c>Refii.Game.GameSplitView</c>, as it states them
+/// (<see cref="Refii.Core.Engine_Views.Stacked"/>): side by side, player one LEFT and player two
+/// RIGHT, each half the window's width and all of its height; stacked, player one TOP and player
+/// two BOTTOM, each all of the window's width and half its height.</para>
 /// </remarks>
 public static class Engine_UiSeats
 {
@@ -24,10 +26,10 @@ public static class Engine_UiSeats
         /// <summary>The whole window — solo, and local co-op on a shared screen.</summary>
         Whole,
 
-        /// <summary>Player one's half on split screen, the left.</summary>
+        /// <summary>Player one's half on split screen: the left, or the top when stacked.</summary>
         PlayerOne,
 
-        /// <summary>Player two's half on split screen, the right.</summary>
+        /// <summary>Player two's half on split screen: the right, or the bottom when stacked.</summary>
         PlayerTwo,
     }
 
@@ -163,8 +165,11 @@ public static class Engine_UiSeats
             return new Frame(Seat.Whole, window, Vector2.Zero, Vector2.Zero, 1f);
         }
 
-        var size = new Vector2(window.X * 0.5f, window.Y);
-        var origin = new Vector2(seat == Seat.PlayerTwo ? window.X * 0.5f : 0f, 0f);
+        bool stacked = Refii.Core.Engine_Views.Stacked;
+        Vector2 size = stacked ? new Vector2(window.X, window.Y * 0.5f) : new Vector2(window.X * 0.5f, window.Y);
+        Vector2 origin = seat != Seat.PlayerTwo ? Vector2.Zero
+            : stacked ? new Vector2(0f, window.Y * 0.5f)
+            : new Vector2(window.X * 0.5f, 0f);
 
         // The canvas camera shows CanvasExtent(window) across the window at one scale on both axes,
         // so a window pixel is the same number of canvas units either way.

@@ -1698,6 +1698,10 @@ public partial class GameUi : Node
 			HoldScreenStick(0);
 			GameInput.ScreenMenuOwnsInput = false;
 			_screenMenuAddress = 0;
+			if (pause is not { } stillOpen || stillOpen.ScreenId != Engine_UiScreenInput.AbilitiesScreenId)
+			{
+				_abilityHovered = -1;
+			}
 
 			// The panel follows its SCREEN, not this drive: every early return here is a frame
 			// the owned text would keep painting over whatever replaced it, and the guest's own
@@ -1903,6 +1907,62 @@ public partial class GameUi : Node
 
 		AdoptScreenMenu(address, drawn, state.ScreenId);
 
+		// THE LIST FOLLOWS THE GAME'S DATA. The bridge's generation moves whenever a level,
+		// experience, an item, gold or a drawn weapon changes (mod_events.cpp's entry points);
+		// the open list re-reads its sources in place then — a purchase, a use or a sale shows at
+		// once, as the guest's own handler restates its rows, instead of on the next visit.
+		uint dataGeneration = HostBridge.UiDataGeneration();
+		if (dataGeneration != _uiDataSeen)
+		{
+			_uiDataSeen = dataGeneration;
+			if (_screenMenu?.Resource() == true)
+			{
+				_screenMenuView?.Refresh();
+			}
+		}
+
+		// A ROW SEEN IS VIEWED. The guest's highlight ticks clear an item's or a quest's "!" on
+		// the row their cursor stands on (`*(item+20) = 1` in `sub_829B5160`, `Quest+78 = 1` in
+		// `sub_829AF638`/`sub_829AFE58`); that cursor no longer moves, so ours states it. The
+		// pump writes the flag and moves the data generation, and the re-read above restates
+		// the row, its header and (on the next pause build) the tab.
+		if (_screenMenu?.Script.Highlighted is { Unviewed: true } seen)
+		{
+			uint id = ((uint)seen.IdHigh << 16) | ((uint)seen.IdLow & 0xFFFFu);
+			if (id != 0u && id != _viewedPosted)
+			{
+				_viewedPosted = id;
+				HostBridge.PostFrontEndAction(seen.EventType is 42 or 43
+					? $"{Engine_UiQuestSource.QuestAction}viewed:0x{id:X8}"
+					: $"{Engine_UiInventorySource.InventoryAction}viewed:{id}");
+			}
+		}
+
+		// THE ABILITY SCREEN'S VOICE-OVER. The guest arms its tutorial narration on its own
+		// highlight edge, which our cursor no longer moves; the pump runs that arm for the row
+		// we state (guest_tick_pump.cpp ArmAbilityTutorial). 0 is "not an ability", which the
+		// guest answers by disarming.
+		int hovered = -1;
+		if (state.ScreenId == Engine_UiScreenInput.AbilitiesScreenId)
+		{
+			hovered = _screenMenu?.Script.Highlighted is { } row &&
+				!Engine_UiModAbilities.TryGet(row.Name, out _) &&
+				Refii.Gdb.Engine_AbilityRecords.TryGet(row.Name,
+					out Refii.Gdb.Engine_AbilityRecords.Ability ability) &&
+				ability.Type is >= 1 and <= 14
+					? ability.Type
+					: 0;
+		}
+
+		if (hovered != _abilityHovered)
+		{
+			_abilityHovered = hovered;
+			if (hovered >= 0)
+			{
+				HostBridge.PostFrontEndAction($"{Engine_UiAbilitySource.AbilityAction}hover:{hovered}");
+			}
+		}
+
 		// A screen cannot have both: once its book is standing, the panel's text is painted into
 		// the book's clones and running both draws every field twice a few units apart.
 		if (_books.Book(state.ScreenId) is { Visible: true })
@@ -2106,7 +2166,10 @@ public partial class GameUi : Node
 		if (_screenMenu.HostExpanded)
 		{
 			HoldScreenStick(0);
-			_screenMenuView.Navigate(GameInput.MenuDirection, delta);
+			if (_screenMenuView.Navigate(GameInput.MenuDirection, delta))
+			{
+				Cue(frontEnd: false, GameInput.MenuDirection < 0 ? "slideup" : "slidedown");
+			}
 
 			// Change-keyed row report: one line when the list settles, one more per press.
 			ReportMenuView(_screenMenuView);
@@ -2223,8 +2286,18 @@ public partial class GameUi : Node
 			// Refresh on the PRESS, not the next sample: a host-owned fold changes the visible
 			// list immediately and the sampling path runs only a few times a second.
 			bool dyeHeld = Engine_UiDyeFlow.Active;
+
+			// The shared A arm (`sub_826D58F0`) plays the select cue below the root
+			// (`SE_GUI_MENU_BOX_SELECT` 0x826D59B0, skipped when `IsHighlightedItemAtRoot`);
+			// a commit by identity never runs that arm.
+			bool belowRoot = _screenMenu?.Script.Highlighted is { Parent: { Parent: not null } };
 			if (_screenMenu is { } pressed && pressed.Commit())
 			{
+				if (belowRoot)
+				{
+					Cue(frontEnd: false, "select");
+				}
+
 				if (Engine_UiDyeFlow.Active != dyeHeld)
 				{
 					pressed.FollowDyeFlow();
@@ -2269,6 +2342,9 @@ public partial class GameUi : Node
 			// collapse.
 			if (_screenMenu is { } menu && menu.HostExpanded && menu.Collapse())
 			{
+				// The guest's own collapse below the root cancels (`SE_GUI_MENU_BOX_CANCEL`,
+				// 0x826D5BBC); this one is ours.
+				Cue(frontEnd: false, "cancel");
 				_screenMenuView?.Refresh();
 				GD.Print($"[game-ui] screen {state.ScreenId}: B collapsed one level — " +
 					$"cursor {menu.Script.CurrentHighlightIdx}/{menu.Script.Visible.Count}");
@@ -2701,8 +2777,8 @@ public partial class GameUi : Node
 
 		// PLAYER TWO'S HALF, for split screen. The same view over the same layout, art and
 		// published values — `hud.bgf` is one presentation carrying both players' pieces — built
-		// with player two's pieces alone (Engine_HudLayout.OwnerOf) and laid out in the right
-		// half. Down until the screen splits; see SeatPlayerUi.
+		// with player one's pieces keyed to player two's (Engine_HudView.ForPlayerTwo) and laid
+		// out in player two's half. Down until the screen splits; see SeatPlayerUi.
 		_hudTwo = new Engine_HudView
 		{
 			Name = "HudPlayerTwo",
@@ -2839,8 +2915,8 @@ public partial class GameUi : Node
 	/// <summary>
 	/// SPLIT SCREEN, PER PLAYER. While the world is drawn through two views
 	/// (<see cref="Engine_Views.Split"/>), each local player's UI stands in their own half: player
-	/// one's HUD in the left half, laid out as on a screen that size, and player two's view of the
-	/// same HUD in the right half; the spells wheel in the half of whoever opened it; the menu
+	/// one's HUD in their half (Engine_UiSeats: left or top), laid out as on a screen that size, and
+	/// player two's view of the same HUD in theirs (right or bottom); the spells wheel in the half of whoever opened it; the menu
 	/// input and masks on the pad of whoever owns the open menu. A shared screen and solo play take
 	/// none of this — every seat is the whole window and the menu owner is not stated. The menus
 	/// stand in the half of whoever opened them (<see cref="Engine_UiPresentationHost.MenuLayer"/>).
@@ -3018,7 +3094,8 @@ public partial class GameUi : Node
 
 	/// <summary>
 	/// Hands player two's HUD the element feed player one's was just given: one `hud.bgf`
-	/// presentation, one read, two views.
+	/// presentation, one read, two views — resolved again with player two's own slides folded in
+	/// whenever they state any (<see cref="ResolvePlayerTwo"/>).
 	/// </summary>
 	private void ShareHudFeed()
 	{
@@ -3027,12 +3104,22 @@ public partial class GameUi : Node
 			return;
 		}
 
-		_hudTwo.Resolve = _hud.Resolve;
-		_hudTwo.LiveSlides = SlidesForPlayerTwo(_hud.LiveSlides);
+		if (ResolvePlayerTwo())
+		{
+			_hudTwo.Resolve = _hudTwoResolve;
+			_hudTwo.LiveSlides = _hudTwoSlideBuffer;
+			_hudTwo.ElementActive = _hudTwoActive;
+		}
+		else
+		{
+			_hudTwo.Resolve = _hud.Resolve;
+			_hudTwo.LiveSlides = SlidesForPlayerTwo(_hud.LiveSlides);
+			_hudTwo.ElementActive = _hud.ElementActive;
+		}
+
 		_hudTwo.LiveTextures = TexturesForPlayerTwo(_hud.LiveTextures);
 		_hudTwo.LiveTransform = _hud.LiveTransform;
 		_hudTwo.LiveTexts = _hud.LiveTexts;
-		_hudTwo.ElementActive = _hud.ElementActive;
 	}
 
 	/// <summary>Player two's own element slides over the shared ones (ordinal → slide).</summary>
@@ -3043,7 +3130,7 @@ public partial class GameUi : Node
 	private System.Collections.Generic.IReadOnlyList<int>? SlidesForPlayerTwo(
 		System.Collections.Generic.IReadOnlyList<int>? shared)
 	{
-		if (shared is null || (_hudTwoSlides.Count == 0 && _hudTwoQuerySlides.Count == 0))
+		if (shared is null || (_hudTwoSlides.Count == 0 && _hudTwoQuerySlides.Count == 0 && _hudTwoDpadSlides.Count == 0))
 		{
 			return shared;
 		}
@@ -3067,6 +3154,14 @@ public partial class GameUi : Node
 		}
 
 		foreach ((int ordinal, int slide) in _hudTwoQuerySlides)
+		{
+			if (ordinal >= 0 && ordinal < _hudTwoSlideBuffer.Length)
+			{
+				_hudTwoSlideBuffer[ordinal] = slide;
+			}
+		}
+
+		foreach ((int ordinal, int slide) in _hudTwoDpadSlides)
 		{
 			if (ordinal >= 0 && ordinal < _hudTwoSlideBuffer.Length)
 			{
@@ -3842,8 +3937,8 @@ public partial class GameUi : Node
 	/// <summary>
 	/// Points both sprite views at this frame's cameras, and seats the layers drawn through them:
 	/// on the whole window everything is exactly as it always was; split, player one's layers
-	/// (sprites, pooled icons, their reticule, the slow-time dial) take the left half and player
-	/// two's (their sprites and reticule) the right. Returns whether the screen is split.
+	/// (sprites, pooled icons, their reticule, the slow-time dial) take player one's half and
+	/// player two's (their sprites and reticule) player two's. Returns whether the screen is split.
 	/// </summary>
 	private bool SeatSpriteViews(Camera3D windowCamera, Vector2 window)
 	{
@@ -4049,7 +4144,7 @@ public partial class GameUi : Node
 		return new Vector2(Mathf.Clamp(canvas.X, left, right), Mathf.Clamp(canvas.Y, bottom, top));
 	}
 
-	/// <summary>Player one's seat window — the whole window, or the left half while split — for
+	/// <summary>Player one's seat window — the whole window, or their half while split — for
 	/// the layers that size themselves off it. See <see cref="SeatSpriteViews"/>.</summary>
 	private Vector2 _spriteWindow;
 
@@ -4895,6 +4990,15 @@ public partial class GameUi : Node
 	private long? _screenMenuDeclined;
 
 	private Engine_UiScreenMenu? _screenMenu;
+
+	/// <summary>The bridge's UI data generation the open list last re-read at (<see cref="HostBridge.UiDataGeneration"/>).</summary>
+	private uint _uiDataSeen;
+
+	/// <summary>The last row this cursor marked viewed, so a resting cursor posts it once.</summary>
+	private uint _viewedPosted;
+
+	/// <summary>The ability row last stated to the pump; -1 off the abilities screen.</summary>
+	private int _abilityHovered = -1;
 	private Engine_FrontEndMenuView? _screenMenuView;
 
 	/// <summary>The guest's screen fade, drawn over the UI. See <see cref="Engine_UiScreenFade"/>.</summary>
@@ -5168,10 +5272,13 @@ public partial class GameUi : Node
 			}
 		}
 
-		// No slide sound yet, deliberately: the front end's 140/141 command path runs against
-		// the front-end screen object, which does not exist in game.
+		// The slide sound every in-game screen's own 140/141 arm plays on the in-game GUI
+		// (`sub_826A26E8` 0x826A2734/0x826A2760 on the pause root), for a move that happened.
 		_pauseView.Book = _pauseBook;
-		_pauseView.Navigate(GameInput.MenuDirection, delta);
+		if (_pauseView.Navigate(GameInput.MenuDirection, delta))
+		{
+			Cue(frontEnd: false, GameInput.MenuDirection < 0 ? "slideup" : "slidedown");
+		}
 		bool pauseClicked = PointerList(_pauseView);
 
 		// Change-keyed, so this is one line when the list settles and one more per press —
@@ -5181,8 +5288,12 @@ public partial class GameUi : Node
 		if (GameInput.MenuBackPressed)
 		{
 			// Collapse only. With nothing expanded B is left through to the guest, whose own
-			// B on the pause root resumes the game — that path is entirely the guest's.
-			_pauseView.Back();
+			// B on the pause root resumes the game — that path is entirely the guest's. A level
+			// closed below the root is the shared cancel (`SE_GUI_MENU_BOX_CANCEL`, 0x826D5BBC).
+			if (_pauseView.Back())
+			{
+				Cue(frontEnd: false, "cancel");
+			}
 		}
 
 		if (!GameInput.MenuAcceptPressed && !pauseClicked)
@@ -7595,7 +7706,12 @@ public partial class GameUi : Node
 			// A false return is "nothing left to back out of". On the front end's root menu
 			// that is the guest's business, not ours — B there leaves for the title screen,
 			// and the guest is already being fed the same B press through XInput.
-			_menuView.Back();
+			// A fold closed here is the guest's `OnPressB` arm, which slides the blade out
+			// (`SE_GUI_BLADE_SLIDE_OUT`, 0x826DFC80 then 0x826DFBDC).
+			if (_menuView.Back())
+			{
+				Cue(frontEnd: true, "bladeout");
+			}
 		}
 
 		if (!GameInput.MenuAcceptPressed && !menuClicked)
@@ -7604,6 +7720,10 @@ public partial class GameUi : Node
 		}
 
 		string? action = _menuView.Activate();
+
+		// A on any root row slides the blade in (`SE_GUI_BLADE_SLIDE_IN`, 0x826DF428) before the
+		// press reaches Lua; A is ours in this substate, so the guest's arm never plays it.
+		Cue(frontEnd: true, "bladein");
 
 		// The guest confirms through the pump's next sample; flipping now keeps the marker on
 		// the row the player just chose instead of one sample behind their press.
@@ -8274,6 +8394,10 @@ public partial class GameUi : Node
 			_cardView.Reset();
 			_cardView.Visible = true;
 
+			// New Game past its guards: the narrator's line as the card comes in
+			// (`TEXT_QUEST_QC010_FRONT_END_20`, 0x826E0244).
+			Cue(frontEnd: true, "newgame");
+
 			// The rows out of the way while the card is up — see the field's remarks for why
 			// that is ours rather than the original's.
 			if (_menuView is not null)
@@ -8334,6 +8458,7 @@ public partial class GameUi : Node
 			GD.Print($"[game-ui] gender card input {sideways:+#;-#;0} — {_cardView.Describe()}");
 		}
 
+		Engine_FrontEndCardChoice.Choice raisedBefore = _cardView.Chosen;
 		if (_cardView.Navigate(sideways))
 		{
 			GD.Print($"[game-ui] gender card moved — {_cardView.Describe()}");
@@ -8357,8 +8482,18 @@ public partial class GameUi : Node
 			}
 		}
 
+		// A card raised or swapped turns the page (`SE_GUI_NEW_PAGE`, 0x826DF380 and its three
+		// siblings), by stick or by pointer.
+		if (_cardView.Chosen != raisedBefore)
+		{
+			Cue(frontEnd: true, "page");
+		}
+
 		if (GameInput.MenuBackPressed)
 		{
+			// The card's B slides the blade out (`SE_GUI_BLADE_SLIDE_OUT`, 0x826DFBDC).
+			Cue(frontEnd: true, "bladeout");
+
 			// The guest sees this press too, through XInput, and it is sitting in substate 0
 			// with the menu list live — so its own B handler may leave for the title screen at
 			// the same moment we cancel back to the rows. That is inherited rather than
@@ -8382,9 +8517,21 @@ public partial class GameUi : Node
 			return;
 		}
 
+		// The choice's line (`..._30_HM` 0x826DF5E8 / `..._30_HF` 0x826DF734), then the commit once
+		// the card's own slide has run (`ChooseBoy` 600 ms, `ChooseGirl` 603 ms), as the guest
+		// commits after it: the line is not cut by the transition.
+		bool boy = _cardView.Chosen == Engine_FrontEndCardChoice.Choice.Boy;
+		Cue(frontEnd: true, boy ? "boy" : "girl");
 		CloseCardChoice();
-		Post(chosen, "gender card");
+		GetTree().CreateTimer(boy ? 0.600 : 0.603).Timeout += () => Post(chosen, "gender card");
 	}
+
+	/// <summary>
+	/// Plays one of the guest's own UI sounds for a press Godot handled itself (the pump's
+	/// `UiCue:`): on the front end's emitter or the in-game GUI's.
+	/// </summary>
+	private static void Cue(bool frontEnd, string cue) =>
+		HostBridge.PostFrontEndAction($"UiCue:{(frontEnd ? "fe" : "game")}:{cue}");
 
 	/// <summary>
 	/// Takes the card down and gives the rows back.

@@ -203,6 +203,25 @@ public sealed class Engine_UiScreenMenu
 		return changed;
 	}
 
+	/// <summary>
+	/// Re-reads the bound template's sources NOW, in place (fold and cursor kept): what the guest's
+	/// own handler does after a purchase or a use (`sub_829A5568` restates every ability row and
+	/// the category counts after `sub_8246C970`), which our pump's direct call never runs. The
+	/// sampled rebuild runs only when the guest's hidden presentation changes, and a host action
+	/// changes none of it. Called on the bridge's data generation (a level, experience, an item,
+	/// gold, a drawn weapon changed).
+	/// </summary>
+	public bool Resource()
+	{
+		if (_authoredFrom is not { } template)
+		{
+			return false;
+		}
+
+		return RebuildFromTemplate(
+			template, _lastButtons ?? System.Array.Empty<Engine_ExpandableMenuItems.Button>());
+	}
+
 	private bool RebuildFromTemplate(
 		Engine_UiMenuTemplate template,
 		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons)

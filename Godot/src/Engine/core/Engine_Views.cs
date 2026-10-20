@@ -32,6 +32,13 @@ public static class Engine_Views
 	/// <summary>Whether the world is drawn through two views right now.</summary>
 	public static bool Split => Second is { } camera && GodotObject.IsInstanceValid(camera);
 
+	/// <summary>
+	/// How the split view divides the window: false side by side (player one left, player two
+	/// right), true stacked (player one top, player two bottom). Stated by the split view as it
+	/// lays the views out; every half of the UI (Refii.Ui.Engine_UiSeats) follows it.
+	/// </summary>
+	public static bool Stacked { get; private set; }
+
 	/// <summary>Raised when the screen splits or rejoins.</summary>
 	public static event System.Action? ViewsChanged;
 
@@ -46,6 +53,9 @@ public static class Engine_Views
 		ViewsChanged?.Invoke();
 	}
 
+	/// <summary>Set by the split view when it lays its views out side by side or stacked.</summary>
+	public static void SetStacked(bool stacked) => Stacked = stacked;
+
 	/// <summary>
 	/// The cameras drawing the world: <paramref name="primary"/> (the window's), or on split
 	/// screen player one's view camera in its place followed by player two's. The list is reused;
@@ -53,8 +63,8 @@ public static class Engine_Views
 	/// </summary>
 	/// <remarks>
 	/// While split, the window camera is NOT what player one is drawn through: player one's view
-	/// shares its eye but renders a half-width viewport keeping the horizontal angle, so its
-	/// frustum is taller and narrower. A frustum test against the window camera would call
+	/// shares its eye but renders a half of the window at the split view's angle rule, so its
+	/// frustum differs. A frustum test against the window camera would call
 	/// things on player one's screen out of view.
 	/// </remarks>
 	public static IReadOnlyList<Camera3D> Cameras(Camera3D? primary)
@@ -85,7 +95,7 @@ public static class Engine_Views
 
 	/// <summary>
 	/// The camera player one is drawn through: their view's camera while split (same eye as the
-	/// window camera, but a half-width view at the stated horizontal angle), else the window's.
+	/// window camera, but a half of the window at the split view's angle rule), else the window's.
 	/// Anything that culls by a frustum or projects through player one's camera uses this.
 	/// </summary>
 	public static Camera3D? Primary(Camera3D? window) =>

@@ -799,6 +799,12 @@ REFII_LUA_NATIVE(NativeCoopMode) {
   RESULTS(1);
 }
 
+// Refii.world_here(): whether this machine runs the shared world (alone, local co-op, online host).
+REFII_LUA_NATIVE(NativeWorldHere) {
+  lua.PushBoolean(refii_mod_world_here(lua.base) != 0);
+  RESULTS(1);
+}
+
 // Refii.focus(p): the living entity player p's hero is focused on, or nil.
 REFII_LUA_NATIVE(NativeFocus) {
   lua.PushHandle(refii_mod_focus(lua.base, lua.Int(1)));
@@ -830,6 +836,34 @@ REFII_LUA_NATIVE(NativeEntity) {
   RESULTS(1);
 }
 
+/// The entity at argument `index`: a handle number, or a game Entity userdata (any the shipped
+/// scripts or natives gave) resolved through its script reference; 0 for a dead entity or anything
+/// else.
+uint32_t EntityArgument(Lua& lua, int32_t index) {
+  if (lua.Type(index) == kTypeNumber) {
+    return lua.Entity(index);
+  }
+  PPCContext check = lua.Work();
+  check.r4.s64 = index;
+  check.r5.u32 = refii::guest::Address(kEntityTypeName);
+  rex_lhLua_IsFableType(check, lua.base);
+  if (check.r3.u32 == 0) {
+    return 0u;
+  }
+  PPCContext data = lua.Work();
+  data.r4.s64 = index;
+  rex_lua_touserdata(data, lua.base);
+  const uint32_t body = data.r3.u32;
+  const uint32_t ref = body >= 0x10000u && body < 0xC0000000u ? refii::mods::LoadU32(lua.base, body) : 0u;
+  if (ref < 0x10000u || ref >= 0xC0000000u) {
+    return 0u;
+  }
+  PPCContext resolve = lua.ctx;
+  resolve.r3.u32 = ref;
+  rex_lhScriptEntityRef_Resolve(resolve, lua.base);
+  return resolve.r3.u32;
+}
+
 // Refii.handle(x): the handle for a game Entity userdata (any the shipped scripts or natives gave),
 // a number handed back as it is, or nil for a dead entity or anything else.
 REFII_LUA_NATIVE(NativeHandle) {
@@ -838,25 +872,20 @@ REFII_LUA_NATIVE(NativeHandle) {
     RESULTS(1);
     return;
   }
-  PPCContext check = lua.Work();
-  check.r4.s64 = 1;
-  check.r5.u32 = refii::guest::Address(kEntityTypeName);
-  rex_lhLua_IsFableType(check, lua.base);
-  uint32_t entity = 0;
-  if (check.r3.u32 != 0) {
-    PPCContext data = lua.Work();
-    data.r4.s64 = 1;
-    rex_lua_touserdata(data, lua.base);
-    const uint32_t body = data.r3.u32;
-    const uint32_t ref = body >= 0x10000u && body < 0xC0000000u ? refii::mods::LoadU32(lua.base, body) : 0u;
-    if (ref >= 0x10000u && ref < 0xC0000000u) {
-      PPCContext resolve = lua.ctx;
-      resolve.r3.u32 = ref;
-      rex_lhScriptEntityRef_Resolve(resolve, lua.base);
-      entity = resolve.r3.u32;
-    }
+  lua.PushHandle(EntityArgument(lua, 1));
+  RESULTS(1);
+}
+
+// Refii.player_for(e): 1 or 2, the player entity `e` deals with (refii_mod_player_for: a hero
+// itself, a player's dog its master, anything else the nearer hero); nil with no hero. `e` is a
+// handle or a game Entity, so the core co-op Lua and mods ask the one rule.
+REFII_LUA_NATIVE(NativePlayerFor) {
+  const int32_t player = refii_mod_player_for(&lua.ctx, lua.base, EntityArgument(lua, 1));
+  if (player == 1 || player == 2) {
+    lua.PushNumber(player);
+  } else {
+    lua.PushNil();
   }
-  lua.PushHandle(entity);
   RESULTS(1);
 }
 
@@ -1041,6 +1070,7 @@ Native g_natives[] = {
     {"event_replica", &NativeEventReplica, 0},
     {"split_screen", &NativeSplitScreen, 0},
     {"player_dog", &NativePlayerDog, 0},
+    {"player_for", &NativePlayerFor, 0},
     {"_set_partner_dog", &NativeSetPartnerDog, 0},
     {"_job_worker", &NativeJobWorker, 0},
     {"_estate_buyer", &NativeEstateBuyer, 0},
@@ -1060,6 +1090,7 @@ Native g_natives[] = {
     {"opinion", &NativeOpinion, 0},
     {"focus", &NativeFocus, 0},
     {"coop_mode", &NativeCoopMode, 0},
+    {"world_here", &NativeWorldHere, 0},
     {"uid", &NativeUid, 0},
     {"_chest_counted", &NativeChestCounted, 0},
     {"_chest_money", &NativeChestMoney, 0},

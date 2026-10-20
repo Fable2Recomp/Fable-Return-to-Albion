@@ -419,6 +419,71 @@ extern "C" int32_t refii_mod_coop_mode(uint8_t* base) {
   return game >= 0x10000u && game < 0xC0000000u && refii::mods::LoadU32(base, game + 0x11Cu) == 2u ? 1 : 2;
 }
 
+extern "C" int32_t refii_mod_world_here(uint8_t* base) { return refii_mod_coop_mode(base) == 3 ? 0 : 1; }
+
+// guest_tick_pump.cpp: a player's dog (players+196's for player one, the co-op record for two).
+extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
+
+// The player an entity deals with (core/refii_mod.h): its own if a hero, its master's if a dog,
+// else the nearer living hero with 3 m of hysteresis — the rule the core co-op Lua's
+// Refii.player_for states. The last answer per entity is kept for the hysteresis; the table is
+// small (the entities a mod asks about) and starts over when it grows past its bound.
+extern "C" int32_t refii_mod_player_for(PPCContext* ctx, uint8_t* base, uint32_t entity) {
+  if (base == nullptr) {
+    return 0;
+  }
+  const uint32_t one = refii_mod_player_hero(base, 1);
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  const bool one_alive = one != 0u && refii_mod_entity_alive(base, one) != 0;
+  const bool two_alive = two != 0u && refii_mod_entity_alive(base, two) != 0;
+  if (one == 0u && two == 0u) {
+    return 0;
+  }
+  if (const int32_t own = refii_mod_player_of(base, entity); own != 0) {
+    return own;
+  }
+  if (entity != 0u) {
+    if (entity == RefiiCoopPlayerDog(base, 1)) {
+      return 1;
+    }
+    if (entity == RefiiCoopPlayerDog(base, 2)) {
+      return 2;
+    }
+  }
+  if (!one_alive || !two_alive) {
+    // One hero standing is everyone's; with neither standing, the one that exists.
+    return one_alive ? 1 : (two_alive ? 2 : (one != 0u ? 1 : 2));
+  }
+  float at[3];
+  float p1[3];
+  float p2[3];
+  if (ctx == nullptr || entity == 0u || refii_mod_entity_position(ctx, base, entity, at) == 0 ||
+      refii_mod_entity_position(ctx, base, one, p1) == 0 || refii_mod_entity_position(ctx, base, two, p2) == 0) {
+    return 1;
+  }
+  const auto distance = [&at](const float* p) {
+    const float dx = p[0] - at[0];
+    const float dy = p[1] - at[1];
+    const float dz = p[2] - at[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+  };
+  const float d1 = distance(p1);
+  const float d2 = distance(p2);
+  constexpr float kHysteresis = 3.0f;
+  static std::unordered_map<uint32_t, int32_t> last;
+  if (last.size() > 4096u) {
+    last.clear();
+  }
+  auto found = last.find(entity);
+  int32_t answer = d2 < d1 ? 2 : 1;
+  if (found != last.end()) {
+    // Keep the last answer until the other hero is clearly nearer.
+    answer = found->second == 1 ? (d2 + kHysteresis < d1 ? 2 : 1) : (d1 + kHysteresis < d2 ? 1 : 2);
+  }
+  last[entity] = answer;
+  return answer;
+}
+
 // A villager's opinion of either hero (core/coop_opinion.cpp): player one's is the opinion
 // component's own current axes (+44, five floats); player two's the set kept for them, its current
 // axes at block+20 in guest byte order, or the villager's base attitudes (+24) before player two

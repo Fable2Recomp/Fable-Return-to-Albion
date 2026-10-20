@@ -751,6 +751,14 @@ public partial class ModdingGuideView : MarginContainer
             "A hook on a game function (tab 6) stays for a seam no event covers; it chains with other owners as before.\n\n" +
             "Full reference: docs/mod_api.md"));
 
+        page.AddChild(CreateSectionCard(
+            "🤝 Both players, always",
+            new Color(0.60f, 0.90f, 0.60f),
+            ModApi.PlayerAgnostic + "\n\n" +
+            "In practice: key per-player state by the event's player (or Refii.player_of / refii_mod_player_of), never by \"the hero\"; ask Refii.player_for(e) when an NPC's or a dog's \"hero\" matters; " +
+            "make a world effect where Refii.world_here() holds and a hero's own effect where Refii.player_here(p) holds; and skip world and body effects in a copy (Refii.event_replica()). " +
+            "The events marked RELAYED below reach the other machine as copies, so the machine that needs them (the host's AI, the joiner's looks) gets them without a mod sending anything."));
+
         foreach (ModApiEvent e in ModApi.Events)
         {
             page.AddChild(BuildEventCard(e));
@@ -766,6 +774,11 @@ public partial class ModdingGuideView : MarginContainer
             "Composed ahead of every mod's init.lua. Entities are HANDLES in Lua (small integers for an object this session; the game's Lua number is a 32-bit float): compare them, key tables by them, pass them to Refii.* calls. Hashes (definitions, text) are \"0x…\" strings. Assigning a writable field in a handler (e.damage, e.delta, e.amount, e.level, e.type, e.relation) changes what the game gets.",
             ModApi.LuaHelpers, EventsEntryKind.LuaHelper));
 
+        page.AddChild(BuildHelpersCard(
+            "🎮 Godot script helpers", new Color(0.55f, 0.80f, 1.0f),
+            "Engine.get_singleton(\"RefiiHost\") in a mod's godot/*.gd: one signal per event (its Lua name) and the calls below. Entities are HANDLES, as in Lua. A query answers on a later frame on reply(id, result); match it by id. hero(1) is the host's hero on both machines — this machine's hero is local_hero().",
+            ModApi.GodotHelpers, EventsEntryKind.GodotHelper));
+
         ApplyEventsFilter();
 
         page.AddChild(CreateSectionCard(
@@ -777,7 +790,7 @@ public partial class ModdingGuideView : MarginContainer
         return page;
     }
 
-    private enum EventsEntryKind { Event, NativeHelper, LuaHelper }
+    private enum EventsEntryKind { Event, NativeHelper, LuaHelper, GodotHelper }
 
     /// <summary>One filterable node of the events page: a card or a helper row, with the text the search matches.</summary>
     private sealed record EventsEntry(Control Node, EventsEntryKind Kind, string Haystack, bool Cancellable, bool Writable, bool Lua);
@@ -790,6 +803,7 @@ public partial class ModdingGuideView : MarginContainer
     private Label? _eventsCountLabel;
     private Control? _nativeHelpersCard;
     private Control? _luaHelpersCard;
+    private Control? _godotHelpersCard;
 
     /// <summary>The search box, the filter chips, the count line and the docs button; the rows wrap at narrow widths.</summary>
     private Control BuildEventsToolbar()
@@ -880,6 +894,11 @@ public partial class ModdingGuideView : MarginContainer
         body.Append("Native: refii::mods::").Append(e.Name).Append("Event — REFII_MOD_ON(").Append(e.Name).Append(", fn)\n");
         body.Append("Lua: Refii.on(\"").Append(e.LuaName).Append("\", function(e) ... end)\n");
         body.Append("Cancel: ").Append(e.Cancellable ? e.Cancel : "not cancellable").Append("\n");
+        if (e.IsRelayed)
+        {
+            body.Append("Co-op: ").Append(e.Relayed).Append("\n");
+        }
+
         body.Append("Seam: ").Append(e.Seam).Append("\n\nFields:\n");
         foreach (ModApiField f in e.Fields)
         {
@@ -905,7 +924,7 @@ public partial class ModdingGuideView : MarginContainer
 
         var haystack = new System.Text.StringBuilder();
         haystack.Append(e.Name).Append('\n').Append(e.LuaName).Append('\n').Append(e.Summary).Append('\n')
-            .Append(e.Seam).Append('\n').Append(e.Cancel).Append('\n');
+            .Append(e.Seam).Append('\n').Append(e.Cancel).Append('\n').Append(e.Relayed).Append('\n');
         foreach (ModApiField f in e.Fields)
         {
             haystack.Append(f.Name).Append('\n').Append(f.Type).Append('\n').Append(f.Meaning).Append('\n');
@@ -948,13 +967,17 @@ public partial class ModdingGuideView : MarginContainer
             () => string.Join("\n", helpers.Select(h => h.Signature)) + "\n"));
         vbox.AddChild(buttons);
 
-        if (kind == EventsEntryKind.LuaHelper)
+        switch (kind)
         {
-            _luaHelpersCard = card;
-        }
-        else
-        {
-            _nativeHelpersCard = card;
+            case EventsEntryKind.LuaHelper:
+                _luaHelpersCard = card;
+                break;
+            case EventsEntryKind.GodotHelper:
+                _godotHelpersCard = card;
+                break;
+            default:
+                _nativeHelpersCard = card;
+                break;
         }
 
         return card;
@@ -994,7 +1017,7 @@ public partial class ModdingGuideView : MarginContainer
         bool writable = _eventsWritableChip?.ButtonPressed ?? false;
         bool lua = _eventsLuaChip?.ButtonPressed ?? false;
 
-        int events = 0, eventsShown = 0, native = 0, nativeShown = 0, luaHelpers = 0, luaShown = 0;
+        int events = 0, eventsShown = 0, native = 0, nativeShown = 0, luaHelpers = 0, luaShown = 0, godot = 0, godotShown = 0;
         foreach (EventsEntry entry in _eventsEntries)
         {
             bool show = words.All(w => entry.Haystack.Contains(w, StringComparison.Ordinal));
@@ -1008,15 +1031,17 @@ public partial class ModdingGuideView : MarginContainer
             {
                 case EventsEntryKind.Event: events++; if (show) eventsShown++; break;
                 case EventsEntryKind.NativeHelper: native++; if (show) nativeShown++; break;
+                case EventsEntryKind.GodotHelper: godot++; if (show) godotShown++; break;
                 default: luaHelpers++; if (show) luaShown++; break;
             }
         }
 
         if (_nativeHelpersCard is not null) _nativeHelpersCard.Visible = nativeShown != 0;
         if (_luaHelpersCard is not null) _luaHelpersCard.Visible = luaShown != 0;
+        if (_godotHelpersCard is not null) _godotHelpersCard.Visible = godotShown != 0;
         if (_eventsCountLabel is not null)
         {
-            _eventsCountLabel.Text = $"{eventsShown} of {events} events  ·  {nativeShown} of {native} native helpers  ·  {luaShown} of {luaHelpers} Lua helpers";
+            _eventsCountLabel.Text = $"{eventsShown} of {events} events  ·  {nativeShown} of {native} native helpers  ·  {luaShown} of {luaHelpers} Lua helpers  ·  {godotShown} of {godot} Godot helpers";
         }
     }
 

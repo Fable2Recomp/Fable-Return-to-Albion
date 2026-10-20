@@ -19,6 +19,14 @@
 // The events (core/refii_mod_events.h): SpellCreated binds the armed pair; Hit, before delivery,
 // scales a weave-side spell's damage; HitLanded, after it, queues the partner on the victim.
 //
+// CO-OP: NO PLUMBING OF ITS OWN; THE MOD API'S RULES. Online, a cast runs on both machines and
+// the host's copy is the spell that deals the damage: Hit and HitLanded are decided on the host.
+// So partners are cast where refii_mod_world_here holds (the host, or the one machine alone and in
+// local co-op) — player two's included — and nowhere else. The API relays each HitLanded with a
+// hero in it to the joiner as a replica (refii_mod_event_replica), so the joiner's look follows
+// the base's real victims too: a replica only notes its victim, it never casts. Both players are
+// the same code: every record is keyed by the caster's player (refii_mod_player_of).
+//
 // Still hooked by name, as no event covers them (TU1 / disc, named in versions/*/refii_config.toml):
 //   rex_VortexComponent_Init / _Shutdown: the live vortex. The registry lookup never returns a
 //     Vortex: the vortex spell object marks itself finished in its own post-init (0x828b20b4
@@ -653,6 +661,11 @@ void OnSpellCreated(refii::mods::SpellCreatedEvent& e) {
     // The swords are there: the factory ran the class's Start (see the header comment).
     const uint32_t at = e.targeted ? kSpellBladesControllerTargeted : kSpellBladesControllerArea;
     ReadSwords(e.base, w, refii::mods::LoadU32(e.base, e.spell + at));
+  } else if ((w.base == kLightning || w.base == kForcePush || w.base == kChaos) && e.targeted && e.target != 0 &&
+             refii_mod_world_here(e.base) == 0) {
+    // Where hits are not decided (an online joiner) the victims arrive as the host's relayed hits,
+    // a network moment later: until then the look rides on the target the cast states.
+    NoteVictim(w, e.target);
   }
   REXLOG_INFO("Spell Weaving: weave serial {} = {} carrying {} at power {} for player {} (anchor {:#x}, vortex {:#x})",
               w.serial, w.base, w.overlay, w.level + 1, player + 1, w.anchor, w.vortex);
@@ -722,11 +735,35 @@ void OnHit(refii::mods::HitEvent& e) {
 }
 REFII_MOD_ON(Hit, OnHit);
 
+/// The weave a hit relayed from the host belongs to: by serial when this machine's copy of the cast
+/// carries the host's number, else the newest weave of the attacker's player whose base is the
+/// hit's spell. Null when none is out.
+Weave* WeaveForReplica(const refii::mods::HitLandedEvent& e) {
+  if (Weave* w = WeaveBySerial(e.spell_serial)) {
+    return w;
+  }
+  const int player = Index(e.attacker_player);
+  Weave* newest = nullptr;
+  for (Weave& w : g_weaves) {
+    if (w.serial != 0 && w.player == player && w.base == e.spell_type && (newest == nullptr || w.age < newest->age)) {
+      newest = &w;
+    }
+  }
+  return newest;
+}
+
 /// The hit landed first, as the game delivers it; the partner's cast follows it — the partner
 /// of the WEAVE whose serial the hit carries.
 void OnHitLanded(refii::mods::HitLandedEvent& e) {
   if (g_applying || Knob("spell_weaving.woven", 1.0f) == 0.0f || e.spell_type < 0 || IsWeaveSerial(e.spell_serial)) {
     return;  // a weave-side spell never casts a partner of its own
+  }
+  if (refii_mod_event_replica() != 0) {
+    // The host's hit, relayed (an online joiner): the look follows its victim; the host casts.
+    if (Weave* w = WeaveForReplica(e); w != nullptr && e.spell_type == w->base) {
+      NoteVictim(*w, e.victim);
+    }
+    return;
   }
   Weave* w = WeaveBySerial(e.spell_serial);
   if (w == nullptr) {
@@ -824,13 +861,16 @@ REX_EXTERN(rex_TargetedFireball_Impact) {
 
   // The detonation, once: the exploded byte went up inside the call. Its blast delivered its
   // hits before returning, and each victim's hit queued the partner on that victim above; a
-  // detonation that queued nothing struck nothing alive, and the partner goes to the point.
+  // detonation that queued nothing struck nothing alive, and the partner goes to the point — on
+  // the machine that runs the world only: an online joiner's blast delivers no hits, and the
+  // host's copy queues for it.
   if (w == nullptr || refii::mods::LoadU8(base, spell + kSpellExploded) == 0) {
     return;
   }
   // The look holds on the blast for its fade; the projectile is gone.
   w->done_at = g_clock;
-  if (g_queued != queued || g_applying || Knob("spell_weaving.woven", 1.0f) == 0.0f || w->overlay < 0) {
+  if (g_queued != queued || g_applying || Knob("spell_weaving.woven", 1.0f) == 0.0f || w->overlay < 0 ||
+      refii_mod_world_here(base) == 0) {
     return;
   }
   int level = static_cast<int32_t>(refii::mods::LoadU32(base, spell + kSpellLevel));

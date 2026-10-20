@@ -247,6 +247,18 @@ and partners when they go home. Saves from before kept player one's level in the
 (`RefiiModSave.SpellWeaving`); it is taken from there once.
 The HUD glyph follows each player's charge meter, in their own half on split screen.
 
+Online, the mod has no co-op plumbing of its own; it follows the mod API's rules. A cast runs on
+both machines and the host's copy is the spell that deals the damage: hits are decided on the
+host. So partners are cast only where the world runs (`refii_mod_world_here`: the host, or the one
+machine alone and in local co-op) — player two's included — one per victim, or one at the impact
+point for a fireball that struck nothing alive; an online joiner casts none, which would otherwise
+have cast a second "struck nothing alive" partner for every fireball whose blast it saw land no
+hits. The look follows the real victims on both machines: the API relays every hit a hero deals
+or takes from the host to the joiner as a replica (`refii_mod_event_replica`), and a replica only
+notes its victim on the weave of the caster's player whose base it is — it never casts. A targeted
+Lightning, Force Push or Chaos rides on the target the cast states until those hits arrive; an
+untargeted one stands at the caster for that network moment, then on its victims.
+
 ## Next
 
 - Tune the HUD glyph's place beside the charge meter in a run (`ui/hud.json` offset).

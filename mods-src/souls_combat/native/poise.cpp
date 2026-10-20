@@ -6,6 +6,14 @@
 // and the victim's health. The bus keeps the game's early-outs (a blocked or parried hit, a
 // ranged hit, a knockdown request, a killing blow — death's fall must play), so this only ever
 // sees a hit the victim would have flinched at. Cancelling absorbs it: no animation, no state.
+//
+// Online, the game runs the response on both machines for a hit on or by player two; the run on
+// the machine not authoritative for the victim is the copy (refii_mod_event_replica). The host
+// runs every hit, so its pools are whole: it decides every victim but player two, and keeps
+// player two's pool from the same hits the joiner sees, so its copy agrees with the joiner. The
+// joiner runs only hits on or by player two: it decides player two's own pool, and its copy of a
+// hit by player two on anyone else (whose pool there would miss player one's hits) is left to the
+// game's own predicted response, the pool untouched.
 
 #include "core/refii_mod.h"
 #include "souls_combat.h"
@@ -53,7 +61,7 @@ Poise& PoiseOf(uint32_t entity) {
 }
 
 void OnHitResponse(refii::mods::HitResponseEvent& e) {
-  if (e.max_health <= 0.0f) {
+  if (e.max_health <= 0.0f || (refii_mod_event_replica() != 0 && refii_mod_coop_mode(e.base) == 3)) {
     return;
   }
   Poise& poise = PoiseOf(e.victim);

@@ -611,6 +611,26 @@ uint64_t g_property_estate_uid = 0u;
 
 void RequestPropertyEstate(uint64_t uid) { g_property_estate_wanted.store(uid); }
 
+namespace {
+std::atomic<uint32_t> g_ui_data_generation{0};
+std::atomic<bool> g_ui_data_dirty{false};
+}  // namespace
+
+extern "C" void refii_bridge_ui_data_changed(void) {
+  g_ui_data_dirty.store(true, std::memory_order_release);
+  g_ui_data_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+extern "C" int32_t refii_bridge_ui_data_take_dirty(void) {
+  return g_ui_data_dirty.exchange(false, std::memory_order_acq_rel) ? 1 : 0;
+}
+
+extern "C" void refii_bridge_ui_data_published(void) {
+  g_ui_data_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+extern "C" uint32_t refii_bridge_ui_data_generation(void) { return g_ui_data_generation.load(std::memory_order_relaxed); }
+
 extern "C" uint64_t refii_bridge_requested_property_estate(void) { return g_property_estate_wanted.load(); }
 
 extern "C" void refii_bridge_publish_property_estate(uint64_t uid, const void* estate) {
