@@ -6341,6 +6341,29 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// The host's dynamic weather, for this joiner to show (GameUiCoopWeather).
+			if (TakeWeatherMessage(message))
+			{
+				continue;
+			}
+
+			// The host's notice about one of this joiner's buildings (GameUiPropertyTips).
+			if (TakePropertyNoticeMessage(message))
+			{
+				continue;
+			}
+
+			// The joiner's Repair All in this host's world (Engine_UiPropertySource).
+			if (message == Engine_UiPropertySource.RepairAllMessage)
+			{
+				if (!CoopSession.IsClient)
+				{
+					HostBridge.PostFrontEndAction("Property:repairall:2");
+				}
+
+				continue;
+			}
+
 			// The joiner's repair of one of its properties in this host's world (Engine_UiPropertySource).
 			if (message.StartsWith(Engine_UiPropertySource.RepairMessage, System.StringComparison.Ordinal))
 			{
@@ -7319,6 +7342,8 @@ public partial class GameUi : Node
 		DriveCoopNotices(delta);
 		DriveCoopConsent(delta);
 		DriveCoopEstate(delta);
+		DriveCoopWeather(delta);
+		DrivePropertyTips(delta);
 		if (guestFrame) DriveOwnedScreenProvider();
 		if (guestFrame) _books.Drive(_drawn, IsRevealed);
 		if (guestFrame) _spells.Follow(IsRevealed);

@@ -164,23 +164,6 @@ public static class Engine_DynamicSky
         }
     }
 
-    public static DynamicWeatherRule CurrentRule { get; private set; } = DynamicWeatherRule.Random;
-
-    public static DynamicWeatherPreset? CurrentPick { get; set; }
-
-    public static void SetLevel(LevelEntry level)
-    {
-        DynamicWeatherRule rule = Engine_DynamicWeatherRules.Resolve(level);
-        if (rule != CurrentRule || rule.Mode != DynamicWeatherMode.Random)
-        {
-            CurrentPick = null;
-        }
-
-        CurrentRule = rule;
-        GD.Print($"[dynamic-sky] {level}: scenario='{level.Scenario}' weather rule={rule.Mode} " +
-            $"preset={rule.Preset} ({rule.Reason})");
-    }
-
     public static readonly bool HideGameClouds =
         Refii.Core.Engine_Switches.Flag("dynamic_sky_hide_game_clouds", true);
 
@@ -303,22 +286,10 @@ public static class Engine_DynamicSky
         Configure(material, cubemapFableDome: true);
         ApplyFrame(material, frame, theme);
 
-        DynamicWeatherState state = CurrentRule.Mode switch
-        {
-            DynamicWeatherMode.Fixed => DynamicWeatherState.Of(CurrentRule.Preset),
-            DynamicWeatherMode.None => DynamicWeatherState.Of(DynamicWeatherPreset.Clear),
-            DynamicWeatherMode.Random when CurrentPick is { } pick => DynamicWeatherState.Of(pick),
-            _ => DynamicWeatherState.FromTheme(weather),
-        };
-        if (TryParsePreset(WeatherSwitch, out DynamicWeatherPreset forced) &&
-            forced != DynamicWeatherPreset.Theme)
-        {
-            state = DynamicWeatherState.Of(forced);
-        }
-
+        DynamicWeatherState state = Engine_DynamicWeatherChoice.StateOf(Engine_DynamicWeatherChoice.Token, weather);
         ApplyWeather(material, state);
         ApplyClock(0f, 0f, Vector3.Back);
-        GD.Print($"[dynamic-sky] on: weather={WeatherSwitch} coverage={state.Coverage:0.00} " +
+        GD.Print($"[dynamic-sky] on: weather={Engine_DynamicWeatherChoice.Token} coverage={state.Coverage:0.00} " +
             $"overcast={state.Overcast:0.00} storm={state.Storm:0.00} snow={state.Snow:0.00} " +
             $"hide_clouds={HideGameClouds} hide_celestial={HideGameCelestial}");
     }
@@ -501,10 +472,8 @@ public sealed class Engine_DynamicSkyDriver
     private Vector3 _strikeDir = new(0f, 0.3f, 1f);
     private readonly Random _random = new();
 
-    private DynamicWeatherPreset _forced = DynamicWeatherPreset.Theme;
-    private bool _forcedParsed;
-    private float _untilChange = -1f;
     private int _switchGeneration = -1;
+    private int _choiceGeneration = -1;
     private WeatherTheme? _lastTheme;
 
     public DynamicWeatherState Weather => _now;
@@ -528,8 +497,6 @@ public sealed class Engine_DynamicSkyDriver
 
     public void SetWeather(DynamicWeatherPreset preset, float seconds)
     {
-        _forced = preset;
-        _forcedParsed = true;
         if (preset != DynamicWeatherPreset.Theme)
         {
             SetWeather(DynamicWeatherState.Of(preset), seconds);
@@ -540,94 +507,13 @@ public sealed class Engine_DynamicSkyDriver
         }
     }
 
+    /// <summary>The level's sky: the decided weather (<see cref="Engine_DynamicWeatherChoice"/>) over the game's theme.</summary>
     public void FollowTheme(WeatherTheme theme)
     {
         _lastTheme = theme;
-        if (!_forcedParsed)
-        {
-            _forcedParsed = true;
-            if (Engine_DynamicSky.TryParsePreset(Engine_DynamicSky.WeatherSwitch, out var preset))
-            {
-                _forced = preset;
-            }
-        }
-
-        if (_forced != DynamicWeatherPreset.Theme)
-        {
-            Retarget(DynamicWeatherState.Of(_forced));
-            return;
-        }
-
-        DynamicWeatherRule rule = Engine_DynamicSky.CurrentRule;
-        switch (rule.Mode)
-        {
-            case DynamicWeatherMode.Fixed:
-                Retarget(DynamicWeatherState.Of(rule.Preset));
-                break;
-            case DynamicWeatherMode.None:
-                Retarget(DynamicWeatherState.Of(DynamicWeatherPreset.Clear) with
-                {
-                    Coverage = 0.1f, Cirrus = 0.1f,
-                });
-                break;
-            case DynamicWeatherMode.Random:
-                if (Engine_DynamicSky.CurrentPick is not { } pick)
-                {
-                    pick = Engine_DynamicWeatherRules.Roll(_random);
-                    Engine_DynamicSky.CurrentPick = pick;
-                    _untilChange = NextChangeSeconds();
-                    GD.Print($"[dynamic-sky] rolled {pick}");
-                }
-
-                Retarget(DynamicWeatherState.Of(pick));
-                break;
-            default:
-                Retarget(DynamicWeatherState.FromTheme(theme));
-                break;
-        }
-    }
-
-    private void Retarget(in DynamicWeatherState target)
-    {
-        SetWeather(target, Engine_DynamicSky.BlendSeconds);
-    }
-
-    private float NextChangeSeconds()
-    {
-        float minutes = MathF.Max(Engine_DynamicWeatherRules.ChangeMinutes, 0.1f);
-        return minutes * 60f * (0.6f + ((float)_random.NextDouble() * 0.8f));
-    }
-
-    private void TickRandomDrift(float delta)
-    {
-        if (_forced != DynamicWeatherPreset.Theme ||
-            Engine_DynamicSky.CurrentRule.Mode != DynamicWeatherMode.Random ||
-            Engine_DynamicSky.CurrentPick is not { } current)
-        {
-            return;
-        }
-
-        if (_untilChange < 0f)
-        {
-            _untilChange = NextChangeSeconds();
-        }
-
-        _untilChange -= delta;
-        if (_untilChange > 0f)
-        {
-            return;
-        }
-
-        _untilChange = NextChangeSeconds();
-        DynamicWeatherPreset next = Engine_DynamicWeatherRules.Drift(current, _random);
-        if (next == current)
-        {
-            return;
-        }
-
-        Engine_DynamicSky.CurrentPick = next;
-        GD.Print($"[dynamic-sky] weather drifts {current} -> {next}");
-        SetWeather(DynamicWeatherState.Of(next), Engine_DynamicSky.BlendSeconds * 3f);
+        _choiceGeneration = Engine_DynamicWeatherChoice.Generation;
+        SetWeather(Engine_DynamicWeatherChoice.StateOf(Engine_DynamicWeatherChoice.Token, theme),
+            Engine_DynamicSky.BlendSeconds);
     }
 
     private Vector2 _windDir = new(1f, 0.25f);
@@ -680,20 +566,21 @@ public sealed class Engine_DynamicSkyDriver
         {
             _switchGeneration = generation;
             Engine_DynamicSky.ApplyCloudChoice(material, volumetricClouds);
-            _forcedParsed = false;
-            if (_lastTheme is { } theme)
+
+            // A driver that follows no level (the options preview) shows this player's own override.
+            if (_lastTheme is null &&
+                Engine_DynamicSky.TryParsePreset(Engine_DynamicSky.WeatherSwitch, out var forced) &&
+                forced != DynamicWeatherPreset.Theme)
             {
-                FollowTheme(theme);
+                SetWeather(DynamicWeatherState.Of(forced), Engine_DynamicSky.BlendSeconds);
             }
-            else if (Engine_DynamicSky.TryParsePreset(Engine_DynamicSky.WeatherSwitch, out var forced))
-            {
-                _forcedParsed = true;
-                _forced = forced;
-                if (forced != DynamicWeatherPreset.Theme)
-                {
-                    SetWeather(DynamicWeatherState.Of(forced), Engine_DynamicSky.BlendSeconds);
-                }
-            }
+        }
+
+        if (_lastTheme is { } theme && Engine_DynamicWeatherChoice.Generation != _choiceGeneration)
+        {
+            _choiceGeneration = Engine_DynamicWeatherChoice.Generation;
+            SetWeather(Engine_DynamicWeatherChoice.StateOf(Engine_DynamicWeatherChoice.Token, theme),
+                Engine_DynamicWeatherChoice.BlendSeconds);
         }
 
         DynamicWeatherState previous = _now;
@@ -729,7 +616,6 @@ public sealed class Engine_DynamicSkyDriver
             }
         }
 
-        TickRandomDrift(delta);
         TickLightning(delta);
         bool surfaces = surfaceWeather ?? Engine_DynamicSurfaceWeather.Enabled;
         _surface.Advance(delta, _now, _day, surfaces);

@@ -49,9 +49,9 @@ public static class Engine_UiQuestPages
 	private const string JobAButtonText = "JobsPage.Contents.AButton.ButtonText";
 
 	// The sales page — a title and one blob, like the quest page.
-	private const string SaleTitle = "SalesPage.Contents.PageTitle";
+	public const string SaleTitle = "SalesPage.Contents.PageTitle";
 
-	private const string SaleBody = "SalesPage.Contents.Description";
+	public const string SaleBody = "SalesPage.Contents.Description";
 
 	private const string DaysLeftTag = "GUI_SCREEN_WORLD_MAP_SALES_NUMBER_OF_DAYS_LEFT";
 

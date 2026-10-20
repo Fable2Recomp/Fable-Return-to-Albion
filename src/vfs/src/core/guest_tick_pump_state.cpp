@@ -602,6 +602,34 @@ RealEstate RealEstateSnapshot() {
   return g_estate;
 }
 
+namespace {
+std::atomic<uint64_t> g_property_estate_wanted{0};
+std::mutex g_property_estate_mutex;
+RealEstate g_property_estate;
+uint64_t g_property_estate_uid = 0u;
+}  // namespace
+
+void RequestPropertyEstate(uint64_t uid) { g_property_estate_wanted.store(uid); }
+
+extern "C" uint64_t refii_bridge_requested_property_estate(void) { return g_property_estate_wanted.load(); }
+
+extern "C" void refii_bridge_publish_property_estate(uint64_t uid, const void* estate) {
+  if (estate == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_property_estate_mutex);
+  g_property_estate = *static_cast<const RealEstate*>(estate);
+  g_property_estate_uid = uid;
+}
+
+RealEstate PropertyEstateSnapshot(uint64_t* uid) {
+  std::lock_guard<std::mutex> lock(g_property_estate_mutex);
+  if (uid != nullptr) {
+    *uid = g_property_estate_uid;
+  }
+  return g_property_estate;
+}
+
 extern "C" void refii_bridge_publish_quests(const void* entries, uint32_t count) {
   const QuestEntry* typed = static_cast<const QuestEntry*>(entries);
   std::lock_guard<std::mutex> lock(g_quest_mutex);

@@ -503,6 +503,14 @@ public static class Engine_UiPageProviders
 				Refii.Host.HostBridge.SetWorldMapRegion((uint)region);
 			}
 
+			// The property under the cursor, for its sign's numbers (0 when the row is not one).
+			ulong property = Engine_UiPropertySource.UidOf(page.Row?.Name);
+			if (property != _propertyAsked)
+			{
+				_propertyAsked = property;
+				Refii.Host.HostBridge.RequestPropertyEstate(property);
+			}
+
 			// Change-keyed: which row Prepare saw and what it asked for. A blank region page
 			// cannot say whether the request fired; this can.
 			string saw = page.Row is { } row
@@ -516,6 +524,8 @@ public static class Engine_UiPageProviders
 		}
 
 		private string _preparedFor = string.Empty;
+
+		private ulong _propertyAsked;
 	}
 
 	private sealed class OptionsProvider : Engine_UiPageProvider

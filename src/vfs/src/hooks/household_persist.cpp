@@ -489,6 +489,30 @@ struct Household {
   int32_t partnership = -1;  // the last seen, for the mod API's Partnership event
 };
 
+/// A hero's homes (comp69 records with the home flag +15); `marital` the marital home (+12) first.
+uint64_t HomeOf(uint8_t* base, uint32_t hero, int32_t* count) {
+  const uint32_t props = hero != 0u ? refii_mod_component(base, hero, kProperties) : 0u;
+  const uint32_t head = props != 0u ? LoadU32(base, props + 28u) : 0u;
+  uint64_t first = 0u;
+  uint64_t marital = 0u;
+  int32_t homes = 0;
+  uint32_t node = Heap(head) ? LoadU32(base, head) : 0u;
+  for (uint32_t n = 0; Heap(node) && node != head && n < 256u; ++n, node = LoadU32(base, node)) {
+    const uint32_t record = LoadU32(base, node + 8u);
+    if (!Heap(record) || base[record + 15u] == 0u) {
+      continue;
+    }
+    const uint64_t uid = (static_cast<uint64_t>(LoadU32(base, record)) << 32) | LoadU32(base, record + 4u);
+    ++homes;
+    first = first != 0u ? first : uid;
+    marital = marital != 0u || base[record + 12u] == 0u ? marital : uid;
+  }
+  if (count != nullptr) {
+    *count = homes;
+  }
+  return marital != 0u ? marital : first;
+}
+
 /// PLAYER TWO'S FOLLOWERS, as the host's world has them, for the online joiner: the guest never
 /// sends who follows whom, and the villagers' AI is the host's, so the joiner's hero two lists
 /// nobody — and its bed (Follow.IsBeingFollowedBySexPartner), estate screen (the follow scans)
@@ -639,8 +663,27 @@ void DriveHouseholds(PPCContext& ctx, uint8_t* base, float seconds) {
     g_household.followers_in = 1.0;
     PublishFollowers(ctx, base, two);
     // Fable 3's partnership between the two heroes, raised to mods when it changes (the host's).
+    // FABLE 3'S MARRIAGE NEEDS A HOME: each hero's home count, a session value of the world, so the
+    // proposer's machine can tell (an online joiner has no copy of the host hero's properties).
+    const uint32_t one = refii_mod_player_hero(base, 1);
+    int32_t homes_one = 0;
+    int32_t homes_two = 0;
+    const uint64_t home_one = HomeOf(base, one, &homes_one);
+    const uint64_t home_two = HomeOf(base, two, &homes_two);
+    refii_bridge_player_write(1, "refii.homes.1", std::strlen("refii.homes.1"), static_cast<float>(homes_one), 0, 0);
+    refii_bridge_player_write(1, "refii.homes.2", std::strlen("refii.homes.2"), static_cast<float>(homes_two), 0, 0);
     const int32_t now = refii_bridge_partnership();
     if (g_household.partnership >= 0 && now != g_household.partnership) {
+      // Married: the marital home is theirs together (Fable 3: the host chooses it, co-owned with the
+      // partner) — hero one's marital home, else their first home, else player two's.
+      if (now == 2) {
+        const bool ones = home_one != 0u;
+        const uint64_t home = ones ? home_one : home_two;
+        const uint64_t partner = refii_bridge_hero_id(ones ? 2 : 1);
+        if (home != 0u && partner != 0u) {
+          refii_bridge_coowner_set(home, partner);
+        }
+      }
       refii_mod_raise_partnership(&ctx, base, now, g_household.partnership);
     }
     g_household.partnership = now;

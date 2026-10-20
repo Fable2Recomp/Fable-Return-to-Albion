@@ -331,6 +331,9 @@ void refii_bridge_publish_world_map_region(const void* region);
 // contract gives at the top of this file.
 void refii_bridge_publish_family(const void* members, uint32_t count);
 void refii_bridge_publish_real_estate(const void* estate);
+/// The world map's property row: the UID the host wants sampled, and the page's numbers for it.
+uint64_t refii_bridge_requested_property_estate(void);
+void refii_bridge_publish_property_estate(uint64_t uid, const void* estate);
 uint32_t refii_bridge_requested_quest_travel(void);
 void refii_bridge_publish_quest_travel(const void* travel);
 uint32_t refii_bridge_requested_shop_price(int32_t* sell);

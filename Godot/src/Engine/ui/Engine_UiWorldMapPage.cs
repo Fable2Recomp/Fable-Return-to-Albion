@@ -171,6 +171,13 @@ public static class Engine_UiWorldMapPage
 			active[shown] = true;
 		}
 
+		// The sales page's A-button travels to a sale; a Properties row's A is its repair, so the
+		// travel prompt stands only for a sale.
+		if (ReferenceEquals(shown, SalesPage))
+		{
+			active[SaleAButton] = row.EventType == SalesEventType;
+		}
+
 		// The job page's A-button is shown or hidden outright by `sub_82426328`, and two of
 		// `sub_824708D8`'s branches hide it. Stated only for the job page — naming it anywhere
 		// else would gate an element that page does not own.
@@ -208,6 +215,8 @@ public static class Engine_UiWorldMapPage
 
 	private const string SalesPage = "Foreground.Book.Pages.SalesPage";
 
+	private const string SaleAButton = "SalesPage.Contents.AButton";
+
 	private const string FamilyPage = "Foreground.Book.Pages.FamilyPage";
 
 	/// <summary>`Page1` — the region readout the `Text.*Amount` fields are written into.</summary>
@@ -228,6 +237,9 @@ public static class Engine_UiWorldMapPage
 		"Quests" => "Foreground.Book.Pages.QuestsPage",
 		"Jobs" => "Foreground.Book.Pages.JobsPage",
 		"Sales" => "Foreground.Book.Pages.SalesPage",
+
+		// Our Properties category takes the sales page's title-and-text shape (Engine_UiPropertySource.FillPage).
+		"Properties" => "Foreground.Book.Pages.SalesPage",
 		"Family" or "Families" => "Foreground.Book.Pages.FamilyPage",
 		_ => null,
 	};
@@ -328,6 +340,12 @@ public static class Engine_UiWorldMapPage
 			Engine_UiQuestPages.Fill(
 				values, definition, quest.EventType == JobEventType,
 				quest.StatedLabel ?? quest.Name, strings);
+		}
+
+		// A PROPERTIES ROW — a property's sign, or what a partnership row does.
+		if (row is { } property)
+		{
+			Engine_UiPropertySource.FillPage(values, property.Name, strings);
 		}
 
 		// THE FAMILY PAGE indexes by ORDINAL — `sub_829B04E0` takes `52 * n + begin` straight

@@ -202,6 +202,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         AnimateSky((float)delta);
         Engine_WeatherShelter.Tick((float)delta);
         FollowSkyChoice();
+        Engine_DynamicWeatherChoice.Tick((float)delta);
         if (Engine_DynamicSky.Enabled &&
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {

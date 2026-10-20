@@ -64,7 +64,7 @@ public static class Engine_SkyEnvironment
 
         Engine_EnvironmentTheme.TryExtractWeather(chain, out weather);
 
-        Engine_DynamicSky.SetLevel(level);
+        Engine_DynamicWeatherChoice.SetLevel(level);
         if (Engine_DynamicSky.Enabled)
         {
             Engine_DynamicSky.EnsureGlobals();

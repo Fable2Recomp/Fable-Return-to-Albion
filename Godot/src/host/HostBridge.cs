@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 207;
+	public const int ExpectedAbiVersion = 209;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -2652,11 +2652,14 @@ public static class HostBridge
 	/// <summary>
 	/// One of a player's properties: the building's UID, its BuildingName tag, flags (bit 0 marital
 	/// home, 1 rented out, 2 dungeon, 3 home, 4 tenants, 5 workers, 6 shared with the holder's
-	/// partner), rent per drop, value, condition 0..1 and a full repair's bill.
+	/// partner), rent per drop, value, condition 0..1, a full repair's bill and what it was bought for.
 	/// </summary>
 	public readonly record struct Property(
-		ulong Uid, string NameTag, uint Flags, int Income, int Value, float Condition, int RepairCost)
+		ulong Uid, string NameTag, uint Flags, int Income, int Value, float Condition, int RepairCost,
+		int BoughtFor = 0)
 	{
+		public bool IsMarital => (Flags & 1u) != 0u;
+		public bool HasWorkers => (Flags & 32u) != 0u;
 		public bool IsHome => (Flags & 8u) != 0u;
 		public bool IsRented => (Flags & 2u) != 0u;
 		public bool HasTenants => (Flags & 16u) != 0u;
@@ -2692,14 +2695,15 @@ public static class HostBridge
 		foreach (string line in Encoding.UTF8.GetString(_properties, 0, (int)written).Split('\n'))
 		{
 			string[] p = line.Split('\t');
-			if (p.Length == 7 &&
+			if (p.Length >= 7 &&
 				ulong.TryParse(p[0], System.Globalization.NumberStyles.HexNumber, null, out ulong uid) &&
 				uint.TryParse(p[2], out uint flags) && int.TryParse(p[3], out int income) &&
 				int.TryParse(p[4], out int value) &&
 				float.TryParse(p[5], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float condition) &&
 				int.TryParse(p[6], out int cost))
 			{
-				list.Add(new Property(uid, p[1], flags, income, value, condition, cost));
+				int bought = p.Length >= 8 && int.TryParse(p[7], out int paid) ? paid : 0;
+				list.Add(new Property(uid, p[1], flags, income, value, condition, cost, bought));
 			}
 		}
 
@@ -2770,6 +2774,72 @@ public static class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			return null;
+		}
+	}
+
+	/// <summary>A player's store value (the same on both co-op machines), or null when unset.</summary>
+	public static float? GetPlayerValue(int player, string key)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		try
+		{
+			return RefiiHostGetPlayerValue(player, key, out float value) != 0 ? value : null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>Writes a SAVED value into a player's store (kept with that player's save).</summary>
+	public static bool SetPlayerValue(int player, string key, float value)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostSetPlayerValue(player, key, value) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>The game's FNV-1 of a name: a GDB record's hash (refii_mod_fnv1).</summary>
+	public static uint Fnv1(string name)
+	{
+		uint hash = 0x811C9DC5u;
+		foreach (byte c in Encoding.UTF8.GetBytes(name))
+		{
+			hash = unchecked(hash * 0x01000193u) ^ c;
+		}
+
+		return hash;
+	}
+
+	/// <summary>How many of an item (by its GDB record name) player <paramref name="player"/>'s hero carries; -1 without the hero.</summary>
+	public static int GetItemCount(int player, string record)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return -1;
+		}
+
+		try
+		{
+			return RefiiHostGetItemCount(player, Fnv1(record));
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return -1;
 		}
 	}
 
@@ -6579,6 +6649,53 @@ public static class HostBridge
 			: 5;
 	}
 
+	/// <summary>Names the property under the world map's cursor (0 for none); the pump samples it.</summary>
+	public static void RequestPropertyEstate(ulong uid)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostRequestPropertyEstate(uid);
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>
+	/// Screen 28's numbers for the property <paramref name="uid"/>, sampled while its building's
+	/// region is loaded; not <see cref="RealEstate.Known"/> otherwise, or before the pump answers.
+	/// </summary>
+	public static RealEstate GetPropertyEstate(ulong uid)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp || uid == 0ul)
+		{
+			return default;
+		}
+
+		uint[] words = new uint[15];
+		var occupant = new byte[128];
+		uint known;
+		try
+		{
+			known = RefiiHostGetPropertyEstate(uid, words, (uint)words.Length, occupant, (uint)occupant.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		return known == 0u ? default : new RealEstate(
+			true, words[0], words[1], words[2] != 0u, words[3] != 0u,
+			(int)words[4], (int)words[5], (int)words[6], (int)words[7], (int)words[8],
+			(int)words[9], (int)words[10], (int)words[11], (int)words[12], words[13],
+			Utf8(occupant), words[14]);
+	}
+
 	/// <summary>Reads screen 28's building. See <see cref="RealEstate"/>.</summary>
 	public static RealEstate GetRealEstate()
 	{
@@ -8737,6 +8854,12 @@ public static class HostBridge
 	private static extern int RefiiHostGetPartnership(out int kind);
 
 	[DllImport(Library)]
+	private static extern int RefiiHostGetItemCount(int player, uint definition);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetPlayerValue(int player, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, out float value);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostTakeEstateIntent(byte[] outBuffer, uint capacity);
 
 	[DllImport(Library)]
@@ -9576,6 +9699,17 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetRealEstate(
 		uint[] words, uint wordCapacity, byte[] occupant, uint occupantCapacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostRequestPropertyEstate(ulong uid);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetPropertyEstate(
+		ulong uid, uint[] words, uint wordCapacity, byte[] occupant, uint occupantCapacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostSetPlayerValue(
+		int player, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, float value);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetOptions(

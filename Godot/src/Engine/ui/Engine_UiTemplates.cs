@@ -2513,18 +2513,21 @@ public static class Engine_UiTemplates
 			// stick) drives it.
 			// The Quests (`sub_829AF5D0`, `MaskQuests`), Family (`sub_829B03F0`, `MaskFamily`)
 			// and Legend (`sub_829ABF30`, automatic, `MaskPage3`) pages scroll too. Sales
-			// registers `MaskPage2` over a Description no row names: nothing to move.
+			// registers `MaskPage2` over its Description with its own bar — a property's sign
+			// runs longer than the page (Engine_UiPropertySource.FillPage).
 			ScrollContent =
 				"Foreground.Book.Pages.Page1.Contents.Text|" +
 				"Foreground.Book.Pages.QuestsPage.Contents.Description|" +
 				"Foreground.Book.Pages.FamilyPage.Contents.Group|" +
-				"Foreground.Book.Pages.Page2.Contents.Legend",
-			ScrollMask = "MaskPage2|MaskQuests|MaskFamily|MaskPage3",
+				"Foreground.Book.Pages.Page2.Contents.Legend|" +
+				"Foreground.Book.Pages.SalesPage.Contents.Description",
+			ScrollMask = "MaskPage2|MaskQuests|MaskFamily|MaskPage3|MaskPage2",
 			ScrollBar =
 				"Foreground.Book.Pages.Page1.Contents.Scrollbar|" +
 				"Foreground.Book.Pages.QuestsPage.Contents.Scrollbar|" +
 				"Foreground.Book.Pages.FamilyPage.Contents.Scrollbar|" +
-				"Foreground.Book.Pages.Page2.Contents.Scrollbar",
+				"Foreground.Book.Pages.Page2.Contents.Scrollbar|" +
+				"Foreground.Book.Pages.SalesPage.Contents.Scrollbar",
 
 			// And it reflows — `sub_829AB8A8` measures the wrapped merchants list and moves
 			// every row below it by the overflow, silver keys taking the gargoyle row's place

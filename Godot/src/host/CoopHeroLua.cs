@@ -162,8 +162,13 @@ public static class CoopHeroLua
 			if behaviour == nil or partner == nil or type(behaviour.GetGift) ~= "function" then
 				return nil
 			end
-			local message = behaviour:GetGift()
-			local from = message ~= nil and message.GetEntitySentBy ~= nil and message:GetEntitySentBy() or nil
+			-- GetGift answers (given, message): the first is a boolean, never the message. Indexing
+			-- it threw inside AIManager:Update's best-behaviour pass and stopped every brain.
+			local given, message = behaviour:GetGift()
+			if not given or message == nil then
+				return nil
+			end
+			local from = message:GetEntitySentBy()
 			return from ~= nil and from == partner and partner or nil
 		end
 		if type(BehaviourReceiveGift) == "table" and not rawget(BehaviourReceiveGift, "RefiiGiverWrapped") then
@@ -1047,10 +1052,8 @@ public static class CoopHeroLua
 				coroutine.yield()
 			end
 		end
+		-- The PREGNANT line itself is the host's partner speaking: it arrives with the scene's chatter.
 		function C.PlayBirth(verdict)
-			if verdict.partner ~= nil then
-				ScriptFunction.SaySimLine(verdict.partner, "TEXT_AI_COURTING_SEX_PREGNANT")
-			end
 			Sound.SetSoundEffectVolume(0.0)
 			C.WaitSeconds(5.0)
 			Sound.SetSoundEffectVolume(1.0)
@@ -1152,7 +1155,22 @@ public static class CoopHeroLua
 			end)
 		end, "HostBedSexThread")
 
-		-- Which spouse a birth in the silent thread was with (for the joiner's PREGNANT line).
+		-- THE CHATTER GOES TO THE JOINER. Every line a partner is told to say in the silent thread
+		-- (the comments, the PREGNANT line) is played later by the villager's AI; its speaker is marked
+		-- so those lines reach the joiner's screen too (mod_events.cpp ForwardSpeech).
+		if ScriptFunction ~= nil and ScriptFunction.SaySimLine ~= nil and not rawget(ScriptFunction, "RefiiForwardSpeech") then
+			local shipped = ScriptFunction.SaySimLine
+			rawset(ScriptFunction, "RefiiForwardSpeech", shipped)
+			ScriptFunction.SaySimLine = C.Permanent(function(speaker, ...)
+				local co = coroutine.running()
+				if co ~= nil and C.Silent[co] and speaker ~= nil and Refii._forward_speech ~= nil then
+					Refii._forward_speech(Refii.handle(speaker), 15.0)
+				end
+				return shipped(speaker, ...)
+			end, "Forward.SaySimLine")
+		end
+
+		-- Which spouse a birth in the silent thread was with (the joiner's verdict).
 		if PlayerFamily ~= nil and PlayerFamily.AdoptWithSpouse ~= nil and not rawget(PlayerFamily, "RefiiBirthSpouse") then
 			local shipped = PlayerFamily.AdoptWithSpouse
 			rawset(PlayerFamily, "RefiiBirthSpouse", shipped)
@@ -1410,6 +1428,22 @@ public static class CoopHeroLua
 
 		function C.FreeRoam()
 			return C.OwnCameras()
+		end
+
+		-- A CAMERA'S LOOK-AT IS ITS OWN PLAYER'S. CameraFunctions.GetSafeLookAtButtonDown(player)
+		-- ignores its player: it answers from hero one (gated on Player.IsAvailable(GetPlayerHero()))
+		-- or'd with the henchman — one shared camera. On a joiner hero one is the host's copy, with
+		-- no Player component, so player two's held trigger never reached their camera (no target
+		-- lock, no look-at). With a camera each, it is the camera's own player's button.
+		if CameraFunctions.GetSafeLookAtButtonDown ~= C.SafeLookAtButtonDown then
+			local shipped = CameraFunctions.GetSafeLookAtButtonDown
+			C.SafeLookAtButtonDown = C.Permanent(function(player, ...)
+				if C.OwnCameras() then
+					return player ~= nil and Player.IsAvailable(player) and Player.GetLookAtButtonDown(player) == true
+				end
+				return shipped(player, ...)
+			end, "SafeLookAtButtonDown")
+			CameraFunctions.GetSafeLookAtButtonDown = C.SafeLookAtButtonDown
 		end
 
 		if CameraFunctions.IsMultiplayer ~= C.IsMultiplayer then

@@ -172,6 +172,53 @@ public static class Engine_UiRealEstatePage
 	}
 
 	/// <summary>
+	/// THE SIGN AS LINES, for a page with one text block (the world map's property row): the same
+	/// values <see cref="Values"/> gives both pages, under the sign's own captions, in its order —
+	/// type, owner, base value, decoration, economy, sale price, the context rows, bonuses, then
+	/// page two's address and history. A caption whose value is empty is left out.
+	/// </summary>
+	public static IReadOnlyList<string> Lines(
+		Refii.Host.HostBridge.RealEstate estate,
+		Refii.Text.Engine_BabelDatabase? strings)
+	{
+		var lines = new List<string>(16);
+		IReadOnlyDictionary<string, string> v = Values(estate, strings);
+		string Get(string key) => v.TryGetValue(key, out string? text) ? text : string.Empty;
+		void Add(string caption, string value)
+		{
+			if (value.Length != 0)
+			{
+				lines.Add(caption.Length != 0 ? $"{caption} <s1>{value}</s1>" : value);
+			}
+		}
+
+		Add(string.Empty, Get(Type));
+		Add(Get(OwnerLabel) is { Length: > 0 } label ? label : Babel(strings, "GUI_SCREEN_REAL_ESTATE_OWNER"),
+			Get(OwnerName));
+		Add(Babel(strings, "GUI_SCREEN_REAL_ESTATE_BASE_VALUE"), Get(BaseValue));
+		Add(Babel(strings, "GUI_SCREEN_REAL_ESTATE_DECORATION"), Get(Decoration));
+		Add(Babel(strings, "GUI_SCREEN_REAL_ESTATE_ECONOMY"), Get(Economy));
+		Add(Babel(strings, "GUI_SCREEN_REAL_ESTATE_SALE_PRICE"), Get(SalePrice));
+		for (int slot = 1; slot <= 4; ++slot)
+		{
+			Add(Get($"Page1.Group.Variable{slot}"), Get($"Page1.Group.Variable{slot}Amount"));
+		}
+
+		if (Get(BonusesList) is { Length: > 0 } bonuses)
+		{
+			lines.Add($"{Get(Bonuses)}<br>{bonuses.TrimEnd('\n').Replace("\n", "<br>")}");
+		}
+
+		Add(Babel(strings, "GUI_SCREEN_REAL_ESTATE_ADDRESS"), Get(Address));
+		if (Get(History) is { Length: > 0 } history)
+		{
+			lines.Add($"{Babel(strings, "GUI_SCREEN_REAL_ESTATE_HISTORY")}<br>{history.Replace("\n", "<br>")}");
+		}
+
+		return lines;
+	}
+
+	/// <summary>
 	/// The four context rows, exactly as `sub_82998FB0` chooses them.
 	///
 	/// OWNED: row 1 is the selling fee, and only when the record allows reselling; rows 2 and 3

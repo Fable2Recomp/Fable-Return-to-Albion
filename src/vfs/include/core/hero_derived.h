@@ -269,6 +269,19 @@ inline void PublishRealEstate(const RealEstate& estate) {
 
 RealEstate RealEstateSnapshot();
 
+/// THE WORLD MAP'S PROPERTY ROW. The host names the UID under its cursor; the pump answers with
+/// screen 28's numbers for that building while its region is loaded, unknown otherwise.
+void RequestPropertyEstate(uint64_t uid);
+
+inline uint64_t RequestedPropertyEstate() { return refii_bridge_requested_property_estate(); }
+
+inline void PublishPropertyEstate(uint64_t uid, const RealEstate& estate) {
+  refii_bridge_publish_property_estate(uid, &estate);
+}
+
+/// The last answer and the UID it is for.
+RealEstate PropertyEstateSnapshot(uint64_t* uid);
+
 /// ONE JOB'S JOURNEY — the world map's job page.
 ///
 /// `sub_829AFE58` fills `Lines.DistanceAmount` and `Lines.TravelAmount` by handing the quest's

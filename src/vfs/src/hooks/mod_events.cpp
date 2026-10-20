@@ -2424,8 +2424,14 @@ REX_EXTERN(rex_CECQuestTracker_SetObjectiveTagSilently) {
 // variant suffixes), r5 = force subtitle, r6 = the listener entity or 0. The audio, the speech
 // idle action, the listener's look and the subtitle all follow inside. Returns whether audio
 // plays. TU1 0x825D7F78 / disc 0x82449448. Not calling it keeps the line unspoken.
+namespace {
+/// A line the host's world speaks for the online joiner's bed scene (below, with the gifts).
+void ForwardSpeech(uint8_t* base, uint32_t speaker, uint32_t text);
+}  // namespace
+
 REX_EXTERN(rex_CECTalk_PlayLine) {
   REX_FUNC_PROLOGUE();
+  ForwardSpeech(base, ctx.r3.u32 != 0 ? Load32(base, ctx.r3.u32 + 4u) : 0u, ctx.r4.u32);
   if (AnySubscriber(REFII_EVENT_DIALOGUE)) {
     DialogueEvent e{};
     PPCContext e_ctx = ctx;
@@ -3917,6 +3923,32 @@ thread_local bool t_furniture_for_two = false;
 // The core Lua's silent bed thread for the joiner's hero two is running (Refii._household_context).
 int32_t g_household_context = 0;
 
+/// THE ONLINE BED'S CHATTER. The host runs the joiner's bed scene for its hero two (core Lua's
+/// silent thread), and the partners speak there: their SaySimLine lines become a micro behaviour the
+/// villager's AI plays later through the talk component (`sub_825D7F78`, CECTalk comp 100: r3 the
+/// component, r4 the final text key, r5 subtitle, r6 listener), which sends nothing — so the joiner,
+/// whose screen shows the scene, heard none of it. The silent thread marks each speaker for a while
+/// (Refii._forward_speech), and each line such a speaker plays on the host goes to the joiner
+/// (`say:<speaker uid>:<text key>`), who plays the same key on its own copy of the speaker.
+std::unordered_map<uint32_t, uint32_t> g_speech_forward;  // speaker → world frame it lapses at
+
+uint32_t WorldFrame(uint8_t* base) { return Load32(base, refii::guest::Address(0x83319650u)); }
+
+void ForwardSpeech(uint8_t* base, uint32_t speaker, uint32_t text) {
+  if (speaker == 0u || g_speech_forward.empty() || refii_mod_coop_mode(base) != 2) {
+    return;
+  }
+  const auto found = g_speech_forward.find(speaker);
+  if (found == g_speech_forward.end()) {
+    return;
+  }
+  if (static_cast<int32_t>(WorldFrame(base) - found->second) > 0) {
+    g_speech_forward.erase(found);
+    return;
+  }
+  PostHousehold("say", EntityUid(base, speaker), static_cast<int32_t>(text));
+}
+
 /// ONLINE, PLAYER TWO'S STATS ARE THE JOINER'S. A tracked stat (`sub_822D8E08`) is a plain local
 /// counter on the hero's comp57 (and a leaderboard write for this machine's profile), sent nowhere,
 /// and an achievement (`sub_824D8F88`) is credited on the machine that unlocks it. Household work the
@@ -3930,6 +3962,12 @@ bool HouseholdForwards(uint8_t* base, uint32_t stats) {
          (t_slot_lent || t_estate_replay || g_household_context > 0);
 }
 }  // namespace
+
+extern "C" void refii_household_forward_speech(uint8_t* base, uint32_t speaker, float seconds) {
+  if (base != nullptr && speaker != 0u && seconds > 0.0f) {
+    g_speech_forward[speaker] = WorldFrame(base) + static_cast<uint32_t>(std::min(seconds, 120.0f) * 15.0f);
+  }
+}
 
 extern "C" void refii_household_context(int32_t on) {
   g_household_context = std::max(0, g_household_context + (on != 0 ? 1 : -1));
@@ -4228,6 +4266,16 @@ bool ReplayHouseholdOnline(PPCContext& ctx, uint8_t* base, std::string_view acti
       } else {
         call(0x824D8F88u, stats, packed);
       }
+    }
+    return true;
+  }
+  if (action == "say") {
+    // A partner's line in the host's run of this joiner's bed scene: the same key, spoken here by
+    // this machine's copy of the speaker to its hero two.
+    const uint32_t speaker = OnlineJoiner() ? ResolveUid(ctx, base, uid) : 0u;
+    const uint32_t talk = speaker != 0u ? refii_mod_component(base, speaker, 100u) : 0u;
+    if (talk != 0u) {
+      call(0x825D7F78u, talk, static_cast<uint32_t>(value), 0u, two);
     }
     return true;
   }

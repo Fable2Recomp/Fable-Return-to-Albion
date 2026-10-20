@@ -11616,6 +11616,7 @@
 0x82298460 = { name = "rex_lhGameTimeManager_Update" }
 0x82549B80 = { name = "rex_lhEnvironmentThemeManager_BlendToTheme" }
 0x823D5760 = { name = "rex_CmdLevelChange_Start" }
+0x823D6E18 = { name = "rex_CmdLevelChange_PlaceTravellers" }
 0x82519B08 = { name = "rex_FastTravelManager_TravelToStop" }
 0x8236EB68 = { name = "rex_lhGuiManager_EnterGuiMode" }
 0x8236E388 = { name = "rex_lhGuiManager_SetActiveScreen" }
@@ -12039,3 +12040,20 @@ jump_address_on_true = 0x82814F84
 name = "RefiiCoopPartnerPauseRoams"
 address = 0x8232C2E8
 jump_address_on_true = 0x8232C378
+
+# A partner's held look-at (left trigger) never sets hero one's (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopPartnerLookAtStaysTheirs"
+address = 0x8239AF54
+jump_address_on_true = 0x8239CBCC
+
+# A joiner's look-at readout and target panel are its own hero's (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopLookAtHero"
+address = 0x8219C0E0
+registers = ["r10"]
+
+[[midasm_hook]]
+name = "RefiiCoopInteractionHero"
+address = 0x822BAA2C
+registers = ["r1", "r25"]

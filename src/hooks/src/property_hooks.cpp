@@ -40,6 +40,8 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <rex/ppc/context.h>
 #include <rex/ppc/func.h>
@@ -420,4 +422,42 @@ extern "C" int32_t RefiiPropertyRepair(PPCContext& ctx, uint8_t* base, uint32_t 
     return 1;
   }
   return 0;
+}
+
+// REPAIR ALL (the pump's Property:repairall:<player>): every record of `hero`'s below full condition,
+// cheapest first, each through RefiiPropertyRepair while the gold lasts. `repaired`, `spent` and
+// `left` (still in disrepair: not enough gold) are the outcome.
+extern "C" void RefiiPropertyRepairAll(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t* repaired, int32_t* spent,
+                                       int32_t* left) {
+  *repaired = 0;
+  *spent = 0;
+  *left = 0;
+  const uint32_t props = hero != 0u ? refii_mod_component(base, hero, 69u) : 0u;
+  if (props == 0u) {
+    return;
+  }
+  std::vector<std::pair<int32_t, uint64_t>> worn;
+  const uint32_t head = Load32(base, props + 28u);
+  uint32_t node = Heap(head) ? Load32(base, head) : 0u;
+  for (uint32_t n = 0; Heap(node) && node != head && n < 256u; ++n, node = Load32(base, node)) {
+    const uint32_t record = Load32(base, node + 8u);
+    if (!Heap(record)) {
+      continue;
+    }
+    const uint64_t uid = Uid(base, record);
+    const float condition = RefiiPropertyCondition(uid);
+    const int32_t cost = refii::property::RepairCost(static_cast<int32_t>(Load32(base, record + 44u)), condition);
+    if (condition < 1.0f && cost > 0) {
+      worn.emplace_back(cost, uid);
+    }
+  }
+  std::sort(worn.begin(), worn.end());
+  for (const auto& [cost, uid] : worn) {
+    if (RefiiPropertyRepair(ctx, base, hero, uid) > 0) {
+      ++*repaired;
+      *spent += cost;
+    } else {
+      ++*left;
+    }
+  }
 }

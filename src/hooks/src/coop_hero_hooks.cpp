@@ -502,6 +502,55 @@ bool RefiiCoopPartnerPauseRoams() {
   return true;
 }
 
+// A PARTNER'S LOOK-AT (held left trigger) IS THEIRS. The left trigger sets the presser's own
+// look-at flag (`sub_823E9F10`, comp33+32) and, online, sends it (msg off_820A6414). The receiver
+// (`sub_82392250`, 0x8239AF54) stores it in hero one's comp33+33 — "the partner's look-at" — and
+// `sub_823E24B0` then takes hero one's look-at mask while either flag is set: one shared camera,
+// shipped. With a camera each, player two's held trigger put player one into look-at (seen live:
+// host P1 +33 = 1 for the whole hold). The hook at the store's first load (0x8239AF54) goes to
+// the dispatcher's exit (0x8239CBCC): +33 stays clear and the presser's own +32 still acts.
+std::atomic<bool> g_said_partner_look{false};
+
+bool RefiiCoopPartnerLookAtStaysTheirs() {
+  Once(g_said_partner_look, "a partner's held look-at stays theirs");
+  return true;
+}
+
+// THE LOOK-AT TARGET IS THE LOCAL PLAYER'S. The HUD's look-at readout (`sub_8219C098`, GUI manager
+// slot +76: the target's name and outline, SE_LOOKAT_NOTIFICATION) reads hero one only
+// (players+104, 0x8219C0B4..0x8219C0C8) and asks its comp33 and comp77 (`sub_822C7D50`); the
+// target's interaction panel (`sub_822BA8D8`) takes hero one too unless game+0x11C is 2. On a
+// joiner hero one is the host's copy, with neither component: player two's held trigger targeted
+// nothing. There the joiner's own hero stands in — the readout at the hero's load into r29
+// (0x8219C0E0, r10), the panel where its two choices join (0x822BAA2C, r25 and its spill at
+// r1+0x7C), with -1 at r1+0x60 as the guest's own hero-two choice writes (0x822BA9C8).
+namespace {
+uint32_t JoinerHero(uint8_t* base) {
+  if (base == nullptr || !IsJoiner(base)) {
+    return 0u;
+  }
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  return Plausible(two) && (refii::vfs::LoadGuestU8(base, two + 0x90u) & 0x40u) != 0u ? two : 0u;
+}
+}  // namespace
+
+void RefiiCoopLookAtHero(PPCRegister& r10) {
+  if (const uint32_t two = JoinerHero(RefiiGuestBase()); two != 0u) {
+    r10.u64 = two;
+  }
+}
+
+void RefiiCoopInteractionHero(PPCRegister& r1, PPCRegister& r25) {
+  uint8_t* base = RefiiGuestBase();
+  const uint32_t two = JoinerHero(base);
+  if (two == 0u || r25.u32 != refii_mod_player_hero(base, 1)) {
+    return;
+  }
+  r25.u64 = two;
+  refii::vfs::StoreGuestU32(base, r1.u32 + 0x7Cu, two);
+  refii::vfs::StoreGuestU32(base, r1.u32 + 0x60u, 0xFFFFFFFFu);
+}
+
 // ActivateCamera (r3 camera manager, r4 the Lua camera table). Records a joiner's call, and
 // points a call made during player two's tick at player two's manager.
 REX_EXTERN(rex_lhCameraManager_ActivateCamera) {

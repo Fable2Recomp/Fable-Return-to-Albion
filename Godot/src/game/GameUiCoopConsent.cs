@@ -108,8 +108,19 @@ public partial class GameUi
 			Asker = asker,
 			OnAnswer = yes =>
 			{
-				if (yes && HostBridge.SetPartnership(kind == Engine_UiPropertySource.ProposalKind ? 2 : 1) &&
-					PartnershipMade(kind) is { } made)
+				if (!yes || !HostBridge.SetPartnership(kind == Engine_UiPropertySource.ProposalKind ? 2 : 1))
+				{
+					return;
+				}
+
+				// The proposer's ring is given (from their own inventory, on their own machine).
+				if (kind == Engine_UiPropertySource.ProposalKind && Engine_UiPropertySource.RingOf(asker) is { } ring)
+				{
+					HostBridge.PostFrontEndAction(string.Create(CultureInfo.InvariantCulture,
+						$"debug-gamelua:Inventory.RemoveItemOfType(Refii.entity(Refii.player_hero({asker})), \"{ring}\")"));
+				}
+
+				if (PartnershipMade(kind) is { } made)
 				{
 					_coopNotices.Tell(made);
 				}

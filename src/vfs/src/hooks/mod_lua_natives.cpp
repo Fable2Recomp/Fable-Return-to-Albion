@@ -51,6 +51,7 @@ extern "C" void RefiiCoopSetEstateBuyer(int player);
 extern "C" void refii_bridge_estate_intent_post(const char* text);
 extern "C" uint32_t refii_household_resolve_uid(PPCContext* ctx, uint8_t* base, uint64_t uid);
 extern "C" void refii_household_context(int32_t on);
+extern "C" void refii_household_forward_speech(uint8_t* base, uint32_t speaker, float seconds);
 extern "C" int32_t refii_household_children_two(uint8_t* base);
 extern "C" int32_t refii_household_follower_two(PPCContext* ctx, uint8_t* base, int32_t index, uint32_t* entity,
                                                 uint32_t* flags);
@@ -561,6 +562,13 @@ REFII_LUA_NATIVE(NativeHouseholdContext) {
   RESULTS(0);
 }
 
+// Core co-op only: Refii._forward_speech(e, seconds) — the lines `e` speaks on the host in the next
+// seconds go to the online joiner too (the bed scene run for its hero two; mod_events.cpp).
+REFII_LUA_NATIVE(NativeForwardSpeech) {
+  refii_household_forward_speech(lua.base, lua.Entity(1), static_cast<float>(lua.Number(2)));
+  RESULTS(0);
+}
+
 // Core co-op only: Refii._children_two() — how many children hero two's family records hold.
 REFII_LUA_NATIVE(NativeChildrenTwo) {
   lua.PushNumber(refii_household_children_two(lua.base));
@@ -1041,6 +1049,7 @@ Native g_natives[] = {
     {"_followers_two", &NativeFollowersTwo, 0},
     {"_household_context", &NativeHouseholdContext, 0},
     {"_children_two", &NativeChildrenTwo, 0},
+    {"_forward_speech", &NativeForwardSpeech, 0},
     {"_partner_screen", &NativePartnerScreen, 0},
     {"_consent_ask", &NativeConsentAsk, 0},
     {"_key_taken", &NativeKeyTaken, 0},

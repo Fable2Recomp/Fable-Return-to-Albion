@@ -269,23 +269,28 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 		return _display != 0;
 	}
 
+	protected override bool ApplyHost()
+	{
+		if (!_host || Engine_UiHostBoxes.Notice is not { } notice)
+		{
+			return false;
+		}
+
+		// The guest's fitter chooses the paper by the text; ours by its length the same way.
+		int fitted = notice.Length < 80 ? 0 : notice.Length < 160 ? 1 : 2;
+		if (Changed($"host:{notice}"))
+		{
+			View!.ShowStated(notice, fitted, SizeSlide(fitted));
+			GD.Print($"[game-ui] host message box up — {View.LastReport}");
+		}
+
+		return true;
+	}
+
 	protected override void Apply(
 		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
 		Engine_UiPresentationHost host)
 	{
-		if (_host && Engine_UiHostBoxes.Notice is { } notice)
-		{
-			// The guest's fitter chooses the paper by the text; ours by its length the same way.
-			int fitted = notice.Length < 80 ? 0 : notice.Length < 160 ? 1 : 2;
-			if (Changed($"host:{notice}"))
-			{
-				View!.ShowStated(notice, fitted, SizeSlide(fitted));
-				GD.Print($"[game-ui] host message box up — {View.LastReport}");
-			}
-
-			return;
-		}
-
 		// The guest's chosen size is the variant its slide ACTIVATES; the text may be written
 		// into more than one. The first non-empty text stands in when none is active.
 		int chosen = -1;
@@ -422,26 +427,32 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 		_codes = null;
 		_display = Engine_UiSource.Current.DisplayQueryUp();
-		_host = !_display && Engine_UiHostBoxes.Question is not null;
+		// A host question needs the box's join to be shown; without one it must not hold the frame.
+		_host = !_display && Engine_UiHostBoxes.Question is not null && (View is null || _joins is not null);
 		return _display || _host;
+	}
+
+	protected override bool ApplyHost()
+	{
+		if (!_host || Engine_UiHostBoxes.Question is not { } question || _joins is null)
+		{
+			return false;
+		}
+
+		// The default A/B row, its captions the authored ones.
+		if (Changed($"host:{question}"))
+		{
+			View!.ShowStated(question, _joins.Rows[0].Name, null, null);
+			GD.Print($"[game-ui] host query up — {View.LastReport}");
+		}
+
+		return true;
 	}
 
 	protected override void Apply(
 		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
 		Engine_UiPresentationHost host)
 	{
-		if (_host && Engine_UiHostBoxes.Question is { } question)
-		{
-			// The default A/B row, its captions the authored ones.
-			if (Changed($"host:{question}"))
-			{
-				View!.ShowStated(question, _joins!.Rows[0].Name, null, null);
-				GD.Print($"[game-ui] host query up — {View.LastReport}");
-			}
-
-			return;
-		}
-
 		// The row the guest stood up; the default A/B pair when none reads active (the flags
 		// can lag the opener by a frame).
 		Engine_UiQueryBox.RowJoin row = _joins!.Rows[0];

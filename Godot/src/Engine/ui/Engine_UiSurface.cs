@@ -223,6 +223,9 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
 		Engine_UiPresentationHost host);
 
+	/// <summary>A host-raised box's text, shown without the guest's elements; true when it is one.</summary>
+	protected virtual bool ApplyHost() => false;
+
 	/// <summary>This frame's press, once the view is standing.</summary>
 	protected abstract void Route(Engine_UiSurfaceInput input);
 
@@ -270,7 +273,10 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 			Address = AddressOf($"{Presentation}.bgf");
 		}
 
-		if (Address != 0 && Joined && Elements(Address) is { } elements)
+		// A box the HOST raises states its own text: it needs no guest presentation, and over a
+		// screen with none (the world map) waiting for one left it unseen, deaf, and holding the
+		// frame — every menu under it starved.
+		if (!ApplyHost() && Address != 0 && Joined && Elements(Address) is { } elements)
 		{
 			Apply(elements, host);
 		}

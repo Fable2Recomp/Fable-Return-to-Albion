@@ -98,8 +98,11 @@ PPC_EXTERN_FUNC(rex_lhSaveManager_SelectStorageDevice);
 PPC_EXTERN_FUNC(rex_CNetworkManager_LeaveSession);
 extern "C" int RefiiCoopShoppingPlayerTwo(void);
 extern "C" int32_t RefiiPropertyRepair(PPCContext& ctx, uint8_t* base, uint32_t hero, uint64_t uid);
+extern "C" void RefiiPropertyRepairAll(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t* repaired, int32_t* spent,
+                                       int32_t* left);
 extern "C" int RefiiCoopSplitScreen(void);
 extern "C" void RefiiCoopLocalPlayerTwoCall(int on);
+extern "C" uint32_t refii_household_resolve_uid(PPCContext* ctx, uint8_t* base, uint64_t uid);
 
 PPC_EXTERN_FUNC(rex_lhSaveManager_CountSavedGamesAllDevices);
 
@@ -7190,30 +7193,14 @@ void SampleShopPrice(PPCContext& ctx, uint8_t* base) {
 /// a prosperity term off a world component, a GDB adjustment array matched against the
 /// building-type mask, an occupant-opinion term weighted over five personality axes. The host
 /// gets the numbers and owns the presentation.
-void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
-  constexpr uint32_t kRealEstateScreenId = 28u;
+/// The page's numbers for one building entity, asked of `hero`'s ownership list: screen 28's
+/// building, or a property the world map's cursor is on (SamplePropertyEstate). False when the
+/// entity carries no CECBuilding.
+bool FillRealEstate(PPCContext& ctx, uint8_t* base, uint32_t hero, uint32_t building_entity,
+                    RealEstate& estate) {
   constexpr uint32_t kPropertiesComponent = 69u;   // the hero's ownership list
-  constexpr uint32_t kSiteComponent = 77u;         // the "what am I standing at" component
-  constexpr uint32_t kBuildingHandleComponent = 142u;
   constexpr uint32_t kBuildingComponent = 67u;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-
-  uint32_t owner_screen = 0;
-  uint32_t screen_id = 0;
-  if (!InGameScreenRoots(base, &owner_screen, &screen_id) ||
-      screen_id != kRealEstateScreenId) {
-    return;
-  }
-
-  RealEstate estate;
-
-  const uint32_t hero = HeroEntity(base);
-  const uint32_t site = HeroComponent(base, hero, kSiteComponent);
-  if (!plausible(site)) {
-    PublishRealEstate(estate);
-    return;
-  }
-
   // Claimed low so a callee's frame cannot land on an out-parameter it is handed.
   const uint32_t sp = ctx.r1.u32;
   const uint32_t frame = (sp - 0x200u) & ~0xFu;
@@ -7233,22 +7220,9 @@ void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
     return result;
   };
 
-  // `comp77->vtbl[0x44]()` — the site's own "which entity is this" accessor. Indirect because
-  // the concrete class is chosen at runtime; the slot is not.
-  const uint32_t site_vtable = LoadGuestU32(base, site);
-  const uint32_t accessor = plausible(site_vtable) ? LoadGuestU32(base, site_vtable + 0x44u) : 0u;
-  const uint32_t entity = call(FindGuestFunction(accessor), site, 0u);
-  if (!plausible(entity) || (LoadGuestU8(base, entity + 0x90u) & 0x40u) == 0u) {
-    PublishRealEstate(estate);
-    return;
-  }
-
-  const uint32_t handle = HeroComponent(base, entity, kBuildingHandleComponent);
-  const uint32_t building_entity = call(FindGuestFunction(refii::guest::Address(0x8229EE78u)), handle, 0u);
   const uint32_t building = HeroComponent(base, building_entity, kBuildingComponent);
   if (!plausible(building)) {
-    PublishRealEstate(estate);
-    return;
+    return false;
   }
 
   const uint32_t properties = HeroComponent(base, hero, kPropertiesComponent);
@@ -7346,7 +7320,96 @@ void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
     }
   }
 
+  return true;
+}
+
+void SampleRealEstate(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kRealEstateScreenId = 28u;
+  constexpr uint32_t kSiteComponent = 77u;         // the "what am I standing at" component
+  constexpr uint32_t kBuildingHandleComponent = 142u;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  uint32_t owner_screen = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &owner_screen, &screen_id) ||
+      screen_id != kRealEstateScreenId) {
+    return;
+  }
+
+  RealEstate estate;
+
+  const uint32_t hero = HeroEntity(base);
+  const uint32_t site = HeroComponent(base, hero, kSiteComponent);
+  if (!plausible(site)) {
+    PublishRealEstate(estate);
+    return;
+  }
+
+  // Claimed low so a callee's frame cannot land on an out-parameter it is handed.
+  const uint32_t sp = ctx.r1.u32;
+  const uint32_t frame = (sp - 0x200u) & ~0xFu;
+  const PPCContext saved = ctx;
+
+  const auto call = [&](PPCFunc* fn, uint32_t r3, uint32_t r4) -> uint32_t {
+    if (fn == nullptr) {
+      return 0u;
+    }
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = r3;
+    ctx.r4.u32 = r4;
+    fn(ctx, base);
+    const uint32_t result = ctx.r3.u32;
+    ctx = saved;
+    return result;
+  };
+
+  // `comp77->vtbl[0x44]()` — the site's own "which entity is this" accessor. Indirect because
+  // the concrete class is chosen at runtime; the slot is not.
+  const uint32_t site_vtable = LoadGuestU32(base, site);
+  const uint32_t accessor = plausible(site_vtable) ? LoadGuestU32(base, site_vtable + 0x44u) : 0u;
+  const uint32_t entity = call(FindGuestFunction(accessor), site, 0u);
+  if (!plausible(entity) || (LoadGuestU8(base, entity + 0x90u) & 0x40u) == 0u) {
+    PublishRealEstate(estate);
+    return;
+  }
+
+  const uint32_t handle = HeroComponent(base, entity, kBuildingHandleComponent);
+  const uint32_t building_entity = call(FindGuestFunction(refii::guest::Address(0x8229EE78u)), handle, 0u);
+  FillRealEstate(ctx, base, hero, building_entity, estate);
   PublishRealEstate(estate);
+}
+
+/// THE WORLD MAP'S PROPERTY ROW — the same page numbers for the property the cursor is on (the
+/// host names its UID, RequestPropertyEstate). The building is found by UID in the guest's own
+/// map (`refii_household_resolve_uid`); one in a region that is not loaded has no entity, and is
+/// answered as unknown for that UID so the host falls back to the ownership record.
+void SamplePropertyEstate(PPCContext& ctx, uint8_t* base) {
+  constexpr uint32_t kWorldMapScreenId = 23u;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  uint32_t owner_screen = 0;
+  uint32_t screen_id = 0;
+  const uint64_t uid = RequestedPropertyEstate();
+  if (uid == 0u || !InGameScreenRoots(base, &owner_screen, &screen_id) ||
+      screen_id != kWorldMapScreenId) {
+    return;
+  }
+
+  // A new row is answered on this tick; the one already answered refreshes every 8th.
+  static uint64_t answered = 0u;
+  static uint32_t ticks = 0u;
+  if (uid == answered && (++ticks % 8u) != 0u) {
+    return;
+  }
+  answered = uid;
+
+  RealEstate estate;
+  const uint32_t building_entity = refii_household_resolve_uid(&ctx, base, uid);
+  if (plausible(building_entity) && (LoadGuestU8(base, building_entity + 0x90u) & 0x40u) != 0u) {
+    FillRealEstate(ctx, base, HeroEntity(base), building_entity, estate);
+  }
+  PublishPropertyEstate(uid, estate);
 }
 
 /// The completed-quest list the logbook's page indexes into.
@@ -8564,6 +8627,29 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
                     outcome > 0 ? "repaired" : outcome < 0 ? "not enough gold" : "nothing to repair");
       }
       ran = true;
+    } else if (name.rfind("Property:repairall:", 0) == 0) {
+      // `Property:repairall:<player>` — the world map's Repair All: every building of the player's
+      // below full condition, cheapest first, while the gold lasts. One notice (kind 7) carries the
+      // outcome packed: player << 56 | still worn << 48 | repaired << 32 | gold spent.
+      unsigned player = 0;
+      if (std::sscanf(name.c_str() + std::strlen("Property:repairall:"), "%u", &player) == 1 &&
+          (player == 1u || player == 2u)) {
+        const uint32_t hero = refii_mod_player_hero(base, static_cast<int32_t>(player));
+        int32_t repaired = 0;
+        int32_t spent = 0;
+        int32_t left = 0;
+        if (hero != 0u) {
+          RefiiPropertyRepairAll(ctx, base, hero, &repaired, &spent, &left);
+        }
+        const uint64_t packed = (static_cast<uint64_t>(player) << 56) |
+                                (static_cast<uint64_t>(std::min(left, 255)) << 48) |
+                                (static_cast<uint64_t>(std::min(repaired, 65535)) << 32) |
+                                static_cast<uint32_t>(spent);
+        refii_bridge_property_notice_post_kind(7, packed);
+        REXLOG_INFO("Refii guest-tick pump: Property:repairall player {} — {} repaired for {} gold, {} left", player,
+                    repaired, spent, left);
+      }
+      ran = true;
     } else if (name.rfind("Estate:", 0) == 0) {
       // `Estate:<action>:<sign uid hex>:<value>` — an online joiner's real-estate action for its
       // hero two, run here on the host's (mod_events.cpp ReplayEstateIntent).
@@ -9529,6 +9615,7 @@ REX_EXTERN(rex_lhGuiManager_TickUpdate) {
       }
     }
   }
+  refii::vfs::SamplePropertyEstate(ctx, base);
 
   __imp__rex_lhGuiManager_TickUpdate(ctx, base);
 }

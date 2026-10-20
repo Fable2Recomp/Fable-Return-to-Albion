@@ -46,6 +46,7 @@ extern "C" void RefiiCoopPartnerScreen(int on);
 extern "C" REX_FUNC(__imp__rex_CECDog_Update);
 extern "C" REX_FUNC(__imp__rex_CECDog_TeleportNearMasterOffScreen);
 extern "C" uint32_t RefiiGdbRecordId(PPCContext* ctx, uint8_t* base, const char* name);
+extern "C" uint32_t refii_mod_component(uint8_t* base, uint32_t entity, uint32_t id);
 extern "C" uint32_t RefiiCoopPartnerDogKit(uint32_t* definition, int32_t* searching, int32_t* combat,
                                            char* tricks, uint32_t capacity);
 
@@ -312,6 +313,42 @@ void AsPartnerDog(PPCContext& ctx, uint8_t* base, PPCFunc* original) {
 }  // namespace
 
 REX_EXTERN(rex_CECDog_Update) { AsPartnerDog(ctx, base, __imp__rex_CECDog_Update); }
+
+// PLAYER TWO'S DOG TRAVELS WITH THEM. A level change that stays in the level (a door, travel to a
+// marker here) places the travellers in `sub_823D6E18` (CmdLevelChange vtable +32, disc
+// `sub_8245E3F8`), when command+50 is clear and game+260 (disc +256) is not: hero one, then the
+// global dog (players+192) through `sub_8280B4A8(dogComp, 0)` (0x823D70FC) — its own master's
+// position, a nav fit, SetPosition — then hero two. Player two's dog is not the global dog and was
+// left behind. The host runs the same teleport for it after the original; a joiner's copy follows
+// the host's.
+extern "C" REX_FUNC(__imp__rex_CmdLevelChange_PlaceTravellers);
+
+REX_EXTERN(rex_CmdLevelChange_PlaceTravellers) {
+  using refii::vfs::LoadGuestU8;
+  using refii::vfs::LoadGuestU32;
+  const uint32_t command = ctx.r3.u32;
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = Plausible(root) ? LoadGuestU32(base, root + 0xCu) : 0u;
+  const bool same_level = Plausible(command) && Plausible(game) &&
+                          LoadGuestU8(base, command + 50u) == 0u &&
+                          LoadGuestU8(base, game + refii::guest::Pick(260u, 256u)) == 0u;
+  const PPCContext saved = ctx;
+  __imp__rex_CmdLevelChange_PlaceTravellers(ctx, base);
+  if (!same_level || IsJoiner(base)) {
+    return;
+  }
+  const uint32_t dog = RefiiCoopPlayerDog(base, 2);
+  const uint32_t comp = dog != 0u && refii_mod_entity_alive(base, dog) != 0 ? refii_mod_component(base, dog, 97u) : 0u;
+  static PPCFunc* const teleport = refii::vfs::FindGuestFunction(refii::guest::Address(0x8280B4A8u));
+  if (comp == 0u || teleport == nullptr) {
+    return;
+  }
+  PPCContext call = saved;
+  call.r3.u64 = comp;
+  call.r4.u64 = 0u;
+  teleport(call, base);
+  REXLOG_INFO("coop dogs: player two's dog travels with them");
+}
 
 REX_EXTERN(rex_CECDog_TeleportNearMasterOffScreen) {
   AsPartnerDog(ctx, base, __imp__rex_CECDog_TeleportNearMasterOffScreen);
