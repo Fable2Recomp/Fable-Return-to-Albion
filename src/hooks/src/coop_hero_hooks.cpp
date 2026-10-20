@@ -49,8 +49,10 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
@@ -213,10 +215,18 @@ extern "C" int RefiiCoopShoppingPlayerTwo(void) {
   return g_shopping_player_two.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
+/// Set by the pump around a guest call it makes FOR local player two (their drunk warp): "the
+/// local player" answers player two for that call. Guest tick thread only.
+namespace {
+int g_local_player_two_call = 0;
+}  // namespace
+
+extern "C" void RefiiCoopLocalPlayerTwoCall(int on) { g_local_player_two_call += on != 0 ? 1 : -1; }
+
 // `sub_821C7CE0`'s tail (`li r4, 1` then `b sub_82264230`): r4 is the local player's number.
 void RefiiCoopShopPlayer(PPCRegister& r4) {
   uint8_t* base = RefiiGuestBase();
-  if (base != nullptr && r4.u32 == 1u && Shopping(base)) {
+  if (base != nullptr && r4.u32 == 1u && (g_local_player_two_call > 0 || Shopping(base))) {
     r4.u64 = 2u;
   }
 }
@@ -1185,10 +1195,15 @@ REX_EXTERN(rex_CECLevelExit_Fire) {
 //   - HOLD USE: a full hold (sub_821C5BB0 / disc sub_821C5C20) uses the HERO's target as the hero
 //     (`mr r31,r3` at 0x821C6018 / 0x821C6088). The hook there hands it the player who held, so
 //     the use is their target's and runs for them. Every step after is null-safe.
+//   - HOLD PROMPT: the manager keeps ONE hold prompt (a type-35 request is filed at manager+64,
+//     `sub_823DDF90` 0x823DE0A0, and drawn on the single FillWorldIcon element). In local co-op a
+//     hold prompt asked for player two is kept here instead (the request `sub_823DD730`), so each
+//     player has their own; the host draws player two's in their half.
 
 extern "C" REX_FUNC(__imp__rex_CECOnActionUse_Update);
 extern "C" REX_FUNC(__imp__rex_lhPromptManager_HoldInput);
 extern "C" REX_FUNC(__imp__rex_lhPromptManager_Update);
+extern "C" REX_FUNC(__imp__rex_lhPromptManager_Request);
 
 namespace {
 
@@ -1288,15 +1303,49 @@ void RefiiCoopPromptForNearerPlayer(PPCRegister& r3) {
   }
 }
 
+namespace {
+/// The A event the hold handler is looking at (+44: 13 pressed, 14 held, 15 released).
+int32_t g_hold_event_kind = 0;
+/// For the hold handler's call: an interaction exit's prompt is up for player two, whose hold
+/// goes through the guest's own (shared) hold as shipped for exits.
+bool g_two_exit_hold = false;
+/// Player two's own hold: whether they hold A on their own hold-to-use target.
+bool g_two_held = false;
+
+/// Player two's hold prompt, while a thing shows one for them: the thing, its use component,
+/// the icon's offset from the thing (the request's v1) and the title.
+struct HoldPromptTwo {
+  uint32_t thing = 0u;
+  uint32_t use = 0u;
+  float offset[3] = {};
+  std::string title;
+};
+HoldPromptTwo g_hold_prompt_two;
+
+/// Updates in a row that found player one the nearer player at player two's prompt's thing.
+uint32_t g_hold_prompt_flip = 0u;
+}  // namespace
+
 bool RefiiCoopHoldByEitherPlayer(PPCRegister& r31) {
   if ((r31.u32 & 0xFFu) != 0u) {
     g_hold_player = 1;
     return false;
   }
-  if (g_two_may_hold) {
+  if (g_two_exit_hold) {
     r31.u64 = 1u;
     g_hold_player = 2;
-    Once(g_said_hold, "player two holds a hold-to-use prompt");
+    Once(g_said_hold, "player two holds an exit's prompt");
+    return false;
+  }
+  if (g_two_may_hold) {
+    // Player two's own hold: the guest consumes the press as not player one's (0x823DD434), and
+    // their meter is their own (rex_lhPromptManager_Update below).
+    if (g_hold_event_kind == 13) {
+      g_two_held = true;
+    } else if (g_hold_event_kind == 15) {
+      g_two_held = false;
+    }
+    Once(g_said_hold, "player two holds their own hold-to-use prompt");
     return false;
   }
   return true;  // not the hold's: leave the press to player two's controls
@@ -1310,56 +1359,321 @@ void RefiiCoopHoldUsesHolder(PPCRegister& r3) {
 
 namespace {
 
-/// The things answering player two, gathered over a frame and published when the next begins
-/// (refii_bridge_set_prompts_two): the host seats their prompt icons in player two's half.
-struct PromptsTwo {
+/// The things whose prompt is up and which players see each (bit 0 player one, bit 1 player
+/// two), gathered over a frame and published when the next begins (refii_bridge_set_prompt_masks):
+/// the host draws each icon in every half that sees it.
+struct PromptMasks {
   uint32_t frame = 0xFFFFFFFFu;
   std::array<uint32_t, 64> things{};
+  std::array<uint8_t, 64> masks{};
   int32_t count = 0;
 };
-PromptsTwo g_prompts_two;
+PromptMasks g_prompt_masks;
 
-void NotePromptTwo(uint8_t* base, uint32_t thing) {
+void NotePromptMask(uint8_t* base, uint32_t thing, uint8_t mask) {
   const uint32_t frame = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u));
-  if (frame != g_prompts_two.frame) {
-    refii_bridge_set_prompts_two(g_prompts_two.things.data(), g_prompts_two.count);
-    g_prompts_two.frame = frame;
-    g_prompts_two.count = 0;
+  if (frame != g_prompt_masks.frame) {
+    refii_bridge_set_prompt_masks(g_prompt_masks.things.data(), g_prompt_masks.masks.data(), g_prompt_masks.count);
+    g_prompt_masks.frame = frame;
+    g_prompt_masks.count = 0;
   }
-  if (thing != 0u && g_prompts_two.count < static_cast<int32_t>(g_prompts_two.things.size())) {
-    g_prompts_two.things[static_cast<std::size_t>(g_prompts_two.count++)] = thing;
+  if (thing != 0u && mask != 0u && g_prompt_masks.count < static_cast<int32_t>(g_prompt_masks.things.size())) {
+    g_prompt_masks.things[static_cast<std::size_t>(g_prompt_masks.count)] = thing;
+    g_prompt_masks.masks[static_cast<std::size_t>(g_prompt_masks.count++)] = mask;
   }
+}
+
+/// The use update being run, and the WorldIconRadius² its in-range test was given this run.
+uint32_t g_use_running = 0u;
+uint32_t g_use_radius_for = 0u;
+float g_use_radius_sq = 0.0f;
+
+/// Whether `viewer` passes `thing`'s own in-range test (`sub_82821E88` 0x82822550..0x828226C8):
+/// alive with a player controller (component 33), the controller's own test when its +0x7C bit 6
+/// asks (`sub_823E1650(comp33, thing)`), then `sub_822BE1E8(targeting, viewer, radius², scratch)`.
+bool SeesPrompt(PPCContext& ctx, uint8_t* base, uint32_t thing, uint32_t viewer, float radius_sq) {
+  using refii::vfs::LoadGuestU32;
+  if (!Plausible(viewer) || (refii::vfs::LoadGuestU8(base, viewer + 0x90u) & 0x40u) == 0u) {
+    return false;
+  }
+  const uint32_t controller = refii_mod_component(base, viewer, 33u);
+  const uint32_t targeting = refii_mod_component(base, thing, 23u);
+  if (controller == 0u || targeting == 0u) {
+    return false;
+  }
+  if (((LoadGuestU32(base, controller + 0x7Cu) >> 6) & 1u) != 0u) {
+    PPCContext work = refii::mods::Frame(ctx);
+    work.r3.u64 = controller;
+    work.r4.u64 = thing;
+    if (!refii::mods::CallGuest(work, base, refii::guest::Address(0x823E1650u)) || (work.r3.u32 & 0xFFu) == 0u) {
+      return false;
+    }
+  }
+  PPCContext work = refii::mods::Frame(ctx);
+  const uint32_t scratch = (work.r1.u32 + 0x60u) & ~0xFu;
+  for (uint32_t i = 0; i < 16u; i += 4u) {
+    refii::mods::StoreU32(base, scratch + i, 0u);
+  }
+  work.r3.u64 = targeting;
+  work.r4.u64 = viewer;
+  work.r5.u64 = scratch;
+  work.r6.u64 = scratch;
+  work.f1.f64 = radius_sq;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(0x822BE1E8u)) && (work.r3.u32 & 0xFFu) != 0u;
 }
 
 }  // namespace
 
-// A usable thing's update (r3 its CECOnActionUse component; the thing at +4).
+// The WorldIconRadius² the use update hands its in-range test (`fmuls f1,f1,f1` just before;
+// TU1 0x828226B0 / disc 0x82754130), kept for the other player's test after the update.
+void RefiiCoopUseRadius(PPCRegister& f1) {
+  if (g_use_running != 0u) {
+    g_use_radius_for = g_use_running;
+    g_use_radius_sq = static_cast<float>(f1.f64);
+  }
+}
+
+// A usable thing's update (r3 its CECOnActionUse component; the thing at +4). The guest keeps ONE
+// prompt per thing, for the player it tests (the nearer, above); after it, the other player gets
+// the same in-range test, and each half draws the icon of a thing its player sees.
 REX_EXTERN(rex_CECOnActionUse_Update) {
   const uint32_t previous = g_use_viewer;
+  const uint32_t previous_running = g_use_running;
+  const PPCContext entry = ctx;
   const uint32_t use = ctx.r3.u32;
   const uint32_t thing = Plausible(use) ? refii::vfs::LoadGuestU32(base, use + 4u) : 0u;
   g_use_viewer = NearerPlayerTwo(ctx, base, thing);
-  NotePromptTwo(base, g_use_viewer != 0u ? thing : 0u);
+  g_use_running = use;
+  g_use_radius_for = 0u;
   __imp__rex_CECOnActionUse_Update(ctx, base);
+  if (Plausible(use) && refii::vfs::LoadGuestU8(base, use + 0x18u) != 0u && CoopGame(base)) {
+    const uint32_t one = refii_mod_player_hero(base, 1);
+    const uint32_t two = refii_mod_player_hero(base, 2);
+    const bool viewer_two = g_use_viewer != 0u;
+    uint8_t mask = viewer_two ? 2u : 1u;
+    PPCContext work = entry;
+    if (g_use_radius_for == use && SeesPrompt(work, base, thing, viewer_two ? one : two, g_use_radius_sq)) {
+      mask |= viewer_two ? 1u : 2u;
+    }
+    NotePromptMask(base, thing, mask);
+  }
+  // Player two's hold prompt goes to player one once player one is the nearer player there for
+  // a few updates in a row: hidden (`sub_82823498`), it is asked again next update for player one.
+  if (Plausible(use) && use == g_hold_prompt_two.use) {
+    g_hold_prompt_flip = g_use_viewer == 0u ? g_hold_prompt_flip + 1u : 0u;
+    if (g_hold_prompt_flip >= 10u) {
+      g_hold_prompt_flip = 0u;
+      g_hold_prompt_two = HoldPromptTwo{};
+      PPCContext work = refii::mods::Frame(entry);
+      work.r3.u64 = use;
+      refii::mods::CallGuest(work, base, refii::guest::Address(0x82823498u));
+    }
+  }
+  g_use_running = previous_running;
   g_use_viewer = previous;
 }
 
-// The prompt manager's A handler (r3 manager, r4 the input event: +8 button, +44 kind).
-REX_EXTERN(rex_lhPromptManager_HoldInput) {
-  const bool previous = g_two_may_hold;
-  const uint32_t event = ctx.r4.u32;
-  const uint32_t frame = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u));
-  g_two_may_hold = Plausible(event) && refii::vfs::LoadGuestU8(base, event + 8u) == 11u &&
-                   CoopGame(base) &&
-                   (frame - g_exit_prompt_two_frame <= 2u || PlayerTwoTargetsHoldUse(ctx, base));
-  __imp__rex_lhPromptManager_HoldInput(ctx, base);
-  g_two_may_hold = previous;
+// The prompt manager's request (`sub_823DD730`: r3 manager, r4 &key, r5 the thing, r6 &title,
+// r7 type, v1 the icon's offset from the thing). A hold prompt (type 35) asked for player two in
+// local co-op is kept as theirs and answered 1, as a request the manager took is; the use update
+// then marks it shown (+0x18, +0x1A) as it would.
+REX_EXTERN(rex_lhPromptManager_Request) {
+  if (g_use_viewer == 0u || g_use_running == 0u || ctx.r7.u32 != 35u || !Plausible(ctx.r5.u32) ||
+      !LocalCoopGame(base)) {
+    __imp__rex_lhPromptManager_Request(ctx, base);
+    return;
+  }
+  HoldPromptTwo prompt;
+  prompt.thing = ctx.r5.u32;
+  prompt.use = g_use_running;
+  refii::mods::GetVector(ctx, 1, prompt.offset);
+  prompt.title = Plausible(ctx.r6.u32) ? refii::vfs::ReadGuestWideString(base, ctx.r6.u32) : std::string();
+  g_hold_prompt_two = std::move(prompt);
+  g_hold_prompt_flip = 0u;
+  Once(g_said_hold, "player two has their own hold prompt");
+  ctx.r3.u64 = 1u;
 }
 
-// The prompt manager's update: a full hold uses as the player who held.
+namespace {
+
+/// Whether `event` came from player one's pad (`sub_823DD318` 0x823DD388..0x823DD3B8: the pad of
+/// player record 1, `sub_82264230(*(game+156), 1)`, matched on +40).
+bool PlayerOnesEvent(PPCContext& ctx, uint8_t* base, uint32_t event) {
+  using refii::vfs::LoadGuestU32;
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = Plausible(root) ? LoadGuestU32(base, root + 0xCu) : 0u;
+  if (!Plausible(game)) {
+    return true;
+  }
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u64 = LoadGuestU32(base, game + 156u);
+  work.r4.u64 = 1u;
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(0x82264230u))) {
+    return true;
+  }
+  const uint32_t pad = work.r3.u32;
+  return Plausible(pad) && LoadGuestU32(base, event + 40u) == LoadGuestU32(base, pad + 40u);
+}
+
+/// Whether `hero` moves faster than the hold handler lets a press be a hold: the creature's
+/// velocity (`*(hero+0x7C)` vfunc +0x4C) squared over x and y past 1 (0x823DD3E0..0x823DD428).
+bool MovingTooFastToHold(PPCContext& ctx, uint8_t* base, uint32_t hero) {
+  using refii::vfs::LoadGuestU32;
+  const uint32_t mover = Plausible(hero) ? LoadGuestU32(base, hero + 0x7Cu) : 0u;
+  const uint32_t vtable = Plausible(mover) ? LoadGuestU32(base, mover) : 0u;
+  if (!Plausible(vtable)) {
+    return false;
+  }
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u64 = (work.r1.u32 + 0x80u) & ~0xFu;
+  work.r4.u64 = mover;
+  if (!refii::mods::CallGuest(work, base, LoadGuestU32(base, vtable + 0x4Cu)) || !Plausible(work.r3.u32)) {
+    return false;
+  }
+  const auto lane = [&](uint32_t i) {
+    const uint32_t bits = LoadGuestU32(base, work.r3.u32 + i * 4u);
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  };
+  const float x = lane(0u), y = lane(1u);
+  return x * x + y * y > 1.0f;
+}
+
+}  // namespace
+
+// The prompt manager's A handler (r3 manager, r4 the input event: +8 button, +44 kind). While
+// player two has their own hold prompt, their A presses are its: taken here (+56 consumed, 1)
+// before the shipped handler, which sees only the manager's one prompt.
+REX_EXTERN(rex_lhPromptManager_HoldInput) {
+  {
+    const uint32_t event = ctx.r4.u32;
+    const int32_t kind = Plausible(event) ? static_cast<int32_t>(refii::vfs::LoadGuestU32(base, event + 44u)) : 0;
+    const uint32_t frame = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u));
+    if (g_hold_prompt_two.use != 0u && frame - g_exit_prompt_two_frame > 2u && Plausible(event) &&
+        refii::vfs::LoadGuestU8(base, event + 8u) == 11u &&
+        kind >= 13 && kind <= 15 && LocalCoopGame(base) && !PlayerOnesEvent(ctx, base, event) &&
+        !MovingTooFastToHold(ctx, base, refii_mod_player_hero(base, 2))) {
+      if (kind == 13) {
+        g_two_held = true;
+      } else if (kind == 15) {
+        g_two_held = false;
+      }
+      refii::mods::StoreU8(base, event + 56u, 1u);
+      ctx.r3.u64 = 1u;
+      return;
+    }
+  }
+  const bool previous = g_two_may_hold;
+  const bool previous_exit = g_two_exit_hold;
+  const uint32_t event = ctx.r4.u32;
+  const uint32_t frame = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u));
+  const bool a_event = Plausible(event) && refii::vfs::LoadGuestU8(base, event + 8u) == 11u && CoopGame(base);
+  g_hold_event_kind = Plausible(event) ? static_cast<int32_t>(refii::vfs::LoadGuestU32(base, event + 44u)) : 0;
+  g_two_exit_hold = a_event && frame - g_exit_prompt_two_frame <= 2u;
+  g_two_may_hold = a_event && !g_two_exit_hold && PlayerTwoTargetsHoldUse(ctx, base);
+  __imp__rex_lhPromptManager_HoldInput(ctx, base);
+  g_two_may_hold = previous;
+  g_two_exit_hold = previous_exit;
+}
+
+namespace {
+
+/// Player two's own hold meter: the guest's integrator (`sub_821C5BB0` 0x821C5EB4..0x821C5F2C)
+/// at its own rates (GUIValues HeldButtonUpdateSpeed / ReleasedButtonUpdateSpeed, read live),
+/// on player two's target, completing ONCE as the guest does — on the frame it reaches 1, through
+/// the guest's own use `sub_828219F8(target's component 78, hero)` (0x821C62C4) — and starting
+/// again once they let go or change target.
+float g_two_fraction = 0.0f;
+uint32_t g_two_target = 0u;
+
+/// Player two's hold prompt as it stands: dropped once its thing stops showing it (the use's hide,
+/// `sub_82823498`, clears +0x18 and +0x1A) or outside local co-op; stated to the host with its
+/// world point (the thing's position plus the request's offset) and title.
+void PublishHoldPromptTwo(PPCContext& ctx, uint8_t* base) {
+  HoldPromptTwo& prompt = g_hold_prompt_two;
+  float at[3] = {};
+  const bool up = prompt.use != 0u && LocalCoopGame(base) && Plausible(prompt.thing) &&
+                  refii::vfs::LoadGuestU8(base, prompt.use + 0x18u) != 0u &&
+                  refii::vfs::LoadGuestU8(base, prompt.use + 0x1Au) != 0u &&
+                  refii::vfs::LoadGuestU32(base, prompt.use + 4u) == prompt.thing &&
+                  refii_mod_entity_position(&ctx, base, prompt.thing, at) != 0;
+  if (!up) {
+    prompt = HoldPromptTwo{};
+    refii_bridge_player_two_hold_prompt(0, nullptr, nullptr);
+    return;
+  }
+  for (int i = 0; i < 3; ++i) {
+    at[i] += prompt.offset[i];
+  }
+  refii_bridge_player_two_hold_prompt(1, at, prompt.title.c_str());
+}
+
+void DrivePlayerTwoHold(PPCContext& ctx, uint8_t* base, float dt) {
+  using refii::vfs::LoadGuestU32;
+  PublishHoldPromptTwo(ctx, base);
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  uint32_t target = 0u;
+  uint32_t use = 0u;
+  if (two != 0u && LocalCoopGame(base) && PlayerTwoTargetsHoldUse(ctx, base)) {
+    const uint32_t targeting = refii_mod_component(base, two, 77u);
+    PPCContext work = refii::mods::Frame(ctx);
+    if (targeting != 0u && refii::mods::CallVirtual(work, base, targeting, 0x44u / 4u)) {
+      target = work.r3.u32;
+      use = Plausible(target) ? refii_mod_component(base, target, 78u) : 0u;
+    }
+  }
+  if (use == 0u) {
+    g_two_fraction = 0.0f;
+    g_two_target = 0u;
+    g_two_held = false;
+    refii_bridge_player_two_hold_state(0.0f, 0);
+    return;
+  }
+  if (target != g_two_target) {
+    g_two_target = target;
+    g_two_fraction = 0.0f;
+  }
+  if (g_two_fraction >= 1.0f && !g_two_held) {
+    g_two_fraction = 0.0f;
+  }
+  const auto rate = [base](uint32_t address) {
+    const uint32_t bits = LoadGuestU32(base, refii::guest::Address(address));
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  };
+  if (g_two_fraction < 1.0f && dt > 0.0f && dt < 1.0f) {
+    g_two_fraction += g_two_held ? rate(0x8335C4A8u) * dt : -rate(0x8335C4A4u) * dt;
+    g_two_fraction = std::clamp(g_two_fraction, 0.0f, 1.0f);
+    if (g_two_fraction >= 1.0f) {
+      PPCContext work = refii::mods::Frame(ctx);
+      work.r3.u64 = use;
+      work.r4.u64 = two;
+      refii::mods::CallGuest(work, base, refii::guest::Address(0x828219F8u));
+      Once(g_said_hold, "player two completed their own hold");
+    }
+  }
+  refii_bridge_player_two_hold_state(g_two_fraction, g_two_held ? 1 : 0);
+}
+
+}  // namespace
+
+// The prompt manager's update (r3 the manager, f1 now; +0x38 the last time): a full hold of the
+// shared meter uses as the player who held (an exit's), and player two's own meter steps.
 REX_EXTERN(rex_lhPromptManager_Update) {
   const uint32_t previous = g_hold_creature;
+  const PPCContext entry = ctx;
+  const uint32_t manager = ctx.r3.u32;
+  float last = 0.0f;
+  if (Plausible(manager)) {
+    const uint32_t bits = refii::vfs::LoadGuestU32(base, manager + 0x38u);
+    std::memcpy(&last, &bits, sizeof(last));
+  }
+  const float dt = static_cast<float>(ctx.f1.f64) - last;
   g_hold_creature = g_hold_player == 2 && CoopGame(base) ? refii_mod_player_hero(base, 2) : 0u;
   __imp__rex_lhPromptManager_Update(ctx, base);
   g_hold_creature = previous;
+  PPCContext work = entry;
+  DrivePlayerTwoHold(work, base, dt);
 }

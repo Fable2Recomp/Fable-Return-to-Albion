@@ -165,7 +165,7 @@ extern "C" uint32_t refii_mod_player_hero(uint8_t* base, int32_t player) {
     return 0u;
   }
 
-  const uint32_t handle = refii::vfs::LoadGuestU32(base, at + (player == 1 ? 0x6Cu : 0x74u));
+  const uint32_t handle = player == 1 ? refii_bridge_hero_one_holder(base, at) : refii::vfs::LoadGuestU32(base, at + 0x74u);
   return plausible(handle) ? refii::vfs::LoadGuestU32(base, handle) : 0u;
 }
 
@@ -399,6 +399,21 @@ extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity) {
 
 extern "C" int32_t refii_mod_menu_player(uint8_t* base) {
   return refii::vfs::IsCoopJoiner(base) || refii::vfs::MenusActForPlayerTwo(base) ? 2 : 1;
+}
+
+// How this game is shared: 0 alone, 1 local co-op (game+0x11C == 2, the guest's IsLocalCoopGame),
+// 2 online with this machine hosting, 3 online with this machine joined. A partner counts once their
+// hero exists.
+extern "C" int32_t refii_mod_coop_mode(uint8_t* base) {
+  if (base == nullptr || refii_mod_player_hero(base, 2) == 0u) {
+    return 0;
+  }
+  if (refii::vfs::IsCoopJoiner(base)) {
+    return 3;
+  }
+  const uint32_t root = refii::mods::LoadU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = root >= 0x10000u && root < 0xC0000000u ? refii::mods::LoadU32(base, root + 12u) : 0u;
+  return game >= 0x10000u && game < 0xC0000000u && refii::mods::LoadU32(base, game + 0x11Cu) == 2u ? 1 : 2;
 }
 
 // A villager's opinion of either hero (core/coop_opinion.cpp): player one's is the opinion

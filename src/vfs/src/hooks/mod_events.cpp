@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <memory>
 #include <vector>
 
 #include <rex/logging.h>
@@ -32,6 +33,18 @@
 #include "vfs_hooks_private.h"
 
 PPC_EXTERN_FUNC(__imp__rex_CPlayerActionReceiver_ProcessAction);
+PPC_EXTERN_FUNC(__imp__rex_CECCrime_Add);
+PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_Update);
+PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_Shutdown);
+PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_Reset);
+PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_SendIcon);
+PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_SendIconRemoved);
+PPC_EXTERN_FUNC(__imp__rex_lhWorldIcons_Request);
+PPC_EXTERN_FUNC(__imp__rex_lhWorldIcons_Remove);
+PPC_EXTERN_FUNC(__imp__rex_lhWorldIcon_Update);
+PPC_EXTERN_FUNC(__imp__rex_CECVillager_SpeechReaction);
+PPC_EXTERN_FUNC(__imp__rex_CECVillager_ChooseTopic);
+PPC_EXTERN_FUNC(__imp__rex_CECStats_UnlockAchievement);
 PPC_EXTERN_FUNC(__imp__rex_CECAbilities_PerformRequest);
 PPC_EXTERN_FUNC(__imp__rex_CAbilityActionMelee_CommitSwing);
 PPC_EXTERN_FUNC(__imp__rex_CAbilityActionStrafeRoll_CanStart);
@@ -609,6 +622,29 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       std::snprintf(out, size, "summoner=%u,player=%d,summon=%u,kind=%d", H(e.summoner), e.player, H(e.summon), e.kind);
       return;
     }
+    case REFII_EVENT_CRIME: {
+      const auto& e = *static_cast<const CrimeEvent*>(event);
+      std::snprintf(out, size, "criminal=%u,player=%d,victim=%u,victim_player=%d,type=%d", H(e.criminal), e.player,
+                    H(e.victim), e.victim_player, e.type);
+      return;
+    }
+    case REFII_EVENT_ACHIEVEMENT: {
+      const auto& e = *static_cast<const AchievementEvent*>(event);
+      std::snprintf(out, size, "id=%d,source=%u,player=%d", e.id, H(e.source), e.player);
+      return;
+    }
+    case REFII_EVENT_COLLECTABLE_TAKEN: {
+      const auto& e = *static_cast<const CollectableTakenEvent*>(event);
+      std::snprintf(out, size, "player=%d,entity=%u,record='0x%08x',stays=%s", e.player, H(e.entity), e.record,
+                    e.stays ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_PARTNER_CONSENT: {
+      const auto& e = *static_cast<const PartnerConsentEvent*>(event);
+      std::snprintf(out, size, "ticket=%u,kind=%d,asker=%d,detail=%d,answer=%d", e.ticket, e.kind, e.asker, e.detail,
+                    e.answer);
+      return;
+    }
     case REFII_EVENT_WEATHER_REGION: {
       const auto& e = *static_cast<const WeatherRegionEvent*>(event);
       std::snprintf(out, size, "day_set='0x%08x',previous='0x%08x',inside=%s", e.day_set, e.previous,
@@ -798,8 +834,8 @@ namespace {
 bool g_verdict_running = false;
 
 void RunGodotVerdict(int32_t kind, void* event) {
-  if (g_verdict_running || kind < 0 || kind >= 64 ||
-      ((refii_bridge_mod_verdict_mask() >> kind) & 1u) == 0u) {
+  const uint64_t verdict_word = kind < 64 ? refii_bridge_mod_verdict_mask() : refii_bridge_mod_verdict_mask_high();
+  if (g_verdict_running || kind < 0 || kind >= 128 || ((verdict_word >> (kind % 64)) & 1u) == 0u) {
     return;
   }
   const refii_mod_verdict_fn handler = refii_bridge_mod_verdict_handler();
@@ -955,6 +991,12 @@ bool WriteEventField(int32_t kind, void* event, const char* field, double value)
   }
   const auto is = [field](const char* name) { return std::strcmp(field, name) == 0; };
   switch (kind) {
+    case REFII_EVENT_PARTNER_CONSENT:
+      if (is("answer")) {
+        static_cast<PartnerConsentEvent*>(event)->answer = value < 0.0 ? -1 : (value >= 0.5 ? 1 : 0);
+        return true;
+      }
+      return false;
     case REFII_EVENT_HIT:
       if (is("damage")) {
         static_cast<HitEvent*>(event)->damage = static_cast<float>(value);
@@ -2663,56 +2705,188 @@ REX_EXTERN(rex_CECTargetingPlayer_ClearTarget) {
 // (villager at +4), r4 = the message (+32 the deed record pair, +52 the kind, +72 the doer's weak
 // ref), r5 = the player-manager accessor's argument. It adds the opinion effects and the renown, morality and purity the deed
 // earns. TU1 0x82786F58.
-// THE VILLAGER'S OPINION OF EACH HERO (core/coop_opinion.cpp): for a deed of player two's, player
-// two's set is swapped into the component for the call — the deed's modifiers, its reaction and
-// its effect land on how the villager sees player two — and the main set put back after. A
-// villager player two never dealt with starts from the villager's own base attitudes, with no
-// deeds remembered. The two ranges are the component's +24..+64 and +176..+236.
+// THE VILLAGER'S OPINION OF EACH HERO (core/coop_opinion.cpp; Fable 3 keeps a record per hero,
+// `sub_82239488(comp+864, hero)`). Fable 2's opinion component holds one hero's worth of state and
+// every reader asks hero one (players+104, a weak reference whose holder is +108: `sub_8222C1B8`
+// and some twenty inline `lwz rX,0x6C(players)`). While code runs FOR HERO TWO the scope below
+//   - swaps player two's per-hero state into the component (the regions under kOpinionRegions,
+//     read in the rebuild `sub_8278B948`, the expiry `sub_8278B680`, the Update `sub_82261750` and
+//     the relationship getters: +0x302 interest, +0x303 engaged, +0x304 waiting, +0x307 follow
+//     for sex, +0x309 flirt, +0x364 icon, +0x3C4 last visit), and
+//   - puts hero two's holder (+116) in hero one's (+108), so every hero-one fetch in the call
+//     answers hero two;
+// and puts both back after. Scopes nest: a component already in scope is left alone, and the
+// holder goes back when the outermost scope ends.
+struct OpinionRegion {
+  uint32_t offset;
+  uint32_t size;
+};
+
+// Block order is fixed: the first 40 bytes (base +24, current +44) are what the host's targeted
+// readout and refii_mod_opinion read.
+constexpr OpinionRegion kOpinionRegions[] = {
+    {24u, 40u},   // base and current axes
+    {176u, 60u},  // the five modifier lists {word, head node, size}
+    {64u, 40u},   // appearance (+64) and script (+84) terms
+    {492u, 4u},   // the renown scale the rebuild writes
+    {716u, 20u},  // weapon terms (`sub_82266780`)
+    {770u, 3u},   // shown romantic interest, engaged, waiting to marry
+    {775u, 1u},   // follow for sex
+    {777u, 1u},   // can flirt
+    {864u, 8u},   // last sex day, icon type
+    {964u, 12u},  // last visit day, visit count, harassment clock
+    {980u, 8u},   // harassment count, harasser
+    {108u, 4u},   // the love the relationship icon last showed (`sub_82268848`)
+};
+
+constexpr uint32_t kOpinionRegionBytes = [] {
+  uint32_t total = 0u;
+  for (const OpinionRegion& r : kOpinionRegions) {
+    total += r.size;
+  }
+  return total;
+}();
+static_assert(kOpinionRegionBytes <= REFII_OPINION_BLOCK_BYTES, "the opinion block holds every region");
+
 void OpinionBlock(uint8_t* base, uint32_t component, uint8_t* out) {
-  std::memcpy(out, base + component + 24u, 40u);
-  std::memcpy(out + 40u, base + component + 176u, 60u);
+  uint32_t at = 0u;
+  for (const OpinionRegion& r : kOpinionRegions) {
+    std::memcpy(out + at, base + component + r.offset, r.size);
+    at += r.size;
+  }
 }
 
 void OpinionWrite(uint8_t* base, uint32_t component, const uint8_t* in) {
-  std::memcpy(base + component + 24u, in, 40u);
-  std::memcpy(base + component + 176u, in + 40u, 60u);
+  uint32_t at = 0u;
+  for (const OpinionRegion& r : kOpinionRegions) {
+    std::memcpy(base + component + r.offset, in + at, r.size);
+    at += r.size;
+  }
 }
 
-struct OpinionSwap {
+/// The player record that holds the two heroes' weak references (+104 hero one, +112 hero two).
+uint32_t OpinionPlayers(uint8_t* base) {
+  const uint32_t root = Load32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = root >= 0x10000u ? Load32(base, root + 12u) : 0u;
+  const uint32_t manager = game >= 0x10000u ? Load32(base, game + 88u) : 0u;
+  const uint32_t cell = manager >= 0x10000u ? Load32(base, manager + 4u) : 0u;
+  return cell >= 0x10000u ? Load32(base, cell) : 0u;
+}
+
+/// Player two's first block for a villager: its own attitudes and terms as they stand, empty
+/// modifier lists of their own (each a fresh head node, next = prev = itself, as the list walks
+/// `**(list+4)` expect), and no relationship, visits or harassment.
+bool OpinionFirstBlock(PPCContext& ctx, uint8_t* base, const uint8_t* main, uint8_t* out) {
+  std::memcpy(out, main, REFII_OPINION_BLOCK_BYTES);
+  for (uint32_t list = 0; list < 5u; ++list) {
+    PPCContext work = Frame(ctx);
+    work.r3.u64 = 16u;
+    if (!CallGuest(work, base, refii::guest::Address(0x8221F258u)) || work.r3.u32 < 0x10000u) {
+      return false;
+    }
+    const uint32_t node = work.r3.u32;
+    refii::mods::StoreU32(base, node, node);
+    refii::mods::StoreU32(base, node + 4u, node);
+    uint8_t* entry = out + 40u + (12u * list);
+    const uint32_t head = __builtin_bswap32(node);
+    std::memcpy(entry + 4u, &head, 4u);
+    std::memset(entry + 8u, 0, 4u);
+  }
+  // No relationship, visits or harassment yet (+770 onward).
+  uint32_t at = 0u;
+  for (const OpinionRegion& r : kOpinionRegions) {
+    if (r.offset >= 770u) {
+      std::memset(out + at, 0, r.size);
+    }
+    at += r.size;
+  }
+  return true;
+}
+
+thread_local uint32_t t_opinion_scoped[8] = {};
+thread_local int32_t t_opinion_depth = 0;
+thread_local uint32_t t_opinion_holder = 0u;
+thread_local uint32_t t_opinion_players = 0u;
+
+struct OpinionHeroScope {
   uint8_t* base = nullptr;
   uint32_t component = 0u;
   uint8_t main[REFII_OPINION_BLOCK_BYTES] = {};
 
-  OpinionSwap(PPCContext& ctx, uint8_t* guest, uint32_t comp, uint32_t message) {
-    const uint32_t doer = message != 0u ? Deref(ctx, guest, message + 72u) : 0u;
-    if (comp == 0u || doer == 0u || doer != refii_mod_player_hero(guest, 2) || refii_mod_player_hero(guest, 1) == 0u) {
+  /// Enters when `hero` is hero two (and hero one exists); otherwise does nothing.
+  OpinionHeroScope(PPCContext& ctx, uint8_t* guest, uint32_t comp, uint32_t hero) {
+    if (comp < 0x10000u || hero == 0u || hero != refii_mod_player_hero(guest, 2) ||
+        refii_mod_player_hero(guest, 1) == 0u || t_opinion_depth >= 8) {
+      return;
+    }
+    for (int32_t i = 0; i < t_opinion_depth; ++i) {
+      if (t_opinion_scoped[i] == comp) {
+        return;
+      }
+    }
+    const uint32_t players = t_opinion_depth == 0 ? OpinionPlayers(guest) : t_opinion_players;
+    if (players < 0x10000u) {
+      return;
+    }
+    OpinionBlock(guest, comp, main);
+    uint8_t two[REFII_OPINION_BLOCK_BYTES] = {};
+    if (refii_bridge_opinion_two_load(comp, two) == 0 && !OpinionFirstBlock(ctx, guest, main, two)) {
       return;
     }
     base = guest;
     component = comp;
-    OpinionBlock(base, component, main);
-    uint8_t two[REFII_OPINION_BLOCK_BYTES] = {};
-    if (refii_bridge_opinion_two_load(component, two) == 0) {
-      std::memcpy(two, main, 20u);       // base axes: the villager's own attitudes
-      std::memcpy(two + 20u, main, 20u); // current = base: no deeds remembered yet
-    }
     OpinionWrite(base, component, two);
+    if (t_opinion_depth == 0) {
+      t_opinion_players = players;
+      t_opinion_holder = Load32(base, players + 108u);
+      refii_bridge_hero_slot_lend(t_opinion_holder);
+      refii::mods::StoreU32(base, players + 108u, Load32(base, players + 116u));
+    }
+    t_opinion_scoped[t_opinion_depth++] = comp;
   }
 
-  ~OpinionSwap() {
+  bool active() const { return base != nullptr; }
+
+  ~OpinionHeroScope() {
     if (base == nullptr) {
       return;
     }
-    uint8_t two[REFII_OPINION_BLOCK_BYTES];
+    uint8_t two[REFII_OPINION_BLOCK_BYTES] = {};
     OpinionBlock(base, component, two);
     refii_bridge_opinion_two_store(component, two);
     OpinionWrite(base, component, main);
+    --t_opinion_depth;
+    if (t_opinion_depth == 0) {
+      refii::mods::StoreU32(base, t_opinion_players + 108u, t_opinion_holder);
+      refii_bridge_hero_slot_return();
+    }
   }
+
+  OpinionHeroScope(const OpinionHeroScope&) = delete;
+  OpinionHeroScope& operator=(const OpinionHeroScope&) = delete;
 };
+
+/// The hero a villager's opinion concerns when the caller names none: the nearer hero, the
+/// game's own rule for whom a villager notices (GetEntityToNoticeExpressionsOf `sub_82798578`).
+uint32_t OpinionNearerHero(PPCContext& ctx, uint8_t* base, uint32_t villager) {
+  const uint32_t one = refii_mod_player_hero(base, 1);
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  float v[3], a[3], b[3];
+  if (villager == 0u || one == 0u || two == 0u || refii_mod_entity_position(&ctx, base, villager, v) == 0 ||
+      refii_mod_entity_position(&ctx, base, one, a) == 0 || refii_mod_entity_position(&ctx, base, two, b) == 0) {
+    return one;
+  }
+  const auto d2 = [&v](const float* p) {
+    return (p[0] - v[0]) * (p[0] - v[0]) + (p[1] - v[1]) * (p[1] - v[1]) + (p[2] - v[2]) * (p[2] - v[2]);
+  };
+  return d2(b) < d2(a) ? two : one;
+}
 
 REX_EXTERN(rex_CECOpinionReaction_OnDeed) {
   REX_FUNC_PROLOGUE();
-  OpinionSwap swap(ctx, base, ctx.r3.u32, ctx.r4.u32);
+  PPCContext entry = ctx;
+  const uint32_t doer = ctx.r4.u32 != 0u ? Deref(ctx, base, ctx.r4.u32 + 72u) : 0u;
+  OpinionHeroScope scope(entry, base, ctx.r3.u32, doer);
   if (AnySubscriber(REFII_EVENT_OPINION_DEED) && ctx.r4.u32 != 0) {
     OpinionDeedEvent e{};
     PPCContext e_ctx = ctx;
@@ -2729,6 +2903,265 @@ REX_EXTERN(rex_CECOpinionReaction_OnDeed) {
     }
   }
   __imp__rex_CECOpinionReaction_OnDeed(ctx, base);
+}
+
+// The opinion component's per-frame update (r3 the component): the shipped pass is hero one's;
+// with a partner, the opinion math runs again inside player two's scope, in the shipped order and
+// behind the shipped gates (`sub_82261750`): expiry `sub_8278B680`, the rebuild `sub_8278B948`,
+// then the appearance term `sub_82791658` (byte_83318FDC, +779, not `sub_821DE478`) and the weapon
+// term `sub_82266780(comp, 0)` (byte_83318FDD, +779). Icons, visits and harassment stay the
+// shipped pass's, except the relationship icon `sub_82268848`, which player two gets as their own
+// (the world-icon hooks below). TU1 0x82261750.
+REX_EXTERN(rex_CECOpinionReaction_Update) {
+  REX_FUNC_PROLOGUE();
+  const PPCContext entry = ctx;
+  const uint32_t comp = ctx.r3.u32;
+  __imp__rex_CECOpinionReaction_Update(ctx, base);
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  if (two == 0u || comp < 0x10000u) {
+    return;
+  }
+  PPCContext call = entry;
+  OpinionHeroScope scope(call, base, comp, two);
+  if (!scope.active()) {
+    return;
+  }
+  const auto run = [&](uint32_t address, uint32_t r4) {
+    PPCContext work = Frame(entry);
+    work.r3.u64 = comp;
+    work.r4.u64 = r4;
+    CallGuest(work, base, refii::guest::Address(address));
+    return work.r3.u32;
+  };
+  run(0x8278B680u, 0u);
+  run(0x8278B948u, 0u);
+  const bool engaged = Load8(base, comp + 779u) != 0u;
+  if (engaged && Load8(base, refii::guest::Address(0x83318FDCu)) != 0u && (run(0x821DE478u, 0u) & 0xFFu) == 0u) {
+    run(0x82791658u, 0u);
+  }
+  if (engaged && Load8(base, refii::guest::Address(0x83318FDDu)) != 0u) {
+    run(0x82266780u, 0u);
+  }
+  // The relationship icon, last as shipped. A joiner is sent player two's by the host.
+  if (refii_mod_coop_mode(base) != 3) {
+    run(0x82268848u, 0u);
+  }
+}
+
+// A villager's spoken reaction (`sub_824742D0`, a behaviour's virtual: r6 the villager; it asks
+// GetAnOpinion and GetCurrentReaction for hero one, 0x82474460) and its conversation topic
+// (`sub_8247CBB0`: r5 the villager; hero one inline at 0x8247D21C): both run for the hero the
+// villager notices, so player two is greeted and talked to as the villager sees player two.
+// TU1 0x824742D0 / 0x8247CBB0.
+REX_EXTERN(rex_CECVillager_SpeechReaction) {
+  REX_FUNC_PROLOGUE();
+  PPCContext entry = ctx;
+  const uint32_t villager = ctx.r6.u32;
+  const uint32_t opinion = villager != 0u ? refii_mod_component(base, villager, 47u) : 0u;
+  OpinionHeroScope scope(entry, base, opinion, opinion != 0u ? OpinionNearerHero(entry, base, villager) : 0u);
+  __imp__rex_CECVillager_SpeechReaction(ctx, base);
+}
+
+REX_EXTERN(rex_CECVillager_ChooseTopic) {
+  REX_FUNC_PROLOGUE();
+  PPCContext entry = ctx;
+  const uint32_t villager = ctx.r5.u32;
+  const uint32_t opinion = villager != 0u ? refii_mod_component(base, villager, 47u) : 0u;
+  OpinionHeroScope scope(entry, base, opinion, opinion != 0u ? OpinionNearerHero(entry, base, villager) : 0u);
+  __imp__rex_CECVillager_ChooseTopic(ctx, base);
+}
+
+// PLAYER TWO'S OPINION ICONS. The relationship icon (`sub_82268848` -> `sub_821AD468`, key
+// "<uid>_Opinion", types 22..26 from 0x8209C00C) and the "+N love" splashes (`sub_82789FC0`,
+// types 1..20 from 0x8209BBD8) go through the world-icon manager's request
+// `sub_823DD6B0(wim, &key, thing, &text, type)` and removal `sub_821BD798(wim, thing, &key)`, one
+// icon per key. Inside player two's opinion scope the key gains "_P2", so player two's icons stand
+// beside player one's on the same villager (the manager stacks them) and the host draws each in
+// its own player's view (host_bridge.cpp RefiiHostGetWorldSprites, flag 4). Online the joiner is
+// player two: the network copy (`sub_8279F7B0` / `sub_8279F868`, sent with the unsuffixed key) is
+// sent for player two's icons only.
+namespace {
+
+constexpr char kPlayerTwoKey[] = "_P2";
+
+/// A villager's icons going away whole: its opinion component shut down (`sub_82790988`) or reset
+/// (`sub_827931C0`). Player two's go with player one's.
+thread_local bool t_opinion_icons_gone = false;
+
+/// Whether the guest string object at `string` (a pointer to its rep {chars, length, ...},
+/// `sub_82208778`) ends in "_P2".
+bool KeyIsPlayerTwo(const uint8_t* base, uint32_t string) {
+  const uint32_t rep = string >= 0x10000u ? Load32(base, string) : 0u;
+  const uint32_t chars = rep >= 0x10000u ? Load32(base, rep) : 0u;
+  const uint32_t length = rep >= 0x10000u ? Load32(base, rep + 4u) : 0u;
+  return chars >= 0x10000u && length >= 3u && length <= 512u &&
+         std::memcmp(base + chars + length - 3u, kPlayerTwoKey, 3u) == 0;
+}
+
+/// Runs `call(ctx, copy)` with player two's copy of the key object at `key` ("<key>_P2"), built on
+/// the guest stack below the caller's frame (`sub_821F0240` copy, `sub_821DA9C0` append) and
+/// released after (`sub_82214DD8`); the original runs below the copy.
+template <typename Call>
+void WithPlayerTwoKey(PPCContext& ctx, uint8_t* base, uint32_t key, Call&& call) {
+  const uint32_t caller_sp = ctx.r1.u32;
+  const PPCContext work = Frame(ctx, 0x100u);
+  const uint32_t copy = (work.r1.u32 + 0x80u) & ~0xFu;
+  const uint32_t suffix = copy + 0x10u;
+  std::memcpy(base + suffix, kPlayerTwoKey, sizeof(kPlayerTwoKey));
+  refii::mods::StoreU32(base, copy, 0u);
+  PPCContext step = work;
+  step.r3.u64 = copy;
+  step.r4.u64 = key;
+  if (!CallGuest(step, base, refii::guest::Address(0x821F0240u))) {
+    call(ctx, key);
+    return;
+  }
+  step = work;
+  step.r3.u64 = copy;
+  step.r4.u64 = suffix;
+  CallGuest(step, base, refii::guest::Address(0x821DA9C0u));
+  ctx.r1.u64 = work.r1.u32;
+  call(ctx, copy);
+  ctx.r1.u64 = caller_sp;
+  step = work;
+  step.r3.u64 = copy;
+  CallGuest(step, base, refii::guest::Address(0x82214DD8u));
+}
+
+/// The host's network copy of an icon is player two's alone online (the joiner plays player two).
+bool HostSendsIcon(uint8_t* base) {
+  return t_opinion_depth > 0 || t_opinion_icons_gone || refii_mod_coop_mode(base) != 2;
+}
+
+}  // namespace
+
+// The world-icon manager's request (r3 manager, r4 &key, r5 thing, r6 &text, r7 type). TU1 0x823DD6B0.
+REX_EXTERN(rex_lhWorldIcons_Request) {
+  if (t_opinion_depth == 0 || ctx.r4.u32 < 0x10000u) {
+    __imp__rex_lhWorldIcons_Request(ctx, base);
+    return;
+  }
+  WithPlayerTwoKey(ctx, base, ctx.r4.u32, [base](PPCContext& run, uint32_t key) {
+    run.r4.u64 = key;
+    __imp__rex_lhWorldIcons_Request(run, base);
+  });
+}
+
+// The world-icon manager's removal (r3 manager, r4 thing, r5 &key). TU1 0x821BD798.
+REX_EXTERN(rex_lhWorldIcons_Remove) {
+  const uint32_t key = ctx.r5.u32;
+  const auto remove_two = [base](PPCContext& run, uint32_t two) {
+    run.r5.u64 = two;
+    __imp__rex_lhWorldIcons_Remove(run, base);
+  };
+  if (t_opinion_depth > 0 && key >= 0x10000u) {
+    WithPlayerTwoKey(ctx, base, key, remove_two);
+    return;
+  }
+  const PPCContext entry = ctx;
+  __imp__rex_lhWorldIcons_Remove(ctx, base);
+  if (t_opinion_icons_gone && key >= 0x10000u && refii_mod_player_hero(base, 2) != 0u) {
+    PPCContext again = entry;
+    WithPlayerTwoKey(again, base, key, remove_two);
+  }
+}
+
+// The opinion component's shutdown and reset, each removing the villager's relationship icon.
+// TU1 0x82790988 / 0x827931C0.
+REX_EXTERN(rex_CECOpinionReaction_Shutdown) {
+  const bool previous = t_opinion_icons_gone;
+  t_opinion_icons_gone = true;
+  __imp__rex_CECOpinionReaction_Shutdown(ctx, base);
+  t_opinion_icons_gone = previous;
+}
+
+REX_EXTERN(rex_CECOpinionReaction_Reset) {
+  const bool previous = t_opinion_icons_gone;
+  t_opinion_icons_gone = true;
+  __imp__rex_CECOpinionReaction_Reset(ctx, base);
+  t_opinion_icons_gone = previous;
+}
+
+// The opinion icon's network copy, request and removal (gated in the guest on an online host,
+// `game+140` +52/+53). TU1 0x8279F7B0 / 0x8279F868.
+REX_EXTERN(rex_CECOpinionReaction_SendIcon) {
+  if (HostSendsIcon(base)) {
+    __imp__rex_CECOpinionReaction_SendIcon(ctx, base);
+  }
+}
+
+REX_EXTERN(rex_CECOpinionReaction_SendIconRemoved) {
+  if (HostSendsIcon(base)) {
+    __imp__rex_CECOpinionReaction_SendIconRemoved(ctx, base);
+  }
+}
+
+// A world icon's per-frame update (r3 the icon, r4 nonzero when it is measured against the hero):
+// its size, fade and look-at cue follow hero one's distance (`sub_8222C1B8` at 0x82241CB4). Player
+// two's icons are measured from player two: hero one's slot is lent to hero two for the call, as
+// the opinion scope lends it. TU1 0x82241AD8.
+REX_EXTERN(rex_lhWorldIcon_Update) {
+  const uint32_t icon = ctx.r3.u32;
+  const uint32_t players = t_opinion_depth == 0 && (ctx.r4.u32 & 0xFFu) != 0u && icon >= 0x10000u &&
+                                   KeyIsPlayerTwo(base, icon + 16u) && refii_mod_player_hero(base, 2) != 0u
+                               ? OpinionPlayers(base)
+                               : 0u;
+  if (players < 0x10000u) {
+    __imp__rex_lhWorldIcon_Update(ctx, base);
+    return;
+  }
+  const uint32_t holder = Load32(base, players + 108u);
+  refii_bridge_hero_slot_lend(holder);
+  refii::mods::StoreU32(base, players + 108u, Load32(base, players + 116u));
+  __imp__rex_lhWorldIcon_Update(ctx, base);
+  refii::mods::StoreU32(base, players + 108u, holder);
+  refii_bridge_hero_slot_return();
+}
+
+// A crime recorded: r3 = the crime component, r4 = the criminal, r5 = the victim, r6 = the crime
+// type, r7 a flag; v1 the place. Returns 1 when the crime was recorded (`sub_827C9C10`, which
+// recurses once with type 3 for a reported murder). A refusal returns 0, as the function's own
+// gates do. TU1 0x827C9C10.
+REX_EXTERN(rex_CECCrime_Add) {
+  REX_FUNC_PROLOGUE();
+  if (AnySubscriber(REFII_EVENT_CRIME)) {
+    CrimeEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.criminal = ctx.r4.u32;
+    e.player = PlayerOf(base, e.criminal);
+    e.victim = ctx.r5.u32;
+    e.victim_player = PlayerOf(base, e.victim);
+    e.type = static_cast<int32_t>(ctx.r6.u32);
+    Dispatch(e);
+    if (e.cancel) {
+      ctx.r3.u64 = 0u;
+      return;
+    }
+  }
+  __imp__rex_CECCrime_Add(ctx, base);
+}
+
+// An achievement unlocked: r3 = the stats component (owner at +4), r4 = the id (1..50). The body
+// checks the owner is a player and writes it for both heroes (`sub_824D8F88`; Lua
+// Stats.UnlockAchievement). TU1 0x824D8F88.
+REX_EXTERN(rex_CECStats_UnlockAchievement) {
+  REX_FUNC_PROLOGUE();
+  if (AnySubscriber(REFII_EVENT_ACHIEVEMENT) && ctx.r4.u32 != 0u) {
+    AchievementEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.id = static_cast<int32_t>(ctx.r4.u32);
+    e.source = Owner(base, ctx.r3.u32);
+    e.player = PlayerOf(base, e.source);
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+  }
+  __imp__rex_CECStats_UnlockAchievement(ctx, base);
 }
 
 // A script's direct opinion change: r3 = the component, r4 = the axis, f1 = the delta; the axis
@@ -3217,4 +3650,73 @@ void refii::vfs::ForgetDownStates(uint32_t entity) {
 void refii::vfs::ResetTimeOfDayBaseline() {
   g_last_hour = -1;
   g_last_day = -1;
+}
+
+// Raised by co-op code outside this file (coop_world_hooks.cpp, mod_lua_natives.cpp).
+extern "C" void refii_mod_raise_collectable_taken(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t entity,
+                                                  uint32_t record, int32_t stays) {
+  using namespace refii::mods;
+  if (ctx == nullptr || !AnySubscriber(REFII_EVENT_COLLECTABLE_TAKEN)) {
+    return;
+  }
+  CollectableTakenEvent e{};
+  PPCContext e_ctx = *ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.player = player;
+  e.entity = entity;
+  e.record = record;
+  e.stays = stays != 0;
+  Dispatch(e);
+}
+
+/// The answer the handlers gave for the partner: -1 ask them, 0 no, 1 yes.
+extern "C" int32_t refii_mod_raise_partner_consent(PPCContext* ctx, uint8_t* base, uint32_t ticket, int32_t kind,
+                                                   int32_t asker, int32_t detail) {
+  using namespace refii::mods;
+  if (ctx == nullptr || !AnySubscriber(REFII_EVENT_PARTNER_CONSENT)) {
+    return -1;
+  }
+  PartnerConsentEvent e{};
+  PPCContext e_ctx = *ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.ticket = ticket;
+  e.kind = kind;
+  e.asker = asker;
+  e.detail = detail;
+  e.answer = -1;
+  Dispatch(e);
+  return e.answer;
+}
+
+// THE OPINION SCOPE FOR LUA (Refii._opinion_enter / _opinion_leave, the core Lua's wrap of the
+// OpinionReaction natives): enters player two's scope for `villager` when the call concerns
+// hero two — `hero` when the caller names one, else the hero the villager notices (the nearer).
+// Returns 1 when a scope was entered; every 1 must be matched by a leave.
+namespace {
+thread_local std::vector<std::unique_ptr<OpinionHeroScope>> t_lua_opinion_scopes;
+}
+
+extern "C" int32_t refii_mod_opinion_enter(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero) {
+  if (ctx == nullptr || villager == 0u) {
+    return 0;
+  }
+  const uint32_t opinion = refii_mod_component(base, villager, 47u);
+  if (opinion == 0u) {
+    return 0;
+  }
+  const uint32_t who = hero != 0u ? hero : OpinionNearerHero(*ctx, base, villager);
+  auto scope = std::make_unique<OpinionHeroScope>(*ctx, base, opinion, who);
+  if (!scope->active()) {
+    return 0;
+  }
+  t_lua_opinion_scopes.push_back(std::move(scope));
+  return 1;
+}
+
+extern "C" void refii_mod_opinion_leave(void) {
+  if (!t_lua_opinion_scopes.empty()) {
+    t_lua_opinion_scopes.pop_back();
+  }
 }

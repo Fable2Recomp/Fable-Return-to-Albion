@@ -123,6 +123,13 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	public int Lit { get; private set; }
 
 	/// <summary>
+	/// A hold prompt this layer draws whatever the guest's one hold slot shows: player two's own
+	/// (HostBridge.GetPlayerTwoHoldPrompt), its title; null for none. It lights the hold icon
+	/// (`FillWorldIcon`, pool index 16) — the copy whose component the guest has active.
+	/// </summary>
+	public string? StatedFill { get; set; }
+
+	/// <summary>
 	/// Resolves the pooled slots from the parsed document. The file may carry the pool twice —
 	/// the 4:3 and 16:9 layouts — and every copy is kept: the guest's own active bit says which
 	/// copy draws, so choosing here would be a host-side guess.
@@ -362,9 +369,13 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 		}
 
 		Lit = 0;
+		bool fillStated = false;
 		foreach (Slot slot in _slots)
 		{
-			slot.Lit = slot.LitOrdinal < elements.Count && elements[slot.LitOrdinal].IsGloballyActive;
+			bool statedFill = StatedFill is not null && !fillStated && PoolIndexOf(slot.Name) == 16 &&
+				slot.Ordinal < elements.Count && elements[slot.Ordinal].IsGloballyActive;
+			fillStated |= statedFill;
+			slot.Lit = statedFill || (slot.LitOrdinal < elements.Count && elements[slot.LitOrdinal].IsGloballyActive);
 			if (!slot.Lit)
 			{
 				if (slot.Node is not null)
@@ -396,9 +407,11 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 
 			// The title, through the same glyph path as every owned surface. Live text only:
 			// the authored string is the artist's "Text" placeholder, never a fallback.
-			string title = slot.TitleOrdinal >= 0 && slot.TitleOrdinal < elements.Count
-				? elements[slot.TitleOrdinal].Text ?? string.Empty
-				: string.Empty;
+			string title = statedFill
+				? StatedFill!
+				: slot.TitleOrdinal >= 0 && slot.TitleOrdinal < elements.Count
+					? elements[slot.TitleOrdinal].Text ?? string.Empty
+					: string.Empty;
 			// The `.fac` record's colour — the prompt title is authored (255,255,48).
 			var colour = slot.Title is { } record
 				? new Color(record.R, record.G, record.B, 1f)
@@ -484,7 +497,11 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	/// through its own cameras. The guest's stated position would follow the guest's camera, not
 	/// the one Godot draws the world with.
 	/// </summary>
-	public void TrackProjected(IReadOnlyDictionary<int, Vector2> canvasBySlot)
+	/// <param name="hideUntracked">
+	/// Split screen: each half's layer draws only the slots its player sees, so a lit slot with no
+	/// position here is another player's and hides; whole-screen, an untracked slot keeps its own.
+	/// </param>
+	public void TrackProjected(IReadOnlyDictionary<int, Vector2> canvasBySlot, bool hideUntracked = false)
 	{
 		foreach (Slot slot in _slots)
 		{
@@ -496,7 +513,17 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			int index = PoolIndexOf(slot.Name);
 			if (index < 0 || !canvasBySlot.TryGetValue(index, out Vector2 at))
 			{
+				if (hideUntracked)
+				{
+					slot.Node.Visible = false;
+				}
+
 				continue;
+			}
+
+			if (hideUntracked)
+			{
+				slot.Node.Visible = true;
 			}
 
 			Vector2 origin = at - (slot.Scale * slot.Pivot);
@@ -589,7 +616,10 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	/// hold button: `sub_823DD318` raises `FillWorldIconButton` on the press and lowers it on
 	/// the release, a toggle the host cannot read (registry 9), so it is stated from the pad.
 	/// </summary>
-	public void Drive(bool pressed)
+	/// <param name="meter">
+	/// Player two's own hold, 0..100, for their half's layer; null reads the guest's published meter.
+	/// </param>
+	public void Drive(bool pressed, float? meter = null)
 	{
 		foreach (Slot slot in _slots)
 		{
@@ -600,7 +630,7 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 
 			// `sub_821C5BB0` publishes `fraction x 100` on meter registry 1 whenever it moves;
 			// unpublished is the ring at rest.
-			float value = Values?.Meter(slot.Meter) ?? 0f;
+			float value = meter ?? Values?.Meter(slot.Meter) ?? 0f;
 			Scrub(slot, Mathf.Clamp(value, 0f, 100f) * 10f, pressed);
 		}
 	}

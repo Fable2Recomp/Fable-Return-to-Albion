@@ -36,8 +36,13 @@ inline void PostEvent(int32_t kind, std::string_view fields) {
   refii_bridge_mod_event_post(kind, fields.data(), fields.size());
 }
 
+/// The host's mask is two words: kinds 0..63, then 64..127.
 inline bool HostWantsEvent(int32_t kind) {
-  return kind >= 0 && kind < 64 && ((refii_bridge_mod_host_event_mask() >> kind) & 1u) != 0u;
+  if (kind < 0 || kind >= 128) {
+    return false;
+  }
+  const uint64_t word = kind < 64 ? refii_bridge_mod_host_event_mask() : refii_bridge_mod_host_event_mask_high();
+  return ((word >> (kind % 64)) & 1u) != 0u;
 }
 
 // THE HOST'S SIDE of the same state (src/core/mod_values.cpp; linked by the host bridge, never
@@ -46,6 +51,7 @@ inline bool HostWantsEvent(int32_t kind) {
 /// an event that does not fit stays queued. Returns the bytes written.
 size_t DrainEventsForHost(char* out, size_t capacity);
 void SetHostEventMask(uint64_t mask);
+void SetHostEventMaskHigh(uint64_t mask);
 void PostInputFromHost(std::string_view action, int32_t player, bool pressed);
 void PostCommandFromHost(std::string_view line);
 /// Moves the queued mod errors into `out`, one per line, oldest first. Returns the bytes written.

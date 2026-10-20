@@ -102,6 +102,10 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void sleep_chosenEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void slow_timeEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void summonedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void crimeEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void achievementEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void collectable_takenEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void partner_consentEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -117,13 +121,14 @@ public partial class RefiiHost : Node
 		"marriage", "dog_trick", "ranged_shot", "status_effect", "target_changed", "opinion_deed",
 		"opinion_modified", "time_of_day", "weather_theme", "sleep_menu", "travel", "fast_travel",
 		"menu_opened", "menu_closed", "menu_screen", "weather_region", "sleep_chosen", "slow_time", "summoned",
+		"crime", "achievement", "collectable_taken", "partner_consent",
 	};
 
 	public const string SingletonName = "RefiiHost";
 	public const string ModEventSignal = "mod_event";
 
 	/// <summary>The kinds the host keeps in the mask while any script is loaded: hero_ready and hero_gone feed <see cref="hero"/>.</summary>
-	private const ulong HeroKinds = (1ul << 1) | (1ul << 2);
+	private static readonly UInt128 HeroKinds = ((UInt128)1 << 1) | ((UInt128)1 << 2);
 
 	/// <summary>The kind a query's reply arrives under (REFII_MOD_HOST_REPLY_KIND); never an event.</summary>
 	public const int ReplyKind = 1000;
@@ -137,7 +142,7 @@ public partial class RefiiHost : Node
 	private readonly StringName?[] _signalByKind;
 	private readonly StringName[] _nameByKind;
 	private readonly Dictionary<long, long> _hero = new();
-	private ulong _mask;
+	private UInt128 _mask;
 	private bool _maskSent;
 
 	/// <summary>The node the loaded scripts live under; no children means no script is loaded.</summary>
@@ -250,14 +255,14 @@ public partial class RefiiHost : Node
 
 	private static void PushVerdictMask()
 	{
-		ulong mask = 0;
+		UInt128 mask = 0;
 		lock (VerdictLock)
 		{
 			foreach ((int kind, List<Callable> list) in Verdicts)
 			{
-				if (list.Count != 0 && kind >= 0 && kind < 64)
+				if (list.Count != 0 && kind >= 0 && kind < 128)
 				{
-					mask |= 1ul << kind;
+					mask |= (UInt128)1 << kind;
 				}
 			}
 		}
@@ -400,7 +405,7 @@ public partial class RefiiHost : Node
 		ClearVerdicts();
 		if (_maskSent)
 		{
-			HostBridge.SetModEventMask(0ul);
+			HostBridge.SetModEventMask(0);
 			_maskSent = false;
 		}
 	}
@@ -408,7 +413,7 @@ public partial class RefiiHost : Node
 	/// <summary>Once per frame: the mask from the live connections, then every event posted since the last frame.</summary>
 	public override void _Process(double delta)
 	{
-		ulong mask = ComputeMask();
+		UInt128 mask = ComputeMask();
 		if (mask != _mask || !_maskSent)
 		{
 			_mask = mask;
@@ -479,19 +484,19 @@ public partial class RefiiHost : Node
 	/// Bit k set when some script is connected to kind k's signal; every bit when one is
 	/// connected to mod_event; the hero kinds whenever a script is loaded at all; zero when none is.
 	/// </summary>
-	private ulong ComputeMask()
+	private UInt128 ComputeMask()
 	{
 		if (ScriptsRoot is null || !IsInstanceValid(ScriptsRoot) || ScriptsRoot.GetChildCount() == 0)
 		{
-			return 0ul;
+			return 0;
 		}
 
-		ulong mask = HeroKinds;
+		UInt128 mask = HeroKinds;
 		if (GetSignalConnectionList(SignalName.mod_event).Count != 0)
 		{
 			for (int kind = 0; kind < _nameByKind.Length; kind++)
 			{
-				mask |= 1ul << kind;
+				mask |= (UInt128)1 << kind;
 			}
 
 			return mask;
@@ -501,7 +506,7 @@ public partial class RefiiHost : Node
 		{
 			if (_signalByKind[kind] is { } signal && GetSignalConnectionList(signal).Count != 0)
 			{
-				mask |= 1ul << kind;
+				mask |= (UInt128)1 << kind;
 			}
 		}
 

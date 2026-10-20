@@ -20,16 +20,22 @@ public static class Engine_ModernDrunk
     private const int MaxQuads = 4;
 
     private static readonly float[] _quads = new float[1 + MaxQuads * 16];
-    private static readonly Polygon2D?[] _nodes = new Polygon2D?[MaxQuads];
+    /// <summary>Per view (0 the window or player one's half, 1 player two's), the quads' nodes.</summary>
+    private static readonly Polygon2D?[,] _nodes = new Polygon2D?[2, MaxQuads];
     private static readonly Vector2[] _corners = new Vector2[4];
     private static Texture2D? _texture;
     private static ShaderMaterial? _material;
     private static bool _tried;
 
-    /// <summary>Quads drawn at the last pump.</summary>
+    /// <summary>Quads drawn at the last pump, over both views.</summary>
     public static int Drawn { get; private set; }
 
-    /// <summary>Follows the guest's quads. Main thread, once a frame.</summary>
+    /// <summary>
+    /// Follows the guest's quads. Main thread, once a frame. On split screen each view draws the
+    /// warp while ITS player is drunk (<see cref="Refii.Host.HostBridge.GetDrunkPlayers"/>): the
+    /// guest builds player one's effect and the pump player two's from the same record, so the
+    /// first quad is the warp for either; whole-screen, the quads draw as the guest states them.
+    /// </summary>
     public static void Pump(Node context)
     {
         uint got = Refii.Host.HostBridge.GetDisplacementQuads(_quads);
@@ -38,18 +44,40 @@ public static class Engine_ModernDrunk
         {
             Engine_FxDisplacement.Ensure(context);
         }
-        SubViewport? target = Engine_FxDisplacement.Current?.Target;
-        if (count > 0 && (target is null || !Ensure()))
+        if (count > 0 && !Ensure())
+        {
+            count = 0;
+        }
+        Engine_FxDisplacement? second = Engine_FxDisplacement.SecondView;
+        bool split = Refii.Core.Engine_Views.Split && second is not null;
+        uint drunk = split && count > 0 ? Refii.Host.HostBridge.GetDrunkPlayers() : 0u;
+        int drawn = 0;
+        drawn += DrawView(0, Engine_FxDisplacement.Current?.Target, split ? ((drunk & 1u) != 0u ? 1 : 0) : count);
+        drawn += DrawView(1, split ? second!.Target : null, split && (drunk & 2u) != 0u ? 1 : 0);
+        if (drawn > 0)
+        {
+            Engine_FxDisplacement.NotifyActive();
+        }
+        Drawn = drawn;
+    }
+
+    private static int DrawView(int view, SubViewport? target, int count)
+    {
+        if (target is null || !GodotObject.IsInstanceValid(target))
         {
             count = 0;
         }
         int drawn = 0;
         for (int i = 0; i < MaxQuads; i++)
         {
-            Polygon2D? node = _nodes[i];
-            if (node is not null && !GodotObject.IsInstanceValid(node))
+            Polygon2D? node = _nodes[view, i];
+            if (node is not null && (!GodotObject.IsInstanceValid(node) || node.GetParent() != target))
             {
-                node = _nodes[i] = null;
+                if (GodotObject.IsInstanceValid(node))
+                {
+                    node.QueueFree();
+                }
+                node = _nodes[view, i] = null;
             }
             int at = 1 + i * 16;
             float w = _quads[at + 14], h = _quads[at + 15];
@@ -63,9 +91,9 @@ public static class Engine_ModernDrunk
             }
             if (node is null)
             {
-                node = new Polygon2D { Name = $"DrunkQuad{i}", Texture = _texture, Material = _material };
+                node = new Polygon2D { Name = $"DrunkQuad{view}_{i}", Texture = _texture, Material = _material };
                 target!.AddChild(node);
-                _nodes[i] = node;
+                _nodes[view, i] = node;
             }
             Vector2 scale = new Vector2(target!.Size.X / w, target.Size.Y / h);
             float x0 = _quads[at], y0 = _quads[at + 1], x1 = _quads[at + 2], y1 = _quads[at + 3];
@@ -91,11 +119,7 @@ public static class Engine_ModernDrunk
             node.Visible = true;
             ++drawn;
         }
-        if (drawn > 0)
-        {
-            Engine_FxDisplacement.NotifyActive();
-        }
-        Drawn = drawn;
+        return drawn;
     }
 
     private static bool Ensure()

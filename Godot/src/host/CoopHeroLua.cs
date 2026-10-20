@@ -398,38 +398,52 @@ public static class CoopHeroLua
 			OnActionUsePickUp.Update = C.PickUp
 		end
 
-		-- SILVER-KEY CHESTS PER PLAYER (Fable 3's one-time chests): the first player to open one takes
-		-- its loot as shipped; the partner, if they hold the keys it asks for too, is given the same
-		-- loot then, as their own. Snapshot before the opening, given after it emptied.
+		-- SILVER-KEY CHESTS PER PLAYER (Fable 3's one-time chests: each hero opens one for themselves).
+		-- A chest's loot lives in its own inventory and the shipped script moves it to the opener;
+		-- an empty chest stops being targetable (the chest's tick, `sub_82295D60`). With a partner
+		-- who has not opened it, the chest is closed again after the first opening
+		-- (Chest.SnapToClosed, which the shipped script itself uses), its counted byte restored
+		-- (Refii._chest_counted) and its loot and gold put back, so the partner opens it through the
+		-- same script. Who has opened which chest is a SAVED player value (refii.chest.<UniqueID>),
+		-- so it goes home with each hero; a player cannot open a chest twice.
 		if OnActionUseTakeItems ~= nil and OnActionUseTakeItems.Update ~= nil and OnActionUseTakeItems.Update ~= C.TakeItems then
 			local shipped = OnActionUseTakeItems.Update
 			C.TakeItems = C.Permanent(function(self, ...)
 				local chest = self and self.ItemBeingUsed
 				local user = self and self.EntityUsingItem
+				if chest == nil or user == nil or not chest:IsAlive() or not Chest.IsAvailable(chest) or Refii == nil
+					or Refii.uid == nil or Chest.GetNumberOfSilverKeysNeeded(chest) <= 0 then
+					return shipped(self, ...)
+				end
 				local one = C.ShippedGetPlayerHero and C.ShippedGetPlayerHero()
 				local two = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
-				local partner = (user ~= nil and user == two) and one or two
-				local needed, loot, money = 0, nil, 0
-				if chest ~= nil and chest:IsAlive() and partner ~= nil and partner:IsAlive() and partner ~= user and
-					Chest.IsAvailable(chest) and not Chest.IsOpen(chest) and Refii ~= nil and Refii.inventory ~= nil then
-					needed = Chest.GetNumberOfSilverKeysNeeded(chest)
-					if needed > 0 then
-						loot = Refii.inventory(Refii.handle(chest))
-						money = Money.IsAvailable(chest) and Money.Get(chest) or 0
-					end
+				local player = (two ~= nil and user == two) and 2 or 1
+				local partner = player == 2 and one or two
+				local handle = Refii.handle(chest)
+				local key = "refii.chest." .. tostring(Refii.uid(handle))
+				if Refii.player_value(player, key, 0) ~= 0 then
+					return
 				end
+				local loot = Refii.inventory(handle) or {}
+				local money = Money.IsAvailable(chest) and Money.Get(chest) or 0
 				local results = { shipped(self, ...) }
-				if loot ~= nil and chest:IsAlive() and Chest.IsOpen(chest) and partner:IsAlive() and
-					Inventory.IsAvailable(partner) and
-					Inventory.GetNumberOfItemsOfType(partner, "ObjectInventorySilverKey") >= needed then
-					local who = Refii.handle(partner)
+				local after = chest:IsAlive() and Refii.inventory(handle) or {}
+				local opened = Chest.IsOpen(chest) or (#loot > 0 and #after == 0)
+				if not opened then
+					return unpack(results)
+				end
+				Refii.player_save(player, key, 1)
+				local other = player == 1 and 2 or 1
+				if partner ~= nil and partner:IsAlive() and Refii.player_value(other, key, 0) == 0 then
+					Chest.SnapToClosed(chest)
+					Refii._chest_counted(handle)
 					for _, stack in ipairs(loot) do
 						for i = 1, (stack.count or 1) do
-							Refii.add_item(who, stack.definition)
+							Refii.add_item(handle, stack.definition)
 						end
 					end
-					if money > 0 and Money.IsAvailable(partner) then
-						Money.Modify(partner, money)
+					if money > 0 and Money.IsAvailable(chest) then
+						Money.Set(chest, money)
 					end
 				end
 				return unpack(results)
@@ -481,6 +495,49 @@ public static class CoopHeroLua
 			OnActionUseBed.Sex = C.BedSex
 		end
 
+		-- EACH VILLAGER'S OPINION OF EACH HERO (Fable 3 keeps a record per hero). The villagers'
+		-- brains ask OpinionReaction.* with the villager alone and the game answers for hero one;
+		-- each native now runs for the hero it concerns — a hero passed to it, else the one the
+		-- villager notices (the nearer, the game's own GetEntityToNoticeExpressionsOf rule) — with
+		-- that hero's opinion swapped in (mod_events.cpp OpinionHeroScope). Natives never yield.
+		if OpinionReaction ~= nil and Refii ~= nil and Refii._opinion_enter ~= nil and not C.OpinionWrapped then
+			C.OpinionWrapped = true
+			local skip = { GetECType = true, IsAvailable = true, IsValidAxis = true }
+			local function finish(ok, ...)
+				Refii._opinion_leave()
+				if not ok then
+					error((...), 0)
+				end
+				return ...
+			end
+			for name, shipped in pairs(OpinionReaction) do
+				if type(shipped) == "function" and not skip[name] then
+					OpinionReaction[name] = C.Permanent(function(villager, ...)
+						local two = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+						if two == nil or villager == nil then
+							return shipped(villager, ...)
+						end
+						local one = C.ShippedGetPlayerHero and C.ShippedGetPlayerHero()
+						local hero = nil
+						for i = 1, select("#", ...) do
+							local v = select(i, ...)
+							if v ~= nil and v == two then
+								hero = two
+								break
+							elseif v ~= nil and v == one then
+								return shipped(villager, ...)
+							end
+						end
+						local entered = Refii._opinion_enter(Refii.handle(villager), hero ~= nil and Refii.handle(hero) or nil)
+						if entered ~= 1 then
+							return shipped(villager, ...)
+						end
+						return finish(pcall(shipped, villager, ...))
+					end, "Opinion." .. name)
+				end
+			end
+		end
+
 		-- DOGS, ONE PER PLAYER. Shipped, GetDog() is the one global "the dog" slot (hero one's);
 		-- player two's dog is the co-op one (coop_dog_hooks.cpp), Refii.player_dog(2). Each dog
 		-- serves Dog.GetMaster(dog), so a behaviour that names GetDog() or GetPlayerHero() where
@@ -488,6 +545,25 @@ public static class CoopHeroLua
 		function C.PartnerDog()
 			local handle = Refii ~= nil and Refii.player_dog ~= nil and Refii.player_dog(2) or nil
 			return handle ~= nil and Refii.entity(handle) or nil
+		end
+
+		-- BOTH DOGS ALWAYS THINK. AIManager:IsEntityToUpdate updates GetDog() every time and any
+		-- other creature only inside its update zone, so player two's dog stopped following and
+		-- answering once it left that zone (seen on the host: no TrackHero, its navigation target
+		-- frozen at player two's old spot). Fable 3's names both heroes' dogs (GetLocalHeroDog,
+		-- GetRemoteHeroDog); player two's dog is the second.
+		if AIManager ~= nil and AIManager.IsEntityToUpdate ~= nil and AIManager.IsEntityToUpdate ~= C.IsEntityToUpdate then
+			local shipped = AIManager.IsEntityToUpdate
+			C.IsEntityToUpdate = C.Permanent(function(self, entity, ...)
+				if entity ~= nil then
+					local partner = C.PartnerDog()
+					if partner ~= nil and entity == partner then
+						return true
+					end
+				end
+				return shipped(self, entity, ...)
+			end, "AIManager.IsEntityToUpdate")
+			AIManager.IsEntityToUpdate = C.IsEntityToUpdate
 		end
 
 		-- ITEMS USED ON "THE DOG" (treat, collar, breed potions and books, the dig's happy dog)

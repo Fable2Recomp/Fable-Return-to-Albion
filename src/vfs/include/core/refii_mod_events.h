@@ -107,7 +107,11 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_SLEEP_CHOSEN = 61,
   REFII_EVENT_SLOW_TIME = 62,
   REFII_EVENT_SUMMONED = 63,
-  REFII_EVENT_COUNT = 64,
+  REFII_EVENT_CRIME = 64,
+  REFII_EVENT_ACHIEVEMENT = 65,
+  REFII_EVENT_COLLECTABLE_TAKEN = 66,
+  REFII_EVENT_PARTNER_CONSENT = 67,
+  REFII_EVENT_COUNT = 68,
 };
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
@@ -890,6 +894,54 @@ struct SummonedEvent : Event {
   int32_t player;
   uint32_t summon;
   int32_t kind;
+};
+
+/// A crime is recorded against someone: `criminal` committed crime `type` (the game's crime
+/// enum: 2 murder, 3 assault, 6 trespass, 11 vandalism are among them) on `victim` (0 when none).
+/// `cancel` drops it: no witness record, no bounty, no guards. The co-op partner's crimes are their
+/// own. Seam: rex_CECCrime_Add (r3 the crime component, r4 the criminal, r5 the victim, r6 the
+/// type, r7 a flag), which also records assault against hero one when a murder is reported.
+struct CrimeEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CRIME;
+  uint32_t criminal;
+  int32_t player;
+  uint32_t victim;
+  int32_t victim_player;
+  int32_t type;
+};
+
+/// An achievement unlocks (the game's ids 1..50; scripts and the stats code both unlock through
+/// this). It is written for BOTH heroes. `source` is the entity whose stats asked. `cancel` keeps
+/// it locked. Seam: rex_CECStats_UnlockAchievement (r3 the stats component, owner at +4; r4 the id).
+struct AchievementEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ACHIEVEMENT;
+  int32_t id;
+  uint32_t source;
+  int32_t player;
+};
+
+/// A player picks up a one-time collectable that is kept per player in co-op (a silver key):
+/// `stays` is true when the entity stays in the world for the partner, who takes their own.
+/// After the decision, before the pickup. Seam: rex_CECInventory_AddEntity (coop_world_hooks.cpp).
+struct CollectableTakenEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_COLLECTABLE_TAKEN;
+  int32_t player;
+  uint32_t entity;
+  uint32_t record;
+  bool stays;
+};
+
+/// A co-op script asks the other player's consent (a bed's sleep or sex, or a mod's own question
+/// from Refii.ask_partner): `kind` 1 sleep (`detail` the sleep type), 2 sex, 0 a mod's question;
+/// `asker` the asking player. `answer` (writable) answers for the partner: -1 asks them (the
+/// default), 0 refuses, 1 agrees. Seam: the consent ask (mod_lua_natives.cpp).
+struct PartnerConsentEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PARTNER_CONSENT;
+  uint32_t ticket;
+  int32_t kind;
+  int32_t asker;
+  int32_t detail;
+  int32_t answer;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

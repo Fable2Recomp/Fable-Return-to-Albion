@@ -661,6 +661,47 @@ public static class ModApi
 				F("summon", "uint32_t", "the summoned entity"),
 				F("kind", "int32_t", "1 a Raise Dead minion, 2 a Blades sword"),
 			}),
+		new ModApiEvent("Crime", "crime", 64, "rex_CECCrime_Add (r3 crime component, r4 criminal, r5 victim, r6 type)",
+			"A crime is recorded against someone. The co-op partner's crimes are their own. A reported murder also records an assault (type 3), raised again.",
+			"the crime is not recorded: no witness record, no bounty, no guards",
+			new[]
+			{
+				F("criminal", "uint32_t", "who committed it"),
+				F("player", "int32_t", "1 or 2 when the criminal is a hero, else 0"),
+				F("victim", "uint32_t", "the victim, 0 when none"),
+				F("victim_player", "int32_t", "1 or 2 when the victim is a hero, else 0"),
+				F("type", "int32_t", "the game's crime type (2 murder, 3 assault, 6 trespass, 11 vandalism among them)"),
+			}),
+		new ModApiEvent("Achievement", "achievement", 65, "rex_CECStats_UnlockAchievement (r3 stats component, owner at +4; r4 id)",
+			"An achievement unlocks, for both heroes (scripts and the stats code both unlock here).",
+			"it stays locked",
+			new[]
+			{
+				F("id", "int32_t", "the achievement, 1..50"),
+				F("source", "uint32_t", "the entity whose stats asked"),
+				F("player", "int32_t", "1 or 2 when the source is a hero, else 0"),
+			}),
+		new ModApiEvent("CollectableTaken", "collectable_taken", 66, "rex_CECInventory_AddEntity (coop_world_hooks.cpp), before the pickup",
+			"A player picks up a one-time collectable kept per player in co-op (a silver key): each hero takes their own.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2"),
+				F("entity", "uint32_t", "the collectable in the world"),
+				F("record", "uint32_t", "its GDB record"),
+				F("stays", "bool", "it stays in the world for the partner"),
+			}),
+		new ModApiEvent("PartnerConsent", "partner_consent", 67, "the consent ask (mod_lua_natives.cpp: the core beds and Refii.ask_partner)",
+			"A co-op script asks the other player's consent before something that changes both players' game. A handler can answer for the partner.",
+			string.Empty,
+			new[]
+			{
+				F("ticket", "uint32_t", "the question, as Refii.partner_answer takes it"),
+				F("kind", "int32_t", "1 sleep, 2 sex, 0 a mod's own question"),
+				F("asker", "int32_t", "the asking player, 1 or 2"),
+				F("detail", "int32_t", "the sleep type for kind 1"),
+				F("answer", "int32_t", "-1 asks the partner (the default), 0 refuses, 1 agrees (writable)", true),
+			}),
 	};
 
 	/// <summary>The native helpers of <c>core/refii_mod.h</c>, for the Guide and the editor API.</summary>
@@ -671,6 +712,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_player_of(base, entity)", "1 or 2 when the entity is that player's hero, else 0"),
 		new ModApiHelper("int32_t refii_mod_menu_player(base)", "the player whose menus are open here, 1 or 2: an ability row publishes and buys for them"),
 		new ModApiHelper("int32_t refii_mod_opinion(base, villager, player, float out[5])", "how a villager feels about that hero: love, fear, attractiveness, morality, respect; a set per hero, player two's moved only by player two's deeds"),
+		new ModApiHelper("int32_t refii_mod_coop_mode(base)", "0 alone, 1 local co-op, 2 online hosting, 3 online joined"),
 		new ModApiHelper("uint32_t refii_mod_focus(base, player)", "the living entity that hero is focused on (their targeting), or 0"),
 		new ModApiHelper("float refii_mod_player_value(player, key, fallback)", "a player's value, the same on both co-op machines (fallback when unset)"),
 		new ModApiHelper("void refii_mod_player_set(player, key, v) / refii_mod_player_add(player, key, d, saved)", "writes a player's value on either machine; the hero's owner applies it (an add merges)"),
@@ -742,6 +784,8 @@ public static class ModApi
 		new ModApiHelper("Refii.split_screen()", "true when local co-op runs on split screen (each local player their own camera)"),
 		new ModApiHelper("Refii.player_dog(p)", "a player's dog: player one's is the game's own GetDog, player two's the co-op dog bound to them; nil when none"),
 		new ModApiHelper("Refii.opinion(villager, p) -> love, fear, attractiveness, morality, respect", "how a villager feels about player p's hero (-1..1); a set per hero; nil when it holds no opinions"),
+		new ModApiHelper("Refii.uid(e)", "the entity's own 64-bit UniqueID as \"0x…\": the same on both co-op machines and across saves (a handle is neither) — a key for per-thing player values"),
+		new ModApiHelper("Refii.coop_mode()", "0 alone, 1 local co-op, 2 online and this machine hosts, 3 online and this machine joined"),
 		new ModApiHelper("Refii.focus(p) / Refii.key_taken(e, p)", "the living entity player p is focused on, or nil; whether player p has taken the per-player collectable e (silver keys)"),
 		new ModApiHelper("Refii.ask_partner(asker, question) -> ticket / Refii.partner_answer(ticket) -> nil, true, false", "your own yes/no question for the other player, on their screen; nil while pending, 30 s unanswered is no; no partner answers yes"),
 		new ModApiHelper("Refii.renown(e) / Refii.morality(e) / Refii.purity(e) / Refii.age(e) / Refii.physique(e) -> fat, height", "the hero stats the game reports"),

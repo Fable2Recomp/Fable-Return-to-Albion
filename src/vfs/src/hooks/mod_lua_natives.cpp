@@ -578,8 +578,25 @@ REFII_LUA_NATIVE(NativeKeyTaken) {
   RESULTS(1);
 }
 
+extern "C" int32_t refii_mod_raise_partner_consent(PPCContext* ctx, uint8_t* base, uint32_t ticket, int32_t kind,
+                                                   int32_t asker, int32_t detail);
+
+/// A new question: the PartnerConsent event may answer it for the partner, in which case it is
+/// answered before anyone is asked.
+void ConsentAsked(PPCContext& ctx, uint8_t* base, uint32_t ticket, int32_t kind, int32_t asker, int32_t detail) {
+  const int32_t answer = refii_mod_raise_partner_consent(&ctx, base, ticket, kind, asker, detail);
+  if (answer >= 0) {
+    refii_bridge_consent_give(ticket, answer);
+  }
+}
+
 REFII_LUA_NATIVE(NativeConsentAsk) {
-  lua.PushNumber(static_cast<double>(refii_bridge_consent_ask(lua.Int(1), lua.Int(2), lua.Int(3))));
+  const int32_t kind = lua.Int(1);
+  const int32_t asker = lua.Int(2);
+  const int32_t detail = lua.Int(3);
+  const uint32_t ticket = refii_bridge_consent_ask(kind, asker, detail);
+  ConsentAsked(lua.ctx, lua.base, ticket, kind, asker, detail);
+  lua.PushNumber(static_cast<double>(ticket));
   RESULTS(1);
 }
 
@@ -597,7 +614,9 @@ REFII_LUA_NATIVE(NativeAskPartner) {
   if (text[0] == 0 || (asker != 1 && asker != 2)) {
     lua.PushNil();
   } else {
-    lua.PushNumber(static_cast<double>(refii_bridge_consent_ask_text(asker, text)));
+    const uint32_t ticket = refii_bridge_consent_ask_text(asker, text);
+    ConsentAsked(lua.ctx, lua.base, ticket, 0, asker, 0);
+    lua.PushNumber(static_cast<double>(ticket));
   }
   RESULTS(1);
 }
@@ -632,6 +651,55 @@ REFII_LUA_NATIVE(NativeOpinion) {
     }
     RESULTS(5);
   }
+}
+
+extern "C" int32_t refii_mod_opinion_enter(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero);
+extern "C" void refii_mod_opinion_leave(void);
+
+// Core co-op only: Refii._opinion_enter(villager [, hero]) runs what follows as the villager's
+// opinion of hero two when it concerns them (the named hero, else the nearer); 1 when entered,
+// each 1 matched by Refii._opinion_leave().
+REFII_LUA_NATIVE(NativeOpinionEnter) {
+  const uint32_t hero = lua.Type(2) == kTypeNumber ? lua.Entity(2) : 0u;
+  lua.PushNumber(refii_mod_opinion_enter(&lua.ctx, lua.base, lua.Entity(1), hero));
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeOpinionLeave) {
+  refii_mod_opinion_leave();
+  RESULTS(0);
+}
+
+// Refii.uid(e): the entity's own 64-bit UniqueID (+0x14 high, +0x18 low) as "0x…": the same on
+// both co-op machines and across saves, unlike a handle; nil for no entity.
+REFII_LUA_NATIVE(NativeUid) {
+  const uint32_t entity = lua.Entity(1);
+  if (entity == 0u) {
+    lua.PushNil();
+  } else {
+    char text[24];
+    std::snprintf(text, sizeof(text), "0x%08x%08x", refii::mods::LoadU32(lua.base, entity + 0x14u),
+                  refii::mods::LoadU32(lua.base, entity + 0x18u));
+    lua.PushString(text);
+  }
+  RESULTS(1);
+}
+
+// Core co-op only: Refii._chest_counted(chest) — after Chest.SnapToClosed re-closes a chest for the
+// partner, its "has been opened" byte (component 40 +0x0F, which SnapToClosed clears) is put back,
+// so the world map's chest count (`sub_825949E0`, gated on it) counts the chest once.
+REFII_LUA_NATIVE(NativeChestCounted) {
+  const uint32_t chest = refii_mod_component(lua.base, lua.Entity(1), 40u);
+  if (chest != 0u) {
+    refii::mods::StoreU8(lua.base, chest + 0x0Fu, 1u);
+  }
+  RESULTS(0);
+}
+
+// Refii.coop_mode(): 0 alone, 1 local co-op, 2 online hosting, 3 online joined.
+REFII_LUA_NATIVE(NativeCoopMode) {
+  lua.PushNumber(refii_mod_coop_mode(lua.base));
+  RESULTS(1);
 }
 
 // Refii.focus(p): the living entity player p's hero is focused on, or nil.
@@ -888,6 +956,11 @@ Native g_natives[] = {
     {"key_taken", &NativeKeyTakenPublic, 0},
     {"opinion", &NativeOpinion, 0},
     {"focus", &NativeFocus, 0},
+    {"coop_mode", &NativeCoopMode, 0},
+    {"uid", &NativeUid, 0},
+    {"_chest_counted", &NativeChestCounted, 0},
+    {"_opinion_enter", &NativeOpinionEnter, 0},
+    {"_opinion_leave", &NativeOpinionLeave, 0},
     {"renown", &NativeRenown, 0},
     {"morality", &NativeMorality, 0},
     {"purity", &NativePurity, 0},

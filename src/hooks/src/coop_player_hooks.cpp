@@ -38,6 +38,7 @@
 #include <rex/ppc/func.h>
 
 #include "core/guest_state.h"
+#include "core/payload_bridge.h"
 #include "core/guest_build.h"
 #include "core/refii_mod.h"
 
@@ -747,7 +748,7 @@ bool IsPlayerBody(uint8_t* base, uint32_t entity) {
   const uint32_t manager = Plausible(slot) ? LoadGuestU32(base, slot) : 0u;
   if (!Plausible(manager)) return false;
   for (uint32_t at : {108u, 116u}) {
-    const uint32_t object = LoadGuestU32(base, manager + at);
+    const uint32_t object = at == 108u ? refii_bridge_hero_one_holder(base, manager) : LoadGuestU32(base, manager + at);
     if (Plausible(object) && LoadGuestU32(base, object) == entity) return true;
   }
   return false;

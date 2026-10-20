@@ -42,9 +42,13 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	/// sprite, so twenty hearts shared one node and the last in the vector was the one drawn.
 	/// </param>
 	/// <param name="Entity">The entity the icon is anchored on, or 0.</param>
+	/// <param name="Badge">
+	/// A mark drawn inside the icon: the player a relationship heart is for ("1" or "2") when both
+	/// players' hearts share one screen. Empty for none.
+	/// </param>
 	public readonly record struct Sprite(
 		uint Type, uint TextureHash, Color Colour, uint Entity, Vector3 Anchor, float Scale,
-		string Title, string Opinion, uint Object = 0);
+		string Title, string Opinion, uint Object = 0, string Badge = "");
 
 	/// <summary>Where one icon falls this frame.</summary>
 	/// <param name="Canvas">HUD canvas units.</param>
@@ -65,8 +69,11 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		public required ShaderMaterial IconMaterial { get; init; }
 		public required MeshInstance3D Title { get; init; }
 		public required MeshInstance3D Opinion { get; init; }
+		public required MeshInstance3D Badge { get; init; }
 		public ShaderMaterial? TitleMaterial { get; set; }
 		public ShaderMaterial? OpinionMaterial { get; set; }
+		public ShaderMaterial? BadgeMaterial { get; set; }
+		public string? ShownBadge { get; set; }
 		public Sprite Stated { get; set; }
 		public uint ShownTexture { get; set; }
 		public string? ShownTitle { get; set; }
@@ -166,6 +173,12 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 				drawn.OpinionMaterial = Text(drawn.Opinion, sprite.Opinion, rgb, horizontalAlign: 0);
 			}
 
+			if (Theme is not null && sprite.Badge != drawn.ShownBadge)
+			{
+				drawn.ShownBadge = sprite.Badge;
+				drawn.BadgeMaterial = Text(drawn.Badge, sprite.Badge, Colors.White, horizontalAlign: 1);
+			}
+
 			drawn.ShownRgb = rgb;
 		}
 
@@ -238,6 +251,11 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			drawn.Icon.Position = new Vector3(0f, titleHeight + (size * 0.5f), 0f);
 			drawn.Title.Position = new Vector3(0f, titleHeight * 0.5f, 1f);
 			drawn.Opinion.Position = new Vector3((size * 0.5f) + 4f, titleHeight + (size * 0.5f), 1f);
+			// The badge sits in the icon's middle, sized with it.
+			float badgeScale = size / IconSize;
+			drawn.Badge.Visible = sprite.Badge.Length != 0;
+			drawn.Badge.Position = new Vector3(0f, titleHeight + (size * 0.5f), 2f);
+			drawn.Badge.Scale = new Vector3(badgeScale, badgeScale, 1f);
 
 			drawn.IconMaterial.SetShaderParameter(Param_tint, new Color(0.7f, 0.7f, 0.7f, sprite.Colour.A));
 			drawn.IconMaterial.SetShaderParameter(Param_sight, at.Sight);
@@ -254,6 +272,12 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			{
 				opinion.SetShaderParameter(Param_tint, ink);
 				opinion.SetShaderParameter(Param_sight, at.Sight);
+			}
+
+			if (drawn.BadgeMaterial is { } badge)
+			{
+				badge.SetShaderParameter(Param_tint, new Color(1f, 1f, 1f, sprite.Colour.A));
+				badge.SetShaderParameter(Param_sight, at.Sight);
 			}
 		}
 
@@ -286,10 +310,12 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		node.AddChild(title);
 		var opinion = new MeshInstance3D { Name = "Opinion", CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
 		node.AddChild(opinion);
+		var badge = new MeshInstance3D { Name = "Badge", CastShadow = GeometryInstance3D.ShadowCastingSetting.Off, Visible = false };
+		node.AddChild(badge);
 
 		return new Drawn
 		{
-			Node = node, Icon = icon, IconMaterial = material, Title = title, Opinion = opinion,
+			Node = node, Icon = icon, IconMaterial = material, Title = title, Opinion = opinion, Badge = badge,
 			ShownTexture = sprite.TextureHash,
 		};
 	}

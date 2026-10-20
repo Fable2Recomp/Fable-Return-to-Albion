@@ -19,6 +19,7 @@
 
 #include "vfs_hooks_private.h"
 #include "core/guest_state.h"
+#include "core/payload_bridge.h"
 #include "gui/gui_native_calls.h"
 #include "hooks/ppc_externs.h"
 #include "core/guest_build.h"
@@ -35,10 +36,14 @@ bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
 /// its object at `+108`, one more deref.
 uint32_t PlayerOneEntity(uint8_t* base) {
     uint32_t at = refii::vfs::LoadGuestU32(base, kGameRoot);
-    for (uint32_t offset : {12u, 88u, 4u, 0u, 108u, 0u}) {
+    for (uint32_t offset : {12u, 88u, 4u, 0u}) {
         if (!Plausible(at)) return 0u;
         at = refii::vfs::LoadGuestU32(base, at + offset);
     }
+    if (!Plausible(at)) return 0u;
+    at = refii_bridge_hero_one_holder(base, at);
+    if (!Plausible(at)) return 0u;
+    at = refii::vfs::LoadGuestU32(base, at);
     return Plausible(at) ? at : 0u;
 }
 

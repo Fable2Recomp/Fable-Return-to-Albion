@@ -14935,6 +14935,18 @@
 0x826FDC90 = { name = "rex_CECFirearm_Fire" }
 0x82763BE8 = { name = "rex_CECOpinionReaction_ModifyAxisValue" }
 0x82759570 = { name = "rex_CECOpinionReaction_OnDeed" }
+0x82261710 = { name = "rex_CECOpinionReaction_Update" }
+0x825BFDF8 = { name = "rex_CECVillager_SpeechReaction" }
+0x825C86D8 = { name = "rex_CECVillager_ChooseTopic" }
+0x823B6D98 = { name = "rex_lhWorldIcons_Request" }
+0x821BD998 = { name = "rex_lhWorldIcons_Remove" }
+0x82241AE0 = { name = "rex_lhWorldIcon_Update" }
+0x82762F98 = { name = "rex_CECOpinionReaction_Shutdown" }
+0x827657D0 = { name = "rex_CECOpinionReaction_Reset" }
+0x82771DB0 = { name = "rex_CECOpinionReaction_SendIcon" }
+0x82771E68 = { name = "rex_CECOpinionReaction_SendIconRemoved" }
+0x8284F4F8 = { name = "rex_CECCrime_Add" }
+0x824A0100 = { name = "rex_CECStats_UnlockAchievement" }
 0x82824C38 = { name = "rex_CECPlayerFamily_Marry" }
 0x8277B8F0 = { name = "rex_CECTargetingPlayer_ClearTarget" }
 0x8277BA90 = { name = "rex_CECTargetingPlayer_SetTarget" }
@@ -14986,6 +14998,7 @@
 0x82753908 = { name = "rex_CECOnActionUse_Update" }
 0x823B6A00 = { name = "rex_lhPromptManager_HoldInput" }
 0x821C5C20 = { name = "rex_lhPromptManager_Update" }
+0x823B6E70 = { name = "rex_lhPromptManager_Request" }
 
 # Co-op heroes (src/hooks/src/coop_hero_hooks.cpp): each hook runs before its instruction and
 # skips one henchman test. Same offsets in both builds.
@@ -15154,6 +15167,11 @@ address = 0x82753FA0
 registers = ["r3"]
 
 # Before `li r11,1` in the prompt manager's A handler (r31 = the press is player record 1's).
+[[midasm_hook]]
+name = "RefiiCoopUseRadius"
+address = 0x82754130
+registers = ["f1"]
+
 [[midasm_hook]]
 name = "RefiiCoopHoldByEitherPlayer"
 address = 0x823B6B14

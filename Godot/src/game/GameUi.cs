@@ -284,6 +284,11 @@ public partial class GameUi : Node
 			_worldIcons.Clear();
 		}
 
+		if (_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
+		{
+			_worldIconsTwo.Clear();
+		}
+
 		_boxes.Clear();
 		_menuModel.Reset();
 		_menuModelSeenLive.Clear();
@@ -2736,6 +2741,22 @@ public partial class GameUi : Node
 		_worldIcons.Bind(screen);
 		_presentation.AddChild(_worldIcons);
 
+		// PLAYER TWO'S WORLD ICONS on split screen: the same pooled prompts, seated in their half,
+		// each drawn when player two sees its thing (both players' in-range tests run,
+		// coop_hero_hooks.cpp), with player two's own hold meter.
+		_worldIconsTwo = new Engine_HudWorldIcons
+		{
+			Name = "WorldIconsTwo",
+			Theme = _presentation.Theme,
+			Art = _hud.Art.Shipped,
+			Values = _hudTwo?.Values ?? _hud.Values,
+			Position = new Vector3(0f, 0f, 50f),
+			ResolveTexture = _worldIcons.ResolveTexture,
+			Visible = false,
+		};
+		_worldIconsTwo.Bind(screen);
+		_presentation.AddChild(_worldIconsTwo);
+
 		// THE WORLD-SPACE ICON CLASS the guest drew through its renderer — property signs,
 		// income, opinions, quest markers. Same reader shape, projected by Godot's own camera.
 		_worldSprites = new Engine_HudWorldSprites
@@ -3199,6 +3220,12 @@ public partial class GameUi : Node
 	public const string HudLayoutSnapshotPath = Engine_HudLayout.SnapshotPath;
 
 	private Engine_HudWorldIcons? _worldIcons;
+
+	/// <summary>Player two's copy of the pooled world icons, in their half while split.</summary>
+	private Engine_HudWorldIcons? _worldIconsTwo;
+
+	/// <summary>Per half, the pooled slots' canvas positions this frame (index 1: player two's seat).</summary>
+	private System.Collections.Generic.Dictionary<int, Vector2>? _pooledCanvasTwo;
 	private Engine_HudWorldSprites? _worldSprites;
 
 	/// <summary>Player two's copy of the world sprites, drawn only while the screen is split.</summary>
@@ -3596,20 +3623,34 @@ public partial class GameUi : Node
 				? (_lastRawWorldSprites = HostBridge.GetWorldSprites())
 				: _lastRawWorldSprites;
 		bool rebuildSprites = guestFrame || sprites.Count == 0;
+		System.Collections.Generic.List<Engine_HudWorldSprites.Sprite> spritesTwo =
+			_worldSpriteListTwo ??= new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>();
 		if (rebuildSprites)
 		{
 			sprites.Clear();
+			spritesTwo.Clear();
 		}
 
+		System.Collections.Generic.Dictionary<int, Vector2> pooledTwo =
+			_pooledCanvasTwo ??= new System.Collections.Generic.Dictionary<int, Vector2>();
+		pooledTwo.Clear();
 		if (guestFrame)
 		{
+			_holdPromptTwo = CoopSession.LocalCoop ? HostBridge.GetPlayerTwoHoldPrompt() : null;
 			_promptsTwo.Clear();
+			_promptsOneHidden.Clear();
 			if (split)
 			{
 				int prompts = HostBridge.GetPlayerTwoPrompts(_promptsTwoBuffer);
 				for (int i = 0; i < prompts; ++i)
 				{
 					_promptsTwo.Add(_promptsTwoBuffer[i]);
+				}
+
+				int hidden = HostBridge.GetPlayerOneHiddenPrompts(_promptsTwoBuffer);
+				for (int i = 0; i < hidden; ++i)
+				{
+					_promptsOneHidden.Add(_promptsTwoBuffer[i]);
 				}
 			}
 		}
@@ -3623,22 +3664,28 @@ public partial class GameUi : Node
 				// `sub_82824D60`) are pinned inside the edge. On split screen the hero's marker
 				// is for player two, so it is pinned inside player two's half through player
 				// two's camera; the icons layer stands in player one's seat, so the point is
-				// carried into that seat's canvas. A use prompt answering player two (the guest's
-				// nearer-player rule, HostBridge.GetPlayerTwoPrompts) goes the same way.
+				// carried into that seat's canvas. On split screen a use prompt is drawn in each
+				// half whose player sees its thing (HostBridge.GetPlayerTwoPrompts /
+				// GetPlayerOneHiddenPrompts): player one's by their layer, player two's by theirs.
+				bool prompt = sprite.Type is not (52u or 53u);
 				Vector2? placed = split && sprite.Type == 52u
 					? ProjectOffScreenMarker(_spriteViews[1], sprite.Anchor) is { } theirs
 						? (Vector2?)_spriteViews[0].Frame.FromCanvas(_spriteViews[1].Frame.ToCanvas(theirs))
 						: null
 					: sprite.Type is 52u or 53u
 						? ProjectOffScreenMarker(_spriteViews[0], sprite.Anchor)
-						: split && _promptsTwo.Contains(sprite.Entity)
-							? ProjectWorldSpriteIn(_spriteViews[1], sprite.Anchor) is { } prompt
-								? _spriteViews[0].Frame.FromCanvas(_spriteViews[1].Frame.ToCanvas(prompt))
-								: null
+						: split && _promptsOneHidden.Contains(sprite.Entity)
+							? null
 							: ProjectWorldSprite(sprite.Anchor);
 				if (sprite.Slot >= 0 && placed is { } canvas)
 				{
 					pooled[sprite.Slot] = canvas;
+				}
+
+				if (split && prompt && sprite.Slot >= 0 && _promptsTwo.Contains(sprite.Entity) &&
+					ProjectWorldSpriteIn(_spriteViews[1], sprite.Anchor) is { } theirsAt)
+				{
+					pooledTwo[sprite.Slot] = theirsAt;
 				}
 
 				continue;
@@ -3646,10 +3693,41 @@ public partial class GameUi : Node
 
 			if (rebuildSprites)
 			{
-				sprites.Add(new Engine_HudWorldSprites.Sprite(
+				// EACH PLAYER'S OPINION ICONS (mod_events.cpp, the "_P2" keys): on split screen each
+				// half shows its own player's hearts and "+N love" splashes; on one shared couch
+				// screen both stand, the hearts numbered for their player; an online host shows its
+				// own (the joiner is sent player two's).
+				bool opinion = sprite.Type is (>= 1u and <= 20u) or (>= 22u and <= 26u);
+				string badge = !split && CoopSession.LocalCoop && sprite.Type is >= 22u and <= 26u
+					? (sprite.PlayerTwo ? "2" : "1")
+					: string.Empty;
+				var stated = new Engine_HudWorldSprites.Sprite(
 					sprite.Type, sprite.TextureHash, sprite.Colour, sprite.Entity, sprite.Anchor,
-					sprite.Scale, sprite.Title, sprite.Opinion, sprite.Object));
+					sprite.Scale, sprite.Title, sprite.Opinion, sprite.Object, badge);
+				bool hostOnline = CoopSession.PeerStanding && !CoopSession.LocalCoop && !CoopSession.IsClient;
+				if (!sprite.PlayerTwo || (!split && !hostOnline))
+				{
+					sprites.Add(stated);
+				}
+
+				if (split && (sprite.PlayerTwo || !opinion))
+				{
+					spritesTwo.Add(stated);
+				}
 			}
+		}
+
+		// PLAYER TWO'S OWN HOLD PROMPT (the guest's one hold slot is player one's): drawn by their
+		// layer's hold icon, in their half or on the shared screen.
+		if (_holdPromptTwo is { } hold &&
+			(split ? ProjectWorldSpriteIn(_spriteViews[1], hold.Anchor) : ProjectWorldSprite(hold.Anchor)) is { } holdAt)
+		{
+			pooledTwo[16] = holdAt;
+		}
+
+		if (_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
+		{
+			_worldIconsTwo.StatedFill = _holdPromptTwo?.Title;
 		}
 
 		_worldSprites.Place ??= PlaceWorldSprite;
@@ -3664,7 +3742,7 @@ public partial class GameUi : Node
 			_worldSpritesTwo.Place ??= PlaceWorldSpriteTwo;
 			if (split && rebuildSprites)
 			{
-				_worldSpritesTwo.Feed(sprites);
+				_worldSpritesTwo.Feed(spritesTwo);
 				_worldSpritesTwoFed = true;
 			}
 			else if (!split && _worldSpritesTwoFed)
@@ -3678,8 +3756,17 @@ public partial class GameUi : Node
 	/// <summary>Whether player two's sprite layer holds this split's sprites.</summary>
 	private bool _worldSpritesTwoFed;
 
+	/// <summary>Player two's own hold prompt, read once a guest frame (local co-op).</summary>
+	private (Vector3 Anchor, string Title)? _holdPromptTwo;
+
+	/// <summary>Player two's half's sprites on split screen, reused like <c>_worldSpriteList</c>.</summary>
+	private System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>? _worldSpriteListTwo;
+
 	/// <summary>The things whose use prompt answers player two, read once a guest frame.</summary>
 	private readonly System.Collections.Generic.HashSet<uint> _promptsTwo = new();
+
+	/// <summary>The things whose use prompt only player two sees, read once a guest frame.</summary>
+	private readonly System.Collections.Generic.HashSet<uint> _promptsOneHidden = new();
 	private readonly uint[] _promptsTwoBuffer = new uint[64];
 
 	/// <summary>
@@ -3758,6 +3845,7 @@ public partial class GameUi : Node
 			_spriteLayersSeated = split;
 			Seat(_worldSprites, mine.Frame, 52f);
 			Seat(_worldIcons, mine.Frame, 50f);
+			Seat(_worldIconsTwo, split ? theirs.Frame : mine.Frame, 50f);
 			Seat(_reticule, mine.Frame, 54f);
 			Seat(_slowTimeDial, mine.Frame, 50f);
 			Seat(_worldSpritesTwo, theirs.Frame, 52f);
@@ -3771,6 +3859,7 @@ public partial class GameUi : Node
 
 		bool theirsShown = split && !_fullCutscene;
 		ShowLayer(_worldSpritesTwo, theirsShown);
+		ShowLayer(_worldIconsTwo, (split || _holdPromptTwo is not null) && !_fullCutscene);
 		ShowLayer(_reticuleTwo, theirsShown);
 		ShowLayer(_slowTimeDialTwo, theirsShown);
 		return split;
@@ -4325,8 +4414,12 @@ public partial class GameUi : Node
 		{
 			if (cadence)
 			{
-				_worldIcons.Sample(elements,
-					HostBridge.GetUiTextureHashes(_hudAddress, elements.Count));
+				uint[]? iconTextures = HostBridge.GetUiTextureHashes(_hudAddress, elements.Count);
+				_worldIcons.Sample(elements, iconTextures);
+				if (_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
+				{
+					_worldIconsTwo.Sample(elements, iconTextures);
+				}
 			}
 
 			// THE SAME ELEMENT READ, EVERY FRAME, gates the rebuilt HUD's pieces — it shares
@@ -4679,13 +4772,24 @@ public partial class GameUi : Node
 			}
 		}
 
+		bool splitIcons = Engine_Views.Split && _worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo);
+		bool iconsTwo = (Engine_Views.Split || _holdPromptTwo is not null) && _worldIconsTwo is not null &&
+			GodotObject.IsInstanceValid(_worldIconsTwo);
 		if (_worldIcons.Lit > 0)
 		{
 			_worldIcons.Drive(GameInput.AHeld);
 			if (_pooledCanvas is { } pooled)
 			{
-				_worldIcons.TrackProjected(pooled);
+				_worldIcons.TrackProjected(pooled, splitIcons);
 			}
+		}
+
+		if (iconsTwo && _worldIconsTwo!.Lit > 0)
+		{
+			(float fraction, bool pressed) = HostBridge.GetPlayerTwoHold();
+			_worldIconsTwo.Drive(pressed, fraction * 100f);
+			_worldIconsTwo.TrackProjected(_pooledCanvasTwo ??
+				(System.Collections.Generic.IReadOnlyDictionary<int, Vector2>)new System.Collections.Generic.Dictionary<int, Vector2>(), true);
 		}
 	}
 
@@ -6198,6 +6302,12 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// The joiner's question about a villager's opinion of them, or the host's answer (GameUiCoopOpinion).
+			if (TakeOpinionMessage(message))
+			{
+				continue;
+			}
+
 			// The peer's mods record; compared below once the peer stands (GameUiCoopMods).
 			if (TakeCoopMods(message))
 			{
@@ -7102,7 +7212,9 @@ public partial class GameUi : Node
 				Engine_UiHudTopBox.Publish(
 					HostBridge.GetTopBoxFront(), GameInput.AHeld, GameInput.YHeld, _hud.Values,
 					_presentation?.Strings, _boxes.FrontOf(RefiiNoticeBoxes));
-				Engine_UiHudTargetedQuery.Publish(HostBridge.GetTargetedQuery(), _hud.Values);
+				HostBridge.TargetedQuery targeted = HostBridge.GetTargetedQuery();
+				Engine_UiHudTargetedQuery.Publish(targeted, _hud.Values);
+				DriveJoinerOpinion(targeted, _hud.Values, delta);
 			}
 
 			// THE PEER'S EXPRESSION STAYS ON THE PEER'S SCREEN. The guest starts the local meter

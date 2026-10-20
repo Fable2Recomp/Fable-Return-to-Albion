@@ -1656,9 +1656,10 @@ void SignalGuestFrameCompletions() {
         write32(target + 8u, read32(current));
         write32(target + 12u, read32(current + 4u));
 
-        // The guest's own clock: `mftb` in recompiled code is this call, so the stamp is in
-        // the units `sub_82B90048`'s readers divide by `dbl_834970A8` to get seconds.
-        const uint64_t now = ::rex::chrono::Clock::QueryGuestTickCount();
+        // The guest's own clock: `mftb` in recompiled code is the payload's tick count (under the
+        // driven time base, the virtual tick), so the stamp is in the units `sub_82B90048`'s
+        // readers divide by `dbl_834970A8` to get seconds.
+        const uint64_t now = refii_bridge_rex_query_guest_tick_count();
         write32(target, static_cast<uint32_t>(now >> 32));
         write32(target + 4u, static_cast<uint32_t>(now & 0xFFFFFFFFu));
 
@@ -2348,7 +2349,18 @@ extern "C" {
 ///     targeted-citizen readout, from the villager's opinion of player two) and
 ///     RefiiHostGetPlayerTwoHud (their readout's title and d-pad icons, from the guest's own
 ///     builders called for hero two).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 198; }
+/// 199 adds the mod event masks' second word, kinds 64..127: RefiiHostSetModEventMaskHigh and
+///     RefiiHostSetModVerdictMaskHigh (Crime, Achievement, CollectableTaken, PartnerConsent).
+/// 200 adds RefiiHostGetDrunkPlayers — which heroes are past the drunk warp's threshold, so each
+///     split view draws its own player's warp.
+/// 201 adds per-player use prompts on split screen: RefiiHostGetPlayerOneHiddenPrompts (things only
+///     player two sees; RefiiHostGetPlayerTwoPrompts is now every thing player two sees, both
+///     players' in-range tests run) and RefiiHostGetPlayerTwoHold (player two's own hold meter).
+/// 202 adds per-player opinion icons and hold prompts: RefiiHostGetWorldSprites flag 4 (an icon of
+///     player two's, its key ending "_P2"), RefiiHostGetPlayerTwoHoldPrompt (player two's own hold
+///     prompt), and RefiiHostGetEntityUid / RefiiHostGetOpinionOfUid (a villager's opinion of
+///     either player by its network id, for the online joiner's targeted readout).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 202; }
 
 /// The taken silver keys still in the world: (address, mask) pairs into `out`, at most `capacity`
 /// words. Returns the pairs written.
@@ -2380,6 +2392,31 @@ REFII_HOST_ABI_EXPORT int RefiiHostTakeExitRefused(void) { return refii_bridge_t
 /// The things whose use prompt answers player two this frame (coop_hero_hooks.cpp, the nearer
 /// player rule), for seating their prompt icons in player two's half. Returns the count written.
 REFII_HOST_ABI_EXPORT int RefiiHostGetExitWaiting(void) { return refii_bridge_exit_waiting(); }
+
+/// The things whose use prompt only player two sees this frame (player one's half hides them):
+/// each prompt's in-range test is run for both players (coop_hero_hooks.cpp). Returns the count.
+REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerOneHiddenPrompts(uint32_t* out, int capacity) {
+    return refii_bridge_prompts_one_hidden(out, capacity);
+}
+
+/// Player two's own hold-to-use meter on split screen: the fraction 0..1, and whether they hold A.
+/// The guest keeps one, for player one; player two's is integrated at the guest's own rates and
+/// completes through the guest's own use (coop_hero_hooks.cpp).
+/// Player two's own hold-to-use prompt in local co-op (the guest keeps one, player one's; player
+/// two's is kept beside it, coop_hero_hooks.cpp): 1 with its guest world point (3 floats) and
+/// title (UTF-8), 0 when they have none.
+REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerTwoHoldPrompt(float* out_at, char* title, uint32_t capacity) {
+    return refii_bridge_player_two_hold_prompt_get(out_at, title, capacity);
+}
+
+REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerTwoHold(float* out_fraction, int* out_pressed) {
+    float fraction = 0.0f;
+    int32_t pressed = 0;
+    refii_bridge_player_two_hold(&fraction, &pressed);
+    if (out_fraction != nullptr) *out_fraction = fraction;
+    if (out_pressed != nullptr) *out_pressed = pressed;
+    return 1;
+}
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetExitRequest(float* out_xyz) {
     return refii_bridge_exit_request(out_xyz);
@@ -2928,7 +2965,9 @@ uint32_t PlayerEntityForKey(const uint8_t* base, uint32_t wanted) {
         const uint32_t holder = read32(game + 88u);
         const uint32_t slot = plausible(holder) ? read32(holder + 4u) : 0u;
         const uint32_t manager = plausible(slot) ? read32(slot) : 0u;
-        const uint32_t object = plausible(manager) ? read32(manager + (wanted == 1u ? 108u : 116u)) : 0u;
+        const uint32_t object = !plausible(manager) ? 0u
+                                : wanted == 1u ? refii_bridge_hero_one_holder(base, manager)
+                                               : read32(manager + 116u);
         const uint32_t entity = plausible(object) ? read32(object) : 0u;
         if (plausible(entity)) return entity;
     }
@@ -3473,6 +3512,11 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetModEventMask(uint64_t mask) {
     refii::mods::SetHostEventMask(mask);
 }
 
+/// The same for kinds 64..127 (bit = kind − 64).
+REFII_HOST_ABI_EXPORT void RefiiHostSetModEventMaskHigh(uint64_t mask) {
+    refii::mods::SetHostEventMaskHigh(mask);
+}
+
 /// A helper call or a query for the guest tick (the grammar is src/hooks/mod_commands.cpp); a
 /// query's reply comes back through RefiiHostDrainModEvents under kind 1000 with its id.
 REFII_HOST_ABI_EXPORT void RefiiHostPostModCommand(const char* line, uint32_t line_length) {
@@ -3494,6 +3538,11 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictHandler(refii_mod_verdict_fn ha
 /// Which event kinds the verdict handler is asked about (bit = kind).
 REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictMask(uint64_t mask) {
     refii_bridge_mod_set_verdict_mask(mask);
+}
+
+/// The same for kinds 64..127 (bit = kind − 64).
+REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictMaskHigh(uint64_t mask) {
+    refii_bridge_mod_set_verdict_mask_high(mask);
 }
 
 /// The entity a mod handle stands for (what a Godot script holds), or 0.
@@ -9069,7 +9118,7 @@ static uint32_t EntityLinkedAnimLeaf(const uint8_t* base, uint32_t entity, uint3
         if (!std::isfinite(frequency) || frequency <= 0.0 || !std::isfinite(time_base)) {
             return 0u;
         }
-        const double now = (static_cast<double>(::rex::chrono::Clock::QueryGuestTickCount()) - time_base) / frequency;
+        const double now = (static_cast<double>(refii_bridge_rex_query_guest_tick_count()) - time_base) / frequency;
         const float current = readf(leaf + 32u);
         float step = current - readf(leaf + 28u);
         if (!(step > 0.0f) || !std::isfinite(step)) {
@@ -9552,8 +9601,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         record_prev_bits = 0x3F800000u;
         record_cur_bits = 0x3F800000u;
         // The guest's own alpha for this tree (see the note above `flatten`). `mftb` in
-        // recompiled code is QueryGuestTickCount; the two doubles are LHTiming's base and
-        // frequency, stored high word first. A packet landing mid-walk re-bases +164 and
+        // recompiled code is the payload's tick count, refii_bridge_rex_query_guest_tick_count —
+        // the VIRTUAL tick under the driven time base, never the SDK's real
+        // `Clock::QueryGuestTickCount`, which runs ahead by however far the world lags real
+        // time (17 s on a joiner, 2026-10-20: every replica rig stated clip times far ahead and
+        // jumping, so bodies slid under poses held on random frames). The two doubles are
+        // LHTiming's base and frequency, stored high word first. A packet landing mid-walk re-bases +164 and
         // swaps the tree, so a walk whose receipt moved is done once more with the new one.
         const auto read_double = [&](uint32_t at) {
             const uint64_t bits = (static_cast<uint64_t>(read32(at)) << 32) | read32(at + 4u);
@@ -9569,7 +9622,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             const float receipt = readf(controller + 164u);
             if (std::isfinite(frequency) && frequency > 0.0 && std::isfinite(time_base) &&
                 std::isfinite(receipt)) {
-                const double now = static_cast<double>(::rex::chrono::Clock::QueryGuestTickCount());
+                const double now = static_cast<double>(refii_bridge_rex_query_guest_tick_count());
                 const double alpha = ((now - time_base) / frequency - receipt) * 15.0;
                 // Bounded against a stale receipt: a minute of extrapolation is a tree the
                 // host stopped sending, not a clip to run on.
@@ -13293,6 +13346,35 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxMeshes(float* out, uint32_t capacit
     return used;
 }
 
+/// Which heroes are drunk enough for the drunk warp, the warp builder's own test (`sub_822B62F0`:
+/// component 157 +12 at or past +36): bit 0 hero one, bit 1 hero two. On split screen the warp
+/// draws in each drunk player's own view (the guest builds player one's effect, the pump player
+/// two's, from the same record).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDrunkPlayers(void) {
+    auto* memory = SafeKernelMemory();
+    const uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+    uint32_t bits = 0u;
+    for (uint32_t player = 1u; player <= 2u; ++player) {
+        const uint32_t hero = PlayerEntityForKey(base, player);
+        const uint32_t drink = hero >= 0x10000u && hero < 0xC0000000u ? EntityComponent(base, hero, 157u) : 0u;
+        if (drink < 0x10000u || drink >= 0xC0000000u) {
+            continue;
+        }
+        const uint32_t level = GuestWordAt(base, drink + 12u);
+        const uint32_t limit = GuestWordAt(base, drink + 36u);
+        float a = 0.0f, b = 0.0f;
+        std::memcpy(&a, &level, sizeof(a));
+        std::memcpy(&b, &limit, sizeof(b));
+        if (a >= b) {
+            bits |= 1u << (player - 1u);
+        }
+    }
+    return bits;
+}
+
 /// The render scene's DISPLACEMENT QUADS (typed list type 29, ctor `sub_82A4B9A8`, vtable
 /// 0x820F72F0): screen-space quads the displacement renderer draws with VS 176 / PS 177 (a textured
 /// quad) — as shipped only the drunk warp (`sub_822B62F0`: "Art\GUI\HUD\FXT_Fullscreen_Drunk",
@@ -15342,6 +15424,74 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPlayerTwoTargetedQuery(uint32_t* out_
         out_words[11] = bits(axis == 1u ? (value - 1.0f) * -0.5f : (value + 1.0f) * 0.5f);
     }
     return 12u;
+}
+
+/// An entity's network id, the 64-bit UID the guest keys its entity map on (`entity+20` high,
+/// `+24` low; `sub_82264488`). 0 for none.
+REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetEntityUid(uint32_t entity) {
+    auto* memory = SafeKernelMemory();
+    const uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 0u;
+    }
+    return (static_cast<uint64_t>(GuestWordAt(base, entity + 20u)) << 32) | GuestWordAt(base, entity + 24u);
+}
+
+/// A villager's opinion of player `player` (1 or 2) by its network id: the five axes (love, fear,
+/// attractiveness, morality, respect) into `out`. Player one's are the opinion component's current
+/// axes (+44); player two's the set kept for them (current at block+20), or the villager's base
+/// attitudes (+24) before player two has done anything there. The entity is found the guest's way,
+/// in the UID map at players+136 (`sub_82264488`: {left +0, parent +4, right +8, key high +12, low
+/// +16, value +20, nil byte +25}). Returns 1 when found.
+REFII_HOST_ABI_EXPORT int RefiiHostGetOpinionOfUid(uint64_t uid, int player, float* out) {
+    auto* memory = SafeKernelMemory();
+    const uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || out == nullptr || uid == 0u || (player != 1 && player != 2)) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    const auto word = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const uint32_t root = word(refii::guest::Address(0x83496AB8u));
+    const uint32_t game = plausible(root) ? word(root + 12u) : 0u;
+    const uint32_t manager = plausible(game) ? word(game + 88u) : 0u;
+    const uint32_t cell = plausible(manager) ? word(manager + 4u) : 0u;
+    const uint32_t players = plausible(cell) ? word(cell) : 0u;
+    const uint32_t head = plausible(players) ? word(players + 140u) : 0u;
+    if (!plausible(head)) {
+        return 0;
+    }
+    const auto key = [&](uint32_t node) { return (static_cast<uint64_t>(word(node + 12u)) << 32) | word(node + 16u); };
+    uint32_t found = head;
+    uint32_t node = word(head + 4u);
+    for (uint32_t steps = 0; steps < 96u && plausible(node) && GuestByteAt(base, node + 25u) == 0u; ++steps) {
+        if (key(node) >= uid) {
+            found = node;
+            node = word(node);
+        } else {
+            node = word(node + 8u);
+        }
+    }
+    if (found == head || key(found) != uid) {
+        return 0;
+    }
+    const uint32_t entity = word(found + 20u);
+    const uint32_t opinion = plausible(entity) ? EntityComponent(base, entity, 47u) : 0u;
+    if (!plausible(opinion)) {
+        return 0;
+    }
+    uint8_t two[REFII_OPINION_BLOCK_BYTES];
+    const bool kept = player == 2 && refii_bridge_opinion_two_load(opinion, two) != 0;
+    for (uint32_t axis = 0; axis < 5u; ++axis) {
+        uint32_t raw = 0u;
+        if (kept) {
+            std::memcpy(&raw, two + 20u + (4u * axis), sizeof(raw));
+            raw = __builtin_bswap32(raw);
+        } else {
+            raw = word(opinion + (player == 1 ? 44u : 24u) + (4u * axis));
+        }
+        std::memcpy(&out[axis], &raw, sizeof(raw));
+    }
+    return 1;
 }
 
 /// PLAYER TWO'S D-PAD AND TARGETED TITLE on split screen, from the guest's own builders called
@@ -18973,7 +19123,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
         const uint32_t handle = read32(obj + 28u);
         w[3] = plausible(handle) ? read32(handle) : 0u;
         w[4] = base[obj + 52u];
-        w[5] = base[obj + 100u] != 0u ? 1u : 0u;  // bit0 fading, bit1 pooled
+        // bit0 fading, bit1 pooled, bit2 player two's (its key, +16, ends "_P2": mod_events.cpp,
+        // the opinion icons asked in player two's scope).
+        const uint32_t key_rep = read32(obj + 16u);
+        const uint32_t key_chars = plausible(key_rep) ? read32(key_rep) : 0u;
+        const uint32_t key_length = plausible(key_rep) ? read32(key_rep + 4u) : 0u;
+        const bool player_two = plausible(key_chars) && key_length >= 3u && key_length <= 512u &&
+                                std::memcmp(base + key_chars + key_length - 3u, "_P2", 3u) == 0;
+        w[5] = (base[obj + 100u] != 0u ? 1u : 0u) | (player_two ? 4u : 0u);
         w[6] = 0xFFFFFFFFu;
         w[7] = obj;
 

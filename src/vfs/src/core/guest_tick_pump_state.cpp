@@ -29,6 +29,7 @@
 #ifndef _WIN32
 #include <signal.h>
 #endif
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -771,14 +772,16 @@ namespace {
 constexpr int32_t kPromptsTwo = 64;
 std::mutex g_prompts_two_mutex;
 std::array<uint32_t, kPromptsTwo> g_prompts_two{};
+std::array<uint8_t, kPromptsTwo> g_prompt_masks{};
 int32_t g_prompts_two_count = 0;
 }  // namespace
 
-void refii_bridge_set_prompts_two(const uint32_t* things, int32_t count) {
+void refii_bridge_set_prompt_masks(const uint32_t* things, const uint8_t* masks, int32_t count) {
   std::lock_guard<std::mutex> lock(g_prompts_two_mutex);
-  g_prompts_two_count = things == nullptr ? 0 : std::clamp(count, 0, kPromptsTwo);
+  g_prompts_two_count = things == nullptr || masks == nullptr ? 0 : std::clamp(count, 0, kPromptsTwo);
   for (int32_t i = 0; i < g_prompts_two_count; ++i) {
     g_prompts_two[static_cast<std::size_t>(i)] = things[i];
+    g_prompt_masks[static_cast<std::size_t>(i)] = masks[i];
   }
 }
 
@@ -814,13 +817,69 @@ uint32_t refii_bridge_exit_request(float* out_xyz) {
   return g_exit_request_seq;
 }
 
-int32_t refii_bridge_prompts_two(uint32_t* out, int32_t capacity) {
+namespace {
+int32_t PromptsWith(uint32_t* out, int32_t capacity, uint8_t want, uint8_t value) {
   std::lock_guard<std::mutex> lock(g_prompts_two_mutex);
-  const int32_t count = out == nullptr ? 0 : std::min(capacity, g_prompts_two_count);
-  for (int32_t i = 0; i < count; ++i) {
-    out[i] = g_prompts_two[static_cast<std::size_t>(i)];
+  int32_t written = 0;
+  for (int32_t i = 0; out != nullptr && i < g_prompts_two_count && written < capacity; ++i) {
+    if ((g_prompt_masks[static_cast<std::size_t>(i)] & want) == value) {
+      out[written++] = g_prompts_two[static_cast<std::size_t>(i)];
+    }
   }
-  return count;
+  return written;
+}
+}  // namespace
+
+int32_t refii_bridge_prompts_two(uint32_t* out, int32_t capacity) { return PromptsWith(out, capacity, 2u, 2u); }
+
+int32_t refii_bridge_prompts_one_hidden(uint32_t* out, int32_t capacity) { return PromptsWith(out, capacity, 1u, 0u); }
+
+namespace {
+std::mutex g_hold_two_mutex;
+float g_hold_two_fraction = 0.0f;
+int32_t g_hold_two_pressed = 0;
+}  // namespace
+
+void refii_bridge_player_two_hold_state(float fraction, int32_t pressed) {
+  std::lock_guard<std::mutex> lock(g_hold_two_mutex);
+  g_hold_two_fraction = fraction;
+  g_hold_two_pressed = pressed;
+}
+
+void refii_bridge_player_two_hold(float* fraction, int32_t* pressed) {
+  std::lock_guard<std::mutex> lock(g_hold_two_mutex);
+  if (fraction != nullptr) *fraction = g_hold_two_fraction;
+  if (pressed != nullptr) *pressed = g_hold_two_pressed;
+}
+
+namespace {
+bool g_hold_prompt_two_up = false;
+float g_hold_prompt_two_at[3] = {};
+std::string g_hold_prompt_two_title;
+}  // namespace
+
+void refii_bridge_player_two_hold_prompt(int32_t up, const float* at, const char* title) {
+  std::lock_guard<std::mutex> lock(g_hold_two_mutex);
+  g_hold_prompt_two_up = up != 0 && at != nullptr;
+  if (!g_hold_prompt_two_up) {
+    return;
+  }
+  for (int i = 0; i < 3; ++i) g_hold_prompt_two_at[i] = at[i];
+  g_hold_prompt_two_title = title != nullptr ? title : "";
+}
+
+int32_t refii_bridge_player_two_hold_prompt_get(float* at, char* title, uint32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_hold_two_mutex);
+  if (!g_hold_prompt_two_up) {
+    return 0;
+  }
+  if (at != nullptr) {
+    for (int i = 0; i < 3; ++i) at[i] = g_hold_prompt_two_at[i];
+  }
+  if (title != nullptr && capacity != 0u) {
+    std::snprintf(title, capacity, "%s", g_hold_prompt_two_title.c_str());
+  }
+  return 1;
 }
 
 /// Clears the partial-population flag. Called once per guest tick.

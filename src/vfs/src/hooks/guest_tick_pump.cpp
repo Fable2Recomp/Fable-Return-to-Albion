@@ -100,6 +100,7 @@ PPC_EXTERN_FUNC(rex_XboxLive_Instance);
 PPC_EXTERN_FUNC(rex_XboxLive_RestoreAfterLeave);
 extern "C" int RefiiCoopShoppingPlayerTwo(void);
 extern "C" int RefiiCoopSplitScreen(void);
+extern "C" void RefiiCoopLocalPlayerTwoCall(int on);
 
 PPC_EXTERN_FUNC(rex_lhSaveManager_CountSavedGamesAllDevices);
 
@@ -1770,7 +1771,7 @@ bool DispatchSpellAssign(PPCContext& ctx, uint8_t* base, uint32_t slot, uint32_t
     const uint32_t holder = plausible(game) ? LoadGuestU32(base, game + 88u) : 0u;
     const uint32_t party = plausible(holder) ? LoadGuestU32(base, holder + 4u) : 0u;
     const uint32_t roster = plausible(party) ? LoadGuestU32(base, party) : 0u;
-    const uint32_t entry = plausible(roster) ? LoadGuestU32(base, roster + 108u) : 0u;
+    const uint32_t entry = plausible(roster) ? refii_bridge_hero_one_holder(base, roster) : 0u;
     hero = plausible(entry) ? LoadGuestU32(base, entry) : 0u;
   }
 
@@ -3396,7 +3397,8 @@ uint32_t CoopPlayerOneEntity(uint8_t* base) {
 
   const uint32_t manager =
       step(step(step(step(LoadGuestU32(base, refii::guest::Address(0x83496AB8u)), 12u), 88u), 4u), 0u);
-  const uint32_t entity = step(step(manager, 108u), 0u);
+  const uint32_t holder = LooksLikeGuestPointer(manager) ? refii_bridge_hero_one_holder(base, manager) : 0u;
+  const uint32_t entity = step(holder, 0u);
   return LooksLikeGuestPointer(entity) ? entity : 0u;
 }
 
@@ -9198,20 +9200,6 @@ void ConfirmPendingMenuEvent(PPCContext& ctx, uint8_t* base) {
 /// `sub_821ECA30`, then the context keyed 0 in the GUI's map at +0x44 (`sub_8236FFC0(gui, 0)`),
 /// whose +4 is 1 when PLAYER TWO opened it. Run as its two parts rather than whole: the lookup
 /// answers 0 when the map holds no key 0, and the predicate would then read address 4.
-/// Player two's d-pad icons and targeted title, as the pump last stated them.
-struct PlayerTwoHud {
-  std::mutex mutex;
-  bool known = false;
-  uint32_t target = 0u;
-  std::string title;
-  std::string icons[4];
-};
-
-PlayerTwoHud& TwoHud() {
-  static PlayerTwoHud hud;
-  return hud;
-}
-
 /// Set across player two's d-pad fill, so the shared tutorial calls inside it are skipped.
 std::atomic<bool> g_dpad_two_querying{false};
 
@@ -9245,13 +9233,11 @@ std::string GuestCString(uint8_t* base, uint32_t at, uint32_t cap = 260u) {
 ///           The target is hero two's focus target (component 77, `*(*(comp + 0xC8))`).
 void SamplePlayerTwoHud(PPCContext& ctx, uint8_t* base) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-  PlayerTwoHud& hud = TwoHud();
   const uint32_t hero = RefiiCoopSplitScreen() != 0 ? refii_mod_player_hero(base, 2) : 0u;
   const uint32_t pad = plausible(hero) && (LoadGuestU8(base, hero + 144u) & 0x40u) != 0u
                            ? EntityComponent(base, hero, 33u) : 0u;
   if (!plausible(pad)) {
-    std::lock_guard lock(hud.mutex);
-    hud.known = false;
+    refii_bridge_player_two_hud_state(0, 0u, nullptr, nullptr);
     return;
   }
 
@@ -9320,13 +9306,46 @@ void SamplePlayerTwoHud(PPCContext& ctx, uint8_t* base) {
     CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x821C67F8u), title);
   }
 
-  std::lock_guard lock(hud.mutex);
-  hud.known = true;
-  hud.target = target;
-  hud.title = std::move(said);
-  for (uint32_t i = 0; i < 4u; ++i) {
-    hud.icons[i] = std::move(icons[i]);
+  const char* const paths[4] = {icons[0].c_str(), icons[1].c_str(), icons[2].c_str(), icons[3].c_str()};
+  refii_bridge_player_two_hud_state(1, target, said.c_str(), paths);
+}
+
+/// PLAYER TWO'S DRUNK WARP on split screen. The guest makes one fullscreen displacement effect,
+/// for the local hero: `sub_822B62F0(owner)` creates it ("Art\GUI\HUD\FXT_Fullscreen_Drunk",
+/// `sub_821DE2E8`) while that hero's drunkenness (component 157 +12) is at or past its threshold
+/// (+36), keeps the handle at owner+4 (-1 none) and destroys it (`sub_82175918(handle, 1)`) once
+/// sober; the hero is `sub_8229EE78(sub_821C7CE0())`, the local player. Here the same builder runs
+/// for player two, with the local player answering player two for the call
+/// (RefiiCoopLocalPlayerTwoCall), on an owner of our own; off split screen their effect goes.
+/// Both effects are the same record, so the host routes the warp by whose drunk, not by quad.
+uint32_t g_drunk_two_owner = 0u;
+
+void DrivePlayerTwoDrunk(PPCContext& ctx, uint8_t* base) {
+  const PPCContext saved = ctx;
+  const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
+  if (g_drunk_two_owner == 0u) {
+    if (RefiiCoopSplitScreen() == 0) {
+      return;
+    }
+    const uint32_t owner = CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8221F258u), 16u);
+    if (owner < 0x10000u) {
+      return;
+    }
+    StoreGuestU32(base, owner, 0u);
+    StoreGuestU32(base, owner + 4u, 0xFFFFFFFFu);
+    g_drunk_two_owner = owner;
   }
+  if (RefiiCoopSplitScreen() == 0 || refii_mod_player_hero(base, 2) == 0u) {
+    const uint32_t handle = LoadGuestU32(base, g_drunk_two_owner + 4u);
+    if (handle != 0xFFFFFFFFu) {
+      CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82175918u), handle, 1u);
+      StoreGuestU32(base, g_drunk_two_owner + 4u, 0xFFFFFFFFu);
+    }
+    return;
+  }
+  RefiiCoopLocalPlayerTwoCall(1);
+  CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x822B62F0u), g_drunk_two_owner);
+  RefiiCoopLocalPlayerTwoCall(0);
 }
 
 void SampleMenuOwner(PPCContext& ctx, uint8_t* base) {
@@ -9400,6 +9419,7 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   CheckGuestHeaps(base, g_coop_ticks);
   CoopRedress(ctx, base);
   SamplePlayerTwoHud(ctx, base);
+  DrivePlayerTwoDrunk(ctx, base);
 
   MaybeArmInGameSimulation(ctx, base);
 
@@ -9737,26 +9757,6 @@ int RefiiCoopIsHostWeapon(uint32_t body, uint32_t item) {
     return 0;
   }
   return found->second[0] == item || found->second[1] == item ? 1 : 0;
-}
-
-/// Player two's split-screen HUD, as SamplePlayerTwoHud stated it: `out` takes the targeted
-/// title then the four d-pad icon paths (up, left, down, right), one per line. 1 when stated.
-uint32_t refii_bridge_player_two_hud(uint32_t* target, char* out, uint32_t capacity) {
-  auto& hud = refii::vfs::TwoHud();
-  std::lock_guard lock(hud.mutex);
-  if (!hud.known || out == nullptr || capacity == 0u) {
-    return 0u;
-  }
-  if (target != nullptr) {
-    *target = hud.target;
-  }
-  std::string text = hud.title;
-  for (const std::string& icon : hud.icons) {
-    text += '\n';
-    text += icon;
-  }
-  std::snprintf(out, capacity, "%s", text.c_str());
-  return 1u;
 }
 
 /// Whether player two's d-pad fill is running (coop_hero_hooks.cpp skips the shared tutorial).

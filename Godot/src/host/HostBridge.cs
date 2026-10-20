@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 198;
+	public const int ExpectedAbiVersion = 202;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -2555,6 +2555,100 @@ public static class HostBridge
 	public static int GetPlayerTwoPrompts(uint[] into) =>
 		TryGetAbiVersion() is null || !IsGuestUp ? 0 : RefiiHostGetPlayerTwoPrompts(into, into.Length);
 
+	/// <summary>The things whose use prompt only player two sees this frame (player one's half hides them).</summary>
+	public static int GetPlayerOneHiddenPrompts(uint[] into) =>
+		TryGetAbiVersion() is null || !IsGuestUp ? 0 : RefiiHostGetPlayerOneHiddenPrompts(into, into.Length);
+
+	/// <summary>Player two's own hold-to-use meter: the fraction 0..1 and whether they hold A.</summary>
+	public static (float Fraction, bool Pressed) GetPlayerTwoHold()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return (0f, false);
+		}
+
+		try
+		{
+			RefiiHostGetPlayerTwoHold(out float fraction, out int pressed);
+			return (fraction, pressed != 0);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return (0f, false);
+		}
+	}
+
+	private static readonly float[] _holdPromptAt = new float[3];
+	private static readonly byte[] _holdPromptTitle = new byte[256];
+
+	/// <summary>
+	/// PLAYER TWO'S OWN HOLD PROMPT in local co-op: the guest keeps one hold prompt, player one's;
+	/// player two's is kept beside it (coop_hero_hooks.cpp). Its guest world point and title, or
+	/// null when they have none.
+	/// </summary>
+	public static (Vector3 Anchor, string Title)? GetPlayerTwoHoldPrompt()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			if (RefiiHostGetPlayerTwoHoldPrompt(_holdPromptAt, _holdPromptTitle, (uint)_holdPromptTitle.Length) == 0)
+			{
+				return null;
+			}
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		int length = Array.IndexOf(_holdPromptTitle, (byte)0);
+		string title = Encoding.UTF8.GetString(_holdPromptTitle, 0, length < 0 ? _holdPromptTitle.Length : length);
+		return (new Vector3(_holdPromptAt[0], _holdPromptAt[1], _holdPromptAt[2]), title);
+	}
+
+	/// <summary>An entity's network id (the guest's 64-bit UID), or 0.</summary>
+	public static ulong GetEntityUid(uint entity)
+	{
+		if (entity == 0u || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0ul;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityUid(entity);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0ul;
+		}
+	}
+
+	/// <summary>
+	/// A villager's opinion of player 1 or 2 by its network id: love, fear, attractiveness,
+	/// morality and respect into <paramref name="axes"/> (five). False when it is not found here.
+	/// </summary>
+	public static bool GetOpinionOfUid(ulong uid, int player, float[] axes)
+	{
+		if (uid == 0ul || axes.Length < 5 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostGetOpinionOfUid(uid, player, axes) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
 	/// <summary>Whether the guest still wants the movie the host is showing.</summary>
 	public enum MoviePlayback { None = 0, Wanted = 1, EndedByGuest = 2 }
 
@@ -2635,7 +2729,7 @@ public static class HostBridge
 	public readonly record struct WorldSprite(
 		uint Type, uint TextureHash, Color Colour, uint Entity, bool Persistent, bool Fading,
 		Vector3 Anchor, float Scale, float SecondsLeft, float Age, string Title, string Opinion,
-		bool Pooled = false, int Slot = -1, uint Object = 0);
+		bool Pooled = false, int Slot = -1, uint Object = 0, bool PlayerTwo = false);
 
 	private const int SpriteWords = 8;
 
@@ -2707,7 +2801,8 @@ public static class HostBridge
 				title, opinion,
 				Pooled: (flags & 2) != 0,
 				Slot: _spriteWords[w + 6] == 0xFFFFFFFFu ? -1 : (int)_spriteWords[w + 6],
-				Object: _spriteWords[w + 7]));
+				Object: _spriteWords[w + 7],
+				PlayerTwo: (flags & 4) != 0));
 		}
 
 		return sprites;
@@ -6757,7 +6852,7 @@ public static class HostBridge
 	}
 
 	/// <summary>Which event kinds the payload posts for <see cref="DrainModEvents"/> (bit = kind); 0 posts nothing.</summary>
-	public static void SetModEventMask(ulong mask)
+	public static void SetModEventMask(UInt128 mask)
 	{
 		if (TryGetAbiVersion() is null)
 		{
@@ -6766,7 +6861,8 @@ public static class HostBridge
 
 		try
 		{
-			RefiiHostSetModEventMask(mask);
+			RefiiHostSetModEventMaskHigh((ulong)(mask >> 64));
+			RefiiHostSetModEventMask((ulong)mask);
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -6876,7 +6972,7 @@ public static class HostBridge
 	}
 
 	/// <summary>Which event kinds the verdict handler is asked about (bit = kind); 0 asks about none.</summary>
-	public static void SetModVerdictMask(ulong mask)
+	public static void SetModVerdictMask(UInt128 mask)
 	{
 		if (TryGetAbiVersion() is null)
 		{
@@ -6885,7 +6981,8 @@ public static class HostBridge
 
 		try
 		{
-			RefiiHostSetModVerdictMask(mask);
+			RefiiHostSetModVerdictMaskHigh((ulong)(mask >> 64));
+			RefiiHostSetModVerdictMask((ulong)mask);
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -8438,6 +8535,21 @@ public static class HostBridge
 	private static extern int RefiiHostGetPlayerTwoPrompts(uint[] outThings, int capacity);
 
 	[DllImport(Library)]
+	private static extern int RefiiHostGetPlayerOneHiddenPrompts(uint[] outThings, int capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetPlayerTwoHold(out float fraction, out int pressed);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetPlayerTwoHoldPrompt([Out] float[] at, [Out] byte[] title, uint capacity);
+
+	[DllImport(Library)]
+	private static extern ulong RefiiHostGetEntityUid(uint entity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetOpinionOfUid(ulong uid, int player, [Out] float[] axes);
+
+	[DllImport(Library)]
 	private static extern int RefiiHostGetExitWaiting();
 
 	[DllImport(Library)]
@@ -8539,6 +8651,26 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetPlayerTwoTargetedQuery([Out] uint[] words, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetDrunkPlayers();
+
+	/// <summary>Which heroes are past the drunk warp's threshold: bit 0 hero one, bit 1 hero two.</summary>
+	public static uint GetDrunkPlayers()
+	{
+		try
+		{
+			return RefiiHostGetDrunkPlayers();
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0u;
+		}
+		catch (DllNotFoundException)
+		{
+			return 0u;
+		}
+	}
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetPlayerTwoHud(ref uint target, [Out] byte[] text, uint capacity);
@@ -9261,6 +9393,9 @@ public static class HostBridge
 	private static extern void RefiiHostSetModEventMask(ulong mask);
 
 	[DllImport(Library)]
+	private static extern void RefiiHostSetModEventMaskHigh(ulong mask);
+
+	[DllImport(Library)]
 	private static extern void RefiiHostPostModInput(byte[] action, uint actionLength, int player, int pressed);
 
 	[DllImport(Library)]
@@ -9296,6 +9431,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetModVerdictMask(ulong mask);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetModVerdictMaskHigh(ulong mask);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetHeroDerived(

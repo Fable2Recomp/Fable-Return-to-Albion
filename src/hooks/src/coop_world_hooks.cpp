@@ -29,6 +29,30 @@
 extern "C" uint8_t* RefiiGuestBase(void);
 extern "C" REX_FUNC(__imp__rex_CECInventory_AddEntity);
 extern "C" REX_FUNC(rex_lhEntity_Destroy);
+extern "C" void refii_mod_raise_collectable_taken(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t entity,
+                                                  uint32_t record, int32_t stays);
+
+// A GDB record's id by its name — `NGDB_CRecord_Get_int(g_GDBManager, name, 0)` (`sub_8217F390`),
+// the id space of an entity's +28 and of CreateEntityFromIDAtPosition. 0 when there is none.
+// Game Lua cannot compare ids (`record:GetID()` is a userdata), so a choice between records is
+// made here and handed to Lua by name.
+extern "C" uint32_t RefiiGdbRecordId(PPCContext* ctx, uint8_t* base, const char* name) {
+  static PPCFunc* const lookup = refii::vfs::FindGuestFunction(refii::guest::Address(0x8217F390u));
+  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496DA0u));
+  const std::size_t length = name != nullptr ? std::strlen(name) : 0u;
+  if (ctx == nullptr || lookup == nullptr || gdb < 0x10000u || gdb >= 0xC0000000u || length == 0u || length >= 0x100u) {
+    return 0u;
+  }
+  PPCContext work = *ctx;
+  work.r1.u32 = (ctx->r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t text = work.r1.u32 + 0x60u;
+  std::memcpy(base + text, name, length + 1u);
+  work.r3.u32 = gdb;
+  work.r4.u32 = text;
+  work.r5.u64 = 0u;
+  lookup(work, base);
+  return work.r3.u32;
+}
 
 namespace {
 
@@ -37,24 +61,9 @@ bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
 /// The silver key's record, asked of the game's own record table once.
 uint32_t SilverKeyRecord(PPCContext& ctx, uint8_t* base) {
   static uint32_t record = 0u;
-  if (record != 0u) {
-    return record;
+  if (record == 0u) {
+    record = RefiiGdbRecordId(&ctx, base, "ObjectInventorySilverKey");
   }
-  static PPCFunc* const lookup = refii::vfs::FindGuestFunction(refii::guest::Address(0x8217F390u));
-  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496DA0u));
-  if (lookup == nullptr || !Plausible(gdb)) {
-    return 0u;
-  }
-  PPCContext work = ctx;
-  work.r1.u32 = (ctx.r1.u32 - 0x200u) & ~0xFu;
-  const uint32_t text = work.r1.u32 + 0x60u;
-  static constexpr char kName[] = "ObjectInventorySilverKey";
-  std::memcpy(base + text, kName, sizeof(kName));
-  work.r3.u32 = gdb;
-  work.r4.u32 = text;
-  work.r5.u64 = 0u;
-  lookup(work, base);
-  record = work.r3.u32;
   return record;
 }
 
@@ -115,6 +124,8 @@ REX_EXTERN(rex_CECInventory_AddEntity) {
   const uint64_t uid = UniqueId(base, entity);
   const uint32_t partner_bit = 1u << (player == 1 ? 1 : 0);
   const bool partner_has = (refii_bridge_collectable_mask(uid) & partner_bit) != 0u;
+  refii_mod_raise_collectable_taken(&ctx, base, player, entity, refii::vfs::LoadGuestU32(base, entity + 28u),
+                                    partner_has ? 0 : 1);
   ctx.r6.u64 = 0u;  // the item is made either way; the world key stays for the partner
   __imp__rex_CECInventory_AddEntity(ctx, base);
   refii_bridge_collectable_take(player, uid);

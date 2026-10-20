@@ -216,7 +216,9 @@ void refii_bridge_note_exit_refused(int32_t player);
 int32_t refii_bridge_take_exit_refused(void);
 // The things whose use prompt answers player two (coop_hero_hooks.cpp), published by the payload
 // once a frame; the host copies them out (RefiiHostGetPlayerTwoPrompts). Returns the count.
-void refii_bridge_set_prompts_two(const uint32_t* things, int32_t count);
+// The things whose use prompt shows this frame and which players see it (bit 0 player one, bit 1
+// player two: the guest's own in-range test run for each), published by coop_hero_hooks.cpp.
+void refii_bridge_set_prompt_masks(const uint32_t* things, const uint8_t* masks, int32_t count);
 // Online: this machine's player stands waiting at a region exit for their partner (the travel
 // rule). Set by the payload once a frame; the host restates it to the peer (RefiiHostGetExitWaiting).
 void refii_bridge_set_exit_waiting(int32_t waiting);
@@ -227,6 +229,14 @@ void refii_bridge_set_exit_request(float x, float y, float z);
 uint32_t refii_bridge_exit_request(float* out_xyz);
 int32_t refii_bridge_exit_waiting(void);
 int32_t refii_bridge_prompts_two(uint32_t* out, int32_t capacity);
+// The things only player two sees (player one's half hides their icon).
+int32_t refii_bridge_prompts_one_hidden(uint32_t* out, int32_t capacity);
+// Player two's own hold-to-use meter (coop_hero_hooks.cpp): the fraction 0..1 and whether A is held.
+void refii_bridge_player_two_hold_state(float fraction, int32_t pressed);
+void refii_bridge_player_two_hold(float* fraction, int32_t* pressed);
+// Player two's own hold prompt (coop_hero_hooks.cpp): up, its guest world point and title (UTF-8).
+void refii_bridge_player_two_hold_prompt(int32_t up, const float* at, const char* title);
+int32_t refii_bridge_player_two_hold_prompt_get(float* at, char* title, uint32_t capacity);
 int32_t refii_bridge_menu_populating(void);
 
 uint32_t refii_bridge_guest_tick_pump_begin_drain(void);
@@ -348,6 +358,8 @@ float refii_bridge_mod_setting_f32(const char* key, size_t key_length, float fal
 //   or 2) and the payload's tick polls them into InputAction events.
 void refii_bridge_mod_event_post(int32_t kind, const char* fields, size_t length);
 uint64_t refii_bridge_mod_host_event_mask(void);
+// Kinds 64..127.
+uint64_t refii_bridge_mod_host_event_mask_high(void);
 int32_t refii_bridge_mod_input_poll(char* out_name, size_t capacity, int32_t* out_player,
                                     int32_t* out_pressed);
 // - the host POSTS a command line (a helper call or a query from a Godot script, the grammar in
@@ -372,6 +384,9 @@ void refii_bridge_mod_set_verdict_handler(refii_mod_verdict_fn handler);
 refii_mod_verdict_fn refii_bridge_mod_verdict_handler(void);
 void refii_bridge_mod_set_verdict_mask(uint64_t mask);
 uint64_t refii_bridge_mod_verdict_mask(void);
+// Kinds 64..127.
+void refii_bridge_mod_set_verdict_mask_high(uint64_t mask);
+uint64_t refii_bridge_mod_verdict_mask_high(void);
 
 // PLAYER STATE (state in src/core/player_state.cpp, the contract in core/player_state.h): a mod's
 // per-player values, owned by the machine that plays the hero and the same on both machines.
@@ -428,19 +443,29 @@ void refii_bridge_collectable_take(int32_t player, uint64_t uid);
 uint32_t refii_bridge_collectable_masks(uint32_t* out, uint32_t capacity);
 
 // A VILLAGER'S OPINION OF PLAYER TWO (src/core/coop_opinion.cpp), by the opinion component's
-// address: the block is the component's bytes +24..+64 (base and current axes, guest byte order)
-// then +176..+236 (the five modifier vectors).
-#define REFII_OPINION_BLOCK_BYTES 100
+// address: the component's per-hero regions in guest byte order (mod_events.cpp kOpinionRegions),
+// starting with +24..+64 (base and current axes) then +176..+236 (the five modifier lists).
+#define REFII_OPINION_BLOCK_BYTES 208
 int32_t refii_bridge_opinion_two_load(uint32_t component, uint8_t* out);
 void refii_bridge_opinion_two_store(uint32_t component, const uint8_t* in);
 void refii_bridge_opinion_two_forget(uint32_t component);
+// Hero one's slot (the player record `players`'s +108 holder) as our readers must see it on any
+// thread: an opinion scope for hero two lends it to hero two for one guest call
+// (refii_bridge_hero_slot_lend / _return); a read overlapping a lend answers the real holder.
+void refii_bridge_hero_slot_lend(uint32_t real_holder);
+void refii_bridge_hero_slot_return(void);
+uint32_t refii_bridge_hero_one_holder(const uint8_t* base, uint32_t players);
 
-// PLAYER TWO'S SPLIT-SCREEN HUD (hooks/guest_tick_pump.cpp, SamplePlayerTwoHud): their targeted
-// title and d-pad icons, from the guest's own builders called for hero two.
-// - the host reads the title then four icon paths (up, left, down, right), newline-separated,
-//   and the targeted entity; returns 1 when stated.
+// PLAYER TWO'S SPLIT-SCREEN HUD (src/core/coop_hud_two.cpp): their targeted title and d-pad
+// icons, from the guest's own builders called for hero two (hooks/guest_tick_pump.cpp).
+// - the pump states them each tick (known 0 off split screen; icons: up, left, down, right);
+void refii_bridge_player_two_hud_state(int32_t known, uint32_t target, const char* title,
+                                       const char* const* icons);
+// - the host reads the title then the four icon paths, newline-separated, and the targeted
+//   entity; returns 1 when stated.
 uint32_t refii_bridge_player_two_hud(uint32_t* target, char* out, uint32_t capacity);
-// - nonzero while player two's d-pad fill runs (the shared tutorial calls are skipped).
+// - nonzero while player two's d-pad fill runs (the shared tutorial calls are skipped); the
+//   payload's own (the pump sets it, coop_hero_hooks.cpp reads it).
 int32_t refii_bridge_dpad_query_two(void);
 
 #ifdef __cplusplus

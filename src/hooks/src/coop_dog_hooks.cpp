@@ -45,6 +45,7 @@ extern "C" int RefiiCoopPartnerDogName(char* out, uint32_t capacity);
 extern "C" void RefiiCoopPartnerScreen(int on);
 extern "C" REX_FUNC(__imp__rex_CECDog_Update);
 extern "C" REX_FUNC(__imp__rex_CECDog_TeleportNearMasterOffScreen);
+extern "C" uint32_t RefiiGdbRecordId(PPCContext* ctx, uint8_t* base, const char* name);
 extern "C" uint32_t RefiiCoopPartnerDogKit(uint32_t* definition, int32_t* searching, int32_t* combat,
                                            char* tricks, uint32_t capacity);
 
@@ -162,24 +163,27 @@ void Spawn(PPCContext* ctx, uint8_t* base) {
     }
   }
 
-  // Record ids are large (a breed's is ~4.8e8) and a Lua number here is a float, so the stated
-  // id only ever SELECTS among the four breed records by equality: both sides round the same id
-  // the same way, and the game's own breed change passes `record:GetID()` the same way
-  // (ApplyDogChange). A guard dropping ids past 2^24 made every breed the plain dog (2026-10-20).
-  const uint32_t stated = definition;
+  // THE BREED IS CHOSEN HERE, by record id. The stated breed is player two's dog's record id
+  // (entity+0x1C); game Lua cannot compare one — `record:GetID()` is a userdata, so an equality
+  // with a number is never true and every breed came out the plain dog (seen live 2026-10-20).
+  // The match is made against the game's own record table and Lua is handed the breed's name,
+  // whose `GetID()` goes to CreateEntityFromIDAtPosition as the game's breed change passes it.
+  static constexpr const char* kBreeds[] = {
+      "CreatureDogHero", "CreatureDogHeroBloodhound", "CreatureDogHeroDalmation", "CreatureDogHeroHusky",
+  };
+  const char* breed = kBreeds[0];
+  for (const char* candidate : kBreeds) {
+    if (definition != 0u && RefiiGdbRecordId(ctx, base, candidate) == definition) {
+      breed = candidate;
+      break;
+    }
+  }
   const std::string chunk =
       "local hero = GetPlayerHenchman and GetPlayerHenchman()\n"
       "if hero == nil or not hero:IsAlive() then return end\n"
-      "local id\n"
-      "for _, name in ipairs({ \"CreatureDogHero\", \"CreatureDogHeroBloodhound\", "
-      "\"CreatureDogHeroDalmation\", \"CreatureDogHeroHusky\" }) do\n"
-      "  local record = GDB.GetRecord(name)\n"
-      "  if record ~= nil and not record:IsNull() then\n"
-      "    if id == nil or record:GetID() == " + std::to_string(stated) + " then id = record:GetID() end\n"
-      "  end\n"
-      "end\n"
-      "if id == nil then return end\n"
-      "local dog = CreateEntityFromIDAtPosition(id, \"" + std::string(kPartnerDogName) + "\", hero:GetPosition())\n"
+      "local record = GDB.GetRecord(\"" + std::string(breed) + "\")\n"
+      "if record == nil or record:IsNull() then return end\n"
+      "local dog = CreateEntityFromIDAtPosition(record:GetID(), \"" + std::string(kPartnerDogName) + "\", hero:GetPosition())\n"
       "if dog == nil or not dog:IsAlive() then return end\n"
       "Refii._set_partner_dog(Refii.handle(dog))\n" +
       (name.empty() ? std::string()
@@ -194,8 +198,8 @@ void Spawn(PPCContext* ctx, uint8_t* base) {
       "end\n";
   const bool ran = refii_mod_run_game_lua(ctx, base, chunk.c_str()) != 0;
   const uint32_t dog = RefiiCoopPlayerDog(base, 2);
-  REXLOG_INFO("coop dogs: player two's dog {} (stated breed 0x{:08X}, levels {}/{}, tricks [{}]){}",
-              dog != 0u ? "created" : "NOT created", definition, searching, combat, tricks,
+  REXLOG_INFO("coop dogs: player two's dog {} ({}, stated breed 0x{:08X}, levels {}/{}, tricks [{}]){}",
+              dog != 0u ? "created" : "NOT created", breed, definition, searching, combat, tricks,
               ran ? "" : " — the chunk failed");
 }
 

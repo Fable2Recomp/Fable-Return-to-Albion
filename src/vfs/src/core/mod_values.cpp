@@ -62,6 +62,8 @@ constexpr size_t kMaxQueuedEvents = 4096;
 constexpr size_t kMaxQueuedInputs = 256;
 constexpr size_t kMaxFieldsLength = 2048;
 std::atomic<uint64_t> g_host_event_mask{0};
+/// Kinds 64..127.
+std::atomic<uint64_t> g_host_event_mask_high{0};
 
 ModValueTables& Tables() {
   static ModValueTables tables;
@@ -122,8 +124,7 @@ extern "C" void refii_bridge_mod_event_post(int32_t kind, const char* fields, si
   if (kind < 0 || fields == nullptr || length > kMaxFieldsLength) {
     return;
   }
-  if (kind < kHostOnlyKind &&
-      (kind >= 64 || ((g_host_event_mask.load(std::memory_order_relaxed) >> kind) & 1u) == 0u)) {
+  if (kind < kHostOnlyKind && !refii::mods::HostWantsEvent(kind)) {
     return;
   }
   ModValueTables& tables = Tables();
@@ -143,6 +144,10 @@ extern "C" void refii_bridge_mod_event_post(int32_t kind, const char* fields, si
 
 extern "C" uint64_t refii_bridge_mod_host_event_mask(void) {
   return g_host_event_mask.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t refii_bridge_mod_host_event_mask_high(void) {
+  return g_host_event_mask_high.load(std::memory_order_relaxed);
 }
 
 extern "C" int32_t refii_bridge_mod_input_poll(char* out_name, size_t capacity, int32_t* out_player,
@@ -301,11 +306,15 @@ size_t DrainEventsForHost(char* out, size_t capacity) {
 
 void SetHostEventMask(uint64_t mask) {
   g_host_event_mask.store(mask, std::memory_order_relaxed);
-  if (mask == 0) {
+  if (mask == 0 && g_host_event_mask_high.load(std::memory_order_relaxed) == 0) {
     ModValueTables& tables = Tables();
     std::lock_guard lock(tables.mutex);
     tables.events.clear();
   }
+}
+
+void SetHostEventMaskHigh(uint64_t mask) {
+  g_host_event_mask_high.store(mask, std::memory_order_relaxed);
 }
 
 void PostInputFromHost(std::string_view action, int32_t player, bool pressed) {
@@ -325,6 +334,7 @@ void PostInputFromHost(std::string_view action, int32_t player, bool pressed) {
 namespace {
 std::atomic<refii_mod_verdict_fn> g_verdict_handler{nullptr};
 std::atomic<uint64_t> g_verdict_mask{0};
+std::atomic<uint64_t> g_verdict_mask_high{0};
 }  // namespace
 
 extern "C" void refii_bridge_mod_set_verdict_handler(refii_mod_verdict_fn handler) {
@@ -341,4 +351,12 @@ extern "C" void refii_bridge_mod_set_verdict_mask(uint64_t mask) {
 
 extern "C" uint64_t refii_bridge_mod_verdict_mask(void) {
   return g_verdict_mask.load(std::memory_order_acquire);
+}
+
+extern "C" void refii_bridge_mod_set_verdict_mask_high(uint64_t mask) {
+  g_verdict_mask_high.store(mask, std::memory_order_release);
+}
+
+extern "C" uint64_t refii_bridge_mod_verdict_mask_high(void) {
+  return g_verdict_mask_high.load(std::memory_order_acquire);
 }

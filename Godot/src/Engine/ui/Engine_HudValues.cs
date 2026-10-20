@@ -42,18 +42,31 @@ public sealed class Engine_HudValues
         }
     }
 
-    /// <summary>States a meter on this overlay, 0..100 (null withdraws it).</summary>
+    /// <summary>
+    /// States a meter on this overlay, 0..100 (null withdraws it). On a feed of its own the
+    /// statement outlasts each read of the guest's channels until withdrawn — the online joiner's
+    /// readout, which shows player two's numbers where the guest states the host's.
+    /// </summary>
     public void OverrideMeter(Handle handle, float? percent)
     {
         if (percent is { } value)
         {
             _meters[handle.Hash] = value;
+            _meterOverrides[handle.Hash] = value;
         }
         else
         {
-            _meters.Remove(handle.Hash);
+            // A feed of its own keeps the guest's value until its next read.
+            _meterOverrides.Remove(handle.Hash);
+            if (Under is not null)
+            {
+                _meters.Remove(handle.Hash);
+            }
         }
     }
+
+    /// <summary>The meters stated over this feed's reads (<see cref="OverrideMeter"/>).</summary>
+    private readonly Dictionary<uint, float> _meterOverrides = new();
 
     /// <summary>States an element's visibility on this overlay (null withdraws it).</summary>
     public void OverrideVisible(Handle handle, bool? visible)
@@ -424,6 +437,10 @@ public sealed class Engine_HudValues
         _pulsers = Engine_UiSource.Current.GetHudPulsers();
         _texts = Engine_UiSource.Current.GetHudTexts();
         FollowPolled();
+        foreach ((uint hash, float value) in _meterOverrides)
+        {
+            _meters[hash] = value;
+        }
 
         // The registry wins where both channels hold a name.
         foreach ((uint hash, float value) in Engine_UiSource.Current.GetHudScriptMeters())

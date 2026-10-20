@@ -238,6 +238,10 @@ extern "C" int32_t refii_mod_menu_player(uint8_t* base);
 /// holds player two's set for the call.
 extern "C" int32_t refii_mod_opinion(uint8_t* base, uint32_t villager, int32_t player, float* out);
 
+/// How this game is shared: 0 alone, 1 local co-op (split or shared screen), 2 online and this
+/// machine hosts, 3 online and this machine joined. A partner counts once their hero exists.
+extern "C" int32_t refii_mod_coop_mode(uint8_t* base);
+
 /// The living entity player `player`'s hero is focused on (their targeting's target), or 0.
 extern "C" uint32_t refii_mod_focus(uint8_t* base, int32_t player);
 

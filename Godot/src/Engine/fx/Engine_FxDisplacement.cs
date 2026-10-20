@@ -58,6 +58,10 @@ public partial class Engine_FxDisplacement : Node
 
     public static Engine_FxDisplacement? Current => _current;
 
+    /// <summary>View 1's instance (player two's half) while the screen is split, else null.</summary>
+    public static Engine_FxDisplacement? SecondView =>
+        _current?._second is { } second && GodotObject.IsInstanceValid(second) ? second : null;
+
     /// <summary>The layer's own viewport, for 2D drawn into it (Engine_ModernDrunk); null until ready.</summary>
     public SubViewport? Target => _viewport;
 
