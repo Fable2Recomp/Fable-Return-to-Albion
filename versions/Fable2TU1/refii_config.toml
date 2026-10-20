@@ -11633,8 +11633,6 @@
 0x821ECA30 = { name = "rex_lhGameFlow_IsGuiActive", size = 0xA4 }
 0x82370050 = { name = "rex_lhGuiManager_EnterGuiModeQuiet", size = 0x128 }
 0x823A4290 = { name = "rex_CECCreature_FinishDeath" }
-0x8217EB08 = { name = "rex_XboxLive_Instance", size = 0x7C }
-0x822EA848 = { name = "rex_XboxLive_RestoreAfterLeave", size = 0x7C }
 0x821E4250 = { name = "rex_GDBManager_FindEntryByHash", size = 0x64 }
 0x827E1178 = { name = "rex_CECVillager_OnUse" }
 0x82481760 = { name = "rex_lhCameraManager_ActivateCamera" }

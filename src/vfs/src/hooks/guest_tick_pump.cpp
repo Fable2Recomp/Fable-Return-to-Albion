@@ -96,8 +96,6 @@ PPC_EXTERN_FUNC(rex_lhGui_FrontendTitle_OnScreenAction);
 // the kernel dispatch thread via CompleteOverlappedDeferred. Costs 100ms, once, at New Game.
 PPC_EXTERN_FUNC(rex_lhSaveManager_SelectStorageDevice);
 PPC_EXTERN_FUNC(rex_CNetworkManager_LeaveSession);
-PPC_EXTERN_FUNC(rex_XboxLive_Instance);
-PPC_EXTERN_FUNC(rex_XboxLive_RestoreAfterLeave);
 extern "C" int RefiiCoopShoppingPlayerTwo(void);
 extern "C" int RefiiCoopSplitScreen(void);
 extern "C" void RefiiCoopLocalPlayerTwoCall(int on);
@@ -5974,21 +5972,13 @@ bool DispatchCoopLeave(PPCContext& ctx, uint8_t* base) {
   const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
   const bool joiner = LoadGuestU8(base, net + 52u) != 0u && LoadGuestU8(base, net + 54u) != 0u;
   if (joiner) {
-    // The game's own leave as its co-op Reject runs it (sub_8236E458, box 44 answer 36): r4 = 1 is
-    // the quiet leave, no "disconnected" notice. The joiner then gets back the state it saved when
-    // it joined (XboxLive::RestoreAfterLeave on the XboxLive singleton), as the Reject does.
+    // The drop-out box's own answer for an online joiner (`sub_826A6E70`, 0x826A6ED8..0x826A6F20):
+    // `sub_8233E668(net, 1)`, the quiet leave, then the pause closed. NOT box 44's answer 36
+    // (`sub_8236E458`), which follows the leave with `sub_822EA848` — XboxLive's JoinSession on the
+    // session it saved (`sub_822EA738`, "CXboxLive::JoinSession called") — and so walked the
+    // joiner straight back into the session it had just left (2026-10-20 14:36:50).
     CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8233E668u), net, 1u);
     CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x8236ED98u), gui, 1u);
-    PPCContext live = saved;
-    live.r1.u32 = frame;
-    rex_XboxLive_Instance(live, base);
-    const uint32_t xbox_live = live.r3.u32;
-    if (plausible(xbox_live)) {
-      live = saved;
-      live.r1.u32 = frame;
-      live.r3.u32 = xbox_live;
-      rex_XboxLive_RestoreAfterLeave(live, base);
-    }
     ctx = saved;
     REXLOG_INFO("Refii guest-tick pump: CoopLeave — the joiner left the session (its hero saved)");
     return true;
