@@ -71,6 +71,7 @@ set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/core/coop_opinion.cpp
     # Player two's split-screen HUD: the pump states it, the host bridge reads it.
     ${REFII_VFS_ROOT}/src/core/coop_hud_two.cpp
+    ${REFII_VFS_ROOT}/src/core/coop_names.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
     # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
     # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the

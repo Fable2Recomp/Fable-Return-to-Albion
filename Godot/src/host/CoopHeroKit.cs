@@ -251,7 +251,10 @@ public static class CoopHeroKit
 			AbilityLevels: keep ? before.AbilityLevels : abilities,
 			Worn: hashes,
 			Inventory: inventory,
-			Name: LocalName,
+			// NO NAME TRAVELS: the kit crosses the co-op channel to whoever the partner is, and a
+			// display name goes only to friends (RexNet §17.3.8). The partner names us from its own
+			// RexNet view (NetBridge.PartnerName): our name if we are friends, our pseudonym if not.
+			Name: string.Empty,
 			Money: keep ? before.Money : vitals.Gold,
 			Experience: keep ? before.Experience : pools,
 			TotalExperience: keep ? before.TotalExperience : totals,
@@ -303,7 +306,7 @@ public static class CoopHeroKit
 		_sampledSave = name;
 		_pendingMelee = 0u;
 		_pendingRanged = 0u;
-		if (KitFromSave(name, LocalName) is not { } kit)
+		if (KitFromSave(name, string.Empty) is not { } kit)
 		{
 			ChosenSaveRead = false;
 			return;

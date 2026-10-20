@@ -297,6 +297,43 @@ public static class NetBridge
 		return parts.Length == 2 ? (parts[0], parts[1]) : null;
 	}
 
+	/// <summary>
+	/// The name to show for a peer, by RexNet's rule (§17.3.7–§17.3.8): a friend's own display
+	/// name, anyone else's pseudonym ("Curious Cat") — never a name a non-friend asserted. Null
+	/// when the id is not one or the node is absent.
+	/// </summary>
+	public static string? PeerName(string peerId) =>
+		string.IsNullOrEmpty(peerId) ? null : ReadName(buffer => RefiiNetPeerName(peerId, buffer, (uint)buffer.Length));
+
+	/// <summary>The online co-op partner's name to show, by the same rule; null when none is known.</summary>
+	public static string? PartnerName() => ReadName(buffer => RefiiNetPartnerName(buffer, (uint)buffer.Length));
+
+	private static string? ReadName(Func<byte[], uint> read)
+	{
+		var buffer = new byte[256];
+		uint written;
+		try
+		{
+			written = read(buffer);
+		}
+		catch (DllNotFoundException)
+		{
+			return null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		if (written == 0 || written > buffer.Length)
+		{
+			return null;
+		}
+
+		string name = Encoding.UTF8.GetString(buffer, 0, (int)written).TrimEnd('\n');
+		return name.Length == 0 ? null : name;
+	}
+
 	/// <summary>Outcome of <see cref="AddFriendByCode"/>: 0 failed, 1 sent, 2 that was our own code.</summary>
 	public static int AddFriendByCodeResult(string code, string note)
 	{
@@ -566,6 +603,12 @@ public static class NetBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiNetSetJoinable(int on);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetPeerName([MarshalAs(UnmanagedType.LPUTF8Str)] string peerId, byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetPartnerName(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetPreviewCode([MarshalAs(UnmanagedType.LPUTF8Str)] string code, byte[] outText, uint capacity);

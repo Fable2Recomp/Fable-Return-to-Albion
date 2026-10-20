@@ -187,7 +187,7 @@ public static class Engine_UiNetworkSource
 		var rows = new List<Engine_UiMenuSources.Row>();
 		foreach (NetBridge.Friend friend in FriendList())
 		{
-			string name = friend.DisplayName.Length == 0 ? Short(friend.PeerId) : friend.DisplayName;
+			string name = friend.DisplayName.Length == 0 ? Named(friend.PeerId) : friend.DisplayName;
 			string state = friend.Joinable
 				? (friend.TitleName.Length == 0 ? "in a game" : $"in {friend.TitleName}")
 				: friend.Online ? "online" : "offline";
@@ -221,7 +221,7 @@ public static class Engine_UiNetworkSource
 		{
 			string who = _sentNames.TryGetValue(peer, out string? name) && name.Length != 0
 				? name
-				: Short(peer);
+				: Named(peer);
 			// "Sent" was the node taking it; this is the other side's acknowledgement.
 			_declinedSays = $"Your friend request reached {who}.\n\nThey appear under Friends once they accept.";
 		}
@@ -230,7 +230,7 @@ public static class Engine_UiNetworkSource
 		{
 			string who = _sentNames.TryGetValue(notice.PeerId, out string? name) && name.Length != 0
 				? name
-				: Short(notice.PeerId);
+				: Named(notice.PeerId);
 			_declinedSays = notice.Kind switch
 			{
 				NetBridge.Notice.InviteFailed => $"Your invitation to {who} could not be delivered.\n\nThey may be offline; invite them again.",
@@ -243,7 +243,7 @@ public static class Engine_UiNetworkSource
 		{
 			string who = _sentNames.TryGetValue(peer, out string? name) && name.Length != 0
 				? name
-				: Short(peer);
+				: Named(peer);
 			_declinedSays = $"{who} declined your friend request.\n\nYou can ask again.";
 		}
 
@@ -266,9 +266,11 @@ public static class Engine_UiNetworkSource
 
 		foreach (NetBridge.Request request in NetBridge.Requests())
 		{
+			// A REQUEST IS THE ONE PLACE A STRANGER'S OWN NAME IS SHOWN (RexNet §17.3.8: without it
+			// a request is undecidable), and it is shown as theirs, self-named, not as a verified name.
 			string name = request.DisplayName.Length == 0
-				? Short(request.PeerId)
-				: request.DisplayName;
+				? Named(request.PeerId)
+				: $"\"{request.DisplayName}\" (self-named)";
 			string label = request.Note.Length == 0 ? name : $"{name} — \"{request.Note}\"";
 			rows.Add(Row(
 				$"request:{request.PeerId}", label, $"{CommandPrefix}accept:{request.PeerId}"));
@@ -293,7 +295,7 @@ public static class Engine_UiNetworkSource
 		{
 			rows.Add(Row(
 				$"invite:{invite.PeerId}",
-				$"{Short(invite.PeerId)} invited you",
+				$"{Named(invite.PeerId)} invited you",
 				$"{CommandPrefix}accept-invite:{invite.PeerId}"));
 		}
 
@@ -327,7 +329,7 @@ public static class Engine_UiNetworkSource
 				continue;
 			}
 
-			string name = friend.DisplayName.Length == 0 ? Short(friend.PeerId) : friend.DisplayName;
+			string name = friend.DisplayName.Length == 0 ? Named(friend.PeerId) : friend.DisplayName;
 			rows.Add(Row(
 				$"game:{friend.PeerId}",
 				$"{name}'s game",
@@ -343,7 +345,7 @@ public static class Engine_UiNetworkSource
 
 			rows.Add(Row(
 				$"game:{session.HostPeerId}",
-				$"{Short(session.HostPeerId)} — {session.SlotsOpen}/{session.SlotsTotal} open",
+				$"{Named(session.HostPeerId)} — {session.SlotsOpen}/{session.SlotsTotal} open",
 				$"{CommandPrefix}join:{session.HostPeerId}",
 				ghosted: session.SlotsOpen == 0));
 		}
@@ -725,6 +727,12 @@ public static class Engine_UiNetworkSource
 			: string.Empty;
 
 	/// <summary>The tail of a peer id — enough to tell two strangers apart in a row.</summary>
+	/// <summary>
+	/// The name a peer is shown by (RexNet §17.3.7–§17.3.8): a friend's own name, anyone else's
+	/// pseudonym, the same on every observer. The id's tail only when the node cannot say.
+	/// </summary>
+	private static string Named(string peerId) => NetBridge.PeerName(peerId) ?? Short(peerId);
+
 	private static string Short(string peerId) =>
 		peerId.Length <= 8 ? peerId : "…" + peerId[^8..];
 }

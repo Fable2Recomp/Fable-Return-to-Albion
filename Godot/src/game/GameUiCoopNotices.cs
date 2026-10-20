@@ -87,7 +87,7 @@ public partial class GameUi
 			}
 		}
 
-		if (_coopNotices.Tick(delta, CoopHeroKit.Remote.Name ?? string.Empty, inGame) is { } text)
+		if (_coopNotices.Tick(delta, PartnerName(), inGame) is { } text)
 		{
 			GD.Print($"[coop-notice] {text}");
 			_boxes.InfoBoxEx(Engine_UiCoopNotices.BoxName, Engine_UiCoopNotices.Seconds, text);
@@ -95,6 +95,31 @@ public partial class GameUi
 	}
 
 	private static string JoinAskKey(string userId) => "joinask:" + userId;
+
+	private string _partnerName = string.Empty;
+	private ulong _partnerNameAtMs;
+
+	/// <summary>
+	/// The partner's name as this player is shown it: local player two's from their kit; an online
+	/// partner's from RexNet (a friend's display name, anyone else's pseudonym — RexNet §17.3.8),
+	/// never a name the partner sent. Re-read twice a second; empty until known.
+	/// </summary>
+	private string PartnerName()
+	{
+		if (CoopSession.LocalCoop)
+		{
+			return CoopHeroKit.Remote.Name ?? string.Empty;
+		}
+
+		ulong now = Time.GetTicksMsec();
+		if (now - _partnerNameAtMs >= 500ul || _partnerName.Length == 0)
+		{
+			_partnerNameAtMs = now;
+			_partnerName = CoopSession.PeerStanding ? NetBridge.PartnerName() ?? string.Empty : string.Empty;
+		}
+
+		return _partnerName;
+	}
 
 	/// <summary>
 	/// Raises the oldest unasked Discord ask as Fable 3's question, one at a time and never over

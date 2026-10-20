@@ -237,6 +237,13 @@ void refii_bridge_player_two_hold(float* fraction, int32_t* pressed);
 // Player two's own hold prompt (coop_hero_hooks.cpp): up, its guest world point and title (UTF-8).
 void refii_bridge_player_two_hold_prompt(int32_t up, const float* at, const char* title);
 int32_t refii_bridge_player_two_hold_prompt_get(float* at, char* title, uint32_t capacity);
+// The name the game shows for the player with this XUID, by RexNet's rule (core/coop_names.cpp):
+// a friend's display name, anyone else's pseudonym. 1 when the XUID is a known player.
+int32_t refii_bridge_safe_name_for_xuid(uint64_t xuid, char* out, uint32_t capacity);
+// The name to show for a name another machine's game sent (a known player's pseudonym → their
+// name by the same rule); 0 when it names no known player. And this player's own name.
+int32_t refii_bridge_safe_name_for_sent(const char* sent, char* out, uint32_t capacity);
+int32_t refii_bridge_own_name(char* out, uint32_t capacity);
 int32_t refii_bridge_menu_populating(void);
 
 uint32_t refii_bridge_guest_tick_pump_begin_drain(void);

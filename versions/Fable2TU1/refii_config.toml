@@ -11650,6 +11650,12 @@
 0x823DD318 = { name = "rex_lhPromptManager_HoldInput" }
 0x821C5BB0 = { name = "rex_lhPromptManager_Update" }
 0x823DD730 = { name = "rex_lhPromptManager_Request" }
+0x822EF760 = { name = "rex_CXboxLive_PartnerName" }
+0x82560590 = { name = "rex_NLivePresence_PlayerName" }
+0x823A1248 = { name = "rex_NLivePresence_GiftAccepted" }
+0x8235A500 = { name = "rex_lhCoopText_DonationRecipient" }
+0x82359B40 = { name = "rex_lhCoopText_RefusedByHost" }
+0x823596C0 = { name = "rex_lhCoopText_RefusedByJoiner" }
 
 # Co-op heroes (src/hooks/src/coop_hero_hooks.cpp): each hook runs before its instruction and
 # skips one henchman test. Same offsets in both builds.
@@ -11873,6 +11879,22 @@ registers = ["r3"]
 name = "RefiiCoopPlayerOneOrLocal"
 address = 0x829B871C
 registers = ["r3"]
+
+# The local player's own name on the game's own screens (coop_ui_hooks.cpp RefiiOwnGamertag).
+[[midasm_hook]]
+name = "RefiiOwnGamertagNarrow"
+address = 0x8243BC98
+registers = ["r1", "r4"]
+
+[[midasm_hook]]
+name = "RefiiOwnGamertag"
+address = 0x826E1B78
+registers = ["r4"]
+
+[[midasm_hook]]
+name = "RefiiOwnGamertag"
+address = 0x82882A50
+registers = ["r4"]
 
 # Player two works a job's meter and buys property as themselves (coop_ui_hooks.cpp).
 [[midasm_hook]]

@@ -6264,9 +6264,9 @@ public partial class GameUi : Node
 			};
 
 			// Player one is the host, player two the joiner; each side knows its own name from
-			// the node and the other's from the kit.
+			// the node and the other's from RexNet's view of them (PartnerName).
 			string own = CoopHeroKit.LocalName;
-			string peer = CoopHeroKit.Remote.Name ?? string.Empty;
+			string peer = PartnerName();
 			bool joiner = SessionRole == 2u;
 			Engine_UiPageProviders.CoopPlayerOneName = joiner ? peer : own;
 			Engine_UiPageProviders.CoopPlayerTwoName = joiner ? own : peer;

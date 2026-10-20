@@ -1714,6 +1714,7 @@ std::vector<std::string> SplitArguments(const char* packed) {
 #if defined(REXGLUE_ENABLE_REXNET)
 #include <rex/net/rexnet.h>
 #include <rex/net/rexnet_ffi.h>
+#include <rex/net/pseudonym.h>
 
 namespace {
 /// Appends one field, stripped of anything that could forge a delimiter.
@@ -2360,7 +2361,9 @@ extern "C" {
 ///     player two's, its key ending "_P2"), RefiiHostGetPlayerTwoHoldPrompt (player two's own hold
 ///     prompt), and RefiiHostGetEntityUid / RefiiHostGetOpinionOfUid (a villager's opinion of
 ///     either player by its network id, for the online joiner's targeted readout).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 202; }
+/// 203 adds RefiiNetPeerName and RefiiNetPartnerName — the name to show for a peer by RexNet's rule
+///     (a friend's display name, anyone else's pseudonym); co-op no longer carries names.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 203; }
 
 /// The taken silver keys still in the world: (address, mask) pairs into `out`, at most `capacity`
 /// words. Returns the pairs written.
@@ -20343,6 +20346,71 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetPreviewCode(const char* code, char* out, 
     return Emit(row, out, capacity);
 #else
     (void)code;
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
+/// THE NAME TO SHOW FOR A PEER (RexNet §17.3.7–§17.3.8): a friend's own display name; anyone else
+/// is shown the pseudonym every observer derives from their peer id ("Curious Cat"), never a name
+/// they asserted. `name` in one record, 0 when the id is not one.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetPeerName(const char* peer_text, char* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    RexNetPeerId peer{};
+    if (!ParsePeer(peer_text, peer)) {
+        return 0;
+    }
+
+    std::string name;
+    rex::net::RexNet* net = Net();
+    if (net != nullptr && net->IsFriend(peer)) {
+        for (const rex::net::RexNet::FriendInfo& friend_info : net->SnapshotFriends()) {
+            if (SamePeerId(friend_info.peer, peer)) {
+                name = friend_info.display_name;
+                break;
+            }
+        }
+    }
+    if (name.empty()) {
+        name = rex::net::Pseudonym(peer);
+    }
+
+    std::string row;
+    Field(row, name, '\n');
+    return Emit(row, out, capacity);
+#else
+    (void)peer_text;
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
+extern "C" uint32_t RefiiCoopChannelPeer(void);
+
+/// The online co-op partner's name to show, by the same rule: the connection the co-op channel
+/// talks to (`RefiiCoopChannelPeer`), named by RexNet's own snapshot (a friend's display name, else
+/// the peer's pseudonym; §17.2). `name` in one record, 0 when no partner is known.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetPartnerName(char* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    const uint32_t partner = RefiiCoopChannelPeer();
+    if (net == nullptr || partner == 0u) {
+        return 0;
+    }
+
+    for (const rex::net::RexNet::Connection& connection : net->SnapshotConnections()) {
+        if (connection.virtual_ip == partner && !connection.is_relay) {
+            std::string row;
+            Field(row, connection.display_name.empty() ? rex::net::Pseudonym(connection.peer)
+                                                       : connection.display_name,
+                  '\n');
+            return Emit(row, out, capacity);
+        }
+    }
+    return 0;
+#else
     (void)out;
     (void)capacity;
     return 0;
