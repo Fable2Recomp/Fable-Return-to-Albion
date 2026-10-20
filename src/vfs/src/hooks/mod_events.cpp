@@ -21,6 +21,7 @@
 #include <cstring>
 #include <string>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include <rex/logging.h>
@@ -42,6 +43,45 @@ PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_SendIconRemoved);
 PPC_EXTERN_FUNC(__imp__rex_lhWorldIcons_Request);
 PPC_EXTERN_FUNC(__imp__rex_lhWorldIcons_Remove);
 PPC_EXTERN_FUNC(__imp__rex_lhWorldIcon_Update);
+PPC_EXTERN_FUNC(__imp__rex_lhInteraction_Suggestions);
+PPC_EXTERN_FUNC(__imp__rex_CECMood_HeroPresence);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_Start);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_Stop);
+PPC_EXTERN_FUNC(__imp__rex_CECRewardGiver_GiveReward);
+PPC_EXTERN_FUNC(__imp__rex_CECShopkeeper_BuyPrice);
+PPC_EXTERN_FUNC(__imp__rex_CECShopkeeper_SellPrice);
+PPC_EXTERN_FUNC(__imp__rex_CECShopkeeper_FrontPage);
+PPC_EXTERN_FUNC(__imp__rex_CECShopkeeper_Greet);
+PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_Copy);
+PPC_EXTERN_FUNC(__imp__rex_CECPlayerFamily_Update);
+PPC_EXTERN_FUNC(__imp__rex_CECPlayerFamily_FinishDivorcing);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_AnyEngaged);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_AnyMarried);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_AnySexPartner);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_AnyOtherSexPartner);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_FirstEngaged);
+PPC_EXTERN_FUNC(__imp__rex_CECFollow_FirstMarried);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_Update);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_OnMenuEvent);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_OnScreenAction);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_Confirm);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_Buy);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_Clear);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_Sell);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_MaritalHome);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_SetBudget);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRealEstateScreen_Message);
+PPC_EXTERN_FUNC(__imp__rex_CECPlayerProperties_SetRentedOut);
+PPC_EXTERN_FUNC(__imp__rex_lhGiftComponent_GiveGift);
+PPC_EXTERN_FUNC(__imp__rex_CECHeroGifts_RemovePermanently);
+PPC_EXTERN_FUNC(__imp__rex_CECBuilding_SetRedecorating);
+PPC_EXTERN_FUNC(__imp__rex_CECBuilding_RedecorateUpdate);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFurnitureScreen_Upgrade);
+PPC_EXTERN_FUNC(__imp__rex_CECUpgradeableFurniture_SetLevel);
+PPC_EXTERN_FUNC(__imp__rex_CECStats_ModifyTrackedStat);
+PPC_EXTERN_FUNC(__imp__rex_CECPlayerFamily_Widow);
+PPC_EXTERN_FUNC(__imp__rex_CECPlayerFamily_AdoptWithSpouse);
+PPC_EXTERN_FUNC(__imp__rex_CECOpinionReaction_SetEngaged);
 PPC_EXTERN_FUNC(__imp__rex_CECVillager_SpeechReaction);
 PPC_EXTERN_FUNC(__imp__rex_CECVillager_ChooseTopic);
 PPC_EXTERN_FUNC(__imp__rex_CECStats_UnlockAchievement);
@@ -177,8 +217,8 @@ int32_t PlayerOf(uint8_t* base, uint32_t entity) { return refii_mod_player_of(ba
 /// Kinds with a Lua handler, in groups of 20 (Refii._masks[g] holds kinds 20*(g-1)..20*g-1: a
 /// 32-bit float, the game Lua's number, is exact only to 24 bits).
 constexpr int32_t kLuaMaskBits = 20;
-constexpr int32_t kLuaMaskGroups = 4;
-uint32_t g_lua_masks[kLuaMaskGroups] = {0, 0, 0, 0};
+constexpr int32_t kLuaMaskGroups = 5;
+uint32_t g_lua_masks[kLuaMaskGroups] = {0, 0, 0, 0, 0};
 uint32_t g_lua_mask_generation = 0xFFFFFFFFu;
 float g_lua_dirty_poll = 0.0f;
 bool g_lua_running = false;
@@ -645,6 +685,102 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
                     e.answer);
       return;
     }
+    case REFII_EVENT_PROPERTY_BOUGHT: {
+      const auto& e = *static_cast<const PropertyBoughtEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,building=%u,price=%d", H(e.hero), e.player, H(e.building), e.price);
+      return;
+    }
+    case REFII_EVENT_PROPERTY_SOLD: {
+      const auto& e = *static_cast<const PropertySoldEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,building=%u,price=%d", H(e.hero), e.player, H(e.building), e.price);
+      return;
+    }
+    case REFII_EVENT_RENT_PAID: {
+      const auto& e = *static_cast<const RentPaidEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,gold=%d,drops=%d,away=%s", H(e.hero), e.player, e.gold, e.drops,
+                    e.away ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_PROPERTY_RENTED: {
+      const auto& e = *static_cast<const PropertyRentedEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,building=%u,rented=%s", H(e.hero), e.player, H(e.building),
+                    e.rented ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_PROPERTY_CONDITION: {
+      const auto& e = *static_cast<const PropertyConditionEvent*>(event);
+      std::snprintf(out, size, "uid='0x%016llx',player=%d,condition=%.9g,previous=%.9g,repaired=%s",
+                    static_cast<unsigned long long>(e.uid), e.player, Fin(e.condition), Fin(e.previous),
+                    e.repaired ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_DIVORCE: {
+      const auto& e = *static_cast<const DivorceEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,spouse=%u", H(e.hero), e.player, H(e.spouse));
+      return;
+    }
+    case REFII_EVENT_WIDOWED: {
+      const auto& e = *static_cast<const WidowedEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,uid='0x%016llx'", H(e.hero), e.player,
+                    static_cast<unsigned long long>(e.uid));
+      return;
+    }
+    case REFII_EVENT_CHILD_BORN: {
+      const auto& e = *static_cast<const ChildBornEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,spouse=%u,child=%u", H(e.hero), e.player, H(e.spouse), H(e.child));
+      return;
+    }
+    case REFII_EVENT_GIFT_GIVEN: {
+      const auto& e = *static_cast<const GiftGivenEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,target=%u,item='0x%08x'", H(e.hero), e.player, H(e.target), e.item);
+      return;
+    }
+    case REFII_EVENT_GIFT_ACCEPTED: {
+      const auto& e = *static_cast<const GiftAcceptedEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,item='0x%08x'", H(e.hero), e.player, e.item);
+      return;
+    }
+    case REFII_EVENT_ENGAGED: {
+      const auto& e = *static_cast<const EngagedEvent*>(event);
+      std::snprintf(out, size, "villager=%u,player=%d,engaged=%s", H(e.villager), e.player, e.engaged ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_FOLLOW: {
+      const auto& e = *static_cast<const FollowEvent*>(event);
+      std::snprintf(out, size, "follower=%u,leader=%u,player=%d,following=%s", H(e.follower), H(e.leader), e.player,
+                    e.following ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_FURNITURE_UPGRADED: {
+      const auto& e = *static_cast<const FurnitureUpgradedEvent*>(event);
+      std::snprintf(out, size, "piece=%u,player=%d,level=%d,previous=%d", H(e.piece), e.player, e.level, e.previous);
+      return;
+    }
+    case REFII_EVENT_REDECORATING: {
+      const auto& e = *static_cast<const RedecoratingEvent*>(event);
+      std::snprintf(out, size, "building=%u,player=%d,on=%s", H(e.building), e.player, e.on ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_HOUSEHOLD_BUDGET: {
+      const auto& e = *static_cast<const HouseholdBudgetEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,building=%u,gold=%d", H(e.hero), e.player, H(e.building), e.gold);
+      return;
+    }
+    case REFII_EVENT_TRACKED_STAT: {
+      const auto& e = *static_cast<const TrackedStatEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,stat=%d,amount=%d", H(e.hero), e.player, e.stat, e.amount);
+      return;
+    }
+    case REFII_EVENT_PARTNERSHIP: {
+      const auto& e = *static_cast<const PartnershipEvent*>(event);
+      std::snprintf(out, size, "kind=%d,previous=%d", e.kind, e.previous);
+      return;
+    }
+    case REFII_EVENT_HOUSEHOLD_RESTORED: {
+      const auto& e = *static_cast<const HouseholdRestoredEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,spouses=%d", H(e.hero), e.player, e.spouses);
+      return;
+    }
     case REFII_EVENT_WEATHER_REGION: {
       const auto& e = *static_cast<const WeatherRegionEvent*>(event);
       std::snprintf(out, size, "day_set='0x%08x',previous='0x%08x',inside=%s", e.day_set, e.previous,
@@ -1081,6 +1217,36 @@ bool WriteEventField(int32_t kind, void* event, const char* field, double value)
     case REFII_EVENT_RELATION:
       if (is("relation")) {
         static_cast<RelationEvent*>(event)->relation = ClampInt(value);
+        return true;
+      }
+      return false;
+    case REFII_EVENT_PROPERTY_BOUGHT:
+      if (is("price")) {
+        static_cast<PropertyBoughtEvent*>(event)->price = std::max(0, ClampInt(value));
+        return true;
+      }
+      return false;
+    case REFII_EVENT_PROPERTY_SOLD:
+      if (is("price")) {
+        static_cast<PropertySoldEvent*>(event)->price = std::max(0, ClampInt(value));
+        return true;
+      }
+      return false;
+    case REFII_EVENT_FURNITURE_UPGRADED:
+      if (is("level")) {
+        static_cast<FurnitureUpgradedEvent*>(event)->level = std::max(0, ClampInt(value));
+        return true;
+      }
+      return false;
+    case REFII_EVENT_HOUSEHOLD_BUDGET:
+      if (is("gold")) {
+        static_cast<HouseholdBudgetEvent*>(event)->gold = std::max(0, ClampInt(value));
+        return true;
+      }
+      return false;
+    case REFII_EVENT_TRACKED_STAT:
+      if (is("amount")) {
+        static_cast<TrackedStatEvent*>(event)->amount = ClampInt(value);
         return true;
       }
       return false;
@@ -2803,7 +2969,11 @@ bool OpinionFirstBlock(PPCContext& ctx, uint8_t* base, const uint8_t* main, uint
   return true;
 }
 
-thread_local uint32_t t_opinion_scoped[8] = {};
+constexpr int32_t kOpinionScopes = 32;
+thread_local uint32_t t_opinion_scoped[kOpinionScopes] = {};
+/// Hero one's slot is lent to hero two by an enclosing household scope; opinion scopes inside it
+/// swap their blocks and leave the slot to it.
+thread_local bool t_slot_lent = false;
 thread_local int32_t t_opinion_depth = 0;
 thread_local uint32_t t_opinion_holder = 0u;
 thread_local uint32_t t_opinion_players = 0u;
@@ -2812,11 +2982,12 @@ struct OpinionHeroScope {
   uint8_t* base = nullptr;
   uint32_t component = 0u;
   uint8_t main[REFII_OPINION_BLOCK_BYTES] = {};
+  bool lent_here = false;
 
   /// Enters when `hero` is hero two (and hero one exists); otherwise does nothing.
   OpinionHeroScope(PPCContext& ctx, uint8_t* guest, uint32_t comp, uint32_t hero) {
     if (comp < 0x10000u || hero == 0u || hero != refii_mod_player_hero(guest, 2) ||
-        refii_mod_player_hero(guest, 1) == 0u || t_opinion_depth >= 8) {
+        refii_mod_player_hero(guest, 1) == 0u || t_opinion_depth >= kOpinionScopes) {
       return;
     }
     for (int32_t i = 0; i < t_opinion_depth; ++i) {
@@ -2836,11 +3007,12 @@ struct OpinionHeroScope {
     base = guest;
     component = comp;
     OpinionWrite(base, component, two);
-    if (t_opinion_depth == 0) {
+    if (t_opinion_depth == 0 && !t_slot_lent) {
       t_opinion_players = players;
       t_opinion_holder = Load32(base, players + 108u);
       refii_bridge_hero_slot_lend(t_opinion_holder);
       refii::mods::StoreU32(base, players + 108u, Load32(base, players + 116u));
+      lent_here = true;
     }
     t_opinion_scoped[t_opinion_depth++] = comp;
   }
@@ -2856,7 +3028,7 @@ struct OpinionHeroScope {
     refii_bridge_opinion_two_store(component, two);
     OpinionWrite(base, component, main);
     --t_opinion_depth;
-    if (t_opinion_depth == 0) {
+    if (lent_here) {
       refii::mods::StoreU32(base, t_opinion_players + 108u, t_opinion_holder);
       refii_bridge_hero_slot_return();
     }
@@ -3033,6 +3205,13 @@ bool HostSendsIcon(uint8_t* base) {
   return t_opinion_depth > 0 || t_opinion_icons_gone || refii_mod_coop_mode(base) != 2;
 }
 
+/// A villager's death or removal widows only hero one: the shutdown (`sub_82790988`) asks hero
+/// one's family alone (0x82790B4C), then `sub_821C6DB0` married-to and `!sub_827B3C88`, and
+/// `sub_827B5DF8(family, villager+20)` ends the household (its penalties `sub_827A8158`). Hero
+/// two's spouse gets the same, from hero two's family, as their household (HouseholdScope below,
+/// declared later; here through its own lend so the order of definitions stays simple).
+void PlayerTwoWidowed(const PPCContext& entry, uint8_t* base, uint32_t opinion);
+
 }  // namespace
 
 // The world-icon manager's request (r3 manager, r4 &key, r5 thing, r6 &text, r7 type). TU1 0x823DD6B0.
@@ -3070,9 +3249,12 @@ REX_EXTERN(rex_lhWorldIcons_Remove) {
 // TU1 0x82790988 / 0x827931C0.
 REX_EXTERN(rex_CECOpinionReaction_Shutdown) {
   const bool previous = t_opinion_icons_gone;
+  const PPCContext entry = ctx;
+  const uint32_t opinion = ctx.r3.u32;
   t_opinion_icons_gone = true;
   __imp__rex_CECOpinionReaction_Shutdown(ctx, base);
   t_opinion_icons_gone = previous;
+  PlayerTwoWidowed(entry, base, opinion);
 }
 
 REX_EXTERN(rex_CECOpinionReaction_Reset) {
@@ -3097,15 +3279,29 @@ REX_EXTERN(rex_CECOpinionReaction_SendIconRemoved) {
 }
 
 // A world icon's per-frame update (r3 the icon, r4 nonzero when it is measured against the hero):
-// its size, fade and look-at cue follow hero one's distance (`sub_8222C1B8` at 0x82241CB4). Player
-// two's icons are measured from player two: hero one's slot is lent to hero two for the call, as
-// the opinion scope lends it. TU1 0x82241AD8.
+// its size, fade and look-at cue follow hero one's distance (`sub_8222C1B8` at 0x82241CB4), and a
+// relationship icon's intensity the villager's love (`sub_82820A78`, comp47 +0x2C against the
+// thresholds +0x70/+0x74). Player two's icons run in player two's opinion scope for their villager
+// (the icon's entity, the weak reference at +24 whose block +28 holds it): hero two lent and their
+// opinion swapped in. TU1 0x82241AD8.
 REX_EXTERN(rex_lhWorldIcon_Update) {
   const uint32_t icon = ctx.r3.u32;
-  const uint32_t players = t_opinion_depth == 0 && (ctx.r4.u32 & 0xFFu) != 0u && icon >= 0x10000u &&
-                                   KeyIsPlayerTwo(base, icon + 16u) && refii_mod_player_hero(base, 2) != 0u
-                               ? OpinionPlayers(base)
-                               : 0u;
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  if (t_opinion_depth != 0 || (ctx.r4.u32 & 0xFFu) == 0u || icon < 0x10000u || two == 0u ||
+      !KeyIsPlayerTwo(base, icon + 16u)) {
+    __imp__rex_lhWorldIcon_Update(ctx, base);
+    return;
+  }
+  const uint32_t block = Load32(base, icon + 28u);
+  const uint32_t villager = block >= 0x10000u && block < 0xE0000000u ? Load32(base, block) : 0u;
+  const uint32_t opinion = villager != 0u ? refii_mod_component(base, villager, 47u) : 0u;
+  PPCContext entry = ctx;
+  OpinionHeroScope scope(entry, base, opinion, two);
+  if (scope.active()) {
+    __imp__rex_lhWorldIcon_Update(ctx, base);
+    return;
+  }
+  const uint32_t players = OpinionPlayers(base);
   if (players < 0x10000u) {
     __imp__rex_lhWorldIcon_Update(ctx, base);
     return;
@@ -3116,6 +3312,1156 @@ REX_EXTERN(rex_lhWorldIcon_Update) {
   __imp__rex_lhWorldIcon_Update(ctx, base);
   refii::mods::StoreU32(base, players + 108u, holder);
   refii_bridge_hero_slot_return();
+}
+
+// VILLAGERS ACTING ON HOW THEY FEEL ABOUT PLAYER TWO. Beyond deeds, the per-frame math, speech and
+// topics, these read the opinion component for "the hero" (hero one, players+108, or a hero passed
+// in) to decide what a villager does; each runs in player two's opinion scope when it concerns hero
+// two. The relationship getters they call (`sub_822684A8` married, `sub_82268678`, `sub_8226B0D8`
+// eligible) read hero one's family and age inline through players+0x6C — the slot the scope lends —
+// so inside a scope they answer for hero two too.
+namespace {
+
+uint32_t OpinionOf(uint8_t* base, uint32_t villager) {
+  return villager >= 0x10000u && villager < 0xC0000000u ? refii_mod_component(base, villager, 47u) : 0u;
+}
+
+uint32_t ComponentOwner(uint8_t* base, uint32_t component) {
+  return component >= 0x10000u && component < 0xE0000000u ? Load32(base, component + 4u) : 0u;
+}
+
+/// Local co-op with player two owning the open menu (the shop they are in).
+bool PlayerTwoShops(uint8_t* base) {
+  return refii_bridge_menu_owner_two() != 0 && refii_mod_coop_mode(base) == 1;
+}
+
+}  // namespace
+
+// The interaction suggestions for the hero's target (`sub_822BA8D8`: r3 the hero-side interaction
+// component): Follow, Wait, Come back to my place, Gift, the expression suggestions, from the
+// target's love, fear and relationship. The guest runs it for hero two itself when game+0x11C == 2
+// and the component's +34 is set and +33 clear (0x822BA99C..0x822BA9D4); then it is player two's
+// opinion of their focused villager. TU1 0x822BA8D8.
+REX_EXTERN(rex_lhInteraction_Suggestions) {
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t root = Load32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = root >= 0x10000u ? Load32(base, root + 12u) : 0u;
+  const bool for_two = component >= 0x10000u && game >= 0x10000u && Load32(base, game + 0x11Cu) == 2u &&
+                       Load8(base, component + 34u) != 0u && Load8(base, component + 33u) == 0u;
+  if (!for_two) {
+    __imp__rex_lhInteraction_Suggestions(ctx, base);
+    return;
+  }
+  PPCContext entry = ctx;
+  OpinionHeroScope scope(entry, base, OpinionOf(base, refii_mod_focus(base, 2)), refii_mod_player_hero(base, 2));
+  __imp__rex_lhInteraction_Suggestions(ctx, base);
+}
+
+// A villager's sense of the hero's presence (`sub_8229FD88`: r3 the mood component, the villager at
+// +4): mood+28 / +32 = love / fear × nearness × sight, for hero one only (0x8229FEE0). With player
+// two in the game it is measured for each hero — the second time in player two's opinion scope —
+// and the stronger presence of each kind is kept. TU1 0x8229FD88.
+REX_EXTERN(rex_CECMood_HeroPresence) {
+  const uint32_t mood = ctx.r3.u32;
+  const PPCContext entry = ctx;
+  __imp__rex_CECMood_HeroPresence(ctx, base);
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  const uint32_t opinion = OpinionOf(base, ComponentOwner(base, mood));
+  if (two == 0u || opinion == 0u || t_opinion_depth != 0) {
+    return;
+  }
+  const auto load_float = [base](uint32_t at) {
+    const uint32_t bits = Load32(base, at);
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  };
+  const float love_one = load_float(mood + 28u);
+  const float fear_one = load_float(mood + 32u);
+  {
+    PPCContext pass = entry;
+    OpinionHeroScope scope(pass, base, opinion, two);
+    if (!scope.active()) {
+      return;
+    }
+    __imp__rex_CECMood_HeroPresence(pass, base);
+  }
+  const float love_two = load_float(mood + 28u);
+  const float fear_two = load_float(mood + 32u);
+  refii::mods::StoreF32(base, mood + 28u, std::fabs(love_two) > std::fabs(love_one) ? love_two : love_one);
+  refii::mods::StoreF32(base, mood + 32u, std::fabs(fear_two) > std::fabs(fear_one) ? fear_two : fear_one);
+}
+
+// Following a hero starts (`sub_825E33D0`: r3 the follow component, the villager at +4, r4 the
+// leader) and stops (`sub_825E3660`: the leader the weak reference at +0x1C, its holder +0x20): an
+// engaged villager's waiting-to-marry flag and its stamp are the leader's — player two's in their
+// scope. TU1 0x825E33D0 / 0x825E3660.
+REX_EXTERN(rex_CECFollow_Start) {
+  PPCContext entry = ctx;
+  if (AnySubscriber(REFII_EVENT_FOLLOW)) {
+    FollowEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.follower = ComponentOwner(base, ctx.r3.u32);
+    e.leader = ctx.r4.u32;
+    e.player = PlayerOf(base, e.leader);
+    e.following = true;
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+  }
+  OpinionHeroScope scope(entry, base, OpinionOf(base, ComponentOwner(base, ctx.r3.u32)), ctx.r4.u32);
+  __imp__rex_CECFollow_Start(ctx, base);
+}
+
+REX_EXTERN(rex_CECFollow_Stop) {
+  const uint32_t follow = ctx.r3.u32;
+  const uint32_t holder = follow >= 0x10000u ? Load32(base, follow + 0x20u) : 0u;
+  const uint32_t leader = holder >= 0x10000u && holder < 0xE0000000u ? Load32(base, holder) : 0u;
+  PPCContext entry = ctx;
+  {
+    OpinionHeroScope scope(entry, base, OpinionOf(base, ComponentOwner(base, follow)), leader);
+    __imp__rex_CECFollow_Stop(ctx, base);
+  }
+  if (leader != 0u && AnySubscriber(REFII_EVENT_FOLLOW)) {
+    FollowEvent e{};
+    PPCContext e_ctx = entry;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.follower = ComponentOwner(base, follow);
+    e.leader = leader;
+    e.player = PlayerOf(base, leader);
+    e.following = false;
+    Dispatch(e);
+  }
+}
+
+// NPCRewardGiver.GivePlayerReward (`sub_825DD5E0`: r3 the reward component, the villager at +4,
+// r4 the hero rewarded): the reward's opinion threshold (`sub_82840170`, comp47 +0x2C + 4·axis)
+// is the rewarded hero's. TU1 0x825DD5E0.
+REX_EXTERN(rex_CECRewardGiver_GiveReward) {
+  PPCContext entry = ctx;
+  OpinionHeroScope scope(entry, base, OpinionOf(base, ComponentOwner(base, ctx.r3.u32)), ctx.r4.u32);
+  __imp__rex_CECRewardGiver_GiveReward(ctx, base);
+}
+
+// A shopkeeper's prices and greeting follow their love and fear for the customer
+// (`sub_828727B8` buy, `sub_82872910` sell, `sub_82873F18` front page: r3 the shopkeeper component,
+// the shopkeeper at +4; `sub_828731A8` greeting: r4 it). The customer is not passed; in local co-op
+// player two is the customer while their menu is open. TU1 0x828727B8 / 0x82872910 / 0x82873F18 /
+// 0x828731A8.
+REX_EXTERN(rex_CECShopkeeper_BuyPrice) {
+  PPCContext entry = ctx;
+  OpinionHeroScope scope(entry, base, PlayerTwoShops(base) ? OpinionOf(base, ComponentOwner(base, ctx.r3.u32)) : 0u,
+                         refii_mod_player_hero(base, 2));
+  __imp__rex_CECShopkeeper_BuyPrice(ctx, base);
+}
+
+REX_EXTERN(rex_CECShopkeeper_SellPrice) {
+  PPCContext entry = ctx;
+  OpinionHeroScope scope(entry, base, PlayerTwoShops(base) ? OpinionOf(base, ComponentOwner(base, ctx.r3.u32)) : 0u,
+                         refii_mod_player_hero(base, 2));
+  __imp__rex_CECShopkeeper_SellPrice(ctx, base);
+}
+
+REX_EXTERN(rex_CECShopkeeper_FrontPage) {
+  PPCContext entry = ctx;
+  OpinionHeroScope scope(entry, base, PlayerTwoShops(base) ? OpinionOf(base, ComponentOwner(base, ctx.r3.u32)) : 0u,
+                         refii_mod_player_hero(base, 2));
+  __imp__rex_CECShopkeeper_FrontPage(ctx, base);
+}
+
+REX_EXTERN(rex_CECShopkeeper_Greet) {
+  PPCContext entry = ctx;
+  OpinionHeroScope scope(entry, base, PlayerTwoShops(base) ? OpinionOf(base, ComponentOwner(base, ctx.r4.u32)) : 0u,
+                         refii_mod_player_hero(base, 2));
+  __imp__rex_CECShopkeeper_Greet(ctx, base);
+}
+
+// PLAYER TWO'S HOUSEHOLD. Fable 2's family code mostly takes its hero from the family component's
+// owner (CECPlayerFamily, comp136 on the hero: records at *(family+20), the spouse's UID at node+8,
+// children's UIDs in the record's list at rec+8), but reads hero one inline for the upkeep's purse
+// (0x827A8A80), the spouse's and home's opinion (0x8278B9BC, 0x8279DD24, 0x8279E288), the divorce
+// penalties (0x827A81A0) and the follower scans' married test (`sub_822684A8`); and every villager
+// reads its one opinion set. For hero two's household the scope below lends hero two into hero one's
+// slot for the call and swaps in player two's opinion for each spouse, child and follower (comp94's
+// list: *(follow+40) the list's sentinel, the follower's weak-reference holder at node+12).
+struct HouseholdScope {
+  uint8_t* base = nullptr;
+  uint32_t players = 0u;
+  uint32_t holder = 0u;
+  uint32_t two = 0u;
+  std::vector<std::unique_ptr<OpinionHeroScope>> scopes;
+
+  HouseholdScope(PPCContext& ctx, uint8_t* guest, uint32_t hero) {
+    two = refii_mod_player_hero(guest, 2);
+    if (hero == 0u || hero != two || refii_mod_player_hero(guest, 1) == 0u || t_slot_lent || t_opinion_depth != 0) {
+      return;
+    }
+    players = OpinionPlayers(guest);
+    if (players < 0x10000u) {
+      return;
+    }
+    base = guest;
+    holder = Load32(base, players + 108u);
+    refii_bridge_hero_slot_lend(holder);
+    refii::mods::StoreU32(base, players + 108u, Load32(base, players + 116u));
+    t_slot_lent = true;
+
+    const auto heap = [](uint32_t at) { return at >= 0x10000u && at < 0xE0000000u; };
+    if (const uint32_t family = refii_mod_component(base, hero, 136u)) {
+      const uint32_t head = Load32(base, family + 20u);
+      uint32_t node = heap(head) ? Load32(base, head) : 0u;
+      for (uint32_t n = 0; heap(node) && node != head && n < 16u; ++n, node = Load32(base, node)) {
+        AddUid(ctx, node + 8u);
+        const uint32_t children = Load32(base, node + 8u + 12u);
+        uint32_t child = heap(children) ? Load32(base, children) : 0u;
+        for (uint32_t c = 0; heap(child) && child != children && c < 8u; ++c, child = Load32(base, child)) {
+          AddUid(ctx, child + 8u);
+        }
+      }
+    }
+    if (const uint32_t follow = refii_mod_component(base, hero, 94u)) {
+      const uint32_t head = Load32(base, follow + 40u);
+      uint32_t node = heap(head) ? Load32(base, head) : 0u;
+      for (uint32_t n = 0; heap(node) && node != head && n < 16u; ++n, node = Load32(base, node)) {
+        const uint32_t weak = Load32(base, node + 12u);
+        AddEntity(ctx, heap(weak) ? Load32(base, weak) : 0u);
+      }
+    }
+  }
+
+  void AddUid(PPCContext& ctx, uint32_t uid) {
+    PPCContext work = Frame(ctx);
+    work.r3.u64 = players;
+    work.r4.u64 = uid;
+    if (CallGuest(work, base, refii::guest::Address(0x82264488u))) {
+      AddEntity(ctx, work.r3.u32);
+    }
+  }
+
+  void AddEntity(PPCContext& ctx, uint32_t entity) {
+    const uint32_t opinion = entity >= 0x10000u && entity < 0xC0000000u ? refii_mod_component(base, entity, 47u) : 0u;
+    if (opinion != 0u && t_opinion_depth < kOpinionScopes - 1) {
+      auto scope = std::make_unique<OpinionHeroScope>(ctx, base, opinion, two);
+      if (scope->active()) {
+        scopes.push_back(std::move(scope));
+      }
+    }
+  }
+
+  bool active() const { return base != nullptr; }
+
+  ~HouseholdScope() {
+    while (!scopes.empty()) {
+      scopes.pop_back();
+    }
+    if (base != nullptr) {
+      refii::mods::StoreU32(base, players + 108u, holder);
+      refii_bridge_hero_slot_return();
+      t_slot_lent = false;
+    }
+  }
+
+  HouseholdScope(const HouseholdScope&) = delete;
+  HouseholdScope& operator=(const HouseholdScope&) = delete;
+};
+
+// The family's per-frame update (`sub_827AB848`: r3 the family, owner at +4): once a game day it
+// ticks every household (`sub_827A8A48`: upkeep from the purse, the spouse's and children's
+// opinion, the home's, rewards, the state). Hero two's runs as their household. TU1 0x827AB848.
+REX_EXTERN(rex_CECPlayerFamily_Update) {
+  if (refii::vfs::HouseholdIsMirror(base, ComponentOwner(base, ctx.r3.u32))) {
+    return;  // an online joiner's hero two shows the host's household; the host's copy ticks
+  }
+  PPCContext entry = ctx;
+  HouseholdScope scope(entry, base, ComponentOwner(base, ctx.r3.u32));
+  __imp__rex_CECPlayerFamily_Update(ctx, base);
+}
+
+// PlayerFamily.FinishDivorcing (`sub_827B2F90`: r3 the family, r4 the spouse): the record's
+// removal and the divorce's penalties (`sub_827A8158`, hero one's stats at 0x827A81A0) are the
+// family owner's. TU1 0x827B2F90.
+REX_EXTERN(rex_CECPlayerFamily_FinishDivorcing) {
+  PPCContext entry = ctx;
+  const uint32_t hero = ComponentOwner(base, ctx.r3.u32);
+  const uint32_t spouse = ctx.r4.u32;
+  {
+    HouseholdScope scope(entry, base, hero);
+    __imp__rex_CECPlayerFamily_FinishDivorcing(ctx, base);
+  }
+  if (AnySubscriber(REFII_EVENT_DIVORCE)) {
+    DivorceEvent e{};
+    PPCContext e_ctx = entry;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = hero;
+    e.player = PlayerOf(base, hero);
+    e.spouse = spouse;
+    Dispatch(e);
+  }
+}
+
+// A spouse gone: the household ends (`sub_827B5DF8`: r3 the family, r4 &the spouse's UID; the
+// opinion shutdown asks hero one's family, PlayerTwoWidowed hero two's). TU1 0x827B5DF8.
+REX_EXTERN(rex_CECPlayerFamily_Widow) {
+  const uint32_t hero = ComponentOwner(base, ctx.r3.u32);
+  const uint32_t uid_at = ctx.r4.u32;
+  const uint64_t uid = uid_at >= 0x10000u ? (static_cast<uint64_t>(Load32(base, uid_at)) << 32) | Load32(base, uid_at + 4u) : 0u;
+  const PPCContext entry = ctx;
+  __imp__rex_CECPlayerFamily_Widow(ctx, base);
+  if (AnySubscriber(REFII_EVENT_WIDOWED)) {
+    WidowedEvent e{};
+    PPCContext e_ctx = entry;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = hero;
+    e.player = PlayerOf(base, hero);
+    e.uid = uid;
+    Dispatch(e);
+  }
+}
+
+// A child for a hero and their spouse (`sub_827AFF80`: r3 the family, r4 the spouse, r5 the child;
+// PlayerFamily.AdoptWithSpouse, the birth). TU1 0x827AFF80.
+REX_EXTERN(rex_CECPlayerFamily_AdoptWithSpouse) {
+  const uint32_t hero = ComponentOwner(base, ctx.r3.u32);
+  const uint32_t spouse = ctx.r4.u32;
+  const uint32_t child = ctx.r5.u32;
+  const PPCContext entry = ctx;
+  __imp__rex_CECPlayerFamily_AdoptWithSpouse(ctx, base);
+  if (AnySubscriber(REFII_EVENT_CHILD_BORN)) {
+    ChildBornEvent e{};
+    PPCContext e_ctx = entry;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = hero;
+    e.player = PlayerOf(base, hero);
+    e.spouse = spouse;
+    e.child = child;
+    Dispatch(e);
+  }
+}
+
+// The follow component's scans of the leader's followers (r3 the follow component, the leader at
+// +4): `sub_825E5750` any engaged, `sub_825E5940` any married to the hero, `sub_825E5B30` any sex
+// partner, `sub_825E5D20` any other sex partner, `sub_825E5F70` the first engaged,
+// `sub_825E6140` the first married. Each reads the followers' opinion bytes (+771, +775) and
+// `sub_822684A8`; a leader who is hero two is answered from player two's set. TU1 0x825E5750 /
+// 0x825E5940 / 0x825E5B30 / 0x825E5D20 / 0x825E5F70 / 0x825E6140.
+//
+// On an online joiner, hero two's own follow component lists nobody (the guest never sends who
+// follows whom; the host runs the villagers), so a scan for hero two there is answered from the
+// followers the host publishes (household_persist.cpp): any (r3 0/1) or the first (r3 the entity)
+// whose flags match.
+namespace {
+bool JoinerFollowScan(PPCContext& ctx, uint8_t* base, uint32_t want, uint32_t refuse, bool first);
+}  // namespace
+
+#define REFII_FOLLOW_SCAN(name, want, refuse, first)                         \
+  REX_EXTERN(name) {                                                         \
+    if (JoinerFollowScan(ctx, base, want, refuse, first)) {                  \
+      return;                                                                \
+    }                                                                        \
+    PPCContext entry = ctx;                                                  \
+    HouseholdScope scope(entry, base, ComponentOwner(base, ctx.r3.u32));     \
+    __imp__##name(ctx, base);                                                \
+  }
+REFII_FOLLOW_SCAN(rex_CECFollow_AnyEngaged, 1u, 0u, false)
+REFII_FOLLOW_SCAN(rex_CECFollow_AnyMarried, 4u, 0u, false)
+REFII_FOLLOW_SCAN(rex_CECFollow_AnySexPartner, 2u, 0u, false)
+REFII_FOLLOW_SCAN(rex_CECFollow_AnyOtherSexPartner, 2u, 4u, false)
+REFII_FOLLOW_SCAN(rex_CECFollow_FirstEngaged, 1u, 0u, true)
+REFII_FOLLOW_SCAN(rex_CECFollow_FirstMarried, 4u, 0u, true)
+#undef REFII_FOLLOW_SCAN
+
+// The real-estate screen (vtable 0x820CEA58) caches its buyer at screen+144 when it opens
+// (`sub_826B1A08`, player two's when it was their sale sign: coop_ui_hooks.cpp RefiiCoopEstateBuyer)
+// and works for it: its update and menu builder (`sub_82998300`, hero one at 0x8299836C), its
+// menu event (`sub_826B2210`), screen action (`sub_826B2A18`) and confirm (`sub_826B25E0`) — the
+// purchase, the rent and budget, and the wedding (`sub_826B35B8` → `sub_826B3778`, the engaged
+// follower and hero one's JustMarriedHero at 0x826B3F2C). Player two's screen runs as their
+// household. TU1 0x826B1EF0 / 0x826B2210 / 0x826B2A18 / 0x826B25E0.
+//
+// ONLINE, A JOINER'S ESTATE ACTIONS ARE THE HOST'S. Player two's household lives on the host's copy
+// of hero two (household_persist.cpp); the joiner's screen runs on its mirror, where a client's money
+// changes nothing and nothing is sent. So on the joiner, each of the screen's state changes for hero
+// two is not run but sent to the host as an intent (`<action>:<sign uid>:<value>`, the pump's
+// Estate: action), and the host runs the same helper for its hero two (ReplayEstateIntent). The
+// helpers read only the screen's binding (`sub_826B1A08`): +0x90 the hero, +0x94 its comp69, +0x98
+// its comp77, +0x9C the sale sign, +0xA0 the sign's comp142, +0xA4 the building, +0xA8 its comp67.
+//   buy      `sub_826B32B0`: purchase, sign sold, "HousePurchased", gossip;
+//   clear    `sub_826B3258`: occupants out, `sub_828D3BD8`, not rented;
+//   sell     `sub_826B3448`: sale, sign, "HouseSold", gossip — then the GUI's exit (`sub_8236ED98`)
+//            and the "sold" message (`sub_826B1F48`), presentation the joiner keeps;
+//   marital  `sub_826B35B8`: clear, then the wedding (`sub_826B3778`) or moving the family, and
+//            the marital-home flag;
+//   budget   `sub_826B2B20(screen, gold)`: the household's upkeep, paid from the hero's purse;
+//   rentout  `sub_828D28D8(props, building, on)` (confirms 32 and 33);
+//   rent     the rent/profit level the confirm writes to comp67+0x5C (pickers 36/37).
+namespace {
+thread_local uint32_t t_estate_screen = 0u;
+thread_local bool t_estate_replay = false;
+
+struct EstateScreenScope {
+  uint32_t previous;
+  explicit EstateScreenScope(uint32_t screen) : previous(t_estate_screen) { t_estate_screen = screen; }
+  ~EstateScreenScope() { t_estate_screen = previous; }
+  EstateScreenScope(const EstateScreenScope&) = delete;
+  EstateScreenScope& operator=(const EstateScreenScope&) = delete;
+};
+
+/// On an online joiner, inside the estate screen bound to its hero two: the change is the host's.
+bool EstateForwards(uint8_t* base, uint32_t screen) {
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  return screen >= 0x10000u && two != 0u && refii_mod_player_here(1) == 0 && refii_mod_player_here(2) != 0 &&
+         Load32(base, screen + 0x90u) == two;
+}
+
+void PostEstate(uint8_t* base, uint32_t screen, const char* action, int32_t value) {
+  const uint32_t sign = Load32(base, screen + 0x9Cu);
+  const uint64_t uid = sign >= 0x10000u ? (static_cast<uint64_t>(Load32(base, sign + 20u)) << 32) | Load32(base, sign + 24u)
+                                        : 0u;
+  if (uid == 0u) {
+    return;
+  }
+  char text[96];
+  std::snprintf(text, sizeof(text), "%s:%016llX:%d", action, static_cast<unsigned long long>(uid), value);
+  refii_bridge_estate_intent_post(text);
+  REXLOG_INFO("Refii estate: the joiner's {} goes to the host", text);
+}
+}  // namespace
+
+#define REFII_ESTATE_SCREEN(name)                                                                 \
+  REX_EXTERN(name) {                                                                              \
+    const uint32_t screen = ctx.r3.u32;                                                           \
+    PPCContext entry = ctx;                                                                       \
+    EstateScreenScope screen_scope(screen);                                                       \
+    HouseholdScope scope(entry, base, screen >= 0x10000u ? Load32(base, screen + 144u) : 0u);     \
+    __imp__##name(ctx, base);                                                                     \
+  }
+REFII_ESTATE_SCREEN(rex_lhGuiRealEstateScreen_Update)
+REFII_ESTATE_SCREEN(rex_lhGuiRealEstateScreen_OnMenuEvent)
+REFII_ESTATE_SCREEN(rex_lhGuiRealEstateScreen_OnScreenAction)
+#undef REFII_ESTATE_SCREEN
+
+// The confirm (`sub_826B25E0`) also writes the rent/profit level itself (comp67+0x5C, pickers
+// 36/37); on a joiner that value goes to the host as well. TU1 0x826B25E0.
+REX_EXTERN(rex_lhGuiRealEstateScreen_Confirm) {
+  const uint32_t screen = ctx.r3.u32;
+  PPCContext entry = ctx;
+  EstateScreenScope screen_scope(screen);
+  HouseholdScope scope(entry, base, screen >= 0x10000u ? Load32(base, screen + 144u) : 0u);
+  const uint32_t building = screen >= 0x10000u ? Load32(base, screen + 0xA8u) : 0u;
+  const uint32_t level = building >= 0x10000u ? Load32(base, building + 0x5Cu) : 0u;
+  __imp__rex_lhGuiRealEstateScreen_Confirm(ctx, base);
+  if (building >= 0x10000u && Load32(base, building + 0x5Cu) != level && EstateForwards(base, screen)) {
+    PostEstate(base, screen, "rent", static_cast<int32_t>(Load32(base, building + 0x5Cu)));
+  }
+}
+
+// The screen's state helpers (r3 the screen): on a joiner for its hero two, sent to the host instead.
+// TU1 0x826B32B0 / 0x826B3258 / 0x826B35B8.
+#define REFII_ESTATE_HELPER(name, action)                 \
+  REX_EXTERN(name) {                                      \
+    if (EstateForwards(base, ctx.r3.u32)) {               \
+      PostEstate(base, ctx.r3.u32, action, 0);            \
+      return;                                             \
+    }                                                     \
+    __imp__##name(ctx, base);                             \
+  }
+REFII_ESTATE_HELPER(rex_lhGuiRealEstateScreen_Buy, "buy")
+REFII_ESTATE_HELPER(rex_lhGuiRealEstateScreen_Clear, "clear")
+REFII_ESTATE_HELPER(rex_lhGuiRealEstateScreen_MaritalHome, "marital")
+#undef REFII_ESTATE_HELPER
+
+// The household budget (`sub_826B2B20`: r3 the screen, r4 the gold). TU1 0x826B2B20.
+REX_EXTERN(rex_lhGuiRealEstateScreen_SetBudget) {
+  if (EstateForwards(base, ctx.r3.u32)) {
+    PostEstate(base, ctx.r3.u32, "budget", static_cast<int32_t>(ctx.r4.u32));
+    return;
+  }
+  if (AnySubscriber(REFII_EVENT_HOUSEHOLD_BUDGET)) {
+    HouseholdBudgetEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = Load32(base, ctx.r3.u32 + 0x90u);
+    e.player = PlayerOf(base, e.hero);
+    e.building = Load32(base, ctx.r3.u32 + 0xA4u);
+    e.gold = static_cast<int32_t>(ctx.r4.u32);
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+    ctx.r4.u64 = static_cast<uint32_t>(e.gold);
+  }
+  __imp__rex_lhGuiRealEstateScreen_SetBudget(ctx, base);
+}
+
+// A sale (`sub_826B3448`, r3 the screen): on a joiner the sale is the host's, and the joiner keeps
+// the screen's own ending — the GUI's exit and the "sold" message. TU1 0x826B3448.
+REX_EXTERN(rex_lhGuiRealEstateScreen_Sell) {
+  const uint32_t screen = ctx.r3.u32;
+  if (!EstateForwards(base, screen)) {
+    __imp__rex_lhGuiRealEstateScreen_Sell(ctx, base);
+    return;
+  }
+  PostEstate(base, screen, "sell", 0);
+  const uint32_t gui = Load32(base, refii::guest::Address(0x83496B08u));
+  PPCContext work = Frame(ctx);
+  if (gui >= 0x10000u) {
+    work.r3.u64 = Load32(base, gui + 28u);
+    work.r4.u64 = 1u;
+    CallGuest(work, base, refii::guest::Address(0x8236ED98u));
+  }
+  static constexpr char kSold[] = "GUI_SCREEN_REAL_ESTATE_PROPERTY_SOLD";
+  PPCContext text = Frame(ctx);
+  const uint32_t name = (text.r1.u32 + 0x80u) & ~0xFu;
+  const uint32_t string = name + 0x40u;
+  std::memcpy(base + name, kSold, sizeof(kSold));
+  text.r3.u64 = string;
+  text.r4.u64 = name;
+  text.r5.u64 = 0xFFFFFFFFu;
+  if (CallGuest(text, base, refii::guest::Address(0x8222CED0u))) {
+    PPCContext message = Frame(ctx);
+    message.r3.u64 = screen;
+    message.r4.u64 = string;
+    CallGuest(message, base, refii::guest::Address(0x826B1F48u));  // shows and releases the string
+  }
+}
+
+// Rented out or not (`sub_828D28D8`: r3 the hero's comp69, r4 the building, r5 on). The confirm
+// calls it for 32/33; inside the clear and marital helpers it runs on the host. TU1 0x828D28D8.
+REX_EXTERN(rex_CECPlayerProperties_SetRentedOut) {
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  if (t_estate_screen != 0u && EstateForwards(base, t_estate_screen) && two != 0u &&
+      ctx.r3.u32 == refii_mod_component(base, two, 69u)) {
+    PostEstate(base, t_estate_screen, "rentout", ctx.r5.u8 != 0 ? 1 : 0);
+    return;
+  }
+  if (AnySubscriber(REFII_EVENT_PROPERTY_RENTED)) {
+    PropertyRentedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = ComponentOwner(base, ctx.r3.u32);
+    e.player = PlayerOf(base, e.hero);
+    e.building = ctx.r4.u32;
+    e.rented = ctx.r5.u8 != 0;
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+  }
+  __imp__rex_CECPlayerProperties_SetRentedOut(ctx, base);
+}
+
+// Presentation the host never shows for the joiner's replayed action: the screen's message (here)
+// and the GUI's exit (rex_lhGuiManager_ExitScreen, below). TU1 0x826B1F48.
+REX_EXTERN(rex_lhGuiRealEstateScreen_Message) {
+  if (t_estate_replay) {
+    return;
+  }
+  __imp__rex_lhGuiRealEstateScreen_Message(ctx, base);
+}
+
+
+
+// GIFTS AND RINGS ONLINE. `Player.GiveGiftFromInventoryItem` (`sub_823F2718`: r3 the hero's comp33,
+// r4 the item handle) takes the gift out of the giver's inventory at once, keeps it in comp33's
+// TransitoryGifts (+0x104, sentinel +0x108; {record hash, expiry frame}) to be handed back after
+// 15 s of world frames, and posts the world message 48 (MESSAGE_EVENT_GIFT_GIVEN, `sub_82279B80`) to
+// the target (comp77's). The villager's BehaviourReceiveGift reads that message, and on accepting
+// calls `Player.RemoveGiftPermanently` (`sub_823F3028`: r3 comp33, r4 the Lua state, arg 1 the
+// record hash), which drops the TransitoryGifts entry (`sub_821D9EE8`) and applies the gift's
+// morality (`sub_824D5BC0`, which the host sends on). None of it reaches the network, and villager
+// AI is the host's. So an online joiner's gift runs as shipped on the joiner (the item leaves its
+// own inventory, to come back unless accepted) and is sent to the host (`gift:<target uid>:<hash>`),
+// which posts the same message for its hero two and keeps the same TransitoryGifts entry; the
+// host's acceptance (RemoveGiftPermanently for hero two) is sent back (`giftkept:0:<hash>`), and
+// the joiner drops its entry, so the gift stays given.
+namespace {
+uint32_t ResolveUid(PPCContext& ctx, uint8_t* base, uint64_t uid) {
+  const uint32_t players = OpinionPlayers(base);
+  if (players < 0x10000u || uid == 0u) {
+    return 0u;
+  }
+  PPCContext work = Frame(ctx, 0x200u);
+  const uint32_t at = (work.r1.u32 + 0x80u) & ~0xFu;
+  refii::mods::StoreU32(base, at, static_cast<uint32_t>(uid >> 32));
+  refii::mods::StoreU32(base, at + 4u, static_cast<uint32_t>(uid));
+  work.r3.u64 = players;
+  work.r4.u64 = at;
+  const uint32_t entity = CallGuest(work, base, refii::guest::Address(0x82264488u)) ? work.r3.u32 : 0u;
+  return refii_mod_entity_alive(base, entity) != 0 ? entity : 0u;
+}
+
+uint64_t EntityUid(uint8_t* base, uint32_t entity) {
+  return entity >= 0x10000u ? (static_cast<uint64_t>(Load32(base, entity + 20u)) << 32) | Load32(base, entity + 24u) : 0u;
+}
+
+bool OnlineJoiner() { return refii_mod_player_here(1) == 0 && refii_mod_player_here(2) != 0; }
+
+void PostHousehold(const char* action, uint64_t uid, int32_t value) {
+  char text[96];
+  std::snprintf(text, sizeof(text), "%s:%016llX:%d", action, static_cast<unsigned long long>(uid), value);
+  refii_bridge_estate_intent_post(text);
+}
+
+// Furniture being upgraded for hero two (redecorating, below), on this thread.
+thread_local bool t_furniture_for_two = false;
+
+// The core Lua's silent bed thread for the joiner's hero two is running (Refii._household_context).
+int32_t g_household_context = 0;
+
+/// ONLINE, PLAYER TWO'S STATS ARE THE JOINER'S. A tracked stat (`sub_822D8E08`) is a plain local
+/// counter on the hero's comp57 (and a leaderboard write for this machine's profile), sent nowhere,
+/// and an achievement (`sub_824D8F88`) is credited on the machine that unlocks it. Household work the
+/// host runs for its copy of hero two — the family's natives under hero two's household scope, a
+/// joiner's estate action replayed, the joiner's bed run silently — would count them on a copy
+/// nobody keeps, so there they are sent to the joiner (`stat` / `ach`) instead; the achievement
+/// stays on the host too, as Fable 2's shared co-op achievements do.
+bool HouseholdForwards(uint8_t* base, uint32_t stats) {
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  return two != 0u && refii_mod_coop_mode(base) == 2 && ComponentOwner(base, stats) == two &&
+         (t_slot_lent || t_estate_replay || g_household_context > 0);
+}
+}  // namespace
+
+extern "C" void refii_household_context(int32_t on) {
+  g_household_context = std::max(0, g_household_context + (on != 0 ? 1 : -1));
+}
+
+// A tracked stat (`sub_822D8E08`: r3 the hero's comp57, r4 the stat, r5 the amount). TU1 0x822D8E08.
+REX_EXTERN(rex_CECStats_ModifyTrackedStat) {
+  if (HouseholdForwards(base, ctx.r3.u32) && ctx.r5.s32 != 0) {
+    PostHousehold("stat", 1u, static_cast<int32_t>((ctx.r4.u32 << 16) | (static_cast<uint32_t>(ctx.r5.s32) & 0xFFFFu)));
+    return;
+  }
+  if (ctx.r5.s32 != 0 && AnySubscriber(REFII_EVENT_TRACKED_STAT)) {
+    TrackedStatEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = ComponentOwner(base, ctx.r3.u32);
+    e.player = PlayerOf(base, e.hero);
+    e.stat = static_cast<int32_t>(ctx.r4.u32);
+    e.amount = ctx.r5.s32;
+    Dispatch(e);
+    if (e.cancel || e.amount == 0) {
+      return;
+    }
+    ctx.r5.s64 = e.amount;
+  }
+  __imp__rex_CECStats_ModifyTrackedStat(ctx, base);
+}
+
+// TU1 0x823F2718.
+REX_EXTERN(rex_lhGiftComponent_GiveGift) {
+  const uint32_t gifts = ctx.r3.u32;
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  const bool forward = two != 0u && OnlineJoiner() && ComponentOwner(base, gifts) == two;
+  uint32_t target = 0u;
+  if (forward) {
+    PPCContext work = Frame(ctx);
+    const uint32_t targeting = refii_mod_component(base, two, 77u);
+    if (targeting != 0u && CallVirtual(work, base, targeting, 17u)) {  // comp77 +0x44: its target
+      target = work.r3.u32;
+    }
+  }
+  if (AnySubscriber(REFII_EVENT_GIFT_GIVEN)) {
+    GiftGivenEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = ComponentOwner(base, gifts);
+    e.player = PlayerOf(base, e.hero);
+    const uint32_t handle = ctx.r4.u32;
+    const uint32_t instance = handle >= 0x10000u ? Load32(base, handle) : 0u;
+    e.item = instance >= 0x10000u ? Load32(base, instance + 4u) : 0u;
+    PPCContext work = Frame(ctx);
+    const uint32_t targeting = refii_mod_component(base, e.hero, 77u);
+    if (targeting != 0u && CallVirtual(work, base, targeting, 17u)) {
+      e.target = work.r3.u32;
+    }
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+  }
+  const uint32_t sentinel = gifts >= 0x10000u ? Load32(base, gifts + 0x108u) : 0u;
+  const uint32_t newest = sentinel >= 0x10000u ? Load32(base, sentinel + 4u) : 0u;
+  __imp__rex_lhGiftComponent_GiveGift(ctx, base);
+  const uint32_t added = sentinel >= 0x10000u ? Load32(base, sentinel + 4u) : 0u;
+  if (forward && refii_mod_entity_alive(base, target) != 0 && added != newest && added != sentinel) {
+    PostHousehold("gift", EntityUid(base, target), static_cast<int32_t>(Load32(base, added + 8u)));
+    REXLOG_INFO("Refii household: the joiner's gift goes to the host");
+  }
+}
+
+// TU1 0x823F3028.
+REX_EXTERN(rex_CECHeroGifts_RemovePermanently) {
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  if (two != 0u && ComponentOwner(base, ctx.r3.u32) == two && refii_mod_coop_mode(base) == 2) {
+    PPCContext work = Frame(ctx);
+    work.r3.u64 = ctx.r4.u32;
+    work.r4.u64 = 1u;
+    if (CallGuest(work, base, refii::guest::Address(0x822280F8u))) {  // lua_touserdata(L, 1)
+      PostHousehold("giftkept", 1u, static_cast<int32_t>(work.r3.u32));
+    }
+  }
+  const PPCContext entry = ctx;
+  uint32_t item = 0u;
+  if (AnySubscriber(REFII_EVENT_GIFT_ACCEPTED)) {
+    PPCContext work = Frame(ctx);
+    work.r3.u64 = ctx.r4.u32;
+    work.r4.u64 = 1u;
+    if (CallGuest(work, base, refii::guest::Address(0x822280F8u))) {
+      item = work.r3.u32;
+    }
+  }
+  __imp__rex_CECHeroGifts_RemovePermanently(ctx, base);
+  if (item != 0u) {
+    GiftAcceptedEvent e{};
+    PPCContext e_ctx = entry;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = ComponentOwner(base, entry.r3.u32);
+    e.player = PlayerOf(base, e.hero);
+    e.item = item;
+    Dispatch(e);
+  }
+}
+
+// OpinionReaction.SetEngagedToHero (`sub_8278FFC8`: r3 the villager's comp47, r4 engaged; the byte at
+// +771 is the set of the hero in scope: player two's inside their opinion scope). TU1 0x8278FFC8.
+REX_EXTERN(rex_CECOpinionReaction_SetEngaged) {
+  if (AnySubscriber(REFII_EVENT_ENGAGED)) {
+    EngagedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.villager = ComponentOwner(base, ctx.r3.u32);
+    bool two = false;
+    for (int32_t i = 0; i < t_opinion_depth; ++i) {
+      two = two || t_opinion_scoped[i] == ctx.r3.u32;
+    }
+    e.player = two ? 2 : 1;
+    e.engaged = ctx.r4.u8 != 0;
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+  }
+  __imp__rex_CECOpinionReaction_SetEngaged(ctx, base);
+}
+
+// REDECORATING (real-estate options 113/114): `sub_8282DFC0(building comp67, on)` makes the
+// building's upgradeable furniture (comp68) usable and anchors at hero one; its update
+// (`sub_8282EF80`) ends it when hero one walks 3.5 away or leaves; a piece's upgrade
+// (`sub_826B6A18`, the furniture screen) takes the card from hero one's inventory, sets the level
+// (`sub_825CB860(comp68, level, value)`) and revalues hero one's properties. Whoever started it
+// is the one redecorating: hero two (the screen ran under hero two's household scope) is lent into
+// hero one's slot for the update and for their upgrades. The level is the host's to send (msg
+// 0xD5 goes host → joiner only), so an online joiner's upgrade is sent to the host as well.
+namespace {
+std::unordered_map<uint32_t, int32_t> g_redecorating;  // building comp67 → player, guest thread
+}  // namespace
+
+// TU1 0x8282DFC0.
+REX_EXTERN(rex_CECBuilding_SetRedecorating) {
+  const uint32_t building = ctx.r3.u32;
+  const auto found = g_redecorating.find(building);
+  const int32_t player = ctx.r4.u8 != 0 ? (t_slot_lent ? 2 : 1) : (found != g_redecorating.end() ? found->second : 1);
+  if (ctx.r4.u8 != 0) {
+    g_redecorating[building] = player;
+  } else {
+    g_redecorating.erase(building);
+  }
+  const PPCContext entry = ctx;
+  __imp__rex_CECBuilding_SetRedecorating(ctx, base);
+  if (AnySubscriber(REFII_EVENT_REDECORATING)) {
+    RedecoratingEvent e{};
+    PPCContext e_ctx = entry;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.building = ComponentOwner(base, building);
+    e.player = player;
+    e.on = entry.r4.u8 != 0;
+    Dispatch(e);
+  }
+}
+
+// TU1 0x8282EF80.
+REX_EXTERN(rex_CECBuilding_RedecorateUpdate) {
+  const auto found = g_redecorating.find(ctx.r3.u32);
+  PPCContext entry = ctx;
+  HouseholdScope scope(entry, base, found != g_redecorating.end() && found->second == 2 ? refii_mod_player_hero(base, 2) : 0u);
+  __imp__rex_CECBuilding_RedecorateUpdate(ctx, base);
+}
+
+// TU1 0x826B6A18 (r3 the furniture screen).
+REX_EXTERN(rex_lhGuiFurnitureScreen_Upgrade) {
+  bool two_redecorates = false;
+  for (const auto& [building, player] : g_redecorating) {
+    two_redecorates = two_redecorates || player == 2;
+  }
+  const bool for_two = two_redecorates && refii_mod_menu_player(base) == 2;
+  PPCContext entry = ctx;
+  HouseholdScope scope(entry, base, for_two ? refii_mod_player_hero(base, 2) : 0u);
+  const bool previous = t_furniture_for_two;
+  t_furniture_for_two = for_two;
+  __imp__rex_lhGuiFurnitureScreen_Upgrade(ctx, base);
+  t_furniture_for_two = previous;
+}
+
+// TU1 0x825CB860 (r3 the piece's comp68, r4 the level).
+REX_EXTERN(rex_CECUpgradeableFurniture_SetLevel) {
+  if (t_furniture_for_two && OnlineJoiner()) {
+    PostHousehold("furniture", EntityUid(base, ComponentOwner(base, ctx.r3.u32)), static_cast<int32_t>(ctx.r4.u32));
+  } else if (AnySubscriber(REFII_EVENT_FURNITURE_UPGRADED)) {
+    // Raised where the level is the world's: on the host (a joiner's upgrade is raised there).
+    FurnitureUpgradedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.piece = ComponentOwner(base, ctx.r3.u32);
+    e.player = t_slot_lent ? 2 : 1;
+    e.level = static_cast<int32_t>(ctx.r4.u32);
+    e.previous = static_cast<int32_t>(Load32(base, ctx.r3.u32 + 16u));
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+    ctx.r4.u64 = static_cast<uint32_t>(e.level);
+  }
+  __imp__rex_CECUpgradeableFurniture_SetLevel(ctx, base);
+}
+
+extern "C" uint32_t refii_household_resolve_uid(PPCContext* ctx, uint8_t* base, uint64_t uid) {
+  return ctx != nullptr ? ResolveUid(*ctx, base, uid) : 0u;
+}
+
+// Player two's followers as the host publishes them (household_persist.cpp, the world blob
+// `refii.followers.two`: 9 bytes each, the UID big-endian then the flags).
+extern "C" int32_t refii_household_follower_two(PPCContext* ctx, uint8_t* base, int32_t index, uint32_t* entity,
+                                                uint32_t* flags) {
+  uint8_t list[9 * 32];
+  const int32_t size = refii_bridge_player_blob_get(1, "refii.followers.two", list, sizeof(list));
+  if (ctx == nullptr || index < 1 || size <= 0 || index * 9 > size) {
+    return 0;
+  }
+  const uint8_t* record = list + 9 * (index - 1);
+  uint64_t uid = 0u;
+  for (int i = 0; i < 8; ++i) {
+    uid = (uid << 8) | record[i];
+  }
+  *entity = ResolveUid(*ctx, base, uid);
+  *flags = record[8];
+  return *entity != 0u ? 1 : 0;
+}
+
+namespace {
+bool JoinerFollowScan(PPCContext& ctx, uint8_t* base, uint32_t want, uint32_t refuse, bool first) {
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  if (two == 0u || !OnlineJoiner() || ComponentOwner(base, ctx.r3.u32) != two) {
+    return false;
+  }
+  const int32_t count = std::max(0, refii_bridge_player_blob_get(1, "refii.followers.two", nullptr, 0u)) / 9;
+  uint32_t found = 0u;
+  for (int32_t i = 1; i <= count && i <= 32 && found == 0u; ++i) {
+    uint32_t entity = 0u;
+    uint32_t flags = 0u;
+    if (refii_household_follower_two(&ctx, base, i, &entity, &flags) != 0 && (flags & want) != 0u &&
+        (flags & refuse) == 0u) {
+      found = entity;
+    }
+  }
+  ctx.r3.u64 = first ? found : (found != 0u ? 1u : 0u);
+  return true;
+}
+
+// The household intents that are not the estate screen's: a joiner's gift and furniture level run
+// on the host, the host's acceptance of a gift on the joiner. True when `action` was one of them.
+bool ReplayHouseholdOnline(PPCContext& ctx, uint8_t* base, std::string_view action, uint64_t uid, int32_t value) {
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  PPCContext frame = Frame(ctx, 0x400u);
+  const uint32_t area = (frame.r1.u32 + 0x100u) & ~0xFu;
+  const auto call = [&](uint32_t address, uint64_t r3, uint64_t r4 = 0u, uint64_t r5 = 0u, uint64_t r6 = 0u,
+                        uint64_t r7 = 0u, uint64_t r8 = 0u, uint64_t r9 = 0u) {
+    PPCContext work = frame;
+    work.r3.u64 = r3;
+    work.r4.u64 = r4;
+    work.r5.u64 = r5;
+    work.r6.u64 = r6;
+    work.r7.u64 = r7;
+    work.r8.u64 = r8;
+    work.r9.u64 = r9;
+    return CallGuest(work, base, refii::guest::Address(address)) ? work.r3.u32 : 0u;
+  };
+  const uint32_t gifts = two != 0u ? refii_mod_component(base, two, 33u) : 0u;
+  if (action == "giftkept") {
+    if (!OnlineJoiner() || gifts == 0u) {
+      return true;
+    }
+    const uint32_t sentinel = Load32(base, gifts + 0x108u);
+    uint32_t node = sentinel >= 0x10000u ? Load32(base, sentinel) : 0u;
+    for (uint32_t n = 0; node >= 0x10000u && node != sentinel && n < 64u; ++n, node = Load32(base, node)) {
+      if (Load32(base, node + 8u) == static_cast<uint32_t>(value)) {
+        call(0x821D9EE8u, area, gifts + 0x104u, (static_cast<uint64_t>(gifts + 0x104u) << 32) | node);
+        REXLOG_INFO("Refii household: the host kept the joiner's gift");
+        break;
+      }
+    }
+    return true;
+  }
+  if (action == "stat" || action == "ach") {
+    // The host's household work counted for player two: applied here, to their own hero.
+    const uint32_t stats = OnlineJoiner() && two != 0u ? refii_mod_component(base, two, 57u) : 0u;
+    if (stats != 0u) {
+      const uint32_t packed = static_cast<uint32_t>(value);
+      if (action == "stat") {
+        call(0x822D8E08u, stats, packed >> 16, static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(packed & 0xFFFFu))));
+      } else {
+        call(0x824D8F88u, stats, packed);
+      }
+    }
+    return true;
+  }
+  if (action == "sexdone") {
+    // The host's verdict on the joiner's bed (core Lua RefiiCoop.SexVerdict): the partner, 1 a
+    // child was born, 2 it is player two's first.
+    if (OnlineJoiner()) {
+      char chunk[256];
+      std::snprintf(chunk, sizeof(chunk),
+                    "if RefiiCoop and Refii and Refii._by_uid then RefiiCoop.SexVerdict = { partner = "
+                    "Refii.entity(Refii._by_uid(\"0x%016llX\")), born = %s, first = %s } end",
+                    static_cast<unsigned long long>(uid), (value & 1) != 0 ? "true" : "false",
+                    (value & 2) != 0 ? "true" : "false");
+      refii::vfs::RunGameLua(ctx, base, chunk);
+    }
+    return true;
+  }
+  if (action == "sex") {
+    // The joiner's bed for its hero two, run on the host (core Lua RefiiCoop.HostBedSex): the
+    // payment and SexFunction.Begin in a silent thread; value 1 when a condom was chosen.
+    if (refii_mod_player_here(1) != 0 && two != 0u) {
+      char chunk[256];
+      std::snprintf(chunk, sizeof(chunk),
+                    "if RefiiCoop and RefiiCoop.HostBedSex and Refii and Refii._by_uid then "
+                    "RefiiCoop.HostBedSex(Refii.entity(Refii._by_uid(\"0x%016llX\")), %d) end",
+                    static_cast<unsigned long long>(uid), value);
+      refii::vfs::RunGameLua(ctx, base, chunk);
+      REXLOG_INFO("Refii household: the joiner's bed runs here for player two");
+    }
+    return true;
+  }
+  if (action != "gift" && action != "furniture") {
+    return false;
+  }
+  if (refii_mod_player_here(1) == 0 || two == 0u) {
+    return true;
+  }
+  const uint32_t target = ResolveUid(ctx, base, uid);
+  if (target == 0u) {
+    REXLOG_WARN("Refii household: the joiner's {} names nothing here", action);
+    return true;
+  }
+  if (action == "gift") {
+    const uint32_t root = Load32(base, refii::guest::Address(0x83496AB8u));
+    const uint32_t game = root >= 0x10000u ? Load32(base, root + 12u) : 0u;
+    const uint32_t manager = game >= 0x10000u ? Load32(base, game + 88u) : 0u;
+    const uint32_t cell = manager >= 0x10000u ? Load32(base, manager + 4u) : 0u;
+    const uint32_t messages = cell >= 0x10000u ? Load32(base, cell + 16u) : 0u;
+    const uint32_t body = Load32(base, two + 124u);
+    if (messages < 0x10000u || body < 0x10000u || gifts == 0u) {
+      return true;
+    }
+    // The giver's position (the body's +0x40: r3 the 16-byte out, r4 the body), then the message.
+    const uint32_t pos = area;
+    call(Load32(base, Load32(base, body) + 0x40u), pos, body);
+    PPCContext post = frame;
+    post.r3.u64 = messages;
+    post.r4.u64 = 48u;
+    post.r5.u64 = pos;
+    post.r6.u64 = two;
+    post.r7.u64 = target;
+    post.r8.u64 = 101u;
+    post.r9.u64 = static_cast<uint32_t>(value);
+    CallGuest(post, base, refii::guest::Address(0x82279B80u));
+    // The same TransitoryGifts entry the native keeps: {hash, now + tick rate × 10}.
+    const uint32_t now = Load32(base, refii::guest::Address(0x83319650u));
+    double rate = 15.0;
+    uint64_t bits = (static_cast<uint64_t>(Load32(base, refii::guest::Address(0x83319660u))) << 32) |
+                    Load32(base, refii::guest::Address(0x83319660u) + 4u);
+    std::memcpy(&rate, &bits, sizeof(rate));
+    if (!(rate > 0.0 && rate < 1000.0)) {
+      rate = 15.0;
+    }
+    const uint32_t entry = area + 0x40u;
+    refii::mods::StoreU32(base, entry, static_cast<uint32_t>(value));
+    refii::mods::StoreU32(base, entry + 4u, now + static_cast<uint32_t>(rate * 10.0));
+    call(0x82683BA0u, gifts + 0x104u, (static_cast<uint64_t>(gifts + 0x104u) << 32) | Load32(base, gifts + 0x108u),
+         entry);
+    REXLOG_INFO("Refii household: the joiner's gift reached its villager here");
+    return true;
+  }
+  // furniture: the level set as the upgrade screen sets it, for hero two.
+  const uint32_t piece = refii_mod_component(base, target, 68u);
+  const uint32_t props = refii_mod_component(base, two, 69u);
+  if (piece == 0u) {
+    return true;
+  }
+  PPCContext scoped = frame;
+  HouseholdScope scope(scoped, base, two);
+  const uint32_t worth = call(0x825CBFC8u, piece, static_cast<uint32_t>(value));
+  call(0x825CB860u, piece, static_cast<uint32_t>(value), worth);
+  if (props != 0u) {
+    call(0x828D4218u, props);
+  }
+  refii::vfs::HouseholdChanged();
+  return true;
+}
+}  // namespace
+
+namespace refii::vfs {
+
+// The host's run of a joiner's estate intent for its hero two: the screen's binding rebuilt in
+// guest scratch from the sale sign (`sub_8229EE78(sign comp142)` the building), the helper called
+// under hero two's household scope (the wedding reads hero one inline: its event, its movie gate),
+// the presentation suppressed, and the household stashed at once so the joiner's mirror follows.
+bool ReplayEstateIntent(PPCContext& ctx, uint8_t* base, const std::string& text) {
+  char action[16] = {};
+  unsigned long long uid = 0;
+  int value = 0;
+  if (std::sscanf(text.c_str(), "%15[a-z]:%llx:%d", action, &uid, &value) != 3 || uid == 0u) {
+    return false;
+  }
+  if (ReplayHouseholdOnline(ctx, base, action, uid, value)) {
+    return true;
+  }
+  if (refii_mod_player_here(1) == 0) {
+    return false;
+  }
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  const uint32_t players = OpinionPlayers(base);
+  if (two == 0u || players < 0x10000u) {
+    return false;
+  }
+  PPCContext frame = Frame(ctx, 0x400u);
+  const uint32_t area = (frame.r1.u32 + 0x100u) & ~0xFu;
+  const uint32_t fake = area;           // 0xB0 bytes: the screen's binding
+  const uint32_t uid_at = area + 0xC0u;  // the sign's UID for the lookup
+  std::memset(base + fake, 0, 0xB0u);
+  refii::mods::StoreU32(base, uid_at, static_cast<uint32_t>(uid >> 32));
+  refii::mods::StoreU32(base, uid_at + 4u, static_cast<uint32_t>(uid));
+  const auto call = [&](uint32_t address, uint32_t r3, uint32_t r4 = 0u, uint32_t r5 = 0u) {
+    PPCContext work = frame;
+    work.r3.u64 = r3;
+    work.r4.u64 = r4;
+    work.r5.u64 = r5;
+    return CallGuest(work, base, refii::guest::Address(address)) ? work.r3.u32 : 0u;
+  };
+  const uint32_t sign = call(0x82264488u, players, uid_at);
+  const uint32_t sign_link = refii_mod_entity_alive(base, sign) != 0 ? refii_mod_component(base, sign, 142u) : 0u;
+  const uint32_t building = sign_link != 0u ? call(0x8229EE78u, sign_link) : 0u;
+  const uint32_t record = building >= 0x10000u ? refii_mod_component(base, building, 67u) : 0u;
+  const uint32_t props = refii_mod_component(base, two, 69u);
+  if (record == 0u || props == 0u) {
+    REXLOG_WARN("Refii estate: the joiner's {} names no building here", text);
+    return false;
+  }
+  const uint32_t fields[7] = {two, props, refii_mod_component(base, two, 77u), sign, sign_link, building, record};
+  for (uint32_t i = 0; i < 7u; ++i) {
+    refii::mods::StoreU32(base, fake + 0x90u + 4u * i, fields[i]);
+  }
+  {
+    PPCContext scoped = frame;
+    HouseholdScope scope(scoped, base, two);
+    t_estate_replay = true;
+    const std::string_view what(action);
+    if (what == "buy") {
+      call(0x826B32B0u, fake);
+    } else if (what == "clear") {
+      call(0x826B3258u, fake);
+    } else if (what == "sell") {
+      call(0x826B3448u, fake);
+    } else if (what == "marital") {
+      call(0x826B35B8u, fake);
+    } else if (what == "budget") {
+      call(0x826B2B20u, fake, static_cast<uint32_t>(value));
+    } else if (what == "rentout") {
+      call(0x828D28D8u, props, building, value != 0 ? 1u : 0u);
+    } else if (what == "rent") {
+      refii::mods::StoreU32(base, record + 0x5Cu, static_cast<uint32_t>(std::clamp(value, -100, 100)));
+    }
+    t_estate_replay = false;
+  }
+  HouseholdChanged();
+  REXLOG_INFO("Refii estate: the joiner's {} ran for player two", text);
+  return true;
+}
+
+}  // namespace refii::vfs
+
+namespace {
+void PlayerTwoWidowed(const PPCContext& entry, uint8_t* base, uint32_t opinion) {
+  const uint32_t villager = ComponentOwner(base, opinion);
+  const uint32_t two = refii_mod_player_hero(base, 2);
+  const uint32_t family = two != 0u ? refii_mod_component(base, two, 136u) : 0u;
+  const uint32_t record = villager != 0u ? refii_mod_component(base, villager, 26u) : 0u;
+  if (family == 0u || villager == 0u || (record != 0u && Load8(base, record + 172u) != 0u)) {
+    return;
+  }
+  const auto call = [&](uint32_t address, uint32_t r3, uint32_t r4) {
+    PPCContext work = Frame(entry);
+    work.r3.u64 = r3;
+    work.r4.u64 = r4;
+    return CallGuest(work, base, refii::guest::Address(address)) ? (work.r3.u32 & 0xFFu) : 0u;
+  };
+  if (call(0x821C6DB0u, family, villager) == 0u || call(0x827B3C88u, family, villager) != 0u) {
+    return;
+  }
+  PPCContext scoped = entry;
+  HouseholdScope scope(scoped, base, two);
+  PPCContext work = Frame(entry);
+  work.r3.u64 = family;
+  work.r4.u64 = villager + 20u;
+  CallGuest(work, base, refii::guest::Address(0x827B5DF8u));
+}
+}  // namespace
+
+// A creature's opinion copied onto its replacement (`sub_82789BB0`: r3 the new component, r4 the
+// old; creature replacement and spawn, 0x827DF36C / 0x827E0094). Player two's set goes with it:
+// their attitudes, terms and relationship, with modifier lists of the new component's own (the old
+// lists' nodes stay the old component's). TU1 0x82789BB0.
+REX_EXTERN(rex_CECOpinionReaction_Copy) {
+  const uint32_t to = ctx.r3.u32;
+  const uint32_t from = ctx.r4.u32;
+  const PPCContext entry = ctx;
+  __imp__rex_CECOpinionReaction_Copy(ctx, base);
+  uint8_t two[REFII_OPINION_BLOCK_BYTES];
+  if (to < 0x10000u || from < 0x10000u || refii_bridge_opinion_two_load(from, two) == 0) {
+    return;
+  }
+  for (uint32_t list = 0; list < 5u; ++list) {
+    PPCContext work = Frame(entry);
+    work.r3.u64 = 16u;
+    if (!CallGuest(work, base, refii::guest::Address(0x8221F258u)) || work.r3.u32 < 0x10000u) {
+      return;
+    }
+    const uint32_t node = work.r3.u32;
+    refii::mods::StoreU32(base, node, node);
+    refii::mods::StoreU32(base, node + 4u, node);
+    uint8_t* slot = two + 40u + (12u * list);
+    const uint32_t head = __builtin_bswap32(node);
+    std::memcpy(slot + 4u, &head, 4u);
+    std::memset(slot + 8u, 0, 4u);
+  }
+  refii_bridge_opinion_two_store(to, two);
 }
 
 // A crime recorded: r3 = the crime component, r4 = the criminal, r5 = the victim, r6 = the crime
@@ -3160,6 +4506,9 @@ REX_EXTERN(rex_CECStats_UnlockAchievement) {
     if (e.cancel) {
       return;
     }
+  }
+  if (HouseholdForwards(base, ctx.r3.u32) && ctx.r4.u32 != 0u) {
+    PostHousehold("ach", 1u, static_cast<int32_t>(ctx.r4.u32));
   }
   __imp__rex_CECStats_UnlockAchievement(ctx, base);
 }
@@ -3376,6 +4725,9 @@ REX_EXTERN(rex_lhGuiManager_EnterGuiModeQuiet) {
 // +40 is 1 (a query box sets it otherwise). r3 = the manager, r4 = a flag. TU1 0x8236ED98.
 REX_EXTERN(rex_lhGuiManager_ExitScreen) {
   REX_FUNC_PROLOGUE();
+  if (t_estate_replay) {
+    return;  // a joiner's sale replayed on the host closes nothing here (ReplayEstateIntent)
+  }
   const uint32_t manager = ctx.r3.u32;
   const bool closing = AnySubscriber(REFII_EVENT_MENU_CLOSED) && manager != 0 &&
                        Load32(base, manager + 40u) == 1u && GuiActive(ctx, base);
@@ -3670,6 +5022,113 @@ extern "C" void refii_mod_raise_collectable_taken(PPCContext* ctx, uint8_t* base
   Dispatch(e);
 }
 
+/// A purchase or sale about to happen (property_hooks.cpp): the price as the game reckons it
+/// (`sub_8282BA48` / `sub_8282BCA0` on the building's comp67, condition included) through the
+/// handlers. Returns 1 when cancelled; `price_out` the handlers' price, or -1 when nobody listens.
+extern "C" int32_t refii_mod_raise_property_trade(PPCContext* ctx, uint8_t* base, int32_t sold, uint32_t hero,
+                                                  uint32_t building, int32_t* price_out) {
+  using namespace refii::mods;
+  const int32_t kind = sold != 0 ? REFII_EVENT_PROPERTY_SOLD : REFII_EVENT_PROPERTY_BOUGHT;
+  *price_out = -1;
+  if (ctx == nullptr || !AnySubscriber(kind)) {
+    return 0;
+  }
+  const uint32_t record = refii_mod_component(base, building, 67u);
+  PPCContext work = Frame(*ctx);
+  work.r3.u64 = record;
+  const int32_t price = record != 0u && CallGuest(work, base, refii::guest::Address(sold != 0 ? 0x8282BCA0u : 0x8282BA48u))
+                            ? static_cast<int32_t>(work.r3.u32)
+                            : 0;
+  PPCContext e_ctx = *ctx;
+  if (sold != 0) {
+    PropertySoldEvent e{};
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = hero;
+    e.player = PlayerOf(base, hero);
+    e.building = building;
+    e.price = price;
+    Dispatch(e);
+    *price_out = e.price;
+    return e.cancel ? 1 : 0;
+  }
+  PropertyBoughtEvent e{};
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.hero = hero;
+  e.player = PlayerOf(base, hero);
+  e.building = building;
+  e.price = price;
+  Dispatch(e);
+  *price_out = e.price;
+  return e.cancel ? 1 : 0;
+}
+
+extern "C" void refii_mod_raise_rent_paid(PPCContext* ctx, uint8_t* base, uint32_t hero, int32_t gold, int32_t drops,
+                                          int32_t away) {
+  using namespace refii::mods;
+  if (ctx == nullptr || !AnySubscriber(REFII_EVENT_RENT_PAID)) {
+    return;
+  }
+  RentPaidEvent e{};
+  PPCContext e_ctx = *ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.hero = hero;
+  e.player = PlayerOf(base, hero);
+  e.gold = gold;
+  e.drops = drops;
+  e.away = away != 0;
+  Dispatch(e);
+}
+
+extern "C" void refii_mod_raise_property_condition(PPCContext* ctx, uint8_t* base, uint64_t uid, int32_t player,
+                                                   float condition, float previous, int32_t repaired) {
+  using namespace refii::mods;
+  if (ctx == nullptr || !AnySubscriber(REFII_EVENT_PROPERTY_CONDITION)) {
+    return;
+  }
+  PropertyConditionEvent e{};
+  PPCContext e_ctx = *ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.uid = uid;
+  e.player = player;
+  e.condition = condition;
+  e.previous = previous;
+  e.repaired = repaired != 0;
+  Dispatch(e);
+}
+
+extern "C" void refii_mod_raise_partnership(PPCContext* ctx, uint8_t* base, int32_t kind, int32_t previous) {
+  using namespace refii::mods;
+  if (ctx == nullptr || !AnySubscriber(REFII_EVENT_PARTNERSHIP)) {
+    return;
+  }
+  PartnershipEvent e{};
+  PPCContext e_ctx = *ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.kind = kind;
+  e.previous = previous;
+  Dispatch(e);
+}
+
+extern "C" void refii_mod_raise_household_restored(PPCContext* ctx, uint8_t* base, uint32_t hero, int32_t spouses) {
+  using namespace refii::mods;
+  if (ctx == nullptr || !AnySubscriber(REFII_EVENT_HOUSEHOLD_RESTORED)) {
+    return;
+  }
+  HouseholdRestoredEvent e{};
+  PPCContext e_ctx = *ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.hero = hero;
+  e.player = PlayerOf(base, hero);
+  e.spouses = spouses;
+  Dispatch(e);
+}
+
 /// The answer the handlers gave for the partner: -1 ask them, 0 no, 1 yes.
 extern "C" int32_t refii_mod_raise_partner_consent(PPCContext* ctx, uint8_t* base, uint32_t ticket, int32_t kind,
                                                    int32_t asker, int32_t detail) {
@@ -3698,6 +5157,9 @@ namespace {
 thread_local std::vector<std::unique_ptr<OpinionHeroScope>> t_lua_opinion_scopes;
 }
 
+// Whether code is running in an opinion scope for hero two (this thread).
+extern "C" int32_t refii_mod_opinion_scope_two(void) { return t_opinion_depth > 0 ? 1 : 0; }
+
 extern "C" int32_t refii_mod_opinion_enter(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero) {
   if (ctx == nullptr || villager == 0u) {
     return 0;
@@ -3720,3 +5182,49 @@ extern "C" void refii_mod_opinion_leave(void) {
     t_lua_opinion_scopes.pop_back();
   }
 }
+
+namespace refii::vfs {
+
+// PLAYER TWO'S FEELINGS KEPT WITH THEIR HOUSEHOLD (household_persist.cpp). The opinion component's
+// own serializer (`sub_82793590`) cannot carry player two's set: it writes some forty fields the
+// swap leaves alone, appends to its lists, and its post-load (`sub_827954F8`) replays deeds against
+// hero one. So only the base axes go (block bytes 0..19, comp+24..+40, guest order); the current
+// axes start at them and the rebuild derives the rest.
+bool PlayerTwoOpinionAxes(uint32_t component, float* axes) {
+  uint8_t two[REFII_OPINION_BLOCK_BYTES] = {};
+  if (component < 0x10000u || refii_bridge_opinion_two_load(component, two) == 0) {
+    return false;
+  }
+  for (uint32_t axis = 0; axis < 5u; ++axis) {
+    uint32_t bits = 0u;
+    std::memcpy(&bits, two + 4u * axis, 4u);
+    bits = __builtin_bswap32(bits);
+    std::memcpy(&axes[axis], &bits, 4u);
+  }
+  return true;
+}
+
+bool SeedPlayerTwoOpinion(PPCContext& ctx, uint8_t* base, uint32_t component, const float* axes) {
+  if (component < 0x10000u) {
+    return false;
+  }
+  uint8_t two[REFII_OPINION_BLOCK_BYTES] = {};
+  if (refii_bridge_opinion_two_load(component, two) == 0) {
+    uint8_t main[REFII_OPINION_BLOCK_BYTES] = {};
+    OpinionBlock(base, component, main);
+    if (!OpinionFirstBlock(ctx, base, main, two)) {
+      return false;
+    }
+  }
+  for (uint32_t axis = 0; axis < 5u; ++axis) {
+    uint32_t bits = 0u;
+    std::memcpy(&bits, &axes[axis], 4u);
+    bits = __builtin_bswap32(bits);
+    std::memcpy(two + 4u * axis, &bits, 4u);
+    std::memcpy(two + 20u + 4u * axis, &bits, 4u);
+  }
+  refii_bridge_opinion_two_store(component, two);
+  return true;
+}
+
+}  // namespace refii::vfs

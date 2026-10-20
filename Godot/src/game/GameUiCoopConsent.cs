@@ -22,6 +22,9 @@ namespace Refii.Game;
 /// A mod asks its own question (<c>Refii.ask_partner</c>, kind 0): its words are the box's, and
 /// travel last on the ask message (they may hold colons). With no partner in the game, every
 /// question is answered yes at once.
+/// FABLE 3'S PARTNERSHIPS ask the same way, from the world map's rows (Engine_UiPropertySource):
+/// a proposal (kind 3) or an offer of business partnership (kind 4), asked here rather than by a
+/// script; the asker's machine records the answer (HostBridge.SetPartnership).
 /// </remarks>
 public partial class GameUi
 {
@@ -52,7 +55,13 @@ public partial class GameUi
 
 		public int Answer = -1;
 		public int AnswerRestates;
+
+		/// <summary>Asked here, not by a script: the answer goes to this instead of the native side.</summary>
+		public System.Action<bool>? OnAnswer;
 	}
+
+	/// <summary>Tickets of questions asked here (high bit set, apart from the native side's).</summary>
+	private uint _partnerTicket;
 
 	private readonly List<ConsentAsk> _consentAsks = new();
 
@@ -75,19 +84,56 @@ public partial class GameUi
 			_ => "a while",
 		}) + ". Is that all right?",
 		2 => "Your partner wants to take someone to bed. Is that all right?",
+		Engine_UiPropertySource.ProposalKind => "Your partner asks you to marry them. Will you?",
+		Engine_UiPropertySource.BusinessKind =>
+			"Your partner offers you a business partnership: you would share every property either of you buys from now on, and its rent. Do you accept?",
 		_ => "Your partner asks for your consent. Is that all right?",
 	};
+
+	private static string? PartnershipMade(int kind) => kind switch
+	{
+		Engine_UiPropertySource.ProposalKind => "You are married.",
+		Engine_UiPropertySource.BusinessKind => "You are now business partners.",
+		_ => null,
+	};
+
+	/// <summary>A partnership question for the other player, from the world map's rows.</summary>
+	private void AskPartnerConsent(int kind)
+	{
+		int asker = CoopSession.LocalCoop ? HostBridge.GetMenuOwner() : (CoopSession.IsClient ? 2 : 1);
+		var ask = new ConsentAsk
+		{
+			Ticket = 0x80000000u | ++_partnerTicket,
+			Kind = kind,
+			Asker = asker,
+			OnAnswer = yes =>
+			{
+				if (yes && HostBridge.SetPartnership(kind == Engine_UiPropertySource.ProposalKind ? 2 : 1) &&
+					PartnershipMade(kind) is { } made)
+				{
+					_coopNotices.Tell(made);
+				}
+			},
+		};
+		ask.Remote = !PlaysHere(asker == 2 ? 1 : 2);
+		_consentAsks.Add(ask);
+		GD.Print($"[coop-consent] player {asker} asks their partner (kind {kind}){(ask.Remote ? " — over the channel" : string.Empty)}");
+	}
 
 	private static string ConsentRefused(int kind) => kind switch
 	{
 		1 => "Your partner doesn't want to sleep now.",
 		2 => "Your partner would rather you didn't.",
+		Engine_UiPropertySource.ProposalKind => "Your partner declined your proposal.",
+		Engine_UiPropertySource.BusinessKind => "Your partner declined the partnership.",
 		_ => "Your partner said no.",
 	};
 
 	/// <summary>Takes the scripts' questions and keeps every one moving. Called once a frame.</summary>
 	private void DriveCoopConsent(double delta)
 	{
+		Engine_UiPropertySource.AskPartner ??= AskPartnerConsent;
+		Engine_UiPropertySource.Told ??= _coopNotices.Tell;
 		while (HostBridge.ConsentTake() is { } taken)
 		{
 			var ask = new ConsentAsk
@@ -137,7 +183,15 @@ public partial class GameUi
 					_consentOwner = 0;
 				}
 
-				HostBridge.ConsentGive(ask.Ticket, ask.Answer == 1);
+				if (ask.OnAnswer is { } onAnswer)
+				{
+					onAnswer(ask.Answer == 1);
+				}
+				else
+				{
+					HostBridge.ConsentGive(ask.Ticket, ask.Answer == 1);
+				}
+
 				if (ask.Answer == 0)
 				{
 					_coopNotices.Tell(ConsentRefused(ask.Kind));
@@ -203,6 +257,10 @@ public partial class GameUi
 		ask.Answer = yes ? 1 : 0;
 		ask.Restate = 0.0;
 		_consentOwner = 0;
+		if (yes && ask.FromPeer && PartnershipMade(ask.Kind) is { } made)
+		{
+			_coopNotices.Tell(made);
+		}
 		GD.Print($"[coop-consent] question {ask.Ticket} answered {(yes ? "yes" : "no")}");
 	}
 

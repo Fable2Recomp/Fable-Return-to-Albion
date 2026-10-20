@@ -53,6 +53,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
@@ -1195,6 +1196,18 @@ REX_EXTERN(rex_CECLevelExit_Fire) {
 //   - HOLD USE: a full hold (sub_821C5BB0 / disc sub_821C5C20) uses the HERO's target as the hero
 //     (`mr r31,r3` at 0x821C6018 / 0x821C6088). The hook there hands it the player who held, so
 //     the use is their target's and runs for them. Every step after is null-safe.
+//   - THE VIEWER WHOLE: the update fetches "the hero" three times (`sub_8222C1B8`: the witness
+//     refresh 0x828222A0, the main path 0x8282251C, the door test inside `sub_82582D00`). Hero one's
+//     slot is lent to the viewer for the whole update, so all three answer the same player.
+//   - TEXT FOLLOWS THE VIEWER: the text and type are fixed when the prompt first shows (the update
+//     returns at 0x828226CC once +0x18 is set); when the nearer player changes and stays changed,
+//     the prompt is hidden (`sub_82823498`) and asked again for them.
+//   - THE OTHER PLAYER'S TEXT (local co-op): the update runs a second, dry pass for the farther
+//     player against their own copy of its per-viewer bytes (+0x18 shown, +0x1A hold, +0x1B
+//     witnessed, +0x1C re-check time — the only bytes it writes), with their hero lent; its request,
+//     hide, witness write and tutorial hints are diverted, so the manager's one prompt per thing
+//     stays the nearer player's, and the text the other player would be shown ("Steal" where the
+//     nearer owns the house, "Knock" at a door only one may open) is drawn in their half over it.
 //   - HOLD PROMPT: the manager keeps ONE hold prompt (a type-35 request is filed at manager+64,
 //     `sub_823DDF90` 0x823DE0A0, and drawn on the single FillWorldIcon element). In local co-op a
 //     hold prompt asked for player two is kept here instead (the request `sub_823DD730`), so each
@@ -1204,6 +1217,13 @@ extern "C" REX_FUNC(__imp__rex_CECOnActionUse_Update);
 extern "C" REX_FUNC(__imp__rex_lhPromptManager_HoldInput);
 extern "C" REX_FUNC(__imp__rex_lhPromptManager_Update);
 extern "C" REX_FUNC(__imp__rex_lhPromptManager_Request);
+extern "C" REX_FUNC(__imp__rex_CECOnActionUse_Hide);
+extern "C" REX_FUNC(__imp__rex_lhPromptManager_Witnessed);
+extern "C" REX_FUNC(__imp__rex_lhTutorials_Display);
+extern "C" REX_FUNC(__imp__rex_lhGuiItemsScreen_OnEnter);
+extern "C" REX_FUNC(__imp__rex_lhGuiItemsScreen_Update);
+extern "C" REX_FUNC(__imp__rex_lhGuiClothingScreen_OnEnter);
+extern "C" REX_FUNC(__imp__rex_lhGuiClothingScreen_Update);
 
 namespace {
 
@@ -1322,8 +1342,70 @@ struct HoldPromptTwo {
 };
 HoldPromptTwo g_hold_prompt_two;
 
-/// Updates in a row that found player one the nearer player at player two's prompt's thing.
-uint32_t g_hold_prompt_flip = 0u;
+/// The hero-one slot lent to hero two for one guest call (players+108 := +116), as the opinion scope
+/// lends it: every hero-one fetch inside answers hero two. Our own hero-one readers read through
+/// the lend (`refii_bridge_hero_one_holder`). Does nothing when `lend` is false.
+struct HeroTwoLend {
+  uint8_t* base = nullptr;
+  uint32_t players = 0u;
+  uint32_t holder = 0u;
+
+  HeroTwoLend(uint8_t* guest, bool lend) {
+    using refii::vfs::LoadGuestU32;
+    if (!lend) {
+      return;
+    }
+    const uint32_t root = LoadGuestU32(guest, refii::guest::Address(0x83496AB8u));
+    const uint32_t game = Plausible(root) ? LoadGuestU32(guest, root + 0xCu) : 0u;
+    const uint32_t manager = Plausible(game) ? LoadGuestU32(guest, game + 88u) : 0u;
+    const uint32_t cell = Plausible(manager) ? LoadGuestU32(guest, manager + 4u) : 0u;
+    const uint32_t record = Plausible(cell) ? LoadGuestU32(guest, cell) : 0u;
+    const uint32_t two = Plausible(record) ? LoadGuestU32(guest, record + 116u) : 0u;
+    if (two < 0x10000u || two >= 0xE0000000u) {
+      return;
+    }
+    base = guest;
+    players = record;
+    holder = LoadGuestU32(guest, record + 108u);
+    refii_bridge_hero_slot_lend(holder);
+    refii::mods::StoreU32(guest, record + 108u, two);
+  }
+
+  ~HeroTwoLend() {
+    if (base != nullptr) {
+      refii::mods::StoreU32(base, players + 108u, holder);
+      refii_bridge_hero_slot_return();
+    }
+  }
+
+  HeroTwoLend(const HeroTwoLend&) = delete;
+  HeroTwoLend& operator=(const HeroTwoLend&) = delete;
+};
+
+/// Per usable thing (its use component): who the shown prompt was asked for, how many updates in a
+/// row the nearer player has been someone else, and the other player's copy of the per-viewer
+/// bytes (+0x18..+0x1F).
+struct UseState {
+  uint32_t thing = 0u;
+  uint32_t requested_by = 0u;
+  uint32_t flip = 0u;
+  uint8_t other[8] = {};
+};
+std::unordered_map<uint32_t, UseState> g_use_state;
+
+/// The dry pass for the other player is running: its request, hide, witness write and hints are
+/// diverted (rex_lhPromptManager_Request, rex_CECOnActionUse_Hide, rex_lhPromptManager_Witnessed,
+/// rex_lhTutorials_Display).
+bool g_use_pass_other = false;
+int32_t g_use_pass_player = 0;
+
+/// The other player's prompt text per thing, and the prompt-manager frame it was last confirmed.
+struct OtherTitle {
+  int32_t player = 0;
+  std::string title;
+  uint32_t frame = 0u;
+};
+std::unordered_map<uint32_t, OtherTitle> g_other_titles;
 }  // namespace
 
 bool RefiiCoopHoldByEitherPlayer(PPCRegister& r31) {
@@ -1434,19 +1516,28 @@ void RefiiCoopUseRadius(PPCRegister& f1) {
 }
 
 // A usable thing's update (r3 its CECOnActionUse component; the thing at +4). The guest keeps ONE
-// prompt per thing, for the player it tests (the nearer, above); after it, the other player gets
-// the same in-range test, and each half draws the icon of a thing its player sees.
+// prompt per thing, for the player it tests (the nearer, above, with their hero lent for the whole
+// update); after it, the other player gets the same in-range test, and each half draws the icon of a
+// thing its player sees. In local co-op the other player's own text comes from a dry second pass.
 REX_EXTERN(rex_CECOnActionUse_Update) {
+  using refii::vfs::LoadGuestU32;
+  using refii::vfs::LoadGuestU8;
   const uint32_t previous = g_use_viewer;
   const uint32_t previous_running = g_use_running;
   const PPCContext entry = ctx;
   const uint32_t use = ctx.r3.u32;
-  const uint32_t thing = Plausible(use) ? refii::vfs::LoadGuestU32(base, use + 4u) : 0u;
+  const uint32_t thing = Plausible(use) ? LoadGuestU32(base, use + 4u) : 0u;
   g_use_viewer = NearerPlayerTwo(ctx, base, thing);
   g_use_running = use;
   g_use_radius_for = 0u;
-  __imp__rex_CECOnActionUse_Update(ctx, base);
-  if (Plausible(use) && refii::vfs::LoadGuestU8(base, use + 0x18u) != 0u && CoopGame(base)) {
+  const bool was_shown = Plausible(use) && LoadGuestU8(base, use + 0x18u) != 0u;
+  {
+    HeroTwoLend lend(base, g_use_viewer != 0u);
+    __imp__rex_CECOnActionUse_Update(ctx, base);
+  }
+  const bool shown = Plausible(use) && LoadGuestU8(base, use + 0x18u) != 0u;
+  const bool coop = CoopGame(base);
+  if (shown && coop) {
     const uint32_t one = refii_mod_player_hero(base, 1);
     const uint32_t two = refii_mod_player_hero(base, 2);
     const bool viewer_two = g_use_viewer != 0u;
@@ -1457,20 +1548,134 @@ REX_EXTERN(rex_CECOnActionUse_Update) {
     }
     NotePromptMask(base, thing, mask);
   }
-  // Player two's hold prompt goes to player one once player one is the nearer player there for
-  // a few updates in a row: hidden (`sub_82823498`), it is asked again next update for player one.
-  if (Plausible(use) && use == g_hold_prompt_two.use) {
-    g_hold_prompt_flip = g_use_viewer == 0u ? g_hold_prompt_flip + 1u : 0u;
-    if (g_hold_prompt_flip >= 10u) {
-      g_hold_prompt_flip = 0u;
-      g_hold_prompt_two = HoldPromptTwo{};
-      PPCContext work = refii::mods::Frame(entry);
-      work.r3.u64 = use;
-      refii::mods::CallGuest(work, base, refii::guest::Address(0x82823498u));
+
+  if (Plausible(use) && coop) {
+    if (!shown) {
+      g_use_state.erase(use);
+      g_other_titles.erase(thing);
+    } else {
+      UseState& state = g_use_state[use];
+      if (state.thing != thing) {
+        state = UseState{};
+        state.thing = thing;
+      }
+      // The text belongs to whoever it was asked for; when the nearer player changes and stays
+      // changed for a few updates, the prompt is hidden and asked again for them next update.
+      if (!was_shown) {
+        state.requested_by = g_use_viewer;
+        state.flip = 0u;
+      } else if (state.requested_by != g_use_viewer) {
+        if (++state.flip >= 10u) {
+          state.flip = 0u;
+          PPCContext work = refii::mods::Frame(entry);
+          work.r3.u64 = use;
+          refii::mods::CallGuest(work, base, refii::guest::Address(0x82823498u));
+        }
+      } else {
+        state.flip = 0u;
+      }
+
+      // The other player's own text: the same update, dry, for them.
+      const uint32_t two = refii_mod_player_hero(base, 2);
+      if (LocalCoopGame(base) && two != 0u && refii_mod_player_hero(base, 1) != 0u &&
+          LoadGuestU8(base, use + 0x18u) != 0u) {
+        const bool other_is_two = g_use_viewer == 0u;
+        uint8_t mine[8];
+        std::memcpy(mine, base + use + 0x18u, sizeof(mine));
+        std::memcpy(base + use + 0x18u, state.other, sizeof(state.other));
+        const uint32_t viewer = g_use_viewer;
+        g_use_viewer = other_is_two ? two : 0u;
+        g_use_pass_other = true;
+        g_use_pass_player = other_is_two ? 2 : 1;
+        {
+          PPCContext pass = entry;
+          HeroTwoLend lend(base, other_is_two);
+          __imp__rex_CECOnActionUse_Update(pass, base);
+        }
+        g_use_pass_other = false;
+        g_use_viewer = viewer;
+        std::memcpy(state.other, base + use + 0x18u, sizeof(state.other));
+        std::memcpy(base + use + 0x18u, mine, sizeof(mine));
+        if (state.other[0] == 0u) {
+          g_other_titles.erase(thing);
+        } else if (const auto found = g_other_titles.find(thing); found != g_other_titles.end()) {
+          found->second.frame = LoadGuestU32(base, refii::guest::Address(0x83319650u));
+        }
+      }
     }
   }
   g_use_running = previous_running;
   g_use_viewer = previous;
+}
+
+// The use's hide (`sub_82823498`: r3 the component; removes the prompt from the manager by the
+// thing's key, `sub_821BD798`, and clears +0x18, +0x1A, +0x1B, +0x1C). In the other player's dry
+// pass only their copy of the bytes is cleared: the manager's prompt is the nearer player's.
+// TU1 0x82823498.
+REX_EXTERN(rex_CECOnActionUse_Hide) {
+  const uint32_t use = ctx.r3.u32;
+  if (!g_use_pass_other || !Plausible(use)) {
+    __imp__rex_CECOnActionUse_Hide(ctx, base);
+    return;
+  }
+  refii::mods::StoreU8(base, use + 0x18u, 0u);
+  refii::mods::StoreU8(base, use + 0x1Au, 0u);
+  refii::mods::StoreU8(base, use + 0x1Bu, 0u);
+  refii::mods::StoreU32(base, use + 0x1Cu, 0u);
+  g_other_titles.erase(refii::vfs::LoadGuestU32(base, use + 4u));
+}
+
+// The hold prompt's "witnessed" write to the GUI (`sub_823DD9E8`: GUI page 9, one global). The
+// other player's dry pass writes nothing. TU1 0x823DD9E8.
+REX_EXTERN(rex_lhPromptManager_Witnessed) {
+  if (!g_use_pass_other) {
+    __imp__rex_lhPromptManager_Witnessed(ctx, base);
+  }
+}
+
+// TryQueueTutorial (`sub_821B5260(mgr, id)`: one tutorial queue for the whole game, its shown and
+// exhausted state per hint, displayed for hero one, `sub_8227BF90`). Code running for player two
+// raises none: the other player's dry use pass (hints 92, 113) and an opinion scope for hero two
+// (61 TUTORIAL_MARRIAGE_ATTRACT, 203 TUTORIAL_OPINION_ATTRACTED, 183 TUTORIAL_OPINION_CHANGE from
+// `sub_821AD468`), which would show player one a hint about player two's villager. TU1 0x821B5260.
+REX_EXTERN(rex_lhTutorials_Display) {
+  if (g_use_pass_other || refii_mod_opinion_scope_two() != 0) {
+    ctx.r3.u64 = 0u;
+    return;
+  }
+  __imp__rex_lhTutorials_Display(ctx, base);
+}
+
+// PLAYER TWO'S ITEMS AND CLOTHING PAGES (local co-op). The pause's screens 15 (items/weapons,
+// vtable 0x820CFEB0) and 16 (clothing, 0x820CFEDC) are built for hero one: the clothing page's
+// preview mannequin takes hero one's sex, age and body (`sub_826D2B88` 0x826D2C4C →
+// `sub_826D7650` 0x826D76EC, `sub_826D3358` 0x826D3388) and both pages' gold line reads hero one
+// (`sub_8246B5E8(…, 1)`). While player two owns the pause, hero two is lent into hero one's slot for
+// each page's open and update. Equipping is not done here: the pump equips player two's hero
+// directly (guest_tick_pump.cpp, Inventory:equip), because the pages' own answers commit to the
+// equipment record at GUI+52, which pause exit applies to hero one.
+namespace {
+bool PlayerTwoOwnsPause(uint8_t* base) { return refii_bridge_menu_owner_two() != 0 && LocalCoopGame(base); }
+}  // namespace
+
+REX_EXTERN(rex_lhGuiItemsScreen_OnEnter) {
+  HeroTwoLend lend(base, PlayerTwoOwnsPause(base));
+  __imp__rex_lhGuiItemsScreen_OnEnter(ctx, base);
+}
+
+REX_EXTERN(rex_lhGuiItemsScreen_Update) {
+  HeroTwoLend lend(base, PlayerTwoOwnsPause(base));
+  __imp__rex_lhGuiItemsScreen_Update(ctx, base);
+}
+
+REX_EXTERN(rex_lhGuiClothingScreen_OnEnter) {
+  HeroTwoLend lend(base, PlayerTwoOwnsPause(base));
+  __imp__rex_lhGuiClothingScreen_OnEnter(ctx, base);
+}
+
+REX_EXTERN(rex_lhGuiClothingScreen_Update) {
+  HeroTwoLend lend(base, PlayerTwoOwnsPause(base));
+  __imp__rex_lhGuiClothingScreen_Update(ctx, base);
 }
 
 // The prompt manager's request (`sub_823DD730`: r3 manager, r4 &key, r5 the thing, r6 &title,
@@ -1478,6 +1683,17 @@ REX_EXTERN(rex_CECOnActionUse_Update) {
 // local co-op is kept as theirs and answered 1, as a request the manager took is; the use update
 // then marks it shown (+0x18, +0x1A) as it would.
 REX_EXTERN(rex_lhPromptManager_Request) {
+  if (g_use_pass_other) {
+    // The other player's dry pass: their text for this thing, never the manager's prompt.
+    if (Plausible(ctx.r5.u32)) {
+      OtherTitle& other = g_other_titles[ctx.r5.u32];
+      other.player = g_use_pass_player;
+      other.title = Plausible(ctx.r6.u32) ? refii::vfs::ReadGuestWideString(base, ctx.r6.u32) : std::string();
+      other.frame = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u));
+    }
+    ctx.r3.u64 = 1u;
+    return;
+  }
   if (g_use_viewer == 0u || g_use_running == 0u || ctx.r7.u32 != 35u || !Plausible(ctx.r5.u32) ||
       !LocalCoopGame(base)) {
     __imp__rex_lhPromptManager_Request(ctx, base);
@@ -1489,7 +1705,6 @@ REX_EXTERN(rex_lhPromptManager_Request) {
   refii::mods::GetVector(ctx, 1, prompt.offset);
   prompt.title = Plausible(ctx.r6.u32) ? refii::vfs::ReadGuestWideString(base, ctx.r6.u32) : std::string();
   g_hold_prompt_two = std::move(prompt);
-  g_hold_prompt_flip = 0u;
   Once(g_said_hold, "player two has their own hold prompt");
   ctx.r3.u64 = 1u;
 }
@@ -1609,9 +1824,30 @@ void PublishHoldPromptTwo(PPCContext& ctx, uint8_t* base) {
   refii_bridge_player_two_hold_prompt(1, at, prompt.title.c_str());
 }
 
+/// The other player's prompt texts (the dry pass), as `thing \t player \t title` lines; a thing
+/// no longer confirmed by its update for a few frames (unloaded, gone) is dropped.
+void PublishOtherTitles(uint8_t* base) {
+  const uint32_t now = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83319650u));
+  std::string text;
+  for (auto it = g_other_titles.begin(); it != g_other_titles.end();) {
+    if (now - it->second.frame > 3u) {
+      it = g_other_titles.erase(it);
+      continue;
+    }
+    std::string title;
+    for (char c : it->second.title) {
+      title.push_back(c == '\t' || c == '\n' ? ' ' : c);
+    }
+    text += std::to_string(it->first) + '\t' + std::to_string(it->second.player) + '\t' + title + '\n';
+    ++it;
+  }
+  refii_bridge_set_prompt_titles(text.c_str());
+}
+
 void DrivePlayerTwoHold(PPCContext& ctx, uint8_t* base, float dt) {
   using refii::vfs::LoadGuestU32;
   PublishHoldPromptTwo(ctx, base);
+  PublishOtherTitles(base);
   const uint32_t two = refii_mod_player_hero(base, 2);
   uint32_t target = 0u;
   uint32_t use = 0u;

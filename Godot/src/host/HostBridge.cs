@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 203;
+	public const int ExpectedAbiVersion = 207;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -2608,6 +2608,187 @@ public static class HostBridge
 		int length = Array.IndexOf(_holdPromptTitle, (byte)0);
 		string title = Encoding.UTF8.GetString(_holdPromptTitle, 0, length < 0 ? _holdPromptTitle.Length : length);
 		return (new Vector3(_holdPromptAt[0], _holdPromptAt[1], _holdPromptAt[2]), title);
+	}
+
+	private static readonly byte[] _promptTitles = new byte[8192];
+
+	/// <summary>
+	/// Local co-op: the use-prompt text the player the guest's prompt is NOT for would be shown,
+	/// per thing — (thing, player 1 or 2, title). Read into <paramref name="into"/>, cleared first.
+	/// </summary>
+	public static void GetPromptTitles(Dictionary<uint, (int Player, string Title)> into)
+	{
+		into.Clear();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return;
+		}
+
+		uint written;
+		try
+		{
+			written = RefiiHostGetPromptTitles(_promptTitles, (uint)_promptTitles.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return;
+		}
+
+		if (written == 0 || written >= _promptTitles.Length)
+		{
+			return;
+		}
+
+		foreach (string line in Encoding.UTF8.GetString(_promptTitles, 0, (int)written).Split('\n'))
+		{
+			string[] parts = line.Split('\t');
+			if (parts.Length == 3 && uint.TryParse(parts[0], out uint thing) && int.TryParse(parts[1], out int player))
+			{
+				into[thing] = (player, parts[2]);
+			}
+		}
+	}
+
+	/// <summary>
+	/// One of a player's properties: the building's UID, its BuildingName tag, flags (bit 0 marital
+	/// home, 1 rented out, 2 dungeon, 3 home, 4 tenants, 5 workers, 6 shared with the holder's
+	/// partner), rent per drop, value, condition 0..1 and a full repair's bill.
+	/// </summary>
+	public readonly record struct Property(
+		ulong Uid, string NameTag, uint Flags, int Income, int Value, float Condition, int RepairCost)
+	{
+		public bool IsHome => (Flags & 8u) != 0u;
+		public bool IsRented => (Flags & 2u) != 0u;
+		public bool HasTenants => (Flags & 16u) != 0u;
+		public bool IsShared => (Flags & 64u) != 0u;
+	}
+
+	private static readonly byte[] _properties = new byte[32768];
+
+	/// <summary>A player's properties (1 or 2; 0 the player whose menus are open).</summary>
+	public static List<Property> GetProperties(int player)
+	{
+		var list = new List<Property>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return list;
+		}
+
+		uint written;
+		try
+		{
+			written = RefiiHostGetProperties(player, _properties, (uint)_properties.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return list;
+		}
+
+		if (written == 0 || written >= _properties.Length)
+		{
+			return list;
+		}
+
+		foreach (string line in Encoding.UTF8.GetString(_properties, 0, (int)written).Split('\n'))
+		{
+			string[] p = line.Split('\t');
+			if (p.Length == 7 &&
+				ulong.TryParse(p[0], System.Globalization.NumberStyles.HexNumber, null, out ulong uid) &&
+				uint.TryParse(p[2], out uint flags) && int.TryParse(p[3], out int income) &&
+				int.TryParse(p[4], out int value) &&
+				float.TryParse(p[5], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float condition) &&
+				int.TryParse(p[6], out int cost))
+			{
+				list.Add(new Property(uid, p[1], flags, income, value, condition, cost));
+			}
+		}
+
+		return list;
+	}
+
+	/// <summary>
+	/// The oldest property notice: kind 0 disrepair, 1 repaired, 2 not enough gold, 3 nothing to
+	/// repair, 6 a purchase shared with the partner (the building's UID); 4 owed gold paid on return,
+	/// 5 a sale's half paid to the partner (the gold in <c>Uid</c>).
+	/// </summary>
+	public static (int Kind, ulong Uid)? TakePropertyNotice()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		try
+		{
+			return RefiiHostTakePropertyNotice(out int kind, out ulong uid) != 0 ? (kind, uid) : null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// The partnership between the two heroes in the game (Fable 3's): 0 none, 1 business partners,
+	/// 2 married; null when both heroes are not here with their identities known.
+	/// </summary>
+	public static int? GetPartnership()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			return RefiiHostGetPartnership(out int kind) != 0 ? kind : null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	private static readonly byte[] _estateIntent = new byte[128];
+
+	/// <summary>
+	/// The oldest household action for the co-op peer to run (<c>&lt;action&gt;:&lt;uid&gt;:&lt;value&gt;</c>):
+	/// a joiner's estate action, gift, furniture level or bed, or the host's kept gift; null when none.
+	/// </summary>
+	public static string? TakeEstateIntent()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		try
+		{
+			uint written = RefiiHostTakeEstateIntent(_estateIntent, (uint)_estateIntent.Length);
+			return written == 0 ? null : Encoding.UTF8.GetString(_estateIntent, 0, (int)written);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>Sets the partnership in both heroes' saved values (0 ends it). False when it could not.</summary>
+	public static bool SetPartnership(int kind)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostSetPartnership(kind) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
 	}
 
 	/// <summary>An entity's network id (the guest's 64-bit UID), or 0.</summary>
@@ -8544,6 +8725,27 @@ public static class HostBridge
 	private static extern int RefiiHostGetPlayerTwoHoldPrompt([Out] float[] at, [Out] byte[] title, uint capacity);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetPromptTitles([Out] byte[] text, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetProperties(int player, [Out] byte[] text, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostTakePropertyNotice(out int kind, out ulong uid);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetPartnership(out int kind);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTakeEstateIntent(byte[] outBuffer, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostSetPartnership(int kind);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicSceneLights([Out] float[] values, uint capacity);
+
+	[DllImport(Library)]
 	private static extern ulong RefiiHostGetEntityUid(uint entity);
 
 	[DllImport(Library)]
@@ -9140,6 +9342,29 @@ public static class HostBridge
 			return 0;
 		}
 		return RefiiHostGetClassicLights(values, (uint)values.Length);
+	}
+
+	/// <summary>Floats per light in <see cref="GetClassicSceneLights"/>.</summary>
+	public const int ClassicSceneLightStride = 36;
+
+	/// <summary>
+	/// Every light of the render scene, not only the manager's active list (see the native export
+	/// for the 36-float layout). Returns the lights written.
+	/// </summary>
+	public static uint GetClassicSceneLights(float[] values)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicSceneLights(values, (uint)values.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
 	}
 
 	/// <summary>

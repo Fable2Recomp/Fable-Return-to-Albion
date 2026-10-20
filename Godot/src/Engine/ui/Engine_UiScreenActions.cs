@@ -236,6 +236,13 @@ public static class Engine_UiScreenActions
 			return true;
 		}
 
+		// `PropertyRepair:<uid>` — the world map's property rows: confirmed, then repaired for the
+		// player whose menus are open (Engine_UiPropertySource).
+		if (Engine_UiPropertySource.Run(action))
+		{
+			return true;
+		}
+
 		// `Mod:buy:<setting>` — a mod ability's row: the purchase is the mod's (Engine_UiModAbilities).
 		if (Engine_UiModAbilities.Buy(action))
 		{

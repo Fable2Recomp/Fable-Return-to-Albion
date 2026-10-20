@@ -97,6 +97,7 @@ PPC_EXTERN_FUNC(rex_lhGui_FrontendTitle_OnScreenAction);
 PPC_EXTERN_FUNC(rex_lhSaveManager_SelectStorageDevice);
 PPC_EXTERN_FUNC(rex_CNetworkManager_LeaveSession);
 extern "C" int RefiiCoopShoppingPlayerTwo(void);
+extern "C" int32_t RefiiPropertyRepair(PPCContext& ctx, uint8_t* base, uint32_t hero, uint64_t uid);
 extern "C" int RefiiCoopSplitScreen(void);
 extern "C" void RefiiCoopLocalPlayerTwoCall(int on);
 
@@ -8549,6 +8550,25 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       ran = DispatchCoopLeave(ctx, base);
     } else if (name == kActionCoopKick) {
       ran = DispatchCoopKick(ctx, base);
+    } else if (name.rfind("Property:repair:", 0) == 0) {
+      // `Property:repair:<player>:<building uid hex>` — the world map's property page: the
+      // player's own building repaired, Fable 3's bill charged (hooks/src/property_hooks.cpp).
+      unsigned player = 0;
+      unsigned long long uid = 0;
+      if (std::sscanf(name.c_str() + std::strlen("Property:repair:"), "%u:%llx", &player, &uid) == 2 &&
+          (player == 1u || player == 2u)) {
+        const uint32_t hero = refii_mod_player_hero(base, static_cast<int32_t>(player));
+        const int32_t outcome = hero != 0u ? RefiiPropertyRepair(ctx, base, hero, uid) : 0;
+        refii_bridge_property_notice_post_kind(outcome > 0 ? 1 : outcome < 0 ? 2 : 3, uid);
+        REXLOG_INFO("Refii guest-tick pump: Property:repair player {} building {:016X} — {}", player, uid,
+                    outcome > 0 ? "repaired" : outcome < 0 ? "not enough gold" : "nothing to repair");
+      }
+      ran = true;
+    } else if (name.rfind("Estate:", 0) == 0) {
+      // `Estate:<action>:<sign uid hex>:<value>` — an online joiner's real-estate action for its
+      // hero two, run here on the host's (mod_events.cpp ReplayEstateIntent).
+      refii::vfs::ReplayEstateIntent(ctx, base, name.substr(std::strlen("Estate:")));
+      ran = true;
     } else if (name.rfind(kActionCoopExitUsePrefix, 0) == 0) {
       float at[3] = {0.0f, 0.0f, 0.0f};
       const std::string rest = name.substr(std::strlen(kActionCoopExitUsePrefix));

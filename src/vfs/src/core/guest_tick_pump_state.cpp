@@ -858,6 +858,73 @@ float g_hold_prompt_two_at[3] = {};
 std::string g_hold_prompt_two_title;
 }  // namespace
 
+namespace {
+std::mutex g_property_notices_mutex;
+std::vector<std::pair<int32_t, uint64_t>> g_property_notices;
+}  // namespace
+
+void refii_bridge_property_notice_post_kind(int32_t kind, uint64_t uid) {
+  std::lock_guard<std::mutex> lock(g_property_notices_mutex);
+  if (g_property_notices.size() < 64u) {
+    g_property_notices.emplace_back(kind, uid);
+  }
+}
+
+void refii_bridge_property_notice_post(uint64_t uid) { refii_bridge_property_notice_post_kind(0, uid); }
+
+int32_t refii_bridge_property_notice_take(int32_t* kind, uint64_t* uid) {
+  std::lock_guard<std::mutex> lock(g_property_notices_mutex);
+  if (g_property_notices.empty()) {
+    return 0;
+  }
+  if (kind != nullptr) *kind = g_property_notices.front().first;
+  if (uid != nullptr) *uid = g_property_notices.front().second;
+  g_property_notices.erase(g_property_notices.begin());
+  return 1;
+}
+
+namespace {
+std::mutex g_estate_intents_mutex;
+std::vector<std::string> g_estate_intents;
+}  // namespace
+
+void refii_bridge_estate_intent_post(const char* text) {
+  std::lock_guard<std::mutex> lock(g_estate_intents_mutex);
+  if (text != nullptr && g_estate_intents.size() < 64u) {
+    g_estate_intents.emplace_back(text);
+  }
+}
+
+uint32_t refii_bridge_estate_intent_take(char* out, uint32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_estate_intents_mutex);
+  if (g_estate_intents.empty() || out == nullptr || capacity <= g_estate_intents.front().size()) {
+    return 0u;
+  }
+  const std::string text = g_estate_intents.front();
+  g_estate_intents.erase(g_estate_intents.begin());
+  std::memcpy(out, text.c_str(), text.size() + 1u);
+  return static_cast<uint32_t>(text.size());
+}
+
+namespace {
+std::mutex g_prompt_titles_mutex;
+std::string g_prompt_titles;
+}  // namespace
+
+void refii_bridge_set_prompt_titles(const char* text) {
+  std::lock_guard<std::mutex> lock(g_prompt_titles_mutex);
+  g_prompt_titles = text != nullptr ? text : "";
+}
+
+uint32_t refii_bridge_prompt_titles(char* out, uint32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_prompt_titles_mutex);
+  if (out == nullptr || capacity == 0u || g_prompt_titles.size() + 1u > capacity) {
+    return 0u;
+  }
+  std::memcpy(out, g_prompt_titles.c_str(), g_prompt_titles.size() + 1u);
+  return static_cast<uint32_t>(g_prompt_titles.size());
+}
+
 void refii_bridge_player_two_hold_prompt(int32_t up, const float* at, const char* title) {
   std::lock_guard<std::mutex> lock(g_hold_two_mutex);
   g_hold_prompt_two_up = up != 0 && at != nullptr;

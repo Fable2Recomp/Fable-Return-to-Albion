@@ -72,6 +72,7 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Player two's split-screen HUD: the pump states it, the host bridge reads it.
     ${REFII_VFS_ROOT}/src/core/coop_hud_two.cpp
     ${REFII_VFS_ROOT}/src/core/coop_names.cpp
+    ${REFII_VFS_ROOT}/src/core/hero_partners.cpp
     ${REFII_VFS_ROOT}/src/core/host_asset_reader.cpp
     # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
     # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the
@@ -144,6 +145,7 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/mod_api.cpp
     # The mod event bus: typed events on the game's seams, and the mods' Lua handlers.
     ${REFII_VFS_ROOT}/src/hooks/mod_events.cpp
+    ${REFII_VFS_ROOT}/src/hooks/household_persist.cpp
     # Player state's saves: a hero's saved mod values beside the save the game writes it into.
     ${REFII_VFS_ROOT}/src/hooks/player_state_hooks.cpp
     # The host's queued helper calls and queries (Godot scripts), run in the guest tick.

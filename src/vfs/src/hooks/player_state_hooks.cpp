@@ -32,6 +32,7 @@
 #include "core/payload_bridge.h"
 #include "core/refii_mod.h"
 #include "hooks/ppc_externs.h"
+#include "vfs_hooks_private.h"
 
 PPC_EXTERN_FUNC(__imp__rex_lhSaveManager_WritePackage);
 PPC_EXTERN_FUNC(__imp__rex_lhSaveManager_WriteHeroPackage);
@@ -72,6 +73,11 @@ REX_EXTERN(rex_lhSaveManager_WritePackage) {
   REX_FUNC_PROLOGUE();
   const uint32_t name_at = ctx.r4.u32;
   const uint32_t player = ctx.r5.u32;
+  if (player == 1u) {
+    // The world is in this package: player two's household as it stands goes with it.
+    PPCContext stash = ctx;
+    refii::vfs::StashHouseholdForSave(stash, base);
+  }
   __imp__rex_lhSaveManager_WritePackage(ctx, base);
   Written(base, name_at, player, (ctx.r3.u32 & 0xFFu) != 0u);
 }

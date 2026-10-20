@@ -1284,7 +1284,7 @@
 0x823C9D58 = { size = 0x74 }
 0x823C9FE0 = { size = 0x140 }
 0x823CA120 = { size = 0x58 }
-0x823D1A38 = { size = 0x274 }
+0x823D1A38 = { name = "rex_CECHeroGifts_RemovePermanently", size = 0x274 }
 0x823D1CB0 = { size = 0x174 }
 0x823D1E28 = { size = 0x8 }
 0x823D1E30 = { size = 0x148 }
@@ -2586,7 +2586,7 @@
 0x82C2F398 = { size = 0x8 }
 0x82457C80 = { size = 0x160 }
 0x82457DE0 = { size = 0x138 }
-0x82458EB8 = { size = 0x24C }
+0x82458EB8 = { name = "rex_CECFollow_AnyOtherSexPartner", size = 0x24C }
 0x824596B0 = { name = "rex_lhEntityBehavior_PlaceOnTerrain", size = 0x278 }
 0x8245B220 = { size = 0x40 }
 0x8245B260 = { size = 0x8 }
@@ -3490,7 +3490,7 @@
 0x82825758 = { size = 0x8 }
 0x82825760 = { size = 0x240 }
 0x82825AA8 = { size = 0x1E8 }
-0x82825C90 = { size = 0x16C }
+0x82825C90 = { name = "rex_CECPlayerFamily_AdoptWithSpouse", size = 0x16C }
 0x82825E00 = { size = 0xA0 }
 0x82825EA0 = { size = 0xB0 }
 0x82825F50 = { size = 0x40 }
@@ -14997,6 +14997,52 @@
 0x823B6A00 = { name = "rex_lhPromptManager_HoldInput" }
 0x821C5C20 = { name = "rex_lhPromptManager_Update" }
 0x823B6E70 = { name = "rex_lhPromptManager_Request" }
+0x828214A8 = { name = "rex_CECPlayerFamily_Update" }
+0x82828CA0 = { name = "rex_CECPlayerFamily_FinishDivorcing" }
+0x824588E8 = { name = "rex_CECFollow_AnyEngaged" }
+0x82458AD8 = { name = "rex_CECFollow_AnyMarried" }
+0x82458CC8 = { name = "rex_CECFollow_AnySexPartner" }
+0x82459108 = { name = "rex_CECFollow_FirstEngaged" }
+0x824592D8 = { name = "rex_CECFollow_FirstMarried" }
+0x825971A0 = { name = "rex_lhGuiRealEstateScreen_Update" }
+0x82597880 = { name = "rex_lhGuiRealEstateScreen_Confirm" }
+0x82598548 = { name = "rex_lhGuiRealEstateScreen_Buy" }
+0x825984F0 = { name = "rex_lhGuiRealEstateScreen_Clear" }
+0x825986E0 = { name = "rex_lhGuiRealEstateScreen_Sell" }
+0x82598850 = { name = "rex_lhGuiRealEstateScreen_MaritalHome" }
+0x82597DC0 = { name = "rex_lhGuiRealEstateScreen_SetBudget" }
+0x825971F8 = { name = "rex_lhGuiRealEstateScreen_Message" }
+0x828B1F28 = { name = "rex_CECPlayerProperties_SetRentedOut" }
+0x827502F0 = { name = "rex_CECBuilding_SetRedecorating" }
+0x827512D8 = { name = "rex_CECBuilding_RedecorateUpdate" }
+0x8259BB80 = { name = "rex_lhGuiFurnitureScreen_Upgrade" }
+0x82561480 = { name = "rex_CECUpgradeableFurniture_SetLevel" }
+0x822D9508 = { name = "rex_CECStats_ModifyTrackedStat" }
+0x8282BB08 = { name = "rex_CECPlayerFamily_Widow" }
+0x827625D8 = { name = "rex_CECOpinionReaction_SetEngaged" }
+0x828AECD0 = { name = "rex_CECPlayerProperties_PayIncome" }
+0x828AD3D8 = { name = "rex_CECPlayerProperties_RecordIncome" }
+0x8274DD78 = { name = "rex_CECBuilding_BuyPrice" }
+0x8274DFD0 = { name = "rex_CECBuilding_SalePrice" }
+0x828AF6D0 = { name = "rex_CECPlayerProperties_Buy" }
+0x828B01C8 = { name = "rex_CECPlayerProperties_Sell" }
+0x82754F18 = { name = "rex_CECOnActionUse_Hide" }
+0x823B7128 = { name = "rex_lhPromptManager_Witnessed" }
+0x821B5478 = { name = "rex_lhTutorials_Display" }
+0x8257CDC0 = { name = "rex_lhGuiItemsScreen_OnEnter" }
+0x8257D088 = { name = "rex_lhGuiItemsScreen_Update" }
+0x8257E5C0 = { name = "rex_lhGuiClothingScreen_OnEnter" }
+0x8257EA18 = { name = "rex_lhGuiClothingScreen_Update" }
+0x822BA5F8 = { name = "rex_lhInteraction_Suggestions" }
+0x8229FB48 = { name = "rex_CECMood_HeroPresence" }
+0x82456568 = { name = "rex_CECFollow_Start" }
+0x82456800 = { name = "rex_CECFollow_Stop" }
+0x82450DF0 = { name = "rex_CECRewardGiver_GiveReward" }
+0x827AF5A0 = { name = "rex_CECShopkeeper_BuyPrice" }
+0x827AF6F8 = { name = "rex_CECShopkeeper_SellPrice" }
+0x827B0D00 = { name = "rex_CECShopkeeper_FrontPage" }
+0x827AFF90 = { name = "rex_CECShopkeeper_Greet" }
+0x8275C1C0 = { name = "rex_CECOpinionReaction_Copy" }
 0x822EF930 = { name = "rex_CXboxLive_PartnerName" }
 0x824EF768 = { name = "rex_NLivePresence_PlayerName" }
 0x8238CED0 = { name = "rex_NLivePresence_GiftAccepted" }
@@ -15225,6 +15271,18 @@ registers = ["r3"]
 name = "RefiiCoopPlayerOneOrLocal"
 address = 0x828D1AFC
 registers = ["r3"]
+
+# Rent and sale money paid to player two stay theirs: r5 = 1 on the payout's and the sale's money
+# changes (property_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiPropertyPayee"
+address = 0x828AF2E0
+registers = ["r3", "r5"]
+
+[[midasm_hook]]
+name = "RefiiPropertyPayee"
+address = 0x828B0434
+registers = ["r3", "r5"]
 
 # The local player's own name on the game's own screens (coop_ui_hooks.cpp RefiiOwnGamertag).
 [[midasm_hook]]

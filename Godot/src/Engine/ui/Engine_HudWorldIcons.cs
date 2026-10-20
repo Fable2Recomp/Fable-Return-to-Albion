@@ -130,6 +130,13 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	public string? StatedFill { get; set; }
 
 	/// <summary>
+	/// Titles this layer draws over the guest's, by pool index: on split screen, the text this
+	/// half's player would be shown where the guest's one prompt for a thing is the other
+	/// player's (HostBridge.GetPromptTitles). Null for none.
+	/// </summary>
+	public IReadOnlyDictionary<int, string>? StatedTitles { get; set; }
+
+	/// <summary>
 	/// Resolves the pooled slots from the parsed document. The file may carry the pool twice —
 	/// the 4:3 and 16:9 layouts — and every copy is kept: the guest's own active bit says which
 	/// copy draws, so choosing here would be a host-side guess.
@@ -409,6 +416,8 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			// the authored string is the artist's "Text" placeholder, never a fallback.
 			string title = statedFill
 				? StatedFill!
+				: StatedTitles is { } titles && titles.TryGetValue(PoolIndexOf(slot.Name), out string? own)
+					? own
 				: slot.TitleOrdinal >= 0 && slot.TitleOrdinal < elements.Count
 					? elements[slot.TitleOrdinal].Text ?? string.Empty
 					: string.Empty;

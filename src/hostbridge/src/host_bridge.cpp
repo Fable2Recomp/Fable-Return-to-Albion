@@ -71,6 +71,7 @@ void FlushLogging();
 #include "core/host_asset_reader.h"
 #include "core/precise_sleep.h"
 #include "core/payload_bridge.h"
+#include "core/property_condition.h"
 #include "core/rex_payload_bridge.h"
 #include <rex/memory/utils.h>
 #include <rex/system/mmio_handler.h>
@@ -2363,7 +2364,19 @@ extern "C" {
 ///     either player by its network id, for the online joiner's targeted readout).
 /// 203 adds RefiiNetPeerName and RefiiNetPartnerName — the name to show for a peer by RexNet's rule
 ///     (a friend's display name, anyone else's pseudonym); co-op no longer carries names.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 203; }
+/// 205 adds RefiiHostGetProperties (a player's properties with their condition and repair bill) and
+///     RefiiHostTakePropertyNotice (disrepair and repair outcomes).
+/// 204 adds RefiiHostGetPromptTitles — the use-prompt text the other player would be shown, per
+///     thing, for each split half to draw its own player's text — and
+///     RefiiHostGetClassicSceneLights (every light of the render scene, for the classic renderer's
+///     gather for player two's eye); RefiiHostGetClassicLights carries each light's address at [18].
+/// 206 adds Fable 3's player-to-player partnerships: RefiiHostGetPartnership / RefiiHostSetPartnership
+///     (marriage and business partnership between the two heroes in the game), RefiiHostGetProperties
+///     flag 64 (a building shared with the holder's partner), and property notices 4..6 (owed gold
+///     paid, a sale's half to the partner, a purchase shared).
+/// 207 adds RefiiHostTakeEstateIntent — an online joiner's real-estate actions for its hero two,
+///     sent to the host and run there for the host's hero two (the pump's Estate: action).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 207; }
 
 /// The taken silver keys still in the world: (address, mask) pairs into `out`, at most `capacity`
 /// words. Returns the pairs written.
@@ -2410,6 +2423,13 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerOneHiddenPrompts(uint32_t* out, int 
 /// title (UTF-8), 0 when they have none.
 REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerTwoHoldPrompt(float* out_at, char* title, uint32_t capacity) {
     return refii_bridge_player_two_hold_prompt_get(out_at, title, capacity);
+}
+
+/// Local co-op: the use-prompt text the player the guest's prompt is NOT for would be shown, per
+/// thing (coop_hero_hooks.cpp, the dry pass): `thing \t player \t title` lines, UTF-8. Returns
+/// the byte count, 0 when none or the buffer is short.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPromptTitles(char* out, uint32_t capacity) {
+    return refii_bridge_prompt_titles(out, capacity);
 }
 
 REFII_HOST_ABI_EXPORT int RefiiHostGetPlayerTwoHold(float* out_fraction, int* out_pressed) {
@@ -12553,9 +12573,128 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLights(float* out, uint32_t ca
         const uint32_t zone = read32(light + 416u);
         std::memcpy(o + 16, &zone, sizeof(zone));
         o[17] = static_cast<float>(index);
-        o[18] = 0.0f;
+        // The light's address, bit for bit: matches it to RefiiHostGetClassicSceneLights.
+        std::memcpy(o + 18, &light, sizeof(light));
         o[19] = 0.0f;
         ++written;
+    }
+    return written;
+}
+
+/// EVERY LIGHT OF THE RENDER SCENE, not only the manager's active list: the scene registry's
+/// lights (scene+3412, nodes of 24 bytes at +24..+28 with flag 1 at +4, objects at +12..+16, as
+/// `sub_821FF800` walks them; a light is an object whose vtable+8 is `sub_8221FAE0`), less type 11
+/// and those with L+338 set — what the manager's gather tests further against ONE eye, the view the
+/// guest draws (player one's). For split screen's second view the classic renderer gathers from
+/// these by the same rules against player two's eye (Engine_ClassicLights).
+/// 36 floats per light: [0..19] as RefiiHostGetClassicLights (sphere L+112, colour L+208,
+/// intensity L+448 as player one's eye left it, direction, type, range, cone, range scale, flags,
+/// zone, [17] 0, [18] the light's address), then [20..22] position L+288, [23] fade distance
+/// L+328, [24] fade range L+332, [25] flicker brightness L+224, [26] the flicker walk L+444,
+/// [27..29] AABB min L+80, [30..32] AABB max L+96. Returns the lights written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicSceneLights(float* out, uint32_t capacity) {
+    constexpr uint32_t kStride = 36u;
+    if (out == nullptr || capacity < kStride) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xE0000000u; };
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto read_float = [base](uint32_t at) {
+        const uint32_t bits = GuestWordAt(base, at);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+
+    const uint32_t mode = read32(refii::guest::Address(0x83496AB8u));
+    const uint32_t a = plausible(mode) ? read32(mode + 12u) : 0u;
+    const uint32_t b = plausible(a) ? read32(a + 88u) : 0u;
+    const uint32_t wg = plausible(b) ? read32(b + 4u) : 0u;
+    const uint32_t owner = plausible(wg) ? read32(wg + 92u) : 0u;
+    const uint32_t scenes = read32(refii::guest::Address(0x8349F79Cu));
+    if (!plausible(owner) || !plausible(scenes)) {
+        return 0;
+    }
+    const uint32_t scene_index = read32(owner + 4u);
+    const uint32_t scene = scene_index < 4096u ? read32(scenes + scene_index * 4u) : 0u;
+    if (!plausible(scene)) {
+        return 0;
+    }
+    const uint32_t registry = scene + 3412u;
+    const uint32_t nodes_begin = read32(registry + 24u);
+    const uint32_t nodes_end = read32(registry + 28u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || (nodes_end - nodes_begin) % 24u != 0u ||
+        (nodes_end - nodes_begin) / 24u > 64u) {
+        return 0;
+    }
+    const uint32_t stamp = refii::guest::Address(0x8221FAE0u);
+    const uint32_t max_lights = capacity / kStride;
+    uint32_t written = 0;
+    for (uint32_t node = nodes_begin; node < nodes_end && written < max_lights; node += 24u) {
+        if ((read32(node + 4u) & 1u) == 0u) {
+            continue;
+        }
+        const uint32_t objects = read32(node + 12u);
+        const uint32_t objects_end = read32(node + 16u);
+        if (!plausible(objects) || objects_end < objects || objects_end - objects > 4u * 4096u) {
+            continue;
+        }
+        for (uint32_t at = objects; at < objects_end && written < max_lights; at += 4u) {
+            const uint32_t light = read32(at);
+            const uint32_t vtable = plausible(light) ? read32(light) : 0u;
+            if (!plausible(vtable) || read32(vtable + 8u) != stamp || read32(light + 4u) == 11u ||
+                GuestByteAt(base, light + 338u) != 0u) {
+                continue;
+            }
+            float* o = out + written * kStride;
+            o[0] = read_float(light + 112u);
+            o[1] = read_float(light + 116u);
+            o[2] = read_float(light + 120u);
+            o[3] = read_float(light + 124u);
+            o[4] = read_float(light + 208u);
+            o[5] = read_float(light + 212u);
+            o[6] = read_float(light + 216u);
+            o[7] = read_float(light + 448u);
+            o[8] = read_float(light + 304u);
+            o[9] = read_float(light + 308u);
+            o[10] = read_float(light + 312u);
+            o[11] = static_cast<float>(read32(light + 4u));
+            o[12] = read_float(light + 320u);
+            o[13] = read_float(light + 324u);
+            o[14] = read_float(light + 452u);
+            const uint32_t flag_word = read32(light + 336u);
+            uint32_t flags = 0;
+            flags |= ((flag_word >> 24) & 0xFFu) != 0u ? 1u : 0u;
+            flags |= ((flag_word >> 16) & 0xFFu) != 0u ? 2u : 0u;
+            flags |= ((flag_word >> 8) & 0xFFu) != 0u ? 4u : 0u;
+            flags |= (read32(light + 484u) >> 24) != 0u ? 8u : 0u;
+            o[15] = static_cast<float>(flags);
+            const uint32_t zone = read32(light + 416u);
+            std::memcpy(o + 16, &zone, sizeof(zone));
+            o[17] = 0.0f;
+            std::memcpy(o + 18, &light, sizeof(light));
+            o[19] = 0.0f;
+            o[20] = read_float(light + 288u);
+            o[21] = read_float(light + 292u);
+            o[22] = read_float(light + 296u);
+            o[23] = read_float(light + 328u);
+            o[24] = read_float(light + 332u);
+            o[25] = read_float(light + 224u);
+            o[26] = read_float(light + 444u);
+            for (uint32_t k = 0; k < 3u; ++k) {
+                o[27 + k] = read_float(light + 80u + 4u * k);
+                o[30 + k] = read_float(light + 96u + 4u * k);
+            }
+            for (uint32_t k = 33u; k < kStride; ++k) {
+                o[k] = 0.0f;
+            }
+            ++written;
+        }
     }
     return written;
 }
@@ -15496,6 +15635,107 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetOpinionOfUid(uint64_t uid, int player, flo
     }
     return 1;
 }
+
+/// A PLAYER'S PROPERTIES: the records of their hero's CECPlayerProperties (comp69: *(props+28) the
+/// list's sentinel, the record at node+8, "PlayerBuildingData": +0/+4 the building's UID, +8 its
+/// BuildingName tag, +12 marital home, +13 rented out, +14 dungeon, +15 home, +18 tenants,
+/// +19 workers, +28 income per drop, +44 value, +48 bought for), with each building's condition and
+/// a full repair's bill (core/property_condition.h). `player` 1 or 2, or 0 for the hero whose menus
+/// are open (ResolvePlayerHero). One record per line: `uid(hex) \t name tag \t flags \t income
+/// \t value \t condition \t repair bill`, flags bit 0 marital, 1 rented, 2 dungeon, 3 home,
+/// 4 tenants, 5 workers, 6 shared with the holder's partner (core/hero_partners.cpp). Returns the
+/// byte count.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetProperties(int32_t player, char* out, uint32_t capacity) {
+    auto* memory = SafeKernelMemory();
+    const uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || out == nullptr || capacity == 0u) {
+        return 0u;
+    }
+    const auto heap = [](uint32_t at) { return at >= 0x10000u && at < 0xE0000000u; };
+    const uint32_t hero = player == 1 || player == 2 ? PlayerEntityForKey(base, static_cast<uint32_t>(player))
+                                                     : ResolvePlayerHero(base);
+    const uint32_t props = heap(hero) ? EntityComponent(base, hero, 69u) : 0u;
+    if (!heap(props)) {
+        return 0u;
+    }
+    const int32_t holder = hero == PlayerEntityForKey(base, 2u) ? 2 : 1;
+    std::string text;
+    const uint32_t head = GuestWordAt(base, props + 28u);
+    uint32_t node = heap(head) ? GuestWordAt(base, head) : 0u;
+    for (uint32_t n = 0; heap(node) && node != head && n < 256u; ++n, node = GuestWordAt(base, node)) {
+        const uint32_t record = GuestWordAt(base, node + 8u);
+        if (!heap(record)) {
+            continue;
+        }
+        const uint64_t uid = (static_cast<uint64_t>(GuestWordAt(base, record)) << 32) | GuestWordAt(base, record + 4u);
+        const uint32_t rep = GuestWordAt(base, record + 8u);
+        const uint32_t chars = heap(rep) ? GuestWordAt(base, rep) : 0u;
+        std::string name;
+        for (uint32_t i = 0; heap(chars) && i < 128u; ++i) {
+            const char c = static_cast<char>(GuestByteAt(base, chars + i));
+            if (c == '\0') {
+                break;
+            }
+            name.push_back(c == '\t' || c == '\n' ? ' ' : c);
+        }
+        uint32_t flags = 0u;
+        flags |= GuestByteAt(base, record + 12u) != 0u ? 1u : 0u;
+        flags |= GuestByteAt(base, record + 13u) != 0u ? 2u : 0u;
+        flags |= GuestByteAt(base, record + 14u) != 0u ? 4u : 0u;
+        flags |= GuestByteAt(base, record + 15u) != 0u ? 8u : 0u;
+        flags |= GuestByteAt(base, record + 18u) != 0u ? 16u : 0u;
+        flags |= GuestByteAt(base, record + 19u) != 0u ? 32u : 0u;
+        const uint64_t co_owner = refii_bridge_coowner(uid);
+        flags |= co_owner != 0u && refii_bridge_partner_kind(holder, co_owner) > 0 ? 64u : 0u;
+        const int32_t income = static_cast<int32_t>(GuestWordAt(base, record + 28u));
+        const int32_t value = static_cast<int32_t>(GuestWordAt(base, record + 44u));
+        float condition = 1.0f;
+        const std::string key = refii::property::ConditionKey(uid);
+        refii_bridge_player_get(1, key.c_str(), key.size(), &condition);
+        condition = std::clamp(condition, 0.0f, 1.0f);
+        char line[512];
+        std::snprintf(line, sizeof(line), "%016llX\t%s\t%u\t%d\t%d\t%.4f\t%d\n",
+                      static_cast<unsigned long long>(uid), name.c_str(), flags, income, value, condition,
+                      refii::property::RepairCost(value, condition));
+        text += line;
+    }
+    if (text.size() + 1u > capacity) {
+        return 0u;
+    }
+    std::memcpy(out, text.c_str(), text.size() + 1u);
+    return static_cast<uint32_t>(text.size());
+}
+
+/// The oldest property notice (core/payload_bridge.h): 1 with its kind (0 fell into disrepair,
+/// 1 repaired, 2 not enough gold, 3 nothing to repair, 6 a purchase shared with the partner: the
+/// building's UID; 4 owed gold paid on return, 5 a sale's half paid to the partner: the gold in
+/// `uid`), 0 when none.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostTakePropertyNotice(int32_t* kind, uint64_t* uid) {
+    return refii_bridge_property_notice_take(kind, uid);
+}
+
+/// THE PARTNERSHIP between the two heroes in the game, Fable 3's (core/hero_partners.cpp): 1 with
+/// its kind (0 none, 1 business partners, 2 married) when both heroes are here with their
+/// identities known, 0 otherwise.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostGetPartnership(int32_t* kind) {
+    if (kind != nullptr) *kind = 0;
+    if (refii_bridge_hero_id(1) == 0u || refii_bridge_hero_id(2) == 0u) {
+        return 0;
+    }
+    if (kind != nullptr) *kind = refii_bridge_partnership();
+    return 1;
+}
+
+/// The oldest household action for the co-op peer (mod_events.cpp): a joiner's estate action,
+/// gift, furniture level or bed for the host to run for its hero two, or the host's kept gift for
+/// the joiner. `<action>:<uid hex>:<value>`. Returns its length, 0 when none.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeEstateIntent(char* out, uint32_t capacity) {
+    return refii_bridge_estate_intent_take(out, capacity);
+}
+
+/// Sets the partnership in both heroes' saved values (0 ends it, 1 business, 2 married). Returns
+/// 1 when both identities are known.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostSetPartnership(int32_t kind) { return refii_bridge_partnership_set(kind); }
 
 /// PLAYER TWO'S D-PAD AND TARGETED TITLE on split screen, from the guest's own builders called
 /// for hero two each tick (guest_tick_pump.cpp, SamplePlayerTwoHud). `out` takes the title, then

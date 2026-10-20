@@ -48,6 +48,12 @@ extern "C" void RefiiCoopSetPartnerDog(uint32_t dog);
 extern "C" void RefiiCoopSetJobWorker(int player);
 extern "C" void RefiiCoopPartnerScreen(int on);
 extern "C" void RefiiCoopSetEstateBuyer(int player);
+extern "C" void refii_bridge_estate_intent_post(const char* text);
+extern "C" uint32_t refii_household_resolve_uid(PPCContext* ctx, uint8_t* base, uint64_t uid);
+extern "C" void refii_household_context(int32_t on);
+extern "C" int32_t refii_household_children_two(uint8_t* base);
+extern "C" int32_t refii_household_follower_two(PPCContext* ctx, uint8_t* base, int32_t index, uint32_t* entity,
+                                                uint32_t* flags);
 
 PPC_EXTERN_FUNC(rex_lua_pushcclosure);
 PPC_EXTERN_FUNC(rex_lua_getfield);
@@ -506,6 +512,61 @@ REFII_LUA_NATIVE(NativeEstateBuyer) {
   RESULTS(0);
 }
 
+// Core co-op only: Refii._household(action, uid, value) sends player two's household action to the
+// co-op peer (`<action>:<uid hex>:<value>`, the pump's Estate: action there; mod_events.cpp). `uid`
+// is Refii.uid's text ("0x…").
+REFII_LUA_NATIVE(NativeHousehold) {
+  char action[24];
+  char uid[32];
+  lua.String(1, action, sizeof(action));
+  lua.String(2, uid, sizeof(uid));
+  const unsigned long long value = std::strtoull(uid, nullptr, 16);
+  char text[96];
+  std::snprintf(text, sizeof(text), "%s:%016llX:%d", action, value, lua.Int(3));
+  if (action[0] != 0) {
+    refii_bridge_estate_intent_post(text);
+  }
+  RESULTS(0);
+}
+
+// Core co-op only: Refii._by_uid(uid) — the handle of the living entity with that UniqueID
+// (Refii.uid's "0x…" text), or nil.
+REFII_LUA_NATIVE(NativeByUid) {
+  char uid[32];
+  lua.String(1, uid, sizeof(uid));
+  lua.PushHandle(refii_household_resolve_uid(&lua.ctx, lua.base, std::strtoull(uid, nullptr, 16)));
+  RESULTS(1);
+}
+
+// Core co-op only: Refii._followers_two(i) — player two's i-th follower as the host states it
+// (household_persist.cpp publishes them; online the joiner's own copy has none): its handle and
+// flags (1 engaged to player two, 2 following for sex, 4 married to player two), or nil.
+REFII_LUA_NATIVE(NativeFollowersTwo) {
+  uint32_t entity = 0u;
+  uint32_t flags = 0u;
+  if (refii_household_follower_two(&lua.ctx, lua.base, lua.Int(1), &entity, &flags) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.PushHandle(entity);
+  lua.PushNumber(static_cast<double>(flags));
+  RESULTS(2);
+}
+
+// Core co-op only: Refii._household_context(on) — the core Lua's silent bed thread for player two
+// runs (on 1, off 0, nested): player two's stats it counts go to the joiner (mod_events.cpp).
+REFII_LUA_NATIVE(NativeHouseholdContext) {
+  refii_household_context(lua.Boolean(1) ? 1 : 0);
+  RESULTS(0);
+}
+
+// Core co-op only: Refii._children_two() — how many children hero two's family records hold.
+REFII_LUA_NATIVE(NativeChildrenTwo) {
+  lua.PushNumber(refii_household_children_two(lua.base));
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativeLocalHero) {
   lua.PushHandle(refii_mod_local_hero(lua.base));
   RESULTS(1);
@@ -692,6 +753,34 @@ REFII_LUA_NATIVE(NativeChestCounted) {
   const uint32_t chest = refii_mod_component(lua.base, lua.Entity(1), 40u);
   if (chest != 0u) {
     refii::mods::StoreU8(lua.base, chest + 0x0Fu, 1u);
+  }
+  RESULTS(0);
+}
+
+// Core co-op only: Refii._chest_money(chest) — puts a chest's gold back as its definition states
+// it: the money component (81) re-reads "Money" from its own definition record, the read it made
+// when the chest was created (`sub_8242E2A8(comp, entry)` → `sub_823AD468(entry, "Money", comp+12)`;
+// the entry is the component's record, `sub_821DA3B0(&h, comp)` then `sub_821B24F8(&h)`).
+REFII_LUA_NATIVE(NativeChestMoney) {
+  const uint32_t money = refii_mod_component(lua.base, lua.Entity(1), 81u);
+  if (money != 0u) {
+    PPCContext work = refii::mods::Frame(lua.ctx);
+    const uint32_t handle = (work.r1.u32 + 0x80u) & ~0xFu;
+    refii::mods::StoreU32(lua.base, handle, 0u);
+    refii::mods::StoreU32(lua.base, handle + 4u, 0u);
+    work.r3.u64 = handle;
+    work.r4.u64 = money;
+    if (refii::mods::CallGuest(work, lua.base, refii::guest::Address(0x821DA3B0u))) {
+      work = refii::mods::Frame(lua.ctx);
+      work.r3.u64 = handle;
+      if (refii::mods::CallGuest(work, lua.base, refii::guest::Address(0x821B24F8u)) && work.r3.u32 >= 0x10000u) {
+        const uint32_t entry = work.r3.u32;
+        work = refii::mods::Frame(lua.ctx);
+        work.r3.u64 = money;
+        work.r4.u64 = entry;
+        refii::mods::CallGuest(work, lua.base, refii::guest::Address(0x8242E2A8u));
+      }
+    }
   }
   RESULTS(0);
 }
@@ -947,6 +1036,11 @@ Native g_natives[] = {
     {"_set_partner_dog", &NativeSetPartnerDog, 0},
     {"_job_worker", &NativeJobWorker, 0},
     {"_estate_buyer", &NativeEstateBuyer, 0},
+    {"_household", &NativeHousehold, 0},
+    {"_by_uid", &NativeByUid, 0},
+    {"_followers_two", &NativeFollowersTwo, 0},
+    {"_household_context", &NativeHouseholdContext, 0},
+    {"_children_two", &NativeChildrenTwo, 0},
     {"_partner_screen", &NativePartnerScreen, 0},
     {"_consent_ask", &NativeConsentAsk, 0},
     {"_key_taken", &NativeKeyTaken, 0},
@@ -959,6 +1053,7 @@ Native g_natives[] = {
     {"coop_mode", &NativeCoopMode, 0},
     {"uid", &NativeUid, 0},
     {"_chest_counted", &NativeChestCounted, 0},
+    {"_chest_money", &NativeChestMoney, 0},
     {"_opinion_enter", &NativeOpinionEnter, 0},
     {"_opinion_leave", &NativeOpinionLeave, 0},
     {"renown", &NativeRenown, 0},

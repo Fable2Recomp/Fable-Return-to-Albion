@@ -152,6 +152,10 @@ public static class Engine_ClassicLights
                 (int)_raw[at + 11], _raw[at + 12], _raw[at + 13], _raw[at + 14],
                 (int)_raw[at + 15], BitConverter.SingleToUInt32Bits(_raw[at + 16]), (int)_raw[at + 17]));
         }
+        if (Replay is null)
+        {
+            GatherSecondView((int)count, stride);
+        }
 
         // The shared group: every directional light. The group walker takes lights from the
         // manager's mask highest index first (`sub_8223B130`), so slot 0 is the highest index.
@@ -174,6 +178,125 @@ public static class Engine_ClassicLights
         // The vertex block is c76..c107: the pixel block's layout without its last two entries
         // (screen and spot shadow masks), which would land on g_VertexAtmosphericParameters c108.
         Engine_ClassicConstants.SetFrame(false, Engine_ClassicRegisters.Vs.LightPositions, VertexBlock(_block));
+    }
+
+    private const int MaxSceneLights = 2048;
+    private const int SecondViewFirstIndex = 64;
+    private static readonly float[] _scene = new float[MaxSceneLights * Refii.Host.HostBridge.ClassicSceneLightStride];
+    private static readonly HashSet<uint> _active = new();
+    private static readonly List<(float Distance, int At, float Intensity)> _second = new();
+
+    /// <summary>Lights the second view's gather added on the last frame.</summary>
+    public static int SecondViewLights { get; private set; }
+
+    /// <summary>
+    /// SPLIT SCREEN: PLAYER TWO'S LIGHTS. The guest renders one view and its light manager gathers
+    /// against that view's eye alone (`sub_82240CE8` from 0x821C3AF4; `sub_821FF800`: within
+    /// min(L+328, 1000) of view+80, coloured, the box in the view's planes, intensity faded by the
+    /// eye's distance in `sub_821F0A50`), so a lamp beside player two far from player one is never
+    /// in the list. The scene's other lights (HostBridge.GetClassicSceneLights) are gathered here
+    /// by the same rules against player two's eye and added after the guest's own, with indices
+    /// from 64 (the manager has 64 slots). Each draw then takes the lights its bounds meet as
+    /// before, so a draw near either player is lit by the lights near it.
+    /// Deviations, stated: a light the guest did not gather has no frame update, so its flicker
+    /// walk L+444 stands still (its brightness is read from it as the update computes it); when more
+    /// pass than 64 the nearest are kept (the guest fills its slots in registry order); the second
+    /// view's lights carry no spot receive frustum (InFrustum passes them).
+    /// </summary>
+    private static void GatherSecondView(int activeCount, int stride)
+    {
+        SecondViewLights = 0;
+        if (!Refii.Core.Engine_Views.Split || Refii.Core.Engine_Views.Second is not { } second ||
+            !GodotObject.IsInstanceValid(second))
+        {
+            return;
+        }
+        uint count = Refii.Host.HostBridge.GetClassicSceneLights(_scene);
+        if (count == 0)
+        {
+            return;
+        }
+
+        _active.Clear();
+        for (int i = 0; i < activeCount; i++)
+        {
+            _active.Add(BitConverter.SingleToUInt32Bits(_raw[i * stride + 18]));
+        }
+
+        const int s = Refii.Host.HostBridge.ClassicSceneLightStride;
+        Vector3 eye = second.GlobalPosition;
+        var guestEye = new Vector3(-eye.X, eye.Z, eye.Y);
+        Godot.Collections.Array<Plane> frustum = second.GetFrustum();
+        _second.Clear();
+        for (int i = 0; i < count; i++)
+        {
+            int at = i * s;
+            if (_active.Contains(BitConverter.SingleToUInt32Bits(_scene[at + 18])))
+            {
+                continue;
+            }
+            var position = new Vector3(_scene[at + 20], _scene[at + 21], _scene[at + 22]);
+            float distance = position.DistanceTo(guestEye);
+            float reach = MathF.Min(_scene[at + 23], 1000f);
+            if (reach > 0f && distance >= reach)
+            {
+                continue;
+            }
+            float intensity = Math.Clamp(_scene[at + 26] * _scene[at + 25] + 1f, 0f, 2f);
+            if (_scene[at + 24] > 0f)
+            {
+                intensity *= Math.Clamp((reach - distance) / _scene[at + 24], 0f, 1f);
+            }
+            var colour = new Vector3(_scene[at + 4], _scene[at + 5], _scene[at + 6]);
+            float colourSq = colour.LengthSquared();
+            if (colourSq <= 1e-4f || colourSq * intensity * intensity <= 1e-4f)
+            {
+                continue;
+            }
+            // The box in the view's planes, in Godot's axes: guest (x, y, z) is Godot (-x, z, y).
+            var min = new Vector3(-_scene[at + 30], _scene[at + 29], _scene[at + 28]);
+            var max = new Vector3(-_scene[at + 27], _scene[at + 32], _scene[at + 31]);
+            if (!BoxInView(frustum, min, max))
+            {
+                continue;
+            }
+            _second.Add((distance, at, intensity));
+        }
+
+        if (_second.Count > SecondViewFirstIndex)
+        {
+            _second.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        }
+        int index = SecondViewFirstIndex;
+        foreach ((float _, int at, float intensity) in _second)
+        {
+            if (index >= SecondViewFirstIndex * 2)
+            {
+                break;
+            }
+            _lights.Add(new Light(
+                new Vector3(_scene[at], _scene[at + 1], _scene[at + 2]), _scene[at + 3],
+                new Vector3(_scene[at + 4], _scene[at + 5], _scene[at + 6]), intensity,
+                new Vector3(_scene[at + 8], _scene[at + 9], _scene[at + 10]),
+                (int)_scene[at + 11], _scene[at + 12], _scene[at + 13], _scene[at + 14],
+                (int)_scene[at + 15], BitConverter.SingleToUInt32Bits(_scene[at + 16]), index++));
+        }
+        SecondViewLights = index - SecondViewFirstIndex;
+    }
+
+    /// <summary>Whether a box meets every plane of a Godot frustum (planes face outward).</summary>
+    private static bool BoxInView(Godot.Collections.Array<Plane> frustum, Vector3 min, Vector3 max)
+    {
+        foreach (Plane plane in frustum)
+        {
+            Vector3 n = plane.Normal;
+            var nearest = new Vector3(n.X > 0f ? min.X : max.X, n.Y > 0f ? min.Y : max.Y, n.Z > 0f ? min.Z : max.Z);
+            if (plane.DistanceTo(nearest) > 0f)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>The part of a pixel-layout light block the vertex stage has (c76..c107).</summary>

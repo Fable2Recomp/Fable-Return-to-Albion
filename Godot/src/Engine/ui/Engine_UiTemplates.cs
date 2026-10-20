@@ -1714,6 +1714,9 @@ public static class Engine_UiTemplates
 					Engine_UiQuestSource.FamilySource),
 				WorldMapCategory("Regions", "GUI_SCREEN_WORLD_MAP_REGIONS",
 					Engine_UiQuestSource.RegionsSource),
+
+				// The player's properties with Fable 3's condition and repair (no shipped tag).
+				WorldMapCategory("Properties", "Properties", Engine_UiPropertySource.SourceName),
 			},
 		};
 

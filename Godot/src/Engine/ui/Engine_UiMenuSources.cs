@@ -110,6 +110,7 @@ public static class Engine_UiMenuSources
 			[Engine_UiQuestSource.RegionsSource] = Engine_UiQuestSource.Regions,
 			[Engine_UiQuestSource.SalesSource] = Engine_UiQuestSource.Sales,
 			[Engine_UiQuestSource.FamilySource] = Engine_UiQuestSource.Family,
+			[Engine_UiPropertySource.SourceName] = Engine_UiPropertySource.Rows,
 			[Engine_UiAbilitySource.SourceName] = Engine_UiAbilitySource.Rows,
 
 			// The shell's own screen: mods from the load order on disk, the rest from the live

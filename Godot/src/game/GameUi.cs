@@ -3639,6 +3639,16 @@ public partial class GameUi : Node
 			_holdPromptTwo = CoopSession.LocalCoop ? HostBridge.GetPlayerTwoHoldPrompt() : null;
 			_promptsTwo.Clear();
 			_promptsOneHidden.Clear();
+			_titlesOne.Clear();
+			_titlesTwo.Clear();
+			if (split)
+			{
+				HostBridge.GetPromptTitles(_promptTitles);
+			}
+			else
+			{
+				_promptTitles.Clear();
+			}
 			if (split)
 			{
 				int prompts = HostBridge.GetPlayerTwoPrompts(_promptsTwoBuffer);
@@ -3688,6 +3698,15 @@ public partial class GameUi : Node
 					pooledTwo[sprite.Slot] = theirsAt;
 				}
 
+				// EACH HALF ITS OWN PLAYER'S TEXT: the guest's prompt for a thing is the nearer
+				// player's; the other player's own text (who owns it, who may open it) comes from
+				// the guest's update run for them (HostBridge.GetPromptTitles).
+				if (guestFrame && split && prompt && sprite.Slot >= 0 &&
+					_promptTitles.TryGetValue(sprite.Entity, out (int Player, string Title) other))
+				{
+					(other.Player == 2 ? _titlesTwo : _titlesOne)[sprite.Slot] = other.Title;
+				}
+
 				continue;
 			}
 
@@ -3728,7 +3747,10 @@ public partial class GameUi : Node
 		if (_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
 		{
 			_worldIconsTwo.StatedFill = _holdPromptTwo?.Title;
+			_worldIconsTwo.StatedTitles = split ? _titlesTwo : null;
 		}
+
+		_worldIcons.StatedTitles = split ? _titlesOne : null;
 
 		_worldSprites.Place ??= PlaceWorldSprite;
 		if (rebuildSprites)
@@ -3755,6 +3777,11 @@ public partial class GameUi : Node
 
 	/// <summary>Whether player two's sprite layer holds this split's sprites.</summary>
 	private bool _worldSpritesTwoFed;
+
+	/// <summary>The other player's prompt text per thing, and each half's titles by pool slot.</summary>
+	private readonly System.Collections.Generic.Dictionary<uint, (int Player, string Title)> _promptTitles = new();
+	private readonly System.Collections.Generic.Dictionary<int, string> _titlesOne = new();
+	private readonly System.Collections.Generic.Dictionary<int, string> _titlesTwo = new();
 
 	/// <summary>Player two's own hold prompt, read once a guest frame (local co-op).</summary>
 	private (Vector3 Anchor, string Title)? _holdPromptTwo;
@@ -6308,6 +6335,23 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// The joiner's real-estate action for its hero two, or the host's ack (GameUiCoopEstate).
+			if (TakeEstateMessage(message))
+			{
+				continue;
+			}
+
+			// The joiner's repair of one of its properties in this host's world (Engine_UiPropertySource).
+			if (message.StartsWith(Engine_UiPropertySource.RepairMessage, System.StringComparison.Ordinal))
+			{
+				if (!CoopSession.IsClient)
+				{
+					HostBridge.PostFrontEndAction("Property:repair:2:" + message[Engine_UiPropertySource.RepairMessage.Length..]);
+				}
+
+				continue;
+			}
+
 			// The peer's mods record; compared below once the peer stands (GameUiCoopMods).
 			if (TakeCoopMods(message))
 			{
@@ -7274,6 +7318,7 @@ public partial class GameUi : Node
 		DriveCoopHeroChannel(delta);
 		DriveCoopNotices(delta);
 		DriveCoopConsent(delta);
+		DriveCoopEstate(delta);
 		if (guestFrame) DriveOwnedScreenProvider();
 		if (guestFrame) _books.Drive(_drawn, IsRevealed);
 		if (guestFrame) _spells.Follow(IsRevealed);

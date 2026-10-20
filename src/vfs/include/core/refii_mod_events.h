@@ -111,7 +111,25 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_ACHIEVEMENT = 65,
   REFII_EVENT_COLLECTABLE_TAKEN = 66,
   REFII_EVENT_PARTNER_CONSENT = 67,
-  REFII_EVENT_COUNT = 68,
+  REFII_EVENT_PROPERTY_BOUGHT = 68,
+  REFII_EVENT_PROPERTY_SOLD = 69,
+  REFII_EVENT_RENT_PAID = 70,
+  REFII_EVENT_PROPERTY_RENTED = 71,
+  REFII_EVENT_PROPERTY_CONDITION = 72,
+  REFII_EVENT_DIVORCE = 73,
+  REFII_EVENT_WIDOWED = 74,
+  REFII_EVENT_CHILD_BORN = 75,
+  REFII_EVENT_GIFT_GIVEN = 76,
+  REFII_EVENT_GIFT_ACCEPTED = 77,
+  REFII_EVENT_ENGAGED = 78,
+  REFII_EVENT_FOLLOW = 79,
+  REFII_EVENT_FURNITURE_UPGRADED = 80,
+  REFII_EVENT_REDECORATING = 81,
+  REFII_EVENT_HOUSEHOLD_BUDGET = 82,
+  REFII_EVENT_TRACKED_STAT = 83,
+  REFII_EVENT_PARTNERSHIP = 84,
+  REFII_EVENT_HOUSEHOLD_RESTORED = 85,
+  REFII_EVENT_COUNT = 86,
 };
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
@@ -942,6 +960,195 @@ struct PartnerConsentEvent : Event {
   int32_t asker;
   int32_t detail;
   int32_t answer;
+};
+
+// --- PROPERTY AND HOUSEHOLD (2026-10-20) ------------------------------------------------------
+// Online, all of these fire on the host, where player two's household and property live and the
+// economy is (household_persist.cpp); an online joiner's own actions are forwarded there and fire
+// there. Each fires once per occurrence.
+
+/// A hero buys a building (before the purchase). `price` (writable) is what it costs, condition
+/// included. `cancel` keeps the building unbought and the gold where it is. Seam:
+/// rex_CECPlayerProperties_Buy (r3 the buyer's properties comp69, r4 the building's entity).
+struct PropertyBoughtEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PROPERTY_BOUGHT;
+  uint32_t hero;
+  int32_t player;
+  uint32_t building;
+  int32_t price;
+};
+
+/// A hero sells a building (before the sale). `price` (writable) is what they are paid; a shared
+/// building's half then goes to the partner. `cancel` keeps it owned. Seam:
+/// rex_CECPlayerProperties_Sell (r3 the seller's comp69, r4 the building's entity).
+struct PropertySoldEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PROPERTY_SOLD;
+  uint32_t hero;
+  int32_t player;
+  uint32_t building;
+  int32_t price;
+};
+
+/// A hero's rent and shop profits were paid (after the payout): `gold` in all, for `drops` five-minute
+/// drops; `away` when it is the catch-up for time spent out of the game (paid on the next screen).
+/// Seam: rex_CECPlayerProperties_PayIncome (r3 comp69, r4 drops, r5 away; the total in r3 after).
+struct RentPaidEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_RENT_PAID;
+  uint32_t hero;
+  int32_t player;
+  int32_t gold;
+  int32_t drops;
+  bool away;
+};
+
+/// A building is rented out or its tenants evicted (before). `cancel` leaves it as it was. Seam:
+/// rex_CECPlayerProperties_SetRentedOut (r3 comp69, r4 the building's entity, r5 rented).
+struct PropertyRentedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PROPERTY_RENTED;
+  uint32_t hero;
+  int32_t player;
+  uint32_t building;
+  bool rented;
+};
+
+/// A building's condition changed (Fable 3's, 0..1): a rented home wore down at a rent drop, or it was
+/// repaired. After the fact. `uid` is the building's UniqueID ("0x…"). Seam: property_hooks.cpp.
+struct PropertyConditionEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PROPERTY_CONDITION;
+  uint64_t uid;
+  int32_t player;
+  float condition;
+  float previous;
+  bool repaired;
+};
+
+/// A marriage ended in divorce (the spouse has left). After the fact. Seam:
+/// rex_CECPlayerFamily_FinishDivorcing (r3 the hero's family comp136, r4 the spouse).
+struct DivorceEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DIVORCE;
+  uint32_t hero;
+  int32_t player;
+  uint32_t spouse;
+};
+
+/// A hero's spouse died or was removed: the household ends. After the fact. `uid` is the late
+/// spouse's UniqueID. Seam: rex_CECPlayerFamily_Widow (r3 the family comp136, r4 &the spouse's UID).
+struct WidowedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_WIDOWED;
+  uint32_t hero;
+  int32_t player;
+  uint64_t uid;
+};
+
+/// A child is born to (or adopted by) a hero and their spouse. After the fact. Seam:
+/// rex_CECPlayerFamily_AdoptWithSpouse (r3 the family comp136, r4 the spouse, r5 the child).
+struct ChildBornEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CHILD_BORN;
+  uint32_t hero;
+  int32_t player;
+  uint32_t spouse;
+  uint32_t child;
+};
+
+/// A hero gives a gift (a ring among them) to the one they target (before). The item leaves their
+/// inventory and comes back after fifteen seconds unless the villager keeps it (GiftAccepted).
+/// `cancel` gives nothing. Seam: rex_lhGiftComponent_GiveGift (r3 the giver's comp33, r4 the item).
+struct GiftGivenEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_GIFT_GIVEN;
+  uint32_t hero;
+  int32_t player;
+  uint32_t target;
+  uint32_t item;
+};
+
+/// A villager kept a hero's gift: it is theirs for good, and the gift's morality applies. After
+/// the fact. Seam: rex_CECHeroGifts_RemovePermanently (r3 the giver's comp33, the item's record as
+/// the Lua argument).
+struct GiftAcceptedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_GIFT_ACCEPTED;
+  uint32_t hero;
+  int32_t player;
+  uint32_t item;
+};
+
+/// A villager becomes engaged to a hero (or the engagement ends). `cancel` leaves it as it was.
+/// Seam: rex_CECOpinionReaction_SetEngaged (r3 the villager's comp47, r4 engaged).
+struct EngagedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ENGAGED;
+  uint32_t villager;
+  int32_t player;
+  bool engaged;
+};
+
+/// A creature starts or stops following someone (a hero's follower, a fiancé, a partner for the
+/// night). `cancel` on a start keeps it from following. Seams: rex_CECFollow_Start (r3 the
+/// follower's comp94, r4 the leader) / rex_CECFollow_Stop (r3 comp94).
+struct FollowEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_FOLLOW;
+  uint32_t follower;
+  uint32_t leader;
+  int32_t player;
+  bool following;
+};
+
+/// A piece of upgradeable furniture changes level (redecorating, with a furniture card). `level`
+/// (writable) is the new level. `cancel` leaves it. Seam: rex_CECUpgradeableFurniture_SetLevel (r3
+/// the piece's comp68, r4 the level).
+struct FurnitureUpgradedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_FURNITURE_UPGRADED;
+  uint32_t piece;
+  int32_t player;
+  int32_t level;
+  int32_t previous;
+};
+
+/// Redecorating a building starts or ends (its furniture becomes usable for upgrades). Fires on the
+/// machine of the player redecorating. Seam: rex_CECBuilding_SetRedecorating (r3 comp67, r4 on).
+struct RedecoratingEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_REDECORATING;
+  uint32_t building;
+  int32_t player;
+  bool on;
+};
+
+/// A hero sets a household's budget at its home (the upkeep it is given). `gold` (writable) is the
+/// budget. `cancel` leaves it. Seam: rex_lhGuiRealEstateScreen_SetBudget (r3 the estate screen, r4
+/// the gold).
+struct HouseholdBudgetEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_HOUSEHOLD_BUDGET;
+  uint32_t hero;
+  int32_t player;
+  uint32_t building;
+  int32_t gold;
+};
+
+/// A hero's tracked stat counts up (the game's ETrackedStatType: kills, sex, marriages, children, gold
+/// spent and many more; achievements and titles are judged from them). `amount` (writable) is what
+/// is added. `cancel` adds nothing. Seam: rex_CECStats_ModifyTrackedStat (r3 the hero's stats comp57,
+/// r4 the stat, r5 the amount).
+struct TrackedStatEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_TRACKED_STAT;
+  uint32_t hero;
+  int32_t player;
+  int32_t stat;
+  int32_t amount;
+};
+
+/// Fable 3's player-to-player partnership between the two heroes changed: `kind` 0 none, 1
+/// business partners, 2 married (core/hero_partners.cpp). After the fact. Seam: the household tick.
+struct PartnershipEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PARTNERSHIP;
+  int32_t kind;
+  int32_t previous;
+};
+
+/// Player two is back in the host's world and their household and property, kept with the world,
+/// were restored onto their hero (household_persist.cpp). After the fact.
+struct HouseholdRestoredEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_HOUSEHOLD_RESTORED;
+  uint32_t hero;
+  int32_t player;
+  int32_t spouses;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

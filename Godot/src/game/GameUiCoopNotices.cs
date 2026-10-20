@@ -87,6 +87,15 @@ public partial class GameUi
 			}
 		}
 
+		// Property notices (Engine_UiPropertySource): a rented home in disrepair, a repair's outcome.
+		while (HostBridge.TakePropertyNotice() is { } notice)
+		{
+			if (Engine_UiPropertySource.Notice(notice.Kind, notice.Uid) is { } said)
+			{
+				_coopNotices.Tell(said);
+			}
+		}
+
 		if (_coopNotices.Tick(delta, PartnerName(), inGame) is { } text)
 		{
 			GD.Print($"[coop-notice] {text}");

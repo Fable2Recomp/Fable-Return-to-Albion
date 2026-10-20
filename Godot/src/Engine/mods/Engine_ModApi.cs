@@ -702,6 +702,180 @@ public static class ModApi
 				F("detail", "int32_t", "the sleep type for kind 1"),
 				F("answer", "int32_t", "-1 asks the partner (the default), 0 refuses, 1 agrees (writable)", true),
 			}),
+		new ModApiEvent("PropertyBought", "property_bought", 68, "rex_CECPlayerProperties_Buy (r3 the buyer's properties comp69, r4 the building), before",
+			"A hero buys a building. Online it fires on the host, where the economy is (a joiner's purchase is run there).",
+			"the building stays unbought and the gold where it is",
+			new[]
+			{
+				F("hero", "uint32_t", "the buyer"),
+				F("player", "int32_t", "1 or 2"),
+				F("building", "uint32_t", "the building"),
+				F("price", "int32_t", "what it costs, condition included (writable)", true),
+			}),
+		new ModApiEvent("PropertySold", "property_sold", 69, "rex_CECPlayerProperties_Sell (r3 the seller's comp69, r4 the building), before",
+			"A hero sells a building; a building shared with a Fable 3 partner gives them half.",
+			"it stays owned",
+			new[]
+			{
+				F("hero", "uint32_t", "the seller"),
+				F("player", "int32_t", "1 or 2"),
+				F("building", "uint32_t", "the building"),
+				F("price", "int32_t", "what the seller is paid (writable)", true),
+			}),
+		new ModApiEvent("RentPaid", "rent_paid", 70, "rex_CECPlayerProperties_PayIncome (r3 comp69, r4 drops, r5 away), after",
+			"A hero's rent and shop profits were paid, every five real minutes (or the catch-up for time away, paid on the next screen).",
+			string.Empty,
+			new[]
+			{
+				F("hero", "uint32_t", "the owner"),
+				F("player", "int32_t", "1 or 2"),
+				F("gold", "int32_t", "the total paid"),
+				F("drops", "int32_t", "how many five-minute drops it covers"),
+				F("away", "bool", "the catch-up for time out of the game"),
+			}),
+		new ModApiEvent("PropertyRented", "property_rented", 71, "rex_CECPlayerProperties_SetRentedOut (r3 comp69, r4 the building, r5 rented), before",
+			"A building is rented out, or its tenants are evicted.",
+			"it stays as it was",
+			new[]
+			{
+				F("hero", "uint32_t", "the owner"),
+				F("player", "int32_t", "1 or 2"),
+				F("building", "uint32_t", "the building"),
+				F("rented", "bool", "rented out (false: evicted)"),
+			}),
+		new ModApiEvent("PropertyCondition", "property_condition", 72, "the condition rules (property_hooks.cpp: the rent payout and the repair)",
+			"A building's condition (Fable 3's, 0..1) changed: a rented home wore down at a rent drop, or it was repaired. At 0 its tenants pay nothing.",
+			string.Empty,
+			new[]
+			{
+				F("uid", "uint64_t", "the building's UniqueID (\"0x…\" in Lua and Godot)"),
+				F("player", "int32_t", "the owner, 1 or 2"),
+				F("condition", "float", "now, 0..1"),
+				F("previous", "float", "before"),
+				F("repaired", "bool", "a repair (else wear)"),
+			}),
+		new ModApiEvent("Divorce", "divorce", 73, "rex_CECPlayerFamily_FinishDivorcing (r3 the family comp136, r4 the spouse), after",
+			"A marriage ended: the spouse has left the hero.",
+			string.Empty,
+			new[]
+			{
+				F("hero", "uint32_t", "the hero"),
+				F("player", "int32_t", "1 or 2"),
+				F("spouse", "uint32_t", "the former spouse"),
+			}),
+		new ModApiEvent("Widowed", "widowed", 74, "rex_CECPlayerFamily_Widow (r3 the family comp136, r4 &the spouse's UID), after",
+			"A hero's spouse died or was removed: the household ends.",
+			string.Empty,
+			new[]
+			{
+				F("hero", "uint32_t", "the hero"),
+				F("player", "int32_t", "1 or 2"),
+				F("uid", "uint64_t", "the late spouse's UniqueID (\"0x…\")"),
+			}),
+		new ModApiEvent("ChildBorn", "child_born", 75, "rex_CECPlayerFamily_AdoptWithSpouse (r3 the family comp136, r4 the spouse, r5 the child), after",
+			"A child is born to (or adopted by) a hero and their spouse. Online it fires on the host.",
+			string.Empty,
+			new[]
+			{
+				F("hero", "uint32_t", "the parent hero"),
+				F("player", "int32_t", "1 or 2"),
+				F("spouse", "uint32_t", "the other parent"),
+				F("child", "uint32_t", "the child"),
+			}),
+		new ModApiEvent("GiftGiven", "gift_given", 76, "rex_lhGiftComponent_GiveGift (r3 the giver's comp33, r4 the item), before",
+			"A hero gives a gift (a ring among them) to the one they target. It leaves their inventory and comes back after fifteen seconds unless the villager keeps it (gift_accepted). Fires on the giver's machine.",
+			"nothing is given",
+			new[]
+			{
+				F("hero", "uint32_t", "the giver"),
+				F("player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("target", "uint32_t", "the one it is given to"),
+				F("item", "uint32_t", "the item's record (\"0x…\")"),
+			}),
+		new ModApiEvent("GiftAccepted", "gift_accepted", 77, "rex_CECHeroGifts_RemovePermanently (r3 the giver's comp33), after",
+			"A villager kept a hero's gift: it is theirs for good and the gift's morality applies. Online it fires on the host.",
+			string.Empty,
+			new[]
+			{
+				F("hero", "uint32_t", "the giver"),
+				F("player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("item", "uint32_t", "the item's record (\"0x…\")"),
+			}),
+		new ModApiEvent("Engaged", "engaged", 78, "rex_CECOpinionReaction_SetEngaged (r3 the villager's comp47, r4 engaged), before",
+			"A villager becomes engaged to a hero (a ring accepted), or the engagement ends.",
+			"it stays as it was",
+			new[]
+			{
+				F("villager", "uint32_t", "the villager"),
+				F("player", "int32_t", "the hero it concerns, 1 or 2"),
+				F("engaged", "bool", "engaged (false: the engagement ends)"),
+			}),
+		new ModApiEvent("Follow", "follow", 79, "rex_CECFollow_Start (r3 the follower's comp94, r4 the leader), before / rex_CECFollow_Stop (r3 comp94), after",
+			"A creature starts or stops following someone: a hero's follower, a fiancé, a partner for the night.",
+			"on a start: it does not follow",
+			new[]
+			{
+				F("follower", "uint32_t", "the creature"),
+				F("leader", "uint32_t", "who it follows"),
+				F("player", "int32_t", "1 or 2 when the leader is a hero, else 0"),
+				F("following", "bool", "starts (false: stops)"),
+			}),
+		new ModApiEvent("FurnitureUpgraded", "furniture_upgraded", 80, "rex_CECUpgradeableFurniture_SetLevel (r3 the piece's comp68, r4 the level), before",
+			"A piece of furniture changes level while redecorating (with a furniture card). Online it fires on the host.",
+			"it keeps its level",
+			new[]
+			{
+				F("piece", "uint32_t", "the furniture"),
+				F("player", "int32_t", "the player redecorating, 1 or 2"),
+				F("level", "int32_t", "the new level (writable)", true),
+				F("previous", "int32_t", "the level before"),
+			}),
+		new ModApiEvent("Redecorating", "redecorating", 81, "rex_CECBuilding_SetRedecorating (r3 the building's comp67, r4 on), after",
+			"Redecorating a building starts or ends. Fires on the redecorating player's machine.",
+			string.Empty,
+			new[]
+			{
+				F("building", "uint32_t", "the building"),
+				F("player", "int32_t", "the player redecorating, 1 or 2"),
+				F("on", "bool", "starts (false: ends)"),
+			}),
+		new ModApiEvent("HouseholdBudget", "household_budget", 82, "rex_lhGuiRealEstateScreen_SetBudget (r3 the estate screen, r4 the gold), before",
+			"A hero sets a household's budget at its home: the upkeep the family is given. Online it fires on the host.",
+			"the budget stays",
+			new[]
+			{
+				F("hero", "uint32_t", "the hero"),
+				F("player", "int32_t", "1 or 2"),
+				F("building", "uint32_t", "the home"),
+				F("gold", "int32_t", "the budget (writable)", true),
+			}),
+		new ModApiEvent("TrackedStat", "tracked_stat", 83, "rex_CECStats_ModifyTrackedStat (r3 the hero's stats comp57, r4 the stat, r5 the amount), before",
+			"A hero's tracked stat counts (the game's ETrackedStatType: kills, sex, marriages, children, gold spent and many more; achievements and titles are judged from them). Online, player two's are counted on the joiner's machine.",
+			"nothing is counted",
+			new[]
+			{
+				F("hero", "uint32_t", "the hero"),
+				F("player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("stat", "int32_t", "the stat (ETrackedStatType)"),
+				F("amount", "int32_t", "what is added (writable)", true),
+			}),
+		new ModApiEvent("Partnership", "partnership", 84, "the household tick (hero_partners.cpp): the two heroes' partnership changed",
+			"Fable 3's player-to-player partnership between the two heroes changed. Fires on the host.",
+			string.Empty,
+			new[]
+			{
+				F("kind", "int32_t", "0 none, 1 business partners, 2 married"),
+				F("previous", "int32_t", "the kind before"),
+			}),
+		new ModApiEvent("HouseholdRestored", "household_restored", 85, "the household tick (household_persist.cpp), after the restore",
+			"Player two is back in the host's world: the household and property kept with the world were put back on their hero. Fires on the host.",
+			string.Empty,
+			new[]
+			{
+				F("hero", "uint32_t", "player two's hero"),
+				F("player", "int32_t", "2"),
+				F("spouses", "int32_t", "the spouses found in the world"),
+			}),
 	};
 
 	/// <summary>The native helpers of <c>core/refii_mod.h</c>, for the Guide and the editor API.</summary>

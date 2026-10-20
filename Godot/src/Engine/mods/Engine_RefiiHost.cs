@@ -106,6 +106,24 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void achievementEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void collectable_takenEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void partner_consentEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void property_boughtEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void property_soldEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void rent_paidEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void property_rentedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void property_conditionEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void divorceEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void widowedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void child_bornEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void gift_givenEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void gift_acceptedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void engagedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void followEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void furniture_upgradedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void redecoratingEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void household_budgetEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void tracked_statEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void partnershipEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void household_restoredEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -122,6 +140,7 @@ public partial class RefiiHost : Node
 		"opinion_modified", "time_of_day", "weather_theme", "sleep_menu", "travel", "fast_travel",
 		"menu_opened", "menu_closed", "menu_screen", "weather_region", "sleep_chosen", "slow_time", "summoned",
 		"crime", "achievement", "collectable_taken", "partner_consent",
+		"property_bought", "property_sold", "rent_paid", "property_rented", "property_condition", "divorce", "widowed", "child_born", "gift_given", "gift_accepted", "engaged", "follow", "furniture_upgraded", "redecorating", "household_budget", "tracked_stat", "partnership", "household_restored",
 	};
 
 	public const string SingletonName = "RefiiHost";

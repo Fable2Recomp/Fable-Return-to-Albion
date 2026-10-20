@@ -237,6 +237,21 @@ void refii_bridge_player_two_hold(float* fraction, int32_t* pressed);
 // Player two's own hold prompt (coop_hero_hooks.cpp): up, its guest world point and title (UTF-8).
 void refii_bridge_player_two_hold_prompt(int32_t up, const float* at, const char* title);
 int32_t refii_bridge_player_two_hold_prompt_get(float* at, char* title, uint32_t capacity);
+// Local co-op: the use prompt text the OTHER player (not the one the guest's prompt is for) would be
+// shown, per thing (coop_hero_hooks.cpp, the dry pass): `thing \t player \t title` lines.
+void refii_bridge_set_prompt_titles(const char* text);
+// Property notices for the host (hooks/src/property_hooks.cpp): kind 0 a rented home fell into
+// disrepair (its tenants stop paying), 1 repaired, 2 not enough gold to repair, 3 nothing to repair.
+void refii_bridge_property_notice_post(uint64_t uid);
+void refii_bridge_property_notice_post_kind(int32_t kind, uint64_t uid);
+int32_t refii_bridge_property_notice_take(int32_t* kind, uint64_t* uid);
+uint32_t refii_bridge_prompt_titles(char* out, uint32_t capacity);
+// Player two's household actions for the co-op peer to run (mod_events.cpp, the core Lua's
+// Refii._household): the joiner's estate actions, gifts, furniture and bed for the host, the host's
+// kept gifts for the joiner. `<action>:<uid hex>:<value>`, oldest first; take returns the length,
+// 0 when none.
+void refii_bridge_estate_intent_post(const char* text);
+uint32_t refii_bridge_estate_intent_take(char* out, uint32_t capacity);
 // The name the game shows for the player with this XUID, by RexNet's rule (core/coop_names.cpp):
 // a friend's display name, anyone else's pseudonym. 1 when the XUID is a known player.
 int32_t refii_bridge_safe_name_for_xuid(uint64_t xuid, char* out, uint32_t capacity);
@@ -426,6 +441,27 @@ int32_t refii_bridge_player_loaded_from(int32_t player, const char* save_name);
 // - the game has just written `player`'s hero into the save named `save_name`: its saved values
 //   go into that folder. Returns 1 when written.
 int32_t refii_bridge_player_write_saved(int32_t player, const char* save_name);
+// - saved BYTES under a key: written beside the save with the saved values and read back with them,
+//   and the owner's go to the peer (in parts, when they change and every few seconds). get: the
+//   size (the bytes into `out` when `capacity` holds them), -1 when none; set: null `data` drops
+//   the key.
+int32_t refii_bridge_player_blob_get(int32_t player, const char* key, uint8_t* out, uint32_t capacity);
+void refii_bridge_player_blob_set(int32_t player, const char* key, const uint8_t* data, uint32_t size);
+
+// HERO IDENTITY AND PARTNERSHIPS (src/core/hero_partners.cpp), Fable 3's player-to-player marriage
+// and business partnership: a hero's id (48 bits, kept with its save; 0 not yet known), made once by
+// the machine that plays the hero; a partnership in both partners' stores (1 business, 2 married);
+// a building's co-owner (the world's, player one's store) and the gold owed to an absent partner.
+uint64_t refii_bridge_hero_id(int32_t player);
+void refii_bridge_hero_id_ensure(int32_t player);
+int32_t refii_bridge_partner_kind(int32_t player, uint64_t other);
+// The partnership between the two heroes in the game (both stores agree), 0 none.
+int32_t refii_bridge_partnership(void);
+int32_t refii_bridge_partnership_set(int32_t kind);
+uint64_t refii_bridge_coowner(uint64_t uid);
+void refii_bridge_coowner_set(uint64_t uid, uint64_t id);
+int32_t refii_bridge_owed(uint64_t id);
+void refii_bridge_owed_add(uint64_t id, int32_t gold);
 
 // PARTNER CONSENT (src/core/coop_consent.cpp): a co-op script asks the other player before doing
 // something that changes both players' game. `kind` 1 sleep (detail: the sleep type), 2 sex,

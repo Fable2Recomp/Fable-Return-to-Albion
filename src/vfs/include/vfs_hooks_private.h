@@ -354,6 +354,24 @@ void ReapplyCameraFeel(PPCContext& ctx, uint8_t* base);
 /// Runs hard mods' registered tick callbacks. Defined in hooks/mod_api.cpp.
 void RunModTicks(PPCContext& ctx, uint8_t* base);
 
+/// Player two's household kept in the host's world (hooks/household_persist.cpp): restored when
+/// their hero arrives and stashed while it stays, every tick; stashed again before player one's
+/// save is written.
+void DriveHouseholds(PPCContext& ctx, uint8_t* base, float seconds);
+void StashHouseholdForSave(PPCContext& ctx, uint8_t* base);
+/// On an online joiner, hero two's household is a mirror of the host's: its own ticks are off.
+bool HouseholdIsMirror(uint8_t* base, uint32_t hero);
+/// The host's household changed (a replayed estate action): stash it at the next tick.
+void HouseholdChanged();
+/// A joiner's estate intent (`<action>:<sign uid hex>:<value>`) run on the host for hero two.
+/// Defined in hooks/mod_events.cpp.
+bool ReplayEstateIntent(PPCContext& ctx, uint8_t* base, const std::string& text);
+
+/// Player two's base opinion axes of a villager (comp47), and a seed of them (their first block
+/// made when they have none). Defined in hooks/mod_events.cpp.
+bool PlayerTwoOpinionAxes(uint32_t component, float* axes);
+bool SeedPlayerTwoOpinion(PPCContext& ctx, uint8_t* base, uint32_t component, const float* axes);
+
 /// Steps refii_mod_lua_generation: the game's Lua state was rebuilt or loaded from a save.
 void BumpLuaGeneration();
 }  // namespace refii::vfs

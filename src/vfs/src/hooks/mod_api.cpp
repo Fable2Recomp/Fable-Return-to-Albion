@@ -339,6 +339,8 @@ void DrivePlayerState(uint8_t* base) {
     }
     if (hero != 0u) {
       heroes[player - 1] = hero;
+      // Its identity for Fable 3's partnerships (core/hero_partners.cpp), made where it is played.
+      refii_bridge_hero_id_ensure(player);
     }
   }
 }
@@ -359,6 +361,7 @@ void RunModTicks(PPCContext& ctx, uint8_t* base) {
     seconds = 0.25f;
   }
 
+  DriveHouseholds(ctx, base, seconds);
   for (refii_mod_tick_fn fn : ticks) {
     PPCContext work = ctx;
     fn(&work, base, seconds);

@@ -9,6 +9,11 @@
 //   ps.o=<p>,<op epoch>|<seq>:<s|a><v|s><key>=<value>;...
 //       the peer's pending operations on player p (set or add), restated until the owner's state
 //       says it applied them.
+//   ps.b=<p>,<version>,<part>,<parts>,<key>|<base64>
+//       one part of the owner's saved blob <key> for player p, sent when it changes and restated
+//       every few seconds; the peer keeps it once every part of that version has arrived.
+//   ps.k=<p>|<key>;<key>;...
+//       the owner's blob keys for player p, with each restatement: a blob not listed is gone.
 
 #include "core/player_state.h"
 
@@ -36,6 +41,13 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kMaxKeyLength = 128;
+constexpr std::string_view kBlobPrefix = "refii_blob_";
+constexpr std::string_view kBlobSuffix = ".bin";
+constexpr size_t kMaxBlobBytes = 4u << 20;
+/// A blob part's base64 (450 bytes), and how many parts go out a frame.
+constexpr size_t kBlobPartChars = 600;
+constexpr size_t kBlobPartsPerTake = 4;
+constexpr auto kBlobRestateInterval = std::chrono::seconds(5);
 /// A datagram's line, kept well under the channel's limit.
 constexpr size_t kMaxMessage = 900;
 constexpr auto kChangedInterval = std::chrono::milliseconds(50);
@@ -67,6 +79,12 @@ struct Assembly {
   Entries entries;
 };
 
+struct BlobAssembly {
+  uint32_t version = 0;
+  std::vector<std::string> parts;
+  size_t have = 0;
+};
+
 struct Store {
   /// What this machine reads: the owner's values (with this machine's unapplied operations on
   /// top when it is not the owner).
@@ -81,6 +99,16 @@ struct Store {
   bool trusted = true;
   /// The save the saved values were last loaded from, or empty.
   std::string loaded_from;
+  /// Saved bytes by key (refii_bridge_player_blob_*): written beside the save as
+  /// kBlobPrefix<key>.bin and read back with the saved values; the owner's go to the peer (ps.b).
+  std::map<std::string, std::vector<uint8_t>> blobs;
+  // The owner's side of the blobs: each one's version, the version last queued, the parts queued.
+  std::map<std::string, uint32_t> blob_versions;
+  std::map<std::string, uint32_t> blob_queued;
+  Clock::time_point blobs_restated_at{};
+  std::deque<std::string> blob_out;
+  // The peer's side: blobs arriving in parts.
+  std::map<std::string, BlobAssembly> blob_in;
   // The owner's side.
   uint32_t sent_version = 0;
   Clock::time_point sent_at{};
@@ -231,6 +259,121 @@ void StateMessages(const Store& store, int index, std::vector<std::string>& line
                   store.peer_op_epoch, store.peer_op_seq, part, bodies.size());
     lines.push_back(std::string(head) + bodies[part]);
   }
+}
+
+constexpr char kBase64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string Base64(const uint8_t* data, size_t size) {
+  std::string out;
+  out.reserve((size + 2) / 3 * 4);
+  for (size_t i = 0; i < size; i += 3) {
+    const uint32_t n = (static_cast<uint32_t>(data[i]) << 16) | (i + 1 < size ? data[i + 1] << 8 : 0u) |
+                       (i + 2 < size ? data[i + 2] : 0u);
+    out += kBase64[(n >> 18) & 63u];
+    out += kBase64[(n >> 12) & 63u];
+    out += i + 1 < size ? kBase64[(n >> 6) & 63u] : '=';
+    out += i + 2 < size ? kBase64[n & 63u] : '=';
+  }
+  return out;
+}
+
+bool Unbase64(std::string_view text, std::vector<uint8_t>& out) {
+  uint32_t n = 0;
+  int bits = 0;
+  for (const char c : text) {
+    if (c == '=') {
+      break;
+    }
+    const char* at = std::strchr(kBase64, c);
+    if (at == nullptr || c == '\0') {
+      return false;
+    }
+    n = (n << 6) | static_cast<uint32_t>(at - kBase64);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(static_cast<uint8_t>((n >> bits) & 0xFFu));
+    }
+  }
+  return true;
+}
+
+/// The owner's blobs for one player, queued in parts: those changed since last queued, and every
+/// one (with the key list) at each restatement.
+void QueueBlobs(Store& store, int index, Clock::time_point now) {
+  const bool restate = now - store.blobs_restated_at >= kBlobRestateInterval;
+  for (const auto& [key, data] : store.blobs) {
+    const uint32_t version = store.blob_versions[key];
+    auto queued = store.blob_queued.find(key);
+    if (!restate && queued != store.blob_queued.end() && queued->second == version) {
+      continue;
+    }
+    store.blob_queued[key] = version;
+    const std::string text = Base64(data.data(), data.size());
+    const size_t parts = std::max<size_t>(1u, (text.size() + kBlobPartChars - 1) / kBlobPartChars);
+    for (size_t part = 0; part < parts; ++part) {
+      char head[192];
+      std::snprintf(head, sizeof(head), "ps.b=%d,%u,%zu,%zu,%s|", index + 1, version, part, parts, key.c_str());
+      store.blob_out.push_back(std::string(head) + text.substr(part * kBlobPartChars, kBlobPartChars));
+    }
+  }
+  if (restate) {
+    store.blobs_restated_at = now;
+    std::string list = "ps.k=" + std::to_string(index + 1) + "|";
+    bool first = true;
+    for (const auto& [key, data] : store.blobs) {
+      list += (first ? "" : ";") + key;
+      first = false;
+    }
+    store.blob_out.push_back(list);
+  }
+}
+
+/// A blob part, or the key list, from the owner of player `index`.
+void TakeBlob(Store& store, std::string_view head, std::string_view body, bool list) {
+  if (list) {
+    std::erase_if(store.blobs, [&](const auto& item) {
+      for (const std::string_view key : Split(body, ';')) {
+        if (key == item.first) {
+          return false;
+        }
+      }
+      return true;
+    });
+    return;
+  }
+  const std::vector<std::string_view> fields = Split(head, ',');
+  uint32_t version = 0;
+  uint32_t part = 0;
+  uint32_t parts = 0;
+  if (fields.size() != 5 || !ParseU32(fields[1], version) || !ParseU32(fields[2], part) ||
+      !ParseU32(fields[3], parts) || parts == 0u || part >= parts || parts > kMaxBlobBytes / 450u ||
+      !ValidKey(fields[4])) {
+    return;
+  }
+  const std::string key(fields[4]);
+  BlobAssembly& assembly = store.blob_in[key];
+  if (assembly.version != version || assembly.parts.size() != parts) {
+    assembly = BlobAssembly{};
+    assembly.version = version;
+    assembly.parts.resize(parts);
+  }
+  if (assembly.parts[part].empty() && !body.empty()) {
+    assembly.parts[part] = std::string(body);
+    ++assembly.have;
+  }
+  if (assembly.have != parts) {
+    return;
+  }
+  std::string text;
+  for (const std::string& chunk : assembly.parts) {
+    text += chunk;
+  }
+  std::vector<uint8_t> data;
+  if (Unbase64(text, data) && data.size() <= kMaxBlobBytes) {
+    store.blobs[key] = std::move(data);
+  }
+  store.blob_in.erase(key);
 }
 
 void OperationMessages(const State& s, const Store& store, int index, std::vector<std::string>& lines) {
@@ -517,6 +660,7 @@ extern "C" void refii_bridge_player_clear(int32_t player, int32_t fresh) {
   }
   store.trusted = fresh != 0;
   store.loaded_from.clear();
+  store.blobs.clear();
   if (store.entries.empty()) {
     return;
   }
@@ -563,8 +707,29 @@ extern "C" void refii_bridge_player_load_saved(int32_t player, const char* save_
   ++store.version;
   store.trusted = true;
   store.loaded_from = save_name;
-  REXLOG_INFO("Refii player state: player {} loaded {} saved value(s) from save '{}'", player, loaded.size(),
-              save_name);
+  store.blobs.clear();
+  std::error_code listing;
+  for (const std::filesystem::directory_entry& item : std::filesystem::directory_iterator(folder, listing)) {
+    const std::string file_name = item.path().filename().string();
+    if (!file_name.starts_with(kBlobPrefix) || !file_name.ends_with(kBlobSuffix)) {
+      continue;
+    }
+    const std::string key =
+        file_name.substr(kBlobPrefix.size(), file_name.size() - kBlobPrefix.size() - kBlobSuffix.size());
+    std::error_code sized;
+    const auto bytes = std::filesystem::file_size(item.path(), sized);
+    if (!ValidKey(key) || sized || bytes > kMaxBlobBytes) {
+      continue;
+    }
+    std::ifstream blob_file(item.path(), std::ios::binary);
+    std::vector<uint8_t> data(static_cast<size_t>(bytes));
+    if (blob_file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()))) {
+      store.blobs[key] = std::move(data);
+      ++store.blob_versions[key];
+    }
+  }
+  REXLOG_INFO("Refii player state: player {} loaded {} saved value(s) and {} blob(s) from save '{}'", player,
+              loaded.size(), store.blobs.size(), save_name);
 }
 
 extern "C" int32_t refii_bridge_player_loaded_from(int32_t player, const char* save_name) {
@@ -622,8 +787,76 @@ extern "C" int32_t refii_bridge_player_write_saved(int32_t player, const char* s
     REXLOG_WARN("Refii player state: could not replace '{}': {}", target.string(), error.message());
     return 0;
   }
-  REXLOG_INFO("Refii player state: player {} wrote {} saved value(s) into save '{}'", player, count, save_name);
+  const auto& blobs = s.stores[index].blobs;
+  for (const auto& [key, data] : blobs) {
+    const fs::path blob_target = folder / (std::string(kBlobPrefix) + key + std::string(kBlobSuffix));
+    const fs::path blob_temporary = fs::path(blob_target.string() + ".tmp");
+    {
+      std::ofstream file(blob_temporary, std::ios::binary | std::ios::trunc);
+      file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+      if (!file) {
+        REXLOG_WARN("Refii player state: could not write '{}'", blob_temporary.string());
+        continue;
+      }
+    }
+    fs::rename(blob_temporary, blob_target, error);
+    if (error) {
+      REXLOG_WARN("Refii player state: could not replace '{}': {}", blob_target.string(), error.message());
+    }
+  }
+  // A blob dropped since the last write goes from the save too.
+  for (const fs::directory_entry& item : fs::directory_iterator(folder, error)) {
+    const std::string file_name = item.path().filename().string();
+    if (file_name.starts_with(kBlobPrefix) && file_name.ends_with(kBlobSuffix) &&
+        !blobs.contains(file_name.substr(kBlobPrefix.size(),
+                                         file_name.size() - kBlobPrefix.size() - kBlobSuffix.size()))) {
+      std::error_code removed;
+      fs::remove(item.path(), removed);
+    }
+  }
+  REXLOG_INFO("Refii player state: player {} wrote {} saved value(s) and {} blob(s) into save '{}'", player, count,
+              blobs.size(), save_name);
   return 1;
+}
+
+extern "C" int32_t refii_bridge_player_blob_get(int32_t player, const char* key, uint8_t* out, uint32_t capacity) {
+  const int index = Index(player);
+  if (index < 0 || key == nullptr) {
+    return -1;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  const auto found = s.stores[index].blobs.find(key);
+  if (found == s.stores[index].blobs.end()) {
+    return -1;
+  }
+  const auto size = static_cast<int32_t>(found->second.size());
+  if (out != nullptr && capacity >= found->second.size()) {
+    std::memcpy(out, found->second.data(), found->second.size());
+  }
+  return size;
+}
+
+extern "C" void refii_bridge_player_blob_set(int32_t player, const char* key, const uint8_t* data, uint32_t size) {
+  const int index = Index(player);
+  if (index < 0 || key == nullptr || !ValidKey(key) || size > kMaxBlobBytes) {
+    return;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  Store& store = s.stores[index];
+  if (data == nullptr) {
+    store.blobs.erase(key);
+    store.blob_versions.erase(key);
+    store.blob_queued.erase(key);
+    return;
+  }
+  auto& held = store.blobs[key];
+  if (held.size() == size && (size == 0u || std::memcmp(held.data(), data, size) == 0)) {
+    return;
+  }
+  held.assign(data, data + size);
+  ++store.blob_versions[key];
 }
 
 namespace refii::players {
@@ -654,6 +887,11 @@ size_t TakeOutgoing(char* out, size_t capacity) {
         store.sent_at = now;
         store.sent_once = true;
       }
+      QueueBlobs(store, index, now);
+      for (size_t n = 0; n < kBlobPartsPerTake && !store.blob_out.empty(); ++n) {
+        lines.push_back(std::move(store.blob_out.front()));
+        store.blob_out.pop_front();
+      }
     } else if (!store.pending.empty() && now - store.ops_sent_at >= kOperationInterval) {
       OperationMessages(s, store, index, lines);
       store.ops_sent_at = now;
@@ -668,7 +906,9 @@ size_t TakeOutgoing(char* out, size_t capacity) {
 
 bool Receive(std::string_view message) {
   const bool state = message.starts_with("ps.s=");
-  if (!state && !message.starts_with("ps.o=")) {
+  const bool blob = message.starts_with("ps.b=");
+  const bool keys = message.starts_with("ps.k=");
+  if (!state && !blob && !keys && !message.starts_with("ps.o=")) {
     return false;
   }
   const std::string_view rest = message.substr(5);
@@ -684,7 +924,11 @@ bool Receive(std::string_view message) {
   }
   State& s = Tables();
   std::lock_guard lock(s.mutex);
-  if (state) {
+  if (blob || keys) {
+    if (!Owns(s, index)) {
+      TakeBlob(s.stores[index], head, body, keys);
+    }
+  } else if (state) {
     TakeState(s, index, head, body);
   } else {
     TakeOperations(s, index, head, body);

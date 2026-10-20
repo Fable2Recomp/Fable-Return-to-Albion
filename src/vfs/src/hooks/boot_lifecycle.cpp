@@ -818,7 +818,7 @@ void StateDrawnLights(uint8_t* base, uint32_t view) {
     std::memcpy(base + at, &raw, sizeof(raw));
   };
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xE0000000u; };
-  constexpr uint32_t kStampLight = 0x8221FAE0u;
+  const uint32_t kStampLight = refii::guest::Address(0x8221FAE0u);
 
   const uint32_t scene = load32(view + 0x14u);
   if (!plausible(scene)) {

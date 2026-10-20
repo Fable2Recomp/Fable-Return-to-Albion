@@ -152,6 +152,38 @@ public static class CoopHeroLua
 		-- GetPlayerHero(); run as the user, player two gives their own gift to their own target.
 		C.RunMethodAsUser("OnCarriedActionUseRing", "Update", "EntityUsingItem")
 
+		-- A GIFT'S ANSWER IS FOR ITS GIVER. BehaviourReceiveGift takes "the hero" from
+		-- GetPlayerHero() throughout: who to face and answer, whose inventory the gift leaves
+		-- (RemoveGiftFromHero), who a ring's AgreeToMarryHero goes to. The gift is a message
+		-- (GetGift: MessageEvents' gift event) whose sender is the giver; PrepareToRun reads it, and
+		-- the behaviour runs as them from then on (self.RefiiGiver, kept with the behaviour).
+		function C.GiftGiver(behaviour)
+			local partner = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+			if behaviour == nil or partner == nil or type(behaviour.GetGift) ~= "function" then
+				return nil
+			end
+			local message = behaviour:GetGift()
+			local from = message ~= nil and message.GetEntitySentBy ~= nil and message:GetEntitySentBy() or nil
+			return from ~= nil and from == partner and partner or nil
+		end
+		if type(BehaviourReceiveGift) == "table" and not rawget(BehaviourReceiveGift, "RefiiGiverWrapped") then
+			rawset(BehaviourReceiveGift, "RefiiGiverWrapped", true)
+			local methods = {}
+			for key, value in pairs(BehaviourReceiveGift) do
+				if type(value) == "function" and key ~= "CreateSubClass" and key ~= "GetGift" then
+					methods[key] = value
+				end
+			end
+			for key, shipped in pairs(methods) do
+				BehaviourReceiveGift[key] = C.Permanent(function(self, ...)
+					if key == "PrepareToRun" and self ~= nil then
+						self.RefiiGiver = C.GiftGiver(self)
+					end
+					return C.RunAs(self and self.RefiiGiver, shipped, self, ...)
+				end, "Gift.BehaviourReceiveGift." .. key)
+			end
+		end
+
 		-- QUEST GIVERS: either player. The shipped prompts show a quest's box when
 		-- `ScriptFunction.GetPlayersTarget() == giver and Targeted.IsHeroWithinInteractionDistance(giver)`,
 		-- both player one only (QuestManager.HeroEntity). The game's own two-player rule is
@@ -451,6 +483,53 @@ public static class CoopHeroLua
 			OnActionUseTakeItems.Update = C.TakeItems
 		end
 
+		-- A SILVER-KEY CHEST OPENED BEFORE THE PARTNER WAS THERE: open, emptied, and no longer
+		-- targetable (the chest's tick `sub_82295D60` keys targeting on the inventory), so the wrapper
+		-- above never sees player two use it. Its loot is its definition's InitialItems, put in once at
+		-- creation (`sub_824EEF48` → `sub_824EFFC8`, Inventory.AddInitialItems) and saved empty after,
+		-- and its gold the definition's "Money". Near player two, such a chest they have not opened is
+		-- given back to them: player one is recorded as having opened it, it is closed again, its
+		-- counted byte kept, and refilled the game's own way — a randomly generated entry rolls again,
+		-- as it would for a fresh chest. The world is the host's, so the host does it.
+		function C.RestoreChestsNear(hero)
+			local x, y, z = Refii.position(Refii.handle(hero))
+			if x == nil or Inventory == nil or Inventory.AddInitialItems == nil then
+				return
+			end
+			for _, handle in ipairs(Refii.near(x, y, z, 20, false) or {}) do
+				local chest = Refii.entity(handle)
+				if chest ~= nil and chest:IsAlive() and Chest.IsAvailable(chest) and Chest.IsOpen(chest)
+					and Chest.GetNumberOfSilverKeysNeeded(chest) > 0 then
+					local key = "refii.chest." .. tostring(Refii.uid(handle))
+					local items = Refii.inventory(handle)
+					if items ~= nil and #items == 0 and Refii.player_value(2, key, 0) == 0 then
+						if Refii.player_value(1, key, 0) == 0 then
+							Refii.player_save(1, key, 1)
+						end
+						Chest.SnapToClosed(chest)
+						Refii._chest_counted(handle)
+						Inventory.AddInitialItems(chest)
+						Refii._chest_money(handle)
+					end
+				end
+			end
+		end
+
+		function C.ChestWatch()
+			C.ChestTicks = (C.ChestTicks or 0) + 1
+			if C.ChestTicks % 90 ~= 0 or Refii == nil or Refii.coop_mode == nil or Refii._chest_money == nil then
+				return
+			end
+			local mode = Refii.coop_mode()
+			if mode ~= 1 and mode ~= 2 then
+				return
+			end
+			local two = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+			if two ~= nil and two:IsAlive() then
+				C.RestoreChestsNear(two)
+			end
+		end
+
 		-- KNOCKED DOWN, PLAYER TWO TAKES THE HERO'S PENALTY (Fable 3: one death tracker per hero).
 		-- Shipped, Henchman_DeathTracker (gameflow.lua) revives player two with
 		-- MESSAGE_EVENT_REVIVING_HENCHMAN and no scars, where Hero_DeathTracker gives hero one a
@@ -518,7 +597,8 @@ public static class CoopHeroLua
 							return shipped(villager, ...)
 						end
 						local one = C.ShippedGetPlayerHero and C.ShippedGetPlayerHero()
-						local hero = nil
+						-- Code running as player two (C.RunAs) asks about player two.
+						local hero = C.Acting() == two and two or nil
 						for i = 1, select("#", ...) do
 							local v = select(i, ...)
 							if v ~= nil and v == two then
@@ -812,6 +892,318 @@ public static class CoopHeroLua
 			end
 		end
 
+		-- WHO A VILLAGER FOLLOWS AND ANSWERS. The expression behaviour answers the hero the villager
+		-- notices (the nearer — the game's own GetEntityToNoticeExpressionsOf rule) and the follow
+		-- behaviours the hero they follow; shipped, both say GetPlayerHero(), so player two's "follow
+		-- me" or seduction made the villager follow player one (FollowEntityFromExpression with
+		-- GetPlayerHero()), and player two could gather no followers, no fiancé to wed, no partner.
+		function C.WrapClassAs(name, resolver)
+			local class = _G[name]
+			if type(class) ~= "table" or rawget(class, "RefiiHeroWrapped") then
+				return
+			end
+			rawset(class, "RefiiHeroWrapped", true)
+			local methods = {}
+			for key, value in pairs(class) do
+				if type(value) == "function" and key ~= "CreateSubClass" then
+					methods[key] = value
+				end
+			end
+			for key, shipped in pairs(methods) do
+				class[key] = C.Permanent(function(self, ...)
+					return C.RunAs(resolver(self), shipped, self, ...)
+				end, "Hero." .. name .. "." .. key)
+			end
+		end
+		C.NoticedPartner = C.Permanent(function(behaviour)
+			return C.NearerPartner(behaviour and behaviour.Entity)
+		end, "NoticedPartner")
+		C.FollowLeader = C.Permanent(function(behaviour)
+			local entity = behaviour and behaviour.Entity
+			local partner = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+			if entity == nil or partner == nil then
+				return nil
+			end
+			if Follow ~= nil and type(Follow.GetFollowTarget) == "function" then
+				local target = Follow.GetFollowTarget(entity)
+				if target ~= nil then
+					return target == partner and partner or nil
+				end
+			end
+			return C.NearerPartner(entity)
+		end, "FollowLeader")
+		C.WrapClassAs("BehaviourNoticeExpression", C.NoticedPartner)
+		for _, name in ipairs({ "BehaviourFollow", "BehaviourFollowForSex", "BehaviourFollowCatchUp" }) do
+			C.WrapClassAs(name, C.FollowLeader)
+		end
+
+		-- ONLINE, PLAYER TWO'S FOLLOWERS ARE THE HOST'S. The guest never sends who follows whom and
+		-- the villagers think on the host, so the joiner's hero two lists nobody: its bed never
+		-- found a partner. The host publishes them (household_persist.cpp, Refii._followers_two:
+		-- handle and flags, 1 engaged, 2 following for sex, 4 married), and on the joiner the follow
+		-- queries for its own hero two answer from that list.
+		function C.JoinerTwo(hero)
+			local partner = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+			return hero ~= nil and partner ~= nil and hero == partner and Refii ~= nil and Refii.coop_mode ~= nil
+				and Refii._followers_two ~= nil and Refii.coop_mode() == 3
+		end
+		function C.PublishedFollowers()
+			local list = {}
+			for i = 1, 32 do
+				local handle, flags = Refii._followers_two(i)
+				local entity = handle ~= nil and Refii.entity(handle) or nil
+				if entity ~= nil then
+					list[#list + 1] = { entity = entity, flags = flags or 0 }
+				end
+			end
+			return list
+		end
+		if Follow ~= nil and Follow.GetListOfFollowers ~= nil and not rawget(Follow, "RefiiJoinerFollowers") then
+			rawset(Follow, "RefiiJoinerFollowers", true)
+			local shipped_list = Follow.GetListOfFollowers
+			Follow.GetListOfFollowers = C.Permanent(function(hero, ...)
+				if not C.JoinerTwo(hero) then
+					return shipped_list(hero, ...)
+				end
+				local list = {}
+				for _, follower in ipairs(C.PublishedFollowers()) do
+					list[#list + 1] = follower.entity
+				end
+				return list
+			end, "Follow.GetListOfFollowers")
+			local shipped_sex = Follow.IsBeingFollowedBySexPartner
+			if shipped_sex ~= nil then
+				Follow.IsBeingFollowedBySexPartner = C.Permanent(function(hero, ...)
+					if not C.JoinerTwo(hero) then
+						return shipped_sex(hero, ...)
+					end
+					for _, follower in ipairs(C.PublishedFollowers()) do
+						if follower.flags % 4 >= 2 then
+							return true
+						end
+					end
+					return false
+				end, "Follow.IsBeingFollowedBySexPartner")
+			end
+		end
+
+		-- ONLINE, PLAYER TWO'S BED IS PARTLY THE HOST'S. On the joiner the bed runs as shipped for its
+		-- player (the menus, the fade, their own stats), but the partners, the pregnancy and the baby,
+		-- the partner's opinion, the deeds and the gold are the host's world: SexFunction.Begin there
+		-- would find no partner (SexFunction.SexPartners is filled by the host's follow behaviours) and
+		-- a client's money changes nothing. So the joiner's Begin for its hero two also goes to the
+		-- host (`sex:<bed uid>:<condom>`), which runs the bed's own payment (the prostitutes' and the
+		-- inn's, as OnActionUseBed:Update/Sex reckon them) and Begin for its hero two in a thread of
+		-- its own, silent: no fade, movie, sound, tutorial, message box or achievement on the host.
+		C.Silent = C.Silent or setmetatable({}, { __mode = "k" })
+		C.HostThreads = C.HostThreads or {}
+		function C.Silence(class, name, answer)
+			if type(class) ~= "table" or type(class[name]) ~= "function" or rawget(class, "RefiiSilent" .. name) then
+				return
+			end
+			local shipped = class[name]
+			rawset(class, "RefiiSilent" .. name, shipped)
+			class[name] = C.Permanent(function(...)
+				local co = coroutine.running()
+				if co ~= nil and C.Silent[co] then
+					return answer
+				end
+				return shipped(...)
+			end, "Silent." .. name)
+		end
+		C.Silence(GUI, "FadeScreenOut")
+		C.Silence(GUI, "FadeScreenIn")
+		C.Silence(GUI, "IsScreenFading", false)
+		C.Silence(GUI, "SetDPadEnabled")
+		C.Silence(GUI, "PlayLocalisedMovie")
+		C.Silence(GUI, "DisplayMessageBox")
+		C.Silence(Debug, "SetShouldDrawWorldIcons")
+		C.Silence(Sound, "SetSoundEffectVolume")
+		C.Silence(TutorialManager, "DisplayTutorial")
+
+		-- THE JOINER'S OWN BED SCENE IS ITS PRESENTATION. Its Begin finds no partner (they are the
+		-- host's), so what it would count is wrong and what it would show is incomplete: its tracked
+		-- stats and achievements are left to the host's (sent here, mod_events.cpp `stat`/`ach`), and
+		-- its fade-in waits for the host's verdict (RefiiCoop.SexVerdict: the partner, a child born,
+		-- the first) to play what a birth plays — the PREGNANT line with the sound down for five
+		-- seconds, Childbirth.bik for the first child, the baby tutorial after the fade.
+		C.Presenting = C.Presenting or setmetatable({}, { __mode = "k" })
+		for _, name in ipairs({ "ModifyTrackedStat", "UnlockAchievement" }) do
+			if Stats ~= nil and type(Stats[name]) == "function" and not rawget(Stats, "RefiiPresenting" .. name) then
+				local shipped = Stats[name]
+				rawset(Stats, "RefiiPresenting" .. name, shipped)
+				Stats[name] = C.Permanent(function(...)
+					local co = coroutine.running()
+					if co ~= nil and C.Presenting[co] then
+						return nil
+					end
+					return shipped(...)
+				end, "Presenting." .. name)
+			end
+		end
+		function C.WaitSeconds(seconds)
+			local until_frame = Timing.GetWorldFrame() + Timing.GetTickRate() * seconds
+			while Timing.GetWorldFrame() < until_frame do
+				coroutine.yield()
+			end
+		end
+		function C.PlayBirth(verdict)
+			if verdict.partner ~= nil then
+				ScriptFunction.SaySimLine(verdict.partner, "TEXT_AI_COURTING_SEX_PREGNANT")
+			end
+			Sound.SetSoundEffectVolume(0.0)
+			C.WaitSeconds(5.0)
+			Sound.SetSoundEffectVolume(1.0)
+			if verdict.first then
+				GUI.PlayLocalisedMovie("Childbirth.bik")
+			end
+		end
+		if GUI ~= nil and GUI.FadeScreenIn ~= nil and not rawget(GUI, "RefiiAwaitVerdict") then
+			local shipped = GUI.FadeScreenIn
+			rawset(GUI, "RefiiAwaitVerdict", shipped)
+			GUI.FadeScreenIn = C.Permanent(function(...)
+				local co = coroutine.running()
+				local verdict = nil
+				if co ~= nil and C.Presenting[co] then
+					C.Presenting[co] = nil
+					local limit = Timing.GetWorldFrame() + Timing.GetTickRate() * 45.0
+					while C.SexVerdict == nil and Timing.GetWorldFrame() < limit do
+						coroutine.yield()
+					end
+					verdict = C.SexVerdict
+					C.SexVerdict = nil
+					if verdict ~= nil and verdict.born then
+						C.PlayBirth(verdict)
+					end
+				end
+				local results = { shipped(...) }
+				if verdict ~= nil and verdict.born and TutorialManager ~= nil
+					and not TutorialManager.HasDisplayedTutorial(ETutorialType.TUTORIAL_BABY) then
+					TutorialManager.DisplayTutorial(ETutorialType.TUTORIAL_BABY)
+				end
+				return unpack(results)
+			end, "AwaitVerdict.FadeScreenIn")
+		end
+
+		if SexFunction ~= nil and SexFunction.Begin ~= nil and SexFunction.Begin ~= C.SexBegin then
+			local shipped = SexFunction.Begin
+			C.SexBegin = C.Permanent(function(hero, bed, ...)
+				if bed ~= nil and C.JoinerTwo(hero) and Refii._household ~= nil and Refii.uid(bed) ~= nil then
+					local condom = Player ~= nil and Player.IsWearingCondom ~= nil and Player.IsWearingCondom(hero)
+					Refii._household("sex", Refii.uid(bed), condom and 1 or 0)
+					local co = coroutine.running()
+					if co ~= nil then
+						C.SexVerdict = nil
+						C.Presenting[co] = true
+						local results = { shipped(hero, bed, ...) }
+						C.Presenting[co] = nil
+						return unpack(results)
+					end
+				end
+				return shipped(hero, bed, ...)
+			end, "SexFunction.Begin")
+			SexFunction.Begin = C.SexBegin
+		end
+
+		C.HostBedSexThread = C.Permanent(function(hero, bed, condom)
+			return C.RunAs(hero, function()
+				local owner = OwnedEntity.IsAvailable(bed) and OwnedEntity.GetOwner(bed) or nil
+				local trespass, cost = false, 0
+				if owner ~= nil and owner:IsAlive() then
+					local bar = Building.IsBuildingOfType(owner, EBuildingType.BUILDING_BAR)
+					trespass = not PlayerProperties.IsOwnedByPlayer(hero, owner) and not bar
+					if bar then
+						cost = Building.GetCostToSleepHere(owner) or 0
+					end
+				end
+				local whores = 0
+				for _, follower in ipairs(Follow.GetListOfFollowers(hero) or {}) do
+					if Villager.GetOccupation(follower) == EJobType.JOB_WHORE and not PlayerFamily.IsMarriedTo(hero, follower) then
+						whores = whores + 1
+					end
+				end
+				local total = cost + whores * GDB.GetRecord("WhoreMultipliers"):GetS32("Cost")
+				if total > 0 then
+					Money.Modify(hero, -total)
+				end
+				if condom == 1 then
+					Player.SetWearingCondom(hero, true)
+				end
+				-- What the bed's own Sex charges a hero after Begin (onactionusebed main.3 pc 303–362):
+				-- the prostitutes' morality and purity, +10 morality for protection. Morality is the
+				-- host's (a client's change applies only when received), so it is charged here.
+				local multipliers = GDB.GetRecord("WhoreMultipliers")
+				SexFunction.HenchmanHavingSex = false
+				local before = SexFunction.FrameLastHadChild
+				C.BirthSpouse = nil
+				SexFunction.Begin(hero, bed, trespass, owner)
+				if Stats.IsAvailable(hero) then
+					Stats.ModifyMorality(hero, multipliers:GetS32("MoralityModifier") * whores)
+					Stats.ModifyPurity(hero, multipliers:GetFloat("PurityModifier") * whores)
+					if condom == 1 then
+						Stats.ModifyMorality(hero, 10.0)
+					end
+				end
+				-- The verdict for the joiner's own presentation (mod_events.cpp `sexdone`).
+				local born = SexFunction.FrameLastHadChild ~= before
+				local first = born and Refii._children_two ~= nil and Refii._children_two() == 1
+				local partner = born and C.BirthSpouse ~= nil and Refii.uid(C.BirthSpouse) or "0x1"
+				Refii._household("sexdone", partner, (born and 1 or 0) + (first and 2 or 0))
+			end)
+		end, "HostBedSexThread")
+
+		-- Which spouse a birth in the silent thread was with (for the joiner's PREGNANT line).
+		if PlayerFamily ~= nil and PlayerFamily.AdoptWithSpouse ~= nil and not rawget(PlayerFamily, "RefiiBirthSpouse") then
+			local shipped = PlayerFamily.AdoptWithSpouse
+			rawset(PlayerFamily, "RefiiBirthSpouse", shipped)
+			PlayerFamily.AdoptWithSpouse = C.Permanent(function(hero, spouse, ...)
+				local co = coroutine.running()
+				if co ~= nil and C.Silent[co] then
+					C.BirthSpouse = spouse
+				end
+				return shipped(hero, spouse, ...)
+			end, "BirthSpouse.AdoptWithSpouse")
+		end
+
+		function C.HostBedSex(bed, condom)
+			local hero = C.ShippedGetPlayerHenchman and C.ShippedGetPlayerHenchman()
+			if bed == nil or hero == nil or not hero:IsAlive() then
+				return
+			end
+			local co = coroutine.create(C.HostBedSexThread)
+			C.Silent[co] = true
+			C.HostThreads[#C.HostThreads + 1] = { co = co, args = { hero, bed, condom } }
+		end
+
+		-- The host's threads run once a world frame (from the per-hero FrameUpdate, below).
+		function C.HouseholdTick()
+			local frame = GetWorldFrame ~= nil and GetWorldFrame() or 0
+			if C.HouseholdFrame == frame or #C.HostThreads == 0 then
+				return
+			end
+			C.HouseholdFrame = frame
+			for i = #C.HostThreads, 1, -1 do
+				local thread = C.HostThreads[i]
+				if coroutine.status(thread.co) == "dead" then
+					table.remove(C.HostThreads, i)
+				else
+					-- Player two's stats counted while it runs go to the joiner (mod_events.cpp).
+					if Refii._household_context ~= nil then
+						Refii._household_context(true)
+					end
+					local ok, err = coroutine.resume(thread.co, unpack(thread.args))
+					if Refii._household_context ~= nil then
+						Refii._household_context(false)
+					end
+					thread.args = {}
+					if not ok then
+						print("[refii] player two's bed on the host: " .. tostring(err))
+						table.remove(C.HostThreads, i)
+					end
+				end
+			end
+		end
+
 		-- QUEST PROGRESS IS THE WORLD'S. Code acting for player two still records quests on player
 		-- one's tracker (quests belong to the host's world, as in Fable 3): a QuestTracker call
 		-- whose hero argument is the acting partner is made for the stored hero instead.
@@ -1050,6 +1442,13 @@ public static class CoopHeroLua
 			local shipped = CameraManager.FrameUpdate
 			C.CameraState = C.CameraState or {}
 			C.FrameUpdate = C.Permanent(function(self, hero, ...)
+				-- Called for each hero every frame: the chest watch rides it (throttled inside).
+				if C.ChestWatch ~= nil then
+					pcall(C.ChestWatch)
+				end
+				if C.HouseholdTick ~= nil then
+					pcall(C.HouseholdTick)
+				end
 				if hero == nil or not C.OwnCameras() then
 					return shipped(self, hero, ...)
 				end
