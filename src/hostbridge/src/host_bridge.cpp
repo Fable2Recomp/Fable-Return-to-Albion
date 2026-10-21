@@ -2387,7 +2387,12 @@ extern "C" {
 /// 210 adds RefiiHostUiDataGeneration — bumped when anything an open menu lists changes (an ability
 ///     level, experience, an item, gold, a drawn weapon, the pump's own item/ability/shop/repair
 ///     actions); Godot re-reads the open list when it moves.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 210; }
+/// 211 adds RefiiHostGetCoopFigures — both co-op screen figures: player two's henchman and the
+///     player-one mannequin the original spawns for the left page (found by its preview ticket) —
+///     and retires RefiiHostGetCoopMannequin, which it replaces — and RefiiHostGetCoopScreen: each
+///     page's focus and accept, and the save picker's state and card text, for the host-drawn
+///     co-op screen.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 211; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -19167,26 +19172,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClothingMannequin(void) {
     return refii::vfs::ClothingMannequinSnapshot();
 }
 
-/// The co-op screen's mannequin: the LIVE ENTITY `sub_82438818` spawned (`screen+276`,
-/// 0x824388CC) and its preview ticket (`screen+284`, 0x824389B4). Both zero until the guest has
-/// built one. The handler comes off the same screen map the preview export walks. Returns 1 when
-/// the screen is up and an entity is standing.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopMannequin(uint32_t* out_entity, uint32_t* out_ticket) {
-    if (out_entity != nullptr) *out_entity = 0;
-    if (out_ticket != nullptr) *out_ticket = 0;
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) return 0;
-    uint8_t* base = memory->virtual_membase();
-    if (base == nullptr) return 0;
+/// The co-op screen's handler, off the same screen map the preview export walks, or 0 when screen
+/// 24 is not the current screen. `step` is the walk step that refused, for a once-per-cause log.
+static uint32_t CoopScreenHandler(uint8_t* base, int* step, uint32_t* detail) {
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-
-    // Change-keyed: the step that refused, so a silent panel names its cause once.
-    static std::atomic<int> last_step{-1};
-    const auto refuse = [&](int step, uint32_t detail) {
-        if (last_step.exchange(step) != step) {
-            REXLOG_INFO("Refii co-op mannequin: refused at step {} (detail {:08X})", step, detail);
-        }
+    const auto refuse = [&](int at, uint32_t why) {
+        *step = at;
+        *detail = why;
         return 0u;
     };
 
@@ -19201,22 +19194,139 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopMannequin(uint32_t* out_entity, u
     if (!plausible(end_node)) return refuse(4, end_node);
     uint32_t node = read32(end_node + 4u);
     uint32_t handler = 0;
-    for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
+    for (uint32_t walk = 0; walk < 64u && plausible(node) && node != end_node; ++walk) {
         const uint32_t key = refii::guest::ScreenIdToTu1(read32(node + 12u));
         if (key == 24u) { handler = read32(node + 16u); break; }
         node = read32(node + (24u < key ? 0u : 8u));
     }
     if (!plausible(handler)) return refuse(5, handler);
+    *step = 0;
+    *detail = handler;
+    return handler;
+}
 
-    const uint32_t entity = read32(handler + 276u);
-    if (!plausible(entity)) return refuse(6, entity);
-    if (last_step != 0) {
-        last_step = 0;
-        REXLOG_INFO("Refii co-op mannequin: entity {:08X} at handler {:08X}", entity, handler);
+/// Both co-op screen figures, as words: [0] player two's henchman entity (`screen+276`), [1] its
+/// preview ticket (`screen+284`), [2] player one's mannequin entity, [3] its ticket
+/// (`screen+280`). The original spawns player one's figure itself — `sub_82436548` calls
+/// `sub_826D7650(previewManager, sub_8222C1B8(players[0]), "LeftPage.model_proxy.model")`
+/// (0x82436A2C), a `CreatureHeroMannequin*` dressed from the hero by component 192 — and keeps
+/// only the ticket, so the entity is found in the preview manager `*(GUI+8)`: records
+/// `*(pm+56)..*(pm+60)`, stride 24, `+4` entity holder, `+16` ticket. A word is 0 for a figure not
+/// standing. Returns the words written, 0 when the screen is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopFigures(uint32_t* out_words, uint32_t capacity) {
+    constexpr uint32_t kWords = 4u;
+    if (out_words == nullptr || capacity < kWords) return 0;
+    for (uint32_t i = 0; i < kWords; ++i) out_words[i] = 0u;
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    int step = 0;
+    uint32_t detail = 0;
+    const uint32_t handler = CoopScreenHandler(base, &step, &detail);
+    if (handler == 0u) return 0;
+
+    const uint32_t henchman = read32(handler + 276u);
+    if (plausible(henchman)) {
+        out_words[0] = henchman;
+        out_words[1] = read32(handler + 284u);
     }
-    if (out_entity != nullptr) *out_entity = entity;
-    if (out_ticket != nullptr) *out_ticket = read32(handler + 284u);
-    return 1;
+
+    const uint32_t ticket = read32(handler + 280u);
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    const uint32_t previews = plausible(gui) ? read32(gui + 8u) : 0u;
+    if (ticket != 0u && plausible(previews)) {
+        const uint32_t begin = read32(previews + 56u);
+        const uint32_t end = read32(previews + 60u);
+        if (plausible(begin) && end >= begin && end - begin <= 24u * 64u) {
+            for (uint32_t record = begin; record + 24u <= end; record += 24u) {
+                if (read32(record + 16u) != ticket) continue;
+                const uint32_t holder = read32(record + 4u);
+                const uint32_t entity = plausible(holder) ? read32(holder) : 0u;
+                if (plausible(entity)) {
+                    out_words[2] = entity;
+                    out_words[3] = ticket;
+                }
+                break;
+            }
+        }
+    }
+    return kWords;
+}
+
+/// The co-op screen's state, as words, for a host that draws the screen: [0] the left page's
+/// focused row (`+44`), [1] the left page accepted (`+48`), [2] the right page's focused row
+/// (`+156`), [3] the right page accepted (`+160`), [4] the save picker open (`+304`), [5] its
+/// cursor (`+392`), [6] its base card slot (`+396`), [7] the saves listed (`+404..+408`), [8] a
+/// bit per save whose header parsed (`*(+452) + 40i + 24`; A is refused on the others at
+/// 0x82438DB4), [9] closing (`+268`). Verified against `sub_82434DD8` (the two row maps and
+/// their focus/accept words), `sub_8243B070` (base slot by count, the header walk) and
+/// `sub_82439738` (the cursor and its `min(count, 6)` bound).
+///
+/// The picker's card text is written to `text` as NUL-separated UTF-8 in save order — the
+/// finished strings `sub_8243B678` builds into `+436` (display name, level, context line, or the
+/// corrupt-save warning), the same LHStrings `sub_8243B618` puts on `loadgame.SaveGameDescription`.
+/// Returns the words written, 0 when screen 24 is not up.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopScreen(uint32_t* out_words, uint32_t capacity, char* text,
+                                                      uint32_t text_capacity) {
+    constexpr uint32_t kWords = 10u;
+    if (text != nullptr && text_capacity > 0u) text[0] = '\0';
+    if (out_words == nullptr || capacity < kWords) return 0;
+    for (uint32_t i = 0; i < kWords; ++i) out_words[i] = 0u;
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    int step = 0;
+    uint32_t detail = 0;
+    const uint32_t handler = CoopScreenHandler(base, &step, &detail);
+    if (handler == 0u) return 0;
+
+    out_words[0] = read32(handler + 44u);
+    out_words[1] = GuestByteAt(base, handler + 48u);
+    out_words[2] = read32(handler + 156u);
+    out_words[3] = GuestByteAt(base, handler + 160u);
+    out_words[4] = GuestByteAt(base, handler + 304u);
+    out_words[5] = read32(handler + 392u);
+    out_words[6] = read32(handler + 396u);
+    out_words[9] = GuestByteAt(base, handler + 268u);
+
+    const uint32_t files_begin = read32(handler + 404u);
+    const uint32_t files_end = read32(handler + 408u);
+    const uint32_t count = plausible(files_begin) && files_end >= files_begin &&
+                                   files_end - files_begin < 0x1000u
+                               ? (files_end - files_begin) / 4u
+                               : 0u;
+    out_words[7] = count;
+
+    const uint32_t headers = read32(handler + 452u);
+    if (plausible(headers)) {
+        for (uint32_t i = 0; i < count && i < 32u; ++i) {
+            if (GuestByteAt(base, headers + (40u * i) + 24u) != 0u) out_words[8] |= 1u << i;
+        }
+    }
+
+    if (text != nullptr && text_capacity > 0u) {
+        const uint32_t text_begin = read32(handler + 436u);
+        const uint32_t text_end = read32(handler + 440u);
+        const uint32_t described = plausible(text_begin) && text_end >= text_begin &&
+                                           text_end - text_begin < 0x1000u
+                                       ? (text_end - text_begin) / 4u
+                                       : 0u;
+        uint32_t written = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            written += write_guest_wide_string(
+                base, i < described ? text_begin + (i * 4u) : 0u, text + written,
+                text_capacity > written ? text_capacity - written : 0u);
+        }
+    }
+    return kWords;
 }
 
 /// The 3D PREVIEW OBJECT the current in-game screen shows — the spinning weapon or item.

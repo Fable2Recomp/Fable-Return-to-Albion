@@ -3941,7 +3941,7 @@ void WearHashes(PPCContext& ctx, uint8_t* base, uint32_t inventory, uint32_t mod
 /// The co-op screen's preview entity and the screen handler that owns it: `gui+56` is the
 /// current screen (its id at +4 must be 24), `gui+28` the owner whose map at +72 keys handlers
 /// by screen id; the handler holds the entity at +276 (0x824388CC). The same walk the bridge's
-/// mannequin export makes.
+/// co-op screen exports make (`CoopScreenHandler`).
 std::pair<uint32_t, uint32_t> CoopMannequin(uint8_t* base) {
   const uint32_t gui = LoadGuestU32(base, refii::guest::Address(0x83496B08u));
   if (!LooksLikeGuestPointer(gui) || LoadGuestU32(base, gui) != refii::guest::Address(0x82001610u)) return {0u, 0u};

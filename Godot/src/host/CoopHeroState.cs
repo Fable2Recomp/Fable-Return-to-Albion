@@ -8,7 +8,7 @@ namespace Refii.Host;
 
 /// <summary>
 /// The HeroState protocol: one versioned record of a player's hero, serialized to bytes, carried
-/// over the co-op channel as fragments, acknowledged once the receiving pump has APPLIED it.
+/// over the co-op channel as fragments, acknowledged once the receiver holds it whole.
 /// </summary>
 /// <remarks>
 /// The record (`HST1`, little-endian) is the whole <see cref="CoopHeroKit.Kit"/>: identity, looks,
@@ -19,8 +19,8 @@ namespace Refii.Host;
 /// <list type="bullet">
 /// <item><c>hs.frag=&lt;version&gt;/&lt;index&gt;/&lt;total&gt;:&lt;base64 slice&gt;</c> — the base64 of
 /// the record, cut into <see cref="SliceChars"/>-character slices.</item>
-/// <item><c>hs.ack=&lt;version&gt;</c> — the receiver's acknowledgement, sent only once its pump reports
-/// that version applied.</item>
+/// <item><c>hs.ack=&lt;version&gt;</c> — the receiver's acknowledgement, sent once that version is
+/// complete and decoded; the record is applied whenever its body stands.</item>
 /// </list>
 /// Versions are monotonic for the life of the process and bump whenever the serialized record
 /// changes. The sender resends the latest unacked version every <see cref="ResendSeconds"/> and
@@ -280,6 +280,12 @@ public static class CoopHeroState
 	/// <summary>The newest version the peer has acknowledged.</summary>
 	public static uint AckedVersion { get; private set; }
 
+	/// <summary>Whether the peer holds the local record as it stands: sent and acknowledged.</summary>
+	public static bool Delivered => Version != 0u && AckedVersion >= Version;
+
+	/// <summary>Fragments in the version being sent; 0 before the first send.</summary>
+	public static int SendingFragments => _fragments.Length;
+
 	/// <summary>The base64 of the local record at <see cref="Version"/>, as the pump takes it. Null before the first send.</summary>
 	public static string? LocalBase64 { get; private set; }
 
@@ -292,6 +298,9 @@ public static class CoopHeroState
 
 	/// <summary>Whether the last send was refused by the bridge, reported on each change of outcome.</summary>
 	private static bool? _refusedReported;
+
+	/// <summary>The last send was refused in part or whole.</summary>
+	private static bool _refused;
 
 	/// <summary>
 	/// One tick of the sender, <paramref name="delta"/> seconds after the last. A kit whose record
@@ -324,15 +333,18 @@ public static class CoopHeroState
 		}
 
 		_sinceSend += delta;
-		if (_sinceSend < ResendSeconds)
+		if (_sinceSend < ResendSeconds && !_refused)
 		{
 			return;
 		}
 
 		_sinceSend = 0.0;
 		int resent = SendFragments();
-		Godot.GD.Print($"[hero-state] v{Version} resent: {resent}/{_fragments.Length} fragments " +
-			$"(peer acked v{AckedVersion})");
+		if (resent != 0)
+		{
+			Godot.GD.Print($"[hero-state] v{Version} resent: {resent}/{_fragments.Length} fragments " +
+				$"(peer acked v{AckedVersion})");
+		}
 	}
 
 	/// <summary>Sends every fragment of the current version; returns how many the bridge took.</summary>
@@ -348,6 +360,10 @@ public static class CoopHeroState
 		}
 
 		bool refused = sent != _fragments.Length;
+
+		// A send the bridge refused (no peer yet) is retried on the very next tick, not a whole
+		// resend interval later: the record should cross the moment the peer is there.
+		_refused = refused;
 		if (_refusedReported != refused)
 		{
 			_refusedReported = refused;
@@ -417,6 +433,12 @@ public static class CoopHeroState
 	private static string?[] _rxParts = Array.Empty<string?>();
 
 	private static int _rxHave;
+
+	/// <summary>
+	/// The peer's record part-way across: fragments held and expected, or (0, 0) when nothing is
+	/// arriving. A version completes and decodes the moment the last one lands.
+	/// </summary>
+	public static (int Have, int Total) Receiving => (_rxHave, _rxParts.Length);
 
 	/// <summary>
 	/// Takes one <c>hs.frag=</c>. Returns true the moment a NEW version is complete and decoded —
@@ -547,6 +569,7 @@ public static class CoopHeroState
 		_fragments = Array.Empty<string>();
 		_sinceSend = 0.0;
 		_refusedReported = null;
+		_refused = false;
 		LocalBase64 = null;
 		ReceivedVersion = 0u;
 		ReceivedBase64 = null;

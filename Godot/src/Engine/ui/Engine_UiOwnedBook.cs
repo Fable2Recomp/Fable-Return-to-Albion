@@ -158,6 +158,32 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// <summary>The guest's slide sample last fed, for the page-stack probe.</summary>
 	private IReadOnlyList<int>? _lastSlides;
 
+	/// <summary>The guest's last stated transforms, before any host placement is written over them.</summary>
+	private IReadOnlyList<float?[]?>? _lastStated;
+
+	/// <summary>The guest's last stated texture hashes, by ordinal.</summary>
+	private uint[]? _lastTextures;
+
+	/// <summary>
+	/// The texture the guest has stamped on one element, resolved, or null when it stated none —
+	/// the co-op picker's card portraits (`sub_8243B520` writes each card's screenshot hash).
+	/// </summary>
+	public Texture2D? StatedTexture(string path) =>
+		OrdinalForPath(path) is int ordinal && _lastTextures is { } hashes && ordinal >= 0 &&
+		ordinal < hashes.Length && hashes[ordinal] != 0u
+			? ResolveTexture?.Invoke(hashes[ordinal])
+			: null;
+
+	/// <summary>
+	/// The guest's stated `scale.x` for one element, or null when it stated none. The co-op
+	/// figures are sized by this one value (`sub_82438438` writes it; `sub_826D6C90` reads only it).
+	/// </summary>
+	public float? StatedScaleX(string path) =>
+		OrdinalForPath(path) is int ordinal && _lastStated is { } stated && ordinal >= 0 &&
+		ordinal < stated.Count && stated[ordinal] is { Length: > 3 } entry
+			? entry[3]
+			: null;
+
 	/// <summary>The screen template naming this book's parts (<see cref="Engine_UiTemplates"/>, screen 0 by default).</summary>
 	public Engine_UiScreenTemplate? Template { get; set; }
 
@@ -401,6 +427,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			RegisterLive();
 		}
 		_lastSlides = slides;
+		_lastStated = transform;
+		_lastTextures = textures;
 		_resolve.Apply(Slid(slides), Activated(active), Opaqued(opacity), SwitchedOn());
 
 		// Draw gate, accumulated opacity and stated art for every node, in one pass.

@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 210;
+	public const int ExpectedAbiVersion = 211;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -3495,21 +3495,72 @@ public static class HostBridge
 		}
 	}
 
+	/// <summary>The co-op screen's own state — see <see cref="CoopScreen"/>.</summary>
+	/// <param name="LeftFocus">Player one's focused row (`+44`).</param>
+	/// <param name="LeftAccepted">Player one has accepted (`+48`).</param>
+	/// <param name="RightFocus">Player two's focused pickbox, 0..2 (`+156`).</param>
+	/// <param name="RightAccepted">Player two has accepted (`+160`).</param>
+	/// <param name="PickerOpen">Player two's save picker is up (`+304`).</param>
+	/// <param name="PickerCursor">The picked save, 0-based (`+392`).</param>
+	/// <param name="PickerBaseSlot">The card the first save sits on, 1..3 (`+396`).</param>
+	/// <param name="Saves">The picker's cards, in save order: the guest's finished text and whether
+	/// the save's header parsed (A is refused on one that did not).</param>
+	/// <param name="Closing">The screen is closing (`+268`); it takes no input.</param>
+	public readonly record struct CoopScreenState(
+		int LeftFocus, bool LeftAccepted, int RightFocus, bool RightAccepted, bool PickerOpen,
+		int PickerCursor, int PickerBaseSlot, IReadOnlyList<(string Text, bool Valid)> Saves, bool Closing);
+
 	/// <summary>
-	/// The co-op screen's mannequin — the live entity the guest spawned for the pickbox preview and
-	/// its preview ticket — or null when screen 24 is not up or nothing is standing yet. There is
-	/// no model hash: the entity is drawn from its own components like any spawned creature.
+	/// The co-op screen's state, or null when screen 24 is not up. <paramref name="withText"/>
+	/// reads the picker's card text too, which only matters when the picker opens.
 	/// </summary>
-	public static (uint Entity, uint Ticket)? CoopMannequin()
+	public static CoopScreenState? CoopScreen(bool withText)
 	{
 		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return null;
 		}
 
-		return RefiiHostGetCoopMannequin(out uint entity, out uint ticket) != 0 && entity != 0
-			? (entity, ticket)
-			: null;
+		uint[] words = new uint[10];
+		byte[]? text = withText ? new byte[8192] : null;
+		if (RefiiHostGetCoopScreen(words, (uint)words.Length, text, (uint)(text?.Length ?? 0)) < 10u)
+		{
+			return null;
+		}
+
+		var saves = new List<(string Text, bool Valid)>();
+		int at = 0;
+		for (int i = 0; i < (int)words[7]; ++i)
+		{
+			string line = string.Empty;
+			if (text is not null && at < text.Length && Array.IndexOf(text, (byte)0, at) is var end and >= 0)
+			{
+				line = Encoding.UTF8.GetString(text, at, end - at);
+				at = end + 1;
+			}
+
+			saves.Add((line, i < 32 && (words[8] & (1u << i)) != 0u));
+		}
+
+		return new CoopScreenState(
+			(int)words[0], words[1] != 0u, (int)words[2], words[3] != 0u, words[4] != 0u,
+			(int)words[5], (int)words[6], saves, words[9] != 0u);
+	}
+
+	/// <summary>
+	/// Both co-op screen figures: player two's henchman (`screen+276`) and the player-one mannequin
+	/// the original spawns for the left page (`screen+280`'s preview ticket). An entity is 0 for a
+	/// figure not standing; null when screen 24 is not up.
+	/// </summary>
+	public static (uint Henchman, uint PlayerOne)? CoopFigures()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		uint[] words = new uint[4];
+		return RefiiHostGetCoopFigures(words, (uint)words.Length) >= 4u ? (words[0], words[2]) : null;
 	}
 
 	/// <summary>
@@ -8943,7 +8994,10 @@ public static class HostBridge
 	private static extern uint RefiiHostGetCoopHeldUids(uint player, out ulong melee, out ulong ranged);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopMannequin(out uint entity, out uint ticket);
+	private static extern uint RefiiHostGetCoopFigures([Out] uint[] outWords, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopScreen([Out] uint[] outWords, uint capacity, [Out] byte[]? text, uint textCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetClothingMannequin();

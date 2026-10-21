@@ -395,8 +395,10 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	/// Puts a list of saves on the fan and selects the first. More than six is truncated rather
 	/// than refused, and <see cref="Describe"/> says so — the guest's write path returns 0 once
 	/// six exist, so a longer list means the caller's storage query disagrees with its cap.
+	/// <paramref name="baseSlot"/> is the guest's own first card where it states one: the co-op
+	/// picker centres even a single save (`sub_8243B070`: one or two saves start at card 3).
 	/// </summary>
-	public void SetSaves(IReadOnlyList<Save> saves)
+	public void SetSaves(IReadOnlyList<Save> saves, int? baseSlot = null)
 	{
 		_saves.Clear();
 		for (int i = 0; i < saves.Count && i < MaxCards; i++)
@@ -404,7 +406,7 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			_saves.Add(saves[i]);
 		}
 
-		BaseSlot = BaseSlotFor(_saves.Count);
+		BaseSlot = baseSlot is >= 1 and <= MaxCards ? baseSlot.Value : BaseSlotFor(_saves.Count);
 		Cursor = 0;
 		_lockLeft = _lockRight = 0.0;
 		ApplyPortraits();

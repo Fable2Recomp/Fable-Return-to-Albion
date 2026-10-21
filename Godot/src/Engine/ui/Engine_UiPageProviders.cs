@@ -54,6 +54,25 @@ public static class Engine_UiPageProviders
 	/// </summary>
 	public static bool CoopHeroAvailable { get; set; }
 
+	/// <summary>
+	/// Each page's hero status while that player's hero record crosses the wire ("Receiving
+	/// hero… 3/7", "Hero ready"), or empty — set by the shell, shown under the player's name.
+	/// </summary>
+	public static string CoopPlayerOneStatus { get; set; } = string.Empty;
+
+	/// <inheritdoc cref="CoopPlayerOneStatus"/>
+	public static string CoopPlayerTwoStatus { get; set; } = string.Empty;
+
+	/// <summary>Player two has accepted on the co-op screen (`+160`) — their prompts stand dimmed.</summary>
+	public static bool CoopPlayerTwoAccepted { get; set; }
+
+	/// <summary>
+	/// This machine is the online host, so player two's page is a remote player's: the guest
+	/// writes no save prompt there (it lights `LoadGroup` only for local and joiner pads), and the
+	/// remaster draws the same page on both machines.
+	/// </summary>
+	public static bool CoopRemotePlayerTwo { get; set; }
+
 	/// <summary>The two players' display names, as the shell knows them — left page is player one.</summary>
 	public static string CoopPlayerOneName { get; set; } = string.Empty;
 	public static string CoopPlayerTwoName { get; set; } = string.Empty;
@@ -130,34 +149,15 @@ public static class Engine_UiPageProviders
 			// No slider values: the share sliders are hidden (see `Sliders`).
 			var values = new Dictionary<string, string>(System.StringComparer.Ordinal);
 
-			// OUR OWN NAME, ON OUR OWN SIDE OF THE SPREAD. The left page is player one and the
-			// right is player two, so which one carries this player's name is the co-op role.
-			//
-			// Writing it is also what LIGHTS it: `HostValues` lights its fields, and the whole
-			// gamertag block is authored at 100 and slid to 0 by the guest. The name the guest had
-			// resolved there was a leftover profile, not this player.
-			// A NAME EVEN WHEN RexNet HAS NOT BEEN GIVEN ONE. Requiring a non-empty DisplayName
-			// wrote nothing at all — a live read showed both pages still at `op=0.00` and still
-			// showing the guest's leftover `JamieEngland`, while the sliders beside them took their
-			// values fine, so the provider was running and only this line was skipped. The friends
-			// list already has the convention for an unnamed peer, so use it for ourselves.
-			if (Refii.Host.NetBridge.Self() is { } me)
-			{
-				string name =
-					me.DisplayName.Length != 0 ? me.DisplayName
-					: me.FriendCode.Length != 0 ? me.FriendCode
-					: me.PeerId.Length <= 8 ? me.PeerId
-					: "…" + me.PeerId[^8..];
-
-				string side = Refii.Host.CoopSession.IsClient
-					? "Foreground.RightPage"
-					: "Foreground.LeftPage";
-
-			// BOTH NAMES, from what the shell knows: player one on the left page, player two on
-			// the right, on both instances. The guest's own text here is its stub profile name.
-			values["Foreground.LeftPage.ProfileSelector.gamertag.gamertag"] = CoopPlayerOneName;
-			values["Foreground.RightPage.ProfileSelector.gamertag.gamertag"] = CoopPlayerTwoName;
-			}
+			// BOTH NAMES, ALWAYS, on both machines: player one on the left page, player two on the
+			// right, as the shell knows them, or "Player 1" / "Player 2" until it does — a partner's
+			// name arrives with the session, and a couch partner may have none. Writing them is also
+			// what lights them: the gamertag block is authored at 100 and slid to 0 by the guest,
+			// whose own text there is its stub profile name.
+			values["Foreground.LeftPage.ProfileSelector.gamertag.gamertag"] =
+				CoopPlayerOneName.Length != 0 ? CoopPlayerOneName : "Player 1";
+			values["Foreground.RightPage.ProfileSelector.gamertag.gamertag"] =
+				CoopPlayerTwoName.Length != 0 ? CoopPlayerTwoName : "Player 2";
 
 			// X ON THE RIGHT PAGE IS THE HERO-FROM-SAVE PROMPT.
 			//
@@ -172,6 +172,17 @@ public static class Engine_UiPageProviders
 			// toggle on these screens reads.
 			values["Foreground.RightPage.ProfileSelector.Buttons.Title2"] =
 				CoopOwnHero ? "Use Henchman" : "Load Hero";
+
+			// EACH PLAYER'S HERO, ON ITS WAY. The shipped Reputation line under the name carries
+			// the hero record's progress across the wire, on both pages and both machines.
+			values["Foreground.LeftPage.ProfileSelector.gamertag.reputation"] = CoopPlayerOneStatus;
+			values["Foreground.RightPage.ProfileSelector.gamertag.reputation"] = CoopPlayerTwoStatus;
+
+			// Player two's save prompt on the host's copy of their page, where the guest writes none.
+			if (CoopRemotePlayerTwo)
+			{
+				values["Foreground.RightPage.buttons.LoadGroup.LoadText"] = "Select Save";
+			}
 
 			return values;
 		}
@@ -214,17 +225,25 @@ public static class Engine_UiPageProviders
 				["Foreground.RightPage.ProfileSelector.Buttons"] = 1f,
 				["Foreground.RightPage.ProfileSelector.Buttons.*"] = 1f,
 				["Foreground.LeftPage.ProfileSelector"] = 1f,
+				["Foreground.LeftPage.ProfileSelector.gamertag.reputation"] = 1f,
+				["Foreground.RightPage.ProfileSelector.gamertag.reputation"] = 1f,
 				[Sliders + ".*"] = 0f,
+
+				// THE SAVE PROMPT ON BOTH MACHINES, at the guest's own strength: full, or half once
+				// player two has accepted (`sub_82439988`, 0x82439A68).
+				["Foreground.RightPage.buttons.LoadGroup"] = CoopPlayerTwoAccepted ? 0.5f : 1f,
+				["Foreground.RightPage.buttons.LoadGroup.*"] = 1f,
 			};
 
 		/// <summary>
-		/// Two authored placements this screen cannot use as authored.
+		/// Authored placements this screen cannot use as authored.
 		///
 		/// The X prompt (`Title2` + `icon_button_x`) is authored ~42 canvas units BELOW the
 		/// "Change Save" row — exactly where the `menu` unit draws "Accept A", later, on top. A
 		/// live read had the pair lit and drawn and the screen showed nothing there. It goes above
-		/// the Y row instead. The two `model_proxy` anchors are authored at y ≈ −468, below the
-		/// bottom of the page; the guest's preview layer has its own camera, this panel does not.
+		/// the Y row instead. The two `model_proxy` anchors stay where the file puts them, below
+		/// the page: that is where the original stands its 3.5× figures' feet
+		/// (Engine_UiFigureStage).
 		/// </summary>
 		public IReadOnlyDictionary<string, Vector3> Positions(in Engine_UiPageContext page) =>
 			new Dictionary<string, Vector3>(System.StringComparer.Ordinal)
@@ -242,9 +261,6 @@ public static class Engine_UiPageProviders
 				["Foreground.RightPage.ProfileSelector.Buttons.icon_button_x"] = new(306f, -688f, float.NaN),
 				["Foreground.RightPage.buttons.CancelGroup"] = new(float.NaN, -36.5f, float.NaN),
 				["Foreground.RightPage.buttons.AcceptGroup"] = new(float.NaN, -36.5f, float.NaN),
-				// The mannequin's centre sits between the name line and the pickbox rows.
-				["Foreground.RightPage.model_proxy"] = new(239f, 110f, float.NaN),
-				["Foreground.LeftPage.model_proxy"] = new(-236f, 110f, float.NaN),
 
 				// The right frame reaches the 16:9 edge: coopscreen.bgf's frames end at +630 / −672
 				// canvas (the console's overscan hid the shortfall), so its group (parent scale
@@ -272,16 +288,38 @@ public static class Engine_UiPageProviders
 			}
 
 			active[Sliders] = false;
+
+			// OFF: the "Player 1 ▲  Player 2 ▲" labels under the left page. Every page carries its
+			// player's name at the top, so the arrows pointing the pages out say nothing more.
+			active["Foreground.LeftPage.PlayerArrowLabels"] = false;
 			active["Foreground.LeftPage.ProfileSelector.Buttons.Title2"] = false;
 			active["Foreground.LeftPage.ProfileSelector.Buttons.icon_button_x2"] = false;
 
-			// ON: player two's X prompt. Its opacity was stated and landed, and it still did not
-			// draw while the gamertag block beside it did — the draw gate is `own && (slid ||
-			// forced)`, and this pair sits on a slide the guest keeps off until a profile is
-			// wanted. A host switch is the `forced` half of that gate.
+			// OFF: "Use Player 1's Heroes" — the original's Y for a couch partner with no profile of
+			// their own, borrowing player one's saves. Every player picks their own save here
+			// (Select Save), and plays their own hero or a henchman.
+			active["Foreground.RightPage.ProfileSelector.Buttons.Title"] = false;
+			active["Foreground.RightPage.ProfileSelector.Buttons.icon_button_y"] = false;
+
+			// Player two's X prompt, only once their hero is on both machines — until then the
+			// status line under their name says how far it has got. The draw gate is `own && (slid
+			// || forced)` and this pair sits on a slide the guest keeps off; a host switch is the
+			// `forced` half, both ways.
 			active["Foreground.RightPage.ProfileSelector.Buttons"] = true;
-			active["Foreground.RightPage.ProfileSelector.Buttons.Title2"] = true;
-			active["Foreground.RightPage.ProfileSelector.Buttons.icon_button_x"] = true;
+			active["Foreground.RightPage.ProfileSelector.Buttons.Title2"] = CoopHeroAvailable;
+			active["Foreground.RightPage.ProfileSelector.Buttons.icon_button_x"] = CoopHeroAvailable;
+
+			// The status lines, while there is something to say.
+			active["Foreground.LeftPage.ProfileSelector.gamertag.reputation"] = CoopPlayerOneStatus.Length != 0;
+			active["Foreground.RightPage.ProfileSelector.gamertag.reputation"] = CoopPlayerTwoStatus.Length != 0;
+
+			// Player two's save prompt on every machine; the henchman rows only for a henchman.
+			active["Foreground.RightPage.buttons.LoadGroup"] = true;
+			active["Foreground.RightPage.Pickbox"] = !CoopOwnHero;
+
+			// The save picker's cards are drawn by the shared Load Game fan
+			// (Engine_FrontEndSaveCards), as on the main menu; the guest's own copy stays dark.
+			active["loadgame"] = false;
 			return active;
 		}
 

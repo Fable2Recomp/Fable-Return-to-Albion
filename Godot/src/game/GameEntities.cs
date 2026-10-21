@@ -2179,7 +2179,31 @@ public partial class GameEntities : Node3D
     /// part reads, relights and full passes are spread across the period.
     /// </summary>
     private bool Due(uint address, int period) =>
+        _watched.Contains(address) ||
         (uint)(_ticks + (int)((address * 2654435761u) >> 20)) % (uint)period == 0u;
+
+    /// <summary>Entities re-read on every walk, whatever their cadence — see <see cref="Watch"/>.</summary>
+    private readonly HashSet<uint> _watched = new();
+
+    /// <summary>
+    /// Re-reads these entities — their part lists, garments and dyes — on every walk instead of
+    /// on the reconcile cadence, for a consumer that shows them close up and changes them on a
+    /// press: the co-op screen's two figures, redressed the moment a player picks their own hero
+    /// or a henchman. An empty set returns every entity to its cadence.
+    /// </summary>
+    public void Watch(uint first, uint second)
+    {
+        _watched.Clear();
+        if (first != 0u)
+        {
+            _watched.Add(first);
+        }
+
+        if (second != 0u)
+        {
+            _watched.Add(second);
+        }
+    }
 
     /// <summary>Scratch for the reconcile, reused so a twice-a-second pass allocates nothing.</summary>
     private readonly HashSet<uint> _liveRecords = new();

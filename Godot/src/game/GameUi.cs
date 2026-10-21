@@ -297,7 +297,6 @@ public partial class GameUi : Node
 	}
 
 	/// <summary>The key over the last co-op mannequin line; null before the first one.</summary>
-	private long? _coopMannequinReport;
 
 	/// <summary>Joiner only: whether the live hero has become the kit's source.</summary>
 	private bool _coopLiveSampling;
@@ -5585,52 +5584,6 @@ public partial class GameUi : Node
 			}
 		}
 
-		// THE CO-OP MANNEQUIN IS A LIVE ENTITY, NOT A NAMED MODEL. Screen 24 has no 128-byte
-		// preview struct for the bridge to read — `sub_82438818` spawns a real
-		// `CoopScreenTempHenchmanToDisplay` creature at `screen+276` and registers a ticket. So
-		// it is synthesised here with no hash, and shown below from the entity feed's composed
-		// body. Gated on the pause state's screen id, which is what the X binding on this same
-		// screen already proves is answered in the front end.
-		// Not under the save cards, which cover this page.
-		if (spinning is null && OwnedScreenId() == CoopScreenId && _saveCardView is not { Visible: true })
-		{
-			(uint Entity, uint Ticket)? mannequin = HostBridge.CoopMannequin();
-			if (mannequin is { } found)
-			{
-				// THE GUEST'S OWN SCALE for this preview: `sub_82438438` (0x824387E0) sizes the
-				// henchman by `(2.1 / body) * 350` canvas units, body 2.1 for an adult. A scale of
-				// 0 fell back to one canvas unit per metre and drew the body as a speck.
-				// ~230 canvas units tall, the original's proportion on this page (the 360's
-				// henchman spans a third of the screen height), and turned a quarter to face the
-				// viewer — the composed body's forward is +X, and it drew side-on.
-				// The posed body faces the viewer at +π/2 (the rest pose needed −π/2).
-				spinning = new HostBridge.UiPreviewObject(
-					CoopScreenId, 0u, found.Entity, Vector3.Zero,
-					new Vector3(0f, Mathf.Pi / 2f, 0f), 121f, 0);
-			}
-
-			// SAID ONCE PER OUTCOME. The bridge answers nothing both when the screen has not
-			// spawned its henchman yet and when its walk to the handler failed; the entity feed
-			// may also not hold the body. Each is a different fix, and all three were one silence.
-			// Key first, string only on a change: an entity, a ticket and one bit, every frame
-			// of the co-op screen.
-			bool inFeed = mannequin is { } m &&
-				GetParent()?.GetNodeOrNull<GameWorld>("GameWorld")?.Entities?.NodeFor(m.Entity)
-					is not null;
-			long report = mannequin is { } keyed
-				? (((long)keyed.Entity << 32) ^ ((long)keyed.Ticket << 1)) | (inFeed ? 1L : 0L)
-				: -1L;
-			if (report != _coopMannequinReport)
-			{
-				_coopMannequinReport = report;
-				GD.Print(mannequin is { } said
-					? $"[game-ui] co-op mannequin: entity 0x{said.Entity:X8} " +
-						$"ticket {said.Ticket}, body " +
-						(inFeed ? "in the entity feed" : "NOT in the entity feed")
-					: "[game-ui] co-op mannequin: bridge reports NO mannequin");
-			}
-		}
-
 		if (spinning is not { } preview)
 		{
 			if (_previewObject is not null)
@@ -5773,8 +5726,7 @@ public partial class GameUi : Node
 			: preview.Translation;
 
 		uint was = _previewObject.ModelHash;
-		bool live = preview.ScreenId == CoopScreenId ||
-			(preview.ScreenId == EquipmentScreenId && preview.ModelHash == 0u && preview.Entity != 0u);
+		bool live = preview.ScreenId == EquipmentScreenId && preview.ModelHash == 0u && preview.Entity != 0u;
 		// Hung by its origin wherever the guest's own placement stands (`sub_828C3C78` reads no
 		// bounds); centred where the placement is ours — the live body, and screen 16's
 		// item-alone view, whose stated offset was dropped above.
@@ -5794,9 +5746,7 @@ public partial class GameUi : Node
 			Skeleton3D? rig = feedNode is not null && !feedNode.Skeleton.IsEmpty
 				? feedNode.GetNodeOrNull<Skeleton3D>(feedNode.Skeleton)
 				: null;
-			shown = _previewObject.ShowLive(
-				body, preview.Entity, placement, rig, inPage: preview.ScreenId == CoopScreenId,
-				skin: feedNode?.Skin);
+			shown = _previewObject.ShowLive(body, preview.Entity, placement, rig, feedNode?.Skin);
 			_previewLiveShown = shown ? preview.Entity : 0u;
 		}
 		else
@@ -5938,67 +5888,6 @@ public partial class GameUi : Node
 
 	private Engine_UiPreviewObject? _previewObject;
 
-	/// <summary>The co-op screen's LEFT page body: player one's hero, off the entity feed.</summary>
-	private Engine_UiPreviewObject? _previewObjectLeft;
-
-	private uint _previewLeftShown;
-
-	/// <summary>
-	/// The host's hero on the co-op screen's left page, as the original draws both players. The
-	/// guest spawns a preview entity only for the RIGHT page (the henchman pickbox); the left
-	/// page shows the live player-one body the entity feed already holds — on the host its own
-	/// hero, on a joined client the host's replicated copy. Off the co-op screen it hides.
-	/// </summary>
-	private void DriveCoopLeftMannequin()
-	{
-		bool up = OwnedScreenId() == CoopScreenId && _saveCardView is not { Visible: true };
-		Node3D? anchor = null;
-		if (up && _books.Book(CoopScreenId) is { } book && IsInstanceValid(book) && book.Visible)
-		{
-			anchor = FindAnchor(book, "LeftPage.model_proxy.model");
-		}
-
-		if (anchor is null)
-		{
-			if (_previewObjectLeft is not null)
-			{
-				_previewObjectLeft.Visible = false;
-			}
-
-			return;
-		}
-
-		(uint one, _) = HostBridge.CoopPlayerEntities();
-		MeshInstance3D? feedNode = one == 0u
-			? null
-			: GetParent()?.GetNodeOrNull<GameWorld>("GameWorld")?.Entities?.NodeFor(one);
-		Mesh? body = feedNode?.Mesh;
-		Skeleton3D? rig = feedNode is not null && !feedNode.Skeleton.IsEmpty
-			? feedNode.GetNodeOrNull<Skeleton3D>(feedNode.Skeleton)
-			: null;
-
-		_previewObjectLeft ??= new Engine_UiPreviewObject { Name = "PreviewObjectLeft" };
-		if (_previewObjectLeft.GetParent() != anchor)
-		{
-			_previewObjectLeft.GetParent()?.RemoveChild(_previewObjectLeft);
-			anchor.AddChild(_previewObjectLeft);
-		}
-
-		_previewObjectLeft.PanelSize = PanelExtent(anchor);
-		// No quarter turn here: the hero's live body drew side-on WITH the turn the henchman
-		// preview needs, so its rest forward already faces the viewer.
-		var placement = new Engine_UiPreviewObject.Placement(
-			Vector3.Zero, Vector3.Zero, 121f, 0);
-		bool shown = _previewObjectLeft.ShowLive(body, one, placement, rig);
-		uint state = shown ? one : 0u;
-		if (state != _previewLeftShown)
-		{
-			_previewLeftShown = state;
-			GD.Print($"[game-ui] co-op left page: player one 0x{one:X8} — " +
-				(shown ? _previewObjectLeft.LastReport : "no body in the entity feed (panel left empty)"));
-		}
-	}
-
 	/// <summary>The screen and model whose anchor was last reported missing, to print once.</summary>
 	private long? _previewAnchorMissing;
 
@@ -6124,18 +6013,20 @@ public partial class GameUi : Node
 		book.HostOpacity = Engine_UiDetailPages.Opacities(upId, row);
 		book.HostPositions = Engine_UiDetailPages.Positions(upId, default, row);
 
-		// X ON THE CO-OP SCREEN PUTS PLAYER TWO IN THEIR OWN HERO'S BODY.
-		//
-		// `MenuEquipPressed` is the pad's X. The prompt is the authored `icon_button_x` beside
-		// `Title2` on the right page, which the provider labels; this is the half that acts.
+		// X ON THE CO-OP SCREEN PUTS PLAYER TWO IN THEIR OWN HERO'S BODY — player two's X, as the
+		// prompt stands on their page: the joiner's own pad online, player two's pad on the couch.
+		// `MenuEquipPressed` is pad 0's X.
 		//
 		// The body's gender is the kit's where one describes player two, else the appearance
 		// pickbox's (`CoopHeroBody:auto`). `sub_82389FB8` is the guest's own
 		// `Player::ChangeEntityType`, proven live — the body swaps and the session survives.
 		// The outfit, weapons, inventory and stats follow from the kit on the channel drive.
-		if (upId == CoopScreenId && GameInput.MenuEquipPressed)
+		bool playerTwoX = CoopSession.LocalCoop
+			? GameInput.XTwoPressed
+			: CoopDrivesRightPage && GameInput.MenuEquipPressed;
+		if (upId == CoopScreenId && playerTwoX)
 		{
-			PressCoopHeroToggle();
+			RequestCoopHeroBody(!Engine_UiPageProviders.CoopOwnHero);
 		}
 	}
 
@@ -6151,27 +6042,7 @@ public partial class GameUi : Node
 			: _showing == "coopscreen" ? CoopScreenId : 0u;
 
 	/// <summary>
-	/// X was pressed. THE JOINER OWNS THE BIT — it is their hero — so the host does not flip it
-	/// locally; it states the body it wants player two in and adopts whatever the joiner states
-	/// back. Two instances that each flipped their own copy would take one press to disagree
-	/// about what player two IS.
-	/// </summary>
-	private void PressCoopHeroToggle()
-	{
-		if (SessionRole == 1u && !CoopSession.LocalCoop)
-		{
-			bool wanted = !_coopHeroApplied;
-			GD.Print($"[game-ui] co-op X — asking the joiner to put player two in their " +
-				$"{(wanted ? "own hero" : "henchman")}");
-			HostBridge.CoopSend($"{CoopHeroToggleMessage}={(wanted ? "1" : "0")}");
-			return;
-		}
-
-		RequestCoopHeroBody(!Engine_UiPageProviders.CoopOwnHero);
-	}
-
-	/// <summary>
-	/// The joiner's side of the toggle, from its own X or the host's request: a DESIRED body,
+	/// Player two's side of the toggle: a DESIRED body,
 	/// applied only when it differs from the one player two is in, so a repeated request is
 	/// not a flip. ONLY AFTER A SAVE IS CHOSEN: the hero comes from the save the player picked
 	/// with Y on this screen; until one is chosen there is no hero to switch to, and the prompt
@@ -6216,6 +6087,10 @@ public partial class GameUi : Node
 
 		string body = CoopHeroBodyAction(ownHero);
 		_coopBodyPosted = body;
+		_coopHeroPickedAt = Time.GetTicksMsec();
+
+		// Told to the peer on this pass, not the next half-second restatement.
+		_coopHeroRestate = 0.0;
 		GD.Print($"[game-ui] co-op — player two to their {(ownHero ? "own hero" : "henchman")} ({body})");
 		HostBridge.PostFrontEndAction(body);
 	}
@@ -6233,6 +6108,37 @@ public partial class GameUi : Node
 		return !ownHero ? "CoopHeroBody:pickbox"
 			: two.Known ? (two.Female ? "CoopHeroBody:female" : "CoopHeroBody:male")
 			: "CoopHeroBody:auto";
+	}
+
+	/// <summary>
+	/// What one page says about its player's hero while it crosses the wire — the same words on
+	/// both machines. Each hero record travels from the machine that plays it (player one's from
+	/// the host, player two's from the joiner) as acknowledged fragments (<see cref="CoopHeroState"/>),
+	/// so the sending side reports the acknowledgement and the receiving side the fragments
+	/// landed. Empty once the record is across, and always on one machine: local co-op reads player
+	/// two's save in place.
+	/// </summary>
+	private static string CoopHeroStatus(bool playerTwo)
+	{
+		uint role = SessionRole;
+		if (role == 0u || CoopSession.LocalCoop)
+		{
+			return string.Empty;
+		}
+
+		bool ours = playerTwo == (role == 2u);
+		if (ours)
+		{
+			return !CoopHeroKit.Local.Known
+				? (playerTwo ? "Select a save to bring your hero" : string.Empty)
+				: CoopHeroState.Delivered ? "Hero ready"
+				: $"Sending hero to {(playerTwo ? "player one" : "player two")}…";
+		}
+
+		(int have, int total) = CoopHeroState.Receiving;
+		return total > 0 ? $"Receiving hero… {have}/{total}"
+			: CoopHeroKit.Remote.Known ? "Hero ready"
+			: "Waiting for hero…";
 	}
 
 	/// <summary>The session's role as the pump's numbers: 0 solo, 1 host, 2 client.</summary>
@@ -6404,14 +6310,21 @@ public partial class GameUi : Node
 				CoopHeroKit.SampleChosenSave();
 			}
 
-			// The host offers whatever the joiner's kit says; the joiner offers its kit from
-			// either source.
-			Engine_UiPageProviders.CoopHeroAvailable = SessionRole switch
-			{
-				1u => CoopHeroKit.Remote.Known,
-				2u => CoopHeroKit.Local.Known,
-				_ => false,
-			};
+			// PLAYER TWO'S OWN HERO IS OFFERED ONCE BOTH MACHINES HOLD IT: on the host when the
+			// joiner's record has landed, on the joiner when the host has acknowledged it. Offering
+			// it earlier swapped the body on one screen while the other still drew the henchman.
+			// On the couch player two's record is read from their save in place (Remote, by
+			// SampleLocalPlayerTwo) and nothing crosses a wire.
+			Engine_UiPageProviders.CoopHeroAvailable = CoopSession.LocalCoop
+				? CoopHeroKit.Remote.Known
+				: SessionRole switch
+				{
+					1u => CoopHeroKit.Remote.Known,
+					2u => CoopHeroKit.Local.Known && CoopHeroState.Delivered,
+					_ => false,
+				};
+			Engine_UiPageProviders.CoopPlayerOneStatus = CoopHeroStatus(playerTwo: false);
+			Engine_UiPageProviders.CoopPlayerTwoStatus = CoopHeroStatus(playerTwo: true);
 
 			// Player one is the host, player two the joiner; each side knows its own name from
 			// the node and the other's from RexNet's view of them (PartnerName).
@@ -6504,19 +6417,6 @@ public partial class GameUi : Node
 				continue;
 			}
 
-			if (message.StartsWith(CoopHeroToggleMessage, System.StringComparison.Ordinal))
-			{
-				// Only the joiner answers a toggle; a host that echoed one would ping-pong. The
-				// host states the body it wants (`=1` / `=0`); the bare form is an older peer's
-				// flip request.
-				if (role == 2u)
-				{
-					string wanted = message[CoopHeroToggleMessage.Length..];
-					RequestCoopHeroBody(wanted.Length == 0 ? !Engine_UiPageProviders.CoopOwnHero : wanted == "=1");
-				}
-
-				continue;
-			}
 
 			if (message.StartsWith(CoopHeroState.FragmentPrefix, System.StringComparison.Ordinal))
 			{
@@ -6708,7 +6608,7 @@ public partial class GameUi : Node
 		// without any clothes. A changed record is a new version; an unacked one is resent.
 		CoopHeroState.Send(CoopHeroKit.Local, CoopHeroRestateSeconds);
 		PostHeroStates(role);
-		AckHeroState(role);
+		AckHeroState();
 	}
 
 	/// <summary>
@@ -6751,31 +6651,28 @@ public partial class GameUi : Node
 	}
 
 	/// <summary>
-	/// Acknowledges the peer's record once the pump reports that version APPLIED to the peer's
-	/// body — player two's on the host, player one's on the joiner. A record without a hero has
-	/// nothing to apply and is acknowledged on receipt. Acked again when the peer resends a
-	/// version already acknowledged, which says the ack was lost.
+	/// Acknowledges the peer's record the moment it is complete and decoded. Acked again when the
+	/// peer resends a version already acknowledged, which says the ack was lost.
+	///
+	/// ON RECEIPT, NOT ON APPLY. Waiting for the pump to apply the record to a body held the ack
+	/// until player two was standing in their own hero — which the screen offers only once the
+	/// record is across — so the sender resent a record the host already held, every second, and
+	/// "Load Hero" could never appear. A resend could not have helped an apply anyway: a version
+	/// already complete is not reassembled again. The record is kept (`ReceivedBase64`) and
+	/// applied whenever its body stands (<see cref="PostHeroStates"/>).
 	/// </summary>
-	private static void AckHeroState(uint role)
+	private static void AckHeroState()
 	{
 		uint received = CoopHeroState.ReceivedVersion;
-		if (received == 0u || (CoopHeroState.AckedToPeer == received && !CoopHeroState.AckDue))
-		{
-			return;
-		}
-
-		uint applied = CoopHeroKit.Remote.Known ? HostBridge.HeroStateApplied(role == 1u ? 2u : 1u) : received;
-		if (applied == received)
+		if (received != 0u && (CoopHeroState.AckedToPeer != received || CoopHeroState.AckDue))
 		{
 			CoopHeroState.SendAck();
 		}
 	}
 
-	/// <summary>The joiner's statement of which body player two is in.</summary>	/// <summary>The joiner's statement of which body player two is in.</summary>
+	/// <summary>The joiner's statement of which body player two is in.</summary>
 	private const string CoopHeroStatePrefix = "coop.hero=";
 
-	/// <summary>The host's request for a body, `=1` own hero / `=0` henchman; bare, an older peer's flip.</summary>
-	private const string CoopHeroToggleMessage = "coop.hero.toggle";
 
 	/// <summary>`coop.exit.waiting=0|1`: the sender's player waits at a region exit for the partner.</summary>
 	private const string CoopExitWaitingPrefix = "coop.exit.waiting=";
@@ -6861,6 +6758,7 @@ public partial class GameUi : Node
 			// The pointer first, so every screen below reads the same position this frame.
 			Engine_UiPointer.Resolve(_uiCamera, _viewport, GetViewport().GetVisibleRect().Size);
 
+			GameInput.CoopScreenOwnsInput = OwnedScreenId() == CoopScreenId;
 			PointerCoop();
 			ui_processBody(delta);
 
@@ -6957,41 +6855,6 @@ public partial class GameUi : Node
 		Engine_UiPointer.TakeLeft();
 		view.PointAt(item);
 		return ReferenceEquals(view.Menu?.Highlighted, item);
-	}
-
-	/// <summary>
-	/// The mouse on the co-op screen. The guest drives it from the pad itself, so a click on one
-	/// of its buttons presses that button: Accept is A, Cancel B, the X prompt (the hero toggle)
-	/// X and the Y prompt (load a hero) Y. Any other click is taken, so it cannot accept the
-	/// screen by falling through as A. Rows and values stay on the keys.
-	/// </summary>
-	private void PointerCoop()
-	{
-		if (!Engine_UiPointer.LeftPressed || Engine_UiPointer.Canvas is not { } at ||
-			OwnedScreenId() != CoopScreenId || _saveCardView is { Visible: true } ||
-			_books.Book(CoopScreenId) is not { Visible: true } book)
-		{
-			return;
-		}
-
-		Engine_UiPointer.TakeLeft();
-		foreach ((string path, uint button) in new[]
-		{
-			("Foreground.RightPage.buttons.AcceptGroup", GameInput.PadA),
-			("Foreground.RightPage.buttons.CancelGroup", GameInput.PadB),
-			("Foreground.RightPage.ProfileSelector.Buttons.icon_button_x", GameInput.PadX),
-			("Foreground.RightPage.ProfileSelector.Buttons.Title2", GameInput.PadX),
-			("Foreground.RightPage.ProfileSelector.Buttons.icon_button_y", GameInput.PadY),
-			("Foreground.RightPage.ProfileSelector.Buttons.Title", GameInput.PadY),
-		})
-		{
-			if (book.NodeFor(path) is { } node && node.IsVisibleInTree() &&
-				Engine_UiPointer.CanvasBounds(node) is { } bounds && bounds.Grow(6f).HasPoint(at))
-			{
-				GameInput.QueuePointerPress(button);
-				return;
-			}
-		}
 	}
 
 	/// <summary>The left button went down on the expression wheel and has not come up.</summary>
@@ -7471,7 +7334,8 @@ public partial class GameUi : Node
 		if (guestFrame) _books.Drive(_drawn, IsRevealed);
 		if (guestFrame) _spells.Follow(IsRevealed);
 		DrivePreviewObject();
-		if (guestFrame) DriveCoopLeftMannequin();
+		DriveCoopScreen(delta);
+		if (guestFrame) DriveCoopFigures();
 
 		// THE MOVING PARTS, every frame — see Engine_UiSceneBuilder.ApplyLiveTransform. This is
 		// deliberately NOT inside TracePresentations, which samples a few times a second: the

@@ -850,11 +850,13 @@ REX_EXTERN(rex_CECNetwork_ApplyReplicaTarget) {
   }
 
   const PPCContext saved = ctx;
-  // Scratch below the caller's frame, above the callees' argument-save area.
+  // Scratch below the caller's frame. Every guest call made from here, the setters included, runs
+  // with r1 at `frame`, so its own frame lies below the scratch: a setter called with the caller's
+  // r1 built its frame over it and overwrote the current orientation read before it — the test
+  // then compared garbage and skipped, so a replica's facing changed only while it stood still.
   const uint32_t frame = (saved.r1.u32 - 0x100u) & ~0xFu;
   const uint32_t current_position = frame + 0x60u;
   const uint32_t current_orientation = frame + 0x70u;
-  const uint32_t target_position = frame + 0x80u;
   const auto get = [&](PPCFunc* fn, uint32_t out) {
     PPCContext call = saved;
     call.r1.u32 = frame;
@@ -864,19 +866,24 @@ REX_EXTERN(rex_CECNetwork_ApplyReplicaTarget) {
   };
   get(get_position, current_position);
   get(get_orientation, current_orientation);
+  float position_now[3];
+  float orientation_now[4];
+  for (uint32_t i = 0; i < 3u; ++i) position_now[i] = GuestF32(base, current_position + 4u * i);
+  for (uint32_t i = 0; i < 4u; ++i) orientation_now[i] = GuestF32(base, current_orientation + 4u * i);
+
   // v1 as the guest's `stvx` would store it: the recompiler keeps a vector byte-reversed
   // (VectorMaskL row 0), so reversing its bytes gives the big-endian memory image.
-  for (uint32_t i = 0; i < 16u; ++i) base[target_position + i] = saved.v1.u8[15u - i];
-
+  uint8_t target_image[16];
+  for (uint32_t i = 0; i < 16u; ++i) target_image[i] = saved.v1.u8[15u - i];
   float distance = 0.0f;
   for (uint32_t i = 0; i < 3u; ++i) {
-    const float d = GuestF32(base, target_position + 4u * i) - GuestF32(base, current_position + 4u * i);
+    uint32_t word;
+    std::memcpy(&word, target_image + 4u * i, sizeof(word));
+    word = __builtin_bswap32(word);
+    float target_axis;
+    std::memcpy(&target_axis, &word, sizeof(target_axis));
+    const float d = target_axis - position_now[i];
     distance += d * d;
-  }
-  if (!(distance < GuestF32(base, refii::guest::Address(0x82099A80u)))) {
-    PPCContext call = saved;  // v1 already holds the target position
-    call.r3.u32 = placement;
-    set_position(call, base);
   }
 
   // Target quaternion as the guest passes it: r4 = {x, y}, r5 = {z, w}, big-endian floats.
@@ -886,8 +893,16 @@ REX_EXTERN(rex_CECNetwork_ApplyReplicaTarget) {
   float dot = 0.0f;
   for (uint32_t i = 0; i < 4u; ++i) {
     std::memcpy(&target[i], &target_bits[i], sizeof(float));
-    dot += GuestF32(base, current_orientation + 4u * i) * target[i];
+    dot += orientation_now[i] * target[i];
   }
+
+  if (!(distance < GuestF32(base, refii::guest::Address(0x82099A80u)))) {
+    PPCContext call = saved;  // v1 already holds the target position
+    call.r1.u32 = frame;
+    call.r3.u32 = placement;
+    set_position(call, base);
+  }
+
   if (!std::isfinite(dot) || dot > GuestF32(base, refii::guest::Address(0x83320A74u))) {
     return;
   }
@@ -897,6 +912,7 @@ REX_EXTERN(rex_CECNetwork_ApplyReplicaTarget) {
     std::memcpy(&bits[i], &value, sizeof(uint32_t));
   }
   PPCContext call = saved;
+  call.r1.u32 = frame;
   call.r3.u32 = placement;
   call.r4.u64 = (static_cast<uint64_t>(bits[0]) << 32) | bits[1];
   call.r5.u64 = (static_cast<uint64_t>(bits[2]) << 32) | bits[3];

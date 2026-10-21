@@ -172,6 +172,8 @@ public partial class GameInput : Node
 	public const uint PadY = ButtonY;
 	public const uint PadLeft = DpadLeft;
 	public const uint PadRight = DpadRight;
+	public const uint PadUp = DpadUp;
+	public const uint PadDown = DpadDown;
 
 	/// <summary>Wheel notches still to be played out as D-pad steps, signed (negative up).</summary>
 	private static int _wheelPending;
@@ -821,6 +823,13 @@ public partial class GameInput : Node
 	/// </summary>
 	public static bool ScreenMenuOwnsInput { get; set; }
 
+	/// <summary>
+	/// Set by <c>GameUi</c> while the co-op screen stands. The guest reads that screen's pad
+	/// itself, so nothing is masked; it only stops counting as play — the cursor is free for its
+	/// buttons and rows, and B is back, not magic.
+	/// </summary>
+	public static bool CoopScreenOwnsInput { get; set; }
+
 	private static bool MaskScreenMenuInput =>
 		ScreenMenuOwnsInput && HostBridge.GetPauseState() is { ModalMode: 1, ScreenId: not 0 };
 
@@ -1040,15 +1049,22 @@ public partial class GameInput : Node
 		WheelTwoAcceptPressed = a && !_acceptTwoWasDown;
 		WheelTwoAcceptReleased = !a && _acceptTwoWasDown;
 		WheelTwoBackPressed = b && !_backTwoWasDown;
+		bool x = (buttons & ButtonX) != 0;
+		XTwoPressed = x && !_xTwoWasDown;
 		LeftStickTwo = new Vector2(leftX / 32767f, leftY / 32767f);
 		_wheelTwoWasDown = wheel;
 		_acceptTwoWasDown = a;
 		_backTwoWasDown = b;
+		_xTwoWasDown = x;
 	}
 
 	private static bool _wheelTwoWasDown;
 	private static bool _acceptTwoWasDown;
 	private static bool _backTwoWasDown;
+	private static bool _xTwoWasDown;
+
+	/// <summary>True on the frame local player two's X went down — their hero toggle on the co-op screen.</summary>
+	public static bool XTwoPressed { get; private set; }
 
 	public static bool QuickWheelTwoPressed { get; private set; }
 	public static bool QuickWheelTwoReleased { get; private set; }

@@ -139,7 +139,6 @@ public partial class Engine_UiPreviewObject : Node3D
 		}
 
 		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
-		_inPage = false;
 		int textured = Present(_mesh, mesh);
 		AddChild(_mesh);
 		LastReport = $"{path} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured{dyed})";
@@ -151,25 +150,16 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// <summary>
 	/// <summary>
 	/// Shows a mesh the caller already holds — a LIVE ENTITY's composed body, not a model the guest
-	/// named by hash. The co-op screen's mannequin is the case: `sub_82438818` spawns a real
-	/// `CoopScreenTempHenchmanToDisplay` creature and the entity feed composes its dressed figure
-	/// from component 17, so there is no hash to resolve and no second copy to load. Presented
-	/// exactly as <see cref="Show"/> presents a model, keyed by <paramref name="key"/> (the entity
-	/// address) so a frame that shows the same body again only re-applies the placement.
-	///
-	/// The guest scales this node by `(2.1 / body) * 350` (`sub_82438438`, 0x824387E0; body is
-	/// 1.5 for a child, 2.1 adult, 2.4 with hair flag 10). What that means in this panel's units
-	/// is not established, so the placement's scale is left for the panel fit in <c>Apply</c>.
+	/// named by hash: the clothing book's mannequin, whose figure the entity feed composes from
+	/// component 17. Presented exactly as <see cref="Show"/> presents a model, keyed by
+	/// <paramref name="key"/> (the entity address) so a frame that shows the same body again only
+	/// re-applies the placement. The co-op screen's figures are not drawn here — they stand on
+	/// <see cref="Engine_UiFigureStage"/>, the original's own perspective stage.
 	/// </summary>
 	/// <param name="skeleton">
 	/// The feed's Skeleton3D driving that body, or null. A skinned mesh drawn without its
 	/// skeleton renders in BIND pose whatever the guest animates, so the copy here is bound to
 	/// the same skeleton the feed poses — the pose then comes through as the feed writes it.
-	/// </param>
-	/// <param name="inPage">
-	/// Keep the body at its anchor's depth — the co-op pages compose their figure behind the
-	/// page's mask and the save-card fan. False lifts it clear of the page as a named model is:
-	/// the clothing book's anchor lies 350 behind its parchment and the book's cloth.
 	/// </param>
 	/// <param name="skin">
 	/// The feed node's own <see cref="Skin"/> for that mesh. Without it Godot binds the copy by
@@ -177,10 +167,8 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// vertices landed on the wrong bones and the figure exploded into spikes.
 	/// </param>
 	public bool ShowLive(
-		Mesh? mesh, uint key, Placement placement, Skeleton3D? skeleton = null, bool inPage = true,
-		Skin? skin = null)
+		Mesh? mesh, uint key, Placement placement, Skeleton3D? skeleton = null, Skin? skin = null)
 	{
-		_inPage = inPage;
 		if (skeleton is not null && _mesh is not null && GodotObject.IsInstanceValid(skeleton) &&
 			skeleton.IsInsideTree() && _mesh.IsInsideTree())
 		{
@@ -209,7 +197,7 @@ public partial class Engine_UiPreviewObject : Node3D
 			if (mesh is not null && !ReferenceEquals(_mesh.Mesh, mesh))
 			{
 				_mesh.Mesh = mesh;
-				int retextured = Present(_mesh, mesh, inPage);
+				int retextured = Present(_mesh, mesh);
 				LastReport = $"live entity 0x{key:X8} redressed ({retextured}/{mesh.GetSurfaceCount()} " +
 					"surface(s) textured)";
 			}
@@ -230,7 +218,7 @@ public partial class Engine_UiPreviewObject : Node3D
 		_liveKey = key;
 		_mesh?.QueueFree();
 		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh, Skin = skin };
-		int textured = Present(_mesh, mesh, inPage);
+		int textured = Present(_mesh, mesh);
 		AddChild(_mesh);
 		LastReport = $"live entity 0x{key:X8} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
 		Apply(placement);
@@ -277,12 +265,7 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// the original: take the albedo and show it unlit. A surface stating no albedo gets neutral
 	/// grey, so an untextured item reads as missing art rather than a rendering fault.
 	/// </summary>
-	/// <param name="inPage">
-	/// Stay at the anchor's depth: the co-op mannequin sits in front of the parchment and behind
-	/// the page's cut-out mask and the save-card fan, as the original composes it. The
-	/// named-model path is lifted clear of the page instead (<see cref="Lift"/>).
-	/// </param>
-	private static int Present(MeshInstance3D instance, Mesh mesh, bool inPage = false)
+	private static int Present(MeshInstance3D instance, Mesh mesh)
 	{
 		int textured = 0;
 		for (int surface = 0; surface < mesh.GetSurfaceCount(); ++surface)
@@ -420,9 +403,6 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// </summary>
 	private const float PageClearance = 400f;
 
-	/// <summary>True for a body composed in the page's own depth (the co-op mannequins).</summary>
-	private bool _inPage;
-
 	/// <summary>
 	/// OVER THE PAGE BY DEPTH, NOT BY DRAW ORDER. The UI camera is orthographic, so moving the
 	/// mesh along the view axis changes what it occludes and nothing about its size. It is
@@ -430,7 +410,7 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// </summary>
 	private void Lift()
 	{
-		if (_mesh is null || _inPage || !_mesh.IsInsideTree() ||
+		if (_mesh is null || !_mesh.IsInsideTree() ||
 			GetViewport()?.GetCamera3D() is not { } camera)
 		{
 			return;
