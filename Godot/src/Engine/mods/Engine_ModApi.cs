@@ -386,7 +386,7 @@ public static class ModApi
 			{
 				F("entity", "uint32_t", "the entity"),
 				F("player", "int32_t", "1 or 2 for a hero, else 0"),
-				F("type", "int32_t", "the ability 1..14 (1 Toughness .. 7 Lightning .. 14 Raise Dead)"),
+				F("type", "int32_t", "the ability 1..14 (1 Heavy Weapons, 2 Physique, 3 Toughness, 4 Ranged Weapons, 5 Accuracy, 6 Speed, 7 Lightning .. 14 Raise Dead)"),
 				F("level", "int32_t", "the level being set (native: writable)", true),
 				F("old_level", "int32_t", "the level before"),
 			}),
@@ -929,7 +929,7 @@ public static class ModApi
 				F("from_host", "bool", "an online joiner adopting the host's statement; false where this machine decided it"),
 			}),
 		new ModApiEvent("ModMenuRow", "mod_menu_row", 87, "Godot's menu lists (Engine_UiModMenus), then the guest tick from the host's command queue (menu_row)",
-			"A row of a menu a mod defines in ui/templates.json was chosen, or a row a mod patched into a shipped menu, or any row whose command is Opens:<menu> or Mod:lua:<function>. Godot scripts get it as it happens; native handlers on the next guest tick, on the title and the front end too; Lua handlers on the next guest tick in a game (the game's Lua is built when a game starts, so there is none on the front end).",
+			"A row of a menu a mod defines in ui/templates.json was chosen, or a row a mod patched into a shipped menu, or any row whose command is Opens:<menu> or Mod:lua:<function>. Godot scripts get it as it happens; native handlers on the next guest tick, on the title and the front end too; Lua handlers on the next guest tick: in a game the init.lua ones, on the title and the front end the mod/frontend.lua ones (run in the current Gameface presentation's own Lua state).",
 			string.Empty,
 			new[]
 			{
@@ -939,13 +939,56 @@ public static class ModApi
 				F("mod", "const char* / string", "the mod that stated the row or its menu, empty for a shipped row"),
 			}),
 		new ModApiEvent("ModMessageBox", "mod_message_box", 88, "Godot's host boxes (Engine_UiModBoxes), then the guest tick from the host's command queue (box_answer)",
-			"A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was answered. Godot scripts get it as it happens; native handlers on the next guest tick, on the front end too; Lua handlers in a game.",
+			"A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was answered. Godot scripts get it as it happens; native handlers on the next guest tick, on the front end too; Lua handlers in a game (init.lua) and on the front end (mod/frontend.lua).",
 			string.Empty,
 			new[]
 			{
 				F("id", "uint32_t", "what the call returned: the payload's ids are 1 .. 2^23-1, Godot's 2^23 .. 2^24-1"),
 				F("button", "int32_t", "0 for A, 1 for B, -1 when another box replaced it or its player is played on the other machine"),
 				F("player", "int32_t", "1 or 2: whose box it was"),
+			}),
+		new ModApiEvent("ModNotice", "mod_notice", 89, "Godot's notice channel (Engine_UiNotices, shown by GameUi), then the guest tick from the host's command queue (notice_done)",
+			"A notice a mod posted (refii_mod_notice, Refii.notice, RefiiHost.notice) has gone. Godot scripts get it as it happens; native handlers on the next guest tick, on the front end too; Lua handlers in a game.",
+			string.Empty,
+			new[]
+			{
+				F("id", "uint32_t", "what the call returned: the payload's ids are 1 .. 2^23-1, Godot's 2^23 .. 2^24-1 (one id space with the message and menu boxes)"),
+				F("outcome", "int32_t", "0 once it was shown and its time ran out (or it was dismissed on the front end); -1 when it never showed: its player is played on the other machine, or the queue overflowed"),
+				F("player", "int32_t", "1 or 2: whose notice it was"),
+			}),
+		new ModApiEvent("ModMenuBox", "mod_menu_box", 90, "Godot's host menu box (Engine_UiModMenuBox), then the guest tick from the host's command queue (menu_box_answer)",
+			"A menu box a mod raised (refii_mod_menu_box, Refii.menu_box, RefiiHost.menu_box) was answered. Godot scripts get it as it happens; native handlers on the next guest tick, on the front end too; Lua handlers in a game. A RefiiHost.message_box with more than two buttons is a menu box answered as mod_message_box instead.",
+			string.Empty,
+			new[]
+			{
+				F("id", "uint32_t", "what the call returned (one id space with the message boxes and notices)"),
+				F("option", "int32_t", "the chosen option's index in the list the mod gave (paging is the box's own); -1 for B on a cancelable box, another box replacing it, or its player played on the other machine"),
+				F("player", "int32_t", "1 or 2: whose box it was"),
+			}),
+		new ModApiEvent("ModAbility", "mod_ability", 91, "the engine's mod-ability purchase (src/vfs/src/hooks/mod_abilities.cpp), run on the guest tick from the book's ability_buy / ability_refund",
+			"A player is buying or giving back a level of a mod ability (ui/abilities.json). The ENGINE runs the purchase from the declaration: the level is the player's saved value under levelKey, the price the game's own table of the ability costLike names, split evenly across the declared disciplines' pools (the first named takes the odd point) and spent through the game's own Spend; an unlearn (\"refund\": \"half\") gives half the given-up level's price back into General, as the shipped unlearn does. Raised before anything changes, only for a purchase that can happen. A mod applies the level's effect by reading the level from the player store where it is used.",
+			"refuses it: nothing is spent and the level stands",
+			new[]
+			{
+				F("ability", "const char* / string", "the ability's declared name"),
+				F("mod", "const char* / string", "the mod that declared it"),
+				F("refund", "bool", "true for an unlearn, false for a purchase"),
+				F("previous", "int32_t", "the level held"),
+				F("level", "int32_t", "the level it will hold"),
+				F("experience", "int32_t", "the price to be spent (a purchase) or what comes back into General (an unlearn)"),
+				F("player", "int32_t", "1 or 2: whose book it is (the level, the hero and the experience are theirs)"),
+			}),
+		new ModApiEvent("SpellPick", "spell_pick", 92, "a mod's pick: the spell selectors (Engine_UiSpellPicks), then the guest tick from the host's command queue (spell_pick); the game's own pick: the guest's slot writer CECSpellManager::SetSpellSlot (TU1 sub_82541F30) when it is called as a choice",
+			"A player chose or cleared a pick on one of their spell slots. A mod's pick (ui/spellwheel.json, Spell Weaving's partner) is kept per player and slot as a saved player value under the pick's store key, written after the handlers unless one refuses it. The game's own pick is the slot's spell (pick \"spell\", mod \"\"): every assignment the game makes as a choice raises it before the slot is written — each step of the selectors' carousel, the scripts' spell-table natives, the host's own assignment — and a changed spell is the one stored; the template's defaults, the other machine's pick arriving and a save load are not picks. Raised on the machine whose player made the pick; Godot scripts get it from the bus.",
+			"keeps the slot's pick as it was",
+			new[]
+			{
+				F("pick", "const char* / string", "the pick's name as ui/spellwheel.json states it; \"spell\" for the game's own pick"),
+				F("mod", "const char* / string", "the mod that stated the pick; empty for the game's own"),
+				F("slot", "int32_t", "the slot, 0..4"),
+				F("spell", "int32_t", "the will chosen, 0 Lightning .. 7 Dead Rising; -1 cleared (writable: another will, or -1)", true),
+				F("previous", "int32_t", "the will held before, -1 none"),
+				F("player", "int32_t", "1 or 2: whose selectors"),
 			}),
 	};
 
@@ -980,7 +1023,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_entity_position(ctx, base, entity, float out[3])", "the entity's position through its own placement getter"),
 		new ModApiHelper("int32_t refii_mod_health(base, entity, float* current, float* max)", "current and maximum health"),
 		new ModApiHelper("int32_t refii_mod_set_health(base, entity, value)", "writes current health, clamped to [0, max]"),
-		new ModApiHelper("int32_t refii_mod_ability_level(base, entity, type)", "the level of ability 1..14 (1 Toughness .. 7 Lightning .. 14 Raise Dead), or -1"),
+		new ModApiHelper("int32_t refii_mod_ability_level(base, entity, type)", "the level of ability 1..14 (1 Heavy Weapons, 2 Physique, 3 Toughness, 4 Ranged Weapons, 5 Accuracy, 6 Speed, 7 Lightning .. 14 Raise Dead), or -1"),
 		new ModApiHelper("int32_t refii_mod_experience(base, entity, pool, float* out)", "the experience in a pool: 0 General 1 Strength 2 Skill 3 Will"),
 		new ModApiHelper("int32_t refii_mod_ability_cost(ctx, base, entity, type, level)", "the game's own price of an ability level"),
 		new ModApiHelper("int32_t refii_mod_give_experience(ctx, base, entity, pool, amount)", "adds (or takes, negative) experience through the game's Modify, outside the lifetime total"),
@@ -998,6 +1041,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_gold(base, entity, int32_t* out) / refii_mod_give_gold(ctx, base, entity, delta)", "a purse, read and changed through the game's own Modify"),
 		new ModApiHelper("int32_t refii_mod_item_count(base, entity, definition) / uint32_t refii_mod_add_item(ctx, base, entity, definition)", "an inventory, counted and added to through the game's own add"),
 		new ModApiHelper("int32_t refii_mod_run_game_lua(ctx, base, chunk)", "runs a Lua chunk in the game VM"),
+		new ModApiHelper("int32_t refii_mod_run_frontend_lua(ctx, base, chunk)", "runs a Lua chunk in the mods' front-end Lua (the title and the front end: the current Gameface presentation's own state, every mod's mod/frontend.lua run in it first); 0 when no presentation has one"),
 		new ModApiHelper("int32_t refii_mod_game_lua_int(ctx, base, expr, lo, hi, int32_t* out)", "an integer Lua expression's value, by a search of assertions"),
 		new ModApiHelper("uint32_t refii_mod_lua_generation()", "steps on every Lua rebuild and save load"),
 		new ModApiHelper("int32_t refii_mod_save_set_int(ctx, base, key, value)", "RefiiModSave.<key> = value: persists with the save game"),
@@ -1022,12 +1066,26 @@ public static class ModApi
 			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity; " +
 			"options (refii_mod_fx_options, null for refii_mod_fx_default_options()): duration, scale, tint, intensity, loop, offset; returns the id. Any thread"),
 		new ModApiHelper("void refii_mod_stop_fx(id)", "stops a played effect by any surface's id (native, Lua or Godot)"),
+		new ModApiHelper("int32_t refii_mod_set_menu_rows(player, menu, rows)",
+			"states a menu list's rows for player 1 or 2 (0: every player) — what a ui/templates.json menu or entry with \"source\": \"rows\" " +
+			"(or rows:<list>) shows, at once if open; rows is one text, \"name|label|command|ghosted\" split by ';' ('\\' escapes), " +
+			"command any row verb (Mod:lua:, Opens:, Screen:open:); \"\" clears. Any thread"),
+		new ModApiHelper("int32_t refii_mod_open_screen(player, screen)",
+			"opens a host-owned screen by id for player 1 or 2 (0: the menu owner here) — the Screen:open:<id> verb: the game's (1013 " +
+			"achievements, 1014 multiplayer) or a ui/templates.json screens record a mod states (id 1000+, a menu and a presentation, " +
+			"filled by its provider — \"data\" binds fields to mod:/player: values); it stands over the pause book. Any thread"),
 		new ModApiHelper("int32_t refii_mod_open_menu(player, name)",
 			"opens a menu a mod defines in ui/templates.json for player 1 or 2 (0: whoever owns the menus here) over the list that has the input, " +
 			"or on its own with none up — in play or on the title (it takes the pad; B at its root closes it); shown only where that player is played. Any thread"),
 		new ModApiHelper("uint32_t refii_mod_message_box(player, title, text, accept, cancel)",
 			"the game's own box for player 1 or 2 (0: the menu owner here) — in game the query or message box, on the front end its dialog: " +
 			"a question with cancel non-null (null or \"\" captions keep the box's own), else a notice; returns the id mod_message_box carries. Any thread"),
+		new ModApiHelper("uint32_t refii_mod_notice(player, title, text, seconds)",
+			"a notice for player 1 or 2 (0: the menu owner here) on the notice channel the game's co-op notices use — in game the HUD's info box " +
+			"for seconds (0: the channel's length), on the front end its dialog; notices queue; returns the id mod_notice carries (0 shown, -1 never). Any thread"),
+		new ModApiHelper("uint32_t refii_mod_menu_box(player, title, text, options, count, cancelable)",
+			"the game's own menu box (the Golden Cock's) for player 1 or 2 (0: the menu owner here), on the front end and in game: up to 16 options, " +
+			"paged past six; B closes a cancelable box; returns the id mod_menu_box carries with the option's index (-1 none). Any thread"),
 	};
 
 	/// <summary>The Lua-side calls the init chunk's preamble defines.</summary>
@@ -1072,8 +1130,12 @@ public static class ModApi
 			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity handle; " +
 			"options { duration = s, scale = n, tint = {r, g, b}, intensity = n, loop = false, offset = {x, y, z} }; the id, or nil"),
 		new ModApiHelper("Refii.stop_fx(id)", "stops a played effect by any surface's id"),
+		new ModApiHelper("Refii.set_menu_rows(menu, rows [, p])", "states a menu list's rows for player p (nil: every player): strings or { name, label, command, ghosted } — what a menu or entry with \"source\": \"rows\" shows, at once if open; {} clears; true when posted"),
+		new ModApiHelper("Refii.open_screen(id [, p])", "opens a host-owned screen (Screen:open:<id>) for player p: the game's or a screens record a mod states (id 1000+); true when posted"),
 		new ModApiHelper("Refii.open_menu(name [, p])", "opens a mod's menu (ui/templates.json) for player p (nil: the menu owner here) over the list that has the input, or on its own with none up; true when asked"),
 		new ModApiHelper("Refii.message_box(title, text [, accept [, cancel [, p]]])", "the game's own box for player p: a question when cancel is given (nil captions keep the box's own), else a notice; the id mod_message_box carries"),
+		new ModApiHelper("Refii.notice(title, text [, seconds [, p]])", "a notice on the notice channel for player p (nil: the menu owner here): the HUD's info box in game, queued behind the others; the id mod_notice carries (0 shown, -1 never)"),
+		new ModApiHelper("Refii.menu_box(title, text, options [, p [, cancelable]])", "the game's own menu box for player p: up to 12 options from the table, paged past six; B closes it unless cancelable is false; the id mod_menu_box carries with the option's index (-1 none)"),
 		new ModApiHelper("Refii.setting(key, default)", "a settings.json value (composed in at session start as RefiiSettings)"),
 		new ModApiHelper("Refii.hero(player)", "the player's hero handle as the bus last stated it, or nil"),
 		new ModApiHelper("Refii.api_version", "the API version the chunk was composed for"),
@@ -1097,10 +1159,15 @@ public static class ModApi
 		new ModApiHelper("e.replica", "true in a signal's (or verdict's) dictionary when the event is a copy of the other co-op machine's — the game's own copy or a RELAYED one; absent otherwise"),
 		new ModApiHelper("player_set(p, key, v) / player_add(p, key, d, saved) / player_save(p, key, v)", "per-player values, written to the store Refii.player_set / _add / _save write: the same on both co-op machines; saved ones go home with the hero"),
 		new ModApiHelper("node_for(handle)", "the Node3D Godot draws that entity with, or null: parent to it, never move it"),
-		new ModApiHelper("get_value(key) / setting(key, default) / set_setting(key, v) / run_lua(chunk) / mods()", "a mod's published value, a settings.json value, a live override, a Lua chunk in the game VM, the enabled mods"),
+		new ModApiHelper("get_value(key) / setting(key, default) / set_setting(key, v) / run_lua(chunk) / frontend_lua(chunk) / mods()", "a mod's published value, a settings.json value, a live override, a Lua chunk in the game VM, a Lua chunk in the mods' front-end Lua (the title and the front end, every mod's mod/frontend.lua in scope), the enabled mods"),
 		new ModApiHelper("publish(key, value)", "sets a mod value (\"mod:<key>\" in the UI) on the guest's next tick, for every reader: HUD pieces, menus, Lua and native"),
+		new ModApiHelper("set_menu_rows(menu, rows, player = 0)", "states a menu list's rows for player 1 or 2 (0: every player), replacing the last: what a ui/templates.json menu or entry with \"source\": \"rows\" (or rows:<list>) shows, at once if it is open. A row is a string or { name, label, command, ghosted }; label a Babel tag or literal, command any row verb; [] clears. \"source\": \"values:mod:<key>|<format>=<label>,...\" lists published values instead"),
+		new ModApiHelper("open_screen(screen, player = 0) -> bool", "opens a host-owned screen by id — the Screen:open:<id> verb any row can name: the game's (1013 achievements, 1014 multiplayer) or a ui/templates.json screens record a mod states (id 1000+, with a menu and a presentation; provider \"data\" fills its page from the record's fields, bound to mod:/player: values, row:label, Babel tags). It stands over the pause book, so it opens while the pause list has the input; false says why in the log"),
+		new ModApiHelper("register_command(verb, handler) -> bool", "a row verb every list runs (the front end, the pause book, screen lists, mod menus, a screen's own buttons): a row whose command is verb — or begins with it when it ends in ':' — calls handler(argument, menu, row, player); false refuses the row. The game's verbs (PauseTab:, Screen:open:, Opens:, Mod:lua:, setting:, Inventory: ...) stay the game's"),
 		new ModApiHelper("open_menu(name, player = 0) -> bool", "opens a menu a mod defines in ui/templates.json for player 1 or 2 (0: whoever owns the menus here) over the menu list that has the input — B returns — or, with no list up (in play, on the title), as a list of its own that takes the pad and closes on B. False for no such menu or a player played on the other machine. A row chosen there raises mod_menu_row here at once, and reaches native handlers (and Lua in a game) on the guest's next tick through the menu_row command"),
-		new ModApiHelper("message_box(title, text, buttons, player = 0) -> id / signal message_box_answered(id, button)", "the game's own box for player 1 or 2 (0: the menu owner here) — in game the message box (one button) or query box (two), on the front end its own dialog; button is 0 for A, 1 for B, -1 when another box replaced it or the player is played on the other machine. The mod_message_box event carries the same, on every surface"),
+		new ModApiHelper("message_box(title, text, buttons, player = 0) -> id / signal message_box_answered(id, button)", "the game's own box for player 1 or 2 (0: the menu owner here) — in game the message box (one button) or query box (two), on the front end its own dialog; more than two buttons is a menu box answered here with the button's index; button is 0 for A, 1 for B, -1 when another box replaced it or the player is played on the other machine. The mod_message_box event carries the same, on every surface"),
+		new ModApiHelper("notice(title, text, seconds = 0, player = 0) -> id / signal notice_done(id, outcome)", "a notice on the channel the game's co-op notices use — in game the HUD's info box for seconds (0: its own length), on the front end its dialog — queued behind the others; outcome 0 once shown, -1 when it never showed. The mod_notice event carries the same, on every surface"),
+		new ModApiHelper("menu_box(title, text, options, player = 0, cancelable = true) -> id / signal menu_box_answered(id, option)", "the game's own menu box (the Golden Cock's) on the front end and in game, for player 1 or 2 (0: the menu owner here): up to 16 options, paged past six; option is the index chosen, -1 for B, a box replacing it or a player played on the other machine. The mod_menu_box event carries the same, on every surface"),
 		new ModApiHelper("give_gold / modify_health / set_health / add_item / give_experience / spend_experience / cast_spell / set_position / save_set", "helper calls, run in the guest tick with the real context; silent when there is nothing to act on"),
 		new ModApiHelper("query(what, args) -> id / signal reply(id, result)", "asks the guest; the answer comes on a later frame with ok and the fields below"),
 		new ModApiHelper("query health E / position E / gold E / item_count E DEF / experience E POOL / ability_level E T", "current, max · x, y, z · gold · count · amount · level"),

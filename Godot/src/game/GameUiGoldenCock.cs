@@ -9,9 +9,16 @@ public partial class GameUi
     private Engine_UiGuiBoxes.MenuBoxModel? _goldenCockPage;
     private int _goldenCockHighlight = -1;
 
+    /// <summary>
+    /// The host's menu box — the Golden Cock's flow, else a mod's <c>menu_box</c>
+    /// (<see cref="Engine_UiModMenuBox"/>) — drawn in the game's menu box art, on the front end and
+    /// in game, taking the pad while it stands. One view serves both: the same dialog drive
+    /// (<see cref="Engine_UiMenuBoxDialog"/>) and the same art.
+    /// </summary>
     private bool DriveGoldenCockMenu(double delta)
     {
-        if (GameGoldenCock.ActiveMenu is not { } dialog)
+        Engine_UiMenuBoxDialog? dialog = GameGoldenCock.ActiveMenu ?? (Engine_UiMenuBoxDialog?)Engine_UiModMenuBox.Active;
+        if (dialog is null)
         {
             _goldenCockView?.Hide();
             _goldenCockPage = null;
@@ -19,9 +26,16 @@ public partial class GameUi
         }
         if (_presentation is null || !IsRevealed)
         {
-            GameGoldenCock.CancelMenu();
             _goldenCockView?.Hide();
             _goldenCockPage = null;
+
+            // A mod's box waits for the screen to come back; the Golden Cock's flow ends.
+            if (dialog is Engine_UiModMenuBox)
+            {
+                return false;
+            }
+
+            CancelHostMenuBox(dialog);
             return true;
         }
         if (_goldenCockView is null)
@@ -32,7 +46,7 @@ public partial class GameUi
             {
                 GD.PushWarning("[golden-cock] Fable 2 menu art is unavailable: " + view.LastReport);
                 view.Free();
-                GameGoldenCock.CancelMenu();
+                CancelHostMenuBox(dialog);
                 return true;
             }
             _goldenCockView = view;
@@ -71,5 +85,18 @@ public partial class GameUi
             _goldenCockHighlight = page.Highlight;
         }
         return true;
+    }
+
+    /// <summary>Takes a host menu box down unanswered: the Golden Cock's closes its flow, a mod's answers -1.</summary>
+    private static void CancelHostMenuBox(Engine_UiMenuBoxDialog dialog)
+    {
+        if (dialog is Engine_UiModMenuBox mod)
+        {
+            mod.Cancel();
+        }
+        else
+        {
+            GameGoldenCock.CancelMenu();
+        }
     }
 }

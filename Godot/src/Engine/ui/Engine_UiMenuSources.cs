@@ -129,6 +129,10 @@ public static class Engine_UiMenuSources
 
 			// The shop's six groups — the capture's rows with the TRANSACTION stamped on.
 			[ShopSource] = ShopRows,
+
+			// A mod's rows: those a script stated (set_menu_rows) and published values (Engine_UiModRows).
+			[Engine_UiModRows.RowsSource] = Engine_UiModRows.Rows,
+			[Engine_UiModRows.ValuesSource] = Engine_UiModRows.Values,
 		};
 
 	/// <summary>`shop:<group>` — the capture under that group, each row carrying its commit.</summary>

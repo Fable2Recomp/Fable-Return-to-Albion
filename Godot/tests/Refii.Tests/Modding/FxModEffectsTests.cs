@@ -367,6 +367,40 @@ public class FxModEffectsTests
 	}
 
 	[TestCase]
+	public void AShippedRecordStatedAsTheBankHoldsItIsReferenced()
+	{
+		FxBank bank = SmallBank();
+		FxEmitter shippedA = bank.Emitters[0];
+		FxSystemDef shippedS = bank.Systems[0];
+
+		// An effect of its own chaining shipped emitter A and system S exactly as the bank holds
+		// them (the way Spell Weaving's blades carry the Blades sword's effects), beside one emitter
+		// of its own.
+		var d = new Engine_FxEffectJson.Definition { Name = "chains_a" };
+		d.Emitters.Add(Engine_FxEffectJson.Extract(bank, bank.FindByName("brazier")!).Emitters[0]);
+		d.Emitters.Add(OneEmitter("x", 0, 3).Emitters[0]);
+		d.Systems.Add(Engine_FxEffectJson.Extract(bank, bank.FindByName("torch")!).Systems[0]);
+		d.Parts.Add(new FxEffectPart(0, 0, 1, 0));
+		d.Parts.Add(new FxEffectPart(1, 0, 1, 1));
+		Engine_FxModEffects.Result result = Engine_FxModEffects.Apply(bank, new List<Engine_FxModEffects.Source> { new("m", "fx/effects/chains_a.json", Engine_FxEffectJson.Copy(d)) });
+
+		// Referenced: the bank's own objects, drawn by the new effect, never restated to either bank.
+		AssertThat(result.EmittersReferenced).IsEqual(1);
+		AssertThat(result.SystemsReferenced).IsEqual(1);
+		AssertThat(result.EmittersReplaced).IsEqual(0);
+		AssertThat(result.SystemsReplaced).IsEqual(0);
+		AssertThat(ReferenceEquals(bank.Emitters[0], shippedA)).IsTrue();
+		AssertThat(ReferenceEquals(bank.Systems[0], shippedS)).IsTrue();
+		AssertThat(result.StatedEmitters.Contains(0xA0A0A0A0u)).IsFalse();
+		AssertThat(result.StatedSystems.Contains(0x51515151u)).IsFalse();
+		FxEffect chains = bank.FindByName("chains_a")!;
+		AssertThat(chains.Parts[0].Emitter).IsEqual(0);
+		AssertThat(chains.Parts[0].System).IsEqual(0);
+		AssertThat(bank.EffectForType(0xA0A0A0A0u)).IsEqual(FxBank.Fnv1Lower("torch"));
+		AssertThat(result.Conflicts.Count).IsEqual(0);
+	}
+
+	[TestCase]
 	public void OverlayAddsReplacesAndRecordsConflicts()
 	{
 		FxBank bank = SmallBank();

@@ -1,17 +1,22 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Refii.Host;
 
 namespace Refii.Ui;
 
 /// <summary>
-/// A MOD'S MESSAGE BOXES AND MENUS, from every surface: <c>RefiiHost.message_box</c> /
-/// <c>open_menu</c> in Godot, and the native and Lua requests that cross the bus as
-/// <see cref="Engine_UiModRequest.Kind"/> (<c>refii_mod_message_box</c>, <c>Refii.message_box</c>,
-/// <c>refii_mod_open_menu</c>, <c>Refii.open_menu</c>). A box is the host's
+/// A MOD'S MESSAGE BOXES, NOTICES, MENU BOXES AND MENUS, from every surface:
+/// <c>RefiiHost.message_box</c> / <c>notice</c> / <c>menu_box</c> / <c>open_menu</c> in Godot, and
+/// the native and Lua requests that cross the bus as <see cref="Engine_UiModRequest.Kind"/>
+/// (<c>refii_mod_message_box</c>, <c>refii_mod_notice</c>, <c>refii_mod_menu_box</c>,
+/// <c>refii_mod_open_menu</c> and their <c>Refii.*</c> twins). A message box is the host's
 /// (<see cref="Engine_UiHostBoxes"/>): in game the game's own query or message box, on the front end
-/// its own dialog. Its answer raises the <c>ModMessageBox</c> event on all three surfaces — the
-/// Godot signal at once, the native and Lua handlers on the next guest tick (<c>box_answer</c>).
+/// its own dialog. A notice joins the notice channel (<see cref="Engine_UiNotices"/>), the one the
+/// co-op notices use. A menu box is the game's menu box art the Golden Cock's flow uses
+/// (<see cref="Engine_UiModMenuBox"/>). Each answer raises its event on all three surfaces — the
+/// Godot signal at once, the native and Lua handlers on the next guest tick: <c>ModMessageBox</c>
+/// (<c>box_answer</c>), <c>ModNotice</c> (<c>notice_done</c>), <c>ModMenuBox</c> (<c>menu_box_answer</c>).
 /// </summary>
 /// <remarks>
 /// PLAYER-AWARE: a request names player 1 or 2, or 0 for whoever owns the menus here. A machine
@@ -47,7 +52,89 @@ public static class Engine_UiModBoxes
 				Raise(request.Id, request.Player, request.Title, request.Text, request.Accept, request.Cancel,
 					request.Question, null);
 				break;
+
+			case Engine_UiModRequest.Op.Notice:
+				Notice(request.Id, request.Player, request.Title, request.Text, request.Seconds, null);
+				break;
+
+			case Engine_UiModRequest.Op.MenuBox:
+				MenuBox(request.Id, request.Player, request.Title, request.Text, request.Options ?? Array.Empty<string>(),
+					request.Cancelable, null);
+				break;
 		}
+	}
+
+	/// <summary>
+	/// Posts a mod's notice for <paramref name="player"/> (0: whoever owns the menus here) on the
+	/// notice channel, for <paramref name="seconds"/> (0: the channel's length). <paramref name="done"/>
+	/// gets 0 once it has shown and gone, -1 when it never showed (its player is played on the other
+	/// machine, or the queue overflowed); the <c>ModNotice</c> event carries the same.
+	/// </summary>
+	public static bool Notice(uint id, int player, string title, string text, float seconds, Action<int>? done)
+	{
+		int shownTo = Resolve(player);
+		void Done(int outcome)
+		{
+			done?.Invoke(outcome);
+			Refii.Mods.ModGodot.Host?.RaiseModNotice(id, outcome, shownTo);
+			if (HostBridge.IsGuestUp)
+			{
+				HostBridge.PostModCommand(Engine_UiModRequest.NoticeCommandLine(id, outcome, shownTo));
+			}
+		}
+
+		if (!PlayedHere(player))
+		{
+			GD.Print($"[mod-ui] notice {id} is for player {player}, who is played on the other machine — done -1 here");
+			Done(-1);
+			return false;
+		}
+
+		Engine_UiNotices.Post(id, shownTo, title, text, seconds, Engine_UiNotices.ModBoxName, Done);
+		return true;
+	}
+
+	/// <summary>
+	/// Puts up a mod's menu box for <paramref name="player"/> (0: whoever owns the menus here):
+	/// <paramref name="title"/> above <paramref name="text"/>, then <paramref name="options"/> (paged
+	/// past the box's rows). <paramref name="answered"/> gets the chosen option's index, -1 for B on a
+	/// <paramref name="cancelable"/> box, another box replacing it or a player played on the other
+	/// machine. The answer raises <c>ModMenuBox</c> — or, for a <c>message_box</c> with more than two
+	/// buttons (<paramref name="asMessageBox"/>), <c>ModMessageBox</c> with the button's index.
+	/// </summary>
+	public static bool MenuBox(
+		uint id, int player, string title, string text, IReadOnlyList<string> options, bool cancelable,
+		Action<int>? answered, bool asMessageBox = false)
+	{
+		int shownTo = Resolve(player);
+		void Answered(int option)
+		{
+			answered?.Invoke(option);
+			if (asMessageBox)
+			{
+				RaiseAnswered(id, option, shownTo);
+				return;
+			}
+
+			Refii.Mods.ModGodot.Host?.RaiseModMenuBox(id, option, shownTo);
+			if (HostBridge.IsGuestUp)
+			{
+				HostBridge.PostModCommand(Engine_UiModRequest.MenuBoxCommandLine(id, option, shownTo));
+			}
+		}
+
+		if (options.Count == 0 || !PlayedHere(player))
+		{
+			GD.Print($"[mod-ui] menu box {id} " + (options.Count == 0
+				? "has no options — answered -1"
+				: $"is for player {player}, who is played on the other machine — answered -1 here"));
+			Answered(-1);
+			return false;
+		}
+
+		Engine_UiModMenuBox.Open(id, shownTo, Engine_UiModRequest.Body(title, text), options, cancelable, Answered);
+		GD.Print($"[mod-ui] menu box {id} up for player {shownTo}: {options.Count} option(s)");
+		return true;
 	}
 
 	/// <summary>

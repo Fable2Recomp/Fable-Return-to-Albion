@@ -5,76 +5,61 @@ using Refii.Host;
 namespace Refii.Ui;
 
 /// <summary>
-/// THE SECONDARY PICK on the spell selectors — a mod's. A mod ships <c>ui/spellwheel.json</c>:
-/// <code>
-/// { "secondary": {
-///     "setting": "spell_weaving.partner_{slot}", "settingPlayerTwo": "spell_weaving.partner2_{slot}",
-///     "value": "mod:spell_weaving.partner_active_{slot}", "valuePlayerTwo": "mod:spell_weaving.partner2_active_{slot}",
-///     "chosen": "mod:spell_weaving.partner_chosen_{slot}", "chosenPlayerTwo": "...",
-///     "empty": "art/gui/hud/spell_weaving_slot.tex",
-///     "scale": 0.55, "exclude": [2, 7],
-///     "unlocked": "mod:spell_weaving.level",
-///     "apply": "SPELL_WEAVING_SET_PARTNER", "remove": "SPELL_WEAVING_REMOVE_PARTNER" } }
-/// </code>
-/// On both selectors (the quick wheel and the abilities blade) X on the highlighted will writes
-/// that will's type to the setting and Y writes -1. A <c>{slot}</c> in a key is the highlighted
-/// slot's number, 1..5, so a mod may keep one pick per slot; without it one pick serves every slot.
+/// THE MODS' PICKS on the spell selectors: every enabled mod's spell slot pick
+/// (<see cref="Engine_UiSpellPicks.Mods"/>, <c>ui/spellwheel.json</c>), beside the slot's own
+/// spell (<see cref="Engine_UiSpellPicks.Game"/>). On both selectors (the quick wheel and the
+/// abilities blade) X on the highlighted will picks it into the player's ACTIVE pick
+/// (<see cref="Engine_UiSpellPicks.Active"/>) for the highlighted slot and Y clears that pick,
+/// through <see cref="Engine_UiSpellPicks.Choose"/> — the engine raises <c>SpellPick</c> and keeps the
+/// pick as the selectors' player's saved value. Every read is for the selectors' player.
 ///
-/// <c>unlocked</c> names the mod value that says the player HAS the pick (positive); until then
-/// the spell page says nothing about it. <c>apply</c> and <c>remove</c> are the Babel tags of the
-/// two PROMPTS the abilities blade shows once it is unlocked — an X row and a Y row in the page's
-/// own prompt style (glyph, then the words, as the book's "Back"), on the free left side of the
-/// page's prompt band, beside the authored A "Copy Spell to Slots Above" and B "Done".
+/// WHICH PICK X AND Y ACT ON, with two or more: a press that has nothing to do on the active pick
+/// steps to the next one, in load order, wrapping — X on the slot's own spell, on a will the pick
+/// excludes or on the will it already holds; Y on a pick with nothing to clear. On the abilities
+/// blade LB and RB step back and on as well (the book leaves them unused while the blade is up;
+/// the quick wheel's held trigger leaves the guest every button but X and Y). With one pick
+/// nothing steps, and X and Y behave as they always have.
 ///
-/// WHAT IS DRAWN: a small frame in the lower-right corner of every ASSIGNED slot's icon, always
-/// there once the mod declares a pick, so the player can see the slot takes one. Its state:
+/// <c>apply</c> and <c>remove</c> are the Babel tags of the two PROMPTS the abilities blade shows
+/// once a pick is unlocked — an X row and a Y row in the page's own prompt style (glyph, then the
+/// words, as the book's "Back"), on the free left side of the page's prompt band, beside the
+/// authored A "Copy Spell to Slots Above" and B "Done". The words are the active pick's.
+///
+/// WHAT IS DRAWN: a small frame per pick under every ASSIGNED slot's icon
+/// (<see cref="Engine_UiSpellPicks.Layout"/>), always there once a mod states a pick, so the player
+/// can see the slot takes one. With two or more the active pick's frame is drawn larger. Each
+/// frame's state:
 /// <list type="bullet">
-/// <item>empty — the <c>empty</c> art alone, faint: the slot can take a pick and has none;</item>
-/// <item>chosen — the will the mod states in <c>value</c>, at full strength;</item>
-/// <item>chosen but not in effect — the will in <c>chosen</c> when <c>value</c> is -1, at half
+/// <item>empty — the <c>empty</c> art alone, faint: the slot can take the pick and has none;</item>
+/// <item>picked — the will <c>inEffect</c> states, at full strength;</item>
+/// <item>picked but not in effect — the stored will when <c>inEffect</c> says -1, at half
 /// strength (unlearned, or beyond the mod's own gate);</item>
-/// <item>disabled — the frame greyed down when the slot's own will is in <c>exclude</c>; it comes
-/// back the moment a will the pick allows is assigned there.</item>
+/// <item>disabled — the frame greyed down when the slot's own will is in that pick's
+/// <c>exclude</c>; it comes back the moment a will the pick allows is assigned there.</item>
 /// </list>
-/// The host knows nothing of what the pick means; the mod does.
+/// The host knows nothing of what a pick means; its mod does.
 /// </summary>
 public sealed partial class Engine_UiSpellAssign
 {
-	public const string SecondaryPath = "ui/spellwheel.json";
-
-	public sealed record SecondaryBinding(
-		string Mod, string[] Settings, string[] Values, string[] Chosen, string Empty, float Scale,
-		HashSet<int> Excluded, string Unlocked, string Apply, string Remove);
+	public const string SecondaryPath = Engine_UiSpellPicks.SpellWheelPath;
 
 	private const float EmptyOpacity = 0.45f;
 	private const float DisabledOpacity = 0.22f;
 	private const float PendingOpacity = 0.5f;
 
-	private static SecondaryBinding? _secondary;
-	private static bool _secondaryLoaded;
+	/// <summary>How much larger the active pick's frame is drawn when a slot carries two or more.</summary>
+	private const float ActiveEmphasis = 1.2f;
 
-	/// <summary>The binding the enabled mods state, the last in load order winning; null when none.</summary>
-	public static SecondaryBinding? Secondary
-	{
-		get
-		{
-			if (!_secondaryLoaded)
-			{
-				_secondary = LoadSecondary();
-				_secondaryLoaded = true;
-			}
+	/// <summary>The pick X and Y act on for player one; null when no mod states one (the input mask's gate).</summary>
+	public static Engine_UiSpellPicks.Pick? Secondary => Engine_UiSpellPicks.Active(1);
 
-			return _secondary;
-		}
-	}
-
-	/// <summary>Drops the loaded binding; the next read loads it again.</summary>
-	public static void ReloadSecondary() => _secondaryLoaded = false;
+	/// <summary>Drops the loaded picks; the next read loads them again.</summary>
+	public static void ReloadSecondary() => Engine_UiSpellPicks.Reload();
 
 	/// <summary>Which player's hero this copy shows: 1, or 2 for the joiner's wheel.</summary>
 	public int Player { get; set; } = 1;
 
-	/// <summary>What a press on the selectors asks of the partner: X applies the highlighted will, Y removes the partner.</summary>
+	/// <summary>What a press on the selectors asks of the active pick: X applies the highlighted will, Y removes it.</summary>
 	public enum SecondaryAction
 	{
 		None,
@@ -85,17 +70,45 @@ public sealed partial class Engine_UiSpellAssign
 	public static SecondaryAction SecondaryPressed(bool flip, bool equip) =>
 		Secondary is null ? SecondaryAction.None : equip ? SecondaryAction.Apply : flip ? SecondaryAction.Remove : SecondaryAction.None;
 
-	/// <summary>
-	/// Whether the player has the pick: the mod value <c>unlocked</c> names is positive. A binding
-	/// that names none is unlocked from the start.
-	/// </summary>
-	public static bool SecondaryUnlocked() =>
-		Secondary is { } binding &&
-		(binding.Unlocked.Length == 0 ||
-		 (HostBridge.TryGetModValue(binding.Unlocked, out float level) && level > 0f));
+	/// <summary>Whether <paramref name="player"/> has any of the picks: an <c>unlocked</c> source positive for them.</summary>
+	public static bool SecondaryUnlocked(int player)
+	{
+		foreach (Engine_UiSpellPicks.Pick pick in Engine_UiSpellPicks.Mods)
+		{
+			if (Engine_UiSpellPicks.Unlocked(pick, player))
+			{
+				return true;
+			}
+		}
 
-	/// <summary>The prompt rows this copy added to the book's blade, X then Y, glyphs and words.</summary>
-	private readonly List<Node3D> _prompts = new();
+		return false;
+	}
+
+	/// <summary>Steps <paramref name="player"/>'s active pick <paramref name="delta"/> on; nothing with one pick or none.</summary>
+	public static void StepSecondary(int player, int delta)
+	{
+		IReadOnlyList<Engine_UiSpellPicks.Pick> picks = Engine_UiSpellPicks.Mods;
+		if (picks.Count < 2 || delta == 0)
+		{
+			return;
+		}
+
+		int at = Engine_UiSpellPicks.StepCursor(player, delta, picks.Count);
+		GD.Print($"[spell-wheel] player {player} now picks {picks[at].Name} ({at + 1} of {picks.Count})");
+	}
+
+	/// <summary>The prompt glyphs this copy added to the book's blade, X then Y.</summary>
+	private readonly List<Node3D> _promptGlyphs = new();
+
+	/// <summary>Each pick's prompt words, in load order: the X row's, then the Y row's.</summary>
+	private readonly List<(Node3D Apply, Node3D Remove)> _promptWords = new();
+
+	private const string GlyphX = "icon_button_x";
+	private const string GlyphY = "icon_button_y";
+
+	private static string ApplyName(int pick) => "SetPick_" + pick;
+
+	private static string RemoveName(int pick) => "RemovePick_" + pick;
 
 	/// <summary>
 	/// THE PROMPTS, in the page's own band. `abilitiesscreen.bgf` authors `Blade.Buttons` at
@@ -104,63 +117,87 @@ public sealed partial class Engine_UiSpellAssign
 	/// B row and the Y row on the A row, laid out as the book's own glyph-first `Back` prompt
 	/// (glyph at x, words left-aligned 21 units on). The glyph is the authored B quad duplicated
 	/// and re-cut to the X or Y column of the `abyx` atlas (columns A, B, Y, X), with its keycap
-	/// for the keyboard; the words are a label in the page's prompt colour and size. Built once
-	/// per Buttons node and adopted on a rebuild, so a blade that comes and goes never doubles
-	/// them. Hidden until <see cref="ShowPrompts"/> says otherwise.
+	/// for the keyboard; the words — one pair per pick, only the active pick's shown — are labels
+	/// in the page's prompt colour and size. Built once per Buttons node and adopted on a rebuild,
+	/// so a blade that comes and goes never doubles them. Hidden until <see cref="ShowPrompts"/>
+	/// says otherwise.
 	/// </summary>
 	public void EnsurePrompts(Engine_UiOwnedBook book)
 	{
-		if (Secondary is not { } binding || Book is null)
+		IReadOnlyList<Engine_UiSpellPicks.Pick> picks = Engine_UiSpellPicks.Mods;
+		if (picks.Count == 0 || Book is null)
 		{
 			return;
 		}
 
-		if (_prompts.Count > 0 && GodotObject.IsInstanceValid(_prompts[0]))
+		if (_promptGlyphs.Count == 2 && _promptWords.Count == picks.Count && GodotObject.IsInstanceValid(_promptGlyphs[0]))
 		{
 			return;
 		}
 
-		_prompts.Clear();
 		if (book.Find("Blade") is not { } blade ||
 			Engine_UiTheme.FindByName(blade, "Buttons") is not Node3D buttons ||
 			Engine_UiTheme.FindByName(buttons, "icon_button_b") is not MeshInstance3D glyph ||
 			Engine_UiTheme.FindByName(buttons, "Done") is not MeshInstance3D done)
 		{
-			GD.PushWarning("[spell-wheel] the blade's prompt band is not in this book; no partner prompts");
+			GD.PushWarning("[spell-wheel] the blade's prompt band is not in this book; no pick prompts");
 			return;
 		}
 
-		// A rebuild of the widget finds the rows a previous copy left on the same Buttons node.
-		foreach (string name in new[] { "icon_button_x", "SetPartner", "icon_button_y", "RemovePartner" })
+		// A rebuild of the widget finds the rows a previous copy left on the same Buttons node,
+		// for as many picks as are stated now.
+		_promptGlyphs.Clear();
+		_promptWords.Clear();
+		var kept = new List<Node3D>();
+		foreach (string name in new[] { GlyphX, GlyphY })
 		{
-			if (Engine_UiTheme.FindByName(buttons, name) is Node3D kept)
+			if (Engine_UiTheme.FindByName(buttons, name) is Node3D node)
 			{
-				_prompts.Add(kept);
+				kept.Add(node);
 			}
 		}
 
-		if (_prompts.Count == 4)
+		bool whole = kept.Count == 2;
+		for (int i = 0; whole && i < picks.Count; ++i)
 		{
+			if (Engine_UiTheme.FindByName(buttons, ApplyName(i)) is Node3D apply &&
+				Engine_UiTheme.FindByName(buttons, RemoveName(i)) is Node3D remove)
+			{
+				_promptWords.Add((apply, remove));
+			}
+			else
+			{
+				whole = false;
+			}
+		}
+
+		if (whole && Engine_UiTheme.FindByName(buttons, ApplyName(picks.Count)) is null)
+		{
+			_promptGlyphs.AddRange(kept);
 			return;
 		}
 
-		foreach (Node3D stale in _prompts)
+		// Stale or partial (the picks changed on a remount): every row of ours goes, then all are built.
+		_promptWords.Clear();
+		foreach (Node child in buttons.GetChildren())
 		{
-			stale.QueueFree();
+			if (child.Name.ToString() is GlyphX or GlyphY || child.Name.ToString().StartsWith("SetPick_", System.StringComparison.Ordinal) ||
+				child.Name.ToString().StartsWith("RemovePick_", System.StringComparison.Ordinal))
+			{
+				buttons.RemoveChild(child);
+				child.QueueFree();
+			}
 		}
 
-		_prompts.Clear();
 		int size = done.HasMeta("text_size") ? (int)done.GetMeta("text_size") : 18;
 		Color colour = Engine_UiSceneBuilder.TextColour(done);
-		float rowStep = 32f;  // the authored A row (y 3) to the B row (y 35)
-		foreach ((string button, int column, string tag, string name, float y) in new[]
-			{
-				("X", 3, binding.Apply, "SetPartner", done.Position.Y),
-				("Y", 2, binding.Remove, "RemovePartner", done.Position.Y - rowStep),
-			})
+		const float rowStep = 32f;  // the authored A row (y 3) to the B row (y 35)
+		float applyY = done.Position.Y;
+		float removeY = done.Position.Y - rowStep;
+		foreach ((string button, int column, float y) in new[] { ("X", 3, applyY), ("Y", 2, removeY) })
 		{
 			var quad = (MeshInstance3D)glyph.Duplicate();
-			quad.Name = "icon_button_" + button.ToLowerInvariant();
+			quad.Name = button == "X" ? GlyphX : GlyphY;
 			quad.Position = new Vector3(PromptGlyphX, y + (glyph.Position.Y - done.Position.Y), glyph.Position.Z);
 			if (quad.MaterialOverride is ShaderMaterial shared)
 			{
@@ -174,14 +211,22 @@ public sealed partial class Engine_UiSpellAssign
 
 			quad.Visible = false;
 			buttons.AddChild(quad);
-			_prompts.Add(quad);
+			_promptGlyphs.Add(quad);
+		}
 
-			MeshInstance3D words = Book.Label(Book.Resolve(tag), size, colour);
-			words.Name = name;
-			words.Position = new Vector3(PromptGlyphX + PromptWordsOffset, y, done.Position.Z);
-			words.Visible = false;
-			buttons.AddChild(words);
-			_prompts.Add(words);
+		for (int i = 0; i < picks.Count; ++i)
+		{
+			MeshInstance3D Words(string tag, string name, float y)
+			{
+				MeshInstance3D words = Book.Label(Book.Resolve(tag), size, colour);
+				words.Name = name;
+				words.Position = new Vector3(PromptGlyphX + PromptWordsOffset, y, done.Position.Z);
+				words.Visible = false;
+				buttons.AddChild(words);
+				return words;
+			}
+
+			_promptWords.Add((Words(picks[i].Apply, ApplyName(i), applyY), Words(picks[i].Remove, RemoveName(i), removeY)));
 		}
 	}
 
@@ -191,100 +236,97 @@ public sealed partial class Engine_UiSpellAssign
 	/// <summary>Words start 21 units right of the glyph's centre — the book's `Back` prompt spacing.</summary>
 	private const float PromptWordsOffset = 21f;
 
-	/// <summary>Shows or hides the partner prompts — up while the blade is known and the pick unlocked.</summary>
-	public void ShowPrompts(bool shown)
+	/// <summary>Shows or hides the pick prompts — up while the blade is known and a pick unlocked; the words are <paramref name="player"/>'s active pick's.</summary>
+	public void ShowPrompts(bool shown, int player)
 	{
-		foreach (Node3D node in _prompts)
+		foreach (Node3D node in _promptGlyphs)
 		{
 			if (GodotObject.IsInstanceValid(node))
 			{
 				node.Visible = shown;
 			}
 		}
+
+		int active = Engine_UiSpellPicks.Cursor(player, _promptWords.Count);
+		for (int i = 0; i < _promptWords.Count; ++i)
+		{
+			(Node3D apply, Node3D remove) = _promptWords[i];
+			bool on = shown && i == active;
+			if (GodotObject.IsInstanceValid(apply))
+			{
+				apply.Visible = on;
+			}
+
+			if (GodotObject.IsInstanceValid(remove))
+			{
+				remove.Visible = on;
+			}
+		}
 	}
 
-	/// <summary>Y on a slot: its partner is removed, and its frame goes back to empty.</summary>
+	/// <summary>
+	/// Y on a slot: the active pick is cleared there (the engine's <c>spell_pick</c> with -1), and its
+	/// frame goes back to empty. With nothing to clear and more than one pick, the next pick becomes
+	/// the active one instead.
+	/// </summary>
 	public static void RemoveSecondary(int player, int slot)
 	{
-		if (Secondary is not { } binding || slot < 0 || slot >= Engine_UiModel.SpellAssignState.Slots)
+		if (Engine_UiSpellPicks.Active(player) is not { } pick || slot < 0 || slot >= Engine_UiModel.SpellAssignState.Slots)
 		{
 			return;
 		}
 
-		string key = KeyFor(binding.Settings[player == 2 && binding.Settings.Length > 1 ? 1 : 0], slot);
-		GD.Print($"[spell-wheel] partner removed: player {player} slot {slot + 1} (was {SecondaryChosen(player, slot)})");
-		Refii.Mods.ModSettings.Set(key, -1f);
-	}
-
-	/// <summary>A key with its <c>{slot}</c> filled in — the slot's number, 1..5.</summary>
-	private static string KeyFor(string template, int slot) =>
-		template.Replace("{slot}", (slot + 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
-
-	private static int WillValue(string[] keys, int player, int slot)
-	{
-		if (keys.Length == 0)
+		int was = SecondaryChosen(pick, player, slot);
+		if (was < 0 && Engine_UiSpellPicks.Mods.Count > 1)
 		{
-			return -1;
+			StepSecondary(player, 1);
+			return;
 		}
 
-		string key = KeyFor(keys[player == 2 && keys.Length > 1 ? 1 : 0], slot);
-		return HostBridge.TryGetModValue(key, out float value) && value >= 0f && value < Engine_UiModel.SpellAssignState.Spells
-			? (int)value
-			: -1;
+		GD.Print($"[spell-wheel] {pick.Name} cleared: player {player} slot {slot + 1} (was {was})");
+		Engine_UiSpellPicks.Choose(pick, player, slot, -1);
 	}
 
-	/// <summary>The will the mod states as IN EFFECT for <paramref name="player"/> on <paramref name="slot"/>, or -1.</summary>
-	public static int SecondaryWill(int player, int slot) =>
-		Secondary is { } binding ? WillValue(binding.Values, player, slot) : -1;
+	/// <summary>The will <paramref name="pick"/>'s mod states as IN EFFECT for <paramref name="player"/> on <paramref name="slot"/>, or -1.</summary>
+	public static int SecondaryWill(Engine_UiSpellPicks.Pick pick, int player, int slot) =>
+		Engine_UiSpellPicks.InEffect(pick, player, slot);
 
-	/// <summary>The will the mod states as CHOSEN there, in effect or not; falls back to the one in effect.</summary>
-	public static int SecondaryChosen(int player, int slot)
+	/// <summary>The will stored as the player's <paramref name="pick"/> there, in effect or not; falls back to the one in effect.</summary>
+	public static int SecondaryChosen(Engine_UiSpellPicks.Pick pick, int player, int slot)
 	{
-		if (Secondary is not { } binding)
-		{
-			return -1;
-		}
-
-		int chosen = WillValue(binding.Chosen, player, slot);
-		return chosen >= 0 ? chosen : WillValue(binding.Values, player, slot);
+		int chosen = Engine_UiSpellPicks.Stored(pick, player, slot);
+		return chosen >= 0 ? chosen : Engine_UiSpellPicks.InEffect(pick, player, slot);
 	}
 
 	/// <summary>
-	/// The pick on a slot: the will under the cursor becomes the slot's partner. The slot's OWN
-	/// spell (<paramref name="primary"/>) picked as partner means "no partner" — it can never be
-	/// one — and the will already chosen is kept, never toggled off: a second press on the same
-	/// will used to clear it, which read as the pick not taking.
+	/// The pick on a slot: the will under the cursor goes into the player's active pick. The slot's
+	/// OWN spell (<paramref name="primary"/>) can never be one, a will the pick excludes is refused,
+	/// and the will already chosen is kept, never toggled off (a second press on the same will used
+	/// to clear it, which read as the pick not taking). Each of those presses has nothing to do, so
+	/// with more than one pick it steps to the next instead.
 	/// </summary>
 	public static void ChooseSecondary(int player, int slot, int? will, int primary = -1)
 	{
-		if (Secondary is not { } binding || will is not { } chosen || chosen < 0 ||
+		if (Engine_UiSpellPicks.Active(player) is not { } binding || will is not { } chosen || chosen < 0 ||
 			slot < 0 || slot >= Engine_UiModel.SpellAssignState.Slots)
 		{
 			return;
 		}
 
-		string key = KeyFor(binding.Settings[player == 2 && binding.Settings.Length > 1 ? 1 : 0], slot);
-		int current = SecondaryChosen(player, slot);
-		if (chosen == primary)
+		int current = SecondaryChosen(binding, player, slot);
+		string? idle = chosen == primary ? "is the slot's own spell"
+			: binding.Excludes(chosen) ? "cannot be picked"
+			: chosen == current ? "is already picked"
+			: null;
+		if (idle is not null)
 		{
-			GD.Print($"[spell-wheel] partner pick: player {player} slot {slot + 1}: will {chosen} is the slot's own spell; kept {current} (Y removes)");
+			GD.Print($"[spell-wheel] {binding.Name}: player {player} slot {slot + 1}: will {chosen} {idle}; kept {current}");
+			StepSecondary(player, 1);
 			return;
 		}
 
-		if (binding.Excluded.Contains(chosen))
-		{
-			GD.Print($"[spell-wheel] partner pick: player {player} slot {slot + 1}: will {chosen} cannot be a partner; kept {current}");
-			return;
-		}
-
-		if (chosen == current)
-		{
-			GD.Print($"[spell-wheel] partner pick: player {player} slot {slot + 1}: will {chosen} already the partner; kept");
-			return;
-		}
-
-		GD.Print($"[spell-wheel] partner pick: player {player} slot {slot + 1}: will {chosen} (was {current})");
-		Refii.Mods.ModSettings.Set(key, chosen);
+		GD.Print($"[spell-wheel] {binding.Name}: player {player} slot {slot + 1}: will {chosen} (was {current})");
+		Engine_UiSpellPicks.Choose(binding, player, slot, chosen);
 	}
 
 	/// <summary>The will under the carousel's centre on this copy's own cursor — the abilities blade's pick.</summary>
@@ -294,64 +336,72 @@ public sealed partial class Engine_UiSpellAssign
 		return _cell >= 0 && _cell < choices.Count ? choices[_cell] : null;
 	}
 
-	/// <summary>The small frame under each assigned slot's icon, in one of its four states.</summary>
+	/// <summary>The small frames under each assigned slot's icon, one per pick, each in one of its four states.</summary>
 	private void PaintSecondary()
 	{
-		if (Secondary is not { } binding)
-		{
-			return;
-		}
-
+		IReadOnlyList<Engine_UiSpellPicks.Pick> picks = Engine_UiSpellPicks.Mods;
+		int active = picks.Count > 1 ? Engine_UiSpellPicks.Cursor(Player, picks.Count) : -1;
 		for (int slot = 0; slot < _rows.Count; ++slot)
 		{
 			Row row = _rows[slot];
 			bool assigned = row.Shown >= 0 && row.Icon is not null && GodotObject.IsInstanceValid(row.Icon);
-			if (!assigned)
+			for (int i = 0; i < row.Minis.Count; ++i)
 			{
-				if (row.Mini is not null && GodotObject.IsInstanceValid(row.Mini))
+				if ((!assigned || i >= picks.Count) && GodotObject.IsInstanceValid(row.Minis[i]))
 				{
-					row.Mini.Visible = false;
-				}
-
-				continue;
-			}
-
-			MeshInstance3D? mini = EnsureMini(row, binding.Scale);
-			if (mini is null)
-			{
-				continue;
-			}
-
-			// The state, as one number the row remembers: -3 disabled, -2 empty, will + 8 pending,
-			// will in effect.
-			int active = SecondaryWill(Player, slot);
-			int chosen = SecondaryChosen(Player, slot);
-			int state = binding.Excluded.Contains(row.Shown) ? -3
-				: active >= 0 ? active
-				: chosen >= 0 ? chosen + 8
-				: -2;
-			if (state != row.MiniShown)
-			{
-				row.MiniShown = state;
-				switch (state)
-				{
-					case -3:
-						PaintFrame(mini, binding.Empty, DisabledOpacity);
-						break;
-					case -2:
-						PaintFrame(mini, binding.Empty, EmptyOpacity);
-						break;
-					case >= 8:
-						Paint(mini, state - 8);
-						Engine_UiSceneBuilder.SetQuadOpacity(mini, PendingOpacity);
-						break;
-					default:
-						Paint(mini, state);
-						break;
+					row.Minis[i].Visible = false;
 				}
 			}
 
-			mini.Visible = true;
+			if (!assigned || picks.Count == 0)
+			{
+				continue;
+			}
+
+			PlaceMinis(row, picks, active);
+			for (int i = 0; i < picks.Count; ++i)
+			{
+				Engine_UiSpellPicks.Pick pick = picks[i];
+				MeshInstance3D? mini = i < row.Minis.Count ? row.Minis[i] : null;
+				if (mini is null || !GodotObject.IsInstanceValid(mini))
+				{
+					continue;
+				}
+
+				// The state, as one number the row remembers: -3 disabled, -2 empty, will + 8 pending,
+				// will in effect.
+				int inEffect = SecondaryWill(pick, Player, slot);
+				int chosen = SecondaryChosen(pick, Player, slot);
+				int state = pick.Excludes(row.Shown) ? -3
+					: inEffect >= 0 ? inEffect
+					: chosen >= 0 ? chosen + 8
+					: -2;
+				if (state != row.MinisShown[i])
+				{
+					row.MinisShown[i] = state;
+					switch (state)
+					{
+						case -3:
+							PaintFrame(mini, pick.Empty, DisabledOpacity);
+							break;
+						case -2:
+							PaintFrame(mini, pick.Empty, EmptyOpacity);
+							break;
+						case >= 8:
+							Paint(mini, state - 8);
+							Engine_UiSceneBuilder.SetQuadOpacity(mini, PendingOpacity);
+							break;
+						default:
+							Paint(mini, state);
+							break;
+					}
+
+					// What the paint left: hidden only when the frame's art is missing.
+					row.MinisDrawn[i] = mini.Visible;
+				}
+
+				mini.Visible = row.MinisDrawn[i];
+			}
 		}
 	}
 
@@ -375,93 +425,60 @@ public sealed partial class Engine_UiSpellAssign
 		Engine_UiSceneBuilder.SetQuadOpacity(node, opacity);
 	}
 
-	/// <summary>A copy of the slot's icon quad, under it, at the lower-right corner, at <paramref name="scale"/>.</summary>
-	private static MeshInstance3D? EnsureMini(Row row, float scale)
+	/// <summary>
+	/// One copy of the slot's icon quad per pick, under it, placed by
+	/// <see cref="Engine_UiSpellPicks.Layout"/> at the smallest of the picks' <c>scale</c>s, the active
+	/// one drawn larger and in front; re-placed only when the count or the active pick changes.
+	/// </summary>
+	private static void PlaceMinis(Row row, IReadOnlyList<Engine_UiSpellPicks.Pick> picks, int active)
 	{
-		if (row.Mini is not null && GodotObject.IsInstanceValid(row.Mini))
-		{
-			return row.Mini;
-		}
-
 		if (row.Icon is not { } icon || icon.Mesh is null)
 		{
-			return null;
+			return;
 		}
 
-		var mini = new MeshInstance3D
+		while (row.Minis.Count < picks.Count)
 		{
-			Name = "Secondary",
-			Mesh = icon.Mesh,
-			MaterialOverride = icon.MaterialOverride?.Duplicate() as Material,
-		};
+			var mini = new MeshInstance3D
+			{
+				Name = "Secondary" + row.Minis.Count,
+				Mesh = icon.Mesh,
+				MaterialOverride = icon.MaterialOverride?.Duplicate() as Material,
+				Visible = false,
+			};
+			icon.AddChild(mini);
+			row.Minis.Add(mini);
+			row.MinisShown.Add(int.MinValue);
+			row.MinisDrawn.Add(false);
+			row.MinisPlaced = -1;
+		}
+
+		int placed = (picks.Count * 16) + active + 1;
+		if (row.MinisPlaced == placed)
+		{
+			return;
+		}
+
+		row.MinisPlaced = placed;
+		float scale = 1f;
+		foreach (Engine_UiSpellPicks.Pick pick in picks)
+		{
+			scale = Mathf.Min(scale, pick.Scale);
+		}
+
 		Vector3 size = icon.Mesh.GetAabb().Size;
-		// Its centre sits so the small quad overhangs the big one's corner by a little.
-		float dx = (size.X * 0.5f) - (size.X * scale * 0.35f);
-		float dy = (size.Y * 0.5f) - (size.Y * scale * 0.35f);
-		mini.Position = new Vector3(dx, -dy, 1f);
-		mini.Scale = new Vector3(scale, scale, 1f);
-		icon.AddChild(mini);
-		row.Mini = mini;
-		row.MiniShown = int.MinValue;
-		return mini;
-	}
-
-	private static SecondaryBinding? LoadSecondary()
-	{
-		SecondaryBinding? found = null;
-		foreach ((string mod, string text) in Refii.Mods.ModEntries.ReadEnabledText(SecondaryPath))
+		(float X, float Y, float Scale)[] at = Engine_UiSpellPicks.Layout(picks.Count, scale);
+		for (int i = 0; i < picks.Count; ++i)
 		{
-			Variant parsed = Json.ParseString(text);
-			if (parsed.VariantType != Variant.Type.Dictionary ||
-				!parsed.AsGodotDictionary().TryGetValue("secondary", out Variant value) ||
-				value.VariantType != Variant.Type.Dictionary)
+			MeshInstance3D mini = row.Minis[i];
+			if (!GodotObject.IsInstanceValid(mini))
 			{
-				GD.PushWarning($"[spell-wheel] {mod}:{SecondaryPath} has no \"secondary\" object; ignored");
 				continue;
 			}
 
-			var record = value.AsGodotDictionary();
-			string Text(string key) => record.TryGetValue(key, out Variant v) ? v.AsString() : string.Empty;
-			string setting = Text("setting");
-			string stated = Text("value");
-			if (setting.Length == 0 || stated.Length == 0)
-			{
-				GD.PushWarning($"[spell-wheel] {mod}: secondary needs setting and value; ignored");
-				continue;
-			}
-
-			string settingTwo = Text("settingPlayerTwo");
-			string statedTwo = Text("valuePlayerTwo");
-			string chosen = Text("chosen");
-			string chosenTwo = Text("chosenPlayerTwo");
-			float scale = record.TryGetValue("scale", out Variant s) && s.VariantType is Variant.Type.Float or Variant.Type.Int
-				? Mathf.Clamp((float)s.AsDouble(), 0.2f, 1f)
-				: 0.55f;
-			static string Bare(string key) => key.StartsWith("mod:", System.StringComparison.Ordinal) ? key[4..] : key;
-			var excluded = new HashSet<int>();
-			if (record.TryGetValue("exclude", out Variant exclude) && exclude.VariantType == Variant.Type.Array)
-			{
-				foreach (Variant item in exclude.AsGodotArray())
-				{
-					excluded.Add(item.AsInt32());
-				}
-			}
-
-			found = new SecondaryBinding(
-				mod,
-				settingTwo.Length == 0 ? new[] { setting } : new[] { setting, settingTwo },
-				statedTwo.Length == 0 ? new[] { Bare(stated) } : new[] { Bare(stated), Bare(statedTwo) },
-				chosen.Length == 0 ? System.Array.Empty<string>()
-					: chosenTwo.Length == 0 ? new[] { Bare(chosen) } : new[] { Bare(chosen), Bare(chosenTwo) },
-				Text("empty"), scale, excluded, Bare(Text("unlocked")), Text("apply"), Text("remove"));
+			float s = at[i].Scale * (i == active ? ActiveEmphasis : 1f);
+			mini.Position = new Vector3(at[i].X * size.X, at[i].Y * size.Y, i == active ? 2f : 1f);
+			mini.Scale = new Vector3(s, s, 1f);
 		}
-
-		if (found is not null)
-		{
-			GD.Print($"[spell-wheel] secondary pick from {found.Mod}: X applies, Y removes" +
-				(found.Unlocked.Length == 0 ? string.Empty : $", unlocked by {found.Unlocked}"));
-		}
-
-		return found;
 	}
 }

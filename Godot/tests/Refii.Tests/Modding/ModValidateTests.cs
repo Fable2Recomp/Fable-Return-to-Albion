@@ -62,7 +62,7 @@ public class ModValidateTests
             return;  // a packaged test run without the source tree
         }
 
-        var expected = new Dictionary<string, int> { ["souls_combat"] = 4, ["spell_weaving"] = 7 };
+        var expected = new Dictionary<string, int> { ["souls_combat"] = 5, ["spell_weaving"] = 23 };
         foreach ((string mod, int kinds) in expected)
         {
             string folder = Path.Combine(root, "mods-src", mod);
@@ -227,23 +227,37 @@ public class ModValidateTests
     public void BrokenSpellWheel()
     {
         List<ModIssue> issues = Check("ui/spellwheel.json",
-            "{ \"secondary\": { \"setting\": \"mod:a.partner_{slot}\", \"scale\": 3, \"exclude\": [9] } }");
-        HasError(issues, "secondary.value", "is required");
-        HasError(issues, "secondary.setting", "named bare");
-        HasWarning(issues, "secondary.scale", "clamped");
-        HasWarning(issues, "secondary.exclude[0]", "no will type");
-        HasError(Check("ui/spellwheel.json", "{ \"primary\": {} }"), string.Empty, "\"secondary\" object");
+            "{ \"picks\": [ { \"store\": \"mod:a.partner_{slot}\", \"inEffect\": \"a.active\", \"scale\": 3, \"exclude\": [9] }, " +
+            "{ \"name\": \"b\", \"store\": \"game\" }, { \"name\": \"c\", \"store\": \"a.pick\" } ] }");
+        HasError(issues, "picks[0].name", "is required");
+        HasError(issues, "picks[0].store", "not a player value key");
+        HasError(issues, "picks[0].inEffect", "not a value source");
+        HasWarning(issues, "picks[0].scale", "clamped");
+        HasWarning(issues, "picks[0].exclude[0]", "no will type");
+        HasError(issues, "picks[1].store", "the game's pick");
+        HasWarning(issues, "picks[2].store", "has no {slot}");
+        HasError(Check("ui/spellwheel.json", "{ \"primary\": {} }"), string.Empty, "\"picks\" list");
+        HasError(Check("ui/spellwheel.json", "{ \"secondary\": { \"setting\": \"a.pick\" } }"), "secondary", "old setting-channel form");
     }
 
     [TestCase]
     public void BrokenAbilities()
     {
         List<ModIssue> issues = Check("ui/abilities.json",
-            "{ \"abilities\": [ { \"name\": \"A\", \"category\": \"Hybrid\", \"level\": \"mod:a.level\", \"maxLevel\": 0 } ] }");
-        HasError(issues, "abilities[0].buy", "is required");
-        HasError(issues, "abilities[0].level", "names the mod value bare");
+            "{ \"abilities\": [ { \"name\": \"A B\", \"category\": \"Hybrid\", \"level\": \"mod:a.level\", \"maxLevel\": 0, " +
+            "\"refund\": \"all\", \"stat\": \"a.next\" }, " +
+            "{ \"name\": \"C\", \"category\": \"Will\", \"levelKey\": \"a level\", \"costLike\": 15, \"stats\": [1, 2] } ] }");
+        HasError(issues, "abilities[0].levelKey", "is required");
+        HasError(issues, "abilities[0].costLike", "is required");
+        HasError(issues, "abilities[0].level", "old setting-counter form");
+        HasError(issues, "abilities[0].name", "no spaces");
         HasError(issues, "abilities[0].maxLevel", "below the least allowed");
+        HasError(issues, "abilities[0].refund", "no refund rule");
+        HasError(issues, "abilities[0].stat", "not a value source");
         HasWarning(issues, "abilities[0].category", "names its \"disciplines\"");
+        HasError(issues, "abilities[1].levelKey", "not a player value key");
+        HasError(issues, "abilities[1].costLike", "above the most allowed");
+        HasWarning(issues, "abilities[1].stats", "one per level");
     }
 
     [TestCase]

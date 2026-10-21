@@ -7,7 +7,8 @@ namespace Refii.Ui;
 /// Fable 3's co-op join and leave notices, adapted: what to tell the player when the co-op session
 /// they are in changes, and the "press START" invitation while a second pad sits idle. Fed the
 /// session transitions the shell already detects (<c>GameUi.DriveCoopHeroChannel</c>); it decides
-/// the text and the order, the shell shows each one in the info box for <see cref="Seconds"/>.
+/// the text and the order, and each is posted on the notice channel (<see cref="Engine_UiNotices"/>)
+/// for <see cref="Seconds"/> — the channel a mod's <c>notice</c> uses, so the two queue together.
 /// </summary>
 /// <remarks>
 /// ONE AT A TIME. A join can raise two notices on one frame (the join and the progression note);

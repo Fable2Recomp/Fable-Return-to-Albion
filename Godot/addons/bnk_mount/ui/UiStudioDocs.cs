@@ -305,10 +305,10 @@ public sealed class ModMenuTarget : IUiMenuTarget
 			return;
 		}
 
-		_base = UiStudioDocs.FromGodot(Engine_UiTemplates.Compose(_docs.Files(Engine_UiTemplates.ModTemplatesPath, null)).Records);
-		(Godot.Collections.Dictionary records, IReadOnlyList<Engine_UiTemplates.ModConflict> conflicts) =
+		_base = Engine_UiTemplates.Compose(_docs.Files(Engine_UiTemplates.ModTemplatesPath, null)).Records;
+		(JsonObject records, IReadOnlyList<Engine_UiTemplates.ModConflict> conflicts) =
 			Engine_UiTemplates.Compose(_docs.Files(Engine_UiTemplates.ModTemplatesPath, modText));
-		_current = UiStudioDocs.FromGodot(records);
+		_current = records;
 		Conflicts = conflicts;
 	}
 

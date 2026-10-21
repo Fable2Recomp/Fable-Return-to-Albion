@@ -1,12 +1,12 @@
 using System;
-using System.Globalization;
 
 namespace Refii.Ui;
 
 /// <summary>
 /// What a mod's <c>text</c> HUD piece says (<see cref="Engine_HudModPieces"/>): its <c>"text"</c>
-/// is a literal, a Babel tag, or <c>mod:&lt;key&gt;</c> — a value a mod publishes, drawn through
-/// <c>"format"</c> — and <c>"align"</c> picks the edge the text hangs from.
+/// is a literal, a Babel tag, or a value source (<see cref="Engine_UiValueSources"/>: <c>mod:</c>,
+/// <c>game:</c>, <c>player:</c>, <c>hero:</c>) drawn through <c>"format"</c> — a <c>game:</c>
+/// text field is drawn as the guest wrote it — and <c>"align"</c> picks the edge the text hangs from.
 /// </summary>
 /// <remarks>
 /// <para>A tag is tried in the string book first and the text drawn as written when the book has
@@ -20,43 +20,19 @@ public static class Engine_HudModText
 {
 	public const string ModPrefix = "mod:";
 
-	/// <summary>The piece's string now, or null when it states nothing (an unpublished value, an empty text).</summary>
-	public static string? Resolve(string text, string format, Func<string, float?> modValue, Func<string, string?> tag)
-	{
-		string source = text.Trim();
-		if (source.Length == 0)
-		{
-			return null;
-		}
+	/// <summary>
+	/// The piece's string now, or null when it states nothing (an unpublished value, an empty text).
+	/// Only <c>mod:</c> answers here; <see cref="Engine_UiValueSources.Text"/> is the whole rule.
+	/// </summary>
+	public static string? Resolve(string text, string format, Func<string, float?> modValue, Func<string, string?> tag) =>
+		Engine_UiValueSources.Text(text, format, new Engine_UiValueSources.Context { Mod = modValue }, tag);
 
-		if (source.StartsWith(ModPrefix, StringComparison.Ordinal))
-		{
-			string key = source[ModPrefix.Length..];
-			return key.Length != 0 && modValue(key) is { } value ? Format(format, value) : null;
-		}
-
-		return tag(source) is { Length: > 0 } found ? found : text;
-	}
+	/// <summary>The piece's string now for one reader (<see cref="Engine_UiValueSources.Context"/>).</summary>
+	public static string? Resolve(string text, string format, Engine_UiValueSources.Context context, Func<string, string?> tag) =>
+		Engine_UiValueSources.Text(text, format, context, tag);
 
 	/// <summary>A value through the piece's format; a format that does not parse draws the plain number.</summary>
-	public static string Format(string format, float value)
-	{
-		if (format.Length == 0)
-		{
-			return value.ToString("0.##", CultureInfo.InvariantCulture);
-		}
-
-		try
-		{
-			return format.Contains('{', StringComparison.Ordinal)
-				? string.Format(CultureInfo.InvariantCulture, format, value)
-				: value.ToString(format, CultureInfo.InvariantCulture);
-		}
-		catch (FormatException)
-		{
-			return value.ToString("0.##", CultureInfo.InvariantCulture);
-		}
-	}
+	public static string Format(string format, float value) => Engine_UiValueSources.Format(format, value);
 
 	/// <summary>
 	/// The text record's horizontal alignment (0 left, 1 centre, 2 right — <c>UiText.HorzAlign</c>):

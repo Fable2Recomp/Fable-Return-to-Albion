@@ -2458,7 +2458,11 @@ public static class GameCodeBuild
 			};
 
 			File.WriteAllText(BuildInfoPath, JsonSerializer.Serialize(
-				record, new JsonSerializerOptions { WriteIndented = true }));
+				record, new JsonSerializerOptions
+				{
+					WriteIndented = true,
+					TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
+				}));
 		}
 		catch (Exception)
 		{

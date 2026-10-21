@@ -3,23 +3,16 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Refii.Save;
-using static Refii.Ui.Engine_UiGuiBoxes;
 
 namespace Refii.Ui;
 
-public sealed class Engine_NewGameDialog
+/// <summary>The Golden Cock's flow, a host menu box (<see cref="Engine_UiMenuBoxDialog"/>).</summary>
+public sealed class Engine_NewGameDialog : Engine_UiMenuBoxDialog
 {
-    private readonly List<Action> _actions = new();
-    private readonly List<MenuOption> _options = new();
     private Task<NewGameSaveScan>? _scanTask;
     private NewGameSaveScan? _scan;
     private Action<NewGameSelection?>? _answer;
-    private Action? _back;
-    private double _inputDelay;
     private int _sourcePage;
-
-    public bool IsOpen { get; private set; }
-    public MenuBoxModel? Menu { get; private set; }
 
     public void Open(Action<NewGameSelection?> answer, Func<NewGameSaveScan>? scan = null)
     {
@@ -57,42 +50,24 @@ public sealed class Engine_NewGameDialog
 
     public void Dismiss()
     {
-        IsOpen = false;
-        Menu = null;
+        ClearPages();
         _answer = null;
         _scanTask = null;
-        _back = null;
-        _actions.Clear();
-        _options.Clear();
     }
 
-    public void Drive(double delta, int direction, bool accept, bool back, int pointed = -1, bool clicked = false)
+    /// <summary>The save scan's page, once it has finished.</summary>
+    protected override bool Poll()
     {
-        if (!IsOpen) return;
-        if (_scanTask is { IsCompleted: true } completed)
+        if (_scanTask is not { IsCompleted: true } completed)
         {
-            _scanTask = null;
-            _scan = completed.IsCompletedSuccessfully ? completed.Result :
-                new NewGameSaveScan(Array.Empty<NewGameSave>(), new[] { "Save scan failed." });
-            ShowOptions();
-            return;
+            return false;
         }
-        _inputDelay -= delta;
-        if (_inputDelay > 0 || Menu is null) return;
-        if (back && Menu.Cancelable) { _back?.Invoke(); return; }
-        if (pointed >= 0 && pointed < _options.Count) Menu.Highlight = pointed;
-        if (direction != 0 && _options.Count > 0)
-        {
-            Menu.Highlight = (Menu.Highlight + Math.Sign(direction) + _options.Count) % _options.Count;
-            _inputDelay = 0.2;
-            return;
-        }
-        if ((accept || clicked && pointed >= 0 && pointed < _options.Count) &&
-            _options.Count > 0 && _options[Menu.Highlight].Enabled)
-        {
-            _inputDelay = 0.2;
-            _actions[Menu.Highlight]();
-        }
+
+        _scanTask = null;
+        _scan = completed.IsCompletedSuccessfully ? completed.Result :
+            new NewGameSaveScan(Array.Empty<NewGameSave>(), new[] { "Save scan failed." });
+        ShowOptions();
+        return true;
     }
 
     private void ShowOptions()
@@ -137,21 +112,6 @@ public sealed class Engine_NewGameDialog
         ShowPage(title, () => ShowPosters(selection.Start, selection.SourceDirectory));
         AddChoice("Go back", () => ShowPosters(selection.Start, selection.SourceDirectory));
         AddChoice($"Begin adulthood - posters to {selection.Posters}", () => Finish(selection));
-    }
-
-    private void ShowPage(string text, Action? back)
-    {
-        _actions.Clear();
-        _options.Clear();
-        Menu = new MenuBoxModel(text, _options, back is not null);
-        _inputDelay = 0.2;
-        _back = back;
-    }
-
-    private void AddChoice(string text, Action action, bool enabled = true)
-    {
-        _options.Add(new MenuOption(text, enabled));
-        _actions.Add(action);
     }
 
     private void Finish(NewGameSelection? selection) => _answer?.Invoke(selection);

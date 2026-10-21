@@ -78,6 +78,14 @@ public static class ModTemplates
 				(ModLua.ModInitPath, Fill(ModMenuLua, mod, title).Replace("{id}", LuaIdentifier(mod))),
 				("language/en-uk/text/book.babel.csv", Fill(ModMenuBabel, mod, title)),
 			}),
+		new ModTemplate("front_end", "Front end",
+			"A row on the title screen whose mod/frontend.lua puts up a menu box and answers it with a notice — mods' Lua where there is no game.",
+			(mod, title) => new[]
+			{
+				("ui/templates.json", Fill(FrontEndJson, mod, title).Replace("{id}", LuaIdentifier(mod))),
+				(ModLua.ModFrontendPath, Fill(FrontEndLua, mod, title).Replace("{id}", LuaIdentifier(mod))),
+				("language/en-uk/text/book.babel.csv", Fill(FrontEndBabel, mod, title)),
+			}),
 		new ModTemplate("hud_text", "HUD text",
 			"A line of HUD text in the top-right corner showing the hero's gold, a value init.lua publishes.",
 			(mod, title) => new[]
@@ -315,6 +323,57 @@ public static class ModTemplates
 		"{MOD}_MENU,{title}\n" +
 		"{MOD}_MENU_GREET,Say hello\n" +
 		"{MOD}_MENU_GOLD,Take 100 gold\n";
+
+	// ---------------------------------------------------------------------------------------
+	// front_end
+	// ---------------------------------------------------------------------------------------
+
+	private const string FrontEndJson =
+		"{\n" +
+		"\t\"menus\": {\n" +
+		"\t\t\"frontend-root\": {\n" +
+		"\t\t\t\"patch\": true,\n" +
+		"\t\t\t\"entries\": [\n" +
+		"\t\t\t\t{ \"name\": \"{mod}.title\", \"tag\": \"{MOD}_TITLE_ROW\", \"command\": \"Mod:lua:{id}_frontend.ask\" }\n" +
+		"\t\t\t]\n" +
+		"\t\t}\n" +
+		"\t}\n" +
+		"}\n";
+
+	private const string FrontEndLua =
+		"-- {title} on the title screen (mod/frontend.lua).\n" +
+		"--\n" +
+		"-- No game runs here: no hero, no save, no world. This file runs in the front end's own Lua,\n" +
+		"-- the current presentation's, where Refii offers notice, menu_box, message_box, open_menu,\n" +
+		"-- publish/value and log, and the events mod_menu_row, mod_menu_box, mod_message_box and\n" +
+		"-- mod_notice (Refii.frontend is true). ui/templates.json adds a row to the title's menu whose\n" +
+		"-- command calls {id}_frontend.ask; the box's answer comes back as mod_menu_box.\n" +
+		"\n" +
+		"{id}_frontend = {}\n" +
+		"\n" +
+		"local asked = nil\n" +
+		"\n" +
+		"function {id}_frontend.ask(arg, e)\n" +
+		"\tasked = Refii.menu_box(\"{title}\", \"Pick one.\", { \"Hello\", \"Goodbye\" }, e and e.player or 0)\n" +
+		"end\n" +
+		"\n" +
+		"Refii.on(\"mod_menu_box\", function(e)\n" +
+		"\tif asked == nil or e.id ~= asked then\n" +
+		"\t\treturn\n" +
+		"\tend\n" +
+		"\tasked = nil\n" +
+		"\tif e.option >= 0 then\n" +
+		"\t\tRefii.notice(\"{title}\", e.option == 0 and \"Hello from the title screen.\" or \"Goodbye.\", 0, e.player)\n" +
+		"\tend\n" +
+		"end)\n" +
+		"\n" +
+		"Refii.on(\"mod_notice\", function(e)\n" +
+		"\tRefii.log(\"{title}: notice \" .. tostring(e.id) .. \" gone (\" .. tostring(e.outcome) .. \")\")\n" +
+		"end)\n";
+
+	private const string FrontEndBabel =
+		"key,value\n" +
+		"{MOD}_TITLE_ROW,{title}\n";
 
 	// ---------------------------------------------------------------------------------------
 	// hud_text

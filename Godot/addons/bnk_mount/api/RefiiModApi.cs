@@ -516,8 +516,9 @@ public partial class RefiiModApi : RefCounted
 
 	/// <summary>
 	/// An ability of the mod's own on the abilities book, keyed by <c>name</c> (with category,
-	/// nameTag, descriptionTag, maxLevel, the mod-value keys level/cost/stat/buy/refund/refundValue,
-	/// and image). The mod's native code does the buying and refunding.
+	/// disciplines, nameTag, descriptionTag, maxLevel, levelKey, costLike, costLikeSetting, refund,
+	/// stats or stat, legacySaveKey and image). The ENGINE runs its purchase and unlearn from these
+	/// (Engine_UiModAbilities); the mod's code reads the level from the player store.
 	/// </summary>
 	public string SetAbility(Godot.Collections.Dictionary ability) =>
 		Upsert(Engine_UiModAbilities.ModAbilitiesPath, "abilities", "name", ability);
@@ -570,9 +571,11 @@ public partial class RefiiModApi : RefCounted
 	/// <summary>The contracts mod content runs against, by name — the Modding Guide's Script API page.</summary>
 	public Godot.Collections.Dictionary DescribeRuntime() => new()
 	{
-		["mod_values"] = "A native hook publishes a float with refii::mods::Publish(\"<mod>.<name>\", v); " +
-			"HUD pieces, copies and abilities read it as \"mod:<mod>.<name>\". The UI hands a hook a " +
-			"setting with SetModSetting; the hook reads refii::mods::Setting(key, fallback).",
+		["mod_values"] = "A value each player has goes in the player store (refii_mod_player_set / Refii.player_set) " +
+			"and HUD pieces, copies and pages read it as \"player:<mod>.<name>\" for the player they belong to; " +
+			"one value for everyone is published with refii::mods::Publish(\"<mod>.<name>\", v) and read as " +
+			"\"mod:<mod>.<name>\". Settings are tunables the hook reads with refii::mods::Setting(key, fallback), " +
+			"never a command channel.",
 		["save"] = "Lua: what a mod puts in the table RefiiModSave persists with the save game (numbers, " +
 			"strings, tables). Native code reads it back with refii_mod_game_lua_int when " +
 			"refii_mod_lua_generation() changes.",
@@ -592,28 +595,36 @@ public partial class RefiiModApi : RefCounted
 			"config names, never sub_ addresses. Two mods hooking one function run as a chain in load " +
 			"order (the higher mod's hook calls the lower's through __imp__name, the lowest calls the " +
 			"game); a hook that never calls __imp__name must be the only one on its function.",
-		["spellwheel"] = "ui/spellwheel.json: { \"secondary\": { \"setting\": <key>, " +
-			"\"settingPlayerTwo\": <key>, \"value\": \"mod:<key>\", \"valuePlayerTwo\": \"mod:<key>\", \"chosen\": \"mod:<key>\", \"scale\": 0.55, \"exclude\": [2, 7], " +
-			"\"unlocked\": \"mod:<key>\", \"apply\": <babel tag>, \"remove\": <babel tag> } } " +
-			"— on both spell selectors X on the highlighted will writes its type (0 Lightning .. 7 " +
-			"Dead Rising) to the setting and Y writes -1; the will the mod states back in " +
-			"value is drawn smaller under every assigned slot's icon; exclude lists the will types X ignores; a {slot} in a key is the highlighted slot's number 1..5, for one pick per slot; " +
-			"while the unlocked value is not positive the spell page says nothing of the pick; once it is, the abilities blade shows two prompt rows beside the page's own, X with the apply tag's text and Y with the remove tag's.",
+		["spellwheel"] = "ui/spellwheel.json: { \"picks\": [ { \"name\": <name>, \"store\": \"<mod>.<key>_{slot}\", " +
+			"\"inEffect\": \"player:<key>_{slot}\", \"unlocked\": \"player:<key>\", \"scale\": 0.55, \"exclude\": [2, 7], " +
+			"\"empty\": <tex>, \"apply\": <babel tag>, \"remove\": <babel tag> } ] } " +
+			"— a spell slot pick, one data form with the slot's own spell (the game's pick): on both spell selectors X on " +
+			"the highlighted will (0 Lightning .. 7 Dead Rising) picks it for the highlighted slot and Y clears it (-1), for the " +
+			"selectors' player; the engine raises spell_pick (cancel keeps the old pick, spell is writable) and saves it in " +
+			"that player's store under store ({slot} the slot's number 1..5). inEffect and unlocked are value sources read " +
+			"for that player: the stored pick is drawn full when inEffect states it, faint otherwise; exclude lists the will " +
+			"types X ignores; while unlocked is not positive the spell page says nothing of the pick; once it is, the " +
+			"abilities blade shows two prompt rows beside the page's own, X with the apply tag's text and Y with the remove tag's. " +
+			"Every enabled mod's pick is drawn under each slot in load order; X and Y act on the player's active pick (drawn " +
+			"larger) — a press with nothing to do on it, or LB/RB on the blade, steps to the next. A later mod's pick of the " +
+			"same name replaces it: prefix the name with the mod's.",
 		["fx"] = "fx/recipes.json: while a mod value equals a recipe's number, every live effect named in its " +
 			"base list is dressed — a tint on each particle, intensity and size multipliers, and attached " +
 			"effects (count copies on a ring of radius at height, turning at turnsPerSecond), and authored " +
 			"pieces drawn with the game's own effect textures and meshes: embers (a spiral cone of particles), " +
 			"arcs (re-struck lightning ribbons), ring (a repeating shockwave), blades (the cutlass mesh orbiting). " +
 			"everyNode dresses every live anchor effect; entities (definition names or #hashes) dresses every live " +
-			"entity of those definitions on a node that follows it; instances (a mod value prefix) binds each effect " +
-			"and entity to the nearest stated instance of its look, so every cast carries its own. " +
+			"entity of those definitions on a node that follows it; with (an effect name) holds the recipe only where " +
+			"that effect plays — a base node is dressed when a play of it rides the node's entity or stands within " +
+			"withRadius — so a cast that play_fx_on's its look dresses its own base and no other's. Pieces are Godot's " +
+			"drawing only; an effect that must draw under both looks builds them from bank entities (fx/effects). " +
 			"The guest still states which effect plays and where; Godot changes the look. See Engine_FxRecipes " +
 			"and Engine_FxRecipePieces. fx/effects/<name>.json is the particle bank's own model as JSON (an effect, " +
 			"its emitters, systems and visuals; Engine_FxEffectJson): a new name adds an effect, a shipped name replaces " +
 			"it, an emitter carrying a shipped entityId replaces that emitter wherever the bank uses it, so the game's " +
 			"own spawns draw the change. play_fx (native refii_mod_play_fx, Lua Refii.play_fx, Godot RefiiHost.play_fx) " +
 			"draws any bank or mod effect at a position or on an entity handle; stop_fx(id) stops it. Script calls: " +
-			"SetRecipe, RemoveRecipe, CloneEffect, OverrideEffect, SetEffectJson, SetEmitterField, SetEmitterKeys, " +
+			"SetRecipe, RemoveRecipe, CloneEffect, OverrideEffect, SetEffectJson, SetEmitterField, SetVisualField, SetEmitterKeys, " +
 			"SaveFableFxAsEffect.",
 		["dependencies"] = "mod.toml: requires = [\"souls_combat >= 0.1\"] places that mod beneath this one " +
 			"(mounted, composed and hooked inside it) and makes its native/include/ visible to this mod's " +
@@ -639,7 +650,21 @@ public partial class RefiiModApi : RefCounted
 			"(0: the menu owner here): Godot RefiiHost.open_menu(name, player), message_box(title, text, buttons, player); " +
 			"native refii_mod_open_menu, refii_mod_message_box; Lua Refii.open_menu, Refii.message_box — a menu with no " +
 			"list up opens on its own, a box shows on the front end too; the answer is mod_message_box (and Godot's " +
-			"message_box_answered). publish.",
+			"message_box_answered). notice(title, text, seconds, player) posts on the co-op notices' channel (mod_notice, " +
+			"notice_done); menu_box(title, text, options, player, cancelable) is the game's menu box, paged past six " +
+			"(mod_menu_box, menu_box_answered); native refii_mod_notice / refii_mod_menu_box, Lua Refii.notice / " +
+			"Refii.menu_box; a message_box with more than two buttons is a menu box. HUD widgets (widget.*: world icons, " +
+			"world sprites, reticule, slow-time dial, each with a …2 for player two, and the achievement toast) are hidden, " +
+			"scaled, moved and copied like any piece (ListHudWidgets); value sources mod:, game:<name>, player:<key> " +
+			"(read for the piece's player) and hero: (ListHudValueSources). publish. " +
+			"Every list's row command runs through ONE dispatcher of verbs (ListRowVerbs): any row may name any verb, one " +
+			"that belongs to another list refuses; RefiiHost.register_command(verb, handler) adds a script's. Screens: " +
+			"\"patch\": true merges a record per field (SetScreenPatch); a host screen of a mod's own (id 1000+, a menu and " +
+			"a presentation) opens with Screen:open:<id> (RefiiHost.open_screen, Refii.open_screen, refii_mod_open_screen) " +
+			"and provider \"data\" fills its page from \"fields\" / \"switches\" bound to mod:, player:, game:, row:label, " +
+			"Babel tags or literals. A row's \"when\" builds it under a condition (ListRowConditions; pause-root is one " +
+			"menu for both players). \"source\": \"rows\" shows what set_menu_rows states (RefiiHost.set_menu_rows, " +
+			"Refii.set_menu_rows, refii_mod_set_menu_rows; per player), \"values:...\" published values (ValuesSource).",
 		["settings"] = "settings.json: a flat object of numbers keyed <mod>.<name> (one nesting level is " +
 			"folded). Pushed to the game as mod settings when the guest comes up; native code reads " +
 			"refii::mods::Setting(key, default). Live: refii_action \"mod-setting <key> <value>\".",

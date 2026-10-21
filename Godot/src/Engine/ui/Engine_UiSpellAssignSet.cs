@@ -310,10 +310,12 @@ public sealed class Engine_UiSpellAssignSet
 		_bladeWasKnown = state.Known;
 		_blade.Visible = state.Known;
 		_blade.EnsurePrompts(book);
-		_blade.ShowPrompts(state.Known && Engine_UiSpellAssign.SecondaryUnlocked());
+		// The abilities book's player: its blade reads and picks for them.
+		int bookPlayer = Engine_UiModMenus.MenuPlayer;
+		_blade.ShowPrompts(state.Known && Engine_UiSpellAssign.SecondaryUnlocked(bookPlayer), bookPlayer);
 		if (state.Known)
 		{
-			_blade.Player = 1;
+			_blade.Player = bookPlayer;
 			_blade.FollowGuest(state);
 			_blade.SetLive(_spells);
 		}
@@ -583,7 +585,7 @@ public sealed class Engine_UiSpellAssignSet
 			int steps = choices.IndexOf(primary) - choices.IndexOf(chosen);
 			if (choices.IndexOf(primary) < 0 || choices.IndexOf(chosen) < 0)
 			{
-				Engine_UiSource.Current.AssignSpell(row, primary, player);
+				Engine_UiSpellPicks.Choose(Engine_UiSpellPicks.Game, player, row, primary);
 				return;
 			}
 
@@ -595,7 +597,7 @@ public sealed class Engine_UiSpellAssignSet
 		}
 		else
 		{
-			Engine_UiSource.Current.AssignSpell(row, primary, player);
+			Engine_UiSpellPicks.Choose(Engine_UiSpellPicks.Game, player, row, primary);
 		}
 	}
 
@@ -616,19 +618,27 @@ public sealed class Engine_UiSpellAssignSet
 				input.Horizontal < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
 		}
 
+		// LB / RB step the book's player's active pick (Engine_UiSpellAssignSecondary): the book
+		// leaves them unused while the blade is up.
+		if (input.TabPrev || input.TabNext)
+		{
+			Engine_UiSpellAssign.StepSecondary(Engine_UiModMenus.MenuPlayer, input.TabNext ? 1 : -1);
+		}
+
 		Engine_UiSpellAssign.SecondaryAction action = Engine_UiSpellAssign.SecondaryPressed(input.Flip, input.Equip);
 		if (action != Engine_UiSpellAssign.SecondaryAction.None)
 		{
-			// A mod's secondary pick on the blade: X applies the will under the carousel's
-			// centre, Y removes the row's partner.
+			// The mods' picks on the blade, for the book's player: X picks the will under the
+			// carousel's centre into the active pick, Y clears the row's active pick.
 			Engine_UiModel.SpellWheelState state = Engine_UiSource.Current.GetSpellBlade();
+			int bookPlayer = Engine_UiModMenus.MenuPlayer;
 			if (state.Known && action == Engine_UiSpellAssign.SecondaryAction.Remove)
 			{
-				Engine_UiSpellAssign.RemoveSecondary(1, state.Row);
+				Engine_UiSpellAssign.RemoveSecondary(bookPlayer, state.Row);
 			}
 			else if (state.Known)
 			{
-				PickSecondary(1, state, _bladeOpenedWills,
+				PickSecondary(bookPlayer, state, _bladeOpenedWills,
 					_blade is { } blade && GodotObject.IsInstanceValid(blade) ? blade.CursorWill() : null, guestCarousel: true);
 			}
 		}

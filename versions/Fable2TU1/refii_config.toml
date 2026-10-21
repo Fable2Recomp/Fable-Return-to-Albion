@@ -10997,6 +10997,9 @@
 0x824B1828 = { name = "rex_CSpellRegistry_Create" }
 0x827441F0 = { name = "rex_TargetedFireball_Impact" }
 0x8275C578 = { name = "rex_VortexComponent_Capture" }
+0x827590E0 = { name = "rex_VortexComponent_Update" }
+0x825A63A8 = { name = "rex_DamoclesSword_Update" }
+0x825F86F0 = { name = "rex_FxEntity_PlaceAt" }
 0x8253E4B8 = { name = "rex_CECSpellManager_ChargeLevelFromTime" }
 0x82989A80 = { name = "rex_CAbilityActionMagicCharge_CanStart" }
 0x8295CF08 = { name = "rex_CECHitResponsePlayAction_OnHit" }
@@ -11560,6 +11563,13 @@
 0x82BB5760 = { name = "rex_lhGuiAnimation_GotoSlide" }
 0x83231C40 = { name = "rex_CParticleSystemEntityInstance_SetOrientation" }
 0x832325A8 = { name = "rex_CParticleSystemEntityInstance_SetPositionAndVelocity" }
+0x83233300 = { name = "rex_CParticleSystemEntityInstance_Ctor" }
+0x83232290 = { name = "rex_CParticleSystemEntityInstance_SetScale" }
+0x83232108 = { name = "rex_CParticleSystemEntityInstance_GetScale" }
+# Spin and mesh alignment the bank cannot state (particle_motion.cpp): one particle's integrator
+# step, and a mesh particle's visual born.
+0x8322CF40 = { name = "rex_CParticleEmitter_StepParticle" }
+0x83220AC8 = { name = "rex_CMeshParticle_InitVisual" }
 
 # The mod API's quest and dialogue seams (hooks/mod_events.cpp) and the game VM's Lua 5.1 C API
 # the Refii.* natives call (hooks/mod_lua_natives.cpp). Two Lua runtimes are linked; these are

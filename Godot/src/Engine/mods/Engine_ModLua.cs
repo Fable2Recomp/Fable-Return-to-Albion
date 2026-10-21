@@ -37,6 +37,15 @@ public static class ModLua
 	public const string ModCameraPath = "mod/camera.lua";
 
 	/// <summary>
+	/// A mod's Lua for the TITLE and the FRONT END, where there is no game VM: run in the current
+	/// Gameface presentation's own Lua state (src/vfs/src/hooks/mod_frontend_lua.cpp), which is a
+	/// different Lua build with no world, no hero and no save. Its own entry point, as a client and
+	/// a server entry point are separate: init.lua patches the game's scripts, which do not exist
+	/// there. What works in it is <see cref="FrontendPreamble"/>'s list.
+	/// </summary>
+	public const string ModFrontendPath = "mod/frontend.lua";
+
+	/// <summary>
 	/// What the init chunk starts with whenever a mod ships one: <c>RefiiModSave</c>, a table
 	/// that persists WITH THE SAVE. The game builds its save through the global <c>GetSaveTable</c>
 	/// and restores through <c>LoadScriptSave</c> (saveloadsystem.lua; the engine looks both up by
@@ -155,6 +164,7 @@ public static class ModLua
 			"\treturn h\n" +
 			"end\n" +
 			MenuRowRuntime +
+			MenuRowsRuntime +
 			// play_fx / play_fx_on unpack the options table for the native Refii._play_fx (the
 			// game's Lua C API here has no array reads): duration, scale, tint {r, g, b},
 			// intensity, loop (true unless false), offset {x, y, z}.
@@ -178,6 +188,17 @@ public static class ModLua
 			"function Refii.message_box(title, text, accept, cancel, p)\n" +
 			"\tif Refii._message_box == nil then return nil end\n" +
 			"\treturn Refii._message_box(title or '', text or '', accept or '', cancel or '', cancel ~= nil and 1 or 0, p or 0)\n" +
+			"end\n" +
+			// menu_box(title, text, options [, p [, cancelable]]): up to 12 options from the table
+			// (cancelable unless false); the id mod_menu_box carries.
+			"function Refii.menu_box(title, text, options, p, cancelable)\n" +
+			"\tif Refii._menu_box == nil or type(options) ~= 'table' then return nil end\n" +
+			"\tlocal o = {}\n" +
+			"\tfor i = 1, 12 do o[i] = options[i] ~= nil and tostring(options[i]) or '' end\n" +
+			"\tlocal n = 0\n" +
+			"\twhile n < 12 and options[n + 1] ~= nil do n = n + 1 end\n" +
+			"\treturn Refii._menu_box(title or '', text or '', p or 0, cancelable == false and 0 or 1, n,\n" +
+			"\t\to[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], o[10], o[11], o[12])\n" +
 			"end\n");
 
 		text.Append("RefiiSettings = {");
@@ -224,6 +245,37 @@ public static class ModLua
 		"end\n";
 
 	/// <summary>
+	/// <c>Refii.set_menu_rows(menu, rows [, p])</c>: writes the rows table — strings, or
+	/// <c>{ name, label, command, ghosted }</c> — as the bus text Engine_UiModRows reads
+	/// (<c>name|label|command|ghosted</c> by <c>;</c>, <c>\</c> escaping) for the native
+	/// <c>Refii._menu_rows</c>, which the game's Lua C API needs: it has no table reads.
+	/// </summary>
+	public const string MenuRowsRuntime = """
+		function Refii.set_menu_rows(menu, rows, p)
+			if Refii._menu_rows == nil or type(rows) ~= 'table' then return false end
+			local function esc(v)
+				v = string.gsub(tostring(v or ''), '\\', '\\\\')
+				v = string.gsub(v, '|', '\\|')
+				return (string.gsub(v, ';', '\\;'))
+			end
+			local text = ''
+			for i = 1, #rows do
+				local r = rows[i]
+				local row
+				if type(r) == 'table' then
+					row = esc(r.name or r.label or i) .. '|' .. esc(r.label or '') .. '|' .. esc(r.command or '') .. '|' .. (r.ghosted and '1' or '0')
+				else
+					row = esc(r) .. '|' .. esc(r) .. '||0'
+				end
+				if i > 1 then text = text .. ';' end
+				text = text .. row
+			end
+			return Refii._menu_rows(menu or '', text, p or 0)
+		end
+
+		""";
+
+	/// <summary>
 	/// A mod's Lua text as it runs in the init chunk: the body of a protected function, its error
 	/// appended to <c>RefiiModErrors</c>. The Studio's live run sends this through the debug
 	/// channel so a chunk run live behaves exactly as it does at session start.
@@ -239,19 +291,91 @@ public static class ModLua
 	public const string InitKey = "refii/mod_init.lua";
 	public const string CameraKey = "refii/mod_camera.lua";
 
+	/// <summary>The front end's composed chunk (<see cref="FrontendPreamble"/> and every mod's
+	/// <see cref="ModFrontendPath"/>), read by the payload when a presentation state lacks it.</summary>
+	public const string FrontendKey = "refii/mod_frontend.lua";
+
 	public static bool IsModLuaPath(string path)
 	{
 		string normalized = path.Replace('\\', '/').TrimStart('/');
 		return normalized.Equals(ModInitPath, StringComparison.OrdinalIgnoreCase) ||
-			normalized.Equals(ModCameraPath, StringComparison.OrdinalIgnoreCase);
+			normalized.Equals(ModCameraPath, StringComparison.OrdinalIgnoreCase) ||
+			normalized.Equals(ModFrontendPath, StringComparison.OrdinalIgnoreCase);
 	}
 
-	/// <summary>Composes both chunks from <paramref name="overlays"/> (mount order) into the mount.</summary>
+	public static bool IsFrontendKey(string path) => path.Equals(FrontendKey, StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>Composes the chunks from <paramref name="overlays"/> (mount order) into the mount.</summary>
 	public static void Apply(BnkFileSystem mounted, IReadOnlyList<ModOverlay> overlays)
 	{
 		Compose(mounted, overlays, ModInitPath, InitKey);
 		Compose(mounted, overlays, ModCameraPath, CameraKey);
+		Compose(mounted, overlays, ModFrontendPath, FrontendKey);
 	}
+
+	/// <summary>
+	/// THE FRONT END'S RUNTIME, ahead of every mod's mod/frontend.lua: a fresh <c>Refii</c> (so a
+	/// state that runs it again — a remount — does not subscribe twice) with the game preamble's pure
+	/// Lua (<c>Refii.on</c>, <c>_fire</c>, <c>_report</c>, <c>setting</c> over <c>RefiiSettings</c>,
+	/// <c>_menu_row</c>, <c>message_box</c>), and the natives the payload registers in that state as
+	/// globals (<c>__refii_*</c>, mod_frontend_lua.cpp), moved under <c>Refii</c>:
+	/// <list type="bullet">
+	/// <item><c>publish(key, n)</c>, <c>value(key)</c>: the shared value store, which every surface reads.</item>
+	/// <item><c>log(text)</c>; a handler's error goes to the Mods error list as in a game.</item>
+	/// <item><c>open_menu(name [, p])</c>, <c>message_box(...)</c>, <c>notice(title, text [, seconds [, p]])</c>,
+	/// <c>menu_box(title, text, options [, p [, cancelable]])</c>: the host's list, dialog, notices and
+	/// menu box, which the front end has (G.14, G.18 #6).</item>
+	/// <item><c>menu_player()</c>.</item>
+	/// </list>
+	/// The events heard there are <c>mod_menu_row</c>, <c>mod_message_box</c>, <c>mod_notice</c> and
+	/// <c>mod_menu_box</c> — the only ones raised without a world. Everything that needs a world, a hero, an entity or the save (health,
+	/// gold, spawn, play_fx, player values, <c>RefiiModSave</c>) is absent: <c>Refii.frontend</c> is
+	/// true. Lua globals live in the presentation's state, so another presentation starts fresh;
+	/// published values persist.
+	/// </summary>
+	public static string FrontendPreamble()
+	{
+		var text = new StringBuilder("Refii = {}\n");
+		text.Append(RuntimePreamble());
+		text.Append(FrontendNatives);
+		return text.ToString();
+	}
+
+	/// <summary>
+	/// The front-end natives (registered as globals by mod_frontend_lua.cpp's table) under
+	/// <c>Refii</c>, and the marks the payload's probe reads (<c>Refii._frontend</c>).
+	/// </summary>
+	public const string FrontendNatives =
+		"Refii._frontend = true\n" +
+		"Refii.frontend = true\n" +
+		"Refii.publish = __refii_publish\n" +
+		"Refii.value = __refii_value\n" +
+		"Refii.log = __refii_log\n" +
+		"Refii._error = __refii_error\n" +
+		"Refii.open_menu = __refii_open_menu\n" +
+		"Refii._message_box = __refii_message_box\n" +
+		"Refii.notice = __refii_notice\n" +
+		"Refii._menu_box = __refii_menu_box\n" +
+		"Refii.menu_player = __refii_menu_player\n";
+
+	/// <summary>
+	/// A remount that changed <see cref="FrontendKey"/> while the front end is up: the current
+	/// presentation's state is marked stale, so the next front-end chunk runs the new composition
+	/// first. True when posted.
+	/// </summary>
+	public static bool RefreshFrontend(IReadOnlyList<string> changed)
+	{
+		if (!changed.Any(IsFrontendKey) || !Refii.Host.HostBridge.IsGuestUp || Refii.Host.HostBridge.IsInGame)
+		{
+			return false;
+		}
+
+		Refii.Host.HostBridge.PostModCommand(FrontendCommand + "if Refii then Refii._frontend = false end");
+		return true;
+	}
+
+	/// <summary>The guest tick's command running a chunk in the front end's mod Lua (mod_commands.cpp).</summary>
+	public const string FrontendCommand = "frontend_lua ";
 
 	private static void Compose(
 		BnkFileSystem mounted, IReadOnlyList<ModOverlay> overlays, string modPath, string key)
@@ -318,6 +442,10 @@ public static class ModLua
 		if (key == InitKey && overlays.Count != 0)
 		{
 			text.Insert(0, SavePreamble + RuntimePreamble());
+		}
+		else if (key == FrontendKey && overlays.Count != 0)
+		{
+			text.Insert(0, FrontendPreamble());
 		}
 		else if (included.Count == 0)
 		{

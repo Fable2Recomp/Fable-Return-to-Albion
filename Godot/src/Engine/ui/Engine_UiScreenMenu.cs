@@ -1730,11 +1730,19 @@ public sealed class Engine_UiScreenMenu
 			return false;
 		}
 
-		if (Engine_UiScreenActions.Run(action))
+		Engine_UiCommandResult ran = Engine_UiCommands.Run(action, new Engine_UiCommandContext(
+			Engine_UiCommandList.Screen, Row: row.Name, Player: Engine_UiModMenus.MenuPlayer));
+		if (ran.Outcome == Engine_UiCommandOutcome.Done)
 		{
 			Engine_UiScreenActions.RefreshSettingLabel(row);
 			GD.Print($"[screen-menu] '{label}' ran the HOST action '{action}' — " +
 				"nothing was pushed to the guest");
+			return true;
+		}
+
+		// A verb that refused said why (Engine_UiCommands); the row is answered, not the guest's.
+		if (ran.Outcome == Engine_UiCommandOutcome.Refused)
+		{
 			return true;
 		}
 

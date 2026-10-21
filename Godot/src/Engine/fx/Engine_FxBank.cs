@@ -375,6 +375,23 @@ public sealed class FxEmitter
 
     public float AngularRotationRate;
 
+    /// <summary>
+    /// SPIN: radians per second every particle of this emitter turns about the emitter's own Z axis,
+    /// through the emitter's origin, positive counter-clockwise seen down the axis. Applied after each
+    /// step of the guest's integrator (`sub_8322CF40`: velocity += acceleration, the attractors'
+    /// pull, damping; position += velocity) as one rotation of the particle's position about that
+    /// axis and of its velocity with it, by spin ÷ 30 × the step's frames
+    /// (`flt_8335F1D4[dword_83496DD4]`), in the frame the particles are stored in: the emitter's
+    /// spawn matrix (`unk_8349E5F0`, row 2 the axis, row 3 the origin), which `sub_8322D988` copies
+    /// before it steps the emitter (0x8322d9a8..0x8322d9d4, then `sub_8322F1E0` → slot 26).
+    /// The bank's record has no field for it (a standard emitter's file states parameters 2..14
+    /// only), so the guest reads it from the dress table beside its bank
+    /// (<see cref="Engine_FxModEffects.DressKey"/>, src/vfs/src/hooks/particle_motion.cpp). 0 for
+    /// every shipped emitter: neither Fable II nor Fable III has a force that turns a particle about
+    /// an axis — Fable III's twisters turn their EMITTERS on orbitals (type 3).
+    /// </summary>
+    public float Spin;
+
     public float SplineRateEmitter = 0.01f;
     public int AnimationMode;
     public int NumSplineSegments = 1;
@@ -463,6 +480,29 @@ public sealed class FxVisual
     public float[] OrAxis = { 1f, 0f, 0f };
     public bool OrRandAxis = true;
 
+    /// <summary>
+    /// A mesh particle's REST ORIENTATION, the quaternion (x, y, z, w) its mesh is turned by in the
+    /// emitter's frame before anything else — what lays a blade along its orbit and tilts it.
+    /// Read from the system's FIRST visual, at the particle's birth, as the orient fields are.
+    /// <para>The guest's contract (TU1; Fable III's `sub_83177C70` is the same): a mesh particle's
+    /// visual is born in `sub_83220AC8`, which stores the orientation its caller hands it in r6:r7
+    /// at particle+0x30 (0x83220dc0/0x83220dc4) — the emitter's spawn rotation
+    /// (`sub_8223B9A0(q, unk_8349E5F0)` at 0x82a0b148, passed at 0x82a0b390) — and the initial
+    /// angle about <see cref="OrAxis"/> at particle+0x40 (`sub_8223A070` at 0x83220d80). Each step
+    /// `sub_832213E8` turns +0x30 by the axis-angle of the rate (0x832215bc), on the LEFT
+    /// (`sub_822ADF78`: dst = arg ⊗ dst), so the spin is about <see cref="OrAxis"/> in the frame the
+    /// particles are stored in; the draw `sub_821CEA80` sends (+0x30) ⊗ (+0x40) (0x821cee48..0x821ceebc).
+    /// So drawn = spin(axis, Σrate) ⊗ emitterRotation ⊗ MeshAlign ⊗ angle(axis, initial).</para>
+    /// <para>The bank's mesh visual has no alignment: `sub_83220AC8` reads only the segment's rate
+    /// (+24), spread (+28), random-angle flag (+32), axis (+36..+44), random-axis flag (+48) and
+    /// scale (+60, +64), so the guest reads it from the dress table keyed by the SYSTEM's id
+    /// (`sub_83220AC8`'s r8 is the system; system+4 its id) and composes it onto r6:r7 before the
+    /// visual is born (src/vfs/src/hooks/particle_motion.cpp). Absent on every shipped visual.</para>
+    /// </summary>
+    public bool HasMeshAlign;
+
+    public float[] MeshAlign = { 0f, 0f, 0f, 1f };
+
     public int DelayFrames;
     public float InvSpan;
     public float[] ColorSq = { 1f, 1f, 1f };
@@ -522,6 +562,17 @@ public sealed class FxEffect
     /// shipped effect.
     /// </summary>
     public float[] Tint = { 1f, 1f, 1f };
+
+    /// <summary>
+    /// AUTHORED PIECES the effect draws beside its parts (fx/effects/*.json <c>pieces</c>; a recipe's
+    /// <c>pieces</c> become such an effect): embers, arcs, ring, blades, built by
+    /// <see cref="Engine_FxRecipePieces.Build"/> under the <see cref="FableFx"/> drawing the effect.
+    /// Empty for every shipped effect. The guest's effect record has no such kind, so the guest's
+    /// bank never carries them (<see cref="Engine_FxModEffects.ComposeGuestBank"/>); an effect that
+    /// must also play under the classic look states the same look with the bank's own entities
+    /// (<see cref="Engine_FxRecipePieces"/>'s remarks map each kind to them).
+    /// </summary>
+    public List<Engine_FxRecipePieces.Piece> Pieces { get; } = new();
 }
 
 public sealed class FxBank

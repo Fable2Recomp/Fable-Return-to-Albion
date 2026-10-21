@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Godot;
+using Refii.Host;
 using Refii.Ui;
 
 namespace Refii.Game;
@@ -16,8 +17,10 @@ public partial class GameUi
 	/// retired trees at the end of this frame — and each is built again from the new book where it
 	/// is next needed, by the same code that built it first. The ones that hold the book itself
 	/// (owned books, the HUD's art, the spell widgets, the info panel, the co-op fan's pattern) must
-	/// let go of it now. An in-game list's view paints with its book's fonts only and keeps no node
-	/// of it; it takes the new art when its screen next opens.
+	/// let go of it now. An OPEN list — a screen's list, a mod's menu standing on its own — is
+	/// dressed again from the new book at once, keeping its rows, its highlight and every menu
+	/// opened over it. The HUD derives its layout again from the new document (a mod that changed
+	/// `hud.bgf`'s structure changes the pieces), and player two's view and the widgets follow it.
 	/// </summary>
 	private void OnPatternBooksRetired(IReadOnlyList<string> names)
 	{
@@ -25,6 +28,9 @@ public partial class GameUi
 		int books = _books.Retire(retired);
 		_spells.Retire(retired);
 		_infoPanel.Retire();
+
+		// Host screens rebuild from the records and art as they stand now, on their next open.
+		ForgetHostScreens();
 
 		if (retired.Contains("coopscreen"))
 		{
@@ -45,12 +51,12 @@ public partial class GameUi
 				}
 			}
 
+			// Derived again from the new document (Engine_HudView.Derive), player two's view and
+			// the widgets after it (OnHudRebuilt).
 			_hud.Build();
-			if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
-			{
-				_hudTwo.Build();
-			}
 		}
+
+		RedressOpenLists(retired);
 
 		if (retired.Contains(FrontEndMenuPresentation))
 		{
@@ -82,6 +88,60 @@ public partial class GameUi
 
 		GD.Print($"[game-ui] the mount changed {string.Join(", ", names)} — {books} owned book(s) and the views " +
 			"built from them go, and are built again from the new files");
+	}
+
+	/// <summary>The presentation the open screen list was dressed from (<see cref="AdoptScreenMenu"/>).</summary>
+	private string _screenMenuPresentation = string.Empty;
+
+	/// <summary>The screen list's cursor at the book's authored <c>MenuHighlight</c>, relative to the list's anchor.</summary>
+	private Transform3D? ScreenMenuCursorPose(Engine_UiTheme? book)
+	{
+		if (book?.ArtSourceNode("MenuHighlight") is not { } highlight)
+		{
+			return null;
+		}
+
+		Transform3D authored = Engine_UiTheme.CanvasTransform(highlight);
+		authored.Origin -= new Vector3(_screenMenuAnchor.X, _screenMenuAnchor.Y, 0f);
+		return authored;
+	}
+
+	/// <summary>
+	/// The lists open now whose book was retired, dressed again from the new one (G.22): the
+	/// screen's list and a mod's menu standing on its own.
+	/// </summary>
+	private void RedressOpenLists(ISet<string> retired)
+	{
+		if (_presentation is null)
+		{
+			return;
+		}
+
+		if (_screenMenuView is not null && GodotObject.IsInstanceValid(_screenMenuView) &&
+			retired.Contains(_screenMenuPresentation))
+		{
+			Engine_UiTheme? book = _presentation.PatternBookFor(_screenMenuPresentation);
+			Node3D? pattern = book is null ? null : Engine_UiButtonPool.FindButtonPool(book);
+			if (pattern is not null)
+			{
+				_screenMenuAnchor = Engine_UiTheme.CanvasTransform(pattern).Origin;
+			}
+
+			_screenMenuView.Redress(book, pattern is null ? null : Engine_FrontEndMenuView.RowTemplateIn(pattern),
+				book?.Art("MenuHighlight"), ScreenMenuCursorPose(book));
+			GD.Print($"[game-ui] the open list on '{_screenMenuPresentation}' takes the new art now");
+		}
+
+		if (_hostMenuView is not null && GodotObject.IsInstanceValid(_hostMenuView))
+		{
+			bool inGame = HostBridge.IsInGame;
+			string presentation = inGame ? PausePresentation : FrontEndMenuPresentation;
+			if (retired.Contains(presentation))
+			{
+				_hostMenuView.RedressFrom(_presentation.PatternBookFor(presentation), bookLook: inGame, _presentation.Theme);
+				GD.Print($"[game-ui] the mod menu standing on its own takes the new '{presentation}' art now");
+			}
+		}
 	}
 
 	private static void FreeView<T>(ref T? view)

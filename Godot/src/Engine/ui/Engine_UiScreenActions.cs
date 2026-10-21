@@ -1,13 +1,14 @@
 namespace Refii.Ui;
 
 /// <summary>
-/// The actions a screen template can name for a button, and the one place that runs them.
+/// The host actions a row or a screen's own button can name, registered as verbs on the one
+/// dispatcher (<see cref="Engine_UiCommands"/>), and the config-switch rows' labels.
 ///
 /// THE ONE-OFF PANELS ANSWER A DIFFERENT VOCABULARY, and that used to be a chain of screen-id
 /// comparisons in `GameUi`: the query panel closes on Back, the repeatable-quest card dismisses
 /// its box on Accept, minigame-completed and quest-completion dismiss the screen. Each was a
 /// branch, so each could be wrong on its own. Naming the action in the template puts them on one
-/// path — a screen states which button does what, and this runs it.
+/// path — a screen states which button does what, and the dispatcher runs it.
 /// </summary>
 public static class Engine_UiScreenActions
 {
@@ -16,37 +17,6 @@ public static class Engine_UiScreenActions
 	public const string SettingSet = "setting:set:";
 
 	public const string SettingCycle = "setting:cycle:";
-
-	public const string WeatherOverrideKey = "dynamic_sky_weather";
-
-	public const string WeatherOverrideValues =
-		"theme,clear,partlycloudy,cloudy,overcast,rain,storm,snow,fog,lightrain,lightsnow,blizzard";
-
-	private static readonly System.Collections.Generic.Dictionary<string, string> SettingTitles =
-		new(System.StringComparer.Ordinal)
-		{
-			[Refii.Level.Engine_DynamicSky.SwitchKey] = "Enable/Disable",
-			[WeatherOverrideKey] = "Weather Override",
-			[Refii.Level.Engine_DynamicNightSky.TimeKey] = "Time of Day Override",
-			[Refii.Level.Engine_DynamicNightSky.AuroraKey] = "Aurora",
-			[Refii.Level.Engine_DynamicSurfaceWeather.SwitchKey] = "Surface Weather",
-			[Refii.Level.Engine_DynamicSky.VolumetricCloudsKey] = "Volumetric Clouds",
-			[Refii.Level.Engine_DynamicSky.CloudShadowsKey] = "Cloud Shadows",
-		};
-
-	private static readonly System.Collections.Generic.Dictionary<string, string> ValueTitles =
-		new(System.StringComparer.Ordinal)
-		{
-			["theme"] = "Auto",
-			["clear"] = "Clear",
-			["partlycloudy"] = "Partly Cloudy",
-			["cloudy"] = "Cloudy",
-			["overcast"] = "Overcast",
-			["rain"] = "Rain",
-			["storm"] = "Storm",
-			["snow"] = "Snow",
-			["fog"] = "Fog",
-		};
 
 	public static void RefreshSettingLabel(Engine_UiExpandableMenu.Item item)
 	{
@@ -58,20 +28,31 @@ public static class Engine_UiScreenActions
 		if (command.StartsWith(SettingToggle, System.StringComparison.Ordinal))
 		{
 			string key = command[SettingToggle.Length..];
-			string title = SettingTitles.TryGetValue(key, out string? known) ? known : key;
-			bool on = Refii.Core.Engine_Switches.Flag(key, false);
-			item.StatedLabel = $"{title}: {(on ? "On" : "Off")}";
+			item.StatedLabel = SettingLabel(key, Refii.Core.Engine_Switches.Flag(key, false) ? "true" : "false");
 			return;
 		}
 
 		if (command.StartsWith(SettingCycle, System.StringComparison.Ordinal) &&
 			SplitCycle(command, out string cycleKey, out string[] values))
 		{
-			string title = SettingTitles.TryGetValue(cycleKey, out string? known) ? known : cycleKey;
-			string current = Refii.Core.Engine_Switches.String(cycleKey, values[0]).Trim().ToLowerInvariant();
-			string shown = ValueTitles.TryGetValue(current, out string? pretty) ? pretty : current;
-			item.StatedLabel = $"{title}: {shown}";
+			item.StatedLabel = SettingLabel(
+				cycleKey, Refii.Core.Engine_Switches.String(cycleKey, values[0]).Trim().ToLowerInvariant());
 		}
+	}
+
+	/// <summary>
+	/// "Title: value" for a switch row, worded by the page that describes the switch (the dynamic
+	/// sky's, <see cref="Engine_UiWeatherOptions.Description"/>) so a row and the page never say it
+	/// differently; a switch no page describes shows its key and raw value.
+	/// </summary>
+	private static string SettingLabel(string key, string stored)
+	{
+		if (Engine_UiWeatherOptions.Page.RowFor(key) is { } row)
+		{
+			return $"{row.Label}: {row.Caption(row.IndexOfStored(stored))}";
+		}
+
+		return $"{key}: {(stored is "true" ? "On" : stored is "false" ? "Off" : stored)}";
 	}
 
 	private static bool SplitCycle(string command, out string key, out string[] values)
@@ -156,40 +137,46 @@ public static class Engine_UiScreenActions
 	/// </summary>
 	public const string BoxDismiss = "box:dismiss";
 
-	/// <summary>Runs a named action. An empty or unknown name does nothing.</summary>
-	public static bool Run(string action)
+	/// <summary>
+	/// Runs a named action through the one dispatcher (<see cref="Engine_UiCommands"/>), as chosen
+	/// on <paramref name="list"/>. True when a verb ran it; an empty, unknown or refused command
+	/// does nothing here.
+	/// </summary>
+	public static bool Run(string action, Engine_UiCommandList list = Engine_UiCommandList.Screen) =>
+		Engine_UiCommands.Run(action, list);
+
+	/// <summary>
+	/// The host actions as verbs on the one dispatcher: options pages, config switches, the
+	/// simulation operations the pump runs on the guest's tick, the property rows, a mod's ability
+	/// purchase, and a guest screen's own levers.
+	/// </summary>
+	public static void RegisterVerbs(Engine_UiCommandSet set)
 	{
 		// A HOST OPTIONS PAGE — the dynamic sky's switches, a mod's settings: the row opens the
 		// page the registry maps its command to, on the options screen's own furniture.
-		if (Engine_UiHostOptionsPage.Run(action))
-		{
-			return true;
-		}
+		set.Register(Engine_UiVerbs.Options, (_, context) => Engine_UiCommandResult.From(
+			Engine_UiHostOptionsPage.Run(context.Command), $"'{context.Command}' names no options page"));
 
-		if (action.StartsWith(SettingToggle, System.StringComparison.Ordinal))
+		set.Register(Engine_UiVerbs.SettingToggle, (key, _) =>
+			Engine_UiCommandResult.From(key.Length != 0 && ToggleSetting(key), "the switch was not written"));
+		set.Register(Engine_UiVerbs.SettingCycle, (_, context) =>
+			Engine_UiCommandResult.From(CycleSetting(context.Command), "names no key and values, or was not written"));
+		set.Register(Engine_UiVerbs.SettingSet, (assignment, _) =>
 		{
-			return ToggleSetting(action[SettingToggle.Length..]);
-		}
-
-		if (action.StartsWith(SettingCycle, System.StringComparison.Ordinal))
-		{
-			return CycleSetting(action);
-		}
-
-		if (action.StartsWith(SettingSet, System.StringComparison.Ordinal))
-		{
-			string assignment = action[SettingSet.Length..];
 			int equals = assignment.IndexOf('=');
-			return equals > 0 && WriteSetting(assignment[..equals], assignment[(equals + 1)..]);
-		}
+			return Engine_UiCommandResult.From(
+				equals > 0 && WriteSetting(assignment[..equals], assignment[(equals + 1)..]),
+				"states no <key>=<value>, or was not written");
+		});
 
 		// `Inventory:<op>:<record hash>` — an operation on the SIMULATION, posted to the guest's
 		// tick pump because guest code must run on the guest's thread. It reaches
 		// `AddAndReplaceItemOfRecordID` / `Player:GiveGift` directly: no GUI event queue, no
 		// screen class, no populated Gameface menu. See `DispatchInventoryAction`.
-		if (action.StartsWith(Engine_UiInventorySource.InventoryAction,
-				System.StringComparison.Ordinal))
+		set.Register(Engine_UiVerbs.Inventory, (_, context) =>
 		{
+			string action = context.Command;
+
 			// A dye is CHOSEN, not used: the press opens the dye list and the simulation is
 			// untouched until a target is picked.
 			if (action.StartsWith(Engine_UiDyeFlow.SelectAction, System.StringComparison.Ordinal))
@@ -199,7 +186,7 @@ public static class Engine_UiScreenActions
 					Engine_UiDyeFlow.Begin(dye);
 				}
 
-				return true;
+				return Engine_UiCommandResult.Done;
 			}
 
 			// A joiner's weapon pick changes the record; the host equips it. The id is decimal.
@@ -208,72 +195,59 @@ public static class Engine_UiScreenActions
 				uint.TryParse(action[equip.Length..], out uint record) &&
 				Refii.Host.CoopHeroKit.SetLocalWeapon(record, Engine_UiInventorySource.WeaponClassOf(record)))
 			{
-				return true;
+				return Engine_UiCommandResult.Done;
 			}
 
 			Refii.Host.HostBridge.PostFrontEndAction(action);
-			return true;
-		}
+			return Engine_UiCommandResult.Done;
+		});
 
-		// `Quest:select:<record>` — the world map's quest rows. The pump turns the record into
-		// the guest's own row ordinal and delivers event 42 to screen 23, whose handler asks
-		// "make this your primary quest?" and commits through `QuestTracker.SetAsPrimary`.
-		if (action.StartsWith(Engine_UiQuestSource.QuestAction, System.StringComparison.Ordinal) ||
-			action.StartsWith(Engine_UiQuestSource.SaleAction, System.StringComparison.Ordinal))
+		// `Quest:select:<record>` — the world map's quest rows. The pump turns the record into the
+		// guest's own row ordinal and delivers event 42 to screen 23, whose handler asks "make this
+		// your primary quest?" and commits through `QuestTracker.SetAsPrimary`. `Sale:` likewise.
+		//
+		// `Ability:learn:<1..14>` — the abilities screen. The guest's own answer to one of those
+		// rows is a single two-argument call that reads nothing from the screen or the menu
+		// (`sub_8246C970` / `sub_8246CF48`), so the row performs it directly rather than borrowing
+		// an identity and hoping the guest's cursor agrees.
+		Engine_UiCommandHandler pump = (_, context) =>
 		{
-			Refii.Host.HostBridge.PostFrontEndAction(action);
-			return true;
-		}
+			Refii.Host.HostBridge.PostFrontEndAction(context.Command);
+			return Engine_UiCommandResult.Done;
+		};
+		set.Register(Engine_UiVerbs.Quest, pump);
+		set.Register(Engine_UiVerbs.Sale, pump);
+		set.Register(Engine_UiVerbs.Ability, pump);
 
-		// `Ability:learn:<1..14>` — the same arrangement for the abilities screen. The guest's
-		// own answer to one of those rows is a single two-argument call that reads nothing from
-		// the screen or the menu (`sub_8246C970` / `sub_8246CF48`), so the row performs it
-		// directly rather than borrowing an identity and hoping the guest's cursor agrees.
-		if (action.StartsWith(Engine_UiAbilitySource.AbilityAction,
-				System.StringComparison.Ordinal))
+		// The world map's property rows: confirmed, then repaired for the player whose menus are
+		// open (Engine_UiPropertySource).
+		Engine_UiCommandHandler property = (_, context) => Engine_UiCommandResult.From(
+			Engine_UiPropertySource.Run(context.Command), $"'{context.Command}' names no property");
+		set.Register(Engine_UiVerbs.PropertyRepair, property);
+		set.Register(Engine_UiVerbs.PropertyRepairAll, property);
+		set.Register(Engine_UiVerbs.Partner, property);
+
+		// `Mod:buy:<ability>` — a mod ability's row: the engine's purchase for the row's player
+		// (Engine_UiModAbilities, src/vfs/src/hooks/mod_abilities.cpp).
+		set.Register(Engine_UiVerbs.ModBuy, (_, context) => Engine_UiCommandResult.From(
+			Engine_UiModAbilities.Buy(context.Command, context.Player), "names no ability"));
+
+		set.Register(Engine_UiVerbs.ScreenBack, (_, _) => Lever(Engine_UiScreenInput.Back));
+		set.Register(Engine_UiVerbs.ScreenDismiss, (_, _) => Lever(Engine_UiScreenInput.Dismiss));
+		set.Register(Engine_UiVerbs.ScreenUnlearn, (_, _) => Lever(Engine_UiScreenInput.Unlearn));
+		set.Register(Engine_UiVerbs.ScreenSelect, (_, _) => Lever(Engine_UiScreenInput.Select));
+		set.Register(Engine_UiVerbs.BoxDismiss, (_, _) =>
 		{
-			Refii.Host.HostBridge.PostFrontEndAction(action);
-			return true;
-		}
+			Engine_UiSource.Current.DisplayBoxAction(Engine_UiSource.BoxAction.Dismiss);
+			return Engine_UiCommandResult.Done;
+		});
+	}
 
-		// `PropertyRepair:<uid>` — the world map's property rows: confirmed, then repaired for the
-		// player whose menus are open (Engine_UiPropertySource).
-		if (Engine_UiPropertySource.Run(action))
-		{
-			return true;
-		}
-
-		// `Mod:buy:<setting>` — a mod ability's row: the purchase is the mod's (Engine_UiModAbilities).
-		if (Engine_UiModAbilities.Buy(action))
-		{
-			return true;
-		}
-
-		switch (action)
-		{
-			case ScreenBack:
-				Refii.Host.HostBridge.ScreenAction(Engine_UiScreenInput.Back);
-				return true;
-
-			case ScreenDismiss:
-				Refii.Host.HostBridge.ScreenAction(Engine_UiScreenInput.Dismiss);
-				return true;
-
-			case ScreenUnlearn:
-				Refii.Host.HostBridge.ScreenAction(Engine_UiScreenInput.Unlearn);
-				return true;
-
-			case ScreenSelect:
-				Refii.Host.HostBridge.ScreenAction(Engine_UiScreenInput.Select);
-				return true;
-
-			case BoxDismiss:
-				Engine_UiSource.Current.DisplayBoxAction(Engine_UiSource.BoxAction.Dismiss);
-				return true;
-
-			default:
-				return false;
-		}
+	/// <summary>A guest screen's own lever, through the bridge's screen action.</summary>
+	private static Engine_UiCommandResult Lever(uint code)
+	{
+		Refii.Host.HostBridge.ScreenAction(code);
+		return Engine_UiCommandResult.Done;
 	}
 
 	/// <summary>Whether this screen takes input directly once revealed.</summary>
@@ -295,13 +269,13 @@ public static class Engine_UiScreenActions
 
 		if (accept && screen.RevealedAccept.Length != 0)
 		{
-			Run(screen.RevealedAccept);
+			Run(screen.RevealedAccept, Engine_UiCommandList.Revealed);
 			return;
 		}
 
 		if (back && screen.RevealedBack.Length != 0)
 		{
-			Run(screen.RevealedBack);
+			Run(screen.RevealedBack, Engine_UiCommandList.Revealed);
 		}
 	}
 }

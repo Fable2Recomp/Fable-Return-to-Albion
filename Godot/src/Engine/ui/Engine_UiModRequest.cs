@@ -6,7 +6,8 @@ namespace Refii.Ui;
 
 /// <summary>
 /// A UI request a native or Lua mod made — <c>refii_mod_open_menu</c> / <c>Refii.open_menu</c>,
-/// <c>refii_mod_message_box</c> / <c>Refii.message_box</c> — as it crosses the mod bus to Godot
+/// <c>refii_mod_message_box</c> / <c>Refii.message_box</c>, <c>refii_mod_notice</c> /
+/// <c>Refii.notice</c>, <c>refii_mod_menu_box</c> / <c>Refii.menu_box</c> — as it crosses the mod bus to Godot
 /// under <see cref="Kind"/> (REFII_MOD_HOST_UI_KIND, core/refii_mod_events.h): never an event,
 /// posted whatever the mask says. And the guest command a box's answer goes back as, which raises
 /// the <c>ModMessageBox</c> event for native and Lua handlers.
@@ -33,10 +34,21 @@ public static class Engine_UiModRequest
 	/// <summary>The guest command that raises <c>ModMessageBox</c> (src/vfs/src/hooks/mod_commands.cpp).</summary>
 	public const string AnswerVerb = "box_answer";
 
+	/// <summary>The guest command that raises <c>ModNotice</c>.</summary>
+	public const string NoticeVerb = "notice_done";
+
+	/// <summary>The guest command that raises <c>ModMenuBox</c>.</summary>
+	public const string MenuBoxVerb = "menu_box_answer";
+
+	/// <summary>The most options a menu box takes on any surface (the bus carries <c>o0</c>..<c>o15</c>).</summary>
+	public const int MaxMenuOptions = 16;
+
 	public enum Op
 	{
 		OpenMenu,
 		MessageBox,
+		Notice,
+		MenuBox,
 	}
 
 	/// <summary>
@@ -44,8 +56,11 @@ public static class Engine_UiModRequest
 	/// machine. For a box: <see cref="Question"/> raises two buttons (A, B) captioned
 	/// <see cref="Accept"/> and <see cref="Cancel"/> (null keeps the box's own), else one (a notice).
 	/// </summary>
+	/// <para>A notice is shown for <see cref="Seconds"/> (0: the channel's own length). A menu box
+	/// offers <see cref="Options"/> and is <see cref="Cancelable"/> with B.</para>
 	public readonly record struct Request(
-		Op Op, uint Id, int Player, string Name, string Title, string Text, string? Accept, string? Cancel, bool Question);
+		Op Op, uint Id, int Player, string Name, string Title, string Text, string? Accept, string? Cancel, bool Question,
+		IReadOnlyList<string>? Options = null, float Seconds = 0f, bool Cancelable = true);
 
 	/// <summary>The request in <paramref name="fields"/>, or null when it is not one (no op, an open with no menu, a box with no id or text).</summary>
 	public static Request? Parse(IEnumerable<KeyValuePair<string, object>> fields)
@@ -89,10 +104,55 @@ public static class Engine_UiModRequest
 				return new Request(Op.MessageBox, id, player, string.Empty, title, text, accept, question ? cancel : null, question);
 			}
 
+			case "notice":
+			{
+				uint id = Id(Number("id"));
+				string title = Text("title");
+				string text = Text("text");
+				if (id == 0 || title.Length + text.Length == 0)
+				{
+					return null;
+				}
+
+				double seconds = Number("seconds");
+				return new Request(Op.Notice, id, player, string.Empty, title, text, null, null, false,
+					Seconds: double.IsFinite(seconds) && seconds > 0 ? (float)Math.Min(seconds, 600) : 0f);
+			}
+
+			case "menu_box":
+			{
+				uint id = Id(Number("id"));
+				int count = (int)Math.Clamp(Number("count"), 0, MaxMenuOptions);
+				var options = new List<string>(count);
+				for (int i = 0; i < count; i++)
+				{
+					options.Add(Text("o" + i.ToString(CultureInfo.InvariantCulture)));
+				}
+
+				if (id == 0 || options.Count == 0)
+				{
+					return null;
+				}
+
+				return new Request(Op.MenuBox, id, player, string.Empty, Text("title"), Text("text"), null, null, false,
+					Options: options, Cancelable: !values.ContainsKey("cancel") || Number("cancel") != 0);
+			}
+
 			default:
 				return null;
 		}
 	}
+
+	/// <summary>An id as the bus states it: 1 .. <see cref="LastBoxId"/>, else 0.</summary>
+	private static uint Id(double raw) => raw is >= 1 and <= LastBoxId ? (uint)raw : 0u;
+
+	/// <summary>The guest command that raises <c>ModNotice</c>: <c>notice_done &lt;id&gt; &lt;outcome&gt; &lt;player&gt;</c>.</summary>
+	public static string NoticeCommandLine(uint id, int outcome, int player) =>
+		string.Create(CultureInfo.InvariantCulture, $"{NoticeVerb} {id} {outcome} {player}");
+
+	/// <summary>The guest command that raises <c>ModMenuBox</c>: <c>menu_box_answer &lt;id&gt; &lt;option&gt; &lt;player&gt;</c>.</summary>
+	public static string MenuBoxCommandLine(uint id, int option, int player) =>
+		string.Create(CultureInfo.InvariantCulture, $"{MenuBoxVerb} {id} {option} {player}");
 
 	/// <summary>The box's body: the title above the text, a blank line between; either alone stands alone.</summary>
 	public static string Body(string title, string text) =>

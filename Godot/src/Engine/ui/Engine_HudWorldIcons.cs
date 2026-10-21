@@ -143,6 +143,16 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	/// </summary>
 	public void Bind(Engine_UiScreen screen)
 	{
+		// A rebind (a new `hud.bgf`, or new art) drops the slots built from the old one.
+		foreach (Slot slot in _slots)
+		{
+			if (slot.Node is not null && GodotObject.IsInstanceValid(slot.Node))
+			{
+				slot.Node.QueueFree();
+			}
+		}
+
+		Lit = 0;
 		_slots.Clear();
 		_screen = screen;
 		_documentElements = screen.Nodes.Length;
@@ -477,10 +487,11 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 
 			// `origin = position - basis * pivot`, with the component's authored scale standing
 			// in for the basis: these elements are never rotated.
-			Vector2 origin = new Vector2(x, y) - (slot.Scale * slot.Pivot);
+			Vector2 origin = new Vector2(x, y) - (PieceScale * slot.Scale * slot.Pivot);
 			if (float.IsFinite(origin.X) && float.IsFinite(origin.Y))
 			{
 				slot.Node.Position = new Vector3(origin.X, origin.Y, 0f);
+				slot.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
 			}
 		}
 	}
@@ -499,6 +510,12 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 				? n - 1
 				: -1,
 	};
+
+	/// <summary>
+	/// A mod's size for this widget (<c>ui/hud.json</c> <c>scale</c>, <see cref="Engine_HudWidgets"/>):
+	/// each mark is drawn this much larger about its own point; 1 is the game's.
+	/// </summary>
+	public float PieceScale { get; set; } = 1f;
 
 	/// <summary>
 	/// Places the lit slots at canvas points projected by GODOT from the guest's world anchors —
@@ -535,10 +552,11 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 				slot.Node.Visible = true;
 			}
 
-			Vector2 origin = at - (slot.Scale * slot.Pivot);
+			Vector2 origin = at - (PieceScale * slot.Scale * slot.Pivot);
 			if (float.IsFinite(origin.X) && float.IsFinite(origin.Y))
 			{
 				slot.Node.Position = new Vector3(origin.X, origin.Y, 0f);
+				slot.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
 			}
 		}
 	}

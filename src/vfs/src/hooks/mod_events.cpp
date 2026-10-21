@@ -843,6 +843,36 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       std::snprintf(out, size, "id=%u,button=%d,player=%d", e.id, e.button, e.player);
       return;
     }
+    case REFII_EVENT_MOD_NOTICE: {
+      const auto& e = *static_cast<const ModNoticeEvent*>(event);
+      std::snprintf(out, size, "id=%u,outcome=%d,player=%d", e.id, e.outcome, e.player);
+      return;
+    }
+    case REFII_EVENT_MOD_MENU_BOX: {
+      const auto& e = *static_cast<const ModMenuBoxEvent*>(event);
+      std::snprintf(out, size, "id=%u,option=%d,player=%d", e.id, e.option, e.player);
+      return;
+    }
+    case REFII_EVENT_MOD_ABILITY: {
+      const auto& e = *static_cast<const ModAbilityEvent*>(event);
+      char ability[96];
+      char mod[96];
+      LuaString(e.ability, ability, sizeof(ability));
+      LuaString(e.mod, mod, sizeof(mod));
+      std::snprintf(out, size, "ability='%s',mod='%s',refund=%s,previous=%d,level=%d,experience=%d,player=%d", ability,
+                    mod, e.refund ? "true" : "false", e.previous, e.level, e.experience, e.player);
+      return;
+    }
+    case REFII_EVENT_SPELL_PICK: {
+      const auto& e = *static_cast<const SpellPickEvent*>(event);
+      char pick[96];
+      char mod[96];
+      LuaString(e.pick, pick, sizeof(pick));
+      LuaString(e.mod, mod, sizeof(mod));
+      std::snprintf(out, size, "pick='%s',mod='%s',slot=%d,spell=%d,previous=%d,player=%d", pick, mod, e.slot, e.spell,
+                    e.previous, e.player);
+      return;
+    }
     case REFII_EVENT_DIALOGUE: {
       const auto& e = *static_cast<const DialogueEvent*>(event);
       std::snprintf(out, size, "speaker=%u,speaker_player=%d,text='0x%08x',listener=%u,listener_player=%d,subtitle=%s",
@@ -1166,7 +1196,8 @@ extern "C" void refii_mod_dispatch(int32_t kind, void* event) {
   }
   // Godot's scripts see the verdict, after every handler, as the same table text Lua gets. A
   // menu row and a box's answer are Godot's own: its RefiiHost raised the signal where they happened.
-  if (kind != REFII_EVENT_MOD_MENU_ROW && kind != REFII_EVENT_MOD_MESSAGE_BOX && refii::mods::HostWantsEvent(kind)) {
+  if (kind != REFII_EVENT_MOD_MENU_ROW && kind != REFII_EVENT_MOD_MESSAGE_BOX && kind != REFII_EVENT_MOD_NOTICE &&
+      kind != REFII_EVENT_MOD_MENU_BOX && refii::mods::HostWantsEvent(kind)) {
     char fields[640];
     HostFields(kind, event, replica, fields, sizeof(fields));
     refii::mods::PostEvent(kind, fields);
@@ -1224,6 +1255,12 @@ bool WriteEventField(int32_t kind, void* event, const char* field, double value)
     case REFII_EVENT_SPELL_LAUNCH:
       if (is("type")) {
         static_cast<SpellLaunchEvent*>(event)->type = ClampInt(value);
+        return true;
+      }
+      return false;
+    case REFII_EVENT_SPELL_PICK:
+      if (is("spell")) {
+        static_cast<SpellPickEvent*>(event)->spell = ClampInt(value);
         return true;
       }
       return false;

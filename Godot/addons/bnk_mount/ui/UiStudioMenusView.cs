@@ -13,7 +13,8 @@ namespace Refii.Assets.UI;
 /// <summary>
 /// The UI tab's Menus page: the shared <see cref="UiMenuEditor"/> over the mod's menus
 /// (<see cref="ModMenuTarget"/>: its own menus whole, every other menu as a patch), the screens it
-/// states (whole records), and a preview through the game's own list view
+/// states (whole records, per-field patches, or host screens of its own opened by
+/// <c>Screen:open:&lt;id&gt;</c> and filled by the <c>data</c> provider), and a preview through the game's own list view
 /// (<see cref="Engine_FrontEndMenuView"/>) built from the front end's or the pause book's pattern
 /// art the way the game builds it — clicked to highlight and press, so an <c>opens</c> or an
 /// <c>Opens:</c> row opens its menu over the list and Back returns.
@@ -35,7 +36,7 @@ public partial class UiStudioMenusView : VBoxContainer
 	private OptionButton _screen = null!;
 	private Label _screenNote = null!;
 	private TextEdit _screenText = null!;
-	private Button _stateScreen = null!, _dropScreen = null!;
+	private Button _stateScreen = null!, _patchScreen = null!, _newScreen = null!, _dropScreen = null!;
 	private bool _filling;
 
 	private bool _active;
@@ -94,8 +95,11 @@ public partial class UiStudioMenusView : VBoxContainer
 	private Control BuildScreens()
 	{
 		var body = new VBoxContainer();
-		body.AddChild(ModStudioUiStyles.Note("A screen record is replaced whole: state one in the mod to start from the record as it runs, " +
-			"then edit it. Dropping it lets the game's own (or a lower mod's) stand again."));
+		body.AddChild(ModStudioUiStyles.Note("A screen record is stated WHOLE (start from the record as it runs) or as a PATCH " +
+			"(\"patch\": true — only the fields it states change: a list replaces the list, fields/switches/boxPaths merge per key, " +
+			"null removes a key). A NEW HOST SCREEN (id 1000 and up) is the mod's own book: a menu, a presentation to draw it with, " +
+			"and provider \"data\" filling its page; a row opens it with Screen:open:<id>. Dropping the mod's record lets the " +
+			"game's own (or a lower mod's) stand again."));
 		var row = new HBoxContainer();
 		_screen = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		_screen.ItemSelected += _ => ShowScreen();
@@ -103,6 +107,12 @@ public partial class UiStudioMenusView : VBoxContainer
 		_stateScreen = new Button { Text = "+ State in the mod" };
 		_stateScreen.Pressed += StateScreen;
 		row.AddChild(_stateScreen);
+		_patchScreen = new Button { Text = "+ Patch in the mod", TooltipText = "State only the fields the mod changes" };
+		_patchScreen.Pressed += PatchScreen;
+		row.AddChild(_patchScreen);
+		_newScreen = new Button { Text = "+ New host screen", TooltipText = "A book screen of the mod's own, opened by Screen:open:<id>" };
+		_newScreen.Pressed += NewScreen;
+		row.AddChild(_newScreen);
 		_dropScreen = new Button { Text = "↺ Drop the mod's record" };
 		ModStudioUiStyles.ApplyRedButtonStyle(_dropScreen);
 		_dropScreen.Pressed += DropScreen;
@@ -113,7 +123,27 @@ public partial class UiStudioMenusView : VBoxContainer
 		_screenText = new TextEdit { CustomMinimumSize = new Vector2(0, 160), SizeFlagsVertical = SizeFlags.ExpandFill };
 		_screenText.TextChanged += OnScreenText;
 		body.AddChild(_screenText);
+		body.AddChild(ModStudioUiStyles.Note(Reference()));
 		return ModStudioUiStyles.Card("🪟 Screens", new Color(0.70f, 0.75f, 1.0f), body);
+	}
+
+	/// <summary>
+	/// What a row and a screen can name, from the engine's own tables: the row verbs every list runs,
+	/// the row conditions, the row sources a mod's list takes, the page providers and the binding forms.
+	/// </summary>
+	private static string Reference()
+	{
+		string verbs = string.Join("  ·  ", Engine_UiVerbs.Game.Select(v => v.Usage +
+			(v.Lists.Count == 0 ? string.Empty : $" ({string.Join("/", v.Lists.Select(Engine_UiCommandSet.ListName))})")));
+		return "ROW VERBS (any list's row; a list-specific one refuses elsewhere): " + verbs + ".\n" +
+			"ROW CONDITIONS (\"when\": name, !name, a,b): " + string.Join(", ", Engine_UiRowConditions.Game) +
+			". Siblings may share a name under different conditions; a patch with no \"when\" reaches them all.\n" +
+			"ROW SOURCES: \"rows\" / \"rows:<list>\" — what set_menu_rows states (Godot, Lua, native), per player; " +
+			"\"values:mod:<key>|<format>=<label>,...\" — published values.\n" +
+			"PAGE PROVIDERS: " + string.Join(", ", Engine_UiPageProviders.ShippedNames) +
+			". \"data\" fills \"fields\" (element path → binding) and \"switches\" (element path → on/off binding); a binding is " +
+			"mod:<key>, player:<key> (the menu's player), game:<name>, row:label, row:name, a Babel tag or a literal, " +
+			"{row} the highlighted row's name, |<format> after a value.";
 	}
 
 	private JsonObject ModScreens()
@@ -165,11 +195,15 @@ public partial class UiStudioMenusView : VBoxContainer
 		_screenText.Text = record?.ToJsonString(Engine_HudLayoutEdit.Indented) ?? string.Empty;
 		_screenText.Editable = stated;
 		_filling = false;
+		bool patch = stated && record is JsonObject stating && Engine_UiMenuEdit.Flag(stating, "patch", false);
 		_stateScreen.Disabled = id is null || stated;
+		_patchScreen.Disabled = id is null || stated;
 		_dropScreen.Disabled = !stated;
-		_screenNote.Text = id is null ? "No screen." : stated
-			? $"Screen {id} as the mod states it — edited here, saved whole."
-			: $"Screen {id} as it runs; read only until it is stated in the mod.";
+		_screenNote.Text = id is null ? "No screen." : !stated
+			? $"Screen {id} as it runs; read only until it is stated or patched in the mod."
+			: patch
+				? $"Screen {id}: the mod's patch — only the fields it states change."
+				: $"Screen {id} as the mod states it — edited here, saved whole.";
 	}
 
 	private void StateScreen()
@@ -181,6 +215,61 @@ public partial class UiStudioMenusView : VBoxContainer
 
 		ModScreens()[id] = record.DeepClone();
 		FillScreens();
+		Edited?.Invoke();
+	}
+
+	private void PatchScreen()
+	{
+		if (ScreenId is not { } id)
+		{
+			return;
+		}
+
+		ModScreens()[id] = new JsonObject { ["patch"] = true };
+		FillScreens();
+		Edited?.Invoke();
+	}
+
+	/// <summary>
+	/// A host screen of the mod's own at the first free id from 1050: the logbook's book, a list the
+	/// mod names, and the data provider over the help page — a start the author edits.
+	/// </summary>
+	private void NewScreen()
+	{
+		uint id = 1050;
+		while (_docs.Menus.Screens.ContainsKey(id.ToString()) || ModScreens().ContainsKey(id.ToString()))
+		{
+			++id;
+		}
+
+		string menu = (_docs.Mod.Length == 0 ? "mod" : _docs.Mod) + $"-screen-{id}";
+		const string page = "Foreground.Book.Pages.HelpPage";
+		ModScreens()[id.ToString()] = new JsonObject
+		{
+			["name"] = menu,
+			["ownsList"] = true,
+			["presentation"] = "logbookscreen",
+			["menu"] = menu,
+			["provider"] = Engine_UiPageProviders.Data,
+			["chrome"] = new JsonArray("Foreground"),
+			["ownedElsewhere"] = new JsonArray("ExpandableMenu.Buttons", "MenuHighlight"),
+			["pageRootUnit"] = "Pages",
+			["backdropUnit"] = "background_yellow",
+			["fields"] = new JsonObject { [page + ".Title"] = "row:label" },
+			["switches"] = new JsonObject { [page] = "true" },
+		};
+		FillScreens();
+		for (int i = 0; i < _screen.ItemCount; ++i)
+		{
+			if ((string)_screen.GetItemMetadata(i) == id.ToString())
+			{
+				_screen.Select(i);
+			}
+		}
+
+		ShowScreen();
+		_screenNote.Text = $"Screen {id} added: give menu '{menu}' rows in the menu editor (or \"source\": \"rows\" and " +
+			$"set_menu_rows), and open it from a pause row with Screen:open:{id}.";
 		Edited?.Invoke();
 	}
 
@@ -208,7 +297,9 @@ public partial class UiStudioMenusView : VBoxContainer
 			if (JsonNode.Parse(_screenText.Text) is JsonObject record)
 			{
 				ModScreens()[id] = record;
-				_screenNote.Text = $"Screen {id} as the mod states it — edited here, saved whole.";
+				_screenNote.Text = Engine_UiMenuEdit.Flag(record, "patch", false)
+					? $"Screen {id}: the mod's patch — only the fields it states change."
+					: $"Screen {id} as the mod states it — edited here, saved whole.";
 				_screenNote.Modulate = new Color(0.72f, 0.75f, 0.80f);
 				Edited?.Invoke();
 				return;
@@ -340,7 +431,7 @@ public partial class UiStudioMenusView : VBoxContainer
 
 	/// <summary>A menu record as the runtime model, through the template's own construction.</summary>
 	private static Engine_FrontEndMenu? Model(string name, JsonObject record) =>
-		Engine_UiTemplates.ParseMenuRecord(name, UiStudioDocs.ToGodot(record))?.Build();
+		Engine_UiTemplates.ParseMenuRecord(name, record)?.Build();
 
 	/// <summary>
 	/// Builds the list view for the menu the editor shows, the way the game builds it: the row and

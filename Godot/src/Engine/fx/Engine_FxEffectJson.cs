@@ -57,6 +57,9 @@ public static class Engine_FxEffectJson
 		public List<FxEffectPart> Parts { get; } = new();
 		public List<FxEmitter> Emitters { get; } = new();
 		public List<FxSystemDef> Systems { get; } = new();
+
+		/// <summary>The authored pieces the effect draws beside its parts (<see cref="FxEffect.Pieces"/>).</summary>
+		public List<Engine_FxRecipePieces.Piece> Pieces { get; } = new();
 	}
 
 	/// <summary>A problem in a file: <paramref name="Pointer"/> is the place (<c>emitters[2].params.rate</c>), empty for the file.</summary>
@@ -94,8 +97,18 @@ public static class Engine_FxEffectJson
 
 	private static readonly string[] EffectKeys =
 	{
-		"format", "name", "zSortEmitters", "updateFrequency", "scale", "tint", "parts", "emitters", "systems",
+		"format", "name", "zSortEmitters", "updateFrequency", "scale", "tint", "parts", "emitters", "systems", "pieces",
 	};
+
+	/// <summary>A piece's keys, as a recipe's <c>pieces</c> state them (<see cref="Engine_FxRecipePieces.Piece"/>).</summary>
+	public static readonly string[] PieceKeys =
+	{
+		"kind", "texture", "color", "colorEnd", "height", "radius", "radiusTop", "rate", "speed", "size", "sizeEnd",
+		"count", "period", "width", "mesh", "tilt", "intensity", "blend",
+	};
+
+	/// <summary>The piece kinds <see cref="Engine_FxRecipePieces.Build"/> draws.</summary>
+	public static readonly string[] PieceKinds = { "embers", "arcs", "ring", "blades" };
 
 	private static readonly string[] PartKeys = { "emitter", "system", "trail", "group", "vector" };
 
@@ -118,6 +131,7 @@ public static class Engine_FxEffectJson
 			Scale = effect.Scale,
 			Tint = (float[])effect.Tint.Clone(),
 		};
+		d.Pieces.AddRange(effect.Pieces);
 		var emitterAt = new Dictionary<int, int>();
 		var systemAt = new Dictionary<int, int>();
 		int Local<T>(Dictionary<int, int> map, List<T> source, List<T> into, int index)
@@ -357,8 +371,65 @@ public static class Engine_FxEffectJson
 		}
 
 		w.WriteEndArray();
+		if (d.Pieces.Count != 0)
+		{
+			w.WriteStartArray("pieces");
+			foreach (Engine_FxRecipePieces.Piece piece in d.Pieces)
+			{
+				WritePiece(w, piece);
+			}
+
+			w.WriteEndArray();
+		}
+
 		w.WriteEndObject();
 	}
+
+	/// <summary>One piece in its recipe form (the keys <see cref="PieceKeys"/> names).</summary>
+	private static void WritePiece(Utf8JsonWriter w, Engine_FxRecipePieces.Piece p)
+	{
+		w.WriteStartObject();
+		w.WriteString("kind", p.Kind);
+		if (p.Texture.Length != 0)
+		{
+			w.WriteString("texture", p.Texture);
+		}
+
+		w.WritePropertyName("color");
+		WriteFloats(w, new[] { p.Colour.R, p.Colour.G, p.Colour.B, p.Colour.A });
+		w.WritePropertyName("colorEnd");
+		WriteFloats(w, new[] { p.ColourEnd.R, p.ColourEnd.G, p.ColourEnd.B, p.ColourEnd.A });
+		void Number(string key, float value)
+		{
+			w.WritePropertyName(key);
+			WriteFloat(w, value);
+		}
+
+		Number("height", p.Height);
+		Number("radius", p.Radius);
+		Number("radiusTop", p.RadiusTop);
+		Number("rate", p.Rate);
+		Number("speed", p.Speed);
+		Number("size", p.Size);
+		Number("sizeEnd", p.SizeEnd);
+		w.WriteNumber("count", p.Count);
+		Number("period", p.Period);
+		Number("width", p.Width);
+		if (p.Mesh.Length != 0)
+		{
+			w.WriteString("mesh", p.Mesh);
+		}
+
+		Number("tilt", p.Tilt);
+		Number("intensity", p.Intensity);
+		if (p.Blend != "add")
+		{
+			w.WriteString("blend", p.Blend);
+		}
+
+		w.WriteEndObject();
+	}
+
 
 	/// <summary>The model's public fields of plain types in declaration order, the ones at their default left out.</summary>
 	private static void WriteFields(Utf8JsonWriter w, object value, object defaults, HashSet<string>? skip)
@@ -632,12 +703,71 @@ public static class Engine_FxEffectJson
 			}
 		}
 
-		if (d.Parts.Count == 0 && issues.Count(i => i.Error) == errorsBefore)
+		if (Array(e, "pieces", at, issues) is { } pieces)
+		{
+			int i = 0;
+			foreach (JsonElement item in pieces.EnumerateArray())
+			{
+				if (ReadPiece(item, At(At(at, "pieces"), i++), issues) is { } piece)
+				{
+					d.Pieces.Add(piece);
+				}
+			}
+		}
+
+		if (d.Parts.Count == 0 && d.Pieces.Count == 0 && issues.Count(i => i.Error) == errorsBefore)
 		{
 			issues.Add(new Issue(At(at, "parts"), false, "no parts: the effect draws nothing"));
 		}
 
 		return issues.Count(i => i.Error) == errorsBefore ? d : null;
+	}
+
+	/// <summary>
+	/// One piece, with the defaults a recipe's piece takes (Engine_FxRecipes.ParsePiece): colour
+	/// white, its end the colour with alpha 0, height 2, radius 1, rate 10, speed 1, size 0.5 (its end
+	/// 0.4 of it), count 64, period 1, width 0.1, tilt 20, intensity 1, blend "add".
+	/// </summary>
+	private static Engine_FxRecipePieces.Piece? ReadPiece(JsonElement item, string at, List<Issue> issues)
+	{
+		if (item.ValueKind != JsonValueKind.Object)
+		{
+			issues.Add(new Issue(at, true, "must be a piece object { \"kind\", ... }"));
+			return null;
+		}
+
+		Unknown(item, at, PieceKeys, issues);
+		string Text(string key) =>
+			item.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+		string kind = Text("kind");
+		if (!PieceKinds.Contains(kind))
+		{
+			issues.Add(new Issue(At(at, "kind"), true, $"'{kind}' is no piece kind ({string.Join(", ", PieceKinds)})"));
+			return null;
+		}
+
+		Godot.Color Colour(string key, Godot.Color fallback)
+		{
+			if (!item.TryGetProperty(key, out JsonElement v))
+			{
+				return fallback;
+			}
+
+			float[]? c = Floats(v, At(at, key), 0, issues);
+			return c is { Length: >= 3 } ? new Godot.Color(c[0], c[1], c[2], c.Length >= 4 ? c[3] : 1f) : fallback;
+		}
+
+		float size = Float(item, "size", at, 0.5f, issues);
+		float radius = Float(item, "radius", at, 1f, issues);
+		Godot.Color colour = Colour("color", Godot.Colors.White);
+		string blend = Text("blend");
+		return new Engine_FxRecipePieces.Piece(
+			kind, Text("texture"), colour, Colour("colorEnd", colour with { A = 0f }),
+			Float(item, "height", at, 2f, issues), radius, Float(item, "radiusTop", at, radius, issues),
+			Float(item, "rate", at, 10f, issues), Float(item, "speed", at, 1f, issues), size,
+			Float(item, "sizeEnd", at, size * 0.4f, issues), Int(item, "count", at, 64, 0, 100000, issues),
+			Float(item, "period", at, 1f, issues), Float(item, "width", at, 0.1f, issues), Text("mesh"),
+			Float(item, "tilt", at, 20f, issues), Float(item, "intensity", at, 1f, issues), blend.Length != 0 ? blend : "add");
 	}
 
 	private static FxEmitter ReadEmitter(JsonElement item, string at, List<Issue> issues)

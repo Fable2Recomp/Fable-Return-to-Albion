@@ -23,8 +23,8 @@
 				]
 			},
 			"values": {
-				"PlayerHealth": "mod:souls_combat.mana/mod:souls_combat.bar_cap",
-				"PlayerHealthMax": "mod:souls_combat.mana_max/mod:souls_combat.bar_cap",
+				"PlayerHealth": "player:souls_combat.mana/mod:souls_combat.bar_cap",
+				"PlayerHealthMax": "player:souls_combat.mana_max/mod:souls_combat.bar_cap",
 				"PlayerLowHealthPulser": "none"
 			},
 			"bars": {
@@ -51,69 +51,13 @@
 				]
 			},
 			"values": {
-				"PlayerHealth": "mod:souls_combat.stamina/mod:souls_combat.bar_cap",
-				"PlayerHealthMax": "mod:souls_combat.stamina_max/mod:souls_combat.bar_cap",
+				"PlayerHealth": "player:souls_combat.stamina/mod:souls_combat.bar_cap",
+				"PlayerHealthMax": "player:souls_combat.stamina_max/mod:souls_combat.bar_cap",
 				"PlayerLowHealthPulser": "none"
 			},
 			"bars": {
 				"Bar": "PlayerHealth",
 				"BarMax": "PlayerHealthMax"
-			}
-		},
-		{
-			"id": "souls_combat.mana2",
-			"of": "group.CoopHealth.CoopHealth",
-			"offset": [
-				0,
-				34
-			],
-			"hue": 0.62,
-			"hueElements": [
-				"Bar",
-				"BarMax"
-			],
-			"icon": {
-				"element": "Heart",
-				"textures": [
-					"art/gui/hud/souls_combat_mana.tex"
-				]
-			},
-			"values": {
-				"CoopHealth": "mod:souls_combat.mana2/mod:souls_combat.bar_cap",
-				"CoopHealthMax": "mod:souls_combat.mana2_max/mod:souls_combat.bar_cap",
-				"CoopLowHealthPulser": "none"
-			},
-			"bars": {
-				"Bar": "CoopHealth",
-				"BarMax": "CoopHealthMax"
-			}
-		},
-		{
-			"id": "souls_combat.stamina2",
-			"of": "group.CoopHealth.CoopHealth",
-			"offset": [
-				0,
-				68
-			],
-			"hue": 0.33,
-			"hueElements": [
-				"Bar",
-				"BarMax"
-			],
-			"icon": {
-				"element": "Heart",
-				"textures": [
-					"art/gui/hud/souls_combat_stamina.tex"
-				]
-			},
-			"values": {
-				"CoopHealth": "mod:souls_combat.stamina2/mod:souls_combat.bar_cap",
-				"CoopHealthMax": "mod:souls_combat.stamina2_max/mod:souls_combat.bar_cap",
-				"CoopLowHealthPulser": "none"
-			},
-			"bars": {
-				"Bar": "CoopHealth",
-				"BarMax": "CoopHealthMax"
 			}
 		}
 	]

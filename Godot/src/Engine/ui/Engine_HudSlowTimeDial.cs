@@ -102,6 +102,12 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 		return texture;
 	}
 
+	/// <summary>
+	/// A mod's size for this widget (<c>ui/hud.json</c> <c>scale</c>, <see cref="Engine_HudWidgets"/>):
+	/// each mark is drawn this much larger about its own point; 1 is the game's.
+	/// </summary>
+	public float PieceScale { get; set; } = 1f;
+
 	public override void _Process(double delta)
 	{
 		if (_dial is not { } dial || dial.Alpha <= 0.004f)
@@ -110,7 +116,7 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 			return;
 		}
 
-		float scale = UnitsPerGuestPixel;
+		float scale = UnitsPerGuestPixel * PieceScale;
 		for (int i = 0; i < Segments; ++i)
 		{
 			Segment? stated = i == 0 ? dial.First : dial.Second;

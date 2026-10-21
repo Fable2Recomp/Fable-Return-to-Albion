@@ -18,9 +18,51 @@ namespace Refii.Fx;
 /// <item><c>blades</c>: the Blades spell's own cutlass mesh, several, orbiting tilted, each with
 /// its aura.</item>
 /// </list>
-/// Each is a node under the dressed effect, so it follows it and dies with it. Textures are the
-/// bank's <c>art/fx/pfx_textures/*.tex</c> by leaf name.
+/// A piece is a part kind of an EFFECT (<see cref="FxEffect.Pieces"/>, fx/effects/*.json
+/// <c>pieces</c>; a recipe's <c>pieces</c> are stated as such an effect): built by
+/// <see cref="Build"/> as a child of the <see cref="FableFx"/> drawing the effect, so it follows it
+/// and dies with it. Textures are the bank's <c>art/fx/pfx_textures/*.tex</c> by leaf name.
 /// </summary>
+/// <remarks>
+/// A PIECE IS GODOT'S DRAWING; THE GUEST HAS NO SUCH KIND, so the guest's bank never carries one and
+/// the classic look never shows one. Every kind is expressible with the bank's own entities, which
+/// the guest simulates and both looks draw — the form an effect that must play everywhere takes
+/// (mods-src/spell_weaving/fx/effects/*.json, each pinned to its piece by SpellWeavingLookTests):
+/// <list type="bullet">
+/// <item><c>embers</c> — a standard emitter on a disc (<c>subType</c> 2, <c>spawnRadius</c> = radius)
+/// shooting each particle out from the EDGE (<c>shapeFlagA</c>, <c>shapeFlagB</c>) at the cone's
+/// widening, (0.8 radiusTop − radius) ÷ period with 0.4 radiusTop ÷ period of <c>speedSpread</c> (the
+/// piece's ±20% jitter); lifted by a reversed <c>gravityScale</c> against <c>vec1</c> (1, 1, 0.5),
+/// which holds the climb at height ÷ (period × 30) a step one frame after the spawn; <c>rate</c> =
+/// max(8, count) ÷ (period × 30) a frame (the bank's rate is particles per frame), living the
+/// period (the last colour/size key). A true cone, every particle turning about its axis at the
+/// piece's <c>speed</c>: the emitter's <c>spin</c> (<see cref="FxEmitter.Spin"/>, which the guest
+/// takes from the dress table).</item>
+/// <item><c>arcs</c> — a spline entity (typeId 5) round the cone over the band the arcs crawled
+/// (0.125..0.825 of the height), <c>splineRandomGenerator</c> putting its point anywhere on it each
+/// step, carrying a standard emitter of bolt sprites (the lightning texture, width × the mean
+/// chord) at count × rate × 0.65 a second (the piece skipped 35% of its strikes), each living one
+/// strike, 1 ÷ rate, and lit at the piece's mean flash (E[f²], f in 0.55..1).</item>
+/// <item><c>ring</c> — a standard emitter at height emitting one particle per period with an aligned
+/// visual (<c>hasAlignQuat</c>, lying flat) whose keys, at (k ÷ 6)² of the period, follow the
+/// piece's lerp(radius ÷ 10, radius, √t) and its colour and alpha × (1 − t).</item>
+/// <item><c>blades</c> — one attractor (typeId 4) holding a persistent particle per blade, and one
+/// per aura, in orbit: each emitter (<c>positionalInteractable</c>, <c>initialNum</c> 1, rate 0, a
+/// system looping forever) starts at the blade's place with the velocity of the exact discrete
+/// orbit at the piece's turn rate, <c>vec1.z</c> 0 freezing its height; the blades stand on one
+/// sphere about the attractor, so each blade's height moves up to 0.1 m. The blade is Fable II's
+/// own Blades sword — SpellShotDamoclesSword's model (globals.gdb ModelFile,
+/// npc_sword_damocles.mdl) as the mesh visual at the piece's size — laid along its orbit, tip first,
+/// climbing by the piece's tilt, the flat facing out (its <c>meshAlign</c> under the emitter's
+/// rotation, <see cref="FxVisual.MeshAlign"/>), turning about the vertical at the orbit's rate
+/// (<c>orAxis</c> (0, 0, −1) in the root's frame). The sword's own effects — FX_Damocles_Trail's
+/// fxspl_damocles_trail and SwordContinueFX's fxspl_damocles_sword_continue, the bank's own
+/// emitters and systems, referenced — ride an orbital (typeId 3) in step with it.</item>
+/// </list>
+/// The light is the bank's point light (typeId 7) with its own flicker walk: <c>p21</c> =
+/// 1 − e^(−23/30), the corner of the old wave's fast 23 rad/s, and <c>p20</c> = flicker × the old
+/// wave's spread ÷ the walk's.
+/// </remarks>
 public static class Engine_FxRecipePieces
 {
 	public sealed record Piece(

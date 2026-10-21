@@ -53,10 +53,10 @@ public static class Engine_PauseMenu
 	public const string QuitCommandPrefix = "PauseQuit:";
 
 	/// <summary>
-	/// Command prefix of a tab the HOST owns outright; the suffix is the host-only screen id it
-	/// stands (<see cref="Engine_UiBookSet.HostOnlyScreenId"/> and up). The tab lever cannot
-	/// express these — `sub_826B89E0`'s switch has no case for a screen the guest never had —
-	/// so they never reach the bridge and the guest's pause root stays exactly where it is.
+	/// The old spelling of the open-screen verb (<see cref="Engine_UiHostScreens.OpenPrefix"/>,
+	/// <c>Screen:open:&lt;id&gt;</c>), still answered for a player's file written with it. The tab
+	/// lever cannot express a host screen — `sub_826B89E0`'s switch has no case for a screen the
+	/// guest never had — so it never reaches the bridge and the guest's pause root stays put.
 	/// </summary>
 	public const string OwnedCommandPrefix = "PauseOwned:";
 
@@ -80,28 +80,30 @@ public static class Engine_PauseMenu
 	public const uint TabOptions = 8;
 
 	/// <summary>
-	/// Builds the hero pause list from the TEMPLATE — `sub_8298DF98`'s spawn list as data: same
-	/// names, same event params on the Saving children, same tab ids, and the guest's own
-	/// SetInitiallySelectedItem(2). A `user://ui/templates.json` override replaces the record.
+	/// Builds the pause list from the TEMPLATE — `sub_8298DF98`'s spawn list as data: same names,
+	/// same event params on the Saving children, same tab ids, and the guest's own
+	/// SetInitiallySelectedItem(2). ONE record for both players: player two's rows stand under the
+	/// row condition <see cref="Engine_UiRowConditions.PlayerTwo"/>, which this states, so a mod
+	/// patches the pause book once and reaches both.
 	/// </summary>
-	/// <param name="coopJoiner">
-	/// True when this player joined someone else's session — the caller reads it, the same way
-	/// <see cref="ApplyTabAvailability"/> is handed its mask rather than fetching one.
+	/// <param name="playerTwo">
+	/// True when this list is player two's (a joiner's, or local player two's) — the caller reads
+	/// it, the same way <see cref="ApplyTabAvailability"/> is handed its mask rather than fetching
+	/// one.
 	/// </param>
-	public static Engine_FrontEndMenu BuildHero(bool coopJoiner = false)
+	public static Engine_FrontEndMenu BuildHero(bool playerTwo = false)
 	{
-		// A VISITING PLAYER GETS A DIFFERENT LIST, and it cannot be chosen by the population
-		// script: both players' pause screens name `PauseMenu`, so the joiner would otherwise
-		// take the host's tabs on top of the capture's rows.
-		//
-		// Godot owns the list either way — the guest's spawn capture is not the authority on
-		// what this menu contains. What the guest supplies is the availability mask, applied by
-		// ApplyTabAvailability below, and the commit entry points behind each command.
-		return Engine_UiTemplates.Menu(RootTemplate(coopJoiner))?.Build() ?? new Engine_FrontEndMenu();
+		// BOTH PLAYERS' PAUSE SCREENS NAME `PauseMenu`, so the variant cannot be chosen by the
+		// population script; it is the fact the build states. Godot owns the list either way — the
+		// guest's spawn capture is not the authority on what this menu contains. What the guest
+		// supplies is the availability mask, applied by ApplyTabAvailability below, and the commit
+		// entry points behind each command.
+		return Engine_UiTemplates.Menu(RootTemplate)?.Build(Engine_UiRowConditions.PauseFacts(playerTwo)) ??
+			new Engine_FrontEndMenu();
 	}
 
-	/// <summary>The template the pause list is built from: the hero's, or the joiner's variant.</summary>
-	public static string RootTemplate(bool coopJoiner) => coopJoiner ? "pause-root-coop" : "pause-root";
+	/// <summary>The template the pause list is built from, for both players.</summary>
+	public const string RootTemplate = "pause-root";
 
 	/// <summary>
 	/// Applies the bridge's availability mask (bit N = tab N available) to the tab entries.

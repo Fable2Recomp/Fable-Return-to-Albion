@@ -6,11 +6,11 @@
 			"nameTag": "SOULS_COMBAT_STAMINA_NAME",
 			"descriptionTag": "SOULS_COMBAT_STAMINA_DESCRIPTION",
 			"maxLevel": 5,
-			"level": "souls_combat.stamina_level",
-			"cost": "souls_combat.stamina_cost",
-			"buy": "souls_combat.buy_stamina",
-			"refund": "souls_combat.refund_stamina",
-			"refundValue": "souls_combat.stamina_refund",
+			"levelKey": "souls_combat.stamina_ability",
+			"costLike": 3,
+			"refund": "half",
+			"stats": [100, 128, 185, 214, 242, 271],
+			"legacySaveKey": "SoulsStamina",
 			"image": "art/gui/abilitytarot/souls_combat_stamina.tex"
 		}
 	]

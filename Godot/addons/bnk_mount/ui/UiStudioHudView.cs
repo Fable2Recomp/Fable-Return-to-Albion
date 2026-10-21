@@ -105,7 +105,9 @@ public partial class UiStudioHudView : VBoxContainer
 		var body = new VBoxContainer();
 		body.AddChild(ModStudioUiStyles.Note("Pieces of the mod's own, drawn with the HUD's own primitives and fonts. A piece is placed by " +
 			"anchor + offset, or hangs under a game piece with follow. A value source is a number, mod:<key> (a value the mod's code " +
-			"publishes) or hero:health / hero:health_max; a piece whose value is not stated is not drawn."));
+			"publishes), game:<name> (what the game publishes for its own HUD: a meter 0..100, or a text such as game:QuestTitle), " +
+			"player:<key> (the per-player store, read for the piece's player — player two's copy reads player two's) or " +
+			"hero:health / hero:health_max; a piece whose value is not stated is not drawn."));
 
 		var buttons = new HFlowContainer();
 		foreach (string kind in Kinds)
@@ -146,8 +148,8 @@ public partial class UiStudioHudView : VBoxContainer
 		_pieceFields.Add("followElement", "Follow element", UiStudioFields.Type.Text, "An element (or comma list) inside the followed piece");
 		_pieceFields.Add("size", "Size", UiStudioFields.Type.Pair, "Width, height in design units; width 0 takes the followed element's", Boxed);
 		_pieceFields.Add("size", "Point size", UiStudioFields.Type.Number, $"The text's point size ({Engine_HudModText.DefaultSize} when empty)", new[] { "text" });
-		_pieceFields.Add("text", "Text", UiStudioFields.Type.Text, "A literal, a Babel tag, or mod:<key> drawn through format", new[] { "text" });
-		_pieceFields.Add("format", "Format", UiStudioFields.Type.Text, "For mod:<key>: \"Stamina {0:0}\" or a numeric format like 0.0", new[] { "text" });
+		_pieceFields.Add("text", "Text", UiStudioFields.Type.Text, "A literal, a Babel tag, or a value source (mod:, game:, player:) drawn through format", new[] { "text" });
+		_pieceFields.Add("format", "Format", UiStudioFields.Type.Text, "For a value source: \"Stamina {0:0}\" or a numeric format like 0.0", new[] { "text" });
 		_pieceFields.Add("colour", "Colour", UiStudioFields.Type.Colour, "The text's colour (the HUD text's own when empty)", new[] { "text" });
 		_pieceFields.Add("align", "Align", UiStudioFields.Type.Choice, "Which edge of the text sits at the piece's point", new[] { "text" }, new[] { "left", "centre", "right" });
 		_pieceFields.Add("value", "Value", UiStudioFields.Type.Text, "The value source the piece draws", Boxed);
@@ -340,8 +342,11 @@ public partial class UiStudioHudView : VBoxContainer
 	private Control BuildShipped()
 	{
 		var body = new VBoxContainer();
-		body.AddChild(ModStudioUiStyles.Note("The game's own pieces, cut from hud.bgf. Moving one writes the mod's \"layout\" block — the " +
-			"entry shape of the player's user://hud/layout.json, which still wins over it. Drag a piece in the preview, or set it here."));
+		body.AddChild(ModStudioUiStyles.Note("The game's own pieces, cut from hud.bgf, and its widgets drawn by their own readers " +
+			"(widget.*: the world icons and sprites, the reticule, time control's dial — each with a player-two copy, …2 — and the " +
+			"achievement toast), stood in by a frame in the preview. Moving one writes the mod's \"layout\" block — the " +
+			"entry shape of the player's user://hud/layout.json, which still wins over it; a widget's place is its home point. " +
+			"Drag a piece in the preview, or set it here."));
 		_layout = new UiLayoutEditor { TargetName = "this mod", CustomMinimumSize = new Vector2(0, 260) };
 		_layout.Edited += SyncLayout;
 		_layout.PieceSelected += ShowShipped;
@@ -469,7 +474,9 @@ public partial class UiStudioHudView : VBoxContainer
 			{
 				pieces.Add(new HudLayoutPiece(piece.Id,
 					new Engine_HudModLayout.Move(piece.Anchor.X, piece.Anchor.Y, piece.Offset.X, piece.Offset.Y),
-					$"art: {piece.Art}   value: {piece.Value}   drive: {piece.Driven}" + (piece.Placed ? string.Empty : "   (not placed in the shipped layout — placing it draws it)")));
+					Engine_HudWidgets.Find(piece.Id) is { } widget
+						? $"widget: {widget.Summary} — drawn by its own reader; its place is its home point"
+						: $"art: {piece.Art}   value: {piece.Value}   drive: {piece.Driven}" + (piece.Placed ? string.Empty : "   (not placed in the shipped layout — placing it draws it)")));
 			}
 		}
 		else if (PlayerHudLayoutTarget.Load() is { } snapshot)
@@ -755,17 +762,26 @@ public partial class UiStudioHudView : VBoxContainer
 			}
 		}
 
+		// The value sources' stand-ins by whole source text: a copy's values and the mod pieces read
+		// them; a game: source not stood in reads the game meters' stand-in above.
+		_hud.StandIn = StandInFor;
 		_hud.Build();
 		if (_hud.ModPieces is { } mods)
 		{
 			mods.PreviewValue = _meterStandIn;
-			mods.PreviewSource = key => _standIns.TryGetValue(key, out float value) ? value : null;
+			mods.PreviewSource = StandInFor;
 		}
 
 		BuildStandIns();
 	}
 
-	/// <summary>The stand-in sliders: the game's meters, and one per <c>mod:</c> key the file reads.</summary>
+	/// <summary>A source's stand-in (whole text, <c>"player:souls.stamina"</c>), or null for none.</summary>
+	private float? StandInFor(string source) => _standIns.TryGetValue(source.Trim(), out float value) ? value : null;
+
+	/// <summary>
+	/// The stand-in sliders: the game's meters, and one per named source the file reads —
+	/// <c>mod:</c>, <c>player:</c> (as the piece's player would read it) and <c>game:</c>.
+	/// </summary>
 	private void BuildStandIns()
 	{
 		if (!_active)
@@ -773,7 +789,7 @@ public partial class UiStudioHudView : VBoxContainer
 			return;
 		}
 
-		List<string> keys = Engine_HudModEdit.ModKeys(_docs.Hud);
+		List<string> keys = Engine_HudModEdit.SourceKeys(_docs.Hud);
 		if (_standInRows is not null && GodotObject.IsInstanceValid(_standInRows) && keys.SequenceEqual(_standInKeys))
 		{
 			return;
@@ -801,7 +817,7 @@ public partial class UiStudioHudView : VBoxContainer
 		{
 			float start = _standIns.TryGetValue(key, out float known) ? known : 75f;
 			_standIns[key] = start;
-			_standInRows.AddChild(StandIn("mod:" + key, start, 0, 100, 0.1, value => _standIns[key] = value));
+			_standInRows.AddChild(StandIn(key, start, 0, 100, 0.1, value => _standIns[key] = value));
 		}
 
 		_standInCard = ModStudioUiStyles.Card("Stand-in values", new Color(0.55f, 0.85f, 1.0f), _standInRows);

@@ -41,8 +41,8 @@ public partial class RefiiModApi
 	/// <summary>
 	/// A whole recipe by its <c>id</c>, added or replacing the one with that id: <c>when</c>,
 	/// <c>equals</c>, <c>base</c>, <c>tint</c>, <c>intensity</c>, <c>size</c>, <c>attach</c>, <c>anchor</c>,
-	/// <c>light</c>, <c>pieces</c>, <c>everyNode</c>, <c>entities</c>, <c>instances</c>,
-	/// <c>instanceRadius</c> — the schema Engine_FxRecipes reads.
+	/// <c>light</c>, <c>pieces</c>, <c>everyNode</c>, <c>entities</c>, <c>with</c>,
+	/// <c>withRadius</c> — the schema Engine_FxRecipes reads.
 	/// </summary>
 	public string SetRecipe(Godot.Collections.Dictionary recipe) =>
 		Upsert(Engine_FxRecipes.RecipesPath, "recipes", "id", recipe);
@@ -144,6 +144,43 @@ public partial class RefiiModApi
 	/// </summary>
 	public string SetEmitterField(string effect, int emitter, string field, Variant value) =>
 		EditEmitter(effect, emitter, e => SetField(e, field, value));
+
+	/// <summary>
+	/// One field of visual <paramref name="visual"/> of system <paramref name="system"/> of the active
+	/// mod's effect <paramref name="effect"/>, by its file key (<c>sizeX</c>, <c>orAxis</c>,
+	/// <c>orSpeed</c>, <c>meshAlign</c> …). A value read under a flag states the flag with it:
+	/// <c>meshAlign</c> sets <c>hasMeshAlign</c>, the <c>or…</c> fields <c>hasOrient</c>.
+	/// </summary>
+	public string SetVisualField(string effect, int system, int visual, string field, Variant value)
+	{
+		if (ReadModEffect(effect) is not { } d)
+		{
+			return $"the active mod has no effect '{effect}' (CloneEffect or OverrideEffect first)";
+		}
+
+		if (system < 0 || system >= d.Systems.Count || visual < 0 || visual >= d.Systems[system].Visuals.Count)
+		{
+			return $"'{effect}' has no visual {visual} of system {system}";
+		}
+
+		FxVisual v = d.Systems[system].Visuals[visual];
+		string error = SetField(v, field, value);
+		if (error.Length != 0)
+		{
+			return error;
+		}
+
+		if (field == "meshAlign")
+		{
+			v.HasMeshAlign = true;
+		}
+		else if (field is "orSpeed" or "orSpread" or "orAxis" or "orRandAngle" or "orRandAxis")
+		{
+			v.HasOrient = true;
+		}
+
+		return WriteEffect(d);
+	}
 
 	/// <summary>
 	/// A generic parameter's timeline (<c>rate</c>, <c>speed</c>, <c>gravityScale</c>, <c>lightRange</c>

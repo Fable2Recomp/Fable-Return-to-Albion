@@ -83,8 +83,8 @@ public partial class RefiiModApi
 	// ---- ui/hud.json: text pieces ----------------------------------------------------------
 
 	/// <summary>
-	/// A <c>text</c> HUD piece, keyed by <c>id</c>: <c>text</c> (a literal, a Babel tag or
-	/// <c>mod:&lt;key&gt;</c>), <c>format</c>, <c>size</c> (point size), <c>colour</c>, <c>align</c>
+	/// A <c>text</c> HUD piece, keyed by <c>id</c>: <c>text</c> (a literal, a Babel tag or a value
+	/// source — <c>mod:</c>, <c>game:</c>, <c>player:</c>, see <see cref="ListHudValueSources"/>), <c>format</c>, <c>size</c> (point size), <c>colour</c>, <c>align</c>
 	/// and the placement every piece takes (<c>anchor</c>, <c>offset</c>, or <c>follow</c>). The
 	/// kind is set to <c>text</c>.
 	/// </summary>
@@ -94,6 +94,57 @@ public partial class RefiiModApi
 		record["kind"] = "text";
 		return SetHudPiece(record);
 	}
+
+	// ---- ui/hud.json: the widgets drawn by their own readers, and value sources ------------
+
+	/// <summary>
+	/// The HUD's other widgets, addressable exactly as a cut piece is — <see cref="HideHudPiece"/>,
+	/// <see cref="SetHudScale"/>, <see cref="SetHudLayout"/> (moves the widget's home point) and
+	/// <see cref="SetHudWidgetCopy"/> — by id → what it draws: the world icons and sprites, the aim
+	/// reticule, time control's dial (each with a player-two copy, <c>…2</c>) and the achievement
+	/// toast (<see cref="Engine_HudWidgets"/>). The timing meter is the cut piece
+	/// <c>group.ExpressionMeter.ExpressionMeter</c>.
+	/// </summary>
+	public Godot.Collections.Dictionary ListHudWidgets()
+	{
+		var widgets = new Godot.Collections.Dictionary();
+		foreach (Engine_HudWidgets.Widget widget in Engine_HudWidgets.All)
+		{
+			widgets[widget.Id] = widget.Summary;
+		}
+
+		return widgets;
+	}
+
+	/// <summary>
+	/// A copy of a widget (<paramref name="of"/>, an id from <see cref="ListHudWidgets"/>) drawn
+	/// <paramref name="offset"/> design units from it (+Y down): it draws exactly what the original
+	/// draws, every frame. Its own <see cref="SetHudScale"/> sizes it.
+	/// </summary>
+	public string SetHudWidgetCopy(string id, string of, Vector2 offset) =>
+		Engine_HudWidgets.Find(of) is null
+			? $"'{of}' is not a widget; a copy of a cut piece is SetHudClone"
+			: SetHudClone(new Godot.Collections.Dictionary
+			{
+				["id"] = id,
+				["of"] = of,
+				["offset"] = new Godot.Collections.Array { offset.X, offset.Y },
+			});
+
+	/// <summary>
+	/// The value sources a HUD piece (and a copy's <c>values</c>) reads, by prefix → meaning
+	/// (<see cref="Engine_UiValueSources"/>): <c>mod:</c>, <c>game:</c>, <c>player:</c>, <c>hero:</c>.
+	/// </summary>
+	public Godot.Collections.Dictionary ListHudValueSources() => new()
+	{
+		[Engine_UiValueSources.ModPrefix] = "mod:<mod>.<name> — what a mod's code published (publish, Refii.publish)",
+		[Engine_UiValueSources.GamePrefix] = "game:<name> — what the guest published for its own HUD under a hud.bgf binding name: a meter 0..100, or a text field read as text (game:QuestTitle)",
+		[Engine_UiValueSources.PlayerPrefix] = "player:<key> — the per-player store (Refii.player_set), read for the piece's player: player two's view and player two's widget read player two's",
+		[Engine_UiValueSources.HeroPrefix] = "hero:health / hero:health_max — the local hero's vitals",
+	};
+
+	/// <summary>Why <paramref name="source"/> is not a number a HUD piece can read, or "" when it is.</summary>
+	public string CheckHudSource(string source) => Engine_UiValueSources.NumberProblem(source) ?? string.Empty;
 
 	/// <summary>Drops the mod's size factor for <paramref name="id"/>; the piece draws at its own size.</summary>
 	public string RemoveHudScale(string id)
@@ -221,6 +272,70 @@ public partial class RefiiModApi
 		Section(templates, "menus")[menu] = patch;
 		return WriteJson(Engine_UiTemplates.ModTemplatesPath, templates);
 	}
+
+	/// <summary>
+	/// The mod's PATCH of a screen: only the fields <paramref name="fields"/> states change — a list
+	/// replaces the list, <c>fields</c> / <c>switches</c> / <c>boxPaths</c> / <c>menuScriptByMode</c>
+	/// merge per key (a null value removes that key). Merged into the patch the mod already states.
+	/// </summary>
+	public string SetScreenPatch(int screenId, Godot.Collections.Dictionary fields)
+	{
+		Godot.Collections.Dictionary templates = ReadJson(Engine_UiTemplates.ModTemplatesPath);
+		Godot.Collections.Dictionary screens = Section(templates, "screens");
+		string key = screenId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+		Godot.Collections.Dictionary patch = screens.TryGetValue(key, out Variant standing) &&
+			standing.VariantType == Variant.Type.Dictionary && standing.AsGodotDictionary().TryGetValue("patch", out Variant flag) &&
+			flag.AsBool()
+				? standing.AsGodotDictionary()
+				: new Godot.Collections.Dictionary();
+		foreach ((Variant name, Variant value) in fields)
+		{
+			patch[name] = value;
+		}
+
+		patch["patch"] = true;
+		screens[key] = patch;
+		return WriteJson(Engine_UiTemplates.ModTemplatesPath, templates);
+	}
+
+	/// <summary>The row command that opens a host screen: <c>Screen:open:&lt;id&gt;</c>.</summary>
+	public string OpenScreenCommand(int screenId) => Engine_UiHostScreens.OpenCommand((uint)Math.Max(0, screenId));
+
+	/// <summary>
+	/// The row verbs every list runs (<c>Refii.Ui.Engine_UiVerbs</c>): <c>{ usage: { lists, meaning } }</c>,
+	/// <c>lists</c> empty for a verb that runs on every list.
+	/// </summary>
+	public Godot.Collections.Dictionary ListRowVerbs()
+	{
+		var verbs = new Godot.Collections.Dictionary();
+		foreach (Engine_UiVerb verb in Engine_UiVerbs.Game)
+		{
+			verbs[verb.Usage] = new Godot.Collections.Dictionary
+			{
+				["lists"] = new Godot.Collections.Array<string>(verb.Lists.Select(Engine_UiCommandSet.ListName)),
+				["meaning"] = verb.Description,
+			};
+		}
+
+		return verbs;
+	}
+
+	/// <summary>The row conditions an entry's <c>when</c> can name.</summary>
+	public string[] ListRowConditions() => Engine_UiRowConditions.Game.ToArray();
+
+	/// <summary>The page providers a screen record can name; <c>data</c> fills the record's <c>fields</c> and <c>switches</c>.</summary>
+	public string[] ListPageProviders() => Engine_UiPageProviders.ShippedNames.ToArray();
+
+	/// <summary>
+	/// A row source over published values: <c>values:&lt;binding&gt;=&lt;label&gt;,...</c>, each binding
+	/// <c>mod:&lt;key&gt;</c> or <c>player:&lt;key&gt;</c> with an optional <c>|format</c>.
+	/// </summary>
+	public string ValuesSource(Godot.Collections.Dictionary labelsByBinding) =>
+		Engine_UiModRows.ValuesSource + ":" + string.Join(",",
+			labelsByBinding.Select(pair => pair.Key.AsString() + "=" + pair.Value.AsString()));
+
+	/// <summary>Why a page or row binding cannot be read, or empty when it can.</summary>
+	public string CheckBinding(string binding) => Engine_UiValueSource.Problem(binding) ?? string.Empty;
 
 	/// <summary>Drops the mod's record for a screen; the shipped one (or another mod's) stands.</summary>
 	public string RemoveScreen(int screenId)

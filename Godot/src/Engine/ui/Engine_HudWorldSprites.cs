@@ -224,6 +224,12 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	/// (`sub_821DEB48` / `sub_822782C8` / `sub_821D6078`). The quad is drawn grey 0.7 at the fade
 	/// alpha; the text carries the stated colour at the same alpha.
 	/// </summary>
+	/// <summary>
+	/// A mod's size for this widget (<c>ui/hud.json</c> <c>scale</c>, <see cref="Engine_HudWidgets"/>):
+	/// each mark is drawn this much larger about its own point; 1 is the game's.
+	/// </summary>
+	public float PieceScale { get; set; } = 1f;
+
 	public override void _Process(double delta)
 	{
 		_lastCanvas = null;
@@ -244,6 +250,7 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			_lastCanvas ??= (sprite.Anchor, at.Canvas, sprite.Scale, sprite.Colour);
 			drawn.Node.Visible = true;
 			drawn.Node.Position = new Vector3(at.Canvas.X, at.Canvas.Y, 0f);
+			drawn.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
 
 			float size = Mathf.Max(IconSize * sprite.Scale, 0.001f);
 			float titleHeight = sprite.Title.Length > 0 ? TextSize : 0f;

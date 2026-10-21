@@ -10775,6 +10775,9 @@
 0x8249BB60 = { name = "rex_CSpellRegistry_Create" }
 0x827192F0 = { name = "rex_TargetedFireball_Impact" }
 0x82733F58 = { name = "rex_VortexComponent_Capture" }
+0x82730AC0 = { name = "rex_VortexComponent_Update" }
+0x82557190 = { name = "rex_DamoclesSword_Update" }
+0x824B8938 = { name = "rex_FxEntity_PlaceAt" }
 0x82428EF8 = { name = "rex_CECSpellManager_ChargeLevelFromTime" }
 0x829B9040 = { name = "rex_CAbilityActionMagicCharge_CanStart" }
 0x8296D570 = { name = "rex_CECHitResponsePlayAction_OnHit" }
@@ -11335,6 +11338,13 @@
 0x82BAF540 = { name = "rex_lhGuiAnimation_GotoSlide" }
 0x8322B3C8 = { name = "rex_CParticleSystemEntityInstance_SetOrientation" }
 0x8322BD20 = { name = "rex_CParticleSystemEntityInstance_SetPositionAndVelocity" }
+0x8322CA88 = { name = "rex_CParticleSystemEntityInstance_Ctor" }
+0x8322BA18 = { name = "rex_CParticleSystemEntityInstance_SetScale" }
+0x8322B890 = { name = "rex_CParticleSystemEntityInstance_GetScale" }
+# Spin and mesh alignment the bank cannot state (particle_motion.cpp): one particle's integrator
+# step, and a mesh particle's visual born.
+0x83229378 = { name = "rex_CParticleEmitter_StepParticle" }
+0x8321A250 = { name = "rex_CMeshParticle_InitVisual" }
 0x82172390 = { size = 0x14 }
 0x82172ED0 = { size = 0x10 }
 0x82173CB0 = { size = 0xC }

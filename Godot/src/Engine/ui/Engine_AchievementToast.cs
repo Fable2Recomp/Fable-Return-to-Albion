@@ -228,7 +228,13 @@ public sealed partial class Engine_AchievementToast : Node3D
 	/// canvas units; this is the inverse, so a size quoted in the HUD's units lands at the same
 	/// height on screen whatever the window is.
 	/// </summary>
-	private float HudScale => Mathf.Max(Canvas.Y, 1f) / 720f;
+	private float HudScale => Mathf.Max(Canvas.Y, 1f) / 720f * PieceScale;
+
+	/// <summary>
+	/// A mod's size for the toast (<c>ui/hud.json</c> <c>scale</c> on <c>widget.AchievementToast</c>,
+	/// <see cref="Engine_HudWidgets"/>): drawn this much larger, still standing on its bottom edge.
+	/// </summary>
+	public float PieceScale { get; set; } = 1f;
 
 	/// <summary>
 	/// Puts the current toast on screen through the same glyph and quad path as every other owned

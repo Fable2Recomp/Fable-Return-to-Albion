@@ -509,6 +509,66 @@ extern "C" uint32_t refii_mod_message_box(int32_t player, const char* title, con
   return id;
 }
 
+extern "C" uint32_t refii_mod_notice(int32_t player, const char* title, const char* text, float seconds) {
+  const std::string head = QuotedField(title, 128);
+  const std::string body = QuotedField(text, 480);
+  if (head.empty() && body.empty()) {
+    return 0;
+  }
+  const uint32_t id = (g_box_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
+  const float shown = std::isfinite(seconds) && seconds > 0.0f ? seconds : 0.0f;
+  char length[32];
+  std::snprintf(length, sizeof(length), "%.3f", static_cast<double>(shown));
+  const std::string fields = "op='notice',id=" + std::to_string(id) + ",player=" + std::to_string(ClampPlayer(player)) +
+                             ",title='" + head + "',text='" + body + "',seconds=" + length;
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return id;
+}
+
+extern "C" uint32_t refii_mod_menu_box(int32_t player, const char* title, const char* text, const char* const* options,
+                                       int32_t count, int32_t cancelable) {
+  constexpr int32_t kMaxOptions = 16;  // Engine_UiModRequest.MaxMenuOptions
+  const int32_t n = options == nullptr || count < 0 ? 0 : (count > kMaxOptions ? kMaxOptions : count);
+  if (n == 0) {
+    return 0;
+  }
+  const uint32_t id = (g_box_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
+  std::string fields = "op='menu_box',id=" + std::to_string(id) + ",player=" + std::to_string(ClampPlayer(player)) +
+                       ",title='" + QuotedField(title, 128) + "',text='" + QuotedField(text, 480) +
+                       "',cancel=" + (cancelable != 0 ? "1" : "0") + ",count=" + std::to_string(n);
+  for (int32_t i = 0; i < n; ++i) {
+    fields += ",o" + std::to_string(i) + "='" + QuotedField(options[i], 96) + "'";
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return id;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Menu rows and host screens: a request for Godot, posted on the host-only kind
+// REFII_MOD_HOST_MENU_KIND (Engine_UiModRows reads it)
+// ---------------------------------------------------------------------------------------------
+
+extern "C" int32_t refii_mod_set_menu_rows(int32_t player, const char* menu, const char* rows) {
+  const std::string list = QuotedField(menu, 96);
+  if (list.empty()) {
+    return 0;
+  }
+  const std::string fields = "op='menu_rows',player=" + std::to_string(ClampPlayer(player)) + ",menu='" + list +
+                             "',rows='" + QuotedField(rows, 1800) + "'";
+  refii::mods::PostEvent(REFII_MOD_HOST_MENU_KIND, fields);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_open_screen(int32_t player, uint32_t screen) {
+  if (screen == 0u) {
+    return 0;
+  }
+  const std::string fields =
+      "op='open_screen',player=" + std::to_string(ClampPlayer(player)) + ",screen=" + std::to_string(screen);
+  refii::mods::PostEvent(REFII_MOD_HOST_MENU_KIND, fields);
+  return 1;
+}
+
 extern "C" uint32_t refii_mod_fnv1(const char* text) {
   uint32_t hash = 0x811C9DC5u;
   for (const char* c = text; c != nullptr && *c != 0; ++c) {

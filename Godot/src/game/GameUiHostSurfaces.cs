@@ -164,7 +164,7 @@ public partial class GameUi
 		}
 
 		GameInput.HostUiOwnsPad = true;
-		Engine_UiModMenus.Focus(_hostMenuView, _hostMenuRoot);
+		Engine_UiModMenus.Focus(_hostMenuView, _hostMenuRoot, Engine_UiCommandList.HostList);
 		_hostMenuView.Navigate(GameInput.MenuDirection, delta);
 		bool clicked = PointerList(_hostMenuView);
 		ReportMenuView(_hostMenuView);
@@ -186,7 +186,8 @@ public partial class GameUi
 
 		Engine_UiExpandableMenu.Item? chosen = _hostMenuView.Menu?.Highlighted;
 		string? action = _hostMenuView.Activate();
-		Engine_UiModMenus.Activated(_hostMenuView, _hostMenuRoot, chosen, action, rootIsModMenu: true);
+		Engine_UiModMenus.Activated(_hostMenuView, _hostMenuRoot, chosen, action, Engine_UiCommandList.HostList,
+			rootIsModMenu: true);
 		if (_hostMenuView is not null && GodotObject.IsInstanceValid(_hostMenuView))
 		{
 			// An entry naming a SCREEN latches it for the front end; there is none under this list.

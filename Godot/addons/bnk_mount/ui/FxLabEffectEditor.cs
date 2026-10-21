@@ -74,6 +74,7 @@ public partial class FxLabEffectEditor : ScrollContainer
 		(nameof(FxEmitter.AttachToRoot), "attach to root", 0, 1, 1), (nameof(FxEmitter.Fades), "fades (in from, in to, out from, out to)", 0, 10000, 0.1),
 		(nameof(FxEmitter.ReleaseTrail), "release trail", 0, 1, 1), (nameof(FxEmitter.GlobalCollider), "global collider", 0, 1, 1),
 		(nameof(FxEmitter.CollisionRestitution), "restitution", 0, 10, 0.01), (nameof(FxEmitter.SortParticles), "sort", 0, 1, 1),
+		(nameof(FxEmitter.Spin), "spin (rad/s about the emitter's Z)", -100, 100, 0.01),
 	};
 
 	private static readonly (string Field, string Label, double Min, double Max, double Step)[] SplineEmitting =
@@ -112,6 +113,9 @@ public partial class FxLabEffectEditor : ScrollContainer
 		(nameof(FxVisual.BlendOp), "blend op", 0, 8, 1), (nameof(FxVisual.SoftDepthContrast), "soft depth", 0, 100, 0.01),
 		(nameof(FxVisual.FlickerPeriod), "flicker period", 0, 30, 0.01), (nameof(FxVisual.FlickerSpreadX), "flicker x", 0, 10, 0.01),
 		(nameof(FxVisual.FlickerSpreadY), "flicker y", 0, 10, 0.01), (nameof(FxVisual.Displacement), "displacement", 0, 1, 1),
+		(nameof(FxVisual.OrSpeed), "mesh turn (rad/frame)", -10, 10, 0.001), (nameof(FxVisual.OrSpread), "mesh turn spread", 0, 10, 0.001),
+		(nameof(FxVisual.OrAxis), "mesh turn axis", -1, 1, 0.001), (nameof(FxVisual.OrRandAngle), "mesh random angle", 0, 1, 1),
+		(nameof(FxVisual.OrRandAxis), "mesh random axis", 0, 1, 1), (nameof(FxVisual.MeshAlign), "mesh rest orientation (quat)", -1, 1, 0.001),
 	};
 
 	/// <summary>The flag a visual's value is read under: editing the value states the flag.</summary>
@@ -124,6 +128,9 @@ public partial class FxLabEffectEditor : ScrollContainer
 		[nameof(FxVisual.TrailWidth)] = nameof(FxVisual.HasTrailWidth), [nameof(FxVisual.TrailLen)] = nameof(FxVisual.HasTrailLen),
 		[nameof(FxVisual.FlickerPeriod)] = nameof(FxVisual.HasFlicker), [nameof(FxVisual.FlickerSpreadX)] = nameof(FxVisual.HasFlicker),
 		[nameof(FxVisual.FlickerSpreadY)] = nameof(FxVisual.HasFlicker),
+		[nameof(FxVisual.OrSpeed)] = nameof(FxVisual.HasOrient), [nameof(FxVisual.OrSpread)] = nameof(FxVisual.HasOrient),
+		[nameof(FxVisual.OrAxis)] = nameof(FxVisual.HasOrient), [nameof(FxVisual.OrRandAngle)] = nameof(FxVisual.HasOrient),
+		[nameof(FxVisual.OrRandAxis)] = nameof(FxVisual.HasOrient), [nameof(FxVisual.MeshAlign)] = nameof(FxVisual.HasMeshAlign),
 	};
 
 	/// <summary>Set before the node enters the tree (the lab builds it).</summary>

@@ -677,7 +677,40 @@ public sealed class Engine_HudLayout
 
         AbsorbIntoGroups(screen, layout._pieces);
         ReportNesting(screen, layout._pieces);
+        layout.AddWidgets();
         return layout;
+    }
+
+    /// <summary>
+    /// The widgets drawn by their own readers (<see cref="Engine_HudWidgets"/>) as pieces at their
+    /// homes, so a layout entry, the snapshot, the player's tool and the Studio address them as
+    /// they address a cut piece. Never built by <see cref="Engine_HudView"/>: their readers draw them.
+    /// </summary>
+    public Engine_HudLayout AddWidgets()
+    {
+        foreach (Engine_HudWidgets.Widget widget in Engine_HudWidgets.All)
+        {
+            if (!_pieces.Exists(p => p.Id == widget.Id))
+            {
+                _pieces.Add(new Piece(widget.Id, widget.Name, widget.Home, Vector2.Zero));
+            }
+        }
+
+        return this;
+    }
+
+    /// <summary>A piece by id, or null.</summary>
+    public Piece? Find(string id)
+    {
+        foreach (Piece piece in _pieces)
+        {
+            if (piece.Id == id)
+            {
+                return piece;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

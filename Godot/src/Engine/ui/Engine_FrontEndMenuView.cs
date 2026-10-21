@@ -246,6 +246,29 @@ public partial class Engine_FrontEndMenuView : Node3D
 	public static Engine_FrontEndMenuView Dressed(
 		string name, Engine_UiTheme? book, bool bookLook, Engine_UiScreen? document, Engine_UiTheme? fallback)
 	{
+		(Node3D? template, Vector3 anchor, Transform3D? cursorPose) = DressingOf(book, bookLook);
+		var view = new Engine_FrontEndMenuView
+		{
+			Name = name,
+			Theme = book ?? fallback,
+			RowTemplate = template,
+			Anchor = anchor,
+			CursorTemplate = book?.Art("MenuHighlight"),
+			CursorPose = cursorPose,
+			Ratings = Engine_UiRowRating.Resolve(document),
+		};
+		if (bookLook)
+		{
+			view.ScreenId = 0;
+			view.ClipRect = Engine_UiButtonPool.ListClip(document);
+		}
+
+		return view;
+	}
+
+	/// <summary>The row template, anchor and cursor pose <see cref="Dressed"/> takes from a book.</summary>
+	private static (Node3D? Template, Vector3 Anchor, Transform3D? CursorPose) DressingOf(Engine_UiTheme? book, bool bookLook)
+	{
 		Node3D? pattern = book is null ? null : bookLook
 			? Engine_UiButtonPool.FindButtonPool(book)
 			: book.ArtSourceNode(RowGroupName);
@@ -265,23 +288,17 @@ public partial class Engine_FrontEndMenuView : Node3D
 			cursorPose = authored;
 		}
 
-		var view = new Engine_FrontEndMenuView
-		{
-			Name = name,
-			Theme = book ?? fallback,
-			RowTemplate = template,
-			Anchor = anchor,
-			CursorTemplate = book?.Art("MenuHighlight"),
-			CursorPose = cursorPose,
-			Ratings = Engine_UiRowRating.Resolve(document),
-		};
-		if (bookLook)
-		{
-			view.ScreenId = 0;
-			view.ClipRect = Engine_UiButtonPool.ListClip(document);
-		}
+		return (template, anchor, cursorPose);
+	}
 
-		return view;
+	/// <summary>
+	/// <see cref="Redress"/> for a view <see cref="Dressed"/> made: the same dressing from the new
+	/// book, the view's anchor kept (its owner may have moved it in depth).
+	/// </summary>
+	public void RedressFrom(Engine_UiTheme? book, bool bookLook, Engine_UiTheme? fallback)
+	{
+		(Node3D? template, _, Transform3D? cursorPose) = DressingOf(book, bookLook);
+		Redress(book ?? fallback, template, book?.Art("MenuHighlight"), cursorPose);
 	}
 
 	/// <summary>The model being drawn. Null until <see cref="Bind"/>.</summary>
@@ -489,6 +506,53 @@ public partial class Engine_FrontEndMenuView : Node3D
 		Position = Anchor;
 		BuildRows();
 		Refresh();
+	}
+
+	/// <summary>
+	/// Dresses the view again from a NEW pattern book — the mount replaced the presentation it was
+	/// dressed from — keeping its model, its highlight and every menu opened over it: the rows and
+	/// the cursor are built again from the new art and laid out at once.
+	/// </summary>
+	public void Redress(Engine_UiTheme? theme, Node3D? rowTemplate, Node3D? cursorTemplate, Transform3D? cursorPose)
+	{
+		foreach (Node3D row in _rows)
+		{
+			if (row is not null && GodotObject.IsInstanceValid(row))
+			{
+				RemoveChild(row);
+				row.QueueFree();
+			}
+		}
+
+		if (_cursor is not null && GodotObject.IsInstanceValid(_cursor))
+		{
+			RemoveChild(_cursor);
+			_cursor.QueueFree();
+		}
+
+		if (CursorTemplate is not null && GodotObject.IsInstanceValid(CursorTemplate) && !CursorTemplate.IsInsideTree())
+		{
+			CursorTemplate.Free();
+		}
+
+		_cursor = null;
+		_ringLocal = null;
+		_cursorRest = Transform3D.Identity;
+		System.Array.Clear(_rowItem);
+		System.Array.Clear(_rowFaced);
+		System.Array.Clear(_rowEmphasis);
+		System.Array.Clear(_rowRating);
+		System.Array.Clear(_labelSize);
+		System.Array.Clear(_labelTruncate);
+		Theme = theme;
+		RowTemplate = rowTemplate;
+		CursorTemplate = cursorTemplate;
+		CursorPose = cursorPose;
+		if (IsInsideTree())
+		{
+			BuildRows();
+			Refresh();
+		}
 	}
 
 	/// <summary>

@@ -11,10 +11,25 @@
 // ONE WEAVE PER CAST (spell_weaving.h). The launch arms the pair (weave.cpp); the SpellCreated
 // event that the same launch raises binds it to the base's spell object and serial; every hit
 // that carries that serial casts THAT weave's partner on its victim, however many casts are out
-// and whatever the slot's partner has become since. The look is published per weave as an
-// INSTANCE TABLE the host's recipes read (spell_weaving.inst_<i>_look / _x _y _z / _hi _lo / _serial):
-// one entry per vortex, per fireball in flight, per hovering sword, each at its own place and
-// with its own entity, so two vortices from two slots each carry their own partner's look.
+// and whatever the slot's partner has become since.
+//
+// THE LOOK IS AN EFFECT, PLAYED PER CAST (UpdateLooks). Each pair has its own mod effect,
+// fx/effects/spell_weaving_<base>_<overlay>.json, built from the particle bank's own entities so
+// the guest's bank carries it and BOTH looks draw it. A weave plays it with refii_mod_play_fx_on on
+// each thing its base put in the world — the vortex entity, the fireball's shot, each live sword,
+// each victim of a bolt, shove or chaos for its hold — and refii_mod_stop_fx ends each play when
+// that thing is gone; with nothing to ride (a fireball's blast, an instant cast that hit nobody)
+// it plays once at the point. Two vortices from two slots each carry their own partner's look,
+// and fx/recipes.json tints each base effect by the play bound to it ("with"), not by a table.
+// THE VORTEX ENTITY TRAVELS WITH ITS TWISTER: the component's update ends by writing the
+// twister's point to +0x140 and placing its entity there (sub_82759928, 0x82759bdc..0x82759bf4),
+// so the play rides the entity. The host draws an entity with no body where its own live effects
+// are (Engine_FxPlayer) under the modern look; under the classic look the guest instance is placed
+// at the entity at the end of that same update (src/vfs/src/hooks/spell_fx_owner.cpp), and the
+// recipe's `with` binds the base effects the vortex's, the fireball shot's and each sword's own
+// update states as theirs — never another cast's, never by distance.
+// Each machine plays its own copy: a weave is bound wherever the cast runs (both machines online),
+// and a play draws only on the machine that asked for it.
 //
 // The events (core/refii_mod_events.h): SpellCreated binds the armed pair; Hit, before delivery,
 // scales a weave-side spell's damage; HitLanded, after it, queues the partner on the victim.
@@ -90,7 +105,6 @@ constexpr uint32_t kControllerCount = 0;
 constexpr uint32_t kControllerSlots = 116;  // eight sword records; record+0 vtable, +4 the weak-ref body
 constexpr uint32_t kRecordRefBody = 4;
 constexpr int kLevels = 5;
-constexpr int kMaxInstances = 32;
 
 bool g_applying = false;
 float g_clock = 0.0f;
@@ -182,6 +196,17 @@ bool BaseLive(uint8_t* base, Weave& w) {
   }
 }
 
+/// Ends every play of a weave's look.
+void StopLooks(Weave& w) {
+  for (int i = 0; i < Weave::kMaxLooks; ++i) {
+    if (w.look_id[i] != 0) {
+      refii_mod_stop_fx(w.look_id[i]);
+    }
+    w.look_id[i] = 0;
+    w.look_on[i] = 0;
+  }
+}
+
 Weave* FreeWeave() {
   Weave* oldest = &g_weaves[0];
   for (Weave& w : g_weaves) {
@@ -192,6 +217,7 @@ Weave* FreeWeave() {
       oldest = &w;
     }
   }
+  StopLooks(*oldest);
   *oldest = Weave{};
   return oldest;
 }
@@ -488,111 +514,101 @@ void NoteVictim(Weave& w, uint32_t victim) {
   w.victim_at[slot] = g_clock;
 }
 
-/// The instance table for the host's recipes: one entry per thing the look rides on.
-struct Instance {
-  int look;
-  float pos[3];
-  uint32_t entity;
-  uint32_t serial;
-};
+/// The pair's own effect (fx/effects): spell_weaving_<base>_<overlay>; null for a pair with none
+/// (a spell woven with itself under allow_same).
+const char* LookName(int base, int overlay) {
+  static const char* const kNames[kSpellTypes] = {"shock", "fire", nullptr, "blades", "vortex", "chaos", "push", nullptr};
+  static char names[kSpellTypes][kSpellTypes][48];
+  if (base < 0 || base >= kSpellTypes || overlay < 0 || overlay >= kSpellTypes || base == overlay || kNames[base] == nullptr ||
+      kNames[overlay] == nullptr) {
+    return nullptr;
+  }
+  char* name = names[base][overlay];
+  if (name[0] == 0) {
+    std::snprintf(name, sizeof(names[base][overlay]), "spell_weaving_%s_%s", kNames[base], kNames[overlay]);
+  }
+  return name;
+}
 
-void PublishInstances(PPCContext& ctx, uint8_t* base) {
-  Instance table[kMaxInstances];
+/// What a weave's look rides this tick: entities (each its own play), or — with none, while the
+/// base is out — the point at the weave's origin (entity 0). Each sword, each victim of a bolt,
+/// shove or chaos within its hold, else the anchor (the vortex, the shot in flight), else the
+/// origin (an instant cast that hit nobody). A base's end (the vortex's shutdown, the fireball's
+/// blast) ends its look: a play restarted at the end point would pop for its short hold.
+int Riders(uint8_t* base, Weave& w, bool live, uint32_t* out) {
   int n = 0;
-  auto add = [&](int look, const float* pos, uint32_t entity, uint32_t serial) {
-    if (n < kMaxInstances) {
-      table[n].look = look;
-      table[n].pos[0] = pos[0];
-      table[n].pos[1] = pos[1];
-      table[n].pos[2] = pos[2];
-      table[n].entity = entity;
-      table[n].serial = serial;
-      ++n;
+  if (w.base == kSwords) {
+    for (int i = 0; i < 8 && n < Weave::kMaxLooks; ++i) {
+      if (const uint32_t sword = SwordOf(base, w, i); sword != 0) {
+        out[n++] = sword;
+      }
     }
-  };
+    return n;
+  }
+  if (w.base == kLightning || w.base == kForcePush || w.base == kChaos) {
+    for (int i = 0; i < 8 && n < Weave::kMaxLooks; ++i) {
+      if (w.victims[i] != 0 && g_clock - w.victim_at[i] <= HoldSeconds(w.base) && refii_mod_entity_alive(base, w.victims[i])) {
+        out[n++] = w.victims[i];
+      }
+    }
+    if (n != 0) {
+      return n;
+    }
+  }
+  if (w.anchor != 0 || live) {
+    out[n++] = w.anchor;  // 0: the point
+  }
+  return n;
+}
 
-  int newest_look[2] = {-1, -1};
-  float newest_age[2] = {1e9f, 1e9f};
+/// Each live weave plays its look on what it rides, and stops each play whose rider has gone.
+void UpdateLooks(uint8_t* base) {
   for (Weave& w : g_weaves) {
     if (w.serial == 0) {
       continue;
     }
     const bool live = BaseLive(base, w);
     const bool holding = !live && w.done_at >= 0.0f && g_clock - w.done_at <= HoldSeconds(w.base);
-    if (!live && !holding) {
-      continue;
-    }
-    const int look = w.base * 8 + w.overlay;
-    if (w.player >= 0 && w.player < 2 && w.age < newest_age[w.player]) {
-      newest_age[w.player] = w.age;
-      newest_look[w.player] = look;
-    }
-    if (w.base == kSwords) {
-      for (int i = 0; i < 8; ++i) {
-        float pos[3];
-        const uint32_t sword = SwordOf(base, w, i);
-        if (sword != 0 && refii_mod_entity_position(&ctx, base, sword, pos) != 0) {
-          add(look, pos, sword, w.serial);
-        }
-      }
-      continue;
-    }
-    // A base with nothing of its own in the world (a bolt, a shove, chaos): the look rides on
-    // each victim it hit, for the base's hold after that hit.
-    if (w.base == kLightning || w.base == kForcePush || w.base == kChaos) {
-      bool any = false;
-      for (int i = 0; i < 8; ++i) {
-        float pos[3];
-        if (w.victims[i] != 0 && g_clock - w.victim_at[i] <= HoldSeconds(w.base) && refii_mod_entity_alive(base, w.victims[i]) &&
-            refii_mod_entity_position(&ctx, base, w.victims[i], pos) != 0) {
-          add(look, pos, w.victims[i], w.serial);
-          any = true;
-        }
-      }
-      if (any) {
+    const char* look = LookName(w.base, w.overlay);
+    uint32_t riders[Weave::kMaxLooks];
+    const int count = (live || holding) && look != nullptr ? Riders(base, w, live, riders) : 0;
+
+    for (int i = 0; i < Weave::kMaxLooks; ++i) {
+      if (w.look_id[i] == 0) {
         continue;
       }
-    }
-    // The anchor stands until its own seam says it is gone (the vortex's Shutdown, the
-    // fireball's impact): the vortex entity does not carry the creature "in world" bit, so
-    // only the position read decides here.
-    float pos[3] = {w.origin[0], w.origin[1], w.origin[2]};
-    uint32_t anchor = w.anchor;
-    if (w.base == kVortex && w.vortex != 0) {
-      // THE TWISTER TRAVELS; ITS ENTITY STAYS. The vortex component keeps the twister's own
-      // position at +0x140 — the vector its update hands every ground effect each tick
-      // (sub_827590E0: `li r28,0x140` 0x82759210, `lvx128 v1,r31,r28` 0x82759238 before
-      // sub_825F86F0). A run placed the look 18 m behind the twister on the entity's position.
-      for (int i = 0; i < 3; ++i) {
-        pos[i] = refii::mods::LoadF32(base, w.vortex + 0x140u + 4u * static_cast<uint32_t>(i));
+      bool wanted = false;
+      for (int r = 0; r < count && !wanted; ++r) {
+        wanted = riders[r] == w.look_on[i];
       }
-    } else if (anchor != 0 && refii_mod_entity_position(&ctx, base, anchor, pos) == 0) {
-      anchor = 0;
+      if (!wanted) {
+        refii_mod_stop_fx(w.look_id[i]);
+        w.look_id[i] = 0;
+        w.look_on[i] = 0;
+      }
     }
-    add(look, pos, anchor, w.serial);
-  }
 
-  refii::mods::Publish("spell_weaving.inst_count", static_cast<float>(n));
-  for (int i = 0; i < n; ++i) {
-    char key[48];
-    std::snprintf(key, sizeof(key), "spell_weaving.inst_%d_look", i);
-    refii::mods::Publish(key, static_cast<float>(table[i].look));
-    std::snprintf(key, sizeof(key), "spell_weaving.inst_%d_x", i);
-    refii::mods::Publish(key, table[i].pos[0]);
-    std::snprintf(key, sizeof(key), "spell_weaving.inst_%d_y", i);
-    refii::mods::Publish(key, table[i].pos[1]);
-    std::snprintf(key, sizeof(key), "spell_weaving.inst_%d_z", i);
-    refii::mods::Publish(key, table[i].pos[2]);
-    std::snprintf(key, sizeof(key), "spell_weaving.inst_%d_hi", i);
-    refii::mods::Publish(key, static_cast<float>(table[i].entity >> 16));
-    std::snprintf(key, sizeof(key), "spell_weaving.inst_%d_lo", i);
-    refii::mods::Publish(key, static_cast<float>(table[i].entity & 0xFFFFu));
-    std::snprintf(key, sizeof(key), "spell_weaving.inst_%d_serial", i);
-    refii::mods::Publish(key, static_cast<float>(table[i].serial));
+    for (int r = 0; r < count; ++r) {
+      bool playing = false;
+      int free = -1;
+      for (int i = 0; i < Weave::kMaxLooks; ++i) {
+        playing = playing || (w.look_id[i] != 0 && w.look_on[i] == riders[r]);
+        free = free < 0 && w.look_id[i] == 0 ? i : free;
+      }
+      if (playing || free < 0) {
+        continue;
+      }
+      refii_mod_fx_options options = refii_mod_fx_default_options();
+      if (riders[r] != 0) {
+        w.look_id[free] = refii_mod_play_fx_on(look, riders[r], &options);
+      } else {
+        // At a point: bounded, so a play whose stop never comes (the mod unmounted) still ends.
+        options.duration = HoldSeconds(w.base) + 8.0f;
+        w.look_id[free] = refii_mod_play_fx(look, w.origin, &options);
+      }
+      w.look_on[free] = riders[r];
+    }
   }
-  // The newest live weave per player, for the HUD and the log.
-  refii::mods::Publish("spell_weaving.look", static_cast<float>(newest_look[0]));
-  refii::mods::Publish("spell_weaving.look2", static_cast<float>(newest_look[1]));
 }
 
 }  // namespace
@@ -698,6 +714,7 @@ void OnTick(refii::mods::TickEvent& e) {
     if ((w.done_at >= 0.0f && g_clock - w.done_at > HoldSeconds(w.base) + 1.0f) || w.age > 60.0f ||
         refii_mod_player_hero(e.base, w.player + 1) == 0) {
       REXLOG_INFO("Spell Weaving: weave serial {} over", w.serial);
+      StopLooks(w);
       w = Weave{};
     }
   }
@@ -708,7 +725,7 @@ void OnTick(refii::mods::TickEvent& e) {
   g_armed[0] = Armed{};
   g_armed[1] = Armed{};
 
-  PublishInstances(*e.ctx, e.base);
+  UpdateLooks(e.base);
 }
 REFII_MOD_ON(Tick, OnTick);
 
@@ -797,7 +814,10 @@ void OnHitLanded(refii::mods::HitLandedEvent& e) {
                                            : Knob("spell_weaving.shot_delay", 1.0f)) * Jitter();
   float origin[3] = {w->origin[0], w->origin[1], w->origin[2]};
   if (w->base == kVortex && w->vortex != 0) {
-    // The twister itself (component+0x140, see PublishInstances): the push is away from it.
+    // The twister's point: the vortex component's +0x140 — the vector its update hands every
+    // ground effect each tick (sub_827590E0: `li r28,0x140` 0x82759210, `lvx128 v1,r31,r28`
+    // 0x82759238 before sub_825F86F0) and then its entity (sub_82759928 0x82759bdc). The push is
+    // away from the twister.
     for (int i = 0; i < 3; ++i) {
       origin[i] = refii::mods::LoadF32(e.base, w->vortex + 0x140u + 4u * static_cast<uint32_t>(i));
     }

@@ -195,8 +195,8 @@ public static class Engine_UiAbilitySource
 		}
 
 		// MODS' ABILITIES stand after the category's own (Engine_UiModAbilities): the same row
-		// shape, the same pip rule and affordability, but the level and cost are what the mod's
-		// hook publishes and A hands the purchase to the mod.
+		// shape and pip rule; the level is the book's player's saved value, the price and
+		// affordability what the engine states beside it, and A posts the engine's purchase.
 		int modIndex = 0;
 		foreach (Engine_UiModAbilities.Ability mod in Engine_UiModAbilities.All)
 		{
@@ -221,10 +221,9 @@ public static class Engine_UiAbilitySource
 				Id: 0x10000u + (uint)modIndex,
 				Rating: maxed ? 2 * level : (2 * level) + 1,
 				Committable: false,
-				Counted: !maxed && cost is { } price &&
-					Engine_UiModAbilities.Affordable(mod, vitals.ExperienceAvailable, price),
+				Counted: !maxed && cost is not null && Engine_UiModAbilities.CanAfford(mod),
 				Ghosted: false,
-				Command: Engine_UiModAbilities.BuyAction + mod.BuyKey));
+				Command: Engine_UiModAbilities.BuyAction + mod.Name));
 		}
 
 		int buyable = 0;

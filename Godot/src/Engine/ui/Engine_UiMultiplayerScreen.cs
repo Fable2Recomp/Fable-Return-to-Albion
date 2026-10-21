@@ -7,7 +7,7 @@ namespace Refii.Ui;
 /// highlighted row's detail on the page, and A performing that row's action.
 /// </summary>
 /// <remarks>
-/// The same shape as <see cref="Engine_UiAchievementScreen"/> — a host-only screen id, the
+/// The same shape as <see cref="Engine_UiHostScreen"/> — a host-only screen id, the
 /// logbook's furniture, an owned book and an owned list — with one difference that matters: an
 /// achievement is a fact and this screen's rows are COMMANDS, so A dispatches through
 /// <see cref="Action"/> rather than being swallowed.

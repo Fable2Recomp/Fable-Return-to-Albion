@@ -583,7 +583,7 @@ public static partial class ModValidate
 		if (root.TryGetProperty("look", out JsonElement look) &&
 			doc.Object(look, "look", "must be an object: one fx recipe body; the spell is refused"))
 		{
-			CheckRecipe(doc, look, "look", fileInstances: false, spellLook: true);
+			CheckRecipe(doc, look, "look", spellLook: true);
 		}
 	}
 
@@ -591,12 +591,12 @@ public static partial class ModValidate
 	// fx/recipes.json — Engine_FxRecipes.Parse / ParsePiece, Engine_FxRecipePieces.Build
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] RecipeFileKeys = { "recipes", "instances", "instanceRadius" };
+	private static readonly string[] RecipeFileKeys = { "recipes" };
 
 	private static readonly string[] RecipeKeys =
 	{
 		"id", "when", "equals", "base", "tint", "intensity", "size", "attach", "anchor", "light", "pieces",
-		"instances", "instanceRadius", "everyNode", "entities",
+		"with", "withRadius", "everyNode", "entities",
 	};
 
 	private static readonly string[] SpellLookKeys = RecipeKeys.Append("seconds").ToArray();
@@ -622,8 +622,8 @@ public static partial class ModValidate
 	private static readonly string[] Blends = { "add", "mix" };
 
 	/// <summary>
-	/// An object with a <c>recipes</c> array (and file-wide <c>instances</c>/<c>instanceRadius</c>).
-	/// A recipe needs <c>id</c>, <c>when</c> (or <c>instances</c>) and a non-empty <c>base</c>.
+	/// An object with a <c>recipes</c> array. A recipe needs <c>id</c>, <c>when</c> (or <c>with</c>: an
+	/// effect the mod plays per cast) and a non-empty <c>base</c>.
 	/// </summary>
 	private static void CheckRecipes(Doc doc, JsonElement root)
 	{
@@ -635,8 +635,6 @@ public static partial class ModValidate
 		}
 
 		doc.Keys(root, string.Empty, RecipeFileKeys);
-		bool fileInstances = (doc.Text(root, "instances", string.Empty) ?? string.Empty).Length != 0;
-		doc.Number(root, "instanceRadius", string.Empty, strict: true);
 		var ids = new HashSet<string>(StringComparer.Ordinal);
 		int i = 0;
 		foreach (JsonElement recipe in recipes.EnumerateArray())
@@ -647,7 +645,7 @@ public static partial class ModValidate
 				continue;
 			}
 
-			string? id = CheckRecipe(doc, recipe, at, fileInstances, spellLook: false);
+			string? id = CheckRecipe(doc, recipe, at, spellLook: false);
 			if (id is { Length: > 0 } && !ids.Add(id))
 			{
 				doc.Warn(At(at, "id"), $"a second recipe '{id}' in this file; the later one replaces the earlier");
@@ -656,7 +654,7 @@ public static partial class ModValidate
 	}
 
 	/// <summary>One recipe body; returns its id. A spell's look has its id, when and equals filled in by the composer.</summary>
-	private static string? CheckRecipe(Doc doc, JsonElement recipe, string at, bool fileInstances, bool spellLook)
+	private static string? CheckRecipe(Doc doc, JsonElement recipe, string at, bool spellLook)
 	{
 		doc.Keys(recipe, at, spellLook ? SpellLookKeys : RecipeKeys);
 		string? id = null;
@@ -680,19 +678,16 @@ public static partial class ModValidate
 		{
 			id = doc.Text(recipe, "id", at, required: true);
 			List<string> when = doc.TextOrList(recipe, "when", at) ?? new List<string>();
-			bool instances = Has(recipe, "instances")
-				? (doc.Text(recipe, "instances", at) ?? string.Empty).Length != 0
-				: fileInstances;
-			if (when.Count == 0 && !instances)
+			if (when.Count == 0 && (doc.Text(recipe, "with", at) ?? string.Empty).Length == 0)
 			{
-				doc.Error(at, "needs \"when\" (the mod values that switch it on) or \"instances\"; skipped");
+				doc.Error(at, "needs \"when\" (the mod values that switch it on) or \"with\" (an effect the mod plays per cast); skipped");
 			}
 		}
 
 		doc.Number(recipe, "equals", at, strict: true);
 		doc.Number(recipe, "intensity", at, strict: true);
 		doc.Number(recipe, "size", at, strict: true);
-		doc.Number(recipe, "instanceRadius", at, strict: true);
+		doc.Number(recipe, "withRadius", at, strict: true, min: 0);
 		doc.Flag(recipe, "everyNode", at);
 		List<string>? baseNames = doc.TextList(recipe, "base", at);
 		if (baseNames is null || baseNames.All(name => name.Length == 0))
@@ -811,8 +806,9 @@ public static partial class ModValidate
 	/// <summary>
 	/// <c>hide</c> (ids), <c>scale</c> (id → factor), <c>clones</c> (copies of a shipped piece: id
 	/// and of required) and <c>pieces</c> (meter, panel or picture: id required). Values are a
-	/// number or a source the HUD reads: <c>mod:&lt;key&gt;</c>, <c>hero:health</c>,
-	/// <c>hero:health_max</c>; colours are HTML hex.
+	/// number or a source the HUD reads (Engine_UiValueSources): <c>mod:&lt;key&gt;</c>,
+	/// <c>game:&lt;meter&gt;</c>, <c>player:&lt;key&gt;</c>, <c>hero:health</c>, <c>hero:health_max</c>;
+	/// colours are HTML hex. A <c>widget.</c> id must name one of Engine_HudWidgets.
 	/// </summary>
 	private static void CheckHud(Doc doc, JsonElement root)
 	{
@@ -822,7 +818,24 @@ public static partial class ModValidate
 		}
 
 		doc.Keys(root, string.Empty, HudKeys);
-		doc.TextList(root, "hide", string.Empty);
+		if (doc.TextList(root, "hide", string.Empty) is { } hidden)
+		{
+			for (int i = 0; i < hidden.Count; i++)
+			{
+				UnknownWidget(doc, At("hide", i), hidden[i]);
+			}
+		}
+
+		foreach (string section in new[] { "layout", "scale" })
+		{
+			if (Has(root, section) && root.GetProperty(section).ValueKind == JsonValueKind.Object)
+			{
+				foreach (JsonProperty entry in root.GetProperty(section).EnumerateObject())
+				{
+					UnknownWidget(doc, At(section, entry.Name), entry.Name);
+				}
+			}
+		}
 
 		if (Has(root, "layout") &&
 			doc.Object(root.GetProperty("layout"), "layout", "must be an object of shipped piece id to { \"anchor\", \"offset\" }; ignored"))
@@ -880,6 +893,15 @@ public static partial class ModValidate
 		}
 	}
 
+	/// <summary>A <c>widget.</c> id that names no widget: the statement reaches nothing.</summary>
+	private static void UnknownWidget(Doc doc, string at, string id)
+	{
+		if (Refii.Ui.Engine_HudWidgets.IsWidget(id) && Refii.Ui.Engine_HudWidgets.Find(id) is null)
+		{
+			doc.Error(at, $"'{id}' is not a widget: {string.Join(", ", Refii.Ui.Engine_HudWidgets.All.Select(w => w.Id))}; ignored");
+		}
+	}
+
 	/// <summary>
 	/// One <c>layout</c> entry, the shape of <c>user://hud/layout.json</c>'s
 	/// (Engine_HudModLayout.ParseEntries): <c>anchor</c> and <c>offset</c>, each two numbers, both
@@ -925,10 +947,28 @@ public static partial class ModValidate
 	{
 		doc.Keys(clone, at, HudCloneKeys);
 		string? id = doc.Text(clone, "id", at, required: true);
-		doc.Text(clone, "of", at, required: true);
+		string? of = doc.Text(clone, "of", at, required: true);
 		if (id is { Length: > 0 } && !ids.Add(id))
 		{
 			doc.Warn(At(at, "id"), $"a second clone '{id}' in this file; the later one replaces the earlier");
+		}
+
+		// A copy of a widget (Engine_HudWidgets) draws what the widget draws; it has no meters,
+		// art or icon of its own to change.
+		if (of is { Length: > 0 } && Refii.Ui.Engine_HudWidgets.IsWidget(of))
+		{
+			if (Refii.Ui.Engine_HudWidgets.Find(of) is null)
+			{
+				doc.Error(At(at, "of"), $"'{of}' is not a widget: {string.Join(", ", Refii.Ui.Engine_HudWidgets.All.Select(w => w.Id))}; nothing is copied");
+			}
+
+			foreach (string key in new[] { "hue", "hueElements", "icon", "values", "bars" })
+			{
+				if (Has(clone, key))
+				{
+					doc.Warn(At(at, key), "a copy of a widget draws exactly what the widget draws; ignored");
+				}
+			}
 		}
 
 		doc.Vector(clone, "offset", at, 2, 2, extraIgnored: false);
@@ -1069,17 +1109,17 @@ public static partial class ModValidate
 	{
 		string text = doc.Text(piece, "text", at, required: true) ?? string.Empty;
 		string format = doc.Text(piece, "format", at) ?? string.Empty;
-		bool value = text.Trim().StartsWith(Refii.Ui.Engine_HudModText.ModPrefix, StringComparison.Ordinal);
-		if (value && text.Trim().Length == Refii.Ui.Engine_HudModText.ModPrefix.Length)
+		bool value = Refii.Ui.Engine_UiValueSources.Parse(text).Named;
+		if (Refii.Ui.Engine_UiValueSources.TextProblem(text) is { } problem)
 		{
-			doc.Error(At(at, "text"), "'mod:' names no value; write mod:<mod>.<name>");
+			doc.Error(At(at, "text"), problem);
 		}
 
 		if (format.Length != 0)
 		{
 			if (!value)
 			{
-				doc.Warn(At(at, "format"), "formats a mod: value; this text is not one, so it is ignored");
+				doc.Warn(At(at, "format"), "formats a value source (mod:, game:, player:, hero:); this text is not one, so it is ignored");
 			}
 			else if (format.Contains('{', StringComparison.Ordinal) && !format.Contains("{0", StringComparison.Ordinal))
 			{
@@ -1155,28 +1195,16 @@ public static partial class ModValidate
 		Source(doc, where, text);
 	}
 
-	/// <summary>Engine_HudModPieces.Source: a number, <c>mod:&lt;key&gt;</c>, <c>hero:health</c> or <c>hero:health_max</c>.</summary>
+	/// <summary>
+	/// Engine_UiValueSources.Number: a number, <c>mod:&lt;key&gt;</c>, <c>game:&lt;meter&gt;</c>,
+	/// <c>player:&lt;key&gt;</c>, <c>hero:health</c> or <c>hero:health_max</c>.
+	/// </summary>
 	private static void Source(Doc doc, string at, string text)
 	{
-		string source = text.Trim();
-		if (double.TryParse(source, NumberStyles.Float, CultureInfo.InvariantCulture, out _) ||
-			source is "hero:health" or "hero:health_max")
+		if (Refii.Ui.Engine_UiValueSources.NumberProblem(text) is { } problem)
 		{
-			return;
+			doc.Error(at, problem);
 		}
-
-		if (source.StartsWith("mod:", StringComparison.Ordinal))
-		{
-			if (source.Length == "mod:".Length)
-			{
-				doc.Error(at, "'mod:' names no value; write mod:<mod>.<name>");
-			}
-
-			return;
-		}
-
-		doc.Error(at, $"'{text}' is not a value source: a number, mod:<mod>.<name>, hero:health or hero:health_max; " +
-			"it never states a value, so the piece never draws");
 	}
 
 	/// <summary>Engine_HudModPieces.MeterValue: <c>source</c>, <c>source/cap</c>, or <c>none</c> to hold the meter still.</summary>
@@ -1221,6 +1249,7 @@ public static partial class ModValidate
 	private static readonly string[] EntryKeys =
 	{
 		"name", "tag", "command", "opens", "hostOnly", "drop", "source", "icon", "eventType", "rating", "counted", "children",
+		"when",
 	};
 
 	/// <summary>PatchMenu's per-entry placement fields, read only in a <c>"patch": true</c> menu.</summary>
@@ -1248,11 +1277,12 @@ public static partial class ModValidate
 
 	private static readonly string[] ScreenKeys = ScreenTextKeys.Concat(ScreenFlagKeys).Concat(ScreenListKeys)
 		.Concat(new[] { "pageSlide", "listLift", "boxPaths", "pageStackAt", "statFields", "panelFields", "menuScriptByMode" })
+		.Concat(new[] { "patch", "fields", "switches" })
 		.ToArray();
 
 	/// <summary>
 	/// <c>menus</c> (by name: a whole menu, or with <c>"patch": true</c> per-entry edits by name) and
-	/// <c>screens</c> (by numeric screen id, replacing the whole record).
+	/// <c>screens</c> (by numeric screen id: the whole record, or with <c>"patch": true</c> per field).
 	/// </summary>
 	private static void CheckTemplates(Doc doc, JsonElement root)
 	{
@@ -1338,6 +1368,7 @@ public static partial class ModValidate
 				if (doc.Object(screen.Value, at, "must be an object; the screen is ignored"))
 				{
 					CheckScreen(doc, screen.Value, at);
+					CheckScreenData(doc, screen.Value, at, uint.Parse(screen.Name, CultureInfo.InvariantCulture));
 				}
 			}
 		}
@@ -1370,6 +1401,16 @@ public static partial class ModValidate
 			foreach (string key in new[] { "tag", "command", "opens", "source", "icon" })
 			{
 				doc.Text(entry, key, where);
+			}
+
+			if (doc.Text(entry, "when", where) is { Length: > 0 } when)
+			{
+				RowCondition(doc, At(where, "when"), when);
+			}
+
+			if (entry.TryGetProperty("source", out JsonElement entrySource) && entrySource.ValueKind == JsonValueKind.String)
+			{
+				RowSource(doc, At(where, "source"), entrySource.GetString() ?? string.Empty);
 			}
 
 			if (entry.TryGetProperty("command", out JsonElement command) && command.ValueKind == JsonValueKind.String)
@@ -1423,7 +1464,12 @@ public static partial class ModValidate
 	/// </summary>
 	private static void MenuCommand(Doc doc, string at, string command)
 	{
-		if (command.StartsWith(Refii.Ui.Engine_UiModMenuCommand.OpensPrefix, StringComparison.Ordinal) &&
+		if (command.StartsWith(Refii.Ui.Engine_UiHostScreens.OpenPrefix, StringComparison.Ordinal) &&
+			Refii.Ui.Engine_UiHostScreens.ParseId(command[Refii.Ui.Engine_UiHostScreens.OpenPrefix.Length..]) is null)
+		{
+			doc.Error(at, $"'{command}' names no screen id: Screen:open:<id>; the row opens nothing");
+		}
+		else if (command.StartsWith(Refii.Ui.Engine_UiModMenuCommand.OpensPrefix, StringComparison.Ordinal) &&
 			Refii.Ui.Engine_UiModMenuCommand.Parse(command).Verb == Refii.Ui.Engine_UiModMenuCommand.Verb.None)
 		{
 			doc.Error(at, "'Opens:' names no menu; the row opens nothing");
@@ -1432,6 +1478,103 @@ public static partial class ModValidate
 			Refii.Ui.Engine_UiModMenuCommand.Parse(command).Verb == Refii.Ui.Engine_UiModMenuCommand.Verb.None)
 		{
 			doc.Error(at, $"'{command}' does not name a Lua function: Mod:lua:<name or table.name>[:<arg>]; the row calls nothing");
+		}
+	}
+
+	/// <summary>
+	/// A row condition (Engine_UiRowConditions): names joined by <c>,</c>, each optionally <c>!</c>.
+	/// A name the game does not state is a warning — a Godot script may register it — and the row
+	/// is hidden until something does.
+	/// </summary>
+	private static void RowCondition(Doc doc, string at, string when)
+	{
+		foreach (string name in Refii.Ui.Engine_UiRowConditions.NamesIn(when))
+		{
+			if (!Refii.Ui.Engine_UiRowConditions.Game.Contains(name))
+			{
+				doc.Warn(at, $"'{name}' is not a condition the game states ({string.Join(", ", Refii.Ui.Engine_UiRowConditions.Game)}); " +
+					"unless a script registers it the row never shows");
+			}
+		}
+	}
+
+	/// <summary>A mod row source (Engine_UiModRows): <c>values:</c> must bind something readable.</summary>
+	private static void RowSource(Doc doc, string at, string source)
+	{
+		const string values = Refii.Ui.Engine_UiModRows.ValuesSource + ":";
+		if (!source.StartsWith(values, StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		string[] items = source[values.Length..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+		if (items.Length == 0)
+		{
+			doc.Error(at, "'values:' binds nothing: values:<mod:key or player:key>[|format]=<label>,...; the menu shows no rows");
+		}
+
+		foreach (string item in items)
+		{
+			int equals = item.IndexOf('=');
+			string binding = equals < 0 ? item : item[..equals];
+			if (!Refii.Ui.Engine_UiValueSource.IsValue(binding))
+			{
+				binding = Refii.Ui.Engine_UiValueSource.ModPrefix + binding;
+			}
+
+			if (Refii.Ui.Engine_UiValueSource.Problem(binding) is { } problem)
+			{
+				doc.Error(at, $"'{item}': {problem}");
+			}
+		}
+	}
+
+	/// <summary>
+	/// A screen's <c>patch</c> flag, its data page (<c>fields</c>, <c>switches</c>: element path to a
+	/// binding) and whether a host screen (id 1000 and up) can be stood by <c>Screen:open:</c>.
+	/// </summary>
+	private static void CheckScreenData(Doc doc, JsonElement screen, string at, uint id)
+	{
+		bool patch = doc.Flag(screen, "patch", at) ?? false;
+		foreach (string map in new[] { "fields", "switches" })
+		{
+			if (!Has(screen, map))
+			{
+				continue;
+			}
+
+			string where = At(at, map);
+			if (!doc.Object(screen.GetProperty(map), where, "must be an object of element path to binding; ignored"))
+			{
+				continue;
+			}
+
+			foreach (JsonProperty field in screen.GetProperty(map).EnumerateObject())
+			{
+				if (field.Value.ValueKind == JsonValueKind.Null && patch)
+				{
+					continue;
+				}
+
+				if (doc.LooseText(field.Value, At(where, field.Name)) is { } binding &&
+					Refii.Ui.Engine_UiValueSource.Problem(binding) is { } problem)
+				{
+					doc.Error(At(where, field.Name), problem);
+				}
+			}
+		}
+
+		if (screen.TryGetProperty("provider", out JsonElement provider) && provider.ValueKind == JsonValueKind.String &&
+			provider.GetString() is { Length: > 0 } name && !Refii.Ui.Engine_UiPageProviders.ShippedNames.Contains(name))
+		{
+			doc.Warn(At(at, "provider"), $"'{name}' is not one of the game's page providers " +
+				$"({string.Join(", ", Refii.Ui.Engine_UiPageProviders.ShippedNames)}); unless a script registers it the page stays empty");
+		}
+
+		if (!patch && id >= Refii.Ui.Engine_UiBookSet.HostOnlyScreenId &&
+			(Has(screen, "fields") || Has(screen, "switches")) && (!Has(screen, "menu") || !Has(screen, "presentation")))
+		{
+			doc.Warn(at, "a host screen states a \"menu\" and a \"presentation\" to be opened by Screen:open:; this one cannot stand");
 		}
 	}
 
@@ -1536,70 +1679,107 @@ public static partial class ModValidate
 	}
 
 	// ---------------------------------------------------------------------------------------
-	// ui/spellwheel.json — Engine_UiSpellAssign.LoadSecondary
+	// ui/spellwheel.json — Engine_UiSpellPicks.Parse
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] SecondaryKeys =
+	private static readonly string[] PickKeys =
 	{
-		"setting", "settingPlayerTwo", "value", "valuePlayerTwo", "chosen", "chosenPlayerTwo", "empty", "scale",
-		"exclude", "unlocked", "apply", "remove",
+		"name", "store", "inEffect", "unlocked", "exclude", "empty", "scale", "apply", "remove",
 	};
 
 	/// <summary>
-	/// An object with a <c>secondary</c> object: <c>setting</c> and <c>value</c> required, the other
-	/// keys strings, <c>scale</c> 0.2..1, <c>exclude</c> a list of will types 0..7.
+	/// An object with a <c>picks</c> list: each needs <c>name</c> and <c>store</c> (a player value
+	/// key with <c>{slot}</c>, which the engine writes); <c>inEffect</c> and <c>unlocked</c> are value
+	/// sources, <c>scale</c> 0.2..1, <c>exclude</c> a list of will types 0..7. Every enabled mod's
+	/// picks are drawn under each slot, so a <c>name</c> without the mod's prefix is warned: a later
+	/// mod's pick of the same name replaces it.
 	/// </summary>
 	private static void CheckSpellWheel(Doc doc, JsonElement root)
 	{
-		if (root.ValueKind != JsonValueKind.Object ||
-			!root.TryGetProperty("secondary", out JsonElement secondary) || secondary.ValueKind != JsonValueKind.Object)
+		if (root.ValueKind == JsonValueKind.Object && Has(root, "secondary"))
 		{
-			doc.Error(string.Empty, "must be an object with a \"secondary\" object; the file is ignored");
+			doc.Error("secondary", "is the old setting-channel form; state the pick in a \"picks\" list " +
+				"(name, store, inEffect, unlocked …): the engine stores each player's pick and raises SpellPick");
+		}
+
+		if (root.ValueKind != JsonValueKind.Object ||
+			!root.TryGetProperty("picks", out JsonElement picks) || picks.ValueKind != JsonValueKind.Array)
+		{
+			doc.Error(string.Empty, "must be an object with a \"picks\" list; the file is ignored");
 			return;
 		}
 
-		doc.Keys(root, string.Empty, new[] { "secondary" });
-		const string at = "secondary";
-		doc.Keys(secondary, at, SecondaryKeys);
-		string? setting = doc.Text(secondary, "setting", at, required: true);
-		doc.Text(secondary, "value", at, required: true);
-		string? settingTwo = doc.Text(secondary, "settingPlayerTwo", at);
-		string? valueTwo = doc.Text(secondary, "valuePlayerTwo", at);
-		doc.Text(secondary, "chosen", at);
-		string? chosenTwo = doc.Text(secondary, "chosenPlayerTwo", at);
-		foreach (string key in new[] { "empty", "unlocked", "apply", "remove" })
+		doc.Keys(root, string.Empty, new[] { "picks", "secondary" });
+		var names = new HashSet<string>(StringComparer.Ordinal);
+		int n = 0;
+		foreach (JsonElement pick in picks.EnumerateArray())
 		{
-			doc.Text(secondary, key, at);
-		}
-
-		foreach ((string key, string? name) in new[] { ("setting", setting), ("settingPlayerTwo", settingTwo) })
-		{
-			if (name is not null && name.StartsWith("mod:", StringComparison.Ordinal))
+			string at = At("picks", n++);
+			if (!doc.Object(pick, at, "must be an object; skipped"))
 			{
-				doc.Error(At(at, key), "a setting is named bare (<mod>.<name>); \"mod:\" would be kept as part of its name");
+				continue;
 			}
-		}
 
-		if ((settingTwo is { Length: > 0 }) != (valueTwo is { Length: > 0 }))
-		{
-			doc.Warn(at, "player two's pick needs both \"settingPlayerTwo\" and \"valuePlayerTwo\"; with one, player two shares player one's");
-		}
-
-		if (chosenTwo is { Length: > 0 } && !Has(secondary, "chosen"))
-		{
-			doc.Warn(At(at, "chosenPlayerTwo"), "read only beside \"chosen\"; ignored");
-		}
-
-		doc.Number(secondary, "scale", at, strict: true, min: 0.2, max: 1, clamps: true);
-		if (doc.Array(secondary, "exclude", at) is { } exclude)
-		{
-			int i = 0;
-			foreach (JsonElement item in exclude.EnumerateArray())
+			doc.Keys(pick, at, PickKeys);
+			string? name = doc.Text(pick, "name", at, required: true);
+			if (name is { Length: > 0 } && name.Any(char.IsWhiteSpace))
 			{
-				string where = At(At(at, "exclude"), i++);
-				if (doc.LooseNumber(item, where, integer: true) is { } type && (type < 0 || type >= ModSpells.TypeNames.Length))
+				doc.Error(At(at, "name"), "must have no spaces: the SpellPick event carries it");
+			}
+
+			if (name is { Length: > 0 } && !names.Add(name))
+			{
+				doc.Warn(At(at, "name"), $"a second pick '{name}' in this file; the later one replaces the earlier");
+			}
+
+			// Every mod's picks are drawn side by side, and a later mod's pick of the SAME name
+			// replaces an earlier one's: a bare name meets another mod's by accident.
+			if (name is { Length: > 0 } && !name.Contains('.', StringComparison.Ordinal))
+			{
+				doc.Warn(At(at, "name"), $"'{name}' has no mod prefix ('my_mod.{name}'): a later mod's pick of the same name replaces this one on the selectors");
+			}
+
+			string? store = doc.Text(pick, "store", at, required: true);
+			if (store is { Length: > 0 })
+			{
+				if (store == Refii.Ui.Engine_UiSpellPicks.GameStore)
 				{
-					doc.Warn(where, $"{Format(type)} is no will type; the eight are 0..7 ({string.Join(", ", ModSpells.TypeNames)})");
+					doc.Error(At(at, "store"), "\"game\" is the slot's own spell, the game's pick; a mod's pick is a player value key");
+				}
+				else if (!PlayerKey(store.Replace(Refii.Ui.Engine_UiSpellPicks.SlotToken, "1", StringComparison.Ordinal)))
+				{
+					doc.Error(At(at, "store"), $"'{store}' is not a player value key (letters, digits, '_', '.', '-', and {{slot}})");
+				}
+				else if (!store.Contains(Refii.Ui.Engine_UiSpellPicks.SlotToken, StringComparison.Ordinal))
+				{
+					doc.Warn(At(at, "store"), "has no {slot}: one pick serves every slot");
+				}
+			}
+
+			foreach (string key in new[] { "inEffect", "unlocked" })
+			{
+				if (doc.Text(pick, key, at) is { Length: > 0 } source && Refii.Ui.Engine_UiValueSources.NumberProblem(source) is { } problem)
+				{
+					doc.Error(At(at, key), problem);
+				}
+			}
+
+			foreach (string key in new[] { "empty", "apply", "remove" })
+			{
+				doc.Text(pick, key, at);
+			}
+
+			doc.Number(pick, "scale", at, strict: true, min: 0.2, max: 1, clamps: true);
+			if (doc.Array(pick, "exclude", at) is { } exclude)
+			{
+				int i = 0;
+				foreach (JsonElement item in exclude.EnumerateArray())
+				{
+					string where = At(At(at, "exclude"), i++);
+					if (doc.LooseNumber(item, where, integer: true) is { } type && (type < 0 || type >= ModSpells.TypeNames.Length))
+					{
+						doc.Warn(where, $"{Format(type)} is no will type; the eight are 0..7 ({string.Join(", ", ModSpells.TypeNames)})");
+					}
 				}
 			}
 		}
@@ -1611,17 +1791,30 @@ public static partial class ModValidate
 
 	private static readonly string[] AbilityKeys =
 	{
-		"name", "category", "nameTag", "descriptionTag", "maxLevel", "level", "cost", "stat", "buy", "refund",
-		"refundValue", "image", "disciplines", "totalXpTag",
+		"name", "category", "nameTag", "descriptionTag", "maxLevel", "levelKey", "costLike", "costLikeSetting",
+		"refund", "legacySaveKey", "stats", "stat", "image", "disciplines", "totalXpTag",
+	};
+
+	/// <summary>The fields of the setting-counter form the engine's purchase replaced, and what took each one's place.</summary>
+	private static readonly (string Key, string Instead)[] RetiredAbilityKeys =
+	{
+		("level", "levelKey: the saved player value the engine keeps the level in"),
+		("cost", "nothing: the engine states the price (<levelKey>.cost) from costLike"),
+		("buy", "nothing: A runs the engine's purchase"),
+		("refundValue", "nothing: the engine states the refund (<levelKey>.refund)"),
 	};
 
 	/// <summary>Engine_UiModAbilities.Pool's disciplines; any other draws on General.</summary>
 	private static readonly string[] Disciplines = { "Strength", "Skill", "Will", "General" };
 
-	/// <summary>The mod value and setting keys an ability names; read bare by HostBridge.TryGetModValue / ModSettings.Set.</summary>
-	private static readonly string[] AbilityValueKeys = { "level", "cost", "stat", "buy", "refund", "refundValue" };
+	/// <summary>A player store key: letters, digits, '_', '.', '-' (src/vfs/src/core/player_state.cpp KeyChar), at most 120 so the engine's suffixes fit.</summary>
+	private static bool PlayerKey(string key) =>
+		key.Length is > 0 and <= 120 && key.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.' or '-');
 
-	/// <summary>An object with an <c>abilities</c> array; each needs <c>name</c>, <c>category</c> and <c>buy</c>.</summary>
+	/// <summary>
+	/// An object with an <c>abilities</c> array; each needs <c>name</c>, <c>category</c>,
+	/// <c>levelKey</c> and <c>costLike</c> — the engine runs the purchase from them (Engine_UiModAbilities.Parse).
+	/// </summary>
 	private static void CheckAbilities(Doc doc, JsonElement root)
 	{
 		if (root.ValueKind != JsonValueKind.Object ||
@@ -1642,27 +1835,67 @@ public static partial class ModValidate
 				continue;
 			}
 
-			doc.Keys(ability, at, AbilityKeys);
+			foreach ((string key, string instead) in RetiredAbilityKeys)
+			{
+				if (Has(ability, key))
+				{
+					doc.Error(At(at, key), $"is the old setting-counter form; the engine runs the purchase now — use {instead}");
+				}
+			}
+
+			doc.Keys(ability, at, AbilityKeys.Concat(RetiredAbilityKeys.Select(r => r.Key)).ToArray());
 			string? name = doc.Text(ability, "name", at, required: true);
 			string? category = doc.Text(ability, "category", at, required: true);
-			doc.Text(ability, "buy", at, required: true);
-			foreach (string key in new[] { "nameTag", "descriptionTag", "level", "cost", "stat", "refund", "refundValue", "image", "totalXpTag" })
+			string? levelKey = doc.Text(ability, "levelKey", at, required: true);
+			if (levelKey is { Length: > 0 } && !PlayerKey(levelKey))
+			{
+				doc.Error(At(at, "levelKey"), $"'{levelKey}' is not a player value key (letters, digits, '_', '.', '-'; at most 120)");
+			}
+
+			if (name is { Length: > 0 } && name.Any(char.IsWhiteSpace))
+			{
+				doc.Error(At(at, "name"), "must have no spaces: the engine's purchase names the ability by it");
+			}
+
+			if (!Has(ability, "costLike"))
+			{
+				doc.Error(At(at, "costLike"), "is required: the ability type (1..14) whose experience table prices the levels");
+			}
+			else
+			{
+				doc.Number(ability, "costLike", at, integer: true, min: 1, max: 14);
+			}
+
+			foreach (string key in new[] { "nameTag", "descriptionTag", "costLikeSetting", "legacySaveKey", "image", "totalXpTag" })
 			{
 				doc.Text(ability, key, at);
 			}
 
-			foreach (string key in AbilityValueKeys)
+			if (doc.Text(ability, "refund", at) is { } refund && refund != Refii.Ui.Engine_UiModAbilities.HalfRefund && refund != "none")
 			{
-				if (ability.TryGetProperty(key, out JsonElement value) && value.ValueKind == JsonValueKind.String &&
-					(value.GetString() ?? string.Empty).StartsWith("mod:", StringComparison.Ordinal))
-				{
-					doc.Error(At(at, key), "names the mod value bare (<mod>.<name>); \"mod:\" would be kept as part of the name");
-				}
+				doc.Error(At(at, "refund"), $"'{refund}' is no refund rule: \"half\" (the shipped unlearn) or \"none\"");
 			}
 
-			if (Has(ability, "maxLevel"))
+			if (doc.Text(ability, "stat", at) is { Length: > 0 } stat && Refii.Ui.Engine_UiValueSources.NumberProblem(stat) is { } problem)
 			{
-				doc.LooseNumber(ability.GetProperty("maxLevel"), At(at, "maxLevel"), integer: true, min: 1);
+				doc.Error(At(at, "stat"), problem);
+			}
+
+			double? maxLevel = Has(ability, "maxLevel")
+				? doc.LooseNumber(ability.GetProperty("maxLevel"), At(at, "maxLevel"), integer: true, min: 1)
+				: 5;
+			if (doc.Array(ability, "stats", at) is { } stats)
+			{
+				int n = 0;
+				foreach (JsonElement value in stats.EnumerateArray())
+				{
+					doc.LooseNumber(value, At(At(at, "stats"), n++));
+				}
+
+				if (maxLevel is { } levels && n != (int)levels + 1)
+				{
+					doc.Warn(At(at, "stats"), $"states {n} value(s); one per level 0..{(int)levels} ({(int)levels + 1}) reads each level's own");
+				}
 			}
 
 			List<string>? disciplines = doc.TextList(ability, "disciplines", at);

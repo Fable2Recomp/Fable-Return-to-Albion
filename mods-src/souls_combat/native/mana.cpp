@@ -8,8 +8,8 @@
 // empty pool refuses the charge; a short one caps the charge at the top slot it can pay for, and
 // a lower slot of the cascade is skipped when launching it would leave the top slot unpaid — the
 // charged spell always fires. Mana refills slowly after a pause — Fable 2 has no flask to refill
-// it with. Published as souls_combat.mana / mana_max (player 1) and mana2 / mana2_max (player 2)
-// for the FP bar in ui/hud.json.
+// it with. The FP bar (ui/hud.json) reads player:souls_combat.mana and player:souls_combat.mana_max
+// from the player store, keyed to whichever player's widget it is drawn beside.
 //
 // THE POOL IS IN THE PLAYER STORE (souls_combat.mana, mana_rest; souls_combat.h), so both co-op
 // machines read the same pool: a launch spends on whichever machine it happens, the refill runs
@@ -40,6 +40,7 @@ constexpr int kLastSpell = 14;
 constexpr int kMaxChargeLevel = 5;
 
 constexpr const char* kManaKey = "souls_combat.mana";
+constexpr const char* kManaMaxKey = "souls_combat.mana_max";
 constexpr const char* kManaRestKey = "souls_combat.mana_rest";
 constexpr float kRestCap = 10.0f;
 
@@ -71,6 +72,9 @@ int AffordableLevels(int index) {
 
 void OnTick(refii::mods::TickEvent& e) {
   float value[2] = {0.0f, 0.0f};
+  // One length both bars are drawn against: a full pool as long as a maxed health bar. The same
+  // for everyone, so a mod value, not a player's.
+  refii::mods::Publish("souls_combat.bar_cap", kBarCap);
   for (int index = 0; index < 2; ++index) {
     const int32_t player = index + 1;
     const uint32_t hero = refii_mod_player_hero(e.base, player);
@@ -82,6 +86,7 @@ void OnTick(refii::mods::TickEvent& e) {
     g_max[index] = MaxMana(e.base, hero);
     value[index] = ManaOf(index);
     if (refii_mod_player_here(player) != 0) {
+      refii_mod_player_set(player, kManaMaxKey, g_max[index]);
       // A hero arriving (a load, a join) starts full: ManaOf is the maximum until stated.
       const float rest = refii_mod_player_value(player, kManaRestKey, kRestCap) + e.seconds;
       if (rest >= Knob("souls_combat.mana_regen_delay", kManaRegenDelay)) {
@@ -92,12 +97,6 @@ void OnTick(refii::mods::TickEvent& e) {
       refii_mod_player_set(player, kManaRestKey, rest > kRestCap ? kRestCap : rest);
     }
   }
-
-  refii::mods::Publish("souls_combat.bar_cap", kBarCap);
-  refii::mods::Publish("souls_combat.mana", value[0]);
-  refii::mods::Publish("souls_combat.mana_max", g_max[0]);
-  refii::mods::Publish("souls_combat.mana2", value[1]);
-  refii::mods::Publish("souls_combat.mana2_max", g_max[1]);
 }
 REFII_MOD_ON(Tick, OnTick);
 

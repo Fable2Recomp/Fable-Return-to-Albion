@@ -93,6 +93,11 @@ extern "C" int32_t refii_mod_entity_position(PPCContext* ctx, uint8_t* base, uin
 /// mods' Lua. True when it ran without error. Guest tick thread only (a tick callback or a hook).
 extern "C" int32_t refii_mod_run_game_lua(PPCContext* ctx, uint8_t* base, const char* chunk);
 
+/// Runs a Lua chunk in the mods' FRONT-END Lua (the title and the front end, where there is no game
+/// VM): the current Gameface presentation's own state, the mods' mod/frontend.lua run in it first.
+/// 0 when no presentation has a script engine. Guest tick thread only.
+extern "C" int32_t refii_mod_run_frontend_lua(PPCContext* ctx, uint8_t* base, const char* chunk);
+
 /// The integer value of the Lua expression `expr` in [lo, hi], by a binary search of assertions —
 /// a handful of chunk runs, so read it when it can have changed (see refii_mod_lua_generation),
 /// not every tick. False when the expression is not a number in that range.
@@ -345,7 +350,8 @@ extern "C" int32_t refii_mod_health(uint8_t* base, uint32_t entity, float* out_c
 /// reads; the game's own health-changed event is not raised. Returns true when written.
 extern "C" int32_t refii_mod_set_health(uint8_t* base, uint32_t entity, float value);
 
-/// The level of ability `type` (1..14 — 1 Toughness .. 7 Lightning .. 14 Raise Dead: the stats
+/// The level of ability `type` (1..14 — 1 Heavy Weapons, 2 Physique, 3 Toughness, 4 Ranged Weapons,
+/// 5 Accuracy, 6 Speed, 7 Lightning .. 14 Raise Dead, as `sub_824E45F8` names them: the stats
 /// component's table at +0x110 + 4*type) on `entity`, or -1 without a stats component (57).
 extern "C" int32_t refii_mod_ability_level(uint8_t* base, uint32_t entity, int32_t type);
 
@@ -532,7 +538,7 @@ extern "C" uint32_t refii_mod_play_fx_on(const char* name, uint32_t entity, cons
 extern "C" void refii_mod_stop_fx(uint32_t id);
 
 // ---------------------------------------------------------------------------------------------
-// The UI: a mod's menus and message boxes, drawn by Godot (posted as REFII_MOD_HOST_UI_KIND)
+// The UI: a mod's menus, message boxes, notices and menu boxes, drawn by Godot (posted as REFII_MOD_HOST_UI_KIND)
 // ---------------------------------------------------------------------------------------------
 
 /// Opens a menu a mod defines in ui/templates.json for `player` (1 or 2; 0 for whoever owns the
@@ -550,6 +556,41 @@ extern "C" int32_t refii_mod_open_menu(int32_t player, const char* name);
 /// machine shows it only for a player it plays, and answers -1 elsewhere. Any thread.
 extern "C" uint32_t refii_mod_message_box(int32_t player, const char* title, const char* text, const char* accept,
                                           const char* cancel);
+
+/// Posts a notice for `player` (1 or 2; 0 for whoever owns the menus here) on the notice channel the
+/// game's own co-op notices use — in game the HUD's info box for `seconds` (0 or less: the
+/// channel's own length), on the front end its own dialog until dismissed: `title` above `text`.
+/// Notices queue one after another. Returns the id the ModNotice event carries when it has gone
+/// (0 for no text). A machine shows it only for a player it plays, and reports -1 elsewhere. Any
+/// thread.
+extern "C" uint32_t refii_mod_notice(int32_t player, const char* title, const char* text, float seconds);
+
+/// Raises a menu box for `player` (1 or 2; 0 for whoever owns the menus here) in the game's own
+/// menu box art, on the front end and in game: `title` above `text`, then `count` options (at most
+/// 16; more than the box's six rows are paged). B closes it when `cancelable` is non-zero. Returns
+/// the id the ModMenuBox event carries with the chosen option's index (-1 for none) — 0 for no
+/// option. One menu box stands at a time; a machine shows it only for a player it plays. Any thread.
+extern "C" uint32_t refii_mod_menu_box(int32_t player, const char* title, const char* text, const char* const* options,
+                                       int32_t count, int32_t cancelable);
+
+// ---------------------------------------------------------------------------------------------
+// Menu rows and host screens, drawn by Godot (posted as REFII_MOD_HOST_MENU_KIND)
+// ---------------------------------------------------------------------------------------------
+
+/// States the rows of a menu list for `player` (1 or 2; 0 for every player), replacing what was
+/// stated before: what a ui/templates.json menu or entry with "source": "rows" (or
+/// "rows:<list>") shows, at once if it is open. `rows` is one text: rows split by ';', each
+/// "name|label|command|ghosted" ('\' escapes '|', ';' and itself; label a Babel tag or literal,
+/// the name when empty; command any row verb — Mod:lua:, Opens:, Screen:open:; ghosted 1 or 0).
+/// An empty text clears the list. About 1.8 KB of rows cross at once. Returns 1 when posted.
+extern "C" int32_t refii_mod_set_menu_rows(int32_t player, const char* menu, const char* rows);
+
+/// Opens a host-owned screen by id for `player` (1 or 2; 0 for whoever owns the menus here): the
+/// Screen:open:<id> verb, as a row on the list with the input would — the game's (achievements
+/// 1013, multiplayer 1014) or a ui/templates.json screens record a mod states (id 1000 and up,
+/// with a menu and a presentation). A template book stands over the pause book, so it opens while
+/// the pause list has the input. Returns 1 when posted. Any thread.
+extern "C" int32_t refii_mod_open_screen(int32_t player, uint32_t screen);
 
 // The events — one include gives a mod the whole surface.
 #include "core/refii_mod_events.h"

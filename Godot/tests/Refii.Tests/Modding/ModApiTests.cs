@@ -182,9 +182,11 @@ public class ModApiTests
         AssertThat(verbs.Count > 30).IsTrue();
         // menu_row and box_answer are the host's own: Godot's menu lists and host boxes post them
         // when a mod's row is chosen or its box answered (Engine_UiModMenus, Engine_UiModBoxes), so
-        // no script calls them. fx_play and fx_stop likewise: Engine_FxPlayer posts them for a
+        // no script calls them; notice_done and menu_box_answer likewise for a notice gone and a menu
+        // box answered. fx_play and fx_stop likewise: Engine_FxPlayer posts them for a
         // play_fx under the classic look; a script calls play_fx / stop_fx.
-        foreach (string verb in verbs.Where(v => v is not ("menu_row" or "box_answer" or "fx_play" or "fx_stop")))
+        // fx_reload is the remount's (Engine_ModRemount -> Engine_FxModEffects.ReloadGuestBank).
+        foreach (string verb in verbs.Where(v => v is not ("menu_row" or "box_answer" or "notice_done" or "menu_box_answer" or "fx_play" or "fx_stop" or "fx_reload")))
         {
             AssertThat(Regex.IsMatch(godot, @"\b" + verb + @"\b"))
                 .OverrideFailureMessage($"'{verb}' is answered by mod_commands.cpp but missing from ModApi.GodotHelpers")

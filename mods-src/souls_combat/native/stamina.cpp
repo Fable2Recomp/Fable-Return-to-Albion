@@ -1,9 +1,10 @@
 // Souls Combat — stamina.
 //
 // A pool per player hero (both players are principals), in points. Swings spend it; it refills
-// after a short pause; at zero the next swing is refused. Published to Godot as
-// souls_combat.stamina / stamina_max (player 1) and stamina2 / stamina2_max (player 2) for the
-// HUD meters in ui/hud.json.
+// after a short pause; at zero the next swing is refused. The HUD meter (ui/hud.json) reads the
+// pool and its maximum straight from the player store — player:souls_combat.stamina and
+// player:souls_combat.stamina_max — keyed to whichever player's widget it is drawn beside, so one
+// record serves both players on every screen.
 //
 // THE POOL IS IN THE PLAYER STORE (souls_combat.h), so both co-op machines read the same pool: a
 // spend is an add on whichever machine the swing, roll or block happens, the refill runs only
@@ -59,10 +60,12 @@ void OnTick(refii::mods::TickEvent& e) {
       continue;
     }
 
-    // Each player's maximum grows with their own Stamina ability.
+    // Each player's maximum grows with their own Stamina ability (the level the engine's
+    // purchase saves, ui/abilities.json).
     max[index] = StaminaMax(index);
     value[index] = Stamina(index);
     if (refii_mod_player_here(player) != 0) {
+      refii_mod_player_set(player, kStaminaMaxKey, max[index]);
       const float rest = refii_mod_player_value(player, kStaminaRestKey, kRestCap) + e.seconds;
       if (rest >= Knob("souls_combat.stamina_regen_delay", kRegenDelay) && value[index] < max[index]) {
         value[index] += Knob("souls_combat.stamina_regen_per_second", kRegenPerSecond) * e.seconds;
@@ -74,11 +77,6 @@ void OnTick(refii::mods::TickEvent& e) {
       refii_mod_player_set(player, kStaminaRestKey, rest > kRestCap ? kRestCap : rest);
     }
   }
-
-  refii::mods::Publish("souls_combat.stamina", value[0] < 0.0f ? 0.0f : value[0]);
-  refii::mods::Publish("souls_combat.stamina_max", max[0]);
-  refii::mods::Publish("souls_combat.stamina2", value[1] < 0.0f ? 0.0f : value[1]);
-  refii::mods::Publish("souls_combat.stamina2_max", max[1]);
 }
 REFII_MOD_ON(Tick, OnTick);
 

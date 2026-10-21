@@ -123,6 +123,9 @@ public static class Engine_DynamicSky
 
     public const string LightingOverrideKey = "dynamic_sky_lighting_override";
 
+    /// <summary>The weather override: "theme" (the game's own) or a preset's name.</summary>
+    public const string WeatherKey = "dynamic_sky_weather";
+
     public static bool LightingOverride => Refii.Core.Engine_Switches.Flag(LightingOverrideKey, false);
 
     public static bool CloudShadows => Refii.Core.Engine_Switches.Flag(CloudShadowsKey, false);
@@ -171,7 +174,7 @@ public static class Engine_DynamicSky
         Refii.Core.Engine_Switches.Flag("dynamic_sky_hide_game_celestial", true);
 
     public static string WeatherSwitch =>
-        Refii.Core.Engine_Switches.String("dynamic_sky_weather", "theme");
+        Refii.Core.Engine_Switches.String(WeatherKey, "theme");
 
     public static readonly float Exposure =
         Refii.Core.Engine_Switches.Float("dynamic_sky_exposure", 1f);

@@ -314,7 +314,7 @@ public partial class FableFx : Node3D
 		}
 
 		int generation = Engine_FxModEffects.Generation;
-		IReadOnlyList<Engine_FxModEffects.Source> sources = Engine_FxModEffects.Sources;
+		IReadOnlyList<Engine_FxModEffects.Source> sources = Engine_FxModEffects.DrawnSources;
 		if (sources.Count != 0)
 		{
 			Engine_FxModEffects.Result result = Engine_FxModEffects.Apply(bank, sources);
@@ -1105,6 +1105,9 @@ public partial class FableFx : Node3D
 	/// <summary>Emitters, visuals and particles this effect actually holds — see Census.</summary>
 	public (int Emitters, int Visuals, int TrailVisuals, int Particles) DebugCensus => _system.Census();
 
+	/// <summary>Per emitter, its particles' height and radius spans, for the lab.</summary>
+	public string DebugEmitterSpread() => _system.DebugEmitterSpread();
+
 	/// <summary>What the surfaces hold this frame, for the lab: quads, their box, their colour.</summary>
 	public string DebugSurfaceStats()
 	{
@@ -1144,6 +1147,47 @@ public partial class FableFx : Node3D
 		}
 
 		return string.Join(" | ", parts);
+	}
+
+	private readonly List<Node3D> _pieces = new();
+
+	/// <summary>
+	/// The effect's authored pieces (<see cref="FxEffect.Pieces"/>) as children, at the effect's
+	/// scale: built with the effect, replaced when it is rebuilt.
+	/// </summary>
+	private void BuildPieces(FxBank bank, FxPlacement placement)
+	{
+		foreach (Node3D piece in _pieces)
+		{
+			if (IsInstanceValid(piece))
+			{
+				piece.QueueFree();
+			}
+		}
+
+		_pieces.Clear();
+		FxEffect? effect = placement.EffectHash != 0 ? bank.FindByHash(placement.EffectHash) : bank.FindByName(_effectName);
+		if (effect is not { Pieces.Count: > 0 })
+		{
+			return;
+		}
+
+		float scale = EffectScale * (effect.Scale > 0.0001f ? effect.Scale : 1f);
+		foreach (Engine_FxRecipePieces.Piece piece in effect.Pieces)
+		{
+			if (Engine_FxRecipePieces.Build(piece) is not { } made)
+			{
+				continue;
+			}
+
+			if (scale != 1f)
+			{
+				made.Scale *= scale;
+			}
+
+			AddChild(made);
+			_pieces.Add(made);
+		}
 	}
 
 	/// <summary>Whether Build resolved the effect at all; false means the bank had no such key.</summary>
@@ -1201,6 +1245,7 @@ public partial class FableFx : Node3D
 		}
 
 		_system.Build(bank, new[] { placement });
+		BuildPieces(bank, placement);
 		_hasDisplacement = _system.HasDisplacement;
 		_hasMeshParticles = _system.HasMeshParticles;
 
@@ -1277,7 +1322,7 @@ public partial class FableFx : Node3D
 		_built = true;
 		_builtName = _effectName;
 
-		if (!placement.Resolved)
+		if (!placement.Resolved && _pieces.Count == 0)
 		{
 			GD.Print($"[fx] effect '{_effectName}' not found in bank");
 		}

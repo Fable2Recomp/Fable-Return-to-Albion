@@ -132,7 +132,11 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_DYNAMIC_WEATHER = 86,
   REFII_EVENT_MOD_MENU_ROW = 87,
   REFII_EVENT_MOD_MESSAGE_BOX = 88,
-  REFII_EVENT_COUNT = 89,
+  REFII_EVENT_MOD_NOTICE = 89,
+  REFII_EVENT_MOD_MENU_BOX = 90,
+  REFII_EVENT_MOD_ABILITY = 91,
+  REFII_EVENT_SPELL_PICK = 92,
+  REFII_EVENT_COUNT = 93,
 };
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
@@ -142,10 +146,15 @@ enum refii_mod_event_kind : int32_t {
 /// core/refii_mod.h; Engine_FxPlayer draws it): never a bus event, posted whatever the mask says.
 #define REFII_MOD_HOST_FX_KIND 1001
 
-/// The kind an open_menu / message_box request crosses to Godot under (refii_mod_open_menu,
-/// refii_mod_message_box in core/refii_mod.h; Engine_UiModBoxes acts on it): never a bus event,
-/// posted whatever the mask says.
+/// The kind an open_menu / message_box / notice / menu_box request crosses to Godot under
+/// (refii_mod_open_menu, refii_mod_message_box, refii_mod_notice, refii_mod_menu_box in
+/// core/refii_mod.h; Engine_UiModBoxes acts on it): never a bus event, posted whatever the mask says.
 #define REFII_MOD_HOST_UI_KIND 1002
+
+/// The kind a mod menu's rows and a host screen request cross to Godot under
+/// (refii_mod_set_menu_rows, refii_mod_open_screen in core/refii_mod.h; Engine_UiModRows acts on
+/// it): never a bus event, posted whatever the mask says.
+#define REFII_MOD_HOST_MENU_KIND 1003
 
 /// A subscriber: `event` is the kind's struct (below), `user` is what was registered with it.
 typedef void (*refii_mod_event_fn)(void* event, void (*user)(void));
@@ -1239,6 +1248,83 @@ struct ModMessageBoxEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_MOD_MESSAGE_BOX;
   uint32_t id;
   int32_t button;
+  int32_t player;
+};
+
+/// A notice a mod posted (refii_mod_notice, Refii.notice, RefiiHost.notice) has gone. `id` is what
+/// the call returned, `outcome` 0 once it was shown and its time ran out (or it was dismissed on the
+/// front end), -1 when it never showed (its player is played on the other machine, or the queue
+/// overflowed), `player` 1 or 2 (whose notice it was). The channel is Godot's, so Godot scripts get
+/// it as it happens; native and Lua handlers on the next guest tick, from the host's command queue
+/// (`notice_done`) — native on the front end too, Lua in a game. Not cancellable.
+struct ModNoticeEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MOD_NOTICE;
+  uint32_t id;
+  int32_t outcome;
+  int32_t player;
+};
+
+/// A menu box a mod raised (refii_mod_menu_box, Refii.menu_box, RefiiHost.menu_box) was answered.
+/// `id` is what the call returned, `option` the chosen option's index in the list the mod gave
+/// (paging is the box's own), -1 for B on a cancelable box, another box replacing it, or its player
+/// played on the other machine; `player` 1 or 2 (whose box it was). Godot scripts get it as it
+/// happens; native and Lua handlers on the next guest tick (`menu_box_answer`) — native on the
+/// front end too, Lua in a game. Not cancellable.
+struct ModMenuBoxEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MOD_MENU_BOX;
+  uint32_t id;
+  int32_t option;
+  int32_t player;
+};
+
+/// A player is buying or giving back a level of a MOD ability (ui/abilities.json). The ENGINE runs
+/// the purchase from what the file declares — the level is the player's SAVED value under
+/// `levelKey`, the price the game's own table of the ability `costLike` names
+/// (rex_CECStats_AbilityExperienceCost), split evenly across the declared disciplines' pools (the
+/// first named takes the odd point), each share spent through the game's own Spend; an unlearn
+/// (`"refund": "half"`) gives half the given-up level's price back into General through the game's
+/// own Modify, as the shipped unlearn does. The book's A and Y post it for the player whose book it
+/// is, and it runs on the guest tick of that player's machine. Raised BEFORE anything changes and
+/// only for a purchase that can happen (affordable, below the maximum; a level to give up):
+/// `cancel` refuses it — nothing spent, the level stands. `ability` is the declared name, `mod` the
+/// mod that declared it, `refund` true for an unlearn, `previous` the level held, `level` the level
+/// it will hold, `experience` the price to be spent (a buy) or what comes back (a refund), `player`
+/// 1 or 2. A mod applies the level's effect by reading the level from the player store
+/// (refii_mod_player_value(player, levelKey, 0)) where it is used; it needs no handler for that.
+struct ModAbilityEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MOD_ABILITY;
+  const char* ability;
+  const char* mod;
+  bool refund;
+  int32_t previous;
+  int32_t level;
+  int32_t experience;
+  int32_t player;
+};
+
+/// A player chose (or cleared) a pick on one of their spell slots on the spell selectors — the
+/// quick wheel or the abilities blade — through a pick a mod states in ui/spellwheel.json (Spell
+/// Weaving's partner). The engine keeps each player's pick per slot as a SAVED player value under
+/// the pick's `store` key ({slot} the slot's number, 1..5), written after the handlers unless one
+/// cancels. `pick` is the pick's name, `mod` the mod that stated it, `slot` 0..4, `spell` the will
+/// chosen (0 Lightning .. 7 Dead Rising; -1 cleared) — writable: a handler may choose another, or
+/// -1 — `previous` the will held before (-1 none), `player` 1 or 2 (whose selectors). Raised on the
+/// guest tick of the machine whose player made the pick, from the host's command queue
+/// (`spell_pick`); Godot scripts get it from the bus like any other event. `cancel` keeps the slot's
+/// pick as it was.
+/// THE GAME'S OWN PICK (the slot's spell) is raised too, with `pick` "spell" and `mod` "", by the
+/// guest's slot writer whenever the game calls it as a choice — each step of the selectors'
+/// carousel, the scripts' spell-table natives, the host's own assignment (mod_abilities.cpp
+/// rex_CECSpellManager_SetSpellSlot) — before the slot is written: a changed `spell` is the one
+/// stored and sent to the session, `cancel` leaves the slot as it was. The template's defaults, the
+/// other machine's pick arriving and a save load are not picks and raise nothing.
+struct SpellPickEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SPELL_PICK;
+  const char* pick;
+  const char* mod;
+  int32_t slot;
+  int32_t spell;
+  int32_t previous;
   int32_t player;
 };
 

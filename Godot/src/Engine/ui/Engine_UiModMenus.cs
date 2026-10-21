@@ -23,9 +23,9 @@ namespace Refii.Ui;
 /// menu, every row a mod patched into a shipped menu and every <c>Opens:</c> / <c>Mod:lua:</c> row
 /// raises the <c>ModMenuRow</c> event on all three surfaces: the Godot signal as it happens, the
 /// native and Lua handlers on the next guest tick — on the title too, where the guest ticks with
-/// no game VM, so only native handlers and Godot scripts hear it there. Any other command on a mod
-/// menu's row runs as a host action (<see cref="Engine_UiScreenActions.Run"/>) and never reaches
-/// the guest, which knows nothing of the menu.</para>
+/// no game VM, so only native handlers and Godot scripts hear it there. Every command on a mod
+/// menu's row, and <c>Opens:</c> / <c>Mod:lua:</c> on any list's, runs through the one dispatcher
+/// (<see cref="Engine_UiCommands"/>) and never reaches the guest, which knows nothing of the menu.</para>
 /// </remarks>
 public static class Engine_UiModMenus
 {
@@ -38,18 +38,32 @@ public static class Engine_UiModMenus
 
 	private static Engine_FrontEndMenuView? _focus;
 	private static string _focusRoot = string.Empty;
+	private static Engine_UiCommandList _focusList;
 	private static ulong _focusFrame;
 
 	/// <summary>
-	/// Names the list that has the input this frame and the template its root list is, for a
-	/// script's <c>RefiiHost.open_menu</c>. Called every frame by whichever list is standing.
+	/// Names the list that has the input this frame, the template its root list is and which list
+	/// it is, for a script's <c>RefiiHost.open_menu</c> / <c>open_screen</c>. Called every frame by
+	/// whichever list is standing; a mod menu open on it re-sources its rows here (a script's
+	/// <c>set_menu_rows</c>, a <c>values:</c> source), so a list on screen follows what was stated.
 	/// </summary>
-	public static void Focus(Engine_FrontEndMenuView view, string rootMenu)
+	public static void Focus(Engine_FrontEndMenuView view, string rootMenu, Engine_UiCommandList list)
 	{
 		_focus = view;
 		_focusRoot = rootMenu;
+		_focusList = list;
 		_focusFrame = Engine.GetProcessFrames();
+
+		string? opened = view.OpenedMenuName ?? (ReferenceEquals(view, _standaloneView) ? _standaloneMenu : null);
+		if (opened is not null && view.Menu is { } model && Engine_UiTemplates.Menu(opened) is { } template &&
+			template.RefreshSources(model))
+		{
+			view.Refresh();
+		}
 	}
+
+	/// <summary>Which list has the input, when one stated it this frame or the last.</summary>
+	public static Engine_UiCommandList? FocusedList => Focused is null ? null : _focusList;
 
 	/// <summary>The list with the input, when one stated it this frame or the last.</summary>
 	private static Engine_FrontEndMenuView? Focused =>
@@ -97,6 +111,8 @@ public static class Engine_UiModMenus
 
 	private static int _standalonePlayer;
 
+	private static string? _standaloneMenu;
+
 	/// <summary>
 	/// The menu asked for with no list up, once: the owner stands it on a list of its own, roots it
 	/// with <see cref="StandaloneOpened"/>, drives it as any list (<see cref="Activated"/> with
@@ -114,6 +130,7 @@ public static class Engine_UiModMenus
 	{
 		_standaloneView = view;
 		_standalonePlayer = player;
+		_standaloneMenu = menu;
 		GD.Print($"[mod-menus] '{menu}' opened on its own for player {player} — " +
 			$"{view.Menu?.Visible.Count ?? 0} row(s)");
 	}
@@ -122,6 +139,7 @@ public static class Engine_UiModMenus
 	public static void StandaloneClosed(string menu)
 	{
 		_standaloneView = null;
+		_standaloneMenu = null;
 		GD.Print($"[mod-menus] '{menu}' closed");
 	}
 
@@ -172,10 +190,13 @@ public static class Engine_UiModMenus
 	/// </summary>
 	/// <param name="rootMenu">The template the view's ROOT list is ("frontend-root", "pause-root",
 	/// a screen's population script) — the menu a row belongs to when no mod menu is open.</param>
+	/// <param name="list">The list the view is — what the dispatcher checks a verb against, so a
+	/// <c>PauseTab:</c> row in a mod menu opened over the pause book runs and one over a screen's
+	/// list refuses.</param>
 	/// <param name="rootIsModMenu">The root list is itself a mod's menu (a standalone list).</param>
 	public static bool Activated(
 		Engine_FrontEndMenuView view, string rootMenu, Engine_UiExpandableMenu.Item? item, string? action,
-		bool rootIsModMenu = false)
+		Engine_UiCommandList list, bool rootIsModMenu = false)
 	{
 		if (item is null)
 		{
@@ -202,48 +223,73 @@ public static class Engine_UiModMenus
 			return false;
 		}
 
-		Engine_UiModMenuCommand.Parsed command = Engine_UiModMenuCommand.Parse(action);
+		bool modVerb = Engine_UiModMenuCommand.Parse(action).Verb != Engine_UiModMenuCommand.Verb.None;
 		string mod = Engine_UiTemplates.MenuOwner(menu, item.Name);
-		bool ours = command.Verb != Engine_UiModMenuCommand.Verb.None || inModMenu;
-		if (!ours && mod.Length == 0)
+		if (!modVerb && !inModMenu && mod.Length == 0)
 		{
 			return false;
 		}
 
 		Raise(menu, item.Name, player, mod);
-		switch (command.Verb)
-		{
-			case Engine_UiModMenuCommand.Verb.Opens:
-				Open(view, command.Menu);
-				return true;
-
-			case Engine_UiModMenuCommand.Verb.Lua:
-				CallLua(command, menu, item.Name, player, mod);
-				return true;
-		}
-
-		if (!inModMenu)
+		if (!modVerb && !inModMenu)
 		{
 			// A mod's row patched into a shipped list, with a command of the list's own: the
 			// event is raised and the list answers it as it answers its own rows.
 			return false;
 		}
 
-		// A mod menu's row with any other command: a host action, or nothing. The guest has no row
-		// of this name to commit.
-		if (item.Command is { Length: > 0 } && !Engine_UiScreenActions.Run(action))
+		// `Opens:`, `Mod:lua:`, or any command on a mod menu's row: the one dispatcher. The guest has
+		// no row of this name to commit, so nothing reaches it.
+		if (item.Command is { Length: > 0 } &&
+			Engine_UiCommands.Run(action, new Engine_UiCommandContext(list, menu, item.Name, player, mod) { View = view })
+				.Outcome == Engine_UiCommandOutcome.NotOurs)
 		{
-			GD.Print($"[mod-menus] '{menu}/{item.Name}' names '{action}', which nothing runs");
+			GD.Print($"[mod-menus] '{menu}/{item.Name}' names '{action}', which no verb runs");
 		}
 
 		return true;
 	}
 
 	/// <summary>
+	/// The mod menu verbs on the one dispatcher: <c>Opens:&lt;menu&gt;</c> opens over the list the row
+	/// is on (or on its own with none), <c>Mod:lua:&lt;function&gt;[:&lt;arg&gt;]</c> calls the mod's Lua.
+	/// Any list's row may name either.
+	/// </summary>
+	public static void RegisterVerbs(Engine_UiCommandSet set)
+	{
+		set.Register(Engine_UiVerbs.Opens, (_, context) =>
+		{
+			Engine_UiModMenuCommand.Parsed command = Engine_UiModMenuCommand.Parse(context.Command);
+			if (command.Verb != Engine_UiModMenuCommand.Verb.Opens)
+			{
+				return Engine_UiCommandResult.Refused("'Opens:' names no menu");
+			}
+
+			bool opened = context.View is { } view && GodotObject.IsInstanceValid(view)
+				? Open(view, command.Menu)
+				: OpenFor(command.Menu, context.Player);
+			return Engine_UiCommandResult.From(opened, $"no menu '{command.Menu}' in any ui/templates.json");
+		});
+
+		set.Register(Engine_UiVerbs.Lua, (_, context) =>
+		{
+			Engine_UiModMenuCommand.Parsed command = Engine_UiModMenuCommand.Parse(context.Command);
+			if (command.Verb != Engine_UiModMenuCommand.Verb.Lua)
+			{
+				return Engine_UiCommandResult.Refused(
+					$"'{context.Command}' does not name a Lua function: Mod:lua:<name or table.name>[:<arg>]");
+			}
+
+			return CallLua(command, context.Menu, context.Row, context.Player is 1 or 2 ? context.Player : MenuPlayer,
+				context.Mod);
+		});
+	}
+
+	/// <summary>
 	/// The <c>ModMenuRow</c> event: the Godot signal now, the native and Lua handlers on the next
 	/// guest tick (the guest command <c>menu_row</c>). The guest ticks on the title and the front end
-	/// too, so native handlers hear a front-end row; Lua handlers live in the game VM, which exists
-	/// only in a game, so on the front end the row is Godot's and native code's.
+	/// too, so native handlers hear a front-end row, and the payload fires it into the mods'
+	/// front-end Lua (mod/frontend.lua) when no game VM is up.
 	/// </summary>
 	private static void Raise(string menu, string row, int player, string? mod = null)
 	{
@@ -258,29 +304,25 @@ public static class Engine_UiModMenus
 	}
 
 	/// <summary>
-	/// A row's <c>Mod:lua:</c> call, run in the game VM on the next guest tick. The game VM is built
-	/// by <c>Game_InitDatabases</c> when a game starts and closed when it ends
-	/// (src/vfs/src/hooks/mod_lua_hooks.cpp); the front end's only Lua is Gameface's, one state per
-	/// presentation, a different Lua build the mods' code is never run in. So on the front end the
-	/// call is not made, and says so; the row's <c>ModMenuRow</c> still reaches Godot and native.
+	/// A row's <c>Mod:lua:</c> call on the next guest tick: in a game, in the game VM (built by
+	/// <c>Game_InitDatabases</c>, src/vfs/src/hooks/mod_lua_hooks.cpp); on the title and the front end,
+	/// in the mods' front-end Lua, the current Gameface presentation's own state running every mod's
+	/// <c>mod/frontend.lua</c> (Refii.Mods.ModLua.FrontendPreamble).
 	/// </summary>
-	private static void CallLua(Engine_UiModMenuCommand.Parsed command, string menu, string row, int player, string mod)
+	private static Engine_UiCommandResult CallLua(
+		Engine_UiModMenuCommand.Parsed command, string menu, string row, int player, string mod)
 	{
-		if (!HostBridge.IsInGame)
-		{
-			GD.PushWarning($"[mod-menus] '{menu}/{row}' calls {command.Function}, but no game is running, so there is " +
-				"no game Lua to call it in; the row's mod_menu_row reached Godot scripts and native handlers");
-			return;
-		}
-
-		string line = "run_lua " + Engine_UiModMenuCommand.LuaCall(command, menu, row, player, mod);
+		// In a game, the game VM; on the title and the front end, the mods' front-end Lua (the current
+		// Gameface presentation's state with every mod's mod/frontend.lua, mod_frontend_lua.cpp).
+		string line = (HostBridge.IsInGame ? "run_lua " : Refii.Mods.ModLua.FrontendCommand) +
+			Engine_UiModMenuCommand.LuaCall(command, menu, row, player, mod);
 		if (System.Text.Encoding.UTF8.GetByteCount(line) >= Refii.Mods.RefiiHost.CommandLimit)
 		{
-			GD.PushWarning($"[mod-menus] '{menu}/{row}': the call to {command.Function} is over the " +
+			return Engine_UiCommandResult.Refused($"the call to {command.Function} is over the " +
 				$"{Refii.Mods.RefiiHost.CommandLimit}-byte command limit; not run");
-			return;
 		}
 
 		HostBridge.PostModCommand(line);
+		return Engine_UiCommandResult.Done;
 	}
 }

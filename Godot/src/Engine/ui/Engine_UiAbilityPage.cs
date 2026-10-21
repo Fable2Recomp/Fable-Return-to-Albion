@@ -354,7 +354,7 @@ public static class Engine_UiAbilityPage
 		values[LearnLabel] = Button(
 			strings, priced ? LearnWithParametersTag : LearnTag, level + 1, cost ?? 0, priced);
 		int? refund = level > 0 ? Engine_UiModAbilities.RefundAmount(mod) : null;
-		values[UnlearnLabel] = mod.RefundKey.Length == 0
+		values[UnlearnLabel] = !mod.Refunds
 			? string.Empty
 			: Button(strings, refund is not null ? DiscardWithParametersTag : DiscardTag,
 				level, refund ?? 0, refund is not null);

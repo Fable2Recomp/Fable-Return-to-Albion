@@ -4,6 +4,10 @@
 
 #include "hooks/ppc_externs.h"
 
+namespace refii::vfs {
+void NoteSpellFxInstancePlaced(uint32_t instance);  // spell_fx_owner.cpp
+}  // namespace refii::vfs
+
 // The particle transform setters, recorded per PSInstance.
 //
 // `instance+0x50` is an authored local translation; the world position is stated into each
@@ -57,6 +61,9 @@ REX_EXTERN(rex_CParticleSystemEntityInstance_SetPositionAndVelocity) {
 
   // All four lanes of v1 in the recompiler's register order; the host decides which is x.
   refii::vfs::NoteFxPosition(ctx.r3.u32, ctx.v1.f32);
+
+  // Placed by a spell's own update: one of that spell's effects (spell_fx_owner.cpp).
+  refii::vfs::NoteSpellFxInstancePlaced(ctx.r3.u32);
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_CParticleSystemEntityInstance_SetPositionAndVelocity);
 }

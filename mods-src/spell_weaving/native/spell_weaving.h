@@ -12,9 +12,14 @@ constexpr int kMaxLevel = 5;
 
 /// EACH PLAYER'S CHOICES LIVE IN THE PLAYER STORE (refii_mod_player_*, core/refii_mod.h), SAVED with
 /// the hero, so they go home with that hero's save and are the same on both co-op machines:
-///   spell_weaving.ability       the Spell Weaving level, 0..kMaxLevel (weaving_ability.cpp); level N
+///   spell_weaving.ability       the Spell Weaving level, 0..kMaxLevel: the ENGINE buys and unlearns it
+///                               from ui/abilities.json (price, refund, saves from before); level N
 ///                               weaves casts up to power N, 0 weaves nothing
-///   spell_weaving.partner_1..5  the partner chosen for each slot, -1 for none (weave.cpp)
+///   spell_weaving.partner_1..5  the partner picked for each slot, -1 for none: the ENGINE's spell
+///                               pick of ui/spellwheel.json writes it (weave.cpp refuses Slow Time
+///                               and Raise Dead)
+/// and, stated where the hero is played (session values): spell_weaving.partner_active_1..5 (what
+/// is in effect per slot) and spell_weaving.hud_partner (the glyph while charging) — weave.cpp.
 inline constexpr const char* kAbilityKey = "spell_weaving.ability";
 
 /// A player's Spell Weaving level, by player index (0 player 1, 1 player 2).
@@ -76,6 +81,12 @@ struct Weave {
   /// Seconds since the launch, and whether the base has finished (the look then fades out).
   float age = 0.0f;
   float done_at = -1.0f;
+  /// THE LOOK, PLAYED PER CAST (woven.cpp): the pair's own effect (fx/effects/spell_weaving_<base>_<overlay>)
+  /// on each thing it rides — `look_on[i]` the entity (0 for the one play at a point), `look_id[i]`
+  /// the id refii_mod_play_fx gave it (0 for a free slot), stopped with refii_mod_stop_fx.
+  static constexpr int kMaxLooks = 10;
+  uint32_t look_on[kMaxLooks] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  uint32_t look_id[kMaxLooks] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 };
 
 constexpr int kMaxWeaves = 8;

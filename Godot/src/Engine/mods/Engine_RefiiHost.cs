@@ -127,9 +127,19 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void dynamic_weatherEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void mod_menu_rowEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void mod_message_boxEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void mod_noticeEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void mod_menu_boxEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void mod_abilityEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void spell_pickEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
 	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
+
+	/// <summary>A <see cref="notice"/> has gone: the id it returned, 0 once shown, -1 when it never showed.</summary>
+	[Signal] public delegate void notice_doneEventHandler(long id, long outcome);
+
+	/// <summary>A <see cref="menu_box"/>'s answer: the id it returned and the chosen option's index (-1 for none).</summary>
+	[Signal] public delegate void menu_box_answeredEventHandler(long id, long option);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -150,6 +160,8 @@ public partial class RefiiHost : Node
 		"dynamic_weather",
 		"mod_menu_row",
 		"mod_message_box",
+		"mod_notice", "mod_menu_box",
+		"mod_ability", "spell_pick",
 	};
 
 	public const string SingletonName = "RefiiHost";
@@ -486,6 +498,13 @@ public partial class RefiiHost : Node
 				continue;
 			}
 
+			// A mod menu's rows or a host screen a native or Lua mod asked for: Godot's UI, never an event.
+			if (kind == Refii.Ui.Engine_UiModRows.Kind)
+			{
+				Refii.Ui.Engine_UiModRows.Handle(fields);
+				continue;
+			}
+
 			// A query's answer: the id goes back as the signal's first argument, never to mod_event.
 			if (kind == ReplyKind)
 			{
@@ -615,6 +634,22 @@ public partial class RefiiHost : Node
 		}
 
 		return Post("run_lua " + chunk.Replace("\r", string.Empty));
+	}
+
+	/// <summary>
+	/// Runs a Lua chunk in the mods' FRONT-END Lua on the guest's next tick (frontend_lua): the title
+	/// and the front end, where there is no game VM — the current Gameface presentation's own state,
+	/// with every mod's mod/frontend.lua run in it first (Refii.Mods.ModLua.FrontendPreamble says
+	/// what Refii.* holds there). False when the line would not fit, and nothing runs then.
+	/// </summary>
+	public bool frontend_lua(string chunk)
+	{
+		if (string.IsNullOrEmpty(chunk))
+		{
+			return false;
+		}
+
+		return Post(ModLua.FrontendCommand + chunk.Replace("\r", string.Empty));
 	}
 
 	// ---- helper calls: one line each, run in the guest tick with the real context -------------
@@ -782,6 +817,77 @@ public partial class RefiiHost : Node
 	public bool open_menu(string name, long player = 0) =>
 		Refii.Ui.Engine_UiModMenus.OpenFor(name, (int)Math.Clamp(player, 0, 2));
 
+	/// <summary>
+	/// States the rows of a menu list for <paramref name="player"/> (1 or 2; 0, the default, for every
+	/// player), replacing what was stated before — what a menu or entry with <c>"source": "rows"</c>
+	/// (or <c>rows:&lt;list&gt;</c>) shows, on screen at once if it is open. Each row is a string (its
+	/// name and label) or a dictionary <c>{ name, label, command, ghosted }</c>: <c>label</c> a Babel
+	/// tag or literal, <c>command</c> any row verb (<c>Mod:lua:</c>, <c>Opens:</c>, <c>Screen:open:</c>,
+	/// a registered command). An empty array clears the list.
+	/// </summary>
+	public void set_menu_rows(string menu, Godot.Collections.Array rows, long player = 0)
+	{
+		var stated = new List<Refii.Ui.Engine_UiModRows.Stated>();
+		foreach (Variant row in rows)
+		{
+			if (row.VariantType == Variant.Type.Dictionary)
+			{
+				Godot.Collections.Dictionary record = row.AsGodotDictionary();
+				string Text(string key) => record.TryGetValue(key, out Variant v) ? v.AsString() : string.Empty;
+				string name = Text("name").Length != 0 ? Text("name") : Text("label");
+				if (name.Length != 0)
+				{
+					stated.Add(new Refii.Ui.Engine_UiModRows.Stated(name, Text("label"),
+						Text("command") is { Length: > 0 } command ? command : null,
+						record.TryGetValue("ghosted", out Variant ghosted) && ghosted.AsBool()));
+				}
+			}
+			else if (row.AsString() is { Length: > 0 } name)
+			{
+				stated.Add(new Refii.Ui.Engine_UiModRows.Stated(name, name, null, false));
+			}
+		}
+
+		Refii.Ui.Engine_UiModRows.Set(menu, stated, (int)Math.Clamp(player, 0, 2));
+	}
+
+	/// <summary>
+	/// Opens a host-owned screen by id for <paramref name="player"/> (0, the default, for whoever owns
+	/// the menus here) — the <c>Screen:open:&lt;id&gt;</c> verb, as a row on the list with the input
+	/// would: the game's (achievements 1013, multiplayer 1014) or a <c>screens</c> record a mod states
+	/// (id 1000 and up, with a <c>menu</c> and a <c>presentation</c>). A template book stands over
+	/// the pause book, so it opens while the pause list has the input. False when it did not open
+	/// (the log says why) or the player is played on the other machine.
+	/// </summary>
+	public bool open_screen(long screen, long player = 0) =>
+		screen is > 0 and <= uint.MaxValue &&
+		Refii.Ui.Engine_UiModRows.OpenScreen((uint)screen, (int)Math.Clamp(player, 0, 2));
+
+	/// <summary>
+	/// Registers a ROW VERB every list runs (<c>Refii.Ui.Engine_UiCommands</c>): a row whose command is
+	/// <paramref name="verb"/> — or, when it ends in <c>:</c>, begins with it — calls
+	/// <paramref name="handler"/> with <c>(argument, menu, row, player)</c>. A return of <c>false</c>
+	/// reports the row refused; anything else is done. The game's verbs stay the game's: false when
+	/// the name is one of them.
+	/// </summary>
+	public bool register_command(string verb, Callable handler)
+	{
+		var record = new Refii.Ui.Engine_UiVerb(verb, verb, "a Godot script's verb", Array.Empty<Refii.Ui.Engine_UiCommandList>(),
+			Owner: "godot");
+		return Refii.Ui.Engine_UiCommands.Register(record, (argument, context) =>
+		{
+			if (handler.Target is { } target && !IsInstanceValid(target))
+			{
+				return Refii.Ui.Engine_UiCommandResult.Refused("the script that registered it is gone");
+			}
+
+			Variant answer = handler.Call(argument, context.Menu, context.Row, (long)context.Player);
+			return answer.VariantType == Variant.Type.Bool && !answer.AsBool()
+				? Refii.Ui.Engine_UiCommandResult.Refused("the script's handler answered false")
+				: Refii.Ui.Engine_UiCommandResult.Done;
+		});
+	}
+
 	private long _nextBoxId = Refii.Ui.Engine_UiModRequest.FirstHostBoxId - 1;
 
 	/// <summary>
@@ -789,23 +895,14 @@ public partial class RefiiHost : Node
 	/// front end its own dialog — for <paramref name="player"/> (1 or 2; 0, the default, for whoever
 	/// owns the menus here): <paramref name="title"/> above <paramref name="text"/>, with one button
 	/// (a notice) or two (a question, A and B, their captions <paramref name="buttons"/>[0] and [1];
-	/// none keeps the box's own captions). Returns the id <c>message_box_answered(id, button)</c> and
+	/// none keeps the box's own captions); more than two is a menu box (<see cref="menu_box"/>) whose
+	/// answer is the button's index, on this box's signal and event. Returns the id <c>message_box_answered(id, button)</c> and
 	/// the <c>mod_message_box</c> event carry: 0 for A, 1 for B, -1 when another box replaced it or
 	/// the player is played on the other machine. One question and one notice stand at a time.
 	/// </summary>
 	public long message_box(string title, string text, Godot.Collections.Array<string> buttons, long player = 0)
 	{
-		if (++_nextBoxId > Refii.Ui.Engine_UiModRequest.LastBoxId)
-		{
-			_nextBoxId = Refii.Ui.Engine_UiModRequest.FirstHostBoxId;
-		}
-
-		long id = _nextBoxId;
-		if (buttons.Count > 2)
-		{
-			GD.PushWarning($"[mods] godot: message_box takes one or two buttons; {buttons.Count} given, the first two are used");
-		}
-
+		long id = NextBoxId();
 		void Answered(int button)
 		{
 			if (IsInstanceValid(this))
@@ -814,10 +911,119 @@ public partial class RefiiHost : Node
 			}
 		}
 
+		// More than two buttons is a menu box, answered as this box: the button's index.
+		if (buttons.Count > 2)
+		{
+			Refii.Ui.Engine_UiModBoxes.MenuBox((uint)id, (int)Math.Clamp(player, 0, 2), title, text,
+				MenuOptions(buttons), cancelable: true, Answered, asMessageBox: true);
+			return id;
+		}
+
 		string? Caption(int i) => buttons.Count > i && buttons[i].Length != 0 ? buttons[i] : null;
 		Refii.Ui.Engine_UiModBoxes.Raise((uint)id, (int)Math.Clamp(player, 0, 2), title, text,
 			Caption(0), Caption(1), buttons.Count >= 2, Answered);
 		return id;
+	}
+
+	/// <summary>The next box id, shared by message_box, notice and menu_box (Godot's half of the id space).</summary>
+	private long NextBoxId()
+	{
+		if (++_nextBoxId > Refii.Ui.Engine_UiModRequest.LastBoxId)
+		{
+			_nextBoxId = Refii.Ui.Engine_UiModRequest.FirstHostBoxId;
+		}
+
+		return _nextBoxId;
+	}
+
+	/// <summary>A menu box's options: at most <see cref="Refii.Ui.Engine_UiModRequest.MaxMenuOptions"/>.</summary>
+	private static List<string> MenuOptions(Godot.Collections.Array<string> options)
+	{
+		var list = new List<string>();
+		foreach (string option in options)
+		{
+			if (list.Count == Refii.Ui.Engine_UiModRequest.MaxMenuOptions)
+			{
+				GD.PushWarning($"[mods] godot: a menu box takes {Refii.Ui.Engine_UiModRequest.MaxMenuOptions} options; the rest are dropped");
+				break;
+			}
+
+			list.Add(option);
+		}
+
+		return list;
+	}
+
+	/// <summary>
+	/// Posts a notice for <paramref name="player"/> (1 or 2; 0, the default, for whoever owns the
+	/// menus here) on the notice channel the game's own co-op notices use — in game the HUD's info
+	/// box for <paramref name="seconds"/> (0: the channel's length), on the front end its dialog until
+	/// dismissed: <paramref name="title"/> above <paramref name="text"/>. Notices queue one after
+	/// another. Returns the id <c>notice_done(id, outcome)</c> and the <c>mod_notice</c> event carry:
+	/// 0 once it has shown and gone, -1 when it never showed (its player is played on the other
+	/// machine, which shows it there).
+	/// </summary>
+	public long notice(string title, string text, double seconds = 0, long player = 0)
+	{
+		long id = NextBoxId();
+		Refii.Ui.Engine_UiModBoxes.Notice((uint)id, (int)Math.Clamp(player, 0, 2), title, text,
+			double.IsFinite(seconds) ? (float)Math.Clamp(seconds, 0, 600) : 0f, outcome =>
+			{
+				if (IsInstanceValid(this))
+				{
+					EmitSignal(SignalName.notice_done, id, (long)outcome);
+				}
+			});
+		return id;
+	}
+
+	/// <summary>
+	/// Puts up a menu box in the game's own menu box art (the Golden Cock's), on the front end and in
+	/// game, for <paramref name="player"/> (1 or 2; 0, the default, for whoever owns the menus here):
+	/// <paramref name="title"/> above <paramref name="text"/>, then <paramref name="options"/> (up to
+	/// 16; more than the box's six rows are paged). B closes a <paramref name="cancelable"/> box.
+	/// Returns the id <c>menu_box_answered(id, option)</c> and the <c>mod_menu_box</c> event carry:
+	/// the chosen option's index, -1 for B, another box replacing it, or a player played on the
+	/// other machine. One menu box stands at a time.
+	/// </summary>
+	public long menu_box(string title, string text, Godot.Collections.Array<string> options, long player = 0, bool cancelable = true)
+	{
+		long id = NextBoxId();
+		Refii.Ui.Engine_UiModBoxes.MenuBox((uint)id, (int)Math.Clamp(player, 0, 2), title, text, MenuOptions(options),
+			cancelable, option =>
+			{
+				if (IsInstanceValid(this))
+				{
+					EmitSignal(SignalName.menu_box_answered, id, (long)option);
+				}
+			});
+		return id;
+	}
+
+	/// <summary>The ModNotice event's Godot surface, raised where the notice went (the channel is Godot's).</summary>
+	internal void RaiseModNotice(uint id, int outcome, int player)
+	{
+		var e = new Godot.Collections.Dictionary
+		{
+			["id"] = (long)id,
+			["outcome"] = (long)outcome,
+			["player"] = (long)player,
+		};
+		EmitSignal(SignalName.mod_notice, e);
+		EmitSignal(SignalName.mod_event, "mod_notice", e);
+	}
+
+	/// <summary>The ModMenuBox event's Godot surface, raised where the box was answered.</summary>
+	internal void RaiseModMenuBox(uint id, int option, int player)
+	{
+		var e = new Godot.Collections.Dictionary
+		{
+			["id"] = (long)id,
+			["option"] = (long)option,
+			["player"] = (long)player,
+		};
+		EmitSignal(SignalName.mod_menu_box, e);
+		EmitSignal(SignalName.mod_event, "mod_menu_box", e);
 	}
 
 	/// <summary>

@@ -37,6 +37,15 @@ public sealed class Engine_UiMenuEntry
 	public string Icon = string.Empty;
 
 	/// <summary>
+	/// The ROW CONDITION this entry is built under (<see cref="Engine_UiRowConditions"/>): a name,
+	/// <c>!name</c>, or several joined by <c>,</c> that must all hold. Empty always holds. Siblings
+	/// may share a name when their conditions never hold together — the pause root states the hero's
+	/// <c>Map</c> and player two's <c>Map</c> that way — so one record serves both and a mod patches
+	/// it once.
+	/// </summary>
+	public string When = string.Empty;
+
+	/// <summary>
 	/// The event this entry pushes, as `g_Menu.EventConst` numbers it. `Submenu` (301) is the
 	/// marker a category carries, and it is the DEFAULT for an entry with children — the guest's
 	/// own category rows are spawned with exactly that.
@@ -402,10 +411,10 @@ public sealed class Engine_UiMenuTemplate
 	/// construction the guest's own C++ makes for every row, taking the icon, the event, the id
 	/// pair and the rating together.
 	/// </summary>
-	public Engine_FrontEndMenu Build()
+	public Engine_FrontEndMenu Build(IReadOnlyDictionary<string, bool>? facts = null)
 	{
 		var menu = new Engine_FrontEndMenu();
-		BuildInto(menu, committable: false);
+		BuildInto(menu, committable: false, facts);
 		return menu;
 	}
 
@@ -420,7 +429,9 @@ public sealed class Engine_UiMenuTemplate
 	/// guest's own spawn script and `(name, type, 0)` is exactly what its `SelectMenuItem`
 	/// pushes — so the row commits by identity like any row the guest spawned itself.
 	/// </param>
-	public void BuildInto(Engine_FrontEndMenu menu, bool committable)
+	/// <param name="facts">The row conditions the BUILDER knows (the pause list's <c>player-two</c>),
+	/// asked before the registered ones — see <see cref="Engine_UiMenuEntry.When"/>.</param>
+	public void BuildInto(Engine_FrontEndMenu menu, bool committable, IReadOnlyDictionary<string, bool>? facts = null)
 	{
 		menu.Clear();
 		foreach (Engine_UiMenuEntry entry in Entries)
@@ -451,6 +462,11 @@ public sealed class Engine_UiMenuTemplate
 
 		void Spawn(Engine_UiMenuEntry entry, string parent)
 		{
+			if (!Engine_UiRowConditions.Holds(entry.When, facts))
+			{
+				return;
+			}
+
 			// A category is a submenu row: an entry with children stating no event of its own
 			// gets 301, which is what makes `SelectMenuItem` treat the press as a fold.
 			// A SOURCE MAKES IT A SUBMENU TOO, not just authored children. The rows arrive after
@@ -776,6 +792,23 @@ public sealed class Engine_UiScreenTemplate
 	/// puts every screen on one path.
 	/// </summary>
 	public string Provider = string.Empty;
+
+	/// <summary>
+	/// THE DATA PROVIDER'S PAGE (<see cref="Engine_UiPageProviders.Data"/>): element path to what
+	/// the field says — a literal, a Babel tag, <c>mod:&lt;key&gt;</c>, <c>player:&lt;key&gt;</c> or
+	/// <c>row:label</c>/<c>row:name</c> (<see cref="Engine_UiValueSource"/>); <c>{row}</c> in a
+	/// binding is the highlighted row's name. How a mod fills a screen of its own without C#.
+	/// </summary>
+	public Dictionary<string, string> Fields = new(System.StringComparer.Ordinal);
+
+	/// <summary>
+	/// The data provider's switches: element path to a binding that resolves on (<c>true</c>, a
+	/// non-zero value) or off — see <see cref="Fields"/>.
+	/// </summary>
+	public Dictionary<string, string> Switches = new(System.StringComparer.Ordinal);
+
+	/// <summary>A member-wise copy; <see cref="Engine_UiTemplateJson.Clone"/> deepens it.</summary>
+	public Engine_UiScreenTemplate ShallowCopy() => (Engine_UiScreenTemplate)MemberwiseClone();
 }
 
 /// <summary>
@@ -811,13 +844,16 @@ public sealed class Engine_UiModalTemplate
 }
 
 /// <summary>
-/// The template registry: built-in records for the shipped screens, overridden by
-/// <c>user://ui/templates.json</c>, snapshotted to <c>user://ui/templates.snapshot.json</c>
-/// so the editor and modders start from what actually runs.
+/// The template registry: the guest's population tables, then the GAME'S OWN FILE
+/// (<see cref="Engine_UiGameTemplates"/>, the records below generated into the format a mod's file
+/// takes), then every enabled mod's <c>ui/templates.json</c> in load order, then the player's
+/// <c>user://ui/templates.json</c> — each composed by the same <see cref="Engine_UiTemplateSet"/> — and
+/// snapshotted to <c>user://ui/templates.snapshot.json</c> so the editor and modders start from what
+/// actually runs.
 ///
-/// The built-ins are the decoded contracts as records — entry names the dispatch strcmps on,
-/// event params, tab ids — so an override renaming an entry's LABEL keeps working and one
-/// renaming its NAME stops dispatching, exactly as the guest behaves.
+/// The authored records are the decoded contracts as records — entry names the dispatch strcmps on,
+/// event params, tab ids — so an override renaming an entry's LABEL keeps working and one renaming
+/// its NAME stops dispatching, exactly as the guest behaves.
 /// </summary>
 public static class Engine_UiTemplates
 {
@@ -833,59 +869,36 @@ public static class Engine_UiTemplates
 	/// </summary>
 	public readonly record struct ModConflict(string Piece, string Winner, string Loser);
 
-	private static readonly List<ModConflict> _modConflicts = new();
+	/// <summary>The composition that runs: the game's file, the enabled mods', the player's.</summary>
+	private static Engine_UiTemplateSet? _set;
 
-	/// <summary>Which mod last stated each piece ("menu:pause-root/Map", "screen:23").</summary>
-	private static readonly Dictionary<string, string> _pieceOwners = new(System.StringComparer.Ordinal);
-
-	public static IReadOnlyList<ModConflict> ModConflicts
+	private static Engine_UiTemplateSet Set
 	{
 		get
 		{
 			EnsureLoaded();
-			return _modConflicts;
+			return _set!;
 		}
 	}
 
-	private static Dictionary<uint, Engine_UiScreenTemplate>? _screens;
-	private static Dictionary<string, Engine_UiMenuTemplate>? _menus;
+	public static IReadOnlyList<ModConflict> ModConflicts => Set.Conflicts;
 
 	/// <summary>Every screen record, for a caller that works across the whole set — the component
 	/// exporter and the editor's listing.</summary>
-	public static IEnumerable<Engine_UiScreenTemplate> Screens
-	{
-		get
-		{
-			EnsureLoaded();
-			return _screens!.Values;
-		}
-	}
+	public static IEnumerable<Engine_UiScreenTemplate> Screens => Set.Screens.Values;
 
-	/// <summary>
-	/// The modal answer table (<see cref="Engine_UiModals"/>): the shipped rows, every mod's
-	/// <c>"modals"</c> in load order, then the player's file.
-	/// </summary>
-	private static Engine_UiModals? _modals;
+	/// <summary>Every menu record by name, for the Studio's listings and the validator.</summary>
+	public static IEnumerable<string> MenuNames => Set.Menus.Keys;
 
 	/// <summary>Every modal row as it runs, by key — the editor's and the Studio's listing.</summary>
-	public static IEnumerable<KeyValuePair<string, Engine_UiModalTemplate>> ModalRows
-	{
-		get
-		{
-			EnsureLoaded();
-			return _modals!.Rows;
-		}
-	}
+	public static IEnumerable<KeyValuePair<string, Engine_UiModalTemplate>> ModalRows => Set.Modals.Rows;
 
 	/// <summary>
 	/// The answer for a box, or null when it is not owned. A screen-specific row wins over the
 	/// any-screen one, so id 0 can be per-screen while every other id states itself once.
 	/// </summary>
-	public static Engine_UiModalTemplate? Modal(uint modalId, uint screenId, bool dismissal)
-	{
-		EnsureLoaded();
-		return _modals!.Find(modalId, screenId, dismissal);
-	}
+	public static Engine_UiModalTemplate? Modal(uint modalId, uint screenId, bool dismissal) =>
+		Set.Modals.Find(modalId, screenId, dismissal);
 
 	/// <summary>
 	/// The mod that stated a menu row (<c>menu:&lt;menu&gt;/&lt;row&gt;</c>, a patch), else the mod that
@@ -893,24 +906,23 @@ public static class Engine_UiTemplates
 	/// </summary>
 	public static string MenuOwner(string menu, string row)
 	{
-		EnsureLoaded();
-		if (row.Length != 0 && _pieceOwners.TryGetValue($"menu:{menu}/{row}", out string? rowOwner))
+		Dictionary<string, string> owners = Set.Owners;
+		if (row.Length != 0 && owners.TryGetValue($"menu:{menu}/{row}", out string? rowOwner))
 		{
 			return rowOwner;
 		}
 
-		return _pieceOwners.TryGetValue("menu:" + menu, out string? owner) ? owner : string.Empty;
+		return owners.TryGetValue("menu:" + menu, out string? owner) ? owner : string.Empty;
 	}
+
+	/// <summary>The mod that stated a screen record whole, or empty for the game's or the player's.</summary>
+	public static string ScreenOwner(uint screenId) =>
+		Set.Owners.TryGetValue("screen:" + screenId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+			out string? owner) ? owner : string.Empty;
 
 	/// <summary>One screen's record, or null for a screen Godot has no template for.</summary>
-	public static Engine_UiScreenTemplate? Screen(uint screenId)
-	{
-		EnsureLoaded();
-		return _screens!.TryGetValue(screenId, out Engine_UiScreenTemplate? template)
-			? template
-			: null;
-	}
-
+	public static Engine_UiScreenTemplate? Screen(uint screenId) =>
+		Set.Screens.TryGetValue(screenId, out Engine_UiScreenTemplate? template) ? template : null;
 	/// <summary>
 	/// Whether ANY screen Godot owns is drawn from this presentation — not
 	/// `ScreenFor(...) is not null`, which answers "which single screen is this" and returns null
@@ -920,9 +932,7 @@ public static class Engine_UiTemplates
 	/// </summary>
 	public static bool AnyScreenOwns(string presentation)
 	{
-		EnsureLoaded();
-
-		foreach (Engine_UiScreenTemplate template in _screens!.Values)
+		foreach (Engine_UiScreenTemplate template in Set.Screens.Values)
 		{
 			if (template.ChromeUnits.Count != 0 &&
 				string.Equals(template.Presentation, presentation,
@@ -951,14 +961,12 @@ public static class Engine_UiTemplates
 	/// </summary>
 	public static Engine_UiScreenTemplate? ScreenFor(string presentation)
 	{
-		EnsureLoaded();
-
 		Engine_UiScreenTemplate? guest = null;
 		Engine_UiScreenTemplate? owned = null;
 		bool guestAmbiguous = false;
 		bool ownedAmbiguous = false;
 
-		foreach (Engine_UiScreenTemplate template in _screens!.Values)
+		foreach (Engine_UiScreenTemplate template in Set.Screens.Values)
 		{
 			if (!string.Equals(template.Presentation, presentation,
 					System.StringComparison.OrdinalIgnoreCase))
@@ -999,11 +1007,8 @@ public static class Engine_UiTemplates
 	public readonly record struct DroppedRow(string Name, string Tag);
 
 	/// <summary>A named menu template, or null.</summary>
-	public static Engine_UiMenuTemplate? Menu(string name)
-	{
-		EnsureLoaded();
-		return _menus!.TryGetValue(name, out Engine_UiMenuTemplate? menu) ? menu : null;
-	}
+	public static Engine_UiMenuTemplate? Menu(string name) =>
+		Set.Menus.TryGetValue(name, out Engine_UiMenuTemplate? menu) ? menu : null;
 
 	/// <summary>
 	/// Row names a menu template says the guest may spawn but we do not show — see
@@ -1016,15 +1021,14 @@ public static class Engine_UiTemplates
 	/// </summary>
 	public static IReadOnlyList<DroppedRow> DroppedRows(string menuName)
 	{
-		EnsureLoaded();
-
+		Engine_UiTemplateSet set = Set;
 		if (_dropped!.TryGetValue(menuName, out List<DroppedRow>? cached))
 		{
 			return cached;
 		}
 
 		var rows = new List<DroppedRow>();
-		if (_menus!.TryGetValue(menuName, out Engine_UiMenuTemplate? menu))
+		if (set.Menus.TryGetValue(menuName, out Engine_UiMenuTemplate? menu))
 		{
 			Collect(menu.Entries);
 		}
@@ -1051,27 +1055,37 @@ public static class Engine_UiTemplates
 
 	private static void EnsureLoaded()
 	{
-		if (_screens is not null)
+		if (_set is not null)
 		{
 			return;
 		}
 
-		_screens = new Dictionary<uint, Engine_UiScreenTemplate>();
-		_menus = new Dictionary<string, Engine_UiMenuTemplate>();
-		_modals = new Engine_UiModals();
+		var set = new Engine_UiTemplateSet
+		{
+			Warn = warning => GD.PushWarning("[ui-templates] " + warning),
+			Log = line => GD.Print("[ui-templates] " + line),
+		};
+
+		// THE GAME IS THE FIRST FILE. The guest's own population tables, then the game's records
+		// (Engine_UiGameTemplates) through the same reader every mod's file takes, then the mods in
+		// load order, then the player's own file.
+		RegisterPopulationTables(set.Menus);
+		set.ApplyText(Engine_UiGameTemplates.Text, owner: string.Empty, "the game's templates");
+		int modded = 0;
+		foreach ((string mod, string text) in _composing ?? Refii.Mods.ModEntries.ReadEnabledText(ModTemplatesPath))
+		{
+			modded += set.ApplyText(text, mod, $"{mod}:{ModTemplatesPath}");
+		}
+
+		int overridden = _composing is null ? ApplyOverrides(set, OverridePath) : 0;
 		_dropped = new Dictionary<string, List<DroppedRow>>(System.StringComparer.Ordinal);
-		BuildDefaults();
-		StateWideLayouts();
-		_modConflicts.Clear();
-		_pieceOwners.Clear();
-		int modded = ApplyModTemplates();
-		int overridden = _composing is null ? ApplyOverrides(OverridePath) : 0;
+		_set = set;
 		if (_composing is null)
 		{
 			SaveSnapshot(SnapshotPath);
 		}
 
-		GD.Print($"[ui-templates] {_screens.Count} screen(s), {_menus.Count} menu(s)" +
+		GD.Print($"[ui-templates] {set.Screens.Count} screen(s), {set.Menus.Count} menu(s)" +
 			(modded == 0 ? string.Empty : $"; {modded} piece(s) from mods") +
 			(overridden == 0 ? string.Empty : $"; {overridden} record(s) overridden"));
 	}
@@ -1086,30 +1100,26 @@ public static class Engine_UiTemplates
 	/// The registry as it composes with <paramref name="modFiles"/> (each mod's
 	/// <see cref="ModTemplatesPath"/> text, LOWEST priority first) in place of the enabled mods'
 	/// files, and without the player's file: the Mod Studio's view of a mod's templates as it is
-	/// being edited, enabled or not. The records come back in the snapshot's JSON shape (menus,
+	/// being edited, enabled or not. The records come back in the snapshot's shape (menus,
 	/// screens, modals) with the conflicts that composition recorded, through the same
-	/// <see cref="ApplyOverrideText"/> every run composes with. No snapshot is written, and the
-	/// running registry is rebuilt from the enabled mods on its next use.
+	/// <see cref="Engine_UiTemplateSet.ApplyText"/> every run composes with. No snapshot is
+	/// written, and the running registry is rebuilt from the enabled mods on its next use.
 	/// </summary>
-	public static (Godot.Collections.Dictionary Records, IReadOnlyList<ModConflict> Conflicts) Compose(
+	public static (System.Text.Json.Nodes.JsonObject Records, IReadOnlyList<ModConflict> Conflicts) Compose(
 		IReadOnlyList<(string Mod, string Text)> modFiles)
 	{
 		_composing = modFiles;
 		try
 		{
-			_screens = null;
-			_menus = null;
-			_modals = null;
+			_set = null;
 			_dropped = null;
-			EnsureLoaded();
-			return (SnapshotJson(), new List<ModConflict>(_modConflicts));
+			Engine_UiTemplateSet set = Set;
+			return (set.Snapshot(), new List<ModConflict>(set.Conflicts));
 		}
 		finally
 		{
 			_composing = null;
-			_screens = null;
-			_menus = null;
-			_modals = null;
+			_set = null;
 			_dropped = null;
 		}
 	}
@@ -1118,37 +1128,86 @@ public static class Engine_UiTemplates
 	/// A menu record in the file shape (<c>{ highlight, title, source, rowCommand, entries }</c>) as
 	/// the reader takes it, for an editor's preview of a record it has not written yet.
 	/// </summary>
-	public static Engine_UiMenuTemplate? ParseMenuRecord(string name, Godot.Collections.Dictionary record) =>
-		ParseMenu(name, record);
+	public static Engine_UiMenuTemplate? ParseMenuRecord(string name, System.Text.Json.Nodes.JsonObject record) =>
+		Engine_UiTemplateJson.ParseMenu(name, record);
 
 	/// <summary>
-	/// Drops every record and builds them again — built-ins, mods, then the player's own file.
+	/// Drops every record and builds them again — the game's, mods, then the player's own file.
 	/// For the editor, after a mod's templates change.
 	/// </summary>
 	public static void Reload()
 	{
-		_screens = null;
-		_menus = null;
-		_modals = null;
+		_set = null;
 		_dropped = null;
 		EnsureLoaded();
 	}
 
 	/// <summary>
-	/// Every enabled mod's <see cref="ModTemplatesPath"/>, LOWEST priority first so the highest
-	/// is applied last and wins. Read from each package rather than through the mount, because
-	/// the mount serves one winner per path and templates compose: two mods adding a row to the
-	/// pause menu must both land.
+	/// The game's records as the reader composes them from <see cref="Engine_UiGameTemplates"/> —
+	/// the population tables, then the game's file — with no mod and no player file. Pure: what a
+	/// test holds against <see cref="AuthoredDefaults"/>.
 	/// </summary>
-	private static int ApplyModTemplates()
+	public static Engine_UiTemplateSet ComposeGame()
 	{
-		int taken = 0;
-		foreach ((string mod, string text) in _composing ?? Refii.Mods.ModEntries.ReadEnabledText(ModTemplatesPath))
+		var set = new Engine_UiTemplateSet();
+		RegisterPopulationTables(set.Menus);
+		set.ApplyText(Engine_UiGameTemplates.Text, owner: string.Empty, "the game's templates");
+		return set;
+	}
+
+	/// <summary>
+	/// The game's records as AUTHORED here in C#, beside the evidence each was decoded from: the
+	/// population tables, <see cref="BuildDefaults"/> and the wide layouts. Never what runs — the
+	/// game runs <see cref="Engine_UiGameTemplates.Text"/> through the reader like a mod — but the
+	/// form that file is generated from (<see cref="GameTemplatesText"/>), and a test holds the two
+	/// identical record for record.
+	/// </summary>
+	public static Engine_UiTemplateSet AuthoredDefaults()
+	{
+		var set = new Engine_UiTemplateSet();
+		RegisterPopulationTables(set.Menus);
+		BuildDefaults(set.Menus, set.Screens);
+		StateWideLayouts(set.Screens);
+		return set;
+	}
+
+	/// <summary>
+	/// The game's templates file as generated from <see cref="AuthoredDefaults"/>: every menu the
+	/// authored records add or change over the population tables, whole, and every screen, each
+	/// field only where it is not the reader's default. <see cref="Engine_UiGameTemplates.Text"/>
+	/// is this text.
+	/// </summary>
+	public static string GameTemplatesText()
+	{
+		Engine_UiTemplateSet authored = AuthoredDefaults();
+		var tables = new Dictionary<string, Engine_UiMenuTemplate>();
+		RegisterPopulationTables(tables);
+
+		var menus = new System.Text.Json.Nodes.JsonObject();
+		foreach ((string name, Engine_UiMenuTemplate menu) in authored.Menus)
 		{
-			taken += ApplyOverrideText(text, mod, $"{mod}:{ModTemplatesPath}");
+			System.Text.Json.Nodes.JsonObject record = Engine_UiTemplateJson.MenuJson(menu);
+			if (tables.TryGetValue(name, out Engine_UiMenuTemplate? table) &&
+				Engine_UiTemplateJson.Write(Engine_UiTemplateJson.MenuJson(table)) == Engine_UiTemplateJson.Write(record))
+			{
+				continue;
+			}
+
+			menus[name] = record;
 		}
 
-		return taken;
+		var screens = new System.Text.Json.Nodes.JsonObject();
+		foreach ((uint id, Engine_UiScreenTemplate screen) in authored.Screens)
+		{
+			screens[id.ToString(System.Globalization.CultureInfo.InvariantCulture)] =
+				Engine_UiTemplateJson.ScreenJson(screen, full: false);
+		}
+
+		return Engine_UiTemplateJson.Write(new System.Text.Json.Nodes.JsonObject
+		{
+			["menus"] = menus,
+			["screens"] = screens,
+		});
 	}
 
 	// -----------------------------------------------------------------------------------
@@ -1164,7 +1223,7 @@ public static class Engine_UiTemplates
 	/// A hand-written record with the same name wins — `BuildDefaults` runs this first and then
 	/// states its own, so the pause and front-end roots keep the forms decoded from the binary.
 	/// </summary>
-	private static void RegisterPopulationTables()
+	private static void RegisterPopulationTables(Dictionary<string, Engine_UiMenuTemplate> menus)
 	{
 		foreach (Engine_UiMenuPopulation.Table table in Engine_UiMenuPopulation.All)
 		{
@@ -1227,7 +1286,7 @@ public static class Engine_UiTemplates
 				SourceChildlessSubmenus(entry);
 			}
 
-			_menus![table.Script] = menu;
+			menus[table.Script] = menu;
 		}
 	}
 
@@ -1350,24 +1409,23 @@ public static class Engine_UiTemplates
 		}
 	}
 
-	private static void BuildDefaults()
+	private static void BuildDefaults(
+		Dictionary<string, Engine_UiMenuTemplate> menus, Dictionary<uint, Engine_UiScreenTemplate> screens)
 	{
-		RegisterPopulationTables();
-
 		// THE LOGBOOK DOES NOT OFFER `Achievements`. The guest spawns the row — it is in its own
 		// population table — and its action is `XamShowAchievementsUI` (`sub_826D9620` case 150),
 		// the console's guide blade, which on this platform opens nothing at all. Every press of
 		// it was a press that did nothing.
 		//
 		// The achievements are their own screen now, on their own pause tab; see
-		// `Engine_UiAchievementScreen`. This is the statement that the dead row goes, and it is a
+		// `Engine_UiHostScreen`. This is the statement that the dead row goes, and it is a
 		// TEMPLATE RECORD rather than a special case in the list builder, so any other row on any
 		// other guest menu can be dropped the same way — and put back, from
 		// `user://ui/templates.json`, without a rebuild.
 		// THE DYE LIST'S CHILDREN ARE THE HERO'S CLOTHES. The population table authors the seven
 		// category rows; `sub_829B2168` fills them from the inventory (categories 17..24, worn or
 		// not) and adds `Dye Hero Hair` with the hair, beard and moustache that are on.
-		if (_menus!.TryGetValue(Engine_UiDyeFlow.MenuScript, out Engine_UiMenuTemplate? dyes))
+		if (menus.TryGetValue(Engine_UiDyeFlow.MenuScript, out Engine_UiMenuTemplate? dyes))
 		{
 			foreach (Engine_UiMenuEntry entry in dyes.Entries)
 			{
@@ -1406,7 +1464,7 @@ public static class Engine_UiTemplates
 			});
 		}
 
-		if (_menus!.TryGetValue("OptionsMenu", out Engine_UiMenuTemplate? options) &&
+		if (menus.TryGetValue("OptionsMenu", out Engine_UiMenuTemplate? options) &&
 			options.Entries.FindIndex(entry => entry.Name == "Video") is >= 0 and var videoIndex)
 		{
 			Engine_UiMenuEntry gamma = options.Entries[videoIndex];
@@ -1448,7 +1506,7 @@ public static class Engine_UiTemplates
 			});
 		}
 
-		if (_menus!.TryGetValue("LogbookMenu", out Engine_UiMenuTemplate? logbook))
+		if (menus.TryGetValue("LogbookMenu", out Engine_UiMenuTemplate? logbook))
 		{
 			foreach (Engine_UiMenuEntry entry in logbook.Entries)
 			{
@@ -1460,10 +1518,16 @@ public static class Engine_UiTemplates
 			}
 		}
 
-		// The pause root — `sub_8298DF98`'s spawn list verbatim: names are the identities its
-		// dispatch recognises, the Saving children dispatch by EVENT PARAM ({type 2, param}),
-		// the tabs by the tab lever's ids, and SetInitiallySelectedItem(2) is the highlight.
-		_menus!["pause-root"] = new Engine_UiMenuTemplate
+		// THE PAUSE ROOT — ONE RECORD FOR BOTH PLAYERS. The hero's rows are `sub_8298DF98`'s spawn
+		// list verbatim: names are the identities its dispatch recognises, the Saving children
+		// dispatch by EVENT PARAM ({type 2, param}), the tabs by the tab lever's ids, and
+		// SetInitiallySelectedItem(2) is the highlight. Player two's rows are ours (below) and
+		// stand under the row condition `player-two` (Engine_UiRowConditions), which
+		// `Engine_PauseMenu.BuildHero` states; a row with no condition is on both lists, so a mod
+		// patches this one record and reaches both players.
+		const string hero = "!" + Engine_UiRowConditions.PlayerTwo;
+		const string playerTwo = Engine_UiRowConditions.PlayerTwo;
+		menus["pause-root"] = new Engine_UiMenuTemplate
 		{
 			Name = "pause-root",
 			Highlight = "Map",
@@ -1471,7 +1535,7 @@ public static class Engine_UiTemplates
 			{
 				new Engine_UiMenuEntry
 				{
-					Name = "Saving", Tag = "GUI_SCREEN_PAUSE_SAVING",
+					Name = "Saving", Tag = "GUI_SCREEN_PAUSE_SAVING", When = hero,
 
 					// AUTHORED, NOT SOURCED. `sub_8298DF98` spawns three of these under
 					// "Saving" once (0x8298E0F8/E138/E178, EventType 2, String1 = the localised
@@ -1521,40 +1585,43 @@ public static class Engine_UiTemplates
 						},
 					},
 				},
-				Tab("Map", "GUI_SCREEN_PAUSE_WORLD_MAP", Engine_PauseMenu.TabMap),
-				Tab("Abilities", "GUI_SCREEN_PAUSE_ABILITIES", Engine_PauseMenu.TabAbilities),
-				Tab("Items", "GUI_SCREEN_PAUSE_ITEMS", Engine_PauseMenu.TabItems),
-				Tab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", Engine_PauseMenu.TabWeapons),
-				Tab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", Engine_PauseMenu.TabClothing),
-				Tab("Logbook", "GUI_SCREEN_PAUSE_LOGBOOK", Engine_PauseMenu.TabLogbook),
+
+				// THE TABS, A VARIANT PER PLAYER. Player two is a hero too — the hero's book, Fable
+				// 3's own menus per player (user, 2026-10-19) — but their tabs are HOST-ONLY (see
+				// `HostTab`): the guest's capture on that machine is the henchman list, and the
+				// stated-label pass would hand these rows its captions by ordinal.
+				Tab("Map", "GUI_SCREEN_PAUSE_WORLD_MAP", Engine_PauseMenu.TabMap, hero),
+				HostTab("Map", "GUI_SCREEN_PAUSE_WORLD_MAP", Engine_PauseMenu.TabMap, playerTwo),
+				Tab("Abilities", "GUI_SCREEN_PAUSE_ABILITIES", Engine_PauseMenu.TabAbilities, hero),
+				HostTab("Abilities", "GUI_SCREEN_PAUSE_ABILITIES", Engine_PauseMenu.TabAbilities, playerTwo),
+				Tab("Items", "GUI_SCREEN_PAUSE_ITEMS", Engine_PauseMenu.TabItems, hero),
+				HostTab("Items", "GUI_SCREEN_PAUSE_ITEMS", Engine_PauseMenu.TabItems, playerTwo),
+				Tab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", Engine_PauseMenu.TabWeapons, hero),
+				HostTab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", Engine_PauseMenu.TabWeapons, playerTwo),
+				Tab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", Engine_PauseMenu.TabClothing, hero),
+				HostTab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", Engine_PauseMenu.TabClothing, playerTwo),
+				Tab("Logbook", "GUI_SCREEN_PAUSE_LOGBOOK", Engine_PauseMenu.TabLogbook, hero),
+				HostTab("Logbook", "GUI_SCREEN_PAUSE_LOGBOOK", Engine_PauseMenu.TabLogbook, playerTwo),
 
 				// ACHIEVEMENTS — a host tab, sitting between Logbook and Options because THIS
-				// LIST IS THE ORDER. It used to be pinned last on the theory that the seven
-				// rows the guest spawns had to keep their indices; they do not. The row's
-				// position here is the position on screen, and `HostOnly` is what makes that
-				// safe: it keeps the entry out of the label join against the guest's button
-				// pool and out of the availability mask, neither of which has a row for it, so
-				// the guest's own rows still join by NAME wherever they end up.
+				// LIST IS THE ORDER. `HostOnly` keeps the entry out of the label join against the
+				// guest's button pool and out of the availability mask, neither of which has a row
+				// for it, so the guest's own rows still join by NAME wherever they end up.
 				//
-				// Its command names the SCREEN rather than a tab id — `sub_826B89E0`'s switch
-				// has no case to select — which is what lets it sit anywhere at all.
-				//
-				// The tag is a LITERAL: the shipped text bank has no achievements string —
-				// the console's own guide supplied that label — so there is nothing to
-				// localise against and inventing a tag would resolve to nothing.
+				// Its command OPENS A SCREEN (Engine_UiHostScreens) — `sub_826B89E0`'s switch has
+				// no case to select — which is what lets it sit anywhere at all. The tag is a
+				// LITERAL: the shipped text bank has no achievements string.
 				new Engine_UiMenuEntry
 				{
 					Name = "Achievements", Tag = "Achievements", HostOnly = true,
-					Command =
-						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiAchievementPage.ScreenId}",
+					Command = Engine_UiHostScreens.OpenCommand(Engine_UiAchievementPage.ScreenId),
 				},
 
-				// The multiplayer book, on the same host-owned lever as Achievements.
+				// The multiplayer book, on the same verb.
 				new Engine_UiMenuEntry
 				{
 					Name = "Multiplayer", Tag = "Multiplayer", HostOnly = true,
-					Command =
-						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiMultiplayerPage.ScreenId}",
+					Command = Engine_UiHostScreens.OpenCommand(Engine_UiMultiplayerPage.ScreenId),
 				},
 
 				Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", Engine_PauseMenu.TabOptions),
@@ -1565,7 +1632,7 @@ public static class Engine_UiTemplates
 				// GUI_SCREEN_PAUSE_CONFIRM_KICK_HENCHMAN.
 				new Engine_UiMenuEntry
 				{
-					Name = Engine_PauseMenu.KickRow, Tag = "Kick", HostOnly = true,
+					Name = Engine_PauseMenu.KickRow, Tag = "Kick", HostOnly = true, When = hero,
 					Children =
 					{
 						new Engine_UiMenuEntry
@@ -1576,72 +1643,17 @@ public static class Engine_UiTemplates
 						},
 					},
 				},
-			},
-		};
-
-		// PLAYER TWO'S PAUSE MENU — OURS, AUTHORED, NOT THE GUEST'S.
-		//
-		// BOTH PLAYERS' PAUSE SCREENS NAME THE SAME POPULATION SCRIPT — a live run showed
-		// `[screen-menu] 'PauseMenu' is GODOT'S ... (source 'capture:Root')` on the joiner, not
-		// `HenchmanPauseMenu` — so the variant cannot be chosen by that name. `Engine_PauseMenu`
-		// picks between this and `pause-root` on `HostBridge.IsCoopJoiner` instead.
-		//
-		// Without it the joiner got the capture's four rows AND the whole single-player tab set:
-		// nine-plus rows with a duplicate `Options`, every command running against a row it did
-		// not belong to, so picking `Abilities` reached `Save`.
-		//
-		// The guest states four rows here (`HenchmanAbilities`, `HenchmanConfig`, `Options`,
-		// `HenchmanQuit`). They are not the authority on what this menu contains — Godot owns the
-		// list, the order and the layout; what we take from the guest is the AVAILABILITY mask and
-		// the commit entry points, exactly as the solo menu does.
-		//
-		// TWO PLAYERS, TWO SETS. A visitor on THEIR OWN HERO has clothing and weapons of their own
-		// to manage; a pre-generated HENCHMAN's gear is fixed by the co-op screen's pickboxes and
-		// those rows have nothing behind them. Both are authored here and
-		// `Engine_PauseMenu.ApplyTabAvailability` ghosts whichever the mask
-		// (`RefiiHostPauseTabsAvailable`, the guest's own `sub_826B83D0`) says are unavailable —
-		// so the henchman set falls out of the data rather than a second template. IF A RUN SHOWS
-		// the mask reporting Weapons/Clothing AVAILABLE to a henchman, they need dropping outright
-		// rather than ghosting; that is the one thing here not yet confirmed against a session.
-		_menus!["pause-root-coop"] = new Engine_UiMenuTemplate
-		{
-			Name = "pause-root-coop",
-			Highlight = "Map",
-			Entries =
-			{
-				// PLAYER TWO IS A HERO: the hero's book, Fable 3's own menus per player (user,
-				// 2026-10-19). Saving stays the host's — the world is theirs; player two's HeroSave
-				// is written by the guest on leave and autosave.
-				HostTab("Map", "GUI_SCREEN_PAUSE_WORLD_MAP", Engine_PauseMenu.TabMap),
-				HostTab("Abilities", "GUI_SCREEN_PAUSE_ABILITIES", Engine_PauseMenu.TabAbilities),
-				HostTab("Items", "GUI_SCREEN_PAUSE_ITEMS", Engine_PauseMenu.TabItems),
-				HostTab("Weapons", "GUI_SCREEN_PAUSE_WEAPONS", Engine_PauseMenu.TabWeapons),
-				HostTab("Clothing", "GUI_SCREEN_PAUSE_CLOTHING", Engine_PauseMenu.TabClothing),
-				HostTab("Logbook", "GUI_SCREEN_PAUSE_LOGBOOK", Engine_PauseMenu.TabLogbook),
-
-				new Engine_UiMenuEntry
-				{
-					Name = "Achievements", Tag = "Achievements", HostOnly = true,
-					Command =
-						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiAchievementPage.ScreenId}",
-				},
-				new Engine_UiMenuEntry
-				{
-					Name = "Multiplayer", Tag = "Multiplayer", HostOnly = true,
-					Command =
-						$"{Engine_PauseMenu.OwnedCommandPrefix}{Engine_UiMultiplayerPage.ScreenId}",
-				},
-
-				Tab("Options", "GUI_SCREEN_PAUSE_OPTIONS", Engine_PauseMenu.TabOptions),
 
 				// LEAVING, as Fable 3's "Leave": player two leaves the game, the partner plays on.
 				// `PauseCoop:leave` runs the guest's own drop-out answer (`sub_826A6E70`): an online
 				// joiner's HeroSave is written on the way out; local player two's is written when
 				// they loaded one (box 27), else their earnings go to player one (box 26). The
-				// "don't save" pair below quits this machine's whole game, as before.
+				// "don't save" pair below quits this machine's whole game. Saving stays the host's —
+				// the world is theirs; player two's HeroSave is written by the guest on leave and
+				// autosave.
 				new Engine_UiMenuEntry
 				{
-					Name = "HenchmanQuit", Tag = "Leave or Quit", HostOnly = true,
+					Name = "HenchmanQuit", Tag = "Leave or Quit", HostOnly = true, When = playerTwo,
 					Children =
 					{
 						new Engine_UiMenuEntry
@@ -1667,6 +1679,24 @@ public static class Engine_UiTemplates
 			},
 		};
 
+		// PLAYER TWO'S ROWS ARE OURS, AUTHORED, NOT THE GUEST'S. Both players' pause screens name
+		// the same population script — a live run showed `[screen-menu] 'PauseMenu' is GODOT'S
+		// ... (source 'capture:Root')` on the joiner, not `HenchmanPauseMenu` — so the variant
+		// cannot be chosen by that name; the `player-two` fact is `HostBridge.IsCoopJoiner`'s
+		// reading in GameUi. Without it the joiner got the capture's four rows AND the whole
+		// single-player tab set: nine-plus rows with a duplicate `Options`, every command running
+		// against a row it did not belong to, so picking `Abilities` reached `Save`.
+		//
+		// The guest states four rows there (`HenchmanAbilities`, `HenchmanConfig`, `Options`,
+		// `HenchmanQuit`). They are not the authority on what this menu contains — Godot owns the
+		// list, the order and the layout; what we take from the guest is the AVAILABILITY mask and
+		// the commit entry points, exactly as the solo menu does. A pre-generated HENCHMAN's gear is
+		// fixed by the co-op screen's pickboxes; `Engine_PauseMenu.ApplyTabAvailability` ghosts
+		// whichever tabs the mask (`RefiiHostPauseTabsAvailable`, the guest's own `sub_826B83D0`)
+		// says are unavailable. IF A RUN SHOWS the mask reporting Weapons/Clothing AVAILABLE to a
+		// henchman, they need dropping outright rather than ghosting; that is the one thing here
+		// not yet confirmed against a session.
+
 		// THE ITEM SCREEN'S NINE CATEGORY ROWS, from the guest's own spawn order in
 		// `sub_829B1578` (0x829B15E4 .. 0x829B1886): KeyItems, Books, Food and Drink, Potions,
 		// Gifts, Trophies, Augmentations, Dyes, Furniture. Every one carries the same icon
@@ -1689,7 +1719,7 @@ public static class Engine_UiTemplates
 		// `SpellAssigning` is NOT a category — it has no children and event type 23, and
 		// activating it hands the screen to the spell-assignment widget at `screen+200` in place
 		// (`sub_826C2480`). Its Babel tag reads 'Spell Selector', which is the row observed live.
-		_menus!["AbilitiesMenu"] = new Engine_UiMenuTemplate
+		menus["AbilitiesMenu"] = new Engine_UiMenuTemplate
 		{
 			Name = "AbilitiesMenu",
 			Entries =
@@ -1718,7 +1748,7 @@ public static class Engine_UiTemplates
 		//
 		// All five now read the data areas — see Engine_UiQuestSource. Quests and Jobs are ONE
 		// list split by the definition's GDB `Type`; Sales, Regions and Family have their own.
-		_menus!["WorldMapMenu"] = new Engine_UiMenuTemplate
+		menus["WorldMapMenu"] = new Engine_UiMenuTemplate
 		{
 			Name = "WorldMapMenu",
 			Entries =
@@ -1784,7 +1814,7 @@ public static class Engine_UiTemplates
 		// rename them, reorder them, drop the sell half — without touching the rows.
 		//
 		// All six tags checked against the shipped book before use.
-		_menus!["ShopMenu"] = new Engine_UiMenuTemplate
+		menus["ShopMenu"] = new Engine_UiMenuTemplate
 		{
 			Name = "ShopMenu",
 			Entries =
@@ -1810,7 +1840,7 @@ public static class Engine_UiTemplates
 		// the path altogether.
 		//
 		// Both tags checked against the shipped book before use.
-		_menus!["WeaponsMenu"] = new Engine_UiMenuTemplate
+		menus["WeaponsMenu"] = new Engine_UiMenuTemplate
 		{
 			Name = "WeaponsMenu",
 			Entries =
@@ -1841,7 +1871,7 @@ public static class Engine_UiTemplates
 		// answer is then spent by `sub_826C5258` -> `sub_8242E578`. All of that is the guest's,
 		// so the row is authored here and committed by its event type alone. The id it carries
 		// is never read on this path — only `*(msg + 4)`, the type, decides.
-		_menus!["GiftGivingMenu"] = new Engine_UiMenuTemplate
+		menus["GiftGivingMenu"] = new Engine_UiMenuTemplate
 		{
 			Name = "GiftGivingMenu",
 
@@ -1861,7 +1891,7 @@ public static class Engine_UiTemplates
 
 		foreach (string itemScript in new[] { "ItemsMenu" })
 		{
-			_menus![itemScript] = new Engine_UiMenuTemplate
+			menus[itemScript] = new Engine_UiMenuTemplate
 			{
 				Name = itemScript,
 				Entries =
@@ -1898,7 +1928,7 @@ public static class Engine_UiTemplates
 		// `EquipmentMenu` is the name the screen's widget actually states — confirmed in a run,
 		// which reported `population script 'EquipmentMenu'` and the eight rows in exactly this
 		// order. `ClothingMenu` is registered too but is not what screen 16 asks for.
-		_menus!["EquipmentMenu"] = new Engine_UiMenuTemplate
+		menus["EquipmentMenu"] = new Engine_UiMenuTemplate
 		{
 			Name = "EquipmentMenu",
 			Entries =
@@ -1978,9 +2008,9 @@ public static class Engine_UiTemplates
 			});
 		}
 
-		_menus![Engine_UiMultiplayerPage.MenuName] = multiplayer;
+		menus[Engine_UiMultiplayerPage.MenuName] = multiplayer;
 
-		_menus!["achievements-root"] = new Engine_UiMenuTemplate
+		menus["achievements-root"] = new Engine_UiMenuTemplate
 		{
 			Name = "achievements-root",
 			Highlight = Engine_UiAchievementPage.FolderRowName,
@@ -2001,7 +2031,7 @@ public static class Engine_UiTemplates
 		// rather than dispatching (slide 1 on `choosecard`, substate 2; activating by name would
 		// consume the boy/girl answer unasked). Subtitles expands in place. Availability (Load
 		// Game needs a save, Language two installed) stays the guest's spawn condition.
-		_menus!["frontend-root"] = new Engine_UiMenuTemplate
+		menus["frontend-root"] = new Engine_UiMenuTemplate
 		{
 			Name = "frontend-root",
 			Entries =
@@ -2076,7 +2106,7 @@ public static class Engine_UiTemplates
 			new("Foreground.Book.Pages.Page1.Contents.Info", Alternate: true),
 		};
 
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 0, Name = "pause", Presentation = "pausemainmenu",
 
@@ -2136,7 +2166,7 @@ public static class Engine_UiTemplates
 
 		// The ABILITIES panel. `AbilityCost` carries the parameterised
 		// `GUI_SCREEN_ABLITY_EXPERIENCE_COST` — the typo is the shipped binary's, not ours.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 14, Name = "abilities", OwnsList = true,
 			Provider = Engine_UiPageProviders.Abilities,
@@ -2181,7 +2211,7 @@ public static class Engine_UiTemplates
 
 		foreach (uint id in new uint[] { 15, 16, 25, 26, 27 })
 		{
-			AddScreen(new Engine_UiScreenTemplate
+			AddScreen(screens, new Engine_UiScreenTemplate
 			{
 				ScreenId = id, OwnsList = true,
 
@@ -2281,7 +2311,7 @@ public static class Engine_UiTemplates
 		// Eight pages, 280 text elements between them, hence swept rather than listed. Subject
 		// order is the guest's EventType mapping: 60/64 morality, 61 expressions, 62 completed
 		// quests, 65 renown, 66 attractiveness, 67 stats, 68 dog, 69 help.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 17, Name = "logbook", OwnsList = true,
 
@@ -2407,7 +2437,7 @@ public static class Engine_UiTemplates
 			},
 		});
 
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 18, Name = "options", OwnsList = true,
 			// Four pages; the stack is authored on the leaf already.
@@ -2429,7 +2459,7 @@ public static class Engine_UiTemplates
 
 		// The CRIME panel — three pages of one multi-line text field each: fine plus charge
 		// sheet, charge sheet alone, community-service text.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 21, Name = "crime", OwnsList = true,
 			// Three pages, one per row; the stack is authored on the leaf.
@@ -2460,7 +2490,7 @@ public static class Engine_UiTemplates
 		// The SHOP's panel: `PriceValue` is the full chain of base price, shop multiplier,
 		// wealth and opinion (`sub_82992F90` via `sub_828727B8`/`sub_82872910`), while
 		// `ValueValue` is the unmodified `ShopItemComponent.BasePrice`.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 22, Name = "shop", OwnsList = true,
 			// Three pages, and the stack parks at x = 400 — off the canvas — so it is placed.
@@ -2507,7 +2537,7 @@ public static class Engine_UiTemplates
 
 		// The WORLD MAP's region info page — sub-state +88's writer `sub_829AB0E0`, mode 41.
 		// StarRating is a METER and stays off this list.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 23, Name = "worldmap", OwnsList = true,
 			// Two numbered pages (the named category pages are the provider's); the stack parks at 400.
@@ -2599,7 +2629,7 @@ public static class Engine_UiTemplates
 		// 28 REAL ESTATE — `sub_82998300` spawns the conditional command rows (buy, sell, rent
 		// out, evict, adjust rent…) and the detail text is written on activate, so the list is
 		// owned like every other book's.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 28, Name = "realestate", Presentation = "realestatescreen",
 			// Two pages describing the one building; the stack is authored on the leaf.
@@ -2625,7 +2655,7 @@ public static class Engine_UiTemplates
 		});
 
 		// 1 PHOTO MODE — one dialog box, not a book.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 1, Name = "photomode", Presentation = "photomodescreen",
 			ChromeUnits = { "PhotoMode" },
@@ -2634,7 +2664,7 @@ public static class Engine_UiTemplates
 		// 2 THE SPELL WHEEL. A ring of slots rather than a page — `MenuItemTemplate` is the slot
 		// the guest clones per spell, and `CurrentItemLight` is the selection glow. No backdrop:
 		// the wheel stands over the world.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 2, Name = "spellwheel", Presentation = "spellsmenu",
 
@@ -2653,7 +2683,7 @@ public static class Engine_UiTemplates
 		// 24 CO-OP — NOT A BOOK. A two-page spread with its own frames and backgrounds, a
 		// connecting state and a separate load-game panel; its canvas is 1280x720 where the
 		// in-game books are 960x720.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 24, Name = "coop", Presentation = "coopscreen",
 			ChromeUnits =
@@ -2721,7 +2751,7 @@ public static class Engine_UiTemplates
 		// the current screen: it stands from `DisplayBoxScreen`. Its Open `sub_823CFBE0` writes
 		// every string once — QuestDescription, the DetailsGroup amounts, Remember, the
 		// conditions — so the text is the guest's; the info panel runs only for a current screen.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 5, Name = "questrepeatable", Presentation = "questrepeatable",
 			OwnsRevealedInput = true,
@@ -2738,7 +2768,7 @@ public static class Engine_UiTemplates
 		// THE END CREDITS — drawn by Engine_UiCreditsRoll (the file's elements are anonymous,
 		// so nothing here names chrome). The template carries only the input: the handler
 		// `sub_826B7EF8` skips the roll on 36 or 37.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 29, Name = "creditsscreen", Presentation = "creditsscreen",
 			OwnsRevealedInput = true,
@@ -2753,14 +2783,14 @@ public static class Engine_UiTemplates
 		// display-box surface vetoes. Only `Paper` is chrome here, so while the acceptance and
 		// button boxes (DefaultGroup) are up this book has nothing active to draw. Input stays
 		// the guest's: A and hold-A are the class's raw slot, and it does not freeze the game.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 7, Name = "displaybox", Presentation = "displaybox",
 			ChromeUnits = { "Paper" },
 			GuestTextUnits = { "Paper" },
 		});
 
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 11, Name = "minigamecompleted", Presentation = "minigamecompleted",
 			OwnsRevealedInput = true,
@@ -2780,7 +2810,7 @@ public static class Engine_UiTemplates
 			GuestTextUnits = { "Component" },
 		});
 
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 12, Name = "questcompletion", Presentation = "questcompletion",
 			OwnsRevealedInput = true,
@@ -2825,7 +2855,7 @@ public static class Engine_UiTemplates
 		// string headings and likes/dislikes rows, all through the FNV-1 registries the HUD
 		// reads. `elements` is the whole card; `Layer`'s other two children are the key light
 		// and the camera, which the host supplies.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 10, Name = "query", Presentation = "queryscreen",
 			OwnsRevealedInput = true,
@@ -2858,7 +2888,7 @@ public static class Engine_UiTemplates
 		// `Theme` is not a unit: it is the off-canvas art library at y -1000 the frames are
 		// cloned FROM. `choosecard`, `loadgame` and `dialog` are siblings of `Foreground`, drawn
 		// by their own Engine_FrontEnd* views.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 1010, Name = "frontend", Presentation = "frontendmainmenu",
 			ChromeUnits = { "Foreground", "LiveCountdown", "LoadingAnimation" },
@@ -2871,7 +2901,7 @@ public static class Engine_UiTemplates
 			},
 		});
 
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 1011, Name = "title", Presentation = "frontendstartupscreen",
 
@@ -2888,7 +2918,7 @@ public static class Engine_UiTemplates
 		// THE SCROLLING BACKDROP is a 7x2 grid of 512x512 tiles with a second copy at +3453 to
 		// hide the wrap — the period is 3453, not the 3584 the tile maths suggests, because the
 		// copy overlaps by 131. One unit: the whole `Scrolling` group, scrolled as a whole.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 1012, Name = "backdrop", Presentation = "scrollingbackground",
 			ChromeUnits = { "Scrolling" },
@@ -2915,7 +2945,7 @@ public static class Engine_UiTemplates
 		// `PanelSubtrees` carries the whole page stack rather than `ExpressionsPage` alone: the
 		// provider switches seven of the eight off and the panel must know the fields it is
 		// hiding, the same statement screen 17 makes.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = Engine_UiMultiplayerPage.ScreenId, Name = "multiplayer", OwnsList = true,
 			Provider = Engine_UiPageProviders.Multiplayer,
@@ -2936,11 +2966,14 @@ public static class Engine_UiTemplates
 			},
 		});
 
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = Engine_UiAchievementPage.ScreenId, Name = "achievements", OwnsList = true,
 			Provider = Engine_UiPageProviders.Achievements,
 			Presentation = "logbookscreen",
+
+			// The list a host screen stands (Engine_UiHostScreen).
+			Menu = Engine_UiAchievementPage.MenuName,
 			ChromeUnits = { "Foreground" },
 
 			// Godot owns the row list and its cursor. On a host-only screen it owns the anchor
@@ -2962,7 +2995,7 @@ public static class Engine_UiTemplates
 		});
 
 		// Screen 8 — the receive-items card, owned elsewhere; recorded for its preview anchor.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 8, Name = "receiveitems", Presentation = "receiveitemsscreen",
 			PreviewAnchor = "Foreground.SpinningCube.Cube",
@@ -2978,25 +3011,25 @@ public static class Engine_UiTemplates
 		// `boxUnits` is the role, stated beside each — so a mod re-points a box at its own art
 		// in the same file it re-points a book. `boxPresentation`, not `presentation`: these
 		// are not screens, and a record that named a live file would be taken for its book.
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = MessageBoxId, Name = "messagebox", BoxPresentation = "messageboxmulti",
 			BoxUnits = { "Background", "paper" },             // dim, paper
 			BoxPaths = { ["MessageBox"] = "MessageBox", ["paperbox"] = "paperbox", ["MessageText"] = "MessageText", ["MessageBox/Action"] = "MessageBox/Action", ["MessageBox/MessageText"] = "MessageBox/MessageText" },
 		});
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = QueryBoxId, Name = "querybox", BoxPresentation = "querybox",
 			BoxUnits = { "QueryBox", "Background", "Paper" }, // box, dim, paper
 			BoxPaths = { ["Choices"] = "Choices", ["Affirmative"] = "Affirmative", ["Negative"] = "Negative", ["XAChoices"] = "XAChoices", ["EquipAndContinue"] = "EquipAndContinue", ["Continue"] = "Continue", ["ReloadChoices"] = "ReloadChoices", ["Reload"] = "Reload", ["Cancel"] = "Cancel", ["Text"] = "Text" },
 		});
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = NumericBoxId, Name = "numericbox", BoxPresentation = "numericadjusterbox",
 			BoxUnits = { "QueryBox", "Background", "Paper" }, // box, dim, paper
 			BoxPaths = { ["Text"] = "Text", ["PriceWidget"] = "PriceWidget", ["Arrows"] = "Arrows", ["up"] = "up", ["down"] = "down", ["PriceWidget/Text"] = "PriceWidget/Text", ["PriceWidget/Arrows/"] = "PriceWidget/Arrows/" },
 		});
-		AddScreen(new Engine_UiScreenTemplate
+		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = MenuBoxId, Name = "menubox", BoxPresentation = "menubox",
 			BoxUnits = { "Group" },                           // the option group
@@ -3046,10 +3079,11 @@ public static class Engine_UiTemplates
 	/// <see cref="Engine_PauseMenu.ApplyTabAvailability"/> ghosts an unavailable tab from
 	/// `RefiiHostPauseTabsAvailable`, the guest's `sub_826B83D0` read directly.
 	/// </summary>
-	private static Engine_UiMenuEntry Tab(string name, string tag, uint tab) => new()
+	private static Engine_UiMenuEntry Tab(string name, string tag, uint tab, string when = "") => new()
 	{
 		Name = name,
 		Tag = tag,
+		When = when,
 		Command = $"{Engine_PauseMenu.TabCommandPrefix}{tab}",
 		Source = "spawn",
 
@@ -3067,18 +3101,19 @@ public static class Engine_UiTemplates
 	/// are other rows entirely, so a spawn-sourced "Weapons" bound to its ordinal came up
 	/// captioned "Config" and ghosted by the henchman mask.
 	/// </summary>
-	private static Engine_UiMenuEntry HostTab(string name, string tag, uint tab) => new()
+	private static Engine_UiMenuEntry HostTab(string name, string tag, uint tab, string when = "") => new()
 	{
 		Name = name,
 		Tag = tag,
+		When = when,
 		Command = $"{Engine_PauseMenu.TabCommandPrefix}{tab}",
 		// HOST-ONLY, so the stated-label pass leaves it alone: the positional fallback there
 		// handed these rows the henchman list's captions by ordinal ('Config', 'Options').
 		HostOnly = true,
 	};
 
-	private static void AddScreen(Engine_UiScreenTemplate template) =>
-		_screens![template.ScreenId] = template;
+	private static void AddScreen(Dictionary<uint, Engine_UiScreenTemplate> screens, Engine_UiScreenTemplate template) =>
+		screens[template.ScreenId] = template;
 
 	/// <summary>
 	/// The built-in books' wide layouts, from each file's own tree (`ui_viewer`,
@@ -3087,7 +3122,7 @@ public static class Engine_UiTemplates
 	/// one table because the shipped books share one skeleton; an override record states its
 	/// own lists.
 	/// </summary>
-	private static void StateWideLayouts()
+	private static void StateWideLayouts(Dictionary<uint, Engine_UiScreenTemplate> screens)
 	{
 		const string list = "Foreground.ExpandableMenu";
 		var right = new Dictionary<uint, string[]>
@@ -3115,7 +3150,7 @@ public static class Engine_UiTemplates
 
 		foreach ((uint id, string[] pieces) in right)
 		{
-			if (_screens!.TryGetValue(id, out Engine_UiScreenTemplate? screen))
+			if (screens.TryGetValue(id, out Engine_UiScreenTemplate? screen))
 			{
 				screen.WideLeft = new List<string> { list };
 				screen.WideRight = new List<string>(pieces);
@@ -3123,20 +3158,20 @@ public static class Engine_UiTemplates
 		}
 
 		// The front end is the same book skeleton; its painting is the `backdrop` record's.
-		if (_screens!.TryGetValue(1010, out Engine_UiScreenTemplate? frontEnd))
+		if (screens.TryGetValue(1010, out Engine_UiScreenTemplate? frontEnd))
 		{
 			frontEnd.WideLeft = new List<string> { list };
 			frontEnd.WideRight = new List<string> { "Foreground.Book" };
 		}
 
-		if (_screens!.TryGetValue(1012, out Engine_UiScreenTemplate? painting))
+		if (screens.TryGetValue(1012, out Engine_UiScreenTemplate? painting))
 		{
 			painting.WideGround = new List<string> { "Scrolling" };
 		}
 
 		// CO-OP HAS NO BACKDROP (coopscreen.bgf, `Foreground` at 1.3): the pages and frames
 		// ride out and each page's parchment widens from the gutter to stay under them.
-		if (_screens!.TryGetValue(24, out Engine_UiScreenTemplate? coop))
+		if (screens.TryGetValue(24, out Engine_UiScreenTemplate? coop))
 		{
 			coop.WideLeft = new List<string> { "Foreground.LeftPage", "Foreground.LeftFrame2" };
 			coop.WideRight = new List<string> { "Foreground.RightPage", "Foreground.RightFrame2" };
@@ -3146,7 +3181,7 @@ public static class Engine_UiTemplates
 			};
 		}
 
-		if (_screens!.TryGetValue(23, out Engine_UiScreenTemplate? worldMap))
+		if (screens.TryGetValue(23, out Engine_UiScreenTemplate? worldMap))
 		{
 			worldMap.WideGround = new List<string>
 			{
@@ -3156,27 +3191,17 @@ public static class Engine_UiTemplates
 		}
 	}
 
-	private static Godot.Collections.Dictionary PathsJson(Dictionary<string, string> paths)
-	{
-		var json = new Godot.Collections.Dictionary();
-		foreach ((string key, string mapped) in paths)
-		{
-			json[key] = mapped;
-		}
-
-		return json;
-	}
-
 	/// <summary>How far the owned row list of a screen rides left on a wide window.</summary>
 	public static float WideListShift(uint screenId) =>
 		Screen(screenId) is { WideLeft.Count: > 0 } ? Engine_UiSceneBuilder.WideShift : 0f;
 
 	// -----------------------------------------------------------------------------------
-	// JSON — the editor's and a mod's way in.
+	// Files — the player's own and the snapshot. Every record is read and written by
+	// Engine_UiTemplateJson, composed by Engine_UiTemplateSet.
 	// -----------------------------------------------------------------------------------
 
 	/// <summary>The player's own file, applied after every mod.</summary>
-	private static int ApplyOverrides(string path)
+	private static int ApplyOverrides(Engine_UiTemplateSet set, string path)
 	{
 		if (!FileAccess.FileExists(path))
 		{
@@ -3184,717 +3209,28 @@ public static class Engine_UiTemplates
 		}
 
 		using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Read);
-		return file is null ? 0 : ApplyOverrideText(file.GetAsText(), owner: string.Empty, path);
-	}
-
-	/// <summary>
-	/// Applies one templates file over what is already registered.
-	/// </summary>
-	/// <remarks>
-	/// <para>SCREENS and plain MENUS replace the whole record — the only merge a person can predict
-	/// for a record they wrote out in full.</para>
-	/// <para>A menu with <c>"patch": true</c> composes PER ENTRY by <c>name</c>, which is how two
-	/// mods both add a row to the pause menu. Each patch entry replaces the entry of that name
-	/// where it stands, or is inserted (<c>"after"</c>/<c>"before"</c> a named entry, else at the
-	/// end; <c>"parent"</c> nests it under one), or with <c>"remove": true</c> deletes it.
-	/// Menu-level fields present in a patch replace the menu's own.</para>
-	/// <para><paramref name="owner"/> is the mod's name, empty for the player's file; a piece two
-	/// mods state is recorded in <see cref="ModConflicts"/>.</para>
-	/// </remarks>
-	private static int ApplyOverrideText(string text, string owner, string where)
-	{
-		var parsed = Json.ParseString(text);
-		if (parsed.VariantType != Variant.Type.Dictionary)
-		{
-			GD.PushWarning($"[ui-templates] '{where}' is not a JSON object; ignored");
-			return 0;
-		}
-
-		int taken = 0;
-		var root = parsed.AsGodotDictionary();
-		if (root.TryGetValue("menus", out Variant menus) &&
-			menus.VariantType == Variant.Type.Dictionary)
-		{
-			foreach (var entry in menus.AsGodotDictionary())
-			{
-				string name = entry.Key.AsString();
-				if (entry.Value.VariantType == Variant.Type.Dictionary &&
-					entry.Value.AsGodotDictionary().TryGetValue("patch", out Variant patch) && patch.AsBool())
-				{
-					taken += PatchMenu(name, entry.Value.AsGodotDictionary(), owner, where);
-				}
-				else if (ParseMenu(name, entry.Value) is { } menu)
-				{
-					NoteOwner("menu:" + name, owner);
-					_menus![menu.Name] = menu;
-					++taken;
-				}
-			}
-		}
-
-		if (root.TryGetValue("screens", out Variant screens) &&
-			screens.VariantType == Variant.Type.Dictionary)
-		{
-			foreach (var entry in screens.AsGodotDictionary())
-			{
-				if (uint.TryParse(entry.Key.AsString(), out uint id) &&
-					ParseScreen(id, entry.Value) is { } screen)
-				{
-					NoteOwner("screen:" + id, owner);
-					_screens![id] = screen;
-					++taken;
-				}
-			}
-		}
-
-		// MODALS compose like screens: a whole record per key, the later file winning.
-		taken += _modals!.ApplyText(text, piece => NoteOwner(piece, owner),
-			warning => GD.PushWarning($"[ui-templates] '{where}': {warning}"));
-
-		return taken;
-	}
-
-	/// <summary>Records who stated a piece; a second mod stating it is a conflict it won.</summary>
-	private static void NoteOwner(string piece, string owner)
-	{
-		if (owner.Length == 0)
-		{
-			return;
-		}
-
-		if (_pieceOwners.TryGetValue(piece, out string? previous) &&
-			!string.Equals(previous, owner, System.StringComparison.OrdinalIgnoreCase))
-		{
-			_modConflicts.Add(new ModConflict(piece, owner, previous));
-			GD.Print($"[ui-templates] '{piece}': mod '{owner}' replaces mod '{previous}'");
-		}
-
-		_pieceOwners[piece] = owner;
-	}
-
-	private static int PatchMenu(string name, Godot.Collections.Dictionary record, string owner, string where)
-	{
-		if (!_menus!.TryGetValue(name, out Engine_UiMenuTemplate? menu))
-		{
-			menu = new Engine_UiMenuTemplate { Name = name };
-			_menus[name] = menu;
-		}
-
-		if (record.TryGetValue("highlight", out Variant highlight))
-		{
-			menu.Highlight = highlight.AsString();
-		}
-
-		if (record.TryGetValue("title", out Variant title))
-		{
-			menu.Title = title.AsString();
-		}
-
-		if (record.TryGetValue("rowCommand", out Variant rowCommand))
-		{
-			menu.RowCommand = rowCommand.AsString();
-		}
-
-		if (record.TryGetValue("source", out Variant source))
-		{
-			menu.Source = source.AsString();
-		}
-
-		if (!record.TryGetValue("entries", out Variant entries) || entries.VariantType != Variant.Type.Array)
-		{
-			return 0;
-		}
-
-		int taken = 0;
-		foreach (Variant value in entries.AsGodotArray())
-		{
-			if (value.VariantType != Variant.Type.Dictionary)
-			{
-				continue;
-			}
-
-			var patch = value.AsGodotDictionary();
-			string entryName = patch.TryGetValue("name", out Variant n) ? n.AsString() : string.Empty;
-			if (entryName.Length == 0)
-			{
-				continue;
-			}
-
-			string parentName = patch.TryGetValue("parent", out Variant p) ? p.AsString() : string.Empty;
-			List<Engine_UiMenuEntry>? siblings = parentName.Length == 0
-				? menu.Entries
-				: FindEntry(menu.Entries, parentName)?.Children;
-			if (siblings is null)
-			{
-				GD.PushWarning($"[ui-templates] '{where}': menu '{name}' has no entry '{parentName}' " +
-					$"to put '{entryName}' under; ignored");
-				continue;
-			}
-
-			NoteOwner($"menu:{name}/{entryName}", owner);
-			int at = siblings.FindIndex(e => e.Name == entryName);
-			if (patch.TryGetValue("remove", out Variant remove) && remove.AsBool())
-			{
-				if (at >= 0)
-				{
-					siblings.RemoveAt(at);
-					++taken;
-				}
-
-				continue;
-			}
-
-			if (ParseEntry(value) is not { } parsed)
-			{
-				continue;
-			}
-
-			if (at >= 0)
-			{
-				siblings[at] = parsed;
-			}
-			else
-			{
-				siblings.Insert(InsertIndex(siblings, patch), parsed);
-			}
-
-			++taken;
-		}
-
-		return taken;
-	}
-
-	private static int InsertIndex(List<Engine_UiMenuEntry> siblings, Godot.Collections.Dictionary patch)
-	{
-		if (patch.TryGetValue("after", out Variant after))
-		{
-			int index = siblings.FindIndex(e => e.Name == after.AsString());
-			if (index >= 0)
-			{
-				return index + 1;
-			}
-		}
-
-		if (patch.TryGetValue("before", out Variant before))
-		{
-			int index = siblings.FindIndex(e => e.Name == before.AsString());
-			if (index >= 0)
-			{
-				return index;
-			}
-		}
-
-		return siblings.Count;
-	}
-
-	private static Engine_UiMenuEntry? FindEntry(List<Engine_UiMenuEntry> entries, string name)
-	{
-		foreach (Engine_UiMenuEntry entry in entries)
-		{
-			if (entry.Name == name)
-			{
-				return entry;
-			}
-
-			if (FindEntry(entry.Children, name) is { } nested)
-			{
-				return nested;
-			}
-		}
-
-		return null;
-	}
-
-	private static Engine_UiMenuTemplate? ParseMenu(string name, Variant value)
-	{
-		if (value.VariantType != Variant.Type.Dictionary)
-		{
-			return null;
-		}
-
-		var record = value.AsGodotDictionary();
-		var menu = new Engine_UiMenuTemplate
-		{
-			Name = name,
-			Highlight = record.TryGetValue("highlight", out Variant highlight)
-				? highlight.AsString()
-				: string.Empty,
-			Title = record.TryGetValue("title", out Variant title)
-				? title.AsString()
-				: string.Empty,
-			RowCommand = record.TryGetValue("rowCommand", out Variant rowCommand)
-				? rowCommand.AsString()
-				: string.Empty,
-			Source = record.TryGetValue("source", out Variant rootSource)
-				? rootSource.AsString()
-				: string.Empty,
-		};
-
-		if (record.TryGetValue("entries", out Variant entries) &&
-			entries.VariantType == Variant.Type.Array)
-		{
-			foreach (Variant entry in entries.AsGodotArray())
-			{
-				if (ParseEntry(entry) is { } parsed)
-				{
-					menu.Entries.Add(parsed);
-				}
-			}
-		}
-
-		return menu;
-	}
-
-	/// <summary>`{"1": "ItemsMenu", ...}` — see `Engine_UiScreenTemplate.MenuScriptByMode`.</summary>
-	private static Dictionary<int, string> ParseScriptModes(Godot.Collections.Dictionary record)
-	{
-		var modes = new Dictionary<int, string>();
-		if (!record.TryGetValue("menuScriptByMode", out Variant value) ||
-			value.VariantType != Variant.Type.Dictionary)
-		{
-			return modes;
-		}
-
-		foreach (var pair in value.AsGodotDictionary())
-		{
-			if (int.TryParse(pair.Key.AsString(), out int mode) &&
-				pair.Value.AsString() is { Length: > 0 } script)
-			{
-				modes[mode] = script;
-			}
-		}
-
-		return modes;
-	}
-
-	private static Godot.Collections.Dictionary ScriptModesJson(Dictionary<int, string> modes)
-	{
-		var record = new Godot.Collections.Dictionary();
-		foreach ((int mode, string script) in modes)
-		{
-			record[mode.ToString(System.Globalization.CultureInfo.InvariantCulture)] = script;
-		}
-
-		return record;
-	}
-
-	private static Engine_UiMenuEntry? ParseEntry(Variant value)
-	{
-		if (value.VariantType != Variant.Type.Dictionary)
-		{
-			return null;
-		}
-
-		var record = value.AsGodotDictionary();
-		var entry = new Engine_UiMenuEntry
-		{
-			Name = record.TryGetValue("name", out Variant name) ? name.AsString() : string.Empty,
-			Tag = record.TryGetValue("tag", out Variant tag) ? tag.AsString() : string.Empty,
-			Command = record.TryGetValue("command", out Variant command)
-				? command.AsString()
-				: null,
-			Opens = record.TryGetValue("opens", out Variant opens) ? opens.AsString() : null,
-			HostOnly = record.TryGetValue("hostOnly", out Variant host) && host.AsBool(),
-			Drop = record.TryGetValue("drop", out Variant drop) && drop.AsBool(),
-			Source = record.TryGetValue("source", out Variant source)
-				? source.AsString()
-				: string.Empty,
-			Icon = record.TryGetValue("icon", out Variant icon) ? icon.AsString() : string.Empty,
-			EventType = record.TryGetValue("eventType", out Variant type) ? type.AsInt32() : 0,
-			Rating = record.TryGetValue("rating", out Variant rating)
-				? rating.AsInt32()
-				: Engine_UiMenuConstants.EmptyRatingSlide,
-			Counted = !record.TryGetValue("counted", out Variant counted) || counted.AsBool(),
-		};
-
-		if (entry.Name.Length == 0)
-		{
-			return null;
-		}
-
-		if (record.TryGetValue("children", out Variant children) &&
-			children.VariantType == Variant.Type.Array)
-		{
-			foreach (Variant child in children.AsGodotArray())
-			{
-				if (ParseEntry(child) is { } parsed)
-				{
-					entry.Children.Add(parsed);
-				}
-			}
-		}
-
-		return entry;
-	}
-
-	private static Engine_UiScreenTemplate? ParseScreen(uint id, Variant value)
-	{
-		if (value.VariantType != Variant.Type.Dictionary)
-		{
-			return null;
-		}
-
-		var record = value.AsGodotDictionary();
-		var screen = new Engine_UiScreenTemplate
-		{
-			ScreenId = id,
-			Name = record.TryGetValue("name", out Variant name) ? name.AsString() : $"screen{id}",
-			OwnsList = record.TryGetValue("ownsList", out Variant owns) && owns.AsBool(),
-			MenuScriptByMode = ParseScriptModes(record),
-			MenuScript = record.TryGetValue("menuScript", out Variant menuScript)
-				? menuScript.AsString()
-				: string.Empty,
-			PreviewAnchor = record.TryGetValue("previewAnchor", out Variant preview)
-				? preview.AsString()
-				: string.Empty,
-			PageElement = record.TryGetValue("pageElement", out Variant page)
-				? page.AsString()
-				: string.Empty,
-			PageSlide = record.TryGetValue("pageSlide", out Variant slide)
-				? (int)slide.AsDouble()
-				: 0,
-			Menu = record.TryGetValue("menu", out Variant menu) ? menu.AsString() : string.Empty,
-			Provider = record.TryGetValue("provider", out Variant provider)
-				? provider.AsString()
-				: string.Empty,
-			OwnsRevealedInput =
-				record.TryGetValue("ownsRevealedInput", out Variant revealed) && revealed.AsBool(),
-			RevealedAccept = record.TryGetValue("revealedAccept", out Variant accept)
-				? accept.AsString()
-				: string.Empty,
-			RevealedBack = record.TryGetValue("revealedBack", out Variant back)
-				? back.AsString()
-				: string.Empty,
-			FlipAction = record.TryGetValue("flipAction", out Variant flip)
-				? flip.AsString()
-				: string.Empty,
-			HasSpellBlade = record.TryGetValue("hasSpellBlade", out Variant blade) && blade.AsBool(),
-			ScrollContent = record.TryGetValue("scrollContent", out Variant scroll)
-				? scroll.AsString()
-				: string.Empty,
-			ScrollMask = record.TryGetValue("scrollMask", out Variant scrollMask)
-				? scrollMask.AsString()
-				: string.Empty,
-			ScrollBar = record.TryGetValue("scrollBar", out Variant scrollBar)
-				? scrollBar.AsString()
-				: string.Empty,
-			FlowMeasured = record.TryGetValue("flowMeasured", out Variant flowMeasured)
-				? flowMeasured.AsString()
-				: string.Empty,
-			FlowBase = record.TryGetValue("flowBase", out Variant flowBase)
-				? flowBase.AsString()
-				: string.Empty,
-			FlowTailAnchor = record.TryGetValue("flowTailAnchor", out Variant flowTail)
-				? flowTail.AsString()
-				: string.Empty,
-			FadesTopEnd = !record.TryGetValue("fadesTopEnd", out Variant fadesTop) || fadesTop.AsBool(),
-			FadesBottomEnd =
-				!record.TryGetValue("fadesBottomEnd", out Variant fadesBottom) || fadesBottom.AsBool(),
-			Presentation = record.TryGetValue("presentation", out Variant file)
-				? file.AsString()
-				: string.Empty,
-			PageRootUnit = record.TryGetValue("pageRootUnit", out Variant root)
-				? root.AsString()
-				: string.Empty,
-			BackdropUnit = record.TryGetValue("backdropUnit", out Variant backdrop)
-				? backdrop.AsString()
-				: string.Empty,
-			BoxPresentation = record.TryGetValue("boxPresentation", out Variant boxFile)
-				? boxFile.AsString()
-				: string.Empty,
-
-			// How far the owned row view stands in FRONT of the book. Editable because it is
-			// what decides whether the rows draw behind the left cover or over it, and the right
-			// value is a property of the screen's own art rather than something derivable.
-			ListLift = record.TryGetValue("listLift", out Variant lift)
-				? (float)lift.AsDouble()
-				: Engine_UiPresentationDepth.BookOffset,
-		};
-
-		Strings(record, "chrome", screen.ChromeUnits);
-		Strings(record, "panelSubtrees", screen.PanelSubtrees);
-		Strings(record, "ownedElsewhere", screen.OwnedElsewhere);
-		Strings(record, "liveTexts", screen.LiveTexts);
-		Strings(record, "boxUnits", screen.BoxUnits);
-		if (record.TryGetValue("boxPaths", out Variant boxPaths) &&
-			boxPaths.VariantType == Variant.Type.Dictionary)
-		{
-			foreach ((Variant key, Variant mapped) in boxPaths.AsGodotDictionary())
-			{
-				screen.BoxPaths[key.AsString()] = mapped.AsString();
-			}
-		}
-
-		Strings(record, "pages", screen.Pages);
-		Strings(record, "guestTextUnits", screen.GuestTextUnits);
-		if (record.TryGetValue("pageStackAt", out Variant stack) &&
-			stack.VariantType == Variant.Type.Array && stack.AsGodotArray().Count == 3)
-		{
-			var xyz = stack.AsGodotArray();
-			screen.PageStackAt = new Vector3(
-				(float)xyz[0].AsDouble(), (float)xyz[1].AsDouble(), (float)xyz[2].AsDouble());
-		}
-
-		if (record.TryGetValue("statFields", out Variant stats) && stats.VariantType == Variant.Type.Array)
-		{
-			foreach (Variant stat in stats.AsGodotArray())
-			{
-				if (stat.VariantType != Variant.Type.Dictionary)
-				{
-					continue;
-				}
-
-				var statRecord = stat.AsGodotDictionary();
-				if (statRecord.TryGetValue("id", out Variant statId) &&
-					statRecord.TryGetValue("path", out Variant statPath))
-				{
-					screen.StatFields.Add((statId.AsInt32(), statPath.AsString()));
-				}
-			}
-		}
-
-		Strings(record, "wideLeft", screen.WideLeft);
-		Strings(record, "wideRight", screen.WideRight);
-		Strings(record, "wideGround", screen.WideGround);
-		Strings(record, "wideStretch", screen.WideStretch);
-		Strings(record, "flowMoved", screen.FlowMoved);
-		Strings(record, "flowTailMoved", screen.FlowTailMoved);
-
-		if (record.TryGetValue("panelFields", out Variant fields) &&
-			fields.VariantType == Variant.Type.Array)
-		{
-			foreach (Variant field in fields.AsGodotArray())
-			{
-				if (field.VariantType != Variant.Type.Dictionary)
-				{
-					continue;
-				}
-
-				var fieldRecord = field.AsGodotDictionary();
-				if (!fieldRecord.TryGetValue("path", out Variant path))
-				{
-					continue;
-				}
-
-				screen.PanelFields.Add(new Engine_UiScreenPanel.Field(
-					path.AsString(),
-					fieldRecord.TryGetValue("multiline", out Variant multi) && multi.AsBool(),
-					fieldRecord.TryGetValue("alternate", out Variant alt) && alt.AsBool()));
-			}
-		}
-
-		return screen;
-	}
-
-	private static void Strings(Godot.Collections.Dictionary record, string key, List<string> into)
-	{
-		if (!record.TryGetValue(key, out Variant value) ||
-			value.VariantType != Variant.Type.Array)
-		{
-			return;
-		}
-
-		foreach (Variant entry in value.AsGodotArray())
-		{
-			string text = entry.AsString();
-			if (text.Length != 0)
-			{
-				into.Add(text);
-			}
-		}
+		return file is null ? 0 : set.ApplyText(file.GetAsText(), owner: string.Empty, path);
 	}
 
 	/// <summary>Writes every record as it runs — the editor's starting point and the override
 	/// file's documentation.</summary>
+	/// <summary>
+	/// Writes the composed templates for authors to read. A side product of loading: a failure here
+	/// is reported and the templates stand — it once threw from the HUD build and took the whole UI
+	/// down with it.
+	/// </summary>
 	private static void SaveSnapshot(string path)
 	{
-		DirAccess.MakeDirRecursiveAbsolute("user://ui");
-		using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Write);
-		file?.StoreString(Json.Stringify(SnapshotJson(), "\t"));
-	}
-
-	/// <summary>Every record as it runs, in the snapshot's shape.</summary>
-	private static Godot.Collections.Dictionary SnapshotJson()
-	{
-		var menus = new Godot.Collections.Dictionary();
-		foreach ((string name, Engine_UiMenuTemplate menu) in _menus!)
+		try
 		{
-			var entries = new Godot.Collections.Array();
-			foreach (Engine_UiMenuEntry entry in menu.Entries)
-			{
-				entries.Add(EntryJson(entry));
-			}
-
-			menus[name] = new Godot.Collections.Dictionary
-			{
-				["highlight"] = menu.Highlight,
-				["title"] = menu.Title,
-				["source"] = menu.Source,
-				["rowCommand"] = menu.RowCommand,
-				["entries"] = entries,
-			};
+			string text = _set!.SnapshotText();
+			DirAccess.MakeDirRecursiveAbsolute("user://ui");
+			using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Write);
+			file?.StoreString(text);
 		}
-
-		var screens = new Godot.Collections.Dictionary();
-		foreach ((uint id, Engine_UiScreenTemplate screen) in _screens!)
+		catch (System.Exception exception)
 		{
-			var fields = new Godot.Collections.Array();
-			foreach (Engine_UiScreenPanel.Field field in screen.PanelFields)
-			{
-				fields.Add(new Godot.Collections.Dictionary
-				{
-					["path"] = field.Path,
-					["multiline"] = field.Multiline,
-					["alternate"] = field.Alternate,
-				});
-			}
-
-			var stats = new Godot.Collections.Array();
-			foreach ((int statId, string statPath) in screen.StatFields)
-			{
-				stats.Add(new Godot.Collections.Dictionary { ["id"] = statId, ["path"] = statPath });
-			}
-
-			var screenRecord = new Godot.Collections.Dictionary
-			{
-				["name"] = screen.Name,
-				["ownsList"] = screen.OwnsList,
-				["menuScript"] = screen.MenuScript,
-				["menuScriptByMode"] = ScriptModesJson(screen.MenuScriptByMode),
-				["previewAnchor"] = screen.PreviewAnchor,
-				["pageElement"] = screen.PageElement,
-				["pageSlide"] = screen.PageSlide,
-				["menu"] = screen.Menu,
-				["provider"] = screen.Provider,
-				["ownsRevealedInput"] = screen.OwnsRevealedInput,
-				["revealedAccept"] = screen.RevealedAccept,
-				["revealedBack"] = screen.RevealedBack,
-				["flipAction"] = screen.FlipAction,
-				["hasSpellBlade"] = screen.HasSpellBlade,
-				["scrollContent"] = screen.ScrollContent,
-				["scrollMask"] = screen.ScrollMask,
-				["scrollBar"] = screen.ScrollBar,
-				["flowMeasured"] = screen.FlowMeasured,
-				["flowBase"] = screen.FlowBase,
-				["flowMoved"] = ToArray(screen.FlowMoved),
-				["flowTailAnchor"] = screen.FlowTailAnchor,
-				["flowTailMoved"] = ToArray(screen.FlowTailMoved),
-				["fadesTopEnd"] = screen.FadesTopEnd,
-				["fadesBottomEnd"] = screen.FadesBottomEnd,
-				["presentation"] = screen.Presentation,
-				["pageRootUnit"] = screen.PageRootUnit,
-				["backdropUnit"] = screen.BackdropUnit,
-				["listLift"] = screen.ListLift,
-				["chrome"] = ToArray(screen.ChromeUnits),
-				["panelSubtrees"] = ToArray(screen.PanelSubtrees),
-				["ownedElsewhere"] = ToArray(screen.OwnedElsewhere),
-				["liveTexts"] = ToArray(screen.LiveTexts),
-				["boxPresentation"] = screen.BoxPresentation,
-				["boxUnits"] = ToArray(screen.BoxUnits),
-				["boxPaths"] = PathsJson(screen.BoxPaths),
-				["wideLeft"] = ToArray(screen.WideLeft),
-				["wideRight"] = ToArray(screen.WideRight),
-				["wideGround"] = ToArray(screen.WideGround),
-				["wideStretch"] = ToArray(screen.WideStretch),
-				["panelFields"] = fields,
-				["pages"] = ToArray(screen.Pages),
-				["guestTextUnits"] = ToArray(screen.GuestTextUnits),
-				["statFields"] = stats,
-			};
-			if (screen.PageStackAt is Vector3 stackAt)
-			{
-				screenRecord["pageStackAt"] = new Godot.Collections.Array { stackAt.X, stackAt.Y, stackAt.Z };
-			}
-
-			screens[id.ToString()] = screenRecord;
+			GD.PushError($"[ui-templates] the snapshot was not written ({path}): {exception.Message}");
 		}
-
-		var root = new Godot.Collections.Dictionary
-		{
-			["menus"] = menus,
-			["screens"] = screens,
-			[Engine_UiModals.Section] = Json.ParseString(_modals!.ToJson()),
-		};
-
-		return root;
-	}
-
-	private static Godot.Collections.Dictionary EntryJson(Engine_UiMenuEntry entry)
-	{
-		var record = new Godot.Collections.Dictionary
-		{
-			["name"] = entry.Name,
-			["tag"] = entry.Tag,
-		};
-
-		if (entry.Command is not null)
-		{
-			record["command"] = entry.Command;
-		}
-
-		if (entry.Opens is not null)
-		{
-			record["opens"] = entry.Opens;
-		}
-
-		if (entry.Source.Length != 0)
-		{
-			record["source"] = entry.Source;
-		}
-
-		if (entry.Drop)
-		{
-			record["drop"] = true;
-		}
-
-		if (entry.HostOnly)
-		{
-			record["hostOnly"] = true;
-		}
-
-		// The three an author sets: picture, press meaning, stars. Written only when non-default.
-		if (entry.Icon.Length != 0)
-		{
-			record["icon"] = entry.Icon;
-		}
-
-		if (entry.EventType != 0)
-		{
-			record["eventType"] = entry.EventType;
-		}
-
-		if (entry.Rating != Engine_UiMenuConstants.EmptyRatingSlide)
-		{
-			record["rating"] = entry.Rating;
-		}
-
-		if (!entry.Counted)
-		{
-			record["counted"] = false;
-		}
-
-		if (entry.Children.Count != 0)
-		{
-			var children = new Godot.Collections.Array();
-			foreach (Engine_UiMenuEntry child in entry.Children)
-			{
-				children.Add(EntryJson(child));
-			}
-
-			record["children"] = children;
-		}
-
-		return record;
-	}
-
-	private static Godot.Collections.Array ToArray(List<string> values)
-	{
-		var array = new Godot.Collections.Array();
-		foreach (string value in values)
-		{
-			array.Add(value);
-		}
-
-		return array;
 	}
 }

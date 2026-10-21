@@ -217,6 +217,17 @@ public static class ModRemount
 				"and the menus, boxes, books and HUD art built from them, rebuilt");
 		}
 
+		if (Refii.Fx.Engine_FxModEffects.ReloadGuestBank(report.Changed))
+		{
+			report.Refreshed.Add("the guest's particle bank (fx/effects), read again by the guest's own loader on its next tick: " +
+				"every spawn after it takes the new effects, live ones finish with the old");
+		}
+
+		if (ModLua.RefreshFrontend(report.Changed))
+		{
+			report.Refreshed.Add("the mods' front-end Lua (mod/frontend.lua), run again in the front end's presentation before its next call");
+		}
+
 		var textures = report.Changed.Where(p => p.EndsWith(".tex", StringComparison.OrdinalIgnoreCase)).ToList();
 		if (textures.Count != 0)
 		{
@@ -249,7 +260,8 @@ public static class ModRemount
 		foreach (string path in report.Changed)
 		{
 			string lower = path.ToLowerInvariant();
-			if (lower.EndsWith(".tex") || lower.EndsWith(".babel") || IsModLuaKey(path) || IsPresentationFile(path))
+			if (lower.EndsWith(".tex") || lower.EndsWith(".babel") || IsModLuaKey(path) || IsPresentationFile(path) ||
+				Refii.Fx.Engine_FxModEffects.IsGuestBankFile(path) || ModLua.IsFrontendKey(path))
 			{
 				continue;
 			}

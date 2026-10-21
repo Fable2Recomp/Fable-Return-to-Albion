@@ -51,10 +51,17 @@ public sealed partial class Engine_UiSpellAssign : Node3D
 		public required Node3D Node { get; init; }
 		public MeshInstance3D? Icon { get; set; }
 
-		/// <summary>The smaller copy of <see cref="Icon"/> showing a mod's secondary pick (Engine_UiSpellAssignSecondary).</summary>
-		public MeshInstance3D? Mini { get; set; }
+		/// <summary>The smaller copies of <see cref="Icon"/>, one per mod's pick, in load order (Engine_UiSpellAssignSecondary).</summary>
+		public List<MeshInstance3D> Minis { get; } = new();
 
-		public int MiniShown { get; set; } = -2;
+		/// <summary>Each mini's last painted state; int.MinValue before the first paint.</summary>
+		public List<int> MinisShown { get; } = new();
+
+		/// <summary>Whether each mini's last paint left it drawable (its art resolved).</summary>
+		public List<bool> MinisDrawn { get; } = new();
+
+		/// <summary>The pick count and active pick the minis were last placed for; -1 to place again.</summary>
+		public int MinisPlaced { get; set; } = -1;
 
 		/// <summary>`Surround` — the segment ring; opacity 0 on slide 2, 100 on slide 3.</summary>
 		public Node3D? Surround { get; set; }

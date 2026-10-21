@@ -36,6 +36,13 @@ public static class Engine_UiPageProviders
 	public const string Coop = "coop";
 
 	/// <summary>
+	/// The DATA provider (<see cref="Engine_UiDataPage"/>): a screen record's own <c>fields</c> and
+	/// <c>switches</c>, bound to <c>mod:</c> / <c>player:</c> values, the highlighted row, Babel tags or
+	/// literals — how a mod's screen is filled without C#.
+	/// </summary>
+	public const string Data = "data";
+
+	/// <summary>
 	/// Whether player two is currently standing in their OWN hero's body rather than the
 	/// pickbox henchman — the co-op screen's X toggle, held here so the prompt and the action
 	/// agree about which way the next press goes.
@@ -89,15 +96,52 @@ public static class Engine_UiPageProviders
 		[RealEstate] = new RealEstateProvider(),
 		[Multiplayer] = new MultiplayerProvider(),
 		[Coop] = new CoopProvider(),
+		[Data] = new Engine_UiDataPage(),
 	};
 
-	/// <summary>The provider a template names, or null when it names none or an unknown one.</summary>
-	public static Engine_UiPageProvider? Find(string name) =>
-		name.Length != 0 && Registry.TryGetValue(name, out Engine_UiPageProvider? provider)
-			? provider
-			: null;
+	/// <summary>The game's own provider names, which a registration may not replace.</summary>
+	public static readonly string[] ShippedNames =
+		{ Abilities, Logbook, Crime, WorldMap, Options, ItemBook, Achievements, RealEstate, Multiplayer, Coop, Data };
 
-	public static IEnumerable<string> Names => Registry.Keys;
+	private static readonly HashSet<string> Shipped = new(ShippedNames);
+
+	/// <summary>The provider a template names, or null when it names none or an unknown one.</summary>
+	public static Engine_UiPageProvider? Find(string name)
+	{
+		lock (Registry)
+		{
+			return name.Length != 0 && Registry.TryGetValue(name, out Engine_UiPageProvider? provider) ? provider : null;
+		}
+	}
+
+	/// <summary>
+	/// Registers a provider a screen record can name — a mod's Godot code filling its own screen. The
+	/// game's names stay the game's: false for one of them or an empty name.
+	/// </summary>
+	public static bool Register(string name, Engine_UiPageProvider provider)
+	{
+		lock (Registry)
+		{
+			if (name.Length == 0 || Shipped.Contains(name))
+			{
+				return false;
+			}
+
+			Registry[name] = provider;
+			return true;
+		}
+	}
+
+	public static IEnumerable<string> Names
+	{
+		get
+		{
+			lock (Registry)
+			{
+				return new List<string>(Registry.Keys);
+			}
+		}
+	}
 
 	/// <summary>
 	/// The co-op screen (24) — the two share sliders and the profile blocks on both pages.

@@ -171,6 +171,52 @@ public static class Engine_HudModEdit
 		}
 	}
 
+	/// <summary>
+	/// Every NAMED value source the file's pieces and copies read, whole and sorted —
+	/// <c>mod:…</c>, <c>game:…</c>, <c>player:…</c> (<see cref="Engine_UiValueSources"/>) — what an
+	/// editor offers a stand-in for. <c>hero:</c> is the preview's meter stand-in.
+	/// </summary>
+	public static List<string> SourceKeys(JsonObject hud)
+	{
+		var keys = new SortedSet<string>(StringComparer.Ordinal);
+		foreach (JsonObject piece in ById(hud, PiecesKey).Values)
+		{
+			foreach (string field in SourceFields)
+			{
+				Take(Engine_UiMenuEdit.Text(piece, field));
+			}
+		}
+
+		foreach (JsonObject clone in ById(hud, ClonesKey).Values)
+		{
+			if (clone["values"] is JsonObject values)
+			{
+				foreach ((_, JsonNode? source) in values)
+				{
+					if (source is JsonValue value && value.TryGetValue(out string? text))
+					{
+						foreach (string side in text.Split('/'))
+						{
+							Take(side);
+						}
+					}
+				}
+			}
+		}
+
+		return keys.ToList();
+
+		void Take(string text)
+		{
+			Engine_UiValueSources.Source source = Engine_UiValueSources.Parse(text);
+			if (source.Kind is Engine_UiValueSources.Kind.Mod or Engine_UiValueSources.Kind.Game or
+				Engine_UiValueSources.Kind.Player && source.Key.Length != 0)
+			{
+				keys.Add(text.Trim());
+			}
+		}
+	}
+
 	/// <summary>The records of a list keyed by <c>id</c>, in file order; records without an id are skipped.</summary>
 	public static Dictionary<string, JsonObject> ById(JsonObject hud, string listKey)
 	{

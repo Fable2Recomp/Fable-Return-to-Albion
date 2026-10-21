@@ -1,0 +1,1496 @@
+{
+  "format": 1,
+  "name": "spell_weaving_vortex_blades",
+  "updateFrequency": 1,
+  "parts": [
+    {
+      "emitter": 0,
+      "group": 3,
+      "vector": 0
+    },
+    {
+      "emitter": 1,
+      "system": 0,
+      "group": 3,
+      "vector": 1
+    },
+    {
+      "emitter": 2,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 3,
+      "system": 1,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 4,
+      "system": 2,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 5,
+      "system": 3,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 6,
+      "system": 4,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 7,
+      "system": 5,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 8,
+      "system": 6,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 9,
+      "system": 7,
+      "group": 3,
+      "vector": 3
+    },
+    {
+      "emitter": 10,
+      "group": 3,
+      "vector": 4
+    },
+    {
+      "emitter": 3,
+      "system": 1,
+      "group": 3,
+      "vector": 4
+    },
+    {
+      "emitter": 4,
+      "system": 2,
+      "group": 3,
+      "vector": 4
+    },
+    {
+      "emitter": 5,
+      "system": 3,
+      "group": 3,
+      "vector": 4
+    },
+    {
+      "emitter": 6,
+      "system": 4,
+      "group": 3,
+      "vector": 4
+    },
+    {
+      "emitter": 7,
+      "system": 5,
+      "group": 3,
+      "vector": 4
+    },
+    {
+      "emitter": 8,
+      "system": 6,
+      "group": 3,
+      "vector": 4
+    },
+    {
+      "emitter": 11,
+      "system": 8,
+      "group": 3,
+      "vector": 5
+    },
+    {
+      "emitter": 12,
+      "group": 3,
+      "vector": 6
+    },
+    {
+      "emitter": 3,
+      "system": 1,
+      "group": 3,
+      "vector": 6
+    },
+    {
+      "emitter": 4,
+      "system": 2,
+      "group": 3,
+      "vector": 6
+    },
+    {
+      "emitter": 5,
+      "system": 3,
+      "group": 3,
+      "vector": 6
+    },
+    {
+      "emitter": 6,
+      "system": 4,
+      "group": 3,
+      "vector": 6
+    },
+    {
+      "emitter": 7,
+      "system": 5,
+      "group": 3,
+      "vector": 6
+    },
+    {
+      "emitter": 8,
+      "system": 6,
+      "group": 3,
+      "vector": 6
+    },
+    {
+      "emitter": 13,
+      "system": 9,
+      "group": 3,
+      "vector": 7
+    },
+    {
+      "emitter": 14,
+      "group": 3,
+      "vector": 8
+    },
+    {
+      "emitter": 3,
+      "system": 1,
+      "group": 3,
+      "vector": 8
+    },
+    {
+      "emitter": 4,
+      "system": 2,
+      "group": 3,
+      "vector": 8
+    },
+    {
+      "emitter": 5,
+      "system": 3,
+      "group": 3,
+      "vector": 8
+    },
+    {
+      "emitter": 6,
+      "system": 4,
+      "group": 3,
+      "vector": 8
+    },
+    {
+      "emitter": 7,
+      "system": 5,
+      "group": 3,
+      "vector": 8
+    },
+    {
+      "emitter": 8,
+      "system": 6,
+      "group": 3,
+      "vector": 8
+    },
+    {
+      "emitter": 15,
+      "system": 10,
+      "group": 3,
+      "vector": 9
+    },
+    {
+      "emitter": 16,
+      "group": 3,
+      "vector": 10
+    },
+    {
+      "emitter": 3,
+      "system": 1,
+      "group": 3,
+      "vector": 10
+    },
+    {
+      "emitter": 4,
+      "system": 2,
+      "group": 3,
+      "vector": 10
+    },
+    {
+      "emitter": 5,
+      "system": 3,
+      "group": 3,
+      "vector": 10
+    },
+    {
+      "emitter": 6,
+      "system": 4,
+      "group": 3,
+      "vector": 10
+    },
+    {
+      "emitter": 7,
+      "system": 5,
+      "group": 3,
+      "vector": 10
+    },
+    {
+      "emitter": 8,
+      "system": 6,
+      "group": 3,
+      "vector": 10
+    },
+    {
+      "emitter": 17,
+      "group": 3,
+      "vector": 11
+    }
+  ],
+  "emitters": [
+    {
+      "typeId": 4,
+      "entityId": "0x56AD6534",
+      "pos": [0,0,3.12
+      ],
+      "params": {
+        "attractRadius": [
+          [0,4.7
+          ]
+        ],
+        "attractStrength": [
+          [0,184.87129
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0xEF1033BF",
+      "pos": [1.2,0,1.09948
+      ],
+      "quat": [0.7032332,0.0739128,-0,0.7071068
+      ],
+      "maxActive": 1,
+      "initialNum": 1,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "positionalInteractable": true,
+      "params": {
+        "rate": [
+          [0,0
+          ]
+        ],
+        "speed": [
+          [0,7.526049
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,1
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0
+          ]
+        ]
+      }
+    },
+    {
+      "typeId": 3,
+      "entityId": "0x85D8BEBF",
+      "pos": [0,0,1.09948
+      ],
+      "quat": [0,0,-0.7071068,0.7071068
+      ],
+      "angularRotationRate": -0.2094395,
+      "params": {
+        "p25": [
+          [0,1.2
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0x445DD110",
+      "pos": [-0,0,0
+      ],
+      "quat": [5.1658013E-08,0,0,1
+      ],
+      "maxActive": -1,
+      "params": {
+        "rate": [
+          [0,0.8333333
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,0
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0x67B71EC8",
+      "quat": [5.1658013E-08,0,0,1
+      ],
+      "maxActive": -1,
+      "params": {
+        "rate": [
+          [0,0.16666667
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,0
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0xFE1598B0",
+      "quat": [5.1658013E-08,0,0,1
+      ],
+      "maxActive": -1,
+      "params": {
+        "rate": [
+          [0,0.8333333
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,0
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0xCCC1AADB",
+      "subType": 1,
+      "pos": [-0,0,0
+      ],
+      "quat": [5.1658013E-08,0,0,1
+      ],
+      "maxActive": -1,
+      "spawnRadius": 0.05,
+      "useShapeSpawnDir": true,
+      "attachToRoot": true,
+      "lifetimeFrames": 45,
+      "shapeFlagB": true,
+      "params": {
+        "rate": [
+          [0,0.8333333
+          ]
+        ],
+        "rateSpread": [
+          [0,1.6666666
+          ]
+        ],
+        "velX": [
+          [0,1
+          ]
+        ],
+        "velY": [
+          [0,1
+          ]
+        ],
+        "velZ": [
+          [0,0
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0x17A034D9",
+      "quat": [5.1658013E-08,0,0,1
+      ],
+      "maxActive": -1,
+      "attachToRoot": true,
+      "lifetimeFrames": 45,
+      "params": {
+        "rate": [
+          [0,0.5
+          ]
+        ],
+        "velX": [
+          [0,1
+          ]
+        ],
+        "velY": [
+          [0,1
+          ]
+        ],
+        "velZ": [
+          [0,0
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0x6C55D39F",
+      "subType": 1,
+      "quat": [5.1658013E-08,0,0,1
+      ],
+      "maxActive": -1,
+      "spawnRadius": 0.05,
+      "useShapeSpawnDir": true,
+      "attachToRoot": true,
+      "lifetimeFrames": 45,
+      "shapeFlagB": true,
+      "params": {
+        "rate": [
+          [0,0.6666667
+          ]
+        ],
+        "speed": [
+          [0,0.2
+          ]
+        ],
+        "velX": [
+          [0,1
+          ]
+        ],
+        "velY": [
+          [0,1
+          ]
+        ],
+        "velZ": [
+          [0,0
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0xF11036E5",
+      "pos": [0.448075,1.379032,1.270676
+      ],
+      "quat": [0.1470158,0.6916548,-0,0.7071068
+      ],
+      "maxActive": 1,
+      "initialNum": 1,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "positionalInteractable": true,
+      "params": {
+        "rate": [
+          [0,0
+          ]
+        ],
+        "speed": [
+          [0,9.093976
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,1
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0
+          ]
+        ]
+      }
+    },
+    {
+      "typeId": 3,
+      "entityId": "0x703441C4",
+      "pos": [0,0,1.270676
+      ],
+      "quat": [0,0,-0.1564345,0.9876883
+      ],
+      "angularRotationRate": -0.2094395,
+      "params": {
+        "p25": [
+          [0,1.45
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0xEB102D73",
+      "pos": [-1.375329,0.999235,1.497502
+      ],
+      "quat": [-0.6123724,0.3535534,0,0.7071068
+      ],
+      "maxActive": 1,
+      "initialNum": 1,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "positionalInteractable": true,
+      "params": {
+        "rate": [
+          [0,0
+          ]
+        ],
+        "speed": [
+          [0,10.661903
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,1
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0
+          ]
+        ]
+      }
+    },
+    {
+      "typeId": 3,
+      "entityId": "0x703441C6",
+      "pos": [0,0,1.497502
+      ],
+      "quat": [0,0,0.4539905,0.8910065
+      ],
+      "angularRotationRate": -0.2094395,
+      "params": {
+        "p25": [
+          [0,1.7
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0xED103099",
+      "pos": [-1.577583,-1.146181,1.808512
+      ],
+      "quat": [-0.5254827,-0.4731468,0,0.7071068
+      ],
+      "maxActive": 1,
+      "initialNum": 1,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "positionalInteractable": true,
+      "params": {
+        "rate": [
+          [0,0
+          ]
+        ],
+        "speed": [
+          [0,12.22983
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,1
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0
+          ]
+        ]
+      }
+    },
+    {
+      "typeId": 3,
+      "entityId": "0x703441C0",
+      "pos": [0,0,1.808512
+      ],
+      "quat": [0,0,0.8910065,0.4539905
+      ],
+      "angularRotationRate": -0.2094395,
+      "params": {
+        "p25": [
+          [0,1.95
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "entityId": "0xF7104057",
+      "pos": [0.679837,-2.092324,2.293864
+      ],
+      "quat": [0.2876062,-0.6459742,0,0.7071068
+      ],
+      "maxActive": 1,
+      "initialNum": 1,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "positionalInteractable": true,
+      "params": {
+        "rate": [
+          [0,0
+          ]
+        ],
+        "speed": [
+          [0,13.797757
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,1
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0
+          ]
+        ]
+      }
+    },
+    {
+      "typeId": 3,
+      "entityId": "0x703441C2",
+      "pos": [0,0,2.293864
+      ],
+      "quat": [0,0,0.9876883,-0.1564345
+      ],
+      "angularRotationRate": -0.2094395,
+      "params": {
+        "p25": [
+          [0,2.2
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "typeId": 7,
+      "entityId": "0xF3ECB7A0",
+      "pos": [0,0,1.5
+      ],
+      "params": {
+        "lightRange": [
+          [0,8
+          ]
+        ],
+        "lightIntensity": [
+          [0,1
+          ]
+        ],
+        "lightCutoff": [
+          [0,64
+          ]
+        ],
+        "lightFadeRamp": [
+          [0,50
+          ]
+        ],
+        "p19": [
+          [0,0
+          ]
+        ],
+        "p20": [
+          [0,0.1460646
+          ]
+        ],
+        "p21": [
+          [0,0.535441
+          ]
+        ]
+      },
+      "vectors": {
+        "lightColour": [
+          [0,0.8,0.85,1
+          ]
+        ]
+      }
+    }
+  ],
+  "systems": [
+    {
+      "id": "0xCE1028A8",
+      "mode": 4,
+      "loopEndFrames": 30,
+      "loopCount": -1,
+      "lastStartFrames": 30,
+      "childCount": 2,
+      "visuals": [
+        {
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.5514481,0.3789997,-0.5650918,0.482634
+          ],
+          "hasTrailWidth": true
+        },
+        {
+          "delay": 1.0166667,
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.5514481,0.3789997,-0.5650918,0.482634
+          ],
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "hasTrailWidth": true
+        }
+      ]
+    },
+    {
+      "id": "0x17E73103",
+      "lastStartFrames": 60,
+      "childCount": 3,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_hollowman_eye_01.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1.5,
+          "sizeY": 1.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "hasBlend": true
+        },
+        {
+          "delay": 1,
+          "texture": "art\\fx\\pfx_textures\\fxt_hollowman_eye_01.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "alpha": 0.15,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "colorSq": [1,1,0.25
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 2,
+          "texture": "art\\fx\\pfx_textures\\fxt_hollowman_eye_01.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 60,
+          "invSpan": 0.03448276,
+          "colorSq": [1,1,0.25
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x5BDA9451",
+      "lastStartFrames": 60,
+      "childCount": 3,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "displacement": true,
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasSize": true,
+          "sizeX": 1,
+          "sizeY": 1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true
+        },
+        {
+          "delay": 1,
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "displacement": true,
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0.5,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 30,
+          "invSpan": 0.03448276
+        },
+        {
+          "delay": 2,
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "displacement": true,
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 60,
+          "invSpan": 0.03448276
+        }
+      ]
+    },
+    {
+      "id": "0xB9ADDDE7",
+      "lastStartFrames": 45,
+      "childCount": 3,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1,
+          "sizeY": 1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "hasBlend": true
+        },
+        {
+          "delay": 1,
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "hasBlend": true
+        },
+        {
+          "delay": 1.5000001,
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 45,
+          "invSpan": 0.071428575
+        }
+      ]
+    },
+    {
+      "id": "0x3854C338",
+      "lastStartFrames": 22,
+      "childCount": 3,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_shard_glow.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "hasBlend": true
+        },
+        {
+          "delay": 0.5,
+          "texture": "art\\fx\\pfx_textures\\fxt_shard_glow.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "alpha": 0.75,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.05,
+          "sizeY": 0.05,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 15,
+          "invSpan": 0.071428575,
+          "colorSq": [1,1,0.25
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.73333335,
+          "texture": "art\\fx\\pfx_textures\\fxt_shard_glow.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.05,
+          "sizeY": 0.05,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 22,
+          "invSpan": 0.16666667,
+          "colorSq": [1,1,0.25
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0x9085FBA0",
+      "lastStartFrames": 22,
+      "childCount": 3,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_sparkle_yellow_01.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.1,
+          "sizeY": 0.1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "hasBlend": true
+        },
+        {
+          "delay": 0.5,
+          "texture": "art\\fx\\pfx_textures\\fxt_sparkle_yellow_01.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.1,
+          "sizeY": 0.1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 15,
+          "invSpan": 0.071428575,
+          "colorSq": [1,1,0.25
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.73333335,
+          "texture": "art\\fx\\pfx_textures\\fxt_sparkle_yellow_01.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.1,
+          "sizeY": 0.1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 22,
+          "invSpan": 0.16666667,
+          "colorSq": [1,1,0.25
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0xB1B4A838",
+      "lastStartFrames": 60,
+      "childCount": 3,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "hasBlend": true
+        },
+        {
+          "delay": 0.5,
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1,
+          "sizeY": 1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 15,
+          "invSpan": 0.071428575,
+          "colorSq": [1,1,0.25
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 2,
+          "texture": "art\\fx\\pfx_textures\\fxt_dust_fall_cloud.tex",
+          "hasColor": true,
+          "color": [1,1,0.5
+          ],
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1,
+          "sizeY": 1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasTexture": true,
+          "delayFrames": 60,
+          "invSpan": 0.022727273,
+          "colorSq": [1,1,0.25
+          ]
+        }
+      ]
+    },
+    {
+      "id": "0xD0102BCE",
+      "mode": 4,
+      "loopEndFrames": 30,
+      "loopCount": -1,
+      "lastStartFrames": 30,
+      "childCount": 2,
+      "visuals": [
+        {
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.6689013,-0.0175158,-0.1734837,0.7226117
+          ],
+          "hasTrailWidth": true
+        },
+        {
+          "delay": 1.0166667,
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.6689013,-0.0175158,-0.1734837,0.7226117
+          ],
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "hasTrailWidth": true
+        }
+      ]
+    },
+    {
+      "id": "0xD2102EF4",
+      "mode": 4,
+      "loopEndFrames": 30,
+      "loopCount": -1,
+      "lastStartFrames": 30,
+      "childCount": 2,
+      "visuals": [
+        {
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.530857,-0.4073409,0.2843892,0.6865763
+          ],
+          "hasTrailWidth": true
+        },
+        {
+          "delay": 1.0166667,
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.530857,-0.4073409,0.2843892,0.6865763
+          ],
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "hasTrailWidth": true
+        }
+      ]
+    },
+    {
+      "id": "0xD410321A",
+      "mode": 4,
+      "loopEndFrames": 30,
+      "loopCount": -1,
+      "lastStartFrames": 30,
+      "childCount": 2,
+      "visuals": [
+        {
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.1900434,-0.6415756,0.6336352,0.3882921
+          ],
+          "hasTrailWidth": true
+        },
+        {
+          "delay": 1.0166667,
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.1900434,-0.6415756,0.6336352,0.3882921
+          ],
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "hasTrailWidth": true
+        }
+      ]
+    },
+    {
+      "id": "0xC6101C10",
+      "mode": 4,
+      "loopEndFrames": 30,
+      "loopCount": -1,
+      "lastStartFrames": 30,
+      "childCount": 2,
+      "visuals": [
+        {
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.2233604,0.6307503,-0.7408539,0.0583065
+          ],
+          "hasTrailWidth": true
+        },
+        {
+          "delay": 1.0166667,
+          "hasColor": true,
+          "hasAlpha": true,
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasScalarSize": true,
+          "hasSelfIllum": true,
+          "hasMesh": true,
+          "meshPath": "art\\inventory\\weapons\\dotxsi\\npc_sword_damocles\\npc_sword_damocles.mdl",
+          "hasOrient": true,
+          "orSpeed": 0.20943952,
+          "orAxis": [0,0,-1
+          ],
+          "orRandAxis": false,
+          "hasMeshAlign": true,
+          "meshAlign": [-0.2233604,0.6307503,-0.7408539,0.0583065
+          ],
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "hasTrailWidth": true
+        }
+      ]
+    }
+  ]
+}

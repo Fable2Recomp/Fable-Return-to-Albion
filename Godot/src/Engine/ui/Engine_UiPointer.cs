@@ -18,10 +18,18 @@ namespace Refii.Ui;
 /// </remarks>
 public static class Engine_UiPointer
 {
-	/// <summary>The pointer on the canvas, or null when there is no UI camera or no cursor.</summary>
+	/// <summary>
+	/// The pointer on the canvas, or null when there is no UI camera, no cursor, or the controller is
+	/// the device in use (<see cref="Engine_UiInputMode.KeyboardMouse"/> false): a resting mouse must
+	/// not hold a highlight, steer a wheel or catch a click while the player drives the menus with the
+	/// pad. The first real mouse movement, click or key makes it the device again.
+	/// </summary>
 	public static Vector2? Canvas { get; private set; }
 
-	/// <summary>The pointer moved this frame — the only thing that may re-pick a list row.</summary>
+	/// <summary>
+	/// The pointer moved this frame by more than sensor jitter (the same 2-pixel threshold the device
+	/// switch uses) — the only thing that may re-pick a list row.
+	/// </summary>
 	public static bool Moved { get; private set; }
 
 	public static bool LeftPressed { get; private set; }
@@ -54,7 +62,7 @@ public static class Engine_UiPointer
 		{
 			case InputEventMouseMotion motion:
 				_window = motion.Position;
-				_motion = true;
+				_motion |= motion.Relative.LengthSquared() > 4f;
 				break;
 			case InputEventMouseButton { Pressed: true } button:
 				_window = button.Position;
@@ -95,9 +103,10 @@ public static class Engine_UiPointer
 		Vector3 topLeft = camera.ProjectRayOrigin(Vector2.Zero);
 		Vector3 bottomRight = camera.ProjectRayOrigin(size);
 		VisibleCanvas = new Rect2(topLeft.X, bottomRight.Y, bottomRight.X - topLeft.X, topLeft.Y - bottomRight.Y);
-		if (!Free)
+		if (!Free || !Engine_UiInputMode.KeyboardMouse)
 		{
 			Canvas = null;
+			Moved = false;
 			return;
 		}
 

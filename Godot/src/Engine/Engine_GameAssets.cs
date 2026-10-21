@@ -430,8 +430,8 @@ public partial class Engine_GameAssets : Node
 			}
 		}
 
-		// ...and written into the guest's own bank, which the guest loads once at boot: a remount
-		// during a session reaches its simulation at the next launch.
+		// ...and written into the guest's own bank, which the guest loads at boot; a remount during a
+		// session has the guest read it again (Engine_ModRemount -> Engine_FxModEffects.ReloadGuestBank).
 		foreach (string line in Refii.Fx.Engine_FxModEffects.ComposeGuestBank(mounted, () => ReadShippedParticleBank(mounted)))
 		{
 			if (line.StartsWith("REFUSED", System.StringComparison.Ordinal))
@@ -440,7 +440,7 @@ public partial class Engine_GameAssets : Node
 			}
 			else
 			{
-				GD.Print($"[mods] fx {line}{(live ? " (the running guest loaded its bank at boot; this takes effect at the next launch)" : string.Empty)}");
+				GD.Print($"[mods] fx {line}{(live ? " (the running guest reads it again on its next tick)" : string.Empty)}");
 			}
 		}
 
@@ -453,6 +453,7 @@ public partial class Engine_GameAssets : Node
 			Refii.Mods.ModInput.Reload();
 			Refii.Fx.Engine_FxRecipes.Reload();
 			Refii.Ui.Engine_UiSpellAssign.ReloadSecondary();
+			Refii.Ui.Engine_UiModAbilities.Reload();
 		}
 
 		// Ensure GDB resolvers are bound so composite synthesis can access the unpatched base database:

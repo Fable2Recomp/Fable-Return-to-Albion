@@ -18,6 +18,8 @@
 //                                   in Godot; a space in a name arrives as '_', an empty one as '-')
 //   box_answer ID BUTTON PLAYER  -> raises ModMessageBox for the native and Lua handlers (a mod's
 //                                   message box answered in Godot: 0 A, 1 B, -1 replaced)
+//   notice_done ID OUTCOME PLAYER -> raises ModNotice (a mod's notice gone: 0 shown, -1 never shown)
+//   menu_box_answer ID OPTION PLAYER -> raises ModMenuBox (a mod's menu box answered: the option, -1 none)
 //   query ID health E            -> id,ok,current,max
 //   query ID position E          -> id,ok,x,y,z
 //   query ID gold E              -> id,ok,gold
@@ -47,12 +49,23 @@
 //     morality,respect · uid E -> uid='0x…'
 //   query ID discovered_crime E P -> discovered · perceived_renown E P -> renown
 //   forgive_crimes E P   (refii_mod_forgive_crimes: player P's crimes the villager E knows of)
-//   fx_play ID HASH X Y Z ENTITY OX OY OZ SCALE INTENSITY LOOP
+//   fx_play ID HASH X Y Z ENTITY OX OY OZ SCALE INTENSITY LOOP [R G B]
 //                        play_fx under the classic look (Engine_FxPlayer): the guest's own particle
 //                        instance of effect HASH (its bank key), at X Y Z or riding handle ENTITY
 //                        (0 for none) offset by OX OY OZ; SCALE and INTENSITY the instance's own
-//                        setters; LOOP 1 spawns it again each time it retires
+//                        setters; LOOP 1 spawns it again each time it retires; R G B the tint, on
+//                        the instance's own material copy (particle_dress.cpp TintFxInstance)
 //   fx_stop ID           ends it: the guest's kill (a zero-frame fade) and our reference released
+//   fx_reload            the guest's particle bank read again through its own loader after a
+//                        remount (particle_dress.cpp ReloadParticleBank)
+//   frontend_lua CHUNK...  a chunk in the front end's mod Lua (mod_frontend_lua.cpp): the current
+//                        Gameface presentation's state, the mods' front-end chunk run in it first
+//   ability_clear · ability_declare … · ability_buy P NAME · ability_refund P NAME
+//                        the mod abilities' engine path (mod_abilities.cpp): the book declares each
+//                        ui/abilities.json record, A and Y post the purchase and the unlearn
+//   spell_pick P SLOT SPELL STORE PICK MOD
+//                        a pick on a spell slot (ui/spellwheel.json): raises SpellPick, then saves
+//                        the player value STORE unless a handler refused it (mod_abilities.cpp)
 // A command that does nothing (no such entity, no component) is silent; a query always replies,
 // with ok=false when it could not be answered.
 
@@ -71,6 +84,19 @@
 
 // guest_tick_pump.cpp: a player's dog (Refii.player_dog's answer).
 extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
+
+namespace refii::vfs {
+// particle_dress.cpp
+void TintFxInstance(const PPCContext& ctx, uint8_t* base, uint32_t instance, const float* rgb);
+bool ReloadParticleBank(PPCContext& ctx, uint8_t* base);
+void PumpParticleBank(PPCContext& ctx, uint8_t* base);
+// mod_frontend_lua.cpp
+bool GameLuaUp(uint8_t* base);
+bool RunFrontEndLua(PPCContext& ctx, uint8_t* base, const std::string& chunk);
+// mod_abilities.cpp
+bool RunModAbilityCommand(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& words);
+void PumpModAbilities(PPCContext& ctx, uint8_t* base);
+}  // namespace refii::vfs
 
 namespace {
 
@@ -347,6 +373,19 @@ void RaiseMenuRow(PPCContext& ctx, uint8_t* base, const std::vector<std::string>
   e.row = Name(w, 3);
   e.mod = Name(w, 4);
   refii::mods::Dispatch(e);
+  // No game VM (the title, the front end): the mods' front-end Lua hears it instead.
+  if (!refii::vfs::GameLuaUp(base)) {
+    char menu[160];
+    char row[160];
+    char mod[96];
+    Quote(e.menu, menu, sizeof(menu));
+    Quote(e.row, row, sizeof(row));
+    Quote(e.mod, mod, sizeof(mod));
+    char chunk[640];
+    std::snprintf(chunk, sizeof(chunk), "if Refii and Refii._fire then Refii._fire(%d, {player=%d,menu='%s',row='%s',mod='%s'}) end",
+                  REFII_EVENT_MOD_MENU_ROW, e.player, menu, row, mod);
+    refii::vfs::RunFrontEndLua(ctx, base, chunk);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -376,7 +415,8 @@ void RaiseMenuRow(PPCContext& ctx, uint8_t* base, const std::vector<std::string>
 // behind ParticleAttacher.SetParticleScale (0x8276724c) — and intensity `sub_832323E0(inst, f1)`,
 // instance+52 and every emitter's +408, behind SetParticleAlpha (0x8276701c). There is no colour
 // on an instance (the constructor initialises +48, +52 and +68 as single floats; a particle's
-// colour is its material's keyframe table), so a TINT cannot be honoured on this path.
+// colour is its system's material keyframe table), so a TINT is the instance's emitters pointed at
+// a tinted copy of that material (particle_dress.cpp TintFxInstance).
 //
 // END OF LIFE: `sub_83232048(inst, frames)` sets every element's +0xC0 = +0xC4 = frames; zero fails
 // the liveness test at once and the retire pass `sub_83234338` drops the instance, writing -1 back
@@ -407,6 +447,7 @@ struct Played {
   float offset[3] = {0.0f, 0.0f, 0.0f};
   float scale = 1.0f;
   float intensity = 1.0f;
+  float tint[3] = {1.0f, 1.0f, 1.0f};
   bool loop = true;
 };
 
@@ -581,6 +622,8 @@ bool Start(PPCContext& ctx, uint8_t* base, Played& p) {
     SetFloat(ctx, base, instance, kSetScale, p.scale);
   }
   SetFloat(ctx, base, instance, kSetIntensity, p.intensity);
+  // On top of the effect's own tint, which the constructor hook has already put on its material.
+  refii::vfs::TintFxInstance(ctx, base, instance, p.tint);
   return true;
 }
 
@@ -615,6 +658,12 @@ void Play(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
   p.scale = F(w, 10);
   p.intensity = F(w, 11);
   p.loop = I(w, 12) != 0;
+  if (w.size() >= 16) {
+    for (int c = 0; c < 3; ++c) {
+      const float v = F(w, 13 + static_cast<size_t>(c));
+      p.tint[c] = v >= 0.0f ? v : 0.0f;
+    }
+  }
   if (id == 0u || p.hash == 0u || !Start(ctx, base, p)) {
     return;
   }
@@ -652,6 +701,28 @@ void Pump(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+/// The plays riding `entity`, placed where it stands now: called from inside the update in which
+/// the guest moves that entity and its own effects (spell_fx_owner.cpp), so a ridden play stands
+/// where the guest put them in the same tick rather than where the entity stood when Pump ran.
+void PlaceRiding(PPCContext& ctx, uint8_t* base, uint32_t entity) {
+  if (entity == 0u || g_played.empty()) {
+    return;
+  }
+  for (auto& [id, p] : g_played) {
+    if (p.entity == 0u || refii_mod_handle_address(p.entity) != entity) {
+      continue;
+    }
+    const uint32_t instance = Instance(base, p.holder);
+    if (instance == 0u || refii::mods::LoadU32(base, instance + kManagerSlot) == 0xFFFFFFFFu) {
+      continue;
+    }
+    float xyz[3];
+    if (Where(ctx, base, p, xyz)) {
+      Place(ctx, base, instance, xyz);
+    }
+  }
+}
+
 }  // namespace guest_fx
 
 void RaiseMessageBox(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
@@ -662,14 +733,56 @@ void RaiseMessageBox(PPCContext& ctx, uint8_t* base, const std::vector<std::stri
   e.button = I(w, 2);
   e.player = I(w, 3);
   refii::mods::Dispatch(e);
+  if (!refii::vfs::GameLuaUp(base)) {
+    char chunk[256];
+    std::snprintf(chunk, sizeof(chunk), "if Refii and Refii._fire then Refii._fire(%d, {id=%u,button=%d,player=%d}) end",
+                  REFII_EVENT_MOD_MESSAGE_BOX, e.id, e.button, e.player);
+    refii::vfs::RunFrontEndLua(ctx, base, chunk);
+  }
+}
+
+void RaiseNotice(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
+  refii::mods::ModNoticeEvent e{};
+  e.ctx = &ctx;
+  e.base = base;
+  e.id = U(w, 1);
+  e.outcome = I(w, 2);
+  e.player = I(w, 3);
+  refii::mods::Dispatch(e);
+  if (!refii::vfs::GameLuaUp(base)) {
+    char chunk[256];
+    std::snprintf(chunk, sizeof(chunk), "if Refii and Refii._fire then Refii._fire(%d, {id=%u,outcome=%d,player=%d}) end",
+                  REFII_EVENT_MOD_NOTICE, e.id, e.outcome, e.player);
+    refii::vfs::RunFrontEndLua(ctx, base, chunk);
+  }
+}
+
+void RaiseMenuBox(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
+  refii::mods::ModMenuBoxEvent e{};
+  e.ctx = &ctx;
+  e.base = base;
+  e.id = U(w, 1);
+  e.option = I(w, 2);
+  e.player = I(w, 3);
+  refii::mods::Dispatch(e);
+  if (!refii::vfs::GameLuaUp(base)) {
+    char chunk[256];
+    std::snprintf(chunk, sizeof(chunk), "if Refii and Refii._fire then Refii._fire(%d, {id=%u,option=%d,player=%d}) end",
+                  REFII_EVENT_MOD_MENU_BOX, e.id, e.option, e.player);
+    refii::vfs::RunFrontEndLua(ctx, base, chunk);
+  }
 }
 
 void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
-  const std::vector<std::string> w = Split(line, std::strncmp(line, "run_lua ", 8) == 0 ? 1 : 64);
+  const bool chunk = std::strncmp(line, "run_lua ", 8) == 0 || std::strncmp(line, "frontend_lua ", 13) == 0;
+  const std::vector<std::string> w = Split(line, chunk ? 1 : 64);
   if (w.empty()) {
     return;
   }
   const std::string& op = w[0];
+  if (refii::vfs::RunModAbilityCommand(ctx, base, w)) {
+    return;
+  }
   if (op == "query") {
     RunQuery(ctx, base, w);
   } else if (op == "give_gold") {
@@ -705,12 +818,20 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     RaiseMenuRow(ctx, base, w);
   } else if (op == "box_answer" && w.size() >= 4) {
     RaiseMessageBox(ctx, base, w);
+  } else if (op == "notice_done" && w.size() >= 4) {
+    RaiseNotice(ctx, base, w);
+  } else if (op == "menu_box_answer" && w.size() >= 4) {
+    RaiseMenuBox(ctx, base, w);
   } else if (op == "run_lua" && w.size() >= 2) {
     refii_mod_run_game_lua(&ctx, base, w[1].c_str());
   } else if (op == "fx_play") {
     guest_fx::Play(ctx, base, w);
   } else if (op == "fx_stop") {
     guest_fx::Stop(ctx, base, U(w, 1));
+  } else if (op == "fx_reload") {
+    refii::vfs::ReloadParticleBank(ctx, base);
+  } else if (op == "frontend_lua" && w.size() >= 2) {
+    refii::vfs::RunFrontEndLua(ctx, base, w[1]);
   }
 }
 
@@ -727,6 +848,16 @@ void RunModCommands(PPCContext& ctx, uint8_t* base) {
   }
   PPCContext work = ctx;
   guest_fx::Pump(work, base);
+  work = ctx;
+  refii::vfs::PumpParticleBank(work, base);
+  work = ctx;
+  refii::vfs::PumpModAbilities(work, base);
+}
+
+/// The classic plays riding `entity` placed at it now (guest_fx::PlaceRiding); guest thread only.
+void PlaceFxRiding(PPCContext& ctx, uint8_t* base, uint32_t entity) {
+  PPCContext work = ctx;
+  guest_fx::PlaceRiding(work, base, entity);
 }
 
 }  // namespace refii::vfs

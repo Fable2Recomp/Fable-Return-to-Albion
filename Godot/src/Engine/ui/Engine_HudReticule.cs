@@ -129,6 +129,12 @@ public sealed partial class Engine_HudReticule : Node3D
 		return _textures[which];
 	}
 
+	/// <summary>
+	/// A mod's size for this widget (<c>ui/hud.json</c> <c>scale</c>, <see cref="Engine_HudWidgets"/>):
+	/// each mark is drawn this much larger about its own point; 1 is the game's.
+	/// </summary>
+	public float PieceScale { get; set; } = 1f;
+
 	public override void _Process(double delta)
 	{
 		for (int player = 0; player < 2; ++player)
@@ -160,7 +166,7 @@ public sealed partial class Engine_HudReticule : Node3D
 			float r = ((1f - m) * 18f) + 8f;
 			float s = ((1f - t) * 12f) + 12f;
 			float k = ((1f - t) * 1.25f) + 1f;
-			float scale = UnitsPerGuestPixel;
+			float scale = UnitsPerGuestPixel * PieceScale;
 			var tint = new Color(aim.Colour.R, aim.Colour.G, aim.Colour.B, aim.Colour.A * t);
 			Texture2D? texture = TextureFor(aim.Mode);
 

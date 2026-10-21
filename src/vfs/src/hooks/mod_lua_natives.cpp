@@ -30,6 +30,10 @@
 //   (play_fx / play_fx_on are the preamble's, Engine_ModLua: they unpack the options table)
 //   open_menu(name [, p]) · _message_box(title, text, accept, cancel, question, p)
 //   (message_box is the preamble's: it fills the defaults)
+//   notice(title, text [, seconds [, p]]) · _menu_box(title, text, p, cancelable, n, o1 .. o12)
+//   (menu_box is the preamble's: it unpacks the options table)
+//   _menu_rows(menu, rows, p) · open_screen(id [, p])
+//   (set_menu_rows is the preamble's: it writes the rows table as the bus text)
 //   _write(kind, field, value) · _error(text)
 
 #include <cmath>
@@ -1143,6 +1147,25 @@ REFII_LUA_NATIVE(NativeOpenMenu) {
   RESULTS(1);
 }
 
+// Refii._menu_rows(menu, rows, p): refii_mod_set_menu_rows with the preamble's text for the rows
+// table (Refii.set_menu_rows). True when posted.
+REFII_LUA_NATIVE(NativeMenuRows) {
+  char menu[96];
+  char rows[1800];
+  lua.String(1, menu, sizeof(menu));
+  lua.String(2, rows, sizeof(rows));
+  lua.PushBoolean(refii_mod_set_menu_rows(lua.Int(3), menu, rows) != 0);
+  RESULTS(1);
+}
+
+// Refii.open_screen(id [, p]): a host-owned screen for player p (refii_mod_open_screen). True when posted.
+REFII_LUA_NATIVE(NativeOpenScreen) {
+  const double id = lua.Number(1);
+  lua.PushBoolean(id >= 1.0 && id <= 4294967295.0 &&
+                  refii_mod_open_screen(lua.Int(2), static_cast<uint32_t>(id)) != 0);
+  RESULTS(1);
+}
+
 // Refii._message_box(title, text, accept, cancel, question, p): refii_mod_message_box; the
 // preamble's Refii.message_box fills the defaults. The id the mod_message_box event carries, or nil.
 REFII_LUA_NATIVE(NativeMessageBox) {
@@ -1155,6 +1178,47 @@ REFII_LUA_NATIVE(NativeMessageBox) {
   lua.String(3, accept, sizeof(accept));
   lua.String(4, cancel, sizeof(cancel));
   const uint32_t id = refii_mod_message_box(lua.Int(6), title, text, accept, lua.Int(5) != 0 ? cancel : nullptr);
+  if (id != 0) {
+    lua.PushNumber(id);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.notice(title, text [, seconds [, p]]): refii_mod_notice — the notice channel, for player p
+// (0 or nil: whoever owns the menus here). The id the mod_notice event carries, or nil.
+REFII_LUA_NATIVE(NativeNotice) {
+  char title[128];
+  char text[480];
+  lua.String(1, title, sizeof(title));
+  lua.String(2, text, sizeof(text));
+  const uint32_t id = refii_mod_notice(lua.Int(4), title, text, static_cast<float>(lua.Number(3)));
+  if (id != 0) {
+    lua.PushNumber(id);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii._menu_box(title, text, p, cancelable, n, o1 .. o12): refii_mod_menu_box; the preamble's
+// Refii.menu_box(title, text, options [, p [, cancelable]]) unpacks the options table (this Lua's
+// C API here has no array reads). The id the mod_menu_box event carries, or nil.
+REFII_LUA_NATIVE(NativeMenuBox) {
+  constexpr int32_t kMax = 12;
+  char title[128];
+  char text[480];
+  char options[kMax][96];
+  const char* list[kMax];
+  lua.String(1, title, sizeof(title));
+  lua.String(2, text, sizeof(text));
+  const int32_t count = static_cast<int32_t>(Lua::Clamp(lua.Number(5), 0.0, kMax));
+  for (int32_t i = 0; i < count; ++i) {
+    lua.String(6 + i, options[i], sizeof(options[i]));
+    list[i] = options[i];
+  }
+  const uint32_t id = refii_mod_menu_box(lua.Int(3), title, text, list, count, lua.Int(4) != 0 ? 1 : 0);
   if (id != 0) {
     lua.PushNumber(id);
   } else {
@@ -1265,7 +1329,11 @@ Native g_natives[] = {
     {"_play_fx", &NativePlayFx, 0},
     {"stop_fx", &NativeStopFx, 0},
     {"open_menu", &NativeOpenMenu, 0},
+    {"_menu_rows", &NativeMenuRows, 0},
+    {"open_screen", &NativeOpenScreen, 0},
     {"_message_box", &NativeMessageBox, 0},
+    {"notice", &NativeNotice, 0},
+    {"_menu_box", &NativeMenuBox, 0},
     {"_write", &NativeWrite, 0},
     {"_error", &NativeError, 0},
     {"_cancelled", &NativeCancelled, 0},

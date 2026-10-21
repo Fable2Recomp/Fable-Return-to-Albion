@@ -104,8 +104,10 @@ public partial class GameUi
 		if (_coopNotices.Tick(delta, PartnerName(), inGame) is { } text)
 		{
 			GD.Print($"[coop-notice] {text}");
-			_boxes.InfoBoxEx(Engine_UiCoopNotices.BoxName, Engine_UiCoopNotices.Seconds, text);
+			Engine_UiNotices.Post(0u, 0, string.Empty, text, Engine_UiCoopNotices.Seconds, Engine_UiCoopNotices.BoxName);
 		}
+
+		DriveNotices(inGame);
 	}
 
 	private static string JoinAskKey(string userId) => "joinask:" + userId;

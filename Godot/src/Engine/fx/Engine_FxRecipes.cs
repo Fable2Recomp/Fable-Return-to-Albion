@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using Refii.Host;
 
@@ -14,7 +15,7 @@ namespace Refii.Fx;
 /// <code>
 /// { "recipes": [
 ///   { "id": "spell_weaving.vortex_fire",
-///     "when": ["mod:spell_weaving.look", "mod:spell_weaving.look2"], "equals": 33,
+///     "with": "spell_weaving_vortex_fire", "withRadius": 10,
 ///     "base": ["fxspl_vortex_orb", "fxspl_vortex_orb_01"],
 ///     "tint": [1.7, 0.7, 0.25], "intensity": 1.3, "size": 1.0,
 ///     "attach": [ { "effect": "fxspl_blast_fire_ring", "scale": 0.9, "count": 1 },
@@ -22,7 +23,9 @@ namespace Refii.Fx;
 ///                   "turnsPerSecond": 1.0 } ] } ] }
 /// </code>
 /// <para>A recipe is ACTIVE while any of its <c>when</c> mod values equals <c>equals</c>
-/// (<see cref="Begin"/>, once per frame). While active, every live effect named in <c>base</c>
+/// (<see cref="Begin"/>, once per frame), or — a look bound to a CAST — while the effect it names
+/// in <c>with</c> is playing (<c>play_fx_on</c>; see <see cref="WithHash"/>), and then only on the
+/// base effects that play binds. While active, every live effect named in <c>base</c>
 /// takes the recipe's <c>tint</c> (a multiplier on each particle's colour), <c>intensity</c>
 /// and <c>size</c> multipliers, and the <c>attach</c> effects as child nodes: <c>count</c> copies,
 /// spread evenly on a ring of <c>radius</c> at <c>height</c>, turning about the base at
@@ -31,7 +34,14 @@ namespace Refii.Fx;
 /// recipe naming an effect wins; mods compose by load order.</para>
 /// <para>A recipe may also carry <c>pieces</c>, authored looks the banks never had, drawn with the
 /// game's own effect textures and meshes (<see cref="Engine_FxRecipePieces"/>): <c>embers</c>,
-/// <c>arcs</c>, <c>ring</c>, <c>blades</c>. They hang on the anchor like the attachments.</para>
+/// <c>arcs</c>, <c>ring</c>, <c>blades</c>. ONE FX MODEL: a recipe's pieces are an EFFECT of the
+/// bank's model (<see cref="FxEffect.Pieces"/>), named <see cref="PiecesEffectName"/> and stated
+/// into Godot's bank (<see cref="Engine_FxModEffects.Contribute"/>), so they hang on the anchor as
+/// one more attachment. Every attachment is made by <see cref="Engine_FxPlayer.Attach"/>, the node
+/// play_fx makes. A piece and an attachment are Godot's drawing only (the classic look shows
+/// neither); a look that must play under both looks is a mod effect (<c>fx/effects/*.json</c>, the
+/// bank's own entities) played per cast, with the recipe binding the tint to it through
+/// <c>with</c>.</para>
 /// <para>Effect names are the <c>.pfx</c> names (FNV-1 lower-cased, as the banks key them) or
 /// <c>FX_&lt;hash&gt;</c> tokens.</para>
 /// </remarks>
@@ -75,8 +85,8 @@ public static class Engine_FxRecipes
 		bool EveryNode = false,
 		HashSet<uint>? Entities = null,
 		IReadOnlyList<string>? EntityNames = null,
-		string Instances = "",
-		float InstanceRadius = 10f);
+		string With = "",
+		float WithRadius = 10f);
 
 	private sealed class Applied
 	{
@@ -91,204 +101,23 @@ public static class Engine_FxRecipes
 	}
 
 	/// <summary>
-	/// INSTANCES. A look stated PER CAST, not per player: the mod publishes a table under a prefix
-	/// — <c>&lt;prefix&gt;count</c>, then per entry <c>&lt;prefix&gt;&lt;i&gt;_look</c>, <c>_x _y _z</c>
-	/// (the guest's own axes) and <c>_hi _lo</c> (the entity the look rides, 16 bits each, 0 for
-	/// none) — one entry per vortex, per fireball in flight, per hovering sword. A recipe that
-	/// names the prefix (<c>"instances": "mod:spell_weaving.inst_"</c>) holds wherever an entry
-	/// carries its look: an effect node is dressed by the entry of its look nearest to it within
-	/// <c>instanceRadius</c>, an entity by the entry that names it. So two vortices from two slots
-	/// each carry their own partner's look, and a cast with no partner carries none.
+	/// WITH: A LOOK BOUND TO A CAST BY THE EFFECT THE CAST PLAYS. A mod plays its look per cast with
+	/// <c>play_fx_on</c> / <c>play_fx</c> (<see cref="Engine_FxPlayer"/>) on whatever the cast put in the
+	/// world — the vortex, the fireball's shot, each sword, each victim. A recipe naming that effect
+	/// (<c>"with": "spell_weaving_vortex_fire"</c>) holds while it plays, and dresses a base effect
+	/// only where it plays (<see cref="Engine_FxPlayer.Bind"/>): on the entity the guest states the
+	/// base node belongs to — the effect feed's owner, what its entity is attached to, or the spell
+	/// whose own update places it (the vortex's ground effects, a Blades sword's; the fireball shot's
+	/// effect is attached to the shot) — and an effect stated to another cast binds no other play;
+	/// only an effect the guest states no cast for binds by standing within <c>withRadius</c> metres
+	/// of a play. So two vortices from two slots each take their own partner's tint, and a cast that
+	/// plays no look takes none. The node a play binds first carries the recipe's attachments and
+	/// light, one per play.
 	/// </summary>
-	public readonly record struct Instance(int Look, Vector3 Position, uint Entity, uint Serial);
+	private static uint WithHash(Recipe recipe) => recipe.With.Length == 0 ? 0u : Engine_FxEffectJson.HashOf(recipe.With);
 
-	/// <summary>Where the looks' own nodes hang; the effect host sets it (GameFx).</summary>
-	public static Node3D? AnchorParent { get; set; }
-
-	private static readonly Dictionary<string, List<Instance>> _instances = new(StringComparer.Ordinal);
-
-	/// <summary>The guest's axes to Godot's, as the entity feed places things.</summary>
-	private static Vector3 GuestToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
-
-	private static void ReadInstances(string prefix)
-	{
-		if (_instances.ContainsKey(prefix))
-		{
-			return;
-		}
-
-		var list = new List<Instance>();
-		_instances[prefix] = list;
-		if (!HostBridge.TryGetModValue(prefix + "count", out float count))
-		{
-			return;
-		}
-
-		int n = Math.Clamp((int)count, 0, 64);
-		for (int i = 0; i < n; i++)
-		{
-			string at = prefix + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-			if (!HostBridge.TryGetModValue(at + "_look", out float look) ||
-				!HostBridge.TryGetModValue(at + "_x", out float x) ||
-				!HostBridge.TryGetModValue(at + "_y", out float y) ||
-				!HostBridge.TryGetModValue(at + "_z", out float z))
-			{
-				continue;
-			}
-
-			uint entity = 0;
-			if (HostBridge.TryGetModValue(at + "_hi", out float hi) && HostBridge.TryGetModValue(at + "_lo", out float lo))
-			{
-				entity = ((uint)hi << 16) | ((uint)lo & 0xFFFFu);
-			}
-
-			uint serial = HostBridge.TryGetModValue(at + "_serial", out float stated) ? (uint)stated : (uint)i;
-			list.Add(new Instance((int)look, GuestToGodot(new Vector3(x, y, z)), entity, serial));
-		}
-	}
-
-	/// <summary>The table's entries of <paramref name="recipe"/>'s look; empty for a recipe without a table.</summary>
-	private static IEnumerable<Instance> InstancesOf(Recipe recipe)
-	{
-		if (recipe.Instances.Length == 0 || !_instances.TryGetValue(recipe.Instances, out List<Instance>? list))
-		{
-			yield break;
-		}
-
-		int look = (int)recipe.Match;
-		foreach (Instance instance in list)
-		{
-			if (instance.Look == look)
-			{
-				yield return instance;
-			}
-		}
-	}
-
-	/// <summary>Whether an instance of the recipe's look stands within its radius of <paramref name="position"/>.</summary>
-	private static bool NearAnInstance(Recipe recipe, Vector3 position)
-	{
-		float radius = recipe.InstanceRadius * recipe.InstanceRadius;
-		foreach (Instance instance in InstancesOf(recipe))
-		{
-			if (instance.Position.DistanceSquaredTo(position) <= radius)
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	private static bool NamesEntity(Recipe recipe, uint address)
-	{
-		foreach (Instance instance in InstancesOf(recipe))
-		{
-			if (instance.Entity == address)
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	/// <summary>
-	/// THE LOOK IS A TEMPLATE, PLAYED PER CAST. For every instance the mod states (the vortex,
-	/// the fireball in flight, each hovering sword, the cast's origin for an instant spell) the
-	/// recipe of its look gets its own node, placed where the mod says each frame, carrying the
-	/// recipe's light, pieces and attached effects — "Fire Vortex" is always this combination,
-	/// at every fire vortex, whatever the game's own effects are called. The game's base effects
-	/// bound to the cast take the tint, intensity and size only.
-	/// </summary>
-	private sealed class InstanceAnchor
-	{
-		public Node3D Node = null!;
-		public Recipe Recipe = null!;
-		public readonly List<Node> Children = new();
-		public bool Seen;
-	}
-
-	private static readonly Dictionary<(string, uint, uint), InstanceAnchor> _instanceAnchors = new();
-
-	private static void ApplyInstances()
-	{
-		foreach (InstanceAnchor anchor in _instanceAnchors.Values)
-		{
-			anchor.Seen = false;
-		}
-
-		Node3D? parent = AnchorParent;
-		if (parent is not null && GodotObject.IsInstanceValid(parent) && parent.IsInsideTree())
-		{
-			foreach (Recipe recipe in _active)
-			{
-				if (recipe.Instances.Length == 0)
-				{
-					continue;
-				}
-
-				foreach (Instance instance in InstancesOf(recipe))
-				{
-					(string, uint, uint) key = (recipe.Id, instance.Entity, instance.Serial);
-					if (!_instanceAnchors.TryGetValue(key, out InstanceAnchor? anchor) || !GodotObject.IsInstanceValid(anchor.Node))
-					{
-						anchor = new InstanceAnchor
-						{
-							Node = new Node3D { Name = $"Recipe_{recipe.Id}_{instance.Serial}_{instance.Entity:X8}" },
-							Recipe = recipe,
-						};
-						parent.AddChild(anchor.Node);
-						DressChildren(anchor.Node, recipe, anchor.Children);
-						_instanceAnchors[key] = anchor;
-						string once = recipe.Id + "|instance|" + instance.Serial.ToString(System.Globalization.CultureInfo.InvariantCulture);
-						if (_reported.Add(once))
-						{
-							GD.Print($"[fx-recipes] {recipe.Id}: cast {instance.Serial} entity {instance.Entity:x8} — the look's own node placed");
-						}
-					}
-
-					anchor.Node.GlobalPosition = instance.Position;
-					anchor.Seen = true;
-				}
-			}
-		}
-
-		List<(string, uint, uint)>? gone = null;
-		foreach (((string, uint, uint) key, InstanceAnchor anchor) in _instanceAnchors)
-		{
-			if (!anchor.Seen)
-			{
-				DropChildren(anchor.Node, anchor.Children);
-				(gone ??= new List<(string, uint, uint)>()).Add(key);
-			}
-		}
-
-		if (gone is not null)
-		{
-			foreach ((string, uint, uint) key in gone)
-			{
-				_instanceAnchors.Remove(key);
-			}
-		}
-	}
-
-	private static void DropChildren(Node3D node, List<Node> children)
-	{
-		foreach (Node child in children)
-		{
-			if (GodotObject.IsInstanceValid(child))
-			{
-				child.QueueFree();
-			}
-		}
-
-		children.Clear();
-		if (GodotObject.IsInstanceValid(node))
-		{
-			node.QueueFree();
-		}
-	}
+	/// <summary>Where the anchoring node of each (recipe, play) is: the first base node the play bound.</summary>
+	private static readonly Dictionary<(string Recipe, uint Play), FableFx> _withAnchors = new();
 
 	/// <summary>
 	/// ENTITY ANCHORS. Some of a spell's live things are not effects but ENTITIES the guest
@@ -326,7 +155,7 @@ public static class Engine_FxRecipes
 		{
 			foreach (Recipe recipe in _active)
 			{
-				if (recipe.Entities is not { Count: > 0 } wanted || recipe.Instances.Length != 0)
+				if (recipe.Entities is not { Count: > 0 } wanted || recipe.With.Length != 0)
 				{
 					continue;
 				}
@@ -334,11 +163,6 @@ public static class Engine_FxRecipes
 				foreach (HostBridge.GuestEntity entity in entities)
 				{
 					if (!wanted.Contains(entity.RecordHash))
-					{
-						continue;
-					}
-
-					if (recipe.Instances.Length != 0 && !NamesEntity(recipe, entity.Address))
 					{
 						continue;
 					}
@@ -410,9 +234,9 @@ public static class Engine_FxRecipes
 	}
 
 	/// <summary>
-	/// A base effect of an active recipe that NO instance claimed, once per (recipe, effect)
-	/// every few seconds: where the node stands, who owns it, and the nearest instance of the
-	/// look — the line that says why a cast's effect went undressed.
+	/// A base effect of an active <c>with</c> recipe that no play of its effect bound, once per
+	/// (recipe, effect) every few seconds: where the node stands and who owns it — the line that says
+	/// why a cast's effect went undressed.
 	/// </summary>
 	private static readonly Dictionary<string, ulong> _rejectedAt = new(System.StringComparer.Ordinal);
 
@@ -427,20 +251,6 @@ public static class Engine_FxRecipes
 
 		_rejectedAt[key] = now;
 		Vector3 at = node.GlobalPosition;
-		float best = float.MaxValue;
-		Instance nearest = default;
-		int count = 0;
-		foreach (Instance instance in InstancesOf(recipe))
-		{
-			count++;
-			float d = instance.Position.DistanceTo(at);
-			if (d < best)
-			{
-				best = d;
-				nearest = instance;
-			}
-		}
-
 		string name = effectHash.ToString("x8");
 		foreach (string candidate in recipe.BaseNames)
 		{
@@ -453,9 +263,7 @@ public static class Engine_FxRecipes
 		}
 
 		GD.Print($"[fx-recipes] {recipe.Id}: base effect {name} at ({at.X:F1}, {at.Y:F1}, {at.Z:F1}) owner {owner:x8} attached {attached:x8} — " +
-			(count == 0
-				? "no instance of its look is stated"
-				: $"nearest of {count} instance(s) is {best:F1} m away at ({nearest.Position.X:F1}, {nearest.Position.Y:F1}, {nearest.Position.Z:F1}) entity {nearest.Entity:x8}; radius {recipe.InstanceRadius:F0}"));
+			$"no play of '{recipe.With}' rides its entity or stands within {recipe.WithRadius:F0} m");
 	}
 
 	/// <summary>Each (recipe, effect) dressing reported once, so a run says what a cast really plays.</summary>
@@ -516,12 +324,7 @@ public static class Engine_FxRecipes
 		}
 
 		_entityAnchors.Clear();
-		foreach (InstanceAnchor anchor in _instanceAnchors.Values)
-		{
-			DropChildren(anchor.Node, anchor.Children);
-		}
-
-		_instanceAnchors.Clear();
+		_withAnchors.Clear();
 	}
 
 	/// <summary>How many recipes are active this frame, for the FX report.</summary>
@@ -531,24 +334,13 @@ public static class Engine_FxRecipes
 	public static void Begin()
 	{
 		_active.Clear();
-		_instances.Clear();
+		Engine_FxPlayer.BeginLiveEffects();
 		foreach (Recipe recipe in All)
 		{
-			if (recipe.Instances.Length != 0)
+			if (recipe.With.Length != 0 && Engine_FxPlayer.IsPlaying(WithHash(recipe)))
 			{
-				ReadInstances(recipe.Instances);
-				bool stated = false;
-				foreach (Instance _ in InstancesOf(recipe))
-				{
-					stated = true;
-					break;
-				}
-
-				if (stated)
-				{
-					_active.Add(recipe);
-					continue;
-				}
+				_active.Add(recipe);
+				continue;
 			}
 
 			foreach (string key in recipe.When)
@@ -561,8 +353,6 @@ public static class Engine_FxRecipes
 				}
 			}
 		}
-
-		ApplyInstances();
 
 		_gone.Clear();
 		foreach ((FableFx node, _) in _applied)
@@ -585,16 +375,29 @@ public static class Engine_FxRecipes
 				_anchorOf.Remove(recipe);
 			}
 		}
+
+		foreach (((string, uint) key, FableFx node) in new List<KeyValuePair<(string, uint), FableFx>>(_withAnchors))
+		{
+			if (!GodotObject.IsInstanceValid(node) || !node.IsInsideTree() || !_applied.ContainsKey(node))
+			{
+				_withAnchors.Remove(key);
+			}
+		}
 	}
 
 	/// <summary>
 	/// Dresses or undresses one live effect's node for this frame's active recipes.
 	/// <paramref name="owner"/> and <paramref name="attached"/> are the entities the feed states
-	/// for the effect (the emitter's owner, and what its entity was attached to), 0 when unknown.
+	/// for the effect (the emitter's owner, and what its entity was attached to), 0 when unknown;
+	/// <paramref name="handle"/> is the effect instance the feed names it by.
 	/// </summary>
-	public static void Apply(FableFx node, uint effectHash, uint owner = 0, uint attached = 0)
+	public static void Apply(FableFx node, uint effectHash, uint owner = 0, uint attached = 0, uint handle = 0)
 	{
+		// What a play riding an entity with no drawn body follows (Engine_FxPlayer).
+		Engine_FxPlayer.NoteLiveEffect(node, owner, attached, handle);
+
 		Recipe? want = null;
+		uint play = 0;
 		foreach (Recipe recipe in _active)
 		{
 			if (!recipe.Base.Contains(effectHash))
@@ -602,12 +405,10 @@ public static class Engine_FxRecipes
 				continue;
 			}
 
-			// With an instance table the look belongs to a CAST: the node is dressed when an
-			// instance of the look names the entity the effect belongs to, or — for an effect
-			// the guest owns by a spell rather than an entity — stands near it.
-			if (recipe.Instances.Length != 0 &&
-				!((owner != 0 && NamesEntity(recipe, owner)) || (attached != 0 && NamesEntity(recipe, attached)) ||
-					NearAnInstance(recipe, node.GlobalPosition)))
+			// A look bound to a CAST: the node is dressed where a play of the recipe's effect rides
+			// its entity or stands near it.
+			if (recipe.With.Length != 0 &&
+				!Engine_FxPlayer.Binds(WithHash(recipe), owner, attached, handle, node.GlobalPosition, recipe.WithRadius, out play))
 			{
 				ReportRejected(recipe, effectHash, node, owner, attached);
 				continue;
@@ -653,31 +454,34 @@ public static class Engine_FxRecipes
 			// never stand-ins (the Blades' appear and destroy bursts would otherwise each carry a
 			// column for a moment).
 			bool anchored;
-			if (want.Instances.Length != 0)
+			if (want.With.Length != 0)
 			{
-				anchored = false;
+				// One per play: the first base node the play binds carries the light and attachments.
+				(string, uint) key = (want.Id, play);
+				if (!_withAnchors.TryGetValue(key, out FableFx? first) || !GodotObject.IsInstanceValid(first) ||
+					!first.IsInsideTree() || !_applied.ContainsKey(first))
+				{
+					_withAnchors[key] = node;
+					first = node;
+				}
+
+				anchored = ReferenceEquals(first, node);
 			}
 			else if (named)
 			{
 				anchored = want.EveryNode || free;
-			}
-			else if (want.Instances.Length != 0)
-			{
-				// Bound to a CAST by the instance table above: the cast's own node carries the
-				// pieces (ApplyInstances); the game's effect takes the tint only.
-				anchored = false;
 			}
 			else
 			{
 				anchored = want.Entities is null && !AnyNamedLive(want) && free;
 			}
 
-			if (anchored && (!want.EveryNode || !named) && want.Instances.Length == 0)
+			if (anchored && (!want.EveryNode || !named) && want.With.Length == 0)
 			{
 				_anchorOf[want] = node;
 			}
 
-			if (anchored && named)
+			if (anchored && named && want.With.Length == 0)
 			{
 				foreach ((FableFx other, Applied dressed) in new List<KeyValuePair<FableFx, Applied>>(_applied))
 				{
@@ -801,16 +605,10 @@ public static class Engine_FxRecipes
 			children.Add(light);
 		}
 
-		if (recipe.Pieces is not null)
+		if (recipe.Pieces is { Count: > 0 } &&
+			Engine_FxPlayer.Attach(node, PiecesEffectName(recipe), Vector3.Zero, nodeName: "RecipePieces", bank: PiecesBank(recipe)) is { } pieces)
 		{
-			foreach (Engine_FxRecipePieces.Piece piece in recipe.Pieces)
-			{
-				if (Engine_FxRecipePieces.Build(piece) is { } made)
-				{
-					node.AddChild(made);
-					children.Add(made);
-				}
-			}
+			children.Add(pieces);
 		}
 
 		foreach (Attachment attachment in recipe.Attach)
@@ -833,16 +631,19 @@ public static class Engine_FxRecipes
 					int ordinal = (level * count) + i;
 					float levelScale = attachment.Scale * Mathf.Pow(attachment.ScaleStep, level);
 					float levelRadius = attachment.Radius + (attachment.RadiusStep * level);
-					var child = new FableFx
+					// Each level starts a third of a turn on from the last, so a stack spirals.
+					float angle = (count > 1 ? Mathf.Tau * i / count : 0f) + (level * Mathf.Tau / 3f);
+					var local = new Vector3(
+						levelRadius * Mathf.Cos(angle), attachment.Height + (level * attachment.StackStep),
+						levelRadius * Mathf.Sin(angle));
+					if (Engine_FxPlayer.Attach(
+							parent, attachment.Effect, local, levelScale, attachment.Tint ?? Colors.White,
+							attachment.FadeIn > 0f ? 0f : attachment.Intensity, true, attachment.Stagger <= 0f || ordinal == 0,
+							$"Recipe_{attachment.Effect}_{level}_{i}") is not { } child)
 					{
-						Name = $"Recipe_{attachment.Effect}_{level}_{i}",
-						EffectName = attachment.Effect,
-						Loop = true,
-						EffectScale = levelScale,
-						Intensity = attachment.FadeIn > 0f ? 0f : attachment.Intensity,
-						Playing = attachment.Stagger <= 0f || ordinal == 0,
-						Tint = attachment.Tint ?? Colors.White,
-					};
+						continue;
+					}
+
 					if (attachment.FadeIn > 0f)
 					{
 						// Brought up over FadeIn seconds: a trail's first frames are a flat flash
@@ -869,12 +670,6 @@ public static class Engine_FxRecipes
 							}
 						};
 					}
-					// Each level starts a third of a turn on from the last, so a stack spirals.
-					float angle = (count > 1 ? Mathf.Tau * i / count : 0f) + (level * Mathf.Tau / 3f);
-					child.Position = new Vector3(
-						levelRadius * Mathf.Cos(angle), attachment.Height + (level * attachment.StackStep),
-						levelRadius * Mathf.Sin(angle));
-					parent.AddChild(child);
 					if (ReferenceEquals(parent, node))
 					{
 						children.Add(child);
@@ -952,7 +747,82 @@ public static class Engine_FxRecipes
 			GD.Print($"[fx-recipes] {recipes.Count} from mods");
 		}
 
+		ContributePieces(recipes);
 		return recipes;
+	}
+
+	/// <summary>The effect a recipe's pieces are (<see cref="FxEffect.Pieces"/>): <c>&lt;id&gt;.pieces</c>, in effect-name characters.</summary>
+	public static string PiecesEffectName(Recipe recipe)
+	{
+		var name = new System.Text.StringBuilder(recipe.Id.Length + 7);
+		foreach (char c in recipe.Id)
+		{
+			name.Append(char.IsLetterOrDigit(c) || c is '_' or '-' or '.' ? c : '_');
+		}
+
+		return name.Append(".pieces").ToString();
+	}
+
+	/// <summary>A recipe's pieces as the effect definition they are stated as.</summary>
+	public static Engine_FxEffectJson.Definition PiecesDefinition(Recipe recipe)
+	{
+		var d = new Engine_FxEffectJson.Definition { Name = PiecesEffectName(recipe) };
+		if (recipe.Pieces is not null)
+		{
+			d.Pieces.AddRange(recipe.Pieces);
+		}
+
+		return d;
+	}
+
+	private static string _contributedPieces = string.Empty;
+
+	/// <summary>Every recipe's pieces stated into Godot's bank, when they changed.</summary>
+	private static void ContributePieces(IReadOnlyList<Recipe> recipes)
+	{
+		var sources = new List<Engine_FxModEffects.Source>();
+		var signature = new System.Text.StringBuilder();
+		foreach (Recipe recipe in recipes)
+		{
+			if (recipe.Pieces is not { Count: > 0 })
+			{
+				continue;
+			}
+
+			sources.Add(new Engine_FxModEffects.Source(recipe.Mod, RecipesPath, PiecesDefinition(recipe)));
+			signature.Append(recipe.Id).Append('|');
+			foreach (Engine_FxRecipePieces.Piece piece in recipe.Pieces)
+			{
+				signature.Append(piece).Append('|');
+			}
+		}
+
+		string text = signature.ToString();
+		if (text == _contributedPieces)
+		{
+			return;
+		}
+
+		_contributedPieces = text;
+		Engine_FxModEffects.Contribute(RecipesPath, sources);
+	}
+
+	/// <summary>
+	/// The bank <paramref name="recipe"/>'s pieces draw from: the shared one when it states them as
+	/// this recipe does, else a preview bank with them (a recipe being edited in the FX Lab).
+	/// </summary>
+	private static FxBank? PiecesBank(Recipe recipe)
+	{
+		FxBank? shared = FableFx.SharedBank();
+		if (shared is null)
+		{
+			return null;
+		}
+
+		FxEffect? stated = shared.FindByName(PiecesEffectName(recipe));
+		return stated is not null && recipe.Pieces is not null && stated.Pieces.SequenceEqual(recipe.Pieces)
+			? null
+			: Engine_FxModEffects.PreviewBank(shared, PiecesDefinition(recipe));
 	}
 
 	/// <summary>One mod's <c>fx/recipes.json</c> text as recipes; malformed entries are skipped with a warning.</summary>
@@ -967,11 +837,6 @@ public static class Engine_FxRecipes
 			GD.PushWarning($"[fx-recipes] {mod}:{RecipesPath} has no \"recipes\" array; ignored");
 			return recipes;
 		}
-
-		var file = parsed.AsGodotDictionary();
-		string fileInstances = file.TryGetValue("instances", out Variant fileInstancesValue) ? fileInstancesValue.AsString() : string.Empty;
-		float fileRadius = file.TryGetValue("instanceRadius", out Variant fileRadiusValue) &&
-			fileRadiusValue.VariantType is Variant.Type.Float or Variant.Type.Int ? (float)fileRadiusValue.AsDouble() : 10f;
 
 		foreach (Variant value in list.AsGodotArray())
 		{
@@ -1100,18 +965,13 @@ public static class Engine_FxRecipes
 				}
 			}
 
-			string instances = record.ContainsKey("instances") ? Text("instances") : fileInstances;
-			if (instances.StartsWith("mod:", StringComparison.Ordinal))
-			{
-				instances = instances[4..];
-			}
-
-			float instanceRadius = Number("instanceRadius", fileRadius);
+			string with = Text("with");
+			float withRadius = Number("withRadius", 10f);
 
 			string id = Text("id");
-			if (id.Length == 0 || (when.Count == 0 && instances.Length == 0) || baseNames.Count == 0)
+			if (id.Length == 0 || (when.Count == 0 && with.Length == 0) || baseNames.Count == 0)
 			{
-				GD.PushWarning($"[fx-recipes] {mod}: a recipe needs id, when (or instances) and base; skipped");
+				GD.PushWarning($"[fx-recipes] {mod}: a recipe needs id, when (or with) and base; skipped");
 				continue;
 			}
 
@@ -1129,7 +989,7 @@ public static class Engine_FxRecipes
 				}
 			}
 
-			recipes.Add(Make(id, mod, when, Number("equals", 1f), baseNames, tint, Number("intensity", 1f), Number("size", 1f), attach, anchorNames, glow, pieces, everyNode, entityNames, instances, instanceRadius));
+			recipes.Add(Make(id, mod, when, Number("equals", 1f), baseNames, tint, Number("intensity", 1f), Number("size", 1f), attach, anchorNames, glow, pieces, everyNode, entityNames, with, withRadius));
 		}
 
 		return recipes;
@@ -1185,7 +1045,7 @@ public static class Engine_FxRecipes
 		string id, string mod, IReadOnlyList<string> when, float match, IReadOnlyList<string> baseNames,
 		Color tint, float intensity, float size, IReadOnlyList<Attachment> attach,
 		IReadOnlyList<string>? anchorNames = null, Light? glow = null, IReadOnlyList<Engine_FxRecipePieces.Piece>? pieces = null,
-		bool everyNode = false, IReadOnlyList<string>? entityNames = null, string instances = "", float instanceRadius = 10f)
+		bool everyNode = false, IReadOnlyList<string>? entityNames = null, string with = "", float withRadius = 10f)
 	{
 		static HashSet<uint> Hashes(IReadOnlyList<string> names)
 		{
@@ -1218,7 +1078,7 @@ public static class Engine_FxRecipes
 
 		IReadOnlyList<string> anchors = anchorNames ?? System.Array.Empty<string>();
 		return new Recipe(id, mod, when, match, Hashes(baseNames), tint, intensity, size, attach, baseNames, Hashes(anchors), anchors, glow, pieces, everyNode,
-			EntityHashes(entityNames), entityNames is { Count: > 0 } ? entityNames : null, instances, instanceRadius);
+			EntityHashes(entityNames), entityNames is { Count: > 0 } ? entityNames : null, with, withRadius);
 	}
 
 	/// <summary>The recipes as a <c>fx/recipes.json</c> text, the inverse of <see cref="Parse"/>.</summary>
@@ -1230,12 +1090,16 @@ public static class Engine_FxRecipes
 			var record = new Godot.Collections.Dictionary
 			{
 				["id"] = recipe.Id,
-				["when"] = new Godot.Collections.Array(System.Linq.Enumerable.Select(recipe.When, w => Variant.CreateFrom(w))),
-				["equals"] = recipe.Match,
 				["base"] = new Godot.Collections.Array(System.Linq.Enumerable.Select(recipe.BaseNames, b => Variant.CreateFrom(b))),
 				["tint"] = new Godot.Collections.Array { recipe.Tint.R, recipe.Tint.G, recipe.Tint.B },
 				["intensity"] = recipe.Intensity,
 			};
+			if (recipe.When.Count != 0)
+			{
+				record["when"] = new Godot.Collections.Array(System.Linq.Enumerable.Select(recipe.When, w => Variant.CreateFrom(w)));
+				record["equals"] = recipe.Match;
+			}
+
 			if (recipe.Size != 1f)
 			{
 				record["size"] = recipe.Size;
@@ -1256,12 +1120,12 @@ public static class Engine_FxRecipes
 				record["entities"] = new Godot.Collections.Array(System.Linq.Enumerable.Select(entityNames, e => Variant.CreateFrom(e)));
 			}
 
-			if (recipe.Instances.Length != 0)
+			if (recipe.With.Length != 0)
 			{
-				record["instances"] = "mod:" + recipe.Instances;
-				if (recipe.InstanceRadius != 10f)
+				record["with"] = recipe.With;
+				if (recipe.WithRadius != 10f)
 				{
-					record["instanceRadius"] = recipe.InstanceRadius;
+					record["withRadius"] = recipe.WithRadius;
 				}
 			}
 

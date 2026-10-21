@@ -398,6 +398,9 @@ public sealed partial class Engine_HudView : Node3D
 
         /// <summary>The last string drawn, so glyphs are only re-laid when the text changes.</summary>
         public string Shown { get; set; } = string.Empty;
+
+        /// <summary>An editor's stand-in for a widget (<see cref="BuildWidgetStandIn"/>): placed, never driven.</summary>
+        public bool StandsIn { get; init; }
     }
 
     private readonly List<Built> _built = new();
@@ -420,6 +423,14 @@ public sealed partial class Engine_HudView : Node3D
     /// </summary>
     public void Build()
     {
+        // The layout from the document AS IT STANDS: a mod that changed `hud.bgf`'s structure, or
+        // a mod set whose `layout` blocks changed, is a new arrangement, not the old one rebuilt.
+        if (Derive?.Invoke() is { } derived)
+        {
+            Screen = derived.Screen;
+            Layout = derived.Layout;
+        }
+
         foreach (Built built in _built)
         {
             built.Node.QueueFree();
@@ -427,12 +438,14 @@ public sealed partial class Engine_HudView : Node3D
 
         _built.Clear();
         _builtOnce = true;
+        _sources = null;
         BindCentreToggle();
 
         // What mods put on the HUD, and which shipped pieces they replace (not built).
         Engine_HudModPieces.ModLayout modLayout = ModFiles is { } files
             ? Engine_HudModPieces.LoadFrom(files)
             : Engine_HudModPieces.LoadFromMods();
+        ModLayout = modLayout;
 
         // Pieces mods define (ui/hud.json), beside the ones cut from hud.bgf; children of this view
         // so they show and hide with the HUD. A piece that FOLLOWS a shipped piece is that
@@ -451,6 +464,8 @@ public sealed partial class Engine_HudView : Node3D
             _modPieces.Window = SeatFrame.Window;
             _modPieces.Theme = Theme;
             _modPieces.StringBook = Values.Strings;
+            _modPieces.Sources = Sources;
+            _modPieces.ForPlayerTwo = ForPlayerTwo;
             _modPieces.Build(ownsMods
                 ? modLayout.Pieces
                 : modLayout.Pieces.FindAll(piece => piece.Follow.Length != 0));
@@ -466,6 +481,25 @@ public sealed partial class Engine_HudView : Node3D
 
         foreach (Engine_HudLayout.Piece piece in Layout.Pieces)
         {
+            // A widget is drawn by its own reader (Engine_HudWidgets); the editor's preview stands
+            // one in so it can be seen, picked and moved there.
+            if (Engine_HudWidgets.IsWidget(piece.Id))
+            {
+                if (Engine.IsEditorHint() && ownsMods && !modLayout.Hidden.Contains(piece.Id))
+                {
+                    BuildWidgetStandIn(piece, piece.Id, modLayout);
+                    foreach (Engine_HudModPieces.Clone clone in modLayout.Clones)
+                    {
+                        if (clone.Of == piece.Id)
+                        {
+                            BuildWidgetStandIn(piece with { Id = clone.Id, Offset = piece.Offset + clone.Offset }, clone.Id, modLayout);
+                        }
+                    }
+                }
+
+                continue;
+            }
+
             // The piece mods address: in a view for player two, player one's piece stands for
             // its player-two source, so a mod's statement about player two's widget (hide, scale,
             // copies) lands on it, and one about player one's does not.
@@ -499,19 +533,30 @@ public sealed partial class Engine_HudView : Node3D
 
             // Mods' copies of this piece, built right after it from the same art, in every view
             // that builds the original. A copy of player two's widget is built from player one's
-            // in a view for player two, keyed as the original is.
-            foreach (Engine_HudModPieces.Clone clone in modLayout.Clones)
+            // in a view for player two, keyed as the original is. A copy of player one's widget
+            // that reads per-player values is EACH player's (Engine_HudModTwins.EachPlayer): it
+            // is built beside player two's widget too, its meters named as that widget's.
+            foreach (Engine_HudModPieces.Clone stated in modLayout.Clones)
             {
-                if (clone.Of != declared)
+                Engine_HudModPieces.Clone clone = stated;
+                if (stated.Of != declared)
                 {
-                    continue;
+                    if (!Engine_HudModTwins.EachPlayer(stated) ||
+                        Engine_HudLayout.PlayerTwoSourceId(stated.Of) != declared ||
+                        modLayout.Clones.Exists(c => c.Id == Engine_HudModTwins.PlayerTwoId(stated.Id)))
+                    {
+                        continue;
+                    }
+
+                    clone = Engine_HudModTwins.TwinForPlayerTwo(stated, declared, MeterNamesToTwo(stated.Of, declared));
                 }
 
                 Engine_HudLayout.Piece copy = piece with { Id = clone.Id, Offset = piece.Offset + clone.Offset };
                 if (BuildPiece(copy, missing, source) is { } cloned)
                 {
                     cloned.Origin = piece;
-                    cloned.ExtraScale = modLayout.Scales.TryGetValue(clone.Id, out float own) ? own : built.ExtraScale;
+                    cloned.ExtraScale = modLayout.Scales.TryGetValue(clone.Id, out float own) ||
+                        modLayout.Scales.TryGetValue(stated.Id, out own) ? own : built.ExtraScale;
                     ApplyClone(cloned, clone);
                     GD.Print($"[hud-mods] '{clone.Id}' ({clone.Mod}) is a copy of '{piece.Id}'" +
                         (source is { } keyed ? $" keyed to '{keyed.Id}'" : string.Empty));
@@ -520,6 +565,98 @@ public sealed partial class Engine_HudView : Node3D
         }
 
         FinishBuild(missing, unplaced);
+        Rebuilt?.Invoke(this);
+    }
+
+    /// <summary>
+    /// Re-derives the layout (and the document it is cut from) at the head of every
+    /// <see cref="Build"/>; null keeps the one set. The game's owner states it, so a remount that
+    /// changes `hud.bgf` or a mod's <c>layout</c> rebuilds the arrangement from the new files.
+    /// </summary>
+    /// <remarks>An answer of null keeps the layout set (the owner has just derived it).</remarks>
+    public System.Func<(Engine_UiScreen Screen, Engine_HudLayout Layout)?>? Derive { get; set; }
+
+    /// <summary>What the mods stated at the last <see cref="Build"/>: hidden, scaled, copied and added pieces.</summary>
+    public Engine_HudModPieces.ModLayout? ModLayout { get; private set; }
+
+    /// <summary>Raised at the end of every <see cref="Build"/>, for the owner of the widgets the view does not draw.</summary>
+    public event System.Action<Engine_HudView>? Rebuilt;
+
+    /// <summary>
+    /// The value sources' readers for this view (<see cref="Engine_UiValueSources"/>): the guest's
+    /// published meters and texts as THIS view holds them (player two's view states player two's
+    /// own over the shared feed), mod values, the player store and the local hero. An editor's
+    /// preview adds its stand-ins.
+    /// </summary>
+    public Engine_UiValueSources.Context Sources
+    {
+        get
+        {
+            if (_sources is null)
+            {
+                _sources = new Engine_UiValueSources.Context
+                {
+                    Player = ForPlayerTwo ? 2 : 1,
+                    Mod = key => !Engine.IsEditorHint() && Refii.Host.HostBridge.TryGetModValue(key, out float value) ? value : null,
+                    GameMeter = name => Values.Meter(Engine_HudValues.Handle.For(name)),
+                    GameText = name => Values.Text(Engine_HudValues.Handle.For(name)),
+                    PlayerValue = (player, key) => Engine.IsEditorHint() ? null : Refii.Host.HostBridge.GetPlayerValue(player, key),
+                    Hero = key =>
+                    {
+                        if (Engine.IsEditorHint())
+                        {
+                            return null;
+                        }
+
+                        Refii.Host.HostBridge.HeroVitals vitals = Refii.Host.HostBridge.GetHeroVitals();
+                        return !vitals.Known || vitals.MaxHealth <= 0f ? null
+                            : key == "health" ? vitals.Health : vitals.MaxHealth;
+                    },
+                    StandIn = source => StandIn?.Invoke(source),
+                    StandInText = source => StandInText?.Invoke(source),
+                };
+            }
+
+            return _sources;
+        }
+    }
+
+    private Engine_UiValueSources.Context? _sources;
+
+    /// <summary>An editor preview's stand-in for a whole source text (<c>"player:souls.stamina"</c>); null for none.</summary>
+    public System.Func<string, float?>? StandIn { get; set; }
+
+    /// <summary>An editor preview's stand-in for a <c>game:</c> text field; null for none.</summary>
+    public System.Func<string, string?>? StandInText { get; set; }
+
+    /// <summary>The readers for one built piece: player two's for a piece of player two's (<see cref="Engine_UiValueSources.PlayerFor"/>).</summary>
+    private Engine_UiValueSources.Context SourcesFor(Built built) =>
+        Sources.ForPlayer(Engine_UiValueSources.PlayerFor(ForPlayerTwo,
+            Engine_HudLayout.OwnerOf(built.Rules) == Engine_UiSeats.Seat.PlayerTwo));
+
+    /// <summary>
+    /// An editor-only stand-in for a widget its own reader draws in the game: a frame of the
+    /// widget's nominal size at its place, so the preview shows, picks and drags it like a piece.
+    /// </summary>
+    private void BuildWidgetStandIn(Engine_HudLayout.Piece piece, string id, Engine_HudModPieces.ModLayout modLayout)
+    {
+        Engine_HudWidgets.Widget? widget = Engine_HudWidgets.Find(piece.Id) ??
+            (modLayout.Clones.Find(c => c.Id == id) is { } clone ? Engine_HudWidgets.Find(clone.Of) : null);
+        if (widget is null)
+        {
+            return;
+        }
+
+        float factor = modLayout.Scales.TryGetValue(id, out float stated) && stated > 0f ? stated : 1f;
+        Vector2 size = widget.Size * factor;
+        var frame = new Engine_UiRoundedPanel { Name = id.Replace('.', '_') };
+        frame.Style(new Color(0.55f, 0.85f, 1f, 0.18f), new Color(0.55f, 0.85f, 1f, 0.9f), 1.5f);
+        frame.Corner(6f);
+        AddChild(frame);
+        var padding = new Vector2(Engine_UiRoundedPanel.PaddingX, Engine_UiRoundedPanel.PaddingY);
+        Vector2 inner = size - padding * 2f;
+        frame.Fit(new Rect2(-inner * 0.5f, inner), 0.4f);
+        _built.Add(new Built { Piece = piece with { Id = id }, Node = frame, StandsIn = true, ExtraScale = factor });
     }
 
     /// <summary>
@@ -595,7 +732,7 @@ public sealed partial class Engine_HudView : Node3D
                 bar.Full = stated / (guest / 100f);
             }
 
-            if (bar.Full is not { } full || Engine_HudModPieces.MeterValue(bar.Source) is not { } ours)
+            if (bar.Full is not { } full || Engine_UiValueSources.Ratio(bar.Source, SourcesFor(built)) is not { } ours)
             {
                 continue;
             }
@@ -669,6 +806,52 @@ public sealed partial class Engine_HudView : Node3D
         }
 
         return owned;
+    }
+
+    /// <summary>
+    /// The meter and pulser names player two's widget <paramref name="twoId"/> binds where player
+    /// one's <paramref name="oneId"/> binds each of its own (`PlayerHealth` → `CoopHealth`,
+    /// `PlayerLowHealthPulser` → `CoopLowHealthPulser`): the elements paired as
+    /// <see cref="KeyOrdinals"/> pairs them, each binding to the one of its kind on the paired
+    /// element. Empty without the document.
+    /// </summary>
+    private Dictionary<string, string> MeterNamesToTwo(string oneId, string twoId)
+    {
+        var names = new Dictionary<string, string>(System.StringComparer.Ordinal);
+        Engine_HudLayout.Piece? one = null;
+        Engine_HudLayout.Piece? two = null;
+        foreach (Engine_HudLayout.Piece candidate in Layout.Pieces)
+        {
+            one = candidate.Id == oneId ? candidate : one;
+            two = candidate.Id == twoId ? candidate : two;
+        }
+
+        if (Screen is not { } screen || Bindings is not { } bindings || one is not { } p1 || two is not { } p2 ||
+            p1.ElementOrdinal < 0 || p2.ElementOrdinal < 0 ||
+            p1.ElementOrdinal >= screen.Nodes.Length || p2.ElementOrdinal >= screen.Nodes.Length)
+        {
+            return names;
+        }
+
+        Dictionary<int, int> keys = KeyOrdinals(screen.Nodes[p1.ElementOrdinal], screen.Nodes[p2.ElementOrdinal]);
+        foreach (Engine_UiBindings.Binding binding in bindings.All)
+        {
+            if (!keys.TryGetValue(binding.ElementOrdinal, out int paired))
+            {
+                continue;
+            }
+
+            foreach (Engine_UiBindings.Binding candidate in bindings.All)
+            {
+                if (candidate.ElementOrdinal == paired && candidate.Kind == binding.Kind)
+                {
+                    names[binding.Name] = candidate.Name;
+                    break;
+                }
+            }
+        }
+
+        return names;
     }
 
     /// <summary>
@@ -1841,7 +2024,7 @@ public sealed partial class Engine_HudView : Node3D
     {
         if (built.Remap is { } remap && remap.TryGetValue(handle.Name, out string? source))
         {
-            return source != "none" && Engine_HudModPieces.MeterValue(source) is { } mod
+            return source != "none" && Engine_UiValueSources.Ratio(source, SourcesFor(built)) is { } mod
                 ? mod * 10f
                 : null;
         }
@@ -2071,6 +2254,20 @@ public sealed partial class Engine_HudView : Node3D
         {
             ++WalkedPieces;
             long mark = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            // A widget's stand-in in the editor: at its place, its frame inside the screen edge
+            // its home is on.
+            if (built.StandsIn)
+            {
+                Vector2 point = Engine_HudLayout.Place(built.Piece, extent);
+                Vector2 half = (Engine_HudWidgets.FindByName(built.Piece.Art) is { } widget ? widget.Size : Vector2.Zero) *
+                    built.ExtraScale * scale * 0.5f;
+                Vector2 inside = new(-(built.Piece.Anchor.X - 0.5f) * 2f * half.X, (built.Piece.Anchor.Y - 0.5f) * 2f * half.Y);
+                built.Node.Position = new Vector3(point.X + inside.X, point.Y + inside.Y, 0.4f);
+                built.Node.Scale = new Vector3(scale, scale, 1f);
+                built.Node.Visible = true;
+                continue;
+            }
 
             // Another seat's piece: player two's health in player one's half, or the reverse.
             if (!Admits(built.Rules))

@@ -1,0 +1,542 @@
+{
+  "format": 1,
+  "name": "spell_weaving_fire_push",
+  "updateFrequency": 1,
+  "parts": [
+    {
+      "emitter": 0,
+      "system": 0,
+      "group": 3,
+      "vector": 0
+    },
+    {
+      "emitter": 1,
+      "system": 1,
+      "group": 3,
+      "vector": 1
+    },
+    {
+      "emitter": 2,
+      "system": 2,
+      "group": 3,
+      "vector": 2
+    },
+    {
+      "emitter": 3,
+      "system": 3,
+      "group": 3,
+      "vector": 3
+    },
+    {
+      "emitter": 4,
+      "group": 3,
+      "vector": 4
+    }
+  ],
+  "emitters": [
+    {
+      "entityId": "0xC25F4B81",
+      "subType": 2,
+      "maxActive": 42,
+      "spawnRadius": 0.1,
+      "emitOnSurface": true,
+      "useShapeSpawnDir": true,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "shapeFlagA": true,
+      "shapeFlagB": true,
+      "spin": 2,
+      "params": {
+        "rate": [
+          [0,1.9900497
+          ]
+        ],
+        "speed": [
+          [0,0.4477612
+          ]
+        ],
+        "speedSpread": [
+          [0,0.29850745
+          ]
+        ],
+        "gravityScale": [
+          [0,-3.6734693
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0.5
+          ]
+        ]
+      }
+    },
+    {
+      "entityId": "0xC15F49EE",
+      "subType": 2,
+      "maxActive": 10,
+      "spawnRadius": 0.01,
+      "emitOnSurface": true,
+      "useShapeSpawnDir": true,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "shapeFlagA": true,
+      "shapeFlagB": true,
+      "params": {
+        "rate": [
+          [0,0.26666668
+          ]
+        ],
+        "speed": [
+          [0,0.07
+          ]
+        ],
+        "speedSpread": [
+          [0,0.04
+          ]
+        ],
+        "gravityScale": [
+          [0,-0.6122449
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0.5
+          ]
+        ]
+      }
+    },
+    {
+      "entityId": "0xC05F485B",
+      "subType": 2,
+      "maxActive": 32,
+      "spawnRadius": 0.1,
+      "emitOnSurface": true,
+      "useShapeSpawnDir": true,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "shapeFlagA": true,
+      "shapeFlagB": true,
+      "spin": 1,
+      "params": {
+        "rate": [
+          [0,2
+          ]
+        ],
+        "speed": [
+          [0,1.08
+          ]
+        ],
+        "speedSpread": [
+          [0,0.64
+          ]
+        ],
+        "gravityScale": [
+          [0,-3.6734693
+          ]
+        ]
+      },
+      "vectors": {
+        "vec1": [
+          [0,1,1,0.5
+          ]
+        ]
+      }
+    },
+    {
+      "entityId": "0x23D8737A",
+      "pos": [0,0,0.2
+      ],
+      "maxActive": 2,
+      "initialNum": 1,
+      "attachToRoot": true,
+      "fades": [0.8,1,48,64
+      ],
+      "params": {
+        "rate": [
+          [0,0.06666667
+          ]
+        ],
+        "speed": [
+          [0,0
+          ]
+        ]
+      },
+      "vectors": {}
+    },
+    {
+      "typeId": 7,
+      "entityId": "0x20C7E415",
+      "pos": [0,0,0.5
+      ],
+      "params": {
+        "lightRange": [
+          [0,5
+          ]
+        ],
+        "lightIntensity": [
+          [0,1
+          ]
+        ],
+        "lightCutoff": [
+          [0,64
+          ]
+        ],
+        "lightFadeRamp": [
+          [0,50
+          ]
+        ],
+        "p19": [
+          [0,0
+          ]
+        ],
+        "p20": [
+          [0,0.2921292
+          ]
+        ],
+        "p21": [
+          [0,0.535441
+          ]
+        ]
+      },
+      "vectors": {
+        "lightColour": [
+          [0,1,0.6,0.3
+          ]
+        ]
+      }
+    }
+  ],
+  "systems": [
+    {
+      "id": "0xB7183033",
+      "lastStartFrames": 20,
+      "childCount": 2,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_flames_double_01.tex",
+          "hasColor": true,
+          "color": [2,1.8,1.8
+          ],
+          "hasAlpha": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.5,
+          "sizeY": 0.5,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "colorSq": [4,3.2399998,3.2399998
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.68333334,
+          "texture": "art\\fx\\pfx_textures\\fxt_flames_double_01.tex",
+          "hasColor": true,
+          "color": [1,0.5,0.1
+          ],
+          "hasAlpha": true,
+          "alpha": 0,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.7,
+          "sizeY": 0.7,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 20,
+          "invSpan": 0.05263158,
+          "colorSq": [1,0.25,0.010000001
+          ],
+          "hasBlend": true
+        }
+      ]
+    },
+    {
+      "id": "0xB6182EA0",
+      "lastStartFrames": 30,
+      "childCount": 2,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_explosion_fire_02.tex",
+          "hasColor": true,
+          "color": [1.4,1.4,1.4
+          ],
+          "hasAlpha": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1,
+          "sizeY": 1,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "colorSq": [1.9599999,1.9599999,1.9599999
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 1.0166667,
+          "texture": "art\\fx\\pfx_textures\\fxt_explosion_fire_02.tex",
+          "hasColor": true,
+          "hasAlpha": true,
+          "alpha": 0,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.2,
+          "sizeY": 0.2,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 30,
+          "invSpan": 0.03448276,
+          "hasBlend": true
+        }
+      ]
+    },
+    {
+      "id": "0xB9183359",
+      "lastStartFrames": 15,
+      "childCount": 2,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_sparkle_orange_01.tex",
+          "hasColor": true,
+          "color": [1.6,0.96,0.64
+          ],
+          "hasAlpha": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.3,
+          "sizeY": 0.3,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "colorSq": [2.5600002,0.9216,0.4096
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.51666665,
+          "texture": "art\\fx\\pfx_textures\\fxt_sparkle_orange_01.tex",
+          "hasColor": true,
+          "color": [0.2,0.2,0.1
+          ],
+          "hasAlpha": true,
+          "alpha": 0,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.15,
+          "sizeY": 0.15,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 15,
+          "invSpan": 0.071428575,
+          "colorSq": [0.040000003,0.040000003,0.010000001
+          ],
+          "hasBlend": true
+        }
+      ]
+    },
+    {
+      "id": "0x192DC870",
+      "lastStartFrames": 15,
+      "childCount": 6,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
+          "hasColor": true,
+          "color": [1.6,0.96,0.64
+          ],
+          "hasAlpha": true,
+          "hasAlignQuat": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 0.26,
+          "sizeY": 0.26,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "colorSq": [2.5600002,0.9216,0.4096
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.083333336,
+          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
+          "hasColor": true,
+          "color": [1.386667,0.832,0.554667
+          ],
+          "hasAlpha": true,
+          "alpha": 0.866667,
+          "hasAlignQuat": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1.114447,
+          "sizeY": 1.114447,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 2,
+          "invSpan": 1,
+          "colorSq": [1.9228454,0.692224,0.30765548
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.15,
+          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
+          "hasColor": true,
+          "color": [1.1733329,0.704,0.469333
+          ],
+          "hasAlpha": true,
+          "alpha": 0.733333,
+          "hasAlignQuat": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1.468371,
+          "sizeY": 1.468371,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 4,
+          "invSpan": 1,
+          "colorSq": [1.3767102,0.495616,0.22027346
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.25,
+          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
+          "hasColor": true,
+          "color": [0.853333,0.512,0.341333
+          ],
+          "hasAlpha": true,
+          "alpha": 0.533333,
+          "hasAlignQuat": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 1.858524,
+          "sizeY": 1.858524,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 7,
+          "invSpan": 0.5,
+          "colorSq": [0.7281772,0.26214403,0.116508216
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.35,
+          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
+          "hasColor": true,
+          "color": [0.533333,0.32,0.213333
+          ],
+          "hasAlpha": true,
+          "alpha": 0.333333,
+          "hasAlignQuat": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 2.170602,
+          "sizeY": 2.170602,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 10,
+          "invSpan": 0.5,
+          "colorSq": [0.2844441,0.1024,0.045510966
+          ],
+          "hasBlend": true
+        },
+        {
+          "delay": 0.51666665,
+          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
+          "hasColor": true,
+          "color": [0,0,0
+          ],
+          "hasAlpha": true,
+          "alpha": 0,
+          "hasAlignQuat": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 4,
+          "dstBlend": 1,
+          "hasSize": true,
+          "sizeX": 2.6,
+          "sizeY": 2.6,
+          "hasSelfIllum": true,
+          "hasGlobalScale": true,
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 15,
+          "invSpan": 0.25,
+          "colorSq": [0,0,0
+          ],
+          "hasBlend": true
+        }
+      ]
+    }
+  ]
+}

@@ -153,11 +153,21 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/player_state_hooks.cpp
     # The host's queued helper calls and queries (Godot scripts), run in the guest tick.
     ${REFII_VFS_ROOT}/src/hooks/mod_commands.cpp
+    # Mod abilities' purchases and spell picks, run by the engine from what the mods declare.
+    ${REFII_VFS_ROOT}/src/hooks/mod_abilities.cpp
     # The Refii.* natives registered into the game VM for mods' Lua.
     ${REFII_VFS_ROOT}/src/hooks/mod_lua_natives.cpp
     ${REFII_VFS_ROOT}/src/hooks/lua_gc_slice.cpp
     ${REFII_VFS_ROOT}/src/hooks/frontend_video_handoff.cpp
     ${REFII_VFS_ROOT}/src/hooks/particle_transform.cpp
+    # Which spell a spell's effects belong to, as its own update states it; plays ride that update.
+    ${REFII_VFS_ROOT}/src/hooks/spell_fx_owner.cpp
+    # Mod effects' scale and tint on the guest's instances, the bank reloaded on a remount.
+    ${REFII_VFS_ROOT}/src/hooks/particle_dress.cpp
+    # Mod emitters' spin and mod mesh particles' rest orientation, read from the same dress table.
+    ${REFII_VFS_ROOT}/src/hooks/particle_motion.cpp
+    # Mods' Lua on the title and the front end, in the current presentation's Gameface state.
+    ${REFII_VFS_ROOT}/src/hooks/mod_frontend_lua.cpp
     ${REFII_VFS_ROOT}/src/hooks/spell_fx_lifetime.cpp
     ${REFII_VFS_ROOT}/src/hooks/target_highlight.cpp
     ${REFII_VFS_ROOT}/src/hooks/entity_appearance.cpp

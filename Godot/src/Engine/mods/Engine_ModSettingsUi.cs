@@ -48,8 +48,13 @@ public static class ModSettingsUi
 		Choice,
 	}
 
-	/// <summary>One labelled value of a <see cref="Kind.Choice"/> row.</summary>
-	public readonly record struct Option(float Value, string Label);
+	/// <summary>
+	/// One labelled value of a <see cref="Kind.Choice"/> row. A mod's setting holds a number
+	/// (<see cref="Value"/>); a page over the game's config switches stores text (<see cref="Text"/>,
+	/// with <see cref="Aliases"/> the other spellings a stored value may have, e.g. "true" for "on").
+	/// A text option's <see cref="Value"/> is its position.
+	/// </summary>
+	public readonly record struct Option(float Value, string Label, string? Text = null, IReadOnlyList<string>? Aliases = null);
 
 	/// <summary>
 	/// One value row: the setting, how it is shown and the range it steps over — or, for a
@@ -57,7 +62,7 @@ public static class ModSettingsUi
 	/// </summary>
 	public sealed record Row(
 		string Mod, string Key, string Label, Kind Kind, float Min, float Max, float Step, string Description,
-		IReadOnlyList<Option>? Options = null)
+		IReadOnlyList<Option>? Options = null, string Default = "")
 	{
 		/// <summary>The value in force now — the player's, the live override's or the file's.</summary>
 		public float Current => ModSettings.TryGet(Key, out float value) ? value : Min;
@@ -102,6 +107,61 @@ public static class ModSettingsUi
 					return Math.Clamp((int)MathF.Round((value - Min) / Step), 0, Choices - 1);
 			}
 		}
+
+		/// <summary>
+		/// The index a STORED value stands at, for a page over text switches: a choice's option whose
+		/// text or alias matches (case-insensitive), else the option nearest a number; a toggle on
+		/// "true"/"1"/"on"; a slider at the nearest step. An empty value reads as <see cref="Default"/>.
+		/// </summary>
+		public int IndexOfStored(string? stored)
+		{
+			string text = (stored ?? string.Empty).Trim().Trim('"');
+			if (text.Length == 0)
+			{
+				text = Default;
+			}
+
+			bool number = float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsed);
+			switch (Kind)
+			{
+				case Kind.Toggle:
+					return text.ToLowerInvariant() is "true" or "1" or "on" ? 1 : 0;
+
+				case Kind.Choice when Options is { Count: > 0 } options && options.Any(o => o.Text is not null):
+					for (int i = 0; i < options.Count; i++)
+					{
+						if (string.Equals(options[i].Text, text, StringComparison.OrdinalIgnoreCase) ||
+							(options[i].Aliases?.Any(a => string.Equals(a, text, StringComparison.OrdinalIgnoreCase)) ?? false))
+						{
+							return i;
+						}
+					}
+
+					int nearest = -1;
+					for (int i = 0; number && i < options.Count; i++)
+					{
+						if (float.TryParse(options[i].Text, NumberStyles.Float, CultureInfo.InvariantCulture, out float at) &&
+							(nearest < 0 || MathF.Abs(at - parsed) < MathF.Abs(float.Parse(options[nearest].Text!, CultureInfo.InvariantCulture) - parsed)))
+						{
+							nearest = i;
+						}
+					}
+
+					return nearest >= 0 ? nearest : (text == Default ? 0 : IndexOfStored(Default));
+
+				default:
+					return number ? IndexOf(parsed) : 0;
+			}
+		}
+
+		/// <summary>The text a page over switches stores for an index: the option's text, "true"/"false", or the number.</summary>
+		public string StoredAt(int index) => Kind switch
+		{
+			Kind.Toggle => index != 0 ? "true" : "false",
+			Kind.Choice when Options is { Count: > 0 } options &&
+				options[Math.Clamp(index, 0, options.Count - 1)].Text is { } text => text,
+			_ => ValueAt(index).ToString(CultureInfo.InvariantCulture),
+		};
 
 		/// <summary>The caption at an index: On/Off, the option's label, or the number at the step's precision.</summary>
 		public string Caption(int index)
@@ -160,6 +220,98 @@ public static class ModSettingsUi
 			Row setting = Settings[row];
 			ModSettings.Persist(setting.Key, setting.ValueAt(index));
 		}
+	}
+
+	/// <summary>
+	/// A page over the GAME's own config switches (refii.toml, <see cref="Refii.Core.Engine_Switches"/>),
+	/// described in exactly the shape a mod's <c>settings.ui.json</c> takes — the same parser, the
+	/// same rows — with each entry keyed by the switch, its <c>default</c> what an unset switch reads
+	/// as, and <c>choice</c> options that may store text. Values are committed together on A, as
+	/// one config write; a refused write keeps the page open.
+	/// </summary>
+	public sealed class SwitchPage : Engine_UiHostOptionsPage
+	{
+		public SwitchPage(string name, string title, IReadOnlyList<Row> rows)
+		{
+			Name = name;
+			Title = title;
+			Settings = rows;
+		}
+
+		/// <summary>A page from its description: a JSON object of rows keyed by switch, in order.</summary>
+		public static SwitchPage FromDescription(string name, string title, string description) =>
+			new(name, title, DescribeRows(name, description));
+
+		public IReadOnlyList<Row> Settings { get; }
+
+		public override string Name { get; }
+		public override string Title { get; }
+		public override int Count => Settings.Count;
+		public override string RowTitle(int row) => Settings[row].Label;
+		public override int Choices(int row) => Settings[row].Choices;
+		public override string Caption(int row, int index) => Settings[row].Caption(index);
+
+		/// <summary>The row stating <paramref name="key"/>, or null.</summary>
+		public Row? RowFor(string key) =>
+			Settings.FirstOrDefault(row => string.Equals(row.Key, key, StringComparison.Ordinal));
+
+		public override int[] Read() => Read(key => Refii.Core.Engine_Switches.String(key, string.Empty));
+
+		/// <summary>Every row's index for the stored values <paramref name="read"/> gives (empty for unset).</summary>
+		public int[] Read(Func<string, string> read)
+		{
+			var indices = new int[Settings.Count];
+			for (int i = 0; i < indices.Length; i++)
+			{
+				indices[i] = Settings[i].IndexOfStored(read(Settings[i].Key));
+			}
+
+			return indices;
+		}
+
+		/// <summary>The switch values a set of indices stands for, keyed by switch.</summary>
+		public IReadOnlyDictionary<string, string> Values(Func<int, int> index)
+		{
+			var values = new Dictionary<string, string>(StringComparer.Ordinal);
+			for (int i = 0; i < Settings.Count; i++)
+			{
+				values[Settings[i].Key] = Settings[i].StoredAt(index(i));
+			}
+
+			return values;
+		}
+
+		public override bool Commit(Func<int, int> index) => Engine_UiScreenActions.WriteSettings(Values(index));
+	}
+
+	/// <summary>
+	/// The rows a description states, in its order, each keyed by the description's own key — the
+	/// parse a <see cref="SwitchPage"/> is built from. A row with no <c>type</c> and no range reads
+	/// as a toggle when its default does.
+	/// </summary>
+	public static IReadOnlyList<Row> DescribeRows(string owner, string description)
+	{
+		var rows = new List<Row>();
+		if (Json.ParseString(description) is not { VariantType: Variant.Type.Dictionary } parsed)
+		{
+			GD.PushWarning($"[settings-page] {owner}: the description is not a JSON object");
+			return rows;
+		}
+
+		foreach (KeyValuePair<Variant, Variant> entry in parsed.AsGodotDictionary())
+		{
+			Godot.Collections.Dictionary? spec = entry.Value.VariantType == Variant.Type.Dictionary
+				? entry.Value.AsGodotDictionary()
+				: null;
+			string fallback = DefaultText(spec);
+			float file = fallback.ToLowerInvariant() is "true" or "1" ? 1f
+				: float.TryParse(fallback, NumberStyles.Float, CultureInfo.InvariantCulture, out float number) ? number
+				: 0f;
+			string key = entry.Key.AsString();
+			rows.Add(Describe(owner, key, key, file, spec, switches: true));
+		}
+
+		return rows;
 	}
 
 	private static List<Page>? _pages;
@@ -355,13 +507,37 @@ public static class ModSettingsUi
 	/// or 1, else a range from 0 to twice the value (the other way for a negative one) in
 	/// twentieths; a value of 0 steps 0..1 by 0.05.
 	/// </summary>
-	private static Row Describe(string mod, string key, string name, float file, Godot.Collections.Dictionary? spec)
+	/// <param name="switches">The row is a game switch's (<see cref="SwitchPage"/>), whose choices may store
+	/// text; a mod's setting holds a number, so its text options are skipped, as the validator says.</param>
+	private static Row Describe(
+		string mod, string key, string name, float file, Godot.Collections.Dictionary? spec, bool switches = false) =>
+		DescribeRow(mod, key, name, file, spec, switches) with { Default = DefaultText(spec) };
+
+	/// <summary>A row's <c>default</c> as text — what a page over switches reads when the key is unset.</summary>
+	private static string DefaultText(Godot.Collections.Dictionary? spec)
+	{
+		if (spec is null || !spec.TryGetValue("default", out Variant value))
+		{
+			return string.Empty;
+		}
+
+		return value.VariantType switch
+		{
+			Variant.Type.Bool => value.AsBool() ? "true" : "false",
+			Variant.Type.Float or Variant.Type.Int => value.AsDouble().ToString(CultureInfo.InvariantCulture),
+			Variant.Type.String => value.AsString(),
+			_ => string.Empty,
+		};
+	}
+
+	private static Row DescribeRow(
+		string mod, string key, string name, float file, Godot.Collections.Dictionary? spec, bool switches)
 	{
 		string label = Text(spec, "label", name.Replace('_', ' '));
 		string description = Text(spec, "description", string.Empty);
 		string type = Text(spec, "type", string.Empty).Trim().ToLowerInvariant();
 
-		if (type == "choice" && ChoiceOptions(spec) is { Count: > 0 } options)
+		if (type == "choice" && ChoiceOptions(spec, switches) is { Count: > 0 } options)
 		{
 			float low = options.Min(o => o.Value);
 			float high = options.Max(o => o.Value);
@@ -403,10 +579,12 @@ public static class ModSettingsUi
 	}
 
 	/// <summary>
-	/// A choice row's <c>options</c>: each <c>{ "value": number, "label": text }</c>, in the file's
-	/// order. An option with no number is skipped; one with no label is captioned by its number.
+	/// A choice row's <c>options</c>: each <c>{ "value": number or text, "label": text, "aliases":
+	/// [text…] }</c>, in the file's order. A text value is for a page over the game's config switches
+	/// (<see cref="SwitchPage"/>); a mod's setting is a number, and the validator holds mods to that.
+	/// An option with no value is skipped; one with no label is captioned by its value.
 	/// </summary>
-	private static List<Option> ChoiceOptions(Godot.Collections.Dictionary? spec)
+	private static List<Option> ChoiceOptions(Godot.Collections.Dictionary? spec, bool textValues)
 	{
 		var options = new List<Option>();
 		if (spec is null || !spec.TryGetValue("options", out Variant list) || list.VariantType != Variant.Type.Array)
@@ -422,8 +600,31 @@ public static class ModSettingsUi
 			}
 
 			Godot.Collections.Dictionary option = item.AsGodotDictionary();
-			if (!option.TryGetValue("value", out Variant value) ||
-				value.VariantType is not (Variant.Type.Float or Variant.Type.Int or Variant.Type.Bool))
+			if (!option.TryGetValue("value", out Variant value))
+			{
+				continue;
+			}
+
+			if (value.VariantType == Variant.Type.String && textValues)
+			{
+				var aliases = new List<string>();
+				if (option.TryGetValue("aliases", out Variant names) && names.VariantType == Variant.Type.Array)
+				{
+					foreach (Variant alias in names.AsGodotArray())
+					{
+						if (alias.VariantType == Variant.Type.String)
+						{
+							aliases.Add(alias.AsString());
+						}
+					}
+				}
+
+				string text = value.AsString();
+				options.Add(new Option(options.Count, Text(option, "label", text), text, aliases));
+				continue;
+			}
+
+			if (value.VariantType is not (Variant.Type.Float or Variant.Type.Int or Variant.Type.Bool))
 			{
 				continue;
 			}

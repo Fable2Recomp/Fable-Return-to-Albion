@@ -60,6 +60,17 @@ public sealed class Engine_FxSystem
         public float FlickY = 1f;
         public float[] TexFrame = new float[4];
         public float[] Axis = new float[3];
+
+        /// <summary>
+        /// A mesh particle under a stated rest orientation (<see cref="FxVisual.HasMeshAlign"/>): its
+        /// birth orientation, the emitter's rotation × the align (the guest's particle+0x30), the axis
+        /// in the visual's own frame and its initial angle (the guest's +0x40). <see cref="HasBase"/>
+        /// says whether this particle carries one.
+        /// </summary>
+        public bool HasBase;
+        public float[]? Base;
+        public float[] AxisBody = new float[3];
+        public float Rot0;
         public float[][] Hist = new float[TrailHistory][];
         public int HistCount;
     }
@@ -124,6 +135,9 @@ public sealed class Engine_FxSystem
         public bool OrRandAngle;
         public float[] OrAxis = { 1f, 0f, 0f };
         public bool OrRandAxis = true;
+
+        /// <summary>The visual's stated rest orientation as a matrix (<see cref="FxVisual.MeshAlign"/>); null when it states none.</summary>
+        public float[]? MeshAlign;
     }
 
     private sealed class ChainNode
@@ -707,6 +721,18 @@ public sealed class Engine_FxSystem
                 v.OrRandAxis = vis.OrRandAxis;
             }
 
+            if (vis.HasMeshAlign && vis.MeshAlign.Length >= 4)
+            {
+                float[] q = { vis.MeshAlign[0], vis.MeshAlign[1], vis.MeshAlign[2], vis.MeshAlign[3] };
+                float ql = MathF.Sqrt((q[0] * q[0]) + (q[1] * q[1]) + (q[2] * q[2]) + (q[3] * q[3]));
+                if (ql > 1e-6f)
+                {
+                    for (int k = 0; k < 4; k++) q[k] /= ql;
+                    v.MeshAlign = new float[9];
+                    QuatToMat(q, v.MeshAlign);
+                }
+            }
+
             return v;
         }
 
@@ -1049,7 +1075,33 @@ public sealed class Engine_FxSystem
         }
 
         pt.Pos[0] += vpx; pt.Pos[1] += vpy; pt.Pos[2] += vpz;
+        if (rt.Def!.Spin != 0f) Spin(rt, pt, rt.Def.Spin / Fps * step);
     }
+
+    /// <summary>
+    /// <see cref="FxEmitter.Spin"/>, as the guest's hook applies it after each integrator step
+    /// (src/vfs/src/hooks/particle_motion.cpp): the particle's position turned about the emitter's
+    /// own Z axis through its origin by <paramref name="angle"/>, and its velocity with it.
+    /// </summary>
+    private void Spin(EmitterRuntime rt, ParticleState pt, float angle)
+    {
+        float[] axis = _spinAxis;
+        axis[0] = rt.RotW[2]; axis[1] = rt.RotW[5]; axis[2] = rt.RotW[8];
+        if (!VNorm(axis, 1e-6f)) return;
+        float[] m = _spinMat;
+        AxisAngleMat(axis, angle, m);
+        float[] d = _spinD, o = _spinO;
+        d[0] = pt.Pos[0] - rt.PosW[0]; d[1] = pt.Pos[1] - rt.PosW[1]; d[2] = pt.Pos[2] - rt.PosW[2];
+        MatVec(m, d, o);
+        pt.Pos[0] = rt.PosW[0] + o[0]; pt.Pos[1] = rt.PosW[1] + o[1]; pt.Pos[2] = rt.PosW[2] + o[2];
+        MatVec(m, pt.Vel, o);
+        pt.Vel[0] = o[0]; pt.Vel[1] = o[1]; pt.Vel[2] = o[2];
+    }
+
+    private readonly float[] _spinAxis = new float[3];
+    private readonly float[] _spinMat = new float[9];
+    private readonly float[] _spinD = new float[3];
+    private readonly float[] _spinO = new float[3];
 
     private void RollSize(VisualRuntime v0, ParticleState pt)
     {
@@ -1082,7 +1134,33 @@ public sealed class Engine_FxSystem
         if (v0.IsMesh)
         {
             pt.Rot = v0.OrRandAngle ? Frand() * TwoPi : 0f;
-            if (v0.OrRandAxis)
+            pt.HasBase = false;
+            if (v0.MeshAlign is not null)
+            {
+                // The guest's contract (FxVisual.HasMeshAlign): the axis is stated in the frame the
+                // particles are stored in — the root's — and the visual's own frame alike; the
+                // particle is born turned by the emitter's rotation, then the align.
+                float[] raw = pt.AxisBody;
+                if (v0.OrRandAxis)
+                {
+                    float ax, ay, az, l2;
+                    do { ax = Srand2(); ay = Srand2(); az = Srand2(); l2 = (ax * ax) + (ay * ay) + (az * az); } while (l2 > 1f || l2 < 1e-8f);
+                    float il = 1f / MathF.Sqrt(l2);
+                    raw[0] = ax * il; raw[1] = ay * il; raw[2] = az * il;
+                }
+                else
+                {
+                    raw[0] = v0.OrAxis[0]; raw[1] = v0.OrAxis[1]; raw[2] = v0.OrAxis[2];
+                    if (!VNorm(raw, 1e-4f)) { raw[0] = 0; raw[1] = 0; raw[2] = 1; }
+                }
+
+                MatVec(rt.PlaceRot, raw, pt.Axis);
+                pt.Base ??= new float[9];
+                MatMul(rt.RotW, v0.MeshAlign, pt.Base);
+                pt.Rot0 = pt.Rot;
+                pt.HasBase = true;
+            }
+            else if (v0.OrRandAxis)
             {
                 float ax, ay, az, l2;
                 do { ax = Srand2(); ay = Srand2(); az = Srand2(); l2 = (ax * ax) + (ay * ay) + (az * az); } while (l2 > 1f || l2 < 1e-8f);
@@ -1739,6 +1817,46 @@ public sealed class Engine_FxSystem
             foreach (EmitterRuntime rt in inst.Emitters)
                 foreach (ParticleState pt in rt.Particles)
                     yield return ToGodot(pt.Pos);
+    }
+
+    /// <summary>
+    /// Per emitter, for the offline tools: live particles, their height span (the guest's z) and
+    /// their radius span about the emitter's origin, in the guest's units.
+    /// </summary>
+    public string DebugEmitterSpread()
+    {
+        var parts = new List<string>();
+        foreach (InstanceState inst in _instances)
+        {
+            for (int i = 0; i < inst.Emitters.Count; i++)
+            {
+                EmitterRuntime rt = inst.Emitters[i];
+                if (rt.Particles.Count == 0)
+                {
+                    parts.Add($"#{i}: none");
+                    continue;
+                }
+
+                float zMin = float.MaxValue, zMax = float.MinValue, rMin = float.MaxValue, rMax = 0f;
+                foreach (ParticleState pt in rt.Particles)
+                {
+                    float dx = pt.Pos[0] - rt.PosW[0], dy = pt.Pos[1] - rt.PosW[1];
+                    float r = MathF.Sqrt((dx * dx) + (dy * dy));
+                    zMin = MathF.Min(zMin, pt.Pos[2] - rt.PosW[2]); zMax = MathF.Max(zMax, pt.Pos[2] - rt.PosW[2]);
+                    rMin = MathF.Min(rMin, r); rMax = MathF.Max(rMax, r);
+                }
+
+                string mesh = string.Empty;
+                if (rt.Particles[0] is { HasBase: true, Base: { } b } p0)
+                {
+                    mesh = $" base [{string.Join(",", System.Linq.Enumerable.Select(b, x => x.ToString("0.00")))}] rot {p0.Rot - p0.Rot0:0.00} axis ({p0.Axis[0]:0.00},{p0.Axis[1]:0.00},{p0.Axis[2]:0.00})";
+                }
+
+                parts.Add($"#{i}: {rt.Particles.Count} z {zMin:0.00}..{zMax:0.00} r {rMin:0.00}..{rMax:0.00}{mesh}");
+            }
+        }
+
+        return string.Join(" | ", parts);
     }
 
     public int AliveCount()
@@ -2610,9 +2728,28 @@ public sealed class Engine_FxSystem
         float ms = vb is not null && vb.IsMesh ? va.MeshScale + ((vb.MeshScale - va.MeshScale) * w) : va.MeshScale;
         float s = ms * pt.FlickX * _sizeScale;
         if (s <= 1e-5f) return;
-        Vector3 axis = ToGodot(pt.Axis);
-        if (axis.LengthSquared() < 1e-6f) axis = Vector3.Up;
-        var basis = new Basis(axis.Normalized(), pt.Rot).Scaled(new Vector3(s, s, s));
+        Basis basis;
+        if (pt.HasBase && pt.Base is not null)
+        {
+            // The guest's draw (FxVisual.HasMeshAlign): spin(axis, Σrate) × birth × angle(axis, initial),
+            // in the guest's axes, then into Godot's by the same y/z swap the mesh and positions take.
+            float[] spin = _meshSpin, initial = _meshInitial, drawn = _meshDrawn;
+            AxisAngleMat(pt.Axis, pt.Rot - pt.Rot0, spin);
+            AxisAngleMat(pt.AxisBody, pt.Rot0, initial);
+            MatMul(spin, pt.Base, drawn);
+            MatMul(drawn, initial, drawn);
+            basis = new Basis(
+                new Vector3(drawn[0], drawn[6], drawn[3]),
+                new Vector3(drawn[2], drawn[8], drawn[5]),
+                new Vector3(drawn[1], drawn[7], drawn[4])).Scaled(new Vector3(s, s, s));
+        }
+        else
+        {
+            Vector3 axis = ToGodot(pt.Axis);
+            if (axis.LengthSquared() < 1e-6f) axis = Vector3.Up;
+            basis = new Basis(axis.Normalized(), pt.Rot).Scaled(new Vector3(s, s, s));
+        }
+
         data.Instances.Add((new Transform3D(basis, ToGodot(pt.Pos)), new Color(col[0], col[1], col[2], alpha), motion));
     }
 
@@ -2684,6 +2821,9 @@ public sealed class Engine_FxSystem
     }
 
     private readonly float[] _emitCol = new float[3];
+    private readonly float[] _meshSpin = new float[9];
+    private readonly float[] _meshInitial = new float[9];
+    private readonly float[] _meshDrawn = new float[9];
 
     private System.Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>>? _sink;
 

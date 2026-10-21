@@ -296,8 +296,8 @@ public class FxBankWriterTests
 		string line = Engine_FxPlayer.GuestPlayCommand(r, hash);
 		string[] w = line.Split(' ');
 
-		// The grammar mod_commands.cpp reads: fx_play ID HASH X Y Z ENTITY OX OY OZ SCALE INTENSITY LOOP.
-		AssertThat(w.Length).IsEqual(13);
+		// The grammar mod_commands.cpp reads: fx_play ID HASH X Y Z ENTITY OX OY OZ SCALE INTENSITY LOOP R G B.
+		AssertThat(w.Length).IsEqual(16);
 		AssertThat(w[0]).IsEqual("fx_play");
 		AssertThat(w[1]).IsEqual("7");
 		AssertThat(w[2]).IsEqual($"0x{FxBank.Fnv1Lower("my_mod_glow"):X8}");
@@ -308,6 +308,10 @@ public class FxBankWriterTests
 		AssertThat(float.Parse(w[10], System.Globalization.CultureInfo.InvariantCulture)).IsEqual(2f);
 		AssertThat(float.Parse(w[11], System.Globalization.CultureInfo.InvariantCulture)).IsEqual(0.75f);
 		AssertThat(w[12]).IsEqual("0");
+		// The tint, which the guest puts on the instance's own material copy (particle_dress.cpp).
+		AssertThat(float.Parse(w[13], System.Globalization.CultureInfo.InvariantCulture)).IsEqual(1f);
+		AssertThat(float.Parse(w[14], System.Globalization.CultureInfo.InvariantCulture)).IsEqual(0.5f);
+		AssertThat(float.Parse(w[15], System.Globalization.CultureInfo.InvariantCulture)).IsEqual(1f);
 
 		// A hash token names the effect by its key as it stands.
 		AssertThat(Engine_FxPlayer.GuestPlayCommand(r with { Name = "FX_0A1B2C3D" }, Engine_FxEffectJson.HashOf("FX_0A1B2C3D")).Split(' ')[2]).IsEqual("0x0A1B2C3D");

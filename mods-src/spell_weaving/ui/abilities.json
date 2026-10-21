@@ -8,12 +8,12 @@
 			"descriptionTag": "SPELL_WEAVING_DESCRIPTION",
 			"totalXpTag": "SPELL_WEAVING_TOTAL_XP",
 			"maxLevel": 5,
-			"level": "spell_weaving.level",
-			"cost": "spell_weaving.cost",
-			"stat": "spell_weaving.next",
-			"buy": "spell_weaving.buy",
-			"refund": "spell_weaving.refund",
-			"refundValue": "spell_weaving.refund_value",
+			"levelKey": "spell_weaving.ability",
+			"costLike": 8,
+			"costLikeSetting": "spell_weaving.cost_like",
+			"refund": "half",
+			"stats": [0, 1, 2, 3, 4, 5],
+			"legacySaveKey": "SpellWeaving",
 			"image": "art/gui/abilitytarot/spell_weaving.tex"
 		}
 	]

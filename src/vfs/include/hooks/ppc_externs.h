@@ -206,6 +206,15 @@ PPC_EXTERN_FUNC(__imp__rex_lhFx_CreateMeshDescriptor); // FX mesh particle descr
 PPC_EXTERN_FUNC(__imp__rex_lhRenderTwin_Destroy); // render twin destroy by handle (sub_82175918)
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetPositionAndVelocity); // CParticleSystemEntityInstance: states the world position
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetOrientation); // CParticleSystemEntityInstance: states the orientation
+PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_Ctor); // CParticleSystemEntityInstance(typeRef): a mod effect's scale and tint applied (particle_dress.cpp)
+PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetScale); // SetParticleScale: times the effect's authored scale
+PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_GetScale); // GetParticleScale: without it
+PPC_EXTERN_FUNC(__imp__rex_CParticleEmitter_StepParticle); // one particle's integrator step: a mod emitter's spin after it (particle_motion.cpp)
+PPC_EXTERN_FUNC(__imp__rex_CMeshParticle_InitVisual); // a mesh particle's visual born: a mod system's rest orientation composed in (particle_motion.cpp)
+PPC_EXTERN_FUNC(__imp__rex_CECSpellManager_SetSpellSlot); // a spell slot's will; notify set = a pick (SpellPick, mod_abilities.cpp)
+PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Update); // the vortex's tick: moves its entity and places its ground FX (spell_fx_owner.cpp)
+PPC_EXTERN_FUNC(__imp__rex_DamoclesSword_Update); // one Blades sword record's tick: places its FX entity and instance (spell_fx_owner.cpp)
+PPC_EXTERN_FUNC(__imp__rex_FxEntity_PlaceAt); // an FX entity and its particle instance placed at v1 (spell_fx_owner.cpp)
 PPC_EXTERN_FUNC(__imp__rex_lhFx_SpawnFromDefProperty); // spell FX: create from <Spell>SpellParticleFXInfo.<slot>
 PPC_EXTERN_FUNC(__imp__rex_CRemappingFileSystem_AddRemap);
 PPC_EXTERN_FUNC(__imp__rex_lhApp_CreateFrontEnd);

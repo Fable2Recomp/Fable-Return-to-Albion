@@ -13,7 +13,7 @@ namespace Refii.Assets.UI;
 /// THE FX LAB — the active mod's effects edited against a live preview, inside the Mod Studio hub.
 /// Two editors share one turntable:
 /// <list type="bullet">
-/// <item>RECIPES (<c>fx/recipes.json</c>): every field of every recipe — when/equals, instances,
+/// <item>RECIPES (<c>fx/recipes.json</c>): every field of every recipe — when/equals, with,
 /// base/anchor/entities, everyNode, tint, intensity, size, the light, the attached effects and the
 /// authored pieces — previewed on the base effect dressed exactly as the game dresses it
 /// (<see cref="Engine_FxRecipes.DressPreview"/>).</item>
@@ -35,8 +35,8 @@ public partial class FxLabView : MarginContainer
 	private FxLabEffectEditor _effects = null!;
 
 	private ItemList _list = null!;
-	private LineEdit _id = null!, _when = null!, _baseNames = null!, _anchor = null!, _entities = null!, _instances = null!;
-	private SpinBox _equals = null!, _instanceRadius = null!;
+	private LineEdit _id = null!, _when = null!, _baseNames = null!, _anchor = null!, _entities = null!, _with = null!;
+	private SpinBox _equals = null!, _withRadius = null!;
 	private CheckBox _everyNode = null!;
 	private OptionButton _base = null!;
 	private SpinBox _tintR = null!, _tintG = null!, _tintB = null!, _intensity = null!, _size = null!;
@@ -321,8 +321,8 @@ public partial class FxLabView : MarginContainer
 		_id = Text("Id", "the recipe's id: <mod>.<name>; a later mod's recipe with the same id replaces it");
 		_when = Text("When (mod values)", "comma-separated mod values (mod:<mod>.<name>); the recipe holds while any equals the number below");
 		_equals = Number("Equals", -1e6, 1e6, 0.01, "the value the 'when' keys must equal");
-		_instances = Text("Instances (prefix)", "a mod value prefix (mod:<mod>.inst_) publishing one entry per cast; empty for none");
-		_instanceRadius = Number("Instance radius", 0, 1000, 0.1, "an effect binds to the nearest entry of its look within this many metres");
+		_with = Text("With (effect)", "an effect the mod plays per cast (play_fx_on): the recipe holds where it plays; empty for none");
+		_withRadius = Number("With radius", 0, 1000, 0.1, "a base effect binds to a play of that effect riding its entity, or within this many metres");
 		_baseNames = Text("Base effects", "comma-separated effect names the recipe dresses (.pfx names or FX_XXXXXXXX)");
 		grid.AddChild(new Label { Text = "Base effect shown" });
 		_base = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -491,8 +491,8 @@ public partial class FxLabView : MarginContainer
 		_id.Text = recipe.Id;
 		_when.Text = string.Join(", ", recipe.When);
 		_equals.Value = recipe.Match;
-		_instances.Text = recipe.Instances.Length != 0 ? "mod:" + recipe.Instances : string.Empty;
-		_instanceRadius.Value = recipe.InstanceRadius;
+		_with.Text = recipe.With;
+		_withRadius.Value = recipe.WithRadius;
 		_baseNames.Text = string.Join(", ", recipe.BaseNames);
 		FillBaseChoices(recipe.BaseNames);
 		_anchor.Text = string.Join(", ", recipe.AnchorNames);
@@ -719,19 +719,13 @@ public partial class FxLabView : MarginContainer
 		Engine_FxRecipes.Light? glow = _lightOn.ButtonPressed
 			? new Engine_FxRecipes.Light(_lightColour.Color, (float)_lightEnergy.Value, (float)_lightRange.Value, (float)_lightHeight.Value, (float)_lightFlicker.Value)
 			: null;
-		string instances = _instances.Text.Trim();
-		if (instances.StartsWith("mod:", StringComparison.Ordinal))
-		{
-			instances = instances[4..];
-		}
-
 		string id = _id.Text.Trim().Length != 0 ? _id.Text.Trim() : was.Id;
 		List<string> baseNames = CommaList(_baseNames.Text);
 		return Engine_FxRecipes.Make(
 			id, was.Mod, CommaList(_when.Text), (float)_equals.Value, baseNames,
 			new Color((float)_tintR.Value, (float)_tintG.Value, (float)_tintB.Value),
 			(float)_intensity.Value, (float)_size.Value, attach, CommaList(_anchor.Text), glow, pieces, _everyNode.ButtonPressed,
-			CommaList(_entities.Text), instances, (float)_instanceRadius.Value);
+			CommaList(_entities.Text), _with.Text.Trim(), (float)_withRadius.Value);
 	}
 
 	private void Changed()
@@ -782,7 +776,7 @@ public partial class FxLabView : MarginContainer
 		var problems = new List<string>();
 		foreach (Engine_FxRecipes.Recipe r in _all)
 		{
-			if (r.Id.Length == 0 || r.BaseNames.Count == 0 || (r.When.Count == 0 && r.Instances.Length == 0))
+			if (r.Id.Length == 0 || r.BaseNames.Count == 0 || (r.When.Count == 0 && r.With.Length == 0))
 			{
 				problems.Add(r.Id.Length != 0 ? r.Id : "(no id)");
 			}
@@ -790,7 +784,7 @@ public partial class FxLabView : MarginContainer
 
 		if (problems.Count != 0)
 		{
-			_status.Text = $"Not saved: {string.Join(", ", problems)} need an id, base effects and when (or instances).";
+			_status.Text = $"Not saved: {string.Join(", ", problems)} need an id, base effects and when (or with).";
 			return;
 		}
 

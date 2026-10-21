@@ -420,6 +420,12 @@ public static class Engine_UiMenuEdit
 	/// <c>after</c> its previous sibling or <c>before</c> its next standing one). A row stays when
 	/// it keeps its parent and its order among the siblings that also stay (the longest such run).
 	/// </summary>
+	/// <remarks>
+	/// A row is known by its parent, its name AND its <c>when</c> (<see cref="Key"/>): siblings that
+	/// share a name under different conditions are different rows (the pause root's two <c>Map</c>s),
+	/// as are rows of one name under two parents (each quit group's <c>QuitDontSave</c>), and every op
+	/// written for one states its <c>when</c>, so the engine's patch addresses that variant alone.
+	/// </remarks>
 	public static JsonArray Diff(JsonArray baseEntries, JsonArray edited)
 	{
 		var before = new Dictionary<string, Placed>(StringComparer.Ordinal);
@@ -434,15 +440,45 @@ public static class Engine_UiMenuEdit
 		return ops;
 	}
 
-	/// <summary>Every named entry by name, first by depth-first order (the engine's FindEntry).</summary>
+	/// <summary>
+	/// A row's identity in a diff: its name, and its <c>when</c> condition after a separator no
+	/// name carries. Empty for a row with no name.
+	/// </summary>
+	public static string Key(JsonObject entry)
+	{
+		string name = Name(entry);
+		string when = Text(entry, "when");
+		return name.Length == 0 || when.Length == 0 ? name : name + KeySeparator + when;
+	}
+
+	private const char KeySeparator = '\u0001';
+
+	private const char PathSeparator = '\u0002';
+
+	/// <summary>A row's identity under its parent's (empty for the root): the path of keys down to it.</summary>
+	private static string Id(string parent, JsonObject entry) =>
+		Key(entry) is { Length: > 0 } key ? (parent.Length == 0 ? key : parent + PathSeparator + key) : string.Empty;
+
+	/// <summary>
+	/// The plain name of the row an id ends at — what a patch's <c>parent</c>, <c>after</c> and
+	/// <c>before</c> name.
+	/// </summary>
+	private static string NameOf(string id)
+	{
+		string key = id[(id.LastIndexOf(PathSeparator) + 1)..];
+		int at = key.IndexOf(KeySeparator);
+		return at < 0 ? key : key[..at];
+	}
+
+	/// <summary>Every named entry by id, depth first.</summary>
 	private static void Index(JsonArray list, string parent, Dictionary<string, Placed> into)
 	{
 		foreach (JsonNode? node in list)
 		{
-			if (node is JsonObject entry && Name(entry) is { Length: > 0 } name)
+			if (node is JsonObject entry && Id(parent, entry) is { Length: > 0 } id)
 			{
-				into.TryAdd(name, new Placed(parent, entry));
-				Index(Children(entry), name, into);
+				into.TryAdd(id, new Placed(parent, entry));
+				Index(Children(entry), id, into);
 			}
 		}
 	}
@@ -451,29 +487,29 @@ public static class Engine_UiMenuEdit
 		JsonArray list, string parent, JsonArray baseList, Dictionary<string, Placed> before, HashSet<string> stays)
 	{
 		// The base order of the edited rows that kept this parent, in edited order.
-		List<string> baseOrder = NamesOf(BaseSiblings(parent, baseList, before));
-		var names = new List<string>();
+		List<string> baseOrder = BaseSiblings(parent, baseList, before).OfType<JsonObject>()
+			.Select(entry => Id(parent, entry)).ToList();
+		var ids = new List<string>();
 		var positions = new List<int>();
 		foreach (JsonNode? node in list)
 		{
-			if (node is JsonObject entry && Name(entry) is { Length: > 0 } name &&
-				before.TryGetValue(name, out Placed? placed) && placed.Parent == parent)
+			if (node is JsonObject entry && Id(parent, entry) is { Length: > 0 } id && before.ContainsKey(id))
 			{
-				names.Add(name);
-				positions.Add(baseOrder.IndexOf(name));
+				ids.Add(id);
+				positions.Add(baseOrder.IndexOf(id));
 			}
 		}
 
 		foreach (int kept in LongestIncreasing(positions))
 		{
-			stays.Add(names[kept]);
+			stays.Add(ids[kept]);
 		}
 
 		foreach (JsonNode? node in list)
 		{
-			if (node is JsonObject entry && Name(entry) is { Length: > 0 } name)
+			if (node is JsonObject entry && Id(parent, entry) is { Length: > 0 } id)
 			{
-				Stays(Children(entry), name, baseList, before, stays);
+				Stays(Children(entry), id, baseList, before, stays);
 			}
 		}
 	}
@@ -482,9 +518,6 @@ public static class Engine_UiMenuEdit
 		parent.Length == 0 ? baseList :
 		before.TryGetValue(parent, out Placed? placed) ? Children(placed.Entry) :
 		new JsonArray();
-
-	private static List<string> NamesOf(JsonArray list) =>
-		list.OfType<JsonObject>().Select(Name).ToList();
 
 	/// <summary>The indices of a longest strictly increasing subsequence of <paramref name="values"/>.</summary>
 	private static List<int> LongestIncreasing(List<int> values)
@@ -526,24 +559,29 @@ public static class Engine_UiMenuEdit
 	{
 		foreach (JsonNode? node in list)
 		{
-			if (node is not JsonObject entry || Name(entry) is not { Length: > 0 } name)
+			if (node is not JsonObject entry || Id(parent, entry) is not { Length: > 0 } id)
 			{
 				continue;
 			}
 
-			if (!stays.Contains(name))
+			if (!stays.Contains(id))
 			{
-				var remove = new JsonObject { [NameKey] = name, ["remove"] = true };
+				var remove = new JsonObject { [NameKey] = Name(entry), ["remove"] = true };
+				if (Text(entry, "when") is { Length: > 0 } when)
+				{
+					remove["when"] = when;
+				}
+
 				if (parent.Length != 0)
 				{
-					remove["parent"] = parent;
+					remove["parent"] = NameOf(parent);
 				}
 
 				ops.Add(remove);
 				continue;
 			}
 
-			Removals(Children(entry), name, stays, ops);
+			Removals(Children(entry), id, stays, ops);
 		}
 	}
 
@@ -552,20 +590,20 @@ public static class Engine_UiMenuEdit
 	{
 		for (int i = 0; i < list.Count; i++)
 		{
-			if (list[i] is not JsonObject entry || Name(entry) is not { Length: > 0 } name)
+			if (list[i] is not JsonObject entry || Id(parent, entry) is not { Length: > 0 } id)
 			{
 				continue;
 			}
 
-			if (stays.Contains(name))
+			if (stays.Contains(id))
 			{
-				if (!Same(OwnFields(before[name].Entry), OwnFields(entry)))
+				if (!Same(OwnFields(before[id].Entry), OwnFields(entry)))
 				{
 					ops.Add(Whole(entry, parent));
 				}
 				else
 				{
-					Walk(Children(entry), name, before, stays, ops);
+					Walk(Children(entry), id, before, stays, ops);
 				}
 
 				continue;
@@ -576,7 +614,7 @@ public static class Engine_UiMenuEdit
 			{
 				insert["after"] = after;
 			}
-			else if (NextStanding(list, i, stays) is { } next)
+			else if (NextStanding(list, i, parent, stays) is { } next)
 			{
 				insert["before"] = next;
 			}
@@ -585,13 +623,13 @@ public static class Engine_UiMenuEdit
 		}
 	}
 
-	/// <summary>The row with its whole subtree, stated under <paramref name="parent"/>.</summary>
+	/// <summary>The row with its whole subtree, stated under <paramref name="parent"/> (a key).</summary>
 	private static JsonObject Whole(JsonObject entry, string parent)
 	{
 		JsonObject whole = StripPlacing(entry);
 		if (parent.Length != 0)
 		{
-			whole["parent"] = parent;
+			whole["parent"] = NameOf(parent);
 		}
 
 		return whole;
@@ -628,13 +666,13 @@ public static class Engine_UiMenuEdit
 		return null;
 	}
 
-	private static string? NextStanding(JsonArray list, int at, HashSet<string> stays)
+	private static string? NextStanding(JsonArray list, int at, string parent, HashSet<string> stays)
 	{
 		for (int i = at + 1; i < list.Count; i++)
 		{
-			if (list[i] is JsonObject entry && Name(entry) is { Length: > 0 } name && stays.Contains(name))
+			if (list[i] is JsonObject entry && Id(parent, entry) is { Length: > 0 } id && stays.Contains(id))
 			{
-				return name;
+				return Name(entry);
 			}
 		}
 

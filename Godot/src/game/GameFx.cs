@@ -101,7 +101,6 @@ public partial class GameFx : Node3D
     public override void _EnterTree()
     {
         Current = this;
-        Engine_FxRecipes.AnchorParent = this;
     }
 
     public override void _ExitTree()
@@ -508,9 +507,12 @@ public partial class GameFx : Node3D
             (float scale, float fade) = _emitterState.TryGetValue(key, out var state) ? state : (1f, 1f);
             node.Intensity = fx.Intensity * fade;
             node.LightFade = fade;
-            node.SizeScale = scale;
+            // The guest's element scale carries a mod effect's authored scale (the instance hooks,
+            // src/vfs/src/hooks/particle_dress.cpp); this node applies that factor itself
+            // (FxEffect.Scale, Engine_FxSystem), so the size it takes from the guest is the game's.
+            node.SizeScale = scale / AuthoredScale(effect);
             node.GuestDrawn = _guestDrawn.Contains(key);
-            Engine_FxRecipes.Apply(node, effect, fx.Owner, fx.Attached);
+            Engine_FxRecipes.Apply(node, effect, fx.Owner, fx.Attached, fx.Handle);
         }
 
         // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the
@@ -585,6 +587,10 @@ public partial class GameFx : Node3D
     /// teleport rule as <see cref="GameEntities"/> — a jump over four metres or a gap of many
     /// ticks restarts the timeline rather than blending across it.
     /// </summary>
+    /// <summary>A mod effect's authored scale (1 for every shipped effect), from the bank this feed draws with.</summary>
+    private static float AuthoredScale(uint effect) =>
+        FableFx.SharedBank()?.FindByHash(effect) is { Scale: > 0.0001f } e ? e.Scale : 1f;
+
     private Transform3D Smoothed(uint key, Transform3D stated)
     {
         if (!_timelines.TryGetValue(key, out Refii.Core.Engine_TickTimeline? timeline))

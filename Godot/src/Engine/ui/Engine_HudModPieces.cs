@@ -50,10 +50,13 @@ namespace Refii.Ui;
 /// "textures": ["game://art/gui/wheelicons/abilities/will_shock.tex", ...],
 /// "index": "mod:spell_weaving.hud_partner" }</c>.</item>
 /// </list>
-/// <para>Value sources: <c>mod:&lt;mod&gt;.&lt;name&gt;</c> is what a hard mod's hook published
-/// (<see cref="HostBridge.TryGetModValue"/>); <c>hero:health</c> and <c>hero:health_max</c> are
-/// the local hero's own. A piece whose value is not stated is not drawn — "not stated" must
-/// not render as empty or full.</para>
+/// <para>Value sources (<see cref="Engine_UiValueSources"/>, the one resolver every UI record
+/// reads through): a number; <c>mod:&lt;mod&gt;.&lt;name&gt;</c>, what a mod published;
+/// <c>game:&lt;name&gt;</c>, what the guest published for its own HUD (a meter 0..100, or a text
+/// field for a <c>text</c> piece — <c>game:QuestTitle</c>); <c>player:&lt;key&gt;</c>, the player
+/// store read for the PIECE'S player (a piece in player two's view, or following player two's
+/// widget, reads player two's); <c>hero:health</c> / <c>hero:health_max</c>, the local hero's. A
+/// piece whose value is not stated is not drawn — "not stated" must not render as empty or full.</para>
 /// <para>Pieces compose by id across mods in load order; a higher-priority mod's piece replaces
 /// a lower one's. Made of Godot primitives, so a mod needs no art of its own. Children of the
 /// HUD view, so they show and hide with it.</para>
@@ -114,7 +117,9 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// the meter's own value. A copy is its original's player's: a copy of <c>CoopHealth</c> is
 	/// player two's, and in a view drawn for player two it is built from player one's widget
 	/// keyed to player two (its meters read under player two's names), so it looks exactly like
-	/// the same copy of <c>PlayerHealth</c> does for player one.
+	/// the same copy of <c>PlayerHealth</c> does for player one. A copy of player one's widget whose
+	/// meters read <c>player:</c> values is each player's: one record draws beside both players'
+	/// widgets (<see cref="Engine_HudModTwins"/>).
 	/// </summary>
 	public sealed record Clone(
 		string Id,
@@ -136,13 +141,112 @@ public sealed partial class Engine_HudModPieces : Node3D
 	public System.Func<string, Node3D?>? FindPiece { get; set; }
 
 	/// <summary>A stand-in value for every piece, for an editor preview with no game running.</summary>
-	public float? PreviewValue { get; set; }
+	public float? PreviewValue
+	{
+		get => _previewValue;
+		set
+		{
+			_previewValue = value;
+			_contexts[0] = _contexts[1] = null;
+		}
+	}
+
+	private float? _previewValue;
 
 	/// <summary>
-	/// A stand-in for one mod value by key (without <c>mod:</c>), as the mod would publish it, for
-	/// an editor preview; a key it answers null for falls to <see cref="PreviewValue"/>.
+	/// A stand-in for one value source by its whole text (<c>"mod:souls.stamina"</c>,
+	/// <c>"player:souls.stamina"</c>, <c>"game:PlayerHealth"</c>), for an editor preview; a source it
+	/// answers null for falls to <see cref="PreviewValue"/> (a <c>game:</c> one to the view's own
+	/// stand-in meters).
 	/// </summary>
-	public System.Func<string, float?>? PreviewSource { get; set; }
+	public System.Func<string, float?>? PreviewSource
+	{
+		get => _previewSource;
+		set
+		{
+			_previewSource = value;
+			_contexts[0] = _contexts[1] = null;
+		}
+	}
+
+	private System.Func<string, float?>? _previewSource;
+
+	/// <summary>The owning view's value readers (<see cref="Engine_HudView.Sources"/>); null reads mod values and the hero only.</summary>
+	public Engine_UiValueSources.Context? Sources
+	{
+		get => _sources;
+		set
+		{
+			_sources = value;
+			_contexts[0] = _contexts[1] = null;
+		}
+	}
+
+	private Engine_UiValueSources.Context? _sources;
+
+	/// <summary>The owning view is drawn for player two: every piece in it reads player two's values.</summary>
+	public bool ForPlayerTwo
+	{
+		get => _forPlayerTwo;
+		set
+		{
+			_forPlayerTwo = value;
+			_contexts[0] = _contexts[1] = null;
+		}
+	}
+
+	private bool _forPlayerTwo;
+
+	/// <summary>Per player, the readers with the preview's stand-ins over them; rebuilt when <see cref="Sources"/> changes.</summary>
+	private readonly Engine_UiValueSources.Context?[] _contexts = new Engine_UiValueSources.Context?[2];
+
+	/// <summary>The readers without a view: published mod values and the local hero.</summary>
+	private static readonly Engine_UiValueSources.Context Standalone = new()
+	{
+		Mod = key => !Engine.IsEditorHint() && HostBridge.TryGetModValue(key, out float value) ? value : null,
+		Hero = key =>
+		{
+			if (Engine.IsEditorHint())
+			{
+				return null;
+			}
+
+			HostBridge.HeroVitals vitals = HostBridge.GetHeroVitals();
+			return !vitals.Known || vitals.MaxHealth <= 0f ? null : key == "health" ? vitals.Health : vitals.MaxHealth;
+		},
+	};
+
+	/// <summary>
+	/// The readers for one piece: the piece's player is the view's, or player two's when the piece
+	/// follows player two's widget in a shared view (<see cref="Engine_UiValueSources.PlayerFor"/>).
+	/// </summary>
+	private Engine_UiValueSources.Context ContextFor(Piece piece)
+	{
+		bool followsTwo = piece.Follow.Length != 0 && Engine_HudLayout.OwnerOf(
+			new Engine_HudLayout.Piece(piece.Follow.Split(',')[0].Trim(), string.Empty, default, default)) ==
+			Engine_UiSeats.Seat.PlayerTwo;
+		int player = Engine_UiValueSources.PlayerFor(ForPlayerTwo, followsTwo);
+		return _contexts[player - 1] ??= (Sources ?? Standalone).ForPlayer(player) with
+		{
+			StandIn = PreviewSource is null && PreviewValue is null ? (Sources ?? Standalone).StandIn : PreviewStand,
+		};
+	}
+
+	/// <summary>The preview's stand-in for a source: the Studio's own, else the one stand-in for every non-game value.</summary>
+	private float? PreviewStand(string source)
+	{
+		if (PreviewSource?.Invoke(source) is { } stated)
+		{
+			return stated;
+		}
+
+		if (PreviewValue is { } preview && !source.StartsWith(Engine_UiValueSources.GamePrefix, System.StringComparison.Ordinal))
+		{
+			return source.EndsWith("_max", System.StringComparison.Ordinal) ? 100f : preview * 100f;
+		}
+
+		return null;
+	}
 
 	/// <summary>The shipped look — fonts and the Paint path — that a <c>text</c> piece draws with.</summary>
 	public Engine_UiTheme? Theme { get; set; }
@@ -305,14 +409,13 @@ public sealed partial class Engine_HudModPieces : Node3D
 	{
 		Vector2 extent = Engine_HudLayout.CanvasExtent(Window);
 		float scale = Engine_HudLayout.Scale(extent);
-		HostBridge.HeroVitals? vitals = null;
 		foreach (Built built in _built)
 		{
 			Piece piece = built.Piece;
 			Vector2 size = piece.Size;
 			if (piece.WidthFrom.Length != 0)
 			{
-				if (Resolve(piece.WidthFrom, ref vitals) is not { } widthValue)
+				if (Resolve(piece.WidthFrom, piece) is not { } widthValue)
 				{
 					Hide(built);
 					continue;
@@ -369,7 +472,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 			{
 				if (built.Textures is { } choices)
 				{
-					int index = Resolve(piece.Index, ref vitals) is { } chosen ? (int)Mathf.Floor(chosen) : -1;
+					int index = Resolve(piece.Index, piece) is { } chosen ? (int)Mathf.Floor(chosen) : -1;
 					if (index < 0 || index >= choices.Count || choices[index] is not { } shown)
 					{
 						Hide(built);
@@ -395,8 +498,8 @@ public sealed partial class Engine_HudModPieces : Node3D
 				continue;
 			}
 
-			float? max = Resolve(piece.Max, ref vitals);
-			if (Resolve(piece.Value, ref vitals) is not { } current || max is not { } top)
+			float? max = Resolve(piece.Max, piece);
+			if (Resolve(piece.Value, piece) is not { } current || max is not { } top)
 			{
 				Hide(built);
 				continue;
@@ -436,7 +539,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 	private bool DrawText(Built built, MeshInstance3D label)
 	{
 		Piece piece = built.Piece;
-		string? text = Engine_HudModText.Resolve(piece.Text, piece.Format, ModValue, Tag);
+		string? text = Engine_HudModText.Resolve(piece.Text, piece.Format, ContextFor(piece), Tag);
 		if (text is null || Theme is null)
 		{
 			return false;
@@ -450,23 +553,6 @@ public sealed partial class Engine_HudModPieces : Node3D
 		}
 
 		return true;
-	}
-
-	/// <summary>A published mod value, or the preview's stand-in in the editor.</summary>
-	private float? ModValue(string key)
-	{
-		if (PreviewSource?.Invoke(key) is { } stated)
-		{
-			return stated;
-		}
-
-		if (PreviewValue is { } preview)
-		{
-			return preview * 100f;
-		}
-
-		// The editor has no guest: a key the preview does not stand in is unset there.
-		return !Engine.IsEditorHint() && HostBridge.TryGetModValue(key, out float value) ? value : null;
 	}
 
 	private string? Tag(string tag) =>
@@ -555,67 +641,8 @@ public sealed partial class Engine_HudModPieces : Node3D
 		panel.Fit(new Rect2(centre - inner * 0.5f, inner), z);
 	}
 
-	/// <summary>A number, or the value a source states now; null when the source has none.</summary>
-	private float? Resolve(string source, ref HostBridge.HeroVitals? vitals)
-	{
-		if (PreviewSource is { } stand && source.Trim().StartsWith(Engine_HudModText.ModPrefix, System.StringComparison.Ordinal) &&
-			stand(source.Trim()[Engine_HudModText.ModPrefix.Length..]) is { } stated)
-		{
-			return stated;
-		}
-
-		if (PreviewValue is { } preview && source.Length != 0 &&
-			!float.TryParse(source, System.Globalization.NumberStyles.Float,
-				System.Globalization.CultureInfo.InvariantCulture, out _))
-		{
-			return source.EndsWith("_max", System.StringComparison.Ordinal) ? 100f : preview * 100f;
-		}
-
-		return Source(source, ref vitals);
-	}
-
-	private static float? Source(string source, ref HostBridge.HeroVitals? vitals)
-	{
-		source = source.Trim();
-		if (source.Length == 0)
-		{
-			return null;
-		}
-
-		// The editor has no guest to state a value; only a number stands there.
-		if (Engine.IsEditorHint())
-		{
-			return float.TryParse(source, System.Globalization.NumberStyles.Float,
-				System.Globalization.CultureInfo.InvariantCulture, out float stated) ? stated : null;
-		}
-
-		if (float.TryParse(source, System.Globalization.NumberStyles.Float,
-			System.Globalization.CultureInfo.InvariantCulture, out float number))
-		{
-			return number;
-		}
-
-		const string modPrefix = "mod:";
-		if (source.StartsWith(modPrefix, System.StringComparison.Ordinal))
-		{
-			return HostBridge.TryGetModValue(source.Substring(modPrefix.Length), out float value)
-				? value
-				: null;
-		}
-
-		if (source == "hero:health" || source == "hero:health_max")
-		{
-			vitals ??= HostBridge.GetHeroVitals();
-			if (!vitals.Value.Known || vitals.Value.MaxHealth <= 0f)
-			{
-				return null;
-			}
-
-			return source == "hero:health" ? vitals.Value.Health : vitals.Value.MaxHealth;
-		}
-
-		return null;
-	}
+	/// <summary>A number, or the value a source states now for the piece's player; null when the source has none.</summary>
+	private float? Resolve(string source, Piece piece) => Engine_UiValueSources.Number(source, ContextFor(piece));
 
 	private static Texture2D? LoadTexture(string path)
 	{
@@ -666,7 +693,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 			}
 		}
 
-		return new ModLayout(order.ConvertAll(id => byId[id]), hidden, new List<Clone>(clones.Values), scales);
+		return new ModLayout(Engine_HudModTwins.WithPlayerTwoTwins(order.ConvertAll(id => byId[id])), hidden, new List<Clone>(clones.Values), scales);
 	}
 
 	/// <summary>A file's <c>clones</c> and per-piece <c>scale</c>, by id, later mods winning.</summary>
@@ -756,26 +783,11 @@ public sealed partial class Engine_HudModPieces : Node3D
 	}
 
 	/// <summary>
-	/// A clone's meter value, 0..100: <c>source/cap</c> is <c>source ÷ cap × 100</c>, either side a
-	/// number or a source; a bare source is taken as already 0..100. Null while unstated.
+	/// A clone's meter value, 0..100, read without a view (mod values and the hero only):
+	/// <see cref="Engine_UiValueSources.Ratio"/>. The HUD view reads its copies' through its own
+	/// readers, keyed to the copy's player.
 	/// </summary>
-	public static float? MeterValue(string expression)
-	{
-		HostBridge.HeroVitals? vitals = null;
-		int slash = expression.LastIndexOf('/');
-		if (slash <= 0)
-		{
-			return Source(expression, ref vitals);
-		}
-
-		if (Source(expression[..slash], ref vitals) is not { } value ||
-			Source(expression[(slash + 1)..], ref vitals) is not { } cap || cap <= 0f)
-		{
-			return null;
-		}
-
-		return Mathf.Clamp(value / cap * 100f, 0f, 100f);
-	}
+	public static float? MeterValue(string expression) => Engine_UiValueSources.Ratio(expression, Standalone);
 
 	/// <summary>The pieces one <c>ui/hud.json</c> states, adding its <c>hide</c> ids to <paramref name="hidden"/>.</summary>
 	public static List<Piece> Parse(string text, string mod, HashSet<string> hidden)

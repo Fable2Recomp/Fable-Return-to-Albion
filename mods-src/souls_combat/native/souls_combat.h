@@ -17,10 +17,14 @@ namespace souls_combat {
 /// the hero's owner, and the refill runs where the hero is played. Keys:
 ///   souls_combat.stamina        the pool in points, 0..max; it may dip below zero by up to kFloor:
 ///                               the swing that empties it still lands, and the next one waits
+///   souls_combat.stamina_max    the pool's maximum, stated where the hero is played (the HUD's bar)
 ///   souls_combat.stamina_rest   seconds since the last spend (the refill waits for kRegenDelay)
-///   souls_combat.mana / mana_rest   the same for mana (mana.cpp)
-///   souls_combat.stamina_ability    the Stamina ability's level, SAVED with the hero
+///   souls_combat.mana / mana_max / mana_rest   the same for mana (mana.cpp)
+///   souls_combat.stamina_ability    the Stamina ability's level, SAVED with the hero: the ENGINE
+///                               buys and unlearns it from ui/abilities.json (its price, its
+///                               refund, saves from before); this mod only reads it
 inline constexpr const char* kStaminaKey = "souls_combat.stamina";
+inline constexpr const char* kStaminaMaxKey = "souls_combat.stamina_max";
 inline constexpr const char* kStaminaRestKey = "souls_combat.stamina_rest";
 inline constexpr const char* kStaminaAbilityKey = "souls_combat.stamina_ability";
 

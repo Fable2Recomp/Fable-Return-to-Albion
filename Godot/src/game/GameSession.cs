@@ -327,6 +327,8 @@ public partial class GameSession : Node
 	{
 		// The mods' settings.json values reach the game once per guest.
 		Refii.Mods.ModSettings.Pump(Refii.Host.HostBridge.IsGuestUp);
+		// The mods' declared abilities reach the engine's purchase once per guest (and after a remount).
+		Refii.Ui.Engine_UiModAbilities.Pump(Refii.Host.HostBridge.IsGuestUp);
 		Refii.Mods.ModErrors.Pump();
 
 		// The mods' godot/*.gd scripts run under this node while the guest is up and driven.

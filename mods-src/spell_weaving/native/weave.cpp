@@ -20,18 +20,21 @@
 // 7 DeadRising. Slow Time and Raise Dead are never partners. Learned ranks: the stats
 // component's ability levels 7 + type (refii_mod_ability_level).
 //
-// EACH SLOT HAS ITS OWN PARTNER, as each slot has its own spell. The partners are kept as
-// saved player values (per player, going home with that hero's own save) and chosen through the
-// settings spell_weaving.partner_1..5 / partner2_1..5: a CHANGE of a setting is the choice (-1
-// clears; Slow Time and Raise Dead are refused). The partner in effect per slot is published as
-// spell_weaving.partner_active_1..5 / partner2_active_1..5. Settings (settings.json, live through
-// the debug channel's `mod-setting`):
-//   spell_weaving.partner_<n> / partner2_<n>  the partner spell type on slot n for player 1 / 2
+// EACH SLOT HAS ITS OWN PARTNER, as each slot has its own spell. The partner is the ENGINE'S spell
+// pick this mod states in ui/spellwheel.json: X on a will on either selector picks it for the
+// highlighted slot, Y clears it, and the engine raises SpellPick and keeps the choice as a SAVED
+// player value, spell_weaving.partner_<n> (per player, going home with that hero's own save; -1
+// none). The pick's "exclude" keeps Slow Time and Raise Dead off it; this file refuses them too
+// (SpellPick), so no other surface can store one. What is in effect per slot (chosen, learned, and
+// within the Spell Weaving level) is stated beside it, spell_weaving.partner_active_<n>, where the
+// hero is played — the selectors read both for the reader's player. Settings (settings.json, live
+// through the debug channel's `mod-setting`):
 //   spell_weaving.top_only                    1: only the charged slot casts (Fable 3); 0: cascade
 //   spell_weaving.allow_same                  1: a partner equal to the slot's spell casts it twice
 //   spell_weaving.woven                       1: weaving on; 0: every slot casts its own spell alone
 
 #include <cstdio>
+#include <cstring>
 
 #include "core/refii_mod.h"
 #include "spell_weaving.h"
@@ -49,21 +52,18 @@ namespace {
 constexpr int kFirstSpellAbility = 7;
 constexpr int kSlots = 5;
 
-/// The setting values last seen per player and slot: a CHANGE is a choice made on this machine.
-bool g_setting_seen[2][kSlots] = {};
-float g_setting_value[2][kSlots] = {};
-
-void SettingKey(char* out, size_t size, int player, int slot) {
-  std::snprintf(out, size, "spell_weaving.partner%s_%d", player == 0 ? "" : "2", slot + 1);
-}
-
 /// Where saves from before kept the choices: the world save's Lua table.
 void LegacyKey(char* out, size_t size, int player, int slot) {
   std::snprintf(out, size, "SpellWeavingPartner%s%d", player == 0 ? "" : "2_", slot + 1);
 }
 
-/// The player value holding a slot's partner (spell_weaving.h).
+/// The player value holding a slot's partner — the pick's store (ui/spellwheel.json).
 void PartnerKey(char* out, size_t size, int slot) { std::snprintf(out, size, "spell_weaving.partner_%d", slot + 1); }
+
+/// What is in effect on a slot, stated where the hero is played (the selectors' "inEffect").
+void ActiveKey(char* out, size_t size, int slot) {
+  std::snprintf(out, size, "spell_weaving.partner_active_%d", slot + 1);
+}
 
 /// A player's chosen partner on a slot (by index), -1 for none.
 int Partner(int player, int slot) {
@@ -88,22 +88,22 @@ int LearnedPartner(uint8_t* base, int player, uint32_t hero, int slot) {
   return refii_mod_ability_level(base, hero, kFirstSpellAbility + type) > 0 ? type : -1;
 }
 
-void Choose(int player, int slot, int type) {
-  // -1 clears. Slow Time and Raise Dead can never be woven: a request for either changes nothing.
-  if (type >= 0 && !Weavable(type)) {
-    REXLOG_INFO("Spell Weaving: {} cannot be a partner; player {} slot {} keeps {}", type, player + 1, slot + 1,
-                Partner(player, slot));
+/// The partner pick (SpellPick, the engine's, for ui/spellwheel.json's "spell_weaving.partner"):
+/// Slow Time and Raise Dead can never be woven, so a pick of either is refused, whatever surface
+/// made it. The engine stores the pick after this.
+void OnSpellPick(refii::mods::SpellPickEvent& e) {
+  if (std::strcmp(e.pick, "spell_weaving.partner") != 0 || e.spell < 0 || Weavable(e.spell)) {
     return;
   }
-  char key[40];
-  PartnerKey(key, sizeof(key), slot);
-  refii_mod_player_save(player + 1, key, static_cast<float>(type >= 0 ? type : -1));
-  REXLOG_INFO("Spell Weaving: partner {} chosen on slot {} for player {}", type >= 0 ? type : -1, slot + 1, player + 1);
+  REXLOG_INFO("Spell Weaving: {} cannot be a partner; player {} slot {} keeps {}", e.spell, e.player, e.slot + 1,
+              e.previous);
+  e.cancel = true;
 }
+REFII_MOD_ON(SpellPick, OnSpellPick);
 
-/// A save from before keeps the choices in its Lua table, and settings.json may state defaults. The
-/// Lua and SaveLoaded events say the table changed; the read waits for the next tick with the hero
-/// present, where the game VM is up and a chunk can run.
+/// A save from before keeps the choices in its Lua table. The Lua and SaveLoaded events say the
+/// table changed; the read waits for the next tick with the hero present, where the game VM is up
+/// and a chunk can run.
 bool g_reread = true;
 
 void SaveChanged(refii::mods::LuaEvent& e) {
@@ -116,17 +116,10 @@ void SaveLoaded(refii::mods::SaveLoadedEvent& e) { SaveChanged(e); }
 REFII_MOD_ON(SaveLoaded, SaveLoaded);
 
 /// For each player played here, a slot the hero's saved values leave empty takes the old Lua
-/// table's choice, else settings.json's (the file ships -1 everywhere; an edited file chooses). Run
-/// after every Lua rebuild and save load, so a default never races the save's own values. The
-/// settings' current values are taken as seen, so only a later change of one is a choice.
+/// table's choice. Run after every Lua rebuild and save load, so it never races the save's own values.
 void ReadSaved(PPCContext* ctx, uint8_t* base) {
   for (int player = 0; player < 2; ++player) {
     for (int slot = 0; slot < kSlots; ++slot) {
-      char setting[48];
-      SettingKey(setting, sizeof(setting), player, slot);
-      const float value = Knob(setting, -1.0f);
-      g_setting_seen[player][slot] = true;
-      g_setting_value[player][slot] = value;
       if (refii_mod_player_here(player + 1) == 0 || HasPartnerValue(player, slot)) {
         continue;
       }
@@ -134,9 +127,11 @@ void ReadSaved(PPCContext* ctx, uint8_t* base) {
       LegacyKey(legacy, sizeof(legacy), player, slot);
       int32_t saved = -1;
       if (refii_mod_save_get_int(ctx, base, legacy, 0, kSpellTypes - 1, &saved) != 0 && Weavable(saved)) {
-        Choose(player, slot, saved);
-      } else if (value >= 0.0f) {
-        Choose(player, slot, static_cast<int>(value));
+        char key[40];
+        PartnerKey(key, sizeof(key), slot);
+        refii_mod_player_save(player + 1, key, static_cast<float>(saved));
+        REXLOG_INFO("Spell Weaving: player {} slot {} partner {} taken from the save's Lua table", player + 1, slot + 1,
+                    saved);
       }
     }
   }
@@ -152,33 +147,27 @@ void OnTick(refii::mods::TickEvent& e) {
     ReadSaved(e.ctx, e.base);
   }
 
+  // What is in effect per slot (chosen, learned, and the slot within the Spell Weaving level),
+  // stated where the hero is played: the selectors draw the chosen pick faint when it is not this.
   for (int player = 0; player < 2; ++player) {
     const uint32_t hero = refii_mod_player_hero(e.base, player + 1);
+    if (hero == 0 || refii_mod_player_here(player + 1) == 0) {
+      continue;
+    }
     for (int slot = 0; slot < kSlots; ++slot) {
       char key[48];
-      SettingKey(key, sizeof(key), player, slot);
-      const float value = Knob(key, -1.0f);
-      if (g_setting_seen[player][slot] && value != g_setting_value[player][slot]) {
-        // A CHANGE of the setting is a choice (the picker, the debug channel, a re-mount).
-        g_setting_value[player][slot] = value;
-        Choose(player, slot, static_cast<int>(value));
-      }
-
-      // Two statements per slot: what was chosen, and what is in effect (chosen, learned, and the
-      // slot within the Spell Weaving level). The selectors draw the first faint when it is not the second.
-      char published[48];
-      std::snprintf(published, sizeof(published), "spell_weaving.partner%s_chosen_%d", player == 0 ? "" : "2", slot + 1);
-      refii::mods::Publish(published, static_cast<float>(Partner(player, slot)));
-      std::snprintf(published, sizeof(published), "spell_weaving.partner%s_active_%d", player == 0 ? "" : "2", slot + 1);
-      const int active = hero != 0 && slot < Level(player) ? LearnedPartner(e.base, player, hero, slot) : -1;
-      refii::mods::Publish(published, static_cast<float>(active));
+      ActiveKey(key, sizeof(key), slot);
+      const int active = slot < Level(player) ? LearnedPartner(e.base, player, hero, slot) : -1;
+      refii_mod_player_set(player + 1, key, static_cast<float>(active));
     }
   }
 }
 REFII_MOD_ON(Tick, OnTick);
 
-/// THE HUD GLYPH (ui/hud.json): while a hero charges, the partner the charged slot would weave
-/// is published as spell_weaving.hud_partner / hud_partner2 (-1 when none, or not charging) —
+/// THE HUD GLYPH (ui/hud.json): while a hero charges, the partner the charged slot would weave is
+/// stated in that player's store as spell_weaving.hud_partner (-1 when none, or not charging),
+/// where the hero is played; the glyph reads player:spell_weaving.hud_partner beside each player's
+/// own spell column —
 /// the charge level (the top slot, 0..4) arrives every frame of the charge through
 /// SpellChargeLevel and goes stale a third of a second after the last one; a launch ends it at
 /// once. The glyph shows what the launch would weave: the slot's own spell must be weavable and
@@ -221,6 +210,9 @@ void PublishHudPartner(refii::mods::TickEvent& e) {
   for (int player = 0; player < 2; ++player) {
     g_charging_age[player] += e.seconds;
     const uint32_t hero = refii_mod_player_hero(e.base, player + 1);
+    if (hero == 0 || refii_mod_player_here(player + 1) == 0) {
+      continue;
+    }
     const int slot = g_charging_slot[player];
     int partner = -1;
     if (hero != 0 && slot >= 0 && slot < kSlots && g_charging_age[player] <= kChargeHoldSeconds && slot < Level(player) &&
@@ -231,8 +223,7 @@ void PublishHudPartner(refii::mods::TickEvent& e) {
         partner = -1;
       }
     }
-    refii::mods::Publish(player == 0 ? "spell_weaving.hud_partner" : "spell_weaving.hud_partner2",
-                         static_cast<float>(partner));
+    refii_mod_player_set(player + 1, "spell_weaving.hud_partner", static_cast<float>(partner));
   }
 }
 REFII_MOD_ON(Tick, PublishHudPartner);

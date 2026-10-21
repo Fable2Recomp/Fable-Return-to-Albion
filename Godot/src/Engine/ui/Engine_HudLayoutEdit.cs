@@ -197,7 +197,12 @@ public static class Engine_HudLayoutEdit
 		ParseObject(text)[Engine_HudLayout.SnapshotLayerKey] is JsonValue layer &&
 		layer.TryGetValue(out string? value) && value == Engine_HudLayout.SnapshotLayer;
 
-	internal static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+	/// <summary>Indented output, with the resolver stated (see Engine_UiTemplateJson.WriteOptions).</summary>
+	internal static readonly JsonSerializerOptions Indented = new()
+	{
+		WriteIndented = true,
+		TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
+	};
 
 	/// <summary>A JSON object from text; empty for null, blank or anything that is not an object.</summary>
 	public static JsonObject ParseObject(string? text)
