@@ -45,6 +45,15 @@ public partial class FableFx : Node3D
 	private static FxBank? _bank;
 	private static bool _bankTried;
 
+	/// <summary>The shipped bank's bytes, kept so a changed mod set re-overlays without re-reading the archive.</summary>
+	private static byte[]? _bankBytes;
+
+	/// <summary>The <see cref="Engine_FxModEffects.Generation"/> the shared bank was overlaid at.</summary>
+	private static int _bankOverlay = -1;
+
+	/// <summary>A bank handed over whole (<see cref="UseBank"/>): drawn as given, no mod overlay.</summary>
+	private static bool _referenceBank;
+
 	/// <summary>
 	/// A reference folder of loose <c>.tex</c> files tried before the mount for effect textures,
 	/// and a particle bank taken over the mount's: the weave lab's way of drawing another
@@ -64,6 +73,7 @@ public partial class FableFx : Node3D
 
 		_bank = bank;
 		_bankTried = true;
+		_referenceBank = true;
 		error = string.Empty;
 		GD.Print($"[fx] reference bank loaded: {bank.Effects.Count} effects, {bank.Emitters.Count} emitters, {bank.Systems.Count} systems");
 		if (bank.ExactModel is { } x)
@@ -217,10 +227,23 @@ public partial class FableFx : Node3D
 
 	private static ulong _bankRetryAtMsec;
 
+	/// <summary>
+	/// THE particle bank every effect draws from: the shipped bank with the enabled mods' effects
+	/// overlaid (<see cref="Engine_FxModEffects"/>). A mount that changes the mods' effects steps
+	/// their generation and the next call overlays again on a fresh parse; nodes already built keep
+	/// what they built.
+	/// </summary>
 	public static FxBank? SharedBank()
 	{
-		if (_bank is not null)
+		if (_bank is not null &&
+			(_referenceBank || _bankOverlay == Engine_FxModEffects.Generation || _bankBytes is null))
 		{
+			return _bank;
+		}
+
+		if (_bank is not null && _bankBytes is not null && Overlaid(_bankBytes) is { } fresh)
+		{
+			_bank = fresh;
 			return _bank;
 		}
 
@@ -232,7 +255,10 @@ public partial class FableFx : Node3D
 
 		_bankTried = true;
 		_bankRetryAtMsec = now + 2000;
-		byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(BankPath) ??
+		// The SHIPPED bytes: with mods stating effects the mount serves the guest's composed bank
+		// under this name (Engine_FxModEffects.ComposeGuestBank), and this copy overlays them itself.
+		byte[]? bytes = Engine_FxModEffects.ShippedBank ??
+						Engine_BnkMeshLoader.ReadBytes(BankPath) ??
 						Engine_BnkMeshLoader.ReadBytes("data/" + BankPath);
 		if (bytes is null)
 		{
@@ -263,6 +289,23 @@ public partial class FableFx : Node3D
 			return null;
 		}
 
+		FxBank? bank = Overlaid(bytes);
+		if (bank is null)
+		{
+			return null;
+		}
+
+		GD.Print(
+			$"[fx] bank loaded: {bank.Effects.Count} effects, " +
+			$"{bank.Emitters.Count} emitters, {bank.Systems.Count} systems");
+		_bankBytes = bytes;
+		_bank = bank;
+		return bank;
+	}
+
+	/// <summary>The shipped bank parsed from <paramref name="bytes"/> with the mods' effects overlaid; null when it does not parse.</summary>
+	private static FxBank? Overlaid(byte[] bytes)
+	{
 		var bank = new FxBank();
 		if (!Engine_FxBank.Parse(bytes, bank))
 		{
@@ -270,12 +313,37 @@ public partial class FableFx : Node3D
 			return null;
 		}
 
-		GD.Print(
-			$"[fx] bank loaded: {bank.Effects.Count} effects, " +
-			$"{bank.Emitters.Count} emitters, {bank.Systems.Count} systems");
-		_bank = bank;
+		int generation = Engine_FxModEffects.Generation;
+		IReadOnlyList<Engine_FxModEffects.Source> sources = Engine_FxModEffects.Sources;
+		if (sources.Count != 0)
+		{
+			Engine_FxModEffects.Result result = Engine_FxModEffects.Apply(bank, sources);
+			GD.Print($"[fx] mod effects over the bank: {result}");
+			foreach (Refii.Mods.RowConflict conflict in result.Conflicts)
+			{
+				GD.PushWarning($"[fx] {conflict.Key} is stated by {string.Join(", ", conflict.Losers)} and {conflict.Winner}; {conflict.Winner} wins (the later in the load order)");
+			}
+		}
+
+		_bankOverlay = generation;
 		return bank;
 	}
+
+	/// <summary>
+	/// A bank this node draws from instead of <see cref="SharedBank"/> — the FX Lab's preview of an
+	/// effect being edited (<see cref="Engine_FxModEffects.PreviewBank"/>). Setting it rebuilds.
+	/// </summary>
+	public FxBank? BankOverride
+	{
+		get => _bankOverride;
+		set
+		{
+			_bankOverride = value;
+			_built = false;
+		}
+	}
+
+	private FxBank? _bankOverride;
 
 	public override void _Ready()
 	{
@@ -1094,7 +1162,7 @@ public partial class FableFx : Node3D
 			return;
 		}
 
-		FxBank? bank = SharedBank();
+		FxBank? bank = _bankOverride ?? SharedBank();
 		if (bank is null || _effectName.Length == 0)
 		{
 			return;

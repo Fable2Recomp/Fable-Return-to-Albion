@@ -114,6 +114,7 @@ public partial class ModdingGuideView : MarginContainer
         AddSubTabButton(subNavRow, "📜 5. Lua Scripts & Quests", 4);
         AddSubTabButton(subNavRow, "🧩 6. Script API & Hard Mods", 5);
         AddSubTabButton(subNavRow, "⚡ 7. Events & the Mod API", 6);
+        AddSubTabButton(subNavRow, "✨ 8. Effects (FX)", 7);
 
         topVBox.AddChild(subNavRow);
         topPanel.AddChild(topVBox);
@@ -140,6 +141,7 @@ public partial class ModdingGuideView : MarginContainer
         _subTabPages.Add(BuildLuaPage());
         _subTabPages.Add(BuildScriptApiPage());
         _subTabPages.Add(BuildEventsPage());
+        _subTabPages.Add(BuildFxPage());
 
         foreach (Control page in _subTabPages)
         {
@@ -681,6 +683,24 @@ public partial class ModdingGuideView : MarginContainer
             "Effects (fx/recipes.json): while a mod value equals a recipe's number, the live effects it names take a tint, intensity and size, authored pieces and attached effects on a turning ring — Spell Weaving's merged looks. everyNode dresses every live anchor; entities names entity definitions (the Blades' swords) so every live one carries the pieces on a node that follows it."));
 
         page.AddChild(CreateSectionCard(
+            "🖼️ The UI tab — HUD, menus, modals and the settings page",
+            new Color(0.55f, 0.85f, 1.0f),
+            "The hub's UI tab edits the active mod's UI files against the game's OWN UI: the preview on the right is the game's HUD view and list view, built inside the editor from the banks on the editor's mount (the enabled mods' art included), with this mod's files as you are editing them composed in load order with the other enabled mods'. Nothing is written until 💾 Save UI, which makes the same per-entry RefiiModApi calls a script would (checked, then re-mounted once). Each page shows the schema check of its file as it would be saved, and its conflicts with the other enabled mods.\n\n" +
+            "HUD page (ui/hud.json):\n" +
+            "  • The mod's pieces — + Meter / Panel / Picture / Text, every field (anchor preset or anchor + offset, follow and followElement, size, value and max, colours, widthFrom, textures + index; a text piece's text — literal, Babel tag or mod:<key> — format, point size, colour, align).\n" +
+            "  • The game's pieces — select one (or click it in the preview) to move it, hide it, scale it, or make a copy of it. A move is written to the mod's \"layout\" block: { \"<piece id>\": { \"anchor\": [x, y], \"offset\": [x, y] } }, the same entry as the player's user://hud/layout.json. Order: shipped < mods in load order < the player's file, so a player's own arrangement always wins.\n" +
+            "  • The preview — drag any piece: a game piece writes layout, a mod piece its own anchor/offset (\"Snap anchor on drop\" re-anchors it to the nearest edge or centre so it follows that edge on other windows), a copy its offset. The Window menu shows 16:9, 21:9, 4:3 and 32:9, so the anchors can be checked. Stand-in values: one slider for every game meter and one per mod:<key> the pieces read (Engine_HudModPieces.PreviewSource).\n\n" +
+            "Menus page (ui/templates.json):\n" +
+            "  • Every menu the game and the enabled mods state, and the mod's own. A menu the mod does not own is saved as a PATCH — only the rows you added, changed, moved or removed, as entries with after / before / parent / remove — computed against the menu as the game and the other mods leave it, so two mods' patches to the pause menu both land. A mod's own menu (+ Menu) is saved whole; a row opens it with \"opens\": \"<menu>\" or the command Opens:<menu>, and B returns.\n" +
+            "  • Rows: + Row, + Child, → Nest, ← Promote, ↑ ↓, remove; name, tag, the command (Opens:<menu>, Mod:lua:<function>[:<arg>] — the function must be a Lua name path such as my_mod.on_row — or any other command), opens, source, icon, eventType, rating, hostOnly, drop, counted. Every field a record carries is kept, shown or not.\n" +
+            "  • Screens: \"State in the mod\" copies a screen record as it runs into the mod to edit whole; drop it to let the game's stand.\n" +
+            "  • The preview is the game's list view with the front end's or the books' row art: click a row to highlight it, click it again to press it — an opens / Opens: row opens its menu over the list, ◀ Back (or right-click) returns; a Mod:lua: row names the call it makes in game.\n\n" +
+            "Modals page: every shipped box row (13, or 0@22 for one screen) with what the mod states over it — Override (a whole { kind: query | message, confirm, cancel } record), Release to the guest (null: the guest's own input answers), or drop the mod's row.\n\n" +
+            "Settings page (settings.ui.json): a row per number in settings.json — label, description, type (slider with min / max / step, toggle, or choice with options { value, label } in order). The preview is the page as the game's row model draws it (ModSettingsUi): each row's caption at settings.json's value, stepped with ◀ ▶.\n\n" +
+            "The same HUD placement editor and menu editor are the player's tools (the HUD Layout and UI Menus docks of the hud_editor plugin), pointed at user://hud/layout.json and user://ui/templates.json: they write only the pieces and menus you changed, and keep every other entry and field of those files.\n\n" +
+            "Script calls behind the tab: SetHudPiece, SetHudText, SetHudClone, HideHudPiece / ShowHudPiece, SetHudScale / RemoveHudScale, RemoveHudEntry, SetHudLayout / RemoveHudLayout / GetHudLayout; SetMenu (whole), SetMenuPatch (a whole patch, in order — a remove then a re-insert of one name moves a row), PatchMenu (merge entries by name), RemoveMenu, SetMenuRow / RemoveMenuRow, OpensCommand, LuaCommand, ParseMenuCommand; SetScreen / RemoveScreen; SetModal / ReleaseModal / RemoveModal, ShippedModals; SetSettingRow / SetSettingChoice / RemoveSettingRow. BeginChanges() … EndChanges() around many calls re-mounts the mods once."));
+
+        page.AddChild(CreateSectionCard(
             "⚙ Hard mods — native code",
             new Color(1.0f, 0.60f, 0.40f),
             "A hard mod ships C++ under native/. The launcher compiles it into the game code when the mod is enabled, after the player allows that mod's native code once per version.\n\n" +
@@ -786,6 +806,72 @@ public partial class ModdingGuideView : MarginContainer
             new Color(0.60f, 0.90f, 0.60f),
             "Both bundled hard mods are built on these events (mods-src/souls_combat, mods-src/spell_weaving in the refii tree): stamina spends on MeleeSwing and RollStarted and refuses on AbilityRequest and Roll; the guard breaks through Block; poise absorbs through HitResponse; the lock-on toggles through GameAction; mana charges through SpellCharge, SpellChargeLevel and SpellLaunched; the weave stands its base in through SpellLaunch and casts the partner from HitLanded with refii_mod_cast_spell. " +
             "What each still hooks by name is a seam no event covers yet (the look-at writer, the vortex component, the fireball's impact)."));
+
+        return page;
+    }
+
+    // =========================================================================
+    // SUB-TAB 7: EFFECTS — recipes, the mod's own effects, play_fx, the FX Lab
+    // =========================================================================
+    private Control BuildFxPage()
+    {
+        var page = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+        page.AddThemeConstantOverride("separation", 10);
+
+        page.AddChild(CreateSectionCard(
+            "✨ Effects: the guest says which and where, Godot draws",
+            new Color(1.0f, 0.75f, 0.45f),
+            "Every effect on screen is a FableFx node drawing the particle bank (art/particles/particle_bank.bnk). A mod changes effects three ways, all through that one bank and that one node:\n" +
+            "  • RECIPES (fx/recipes.json) dress the live effects the game plays while a mod value holds — a tint, intensity and size, a light, attached effects, authored pieces.\n" +
+            "  • EFFECTS (fx/effects/<name>.json) are the bank's own model as JSON, overlaid on the shipped bank when it loads: new effects, replaced effects, replaced emitters.\n" +
+            "  • play_fx draws any bank or mod effect where a mod says, from native code, Lua or a Godot script.\n\n" +
+            "The FX Lab (Mod Studio, the FX Lab tab) edits recipes and effects against a live turntable; selecting a FableFx in a scene adds 'Save as mod effect' and 'Edit in FX Lab' to the inspector."));
+
+        page.AddChild(CreateSectionCard(
+            "🧪 fx/effects/<name>.json — the bank's own model",
+            new Color(0.55f, 0.85f, 1.0f),
+            "One effect object per file (or { \"effects\": [ ... ] }):\n" +
+            "  { \"format\": 1, \"name\": \"my_mod_green_torch\", \"updateFrequency\": 1, \"scale\": 1, \"tint\": [1, 1, 1],\n" +
+            "    \"parts\": [ { \"emitter\": 0, \"system\": 0, \"group\": 1, \"vector\": 0 } ],\n" +
+            "    \"emitters\": [ { \"typeId\": 0, \"subType\": 1, \"maxActive\": 40, \"spawnRadius\": 0.2,\n" +
+            "                    \"params\": { \"rate\": [[0, 12]], \"speed\": [[0, 1.5], [1, 0.2]] } } ],\n" +
+            "    \"systems\": [ { \"mode\": 1, \"visuals\": [ { \"texture\": \"art\\\\fx\\\\pfx_textures\\\\fxt_flames_double_03.tex\", ... } ] } ] }\n\n" +
+            "Every field of the model is a key in camelCase; a key left out is the model's default. parts index the file's own emitters and systems (-1 for none); \"vector\" is the chain an entity belongs to (each chain parents its entities in order), \"group\" its update bucket. " +
+            "A generic parameter is params.<name> (rate, rateSpread, speed, speedSpread, accelDirScale, gravityScale, globalWindScale, velX, velY, velZ, wind, lightRange, lightIntensity, lightCutoff, lightFadeRamp, lightConeAngle, attractRadius, attractStrength, or p0..p27) as [[seconds, value], ...]; " +
+            "a vector parameter is vectors.vec0|vec1|vec2|lightColour as [[seconds, x, y, z], ...]. The FIRST key starts a timeline and one key is a constant, as the bank's loader reads them.\n\n" +
+            "THE OVERLAY, in load order (the highest mod last, and winning):\n" +
+            "  • a new effect name ADDS an effect; a shipped name REPLACES it — every placement and every live spawn of it;\n" +
+            "  • an emitter whose entityId the bank holds REPLACES that emitter wherever the bank uses it, so the game's own spawns draw the change; one without an id is new;\n" +
+            "  • a system whose id the bank holds is replaced the same way;\n" +
+            "  • two mods stating the same effect, emitter or system are a conflict, shown in the Mods panel beside file and text conflicts.\n" +
+            "Script: CloneEffect(source, name) (fresh ids — nothing shipped changes), OverrideEffect(name) (ids kept — replaces), GetEffectJson, SetEffectJson, SetEmitterField(effect, emitter, key, value), SetEmitterKeys(effect, emitter, param, keys), RemoveEffect."));
+
+        page.AddChild(CreateSectionCard(
+            "▶ play_fx — on every surface",
+            new Color(0.60f, 0.90f, 0.60f),
+            "Native:  refii_mod_fx_options o = refii_mod_fx_default_options(); o.duration = 2.0f;\n" +
+            "         uint32_t id = refii_mod_play_fx(\"my_mod_green_torch\", xyz, &o);   // or refii_mod_play_fx_on(name, entity, &o)\n" +
+            "         refii_mod_stop_fx(id);\n" +
+            "Lua:     local id = Refii.play_fx(\"my_mod_green_torch\", x, y, z, { duration = 2, scale = 1.5, tint = {1, 0.5, 0.2} })\n" +
+            "         Refii.play_fx_on(e.victim, \"fxspl_blast_fire_ring\", { offset = {0, 0, 1}, loop = false })\n" +
+            "         Refii.stop_fx(id)\n" +
+            "Godot:   var host = Engine.get_singleton(\"RefiiHost\")\n" +
+            "         var id = host.play_fx(\"my_mod_green_torch\", x, y, z, {\"duration\": 2.0, \"tint\": Color(1, 0.5, 0.2)})\n" +
+            "         host.play_fx_on(\"fxspl_blast_fire_ring\", handle, {\"offset\": Vector3(0, 0, 1)})\n" +
+            "         host.stop_fx(id)\n\n" +
+            "Options: duration (seconds; 0 plays until stop_fx, or with loop false until the effect has run out), scale, tint, intensity, loop (true), offset (from the entity, the guest's axes). " +
+            "Positions are the guest's world axes, as every event states them; an entity is a handle in Lua and Godot and an address natively. An effect on an entity starts at the entity's drawn node and rides it. " +
+            "Every surface's id stops through any surface's stop_fx. Godot spawns the same FableFx node it draws every bank effect with; the game spawns nothing."));
+
+        page.AddChild(CreateSectionCard(
+            "🎛 The FX Lab",
+            new Color(0.85f, 0.65f, 1.0f),
+            "Recipes: + New recipe, then every field — id, when and equals, instances and their radius, base, anchors, entities, every node, tint, intensity, size, the light, attached effects (with their own tint) and pieces (embers, arcs, ring, blades with their numbers, textures, meshes and colours). The turntable shows the base effect dressed as the game dresses it.\n\n" +
+            "Effects: pick a bank effect (★ marks the active mod's own) — it opens as an OVERRIDE draft (saved as is, it replaces the shipped effect and its emitters); 'Clone into mod' makes it a new effect under a new name instead. " +
+            "Edit each entity's fields for its type, its parameter timelines and vector timelines as key lists, its system and visuals (texture, sheet, colour, size, spin, trail, mesh, blend), and watch the change on the turntable. Save writes fx/effects/<name>.json, checked by the same reader the game uses."));
 
         return page;
     }

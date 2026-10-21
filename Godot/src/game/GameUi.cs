@@ -396,6 +396,8 @@ public partial class GameUi : Node
 			Engine_UiInventorySource.Strings = newStrings;
 		};
 
+		_presentation.PatternBooksRetired += OnPatternBooksRetired;
+
 		_books.Host = _presentation;
 		_infoPanel.Host = _presentation;
 		_spells.Host = _presentation;
@@ -1314,12 +1316,23 @@ public partial class GameUi : Node
 		Node3D? group = theme.ArtSourceNode(Engine_FrontEndWarning.GroupName);
 		Node3D? pattern = _presentation?.Templates?.ArtSourceNode(Engine_FrontEndWarning.GroupName);
 
+		// Off the main menu — the title, where a host box can be raised too — neither the live
+		// tree nor the shown screen's catalogue carries the page: the front end's own pattern
+		// book does, at the place the file authors it.
+		pattern ??= group is null
+			? _presentation?.PatternBookFor(FrontEndMenuPresentation)?.ArtSourceNode(Engine_FrontEndWarning.GroupName)
+			: null;
+
 		if (_warningView is null)
 		{
 			_warningView = Engine_FrontEndWarning.FromPresentation(pattern ?? group);
 			if (group is not null)
 			{
 				_warningView.Transform = group.GlobalTransform;
+			}
+			else if (pattern is not null)
+			{
+				_warningView.Transform = Engine_UiTheme.CanvasTransform(pattern);
 			}
 
 			_presentation!.AddChild(_warningView);
@@ -2157,6 +2170,15 @@ public partial class GameUi : Node
 		_screenMenuView.Visible = true;
 		GameInput.ScreenMenuOwnsInput = true;
 		GameInput.ScreenMenuHoldsFlip = _screenMenu.HighlightedIsModAbility;
+		Engine_UiModMenus.Focus(_screenMenuView, _screenMenu.PopulationScript);
+
+		// A MOD'S MENU opened over this list is the host's alone: the guest's pool does not carry
+		// its rows, so the view is navigated directly and B returns to the screen's own list.
+		if (_screenMenuView.OpenedDepth > 0)
+		{
+			DriveOpenedModMenu(_screenMenuView, _screenMenu.PopulationScript, delta);
+			return true;
+		}
 
 		// Navigation goes to the GUEST while the rows on screen are the guest's: its cursor is
 		// the authority for pool rows and the stick is a LATCH its Lua polls with the shipped
@@ -2274,6 +2296,16 @@ public partial class GameUi : Node
 
 		if (GameInput.MenuAcceptPressed || PointerList(_screenMenuView))
 		{
+			// A mod's row first: an `opens` menu, an Opens:/Mod:lua: command, or a row a mod
+			// patched in (which raises its event and then commits like any other).
+			if (_screenMenuView is { } modView && Engine_UiModMenus.Activated(modView,
+					_screenMenu.PopulationScript, _screenMenu.Script.Highlighted, _screenMenu.Script.Highlighted?.Command))
+			{
+				modView.Refresh();
+				ReportMenuView(modView);
+				return true;
+			}
+
 			// By IDENTITY where the row can be named, by A press where it cannot.
 			// `ScreenAction(36)` posts `OnPressA` into the presentation's logic queue and the
 			// screen asks Lua which row that meant, so it commits `CurrentHighlightIdx`, not our
@@ -2759,19 +2791,22 @@ public partial class GameUi : Node
 			Engine_UiComponentLibrary.ExportAll(name => _presentation.PatternBookFor(name));
 		GD.Print($"[ui-components] {exported} -> {Engine_UiComponentLibrary.Root}");
 
-		// The player's (or a mod's) arrangement, over the derived one — the file only moves
-		// pieces, so the banks stay the source of what a piece IS.
+		// The mods' arrangement, then the player's, over the derived one — shipped < mods < the
+		// player's file. Both only move pieces, so the banks stay the source of what a piece IS.
 		DirAccess.MakeDirRecursiveAbsolute("user://hud");
-		int arranged = _hud.Layout.ApplyOverrides(HudLayoutPath);
+		int modArranged = _hud.Layout.ApplyModLayout();
 
-		// The derived arrangement, written out for the editor dock and for modders: the piece
-		// ids are the contract for BOTH override files, and a file beats a log line as the
-		// place to learn them. Written after the overrides so it shows the layout as it runs.
-		_hud.Layout.Save(HudLayoutSnapshotPath);
+		// The derived arrangement, written out for the player's layout tool and for modders: the
+		// piece ids are the contract for BOTH override files. It is the arrangement BENEATH the
+		// player's file — shipped, then the mods' layout in load order — so the tool's "back to
+		// the place beneath" returns a piece there, not to where the player's own file put it.
+		_hud.Layout.Save(HudLayoutSnapshotPath, Engine_HudLayout.SnapshotLayer);
+		int arranged = _hud.Layout.ApplyOverrides(HudLayoutPath);
 
 		int replaced = _hud.Art.LoadOverrides("user://hud", ids);
 		_hud.Build();
 		GD.Print($"[hud] {bindings.Describe()}; {replaced} piece(s) replaced from user://hud" +
+			(modArranged == 0 ? string.Empty : $"; {modArranged} piece(s) moved by mods") +
 			(arranged == 0 ? string.Empty : $"; {arranged} piece(s) moved by {HudLayoutPath}"));
 
 		// PLAYER TWO'S HALF, for split screen. The same view over the same layout, art and
@@ -5113,6 +5148,12 @@ public partial class GameUi : Node
 		bool onRoot = _pauseTreeUp && IsRevealed && pause is { ScreenId: 0 };
 		_pauseView.Visible = onRoot;
 
+		// A mod's menu stands over the pause ROOT only: a tab push, a resume or a quit drops it.
+		if (!onRoot)
+		{
+			_pauseView.CloseMenus();
+		}
+
 		DrivePauseBanner(pause);
 
 		// THE OWNED BOOK DRAWS THE ROOT; THE MIRROR DRAWS THE REST. One presentation carries
@@ -5228,7 +5269,8 @@ public partial class GameUi : Node
 		// The nav mask keys on the guest's own pause state inside GameInput; only the B
 		// swallow is ours to declare, and it is re-derived every frame so it can never
 		// outlive the expansion that justified it.
-		GameInput.PauseMenuSwallowsBack = standing && _pauseMenu.CanCollapse;
+		GameInput.PauseMenuSwallowsBack = standing &&
+			(_pauseView.Menu?.CanCollapse == true || _pauseView.OpenedDepth > 0);
 
 		if (!standing)
 		{
@@ -5295,15 +5337,22 @@ public partial class GameUi : Node
 		// Change-keyed, so this is one line when the list settles and one more per press —
 		// not a line per frame. It is the only report that walks the ROWS.
 		ReportMenuView(_pauseView);
+		string pauseRoot = Engine_PauseMenu.RootTemplate(_pauseMenuJoiner);
+		Engine_UiModMenus.Focus(_pauseView, pauseRoot);
 
 		if (GameInput.MenuBackPressed)
 		{
-			// Collapse only. With nothing expanded B is left through to the guest, whose own
-			// B on the pause root resumes the game — that path is entirely the guest's. A level
-			// closed below the root is the shared cancel (`SE_GUI_MENU_BOX_CANCEL`, 0x826D5BBC).
+			// Collapse, then close a mod's menu. With neither B is left through to the guest,
+			// whose own B on the pause root resumes the game — that path is entirely the guest's.
+			// A level closed below the root is the shared cancel (`SE_GUI_MENU_BOX_CANCEL`,
+			// 0x826D5BBC).
 			if (_pauseView.Back())
 			{
 				Cue(frontEnd: false, "cancel");
+			}
+			else
+			{
+				Engine_UiModMenus.Back(_pauseView);
 			}
 		}
 
@@ -5312,7 +5361,12 @@ public partial class GameUi : Node
 			return true;
 		}
 
+		Engine_UiExpandableMenu.Item? pauseChosen = _pauseView.Menu?.Highlighted;
 		string? action = _pauseView.Activate();
+		if (Engine_UiModMenus.Activated(_pauseView, pauseRoot, pauseChosen, action))
+		{
+			return true;
+		}
 
 		// EVERY PRESS SAYS WHAT IT DID. A run pressed A on 'Multiplayer' on both instances and
 		// the log held one line for the whole session — there was no way to tell a press the
@@ -7277,9 +7331,10 @@ public partial class GameUi : Node
 			// job's bar fill (mode 3) are one screen's business and draw as they are.
 			// Run every display frame so Smoothed() extrapolates the timing meter at full monitor Hz.
 			HostBridge.ExpressionMeter meter = HostBridge.GetExpressionMeter();
-			bool mine = !CoopSession.PeerStanding || CoopSession.LocalCoop || meter.Mode == 3 ||
-				(CoopSession.IsClient ? meter.ArmedB : meter.ArmedA);
-			Engine_UiHudExpressionMeter.Publish(meter, _hud, mine);
+			bool network = CoopSession.PeerStanding && !CoopSession.LocalCoop;
+			bool mine = !network || meter.Mode == 3 || (CoopSession.IsClient ? meter.ArmedB : meter.ArmedA);
+			int ownPip = network && meter.Mode != 3 ? (CoopSession.IsClient ? 2 : 1) : 0;
+			Engine_UiHudExpressionMeter.Publish(meter, _hud, mine, ownPip);
 
 			// ON SPLIT SCREEN THE METER STANDS IN THE HALF OF WHOEVER ARMED IT: pip A is the
 			// hero's, pip B the henchman's, both is both (`sub_823D0E10`). A meter with no pip
@@ -7353,6 +7408,7 @@ public partial class GameUi : Node
 		// runs.
 		GameInput.ModalBoxOwnsInput = false;
 		GameInput.ScreenMenuHoldsFlip = false;
+		GameInput.HostUiOwnsPad = false;
 
 		// THE GUEST'S STICK LATCH IS RELEASED BY DEFAULT. Every drive below can take the frame
 		// with a `return`, so "release it when the list stops owning the input" cannot be written
@@ -7372,6 +7428,13 @@ public partial class GameUi : Node
 
 		Engine_UiModel.PauseState? modal = _modal;
 		if (_surfaces.Drive(IsRevealed ? _presentation : null, modal, SurfaceInput(delta)))
+		{
+			return;
+		}
+
+		// THE HOST'S OWN SURFACES with nothing of the guest's under them: a host box out of game
+		// (the front end's dialog), then a mod's menu opened with no list up. See GameUiHostSurfaces.
+		if (DriveFrontEndHostBox() || DriveHostModMenu(delta))
 		{
 			return;
 		}
@@ -7409,7 +7472,7 @@ public partial class GameUi : Node
 		GameInput.FrontEndSwallowsBack =
 			_menu is not null && _menuView is not null && IsRevealed &&
 			(_warningView is { Visible: true } || _cardView is { Visible: true } ||
-			(_menuView.Visible && _menu.CanCollapse));
+			(_menuView.Visible && (_menuView.Menu?.CanCollapse == true || _menuView.OpenedDepth > 0)));
 
 		// AND WHAT IT IS SHOWING, for the unattended driver — see GameInput.FrontEndDrive. The
 		// driver asked the GUEST which slide the menu was on and got a permanent 1, so it kept
@@ -7576,17 +7639,22 @@ public partial class GameUi : Node
 		// same class on the same slot table, so the front end — which draws correctly — is the
 		// control: a difference between the two lines localises a defect in one report.
 		ReportMenuView(_menuView);
+		Engine_UiModMenus.Focus(_menuView, Engine_FrontEndMenu.RootTemplate);
 
 		if (GameInput.MenuBackPressed)
 		{
-			// A false return is "nothing left to back out of". On the front end's root menu
-			// that is the guest's business, not ours — B there leaves for the title screen,
-			// and the guest is already being fed the same B press through XInput.
+			// A false return is "nothing left to back out of". Inside a mod's menu that closes
+			// the menu; on the front end's root it is the guest's business, not ours — B there
+			// leaves for the title screen, and the guest is fed the same B press through XInput.
 			// A fold closed here is the guest's `OnPressB` arm, which slides the blade out
 			// (`SE_GUI_BLADE_SLIDE_OUT`, 0x826DFC80 then 0x826DFBDC).
 			if (_menuView.Back())
 			{
 				Cue(frontEnd: true, "bladeout");
+			}
+			else
+			{
+				Engine_UiModMenus.Back(_menuView);
 			}
 		}
 
@@ -7595,7 +7663,12 @@ public partial class GameUi : Node
 			return;
 		}
 
+		Engine_UiExpandableMenu.Item? frontChosen = _menuView.Menu?.Highlighted;
 		string? action = _menuView.Activate();
+		if (Engine_UiModMenus.Activated(_menuView, Engine_FrontEndMenu.RootTemplate, frontChosen, action))
+		{
+			return;
+		}
 
 		// A on any root row slides the blade in (`SE_GUI_BLADE_SLIDE_IN`, 0x826DF428) before the
 		// press reaches Lua; A is ours in this substate, so the guest's arm never plays it.
@@ -8258,6 +8331,39 @@ public partial class GameUi : Node
 		Engine_UiNetworkSource.Say("Joining another game leaves this one, and anything you have not saved is lost." +
 			"\n\nPress again to join.");
 		return false;
+	}
+
+	/// <summary>
+	/// One frame of a mod's menu opened over a screen's list (<see cref="Engine_UiModMenus"/>): the
+	/// stick moves the view, A runs the row, B collapses a fold or closes the menu. The guest's
+	/// stick latch is released, since none of these rows are in its pool.
+	/// </summary>
+	private void DriveOpenedModMenu(Engine_FrontEndMenuView view, string rootMenu, double delta)
+	{
+		HoldScreenStick(0);
+		view.Navigate(GameInput.MenuDirection, delta);
+		bool clicked = PointerList(view);
+		ReportMenuView(view);
+
+		if (GameInput.MenuBackPressed)
+		{
+			if (!view.Back())
+			{
+				Engine_UiModMenus.Back(view);
+			}
+
+			return;
+		}
+
+		if (!GameInput.MenuAcceptPressed && !clicked)
+		{
+			return;
+		}
+
+		Engine_UiExpandableMenu.Item? chosen = view.Menu?.Highlighted;
+		string? action = view.Activate();
+		Engine_UiModMenus.Activated(view, rootMenu, chosen, action);
+		view.Refresh();
 	}
 
 	private void OpenScreen(string screen)

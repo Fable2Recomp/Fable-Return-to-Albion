@@ -608,7 +608,13 @@ public partial class RefiiModApi : RefCounted
 			"entity of those definitions on a node that follows it; instances (a mod value prefix) binds each effect " +
 			"and entity to the nearest stated instance of its look, so every cast carries its own. " +
 			"The guest still states which effect plays and where; Godot changes the look. See Engine_FxRecipes " +
-			"and Engine_FxRecipePieces.",
+			"and Engine_FxRecipePieces. fx/effects/<name>.json is the particle bank's own model as JSON (an effect, " +
+			"its emitters, systems and visuals; Engine_FxEffectJson): a new name adds an effect, a shipped name replaces " +
+			"it, an emitter carrying a shipped entityId replaces that emitter wherever the bank uses it, so the game's " +
+			"own spawns draw the change. play_fx (native refii_mod_play_fx, Lua Refii.play_fx, Godot RefiiHost.play_fx) " +
+			"draws any bank or mod effect at a position or on an entity handle; stop_fx(id) stops it. Script calls: " +
+			"SetRecipe, RemoveRecipe, CloneEffect, OverrideEffect, SetEffectJson, SetEmitterField, SetEmitterKeys, " +
+			"SaveFableFxAsEffect.",
 		["dependencies"] = "mod.toml: requires = [\"souls_combat >= 0.1\"] places that mod beneath this one " +
 			"(mounted, composed and hooked inside it) and makes its native/include/ visible to this mod's " +
 			"native code; after = [\"hd-ui\"] orders without requiring. A mod cannot be enabled while a " +
@@ -622,6 +628,18 @@ public partial class RefiiModApi : RefCounted
 			"ListGameLuaNatives(table), FindGameLuaNatives(text).",
 		["probe"] = "The live debug channel's refii_lua runs '@game <chunk>' in the game VM and reports " +
 			"whether it ran; assert(<expr>) reads a value out.",
+		["ui"] = "ui/hud.json: \"layout\" moves the game's own HUD pieces in the entry shape of user://hud/layout.json " +
+			"(shipped < mods in load order < the player's file); a \"text\" piece draws a literal, a Babel tag or " +
+			"mod:<key> through \"format\" at \"size\" points in \"colour\", \"align\"ed left, centre or right. " +
+			"ui/templates.json: \"modals\" are answer records by key (\"13\", \"0@22\"), replaced whole; a menu a mod " +
+			"defines opens from a row's \"opens\" or the command Opens:<menu> over the front end, the pause list or a " +
+			"screen's list (B returns), and Mod:lua:<function>[:<arg>] calls function(arg, e) in the game VM; every " +
+			"such row raises mod_menu_row (Godot and native on the title too; Lua in a game). settings.ui.json: " +
+			"\"type\": \"choice\" with \"options\": [{ value, label }]. Menus and boxes on every surface, per player " +
+			"(0: the menu owner here): Godot RefiiHost.open_menu(name, player), message_box(title, text, buttons, player); " +
+			"native refii_mod_open_menu, refii_mod_message_box; Lua Refii.open_menu, Refii.message_box — a menu with no " +
+			"list up opens on its own, a box shows on the front end too; the answer is mod_message_box (and Godot's " +
+			"message_box_answered). publish.",
 		["settings"] = "settings.json: a flat object of numbers keyed <mod>.<name> (one nesting level is " +
 			"folded). Pushed to the game as mod settings when the guest comes up; native code reads " +
 			"refii::mods::Setting(key, default). Live: refii_action \"mod-setting <key> <value>\".",
@@ -705,6 +723,12 @@ public partial class RefiiModApi : RefCounted
 	/// <summary>Re-mounts the mods and tells the Studio, as its own editors do after a save.</summary>
 	private void Changed()
 	{
+		if (_changesOpen > 0)
+		{
+			_changesPending = true;
+			return;
+		}
+
 		BnkMountPlugin.Instance?.ReloadModOverlays();
 		EditorModExporter.NotifyModContentChanged(GetActiveMod());
 	}

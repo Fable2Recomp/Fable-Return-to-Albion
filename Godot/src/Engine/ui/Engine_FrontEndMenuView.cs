@@ -36,6 +36,7 @@ namespace Refii.Ui;
 /// <see cref="RowTemplate"/> takes one such node and this duplicates it per slot, Godot having no
 /// component instancing; null gives text-only rows.
 /// </summary>
+[Tool]
 public partial class Engine_FrontEndMenuView : Node3D
 {
 	/// <summary>
@@ -231,6 +232,56 @@ public partial class Engine_FrontEndMenuView : Node3D
 		}
 
 		CursorTemplate = null;
+	}
+
+	/// <summary>
+	/// A list view dressed from a presentation's pattern book: the front end's look (its
+	/// <see cref="RowGroupName"/> rows, <paramref name="bookLook"/> false) or a book's (its button
+	/// pool, the pause book's and the screens' lists), anchored where that file parks the group, its
+	/// cursor the file's <c>MenuHighlight</c> at its authored place. A missing book leaves text-only
+	/// rows at <see cref="CanvasAnchor"/> painted with <paramref name="fallback"/>. One dressing for
+	/// every list a host stands with no list of the guest's under it — a mod's menu opened on its
+	/// own, the Mod Studio's preview.
+	/// </summary>
+	public static Engine_FrontEndMenuView Dressed(
+		string name, Engine_UiTheme? book, bool bookLook, Engine_UiScreen? document, Engine_UiTheme? fallback)
+	{
+		Node3D? pattern = book is null ? null : bookLook
+			? Engine_UiButtonPool.FindButtonPool(book)
+			: book.ArtSourceNode(RowGroupName);
+		Node3D? template = pattern is null ? null : RowTemplateIn(pattern);
+		Vector3 anchor = CanvasAnchor;
+		if (pattern is not null)
+		{
+			Vector3 origin = Engine_UiTheme.CanvasTransform(pattern).Origin;
+			anchor = new Vector3(origin.X, origin.Y, 0f);
+		}
+
+		Transform3D? cursorPose = null;
+		if (book?.ArtSourceNode("MenuHighlight") is { } highlight)
+		{
+			Transform3D authored = Engine_UiTheme.CanvasTransform(highlight);
+			authored.Origin -= anchor;
+			cursorPose = authored;
+		}
+
+		var view = new Engine_FrontEndMenuView
+		{
+			Name = name,
+			Theme = book ?? fallback,
+			RowTemplate = template,
+			Anchor = anchor,
+			CursorTemplate = book?.Art("MenuHighlight"),
+			CursorPose = cursorPose,
+			Ratings = Engine_UiRowRating.Resolve(document),
+		};
+		if (bookLook)
+		{
+			view.ScreenId = 0;
+			view.ClipRect = Engine_UiButtonPool.ListClip(document);
+		}
+
+		return view;
 	}
 
 	/// <summary>The model being drawn. Null until <see cref="Bind"/>.</summary>
@@ -440,8 +491,17 @@ public partial class Engine_FrontEndMenuView : Node3D
 		Refresh();
 	}
 
-	/// <summary>Points the view at a model and lays it out. Safe before <c>_Ready</c>.</summary>
+	/// <summary>
+	/// Points the view at a model and lays it out. Safe before <c>_Ready</c>. The model is the
+	/// view's ROOT list: menus opened over the old one (<see cref="OpenMenu"/>) are dropped.
+	/// </summary>
 	public void Bind(Engine_FrontEndMenu menu)
+	{
+		_openedMenus.Clear();
+		ShowModel(menu);
+	}
+
+	private void ShowModel(Engine_FrontEndMenu menu)
 	{
 		Menu = menu;
 		_pcCentre = PcMinCentre;
@@ -449,6 +509,60 @@ public partial class Engine_FrontEndMenuView : Node3D
 		{
 			Refresh();
 		}
+	}
+
+	/// <summary>
+	/// The menus opened OVER the root list, innermost last: each the model it covered and the name
+	/// of the menu that replaced it. One list view stands for every level, the way the guest's own
+	/// lists nest, so B (<see cref="CloseMenu"/>) returns to exactly where the menu was opened.
+	/// </summary>
+	private readonly System.Collections.Generic.List<(Engine_FrontEndMenu Covered, string Name)> _openedMenus = new();
+
+	/// <summary>How many menus are open over the root list; 0 shows the root.</summary>
+	public int OpenedDepth => _openedMenus.Count;
+
+	/// <summary>The name of the menu showing when one is open over the root, else null.</summary>
+	public string? OpenedMenuName => _openedMenus.Count == 0 ? null : _openedMenus[^1].Name;
+
+	/// <summary>Shows <paramref name="menu"/> (named <paramref name="name"/>) over the list showing now.</summary>
+	public void OpenMenu(Engine_FrontEndMenu menu, string name)
+	{
+		if (Menu is not { } covered)
+		{
+			Bind(menu);
+			return;
+		}
+
+		_openedMenus.Add((covered, name));
+		ShowModel(menu);
+	}
+
+	/// <summary>Closes the innermost opened menu and shows the list it covered. False at the root.</summary>
+	public bool CloseMenu()
+	{
+		if (_openedMenus.Count == 0)
+		{
+			return false;
+		}
+
+		Engine_FrontEndMenu covered = _openedMenus[^1].Covered;
+		_openedMenus.RemoveAt(_openedMenus.Count - 1);
+		ShowModel(covered);
+		return true;
+	}
+
+	/// <summary>Closes every opened menu, back to the root list. False when none was open.</summary>
+	public bool CloseMenus()
+	{
+		if (_openedMenus.Count == 0)
+		{
+			return false;
+		}
+
+		Engine_FrontEndMenu root = _openedMenus[0].Covered;
+		_openedMenus.Clear();
+		ShowModel(root);
+		return true;
 	}
 
 	/// <summary>

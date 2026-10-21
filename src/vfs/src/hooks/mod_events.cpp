@@ -827,6 +827,22 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
                     Fin(e.seconds), e.from_host ? "true" : "false");
       return;
     }
+    case REFII_EVENT_MOD_MENU_ROW: {
+      const auto& e = *static_cast<const ModMenuRowEvent*>(event);
+      char menu[96];
+      char row[96];
+      char mod[96];
+      LuaString(e.menu, menu, sizeof(menu));
+      LuaString(e.row, row, sizeof(row));
+      LuaString(e.mod, mod, sizeof(mod));
+      std::snprintf(out, size, "menu='%s',row='%s',player=%d,mod='%s'", menu, row, e.player, mod);
+      return;
+    }
+    case REFII_EVENT_MOD_MESSAGE_BOX: {
+      const auto& e = *static_cast<const ModMessageBoxEvent*>(event);
+      std::snprintf(out, size, "id=%u,button=%d,player=%d", e.id, e.button, e.player);
+      return;
+    }
     case REFII_EVENT_DIALOGUE: {
       const auto& e = *static_cast<const DialogueEvent*>(event);
       std::snprintf(out, size, "speaker=%u,speaker_player=%d,text='0x%08x',listener=%u,listener_player=%d,subtitle=%s",
@@ -1148,8 +1164,9 @@ extern "C" void refii_mod_dispatch(int32_t kind, void* event) {
   if (replica) {
     refii_bridge_player_replica(0);
   }
-  // Godot's scripts see the verdict, after every handler, as the same table text Lua gets.
-  if (refii::mods::HostWantsEvent(kind)) {
+  // Godot's scripts see the verdict, after every handler, as the same table text Lua gets. A
+  // menu row and a box's answer are Godot's own: its RefiiHost raised the signal where they happened.
+  if (kind != REFII_EVENT_MOD_MENU_ROW && kind != REFII_EVENT_MOD_MESSAGE_BOX && refii::mods::HostWantsEvent(kind)) {
     char fields[640];
     HostFields(kind, event, replica, fields, sizeof(fields));
     refii::mods::PostEvent(kind, fields);

@@ -335,6 +335,7 @@ public partial class Engine_GameAssets : Node
 		if (overlays.Count == 0)
 		{
 			Refii.Gdb.GdbPatchCompositor.PurgeCache(ModsRoot);
+			Refii.Fx.Engine_FxModEffects.Load(overlays);
 			return;
 		}
 
@@ -415,6 +416,34 @@ public partial class Engine_GameAssets : Node
 			GD.Print($"[mods] spell {line}");
 		}
 
+		// MOD EFFECTS: fx/effects/*.json read for the particle bank, which overlays them the next
+		// time it is asked for (FableFx.SharedBank) — before the first effect is drawn.
+		foreach (string line in Refii.Fx.Engine_FxModEffects.Load(overlays))
+		{
+			if (line.StartsWith("REFUSED", System.StringComparison.Ordinal))
+			{
+				GD.PushWarning($"[mods] fx effect {line}");
+			}
+			else
+			{
+				GD.Print($"[mods] fx effect {line}");
+			}
+		}
+
+		// ...and written into the guest's own bank, which the guest loads once at boot: a remount
+		// during a session reaches its simulation at the next launch.
+		foreach (string line in Refii.Fx.Engine_FxModEffects.ComposeGuestBank(mounted, () => ReadShippedParticleBank(mounted)))
+		{
+			if (line.StartsWith("REFUSED", System.StringComparison.Ordinal))
+			{
+				GD.PushWarning($"[mods] fx {line}");
+			}
+			else
+			{
+				GD.Print($"[mods] fx {line}{(live ? " (the running guest loaded its bank at boot; this takes effect at the next launch)" : string.Empty)}");
+			}
+		}
+
 		// MOD LUA: every enabled mod's mod/init.lua and mod/camera.lua, composed for the payload hook
 		// that runs them after the shipped scripts.
 		Refii.Mods.ModLua.Apply(mounted, overlays);
@@ -467,6 +496,38 @@ public partial class Engine_GameAssets : Node
 		GD.Print(
 			$"[mods] {overlays.Count} enabled, {overrides} override(s), {additions} addition(s) " +
 			$"— see {ResolvedReportPath}");
+	}
+
+	/// <summary>
+	/// The particle bank the guest would read with no mod effects: a file a mod mounts under its name,
+	/// else the game directory's own (it is not an archive, so the fold never indexes it).
+	/// </summary>
+	private static byte[]? ReadShippedParticleBank(BnkFileSystem mounted)
+	{
+		if (mounted.TryGetFile(Refii.Fx.Engine_FxModEffects.GuestBankPath, out BnkFile file))
+		{
+			return file.ReadAllBytes();
+		}
+
+		string root = Instance?.GameDirectory is { Length: > 0 } directory ? directory : Refii.Core.Engine_GameData.Resolve();
+		if (root.Length == 0)
+		{
+			return null;
+		}
+
+		foreach (string candidate in new[]
+				 {
+					 System.IO.Path.Combine(root, "art", "particles", "particle_bank.bnk"),
+					 System.IO.Path.Combine(root, "data", "art", "particles", "particle_bank.bnk"),
+				 })
+		{
+			if (System.IO.File.Exists(candidate))
+			{
+				return System.IO.File.ReadAllBytes(candidate);
+			}
+		}
+
+		return null;
 	}
 
 	private void ReportMounted(int fileCount)

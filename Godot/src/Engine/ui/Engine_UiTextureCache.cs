@@ -77,8 +77,12 @@ public sealed class Engine_UiTextureCache
 		// spellings — GameLoadingScreen.Resolve tries the bare path then the prefixed one —
 		// therefore logged an error for every probe, every frame, for art that was present all
 		// along. Same lookup Engine_BnkTextureLoader's own resolver uses, so the two cannot
-		// disagree about what "the bank has it" means.
-		if (!_banks.TryGetFile(virtualPath, out BnkFile probe))
+		// disagree about what "the bank has it" means. The game's mount is asked first: it holds the
+		// enabled mods' layers, and the loader's primary resolver reads through it, so a texture a
+		// mod ADDS is "in the bank" too.
+		if (!(Refii.Assets.Engine_GameAssets.Instance is { IsMounted: true } assets &&
+				assets.TryGetFile(virtualPath, out BnkFile probe)) &&
+			!_banks.TryGetFile(virtualPath, out probe))
 		{
 			_failures[relativePath] = "not in the bank under this path";
 			return null;

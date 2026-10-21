@@ -237,6 +237,8 @@ public partial class ModdingPanel : VBoxContainer
 
 		var recordConflicts = Refii.Gdb.GdbPatchCompositor.DetectRecordConflicts(_modsRoot, _order, _mods);
 		var rowConflicts = Refii.Mods.ModRowOverlays.DetectRowConflicts(_order, _mods);
+		// Mod effects (fx/effects/*.json) two mods both state: an effect, an emitter or a system.
+		rowConflicts.AddRange(Refii.Fx.Engine_FxModEffects.DetectConflicts(_order, _mods));
 		foreach ((string name, ModTally tally) in ModIndex.Tally(ModIndex.Predict(_order, _mods), recordConflicts, rowConflicts))
 		{
 			_tallies[name] = tally;

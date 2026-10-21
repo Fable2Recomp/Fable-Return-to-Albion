@@ -207,6 +207,16 @@ public static class ModRemount
 			report.Refreshed.Add("Godot scripts (godot/*.gd), restarted");
 		}
 
+		// The presentations: the game's UI host compared each pattern book it holds with the new
+		// mount's files when the mount was emitted (Engine_UiPresentationHost.RefreshPatternBooks)
+		// and rebuilt the changed ones, and the views built from them.
+		var presentations = report.Changed.Where(IsPresentationFile).ToList();
+		if (presentations.Count != 0)
+		{
+			report.Refreshed.Add($"{presentations.Count} UI presentation file(s) (.bgf/.fac/.bsg): their pattern books " +
+				"and the menus, boxes, books and HUD art built from them, rebuilt");
+		}
+
 		var textures = report.Changed.Where(p => p.EndsWith(".tex", StringComparison.OrdinalIgnoreCase)).ToList();
 		if (textures.Count != 0)
 		{
@@ -239,7 +249,7 @@ public static class ModRemount
 		foreach (string path in report.Changed)
 		{
 			string lower = path.ToLowerInvariant();
-			if (lower.EndsWith(".tex") || lower.EndsWith(".babel") || IsModLuaKey(path))
+			if (lower.EndsWith(".tex") || lower.EndsWith(".babel") || IsModLuaKey(path) || IsPresentationFile(path))
 			{
 				continue;
 			}
@@ -278,6 +288,12 @@ public static class ModRemount
 				"served from now on; a file the guest has already loaded stays loaded until a relaunch", other));
 		}
 	}
+
+	/// <summary>A Gameface presentation's file: the UI host rebuilds what it built from one.</summary>
+	private static bool IsPresentationFile(string path) =>
+		path.EndsWith(".bgf", StringComparison.OrdinalIgnoreCase) ||
+		path.EndsWith(".fac", StringComparison.OrdinalIgnoreCase) ||
+		path.EndsWith(".bsg", StringComparison.OrdinalIgnoreCase);
 
 	private static bool IsModLuaKey(string path) =>
 		path.Equals(ModLua.InitKey, StringComparison.OrdinalIgnoreCase) ||

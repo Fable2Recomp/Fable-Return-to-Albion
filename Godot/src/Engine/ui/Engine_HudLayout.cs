@@ -19,8 +19,21 @@ public sealed class Engine_HudLayout
     /// <summary>Where the edited arrangement lives — the editor writes it, every boot reads it.</summary>
     public const string LayoutPath = "user://hud/layout.json";
 
-    /// <summary>The derived layout as it ran, written every boot for the editor and modders.</summary>
+    /// <summary>
+    /// The arrangement BENEATH the player's file — shipped, then the enabled mods' layout in load
+    /// order — written every boot for the player's layout tool and for modders. Its
+    /// <see cref="SnapshotLayerKey"/> is <see cref="SnapshotLayer"/>.
+    /// </summary>
     public const string SnapshotPath = "user://hud/layout.snapshot.json";
+
+    /// <summary>The snapshot's top-level field naming which arrangement it holds.</summary>
+    public const string SnapshotLayerKey = "layer";
+
+    /// <summary>
+    /// <see cref="SnapshotLayerKey"/>'s value for a snapshot written beneath the player's file. A
+    /// snapshot without it was written over the player's file, by a build before this one.
+    /// </summary>
+    public const string SnapshotLayer = "shipped+mods";
 
     /// <summary>
     /// The design height every offset and size is authored against — the CANVAS height, which must
@@ -1038,8 +1051,9 @@ public sealed class Engine_HudLayout
     /// <summary>
     /// Applies a saved arrangement over this layout, by piece id. The file MOVES pieces, it does
     /// not define them: what a piece is — art, value, drive — is derived from `hud.bgf`'s bindings
-    /// every boot. An id matching no piece is reported, since that is what a renamed binding looks
-    /// like. Returns how many pieces moved; 0 with no file is ordinary, not an error.
+    /// every boot. Read by <see cref="Engine_HudModLayout.ParsePlayerFile"/>, the one parser of the
+    /// entry shape a mod's `layout` block shares. Returns how many pieces moved; 0 with no file is
+    /// ordinary, not an error.
     /// </summary>
     public int ApplyOverrides(string path)
     {
@@ -1054,51 +1068,51 @@ public sealed class Engine_HudLayout
             return 0;
         }
 
-        var parsed = Json.ParseString(file.GetAsText());
-        if (parsed.VariantType != Variant.Type.Dictionary)
+        Dictionary<string, Engine_HudModLayout.Move> moves = Engine_HudModLayout.ParsePlayerFile(file.GetAsText());
+        if (moves.Count == 0)
         {
-            GD.PushWarning($"[hud-layout] '{path}' is not a JSON object; ignored");
+            GD.PushWarning($"[hud-layout] '{path}' places no piece (a 'pieces' object of " +
+                "{ anchor: [x, y], offset: [x, y] } entries); ignored");
             return 0;
         }
 
-        var root = parsed.AsGodotDictionary();
-        if (!root.TryGetValue("pieces", out Variant piecesVariant) ||
-            piecesVariant.VariantType != Variant.Type.Dictionary)
+        return ApplyMoves(moves, $"'{path}'");
+    }
+
+    /// <summary>
+    /// Every enabled mod's `ui/hud.json` `layout` block, composed in load order
+    /// (<see cref="Engine_HudModLayout.Compose"/>) and applied. Called BEFORE
+    /// <see cref="ApplyOverrides"/>: shipped &lt; mods &lt; the player's file. The pieces two mods
+    /// both moved are in <see cref="ModLayoutConflicts"/>.
+    /// </summary>
+    public int ApplyModLayout()
+    {
+        Engine_HudModLayout.Composed composed = Engine_HudModLayout.Compose(
+            Refii.Mods.ModEntries.ReadEnabledText(Engine_HudModPieces.ModHudPath));
+        ModLayoutConflicts = composed.Conflicts;
+        foreach (Engine_HudModLayout.Conflict conflict in composed.Conflicts)
         {
-            GD.PushWarning($"[hud-layout] '{path}' has no 'pieces' object; ignored");
-            return 0;
+            GD.Print($"[hud-layout] '{conflict.Piece}': mod '{conflict.Winner}' moves it over mod '{conflict.Loser}'");
         }
 
+        return composed.Moves.Count == 0 ? 0 : ApplyMoves(composed.Moves, "the mods' ui/hud.json layout");
+    }
+
+    /// <summary>The pieces two mods' `layout` blocks both moved, from the last <see cref="ApplyModLayout"/>.</summary>
+    public IReadOnlyList<Engine_HudModLayout.Conflict> ModLayoutConflicts { get; private set; } =
+        Array.Empty<Engine_HudModLayout.Conflict>();
+
+    /// <summary>
+    /// Moves every named piece. An id matching no piece is reported, since that is what a renamed
+    /// binding looks like. Returns how many pieces moved.
+    /// </summary>
+    public int ApplyMoves(IReadOnlyDictionary<string, Engine_HudModLayout.Move> moves, string source)
+    {
         int moved = 0;
         var unknown = new List<string>();
-        foreach (var entry in piecesVariant.AsGodotDictionary())
+        foreach ((string id, Engine_HudModLayout.Move move) in moves)
         {
-            string id = entry.Key.AsString();
-            if (entry.Value.VariantType != Variant.Type.Dictionary)
-            {
-                continue;
-            }
-
-            var record = entry.Value.AsGodotDictionary();
-            if (!record.TryGetValue("anchor", out Variant anchorVariant) ||
-                !record.TryGetValue("offset", out Variant offsetVariant))
-            {
-                continue;
-            }
-
-            var anchorArray = anchorVariant.AsGodotArray();
-            var offsetArray = offsetVariant.AsGodotArray();
-            if (anchorArray.Count < 2 || offsetArray.Count < 2)
-            {
-                continue;
-            }
-
-            var anchor = new Anchor(
-                (float)anchorArray[0].AsDouble(), (float)anchorArray[1].AsDouble());
-            var offset = new Vector2(
-                (float)offsetArray[0].AsDouble(), (float)offsetArray[1].AsDouble());
-
-            if (Reposition(id, anchor, offset))
+            if (Reposition(id, new Anchor(move.AnchorX, move.AnchorY), new Vector2(move.OffsetX, move.OffsetY)))
             {
                 ++moved;
             }
@@ -1110,7 +1124,7 @@ public sealed class Engine_HudLayout
 
         if (unknown.Count != 0)
         {
-            GD.Print($"[hud-layout] '{path}' names {unknown.Count} piece(s) this build " +
+            GD.Print($"[hud-layout] {source} names {unknown.Count} piece(s) this build " +
                 $"does not have: {string.Join(", ", unknown)}");
         }
 
@@ -1122,7 +1136,8 @@ public sealed class Engine_HudLayout
     /// which pieces exist. The art/value/driven fields are informational —
     /// <see cref="ApplyOverrides"/> never reads them — and are there for the editor and modders.
     /// </summary>
-    public bool Save(string path)
+    /// <param name="layer">Written as <see cref="SnapshotLayerKey"/> when given: which arrangement the file holds.</param>
+    public bool Save(string path, string? layer = null)
     {
         var pieces = new Godot.Collections.Dictionary();
         foreach (Piece piece in _pieces)
@@ -1142,6 +1157,10 @@ public sealed class Engine_HudLayout
         }
 
         var root = new Godot.Collections.Dictionary { ["pieces"] = pieces };
+        if (layer is not null)
+        {
+            root[SnapshotLayerKey] = layer;
+        }
 
         using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Write);
         if (file is null)

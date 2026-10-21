@@ -321,6 +321,9 @@ public sealed class XexSystemChild
     public int StartFrames;
     public uint MaterialId;
     public XexMaterial Material = new();
+
+    /// <summary>Where the timed material sits in the file: [FileBegin, FileEnd).</summary>
+    public int FileBegin, FileEnd;
 }
 
 public sealed class XexTexEntry
@@ -381,6 +384,9 @@ public sealed class XexSystemDef
     public uint LoopCount;
     public uint TrailingId;
 
+    /// <summary>Where the record (its key first) sits in the file: [FileBegin, FileEnd).</summary>
+    public int FileBegin, FileEnd;
+
     public List<XexSegmentRecord> Segments = new();
     public List<XexTexEntry> TexList = new();
     public List<int> ChildOrder = new();
@@ -396,6 +402,9 @@ public sealed class XexEffectCollection
     public uint UpdateFrequency;
     public List<XexEffectTypeVector> TypeVectors = new();
     public uint TrailingId;
+
+    /// <summary>Where the record (its key first) sits in the file: [FileBegin, FileEnd).</summary>
+    public int FileBegin, FileEnd;
 }
 
 public struct XexEntityRef { public uint TypeId; public uint EntityId; public uint SubType; public int Index; }
@@ -523,17 +532,37 @@ public static class XexBankParser
         else s.Seek(mark);
         int count = s.I32();
         if (count < 0 || count > 100000) { s.Overrun = true; return; }
-        var list = new List<ScalarNode>(count);
         for (int i = 0; i < count && !s.Overrun; i++)
         {
             float tsec = s.F32();
-            int frame = XexConst.Fctiwz(XexConst.Fps * tsec);
             float val = s.F32();
-            list.Add(new ScalarNode { Frame = frame, Value = val });
-            t.Keys.Add(new XexScalarKey { TimeSecs = tsec, Frame = frame, Value = val });
+            t.Keys.Add(new XexScalarKey { TimeSecs = tsec, Frame = XexConst.Fctiwz(XexConst.Fps * tsec), Value = val });
         }
 
         if (s.Overrun) return;
+        BakeScalar(t, defVal);
+    }
+
+    /// <summary>
+    /// The evaluation state of a scalar timeline from its <see cref="XexScalarTimeline.Keys"/> in
+    /// FILE order, as the loader builds it: the start is the FIRST key's frame (before the
+    /// sort), a single key becomes the default, and two or more are resampled into the ten
+    /// samples <see cref="XexScalarTimeline.Eval"/> interpolates. The one routine for a key list
+    /// read from the bank and one authored by a mod.
+    /// </summary>
+    public static void BakeScalar(XexScalarTimeline t, float defVal)
+    {
+        t.Present = false; t.HasSamples = false; t.InvStep10 = 0f; t.StartSecs = -1.0f; t.DefVal = defVal;
+        int count = t.Keys.Count;
+        var list = new List<ScalarNode>(count);
+        for (int i = 0; i < count; i++)
+        {
+            XexScalarKey k = t.Keys[i];
+            k.Frame = XexConst.Fctiwz(XexConst.Fps * k.TimeSecs);
+            t.Keys[i] = k;
+            list.Add(new ScalarNode { Frame = k.Frame, Value = k.Value });
+        }
+
         if (count == 0) t.StartSecs = -1.0f;
         else
         {
@@ -586,18 +615,33 @@ public static class XexBankParser
         else s.Seek(mark);
         int count = s.I32();
         if (count < 0 || count > 100000) { s.Overrun = true; return; }
-        var list = new List<VecNode>(count);
         var v = new float[3];
         for (int i = 0; i < count && !s.Overrun; i++)
         {
             float tsec = s.F32();
-            int frame = XexConst.Fctiwz(XexConst.Fps * tsec);
             s.Vec3(v);
-            list.Add(new VecNode { Frame = frame, X = v[0], Y = v[1], Z = v[2] });
-            t.Keys.Add(new XexVecKey { TimeSecs = tsec, Frame = frame, X = v[0], Y = v[1], Z = v[2] });
+            t.Keys.Add(new XexVecKey { TimeSecs = tsec, Frame = XexConst.Fctiwz(XexConst.Fps * tsec), X = v[0], Y = v[1], Z = v[2] });
         }
 
         if (s.Overrun) return;
+        BakeVec(t, defVal);
+    }
+
+    /// <summary>The vector twin of <see cref="BakeScalar"/>: the same start, default and resampling rules per lane.</summary>
+    public static void BakeVec(XexVecTimeline t, float[] defVal)
+    {
+        t.Present = false; t.HasSamples = false; t.InvStep10 = 0f; t.StartSecs = -1.0f;
+        for (int k = 0; k < 4; k++) t.DefVal[k] = defVal[k];
+        int count = t.Keys.Count;
+        var list = new List<VecNode>(count);
+        for (int i = 0; i < count; i++)
+        {
+            XexVecKey key = t.Keys[i];
+            key.Frame = XexConst.Fctiwz(XexConst.Fps * key.TimeSecs);
+            t.Keys[i] = key;
+            list.Add(new VecNode { Frame = key.Frame, X = key.X, Y = key.Y, Z = key.Z });
+        }
+
         if (count == 0) t.StartSecs = -1.0f;
         else
         {
@@ -908,6 +952,7 @@ public static class XexBankParser
     private static void TimedMaterialLoadBin(XexStream s, XexSystemChild c, uint bankVersion)
     {
         int mark = s.Tell();
+        c.FileBegin = mark;
         uint peek = s.U32();
         if (peek == XexConst.MagicChild) { c.HadMarker = true; c.MarkerVersion = s.U32(); }
         else s.Seek(mark);
@@ -918,6 +963,7 @@ public static class XexBankParser
         c.MaterialId = s.U32();
         MaterialLoadBinary(s, c.Material, bankVersion);
         c.Material.Id = c.MaterialId;
+        c.FileEnd = s.Tell();
     }
 
     private static void LoopInfoLoadBin(XexStream s, XexSystemDef sys)
@@ -1264,9 +1310,11 @@ public static class XexBankParser
             if (count < 0 || count > 200000) { o.Error = "bad system count"; return false; }
             for (int i = 0; i < count; i++)
             {
+                int begin = s.Tell();
                 uint key = s.U32();
-                var sys = new XexSystemDef { Id = key };
+                var sys = new XexSystemDef { Id = key, FileBegin = begin };
                 MaterialTimelineLoadBin(s, sys, bv);
+                sys.FileEnd = s.Tell();
                 if (s.Overrun) { o.Error = $"system #{i} overrun"; return false; }
                 o.SystemById[key] = o.Systems.Count;
                 o.Systems.Add(sys);
@@ -1332,8 +1380,10 @@ public static class XexBankParser
             if (count < 0 || count > 200000) { o.Error = "bad effect count"; return false; }
             for (int i = 0; i < count; i++)
             {
-                var e = new XexEffectCollection { Id = s.U32() };
+                int begin = s.Tell();
+                var e = new XexEffectCollection { Id = s.U32(), FileBegin = begin };
                 EffectCollectionLoadBin(s, e, o.Section5Version);
+                e.FileEnd = s.Tell();
                 if (s.Overrun) { o.Error = $"effect #{i} overrun"; return false; }
                 o.EffectById[e.Id] = o.Effects.Count;
                 o.Effects.Add(e);

@@ -655,6 +655,16 @@ public partial class GameFx : Node3D
     /// <summary>The node basis of an unrotated guest placement: (-x, z, y) from the sim's (x, z, y).</summary>
     private static readonly Basis GuestIdentity = new(new Vector3(-1f, 0f, 0f), Vector3.Up, Vector3.Back);
 
+    /// <summary>
+    /// An effect node's transform for an unrotated effect at <paramref name="guestPosition"/> (the
+    /// guest's world axes) — how a placement the guest states with no rows is drawn, and where a
+    /// mod's <c>play_fx</c> puts its effect (Engine_FxPlayer).
+    /// </summary>
+    public static Transform3D UnrotatedAt(Vector3 guestPosition) => new(GuestIdentity, ToGodot(guestPosition));
+
+    /// <summary>A guest-axes vector (position or offset) in Godot's axes.</summary>
+    public static Vector3 GuestToGodot(Vector3 guest) => ToGodot(guest);
+
     /// <summary>Furthest an FX emitter may sit from the origin before its depth can overflow.</summary>
     private const float MaxFxReach = 1_000_000f;
 

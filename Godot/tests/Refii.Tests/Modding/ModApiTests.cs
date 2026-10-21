@@ -180,7 +180,11 @@ public class ModApiTests
         List<string> verbs = Regex.Matches(grammar, "(?:what|op) == \"([a-z_]+)\"")
             .Select(m => m.Groups[1].Value).Distinct().ToList();
         AssertThat(verbs.Count > 30).IsTrue();
-        foreach (string verb in verbs)
+        // menu_row and box_answer are the host's own: Godot's menu lists and host boxes post them
+        // when a mod's row is chosen or its box answered (Engine_UiModMenus, Engine_UiModBoxes), so
+        // no script calls them. fx_play and fx_stop likewise: Engine_FxPlayer posts them for a
+        // play_fx under the classic look; a script calls play_fx / stop_fx.
+        foreach (string verb in verbs.Where(v => v is not ("menu_row" or "box_answer" or "fx_play" or "fx_stop")))
         {
             AssertThat(Regex.IsMatch(godot, @"\b" + verb + @"\b"))
                 .OverrideFailureMessage($"'{verb}' is answered by mod_commands.cpp but missing from ModApi.GodotHelpers")

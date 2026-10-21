@@ -14,6 +14,7 @@ namespace Refii.Ui;
 /// Pieces are placed every frame, not once: the anchor resolves against the visible canvas,
 /// which changes with the window.
 /// </summary>
+[Tool]
 public sealed partial class Engine_HudView : Node3D
 {
     private Engine_HudModPieces? _modPieces;
@@ -162,6 +163,28 @@ public sealed partial class Engine_HudView : Node3D
 
     /// <summary>The shipped look, for text pieces.</summary>
     public Engine_UiTheme? Theme { get; set; }
+
+    /// <summary>
+    /// The mods' <c>ui/hud.json</c> files to build from, LOWEST priority first; null reads the
+    /// enabled mods (<see cref="Engine_HudModPieces.LoadFromMods"/>). The Mod Studio's preview
+    /// states the mod being edited here.
+    /// </summary>
+    public IReadOnlyList<(string Mod, string Text)>? ModFiles { get; set; }
+
+    /// <summary>The mods' own pieces, once built — an editor's preview sets their stand-in values.</summary>
+    public Engine_HudModPieces? ModPieces => _modPieces;
+
+    /// <summary>Every built shipped piece and copy, by id, with its node — for an editor's hit test.</summary>
+    public IEnumerable<(string Id, Node3D Node)> DrawnPieces()
+    {
+        foreach (Built built in _built)
+        {
+            if (GodotObject.IsInstanceValid(built.Node) && built.Node.IsVisibleInTree())
+            {
+                yield return (built.Piece.Id, built.Node);
+            }
+        }
+    }
 
     /// <summary>Resolves a stated texture hash to a loaded texture, for the pieces' own art.</summary>
     public System.Func<uint, Texture2D?>? ResolveTexture { get; set; }
@@ -407,7 +430,9 @@ public sealed partial class Engine_HudView : Node3D
         BindCentreToggle();
 
         // What mods put on the HUD, and which shipped pieces they replace (not built).
-        Engine_HudModPieces.ModLayout modLayout = Engine_HudModPieces.LoadFromMods();
+        Engine_HudModPieces.ModLayout modLayout = ModFiles is { } files
+            ? Engine_HudModPieces.LoadFrom(files)
+            : Engine_HudModPieces.LoadFromMods();
 
         // Pieces mods define (ui/hud.json), beside the ones cut from hud.bgf; children of this view
         // so they show and hide with the HUD. A piece that FOLLOWS a shipped piece is that
@@ -424,6 +449,8 @@ public sealed partial class Engine_HudView : Node3D
         if (_modPieces is not null)
         {
             _modPieces.Window = SeatFrame.Window;
+            _modPieces.Theme = Theme;
+            _modPieces.StringBook = Values.Strings;
             _modPieces.Build(ownsMods
                 ? modLayout.Pieces
                 : modLayout.Pieces.FindAll(piece => piece.Follow.Length != 0));

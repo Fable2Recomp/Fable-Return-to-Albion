@@ -146,28 +146,7 @@ public static class ModSettings
 		_owners.Clear();
 		foreach ((string mod, string text) in ModEntries.ReadEnabledText(ModSettingsPath))
 		{
-			Variant parsed = Json.ParseString(text);
-			if (parsed.VariantType != Variant.Type.Dictionary)
-			{
-				GD.PushWarning($"[mod-settings] {mod}:{ModSettingsPath} is not a JSON object; ignored");
-				continue;
-			}
-
-			foreach (KeyValuePair<Variant, Variant> entry in parsed.AsGodotDictionary())
-			{
-				string key = entry.Key.AsString();
-				if (entry.Value.VariantType == Variant.Type.Dictionary)
-				{
-					foreach (KeyValuePair<Variant, Variant> inner in entry.Value.AsGodotDictionary())
-					{
-						Take(values, mod, key + "." + inner.Key.AsString(), inner.Value);
-					}
-				}
-				else
-				{
-					Take(values, mod, key, entry.Value);
-				}
-			}
+			Fold(values, mod, text, owned: true);
 		}
 
 		// The files' values are the defaults; the player's choices stand over them.
@@ -225,6 +204,44 @@ public static class ModSettings
 		}
 
 		file.StoreString(Json.Stringify(root, "\t"));
+	}
+
+	/// <summary>
+	/// One mod's <c>settings.json</c> as numbers by key, one nesting level folded into dotted keys,
+	/// as the game reads it — for an editor's preview of a file it is editing. Nothing is recorded
+	/// as owned.
+	/// </summary>
+	public static Dictionary<string, float> Parse(string mod, string text)
+	{
+		var values = new Dictionary<string, float>(StringComparer.Ordinal);
+		Fold(values, mod, text, owned: false);
+		return values;
+	}
+
+	private static void Fold(Dictionary<string, float> values, string mod, string text, bool owned)
+	{
+		Variant parsed = Json.ParseString(text);
+		if (parsed.VariantType != Variant.Type.Dictionary)
+		{
+			GD.PushWarning($"[mod-settings] {mod}:{ModSettingsPath} is not a JSON object; ignored");
+			return;
+		}
+
+		foreach (KeyValuePair<Variant, Variant> entry in parsed.AsGodotDictionary())
+		{
+			string key = entry.Key.AsString();
+			if (entry.Value.VariantType == Variant.Type.Dictionary)
+			{
+				foreach (KeyValuePair<Variant, Variant> inner in entry.Value.AsGodotDictionary())
+				{
+					Take(values, mod, key + "." + inner.Key.AsString(), inner.Value, owned);
+				}
+			}
+			else
+			{
+				Take(values, mod, key, entry.Value, owned);
+			}
+		}
 	}
 
 	private static void Take(Dictionary<string, float> values, string mod, string key, Variant value, bool owned = true)

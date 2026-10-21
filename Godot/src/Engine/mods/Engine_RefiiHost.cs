@@ -125,6 +125,11 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void partnershipEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void household_restoredEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void dynamic_weatherEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void mod_menu_rowEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void mod_message_boxEventHandler(Godot.Collections.Dictionary e);
+
+	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
+	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -143,6 +148,8 @@ public partial class RefiiHost : Node
 		"crime", "achievement", "collectable_taken", "partner_consent",
 		"property_bought", "property_sold", "rent_paid", "property_rented", "property_condition", "divorce", "widowed", "child_born", "gift_given", "gift_accepted", "engaged", "follow", "furniture_upgraded", "redecorating", "household_budget", "tracked_stat", "partnership", "household_restored",
 		"dynamic_weather",
+		"mod_menu_row",
+		"mod_message_box",
 	};
 
 	public const string SingletonName = "RefiiHost";
@@ -436,6 +443,7 @@ public partial class RefiiHost : Node
 	public override void _ExitTree()
 	{
 		ClearVerdicts();
+		Refii.Fx.Engine_FxPlayer.StopAll();
 		if (_maskSent)
 		{
 			HostBridge.SetModEventMask(0);
@@ -464,6 +472,20 @@ public partial class RefiiHost : Node
 		List<(int Kind, string Fields)> events = HostBridge.DrainModEvents();
 		foreach ((int kind, string fields) in events)
 		{
+			// An effect a native or Lua mod asked Godot to play or stop: drawn here, never an event.
+			if (kind == Refii.Fx.Engine_FxPlayer.RequestKind)
+			{
+				Refii.Fx.Engine_FxPlayer.Handle(fields);
+				continue;
+			}
+
+			// A menu or a message box a native or Lua mod asked for: Godot's UI, never an event.
+			if (kind == Refii.Ui.Engine_UiModRequest.Kind)
+			{
+				Refii.Ui.Engine_UiModBoxes.Handle(fields);
+				continue;
+			}
+
 			// A query's answer: the id goes back as the signal's first argument, never to mod_event.
 			if (kind == ReplyKind)
 			{
@@ -508,6 +530,8 @@ public partial class RefiiHost : Node
 
 			EmitSignal(SignalName.mod_event, _nameByKind[kind].ToString(), e);
 		}
+
+		Refii.Fx.Engine_FxPlayer.Pump(delta);
 	}
 
 	private void TrackHero(int kind, Godot.Collections.Dictionary e)
@@ -737,6 +761,159 @@ public partial class RefiiHost : Node
 
 	/// <summary>The enabled mods' names, in load order.</summary>
 	public Godot.Collections.Array<string> mods() => new(EnabledMods);
+
+	// ---- the UI: mod menus, message boxes, published values ----------------------------------
+
+	/// <summary>
+	/// Publishes a mod value under <paramref name="key"/> ("&lt;mod&gt;.&lt;name&gt;", no spaces): what
+	/// a HUD piece reads as <c>mod:&lt;key&gt;</c>, Lua as <c>Refii.value(key)</c> and native code as
+	/// <c>refii::mods::Published</c>. Set on the guest's next tick, the moment every reader sees it.
+	/// </summary>
+	public void publish(string key, float value) =>
+		Post($"publish {key.Replace(' ', '_')} {Num(value)}");
+
+	/// <summary>
+	/// Opens a menu a mod defines in <c>ui/templates.json</c> for <paramref name="player"/> (1 or 2;
+	/// 0, the default, for whoever owns the menus here): over whichever menu list has the input (the
+	/// front end, the pause book or a screen's list) — B returns to it — or, with no list up, in
+	/// play or on the title, as a list of its own that takes the pad and closes on B. False when no
+	/// template has that name or the player is played on the other machine (which opens it there).
+	/// </summary>
+	public bool open_menu(string name, long player = 0) =>
+		Refii.Ui.Engine_UiModMenus.OpenFor(name, (int)Math.Clamp(player, 0, 2));
+
+	private long _nextBoxId = Refii.Ui.Engine_UiModRequest.FirstHostBoxId - 1;
+
+	/// <summary>
+	/// Raises a message box in the game's own box art — in game the query or message box, on the
+	/// front end its own dialog — for <paramref name="player"/> (1 or 2; 0, the default, for whoever
+	/// owns the menus here): <paramref name="title"/> above <paramref name="text"/>, with one button
+	/// (a notice) or two (a question, A and B, their captions <paramref name="buttons"/>[0] and [1];
+	/// none keeps the box's own captions). Returns the id <c>message_box_answered(id, button)</c> and
+	/// the <c>mod_message_box</c> event carry: 0 for A, 1 for B, -1 when another box replaced it or
+	/// the player is played on the other machine. One question and one notice stand at a time.
+	/// </summary>
+	public long message_box(string title, string text, Godot.Collections.Array<string> buttons, long player = 0)
+	{
+		if (++_nextBoxId > Refii.Ui.Engine_UiModRequest.LastBoxId)
+		{
+			_nextBoxId = Refii.Ui.Engine_UiModRequest.FirstHostBoxId;
+		}
+
+		long id = _nextBoxId;
+		if (buttons.Count > 2)
+		{
+			GD.PushWarning($"[mods] godot: message_box takes one or two buttons; {buttons.Count} given, the first two are used");
+		}
+
+		void Answered(int button)
+		{
+			if (IsInstanceValid(this))
+			{
+				EmitSignal(SignalName.message_box_answered, id, (long)button);
+			}
+		}
+
+		string? Caption(int i) => buttons.Count > i && buttons[i].Length != 0 ? buttons[i] : null;
+		Refii.Ui.Engine_UiModBoxes.Raise((uint)id, (int)Math.Clamp(player, 0, 2), title, text,
+			Caption(0), Caption(1), buttons.Count >= 2, Answered);
+		return id;
+	}
+
+	/// <summary>
+	/// The ModMessageBox event's Godot surface: a box a mod raised (any surface's) was answered —
+	/// the <c>mod_message_box</c> signal and <c>mod_event</c>, here as it happens. The guest raises
+	/// the same event for native and Lua handlers on its tick and never posts it back here.
+	/// </summary>
+	internal void RaiseModMessageBox(uint id, int button, int player)
+	{
+		var e = new Godot.Collections.Dictionary
+		{
+			["id"] = (long)id,
+			["button"] = (long)button,
+			["player"] = (long)player,
+		};
+		EmitSignal(SignalName.mod_message_box, e);
+		EmitSignal(SignalName.mod_event, "mod_message_box", e);
+	}
+
+	/// <summary>
+	/// The ModMenuRow event's Godot surface, raised where it happens (the menu is Godot's): the
+	/// <c>mod_menu_row</c> signal and <c>mod_event</c>. The guest raises the same event for native
+	/// and Lua handlers on its tick and never posts it back here.
+	/// </summary>
+	internal void RaiseModMenuRow(string menu, string row, int player, string mod)
+	{
+		var e = new Godot.Collections.Dictionary
+		{
+			["menu"] = menu,
+			["row"] = row,
+			["player"] = (long)player,
+			["mod"] = mod,
+		};
+		EmitSignal(SignalName.mod_menu_row, e);
+		EmitSignal(SignalName.mod_event, "mod_menu_row", e);
+	}
+
+	// ---- effects: Godot draws them (Engine_FxPlayer) --------------------------------------------
+
+	/// <summary>
+	/// Plays effect <paramref name="name"/> (the particle bank's or a mod's fx/effects/, by name or
+	/// FX_XXXXXXXX token) at a world position in the guest's axes, as the events state positions.
+	/// <paramref name="options"/>: duration (seconds, 0 until stop_fx), scale, tint (Color or
+	/// [r, g, b]), intensity, loop (true; false plays it once). Returns the id stop_fx takes, or 0
+	/// for an unknown effect.
+	/// </summary>
+	public long play_fx(string name, float x, float y, float z, Godot.Collections.Dictionary options) =>
+		PlayFx(name, new Vector3(x, y, z), 0, options);
+
+	/// <summary>
+	/// Plays effect <paramref name="name"/> on an entity by its HANDLE: it starts at the entity's drawn
+	/// node plus options.offset (guest axes, Vector3 or [x, y, z]) and rides it; the other options as
+	/// play_fx. 0 for an unknown effect or handle.
+	/// </summary>
+	public long play_fx_on(string name, long handle, Godot.Collections.Dictionary options) =>
+		handle <= 0 || handle > uint.MaxValue ? 0 : PlayFx(name, Vector3.Zero, (uint)handle, options);
+
+	/// <summary>Stops a played effect by any surface's id (native, Lua or Godot); false when none plays under it.</summary>
+	public bool stop_fx(long id) => id > 0 && id <= uint.MaxValue && Refii.Fx.Engine_FxPlayer.Stop((uint)id);
+
+	private static long PlayFx(string name, Vector3 at, uint entity, Godot.Collections.Dictionary options)
+	{
+		float Number(string key, float fallback) =>
+			options.TryGetValue(key, out Variant v) && v.VariantType is Variant.Type.Float or Variant.Type.Int ? (float)v.AsDouble() : fallback;
+		Vector3 Triple(string key, Vector3 fallback)
+		{
+			if (!options.TryGetValue(key, out Variant v))
+			{
+				return fallback;
+			}
+
+			if (v.VariantType == Variant.Type.Vector3)
+			{
+				return v.AsVector3();
+			}
+
+			if (v.VariantType == Variant.Type.Color)
+			{
+				Color c = v.AsColor();
+				return new Vector3(c.R, c.G, c.B);
+			}
+
+			if (v.VariantType == Variant.Type.Array && v.AsGodotArray() is { Count: >= 3 } a)
+			{
+				return new Vector3((float)a[0].AsDouble(), (float)a[1].AsDouble(), (float)a[2].AsDouble());
+			}
+
+			return fallback;
+		}
+
+		Vector3 tint = Triple("tint", Vector3.One);
+		bool loop = !options.TryGetValue("loop", out Variant loopValue) || loopValue.AsBool();
+		return Refii.Fx.Engine_FxPlayer.Play(
+			name, at, entity, Number("duration", 0f), Number("scale", 1f), new Color(tint.X, tint.Y, tint.Z),
+			Number("intensity", 1f), loop, Triple("offset", Vector3.Zero));
+	}
 
 	// ---- the field text --------------------------------------------------------------------
 

@@ -56,6 +56,13 @@ public static class ModTemplates
 		new ModTemplate("quest_hooks", "Quest hooks",
 			"Handlers for level loads, items and kills, counting in the save; quest and dialogue events when the API has them.",
 			(mod, title) => new[] { (ModLua.ModInitPath, QuestHooksLua(mod, title)) }),
+		new ModTemplate("fx_effect", "Effect",
+			"An effect of the mod's own (fx/effects/), played by init.lua where a hero's hit lands — the same file the FX Lab writes.",
+			(mod, title) => new[]
+			{
+				(Refii.Fx.Engine_FxModEffects.PathOf(mod + "_green_flame"), FxEffectJson(mod)),
+				(ModLua.ModInitPath, Fill(FxEffectLua, mod, title)),
+			}),
 		new ModTemplate("native_handler", "Native handler",
 			"A C++ handler for the Hit event under native/, compiled into the game by the launcher.",
 			(mod, title) => new[]
@@ -63,10 +70,104 @@ public static class ModTemplates
 				("native/handler.cpp", ModApi.NativeTemplate(ModApi.Find("hit")!, mod)),
 				("README.md", Fill(NativeReadme, mod, title)),
 			}),
+		new ModTemplate("mod_menu", "Mod menu",
+			"A menu of the mod's own, opened from a row on the pause list; its rows call the mod's Lua.",
+			(mod, title) => new[]
+			{
+				("ui/templates.json", Fill(ModMenuJson, mod, title).Replace("{id}", LuaIdentifier(mod))),
+				(ModLua.ModInitPath, Fill(ModMenuLua, mod, title).Replace("{id}", LuaIdentifier(mod))),
+				("language/en-uk/text/book.babel.csv", Fill(ModMenuBabel, mod, title)),
+			}),
+		new ModTemplate("hud_text", "HUD text",
+			"A line of HUD text in the top-right corner showing the hero's gold, a value init.lua publishes.",
+			(mod, title) => new[]
+			{
+				(ModLua.ModInitPath, Fill(HudTextLua, mod, title)),
+				("ui/hud.json", Fill(HudTextJson, mod, title)),
+			}),
 	};
+
+	/// <summary>A mod name as a Lua identifier: every character that cannot be in one becomes '_'.</summary>
+	private static string LuaIdentifier(string mod)
+	{
+		var name = new StringBuilder(mod.Length + 1);
+		foreach (char c in mod)
+		{
+			name.Append(c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '_' ? c : '_');
+		}
+
+		return name.Length == 0 || char.IsDigit(name[0]) ? "_" + name : name.ToString();
+	}
 
 	public static ModTemplate? Find(string id) =>
 		All.FirstOrDefault(t => string.Equals(t.Id, id, StringComparison.OrdinalIgnoreCase));
+
+	// ---------------------------------------------------------------------------------------
+	// fx_effect
+	// ---------------------------------------------------------------------------------------
+
+	/// <summary>
+	/// A small green flame in the bank's own model: one standard emitter on a sphere, one sprite
+	/// system drawing a shipped flame sheet, built and written by the effect file's own writer.
+	/// </summary>
+	private static string FxEffectJson(string mod)
+	{
+		var d = new Refii.Fx.Engine_FxEffectJson.Definition { Name = mod + "_green_flame", UpdateFrequency = 1 };
+		var emitter = new Refii.Fx.FxEmitter { TypeId = 0, SubType = 1, MaxActive = 48, InitialNum = 4, SpawnRadius = 0.15f };
+		for (int i = 0; i < 28; i++)
+		{
+			emitter.Generic[i] = Refii.Fx.Engine_FxBank.MakeTimeline(i, i switch
+			{
+				2 => new[] { (0f, 24f) },
+				4 => new[] { (0f, 0.6f) },
+				5 => new[] { (0f, 0.2f) },
+				11 => new[] { (0f, 1f) },
+				_ => Array.Empty<(float, float)>(),
+			});
+		}
+
+		emitter.Vec0 = Refii.Fx.Engine_FxBank.MakeVecTimeline(0, Array.Empty<(float, float, float, float)>());
+		emitter.Vec1 = Refii.Fx.Engine_FxBank.MakeVecTimeline(1, Array.Empty<(float, float, float, float)>());
+		emitter.Vec2 = Refii.Fx.Engine_FxBank.MakeVecTimeline(2, Array.Empty<(float, float, float, float)>());
+		emitter.LightColour = Refii.Fx.Engine_FxBank.MakeVecTimeline(3, Array.Empty<(float, float, float, float)>());
+		Refii.Fx.Engine_FxBank.LinkParameters(emitter);
+		var system = new Refii.Fx.FxSystemDef { Mode = 1, LastStartFrames = 30, ChildCount = 1 };
+		system.Visuals.Add(new Refii.Fx.FxVisual
+		{
+			HasTexture = true, Texture = "art\\fx\\pfx_textures\\fxt_flames_double_03.tex", TexCols = 4, TexRows = 4, FrameSpeed = 20f,
+			HasColor = true, Color = new[] { 0.4f, 1f, 0.5f }, ColorSq = new[] { 0.16f, 1f, 0.25f }, HasSize = true, SizeX = 0.5f, SizeY = 0.7f,
+			HasSelfIllum = true, SelfIllum = 1f, HasAlpha = true, Alpha = 1f,
+		});
+		system.Visuals.Add(new Refii.Fx.FxVisual
+		{
+			HasTexture = true, Texture = "art\\fx\\pfx_textures\\fxt_flames_double_03.tex", TexCols = 4, TexRows = 4, FrameSpeed = 20f,
+			HasColor = true, Color = new[] { 0.1f, 0.5f, 0.2f }, ColorSq = new[] { 0.01f, 0.25f, 0.04f }, HasSize = true, SizeX = 0.2f, SizeY = 0.3f,
+			HasSelfIllum = true, SelfIllum = 1f, HasAlpha = true, Alpha = 0f, Delay = 1f, DelayFrames = 30, InvSpan = 1f / 30f,
+		});
+		d.Emitters.Add(emitter);
+		d.Systems.Add(system);
+		d.Parts.Add(new Refii.Fx.FxEffectPart(0, 0, 1, 0));
+		return Refii.Fx.Engine_FxEffectJson.Serialize(d);
+	}
+
+	private const string FxEffectLua =
+		"-- {title}: an effect of the mod's own.\n" +
+		"--\n" +
+		"-- fx/effects/{mod}_green_flame.json is the particle bank's own model as JSON; open it in the\n" +
+		"-- Mod Studio's FX Lab (Effects) to change its emitters with a live preview, or clone any\n" +
+		"-- shipped effect there. Refii.play_fx asks Godot to draw it; the game spawns nothing.\n" +
+		"\n" +
+		"-- \"hit_landed\": a hit was delivered. Where a player's hero lands one, the flame bursts on\n" +
+		"-- the victim for a second and a half. Refii.play_fx_on(e.victim, ...) would ride the victim.\n" +
+		"Refii.on(\"hit_landed\", function(e)\n" +
+		"\tif e.attacker_player == 0 then\n" +
+		"\t\treturn\n" +
+		"\tend\n" +
+		"\tlocal x, y, z = Refii.position(e.victim)\n" +
+		"\tif x ~= nil then\n" +
+		"\t\tRefii.play_fx(\"{mod}_green_flame\", x, y, z, { duration = 1.5, scale = 0.8 })\n" +
+		"\tend\n" +
+		"end)\n";
 
 	private static string Fill(string text, string mod, string title) =>
 		text.Replace("{mod}", mod).Replace("{MOD}", mod.ToUpperInvariant()).Replace("{title}", title);
@@ -156,6 +257,100 @@ public static class ModTemplates
 		"key,value\n" +
 		"{MOD}_GOLD_SHARE_NAME,Gold\n" +
 		"{MOD}_GOLD_SHARE_DESCRIPTION,\"The hero's purse, shown as a share of a thousand gold.\"\n";
+
+	// ---------------------------------------------------------------------------------------
+	// mod_menu
+	// ---------------------------------------------------------------------------------------
+
+	// A host-only row on the pause list (the guest's own rows are matched to its list by order, so
+	// a row it never spawned must say so) that opens the mod's menu; B returns to the pause list.
+	private const string ModMenuJson =
+		"{\n" +
+		"\t\"menus\": {\n" +
+		"\t\t\"pause-root\": {\n" +
+		"\t\t\t\"patch\": true,\n" +
+		"\t\t\t\"entries\": [\n" +
+		"\t\t\t\t{ \"name\": \"{mod}.menu\", \"tag\": \"{MOD}_MENU\", \"opens\": \"{mod}.menu\", \"hostOnly\": true }\n" +
+		"\t\t\t]\n" +
+		"\t\t},\n" +
+		"\t\t\"{mod}.menu\": {\n" +
+		"\t\t\t\"title\": \"{MOD}_MENU\",\n" +
+		"\t\t\t\"entries\": [\n" +
+		"\t\t\t\t{ \"name\": \"greet\", \"tag\": \"{MOD}_MENU_GREET\", \"command\": \"Mod:lua:{id}_menu.greet\" },\n" +
+		"\t\t\t\t{ \"name\": \"gold\", \"tag\": \"{MOD}_MENU_GOLD\", \"command\": \"Mod:lua:{id}_menu.give_gold:100\" }\n" +
+		"\t\t\t]\n" +
+		"\t\t}\n" +
+		"\t}\n" +
+		"}\n";
+
+	private const string ModMenuLua =
+		"-- {title}: a menu of the mod's own.\n" +
+		"--\n" +
+		"-- ui/templates.json defines the menu \"{mod}.menu\" and a row on the pause list that opens it.\n" +
+		"-- A row whose command is Mod:lua:<function>[:<arg>] calls that global function as\n" +
+		"-- function(arg, e): arg is the text after the second colon (nil when there is none), e the\n" +
+		"-- row's mod_menu_row event (e.menu, e.row, e.player, e.mod).\n" +
+		"\n" +
+		"{id}_menu = {}\n" +
+		"\n" +
+		"function {id}_menu.greet(arg, e)\n" +
+		"\tRefii.log(\"{title}: hello, player \" .. tostring(e.player))\n" +
+		"end\n" +
+		"\n" +
+		"-- The player who chose the row gets the gold: e.player is 1 or 2.\n" +
+		"function {id}_menu.give_gold(arg, e)\n" +
+		"\tlocal hero = Refii.hero(e.player)\n" +
+		"\tif hero ~= nil then\n" +
+		"\t\tRefii.give_gold(hero, tonumber(arg) or 0)\n" +
+		"\tend\n" +
+		"end\n" +
+		"\n" +
+		"-- Every row of the menu raises mod_menu_row, whatever its command.\n" +
+		"Refii.on(\"mod_menu_row\", function(e)\n" +
+		"\tRefii.log(\"{title}: \" .. tostring(e.menu) .. \"/\" .. tostring(e.row) .. \" chosen\")\n" +
+		"end)\n";
+
+	private const string ModMenuBabel =
+		"key,value\n" +
+		"{MOD}_MENU,{title}\n" +
+		"{MOD}_MENU_GREET,Say hello\n" +
+		"{MOD}_MENU_GOLD,Take 100 gold\n";
+
+	// ---------------------------------------------------------------------------------------
+	// hud_text
+	// ---------------------------------------------------------------------------------------
+
+	private const string HudTextLua =
+		"-- {title}: a line of HUD text fed from Lua.\n" +
+		"--\n" +
+		"-- A text piece's \"text\" is a literal, a Babel tag, or mod:<key> — a value Refii.publish\n" +
+		"-- states — drawn through its \"format\". An unpublished value draws nothing.\n" +
+		"\n" +
+		"Refii.on(\"tick\", function(e)\n" +
+		"\tlocal hero = Refii.hero(1)\n" +
+		"\tif hero == nil then\n" +
+		"\t\treturn\n" +
+		"\tend\n" +
+		"\tRefii.publish(\"{mod}.gold\", Refii.gold(hero) or 0)\n" +
+		"end)\n";
+
+	// Right-aligned against the top-right corner: the anchor is the corner, the offset +X right, +Y down.
+	private const string HudTextJson =
+		"{\n" +
+		"\t\"pieces\": [\n" +
+		"\t\t{\n" +
+		"\t\t\t\"id\": \"{mod}.gold_text\",\n" +
+		"\t\t\t\"kind\": \"text\",\n" +
+		"\t\t\t\"anchor\": [1, 0],\n" +
+		"\t\t\t\"offset\": [-48, 40],\n" +
+		"\t\t\t\"text\": \"mod:{mod}.gold\",\n" +
+		"\t\t\t\"format\": \"{0:0} gold\",\n" +
+		"\t\t\t\"size\": 18,\n" +
+		"\t\t\t\"colour\": \"#d8b23a\",\n" +
+		"\t\t\t\"align\": \"right\"\n" +
+		"\t\t}\n" +
+		"\t]\n" +
+		"}\n";
 
 	// ---------------------------------------------------------------------------------------
 	// custom_spell

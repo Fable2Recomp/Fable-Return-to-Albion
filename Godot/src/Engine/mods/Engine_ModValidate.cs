@@ -43,6 +43,9 @@ public static partial class ModValidate
 	/// <summary><c>spells/&lt;id&gt;.json</c>, the one kind matched by folder rather than by path.</summary>
 	public const string SpellsKind = "spells/*.json";
 
+	/// <summary><c>fx/effects/&lt;name&gt;.json</c>, a mod effect (Engine_FxEffectJson), matched by folder like the spells.</summary>
+	public const string FxEffectsKind = "fx/effects/*.json";
+
 	/// <summary>
 	/// The kind of a package path, by the path its loader reads (<c>files/</c> stripped, any case);
 	/// empty for a path no schema covers.
@@ -62,6 +65,11 @@ public static partial class ModValidate
 			case Refii.Ui.Engine_UiModAbilities.ModAbilitiesPath:
 			case ModWorkspace.ModMetadataFilename:
 				return normalized;
+		}
+
+		if (Refii.Fx.Engine_FxModEffects.IsEffectFile(normalized, out _))
+		{
+			return FxEffectsKind;
 		}
 
 		return normalized.StartsWith(ModSpells.Folder, StringComparison.Ordinal) &&
@@ -108,6 +116,27 @@ public static partial class ModValidate
 			doc.Warn(string.Empty, "the file starts with a UTF-8 byte-order mark; save it without one " +
 				"(Godot's JSON reader is not guaranteed to skip it)");
 			text = text[1..];
+		}
+
+		// fx/effects/*.json: the reader IS the schema (Engine_FxEffectJson.Parse reports every issue
+		// with its place), so the check is that reader's verdict.
+		if (kind == FxEffectsKind)
+		{
+			var issues = new List<Refii.Fx.Engine_FxEffectJson.Issue>();
+			Refii.Fx.Engine_FxEffectJson.Parse(text, issues);
+			foreach (Refii.Fx.Engine_FxEffectJson.Issue issue in issues)
+			{
+				if (issue.Error)
+				{
+					doc.Error(issue.Pointer, issue.Message);
+				}
+				else
+				{
+					doc.Warn(issue.Pointer, issue.Message);
+				}
+			}
+
+			return doc.Issues;
 		}
 
 		// spells/*.json is read with System.Text.Json allowing comments and trailing commas
@@ -241,9 +270,11 @@ public static partial class ModValidate
 	// settings.ui.json — ModSettingsUi.Build / Describe
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] SettingsUiRowKeys = { "label", "description", "type", "min", "max", "step" };
+	private static readonly string[] SettingsUiRowKeys = { "label", "description", "type", "min", "max", "step", "options" };
 
-	private static readonly string[] SettingsUiTypes = { "slider", "toggle" };
+	private static readonly string[] SettingsUiTypes = { "slider", "toggle", "choice" };
+
+	private static readonly string[] SettingsUiOptionKeys = { "value", "label" };
 
 	/// <summary>
 	/// An object keyed by setting name (without or with the <c>&lt;mod&gt;.</c> prefix), each an object
@@ -274,7 +305,23 @@ public static partial class ModValidate
 			string type = (doc.Text(row, "type", at, strict: true) ?? string.Empty).Trim().ToLowerInvariant();
 			if (type.Length != 0 && Array.IndexOf(SettingsUiTypes, type) < 0)
 			{
-				doc.Error(At(at, "type"), $"'{type}' is not a row type: slider or toggle (it is drawn as a slider)");
+				doc.Error(At(at, "type"), $"'{type}' is not a row type: slider, toggle or choice (it is drawn as a slider)");
+			}
+
+			if (type == "choice")
+			{
+				ChoiceOptions(doc, row, at);
+				if (Has(row, "min") || Has(row, "max") || Has(row, "step"))
+				{
+					doc.Warn(at, "a choice steps through its options; min, max and step are ignored");
+				}
+
+				continue;
+			}
+
+			if (Has(row, "options"))
+			{
+				doc.Warn(At(at, "options"), "read only for \"type\": \"choice\"; ignored");
 			}
 
 			double? min = doc.Number(row, "min", at, strict: true);
@@ -294,6 +341,57 @@ public static partial class ModValidate
 			{
 				doc.Warn(At(at, "step"), "must be above 0; the page steps a twentieth of the range instead");
 			}
+		}
+	}
+
+	/// <summary>
+	/// ModSettingsUi.ChoiceOptions: a list of <c>{ "value": number, "label": text }</c>. An option
+	/// with no number is skipped; a choice with none is drawn as a slider.
+	/// </summary>
+	private static void ChoiceOptions(Doc doc, JsonElement row, string at)
+	{
+		if (doc.Array(row, "options", at) is not { } options)
+		{
+			doc.Error(at, "a choice needs \"options\": [{ \"value\": 0, \"label\": \"…\" }, …]; without them the row is a slider");
+			return;
+		}
+
+		int i = 0;
+		int kept = 0;
+		var values = new HashSet<double>();
+		foreach (JsonElement option in options.EnumerateArray())
+		{
+			string where = At(At(at, "options"), i++);
+			if (!doc.Object(option, where, "must be an object { \"value\", \"label\" }; skipped"))
+			{
+				continue;
+			}
+
+			doc.Keys(option, where, SettingsUiOptionKeys);
+			if (!option.TryGetProperty("value", out JsonElement value) ||
+				value.ValueKind is not (JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False))
+			{
+				doc.Error(At(where, "value"), "must be a number (the setting's value for this option); the option is skipped");
+				continue;
+			}
+
+			double number = value.ValueKind == JsonValueKind.Number ? value.GetDouble() : value.ValueKind == JsonValueKind.True ? 1 : 0;
+			if (!values.Add(number))
+			{
+				doc.Warn(At(where, "value"), $"a second option with the value {Format(number)}; the first is shown for it");
+			}
+
+			if (doc.Text(option, "label", where, strict: true) is null)
+			{
+				doc.Warn(where, "no \"label\"; the option is captioned by its number");
+			}
+
+			kept++;
+		}
+
+		if (kept == 0)
+		{
+			doc.Error(At(at, "options"), "no usable option; the row is a slider");
 		}
 	}
 
@@ -689,19 +787,26 @@ public static partial class ModValidate
 	// ui/hud.json — Engine_HudModPieces.Parse / ParseClones / Source / MeterValue
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] HudKeys = { "hide", "pieces", "clones", "scale" };
+	private static readonly string[] HudKeys = { "hide", "pieces", "clones", "scale", "layout" };
 
 	private static readonly string[] HudPieceKeys =
 	{
 		"id", "kind", "anchor", "offset", "size", "value", "max", "fill", "back", "texture", "follow", "followElement",
 		"widthFrom", "widthPerUnit", "minWidth", "maxWidth", "chip", "border", "borderWidth", "corner", "textures", "index",
+		"text", "format", "colour", "align",
 	};
+
+	/// <summary>The fields only a <c>text</c> piece reads.</summary>
+	private static readonly string[] HudTextKeys = { "text", "format", "colour", "align" };
+
+	/// <summary>A layout entry's fields, as <c>user://hud/layout.json</c> carries them; the last four are informational.</summary>
+	private static readonly string[] HudLayoutEntryKeys = { "anchor", "offset", "art", "value", "driven", "placed" };
 
 	private static readonly string[] HudCloneKeys = { "id", "of", "offset", "hue", "hueElements", "icon", "values", "bars" };
 
 	private static readonly string[] HudIconKeys = { "element", "textures" };
 
-	private static readonly string[] HudPieceKinds = { "meter", "panel", "picture" };
+	private static readonly string[] HudPieceKinds = { "meter", "panel", "picture", "text" };
 
 	/// <summary>
 	/// <c>hide</c> (ids), <c>scale</c> (id → factor), <c>clones</c> (copies of a shipped piece: id
@@ -718,6 +823,16 @@ public static partial class ModValidate
 
 		doc.Keys(root, string.Empty, HudKeys);
 		doc.TextList(root, "hide", string.Empty);
+
+		if (Has(root, "layout") &&
+			doc.Object(root.GetProperty("layout"), "layout", "must be an object of shipped piece id to { \"anchor\", \"offset\" }; ignored"))
+		{
+			doc.DuplicateKeys(root.GetProperty("layout"), "layout");
+			foreach (JsonProperty entry in root.GetProperty("layout").EnumerateObject())
+			{
+				HudLayoutEntry(doc, entry.Value, At("layout", entry.Name));
+			}
+		}
 
 		if (Has(root, "scale") && doc.Object(root.GetProperty("scale"), "scale", "must be an object of piece id to factor; ignored"))
 		{
@@ -761,6 +876,47 @@ public static partial class ModValidate
 				}
 
 				CheckHudPiece(doc, piece, at, ids);
+			}
+		}
+	}
+
+	/// <summary>
+	/// One <c>layout</c> entry, the shape of <c>user://hud/layout.json</c>'s
+	/// (Engine_HudModLayout.ParseEntries): <c>anchor</c> and <c>offset</c>, each two numbers, both
+	/// required. The editor's informational fields are allowed and ignored.
+	/// </summary>
+	private static void HudLayoutEntry(Doc doc, JsonElement entry, string at)
+	{
+		if (!doc.Object(entry, at, "must be an object { \"anchor\": [x, y], \"offset\": [x, y] }; ignored"))
+		{
+			return;
+		}
+
+		doc.Keys(entry, at, HudLayoutEntryKeys);
+		foreach (string pair in new[] { "anchor", "offset" })
+		{
+			string where = At(at, pair);
+			if (!entry.TryGetProperty(pair, out JsonElement value))
+			{
+				doc.Error(at, $"needs \"{pair}\" as well; an entry missing either is not applied");
+				continue;
+			}
+
+			if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() < 2 ||
+				value[0].ValueKind != JsonValueKind.Number || value[1].ValueKind != JsonValueKind.Number)
+			{
+				doc.Error(where, "must be two numbers [x, y]; the entry is not applied");
+				continue;
+			}
+
+			if (value.GetArrayLength() > 2)
+			{
+				doc.Warn(where, "only the first two numbers are read");
+			}
+
+			if (pair == "anchor" && (value[0].GetDouble() is < 0 or > 1 || value[1].GetDouble() is < 0 or > 1))
+			{
+				doc.Warn(where, "an anchor is a fraction of the screen, 0..1 each way; this one hangs the piece off screen");
 			}
 		}
 	}
@@ -838,12 +994,26 @@ public static partial class ModValidate
 		string kind = doc.Text(piece, "kind", at) ?? string.Empty;
 		if (kind.Length != 0 && Array.IndexOf(HudPieceKinds, kind) < 0)
 		{
-			doc.Error(At(at, "kind"), $"'{kind}' is not a piece kind: meter, panel or picture; it is read as a meter");
+			doc.Error(At(at, "kind"), $"'{kind}' is not a piece kind: meter, panel, picture or text; it is read as a meter");
 			kind = "meter";
 		}
 
 		doc.Vector(piece, "anchor", at, 2, 2, extraIgnored: false);
 		doc.Vector(piece, "offset", at, 2, 2, extraIgnored: false);
+		if (kind == "text")
+		{
+			CheckHudText(doc, piece, at);
+			return;
+		}
+
+		foreach (string key in HudTextKeys)
+		{
+			if (Has(piece, key))
+			{
+				doc.Warn(At(at, key), "read only by a \"text\" piece; ignored");
+			}
+		}
+
 		doc.Vector(piece, "size", at, 2, 2, extraIgnored: false);
 		foreach (string colour in new[] { "fill", "back", "chip", "border" })
 		{
@@ -888,6 +1058,62 @@ public static partial class ModValidate
 				doc.Error(at, "a picture needs \"texture\", or \"textures\" with \"index\"; the piece is not built");
 			}
 		}
+	}
+
+	/// <summary>
+	/// A <c>text</c> piece (Engine_HudModPieces / Engine_HudModText): <c>text</c> required (a literal,
+	/// a Babel tag or <c>mod:&lt;key&gt;</c>), <c>format</c> for a value, <c>size</c> a POINT size,
+	/// <c>colour</c> HTML hex, <c>align</c> left, centre or right. Placement as every piece.
+	/// </summary>
+	private static void CheckHudText(Doc doc, JsonElement piece, string at)
+	{
+		string text = doc.Text(piece, "text", at, required: true) ?? string.Empty;
+		string format = doc.Text(piece, "format", at) ?? string.Empty;
+		bool value = text.Trim().StartsWith(Refii.Ui.Engine_HudModText.ModPrefix, StringComparison.Ordinal);
+		if (value && text.Trim().Length == Refii.Ui.Engine_HudModText.ModPrefix.Length)
+		{
+			doc.Error(At(at, "text"), "'mod:' names no value; write mod:<mod>.<name>");
+		}
+
+		if (format.Length != 0)
+		{
+			if (!value)
+			{
+				doc.Warn(At(at, "format"), "formats a mod: value; this text is not one, so it is ignored");
+			}
+			else if (format.Contains('{', StringComparison.Ordinal) && !format.Contains("{0", StringComparison.Ordinal))
+			{
+				doc.Warn(At(at, "format"), "names no {0}; the value is not shown in it");
+			}
+		}
+
+		if (Has(piece, "size") && piece.GetProperty("size").ValueKind == JsonValueKind.Array)
+		{
+			doc.Error(At(at, "size"), "a text piece's size is its point size (a number), not [w, h]; it is drawn at the default");
+		}
+		else if (Has(piece, "size") &&
+			doc.LooseNumber(piece.GetProperty("size"), At(at, "size")) is { } size && size < 1)
+		{
+			doc.Error(At(at, "size"), "a text piece's size is its point size, 1 or more; it is drawn at 1");
+		}
+
+		doc.Colour(piece, "colour", at);
+		if (doc.Text(piece, "align", at) is { Length: > 0 } align &&
+			Array.IndexOf(Refii.Ui.Engine_HudModText.AlignNames, align.Trim().ToLowerInvariant()) < 0)
+		{
+			doc.Warn(At(at, "align"), $"'{align}' is not left, centre or right; it is drawn left-aligned");
+		}
+
+		foreach (string key in new[] { "value", "max", "fill", "back", "chip", "border", "texture", "textures", "index", "widthFrom" })
+		{
+			if (Has(piece, key))
+			{
+				doc.Warn(At(at, key), "not read by a \"text\" piece; ignored");
+			}
+		}
+
+		doc.Text(piece, "follow", at);
+		doc.Text(piece, "followElement", at);
 	}
 
 	/// <summary>A field holding a number or a value source; <paramref name="why"/> is the message for a missing required one.</summary>
@@ -986,7 +1212,9 @@ public static partial class ModValidate
 	// ui/templates.json — Engine_UiTemplates.ApplyOverrideText / PatchMenu / ParseMenu / ParseEntry / ParseScreen
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] TemplatesKeys = { "menus", "screens" };
+	private static readonly string[] TemplatesKeys = { "menus", "screens", "modals" };
+
+	private static readonly string[] ModalKeys = { "kind", "confirm", "cancel" };
 
 	private static readonly string[] MenuKeys = { "patch", "highlight", "title", "rowCommand", "source", "entries" };
 
@@ -1052,9 +1280,45 @@ public static partial class ModValidate
 					doc.Text(menu.Value, key, at);
 				}
 
+				if (menu.Value.TryGetProperty("rowCommand", out JsonElement rowCommand) && rowCommand.ValueKind == JsonValueKind.String)
+				{
+					MenuCommand(doc, At(at, "rowCommand"), rowCommand.GetString() ?? string.Empty);
+				}
+
 				if (doc.Array(menu.Value, "entries", at) is { } entries)
 				{
 					Entries(doc, entries, At(at, "entries"), patch);
+				}
+			}
+		}
+
+		if (Has(root, "modals") &&
+			doc.Object(root.GetProperty("modals"), "modals", "must be an object of modal records by key (\"13\", \"0@22\"); ignored"))
+		{
+			doc.DuplicateKeys(root.GetProperty("modals"), "modals");
+			foreach (JsonProperty modal in root.GetProperty("modals").EnumerateObject())
+			{
+				string at = At("modals", modal.Name);
+				if (!Refii.Ui.Engine_UiModals.TryParseKey(modal.Name, out _, out _))
+				{
+					doc.Error(at, $"'{modal.Name}' is not a modal key: \"<modal id>\" or \"<modal id>@<screen id>\"; ignored");
+					continue;
+				}
+
+				if (modal.Value.ValueKind == JsonValueKind.Null)
+				{
+					continue;
+				}
+
+				if (!doc.Object(modal.Value, at, "must be an object { \"kind\", \"confirm\", \"cancel\" } or null; ignored"))
+				{
+					continue;
+				}
+
+				doc.Keys(modal.Value, at, ModalKeys);
+				if (Refii.Ui.Engine_UiModals.ParseRecord(modal.Name, modal.Value, out string error) is null)
+				{
+					doc.Error(at, error + "; the record is ignored");
 				}
 			}
 		}
@@ -1108,6 +1372,17 @@ public static partial class ModValidate
 				doc.Text(entry, key, where);
 			}
 
+			if (entry.TryGetProperty("command", out JsonElement command) && command.ValueKind == JsonValueKind.String)
+			{
+				MenuCommand(doc, At(where, "command"), command.GetString() ?? string.Empty);
+			}
+
+			if (entry.TryGetProperty("opens", out JsonElement opens) && opens.ValueKind == JsonValueKind.String &&
+				(opens.GetString() ?? string.Empty).Trim().Length == 0)
+			{
+				doc.Error(At(where, "opens"), "names no menu; the entry opens nothing");
+			}
+
 			foreach (string key in new[] { "hostOnly", "drop", "counted" })
 			{
 				doc.Flag(entry, key, where);
@@ -1138,6 +1413,25 @@ public static partial class ModValidate
 			{
 				Entries(doc, children, At(where, "children"), patch: false);
 			}
+		}
+	}
+
+	/// <summary>
+	/// A row command of the mod-menu grammar (Engine_UiModMenuCommand): <c>Opens:&lt;menu&gt;</c> must
+	/// name a menu, <c>Mod:lua:&lt;function&gt;[:&lt;arg&gt;]</c> a Lua name path. Whether the menu
+	/// exists is the engine's to say — another mod may define it.
+	/// </summary>
+	private static void MenuCommand(Doc doc, string at, string command)
+	{
+		if (command.StartsWith(Refii.Ui.Engine_UiModMenuCommand.OpensPrefix, StringComparison.Ordinal) &&
+			Refii.Ui.Engine_UiModMenuCommand.Parse(command).Verb == Refii.Ui.Engine_UiModMenuCommand.Verb.None)
+		{
+			doc.Error(at, "'Opens:' names no menu; the row opens nothing");
+		}
+		else if (command.StartsWith(Refii.Ui.Engine_UiModMenuCommand.LuaPrefix, StringComparison.Ordinal) &&
+			Refii.Ui.Engine_UiModMenuCommand.Parse(command).Verb == Refii.Ui.Engine_UiModMenuCommand.Verb.None)
+		{
+			doc.Error(at, $"'{command}' does not name a Lua function: Mod:lua:<name or table.name>[:<arg>]; the row calls nothing");
 		}
 	}
 

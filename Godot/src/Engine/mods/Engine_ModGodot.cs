@@ -30,6 +30,9 @@ public static class ModGodot
 	private static RefiiHost? _host;
 	private static Node? _root;
 
+	/// <summary>The session's singleton while one stands, for host code that raises its signals.</summary>
+	public static RefiiHost? Host => _host is not null && GodotObject.IsInstanceValid(_host) ? _host : null;
+
 	/// <summary>True for a GDScript source under <c>godot/</c>: run by the host, never mounted.</summary>
 	public static bool IsGodotScriptPath(string path)
 	{

@@ -220,11 +220,18 @@ REX_EXTERN(rex_lhResourceManager_GetCached) {
 
   if (!effective_name.empty()) {
     refii::vfs::RefiiVfsOpenResult open_result;
+    const bool raw_file_open = original_ctx.lr == refii::guest::Address(0x82C6F534u);
     const bool bik_object_open_stream =
-        original_ctx.lr == refii::guest::Address(0x82C6F534u) &&
-        refii::vfs::IsStartupBikAssetName(effective_name);
+        raw_file_open && refii::vfs::IsStartupBikAssetName(effective_name);
+    // A file the guest opens as a plain stream through its file object (`sub_82C6F2A8`'s provider
+    // open at 0x82C6F530, which wraps whatever it gets in `sub_82B4AE10`) that a mod overrides in
+    // the mount is that stream, raw, whatever its extension: the particle bank the boot mounter
+    // reads (`sub_822F3898` -> `sub_82C6F870(.., "...\\particle_bank.bnk", 1)`) carries the mods'
+    // effects this way (Engine_FxModEffects.ComposeGuestBank).
+    const bool overridden_raw_file =
+        raw_file_open && refii::vfs::HostAssetIsOverride(refii::vfs::NormalizeLooseAssetKey(effective_name));
     const refii::vfs::RefiiVfsOpenShape shape =
-        bik_object_open_stream ? refii::vfs::RefiiVfsOpenShape::RawStream
+        bik_object_open_stream || overridden_raw_file ? refii::vfs::RefiiVfsOpenShape::RawStream
         : refii::vfs::IsLuaScriptAssetKey(effective_name)
             ? refii::vfs::RefiiVfsOpenShape::NativeGenerated
         : !direct_bypass_reason.empty()

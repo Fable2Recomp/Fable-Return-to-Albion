@@ -150,7 +150,7 @@ public class ModValidateTests
     {
         List<ModIssue> issues = Check("settings.ui.json",
             "{ \"cost\": { \"type\": \"dial\", \"min\": \"0\", \"max\": 10 }, \"woven\": 1 }");
-        HasError(issues, "cost.type", "slider or toggle");
+        HasError(issues, "cost.type", "slider, toggle or choice");
         HasError(issues, "cost.min", "must be a number");
         HasError(issues, "woven", "must be an object");
     }

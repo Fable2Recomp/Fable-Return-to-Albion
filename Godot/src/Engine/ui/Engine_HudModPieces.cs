@@ -23,7 +23,13 @@ namespace Refii.Ui;
 /// <list type="bullet">
 /// <item><c>hide</c> — ids of SHIPPED pieces the mod replaces; they are not built.</item>
 /// <item><c>kind</c> — <c>meter</c> (back, a trailing chip, fill), <c>panel</c> (back and
-/// border only — a frame or an emblem plate) or <c>picture</c> (a texture).</item>
+/// border only — a frame or an emblem plate), <c>picture</c> (a texture) or <c>text</c> (a
+/// line drawn with the HUD's own fonts through the theme's Paint path).</item>
+/// <item>A <c>text</c> piece's <c>text</c> is a literal, a Babel tag or <c>mod:&lt;key&gt;</c>
+/// drawn through <c>format</c> (<see cref="Engine_HudModText"/>); <c>size</c> is its POINT size
+/// (a number, not the [w, h] the other kinds take), <c>colour</c> its HTML colour and
+/// <c>align</c> left, centre or right of the piece's point. It hangs from the point by its top
+/// edge, placed like every other piece (anchor and offset, or follow).</item>
 /// <item><c>value</c> / <c>max</c> — a number or a value source. <c>max</c> may itself be a
 /// source.</item>
 /// <item><c>widthFrom</c> — a bar whose LENGTH is a value (the pool's maximum), times
@@ -52,6 +58,7 @@ namespace Refii.Ui;
 /// a lower one's. Made of Godot primitives, so a mod needs no art of its own. Children of the
 /// HUD view, so they show and hide with it.</para>
 /// </remarks>
+[Tool]
 public sealed partial class Engine_HudModPieces : Node3D
 {
 	/// <summary>Where a mod ships its HUD pieces, inside its package.</summary>
@@ -62,6 +69,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 		Meter,
 		Panel,
 		Picture,
+		Text,
 	}
 
 	public sealed record Piece(
@@ -87,7 +95,12 @@ public sealed partial class Engine_HudModPieces : Node3D
 		float BorderWidth = 0f,
 		float Corner = -1f,
 		List<string>? Textures = null,
-		string Index = "");
+		string Index = "",
+		string Text = "",
+		string Format = "",
+		int TextSize = Engine_HudModText.DefaultSize,
+		Color? TextColour = null,
+		int Align = 0);
 
 	/// <summary>
 	/// A COPY of a shipped piece — the guest's own widget, built again beside the original, so it
@@ -125,6 +138,21 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// <summary>A stand-in value for every piece, for an editor preview with no game running.</summary>
 	public float? PreviewValue { get; set; }
 
+	/// <summary>
+	/// A stand-in for one mod value by key (without <c>mod:</c>), as the mod would publish it, for
+	/// an editor preview; a key it answers null for falls to <see cref="PreviewValue"/>.
+	/// </summary>
+	public System.Func<string, float?>? PreviewSource { get; set; }
+
+	/// <summary>The shipped look — fonts and the Paint path — that a <c>text</c> piece draws with.</summary>
+	public Engine_UiTheme? Theme { get; set; }
+
+	/// <summary>The string book a <c>text</c> piece's tag resolves through.</summary>
+	public Refii.Text.Engine_BabelDatabase? StringBook { get; set; }
+
+	/// <summary>A text piece's colour when it states none — the HUD text's own fallback.</summary>
+	private static readonly Color DefaultTextColour = new(1f, 224f / 255f, 128f / 255f, 1f);
+
 	/// <summary>The window the anchors resolve against; fed by the owner as for the HUD view.</summary>
 	public Vector2 Window { get; set; } = new(1280f, 720f);
 
@@ -141,6 +169,8 @@ public sealed partial class Engine_HudModPieces : Node3D
 		public Engine_UiRoundedPanel? Chip;
 		public Engine_UiRoundedPanel? Fill;
 		public MeshInstance3D? Picture;
+		public MeshInstance3D? Label;
+		public string? ShownText;
 		/// <summary>The picture's choices, loaded once; a null entry is a path that did not load.</summary>
 		public List<Texture2D?>? Textures;
 		public int Shown = -2;
@@ -152,6 +182,21 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 	public IReadOnlyList<Piece> Pieces { get; private set; } = new List<Piece>();
 
+	/// <summary>Each built piece's drawn parts, by id — for an editor's hit test in its preview.</summary>
+	public IEnumerable<(string Id, Node3D Node)> DrawnNodes()
+	{
+		foreach (Built built in _built)
+		{
+			foreach (Node3D? node in new Node3D?[] { built.Back, built.Chip, built.Fill, built.Picture, built.Label })
+			{
+				if (node is not null && GodotObject.IsInstanceValid(node) && node.IsVisibleInTree())
+				{
+					yield return (built.Piece.Id, node);
+				}
+			}
+		}
+	}
+
 	public void Build(IReadOnlyList<Piece> pieces)
 	{
 		foreach (Built built in _built)
@@ -160,6 +205,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 			built.Chip?.QueueFree();
 			built.Fill?.QueueFree();
 			built.Picture?.QueueFree();
+			built.Label?.QueueFree();
 		}
 
 		_built.Clear();
@@ -168,7 +214,16 @@ public sealed partial class Engine_HudModPieces : Node3D
 		{
 			var built = new Built { Piece = piece };
 			string name = piece.Id.Replace('.', '_');
-			if (piece.Kind == Kind.Picture)
+			if (piece.Kind == Kind.Text)
+			{
+				built.Label = new MeshInstance3D
+				{
+					Name = name,
+					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+				};
+				AddChild(built.Label);
+			}
+			else if (piece.Kind == Kind.Picture)
 			{
 				Texture2D? texture = null;
 				if (piece.Textures is { Count: > 0 } choices)
@@ -294,6 +349,20 @@ public sealed partial class Engine_HudModPieces : Node3D
 					new Engine_HudLayout.Piece(piece.Id, string.Empty, piece.Anchor, piece.Offset), extent);
 			}
 
+			if (built.Label is { } label)
+			{
+				if (!DrawText(built, label))
+				{
+					Hide(built);
+					continue;
+				}
+
+				label.Scale = new Vector3(scale, scale, 1f);
+				label.Position = new Vector3(corner.X, corner.Y, Depth);
+				label.Visible = true;
+				continue;
+			}
+
 			Vector2 centre = corner + new Vector2(size.X * 0.5f, -size.Y * 0.5f);
 
 			if (built.Picture is { } picture)
@@ -360,6 +429,49 @@ public sealed partial class Engine_HudModPieces : Node3D
 		}
 	}
 
+	/// <summary>
+	/// Paints a text piece's string when it changed. False while it states nothing — an unpublished
+	/// value — or there is no theme to draw with.
+	/// </summary>
+	private bool DrawText(Built built, MeshInstance3D label)
+	{
+		Piece piece = built.Piece;
+		string? text = Engine_HudModText.Resolve(piece.Text, piece.Format, ModValue, Tag);
+		if (text is null || Theme is null)
+		{
+			return false;
+		}
+
+		if (text != built.ShownText)
+		{
+			built.ShownText = text;
+			Theme.Paint(label, text, piece.TextSize, piece.TextColour ?? DefaultTextColour,
+				horizontalAlign: piece.Align, verticalAlign: 0);
+		}
+
+		return true;
+	}
+
+	/// <summary>A published mod value, or the preview's stand-in in the editor.</summary>
+	private float? ModValue(string key)
+	{
+		if (PreviewSource?.Invoke(key) is { } stated)
+		{
+			return stated;
+		}
+
+		if (PreviewValue is { } preview)
+		{
+			return preview * 100f;
+		}
+
+		// The editor has no guest: a key the preview does not stand in is unset there.
+		return !Engine.IsEditorHint() && HostBridge.TryGetModValue(key, out float value) ? value : null;
+	}
+
+	private string? Tag(string tag) =>
+		StringBook is { } book && book.TryGetString(tag, out string text) && text.Length != 0 ? text : null;
+
 	/// <summary>A left-aligned bar <paramref name="fraction"/> of the way along the back.</summary>
 	private static void Bar(Engine_UiRoundedPanel panel, Vector2 centre, Vector2 size, float fraction, float z)
 	{
@@ -375,7 +487,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 	private static void Hide(Built built)
 	{
-		foreach (Node3D? node in new Node3D?[] { built.Back, built.Chip, built.Fill, built.Picture })
+		foreach (Node3D? node in new Node3D?[] { built.Back, built.Chip, built.Fill, built.Picture, built.Label })
 		{
 			if (node is not null)
 			{
@@ -446,6 +558,12 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// <summary>A number, or the value a source states now; null when the source has none.</summary>
 	private float? Resolve(string source, ref HostBridge.HeroVitals? vitals)
 	{
+		if (PreviewSource is { } stand && source.Trim().StartsWith(Engine_HudModText.ModPrefix, System.StringComparison.Ordinal) &&
+			stand(source.Trim()[Engine_HudModText.ModPrefix.Length..]) is { } stated)
+		{
+			return stated;
+		}
+
 		if (PreviewValue is { } preview && source.Length != 0 &&
 			!float.TryParse(source, System.Globalization.NumberStyles.Float,
 				System.Globalization.CultureInfo.InvariantCulture, out _))
@@ -462,6 +580,13 @@ public sealed partial class Engine_HudModPieces : Node3D
 		if (source.Length == 0)
 		{
 			return null;
+		}
+
+		// The editor has no guest to state a value; only a number stands there.
+		if (Engine.IsEditorHint())
+		{
+			return float.TryParse(source, System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float stated) ? stated : null;
 		}
 
 		if (float.TryParse(source, System.Globalization.NumberStyles.Float,
@@ -508,7 +633,13 @@ public sealed partial class Engine_HudModPieces : Node3D
 	// Loading — every enabled mod's ui/hud.json, composed by id in load order.
 	// -----------------------------------------------------------------------------------
 
-	public static ModLayout LoadFromMods()
+	public static ModLayout LoadFromMods() => LoadFrom(Refii.Mods.ModEntries.ReadEnabledText(ModHudPath));
+
+	/// <summary>
+	/// What the given mods' <c>ui/hud.json</c> files state (LOWEST priority first), composed — the
+	/// enabled mods' for the game, the mod being edited among them for the Studio's preview.
+	/// </summary>
+	public static ModLayout LoadFrom(IEnumerable<(string Mod, string Text)> files)
 	{
 		var byId = new Dictionary<string, Piece>(System.StringComparer.Ordinal);
 		var order = new List<string>();
@@ -517,7 +648,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 		var scales = new Dictionary<string, float>(System.StringComparer.Ordinal);
 
 		// Lowest priority first, so the highest is applied last and wins a shared id.
-		foreach ((string mod, string text) in Refii.Mods.ModEntries.ReadEnabledText(ModHudPath))
+		foreach ((string mod, string text) in files)
 		{
 			ParseClones(text, mod, clones, scales);
 			foreach (Piece piece in Parse(text, mod, hidden))
@@ -690,6 +821,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 			{
 				"picture" => Kind.Picture,
 				"panel" => Kind.Panel,
+				"text" => Kind.Text,
 				_ => Kind.Meter,
 			};
 			Vector2 anchor = Pair(record, "anchor", Vector2.Zero);
@@ -699,7 +831,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 				kind,
 				new Engine_HudLayout.Anchor(anchor.X, anchor.Y),
 				Pair(record, "offset", Vector2.Zero),
-				Pair(record, "size", new Vector2(200f, 10f)),
+				kind == Kind.Text ? Vector2.Zero : Pair(record, "size", new Vector2(200f, 10f)),
 				Text(record, "value"),
 				record.TryGetValue("max", out Variant max) ? max.AsString() : "1",
 				ColourOf(record, "fill", new Color(0.25f, 0.69f, 0.29f)) ?? default,
@@ -716,11 +848,24 @@ public sealed partial class Engine_HudModPieces : Node3D
 				Number(record, "borderWidth", 1f),
 				Number(record, "corner", -1f),
 				record.ContainsKey("textures") ? Strings(record, "textures") : null,
-				Text(record, "index")));
+				Text(record, "index"),
+				Text(record, "text"),
+				Text(record, "format"),
+				kind == Kind.Text
+					? PointSize(record)
+					: Engine_HudModText.DefaultSize,
+				ColourOf(record, "colour", null),
+				Engine_HudModText.Align(Text(record, "align"))));
 		}
 
 		return pieces;
 	}
+
+	/// <summary>A text piece's <c>size</c>: a POINT size when it is a number, else the HUD's own.</summary>
+	private static int PointSize(Godot.Collections.Dictionary record) =>
+		record.TryGetValue("size", out Variant size) && size.VariantType is Variant.Type.Float or Variant.Type.Int
+			? Mathf.Max(1, Mathf.RoundToInt(size.AsDouble()))
+			: Engine_HudModText.DefaultSize;
 
 	private static string Text(Godot.Collections.Dictionary record, string key) =>
 		record.TryGetValue(key, out Variant value) ? value.AsString() : string.Empty;

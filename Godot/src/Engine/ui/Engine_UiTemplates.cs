@@ -862,46 +862,20 @@ public static class Engine_UiTemplates
 	}
 
 	/// <summary>
-	/// The modal answer table — see <see cref="Engine_UiModalTemplate"/>. It decides who ANSWERS,
-	/// never whether a box is drawn: an unlisted box is drawn and keeps the guest's own input,
-	/// deliberately: the coop boxes (39/40/41/43) answer only on the
-	/// router's pad index 2 while our lever passes 0, the marketplace offer (42) carries an X
-	/// download action and a sign-in gate, and photo mode's box has no dismiss code at all.
+	/// The modal answer table (<see cref="Engine_UiModals"/>): the shipped rows, every mod's
+	/// <c>"modals"</c> in load order, then the player's file.
 	/// </summary>
-	private static readonly Engine_UiModalTemplate[] Modals =
+	private static Engine_UiModals? _modals;
+
+	/// <summary>Every modal row as it runs, by key — the editor's and the Studio's listing.</summary>
+	public static IEnumerable<KeyValuePair<string, Engine_UiModalTemplate>> ModalRows
 	{
-		// QueryBoxes — the saving, shop and real-estate confirms all answer 46/47.
-		Query(2, 46, 47), Query(15, 46, 47), Query(17, 46, 47), Query(19, 46, 47),
-		Query(23, 46, 47), Query(24, 46, 47), Query(25, 46, 47),
-		Query(29, 46, 47), Query(30, 46, 47), Query(31, 46, 47), Query(32, 46, 47),
-		Query(33, 46, 47), Query(34, 46, 47),
-		Query(3, 46, 47), Query(4, 46, 47), Query(5, 46, 47), Query(6, 46, 47),
-		Query(8, 46, 47), Query(9, 46, 47), Query(10, 46, 47), Query(11, 46, 47),
-
-		// The henchman and generic boxes answer the uniform accept/back pair.
-		Query(26, 36, 37), Query(27, 36, 37), Query(28, 36, 37), Query(44, 36, 37),
-
-		// Fast travel confirms on the per-screen Y action.
-		Query(13, 39, 37),
-
-		// B does nothing here — see the note on Cancel.
-		Query(20, 36, null),
-
-		// MessageBoxes — a single dismiss. Ids 0 is per-screen; the rest are uniform.
-		Dismiss(0, 36, screenId: 22),   // shop: already wearing that tattoo
-		Dismiss(0, 46, screenId: 28),   // real estate: buy denied / cannot resell
-		Dismiss(1, 36),                 // abilities: maxed / not enough experience
-		Dismiss(12, 36),                // world map: cannot fast travel
-		Dismiss(16, 36), Dismiss(18, 36), Dismiss(21, 36), Dismiss(22, 36),
-		Dismiss(38, 36),                // equipment / expression / augment notices
-	};
-
-	private static Engine_UiModalTemplate Query(uint id, uint confirm, uint? cancel) =>
-		new() { ModalId = id, Confirm = confirm, Cancel = cancel };
-
-	private static Engine_UiModalTemplate Dismiss(uint id, uint code,
-		uint screenId = uint.MaxValue) =>
-		new() { ModalId = id, ScreenId = screenId, Confirm = code, Dismissal = true };
+		get
+		{
+			EnsureLoaded();
+			return _modals!.Rows;
+		}
+	}
 
 	/// <summary>
 	/// The answer for a box, or null when it is not owned. A screen-specific row wins over the
@@ -909,26 +883,23 @@ public static class Engine_UiTemplates
 	/// </summary>
 	public static Engine_UiModalTemplate? Modal(uint modalId, uint screenId, bool dismissal)
 	{
-		Engine_UiModalTemplate? general = null;
-		foreach (Engine_UiModalTemplate modal in Modals)
+		EnsureLoaded();
+		return _modals!.Find(modalId, screenId, dismissal);
+	}
+
+	/// <summary>
+	/// The mod that stated a menu row (<c>menu:&lt;menu&gt;/&lt;row&gt;</c>, a patch), else the mod that
+	/// stated the whole menu (<c>menu:&lt;menu&gt;</c>); empty for a shipped row or the player's own.
+	/// </summary>
+	public static string MenuOwner(string menu, string row)
+	{
+		EnsureLoaded();
+		if (row.Length != 0 && _pieceOwners.TryGetValue($"menu:{menu}/{row}", out string? rowOwner))
 		{
-			if (modal.ModalId != modalId || modal.Dismissal != dismissal)
-			{
-				continue;
-			}
-
-			if (modal.ScreenId == screenId)
-			{
-				return modal;
-			}
-
-			if (modal.ScreenId == uint.MaxValue)
-			{
-				general = modal;
-			}
+			return rowOwner;
 		}
 
-		return general;
+		return _pieceOwners.TryGetValue("menu:" + menu, out string? owner) ? owner : string.Empty;
 	}
 
 	/// <summary>One screen's record, or null for a screen Godot has no template for.</summary>
@@ -1087,18 +1058,68 @@ public static class Engine_UiTemplates
 
 		_screens = new Dictionary<uint, Engine_UiScreenTemplate>();
 		_menus = new Dictionary<string, Engine_UiMenuTemplate>();
+		_modals = new Engine_UiModals();
 		_dropped = new Dictionary<string, List<DroppedRow>>(System.StringComparer.Ordinal);
 		BuildDefaults();
 		StateWideLayouts();
 		_modConflicts.Clear();
 		_pieceOwners.Clear();
 		int modded = ApplyModTemplates();
-		int overridden = ApplyOverrides(OverridePath);
-		SaveSnapshot(SnapshotPath);
+		int overridden = _composing is null ? ApplyOverrides(OverridePath) : 0;
+		if (_composing is null)
+		{
+			SaveSnapshot(SnapshotPath);
+		}
+
 		GD.Print($"[ui-templates] {_screens.Count} screen(s), {_menus.Count} menu(s)" +
 			(modded == 0 ? string.Empty : $"; {modded} piece(s) from mods") +
 			(overridden == 0 ? string.Empty : $"; {overridden} record(s) overridden"));
 	}
+
+	/// <summary>
+	/// The mods' files a <see cref="Compose"/> stands in for the enabled ones; null for the
+	/// registry as it runs.
+	/// </summary>
+	private static IReadOnlyList<(string Mod, string Text)>? _composing;
+
+	/// <summary>
+	/// The registry as it composes with <paramref name="modFiles"/> (each mod's
+	/// <see cref="ModTemplatesPath"/> text, LOWEST priority first) in place of the enabled mods'
+	/// files, and without the player's file: the Mod Studio's view of a mod's templates as it is
+	/// being edited, enabled or not. The records come back in the snapshot's JSON shape (menus,
+	/// screens, modals) with the conflicts that composition recorded, through the same
+	/// <see cref="ApplyOverrideText"/> every run composes with. No snapshot is written, and the
+	/// running registry is rebuilt from the enabled mods on its next use.
+	/// </summary>
+	public static (Godot.Collections.Dictionary Records, IReadOnlyList<ModConflict> Conflicts) Compose(
+		IReadOnlyList<(string Mod, string Text)> modFiles)
+	{
+		_composing = modFiles;
+		try
+		{
+			_screens = null;
+			_menus = null;
+			_modals = null;
+			_dropped = null;
+			EnsureLoaded();
+			return (SnapshotJson(), new List<ModConflict>(_modConflicts));
+		}
+		finally
+		{
+			_composing = null;
+			_screens = null;
+			_menus = null;
+			_modals = null;
+			_dropped = null;
+		}
+	}
+
+	/// <summary>
+	/// A menu record in the file shape (<c>{ highlight, title, source, rowCommand, entries }</c>) as
+	/// the reader takes it, for an editor's preview of a record it has not written yet.
+	/// </summary>
+	public static Engine_UiMenuTemplate? ParseMenuRecord(string name, Godot.Collections.Dictionary record) =>
+		ParseMenu(name, record);
 
 	/// <summary>
 	/// Drops every record and builds them again — built-ins, mods, then the player's own file.
@@ -1108,6 +1129,7 @@ public static class Engine_UiTemplates
 	{
 		_screens = null;
 		_menus = null;
+		_modals = null;
 		_dropped = null;
 		EnsureLoaded();
 	}
@@ -1121,7 +1143,7 @@ public static class Engine_UiTemplates
 	private static int ApplyModTemplates()
 	{
 		int taken = 0;
-		foreach ((string mod, string text) in Refii.Mods.ModEntries.ReadEnabledText(ModTemplatesPath))
+		foreach ((string mod, string text) in _composing ?? Refii.Mods.ModEntries.ReadEnabledText(ModTemplatesPath))
 		{
 			taken += ApplyOverrideText(text, mod, $"{mod}:{ModTemplatesPath}");
 		}
@@ -3225,6 +3247,10 @@ public static class Engine_UiTemplates
 			}
 		}
 
+		// MODALS compose like screens: a whole record per key, the later file winning.
+		taken += _modals!.ApplyText(text, piece => NoteOwner(piece, owner),
+			warning => GD.PushWarning($"[ui-templates] '{where}': {warning}"));
+
 		return taken;
 	}
 
@@ -3683,7 +3709,13 @@ public static class Engine_UiTemplates
 	private static void SaveSnapshot(string path)
 	{
 		DirAccess.MakeDirRecursiveAbsolute("user://ui");
+		using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Write);
+		file?.StoreString(Json.Stringify(SnapshotJson(), "\t"));
+	}
 
+	/// <summary>Every record as it runs, in the snapshot's shape.</summary>
+	private static Godot.Collections.Dictionary SnapshotJson()
+	{
 		var menus = new Godot.Collections.Dictionary();
 		foreach ((string name, Engine_UiMenuTemplate menu) in _menus!)
 		{
@@ -3781,10 +3813,10 @@ public static class Engine_UiTemplates
 		{
 			["menus"] = menus,
 			["screens"] = screens,
+			[Engine_UiModals.Section] = Json.ParseString(_modals!.ToJson()),
 		};
 
-		using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Write);
-		file?.StoreString(Json.Stringify(root, "\t"));
+		return root;
 	}
 
 	private static Godot.Collections.Dictionary EntryJson(Engine_UiMenuEntry entry)

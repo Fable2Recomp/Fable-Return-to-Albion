@@ -35,6 +35,14 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// <summary>The shipped <c>data</c> directory to stream banks from.</summary>
 	[Export(PropertyHint.GlobalDir)] public string GameDataRoot { get; set; } = string.Empty;
 
+	/// <summary>
+	/// A bank mount to serve the presentations and textures from instead of opening one — the
+	/// editor's, which carries the enabled mods' layers. Its owner disposes it. Null opens the
+	/// shipped banks under the data root. The fonts and the string book still come from the data
+	/// root.
+	/// </summary>
+	public BnkFileSystem? Mount { get; set; }
+
 	/// <summary>Screen names, in display order. How one is fetched is <see cref="_loadScreen"/>'s job.</summary>
 	private readonly List<string> _screens = new();
 
@@ -307,7 +315,13 @@ public partial class Engine_UiPresentationHost : Node3D
 		// even if this presentation host was initialized before the asset worker finished.
 		if (Refii.Assets.Engine_GameAssets.Instance is { } assets)
 		{
-			assets.Mounted += _ => ReloadStrings();
+			assets.Mounted += OnMountChanged;
+			_mountWatched = assets;
+		}
+
+		if (LoadsInBackground && StartInBackground())
+		{
+			return;
 		}
 
 		// Streaming from the shipped banks is the real path; the extracted-tree branch below is
@@ -319,6 +333,171 @@ public partial class Engine_UiPresentationHost : Node3D
 			return;
 
 		OnLoaded();
+	}
+
+	/// <summary>
+	/// The banks, the texture name table, the fonts and the string book are read on a worker and
+	/// adopted on the main thread a few frames later, so the host's first appearance does not
+	/// stall the frame it is added on — the editor's preview, which comes up beside a working
+	/// editor. <see cref="IsLoading"/> holds until then; <see cref="OnLoaded"/> runs as it does
+	/// synchronously. The game loads synchronously: its frame order needs the host loaded on the
+	/// frame it is added.
+	/// </summary>
+	public bool LoadsInBackground { get; set; }
+
+	/// <summary>True while a background load (<see cref="LoadsInBackground"/>) is reading.</summary>
+	public bool IsLoading { get; private set; }
+
+	/// <summary>The game's asset mount this host follows, when one was up at <c>_Ready</c>.</summary>
+	private Refii.Assets.Engine_GameAssets? _mountWatched;
+
+	/// <summary>The mount was built again: the string book, the mods' presentations and textures,
+	/// and every pattern book whose file changed under it.</summary>
+	private void OnMountChanged(int fileCount)
+	{
+		ReloadStrings();
+		AddModLayers();
+		RefreshPatternBooks();
+	}
+
+	/// <summary>
+	/// What the banks give a host before it can stand a screen, read on whichever thread loads:
+	/// the presentations by name, the texture name table, the fonts and the string book.
+	/// </summary>
+	private sealed record BankIndex(
+		BnkFileSystem Banks, bool OwnsBanks, string DataRoot, Dictionary<string, string> ByName,
+		Engine_TextureNameTable Names, Engine_UiFontLibrary Fonts, Engine_BabelDatabase? Strings,
+		string StringsSource);
+
+	/// <summary>Reads the bank index; null when the banks hold no presentation. Any thread.</summary>
+	private static BankIndex? IndexBanks(BnkFileSystem banks, bool owns, string data)
+	{
+		var texturePaths = new List<string>();
+		var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (BnkFile file in banks.EnumerateAllFiles())
+		{
+			string path = file.VirtualPath;
+			if (path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+				texturePaths.Add(path);
+			// One entry per presentation; the .fac sidecar is a separate bank entry.
+			else if (path.EndsWith(".bgf", StringComparison.OrdinalIgnoreCase))
+				byName[BankEntryName(path)] = path;
+		}
+
+		if (byName.Count == 0)
+			return null;
+
+		Engine_TextureNameTable names = Engine_TextureNameTable.FromPaths(texturePaths, new[] { ".tex" });
+		Engine_UiFontLibrary fonts = Engine_UiFontLibrary.Load(data);
+		Engine_BabelDatabase? strings = ReadStrings(data, diskFallback: true, out string source);
+		return new BankIndex(banks, owns, data, byName, names, fonts, strings, source);
+	}
+
+	/// <summary>Takes a read index on the main thread: the host can stand screens after this.</summary>
+	private void AdoptBanks(BankIndex index)
+	{
+		BnkFileSystem banks = index.Banks;
+		if (index.OwnsBanks)
+		{
+			_owned.Add(banks);
+		}
+
+		Dictionary<string, string> byName = index.ByName;
+		_names = index.Names;
+		Textures = new Engine_UiTextureCache(banks);
+		AdoptTextResources(index.Fonts, index.Strings, index.StringsSource);
+
+		_screens.AddRange(byName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+		_bankScreens = byName;
+		_banks = banks;
+		SourceRoot = $"banks: {index.DataRoot}";
+
+		// A mount that finished first already holds the mods' layers.
+		AddModLayers();
+
+		_loadScreen = name =>
+		{
+			string bgfPath = byName[name];
+			byte[] bgf = ReadLayered(banks, bgfPath) ?? throw new IOException($"{bgfPath} vanished from the bank");
+			byte[]? fac = ReadLayered(banks, Path.ChangeExtension(bgfPath, ".fac"));
+			// The .bsg carries the base transform the .bgf overrides — all three
+			// sidecars are separate bank entries under the same stem.
+			byte[]? bsg = ReadLayered(banks, Path.ChangeExtension(bgfPath, ".bsg"));
+			_lastLoadSignature = FileSignature(bgf, fac, bsg);
+			// LiveOpacity and LiveVisible are passed HERE, and were not before: the properties
+			// existed, GameUi set them every frame, and nothing ever read them. A live value
+			// that never reaches the parser is worse than no live value, because the call site
+			// looks like it is following the guest and is not.
+			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, Strings, SceneSlide, LiveSlides,
+				LiveText, LiveOpacity, LiveVisible, LiveTransform, LiveTextures, LiveTint);
+		};
+
+		OnLoaded();
+	}
+
+	/// <summary>
+	/// Starts the background load; false when there is no game data to read, so the caller takes
+	/// the synchronous path (and its report).
+	/// </summary>
+	private bool StartInBackground()
+	{
+		string data = ResolveGameDataRoot();
+		if (data.Length == 0)
+		{
+			return false;
+		}
+
+		BnkFileSystem? given = Mount;
+		IsLoading = true;
+		Report("Loading the game's UI…");
+		System.Threading.Tasks.Task.Run(() =>
+		{
+			BankIndex? index = null;
+			string failure = string.Empty;
+			BnkFileSystem? opened = null;
+			try
+			{
+				BnkFileSystem banks = given ?? (opened = BnkFileSystem.Mount(data));
+				index = IndexBanks(banks, opened is not null, data);
+				if (index is null)
+				{
+					opened?.Dispose();
+				}
+			}
+			catch (Exception exception)
+			{
+				opened?.Dispose();
+				failure = exception.Message;
+			}
+
+			Callable.From(() => FinishInBackground(index, failure)).CallDeferred();
+		});
+		return true;
+	}
+
+	private void FinishInBackground(BankIndex? index, string failure)
+	{
+		if (!GodotObject.IsInstanceValid(this) || !IsInsideTree())
+		{
+			// The host went first; what the worker opened goes with it.
+			if (index is { OwnsBanks: true })
+			{
+				index.Banks.Dispose();
+			}
+
+			return;
+		}
+
+		IsLoading = false;
+		if (index is not null)
+		{
+			AdoptBanks(index);
+			return;
+		}
+
+		Report(failure.Length != 0
+			? $"Bank streaming unavailable: {failure}"
+			: "The banks hold no presentation.");
 	}
 
 	/// <summary>
@@ -335,59 +514,40 @@ public partial class Engine_UiPresentationHost : Node3D
 		// One mount for everything: the bank filesystem indexes every bank under the game
 		// directory and stitches the header/payload halves a .tex is split across.
 		BnkFileSystem banks;
-		try
+		bool owns = false;
+		if (Mount is { } given)
 		{
-			banks = BnkFileSystem.Mount(data);
+			banks = given;
 		}
-		catch (Exception ex)
+		else
 		{
-			// A mount that is present but unreadable is surfaced rather than silently falling
-			// through to the extracted tree.
-			Report($"Bank streaming unavailable: {ex.Message}");
+			try
+			{
+				banks = BnkFileSystem.Mount(data);
+			}
+			catch (Exception ex)
+			{
+				// A mount that is present but unreadable is surfaced rather than silently falling
+				// through to the extracted tree.
+				Report($"Bank streaming unavailable: {ex.Message}");
+				return false;
+			}
+
+			owns = true;
+		}
+
+		BankIndex? index = IndexBanks(banks, owns, data);
+		if (index is null)
+		{
+			if (owns)
+			{
+				_owned.Add(banks);
+			}
+
 			return false;
 		}
 
-		_owned.Add(banks);
-
-		var texturePaths = new List<string>();
-		var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		foreach (BnkFile file in banks.EnumerateAllFiles())
-		{
-			string path = file.VirtualPath;
-			if (path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
-				texturePaths.Add(path);
-			// One entry per presentation; the .fac sidecar is a separate bank entry.
-			else if (path.EndsWith(".bgf", StringComparison.OrdinalIgnoreCase))
-				byName[BankEntryName(path)] = path;
-		}
-
-		if (byName.Count == 0)
-			return false;
-
-		_names = Engine_TextureNameTable.FromPaths(texturePaths, new[] { ".tex" });
-		Textures = new Engine_UiTextureCache(banks);
-		LoadTextResources(data);
-
-		_screens.AddRange(byName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
-		SourceRoot = $"banks: {data}";
-
-		_loadScreen = name =>
-		{
-			string bgfPath = byName[name];
-			byte[] bgf = Read(banks, bgfPath) ?? throw new IOException($"{bgfPath} vanished from the bank");
-			byte[]? fac = Read(banks, Path.ChangeExtension(bgfPath, ".fac"));
-			// The .bsg carries the base transform the .bgf overrides — all three
-			// sidecars are separate bank entries under the same stem.
-			byte[]? bsg = Read(banks, Path.ChangeExtension(bgfPath, ".bsg"));
-			// LiveOpacity and LiveVisible are passed HERE, and were not before: the properties
-			// existed, GameUi set them every frame, and nothing ever read them. A live value
-			// that never reaches the parser is worse than no live value, because the call site
-			// looks like it is following the guest and is not.
-			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, Strings, SceneSlide, LiveSlides,
-				LiveText, LiveOpacity, LiveVisible, LiveTransform, LiveTextures, LiveTint);
-		};
-
-		OnLoaded();
+		AdoptBanks(index);
 		return true;
 	}
 
@@ -440,18 +600,78 @@ public partial class Engine_UiPresentationHost : Node3D
 		banks.TryGetFile(virtualPath, out BnkFile file) ? file.ReadAllBytes() : null;
 
 	/// <summary>
-	/// Loads the bitmap fonts and the localised string database. Both are LOOSE FILES under
+	/// Reads one entry through the GAME'S mount when it is up — the one with the enabled mods'
+	/// layers, so a mod's <c>.bgf</c>, <c>.fac</c> or <c>.bsg</c> stands in for the shipped one —
+	/// and from this host's own bank mount otherwise (the editor's viewers, a run before the mount
+	/// finishes).
+	/// </summary>
+	private static byte[]? ReadLayered(BnkFileSystem banks, string virtualPath) =>
+		Refii.Assets.Engine_GameAssets.Instance is { IsMounted: true } assets &&
+		assets.ReadAllBytes(virtualPath) is { } layered
+			? layered
+			: Read(banks, virtualPath);
+
+	/// <summary>The presentations by name, as <see cref="_loadScreen"/> resolves them; null off the banks.</summary>
+	private Dictionary<string, string>? _bankScreens;
+
+	/// <summary>
+	/// What the enabled mods ADD to the UI: a <c>.bgf</c> no bank ships becomes a presentation this
+	/// host serves, and a <c>.tex</c> joins the name table so a <c>.fac</c> that names it by hash
+	/// resolves. Replacements need nothing here — <see cref="ReadLayered"/> and the texture loader
+	/// read through the mod-aware mount. Run when the game's mount completes, and on start.
+	/// </summary>
+	private void AddModLayers()
+	{
+		if (_bankScreens is null || Refii.Assets.Engine_GameAssets.Instance is not { IsMounted: true } assets)
+		{
+			return;
+		}
+
+		int screens = 0;
+		int textures = 0;
+		foreach (BnkFile file in assets.EnumerateAllFiles())
+		{
+			if (file.SourceMod.Length == 0)
+			{
+				continue;
+			}
+
+			string path = file.VirtualPath;
+			if (path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
+			{
+				_names?.Add(path);
+				++textures;
+			}
+			else if (path.EndsWith(".bgf", StringComparison.OrdinalIgnoreCase) &&
+				_bankScreens.TryAdd(BankEntryName(path), path))
+			{
+				_screens.Add(BankEntryName(path));
+				++screens;
+			}
+		}
+
+		if (screens + textures != 0)
+		{
+			GD.Print($"[ui] mod layers: {screens} new presentation(s), {textures} mod texture(s) named");
+		}
+	}
+
+	/// <summary>
+	/// Takes the bitmap fonts and the localised string database. Both are LOOSE FILES under
 	/// <c>language/</c>, not bank entries, so they come from the data root. Neither is fatal:
 	/// without Babel the authored tag displays verbatim, as the engine falls back too.
 	/// </summary>
-	private void LoadTextResources(string dataRoot)
+	private void AdoptTextResources(Engine_UiFontLibrary fonts, Engine_BabelDatabase? strings, string source)
 	{
-		Fonts = Engine_UiFontLibrary.Load(dataRoot);
+		Fonts = fonts;
 		Engine_UiKeyGlyphs.Fonts ??= Fonts;
 		foreach (string failure in Fonts.Failures)
 			GD.PushWarning($"[ui] font: {failure}");
 
-		ReloadStrings(dataRoot);
+		if (strings is not null)
+		{
+			AdoptStrings(strings, source);
+		}
 
 		// Built on every path out of here, including the two failures above: a theme with no
 		// string book still carries the fonts and the art.
@@ -466,9 +686,32 @@ public partial class Engine_UiPresentationHost : Node3D
 	public void ReloadStrings(string? dataRoot = null)
 	{
 		dataRoot = !string.IsNullOrEmpty(dataRoot) ? dataRoot : ResolveGameDataRoot();
+		if (ReadStrings(dataRoot, diskFallback: Strings is null, out string source) is { } strings)
+		{
+			AdoptStrings(strings, source);
+		}
+	}
 
-		// Query Godot's mounted asset filesystem first (which includes mod row overlays, such as
-		// custom item names and descriptions from book.babel.csv) before falling back to raw disk.
+	private void AdoptStrings(Engine_BabelDatabase strings, string source)
+	{
+		Strings = strings;
+		if (Theme is not null)
+		{
+			Theme.Strings = Strings;
+		}
+
+		GD.Print($"[ui] Loaded string database {source} ({Strings.Count} strings)");
+		StringsChanged?.Invoke(Strings);
+	}
+
+	/// <summary>
+	/// The string database: through Godot's mounted asset filesystem (mod row overlays included)
+	/// when it serves one, else — with <paramref name="diskFallback"/> — from the data root on disk.
+	/// Null when neither reads. Any thread.
+	/// </summary>
+	private static Engine_BabelDatabase? ReadStrings(string dataRoot, bool diskFallback, out string source)
+	{
+		source = string.Empty;
 		byte[]? mountBytes = null;
 		string mountedPathUsed = string.Empty;
 		if (Refii.Assets.Engine_GameAssets.Instance is { } assets)
@@ -496,14 +739,9 @@ public partial class Engine_UiPresentationHost : Node3D
 		{
 			try
 			{
-				Strings = Engine_BabelDatabase.Parse(mountBytes);
-				if (Theme is not null)
-				{
-					Theme.Strings = Strings;
-				}
-				GD.Print($"[ui] Loaded string database via Engine_GameAssets mount ('{mountedPathUsed}', {mountBytes.Length} bytes, {Strings.Count} strings)");
-				StringsChanged?.Invoke(Strings);
-				return;
+				Engine_BabelDatabase parsed = Engine_BabelDatabase.Parse(mountBytes);
+				source = $"via Engine_GameAssets mount ('{mountedPathUsed}', {mountBytes.Length} bytes)";
+				return parsed;
 			}
 			catch (Exception exception)
 			{
@@ -511,32 +749,30 @@ public partial class Engine_UiPresentationHost : Node3D
 			}
 		}
 
-		if (Strings is null && !string.IsNullOrEmpty(dataRoot))
+		if (!diskFallback || string.IsNullOrEmpty(dataRoot))
 		{
-			string? textDir = Engine_UiFontLibrary.LanguageSubdirectory(
-				dataRoot, Engine_UiFontLibrary.DefaultCulture, "text");
-			string babel = textDir is null ? string.Empty : Path.Combine(textDir, "book.babel");
-			if (babel.Length == 0 || !File.Exists(babel))
-			{
-				GD.PushWarning($"[ui] no string database under {dataRoot}; tags will display raw");
-			}
-			else
-			{
-				try
-				{
-					Strings = Engine_BabelDatabase.Load(babel);
-					if (Theme is not null)
-					{
-						Theme.Strings = Strings;
-					}
-					GD.Print($"[ui] Loaded fallback string database from raw disk ('{babel}', {Strings.Count} strings)");
-					StringsChanged?.Invoke(Strings);
-				}
-				catch (Exception exception)
-				{
-					GD.PushWarning($"[ui] string database: {exception.Message}");
-				}
-			}
+			return null;
+		}
+
+		string? textDir = Engine_UiFontLibrary.LanguageSubdirectory(
+			dataRoot, Engine_UiFontLibrary.DefaultCulture, "text");
+		string babel = textDir is null ? string.Empty : Path.Combine(textDir, "book.babel");
+		if (babel.Length == 0 || !File.Exists(babel))
+		{
+			GD.PushWarning($"[ui] no string database under {dataRoot}; tags will display raw");
+			return null;
+		}
+
+		try
+		{
+			Engine_BabelDatabase loaded = Engine_BabelDatabase.Load(babel);
+			source = $"from raw disk ('{babel}')";
+			return loaded;
+		}
+		catch (Exception exception)
+		{
+			GD.PushWarning($"[ui] string database: {exception.Message}");
+			return null;
 		}
 	}
 
@@ -919,12 +1155,15 @@ public partial class Engine_UiPresentationHost : Node3D
 				// throws away the components a host-owned screen borrows. Zero is the preview
 				// heuristic — each owner's first real slide.
 				SceneSlide = 0;
+				_lastLoadSignature = 0;
 				tree = BuildDetached(name, out Engine_UiScreen? screen, out _,
 					keepInactiveForCatalogue: true);
 				if (screen is not null)
 				{
 					_templateScreens[name] = screen;
 				}
+
+				_templateSignatures[name] = _lastLoadSignature;
 			}
 			finally
 			{
@@ -958,6 +1197,136 @@ public partial class Engine_UiPresentationHost : Node3D
 		return tree;
 	}
 
+	/// <summary>The bank mount the presentations are read through; null off the banks.</summary>
+	private BnkFileSystem? _banks;
+
+	/// <summary>The bytes the last <see cref="_loadScreen"/> read, as one signature; 0 off the banks.</summary>
+	private ulong _lastLoadSignature;
+
+	/// <summary>Per cached pattern book, the signature of the files it was built from.</summary>
+	private readonly Dictionary<string, ulong> _templateSignatures = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>How many times each presentation's pattern book has been rebuilt on a new mount.</summary>
+	private readonly Dictionary<string, int> _bookGenerations = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>Books retired by <see cref="RefreshPatternBooks"/>, freed once their owners let go.</summary>
+	private readonly List<Node3D> _retiredTrees = new();
+
+	/// <summary>
+	/// How many times <paramref name="name"/>'s pattern book has been rebuilt because the mount
+	/// changed its files. An owner that built from the book compares it with the generation it
+	/// built at and builds again when it moves.
+	/// </summary>
+	public int BookGeneration(string name) =>
+		_bookGenerations.TryGetValue(name, out int generation) ? generation : 0;
+
+	/// <summary>
+	/// Raised, on the main thread, with the presentations whose pattern books the new mount
+	/// retired — a mod's <c>.bgf</c>, <c>.fac</c> or <c>.bsg</c> now stands in for the file the
+	/// book was built from, or no longer does. Every owner holding art, a theme or a node from one
+	/// of those books drops it here and builds again from <see cref="PatternBookFor"/>: the retired
+	/// trees are freed at the end of this frame.
+	/// </summary>
+	public event Action<IReadOnlyList<string>>? PatternBooksRetired;
+
+	/// <summary>One signature of a presentation's three files (FNV-1a 64 over each, combined).</summary>
+	private static ulong FileSignature(byte[]? bgf, byte[]? fac, byte[]? bsg)
+	{
+		ulong hash = 0xCBF29CE484222325UL;
+		foreach (byte[]? file in new[] { bgf, fac, bsg })
+		{
+			hash = (hash ^ (ulong)(file?.Length ?? -1)) * 0x100000001B3UL;
+			if (file is null)
+			{
+				continue;
+			}
+
+			foreach (byte b in file)
+			{
+				hash = (hash ^ b) * 0x100000001B3UL;
+			}
+		}
+
+		return hash;
+	}
+
+	/// <summary>The signature of a presentation's files as the mount serves them now; 0 when unknown.</summary>
+	private ulong CurrentSignature(string name)
+	{
+		if (_banks is not { } banks || _bankScreens is null || !_bankScreens.TryGetValue(name, out string? bgfPath))
+		{
+			return 0;
+		}
+
+		return FileSignature(
+			ReadLayered(banks, bgfPath),
+			ReadLayered(banks, Path.ChangeExtension(bgfPath, ".fac")),
+			ReadLayered(banks, Path.ChangeExtension(bgfPath, ".bsg")));
+	}
+
+	/// <summary>
+	/// The mount changed: every cached pattern book whose files now read differently is retired —
+	/// dropped from the cache so the next <see cref="PatternBookFor"/> / <see cref="DocumentFor"/>
+	/// builds it from the new files — and its owners are told (<see cref="PatternBooksRetired"/>).
+	/// The retired trees are freed at the end of the frame, after the owners have let go; the
+	/// shown screen's catalogue (<see cref="Templates"/>) is rebuilt at once.
+	/// </summary>
+	public void RefreshPatternBooks()
+	{
+		if (_templateTrees.Count == 0)
+		{
+			return;
+		}
+
+		var retired = new List<string>();
+		foreach (string name in _templateTrees.Keys.ToList())
+		{
+			ulong now = CurrentSignature(name);
+			if (now == 0 || (_templateSignatures.TryGetValue(name, out ulong was) && was == now))
+			{
+				continue;
+			}
+
+			retired.Add(name);
+			_retiredTrees.Add(_templateTrees[name]);
+			_templateTrees.Remove(name);
+			_templateScreens.Remove(name);
+			_templateSignatures.Remove(name);
+			_bookGenerations[name] = BookGeneration(name) + 1;
+		}
+
+		if (retired.Count == 0)
+		{
+			return;
+		}
+
+		// The shown screen's catalogue held art from the books it was built with; it is built
+		// again from the new ones, as a Show would.
+		Templates = null;
+		if (CurrentScreen is { } current)
+		{
+			CatalogueTemplates(current.Name);
+		}
+
+		Report($"[ui-host] the mount changed {retired.Count} presentation(s) — pattern book(s) rebuilt on next " +
+			$"use: {string.Join(", ", retired)}");
+		PatternBooksRetired?.Invoke(retired);
+		Callable.From(FreeRetiredTrees).CallDeferred();
+	}
+
+	private void FreeRetiredTrees()
+	{
+		foreach (Node3D tree in _retiredTrees)
+		{
+			if (GodotObject.IsInstanceValid(tree))
+			{
+				tree.QueueFree();
+			}
+		}
+
+		_retiredTrees.Clear();
+	}
+
 	/// <summary>
 	/// Called after a screen has been built, mounted and aimed. The base reports the
 	/// counts; the viewer overrides it to add its dumps.
@@ -984,11 +1353,20 @@ public partial class Engine_UiPresentationHost : Node3D
 			_watchingAdds = false;
 		}
 
+		if (_mountWatched is { } assets && GodotObject.IsInstanceValid(assets))
+		{
+			assets.Mounted -= OnMountChanged;
+		}
+
+		_mountWatched = null;
+
 		// The template trees were never added to the scene, so nothing else will free them.
 		foreach (Node3D tree in _templateTrees.Values)
 			tree.QueueFree();
 		_templateTrees.Clear();
 		_templateScreens.Clear();
+		_templateSignatures.Clear();
+		FreeRetiredTrees();
 
 		foreach (IDisposable owned in _owned)
 			owned.Dispose();

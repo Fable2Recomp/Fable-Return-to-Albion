@@ -33,8 +33,14 @@ public static class Engine_UiHudExpressionMeter
 	/// armed pip is the local player's (hero pip A on the host, henchman pip B on a client) or
 	/// whether both belong here (local co-op, a job's bar fill).
 	/// </param>
+	/// <param name="ownPip">
+	/// Over the network, the local player's pip — 1 pip A (player one, the host), 2 pip B (player
+	/// two, a joiner) — else 0. Two expressions at once arm both pips (`sub_823D1A48` keeps the
+	/// running meter's pip and adds the new one), which the shared screen drew as `BothPip`; each
+	/// player's own screen shows their own marker.
+	/// </param>
 	public static void Publish(Refii.Host.HostBridge.ExpressionMeter meter, Engine_HudView hud,
-		bool mine = true)
+		bool mine = true, int ownPip = 0)
 	{
 		Engine_HudValues values = hud.Values;
 		// NOT THE ON BYTE EITHER. Gating on the mode hid the meter for every emote; gating on
@@ -64,7 +70,10 @@ public static class Engine_UiHudExpressionMeter
 		// green, yellow, red (`sub_823D1C50`).
 		hud.ExpressionBand = on ? meter.Band : -1;
 
-		if (!meter.PipRunning)
+		// THE PIP GOES WITH THE METER. The pip is lit and swung on its own (Engine_HudView.DrivePip),
+		// not under the meter's toggle, so a meter that is not this screen's left its pip
+		// travelling over the dark frame — the partner's emote showed its pip on both screens.
+		if (!meter.PipRunning || !on)
 		{
 			hud.ExpressionPip = null;
 			return;
@@ -73,7 +82,9 @@ public static class Engine_UiHudExpressionMeter
 		// The guest's own selection order, which tests the HENCHMAN byte first: `sub_823D0E10`
 		// reads `pip+1` at 0x823D0E20 and takes HeroPip whenever it is clear, whatever `pip+0`
 		// says; only with it set does `pip+0` choose between BothPip and HenchmanPip.
-		string binding = meter.ArmedA && meter.ArmedB ? BothPip : meter.ArmedB ? HenchmanPip : HeroPip;
+		string binding = ownPip == 1 ? HeroPip
+			: ownPip == 2 ? HenchmanPip
+			: meter.ArmedA && meter.ArmedB ? BothPip : meter.ArmedB ? HenchmanPip : HeroPip;
 
 		// DEGREES, stated: `(pos * 0.01 * 130) - 65` at 0x823D1050..0x823D1054, so 0 is the arc's
 		// left end, 50 its apex and 100 its right end — a 130° sweep.

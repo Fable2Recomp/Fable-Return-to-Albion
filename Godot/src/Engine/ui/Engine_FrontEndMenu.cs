@@ -130,7 +130,10 @@ public sealed class Engine_FrontEndMenu
 	/// replaces the record whole, which is how a mod extends the front end without code.
 	/// </summary>
 	public static Engine_FrontEndMenu BuildRoot() =>
-		Engine_UiTemplates.Menu("frontend-root")?.Build() ?? new Engine_FrontEndMenu();
+		Engine_UiTemplates.Menu(RootTemplate)?.Build() ?? new Engine_FrontEndMenu();
+
+	/// <summary>The template the front end's root list is built from.</summary>
+	public const string RootTemplate = "frontend-root";
 
 	/// <summary>
 	/// The gender card <c>New Game</c> opens — <see cref="Engine_FrontEndCardChoice"/>. A name

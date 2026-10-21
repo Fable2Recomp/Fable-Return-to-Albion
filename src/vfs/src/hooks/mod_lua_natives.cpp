@@ -26,6 +26,10 @@
 //   age(e) · inventory(e) · equipped(e) -> melee, ranged · near(x, y, z, r [, creatures])
 //   line_of_sight(x1, y1, z1, x2, y2, z2) · spawn(def, x, y, z) · entity(handle) · handle(entity)
 //   forgive_crimes(villager, p) · discovered_crime(villager, p) · perceived_renown(villager, p)
+//   stop_fx(id) · _play_fx(name, x, y, z, e, duration, scale, r, g, b, intensity, loop, ox, oy, oz)
+//   (play_fx / play_fx_on are the preamble's, Engine_ModLua: they unpack the options table)
+//   open_menu(name [, p]) · _message_box(title, text, accept, cancel, question, p)
+//   (message_box is the preamble's: it fills the defaults)
 //   _write(kind, field, value) · _error(text)
 
 #include <cmath>
@@ -82,6 +86,7 @@ bool WriteModEventField(int32_t kind, const char* field, double value);
 void NoteLuaCancelled();
 void BoxSeatEnter(uint8_t* base, int32_t player);
 void BoxSeatLeave(uint8_t* base);
+uint32_t PlayModFxOnHandle(const char* name, const float* xyz, uint32_t handle, const refii_mod_fx_options* options);
 }
 
 namespace {
@@ -1095,6 +1100,69 @@ REFII_LUA_NATIVE(NativeSpawn) {
   RESULTS(1);
 }
 
+// Refii._play_fx(name, x, y, z, e, duration, scale, r, g, b, intensity, loop, ox, oy, oz): the
+// request Godot draws (refii_mod_play_fx); e is a handle, 0 for a world position. The id, or nil.
+REFII_LUA_NATIVE(NativePlayFx) {
+  char name[128];
+  lua.String(1, name, sizeof(name));
+  const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
+                        static_cast<float>(lua.Number(4))};
+  const uint32_t handle = static_cast<uint32_t>(Lua::Clamp(lua.Number(5), 0.0, 4294967295.0));
+  refii_mod_fx_options options = refii_mod_fx_default_options();
+  options.duration = static_cast<float>(lua.Number(6));
+  options.scale = static_cast<float>(lua.Number(7));
+  options.tint[0] = static_cast<float>(lua.Number(8));
+  options.tint[1] = static_cast<float>(lua.Number(9));
+  options.tint[2] = static_cast<float>(lua.Number(10));
+  options.intensity = static_cast<float>(lua.Number(11));
+  options.loop = lua.Int(12) != 0 ? 1 : 0;
+  options.offset[0] = static_cast<float>(lua.Number(13));
+  options.offset[1] = static_cast<float>(lua.Number(14));
+  options.offset[2] = static_cast<float>(lua.Number(15));
+  const uint32_t id = refii::vfs::PlayModFxOnHandle(name, handle != 0 ? nullptr : xyz, handle, &options);
+  if (id != 0) {
+    lua.PushNumber(id);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.stop_fx(id): any surface's id.
+REFII_LUA_NATIVE(NativeStopFx) {
+  refii_mod_stop_fx(static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)));
+  RESULTS(0);
+}
+
+// Refii.open_menu(name [, p]): a mod's menu for player p (0 or nil: whoever owns the menus
+// here), over the list that has the input or on its own (refii_mod_open_menu). True when posted.
+REFII_LUA_NATIVE(NativeOpenMenu) {
+  char name[96];
+  lua.String(1, name, sizeof(name));
+  lua.PushBoolean(refii_mod_open_menu(lua.Int(2), name) != 0);
+  RESULTS(1);
+}
+
+// Refii._message_box(title, text, accept, cancel, question, p): refii_mod_message_box; the
+// preamble's Refii.message_box fills the defaults. The id the mod_message_box event carries, or nil.
+REFII_LUA_NATIVE(NativeMessageBox) {
+  char title[128];
+  char text[480];
+  char accept[64];
+  char cancel[64];
+  lua.String(1, title, sizeof(title));
+  lua.String(2, text, sizeof(text));
+  lua.String(3, accept, sizeof(accept));
+  lua.String(4, cancel, sizeof(cancel));
+  const uint32_t id = refii_mod_message_box(lua.Int(6), title, text, accept, lua.Int(5) != 0 ? cancel : nullptr);
+  if (id != 0) {
+    lua.PushNumber(id);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
 // Refii._cancelled(): the preamble's _fire states that a handler returned true.
 REFII_LUA_NATIVE(NativeCancelled) {
   refii::vfs::NoteLuaCancelled();
@@ -1194,6 +1262,10 @@ Native g_natives[] = {
     {"spawn", &NativeSpawn, 0},
     {"entity", &NativeEntity, 0},
     {"handle", &NativeHandle, 0},
+    {"_play_fx", &NativePlayFx, 0},
+    {"stop_fx", &NativeStopFx, 0},
+    {"open_menu", &NativeOpenMenu, 0},
+    {"_message_box", &NativeMessageBox, 0},
     {"_write", &NativeWrite, 0},
     {"_error", &NativeError, 0},
     {"_cancelled", &NativeCancelled, 0},

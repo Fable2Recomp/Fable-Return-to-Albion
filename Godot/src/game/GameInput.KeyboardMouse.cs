@@ -203,7 +203,7 @@ public partial class GameInput
 	/// </summary>
 	private void UpdateKeyboardMouse(bool devices)
 	{
-		bool menuOwns = GameGoldenCock.OwnsInput || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
+		bool menuOwns = GameGoldenCock.OwnsInput || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
 			ModalBoxOwnsInput || MenuBoxOwnsInput ||
 			ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp;
 		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&

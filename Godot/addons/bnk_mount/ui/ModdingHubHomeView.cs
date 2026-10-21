@@ -65,6 +65,24 @@ public partial class ModdingHubHomeView : VBoxContainer
         };
         button.Pressed += () => _templateDialog?.Open();
         row.AddChild(button);
+
+        // The UI tab, one click away: its HUD page (pieces, the game's pieces moved, the preview)
+        // and its menus page.
+        var hud = new Button
+        {
+            Text = "🖼️ Edit the HUD…",
+            TooltipText = "The UI tab's HUD page: the mod's pieces and the game's, moved over a live preview of the game's HUD"
+        };
+        hud.Pressed += () => ModdingHubPanel.Instance?.OpenUi(0);
+        row.AddChild(hud);
+
+        var menus = new Button
+        {
+            Text = "📜 Edit menus…",
+            TooltipText = "The UI tab's Menus page: the mod's own menus, patches to the game's, Opens: and Mod:lua: rows, previewed in the game's list"
+        };
+        menus.Pressed += () => ModdingHubPanel.Instance?.OpenUi(1);
+        row.AddChild(menus);
         AddChild(row);
 
         _templateDialog = new NewModFromTemplateDialog();

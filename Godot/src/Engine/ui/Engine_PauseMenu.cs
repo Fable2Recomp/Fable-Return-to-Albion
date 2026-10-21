@@ -97,9 +97,11 @@ public static class Engine_PauseMenu
 		// Godot owns the list either way — the guest's spawn capture is not the authority on
 		// what this menu contains. What the guest supplies is the availability mask, applied by
 		// ApplyTabAvailability below, and the commit entry points behind each command.
-		string template = coopJoiner ? "pause-root-coop" : "pause-root";
-		return Engine_UiTemplates.Menu(template)?.Build() ?? new Engine_FrontEndMenu();
+		return Engine_UiTemplates.Menu(RootTemplate(coopJoiner))?.Build() ?? new Engine_FrontEndMenu();
 	}
+
+	/// <summary>The template the pause list is built from: the hero's, or the joiner's variant.</summary>
+	public static string RootTemplate(bool coopJoiner) => coopJoiner ? "pause-root-coop" : "pause-root";
 
 	/// <summary>
 	/// Applies the bridge's availability mask (bit N = tab N available) to the tab entries.

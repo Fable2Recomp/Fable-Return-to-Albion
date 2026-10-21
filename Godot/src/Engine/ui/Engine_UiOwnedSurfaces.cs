@@ -247,7 +247,7 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
 		// DRAWN WHETHER OR NOT ITS CODE IS KNOWN: an unlisted box keeps the guest's own input
-		// (see Engine_UiTemplates.Modals), not the guest's hidden tree.
+		// (see Engine_UiModals), not the guest's hidden tree.
 		_host = false;
 		if (pause is { MessageBoxUp: true } state)
 		{
@@ -259,8 +259,10 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 			return true;
 		}
 
+		// A host notice is the game's message box in game; out of it, the front end's own dialog
+		// draws it (GameUi.DriveFrontEndHostBox).
 		_display = StatedDisplayBox;
-		if (_display == 0 && Engine_UiHostBoxes.Notice is not null)
+		if (_display == 0 && Engine_UiHostBoxes.Notice is not null && Refii.Host.HostBridge.IsInGame)
 		{
 			_host = true;
 			return true;
@@ -428,7 +430,9 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 		_codes = null;
 		_display = Engine_UiSource.Current.DisplayQueryUp();
 		// A host question needs the box's join to be shown; without one it must not hold the frame.
-		_host = !_display && Engine_UiHostBoxes.Question is not null && (View is null || _joins is not null);
+		// In game only: out of it the front end's own dialog draws it (GameUi.DriveFrontEndHostBox).
+		_host = !_display && Engine_UiHostBoxes.Question is not null && Refii.Host.HostBridge.IsInGame &&
+			(View is null || _joins is not null);
 		return _display || _host;
 	}
 
@@ -439,10 +443,13 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 			return false;
 		}
 
-		// The default A/B row, its captions the authored ones.
-		if (Changed($"host:{question}"))
+		// The default A/B row; its captions the question's own where it states them, else the
+		// authored ones.
+		string? accept = Engine_UiHostBoxes.AcceptCaption;
+		string? cancel = Engine_UiHostBoxes.CancelCaption;
+		if (Changed($"host:{question}\u0001{accept}\u0001{cancel}"))
 		{
-			View!.ShowStated(question, _joins.Rows[0].Name, null, null);
+			View!.ShowStated(question, _joins.Rows[0].Name, accept, cancel);
 			GD.Print($"[game-ui] host query up — {View.LastReport}");
 		}
 

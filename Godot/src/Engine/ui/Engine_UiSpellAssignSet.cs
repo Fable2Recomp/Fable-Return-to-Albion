@@ -73,6 +73,29 @@ public sealed class Engine_UiSpellAssignSet
 		SubsequentInterval = Engine_UiScreenInput.PageRepeat,
 	};
 
+	/// <summary>
+	/// The host retired <paramref name="presentations"/>' pattern books on a new mount: a widget
+	/// built from one goes, and is built again from the new book the next time it stands.
+	/// </summary>
+	public void Retire(System.Collections.Generic.ISet<string> presentations)
+	{
+		if (!presentations.Contains(WheelPresentation))
+		{
+			return;
+		}
+
+		foreach (Engine_UiSpellAssign? widget in new[] { _wheel, _blade })
+		{
+			if (widget is not null && GodotObject.IsInstanceValid(widget))
+			{
+				widget.QueueFree();
+			}
+		}
+
+		_wheel = null;
+		_blade = null;
+	}
+
 	/// <summary>Builds the owned widget from one host's pattern book, keeping that file's own
 	/// authored transform.</summary>
 	private Engine_UiSpellAssign? Ensure(string presentation)

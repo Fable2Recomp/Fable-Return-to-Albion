@@ -379,6 +379,136 @@ extern "C" uint32_t refii_mod_handle(uint32_t address) { return refii_bridge_mod
 
 extern "C" uint32_t refii_mod_handle_address(uint32_t handle) { return refii_bridge_mod_handle_address(handle); }
 
+// ---------------------------------------------------------------------------------------------
+// Effects: a request for Godot, posted on the host-only kind REFII_MOD_HOST_FX_KIND.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// The payload's ids are 1 .. 2^23-1; Godot's own play_fx counts from 2^23 (Engine_FxPlayer), so
+/// every id is exact as a Lua number (a 32-bit float) and no surface's id collides with another's.
+constexpr uint32_t kFxIdSpan = 0x7FFFFFu;
+std::atomic<uint32_t> g_fx_ids{0};
+
+/// The fields text RefiiHost parses: key=value, a 'quoted' text never carrying a quote.
+uint32_t PostPlayFx(const char* name, const float* xyz, uint32_t handle, const refii_mod_fx_options* options) {
+  if (name == nullptr || name[0] == 0) {
+    return 0;
+  }
+  char clean[128];
+  size_t n = 0;
+  for (; name[n] != 0 && n + 1 < sizeof(clean); ++n) {
+    const char c = name[n];
+    clean[n] = (c == '\'' || c == ',' || static_cast<unsigned char>(c) < 0x20) ? '_' : c;
+  }
+  clean[n] = 0;
+  const refii_mod_fx_options o = options != nullptr ? *options : refii_mod_fx_default_options();
+  const float origin[3] = {xyz != nullptr ? xyz[0] : 0.0f, xyz != nullptr ? xyz[1] : 0.0f, xyz != nullptr ? xyz[2] : 0.0f};
+  const uint32_t id = (g_fx_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
+  char fields[512];
+  const int written = std::snprintf(
+      fields, sizeof(fields),
+      "op='play',id=%u,name='%s',x=%.9g,y=%.9g,z=%.9g,entity=%u,duration=%.9g,scale=%.9g,r=%.9g,g=%.9g,b=%.9g,"
+      "intensity=%.9g,loop=%d,ox=%.9g,oy=%.9g,oz=%.9g",
+      id, clean, origin[0], origin[1], origin[2], handle, o.duration, o.scale, o.tint[0], o.tint[1], o.tint[2],
+      o.intensity, o.loop != 0 ? 1 : 0, o.offset[0], o.offset[1], o.offset[2]);
+  if (written <= 0 || static_cast<size_t>(written) >= sizeof(fields)) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_FX_KIND, std::string_view(fields, static_cast<size_t>(written)));
+  return id;
+}
+
+}  // namespace
+
+extern "C" uint32_t refii_mod_play_fx(const char* name, const float* xyz, const refii_mod_fx_options* options) {
+  return PostPlayFx(name, xyz, 0u, options);
+}
+
+extern "C" uint32_t refii_mod_play_fx_on(const char* name, uint32_t entity, const refii_mod_fx_options* options) {
+  if (entity == 0) {
+    return 0;
+  }
+  return PostPlayFx(name, nullptr, refii_mod_handle(entity), options);
+}
+
+namespace refii::vfs {
+
+/// The Lua surface's form: the entity is already a handle (Refii.play_fx_on).
+uint32_t PlayModFxOnHandle(const char* name, const float* xyz, uint32_t handle, const refii_mod_fx_options* options) {
+  return PostPlayFx(name, xyz, handle, options);
+}
+
+}  // namespace refii::vfs
+
+extern "C" void refii_mod_stop_fx(uint32_t id) {
+  if (id == 0) {
+    return;
+  }
+  char fields[64];
+  const int written = std::snprintf(fields, sizeof(fields), "op='stop',id=%u", id);
+  if (written > 0 && static_cast<size_t>(written) < sizeof(fields)) {
+    refii::mods::PostEvent(REFII_MOD_HOST_FX_KIND, std::string_view(fields, static_cast<size_t>(written)));
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The UI: a request for Godot, posted on the host-only kind REFII_MOD_HOST_UI_KIND
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// A text for the bus's quoted field: no quote (the field's end) and no tab or line feed (the
+/// record's); a line break crosses as the two characters \n, which Godot reads back.
+std::string QuotedField(const char* text, size_t limit) {
+  std::string out;
+  for (const char* c = text; c != nullptr && *c != 0 && out.size() < limit; ++c) {
+    if (*c == '\'') {
+      out += '`';
+    } else if (*c == '\n') {
+      out += "\\n";
+    } else if (static_cast<unsigned char>(*c) < 0x20u) {
+      out += ' ';
+    } else {
+      out += *c;
+    }
+  }
+  return out;
+}
+
+/// The payload's box ids are 1 .. 2^23-1; Godot's own message_box counts from 2^23 (Engine_UiModRequest).
+std::atomic<uint32_t> g_box_ids{0};
+
+int32_t ClampPlayer(int32_t player) { return player == 1 || player == 2 ? player : 0; }
+
+}  // namespace
+
+extern "C" int32_t refii_mod_open_menu(int32_t player, const char* name) {
+  const std::string menu = QuotedField(name, 96);
+  if (menu.empty()) {
+    return 0;
+  }
+  const std::string fields = "op='open_menu',player=" + std::to_string(ClampPlayer(player)) + ",name='" + menu + "'";
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return 1;
+}
+
+extern "C" uint32_t refii_mod_message_box(int32_t player, const char* title, const char* text, const char* accept,
+                                          const char* cancel) {
+  const std::string head = QuotedField(title, 128);
+  const std::string body = QuotedField(text, 480);
+  if (head.empty() && body.empty()) {
+    return 0;
+  }
+  const uint32_t id = (g_box_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
+  const std::string fields = "op='message_box',id=" + std::to_string(id) + ",player=" +
+                             std::to_string(ClampPlayer(player)) + ",title='" + head + "',text='" + body +
+                             "',accept='" + QuotedField(accept, 64) + "',cancel='" + QuotedField(cancel, 64) +
+                             "',buttons=" + (cancel != nullptr ? "2" : "1");
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return id;
+}
+
 extern "C" uint32_t refii_mod_fnv1(const char* text) {
   uint32_t hash = 0x811C9DC5u;
   for (const char* c = text; c != nullptr && *c != 0; ++c) {

@@ -130,11 +130,11 @@ extern "C" void refii_bridge_mod_event_post(int32_t kind, const char* fields, si
   ModValueTables& tables = Tables();
   std::lock_guard lock(tables.mutex);
   if (tables.events.size() >= kMaxQueuedEvents) {
-    // Drop the oldest ordinary event; a query reply and the hero events are what a script's state
-    // hangs on, so they are kept while anything else can go.
+    // Drop the oldest ordinary event; a host-only record (a query reply, an effect request) and the
+    // hero events are what a script's state hangs on, so they are kept while anything else can go.
     auto victim = tables.events.begin();
     while (victim != tables.events.end() &&
-           (victim->first == kHostOnlyKind || victim->first == 1 || victim->first == 2)) {
+           (victim->first >= kHostOnlyKind || victim->first == 1 || victim->first == 2)) {
       ++victim;
     }
     tables.events.erase(victim != tables.events.end() ? victim : tables.events.begin());

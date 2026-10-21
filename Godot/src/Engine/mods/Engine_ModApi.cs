@@ -928,6 +928,25 @@ public static class ModApi
 				F("seconds", "float", "how long the change blends over (0: at once)"),
 				F("from_host", "bool", "an online joiner adopting the host's statement; false where this machine decided it"),
 			}),
+		new ModApiEvent("ModMenuRow", "mod_menu_row", 87, "Godot's menu lists (Engine_UiModMenus), then the guest tick from the host's command queue (menu_row)",
+			"A row of a menu a mod defines in ui/templates.json was chosen, or a row a mod patched into a shipped menu, or any row whose command is Opens:<menu> or Mod:lua:<function>. Godot scripts get it as it happens; native handlers on the next guest tick, on the title and the front end too; Lua handlers on the next guest tick in a game (the game's Lua is built when a game starts, so there is none on the front end).",
+			string.Empty,
+			new[]
+			{
+				F("menu", "const char* / string", "the menu the row is on: the mod menu's name, or the list's own (frontend-root, pause-root, a screen's population script)"),
+				F("row", "const char* / string", "the row's name"),
+				F("player", "int32_t", "1 or 2: the player whose menu it is"),
+				F("mod", "const char* / string", "the mod that stated the row or its menu, empty for a shipped row"),
+			}),
+		new ModApiEvent("ModMessageBox", "mod_message_box", 88, "Godot's host boxes (Engine_UiModBoxes), then the guest tick from the host's command queue (box_answer)",
+			"A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was answered. Godot scripts get it as it happens; native handlers on the next guest tick, on the front end too; Lua handlers in a game.",
+			string.Empty,
+			new[]
+			{
+				F("id", "uint32_t", "what the call returned: the payload's ids are 1 .. 2^23-1, Godot's 2^23 .. 2^24-1"),
+				F("button", "int32_t", "0 for A, 1 for B, -1 when another box replaced it or its player is played on the other machine"),
+				F("player", "int32_t", "1 or 2: whose box it was"),
+			}),
 	};
 
 	/// <summary>The menu events' player: whose menu it is.</summary>
@@ -999,6 +1018,16 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_entities_near(ctx, base, xyz, radius, creatures_only, out[], max)", "entities within a radius, nearest first"),
 		new ModApiHelper("int32_t refii_mod_line_of_sight(ctx, base, from, to)", "the game's physics raycast: true when nothing is between"),
 		new ModApiHelper("uint32_t refii_mod_spawn(ctx, base, definition, xyz)", "an entity created through the game's own CreateEntityFromIDAtPosition"),
+		new ModApiHelper("uint32_t refii_mod_play_fx(name, xyz, options) / refii_mod_play_fx_on(name, entity, options)",
+			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity; " +
+			"options (refii_mod_fx_options, null for refii_mod_fx_default_options()): duration, scale, tint, intensity, loop, offset; returns the id. Any thread"),
+		new ModApiHelper("void refii_mod_stop_fx(id)", "stops a played effect by any surface's id (native, Lua or Godot)"),
+		new ModApiHelper("int32_t refii_mod_open_menu(player, name)",
+			"opens a menu a mod defines in ui/templates.json for player 1 or 2 (0: whoever owns the menus here) over the list that has the input, " +
+			"or on its own with none up — in play or on the title (it takes the pad; B at its root closes it); shown only where that player is played. Any thread"),
+		new ModApiHelper("uint32_t refii_mod_message_box(player, title, text, accept, cancel)",
+			"the game's own box for player 1 or 2 (0: the menu owner here) — in game the query or message box, on the front end its dialog: " +
+			"a question with cancel non-null (null or \"\" captions keep the box's own), else a notice; returns the id mod_message_box carries. Any thread"),
 	};
 
 	/// <summary>The Lua-side calls the init chunk's preamble defines.</summary>
@@ -1039,6 +1068,12 @@ public static class ModApi
 		new ModApiHelper("Refii.line_of_sight(x1, y1, z1, x2, y2, z2)", "true when the game's physics sees nothing between"),
 		new ModApiHelper("Refii.spawn(definition, x, y, z)", "a new entity through the game's own CreateEntityFromIDAtPosition: its handle, or nil"),
 		new ModApiHelper("Refii.entity(handle) / Refii.handle(entity)", "the game's own Entity userdata for a handle (for the shipped scripts and natives), and back"),
+		new ModApiHelper("Refii.play_fx(name, x, y, z [, options]) / Refii.play_fx_on(e, name [, options])",
+			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity handle; " +
+			"options { duration = s, scale = n, tint = {r, g, b}, intensity = n, loop = false, offset = {x, y, z} }; the id, or nil"),
+		new ModApiHelper("Refii.stop_fx(id)", "stops a played effect by any surface's id"),
+		new ModApiHelper("Refii.open_menu(name [, p])", "opens a mod's menu (ui/templates.json) for player p (nil: the menu owner here) over the list that has the input, or on its own with none up; true when asked"),
+		new ModApiHelper("Refii.message_box(title, text [, accept [, cancel [, p]]])", "the game's own box for player p: a question when cancel is given (nil captions keep the box's own), else a notice; the id mod_message_box carries"),
 		new ModApiHelper("Refii.setting(key, default)", "a settings.json value (composed in at session start as RefiiSettings)"),
 		new ModApiHelper("Refii.hero(player)", "the player's hero handle as the bus last stated it, or nil"),
 		new ModApiHelper("Refii.api_version", "the API version the chunk was composed for"),
@@ -1050,6 +1085,8 @@ public static class ModApi
 	/// The Godot script surface, <c>Engine.get_singleton("RefiiHost")</c> (Engine_RefiiHost.cs): its
 	/// members and the <c>query</c> verbs (mod_commands.cpp's grammar), each answering on
 	/// <c>reply(id, result)</c> with <c>ok</c> and the named fields. Entities are handles, as in Lua.
+	/// A signature's " / "-separated parts name methods (<see cref="GodotMethodNames"/>), except
+	/// those that start "signal ", "query " or "e." and a part's "-> result".
 	/// </summary>
 	public static readonly IReadOnlyList<ModApiHelper> GodotHelpers = new[]
 	{
@@ -1061,6 +1098,9 @@ public static class ModApi
 		new ModApiHelper("player_set(p, key, v) / player_add(p, key, d, saved) / player_save(p, key, v)", "per-player values, written to the store Refii.player_set / _add / _save write: the same on both co-op machines; saved ones go home with the hero"),
 		new ModApiHelper("node_for(handle)", "the Node3D Godot draws that entity with, or null: parent to it, never move it"),
 		new ModApiHelper("get_value(key) / setting(key, default) / set_setting(key, v) / run_lua(chunk) / mods()", "a mod's published value, a settings.json value, a live override, a Lua chunk in the game VM, the enabled mods"),
+		new ModApiHelper("publish(key, value)", "sets a mod value (\"mod:<key>\" in the UI) on the guest's next tick, for every reader: HUD pieces, menus, Lua and native"),
+		new ModApiHelper("open_menu(name, player = 0) -> bool", "opens a menu a mod defines in ui/templates.json for player 1 or 2 (0: whoever owns the menus here) over the menu list that has the input — B returns — or, with no list up (in play, on the title), as a list of its own that takes the pad and closes on B. False for no such menu or a player played on the other machine. A row chosen there raises mod_menu_row here at once, and reaches native handlers (and Lua in a game) on the guest's next tick through the menu_row command"),
+		new ModApiHelper("message_box(title, text, buttons, player = 0) -> id / signal message_box_answered(id, button)", "the game's own box for player 1 or 2 (0: the menu owner here) — in game the message box (one button) or query box (two), on the front end its own dialog; button is 0 for A, 1 for B, -1 when another box replaced it or the player is played on the other machine. The mod_message_box event carries the same, on every surface"),
 		new ModApiHelper("give_gold / modify_health / set_health / add_item / give_experience / spend_experience / cast_spell / set_position / save_set", "helper calls, run in the guest tick with the real context; silent when there is nothing to act on"),
 		new ModApiHelper("query(what, args) -> id / signal reply(id, result)", "asks the guest; the answer comes on a later frame with ok and the fields below"),
 		new ModApiHelper("query health E / position E / gold E / item_count E DEF / experience E POOL / ability_level E T", "current, max · x, y, z · gold · count · amount · level"),
@@ -1072,7 +1112,32 @@ public static class ModApi
 		new ModApiHelper("query player_value P KEY [FALLBACK] / player_here P", "value, has (ok false when neither the value nor a fallback is there) · here: Refii.player_value / player_here"),
 		new ModApiHelper("query player_dog P / focus P / opinion E P / uid E", "dog · entity · love, fear, attractiveness, morality, respect · uid (\"0x…\"): Refii.player_dog / focus / opinion / uid"),
 		new ModApiHelper("query discovered_crime E P / perceived_renown E P · forgive_crimes E P", "discovered · renown: Refii.discovered_crime / perceived_renown for villager E and player P · the command forgives player P's crimes villager E knows of (Refii.forgive_crimes); show_to_player is Lua's — reach it with run_lua"),
+		new ModApiHelper("play_fx(name, x, y, z, options) / play_fx_on(name, handle, options)",
+			"an effect of the particle bank or a mod's fx/effects/ as a FableFx node at a world position (guest axes) or riding an entity handle; " +
+			"options { duration, scale, tint (Color or [r, g, b]), intensity, loop, offset (Vector3 or [x, y, z]) }; the id, 0 for an unknown effect"),
+		new ModApiHelper("stop_fx(id)", "stops a played effect by any surface's id; false when none plays under it"),
 	};
+
+	/// <summary>The RefiiHost method names one <see cref="GodotHelpers"/> signature states.</summary>
+	public static IEnumerable<string> GodotMethodNames(string signature)
+	{
+		if (signature.StartsWith("query ", StringComparison.Ordinal))
+		{
+			yield break;
+		}
+
+		foreach (string raw in signature.Split(" / "))
+		{
+			string part = raw.Split(" ->")[0].Trim();
+			if (part.Length == 0 || part.StartsWith("signal ", StringComparison.Ordinal) ||
+				part.StartsWith("query ", StringComparison.Ordinal) || part.StartsWith("e.", StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			yield return part.Split('(')[0].Trim();
+		}
+	}
 
 	/// <summary>The writable numeric fields of each event, as the Lua preamble's write-back needs them.</summary>
 	public static IEnumerable<(int Kind, string Field)> WritableFields =>

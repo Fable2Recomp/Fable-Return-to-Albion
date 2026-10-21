@@ -48,6 +48,7 @@ public partial class ModdingHubPanel : MarginContainer
     private ModdingGuideView? _moddingGuideView;
     private FxLabView? _fxLabView;
     private PolymorphicItemGraphView? _itemGraphView;
+    private UiStudioView? _uiView;
 
     private readonly List<Control> _views = new();
     private int _currentTabIndex = 0;
@@ -334,7 +335,8 @@ public partial class ModdingHubPanel : MarginContainer
         AddNavButton("📖 Modding Guide", 1);
         AddNavButton("🗂️ GDB Hierarchy & Components", 2);
         AddNavButton("✨ FX Lab", 3);
-        AddNavButton("🎮 Live Game", 4);
+        AddNavButton("🖼️ UI", UiTab);
+        AddNavButton("🎮 Live Game", 5);
 
         var navScroll = new ScrollContainer
         {
@@ -407,7 +409,13 @@ public partial class ModdingHubPanel : MarginContainer
         _views.Add(_fxLabView);
         _contentContainer.AddChild(_fxLabView);
 
-        // Tab 4: the running game — reload the mods into it, and its mods' Lua errors.
+        // Tab 4: the UI tab — the active mod's HUD, menus, modals and settings page against the
+        // game's own HUD view and list view.
+        _uiView = new UiStudioView();
+        _views.Add(_uiView);
+        _contentContainer.AddChild(_uiView);
+
+        // Tab 5: the running game — reload the mods into it, and its mods' Lua errors.
         var liveGameView = new LiveGameView();
         _views.Add(liveGameView);
         _contentContainer.AddChild(liveGameView);
@@ -426,6 +434,23 @@ public partial class ModdingHubPanel : MarginContainer
     {
         SwitchTab(2);
         _itemGraphView?.SelectNodeByHash(recordHash);
+    }
+
+    /// <summary>The FX Lab's effect editor on <paramref name="effect"/> (a bank or mod effect name).</summary>
+    public void OpenFxEffect(string effect)
+    {
+        SwitchTab(3);
+        _fxLabView?.OpenEffect(effect);
+    }
+
+    /// <summary>The UI tab's index on the navigation rail.</summary>
+    private const int UiTab = 4;
+
+    /// <summary>The UI tab on a page: 0 HUD, 1 Menus, 2 Modals, 3 Settings.</summary>
+    public void OpenUi(int page)
+    {
+        SwitchTab(UiTab);
+        _uiView?.ShowPage(page);
     }
 
     private void BuildDialogs()
@@ -596,6 +621,7 @@ public partial class ModdingHubPanel : MarginContainer
         string active = EditorModExporter.ActiveModName;
         _homeView?.Refresh(active);
         _itemGraphView?.RefreshGraph();
+        _uiView?.Refresh();
     }
 
     private void OnOpenCreatorFolder()

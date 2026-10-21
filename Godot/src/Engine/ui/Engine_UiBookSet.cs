@@ -73,7 +73,57 @@ public sealed class Engine_UiBookSet
 		book.Build();
 		book.DriveFrames();
 		Host.MenuLayer.AddChild(book);
+		_made.Add((book, presentation));
 		return book;
+	}
+
+	/// <summary>
+	/// Frees every book built from one of <paramref name="presentations"/> — the host retired
+	/// those pattern books on a new mount (<see cref="Engine_UiPresentationHost.PatternBooksRetired"/>).
+	/// Whoever holds one finds it invalid and ensures it again from the new book, as on first
+	/// sight. Returns how many went.
+	/// </summary>
+	public int Retire(System.Collections.Generic.ISet<string> presentations)
+	{
+		int freed = 0;
+		for (int i = _made.Count - 1; i >= 0; i--)
+		{
+			(Engine_UiOwnedBook book, string presentation) = _made[i];
+			if (!GodotObject.IsInstanceValid(book))
+			{
+				_made.RemoveAt(i);
+				continue;
+			}
+
+			if (!presentations.Contains(presentation))
+			{
+				continue;
+			}
+
+			book.QueueFree();
+			_made.RemoveAt(i);
+			++freed;
+		}
+
+		var gone = new System.Collections.Generic.List<uint>();
+		foreach ((uint id, Engine_UiOwnedBook book) in _books)
+		{
+			if (!GodotObject.IsInstanceValid(book) || book.IsQueuedForDeletion())
+			{
+				gone.Add(id);
+			}
+		}
+
+		foreach (uint id in gone)
+		{
+			_books.Remove(id);
+			if (id == FrontEndBookId)
+			{
+				FrontEndBookId = 0;
+			}
+		}
+
+		return freed;
 	}
 
 	/// <summary>
@@ -296,6 +346,9 @@ public sealed class Engine_UiBookSet
 
 	/// <summary>The title screen's host-only id — <see cref="Engine_UiTemplates"/> record 1011.</summary>
 	public const uint TitleScreenId = 1011;
+
+	/// <summary>Every book <see cref="Ensure"/> built and the presentation it was built from, for <see cref="Retire"/>.</summary>
+	private readonly System.Collections.Generic.List<(Engine_UiOwnedBook Book, string Presentation)> _made = new();
 
 	/// <summary>One owned book per screen id, built on first sight of that screen.</summary>
 	private readonly System.Collections.Generic.Dictionary<uint, Engine_UiOwnedBook> _books =

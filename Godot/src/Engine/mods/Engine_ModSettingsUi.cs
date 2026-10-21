@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Godot;
 using Refii.Ui;
 
@@ -19,8 +20,13 @@ namespace Refii.Mods;
 /// <code>
 /// { "swing_cost": { "label": "Swing cost", "min": 0, "max": 100, "step": 1,
 ///                   "type": "slider", "description": "Stamina a melee swing spends." },
-///   "woven":      { "label": "Weaving", "type": "toggle" } }
+///   "woven":      { "label": "Weaving", "type": "toggle" },
+///   "difficulty": { "label": "Difficulty", "type": "choice",
+///                   "options": [ { "value": 0, "label": "Story" }, { "value": 1, "label": "Hard" } ] } }
 /// </code>
+/// <para>A <c>choice</c> row steps through a fixed list of labelled values, in the order the file
+/// lists them; the setting holds the chosen option's number, and a value no option states shows
+/// the nearest one.</para>
 /// <para>A setting the file does not describe still gets a row: its name as the label, a range
 /// around the file's value (0 to twice it, in twentieths), and a toggle when the value is 0 or
 /// 1. A mod author gets a page for free and refines it when they want to.</para>
@@ -39,34 +45,75 @@ public static class ModSettingsUi
 	{
 		Slider,
 		Toggle,
+		Choice,
 	}
 
-	/// <summary>One value row: the setting, how it is shown and the range it steps over.</summary>
+	/// <summary>One labelled value of a <see cref="Kind.Choice"/> row.</summary>
+	public readonly record struct Option(float Value, string Label);
+
+	/// <summary>
+	/// One value row: the setting, how it is shown and the range it steps over — or, for a
+	/// <see cref="Kind.Choice"/> row, the <see cref="Options"/> it steps through.
+	/// </summary>
 	public sealed record Row(
-		string Mod, string Key, string Label, Kind Kind, float Min, float Max, float Step, string Description)
+		string Mod, string Key, string Label, Kind Kind, float Min, float Max, float Step, string Description,
+		IReadOnlyList<Option>? Options = null)
 	{
 		/// <summary>The value in force now — the player's, the live override's or the file's.</summary>
 		public float Current => ModSettings.TryGet(Key, out float value) ? value : Min;
 
 		/// <summary>How many positions the row's index takes.</summary>
-		public int Choices => Kind == Kind.Toggle ? 2 : (int)MathF.Round((Max - Min) / Step) + 1;
+		public int Choices => Kind switch
+		{
+			Kind.Toggle => 2,
+			Kind.Choice => Math.Max(1, Options?.Count ?? 0),
+			_ => (int)MathF.Round((Max - Min) / Step) + 1,
+		};
 
 		/// <summary>The value an index stands for.</summary>
-		public float ValueAt(int index) => Kind == Kind.Toggle
-			? (index != 0 ? 1f : 0f)
-			: Math.Clamp(Min + index * Step, Min, Max);
+		public float ValueAt(int index) => Kind switch
+		{
+			Kind.Toggle => index != 0 ? 1f : 0f,
+			Kind.Choice => Options is { Count: > 0 } options ? options[Math.Clamp(index, 0, options.Count - 1)].Value : Min,
+			_ => Math.Clamp(Min + index * Step, Min, Max),
+		};
 
-		/// <summary>The index nearest a value.</summary>
-		public int IndexOf(float value) => Kind == Kind.Toggle
-			? (value != 0f ? 1 : 0)
-			: Math.Clamp((int)MathF.Round((value - Min) / Step), 0, Choices - 1);
+		/// <summary>The index nearest a value; for a choice, the option with the nearest value (the first of a tie).</summary>
+		public int IndexOf(float value)
+		{
+			switch (Kind)
+			{
+				case Kind.Toggle:
+					return value != 0f ? 1 : 0;
 
-		/// <summary>The caption at an index: On/Off, or the number at the step's precision.</summary>
+				case Kind.Choice:
+					int best = 0;
+					for (int i = 1; Options is not null && i < Options.Count; i++)
+					{
+						if (MathF.Abs(Options[i].Value - value) < MathF.Abs(Options[best].Value - value))
+						{
+							best = i;
+						}
+					}
+
+					return best;
+
+				default:
+					return Math.Clamp((int)MathF.Round((value - Min) / Step), 0, Choices - 1);
+			}
+		}
+
+		/// <summary>The caption at an index: On/Off, the option's label, or the number at the step's precision.</summary>
 		public string Caption(int index)
 		{
 			if (Kind == Kind.Toggle)
 			{
 				return index != 0 ? "On" : "Off";
+			}
+
+			if (Kind == Kind.Choice)
+			{
+				return Options is { Count: > 0 } options ? options[Math.Clamp(index, 0, options.Count - 1)].Label : string.Empty;
 			}
 
 			int decimals = Step >= 1f ? 0 : Math.Clamp((int)MathF.Ceiling(-MathF.Log10(Step)), 0, 3);
@@ -147,6 +194,38 @@ public static class ModSettingsUi
 		}
 
 		return null;
+	}
+
+	/// <summary>
+	/// One mod's page as the game builds it from <c>settings.json</c> and <c>settings.ui.json</c>
+	/// texts, with each row's value as the file states it — the Mod Studio's preview of a page it is
+	/// editing, through the same row description the game's pages take.
+	/// </summary>
+	public static (Page Page, IReadOnlyList<float> Values) PreviewPage(
+		string mod, string title, string settingsText, string settingsUiText)
+	{
+		Dictionary<string, float> file = ModSettings.Parse(mod, settingsText);
+		Godot.Collections.Dictionary? ui = Json.ParseString(settingsUiText) is { VariantType: Variant.Type.Dictionary } parsed
+			? parsed.AsGodotDictionary()
+			: null;
+
+		var rows = new List<Row>();
+		var values = new List<float>();
+		foreach ((string key, float value) in file)
+		{
+			string name = key.StartsWith(mod + ".", StringComparison.OrdinalIgnoreCase) ? key[(mod.Length + 1)..] : key;
+			Godot.Collections.Dictionary? spec = null;
+			if (ui is not null && (ui.TryGetValue(name, out Variant found) || ui.TryGetValue(key, out found)) &&
+				found.VariantType == Variant.Type.Dictionary)
+			{
+				spec = found.AsGodotDictionary();
+			}
+
+			rows.Add(Describe(mod, key, name, value, spec));
+			values.Add(value);
+		}
+
+		return (new Page(mod, title, rows), values);
 	}
 
 	/// <summary>The Mods fold's rows: one per page, carrying the command that opens it.</summary>
@@ -282,6 +361,13 @@ public static class ModSettingsUi
 		string description = Text(spec, "description", string.Empty);
 		string type = Text(spec, "type", string.Empty).Trim().ToLowerInvariant();
 
+		if (type == "choice" && ChoiceOptions(spec) is { Count: > 0 } options)
+		{
+			float low = options.Min(o => o.Value);
+			float high = options.Max(o => o.Value);
+			return new Row(mod, key, label, Kind.Choice, low, high, 1f, description, options);
+		}
+
 		bool ranged = spec is not null && (spec.ContainsKey("min") || spec.ContainsKey("max") || spec.ContainsKey("step"));
 		bool toggle = type == "toggle" || (type.Length == 0 && !ranged && (file == 0f || file == 1f));
 		if (toggle)
@@ -314,6 +400,39 @@ public static class ModSettingsUi
 		}
 
 		return new Row(mod, key, label, Kind.Slider, min, max, step, description);
+	}
+
+	/// <summary>
+	/// A choice row's <c>options</c>: each <c>{ "value": number, "label": text }</c>, in the file's
+	/// order. An option with no number is skipped; one with no label is captioned by its number.
+	/// </summary>
+	private static List<Option> ChoiceOptions(Godot.Collections.Dictionary? spec)
+	{
+		var options = new List<Option>();
+		if (spec is null || !spec.TryGetValue("options", out Variant list) || list.VariantType != Variant.Type.Array)
+		{
+			return options;
+		}
+
+		foreach (Variant item in list.AsGodotArray())
+		{
+			if (item.VariantType != Variant.Type.Dictionary)
+			{
+				continue;
+			}
+
+			Godot.Collections.Dictionary option = item.AsGodotDictionary();
+			if (!option.TryGetValue("value", out Variant value) ||
+				value.VariantType is not (Variant.Type.Float or Variant.Type.Int or Variant.Type.Bool))
+			{
+				continue;
+			}
+
+			float number = value.VariantType == Variant.Type.Bool ? (value.AsBool() ? 1f : 0f) : (float)value.AsDouble();
+			options.Add(new Option(number, Text(option, "label", number.ToString(CultureInfo.InvariantCulture))));
+		}
+
+		return options;
 	}
 
 	private static string Text(Godot.Collections.Dictionary? spec, string field, string fallback) =>

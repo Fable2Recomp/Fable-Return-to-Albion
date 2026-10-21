@@ -102,6 +102,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private static readonly Color MeshlessItemColor = new(0.62f, 0.62f, 0.62f);
 
     private EntityInspectorPlugin? _entityInspector;
+    private FableFxInspectorPlugin? _fxInspector;
     private readonly EditorScanRequest _extensionScan = new();
     private Refii.Assets.UI.ModdingHubPanel? _modStudioMainPanel;
     private Refii.Assets.UI.ModStudioDockPanel? _modStudioDockPanel;
@@ -144,6 +145,8 @@ public partial class BnkMountPlugin : EditorPlugin
         AddStreamingLabel();
         _entityInspector = new EntityInspectorPlugin();
         AddInspectorPlugin(_entityInspector);
+        _fxInspector = new FableFxInspectorPlugin();
+        AddInspectorPlugin(_fxInspector);
         SetupContextMenu();
         SetupModStudio();
         EnsureFileExtensionsRecognized();
@@ -157,6 +160,12 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             RemoveInspectorPlugin(_entityInspector);
             _entityInspector = null;
+        }
+
+        if (_fxInspector is not null)
+        {
+            RemoveInspectorPlugin(_fxInspector);
+            _fxInspector = null;
         }
 
         EditorFileSystem? resFs = EditorInterface.Singleton?.GetResourceFilesystem();
@@ -420,6 +429,14 @@ public partial class BnkMountPlugin : EditorPlugin
 
                 Refii.Mods.ModRowOverlays.Apply(mounted, overlays);
                 Refii.Mods.ModImageOverlays.Apply(mounted, overlays);
+                foreach (string line in Refii.Fx.Engine_FxModEffects.Load(overlays))
+                {
+                    if (line.StartsWith("REFUSED", StringComparison.Ordinal))
+                    {
+                        GD.PushWarning($"[bnk_mount] fx effect {line}");
+                    }
+                }
+
                 var conversions = Refii.Mods.ModMeshOverlays.Apply(mounted, overlays);
                 foreach (var c in conversions)
                 {
@@ -3481,32 +3498,48 @@ public partial class BnkMountPlugin : EditorPlugin
         }
     }
 
-    private bool _fxNamesDone;
+    /// <summary>The harvested effect names, kept: a re-overlaid bank (a mod effect saved) is a new
+    /// bank instance and takes them again without a second harvest.</summary>
+    private Dictionary<uint, string>? _fxNames;
+
+    private Refii.Fx.FxBank? _fxNamedBank;
 
     private void EnsureFxNames(Refii.Fx.FxBank bank)
     {
-        if (_fxNamesDone || _filesystem is null)
+        if (ReferenceEquals(_fxNamedBank, bank) || _filesystem is null)
         {
             return;
         }
 
-        _fxNamesDone = true;
-
-        var wanted = new HashSet<uint>();
-        foreach (Refii.Fx.FxEffect effect in bank.Effects)
+        _fxNamedBank = bank;
+        if (_fxNames is null)
         {
-            wanted.Add(effect.NameHash);
+            var wanted = new HashSet<uint>();
+            foreach (Refii.Fx.FxEffect effect in bank.Effects)
+            {
+                wanted.Add(effect.NameHash);
+            }
+
+            var files = new List<string>();
+            foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+            {
+                files.Add(file.VirtualPath);
+            }
+
+            _fxNames = Refii.Fx.Engine_FxNames.Harvest(wanted, files, ResolveBytes);
         }
 
-        var files = new List<string>();
-        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
+        // A mod's effect already carries the name it was authored under.
+        var unnamed = new Dictionary<uint, string>();
+        foreach ((uint hash, string name) in _fxNames)
         {
-            files.Add(file.VirtualPath);
+            if (bank.FindByHash(hash) is { Name.Length: 0 })
+            {
+                unnamed[hash] = name;
+            }
         }
 
-        Dictionary<uint, string> names =
-            Refii.Fx.Engine_FxNames.Harvest(wanted, files, ResolveBytes);
-        int applied = Refii.Fx.Engine_FxNames.Apply(bank, names);
+        int applied = Refii.Fx.Engine_FxNames.Apply(bank, unnamed);
         GD.Print($"[bnk_mount] fx names resolved: {applied}/{bank.Effects.Count}");
     }
 
@@ -4119,6 +4152,9 @@ public partial class BnkMountPlugin : EditorPlugin
 
         return null;
     }
+
+    /// <summary>The game data directory the editor's mount streams from (the UI tab's preview reads its fonts and text there).</summary>
+    public static string GameDirectory => ResolveGameDirectory();
 
     private static string ResolveGameDirectory()
     {

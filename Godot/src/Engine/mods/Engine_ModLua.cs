@@ -153,6 +153,31 @@ public static class ModLua
 			"\tlocal h = Refii._hero[player or 1]\n" +
 			"\tif h == nil or h == 0 then return nil end\n" +
 			"\treturn h\n" +
+			"end\n" +
+			MenuRowRuntime +
+			// play_fx / play_fx_on unpack the options table for the native Refii._play_fx (the
+			// game's Lua C API here has no array reads): duration, scale, tint {r, g, b},
+			// intensity, loop (true unless false), offset {x, y, z}.
+			"function Refii._fx_options(o)\n" +
+			"\to = o or {}\n" +
+			"\tlocal t = o.tint or {}\n" +
+			"\tlocal f = o.offset or {}\n" +
+			"\treturn o.duration or 0, o.scale or 1, t[1] or t.r or 1, t[2] or t.g or 1, t[3] or t.b or 1,\n" +
+			"\t\to.intensity or 1, (o.loop == false) and 0 or 1, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0\n" +
+			"end\n" +
+			"function Refii.play_fx(name, x, y, z, o)\n" +
+			"\tif Refii._play_fx == nil then return nil end\n" +
+			"\treturn Refii._play_fx(name, x or 0, y or 0, z or 0, 0, Refii._fx_options(o))\n" +
+			"end\n" +
+			"function Refii.play_fx_on(e, name, o)\n" +
+			"\tif Refii._play_fx == nil or e == nil or e == 0 then return nil end\n" +
+			"\treturn Refii._play_fx(name, 0, 0, 0, e, Refii._fx_options(o))\n" +
+			"end\n" +
+			// message_box(title, text [, accept [, cancel [, p]]]): a question when cancel is given
+			// (nil captions keep the box's own), else a notice; the id mod_message_box carries.
+			"function Refii.message_box(title, text, accept, cancel, p)\n" +
+			"\tif Refii._message_box == nil then return nil end\n" +
+			"\treturn Refii._message_box(title or '', text or '', accept or '', cancel or '', cancel ~= nil and 1 or 0, p or 0)\n" +
 			"end\n");
 
 		text.Append("RefiiSettings = {");
@@ -174,6 +199,29 @@ public static class ModLua
 	/// <see cref="Apply"/> runs, i.e. during the overlay pass).
 	/// </summary>
 	public static readonly List<(string Label, string Source)> ExtraInitSources = new();
+
+	/// <summary>
+	/// <c>Refii._menu_row(path, arg, e)</c>, which a mod menu row's <c>Mod:lua:&lt;function&gt;[:&lt;arg&gt;]</c>
+	/// calls (Engine_UiModMenuCommand.LuaCall): the function is a global or a dotted path through
+	/// tables, LOOKED UP, never compiled, and run protected as <c>function(arg, e)</c>.
+	/// </summary>
+	public const string MenuRowRuntime =
+		"function Refii._menu_row(path, arg, e)\n" +
+		"\tlocal f = _G\n" +
+		"\tlocal at = 1\n" +
+		"\twhile f ~= nil do\n" +
+		"\t\tlocal dot = string.find(path, '.', at, true)\n" +
+		"\t\tlocal part = string.sub(path, at, (dot or 0) - 1)\n" +
+		"\t\tif type(f) ~= 'table' then f = nil break end\n" +
+		"\t\tf = f[part]\n" +
+		"\t\tif dot == nil then break end\n" +
+		"\t\tat = dot + 1\n" +
+		"\tend\n" +
+		"\tlocal where = 'menu row ' .. tostring(e.menu) .. '/' .. tostring(e.row)\n" +
+		"\tif type(f) ~= 'function' then Refii._report(where, 'no Lua function ' .. tostring(path)) return end\n" +
+		"\tlocal ok, err = pcall(f, arg, e)\n" +
+		"\tif not ok then Refii._report(where, err) end\n" +
+		"end\n";
 
 	/// <summary>
 	/// A mod's Lua text as it runs in the init chunk: the body of a protected function, its error

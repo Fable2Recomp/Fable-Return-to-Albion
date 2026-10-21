@@ -120,29 +120,64 @@ public abstract class Engine_UiHostOptionsPage
 		int Index(int at) => open
 			? Engine_UiOptionsPending.IndexOf(at)
 			: at < committed.Length ? committed[at] : 0;
-		book.HostValues = page.Text(Index, VisibleStart);
+		Paint(book, page.Paint(Index, open, open ? Engine_UiOptionsPending.Row : 0));
+	}
+
+	/// <summary>Writes one <see cref="Painted"/> onto the options book over what it already holds.</summary>
+	public static void Paint(Engine_UiOwnedBook book, Painted painted)
+	{
+		book.HostValues = painted.Values;
 
 		var active = new Dictionary<string, bool>(book.HostActive ?? new Dictionary<string, bool>());
-		active["Foreground.Book.Pages.Page1"] = true;
-		active[Buttons] = open;
-		active[Buttons + ".Learn.Edit"] = false;
-		active[Buttons + ".Learn.Done"] = open;
-		int start = page.WindowStart(open ? Engine_UiOptionsPending.Row : 0);
-		for (int i = 0; i < Rows.Length; i++)
+		foreach ((string key, bool on) in painted.Active)
 		{
-			active[Rows[i]] = start + i < page.Count;
+			active[key] = on;
 		}
 
 		book.HostActive = active;
 
 		var opacity = new Dictionary<string, float>(book.HostOpacity ?? new Dictionary<string, float>());
-		opacity[Buttons] = 1f;
-		for (int i = 0; i < Rows.Length; i++)
+		foreach ((string key, float alpha) in painted.Opacity)
 		{
-			opacity[Rows[i]] = !open || Engine_UiOptionsPending.Row == i + VisibleStart ? 1f : 0.6f;
+			opacity[key] = alpha;
 		}
 
 		book.HostOpacity = opacity;
+	}
+
+	/// <summary>
+	/// What the page writes onto the options book's channels: the labels, captions and heading;
+	/// the page, its rows and the A/B prompts switched on or off; and each row's opacity.
+	/// </summary>
+	public readonly record struct Painted(
+		Dictionary<string, string> Values,
+		Dictionary<string, bool> Active,
+		Dictionary<string, float> Opacity);
+
+	/// <summary>
+	/// The page as the options book shows it: <paramref name="index"/> each row's index,
+	/// <paramref name="open"/> whether the page has the input (its prompts up, the rows but the
+	/// cursor's dimmed) or is the list level's preview, <paramref name="cursor"/> the row the
+	/// cursor is on. The game's options screen and the Mod Studio's preview both paint this.
+	/// </summary>
+	public Painted Paint(Func<int, int> index, bool open, int cursor)
+	{
+		int start = open ? WindowStart(cursor) : 0;
+		var active = new Dictionary<string, bool>
+		{
+			["Foreground.Book.Pages.Page1"] = true,
+			[Buttons] = open,
+			[Buttons + ".Learn.Edit"] = false,
+			[Buttons + ".Learn.Done"] = open,
+		};
+		var opacity = new Dictionary<string, float> { [Buttons] = 1f };
+		for (int i = 0; i < Rows.Length; i++)
+		{
+			active[Rows[i]] = start + i < Count;
+			opacity[Rows[i]] = !open || cursor == i + start ? 1f : 0.6f;
+		}
+
+		return new Painted(Text(index, start), active, opacity);
 	}
 
 	// ---------------------------------------------------------------------------------------

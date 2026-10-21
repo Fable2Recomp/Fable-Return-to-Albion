@@ -37,6 +37,21 @@ public sealed class Engine_UiInfoPanel
 		}
 	}
 
+	/// <summary>
+	/// The host retired pattern books on a new mount: the panel, whose theme may be one of them,
+	/// goes and is built again on the next drive.
+	/// </summary>
+	public void Retire()
+	{
+		if (_panel is not null && GodotObject.IsInstanceValid(_panel))
+		{
+			_panel.QueueFree();
+		}
+
+		_panel = null;
+		_reported = null;
+	}
+
 	/// <summary>Forces the next drive to re-report — the presentation it was built against has
 	/// been rebuilt under it.</summary>
 	public void Invalidate() => _reported = null;

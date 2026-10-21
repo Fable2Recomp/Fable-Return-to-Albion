@@ -130,11 +130,22 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_PARTNERSHIP = 84,
   REFII_EVENT_HOUSEHOLD_RESTORED = 85,
   REFII_EVENT_DYNAMIC_WEATHER = 86,
-  REFII_EVENT_COUNT = 87,
+  REFII_EVENT_MOD_MENU_ROW = 87,
+  REFII_EVENT_MOD_MESSAGE_BOX = 88,
+  REFII_EVENT_COUNT = 89,
 };
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
 #define REFII_MOD_HOST_REPLY_KIND 1000
+
+/// The kind a play_fx / stop_fx request crosses to Godot under (refii_mod_play_fx in
+/// core/refii_mod.h; Engine_FxPlayer draws it): never a bus event, posted whatever the mask says.
+#define REFII_MOD_HOST_FX_KIND 1001
+
+/// The kind an open_menu / message_box request crosses to Godot under (refii_mod_open_menu,
+/// refii_mod_message_box in core/refii_mod.h; Engine_UiModBoxes acts on it): never a bus event,
+/// posted whatever the mask says.
+#define REFII_MOD_HOST_UI_KIND 1002
 
 /// A subscriber: `event` is the kind's struct (below), `user` is what was registered with it.
 typedef void (*refii_mod_event_fn)(void* event, void (*user)(void));
@@ -1199,6 +1210,36 @@ struct DynamicWeatherEvent : Event {
   float seconds;
   /// An online joiner adopting the host's statement; false where this machine decided it.
   bool from_host;
+};
+
+/// A row of a mod's menu was chosen in Godot: a row of a menu a mod defines in ui/templates.json,
+/// a row a mod patched into a shipped menu, or any row whose command is Opens:<menu> or
+/// Mod:lua:<function>. `menu` is the menu the row is on (the mod menu's name, or the list's own:
+/// frontend-root, pause-root, a screen's population script), `row` the row's name, `player` 1 or 2
+/// (whose menu it is), `mod` the mod that stated the row or its menu ("" for a shipped row). The
+/// menu is Godot's, so Godot scripts get it as it happens; native and Lua handlers get it on the
+/// next guest tick, raised from the host's command queue (`menu_row`). The guest ticks on the
+/// title and the front end too, so native handlers hear a front-end row; Lua handlers live in the
+/// game VM, which exists only in a game. Not cancellable.
+struct ModMenuRowEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MOD_MENU_ROW;
+  const char* menu;
+  const char* row;
+  int32_t player;
+  const char* mod;
+};
+
+/// A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was
+/// answered. `id` is what the call returned (the payload's ids are 1 .. 2^23-1, Godot's 2^23 ..
+/// 2^24-1), `button` 0 for A, 1 for B, -1 when another box replaced it or its player is played on
+/// the other machine, `player` 1 or 2 (whose box it was). The box is Godot's, so Godot scripts get
+/// it as it happens; native and Lua handlers on the next guest tick, from the host's command queue
+/// (`box_answer`) — native on the front end too, Lua in a game. Not cancellable.
+struct ModMessageBoxEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MOD_MESSAGE_BOX;
+  uint32_t id;
+  int32_t button;
+  int32_t player;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

@@ -508,6 +508,20 @@ public sealed class FxEffect
     public bool ZSortEmitters;
     public uint UpdateFrequency;
     public List<FxEffectPart> Parts { get; } = new();
+
+    /// <summary>
+    /// A MOD's authored size multiplier (fx/effects/*.json <c>scale</c>), applied exactly where a
+    /// node's <see cref="FableFx.EffectScale"/> applies: every position, motion and size of the
+    /// instance. 1 for every shipped effect — the bank states no such field.
+    /// </summary>
+    public float Scale = 1f;
+
+    /// <summary>
+    /// A MOD's authored colour multiplier (fx/effects/*.json <c>tint</c>), applied where a node's
+    /// <see cref="FableFx.Tint"/> applies: each particle's colour after lighting. White for every
+    /// shipped effect.
+    /// </summary>
+    public float[] Tint = { 1f, 1f, 1f };
 }
 
 public sealed class FxBank
@@ -529,6 +543,13 @@ public sealed class FxBank
     }
 
     public FxEffect? FindByName(string name) => FindByHash(Fnv1Lower(name));
+
+    /// <summary>Drops the lookups built over <see cref="Effects"/> and <see cref="Emitters"/>; an overlay that replaced or added entries calls it.</summary>
+    public void Reindex()
+    {
+        _byHash = null;
+        _byEntity = null;
+    }
 
     /// <summary>
     /// FNV-1 of <c>"$$reserved_root_name$$"</c> — the placeholder type the guest gives the
@@ -654,6 +675,19 @@ public sealed class FxBank
     public Xex.XexBank? ExactModel { get; internal set; }
 
     public static uint Fnv1Lower(string s) => Xex.XexBankParser.Fnv1LowerResourceName(s);
+
+    /// <summary>An <c>FX_XXXXXXXX</c> token: an effect named by its hash, for the effects whose name no shipped file states.</summary>
+    public static bool TryParseHashToken(string token, out uint hash)
+    {
+        hash = 0;
+        return token.Length == 11 &&
+            token.StartsWith("FX_", StringComparison.OrdinalIgnoreCase) &&
+            uint.TryParse(
+                token.AsSpan(3),
+                System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out hash);
+    }
 }
 
 public static class Engine_FxBank
@@ -680,6 +714,7 @@ public static class Engine_FxBank
         foreach (Xex.XexEntityRef reference in x.EntityOrder)
         {
             var e = new FxEmitter();
+            bool known = true;
             switch (reference.TypeId)
             {
                 case 0:
@@ -694,7 +729,6 @@ public static class Engine_FxBank
                     e.ReleaseTrail = se.ReleaseTrail;
                     e.GlobalCollider = se.GlobalCollider;
                     e.CollisionRestitution = se.CollisionRestitution;
-                    e.HasMotion = true;
                     break;
                 }
 
@@ -716,7 +750,6 @@ public static class Engine_FxBank
                     e.JerkyAnimationRate = se.JerkyAnimationRate;
                     e.RandomiseAnimMagnitudeFlag = se.RandomiseAnimMagnitudeFlag;
                     e.RandomiseAnimationRates = se.RandomiseAnimationRates;
-                    e.HasMotion = true;
                     break;
                 }
 
@@ -735,9 +768,6 @@ public static class Engine_FxBank
                     FillEntityCommon(a, e);
                     e.PositionalInteractable = a.PositionalInteractable;
                     e.GlobalAttractor = a.GlobalParticleAttractor;
-                    e.IsAttractor = true;
-                    e.AttractRadius = e.Generic[26];
-                    e.AttractStrength = e.Generic[27];
                     break;
                 }
 
@@ -746,7 +776,6 @@ public static class Engine_FxBank
                     Xex.XexSplineEntityType sp = x.SplineEntities[reference.Index];
                     FillEntityCommon(sp, e);
                     e.PositionalInteractable = sp.PositionalInteractable;
-                    e.IsSpline = true;
                     e.SplinePoints = sp.Spline.Points.ToArray();
                     e.SplineRate = sp.Spline.Rate;
                     e.SplineReverseFlow = sp.Spline.ReverseFlow;
@@ -764,12 +793,7 @@ public static class Engine_FxBank
                     Xex.XexPointLightEntityType l = x.PointLights[reference.Index];
                     FillEntityCommon(l, e);
                     e.PositionalInteractable = l.PositionalInteractable;
-                    e.IsLight = true;
                     e.LightColour = ToVecTimeline(l.Vec[3], 3);
-                    e.LightRange = e.Generic[15];
-                    e.LightIntensity = e.Generic[16];
-                    e.LightCutoff = e.Generic[17];
-                    e.LightFadeRamp = e.Generic[18];
                     e.HaloTextureHash = l.HaloTextureHash;
                     break;
                 }
@@ -779,18 +803,17 @@ public static class Engine_FxBank
                     Xex.XexSpotLightEntityType l = x.SpotLights[reference.Index];
                     FillEntityCommon(l, e);
                     e.PositionalInteractable = l.PositionalInteractable;
-                    e.IsLight = true;
                     e.LightColour = ToVecTimeline(l.Vec[3], 3);
-                    e.LightRange = e.Generic[15];
-                    e.LightIntensity = e.Generic[16];
-                    e.LightCutoff = e.Generic[17];
-                    e.LightFadeRamp = e.Generic[18];
-                    e.LightConeAngle = e.Generic[24];
                     e.HaloTextureHash = l.HaloTextureHash;
                     break;
                 }
 
-                default: break;
+                default: known = false; break;
+            }
+
+            if (known)
+            {
+                LinkParameters(e);
             }
 
             eidToIdx[reference.EntityId] = outBank.Emitters.Count;
@@ -923,19 +946,97 @@ public static class Engine_FxBank
         e.SortParticles = x.SortParticles;
         e.ForceToFullSizeRenderBuffer = x.ForceFullSizeRenderBuffer;
         e.AttachToRoot = x.AttachToRoot;
-        e.Rate = e.Generic[2];
-        e.RateSpread = e.Generic[3];
-        e.Speed = e.Generic[4];
-        e.SpeedSpread = e.Generic[5];
-        e.AccelDirScale = e.Generic[6];
-        e.GravityScale = e.Generic[7];
-        e.GlobalWindScale = e.Generic[8];
-        e.VelX = e.Generic[9];
-        e.VelY = e.Generic[10];
-        e.VelZ = e.Generic[11];
-        e.Wind = e.Generic[12];
-        e.P13 = e.Generic[13];
-        e.P14 = e.Generic[14];
+    }
+
+    /// <summary>
+    /// What an entity's TYPE states about it: its kind flags, and the named views over its
+    /// generic parameters (<see cref="FxEmitter.Rate"/> IS <c>Generic[2]</c>, the same object).
+    /// The one place they are derived, for an entity read from the bank and one authored by a
+    /// mod (<see cref="Engine_FxEffectJson"/>). Type 0 standard and 9 spline emitters move and
+    /// emit; 4 attracts; 5 is a spline; 7 point and 8 spot are lights, and only 8 has a cone.
+    /// </summary>
+    public static void LinkParameters(FxEmitter e)
+    {
+        bool emits = e.TypeId is 0 or 9;
+        e.HasMotion = emits;
+        e.IsAttractor = e.TypeId == 4;
+        e.IsSpline = e.TypeId == 5;
+        e.IsLight = e.TypeId is 7 or 8;
+        if (emits)
+        {
+            e.Rate = e.Generic[2];
+            e.RateSpread = e.Generic[3];
+            e.Speed = e.Generic[4];
+            e.SpeedSpread = e.Generic[5];
+            e.AccelDirScale = e.Generic[6];
+            e.GravityScale = e.Generic[7];
+            e.GlobalWindScale = e.Generic[8];
+            e.VelX = e.Generic[9];
+            e.VelY = e.Generic[10];
+            e.VelZ = e.Generic[11];
+            e.Wind = e.Generic[12];
+            e.P13 = e.Generic[13];
+            e.P14 = e.Generic[14];
+        }
+
+        if (e.IsAttractor)
+        {
+            e.AttractRadius = e.Generic[26];
+            e.AttractStrength = e.Generic[27];
+        }
+
+        if (e.IsLight)
+        {
+            e.LightRange = e.Generic[15];
+            e.LightIntensity = e.Generic[16];
+            e.LightCutoff = e.Generic[17];
+            e.LightFadeRamp = e.Generic[18];
+            if (e.TypeId == 8)
+            {
+                e.LightConeAngle = e.Generic[24];
+            }
+        }
+    }
+
+    /// <summary>Generic parameter <paramref name="index"/> from authored keys (time in seconds, value), evaluated as the bank's own.</summary>
+    public static FxTimeline MakeTimeline(int index, IReadOnlyList<(float Time, float Value)> keys)
+    {
+        var engine = new Xex.XexScalarTimeline();
+        var o = new FxTimeline { DefaultValue = Xex.XexConst.ScalarParamDefaults[index], Engine = engine };
+        foreach ((float time, float value) in keys)
+        {
+            engine.Keys.Add(new Xex.XexScalarKey { TimeSecs = time, Value = value });
+            o.Keys.Add((time, value));
+        }
+
+        Xex.XexBankParser.BakeScalar(engine, Xex.XexConst.ScalarParamDefaults[index]);
+        if (!engine.Present)
+        {
+            o.Keys.Clear();  // as ToTimeline: a timeline that never starts is its default
+        }
+
+        return o;
+    }
+
+    /// <summary>Vector parameter <paramref name="index"/> (0..3) from authored keys, evaluated as the bank's own.</summary>
+    public static FxVectorTimeline MakeVecTimeline(int index, IReadOnlyList<(float Time, float X, float Y, float Z)> keys)
+    {
+        float[] defaults = Xex.XexConst.VecParamDefaults[index];
+        var engine = new Xex.XexVecTimeline();
+        var o = new FxVectorTimeline { DefaultValue = new[] { defaults[0], defaults[1], defaults[2] }, Engine = engine };
+        foreach ((float time, float x, float y, float z) in keys)
+        {
+            engine.Keys.Add(new Xex.XexVecKey { TimeSecs = time, X = x, Y = y, Z = z });
+            o.Keys.Add((time, x, y, z));
+        }
+
+        Xex.XexBankParser.BakeVec(engine, defaults);
+        if (!engine.Present)
+        {
+            o.Keys.Clear();
+        }
+
+        return o;
     }
 
     private static FxVisual VisualFromSegment(Xex.XexSystemDef sys, int i)

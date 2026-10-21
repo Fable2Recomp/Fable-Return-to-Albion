@@ -13,6 +13,11 @@
 //   save_set KEY INT · run_lua CHUNK...
 //   player_set P KEY V · player_add P KEY D [SAVED] · player_save P KEY V   (the player store
 //     Refii.player_set / _add / _save write: refii_mod_player_*)
+//   publish KEY VALUE            -> refii::mods::Publish: the value every reader sees ("mod:<key>")
+//   menu_row PLAYER MENU ROW MOD -> raises ModMenuRow for the native and Lua handlers (a row chosen
+//                                   in Godot; a space in a name arrives as '_', an empty one as '-')
+//   box_answer ID BUTTON PLAYER  -> raises ModMessageBox for the native and Lua handlers (a mod's
+//                                   message box answered in Godot: 0 A, 1 B, -1 replaced)
 //   query ID health E            -> id,ok,current,max
 //   query ID position E          -> id,ok,x,y,z
 //   query ID gold E              -> id,ok,gold
@@ -42,6 +47,12 @@
 //     morality,respect · uid E -> uid='0x…'
 //   query ID discovered_crime E P -> discovered · perceived_renown E P -> renown
 //   forgive_crimes E P   (refii_mod_forgive_crimes: player P's crimes the villager E knows of)
+//   fx_play ID HASH X Y Z ENTITY OX OY OZ SCALE INTENSITY LOOP
+//                        play_fx under the classic look (Engine_FxPlayer): the guest's own particle
+//                        instance of effect HASH (its bank key), at X Y Z or riding handle ENTITY
+//                        (0 for none) offset by OX OY OZ; SCALE and INTENSITY the instance's own
+//                        setters; LOOP 1 spawns it again each time it retires
+//   fx_stop ID           ends it: the guest's kill (a zero-frame fade) and our reference released
 // A command that does nothing (no such entity, no component) is silent; a query always replies,
 // with ok=false when it could not be answered.
 
@@ -49,9 +60,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "core/guest_build.h"
 #include "core/mod_values.h"
 #include "core/refii_mod.h"
 
@@ -319,6 +333,337 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
   Reply(id, ok, fields);
 }
 
+/// A menu_row word back to the name Godot sent: '-' stands for an empty one.
+const char* Name(const std::vector<std::string>& w, size_t i) {
+  return i < w.size() && w[i] != "-" ? w[i].c_str() : "";
+}
+
+void RaiseMenuRow(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
+  refii::mods::ModMenuRowEvent e{};
+  e.ctx = &ctx;
+  e.base = base;
+  e.player = I(w, 1);
+  e.menu = Name(w, 2);
+  e.row = Name(w, 3);
+  e.mod = Name(w, 4);
+  refii::mods::Dispatch(e);
+}
+
+// ---------------------------------------------------------------------------------------------
+// play_fx UNDER THE CLASSIC LOOK: the effect is spawned as the guest's own particle instance, so
+// the guest simulates it and the classic renderer draws its groups like any other the game plays.
+//
+// THE SPAWN IS THE GAME'S OWN SEQUENCE, the one the particle component's start `sub_82569C28`
+// runs (and fourteen other spawn sites with it), call for call:
+//
+//   82569c78  bl sub_8322FDC8   the effect's type collection from the registry (dword_8349E568),
+//                               by the bank key: lhResourceName_ComputeHash of the lowered name
+//   82569c80  lwz r11,var_30 / beq   an unknown key spawns nothing
+//   82569c8c  li r3,0x48 / bl Render_AllocD3DObject   (operator new 0x8221F258)
+//   82569c9c  bl sub_83233300   CParticleSystemEntityInstanceCollection(type): its entities, +44 = -1
+//   82569cb0  bl sub_82273058   the owner's smart pointer takes it (a fresh count block)
+//   82569ce8  lwarx/addi 1/stwcx.  a counted copy of that pointer ...
+//   82569d00  bl sub_83234D78   ... handed to the manager, which lists it (dword_8349E480, 28-byte
+//                               records), writes its slot at instance+44 and releases the copy
+//   82569d18  bl sub_822B86C0   the world's own list takes a reference (*(*(dword_83496AB8+12)+88))
+//   82569d28  bl sub_821B7B18   the type reference released
+//
+// The component also writes +40 (its interface) and +4 (the hash); +40 stays 0 here, the state the
+// host bridge already reads as "spell-owned" (no emitter component).
+//
+// WHAT THE OPTIONS ARE ON THE INSTANCE: position `sub_832325A8(inst, v1, v2)` (v1's w is replaced by
+// 1.0 at 0x83232624), scale `sub_83232290(inst, f1)` — every element's vtable slot 11, the setter
+// behind ParticleAttacher.SetParticleScale (0x8276724c) — and intensity `sub_832323E0(inst, f1)`,
+// instance+52 and every emitter's +408, behind SetParticleAlpha (0x8276701c). There is no colour
+// on an instance (the constructor initialises +48, +52 and +68 as single floats; a particle's
+// colour is its material's keyframe table), so a TINT cannot be honoured on this path.
+//
+// END OF LIFE: `sub_83232048(inst, frames)` sets every element's +0xC0 = +0xC4 = frames; zero fails
+// the liveness test at once and the retire pass `sub_83234338` drops the instance, writing -1 back
+// to its +44 (0x832347c8). That word is how a one-shot is known to have run out.
+namespace guest_fx {
+
+constexpr uint32_t kOperatorNew = 0x8221F258u;
+constexpr uint32_t kOperatorDelete = 0x8221BD38u;
+constexpr uint32_t kRefRelease = 0x821B7B18u;
+constexpr uint32_t kRefReset = 0x82273058u;
+constexpr uint32_t kEffectType = 0x8322FDC8u;
+constexpr uint32_t kInstanceCtor = 0x83233300u;
+constexpr uint32_t kManagerAdd = 0x83234D78u;
+constexpr uint32_t kWorldHold = 0x822B86C0u;
+constexpr uint32_t kSetPosition = 0x832325A8u;
+constexpr uint32_t kSetScale = 0x83232290u;
+constexpr uint32_t kSetIntensity = 0x832323E0u;
+constexpr uint32_t kFade = 0x83232048u;
+constexpr uint32_t kGameRoot = 0x83496AB8u;
+constexpr uint32_t kInstanceBytes = 0x48u;
+constexpr uint32_t kManagerSlot = 44u;
+
+struct Played {
+  uint32_t holder = 0;  // our smart pointer {instance, count block}, 8 bytes of guest heap
+  uint32_t hash = 0;
+  uint32_t entity = 0;  // a handle, 0 for a world position
+  float at[3] = {0.0f, 0.0f, 0.0f};
+  float offset[3] = {0.0f, 0.0f, 0.0f};
+  float scale = 1.0f;
+  float intensity = 1.0f;
+  bool loop = true;
+};
+
+// The guest tick thread only.
+std::unordered_map<uint32_t, Played> g_played;
+
+bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
+
+bool Call(PPCContext& work, uint8_t* base, uint32_t tu1) {
+  return refii::mods::CallGuest(work, base, refii::guest::Address(tu1));
+}
+
+uint32_t Instance(uint8_t* base, uint32_t holder) {
+  return holder != 0 ? refii::mods::LoadU32(base, holder) : 0u;
+}
+
+/// The count word of a guest smart pointer's block, raised the way the game raises it (lwarx/stwcx.).
+void Retain(uint8_t* base, uint32_t block) {
+  auto* word = reinterpret_cast<std::atomic<uint32_t>*>(base + block);
+  uint32_t seen = word->load(std::memory_order_relaxed);
+  while (!word->compare_exchange_weak(seen, __builtin_bswap32(__builtin_bswap32(seen) + 1u),
+                                      std::memory_order_acq_rel)) {
+  }
+}
+
+void Release(const PPCContext& frame, uint8_t* base, uint32_t ref) {
+  PPCContext work = frame;
+  work.r3.u32 = ref;
+  Call(work, base, kRefRelease);
+}
+
+/// Our holder: released, then its 8 bytes returned to the guest heap.
+void Drop(const PPCContext& ctx, uint8_t* base, uint32_t holder) {
+  if (holder == 0) {
+    return;
+  }
+  const PPCContext frame = refii::mods::Frame(ctx, 0x300u);
+  Release(frame, base, holder);
+  PPCContext work = frame;
+  work.r3.u32 = holder;
+  Call(work, base, kOperatorDelete);
+}
+
+/// The game's spawn sequence (above). Returns our holder, or 0 when the bank has no such effect.
+uint32_t Spawn(const PPCContext& ctx, uint8_t* base, uint32_t hash) {
+  using refii::mods::LoadU32;
+  using refii::mods::StoreU32;
+  const PPCContext frame = refii::mods::Frame(ctx, 0x300u);
+  const uint32_t type_ref = (frame.r1.u32 + 0x100u) & ~0xFu;
+  const uint32_t copy = type_ref + 16u;
+  StoreU32(base, type_ref, 0u);
+  StoreU32(base, type_ref + 4u, 0u);
+
+  PPCContext work = frame;
+  work.r3.u32 = type_ref;
+  work.r4.u32 = hash;
+  if (!Call(work, base, kEffectType) || LoadU32(base, type_ref) == 0u) {
+    Release(frame, base, type_ref);
+    return 0u;
+  }
+
+  work = frame;
+  work.r3.u64 = 8u;
+  const uint32_t holder = Call(work, base, kOperatorNew) ? work.r3.u32 : 0u;
+  work = frame;
+  work.r3.u64 = kInstanceBytes;
+  const uint32_t memory = Plausible(holder) && Call(work, base, kOperatorNew) ? work.r3.u32 : 0u;
+  if (!Plausible(holder) || !Plausible(memory)) {
+    Release(frame, base, type_ref);
+    if (Plausible(holder)) {
+      work = frame;
+      work.r3.u32 = holder;
+      Call(work, base, kOperatorDelete);
+    }
+    return 0u;
+  }
+  StoreU32(base, holder, 0u);
+  StoreU32(base, holder + 4u, 0u);
+
+  work = frame;
+  work.r3.u32 = memory;
+  work.r4.u32 = type_ref;
+  Call(work, base, kInstanceCtor);
+  const uint32_t instance = work.r3.u32;
+
+  work = frame;
+  work.r3.u32 = holder;
+  work.r4.u32 = instance;
+  Call(work, base, kRefReset);
+
+  const uint32_t block = LoadU32(base, holder + 4u);
+  StoreU32(base, copy, LoadU32(base, holder));
+  StoreU32(base, copy + 4u, block);
+  if (block != 0u) {
+    Retain(base, block);
+  }
+  work = frame;
+  work.r3.u32 = copy;
+  Call(work, base, kManagerAdd);
+
+  const uint32_t root = LoadU32(base, refii::guest::Address(kGameRoot));
+  const uint32_t game = Plausible(root) ? LoadU32(base, root + 12u) : 0u;
+  const uint32_t world = Plausible(game) ? LoadU32(base, game + 88u) : 0u;
+  if (Plausible(world)) {
+    work = frame;
+    work.r3.u32 = world;
+    work.r4.u32 = holder;
+    Call(work, base, kWorldHold);
+  }
+
+  Release(frame, base, type_ref);
+  return holder;
+}
+
+void SetFloat(const PPCContext& ctx, uint8_t* base, uint32_t instance, uint32_t setter, float value) {
+  PPCContext work = refii::mods::Frame(ctx, 0x300u);
+  work.r3.u32 = instance;
+  work.f1.f64 = value;
+  Call(work, base, setter);
+}
+
+void Place(const PPCContext& ctx, uint8_t* base, uint32_t instance, const float* xyz) {
+  PPCContext work = refii::mods::Frame(ctx, 0x300u);
+  const float still[3] = {0.0f, 0.0f, 0.0f};
+  work.r3.u32 = instance;
+  refii::mods::SetVector(work, 1, xyz);
+  refii::mods::SetVector(work, 2, still);
+  Call(work, base, kSetPosition);
+}
+
+void Kill(const PPCContext& ctx, uint8_t* base, uint32_t instance) {
+  PPCContext work = refii::mods::Frame(ctx, 0x300u);
+  work.r3.u32 = instance;
+  work.r4.u32 = 0u;
+  Call(work, base, kFade);
+}
+
+/// Where the effect stands this tick: its entity's position plus the offset, or its stated point.
+/// False when its entity is gone.
+bool Where(PPCContext& ctx, uint8_t* base, const Played& p, float* xyz) {
+  if (p.entity == 0u) {
+    xyz[0] = p.at[0];
+    xyz[1] = p.at[1];
+    xyz[2] = p.at[2];
+    return true;
+  }
+  const uint32_t entity = refii_mod_handle_address(p.entity);
+  if (entity == 0u || refii_mod_entity_position(&ctx, base, entity, xyz) == 0) {
+    return false;
+  }
+  for (int i = 0; i < 3; ++i) {
+    xyz[i] += p.offset[i];
+  }
+  return true;
+}
+
+/// Spawns `p` where it stands and states its options; false when nothing was spawned.
+bool Start(PPCContext& ctx, uint8_t* base, Played& p) {
+  float xyz[3];
+  if (!Where(ctx, base, p, xyz)) {
+    return false;
+  }
+  p.holder = Spawn(ctx, base, p.hash);
+  const uint32_t instance = Instance(base, p.holder);
+  if (instance == 0u) {
+    Drop(ctx, base, p.holder);
+    p.holder = 0u;
+    return false;
+  }
+  Place(ctx, base, instance, xyz);
+  if (p.scale != 1.0f) {
+    SetFloat(ctx, base, instance, kSetScale, p.scale);
+  }
+  SetFloat(ctx, base, instance, kSetIntensity, p.intensity);
+  return true;
+}
+
+void Stop(PPCContext& ctx, uint8_t* base, uint32_t id) {
+  auto found = g_played.find(id);
+  if (found == g_played.end()) {
+    return;
+  }
+  const uint32_t instance = Instance(base, found->second.holder);
+  if (instance != 0u && refii::mods::LoadU32(base, instance + kManagerSlot) != 0xFFFFFFFFu) {
+    Kill(ctx, base, instance);
+  }
+  Drop(ctx, base, found->second.holder);
+  g_played.erase(found);
+}
+
+void Play(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
+  if (w.size() < 13) {
+    return;
+  }
+  const uint32_t id = U(w, 1);
+  Stop(ctx, base, id);
+  Played p;
+  p.hash = U(w, 2);
+  p.at[0] = F(w, 3);
+  p.at[1] = F(w, 4);
+  p.at[2] = F(w, 5);
+  p.entity = U(w, 6);
+  p.offset[0] = F(w, 7);
+  p.offset[1] = F(w, 8);
+  p.offset[2] = F(w, 9);
+  p.scale = F(w, 10);
+  p.intensity = F(w, 11);
+  p.loop = I(w, 12) != 0;
+  if (id == 0u || p.hash == 0u || !Start(ctx, base, p)) {
+    return;
+  }
+  g_played.emplace(id, p);
+}
+
+/// Once a tick: an entity's effect follows it, a retired one-shot is let go, a retired loop spawns
+/// again, and one whose entity is gone ends with it.
+void Pump(PPCContext& ctx, uint8_t* base) {
+  std::vector<uint32_t> done;
+  for (auto& [id, p] : g_played) {
+    const uint32_t instance = Instance(base, p.holder);
+    const bool retired =
+        instance == 0u || refii::mods::LoadU32(base, instance + kManagerSlot) == 0xFFFFFFFFu;
+    float xyz[3];
+    const bool placed = Where(ctx, base, p, xyz);
+    if (!placed) {
+      done.push_back(id);
+      continue;
+    }
+    if (retired) {
+      Drop(ctx, base, p.holder);
+      p.holder = 0u;
+      if (!p.loop || !Start(ctx, base, p)) {
+        done.push_back(id);
+      }
+      continue;
+    }
+    if (p.entity != 0u) {
+      Place(ctx, base, instance, xyz);
+    }
+  }
+  for (uint32_t id : done) {
+    Stop(ctx, base, id);
+  }
+}
+
+}  // namespace guest_fx
+
+void RaiseMessageBox(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
+  refii::mods::ModMessageBoxEvent e{};
+  e.ctx = &ctx;
+  e.base = base;
+  e.id = U(w, 1);
+  e.button = I(w, 2);
+  e.player = I(w, 3);
+  refii::mods::Dispatch(e);
+}
+
 void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
   const std::vector<std::string> w = Split(line, std::strncmp(line, "run_lua ", 8) == 0 ? 1 : 64);
   if (w.empty()) {
@@ -354,8 +699,18 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_save_set_int(&ctx, base, w[1].c_str(), I(w, 2));
   } else if (op == "forgive_crimes") {
     refii_mod_forgive_crimes(&ctx, base, E(w, 1), refii_mod_player_hero(base, I(w, 2)));
+  } else if (op == "publish" && w.size() >= 3) {
+    refii::mods::Publish(w[1], F(w, 2));
+  } else if (op == "menu_row" && w.size() >= 4) {
+    RaiseMenuRow(ctx, base, w);
+  } else if (op == "box_answer" && w.size() >= 4) {
+    RaiseMessageBox(ctx, base, w);
   } else if (op == "run_lua" && w.size() >= 2) {
     refii_mod_run_game_lua(&ctx, base, w[1].c_str());
+  } else if (op == "fx_play") {
+    guest_fx::Play(ctx, base, w);
+  } else if (op == "fx_stop") {
+    guest_fx::Stop(ctx, base, U(w, 1));
   }
 }
 
@@ -370,6 +725,8 @@ void RunModCommands(PPCContext& ctx, uint8_t* base) {
     PPCContext work = ctx;
     RunOne(work, base, line);
   }
+  PPCContext work = ctx;
+  guest_fx::Pump(work, base);
 }
 
 }  // namespace refii::vfs

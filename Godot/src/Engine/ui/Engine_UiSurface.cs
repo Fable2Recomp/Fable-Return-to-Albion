@@ -92,16 +92,30 @@ public abstract class Engine_UiSurface<TView>
 	/// <summary>True once <see cref="Join"/> has produced something drivable.</summary>
 	protected abstract bool Joined { get; }
 
-	/// <summary>Stands the view up and builds its join, once per session. With no pattern book
-	/// the build degrades to text-only stand-ins rather than null, keeping the surface
-	/// answerable.</summary>
+	/// <summary>The host's <see cref="Engine_UiPresentationHost.BookGeneration"/> the view was built at.</summary>
+	private int _generation;
+
+	/// <summary>Stands the view up and builds its join, once per pattern book: again when the mount
+	/// changed this presentation's files (<see cref="Engine_UiPresentationHost.BookGeneration"/>).
+	/// With no pattern book the build degrades to text-only stand-ins rather than null, keeping the
+	/// surface answerable.</summary>
 	protected void Ensure(Engine_UiPresentationHost host)
 	{
 		_open = true;
-		if (View is not null)
+		int generation = host.BookGeneration(Presentation);
+		if (View is not null && GodotObject.IsInstanceValid(View) && generation == _generation)
 		{
 			return;
 		}
+
+		if (View is not null && GodotObject.IsInstanceValid(View))
+		{
+			View.QueueFree();
+		}
+
+		View = null;
+		_shown = null;
+		_generation = generation;
 
 		Engine_UiTheme? book = host.PatternBookFor(Presentation);
 		View = Build(book);

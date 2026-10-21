@@ -44,17 +44,7 @@ public partial class Engine_BnkFxLoader : ResourceFormatLoader
         path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase) &&
         path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase);
 
-    public static bool TryParseHashToken(string token, out uint hash)
-    {
-        hash = 0;
-        return token.Length == 11 &&
-            token.StartsWith("FX_", StringComparison.OrdinalIgnoreCase) &&
-            uint.TryParse(
-                token.AsSpan(3),
-                System.Globalization.NumberStyles.HexNumber,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out hash);
-    }
+    public static bool TryParseHashToken(string token, out uint hash) => FxBank.TryParseHashToken(token, out hash);
 
     public static FxEffect? Resolve(FxBank bank, string token) =>
         TryParseHashToken(token, out uint hash)

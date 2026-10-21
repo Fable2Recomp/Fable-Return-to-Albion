@@ -482,5 +482,74 @@ extern "C" int32_t refii_mod_line_of_sight(PPCContext* ctx, uint8_t* base, const
 /// game while it does not allow script creation. Returns the entity, or 0. Guest tick thread only.
 extern "C" uint32_t refii_mod_spawn(PPCContext* ctx, uint8_t* base, uint32_t definition, const float* xyz);
 
+// ---------------------------------------------------------------------------------------------
+// Effects: a request crosses to the host, which plays it the way the active look draws effects:
+// under the modern look Godot spawns the node it draws every bank effect with (FableFx); under the
+// classic look the host hands it back to the guest tick (`fx_play`, mod_commands.cpp), which spawns
+// the guest's own particle instance by the game's own spawn sequence. A tint applies only to the
+// modern look; the guest's instance has no colour of its own.
+// ---------------------------------------------------------------------------------------------
+
+/// How a played effect is shown. Null options mean refii_mod_fx_default_options().
+typedef struct refii_mod_fx_options {
+  /// Seconds before it is stopped; 0 plays until refii_mod_stop_fx (or, with loop 0, until the
+  /// effect has run out).
+  float duration;
+  /// A size multiplier on every position, motion and size of the effect, as a node's scale is.
+  float scale;
+  /// A colour multiplier on every particle (1, 1, 1 untinted).
+  float tint[3];
+  /// The instance intensity, an alpha term (1 as authored).
+  float intensity;
+  /// 1 repeats the effect, 0 plays it once.
+  int32_t loop;
+  /// From the entity (refii_mod_play_fx_on), in the guest's world axes at the moment it starts;
+  /// after that the effect rides the entity rigidly.
+  float offset[3];
+} refii_mod_fx_options;
+
+inline refii_mod_fx_options refii_mod_fx_default_options(void) {
+  refii_mod_fx_options options{};
+  options.scale = 1.0f;
+  options.tint[0] = options.tint[1] = options.tint[2] = 1.0f;
+  options.intensity = 1.0f;
+  options.loop = 1;
+  return options;
+}
+
+/// Plays effect `name` — any effect of the particle bank or of an enabled mod's fx/effects/, by
+/// its name or an "FX_XXXXXXXX" hash token — at the world position `xyz` (the guest's axes).
+/// Returns the id refii_mod_stop_fx takes (never 0 for a request that was posted; 0 for a null or
+/// empty name). Any thread; the effect appears on Godot's next frame. An unknown name is reported
+/// by Godot, not here.
+extern "C" uint32_t refii_mod_play_fx(const char* name, const float* xyz, const refii_mod_fx_options* options);
+
+/// Plays effect `name` on `entity` (an address; its handle is what crosses): it follows the
+/// entity's drawn node, offset by options->offset, and goes with it.
+extern "C" uint32_t refii_mod_play_fx_on(const char* name, uint32_t entity, const refii_mod_fx_options* options);
+
+/// Stops a played effect by the id play_fx returned — any surface's id: native, Lua or Godot.
+extern "C" void refii_mod_stop_fx(uint32_t id);
+
+// ---------------------------------------------------------------------------------------------
+// The UI: a mod's menus and message boxes, drawn by Godot (posted as REFII_MOD_HOST_UI_KIND)
+// ---------------------------------------------------------------------------------------------
+
+/// Opens a menu a mod defines in ui/templates.json for `player` (1 or 2; 0 for whoever owns the
+/// menus on this machine): over whichever menu list has the input, else — in play or on the title,
+/// with no list up — as a list of its own that takes the pad and closes on B. A machine opens it
+/// only for a player it plays (the mod's code runs on the other machine too). Returns 1 when the
+/// request was posted, 0 for no name. Any thread; Godot acts on it on its next frame.
+extern "C" int32_t refii_mod_open_menu(int32_t player, const char* name);
+
+/// Raises a message box for `player` (1 or 2; 0 for whoever owns the menus here) in the game's own
+/// box art — in game the query or message box, on the front end its own dialog: `title` above
+/// `text` ('\n' breaks a line). With `cancel` non-null it is a question, A and B captioned
+/// `accept` and `cancel` (null or "" keeps the box's own caption); without, a notice with one
+/// button. Returns the id the ModMessageBox event carries when it is answered (0 for no text). A
+/// machine shows it only for a player it plays, and answers -1 elsewhere. Any thread.
+extern "C" uint32_t refii_mod_message_box(int32_t player, const char* title, const char* text, const char* accept,
+                                          const char* cancel);
+
 // The events — one include gives a mod the whole surface.
 #include "core/refii_mod_events.h"

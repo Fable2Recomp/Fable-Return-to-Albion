@@ -626,7 +626,7 @@ public partial class GameInput : Node
 		// The owned menus' masks hold the menu owner's pad — every pad until an owner is stated.
 		bool owned = MasksPad(pad);
 		bool masked = owned && MaskMenuInput;
-		bool goldenMenu = GameGoldenCock.OwnsInput;
+		bool goldenMenu = GameGoldenCock.OwnsInput || (owned && HostUiOwnsPad);
 		bool pauseMasked = owned && !masked && MaskPauseInput;
 		bool queryMasked = owned && !masked && !pauseMasked && MaskPauseQueryInput;
 		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the
@@ -780,6 +780,14 @@ public partial class GameInput : Node
 	/// or the box answers twice. Re-derived every frame, and ANDed with the guest's own state.
 	/// </summary>
 	public static bool ModalBoxOwnsInput { get; set; }
+
+	/// <summary>
+	/// Set by <c>GameUi</c> while a host surface the guest has no part in stands over the play or
+	/// the title: a host box on the front end, a mod's menu opened with no list under it. The whole
+	/// pad is the host's then, as under the Golden Cock's menu — the guest sees no press, stick or
+	/// trigger. Re-derived every frame; a button held across the lift stays hidden until released.
+	/// </summary>
+	public static bool HostUiOwnsPad { get; set; }
 
 	/// <summary>Set while the guest has a display MessageBox open — stated by the class's own
 	/// Open and Close, not the router's modal latch, which such a box never sets.</summary>

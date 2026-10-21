@@ -232,6 +232,9 @@ public sealed class Engine_FxSystem
         public float[] PlaceRot = { 1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f };
         public float Scale = 1f;
         public float[] Lit = { 1f, 1f, 1f };
+
+        /// <summary>The effect's authored tint (<see cref="FxEffect.Tint"/>), beside the node's.</summary>
+        public float[] Tint = { 1f, 1f, 1f };
         public float Time;
         public int Frame;
         public int Step = 1;
@@ -782,6 +785,17 @@ public sealed class Engine_FxSystem
 
             FxEffect? eff = bank.FindByHash(p.EffectHash);
             if (eff is null) continue;
+
+            // A mod effect's authored scale and tint stand where the node's EffectScale and Tint
+            // do; both are identity for every shipped effect. The socket offset above is the
+            // placement's and keeps the placement's scale.
+            if (eff.Scale > 0.0001f && eff.Scale != 1f)
+            {
+                sc *= eff.Scale;
+                inst.Scale = sc;
+            }
+
+            Array.Copy(eff.Tint, inst.Tint, 3);
             // The field IS the guest's group index into its two rate columns, copied verbatim
             // with no clamp: `desc+32` to `def+60` to `inst+12`. Group 0 updates at 15 Hz with
             // dt 1/15 and advances 2 authored frames; group 1 at 30 Hz with dt 1/30 and 1 frame.
@@ -2014,9 +2028,9 @@ public sealed class Engine_FxSystem
                     col[0] = inst.Lit[0] + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - inst.Lit[0]) * si);
                     col[1] = inst.Lit[1] + (((vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1]) - inst.Lit[1]) * si);
                     col[2] = inst.Lit[2] + (((vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2]) - inst.Lit[2]) * si);
-                    col[0] *= _tint[0];
-                    col[1] *= _tint[1];
-                    col[2] *= _tint[2];
+                    col[0] *= _tint[0] * inst.Tint[0];
+                    col[1] *= _tint[1] * inst.Tint[1];
+                    col[2] *= _tint[2] * inst.Tint[2];
                     float a = vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha;
                     // The instance intensity is an alpha term: 0038 `r5.w = fade × FadeOut.z`
                     // (binding 321.z = the batch's intensity), `oColor0.w = r5.w × keyframe.a`;
