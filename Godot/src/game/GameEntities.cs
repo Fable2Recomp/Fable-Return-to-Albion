@@ -326,12 +326,15 @@ public partial class GameEntities : Node3D
             UnbatchAll();
         }
 
+        Transform3D toWorld = GlobalTransform;
         uint heroAddress = HostBridge.HeroEntityAddress();
         (uint playerOne, uint playerTwo) = HostBridge.CoopPlayerEntities();
-        _principals = (heroAddress, playerOne, playerTwo);
+        uint dogAddress = HostBridge.DogEntityAddress();
+        _principals = (heroAddress, playerOne, playerTwo, dogAddress);
         uint heroZone = heroAddress != 0u ? HostBridge.GetEntityLightZone(heroAddress) : Refii.Models.Engine_ClassicZones.Outdoors;
         _heroZone = heroZone;
         _createdThisFrame = 0;
+        _dynamicCasterPositions.Clear();
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         foreach (HostBridge.GuestEntity entity in entities)
         {
@@ -576,6 +579,7 @@ public partial class GameEntities : Node3D
             if (!adopted && !_nodes.ContainsKey(entity.Address) && Twins is { } adoptable &&
                 Refii.Models.Engine_MdlRig.TryFrom(mesh) is null &&
                 !MeshHasCloth(mesh) &&
+                (EntityLayers(entity) & (Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LightZones.IndoorLampHostMask)) == 0u &&
                 ModelKeyFor(entity.ModelHash) is { } adoptKey && IsUsablePlacement(entity.Position) &&
                 adoptable.TryAdopt(entity.RecordHash, adoptKey,
                     ToGlobal(ToGodot(entity.Position, entity.Rotation).Origin))
@@ -594,6 +598,16 @@ public partial class GameEntities : Node3D
                 if (ModelKeyFor(entity.ModelHash) is { } modelKey)
                 {
                     _drawnKeys.Add((entity.Address, modelKey));
+                }
+                else if (entity.ModelHash == 0u && _meshParts.TryGetValue(entity.Address, out uint[]? partHashes))
+                {
+                    for (int p = 0; p < partHashes.Length; p++)
+                    {
+                        if (ModelKeyFor(partHashes[p]) is { } partKey)
+                        {
+                            _drawnKeys.Add((entity.Address, partKey));
+                        }
+                    }
                 }
             }
 
@@ -624,13 +638,15 @@ public partial class GameEntities : Node3D
                     GD.Print($"[game-entities] hero {heroAddress:X8} node created on tick {_ticks}" +
                         (LoadHold ? " (under the load hold)" : " (AFTER the load hold)"));
                 }
+                uint layers = EntityLayers(entity);
+                _entityLayers[entity.Address] = layers;
                 node = new MeshInstance3D
                 {
                     Name = $"Entity_{entity.Address:X8}",
                     Mesh = mesh,
                     // Layer 1 draws it and the second bit is what a fixture's shadow map takes; a
                     // lamp host takes neither, as its static twin would not.
-                    Layers = EntityLayers(entity),
+                    Layers = layers,
                     // It moves: it takes the GI from the probes and is never voxelised into it.
                     GIMode = GeometryInstance3D.GIModeEnum.Dynamic,
                 };
@@ -653,6 +669,13 @@ public partial class GameEntities : Node3D
                 {
                     Twins?.Claim(entity.RecordHash);
                     _dirtyPlaceHides = true;
+                }
+                if (IsUsablePlacement(entity.Position) && _attachments.ParentOf(entity.Address) == 0u)
+                {
+                    Transform3D initialTransform = Refii.Entities.Engine_EntityAppearance.Scaled(
+                        Drawn(entity, ToGodot(entity.Position, entity.Rotation)), entity.Appearance);
+                    node.Transform = initialTransform;
+                    _written[entity.Address] = (node, initialTransform);
                 }
                 AddChild(node);
                 _nodes[entity.Address] = node;
@@ -712,10 +735,12 @@ public partial class GameEntities : Node3D
                     Refii.Fx.Engine_DisplacementMeshes.Adopt(entity.RecordHash, node, mesh);
                 }
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
+                SyncInteriorMesh(entity, node, adopted);
             }
             else
             {
                 node = existingNode!;
+                SyncInteriorMesh(entity, node, adopted);
                 if (!_nodeMesh.TryGetValue(entity.Address, out Mesh? drawnMesh) || !ReferenceEquals(drawnMesh, mesh))
                 {
                     // An entity can change model — a door opening, a prop breaking, a body that
@@ -902,9 +927,26 @@ public partial class GameEntities : Node3D
                         Refii.Entities.Engine_EntityAppearance.Scaled(Drawn(entity, stated), entity.Appearance));
                 }
 
-                if (entity.Changed || created || Due(entity.Address, ReconcileTicks))
+                bool dueReconcile = Due(entity.Address, ReconcileTicks);
+                bool zoneChanged = false;
+                if (entity.Changed || created || IsPrincipal(entity.Address) || dueReconcile)
                 {
-                    EntityLightZoneOf(entity.Address, refresh: true);
+                    uint prevZone = _entityLightZone.TryGetValue(entity.Address, out uint z) ? z : 0u;
+                    uint newZone = EntityLightZoneOf(entity.Address, refresh: true);
+                    zoneChanged = newZone != prevZone;
+                    if (adopted && _adoptions.TryGetValue(entity.Address, out var marriage) &&
+                        (EntityLayers(entity) & (Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LightZones.IndoorLampHostMask)) != 0u)
+                    {
+                        Twins?.Release(marriage.Twin, hide: true);
+                        _adoptions.Remove(entity.Address);
+                        adopted = false;
+                        node.Visible = true;
+                        if (entity.RecordHash != 0)
+                        {
+                            _drawnRecords.Add(entity.RecordHash);
+                            Twins?.Claim(entity.RecordHash);
+                        }
+                    }
                 }
 
                 // LIT FROM THE LEVEL'S PROBE FIELD where it stands, as the guest lights every
@@ -913,27 +955,39 @@ public partial class GameEntities : Node3D
                 // And only when the answer can have changed: the sample depends on position and
                 // theme, so it is redone when the entity has moved half a metre or the region's
                 // lighting generation has changed. Each sample allocates Godot wrappers.
-                if (!adopted && !(_batches?.Contains(entity.Address) ?? false) &&
-                    (Due(entity.Address, ReconcileTicks) || _relit.Add(entity.Address)))
+                if (!adopted && (zoneChanged || dueReconcile || _relit.Add(entity.Address)))
                 {
-                    // A region's lights can spawn after the entity that hosts one.
+                    // A region's lights can spawn after the entity that hosts one, or its building
+                    // zone can resolve after the entity was promoted to a batch.
                     uint layers = EntityLayers(entity);
-                    if (node.Layers != layers)
+                    if (!_entityLayers.TryGetValue(entity.Address, out uint curLayers) || curLayers != layers)
                     {
+                        _entityLayers[entity.Address] = layers;
                         // A batch is keyed by its layers; the prop rejoins one under the new ones.
                         Unbatch(entity.Address, node);
                         node.Layers = layers;
                         Refii.Entities.Engine_ShadowProxy.Sync(node);
                     }
 
-                    Vector3 at = node.IsInsideTree() ? node.GlobalTransform.Origin : Vector3.Zero;
-                    long generation = Refii.Lighting.Engine_LevelBakedLighting.LightingGeneration;
-                    if (!_lastLit.TryGetValue(entity.Address, out (Vector3 At, long Gen) last) ||
-                        last.Gen != generation ||
-                        last.At.DistanceSquaredTo(at) > 0.25f)
+                    if (!(_batches?.Contains(entity.Address) ?? false))
                     {
-                        _lastLit[entity.Address] = (at, generation);
-                        RelightEntity(node);
+                        Vector3 at = Vector3.Zero;
+                        if (_written.TryGetValue(entity.Address, out (MeshInstance3D Node, Transform3D Drawn) written))
+                        {
+                            at = toWorld * written.Drawn.Origin;
+                        }
+                        else if (node.IsInsideTree())
+                        {
+                            at = toWorld * node.Transform.Origin;
+                        }
+                        long generation = Refii.Lighting.Engine_LevelBakedLighting.LightingGeneration;
+                        if (!_lastLit.TryGetValue(entity.Address, out (Vector3 At, long Gen) last) ||
+                            last.Gen != generation ||
+                            last.At.DistanceSquaredTo(at) > 0.25f)
+                        {
+                            _lastLit[entity.Address] = (at, generation);
+                            RelightEntity(node);
+                        }
                     }
                 }
 
@@ -994,8 +1048,19 @@ public partial class GameEntities : Node3D
                     // it is in the view frustum, and for 30 render frames after it leaves;
                     // otherwise its pose is HELD and its clips keep running. The first write is
                     // unconditional: a held pose needs a pose to hold.
-                    bool measurable = haveEye && node.IsInsideTree();
-                    Vector3 rigAt = measurable ? node.GlobalTransform.Origin : Vector3.Zero;
+                    bool measurable = haveEye && (node.IsInsideTree() || _written.ContainsKey(entity.Address));
+                    Vector3 rigAt = Vector3.Zero;
+                    if (measurable)
+                    {
+                        if (_written.TryGetValue(entity.Address, out (MeshInstance3D Node, Transform3D Drawn) written))
+                        {
+                            rigAt = toWorld * written.Drawn.Origin;
+                        }
+                        else
+                        {
+                            rigAt = toWorld * node.Transform.Origin;
+                        }
+                    }
                     float eyeDistanceSq = measurable ? eyeAt.DistanceSquaredTo(rigAt) : 0f;
 
                     // Distance is a RATE, never a cutoff. `sub_822142E8` gates on the view cone
@@ -1008,7 +1073,8 @@ public partial class GameEntities : Node3D
                     // Past its stated reach the rig is not drawn and casts nothing, so its pose is
                     // held like one off screen; the clips run on and the next write is correct.
                     // A principal found after its node was stamped loses the stamp here.
-                    if (IsPrincipal(entity.Address) && _drawRanges.Remove(entity.Address))
+                    bool principal = IsPrincipal(entity.Address) || IsPrincipal(_attachments.ParentOf(entity.Address));
+                    if (principal && _drawRanges.Remove(entity.Address))
                     {
                         node.RemoveMeta(Refii.Level.Engine_PropDrawRange.Meta);
                         node.VisibilityRangeEnd = 0f;
@@ -1022,16 +1088,20 @@ public partial class GameEntities : Node3D
 
                     float reach = DrawnReach(entity.Address) + ReachSlackMetres;
                     bool withinReach = !measurable || float.IsPositiveInfinity(reach) || eyeDistanceSq <= reach * reach;
-                    bool buildingOccluded = measurable && !IsPrincipal(entity.Address) &&
+                    bool buildingOccluded = measurable && !principal &&
                         IsBuildingOccluded(entity.Address, eyeDistanceSq);
-                    bool inView = IsPrincipal(entity.Address) ||
+                    bool inView = principal ||
                         (withinReach && !buildingOccluded && RigInView(entity.Address, measurable, rigAt, frustum, nowMs));
+
+                    if (inView || principal)
+                    {
+                        _dynamicCasterPositions.Add(rigAt);
+                    }
 
                     // Principals and actively moving full-rate rigs keep their shadow skeleton
                     // locked to their visible skeleton every frame so the shadow proxy never lags
                     // into the visible body and self-shadows it; stationary rigs follow on the
                     // guest's 15 Hz HalfRate cadence.
-                    bool principal = IsPrincipal(entity.Address) || IsPrincipal(_attachments.ParentOf(entity.Address));
                     bool fullRate = !measurable || principal ||
                         eyeDistanceSq <= PoseFullRateRadius * PoseFullRateRadius;
                     Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(
@@ -1048,16 +1118,16 @@ public partial class GameEntities : Node3D
                         }
                     }
 
-                    if (inView || neverPosed)
+                    if (writeBones)
                     {
                         long clipFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                         Refii.Animations.Engine_ClipAnimator animator = ClipAnimatorFor(entity.Address, rig);
-                        if (!animator.Begin(entity.Address, writeBones, out bool fold))
+                        if (!animator.Begin(entity.Address, writeBones: true, out bool fold))
                         {
                             // The feed is about to write this skeleton, so the animator's
                             // written-pose cache no longer describes it.
                             animator.ForgetWrittenPose();
-                            rig.Follow(entity.Address, writeBones);
+                            rig.Follow(entity.Address, true);
                             if (!rig.IsSettled)
                             {
                                 _reblending.Add(entity.Address);
@@ -2716,6 +2786,9 @@ public partial class GameEntities : Node3D
             _partMorphs.Remove(address);
             _textureLayers.Remove(address);
             _meshParts.Remove(address);
+            _multiMeshSplit.Remove(address);
+            _interiorMeshesPending.Remove(address);
+            _interiorNodes.Remove(address);
             _nodeMesh.Remove(address);
             _relit.Remove(address);
             _attachments.Forget(address);
@@ -2727,8 +2800,11 @@ public partial class GameEntities : Node3D
             _extentHeldStreak.Remove(address);
             _drawRanges.Remove(address);
             _entityLightZone.Remove(address);
+            _entityLayers.Remove(address);
         }
     }
+
+    private const string InteriorChildName = "Interior";
 
     /// <summary>Scratch for <see cref="Retire"/> — reused, for the reason stated there.</summary>
     private readonly List<uint> _gone = new();
@@ -2771,6 +2847,12 @@ public partial class GameEntities : Node3D
             Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
                 cloth, Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting);
         }
+
+        if (node.GetNodeOrNull<GeometryInstance3D>(InteriorChildName) is { } interior)
+        {
+            Refii.Lighting.Engine_LevelBakedLighting.ApplyInstanceLighting(
+                interior, Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting);
+        }
     }
 
     /// <summary>Probe-lit at the entity's current place: the region root is the sky node's
@@ -2788,6 +2870,10 @@ public partial class GameEntities : Node3D
         if (Refii.Physics.Engine_ClothBody.Of(node) is { } cloth)
         {
             Refii.Lighting.Engine_LevelBakedLighting.LightEntityAt(cloth, local, sky.Lighting);
+        }
+        if (node.GetNodeOrNull<GeometryInstance3D>(InteriorChildName) is { } interior)
+        {
+            Refii.Lighting.Engine_LevelBakedLighting.LightEntityAt(interior, local, sky.Lighting);
         }
     }
 
@@ -2941,30 +3027,152 @@ public partial class GameEntities : Node3D
     /// Same assembly as a composite character and deliberately so — both are "N models drawn as
     /// one entity", and the cache keys on the part list, so a street of identical townhouses
     /// shares a single built mesh. What differs is only where the hashes come from.
+    ///
+    /// When a building carries both exterior and interior mesh records (<c>GetEntityInteriorMeshes</c>,
+    /// <c>sub_828F9BA0</c> / <c>sub_828F9F90</c>), the exterior parts are composed onto the
+    /// primary node (outdoor layer 1) and the interior parts onto the <see cref="InteriorChildName"/>
+    /// child node (<see cref="Refii.Lighting.Engine_LightZones.IndoorMask"/>), so outdoor lights
+    /// illuminate building facades and indoor lights never bleed through exterior walls.
     /// </remarks>
     private Mesh? ResolveMultiMesh(uint address, out bool hasParts)
     {
-        uint[] parts;
+        uint[] extParts;
+        uint[] intParts;
         int total = 0;
-        if (!Due(address, ReconcileTicks) && _meshParts.TryGetValue(address, out uint[]? knownParts))
+        if (!Due(address, ReconcileTicks) && _multiMeshSplit.TryGetValue(address, out (uint[] Exterior, uint[] Interior) known))
         {
-            parts = knownParts;
+            extParts = known.Exterior;
+            intParts = known.Interior;
         }
         else
         {
-            parts = HostBridge.GetEntityMeshParts(address, out total);
+            uint[] parts = HostBridge.GetEntityMeshParts(address, out total);
+            uint[] interiors = parts.Length > 0 ? HostBridge.GetEntityInteriorMeshes(address) : System.Array.Empty<uint>();
+            if (interiors.Length == 0)
+            {
+                extParts = parts;
+                intParts = System.Array.Empty<uint>();
+            }
+            else
+            {
+                var extList = new List<uint>(parts.Length);
+                var intList = new List<uint>(interiors.Length);
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    uint p = parts[i];
+                    if (System.Array.IndexOf(interiors, p) >= 0)
+                    {
+                        intList.Add(p);
+                    }
+                    else
+                    {
+                        extList.Add(p);
+                    }
+                }
+                extParts = extList.ToArray();
+                intParts = intList.ToArray();
+            }
             _meshParts[address] = parts;
+            _multiMeshSplit[address] = (extParts, intParts);
         }
 
-        if (parts.Length == 0)
+        if (extParts.Length == 0 && intParts.Length == 0)
         {
+            _interiorMeshesPending.Remove(address);
             hasParts = false;
             return null;
         }
 
         hasParts = true;
         _multiMeshParts += total;
-        return ComposeParts(parts);
+
+        if (extParts.Length == 0)
+        {
+            _interiorMeshesPending.Remove(address);
+            return ComposeParts(intParts);
+        }
+
+        Mesh? extMesh = ComposeParts(extParts);
+        if (intParts.Length == 0)
+        {
+            _interiorMeshesPending.Remove(address);
+            return extMesh;
+        }
+
+        Mesh? intMesh = ComposeParts(intParts);
+        if (extMesh is null || intMesh is null)
+        {
+            return null;
+        }
+
+        _interiorMeshesPending[address] = intMesh;
+        return extMesh;
+    }
+
+    private readonly Dictionary<uint, (uint[] Exterior, uint[] Interior)> _multiMeshSplit = new();
+    private readonly Dictionary<uint, Mesh> _interiorMeshesPending = new();
+    private readonly Dictionary<uint, MeshInstance3D> _interiorNodes = new();
+
+    private void SyncInteriorMesh(HostBridge.GuestEntity entity, MeshInstance3D node, bool adopted)
+    {
+        if (!_interiorMeshesPending.TryGetValue(entity.Address, out Mesh? intMesh))
+        {
+            if (_interiorNodes.Remove(entity.Address, out MeshInstance3D? stale) && GodotObject.IsInstanceValid(stale))
+            {
+                Refii.Lighting.Engine_ShadowReach.Release(stale);
+                stale.QueueFree();
+            }
+            return;
+        }
+
+        uint intLayers = InteriorEntityLayers(entity);
+        if (!_interiorNodes.TryGetValue(entity.Address, out MeshInstance3D? intNode) || !GodotObject.IsInstanceValid(intNode))
+        {
+            intNode = new MeshInstance3D
+            {
+                Name = InteriorChildName,
+                Mesh = intMesh,
+                Layers = intLayers,
+                GIMode = GeometryInstance3D.GIModeEnum.Dynamic,
+            };
+            node.AddChild(intNode);
+            _interiorNodes[entity.Address] = intNode;
+            LightEntity(intNode);
+            Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(intNode, intMesh);
+            Refii.Lighting.Engine_ShadowReach.Adopt(intNode);
+            if (!adopted)
+            {
+                Refii.Entities.Engine_HiddenClusters.Apply(intNode, entity.Address);
+            }
+            Refii.Entities.Engine_ShadowProxy.Sync(intNode);
+            return;
+        }
+
+        if (intNode.Layers != intLayers)
+        {
+            intNode.Layers = intLayers;
+            Refii.Entities.Engine_ShadowProxy.Sync(intNode);
+        }
+
+        if (!ReferenceEquals(intNode.Mesh, intMesh))
+        {
+            intNode.Mesh = intMesh;
+            LightEntity(intNode);
+            intNode.VisibilityRangeEnd = 0f;
+            Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(intNode, intMesh);
+            Refii.Lighting.Engine_ShadowReach.Release(intNode);
+            Refii.Lighting.Engine_ShadowReach.Adopt(intNode);
+            if (!adopted)
+            {
+                Refii.Entities.Engine_HiddenClusters.Apply(intNode, entity.Address);
+            }
+            Refii.Entities.Engine_ShadowProxy.Sync(intNode);
+        }
+        else if (!adopted && Due(entity.Address, ReconcileTicks))
+        {
+            Refii.Entities.Engine_HiddenClusters.Apply(intNode, entity.Address);
+            Refii.Entities.Engine_ShadowProxy.SyncHidden(intNode);
+        }
     }
 
     /// <summary>Morph part lists per entity, re-read on the reconcile cadence.</summary>
@@ -3050,6 +3258,7 @@ public partial class GameEntities : Node3D
         if (adopted || !Refii.Entities.Engine_EntityBatches.Enabled ||
             !Refii.Lighting.Engine_LightingFrame.ModernModel || !_unrigged.Contains(entity.Address) ||
             mesh is not ArrayMesh shape || (_batches?.Contains(entity.Address) ?? false) ||
+            _interiorNodes.ContainsKey(entity.Address) ||
             MeshHasCloth(mesh) || Refii.Physics.Engine_ClothBody.Of(node) is not null)
         {
             return;
@@ -3088,6 +3297,19 @@ public partial class GameEntities : Node3D
         }
     }
 
+    /// <summary>Re-evaluates visibility ranges across all entity batches and unrigged dressing entity nodes.</summary>
+    public void UpdateAllVisibilityRanges()
+    {
+        _batches?.UpdateVisibilityRanges();
+        foreach (uint addr in _unrigged)
+        {
+            if (_nodes.TryGetValue(addr, out MeshInstance3D? node) && GodotObject.IsInstanceValid(node) && node.Mesh is not null)
+            {
+                Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(node, node.Mesh);
+            }
+        }
+    }
+
     private void UnbatchAll()
     {
         foreach (KeyValuePair<uint, MeshInstance3D> pair in _nodes)
@@ -3102,10 +3324,10 @@ public partial class GameEntities : Node3D
     /// rate, re-posed every drawn frame, posed when off screen — and both players are principals
     /// alike: the co-op partner is as much the centre of attention as the local hero.
     /// </summary>
-    private (uint Hero, uint One, uint Two) _principals;
+    private (uint Hero, uint One, uint Two, uint Dog) _principals;
 
     private bool IsPrincipal(uint address) =>
-        address != 0u && (address == _principals.Hero || address == _principals.One || address == _principals.Two);
+        address != 0u && (address == _principals.Hero || address == _principals.One || address == _principals.Two || address == _principals.Dog);
 
     private int _createdThisFrame;
 
@@ -3802,6 +4024,40 @@ public partial class GameEntities : Node3D
     /// <summary>The hero's stated rotation in the guest's space, beside the position.</summary>
     public static Quaternion? HeroGuestRotation { get; private set; }
 
+    /// <summary>Active dynamic character positions from the last walk that can cast dynamic shadows.</summary>
+    private static readonly List<Vector3> _dynamicCasterPositions = new();
+
+    /// <summary>
+    /// Whether any dynamic character caster (hero, companion dog, moving/visible NPC) is within
+    /// reach (<paramref name="radius"/> + 1.5m) of the given position. Used by the shadow budget to avoid
+    /// allocating dynamic shadow passes for lights illuminating empty areas.
+    /// </summary>
+    public static bool HasDynamicCasterNear(Vector3 position, float radius)
+    {
+        float reach = radius + 1.5f;
+        float reachSq = reach * reach;
+        if (HeroPosition.HasValue && position.DistanceSquaredTo(HeroPosition.Value) <= reachSq)
+        {
+            return true;
+        }
+
+        // Fallback if no entities walked yet (e.g. headless tests)
+        if (_dynamicCasterPositions.Count == 0 && !HeroPosition.HasValue)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < _dynamicCasterPositions.Count; i++)
+        {
+            if (position.DistanceSquaredTo(_dynamicCasterPositions[i]) <= reachSq)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Every walked entity's stated position in the guest's space, by address, from the
     /// last walk — for the readers that plot an entity the guest names (the minimap's dog and
     /// quest markers).</summary>
@@ -3925,6 +4181,7 @@ public partial class GameEntities : Node3D
     private uint _heroZone = Refii.Models.Engine_ClassicZones.Outdoors;
 
     private readonly Dictionary<uint, uint> _entityLightZone = new();
+    private readonly Dictionary<uint, uint> _entityLayers = new();
 
     private uint EntityLightZoneOf(uint address, bool refresh = false)
     {
@@ -3941,7 +4198,7 @@ public partial class GameEntities : Node3D
     /// <summary>
     /// Building occlusion: only cull non-principal rigs if they are occluded by building boundaries:
     /// 1. Outside looking into a building: cull beyond 35m (1225m²).
-    /// 2. Inside a building looking into a DIFFERENT building: cull beyond 20m (400m²).
+    /// 2. Inside a building looking into a DIFFERENT building: cull unconditionally (cannot see through solid walls).
     /// 3. Inside a building looking out into the open world: allow up to 45m (2025m²),
     ///    ensuring town square NPCs visible through open doors and windows remain animated.
     /// </summary>
@@ -3954,7 +4211,7 @@ public partial class GameEntities : Node3D
         {
             return true;
         }
-        if (heroIndoors && indoors && entityZone != _heroZone && eyeDistanceSq > 400f)
+        if (heroIndoors && indoors && entityZone != _heroZone)
         {
             return true;
         }
@@ -4049,13 +4306,58 @@ public partial class GameEntities : Node3D
     /// <summary>
     /// An entity's render layers: the fixture rule (Engine_LevelLights.EntityLayersOf), in its
     /// light zone under the modern renderer (Engine_LightZones: an interior trades the world bit).
+    /// Under the modern renderer where static world shadows are baked, only characters, attached
+    /// items, and active movers carry EntityCasterLayerMask so static props do not flood dynamic shadow passes.
     /// </summary>
     private uint EntityLayers(HostBridge.GuestEntity entity)
     {
-        uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(entity.RecordHash);
-        return Refii.Lighting.Engine_LightZones.Active
-            ? Refii.Lighting.Engine_LightZones.Zoned(layers, EntityLightZoneOf(entity.Address))
-            : layers;
+        bool isDynamic = _skeletons.ContainsKey(entity.Address) ||
+            IsPrincipal(entity.Address) ||
+            _attachments.ParentOf(entity.Address) != 0u ||
+            _movers.Contains(entity.Address);
+
+        uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(
+            entity.RecordHash,
+            includeDynamicCaster: isDynamic || Refii.Models.Engine_ClassicMaterial.Active);
+        if (!Refii.Lighting.Engine_LightZones.Active || Refii.Lighting.Engine_LightingFrame.CurrentInterior)
+        {
+            return layers;
+        }
+
+        uint zone = EntityLightZoneOf(entity.Address);
+        if (zone == (entity.RecordHash & 0x7FFFFFFFu))
+        {
+            // `entity` is a CECBuilding in an outdoor level. Its interior mesh records (if any)
+            // are split onto the "Interior" child node (SyncInteriorMesh -> InteriorEntityLayers),
+            // so the primary node holds only exterior meshes unless the building has interior
+            // records and zero exterior records.
+            if (!_multiMeshSplit.TryGetValue(entity.Address, out (uint[] Exterior, uint[] Interior) split) ||
+                split.Exterior.Length > 0 || split.Interior.Length == 0)
+            {
+                zone = Refii.Models.Engine_ClassicZones.Outdoors;
+            }
+        }
+
+        return Refii.Lighting.Engine_LightZones.Zoned(layers, zone);
+    }
+
+    private uint InteriorEntityLayers(HostBridge.GuestEntity entity)
+    {
+        uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(
+            entity.RecordHash,
+            includeDynamicCaster: Refii.Models.Engine_ClassicMaterial.Active);
+        if (!Refii.Lighting.Engine_LightZones.Active)
+        {
+            return layers;
+        }
+
+        uint zone = EntityLightZoneOf(entity.Address);
+        if (zone == 0u || zone == Refii.Models.Engine_ClassicZones.Outdoors)
+        {
+            zone = entity.RecordHash & 0x7FFFFFFFu;
+        }
+
+        return Refii.Lighting.Engine_LightZones.Zoned(layers, zone);
     }
 
     private Plane[] Frustum(Camera3D eye)
@@ -4176,6 +4478,13 @@ public partial class GameEntities : Node3D
             return;
         }
 
+        Camera3D? eye = GetViewport()?.GetCamera3D();
+        bool haveEye = eye is not null && IsInstanceValid(eye);
+        Vector3 eyeAt = haveEye ? eye!.GlobalPosition : Vector3.Zero;
+        Transform3D toWorld = GlobalTransform;
+        Plane[] frustum = haveEye ? Frustum(eye!) : System.Array.Empty<Plane>();
+        ulong nowMs = Time.GetTicksMsec();
+
         _arrived.Clear();
         double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
         foreach (uint address in _movers)
@@ -4188,12 +4497,21 @@ public partial class GameEntities : Node3D
                 continue;
             }
 
-            Transform3D advanced = body.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, drawTick);
-            if (_lastLook.TryGetValue(address, out HostBridge.EntityAppearance look))
+            if (body.Settled)
             {
-                advanced = Refii.Entities.Engine_EntityAppearance.Scaled(advanced, look);
+                _arrived.Add(address);
+                continue;
             }
-            Place(address, node, advanced);
+
+            Transform3D advanced = body.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, drawTick);
+            if (InViewForRepose(address, haveEye, eyeAt, toWorld, frustum, nowMs))
+            {
+                if (_lastLook.TryGetValue(address, out HostBridge.EntityAppearance look))
+                {
+                    advanced = Refii.Entities.Engine_EntityAppearance.Scaled(advanced, look);
+                }
+                Place(address, node, advanced);
+            }
             if (body.Settled)
             {
                 _arrived.Add(address);
@@ -4218,7 +4536,7 @@ public partial class GameEntities : Node3D
     /// `render poseFullRate=`: a very large value puts every rig on 30 Hz, 0 puts every rig on
     /// 15 Hz.
     /// </remarks>
-    public static float PoseFullRateRadius = 35f;
+    public static float PoseFullRateRadius = 20f;
 
     /// <summary>Entities drawn blended between consecutive stated transforms, and those taken live.</summary>
     public static long BlendedEntities;

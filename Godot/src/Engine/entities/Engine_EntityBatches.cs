@@ -175,20 +175,23 @@ public partial class Engine_EntityBatches : Node3D
 
 	private Batch Create(ArrayMesh mesh, uint layers)
 	{
+		uint staticLayers = layers & ~Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask;
 		var batch = new Batch { Local = mesh.GetAabb() };
 		batch.Mesh = NewMultiMesh(mesh, 8);
 		batch.Node = new MultiMeshInstance3D
 		{
 			Name = $"Batch_{_batches.Count}",
 			Multimesh = batch.Mesh,
-			Layers = layers,
+			Layers = staticLayers,
 			// As the nodes it stands for: lit by the GI's probes, never voxelised into it.
 			GIMode = GeometryInstance3D.GIModeEnum.Dynamic,
 		};
 		AddChild(batch.Node);
 
 		// The same cast-only twin the streamer's batches have; a mesh that merges nothing casts itself.
-		if (Engine_ShadowProxy.MergedCaster(mesh, out _) is { } caster)
+		bool isLampHost = (staticLayers & (Refii.Lighting.Engine_LevelLights.LampHostLayerMask | Refii.Lighting.Engine_LightZones.IndoorLampHostMask)) != 0u;
+		bool indoor = (staticLayers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
+		if (!isLampHost && Engine_ShadowProxy.MergedCaster(mesh, out _, always: indoor) is { } caster)
 		{
 			batch.Caster = NewMultiMesh(caster, 8);
 			var twin = new MultiMeshInstance3D
@@ -197,16 +200,20 @@ public partial class Engine_EntityBatches : Node3D
 				Multimesh = batch.Caster,
 				CastShadow = GeometryInstance3D.ShadowCastingSetting.ShadowsOnly,
 				GIMode = GeometryInstance3D.GIModeEnum.Disabled,
-				Layers = layers,
+				Layers = staticLayers,
 			};
 			batch.Node.AddChild(twin);
 			batch.Node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
 			Engine_ShadowProxy.MarkProxied(batch.Node.GetInstanceId(), true);
 			Refii.Lighting.Engine_ShadowReach.Adopt(twin);
 		}
-		else
+		else if (!isLampHost)
 		{
 			Refii.Lighting.Engine_ShadowReach.Adopt(batch.Node);
+		}
+		else
+		{
+			batch.Node.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
 		}
 
 		Light(batch);
@@ -274,18 +281,33 @@ public partial class Engine_EntityBatches : Node3D
 		{
 			float[] widened = (float[])range.Clone();
 			widened[2] += bounds.Size.Length() * 0.5f;
-			Refii.Level.Engine_PropDrawRange.ApplyStated(batch.Node, widened);
+			Refii.Level.Engine_PropDrawRange.StampEntity(batch.Node, widened);
 		}
-		else
-		{
-			Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(batch.Node, batch.Mesh.Mesh);
-		}
+
+		Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(batch.Node, batch.Mesh.Mesh);
 
 		if (batch.Node.GetNodeOrNull<MultiMeshInstance3D>(Engine_ShadowProxy.NodeName) is { } twin)
 		{
 			twin.VisibilityRangeEnd = batch.Node.VisibilityRangeEnd;
 			twin.VisibilityRangeEndMargin = batch.Node.VisibilityRangeEndMargin;
 			twin.VisibilityRangeFadeMode = batch.Node.VisibilityRangeFadeMode;
+			Refii.Lighting.Engine_ShadowReach.Adopt(twin);
+		}
+		else
+		{
+			Refii.Lighting.Engine_ShadowReach.Adopt(batch.Node);
+		}
+	}
+
+	/// <summary>Re-evaluates visibility ranges across all active entity batches.</summary>
+	public void UpdateVisibilityRanges()
+	{
+		foreach (Batch batch in _batches.Values)
+		{
+			if (batch.Mesh.Mesh is not null)
+			{
+				Cover(batch);
+			}
 		}
 	}
 

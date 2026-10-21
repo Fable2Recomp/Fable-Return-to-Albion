@@ -103,3 +103,17 @@ To ensure long-term codebase maintainability, maintain strict documentation inte
    - Guard any Godot engine logging (`GD.Print`, `GD.PushWarning`) in tested library code with headless execution checks (`testhost` check or delegate handlers) to prevent native interop access violations.
 5. **Verification Requirement**:
    - Always run `dotnet test Godot/` and confirm all tests pass (`Passed: Total, Failed: 0`) with execution duration under 1 second before reporting any task or branch complete.
+
+---
+
+## 5. CPU Overhead & Performance Discipline
+
+When inspecting existing code or authoring new code across both the C# host (`Godot/`) and the C++ bridge/guest (`src/`), **always look for ways to reduce CPU overhead and be vigilant against introducing unnecessary per-frame or per-tick work.**
+
+Key practices to apply and audit for:
+- **Early-Outs & Fast Rejects**: Gate expensive work behind cheap scalar/flag/visibility checks before touching arrays, collections, or native interop boundaries.
+- **Caching & Dirty Tracking**: Cache results of lookups, transforms, component resolutions, and hashes that do not change every frame. Recompute only on dirty flags, generation bumps, or reconcile cadences.
+- **Eliminate Redundant Per-Frame / Per-Tick Calls**: Avoid repeated native Godot interop queries (e.g., `node.GlobalTransform`, `IsInsideTree()`, wrapper allocations) or repeated guest memory/component table walks (`EntityComponent`) inside hot loops.
+- **Loop Consolidation & Zero-Allocation Hot Paths**: Merge multiple passes over the same collection into a single loop, reuse pre-allocated buffers/collections, and skip clearing large arrays when a feature/layer is inactive.
+- *Refer to the `refii-performance` skill (`.agent/skills/refii-performance/SKILL.md`) for detailed C# and C++ optimization patterns.*
+

@@ -74,17 +74,17 @@ public static class Engine_ShadowProxy
 	/// The cast-only mesh of a rigid model with nothing hidden, or null when merging saves
 	/// nothing; <paramref name="merged"/> is how many surfaces became one. Cached per mesh.
 	/// </summary>
-	public static ArrayMesh? MergedCaster(ArrayMesh source, out int merged)
+	public static ArrayMesh? MergedCaster(ArrayMesh source, out int merged, bool always = false)
 	{
 		merged = 0;
 		int surfaces = source.GetSurfaceCount();
-		if (surfaces < MinRigidSurfaces || surfaces > 64 ||
+		if (surfaces < (always ? MinSkinnedSurfaces : MinRigidSurfaces) || surfaces > 64 ||
 			(source.SurfaceGetFormat(0) & Mesh.ArrayFormat.FormatBones) != 0)
 		{
 			return null;
 		}
 
-		ArrayMesh? caster = MergedFor(source, null, UInt128.Zero, skinned: false, always: false);
+		ArrayMesh? caster = MergedFor(source, null, UInt128.Zero, skinned: false, always: always);
 		if (caster is not null)
 		{
 			merged = surfaces - (caster.GetSurfaceCount() - 1);
@@ -268,8 +268,11 @@ public static class Engine_ShadowProxy
 		bool principalHolder = false;
 		bool follower = !skinned && IsFollower(body, out principalHolder);
 		bool follows = skinned || follower;
-		bool eligible = Enabled && source is not null && surfaces <= MaxSurfaces &&
-			surfaces >= (follows ? MinSkinnedSurfaces : MinRigidSurfaces);
+		bool isLampHost = (body.Layers & (Refii.Lighting.Engine_LevelLights.LampHostLayerMask | Refii.Lighting.Engine_LightZones.IndoorLampHostMask)) != 0u;
+		bool indoor = (body.Layers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
+		bool alwaysProxy = (follows || indoor) && !isLampHost;
+		bool eligible = Enabled && !isLampHost && source is not null && surfaces <= MaxSurfaces &&
+			surfaces >= (alwaysProxy ? MinSkinnedSurfaces : MinRigidSurfaces);
 		if (eligible)
 		{
 			// Engine_HiddenClusters is the override slots' only writer and keeps what it wrote.
@@ -294,7 +297,7 @@ public static class Engine_ShadowProxy
 
 		body.SetMeta(StateMeta, state);
 		MeshInstance3D? proxy = ProxyOf(body);
-		ArrayMesh? merged = eligible ? MergedFor(source!, body, hidden, skinned, always: follows) : null;
+		ArrayMesh? merged = eligible ? MergedFor(source!, body, hidden, skinned, always: alwaysProxy) : null;
 		ulong bodyId = body.GetInstanceId();
 		if (merged is null)
 		{
@@ -303,11 +306,23 @@ public static class Engine_ShadowProxy
 				Engine_ShadowSkeletons.Forget(body);
 				Proxies.Remove(body);
 				proxy.QueueFree();
-				body.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
-				if (Proxied.Remove(bodyId) && !skinned)
+				body.CastShadow = isLampHost
+					? GeometryInstance3D.ShadowCastingSetting.Off
+					: GeometryInstance3D.ShadowCastingSetting.On;
+				if (Proxied.Remove(bodyId) && !skinned && !isLampHost)
 				{
 					Refii.Lighting.Engine_ShadowReach.Adopt(body);
 				}
+			}
+
+			if (isLampHost)
+			{
+				body.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+				Refii.Lighting.Engine_ShadowReach.Exclude(body);
+			}
+			else if (!follows && (body.Layers & Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask) != 0u)
+			{
+				body.Layers &= ~Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask;
 			}
 
 			return;
@@ -383,7 +398,9 @@ public static class Engine_ShadowProxy
 		}
 
 		proxy.Mesh = merged;
-		proxy.Layers = body.Layers;
+		proxy.Layers = follows
+			? Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask
+			: (body.Layers & ~Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask);
 
 		// The body's screen-size cull is the caster's too: a range is per instance, not inherited.
 		proxy.VisibilityRangeEnd = body.VisibilityRangeEnd;

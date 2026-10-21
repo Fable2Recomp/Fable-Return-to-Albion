@@ -893,6 +893,29 @@ public partial class GameDebugServer : Node
 					});
 				}
 
+				foreach ((Refii.Launcher.Core.RuntimeCVarDefinition def, string val, bool modified) in
+					Refii.Core.Engine_RefiiConfig.GetGodotCvars())
+				{
+					if (match.Length != 0 &&
+						!def.Name.Contains(match, System.StringComparison.OrdinalIgnoreCase) &&
+						!def.Category.Contains(match, System.StringComparison.OrdinalIgnoreCase))
+					{
+						continue;
+					}
+
+					cvars.Add(new Dictionary<string, object?>
+					{
+						["name"] = def.Name,
+						["value"] = val,
+						["default"] = def.DefaultValue,
+						["category"] = def.Category,
+						["type"] = def.Type.ToString().ToLowerInvariant(),
+						["lifecycle"] = "hot-reload",
+						["modified"] = modified,
+						["debugOnly"] = false,
+					});
+				}
+
 				return Ok(new Dictionary<string, object?>
 				{
 					["count"] = cvars.Count,
@@ -916,8 +939,10 @@ public partial class GameDebugServer : Node
 					};
 				}
 
-				// The registry's own validator answers — lifecycle, range, allowed values.
-				bool accepted = Refii.Host.HostBridge.SetCvar(name, value);
+				// The registry's own validator answers — lifecycle, range, allowed values;
+				// fall back to Godot's CVar table when the guest registry does not own it.
+				bool accepted = Refii.Host.HostBridge.SetCvar(name, value) ||
+					Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value);
 				return Ok(new Dictionary<string, object?>
 				{
 					["name"] = name,

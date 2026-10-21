@@ -130,8 +130,13 @@ public static class LiveGameChannel
 		int timeoutMs = Math.Max(1, (int)(timeoutSeconds * 1000));
 		try
 		{
+			using var cts = new CancellationTokenSource(timeoutMs);
 			using var client = new TcpClient();
-			if (!client.ConnectAsync(IPAddress.Loopback, handshake.Port).Wait(timeoutMs))
+			try
+			{
+				client.ConnectAsync(IPAddress.Loopback, handshake.Port, cts.Token).AsTask().GetAwaiter().GetResult();
+			}
+			catch (Exception ex) when (ex is OperationCanceledException || cts.IsCancellationRequested)
 			{
 				error = $"pid {handshake.Pid} publishes port {handshake.Port} but did not accept within {timeoutSeconds:0.#}s";
 				return null;

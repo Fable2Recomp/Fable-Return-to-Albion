@@ -368,3 +368,7 @@ texture_cache_max_mb = 0
 pubgame_vector_shapes = true
 # How sharply the pub games (Keystone and friends) draw their Flash artwork. 100 is the size it was authored at; 0 follows the window. Higher is sharper but slower to load — Keystone measures 4.6 s and 109 MB at 100, and 11.9 s and 348 MB at 250, because the artwork is drawn on the CPU. Ignored unless pubgame_vector_shapes is off.
 pubgame_raster_scale_percent = 100
+
+# Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). Changing this triggers a re-bake during the startup warmup screen.
+static_shadow_resolution = 8192
+

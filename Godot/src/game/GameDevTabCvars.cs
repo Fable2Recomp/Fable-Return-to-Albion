@@ -67,7 +67,8 @@ public partial class GameDevTabCvars : GameDevTab
 			return;
 		}
 
-		bool accepted = HostBridge.SetCvar(_name, _value.Text);
+		bool accepted = HostBridge.SetCvar(_name, _value.Text) ||
+			Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(_name, _value.Text);
 		_result.Text = accepted ? "accepted" : "REFUSED by the registry";
 		GD.Print($"[dev-menu] cvar {_name} = '{_value.Text}' — {(accepted ? "accepted" : "refused")}");
 		Refresh();
@@ -98,6 +99,30 @@ public partial class GameDevTabCvars : GameDevTab
 				info.Type < (uint)Types.Length ? Types[info.Type] : info.Type.ToString(),
 				info.Lifecycle < (uint)Lifecycles.Length ? Lifecycles[info.Lifecycle] : info.Lifecycle.ToString(),
 				info.Modified ? "yes" : string.Empty,
+			});
+		}
+
+		foreach ((Refii.Launcher.Core.RuntimeCVarDefinition def, string val, bool modified) in
+			Refii.Core.Engine_RefiiConfig.GetGodotCvars())
+		{
+			if (filter.Length != 0 &&
+				!def.Name.Contains(filter, System.StringComparison.OrdinalIgnoreCase) &&
+				!def.Category.Contains(filter, System.StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			string typeName = def.Type switch
+			{
+				Refii.Launcher.Core.RuntimeCVarType.Bool => "bool",
+				Refii.Launcher.Core.RuntimeCVarType.Int => "int32",
+				Refii.Launcher.Core.RuntimeCVarType.Double => "double",
+				_ => "string",
+			};
+			rows.Add(new[]
+			{
+				def.Name, val, def.DefaultValue, def.Category,
+				typeName, "hot-reload", modified ? "yes" : string.Empty,
 			});
 		}
 

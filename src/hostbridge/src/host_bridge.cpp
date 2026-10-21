@@ -8571,6 +8571,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLightZone(uint32_t entity) {
     }
     constexpr uint32_t kBuilding = 67u;
     if (((GuestWordAt(base, entity + 0x24u + (kBuilding / 32u) * 4u) >> (kBuilding % 32u)) & 1u) != 0u) {
+        const uint32_t building = EntityComponent(base, entity, kBuilding);
+        if (building != 0u && (GuestWordAt(base, building + 0x1Cu) & (0x200u | 0x002u)) != 0u) {
+            return 1u;
+        }
         return (GuestByteAt(base, entity + 0x90u) & 0x40u) != 0u
             ? GuestWordAt(base, entity + 0x1Cu) & 0x7FFFFFFFu
             : 1u;
@@ -9123,9 +9127,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     if (read32(controller + 148u) == 3u) {
         flags |= 1u;
     }
-    if (plausible(component(97u))) {
-        flags |= 2u;
-    }
     // Flag 4 carries no information and is kept only so the bit numbering does not move: the
     // constructor `sub_82562CC8` writes 1 to `comp19+576` on every controller
     // (`stb r25, 0x240(r31)`) and its only other accessors are a plain getter and setter.
@@ -9353,7 +9354,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
 
         // The runner-up must clear 1e-4 to exist at all (0x82238070..0x82238074); below that
         // `sub_82237F90` emits nothing and the winner is used alone.
-        if (!overlay && winner != 0u) {
+        // Optimization: if size <= 1, no second record exists in the list so skip the walk.
+        if (!overlay && winner != 0u && size > 1u) {
             node = read32(sentinel);
             for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
                 const uint32_t record = read32(node + 8u);
@@ -9382,17 +9384,24 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
             const uint32_t record = read32(node + 8u);
             node = read32(node);
-            if (!plausible(record) || read32(record + 28u) == 2u) {
+            if (!plausible(record)) {
                 continue;
             }
             if (!overlay && record != winner && record != runner_up) {
                 continue;
             }
-            const float weight = !overlay && record == winner && winner_priority == 128
-                ? 1.0f
-                : readf(record + 20u);
-            if (weight <= 1e-4f) {
+            const uint32_t state = read32(record + 28u);
+            if (state == 2u && (!overlay ? record != runner_up : false)) {
                 continue;
+            }
+            const float weight = readf(record + 20u);
+            if (weight <= 1e-4f) {
+                if (!overlay && record == winner) {
+                    // Retain winner even if cur weight is 0.0f on its opening tick,
+                    // so the host registers the channel and folds runner_up -> winner.
+                } else {
+                    continue;
+                }
             }
             record_prev_bits = read32(record + 24u);
             record_cur_bits = read32(record + 20u);
@@ -9400,7 +9409,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             ramp_out_bits = ramp_seconds(read32(record + 48u));
             overlay_list = overlay;
             priority_mask = read32(record + 16u);
-            flatten(read32(record + 36u), weight, read32(record + 8u), read32(record + 12u), read32(record + 32u));
+
+            uint32_t exported_prio = read32(record + 8u);
+            if (!overlay && record == runner_up && winner != 0u) {
+                // Ensure runner_up priority never exceeds winner's priority, so the host Fold()
+                // always elects winner as topUid and runner_up as runnerUid.
+                if (exported_prio >= static_cast<uint32_t>(winner_priority) && winner_priority > 0) {
+                    exported_prio = static_cast<uint32_t>(winner_priority - 1);
+                }
+            }
+            flatten(read32(record + 36u), weight <= 1e-4f ? 1e-4f : weight, exported_prio, read32(record + 12u), read32(record + 32u));
         }
     };
 

@@ -57,9 +57,65 @@ public partial class Engine_LightFlicker : Node
 	/// </remarks>
 	public static float RadiusEpsilon;
 
+	private static readonly List<Engine_LightFlicker> ActiveInstances = new();
+
 	private readonly List<Flickering> _lights = new();
 
 	private readonly Random _random = new();
+
+	public override void _EnterTree()
+	{
+		if (!ActiveInstances.Contains(this))
+		{
+			ActiveInstances.Add(this);
+		}
+	}
+
+	public override void _ExitTree()
+	{
+		ActiveInstances.Remove(this);
+	}
+
+	/// <summary>
+	/// Re-reads <see cref="Flickering.BaseEnergy"/> and <see cref="Flickering.BaseRange"/> from
+	/// each light node's metadata after a zone change or CVar hot-reload.
+	/// </summary>
+	public static void RefreshAllBaseValues()
+	{
+		for (int i = ActiveInstances.Count - 1; i >= 0; i--)
+		{
+			Engine_LightFlicker instance = ActiveInstances[i];
+			if (!IsInstanceValid(instance))
+			{
+				ActiveInstances.RemoveAt(i);
+				continue;
+			}
+
+			instance.RefreshBaseValues();
+		}
+	}
+
+	public void RefreshBaseValues()
+	{
+		foreach (Flickering light in _lights)
+		{
+			if (!IsInstanceValid(light.Node))
+			{
+				continue;
+			}
+
+			if (light.Node.HasMeta(Engine_LevelLights.BaseEnergyMeta))
+			{
+				light.BaseEnergy = (float)light.Node.GetMeta(Engine_LevelLights.BaseEnergyMeta).AsDouble();
+			}
+			if (light.Node.HasMeta(Engine_LevelLights.AuthoredRangeMeta))
+			{
+				light.BaseRange = (float)light.Node.GetMeta(Engine_LevelLights.AuthoredRangeMeta).AsDouble();
+			}
+			light.WrittenRadiusScale = -1.0f;
+			Apply(light, light.Phase);
+		}
+	}
 
 	private sealed class Flickering
 	{
@@ -182,12 +238,12 @@ public partial class Engine_LightFlicker : Node
 		}
 
 		float between = (float)Math.Clamp(_carried / WalkSeconds, 0.0, 1.0);
-		Updates += _lights.Count;
-		RadiusCandidates += _lights.Count;
 		foreach (Flickering light in _lights)
 		{
-			if (IsInstanceValid(light.Node))
+			if (IsInstanceValid(light.Node) && light.Node.Visible)
 			{
+				++Updates;
+				++RadiusCandidates;
 				Apply(light, light.PreviousPhase + ((light.Phase - light.PreviousPhase) * between));
 			}
 		}
@@ -228,8 +284,9 @@ public partial class Engine_LightFlicker : Node
 		// light's colour scale. The floor is ours: the guest stores the product unclamped at
 		// this point, and with the shipped ranges (0.05 to 0.23) it cannot go negative anyway,
 		// but a modded value past 1.0 would otherwise drive the energy through zero.
+		float fade = Engine_LightShadowBudget.VisibilityFactorOf(light.Node);
 		light.Node.LightEnergy =
-			light.BaseEnergy * MathF.Max(1.0f + (phase * light.BrightnessRange), 0.0f);
+			light.BaseEnergy * fade * MathF.Max(1.0f + (phase * light.BrightnessRange), 0.0f);
 
 		if (!light.FlickersRadius)
 		{

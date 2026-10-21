@@ -35,6 +35,7 @@ Add `--headless` for anything that does not need to draw. The two viewers do.
 | `host_driven` | Does the guest run with GODOT driving it a slice per frame? The plan's "refii as a library". |
 | `game_session` | Runs a `GameSession` without the launcher — asset mount plus guest, no window management. |
 | `game_window` | Asserts the game opens as a REAL OS window, sized from `refii.toml`, that the launcher minimises behind it, and that closing it restores the launcher without taking the process down. Checks `Window.IsEmbedded()` and the toml values rather than trusting the eye — an embedded subwindow looks identical in a screenshot, and a hardcoded 1280x720 assertion passes whether or not the file is read at all. |
+| `shadow_bake` | Bakes octahedral static shadow depth atlases (`.shadows`) for all levels and all scenarios into `Godot/assets/ShadowMaps/`. Headless (`-- --resolution <int> --level <filter>` or `REFII_SHADOW_RES` / `REFII_SHADOW_LEVEL`). |
 
 ## Environment
 

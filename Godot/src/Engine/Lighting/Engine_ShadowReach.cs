@@ -33,19 +33,49 @@ public partial class Engine_ShadowReach : Node
 	/// <summary>Instances considered on the last pass.</summary>
 	public static int Considered;
 
-	/// <summary>Longest AABB axis under which a thing is dressing rather than architecture.</summary>
-	private const float SmallMetres = 3.0f;
-
-	/// <summary>And over which it is landscape or a building, and always casts.</summary>
-	private const float LargeMetres = 12.0f;
-
-	/// <summary>How far dressing casts, and how far mid-sized geometry casts.</summary>
-	private const float SmallReach = 60.0f;
-
-	private const float MidReach = 150.0f;
-
 	/// <summary>Buffer distance to prevent boundary flickering when camera moves near cutoff.</summary>
-	private const float HysteresisMetres = 10.0f;
+	private const float HysteresisMetres = 8.0f;
+
+	/// <summary>
+	/// Computes the tiered sun shadow reach distance based on the object's longest extent.
+	/// &lt;0.6m: 18m * scale (clutter / tableware / small debris)
+	/// &lt;1.5m: 30m * scale (crates, barrels, stools, gravestones)
+	/// &lt;3.5m: 55m * scale (carts, market stalls, tables, lamp posts, fences, bushes)
+	/// &lt;8.0m: 95m * scale (modular building facades, canopies, sheds)
+	/// &gt;=8.0m: PositiveInfinity (landscape, cliffs, hills, large trees, clocktowers, bridges)
+	/// Returns PositiveInfinity when scale &lt;= 0 (culling disabled).
+	/// </summary>
+	public static float CalculateShadowReach(float longest, float reachScale)
+	{
+		if (reachScale <= 0f)
+		{
+			return float.PositiveInfinity;
+		}
+
+		return longest switch
+		{
+			< 0.6f => 18f * reachScale,
+			< 1.5f => 30f * reachScale,
+			< 3.5f => 55f * reachScale,
+			< 8.0f => 95f * reachScale,
+			_ => float.PositiveInfinity
+		};
+	}
+
+	public static float ReadShadowReachScale()
+	{
+		try
+		{
+			return Mathf.Clamp(
+				Refii.Core.Engine_RefiiConfig.Float(
+					Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_reach_scale", 1.0f),
+				0.1f, 5.0f);
+		}
+		catch (System.Exception)
+		{
+			return 1.0f;
+		}
+	}
 
 	/// <summary>Seconds a full pass over the region takes: the work is a slice per frame.</summary>
 	private const double PassSeconds = 0.5;
@@ -65,7 +95,7 @@ public partial class Engine_ShadowReach : Node
 		public ulong Id;
 		public bool Measured;
 		public Aabb Bounds;
-		public float Reach;
+		public float ItemExtent;
 		public GeometryInstance3D.ShadowCastingSetting Applied = (GeometryInstance3D.ShadowCastingSetting)(-1);
 
 		/// <summary>What the instance cast with when taken — On, or ShadowsOnly for a cast-only proxy.</summary>
@@ -175,6 +205,7 @@ public partial class Engine_ShadowReach : Node
 		}
 
 		Vector3 eye = camera.GlobalPosition;
+		float reachScale = ReadShadowReachScale();
 		int slice = System.Math.Max(1, (int)System.Math.Ceiling(_entries.Count * delta / PassSeconds));
 		for (int n = 0; n < slice && _entries.Count != 0; n++)
 		{
@@ -205,20 +236,20 @@ public partial class Engine_ShadowReach : Node
 			++_cursor;
 			if (!entry.Measured)
 			{
-				entry.Bounds = entry.Node.GlobalTransform * entry.Node.GetAabb();
-				Vector3 size = entry.Bounds.Size;
-				float longest = Mathf.Max(size.X, Mathf.Max(size.Y, size.Z));
-				entry.Reach = longest >= LargeMetres
-					? float.PositiveInfinity
-					: longest >= SmallMetres ? MidReach : SmallReach;
+				if (!TryMeasure(entry.Node, out entry.Bounds, out entry.ItemExtent))
+				{
+					continue;
+				}
+
 				entry.Measured = true;
 			}
 
+			float baseReach = CalculateShadowReach(entry.ItemExtent, reachScale);
 			float distance = eye.Clamp(entry.Bounds.Position, entry.Bounds.End).DistanceTo(eye);
 			float reachThreshold = entry.Applied != GeometryInstance3D.ShadowCastingSetting.Off &&
 				entry.Applied != (GeometryInstance3D.ShadowCastingSetting)(-1)
-				? entry.Reach + HysteresisMetres
-				: entry.Reach;
+				? baseReach + HysteresisMetres
+				: baseReach;
 			GeometryInstance3D.ShadowCastingSetting wanted =
 				!Enabled || distance <= reachThreshold
 					? entry.Granted
@@ -237,6 +268,55 @@ public partial class Engine_ShadowReach : Node
 		}
 	}
 
+	private static bool TryMeasure(GeometryInstance3D node, out Aabb worldBounds, out float longestItemAxis)
+	{
+		if (node is MultiMeshInstance3D mmi)
+		{
+			if (mmi.Multimesh is not { } mm || mm.Mesh is not { } batchMesh)
+			{
+				worldBounds = default;
+				longestItemAxis = 0f;
+				return false;
+			}
+
+			Aabb localBounds = mm.CustomAabb.Size != Vector3.Zero ? mm.CustomAabb : batchMesh.GetAabb();
+			worldBounds = mmi.GlobalTransform * localBounds;
+			Vector3 itemSize = batchMesh.GetAabb().Size;
+			longestItemAxis = Mathf.Max(itemSize.X, Mathf.Max(itemSize.Y, itemSize.Z));
+			return true;
+		}
+
+		if (node is MeshInstance3D mi)
+		{
+			if (mi.Mesh is not { } mesh)
+			{
+				worldBounds = default;
+				longestItemAxis = 0f;
+				return false;
+			}
+
+			Aabb meshAabb = mesh.GetAabb();
+			Aabb local = mi.CustomAabb.Size != Vector3.Zero ? mi.CustomAabb : meshAabb;
+			worldBounds = mi.GlobalTransform * local;
+			Vector3 itemSize = (mi.GlobalTransform * meshAabb).Size;
+			longestItemAxis = Mathf.Max(itemSize.X, Mathf.Max(itemSize.Y, itemSize.Z));
+			return true;
+		}
+
+		Aabb custom = node.CustomAabb;
+		if (custom.Size == Vector3.Zero)
+		{
+			worldBounds = default;
+			longestItemAxis = 0f;
+			return false;
+		}
+
+		worldBounds = node.GlobalTransform * custom;
+		Vector3 size = worldBounds.Size;
+		longestItemAxis = Mathf.Max(size.X, Mathf.Max(size.Y, size.Z));
+		return true;
+	}
+
 	private void Take(GeometryInstance3D instance)
 	{
 		if (!GodotObject.IsInstanceValid(instance))
@@ -251,11 +331,8 @@ public partial class Engine_ShadowReach : Node
 		// this the pass would find the id still withdrawn and drop the entry for good.
 		if (_known.TryGetValue(id, out Entry? held))
 		{
-			if (_withdrawn.Remove(id))
-			{
-				held.Measured = false;
-			}
-
+			_withdrawn.Remove(id);
+			held.Measured = false;
 			return;
 		}
 

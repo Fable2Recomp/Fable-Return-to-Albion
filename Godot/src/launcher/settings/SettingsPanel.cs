@@ -260,9 +260,22 @@ public partial class SettingsPanel : VBoxContainer
 
 	private void AddRow(GridContainer grid, RuntimeCVarDefinition definition)
 	{
+		if (definition.Name == "lighting_preset")
+		{
+			AddLightingPresetRows(grid, definition);
+			return;
+		}
+
+		if (definition.Name == "hdr_output")
+		{
+			AddHdrRows(grid, definition);
+			return;
+		}
+
 		Label name = MakeLabel(RuntimeSettingsModel.FormatDisplayName(definition));
 		name.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
 		name.SizeFlagsHorizontal = SizeFlags.Fill;
+		name.VerticalAlignment = VerticalAlignment.Center;
 		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 		name.TooltipText = RuntimeSettingsModel.FormatDescription(definition);
 		grid.AddChild(name);
@@ -280,6 +293,7 @@ public partial class SettingsPanel : VBoxContainer
 		Label defaultLabel = MakeLabel(defaultText);
 		defaultLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
 		defaultLabel.SizeFlagsHorizontal = SizeFlags.Fill;
+		defaultLabel.VerticalAlignment = VerticalAlignment.Center;
 		defaultLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 		defaultLabel.TooltipText = defaultText;
 		defaultLabel.AddThemeColorOverride("font_color", _style.TextDisabled);
@@ -311,11 +325,6 @@ public partial class SettingsPanel : VBoxContainer
 		{
 			case RuntimeCVarType.Bool:
 			{
-				if (definition.Name == "hdr_output")
-				{
-					return BuildHdrRowEditor(definition, current);
-				}
-
 				var check = new CheckBox
 				{
 					ButtonPressed = RuntimeConfig.NormalizeBoolValue(current) == "true",
@@ -408,25 +417,175 @@ public partial class SettingsPanel : VBoxContainer
 		return option;
 	}
 
-	private Control BuildHdrRowEditor(RuntimeCVarDefinition definition, string current)
+	private void AddLightingPresetRows(GridContainer grid, RuntimeCVarDefinition definition)
 	{
-		var container = new HBoxContainer();
-		container.AddThemeConstantOverride("separation", 6);
+		// --- Row 1: Lighting Preset dropdown ---
+		Label name = MakeLabel(RuntimeSettingsModel.FormatDisplayName(definition));
+		name.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
+		name.SizeFlagsHorizontal = SizeFlags.Fill;
+		name.VerticalAlignment = VerticalAlignment.Center;
+		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		name.TooltipText = RuntimeSettingsModel.FormatDescription(definition);
+		grid.AddChild(name);
 
+		List<RuntimeCVarOption> options = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
+		string activePreset = _model.CurrentLightingPreset();
+
+		var optionBtn = new OptionButton
+		{
+			FitToLongestItem = false,
+			TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			CustomMinimumSize = new Vector2(LauncherScale.Px(BaseEditorColumnWidth), 0),
+		};
+		Apply(optionBtn);
+
+		int selected = -1;
+		int customIndex = -1;
+		for (int i = 0; i < options.Count; i++)
+		{
+			optionBtn.AddItem(options[i].Label);
+			if (options[i].Value == activePreset)
+			{
+				selected = i;
+			}
+			if (options[i].Value == "custom")
+			{
+				customIndex = i;
+			}
+		}
+
+		if (customIndex >= 0)
+		{
+			optionBtn.SetItemDisabled(customIndex, activePreset != "custom");
+		}
+
+		if (selected >= 0)
+		{
+			optionBtn.Selected = selected;
+		}
+
+		optionBtn.ItemSelected += index =>
+		{
+			string chosen = options[(int)index].Value;
+			if (chosen == "custom")
+			{
+				return;
+			}
+			_model.ApplyLightingPreset(chosen);
+			_statusLabel.Text = _model.StatusMessage;
+			Rebuild();
+		};
+		grid.AddChild(optionBtn);
+
+		string defaultText = options.Find(o => o.Value == definition.DefaultValue)?.Label
+			?? definition.DefaultValue;
+		Label defaultLabel = MakeLabel(defaultText);
+		defaultLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
+		defaultLabel.SizeFlagsHorizontal = SizeFlags.Fill;
+		defaultLabel.VerticalAlignment = VerticalAlignment.Center;
+		defaultLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		defaultLabel.TooltipText = defaultText;
+		defaultLabel.AddThemeColorOverride("font_color", _style.TextDisabled);
+		grid.AddChild(defaultLabel);
+
+		// --- Row 2: Advanced Lighting button with its own label in Column 1 ---
+		Label advName = MakeLabel("Advanced Lighting");
+		advName.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
+		advName.SizeFlagsHorizontal = SizeFlags.Fill;
+		advName.VerticalAlignment = VerticalAlignment.Center;
+		advName.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		advName.TooltipText = "Fine-tune light and shadow budgets, distances, and rendering options.";
+		grid.AddChild(advName);
+
+		var advancedBtn = new Button
+		{
+			Text = "Advanced...",
+			SizeFlagsHorizontal = SizeFlags.ShrinkBegin,
+			CustomMinimumSize = new Vector2(LauncherScale.Px(100), 0),
+		};
+		Apply(advancedBtn);
+		advancedBtn.TooltipText = "Fine-tune light and shadow budgets, distances, and rendering options.";
+
+		advancedBtn.Pressed += () =>
+		{
+			var dialog = new LightingSettingsDialog(_model, _style, _font, _fontSize, () =>
+			{
+				_statusLabel.Text = _model.StatusMessage;
+				string updatedPreset = _model.CurrentLightingPreset();
+				for (int i = 0; i < options.Count; i++)
+				{
+					if (options[i].Value == updatedPreset)
+					{
+						optionBtn.Selected = i;
+						break;
+					}
+				}
+				if (customIndex >= 0)
+				{
+					optionBtn.SetItemDisabled(customIndex, updatedPreset != "custom");
+				}
+			});
+			Node top = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
+			top.AddChild(dialog);
+		};
+		grid.AddChild(advancedBtn);
+
+		Label advDefault = MakeLabel(string.Empty);
+		advDefault.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
+		advDefault.SizeFlagsHorizontal = SizeFlags.Fill;
+		grid.AddChild(advDefault);
+	}
+
+	private void AddHdrRows(GridContainer grid, RuntimeCVarDefinition definition)
+	{
+		string current = _model.GetValueOrDefault(definition.Name, definition.DefaultValue);
 		bool isEnabled = RuntimeConfig.NormalizeBoolValue(current) == "true";
+
+		// --- Row 1: HDR Output Checkbox ---
+		Label name = MakeLabel(RuntimeSettingsModel.FormatDisplayName(definition));
+		name.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
+		name.SizeFlagsHorizontal = SizeFlags.Fill;
+		name.VerticalAlignment = VerticalAlignment.Center;
+		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		name.TooltipText = RuntimeSettingsModel.FormatDescription(definition);
+		grid.AddChild(name);
 
 		var check = new CheckBox
 		{
 			ButtonPressed = isEnabled,
+			SizeFlagsHorizontal = SizeFlags.ShrinkBegin,
 		};
 		Apply(check);
+		grid.AddChild(check);
+
+		Label defaultLabel = MakeLabel(RuntimeConfig.NormalizeBoolValue(definition.DefaultValue) == "true" ? "On" : "Off");
+		defaultLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
+		defaultLabel.SizeFlagsHorizontal = SizeFlags.Fill;
+		defaultLabel.VerticalAlignment = VerticalAlignment.Center;
+		defaultLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		defaultLabel.TooltipText = defaultLabel.Text;
+		defaultLabel.AddThemeColorOverride("font_color", _style.TextDisabled);
+		grid.AddChild(defaultLabel);
+
+		// --- Row 2: HDR Calibration button with its own label in Column 1 ---
+		Label calibName = MakeLabel("HDR Calibration");
+		calibName.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
+		calibName.SizeFlagsHorizontal = SizeFlags.Fill;
+		calibName.VerticalAlignment = VerticalAlignment.Center;
+		calibName.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		calibName.TooltipText = "Calibrate HDR display paper white reference and peak highlight luminance.";
+		grid.AddChild(calibName);
 
 		var settingsBtn = new Button
 		{
 			Text = "Settings...",
 			Disabled = !isEnabled,
+			SizeFlagsHorizontal = SizeFlags.ShrinkBegin,
+			CustomMinimumSize = new Vector2(LauncherScale.Px(100), 0),
 		};
 		Apply(settingsBtn);
+		settingsBtn.TooltipText = "Calibrate HDR display paper white reference and peak highlight luminance.";
 
 		check.Toggled += pressed =>
 		{
@@ -443,10 +602,12 @@ public partial class SettingsPanel : VBoxContainer
 			Node top = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
 			top.AddChild(dialog);
 		};
+		grid.AddChild(settingsBtn);
 
-		container.AddChild(check);
-		container.AddChild(settingsBtn);
-		return container;
+		Label calibDefault = MakeLabel(string.Empty);
+		calibDefault.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
+		calibDefault.SizeFlagsHorizontal = SizeFlags.Fill;
+		grid.AddChild(calibDefault);
 	}
 
 	private void Commit(RuntimeCVarDefinition definition, string value)

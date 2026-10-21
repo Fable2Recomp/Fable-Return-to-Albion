@@ -152,8 +152,15 @@ public partial class LiveGameView : VBoxContainer
 		long since = _since;
 		Task.Run(() =>
 		{
-			List<LiveGameChannel.ModError>? errors = LiveGameChannel.ModErrors(since, out long latest, out _);
-			Callable.From(() => TakeErrors(errors, latest)).CallDeferred();
+			try
+			{
+				List<LiveGameChannel.ModError>? errors = LiveGameChannel.ModErrors(since, out long latest, out _);
+				Callable.From(() => TakeErrors(errors, latest)).CallDeferred();
+			}
+			catch (Exception)
+			{
+				_polling = false;
+			}
 		});
 	}
 
@@ -215,8 +222,21 @@ public partial class LiveGameView : VBoxContainer
 		_result.Modulate = new Color(0.80f, 0.82f, 0.86f);
 		Task.Run(() =>
 		{
-			LiveGameChannel.RemountResult result = LiveGameChannel.Remount(lua);
-			Callable.From(() => TakeReload(result)).CallDeferred();
+			try
+			{
+				LiveGameChannel.RemountResult result = LiveGameChannel.Remount(lua);
+				Callable.From(() => TakeReload(result)).CallDeferred();
+			}
+			catch (Exception)
+			{
+				Callable.From(() =>
+				{
+					_reloading = false;
+					UpdateButtons();
+					_result.Text = "Reload failed unexpectedly.";
+					_result.Modulate = new Color(1.0f, 0.62f, 0.55f);
+				}).CallDeferred();
+			}
 		});
 	}
 

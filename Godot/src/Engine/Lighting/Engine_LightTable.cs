@@ -25,6 +25,8 @@ public static class Engine_LightTable
 {
 	public const string GlobalName = "fable_light_table";
 
+	public const string ShadowAtlasGlobalName = "fable_static_shadow_atlas";
+
 	/// <summary>Texels. Bounded by the half-precision slot channel: 2 × (Capacity + SlotBase) ≤ 2048.</summary>
 	public const int Capacity = 1000;
 
@@ -35,7 +37,15 @@ public static class Engine_LightTable
 
 	private static readonly Light3D?[] Slots = new Light3D?[Capacity];
 
-	/// <summary>Two rows of Capacity texels: (x, y, z, Godot's range), then (the STATED range, 0, 0, 0).</summary>
+	/// <summary>Deterministic 64-bit light key ((entity &lt;&lt; 32) | index) for each slot.</summary>
+	private static readonly ulong[] Keys = new ulong[Capacity];
+
+	/// <summary>Per-slot octahedral shadow atlas rect (AtlasU, AtlasV, AtlasScale).</summary>
+	private static readonly Vector3[] AtlasRects = new Vector3[Capacity];
+
+	private static StaticShadowMapContainer? _boundShadowMap;
+
+	/// <summary>Two rows of Capacity texels: (x, y, z, Godot's range), then (the STATED range, atlasU, atlasV, atlasScale).</summary>
 	private static readonly float[] Data = new float[Capacity * 4 * 2];
 
 	private static readonly byte[] Bytes = new byte[Capacity * 16 * 2];
@@ -82,10 +92,29 @@ public static class Engine_LightTable
 	public static int Live => _live;
 
 	/// <summary>
+	/// Binds or clears the active scenario's static shadow map container and resolves each
+	/// registered light slot's octahedral atlas rect.
+	/// </summary>
+	public static void RebindShadowMap(StaticShadowMapContainer? container)
+	{
+		lock (Gate)
+		{
+			_boundShadowMap = container;
+			for (int slot = 0; slot < Capacity; slot++)
+			{
+				ulong key = Keys[slot];
+				AtlasRects[slot] = container is not null && key != 0ul &&
+					container.LightRects.TryGetValue(key, out Vector3 rect)
+					? rect : Vector3.Zero;
+			}
+		}
+	}
+
+	/// <summary>
 	/// Gives <paramref name="light"/> a texel and writes its slot into LightSpecular. False when
 	/// the table is full, in which case the light keeps Godot's default and the shader inverts.
 	/// </summary>
-	public static bool Register(Light3D light)
+	public static bool Register(Light3D light, ulong lightKey = 0ul)
 	{
 		lock (Gate)
 		{
@@ -98,6 +127,10 @@ public static class Engine_LightTable
 
 				Slots[slot] = light;
 				Stated[slot] = 0f;
+				Keys[slot] = lightKey;
+				AtlasRects[slot] = _boundShadowMap is not null && lightKey != 0ul &&
+					_boundShadowMap.LightRects.TryGetValue(lightKey, out Vector3 rect)
+					? rect : Vector3.Zero;
 				light.LightSpecular = slot + SlotBase;
 				return true;
 			}
@@ -109,8 +142,14 @@ public static class Engine_LightTable
 	/// <summary>Writes every live light's position and range, and uploads the texture if any moved.</summary>
 	public static void Refresh()
 	{
+		if (Refii.Core.Engine_AppRoot.IsTestHost)
+		{
+			return;
+		}
+
 		bool changed = false;
 		int live = 0;
+		bool useStaticShadows = !Refii.Models.Engine_ClassicMaterial.Active;
 
 		lock (Gate)
 		{
@@ -125,6 +164,8 @@ public static class Engine_LightTable
 					{
 						Slots[slot] = null;
 						Stated[slot] = 0f;
+						Keys[slot] = 0ul;
+						AtlasRects[slot] = Vector3.Zero;
 					}
 					else if (light.IsInsideTree())
 					{
@@ -139,10 +180,17 @@ public static class Engine_LightTable
 				}
 
 				float stated = range > 0f && Stated[slot] > 0f ? Stated[slot] : range;
+				Vector3 rect = useStaticShadows && range > 0f ? AtlasRects[slot] : Vector3.Zero;
 				int second = (Capacity + slot) * 4;
-				if (Data[second] != stated)
+				if (Data[second] != stated ||
+				    Data[second + 1] != rect.X ||
+				    Data[second + 2] != rect.Y ||
+				    Data[second + 3] != rect.Z)
 				{
 					Data[second] = stated;
+					Data[second + 1] = rect.X;
+					Data[second + 2] = rect.Y;
+					Data[second + 3] = rect.Z;
 					changed = true;
 				}
 
@@ -164,7 +212,7 @@ public static class Engine_LightTable
 			}
 
 			Buffer.BlockCopy(Data, 0, Bytes, 0, Bytes.Length);
-			var image = Image.CreateFromData(Capacity, 2, false, Image.Format.Rgbaf, Bytes);
+			using var image = Image.CreateFromData(Capacity, 2, false, Image.Format.Rgbaf, Bytes);
 			if (_texture is null)
 			{
 				_texture = ImageTexture.CreateFromImage(image);

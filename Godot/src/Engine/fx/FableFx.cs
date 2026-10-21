@@ -295,6 +295,38 @@ public partial class FableFx : Node3D
 		FreeLayerInstances();
 	}
 
+	private bool _transformDirty = true;
+	private Transform3D _cachedGlobalTransform;
+	private Transform3D _cachedGlobalInverse;
+
+	private Transform3D CachedGlobalTransform
+	{
+		get
+		{
+			if (_transformDirty)
+			{
+				_cachedGlobalTransform = GlobalTransform;
+				_cachedGlobalInverse = _cachedGlobalTransform.AffineInverse();
+				_transformDirty = false;
+			}
+			return _cachedGlobalTransform;
+		}
+	}
+
+	private Transform3D CachedGlobalInverse
+	{
+		get
+		{
+			if (_transformDirty)
+			{
+				_cachedGlobalTransform = GlobalTransform;
+				_cachedGlobalInverse = _cachedGlobalTransform.AffineInverse();
+				_transformDirty = false;
+			}
+			return _cachedGlobalInverse;
+		}
+	}
+
 	/// <summary>
 	/// The layer instances follow this node's world transform and visibility, which the scene
 	/// tree no longer propagates to them.
@@ -308,7 +340,8 @@ public partial class FableFx : Node3D
 
 		if (what == NotificationTransformChanged)
 		{
-			Transform3D world = GlobalTransform;
+			_transformDirty = true;
+			Transform3D world = CachedGlobalTransform;
 			_addInstance?.SetTransform(world);
 			_dispInstance?.SetTransform(world);
 			foreach (Engine_FxLayerInstance instance in _meshInstances.Values)
@@ -409,7 +442,13 @@ public partial class FableFx : Node3D
 	/// The frame's camera, resolved once by <see cref="Engine_FxDriver"/> for every system;
 	/// null falls back to this node's viewport camera.
 	/// </param>
-	public void Step(double delta, Camera3D? sharedCamera = null)
+	/// <param name="sharedCameraPos">Optional pre-fetched camera global position to avoid interop overhead.</param>
+	/// <param name="sharedCameraTransform">Optional pre-fetched camera global transform to avoid interop overhead.</param>
+	public void Step(
+		double delta,
+		Camera3D? sharedCamera = null,
+		Vector3? sharedCameraPos = null,
+		Transform3D? sharedCameraTransform = null)
 	{
 		if (!Playing)
 		{
@@ -451,7 +490,7 @@ public partial class FableFx : Node3D
 		Camera3D? cullCamera = sharedCamera ?? GetViewport()?.GetCamera3D();
 		// A far effect in view freezes only once it has something to show: one that has never
 		// been near would otherwise keep its empty first frame however long it is looked at.
-		if (cullCamera is not null && !InView(cullCamera, out bool farOnly) && (!farOnly || HasGeometry || lightsOnly))
+		if (cullCamera is not null && !InView(cullCamera, sharedCameraPos, out bool farOnly) && (!farOnly || HasGeometry || lightsOnly))
 		{
 			++FrozenThisFrame;
 			return;
@@ -469,7 +508,7 @@ public partial class FableFx : Node3D
 		// The node's world transform goes in so the system can hold world-space particles still
 		// when this effect moves — see AttachToRoot. A node bolted to a wall passes the same
 		// transform every frame and the system does nothing with it.
-		_system.Update((float)delta, lightsOnly ? null : GlobalTransform, lightsOnly);
+		_system.Update((float)delta, lightsOnly ? null : CachedGlobalTransform, lightsOnly);
 
 		// THE LIGHTS FOLLOW THE SAME CLOCK AS THE PARTICLES, so a brazier's glow breathes with
 		// its flame instead of sitting at a constant. The colour and the energy stay SEPARATE —
@@ -621,7 +660,8 @@ public partial class FableFx : Node3D
 		}
 
 		EnsureLayerInstances();
-		Transform3D local = GlobalTransform.AffineInverse() * camera.GlobalTransform;
+		Transform3D camTransform = sharedCameraTransform ?? camera.GlobalTransform;
+		Transform3D local = CachedGlobalInverse * camTransform;
 		Vector3 cameraPos = local.Origin;
 		Vector3 cameraRight = local.Basis.X.Normalized();
 		Vector3 cameraUp = local.Basis.Y.Normalized();
@@ -759,7 +799,7 @@ public partial class FableFx : Node3D
 
 	/// <summary>Freeze reach: beyond this an effect is a few pixels and the guest would have
 	/// culled it by its radius.</summary>
-	public const float FreezeDistance = 160f;
+	public const float FreezeDistance = 50f;
 
 	/// <summary>A generous bounding sphere for the frustum test, so a wide plume at the edge
 	/// of the view keeps simulating.</summary>
@@ -789,10 +829,10 @@ public partial class FableFx : Node3D
 
 	/// <summary>In the frustum and within <see cref="FreezeDistance"/>; <paramref name="farOnly"/> when
 	/// it is in the frustum and only too far.</summary>
-	private bool InView(Camera3D camera, out bool farOnly)
+	private bool InView(Camera3D camera, Vector3? cameraPos, out bool farOnly)
 	{
 		farOnly = false;
-		Vector3 origin = GlobalPosition;
+		Vector3 origin = CachedGlobalTransform.Origin;
 		foreach (Plane plane in FrameFrustum(camera))
 		{
 			if (plane.DistanceTo(origin) > FreezeRadius)
@@ -801,7 +841,8 @@ public partial class FableFx : Node3D
 			}
 		}
 
-		if (origin.DistanceTo(camera.GlobalPosition) > FreezeDistance)
+		Vector3 camPos = cameraPos ?? camera.GlobalPosition;
+		if (origin.DistanceSquaredTo(camPos) > FreezeDistance * FreezeDistance)
 		{
 			farOnly = true;
 			return false;
@@ -809,6 +850,8 @@ public partial class FableFx : Node3D
 
 		return true;
 	}
+
+	private bool InView(Camera3D camera, out bool farOnly) => InView(camera, null, out farOnly);
 
 	/// <summary>Whether the last emit left anything to draw, in the scene or the additive layer.</summary>
 	private bool HasGeometry =>
@@ -962,7 +1005,7 @@ public partial class FableFx : Node3D
 	{
 		// Only when they moved: each write marks the instance dirty for the render server.
 		if (_axesPublished &&
-			right.Dot(_axisRight) > 0.999995f && up.Dot(_axisUp) > 0.999995f)
+			right.Dot(_axisRight) > 0.9999f && up.Dot(_axisUp) > 0.9999f)
 		{
 			return;
 		}
@@ -971,19 +1014,19 @@ public partial class FableFx : Node3D
 		_axisRight = right;
 		_axisUp = up;
 
-		if (_surface is not null && IsInstanceValid(_surface))
+		if (_surface is not null && IsInstanceValid(_surface) && (_mesh?.GetSurfaceCount() ?? 0) > 0)
 		{
 			_surface.SetInstanceShaderParameter(CamRightParam, right);
 			_surface.SetInstanceShaderParameter(CamUpParam, up);
 		}
 
-		if (_addInstance is not null)
+		if (_addInstance is not null && (_addMesh?.GetSurfaceCount() ?? 0) > 0)
 		{
 			_addInstance.SetShaderParameter(CamRightParam, right);
 			_addInstance.SetShaderParameter(CamUpParam, up);
 		}
 
-		if (_dispInstance is not null)
+		if (_dispInstance is not null && (_dispMesh?.GetSurfaceCount() ?? 0) > 0)
 		{
 			_dispInstance.SetShaderParameter(CamRightParam, right);
 			_dispInstance.SetShaderParameter(CamUpParam, up);

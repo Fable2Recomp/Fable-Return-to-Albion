@@ -11,6 +11,10 @@ public partial class Engine_PropStreamer : Node3D
 {
     public const string ModelPathMeta = "model_path";
 
+    public const string BatchBoundsMeta = "batch_bounds";
+
+    public const string BatchSpreadMeta = "batch_spread";
+
     /// <summary>
     /// The `.save` record one prop instance was built from, on a node that holds a single one.
     ///
@@ -35,6 +39,17 @@ public partial class Engine_PropStreamer : Node3D
     private static readonly Dictionary<string, ArrayMesh> Cache = new();
 
     private static readonly List<Engine_PropStreamer> Live = new();
+
+    static Engine_PropStreamer()
+    {
+        Refii.Core.Engine_RefiiConfig.OnConfigChanged += (name, _) =>
+        {
+            if (name.Equals("prop_cull_distance_scale", StringComparison.OrdinalIgnoreCase))
+            {
+                UpdateAllVisibilityRanges();
+            }
+        };
+    }
 
     private readonly List<GeometryInstance3D> _pending = new();
 
@@ -224,20 +239,135 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
+    public static float ReadCullDistanceScale()
+    {
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue("prop_cull_distance_scale", out string? v) &&
+                float.TryParse(v.Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float scale) && float.IsFinite(scale)
+                ? scale
+                : 1f;
+        }
+        catch (Exception)
+        {
+            return 1f;
+        }
+    }
+
     /// <summary>
-    /// Stops a prop drawing — and casting into the cascades — once its longest side projects
-    /// under <see cref="CullMinPixels"/>, fading over the last 15% of the range. Godot measures
-    /// the range to the instance's bounds, so a batch qualifies only when it is compact.
+    /// Checks whether a model path represents a building or primary architectural structure.
+    /// </summary>
+    public static bool IsBuildingPath(string modelPath, float extent = 0f)
+    {
+        if (string.IsNullOrEmpty(modelPath))
+        {
+            return false;
+        }
+
+        // Small dressing models (<2.5m) are NEVER exempt as buildings
+        if (extent > 0f && extent < 2.5f)
+        {
+            return false;
+        }
+
+        string p = modelPath.Replace('\\', '/').ToLowerInvariant();
+
+        // Building shells and major structures
+        if (p.EndsWith("/exterior.mdl", StringComparison.Ordinal) ||
+            p.EndsWith("/interior.mdl", StringComparison.Ordinal) ||
+            p.Contains("townhouse", StringComparison.Ordinal) ||
+            p.Contains("clocktower", StringComparison.Ordinal) ||
+            p.Contains("gatehouse", StringComparison.Ordinal) ||
+            p.Contains("bridge", StringComparison.Ordinal) ||
+            p.Contains("castle", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // Large regional structures (walls, towers, platforms) >= 4m
+        if (extent >= 4.0f && (p.Contains("/buildings/", StringComparison.Ordinal) || p.Contains("/structures/", StringComparison.Ordinal)))
+        {
+            if (!p.Contains("stall", StringComparison.Ordinal) &&
+                !p.Contains("cart", StringComparison.Ordinal) &&
+                !p.Contains("crate", StringComparison.Ordinal) &&
+                !p.Contains("barrel", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Checks whether an instance represents a building or primary architectural structure.
+    /// Buildings are exempt from size-based prop distance culling so town silhouettes remain visible.
+    /// </summary>
+    public static bool IsBuilding(GeometryInstance3D instance, string? modelPath = null, float extent = 0f)
+    {
+        if (extent > 0f && extent < 2.5f)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(modelPath) && instance.HasMeta(ModelPathMeta))
+        {
+            modelPath = instance.GetMeta(ModelPathMeta, string.Empty).AsString();
+        }
+
+        if (IsBuildingPath(modelPath ?? string.Empty, extent))
+        {
+            return true;
+        }
+
+        string name = instance.Name.ToString().ToLowerInvariant();
+        if (name.Contains("townhouse", StringComparison.Ordinal) ||
+            name.Contains("clocktower", StringComparison.Ordinal) ||
+            name.Contains("gatehouse", StringComparison.Ordinal) ||
+            name.Contains("bridge", StringComparison.Ordinal) ||
+            name.Contains("exterior", StringComparison.Ordinal) ||
+            name.Contains("interior", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Computes the tiered distance cull threshold for a non-building prop based on its longest extent.
+    /// &lt;0.5m: 15m * scale, &lt;1.0m: 20m * scale, &lt;1.5m: 30m * scale, &lt;2.5m: 40m * scale.
+    /// Returns 0 for objects &gt;=2.5m or when scale &lt;= 0 (no size clamp).
+    /// </summary>
+    public static float CalculateTieredCullDistance(float extent, float cullScale)
+    {
+        if (cullScale <= 0f)
+        {
+            return 0f;
+        }
+
+        return extent switch
+        {
+            < 0.5f => 15f * cullScale,
+            < 1.0f => 20f * cullScale,
+            < 1.5f => 30f * cullScale,
+            < 2.5f => 40f * cullScale,
+            _ => 0f
+        };
+    }
+
+    /// <summary>
+    /// Applies draw distance and fade range to a prop instance. First checks guest stated range,
+    /// then applies size-tiered distance culling for non-building dressing props scaled by
+    /// <c>prop_cull_distance_scale</c>:
+    /// &lt;0.5m: 15m * scale, &lt;1.0m: 20m * scale, &lt;1.5m: 30m * scale, &lt;2.5m: 40m * scale.
+    /// Buildings and objects &gt;=2.5m keep their stated distances.
     /// </summary>
     public static void ApplyVisibilityRange(GeometryInstance3D instance, Mesh mesh)
     {
-        // What the guest states outranks this rule: a placement with a stated range was stamped
-        // at build, an entity with one when its node was made (Engine_PropDrawRange), and the
-        // screen-size cull is only for what neither describes.
-        if (Engine_PropDrawRange.Apply(instance, mesh) || CullMinPixels <= 0f)
-        {
-            return;
-        }
+        // First apply what the guest states (draw range, tree instance uniforms, billboard meta)
+        bool hasStated = Engine_PropDrawRange.Apply(instance, mesh);
 
         Vector3 size = mesh.GetAabb().Size;
         float extent = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
@@ -248,36 +378,132 @@ public partial class Engine_PropStreamer : Node3D
             return;
         }
 
+        // Buildings are exempt from size-based distance culling
+        if (IsBuilding(instance, null, extent))
+        {
+            return;
+        }
+
+        float spread = 0f;
         if (instance is MultiMeshInstance3D batch)
         {
-            // The bounds the batch was built with (its custom AABB), not a fresh measurement:
-            // `GetAabb()` on a MultiMeshInstance3D walks every instance.
             if (batch.Multimesh is not { } mm)
             {
                 return;
             }
 
-            Vector3 span = mm.CustomAabb.Size;
-            if (span == Vector3.Zero)
+            if (batch.HasMeta(BatchBoundsMeta))
             {
-                return;  // never measured: leave the batch alone rather than guess
+                Aabb rawBounds = (Aabb)batch.GetMeta(BatchBoundsMeta);
+                float meshRadius = extent * 0.5f;
+                mm.CustomAabb = rawBounds.Grow(MathF.Max(meshRadius, 0.5f));
             }
 
-            if (MathF.Max(span.X, MathF.Max(span.Y, span.Z)) > CompactBatchMetres)
+            if (batch.HasMeta(BatchSpreadMeta))
             {
-                return;
+                spread = batch.GetMeta(BatchSpreadMeta).AsSingle();
+            }
+            else
+            {
+                Vector3 span = mm.CustomAabb.Size;
+                spread = span.Length() * 0.5f;
             }
         }
 
-        float end = extent * PixelsPerMetreAtOneMetre / CullMinPixels;
-        if (end >= CullFarthestMetres)
+        float cullScale = ReadCullDistanceScale();
+        float tieredEnd = CalculateTieredCullDistance(extent, cullScale);
+        if (tieredEnd > 0f)
+        {
+            float end = tieredEnd + spread;
+
+            // If the node carried a stated range, clamp it so small objects cull earlier,
+            // but never push it further than the stated range.
+            if (instance.HasMeta(Engine_PropDrawRange.Meta) &&
+                instance.GetMeta(Engine_PropDrawRange.Meta).AsFloat32Array() is { Length: >= 3 } statedMeta &&
+                statedMeta[2] > 0f)
+            {
+                end = MathF.Min(statedMeta[2], end);
+            }
+
+            if (instance.VisibilityRangeBegin > 0f)
+            {
+                end = MathF.Max(end, instance.VisibilityRangeBegin + 1f);
+            }
+
+            instance.VisibilityRangeEnd = end;
+            instance.VisibilityRangeEndMargin = 0f;
+            instance.VisibilityRangeFadeMode = GeometryInstance3D.VisibilityRangeFadeModeEnum.Disabled;
+            return;
+        }
+
+        // For non-buildings with extent >= 2.5m (or when cullScale <= 0):
+        // If it already had a stated range from the guest, keep that stated range!
+        if (hasStated || CullMinPixels <= 0f)
         {
             return;
         }
 
-        instance.VisibilityRangeEnd = end;
-        instance.VisibilityRangeEndMargin = end * 0.15f;
-        instance.VisibilityRangeFadeMode = GeometryInstance3D.VisibilityRangeFadeModeEnum.Self;
+        float legacyEnd = extent * PixelsPerMetreAtOneMetre / CullMinPixels;
+        if (legacyEnd >= CullFarthestMetres)
+        {
+            return;
+        }
+
+        instance.VisibilityRangeEnd = legacyEnd;
+        instance.VisibilityRangeEndMargin = 0f;
+        instance.VisibilityRangeFadeMode = GeometryInstance3D.VisibilityRangeFadeModeEnum.Disabled;
+    }
+
+    /// <summary>
+    /// Re-evaluates visibility ranges on all streamed props across all live streamers
+    /// (e.g. when <c>prop_cull_distance_scale</c> is updated at runtime).
+    /// </summary>
+    public static void UpdateAllVisibilityRanges()
+    {
+        lock (Live)
+        {
+            for (int i = Live.Count - 1; i >= 0; i--)
+            {
+                Engine_PropStreamer streamer = Live[i];
+                if (!GodotObject.IsInstanceValid(streamer))
+                {
+                    Live.RemoveAt(i);
+                    continue;
+                }
+                UpdateContainerVisibilityRanges(streamer);
+            }
+        }
+
+        Refii.Game.GameEntities.Current?.UpdateAllVisibilityRanges();
+    }
+
+    private static void UpdateContainerVisibilityRanges(Node container)
+    {
+        foreach (Node child in container.GetChildren())
+        {
+            if (child is MeshInstance3D single && single.Mesh is not null)
+            {
+                ApplyVisibilityRange(single, single.Mesh);
+            }
+            else if (child is MultiMeshInstance3D multi && multi.Multimesh?.Mesh is not null)
+            {
+                ApplyVisibilityRange(multi, multi.Multimesh.Mesh);
+                foreach (Node sub in multi.GetChildren())
+                {
+                    if (sub is GeometryInstance3D gi)
+                    {
+                        gi.VisibilityRangeEnd = multi.VisibilityRangeEnd;
+                        gi.VisibilityRangeEndMargin = multi.VisibilityRangeEndMargin;
+                        gi.VisibilityRangeFadeMode = multi.VisibilityRangeFadeMode;
+                    }
+                }
+            }
+
+            if (child.GetChildCount() > 0)
+            {
+                UpdateContainerVisibilityRanges(child);
+            }
+        }
     }
 
     public static PrefetchJob PrefetchModels(IReadOnlyList<string> paths, Func<bool>? stop = null)
@@ -967,7 +1193,7 @@ public partial class Engine_PropStreamer : Node3D
     }
 
     /// <summary>A vertex-baked placement's block in the shared bake texture.</summary>
-    private static readonly StringName BakeBaseMeta = "classic_bake_base";
+    private const string BakeBaseMeta = "classic_bake_base";
 
     private int _bakeApplied;
 

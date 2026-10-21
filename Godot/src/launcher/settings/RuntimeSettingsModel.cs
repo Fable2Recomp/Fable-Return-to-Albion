@@ -38,7 +38,8 @@ public sealed class RuntimeSettingsModel
     /// </summary>
     public static bool IsAdvanced(RuntimeCVarDefinition definition)
     {
-        if (definition.Name is "lighting_model" or "materials_modernized" or "texture_upscaling_enabled")
+        if (definition.Name is "lighting_model" or "materials_modernized" or "texture_upscaling_enabled"
+            or "lighting_preset" or "hdr_output")
         {
             return false;
         }
@@ -100,6 +101,48 @@ public sealed class RuntimeSettingsModel
         Save();
     }
 
+    public sealed record LightingPreset(
+        double LightRange,
+        double ShadowRange);
+
+    public static readonly IReadOnlyDictionary<string, LightingPreset> Presets =
+        new Dictionary<string, LightingPreset>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["performance"] = new(45.0, 30.0),
+            ["balanced"] = new(65.0, 50.0),
+            ["quality"] = new(85.0, 70.0),
+        };
+
+    /// <summary>The lighting preset the current range values match, or "custom".</summary>
+    public string CurrentLightingPreset()
+    {
+        double lightRange = ParseDouble(GetValueOrDefault("placed_light_range", "65.0"), "65.0");
+        double shadowRange = ParseDouble(GetValueOrDefault("placed_shadow_range", "50.0"), "50.0");
+
+        foreach ((string name, LightingPreset preset) in Presets)
+        {
+            if (Math.Abs(lightRange - preset.LightRange) < 1.0 &&
+                Math.Abs(shadowRange - preset.ShadowRange) < 1.0)
+            {
+                return name;
+            }
+        }
+
+        return "custom";
+    }
+
+    /// <summary>Applies a named preset to individual lighting and shadow range CVars.</summary>
+    public void ApplyLightingPreset(string presetName)
+    {
+        if (Presets.TryGetValue(presetName, out LightingPreset? preset))
+        {
+            Values["lighting_preset"] = presetName.ToLowerInvariant();
+            Values["placed_light_range"] = preset.LightRange.ToString("0.0", CultureInfo.InvariantCulture);
+            Values["placed_shadow_range"] = preset.ShadowRange.ToString("0.0", CultureInfo.InvariantCulture);
+            Save();
+        }
+    }
+
     private bool _initialized;
 
     public void Initialize()
@@ -132,6 +175,13 @@ public sealed class RuntimeSettingsModel
                 Values[definition.Name] = definition.DefaultValue;
             }
         }
+        if (Values.TryGetValue("placed_light_range", out string? lrStr) &&
+            double.TryParse(lrStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedLr) &&
+            parsedLr <= 8.0)
+        {
+            Values["placed_light_range"] = (parsedLr <= 1.1 ? 40.0 : parsedLr >= 1.9 ? 80.0 : 60.0).ToString("0.0", CultureInfo.InvariantCulture);
+        }
+        Values["lighting_preset"] = CurrentLightingPreset();
     }
 
     public void Save()
@@ -170,6 +220,15 @@ public sealed class RuntimeSettingsModel
             {
                 continue;
             }
+
+            // All advanced lighting settings live in the LightingSettingsDialog
+            // accessed via the "Advanced..." button under Lighting Preset.
+            if (definition.Category == RuntimeCVarsGodot.LightingCategory &&
+                definition.Name != "lighting_preset" && definition.Name != "hdr_output")
+            {
+                continue;
+            }
+
             if (!showAdvanced && IsAdvanced(definition))
             {
                 continue;
@@ -198,14 +257,14 @@ public sealed class RuntimeSettingsModel
     private static int GroupRank(string category) => category switch
     {
         RuntimeConfig.DisplayCategory => 0,
-        RuntimeCVarsGodot.VideoCategory => 1,
-        RuntimeCVarsGodot.ControlsCategory => 2,
-        RuntimeCVarsGodot.LightingCategory => 2,
-        RuntimeCVarsGodot.Category => 3,
-        MultiplayerCategory => 4,
-        RuntimeCVarsGodot.PresenceCategory => 5,
+        RuntimeCVarsGodot.LightingCategory => 1,
+        RuntimeCVarsGodot.VideoCategory => 2,
+        RuntimeCVarsGodot.ControlsCategory => 3,
+        RuntimeCVarsGodot.Category => 4,
+        MultiplayerCategory => 5,
+        RuntimeCVarsGodot.PresenceCategory => 6,
         RuntimeCVarsGodot.DeveloperCategory => 9,
-        _ => 6,
+        _ => 7,
     };
 
     /// <summary>The panel's name for the runtime's RexNet group: what it is to a player.</summary>

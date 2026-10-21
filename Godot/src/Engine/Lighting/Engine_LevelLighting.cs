@@ -95,6 +95,7 @@ public static class Engine_LevelLighting
 			// the shadow resolution steps — the "seam that does not match up" tracking the
 			// camera's distance rather than any geometry. The blend dithers across it.
 			DirectionalShadowBlendSplits = true,
+			DirectionalShadowFadeStart = 0.85f,
 
 			// NO CASCADES IN A REFLECTION: the reflected bit never selects a caster, so a mirror
 			// camera, which sees only that bit, finds no casters (Engine_ReflectionLayer).
@@ -112,6 +113,12 @@ public static class Engine_LevelLighting
 	}
 
 	private static float? _sunScale;
+
+	public static void ReloadConfig()
+	{
+		_sunScale = null;
+		_giHalfResolution = null;
+	}
 
 	public static void ApplyWeatherSun(DirectionalLight3D light, LightingFrame frame)
 	{
@@ -174,6 +181,17 @@ public static class Engine_LevelLighting
 		bool shadows = SunCasts(frame.SunShadow);
 		if (light.ShadowEnabled != shadows) light.ShadowEnabled = shadows;
 
+		// Exclude town building interiors (IndoorMask / IndoorLampHostMask) from the outdoor
+		// directional sun/moon light so sunlight never leaks through walls or roofs onto indoor
+		// geometry when sun shadows are disabled or beyond cascade depth.
+		uint desiredCullMask = (Engine_LightZones.Active && frame.HasSky)
+			? ~(Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)
+			: uint.MaxValue;
+		if (light.LightCullMask != desiredCullMask)
+		{
+			light.LightCullMask = desiredCullMask;
+		}
+
 		// CASCADES BY STRENGTH. The moon at energy 0.2 cast the same four cascades over the
 		// whole market as the noon sun: 5,000 draw calls of shadow for a light nobody can see
 		// the shadows of. Two splits over a shorter depth at night; the day keeps four.
@@ -181,13 +199,31 @@ public static class Engine_LevelLighting
 		// (the near split to 35 m at half the map, the rest to the reach) or four.
 		float activeEnergy = Refii.Level.Engine_DynamicSkyLighting.OverridesSun
 			? Refii.Level.Engine_DynamicSkyLighting.SunEnergy : frame.SunEnergy;
-		int splits = SunSplitsOverride ?? (activeEnergy < NightEnergy ? 2 : SunSplits);
+		bool isNight = activeEnergy < NightEnergy;
+		int splits = SunSplitsOverride ?? (isNight ? 2 : SunSplits);
 		var mode = splits <= 2
 			? DirectionalLight3D.ShadowMode.Parallel2Splits
 			: DirectionalLight3D.ShadowMode.Parallel4Splits;
-		float distance = splits <= 2 ? Mathf.Min(NightFarDepth, SunFarDepth) : SunFarDepth;
+		float distance = isNight ? Mathf.Min(NightFarDepth, SunFarDepth) : SunFarDepth;
 		if (light.DirectionalShadowMode != mode) light.DirectionalShadowMode = mode;
 		if (light.DirectionalShadowMaxDistance != distance) light.DirectionalShadowMaxDistance = distance;
+		if (light.DirectionalShadowFadeStart != 0.85f) light.DirectionalShadowFadeStart = 0.85f;
+
+		if (distance > 0f)
+		{
+			float split1 = Mathf.Clamp(CascadeSplitNear / distance, 0.05f, 0.5f);
+			if (Mathf.Abs(light.DirectionalShadowSplit1 - split1) > 0.001f)
+			{
+				light.DirectionalShadowSplit1 = split1;
+			}
+			if (splits > 2)
+			{
+				float split2 = Mathf.Clamp(CascadeSplitMid / distance, split1 + 0.05f, 0.8f);
+				float split3 = Mathf.Clamp(Mathf.Min(CascadeSplitFar, distance * 0.8f) / distance, split2 + 0.05f, 0.95f);
+				if (Mathf.Abs(light.DirectionalShadowSplit2 - split2) > 0.001f) light.DirectionalShadowSplit2 = split2;
+				if (Mathf.Abs(light.DirectionalShadowSplit3 - split3) > 0.001f) light.DirectionalShadowSplit3 = split3;
+			}
+		}
 
 		// IN WORLD SPACE, because the node sits under the level root's Scale(-1, 1, 1). A local
 		// transform inherits that mirror, and the sun's world aim came out with its X flipped —
@@ -483,6 +519,16 @@ public static class Engine_LevelLighting
 		// Sky reflections are not part of this: the materials carry their own environment map.
 		environment.ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled;
 
+		// NO SKY, MODERN MODEL: the bakes are the light. See fable_interior in the shader.
+		// A painted day set is not a roof: painted sets author mood over OUTDOOR cells and the
+		// data has no interior flag (`Engine_PaintedDaySets`). Gating on SkylightWeight
+		// (`hasSky ? 1 - PaintedWeight : 0`) flipped the whole screen when PaintedWeight clamped
+		// to exactly 1, and the painted set's ambient is already folded in by its stated weight.
+		// The gate is the theme stating no main light; the interior dials are remaster choices.
+		bool interior = Engine_LightingFrame.ModernModel && !frame.HasSky;
+		Engine_LightingFrame.CurrentInterior = interior;
+
+		float ambientScale = Engine_LevelBakedLighting.AmbientScale;
 		if (unified)
 		{
 			// GODOT'S AMBIENT IS THE GI'S SKY LIGHT, NOT A FLOOR: inside a cascade the engine replaces
@@ -503,8 +549,8 @@ public static class Engine_LevelLighting
 				: Colors.Black;
 			// The GI's half of the bake; the other half is the flat floor below.
 			float traced = 1f - Engine_LightingFrame.ModernFloorShare;
-			environment.AmbientLightEnergy = peak * traced * Engine_LevelBakedLighting.AmbientScale;
-			float floor = Engine_LightingFrame.ModernFloorShare * Engine_LevelBakedLighting.AmbientScale;
+			environment.AmbientLightEnergy = peak * traced * ambientScale;
+			float floor = Engine_LightingFrame.ModernFloorShare * ambientScale;
 			RenderingServer.GlobalShaderParameterSet(FableFillFloorName,
 				new Vector3(sky[0] * floor, sky[1] * floor, sky[2] * floor));
 		}
@@ -527,14 +573,6 @@ public static class Engine_LevelLighting
 		float tether = Engine_LightingFrame.ModernModel && frame.HasAmbient
 			? Engine_LightingFrame.ModernProbeSkyBlend * Math.Clamp(frame.SkylightWeight, 0f, 1f)
 			: 0f;
-		// NO SKY, MODERN MODEL: the bakes are the light. See fable_interior in the shader.
-		// A painted day set is not a roof: painted sets author mood over OUTDOOR cells and the
-		// data has no interior flag (`Engine_PaintedDaySets`). Gating on SkylightWeight
-		// (`hasSky ? 1 - PaintedWeight : 0`) flipped the whole screen when PaintedWeight clamped
-		// to exactly 1, and the painted set's ambient is already folded in by its stated weight.
-		// The gate is the theme stating no main light; the interior dials are remaster choices.
-		bool interior = Engine_LightingFrame.ModernModel && !frame.HasSky;
-		Engine_LightingFrame.CurrentInterior = interior;
 		Engine_LevelBakedLighting.InteriorNow = interior ? 1.0f : 0.0f;
 		Engine_LevelBakedLighting.InteriorBakeNow =
 			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f;
@@ -543,7 +581,6 @@ public static class Engine_LevelLighting
 			interior ? Engine_LightingFrame.InteriorFogScale : 1.0f);
 		RenderingServer.GlobalShaderParameterSet(FableInteriorBakeName,
 			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f);
-		float ambientScale = Engine_LevelBakedLighting.AmbientScale;
 		RenderingServer.GlobalShaderParameterSet(FableSkyAmbientName, new Vector4(
 			frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale,
 			frame.AmbientColour[1] * frame.AmbientEnergy * ambientScale,
@@ -603,11 +640,19 @@ public static class Engine_LevelLighting
 		return Basis.LookingAt(forward, up);
 	}
 
-	// Made once: a string literal converts to a new StringName on every call.
-	private static readonly StringName FableUnifiedName = "fable_unified";
-	private static readonly StringName FableFillFloorName = "fable_fill_floor";
-	private static readonly StringName FableInteriorName = "fable_interior";
-	private static readonly StringName FableInteriorFogName = "fable_interior_fog";
-	private static readonly StringName FableInteriorBakeName = "fable_interior_bake";
-	private static readonly StringName FableSkyAmbientName = "fable_sky_ambient";
+	// Lazily initialized so touching Engine_LevelLighting in headless .NET testhost never invokes
+	// native Godot StringName constructors.
+	private static StringName? _fableUnifiedName;
+	private static StringName? _fableFillFloorName;
+	private static StringName? _fableInteriorName;
+	private static StringName? _fableInteriorFogName;
+	private static StringName? _fableInteriorBakeName;
+	private static StringName? _fableSkyAmbientName;
+
+	private static StringName FableUnifiedName => _fableUnifiedName ??= "fable_unified";
+	private static StringName FableFillFloorName => _fableFillFloorName ??= "fable_fill_floor";
+	private static StringName FableInteriorName => _fableInteriorName ??= "fable_interior";
+	private static StringName FableInteriorFogName => _fableInteriorFogName ??= "fable_interior_fog";
+	private static StringName FableInteriorBakeName => _fableInteriorBakeName ??= "fable_interior_bake";
+	private static StringName FableSkyAmbientName => _fableSkyAmbientName ??= "fable_sky_ambient";
 }

@@ -708,6 +708,17 @@ public partial class Engine_GameAssets : Node
 			entry, ReadAllBytes, FindByFileName, out scenePath, out error);
 	}
 
+	/// <summary>Every discovered level entry across all mounted banks.</summary>
+	public IReadOnlyList<Refii.Level.LevelEntry> DiscoveredLevels()
+	{
+		if (Snapshot() is not { } fs)
+		{
+			return Array.Empty<Refii.Level.LevelEntry>();
+		}
+
+		return _levels ??= Refii.Level.Engine_LevelIndex.Discover(fs);
+	}
+
 	/// <summary>Every discovered level's world and path, once; for tools that walk them all.</summary>
 	public List<(string World, string LevelPath)> LevelPaths()
 	{

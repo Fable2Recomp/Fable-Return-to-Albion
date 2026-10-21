@@ -32,6 +32,11 @@ instance uniform vec4 probe_b = vec4(0.0);
 // by having no transfer at all.
 instance uniform vec4 lightmap_colour = vec4(1.0, 1.0, 1.0, 0.0);
 
+/// Per-instance ambient scale: 1.0 for outdoor surfaces, scaled down by
+/// `building_interior_ambient_scale` for interior building architecture, indoor props,
+/// and characters inside buildings in outdoor levels.
+instance uniform float fable_ambient_scale = 1.0;
+
 /// THE THEME'S LIGHTING IS GLOBAL, published every frame by Engine_LevelLighting. As instance
 /// uniforms these were rewritten on every node once per five game minutes, spread over many
 /// frames, so each step crossed the world as a visible wave.
@@ -79,6 +84,10 @@ global uniform float fable_interior_bake = 1.0;
 /// LightSpecular = slot + 2; anything lower — Godot's default 0.5, an FX light — has no record.
 /// Our shaders use SPECULAR_AMOUNT for nothing else.
 global uniform sampler2D fable_light_table;
+
+/// Pre-baked static world shadow atlas (octahedral R16F depth in metres), published by
+/// Engine_LightTable when a level's `.shadows` container is loaded.
+global uniform sampler2D fable_static_shadow_atlas : filter_nearest;
 
 /// The fragment's world position, assigned at the end of every including shader's vertex().
 varying vec3 fable_world;
@@ -307,7 +316,9 @@ global uniform float fable_emission_boost = 1.0;
 global uniform vec3 fable_fill_floor = vec3(0.0);
 
 vec3 fable_ambient(vec3 bake) {
-	return (bake * (1.0 - fable_unified)) + fable_ambient_colour + fable_fill_floor;
+	float is_amb3 = step(3.5, lightmap_colour.w);
+	return (bake * max(1.0 - fable_unified, is_amb3 * 0.35)) +
+		(fable_ambient_colour + fable_fill_floor) * fable_ambient_scale;
 }
 
 /// The main light. Lambert, because Fable's main light is one directional source and the
@@ -399,6 +410,46 @@ vec3 fable_ambient(vec3 bake) {
 /// The guest's seven-light cap is NOT reproduced: the ramp reaches exactly zero at the range, so
 /// the cap only changes the picture where more than seven radii overlap one point — the worst
 /// overlap in the shipped set is 11, and only 4 of 81 lit levels exceed 7 anywhere.
+vec2 fable_octahedral_uv(vec3 dir) {
+	vec3 n = dir / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1e-6);
+	vec2 oct = n.z >= 0.0
+		? n.xy
+		: (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+	return oct * 0.5 + 0.5;
+}
+
+float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect) {
+	if (atlas_rect.z <= 0.0 || d <= 1e-4) {
+		return 1.0;
+	}
+
+	vec2 tile_uv = fable_octahedral_uv(light_to_world);
+	vec2 uv = atlas_rect.xy + tile_uv * atlas_rect.z;
+	vec2 texel_size = 1.0 / vec2(textureSize(fable_static_shadow_atlas, 0));
+
+	// Receiver depth bias (the baker already applies slope-scale normal bias per texel).
+	float bias = max(0.03, d * 0.015);
+	float receiver = d - bias;
+
+	// Bilinear-weighted 4-tap PCF in octahedral atlas space.
+	// Each tile carries a 1-texel wrapped border gutter so +/-0.5 texel offsets never bleed.
+	vec2 st = uv / texel_size - 0.5;
+	vec2 f = fract(st);
+	vec2 base_uv = (floor(st) + 0.5) * texel_size;
+
+	float d00 = textureLod(fable_static_shadow_atlas, base_uv, 0.0).r;
+	float d10 = textureLod(fable_static_shadow_atlas, base_uv + vec2(texel_size.x, 0.0), 0.0).r;
+	float d01 = textureLod(fable_static_shadow_atlas, base_uv + vec2(0.0, texel_size.y), 0.0).r;
+	float d11 = textureLod(fable_static_shadow_atlas, base_uv + texel_size, 0.0).r;
+
+	float s00 = smoothstep(receiver - 0.06, receiver, d00);
+	float s10 = smoothstep(receiver - 0.06, receiver, d10);
+	float s01 = smoothstep(receiver - 0.06, receiver, d01);
+	float s11 = smoothstep(receiver - 0.06, receiver, d11);
+
+	return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+
 float fable_attenuation(float godot_attenuation, bool directional, float specular_amount, vec3 world) {
 	if (directional) {
 		return godot_attenuation * surface_cloud_transmission(world);
@@ -414,7 +465,8 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 		// a flickering torch breathes every step and lives in the table's second row — the node
 		// keeps the flicker's envelope so its bounds never move (see Engine_LightTable.Stated).
 		// Past the stated radius the ramp is zero and so is the product: no window to undo.
-		float stated = texelFetch(fable_light_table, ivec2(slot, 1), 0).x;
+		vec4 row1 = texelFetch(fable_light_table, ivec2(slot, 1), 0);
+		float stated = row1.x;
 		float ramp = clamp(1.0 - d / max(stated, 1e-3), 0.0, 1.0);
 		if (ramp <= 0.0) {
 			return 0.0;
@@ -424,7 +476,8 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 		float window = 1.0 - (ratio * ratio * ratio * ratio);
 		window *= window;
 		float rest = clamp(godot_attenuation / max(window, 1e-4), 0.0, 1.0);
-		return ramp * rest;
+		float static_shadow = fable_sample_static_shadow(world - record.xyz, d, row1.yzw);
+		return ramp * rest * static_shadow;
 	}
 
 	float a = clamp(godot_attenuation, 0.0, 1.0);

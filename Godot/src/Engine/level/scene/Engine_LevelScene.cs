@@ -851,6 +851,11 @@ public static class Engine_LevelScene
 
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
+            Engine_LevelShadowMaps.LoadOrClear(level, bakedGdbPath);
+        }
+        else
+        {
+            Engine_LevelShadowMaps.LoadOrClear(level, string.Empty);
         }
 
         Mark("baked-lighting");

@@ -61,7 +61,16 @@ public static class Engine_GiRefresh
 			return;
 		}
 
-		Aabb bounds = instance.GlobalTransform * instance.GetAabb();
+		Aabb local = instance switch
+		{
+			MultiMeshInstance3D { Multimesh: { } mm } =>
+				mm.CustomAabb.Size != Vector3.Zero ? mm.CustomAabb : (mm.Mesh?.GetAabb() ?? default),
+			MeshInstance3D mi =>
+				mi.CustomAabb.Size != Vector3.Zero ? mi.CustomAabb : (mi.Mesh?.GetAabb() ?? default),
+			GeometryInstance3D gi => gi.CustomAabb,
+			_ => default,
+		};
+		Aabb bounds = instance.GlobalTransform * local;
 		lock (_arrived)
 		{
 			if (_arrived.Count < 512)

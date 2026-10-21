@@ -6675,6 +6675,11 @@ public static class HostBridge
 		}
 	}
 
+	/// <summary>
+	/// The hero's companion dog entity address, or 0.
+	/// </summary>
+	public static uint DogEntityAddress() => GetMinimapLive().Dog;
+
 	[System.ThreadStatic]
 	private static uint[]? _heroVitalWords;
 

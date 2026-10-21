@@ -191,11 +191,12 @@ public partial class Engine_ClothBody : MeshInstance3D
             return null;
         }
 
+        bool rigged = Refii.Models.Engine_MdlRig.TryFrom(source) is not null;
         var body = new Engine_ClothBody
         {
             Name = NodeName,
             Layers = node.Layers,
-            CastShadow = node.CastShadow,
+            CastShadow = rigged ? GeometryInstance3D.ShadowCastingSetting.Off : node.CastShadow,
             GIMode = node.GIMode,
             VisibilityRangeBegin = node.VisibilityRangeBegin,
             VisibilityRangeEnd = node.VisibilityRangeEnd,
@@ -207,7 +208,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         body.Bind(source, pieces, patch);
         node.AddChild(body);
         body.Owner = node.Owner ?? node;
-        if (Refii.Models.Engine_MdlRig.TryFrom(source) is null)
+        if (!rigged)
         {
             Refii.Lighting.Engine_ShadowReach.Adopt(body);
         }

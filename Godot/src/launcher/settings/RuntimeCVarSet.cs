@@ -204,6 +204,10 @@ public static class RuntimeCVarsGodot
                 + "drawing and casting shadows, fading out over the last stretch. A railing "
                 + "post is culled past ~50 m, a two-metre rock past ~350 m. 0 draws every prop "
                 + "at any distance."),
+            new("prop_cull_distance_scale", DisplayCategory, RuntimeCVarType.Double, "1",
+                "Scale factor for distance culling of non-building props and dressing by size "
+                + "(<0.5m: 10m, <1m: 20m, <1.5m: 30m, <2.5m: 40m). Buildings and large objects >=2.5m "
+                + "are excluded. 1 is default scale; higher values push culling further away; 0 disables size culling."),
 
             new("render_scale_percent", DisplayCategory, RuntimeCVarType.Int, "100",
                 "Renders the 3D world at this percentage of the window and scales it up, "
@@ -262,20 +266,6 @@ public static class RuntimeCVarsGodot
                 "Adds a trace of noise to hide banding in smooth gradients such as the sky, fog "
                 + "and dark interiors."),
 
-            new("hdr_output", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Output HDR to a display that supports it: highlights the SDR picture clips at "
-                + "white are shown up to the display's peak brightness, and everything below "
-                + "white is unchanged. Requires Direct3D 12 on Windows (selected automatically). "
-                + "Falls back to SDR where the display or OS has no HDR, and follows the window between screens."),
-
-            new("hdr_reference_nits", DisplayCategory, RuntimeCVarType.Double, "200",
-                "The brightness of white — the UI, and everything the SDR picture shows — in "
-                + "HDR, in nits. Recommended: 200 nits. 0 follows the OS's own SDR brightness setting."),
-
-            new("hdr_peak_nits", DisplayCategory, RuntimeCVarType.Double, "1000",
-                "The brightest the display can show, in nits, which bounds the highlights. 0 "
-                + "uses what the display reports; set it when that report is wrong."),
-
             new("borderless", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Drops the window's title bar and border. With a window sized to the monitor "
                 + "this is the usual 'borderless fullscreen', which alt-tabs faster than "
@@ -287,12 +277,37 @@ public static class RuntimeCVarsGodot
             new("video_skip_after", VideoCategory, RuntimeCVarType.Double, "0.35",
                 "Seconds a movie has to be on screen before a click or A can skip it, so the "
                 + "press that started it does not also end it."),
+            new("lighting_preset", LightingCategory, RuntimeCVarType.String, "balanced",
+                "Overall lighting and shadow fidelity preset: Performance, Balanced, Quality, or Custom. "
+                + "Controls light and shadow budgets and reach.",
+                "performance|Performance,balanced|Balanced,quality|Quality,custom|Custom"),
+
+            new("hdr_output", LightingCategory, RuntimeCVarType.Bool, "false",
+                "Output HDR to a display that supports it: highlights the SDR picture clips at "
+                + "white are shown up to the display's peak brightness, and everything below "
+                + "white is unchanged. Requires Direct3D 12 on Windows (selected automatically). "
+                + "Falls back to SDR where the display or OS has no HDR, and follows the window between screens."),
+
+            new("hdr_reference_nits", LightingCategory, RuntimeCVarType.Double, "200",
+                "The brightness of white — the UI, and everything the SDR picture shows — in "
+                + "HDR, in nits. Recommended: 200 nits. 0 follows the OS's own SDR brightness setting."),
+
+            new("hdr_peak_nits", LightingCategory, RuntimeCVarType.Double, "1000",
+                "The brightest the display can show, in nits, which bounds the highlights. 0 "
+                + "uses what the display reports; set it when that report is wrong."),
+
+            new("placed_shadow_range", LightingCategory, RuntimeCVarType.Double, "30.0",
+                "Maximum distance from the eye in metres beyond which placed light shadows fade and cull (Performance: 10m, Balanced: 30m, Quality: 70m)."),
+
             new("sun_shadow_distance", LightingCategory, RuntimeCVarType.Double, "200",
                 "How far from the eye the sun and moon cast dynamic shadows, in metres, by day; "
                 + "night uses half. The four cascades share this depth, so a longer reach spends "
                 + "the same shadow map over more ground and draws every caster in it: 300 m "
                 + "measured four times the visible geometry again in the shadow passes. 200 "
                 + "keeps the shadows a player looks at and drops the ones under the horizon haze."),
+
+            new("sun_shadow_reach_scale", LightingCategory, RuntimeCVarType.Double, "1",
+                "Multiplier on size-tiered sun shadow reach distances. Lower values cull small and medium prop shadows earlier while keeping large landscape shadows intact."),
 
             new("sun_shadow_splits", LightingCategory, RuntimeCVarType.Int, "2",
                 "How many cascades the sun's shadow map is split into by day, 2 or 4. Every "
@@ -322,19 +337,12 @@ public static class RuntimeCVarsGodot
                 + "direct sun mild against the baked lighting, so people and ground barely "
                 + "react to it — raising this makes characters and terrain visibly sun-lit "
                 + "and deepens their shadows. 1.0 follows the shipped energy exactly."),
-            new("placed_light_budget", LightingCategory, RuntimeCVarType.Int, "64",
-                "How many placed lights stay visible at once, nearest to the eye first. 0 keeps "
-                + "every fixture in the region lit all the time, which is the remaster's setting: "
-                + "a budget makes lamps switch on and off as the camera moves. Every fixture "
-                + "lit measured 13 ms of draw in Bowerstone Market with every shadow off."),
             new("placed_light_fade", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Whether a placed light fades out and stops drawing past its authored camera "
                 + "cutoff, as the 360 did. Off keeps every fixture lit at any distance; its "
                 + "range still bounds what it reaches. The fable model always fades."),
             new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
-                "Let torches, lamps and fixtures cast shadows. On: "
-                + "the fixtures nearest the eye and on screen hold shadow maps, up to "
-                + "placed_light_shadow_budget of them, fading in and out as the camera moves. "
+                "Let torches, lamps and fixtures cast dynamic shadows within placed_shadow_range. "
                 + "Off follows the shipped data, where only the few spot lights marked to cast do."),
             new("cull_back_faces", VideoCategory, RuntimeCVarType.Bool, "true",
                 "Draw ordinary models from their front side only, as the original game does. "
@@ -379,31 +387,41 @@ public static class RuntimeCVarsGodot
                 + "bounce itself is unchanged; its edges where one surface meets another are a "
                 + "little softer. Frees graphics-card time at high resolutions. Off resolves it "
                 + "at every pixel."),
-            new("placed_light_shadows_world", LightingCategory, RuntimeCVarType.Bool, "false",
-                "What a torch or lamp shadows. Off: characters and the other things the game "
-                + "moves, which is nearly free. On: the level itself as well, so walls and "
-                + "furniture block fixture light; each shadowed fixture then redraws everything "
-                + "in its reach six times a frame."),
-            new("placed_light_shadow_budget", LightingCategory, RuntimeCVarType.Int, "4",
-                "How many placed lights cast shadows at once. Each one redraws everything in "
-                + "its reach into its own shadow map every frame, so this is the lighting dial "
-                + "with the most direct cost: 4 cost about 3 fps in Bowerstone Market. 0 turns "
-                + "fixture shadows off."),
             new("modern_dark_lift", LightingCategory, RuntimeCVarType.Double, "1",
                 "Maximum lift for frames far darker than the original's average-luminance floor "
                 + "in the modern lighting model. The original pins a frame's mean at that floor, "
                 + "so a cave whose mean sits at a fortieth of it renders at 7% grey; the lift "
                 + "lowers the floor only for frames more than ten times darker than it, up to "
                 + "this factor, and leaves daylight and ordinary night alone. 1 follows the original."),
-            new("placed_light_range", LightingCategory, RuntimeCVarType.Double, "1.5",
-                "Multiplier on the reach of torch, lamp and fixture lights. The shipped torches "
-                + "light 5-6 m, balanced for the original's baked glow between them; the remaster "
-                + "widens the pools so a cave floor between two braziers is lit. 1.0 follows the "
-                + "shipped data."),
+            new("placed_light_range", LightingCategory, RuntimeCVarType.Double, "65.0",
+                "Maximum distance from the eye in metres beyond which placed fixture lights fade and cull (Performance: 45m, Balanced: 65m, Quality: 85m)."),
             new("placed_light_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
                 "Multiplier on torch, lamp and fixture light intensity. The authored fixtures "
                 + "throw modest pools — a tall lamp post barely reaches the ground — "
                 + "so the remaster brightens them. 1.0 follows the shipped data exactly."),
+            new("placed_light_reach_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
+                "Multiplier on outdoor torch, lamp and fixture radius (reach). 1.5 expands "
+                + "outdoor street lamps so they reach the ground; 1.0 uses the shipped radius."),
+            new("building_interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "0.5",
+                "Multiplier on outdoor sky and theme ambient inside town buildings in outdoor "
+                + "levels (taverns, shops, houses). Caves and sky-less levels are unaffected "
+                + "and use interior_ambient_scale instead."),
+            new("building_interior_light_scale", LightingCategory, RuntimeCVarType.Double, "0.65",
+                "Multiplier on placed light intensity inside town buildings in outdoor levels. "
+                + "Town interiors pack many overlapping lamps into small rooms; scaling them "
+                + "down prevents washed-out walls and restores shadow contrast. Caves are unaffected."),
+            new("building_interior_reach_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on placed light radius (reach) inside town buildings in outdoor "
+                + "levels. 1.0 preserves the authored room reach without over-overlapping. "
+                + "Caves are unaffected."),
+            new("unattached_light_scale", LightingCategory, RuntimeCVarType.Double, "0.35",
+                "Multiplier on placed OmniLight3D and SpotLight3D nodes in outdoor levels that "
+                + "are not attached to a 3D light fixture or flame dummy (floating fill lights). "
+                + "Set to 0.0 to disable unattached lights completely. Caves are unaffected."),
+            new("static_shadow_resolution", LightingCategory, RuntimeCVarType.Int, "2048",
+                "Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). "
+                + "Changing this triggers a re-bake during the startup warmup screen.",
+                "2048|2048 (Default),4096|4096 (High),8192|8192 (Ultra)"),
             new("lighting_model", LightingCategory, RuntimeCVarType.String, "modern",
                 "How the world is lit. 'modern' is the remaster: Godot's lighting, with the "
                 + "ambient derived live from the sky dome so every surface breathes with the "
@@ -426,10 +444,6 @@ public static class RuntimeCVarsGodot
                 "How far the interior ambient lift is pulled toward neutral. The cave themes "
                 + "state a saturated orange ambient; lifted as-is it paints every surface "
                 + "orange. 0 keeps the theme's colour, 1 lifts with white."),
-            new("interior_bake_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
-                "NO LONGER READ BY EITHER MODEL: it scaled the authored bake in the old modern model's interiors, and the modern model now emits no bake. Scales the authored vertex bakes in levels with no sky. 1.0 is the shipped "
-                + "strength and the one to keep: above it, baked floors and paintings blow out "
-                + "while surfaces with no bake stay black. Modern model only."),
             new("modern_tone_curve", LightingCategory, RuntimeCVarType.String, "filmic",
                 "The tone curve in the modern model. 'filmic' is a curve with a toe and a "
                 + "shoulder, applied where there is no sky (caves, rooms) so the interior lift "

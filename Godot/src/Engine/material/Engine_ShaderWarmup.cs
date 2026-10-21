@@ -32,6 +32,8 @@ public partial class Engine_ShaderWarmup : Node
 
 	public static bool Done { get; private set; }
 
+	public const string MenuMusicPath = "audio/music/menu_interlude.wav";
+
 	private static bool _begun;
 
 	private static Engine_ShaderWarmup? _instance;
@@ -41,6 +43,12 @@ public partial class Engine_ShaderWarmup : Node
 	private bool _batchShown;
 	private int _settle = SettleFrames;
 	private ulong _startedMs;
+
+	private AudioStreamPlayer? _musicPlayer;
+	private bool _musicRequested;
+	private bool _shutDown;
+	private string _gameDirectory = string.Empty;
+	private System.Threading.CancellationTokenSource? _musicCancel;
 
 	private SubViewport _viewport = null!;
 	private Node3D _spatialRoot = null!;
@@ -56,7 +64,7 @@ public partial class Engine_ShaderWarmup : Node
 
 	private static readonly Color GoldDim = new(0.45f, 0.35f, 0.18f);
 
-	public static void Begin(Node parent)
+	public static void Begin(Node parent, string? gameDirectory = null)
 	{
 		if (Done || _begun)
 		{
@@ -81,7 +89,11 @@ public partial class Engine_ShaderWarmup : Node
 			return;
 		}
 
-		_instance = new Engine_ShaderWarmup { Name = "ShaderWarmup" };
+		_instance = new Engine_ShaderWarmup
+		{
+			Name = "ShaderWarmup",
+			_gameDirectory = gameDirectory ?? string.Empty,
+		};
 		parent.AddChild(_instance);
 	}
 
@@ -99,6 +111,7 @@ public partial class Engine_ShaderWarmup : Node
 	{
 		if (_instance is { } warm && IsInstanceValid(warm))
 		{
+			warm.ShutdownMusic();
 			warm.QueueFree();
 		}
 
@@ -122,11 +135,199 @@ public partial class Engine_ShaderWarmup : Node
 		BuildScreen();
 		BuildViewport();
 		GD.Print($"[shader-warmup] compiling {_paths.Count} shader(s) before the guest starts");
+
+		TryRequestWarmupMusic();
+	}
+
+	public override void _ExitTree()
+	{
+		ShutdownMusic();
+	}
+
+	private void TryRequestWarmupMusic()
+	{
+		if (_musicRequested || _shutDown)
+		{
+			return;
+		}
+
+		bool muted = false;
+		try
+		{
+			muted = Refii.Core.Engine_RefiiConfig.Bool(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "audio_mute", false);
+		}
+		catch (System.Exception)
+		{
+		}
+
+		if (muted)
+		{
+			GD.Print("[shader-warmup] audio is muted by config; skipping warmup music");
+			_musicRequested = true;
+			return;
+		}
+
+		string dataRoot = _gameDirectory;
+		if (string.IsNullOrEmpty(dataRoot) || !System.IO.Directory.Exists(dataRoot))
+		{
+			dataRoot = Refii.Core.Engine_GameData.Resolve();
+		}
+
+		_musicRequested = true;
+		_musicCancel = new System.Threading.CancellationTokenSource();
+		var token = _musicCancel.Token;
+
+		System.Threading.Tasks.Task.Run(() =>
+		{
+			if (token.IsCancellationRequested)
+			{
+				return;
+			}
+
+			byte[]? bytes = null;
+
+			// Direct load from music.bnk: opens in <50ms without waiting 28s for the full game mount.
+			if (!string.IsNullOrEmpty(dataRoot) && System.IO.Directory.Exists(dataRoot))
+			{
+				string musicBnk = System.IO.Path.Combine(dataRoot, "data", "audio", "music.bnk");
+				if (!System.IO.File.Exists(musicBnk))
+				{
+					musicBnk = System.IO.Path.Combine(dataRoot, "audio", "music.bnk");
+				}
+
+				if (System.IO.File.Exists(musicBnk))
+				{
+					GD.Print($"[shader-warmup] opening {musicBnk} directly...");
+					if (Refii.Bnk.BnkArchive.TryOpen(musicBnk, out Refii.Bnk.BnkArchive? archive, out string archiveErr) && archive is not null)
+					{
+						using (archive)
+						{
+							foreach (var entry in archive.Entries)
+							{
+								if (entry.RelativePath.Contains("menu_interlude", System.StringComparison.OrdinalIgnoreCase))
+								{
+									bytes = archive.ReadEntryBytes(entry);
+									break;
+								}
+							}
+						}
+					}
+					else
+					{
+						GD.PrintErr($"[shader-warmup] failed to open {musicBnk}: {archiveErr}");
+					}
+				}
+			}
+
+			// Fallback: if direct load didn't find it, query Engine_GameAssets if mounted
+			if (bytes is null || bytes.Length == 0)
+			{
+				var assets = Refii.Assets.Engine_GameAssets.Instance;
+				if (assets is { IsMounted: true })
+				{
+					bytes = assets.ReadAllBytes(MenuMusicPath);
+				}
+			}
+
+			if (bytes is null || bytes.Length == 0 || token.IsCancellationRequested)
+			{
+				GD.Print($"[shader-warmup] {MenuMusicPath} could not be read or was empty");
+				return;
+			}
+
+			GD.Print($"[shader-warmup] read {bytes.Length} bytes of {MenuMusicPath}; decoding XMA...");
+			if (!Refii.Audio.Engine_XmaDecoder.TryDecode(
+				    bytes, out short[] pcm, out int sampleRate, out int channels, out string xmaError))
+			{
+				GD.PrintErr($"[shader-warmup] could not decode {MenuMusicPath}: {xmaError}");
+				return;
+			}
+
+			if (token.IsCancellationRequested)
+			{
+				return;
+			}
+
+			Callable.From(() => OnMusicPcmReady(pcm, sampleRate, channels)).CallDeferred();
+		}, token).ContinueWith(t =>
+		{
+			if (t.IsFaulted && t.Exception is { } ex)
+			{
+				GD.PrintErr($"[shader-warmup] music decode task faulted: {ex.GetBaseException().Message}");
+			}
+		}, System.Threading.Tasks.TaskScheduler.Default);
+	}
+
+	private void OnMusicPcmReady(short[] pcm, int sampleRate, int channels)
+	{
+		if (_shutDown || !IsInstanceValid(this) || IsQueuedForDeletion() || _musicPlayer is not null)
+		{
+			return;
+		}
+
+		AudioStreamWav? stream = Refii.Audio.Engine_AudioStream.FromPcm16(pcm, sampleRate, channels, out string error);
+		if (stream is null)
+		{
+			GD.PrintErr($"[shader-warmup] failed to build AudioStreamWav: {error}");
+			return;
+		}
+
+		int sampleCount = pcm.Length / System.Math.Max(1, channels);
+		stream.LoopBegin = 0;
+		stream.LoopEnd = sampleCount;
+		stream.LoopMode = AudioStreamWav.LoopModeEnum.Forward;
+
+		try
+		{
+			int masterIdx = AudioServer.GetBusIndex("Master");
+			if (masterIdx >= 0 && AudioServer.IsBusMute(masterIdx))
+			{
+				AudioServer.SetBusMute(masterIdx, false);
+			}
+		}
+		catch (System.Exception)
+		{
+		}
+
+		_musicPlayer = new AudioStreamPlayer
+		{
+			Name = "WarmupMusic",
+			Stream = stream,
+			Bus = "Master",
+			VolumeDb = -10.0f,
+		};
+		AddChild(_musicPlayer);
+		_musicPlayer.Play();
+		GD.Print($"[shader-warmup] playing {MenuMusicPath} ({sampleRate} Hz, {channels} ch, {sampleCount} samples, {sampleCount / (float)sampleRate:F1}s)");
+	}
+
+	private void ShutdownMusic()
+	{
+		_shutDown = true;
+
+		_musicCancel?.Cancel();
+		_musicCancel?.Dispose();
+		_musicCancel = null;
+
+		if (_musicPlayer is { } player && IsInstanceValid(player))
+		{
+			player.Stop();
+			player.Stream = null;
+			player.QueueFree();
+		}
+
+		_musicPlayer = null;
 	}
 
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("shaderwarmup");
+		if (!_musicRequested && !_shutDown)
+		{
+			TryRequestWarmupMusic();
+		}
+
 		if (Done)
 		{
 			_spinner?.QueueRedraw();

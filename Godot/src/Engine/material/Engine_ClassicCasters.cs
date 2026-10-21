@@ -89,10 +89,13 @@ public static class Engine_ClassicCasters
     public static int Shown { get; private set; }
 
     /// <summary>
-    /// Whether the guest states that <paramref name="node"/> casts no shadow at all (renderable flag
-    /// 0x40, or a prop's stated casting of nothing): both renderers honour it.
+    /// Whether the guest states that <paramref name="node"/> casts no sun-cascade shadow at all
+    /// (renderable flag 0x40, or a prop's stated casting of nothing). Only applies under the
+    /// classic sun-cascade renderer; in the modern renderer, indoor furniture and cave props have
+    /// 0x40 set because the 360 had no point-light prop shadows.
     /// </summary>
     public static bool NeverCasts(Node node) =>
+        Engine_ClassicMaterial.Active &&
         node.HasMeta(CastingMeta) && (node.GetMeta(CastingMeta).AsInt32() &
             (Engine_ClassicShadows.CastsNear | Engine_ClassicShadows.CastsFar)) == 0;
 

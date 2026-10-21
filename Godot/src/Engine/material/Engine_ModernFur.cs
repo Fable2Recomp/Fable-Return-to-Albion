@@ -30,7 +30,7 @@ public static class Engine_ModernFur
     private static readonly StringName AlbedoName = "albedo_tex";
     private static readonly StringName PbrName = "is_pbr";
     /// <summary>The source's lighting instance uniforms the shells share (fable_lighting, the entity tint).</summary>
-    private static readonly StringName[] Shared = { "probe_r", "probe_g", "probe_b", "lightmap_colour", "entity_tint" };
+    private static readonly StringName[] Shared = { "probe_r", "probe_g", "probe_b", "lightmap_colour", "entity_tint", "fable_ambient_scale" };
 
     /// <summary>Frames between copies of the source's lighting uniforms.</summary>
     private const int ShareFrames = 15;
@@ -99,7 +99,14 @@ public static class Engine_ModernFur
             {
                 continue;
             }
-            Aabb box = furred.Source.GlobalTransform * furred.Source.GetAabb();
+            if (furred.Shell.Layers != furred.Source.Layers)
+            {
+                furred.Shell.Layers = furred.Source.Layers;
+            }
+            Aabb localBox = furred.Source.CustomAabb.Size != Vector3.Zero
+                ? furred.Source.CustomAabb
+                : (furred.Source.Mesh?.GetAabb() ?? default);
+            Aabb box = furred.Source.GlobalTransform * localBox;
             float radius = box.Size.Length() * 0.5f;
             float d = MathF.Max((eye - box.GetCenter()).Length() - radius, camera.Near);
             int n = Math.Clamp((int)((furred.Length / d) / halfTan * 142.85713f + 1f), 16, Engine_ClassicFur.MaxShells);

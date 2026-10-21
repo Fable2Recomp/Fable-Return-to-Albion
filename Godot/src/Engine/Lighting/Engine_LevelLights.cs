@@ -57,6 +57,7 @@ public static class Engine_LevelLights
 	public const uint CastShadows = 0x63200437;
 	public const uint InitialActive = 0xFA11F9CD;
 	public const uint AttachToEntityPosition = 0x84886409;
+	public const uint IgnoreZoning = 0x59732763;
 	public const uint FlickeringBrightnessRange = 0xB6EE59FF;
 	public const uint FlickeringRadiusRange = 0x553EE81A;
 	public const uint FlickeringRate = 0x5CD3FCE3;
@@ -159,7 +160,8 @@ public static class Engine_LevelLights
 		string Dummy,
 		float FlickerRate,
 		float FlickerBrightnessRange,
-		float FlickerRadiusRange);
+		float FlickerRadiusRange,
+		bool IgnoreZoning = false);
 
 	/// <summary>
 	/// The light an entity states, or none.
@@ -242,7 +244,8 @@ public static class Engine_LevelLights
 			// 0x8263117C/80/84), so a light that states none of them simply does not flicker.
 			ReadFloat(views, component, FlickeringRate, 0.0f),
 			ReadFloat(views, component, FlickeringBrightnessRange, 0.0f),
-			ReadFloat(views, component, FlickeringRadiusRange, 0.0f));
+			ReadFloat(views, component, FlickeringRadiusRange, 0.0f),
+			ReadBool(views, component, IgnoreZoning, false));
 
 		return true;
 	}
@@ -264,9 +267,20 @@ public static class Engine_LevelLights
 	/// </summary>
 	private static readonly List<Light3D> FxRegistry = new();
 
+	static Engine_LevelLights()
+	{
+		Refii.Core.Engine_RefiiConfig.OnConfigChanged += (_, _) => ReloadConfig();
+	}
+
 	/// <summary>The fixture's reach as BUILT, before any live scaling, kept so a sweep can be
 	/// relative to the authored value rather than to whatever the last sweep left.</summary>
 	public const string AuthoredRangeMeta = "refii_authored_range";
+
+	public const string RawIntensityMeta = "raw_intensity";
+
+	public const string RawRangeMeta = "raw_range";
+
+	public const string UnattachedLightMeta = "unattached_light";
 
 	/// <summary>
 	/// A live multiplier on every placed fixture's reach, for measuring what `placed_light_range`
@@ -302,6 +316,142 @@ public static class Engine_LevelLights
 				}
 			}
 		}
+	}
+
+	public static bool IsUnattachedLight(Light3D node) =>
+		node.HasMeta(UnattachedLightMeta) && node.GetMeta(UnattachedLightMeta).AsBool();
+
+	public static void ComputeEffectiveLightValues(
+		float rawIntensity,
+		float rawRange,
+		bool isIndoorLight,
+		bool isUnattached,
+		out float baseEnergy,
+		out float authoredRange)
+	{
+		// Cave/interior levels (CurrentInterior == true, i.e., levels with no sky) keep the
+		// canonical PlacedScale and PlacedRange so cave lighting is never altered by town
+		// building interior or unattached-light settings.
+		bool isCaveLevel = Engine_LightingFrame.CurrentInterior;
+		bool isBuildingInterior = !isCaveLevel && isIndoorLight;
+
+		float energyScale = PlacedScale * (isBuildingInterior ? BuildingInteriorLightScale : 1.0f);
+		if (!isCaveLevel && isUnattached)
+		{
+			energyScale *= UnattachedLightScale;
+		}
+
+		float reachScale = PlacedRange * (isBuildingInterior ? BuildingInteriorReachScale : 1.0f);
+
+		baseEnergy = rawIntensity * energyScale;
+		authoredRange = rawRange * reachScale;
+	}
+
+	/// <summary>
+	/// Computes the maximum world-space ray distance for baking static shadow maps for <paramref name="item"/>,
+	/// honouring the <c>placed_light_reach_scale</c> (<see cref="PlacedRange"/>) and
+	/// <c>building_interior_reach_scale</c> (<see cref="BuildingInteriorReachScale"/>) CVars via
+	/// <see cref="ComputeEffectiveLightValues(float, float, bool, bool, out float, out float)"/>,
+	/// plus the light's flicker radius envelope and <see cref="RangeScale"/>.
+	/// </summary>
+	public static float ComputeMaxBakeRange(ResolvedLightInstance item)
+	{
+		ComputeEffectiveLightValues(
+			item.Light.Intensity,
+			item.Light.Range,
+			isIndoorLight: false,
+			item.Unattached,
+			out _,
+			out float outdoorReach);
+		ComputeEffectiveLightValues(
+			item.Light.Intensity,
+			item.Light.Range,
+			isIndoorLight: true,
+			item.Unattached,
+			out _,
+			out float indoorReach);
+
+		float authoredReach = MathF.Max(outdoorReach, indoorReach);
+		float flickerEnvelope = 1.0f + MathF.Max(0.0f, item.Light.FlickerRadiusRange);
+		return authoredReach * flickerEnvelope * MathF.Max(1.0f, RangeScale);
+	}
+
+	public static void ComputeEffectiveLightValues(Light3D node, out float baseEnergy, out float authoredRange)
+	{
+		float rawIntensity = node.HasMeta(RawIntensityMeta)
+			? (float)node.GetMeta(RawIntensityMeta).AsDouble()
+			: DefaultIntensity;
+		float rawRange = node.HasMeta(RawRangeMeta)
+			? (float)node.GetMeta(RawRangeMeta).AsDouble()
+			: 8.0f;
+		ComputeEffectiveLightValues(
+			rawIntensity,
+			rawRange,
+			Engine_LightZones.IsIndoorLight(node),
+			IsUnattachedLight(node),
+			out baseEnergy,
+			out authoredRange);
+	}
+
+	public static void RefreshLightScales(Light3D node)
+	{
+		if (!GodotObject.IsInstanceValid(node) || !node.HasMeta(RawIntensityMeta))
+		{
+			return;
+		}
+
+		ComputeEffectiveLightValues(node, out float baseEnergy, out float authoredRange);
+		node.SetMeta(BaseEnergyMeta, baseEnergy);
+		node.SetMeta(AuthoredRangeMeta, authoredRange);
+
+		float fade = Engine_LightShadowBudget.VisibilityFactorOf(node);
+		node.LightEnergy = baseEnergy * fade;
+
+		float scaledRange = authoredRange * RangeScale;
+		if (node is OmniLight3D omni)
+		{
+			if (MathF.Abs(omni.OmniRange - scaledRange) > 1e-4f)
+			{
+				omni.OmniRange = scaledRange;
+			}
+		}
+		else if (node is SpotLight3D spot)
+		{
+			if (MathF.Abs(spot.SpotRange - scaledRange) > 1e-4f)
+			{
+				spot.SpotRange = scaledRange;
+			}
+		}
+	}
+
+	public static void RefreshAllLightScales()
+	{
+		var snapshot = new List<Light3D>();
+		SnapshotLights(snapshot);
+		foreach (Light3D node in snapshot)
+		{
+			RefreshLightScales(node);
+		}
+
+		Engine_LightFlicker.RefreshAllBaseValues();
+		Engine_LightTable.Refresh();
+	}
+
+	public static void ReloadConfig()
+	{
+		_placedScale = null;
+		_placedRange = null;
+		_buildingInteriorLightScale = null;
+		_buildingInteriorReachScale = null;
+		_unattachedLightScale = null;
+		_placedShadows = null;
+		_placedFade = null;
+
+		Engine_LightShadowBudget.ReloadConfig();
+		Engine_LevelBakedLighting.ReloadConfig();
+		Engine_LevelLighting.ReloadConfig();
+		Engine_LevelShadowMaps.ReloadConfig();
+		RefreshAllLightScales();
 	}
 
 	/// <summary>Copies the live placed lights into <paramref name="into"/>, pruning dead ones.</summary>
@@ -362,6 +512,56 @@ public static class Engine_LevelLights
 		}
 	}
 
+	public static bool IsFlameDummy(string dummy) =>
+		dummy.Length != 0 &&
+		(dummy.Contains("Flame", StringComparison.OrdinalIgnoreCase) ||
+		 dummy.Contains("Fire", StringComparison.OrdinalIgnoreCase) ||
+		 dummy.Contains("Torch", StringComparison.OrdinalIgnoreCase) ||
+		 dummy.Contains("Lamp", StringComparison.OrdinalIgnoreCase) ||
+		 dummy.Contains("Lantern", StringComparison.OrdinalIgnoreCase) ||
+		 dummy.Contains("Brazier", StringComparison.OrdinalIgnoreCase));
+
+	/// <summary>
+	/// Aligns a fixture's <c>Prop.Layout.Light</c> dummy height to its flame emitter height when the
+	/// light dummy was authored above the suspended lamp/flame (e.g. up on the chandelier chain in
+	/// <c>BS_Light_Ceiling.mdl</c> at Y=0.698 vs. the lamp ring at Y=0.394, or inside the top cap of
+	/// <c>BS_Lights_Town.mdl</c> at Y=3.397 vs. the globe flame at Y=3.214). Leaves floor grates and
+	/// campfires (<c>flameY &lt;= 0.35f</c>) untouched.
+	/// </summary>
+	public static Transform3D AlignLightDummyToFlame(Transform3D lightDummy, IReadOnlyList<Vector3> flameOrigins)
+	{
+		float bestFlameY = float.NegativeInfinity;
+		for (int i = 0; i < flameOrigins.Count; i++)
+		{
+			float fy = flameOrigins[i].Y;
+			if (fy > 0.35f && fy < lightDummy.Origin.Y - 0.02f && fy > bestFlameY)
+			{
+				bestFlameY = fy;
+			}
+		}
+
+		if (float.IsFinite(bestFlameY))
+		{
+			lightDummy.Origin = new Vector3(lightDummy.Origin.X, bestFlameY, lightDummy.Origin.Z);
+		}
+
+		return lightDummy;
+	}
+
+	private static bool HasFlameFxAttachment(uint entity, List<GdbView> views)
+	{
+		List<Engine_LevelFx.FxAttachment> fxList = Engine_LevelFx.HuntFxAttachments(entity, views);
+		for (int i = 0; i < fxList.Count; i++)
+		{
+			if (IsFlameDummy(fxList[i].Dummy))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	/// <summary>The placements carrying an active light — kept as nodes of their own by the prop builder.</summary>
 	public static HashSet<uint> LightBearing(
 		GdbView levelView, List<GdbView> supplementalViews, List<GdbPlacement> placements)
@@ -371,13 +571,333 @@ public static class Engine_LevelLights
 		var bearing = new HashSet<uint>();
 		foreach (GdbPlacement placement in placements)
 		{
-			if (TryRead(placement.Hash, views, out LightPlacement light) && light.Active)
+			if ((TryRead(placement.Hash, views, out LightPlacement light) && light.Active) ||
+			    HasFlameFxAttachment(placement.Hash, views))
 			{
 				bearing.Add(placement.Hash);
 			}
 		}
 
 		return bearing;
+	}
+
+	/// <summary>One resolved static light instance in region-local space, shared by runtime spawning and offline shadow baking.</summary>
+	public readonly record struct ResolvedLightInstance(
+		uint Entity,
+		int Index,
+		ulong LightKey,
+		LightPlacement Light,
+		Transform3D Transform,
+		string? EntityName,
+		bool Unattached);
+
+	/// <summary>Composes the deterministic 64-bit key identifying a placed light by its placement record and attachment dummy index.</summary>
+	public static ulong ComposeLightKey(uint entity, int index) =>
+		((ulong)entity << 32) | (uint)index;
+
+	/// <summary>
+	/// Resolves all placed light instances and lamp-host placement hashes for a level scenario using the
+	/// exact 5-step dummy fallback chain and synthetic flame-FX light synthesis.
+	/// </summary>
+	public static List<ResolvedLightInstance> ResolvePlacements(
+		GdbView levelView,
+		List<GdbView> supplementalViews,
+		List<GdbPlacement> placements,
+		Dictionary<uint, string>? modelPaths,
+		HashSet<uint> hosts,
+		out int duplicate,
+		out int duplicateElsewhere)
+	{
+		var views = new List<GdbView>(supplementalViews.Count + 1) { levelView };
+		views.AddRange(supplementalViews);
+
+		var resolved = new List<ResolvedLightInstance>();
+		var emitted = new Dictionary<(uint Entity, int Index), Vector3>();
+		int dup = 0;
+		int dupElsewhere = 0;
+
+		bool Emit(uint entity, in LightPlacement placement, Transform3D at, string? name, int index, bool unattached = false)
+		{
+			var key = (entity, index);
+			if (!emitted.TryAdd(key, at.Origin))
+			{
+				dup++;
+				if (emitted[key].DistanceSquaredTo(at.Origin) > 0.01f)
+				{
+					dupElsewhere++;
+				}
+
+				return false;
+			}
+
+			resolved.Add(new ResolvedLightInstance(
+				entity,
+				index,
+				ComposeLightKey(entity, index),
+				placement,
+				at,
+				name,
+				unattached));
+			return true;
+		}
+
+		static bool TryResolveDummy(string model, string dummy, out Transform3D bone)
+		{
+			if (Engine_LevelFx.TryDummyTransform(model, dummy, out bone))
+			{
+				return true;
+			}
+
+			if (Engine_LevelProps.CompanionPath(model) is { Length: > 0 } companion &&
+			    Engine_LevelFx.TryDummyTransform(companion, dummy, out bone))
+			{
+				return true;
+			}
+
+			bone = Transform3D.Identity;
+			return false;
+		}
+
+		foreach (GdbPlacement placement in placements)
+		{
+			bool hasAuthored = TryRead(placement.Hash, views, out LightPlacement light) && light.Active;
+			if (!hasAuthored)
+			{
+				// Placements that lack GraphicAppearanceLightComponent in GDB (e.g. market stall lanterns,
+				// hanging lanterns, wall braziers) but carry visual flame particle attachments.
+				List<Engine_LevelFx.FxAttachment> fxList = Engine_LevelFx.HuntFxAttachments(placement.Hash, views);
+				if (fxList.Count == 0)
+				{
+					continue;
+				}
+
+				string? propModel = null;
+				modelPaths?.TryGetValue(placement.Hash, out propModel);
+				if (propModel is null || propModel.Length == 0)
+				{
+					continue;
+				}
+
+				Transform3D placedXform = Engine_LevelProps.BuildTransform(placement);
+				var usedBones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+				int synthIndex = 0;
+
+				for (int f = 0; f < fxList.Count; f++)
+				{
+					Engine_LevelFx.FxAttachment fx = fxList[f];
+					if (!IsFlameDummy(fx.Dummy))
+					{
+						continue;
+					}
+
+					string fxBone = Engine_LevelFx.DummyBoneName(fx.Dummy);
+					string trackKey = fxBone.Length != 0 ? fxBone : fx.Dummy;
+					if (!usedBones.Add(trackKey))
+					{
+						continue;
+					}
+
+					if (!TryResolveDummy(propModel, fx.Dummy, out Transform3D at) &&
+					    (fxBone.Length == 0 || !TryResolveDummy(propModel, fxBone, out at)))
+					{
+						continue;
+					}
+
+					Transform3D xform = placedXform * at;
+					if (fx.Offset != Vector3.Zero)
+					{
+						xform *= new Transform3D(Basis.Identity, -fx.Offset);
+					}
+
+					bool isLantern = fx.Dummy.Contains("Lamp", StringComparison.OrdinalIgnoreCase) ||
+					                 fx.Dummy.Contains("Lantern", StringComparison.OrdinalIgnoreCase);
+					Vector3 col = isLantern
+						? new Vector3(1.0f, 0.58f, 0.24f)
+						: new Vector3(1.0f, 0.35f, 0.05f);
+					float intensity = 1.4f;
+					float range = isLantern ? 8.0f : 7.0f;
+
+					var synthetic = new LightPlacement(
+						ColourLinear: col,
+						Intensity: intensity,
+						Range: range,
+						Type: LightTypePoint,
+						HalfAngleRadians: 0f,
+						FadeDistance: 0.0f,
+						FadeRange: 0.0f,
+						CastShadows: false,
+						Active: true,
+						Dummy: fx.Dummy,
+						FlickerRate: 0.1f,
+						FlickerBrightnessRange: 0.23f,
+						FlickerRadiusRange: 0.21f
+					);
+
+					hosts.Add(placement.Hash);
+					Emit(placement.Hash, synthetic, xform, placement.EntityName, synthIndex);
+					synthIndex++;
+				}
+
+				continue;
+			}
+
+			Transform3D placed = Engine_LevelProps.BuildTransform(placement);
+
+			string? model = null;
+			modelPaths?.TryGetValue(placement.Hash, out model);
+			bool isBuildingRoomModel = model is not null && (
+				model.Contains("building", StringComparison.OrdinalIgnoreCase) ||
+				model.Contains("interior", StringComparison.OrdinalIgnoreCase) ||
+				model.Contains("chamber", StringComparison.OrdinalIgnoreCase));
+
+			if (model is not null && model.Length != 0 && !isBuildingRoomModel)
+			{
+				hosts.Add(placement.Hash);
+			}
+
+			// The entity's own origin, which is what AttachToEntityPosition asks for and also the
+			// only thing left when the placement resolved to no model at all.
+			if (light.Dummy.Length == 0 || model is null || model.Length == 0)
+			{
+				bool unattached = model is null || model.Length == 0 || isBuildingRoomModel ||
+					(placement.EntityName?.Contains("PlaceableLight", StringComparison.OrdinalIgnoreCase) ?? false);
+				Emit(placement.Hash, light, placed, placement.EntityName, 0, unattached);
+				continue;
+			}
+
+			// EVERY dummy of that name.
+			var flameOrigins = new List<Vector3>();
+			List<Engine_LevelFx.FxAttachment> modelFxList = Engine_LevelFx.HuntFxAttachments(placement.Hash, views);
+			for (int f = 0; f < modelFxList.Count; f++)
+			{
+				Engine_LevelFx.FxAttachment fx = modelFxList[f];
+				if (!IsFlameDummy(fx.Dummy))
+				{
+					continue;
+				}
+
+				if (TryResolveDummy(model, fx.Dummy, out Transform3D fxAt))
+				{
+					flameOrigins.Add(fxAt.Origin - fx.Offset);
+				}
+
+				string fxBone = Engine_LevelFx.DummyBoneName(fx.Dummy);
+				if (fxBone.Length != 0 && TryResolveDummy(model, fxBone, out Transform3D boneAt))
+				{
+					flameOrigins.Add(boneAt.Origin - fx.Offset);
+				}
+			}
+
+			for (int pIdx = 0; pIdx < DummyScanLimit; pIdx++)
+			{
+				string pNamed = pIdx == 0 ? "FX_Particle_DummyObject" : "FX_Particle_DummyObject" + pIdx;
+				if (TryResolveDummy(model, pNamed, out Transform3D pAt))
+				{
+					flameOrigins.Add(pAt.Origin);
+				}
+			}
+
+			string bone = Engine_LevelFx.DummyBoneName(LightDummy);
+			int index = 0;
+			for (; index < DummyScanLimit; index++)
+			{
+				string dotted = index == 0 ? LightDummy : LightDummy + index;
+				string named = index == 0 ? bone : bone + index;
+				if (!TryResolveDummy(model, dotted, out Transform3D at) &&
+				    !TryResolveDummy(model, named, out at))
+				{
+					break;
+				}
+
+				if (flameOrigins.Count != 0)
+				{
+					at = AlignLightDummyToFlame(at, flameOrigins);
+				}
+
+				Emit(placement.Hash, light, placed * at, placement.EntityName, index, unattached: isBuildingRoomModel);
+			}
+
+			// Fallback 1: Authored FX attachments.
+			if (index == 0)
+			{
+				List<Engine_LevelFx.FxAttachment> fxList =
+					Engine_LevelFx.HuntFxAttachments(placement.Hash, views);
+				var usedBones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+				for (int f = 0; f < fxList.Count; f++)
+				{
+					Engine_LevelFx.FxAttachment fx = fxList[f];
+					if (fx.Dummy.Length == 0)
+					{
+						continue;
+					}
+
+					string fxBone = Engine_LevelFx.DummyBoneName(fx.Dummy);
+					string trackKey = fxBone.Length != 0 ? fxBone : fx.Dummy;
+					if (!usedBones.Add(trackKey))
+					{
+						continue;
+					}
+
+					if (!TryResolveDummy(model, fx.Dummy, out Transform3D at) &&
+					    (fxBone.Length == 0 || !TryResolveDummy(model, fxBone, out at)))
+					{
+						continue;
+					}
+
+					Transform3D xform = placed * at;
+					if (fx.Offset != Vector3.Zero)
+					{
+						xform *= new Transform3D(Basis.Identity, -fx.Offset);
+					}
+
+					Emit(placement.Hash, light, xform, placement.EntityName, index);
+					index++;
+				}
+			}
+
+			// Fallback 2: Generic particle dummy objects on the model rig or sidecar
+			if (index == 0)
+			{
+				const string particleDotted = "Prop.FX.Particle";
+				const string particleDummy = "FX_Particle_DummyObject";
+				for (int pIdx = 0; pIdx < DummyScanLimit; pIdx++)
+				{
+					string dotted = pIdx == 0 ? particleDotted : particleDotted + pIdx;
+					string named = pIdx == 0 ? particleDummy : particleDummy + pIdx;
+					if (!TryResolveDummy(model, dotted, out Transform3D at) &&
+					    !TryResolveDummy(model, named, out at))
+					{
+						break;
+					}
+
+					Emit(placement.Hash, light, placed * at, placement.EntityName, index, unattached: isBuildingRoomModel);
+					index++;
+				}
+			}
+
+			// Fallback 3: Prop.Layout.Position
+			if (index == 0)
+			{
+				const string posDotted = "Prop.Layout.Position";
+				string posBone = Engine_LevelFx.DummyBoneName(posDotted);
+				if (TryResolveDummy(model, posDotted, out Transform3D at) ||
+				    (posBone.Length != 0 && TryResolveDummy(model, posBone, out at)))
+				{
+					Emit(placement.Hash, light, placed * at, placement.EntityName, index, unattached: isBuildingRoomModel);
+					index++;
+				}
+			}
+
+			// Fallback 4: Entity origin
+			if (index == 0)
+			{
+				Emit(placement.Hash, light, placed, placement.EntityName, 0, unattached: true);
+			}
+		}
+
+		duplicate = dup;
+		duplicateElsewhere = dupElsewhere;
+		return resolved;
 	}
 
 	public static int Spawn(
@@ -387,110 +907,30 @@ public static class Engine_LevelLights
 		List<GdbPlacement> placements,
 		Dictionary<uint, string>? modelPaths = null)
 	{
-		var views = new List<GdbView>(supplementalViews.Count + 1) { levelView };
-		views.AddRange(supplementalViews);
-
-		int spawned = 0;
 		var flicker = new Engine_LightFlicker { Name = Engine_LightFlicker.NodeName };
 		var hosts = new HashSet<uint>();
+		List<ResolvedLightInstance> resolved = ResolvePlacements(
+			levelView,
+			supplementalViews,
+			placements,
+			modelPaths,
+			hosts,
+			out int duplicate,
+			out int duplicateElsewhere);
 
-		// ONE LIGHT PER (ENTITY, ATTACHMENT), not one per placement.
-		// `Engine_LevelProps.AugmentPlacementModelHashes` splits a multi-model placement into one
-		// entry PER MODEL PART, each with the same record hash and transform, so without this key
-		// one fixture is built once per part. `Engine_LevelFx` guards the same list the same way.
-		// The dummy index is in the key because a twin-headed post states two lights on two
-		// dummies — a second fixture, not a repeat.
-		var emitted = new Dictionary<(uint Entity, int Index), Vector3>();
-		int duplicate = 0;
-		int duplicateElsewhere = 0;
-
-		bool Emit(uint entity, in LightPlacement placement, Transform3D at, string? name, int index)
+		int spawned = 0;
+		foreach (ResolvedLightInstance item in resolved)
 		{
-			var key = (entity, index);
-			if (!emitted.TryAdd(key, at.Origin))
-			{
-				duplicate++;
-
-				// A repeat at a different origin is counted apart: it would mean the key is
-				// collapsing two real fixtures into one.
-				if (emitted[key].DistanceSquaredTo(at.Origin) > 0.01f)
-				{
-					duplicateElsewhere++;
-				}
-
-				return false;
-			}
-
-			Light3D node = Build(placement, at, name, index);
+			Light3D node = Build(item.Light, item.Transform, item.EntityName, item.Index, item.Entity, item.Unattached);
 			container.AddChild(node);
-			Engine_LightZones.AddLight(node, entity);
-			flicker.Add(node, placement);
+			Engine_LightZones.AddLight(node, item.Entity, item.Light.IgnoreZoning);
+			flicker.Add(node, item.Light);
 			lock (FxRegistry)
 			{
 				FxRegistry.Add(node);
 			}
 
-			return true;
-		}
-
-		foreach (GdbPlacement placement in placements)
-		{
-			if (!TryRead(placement.Hash, views, out LightPlacement light) || !light.Active)
-			{
-				continue;
-			}
-
-			Transform3D placed = Engine_LevelProps.BuildTransform(placement);
-
-			string? model = null;
-			modelPaths?.TryGetValue(placement.Hash, out model);
-			if (model is not null && model.Length != 0)
-			{
-				hosts.Add(placement.Hash);
-			}
-
-			// The entity's own origin, which is what AttachToEntityPosition asks for and also the
-			// only thing left when the placement resolved to no model at all.
-			if (light.Dummy.Length == 0 || model is null || model.Length == 0)
-			{
-				if (Emit(placement.Hash, light, placed, placement.EntityName, 0))
-				{
-					spawned++;
-				}
-				continue;
-			}
-
-			// EVERY dummy of that name. The numeric spelling is the one this tree already
-			// established for the same attachment table — OB_MusicBox carries
-			// FX_Particle_DummyObject beside FX_Particle_DummyObject1 — so a second light is
-			// Layout_Light_DummyObject1. The scan stops at the first gap rather than probing a
-			// fixed count, because the count is a property of the model.
-			string bone = Engine_LevelFx.DummyBoneName(LightDummy);
-			int index = 0;
-			for (; index < DummyScanLimit; index++)
-			{
-				string named = index == 0 ? bone : bone + index;
-				if (!Engine_LevelFx.TryDummyTransform(model, named, out Transform3D at))
-				{
-					break;
-				}
-
-				if (Emit(placement.Hash, light, placed * at, placement.EntityName, index))
-				{
-					spawned++;
-				}
-			}
-
-			// A model that names no such dummy still carries the light — the component states it,
-			// and dropping it because the rig is missing an attachment point loses the fixture
-			// entirely rather than misplacing it by a metre.
-			if (index == 0)
-			{
-				if (Emit(placement.Hash, light, placed, placement.EntityName, 0))
-				{
-					spawned++;
-				}
-			}
+			spawned++;
 		}
 
 		// The updater only earns its place if something actually flickers. Mounting an empty one
@@ -549,8 +989,10 @@ public static class Engine_LevelLights
 	}
 
 	/// <summary>What a guest-driven entity draws on: a lamp host follows <see cref="MarkHosts"/>.</summary>
-	public static uint EntityLayersOf(uint record) =>
-		IsLampHost(record) ? LampHostLayerMask : 1u | EntityCasterLayerMask;
+	public static uint EntityLayersOf(uint record, bool includeDynamicCaster = true) =>
+		IsLampHost(record)
+			? LampHostLayerMask
+			: (includeDynamicCaster ? (1u | EntityCasterLayerMask) : 1u);
 
 	/// <summary>Moves the prop nodes of <paramref name="hosts"/> onto <see cref="LampHostLayer"/>.</summary>
 	private static void MarkHosts(Node container, HashSet<uint> hosts)
@@ -588,6 +1030,87 @@ public static class Engine_LevelLights
 
 	private static float? _placedRange;
 
+	private static float? _buildingInteriorLightScale;
+
+	private static float? _buildingInteriorReachScale;
+
+	private static float? _unattachedLightScale;
+
+	/// <summary>`building_interior_light_scale`: multiplier on placed light intensity inside town buildings in outdoor levels; 0.65 default.</summary>
+	public static float BuildingInteriorLightScale
+	{
+		get
+		{
+			if (_buildingInteriorLightScale is null)
+			{
+				try
+				{
+					_buildingInteriorLightScale = Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _),
+							"building_interior_light_scale", 0.65f),
+						0.0f, 4.0f);
+				}
+				catch (Exception)
+				{
+					_buildingInteriorLightScale = 0.65f;
+				}
+			}
+
+			return _buildingInteriorLightScale.Value;
+		}
+	}
+
+	/// <summary>`building_interior_reach_scale`: multiplier on placed light reach inside town buildings in outdoor levels; 1.0 default.</summary>
+	public static float BuildingInteriorReachScale
+	{
+		get
+		{
+			if (_buildingInteriorReachScale is null)
+			{
+				try
+				{
+					_buildingInteriorReachScale = Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _),
+							"building_interior_reach_scale", 1.0f),
+						0.25f, 4.0f);
+				}
+				catch (Exception)
+				{
+					_buildingInteriorReachScale = 1.0f;
+				}
+			}
+
+			return _buildingInteriorReachScale.Value;
+		}
+	}
+
+	/// <summary>`unattached_light_scale`: multiplier on placed lights not attached to a 3D light fixture in outdoor levels; 0.35 default.</summary>
+	public static float UnattachedLightScale
+	{
+		get
+		{
+			if (_unattachedLightScale is null)
+			{
+				try
+				{
+					_unattachedLightScale = Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _),
+							"unattached_light_scale", 0.35f),
+						0.0f, 4.0f);
+				}
+				catch (Exception)
+				{
+					_unattachedLightScale = 0.35f;
+				}
+			}
+
+			return _unattachedLightScale.Value;
+		}
+	}
+
 	/// <summary>
 	/// The remaster's `placed_light_range`: a multiplier on every fixture's authored reach. The
 	/// shipped torches light 5–6 m with a linear falloff, balanced for a 360 whose vertex bakes
@@ -602,10 +1125,9 @@ public static class Engine_LevelLights
 			{
 				try
 				{
-					_placedRange = Math.Clamp(
-						Refii.Core.Engine_RefiiConfig.Float(
-							Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_range", 1.5f),
-						0.25f, 8.0f);
+					float configured = Refii.Core.Engine_RefiiConfig.Float(
+						Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_reach_scale", 1.5f);
+					_placedRange = Math.Clamp(configured, 0.25f, 4.0f);
 				}
 				catch (Exception)
 				{
@@ -614,6 +1136,20 @@ public static class Engine_LevelLights
 			}
 
 			return _placedRange.Value;
+		}
+	}
+
+	/// <summary>`placed_light_range`: metres from eye to fixture beyond which fixtures fade and cull; 60.0 default.</summary>
+	public static float PlacedLightRange()
+	{
+		try
+		{
+			return Math.Clamp(Refii.Core.Engine_RefiiConfig.Float(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_range", 60.0f), 10.0f, 300.0f);
+		}
+		catch (Exception)
+		{
+			return 60.0f;
 		}
 	}
 
@@ -667,33 +1203,17 @@ public static class Engine_LevelLights
 		}
 	}
 
-	/// <summary>`placed_light_budget`: fixtures kept visible at once; 64 default, 0 is every fixture.</summary>
-	public static int PlacedLightBudget()
+	/// <summary>`placed_shadow_range`: metres from eye to light sphere beyond which shadows fade; 50.0 default.</summary>
+	public static float PlacedShadowRange()
 	{
 		try
 		{
-			return Refii.Core.Engine_RefiiConfig.Read(out _).TryGetValue("placed_light_budget", out string? v) &&
-				int.TryParse(v.Trim(), out int budget)
-				? budget
-				: 42;
+			return Math.Clamp(Refii.Core.Engine_RefiiConfig.Float(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "placed_shadow_range", 50.0f), 5.0f, 200.0f);
 		}
 		catch (Exception)
 		{
-			return 42;
-		}
-	}
-
-	/// <summary>`placed_light_shadow_budget`: fixtures casting at once; 0 is none.</summary>
-	public static int PlacedShadowBudget()
-	{
-		try
-		{
-			return Math.Max(Refii.Core.Engine_RefiiConfig.Int(
-				Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_shadow_budget", 8), 0);
-		}
-		catch (Exception)
-		{
-			return 8;
+			return 50.0f;
 		}
 	}
 
@@ -714,32 +1234,42 @@ public static class Engine_LevelLights
 
 	public const uint EntityCasterLayerMask = 1u << (EntityCasterLayer - 1);
 
-	/// <summary>What a placed light draws into its shadow map, by the data's own CastShadows flag.</summary>
-	public static uint CasterMaskOf(bool authored) =>
-		authored || PlacedShadowsWorld ? ~LampHostLayerMask : EntityCasterLayerMask;
+	public const string BaseEnergyMeta = "base_energy";
 
-	private static bool? _placedShadowsWorld;
+	/// <summary>
+	/// Static architecture and rigid props (outdoor Layer 1 + indoor Layer 14), excluding lamp-host
+	/// fixtures (<see cref="LampHostLayerMask"/> and <see cref="Engine_LightZones.IndoorLampHostMask"/>)
+	/// and dynamic moving character proxies (<see cref="EntityCasterLayerMask"/>).
+	/// </summary>
+	public const uint StaticCasterMask = 1u | Engine_LightZones.IndoorMask;
 
-	private static bool PlacedShadowsWorld
+	/// <summary>
+	/// What a placed light draws into its shadow map: all static walls, floors, ceilings and rigid
+	/// props (<see cref="StaticCasterMask"/>, or <see cref="Engine_LightZones.IndoorMask"/> alone
+	/// for indoor building lights in outdoor levels so they never cull/draw outdoor street geometry)
+	/// when <paramref name="includeStaticWorld"/> is true, plus dynamic moving character proxies
+	/// (<see cref="EntityCasterLayerMask"/>) when <paramref name="includeDynamicEntities"/> is true.
+	/// Never includes lamp-host layers so lights never cast shadows on themselves.
+	/// </summary>
+	public static uint CasterMaskOf(
+		bool includeDynamicEntities = true,
+		bool isIndoorLight = false,
+		bool includeStaticWorld = true)
 	{
-		get
+		uint mask = 0u;
+		if (includeStaticWorld)
 		{
-			if (_placedShadowsWorld is null)
-			{
-				try
-				{
-					_placedShadowsWorld = Refii.Core.Engine_RefiiConfig.Bool(
-						Refii.Core.Engine_RefiiConfig.Read(out _),
-						"placed_light_shadows_world", false);
-				}
-				catch (Exception)
-				{
-					_placedShadowsWorld = false;
-				}
-			}
-
-			return _placedShadowsWorld.Value;
+			mask |= (isIndoorLight && !Engine_LightingFrame.CurrentInterior)
+				? Engine_LightZones.IndoorMask
+				: StaticCasterMask;
 		}
+
+		if (includeDynamicEntities)
+		{
+			mask |= EntityCasterLayerMask;
+		}
+
+		return Refii.Level.Engine_ReflectionLayer.CasterMask(mask);
 	}
 
 	private static bool PlacedShadows
@@ -773,7 +1303,7 @@ public static class Engine_LevelLights
 
 	public static float PlacedShadowBias = float.NaN;
 
-	public static float PlacedShadowNormalBias = 2.0f;
+	public static float PlacedShadowNormalBias = 0.8f;
 
 	private static void ApplyShadowTuning(Light3D node)
 	{
@@ -796,7 +1326,7 @@ public static class Engine_LevelLights
 	}
 
 	private static Light3D Build(
-		LightPlacement light, Transform3D at, string? entityName, int index)
+		LightPlacement light, Transform3D at, string? entityName, int index, uint entity = 0u, bool unattached = false)
 	{
 		// THE COLOUR AND THE INTENSITY STAY SEPARATE, which is what lets this reach our shader
 		// unchanged. The guest premultiplies them — `825c2180 fmuls f0, f0, f13` — but Godot
@@ -833,17 +1363,32 @@ public static class Engine_LevelLights
 				OmniAttenuation = 0.0f,
 			};
 
-		node.Name = $"Light_{entityName ?? "?"}_{index}";
-		node.SetMeta(AuthoredRangeMeta, light.Range * PlacedRange);
+		string label = string.IsNullOrEmpty(entityName)
+			? (entity != 0u ? $"{entity:X8}" : "?")
+			: (entity != 0u ? $"{entityName}_{entity:X8}" : entityName);
+		node.Name = $"Light_{label}_{index}";
+		node.SetMeta(RawIntensityMeta, light.Intensity);
+		node.SetMeta(RawRangeMeta, light.Range);
+		node.SetMeta(UnattachedLightMeta, unattached);
+		ComputeEffectiveLightValues(node, out float initialEnergy, out float initialRange);
+		node.SetMeta(AuthoredRangeMeta, initialRange);
+		if (node is OmniLight3D omniInit)
+		{
+			omniInit.OmniRange = initialRange * RangeScale;
+		}
+		else if (node is SpotLight3D spotInit)
+		{
+			spotInit.SpotRange = initialRange * RangeScale;
+		}
 		// The component as authored, for the classic light list where no guest states one.
 		Refii.Models.Engine_ClassicPlacedLights.Stamp(node, light.ColourLinear, light.Intensity, light.Range,
 			light.Type == LightTypeSpot, light.HalfAngleRadians, light.FadeDistance, light.FadeRange,
 			light.FlickerBrightnessRange, light.FlickerRadiusRange, light.FlickerRate, light.CastShadows);
 		node.LightColor = colour;
 
-		// The remaster's `placed_light_scale`: the authored fixtures throw modest pools — a
-		// lamp on a tall post barely reaches the ground it stands on. 1.0 is the shipped data.
-		node.LightEnergy = light.Intensity * PlacedScale;
+		// The remaster's `placed_light_scale` (and `unattached_light_scale` / `building_interior_light_scale`).
+		node.LightEnergy = initialEnergy;
+		node.SetMeta(BaseEnergyMeta, initialEnergy);
 
 		// SHADOWS ARE A BUDGET, NOT A FLAG. Enabling every fixture's shadow blew past Godot's
 		// positional shadow atlas — with ~190 shadow-enabled omnis in a town the atlas serves a
@@ -853,7 +1398,9 @@ public static class Engine_LevelLights
 		node.ShadowEnabled = false;
 		node.ShadowOpacity = 0.0f;
 		node.SetMeta(AuthoredShadowMeta, light.CastShadows);
-		node.ShadowCasterMask = Refii.Level.Engine_ReflectionLayer.CasterMask(CasterMaskOf(light.CastShadows));
+		node.ShadowCasterMask = CasterMaskOf(
+			includeDynamicEntities: !Refii.Models.Engine_ClassicMaterial.Active,
+			includeStaticWorld: Refii.Models.Engine_ClassicMaterial.Active);
 		ApplyShadowTuning(node);
 
 		// A fixture never moves: the GI bakes it into a cascade when the cascade refreshes, where a
@@ -863,7 +1410,7 @@ public static class Engine_LevelLights
 
 		// Registered in the light table, so the shader measures the distance and takes the shadow
 		// on its own instead of inverting an attenuation the shadow is multiplied into.
-		Engine_LightTable.Register(node);
+		Engine_LightTable.Register(node, ComposeLightKey(entity, index));
 
 		// FADEDISTANCE IS THE CAMERA'S, NOT THE LIGHT'S, and reading it as a second radius is the
 		// mistake the numbers themselves rule out: the shipped fixtures state Range 8 with
@@ -890,18 +1437,21 @@ public static class Engine_LevelLights
 			bool authored = light.FadeDistance > 0.0f;
 			if (authored || (Engine_LightingFrame.ModernModel && PlacedFadeEnabled))
 			{
-				float cutoff = authored ? MathF.Min(light.FadeDistance, 1000.0f) : 40.0f;
+				float cutoff = Engine_LightingFrame.ModernModel || !authored
+					? PlacedLightRange()
+					: light.FadeDistance;
 				float ramp = authored ? MathF.Max(light.FadeRange, 0.01f) : 15.0f;
 				if (Engine_LightingFrame.ModernModel)
 				{
-					cutoff *= 2.0f;
-					ramp = MathF.Max(ramp * 2.0f, cutoff * 0.4f);
+					ramp = MathF.Max(ramp * 2.0f, cutoff * 0.35f);
 				}
 
 				node.DistanceFadeEnabled = true;
 				node.DistanceFadeBegin = MathF.Max(cutoff - ramp, 0.0f);
 				node.DistanceFadeLength = ramp;
-				node.DistanceFadeShadow = cutoff;
+				node.DistanceFadeShadow = Engine_LightingFrame.ModernModel
+					? MathF.Min(cutoff, PlacedShadowRange())
+					: cutoff;
 			}
 		}
 

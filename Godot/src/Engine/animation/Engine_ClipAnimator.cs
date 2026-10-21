@@ -301,6 +301,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		public float BlendIn = 0.2f;
 		public float BlendOut = 0.2f;
+		public float OverlayFade = 1f;
 		public ulong LastUsec;
 		public bool Seen;
 
@@ -732,7 +733,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			if (leaf.BlendIn > 0f) channel.BlendIn = leaf.BlendIn;
-			if (leaf.BlendOut > 0f) channel.BlendOut = leaf.BlendOut;
+			if (leaf.BlendOut > 0f) channel.BlendOut = Mathf.Max(leaf.BlendOut, 0.15f);
 			ObservePlayhead(channel, leaf, tick, drawTick);
 		}
 
@@ -757,7 +758,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 			else
 			{
-				float rate = 1f / Mathf.Max(c.BlendOut, 0.02f);
+				float rate = 1f / Mathf.Max(c.BlendOut, 0.15f);
 				c.Weight = Mathf.MoveToward(c.Weight, 0f, rate * dt);
 				if (c.Weight <= 1e-4f)
 				{
@@ -1036,11 +1037,57 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	{
 		int bones = _foldBones;
 		double pairAt = _foldPairAt;
+		Channel? top = null;
+		float topShare = 1f;
+
+		if (_channels.Count == 0)
+		{
+			_foldRestBones = bones;
+			return;
+		}
+
+		if (_channels.Count == 1)
+		{
+			var e = _channels.GetEnumerator();
+			if (e.MoveNext())
+			{
+				Channel only = e.Current.Value;
+				if (!only.Leaf.Additive && !only.Leaf.Overlay && only.Weight > 1e-5f)
+				{
+					top = only;
+					topShare = 1f;
+					LastTopUid = only.Leaf.Uid;
+					LastTopKey = only.Leaf.Key;
+					LastTopShare = 1f;
+					_lastRunnerUid = 0;
+					_foldTopShare = 1f;
+					_foldTopKey = only.Leaf.Key;
+					_foldShareStep = 0f;
+					_lastShare = 1f;
+					_haveLastShare = true;
+					System.Array.Clear(_rotationWeight, 0, bones);
+					System.Array.Clear(_positionWeight, 0, bones);
+					_overlays.Clear();
+					Sample(only.Built, only.Time, 1f, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
+					goto FinalizePose;
+				}
+			}
+		}
+
 		_recordWeight.Clear();
 		_recordOrder.Clear();
+		uint topUid = 0;
+		int topOrder = -1;
+		int topPriority = int.MinValue;
+		bool haveTop = false;
+		bool topSeen = false;
 		foreach (Channel c in _channels.Values)
 		{
-			if (c.Leaf.Additive || c.Leaf.Overlay || c.Weight <= 1e-5f)
+			if (c.Leaf.Additive || c.Leaf.Overlay)
+			{
+				continue;
+			}
+			if (c.Weight <= 1e-5f && !c.Seen)
 			{
 				continue;
 			}
@@ -1054,34 +1101,42 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			{
 				_recordOrder[c.Leaf.Uid] = c.Order;
 			}
-		}
-
-		int Order(uint uid) => _recordOrder.GetValueOrDefault(uid, int.MaxValue);
-
-		uint topUid = 0;
-		int topOrder = -1;
-		int topPriority = int.MinValue;
-		bool haveTop = false;
-		foreach (Channel c in _channels.Values)
-		{
-			if (c.Leaf.Additive || c.Leaf.Overlay || c.Weight <= 1e-5f)
-			{
-				continue;
-			}
 
 			// TIES GO TO THE NEWEST RECORD. `sub_822013A8` walks the list back to front with a
 			// strict `>` (0x82201434..7c), and records are appended at the tail, so among equal
 			// priorities the record nearest the tail — the one created last — wins. The export
 			// walks front to back, so "newest" is the highest list position.
-			if (!haveTop || c.Leaf.Priority > topPriority
-				|| (c.Leaf.Priority == topPriority && c.Order > topOrder))
+			//
+			// Prefer live channels seen this tick over unseen channels ramping out on the host.
+			bool isBetter = false;
+			if (!haveTop)
+			{
+				isBetter = true;
+			}
+			else if (c.Seen && !topSeen)
+			{
+				isBetter = true;
+			}
+			else if (c.Seen == topSeen)
+			{
+				if (c.Leaf.Priority > topPriority || (c.Leaf.Priority == topPriority && c.Order > topOrder))
+				{
+					isBetter = true;
+				}
+			}
+
+			if (isBetter)
 			{
 				haveTop = true;
+				topSeen = c.Seen;
 				topUid = c.Leaf.Uid;
 				topOrder = c.Order;
 				topPriority = c.Leaf.Priority;
+				top = c;
 			}
 		}
+
+		int Order(uint uid) => _recordOrder.GetValueOrDefault(uid, int.MaxValue);
 
 		// The runner is picked deterministically: `_recordWeight` is a Dictionary with unstable
 		// enumeration order, and the runner sets `topShare`, the crossfade ratio.
@@ -1114,29 +1169,39 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		_lastRunnerUid = runnerUid;
 		LastTopUid = topUid;
 
-		// The factor is the winner's own stated weight, not a normalised ratio. `sub_82211660`
-		// computes `(1 - alpha) * prev + alpha * cur` off the winner record (0x82211B24) and
-		// uses it raw — there is no division by the pair's total anywhere on that path, and no
-		// clamp: the 59/60 and 1/60 branches below are the only guards the guest has.
-		//
-		// The presence test is 1e-4 on the runner's weight, not the winner's: `sub_82237F90`
-		// emits no runner-up at all when its weight fails
-		// `> 1e-4` (0x82238070..0x82238074), and `sub_82211660` then adopts the winner's pose
-		// whole without computing a factor at all (0x82211A80..0x82211AD8).
+		// Normalized crossfade ratio between runnerUid and topUid.
+		// Handled continuously across all ramp combinations:
+		// - Ramp-out only (winner at full weight, runner ramping out 1 -> 0): topShare = 1 - runnerWeight
+		// - Ramp-in only (runner at full weight, winner ramping in 0 -> 1): topShare = topWeight
+		// - Simultaneous ramp: normalized ratio topWeight / (topWeight + runnerWeight)
 		float topWeight = 0f;
-		if (haveTop)
+		if (haveTop && top is not null)
 		{
-			foreach (Channel c in _channels.Values)
-			{
-				if (!c.Leaf.Additive && !c.Leaf.Overlay && c.Leaf.Uid == topUid)
-				{
-					topWeight = RecordWeightAt(c, pairAt);
-					break;
-				}
-			}
+			topWeight = RecordWeightAt(top, pairAt);
 		}
 
-		float topShare = runnerWeight > 1e-4f ? topWeight : 1f;
+		topShare = 1f;
+		if (runnerWeight > 1e-4f)
+		{
+			if (topWeight >= 1f - 1e-4f)
+			{
+				topShare = Mathf.Clamp(1f - runnerWeight, 0f, 1f);
+			}
+			else if (runnerWeight >= 1f - 1e-4f)
+			{
+				topShare = Mathf.Clamp(topWeight, 0f, 1f);
+			}
+			else
+			{
+				float sum = topWeight + runnerWeight;
+				topShare = sum > 1e-4f ? Mathf.Clamp(topWeight / sum, 0f, 1f) : 1f;
+			}
+		}
+		else
+		{
+			topShare = 1f;
+		}
+
 		if (topShare >= 0.98333f) topShare = 1f;
 		if (topShare <= 0.016667f) topShare = 0f;
 
@@ -1156,30 +1221,69 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		_lastShare = topShare;
 		_haveLastShare = true;
-		Channel? top = null;
-		foreach (Channel c in _channels.Values)
-		{
-			if (!c.Leaf.Additive && !c.Leaf.Overlay && c.Leaf.Uid == topUid && c.Weight > 1e-5f)
-			{
-				top = c;
-				break;
-			}
-		}
 
 		System.Array.Clear(_rotationWeight, 0, bones);
 		System.Array.Clear(_positionWeight, 0, bones);
-		System.Array.Clear(_layerRotationWeight, 0, bones);
-		System.Array.Clear(_layerPositionWeight, 0, bones);
+		if (runnerUid != 0 && topShare < 1f)
+		{
+			System.Array.Clear(_layerRotationWeight, 0, bones);
+			System.Array.Clear(_layerPositionWeight, 0, bones);
+		}
 		_overlays.Clear();
 		bool partnerSampled = false;
+		float topRecordWeight = _recordWeight.GetValueOrDefault(topUid);
+		float runnerRecordWeight = runnerWeight;
+
+		// Active priority of the dominant visual pose:
+		// When incoming topShare is near-zero (< 0.05f), the visual pose is still dominated by the runner.
+		// Use the runner's priority for overlay masking so overlays do not flash on during the opening tick.
+		int activePriority = topPriority;
+		if (runnerUid != 0 && topShare < 0.05f)
+		{
+			foreach (Channel c in _channels.Values)
+			{
+				if (c.Leaf.Uid == runnerUid && !c.Leaf.Overlay && !c.Leaf.Additive)
+				{
+					activePriority = c.Leaf.Priority;
+					break;
+				}
+			}
+		}
+
+		// SAME-CLIP RE-QUEUE SMOOTHING:
+		// If top and runner have the identical clip key (e.g. companion dog idle re-queueing Pose),
+		// synchronize their playheads so there is zero phase difference and no periodic hitch.
+		if (runnerUid != 0 && haveTop && top is not null)
+		{
+			foreach (Channel c in _channels.Values)
+			{
+				if (c.Leaf.Uid == runnerUid && !c.Leaf.Overlay && !c.Leaf.Additive)
+				{
+					if (c.Leaf.Key == top.Leaf.Key)
+					{
+						top.Time = c.Time;
+					}
+					break;
+				}
+			}
+		}
+
 		foreach (Channel c in _channels.Values)
 		{
 			HostBridge.GuestAnimLeaf leaf = c.Leaf;
 			if (leaf.Overlay)
 			{
-				if (c.Weight > 1e-4f && haveTop && (leaf.PriorityMask & (uint)topPriority) != 0)
+				bool matchesActive = haveTop && (leaf.PriorityMask & (uint)activePriority) != 0;
+				bool matchesTop = haveTop && (leaf.PriorityMask & (uint)topPriority) != 0;
+				if (c.Weight > 1e-4f && (matchesActive || matchesTop))
 				{
-					_overlays.Add(c);
+					// If the overlay matches topPriority but did not match the active runner priority,
+					// smoothly fade it in with topShare rather than snapping to full weight on frame 0.
+					c.OverlayFade = !matchesActive && topShare < 1f ? topShare : 1f;
+					if (c.OverlayFade > 1e-4f)
+					{
+						_overlays.Add(c);
+					}
 				}
 				continue;
 			}
@@ -1193,6 +1297,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				// applied was an invention.
 				if (c.Weight > 1e-4f && haveTop && (leaf.Uid == topUid || leaf.Uid == runnerUid))
 				{
+					c.OverlayFade = 1f;
 					_overlays.Add(c);
 				}
 				continue;
@@ -1201,7 +1306,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			float time = c.Time;
 			if (leaf.Uid == topUid)
 			{
-				float weight = c.Weight / Mathf.Max(_recordWeight.GetValueOrDefault(topUid), 1e-5f);
+				float weight = topRecordWeight > 1e-5f ? c.Weight / topRecordWeight : LeafShareAt(c, pairAt);
 				if (weight > 1e-5f)
 				{
 					Sample(built, time, weight, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
@@ -1212,7 +1317,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				// THE PARTNER, kept apart: the guest's type-1 node SLERPs partner against top by the
 				// top's own weight (`sub_82293278`, w > 0.5), which an nlerp of the two into one
 				// accumulator only approximates.
-				float weight = c.Weight / Mathf.Max(runnerWeight, 1e-5f);
+				float weight = runnerRecordWeight > 1e-5f ? c.Weight / runnerRecordWeight : LeafShareAt(c, pairAt);
 				if (weight > 1e-5f)
 				{
 					Sample(built, time, weight, false, _layerRotation, _layerRotationWeight, _layerPosition, _layerPositionWeight, bones);
@@ -1269,7 +1374,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			uint maskNode = 0;
 			while (j < _overlays.Count && _overlays[j].Leaf.Uid == uid)
 			{
-				layerWeight += _overlays[j].Weight;
+				layerWeight += _overlays[j].Weight * _overlays[j].OverlayFade;
 				if (maskNode == 0)
 				{
 					maskNode = _overlays[j].Leaf.Mask;
@@ -1283,7 +1388,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			for (int k = i; k < j; ++k)
 			{
 				Channel c = _overlays[k];
-				Sample(c.Built, c.Time, c.Weight / Mathf.Max(layerWeight, 1e-5f), false,
+				Sample(c.Built, c.Time, (c.Weight * c.OverlayFade) / Mathf.Max(layerWeight, 1e-5f), false,
 					_layerRotation, _layerRotationWeight, _layerPosition, _layerPositionWeight, bones);
 			}
 
@@ -1350,6 +1455,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			i = j;
 		}
 
+	FinalizePose:
 		LastOverlays = _overlays.Count;
 
 		int restBones = 0;

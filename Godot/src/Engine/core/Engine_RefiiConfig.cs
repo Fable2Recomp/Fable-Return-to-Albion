@@ -46,7 +46,31 @@ public static class Engine_RefiiConfig
             // The launcher's path config is not available; the conventional ones still are.
         }
 
-        string project = ProjectSettings.GlobalizePath("res://");
+        string project = "";
+        if (!AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) &&
+            !System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                project = ProjectSettings.GlobalizePath("res://");
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        if (string.IsNullOrEmpty(project))
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (!string.IsNullOrEmpty(dir) && !System.IO.File.Exists(System.IO.Path.Combine(dir, "project.godot")))
+            {
+                string? parent = System.IO.Path.GetDirectoryName(dir);
+                if (parent == dir) break;
+                dir = parent;
+            }
+            if (!string.IsNullOrEmpty(dir)) project = dir;
+        }
+
         candidates.Add(System.IO.Path.Combine(project, "build", "refii.toml"));
         candidates.Add(System.IO.Path.Combine(project, "refii.toml"));
         candidates.Add(System.IO.Path.GetFullPath(
@@ -99,7 +123,7 @@ public static class Engine_RefiiConfig
         {
             if (_cached is not null && _cachedPath == path && _cachedStamp == stamp)
             {
-                return _cached;
+                return ApplyOverrides(_cached);
             }
         }
 
@@ -111,7 +135,7 @@ public static class Engine_RefiiConfig
         catch (Exception exception)
         {
             GD.PushWarning($"[config] could not read {path}: {exception.Message}");
-            return new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            return ApplyOverrides(new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase));
         }
 
         lock (_cacheGate)
@@ -121,13 +145,114 @@ public static class Engine_RefiiConfig
             _cachedStamp = stamp;
         }
 
-        return values;
+        return ApplyOverrides(values);
     }
 
     private static readonly object _cacheGate = new();
     private static IReadOnlyDictionary<string, string>? _cached;
     private static string _cachedPath = string.Empty;
     private static DateTime _cachedStamp;
+    private static readonly SortedDictionary<string, string> _overrides = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Invoked on the main thread or caller thread whenever a Godot CVar is updated live via
+    /// <see cref="TrySetGodotCvar"/>.
+    /// </summary>
+    public static event Action<string, string>? OnConfigChanged;
+
+    private static IReadOnlyDictionary<string, string> ApplyOverrides(IReadOnlyDictionary<string, string> baseValues)
+    {
+        lock (_cacheGate)
+        {
+            if (_overrides.Count == 0)
+            {
+                return baseValues;
+            }
+
+            var merged = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach ((string k, string v) in baseValues)
+            {
+                merged[k] = v;
+            }
+            foreach ((string k, string v) in _overrides)
+            {
+                merged[k] = v;
+            }
+            return merged;
+        }
+    }
+
+    /// <summary>
+    /// Sets a live Godot CVar override in memory (and persists to <c>refii.toml</c> when possible),
+    /// then notifies listeners such as <c>Engine_LevelLights</c> and <c>Engine_LevelLighting</c>.
+    /// </summary>
+    public static bool TrySetGodotCvar(string name, string value)
+    {
+        RuntimeCVarDefinition? def = null;
+        foreach (RuntimeCVarDefinition candidate in RuntimeCVarsGodot.Definitions)
+        {
+            if (candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                def = candidate;
+                break;
+            }
+        }
+
+        if (def is null)
+        {
+            return false;
+        }
+
+        string trimmed = value.Trim().Trim('"');
+        switch (def.Type)
+        {
+            case RuntimeCVarType.Bool:
+                if (!trimmed.Equals("true", StringComparison.OrdinalIgnoreCase) &&
+                    !trimmed.Equals("false", StringComparison.OrdinalIgnoreCase) &&
+                    trimmed != "1" && trimmed != "0")
+                {
+                    return false;
+                }
+                trimmed = (trimmed.Equals("true", StringComparison.OrdinalIgnoreCase) || trimmed == "1")
+                    ? "true"
+                    : "false";
+                break;
+            case RuntimeCVarType.Int:
+                if (!int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                {
+                    return false;
+                }
+                break;
+            case RuntimeCVarType.Double:
+                if (!double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) ||
+                    !double.IsFinite(d))
+                {
+                    return false;
+                }
+                break;
+        }
+
+        lock (_cacheGate)
+        {
+            _overrides[def.Name] = trimmed;
+        }
+
+        OnConfigChanged?.Invoke(def.Name, trimmed);
+        return true;
+    }
+
+    public static IEnumerable<(RuntimeCVarDefinition Def, string Value, bool Modified)> GetGodotCvars()
+    {
+        IReadOnlyDictionary<string, string> current = Read(out _);
+        foreach (RuntimeCVarDefinition def in RuntimeCVarsGodot.Definitions)
+        {
+            string val = current.TryGetValue(def.Name, out string? raw) && raw.Length > 0
+                ? raw.Trim().Trim('"')
+                : def.DefaultValue;
+            bool modified = !val.Equals(def.DefaultValue, StringComparison.OrdinalIgnoreCase);
+            yield return (def, val, modified);
+        }
+    }
 
     public static int Int(IReadOnlyDictionary<string, string> values, string key, int fallback) =>
         values.TryGetValue(key, out string? raw) &&

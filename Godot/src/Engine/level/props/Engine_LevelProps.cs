@@ -256,15 +256,11 @@ public static partial class Engine_LevelProps
     }
 
     /// <summary>
-    /// Blocks with this many instances or fewer stay as individual nodes rather than folding
-    /// into a MultiMesh.
+    /// Blocks with this many placements or fewer stay as individual MeshInstance3D nodes instead of
+    /// being partitioned into 32m cell MultiMeshInstance3D batches. Set to 1 so any model with 2 or
+    /// more instances is partitioned by spatial locality cells and batched.
     /// </summary>
-    /// <remarks>
-    /// Do not lower this without grouping by locality: a MultiMesh's bounds cover every member,
-    /// so a batch scattered across a region is culled as one unit and drawn whenever any of it
-    /// is in view, in every pass. Folding small blocks by model alone is a net regression.
-    /// </remarks>
-    public const int SelectableInstanceLimit = 8;
+    public const int SelectableInstanceLimit = 1;
 
     public static readonly string[] SupplementalGdbPaths =
     {
@@ -275,47 +271,126 @@ public static partial class Engine_LevelProps
         "environmentthemes/environmentthemes.gdb",
     };
 
-    public static Node3D? Build(
-        LevelEntry level, Func<string, byte[]?> read, out PropBuildStats stats) =>
-        Build(level, read, null, null, null, null, out stats);
+    public readonly record struct StaticShadowPropBlock(
+        string ModelPath,
+        string ShadowModelPath,
+        PropModelClass ModelClass,
+        bool Foliage,
+        IReadOnlyList<Transform3D> Instances,
+        IReadOnlyList<uint> InstanceHashes,
+        IReadOnlyList<byte> InstanceCasting);
 
-    public static Node3D? Build(
+    /// <summary>
+    /// Collects all static shadow-casting prop blocks, light-bearing host placement hashes, and
+    /// resolved placed light instances for <paramref name="level"/> using the exact same GDB +
+    /// engine_level + companion + GMD layout pipeline as <see cref="Build(LevelEntry,Func{string,byte[]?},Refii.Lighting.LightProbeField?,Refii.Lighting.LightingFrame?,Refii.Lighting.LightmapContainer?,Refii.Entities.EntityInspectData?,out PropBuildStats)"/>.
+    /// </summary>
+    public static bool TryCollectStaticGeometryAndLights(
         LevelEntry level,
         Func<string, byte[]?> read,
-        Refii.Lighting.LightProbeField? probes,
-        Refii.Lighting.LightingFrame? lighting,
-        out PropBuildStats stats) =>
-        Build(level, read, probes, lighting, null, null, out stats);
+        out List<StaticShadowPropBlock> propBlocks,
+        out HashSet<uint> lightHosts,
+        out HashSet<string> lightHostModels,
+        out List<Refii.Lighting.Engine_LevelLights.ResolvedLightInstance> lights,
+        out string gdbPath)
+    {
+        propBlocks = new List<StaticShadowPropBlock>();
+        lightHosts = new HashSet<uint>();
+        lightHostModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        lights = new List<Refii.Lighting.Engine_LevelLights.ResolvedLightInstance>();
 
-    public static Node3D? Build(
+        if (!TryCollectRegionBlocks(
+            level, read, null, null, createSilverKeyNodes: false,
+            out gdbPath, out GdbView view, out _, out _,
+            out List<GdbPlacement> placements, out List<GdbView> supplementalViews,
+            out lightHosts, out Dictionary<string, PropBlockBuild> blocks,
+            out List<string> order, out _, out Dictionary<uint, string> fxModelPaths,
+            out _, out _))
+        {
+            return false;
+        }
+
+        foreach (string key in order)
+        {
+            PropBlockBuild b = blocks[key];
+            if (b.Foliage || b.Instances.Count == 0)
+            {
+                continue;
+            }
+
+            propBlocks.Add(new StaticShadowPropBlock(
+                b.ModelPath,
+                b.ShadowModelPath,
+                b.ModelClass,
+                b.Foliage,
+                b.Instances,
+                b.InstanceHashes,
+                b.InstanceCasting));
+        }
+
+        lights = Refii.Lighting.Engine_LevelLights.ResolvePlacements(
+            view, supplementalViews, placements, fxModelPaths, lightHosts, out _, out _);
+
+        foreach (uint h in lightHosts)
+        {
+            if (fxModelPaths.TryGetValue(h, out string? mp) && !string.IsNullOrEmpty(mp))
+            {
+                lightHostModels.Add(mp);
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryCollectRegionBlocks(
         LevelEntry level,
         Func<string, byte[]?> read,
-        Refii.Lighting.LightProbeField? probes,
-        Refii.Lighting.LightingFrame? lighting,
         Refii.Lighting.LightmapContainer? bakes,
         Refii.Entities.EntityInspectData? inspect,
+        bool createSilverKeyNodes,
+        out string gdbPath,
+        out GdbView view,
+        out List<SaveEntity> saveEntities,
+        out EditorPropHierarchy? editorHierarchy,
+        out List<GdbPlacement> placements,
+        out List<GdbView> supplementalViews,
+        out HashSet<uint> lightHosts,
+        out Dictionary<string, PropBlockBuild> blocks,
+        out List<string> order,
+        out List<SilverKeyNode> silverKeys,
+        out Dictionary<uint, string> fxModelPaths,
+        out Dictionary<uint, Node3D> fxAttachTo,
         out PropBuildStats stats)
     {
         stats = new PropBuildStats();
+        view = null!;
+        saveEntities = new List<SaveEntity>();
+        editorHierarchy = null;
+        placements = new List<GdbPlacement>();
+        supplementalViews = new List<GdbView>();
+        lightHosts = new HashSet<uint>();
+        blocks = new Dictionary<string, PropBlockBuild>();
+        order = new List<string>();
+        silverKeys = new List<SilverKeyNode>();
+        fxModelPaths = new Dictionary<uint, string>();
+        fxAttachTo = new Dictionary<uint, Node3D>();
 
-        byte[]? gdbBytes = Engine_LevelGdb.TryRead(level, read, out string gdbPath);
+        byte[]? gdbBytes = Engine_LevelGdb.TryRead(level, read, out gdbPath);
         if (gdbBytes is null)
         {
-            return null;
+            return false;
         }
 
-        if (!GdbView.TryParse(gdbBytes, out GdbView view, out string why))
+        if (!GdbView.TryParse(gdbBytes, out view, out string why))
         {
             GD.Print($"[props] {level}: level gdb unreadable ({why})");
-            return null;
+            return false;
         }
 
         string savePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ".save");
-        bool isEditor = Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode;
+        bool isEditor = createSilverKeyNodes && (Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode);
         byte[]? saveBytes = read(savePath);
         SaveLayerStats layers;
-        List<SaveEntity> saveEntities;
-        EditorPropHierarchy? editorHierarchy = null;
 
         if (isEditor)
         {
@@ -346,8 +421,8 @@ public static partial class Engine_LevelProps
         // holes in it — is indistinguishable by eye from a dozen other defects.
         GD.Print($"[layers] {level}: {layers}");
 
-        List<GdbPlacement> placements = Engine_GdbPlacements.Parse(view, saveMap);
-        List<GdbView> supplementalViews = LoadSupplementalViews(read);
+        placements = Engine_GdbPlacements.Parse(view, saveMap);
+        supplementalViews = LoadSupplementalViews(read);
         AugmentPlacementModelHashes(level, placements, supplementalViews, stats);
         AppendSupplementalPlacements(supplementalViews, saveMap, placements, stats, editorHierarchy);
         editorHierarchy?.IndexPlacements(placements);
@@ -356,20 +431,12 @@ public static partial class Engine_LevelProps
         // A placement that carries a light keeps a node of its own: Engine_LevelLights removes its
         // model from the casters of the light inside it, which a MultiMesh could only do for
         // every copy at once.
-        HashSet<uint> lightHosts =
+        lightHosts =
             Refii.Lighting.Engine_LevelLights.LightBearing(view, supplementalViews, placements);
 
-        var blocks = new Dictionary<string, PropBlockBuild>();
         var recordKeys = new HashSet<string>();
         var transformKeys = new HashSet<string>();
-        var order = new List<string>();
         var shellCandidates = new List<ShellCandidate>();
-        var silverKeys = new List<SilverKeyNode>();
-        var fxModelPaths = new Dictionary<uint, string>();
-
-        // Placements whose effect must hang off a LIVE node rather than stand in the region.
-        // A silver key bobs and spins; its glow has to go with it.
-        var fxAttachTo = new Dictionary<uint, Node3D>();
 
         AppendEngineLevelBlocks(
             read, Engine_LevelGdb.EngineLevelPath(level, read, gdbPath),
@@ -388,6 +455,8 @@ public static partial class Engine_LevelProps
         }
 
         PropBuildStats buildStats = stats;
+        Dictionary<string, PropBlockBuild> blockMap = blocks;
+        List<string> blockOrder = order;
         void AppendCompanionInstance(string keyPrefix, string path, Transform3D transform, uint ownerHash = 0)
         {
             if (path.Length == 0 ||
@@ -399,11 +468,11 @@ public static partial class Engine_LevelProps
             }
 
             string companionKey = keyPrefix + "|" + resolved;
-            if (!blocks.TryGetValue(companionKey, out PropBlockBuild? companionBlock))
+            if (!blockMap.TryGetValue(companionKey, out PropBlockBuild? companionBlock))
             {
                 companionBlock = new PropBlockBuild(resolved, $"prop {NameOf(resolved)}");
-                blocks[companionKey] = companionBlock;
-                order.Add(companionKey);
+                blockMap[companionKey] = companionBlock;
+                blockOrder.Add(companionKey);
             }
 
             companionBlock.AddInstance(transform, ownerHash);
@@ -435,6 +504,7 @@ public static partial class Engine_LevelProps
 
                 return containerGuard && inspect is not null &&
                     inspect.Contents.ContainsKey(placement.Hash) &&
+                    !inspect.Properties.ContainsKey(placement.Hash) &&
                     IsImplausibleContainerShellModel(candidate);
             }
 
@@ -473,7 +543,7 @@ public static partial class Engine_LevelProps
             {
                 modelPath = Engine_PropModelIndex.Resolve(
                     placement.ModelPathHash, Array.Empty<string>());
-                if (modelPath is not null && RejectSubstitute(modelPath, true))
+                if (modelPath is not null && RejectSubstitute(modelPath, false))
                 {
                     modelPath = null;
                 }
@@ -484,28 +554,12 @@ public static partial class Engine_LevelProps
                 }
             }
 
-            // NO NAME-MATCH FALLBACK. An entity that does not state a model does not get one
-            // guessed from its name.
-            //
-            // This resolved a placement's model by tokenising its ENTITY name and scoring
-            // candidates against it — so an entity called something like a rug got whichever
-            // indexed model scored best for "rug". It reported 162 hits in one region, and
-            // every one of them was a model the level had not asked for. `RejectSubstitute`
-            // existing at all is the tell: the code already knew it was substituting, and was
-            // filtering the worst of its own guesses.
-            //
-            // If a placement's model cannot be resolved from what the level STATES, it is not
-            // drawn and it is counted. See Engine_PropModelIndex.ResolveByPath.
-
             if (modelPath is null)
             {
                 if (placement.ModelPathHash == 0)
                 {
                     stats.NoModelHash++;
 
-                    // AND WHETHER THAT WAS THE LEVEL'S ANSWER OR OURS. A placement declaring a
-                    // mesh component that yielded no `ModelFile` is a hole in the walk, not a
-                    // trigger volume, and it is the only half of this count worth chasing.
                     if (placement.StatesAppearance)
                     {
                         stats.NoModelHashWithAppearance++;
@@ -550,12 +604,6 @@ public static partial class Engine_LevelProps
                 continue;
             }
 
-            // WHICH MODEL THIS PLACEMENT GOT, remembered for the FX pass.
-            //
-            // An attached effect hangs off a bone of the prop's own model, so Engine_LevelFx has
-            // to know which model that is. Resolving it a second time down there would mean a
-            // second copy of the ladder above — hash, then curated parent/entity key, then the
-            // filled hash, each with its own rejections — and the two copies would drift.
             fxModelPaths[placement.Hash] = modelPath;
 
             if (Engine_LevelFx.IsSilverKeyPlacement(placement) &&
@@ -598,31 +646,18 @@ public static partial class Engine_LevelProps
 
             if (Engine_LevelFx.IsSilverKeyPlacement(placement))
             {
-                var keyNode = new SilverKeyNode
+                if (createSilverKeyNodes)
                 {
-                    Transform = transform,
-                    BaseTransform = transform,
-                };
-                keyNode.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
-
-                // THE RECORD RIDES ON THE KEY like on every other single prop. A key is a `.save`
-                // placement the guest keys by `0:record`, and a collected one sits in its
-                // DeadEntities set from the moment the save loads, with no live entity ever
-                // reported for it. The twin index joins that set BY RECORD, so a key node without
-                // one was the only prop the dead-placement test could not reach: every collected
-                // silver key stood bobbing where it was taken, in every later session.
-                keyNode.SetMeta(Engine_PropStreamer.RecordMeta, (long)placement.Hash);
-
-                // NO EFFECT IS BUILT HERE ANY MORE. This used to hang a hardcoded
-                // `FX_Key_Silver_01` off the key, which is the effect the DATA states for it
-                // anyway — the ordinary attachment walk resolves it, and it simulates. Building it
-                // by hand meant the key alone missed the `OffsetFromDummy` its own data states,
-                // and it was a second implementation of a resolver we already have.
-                //
-                // The node is handed to Engine_LevelFx instead, which spawns the effect the data
-                // names AS A CHILD of it, so the glow still bobs and spins with the key.
-                fxAttachTo[placement.Hash] = keyNode;
-                silverKeys.Add(keyNode);
+                    var keyNode = new SilverKeyNode
+                    {
+                        Transform = transform,
+                        BaseTransform = transform,
+                    };
+                    keyNode.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
+                    keyNode.SetMeta(Engine_PropStreamer.RecordMeta, (long)placement.Hash);
+                    fxAttachTo[placement.Hash] = keyNode;
+                    silverKeys.Add(keyNode);
+                }
                 stats.Instances++;
                 continue;
             }
@@ -647,8 +682,7 @@ public static partial class Engine_LevelProps
                 ((ulong)placement.ModelPathHash << 32) | placement.Hash,
                 range: placedRange);
             stats.Instances++;
-            // Guest data, for either renderer (classic's displacement renderer, modern's layer).
-            if (Engine_GdbPlacements.UsesDisplacement(view, placement.Hash))
+            if (createSilverKeyNodes && Engine_GdbPlacements.UsesDisplacement(view, placement.Hash))
             {
                 Refii.Models.Engine_ClassicDisplacement.NoteRecord(placement.Hash);
             }
@@ -674,7 +708,38 @@ public static partial class Engine_LevelProps
         AppendCompanionBlocks(blocks, order, transformKeys, stats, isEditor);
         AppendGmdLayoutChildren(blocks, order, transformKeys, stats, isEditor);
 
-        if (stats.Instances == 0)
+        return stats.Instances != 0;
+    }
+
+    public static Node3D? Build(
+        LevelEntry level, Func<string, byte[]?> read, out PropBuildStats stats) =>
+        Build(level, read, null, null, null, null, out stats);
+
+    public static Node3D? Build(
+        LevelEntry level,
+        Func<string, byte[]?> read,
+        Refii.Lighting.LightProbeField? probes,
+        Refii.Lighting.LightingFrame? lighting,
+        out PropBuildStats stats) =>
+        Build(level, read, probes, lighting, null, null, out stats);
+
+    public static Node3D? Build(
+        LevelEntry level,
+        Func<string, byte[]?> read,
+        Refii.Lighting.LightProbeField? probes,
+        Refii.Lighting.LightingFrame? lighting,
+        Refii.Lighting.LightmapContainer? bakes,
+        Refii.Entities.EntityInspectData? inspect,
+        out PropBuildStats stats)
+    {
+        if (!TryCollectRegionBlocks(
+            level, read, bakes, inspect, createSilverKeyNodes: true,
+            out string gdbPath, out GdbView view, out List<SaveEntity> saveEntities,
+            out EditorPropHierarchy? editorHierarchy, out List<GdbPlacement> placements,
+            out List<GdbView> supplementalViews, out HashSet<uint> lightHosts,
+            out Dictionary<string, PropBlockBuild> blocks, out List<string> order,
+            out List<SilverKeyNode> silverKeys, out Dictionary<uint, string> fxModelPaths,
+            out Dictionary<uint, Node3D> fxAttachTo, out stats))
         {
             return null;
         }
@@ -1108,6 +1173,8 @@ public static partial class Engine_LevelProps
                 block.Configure(node, role, celled.Key.Range, bounds.Size.Length() * 0.5f);
                 block.MarkCasting(node, role, celled.Key.Casting, celled.Key.Range);
                 node.SetMeta(Engine_PropStreamer.ModelPathMeta, rolePath);
+                node.SetMeta(Engine_PropStreamer.BatchBoundsMeta, bounds);
+                node.SetMeta(Engine_PropStreamer.BatchSpreadMeta, bounds.Size.Length() * 0.5f);
 
                 // THE BATCHED SUBSET AGAIN, for the same reason the probe colours use it: the
                 // inspector pulls placements out of the batch into nodes of their own, so instance
@@ -1341,7 +1408,7 @@ public static partial class Engine_LevelProps
             for (int i = 0; i < source.Instances.Count; i++)
             {
                 Transform3D transform = source.Instances[i];
-                uint ownerHash = isEditor && i < source.InstanceHashes.Count
+                uint ownerHash = i < source.InstanceHashes.Count
                     ? source.InstanceHashes[i]
                     : 0u;
                 if (transformKeys.Add(TransformKey(transform, resolved)))
@@ -1766,7 +1833,7 @@ public static partial class Engine_LevelProps
                     order.Add(key);
                 }
 
-                build.AddInstance(transform, isEditor ? placement.Hash : 0u);
+                build.AddInstance(transform, placement.Hash);
                 stats.Shells++;
                 stats.Instances++;
             }
@@ -2844,7 +2911,9 @@ public static partial class Engine_LevelProps
         string path = modelPath.Replace('\\', '/').ToLowerInvariant();
         return path.StartsWith("art/characters/", StringComparison.Ordinal) ||
                path.Contains("/art/characters/", StringComparison.Ordinal) ||
-               path.Contains("/characters/heros/", StringComparison.Ordinal);
+               path.Contains("/characters/heros/", StringComparison.Ordinal) ||
+               path.StartsWith("art/creatures/", StringComparison.Ordinal) ||
+               path.Contains("/art/creatures/", StringComparison.Ordinal);
     }
 
     private static string CompactText(string value)

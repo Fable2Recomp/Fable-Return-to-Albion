@@ -29,6 +29,10 @@ update_data_root = ""
 cache_path = ""
 
 # Lua
+
+# Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). Changing this triggers a re-bake during the startup warmup screen.
+static_shadow_resolution = 8192
+
 # Log script source paths at load time.
 lua_trace_script_loads = false
 
@@ -334,3 +338,7 @@ render_target_path_d3d12 = ""
 d3d12_tiled_shared_memory = true
 
 # Lua
+
+# Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). Changing this triggers a re-bake during the startup warmup screen.
+static_shadow_resolution = 8192
+

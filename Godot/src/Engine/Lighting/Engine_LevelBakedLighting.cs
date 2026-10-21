@@ -63,22 +63,38 @@ public static class Engine_LevelBakedLighting
 	/// <summary>Metadata key holding a node's baked probe sample as three <c>Vector4</c>.</summary>
 	public const string ProbeMeta = "probe_sh";
 
-	// Cached StringNames: a string passed where Godot wants a StringName is converted on every
-	// call, and these are asked for once per instance per relight.
-	public static readonly StringName ProbeMetaName = ProbeMeta;
-	public static readonly StringName ProbeAtMetaName = "probe_at";
-	public static readonly StringName BakeModeMetaName = "bake_mode";
-	public static readonly StringName BakeKeyMetaName = "bake_key";
+	// Lazily cached StringNames so touching Engine_LevelBakedLighting in headless .NET testhost
+	// never invokes native Godot StringName constructors before the engine is up.
+	private static StringName? _probeMetaName;
+	private static StringName? _probeAtMetaName;
+	private static StringName? _bakeModeMetaName;
+	private static StringName? _bakeKeyMetaName;
+	private static StringName? _globalAmbientColour;
+	private static StringName? _globalDarkening;
+	private static StringName? _globalLightmapTint;
+	private static StringName? _globalSunToward;
+	private static StringName? _globalSunColour;
+	private static StringName? _paramLightmapColour;
+	private static StringName? _paramProbeB;
+	private static StringName? _paramProbeG;
+	private static StringName? _paramProbeR;
+	private static StringName? _paramAmbientScale;
+
+	public static StringName ProbeMetaName => _probeMetaName ??= ProbeMeta;
+	public static StringName ProbeAtMetaName => _probeAtMetaName ??= "probe_at";
+	public static StringName BakeModeMetaName => _bakeModeMetaName ??= "bake_mode";
+	public static StringName BakeKeyMetaName => _bakeKeyMetaName ??= "bake_key";
 	private static readonly float[] WhiteLightmap = { 1f, 1f, 1f };
-	private static readonly StringName Global_ambient_colour = "fable_ambient_colour";
-	private static readonly StringName Global_darkening = "fable_darkening";
-	private static readonly StringName Global_lightmap_tint = "fable_lightmap_tint";
-	private static readonly StringName Global_sun_toward = "fable_sun_toward";
-	private static readonly StringName Global_sun_colour = "fable_sun_colour";
-	private static readonly StringName Param_lightmap_colour = "lightmap_colour";
-	private static readonly StringName Param_probe_b = "probe_b";
-	private static readonly StringName Param_probe_g = "probe_g";
-	private static readonly StringName Param_probe_r = "probe_r";
+	private static StringName Global_ambient_colour => _globalAmbientColour ??= "fable_ambient_colour";
+	private static StringName Global_darkening => _globalDarkening ??= "fable_darkening";
+	private static StringName Global_lightmap_tint => _globalLightmapTint ??= "fable_lightmap_tint";
+	private static StringName Global_sun_toward => _globalSunToward ??= "fable_sun_toward";
+	private static StringName Global_sun_colour => _globalSunColour ??= "fable_sun_colour";
+	private static StringName Param_lightmap_colour => _paramLightmapColour ??= "lightmap_colour";
+	private static StringName Param_probe_b => _paramProbeB ??= "probe_b";
+	private static StringName Param_probe_g => _paramProbeG ??= "probe_g";
+	private static StringName Param_probe_r => _paramProbeR ??= "probe_r";
+	public static StringName Param_ambient_scale => _paramAmbientScale ??= "fable_ambient_scale";
 
 	/// <summary>Where a runtime entity last sampled the probe field (region-local Godot axes).</summary>
 	public const string ProbeAtMeta = "probe_at";
@@ -189,6 +205,65 @@ public static class Engine_LevelBakedLighting
 	}
 
 	private static float? _ambientScale;
+
+	private static float? _buildingInteriorAmbientScale;
+
+	public static void ReloadConfig()
+	{
+		_ambientScale = null;
+		_buildingInteriorAmbientScale = null;
+		if (!Refii.Core.Engine_AppRoot.IsTestHost &&
+			Refii.Level.Engine_SkyEnvironmentNode.Current is { } sky &&
+			sky.Lighting is not null &&
+			sky.GetParent() is { } regionRoot)
+		{
+			QueueRefreshInstanceLighting(regionRoot, sky.Lighting);
+		}
+	}
+
+	/// <summary>
+	/// `building_interior_ambient_scale`: scales down the outdoor sky/theme ambient when the viewer
+	/// is inside an enclosed building in an outdoor level (caves and sky-less levels are unaffected).
+	/// </summary>
+	public static float BuildingInteriorAmbientScale
+	{
+		get
+		{
+			if (_buildingInteriorAmbientScale is null)
+			{
+				try
+				{
+					_buildingInteriorAmbientScale = System.Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _),
+							"building_interior_ambient_scale", 0.25f),
+						0.0f, 4.0f);
+				}
+				catch (System.Exception)
+				{
+					_buildingInteriorAmbientScale = 0.25f;
+				}
+			}
+
+			return _buildingInteriorAmbientScale.Value;
+		}
+	}
+
+	/// <summary>
+	/// Effective ambient scale for the current frame: applies <see cref="BuildingInteriorAmbientScale"/>
+	/// on top of <see cref="AmbientScale"/> only when inside a building in an outdoor (sky-bearing) level.
+	/// </summary>
+	public static float EffectiveAmbientScale(LightingFrame? frame)
+	{
+		float scale = AmbientScale;
+		bool isCaveLevel = Engine_LightingFrame.CurrentInterior || (frame is not null && !frame.HasSky);
+		if (!isCaveLevel && Engine_LightZones.IsViewerIndoors)
+		{
+			scale *= BuildingInteriorAmbientScale;
+		}
+
+		return scale;
+	}
 
 	/// <summary>
 	/// The remaster's `ambient_light_scale`: lifts the probe field's flat band and the theme
@@ -807,6 +882,10 @@ public static class Engine_LevelBakedLighting
 			: 1f;
 
 		node.SetInstanceShaderParameter(Param_lightmap_colour, new Vector4(dial, dial, dial, mode));
+
+		bool isIndoorInstance = (node.Layers & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
+		float instanceAmbient = isIndoorInstance ? BuildingInteriorAmbientScale : 1.0f;
+		node.SetInstanceShaderParameter(Param_ambient_scale, instanceAmbient);
 		LastLightSplit += $", params {(System.Diagnostics.Stopwatch.GetTimestamp() - transferred) * toMs:0.0}";
 	}
 

@@ -123,7 +123,7 @@ public static class Engine_LightingFrame
 		// One config read per second at most: the post-effect asks every frame. Two threads
 		// come through here — the main thread via ConfigureEnvironment and the render thread
 		// via the post-effect's DarkLift — so the cache is read and written under its lock.
-		double now = Time.GetTicksMsec() / 1000.0;
+		double now = System.Environment.TickCount64 / 1000.0;
 		lock (_cvarCache)
 		{
 			if (_cvarCache.TryGetValue(name, out (double At, float Value) hit) && now - hit.At < 1.0)
@@ -133,21 +133,23 @@ public static class Engine_LightingFrame
 		}
 
 		float value = fallback;
-		try
-		{
-			value = Refii.Core.Engine_RefiiConfig.Float(
-				Refii.Core.Engine_RefiiConfig.Read(out _), name, fallback);
-		}
-		catch (Exception)
-		{
-		}
-
-		if (float.TryParse(Godot.OS.GetEnvironment(env),
+		if (float.TryParse(System.Environment.GetEnvironmentVariable(env) ?? string.Empty,
 				System.Globalization.NumberStyles.Float,
 				System.Globalization.CultureInfo.InvariantCulture, out float forced) &&
 			forced >= 0f)
 		{
 			value = forced;
+		}
+		else
+		{
+			try
+			{
+				value = Refii.Core.Engine_RefiiConfig.Float(
+					Refii.Core.Engine_RefiiConfig.Read(out _), name, fallback);
+			}
+			catch (Exception)
+			{
+			}
 		}
 
 		float clamped = Math.Clamp(value, min, max);
@@ -233,20 +235,19 @@ public static class Engine_LightingFrame
 	{
 		get
 		{
+			string forced = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL") ?? string.Empty;
+			if (forced.Length != 0)
+			{
+				return !IsClassic(forced);
+			}
+
 			if (_modernAmbient is null)
 			{
 				try
 				{
-					// REFII_LIGHTING_MODEL overrides the config, so a tool can run either model
-					// without touching the player's settings.
-					// "classic" is the setting's name for the original; "fable" is what older
-					// configs wrote for the same thing.
-					string forced = Godot.OS.GetEnvironment("REFII_LIGHTING_MODEL");
-					_modernAmbient = forced.Length != 0
-						? !IsClassic(forced)
-						: !Refii.Core.Engine_RefiiConfig.Read(out _)
-							.TryGetValue("lighting_model", out string? model) ||
-							!IsClassic(model);
+					_modernAmbient = !Refii.Core.Engine_RefiiConfig.Read(out _)
+						.TryGetValue("lighting_model", out string? model) ||
+						!IsClassic(model);
 				}
 				catch (Exception)
 				{
@@ -269,8 +270,11 @@ public static class Engine_LightingFrame
 			{
 				try
 				{
-					_sunShadows = Refii.Core.Engine_RefiiConfig.Bool(
-						Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadows", true);
+					string forced = System.Environment.GetEnvironmentVariable("REFII_SUN_SHADOWS") ?? string.Empty;
+					_sunShadows = forced.Length != 0
+						? !forced.Equals("0", StringComparison.OrdinalIgnoreCase) && !forced.Equals("false", StringComparison.OrdinalIgnoreCase)
+						: Refii.Core.Engine_RefiiConfig.Bool(
+							Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadows", true);
 				}
 				catch (Exception)
 				{
@@ -468,6 +472,7 @@ public static class Engine_LightingFrame
 		Array.Copy(lighting.LightmapColour, result.LightmapColour, 3);
 		Array.Copy(lighting.DarkeningColour, result.DarkeningColour, 3);
 
+		result.HasSky = hasSky;
 		result.PaintedWeight = lighting.PaintedWeight;
 		result.SkylightWeight = hasSky ? 1f - Math.Clamp(lighting.PaintedWeight, 0f, 1f) : 0f;
 		return result;

@@ -31,6 +31,7 @@ public static class CrashReporting
 		TaskScheduler.UnobservedTaskException += (_, args) =>
 		{
 			GD.PushError($"[crash] unobserved task exception: {args.Exception}");
+			args.SetObserved();
 		};
 	}
 }

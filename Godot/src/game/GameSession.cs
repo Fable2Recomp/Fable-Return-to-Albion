@@ -187,7 +187,7 @@ public partial class GameSession : Node
 		// straight failed launches. The warm-up screen renders every shader first, overlapping
 		// the asset mount's worker; _Process starts the boot once both are done.
 		_bootDirectory = directory;
-		Refii.Models.Engine_ShaderWarmup.Begin(this);
+		Refii.Models.Engine_ShaderWarmup.Begin(this, directory);
 	}
 
 	private void Boot()
@@ -421,6 +421,18 @@ public partial class GameSession : Node
 									  $"{progress.Total:N0}");
 						GD.Print($"[game] orm sweep: {result.Built} built, " +
 							$"{result.Failed} failed of {result.Total}");
+
+						// THE STATIC SHADOW SWEEP: verifies the persistent manifest and bakes static shadow
+						// maps into <app>/cache/shadows if resolution or light reach CVars changed.
+						Refii.Lighting.Engine_LevelShadowPrebuild.Progress shadowProg =
+							Refii.Lighting.Engine_LevelShadowPrebuild.Run(directory, progress =>
+								_ormStatus = progress.Total == 0
+									? "Checking static shadows..."
+									: progress.Built == 0 && progress.UpToDate > 0
+										? "Checking static shadows..."
+										: $"Baking static shadows... {progress.Done:N0} of {progress.Total:N0}");
+						GD.Print($"[game] shadow sweep: {shadowProg.Built} built, " +
+							$"{shadowProg.UpToDate} up-to-date, {shadowProg.Failed} failed of {shadowProg.Total}");
 
 						// THE UPSCALE SWEEPS, when `texture_upscaling_when` says boot: every
 						// material texture, then every terrain layer, into the shared cache

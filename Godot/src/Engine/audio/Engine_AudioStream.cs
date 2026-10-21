@@ -31,7 +31,7 @@ public static class Engine_AudioStream
         return null;
     }
 
-    private static AudioStreamWav? FromPcm16(
+    public static AudioStreamWav? FromPcm16(
         short[] pcm, int sampleRate, int channels, out string error)
     {
         error = string.Empty;

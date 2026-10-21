@@ -101,6 +101,13 @@ public sealed partial class Engine_FxDriver : Node
 
         // Resolved once for the whole list; every system shares the same camera.
         Camera3D? camera = GetViewport()?.GetCamera3D();
+        Vector3? cameraPos = null;
+        Transform3D? cameraTransform = null;
+        if (camera is not null && GodotObject.IsInstanceValid(camera))
+        {
+            cameraPos = camera.GlobalPosition;
+            cameraTransform = camera.GlobalTransform;
+        }
         Stepped = 0;
 
         for (int i = 0; i < Systems.Count; i++)
@@ -117,7 +124,7 @@ public sealed partial class Engine_FxDriver : Node
                 continue;
             }
 
-            fx.Step(delta, camera);
+            fx.Step(delta, camera, cameraPos, cameraTransform);
             ++Stepped;
         }
     }
