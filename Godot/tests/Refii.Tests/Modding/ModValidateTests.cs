@@ -62,7 +62,7 @@ public class ModValidateTests
             return;  // a packaged test run without the source tree
         }
 
-        var expected = new Dictionary<string, int> { ["souls_combat"] = 5, ["spell_weaving"] = 23 };
+        var expected = new Dictionary<string, int> { ["souls_combat"] = 4, ["spell_weaving"] = 22 };
         foreach ((string mod, int kinds) in expected)
         {
             string folder = Path.Combine(root, "mods-src", mod);

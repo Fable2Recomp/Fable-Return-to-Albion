@@ -23,6 +23,14 @@ public static class Engine_UiMultiplayerPage
 
 	public const string MenuName = "multiplayer-root";
 
+	/// <summary>
+	/// The Active Mods book: the same page over a list of the enabled mods, each row's page its
+	/// description. Opened from a mod row under the title's Downloadable Content.
+	/// </summary>
+	public const uint ModsScreenId = 1015u;
+
+	public const string ModsMenuName = "mods-root";
+
 	/// <summary>The list, as <see cref="Engine_UiMenuSources"/> registers it.</summary>
 	public const string SourceName = "multiplayer";
 
@@ -57,6 +65,7 @@ public static class Engine_UiMultiplayerPage
 		 row.Name.StartsWith("game:", System.StringComparison.Ordinal) ||
 		 row.Name.StartsWith("none:", System.StringComparison.Ordinal) ||
 		 row.Name.StartsWith("self:", System.StringComparison.Ordinal) ||
+		 row.Name.StartsWith(Engine_UiNetworkSource.ModRowPrefix, System.StringComparison.Ordinal) ||
 		 Engine_UiNetworkSource.IsGroupName(row.Name));
 
 	public static IReadOnlyDictionary<string, string> Values(Engine_UiExpandableMenu.Item? row)

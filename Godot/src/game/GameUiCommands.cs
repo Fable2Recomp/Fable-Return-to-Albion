@@ -96,7 +96,7 @@ public partial class GameUi
 			return Engine_UiCommandResult.Done;
 		});
 
-		// THE MULTIPLAYER BOOK has behaviour of its own (Engine_UiMultiplayerScreen); every other host
+		// THE MULTIPLAYER BOOK has behaviour of its own (Engine_UiListBookScreen); every other host
 		// screen is a template book.
 		Engine_UiHostScreens.Register(Engine_UiMultiplayerPage.ScreenId, (_, _, _) =>
 			Engine_UiCommandResult.From(_multiplayer.Open(), "its art is not read yet; the next press opens it"));

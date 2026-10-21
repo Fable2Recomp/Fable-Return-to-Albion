@@ -50,6 +50,8 @@ set(REFII_VFS_RUNTIME_SOURCES
     ${REFII_VFS_ROOT}/src/core/texture_layer_state.cpp
     # The decals the guest states, filled by src/hooks/decals.cpp.
     ${REFII_VFS_ROOT}/src/core/decal_state.cpp
+    # The mouse's camera turn: the host posts, src/hooks/mouse_look.cpp takes it into the camera.
+    ${REFII_VFS_ROOT}/src/core/mouse_look_state.cpp
     # The FX mesh particle descriptors, filled by src/hooks/fx_meshes.cpp.
     ${REFII_VFS_ROOT}/src/core/fx_mesh_state.cpp
     ${REFII_VFS_ROOT}/src/core/item_dye_layer_state.cpp
@@ -173,6 +175,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/entity_appearance.cpp
     ${REFII_VFS_ROOT}/src/hooks/texture_layers.cpp
     ${REFII_VFS_ROOT}/src/hooks/decals.cpp
+    # The mouse's turn handed to the active camera's own ProcessGameAction before each update.
+    ${REFII_VFS_ROOT}/src/hooks/mouse_look.cpp
     ${REFII_VFS_ROOT}/src/hooks/fx_meshes.cpp
     ${REFII_VFS_ROOT}/src/hooks/attached_particle_restore.cpp
     ${REFII_VFS_ROOT}/src/hooks/native_misc.cpp

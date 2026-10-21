@@ -62,10 +62,10 @@ public sealed class Engine_FxSystem
         public float[] Axis = new float[3];
 
         /// <summary>
-        /// A mesh particle under a stated rest orientation (<see cref="FxVisual.HasMeshAlign"/>): its
-        /// birth orientation, the emitter's rotation × the align (the guest's particle+0x30), the axis
-        /// in the visual's own frame and its initial angle (the guest's +0x40). <see cref="HasBase"/>
-        /// says whether this particle carries one.
+        /// A mesh particle's birth orientation (<see cref="FxVisual.MeshAlign"/>, identity when the
+        /// visual states none): the emitter's rotation × the align (the guest's particle+0x30), the
+        /// axis in the visual's own frame and its initial angle (the guest's +0x40).
+        /// <see cref="HasBase"/> says whether this particle was born under a mesh visual.
         /// </summary>
         public bool HasBase;
         public float[]? Base;
@@ -136,7 +136,7 @@ public sealed class Engine_FxSystem
         public float[] OrAxis = { 1f, 0f, 0f };
         public bool OrRandAxis = true;
 
-        /// <summary>The visual's stated rest orientation as a matrix (<see cref="FxVisual.MeshAlign"/>); null when it states none.</summary>
+        /// <summary>A mesh visual's rest orientation as a matrix (<see cref="FxVisual.MeshAlign"/>, identity when it states none); null for a sprite.</summary>
         public float[]? MeshAlign;
     }
 
@@ -721,17 +721,21 @@ public sealed class Engine_FxSystem
                 v.OrRandAxis = vis.OrRandAxis;
             }
 
-            if (vis.HasMeshAlign && vis.MeshAlign.Length >= 4)
+            // EVERY mesh particle is drawn by the guest's contract; a visual stating no rest
+            // orientation is born at identity, which is what the guest's own bank gives it.
+            float[] q = vis.HasMeshAlign && vis.MeshAlign.Length >= 4
+                ? new[] { vis.MeshAlign[0], vis.MeshAlign[1], vis.MeshAlign[2], vis.MeshAlign[3] }
+                : new[] { 0f, 0f, 0f, 1f };
+            float ql = MathF.Sqrt((q[0] * q[0]) + (q[1] * q[1]) + (q[2] * q[2]) + (q[3] * q[3]));
+            if (ql <= 1e-6f)
             {
-                float[] q = { vis.MeshAlign[0], vis.MeshAlign[1], vis.MeshAlign[2], vis.MeshAlign[3] };
-                float ql = MathF.Sqrt((q[0] * q[0]) + (q[1] * q[1]) + (q[2] * q[2]) + (q[3] * q[3]));
-                if (ql > 1e-6f)
-                {
-                    for (int k = 0; k < 4; k++) q[k] /= ql;
-                    v.MeshAlign = new float[9];
-                    QuatToMat(q, v.MeshAlign);
-                }
+                q = new[] { 0f, 0f, 0f, 1f };
+                ql = 1f;
             }
+
+            for (int k = 0; k < 4; k++) q[k] /= ql;
+            v.MeshAlign = new float[9];
+            QuatToMat(q, v.MeshAlign);
 
             return v;
         }
@@ -1122,6 +1126,7 @@ public sealed class Engine_FxSystem
     {
         pt.Seg = 0;
         pt.LoopIter = 0;
+        pt.HasBase = false;
         pt.Rot = 0f;
         pt.Spin = 0f;
         pt.SpinNext = 0f;
@@ -1134,48 +1139,28 @@ public sealed class Engine_FxSystem
         if (v0.IsMesh)
         {
             pt.Rot = v0.OrRandAngle ? Frand() * TwoPi : 0f;
-            pt.HasBase = false;
-            if (v0.MeshAlign is not null)
-            {
-                // The guest's contract (FxVisual.HasMeshAlign): the axis is stated in the frame the
-                // particles are stored in — the root's — and the visual's own frame alike; the
-                // particle is born turned by the emitter's rotation, then the align.
-                float[] raw = pt.AxisBody;
-                if (v0.OrRandAxis)
-                {
-                    float ax, ay, az, l2;
-                    do { ax = Srand2(); ay = Srand2(); az = Srand2(); l2 = (ax * ax) + (ay * ay) + (az * az); } while (l2 > 1f || l2 < 1e-8f);
-                    float il = 1f / MathF.Sqrt(l2);
-                    raw[0] = ax * il; raw[1] = ay * il; raw[2] = az * il;
-                }
-                else
-                {
-                    raw[0] = v0.OrAxis[0]; raw[1] = v0.OrAxis[1]; raw[2] = v0.OrAxis[2];
-                    if (!VNorm(raw, 1e-4f)) { raw[0] = 0; raw[1] = 0; raw[2] = 1; }
-                }
-
-                MatVec(rt.PlaceRot, raw, pt.Axis);
-                pt.Base ??= new float[9];
-                MatMul(rt.RotW, v0.MeshAlign, pt.Base);
-                pt.Rot0 = pt.Rot;
-                pt.HasBase = true;
-            }
-            else if (v0.OrRandAxis)
+            // The guest's contract (FxVisual.MeshAlign): the axis is stated in the frame the
+            // particles are stored in — the root's — and the visual's own frame alike; the
+            // particle is born turned by the emitter's rotation, then the align.
+            float[] raw = pt.AxisBody;
+            if (v0.OrRandAxis)
             {
                 float ax, ay, az, l2;
                 do { ax = Srand2(); ay = Srand2(); az = Srand2(); l2 = (ax * ax) + (ay * ay) + (az * az); } while (l2 > 1f || l2 < 1e-8f);
                 float il = 1f / MathF.Sqrt(l2);
-                pt.Axis[0] = ax * il; pt.Axis[1] = ay * il; pt.Axis[2] = az * il;
+                raw[0] = ax * il; raw[1] = ay * il; raw[2] = az * il;
             }
             else
             {
-                // The authored axis is normalised in place, so it is copied rather than used —
-                // into scratch, not into a fresh array per spawned mesh particle.
-                float[] al = _spawnAxis;
-                al[0] = v0.OrAxis[0]; al[1] = v0.OrAxis[1]; al[2] = v0.OrAxis[2];
-                if (!VNorm(al, 1e-4f)) { al[0] = 0; al[1] = 0; al[2] = 1; }
-                MatVec(rt.RotW, al, pt.Axis);
+                raw[0] = v0.OrAxis[0]; raw[1] = v0.OrAxis[1]; raw[2] = v0.OrAxis[2];
+                if (!VNorm(raw, 1e-4f)) { raw[0] = 0; raw[1] = 0; raw[2] = 1; }
             }
+
+            MatVec(rt.PlaceRot, raw, pt.Axis);
+            pt.Base ??= new float[9];
+            MatMul(rt.RotW, v0.MeshAlign!, pt.Base);
+            pt.Rot0 = pt.Rot;
+            pt.HasBase = true;
 
             pt.FlickX = v0.HasRandScale ? v0.RsMin + (Frand() * v0.RsRange) : 1f;
             pt.FlickY = pt.FlickX;
@@ -1267,7 +1252,6 @@ public sealed class Engine_FxSystem
     private readonly float[] _spawnDir = new float[3];
     private readonly float[] _spawnO = new float[3];
     private readonly float[] _spawnOd = new float[3];
-    private readonly float[] _spawnAxis = new float[3];
     private readonly float[] _beamDir = new float[3];
 
     /// <summary>Beam scratch: a segment's offset and its base-to-current delta, reused per
@@ -2731,7 +2715,7 @@ public sealed class Engine_FxSystem
         Basis basis;
         if (pt.HasBase && pt.Base is not null)
         {
-            // The guest's draw (FxVisual.HasMeshAlign): spin(axis, Σrate) × birth × angle(axis, initial),
+            // The guest's draw (FxVisual.MeshAlign): spin(axis, Σrate) × birth × angle(axis, initial),
             // in the guest's axes, then into Godot's by the same y/z swap the mesh and positions take.
             float[] spin = _meshSpin, initial = _meshInitial, drawn = _meshDrawn;
             AxisAngleMat(pt.Axis, pt.Rot - pt.Rot0, spin);
@@ -2745,6 +2729,8 @@ public sealed class Engine_FxSystem
         }
         else
         {
+            // Born under a sprite visual and drawn as a mesh by a later segment: it has no birth
+            // orientation, so it turns about its axis alone.
             Vector3 axis = ToGodot(pt.Axis);
             if (axis.LengthSquared() < 1e-6f) axis = Vector3.Up;
             basis = new Basis(axis.Normalized(), pt.Rot).Scaled(new Vector3(s, s, s));

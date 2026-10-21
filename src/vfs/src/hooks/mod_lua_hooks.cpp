@@ -185,8 +185,6 @@ REX_EXTERN(rex_lhLuaScriptSystem_RunCameraScripts) {
     PPCContext work = entry;
     RunComposedChunk(work, base, refii::vfs::LoadGuestU32(base, system), kCoreCameraKey);
     RunComposedChunk(work, base, refii::vfs::LoadGuestU32(base, system), kCameraKey);
-    // The camera scripts just restored their shipped constants over the host's chosen feel.
-    refii::vfs::ReapplyCameraFeel(work, base);
   }
 }
 

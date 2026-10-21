@@ -12,17 +12,6 @@
 					"source": "abilities:Hybrid"
 				}
 			]
-		},
-		"frontend-root": {
-			"patch": true,
-			"entries": [
-				{
-					"name": "spell_weaving.help",
-					"after": "Multiplayer",
-					"tag": "SPELL_WEAVING_HELP",
-					"command": "Mod:lua:spell_weaving_frontend.help"
-				}
-			]
 		}
 	}
 }

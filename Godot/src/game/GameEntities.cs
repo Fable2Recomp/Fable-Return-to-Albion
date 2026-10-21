@@ -5481,7 +5481,7 @@ public partial class GameEntities : Node3D
     /// The basis is <c>N * R * M^-1</c>, and M^-1 sends e0, e1, e2 to localX, localZ and
     /// -localY — which is why the columns below are not localX/Y/Z in order.
     /// </summary>
-    private static Transform3D ToGodot(Vector3 position, Quaternion rotation)
+    internal static Transform3D ToGodot(Vector3 position, Quaternion rotation)
     {
         float lengthSquared = (rotation.X * rotation.X) + (rotation.Y * rotation.Y) +
             (rotation.Z * rotation.Z) + (rotation.W * rotation.W);

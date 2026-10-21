@@ -222,6 +222,7 @@ public class ModAbilityPickTests
         AssertThat(hud.RootElement.GetProperty("clones").GetArrayLength()).IsEqual(2);
         using JsonDocument glyph = JsonDocument.Parse(Read("spell_weaving/ui/hud.json"));
         AssertThat(glyph.RootElement.GetProperty("pieces").GetArrayLength()).IsEqual(1);
-        AssertThat(File.Exists(Path.Combine(mods, "spell_weaving", "mod", "frontend.lua"))).IsTrue();
+        // The title menu is the game's: a mod's help is its description on the Active Mods page.
+        AssertThat(Read("spell_weaving/ui/templates.json").Contains("frontend-root")).IsFalse();
     }
 }

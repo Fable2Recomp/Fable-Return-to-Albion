@@ -2010,6 +2010,15 @@ public static class Engine_UiTemplates
 
 		menus[Engine_UiMultiplayerPage.MenuName] = multiplayer;
 
+		// THE ACTIVE MODS BOOK'S LIST: the enabled mods at the root, in load order — the same
+		// source the title's fold lists, so the book opens on the row that was pressed.
+		menus[Engine_UiMultiplayerPage.ModsMenuName] = new Engine_UiMenuTemplate
+		{
+			Name = Engine_UiMultiplayerPage.ModsMenuName,
+			Title = "Active Mods",
+			Source = Engine_UiNetworkSource.ModsSource,
+		};
+
 		menus["achievements-root"] = new Engine_UiMenuTemplate
 		{
 			Name = "achievements-root",
@@ -2054,10 +2063,12 @@ public static class Engine_UiTemplates
 					HostOnly = true,
 					Children =
 					{
+						// A ROW, NOT A FOLD: it opens the Active Mods book, the mods listed on its
+						// left page and the highlighted one's description on its right.
 						new Engine_UiMenuEntry
 						{
 							Name = "Mods", Tag = "Active Mods", HostOnly = true,
-							Source = Engine_UiNetworkSource.ModsSource,
+							Command = $"{Engine_UiNetworkSource.CommandPrefix}mods",
 						},
 					},
 				},
@@ -2945,26 +2956,40 @@ public static class Engine_UiTemplates
 		// `PanelSubtrees` carries the whole page stack rather than `ExpressionsPage` alone: the
 		// provider switches seven of the eight off and the panel must know the fields it is
 		// hiding, the same statement screen 17 makes.
-		AddScreen(screens, new Engine_UiScreenTemplate
+		// The Active Mods book is the same screen over its own list: one page, two subjects.
+		foreach ((uint id, string name) in new[]
 		{
-			ScreenId = Engine_UiMultiplayerPage.ScreenId, Name = "multiplayer", OwnsList = true,
-			Provider = Engine_UiPageProviders.Multiplayer,
-			Presentation = "logbookscreen",
-			ChromeUnits = { "Foreground" },
-			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
-			PageRootUnit = "Pages", BackdropUnit = "background_yellow",
-			PanelSubtrees =
+			(Engine_UiMultiplayerPage.ScreenId, "multiplayer"), (Engine_UiMultiplayerPage.ModsScreenId, "mods"),
+		})
+		{
+			AddScreen(screens, new Engine_UiScreenTemplate
 			{
-				"Foreground.Book.Pages.MoralityPage",
-				"Foreground.Book.Pages.ExpressionsPage",
-				"Foreground.Book.Pages.CompletedQuestsPage",
-				"Foreground.Book.Pages.RenownPage",
-				"Foreground.Book.Pages.AttractivenessPage",
-				"Foreground.Book.Pages.StatsPage",
-				"Foreground.Book.Pages.DogPage",
-				"Foreground.Book.Pages.HelpPage",
-			},
-		});
+				ScreenId = id, Name = name, OwnsList = true,
+				Provider = Engine_UiPageProviders.Multiplayer,
+				Presentation = "logbookscreen",
+				ChromeUnits = { "Foreground" },
+				OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
+				PageRootUnit = "Pages", BackdropUnit = "background_yellow",
+
+				// THE PAGE IS BOXED AND SCROLLS: the borrowed Expressions page's contents are the
+				// logbook's own scroll region (screen 17), clipped to `Mask`, with its scroll bar —
+				// a mod's description or a friend's status runs as long as it is written.
+				ScrollContent = "Foreground.Book.Pages.ExpressionsPage.Contents",
+				ScrollMask = "Mask",
+				ScrollBar = "Foreground.Book.Pages.ExpressionsPage.Scrollbar",
+				PanelSubtrees =
+				{
+					"Foreground.Book.Pages.MoralityPage",
+					"Foreground.Book.Pages.ExpressionsPage",
+					"Foreground.Book.Pages.CompletedQuestsPage",
+					"Foreground.Book.Pages.RenownPage",
+					"Foreground.Book.Pages.AttractivenessPage",
+					"Foreground.Book.Pages.StatsPage",
+					"Foreground.Book.Pages.DogPage",
+					"Foreground.Book.Pages.HelpPage",
+				},
+			});
+		}
 
 		AddScreen(screens, new Engine_UiScreenTemplate
 		{
@@ -3145,6 +3170,7 @@ public static class Engine_UiTemplates
 			[23] = new[] { "Foreground.Book" },
 			[28] = new[] { "Foreground.Book" },
 			[Engine_UiMultiplayerPage.ScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
+			[Engine_UiMultiplayerPage.ModsScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
 			[Engine_UiAchievementPage.ScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
 		};
 

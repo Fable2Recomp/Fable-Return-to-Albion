@@ -458,3 +458,4 @@ PPC_EXTERN_FUNC(__imp__rex_XAudioStopVoice);  // XAudioStopVoice
 PPC_EXTERN_FUNC(__imp__rex_XAudioSetVolume);  // XAudioSetVolume
 PPC_EXTERN_FUNC(__imp__rex_XAudioSetPitch);  // XAudioSetPitch
 PPC_EXTERN_FUNC(__imp__rex_XAudioCreateSourceVoice);  // XAudioCreateSourceVoice
+PPC_EXTERN_FUNC(__imp__rex_lhRangedAim_MoveCursor);  // the ranged aim cursor: mouse turn joins its stick (mouse_look.cpp)

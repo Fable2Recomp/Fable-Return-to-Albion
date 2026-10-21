@@ -2774,6 +2774,19 @@ public partial class GameDebugServer : Node
 						["cameraBlended"] = Refii.Game.GameWorld.BlendedCameras,
 						["cameraLive"] = Refii.Game.GameWorld.LiveOnlyCameras,
 						["cameraNonFinite"] = Refii.Game.GameWorld.NonFiniteCameras,
+						// The mouse's turn posted and not yet taken by a camera update, drawn ahead of the
+						// guest's camera (degrees); how that camera turns (0 none, 1 orbit, 2 in place) and
+						// its focus distance; everything it has turned for the mouse (degrees, run total);
+						// reads that straddled a camera update (run total); whether the mouse is the look
+						// device (its camera keeps its heading); and the target switches it flicked a
+						// lock to (run total).
+						["mouseLookOutstanding"] = Refii.Game.GameWorld.MouseLookOutstanding,
+						["mouseLookMode"] = Refii.Game.GameWorld.MouseLookMode,
+						["mouseLookPivot"] = Refii.Game.GameWorld.MouseLookPivotMetres,
+						["mouseLookAbsorbed"] = Refii.Game.GameWorld.MouseLookAbsorbed,
+						["mouseLookTorn"] = Refii.Game.GameWorld.MouseLookTornReads,
+						["mouseLookDevice"] = Refii.Ui.Engine_UiInputMode.KeyboardMouse,
+						["mouseLookFlicks"] = Refii.Game.GameWorld.MouseLookFlicks,
 						["torn"] = Refii.Host.HostEntityWalk.TornWalks,
 						["tornSpanWorst"] = Refii.Host.HostEntityWalk.WalkTickSpanWorst,
 						["waited"] = Refii.Host.HostEntityWalk.Waited,

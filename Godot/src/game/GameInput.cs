@@ -70,7 +70,6 @@ public partial class GameInput : Node
 		// (`ev+40`). A START on a pad that is not player one's is the local drop-in
 		// (`sub_82402F70` 0x824031ec → `Coop_SetSharedScreenMode(game+140, 1, pad)`), and player
 		// two's handler takes only `ev.pad == Player+40` (`sub_829C1C08` 0x829c1c88).
-		_frameDelta = delta;
 		ReadControlSettings(delta);
 		AdvancePointerButtons(delta);
 
@@ -138,9 +137,6 @@ public partial class GameInput : Node
 				break;
 		}
 	}
-
-	/// <summary>This frame's length, for the devices that integrate over it (the mouse).</summary>
-	private static double _frameDelta;
 
 	/// <summary>
 	/// How long a pointer-made press is held. The guest reads the pad on its own 30 Hz step and
@@ -530,7 +526,7 @@ public partial class GameInput : Node
 
 		if (devices)
 		{
-			KeyboardMouseState(ref state, _frameDelta);
+			KeyboardMouseState(ref state);
 		}
 
 		if (devices)

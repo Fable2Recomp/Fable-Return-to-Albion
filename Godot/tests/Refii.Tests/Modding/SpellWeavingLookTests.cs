@@ -9,32 +9,30 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 
 /// <summary>
-/// SPELL WEAVING'S LOOKS ARE THE OLD PIECES, RE-STATED IN THE BANK'S OWN TERMS. Each effect in
-/// fx/effects/*.json is pinned here against the Godot-drawn piece it replaces — the numbers from
-/// the old fx/recipes.json (git 6bfa7b4db, before the looks became bank effects) and the maths of
-/// <c>Engine_FxRecipePieces</c> — through the bank's own simulation (<c>Engine_FxSystem</c>): what each
-/// entity, timeline and key does per 30 Hz step. Pure maths on the JSON; no Godot type.
+/// SPELL WEAVING'S LOOKS FOLLOW FABLE III'S WOVEN EFFECTS. Each pair's effect in fx/effects/*.json
+/// is built as Fable III builds that pair's look (its particle bank, read for structure only), drawn
+/// with Fable II's own textures; pinned here through the bank's own model of what each entity does
+/// per 30 Hz step (<c>Engine_FxSystem</c>). Pure maths on the JSON; no Godot type.
 /// <list type="bullet">
-/// <item>embers — a disc emitter shooting out from its EDGE (<c>shapeFlagA</c>, <c>shapeFlagB</c>) at
-/// the cone's own widening speed, lifted at the cone's climb (negative <c>gravityScale</c> against a
-/// halving <c>vec1.z</c>, which holds the rise to a steady speed after a frame), for the piece's
-/// period, at its count ÷ period, with its colour and size keys — a true cone of radius
-/// <c>radius</c>→<c>radiusTop</c> (±20%, the piece's own jitter) over <c>height</c>, every particle
-/// turning about the cone's axis at the piece's <c>speed</c> (the emitter's <c>spin</c>);</item>
-/// <item>arcs — a bolt sprite of the piece's lightning texture struck at a random point of the band
-/// the old arcs crawled (a spline round the cone with <c>splineRandomGenerator</c>), at
-/// count × rate × 0.65 strikes a second (35% of the old strikes skipped), each lasting one
-/// strike's 1 ÷ rate, as long as the old chord and as bright as the old mean flash;</item>
-/// <item>ring — one flat ring per period whose size keys follow the piece's square-root ease and
-/// whose colour and alpha fall with 1 − t, as the piece's material did;</item>
-/// <item>blades — FABLE II'S OWN BLADES SWORDS (SpellShotDamoclesSword's model) ORBITING one attractor at
-/// the piece's turn rate and reach (the vertical step frozen by <c>vec1.z</c> 0), each laid along its
+/// <item>twister (Vortex + Fire, Shock, Force Push, Chaos; fxspl_vortex_*_twister) — a narrow column:
+/// wind sheets shot up at 3 m/s plus up to 3.5, accelerating at 3 m/s², off an emitter an orbital
+/// swings round a 0.3 m circle at 7.33 rad/s, small at birth, a 2 m sheet at 1.2 s, a wide faint one
+/// at 2 s; bright bits flung from a disc at its foot; a point light low in it;</item>
+/// <item>blade burn (Blades + Fire, Shock, Force Push, Chaos; fxspl_swords_*_blades) — a burn riding
+/// the blade: a spline along the sword's blade in the sword's own frame, its emitters chained to it, every sprite a
+/// fraction of a metre, no light;</item>
+/// <item>fireball (Fireball + Shock, Force Push, Chaos; fxspl_enflame_*) — the shot's own look, every
+/// emitter on the shot, a point light at its heart;</item>
+/// <item>burst (Shock + Force Push, Shock + Chaos, Force Push + Chaos; fxspl_lightning_push) — one
+/// smoke burst blown out over a 2 m disc round the victim each play;</item>
+/// <item>Vortex + Blades has no Fable III look of its own (its twister is the vortex's plain dust):
+/// FABLE II'S OWN BLADES SWORDS (SpellShotDamoclesSword's model) ORBITING one attractor at the old
+/// piece's turn rate and reach (the vertical step frozen by <c>vec1.z</c> 0), each laid along its
 /// orbit — tip first along the way it flies, climbing by the piece's tilt, the flat facing out
 /// (<c>meshAlign</c> under the emitter's rotation, turned about the vertical with the orbit) — and
 /// each carrying the sword's own effects (fxspl_damocles_trail, fxspl_damocles_sword_continue, the
-/// bank's own emitters) on an orbital in step with it;</item>
-/// <item>light — the bank's point light with its own flicker walk (p19/p20/p21) set to the
-/// piece's flicker: the walk's corner at the old wave's fast 23 rad/s, its spread at the wave's.</item>
+/// bank's own emitters) on an orbital in step with it, under the bank's point light with its flicker
+/// walk (p19/p20/p21) set to the piece's flicker.</item>
 /// </list>
 /// </summary>
 [TestSuite]
@@ -43,41 +41,244 @@ public class SpellWeavingLookTests
 	private const double Fps = 30.0;
 	private const double Gravity = 9.8;
 
-	/// <summary>The old recipes' pieces and lights, as fx/recipes.json stated them (meshes left out: the cutlass).</summary>
+	/// <summary>Vortex + Blades' old piece and light, as fx/recipes.json stated them (meshes left out: the cutlass).</summary>
 	private static readonly Dictionary<string, string> Old = new(StringComparer.Ordinal)
 	{
 		["spell_weaving_vortex_blades"] = """{"light":{"color":[0.8,0.85,1.0],"energy":3,"range":8,"height":1.5,"flicker":0.1},"pieces":[{"kind":"blades","texture":"fxt_democles_aura","color":[0.75,0.85,1.0],"count":5,"radius":1.2,"height":1.0,"speed":1.0,"tilt":15,"size":1.0,"width":1.0,"intensity":2.0,"period":0.3}]}""",
-		["spell_weaving_vortex_fire"] = """{"light":{"color":[1.0,0.45,0.12],"energy":8,"range":8,"height":1.5,"flicker":0.3},"pieces":[{"kind":"embers","texture":"fxt_smokepuff_cloud_01","color":[1.0,0.5,0.2,0.5],"colorEnd":[1.0,0.5,0.2,0.0],"height":6.5,"radius":0.3,"radiusTop":0.9,"speed":2.0,"size":1.3,"sizeEnd":2.6,"count":100,"period":2.4,"intensity":1.7},{"kind":"embers","texture":"fxt_smokepuff_long_01","color":[1.0,0.5,0.2,0.45],"colorEnd":[1.0,0.5,0.2,0.0],"height":6.8,"radius":0.25,"radiusTop":0.8,"speed":2.4,"size":1.0,"sizeEnd":2.2,"count":60,"period":2.2,"intensity":1.7},{"kind":"embers","texture":"fxt_sparkle_orange_01","color":[1,1,0.8,1.0],"colorEnd":[1,0.5,0.1,0.0],"height":1.4,"radius":0.2,"radiusTop":0.7,"speed":3.0,"size":0.22,"sizeEnd":0.08,"count":90,"period":1.0,"intensity":2.2},{"kind":"embers","texture":"fxt_flames_double_02","color":[1,0.6,0.3,1.0],"colorEnd":[1,0.4,0.1,0.0],"height":1.3,"radius":1.8,"radiusTop":2.4,"speed":0.6,"size":2.2,"sizeEnd":3.0,"count":12,"period":1.8,"intensity":1.6}]}""",
-		["spell_weaving_vortex_shock"] = """{"light":{"color":[0.45,0.65,1.0],"energy":6,"range":8,"height":1.5,"flicker":0.5},"pieces":[{"kind":"embers","texture":"fxt_smokepuff_cloud_01","color":[0.5,0.7,1.0,0.5],"colorEnd":[0.5,0.7,1.0,0.0],"height":6.5,"radius":0.3,"radiusTop":0.9,"speed":2.0,"size":1.3,"sizeEnd":2.6,"count":100,"period":2.4,"intensity":1.7},{"kind":"embers","texture":"fxt_smokepuff_long_01","color":[0.5,0.7,1.0,0.45],"colorEnd":[0.5,0.7,1.0,0.0],"height":6.8,"radius":0.25,"radiusTop":0.8,"speed":2.4,"size":1.0,"sizeEnd":2.2,"count":60,"period":2.2,"intensity":1.7},{"kind":"arcs","texture":"fxt_lightning_vertical_cyan_01","color":[0.8,0.9,1.0],"height":6.2,"radius":0.25,"radiusTop":0.6,"rate":10,"count":4,"width":1.3,"intensity":3.5},{"kind":"embers","texture":"fxt_lightningglow_01","color":[1,1,1,0.9],"colorEnd":[0.5,0.7,1.0,0.0],"height":1.0,"radius":0.1,"radiusTop":0.4,"speed":2.0,"size":1.2,"sizeEnd":0.6,"count":14,"period":0.7,"intensity":2.4},{"kind":"embers","texture":"fxt_sparkle_white_01","color":[1,1,1,1.0],"colorEnd":[0.5,0.7,1.0,0.0],"height":1.6,"radius":0.2,"radiusTop":0.7,"speed":3.0,"size":0.2,"sizeEnd":0.06,"count":70,"period":1.0,"intensity":2.0},{"kind":"ring","texture":"fxt_white_ring_01","color":[0.6,0.6,1.0],"radius":2.6,"period":1.5,"height":0.1,"intensity":1.6}]}""",
-		["spell_weaving_vortex_push"] = """{"light":{"color":[0.9,0.9,1.0],"energy":3,"range":8,"height":1.5,"flicker":0.6},"pieces":[{"kind":"embers","texture":"fxt_smokepuff_cloud_01","color":[0.3,0.3,0.33,0.8],"colorEnd":[0.3,0.3,0.33,0.0],"height":6.5,"radius":0.3,"radiusTop":0.9,"speed":2.0,"size":1.3,"sizeEnd":2.6,"count":90,"period":2.4,"intensity":1.0,"blend":"mix"},{"kind":"embers","texture":"fxt_smokepuff_long_01","color":[0.7,0.7,0.75,0.18],"colorEnd":[0.7,0.7,0.75,0.0],"height":6.8,"radius":0.25,"radiusTop":0.8,"speed":2.4,"size":1.0,"sizeEnd":2.2,"count":40,"period":2.2,"intensity":1.0},{"kind":"embers","texture":"fxt_dust_fall_cloud","color":[0.7,0.65,0.6,0.6],"colorEnd":[0.7,0.65,0.6,0.0],"height":1.2,"radius":1.6,"radiusTop":2.4,"speed":0.8,"size":1.8,"sizeEnd":2.6,"count":14,"period":1.6,"intensity":0.9},{"kind":"ring","texture":"fxt_smokepuff_cloud_01","color":[0.6,0.65,0.75],"radius":3.5,"period":0.9,"height":0.15,"intensity":1.4}]}""",
-		["spell_weaving_vortex_chaos"] = """{"light":{"color":[0.8,0.25,1.0],"energy":6,"range":8,"height":1.5,"flicker":0.4},"pieces":[{"kind":"embers","texture":"fxt_smokepuff_cloud_01","color":[0.7,0.3,1.0,0.5],"colorEnd":[0.7,0.3,1.0,0.0],"height":6.5,"radius":0.3,"radiusTop":0.9,"speed":2.0,"size":1.3,"sizeEnd":2.6,"count":100,"period":2.4,"intensity":1.7},{"kind":"embers","texture":"fxt_smokepuff_long_01","color":[0.7,0.3,1.0,0.45],"colorEnd":[0.7,0.3,1.0,0.0],"height":6.8,"radius":0.25,"radiusTop":0.8,"speed":2.4,"size":1.0,"sizeEnd":2.2,"count":60,"period":2.2,"intensity":1.7},{"kind":"embers","texture":"fxt_blue_twirl_01","color":[0.9,0.5,1.0,1.0],"colorEnd":[0.3,0.05,0.6,0.0],"height":2.0,"radius":0.2,"radiusTop":0.8,"speed":2.5,"size":0.5,"sizeEnd":0.3,"count":60,"period":1.4,"intensity":1.8},{"kind":"embers","texture":"fxt_silk_streams_01","color":[0.7,0.3,1.0,0.8],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.6,"radius":1.6,"radiusTop":2.4,"speed":0.6,"size":1.8,"sizeEnd":2.6,"count":12,"period":1.8,"intensity":1.4}]}""",
-		["spell_weaving_blades_fire"] = """{"light":{"color":[1.0,0.45,0.12],"energy":4.8,"range":5,"height":0.8,"flicker":0.3},"pieces":[{"kind":"embers","texture":"fxt_flames_double_02","color":[1,1,1,1.0],"colorEnd":[1,1,0.9,0.3],"height":1.2,"radius":0.15,"radiusTop":0.4,"speed":4.0,"size":0.7,"sizeEnd":0.6,"count":40,"period":0.6,"intensity":2.0},{"kind":"embers","texture":"fxt_sparkle_white_01","color":[0.0,0.0,1.0,0.4],"colorEnd":[0.0,0.0,1.0,0.0],"height":1.0,"radius":0.15,"radiusTop":0.4,"speed":3.0,"size":0.6,"sizeEnd":0.3,"count":12,"period":0.8,"intensity":1.2},{"kind":"embers","texture":"fxt_smokepuff_long_01","color":[1,0.4,0.4,0.5],"colorEnd":[1,0.4,0.4,0.0],"height":1.2,"radius":0.1,"radiusTop":0.4,"speed":2.0,"size":0.3,"sizeEnd":0.3,"count":10,"period":0.6,"intensity":1.0},{"kind":"embers","texture":"fxt_lightningglow_01","color":[1,0.9,0.6,0.3],"colorEnd":[1,1,1,0.0],"height":0.9,"radius":0.05,"radiusTop":0.2,"speed":1.0,"size":1.0,"sizeEnd":1.0,"count":6,"period":1.0,"intensity":1.4}]}""",
-		["spell_weaving_blades_shock"] = """{"light":{"color":[0.45,0.65,1.0],"energy":3.5999999999999996,"range":5,"height":0.8,"flicker":0.5},"pieces":[{"kind":"embers","texture":"fxt_lightningglow_01","color":[0.4,0.6,1,0.5],"colorEnd":[0.4,0.6,1,0.0],"height":1.0,"radius":0.1,"radiusTop":0.4,"speed":2.0,"size":1.0,"sizeEnd":1.0,"count":12,"period":0.6,"intensity":1.8},{"kind":"embers","texture":"fxt_electrical_patch","color":[0.4,0.6,1,1.0],"colorEnd":[0.4,0.6,1,0.0],"height":1.0,"radius":0.1,"radiusTop":0.4,"speed":3.0,"size":0.5,"sizeEnd":0.5,"count":16,"period":0.4,"intensity":2.5},{"kind":"arcs","texture":"fxt_lightning_curl_cyan_01","color":[1,1,1],"height":1.2,"radius":0.2,"radiusTop":0.5,"rate":14,"count":4,"width":1.0,"intensity":3.5}]}""",
-		["spell_weaving_blades_push"] = """{"light":{"color":[0.9,0.9,1.0],"energy":1.7999999999999998,"range":5,"height":0.8,"flicker":0.6},"pieces":[{"kind":"embers","texture":"fxt_smokepuff_cloud_01","color":[0.5,0.7,0.9,0.25],"colorEnd":[0.5,0.7,0.9,0.0],"height":1.0,"radius":0.1,"radiusTop":0.5,"speed":2.0,"size":1.0,"sizeEnd":1.0,"count":14,"period":0.5,"intensity":1.0},{"kind":"embers","texture":"fxt_smokepuff_long_01","color":[0.7,0.8,1.0,0.5],"colorEnd":[0.7,0.8,1.0,0.0],"height":1.0,"radius":0.1,"radiusTop":0.4,"speed":2.0,"size":1.0,"sizeEnd":1.0,"count":10,"period":0.5,"intensity":1.2},{"kind":"embers","texture":"fxt_dust_fall_cloud","color":[0.2,0.2,0.1,0.8],"colorEnd":[0.2,0.2,0.1,0.0],"height":0.8,"radius":0.1,"radiusTop":0.5,"speed":1.0,"size":0.6,"sizeEnd":0.8,"count":10,"period":0.3,"intensity":1.0,"blend":"mix"},{"kind":"ring","texture":"fxt_white_ring_01","color":[0.5,0.7,0.9],"radius":1.4,"period":0.6,"height":0.08,"intensity":1.6}]}""",
-		["spell_weaving_blades_chaos"] = """{"light":{"color":[0.8,0.25,1.0],"energy":3.5999999999999996,"range":5,"height":0.8,"flicker":0.4},"pieces":[{"kind":"embers","texture":"fxt_blue_twirl_01","color":[0.9,0.5,1.0,1.0],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.1,"radius":0.1,"radiusTop":0.4,"speed":3.0,"size":0.45,"sizeEnd":0.3,"count":24,"period":0.7,"intensity":1.8},{"kind":"embers","texture":"fxt_silk_streams_01","color":[0.7,0.3,1.0,0.8],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.2,"radius":0.1,"radiusTop":0.4,"speed":2.5,"size":0.6,"sizeEnd":0.4,"count":16,"period":0.8,"intensity":1.4}]}""",
-		["spell_weaving_fire_shock"] = """{"light":{"color":[0.45,0.65,1.0],"energy":3.5999999999999996,"range":5,"height":0.8,"flicker":0.5},"pieces":[{"kind":"embers","texture":"fxt_lightningglow_01","color":[0.6,0.6,1.0,0.25],"colorEnd":[0.6,0.6,1.0,0.0],"height":0.6,"radius":0.0,"radiusTop":0.5,"speed":0.5,"size":1.25,"sizeEnd":1.4,"count":14,"period":0.6,"intensity":1.8},{"kind":"embers","texture":"fxt_smokepuff_cloud_01","color":[1.0,0.8,0.2,0.6],"colorEnd":[0.5,0.3,1.0,0.0],"height":0.9,"radius":0.1,"radiusTop":0.6,"speed":1.0,"size":0.3,"sizeEnd":1.6,"count":24,"period":0.6,"intensity":1.3},{"kind":"embers","texture":"fxt_fireglow_01","color":[0.6,0.6,1.0,0.8],"colorEnd":[0.5,0.3,1.0,0.0],"height":0.2,"radius":0.0,"radiusTop":0.05,"speed":0.0,"size":1.5,"sizeEnd":0.5,"count":3,"period":0.4,"intensity":1.0},{"kind":"embers","texture":"fxt_electrical_patch","color":[1,1,1,1.0],"colorEnd":[0.6,0.6,1.0,0.0],"height":0.5,"radius":0.0,"radiusTop":0.3,"speed":2.0,"size":1.0,"sizeEnd":1.0,"count":8,"period":0.25,"intensity":2.5},{"kind":"arcs","texture":"fxt_lightning_vertical_cyan_01","color":[0.7,0.9,1.0],"height":2.2,"radius":0.2,"radiusTop":1.6,"rate":9,"count":3,"width":1.8,"intensity":3.5},{"kind":"embers","texture":"fxt_sparkle_white_01","color":[1,1,1,1.0],"colorEnd":[1,1,1,0.0],"height":1.2,"radius":0.1,"radiusTop":0.5,"speed":3.0,"size":0.12,"sizeEnd":0.04,"count":40,"period":1.0,"intensity":2.0}]}""",
-		["spell_weaving_fire_push"] = """{"light":{"color":[1.0,0.6,0.3],"energy":3,"range":5,"height":0.5,"flicker":0.2},"pieces":[{"kind":"embers","texture":"fxt_flames_double_01","color":[1,0.9,0.9,1.0],"colorEnd":[1,0.5,0.1,0.0],"height":0.8,"radius":0.1,"radiusTop":0.5,"speed":2.0,"size":0.5,"sizeEnd":0.7,"count":40,"period":0.67,"intensity":2.0},{"kind":"embers","texture":"fxt_explosion_fire_02","color":[1,1,1,1.0],"colorEnd":[1,1,1,0.0],"height":0.2,"radius":0.0,"radiusTop":0.1,"speed":0.0,"size":1.0,"sizeEnd":0.2,"count":3,"period":1.0,"intensity":1.4},{"kind":"embers","texture":"fxt_sparkle_orange_01","color":[1,0.6,0.4,1.0],"colorEnd":[0.2,0.2,0.1,0.0],"height":0.6,"radius":0.1,"radiusTop":0.8,"speed":1.0,"size":0.3,"sizeEnd":0.15,"count":30,"period":0.5,"intensity":1.6},{"kind":"ring","texture":"fxt_smokepuff_cloud_01","color":[1.0,0.6,0.4],"radius":1.3,"period":0.5,"height":0.2,"intensity":1.6}]}""",
-		["spell_weaving_fire_chaos"] = """{"light":{"color":[0.8,0.25,1.0],"energy":3.5999999999999996,"range":5,"height":0.8,"flicker":0.4},"pieces":[{"kind":"embers","texture":"fxt_blue_twirl_01","color":[0.9,0.5,1.0,1.0],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.0,"radius":0.1,"radiusTop":0.5,"speed":3.0,"size":0.5,"sizeEnd":0.3,"count":30,"period":0.7,"intensity":1.8},{"kind":"embers","texture":"fxt_silk_streams_01","color":[0.7,0.3,1.0,0.8],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.2,"radius":0.1,"radiusTop":0.6,"speed":2.5,"size":0.7,"sizeEnd":0.5,"count":20,"period":0.9,"intensity":1.4}]}""",
-		["spell_weaving_shock_push"] = """{"light":{"color":[0.9,0.9,1.0],"energy":1.7999999999999998,"range":5,"height":0.8,"flicker":0.6},"pieces":[{"kind":"ring","texture":"fxt_smokepuff_cloud_01","color":[0.9,0.8,0.6],"radius":2.2,"period":0.6,"height":0.25,"intensity":1.0,"blend":"mix"},{"kind":"embers","texture":"fxt_smokepuff_long_01","color":[0.9,0.8,0.6,0.4],"colorEnd":[0.9,0.8,0.6,0.0],"height":0.9,"radius":0.4,"radiusTop":2.0,"speed":0.6,"size":1.0,"sizeEnd":1.0,"count":20,"period":0.5,"intensity":1.0,"blend":"mix"},{"kind":"ring","texture":"fxt_white_ring_01","color":[0.4,0.4,0.45],"radius":1.0,"period":0.3,"height":0.1,"intensity":0.8}]}""",
-		["spell_weaving_shock_chaos"] = """{"light":{"color":[0.8,0.25,1.0],"energy":3.5999999999999996,"range":5,"height":0.8,"flicker":0.4},"pieces":[{"kind":"embers","texture":"fxt_blue_twirl_01","color":[0.9,0.5,1.0,1.0],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.2,"radius":0.1,"radiusTop":0.5,"speed":3.0,"size":0.5,"sizeEnd":0.3,"count":30,"period":0.7,"intensity":1.8},{"kind":"embers","texture":"fxt_silk_streams_01","color":[0.7,0.3,1.0,0.8],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.4,"radius":0.1,"radiusTop":0.6,"speed":2.5,"size":0.7,"sizeEnd":0.5,"count":20,"period":0.9,"intensity":1.4},{"kind":"arcs","texture":"fxt_lightning_curl_cyan_01","color":[0.8,0.5,1.0],"height":1.4,"radius":0.2,"radiusTop":0.6,"rate":8,"count":3,"width":0.9,"intensity":2.5}]}""",
-		["spell_weaving_push_chaos"] = """{"light":{"color":[0.8,0.25,1.0],"energy":3.5999999999999996,"range":5,"height":0.8,"flicker":0.4},"pieces":[{"kind":"ring","texture":"fxt_smokepuff_cloud_01","color":[0.6,0.3,0.9],"radius":2.2,"period":0.6,"height":0.25,"intensity":1.2},{"kind":"embers","texture":"fxt_silk_streams_01","color":[0.7,0.3,1.0,0.8],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.2,"radius":0.4,"radiusTop":1.8,"speed":1.0,"size":0.9,"sizeEnd":1.2,"count":30,"period":0.7,"intensity":1.4},{"kind":"embers","texture":"fxt_blue_twirl_01","color":[0.9,0.5,1.0,1.0],"colorEnd":[0.3,0.05,0.6,0.0],"height":1.0,"radius":0.3,"radiusTop":1.6,"speed":1.5,"size":0.5,"sizeEnd":0.3,"count":24,"period":0.6,"intensity":1.6}]}""",
 	};
 
 	[TestCase] public void VortexBlades() => Check("spell_weaving_vortex_blades");
-	[TestCase] public void VortexFire() => Check("spell_weaving_vortex_fire");
-	[TestCase] public void VortexShock() => Check("spell_weaving_vortex_shock");
-	[TestCase] public void VortexPush() => Check("spell_weaving_vortex_push");
-	[TestCase] public void VortexChaos() => Check("spell_weaving_vortex_chaos");
-	[TestCase] public void BladesFire() => Check("spell_weaving_blades_fire");
-	[TestCase] public void BladesShock() => Check("spell_weaving_blades_shock");
-	[TestCase] public void BladesPush() => Check("spell_weaving_blades_push");
-	[TestCase] public void BladesChaos() => Check("spell_weaving_blades_chaos");
-	[TestCase] public void FireShock() => Check("spell_weaving_fire_shock");
-	[TestCase] public void FirePush() => Check("spell_weaving_fire_push");
-	[TestCase] public void FireChaos() => Check("spell_weaving_fire_chaos");
-	[TestCase] public void ShockPush() => Check("spell_weaving_shock_push");
-	[TestCase] public void ShockChaos() => Check("spell_weaving_shock_chaos");
-	[TestCase] public void PushChaos() => Check("spell_weaving_push_chaos");
+	[TestCase] public void VortexFire() => Twister("spell_weaving_vortex_fire");
+	[TestCase] public void VortexShock() => Twister("spell_weaving_vortex_shock");
+	[TestCase] public void VortexPush() => Twister("spell_weaving_vortex_push");
+	[TestCase] public void VortexChaos() => Twister("spell_weaving_vortex_chaos");
+	[TestCase] public void BladesFire() => BladeBurn("spell_weaving_blades_fire");
+	[TestCase] public void BladesShock() => BladeBurn("spell_weaving_blades_shock");
+	[TestCase] public void BladesPush() => BladeBurn("spell_weaving_blades_push");
+	[TestCase] public void BladesChaos() => BladeBurn("spell_weaving_blades_chaos");
+	[TestCase] public void FireShock() => Fireball("spell_weaving_fire_shock");
+	[TestCase] public void FirePush() => Fireball("spell_weaving_fire_push");
+	[TestCase] public void FireChaos() => Fireball("spell_weaving_fire_chaos");
+	[TestCase] public void ShockPush() => Burst("spell_weaving_shock_push");
+	[TestCase] public void ShockChaos() => Burst("spell_weaving_shock_chaos");
+	[TestCase] public void PushChaos() => Burst("spell_weaving_push_chaos");
+
+	/// <summary>Fable III's own sheets the weaves draw with that Fable II has no copy of: never named by the mod.</summary>
+	private static readonly string[] FableThreeOnly =
+	{
+		"flames_02", "fxt_basic_mulche_01", "fxt_circular_edge_smoke", "fxt_displacement_orb_01", "fxt_explosion_fire_05",
+		"fxt_fabric_scrap_glowing", "fxt_fire_section_01", "fxt_fire_section_02", "fxt_fire_sharp_01", "fxt_fire_soft_glow",
+		"fxt_flowing_smoke", "fxt_flowing_smoke_thick", "fxt_glow_ring", "fxt_lightning_clouds", "fxt_lightning_vertical_blue_01",
+		"fxt_lightning_vertical_f3_01", "fxt_shimmer_ring_01", "fxt_smoke_highlight_02_p", "fxt_smoke_pillar_round_additive",
+		"fxt_snow_chunks", "fxt_soft_glow_cyan", "fxt_twister_wind_01", "fxt_water_splash_01", "fxt_bird_poo_splat",
+		"fxt_smokepuff_cloud_grey", "fxt_electric_spark", "fxt_breadcrumb_sparkle", "fxt_snow_spread_01", "fxt_firefly",
+		"fxt_lightning_surround_01",
+	};
+
+	[TestCase]
+	public void EveryLookDrawsFableTwosOwnTextures()
+	{
+		if (ModFolder() is not { } folder)
+		{
+			return;
+		}
+
+		foreach (string file in Directory.GetFiles(Path.Combine(folder, "fx", "effects"), "*.json"))
+		{
+			using JsonDocument effect = JsonDocument.Parse(File.ReadAllText(file));
+			foreach (JsonElement system in effect.RootElement.GetProperty("systems").EnumerateArray())
+			{
+				foreach (JsonElement visual in system.GetProperty("visuals").EnumerateArray())
+				{
+					if (!visual.TryGetProperty("texture", out JsonElement texture))
+					{
+						continue;
+					}
+
+					string path = texture.GetString()!;
+					AssertThat(path.StartsWith("art\\fx\\pfx_textures\\fxt_", StringComparison.Ordinal))
+						.OverrideFailureMessage($"{Path.GetFileName(file)}: {path} is no Fable II effect sheet").IsTrue();
+					string leaf = Path.GetFileNameWithoutExtension(path.Replace('\\', '/'));
+					AssertThat(FableThreeOnly.Contains(leaf)).OverrideFailureMessage($"{Path.GetFileName(file)}: {leaf} is Fable III's").IsFalse();
+				}
+			}
+		}
+	}
+
+	private static List<List<Link>>? Load(string name)
+	{
+		if (ModFolder() is not { } folder)
+		{
+			return null;  // a packaged test run without the source tree
+		}
+
+		// The elements are read before the document goes: clone the root.
+		JsonElement root = JsonDocument.Parse(File.ReadAllText(Path.Combine(folder, "fx", "effects", name + ".json"))).RootElement.Clone();
+		return Chains(root);
+	}
+
+	private static double Type(JsonElement e) => Field(e, "typeId", 0);
+
+	private static double Z(JsonElement e) => Floats(e, "pos", new[] { 0.0, 0, 0 })[2];
+
+	/// <summary>A key's sprite as drawn: its size times its global scale, the larger side.</summary>
+	private static double Drawn(JsonElement key)
+	{
+		double[] gs = Floats(key, "globalScale", new[] { 1.0, 1 });
+		return Math.Max(Field(key, "sizeX", 1) * gs[0], Field(key, "sizeY", 1) * gs[1]);
+	}
+
+	private static void Twister(string name)
+	{
+		if (Load(name) is not { } chains)
+		{
+			return;
+		}
+
+		var orbitals = chains.SelectMany(c => c).Select(l => l.Emitter).Where(e => Type(e) == 3).Distinct().ToList();
+		AssertThat(orbitals.Count > 0).OverrideFailureMessage($"{name}: the column swings on an orbital").IsTrue();
+		JsonElement orbital = orbitals[0];
+		Near($"{name} orbital turn (rad/s)", Field(orbital, "angularRotationRate", 0) * Fps, 7.33, 0.01);
+		Near($"{name} orbital radius", Param(orbital, "p25"), 0.3);
+
+		// The body: the chain under the orbital whose emitter accelerates up.
+		List<Link>? body = chains.FirstOrDefault(c => c.Count == 2 && Type(c[0].Emitter) == 3 && c[1].System is not null &&
+			Vec(c[1].Emitter, "vec0", new[] { 0.0, 0, 0 })[2] > 0);
+		AssertThat(body is not null).OverrideFailureMessage($"{name}: no wind column under the orbital").IsTrue();
+		JsonElement column = body![1].Emitter;
+		AssertThat(Flag(column, "attachToRoot")).IsTrue();
+		Near($"{name} column speed", Param(column, "speed"), 3);
+		Near($"{name} column speed spread", Param(column, "speedSpread"), 3.5);
+		double lift = Vec(column, "vec0", new[] { 0.0, 0, 0 })[2];
+		Near($"{name} column lift", lift, 3);
+		AssertThat(Param(column, "rate") >= 1.3).OverrideFailureMessage($"{name}: a dense column, 40 sheets a second or more").IsTrue();
+
+		JsonElement[] keys = Keys(body[1]);
+		AssertThat(keys.Length).IsEqual(3);
+		Near($"{name} sheet at birth", Field(keys[0], "sizeX", 1), 0.4);
+		Near($"{name} sheet at 1.2 s", Field(keys[1], "sizeX", 1), 2);
+		Near($"{name} sheet at 2 s", Field(keys[2], "sizeX", 1), 3);
+		AssertThat(Math.Abs(Frame(keys[2]) - 60) <= 1).OverrideFailureMessage($"{name}: a sheet lives 2 s").IsTrue();
+
+		// The slowest sheet's height at the 1.2 s key: the column stands five metres and more.
+		double t = Frame(keys[1]) / Fps;
+		double height = Z(column) + (Param(column, "speed") * t) + (0.5 * lift * t * t);
+		AssertThat(height >= 5).OverrideFailureMessage($"{name}: the column reaches {height:F2} m by its 1.2 s key").IsTrue();
+		AssertThat(Field(keys[2], "alpha", 1) < Field(keys[1], "alpha", 1)).OverrideFailureMessage($"{name}: the top fades").IsTrue();
+
+		// The foot: a small disc flinging bright bits.
+		JsonElement foot = chains[0][0].Emitter;
+		AssertThat(Field(foot, "subType", 0)).IsEqual(2.0);
+		AssertThat(Field(foot, "spawnRadius", 0) <= 0.2).OverrideFailureMessage($"{name}: the foot is narrow").IsTrue();
+		AssertThat(Z(foot) < 0.5).IsTrue();
+
+		var lights = chains.SelectMany(c => c).Select(l => l.Emitter).Where(e => Type(e) == 7).ToList();
+		AssertThat(lights.Count).OverrideFailureMessage($"{name}: one light").IsEqual(1);
+		AssertThat(Z(lights[0]) < 1).OverrideFailureMessage($"{name}: the light sits low in the column").IsTrue();
+	}
+
+	/// <summary>Where the Blades sword's blade begins (its guard) and ends, along its own +Y (metres).</summary>
+	private const double BladeGuard = 0.08;
+	private const double BladeTip = 0.89;
+
+	private static void BladeBurn(string name)
+	{
+		if (Load(name) is not { } chains)
+		{
+			return;
+		}
+
+		var splines = chains.SelectMany(c => c).Select(l => l.Emitter).Where(e => Type(e) == 5).Distinct().ToList();
+		AssertThat(splines.Count).OverrideFailureMessage($"{name}: one spline down the blade").IsEqual(1);
+		double[][] points = splines[0].GetProperty("splinePoints").EnumerateArray()
+			.Select(p => p.EnumerateArray().Select(x => x.GetDouble()).ToArray()).ToArray();
+		AssertThat(points.Length).IsEqual(2);
+		foreach (double[] point in points)
+		{
+			// Played on the sword, the look stands in the sword's own frame (Engine_FxPlayer.InEntityFrame;
+			// classic: the instance's orientation from the placement, mod_commands.cpp guest_fx), and
+			// npc_sword_damocles.mdl's blade runs along its own +Y: the guard at 0.08, the tip at 0.89,
+			// its .mdl.gmd Weapon.Weapon.Hold at -0.083 and Weapon.Weapon.Top at 0.847.
+			AssertThat(Math.Abs(point[0]) < 1e-6 && Math.Abs(point[2]) < 1e-6).OverrideFailureMessage($"{name}: the spline lies along the blade").IsTrue();
+			AssertThat(point[1] >= BladeGuard - 1e-6 && point[1] <= BladeTip + 1e-6).OverrideFailureMessage($"{name}: {point[1]} is off the blade").IsTrue();
+		}
+
+		AssertThat(points.Max(p => p[1]) - points.Min(p => p[1]) >= 0.75).OverrideFailureMessage($"{name}: the burn runs the blade's length").IsTrue();
+		List<Link> burn = chains.First(c => c.Count == 2 && Type(c[0].Emitter) == 5);
+		AssertThat(burn[1].System is not null).IsTrue();
+		AssertThat(chains.SelectMany(c => c).Any(l => Type(l.Emitter) == 7)).OverrideFailureMessage($"{name}: a blade casts no light").IsFalse();
+
+		// Compact: every sprite riding the blade is a fraction of a metre (the old look was a 2-3 m bonfire).
+		foreach (Link link in chains.Where(c => Type(c[0].Emitter) == 5).Select(c => c[^1]).Where(l => l.System is not null))
+		{
+			foreach (JsonElement key in Keys(link))
+			{
+				AssertThat(Drawn(key) <= 1.0 + 1e-6).OverrideFailureMessage($"{name}: a {Drawn(key):F2} m sprite on the blade").IsTrue();
+			}
+		}
+	}
+
+	private static void Fireball(string name)
+	{
+		if (Load(name) is not { } chains)
+		{
+			return;
+		}
+
+		foreach (JsonElement e in chains.SelectMany(c => c).Select(l => l.Emitter))
+		{
+			double[] pos = Floats(e, "pos", new[] { 0.0, 0, 0 });
+			AssertThat(Math.Sqrt((pos[0] * pos[0]) + (pos[1] * pos[1]) + (pos[2] * pos[2])) <= 0.2)
+				.OverrideFailureMessage($"{name}: every emitter rides the shot").IsTrue();
+			AssertThat(Field(e, "spawnRadius", 0) <= 0.1 + 1e-6).OverrideFailureMessage($"{name}: born on the ball").IsTrue();
+		}
+
+		var lights = chains.SelectMany(c => c).Select(l => l.Emitter).Where(e => Type(e) == 7).ToList();
+		AssertThat(lights.Count).OverrideFailureMessage($"{name}: a light at its heart").IsEqual(1);
+		AssertThat(chains.Any(c => c.Count == 1 && Flag(c[0].Emitter, "attachToRoot") && c[0].System is not null))
+			.OverrideFailureMessage($"{name}: a core travelling with the shot").IsTrue();
+	}
+
+	private static void Burst(string name)
+	{
+		if (Load(name) is not { } chains)
+		{
+			return;
+		}
+
+		JsonElement smoke = chains[0][0].Emitter;
+		AssertThat(Field(smoke, "subType", 0)).IsEqual(2.0);
+		Near($"{name} disc radius", Field(smoke, "spawnRadius", 0), 2);
+		AssertThat(Flag(smoke, "shapeFlagA") && Flag(smoke, "shapeFlagB")).OverrideFailureMessage($"{name}: blown out from the disc's edge").IsTrue();
+		AssertThat(Field(smoke, "initialNum", 0)).IsEqual(10.0);
+		AssertThat(Param(smoke, "rate")).IsEqual(0.0);
+		AssertThat(Flag(smoke, "useLife") && Field(smoke, "lifetimeFrames", 0) == 15).OverrideFailureMessage($"{name}: one burst a play").IsTrue();
+		JsonElement[] keys = Keys(chains[0][0]);
+		AssertThat(Field(keys[^1], "alpha", 1)).IsEqual(0.0);
+	}
+
+	/// <summary>The effect's chains in file order: each chain's entities, parent first, with their systems.</summary>
+	private static List<List<Link>> Chains(JsonElement root)
+	{
+		JsonElement[] emitters = root.GetProperty("emitters").EnumerateArray().ToArray();
+		JsonElement[] systems = root.GetProperty("systems").EnumerateArray().ToArray();
+		var chains = new List<List<Link>>();
+		int vector = -1;
+		foreach (JsonElement part in root.GetProperty("parts").EnumerateArray())
+		{
+			int v = part.GetProperty("vector").GetInt32();
+			if (v != vector)
+			{
+				chains.Add(new List<Link>());
+				vector = v;
+			}
+
+			JsonElement? system = part.TryGetProperty("system", out JsonElement s) ? systems[s.GetInt32()] : null;
+			chains[^1].Add(new Link(emitters[part.GetProperty("emitter").GetInt32()], system));
+		}
+
+		return chains;
+	}
 
 	private static string? ModFolder()
 	{
@@ -107,24 +308,7 @@ public class SpellWeavingLookTests
 
 		using JsonDocument effect = JsonDocument.Parse(File.ReadAllText(Path.Combine(folder, "fx", "effects", name + ".json")));
 		using JsonDocument old = JsonDocument.Parse(Old[name]);
-		JsonElement root = effect.RootElement;
-		JsonElement[] emitters = root.GetProperty("emitters").EnumerateArray().ToArray();
-		JsonElement[] systems = root.GetProperty("systems").EnumerateArray().ToArray();
-		var chains = new List<List<Link>>();
-		int vector = -1;
-		foreach (JsonElement part in root.GetProperty("parts").EnumerateArray())
-		{
-			int v = part.GetProperty("vector").GetInt32();
-			if (v != vector)
-			{
-				chains.Add(new List<Link>());
-				vector = v;
-			}
-
-			JsonElement? system = part.TryGetProperty("system", out JsonElement s) ? systems[s.GetInt32()] : null;
-			chains[^1].Add(new Link(emitters[part.GetProperty("emitter").GetInt32()], system));
-		}
-
+		List<List<Link>> chains = Chains(effect.RootElement);
 		int at = 0;
 		foreach (JsonElement piece in old.RootElement.GetProperty("pieces").EnumerateArray())
 		{
@@ -132,15 +316,6 @@ public class SpellWeavingLookTests
 			string where = $"{name} piece {at} ({kind})";
 			switch (kind)
 			{
-				case "embers":
-					Embers(where, chains[at++], piece);
-					break;
-				case "arcs":
-					Arcs(where, chains[at++], piece);
-					break;
-				case "ring":
-					Ring(where, chains[at++], piece);
-					break;
 				case "blades":
 					at += Blades(where, chains, at, piece);
 					break;
@@ -218,178 +393,11 @@ public class SpellWeavingLookTests
 	{
 		double allowed = tolerance * Math.Max(1.0, Math.Abs(expected));
 		AssertThat(Math.Abs(actual - expected) <= allowed)
-			.OverrideFailureMessage($"{what}: {actual:R}, the old piece's maths say {expected:R}")
+			.OverrideFailureMessage($"{what}: {actual:R}, the look says {expected:R}")
 			.IsTrue();
 	}
 
-	private static (int Src, int Dst) Blend(string blend) => blend == "mix" ? (1, 5) : (4, 1);
-
-	// ---- the kinds ------------------------------------------------------------------------------
-
-	private static void Embers(string where, List<Link> chain, JsonElement piece)
-	{
-		AssertThat(chain.Count).OverrideFailureMessage($"{where}: one emitter").IsEqual(1);
-		JsonElement e = chain[0].Emitter;
-		double period = Math.Max(0.2, Num(piece, "period", 1));
-		double count = Math.Max(8, Num(piece, "count", 64));
-		double r0 = Num(piece, "radius", 1), r1 = Num(piece, "radiusTop", r0), height = Num(piece, "height", 2);
-		int life = (int)Math.Round(period * Fps);
-
-		// A disc shooting out from its edge: every particle leaves at the cone's base radius,
-		// radially, and widens at the cone's rate — the piece's lerp(radius, radiusTop, t) ×
-		// (0.8 + 0.4·u), as speed + u·speedSpread over the period.
-		AssertThat(Field(e, "typeId", 0)).OverrideFailureMessage($"{where}: a standard emitter").IsEqual(0.0);
-		AssertThat(Field(e, "subType", 0)).OverrideFailureMessage($"{where}: a disc").IsEqual(2.0);
-		AssertThat(Flag(e, "shapeFlagA") && Flag(e, "shapeFlagB")).OverrideFailureMessage($"{where}: from the edge, outward").IsTrue();
-		AssertThat(Flag(e, "useLife")).OverrideFailureMessage($"{where}: emits for as long as it plays").IsFalse();
-		Near($"{where} base radius", Field(e, "spawnRadius", 0.1), Math.Max(r0, 0.01));
-		double speed = Param(e, "speed"), spread = Param(e, "speedSpread");
-		Near($"{where} mean top radius", Math.Max(r0, 0.01) + ((speed + (spread / 2)) * period), r1, 0.02);
-		Near($"{where} radius jitter", spread * period, 0.4 * r1);
-
-		// The climb: gravity reversed, the vertical velocity halved each step — steady at
-		// a·m/(1−m) per step a frame after the spawn, so the particle rises the height over its life.
-		double[] damping = Vec(e, "vec1", new[] { 1.0, 1, 1 });
-		Near($"{where} no horizontal damping", damping[0] * damping[1], 1);
-		double m = damping[2];
-		AssertThat(m > 0 && m < 1).OverrideFailureMessage($"{where}: a damped rise").IsTrue();
-		double lift = -Param(e, "gravityScale") * Gravity / (Fps * Fps);
-		Near($"{where} climb over the life", lift * m / (1 - m) * life, height);
-
-		// The turn: the piece's angle grew by speed × (0.8 + 0.4·w) rad/s about the cone's axis —
-		// the emitter's own Z (no rotation stated), at the mean rate.
-		AssertThat(e.TryGetProperty("quat", out _)).OverrideFailureMessage($"{where}: the emitter's Z is the cone's axis").IsFalse();
-		Near($"{where} spin", Field(e, "spin", 0), Num(piece, "speed", 1));
-
-		// count ÷ period a second, each living the period: the piece's GpuParticles amount. The bank's
-		// rate is particles a FRAME: the guest's spawner adds rate × time scale × the step's frames
-		// each update (`sub_82A0B0B8`, `sub_822698F8`), as Engine_FxSystem does.
-		Near($"{where} rate", Param(e, "rate") * Fps * period, count);
-		JsonElement[] keys = Keys(chain[0]);
-		AssertThat(keys.Length).IsEqual(2);
-		AssertThat(Frame(keys[1])).OverrideFailureMessage($"{where}: lives the period").IsEqual(life);
-		double intensity = Num(piece, "intensity", 1);
-		double[] c0 = Rgba(piece, "color", new[] { 1.0, 1, 1, 1 });
-		double[] c1 = Rgba(piece, "colorEnd", new[] { c0[0], c0[1], c0[2], 0 });
-		double size0 = Num(piece, "size", 0.5);
-		double size1 = Num(piece, "sizeEnd", size0 * 0.4);
-		(int src, int dst) = Blend(piece.TryGetProperty("blend", out JsonElement b) ? b.GetString()! : "add");
-		for (int k = 0; k < 3; k++)
-		{
-			Near($"{where} colour[{k}]", Floats(keys[0], "color", new[] { 1.0, 1, 1 })[k], c0[k] * intensity);
-			Near($"{where} end colour[{k}]", Floats(keys[1], "color", new[] { 1.0, 1, 1 })[k], c1[k]);
-		}
-
-		Near($"{where} alpha", Field(keys[0], "alpha", 1), c0[3]);
-		Near($"{where} end alpha", Field(keys[1], "alpha", 1), c1[3]);
-		Near($"{where} size", Field(keys[0], "sizeX", 1), size0);
-		Near($"{where} end size", Field(keys[1], "sizeX", 1), size1);
-		AssertThat(((int)Field(keys[0], "srcBlend", -1), (int)Field(keys[0], "dstBlend", -1)))
-			.OverrideFailureMessage($"{where}: the piece's blend").IsEqual((src, dst));
-	}
-
-	private static void Arcs(string where, List<Link> chain, JsonElement piece)
-	{
-		AssertThat(chain.Count).OverrideFailureMessage($"{where}: a path and its emitter").IsEqual(2);
-		double r0 = Num(piece, "radius", 1), r1 = Num(piece, "radiusTop", r0), height = Num(piece, "height", 2);
-		double rate = Num(piece, "rate", 10), count = Num(piece, "count", 64), width = Num(piece, "width", 0.1);
-
-		// The path: a turn and more round the cone, over the band the old arcs crawled (a start in
-		// the lower 70%, a reach of 15–35% up), every point ON the cone; a fresh random point each step.
-		JsonElement path = chain[0].Emitter;
-		AssertThat(Field(path, "typeId", 0)).IsEqual(5.0);
-		AssertThat(Flag(path, "splineRandomGenerator")).OverrideFailureMessage($"{where}: struck anywhere along it").IsTrue();
-		double[][] points = path.GetProperty("splinePoints").EnumerateArray()
-			.Select(p => p.EnumerateArray().Select(x => x.GetDouble()).ToArray()).ToArray();
-		Near($"{where} band foot", points[0][2], 0.125 * height);
-		Near($"{where} band top", points[^1][2], 0.825 * height);
-		double turned = 0;
-		for (int i = 0; i < points.Length; i++)
-		{
-			double t = points[i][2] / height;
-			Near($"{where} point {i} on the cone", Math.Sqrt((points[i][0] * points[i][0]) + (points[i][1] * points[i][1])), r0 + ((r1 - r0) * t));
-			if (i > 0)
-			{
-				double a = Math.Atan2(points[i][1], points[i][0]) - Math.Atan2(points[i - 1][1], points[i - 1][0]);
-				turned += Math.Abs(Math.IEEERemainder(a, 2 * Math.PI));
-			}
-		}
-
-		AssertThat(turned >= 2 * Math.PI).OverrideFailureMessage($"{where}: all the way round").IsTrue();
-
-		// The strikes: count arcs re-struck rate times a second with 35% skipped, each standing
-		// until the next strike.
-		JsonElement e = chain[1].Emitter;
-		Near($"{where} strikes a second", Param(e, "rate") * Fps, 0.65 * count * rate);
-		JsonElement[] keys = Keys(chain[1]);
-		int life = Frame(keys[^1]);
-		AssertThat(Math.Abs((life / Fps) - (1 / rate)) <= 0.5 / Fps)
-			.OverrideFailureMessage($"{where}: a strike stands {life} frames for 1/{rate} s").IsTrue();
-
-		// The bolt: the old ribbon's width, the old chord's mean length, and the old ribbon's mean
-		// light — colour × intensity × E[flash²] (flash uniform in 0.55..1, as colour and as alpha).
-		double rMid = r0 + ((r1 - r0) * 0.475);
-		double chord = Math.Sqrt(Math.Pow(0.25 * height, 2) + Math.Pow(0.25 * (r1 - r0), 2) + Math.Pow(rMid * Math.PI / 8, 2));
-		double flash2 = (1 - Math.Pow(0.55, 3)) / (3 * 0.45);
-		double intensity = Num(piece, "intensity", 1);
-		double[] colour = Rgba(piece, "color", new[] { 1.0, 1, 1, 1 });
-		foreach (JsonElement key in keys)
-		{
-			Near($"{where} width", Field(key, "sizeX", 1), width);
-			Near($"{where} length", Field(key, "sizeY", 1), chord);
-			double[] drawn = Floats(key, "colorSq", new[] { 1.0, 1, 1 });
-			for (int k = 0; k < 3; k++)
-			{
-				Near($"{where} light[{k}]", drawn[k] * Field(key, "alpha", 1), colour[k] * intensity * flash2);
-			}
-		}
-	}
-
-	private static void Ring(string where, List<Link> chain, JsonElement piece)
-	{
-		AssertThat(chain.Count).IsEqual(1);
-		JsonElement e = chain[0].Emitter;
-		double period = Math.Max(0.2, Num(piece, "period", 1));
-		double radius = Num(piece, "radius", 1);
-		double small = Math.Max(0.05, radius * 0.1);
-		int life = (int)Math.Round(period * Fps);
-		Near($"{where} height", Floats(e, "pos", new[] { 0.0, 0, 0 })[2], Num(piece, "height", 2));
-		Near($"{where} one a period", Param(e, "rate") * Fps * period, 1);
-		Near($"{where} the first at once", Field(e, "initialNum", 0), 1);
-		Near($"{where} stands still", Param(e, "speed"), 0);
-
-		// The piece's own curve, key by key: radius lerp(small, radius, √t) and colour and alpha
-		// both × (1 − t) — enough keys that the bank's straight spans follow the ease.
-		JsonElement[] keys = Keys(chain[0]);
-		AssertThat(Frame(keys[^1])).IsEqual(life);
-		AssertThat(keys.Length >= Math.Min(5, life + 1)).OverrideFailureMessage($"{where}: {keys.Length} keys for an eased curve").IsTrue();
-		double intensity = Num(piece, "intensity", 1);
-		double[] colour = Rgba(piece, "color", new[] { 1.0, 1, 1, 1 });
-		foreach (JsonElement key in keys)
-		{
-			double t = Frame(key) / (double)life;
-			AssertThat(Flag(key, "hasAlignQuat")).OverrideFailureMessage($"{where}: lies flat").IsTrue();
-			Near($"{where} size at {t:F2}", Field(key, "sizeX", 1), 2 * (small + ((radius - small) * Math.Sqrt(t))));
-			Near($"{where} alpha at {t:F2}", Field(key, "alpha", 1), 1 - t);
-			for (int k = 0; k < 3; k++)
-			{
-				Near($"{where} colour[{k}] at {t:F2}", Floats(key, "color", new[] { 1.0, 1, 1 })[k], colour[k] * intensity * (1 - t));
-			}
-		}
-
-		for (double t = 0.05; t < 1; t += 0.05)
-		{
-			double f = t * life;
-			int b = Array.FindIndex(keys, k => Frame(k) >= f);
-			int a = Math.Max(0, b - 1);
-			double fa = Frame(keys[a]), fb = Frame(keys[b]);
-			double w = fb > fa ? (f - fa) / (fb - fa) : 0;
-			double drawn = Field(keys[a], "sizeX", 1) + ((Field(keys[b], "sizeX", 1) - Field(keys[a], "sizeX", 1)) * w);
-			double eased = 2 * (small + ((radius - small) * Math.Sqrt(t)));
-			AssertThat(Math.Abs(drawn - eased) <= 0.08 * 2 * radius)
-				.OverrideFailureMessage($"{where}: at {t:F2} the keys draw {drawn:F3}, the ease {eased:F3}").IsTrue();
-		}
-	}
+	// ---- the vortex's blades -----------------------------------------------------------------
 
 	private static double[,] Mul(double[,] a, double[,] b)
 	{

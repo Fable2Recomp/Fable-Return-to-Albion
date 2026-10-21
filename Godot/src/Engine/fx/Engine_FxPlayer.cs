@@ -22,19 +22,23 @@ namespace Refii.Fx;
 /// IDS: the payload issues 1 .. 2^23-1, this side <see cref="FirstHostId"/> (2^23) .. 2^24-1, so
 /// every id is exact as a Lua number and none collides. A world effect hangs under the live
 /// effect feed (<see cref="Refii.Game.GameFx"/>), placed unrotated at the stated point; an entity
-/// effect under that entity's drawn node, started at the node's position plus the offset (guest
-/// world axes) and riding it rigidly after, freed with it. AN ENTITY WITH NO DRAWN BODY (a
-/// vortex, a fireball's shot) is where its own live effects are — the first effect the guest's
-/// feed states it owns, is attached to, or its own update places (<see cref="RideOf"/>), followed each
-/// frame — else where the guest states the entity;
-/// the effect follows that point plus the offset, and ends once the entity has neither for
-/// <see cref="PendingSeconds"/>.
+/// effect under that entity's drawn node IN THE ENTITY'S OWN FRAME (<see cref="InEntityFrame"/>):
+/// its axes are the entity's, the offset is along them, and as the node's child it turns with the
+/// entity rigidly after, freed with it. AN ENTITY WITH NO DRAWN BODY (a
+/// vortex, a fireball's shot — or one whose body is not built YET, until it is, when the effect is
+/// made again in the body's frame) has no frame drawn here: it is where its own live effects are — the
+/// first effect the guest's feed states it owns, is attached to, or its own update places
+/// (<see cref="RideOf"/>), followed each frame — else where the guest states the entity; the
+/// effect stands unrotated, follows that point plus the offset (guest world axes), and ends once
+/// the entity has neither for <see cref="PendingSeconds"/>.
 /// <para>A recipe binds its tint to a cast through the effect the cast plays (<see cref="Bind"/>,
 /// <see cref="Engine_FxRecipes"/> <c>with</c>): a play on an entity binds the effects the guest states
 /// belong to that entity — the feed's owner, what the effect is attached to, and the effects a spell's
 /// own update places (<see cref="Ride"/>) — and never another cast's.</para>
 /// <para>THE CLASSIC PATH keeps every option: the guest places the instance at the point (or each
-/// tick at the entity's position plus the offset, ending it when the entity is gone — and, for a
+/// tick in the entity's frame — its position plus the offset along its axes, and its orientation
+/// through the instance's own setter, as the guest places its own FX entity's instance — ending it
+/// when the entity is gone — and, for a
 /// vortex or a Blades sword, again at the end of the spell's own update that moved it), states its
 /// scale and intensity through the instance's own setters, respawns a loop each time it retires and
 /// lets a one-shot go when it does; a duration and <see cref="Stop"/> are counted here and end it
@@ -346,6 +350,26 @@ public static class Engine_FxPlayer
 				continue;
 			}
 
+			if (played.Follows && Refii.Game.GameEntities.Current?.NodeFor(played.Address) is { } body &&
+				GodotObject.IsInstanceValid(body) && body.IsInsideTree())
+			{
+				// THE BODY HAS COME: the entity was followed only because its node did not exist
+				// yet (GameEntities builds a node once its mesh has loaded, off-thread, which a
+				// fresh spawn — a Blades sword — has not when its first play arrives). Followed,
+				// the look stood upright at the entity's own effect (a sword's FX entity, which
+				// the guest places at the blade's .Top, sub_825A63A8 0x825a6658), past the tip;
+				// it is made again in the body's frame.
+				played.Node.QueueFree();
+				played.Node = null;
+				played.Follows = false;
+				if (TryPlace(played) == Placing.Unknown)
+				{
+					_done.Add(id);
+				}
+
+				continue;
+			}
+
 			if (played.Follows)
 			{
 				if (FollowPoint(played.Address) is { } point)
@@ -422,11 +446,14 @@ public static class Engine_FxPlayer
 				played.Follows = true;
 			}
 
+			var offset = new Vector3(r.OffsetX, r.OffsetY, r.OffsetZ);
 			world = at is not { } origin
 				? default
-				: new Transform3D(
-					Refii.Game.GameFx.UnrotatedAt(Vector3.Zero).Basis,
-					origin + Refii.Game.GameFx.GuestToGodot(new Vector3(r.OffsetX, r.OffsetY, r.OffsetZ)));
+				: played.Follows || parent is null
+					? new Transform3D(
+						Refii.Game.GameFx.UnrotatedAt(Vector3.Zero).Basis,
+						origin + Refii.Game.GameFx.GuestToGodot(offset))
+					: InEntityFrame(parent.GlobalBasis, origin, offset);
 		}
 		else
 		{
@@ -446,6 +473,31 @@ public static class Engine_FxPlayer
 		node.GlobalTransform = world;
 		played.Node = node;
 		return Placing.Placed;
+	}
+
+	/// <summary>
+	/// An effect riding an entity's drawn node, in THAT ENTITY'S OWN FRAME: the effect's axes are the
+	/// entity's guest axes and <paramref name="guestOffset"/> is measured along them, so the effect
+	/// turns with the entity. <paramref name="drawn"/> is the node's global basis, which
+	/// <c>GameEntities.ToGodot</c> builds as <c>N * R * M^-1</c> — columns N·localX, N·localZ,
+	/// −N·localY (R's rows are the guest's local axes; M is the mesh's Z-up to Y-up bake). An effect
+	/// node takes guest rows as <c>(N·row0, N·row2, N·row1)</c> (<c>GameFx</c>'s placement from rows,
+	/// <c>UnrotatedAt</c> for the identity), so the effect's basis is the node's with its third column
+	/// negated; the node's scale is not the effect's (play_fx states its own). The same placement the
+	/// guest makes for its own FX entity, sub_825F8900: the placement component's position (slot
+	/// 0x40) and orientation (slot 0x44) put on the instance with sub_832325A8 and sub_83231C40.
+	/// </summary>
+	public static Transform3D InEntityFrame(Basis drawn, Vector3 origin, Vector3 guestOffset)
+	{
+		Basis axes = drawn.Orthonormalized();
+		var frame = new Basis(axes.Column0, axes.Column1, -axes.Column2);
+		if (!float.IsFinite(frame.Determinant()) || Mathf.Abs(frame.Determinant()) < 0.5f)
+		{
+			frame = Refii.Game.GameFx.UnrotatedAt(Vector3.Zero).Basis;
+		}
+
+		// Guest-local (x, y, z) is the effect node's local (x, z, y).
+		return new Transform3D(frame, origin + (frame * new Vector3(guestOffset.X, guestOffset.Z, guestOffset.Y)));
 	}
 
 	/// <summary>The live effects the feed states per entity this frame (owner and attached), and the last complete frame's.</summary>

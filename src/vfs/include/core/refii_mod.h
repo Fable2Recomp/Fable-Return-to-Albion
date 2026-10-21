@@ -509,8 +509,10 @@ typedef struct refii_mod_fx_options {
   float intensity;
   /// 1 repeats the effect, 0 plays it once.
   int32_t loop;
-  /// From the entity (refii_mod_play_fx_on), in the guest's world axes at the moment it starts;
-  /// after that the effect rides the entity rigidly.
+  /// From the entity (refii_mod_play_fx_on), along the ENTITY'S OWN axes: an effect on an entity
+  /// stands in its frame — the effect's axes are the entity's — and turns with it. An entity with
+  /// no drawn body of its own (a vortex, a fireball's shot) is followed by position only, the
+  /// effect unrotated and the offset in the guest's world axes.
   float offset[3];
 } refii_mod_fx_options;
 
@@ -530,8 +532,9 @@ inline refii_mod_fx_options refii_mod_fx_default_options(void) {
 /// by Godot, not here.
 extern "C" uint32_t refii_mod_play_fx(const char* name, const float* xyz, const refii_mod_fx_options* options);
 
-/// Plays effect `name` on `entity` (an address; its handle is what crosses): it follows the
-/// entity's drawn node, offset by options->offset, and goes with it.
+/// Plays effect `name` on `entity` (an address; its handle is what crosses): it stands in the
+/// entity's own frame, offset by options->offset along the entity's axes, and moves and turns with
+/// it.
 extern "C" uint32_t refii_mod_play_fx_on(const char* name, uint32_t entity, const refii_mod_fx_options* options);
 
 /// Stops a played effect by the id play_fx returned — any surface's id: native, Lua or Godot.

@@ -538,6 +538,24 @@ uint32_t refii_bridge_player_two_hud(uint32_t* target, char* out, uint32_t capac
 //   payload's own (the pump sets it, coop_hero_hooks.cpp reads it).
 int32_t refii_bridge_dpad_query_two(void);
 
+// THE MOUSE'S CAMERA TURN (src/core/mouse_look_state.cpp), taken by src/hooks/mouse_look.cpp
+// once per camera update of the local player's camera manager, guest tick thread only.
+// - take everything the host posted (degrees at the middle sensitivity; right and up positive);
+//   the state's sequence goes odd until the matching state call;
+void refii_bridge_mouse_look_take(float* out_yaw, float* out_pitch);
+// - state what became of it: the yaw taken (posted degrees), vertical held back below the
+//   camera's dead zone (returned to the pending turn), the yaw the camera turned for it in this
+//   update (its own degrees, rightward), its degrees per posted degree (0 keeps the last), and how
+//   the host draws a turn not yet taken: `mode` 0 not at all, 1 about the vertical through the
+//   focus `pivot` metres along the level line of sight, 2 about the camera's own position.
+void refii_bridge_mouse_look_state(uint32_t tick, float taken_yaw, float held_pitch,
+                                   float absorbed_yaw, float factor, float pivot, int32_t mode);
+// - whether the mouse is the player's look device (the host's device switch): nonzero while the
+//   keyboard and mouse were touched last;
+int32_t refii_bridge_mouse_look_device(void);
+// - count one target switch handed to a target lock (a mouse flick), for the debug channel.
+void refii_bridge_mouse_look_flicked(void);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

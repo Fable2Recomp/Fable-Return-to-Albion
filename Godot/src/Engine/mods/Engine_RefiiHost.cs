@@ -1074,9 +1074,9 @@ public partial class RefiiHost : Node
 		PlayFx(name, new Vector3(x, y, z), 0, options);
 
 	/// <summary>
-	/// Plays effect <paramref name="name"/> on an entity by its HANDLE: it starts at the entity's drawn
-	/// node plus options.offset (guest axes, Vector3 or [x, y, z]) and rides it; the other options as
-	/// play_fx. 0 for an unknown effect or handle.
+	/// Plays effect <paramref name="name"/> on an entity by its HANDLE: it stands in the entity's own
+	/// frame, options.offset (Vector3 or [x, y, z]) along the entity's axes, and moves and turns with
+	/// it; the other options as play_fx. 0 for an unknown effect or handle.
 	/// </summary>
 	public long play_fx_on(string name, long handle, Godot.Collections.Dictionary options) =>
 		handle <= 0 || handle > uint.MaxValue ? 0 : PlayFx(name, Vector3.Zero, (uint)handle, options);

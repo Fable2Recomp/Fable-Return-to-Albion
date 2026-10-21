@@ -25,6 +25,28 @@ public partial class GameWorld : Node3D
 	/// <summary>Frames it stood on the live camera — a stated snap, or no pair to blend.</summary>
 	public static long LiveOnlyCameras;
 
+	/// <summary>The mouse's turn drawn ahead of the guest's camera last frame (posted, not yet taken), degrees rightward.</summary>
+	public static double MouseLookOutstanding { get; private set; }
+
+	/// <summary>How the guest's camera turns for the mouse (an Engine_MouseLook mode), and its focus distance.</summary>
+	public static int MouseLookMode { get; private set; }
+
+	public static float MouseLookPivotMetres { get; private set; }
+
+	/// <summary>Everything the guest's camera has turned for the mouse, degrees. Run total.</summary>
+	public static double MouseLookAbsorbed { get; private set; }
+
+	/// <summary>Target switches the mouse handed to a target lock, as last read. Run total.</summary>
+	public static uint MouseLookFlicks { get; private set; }
+
+	/// <summary>Frames whose read of the guest's mouse account straddled a camera update. Run total.</summary>
+	public static long MouseLookTornReads;
+
+	private readonly Refii.Core.Engine_MouseLook _mouseLook = new();
+
+	/// <summary>The camera timeline's own drawn transform last frame, before the mouse's outstanding turn.</summary>
+	private Transform3D _lineDrawn = Transform3D.Identity;
+
 	private Camera3D _camera = null!;
 	private GameSplitView _split = null!;
 	private bool _reported;
@@ -85,6 +107,10 @@ public partial class GameWorld : Node3D
 		//
 		// No teleport threshold: the guest states a snap itself, the byte at `live+0x34`, which
 		// `0x8228ff40` reads to force alpha to 1.0.
+		// The mouse's account is read on both sides of the camera: the guest states the two in one
+		// window (mouse_look.cpp refreshes the live block before closing it), so an unchanged even
+		// sequence means this camera carries exactly the turn the account says it absorbed.
+		HostBridge.MouseLookState? lookBefore = HostBridge.GetMouseLook();
 		var pair = HostBridge.GetCameraPair();
 		HostBridge.GuestCamera camera;
 		if (pair is { } both)
@@ -100,6 +126,8 @@ public partial class GameWorld : Node3D
 			return;
 		}
 
+		HostBridge.MouseLookState? lookAfter = HostBridge.GetMouseLook();
+
 		if (camera.IsDefault)
 		{
 			return;
@@ -108,6 +136,35 @@ public partial class GameWorld : Node3D
 		if (!TryStatedCamera(camera, out Transform3D stated, out float fov))
 		{
 			return;
+		}
+
+		bool torn = lookBefore is { } first && lookAfter is { } look &&
+			(first.Sequence != look.Sequence || (look.Sequence & 1u) != 0u);
+		if (torn)
+		{
+			// The camera may or may not carry the update that was in flight: it is not stated
+			// this frame, and the turn posted since the last whole read is drawn against the
+			// camera already drawn.
+			++MouseLookTornReads;
+			if (lookAfter is { } partial)
+			{
+				_mouseLook.ObservePosted(partial.Posted);
+			}
+
+			if (!_cameraLine.Empty)
+			{
+				_lineDrawn = _cameraLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
+					Refii.Entities.Engine_DrawnFrame.DrawTick);
+				_camera.GlobalTransform = DrawMouseLook(_lineDrawn);
+				_split.Follow(_camera);
+			}
+
+			return;
+		}
+
+		if (lookBefore is not null && lookAfter is { } whole)
+		{
+			ObserveMouseLook(whole);
 		}
 
 		// Blended between consecutive STATED cameras, not across the guest's own pair. The guest
@@ -136,6 +193,7 @@ public partial class GameWorld : Node3D
 			// so does a jump the bodies treat as a teleport — the two restart together.
 			_cameraLine.Reset(cameraTick, stated, fov);
 			++LiveOnlyCameras;
+			drawn = stated;
 		}
 		else
 		{
@@ -150,6 +208,8 @@ public partial class GameWorld : Node3D
 			++BlendedCameras;
 		}
 
+		_lineDrawn = drawn;
+		drawn = DrawMouseLook(drawn);
 		_camera.GlobalTransform = drawn;
 		SampleCameraTrace(drawn.Origin);
 
@@ -170,6 +230,44 @@ public partial class GameWorld : Node3D
 		}
 	}
 
+
+	/// <summary>
+	/// A whole read of the mouse's account, paired with the camera read inside it. A turn the
+	/// guest's camera absorbed since the last whole read is carried by this camera and was drawn
+	/// ahead of the last one, so the drawn history is restated by it, about the point it was drawn
+	/// turning about (<see cref="Refii.Core.Engine_MouseLook"/>): the view does not move, and the
+	/// timeline goes on blending only the camera's own motion. A turn absorbed while none was drawn
+	/// ahead (the camera had refused the mouse until this update) is left to the timeline to glide.
+	/// </summary>
+	private void ObserveMouseLook(HostBridge.MouseLookState look)
+	{
+		int drawnMode = _mouseLook.Mode;
+		float drawnPivot = _mouseLook.PivotMetres;
+		double turned = _mouseLook.Observe(look.Posted, look.Taken, look.Absorbed, look.Factor,
+			look.PivotMetres, look.Mode);
+		if (turned != 0.0 && drawnMode != Refii.Core.Engine_MouseLook.ModeNone && !_cameraLine.Empty)
+		{
+			_cameraLine.TurnAbout(Refii.Core.Engine_MouseLook.PivotFor(_lineDrawn, drawnMode, drawnPivot), turned);
+		}
+
+		MouseLookMode = _mouseLook.Mode;
+		MouseLookPivotMetres = _mouseLook.PivotMetres;
+		MouseLookAbsorbed = _mouseLook.Absorbed;
+		MouseLookFlicks = look.Flicks;
+	}
+
+	/// <summary>
+	/// THE MOUSE'S TURN AT THE DISPLAY RATE: the camera the timeline draws, turned by the part of
+	/// the mouse's turn no guest camera update has taken yet, the way the guest's camera turns —
+	/// about its focus, or in place. Nothing is predicted: the guest turns exactly this much in
+	/// its next update, and the statement that carries it restates the history by the same.
+	/// </summary>
+	private Transform3D DrawMouseLook(Transform3D drawn)
+	{
+		double outstanding = _mouseLook.Outstanding;
+		MouseLookOutstanding = outstanding;
+		return Refii.Core.Engine_MouseLook.Turn(drawn, _mouseLook.Mode, _mouseLook.PivotMetres, outstanding);
+	}
 
 	/// <summary>
 	/// One stated camera as a Godot transform and a vertical fov, or false when it cannot be

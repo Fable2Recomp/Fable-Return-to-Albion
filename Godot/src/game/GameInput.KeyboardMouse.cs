@@ -7,7 +7,7 @@ namespace Refii.Game;
 
 /// <summary>
 /// The keyboard and mouse, as one more device on pad 0: keys become the buttons and stick the
-/// guest already reads, and the mouse turns the camera through the right stick.
+/// guest already reads, and the mouse turns the camera through the camera's own rotate path.
 /// </summary>
 /// <remarks>
 /// THE GUEST HAS ONE CONTROL SCHEME AND IT IS THE PAD'S. `GameControlsCombatOnRelease` over
@@ -21,6 +21,14 @@ namespace Refii.Game;
 /// magic, and the items sit on the function keys. The rest are the usual PC keys. Every action
 /// is rebindable as `key_&lt;action&gt;` in refii.toml — a comma list of Godot key names
 /// (`OS.FindKeycodeFromString`) or MouseLeft / MouseRight / MouseMiddle / Mouse4 / Mouse5.
+///
+/// THE 360 HAS NO KEYBOARD TO REUSE. The control-scheme loader (`sub_82883298`) still builds the
+/// PC era's KeyboardKey (InputType 1), MouseButton (2) and mouse-movement (6) bindings, and the
+/// GDB's Base scheme still binds keys, but the device scan (`sub_821A8CC8`) recognises an XInput
+/// keyboard (capabilities Type 2) and builds no device for it, and the binary imports no
+/// keystroke API, so no keyboard or mouse event is ever produced. The mouse-movement binding's
+/// value (`sub_829C2358`) is the PC's counts / 64 clamped to unit length — a stick again. So keys
+/// press the pad, and the mouse is handed to the camera directly (<see cref="FeedMouseMotion"/>).
 /// </remarks>
 public partial class GameInput
 {
@@ -45,7 +53,8 @@ public partial class GameInput
 		new("melee", "F", "Melee directly, whatever the mode (X)."),
 		new("ranged", "R", "Ranged directly, whatever the mode (Y)."),
 		new("magic", "C", "Magic directly, whatever the mode (B)."),
-		new("target_lock", "MouseRight", "Hold to lock on to a target (left trigger)."),
+		new("target_lock", "MouseRight", "Hold to lock on to a target (left trigger); flick the " +
+			"mouse to switch target."),
 		new("first_person", "MouseMiddle,Z", "Hold for the first-person view (left bumper)."),
 		new("spells_menu", "Ctrl", "Hold to choose a spell (right trigger)."),
 		new("expression_wheel", "Q", "Hold for the expression wheel."),
@@ -78,50 +87,16 @@ public partial class GameInput
 	/// </summary>
 	public static bool Playing { get; private set; }
 
-	/// <summary>Mouse movement since the last frame, while captured.</summary>
-	private static Vector2 _mouseMotion;
+	/// <summary>The mouse buttons a press made in play holds until released (<see cref="Refii.Core.Engine_PlayButtons"/>).</summary>
+	private static readonly Refii.Core.Engine_PlayButtons PlayButtons = new((int)MouseButton.Xbutton2 + 1);
 
-	/// <summary>
-	/// The mouse's recent movement, timestamped, for the average over one camera tick. A box,
-	/// not an exponential: every count is spent exactly once, within one tick of its arrival,
-	/// with no tail — the guest's own camera already smooths, and a second filter on top of it
-	/// is what read as acceleration.
-	/// </summary>
-	private static readonly Queue<(double At, Vector2 Motion)> _mouseWindow = new();
+	private static readonly MouseButton[] BindableButtons =
+	{
+		MouseButton.Left, MouseButton.Right, MouseButton.Middle, MouseButton.Xbutton1, MouseButton.Xbutton2,
+	};
 
-	private static double _mouseClock;
-
-	/// <summary>One SACCamera tick: `Timing.GetTickRate()` is 15, and the camera keeps only the
-	/// last ROTATE action of a tick (`ProcessGameAction` assigns `RotateRight`).</summary>
-	private const double CameraTick = 1.0 / 15.0;
-
-	/// <summary>
-	/// Degrees of camera turn per mouse count at sensitivity 1. 0.15 is the common shooter
-	/// default (about 2400 counts — 3 inches at 800 DPI — per turn).
-	/// </summary>
-	private const float DegreesPerCount = 0.15f;
-
-	/// <summary>
-	/// The guest's full-stick turn rate: SACCamera's `RotateRight = -x * (RotateSpeed / 15) *
-	/// (0.5 + CameraSensitivity)` degrees per tick at 15 ticks a second (stringandcagecamera.lua
-	/// 2977), with the profile's sensitivity at its middle, 0.5. RotateSpeed ships at 120; the
-	/// pointer feel (`CameraFeel:pointer` in the tick pump) raises it to 720.
-	/// </summary>
-	private const float PadStickDegreesPerSecond = 120f;
-
-	private const float PointerStickDegreesPerSecond = 720f;
-
-	/// <summary>The rate full deflection turns at now: the pointer's only once the game VM has
-	/// confirmed it took the pointer feel, so a refused feel never leaves the mouse six times
-	/// too slow.</summary>
-	private static float _stickDegreesPerSecond = PadStickDegreesPerSecond;
-
-	/// <summary>The feel last posted (true = pointer), or null when none stands.</summary>
-	private static bool? _cameraFeelPosted;
-
-	private static bool _cameraFeelPending;
-	private static ulong _cameraFeelSeq;
-	private static double _cameraFeelRetry;
+	/// <summary>Escape and Tab as Start and B, each press keeping the mode it started in.</summary>
+	private static readonly Refii.Core.Engine_PauseBackKeys PauseBackKeys = new();
 
 	/// <summary>Reads `key_*` from the values the settings pass already loaded.</summary>
 	private static void ReadKeyBindings(IReadOnlyDictionary<string, string> values)
@@ -168,8 +143,9 @@ public partial class GameInput
 		return key == Key.None ? null : new BoundInput(key, MouseButton.None);
 	}
 
-	/// <summary>Whether any input bound to an action is down. Mouse buttons count only while the
-	/// mouse is captured — a free cursor's clicks belong to the menus.</summary>
+	/// <summary>Whether any input bound to an action is down. A mouse button counts from a press
+	/// made while the mouse was captured until its release (<see cref="PlayButtons"/>) — a free
+	/// cursor's clicks belong to the menus.</summary>
 	private static bool Down(string action)
 	{
 		if (!_bindings.TryGetValue(action, out List<BoundInput>? inputs))
@@ -181,7 +157,7 @@ public partial class GameInput
 		{
 			if (input.Key != Key.None
 				? Godot.Input.IsKeyPressed(input.Key) || Godot.Input.IsPhysicalKeyPressed(input.Key)
-				: MouseInput && !Engine_UiPointer.Free && Godot.Input.IsMouseButtonPressed(input.Mouse))
+				: MouseInput && PlayButtons.Held((int)input.Mouse))
 			{
 				return true;
 			}
@@ -217,11 +193,25 @@ public partial class GameInput
 		if (Godot.Input.MouseMode != wanted)
 		{
 			Godot.Input.MouseMode = wanted;
-			_mouseMotion = Vector2.Zero;
-			_mouseWindow.Clear();
 		}
 
-		UpdateCameraFeel();
+		if (devices)
+		{
+			bool captured = !Engine_UiPointer.Free;
+			foreach (MouseButton button in BindableButtons)
+			{
+				PlayButtons.Update((int)button, Godot.Input.IsMouseButtonPressed(button), captured);
+			}
+		}
+		else
+		{
+			PlayButtons.ReleaseAll();
+		}
+
+		// The look device, for the guest's camera: while it is the mouse, the camera keeps its
+		// heading as the hero moves and a target lock takes the mouse as flicks
+		// (src/vfs/src/hooks/mouse_look.cpp); a pad keeps the shipped camera.
+		HostBridge.SetMouseLookDevice(Engine_UiInputMode.KeyboardMouse && MouseInput);
 
 		Engine_UiKeyGlyphs.LabelFor ??= KeyLabel;
 		Engine_UiKeyGlyphs.Update();
@@ -237,48 +227,6 @@ public partial class GameInput
 		else if (Down("magic_mode"))
 		{
 			_attackMode = AttackMode.Magic;
-		}
-	}
-
-	/// <summary>
-	/// The camera's feel follows the device: the mouse turns it unsmoothed and with room for a
-	/// flick, the pad as shipped. Posted on every device switch and on entering a game (the game
-	/// VM, and the scripts' constants with it, are rebuilt per game); a refusal is retried.
-	/// </summary>
-	private void UpdateCameraFeel()
-	{
-		if (!HostBridge.IsInGame)
-		{
-			_cameraFeelPosted = null;
-			_cameraFeelPending = false;
-			_stickDegreesPerSecond = PadStickDegreesPerSecond;
-			return;
-		}
-
-		bool pointer = Engine_UiInputMode.KeyboardMouse && MouseInput;
-		_cameraFeelRetry -= GetProcessDeltaTime();
-		if (_cameraFeelPosted != pointer && _cameraFeelRetry <= 0.0)
-		{
-			_cameraFeelSeq = HostBridge.DebugCallResult()?.Seq ?? 0;
-			HostBridge.PostFrontEndAction(pointer ? "CameraFeel:pointer" : "CameraFeel:pad");
-			_cameraFeelPosted = pointer;
-			_cameraFeelPending = true;
-			_stickDegreesPerSecond = PadStickDegreesPerSecond;
-		}
-
-		if (_cameraFeelPending && HostBridge.DebugCallResult() is { } result &&
-			result.Seq != _cameraFeelSeq)
-		{
-			_cameraFeelPending = false;
-			bool took = result.R3 == 1;
-			_stickDegreesPerSecond = took && _cameraFeelPosted == true
-				? PointerStickDegreesPerSecond
-				: PadStickDegreesPerSecond;
-			if (!took)
-			{
-				_cameraFeelPosted = null;
-				_cameraFeelRetry = 1.0;
-			}
 		}
 	}
 
@@ -336,7 +284,17 @@ public partial class GameInput
 		};
 	}
 
-	/// <summary>Captured mouse motion, for the camera.</summary>
+	/// <summary>
+	/// The captured mouse as the camera: each movement's turn, in degrees at the profile's middle
+	/// camera sensitivity, posted as it arrives — Godot's relative motion, summed per frame
+	/// (<c>Input.UseAccumulatedInput</c>), with no curve, no averaging and no rate ceiling. The
+	/// guest hands everything posted since its last camera update to the active camera, whole, in
+	/// that update (src/vfs/src/hooks/mouse_look.cpp), with the profile's sensitivity and vertical
+	/// invert applied as to the stick; Godot draws the part no update has taken yet the frame the
+	/// mouse moves (<see cref="Refii.Core.Engine_MouseLook"/>). The cursor is captured only in play
+	/// (<see cref="UpdateKeyboardMouse"/>), so motion here is always the camera's; horizontal
+	/// invert is ours, as for the stick.
+	/// </summary>
 	private static void FeedMouseMotion(InputEvent @event)
 	{
 		if (!MouseInput)
@@ -344,20 +302,26 @@ public partial class GameInput
 			return;
 		}
 
-		if (@event is InputEventMouseMotion motion &&
-			(Godot.Input.MouseMode == Godot.Input.MouseModeEnum.Captured || (!MouseLock && Playing)))
+		// The cursor is captured in play, or free by choice (mouse_lock off) and still the camera's.
+		if (@event is not InputEventMouseMotion motion ||
+			(Godot.Input.MouseMode != Godot.Input.MouseModeEnum.Captured && !(!MouseLock && Playing)))
 		{
-			_mouseMotion += motion.Relative;
+			return;
+		}
+
+		Vector2 degrees = Refii.Core.Engine_MouseLook.Degrees(motion.Relative, MouseSensitivity, InvertCameraX);
+		if (degrees != Vector2.Zero)
+		{
+			HostBridge.PostMouseLook(degrees.X, degrees.Y);
 		}
 	}
 
-	/// <summary>The keyboard and mouse as pad 0's buttons, triggers and sticks.</summary>
-	private static void KeyboardMouseState(ref PadState state, double delta)
+	/// <summary>The keyboard as pad 0's buttons, triggers and left stick.</summary>
+	private static void KeyboardMouseState(ref PadState state)
 	{
 		// Typing into the dev menu is not play.
 		if (GameDevMenu.KeyboardCaptured)
 		{
-			_mouseMotion = Vector2.Zero;
 			return;
 		}
 
@@ -386,17 +350,11 @@ public partial class GameInput
 		if (Down("item_left")) buttons |= DpadLeft;
 		if (Down("item_right")) buttons |= DpadRight;
 
-		// Escape is bound to both: in play it pauses, in a menu it backs out. Tab pauses in both,
-		// which on the pause book is the guest's own Start-to-resume.
-		if (Playing)
-		{
-			if (Down("pause")) buttons |= Start;
-		}
-		else
-		{
-			if (Down("back")) buttons |= ButtonB;
-			if (Down("pause") && !Down("back")) buttons |= Start;
-		}
+		// Escape pauses in play and backs out in a menu; a held press keeps the meaning it started
+		// with (Engine_PauseBackKeys).
+		(bool start, bool back) = PauseBackKeys.Map(Playing, Down("pause"), Down("back"));
+		if (start) buttons |= Start;
+		if (back) buttons |= ButtonB;
 
 		state.Buttons |= buttons;
 		if (Down("target_lock")) state.LeftTrigger = 255;
@@ -413,79 +371,5 @@ public partial class GameInput
 			state.LeftX = Dominant(state.LeftX, Mathf.RoundToInt(move.X * 32767f));
 			state.LeftY = Dominant(state.LeftY, Mathf.RoundToInt(move.Y * 32767f));
 		}
-
-		MouseCamera(ref state, delta);
-	}
-
-	/// <summary>
-	/// The mouse as the camera. The guest keeps no yaw angle — SACCamera turns by a rate per tick
-	/// from the stick — so the mouse's turn this frame becomes the stick deflection that turns
-	/// the camera by the same amount: rate / full-stick rate, then the guest's stick curve undone
-	/// Capped at full deflection: 720°/s under the pointer feel, the stick's 120°/s without it.
-	/// Capped at full deflection: a flick faster than the stick's 120°/s is spread over frames.
-	/// Averaged over the last camera tick, since the camera takes one ROTATE per tick.
-	/// </summary>
-	private static void MouseCamera(ref PadState state, double delta)
-	{
-		if (!MouseInput)
-		{
-			_mouseMotion = Vector2.Zero;
-			_mouseWindow.Clear();
-			return;
-		}
-
-		Vector2 motion = _mouseMotion;
-		_mouseMotion = Vector2.Zero;
-		if (delta <= 0.0)
-		{
-			return;
-		}
-
-		_mouseClock += delta;
-		if (motion != Vector2.Zero)
-		{
-			_mouseWindow.Enqueue((_mouseClock, motion));
-		}
-
-		Vector2 recent = Vector2.Zero;
-		while (_mouseWindow.Count > 0 && _mouseWindow.Peek().At <= _mouseClock - CameraTick)
-		{
-			_mouseWindow.Dequeue();
-		}
-
-		foreach ((double _, Vector2 counts) in _mouseWindow)
-		{
-			recent += counts;
-		}
-
-		Vector2 rate = recent * (DegreesPerCount * MouseSensitivity / (float)CameraTick);
-
-		// Right is the stick's right; up (a negative screen y) is the stick's up. Vertical is no
-		// rate but `ManualHeightOffset += -y * 0.05 * (0.5 + s)` behind a Lua deadzone of 0.1
-		// (stringandcagecamera.lua 2929..2938), so a slow pull is lifted past it.
-		int x = StickFor(rate.X / _stickDegreesPerSecond);
-		// Height has no degrees and RotateSpeed does not touch it, so it keeps the stick's scale.
-		int y = StickFor(LiftPastDeadzone(-rate.Y / PadStickDegreesPerSecond, 0.1f));
-		state.RightX = Dominant(state.RightX, x);
-		state.RightY = Dominant(state.RightY, y);
-	}
-
-	/// <summary>Maps a nonzero value onto (deadzone, 1], keeping its sign and order.</summary>
-	private static float LiftPastDeadzone(float v, float deadzone)
-	{
-		float magnitude = Mathf.Min(Mathf.Abs(v), 1f);
-		return magnitude < 0.002f ? 0f : Mathf.Sign(v) * (deadzone + 0.001f + ((1f - deadzone) * magnitude));
-	}
-
-	/// <summary>The raw stick value the guest's deadzone curve maps to <paramref name="v"/>.</summary>
-	private static int StickFor(float v)
-	{
-		float magnitude = Mathf.Min(Mathf.Abs(v), 1f);
-		if (magnitude < 0.002f)
-		{
-			return 0;
-		}
-
-		return Mathf.RoundToInt(Mathf.Sign(v) * (0.3f + (0.7f * magnitude)) * 32767f);
 	}
 }

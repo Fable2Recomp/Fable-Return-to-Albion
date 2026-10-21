@@ -3905,6 +3905,35 @@ public static class CoopHeroLua
 			GetCanRotateCamera = C.GetCanRotateCamera
 		end
 
+		-- THE MOUSE'S CAMERA KEEPS ITS HEADING. SACCamera hangs on a string: CalculateXY (FrameUpdate
+		-- pc 113) puts the camera between the cage and the string from the NEW focus, along the line to
+		-- where it was, so a hero moving across the view swings the camera after him — the only turn
+		-- the free camera makes on its own while walking. The script's own counter-term is the zoom
+		-- level's TrackAmount, `pos + CalculateMovement(centre) * TrackAmount` (CalculateXY pc 6..16),
+		-- skipped while PlayerIsManuallyRotatingCamera. The camera the mouse drives is published as
+		-- RefiiMouseLookCamera for its update (src/vfs/src/hooks/mouse_look.cpp, cleared after it):
+		-- that camera is carried by its focus's whole movement every update, so it keeps its heading
+		-- and turns only for the mouse, a lock's AlignToDirection and the scripts' cuts. The shipped
+		-- term is held off for the call (the flag it tests) so the movement is added once.
+		if SACCamera.CalculateXY ~= nil and SACCamera.CalculateXY ~= C.CalculateXY then
+			local shipped = SACCamera.CalculateXY
+			C.CalculateXY = C.Permanent(function(self, pos, cage, length, centre, ...)
+				if self ~= RefiiMouseLookCamera or pos == nil or centre == nil then
+					return shipped(self, pos, cage, length, centre, ...)
+				end
+				local moved = self:CalculateMovement(centre)
+				local manual = self.PlayerIsManuallyRotatingCamera
+				self.PlayerIsManuallyRotatingCamera = true
+				local ok, result = pcall(shipped, self, pos + moved, cage, length, centre, ...)
+				self.PlayerIsManuallyRotatingCamera = manual
+				if not ok then
+					error(result, 0)
+				end
+				return result
+			end, "CalculateXY")
+			SACCamera.CalculateXY = C.CalculateXY
+		end
+
 		-- THE ROUTE's camera calls (SACCamera.AddInterestingEntity, ...): this table is new each time
 		-- the camera scripts run.
 		if C.RouteWrapAll ~= nil then

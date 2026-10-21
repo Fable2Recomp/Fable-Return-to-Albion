@@ -578,10 +578,18 @@ REX_EXTERN(rex_lhCameraManager_ActivateCamera) {
   g_activate_as_joiner = previous;
 }
 
+extern "C" void RefiiMouseLookBeforeCameraUpdate(PPCContext& ctx, uint8_t* base, uint32_t manager);
+extern "C" void RefiiMouseLookAfterCameraUpdate(PPCContext& ctx, uint8_t* base, uint32_t manager);
+
 // The camera manager update (r3 manager). After player one's, player two's on split screen.
+// The manager the guest itself updates is this machine's own player's (sub_821F87C8) — pad 0's,
+// which the keyboard and mouse drive — and it takes the mouse's turn
+// (src/vfs/src/hooks/mouse_look.cpp); player two's split-screen manager, updated below, never does.
 REX_EXTERN(rex_lhCameraManager_Update) {
   const uint32_t manager = ctx.r3.u32;
+  RefiiMouseLookBeforeCameraUpdate(ctx, base, manager);
   __imp__rex_lhCameraManager_Update(ctx, base);
+  RefiiMouseLookAfterCameraUpdate(ctx, base, manager);
   if (g_ticking_manager != 0u || RefiiCoopSplitScreen() == 0) {
     return;
   }

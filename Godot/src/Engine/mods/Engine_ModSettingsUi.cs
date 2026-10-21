@@ -9,14 +9,13 @@ namespace Refii.Mods;
 
 /// <summary>
 /// A mod's settings as an options page the player tunes in the game, instead of editing
-/// <c>settings.json</c>: every enabled mod that ships settings gets a row under the options
-/// screen's Mods fold, and the row opens a host options page (<see cref="Engine_UiHostOptionsPage"/>)
+/// <c>settings.json</c>: every enabled mod whose author offers settings to the player gets a row
+/// under the options screen's Mods fold, and the row opens a host options page (<see cref="Engine_UiHostOptionsPage"/>)
 /// with one value row per setting. Left and right step the value, applied live and saved at
 /// once (<see cref="ModSettings.Persist"/>); A and B leave the page.
 /// </summary>
 /// <remarks>
-/// <para>A mod describes its rows in an optional <c>settings.ui.json</c> beside
-/// <c>settings.json</c>, keyed by the setting's name without the <c>&lt;mod&gt;.</c> prefix:</para>
+/// <para>A mod OFFERS its rows in <c>settings.ui.json</c> beside <c>settings.json</c>, keyed by the setting's name without the <c>&lt;mod&gt;.</c> prefix:</para>
 /// <code>
 /// { "swing_cost": { "label": "Swing cost", "min": 0, "max": 100, "step": 1,
 ///                   "type": "slider", "description": "Stamina a melee swing spends." },
@@ -27,9 +26,8 @@ namespace Refii.Mods;
 /// <para>A <c>choice</c> row steps through a fixed list of labelled values, in the order the file
 /// lists them; the setting holds the chosen option's number, and a value no option states shows
 /// the nearest one.</para>
-/// <para>A setting the file does not describe still gets a row: its name as the label, a range
-/// around the file's value (0 to twice it, in twentieths), and a toggle when the value is 0 or
-/// 1. A mod author gets a page for free and refines it when they want to.</para>
+/// <para>Only what the file describes is shown. A setting it leaves out is the author's tuning, not
+/// the player's, and a mod with no <c>settings.ui.json</c> has no page at all.</para>
 /// </remarks>
 public static class ModSettingsUi
 {
@@ -373,6 +371,11 @@ public static class ModSettingsUi
 				spec = found.AsGodotDictionary();
 			}
 
+			if (spec is null)
+			{
+				continue;
+			}
+
 			rows.Add(Describe(mod, key, name, value, spec));
 			values.Add(value);
 		}
@@ -473,6 +476,13 @@ public static class ModSettingsUi
 					found.VariantType == Variant.Type.Dictionary)
 				{
 					spec = found.AsGodotDictionary();
+				}
+
+				// OPEN ONLY WHAT THE AUTHOR DESCRIBED. A setting is the mod maker's tuning until
+				// settings.ui.json offers it to the player, so a mod without that file has no page.
+				if (spec is null)
+				{
+					continue;
 				}
 
 				rows.Add(Describe(mod, key, name, file, spec));

@@ -979,27 +979,6 @@ constexpr const char* kActionMenuSelect = "MenuSelect";
 // action instead.
 constexpr const char* kActionGuiLuaPrefix = "GuiLua:";
 
-// "CameraFeel:pointer" / "CameraFeel:pad" — which device the camera answers.
-//
-// The camera's feel is the scripts' own constants. SACCamera turns by
-// `RotateRight = -x * RotateSpeed / TickRate * (0.5 + sensitivity)` (stringandcagecamera.lua
-// 2977) and rolls that through `GetRollingAverage(Smooth, RotateRight, RotateDamp)` — 0.6 of the
-// last tick plus 0.4 of this one at RotateDamp 1.5 (2237) — and the height offset the same way
-// through HeightDamp (1723). FirstPersonCamera smooths by RotateSmoothAmount and turns
-// RotateSpeed degrees a tick at full stick (firstpersoncamera.lua 168..173). A stick wants the
-// smoothing; a mouse has already been moved exactly as far as the player meant, so under the
-// pointer the smoothing is off and full deflection is six times the stick's rate, leaving room
-// for a flick. The host scales its stick by the same six. The pad gets the shipped values back.
-constexpr const char* kActionCameraFeelPrefix = "CameraFeel:";
-constexpr const char* kCameraFeelPointer =
-    "if SACCamera then SACCamera.RotateDamp=0 SACCamera.HeightDamp=0 SACCamera.RotateSpeed=720 end "
-    "if FirstPersonCamera then FirstPersonCamera.RotateSmoothAmount=0 "
-    "FirstPersonCamera.RotateSpeed=36 end";
-constexpr const char* kCameraFeelPad =
-    "if SACCamera then SACCamera.RotateDamp=1.5 SACCamera.HeightDamp=1.5 SACCamera.RotateSpeed=120 end "
-    "if FirstPersonCamera then FirstPersonCamera.RotateSmoothAmount=1.5 "
-    "FirstPersonCamera.RotateSpeed=6 end";
-
 /// "SpellAssign:<slot>:<spell>[:<player>]" — put a will on one of the five d-pad slots, of
 /// player 1's hero or (player 2) the co-op partner's.
 ///
@@ -2046,15 +2025,6 @@ bool RunGuestLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
 /// and closed by the game's teardown, so it is re-read on every call. The game itself reaches it
 /// as `*(*(*(0x83496AB8)+0xC)+0x78)+4)` — the script system holding the same pointer
 /// (`World_LoadLevel_Execute` 0x8231c78c).
-/// The camera feel chunk last applied, or null before the host has chosen one.
-static const char* g_cameraFeelChunk = nullptr;
-
-void ReapplyCameraFeel(PPCContext& ctx, uint8_t* base) {
-  if (g_cameraFeelChunk != nullptr) {
-    RunGameLua(ctx, base, g_cameraFeelChunk);
-  }
-}
-
 bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
 
@@ -8724,14 +8694,6 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
       const bool luaRan = RunGuestLua(ctx, base, chunk);
       NoteDebugCallResult(0, luaRan ? 1u : 0u,
                           luaRan ? "ok" : "no live presentation to run Lua in");
-      ran = true;
-    } else if (name.rfind(kActionCameraFeelPrefix, 0) == 0) {
-      const bool pointer = name.substr(std::strlen(kActionCameraFeelPrefix)) == "pointer";
-      g_cameraFeelChunk = pointer ? kCameraFeelPointer : kCameraFeelPad;
-      const bool luaRan = RunGameLua(ctx, base, g_cameraFeelChunk);
-      REXLOG_INFO("Refii guest-tick pump: camera feel '{}' {}", pointer ? "pointer" : "pad",
-                  luaRan ? "set in the game VM" : "NOT set — no game VM yet, or the chunk failed");
-      NoteDebugCallResult(0, luaRan ? 1u : 0u, luaRan ? "ok" : "no game VM");
       ran = true;
     } else if (name.rfind(kActionGuiLuaPrefix, 0) == 0) {
       const std::string chunk = name.substr(std::strlen(kActionGuiLuaPrefix));

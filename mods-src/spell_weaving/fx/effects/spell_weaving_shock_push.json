@@ -14,313 +14,108 @@
       "system": 1,
       "group": 3,
       "vector": 1
-    },
-    {
-      "emitter": 2,
-      "system": 2,
-      "group": 3,
-      "vector": 2
-    },
-    {
-      "emitter": 3,
-      "group": 3,
-      "vector": 3
     }
   ],
   "emitters": [
     {
-      "entityId": "0x60ECB4D1",
-      "pos": [0,0,0.25
-      ],
-      "maxActive": 2,
-      "initialNum": 1,
-      "attachToRoot": true,
-      "fades": [0.8,1,48,64
-      ],
-      "params": {
-        "rate": [
-          [0,0.055555552
-          ]
-        ],
-        "speed": [
-          [0,0
-          ]
-        ]
-      },
-      "vectors": {}
-    },
-    {
-      "entityId": "0xD90403F8",
+      "entityId": "0x7098099C",
       "subType": 2,
-      "maxActive": 22,
-      "spawnRadius": 0.4,
+      "pos": [0,0,0.3
+      ],
+      "maxActive": -1,
+      "initialNum": 10,
+      "spawnRadius": 2,
       "emitOnSurface": true,
       "useShapeSpawnDir": true,
-      "attachToRoot": true,
+      "useLife": true,
+      "lifetimeFrames": 15,
       "fades": [0.8,1,48,64
       ],
       "shapeFlagA": true,
       "shapeFlagB": true,
-      "spin": 0.6,
       "params": {
         "rate": [
-          [0,1.3333334
+          [0,0
+          ]
+        ],
+        "rateSpread": [
+          [0,0
           ]
         ],
         "speed": [
-          [0,2.4
+          [0,1
           ]
         ],
         "speedSpread": [
-          [0,1.6
+          [0,1
           ]
         ],
-        "gravityScale": [
-          [0,-5.5102043
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
+          [0,0
           ]
         ]
       },
       "vectors": {
-        "vec1": [
-          [0,1,1,0.5
+        "vec0": [
+          [0,0,0,1
           ]
         ]
       }
     },
     {
-      "entityId": "0x5EECB1AB",
-      "pos": [0,0,0.1
-      ],
-      "maxActive": 2,
+      "entityId": "0x7098099D",
+      "maxActive": -1,
       "initialNum": 1,
-      "attachToRoot": true,
+      "useLife": true,
+      "lifetimeFrames": 15,
       "fades": [0.8,1,48,64
       ],
       "params": {
         "rate": [
-          [0,0.11111111
+          [0,0
+          ]
+        ],
+        "rateSpread": [
+          [0,0
           ]
         ],
         "speed": [
+          [0,0
+          ]
+        ],
+        "speedSpread": [
+          [0,0
+          ]
+        ],
+        "velX": [
+          [0,0
+          ]
+        ],
+        "velY": [
+          [0,0
+          ]
+        ],
+        "velZ": [
           [0,0
           ]
         ]
       },
       "vectors": {}
-    },
-    {
-      "typeId": 7,
-      "entityId": "0xDE74EC4A",
-      "pos": [0,0,0.8
-      ],
-      "params": {
-        "lightRange": [
-          [0,5
-          ]
-        ],
-        "lightIntensity": [
-          [0,0.6
-          ]
-        ],
-        "lightCutoff": [
-          [0,64
-          ]
-        ],
-        "lightFadeRamp": [
-          [0,50
-          ]
-        ],
-        "p19": [
-          [0,0
-          ]
-        ],
-        "p20": [
-          [0,0.87638754
-          ]
-        ],
-        "p21": [
-          [0,0.535441
-          ]
-        ]
-      },
-      "vectors": {
-        "lightColour": [
-          [0,0.9,0.9,1
-          ]
-        ]
-      }
     }
   ],
   "systems": [
     {
-      "id": "0x3ABAD4B3",
-      "lastStartFrames": 18,
-      "childCount": 6,
-      "visuals": [
-        {
-          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
-          "hasColor": true,
-          "color": [0.9,0.8,0.6
-          ],
-          "hasAlpha": true,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 1,
-          "dstBlend": 5,
-          "hasSize": true,
-          "sizeX": 0.44,
-          "sizeY": 0.44,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "colorSq": [0.80999994,0.64000005,0.36
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.083333336,
-          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
-          "hasColor": true,
-          "color": [0.8,0.711111,0.533333
-          ],
-          "hasAlpha": true,
-          "alpha": 0.888889,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 1,
-          "dstBlend": 5,
-          "hasSize": true,
-          "sizeX": 1.76,
-          "sizeY": 1.76,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 2,
-          "invSpan": 1,
-          "colorSq": [0.64000005,0.5056789,0.2844441
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.15,
-          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
-          "hasColor": true,
-          "color": [0.7,0.622222,0.466667
-          ],
-          "hasAlpha": true,
-          "alpha": 0.777778,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 1,
-          "dstBlend": 5,
-          "hasSize": true,
-          "sizeX": 2.306762,
-          "sizeY": 2.306762,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 4,
-          "invSpan": 1,
-          "colorSq": [0.48999998,0.3871602,0.21777809
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.28333333,
-          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
-          "hasColor": true,
-          "color": [0.5,0.444444,0.333333
-          ],
-          "hasAlpha": true,
-          "alpha": 0.555556,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 1,
-          "dstBlend": 5,
-          "hasSize": true,
-          "sizeX": 3.08,
-          "sizeY": 3.08,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 8,
-          "invSpan": 0.33333334,
-          "colorSq": [0.25,0.19753046,0.11111088
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.45,
-          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
-          "hasColor": true,
-          "color": [0.25,0.222222,0.166667
-          ],
-          "hasAlpha": true,
-          "alpha": 0.277778,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 1,
-          "dstBlend": 5,
-          "hasSize": true,
-          "sizeX": 3.805353,
-          "sizeY": 3.805353,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 13,
-          "invSpan": 0.25,
-          "colorSq": [0.0625,0.049382616,0.027777888
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.6166667,
-          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_cloud_01.tex",
-          "hasColor": true,
-          "color": [0,0,0
-          ],
-          "hasAlpha": true,
-          "alpha": 0,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 1,
-          "dstBlend": 5,
-          "hasSize": true,
-          "sizeX": 4.4,
-          "sizeY": 4.4,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 18,
-          "invSpan": 0.25,
-          "colorSq": [0,0,0
-          ],
-          "hasBlend": true
-        }
-      ]
-    },
-    {
-      "id": "0x8DB81F22",
+      "id": "0xC6B7F74F",
       "lastStartFrames": 15,
-      "childCount": 2,
+      "childCount": 3,
       "visuals": [
         {
           "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_long_01.tex",
@@ -328,7 +123,9 @@
           "color": [0.9,0.8,0.6
           ],
           "hasAlpha": true,
-          "alpha": 0.4,
+          "alpha": 0,
+          "hasRotation": true,
+          "rotInitialRandom": true,
           "alignQuat": [0,0,1,0
           ],
           "srcBlend": 1,
@@ -336,13 +133,59 @@
           "hasSize": true,
           "sizeX": 1,
           "sizeY": 1,
+          "hasFlicker": true,
+          "flickerBaseX": 0.5,
+          "flickerBaseY": 0.5,
+          "flickerSpreadX": 0.5,
+          "flickerSpreadY": 0.5,
           "hasSelfIllum": true,
+          "selfIllum": 0.2,
           "hasGlobalScale": true,
+          "globalScale": [1.5,0.7
+          ],
           "hasSpritePoints": true,
           "hasBlendOp": true,
           "hasTexture": true,
           "colorSq": [0.80999994,0.64000005,0.36
           ],
+          "softDepthContrast": 0.1,
+          "hasBlend": true
+        },
+        {
+          "delay": 0.11666667,
+          "texture": "art\\fx\\pfx_textures\\fxt_smokepuff_long_01.tex",
+          "hasColor": true,
+          "color": [0.9,0.8,0.6
+          ],
+          "hasAlpha": true,
+          "alpha": 0.2,
+          "hasRotation": true,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasSize": true,
+          "sizeX": 1,
+          "sizeY": 1,
+          "hasFlicker": true,
+          "flickerBaseX": 0.5,
+          "flickerBaseY": 0.5,
+          "flickerSpreadX": 0.5,
+          "flickerSpreadY": 0.5,
+          "hasSelfIllum": true,
+          "selfIllum": 0.2,
+          "hasGlobalScale": true,
+          "globalScale": [2,1
+          ],
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 3,
+          "invSpan": 0.5,
+          "colorSq": [0.80999994,0.64000005,0.36
+          ],
+          "softDepthContrast": 0.1,
           "hasBlend": true
         },
         {
@@ -353,6 +196,53 @@
           ],
           "hasAlpha": true,
           "alpha": 0,
+          "hasRotation": true,
+          "rotSpread": 0.087,
+          "rotInitialRandom": true,
+          "alignQuat": [0,0,1,0
+          ],
+          "srcBlend": 1,
+          "dstBlend": 5,
+          "hasSize": true,
+          "sizeX": 1,
+          "sizeY": 1,
+          "hasFlicker": true,
+          "flickerBaseX": 0.5,
+          "flickerBaseY": 0.5,
+          "flickerSpreadX": 0.5,
+          "flickerSpreadY": 0.5,
+          "hasSelfIllum": true,
+          "selfIllum": 0.2,
+          "hasGlobalScale": true,
+          "globalScale": [2,1
+          ],
+          "hasSpritePoints": true,
+          "hasBlendOp": true,
+          "hasTexture": true,
+          "delayFrames": 15,
+          "invSpan": 0.09090909,
+          "colorSq": [0.80999994,0.64000005,0.36
+          ],
+          "softDepthContrast": 0.1,
+          "hasBlend": true
+        }
+      ]
+    },
+    {
+      "id": "0xC6B7F74E",
+      "lastStartFrames": 9,
+      "childCount": 2,
+      "visuals": [
+        {
+          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_02.tex",
+          "displacement": true,
+          "hasColor": true,
+          "color": [0.3,0.3,0.3
+          ],
+          "hasAlpha": true,
+          "alpha": 0.4,
+          "hasRotation": true,
+          "rotInitialRandom": true,
           "alignQuat": [0,0,1,0
           ],
           "srcBlend": 1,
@@ -362,176 +252,43 @@
           "sizeY": 1,
           "hasSelfIllum": true,
           "hasGlobalScale": true,
+          "globalScale": [2,2
+          ],
           "hasSpritePoints": true,
           "hasBlendOp": true,
           "hasTexture": true,
-          "delayFrames": 15,
-          "invSpan": 0.071428575,
-          "colorSq": [0.80999994,0.64000005,0.36
+          "colorSq": [0.09,0.09,0.09
           ],
-          "hasBlend": true
-        }
-      ]
-    },
-    {
-      "id": "0x3CBAD7D9",
-      "lastStartFrames": 9,
-      "childCount": 6,
-      "visuals": [
-        {
-          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_01.tex",
-          "hasColor": true,
-          "color": [0.32,0.32,0.36
-          ],
-          "hasAlpha": true,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 4,
-          "dstBlend": 1,
-          "hasSize": true,
-          "sizeX": 0.2,
-          "sizeY": 0.2,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "colorSq": [0.1024,0.1024,0.1296
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.05,
-          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_01.tex",
-          "hasColor": true,
-          "color": [0.284444,0.284444,0.32
-          ],
-          "hasAlpha": true,
-          "alpha": 0.888889,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 4,
-          "dstBlend": 1,
-          "hasSize": true,
-          "sizeX": 0.8,
-          "sizeY": 0.8,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 1,
-          "invSpan": 1,
-          "colorSq": [0.08090839,0.08090839,0.1024
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.083333336,
-          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_01.tex",
-          "hasColor": true,
-          "color": [0.248889,0.248889,0.28
-          ],
-          "hasAlpha": true,
-          "alpha": 0.777778,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 4,
-          "dstBlend": 1,
-          "hasSize": true,
-          "sizeX": 1.048528,
-          "sizeY": 1.048528,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 2,
-          "invSpan": 1,
-          "colorSq": [0.061945733,0.061945733,0.0784
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.15,
-          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_01.tex",
-          "hasColor": true,
-          "color": [0.17777799,0.17777799,0.2
-          ],
-          "hasAlpha": true,
-          "alpha": 0.555556,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 4,
-          "dstBlend": 1,
-          "hasSize": true,
-          "sizeX": 1.4,
-          "sizeY": 1.4,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 4,
-          "invSpan": 1,
-          "colorSq": [0.031605013,0.031605013,0.040000003
-          ],
-          "hasBlend": true
-        },
-        {
-          "delay": 0.21666667,
-          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_01.tex",
-          "hasColor": true,
-          "color": [0.106667,0.106667,0.12
-          ],
-          "hasAlpha": true,
-          "alpha": 0.333333,
-          "hasAlignQuat": true,
-          "alignQuat": [0,0,1,0
-          ],
-          "srcBlend": 4,
-          "dstBlend": 1,
-          "hasSize": true,
-          "sizeX": 1.669694,
-          "sizeY": 1.669694,
-          "hasSelfIllum": true,
-          "hasGlobalScale": true,
-          "hasSpritePoints": true,
-          "hasBlendOp": true,
-          "hasTexture": true,
-          "delayFrames": 6,
-          "invSpan": 1,
-          "colorSq": [0.011377849,0.011377849,0.0144
-          ],
+          "softDepthContrast": 1,
           "hasBlend": true
         },
         {
           "delay": 0.31666666,
-          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_01.tex",
+          "texture": "art\\fx\\pfx_textures\\fxt_white_ring_02.tex",
+          "displacement": true,
           "hasColor": true,
           "color": [0,0,0
           ],
           "hasAlpha": true,
           "alpha": 0,
-          "hasAlignQuat": true,
+          "hasRotation": true,
+          "rotInitialRandom": true,
           "alignQuat": [0,0,1,0
           ],
-          "srcBlend": 4,
-          "dstBlend": 1,
+          "srcBlend": 1,
+          "dstBlend": 5,
           "hasSize": true,
-          "sizeX": 2,
-          "sizeY": 2,
+          "sizeX": 1,
+          "sizeY": 1,
           "hasSelfIllum": true,
           "hasGlobalScale": true,
+          "globalScale": [6,6
+          ],
           "hasSpritePoints": true,
           "hasBlendOp": true,
           "hasTexture": true,
           "delayFrames": 9,
-          "invSpan": 0.5,
+          "invSpan": 0.125,
           "colorSq": [0,0,0
           ],
           "hasBlend": true

@@ -136,6 +136,13 @@ uint32_t BinkMovieDestRect(uint8_t* base, float* out_x0, float* out_y0,
 // write cannot do this job, and that state file for why the queue is in refii_vfs and not
 // beside the pump hook that drains it.
 uint32_t PostGuestTickAction(const char* name);
+// src/vfs/src/core/mouse_look_state.cpp — the mouse's camera turn, posted here and taken by
+// the payload before each camera update (src/vfs/src/hooks/mouse_look.cpp).
+void MouseLookPost(float yaw_degrees, float pitch_degrees);
+void MouseLookSetDevice(bool mouse);
+uint32_t MouseLookState(uint32_t* out_tick, double* out_posted, double* out_taken,
+                        double* out_absorbed, float* out_factor, float* out_pivot,
+                        int32_t* out_mode, uint32_t* out_flicks);
 uint64_t NewGameTransitionResult(uint32_t* generation);
 uint32_t GuestTickPumpHeroStateApplied(uint32_t player);
 uint32_t DebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3,
@@ -2392,7 +2399,17 @@ extern "C" {
 ///     and retires RefiiHostGetCoopMannequin, which it replaces — and RefiiHostGetCoopScreen: each
 ///     page's focus and accept, and the save picker's state and card text, for the host-drawn
 ///     co-op screen.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 211; }
+/// 212 adds RefiiHostPostMouseLook / RefiiHostGetMouseLook — the mouse's camera turn, handed to the
+///     active camera's own ProcessGameAction once per camera update, and what the camera took of
+///     it, for the host's display-rate prediction.
+/// 213 changes RefiiHostGetMouseLook: what each camera update took of the posted turn, the yaw the
+///     camera turned for it in that update, and how the host draws a turn not yet taken (orbit
+///     about the stated focus, in place, or not at all) — the camera now applies the mouse's turn
+///     whole in the update it is handed, so the host draws it exactly instead of predicting it.
+/// 214 adds RefiiHostSetMouseLookDevice — whether the mouse is the player's look device: the camera
+///     it drives keeps its heading as the hero moves and a target lock takes it as flicks — and
+///     RefiiHostGetMouseLook states the flicks handed to a lock.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 214; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -5228,6 +5245,39 @@ REFII_HOST_ABI_EXPORT void RefiiHostUiElementCounters(uint64_t* out_recorded, ui
 /// dropping them.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostPostFrontEndAction(const char* name) {
     return refii::vfs::PostGuestTickAction(name);
+}
+
+/// Adds the mouse's camera turn since the last post: degrees at the profile's middle camera
+/// sensitivity, right and up positive. The payload hands all of it to the local player's active
+/// camera before that camera's next update (src/vfs/src/hooks/mouse_look.cpp).
+REFII_HOST_ABI_EXPORT void RefiiHostPostMouseLook(float yaw_degrees, float pitch_degrees) {
+    if (std::isfinite(yaw_degrees) && std::isfinite(pitch_degrees)) {
+        refii::vfs::MouseLookPost(yaw_degrees, pitch_degrees);
+    }
+}
+
+/// Whether the mouse is the player's look device (the host's device switch, stated every frame).
+/// While it is, the camera it drives keeps its heading as the hero moves, and a target lock takes
+/// the mouse as flicks between targets (src/vfs/src/hooks/mouse_look.cpp); a pad keeps the shipped
+/// camera.
+REFII_HOST_ABI_EXPORT void RefiiHostSetMouseLookDevice(int32_t mouse) {
+    refii::vfs::MouseLookSetDevice(mouse != 0);
+}
+
+/// The mouse's account as of the last camera update (src/vfs/src/core/mouse_look_state.cpp): the
+/// yaw posted and the yaw taken (cumulative, one origin, posted degrees), the yaw the camera turned
+/// for it (cumulative, the camera's degrees, rightward), the game tick of the last take, the
+/// camera's degrees per posted degree, and how a turn not yet taken is drawn — `mode` 0 not at
+/// all, 1 about the vertical through the focus `pivot` metres along the level line of sight, 2 in
+/// place. Returns the state's sequence — odd while an update is between taking and stating, so a
+/// read that straddles one can be told from a whole one. `out_flicks`: the target switches handed
+/// to a target lock by the mouse, a run total.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMouseLook(uint32_t* out_tick, double* out_posted,
+                                                      double* out_taken, double* out_absorbed,
+                                                      float* out_factor, float* out_pivot,
+                                                      int32_t* out_mode, uint32_t* out_flicks) {
+    return refii::vfs::MouseLookState(out_tick, out_posted, out_taken, out_absorbed, out_factor,
+                                      out_pivot, out_mode, out_flicks);
 }
 
 /// The front end's own storage criteria, so a host-drawn menu gates on what the guest gates on.

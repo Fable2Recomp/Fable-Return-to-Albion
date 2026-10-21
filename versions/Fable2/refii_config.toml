@@ -15062,6 +15062,9 @@
 0x8238CED0 = { name = "rex_NLivePresence_GiftAccepted" }
 0x823394B8 = { name = "rex_lhCoopText_RefusedByHost" }
 0x82339090 = { name = "rex_lhCoopText_RefusedByJoiner" }
+# The ranged aim cursor (r3 the aim, r4 its stick as two packed floats): the mouse's turn joins
+# the stick through the cursor's own gain (src/vfs/src/hooks/mouse_look.cpp).
+0x827B80B0 = { name = "rex_lhRangedAim_MoveCursor" }
 
 # Co-op heroes (src/hooks/src/coop_hero_hooks.cpp): each hook runs before its instruction and
 # skips one henchman test. Same offsets in both builds.

@@ -22,7 +22,6 @@ init and shutdown, and the targeted fireball's impact.
 | Fable 3 pacing | `native/weave.cpp` | By default only the charged slot casts. Fable 2's cascade, which fires slots 1, 2, 3 in turn up to the charge, is skipped slot by slot; `top_only = 0` restores it, pair included. |
 | The Hybrid tree | `ui/abilities.json`, `ui/templates.json`, `language/en-uk/text/book.babel.csv` | A fourth page on the abilities screen, **Hybrid**, holding the Spell Weaving ability: five levels, level N weaves casts up to power N. DECLARED and run by the engine (`docs/mod_api.md`, "Mod abilities"): priced like a spell (`costLike` 8, Fireball's experience table, or the one the setting `cost_like` names) and **paid half from Will, half from Skill** (`disciplines`), General filling each half's gap as Fable 2 fills one pool's. The page lights both orbs and shows their combined total. Y unlearns a level through the game's own confirm, refunding half the level's cost to General (`"refund": "half"`). The level is a saved player value (`spell_weaving.ability`) that goes home with the hero's own save (see below); the mod only reads it. |
 | The HUD glyph | `ui/hud.json`, `native/weave.cpp` | While a hero charges, the partner the charged slot would weave is drawn beside the charge meter: the native code states `spell_weaving.hud_partner` in that player's store from the charge level each frame, -1 when the slot has no partner in effect or nothing is charging, and the HUD picture piece shows the matching will icon from the list in `ui/hud.json` (`textures` chosen by `index`: `player:spell_weaving.hud_partner`). ONE piece serves both players: a piece that follows player one's charge meter and reads a `player:` value also follows player two's (`SpellCharging2`), reading player two's. |
-| Title help | `mod/frontend.lua`, `ui/templates.json` | A "Spell Weaving" row on the title's menu (a patch on `frontend-root`) whose front-end Lua puts up a menu box of topics — weaving, choosing partners, the ability — and answers the chosen one with a message box. |
 | Ability card, slot frame | `art/gui/abilitytarot/spell_weaving.tex.png`, `art/gui/hud/spell_weaving_slot.tex.png` | The still the abilities book shows for Spell Weaving, and the partner slot's empty frame on the selectors (`tools/spell_weaving_icons.py`, our own art). |
 | Woven effects | `native/woven.cpp` | When a hit from the base lands on a victim, a Targeted cast of the overlay is queued on that victim — the game's own spell factory, the hero as caster, the victim as target, placed on the victim, `shot_delay` later at the base's power. The partner spell then does what it always does: burns, shocks, shoves, turns, or sends blades. Its hits are scaled by `weave_damage`. The one place every hit arrives is hooked; the attacker, the victim, the serial, the level, the spell type and the damage are read from the hit. |
 
@@ -83,29 +82,28 @@ intensity and size; nothing else, and no table of casts is published.
 
 **What the looks are made of.** Fable 3's weaves are authored looks, not a second spell played
 over the first (read from Fable III's own `globals.gdb` and particle bank — see
-`/home/loreaxe/Fable 2/Fable 3/README.md` for the table and Lionhead's emitter numbers): Vortex + Fire is a fire tornado, Vortex + Shock has lightning climbing the funnel,
-Vortex + Force Push pulses shockwaves out, Vortex + Chaos has chaos running through it, and
-Vortex + Blades has the swords spinning inside the funnel. None of those exist as effects in the
-Fable 2 banks, so each pair's effect builds them from the bank's entities, following the piece
-kinds the looks were first drawn with (`Engine_FxRecipePieces` documents the mapping):
+`/home/loreaxe/Fable 2/Fable 3/README.md` for the table and Lionhead's emitter numbers). Each pair's
+effect is built the way Fable III builds that pair's look — the same kinds of bank entity, chained
+the same way, at the same rates, speeds, lives and sizes — drawn with Fable II's own textures
+(nothing of Fable III's is shipped):
 
-| look | bank form | where it differs from the first, Godot-drawn version |
+| pairs | Fable III's look | the build |
 |---|---|---|
-| `embers` (a climbing spiral column) | a disc emitter at the column's base radius shooting each particle out from its edge at the cone's widening speed (`shapeFlagA`/`shapeFlagB`, radius ±20% by `speedSpread` as the piece jittered it), lifted at the climb's steady speed (a reversed `gravityScale` against a halving `vec1.z`), for the piece's period at count ÷ period a second, with its colour and size keys | the same truncated cone, but each particle climbs it straight rather than turning round it: the bank's particles move by their spawn velocity, gravity, damping and attractors, none of which turns a particle about an axis |
-| `arcs` (lightning up the cone) | a bolt sprite of the piece's lightning texture struck at a random point of the band the old arcs crawled (a spline round the cone, `splineRandomGenerator`), at count × rate × 0.65 strikes a second, each standing one strike's 1 ÷ rate, as long as the old chord and as bright as the old mean flash | a strike is the texture's bolt facing the camera, not a ribbon kinked fresh between two points; its life is whole frames (1 ÷ rate to the nearest frame) |
-| `ring` (a shockwave) | a standard emitter, one flat aligned particle per period, with up to seven keys following the piece's square-root growth and its fade (colour and alpha × (1 − t)) | straight spans between the keys (at most 8% of the diameter off the curve on the shortest ring) |
-| `blades` (orbiting cutlasses) | one attractor holding every sword and its aura in orbit (persistent particles, the vertical frozen by `vec1.z` 0) at the piece's reach and turn rate, the cutlass at the piece's own scale, turning about the vertical with its orbit | the swords stand upright: a bank mesh particle only turns about one axis from the mesh's rest pose, so it cannot be laid along the orbit and tilted; each sword's height is moved up to 0.1 m so one attractor turns them all at one rate |
-| the glow | the bank's point light in the overlay's colour with its own flicker walk (`p19`–`p21`) set to the piece's flicker | a random walk with the old wave's speed and spread, not the old two sines |
+| Vortex + Fire, Shock, Force Push, Chaos | `fxspl_vortex_enflame_twister`, `_lightning_twister`, `_force_twister` (Chaos: the same build in violet) | a narrow column some six metres tall: wind sheets (`fxt_smokepuff_long_01`) shot up at 3–6.5 m/s and accelerating, off an emitter an orbital swings round a 0.3 m circle at 7.33 rad/s; small at birth, a 2 m sheet at 1.2 s, a wide faint one at 2 s; bright bits flung from a 0.1 m disc at its foot; a point light low in it. Fire adds flames at the foot; Shock a sky-high bolt (`fxt_lightning_vertical_cyan_01`) flickering down the column, a faint ring on the ground and a hot flash at the foot; Force Push is lit brown smoke with grey-blue puffs shot out and braked, the air bending over it and a pulse of edge smoke; Chaos winds twirls up the funnel |
+| Blades + Fire, Shock, Force Push, Chaos | `fxspl_swords_enflame_blades`, `_lightning_blades`, `_forcepush_blades` (Chaos: the fire build in violet) | a burn riding each sword, not round it: a spline along the blade in the sword's own frame (its +Y, from the guard 0.08 m out to 0.87 m by the tip — `npc_sword_damocles.mdl`, whose `.mdl.gmd` puts Weapon.Weapon.Hold at -0.083 and Weapon.Weapon.Top at 0.847), so the look lies on the blade and turns with it however the sword flies, with the emitters chained to it, sprites a fraction of a metre — flames over a blue spark and a flickering flare (Fire), white glow, electrical patches and curls (Shock), faint edge smoke, grit and the air bending (Force Push) |
+| Fireball + Shock, Force Push, Chaos | `fxspl_enflame_lightning_targetball`, `fxspl_enflame_push` (Chaos: the push build in violet) | the shot's own look, on the shot: Shock is a crackling core in a violet storm cloud with bolts flashing off it; Force Push is a fire core wrapped in flame tongues, flinging blobs and sparks, with smoke rolling off; each with a point light |
+| Shock + Force Push, Shock + Chaos, Force Push + Chaos | `fxspl_lightning_push` (the Chaos pairs: the same burst with chaos riding it) | one smoke burst blown out over a 2 m disc round the victim each play, with the air rippling outward |
+| Vortex + Blades | none: Fable III's twister for it is the vortex's plain dust, and the swords are the Blades casts on each held creature | Fable II's own Blades swords orbiting in the funnel on one attractor, each carrying the sword's own effects, under a point light |
 
-`SpellWeavingLookTests` pins each of the fifteen effects to the old piece's numbers through the
-bank's own per-step simulation.
+`SpellWeavingLookTests` pins each build (the orbital, the column's speed, lift and keys and the
+height they reach; the spline down the blade and the size of what rides it; the shot's emitters
+on the ball; the one burst a play) and that no texture is one of Fable III's own.
 
-Textures are the bank's own `art/fx/pfx_textures` (the fire tornado is `fxt_flames_double_03` and
-`fxt_sparkle_orange_01`, shock is `fxt_lightning_vertical_cyan_01` over `fxt_sparkle_white_01`,
-chaos is `fxt_silk_streams_01` with `fxt_blue_twirl_01` discs, push is `fxt_white_ring_01` and
-`fxt_ring_glow`, the blades carry `fxt_democles_aura`). Every pair follows the Fable III effect it
-has one of; chaos pairs have no Fable III original and keep the family's own build at the right
-scale. Under the classic look the vortex's look rides the vortex entity's own position, which can
+The side-by-side renders against Fable III's own effects come from the FX Lab scene
+(`Godot/src/tools/FxWeaveLab.cs`: `REFII_LAB_BANK` draws Fable III's bank, `REFII_LAB_SWORD_ORBIT`
+flies Fable II's Blades sword round a pivot, tilting and rolling, with the look played on it as
+`play_fx_on` plays one — in the sword's own frame — so a Blades look, ours or Fable III's, is seen
+staying on the blade as it turns). Under the classic look the vortex's look rides the vortex entity's own position, which can
 stand behind the travelling twister (an open item).
 
 **The partner is a position cast, as Fable III's is.** Read from Fable III's own classes: every

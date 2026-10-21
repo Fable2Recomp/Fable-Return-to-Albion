@@ -530,6 +530,11 @@ const char* LookName(int base, int overlay) {
   return name;
 }
 
+/// Whether a base's look is one burst per rider rather than a look that lasts: an instant base
+/// (a bolt, a shove) casts its partner once per victim, and its pair's look is Fable III's
+/// half-second burst (fxspl_lightning_push), so a repeat over the victim's hold would pulse.
+bool PlaysOnce(int base) { return base == kLightning || base == kForcePush; }
+
 /// What a weave's look rides this tick: entities (each its own play), or — with none, while the
 /// base is out — the point at the weave's origin (entity 0). Each sword, each victim of a bolt,
 /// shove or chaos within its hold, else the anchor (the vortex, the shot in flight), else the
@@ -599,6 +604,7 @@ void UpdateLooks(uint8_t* base) {
         continue;
       }
       refii_mod_fx_options options = refii_mod_fx_default_options();
+      options.loop = PlaysOnce(w.base) ? 0 : 1;
       if (riders[r] != 0) {
         w.look_id[free] = refii_mod_play_fx_on(look, riders[r], &options);
       } else {

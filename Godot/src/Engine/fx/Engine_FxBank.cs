@@ -497,7 +497,8 @@ public sealed class FxVisual
     /// (+24), spread (+28), random-angle flag (+32), axis (+36..+44), random-axis flag (+48) and
     /// scale (+60, +64), so the guest reads it from the dress table keyed by the SYSTEM's id
     /// (`sub_83220AC8`'s r8 is the system; system+4 its id) and composes it onto r6:r7 before the
-    /// visual is born (src/vfs/src/hooks/particle_motion.cpp). Absent on every shipped visual.</para>
+    /// visual is born (src/vfs/src/hooks/particle_motion.cpp). Absent on every shipped visual, which the guest births at
+    /// identity — and so does the modern draw: every mesh particle takes this composition.</para>
     /// </summary>
     public bool HasMeshAlign;
 

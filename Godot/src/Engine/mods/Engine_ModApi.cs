@@ -1063,7 +1063,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_line_of_sight(ctx, base, from, to)", "the game's physics raycast: true when nothing is between"),
 		new ModApiHelper("uint32_t refii_mod_spawn(ctx, base, definition, xyz)", "an entity created through the game's own CreateEntityFromIDAtPosition"),
 		new ModApiHelper("uint32_t refii_mod_play_fx(name, xyz, options) / refii_mod_play_fx_on(name, entity, options)",
-			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity; " +
+			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity in its own frame (it turns with the entity; offset along the entity's axes); " +
 			"options (refii_mod_fx_options, null for refii_mod_fx_default_options()): duration, scale, tint, intensity, loop, offset; returns the id. Any thread"),
 		new ModApiHelper("void refii_mod_stop_fx(id)", "stops a played effect by any surface's id (native, Lua or Godot)"),
 		new ModApiHelper("int32_t refii_mod_set_menu_rows(player, menu, rows)",
@@ -1127,7 +1127,7 @@ public static class ModApi
 		new ModApiHelper("Refii.spawn(definition, x, y, z)", "a new entity through the game's own CreateEntityFromIDAtPosition: its handle, or nil"),
 		new ModApiHelper("Refii.entity(handle) / Refii.handle(entity)", "the game's own Entity userdata for a handle (for the shipped scripts and natives), and back"),
 		new ModApiHelper("Refii.play_fx(name, x, y, z [, options]) / Refii.play_fx_on(e, name [, options])",
-			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity handle; " +
+			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity handle in its own frame (it turns with the entity; offset along the entity's axes); " +
 			"options { duration = s, scale = n, tint = {r, g, b}, intensity = n, loop = false, offset = {x, y, z} }; the id, or nil"),
 		new ModApiHelper("Refii.stop_fx(id)", "stops a played effect by any surface's id"),
 		new ModApiHelper("Refii.set_menu_rows(menu, rows [, p])", "states a menu list's rows for player p (nil: every player): strings or { name, label, command, ghosted } — what a menu or entry with \"source\": \"rows\" shows, at once if open; {} clears; true when posted"),
@@ -1180,7 +1180,7 @@ public static class ModApi
 		new ModApiHelper("query player_dog P / focus P / opinion E P / uid E", "dog · entity · love, fear, attractiveness, morality, respect · uid (\"0x…\"): Refii.player_dog / focus / opinion / uid"),
 		new ModApiHelper("query discovered_crime E P / perceived_renown E P · forgive_crimes E P", "discovered · renown: Refii.discovered_crime / perceived_renown for villager E and player P · the command forgives player P's crimes villager E knows of (Refii.forgive_crimes); show_to_player is Lua's — reach it with run_lua"),
 		new ModApiHelper("play_fx(name, x, y, z, options) / play_fx_on(name, handle, options)",
-			"an effect of the particle bank or a mod's fx/effects/ as a FableFx node at a world position (guest axes) or riding an entity handle; " +
+			"an effect of the particle bank or a mod's fx/effects/ as a FableFx node at a world position (guest axes) or riding an entity handle in its own frame (it turns with the entity; offset along the entity's axes); " +
 			"options { duration, scale, tint (Color or [r, g, b]), intensity, loop, offset (Vector3 or [x, y, z]) }; the id, 0 for an unknown effect"),
 		new ModApiHelper("stop_fx(id)", "stops a played effect by any surface's id; false when none plays under it"),
 	};

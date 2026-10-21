@@ -347,10 +347,6 @@ inline void GuestTickPumpRequestSaveCount() {
 bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk);
 bool RunNewGameTransition(PPCContext& ctx, uint8_t* base);
 
-/// Re-applies the camera feel the host last chose. The camera scripts run again whenever a
-/// CameraManager is built (a save load, a co-op join) and restore the shipped values.
-void ReapplyCameraFeel(PPCContext& ctx, uint8_t* base);
-
 /// Runs hard mods' registered tick callbacks. Defined in hooks/mod_api.cpp.
 void RunModTicks(PPCContext& ctx, uint8_t* base);
 

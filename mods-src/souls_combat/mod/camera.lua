@@ -43,8 +43,8 @@ end
 C.Generation = (C.Generation or 0) + 1
 
 -- The class fields every update reads through `self`. The orbit speed and damping are not among
--- them: the host sets RotateSpeed/RotateDamp/HeightDamp for the input device straight after this
--- chunk (ReapplyCameraFeel), and the player's camera sensitivity scales them.
+-- them: they stay the shipped ones for the stick, the player's camera sensitivity scales them, and
+-- the mouse's turn lands whole outside them (src/vfs/src/hooks/mouse_look.cpp).
 SACCamera.HeightAdjustSpeed = Setting("camera_pitch_speed", 0.09)
 SACCamera.HeightOffsetUpperBound = 1.2
 SACCamera.HeightOffsetLowerBound = 0.45

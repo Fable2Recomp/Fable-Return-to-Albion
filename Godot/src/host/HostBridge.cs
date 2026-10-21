@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 211;
+	public const int ExpectedAbiVersion = 214;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -5108,6 +5108,64 @@ public static class HostBridge
 	public static uint PostFrontEndAction(string name) =>
 		RefiiHostPostFrontEndAction(name);
 
+	/// <summary>
+	/// Adds the mouse's camera turn since the last post — degrees at the profile's middle camera
+	/// sensitivity, right and up positive. The guest hands all of it to the local player's active
+	/// camera, through that camera's own ProcessGameAction, and the camera turns it whole in its
+	/// next update.
+	/// </summary>
+	public static void PostMouseLook(float yawDegrees, float pitchDegrees)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return;
+		}
+
+		RefiiHostPostMouseLook(yawDegrees, pitchDegrees);
+	}
+
+	/// <summary>
+	/// States whether the mouse is the player's look device (the device switch). While it is, the
+	/// guest's camera it drives keeps its heading as the hero moves and a target lock takes the mouse
+	/// as flicks between targets; a pad keeps the shipped camera. Once per frame.
+	/// </summary>
+	public static void SetMouseLookDevice(bool mouse)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return;
+		}
+
+		RefiiHostSetMouseLookDevice(mouse ? 1 : 0);
+	}
+
+	/// <summary>The mouse's account as of the guest's last camera update; see <see cref="GetMouseLook"/>.</summary>
+	/// <param name="Sequence">Odd while an update is between taking and stating.</param>
+	/// <param name="Tick">The game tick (`game+0xFC`) of the last take.</param>
+	/// <param name="Posted">Yaw posted, cumulative, in posted degrees — the same origin as <paramref name="Taken"/>.</param>
+	/// <param name="Taken">Posted yaw the camera updates have taken, cumulative.</param>
+	/// <param name="Absorbed">Yaw the camera turned for it, cumulative, in the camera's degrees, rightward.</param>
+	/// <param name="Factor">The camera's degrees of turn per posted degree.</param>
+	/// <param name="PivotMetres">For <see cref="Refii.Core.Engine_MouseLook.Orbit"/>: the focus's distance along the level line of sight.</param>
+	/// <param name="Mode">How a turn not yet taken is drawn (<see cref="Refii.Core.Engine_MouseLook"/> modes).</param>
+	/// <param name="Flicks">Target switches the mouse handed to a target lock, run total.</param>
+	public readonly record struct MouseLookState(
+		uint Sequence, uint Tick, double Posted, double Taken, double Absorbed, float Factor,
+		float PivotMetres, int Mode, uint Flicks);
+
+	/// <summary>The mouse's account as of the guest's last camera update, or null without a guest.</summary>
+	public static MouseLookState? GetMouseLook()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		uint sequence = RefiiHostGetMouseLook(out uint tick, out double posted, out double taken,
+			out double absorbed, out float factor, out float pivot, out int mode, out uint flicks);
+		return new MouseLookState(sequence, tick, posted, taken, absorbed, factor, pivot, mode, flicks);
+	}
+
 	/// <summary>The guest's achievement writes newer than <paramref name="afterSequence"/>, oldest first.</summary>
 	public static AchievementUnlock[] GetAchievementUnlocks(ulong afterSequence, int max = 16)
 	{
@@ -8892,6 +8950,17 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetCameraPair(float[] outValues);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostPostMouseLook(float yawDegrees, float pitchDegrees);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetMouseLookDevice(int mouse);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetMouseLook(
+		out uint tick, out double posted, out double taken, out double absorbed, out float factor,
+		out float pivot, out int mode, out uint flicks);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetPlayerCamera(int player, float[] outValues);

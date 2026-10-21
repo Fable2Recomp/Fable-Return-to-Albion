@@ -112,9 +112,9 @@ public partial class UiStudioSettingsView : VBoxContainer
 	public override void _Ready()
 	{
 		AddThemeConstantOverride("separation", 8);
-		AddChild(ModStudioUiStyles.Note("Each number in settings.json gets a row on the mod's options page, under Options › Mods. " +
-			"settings.ui.json describes the rows — keyed by the setting's name without the \"<mod>.\" prefix. A setting it does not " +
-			"describe still gets a row: its name, and a range around its value."));
+		AddChild(ModStudioUiStyles.Note("settings.ui.json offers settings to the player as rows on the mod's options page, under " +
+			"Options › Mods — keyed by the setting's name without the \"<mod>.\" prefix. Only described settings are shown; " +
+			"the rest stay your tuning, and a mod with no settings.ui.json has no page."));
 		_keys = new ItemList { CustomMinimumSize = new Vector2(0, 140), AutoHeight = true };
 		_keys.ItemSelected += _ => ShowKey();
 		AddChild(_keys);
@@ -228,7 +228,7 @@ public partial class UiStudioSettingsView : VBoxContainer
 			.Any(k => k == key || k == _docs.Mod + "." + key);
 		_detail.Text = key is null ? "Select a setting." :
 			!inFile ? $"'{key}' has no value in settings.json — the page shows no row for it until it does." :
-			row is null ? $"'{key}' is not described: the page shows its name and a range around its value." :
+			row is null ? $"'{key}' is not described, so players do not see it — describe it to offer it on the page." :
 			$"'{key}' as the page shows it.";
 		FillOptions(row);
 	}

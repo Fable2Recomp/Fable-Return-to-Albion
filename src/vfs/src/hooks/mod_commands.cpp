@@ -52,7 +52,8 @@
 //   fx_play ID HASH X Y Z ENTITY OX OY OZ SCALE INTENSITY LOOP [R G B]
 //                        play_fx under the classic look (Engine_FxPlayer): the guest's own particle
 //                        instance of effect HASH (its bank key), at X Y Z or riding handle ENTITY
-//                        (0 for none) offset by OX OY OZ; SCALE and INTENSITY the instance's own
+//                        (0 for none) in its frame, offset by OX OY OZ along its axes and turned
+//                        with it (guest_fx below); SCALE and INTENSITY the instance's own
 //                        setters; LOOP 1 spawns it again each time it retires; R G B the tint, on
 //                        the instance's own material copy (particle_dress.cpp TintFxInstance)
 //   fx_stop ID           ends it: the guest's kill (a zero-frame fade) and our reference released
@@ -69,6 +70,7 @@
 // A command that does nothing (no such entity, no component) is silent; a query always replies,
 // with ok=false when it could not be answered.
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -421,6 +423,24 @@ void RaiseMenuRow(PPCContext& ctx, uint8_t* base, const std::vector<std::string>
 // END OF LIFE: `sub_83232048(inst, frames)` sets every element's +0xC0 = +0xC4 = frames; zero fails
 // the liveness test at once and the retire pass `sub_83234338` drops the instance, writing -1 back
 // to its +44 (0x832347c8). That word is how a one-shot is known to have run out.
+//
+// A PLAY ON AN ENTITY STANDS IN THE ENTITY'S FRAME, placed the way the guest places its own FX
+// entity's instance (sub_825F8900 TU1 / sub_824B8938 disc, identical sequences):
+//
+//   825f8ac0  lwz r4,0x7C(r30)          the entity's placement component
+//   825f8ad0  lwz r10,0x40(r11) / bctrl  its position (sret: buffer in r3, `this` in r4)
+//   825f8ae8  lwz r8,0x44(r9) / bctrl    its orientation, the same way; r3 back = the quaternion
+//   825f8b04  ld r5,0(r7) / ld r4,8(r7)  its two halves, re-stored and reloaded as r4 = bytes 0..7,
+//   825f8b30  ld r4,.. / ld r5,..        r5 = bytes 8..15
+//   825f8b2c  bl sub_832325A8           the position on the instance, then
+//   825f8b3c  bl sub_83231C40           the orientation: each emitter's sub_83228D78 stores r4:r5
+//                                       at emitter+0x10 and recomposes its matrix at +0x20 about
+//                                       the position already at +0x50
+//
+// The per-tick emitter writers (sub_8322E4D0, sub_83230880) rewrite only the matrix's row 3
+// (+0x50, `li r7,0x50 / stvx128` 0x8323091c), so the orientation stands until it is stated again.
+// The quaternion is (x, y, z, w) and its rows are the entity's local axes (sub_8220C8F0, the form
+// GameEntities.ToGodot draws the same entity with), so the offset is laid along them.
 namespace guest_fx {
 
 constexpr uint32_t kOperatorNew = 0x8221F258u;
@@ -432,6 +452,9 @@ constexpr uint32_t kInstanceCtor = 0x83233300u;
 constexpr uint32_t kManagerAdd = 0x83234D78u;
 constexpr uint32_t kWorldHold = 0x822B86C0u;
 constexpr uint32_t kSetPosition = 0x832325A8u;
+constexpr uint32_t kSetOrientation = 0x83231C40u;
+constexpr uint32_t kEntityPlacement = 0x7Cu;
+constexpr uint32_t kPlacementOrientationSlot = 0x44u;
 constexpr uint32_t kSetScale = 0x83232290u;
 constexpr uint32_t kSetIntensity = 0x832323E0u;
 constexpr uint32_t kFade = 0x83232048u;
@@ -578,6 +601,52 @@ void Place(const PPCContext& ctx, uint8_t* base, uint32_t instance, const float*
   Call(work, base, kSetPosition);
 }
 
+/// Where an instance stands: a point, and for a play on an entity that entity's orientation as
+/// its placement states it (four raw words, x y z w), when it states one that is a rotation.
+struct Stand {
+  float xyz[3] = {0.0f, 0.0f, 0.0f};
+  uint32_t quaternion[4] = {0u, 0u, 0u, 0u};
+  bool turned = false;
+};
+
+/// The entity's orientation through its placement component's slot 0x44, as sub_825F8900 asks
+/// for it (above). False when it has no placement or the answer is not a unit quaternion.
+bool Orientation(const PPCContext& ctx, uint8_t* base, uint32_t entity, uint32_t* words, float* q) {
+  using refii::mods::LoadU32;
+  const uint32_t placement = Plausible(entity) ? LoadU32(base, entity + kEntityPlacement) : 0u;
+  const uint32_t vtable = Plausible(placement) ? LoadU32(base, placement) : 0u;
+  if (!Plausible(vtable)) {
+    return false;
+  }
+  PPCContext work = refii::mods::Frame(ctx, 0x300u);
+  const uint32_t out = (work.r1.u32 + 0x100u) & ~0xFu;
+  work.r3.u32 = out;
+  work.r4.u32 = placement;
+  if (!refii::mods::CallGuest(work, base, LoadU32(base, vtable + kPlacementOrientationSlot))) {
+    return false;
+  }
+  const uint32_t at = Plausible(work.r3.u32) ? work.r3.u32 : out;
+  float length = 0.0f;
+  for (uint32_t i = 0; i < 4u; ++i) {
+    words[i] = LoadU32(base, at + 4u * i);
+    std::memcpy(&q[i], &words[i], sizeof(float));
+    length += q[i] * q[i];
+  }
+  return std::isfinite(length) && length > 0.98f && length < 1.02f;
+}
+
+void Place(const PPCContext& ctx, uint8_t* base, uint32_t instance, const Stand& at) {
+  Place(ctx, base, instance, at.xyz);
+  if (!at.turned) {
+    return;
+  }
+  PPCContext work = refii::mods::Frame(ctx, 0x300u);
+  work.r3.u32 = instance;
+  work.r4.u64 = (static_cast<uint64_t>(at.quaternion[0]) << 32) | at.quaternion[1];
+  work.r5.u64 = (static_cast<uint64_t>(at.quaternion[2]) << 32) | at.quaternion[3];
+  Call(work, base, kSetOrientation);
+}
+
 void Kill(const PPCContext& ctx, uint8_t* base, uint32_t instance) {
   PPCContext work = refii::mods::Frame(ctx, 0x300u);
   work.r3.u32 = instance;
@@ -585,9 +654,12 @@ void Kill(const PPCContext& ctx, uint8_t* base, uint32_t instance) {
   Call(work, base, kFade);
 }
 
-/// Where the effect stands this tick: its entity's position plus the offset, or its stated point.
-/// False when its entity is gone.
-bool Where(PPCContext& ctx, uint8_t* base, const Played& p, float* xyz) {
+/// Where the effect stands this tick: in its entity's frame (the entity's position, the offset
+/// along its axes, its orientation), or at its stated point. An entity whose placement states no
+/// rotation keeps the offset in world axes. False when its entity is gone.
+bool Where(PPCContext& ctx, uint8_t* base, const Played& p, Stand& at) {
+  at = Stand{};
+  float* xyz = at.xyz;
   if (p.entity == 0u) {
     xyz[0] = p.at[0];
     xyz[1] = p.at[1];
@@ -598,15 +670,31 @@ bool Where(PPCContext& ctx, uint8_t* base, const Played& p, float* xyz) {
   if (entity == 0u || refii_mod_entity_position(&ctx, base, entity, xyz) == 0) {
     return false;
   }
+  float q[4];
+  at.turned = Orientation(ctx, base, entity, at.quaternion, q);
+  if (!at.turned) {
+    for (int i = 0; i < 3; ++i) {
+      xyz[i] += p.offset[i];
+    }
+    return true;
+  }
+  // The rows of sub_8220C8F0's matrix (s = 2/|q|^2): the entity's local x, y and z.
+  const float x = q[0], y = q[1], z = q[2], w = q[3];
+  const float s = 2.0f / (x * x + y * y + z * z + w * w);
+  const float rows[3][3] = {
+      {1.0f - s * (y * y + z * z), s * (x * y + z * w), s * (x * z - y * w)},
+      {s * (x * y - z * w), 1.0f - s * (x * x + z * z), s * (y * z + x * w)},
+      {s * (x * z + y * w), s * (y * z - x * w), 1.0f - s * (x * x + y * y)},
+  };
   for (int i = 0; i < 3; ++i) {
-    xyz[i] += p.offset[i];
+    xyz[i] += p.offset[0] * rows[0][i] + p.offset[1] * rows[1][i] + p.offset[2] * rows[2][i];
   }
   return true;
 }
 
 /// Spawns `p` where it stands and states its options; false when nothing was spawned.
 bool Start(PPCContext& ctx, uint8_t* base, Played& p) {
-  float xyz[3];
+  Stand xyz;
   if (!Where(ctx, base, p, xyz)) {
     return false;
   }
@@ -678,7 +766,7 @@ void Pump(PPCContext& ctx, uint8_t* base) {
     const uint32_t instance = Instance(base, p.holder);
     const bool retired =
         instance == 0u || refii::mods::LoadU32(base, instance + kManagerSlot) == 0xFFFFFFFFu;
-    float xyz[3];
+    Stand xyz;
     const bool placed = Where(ctx, base, p, xyz);
     if (!placed) {
       done.push_back(id);
@@ -716,7 +804,7 @@ void PlaceRiding(PPCContext& ctx, uint8_t* base, uint32_t entity) {
     if (instance == 0u || refii::mods::LoadU32(base, instance + kManagerSlot) == 0xFFFFFFFFu) {
       continue;
     }
-    float xyz[3];
+    Stand xyz;
     if (Where(ctx, base, p, xyz)) {
       Place(ctx, base, instance, xyz);
     }

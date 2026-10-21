@@ -763,6 +763,13 @@ public static class Engine_UiGameTemplates
         }
       ]
     },
+    "mods-root": {
+      "highlight": "",
+      "title": "Active Mods",
+      "source": "mods",
+      "rowCommand": "",
+      "entries": []
+    },
     "achievements-root": {
       "highlight": "Achievements",
       "title": "",
@@ -800,7 +807,7 @@ public static class Engine_UiGameTemplates
             {
               "name": "Mods",
               "tag": "Active Mods",
-              "source": "mods",
+              "command": "Net:mods",
               "hostOnly": true
             }
           ]
@@ -2224,6 +2231,44 @@ public static class Engine_UiGameTemplates
       "name": "multiplayer",
       "ownsList": true,
       "provider": "multiplayer",
+      "scrollContent": "Foreground.Book.Pages.ExpressionsPage.Contents",
+      "scrollMask": "Mask",
+      "scrollBar": "Foreground.Book.Pages.ExpressionsPage.Scrollbar",
+      "presentation": "logbookscreen",
+      "pageRootUnit": "Pages",
+      "backdropUnit": "background_yellow",
+      "chrome": [
+        "Foreground"
+      ],
+      "panelSubtrees": [
+        "Foreground.Book.Pages.MoralityPage",
+        "Foreground.Book.Pages.ExpressionsPage",
+        "Foreground.Book.Pages.CompletedQuestsPage",
+        "Foreground.Book.Pages.RenownPage",
+        "Foreground.Book.Pages.AttractivenessPage",
+        "Foreground.Book.Pages.StatsPage",
+        "Foreground.Book.Pages.DogPage",
+        "Foreground.Book.Pages.HelpPage"
+      ],
+      "ownedElsewhere": [
+        "ExpandableMenu.Buttons",
+        "MenuHighlight"
+      ],
+      "wideLeft": [
+        "Foreground.ExpandableMenu"
+      ],
+      "wideRight": [
+        "Foreground.Book",
+        "Foreground.Mask"
+      ]
+    },
+    "1015": {
+      "name": "mods",
+      "ownsList": true,
+      "provider": "multiplayer",
+      "scrollContent": "Foreground.Book.Pages.ExpressionsPage.Contents",
+      "scrollMask": "Mask",
+      "scrollBar": "Foreground.Book.Pages.ExpressionsPage.Scrollbar",
       "presentation": "logbookscreen",
       "pageRootUnit": "Pages",
       "backdropUnit": "background_yellow",

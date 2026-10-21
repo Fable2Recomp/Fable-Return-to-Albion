@@ -165,19 +165,62 @@ public static class Engine_UiNetworkSource
 			return rows;
 		}
 
-		int position = 1;
+		Dictionary<string, ModMetadata> installed = Installed();
 		foreach (string mod in order.Enabled)
 		{
-			// The number IS the contract: later wins, and a player reordering mods is choosing
-			// which override survives.
-			rows.Add(Row($"mod:{mod}", $"{position}. {mod}", $"{CommandPrefix}mod:{mod}"));
-			++position;
+			// The mod's own title, in load order; a mod whose package is gone is ghosted.
+			bool present = installed.TryGetValue(mod, out ModMetadata? meta);
+			string title = present && meta!.Title.Length != 0 ? meta.Title : mod;
+			rows.Add(Row($"{ModRowPrefix}{mod}", title, $"{CommandPrefix}mod:{mod}", ghosted: !present));
 		}
-
 
 		Placeholder(rows, "mods", ModsRoot.Length == 0 ? "No mods folder found" : "No Mods");
 		return rows;
 	}
+
+	/// <summary>The row-name prefix of a mod row; the rest is the mod's folder name.</summary>
+	public const string ModRowPrefix = "mod:";
+
+	/// <summary>An installed mod's own statement of itself, or null when its package is gone.</summary>
+	public static ModMetadata? ModInfo(string mod) =>
+		Installed().TryGetValue(mod, out ModMetadata? meta) ? meta : null;
+
+	/// <summary>
+	/// The installed packages' metadata, read again only when the mods folder changes — the
+	/// list re-sources four times a second and each read opens every package.
+	/// </summary>
+	private static Dictionary<string, ModMetadata> Installed()
+	{
+		System.DateTime stamp;
+		try
+		{
+			stamp = System.IO.Directory.GetLastWriteTimeUtc(ModsRoot);
+		}
+		catch (System.Exception)
+		{
+			stamp = default;
+		}
+
+		if (_installed is null || _installedRoot != ModsRoot || _installedStamp != stamp)
+		{
+			_installed = new Dictionary<string, ModMetadata>(System.StringComparer.OrdinalIgnoreCase);
+			foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(ModsRoot))
+			{
+				_installed[install.Name] = install.Metadata;
+			}
+
+			_installedRoot = ModsRoot;
+			_installedStamp = stamp;
+		}
+
+		return _installed;
+	}
+
+	private static Dictionary<string, ModMetadata>? _installed;
+
+	private static string _installedRoot = string.Empty;
+
+	private static System.DateTime _installedStamp;
 
 	public static IReadOnlyList<Engine_UiMenuSources.Row> Friends(string argument) =>
 		Fresh("Friends", BuildFriends);
@@ -567,13 +610,27 @@ public static class Engine_UiNetworkSource
 			case "invite":
 				return "You have been invited to this game.\n\nA joins it.";
 
+			case "mod":
+				// THE AUTHOR'S OWN WORDS, from the package's mod.toml.
+				if (ModInfo(peer) is not { } meta)
+				{
+					return "This mod is enabled but its package is missing from the mods folder.";
+				}
+
+				string by = meta.Author.Length == 0 ? string.Empty : $" by {meta.Author}";
+				string version = meta.Version.Length == 0 ? string.Empty : $"Version {meta.Version}{by}.";
+				string credit = version.Length != 0 ? version : by.Length != 0 ? $"By {meta.Author}." : string.Empty;
+				return meta.Description.Length == 0
+					? credit
+					: credit.Length == 0 ? meta.Description : $"{meta.Description}\n\n{credit}";
+
 			case "none":
 				// THE PAGE AN EMPTY SECTION HAS: what fills it, written where the player is
 				// looking. Never a box — a box draws under the book and blocks it.
 				return peer switch
 				{
 					"mods" => "Mods are installed and ordered in the launcher's Mods panel.\n\n" +
-						"Anything enabled there is listed here, in load order — later wins.",
+						"Anything enabled there is listed here, in load order — the first wins a conflict.",
 					"friends" => NetBridge.Available
 						? "No friends yet.\n\nGive someone your friend code from the row below, " +
 							"and once they add you they appear here with what they are playing."

@@ -319,11 +319,10 @@ public partial class GameUi : Node
 			return;
 		}
 
-		// BY CONVENTION, from the data root: game data is `assets/game/data`, so the mods root
-		// is `assets/mods`. Derived rather than configured — §7's rule — and the same folder the
-		// launcher's modding panel writes.
-		Engine_UiNetworkSource.ModsRoot = Refii.Mods.ModWorkspace.GetDefaultModsRoot(
-			System.IO.Path.GetFullPath(System.IO.Path.Combine(dataRoot, "..", "..")));
+		// THE ONE MODS ROOT — the folder the launcher's panel writes and the mount reads. Walking up
+		// from the data root guessed its depth: the installed data root is `assets/game`, so two
+		// levels up was the app root and the list read a load order that does not exist.
+		Engine_UiNetworkSource.ModsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
 
 		// Layer 5: over the world, under the videos on layer 10. A movie covers the front
 		// end, which is what the boot sequence and every later cutscene want.
@@ -401,18 +400,20 @@ public partial class GameUi : Node
 		_books.Host = _presentation;
 		_infoPanel.Host = _presentation;
 		_spells.Host = _presentation;
-		_multiplayer.Host = _presentation;
-		_multiplayer.Books = _books;
-
 		// The screen names the row; this turns it into the same action the front-end fold uses,
 		// so there is one dispatch for the whole feature.
-		_multiplayer.Action = command =>
+		foreach (Engine_UiListBookScreen listBook in new[] { _multiplayer, _modsBook })
 		{
-			if (command.StartsWith(Engine_UiNetworkSource.CommandPrefix, System.StringComparison.Ordinal))
+			listBook.Host = _presentation;
+			listBook.Books = _books;
+			listBook.Action = command =>
 			{
-				DispatchNetwork(command[Engine_UiNetworkSource.CommandPrefix.Length..]);
-			}
-		};
+				if (command.StartsWith(Engine_UiNetworkSource.CommandPrefix, System.StringComparison.Ordinal))
+				{
+					DispatchNetwork(command[Engine_UiNetworkSource.CommandPrefix.Length..]);
+				}
+			};
+		}
 		RegisterCommands();
 		_showing = Screen;
 
@@ -2697,7 +2698,16 @@ public partial class GameUi : Node
 	private readonly Engine_UiBookSet _books = new();
 
 	/// <summary>The multiplayer book — friends, requests, invitations and games.</summary>
-	private readonly Engine_UiMultiplayerScreen _multiplayer = new();
+	private readonly Engine_UiListBookScreen _multiplayer =
+		new(Engine_UiMultiplayerPage.ScreenId, Engine_UiMultiplayerPage.MenuName, "MultiplayerMenu");
+
+	/// <summary>The Active Mods book — the enabled mods, each one's page its description.</summary>
+	private readonly Engine_UiListBookScreen _modsBook =
+		new(Engine_UiMultiplayerPage.ModsScreenId, Engine_UiMultiplayerPage.ModsMenuName, "ModsMenu");
+
+	/// <summary>The list book standing, if any; at most one is open at a time.</summary>
+	private Engine_UiListBookScreen? OpenListBook =>
+		_multiplayer.IsOpen ? _multiplayer : _modsBook.IsOpen ? _modsBook : null;
 
 	/// <summary>The rebuilt, Godot-authored HUD. There is no mirrored one.</summary>
 	private Engine_HudView? _hud;
@@ -5208,11 +5218,11 @@ public partial class GameUi : Node
 		// exists), and "the pause root is not standing" was closing the multiplayer book the
 		// frame the title's own Multiplayer row opened it — leaving the front-end list hidden
 		// and the screen blank. On the front end the book belongs to the front-end drive.
-		if (_multiplayer.IsOpen && HostBridge.IsInGame)
+		if (OpenListBook is { } standingBook && HostBridge.IsInGame)
 		{
 			if (!standing)
 			{
-				_multiplayer.Close();
+				standingBook.Close();
 			}
 			else
 			{
@@ -5226,13 +5236,14 @@ public partial class GameUi : Node
 						: 0f;
 
 				// Y REFRESHES the open page — MenuFlipPressed is Y, already plumbed.
-				if (_multiplayer.Drive(
-						GameInput.MenuDirection, GameInput.RightStickY,
-						GameInput.MenuAcceptPressed || PointerList(_multiplayer.View),
+				PointerPage(standingBook.Book);
+				if (standingBook.Drive(
+						GameInput.MenuDirection,
+						GameInput.MenuAcceptPressed || PointerList(standingBook.View),
 						GameInput.MenuBackPressed,
 						GameInput.MenuFlipPressed, delta, slab))
 				{
-					ReportMenuView(_multiplayer.View);
+					ReportMenuView(standingBook.View);
 				}
 
 				return true;
@@ -7046,10 +7057,10 @@ public partial class GameUi : Node
 		// the game is already up; a level test closed it again the frame after it opened, which
 		// is what made the tab look dead in a running co-op game.
 		bool inGame = HostBridge.IsInGame;
-		if (_multiplayer.IsOpen && inGame && !_multiplayerSawInGame)
+		if (OpenListBook is { } frontEndBook && inGame && !_multiplayerSawInGame)
 		{
-			GD.Print("[game-ui] the game came up — closing the multiplayer screen");
-			_multiplayer.Close();
+			GD.Print("[game-ui] the game came up — closing the front end's list book");
+			frontEndBook.Close();
 		}
 
 		_multiplayerSawInGame = inGame;
@@ -7493,19 +7504,20 @@ public partial class GameUi : Node
 		// load fan above — it is tested BEFORE the menu's own visibility. Opening it takes the
 		// rows off screen, so a gate requiring a visible menu first would hand it no input at
 		// all and leave it standing with nothing able to close it.
-		if (_multiplayer.IsOpen)
+		if (OpenListBook is { } listBook)
 		{
-			if (_multiplayer.Drive(
-					GameInput.MenuDirection, GameInput.RightStickY,
-					GameInput.MenuAcceptPressed || PointerList(_multiplayer.View),
+			PointerPage(listBook.Book);
+			if (listBook.Drive(
+					GameInput.MenuDirection,
+					GameInput.MenuAcceptPressed || PointerList(listBook.View),
 					GameInput.MenuBackPressed,
 					GameInput.MenuFlipPressed, delta, 0f))
 			{
-				ReportMenuView(_multiplayer.View);
+				ReportMenuView(listBook.View);
 			}
 
 			// B on its left list closes the screen; the rows come back with it.
-			if (!_multiplayer.IsOpen)
+			if (!listBook.IsOpen)
 			{
 				_menuView.Visible = true;
 			}
@@ -8198,11 +8210,27 @@ public partial class GameUi : Node
 				// (Engine_UiNetworkSource.Detail for `none:`), so the press is a no-op.
 				break;
 
+			case "mods":
+				// THE ACTIVE MODS BOOK: the enabled mods on the left page, the highlighted one's
+				// description on the right.
+				if (_modsBook.Open())
+				{
+					if (_menuView is not null)
+					{
+						_menuView.Visible = false;
+					}
+				}
+				else
+				{
+					GD.PushWarning("[game-ui] Active Mods book not ready — art still loading");
+				}
+
+				break;
+
 			case "mod":
-				// READ-ONLY here. The load order is the launcher's to write; showing it in the
-				// game and editing it from two places would be two sources of truth.
-				Engine_UiNetworkSource.Say(
-					$"'{argument}' is active.\n\nMods are turned on and ordered in the launcher.");
+				// READ-ONLY, answered on the page: the load order is the launcher's to write, and
+				// editing it from two places would be two sources of truth.
+				Engine_UiNetworkSource.Say("Mods are turned on and ordered in the launcher.");
 				break;
 
 			default:

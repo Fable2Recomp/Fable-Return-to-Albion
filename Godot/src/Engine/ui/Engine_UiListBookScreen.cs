@@ -3,8 +3,9 @@ using Godot;
 namespace Refii.Ui;
 
 /// <summary>
-/// The multiplayer book: the list of friends, requests, invitations and games on the left, the
-/// highlighted row's detail on the page, and A performing that row's action.
+/// A host list book: a list on the left, the highlighted row's detail on the page, and A
+/// performing that row's action. The multiplayer book (friends, requests, invitations, games) and
+/// the Active Mods book are two of these over their own lists.
 /// </summary>
 /// <remarks>
 /// The same shape as <see cref="Engine_UiHostScreen"/> — a host-only screen id, the
@@ -12,7 +13,7 @@ namespace Refii.Ui;
 /// achievement is a fact and this screen's rows are COMMANDS, so A dispatches through
 /// <see cref="Action"/> rather than being swallowed.
 /// </remarks>
-public sealed class Engine_UiMultiplayerScreen
+public sealed class Engine_UiListBookScreen(uint screenId, string menuName, string viewName)
 {
 	/// <summary>The `.bgf` the screen borrows — the logbook's own furniture.</summary>
 	public const string Presentation = "logbookscreen";
@@ -37,6 +38,9 @@ public sealed class Engine_UiMultiplayerScreen
 
 	/// <summary>The view, for the shared list report.</summary>
 	public Engine_FrontEndMenuView? View => _view;
+
+	/// <summary>The book, whose right-hand page the mouse scrolls.</summary>
+	public Engine_UiOwnedBook? Book => _book;
 
 	/// <summary>
 	/// Opens the screen. False when its art is not read yet — a pattern book is built from the
@@ -77,14 +81,13 @@ public sealed class Engine_UiMultiplayerScreen
 	/// A whole <see cref="Engine_UiPresentationDepth.Step"/> in front of it, because this is not
 	/// a book standing over a mirror but a surface standing over the entire screen behind it.
 	/// </param>
-	/// <param name="scroll">
-	/// The right stick, up positive — the page's own cursor. Separate from
-	/// <paramref name="direction"/> so the left list and the open page can be moved without
-	/// leaving one another: the stick picks an item, the d-pad still walks the subjects.
-	/// </param>
+	/// <remarks>
+	/// THE RIGHT STICK IS THE PAGE'S. The highlighted row's page is the book's scroll region
+	/// (screen template <c>ScrollContent</c>), which the owned book scrolls with the right stick
+	/// and the wheel as the logbook's pages do; the list is walked with the d-pad and left stick.
+	/// </remarks>
 	public bool Drive(
-		int direction, float scroll, bool accept, bool back, bool refresh, double delta,
-		float baseZ)
+		int direction, bool accept, bool back, bool refresh, double delta, float baseZ)
 	{
 		if (!IsOpen || !Build())
 		{
@@ -108,7 +111,7 @@ public sealed class Engine_UiMultiplayerScreen
 		_view!.Position = new Vector3(
 			_anchor.X, _anchor.Y,
 			slab +
-			(Engine_UiTemplates.Screen(Engine_UiMultiplayerPage.ScreenId)?.ListLift ??
+			(Engine_UiTemplates.Screen(screenId)?.ListLift ??
 				Engine_UiPresentationDepth.BookOffset));
 		_view.Visible = true;
 
@@ -134,11 +137,7 @@ public sealed class Engine_UiMultiplayerScreen
 			_view.Refresh();
 		}
 
-		// EITHER STICK MOVES THE LIST. `MenuDirection` is down-positive and the right stick is
-		// up-positive, so the sign is flipped to match; the dead zone is the same 0.5 the menu's
-		// own latch uses.
-		int scrolled = scroll > 0.5f ? -1 : scroll < -0.5f ? 1 : 0;
-		_view.Navigate(scrolled != 0 ? scrolled : direction, delta);
+		_view.Navigate(direction, delta);
 
 		if (back)
 		{
@@ -174,13 +173,13 @@ public sealed class Engine_UiMultiplayerScreen
 	{
 		Engine_UiExpandableMenu.Item? row = _menu?.Highlighted;
 		_book!.HostValues = Engine_UiDetailPages.Values(
-			Engine_UiMultiplayerPage.ScreenId, row,
+			screenId, row,
 			default, default, EmptyQuests, default, default, default, default,
 			_book.Book?.Strings);
 		_book.HostTextures =
-			Engine_UiDetailPages.Textures(Engine_UiMultiplayerPage.ScreenId, row);
+			Engine_UiDetailPages.Textures(screenId, row);
 		_book.HostActive =
-			Engine_UiDetailPages.Active(Engine_UiMultiplayerPage.ScreenId, row);
+			Engine_UiDetailPages.Active(screenId, row);
 
 		// NO SLIDES — see Engine_UiMultiplayerPage. Naming even one builds the whole array with
 		// every other ordinal at 0, which resolves each owner to `logbookscreen`'s master
@@ -210,7 +209,7 @@ public sealed class Engine_UiMultiplayerScreen
 			return false;
 		}
 
-		_book ??= Books.Ensure(Engine_UiMultiplayerPage.ScreenId, Presentation);
+		_book ??= Books.Ensure(screenId, Presentation);
 		if (_book is null)
 		{
 			return false;
@@ -257,7 +256,7 @@ public sealed class Engine_UiMultiplayerScreen
 			cursorPose = authored;
 		}
 
-		_template = Engine_UiTemplates.Menu(Engine_UiMultiplayerPage.MenuName);
+		_template = Engine_UiTemplates.Menu(menuName);
 		_menu = _template?.Build();
 		if (_menu is null)
 		{
@@ -266,8 +265,8 @@ public sealed class Engine_UiMultiplayerScreen
 
 		_view = new Engine_FrontEndMenuView
 		{
-			Name = "MultiplayerMenu",
-			ScreenId = Engine_UiMultiplayerPage.ScreenId,
+			Name = viewName,
+			ScreenId = screenId,
 			Theme = art,
 			RowTemplate = Engine_FrontEndMenuView.RowTemplateIn(pool),
 			CursorTemplate = art.Art("MenuHighlight"),
@@ -282,7 +281,7 @@ public sealed class Engine_UiMultiplayerScreen
 		_view.Bind(_menu);
 		_view.ClipRect = Engine_UiButtonPool.ListClip(Host.DocumentFor(Presentation));
 
-		GD.Print($"[multiplayer] the screen is up — {_menu.Visible.Count} row(s), " +
+		GD.Print($"[list-book] {viewName} is up — {_menu.Visible.Count} row(s), " +
 			$"row art {(_view.RowTemplate is null ? "NOT sourced (text-only rows)" : "cloned from the pattern book")}, " +
 			$"anchor ({_anchor.X}, {_anchor.Y}, z {_anchor.Z})");
 		return true;
