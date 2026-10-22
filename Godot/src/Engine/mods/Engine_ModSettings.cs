@@ -99,11 +99,67 @@ public static class ModSettings
 	public static bool TryGet(string key, out float value) =>
 		_overrides.TryGetValue(key, out value) || All.TryGetValue(key, out value);
 
-	/// <summary>Sets a mod setting in the running game and keeps it over the file's value for the session.</summary>
+	/// <summary>
+	/// Every key in force with its value — what the push writes: the files' set with the live
+	/// overrides over it, then the overrides no file states. The Lua preamble composes its
+	/// <c>RefiiSettings</c> from this, so a chunk run after a live change starts from that change.
+	/// </summary>
+	public static IEnumerable<(string Key, float Value)> InForce
+	{
+		get
+		{
+			foreach ((string key, float value) in All)
+			{
+				yield return (key, _overrides.TryGetValue(key, out float live) ? live : value);
+			}
+
+			foreach ((string key, float value) in _overrides)
+			{
+				if (!All.ContainsKey(key))
+				{
+					yield return (key, value);
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// Sets a mod setting in the running game and keeps it over the file's value for the session.
+	/// THE ONE SEAM A LIVE CHANGE CROSSES — the Options › Mods page (<see cref="Persist"/>), a Godot
+	/// script's <c>set_setting</c>, the debug channel's <c>mod-setting</c>: the native table takes
+	/// it at once, and the running Lua's <c>RefiiSettings</c> takes it at the next guest tick
+	/// (<see cref="LuaAssignment"/>, a <c>run_lua</c> command; on the title the front end's state
+	/// instead), so <c>Refii.setting</c> answers the new value without a reload.
+	/// </summary>
 	public static void Set(string key, float value)
 	{
 		_overrides[key] = value;
 		HostBridge.SetModSetting(key, value);
+		string assignment = LuaAssignment(key, value);
+		if (assignment.Length != 0)
+		{
+			HostBridge.PostModCommand("run_lua " + assignment);
+			if (!HostBridge.IsInGame)
+			{
+				HostBridge.PostModCommand(ModLua.FrontendCommand + assignment);
+			}
+		}
+	}
+
+	/// <summary>
+	/// The Lua statement that puts a setting into a running VM's <c>RefiiSettings</c>, one line (the
+	/// command line holds it), or empty for a key no Lua string can carry.
+	/// </summary>
+	public static string LuaAssignment(string key, float value)
+	{
+		if (string.IsNullOrEmpty(key) || key.IndexOfAny(new[] { '\n', '\r', '\0' }) >= 0)
+		{
+			return string.Empty;
+		}
+
+		string escaped = key.Replace("\\", "\\\\").Replace("\"", "\\\"");
+		string number = float.IsFinite(value) ? value.ToString("R", CultureInfo.InvariantCulture) : "0";
+		return "if RefiiSettings then RefiiSettings[\"" + escaped + "\"] = " + number + " end";
 	}
 
 	/// <summary>Pushes the settings once per guest; call every frame with whether the guest is up.</summary>

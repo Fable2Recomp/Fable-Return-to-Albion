@@ -34,6 +34,7 @@ public partial class UiStudioView : MarginContainer
 	private UiStudioMenusView _menus = null!;
 	private UiStudioModalsView _modals = null!;
 	private UiStudioSettingsView _settings = null!;
+	private UiStudioPresentationsView _presentations = null!;
 	private Label _modLabel = null!;
 	private Label _status = null!;
 	private VBoxContainer _issues = null!;
@@ -45,7 +46,8 @@ public partial class UiStudioView : MarginContainer
 	private const int MenusTab = 1;
 	private const int ModalsTab = 2;
 	private const int SettingsTab = 3;
-	private static readonly string[] TabNames = { "🎯 HUD", "📜 Menus", "💬 Modals", "⚙ Settings" };
+	private const int PresentationsTab = 4;
+	private static readonly string[] TabNames = { "🎯 HUD", "📜 Menus", "💬 Modals", "⚙ Settings", "🧩 Presentations" };
 
 	public override void _Ready()
 	{
@@ -85,7 +87,8 @@ public partial class UiStudioView : MarginContainer
 		_menus = new UiStudioMenusView(_docs, _preview) { Name = "Menus" };
 		_modals = new UiStudioModalsView(_docs) { Name = "Modals" };
 		_settings = new UiStudioSettingsView(_docs, _preview) { Name = "Settings" };
-		foreach (Control page in new Control[] { _hud, _menus, _modals, _settings })
+		_presentations = new UiStudioPresentationsView(_docs, _preview) { Name = "Presentations" };
+		foreach (Control page in new Control[] { _hud, _menus, _modals, _settings, _presentations })
 		{
 			page.SizeFlagsVertical = SizeFlags.ExpandFill;
 			_tabs.AddChild(page);
@@ -109,6 +112,7 @@ public partial class UiStudioView : MarginContainer
 		_menus.Edited += Touched;
 		_modals.Edited += Touched;
 		_settings.Edited += Touched;
+		_presentations.Edited += Touched;
 
 		var issuesBody = new VBoxContainer();
 		_issues = new VBoxContainer();
@@ -172,7 +176,7 @@ public partial class UiStudioView : MarginContainer
 		}
 	}
 
-	/// <summary>Opens a page: 0 HUD, 1 Menus, 2 Modals, 3 Settings.</summary>
+	/// <summary>Opens a page: 0 HUD, 1 Menus, 2 Modals, 3 Settings, 4 Presentations.</summary>
 	public void ShowPage(int page)
 	{
 		_tabs.CurrentTab = Math.Clamp(page, 0, TabNames.Length - 1);
@@ -187,12 +191,14 @@ public partial class UiStudioView : MarginContainer
 		_menus.Reload();
 		_modals.Reload();
 		_settings.Reload();
+		_presentations.Reload();
 		Marks();
 		_issuesTimer.Start();
 	}
 
 	private bool Dirty() =>
-		_docs.HudChanged || _docs.TemplatesChanged || _docs.SettingsChanged || _menus.Editor.ChangedRecords().Count != 0;
+		_docs.HudChanged || _docs.TemplatesChanged || _docs.SettingsChanged || _menus.Editor.ChangedRecords().Count != 0 ||
+		_presentations.Dirty;
 
 	private void ActivateTab(int tab, bool force)
 	{
@@ -217,6 +223,9 @@ public partial class UiStudioView : MarginContainer
 			case ModalsTab:
 				_preview.SetStatus("A box is the game's own; who answers it has no picture. The records are listed on the left.");
 				break;
+			case PresentationsTab:
+				_presentations.Activate();
+				break;
 		}
 
 		ShowIssues();
@@ -234,6 +243,9 @@ public partial class UiStudioView : MarginContainer
 				break;
 			case SettingsTab:
 				_settings.Deactivate();
+				break;
+			case PresentationsTab:
+				_presentations.Deactivate();
 				break;
 		}
 
@@ -255,6 +267,7 @@ public partial class UiStudioView : MarginContainer
 			_menus.Editor.ChangedRecords().Count != 0 || _docs.ScreensChanged,
 			_docs.ModalsChanged,
 			_docs.SettingsChanged,
+			_presentations.Dirty,
 		};
 		for (int i = 0; i < TabNames.Length; i++)
 		{
@@ -338,7 +351,8 @@ public partial class UiStudioView : MarginContainer
 		bool templates = _docs.TemplatesChanged;
 		bool settings = _docs.SettingsChanged;
 		int menus = _menus.Editor.ChangedRecords().Count;
-		if (!hud && !templates && !settings && menus == 0)
+		bool presentation = _presentations.Dirty;
+		if (!hud && !templates && !settings && menus == 0 && !presentation)
 		{
 			SetStatus("Nothing to save.");
 			return;
@@ -367,6 +381,11 @@ public partial class UiStudioView : MarginContainer
 			{
 				error = _menus.Editor.Save();
 			}
+
+			if (error.Length == 0 && presentation)
+			{
+				error = _presentations.Export(report: false);
+			}
 		}
 		finally
 		{
@@ -386,6 +405,7 @@ public partial class UiStudioView : MarginContainer
 			(hud ? " — ui/hud.json" : string.Empty) +
 			(templates || menus != 0 ? " — ui/templates.json" : string.Empty) +
 			(settings ? " — settings.ui.json" : string.Empty) +
+			(presentation ? " — the presentation's .bgf" : string.Empty) +
 			". The game reads them when it builds its UI.");
 	}
 

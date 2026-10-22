@@ -98,6 +98,27 @@ extern "C" int32_t refii_mod_run_game_lua(PPCContext* ctx, uint8_t* base, const 
 /// 0 when no presentation has a script engine. Guest tick thread only.
 extern "C" int32_t refii_mod_run_frontend_lua(PPCContext* ctx, uint8_t* base, const char* chunk);
 
+/// THE FRONT END'S OWN STATE (the title and its screens; no game, no hero, no save loaded):
+/// - the signed-in pad: `dword_83496AF8` is the user index the front end's New Game guard and
+///   every save enumeration read (`lwz r3, dword_83496AF8` 0x826e0064; `sub_82443308`'s
+///   `XamContentCreateEnumerator(dword_83496AF8, ..)`), `dword_83496A70` the mask of signed-in
+///   pads tested as `(1 << index) & mask` (0x826e0068 and `sub_826E2220` 0x826e2240). -1 when no
+///   pad is signed in.
+extern "C" int32_t refii_mod_signed_in_user(uint8_t* base);
+
+/// - the saves the signed-in profile has, on every device: rex_lhSaveManager_CountSavedGamesAllDevices
+///   (`sub_82443308`, disc `sub_824E69E8`, same 40 instructions — enumerates content type 1 for
+///   `dword_83496AF8` through XamContentCreateEnumerator, at most 150, and answers the count; r3
+///   the save manager `*(*(0x83496AC0+12)+40)`, as the root screen's populate passes it at
+///   0x826e226c). 0 with no signed-in pad; -1 when the front end is not up. A content
+///   enumeration: read it once a screen, not every tick.
+extern "C" int32_t refii_mod_save_count(PPCContext* ctx, uint8_t* base);
+
+/// - the current Gameface presentation's name (the .bgf's: "FrontendStartup", "FrontendMainMenu",
+///   ...): rex_lhGuiPresentationSet_GetCurrent over GUI+56, then `CPresentation+4`, an AKString
+///   (`char*` at +0; `sub_82BBA588` names it from its path). "" with none.
+extern "C" int32_t refii_mod_frontend_screen(PPCContext* ctx, uint8_t* base, char* out, uint32_t size);
+
 /// The integer value of the Lua expression `expr` in [lo, hi], by a binary search of assertions —
 /// a handful of chunk runs, so read it when it can have changed (see refii_mod_lua_generation),
 /// not every tick. False when the expression is not a number in that range.
@@ -532,6 +553,172 @@ extern "C" uint32_t refii_mod_switch_target(PPCContext* ctx, uint8_t* base, int3
 extern "C" uint32_t refii_mod_locked_target(PPCContext* ctx, uint8_t* base, int32_t player);
 
 // ---------------------------------------------------------------------------------------------
+// Movement speed: the player component's own override, what the scripts' Player.* calls state.
+// Both players are principals.
+// ---------------------------------------------------------------------------------------------
+
+/// Overrides `player`'s (1 or 2) movement speed by `factor`: the pair the game's own scripts set
+/// through `Player.SetOverriddenMovementSpeedMultiplier` (`sub_8283ECC8` = `stfs f1,0xCC(r3); blr`,
+/// disc 0x827EDB38) and `Player.SetPlayerMovementSpeedOverridden` (`sub_823DFF78` = `stb
+/// r4,0x1E(r3); blr`, disc 0x823BE7D0) on the hero's player component (33). The locomotion update
+/// (`sub_822B1F78`, disc `0x822B1DB0`) multiplies the whole velocity vector by the float while the
+/// byte is set: `lbz r11,0x1E(r30); cmplwi; beq` 0x822b2c2c, `lvlx v0,r30,0xCC` 0x822b2c3c,
+/// `vspltw v13,v0,0; vmulfp128 v127,v127,v13` 0x822b2c64..68 (r30 = component 33, resolved at
+/// 0x822b2b38) — so 0 holds the hero in place (turning runs earlier in the same update; rolls
+/// and blocks are actions that do not pass through this velocity); with the byte clear the
+/// update takes 1, or 0.8 while bit 8 of +0x7C is set. The game never clears the byte itself
+/// (every other `stb ..,0x1E` / `stfs ..,0xCC` site surveyed is another class or the constructor,
+/// which states 0): a script that set it keeps it until it clears it, so take the override only
+/// while refii_mod_speed_multiplier says none holds, and give it back. `factor` finite and >= 0.
+/// True when the hero has a player component.
+extern "C" int32_t refii_mod_set_speed_multiplier(uint8_t* base, int32_t player, float factor);
+
+/// Clears the override (the byte written 0, as `Player.SetPlayerMovementSpeedOverridden(false)`
+/// does; the float keeps its value, which nothing reads while the byte is clear). True when the
+/// hero has a player component.
+extern "C" int32_t refii_mod_clear_speed_multiplier(uint8_t* base, int32_t player);
+
+/// Whether an override holds on `player`'s hero (the byte), and the multiplier stored (into
+/// `out`, when not null — `Player.GetOverriddenMovementSpeedMultiplier`, `sub_823E3258` = `lfs
+/// f1,0xCC(r3)`, disc 0x823C1C20). 0 with `out` untouched when the hero has no player component.
+extern "C" int32_t refii_mod_speed_multiplier(uint8_t* base, int32_t player, float* out);
+
+// ---------------------------------------------------------------------------------------------
+// Actions: what the action manager runs, and the interrupt permission every animation grants.
+// ---------------------------------------------------------------------------------------------
+
+/// The action `entity`'s action manager (component 49, CECActionManagerSimple) is running: the
+/// manager's +0x10, written by its own start (`sub_822A4888`: `addi r31,r30,0x10` 0x822a48a4,
+/// `stw r28,0(r31)` 0x822a496c after the old one's Stop `sub_82709FD8` 0x822a4900; disc
+/// `0x822A4648`). 0 when none, and 0 once that action was stopped (its +0x4B, `li r11,1; stb
+/// r11,0x4B(r30)` 0x82709ff0..f8 in Stop; the base constructor zeroes +0x48..+0x53). The action's
+/// address is reused by the next action anyone plays: compare it only while this still answers it.
+/// Any creature, both heroes.
+extern "C" uint32_t refii_mod_current_action(uint8_t* base, uint32_t entity);
+
+/// The action's own clock: its vtable slot 7 (`sub_8226D418`, disc 0x8226D3D8 — the float at +8 of
+/// the action's key-1 sub-object, found by a binary search of the sorted vector at action+0x18;
+/// 0 with none), into `out`. The mods have used it as the elapsed animation seconds and the
+/// commitment's release timed by it holds in runs; WHAT WRITES that float is unproven (its
+/// sub-object is built by the subclass's OnStart, slot 5). True when the slot answered. Guest tick
+/// thread only.
+extern "C" int32_t refii_mod_action_elapsed(PPCContext* ctx, uint8_t* base, uint32_t action, float* out);
+
+/// Whether `action` has granted the next action of the same priority its way in: the pair the
+/// interrupt rule `sub_822CB150` (disc 0x822CB140) reads — `lbz r11,0x4C(r10); cmplwi; bne` then
+/// `lbz r11,0x4D(r10)` 0x822cb1b4..c4: a same-priority action passes only while +0x4C is clear
+/// and +0x4D is set (or +0x38 bit 0, the action's own flag); a higher priority always passes;
+/// priority 13 never; the manager's start asks it with the new action's +0x34 (0x82195cf0).
+/// Strikes, rolls and the plain blocks play at priority 6; the preemptive block and the parry at 8
+/// need no permission. 1 while granted.
+extern "C" int32_t refii_mod_action_interruptible(uint8_t* base, uint32_t action);
+
+/// Grants it: exactly what every action's animation-event handler does for "ALLOW_ACTION_INTERRUPT"
+/// (`sub_82709938`, disc 0x826DF198: `lbz r11,0x4C(r26); cmplwi; bne; stb r25,0x4D(r26)`
+/// 0x82709cac..cb8, r25 = 1) and nothing else — so a mod that cancels that AnimEvent (a committed
+/// swing) grants it later with this. 1 when written (0 when +0x4C holds it back or the action
+/// is 0).
+extern "C" int32_t refii_mod_allow_action_interrupt(uint8_t* base, uint32_t action);
+
+/// WHAT AN ACTION IS. An action's definition is not a GDB record and is not kept on the object:
+/// it is a Lua TABLE of the game's scripts, handed to `Action.SetCurrentAction(entity, def)`
+/// (the glue `sub_8218AAA0`: `lua_touserdata(L, 1)` the entity, `sub_82302080(.., L, 2)` a
+/// registry ref of stack slot 2 = {lua_State, ref}) — or built by a parent action from its own
+/// fields ("RiseAction", "IntoAction", "Actions"[i]). Every action is made from its definition in
+/// ONE place, the factory `sub_8218A8E0` (disc `sub_8218A738`, same 63 instructions): it reads
+/// the table's "Type" (`lis r11,aType_0@ha; addi r4,..; li r5,0; bl sub_8229DDF0` 0x8218a8f0..904
+/// — `lua_rawgeti(L, LUA_REGISTRYINDEX, ref); lua_getfield(L, -1, "Type")`, an integer), finds
+/// that type's factory in the map at `unk_8349E30C` (`bl sub_822C92B0` 0x8218a920; 89 types
+/// registered by `sub_829CF2A8`) and calls it (`bctrl` 0x8218a990), storing the new action and
+/// its refcount at r3[0] / r3[1] (0x8218a9a0..a4). The type is `EScriptableAction` of the game's
+/// own `miscellaneous/scriptableactionenum.lua` (0 PLAY_ANIMATION, 1 MELEE_STRIKE, 2 STRAFE, ...,
+/// 88 DIG), and that enum's names are what refii_mod_action_name answers. The seam
+/// rex_CActionFactory_CreateFromDefinition records {action, type} for the last 64 actions made;
+/// an address reused by a later action takes the later type.
+/// -1 for an action the factory never saw (or 0).
+extern "C" int32_t refii_mod_action_type(uint8_t* base, uint32_t action);
+
+/// The EScriptableAction name of refii_mod_action_type (e.g. "MELEE_STRIKE", "STRAFE",
+/// "PLAY_ANIMATION") into `out`; 0 with "" for an unknown action.
+extern "C" int32_t refii_mod_action_name(uint8_t* base, uint32_t action, char* out, uint32_t size);
+
+/// The name of a scriptable action type 0..88 (the enum above), or "" out of range.
+extern "C" const char* refii_mod_scriptable_action_name(int32_t type);
+
+/// Whether `entity` is in the world AND, for a creature, not yet died: refii_mod_entity_alive's
+/// bit and the creature component's (20) byte +0x18 — 1 from its constructor (`li r29,1; stb
+/// r29,0x18(r31)` 0x823a3160..8c, disc 0x82431718..44), 0 once rex_CECCreature_Die ran (`stb
+/// r27,0x18(r24)` 0x823a4ec8, disc 0x82433430, behind `lbz r11,0x18(r24); beq` — Die runs once).
+/// The target selector's own test (`sub_82844950` 0x82844c44 / disc 0x8277b5a4): a candidate
+/// with the byte clear is rejected. An entity without a creature component counts as living while
+/// in the world. False for 0.
+extern "C" int32_t refii_mod_entity_living(uint8_t* base, uint32_t entity);
+
+/// The spell `player`'s (1 or 2) hero holds in `slot` 0..4, 0 Lightning .. 7 Dead Rising, or -1 for
+/// an empty slot or no spell manager: the manager's (56) slot table, int8 [2][5] at +0x80 — the
+/// game's own writer stores every assignment into BOTH rows (`sub_82541F30`, disc 0x8242C970:
+/// `stbx r10,r3,r31` 0x82541f58 and `stb r10,5(r11)` 0x82541f60, r3 = manager+0x80) and the launch
+/// reads row = its targeted flag (`lbz r9,0x80(r10)` 0x8253f0e8 in `sub_8253F010`, disc
+/// 0x82429b28), so row 0 is the slot's spell. The constructor fills both rows with -1.
+extern "C" int32_t refii_mod_spell_in_slot(uint8_t* base, int32_t player, int32_t slot);
+
+// ---------------------------------------------------------------------------------------------
+// A live cast's parts: what a spell put in the world, by the serial its hits and events carry.
+// ---------------------------------------------------------------------------------------------
+
+/// What refii_mod_spell_parts answers. Every object is read live from the guest and validated:
+/// a field is 0 once its thing is gone.
+struct refii_mod_cast_parts {
+  /// The spell object, while it still carries `serial` at +0x44 (the object's address is reused
+  /// by the next cast of the same class); 0 after. A vortex's spell object finishes at once.
+  uint32_t spell;
+  /// 0 Lightning .. 7 Dead Rising, -1 unknown; `targeted` the factory's flag; `level` 0..4.
+  int32_t type;
+  int32_t targeted;
+  int32_t level;
+  uint32_t caster;
+  int32_t caster_player;
+  /// The live CECVortex component (type 4), 0 once its Shutdown ran.
+  uint32_t vortex;
+  /// The entity the cast put in the world that the look rides: the vortex entity, or the
+  /// fireball's shot entity while it is in the world (the projectile keeps falling after the
+  /// blast). 0 for the rest.
+  uint32_t anchor;
+  /// The Blades' live swords (type 3), `sword_count` of them, in the controller's order.
+  uint32_t swords[8];
+  int32_t sword_count;
+  /// Where the cast stands now: the twister's point (component +0x140), a fireball's impact
+  /// point once an impact was reported (the FireballImpact seam's v1), else its shot's position
+  /// while the shot is in the world, else the caster's position. `has_origin` false when none
+  /// of those could be read.
+  float origin[3];
+  int32_t has_origin;
+  /// A fireball detonated (its +0x48 went 1 inside an Impact).
+  int32_t exploded;
+};
+
+/// The parts of the cast whose serial is `serial` (a SpellCreated / VortexStarted /
+/// FireballImpact event's, a hit's spell_serial, refii_mod_spell_serial): the record the spell
+/// factory seam keeps of the last 32 casts, the live vortex table the VortexStarted / VortexEnded
+/// seams keep, the impacts the FireballImpact seam recorded, and the guest's own objects:
+///   - the Blades' swords: the controller the cast's Start built inside the factory — a targeted
+///     cast's class (vtable 0x820C4F30) keeps it at spell+0xE4 (`sub_825A2188` `stw r3,0xE4(r31)`
+///     0x825a21d4, disc 0x82552fbc), an area cast's (0x820C4F4C) at spell+0xC8 (`sub_825A2720`
+///     0x825a28e0, disc 0x825536c8); its +0 is the sword count, at most 8 (`sub_825A2E68`
+///     0x825a2ea8..b4), its +116+4i the sword records (`sub_825A37E0` `stwx r3,r30,r31` with r30 =
+///     4*(29+i), 0x825a3820..2c); a record's +4 is a weak-reference body whose +0 is the sword
+///     entity (`sub_82214898`: `stw r31,0(r3)` 0x82214910 body->entity, `stw r9,4(r31)` 0x82214924
+///     entity+4 = body). A sword is taken only while its entity still points back at the body and
+///     is in the world — the body is freed once nothing holds it.
+///   - the fireball's shot: the weak reference at spell+0x10/+0x14, `sub_82740568` = *(*(spell+
+///     0x14)) (0x82740574..90, disc 0x8294a304..20), 0 once the body's entity is cleared.
+///   - the vortex: the component the seams recorded, while its +0x18 still carries the serial and
+///     its +4 the entity.
+/// Returns 1 when the cast is known (the factory saw it and the serial is non-zero), 0 otherwise
+/// with `out` zeroed. Guest tick thread only (the origin reads placements).
+extern "C" int32_t refii_mod_spell_parts(PPCContext* ctx, uint8_t* base, uint32_t serial, refii_mod_cast_parts* out);
+
+// ---------------------------------------------------------------------------------------------
 // Status effects: the spells' own per-victim installers, without the spell.
 // ---------------------------------------------------------------------------------------------
 
@@ -941,14 +1128,24 @@ typedef struct refii_mod_light_options {
   const char* at;
   /// 0..1: a waver of the energy (a torch, a brazier); 0 is steady.
   float flicker;
+  /// A SPOT LIGHT when `cone` is above 0: the light shines along `direction` — in the entity's own
+  /// axes (or the helper's when `at` names one), the world's for a world point; any length — over a
+  /// cone `cone` degrees from its axis to its edge (the half-angle; at most 89). Zero: an omni light.
+  float direction[3];
+  float cone;
+  /// The cone's edge falloff, a spot's only: 1 (and 0) is linear from the edge to the axis — the
+  /// title's own spot form, 1/(1-cos) — higher tightens the beam. Modern only; the classic list
+  /// has the one form.
+  float attenuation;
 } refii_mod_light_options;
 
-/// Places an omni light of colour `rgb` (0..1 each) at `energy` (1 is a placed lamp's) reaching
+/// Places a light of colour `rgb` (0..1 each) at `energy` (1 is a placed lamp's) reaching
 /// `range` metres (0: 6), on `entity` (an address; its handle crosses) in the entity's own frame
 /// — riding the body and gone with it — or, with entity 0, at the world point `xyz` (the guest's
-/// axes). Under the modern look it is a Godot light like the FX feed's own; under the classic look
-/// it joins the guest's light list for every draw its sphere meets (Engine_ModLights). Returns the
-/// id refii_mod_light_remove takes (0 for no colour). Any thread; it appears on Godot's next frame.
+/// axes). An omni light, or a spot when the options state a cone. Under the modern look it is a
+/// Godot light like the FX feed's own; under the classic look it joins the guest's light list for
+/// every draw its sphere meets (Engine_ModLights). Returns the id refii_mod_light_remove takes
+/// (0 for no colour). Any thread; it appears on Godot's next frame.
 extern "C" uint32_t refii_mod_light(uint32_t entity, const float* xyz, const float* rgb, float energy, float range,
                                     const refii_mod_light_options* options);
 

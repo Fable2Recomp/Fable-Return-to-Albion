@@ -11645,6 +11645,9 @@
 0x82770A00 = { name = "rex_HollowMan_SetCrumbled", size = 0x374 }
 0x8236E630 = { name = "rex_lhGuiManager_SetScreen", size = 0x534 }
 0x821ECA30 = { name = "rex_lhGameFlow_IsGuiActive", size = 0xA4 }
+0x8218A8E0 = { name = "rex_CActionFactory_CreateFromDefinition", size = 0xFC }
+0x823D4D00 = { name = "rex_lhGameFlowGuiMode_Apply", size = 0x450 }
+0x823D5150 = { name = "rex_lhGameFlowGuiMode_Remove", size = 0x228 }
 0x82370050 = { name = "rex_lhGuiManager_EnterGuiModeQuiet", size = 0x128 }
 0x823A4290 = { name = "rex_CECCreature_FinishDeath" }
 0x821E4250 = { name = "rex_GDBManager_FindEntryByHash", size = 0x64 }

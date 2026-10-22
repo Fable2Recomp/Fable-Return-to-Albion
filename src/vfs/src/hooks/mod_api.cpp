@@ -545,13 +545,18 @@ uint32_t PostLight(uint32_t handle, const float* xyz, const float* rgb, float en
     at[m++] = (*c == '\'' || *c == ',' || static_cast<unsigned char>(*c) < 0x20) ? '_' : *c;
   }
   at[m] = 0;
+  // The spot fields (dx dy dz cone atten) ride every request; cone 0 is the omni light.
+  const float direction[3] = {options != nullptr ? options->direction[0] : 0.0f,
+                              options != nullptr ? options->direction[1] : 0.0f,
+                              options != nullptr ? options->direction[2] : 0.0f};
   char fields[512];
   const int written = std::snprintf(
       fields, sizeof(fields),
       "op='light',id=%u,entity=%u,x=%.9g,y=%.9g,z=%.9g,r=%.9g,g=%.9g,b=%.9g,energy=%.9g,range=%.9g,ox=%.9g,oy=%.9g,oz=%.9g,"
-      "at='%s',flicker=%.9g",
+      "at='%s',flicker=%.9g,dx=%.9g,dy=%.9g,dz=%.9g,cone=%.9g,atten=%.9g",
       id, handle, origin[0], origin[1], origin[2], rgb[0], rgb[1], rgb[2], energy, range, offset[0], offset[1], offset[2], at,
-      options != nullptr ? options->flicker : 0.0f);
+      options != nullptr ? options->flicker : 0.0f, direction[0], direction[1], direction[2],
+      options != nullptr ? options->cone : 0.0f, options != nullptr ? options->attenuation : 0.0f);
   if (written <= 0 || static_cast<size_t>(written) >= sizeof(fields)) {
     return 0;
   }
@@ -1436,6 +1441,128 @@ extern "C" uint32_t refii_mod_locked_target(PPCContext* ctx, uint8_t* base, int3
   const bool locked = refii::mods::LoadU8(base, parts.targeting + kForceLockByte) != 0 ||
                       HasPlayerMode(*ctx, base, parts.player, kTargetLockMode);
   return locked ? TargetOf(*ctx, base, parts.targeting) : 0u;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Movement speed, actions, the living test, the slot table (refii_mod.h quotes each instruction).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// comp33 +0x1E: `Player.SetPlayerMovementSpeedOverridden` (`stb r4,0x1E(r3)` 0x823dff78).
+constexpr uint32_t kSpeedOverridden = 0x1E;
+/// comp33 +0xCC: `Player.SetOverriddenMovementSpeedMultiplier` (`stfs f1,0xCC(r3)` 0x8283ecc8).
+constexpr uint32_t kSpeedMultiplier = 0xCC;
+constexpr uint32_t kActionManager = 49;
+/// manager +0x10: the current action (`stw r28,0(r31)` 0x822a496c, r31 = manager+0x10).
+constexpr uint32_t kManagerCurrentAction = 0x10;
+/// action +0x4B stopped (`stb r11,0x4B(r30)` 0x82709ff8), +0x4C holds the permission back, +0x4D
+/// the permission (`sub_822CB150` 0x822cb1b4..c4; the handler's `stb r25,0x4D(r26)` 0x82709cb8).
+constexpr uint32_t kActionStopped = 0x4B;
+constexpr uint32_t kActionNoInterrupt = 0x4C;
+constexpr uint32_t kActionInterruptAllowed = 0x4D;
+/// The action's clock, vtable slot 7 (`sub_8226D418`).
+constexpr uint32_t kActionElapsedSlot = 7;
+constexpr uint32_t kCreature = 20;
+/// comp20 +0x18: 1 from the constructor (0x823a318c), 0 once rex_CECCreature_Die ran (0x823a4ec8).
+constexpr uint32_t kCreatureNotDied = 0x18;
+/// comp56 +0x80: the int8 [2][5] slot table (`sub_82541F30` writes both rows, the launch reads
+/// row = its flag, `lbz r9,0x80(r10)` 0x8253f0e8).
+constexpr uint32_t kSlotTable = 0x80;
+constexpr int32_t kSpellSlots = 5;
+
+uint32_t PlayerComponentOf(uint8_t* base, int32_t player) {
+  const uint32_t hero = refii_mod_player_hero(base, player);
+  return hero != 0 ? refii_mod_component(base, hero, kPlayerComponent) : 0u;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_set_speed_multiplier(uint8_t* base, int32_t player, float factor) {
+  const uint32_t component = PlayerComponentOf(base, player);
+  if (component == 0 || !std::isfinite(factor) || factor < 0.0f) {
+    return 0;
+  }
+  // The scripts' order: the multiplier first, then the byte the locomotion tests.
+  refii::mods::StoreF32(base, component + kSpeedMultiplier, factor);
+  refii::mods::StoreU8(base, component + kSpeedOverridden, 1u);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_clear_speed_multiplier(uint8_t* base, int32_t player) {
+  const uint32_t component = PlayerComponentOf(base, player);
+  if (component == 0) {
+    return 0;
+  }
+  refii::mods::StoreU8(base, component + kSpeedOverridden, 0u);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_speed_multiplier(uint8_t* base, int32_t player, float* out) {
+  const uint32_t component = PlayerComponentOf(base, player);
+  if (component == 0) {
+    return 0;
+  }
+  if (out != nullptr) {
+    *out = refii::mods::LoadF32(base, component + kSpeedMultiplier);
+  }
+  return refii::mods::LoadU8(base, component + kSpeedOverridden) != 0 ? 1 : 0;
+}
+
+extern "C" uint32_t refii_mod_current_action(uint8_t* base, uint32_t entity) {
+  const uint32_t manager = refii_mod_component(base, entity, kActionManager);
+  const uint32_t action = manager != 0 ? refii::mods::LoadU32(base, manager + kManagerCurrentAction) : 0u;
+  if (!Plausible(action) || refii::mods::LoadU8(base, action + kActionStopped) != 0) {
+    return 0;
+  }
+  return action;
+}
+
+extern "C" int32_t refii_mod_action_elapsed(PPCContext* ctx, uint8_t* base, uint32_t action, float* out) {
+  if (ctx == nullptr || !Plausible(action) || !Plausible(refii::mods::LoadU32(base, action))) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  if (!refii::mods::CallVirtual(work, base, action, kActionElapsedSlot)) {
+    return 0;
+  }
+  if (out != nullptr) {
+    *out = static_cast<float>(work.f1.f64);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_action_interruptible(uint8_t* base, uint32_t action) {
+  return Plausible(action) && refii::mods::LoadU8(base, action + kActionNoInterrupt) == 0 &&
+                 refii::mods::LoadU8(base, action + kActionInterruptAllowed) != 0
+             ? 1
+             : 0;
+}
+
+extern "C" int32_t refii_mod_allow_action_interrupt(uint8_t* base, uint32_t action) {
+  if (!Plausible(action) || refii::mods::LoadU8(base, action + kActionNoInterrupt) != 0) {
+    return 0;
+  }
+  refii::mods::StoreU8(base, action + kActionInterruptAllowed, 1u);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_entity_living(uint8_t* base, uint32_t entity) {
+  if (!refii_mod_entity_alive(base, entity)) {
+    return 0;
+  }
+  const uint32_t creature = refii_mod_component(base, entity, kCreature);
+  return creature == 0 || refii::mods::LoadU8(base, creature + kCreatureNotDied) != 0 ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_spell_in_slot(uint8_t* base, int32_t player, int32_t slot) {
+  const uint32_t hero = refii_mod_player_hero(base, player);
+  const uint32_t manager = hero != 0 ? refii_mod_component(base, hero, kSpellManagerComponent) : 0u;
+  if (manager == 0 || slot < 0 || slot >= kSpellSlots) {
+    return -1;
+  }
+  const int32_t type = static_cast<int8_t>(refii::mods::LoadU8(base, manager + kSlotTable + static_cast<uint32_t>(slot)));
+  return type >= 0 && type <= 7 ? type : -1;
 }
 
 // ---------------------------------------------------------------------------------------------

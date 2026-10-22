@@ -50,10 +50,16 @@ public readonly struct BgfAttribute
 	public readonly BgfValueType Type;
 	public readonly uint RawValue;
 
-	public BgfAttribute(uint id, BgfValueType type, uint rawValue)
+	/// <summary>Bits 30-31 of the packed descriptor word, above the type field. Kept so the writer re-emits the word as read.</summary>
+	public readonly byte PackedHigh;
+
+	public BgfAttribute(uint id, BgfValueType type, uint rawValue, byte packedHigh = 0)
 	{
-		Id = id; Type = type; RawValue = rawValue;
+		Id = id; Type = type; RawValue = rawValue; PackedHigh = packedHigh;
 	}
+
+	/// <summary>The descriptor word as the file stores it: 27-bit id, 3-bit type, 2 high bits.</summary>
+	public uint Packed => (Id & Engine_GameHash.AttributeIdMask) | ((uint)Type << 27) | ((uint)(PackedHigh & 3) << 30);
 
 	public int AsInt() => unchecked((int)RawValue);
 	public bool AsBool() => RawValue != 0;
@@ -84,6 +90,9 @@ public sealed class BgfElement
 
 	/// <summary>Only present on component records.</summary>
 	public uint ComponentExtra;
+
+	/// <summary>The byte between the flags and <see cref="ComponentExtra"/> on a component record; the engine discards it, the writer re-emits it.</summary>
+	public byte ComponentPad;
 
 	public BgfAttribute[] Attributes = Array.Empty<BgfAttribute>();
 
@@ -137,7 +146,13 @@ public readonly struct BgfSlideEntry
 
 	/// <summary>Animation indices this entry switches on; -1 for a pair whose flag is clear.</summary>
 	public int[]? ActivatedAnimations { get; init; }
+
+	/// <summary>The <c>(flag, animationIndex)</c> u16 pairs as the file stores them; <see cref="ActivatedAnimations"/> is derived from these.</summary>
+	public BgfAnimationEvent[] AnimationEvents { get; init; }
 }
+
+/// <summary>One animation-event pair of a slide entry: a non-zero flag switches the track on.</summary>
+public readonly record struct BgfAnimationEvent(ushort Flag, ushort Index);
 
 /// <summary>
 /// One keyframe: the value at <paramref name="Time"/>, plus the cubic-Bezier control pair of
@@ -321,6 +336,9 @@ public sealed class BgfContract
 {
 	public int ElementOrdinal;
 	public string[] Names = Array.Empty<string>();
+
+	/// <summary>The string-table indices the file stores; <see cref="Names"/> is their resolution.</summary>
+	public int[] NameIndices = Array.Empty<int>();
 }
 
 /// <summary>
@@ -333,14 +351,20 @@ public sealed class BgfContract
 /// Both endiannesses ship — byte 0 of the header selects. The Memory section is
 /// the allocation manifest and its counts drive every later section's loop.
 ///
-/// Sections this reader decodes: Memory, String, Element, Contract. The remaining
-/// four are framed by their size prefix and skipped, which still validates the
-/// whole file to EOF. Decode them when the animation/slide work needs them.
+/// Sections this reader decodes: Memory, String, Element, Contract, Animation, Slide. Logic and
+/// Params are framed by their size prefix and carried as bytes, which still validates the whole
+/// file to EOF.
+///
+/// Everything the file holds is kept — the header's reserved bytes, the manifest words past the
+/// nineteen counts, the component pad byte, the raw animation-event pairs, the two undecoded
+/// sections — so <see cref="Engine_BgfWriter"/> is this parser's exact inverse: a parse written
+/// back is the same bytes.
 /// </summary>
 public sealed class Engine_BgfDocument
 {
-	private const string MagicText = "AnarkBGF";
-	private const int SectionsStart = 0x20;
+	public const string MagicText = "AnarkBGF";
+	public const int SectionsStart = 0x20;
+	public const int MemoryCountCount = 19;
 
 	public bool BigEndian;
 	public int Version;
@@ -349,14 +373,32 @@ public sealed class Engine_BgfDocument
 	public int CanvasWidth;
 	public int CanvasHeight;
 
+	/// <summary>
+	/// The 32-byte header as read; the endian byte, magic, version and canvas are decoded from it
+	/// and written back over it, the bytes between them are re-emitted as they were.
+	/// </summary>
+	public byte[] Header = new byte[SectionsStart];
+
 	/// <summary>The 19 allocation counts. Indices used here: 0/1 element counts, 2 attributes, 3 contracts, 6 strings.</summary>
 	public uint[] MemoryCounts = Array.Empty<uint>();
+
+	/// <summary>The manifest words after the nineteen counts (six in every shipped file, mirroring the first six).</summary>
+	public uint[] MemoryExtra = Array.Empty<uint>();
 
 	/// <summary>The keyframe tracks value channels scrub. See the Animation section parse.</summary>
 	public BgfAnimation[] Animations = Array.Empty<BgfAnimation>();
 
 	/// <summary>The Animation section's byte size, kept for the parse diagnosis.</summary>
 	public int AnimationSectionSize;
+
+	/// <summary>The Animation section's bytes when the count solve failed and <see cref="Animations"/> is empty; null when it decoded.</summary>
+	public byte[]? AnimationRaw;
+
+	/// <summary>The Logic section's bytes, not decoded.</summary>
+	public byte[] LogicSection = Array.Empty<byte>();
+
+	/// <summary>The Params section's bytes, not decoded.</summary>
+	public byte[] ParamsSection = Array.Empty<byte>();
 
 	public string[] Strings = Array.Empty<string>();
 	public BgfElement[] Elements = Array.Empty<BgfElement>();
@@ -396,14 +438,18 @@ public sealed class Engine_BgfDocument
 		doc.CanvasWidth = r.U16();
 		doc.CanvasHeight = r.U16();
 
+		doc.Header = d.AsSpan(0, SectionsStart).ToArray();
 		r.Pos = SectionsStart;
 
 		// 1. Memory — 25 u32; the last six mirror the first six in every shipped file.
 		int memSize = checked((int)r.U32());
 		int memEnd = r.Pos + memSize;
-		doc.MemoryCounts = new uint[19];
-		for (int i = 0; i < 19; i++)
+		doc.MemoryCounts = new uint[MemoryCountCount];
+		for (int i = 0; i < MemoryCountCount; i++)
 			doc.MemoryCounts[i] = r.U32();
+		doc.MemoryExtra = new uint[Math.Max(0, (memEnd - r.Pos) / 4)];
+		for (int i = 0; i < doc.MemoryExtra.Length; i++)
+			doc.MemoryExtra[i] = r.U32();
 		r.Pos = memEnd;
 
 		int elementCount = checked((int)(doc.MemoryCounts[0] + doc.MemoryCounts[1]));
@@ -438,7 +484,7 @@ public sealed class Engine_BgfDocument
 			e.Flags = d[r.Pos++];
 			if (e.IsComponent)
 			{
-				r.Pos++; // discarded by the engine's own loader
+				e.ComponentPad = d[r.Pos++]; // discarded by the engine's own loader
 				e.ComponentExtra = r.U32();
 			}
 
@@ -460,9 +506,11 @@ public sealed class Engine_BgfDocument
 			var c = new BgfContract { ElementOrdinal = unchecked((int)r.U32()) };
 			int n = checked((int)r.U32());
 			c.Names = new string[n];
+			c.NameIndices = new int[n];
 			for (int k = 0; k < n; k++)
 			{
-				int idx = checked((int)r.U32());
+				int idx = unchecked((int)r.U32());
+				c.NameIndices[k] = idx;
 				c.Names[k] = idx >= 0 && idx < doc.Strings.Length ? doc.Strings[idx] : string.Empty;
 			}
 			doc.Contracts[i] = c;
@@ -552,14 +600,23 @@ public sealed class Engine_BgfDocument
 				}
 			}
 
+			// An undecoded section is carried as bytes so a write loses nothing.
+			if (animSize > 0 && doc.Animations.Length == 0)
+			{
+				doc.AnimationRaw = d.AsSpan(animEnd - animSize, animSize).ToArray();
+			}
+
 			r.Pos = animEnd;
 		}
 
-		// 6-7. Logic, Params — framed and skipped.
-		for (int i = 0; i < 2; i++)
+		// 6-7. Logic, Params — framed and carried as bytes.
 		{
-			int size = checked((int)r.U32());
-			r.Pos += size;
+			int logicSize = checked((int)r.U32());
+			doc.LogicSection = d.AsSpan(r.Pos, logicSize).ToArray();
+			r.Pos += logicSize;
+			int paramsSize = checked((int)r.U32());
+			doc.ParamsSection = d.AsSpan(r.Pos, paramsSize).ToArray();
+			r.Pos += paramsSize;
 		}
 
 		// 8. Slide. Layout from the loader sub_82BC8F30; the loop is driven by
@@ -600,10 +657,12 @@ public sealed class Engine_BgfDocument
 				// one fader are one track each) — see Engine_HudView.BindTracks.
 				int evtCount = checked((int)r.U32());
 				var activated = new int[evtCount];
+				var events = new BgfAnimationEvent[evtCount];
 				for (int e = 0; e < evtCount; e++)
 				{
-					int flag = r.U16();
-					int index = r.U16();
+					ushort flag = r.U16();
+					ushort index = r.U16();
+					events[e] = new BgfAnimationEvent(flag, index);
 					activated[e] = flag != 0 ? index : -1;
 				}
 
@@ -614,6 +673,7 @@ public sealed class Engine_BgfDocument
 					Commands = commands,
 					EventCount = evtCount,
 					ActivatedAnimations = activated,
+					AnimationEvents = events,
 				};
 			}
 			doc.Slides[i] = s;
@@ -893,7 +953,8 @@ public sealed class Engine_BgfDocument
 		return new BgfAttribute(
 			packed & Engine_GameHash.AttributeIdMask,
 			(BgfValueType)((packed >> 27) & 7),
-			value);
+			value,
+			(byte)(packed >> 30));
 	}
 
 	/// <summary>The element's authored name, read from its <c>name</c> attribute.</summary>

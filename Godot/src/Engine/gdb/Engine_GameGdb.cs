@@ -105,6 +105,21 @@ public static class Engine_GameGdb
 		return null;
 	}
 
+	/// <summary>
+	/// One unpatched database by path — for a database outside <see cref="BaseDatabase"/>'s
+	/// supplemental set (a level's), so a row overlay on it resolves names against its own records.
+	/// </summary>
+	public static byte[]? ReadBaseBytes(string virtualPath)
+	{
+		Func<string, byte[]?> resolver;
+		lock (BuildLock)
+		{
+			resolver = _baseResolver ?? DefaultBaseFileResolver;
+		}
+
+		return resolver(virtualPath) ?? resolver("data/" + virtualPath);
+	}
+
 	/// <summary>The unpatched base database before any mod overlays are applied.</summary>
 	public static GdbMulti? BaseDatabase
 	{

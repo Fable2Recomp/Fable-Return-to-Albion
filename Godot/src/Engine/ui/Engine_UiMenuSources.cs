@@ -123,6 +123,10 @@ public static class Engine_UiMenuSources
 			// The options screen's Mods fold: one row per enabled mod that ships settings, each
 			// opening that mod's host options page.
 			[Refii.Mods.ModSettingsUi.SourceName] = Refii.Mods.ModSettingsUi.Rows,
+
+			// The options screen's Controls fold: one row per enabled mod with rebindable input
+			// actions, each opening that mod's Controls page.
+			[Refii.Mods.ModInputUi.SourceName] = Refii.Mods.ModInputUi.Rows,
 			[Engine_UiNetworkSource.GamesSource] = Engine_UiNetworkSource.Games,
 			[Engine_UiNetworkSource.AllSource] = Engine_UiNetworkSource.All,
 			[Engine_UiNetworkSource.HostingSource] = Engine_UiNetworkSource.Hosting,

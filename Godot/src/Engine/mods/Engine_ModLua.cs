@@ -30,11 +30,55 @@ namespace Refii.Mods;
 /// <c>RefiiModErrors</c>. Each file is compiled first with the game's own compiler, and one that
 /// does not compile is left out and named — a syntax error would otherwise fail the whole
 /// chunk.</para>
+/// <para>A MOD'S LUA MAY BE SEVERAL FILES: every other <c>mod/*.lua</c> is a MODULE, reached from
+/// the mod's own chunks with <c>require("name")</c> — the path under <c>mod/</c> without
+/// <c>.lua</c>, <c>.</c> or <c>/</c> between folders. The game VM has no <c>require</c> and no
+/// file system to resolve one from, so each module is composed INTO the init chunk as a function
+/// registered under the mod's name (<see cref="RequireRuntime"/>), and <c>require</c> is a local
+/// of the mod's block that runs the function once and caches its result, as Lua's does: a module
+/// that returns nothing yields <c>true</c>, a module required while it is running (a cycle) sees
+/// <c>true</c>. Modules are lazy — only what a chunk requires runs — and each mod sees only its
+/// own. The front-end chunk registers them again in its own state. A reload that runs the init
+/// chunk again (Live iteration) registers fresh module functions, so the next <c>require</c>
+/// runs the new file. Each module is compiled with the game's compiler like the entry points.</para>
 /// </remarks>
 public static class ModLua
 {
 	public const string ModInitPath = "mod/init.lua";
 	public const string ModCameraPath = "mod/camera.lua";
+
+	/// <summary>The folder every file of a mod's Lua lives in; any other <c>.lua</c> under it is a module.</summary>
+	public const string ModLuaFolder = "mod/";
+
+	/// <summary>
+	/// The module registry and <c>require</c>, in the preamble: <c>Refii._mod_scope(mod)</c> opens a
+	/// fresh registry for a mod (the composed chunk fills <c>modules[name]</c> with each file as a
+	/// function), <c>Refii._require(mod)</c> is that mod's <c>require</c>. A name is lower-cased with
+	/// <c>.</c> read as <c>/</c>; a missing module is an error naming the file; the first result is
+	/// cached, nil as <c>true</c>, and a cycle sees <c>true</c>.
+	/// </summary>
+	public const string RequireRuntime =
+		"Refii._modules = Refii._modules or {}\n" +
+		"function Refii._mod_scope(mod)\n" +
+		"\tlocal scope = { modules = {}, loaded = {} }\n" +
+		"\tRefii._modules[mod] = scope\n" +
+		"\treturn scope\n" +
+		"end\n" +
+		"function Refii._require(mod)\n" +
+		"\treturn function(name)\n" +
+		"\t\tname = string.lower((string.gsub(tostring(name), '%.', '/')))\n" +
+		"\t\tlocal scope = Refii._modules[mod]\n" +
+		"\t\tlocal module = scope and scope.modules[name]\n" +
+		"\t\tif module == nil then error('require: no mod/' .. name .. '.lua in ' .. tostring(mod), 2) end\n" +
+		"\t\tlocal loaded = scope.loaded[name]\n" +
+		"\t\tif loaded ~= nil then return loaded end\n" +
+		"\t\tscope.loaded[name] = true\n" +
+		"\t\tlocal result = module(name)\n" +
+		"\t\tif result == nil then result = true end\n" +
+		"\t\tscope.loaded[name] = result\n" +
+		"\t\treturn result\n" +
+		"\tend\n" +
+		"end\n";
 
 	/// <summary>
 	/// A mod's Lua for the TITLE and the FRONT END, where there is no game VM: run in the current
@@ -82,9 +126,10 @@ public static class ModLua
 		text.Append("Refii = Refii or {}\n");
 		text.Append("Refii.api_version = ").Append(ModApi.Version).Append('\n');
 		text.Append("Refii._handlers = Refii._handlers or {}\n");
-		// THE SUBSCRIPTION MASKS ARE GROUPS OF 20 BITS: this Lua's number is a 32-bit float, exact
-		// only to 24 bits, so a 31-bit sum loses its low bits once a high one is set. Group g holds
-		// kinds 20*(g-1) .. 20*g-1; the payload reads each (mod_events.cpp ReadLuaMask).
+		// THE SUBSCRIPTION MASKS ARE GROUPS OF ModApi.LuaMaskBits (20) BITS: this Lua's number is a
+		// 32-bit float, exact only to 24 bits, so a 31-bit sum loses its low bits once a high one is
+		// set. Group g holds kinds 20*(g-1) .. 20*g-1; the payload reads ModApi.LuaMaskGroups of
+		// them (mod_events.cpp ReadLuaMask), so the capacity is ModApi.LuaMaskCapacity kinds.
 		text.Append("Refii._masks = Refii._masks or {}\n");
 		text.Append("Refii._dirty = false\n");
 		text.Append("Refii._hero = Refii._hero or {}\n");
@@ -118,8 +163,8 @@ public static class ModLua
 			"\tlocal list = Refii._handlers[kind]\n" +
 			"\tif list == nil then list = {} Refii._handlers[kind] = list end\n" +
 			"\tlist[#list + 1] = fn\n" +
-			"\tlocal group = math.floor(kind / 20) + 1\n" +
-			"\tlocal bit = 2 ^ (kind % 20)\n" +
+			"\tlocal group = math.floor(kind / " + ModApi.LuaMaskBits + ") + 1\n" +
+			"\tlocal bit = 2 ^ (kind % " + ModApi.LuaMaskBits + ")\n" +
 			"\tlocal mask = Refii._masks[group] or 0\n" +
 			"\tif math.floor(mask / bit) % 2 == 0 then Refii._masks[group] = mask + bit end\n" +
 			"\tRefii._dirty = true\n" +
@@ -183,6 +228,17 @@ public static class ModLua
 			"\tif Refii._play_fx == nil or e == nil or e == 0 then return nil end\n" +
 			"\treturn Refii._play_fx(name, 0, 0, 0, e, Refii._fx_options(o))\n" +
 			"end\n" +
+			// cast_spell(caster, type, targeted, target, level [, pos [, dir]]) -> spell, serial: the
+			// native Refii._cast_spell with the start position and facing unpacked from {x, y, z}
+			// tables (the caster's own when absent); targeted is a boolean or 0/1.
+			"function Refii.cast_spell(caster, spell_type, targeted, target, level, pos, dir)\n" +
+			"\tif Refii._cast_spell == nil or caster == nil or caster == 0 then return nil end\n" +
+			"\tlocal p = pos or {}\n" +
+			"\tlocal d = dir or {}\n" +
+			"\tlocal t = (targeted == true or (type(targeted) == 'number' and targeted ~= 0)) and 1 or 0\n" +
+			"\treturn Refii._cast_spell(caster, spell_type, t, target or 0, level or 0, pos ~= nil and 1 or 0,\n" +
+			"\t\tp[1] or p.x or 0, p[2] or p.y or 0, p[3] or p.z or 0, dir ~= nil and 1 or 0, d[1] or d.x or 0, d[2] or d.y or 0, d[3] or d.z or 0)\n" +
+			"end\n" +
 			// mark(target, icon, text [, p]): a HUD world marker over an entity handle or at a point
 			// {x, y, z} for player p (nil: every player played here); the id unmark takes, or nil.
 			"function Refii.mark(target, icon, text, p)\n" +
@@ -194,20 +250,24 @@ public static class ModLua
 			"\treturn Refii._mark(target, 0, 0, 0, icon or '', text or '', p or 0)\n" +
 			"end\n" +
 			// light(target, color, energy, range [, o]): a mod light on an entity handle or at a
-			// point {x, y, z}; color {r, g, b}; o = { offset = {x, y, z}, at = "helper", flicker = n }.
-			// The id light_remove takes, or nil.
+			// point {x, y, z}; color {r, g, b}; o = { offset = {x, y, z}, at = "helper", flicker = n,
+			// direction = {x, y, z}, cone = degrees, attenuation = n } — a cone above 0 is a spot
+			// along the direction. The id light_remove takes, or nil.
 			"function Refii.light(target, color, energy, range, o)\n" +
 			"\tif Refii._light == nil or target == nil then return nil end\n" +
 			"\to = o or {}\n" +
 			"\tlocal c = color or {}\n" +
 			"\tlocal f = o.offset or {}\n" +
+			"\tlocal d = o.direction or {}\n" +
 			"\tlocal r, g, b = c[1] or c.r or 1, c[2] or c.g or 1, c[3] or c.b or 1\n" +
 			"\tif type(target) == 'table' then\n" +
 			"\t\treturn Refii._light(0, target[1] or target.x or 0, target[2] or target.y or 0, target[3] or target.z or 0, r, g, b,\n" +
-			"\t\t\tenergy or 1, range or 0, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or '', o.flicker or 0)\n" +
+			"\t\t\tenergy or 1, range or 0, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or '', o.flicker or 0,\n" +
+			"\t\t\td[1] or d.x or 0, d[2] or d.y or 0, d[3] or d.z or 0, o.cone or 0, o.attenuation or 0)\n" +
 			"\tend\n" +
 			"\tif target == 0 then return nil end\n" +
-			"\treturn Refii._light(target, 0, 0, 0, r, g, b, energy or 1, range or 0, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or '', o.flicker or 0)\n" +
+			"\treturn Refii._light(target, 0, 0, 0, r, g, b, energy or 1, range or 0, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or '', o.flicker or 0,\n" +
+			"\t\td[1] or d.x or 0, d[2] or d.y or 0, d[3] or d.z or 0, o.cone or 0, o.attenuation or 0)\n" +
 			"end\n" +
 			// message_box(title, text [, accept [, cancel [, p]]]): a question when cancel is given
 			// (nil captions keep the box's own), else a notice; the id mod_message_box carries.
@@ -227,8 +287,11 @@ public static class ModLua
 			"\t\to[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], o[10], o[11], o[12])\n" +
 			"end\n");
 
+		text.Append(RequireRuntime);
+		// The values IN FORCE, the live overrides over the files': what the native table holds, so
+		// a session or a reload composed after a live change starts from that change.
 		text.Append("RefiiSettings = {");
-		foreach ((string key, float value) in ModSettings.All)
+		foreach ((string key, float value) in ModSettings.InForce)
 		{
 			text.Append("[\"").Append(key.Replace("\\", "\\\\").Replace("\"", "\\\""))
 				.Append("\"]=").Append(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append(',');
@@ -321,7 +384,20 @@ public static class ModLua
 	/// <see cref="ModFrontendPath"/>), read by the payload when a presentation state lacks it.</summary>
 	public const string FrontendKey = "refii/mod_frontend.lua";
 
+	/// <summary>
+	/// Every <c>.lua</c> under <c>mod/</c>: the three entry points and the modules. All are composed
+	/// (never served as assets); the entry points by their role, the rest by name through <c>require</c>.
+	/// </summary>
 	public static bool IsModLuaPath(string path)
+	{
+		string normalized = path.Replace('\\', '/').TrimStart('/');
+		return normalized.StartsWith(ModLuaFolder, StringComparison.OrdinalIgnoreCase) &&
+			normalized.EndsWith(".lua", StringComparison.OrdinalIgnoreCase) &&
+			normalized.Length > ModLuaFolder.Length + ".lua".Length;
+	}
+
+	/// <summary>Whether a package path is one of the three entry points.</summary>
+	public static bool IsEntryPath(string path)
 	{
 		string normalized = path.Replace('\\', '/').TrimStart('/');
 		return normalized.Equals(ModInitPath, StringComparison.OrdinalIgnoreCase) ||
@@ -329,14 +405,116 @@ public static class ModLua
 			normalized.Equals(ModFrontendPath, StringComparison.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// A module's name from its package path: <c>mod/ai/wheel.lua</c> is <c>ai/wheel</c>, what
+	/// <c>require("ai/wheel")</c> or <c>require("ai.wheel")</c> resolves. Lower case, as the registry
+	/// keys it. False for an entry point or anything outside <c>mod/</c>.
+	/// </summary>
+	public static bool TryModuleName(string path, out string name)
+	{
+		name = string.Empty;
+		if (!IsModLuaPath(path) || IsEntryPath(path))
+		{
+			return false;
+		}
+
+		string normalized = path.Replace('\\', '/').TrimStart('/');
+		name = normalized[ModLuaFolder.Length..^".lua".Length].ToLowerInvariant();
+		return name.Length != 0 && !name.Contains('"') && !name.Contains('\\');
+	}
+
 	public static bool IsFrontendKey(string path) => path.Equals(FrontendKey, StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>Composes the chunks from <paramref name="overlays"/> (mount order) into the mount.</summary>
 	public static void Apply(BnkFileSystem mounted, IReadOnlyList<ModOverlay> overlays)
 	{
-		Compose(mounted, overlays, ModInitPath, InitKey);
-		Compose(mounted, overlays, ModCameraPath, CameraKey);
-		Compose(mounted, overlays, ModFrontendPath, FrontendKey);
+		List<ModSources> sources = Read(overlays);
+		Compose(mounted, overlays, sources, ModInitPath, InitKey);
+		Compose(mounted, overlays, sources, ModCameraPath, CameraKey);
+		Compose(mounted, overlays, sources, ModFrontendPath, FrontendKey);
+	}
+
+	/// <summary>One mod's Lua as the package ships it: the entry points by path, the modules by name.</summary>
+	public sealed class ModSources
+	{
+		public string Mod { get; init; } = string.Empty;
+
+		/// <summary>Entry point text by its package path (<see cref="ModInitPath"/> ...).</summary>
+		public Dictionary<string, string> Entries { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+		/// <summary>Module text by module name, in name order.</summary>
+		public SortedDictionary<string, string> Modules { get; } = new(StringComparer.Ordinal);
+	}
+
+	/// <summary>
+	/// Every enabled mod's Lua files, each checked with the game's compiler: a file that does not
+	/// compile is left out and named, so a syntax error cannot fail a whole chunk.
+	/// </summary>
+	private static List<ModSources> Read(IReadOnlyList<ModOverlay> overlays)
+	{
+		var sources = new List<ModSources>();
+		foreach (ModOverlay overlay in overlays)
+		{
+			if (!F2ModPackage.TryOpen(overlay.PackagePath, out F2ModPackage? package, out _) || package is null)
+			{
+				continue;
+			}
+
+			var mod = new ModSources { Mod = overlay.Name };
+			using (package)
+			{
+				foreach (F2ModEntry entry in package.Entries)
+				{
+					string path = entry.Path.Replace('\\', '/').TrimStart('/');
+					if (path.StartsWith("files/", StringComparison.OrdinalIgnoreCase))
+					{
+						path = path["files/".Length..];
+					}
+
+					if (!IsModLuaPath(path))
+					{
+						continue;
+					}
+
+					string source = Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
+					if (IsEntryPath(path))
+					{
+						if (Checked(overlay.Name, path, source, source))
+						{
+							mod.Entries[path.ToLowerInvariant()] = source;
+						}
+					}
+					else if (TryModuleName(path, out string name) &&
+						Checked(overlay.Name, path, source, WrapModule(overlay.Name, name, source)))
+					{
+						mod.Modules[name] = source;
+					}
+				}
+			}
+
+			sources.Add(mod);
+		}
+
+		return sources;
+	}
+
+	/// <summary>The compile check, on the text as it will be composed; true to include the file.</summary>
+	private static bool Checked(string mod, string path, string source, string composed)
+	{
+		string chunkName = $"@{mod}/{path}";
+		if (Refii.Lua.Engine_LuaDecompiler.TryCheckSource(composed, chunkName, out string error))
+		{
+			return true;
+		}
+
+		if (error.Contains("not available", StringComparison.Ordinal))
+		{
+			GD.PushWarning($"[mods] lua: {mod}/{path} could not be checked ({error}); included unchecked");
+			return true;
+		}
+
+		GD.PushWarning($"[mods] lua: {mod}/{path} does not compile and is NOT run: {error}");
+		return false;
 	}
 
 	/// <summary>
@@ -382,7 +560,11 @@ public static class ModLua
 		"Refii._message_box = __refii_message_box\n" +
 		"Refii.notice = __refii_notice\n" +
 		"Refii._menu_box = __refii_menu_box\n" +
-		"Refii.menu_player = __refii_menu_player\n";
+		"Refii.menu_player = __refii_menu_player\n" +
+		"Refii.hash = __refii_hash\n" +
+		"Refii.signed_in = __refii_signed_in\n" +
+		"Refii.save_count = __refii_save_count\n" +
+		"Refii.screen = __refii_screen\n";
 
 	/// <summary>
 	/// A remount that changed <see cref="FrontendKey"/> while the front end is up: the current
@@ -404,45 +586,37 @@ public static class ModLua
 	public const string FrontendCommand = "frontend_lua ";
 
 	private static void Compose(
-		BnkFileSystem mounted, IReadOnlyList<ModOverlay> overlays, string modPath, string key)
+		BnkFileSystem mounted, IReadOnlyList<ModOverlay> overlays, IReadOnlyList<ModSources> sources,
+		string modPath, string key)
 	{
 		var text = new StringBuilder();
 		var included = new List<string>();
-		foreach (ModOverlay overlay in overlays)
+		foreach (ModSources mod in sources)
 		{
-			if (!F2ModPackage.TryOpen(overlay.PackagePath, out F2ModPackage? package, out _) || package is null)
+			bool entry = mod.Entries.TryGetValue(modPath, out string? source);
+			// THE MODULES RIDE THE INIT CHUNK (the game VM's registry, which the camera chunk shares)
+			// AND THE FRONT-END CHUNK (its own state). A mod with modules and no entry point still
+			// registers them: another entry point of the same mod may require one.
+			bool modules = mod.Modules.Count != 0 && key != CameraKey;
+			if (!entry && !modules)
 			{
 				continue;
 			}
 
-			string source;
-			using (package)
+			text.Append("do\n");
+			AppendRequire(text, mod.Mod);
+			if (modules)
 			{
-				if (!package.TryGetEntry(modPath, out F2ModEntry? entry) || entry is null)
-				{
-					continue;
-				}
-
-				source = Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
+				AppendModules(text, mod.Mod, mod.Modules);
 			}
 
-			string chunkName = $"@{overlay.Name}/{modPath}";
-			if (!Refii.Lua.Engine_LuaDecompiler.TryCheckSource(source, chunkName, out string error))
+			if (entry)
 			{
-				if (error.Contains("not available", StringComparison.Ordinal))
-				{
-					GD.PushWarning($"[mods] lua: {overlay.Name}/{modPath} could not be checked ({error}); " +
-						"included unchecked");
-				}
-				else
-				{
-					GD.PushWarning($"[mods] lua: {overlay.Name}/{modPath} does not compile and is NOT run: {error}");
-					continue;
-				}
+				AppendProtected(text, mod.Mod, source!);
+				included.Add(mod.Mod);
 			}
 
-			AppendWrapped(text, overlay.Name, source);
-			included.Add(overlay.Name);
+			text.Append("end\n");
 		}
 
 		if (key == InitKey)
@@ -484,19 +658,61 @@ public static class ModLua
 			$"composed into {key} ({bytes.Length} bytes)");
 	}
 
+	/// <summary>The mod's own <c>require</c>, a local of the block its chunks and modules close over.</summary>
+	private static void AppendRequire(StringBuilder text, string mod) =>
+		text.Append("local require = Refii._require(\"").Append(Escape(mod)).Append("\")\n");
+
+	/// <summary>
+	/// The mod's modules registered under a fresh scope, each as <c>function(...)</c> over its text —
+	/// so a module's top-level <c>return</c> and <c>local</c>s are its own, and it runs only when
+	/// required.
+	/// </summary>
+	private static void AppendModules(StringBuilder text, string mod, IReadOnlyDictionary<string, string> modules)
+	{
+		text.Append("local __scope = Refii._mod_scope(\"").Append(Escape(mod)).Append("\")\n");
+		foreach ((string name, string source) in modules)
+		{
+			text.Append("__scope.modules[\"").Append(Escape(name)).Append("\"] = function(...)\n");
+			text.Append(source);
+			text.Append("\nend\n");
+		}
+	}
+
+	/// <summary>
+	/// One module's text as the composer registers it, standing on its own for a compile check: the
+	/// scope line and the function the module becomes.
+	/// </summary>
+	public static string WrapModule(string mod, string name, string source)
+	{
+		var text = new StringBuilder();
+		AppendModules(text, mod, new Dictionary<string, string> { [name] = source });
+		return text.ToString();
+	}
+
+	private static string Escape(string text) => text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
 	/// <summary>
 	/// One mod's text as the body of a protected function. A function, so a top-level
 	/// <c>return</c> or a <c>local</c> in the mod's file stays the mod's own.
 	/// </summary>
 	private static void AppendWrapped(StringBuilder text, string mod, string source)
 	{
-		string label = mod.Replace("\\", "\\\\").Replace("\"", "\\\"");
-		text.Append("do local ok, err = pcall(function()\n");
+		text.Append("do\n");
+		AppendRequire(text, mod);
+		AppendProtected(text, mod, source);
+		text.Append("end\n");
+	}
+
+	/// <summary>The protected call alone, inside a block that already holds the mod's <c>require</c>.</summary>
+	private static void AppendProtected(StringBuilder text, string mod, string source)
+	{
+		string label = Escape(mod);
+		text.Append("local ok, err = pcall(function()\n");
 		text.Append(source);
 		text.Append("\nend) if not ok then if Refii and Refii._report then Refii._report(\"")
 			.Append(label)
 			.Append("\", err) else RefiiModErrors = (RefiiModErrors or \"\") .. \"")
 			.Append(label)
-			.Append(": \" .. tostring(err) .. \"\\n\" end end end\n");
+			.Append(": \" .. tostring(err) .. \"\\n\" end end\n");
 	}
 }

@@ -470,6 +470,17 @@ public partial class Engine_GameAssets : Node
 			{
 				GD.Print($"[mods]   override: {conflict}");
 			}
+
+			foreach (string refused in comp.Refused)
+			{
+				GD.PushWarning($"[mods] {refused}");
+			}
+
+			// The patch joins the rows report: the database edits are rows too, and the index
+			// states what they set, added and materialised the way it does for text.
+			Refii.Mods.RowMerge asRows = Refii.Mods.RowMerge.FromComposite(comp);
+			GD.Print($"[mods] rows {Refii.Mods.ModRowOverlays.Describe(asRows)}");
+			merges.Add(asRows);
 		}
 
 		var entries = Refii.Mods.ModIndex.Build(mounted);

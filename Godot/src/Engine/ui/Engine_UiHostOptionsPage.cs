@@ -228,6 +228,8 @@ public abstract class Engine_UiHostOptionsPage
 	static Engine_UiHostOptionsPage()
 	{
 		Register(Engine_UiWeatherOptions.OpenCommand, _ => Engine_UiWeatherOptions.Page);
+		Register(Engine_UiVibrationOptions.OpenCommand, _ => Engine_UiVibrationOptions.Page);
 		Register(Refii.Mods.ModSettingsUi.OpenCommandPrefix, Refii.Mods.ModSettingsUi.PageFor);
+		Register(Refii.Mods.ModInputUi.OpenCommandPrefix, Refii.Mods.ModInputUi.PageFor);
 	}
 }

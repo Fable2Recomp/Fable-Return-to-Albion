@@ -46,6 +46,9 @@ public static partial class ModValidate
 	/// <summary><c>fx/effects/&lt;name&gt;.json</c>, a mod effect (Engine_FxEffectJson), matched by folder like the spells.</summary>
 	public const string FxEffectsKind = "fx/effects/*.json";
 
+	/// <summary><c>&lt;database&gt;.gdb.csv</c>, database rows (GdbCsvOverlay), matched by suffix wherever they sit.</summary>
+	public const string GdbRowsKind = "*.gdb.csv";
+
 	/// <summary>
 	/// The kind of a package path, by the path its loader reads (<c>files/</c> stripped, any case);
 	/// empty for a path no schema covers.
@@ -70,6 +73,11 @@ public static partial class ModValidate
 		if (Refii.Fx.Engine_FxModEffects.IsEffectFile(normalized, out _))
 		{
 			return FxEffectsKind;
+		}
+
+		if (normalized.EndsWith(Refii.Gdb.GdbCsvOverlay.CsvSuffix, StringComparison.Ordinal))
+		{
+			return GdbRowsKind;
 		}
 
 		return normalized.StartsWith(ModSpells.Folder, StringComparison.Ordinal) &&
@@ -108,6 +116,22 @@ public static partial class ModValidate
 			}
 
 			CheckManifest(doc, text);
+			return doc.Issues;
+		}
+
+		// *.gdb.csv: the rows' FORM — columns, type tokens, numbers — is what can be checked without
+		// the database (this check is pure .NET and runs in the test host). Whether an entry or
+		// property exists, and whether a type matches, is decided at mount against the shipped
+		// records, and a refused row is reported in the resolved index's rows section.
+		if (kind == GdbRowsKind)
+		{
+			Refii.Gdb.GdbCsvResult rows = Refii.Gdb.GdbCsvOverlay.Parse(text, null);
+			foreach (string error in rows.Errors)
+			{
+				int colon = error.IndexOf(':');
+				doc.Error(colon > 0 ? error[..colon] : string.Empty, colon > 0 ? error[(colon + 1)..].Trim() : error);
+			}
+
 			return doc.Issues;
 		}
 
@@ -797,7 +821,7 @@ public static partial class ModValidate
 	/// <summary>A layout entry's fields, as <c>user://hud/layout.json</c> carries them; the last four are informational.</summary>
 	private static readonly string[] HudLayoutEntryKeys = { "anchor", "offset", "art", "value", "driven", "placed" };
 
-	private static readonly string[] HudCloneKeys = { "id", "of", "offset", "hue", "hueElements", "icon", "values", "bars" };
+	private static readonly string[] HudCloneKeys = { "id", "of", "offset", "hue", "hueElements", "icon", "values", "bars", "slides" };
 
 	private static readonly string[] HudIconKeys = { "element", "textures" };
 
@@ -962,7 +986,7 @@ public static partial class ModValidate
 				doc.Error(At(at, "of"), $"'{of}' is not a widget: {string.Join(", ", Refii.Ui.Engine_HudWidgets.All.Select(w => w.Id))}; nothing is copied");
 			}
 
-			foreach (string key in new[] { "hue", "hueElements", "icon", "values", "bars" })
+			foreach (string key in new[] { "hue", "hueElements", "icon", "values", "bars", "slides" })
 			{
 				if (Has(clone, key))
 				{
@@ -1017,6 +1041,26 @@ public static partial class ModValidate
 				if (doc.LooseText(bar.Value, where) is { } meter && !meters.Contains(meter))
 				{
 					doc.Error(where, $"names meter '{meter}', which \"values\" does not feed; the bar is not redrawn");
+				}
+			}
+		}
+
+		// "slides": element name → the slide number the copy's element stands on, as the game
+		// counts them (1 past the master); a number or a numeric string. Which elements own slides
+		// is hud.bgf's (the HUD meter lab prints them); it is checked at build.
+		if (Has(clone, "slides") &&
+			doc.Object(clone.GetProperty("slides"), At(at, "slides"), "must be an object of element name to slide number; ignored"))
+		{
+			doc.DuplicateKeys(clone.GetProperty("slides"), At(at, "slides"));
+			foreach (JsonProperty slide in clone.GetProperty("slides").EnumerateObject())
+			{
+				string where = At(At(at, "slides"), slide.Name);
+				double? number = slide.Value.ValueKind == JsonValueKind.String
+					? (double.TryParse(slide.Value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ? parsed : null)
+					: doc.LooseNumber(slide.Value, where);
+				if (number is not { } n || n < 1 || Math.Floor(n) != n)
+				{
+					doc.Warn(where, "must be a slide number as the game counts them (1 past the master slide); ignored");
 				}
 			}
 		}

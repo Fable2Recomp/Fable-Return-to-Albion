@@ -3905,45 +3905,28 @@ public partial class GameUi : Node
 				continue;
 			}
 
-			if (rebuildSprites)
-			{
-				// EACH PLAYER'S OPINION ICONS (mod_events.cpp, the "_P2" keys): on split screen each
-				// half shows its own player's hearts and "+N love" splashes; on one shared couch
-				// screen both stand, the hearts numbered for their player; an online host shows its
-				// own (the joiner is sent player two's).
-				bool opinion = sprite.Type is (>= 1u and <= 20u) or (>= 22u and <= 26u);
-				string badge = !split && CoopSession.LocalCoop && sprite.Type is >= 22u and <= 26u
-					? (sprite.PlayerTwo ? "2" : "1")
-					: string.Empty;
-				var stated = new Engine_HudWorldSprites.Sprite(
-					sprite.Type, sprite.TextureHash, sprite.Colour, sprite.Entity, sprite.Anchor,
-					sprite.Scale, sprite.Title, sprite.Opinion, sprite.Object, badge);
-				bool hostOnline = CoopSession.PeerStanding && !CoopSession.LocalCoop && !CoopSession.IsClient;
-				if (!sprite.PlayerTwo || (!split && !hostOnline))
-				{
-					sprites.Add(stated);
-				}
-
-				if (split && (sprite.PlayerTwo || !opinion))
-				{
-					spritesTwo.Add(stated);
-				}
-			}
+			// A world icon of the sprite layer: composed below, with the mods' markers, by the one
+			// composition (Engine_HudModMarkers.Compose).
 		}
 
-		// THE MODS' MARKERS, after the game's own sprites (Engine_HudModMarkers): each view's
-		// player's, sized by that view's camera distance through the game's own curve. Fed on the
-		// same frames as the game's, through the same layers and projectors.
-		if (rebuildSprites && Engine_HudModMarkers.Count != 0)
+		// THE WORLD ICONS — the game's own and the mods' markers — through ONE composition
+		// (Engine_HudModMarkers.Compose) into each view's list: the game's exactly as the guest
+		// states them (kind, texture hash, fade, anchor, tweened scale, text), shown by the one
+		// per-player rule (each half its own player's hearts and splashes; one shared screen both
+		// players'; an online host its own, the joiner is sent player two's); the markers after
+		// them, sized by that view's camera distance through the game's own curve. Fed on the same
+		// frames, through the same layers and projectors.
+		if (rebuildSprites)
 		{
 			Engine_HudModMarkers.LoadIcon ??= LoadMarkerIcon;
-			bool shared = !split && CoopSession.LocalCoop;
-			Engine_HudModMarkers.Compose(sprites, 1, shared, _markerDistanceOne ??= guest => MarkerDistanceSquared(_spriteViews[0], guest),
-				Godot.Time.GetTicksMsec() / 1000.0);
+			bool hostOnline = CoopSession.PeerStanding && !CoopSession.LocalCoop && !CoopSession.IsClient;
+			double clock = Godot.Time.GetTicksMsec() / 1000.0;
+			Engine_HudModMarkers.Compose(sprites, rawSprites, 1, split, CoopSession.LocalCoop, hostOnline,
+				_markerDistanceOne ??= guest => MarkerDistanceSquared(_spriteViews[0], guest), clock);
 			if (split)
 			{
-				Engine_HudModMarkers.Compose(spritesTwo, 2, false, _markerDistanceTwo ??= guest => MarkerDistanceSquared(_spriteViews[1], guest),
-					Godot.Time.GetTicksMsec() / 1000.0);
+				Engine_HudModMarkers.Compose(spritesTwo, rawSprites, 2, split, CoopSession.LocalCoop, hostOnline,
+					_markerDistanceTwo ??= guest => MarkerDistanceSquared(_spriteViews[1], guest), clock);
 			}
 		}
 

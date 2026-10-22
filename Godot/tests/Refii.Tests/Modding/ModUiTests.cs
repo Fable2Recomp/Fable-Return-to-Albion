@@ -36,6 +36,28 @@ public class ModUiTests
     private static void Clean(List<ModIssue> issues) =>
         AssertThat(issues.Count(i => i.Error)).OverrideFailureMessage("expected no error; got:\n" + Lines(issues)).IsEqual(0);
 
+    // ---- H.16 a copy's own slide --------------------------------------------------------------
+
+    [TestCase]
+    public void ACopyStatesItsOwnSlide()
+    {
+        // "slides": element → slide number (1 past the master), a number or the Studio's numeric
+        // string; anything else is warned and ignored, and a widget copy takes none.
+        List<ModIssue> issues = Check("ui/hud.json",
+            "{ \"clones\": [ { \"id\": \"c\", \"of\": \"slidefader2.GenericMeter.GenericMeter\", \"slides\": { \"GenericMeter\": 2, \"Bar\": \"3\" } }," +
+            " { \"id\": \"d\", \"of\": \"slidefader2.CrucibleMeter.CrucibleMeter\", \"slides\": { \"CrucibleMeter\": 0, \"Bar\": \"On\", \"Fill\": 1.5 } }," +
+            " { \"id\": \"w\", \"of\": \"widget.Reticule\", \"slides\": { \"x\": 1 } }," +
+            " { \"id\": \"e\", \"of\": \"slidefader2.PriceWidget.PriceWidget\", \"slides\": [1, 2] } ] }");
+        AssertThat(issues.Any(i => i.Pointer.StartsWith("clones[0]", StringComparison.Ordinal)))
+            .OverrideFailureMessage("a well-formed slides block raised an issue:\n" + Lines(issues)).IsFalse();
+        HasWarning(issues, "clones[1].slides.CrucibleMeter", "slide number");
+        HasWarning(issues, "clones[1].slides.Bar", "slide number");
+        HasWarning(issues, "clones[1].slides.Fill", "slide number");
+        HasWarning(issues, "clones[2].slides", "copy of a widget");
+        HasError(issues, "clones[3].slides", "must be an object");
+        AssertThat(issues.Count(i => i.Error)).OverrideFailureMessage(Lines(issues)).IsEqual(1);
+    }
+
     // ---- G.5 the HUD layout block ----------------------------------------------------------
 
     [TestCase]

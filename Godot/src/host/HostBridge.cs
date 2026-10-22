@@ -7315,8 +7315,13 @@ public static class HostBridge
 		return events;
 	}
 
-	/// <summary>Which event kinds the payload posts for <see cref="DrainModEvents"/> (bit = kind); 0 posts nothing.</summary>
-	public static void SetModEventMask(UInt128 mask)
+	/// <summary>
+	/// Which event kinds the payload posts for <see cref="DrainModEvents"/>; an empty mask posts
+	/// nothing. Words 0 and 1 go through the two mask exports, the words past them through the
+	/// tick's <c>mask_word</c> command (mod_commands.cpp), so a kind at or past 128 takes effect
+	/// on the next guest tick.
+	/// </summary>
+	public static void SetModEventMask(in Refii.Mods.ModEventMask mask)
 	{
 		if (TryGetAbiVersion() is null)
 		{
@@ -7325,11 +7330,16 @@ public static class HostBridge
 
 		try
 		{
-			RefiiHostSetModEventMaskHigh((ulong)(mask >> 64));
-			RefiiHostSetModEventMask((ulong)mask);
+			RefiiHostSetModEventMaskHigh(mask.Word(1));
+			RefiiHostSetModEventMask(mask.Word(0));
 		}
 		catch (EntryPointNotFoundException)
 		{
+		}
+
+		for (int word = 2; word < Refii.Mods.ModEventMask.Words; word++)
+		{
+			PostModCommand($"mask_word event {word} {mask.Word(word):x}");
 		}
 	}
 
@@ -7435,8 +7445,8 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>Which event kinds the verdict handler is asked about (bit = kind); 0 asks about none.</summary>
-	public static void SetModVerdictMask(UInt128 mask)
+	/// <summary>Which event kinds the verdict handler is asked about; an empty mask asks about none. The words cross as <see cref="SetModEventMask"/>'s do.</summary>
+	public static void SetModVerdictMask(in Refii.Mods.ModEventMask mask)
 	{
 		if (TryGetAbiVersion() is null)
 		{
@@ -7445,11 +7455,16 @@ public static class HostBridge
 
 		try
 		{
-			RefiiHostSetModVerdictMaskHigh((ulong)(mask >> 64));
-			RefiiHostSetModVerdictMask((ulong)mask);
+			RefiiHostSetModVerdictMaskHigh(mask.Word(1));
+			RefiiHostSetModVerdictMask(mask.Word(0));
 		}
 		catch (EntryPointNotFoundException)
 		{
+		}
+
+		for (int word = 2; word < Refii.Mods.ModEventMask.Words; word++)
+		{
+			PostModCommand($"mask_word verdict {word} {mask.Word(word):x}");
 		}
 	}
 

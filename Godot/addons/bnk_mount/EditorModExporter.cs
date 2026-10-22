@@ -499,6 +499,103 @@ public static class EditorModExporter
     }
 
     /// <summary>
+    /// Brings a modder's glTF into the active mod as <c>&lt;virtualPath&gt;.glb</c> (or <c>.gltf</c>),
+    /// the form the mount converts against the shipped model of that path.
+    ///
+    /// CONVERTED BEFORE IT IS PLACED. The same <see cref="ModMeshOverlays.TryConvert"/> the mount
+    /// runs is run here against the model being replaced, and a glTF the mount would refuse — a
+    /// joint the model has no bone for, a tree part, an external buffer — is refused with that
+    /// reason and nothing is copied. Nothing converted is written: the mod keeps the author's
+    /// glTF and the mount serves the `.mdl` from it in memory.
+    /// </summary>
+    /// <param name="virtualPath">The shipped model's virtual path (e.g. <c>art/models/furniture/chair.mdl</c>).</param>
+    /// <param name="sourcePath">The author's <c>.glb</c> or <c>.gltf</c> on disk.</param>
+    /// <param name="filesystem">The mounted bank filesystem the template is read from.</param>
+    /// <param name="placedPath">Where the glTF was copied inside the mod.</param>
+    /// <param name="summary">What the conversion produced: vertices and triangles.</param>
+    public static bool ImportModelGlb(
+        string virtualPath,
+        string sourcePath,
+        BnkFileSystem? filesystem,
+        out string placedPath,
+        out string summary,
+        out string error)
+    {
+        placedPath = string.Empty;
+        summary = string.Empty;
+        error = string.Empty;
+
+        string normalized = virtualPath.Replace('\\', '/').TrimStart('/');
+        if (!normalized.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+        {
+            error = $"'{normalized}' is not a .mdl path";
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(sourcePath) || !File.Exists(sourcePath))
+        {
+            error = $"there is no file at '{sourcePath}'";
+            return false;
+        }
+
+        string extension = Path.GetExtension(sourcePath).ToLowerInvariant();
+        if (extension is not (".glb" or ".gltf"))
+        {
+            error = $"'{Path.GetFileName(sourcePath)}' is not a .glb or .gltf";
+            return false;
+        }
+
+        byte[] gltf;
+        try
+        {
+            gltf = File.ReadAllBytes(sourcePath);
+        }
+        catch (Exception exception)
+        {
+            error = exception.Message;
+            return false;
+        }
+
+        byte[]? template = EditorModValueService.ReadVirtualAssetBytes(normalized, filesystem);
+        if (template is null || template.Length == 0)
+        {
+            error =
+                $"there is no '{normalized}' to replace — a model mod edits a model the game " +
+                "already has, because the file states far more than its mesh.";
+            return false;
+        }
+
+        if (!ModMeshOverlays.TryConvert(gltf, template, out _, out string convertError, out int vertices, out int triangles))
+        {
+            error = convertError;
+            return false;
+        }
+
+        string filesRoot = EnsureActiveModWorkspace();
+        string target = Path.Combine(filesRoot, normalized + extension);
+        string? dir = Path.GetDirectoryName(target);
+        try
+        {
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.Copy(sourcePath, target, overwrite: true);
+        }
+        catch (Exception exception)
+        {
+            error = exception.Message;
+            return false;
+        }
+
+        placedPath = target;
+        summary = $"{vertices} vertices, {triangles} triangles";
+        NotifyModContentChanged(GetActiveModName());
+        return true;
+    }
+
+    /// <summary>
     /// Exports a 3D model (.mdl) and all of its referenced surface textures into a clean subfolder
     /// inside the active mod's creator directory (<c>res://creator/&lt;ActiveMod&gt;/&lt;subFolderSlug&gt;/</c>).
     /// </summary>

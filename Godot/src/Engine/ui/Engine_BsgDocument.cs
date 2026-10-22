@@ -118,21 +118,32 @@ public readonly struct BsgAsset
 /// an <c>AnarkBGF</c> magic, then size-prefixed sections — Memory (two counts),
 /// Scene Graph (96-byte nodes) and Asset (5-byte <c>{objectId, type}</c> records).
 ///
-/// All 52 shipped files parse exactly to EOF. Note the file contains no strings:
+/// All 52 shipped files parse exactly to EOF, and write back byte-identical through
+/// <see cref="Engine_BsgWriter"/>. Note the file contains no strings:
 /// texture names come from the presentation's own path attributes, or better, from
 /// hashing the extracted texture bank — see <see cref="Engine_TextureNameTable"/>.
 /// </summary>
 public sealed class Engine_BsgDocument
 {
-	private const string MagicText = "AnarkBGF";
-	private const string MagicTextReversed = "FGBkranA";
-	private const int MagicOffset = 8;
-	private const int SectionsStart = 0x20;
-	private const int SceneNodeSize = 96;
-	private const int AssetRecordSize = 5;
+	public const string MagicText = "AnarkBGF";
+	public const string MagicTextReversed = "FGBkranA";
+	public const int MagicOffset = 8;
+	public const int VersionOffset = 0x10;
+	public const int SectionsStart = 0x20;
+	public const int SceneNodeSize = 96;
+	public const int AssetRecordSize = 5;
 
 	public bool BigEndian;
 	public int Version;
+
+	/// <summary>
+	/// The 32-byte header as read; the endian byte, magic and version are decoded from it and
+	/// written back over it by <see cref="Engine_BsgWriter"/>, the rest re-emitted as it was.
+	/// </summary>
+	public byte[] Header = new byte[SectionsStart];
+
+	/// <summary>The Memory section's words after the two counts (none in any shipped file), carried for the writer.</summary>
+	public uint[] MemoryExtra = Array.Empty<uint>();
 
 	public BsgSceneNode[] Nodes = Array.Empty<BsgSceneNode>();
 	public BsgAsset[] Assets = Array.Empty<BsgAsset>();
@@ -150,11 +161,12 @@ public sealed class Engine_BsgDocument
 		if (magic != MagicText && magic != MagicTextReversed)
 			throw new InvalidDataException($"bsg: bad magic '{magic}', expected {MagicText} or {MagicTextReversed}");
 
-		int p = 0x10;
+		int p = VersionOffset;
 		doc.Version = checked((int)ReadU32(d, ref p, doc.BigEndian));
 		if (doc.Version != 2)
 			throw new InvalidDataException($"bsg: unsupported version {doc.Version}");
 
+		doc.Header = d.AsSpan(0, SectionsStart).ToArray();
 		p = SectionsStart;
 
 		// 1. Memory — two counts.
@@ -162,6 +174,9 @@ public sealed class Engine_BsgDocument
 		int memEnd = p + memSize;
 		int nodeCount = checked((int)ReadU32(d, ref p, doc.BigEndian));
 		int assetCount = checked((int)ReadU32(d, ref p, doc.BigEndian));
+		doc.MemoryExtra = new uint[Math.Max(0, (memEnd - p) / 4)];
+		for (int i = 0; i < doc.MemoryExtra.Length; i++)
+			doc.MemoryExtra[i] = ReadU32(d, ref p, doc.BigEndian);
 		p = memEnd;
 
 		// 2. Scene graph.

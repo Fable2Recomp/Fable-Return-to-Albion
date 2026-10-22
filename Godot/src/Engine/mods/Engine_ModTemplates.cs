@@ -227,7 +227,7 @@ public static class ModTemplates
 		"\n" +
 		"local cap = 1000  -- the meter is full at this much gold\n" +
 		"\n" +
-		"-- \"tick\": once per game step; Lua sees it at most ten times a second. Refii.hero(1) is\n" +
+		"-- \"tick\": once per game step, e.seconds that step's. Refii.hero(1) is\n" +
 		"-- player one's hero, or nil before a session starts.\n" +
 		"Refii.on(\"tick\", function(e)\n" +
 		"\tlocal hero = Refii.hero(1)\n" +

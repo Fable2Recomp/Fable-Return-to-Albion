@@ -1,5 +1,6 @@
 using Refii.Ui;
 using Godot;
+using Refii.Core;
 using Refii.Host;
 
 namespace Refii.Game;
@@ -44,6 +45,8 @@ public partial class GameInput : Node
 		// The guest can end while this node is up; nothing is published into a torn-down runtime.
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
+			// A joypad left buzzing by a guest that is no longer there would buzz until unplugged.
+			SilenceRumble();
 			return;
 		}
 
@@ -81,9 +84,116 @@ public partial class GameInput : Node
 			PublishPad(pad, devices);
 		}
 
+		DriveRumble(devices);
+
 		// The mods' own actions, on the keyboard and on the pads as just assigned, under the
 		// same focus gate: edges only, posted to the mod event bus.
 		Refii.Mods.ModInput.Pump(devices);
+	}
+
+	public override void _ExitTree() => SilenceRumble();
+
+	/// <summary>Each guest pad's rumble as last applied to its joypad.</summary>
+	private static readonly Engine_Rumble[] _rumble =
+	{
+		new Engine_Rumble(), new Engine_Rumble(), new Engine_Rumble(), new Engine_Rumble(),
+	};
+
+	/// <summary>The joypad each pad's running effect was started on, or -1.</summary>
+	private static readonly int[] _rumbleJoypad = { -1, -1, -1, -1 };
+
+	/// <summary>
+	/// RUMBLE, THE OTHER WAY DOWN THE SAME SEAM. The guest states each pad's motors through
+	/// <c>XamInputSetState</c> every frame the pad is connected (<c>sub_822B38C0</c>: the effect
+	/// mixer at <c>pad+72</c> sums into <c>pad+84/+88</c>, ×65535 into the <c>XINPUT_VIBRATION</c>
+	/// at <c>pad+92</c>, then <c>XInputSetState(pad+4, …)</c>). The kernel routes user N to our
+	/// driver's slot N, <see cref="HostBridge.TryGetVibration"/> reads it, and the joypad holding
+	/// guest pad N is the one that buzzes — so on split screen each player's hits reach their own
+	/// pad, since the guest picks the pad object off the hit entity's player (<c>sub_823EAA58</c>,
+	/// <c>*(player+40)</c>).
+	/// </summary>
+	/// <remarks>
+	/// <para>Change-driven through <see cref="Engine_Rumble"/>: Godot restarts the effect on every
+	/// <c>StartJoyVibration</c>, so a steady pair is told once and silence stops it once. The
+	/// effect runs until stopped (duration 0); the guest's own decay is what ends it, frame by
+	/// frame, the way it ended on the console.</para>
+	/// <para>Under the focus rule: an unfocused window publishes a neutral pad and must not keep a
+	/// controller buzzing on the desk either, so <paramref name="devices"/> false silences every
+	/// pad, and the guest's pair is picked up again on the first focused frame.</para>
+	/// <para>Two switches, both required: the guest's own (<c>byte_8331924F</c>, the Controls
+	/// fold's Controller Vibration page — zero and no effect is ever stated) and the launcher's
+	/// <see cref="ControllerVibration"/>, which silences the joypad whatever is stated.</para>
+	/// </remarks>
+	private static void DriveRumble(bool devices)
+	{
+		for (int pad = 0; pad < MaxControllers; ++pad)
+		{
+			int joypad = _padDevice[pad];
+			uint left = 0;
+			uint right = 0;
+			bool stated = devices && ControllerVibration && joypad >= 0 &&
+				HostBridge.TryGetVibration(pad, out left, out right);
+			Engine_Rumble.Verdict verdict = stated ? _rumble[pad].Observe(left, right) : _rumble[pad].Silence();
+			switch (verdict)
+			{
+				case Engine_Rumble.Verdict.Start:
+					// The pad may have moved joypads while running (a reconnect takes a new id).
+					if (_rumbleJoypad[pad] >= 0 && _rumbleJoypad[pad] != joypad)
+					{
+						Input.StopJoyVibration(_rumbleJoypad[pad]);
+					}
+
+					_rumbleJoypad[pad] = joypad;
+					Input.StartJoyVibration(joypad, _rumble[pad].Weak, _rumble[pad].Strong, 0f);
+					break;
+				case Engine_Rumble.Verdict.Stop:
+					if (_rumbleJoypad[pad] >= 0)
+					{
+						Input.StopJoyVibration(_rumbleJoypad[pad]);
+					}
+
+					_rumbleJoypad[pad] = -1;
+					break;
+			}
+		}
+	}
+
+	/// <summary>Stops every running effect: the guest is down or this node is leaving.</summary>
+	private static void SilenceRumble()
+	{
+		for (int pad = 0; pad < MaxControllers; ++pad)
+		{
+			if (_rumble[pad].Silence() == Engine_Rumble.Verdict.Stop && _rumbleJoypad[pad] >= 0)
+			{
+				Input.StopJoyVibration(_rumbleJoypad[pad]);
+			}
+
+			_rumbleJoypad[pad] = -1;
+		}
+	}
+
+	/// <summary>
+	/// One pad's rumble for the debug channel: the joypad holding it, the pair the guest states
+	/// now, and what the joypad was last told.
+	/// </summary>
+	public static (int Joypad, uint StatedLeft, uint StatedRight, bool Running, float Weak, float Strong)
+		RumbleReadout(int pad)
+	{
+		if (pad < 0 || pad >= MaxControllers)
+		{
+			return (-1, 0, 0, false, 0f, 0f);
+		}
+
+		uint left = 0;
+		uint right = 0;
+		if (!HostBridge.TryGetVibration(pad, out left, out right))
+		{
+			left = 0;
+			right = 0;
+		}
+
+		Engine_Rumble rumble = _rumble[pad];
+		return (_padDevice[pad], left, right, rumble.Running, rumble.Weak, rumble.Strong);
 	}
 
 	/// <summary>The joypad holding guest pad <paramref name="pad"/> (0..3), or -1 while it is free.</summary>
@@ -238,6 +348,9 @@ public partial class GameInput : Node
 	/// <summary>`mouse_lock` in refii.toml — whether the mouse cursor is captured during play.</summary>
 	public static bool MouseLock { get; private set; } = true;
 
+	/// <summary>`controller_vibration` in refii.toml, on by default — the host's rumble gate.</summary>
+	public static bool ControllerVibration { get; private set; } = true;
+
 	private static double _settingsClock;
 	private static System.Collections.Generic.IReadOnlyDictionary<string, string>? _lastControlValues;
 
@@ -269,7 +382,10 @@ public partial class GameInput : Node
 		{
 			Engine_UiInputMode.KeyboardMouse = false;
 		}
+		ControllerVibration = Refii.Core.Engine_RefiiConfig.Bool(values, "controller_vibration", true);
 		ReadKeyBindings(values);
+		// The mods' actions take their rebinds (key_<mod>.<action>, pad_<mod>.<action>) from the same read.
+		Refii.Mods.ModInput.ReadBindings(values);
 		MouseSensitivity = Mathf.Clamp(
 			Refii.Core.Engine_RefiiConfig.Float(values, "mouse_sensitivity", 1f), 0.05f, 10f);
 	}

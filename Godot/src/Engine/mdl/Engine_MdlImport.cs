@@ -1,225 +1,153 @@
 using System;
 using System.Collections.Generic;
-using Godot;
 
 namespace Refii.Models;
 
-/// <summary>A mesh sampled out of Godot, in the arrays <see cref="Engine_MdlWriter"/> takes.</summary>
-public sealed class MdlImportedMesh
-{
-	public float[] Positions = Array.Empty<float>();
-
-	public float[] Uvs = Array.Empty<float>();
-
-	public float[] Normals = Array.Empty<float>();
-
-	public float[] Tangents = Array.Empty<float>();
-
-	public ushort[] Indices = Array.Empty<ushort>();
-
-	public int VertexCount => Positions.Length / 3;
-
-	public int TriangleCount => Indices.Length / 3;
-}
-
-/// <summary>An individual surface sampled out of a glTF/Godot mesh, with its material index preserved.</summary>
+/// <summary>One surface of a glTF in the arrays a `.mdl` is written from, with what it is skinned to.</summary>
 public sealed class MdlImportedSurface
 {
-	public int MaterialIndex { get; set; }
-	public string MaterialName { get; set; } = string.Empty;
+	/// <summary>The glTF material index, or -1 when the primitive states none.</summary>
+	public int MaterialIndex = -1;
+
+	public string MaterialName = string.Empty;
+
+	/// <summary>Three per vertex, model space.</summary>
 	public float[] Positions = Array.Empty<float>();
+
+	/// <summary>Two per vertex; empty when the glTF states none.</summary>
 	public float[] Uvs = Array.Empty<float>();
+
+	/// <summary>Three per vertex, model space; empty when the glTF states none.</summary>
 	public float[] Normals = Array.Empty<float>();
+
+	/// <summary>Four per vertex, model space; empty when the glTF states none.</summary>
 	public float[] Tangents = Array.Empty<float>();
+
+	/// <summary>Whole triangles.</summary>
 	public ushort[] Indices = Array.Empty<ushort>();
+
+	/// <summary>Four per vertex, slots into <see cref="JointNames"/>; empty for an unskinned surface.</summary>
+	public int[] Joints = Array.Empty<int>();
+
+	/// <summary>Four per vertex, paired with <see cref="Joints"/> by slot.</summary>
+	public float[] Weights = Array.Empty<float>();
+
+	/// <summary>The skin's joints by name; empty for an unskinned surface.</summary>
+	public string[] JointNames = Array.Empty<string>();
+
+	public bool IsSkinned => Joints.Length != 0 && JointNames.Length != 0;
+
 	public int VertexCount => Positions.Length / 3;
+
 	public int TriangleCount => Indices.Length / 3;
 }
 
 /// <summary>
-/// Turns a Godot mesh — which is what a glTF import produces — into the arrays a `.mdl` is
-/// written from.
+/// Turns what a glTF states into the arrays a `.mdl` is written from.
 ///
 /// THE AXES ARE THE READER'S, RUN BACKWARDS. Loading a model applies
 /// <c>(x, y, z) -> (x, z, -y)</c>, so writing applies <c>(x, y, z) -> (x, -z, y)</c>. That
 /// matrix has determinant +1 — a proper rotation — so triangle winding survives it and nothing
 /// needs reversing. Getting that wrong turns a model inside out, which is why it is derived from
 /// the reader rather than guessed.
+///
+/// Only what a `.mdl` stores is taken: positions, one UV set, normals, tangents, and for a
+/// skinned surface its four joints and weights per vertex. A glTF's vertex colours and second UV
+/// set have nowhere to go in this layout.
 /// </summary>
 public static class Engine_MdlImport
 {
-	/// <summary>
-	/// Samples one surface.
-	///
-	/// Only what a static `.mdl` stores is taken: positions, one UV set, normals and tangents.
-	/// Godot's own vertex colours and second UV set have nowhere to go in this layout.
-	/// </summary>
-	public static bool TryFromSurface(
-		Mesh mesh, int surface, out MdlImportedMesh imported, out string error, Transform3D? sceneTransform = null)
+	/// <summary>Every primitive of the glTF, in model space.</summary>
+	public static bool TryFromGltf(byte[] gltf, out List<MdlImportedSurface> surfaces, out string error)
 	{
-		imported = new MdlImportedMesh();
-		error = string.Empty;
-
-		if (mesh is null)
+		surfaces = new List<MdlImportedSurface>();
+		if (!Engine_GltfReader.TryRead(gltf, out GltfModel model, out error))
 		{
-			error = "there is no mesh to read";
 			return false;
 		}
 
-		if (surface < 0 || surface >= mesh.GetSurfaceCount())
+		foreach (GltfPrimitive primitive in model.Primitives)
 		{
-			error = $"the mesh has {mesh.GetSurfaceCount()} surface(s); there is no surface {surface}";
-			return false;
-		}
-
-		// Only an ArrayMesh states its primitive type; anything else is taken on trust and the
-		// index arithmetic below catches a surface that is not triangles anyway.
-		if (mesh is ArrayMesh array &&
-			array.SurfaceGetPrimitiveType(surface) != Mesh.PrimitiveType.Triangles)
-		{
-			error =
-				$"surface {surface} is {array.SurfaceGetPrimitiveType(surface)}; a model is " +
-				"written from triangles.";
-			return false;
-		}
-
-		Godot.Collections.Array arrays = Engine_MdlSurfaceArrays.Of(mesh, surface);
-		var vertices = arrays[(int)Mesh.ArrayType.Vertex].As<Vector3[]>();
-		if (vertices is null || vertices.Length == 0)
-		{
-			error = $"surface {surface} has no vertices";
-			return false;
-		}
-
-		if (vertices.Length > ushort.MaxValue)
-		{
-			error =
-				$"{vertices.Length} vertices; a model's indices are 16-bit, so a surface cannot " +
-				"exceed 65,535. Split it, or decimate it.";
-			return false;
-		}
-
-		var normals = arrays[(int)Mesh.ArrayType.Normal].As<Vector3[]>();
-		var tangents = arrays[(int)Mesh.ArrayType.Tangent].As<float[]>();
-		var uvs = arrays[(int)Mesh.ArrayType.TexUV].As<Vector2[]>();
-		var indices = arrays[(int)Mesh.ArrayType.Index].As<int[]>();
-
-		bool hasSceneXform = sceneTransform.HasValue && !sceneTransform.Value.IsEqualApprox(Transform3D.Identity);
-		Transform3D xform = sceneTransform ?? Transform3D.Identity;
-		Basis normalBasis = hasSceneXform ? xform.Basis.Orthonormalized() : Basis.Identity;
-
-		imported.Positions = new float[vertices.Length * 3];
-		for (int v = 0; v < vertices.Length; v++)
-		{
-			Vector3 pos = hasSceneXform ? (xform * vertices[v]) : vertices[v];
-			Vector3 rotated = ToModelSpace(pos);
-			imported.Positions[v * 3] = rotated.X;
-			imported.Positions[(v * 3) + 1] = rotated.Y;
-			imported.Positions[(v * 3) + 2] = rotated.Z;
-		}
-
-		if (normals is { Length: > 0 })
-		{
-			imported.Normals = new float[normals.Length * 3];
-			for (int v = 0; v < normals.Length; v++)
+			if (!TryFromPrimitive(primitive, out MdlImportedSurface surface, out error))
 			{
-				Vector3 nrm = hasSceneXform ? (normalBasis * normals[v]).Normalized() : normals[v];
-				Vector3 rotated = ToModelSpace(nrm);
-				imported.Normals[v * 3] = rotated.X;
-				imported.Normals[(v * 3) + 1] = rotated.Y;
-				imported.Normals[(v * 3) + 2] = rotated.Z;
+				return false;
 			}
-		}
 
-		if (tangents is { Length: > 0 })
-		{
-			imported.Tangents = new float[(tangents.Length / 4) * 4];
-			for (int v = 0; v * 4 + 3 < tangents.Length; v++)
-			{
-				var tVec = new Vector3(tangents[v * 4], tangents[(v * 4) + 1], tangents[(v * 4) + 2]);
-				if (hasSceneXform)
-				{
-					tVec = (normalBasis * tVec).Normalized();
-				}
-				Vector3 rotated = ToModelSpace(tVec);
-				imported.Tangents[v * 4] = rotated.X;
-				imported.Tangents[(v * 4) + 1] = rotated.Y;
-				imported.Tangents[(v * 4) + 2] = rotated.Z;
-				imported.Tangents[(v * 4) + 3] = tangents[(v * 4) + 3];
-			}
-		}
-
-		if (uvs is { Length: > 0 })
-		{
-			imported.Uvs = new float[uvs.Length * 2];
-			for (int v = 0; v < uvs.Length; v++)
-			{
-				imported.Uvs[v * 2] = uvs[v].X;
-				imported.Uvs[(v * 2) + 1] = uvs[v].Y;
-			}
-		}
-
-		// An unindexed surface is still triangles — one index per vertex, in order.
-		if (indices is { Length: > 0 })
-		{
-			imported.Indices = new ushort[indices.Length];
-			for (int i = 0; i < indices.Length; i++)
-			{
-				if (indices[i] < 0 || indices[i] >= vertices.Length)
-				{
-					error = $"an index reaches vertex {indices[i]}, past the {vertices.Length} in this surface";
-					return false;
-				}
-
-				imported.Indices[i] = (ushort)indices[i];
-			}
-		}
-		else
-		{
-			imported.Indices = new ushort[vertices.Length];
-			for (int i = 0; i < vertices.Length; i++)
-			{
-				imported.Indices[i] = (ushort)i;
-			}
-		}
-
-		if (imported.Indices.Length % 3 != 0)
-		{
-			error = $"{imported.Indices.Length} indices is not a whole number of triangles";
-			return false;
+			surfaces.Add(surface);
 		}
 
 		return true;
 	}
 
-	/// <summary>The reader's Z-up to Y-up rotation, run backwards.</summary>
-	private static Vector3 ToModelSpace(Vector3 value) => new(value.X, -value.Z, value.Y);
-
-	/// <summary>The first mesh in a scene a glTF import produced.</summary>
-	public static Mesh? FindFirstMesh(Node root)
+	public static bool TryFromPrimitive(GltfPrimitive primitive, out MdlImportedSurface surface, out string error)
 	{
-		if (root is MeshInstance3D instance && instance.Mesh is { } mesh && mesh.GetSurfaceCount() > 0)
+		surface = new MdlImportedSurface
 		{
-			return mesh;
+			MaterialIndex = primitive.Material,
+			MaterialName = primitive.MaterialName,
+		};
+		error = string.Empty;
+
+		int vertexCount = primitive.VertexCount;
+		if (vertexCount == 0)
+		{
+			error = $"mesh {primitive.Mesh} primitive {primitive.Primitive} has no vertices";
+			return false;
 		}
 
-		if (root is ImporterMeshInstance3D impInstance && impInstance.Mesh is { } impMesh)
+		if (vertexCount > ushort.MaxValue)
 		{
-			ArrayMesh array = impMesh.GetMesh();
-			if (array is not null && array.GetSurfaceCount() > 0)
+			error =
+				$"{vertexCount} vertices; a model's indices are 16-bit, so a surface cannot " +
+				"exceed 65,535. Split it, or decimate it.";
+			return false;
+		}
+
+		surface.Positions = ToModelSpace(primitive.Positions, 3);
+		surface.Normals = ToModelSpace(primitive.Normals, 3);
+		surface.Tangents = ToModelSpace(primitive.Tangents, 4);
+		surface.Uvs = (float[])primitive.Uvs.Clone();
+
+		surface.Indices = new ushort[primitive.Indices.Length];
+		for (int i = 0; i < primitive.Indices.Length; i++)
+		{
+			if (primitive.Indices[i] >= (uint)vertexCount)
 			{
-				return array;
+				error = $"an index reaches vertex {primitive.Indices[i]}, past the {vertexCount} in this surface";
+				return false;
 			}
+
+			surface.Indices[i] = (ushort)primitive.Indices[i];
 		}
 
-		foreach (Node child in root.GetChildren())
+		if (surface.Indices.Length % 3 != 0)
 		{
-			if (FindFirstMesh(child) is { } found)
-			{
-				return found;
-			}
+			error = $"{surface.Indices.Length} indices is not a whole number of triangles";
+			return false;
 		}
 
-		return null;
+		if (primitive.Joints.Length == vertexCount * 4 && primitive.Weights.Length == vertexCount * 4)
+		{
+			surface.Joints = (int[])primitive.Joints.Clone();
+			surface.Weights = (float[])primitive.Weights.Clone();
+			surface.JointNames = (string[])primitive.JointNames.Clone();
+		}
+
+		return true;
+	}
+
+	/// <summary>The reader's Z-up to Y-up rotation, run backwards, over the first three of every <paramref name="stride"/>.</summary>
+	public static float[] ToModelSpace(float[] values, int stride)
+	{
+		var result = (float[])values.Clone();
+		for (int i = 0; i + 2 < result.Length; i += stride)
+		{
+			float y = result[i + 1];
+			float z = result[i + 2];
+			result[i + 1] = -z;
+			result[i + 2] = y;
+		}
+
+		return result;
 	}
 }

@@ -19,6 +19,15 @@ public sealed class FacUvRecord
 {
 	public int StableId;
 
+	/// <summary>
+	/// Fields 2..4 as written — the exporter's ids of the quad's geometry, material and texture
+	/// children, which the engine skips. Carried for the writer; "0" on a record made here.
+	/// </summary>
+	public string[] Extra = { "0", "0", "0" };
+
+	/// <summary>Field 12 as written, skipped by the engine; "0.0" in every shipped record.</summary>
+	public string Field12 = "0.0";
+
 	/// <summary>FNV-1 of the lowercased resource path, e.g. <c>art\gui\frames\frames_04.tex</c>.</summary>
 	public uint TextureHash;
 
@@ -95,6 +104,23 @@ public sealed class FacLightRecord
 }
 
 /// <summary>
+/// One record of the file in file order: its lines as read (null for a record made in memory,
+/// which <see cref="Engine_FacWriter"/> then formats from its fields) and the typed record it
+/// decoded to — at most one of the three; none for a record the reader does not decode (an
+/// unknown keyword, a short record, the empty record an extra blank line makes).
+/// </summary>
+public sealed class FacRecord
+{
+	public string[]? Lines;
+	public FacUvRecord? Uv;
+	public FacTextRecord? Text;
+	public FacLightRecord? Light;
+
+	/// <summary>The record was closed by a blank line; false only for a last record the file ends inside.</summary>
+	public bool Closed = true;
+}
+
+/// <summary>
 /// Reader for the <c>.fac</c> sidecar that ships beside every <c>.bgf</c> presentation.
 /// It carries the baked render parameters the presentation itself does not: which
 /// texture a quad samples, its atlas rectangle and tint, and each text element's
@@ -116,6 +142,9 @@ public sealed class FacLightRecord
 /// </list>
 /// UV and TEXT otherwise resolve exactly: 15,813 of 15,815 quads and 1,417 of 1,417
 /// text records link to a live element.
+///
+/// Every record keeps its lines as read (<see cref="Records"/>), so <see cref="Engine_FacWriter"/>
+/// writes a parsed file back byte-identical and formats only the records made in memory.
 /// </summary>
 public sealed class Engine_FacDocument
 {
@@ -127,6 +156,15 @@ public sealed class Engine_FacDocument
 	public readonly List<FacTextRecord> Text = new();
 	public readonly List<FacLightRecord> Lights = new();
 
+	/// <summary>Every record in file order, the typed lists above being views of it. The writer emits this.</summary>
+	public readonly List<FacRecord> Records = new();
+
+	/// <summary>The file's line ending: CRLF in every shipped file.</summary>
+	public string LineEnding = "\r\n";
+
+	/// <summary>Whether the file's last line ends with a line ending (every shipped file does).</summary>
+	public bool EndsWithNewline = true;
+
 	public static Engine_FacDocument Load(string path) => Parse(File.ReadAllBytes(path));
 
 	public static Engine_FacDocument Parse(byte[] data) =>
@@ -134,41 +172,60 @@ public sealed class Engine_FacDocument
 
 	public static Engine_FacDocument Parse(string text)
 	{
-		var doc = new Engine_FacDocument();
-
-		var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
-		var record = new List<string>();
-
-		void Flush()
+		var doc = new Engine_FacDocument
 		{
-			if (record.Count > 0)
-			{
-				doc.AddRecord(record);
-				record.Clear();
-			}
+			LineEnding = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : text.Contains('\r') ? "\r" : "\n",
+		};
+
+		string normalised = text.Replace("\r\n", "\n").Replace('\r', '\n');
+		var lines = new List<string>(normalised.Split('\n'));
+		// Split leaves one empty element after a terminating line ending; it is not a line.
+		doc.EndsWithNewline = normalised.EndsWith('\n');
+		if (doc.EndsWithNewline)
+		{
+			lines.RemoveAt(lines.Count - 1);
 		}
 
+		var record = new List<string>();
 		foreach (var raw in lines)
 		{
 			if (raw.Length == 0)
-				Flush();
+			{
+				doc.AddRecord(record, closed: true);
+				record = new List<string>();
+			}
 			else
+			{
 				record.Add(raw);
+			}
 		}
-		Flush();
+
+		if (record.Count > 0)
+		{
+			doc.AddRecord(record, closed: false);
+		}
 
 		return doc;
 	}
 
-	private void AddRecord(List<string> f)
+	/// <summary>Adds a record from its lines, decoding it where the keyword and field count say to; the record.</summary>
+	public FacRecord AddRecord(List<string> f, bool closed = true)
 	{
+		var record = new FacRecord { Lines = f.ToArray(), Closed = closed };
+		Records.Add(record);
+		if (f.Count == 0)
+		{
+			return record;
+		}
+
 		switch (f[0])
 		{
 			case "UV" when f.Count >= UvFieldCount:
-				Uv.Add(new FacUvRecord
+				record.Uv = new FacUvRecord
 				{
 					StableId = Int(f[1]),
 					// fields 2..4 are written by the exporter and skipped by the engine
+					Extra = new[] { f[2], f[3], f[4] },
 					TextureHash = unchecked((uint)Int64(f[5])),
 					Du = Float(f[6]),
 					Dv = Float(f[7]),
@@ -176,15 +233,17 @@ public sealed class Engine_FacDocument
 					V0 = Float(f[9]),
 					DetailMapMode = Int(f[10]),
 					SecondaryTexture = Int(f[11]),
+					Field12 = f[12],
 					VertexLane3 = Float(f[13]),
 					R = Rgb(f[14], 0),
 					G = Rgb(f[14], 1),
 					B = Rgb(f[14], 2),
-				});
+				};
+				Uv.Add(record.Uv);
 				break;
 
 			case "TEXT" when f.Count >= TextFieldCount:
-				Text.Add(new FacTextRecord
+				record.Text = new FacTextRecord
 				{
 					StableId = Int(f[1]),
 					Text = PercentDecode(f[2]),
@@ -198,19 +257,48 @@ public sealed class Engine_FacDocument
 					R = Rgb(f[10], 0),
 					G = Rgb(f[10], 1),
 					B = Rgb(f[10], 2),
-				});
+				};
+				Text.Add(record.Text);
 				break;
 
 			case "LIGHT" when f.Count >= LightFieldCount:
-				Lights.Add(new FacLightRecord
+				record.Light = new FacLightRecord
 				{
 					StableId = Int(f[1]),
 					R = Float(f[2]),
 					G = Float(f[3]),
 					B = Float(f[4]),
-				});
+				};
+				Lights.Add(record.Light);
 				break;
 		}
+
+		return record;
+	}
+
+	/// <summary>Adds a record made in memory (no lines; the writer formats it) and files it in its typed list.</summary>
+	public FacRecord Add(FacUvRecord uv)
+	{
+		var record = new FacRecord { Uv = uv };
+		Records.Add(record);
+		Uv.Add(uv);
+		return record;
+	}
+
+	public FacRecord Add(FacTextRecord text)
+	{
+		var record = new FacRecord { Text = text };
+		Records.Add(record);
+		Text.Add(text);
+		return record;
+	}
+
+	public FacRecord Add(FacLightRecord light)
+	{
+		var record = new FacRecord { Light = light };
+		Records.Add(record);
+		Lights.Add(light);
+		return record;
 	}
 
 	/// <summary>Decodes the exporter's percent escapes, then interprets the bytes as UTF-8.</summary>

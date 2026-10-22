@@ -121,6 +121,13 @@ public sealed class ModManifest
 							entry.Kind = ModManifestEntry.KindTu;
 							entry.Source = normalized;
 						}
+						else if (normalized.EndsWith(Refii.Gdb.GdbCsvOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase))
+						{
+							// Rows compile to the same patch a .gdb.tu holds and merge with it.
+							entry.Kind = ModManifestEntry.KindTu;
+							entry.Source = normalized;
+							entry.Path = normalized[..^4] + ".tu";
+						}
 
 						manifest.Entries.Add(entry);
 					}
@@ -155,6 +162,12 @@ public sealed class ModManifest
 					{
 						entry.Kind = ModManifestEntry.KindTu;
 						entry.Source = normalized;
+					}
+					else if (normalized.EndsWith(Refii.Gdb.GdbCsvOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase))
+					{
+						entry.Kind = ModManifestEntry.KindTu;
+						entry.Source = normalized;
+						entry.Path = normalized[..^4] + ".tu";
 					}
 
 					manifest.Entries.Add(entry);

@@ -119,7 +119,12 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// keyed to player two (its meters read under player two's names), so it looks exactly like
 	/// the same copy of <c>PlayerHealth</c> does for player one. A copy of player one's widget whose
 	/// meters read <c>player:</c> values is each player's: one record draws beside both players'
-	/// widgets (<see cref="Engine_HudModTwins"/>).
+	/// widgets (<see cref="Engine_HudModTwins"/>). <see cref="Slides"/> (hud.json <c>"slides"</c>:
+	/// element name → slide number as the game counts them, 1 past the master) puts an element of
+	/// the copy — its root, or one beneath it — on a slide of the copy's choosing: a fader the game
+	/// never raises, raised for the copy ALONE (<c>Engine_HudView.ResolvedFor</c>); the original's
+	/// element keeps the frame's state. A copy lit this way is how a dark shipped piece (the
+	/// GenericMeter, the CrucibleMeter) is used as a mod's own.
 	/// </summary>
 	public sealed record Clone(
 		string Id,
@@ -764,8 +769,32 @@ public sealed partial class Engine_HudModPieces : Node3D
 				iconTextures = Strings(iconRecord, "textures");
 			}
 
+			// "slides": element → slide number (a number, or a numeric string as the Studio's map
+			// field writes it); 1 past the master, as the game counts them.
+			Dictionary<string, int>? slides = null;
+			if (record.TryGetValue("slides", out Variant slideMap) && slideMap.VariantType == Variant.Type.Dictionary)
+			{
+				foreach ((Variant element, Variant slide) in slideMap.AsGodotDictionary())
+				{
+					int number = slide.VariantType switch
+					{
+						Variant.Type.Int or Variant.Type.Float => (int)slide.AsDouble(),
+						Variant.Type.String when int.TryParse(slide.AsString().Trim(), System.Globalization.NumberStyles.Integer,
+							System.Globalization.CultureInfo.InvariantCulture, out int statedSlide) => statedSlide,
+						_ => 0,
+					};
+					if (number <= 0)
+					{
+						GD.PushWarning($"[hud-mods] {mod}:{ModHudPath} clone '{id}': slide for '{element.AsString()}' is not a slide number (1 past the master); ignored");
+						continue;
+					}
+
+					(slides ??= new Dictionary<string, int>(System.StringComparer.Ordinal))[element.AsString()] = number;
+				}
+			}
+
 			clones[id] = new Clone(id, mod, of, Pair(record, "offset", Vector2.Zero),
-				Number(record, "hue", 0f), Strings(record, "hueElements"), iconElement, iconTextures, values, bars);
+				Number(record, "hue", 0f), Strings(record, "hueElements"), iconElement, iconTextures, values, bars, slides);
 		}
 	}
 

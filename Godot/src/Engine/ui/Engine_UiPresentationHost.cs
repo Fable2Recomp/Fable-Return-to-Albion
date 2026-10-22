@@ -1250,6 +1250,23 @@ public partial class Engine_UiPresentationHost : Node3D
 		return hash;
 	}
 
+	/// <summary>
+	/// The bank path of a presentation by name — the path a mod's <c>.bgf</c> takes to stand in
+	/// for it (<c>art/gui/gameface/hud.bgf</c> for <c>hud</c>); null off the banks or unknown.
+	/// </summary>
+	public string? PresentationPath(string name) =>
+		_bankScreens is not null && _bankScreens.TryGetValue(name, out string? path) ? path : null;
+
+	/// <summary>
+	/// A presentation's file as the mount serves it now (a mod's file over the shipped one):
+	/// the <c>.bgf</c> itself, or with <paramref name="extension"/> a sidecar beside it
+	/// (<c>.fac</c>, <c>.bsg</c>, separate bank entries under the same stem). Null when not served.
+	/// </summary>
+	public byte[]? PresentationBytes(string name, string extension = ".bgf") =>
+		_banks is { } banks && PresentationPath(name) is { } path
+			? ReadLayered(banks, extension == ".bgf" ? path : Path.ChangeExtension(path, extension))
+			: null;
+
 	/// <summary>The signature of a presentation's files as the mount serves them now; 0 when unknown.</summary>
 	private ulong CurrentSignature(string name)
 	{

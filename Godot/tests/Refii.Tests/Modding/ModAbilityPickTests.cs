@@ -204,18 +204,19 @@ public class ModAbilityPickTests
         using JsonDocument souls = JsonDocument.Parse(Read("souls_combat/ui/abilities.json"));
         AssertThat(souls.RootElement.GetProperty("abilities")[0].GetProperty("levelKey").GetString())
             .IsEqual("souls_combat.stamina_ability");
-        AssertThat(Read("souls_combat/native/souls_combat.h").Contains("\"souls_combat.stamina_ability\"")).IsTrue();
+        AssertThat(Read("souls_combat/mod/common.lua").Contains("\"souls_combat.stamina_ability\"")).IsTrue();
 
         using JsonDocument weaving = JsonDocument.Parse(Read("spell_weaving/ui/abilities.json"));
         AssertThat(weaving.RootElement.GetProperty("abilities")[0].GetProperty("levelKey").GetString())
             .IsEqual("spell_weaving.ability");
-        AssertThat(Read("spell_weaving/native/spell_weaving.h").Contains("\"spell_weaving.ability\"")).IsTrue();
+        string weavingLua = Read("spell_weaving/mod/init.lua");
+        AssertThat(weavingLua.Contains("\"spell_weaving.ability\"")).IsTrue();
 
-        // The partner pick's store is the key weave.cpp reads.
+        // The partner pick's store is the key the mod's Lua reads.
         using JsonDocument wheel = JsonDocument.Parse(Read("spell_weaving/ui/spellwheel.json"));
         AssertThat(wheel.RootElement.GetProperty("picks")[0].GetProperty("store").GetString())
             .IsEqual("spell_weaving.partner_{slot}");
-        AssertThat(Read("spell_weaving/native/weave.cpp").Contains("\"spell_weaving.partner_%d\"")).IsTrue();
+        AssertThat(weavingLua.Contains("\"spell_weaving.partner_\" .. (slot + 1)")).IsTrue();
 
         // One copy per bar and one glyph: each player's from one record.
         using JsonDocument hud = JsonDocument.Parse(Read("souls_combat/ui/hud.json"));

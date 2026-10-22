@@ -207,7 +207,7 @@ public class FxGuestDressTests
 	public void TheFrontEndNativesAreThePayloadsTable()
 	{
 		var mapped = Regex.Matches(ModLua.FrontendNatives, @"= (__refii_\w+)").Select(m => m.Groups[1].Value).ToHashSet();
-		AssertThat(mapped.Count).IsEqual(9);
+		AssertThat(mapped.Count).IsEqual(13);
 		bool compiles = Refii.Lua.Engine_LuaDecompiler.TryCheckSource(ModLua.FrontendNatives, "@frontend", out string error);
 		AssertThat(compiles || error.Contains("not available", StringComparison.Ordinal)).OverrideFailureMessage(Msg(error)).IsTrue();
 		if (RepoRoot() is not { } root)

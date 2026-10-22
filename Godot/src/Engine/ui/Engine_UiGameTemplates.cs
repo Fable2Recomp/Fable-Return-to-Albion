@@ -65,10 +65,28 @@ public static class Engine_UiGameTemplates
           "counted": false
         },
         {
-          "name": "Controls",
+          "name": "ControlsSettings",
           "tag": "GUI_SCREEN_OPTIONS_CONTROLS",
+          "source": "mod-controls",
+          "hostOnly": true,
           "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
-          "eventType": 71
+          "counted": false,
+          "children": [
+            {
+              "name": "Controls",
+              "tag": "GUI_SCREEN_OPTIONS_CONTROLS",
+              "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+              "eventType": 71
+            },
+            {
+              "name": "ControllerVibration",
+              "tag": "Controller Vibration",
+              "command": "options:vibration",
+              "hostOnly": true,
+              "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+              "counted": false
+            }
+          ]
         },
         {
           "name": "Audio",

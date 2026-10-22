@@ -57,6 +57,7 @@
 PPC_EXTERN_FUNC(rex_lhCharString_CtorFromCStr);
 PPC_EXTERN_FUNC(rex_lhCharString_Dtor);
 PPC_EXTERN_FUNC(rex_lhGuiPresentationSet_GetCurrent);
+PPC_EXTERN_FUNC(rex_lhSaveManager_CountSavedGamesAllDevices);
 
 namespace {
 
@@ -81,10 +82,18 @@ constexpr const char* kProbe = "__refii_need_init(Refii == nil or Refii._fronten
 
 bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
 
+/// Gameface's lua_pushlstring (TU1 0x8219CD00, disc 0x8219CDA8, the same 25 instructions: a GC
+/// step when due, `bl luaS_newlstr` 0x8219cd40 — the Gameface interner 0x8227BBB8 — then the
+/// TValue {TString, 4} at the top and `top += 8`, 0x8219cd44..58). The only way to put a string
+/// on this state's stack: a string TValue must point at an interned TString.
+constexpr uint32_t kPushLString = 0x8219CD00u;
+
 /// A Gameface native's view of its frame (see above).
 struct Gf {
   uint8_t* base;
   uint32_t L;
+  /// The native's own context (the guest thread's): for guest calls a result needs.
+  PPCContext* ctx;
 
   uint32_t Slot(int i) const {
     const uint32_t frame = LoadU32(base, L + 12u);
@@ -159,6 +168,26 @@ struct Gf {
 
   void PushBoolean(bool b) { Push(b ? 1u : 0u, kTypeBoolean); }
   void PushNil() { Push(0u, kTypeNil); }
+
+  /// A string result, interned by the state's own lua_pushlstring from a guest copy of `text`
+  /// (freed after: the TString is the state's). Nil when no guest memory.
+  void PushString(const char* text) {
+    const size_t n = std::strlen(text);
+    const uint32_t heap = refii::vfs::CallLhMalloc(*ctx, base, static_cast<uint32_t>(n) + 1u);
+    if (!Plausible(heap)) {
+      PushNil();
+      return;
+    }
+    std::memcpy(base + heap, text, n + 1u);
+    PPCContext work = refii::mods::Frame(*ctx, 0x200u);
+    work.r3.u32 = L;
+    work.r4.u32 = heap;
+    work.r5.u32 = static_cast<uint32_t>(n);
+    if (!refii::mods::CallGuest(work, base, refii::guest::Address(kPushLString))) {
+      PushNil();
+    }
+    refii::vfs::CallLhFree(*ctx, base, heap);
+  }
 };
 
 bool g_need_init = false;
@@ -166,7 +195,7 @@ bool g_need_init = false;
 #define REFII_FRONTEND_NATIVE(name)                           \
   void name##Body(Gf& lua, int32_t& results);                 \
   void name(PPCContext& ctx, uint8_t* base) {                 \
-    Gf lua{base, ctx.r3.u32};                                 \
+    Gf lua{base, ctx.r3.u32, &ctx};                           \
     int32_t results = 0;                                      \
     name##Body(lua, results);                                 \
     ctx.r3.u64 = static_cast<uint32_t>(results);              \
@@ -294,6 +323,50 @@ REFII_FRONTEND_NATIVE(NativeMenuPlayer) {
   results = 1;
 }
 
+// Refii.hash(name): the game's FNV-1 of a name as a "0x…" string, as the game VM's native.
+REFII_FRONTEND_NATIVE(NativeHash) {
+  char text[256];
+  lua.String(1, text, sizeof(text));
+  char hex[16];
+  std::snprintf(hex, sizeof(hex), "0x%08x", refii_mod_fnv1(text));
+  lua.PushString(hex);
+  results = 1;
+}
+
+// Refii.signed_in() -> the signed-in pad's user index, or nil (refii_mod_signed_in_user).
+REFII_FRONTEND_NATIVE(NativeSignedIn) {
+  const int32_t user = refii_mod_signed_in_user(lua.base);
+  if (user >= 0) {
+    lua.PushNumber(user);
+  } else {
+    lua.PushNil();
+  }
+  results = 1;
+}
+
+// Refii.save_count() -> the signed-in profile's saved games on every device, or nil with no
+// front end (refii_mod_save_count: a content enumeration — ask once a screen).
+REFII_FRONTEND_NATIVE(NativeSaveCount) {
+  const int32_t count = refii_mod_save_count(lua.ctx, lua.base);
+  if (count >= 0) {
+    lua.PushNumber(count);
+  } else {
+    lua.PushNil();
+  }
+  results = 1;
+}
+
+// Refii.screen() -> the current presentation's name ("FrontendMainMenu", ...), or nil.
+REFII_FRONTEND_NATIVE(NativeScreen) {
+  char name[96];
+  if (refii_mod_frontend_screen(lua.ctx, lua.base, name, sizeof(name)) != 0 && name[0] != 0) {
+    lua.PushString(name);
+  } else {
+    lua.PushNil();
+  }
+  results = 1;
+}
+
 struct Native {
   const char* name;
   PPCFunc* function;
@@ -311,6 +384,10 @@ Native g_natives[] = {
     {"__refii_menu_player", &NativeMenuPlayer, 0},
     {"__refii_notice", &NativeNotice, 0},
     {"__refii_menu_box", &NativeMenuBox, 0},
+    {"__refii_hash", &NativeHash, 0},
+    {"__refii_signed_in", &NativeSignedIn, 0},
+    {"__refii_save_count", &NativeSaveCount, 0},
+    {"__refii_screen", &NativeScreen, 0},
 };
 
 bool AllocateThunks() {
@@ -445,4 +522,75 @@ extern "C" int32_t refii_mod_run_frontend_lua(PPCContext* ctx, uint8_t* base, co
     return 0;
   }
   return refii::vfs::RunFrontEndLua(*ctx, base, chunk) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE FRONT END'S OWN STATE (core/refii_mod.h): the signed-in pad, the saves, the presentation.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+constexpr uint32_t kFrontEndRoot = 0x83496AC0u;
+constexpr uint32_t kSignedInUserIndex = 0x83496AF8u;
+constexpr uint32_t kSignedInUserMask = 0x83496A70u;
+}  // namespace
+
+extern "C" int32_t refii_mod_signed_in_user(uint8_t* base) {
+  if (base == nullptr) {
+    return -1;
+  }
+  const uint32_t user = LoadU32(base, refii::guest::Address(kSignedInUserIndex));
+  const uint32_t mask = LoadU32(base, refii::guest::Address(kSignedInUserMask));
+  return user < 4u && ((mask >> user) & 1u) != 0u ? static_cast<int32_t>(user) : -1;
+}
+
+extern "C" int32_t refii_mod_save_count(PPCContext* ctx, uint8_t* base) {
+  if (ctx == nullptr || base == nullptr) {
+    return -1;
+  }
+  // The save manager the root screen's populate passes: *(*(0x83496AC0+12)+40) (0x826e2240..6c).
+  const uint32_t app = LoadU32(base, refii::guest::Address(kFrontEndRoot));
+  const uint32_t state = Plausible(app) ? LoadU32(base, app + 12u) : 0u;
+  const uint32_t manager = Plausible(state) ? LoadU32(base, state + 40u) : 0u;
+  if (!Plausible(manager)) {
+    return -1;
+  }
+  if (refii_mod_signed_in_user(base) < 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x400u);
+  work.r3.u32 = manager;
+  rex_lhSaveManager_CountSavedGamesAllDevices(work, base);
+  return static_cast<int32_t>(work.r3.u32);
+}
+
+extern "C" int32_t refii_mod_frontend_screen(PPCContext* ctx, uint8_t* base, char* out, uint32_t size) {
+  if (out == nullptr || size == 0) {
+    return 0;
+  }
+  out[0] = 0;
+  if (ctx == nullptr || base == nullptr) {
+    return 0;
+  }
+  const uint32_t gui = LoadU32(base, refii::guest::Address(kGuiObject));
+  const uint32_t stack = Plausible(gui) ? LoadU32(base, gui + 56u) : 0u;
+  if (!Plausible(stack)) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x200u);
+  work.r3.u32 = stack;
+  rex_lhGuiPresentationSet_GetCurrent(work, base);
+  const uint32_t presentation = work.r3.u32;
+  // CPresentation+4 is its name, an AKString: `char*` at +0 (memory: the vtable is 0x82006D48;
+  // SetScriptVM is `stw r4,0x1C(r3)`, so +4/+12 are the name and the path).
+  const uint32_t text = Plausible(presentation) ? LoadU32(base, presentation + 4u) : 0u;
+  if (!Plausible(text)) {
+    return 0;
+  }
+  uint32_t n = 0;
+  while (n + 1u < size && base[text + n] != 0 && n < 255u) {
+    out[n] = static_cast<char>(base[text + n]);
+    ++n;
+  }
+  out[n] = 0;
+  return n != 0 ? 1 : 0;
 }

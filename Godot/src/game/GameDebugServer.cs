@@ -983,6 +983,36 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "rumble":
+			{
+				// Per guest pad: the joypad holding it, the motors the guest states this frame
+				// (XInput 0..65535, left = low-frequency), and what the joypad was last told.
+				var pads = new List<object?>();
+				for (int pad = 0; pad < 4; ++pad)
+				{
+					(int joypad, uint left, uint right, bool running, float weak, float strong) =
+						GameInput.RumbleReadout(pad);
+					pads.Add(new Dictionary<string, object?>
+					{
+						["pad"] = pad,
+						["joypad"] = joypad,
+						["left"] = left,
+						["right"] = right,
+						["running"] = running,
+						["weak"] = weak,
+						["strong"] = strong,
+					});
+				}
+
+				return Ok(new Dictionary<string, object?>
+				{
+					// Both gates: the guest's byte_8331924F and the launcher's controller_vibration.
+					["guestSwitch"] = Refii.Ui.Engine_UiVibrationOptions.GuestEnabled(),
+					["launcherSwitch"] = GameInput.ControllerVibration,
+					["pads"] = pads,
+				});
+			}
+
 			case "sockets":
 			{
 				var sockets = new List<Dictionary<string, object?>>();

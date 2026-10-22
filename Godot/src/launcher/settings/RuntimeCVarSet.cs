@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System;
 using System.Linq;
 
 namespace Refii.Launcher.Core;
@@ -537,6 +538,10 @@ public static class RuntimeCVarsGodot
             new("camera_invert_x", ControlsCategory, RuntimeCVarType.Bool, "false",
                 "Invert the camera's left and right, on the stick and the mouse. The game has no " +
                 "setting of its own for this."),
+            new("controller_vibration", ControlsCategory, RuntimeCVarType.Bool, "true",
+                "Rumble the controller as the console did: hits taken and landed, blocks, shots, " +
+                "spells, landings and the near-death heartbeat. The game's own Controls page has " +
+                "a Controller Vibration switch too; both must be on."),
             new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
                 "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
                 "turns twice as far."),
@@ -572,6 +577,56 @@ public static class RuntimeCVarsGodot
         Refii.Game.GameInput.KeyActions.Select(action => new RuntimeCVarDefinition(
             "key_" + action.Name, ControlsCategory, RuntimeCVarType.String, action.Defaults,
             action.Description + " Default: " + action.Defaults + "."));
+
+    /// <summary>The group a mod's rebindable actions sit under: the Controls group, titled by the mod.</summary>
+    public static string ModControlsCategory(string title) => ControlsCategory + ": " + title;
+
+    /// <summary>
+    /// THE MODS' ACTIONS, read from every enabled mod's input.json when the panel loads
+    /// (<see cref="RuntimeCVarSet.Refresh"/>): the same <c>key_&lt;mod&gt;.&lt;action&gt;</c> /
+    /// <c>pad_&lt;mod&gt;.&lt;action&gt;</c> keys the game's Options › Controls page writes, one group
+    /// per mod under its title. THE DEFAULT IS EMPTY, never the file's binding: the launcher writes
+    /// every setting it offers, and an empty value is what the game reads as "the mod's own", so a
+    /// save of the panel pins nothing and a later change to the mod's file still reaches the
+    /// player — the game's page shows the same row as Default. <c>none</c> unbinds.
+    /// </summary>
+    public static IEnumerable<RuntimeCVarDefinition> ModBindings()
+    {
+        var titles = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Refii.Mods.ModInstall install in Refii.Mods.ModWorkspace.DiscoverModInstalls(Refii.Assets.Engine_GameAssets.ModsRoot))
+        {
+            titles[install.Name] = install.Metadata.Title.Length != 0 ? install.Metadata.Title : install.Name;
+        }
+
+        return ModBindings(Refii.Mods.ModInput.ReadDeclared(), mod => titles.TryGetValue(mod, out string? title) ? title : mod);
+    }
+
+    /// <summary>The definitions for <paramref name="actions"/>: a key row where keys are declared, a pad row where buttons or triggers are.</summary>
+    public static IEnumerable<RuntimeCVarDefinition> ModBindings(
+        IEnumerable<Refii.Mods.ModInput.Action> actions, Func<string, string> title)
+    {
+        foreach (Refii.Mods.ModInput.Action action in actions)
+        {
+            string category = ModControlsCategory(title(action.Mod));
+            if (action.Keys.Count != 0)
+            {
+                string keys = string.Join(",", action.Keys.Select(Refii.Mods.ModInputUi.KeyName));
+                yield return new RuntimeCVarDefinition(
+                    Refii.Mods.ModInput.KeySettingKey(action), category, RuntimeCVarType.String, string.Empty,
+                    action.Label + " on the keyboard: a comma list of key names (F, Ctrl, Space, F5, BracketLeft ...); " +
+                    "empty keeps the mod's own (" + keys + "), none unbinds. The game's Options > Controls page edits the same setting.");
+            }
+
+            if (action.Buttons.Count != 0 || action.Triggers.Count != 0)
+            {
+                yield return new RuntimeCVarDefinition(
+                    Refii.Mods.ModInput.PadSettingKey(action), category, RuntimeCVarType.String, string.Empty,
+                    action.Label + " on the pad: a comma list of A B X Y LB RB LT RT L3 R3 Start Back DpadUp DpadDown DpadLeft DpadRight " +
+                    "or JoyButton names; empty keeps the mod's own (" + Refii.Mods.ModInput.DeclaredPadText(action) + "), none unbinds. " +
+                    "The game's Options > Controls page edits the same setting.");
+            }
+        }
+    }
 }
 
 /// <summary>
@@ -587,8 +642,18 @@ public static class RuntimeCVarSet
 {
     private static IReadOnlyList<RuntimeCVarDefinition>? _all;
 
-    public static IReadOnlyList<RuntimeCVarDefinition> All =>
-        _all ??= RuntimeCVars.Definitions
+    public static IReadOnlyList<RuntimeCVarDefinition> All => _all ??= Build();
+
+    /// <summary>
+    /// Reads the list again: the mods' Controls rows (<see cref="RuntimeCVarsGodot.ModBindings()"/>)
+    /// follow the enabled mods' input.json, so the settings panel refreshes them whenever it
+    /// reloads (<c>RuntimeSettingsModel.Reload</c>).
+    /// </summary>
+    public static void Refresh() => _all = Build();
+
+    private static IReadOnlyList<RuntimeCVarDefinition> Build()
+    {
+        var all = RuntimeCVars.Definitions
             .Concat(
                 // The generated list WINS on a name collision. If the native runtime ever grows a
                 // cvar of the same name, its type and description are the authoritative ones and
@@ -597,4 +662,17 @@ public static class RuntimeCVarSet
                     godot => !RuntimeCVars.Definitions.Any(
                         native => native.Name == godot.Name)))
             .ToList();
+        try
+        {
+            all.AddRange(RuntimeCVarsGodot.ModBindings().Where(mod => all.All(known => known.Name != mod.Name)));
+        }
+        catch (Exception exception)
+        {
+            // No mods root, or a file that will not read: the shipped rows stand; the game's own
+            // page reads the mods directly.
+            Godot.GD.PushWarning("[settings] the mods' Controls rows could not be read: " + exception.Message);
+        }
+
+        return all;
+    }
 }

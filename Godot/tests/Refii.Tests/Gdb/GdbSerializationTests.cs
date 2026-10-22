@@ -40,12 +40,14 @@ public class GdbSerializationTests
         var db = new GdbPatchDatabase();
         var entry = new GdbPatchEntry(0x20001000, 0x01);
 
-        uint intPropHash = 0x11111111;
-        uint floatPropHash = 0x22222222;
-        uint boolPropHash = 0x33333333;
-        uint refPropHash = 0x44444444;
-        uint resRefPropHash = 0x55555555;
-        uint enumPropHash = 0x66666666;
+        // A property's hash IS the FNV-1 of its name: the name table maps FNV-1(text) to text
+        // and nothing else, and the writer files names that way.
+        uint intPropHash = Engine_GameHash.Fnv1("IntProp");
+        uint floatPropHash = Engine_GameHash.Fnv1("FloatProp");
+        uint boolPropHash = Engine_GameHash.Fnv1("BoolProp");
+        uint refPropHash = Engine_GameHash.Fnv1("RefProp");
+        uint resRefPropHash = Engine_GameHash.Fnv1("ResRefProp");
+        uint enumPropHash = Engine_GameHash.Fnv1("EnumProp");
 
         float testFloat = 123.456f;
         uint rawFloat = unchecked((uint)BitConverter.SingleToInt32Bits(testFloat));

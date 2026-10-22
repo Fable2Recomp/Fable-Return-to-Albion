@@ -79,9 +79,20 @@ public sealed class MdlGeometryEdit
 /// It is the same bargain the game-database overlay makes, for the same reason: change what is
 /// understood exactly, carry what is not.
 ///
-/// SAME COUNTS. Vertex and index counts live in the descriptor this does not rewrite, so a
-/// replacement keeps the topology of what it replaces — move vertices, re-UV, re-normal, rewind
-/// triangles. Changing the counts means moving every offset after them and is a later step.
+/// THE POSITION IS A FLOAT16_4 AND ITS w IS THE PRT CLUSTER. Both declaration builders state
+/// POSITION as type 16 of the D3DDECLTYPE table — FLOAT16_4, 8 bytes (TU1 `sub_82A8B0E0` and
+/// `sub_82A750E8` against the table at 0x83316CC0; disc `sub_82A97A70` and `sub_82A760D0`
+/// against 0x83316B80) — so bytes +6..7 are the position's w, and the `amb2` vertex shaders
+/// take it as `a0 = trunc(POSITION.w)` to index `g_PRTConstants(a0 + 0..3)`: the vertex's PRT
+/// cluster as a register offset, `cluster x (pca x channels + 4) / 4` vec4s, the block stride
+/// `sub_8225DC80` uploads by. That is the 0 / 4.0 / 8.0 the shipped files hold (pca 4,
+/// channels 3, at most 3 clusters in 12 registers). Every other vertex shader reads
+/// POSITION.xyz. A rebuilt vertex states <see cref="RebuiltClusterOffset"/>.
+///
+/// <see cref="TryReplaceGeometry"/> keeps the counts and rewrites the two regions in place —
+/// move vertices, re-UV, re-normal, rewind triangles, on any buffer kind including skinned
+/// (whose bone bytes it leaves alone). <see cref="TryReplaceMesh"/> changes the topology of a
+/// rigid or skinned buffer and restates every length that follows from it.
 /// </summary>
 public static class Engine_MdlWriter
 {
@@ -94,6 +105,16 @@ public static class Engine_MdlWriter
 
 	public static int StrideFor(MdlMeshBuffer buffer) =>
 		buffer.IsEngineSkinned ? SkinnedStride : buffer.IsEngineTree ? TreeStride : RigidStride;
+
+	/// <summary>
+	/// The PRT cluster offset a rebuilt vertex states in POSITION.w: cluster 0. The writer zeroes
+	/// the per-vertex PCA weights with the geometry, so the `amb2` shader lights the vertex by
+	/// its cluster's MEAN transfer; cluster 0 is the one every model with a transfer has, and the
+	/// only value a model without one holds. The cluster is the compressor's choice per authored
+	/// vertex, not a function of section or material, and a rebuild has no vertex order to carry
+	/// it by — <see cref="TryReplaceGeometry"/> keeps the file's own, weights and all.
+	/// </summary>
+	public const float RebuiltClusterOffset = 0f;
 
 	public static int UvOffsetFor(MdlMeshBuffer buffer) => buffer.IsEngineSkinned ? 20 : 12;
 
@@ -200,15 +221,19 @@ public static class Engine_MdlWriter
 	/// WHY THIS IS POSSIBLE AT ALL: nothing in a `.mdl` is located by a stored offset. Every field
 	/// is found by walking, and the geometry is inline — verified on 1,459 of 1,459 real buffers,
 	/// where `vertexOffset + vertexCount x stride` lands exactly on the index data. So changing
-	/// the counts moves bytes but breaks no pointers; only three stated LENGTHS have to follow.
+	/// the counts moves bytes but breaks no pointers; only the stated LENGTHS have to follow:
+	/// the record's vertex and index counts, its section count, the LOD size, and the two
+	/// per-vertex tails the LOD states — the extra UV sets (`ShDescriptor[4]` float4s per
+	/// vertex, which the reader walks by) and the lightmap channel (4 bytes per rigid and tree
+	/// vertex of the whole LOD, present when the section flag is set).
 	///
 	/// The counts sit at fixed positions relative to the vertex data, derived backwards through
-	/// the record's sequential fields and confirmed against the file on **1,688 of 1,688** engine
-	/// rigid buffers. The 136 skinned buffers in that sample use a different record layout
-	/// (`sub_82B26460`), so this refuses them rather than guessing.
+	/// the record's sequential fields and checked against the file before anything is written.
+	/// A rigid record carries 40 bytes of bounds between its counts and its section count; a
+	/// skinned one carries none, and its 28-byte vertices name four of the model's own bones.
 	///
-	/// The new geometry is written as a single TRIANGLE LIST section, which the shipped data
-	/// proves the engine reads: of 339 buffers whose sections all state list, 339 have
+	/// The new geometry is written as TRIANGLE LIST sections, which the shipped data proves the
+	/// engine reads: of 339 buffers whose sections all state list, 339 have
 	/// `indexCount == 3 x primCount` and none carries a restart index.
 	/// </summary>
 	public static bool TryReplaceMesh(
@@ -225,7 +250,7 @@ public static class Engine_MdlWriter
 		=> TryReplaceMesh(
 			original, info, bufferIndex,
 			positions, uvs, normals, tangents, triangleIndices,
-			sections: null, out result, out error);
+			sections: null, boneIndices: null, boneWeights: null, out result, out error);
 
 	public static bool TryReplaceMesh(
 		byte[] original,
@@ -239,6 +264,31 @@ public static class Engine_MdlWriter
 		IReadOnlyList<MdlSectionSpec>? sections,
 		out byte[] result,
 		out string error)
+		=> TryReplaceMesh(
+			original, info, bufferIndex,
+			positions, uvs, normals, tangents, triangleIndices,
+			sections, boneIndices: null, boneWeights: null, out result, out error);
+
+	/// <param name="boneIndices">
+	/// Four per vertex for a skinned buffer: indices into the model's own bone table
+	/// (<see cref="MdlInfo.Bones"/>), slot k paired with <paramref name="boneWeights"/> slot k.
+	/// Ignored for a rigid buffer.
+	/// </param>
+	/// <param name="boneWeights">Four per vertex, 0..255, summing to 255 for a vertex that is skinned at all.</param>
+	public static bool TryReplaceMesh(
+		byte[] original,
+		MdlInfo info,
+		int bufferIndex,
+		float[] positions,
+		float[] uvs,
+		float[] normals,
+		float[] tangents,
+		ushort[] triangleIndices,
+		IReadOnlyList<MdlSectionSpec>? sections,
+		byte[]? boneIndices,
+		byte[]? boneWeights,
+		out byte[] result,
+		out string error)
 	{
 		result = original;
 		error = string.Empty;
@@ -250,13 +300,22 @@ public static class Engine_MdlWriter
 		}
 
 		MdlMeshBuffer buffer = info.MeshBuffers[bufferIndex];
-		if (buffer.IsEngineSkinned || buffer.IsEngineTree || buffer.IsAltPath || buffer.IsFoliagePath)
+		if (buffer.IsEngineTree || buffer.IsAltPath || buffer.IsFoliagePath)
 		{
 			error =
-				"only a static mesh can be RESIZED — a skinned, tree or foliage buffer states its " +
-				"counts in a different record layout, and a skinned one would also need blend " +
-				"indices matched to this model's own skeleton. Its mesh can still be edited at " +
-				"the same vertex and triangle count, which leaves that data untouched.";
+				"only a rigid or a skinned engine buffer can be RESIZED — a tree or foliage part " +
+				"states its counts in a different record layout. Its mesh can still be edited at " +
+				"the same vertex and triangle count.";
+			return false;
+		}
+
+		bool skinned = buffer.IsEngineSkinned;
+		if (skinned && (boneIndices is null || boneWeights is null))
+		{
+			error =
+				"this buffer is SKINNED: every vertex names four of the model's own bones, so a " +
+				"replacement needs bone indices and weights matched to this model's skeleton. " +
+				"Ship a rigged glTF whose joints are named as this model's bones are.";
 			return false;
 		}
 
@@ -272,20 +331,25 @@ public static class Engine_MdlWriter
 			return false;
 		}
 
-		// THE OTHER LODs ARE COLLAPSED ONTO THIS ONE, using the engine's own mechanism.
-		//
-		// A size of 0 at slot i does not mean "empty": `sub_8221CE48` recurses to slot i-1 and
-		// SHARES its object, which is why the shipped data contains headers like
-		// `lodCount 3, sizes (15374, 0, 7888)`. So a replacement writes its mesh into LOD 0 and
-		// zeroes the rest, and every distance draws the mod's mesh.
-		//
-		// Rewriting each LOD separately would need a decimated mesh per level, which is the
-		// modder's decision and not something to invent from their one mesh.
-		long lodZeroEnd = BodyStart + info.LodSizes[0];
-		if (buffer.VertexOffset < BodyStart)
+		foreach (MdlClothBlock cloth in info.ClothBlocks)
 		{
-			error = "this model's first mesh buffer sits before its geometry";
-			return false;
+			if (cloth.RecordIndex == (uint)bufferIndex)
+			{
+				error =
+					"this buffer carries a cloth simulation whose tables are sized to its own " +
+					"vertices; a replacement would simulate the old mesh. Its vertices can still " +
+					"be edited at the same count.";
+				return false;
+			}
+		}
+
+		foreach (MdlFurBlock fur in info.FurBlocks)
+		{
+			if (fur.RecordIndex == (uint)bufferIndex)
+			{
+				error = "this buffer carries a fur block; its vertices can still be edited at the same count.";
+				return false;
+			}
 		}
 
 		int vertexCount = positions.Length / 3;
@@ -316,101 +380,108 @@ public static class Engine_MdlWriter
 			}
 		}
 
-		// The record's fields are sequential, so their positions come backwards from the vertex
+		if (skinned && (boneIndices!.Length != vertexCount * 4 || boneWeights!.Length != vertexCount * 4))
+		{
+			error = "the bone indices and weights must be four per vertex";
+			return false;
+		}
+
+		if (skinned)
+		{
+			foreach (byte bone in boneIndices!)
+			{
+				if (bone >= info.Bones.Count)
+				{
+					error = $"a vertex names bone {bone}; this model has {info.Bones.Count}";
+					return false;
+				}
+			}
+		}
+
+		if (sections is not null)
+		{
+			foreach (MdlSectionSpec sec in sections)
+			{
+				if (sec.StartIndex < 0 || sec.TriangleCount < 0 ||
+					sec.StartIndex + ((long)sec.TriangleCount * 3) > triangleIndices.Length)
+				{
+					error = "a section reaches past the replacement's triangles";
+					return false;
+				}
+			}
+		}
+
+		// THE RECORD'S FIELDS ARE SEQUENTIAL, so their positions come backwards from the vertex
 		// data. Checked against the file before anything is written — a derivation that has
 		// drifted must not silently overwrite a string.
 		int sectionsAt = buffer.VertexOffset - (buffer.SubMeshes.Count * SectionSize);
 		int sectionCountAt = sectionsAt - 4;
-		int vertexCountAt = sectionCountAt - 16 - 12 - 12 - 4;
+		int vertexCountAt = sectionCountAt - 4 - (skinned ? 0 : RigidRecordBoundsBytes);
 		int indexCountAt = vertexCountAt - 4;
 
-		if (indexCountAt < 104 ||
+		if (indexCountAt < BodyStart ||
 			ReadU32(original, vertexCountAt) != buffer.VertexCount ||
 			ReadU32(original, indexCountAt) != buffer.FaceCount ||
 			ReadU32(original, sectionCountAt) != (uint)buffer.SubMeshes.Count)
 		{
 			error =
-				"this model's record does not sit where a static mesh's record sits, so the " +
-				"counts could not be located. It has not been touched.";
+				"this model's record does not sit where a " + (skinned ? "skinned" : "static") +
+				" mesh's record sits, so the counts could not be located. It has not been touched.";
 			return false;
 		}
 
+		// THE PER-VERTEX TAILS ARE STATED, NOT DERIVED. `ShDescriptor[4]` is the LOD's count of
+		// extra float4 UV sets per vertex, read out of the LOD header and the number the reader
+		// itself walks each record's second stream by. A set is zeroed in the rebuilt stream:
+		// nothing on our side reads it and the guest never draws; what matters is that its
+		// LENGTH follows the new vertex count.
+		uint sh4 = info.ShDescriptor.Length > 4 ? info.ShDescriptor[4] : 0;
 		int oldStride = StrideFor(buffer);
-		long oldGeometry = ((long)buffer.VertexCount * oldStride) + ((long)buffer.FaceCount * 2);
-		int geometryAt = buffer.VertexOffset;
-		long tailAt = geometryAt + oldGeometry;
-		if (tailAt > original.Length)
-		{
-			error = "the model's own geometry runs past the end of the file";
-			return false;
-		}
-
-		// A SECOND VERTEX STREAM IS SIZED PER VERTEX, AND THIS CANNOT REBUILD IT.
-		//
-		// After the indices a buffer may carry `vertexCount x 16 x N` more bytes — the extra UV
-		// sets, whose stride is stated once per LOD. Carrying that across verbatim while changing
-		// the vertex count leaves the walker consuming a length that no longer matches what is
-		// there, and the model stops parsing as an engine mesh at all.
-		//
-		// `TH_Hammers_Hammer` is the shape of it: 1,354 vertices and 31,316 bytes of geometry
-		// inside a 54,104-byte block, where 1,354 x 16 = 21,664 accounts for almost all the rest.
-		// Replacing its mesh with a smaller one succeeded on every field this writes and still
-		// produced a file the engine parser rejected.
-		//
-		// Refused rather than guessed at: a same-count replacement (`TryReplaceGeometry`) is
-		// unaffected and remains the way to edit these.
-		long blockEnd = lodZeroEnd;
-		if (tailAt > blockEnd)
+		long blockEnd = BodyStart + info.LodSizes[0];
+		long dataEnd = buffer.VertexOffset + ((long)buffer.VertexCount * oldStride) +
+			((long)buffer.FaceCount * 2) + ((long)buffer.VertexCount * SecondStreamSetBytes * sh4);
+		if (buffer.VertexOffset < BodyStart || dataEnd > blockEnd || blockEnd > original.Length)
 		{
 			error = "this model's first mesh buffer is not inside its first LOD";
 			return false;
 		}
 
-		long afterIndices = blockEnd - tailAt;
-
-		// THE SECOND STREAM IS REBUILT AT THE NEW VERTEX COUNT WHEN ITS SIZE CAN BE DERIVED.
-		//
-		// It holds N extra float4 UV sets per vertex, so its length is `vertexCount x 16 x N` and
-		// N follows from what the block already spends: 699 of 703 single-buffer static models
-		// account for exactly `vertexCount x 16 x N + 4`, with N either 1 (529 of them) or 0
-		// (170). The four bytes are the trailing word.
-		//
-		// Only for a single-buffer model: with more than one, the bytes after the first buffer's
-		// indices are the next record, and dividing them by a vertex count would be arithmetic on
-		// something else entirely.
-		//
-		// The rebuilt stream is zeroed. It carries extra UV sets that nothing on our side reads —
-		// the mount decodes stream 0 — and the guest never draws; what matters is that its LENGTH
-		// matches the vertex count, because the walker consumes it by that arithmetic.
-		bool vertexCountUnchanged = vertexCount == buffer.VertexCount;
-		long perVertexStream = (long)buffer.VertexCount * SecondStreamSetBytes;
-		int secondStreamSets = 0;
-		bool rebuildSecondStream = false;
-
-		if (!vertexCountUnchanged && afterIndices > TrailingAllowance && perVertexStream > 0)
+		// THE LIGHTMAP CHANNEL closes the LOD when the section flag is set: 4 bytes per rigid
+		// and tree vertex, in record order, skinned records excluded. A rigid buffer's slice is
+		// rebuilt (zeroed — a replacement mesh has no authored lightmap UVs) at the new count;
+		// the other records' slices are carried.
+		long lightmapBytes = 0;
+		long lightmapSliceAt = 0;
+		bool inLightmap = false;
+		if (info.SectionFlag != 0)
 		{
-			// N IS STATED ONCE PER LOD, so it is derived from the LAST buffer — the only one
-			// whose stream is followed by nothing but the trailing word. For every earlier
-			// buffer the bytes after its indices are the next record, and dividing those by a
-			// vertex count would be arithmetic on something else entirely.
-			int sets = DeriveSecondStreamSets(info, blockEnd);
-			if (sets > 0)
+			for (int i = 0; i < info.MeshBuffers.Count; i++)
 			{
-				secondStreamSets = sets;
-				rebuildSecondStream = true;
+				MdlMeshBuffer other = info.MeshBuffers[i];
+				if (other.IsEngineSkinned)
+				{
+					continue;
+				}
+
+				if (i == bufferIndex)
+				{
+					lightmapSliceAt = lightmapBytes;
+					inLightmap = true;
+				}
+
+				lightmapBytes += (long)other.VertexCount * 4;
 			}
 		}
 
-		if (afterIndices > TrailingAllowance && !vertexCountUnchanged && !rebuildSecondStream)
+		long lightmapAt = blockEnd - lightmapBytes;
+		if (lightmapAt < dataEnd)
 		{
-			error =
-				$"this buffer carries {afterIndices} bytes after its indices — a second vertex " +
-				$"stream, sized per vertex. A replacement must keep its {buffer.VertexCount} " +
-				$"vertices (this one has {vertexCount}); the triangles may change freely.";
+			error = "this model's lightmap channel overlaps its geometry; the LOD was not understood";
 			return false;
 		}
 
-		byte[] vertices = EncodeVertices(positions, uvs, normals, tangents, vertexCount);
+		byte[] vertices = EncodeVertices(
+			positions, uvs, normals, tangents, vertexCount, skinned, boneIndices, boneWeights);
 		var indices = new byte[triangleIndices.Length * 2];
 		for (int i = 0; i < triangleIndices.Length; i++)
 		{
@@ -419,25 +490,36 @@ public static class Engine_MdlWriter
 		}
 
 		int sectionCount = sections is not null && sections.Count > 0 ? sections.Count : 1;
-		int oldSectionsBytes = buffer.SubMeshes.Count * SectionSize;
 		int newSectionsBytes = sectionCount * SectionSize;
 
-		var built = new System.IO.MemoryStream(original.Length + vertices.Length + indices.Length + (newSectionsBytes - oldSectionsBytes) + 256);
+		var built = new MemoryStream(original.Length + vertices.Length + indices.Length + newSectionsBytes + 256);
 		built.Write(original, 0, sectionsAt);
 		built.Write(new byte[newSectionsBytes]);
 		built.Write(vertices, 0, vertices.Length);
 		built.Write(indices, 0, indices.Length);
+		built.Write(new byte[(long)vertexCount * SecondStreamSetBytes * sh4]);
 
-		int carryFrom = (int)tailAt;
-		if (rebuildSecondStream)
+		// The record's trailing words and every later record, up to the lightmap channel.
+		built.Write(original, (int)dataEnd, (int)(lightmapAt - dataEnd));
+
+		if (lightmapBytes != 0)
 		{
-			built.Write(new byte[(long)vertexCount * SecondStreamSetBytes * secondStreamSets]);
-			carryFrom += (int)(perVertexStream * secondStreamSets);
+			if (inLightmap)
+			{
+				long oldSlice = (long)buffer.VertexCount * 4;
+				built.Write(original, (int)lightmapAt, (int)lightmapSliceAt);
+				built.Write(new byte[vertexCount * 4]);
+				built.Write(original, (int)(lightmapAt + lightmapSliceAt + oldSlice),
+					(int)(lightmapBytes - lightmapSliceAt - oldSlice));
+			}
+			else
+			{
+				built.Write(original, (int)lightmapAt, (int)lightmapBytes);
+			}
 		}
 
 		// Only to the end of LOD 0 — the later LODs' bytes are dropped, and their sizes zeroed
 		// below so they alias this one.
-		built.Write(original, carryFrom, (int)(blockEnd - carryFrom));
 		byte[] bytes = built.ToArray();
 
 		WriteU32(bytes, vertexCountAt, (uint)vertexCount);
@@ -450,9 +532,9 @@ public static class Engine_MdlWriter
 			{
 				MdlSectionSpec sec = sections[s];
 				int section = sectionsAt + (s * SectionSize);
-				WriteU32(bytes, section, 0xFFFFFFFFu);
+				WriteU32(bytes, section, NoHideRegion);
 				WriteU32(bytes, section + 4, (uint)sec.MaterialIndex);
-				bytes[section + 8] = 0;
+				bytes[section + 8] = TriangleListSection;
 				WriteU32(bytes, section + 9, (uint)sec.TriangleCount);
 				WriteU32(bytes, section + 13, (uint)sec.StartIndex);
 
@@ -478,23 +560,30 @@ public static class Engine_MdlWriter
 		{
 			// One section, stating a triangle list over the whole buffer.
 			int section = sectionsAt;
-			WriteU32(bytes, section, 0xFFFFFFFFu);
+			WriteU32(bytes, section, NoHideRegion);
 			WriteU32(bytes, section + 4, 0);
-			bytes[section + 8] = 0;
+			bytes[section + 8] = TriangleListSection;
 			WriteU32(bytes, section + 9, (uint)(triangleIndices.Length / 3));
 			WriteU32(bytes, section + 13, 0);
 
 			WriteBounds(bytes, positions, vertexCount, section + 17, section + 29);
 		}
 
-		// THE RECORD'S BOUNDS SIT AFTER THE COUNTS, NOT BEFORE THEM. The order on disk is
+		// THE RIGID RECORD'S BOUNDS SIT AFTER THE COUNTS, NOT BEFORE THEM. The order on disk is
 		// indexCount, vertexCount, aabbMin, aabbMax, sphere, sectionCount — which is exactly how
 		// `vertexCountAt` was derived backwards from the sections. Writing them at negative
 		// offsets put the sphere on top of the vertex count and the box over the index count, and
 		// the rewritten file stopped parsing as an engine model at all.
-		WriteBounds(bytes, positions, vertexCount, vertexCountAt + 4, vertexCountAt + 16);
-		WriteSphere(bytes, positions, vertexCount, vertexCountAt + 28);
-		WriteHeaderBounds(bytes, positions, vertexCount);
+		if (!skinned)
+		{
+			WriteBounds(bytes, positions, vertexCount, vertexCountAt + 4, vertexCountAt + 16);
+			WriteSphere(bytes, positions, vertexCount, vertexCountAt + 28);
+		}
+
+		// THE HEADER'S BOUNDS COVER THE WHOLE MODEL, so they are the union of the replacement
+		// and every other buffer this LOD still carries — the sphere centre is what the guest
+		// culls and picks the LOD tier by.
+		WriteHeaderBounds(bytes, UnionPositions(original, info, bufferIndex, positions));
 
 		// THE LOD SIZES ARE THE LENGTHS THAT MUST FOLLOW. Slot 0 is the exact byte length of the
 		// block that is now the whole payload; the rest are zeroed so they alias it.
@@ -506,6 +595,40 @@ public static class Engine_MdlWriter
 
 		result = bytes;
 		return true;
+	}
+
+	/// <summary>
+	/// The replacement's positions followed by every OTHER LOD-0 buffer's, decoded from the
+	/// template: what the header's bounds have to cover.
+	/// </summary>
+	private static float[] UnionPositions(byte[] original, MdlInfo info, int bufferIndex, float[] positions)
+	{
+		var all = new List<float>(positions);
+		for (int i = 0; i < info.MeshBuffers.Count; i++)
+		{
+			if (i == bufferIndex)
+			{
+				continue;
+			}
+
+			MdlMeshBuffer other = info.MeshBuffers[i];
+			int stride = StrideFor(other);
+			if (other.IsAltPath || other.IsFoliagePath ||
+				!Fits(original, other.VertexOffset, (long)other.VertexCount * stride))
+			{
+				continue;
+			}
+
+			for (int v = 0; v < other.VertexCount; v++)
+			{
+				int p = other.VertexOffset + (v * stride);
+				all.Add(MdlReader.HalfToFloat((ushort)((original[p] << 8) | original[p + 1])));
+				all.Add(MdlReader.HalfToFloat((ushort)((original[p + 2] << 8) | original[p + 3])));
+				all.Add(MdlReader.HalfToFloat((ushort)((original[p + 4] << 8) | original[p + 5])));
+			}
+		}
+
+		return all.ToArray();
 	}
 
 	/// <summary>
@@ -988,45 +1111,51 @@ public static class Engine_MdlWriter
 	/// <summary>Where the geometry payload begins, stated by the header as 16 + headerSize.</summary>
 	public const int BodyStart = 104;
 
-	/// <summary>
-	/// How much may follow the index data before this refuses to resize.
-	///
-	/// A buffer with nothing after it carries a single trailing word; anything substantially
-	/// larger is a per-vertex stream this does not rebuild.
-	/// </summary>
-	public const int TrailingAllowance = 64;
+	/// <summary>A rigid record's AABB (two vec3) and sphere (vec4) between its counts and its section count.</summary>
+	public const int RigidRecordBoundsBytes = 40;
 
 	/// <summary>One extra UV set is a float4 per vertex.</summary>
 	public const int SecondStreamSetBytes = 16;
 
-	/// <summary>The word that closes a mesh-buffer record.</summary>
-	public const int TrailingWordBytes = 4;
+	/// <summary>A section's hide-region word when it belongs to none (`uint.MaxValue`, as the reader reads it).</summary>
+	public const uint NoHideRegion = 0xFFFFFFFFu;
 
-	/// <summary>
-	/// A sanity bound on the derived set count. The shipped data uses 0 or 1; anything large is
-	/// arithmetic that happened to divide, not a real stream.
-	/// </summary>
-	public const int MaxSecondStreamSets = 4;
+	/// <summary>The section flag byte stating a triangle list (non-zero is a strip).</summary>
+	public const byte TriangleListSection = 0;
 
 	private static byte[] EncodeVertices(
-		float[] positions, float[] uvs, float[] normals, float[] tangents, int vertexCount)
+		float[] positions, float[] uvs, float[] normals, float[] tangents, int vertexCount,
+		bool skinned, byte[]? boneIndices, byte[]? boneWeights)
 	{
-		var vertices = new byte[vertexCount * RigidStride];
+		int stride = skinned ? SkinnedStride : RigidStride;
+		int uvAt = skinned ? 20 : 12;
+		int tangentAt = skinned ? 24 : 16;
+		var vertices = new byte[vertexCount * stride];
 		for (int v = 0; v < vertexCount; v++)
 		{
-			int p = v * RigidStride;
+			int p = v * stride;
 			WriteHalf(vertices, p, positions[v * 3]);
 			WriteHalf(vertices, p + 2, positions[(v * 3) + 1]);
 			WriteHalf(vertices, p + 4, positions[(v * 3) + 2]);
+			WriteHalf(vertices, p + 6, RebuiltClusterOffset);
 
 			WriteU32(vertices, p + 8, normals.Length >= (v + 1) * 3
 				? EncodeNormal_11_11_10(normals[v * 3], normals[(v * 3) + 1], normals[(v * 3) + 2])
 				: EncodeNormal_11_11_10(0f, 0f, 1f));
 
-			WriteHalf(vertices, p + 12, uvs.Length >= (v + 1) * 2 ? uvs[v * 2] : 0f);
-			WriteHalf(vertices, p + 14, uvs.Length >= (v + 1) * 2 ? uvs[(v * 2) + 1] : 0f);
+			if (skinned)
+			{
+				for (int k = 0; k < 4; k++)
+				{
+					vertices[p + 12 + k] = boneIndices![(v * 4) + k];
+					vertices[p + 16 + k] = boneWeights![(v * 4) + k];
+				}
+			}
 
-			WriteU32(vertices, p + 16, tangents.Length >= (v + 1) * 4
+			WriteHalf(vertices, p + uvAt, uvs.Length >= (v + 1) * 2 ? uvs[v * 2] : 0f);
+			WriteHalf(vertices, p + uvAt + 2, uvs.Length >= (v + 1) * 2 ? uvs[(v * 2) + 1] : 0f);
+
+			WriteU32(vertices, p + tangentAt, tangents.Length >= (v + 1) * 4
 				? EncodeTangent_DEC3N(
 					tangents[v * 4], tangents[(v * 4) + 1], tangents[(v * 4) + 2], tangents[(v * 4) + 3])
 				: EncodeTangent_DEC3N(1f, 0f, 0f, 1f));
@@ -1062,8 +1191,9 @@ public static class Engine_MdlWriter
 	/// `file[0x48] == max(2 x radius, 0.5)` in all 5,446 shipped headers, exactly. Nothing was
 	/// found reading it, but the data says what correct is and it costs nothing to be right.
 	/// </summary>
-	private static void WriteHeaderBounds(byte[] bytes, float[] positions, int vertexCount)
+	private static void WriteHeaderBounds(byte[] bytes, float[] positions)
 	{
+		int vertexCount = positions.Length / 3;
 		WriteSphere(bytes, positions, vertexCount, 0x10);
 		WriteBounds(bytes, positions, vertexCount, 0x20, 0x2C);
 		Sphere(positions, vertexCount, out _, out float radius);
@@ -1143,47 +1273,6 @@ public static class Engine_MdlWriter
 
 	private static uint ReadU32(byte[] data, int at) =>
 		((uint)data[at] << 24) | ((uint)data[at + 1] << 16) | ((uint)data[at + 2] << 8) | data[at + 3];
-
-	/// <summary>
-	/// How many extra float4 UV sets each vertex carries, from the last buffer in the block.
-	///
-	/// Zero when it cannot be derived — which is the signal to refuse rather than to assume none.
-	/// </summary>
-	private static int DeriveSecondStreamSets(MdlInfo info, long blockEnd)
-	{
-		MdlMeshBuffer? last = null;
-		foreach (MdlMeshBuffer candidate in info.MeshBuffers)
-		{
-			if (last is null || candidate.VertexOffset > last.VertexOffset)
-			{
-				last = candidate;
-			}
-		}
-
-		if (last is null || last.VertexCount == 0)
-		{
-			return 0;
-		}
-
-		long end = last.VertexOffset + ((long)last.VertexCount * StrideFor(last)) +
-			((long)last.FaceCount * 2);
-		long after = blockEnd - end;
-		long perVertex = (long)last.VertexCount * SecondStreamSetBytes;
-
-		if (after == TrailingWordBytes)
-		{
-			return 0;
-		}
-
-		if (after <= TrailingWordBytes || perVertex <= 0 ||
-			(after - TrailingWordBytes) % perVertex != 0)
-		{
-			return 0;
-		}
-
-		long sets = (after - TrailingWordBytes) / perVertex;
-		return sets is > 0 and <= MaxSecondStreamSets ? (int)sets : 0;
-	}
 
 	private static bool Fits(byte[] data, int offset, long length) =>
 		offset >= 0 && offset + length <= data.Length;

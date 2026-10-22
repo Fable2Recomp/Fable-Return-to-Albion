@@ -1060,7 +1060,8 @@ public sealed partial class Engine_HudView : Node3D
     }
 
     /// <summary>
-    /// The meter copies as they stand, one line each, for the debug channel and the HUD meter lab:
+    /// The copies on their own slides as they stand — the meter copies, and every hud.json clone
+    /// that states <c>slides</c> — one line each, for the debug channel and the HUD meter lab:
     /// the copy's id and original, whether it is drawn, its own resolve's answer at its root (drawn,
     /// opacity, why dark) against the frame's, and where it is placed.
     /// </summary>
@@ -1068,7 +1069,7 @@ public sealed partial class Engine_HudView : Node3D
     {
         foreach (Built built in _built)
         {
-            if (built.MeterGeneration < 0)
+            if (built.MeterGeneration < 0 && built.SlideOverrides is null)
             {
                 continue;
             }

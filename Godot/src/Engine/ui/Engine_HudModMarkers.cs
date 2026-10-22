@@ -12,6 +12,13 @@ namespace Refii.Ui;
 /// A marker is composed into each player's sprite list the frame it is fed, so it is projected
 /// through that player's camera into that player's half, pinned and clipped exactly as the game's
 /// icons are, and rides the drawn body (the anchor carries the entity, <c>GameEntities.WorldAnchorFor</c>).
+/// THE GAME'S OWN WORLD ICONS go through this one composition too (<see cref="Compose"/> →
+/// <see cref="ComposeGame"/>): each icon the guest's vector states — its kind, its texture HASH,
+/// its tweened scale (the guest's own distance curve, already applied), its fade colour, its
+/// anchor, its two lines — is a sprite of the same list, shown to the view by the one per-player
+/// rule (<see cref="GameIconShownTo"/>) and badged for the shared couch screen
+/// (<see cref="GameIconBadge"/>). The guest is the sole source of what is lit, where, at what size
+/// and with which texture; nothing here re-derives a stated value.
 /// </summary>
 /// <remarks>
 /// <para>SIZED BY THE GAME'S OWN DISTANCE CURVE (<see cref="DistanceSize"/>): the guest sizes a
@@ -144,6 +151,73 @@ public static class Engine_HudModMarkers
 	/// <summary>The sprite key a marker takes on the layer: outside every guest address (the layer keys on the guest's object words).</summary>
 	public static uint SpriteKey(uint id) => 0xFE000000u | (id & 0xFFFFFFu);
 
+	/// <summary>An opinion icon of the game's: the splashes (1..20) and the relationship hearts (22..26).</summary>
+	public static bool IsOpinionIcon(uint type) => type is (>= 1u and <= 20u) or (>= 22u and <= 26u);
+
+	/// <summary>A relationship heart (22..26): the icon that carries a player badge on a shared couch screen.</summary>
+	public static bool IsHeartIcon(uint type) => type is >= 22u and <= 26u;
+
+	/// <summary>
+	/// THE ONE PER-PLAYER RULE for the game's own world icons (mod_events.cpp, the "_P2" keys): a
+	/// view drawn for player 1 shows player one's icons, and player two's too on one shared screen
+	/// — a couch screen, or an online joiner's window (it plays player two) — never an online host's
+	/// (<paramref name="hostOnline"/>: the joiner is sent player two's). Player two's half on split
+	/// screen (<paramref name="viewPlayer"/> 2, only while <paramref name="split"/>) shows player
+	/// two's icons and every icon that is not an opinion: each half shows its own player's hearts
+	/// and splashes, both halves the signs and markers.
+	/// </summary>
+	public static bool GameIconShownTo(bool playerTwo, bool opinion, int viewPlayer, bool split, bool hostOnline) =>
+		viewPlayer == 2
+			? split && (playerTwo || !opinion)
+			: !playerTwo || (!split && !hostOnline);
+
+	/// <summary>
+	/// The badge a game icon carries: the player a relationship heart is for ("1" or "2") when both
+	/// local players share one screen (<paramref name="localCoop"/> and not <paramref name="split"/>);
+	/// empty otherwise.
+	/// </summary>
+	public static string GameIconBadge(uint type, bool playerTwo, bool split, bool localCoop) =>
+		!split && localCoop && IsHeartIcon(type) ? (playerTwo ? "2" : "1") : string.Empty;
+
+	/// <summary>
+	/// THE WORLD ICONS OF ONE VIEW, composed into <paramref name="into"/>: the game's own first
+	/// (<see cref="ComposeGame"/>), the mods' markers after them (<see cref="ComposeMarkers"/>) —
+	/// one list for the one sprite layer. <paramref name="game"/> is the guest's live vector as
+	/// the bridge reads it; <paramref name="viewPlayer"/> 1 or 2; <paramref name="split"/> whether
+	/// the window is split; <paramref name="localCoop"/> whether both players are on this machine;
+	/// <paramref name="hostOnline"/> whether this machine hosts an online session.
+	/// </summary>
+	public static void Compose(List<Engine_HudWorldSprites.Sprite> into, IReadOnlyList<Refii.Host.HostBridge.WorldSprite> game,
+		int viewPlayer, bool split, bool localCoop, bool hostOnline, Func<Vector3, float?> distanceSquaredTo, double clock)
+	{
+		ComposeGame(into, game, viewPlayer, split, localCoop, hostOnline);
+		ComposeMarkers(into, viewPlayer, !split && localCoop, distanceSquaredTo, clock);
+	}
+
+	/// <summary>
+	/// The game's own world icons for one view, each exactly as the guest states it: the kind,
+	/// the texture hash (resolved by the layer), the fade colour, the entity, the anchor, the
+	/// tweened scale, the title and amount, the object word as its identity — those
+	/// <see cref="GameIconShownTo"/> the view, badged by <see cref="GameIconBadge"/>. A pooled
+	/// sprite (a prompt on a HUD element) is not an icon of this layer and is skipped.
+	/// </summary>
+	public static void ComposeGame(List<Engine_HudWorldSprites.Sprite> into, IReadOnlyList<Refii.Host.HostBridge.WorldSprite> game,
+		int viewPlayer, bool split, bool localCoop, bool hostOnline)
+	{
+		foreach (Refii.Host.HostBridge.WorldSprite sprite in game)
+		{
+			if (sprite.Pooled || !GameIconShownTo(sprite.PlayerTwo, IsOpinionIcon(sprite.Type), viewPlayer, split, hostOnline))
+			{
+				continue;
+			}
+
+			into.Add(new Engine_HudWorldSprites.Sprite(
+				sprite.Type, sprite.TextureHash, sprite.Colour, sprite.Entity, sprite.Anchor,
+				sprite.Scale, sprite.Title, sprite.Opinion, sprite.Object,
+				GameIconBadge(sprite.Type, sprite.PlayerTwo, split, localCoop)));
+		}
+	}
+
 	/// <summary>
 	/// Composes this frame's markers for one view into <paramref name="into"/>, after the game's
 	/// own sprites: those <see cref="ShownTo"/> the view, each anchored over its entity's stated
@@ -153,7 +227,7 @@ public static class Engine_HudModMarkers
 	/// position for <see cref="GoneSeconds"/> is dropped. <paramref name="clock"/> is any monotonic
 	/// seconds.
 	/// </summary>
-	public static void Compose(List<Engine_HudWorldSprites.Sprite> into, int viewPlayer, bool sharedScreen,
+	public static void ComposeMarkers(List<Engine_HudWorldSprites.Sprite> into, int viewPlayer, bool sharedScreen,
 		Func<Vector3, float?> distanceSquaredTo, double clock)
 	{
 		if (_marks.Count == 0)

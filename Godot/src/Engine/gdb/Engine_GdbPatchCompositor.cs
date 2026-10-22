@@ -41,6 +41,30 @@ public sealed class CompositeGdbResult
     public string WinningMod { get; set; } = string.Empty;
     public List<string> ContributingMods { get; } = new();
     public List<GdbRecordConflict> Conflicts { get; } = new();
+
+    /// <summary>Authored changes that reached the merged patch: values set, properties and entries added.</summary>
+    public int Applied { get; set; }
+
+    /// <summary>Rows a <c>.gdb.csv</c> stated that were not applied, each with its reason.</summary>
+    public List<string> Refused { get; } = new();
+
+    /// <summary>Entries the base database lacks, by name or hash.</summary>
+    public List<string> AddedEntries { get; } = new();
+
+    /// <summary>Properties no record of an entry's chain declared, as <c>Entry.Property</c>.</summary>
+    public List<string> AddedProperties { get; } = new();
+
+    /// <summary>Inherited properties now declared on the entry itself, as <c>Entry.Property</c>.</summary>
+    public List<string> Materialised { get; } = new();
+}
+
+/// <summary>
+/// One mod's contribution to one patch: a <c>.gdb.tu</c> or a <c>.gdb.csv</c>, loose on disk or
+/// inside a package. <see cref="EntryPath"/> is the package entry (or the loose file) that holds it.
+/// </summary>
+public readonly record struct GdbPatchSource(string ModName, string DiskPath, string EntryPath)
+{
+    public bool IsCsv => EntryPath.EndsWith(GdbCsvOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -150,7 +174,7 @@ public static class GdbPatchCompositor
                 continue;
             }
 
-            var (_, subConflicts) = MergeDatabases(subPath, modFiles);
+            var (_, subConflicts) = MergeSources(subPath, modFiles, BaseFor(subPath, null), new List<string>());
             conflicts.AddRange(subConflicts);
         }
 
@@ -173,67 +197,19 @@ public static class GdbPatchCompositor
             return results;
         }
 
-        // overlays is already LOWEST PRIORITY FIRST:
-        var tuFilesBySubPath = new Dictionary<string, List<(string ModName, string DiskPath)>>(StringComparer.OrdinalIgnoreCase);
-
+        // overlays is already LOWEST PRIORITY FIRST. A loose mod's root IS its "package path"
+        // (ModWorkspace.GetModAssetRoot), which is how the discovery tells the two apart.
+        var installs = new List<ModInstall>(overlays.Count);
         foreach (ModOverlay overlay in overlays)
         {
-            string sourcePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot;
-            if (File.Exists(sourcePath) && sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+            installs.Add(new ModInstall
             {
-                if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out _) && pkg is not null)
-                {
-                    using (pkg)
-                    {
-                        foreach (F2ModEntry entry in pkg.Entries)
-                        {
-                            if (!entry.Path.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
-                            {
-                                continue;
-                            }
-
-                            string normalized = ModLoadOrder.Normalize(entry.Path);
-                            if (!tuFilesBySubPath.TryGetValue(normalized, out var list))
-                            {
-                                list = new List<(string, string)>();
-                                tuFilesBySubPath[normalized] = list;
-                            }
-
-                            list.Add((overlay.Name, sourcePath));
-                        }
-                    }
-                }
-                continue;
-            }
-
-            if (!Directory.Exists(overlay.AssetRoot))
-            {
-                continue;
-            }
-
-            foreach (string file in ModManifest.EnumerateAssets(overlay.AssetRoot))
-            {
-                if (!file.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                string relative = Path.GetRelativePath(overlay.AssetRoot, file);
-                string normalized = ModLoadOrder.Normalize(relative);
-                if (normalized.Length == 0)
-                {
-                    continue;
-                }
-
-                if (!tuFilesBySubPath.TryGetValue(normalized, out var list))
-                {
-                    list = new List<(string, string)>();
-                    tuFilesBySubPath[normalized] = list;
-                }
-
-                list.Add((overlay.Name, file));
-            }
+                Name = overlay.Name,
+                PackagePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot,
+            });
         }
+
+        var tuFilesBySubPath = DiscoverTuFiles(installs);
 
         if (tuFilesBySubPath.Count == 0)
         {
@@ -270,8 +246,14 @@ public static class GdbPatchCompositor
             string currentStamp = ComputeCompositeStamp(modFiles);
 
             byte[] binary;
-            List<GdbRecordConflict> conflicts = new();
+            var refused = new List<string>();
             string winningMod = modFiles[^1].ModName;
+            GdbMulti? baseMulti = BaseFor(subPath, mounted);
+
+            // THE MERGE IS ALWAYS RUN: it is what the report states (who set what, who lost, what
+            // was refused, what was added), and it is cheap next to the synthesis and the write,
+            // which the cache does skip.
+            (GdbPatchDatabase mergedDb, List<GdbRecordConflict> conflicts) = MergeSources(subPath, modFiles, baseMulti, refused);
 
             // Check disk cache first:
             if (File.Exists(cachePath) && File.Exists(stampPath) &&
@@ -280,11 +262,6 @@ public static class GdbPatchCompositor
                 try
                 {
                     binary = File.ReadAllBytes(cachePath);
-                    if (modFiles.Count > 1)
-                    {
-                        // Re-discover conflict records for reporting:
-                        (_, conflicts) = MergeDatabases(subPath, modFiles);
-                    }
                 }
                 catch
                 {
@@ -298,33 +275,31 @@ public static class GdbPatchCompositor
 
             if (binary.Length == 0)
             {
-                GdbPatchDatabase mergedDb;
-                if (modFiles.Count == 1)
-                {
-                    mergedDb = LoadTuPatch(modFiles[0].DiskPath, subPath);
-                }
-                else
-                {
-                    (mergedDb, conflicts) = MergeDatabases(subPath, modFiles);
-                }
-
                 // Synthesize complete native records for the game engine so omitted baseline fields are preserved:
-                GdbMulti? baseMulti = Engine_GameGdb.BaseDatabase ?? Engine_GameGdb.Database;
-                if (mounted is not null && subPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
-                {
-                    string baseGdbSubPath = subPath[..^3];
-                    byte[]? baseGdbBytes = mounted.ReadBaseBytes(baseGdbSubPath) ?? mounted.ReadBaseBytes("data/" + baseGdbSubPath);
-                    if (baseGdbBytes is { Length: > 0 })
-                    {
-                        baseMulti = baseMulti is not null
-                            ? GdbMulti.BuildWithOverlays(baseMulti, new[] { baseGdbBytes })
-                            : GdbMulti.Build(new[] { baseGdbBytes });
-                    }
-                }
-
                 GdbPatchDatabase completeDb = GdbPatchBuilder.SynthesizeCompleteDatabase(mergedDb, baseMulti);
 
-                binary = GdbWriter.Serialize(completeDb);
+                try
+                {
+                    binary = GdbWriter.Serialize(completeDb);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // The writer's round-trip refused the container; the guest would have crashed
+                    // on it at boot. Nothing is mounted for this database and the report says why.
+                    refused.Add($"{subPath}: the merged patch could not be written — {ex.Message}");
+                    var failed = new CompositeGdbResult
+                    {
+                        SubPath = subPath,
+                        CachePath = cachePath,
+                        WinningMod = winningMod,
+                    };
+                    failed.ContributingMods.AddRange(modFiles.Select(m => m.ModName));
+                    failed.Conflicts.AddRange(conflicts);
+                    failed.Refused.AddRange(refused);
+                    results.Add(failed);
+                    LogWarning($"[gdb_compositor] {refused[^1]}");
+                    continue;
+                }
 
                 try
                 {
@@ -362,6 +337,8 @@ public static class GdbPatchCompositor
             };
             res.ContributingMods.AddRange(modFiles.Select(m => m.ModName));
             res.Conflicts.AddRange(conflicts);
+            res.Refused.AddRange(refused);
+            Classify(mergedDb, baseMulti, res);
             results.Add(res);
         }
 
@@ -465,10 +442,56 @@ public static class GdbPatchCompositor
         }
     }
 
-    private static Dictionary<string, List<(string ModName, string DiskPath)>> DiscoverTuFiles(
+    /// <summary>
+    /// The patch a path contributes to: a <c>.gdb.tu</c> is itself, a <c>.gdb.csv</c> compiles
+    /// to the <c>.gdb.tu</c> beside the database it names. Empty for any other path.
+    /// </summary>
+    public static string PatchSubPathOf(string normalizedPath)
+    {
+        if (normalizedPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+        {
+            return normalizedPath;
+        }
+
+        if (normalizedPath.EndsWith(GdbCsvOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return normalizedPath[..^4] + ".tu";
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Every mod's patch sources by the patch they contribute to, in mount order. A mod may ship
+    /// both a <c>.gdb.tu</c> and a <c>.gdb.csv</c> for one database; both merge, the rows last.
+    /// </summary>
+    private static Dictionary<string, List<GdbPatchSource>> DiscoverTuFiles(
         IReadOnlyList<ModInstall> enabledModsInMountOrder)
     {
-        var tuFilesBySubPath = new Dictionary<string, List<(string ModName, string DiskPath)>>(StringComparer.OrdinalIgnoreCase);
+        var tuFilesBySubPath = new Dictionary<string, List<GdbPatchSource>>(StringComparer.OrdinalIgnoreCase);
+
+        void Add(string subPath, GdbPatchSource source)
+        {
+            if (!tuFilesBySubPath.TryGetValue(subPath, out var list))
+            {
+                list = new List<GdbPatchSource>();
+                tuFilesBySubPath[subPath] = list;
+            }
+
+            // Within one mod the binary patch comes first and the rows after, so a hand-written
+            // row overrides what the Studio compiled.
+            int insertAt = list.Count;
+            if (!source.IsCsv)
+            {
+                while (insertAt > 0 && list[insertAt - 1].IsCsv &&
+                    string.Equals(list[insertAt - 1].ModName, source.ModName, StringComparison.OrdinalIgnoreCase))
+                {
+                    insertAt--;
+                }
+            }
+
+            list.Insert(insertAt, source);
+        }
 
         foreach (ModInstall mod in enabledModsInMountOrder)
         {
@@ -480,19 +503,14 @@ public static class GdbPatchCompositor
                     {
                         foreach (F2ModEntry entry in pkg.Entries)
                         {
-                            if (!entry.Path.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
+                            string normalized = ModLoadOrder.Normalize(entry.Path);
+                            string subPath = PatchSubPathOf(normalized);
+                            if (subPath.Length == 0)
                             {
                                 continue;
                             }
 
-                            string normalized = ModLoadOrder.Normalize(entry.Path);
-                            if (!tuFilesBySubPath.TryGetValue(normalized, out var list))
-                            {
-                                list = new List<(string, string)>();
-                                tuFilesBySubPath[normalized] = list;
-                            }
-
-                            list.Add((mod.Name, mod.PackagePath));
+                            Add(subPath, new GdbPatchSource(mod.Name, mod.PackagePath, entry.Path));
                         }
                     }
                 }
@@ -507,49 +525,185 @@ public static class GdbPatchCompositor
 
             foreach (string file in ModManifest.EnumerateAssets(assetRoot))
             {
-                if (!file.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
                 string relative = Path.GetRelativePath(assetRoot, file);
                 string normalized = ModLoadOrder.Normalize(relative);
-                if (normalized.Length == 0)
+                string subPath = PatchSubPathOf(normalized);
+                if (subPath.Length == 0)
                 {
                     continue;
                 }
 
-                if (!tuFilesBySubPath.TryGetValue(normalized, out var list))
-                {
-                    list = new List<(string, string)>();
-                    tuFilesBySubPath[normalized] = list;
-                }
-
-                list.Add((mod.Name, file));
+                Add(subPath, new GdbPatchSource(mod.Name, file, file));
             }
         }
 
         return tuFilesBySubPath;
     }
 
-    private static GdbPatchDatabase LoadTuPatch(string sourcePath, string subPath)
+    /// <summary>
+    /// The unpatched records a patch on <paramref name="subPath"/> is read against: the shared
+    /// supplemental set, plus the database the patch names when it is not among them.
+    /// </summary>
+    private static GdbMulti? BaseFor(string subPath, BnkFileSystem? mounted)
     {
-        if (sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+        GdbMulti? baseMulti = Engine_GameGdb.BaseDatabase ?? Engine_GameGdb.Database;
+        if (!subPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase))
         {
-            if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out _) && pkg is not null)
+            return baseMulti;
+        }
+
+        string baseGdbSubPath = subPath[..^3];
+        if (baseMulti is not null)
+        {
+            foreach (string supplemental in Refii.Level.Engine_LevelProps.SupplementalGdbPaths)
+            {
+                if (string.Equals(ModLoadOrder.Normalize(supplemental), baseGdbSubPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return baseMulti;
+                }
+            }
+        }
+
+        byte[]? baseGdbBytes = mounted is not null
+            ? mounted.ReadBaseBytes(baseGdbSubPath) ?? mounted.ReadBaseBytes("data/" + baseGdbSubPath)
+            : Engine_GameGdb.ReadBaseBytes(baseGdbSubPath);
+        if (baseGdbBytes is not { Length: > 0 })
+        {
+            return baseMulti;
+        }
+
+        return baseMulti is not null
+            ? GdbMulti.BuildWithOverlays(baseMulti, new[] { baseGdbBytes })
+            : GdbMulti.Build(new[] { baseGdbBytes });
+    }
+
+    /// <summary>
+    /// One source as a sparse patch database. A <c>.gdb.csv</c> is compiled here against
+    /// <paramref name="baseMulti"/>; its refused rows go to <paramref name="refused"/>, prefixed
+    /// with the mod and the file.
+    /// </summary>
+    private static GdbPatchDatabase LoadTuPatch(GdbPatchSource source, string subPath, GdbMulti? baseMulti, List<string> refused)
+    {
+        byte[]? bytes = null;
+        if (source.DiskPath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+        {
+            if (F2ModPackage.TryOpen(source.DiskPath, out F2ModPackage? pkg, out _) && pkg is not null)
             {
                 using (pkg)
                 {
-                    if (pkg.TryGetEntry(subPath, out F2ModEntry? entry) && entry is not null)
+                    string entryPath = source.EntryPath.Length != 0 ? source.EntryPath : subPath;
+                    if (pkg.TryGetEntry(entryPath, out F2ModEntry? entry) && entry is not null)
                     {
-                        return GdbPatchBuilder.LoadOrCreatePatchDatabase(pkg.ReadEntryBytes(entry));
+                        bytes = pkg.ReadEntryBytes(entry);
                     }
                 }
             }
+        }
+        else
+        {
+            try
+            {
+                bytes = File.ReadAllBytes(source.DiskPath);
+            }
+            catch (Exception ex)
+            {
+                refused.Add($"{source.ModName}: {source.EntryPath}: {ex.Message}");
+                return new GdbPatchDatabase();
+            }
+        }
+
+        if (bytes is null)
+        {
             return new GdbPatchDatabase();
         }
 
-        return GdbPatchBuilder.LoadOrCreatePatchDatabase(sourcePath);
+        if (!source.IsCsv)
+        {
+            return GdbPatchBuilder.LoadOrCreatePatchDatabase(bytes);
+        }
+
+        if (baseMulti is null)
+        {
+            refused.Add($"{source.ModName}: {source.EntryPath}: no database to read the rows against; the file is skipped");
+            return new GdbPatchDatabase();
+        }
+
+        GdbCsvResult compiled = GdbCsvOverlay.Parse(Encoding.UTF8.GetString(bytes), baseMulti);
+        foreach (string error in compiled.Errors)
+        {
+            refused.Add($"{source.ModName}: {source.EntryPath}: {error}");
+        }
+
+        return compiled.Database;
+    }
+
+    /// <summary>
+    /// What the merged patch does to the base, for the report: an entry the base lacks is ADDED;
+    /// a property no record of the entry's chain declares is ADDED; one an ancestor declares is
+    /// MATERIALISED on the entry; the rest are values set. A property equal to the base's own
+    /// value is not a change (a <c>.gdb.tu</c> carries flattened baseline fields).
+    /// </summary>
+    public static void Classify(GdbPatchDatabase merged, GdbMulti? baseMulti, CompositeGdbResult result)
+    {
+        string EntryName(uint id)
+        {
+            if (merged.Names.TryGetValue(id, out string? own) && own.Length != 0)
+            {
+                return own;
+            }
+
+            string known = baseMulti?.NameOf(id) ?? string.Empty;
+            return known.Length != 0 ? known : $"0x{id:X8}";
+        }
+
+        string PropertyName(uint hash)
+        {
+            if (merged.Names.TryGetValue(hash, out string? own) && own.Length != 0)
+            {
+                return own;
+            }
+
+            string known = baseMulti?.NameOf(hash) ?? string.Empty;
+            return known.Length != 0 ? known : $"0x{hash:X8}";
+        }
+
+        foreach (GdbPatchEntry entry in merged.Entries)
+        {
+            if (baseMulti is null || !baseMulti.TryLookup(entry.Id, out GdbCursor at) || !at.Valid)
+            {
+                result.AddedEntries.Add(EntryName(entry.Id));
+                result.Applied += 1 + entry.Properties.Count(p => p.NameHash != GdbView.HashParent);
+                continue;
+            }
+
+            foreach (GdbPatchProperty property in entry.Properties)
+            {
+                if (at.View.TryFindLocalRaw(at.Record, property.NameHash, -1, out uint local, out _))
+                {
+                    if (local != property.Value)
+                    {
+                        result.Applied++;
+                    }
+
+                    continue;
+                }
+
+                string key = $"{EntryName(entry.Id)}.{PropertyName(property.NameHash)}";
+                if (baseMulti.TryFindInherited(at, property.NameHash, -1, out _, out uint inherited, out _))
+                {
+                    if (inherited != property.Value || merged.Names.ContainsKey(property.NameHash))
+                    {
+                        result.Materialised.Add(key);
+                        result.Applied++;
+                    }
+
+                    continue;
+                }
+
+                result.AddedProperties.Add(key);
+                result.Applied++;
+            }
+        }
     }
 
     /// <summary>
@@ -562,16 +716,32 @@ public static class GdbPatchCompositor
         string subPath,
         IReadOnlyList<(string ModName, string DiskPath)> modFiles)
     {
+        var sources = new List<GdbPatchSource>(modFiles.Count);
+        foreach (var (modName, diskPath) in modFiles)
+        {
+            bool packaged = diskPath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase);
+            sources.Add(new GdbPatchSource(modName, diskPath, packaged ? subPath : diskPath));
+        }
+
+        return MergeSources(subPath, sources, BaseFor(subPath, null), new List<string>());
+    }
+
+    /// <summary><see cref="MergeDatabases"/> over sources of either form, collecting refused rows.</summary>
+    public static (GdbPatchDatabase MergedDb, List<GdbRecordConflict> Conflicts) MergeSources(
+        string subPath,
+        IReadOnlyList<GdbPatchSource> modFiles,
+        GdbMulti? baseMulti,
+        List<string> refused)
+    {
         var merged = new GdbPatchDatabase();
         var recordMap = new Dictionary<uint, GdbPatchEntry>();
         var propertyOwners = new Dictionary<(uint RecordId, uint PropHash), string>();
         var conflictsByRecordProp = new Dictionary<(uint RecordId, uint PropHash), GdbRecordConflict>();
 
-        GdbMulti? baseMulti = Engine_GameGdb.BaseDatabase ?? Engine_GameGdb.Database;
-
-        foreach (var (modName, diskPath) in modFiles)
+        foreach (GdbPatchSource source in modFiles)
         {
-            GdbPatchDatabase db = LoadTuPatch(diskPath, subPath);
+            string modName = source.ModName;
+            GdbPatchDatabase db = LoadTuPatch(source, subPath, baseMulti, refused);
 
             foreach (GdbPatchEntry entry in db.Entries)
             {
@@ -762,12 +932,12 @@ public static class GdbPatchCompositor
         return $"0x{hash:X8}";
     }
 
-    private static string ComputeCompositeStamp(IReadOnlyList<(string ModName, string DiskPath)> modFiles)
+    private static string ComputeCompositeStamp(IReadOnlyList<GdbPatchSource> modFiles)
     {
         var sb = new StringBuilder();
-        foreach (var (modName, diskPath) in modFiles)
+        foreach (var (modName, diskPath, entryPath) in modFiles)
         {
-            sb.Append(modName).Append(':');
+            sb.Append(modName).Append(':').Append(entryPath).Append(':');
             try
             {
                 var fi = new FileInfo(diskPath);

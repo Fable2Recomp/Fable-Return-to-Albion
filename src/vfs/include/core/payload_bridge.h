@@ -387,13 +387,18 @@ float refii_bridge_mod_setting_f32(const char* key, size_t key_length, float fal
 // The mod event bus, both ways across the bridge (state in src/core/mod_values.cpp):
 // - the payload POSTS an event the host asked for (`fields` is the Lua-table-literal body the
 //   bus builds for Lua handlers) and the host drains them in order (Godot scripts' RefiiHost);
-// - the host's MASK says which kinds it wants (bit = kind; nothing is queued otherwise);
+// - the host's MASK says which kinds it wants (bit = kind; nothing is queued otherwise):
+//   REFII_MOD_HOST_MASK_WORDS words of 64, word w holding kinds 64w..64w+63. Words 0 and 1 arrive
+//   through the host's two mask exports (RefiiHostSetModEventMask / ...MaskHigh), the words past
+//   them through the tick's command lane (mod_commands.cpp `mask_word`); the verdict mask below
+//   has the same shape. A kind at or past 64 * REFII_MOD_HOST_MASK_WORDS is never posted — the
+//   catalog's test holds REFII_EVENT_COUNT under it.
 // - the host POSTS an input edge (a mod's input.json action, pressed or released, for player 1
 //   or 2) and the payload's tick polls them into InputAction events.
+#define REFII_MOD_HOST_MASK_WORDS 4
 void refii_bridge_mod_event_post(int32_t kind, const char* fields, size_t length);
-uint64_t refii_bridge_mod_host_event_mask(void);
-// Kinds 64..127.
-uint64_t refii_bridge_mod_host_event_mask_high(void);
+uint64_t refii_bridge_mod_host_event_mask_word(int32_t word);
+void refii_bridge_mod_set_host_event_mask_word(int32_t word, uint64_t mask);
 int32_t refii_bridge_mod_input_poll(char* out_name, size_t capacity, int32_t* out_player,
                                     int32_t* out_pressed);
 // - the host POSTS a command line (a helper call or a query from a Godot script, the grammar in
@@ -416,11 +421,9 @@ void refii_bridge_mod_handle_forget(uint32_t address);
 typedef int32_t (*refii_mod_verdict_fn)(int32_t kind, const char* fields, size_t length, char* out, size_t capacity);
 void refii_bridge_mod_set_verdict_handler(refii_mod_verdict_fn handler);
 refii_mod_verdict_fn refii_bridge_mod_verdict_handler(void);
-void refii_bridge_mod_set_verdict_mask(uint64_t mask);
-uint64_t refii_bridge_mod_verdict_mask(void);
-// Kinds 64..127.
-void refii_bridge_mod_set_verdict_mask_high(uint64_t mask);
-uint64_t refii_bridge_mod_verdict_mask_high(void);
+//   The mask is REFII_MOD_HOST_MASK_WORDS words, as the event mask.
+void refii_bridge_mod_set_verdict_mask_word(int32_t word, uint64_t mask);
+uint64_t refii_bridge_mod_verdict_mask_word(int32_t word);
 
 // PLAYER STATE (state in src/core/player_state.cpp, the contract in core/player_state.h): a mod's
 // per-player values, owned by the machine that plays the hero and the same on both machines.

@@ -2,28 +2,29 @@
 
 Fable 3's spell weaving brought to Fable 2: a second spell, the **partner**, is cast together with
 the spell on the charged slot, at the same power, at the same target, from the same release. A
-hard mod; the design and the binary evidence are in `docs/hard_mods_plan.md` (Part D) and the
-memory notes behind it.
+hard mod with NO native code: everything it does is Lua on the mod API (`docs/mod_api.md`), one
+file, `mod/init.lua`. The design and the binary evidence are in `docs/hard_mods_plan.md` (Part D,
+Part H.15) and the memory notes behind it.
 
-It ships with the app and installs switched off, like Souls Combat. Its native parts are handlers
-on the mod API's events (`docs/mod_api.md`): the pair is stood in through `SpellLaunch`, the
-partner is cast from `HitLanded` with `refii_mod_cast_spell`, and the weave side's damage is
-scaled on `Hit`. Enabled beside Souls Combat, a weave's launch raises the same `SpellLaunched`
-event Souls Combat charges mana on, so a weave costs a cast's mana without either mod knowing
-about the other. What it still hooks by name is a seam no event covers: the vortex component's
-init and shutdown, and the targeted fireball's impact.
+It ships with the app and installs switched off, like Souls Combat. The pair is stood in through
+`spell_launch` (the slot's type, writable for that launch), the partner is cast from `hit_landed`
+with `Refii.cast_spell`, the weave side's damage is scaled on `hit`, and the base's parts and
+lifecycle come from `spell_parts`, `vortex_started`, `vortex_ended` and `fireball_impact`. Enabled
+beside Souls Combat, a weave's launch raises the same `spell_launched` event Souls Combat charges
+mana on, so a weave costs a cast's mana without either mod knowing about the other. It hooks
+nothing by name and reads no guest memory; a soft mod, it needs no rebuild of the game module.
 
 ## What it changes
 
 | Piece | File | What it does |
 |---|---|---|
-| The picker | `ui/spellwheel.json`, `language/en-uk/text/book.babel.csv` | The partner is a spell slot PICK the engine runs (`docs/mod_api.md`, "Spell slot picks"): X on a highlighted spell in either selector makes it the highlighted slot's partner; Y removes the partner. The engine raises `SpellPick` and saves the pick as the selectors' player's `spell_weaving.partner_<slot>`; `weave.cpp` only refuses Slow Time and Raise Dead on that event. Its icon sits small under that slot's icon, and goes with it on Y. Once Spell Weaving is learned (`unlocked`: `player:spell_weaving.ability`), the spell selection page shows two prompts beside its own, X "Set Partner" and Y "Remove Partner" (`SPELL_WEAVING_SET_PARTNER`, `SPELL_WEAVING_REMOVE_PARTNER`). Another enabled mod's picks are drawn beside the partner under each slot; X and Y act on one pick at a time, drawn larger (a press with nothing to do, or LB/RB on the spell page, steps to the next). |
-| The pair | `native/weave.cpp`, `native/woven.cpp` | One combined cast, as Fable 3 has it. Of the slot's spell and the partner, the higher in the hierarchy below is the base and is the one spell launched, through the game's own launch with the base's type in the slot for the length of the call. The lower spell, the overlay, is never launched by the player: at the base's own moment — every victim it hits (for the Vortex, every creature its shudder hits reach); for a Fireball that strikes nothing alive, the impact point itself — a real Targeted cast of the overlay is made `shot_delay` seconds later (0.25, ±5 %) by the game's own spell factory with the hero as caster, exactly how Fable III's primary casts its partner. The partner's hits land at `weave_damage` (0.7) of their damage. One partner cast per victim per base cast; a weave-side spell never casts a partner of its own. The partner must be a spell the hero has learned. Slow Time and Raise Dead are never partners. |
-| Fable 3 pacing | `native/weave.cpp` | By default only the charged slot casts. Fable 2's cascade, which fires slots 1, 2, 3 in turn up to the charge, is skipped slot by slot; `top_only = 0` restores it, pair included. |
-| The Hybrid tree | `ui/abilities.json`, `ui/templates.json`, `language/en-uk/text/book.babel.csv` | A fourth page on the abilities screen, **Hybrid**, holding the Spell Weaving ability: five levels, level N weaves casts up to power N. DECLARED and run by the engine (`docs/mod_api.md`, "Mod abilities"): priced like a spell (`costLike` 8, Fireball's experience table, or the one the setting `cost_like` names) and **paid half from Will, half from Skill** (`disciplines`), General filling each half's gap as Fable 2 fills one pool's. The page lights both orbs and shows their combined total. Y unlearns a level through the game's own confirm, refunding half the level's cost to General (`"refund": "half"`). The level is a saved player value (`spell_weaving.ability`) that goes home with the hero's own save (see below); the mod only reads it. |
-| The HUD glyph | `ui/hud.json`, `native/weave.cpp` | While a hero charges, the partner the charged slot would weave is drawn beside the charge meter: the native code states `spell_weaving.hud_partner` in that player's store from the charge level each frame, -1 when the slot has no partner in effect or nothing is charging, and the HUD picture piece shows the matching will icon from the list in `ui/hud.json` (`textures` chosen by `index`: `player:spell_weaving.hud_partner`). ONE piece serves both players: a piece that follows player one's charge meter and reads a `player:` value also follows player two's (`SpellCharging2`), reading player two's. |
+| The picker | `ui/spellwheel.json`, `language/en-uk/text/book.babel.csv` | The partner is a spell slot PICK the engine runs (`docs/mod_api.md`, "Spell slot picks"): X on a highlighted spell in either selector makes it the highlighted slot's partner; Y removes the partner. The engine raises `spell_pick` and saves the pick as the selectors' player's `spell_weaving.partner_<slot>`; `mod/init.lua` only refuses Slow Time and Raise Dead on that event. Its icon sits small under that slot's icon, and goes with it on Y. Once Spell Weaving is learned (`unlocked`: `player:spell_weaving.ability`), the spell selection page shows two prompts beside its own, X "Set Partner" and Y "Remove Partner" (`SPELL_WEAVING_SET_PARTNER`, `SPELL_WEAVING_REMOVE_PARTNER`). Another enabled mod's picks are drawn beside the partner under each slot; X and Y act on one pick at a time, drawn larger (a press with nothing to do, or LB/RB on the spell page, steps to the next). |
+| The pair | `mod/init.lua` | One combined cast, as Fable 3 has it. Of the slot's spell and the partner, the higher in the hierarchy below is the base and is the one spell launched, through the game's own launch with the base's type in the slot for the length of the call (`spell_launch`, `e.type`). The lower spell, the overlay, is never launched by the player: at the base's own moment — every victim it hits (for the Vortex, every creature its shudder hits reach); for a Fireball that strikes nothing alive, the impact point itself — a real Targeted cast of the overlay is made `shot_delay` seconds later (0.25 for a vortex, 1 otherwise, ±5 %) by the game's own spell factory with the hero as caster (`Refii.cast_spell`), as Fable III's primary casts its partner. The partner's hits land at `weave_damage` (0.7) of their damage (`hit`, `e.damage`). One partner cast per victim per base cast; a weave-side spell never casts a partner of its own. The partner must be a spell the hero has learned (`Refii.ability_level`). Slow Time and Raise Dead are never partners. |
+| Fable 3 pacing | `mod/init.lua` | By default only the charged slot casts. Fable 2's cascade, which fires slots 1, 2, 3 in turn up to the charge, is skipped slot by slot (`spell_launch` with `cascading` cancelled); `top_only = 0` restores it, pair included. |
+| The Hybrid tree | `ui/abilities.json`, `ui/templates.json`, `language/en-uk/text/book.babel.csv` | A fourth page on the abilities screen, **Hybrid**, holding the Spell Weaving ability: five levels, level N weaves casts up to power N. DECLARED and run by the engine (`docs/mod_api.md`, "Mod abilities"): priced like a spell (`costLike` 8, Fireball's experience table, or the one the setting `cost_like` names) and **paid half from Will, half from Skill** (`disciplines`), General filling each half's gap as Fable 2 fills one pool's. The page lights both orbs and shows their combined total. Y unlearns a level through the game's own confirm, refunding half the level's cost to General (`"refund": "half"`). The level is a saved player value (`spell_weaving.ability`) that goes home with the hero's own save (see below); the mod only reads it (`Refii.player_value`). |
+| The HUD glyph | `ui/hud.json`, `mod/init.lua` | While a hero charges, the partner the charged slot would weave is drawn beside the charge meter: the Lua states `spell_weaving.hud_partner` in that player's store from the charge level (`spell_charge_level`; a launch, `spell_launched`, ends it), -1 when the slot has no partner in effect or nothing is charging, and the HUD picture piece shows the matching will icon from the list in `ui/hud.json` (`textures` chosen by `index`: `player:spell_weaving.hud_partner`). ONE piece serves both players: a piece that follows player one's charge meter and reads a `player:` value also follows player two's (`SpellCharging2`), reading player two's. |
 | Ability card, slot frame | `art/gui/abilitytarot/spell_weaving.tex.png`, `art/gui/hud/spell_weaving_slot.tex.png` | The still the abilities book shows for Spell Weaving, and the partner slot's empty frame on the selectors (`tools/spell_weaving_icons.py`, our own art). |
-| Woven effects | `native/woven.cpp` | When a hit from the base lands on a victim, a Targeted cast of the overlay is queued on that victim — the game's own spell factory, the hero as caster, the victim as target, placed on the victim, `shot_delay` later at the base's power. The partner spell then does what it always does: burns, shocks, shoves, turns, or sends blades. Its hits are scaled by `weave_damage`. The one place every hit arrives is hooked; the attacker, the victim, the serial, the level, the spell type and the damage are read from the hit. |
+| Woven effects | `mod/init.lua` | When a hit from the base lands on a victim (`hit_landed`), a Targeted cast of the overlay is queued on that victim — the game's own spell factory, the hero as caster, the victim as target, `shot_delay` later at the base's power. The partner spell then does what it always does: burns, shocks, shoves, turns, or sends blades. Its hits are scaled by `weave_damage`. The one place every hit arrives is the event; the attacker, the victim, the serial, the level, the spell type and the damage are its fields. |
 
 ## The fifteen pairs
 
@@ -65,14 +66,15 @@ One spell of the pair is the **base** and the other's look is applied onto it, b
 
 Each pair's look is an EFFECT of the mod's own, `fx/effects/spell_weaving_<base>_<overlay>.json`,
 in the particle bank's own model and made of the bank's own entities, so the guest's bank carries
-it and BOTH looks draw it (`docs/mod_api.md`, "Mod effects"). `native/woven.cpp` plays it per cast
-with `refii_mod_play_fx_on` on each thing the cast rides — the vortex entity, the fireball's shot,
+it and BOTH looks draw it (`docs/mod_api.md`, "Mod effects"). `mod/init.lua` plays it per cast
+with `Refii.play_fx_on` on each thing the cast rides — the vortex entity, the fireball's shot,
 each hovering Blades sword, each victim of a bolt, shove or chaos for its hold — and
-`refii_mod_stop_fx` ends each play when that thing is gone (the vortex's shutdown, the fireball's
-impact, a sword's stab, a victim's hold running out, the weave finishing). Liveness comes from the
-spell registry for every base but Vortex: the vortex spell object finishes itself the moment it has
-spawned its entity, so the mod hooks the vortex component's init and shutdown
-(`rex_VortexComponent_Init` / `rex_VortexComponent_Shutdown`).
+`Refii.stop_fx` ends each play when that thing is gone (the vortex's shutdown, the fireball's
+impact, a sword's stab, a victim's hold running out, the weave finishing). What the cast put in
+the world comes from `Refii.spell_parts(serial)` — the vortex entity, the fireball's shot, the
+Blades' swords as the cast's own controller holds them — and the vortex's life from the API's
+`vortex_started` / `vortex_ended` events (the vortex spell object finishes itself the moment it
+has spawned its entity, so nothing else says when the twister ends).
 
 `fx/recipes.json` keeps one recipe per pair for the base spell's OWN effects: `"with"` names the
 pair's effect, and a base effect is dressed only where a play of it rides the same entity or stands
@@ -98,6 +100,8 @@ the same way, at the same rates, speeds, lives and sizes — drawn with Fable II
 `SpellWeavingLookTests` pins each build (the orbital, the column's speed, lift and keys and the
 height they reach; the spline down the blade and the size of what rides it; the shot's emitters
 on the ball; the one burst a play) and that no texture is one of Fable III's own.
+`SpellWeavingLuaTests` pins the port: no native folder, every `Refii.*` name in the catalog, the
+chunk compiling with the game's own compiler, and the keys the Lua shares with the declared UI.
 
 The side-by-side renders against Fable III's own effects come from the FX Lab scene
 (`Godot/src/tools/FxWeaveLab.cs`: `REFII_LAB_BANK` draws Fable III's bank, `REFII_LAB_SWORD_ORBIT`
@@ -108,8 +112,8 @@ stand behind the travelling twister (an open item).
 
 **The tinted swords.** Each sword of a woven Blades cast wears its partner's colour — red for
 Fire, blue for Shock, violet for Chaos, dark slate steel for Force Push — under the woven burn
-that rides it. `native/woven.cpp` sets it through the game's own appearance tint setter
-(`refii_mod_entity_tint`, the mod API's tint: `sub_82573770` on the sword's renderable), so the
+that rides it. `mod/init.lua` sets it through the game's own appearance tint setter
+(`Refii.entity_tint`, the mod API's tint: `sub_82573770` on the sword's renderable), so the
 modern and the classic look both draw it and every machine running the cast tints its own copy;
 either player's weave tints that player's swords. It is set once per sword: the sword's own update
 restates its scale and its fade every frame but never its tint, and a sword is destroyed 0.35 s
@@ -121,15 +125,22 @@ weave lab (`REFII_LAB_SWORD_TINT=r,g,b` draws the flown sword with that stated t
 
 **The partner is a position cast, as Fable III's is.** Read from Fable III's own classes: every
 weave request is cast with "shot from the caster" off, and Lightning, Fireball and Force Push
-branch on that — no projectile, no bolt from the caster, no hand effect; the spell resolves at
-once at the request position (the creature the vortex holds, the blade's target, the fireball's
-impact point) with its impact effect there and its hit on the target. The pair reads as ONE
-spell whose hits carry the second effect. Here the partner is started ON the victim: a
-zero-length lightning strike, a fireball that detonates where it spawns, a push centred on the
-base's own place so the victim is shoved away from the vortex or the impact, chaos and blades on
-the victim. A fireball that struck nothing alive casts the partner at the impact point, lightning
-from fifteen units up striking straight down (an untargeted bolt otherwise re-acquires a random
-nearby creature at the start's height, which is what made it jump to the last victim).
+branch on that — no projectile, no bolt from the caster, no hand effect; the spell resolves at once
+at the request position (the creature the vortex holds, the blade's target, the fireball's impact
+point) with its impact effect there and its hit on the target. The pair reads as ONE spell whose
+hits carry the second effect. The partner is started ON the victim (`Refii.cast_spell`'s `pos` and
+`dir`, the same `refii_mod_cast_spell` arguments the native port used): a zero-length lightning
+strike, a fireball that detonates where it spawns, a push centred on the base's own place so the
+victim is shoved away from the vortex or the impact, and for a fireball that struck nothing alive
+lightning from fifteen units up striking straight down at the impact point.
+
+**Every partner cast is known by its serial.** `Refii.cast_spell` returns the spell's handle and
+its cast serial — the number its hits carry — so the weave side is told by serial, never by a
+handle (an address the next cast of the same class reuses). A hit the factory lands inside the
+cast itself (a targeted Lightning's bolt) reaches the `hit` handler live, nested in the cast, and
+is known as the cast in progress by its type and caster, so it lands at `weave_damage` too; the
+cast's own `spell_created` and the bolt's `hit_landed` reach the Lua deferred, after the chunk that
+cast it, with the serial already noted — they never bind as a base or cast a partner.
 
 **Every cast is its own weave.** A woven release is a record from its launch until its base has
 finished — the base's serial, its pair, its power, and what it put in the world: the vortex
@@ -145,6 +156,8 @@ running game takes it with `refii_action fx-recipes-reload`, and in a dev tree i
 folder's `fx/recipes.json` directly, so an edit here needs no repack. The same preview runs from a
 shell as `res://debug/fx_weave_lab.tscn` (`Godot/src/tools/FxWeaveLab.cs`), which draws a base
 plain, dressed and an optional reference effect side by side and writes PNGs at chosen frames.
+The Lua itself reloads live with the Studio's **↻ Reload mods + Lua** (`docs/mod_api.md`, "Live
+iteration"): the handlers are dropped and `mod/init.lua` runs again over the live state.
 
 ## How Fable III builds a weave (from its binary; `/home/loreaxe/Fable 2/Fable 3/README.md`)
 
@@ -158,15 +171,15 @@ duration multipliers (0.75 in the vortex records). Burning, shock and push are t
 spell's own hit code. Vortex + Swords is one Swords cast per held victim with 3–5 blades from the
 weave balance, which is the "5 blades appear over each enemy". Slow Time combos repeat the partner
 every `WeaveSpellRepeatTime`; only the Vortex rolls `WeaveSpellAffectProbability` (shipped 100). Our port does the same with Fable 2's spells, at the same moments: a victim the base hits
-(the `HitLanded` event — for the Vortex that is every creature its shudder hits reach; a
+(the `hit_landed` event — for the Vortex that is every creature its shudder hits reach; a
 creature the vortex only holds without hitting gets nothing, as the game's capture keeps no
 reference a mod could follow), and a fireball's detonation that struck nothing alive
-(`rex_TargetedFireball_Impact`, the partner cast at the impact point with no target — every
-targeted spell's post-init falls back to its position and direction when the target is empty, as
-the game's own launcher casts with no lock-on). Each queues a Targeted cast of the partner through
-the game's own spell factory (`rex_CSpellRegistry_Create`), `shot_delay` later, and the partner's
-hits are scaled by `weave_damage`. There is no status
-installing any more: burning, shock, push, chaos and blades are the partner spell itself.
+(`fireball_impact` with `detonated` and no `hits`, the partner cast at the impact point with no
+target — every targeted spell's post-init falls back to its position and direction when the target
+is empty, as the game's own launcher casts with no lock-on). Each queues a Targeted cast of the
+partner through the game's own spell factory (`Refii.cast_spell`), `shot_delay` later, and the
+partner's hits are scaled by `weave_damage`. There is no status installing any more: burning,
+shock, push, chaos and blades are the partner spell itself.
 
 ## Choosing the partners
 
@@ -189,11 +202,12 @@ held the host withholds X from the game, so the press never reaches the attack o
 scheme binds to it. The partner must be learned to take effect; an unlearned pick simply waits.
 
 The choices are saved player values (`spell_weaving.partner_1..5`, each player their own), written
-only by the engine's pick (the SpellPick event first, which may refuse or change it): a spell type
+only by the engine's pick (the `spell_pick` event first, which may refuse or change it): a spell type
 id, or -1 for none. Saves from before kept them in the world save's Lua
 (`RefiiModSave.SpellWeavingPartner1..5`, `Partner2_1..5`); a slot with no saved choice takes that
-one. There is no settings row for them: a settings page holds one machine's values, a partner is
-each player's own, and the selectors are where each player picks theirs (the title's "Spell
+one (the Lua reads `RefiiModSave` on `lua_ready` / `save_loaded`, at the next tick with the hero
+present). There is no settings row for them: a settings page holds one machine's values, a partner
+is each player's own, and the selectors are where each player picks theirs (the title's "Spell
 Weaving" row says how).
 
 | id | spell | id | spell |
@@ -204,7 +218,7 @@ Weaving" row says how).
 | 3 | Blades | 7 | Raise Dead (not weavable) |
 
 In a running game the debug channel's game Lua (`refii_lua`) can set one directly, without the
-SpellPick event — player 1, slot 2's partner becomes Vortex:
+`spell_pick` event — player 1, slot 2's partner becomes Vortex:
 `Refii.player_save(1, "spell_weaving.partner_2", 4)`.
 
 The partner in effect per slot (chosen, learned, and the ability at that slot's level or more) is
@@ -229,14 +243,15 @@ selectors draw a chosen partner that is not in effect at half strength.
 | `sword_tint_push_r/_g/_b` | 0.28, 0.32, 0.55 | Woven with Force Push: a dark slate steel with no golden glow. |
 
 The sword tints are multipliers of the golden blade's lit colour (1 leaves a lane alone); see "The
-tinted swords" below.
+tinted swords" above. The Lua reads every setting through `Refii.setting`, the values composed in
+at session start and pushed again on a mods reload.
 
 Each player has their own Spell Weaving level and their own partner choices. The ability row in
 the book acts for, and shows, the player whose book is open: player two's own book in local co-op,
 the joiner's book on the joiner's machine; the engine's purchase spends that player's experience.
 The selectors pick for their own player, and the partner picker's prompts unlock from that same
 player's level. The level and the choices are SAVED player values
-in Refii's player store (`refii_mod_player_*`, `docs/mod_api.md`): the same on both machines of an
+in Refii's player store (`Refii.player_*`, `docs/mod_api.md`): the same on both machines of an
 online session, written beside the save the game writes that hero into (`refii_player.txt`) —
 player one's main save, a local player two's own save, an online joiner's own save on the
 joiner's machine — and read back when the game loads that hero. So player two keeps their level
@@ -246,12 +261,12 @@ The HUD glyph follows each player's charge meter, in their own half on split scr
 
 Online, the mod has no co-op plumbing of its own; it follows the mod API's rules. A cast runs on
 both machines and the host's copy is the spell that deals the damage: hits are decided on the
-host. So partners are cast only where the world runs (`refii_mod_world_here`: the host, or the one
+host. So partners are cast only where the world runs (`Refii.world_here`: the host, or the one
 machine alone and in local co-op) — player two's included — one per victim, or one at the impact
 point for a fireball that struck nothing alive; an online joiner casts none, which would otherwise
 have cast a second "struck nothing alive" partner for every fireball whose blast it saw land no
 hits. The look follows the real victims on both machines: the API relays every hit a hero deals
-or takes from the host to the joiner as a replica (`refii_mod_event_replica`), and a replica only
+or takes from the host to the joiner as a replica (`Refii.event_replica`), and a replica only
 notes its victim on the weave of the caster's player whose base it is — it never casts. A targeted
 Lightning, Force Push or Chaos rides on the target the cast states until those hits arrive; an
 untargeted one stands at the caster for that network moment, then on its victims.

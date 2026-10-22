@@ -24,8 +24,9 @@ public class ModdingFeatureTests
     private const uint WoodenSwordId = 0xA2AE58D0;
     private const uint BaseMeleeArchetypeId = 0x11110001;
     private const uint HashParent = GdbView.HashParent;
-    private const uint HashWeaponType = 0x77777777;
-    private const uint HashDamageMult = 0x88888888;
+    // A property's hash is the FNV-1 of its name: the written container names it under that hash.
+    private static readonly uint HashWeaponType = Refii.Core.Engine_GameHash.Fnv1("WeaponType");
+    private static readonly uint HashDamageMult = Refii.Core.Engine_GameHash.Fnv1("DamageMultiplier");
     private const uint HashBasePrice = 0x44C44B51;
 
     private const uint SwordNameTag = 0x1000A001;
@@ -167,9 +168,11 @@ public class ModdingFeatureTests
             AssertThat(priceField).IsNotNull();
             AssertThat(priceField!.Raw).IsEqual(99u);
 
-            // String table in synthesized GDB must contain entry name and property names
-            AssertThat(tuView.Names.ContainsKey(WoodenSwordId)).IsTrue();
-            AssertThat(tuView.Names[WoodenSwordId]).IsEqual("WoodenSword");
+            // The synthesized GDB names the entry and the properties. A record's name is an alias
+            // (FNV-1(name) -> id) resolved into RecordNames; the name table itself is keyed by
+            // the name's own hash, which is what the guest recomputes.
+            AssertThat(tuView.RecordNames.ContainsKey(WoodenSwordId)).IsTrue();
+            AssertThat(tuView.RecordNames[WoodenSwordId]).IsEqual("WoodenSword");
             AssertThat(tuView.Names.ContainsKey(HashParent)).IsTrue();
             AssertThat(tuView.Names[HashParent]).IsEqual("parent");
 

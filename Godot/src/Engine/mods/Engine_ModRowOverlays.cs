@@ -22,6 +22,54 @@ public sealed class RowMerge
 	public List<RowConflict> Conflicts = new();
 
 	public List<string> Errors = new();
+
+	/// <summary>Entries the table did not have (GDB patches only).</summary>
+	public List<string> AddedEntries = new();
+
+	/// <summary>Properties no record of the entry's chain declared, as <c>Entry.Property</c> (GDB patches only).</summary>
+	public List<string> AddedProperties = new();
+
+	/// <summary>Inherited properties now declared on the entry itself (GDB patches only).</summary>
+	public List<string> Materialised = new();
+
+	/// <summary>
+	/// A composited GDB patch as a row merge, so the resolved index's <c>rows</c> section states
+	/// the database edits beside the text ones: who contributed, what was set, added or
+	/// materialised, which keys more than one mod set, and what was refused.
+	/// </summary>
+	public static RowMerge FromComposite(Refii.Gdb.CompositeGdbResult composite)
+	{
+		var merge = new RowMerge
+		{
+			Table = composite.SubPath,
+			Applied = composite.Applied,
+		};
+		foreach (string mod in composite.ContributingMods)
+		{
+			if (!merge.Contributors.Contains(mod))
+			{
+				merge.Contributors.Add(mod);
+			}
+		}
+
+		foreach (Refii.Gdb.GdbRecordConflict conflict in composite.Conflicts)
+		{
+			var row = new RowConflict
+			{
+				Key = $"{conflict.RecordName}.{conflict.PropertyName}",
+				Winner = conflict.WinnerMod,
+			};
+			row.Losers.AddRange(conflict.LoserMods);
+			merge.Conflicts.Add(row);
+		}
+
+		merge.Conflicts.Sort((left, right) => string.CompareOrdinal(left.Key, right.Key));
+		merge.Errors.AddRange(composite.Refused);
+		merge.AddedEntries.AddRange(composite.AddedEntries);
+		merge.AddedProperties.AddRange(composite.AddedProperties);
+		merge.Materialised.AddRange(composite.Materialised);
+		return merge;
+	}
 }
 
 /// <summary>One value two or more mods both set.</summary>
@@ -497,6 +545,21 @@ public static class ModRowOverlays
 		var text = new StringBuilder();
 		text.Append($"{merge.Table}: {merge.Applied} value(s) from ")
 			.Append(string.Join(", ", merge.Contributors));
+		if (merge.AddedEntries.Count != 0)
+		{
+			text.Append($"; {merge.AddedEntries.Count} entry(ies) added");
+		}
+
+		if (merge.AddedProperties.Count != 0)
+		{
+			text.Append($"; {merge.AddedProperties.Count} property(ies) added");
+		}
+
+		if (merge.Materialised.Count != 0)
+		{
+			text.Append($"; {merge.Materialised.Count} inherited value(s) set on the entry");
+		}
+
 		if (merge.Conflicts.Count != 0)
 		{
 			text.Append($"; {merge.Conflicts.Count} row(s) set by more than one mod");

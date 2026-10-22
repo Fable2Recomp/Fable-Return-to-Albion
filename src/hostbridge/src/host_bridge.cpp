@@ -3582,14 +3582,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostDrainModEvents(char* out, uint32_t capac
     return static_cast<uint32_t>(refii::mods::DrainEventsForHost(out, capacity));
 }
 
-/// Which event kinds the host wants posted (bit = kind). 0 clears the queue.
+/// Which event kinds the host wants posted: word 0 of the mask (bit = kind, kinds 0..63). The
+/// mask is REFII_MOD_HOST_MASK_WORDS words (core/mod_values.h); the words past this one and the
+/// next arrive through the command lane (`mask_word`). Every word 0 clears the queue.
 REFII_HOST_ABI_EXPORT void RefiiHostSetModEventMask(uint64_t mask) {
-    refii::mods::SetHostEventMask(mask);
+    refii::mods::SetHostEventMaskWord(0, mask);
 }
 
-/// The same for kinds 64..127 (bit = kind − 64).
+/// Word 1 of the same mask: kinds 64..127 (bit = kind − 64).
 REFII_HOST_ABI_EXPORT void RefiiHostSetModEventMaskHigh(uint64_t mask) {
-    refii::mods::SetHostEventMaskHigh(mask);
+    refii::mods::SetHostEventMaskWord(1, mask);
 }
 
 /// A helper call or a query for the guest tick (the grammar is src/hooks/mod_commands.cpp); a
@@ -3610,14 +3612,15 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictHandler(refii_mod_verdict_fn ha
     refii_bridge_mod_set_verdict_handler(handler);
 }
 
-/// Which event kinds the verdict handler is asked about (bit = kind).
+/// Which event kinds the verdict handler is asked about: word 0 (bit = kind, kinds 0..63); the
+/// mask has the event mask's shape, its later words arriving through the command lane.
 REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictMask(uint64_t mask) {
-    refii_bridge_mod_set_verdict_mask(mask);
+    refii_bridge_mod_set_verdict_mask_word(0, mask);
 }
 
-/// The same for kinds 64..127 (bit = kind − 64).
+/// Word 1 of the same mask: kinds 64..127 (bit = kind − 64).
 REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictMaskHigh(uint64_t mask) {
-    refii_bridge_mod_set_verdict_mask_high(mask);
+    refii_bridge_mod_set_verdict_mask_word(1, mask);
 }
 
 /// The entity a mod handle stands for (what a Godot script holds), or 0.

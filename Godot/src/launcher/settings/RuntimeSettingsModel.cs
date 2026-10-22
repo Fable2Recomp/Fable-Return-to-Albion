@@ -160,6 +160,8 @@ public sealed class RuntimeSettingsModel
     {
         StatusMessage = string.Empty;
         ConfigPath = Installer.GetRuntimeConfigPath();
+        // The mods' Controls rows follow the enabled mods' input.json: read again on every reload.
+        RuntimeCVarSet.Refresh();
 
         if (!RuntimeConfig.EnsureDefaults(ConfigPath, out string error))
         {
@@ -260,6 +262,8 @@ public sealed class RuntimeSettingsModel
         RuntimeCVarsGodot.LightingCategory => 1,
         RuntimeCVarsGodot.VideoCategory => 2,
         RuntimeCVarsGodot.ControlsCategory => 3,
+        // A mod's Controls group ("Controls: <title>") sits with the Controls group, after it.
+        _ when category.StartsWith(RuntimeCVarsGodot.ControlsCategory + ": ", StringComparison.Ordinal) => 3,
         RuntimeCVarsGodot.Category => 4,
         MultiplayerCategory => 5,
         RuntimeCVarsGodot.PresenceCategory => 6,

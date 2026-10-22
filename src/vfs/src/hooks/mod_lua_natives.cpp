@@ -19,6 +19,10 @@
 //   entity_alpha(e, a) · entity_scale(e, s) · entity_saturation_mask(e, on) · entity_drawable(e, on)
 //   lock_target(p [, e]) · release_lock(p) · switch_target(p, left) -> target · locked_target(p) -> target
 //   apply_status(e, kind, seconds [, level [, source]]) · clear_status(e, kind) · has_status(e, kind)
+//   set_speed_multiplier(p, factor) · clear_speed_multiplier(p) · speed_multiplier(p) -> overridden, factor
+//   current_action(e) -> action · action_elapsed(a) -> seconds · action_interruptible(a) · allow_action_interrupt(a)
+//   action_type(a) -> EScriptableAction · action_name(a) -> its name
+//   living(e) · spell_in_slot(p, slot) -> type · spell_parts(serial) -> table
 //   knockback(e, x, y, z [, force]) · stagger(e)
 //   play_sound(cue, e [, tag]) · play_sound_at(cue, x, y, z [, tag]) · stop_sound(e, tag [, fade_ms])
 //   play_music(name) · stop_music(name)
@@ -29,7 +33,9 @@
 //   set_time_of_day(hours) · time_of_day() -> hours · set_weather(theme [, weight [, seconds]])
 //   gold(e) · give_gold(e, delta) · item_count(e, def) · add_item(e, def)
 //   experience(e, pool) · give_experience(e, pool, amount) · spend_experience(e, pool, amount)
-//   ability_level(e, type) · cast_spell(caster, type, targeted, target, level)
+//   ability_level(e, type) · spell_serial(spell) -> serial
+//   _cast_spell(caster, type, targeted, target, level, has_pos, px, py, pz, has_dir, dx, dy, dz) -> spell, serial
+//   (cast_spell(caster, type, targeted, target, level [, pos [, dir]]) is the preamble's: it unpacks the tables)
 //   relation(a, b) · alive(e) · definition(e) · name(e) · player_of(e) · level_name()
 //   player_hero(p) · local_hero() · menu_player() · player_value(p, key [, fallback])
 //   player_set(p, key, v) · player_add(p, key, d [, saved]) · player_save(p, key, v) · player_here(p)
@@ -45,7 +51,7 @@
 //   notice(title, text [, seconds [, p]]) · _menu_box(title, text, p, cancelable, n, o1 .. o12)
 //   _mark(e, x, y, z, icon, text, p) (mark is the preamble's) · unmark(id) · fade(p, dir [, seconds])
 //   meter(id, label, value, max [, p [, style]]) · meter_remove(id)
-//   _light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker) (light is the preamble's)
+//   _light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker, dx, dy, dz, cone, attenuation) (light is the preamble's)
 //   light_remove(id) · send_to_partner(mod, name, payload)
 //   (menu_box is the preamble's: it unpacks the options table)
 //   _menu_rows(menu, rows, p) · open_screen(id [, p])
@@ -468,6 +474,141 @@ REFII_LUA_NATIVE(NativeLockedTarget) {
   RESULTS(1);
 }
 
+// Movement speed: Refii.set_speed_multiplier(p, factor) · clear_speed_multiplier(p) ·
+// speed_multiplier(p) -> overridden, factor (nil without a player component).
+REFII_LUA_NATIVE(NativeSetSpeedMultiplier) {
+  lua.PushBoolean(refii_mod_set_speed_multiplier(lua.base, lua.Int(1), static_cast<float>(lua.Number(2))) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeClearSpeedMultiplier) {
+  lua.PushBoolean(refii_mod_clear_speed_multiplier(lua.base, lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeSpeedMultiplier) {
+  float factor = 1.0f;
+  const uint32_t hero = refii_mod_player_hero(lua.base, lua.Int(1));
+  if (hero == 0 || refii_mod_component(lua.base, hero, 33u) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  const bool overridden = refii_mod_speed_multiplier(lua.base, lua.Int(1), &factor) != 0;
+  lua.PushBoolean(overridden);
+  lua.PushNumber(factor);
+  RESULTS(2);
+}
+
+// Actions: Refii.current_action(e) -> action or nil · action_elapsed(a) -> seconds or nil ·
+// action_interruptible(a) · allow_action_interrupt(a). An action is a handle like any object.
+REFII_LUA_NATIVE(NativeCurrentAction) {
+  lua.PushHandle(refii_mod_current_action(lua.base, lua.Entity(1)));
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeActionElapsed) {
+  float seconds = 0.0f;
+  if (refii_mod_action_elapsed(&lua.ctx, lua.base, lua.Entity(1), &seconds) != 0) {
+    lua.PushNumber(seconds);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeActionInterruptible) {
+  lua.PushBoolean(refii_mod_action_interruptible(lua.base, lua.Entity(1)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeAllowActionInterrupt) {
+  lua.PushBoolean(refii_mod_allow_action_interrupt(lua.base, lua.Entity(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii.action_type(a) -> EScriptableAction (0..88) or nil · Refii.action_name(a) -> its name or
+// nil: what the action was made from (refii_mod_action_type, the factory seam's record).
+REFII_LUA_NATIVE(NativeActionType) {
+  const int32_t type = refii_mod_action_type(lua.base, lua.Entity(1));
+  if (type >= 0) {
+    lua.PushNumber(type);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeActionName) {
+  char name[64];
+  if (refii_mod_action_name(lua.base, lua.Entity(1), name, sizeof(name)) != 0) {
+    lua.PushString(name);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.living(e): in the world and, for a creature, not yet died (refii_mod_entity_living).
+REFII_LUA_NATIVE(NativeLiving) {
+  lua.PushBoolean(refii_mod_entity_living(lua.base, lua.Entity(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii.spell_in_slot(p, slot) -> the spell type held, -1 for none.
+REFII_LUA_NATIVE(NativeSpellInSlot) {
+  lua.PushNumber(refii_mod_spell_in_slot(lua.base, lua.Int(1), lua.Int(2)));
+  RESULTS(1);
+}
+
+// Refii.spell_parts(serial) -> { spell, type, targeted, level, caster, caster_player, vortex,
+// anchor, swords = { e1, .. }, origin = { x, y, z } or nil, exploded } (handles; absent parts
+// nil), or nil for a cast the factory never saw (refii_mod_spell_parts).
+REFII_LUA_NATIVE(NativeSpellParts) {
+  refii_mod_cast_parts parts{};
+  if (refii_mod_spell_parts(&lua.ctx, lua.base, static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)), &parts) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.NewTable();
+  const auto handle_field = [&lua](const char* name, uint32_t address) {
+    if (address != 0) {
+      lua.PushNumber(refii_mod_handle(address));
+      lua.SetField(-2, name);
+    }
+  };
+  handle_field("spell", parts.spell);
+  lua.PushNumber(parts.type);
+  lua.SetField(-2, "type");
+  lua.PushBoolean(parts.targeted != 0);
+  lua.SetField(-2, "targeted");
+  lua.PushNumber(parts.level);
+  lua.SetField(-2, "level");
+  handle_field("caster", parts.caster);
+  lua.PushNumber(parts.caster_player);
+  lua.SetField(-2, "caster_player");
+  handle_field("vortex", parts.vortex);
+  handle_field("anchor", parts.anchor);
+  lua.NewTable();
+  for (int32_t i = 0; i < parts.sword_count; ++i) {
+    lua.PushNumber(refii_mod_handle(parts.swords[i]));
+    lua.RawSetI(-2, i + 1);
+  }
+  lua.SetField(-2, "swords");
+  if (parts.has_origin != 0) {
+    lua.NewTable();
+    for (int32_t i = 0; i < 3; ++i) {
+      lua.PushNumber(parts.origin[i]);
+      lua.RawSetI(-2, i + 1);
+    }
+    lua.SetField(-2, "origin");
+  }
+  lua.PushBoolean(parts.exploded != 0);
+  lua.SetField(-2, "exploded");
+  RESULTS(1);
+}
+
 // Statuses: Refii.apply_status(e, kind, seconds [, level [, source]]) · clear_status(e, kind) ·
 // has_status(e, kind); kinds 1 electrified 2 chaos 3 burning 4 vortex (the status_effect event's).
 REFII_LUA_NATIVE(NativeApplyStatus) {
@@ -697,10 +838,40 @@ REFII_LUA_NATIVE(NativeAbilityLevel) {
   RESULTS(1);
 }
 
+// Refii._cast_spell(caster, type, targeted, target, level, has_pos, px, py, pz, has_dir, dx, dy,
+// dz) -> spell, serial: refii_mod_cast_spell with the start position and facing when stated (the
+// preamble's Refii.cast_spell unpacks its pos / dir tables, as play_fx does its options). The
+// serial is read from the object the factory returned, so a Lua mod knows its own cast by the
+// number its hits carry — the object's spell_created is raised inside this call and reaches Lua
+// deferred, after the chunk. Nil, nil for no cast.
 REFII_LUA_NATIVE(NativeCastSpell) {
   const bool targeted = lua.Type(3) == 1 ? lua.Boolean(3) : lua.Int(3) != 0;
-  lua.PushHandle(refii_mod_cast_spell(&lua.ctx, lua.base, lua.Entity(1), lua.Int(2), targeted ? 1 : 0, lua.Entity(4),
-                                      lua.Int(5), nullptr, nullptr));
+  const float pos[3] = {static_cast<float>(lua.Number(7)), static_cast<float>(lua.Number(8)),
+                        static_cast<float>(lua.Number(9))};
+  const float dir[3] = {static_cast<float>(lua.Number(11)), static_cast<float>(lua.Number(12)),
+                        static_cast<float>(lua.Number(13))};
+  const uint32_t spell = refii_mod_cast_spell(&lua.ctx, lua.base, lua.Entity(1), lua.Int(2), targeted ? 1 : 0, lua.Entity(4),
+                                              lua.Int(5), lua.Int(6) != 0 ? pos : nullptr, lua.Int(10) != 0 ? dir : nullptr);
+  lua.PushHandle(spell);
+  const uint32_t serial = refii_mod_spell_serial(lua.base, spell);
+  if (serial != 0) {
+    lua.PushNumber(serial);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(2);
+}
+
+// Refii.spell_serial(spell) -> serial: the cast number a spell object's hits carry
+// (refii_mod_spell_serial), or nil for no object. A spell handle is the object's address for the
+// object's life and is never forgotten: the serial, not the handle, is a cast's identity.
+REFII_LUA_NATIVE(NativeSpellSerial) {
+  const uint32_t serial = refii_mod_spell_serial(lua.base, lua.Entity(1));
+  if (serial != 0) {
+    lua.PushNumber(serial);
+  } else {
+    lua.PushNil();
+  }
   RESULTS(1);
 }
 
@@ -1461,9 +1632,11 @@ REFII_LUA_NATIVE(NativeStopFx) {
   RESULTS(0);
 }
 
-// Refii._light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker): the light Godot
-// places (refii_mod_light); e is a handle, 0 for the world point x, y, z; at a model helper name or
-// "". The preamble's Refii.light(target, color, energy, range [, o]) builds it. The id, or nil.
+// Refii._light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker, dx, dy, dz, cone,
+// attenuation): the light Godot places (refii_mod_light); e is a handle, 0 for the world point
+// x, y, z; at a model helper name or ""; a cone above 0 makes it a spot along dx, dy, dz
+// (refii_mod_light_options). The preamble's Refii.light(target, color, energy, range [, o]) builds
+// it. The id, or nil.
 REFII_LUA_NATIVE(NativeLight) {
   const uint32_t handle = static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0));
   const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
@@ -1478,6 +1651,11 @@ REFII_LUA_NATIVE(NativeLight) {
   lua.String(13, at, sizeof(at));
   options.at = at[0] != 0 ? at : nullptr;
   options.flicker = static_cast<float>(lua.Number(14));
+  options.direction[0] = static_cast<float>(lua.Number(15));
+  options.direction[1] = static_cast<float>(lua.Number(16));
+  options.direction[2] = static_cast<float>(lua.Number(17));
+  options.cone = static_cast<float>(lua.Number(18));
+  options.attenuation = static_cast<float>(lua.Number(19));
   const uint32_t id = refii::vfs::PlaceModLightOnHandle(handle, xyz, rgb, static_cast<float>(lua.Number(8)),
                                                         static_cast<float>(lua.Number(9)), &options);
   if (id != 0) {
@@ -1635,6 +1813,18 @@ Native g_natives[] = {
     {"release_lock", &NativeReleaseLock, 0},
     {"switch_target", &NativeSwitchTarget, 0},
     {"locked_target", &NativeLockedTarget, 0},
+    {"set_speed_multiplier", &NativeSetSpeedMultiplier, 0},
+    {"clear_speed_multiplier", &NativeClearSpeedMultiplier, 0},
+    {"speed_multiplier", &NativeSpeedMultiplier, 0},
+    {"current_action", &NativeCurrentAction, 0},
+    {"action_elapsed", &NativeActionElapsed, 0},
+    {"action_interruptible", &NativeActionInterruptible, 0},
+    {"allow_action_interrupt", &NativeAllowActionInterrupt, 0},
+    {"action_type", &NativeActionType, 0},
+    {"action_name", &NativeActionName, 0},
+    {"living", &NativeLiving, 0},
+    {"spell_in_slot", &NativeSpellInSlot, 0},
+    {"spell_parts", &NativeSpellParts, 0},
     {"apply_status", &NativeApplyStatus, 0},
     {"clear_status", &NativeClearStatus, 0},
     {"has_status", &NativeHasStatus, 0},
@@ -1666,7 +1856,8 @@ Native g_natives[] = {
     {"give_experience", &NativeGiveExperience, 0},
     {"spend_experience", &NativeSpendExperience, 0},
     {"ability_level", &NativeAbilityLevel, 0},
-    {"cast_spell", &NativeCastSpell, 0},
+    {"_cast_spell", &NativeCastSpell, 0},
+    {"spell_serial", &NativeSpellSerial, 0},
     {"relation", &NativeRelation, 0},
     {"alive", &NativeAlive, 0},
     {"definition", &NativeDefinition, 0},

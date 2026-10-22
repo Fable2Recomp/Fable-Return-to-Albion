@@ -36,13 +36,16 @@ inline void PostEvent(int32_t kind, std::string_view fields) {
   refii_bridge_mod_event_post(kind, fields.data(), fields.size());
 }
 
-/// The host's mask is two words: kinds 0..63, then 64..127.
+/// The host's masks (event and verdict) are kHostMaskWords words of 64 kinds: word w holds kinds
+/// 64w..64w+63 (payload_bridge.h).
+constexpr int32_t kHostMaskWords = REFII_MOD_HOST_MASK_WORDS;
+constexpr int32_t kHostMaskCapacity = 64 * kHostMaskWords;
+
 inline bool HostWantsEvent(int32_t kind) {
-  if (kind < 0 || kind >= 128) {
+  if (kind < 0 || kind >= kHostMaskCapacity) {
     return false;
   }
-  const uint64_t word = kind < 64 ? refii_bridge_mod_host_event_mask() : refii_bridge_mod_host_event_mask_high();
-  return ((word >> (kind % 64)) & 1u) != 0u;
+  return ((refii_bridge_mod_host_event_mask_word(kind / 64) >> (kind % 64)) & 1u) != 0u;
 }
 
 // THE HOST'S SIDE of the same state (src/core/mod_values.cpp; linked by the host bridge, never
@@ -50,8 +53,8 @@ inline bool HostWantsEvent(int32_t kind) {
 /// Moves queued events into `out` as "<kind>\t<fields>\n" records up to `capacity` bytes;
 /// an event that does not fit stays queued. Returns the bytes written.
 size_t DrainEventsForHost(char* out, size_t capacity);
-void SetHostEventMask(uint64_t mask);
-void SetHostEventMaskHigh(uint64_t mask);
+/// One word of the event mask (0..kHostMaskWords-1; others ignored). Every word 0 clears the queue.
+void SetHostEventMaskWord(int32_t word, uint64_t mask);
 void PostInputFromHost(std::string_view action, int32_t player, bool pressed);
 void PostCommandFromHost(std::string_view line);
 /// Moves the queued mod errors into `out`, one per line, oldest first. Returns the bytes written.

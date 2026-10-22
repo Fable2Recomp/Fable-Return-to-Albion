@@ -28,6 +28,7 @@
 #include <rex/logging.h>
 
 #include "core/guest_build.h"
+#include "core/guest_state.h"
 #include "core/mod_values.h"
 #include "core/refii_mod.h"
 #include "core/refii_mod_events.h"
@@ -93,6 +94,12 @@ PPC_EXTERN_FUNC(__imp__rex_CAbilityActionStrafeRoll_Start);
 PPC_EXTERN_FUNC(__imp__rex_CActionBlock_OnHitBlockPose);
 PPC_EXTERN_FUNC(__imp__rex_CActionBlock_OnHitBlockedResponse);
 PPC_EXTERN_FUNC(__imp__rex_CAction_OnAnimEvent);
+// The look-at flag, the vortex and the targeted fireball (LookAtButton, VortexStarted/Ended,
+// FireballImpact): named in both configs since the example mods hooked them.
+PPC_EXTERN_FUNC(__imp__rex_CPlayer_SetLookAtButtonDown);
+PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Init);
+PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Shutdown);
+PPC_EXTERN_FUNC(__imp__rex_TargetedFireball_Impact);
 PPC_EXTERN_FUNC(__imp__rex_CECHitReceiver_OnHit);
 PPC_EXTERN_FUNC(__imp__rex_CECHitResponsePlayAction_OnHit);
 PPC_EXTERN_FUNC(__imp__rex_CAbilityActionMagicCharge_CanStart);
@@ -157,6 +164,12 @@ PPC_EXTERN_FUNC(__imp__rex_SpellRaiseDead_BindSummoner);
 PPC_EXTERN_FUNC(__imp__rex_SpellDamoclesSword_Create);
 PPC_EXTERN_FUNC(__imp__rex_CECOnActionUse_Use);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiWorldMap_FastTravel);
+// The action factory, the pause mode's apply / remove and the front end's start target (H.16):
+// named in both configs for these seams.
+PPC_EXTERN_FUNC(__imp__rex_CActionFactory_CreateFromDefinition);
+PPC_EXTERN_FUNC(__imp__rex_lhGameFlowGuiMode_Apply);
+PPC_EXTERN_FUNC(__imp__rex_lhGameFlowGuiMode_Remove);
+PPC_EXTERN_FUNC(__imp__rex_lhFrontEnd_SetStartGameTarget);
 // Called, never overridden here: the game's own bodies by their config names.
 PPC_EXTERN_FUNC(__imp__rex_lhSmartPtr_Deref);
 PPC_EXTERN_FUNC(__imp__rex_CECHealth_CalculateDamage);
@@ -234,17 +247,44 @@ void DrainPartnerMessages(PPCContext& ctx, uint8_t* base);
 
 /// Which kinds have a Lua handler (bit = kind), as the VM last said; re-read on a generation
 /// change and when Refii._dirty says a registration happened since.
-/// Kinds with a Lua handler, in groups of 20 (Refii._masks[g] holds kinds 20*(g-1)..20*g-1: a
-/// 32-bit float, the game Lua's number, is exact only to 24 bits).
+/// Kinds with a Lua handler, in groups of kLuaMaskBits (Refii._masks[g] holds kinds
+/// 20*(g-1)..20*g-1: a 32-bit float, the game Lua's number, is exact only to 24 bits, so no number
+/// crossing the seam carries more than 20 significant bits). The capacity is kLuaMaskBits *
+/// kLuaMaskGroups kinds; ModApi.LuaMaskBits / LuaMaskGroups (Engine_ModApi.cs) state the same
+/// two numbers to the preamble, and ModApiTests holds both to this file and to REFII_EVENT_COUNT.
 constexpr int32_t kLuaMaskBits = 20;
-constexpr int32_t kLuaMaskGroups = 5;
-uint32_t g_lua_masks[kLuaMaskGroups] = {0, 0, 0, 0, 0};
+constexpr int32_t kLuaMaskGroups = 10;
+static_assert(REFII_EVENT_COUNT <= kLuaMaskBits * kLuaMaskGroups,
+              "the Lua masks hold fewer kinds than REFII_EVENT_COUNT: raise kLuaMaskGroups and ModApi.LuaMaskGroups together");
+uint32_t g_lua_masks[kLuaMaskGroups] = {};
 uint32_t g_lua_mask_generation = 0xFFFFFFFFu;
 float g_lua_dirty_poll = 0.0f;
-bool g_lua_running = false;
-float g_lua_tick_accumulated = 0.0f;
-constexpr float kLuaTickPeriod = 0.1f;
+/// Chunks running now: 0 none, 1 a chunk, 2 a chunk nested inside a chunk's own call.
+int g_lua_depth = 0;
+/// A chunk nests ONCE: an event with writable fields raised inside a running chunk (a handler's
+/// Refii.cast_spell reaching the factory, whose Start lands the bolt's `hit`) runs live, inside
+/// the seam, so the handler's write reaches the game — as native handlers get it. The game's
+/// RunScriptBuffer is re-entrant (per-state, frame-relative, no globals), the nested chunk's
+/// frame sits below the outer's on the guest stack (the seam's own r1), and every bus global the
+/// chunk touches is saved and restored per depth (g_lua_current_* by DispatchLua's Restore,
+/// g_lua_cancelled by FireLua). Deeper than this is refused and deferred.
+constexpr int kLuaMaxDepth = 2;
 constexpr float kLuaDirtyPollSeconds = 1.0f;
+
+/// An event with nothing to write raised while a chunk runs (a Refii.cast_spell's spell_created,
+/// the bolt's hit_landed, a Refii.give_gold's gold notice), or a writable one beyond the depth,
+/// kept as its table text until the outermost chunk returns: it reaches Lua AFTER the game acted,
+/// so its writable fields and cancel have no effect (the table says `deferred=true`).
+struct LuaDeferred {
+  int32_t kind;
+  char fields[640];
+};
+constexpr size_t kLuaDeferredLimit = 32;
+/// Chunk runs one drain may make, nested raises included: a handler that re-raises its own event
+/// forever stops here.
+constexpr int kLuaDrainBudget = 64;
+std::vector<LuaDeferred> g_lua_deferred;
+bool g_lua_draining = false;
 
 bool LuaWants(int32_t kind) {
   if (kind < 0 || kind >= kLuaMaskBits * kLuaMaskGroups) {
@@ -297,9 +337,12 @@ void NoteLuaCancelled() { g_lua_cancelled = true; }
 
 namespace {
 
-/// Runs `Refii._fire(kind, {fields})`; true when a handler cancelled. Never nested.
+/// Runs `Refii._fire(kind, {fields})`; true when a handler cancelled. Nests at most once
+/// (kLuaMaxDepth); the cancel flag is per depth, so a nested run never clobbers the outer verdict.
+/// The deferred events run once the outermost chunk has returned.
+void DrainLuaDeferred(PPCContext& ctx, uint8_t* base);
 bool FireLua(PPCContext& ctx, uint8_t* base, int32_t kind, const char* fields) {
-  if (g_lua_running) {
+  if (g_lua_depth >= kLuaMaxDepth) {
     return false;
   }
   char chunk[900];
@@ -313,12 +356,16 @@ bool FireLua(PPCContext& ctx, uint8_t* base, int32_t kind, const char* fields) {
                   "if Refii and Refii._fire and not Refii._fire(%d,{}) and Refii._cancelled then Refii._cancelled() end",
                   kind);
   }
+  const bool outer_cancelled = g_lua_cancelled;
   g_lua_cancelled = false;
-  g_lua_running = true;
+  ++g_lua_depth;
   refii_mod_run_game_lua(&ctx, base, chunk);
-  g_lua_running = false;
+  --g_lua_depth;
   const bool cancelled = g_lua_cancelled;
-  g_lua_cancelled = false;
+  g_lua_cancelled = outer_cancelled;
+  if (g_lua_depth == 0) {
+    DrainLuaDeferred(ctx, base);
+  }
   return cancelled;
 }
 
@@ -378,7 +425,8 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_MELEE_SWING: {
       const auto& e = *static_cast<const MeleeSwingEvent*>(event);
-      std::snprintf(out, size, "entity=%u,player=%d", H(e.entity), e.player);
+      std::snprintf(out, size, "entity=%u,player=%d,action=%u,action_type=%d,action_name='%s'", H(e.entity), e.player,
+                    H(e.action), e.action_type, e.action_name != nullptr ? e.action_name : "");
       return;
     }
     case REFII_EVENT_ROLL_CAN_START:
@@ -397,7 +445,8 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       const auto& e = *static_cast<const AnimEventEvent*>(event);
       char name[96];
       LuaString(e.name, name, sizeof(name));
-      std::snprintf(out, size, "entity=%u,player=%d,name='%s'", H(e.entity), e.player, name);
+      std::snprintf(out, size, "entity=%u,player=%d,name='%s',action=%u,action_type=%d,action_name='%s'", H(e.entity),
+                    e.player, name, H(e.action), e.action_type, e.action_name != nullptr ? e.action_name : "");
       return;
     }
     case REFII_EVENT_HIT:
@@ -883,6 +932,45 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       std::snprintf(out, size, "mod='%s',name='%s',payload='%s',from=%d", mod, name, payload, e.from);
       return;
     }
+    case REFII_EVENT_LOOK_AT_BUTTON: {
+      const auto& e = *static_cast<const LookAtButtonEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,down=%s", H(e.hero), e.player, e.down ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_VORTEX_STARTED: {
+      const auto& e = *static_cast<const VortexStartedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,caster=%u,caster_player=%d,target=%u,serial=%u,level=%d,x=%.9g,y=%.9g,z=%.9g",
+                    H(e.entity), H(e.caster), e.caster_player, H(e.target), e.serial, e.level, Fin(e.x), Fin(e.y), Fin(e.z));
+      return;
+    }
+    case REFII_EVENT_VORTEX_ENDED: {
+      const auto& e = *static_cast<const VortexEndedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,caster=%u,caster_player=%d,serial=%u,x=%.9g,y=%.9g,z=%.9g", H(e.entity), H(e.caster),
+                    e.caster_player, e.serial, Fin(e.x), Fin(e.y), Fin(e.z));
+      return;
+    }
+    case REFII_EVENT_FIREBALL_IMPACT: {
+      const auto& e = *static_cast<const FireballImpactEvent*>(event);
+      std::snprintf(out, size,
+                    "serial=%u,level=%d,caster=%u,caster_player=%d,struck=%u,struck_player=%d,x=%.9g,y=%.9g,z=%.9g,nx=%.9g,ny=%.9g,nz=%.9g,detonated=%s,hits=%d",
+                    e.serial, e.level, H(e.caster), e.caster_player, H(e.struck), e.struck_player, Fin(e.x), Fin(e.y), Fin(e.z),
+                    Fin(e.nx), Fin(e.ny), Fin(e.nz), e.detonated ? "true" : "false", e.hits);
+      return;
+    }
+    case REFII_EVENT_PAUSED: {
+      const auto& e = *static_cast<const PausedEvent*>(event);
+      std::snprintf(out, size, "paused=%s,mode=%d,player=%d,screen=%d", e.paused ? "true" : "false", e.mode, e.player, e.screen);
+      return;
+    }
+    case REFII_EVENT_START_GAME: {
+      const auto& e = *static_cast<const StartGameEvent*>(event);
+      char save[96];
+      char level[96];
+      LuaString(e.save, save, sizeof(save));
+      LuaString(e.level, level, sizeof(level));
+      std::snprintf(out, size, "save='%s',level='%s',new_game=%s,player=%d", save, level, e.new_game ? "true" : "false", e.player);
+      return;
+    }
     case REFII_EVENT_DIALOGUE: {
       const auto& e = *static_cast<const DialogueEvent*>(event);
       std::snprintf(out, size, "speaker=%u,speaker_player=%d,text='0x%08x',listener=%u,listener_player=%d,subtitle=%s",
@@ -900,16 +988,97 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
 int32_t g_lua_current_kind = -1;
 void* g_lua_current_event = nullptr;
 
+/// The kinds a handler can write back to (WriteEventField's cases): the ones delivered live when
+/// raised inside a chunk. The test pins this list against WriteEventField.
+bool HasWritableFields(int32_t kind) {
+  switch (kind) {
+    case REFII_EVENT_ABILITY_LEVEL:
+    case REFII_EVENT_EXPERIENCE:
+    case REFII_EVENT_FURNITURE_UPGRADED:
+    case REFII_EVENT_GOLD:
+    case REFII_EVENT_HIT:
+    case REFII_EVENT_HOUSEHOLD_BUDGET:
+    case REFII_EVENT_LOOK_AT_BUTTON:
+    case REFII_EVENT_MORALITY:
+    case REFII_EVENT_OPINION_MODIFIED:
+    case REFII_EVENT_PARTNER_CONSENT:
+    case REFII_EVENT_PROPERTY_BOUGHT:
+    case REFII_EVENT_PROPERTY_SOLD:
+    case REFII_EVENT_PURITY:
+    case REFII_EVENT_RELATION:
+    case REFII_EVENT_RENOWN:
+    case REFII_EVENT_SLEEP_CHOSEN:
+    case REFII_EVENT_SLOW_TIME:
+    case REFII_EVENT_SPELL_CHARGE_LEVEL:
+    case REFII_EVENT_SPELL_LAUNCH:
+    case REFII_EVENT_SPELL_PICK:
+    case REFII_EVENT_TRACKED_STAT:
+    case REFII_EVENT_WEATHER_THEME:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// The deferred events, in the order raised, each as its own chunk with no write-back target (a
+/// write or cancel from a handler is refused: the game has already acted). An event one of these
+/// chunks raises is deferred behind it, so the whole chain runs inside one drain, bounded.
+void DrainLuaDeferred(PPCContext& ctx, uint8_t* base) {
+  if (g_lua_draining || g_lua_deferred.empty()) {
+    return;
+  }
+  g_lua_draining = true;
+  const int32_t previous_kind = g_lua_current_kind;
+  void* const previous_event = g_lua_current_event;
+  g_lua_current_kind = -1;
+  g_lua_current_event = nullptr;
+  for (int runs = 0; runs < kLuaDrainBudget && !g_lua_deferred.empty(); ++runs) {
+    const LuaDeferred next = g_lua_deferred.front();
+    g_lua_deferred.erase(g_lua_deferred.begin());
+    FireLua(ctx, base, next.kind, next.fields);
+  }
+  if (!g_lua_deferred.empty()) {
+    REXLOG_INFO("Refii mod Lua: {} deferred event(s) dropped after {} chunk runs in one drain", g_lua_deferred.size(),
+                kLuaDrainBudget);
+    g_lua_deferred.clear();
+  }
+  g_lua_current_kind = previous_kind;
+  g_lua_current_event = previous_event;
+  g_lua_draining = false;
+}
+
 /// A Lua `cancel` lands in the event's flag; a writable number a handler changed comes back
 /// through Refii._write while the chunk runs (the preamble diffs the fields after the handlers).
+/// Every kind goes the moment it fires — the tick every guest tick with that tick's seconds, the
+/// charge level every frame of a held charge — as native handlers get them.
 void DispatchLua(int32_t kind, void* event) {
-  // An event raised from inside a running chunk (a handler calling Refii.give_gold reaches the
-  // hooked Modify) is not run in Lua: chunks never nest, and the running event's write-back target
-  // must survive the nested one.
-  if (!LuaWants(kind) || g_lua_running) {
+  if (!LuaWants(kind)) {
     return;
   }
   auto& e = *static_cast<Event*>(event);
+  if (g_lua_depth > 0 && (kind == REFII_EVENT_TICK || kind == REFII_EVENT_SPELL_CHARGE_LEVEL)) {
+    // Per-frame statements with nothing to say late, never nested or deferred.
+    return;
+  }
+  const bool nested_live = g_lua_depth > 0 && HasWritableFields(kind) && g_lua_depth < kLuaMaxDepth;
+  if (g_lua_depth > 0 && !nested_live) {
+    // Raised from inside a running chunk with nothing to write (a Refii.cast_spell's
+    // spell_created, the bolt's hit_landed), or writable but already nested: it waits as text and
+    // runs once the outermost chunk returns (DrainLuaDeferred).
+    if (HasWritableFields(kind)) {
+      REXLOG_INFO("Refii mod Lua: writable event {} raised {} chunks deep is deferred (its write cannot reach the game)", kind,
+                  g_lua_depth);
+    }
+    if (g_lua_deferred.size() >= kLuaDeferredLimit) {
+      return;
+    }
+    LuaDeferred deferred{kind, {}};
+    char fields[600];
+    LuaFields(kind, event, fields, sizeof(fields));
+    std::snprintf(deferred.fields, sizeof(deferred.fields), "%s%sdeferred=true", fields, fields[0] != 0 ? "," : "");
+    g_lua_deferred.push_back(deferred);
+    return;
+  }
   const int32_t previous_kind = g_lua_current_kind;
   void* const previous_event = g_lua_current_event;
   g_lua_current_kind = kind;
@@ -922,39 +1091,6 @@ void DispatchLua(int32_t kind, void* event) {
       g_lua_current_event = event;
     }
   } restore{previous_kind, previous_event};
-  if (kind == REFII_EVENT_SPELL_CHARGE_LEVEL) {
-    // Every frame of a held charge: Lua runs when the level changes, and its verdict stands for
-    // the frames between (each run is a compile).
-    auto& c = *static_cast<SpellChargeLevelEvent*>(event);
-    static uint32_t last_caster = 0;
-    static int32_t last_level = -100;
-    static int32_t last_verdict = 0;
-    if (c.caster == last_caster && c.level == last_level) {
-      c.level = last_verdict;
-      return;
-    }
-    last_caster = c.caster;
-    last_level = c.level;
-    char fields[640];
-    LuaFields(kind, event, fields, sizeof(fields));
-    if (FireLua(*e.ctx, e.base, kind, fields)) {
-      e.cancel = true;
-    }
-    last_verdict = c.level;
-    return;
-  }
-  if (kind == REFII_EVENT_TICK) {
-    // Ten times a second at most: a chunk run is a compile.
-    g_lua_tick_accumulated += static_cast<TickEvent*>(event)->seconds;
-    if (g_lua_tick_accumulated < kLuaTickPeriod) {
-      return;
-    }
-    char fields[64];
-    std::snprintf(fields, sizeof(fields), "seconds=%.9g", Fin(g_lua_tick_accumulated));
-    g_lua_tick_accumulated = 0.0f;
-    FireLua(*e.ctx, e.base, kind, fields);
-    return;
-  }
   char fields[640];
   LuaFields(kind, event, fields, sizeof(fields));
   if (FireLua(*e.ctx, e.base, kind, fields)) {
@@ -1013,6 +1149,10 @@ int g_block_next = 0;
 uint32_t g_tick = 0;
 /// Hits delivered so far, counted at the receiver (rex_CECHitReceiver_OnHit).
 uint32_t g_hit_sequence = 0;
+/// While a targeted fireball's Impact runs: its cast's serial, and the hits the receiver took
+/// carrying it (FireballImpact.hits).
+uint32_t g_impact_serial = 0;
+int32_t g_impact_hits = 0;
 
 bool AnySubscriber(int32_t kind) {
   if (LuaWants(kind) || refii::mods::HostWantsEvent(kind) || RelayWants(kind)) {
@@ -1076,8 +1216,8 @@ void HostFields(int32_t kind, void* event, bool replica, char* out, size_t size)
 }
 
 void RunGodotVerdict(int32_t kind, void* event) {
-  const uint64_t verdict_word = kind < 64 ? refii_bridge_mod_verdict_mask() : refii_bridge_mod_verdict_mask_high();
-  if (g_verdict_running || kind < 0 || kind >= 128 || ((verdict_word >> (kind % 64)) & 1u) == 0u) {
+  if (g_verdict_running || kind < 0 || kind >= refii::mods::kHostMaskCapacity ||
+      ((refii_bridge_mod_verdict_mask_word(kind / 64) >> (kind % 64)) & 1u) == 0u) {
     return;
   }
   const refii_mod_verdict_fn handler = refii_bridge_mod_verdict_handler();
@@ -1169,6 +1309,17 @@ bool ReplicaRun(int32_t kind, void* event) {
     case REFII_EVENT_SPELL_CREATED:
       subject = static_cast<const SpellCreatedEvent*>(event)->caster;
       break;
+    // A cast runs on both machines (the factory's copy above): its vortex and its fireball's
+    // impact are that cast's.
+    case REFII_EVENT_VORTEX_STARTED:
+      subject = static_cast<const VortexStartedEvent*>(event)->caster;
+      break;
+    case REFII_EVENT_VORTEX_ENDED:
+      subject = static_cast<const VortexEndedEvent*>(event)->caster;
+      break;
+    case REFII_EVENT_FIREBALL_IMPACT:
+      subject = static_cast<const FireballImpactEvent*>(event)->caster;
+      break;
     case REFII_EVENT_EXPERIENCE: {
       const uint32_t entity = static_cast<const ExperienceEvent*>(event)->entity;
       const uint32_t network = entity != 0 ? refii_mod_component(base, entity, kNetworkComponent) : 0u;
@@ -1243,6 +1394,12 @@ bool WriteEventField(int32_t kind, void* event, const char* field, double value)
     case REFII_EVENT_PARTNER_CONSENT:
       if (is("answer")) {
         static_cast<PartnerConsentEvent*>(event)->answer = value < 0.0 ? -1 : (value >= 0.5 ? 1 : 0);
+        return true;
+      }
+      return false;
+    case REFII_EVENT_LOOK_AT_BUTTON:
+      if (is("down")) {
+        static_cast<LookAtButtonEvent*>(event)->down = value != 0.0;
         return true;
       }
       return false;
@@ -1558,6 +1715,117 @@ REX_EXTERN(rex_CECAbilities_PerformRequest) {
   __imp__rex_CECAbilities_PerformRequest(ctx, base);
 }
 
+// ---------------------------------------------------------------------------------------------
+// WHAT AN ACTION IS (core/refii_mod.h, refii_mod_action_type): every action is made from its
+// definition — a Lua table of the game's scripts — by the one factory `sub_8218A8E0` (r3 = the
+// {action, refcount} pair to fill, r4 = the definition {lua_State, registry ref}); the type it
+// reads from the table is EScriptableAction. The factory is hooked; the last 64 {action, type}
+// pairs are kept, so an action's kind is known for as long as the address is that action.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+/// EScriptableAction, the game's own `miscellaneous/scriptableactionenum.lua` (0..88): the names
+/// the "Type" field of an action definition takes.
+constexpr const char* kScriptableActionNames[] = {
+    "PLAY_ANIMATION", "MELEE_STRIKE", "STRAFE", "TALK_TO_ENTITY", "OPEN_CHEST", "CLIMB", "KNOCK_ON_DOOR", "PICK_UP",
+    "PUT_DOWN", "PICK_UP_BOTH_HANDS", "PUT_DOWN_BOTH_HANDS", "DOG_SIT_INTO", "DOG_SIT_OUTOF", "THROW_SHOT",
+    "MOVE_TO_CARRY_SLOT", "MOVE_TO_CARRY_SLOT_FULL_BODY", "BATCH", "DOG_ANIMATION", "MOVE_OBJECT", "MASKED_ANIMATION",
+    "SWIM_TREADWATER_TURN", "DOG_SLEEP_INTO", "DOG_SLEEP_OUTOF", "DOG_PICK_UP_BALL", "DOG_DROP_BALL", "DOG_JUMP_TO_MAUL",
+    "DOG_MAUL", "SHOOT", "RELOAD", "RANGED_INTOAIM", "INTO_AIM", "OUTOF_AIM", "AMBUSH", "AMBUSH_FROM_ABOVE",
+    "POUND_GROUND", "RISE_FROM_UNDERGROUND", "RETURN_UNDERGROUND", "RETURN_UNDERGROUND_CRUMBLE", "TROLL_THROW_INTO",
+    "CREATE_ENTITY_IN_SLOT", "DESTROY_ENTITY_IN_SLOT", "FAST_WEAPON_SWITCH", "TAKE_OFF_FROM_GROUND", "LAND_FROM_FLIGHT",
+    "THROW_OFF_BEETLE", "BALVERINE_JUMP_ESCAPE", "BALVERINE_JUMP_RETURN", "BOUND_ATTACK", "LOOP", "FILL_URN_INTO",
+    "FILL_URN_OUT_OF", "PLAY_PAIRED_ANIMATION", "PLAY_ANIMATION_HOLD_LAST_FRAME", "PLAY_ANIMATION_TOWARDS_TARGET",
+    "RUN_INTO_STRAFE", "BANSHEE_SCREAM", "BANSHEE_MELEE_STRIKE", "BANSHEE_SPAWN_CHILDREN", "HOBBE_LIGHT_BOMB",
+    "HOBBE_FIREBALL", "HOBBE_SUMMON", "HOBBE_SPELL", "HOBBE_STILT_STOMP", "PLAY_ANIMATION_BLENDED_WITH_POSE",
+    "SHARD_PLAY_ANIMATION", "SHARD_BOMBARD_ATTACK", "SHARD_MELEE_ATTACK", "SHARD_CRACK_OPEN", "NPC_MAGIC_QUICK_CAST",
+    "NPC_MAGIC_CHARGE", "MELEE_STRIKE_UNSHEATHE_AND_SHEATHE_WEAPON", "NPC_MAGIC_CORNELIUS_RAISE", "SINGULAR_TELEPORT",
+    "DOG_SIT_AND_REACT_INTO", "DOG_SIT_AND_REACT_OUTOF", "LUCIENS_SOLDIER_SPELL", "SHEATHE_WEAPON", "UNSHEATHE_WEAPON",
+    "DOG_EXCITED_INTO", "DOG_EXCITED_OUTOF", "TROLL_PLAY_ANIMATION", "TROLL_STRAFE", "TROLL_THROW_SHOT",
+    "GROUP_LEADER_GIVE_ORDER", "ENRAGE", "FLEE_AROUND_POSITION", "FLEE_TARGET", "AMBIENT_ANIMAL_FLEE", "DIG",
+};
+constexpr int32_t kScriptableActionCount = static_cast<int32_t>(sizeof(kScriptableActionNames) / sizeof(kScriptableActionNames[0]));
+static_assert(kScriptableActionCount == 89, "EScriptableAction has 89 types (NUM_SCRIPTABLE_ACTIONS)");
+
+struct ActionRecord {
+  uint32_t action;
+  int32_t type;
+};
+ActionRecord g_actions[64];
+size_t g_action_next = 0;
+
+void RecordAction(uint32_t action, int32_t type) {
+  for (ActionRecord& r : g_actions) {
+    if (r.action == action) {
+      r.type = type;
+      return;
+    }
+  }
+  g_actions[g_action_next] = ActionRecord{action, type};
+  g_action_next = (g_action_next + 1) % (sizeof(g_actions) / sizeof(g_actions[0]));
+}
+
+int32_t ActionTypeOf(uint32_t action) {
+  if (action == 0) {
+    return -1;
+  }
+  for (const ActionRecord& r : g_actions) {
+    if (r.action == action) {
+      return r.type;
+    }
+  }
+  return -1;
+}
+}  // namespace
+
+extern "C" const char* refii_mod_scriptable_action_name(int32_t type) {
+  return type >= 0 && type < kScriptableActionCount ? kScriptableActionNames[type] : "";
+}
+
+extern "C" int32_t refii_mod_action_type(uint8_t* base, uint32_t action) {
+  (void)base;
+  return ActionTypeOf(action);
+}
+
+extern "C" int32_t refii_mod_action_name(uint8_t* base, uint32_t action, char* out, uint32_t size) {
+  const int32_t type = refii_mod_action_type(base, action);
+  const char* name = refii_mod_scriptable_action_name(type);
+  if (out != nullptr && size != 0) {
+    std::snprintf(out, size, "%s", name);
+  }
+  return name[0] != 0 ? 1 : 0;
+}
+
+// The action factory: r3 = the {action, refcount} pair it fills (`stw r11,4(r30); stw r10,0(r30)`
+// 0x8218a9a0..a4; both 0 for a type its map lacks, 0x8218a954..58), r4 = the definition. The type
+// is read as the factory reads it, through the game's own field reader `sub_8229DDF0(def, "Type",
+// 0)` (disc `sub_8229DB28`): `lua_rawgeti(L, LUA_REGISTRYINDEX, ref)`, `lua_getfield(L, -1,
+// "Type")`, the integer or the default. TU1 0x8218A8E0 / disc 0x8218A738.
+REX_EXTERN(rex_CActionFactory_CreateFromDefinition) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t pair = ctx.r3.u32;
+  const uint32_t definition = ctx.r4.u32;
+  __imp__rex_CActionFactory_CreateFromDefinition(ctx, base);
+  const uint32_t action = pair != 0 ? Load32(base, pair) : 0u;
+  if (action < 0x10000u || action >= 0xC0000000u || definition == 0) {
+    return;
+  }
+  PPCContext work = refii::mods::Frame(ctx, 0x200u);
+  const uint32_t text = (work.r1.u32 + 0x100u) & ~0xFu;
+  std::memcpy(base + text, "Type", 5);
+  work.r3.u32 = definition;
+  work.r4.u32 = text;
+  work.r5.u64 = 0u;
+  int32_t type = -1;
+  if (CallGuest(work, base, refii::guest::Address(0x8229DDF0u))) {
+    type = static_cast<int32_t>(work.r3.u32);
+    if (type < 0 || type >= kScriptableActionCount) {
+      type = -1;
+    }
+  }
+  RecordAction(action, type);
+}
+
 // Called once by every strike's Perform after the swing's animation has started: r3 = the
 // ability, r4 = the entity. The entity's action manager (component 49) then holds the live
 // clone at +0x10. TU1 0x8297BD68 / disc 0x829AEB98.
@@ -1576,6 +1844,8 @@ REX_EXTERN(rex_CAbilityActionMelee_CommitSwing) {
     e.ability = ability;
     const uint32_t manager = entity != 0 ? refii_mod_component(base, entity, kActionManagerComponent) : 0u;
     e.action = manager != 0 ? Load32(base, manager + 0x10u) : 0u;
+    e.action_type = ActionTypeOf(e.action);
+    e.action_name = refii_mod_scriptable_action_name(e.action_type);
     Dispatch(e);
   }
 }
@@ -1694,6 +1964,8 @@ REX_EXTERN(rex_CAction_OnAnimEvent) {
     const uint32_t owner_body = e.action != 0 ? Load32(base, e.action + 8u) : 0u;
     e.entity = owner_body != 0 ? Load32(base, owner_body) : 0u;
     e.player = PlayerOf(base, e.entity);
+    e.action_type = ActionTypeOf(e.action);
+    e.action_name = refii_mod_scriptable_action_name(e.action_type);
     Dispatch(e);
     if (e.cancel) {
       return;
@@ -1718,6 +1990,10 @@ REX_EXTERN(rex_CECHitReceiver_OnHit) {
   const bool post = AnySubscriber(REFII_EVENT_HIT_LANDED);
   const bool taken = component != 0 && hit != 0 && Load8(base, component + 0x18u) != 0 &&
                      (Load32(base, hit + kHitKind) == 8u || Load8(base, component + 0x19u) != 0);
+  // A fireball's blast delivers its hits inside its Impact: counted for FireballImpact.hits.
+  if (taken && g_impact_serial != 0 && Load32(base, hit + kHitSerial) == g_impact_serial) {
+    ++g_impact_hits;
+  }
   if ((!pre && !post) || !taken) {
     __imp__rex_CECHitReceiver_OnHit(ctx, base);
     return;
@@ -1926,6 +2202,382 @@ REX_EXTERN(rex_CECSpellManager_OnSpellLaunched) {
   __imp__rex_CECSpellManager_OnSpellLaunched(ctx, base);
 }
 
+// ---------------------------------------------------------------------------------------------
+// A live cast's parts (refii_mod_spell_parts) and the seams that keep them: the factory's cast
+// record, the vortex's Init / Shutdown, the targeted fireball's Impact. core/refii_mod.h quotes
+// the instructions behind every offset.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// The spell base (`sub_828E5020`): +0x18/+0x1C the caster's weak reference (body at +0x1C,
+/// `sub_82958B70` reads it), +0x28 the type (`stw r28,0x28(r31)` 0x828e5090), +0x40 the level,
+/// +0x44 the serial (kSpellSerial), +0x48 the fireball's exploded byte (`stb r30,0x48(r31)`
+/// 0x828e50b8; Impact's guard 0x82744234, set 0x827446e4), +0x10/+0x14 the shot's weak reference
+/// (`sub_82740568` = *(*(spell+0x14)), 0x82740578..90).
+constexpr uint32_t kPartPlayerComponent = 33;
+/// A guest address inside the game's own ranges (the shape every helper tests before a load).
+bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
+constexpr uint32_t kPartCasterBody = 0x1C;
+constexpr uint32_t kPartSpellType = 0x28;
+constexpr uint32_t kPartSpellLevel = 0x40;
+constexpr uint32_t kPartExploded = 0x48;
+constexpr uint32_t kPartShotBody = 0x14;
+/// The Blades' controller: spell+0xE4 for a targeted cast (`sub_825A2188` 0x825a21d4), spell+0xC8
+/// for an area cast (`sub_825A2720` 0x825a28e0); +0 the sword count (<= 8, `sub_825A2E68`
+/// 0x825a2ea8..b4), +116+4i the records (`sub_825A37E0` 0x825a3820..2c), a record's +4 its
+/// weak-reference body (`sub_825A5EF8` 0x825a5f14).
+constexpr uint32_t kPartBladesTargeted = 0xE4;
+constexpr uint32_t kPartBladesArea = 0xC8;
+constexpr uint32_t kPartControllerRecords = 116;
+constexpr uint32_t kPartRecordBody = 4;
+/// A weak-reference body's +0 is the entity, and the entity's +4 points back at the body
+/// (`sub_82214898`: `stw r31,0(r3)` 0x82214910, `stw r9,4(r31)` 0x82214924).
+constexpr uint32_t kPartEntityBody = 4;
+/// CECVortex (211): +4 owner entity (constructor 0x82757720), +0x14 level, +0x18 the cast's
+/// serial (Init `stw r25,0x18(r31)` 0x827588f4), +0x160/+0x164 the caster's weak reference (Init
+/// 0x82758884..94), +0x140 the twister's point (0x82759bdc).
+constexpr uint32_t kPartVortexLevel = 0x14;
+constexpr uint32_t kPartVortexSerial = 0x18;
+constexpr uint32_t kPartVortexCasterBody = 0x164;
+constexpr uint32_t kPartVortexPoint = 0x140;
+constexpr int32_t kPartTypeFireball = 1;
+constexpr int32_t kPartTypeSwords = 3;
+constexpr int32_t kPartTypeVortex = 4;
+
+/// What the factory made, by serial: the last 32 casts.
+struct CastRecord {
+  uint32_t serial = 0;
+  uint32_t spell = 0;
+  uint32_t caster = 0;
+  int32_t type = -1;
+  int32_t level = 0;
+  bool targeted = false;
+};
+CastRecord g_casts[32];
+int g_cast_next = 0;
+
+void RecordCast(uint8_t* base, uint32_t spell, int32_t type, bool targeted, int32_t level, uint32_t caster) {
+  const uint32_t serial = Load32(base, spell + kSpellSerial);
+  if (serial == 0) {
+    return;
+  }
+  const CastRecord record{serial, spell, caster, type, level, targeted};
+  for (CastRecord& c : g_casts) {
+    if (c.serial == serial) {
+      c = record;
+      return;
+    }
+  }
+  g_casts[g_cast_next] = record;
+  g_cast_next = (g_cast_next + 1) % 32;
+}
+
+const CastRecord* CastOf(uint32_t serial) {
+  for (const CastRecord& c : g_casts) {
+    if (serial != 0 && c.serial == serial) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+/// The live vortex components, by serial (Init adds, Shutdown removes).
+struct LiveVortex {
+  uint32_t component = 0;
+  uint32_t serial = 0;
+};
+LiveVortex g_vortices[8];
+
+LiveVortex* VortexSlot(uint32_t component) {
+  for (LiveVortex& v : g_vortices) {
+    if (v.component == component) {
+      return &v;
+    }
+  }
+  return nullptr;
+}
+
+/// The targeted fireballs' impacts, by serial: the position Impact was given, and whether the
+/// blast went off.
+struct ImpactRecord {
+  uint32_t serial = 0;
+  float position[3] = {0.0f, 0.0f, 0.0f};
+  bool exploded = false;
+};
+ImpactRecord g_impacts[8];
+int g_impact_next = 0;
+/// The position of the Impact running now (g_impact_serial): the origin while its hits land.
+float g_impact_position[3] = {0.0f, 0.0f, 0.0f};
+
+ImpactRecord* ImpactOf(uint32_t serial) {
+  for (ImpactRecord& i : g_impacts) {
+    if (serial != 0 && i.serial == serial) {
+      return &i;
+    }
+  }
+  return nullptr;
+}
+
+/// The entity a weak-reference body holds, while the entity still points back at the body.
+uint32_t WeakRefEntity(uint8_t* base, uint32_t body) {
+  const uint32_t entity = Plausible(body) ? Load32(base, body) : 0u;
+  return Plausible(entity) && Load32(base, entity + kPartEntityBody) == body ? entity : 0u;
+}
+
+/// A spell object still carrying `serial`: the cast record's object, type-checked.
+uint32_t LiveSpellObject(uint8_t* base, const CastRecord& cast) {
+  return Plausible(cast.spell) && Load32(base, cast.spell + kSpellSerial) == cast.serial &&
+                 static_cast<int32_t>(Load32(base, cast.spell + kPartSpellType)) == cast.type
+             ? cast.spell
+             : 0u;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_spell_parts(PPCContext* ctx, uint8_t* base, uint32_t serial, refii_mod_cast_parts* out) {
+  if (out == nullptr) {
+    return 0;
+  }
+  std::memset(out, 0, sizeof(*out));
+  out->type = -1;
+  const CastRecord* cast = CastOf(serial);
+  if (cast == nullptr) {
+    return 0;
+  }
+  out->type = cast->type;
+  out->targeted = cast->targeted ? 1 : 0;
+  out->level = cast->level;
+  out->caster = cast->caster;
+  out->caster_player = PlayerOf(base, cast->caster);
+  out->spell = LiveSpellObject(base, *cast);
+  if (cast->type == kPartTypeVortex) {
+    for (const LiveVortex& v : g_vortices) {
+      if (v.serial != serial || v.component == 0 || Load32(base, v.component + kPartVortexSerial) != serial) {
+        continue;
+      }
+      out->vortex = v.component;
+      const uint32_t entity = Load32(base, v.component + 4u);
+      out->anchor = Plausible(entity) ? entity : 0u;
+      for (int i = 0; i < 3; ++i) {
+        out->origin[i] = LoadF(base, v.component + kPartVortexPoint + 4u * static_cast<uint32_t>(i));
+      }
+      out->has_origin = 1;
+      break;
+    }
+  } else if (cast->type == kPartTypeFireball) {
+    const ImpactRecord* impact = ImpactOf(serial);
+    out->exploded = impact != nullptr && impact->exploded ? 1 : 0;
+    const uint32_t shot = out->spell != 0 ? WeakRefEntity(base, Load32(base, out->spell + kPartShotBody)) : 0u;
+    out->anchor = shot != 0 && refii_mod_entity_alive(base, shot) != 0 ? shot : 0u;
+    const float* reported = out->exploded != 0 ? impact->position : (g_impact_serial == serial ? g_impact_position : nullptr);
+    if (reported != nullptr) {
+      std::memcpy(out->origin, reported, sizeof(out->origin));
+      out->has_origin = 1;
+    } else if (out->anchor != 0 && ctx != nullptr && refii_mod_entity_position(ctx, base, out->anchor, out->origin) != 0) {
+      out->has_origin = 1;
+    }
+  } else if (cast->type == kPartTypeSwords && out->spell != 0) {
+    const uint32_t controller = Load32(base, out->spell + (cast->targeted ? kPartBladesTargeted : kPartBladesArea));
+    if (Plausible(controller)) {
+      int32_t count = static_cast<int32_t>(Load32(base, controller));
+      count = count < 0 ? 0 : (count > 8 ? 8 : count);
+      for (int32_t i = 0; i < count; ++i) {
+        const uint32_t record = Load32(base, controller + kPartControllerRecords + 4u * static_cast<uint32_t>(i));
+        const uint32_t body = Plausible(record) ? Load32(base, record + kPartRecordBody) : 0u;
+        const uint32_t sword = WeakRefEntity(base, body);
+        if (sword != 0 && refii_mod_entity_alive(base, sword) != 0) {
+          out->swords[out->sword_count++] = sword;
+        }
+      }
+    }
+  }
+  if (out->has_origin == 0 && ctx != nullptr && refii_mod_entity_alive(base, cast->caster) != 0 &&
+      refii_mod_entity_position(ctx, base, cast->caster, out->origin) != 0) {
+    out->has_origin = 1;
+  }
+  return 1;
+}
+
+// The player's look-at flag writer: r3 = the player component (33, owner entity at +4), r4 = the
+// value; `stb r29,0x20(r30)` 0x823e9f34 behind an equal-value early return. Its callers are the
+// camera's LT-down input event (`sub_825ADD58` 0x825ae6e0, 1), the hero's message handler on the
+// release (`sub_826E5B30` case 0x32 0x826e5fc0, 0) and refii_mod_lock_target / _release_lock,
+// which call this name so the event sees the API's own writes too. `down` writes back to r4.
+// TU1 0x823E9F10 / disc 0x823C8940.
+REX_EXTERN(rex_CPlayer_SetLookAtButtonDown) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t hero = component != 0 ? Load32(base, component + 4u) : 0u;
+  const int32_t player = hero != 0 && refii_mod_component(base, hero, kPartPlayerComponent) == component ? PlayerOf(base, hero) : 0;
+  if (player != 0 && AnySubscriber(REFII_EVENT_LOOK_AT_BUTTON)) {
+    LookAtButtonEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = hero;
+    e.player = player;
+    e.down = (ctx.r4.u32 & 0xFFu) != 0;
+    e.component = component;
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+    ctx.r4.u64 = e.down ? 1u : 0u;
+  }
+  __imp__rex_CPlayer_SetLookAtButtonDown(ctx, base);
+}
+
+// The vortex component's Init: r3 = the component (211; owner entity at +4 from its
+// constructor), r4 = the caster entity (kept as a weak reference at +0x160/+0x164), r5 = the
+// target, r6 = the cast's serial (-> +0x18), r8 = the level (-> +0x14); called by the vortex
+// spell's post-init inside the factory (`sub_828B20D0` 0x828b2438), before SpellCreated.
+// TU1 0x827587F8 / disc 0x827301D8.
+REX_EXTERN(rex_VortexComponent_Init) {
+  REX_FUNC_PROLOGUE();
+  const PPCContext entry = ctx;
+  __imp__rex_VortexComponent_Init(ctx, base);
+  const uint32_t component = entry.r3.u32;
+  if (component == 0) {
+    return;
+  }
+  const uint32_t serial = Load32(base, component + kPartVortexSerial);
+  LiveVortex* slot = VortexSlot(component);
+  if (slot == nullptr) {
+    slot = VortexSlot(0);
+  }
+  if (slot == nullptr) {
+    slot = &g_vortices[0];  // the oldest: eight live vortices at once is the game's own ceiling by far
+  }
+  *slot = LiveVortex{component, serial};
+  if (!AnySubscriber(REFII_EVENT_VORTEX_STARTED)) {
+    return;
+  }
+  VortexStartedEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.vortex = component;
+  e.entity = Load32(base, component + 4u);
+  e.caster = entry.r4.u32;
+  e.caster_player = PlayerOf(base, e.caster);
+  e.target = entry.r5.u32;
+  e.serial = serial;
+  e.level = static_cast<int32_t>(Load32(base, component + kPartVortexLevel));
+  float xyz[3] = {0.0f, 0.0f, 0.0f};
+  if (Plausible(e.entity)) {
+    refii_mod_entity_position(&e_ctx, base, e.entity, xyz);
+  }
+  e.x = xyz[0];
+  e.y = xyz[1];
+  e.z = xyz[2];
+  Dispatch(e);
+}
+
+// The vortex component's Shutdown: r3 = the component. It stores nothing to +4, +0x18 or
+// +0x140 (its only store is a global counter, 0x827590d4), so the event reads them before it.
+// TU1 0x82758F98 / disc 0x82730978.
+REX_EXTERN(rex_VortexComponent_Shutdown) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  if (component != 0) {
+    if (LiveVortex* slot = VortexSlot(component)) {
+      *slot = LiveVortex{};
+    }
+    if (AnySubscriber(REFII_EVENT_VORTEX_ENDED)) {
+      VortexEndedEvent e{};
+      PPCContext e_ctx = ctx;
+      e.ctx = &e_ctx;
+      e.base = base;
+      e.vortex = component;
+      e.entity = Load32(base, component + 4u);
+      e.caster = WeakRefEntity(base, Load32(base, component + kPartVortexCasterBody));
+      e.caster_player = PlayerOf(base, e.caster);
+      e.serial = Load32(base, component + kPartVortexSerial);
+      e.x = LoadF(base, component + kPartVortexPoint);
+      e.y = LoadF(base, component + kPartVortexPoint + 4u);
+      e.z = LoadF(base, component + kPartVortexPoint + 8u);
+      Dispatch(e);
+    }
+  }
+  __imp__rex_VortexComponent_Shutdown(ctx, base);
+}
+
+// The targeted fireball's Impact: r3 = the spell object, r4 = what it struck (0 for ground),
+// v1 = the impact position, v2 = the impact normal, f1 = a range, r6 = the reached-target flag.
+// A fireball already exploded (+0x48) returns at once (0x82744234..3c); otherwise the blast's
+// hits land inside the call (`sub_827478D8`) and the byte is set at its end (0x827446e4) — or
+// the fireball passes a creature it ignites and flies on with the byte clear. Called from the
+// shot's update on a hit (`sub_82743EB0` 0x8274402c) and on reaching the target (0x8274405c,
+// `sub_82743B10` 0x82743e94). TU1 0x827441F0 / disc 0x827192F0.
+REX_EXTERN(rex_TargetedFireball_Impact) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t spell = ctx.r3.u32;
+  if (spell == 0 || Load8(base, spell + kPartExploded) != 0) {
+    __imp__rex_TargetedFireball_Impact(ctx, base);
+    return;
+  }
+  const uint32_t serial = Load32(base, spell + kSpellSerial);
+  const uint32_t struck = ctx.r4.u32;
+  float where[3];
+  float normal[3];
+  GetVector(ctx, 1, where);
+  GetVector(ctx, 2, normal);
+  // Nested impacts do not happen (one fireball's blast casts no fireball), but the counters are
+  // restored regardless.
+  const uint32_t outer_serial = g_impact_serial;
+  const int32_t outer_hits = g_impact_hits;
+  float outer_position[3];
+  std::memcpy(outer_position, g_impact_position, sizeof(outer_position));
+  g_impact_serial = serial;
+  g_impact_hits = 0;
+  std::memcpy(g_impact_position, where, sizeof(g_impact_position));
+  __imp__rex_TargetedFireball_Impact(ctx, base);
+  const int32_t hits = g_impact_hits;
+  g_impact_serial = outer_serial;
+  g_impact_hits = outer_hits;
+  std::memcpy(g_impact_position, outer_position, sizeof(g_impact_position));
+  const bool detonated = Load8(base, spell + kPartExploded) != 0;
+  if (detonated && serial != 0) {
+    ImpactRecord* record = ImpactOf(serial);
+    if (record == nullptr) {
+      record = &g_impacts[g_impact_next];
+      g_impact_next = (g_impact_next + 1) % 8;
+    }
+    record->serial = serial;
+    std::memcpy(record->position, where, sizeof(record->position));
+    record->exploded = true;
+  }
+  if (!AnySubscriber(REFII_EVENT_FIREBALL_IMPACT)) {
+    return;
+  }
+  FireballImpactEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.spell = spell;
+  e.serial = serial;
+  e.level = static_cast<int32_t>(Load32(base, spell + kPartSpellLevel));
+  e.caster = WeakRefEntity(base, Load32(base, spell + kPartCasterBody));
+  if (e.caster == 0) {
+    if (const CastRecord* cast = CastOf(serial)) {
+      e.caster = cast->caster;
+    }
+  }
+  e.caster_player = PlayerOf(base, e.caster);
+  e.struck = Plausible(struck) ? struck : 0u;
+  e.struck_player = PlayerOf(base, e.struck);
+  e.x = where[0];
+  e.y = where[1];
+  e.z = where[2];
+  e.nx = normal[0];
+  e.ny = normal[1];
+  e.nz = normal[2];
+  e.detonated = detonated;
+  e.hits = hits;
+  Dispatch(e);
+}
+
 // The spell factory the launcher calls for every cast: r3 registry = *(W + 0x44), r4 spell
 // type, r5 1 targeted / 0 area, r6 target entity, r7 power level 0..4, r8 caster entity, r9 the
 // manager's definitions word; v1 position, v2 direction. The spell object's serial is at +0x44.
@@ -1934,6 +2586,10 @@ REX_EXTERN(rex_CSpellRegistry_Create) {
   REX_FUNC_PROLOGUE();
   const PPCContext entry = ctx;
   __imp__rex_CSpellRegistry_Create(ctx, base);
+  if (ctx.r3.u32 != 0) {
+    RecordCast(base, ctx.r3.u32, static_cast<int32_t>(entry.r4.u32), entry.r5.u32 != 0, static_cast<int32_t>(entry.r7.u32),
+               entry.r8.u32);
+  }
   if (ctx.r3.u32 != 0 && AnySubscriber(REFII_EVENT_SPELL_CREATED)) {
     SpellCreatedEvent e{};
     PPCContext e_ctx = ctx;
@@ -5101,6 +5757,111 @@ REX_EXTERN(rex_lhGuiManager_SetScreen) {
     e.player = MenuOwnerNow(ctx, base);
     Dispatch(e);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE PAUSE STATE (core/refii_mod_events.h PausedEvent): the GameFlow mode command's apply and
+// remove — the game's own set and clear of what rex_lhGameFlow_IsGuiActive answers.
+// ---------------------------------------------------------------------------------------------
+
+namespace refii::vfs {
+// mod_frontend_lua.cpp / mod_commands.cpp
+bool RunFrontEndLua(PPCContext& ctx, uint8_t* base, const std::string& chunk);
+bool GameLuaUp(uint8_t* base);
+}  // namespace refii::vfs
+
+namespace {
+/// The command's id: its vtable slot 1 (`li r3,1; blr` for the GUI mode, `li r3,2` the level change).
+int32_t ModeId(PPCContext& ctx, uint8_t* base, uint32_t command) {
+  if (command < 0x10000u || command >= 0xC0000000u) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(ctx);
+  return refii::mods::CallVirtual(work, base, command, 1) ? static_cast<int32_t>(work.r3.u32) : 0;
+}
+
+/// The in-game GUI manager's screen id in TU1 numbering, -1 when the GUI object up is not the
+/// in-game one (`dword_83496B08` has two writers; the in-game vtable is 0x82001610, as the host's
+/// RefiiHostGetPauseState tests it).
+int32_t MenuScreenNow(uint8_t* base) {
+  const uint32_t gui = Load32(base, refii::guest::Address(0x83496B08u));
+  if (gui < 0x10000u || gui >= 0xC0000000u || Load32(base, gui) != refii::guest::Address(0x82001610u)) {
+    return -1;
+  }
+  const int32_t raw = CurrentScreen(base);
+  return raw >= 0 ? static_cast<int32_t>(refii::guest::ScreenIdToTu1(static_cast<uint32_t>(raw))) : -1;
+}
+
+void RaisePaused(PPCContext& ctx, uint8_t* base, uint32_t command, bool paused) {
+  if (!AnySubscriber(REFII_EVENT_PAUSED)) {
+    return;
+  }
+  PausedEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.paused = paused;
+  e.mode = ModeId(ctx, base, command);
+  e.screen = MenuScreenNow(base);
+  // 31 is the id ExitScreen writes to the screen manager's +4 when it has left: no screen up.
+  e.player = e.mode == 1 && e.screen >= 0 && e.screen != 31 ? MenuOwnerNow(ctx, base) : 0;
+  Dispatch(e);
+}
+}  // namespace
+
+// The GUI / pause mode command's apply, vtable slot +20 (`sub_823D48E8` then `li r4,1; bl
+// sub_823D4A50`): r3 = the command. Run by the push that makes it the top and again when the
+// command above it is removed. TU1 0x823D4D00 / disc 0x8245C2E0.
+REX_EXTERN(rex_lhGameFlowGuiMode_Apply) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t command = ctx.r3.u32;
+  __imp__rex_lhGameFlowGuiMode_Apply(ctx, base);
+  RaisePaused(ctx, base, command, true);
+}
+
+// Its remove, vtable slot +32 (`li r4,0; bl sub_823D4A50`): r3 = the command. Run by the removal
+// (`sub_82318800`, ExitScreen's `sub_82318800(flow, 1)`) and by a push of another command over
+// it. TU1 0x823D5150 / disc 0x8245C730.
+REX_EXTERN(rex_lhGameFlowGuiMode_Remove) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t command = ctx.r3.u32;
+  __imp__rex_lhGameFlowGuiMode_Remove(ctx, base);
+  RaisePaused(ctx, base, command, false);
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE FRONT END STARTS A GAME (core/refii_mod_events.h StartGameEvent): r3 = the front-end
+// object, r4 = the save name LHString, r5 = the start level LHString. Before the call, read-only.
+// There is no game VM on the title: Lua hears it in the mods' front-end state (mod/frontend.lua),
+// as the mod_menu_row / mod_message_box commands deliver theirs. TU1 0x82379838 / disc 0x8237A2D8.
+// ---------------------------------------------------------------------------------------------
+REX_EXTERN(rex_lhFrontEnd_SetStartGameTarget) {
+  REX_FUNC_PROLOGUE();
+  const bool front_end_lua = !refii::vfs::GameLuaUp(base);
+  if (AnySubscriber(REFII_EVENT_START_GAME) || front_end_lua) {
+    const std::string save = ctx.r4.u32 != 0 ? refii::vfs::ReadGuestLhString(base, ctx.r4.u32) : std::string();
+    const std::string level = ctx.r5.u32 != 0 ? refii::vfs::ReadGuestLhString(base, ctx.r5.u32) : std::string();
+    StartGameEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.save = save.c_str();
+    e.level = level.c_str();
+    e.new_game = save.empty();
+    e.player = 1;
+    Dispatch(e);
+    if (front_end_lua) {
+      char fields[320];
+      LuaFields(REFII_EVENT_START_GAME, &e, fields, sizeof(fields));
+      std::string chunk = "if Refii and Refii._fire then Refii._fire(";
+      chunk += std::to_string(static_cast<int>(REFII_EVENT_START_GAME));
+      chunk += ", {";
+      chunk += fields;
+      chunk += "}) end";
+      refii::vfs::RunFrontEndLua(ctx, base, chunk);
+    }
+  }
+  __imp__rex_lhFrontEnd_SetStartGameTarget(ctx, base);
 }
 
 namespace {

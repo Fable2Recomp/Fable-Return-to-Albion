@@ -536,6 +536,34 @@ public static class ModIndex
 					}
 
 					writer.WriteEndArray();
+
+					// WHAT A DATABASE PATCH ADDED, beside what it set: an entry the game never
+					// shipped, a property no record declared, an inherited value now on the entry.
+					if (merge.AddedEntries.Count != 0 || merge.AddedProperties.Count != 0 || merge.Materialised.Count != 0)
+					{
+						writer.WriteStartArray("added_entries");
+						foreach (string added in merge.AddedEntries)
+						{
+							writer.WriteStringValue(added);
+						}
+
+						writer.WriteEndArray();
+						writer.WriteStartArray("added_properties");
+						foreach (string added in merge.AddedProperties)
+						{
+							writer.WriteStringValue(added);
+						}
+
+						writer.WriteEndArray();
+						writer.WriteStartArray("materialised");
+						foreach (string set in merge.Materialised)
+						{
+							writer.WriteStringValue(set);
+						}
+
+						writer.WriteEndArray();
+					}
+
 					writer.WriteEndObject();
 				}
 

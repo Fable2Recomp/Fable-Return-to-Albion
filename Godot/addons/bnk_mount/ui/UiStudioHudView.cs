@@ -40,6 +40,9 @@ public partial class UiStudioHudView : VBoxContainer
 	private Button _copy = null!;
 	private ItemList _clones = null!;
 	private UiStudioFields _cloneFields = null!;
+	private OptionButton _cloneSlide = null!;
+	private readonly List<(string Element, int Slide)> _cloneSlideChoices = new();
+	private bool _fillingSlides;
 	private bool _filling;
 
 	private bool _active;
@@ -539,17 +542,138 @@ public partial class UiStudioHudView : VBoxContainer
 		_cloneFields.Add("icon.textures", "Icon textures", UiStudioFields.Type.List, "Candidates; the first that loads");
 		_cloneFields.Add("values", "Values", UiStudioFields.Type.Map, "meter=source or meter=source/cap; \"none\" holds a meter still");
 		_cloneFields.Add("bars", "Bars", UiStudioFields.Type.Map, "element=meter: the elements a meter fills");
+		_cloneFields.Add("slides", "Slides", UiStudioFields.Type.Map,
+			"element=slide number: the copy's own slide for that element (its root, or one beneath it) — a fader the game never raises, raised for the copy alone; 1 past the master, as the game counts them");
 		_cloneFields.Changed += key =>
 		{
 			if (key == "id")
 			{
 				FillClones(Selected(_clones));
 			}
+			else if (key == "slides")
+			{
+				FillCloneSlides(Record(Engine_HudModEdit.ClonesKey, Selected(_clones)));
+			}
 
 			HudEdited();
 		};
 
+		// THE SLIDE PICKER: the copied piece's own slides as hud.bgf authors them and the game
+		// counts them (1 past the master), one chosen for the copy's root element and written
+		// into "slides" as its number; "(as the original)" removes it.
+		_cloneSlide = new OptionButton { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+		_cloneSlide.ItemSelected += index => PickCloneSlide((int)index);
+		body.AddChild(ModStudioUiStyles.Field("Lit on slide", _cloneSlide,
+			"The copied piece's slides; the copy's root element stands on the one chosen while the original keeps the game's state"));
+		FillCloneSlides(null);
+
 		return ModStudioUiStyles.Card("🪞 Copies of the game's pieces", new Color(0.70f, 0.85f, 0.65f), body);
+	}
+
+	/// <summary>
+	/// Fills the slide picker from the copied piece's root element: every slide that element owns
+	/// in hud.bgf, numbered as the game counts them; the one the clone's <c>slides</c> states is
+	/// selected. Empty and disabled before the preview loads, or for a piece hud.bgf does not bind.
+	/// </summary>
+	private void FillCloneSlides(JsonObject? clone)
+	{
+		if (_cloneSlide is null)
+		{
+			return;
+		}
+
+		_fillingSlides = true;
+		_cloneSlide.Clear();
+		_cloneSlideChoices.Clear();
+		_cloneSlide.AddItem("(as the original)");
+		int select = 0;
+		if (clone is not null && CloneRoot(clone) is { } root)
+		{
+			int current = clone["slides"] is JsonObject slides && slides[root.Element] is { } stated ? SlideNumber(stated) : 0;
+			int index = 0;
+			foreach (Refii.Ui.BgfSlide slide in root.Screen.Document.Slides)
+			{
+				if (slide.OwnerElement != root.Ordinal || slide.IsMaster)
+				{
+					continue;
+				}
+
+				++index;
+				_cloneSlide.AddItem($"{index}: {slide.Name}");
+				_cloneSlideChoices.Add((root.Element, index));
+				if (index == current)
+				{
+					select = _cloneSlideChoices.Count;
+				}
+			}
+		}
+
+		_cloneSlide.Disabled = _cloneSlideChoices.Count == 0;
+		_cloneSlide.Select(select);
+		_fillingSlides = false;
+	}
+
+	/// <summary>A stated slide: a number, or a numeric string as the map field writes it; 0 for neither.</summary>
+	private static int SlideNumber(JsonNode stated) =>
+		Engine_UiMenuEdit.NumberOf(stated) is { } n ? (int)n
+			: stated is JsonValue v && v.TryGetValue(out string? text) && int.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) ? parsed
+			: 0;
+
+	/// <summary>The copied piece's root element in hud.bgf (the screen, its ordinal, its name), or null before the preview loads or for a piece hud.bgf does not bind.</summary>
+	private (Engine_UiScreen Screen, int Ordinal, string Element)? CloneRoot(JsonObject clone)
+	{
+		string of = Engine_UiMenuEdit.Text(clone, "of");
+		if (of.Length == 0 || !_preview.Loaded || _preview.Host!.DocumentFor(HudPresentation) is not { } screen || ShippedLayout() is not { } layout)
+		{
+			return null;
+		}
+
+		foreach (Engine_HudLayout.Piece piece in layout.Pieces)
+		{
+			if (piece.Id == of && piece.ElementOrdinal >= 0 && piece.ElementOrdinal < screen.Nodes.Length)
+			{
+				return (screen, piece.ElementOrdinal, screen.Nodes[piece.ElementOrdinal].Name);
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>The picker's choice written into the selected clone's <c>slides</c> (its root element), or removed for "(as the original)".</summary>
+	private void PickCloneSlide(int index)
+	{
+		if (_fillingSlides || Record(Engine_HudModEdit.ClonesKey, Selected(_clones)) is not { } clone || CloneRoot(clone) is not { } root)
+		{
+			return;
+		}
+
+		if (index <= 0 || index > _cloneSlideChoices.Count)
+		{
+			if (clone["slides"] is JsonObject slides)
+			{
+				slides.Remove(root.Element);
+				if (slides.Count == 0)
+				{
+					clone.Remove("slides");
+				}
+			}
+		}
+		else
+		{
+			(string element, int slide) = _cloneSlideChoices[index - 1];
+			if (clone["slides"] is not JsonObject slides)
+			{
+				slides = new JsonObject();
+				clone["slides"] = slides;
+			}
+
+			slides[element] = slide;
+		}
+
+		_filling = true;
+		_cloneFields.Bind(clone);
+		_filling = false;
+		HudEdited();
 	}
 
 	private void FillClones(string? select)
@@ -575,7 +699,9 @@ public partial class UiStudioHudView : VBoxContainer
 	{
 		if (!_filling)
 		{
-			_cloneFields.Bind(Record(Engine_HudModEdit.ClonesKey, Selected(_clones)));
+			JsonObject? clone = Record(Engine_HudModEdit.ClonesKey, Selected(_clones));
+			_cloneFields.Bind(clone);
+			FillCloneSlides(clone);
 		}
 	}
 

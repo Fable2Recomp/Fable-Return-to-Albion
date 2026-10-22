@@ -132,6 +132,12 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void mod_abilityEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void spell_pickEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void partner_messageEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void look_at_buttonEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void vortex_startedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void vortex_endedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void fireball_impactEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void pausedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void start_gameEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
 	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
@@ -164,13 +170,15 @@ public partial class RefiiHost : Node
 		"mod_notice", "mod_menu_box",
 		"mod_ability", "spell_pick",
 		"partner_message",
+		"look_at_button", "vortex_started", "vortex_ended", "fireball_impact",
+		"paused", "start_game",
 	};
 
 	public const string SingletonName = "RefiiHost";
 	public const string ModEventSignal = "mod_event";
 
 	/// <summary>The kinds the host keeps in the mask while any script is loaded: hero_ready and hero_gone feed <see cref="hero"/>.</summary>
-	private static readonly UInt128 HeroKinds = ((UInt128)1 << 1) | ((UInt128)1 << 2);
+	private static readonly ModEventMask HeroKinds = new ModEventMask().With(1).With(2);
 
 	/// <summary>The kind a query's reply arrives under (REFII_MOD_HOST_REPLY_KIND); never an event.</summary>
 	public const int ReplyKind = 1000;
@@ -184,7 +192,7 @@ public partial class RefiiHost : Node
 	private readonly StringName?[] _signalByKind;
 	private readonly StringName[] _nameByKind;
 	private readonly Dictionary<long, long> _hero = new();
-	private UInt128 _mask;
+	private ModEventMask _mask;
 	private bool _maskSent;
 
 	/// <summary>The guest's last <c>coop_state</c> answer: <see cref="local_hero"/>, <see cref="coop_mode"/>, <see cref="menu_player"/>.</summary>
@@ -309,26 +317,26 @@ public partial class RefiiHost : Node
 
 	private static void PushVerdictMask()
 	{
-		UInt128 mask = 0;
+		var mask = new ModEventMask();
 		lock (VerdictLock)
 		{
 			foreach ((int kind, List<Callable> list) in Verdicts)
 			{
-				if (list.Count != 0 && kind >= 0 && kind < 128)
+				if (list.Count != 0)
 				{
-					mask |= (UInt128)1 << kind;
+					mask = mask.With(kind);
 				}
 			}
 		}
 
-		if (mask != 0 && !_verdictInstalled)
+		if (!mask.IsZero && !_verdictInstalled)
 		{
 			HostBridge.SetModVerdictHandler(VerdictCallback);
 			_verdictInstalled = true;
 		}
 
 		HostBridge.SetModVerdictMask(mask);
-		if (mask == 0 && _verdictInstalled)
+		if (mask.IsZero && _verdictInstalled)
 		{
 			HostBridge.SetModVerdictHandler(null);
 			_verdictInstalled = false;
@@ -461,7 +469,7 @@ public partial class RefiiHost : Node
 		Refii.Lighting.Engine_ModLights.Clear();
 		if (_maskSent)
 		{
-			HostBridge.SetModEventMask(0);
+			HostBridge.SetModEventMask(new ModEventMask());
 			_maskSent = false;
 		}
 	}
@@ -469,7 +477,7 @@ public partial class RefiiHost : Node
 	/// <summary>Once per frame: the mask from the live connections, then every event posted since the last frame.</summary>
 	public override void _Process(double delta)
 	{
-		UInt128 mask = ComputeMask();
+		ModEventMask mask = ComputeMask();
 		if (mask != _mask || !_maskSent)
 		{
 			_mask = mask;
@@ -478,7 +486,7 @@ public partial class RefiiHost : Node
 		}
 
 		// One question a frame while a script is loaded: the co-op state the sync getters answer.
-		if (mask != 0 && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
+		if (!mask.IsZero && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
 		{
 			_coopStateQuery = query("coop_state", new Godot.Collections.Array());
 			_coopStateWait = 0;
@@ -580,19 +588,19 @@ public partial class RefiiHost : Node
 	/// Bit k set when some script is connected to kind k's signal; every bit when one is
 	/// connected to mod_event; the hero kinds whenever a script is loaded at all; zero when none is.
 	/// </summary>
-	private UInt128 ComputeMask()
+	private ModEventMask ComputeMask()
 	{
 		if (ScriptsRoot is null || !IsInstanceValid(ScriptsRoot) || ScriptsRoot.GetChildCount() == 0)
 		{
-			return 0;
+			return new ModEventMask();
 		}
 
-		UInt128 mask = HeroKinds;
+		ModEventMask mask = HeroKinds;
 		if (GetSignalConnectionList(SignalName.mod_event).Count != 0)
 		{
 			for (int kind = 0; kind < _nameByKind.Length; kind++)
 			{
-				mask |= (UInt128)1 << kind;
+				mask = mask.With(kind);
 			}
 
 			return mask;
@@ -602,7 +610,7 @@ public partial class RefiiHost : Node
 		{
 			if (_signalByKind[kind] is { } signal && GetSignalConnectionList(signal).Count != 0)
 			{
-				mask |= (UInt128)1 << kind;
+				mask = mask.With(kind);
 			}
 		}
 
@@ -679,9 +687,18 @@ public partial class RefiiHost : Node
 	public void spend_experience(long entity, int pool, float amount) =>
 		Post($"spend_experience {entity} {pool} {Num(amount)}");
 
-	/// <summary>Casts a spell as caster: the spell type, targeted (true/false), the target entity (0 for none) and the level 0..4.</summary>
+	/// <summary>Casts a spell as caster: the spell type, targeted (true/false), the target entity (0 for none) and the level 0..4, starting at the caster's own position and facing.</summary>
 	public void cast_spell(long caster, int type, bool targeted, long target, int level) =>
 		Post($"cast_spell {caster} {type} {(targeted ? 1 : 0)} {target} {level}");
+
+	/// <summary>
+	/// Casts a spell as caster from a stated start position facing <paramref name="dir"/> (guest axes), as
+	/// Fable III's weave places its partner casts: Fable 2's targeted classes place from the position along
+	/// the facing (Lightning draws its bolt from there to the target, Fireball spawns its shot there, Force
+	/// Push shoves the target away from there).
+	/// </summary>
+	public void cast_spell_at(long caster, int type, bool targeted, long target, int level, Vector3 pos, Vector3 dir) =>
+		Post($"cast_spell {caster} {type} {(targeted ? 1 : 0)} {target} {level} {Num(pos.X)} {Num(pos.Y)} {Num(pos.Z)} {Num(dir.X)} {Num(dir.Y)} {Num(dir.Z)}");
 
 	/// <summary>Moves an entity to a world position.</summary>
 	public void set_position(long entity, float x, float y, float z) =>
@@ -724,6 +741,19 @@ public partial class RefiiHost : Node
 	/// <summary>Ends the lock lock_target stated for player 1 or 2 (refii_mod_release_lock); a held LT is the trigger's.</summary>
 	public void release_lock(int player) => Post($"release_lock {player}");
 
+	/// <summary>
+	/// States that hero <paramref name="handle"/>'s target lock switches by the MOUSE WHEEL
+	/// (refii_mod_wheel_switches_target, what <c>Refii.wheel_switches_target</c> states each
+	/// tick): STICKY — a Godot script runs off the guest tick, so the tick restates it on every
+	/// tick from this call until <paramref name="on"/> false or the hero's player no longer holds
+	/// a lock (the game's own release, or <see cref="release_lock"/>). While it holds and the hero
+	/// is locked under the third-person camera the keyboard and mouse drive, the mouse's movement
+	/// never switches target and each wheel notch is one switch; a pad is untouched. False for a
+	/// bad handle.
+	/// </summary>
+	public bool wheel_switches_target(long handle, bool on = true) =>
+		handle > 0 && handle <= uint.MaxValue && Post($"wheel_switches_target {handle} {(on ? 1 : 0)}");
+
 	/// <summary>Switches a player's locked target to the next one left or right (refii_mod_switch_target), the camera's own flick.</summary>
 	public void switch_target(int player, bool left) => Post($"switch_target {player} {(left ? 1 : 0)}");
 
@@ -737,6 +767,24 @@ public partial class RefiiHost : Node
 
 	/// <summary>Ends a status through the game's own remover (refii_mod_clear_status). <c>query has_status E KIND</c> asks.</summary>
 	public void clear_status(long entity, int kind) => Post($"clear_status {entity} {kind}");
+
+	/// <summary>
+	/// Overrides player 1 or 2's movement speed by a factor (refii_mod_set_speed_multiplier): the
+	/// player component's own override, what the scripts' Player.SetOverriddenMovementSpeedMultiplier
+	/// and SetPlayerMovementSpeedOverridden state; 0 holds the hero in place. <c>query speed_multiplier P</c>
+	/// answers whether one holds and the factor — take it only while none holds, and give it back.
+	/// </summary>
+	public void set_speed_multiplier(int player, float factor) => Post($"set_speed_multiplier {player} {Num(factor)}");
+
+	/// <summary>Clears the override set_speed_multiplier stated (refii_mod_clear_speed_multiplier).</summary>
+	public void clear_speed_multiplier(int player) => Post($"clear_speed_multiplier {player}");
+
+	/// <summary>
+	/// Grants an action's "ALLOW_ACTION_INTERRUPT" (refii_mod_allow_action_interrupt): what the
+	/// animation event itself does, so a cancelled anim_event (a committed swing) is granted later.
+	/// <c>query current_action E</c> answers the action an entity's manager runs, its clock and whether it is granted.
+	/// </summary>
+	public void allow_action_interrupt(long action) => Post($"allow_action_interrupt {action}");
 
 	/// <summary>
 	/// Knocks an entity down and away along a direction scaled by force (refii_mod_knockback): a
@@ -1253,7 +1301,10 @@ public partial class RefiiHost : Node
 	/// at <paramref name="energy"/> over <paramref name="range"/> metres. <paramref name="options"/>:
 	/// offset (Vector3 or [x, y, z], along the entity's axes), at (a model helper name: the light
 	/// stands at that .mdl.gmd point, on a rigged body on its bone — as play_fx_on's at), flicker
-	/// (0..1, a waver of the energy). Placed as play_fx_on places an effect, so it rides the body
+	/// (0..1, a waver of the energy); and for a SPOT: direction (Vector3 or [x, y, z], the offset's
+	/// axes — the entity's or the helper's, the world's for a point), cone (degrees from the axis to
+	/// the cone's edge, above 0 makes it a spot; at most 89) and attenuation (the edge falloff; 0 or
+	/// 1 linear, the title's own). Placed as play_fx_on places an effect, so it rides the body
 	/// and goes with the entity. Returns the id <see cref="light_remove"/> takes; 0 for an unknown
 	/// handle or target.
 	/// </summary>
@@ -1297,17 +1348,21 @@ public partial class RefiiHost : Node
 			_ => Vector3.One,
 		};
 		var offset = Vector3.Zero;
+		var direction = Vector3.Zero;
 		string at = string.Empty;
-		float flicker = 0f;
+		float flicker = 0f, cone = 0f, attenuation = 0f;
 		if (options is not null)
 		{
+			static Vector3 Triple(Variant v) => v.VariantType == Variant.Type.Vector3
+				? v.AsVector3()
+				: v.VariantType == Variant.Type.Array && v.AsGodotArray() is { Count: >= 3 } arr
+					? new Vector3((float)arr[0].AsDouble(), (float)arr[1].AsDouble(), (float)arr[2].AsDouble())
+					: Vector3.Zero;
+			static float Number(Variant v) => v.VariantType is Variant.Type.Float or Variant.Type.Int ? (float)v.AsDouble() : 0f;
+
 			if (options.TryGetValue("offset", out Variant o))
 			{
-				offset = o.VariantType == Variant.Type.Vector3
-					? o.AsVector3()
-					: o.VariantType == Variant.Type.Array && o.AsGodotArray() is { Count: >= 3 } arr
-						? new Vector3((float)arr[0].AsDouble(), (float)arr[1].AsDouble(), (float)arr[2].AsDouble())
-						: Vector3.Zero;
+				offset = Triple(o);
 			}
 
 			if (options.TryGetValue("at", out Variant helper) && helper.VariantType == Variant.Type.String)
@@ -1315,14 +1370,29 @@ public partial class RefiiHost : Node
 				at = helper.AsString();
 			}
 
-			if (options.TryGetValue("flicker", out Variant waver) && waver.VariantType is Variant.Type.Float or Variant.Type.Int)
+			if (options.TryGetValue("flicker", out Variant waver))
 			{
-				flicker = (float)waver.AsDouble();
+				flicker = Number(waver);
+			}
+
+			if (options.TryGetValue("direction", out Variant d))
+			{
+				direction = Triple(d);
+			}
+
+			if (options.TryGetValue("cone", out Variant c))
+			{
+				cone = Number(c);
+			}
+
+			if (options.TryGetValue("attenuation", out Variant a))
+			{
+				attenuation = Number(a);
 			}
 		}
 
 		return Refii.Lighting.Engine_ModLights.Place(
-			handle, point, new Color(rgb.X, rgb.Y, rgb.Z), (float)energy, (float)range, offset, at, flicker);
+			handle, point, new Color(rgb.X, rgb.Y, rgb.Z), (float)energy, (float)range, offset, at, flicker, direction, cone, attenuation);
 	}
 
 	/// <summary>Removes a mod light by any surface's id (native, Lua or Godot); false when none stands under it.</summary>
@@ -1355,16 +1425,22 @@ public partial class RefiiHost : Node
 		return Post($"partner_send {mod} {name} {Convert.ToBase64String(bytes)}");
 	}
 
-	/// <summary>The mod lights standing: id, entity (handle, 0 for a point), r, g, b, energy, range, x, y, z (where it is now, guest axes).</summary>
+	/// <summary>
+	/// The mod lights standing: id, entity (handle, 0 for a point), r, g, b, energy, range, x, y, z
+	/// (where it is now, guest axes), cone (0 for an omni light) and, for a spot, dx, dy, dz (the
+	/// direction it shines along now, guest world axes).
+	/// </summary>
 	public Godot.Collections.Array<Godot.Collections.Dictionary> lights()
 	{
 		var list = new Godot.Collections.Array<Godot.Collections.Dictionary>();
-		foreach ((uint id, uint entity, Color colour, float energy, float range, Vector3 where) in Refii.Lighting.Engine_ModLights.All())
+		foreach ((uint id, uint entity, Color colour, float energy, float range, Vector3 where, float cone, Vector3 direction) in Refii.Lighting.Engine_ModLights.All())
 		{
 			list.Add(new Godot.Collections.Dictionary
 			{
 				["id"] = (long)id,
 				["entity"] = (long)entity,
+				["cone"] = cone,
+				["dx"] = direction.X, ["dy"] = direction.Y, ["dz"] = direction.Z,
 				["r"] = colour.R, ["g"] = colour.G, ["b"] = colour.B,
 				["energy"] = energy,
 				["range"] = range,

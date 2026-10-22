@@ -244,6 +244,45 @@ public class ModHudTests
         AssertThat(Engine_HudModMarkers.SpriteKey(Engine_HudModMarkers.FirstHostId) != Engine_HudModMarkers.SpriteKey(1)).IsTrue();
     }
 
+    [TestCase]
+    public void TheGamesOwnWorldIconsKeepTheirPerPlayerRule()
+    {
+        // H.16: the game's icons go through the markers' composition; the per-player rule is the
+        // one GameUi composed inline before (pinned here, truth table): view 1 takes player one's
+        // always, player two's only on one unsplit screen that is not an online host; view 2 (split
+        // only) takes player two's and every non-opinion icon.
+        foreach (bool opinion in new[] { false, true })
+        {
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(false, opinion, 1, false, false)).IsTrue();
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(false, opinion, 1, true, false)).IsTrue();
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(false, opinion, 1, false, true)).IsTrue();
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(true, opinion, 1, false, false)).IsTrue();   // couch, or the online joiner
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(true, opinion, 1, true, false)).IsFalse();   // split: theirs is in their half
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(true, opinion, 1, false, true)).IsFalse();   // the online host: the joiner draws it
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(true, opinion, 2, true, false)).IsTrue();
+            AssertThat(Engine_HudModMarkers.GameIconShownTo(true, opinion, 2, false, false)).IsFalse();  // view 2 exists only split
+        }
+
+        AssertThat(Engine_HudModMarkers.GameIconShownTo(false, false, 2, true, false)).IsTrue();   // a sign in both halves
+        AssertThat(Engine_HudModMarkers.GameIconShownTo(false, true, 2, true, false)).IsFalse();   // player one's heart stays in their half
+
+        // The opinion kinds and the heart badge, as before: 1..20 and 22..26 are opinions, the
+        // hearts 22..26 carry the player's number on one shared couch screen only.
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(0)).IsFalse();
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(1)).IsTrue();
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(20)).IsTrue();
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(21)).IsFalse();
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(22)).IsTrue();
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(26)).IsTrue();
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(27)).IsFalse();
+        AssertThat(Engine_HudModMarkers.IsOpinionIcon(Engine_HudModMarkers.SpriteType)).IsFalse();
+        AssertThat(Engine_HudModMarkers.GameIconBadge(24, false, false, true)).IsEqual("1");
+        AssertThat(Engine_HudModMarkers.GameIconBadge(24, true, false, true)).IsEqual("2");
+        AssertThat(Engine_HudModMarkers.GameIconBadge(24, true, true, true)).IsEqual("");
+        AssertThat(Engine_HudModMarkers.GameIconBadge(24, true, false, false)).IsEqual("");
+        AssertThat(Engine_HudModMarkers.GameIconBadge(5, true, false, true)).IsEqual("");
+    }
+
     // ---- H.5: fade ---------------------------------------------------------------------------
 
     [TestCase]

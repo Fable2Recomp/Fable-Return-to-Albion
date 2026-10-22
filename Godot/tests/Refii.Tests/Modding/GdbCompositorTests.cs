@@ -303,7 +303,8 @@ public class GdbCompositorTests
     public void TestSynthesizeCompleteDatabasePropagatesBasePropertiesAndNames()
     {
         uint swordId = 0xA2AE58D0;
-        uint hashWeaponType = 0x77777777;
+        // A property's hash is the FNV-1 of its name; the written container names it that way.
+        uint hashWeaponType = Refii.Core.Engine_GameHash.Fnv1("WeaponType");
 
         var baseDb = new GdbPatchDatabase();
         var baseEntry = new GdbPatchEntry(swordId, 0x01);

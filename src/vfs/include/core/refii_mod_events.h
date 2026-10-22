@@ -137,7 +137,13 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_MOD_ABILITY = 91,
   REFII_EVENT_SPELL_PICK = 92,
   REFII_EVENT_PARTNER_MESSAGE = 93,
-  REFII_EVENT_COUNT = 94,
+  REFII_EVENT_LOOK_AT_BUTTON = 94,
+  REFII_EVENT_VORTEX_STARTED = 95,
+  REFII_EVENT_VORTEX_ENDED = 96,
+  REFII_EVENT_FIREBALL_IMPACT = 97,
+  REFII_EVENT_PAUSED = 98,
+  REFII_EVENT_START_GAME = 99,
+  REFII_EVENT_COUNT = 100,
 };
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
@@ -256,6 +262,10 @@ struct MeleeSwingEvent : Event {
   uint32_t ability;
   /// The live strike action the entity's action manager (component 49) now runs, or 0.
   uint32_t action;
+  /// The action's scriptable type (EScriptableAction, 0..88; -1 unknown) and its name
+  /// (refii_mod_action_type / refii_mod_action_name; "" unknown).
+  int32_t action_type;
+  const char* action_name;
 };
 
 /// The roll asks whether it may start (RollCanStart: `cancel` refuses, asked once per matching
@@ -298,6 +308,10 @@ struct AnimEventEvent : Event {
   uint32_t entity;
   /// 1 or 2 when the owner is a player hero, else 0.
   int32_t player;
+  /// The action's scriptable type (EScriptableAction, 0..88; -1 unknown) and its name
+  /// (refii_mod_action_type / refii_mod_action_name; "" unknown).
+  int32_t action_type;
+  const char* action_name;
 };
 
 /// A hit is arriving at its victim — melee, spell, physics, the Blades' stabs: the one receiver
@@ -1343,6 +1357,154 @@ struct PartnerMessageEvent : Event {
   const char* name;
   const char* payload;
   int32_t from;
+};
+
+/// A player hero's LOOK-AT flag is being written — the byte every lock camera script reads and
+/// the one a held LT states. Seam: rex_CPlayer_SetLookAtButtonDown (r3 the player component 33,
+/// its owner entity at +4 — `stw r4,4(r31)` in its constructor 0x823e0110 / disc 0x823beb20; r4
+/// the value; `stb r29,0x20(r30)` 0x823e9f34 / disc 0x823c8964, after `lbz r10,0x20(r30); cmplw;
+/// beq` returns unchanged on an equal value). Its callers are the camera's input event on LT
+/// down (`sub_825ADD58`, `li r4,1` 0x825ae6e0), the hero's message handler on the release
+/// (`sub_826E5B30` case 0x32, `li r4,0` 0x826e5fc0), and the API's own refii_mod_lock_target /
+/// refii_mod_release_lock. `down` is WRITABLE: the value the game stores — a mod whose lock is
+/// its own keeps the flag equal to it whoever asks. `cancel` leaves the flag as it was (the
+/// writer never runs, so the camera mode is not re-picked either). Raised for player heroes only.
+struct LookAtButtonEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_LOOK_AT_BUTTON;
+  uint32_t hero;
+  int32_t player;
+  /// The value being written (writable).
+  bool down;
+  /// The player component (33) the flag lives on (native).
+  uint32_t component;
+};
+
+/// A VORTEX is live: its component (CECVortex, 211, on the vortex entity) was initialised by the
+/// vortex spell's post-init, inside the spell factory and BEFORE SpellCreated reports the spell
+/// object — which marks itself finished at once, so no registry lookup ever returns a vortex.
+/// Seam: rex_VortexComponent_Init (r3 the component, owner entity at +4 from its constructor
+/// `stw r4,4(r31)` 0x82757720; r4 the caster entity, kept as a weak reference at +0x160/+0x164;
+/// r5 the target; r6 the cast's serial -> +0x18 `stw r25,0x18(r31)` 0x827588f4; r8 the level ->
+/// +0x14; the call site `sub_828B20D0` 0x828b23c8..0x828b2438 reads them from the spell's +0x40
+/// and +0x44), after it. `x, y, z` is the vortex entity's position then. Online the cast runs on
+/// both machines (refii_mod_event_replica tells the copy). Read-only.
+struct VortexStartedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_VORTEX_STARTED;
+  /// The live component: refii_mod_spell_parts(serial) finds it again while it lives (native).
+  uint32_t vortex;
+  /// The vortex entity (the component's owner), the thing in the world the look rides.
+  uint32_t entity;
+  uint32_t caster;
+  int32_t caster_player;
+  uint32_t target;
+  uint32_t serial;
+  int32_t level;
+  float x;
+  float y;
+  float z;
+};
+
+/// The vortex is ending: its component's Shutdown, BEFORE it runs, with the twister's last point.
+/// Seam: rex_VortexComponent_Shutdown (r3 the component; +0x140 is the point the update hands
+/// every ground effect — `li r28,0x140; lvx128 v1,r31,r28` 0x82759210..38 — and writes back as the
+/// twister moves, `stvx128 v127,r29,r25` 0x82759bdc, then places the entity there through its
+/// placement, 0x82759be4..f4; Shutdown stores nothing to +4/+0x18/+0x140). Read-only.
+struct VortexEndedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_VORTEX_ENDED;
+  uint32_t vortex;
+  uint32_t entity;
+  uint32_t caster;
+  int32_t caster_player;
+  uint32_t serial;
+  /// The twister's point (component +0x140).
+  float x;
+  float y;
+  float z;
+};
+
+/// A targeted FIREBALL struck something: its Impact ran (the guard `lbz r11,0x48(r31); bne`
+/// 0x82744234 passed — a fireball already detonated returns at once), after it. Seam:
+/// rex_TargetedFireball_Impact (r3 the spell object, r4 what it struck — an entity, 0 for ground,
+/// wall or water — v1 the impact position, v2 the impact normal, f1 a range, r6 the reached-target
+/// flag). `detonated` is the exploded byte (spell+0x48) going 0 -> 1 inside the call: the blast
+/// (`sub_827478D8`, every victim's hit delivered inside the call) and then `stb r24,0x48(r31)`
+/// 0x827446e4 — a struck creature the fireball passes (no blast) leaves it clear and the fireball
+/// flies on. `hits` counts the hits the receiver took inside the call carrying this cast's serial
+/// (hit+0x44): 0 on a detonation means the blast found nothing alive. Online the cast runs on both
+/// machines; the hits are decided where refii_mod_world_here holds. Read-only.
+struct FireballImpactEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_FIREBALL_IMPACT;
+  /// The spell object (native).
+  uint32_t spell;
+  uint32_t serial;
+  int32_t level;
+  uint32_t caster;
+  int32_t caster_player;
+  uint32_t struck;
+  int32_t struck_player;
+  /// The impact position.
+  float x;
+  float y;
+  float z;
+  /// The impact normal.
+  float nx;
+  float ny;
+  float nz;
+  bool detonated;
+  int32_t hits;
+};
+
+/// THE GAME'S PAUSE STATE flipped: a GameFlow mode command of the pause family became the mode in
+/// force, or stopped being it. The game's own test is rex_lhGameFlow_IsGuiActive (`sub_821ECA30`:
+/// the top of the mode stack at `*(*(*(game+0x80)+4)+4)`, its vtable slot 1 == 1), which the
+/// gameplay loop asks every frame (`bl sub_821ECA30` 0x8227711c in `sub_82276D10`). The state is
+/// SET by the mode command's apply, vtable slot +20 of `off_820AEC7C` = `sub_823D4D00` (disc
+/// `sub_8245C2E0`, same 276 instructions: `bl sub_823D48E8` — both players' input categories —
+/// then `li r4,1; bl sub_823D4A50` 0x823d4d14..1c), run by GameFlow_QueueCommand's push
+/// (0x82318718: `(*cmd->vtable+20)(cmd)` as its last call) and again when a command above it
+/// is removed (`sub_82318800` 0x82318800: re-applies the new top); and CLEARED by its remove,
+/// slot +32 = `sub_823D5150` (disc `sub_8245C730`: `li r4,0; bl sub_823D4A50`), run by the
+/// removal and by a push of another command over it. Mode 1 (slot 1 `li r3,1`, `sub_82EA63A8`)
+/// is the GUI/pause command built by `sub_823D4C48` (input categories {12,10,9,11,1} on both
+/// players): queued by rex_lhGuiManager_EnterGuiMode (0x8236ed3c, the pause menu and every
+/// screen entered from play), _EnterGuiModeQuiet (0x82370100), the partner's relayed pause
+/// (`sub_8232B2B0` "MULTI_PLAYER_OTHER_PLAYER_PAUSED_GAME", 0x8232b33c) and the camera's special
+/// modes (`sub_825AD7E8`). Mode 2 (`off_820AECA0`, slot 1 `li r3,2`, the same apply/remove through
+/// thunks `sub_823D53E0` / `sub_823D54F0`) is the level change (World_RequestLevelChange
+/// 0x82350ca0..cc8, `sub_82313328`). Seams: rex_lhGameFlowGuiMode_Apply / _Remove (r3 the
+/// command; its id by vtable slot 1), after each. Read-only.
+struct PausedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PAUSED;
+  /// True after the apply (the mode is in force), false after the remove.
+  bool paused;
+  /// The command's id: 1 the pause / menu mode, 2 a level change.
+  int32_t mode;
+  /// For mode 1 with a menu screen up: whose menu (MenuOwnerNow: 2 for an online joiner or local
+  /// player two's pause book, else 1); 0 for a pause with no screen (the partner's relayed one, a
+  /// camera mode) and for mode 2.
+  int32_t player;
+  /// The GUI manager's screen id then (TU1 numbering; 31 none, 0 the pause root, 29 co-op).
+  int32_t screen;
+};
+
+/// THE FRONT END STARTS A GAME: the title's New Game, Load, Continue or a co-op join state the
+/// target through rex_lhFrontEnd_SetStartGameTarget (`sub_82379838`, disc `sub_8237A2D8`, same 52
+/// instructions: r3 the front-end object, r4 the save name LHString (empty for a new game —
+/// `sub_822651A0(&g_PendingLoadSaveName, a2)`), r5 the start level LHString
+/// (`sub_822651A0(&g_StartLevelName, a3)`); it then flags the game-state change
+/// `*(*(0x83496AC0+12)+92) = 1` and creates the in-game state `sub_82319928`). Callers: the root
+/// screen's action handler 0x826df880, GUI_FrontendRoot_MenuActionDispatch 0x826e0498, the
+/// load-game page 0x826e0f34, and the host's own New Game pump action. Raised BEFORE the call,
+/// read-only; on the title there is no game VM, so Lua hears it in mod/frontend.lua.
+struct StartGameEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_START_GAME;
+  /// The save's name ("" for a new game).
+  const char* save;
+  /// The level the game starts in.
+  const char* level;
+  bool new_game;
+  /// The signed-in pad's player: 1.
+  int32_t player;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

@@ -1506,6 +1506,39 @@ public static class Engine_UiTemplates
 			});
 		}
 
+		// CONTROLS: the game's own Controls page folded with the game's rumble switch
+		// (Engine_UiVibrationOptions — the guest's byte, which shipped with no page behind it)
+		// and one row per enabled mod that declares rebindable input actions (input.json), each
+		// opening that mod's Controls page (ModInputUi) on the host page furniture. The guest's
+		// row keeps its name and event, so the fold's first child is the page it always was.
+		if (options is not null &&
+			options.Entries.FindIndex(entry => entry.Name == "Controls") is >= 0 and var controlsIndex)
+		{
+			Engine_UiMenuEntry controls = options.Entries[controlsIndex];
+			options.Entries[controlsIndex] = new Engine_UiMenuEntry
+			{
+				Name = "ControlsSettings",
+				Tag = controls.Tag,
+				Icon = controls.Icon,
+				HostOnly = true,
+				Counted = false,
+				Children =
+				{
+					controls,
+					new Engine_UiMenuEntry
+					{
+						Name = Engine_UiVibrationOptions.PageName,
+						Tag = Engine_UiVibrationOptions.PageTitle,
+						Icon = controls.Icon,
+						HostOnly = true,
+						Counted = false,
+						Command = Engine_UiVibrationOptions.OpenCommand,
+					},
+				},
+				Source = Refii.Mods.ModInputUi.SourceName,
+			};
+		}
+
 		if (menus.TryGetValue("LogbookMenu", out Engine_UiMenuTemplate? logbook))
 		{
 			foreach (Engine_UiMenuEntry entry in logbook.Entries)

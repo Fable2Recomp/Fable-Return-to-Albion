@@ -281,8 +281,8 @@ public class SpellWeavingLookTests
 	}
 
 	/// <summary>
-	/// The Blades swords' partner tints (woven.cpp SwordTint): settings.json states every lane, and
-	/// each equals the default the native code falls back to. Red, blue, violet and a dark steel.
+	/// The Blades swords' partner tints (mod/init.lua kSwordTintDefaults): settings.json states every
+	/// lane, and each equals the default the Lua falls back to. Red, blue, violet and a dark steel.
 	/// </summary>
 	[TestCase]
 	public void SwordTintsAreStatedAndAgree()
@@ -295,19 +295,19 @@ public class SpellWeavingLookTests
 
 		using JsonDocument settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(mod, "settings.json")));
 		JsonElement weaving = settings.RootElement.GetProperty("spell_weaving");
-		string woven = File.ReadAllText(Path.Combine(mod, "native", "woven.cpp"));
+		string woven = File.ReadAllText(Path.Combine(mod, "mod", "init.lua"));
 		var tints = new Dictionary<string, float[]>(StringComparer.Ordinal);
 		foreach (string name in new[] { "fire", "shock", "chaos", "push" })
 		{
 			System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(woven,
-				@"\{k\w+, """ + name + @""", \{([0-9.]+)f, ([0-9.]+)f, ([0-9.]+)f\}\}");
-			AssertThat(m.Success).OverrideFailureMessage($"woven.cpp states no default tint for {name}").IsTrue();
+				@"\[k\w+\] = \{ """ + name + @""", ([0-9.]+), ([0-9.]+), ([0-9.]+) \},");
+			AssertThat(m.Success).OverrideFailureMessage($"mod/init.lua states no default tint for {name}").IsTrue();
 			var lanes = new float[3];
 			for (int i = 0; i < 3; i++)
 			{
 				lanes[i] = float.Parse(m.Groups[i + 1].Value, System.Globalization.CultureInfo.InvariantCulture);
 				float stated = weaving.GetProperty($"sword_tint_{name}_{"rgb"[i]}").GetSingle();
-				AssertThat(Math.Abs(stated - lanes[i]) < 1e-5f).OverrideFailureMessage($"sword_tint_{name}_{"rgb"[i]}: settings {stated}, woven {lanes[i]}").IsTrue();
+				AssertThat(Math.Abs(stated - lanes[i]) < 1e-5f).OverrideFailureMessage($"sword_tint_{name}_{"rgb"[i]}: settings {stated}, lua {lanes[i]}").IsTrue();
 				// Under the modern look's cap (31.875 / 4), never negative.
 				AssertThat(lanes[i] >= 0f && lanes[i] <= 31.875f / 4f).IsTrue();
 			}

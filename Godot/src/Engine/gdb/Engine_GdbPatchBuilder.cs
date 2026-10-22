@@ -245,6 +245,8 @@ public static class GdbPatchBuilder
                     schemaFlags = cursor.View.RecordSchemaFlags(cursor.Record);
                 }
 
+                // The authoring form: a record's name keyed by its id. The writer files it as the
+                // container holds it (GdbPatchDatabase.FileName) when the patch is written.
                 string entryName = baseMulti.NameOf(sparseEntry.Id);
                 if (!string.IsNullOrEmpty(entryName) && !fullDb.Names.ContainsKey(sparseEntry.Id))
                 {

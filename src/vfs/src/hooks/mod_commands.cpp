@@ -9,15 +9,22 @@
 // addresses; definitions and text hashes are "0x…" strings or decimal.
 //   give_gold E D · modify_health E D ATTACKER · set_health E V · add_item E DEFINITION
 //   give_experience E POOL AMOUNT · spend_experience E POOL AMOUNT
-//   cast_spell CASTER TYPE TARGETED TARGET LEVEL · set_position E X Y Z
+//   cast_spell CASTER TYPE TARGETED TARGET LEVEL [X Y Z [DX DY DZ]] · set_position E X Y Z
+//                                   (the start position and facing; the caster's own when absent)
 //   entity_tint E R G B A · entity_untint E   (refii_mod_entity_tint: the game's own tint setter)
 //   entity_alpha E A · entity_scale E S · entity_saturation_mask E ON · entity_drawable E ON
 //                                (the other component-3 setters, refii_mod_entity_alpha ..)
 //   lock_target P E · release_lock P · switch_target P LEFT   (refii_mod_lock_target ..: P 1 or 2,
 //                                E 0 for the game's own pick, LEFT 1 left / 0 right)
+//   wheel_switches_target E ON   (refii_mod_wheel_switches_target, STICKY: stated again on every
+//                                guest tick while ON is 1 and E's player holds a lock; cleared by
+//                                ON 0 or the lock's release — a Godot script runs off the tick)
 //   apply_status E KIND SECONDS [LEVEL [SOURCE]] · clear_status E KIND   (refii_mod_apply_status:
 //                                1 electrified 2 chaos 3 burning)
 //   knockback E X Y Z [FORCE] · stagger E   (refii_mod_knockback / refii_mod_stagger)
+//   set_speed_multiplier P FACTOR · clear_speed_multiplier P   (refii_mod_set_speed_multiplier /
+//                                refii_mod_clear_speed_multiplier: the player component's override)
+//   allow_action_interrupt A   (refii_mod_allow_action_interrupt: A an action handle)
 //   play_sound CUE E [TAG] · play_sound_at CUE X Y Z [TAG] · stop_sound E TAG [FADE_MS]
 //                                (refii_mod_play_sound_on / _at / refii_mod_stop_sound: E 0 for the
 //                                point emitters; an empty tag is "-")
@@ -32,6 +39,9 @@
 //   save_set KEY INT · run_lua CHUNK...
 //   player_set P KEY V · player_add P KEY D [SAVED] · player_save P KEY V   (the player store
 //     Refii.player_set / _add / _save write: refii_mod_player_*)
+//   mask_word event|verdict W HEX -> word W (2 and up: words 0 and 1 are the two mask exports) of
+//                                   the host's event or verdict mask, its 64 bits in hex
+//                                   (HostBridge.SetModEventMask / SetModVerdictMask post it)
 //   publish KEY VALUE            -> refii::mods::Publish: the value every reader sees ("mod:<key>")
 //   menu_row PLAYER MENU ROW MOD -> raises ModMenuRow for the native and Lua handlers (a row chosen
 //                                   in Godot; a space in a name arrives as '_', an empty one as '-')
@@ -49,6 +59,18 @@
 //   query ID alive E             -> id,ok,alive
 //   query ID locked_target P     -> id,ok,target  (refii_mod_locked_target: 0 when not locked)
 //   query ID has_status E KIND   -> id,ok,has     (refii_mod_has_status)
+//   query ID speed_multiplier P  -> id,ok,overridden,factor  (refii_mod_speed_multiplier)
+//   query ID current_action E    -> id,ok,action,elapsed,interruptible  (refii_mod_current_action,
+//                                   _action_elapsed, _action_interruptible; action 0 for none)
+//   query ID action A            -> id,ok,type,name='..'  (refii_mod_action_type / _action_name:
+//                                   EScriptableAction and its name; ok false for an unknown action)
+//   query ID frontend            -> id,ok,signed_in,saves,screen='..'  (refii_mod_signed_in_user,
+//                                   _save_count, _frontend_screen; ok false with no front end up)
+//   query ID living E            -> id,ok,living  (refii_mod_entity_living)
+//   query ID spell_in_slot P SLOT -> id,ok,type   (refii_mod_spell_in_slot: -1 none)
+//   query ID spell_parts SERIAL  -> id,ok,spell,type,targeted,level,caster,caster_player,vortex,
+//                                   anchor,sword_count,s1..s8,x,y,z,has_origin,exploded
+//                                   (refii_mod_spell_parts; ok false for an unknown cast)
 //   query ID time_of_day         -> id,ok,hours   (refii_mod_time_of_day: the clock, 0..24)
 //   query ID definition E        -> id,ok,definition
 //   query ID name E              -> id,ok,name='..'
@@ -100,6 +122,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <array>
 #include <atomic>
 #include <string>
 #include <unordered_map>
@@ -257,6 +280,51 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
   } else if (what == "has_status") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "has=%s", refii_mod_has_status(base, E(w, 3), I(w, 4)) != 0 ? "true" : "false");
+  } else if (what == "speed_multiplier") {
+    float factor = 1.0f;
+    const uint32_t hero = refii_mod_player_hero(base, I(w, 3));
+    ok = hero != 0 && refii_mod_component(base, hero, 33u) != 0;
+    const bool overridden = refii_mod_speed_multiplier(base, I(w, 3), &factor) != 0;
+    std::snprintf(fields, sizeof(fields), "overridden=%s,factor=%g", overridden ? "true" : "false", static_cast<double>(factor));
+  } else if (what == "current_action") {
+    ok = true;
+    const uint32_t action = refii_mod_current_action(base, E(w, 3));
+    float elapsed = 0.0f;
+    if (action != 0) {
+      refii_mod_action_elapsed(&ctx, base, action, &elapsed);
+    }
+    std::snprintf(fields, sizeof(fields), "action=%u,elapsed=%g,interruptible=%s", refii_mod_handle(action),
+                  static_cast<double>(elapsed), action != 0 && refii_mod_action_interruptible(base, action) != 0 ? "true" : "false");
+  } else if (what == "action") {
+    const uint32_t action = E(w, 3);
+    const int32_t type = refii_mod_action_type(base, action);
+    ok = type >= 0;
+    std::snprintf(fields, sizeof(fields), "type=%d,name='%s'", type, refii_mod_scriptable_action_name(type));
+  } else if (what == "frontend") {
+    char screen[96];
+    refii_mod_frontend_screen(&ctx, base, screen, sizeof(screen));
+    const int32_t saves = refii_mod_save_count(&ctx, base);
+    ok = saves >= 0;
+    std::snprintf(fields, sizeof(fields), "signed_in=%d,saves=%d,screen='%s'", refii_mod_signed_in_user(base), saves, screen);
+  } else if (what == "living") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "living=%s", refii_mod_entity_living(base, E(w, 3)) != 0 ? "true" : "false");
+  } else if (what == "spell_in_slot") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "type=%d", refii_mod_spell_in_slot(base, I(w, 3), I(w, 4)));
+  } else if (what == "spell_parts") {
+    refii_mod_cast_parts parts{};
+    ok = refii_mod_spell_parts(&ctx, base, U(w, 3), &parts) != 0;
+    std::snprintf(fields, sizeof(fields),
+                  "spell=%u,type=%d,targeted=%s,level=%d,caster=%u,caster_player=%d,vortex=%u,anchor=%u,sword_count=%d,"
+                  "s1=%u,s2=%u,s3=%u,s4=%u,s5=%u,s6=%u,s7=%u,s8=%u,x=%g,y=%g,z=%g,has_origin=%s,exploded=%s",
+                  refii_mod_handle(parts.spell), parts.type, parts.targeted != 0 ? "true" : "false", parts.level,
+                  refii_mod_handle(parts.caster), parts.caster_player, refii_mod_handle(parts.vortex), refii_mod_handle(parts.anchor),
+                  parts.sword_count, refii_mod_handle(parts.swords[0]), refii_mod_handle(parts.swords[1]),
+                  refii_mod_handle(parts.swords[2]), refii_mod_handle(parts.swords[3]), refii_mod_handle(parts.swords[4]),
+                  refii_mod_handle(parts.swords[5]), refii_mod_handle(parts.swords[6]), refii_mod_handle(parts.swords[7]),
+                  static_cast<double>(parts.origin[0]), static_cast<double>(parts.origin[1]), static_cast<double>(parts.origin[2]),
+                  parts.has_origin != 0 ? "true" : "false", parts.exploded != 0 ? "true" : "false");
   } else if (what == "time_of_day") {
     float hours = 0.0f;
     ok = refii_mod_time_of_day(base, &hours) != 0;
@@ -932,6 +1000,61 @@ void RaiseMenuBox(PPCContext& ctx, uint8_t* base, const std::vector<std::string>
   }
 }
 
+/// THE STICKY WHEEL STATEMENT for a Godot script (`wheel_switches_target E ON`): a native or Lua
+/// handler restates refii_mod_wheel_switches_target on every guest tick it holds its lock, and a
+/// statement lapses two ticks after it was made (mouse_look.cpp kWheelStatementTicks). A Godot
+/// script runs off the tick, so its ON is kept here, per hero, and restated by RunModCommands on
+/// every tick until the script says OFF or the hero's player no longer holds a lock
+/// (refii_mod_locked_target 0: the game's own release, or release_lock).
+struct WheelSticky {
+  uint32_t hero = 0u;
+};
+
+std::array<WheelSticky, 4> g_wheel_sticky{};
+
+void StateWheelSwitches(PPCContext& ctx, uint8_t* base, uint32_t hero, bool on) {
+  if (hero == 0u) {
+    return;
+  }
+  WheelSticky* slot = nullptr;
+  for (WheelSticky& sticky : g_wheel_sticky) {
+    if (sticky.hero == hero) {
+      slot = &sticky;
+      break;
+    }
+    if (slot == nullptr && sticky.hero == 0u) {
+      slot = &sticky;
+    }
+  }
+  if (!on) {
+    if (slot != nullptr && slot->hero == hero) {
+      slot->hero = 0u;
+    }
+    return;
+  }
+  if (slot == nullptr) {
+    return;  // four heroes already stated: more than any session has players
+  }
+  slot->hero = hero;
+  refii_mod_wheel_switches_target(base, hero);
+  (void)ctx;
+}
+
+/// Every tick: each sticky hero's statement made again while its player's lock holds.
+void RestateWheelSwitches(PPCContext& ctx, uint8_t* base) {
+  for (WheelSticky& sticky : g_wheel_sticky) {
+    if (sticky.hero == 0u) {
+      continue;
+    }
+    const int32_t player = refii_mod_player_of(base, sticky.hero);
+    if (player == 0 || refii_mod_locked_target(&ctx, base, player) == 0u) {
+      sticky.hero = 0u;
+      continue;
+    }
+    refii_mod_wheel_switches_target(base, sticky.hero);
+  }
+}
+
 void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
   const bool chunk = std::strncmp(line, "run_lua ", 8) == 0 || std::strncmp(line, "frontend_lua ", 13) == 0;
   const std::vector<std::string> w = Split(line, chunk ? 1 : 64);
@@ -957,7 +1080,10 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
   } else if (op == "spend_experience") {
     refii_mod_spend_experience(&ctx, base, E(w, 1), I(w, 2), F(w, 3));
   } else if (op == "cast_spell") {
-    refii_mod_cast_spell(&ctx, base, E(w, 1), I(w, 2), I(w, 3), E(w, 4), I(w, 5), nullptr, nullptr);
+    const float pos[3] = {F(w, 6), F(w, 7), F(w, 8)};
+    const float dir[3] = {F(w, 9), F(w, 10), F(w, 11)};
+    refii_mod_cast_spell(&ctx, base, E(w, 1), I(w, 2), I(w, 3), E(w, 4), I(w, 5), w.size() >= 9 ? pos : nullptr,
+                         w.size() >= 12 ? dir : nullptr);
   } else if (op == "set_position") {
     const float xyz[3] = {F(w, 2), F(w, 3), F(w, 4)};
     refii_mod_set_position(&ctx, base, E(w, 1), xyz);
@@ -973,6 +1099,8 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_entity_saturation_mask(&ctx, base, E(w, 1), I(w, 2));
   } else if (op == "entity_drawable" && w.size() >= 3) {
     refii_mod_entity_drawable(&ctx, base, E(w, 1), I(w, 2));
+  } else if (op == "wheel_switches_target" && w.size() >= 3) {
+    StateWheelSwitches(ctx, base, E(w, 1), I(w, 2) != 0);
   } else if (op == "lock_target" && w.size() >= 2) {
     refii_mod_lock_target(&ctx, base, I(w, 1), w.size() >= 3 ? E(w, 2) : 0u);
   } else if (op == "release_lock" && w.size() >= 2) {
@@ -989,6 +1117,12 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_knockback(&ctx, base, E(w, 1), dir, w.size() >= 6 ? F(w, 5) : 1.0f);
   } else if (op == "stagger" && w.size() >= 2) {
     refii_mod_stagger(&ctx, base, E(w, 1));
+  } else if (op == "set_speed_multiplier" && w.size() >= 3) {
+    refii_mod_set_speed_multiplier(base, I(w, 1), F(w, 2));
+  } else if (op == "clear_speed_multiplier" && w.size() >= 2) {
+    refii_mod_clear_speed_multiplier(base, I(w, 1));
+  } else if (op == "allow_action_interrupt" && w.size() >= 2) {
+    refii_mod_allow_action_interrupt(base, E(w, 1));
   } else if (op == "play_sound" && w.size() >= 3) {
     refii_mod_play_sound_on(&ctx, base, E(w, 2), w[1].c_str(), Tag(w, 3));
   } else if (op == "play_sound_at" && w.size() >= 5) {
@@ -1064,6 +1198,15 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii::vfs::ReloadParticleBank(ctx, base);
   } else if (op == "frontend_lua" && w.size() >= 2) {
     refii::vfs::RunFrontEndLua(ctx, base, w[1]);
+  } else if (op == "mask_word" && w.size() >= 4) {
+    // A word of the host's masks past the two the exports carry (core/mod_values.h kHostMaskWords).
+    const int32_t word = I(w, 2);
+    const uint64_t bits = std::strtoull(w[3].c_str(), nullptr, 16);
+    if (w[1] == "event") {
+      refii::mods::SetHostEventMaskWord(word, bits);
+    } else if (w[1] == "verdict") {
+      refii_bridge_mod_set_verdict_mask_word(word, bits);
+    }
   }
 }
 
@@ -1079,6 +1222,8 @@ void RunModCommands(PPCContext& ctx, uint8_t* base) {
     RunOne(work, base, line);
   }
   PPCContext work = ctx;
+  RestateWheelSwitches(work, base);
+  work = ctx;
   guest_fx::Pump(work, base);
   work = ctx;
   refii::vfs::PumpParticleBank(work, base);

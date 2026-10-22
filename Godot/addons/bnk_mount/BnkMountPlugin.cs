@@ -1244,6 +1244,10 @@ public partial class BnkMountPlugin : EditorPlugin
     /// <summary>Context menu displayed when right-clicking assets under the Game:// root in the FileSystem dock.</summary>
     private PopupMenu? _contextMenu;
 
+    /// <summary>The picker for a glTF to import over the right-clicked model, and that model's path.</summary>
+    private FileDialog? _glbImportDialog;
+    private string _glbImportTarget = string.Empty;
+
     /// <summary>Dialog for changing the active mod workspace folder name.</summary>
     private ConfirmationDialog? _modNameDialog;
 
@@ -1284,6 +1288,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private const int MenuInspectModTu = 108;
     private const int MenuInspectTu = 109;
     private const int MenuOpenModStudioWorkspace = 110;
+    private const int MenuImportGlb = 111;
 
     private Refii.Equipment.ItemDetail? _contextItemDetail;
     private ModItemEditorDialog? _itemEditorDialog;
@@ -1330,6 +1335,46 @@ public partial class BnkMountPlugin : EditorPlugin
     }
 
     /// <summary>
+    /// Picks a `.glb`/`.gltf` to stand in for <paramref name="modelPath"/>: it is converted against
+    /// the shipped model first and placed in the mod as `<path>.glb` only if the mount would
+    /// accept it, then the overlays are remounted so the Studio serves the mod's mesh.
+    /// </summary>
+    private void OpenGlbImportDialog(string modelPath)
+    {
+        _glbImportTarget = modelPath;
+        if (_glbImportDialog is null || !IsInstanceValid(_glbImportDialog))
+        {
+            _glbImportDialog = new FileDialog
+            {
+                Access = FileDialog.AccessEnum.Filesystem,
+                FileMode = FileDialog.FileModeEnum.OpenFile,
+                Size = new Vector2I(760, 520),
+            };
+            _glbImportDialog.AddFilter("*.glb, *.gltf ; glTF models (.glb, .gltf)");
+            _glbImportDialog.FileSelected += OnGlbImportSelected;
+            EditorInterface.Singleton.GetBaseControl().AddChild(_glbImportDialog);
+        }
+
+        _glbImportDialog.Title = $"Import glTF over {Path.GetFileName(modelPath)} into [{EditorModExporter.ActiveModName}]";
+        _glbImportDialog.PopupCentered(new Vector2I(760, 520));
+    }
+
+    private void OnGlbImportSelected(string sourcePath)
+    {
+        if (EditorModExporter.ImportModelGlb(
+                _glbImportTarget, sourcePath, _filesystem,
+                out string placed, out string summary, out string error))
+        {
+            GD.Print($"[mod_export] Imported {Path.GetFileName(sourcePath)} over {_glbImportTarget}: {summary}; placed at {placed}");
+            ReloadModOverlays();
+        }
+        else
+        {
+            GD.PushWarning($"[mod_export] {Path.GetFileName(sourcePath)} was not imported over {_glbImportTarget}: {error}");
+        }
+    }
+
+    /// <summary>
     /// Unhooks signals and frees the context menu and dialogs when the plugin exits the tree.
     /// </summary>
     private void RemoveContextMenu()
@@ -1339,6 +1384,13 @@ public partial class BnkMountPlugin : EditorPlugin
             _contextMenu.IdPressed -= OnContextMenuIdPressed;
             _contextMenu.QueueFree();
             _contextMenu = null;
+        }
+
+        if (_glbImportDialog is not null && IsInstanceValid(_glbImportDialog))
+        {
+            _glbImportDialog.FileSelected -= OnGlbImportSelected;
+            _glbImportDialog.QueueFree();
+            _glbImportDialog = null;
         }
 
         if (_modNameDialog is not null && IsInstanceValid(_modNameDialog))
@@ -2310,6 +2362,7 @@ public partial class BnkMountPlugin : EditorPlugin
         {
             string fileName = Path.GetFileName(_contextModelPaths[0]);
             _contextMenu.AddItem($"Export Model ({fileName}.glb) to [{activeMod}]", MenuExportGlb);
+            _contextMenu.AddItem($"Import .glb over {fileName} into [{activeMod}]...", MenuImportGlb);
         }
         else if (_contextModelPaths.Count > 1)
         {
@@ -2523,6 +2576,14 @@ public partial class BnkMountPlugin : EditorPlugin
             case MenuReloadOverlays:
             {
                 ReloadModOverlays();
+                break;
+            }
+            case MenuImportGlb:
+            {
+                if (_contextModelPaths.Count == 1)
+                {
+                    OpenGlbImportDialog(_contextModelPaths[0]);
+                }
                 break;
             }
             case MenuInspectModTu:

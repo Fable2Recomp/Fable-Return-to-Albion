@@ -663,7 +663,15 @@ public sealed class GdbView
             long nameBase = (metaEnd + 3) & ~3L;
             long dictBase = nameBase + (long)namePairs * 8;
 
-            if (dictBase + 12 > bytes.Length || ReadU32(bytes, (int)dictBase) != 0x00010000u)
+            // The tail's first word is the registry capacity the names were laid out in — a
+            // power of two, 0x10000 until the registry has to grow (GdbNameRegistry).
+            if (dictBase + 12 > bytes.Length)
+            {
+                return;
+            }
+
+            uint capacity = ReadU32(bytes, (int)dictBase);
+            if (capacity == 0 || (capacity & (capacity - 1)) != 0)
             {
                 return;
             }

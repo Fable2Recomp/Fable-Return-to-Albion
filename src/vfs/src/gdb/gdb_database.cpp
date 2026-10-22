@@ -15,8 +15,11 @@
 namespace refii::vfs::gdb {
 namespace {
 
-constexpr uint32_t kNameTableVersion = 0x00010000u;
+// The name registry a fresh guest starts with (sub_82A01488: 0x10000 slots);
+// the name-table tail's first word is the capacity the names were laid out in.
+constexpr uint32_t kNameRegistryInitialCapacity = 0x00010000u;
 constexpr size_t kHeaderSize = 24;
+constexpr uint32_t kHashParent = 0x5F6317D5u;  // Fnv1("parent")
 
 uint32_t ReadBe32(const uint8_t* data) {
   return (static_cast<uint32_t>(data[0]) << 24) |
@@ -234,20 +237,104 @@ bool ParseCsvRecord(std::string_view text, size_t* position,
 }
 
 struct SchemaLayout {
-  // Indices into GdbEntry::properties, ordered by (hash, declaration order).
+  // Declared property k -> index into GdbEntry::properties: "parent" first
+  // (the guest's enumeration skips declared index 0 of an entry with one),
+  // then the entry's own order.
+  std::vector<uint32_t> declared;
+  // Sorted slot s -> declared k, ordered by (hash, declaration order).
   std::vector<uint32_t> sorted_order;
+  // Declared k -> sorted slot: descriptor k's low 24 bits.
+  std::vector<uint32_t> slot_of;
+
+  const GdbProperty& AtSlot(const GdbEntry& entry, uint32_t slot) const {
+    return entry.properties[declared[sorted_order[slot]]];
+  }
 };
 
 SchemaLayout BuildSchemaLayout(const GdbEntry& entry) {
   SchemaLayout layout;
-  layout.sorted_order.resize(entry.properties.size());
+  const uint32_t count = static_cast<uint32_t>(entry.properties.size());
+  layout.declared.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (entry.properties[i].name_hash == kHashParent) {
+      layout.declared.push_back(i);
+      break;
+    }
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (layout.declared.empty() || layout.declared.front() != i) {
+      layout.declared.push_back(i);
+    }
+  }
+  layout.sorted_order.resize(count);
   std::iota(layout.sorted_order.begin(), layout.sorted_order.end(), 0u);
   std::stable_sort(layout.sorted_order.begin(), layout.sorted_order.end(),
-                   [&entry](uint32_t left, uint32_t right) {
-                     return entry.properties[left].name_hash <
-                            entry.properties[right].name_hash;
+                   [&entry, &layout](uint32_t left, uint32_t right) {
+                     return entry.properties[layout.declared[left]].name_hash <
+                            entry.properties[layout.declared[right]].name_hash;
                    });
+  layout.slot_of.resize(count);
+  for (uint32_t slot = 0; slot < count; ++slot) {
+    layout.slot_of[layout.sorted_order[slot]] = slot;
+  }
   return layout;
+}
+
+// The guest's name registry (sub_82A01488 / sub_82A01288 / sub_829FF8A0):
+// open addressing, slot = hash & (capacity - 1), linear probe, doubled when
+// the count reaches 3/4 of the capacity (old slots re-inserted in slot order).
+// Returns the capacity and the pair indices in slot order, which is what the
+// name-table tail stores and GDBNames_RegisterTable walks linearly.
+void NameRegistryLayout(const std::vector<uint32_t>& hashes,
+                        uint32_t* capacity_out, std::vector<uint32_t>* order) {
+  uint32_t capacity = kNameRegistryInitialCapacity;
+  std::vector<int64_t> slots(capacity, -1);
+  const auto find = [&](uint32_t hash) {
+    uint32_t s = hash & (capacity - 1);
+    while (slots[s] >= 0) {
+      if (hashes[static_cast<size_t>(slots[s])] == hash) {
+        return true;
+      }
+      s = (s + 1) & (capacity - 1);
+    }
+    return false;
+  };
+  const auto insert = [&](std::vector<int64_t>& table, uint32_t cap,
+                          uint32_t index) {
+    const uint32_t hash = hashes[index];
+    uint32_t s = hash & (cap - 1);
+    while (table[s] >= 0 && hashes[static_cast<size_t>(table[s])] != hash) {
+      s = (s + 1) & (cap - 1);
+    }
+    table[s] = index;
+  };
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < hashes.size(); ++i) {
+    if (find(hashes[i])) {
+      continue;
+    }
+    ++count;
+    if (count == ((3u * capacity) >> 2)) {
+      const uint32_t grown = capacity << 1;
+      std::vector<int64_t> next(grown, -1);
+      for (uint32_t s = 0; s < capacity; ++s) {
+        if (slots[s] >= 0) {
+          insert(next, grown, static_cast<uint32_t>(slots[s]));
+        }
+      }
+      slots.swap(next);
+      capacity = grown;
+    }
+    insert(slots, capacity, i);
+  }
+  order->clear();
+  order->reserve(count);
+  for (uint32_t s = 0; s < capacity; ++s) {
+    if (slots[s] >= 0) {
+      order->push_back(static_cast<uint32_t>(slots[s]));
+    }
+  }
+  *capacity_out = capacity;
 }
 
 }  // namespace
@@ -356,22 +443,25 @@ static bool ParseGdbImpl(const uint8_t* data, size_t size, GdbDatabase* out,
       return Fail(error, "schema or record overruns block for entry " +
                              FormatHashLiteral(entry.id));
     }
+    // Declared property k sits at sorted slot D[k] & 0xFFFFFF (sub_82A008F8 /
+    // sub_82A007C0); the type of slot s is D[s] >> 24 (0x821E5AA0).
     entry.properties.resize(property_count);
-    std::vector<bool> declared(property_count, false);
-    for (uint32_t sorted = 0; sorted < property_count; ++sorted) {
-      const uint32_t name_hash = ReadBe32(schema + 4 + 4 * sorted);
+    std::vector<bool> slot_taken(property_count, false);
+    for (uint32_t k = 0; k < property_count; ++k) {
       const uint32_t descriptor =
-          ReadBe32(schema + 4 + 4 * property_count + 4 * sorted);
-      const uint32_t declaration = descriptor & 0xFFFFFFu;
-      if (declaration >= property_count || declared[declaration]) {
-        return Fail(error, "invalid declaration index in schema of entry " +
+          ReadBe32(schema + 4 + 4 * property_count + 4 * k);
+      const uint32_t slot = descriptor & 0xFFFFFFu;
+      if (slot >= property_count || slot_taken[slot]) {
+        return Fail(error, "invalid sorted-slot index in schema of entry " +
                                FormatHashLiteral(entry.id));
       }
-      declared[declaration] = true;
-      GdbProperty& property = entry.properties[declaration];
-      property.name_hash = name_hash;
-      property.type = static_cast<uint8_t>(descriptor >> 24);
-      property.value = ReadBe32(records + record_offset + 4 + 4 * sorted);
+      slot_taken[slot] = true;
+      const uint32_t slot_descriptor =
+          ReadBe32(schema + 4 + 4 * property_count + 4 * slot);
+      GdbProperty& property = entry.properties[k];
+      property.name_hash = ReadBe32(schema + 4 + 4 * slot);
+      property.type = static_cast<uint8_t>(slot_descriptor >> 24);
+      property.value = ReadBe32(records + record_offset + 4 + 4 * slot);
     }
   }
 
@@ -384,7 +474,10 @@ static bool ParseGdbImpl(const uint8_t* data, size_t size, GdbDatabase* out,
   // Optional name table tail.
   const uint8_t* tail = data + kHeaderSize + payload_size;
   const size_t tail_size = size - kHeaderSize - payload_size;
-  if (tail_size >= 12 && ReadBe32(tail) == kNameTableVersion) {
+  // The tail's first word is the registry capacity the names were laid out
+  // in: a power of two (the guest masks with capacity - 1).
+  const uint32_t capacity = tail_size >= 12 ? ReadBe32(tail) : 0u;
+  if (tail_size >= 12 && capacity != 0 && (capacity & (capacity - 1)) == 0) {
     const uint64_t pairs_size = ReadBe32(tail + 4);
     const uint64_t name_count = ReadBe32(tail + 8);
     if (12 + pairs_size + 4 * name_count > tail_size) {
@@ -457,35 +550,36 @@ static bool SerializeGdbImpl(const GdbDatabase& database, std::vector<uint8_t>* 
                              " has too many properties or invalid flags");
     }
     const SchemaLayout layout = BuildSchemaLayout(entry);
+    const uint32_t count = static_cast<uint32_t>(entry.properties.size());
     std::string key;
     key.push_back(static_cast<char>(entry.schema_flags));
-    for (uint32_t index : layout.sorted_order) {
-      const GdbProperty& property = entry.properties[index];
+    for (uint32_t slot = 0; slot < count; ++slot) {
+      const GdbProperty& property = layout.AtSlot(entry, slot);
       key.append(reinterpret_cast<const char*>(&property.name_hash),
                  sizeof(property.name_hash));
       key.push_back(static_cast<char>(property.type));
-      key.append(reinterpret_cast<const char*>(&index), sizeof(index));
+      key.append(reinterpret_cast<const char*>(&layout.slot_of[slot]),
+                 sizeof(uint32_t));
     }
     auto [match, inserted] =
         schema_offsets.try_emplace(std::move(key),
                                    static_cast<uint32_t>(schemas.size()));
     if (inserted) {
-      AppendBe32(&schemas,
-                 (static_cast<uint32_t>(entry.properties.size()) << 8) |
-                     entry.schema_flags);
-      for (uint32_t index : layout.sorted_order) {
-        AppendBe32(&schemas, entry.properties[index].name_hash);
+      AppendBe32(&schemas, (count << 8) | entry.schema_flags);
+      for (uint32_t slot = 0; slot < count; ++slot) {
+        AppendBe32(&schemas, layout.AtSlot(entry, slot).name_hash);
       }
-      for (uint32_t index : layout.sorted_order) {
+      // Descriptor k: (type of sorted slot k) << 24 | sorted slot of declared k.
+      for (uint32_t k = 0; k < count; ++k) {
         AppendBe32(&schemas,
-                   (static_cast<uint32_t>(entry.properties[index].type) << 24) |
-                       index);
+                   (static_cast<uint32_t>(layout.AtSlot(entry, k).type) << 24) |
+                       layout.slot_of[k]);
       }
     }
     record_offsets[i] = records.size();
     AppendBe32(&records, match->second);
-    for (uint32_t index : layout.sorted_order) {
-      AppendBe32(&records, entry.properties[index].value);
+    for (uint32_t slot = 0; slot < count; ++slot) {
+      AppendBe32(&records, layout.AtSlot(entry, slot).value);
     }
   }
 
@@ -533,22 +627,29 @@ static bool SerializeGdbImpl(const GdbDatabase& database, std::vector<uint8_t>* 
     AppendBe32(out, target);
   }
 
-  // Name table tail.
+  // Name table tail: the pairs, then the registry's capacity and its slot
+  // order (NameRegistryLayout) as the offsets array.
   std::vector<uint8_t> pairs;
   std::vector<uint32_t> pair_offsets;
+  std::vector<uint32_t> pair_hashes;
   pair_offsets.reserve(database.names.size());
+  pair_hashes.reserve(database.names.size());
   for (const auto& [hash, name] : database.names) {
     pair_offsets.push_back(static_cast<uint32_t>(pairs.size()));
+    pair_hashes.push_back(hash);
     AppendBe32(&pairs, hash);
     pairs.insert(pairs.end(), name.begin(), name.end());
     pairs.push_back(0);
   }
-  AppendBe32(out, kNameTableVersion);
+  uint32_t capacity = kNameRegistryInitialCapacity;
+  std::vector<uint32_t> slot_order;
+  NameRegistryLayout(pair_hashes, &capacity, &slot_order);
+  AppendBe32(out, capacity);
   AppendBe32(out, static_cast<uint32_t>(pairs.size()));
   AppendBe32(out, static_cast<uint32_t>(pair_offsets.size()));
   out->insert(out->end(), pairs.begin(), pairs.end());
-  for (uint32_t offset : pair_offsets) {
-    AppendBe32(out, offset);
+  for (uint32_t pair : slot_order) {
+    AppendBe32(out, pair_offsets[pair]);
   }
   return true;
 }
