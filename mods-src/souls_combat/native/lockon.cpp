@@ -1,9 +1,11 @@
 // Souls Combat — LT toggles the lock-on instead of being held.
 //
-// THE LOCK IS OURS: one state per hero, flipped by the LT PRESS itself, and the game's two lock
-// switches are set to match it. Two earlier versions keyed off the game's own look-at flag and
-// both stuck locked: that flag is set only by a camera event on LT down, which is not delivered
-// again while the lock holds, so no second press was ever seen.
+// THE LOCK IS OURS: one state per hero, flipped by the LT PRESS itself, and the game's lock is
+// set to match it through the mod API's own lock calls (core/refii_mod.h, refii_mod_lock_target /
+// refii_mod_release_lock: the targeting component's force byte and the player's look-at flag, what
+// a held LT states). Two earlier versions keyed off the game's own look-at flag and both stuck
+// locked: that flag is set only by a camera event on LT down, which is not delivered again while
+// the lock holds, so no second press was ever seen.
 //
 // The event (core/refii_mod_events.h): GameAction, a GameAction reaching a player hero's
 // receiver — LT is 49, TARGET_LOCK_SET, on press and 50, TARGET_LOCK_RELEASE, on release. The
@@ -16,22 +18,20 @@
 // versions/*/refii_config.toml):
 //   rex_CPlayer_SetLookAtButtonDown (0x823E9F10 / 0x823C8940): the only writer of the player's
 //     look-at flag (`stb r29,0x20(r30)`), the byte every lock-camera script reads. Hooked so the
-//     flag always equals our lock, whoever asks. The player object is the hero's component 33,
-//     which keeps its owner entity at +4 (`stw r4,4(r31)` in its constructor, 0x823e0110).
-//   The FORCE byte, targeting component 77 +0x14 (Targeting.SetForceTargetLock, sub_8290F078
-//     `stb r4,0x14(r3)`): while it is set and a target exists the component's update adds player
-//     mode 4, TARGET_LOCK — the mode that outlines the target.
+//     flag always equals our lock, whoever asks — the camera's press event, and the API's own
+//     lock and release, which write it through this same function. The player object is the hero's
+//     component 33, which keeps its owner entity at +4 (`stw r4,4(r31)` in its constructor,
+//     0x823e0110).
 //
 // THE LOCK ENDS WHEN THERE IS NOTHING TO LOCK. The game never clears the force byte itself: with
 // it set, the targeting component's update (sub_82181EA0 / sub_821818E8) re-selects a target
 // within 8 ticks of the old one dying, and when none is found it only drops player mode 4 — the
 // force byte and the look-at flag stay, and the camera is locked on nothing. So a tick drops our
-// lock after half a second without a valid target, read the way the game reads it (same offsets
-// in both builds):
-//   target  = *(*(comp77 + 12) + 28) -> *cb      GetTarget, sub_821E66F0 / sub_821E62B0
-//   in world: (target + 0x90) & 0x40               selector sub_82844950 @0x82844b28 / 0x8277b488
-//   alive:    component 20 of target, byte +0x18   same selector @0x82844c44 / 0x8277b5a4
-//             (a target without component 20 is not a creature; it counts as alive)
+// lock after half a second without a valid target: the target the API reports locked
+// (refii_mod_locked_target, the component's own GetTarget while the force byte or mode 4 holds),
+// alive, and — for a creature — not killed (component 20, byte +0x18, the selector's own test at
+// sub_82844950 0x82844c44 / 0x8277b5a4; a target without component 20 is not a creature and counts
+// as alive).
 //
 // THE WHEEL SWITCHES TARGET. Each tick a hero's lock holds it is stated to switch by the mouse wheel
 // (refii_mod_wheel_switches_target, core/refii_mod.h): on the keyboard and mouse, moving the mouse
@@ -47,9 +47,6 @@ REFII_MOD_ORIGINAL(rex_CPlayer_SetLookAtButtonDown);
 namespace {
 
 constexpr uint32_t kTargetLockSet = 49;
-constexpr uint32_t kPlayerComponent = 33;
-constexpr uint32_t kTargetingComponent = 77;
-constexpr uint32_t kForceLock = 0x14;
 
 /// The heroes currently locked, by entity, and how long each has been locked on nothing.
 uint32_t g_locked[2] = {0, 0};
@@ -77,15 +74,9 @@ void SetLocked(uint32_t hero, bool on) {
   }
 }
 
-/// The game's own test for "a target worth locking": present, in the world, and not killed.
-bool HasValidTarget(uint8_t* base, uint32_t hero) {
-  const uint32_t targeting = refii_mod_component(base, hero, kTargetingComponent);
-  if (targeting == 0) {
-    return false;
-  }
-  const uint32_t strategy = refii::mods::LoadU32(base, targeting + 12u);
-  const uint32_t block = strategy != 0 ? refii::mods::LoadU32(base, strategy + 28u) : 0u;
-  const uint32_t target = block != 0 ? refii::mods::LoadU32(base, block) : 0u;
+/// The game's own test for "a target worth locking": held by the lock, in the world, not killed.
+bool HasValidTarget(PPCContext& ctx, uint8_t* base, int32_t player) {
+  const uint32_t target = refii_mod_locked_target(&ctx, base, player);
   if (!refii_mod_entity_alive(base, target)) {
     return false;
   }
@@ -93,17 +84,17 @@ bool HasValidTarget(uint8_t* base, uint32_t hero) {
   return creature == 0 || refii::mods::LoadU8(base, creature + 0x18u) != 0;
 }
 
-/// Puts the game's two lock switches where our lock says: the force byte, then the look-at flag
-/// through the game's own writer (which also re-picks the camera mode).
+/// Puts the game's lock where ours says, through the API: the force byte and the look-at flag
+/// (the latter through the game's own writer, hooked below, which also re-picks the camera mode).
 void Apply(PPCContext& ctx, uint8_t* base, uint32_t hero, bool on) {
-  if (const uint32_t targeting = refii_mod_component(base, hero, kTargetingComponent)) {
-    refii::mods::StoreU8(base, targeting + kForceLock, on ? 1u : 0u);
+  const int32_t player = refii_mod_player_of(base, hero);
+  if (player == 0) {
+    return;
   }
-  if (const uint32_t player = refii_mod_component(base, hero, kPlayerComponent)) {
-    PPCContext work = ctx;
-    work.r3.u32 = player;
-    work.r4.u64 = on ? 1u : 0u;
-    __imp__rex_CPlayer_SetLookAtButtonDown(work, base);
+  if (on) {
+    refii_mod_lock_target(&ctx, base, player, 0);  // the game's own pick
+  } else {
+    refii_mod_release_lock(&ctx, base, player);
   }
 }
 
@@ -119,7 +110,7 @@ void DropLostLocks(refii::mods::TickEvent& e) {
       continue;
     }
     refii_mod_wheel_switches_target(e.base, hero);
-    if (HasValidTarget(e.base, hero)) {
+    if (HasValidTarget(*e.ctx, e.base, refii_mod_player_of(e.base, hero))) {
       g_without_target[i] = 0.0f;
       continue;
     }

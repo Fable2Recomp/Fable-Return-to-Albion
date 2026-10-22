@@ -136,7 +136,8 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_MOD_MENU_BOX = 90,
   REFII_EVENT_MOD_ABILITY = 91,
   REFII_EVENT_SPELL_PICK = 92,
-  REFII_EVENT_COUNT = 93,
+  REFII_EVENT_PARTNER_MESSAGE = 93,
+  REFII_EVENT_COUNT = 94,
 };
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
@@ -1326,6 +1327,22 @@ struct SpellPickEvent : Event {
   int32_t spell;
   int32_t previous;
   int32_t player;
+};
+
+/// A mod's message from THE OTHER MACHINE of an online session (refii_mod_send_to_partner,
+/// Refii.send_to_partner, RefiiHost.send_to_partner there): `mod` the mod that sent it, `name` its
+/// word, `payload` its text (at most REFII_MOD_PARTNER_PAYLOAD_MAX bytes; on the Lua and Godot
+/// surfaces a quote, backslash or line break in it arrives as '_'), `from` the player that machine
+/// plays (1 the host, 2 the joiner). Raised on the receiving machine's guest tick, once per message
+/// and in the order sent — the route (core/event_relay.h) carries it — and never on the sender's.
+/// Not a replica: this machine's own handling, so player-state writes in a handler count. Never
+/// raised alone or in local co-op. Not cancellable.
+struct PartnerMessageEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PARTNER_MESSAGE;
+  const char* mod;
+  const char* name;
+  const char* payload;
+  int32_t from;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

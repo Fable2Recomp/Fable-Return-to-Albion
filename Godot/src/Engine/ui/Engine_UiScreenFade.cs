@@ -21,6 +21,12 @@ public sealed partial class Engine_UiScreenFade : Node
 	private CanvasLayer? _layer;
 	private ColorRect? _rect;
 
+	/// <summary>
+	/// The mods' fades (<see cref="Engine_UiModFade"/>), one rect per player: over that player's
+	/// half on split screen, the whole window otherwise. Under the game's own fade.
+	/// </summary>
+	private readonly ColorRect?[] _modRects = new ColorRect?[2];
+
 	/// <summary>What the last poll saw, so the report is one line per change.</summary>
 	/// <summary>
 	/// The key over the last `[screen-fade]` line — see <see cref="Drive"/>. Nullable so the
@@ -47,6 +53,21 @@ public sealed partial class Engine_UiScreenFade : Node
 		};
 		_rect.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		_layer.AddChild(_rect);
+
+		for (int p = 0; p < 2; p++)
+		{
+			var mod = new ColorRect
+			{
+				Name = p == 0 ? "ModFadePlayerOne" : "ModFadePlayerTwo",
+				Color = new Color(0f, 0f, 0f, 0f),
+				MouseFilter = Control.MouseFilterEnum.Ignore,
+				Visible = false,
+			};
+			_layer.AddChild(mod);
+			_modRects[p] = mod;
+		}
+
+		_rect.MoveToFront();
 	}
 
 	/// <summary>
@@ -59,6 +80,8 @@ public sealed partial class Engine_UiScreenFade : Node
 		{
 			return;
 		}
+
+		DriveModFades();
 
 		Engine_UiModel.ScreenFade fade = Engine_UiSource.Current.GetScreenFade();
 
@@ -87,6 +110,50 @@ public sealed partial class Engine_UiScreenFade : Node
 					$"{fade.Colour.B:0.00} a{fade.Colour.A:0.00} t{fade.Progress:0.00}" +
 					$"{(fade.Locked ? " LOCKED" : string.Empty)}"
 				: fade.Known ? "[screen-fade] clear" : "[screen-fade] no fade object");
+		}
+	}
+
+	/// <summary>
+	/// The mods' per-player fades: each ramp advanced, then drawn over its player's seat — on split
+	/// screen that player's half (<see cref="Engine_UiSeats.Of"/>), else the whole window with the
+	/// darker of the two (a shared couch screen shows both players; alone or online one player is
+	/// played here and the other's fade is never requested, Engine_UiModBoxes.PlayedHere).
+	/// </summary>
+	private void DriveModFades()
+	{
+		Engine_UiModFade.Advance(GetProcessDeltaTime());
+		if (_modRects[0] is not { } one || _modRects[1] is not { } two)
+		{
+			return;
+		}
+
+		Vector2 window = GetWindow().GetVisibleRect().Size;
+		bool split = Refii.Core.Engine_Views.Split;
+		if (!split)
+		{
+			float alpha = Mathf.Max(Engine_UiModFade.AlphaFor(1), Engine_UiModFade.AlphaFor(2));
+			Place(one, new Rect2(Vector2.Zero, window), alpha);
+			Place(two, default, 0f);
+			return;
+		}
+
+		Engine_UiSeats.Frame first = Engine_UiSeats.Of(window, Engine_UiSeats.Seat.PlayerOne);
+		Engine_UiSeats.Frame second = Engine_UiSeats.Of(window, Engine_UiSeats.Seat.PlayerTwo);
+		Place(one, new Rect2(first.Origin, first.Window), Engine_UiModFade.AlphaFor(1));
+		Place(two, new Rect2(second.Origin, second.Window), Engine_UiModFade.AlphaFor(2));
+
+		static void Place(ColorRect rect, Rect2 at, float alpha)
+		{
+			bool shown = alpha > 0.002f;
+			rect.Visible = shown;
+			if (!shown)
+			{
+				return;
+			}
+
+			rect.Position = at.Position;
+			rect.Size = at.Size;
+			rect.Color = new Color(0f, 0f, 0f, Mathf.Clamp(alpha, 0f, 1f));
 		}
 	}
 

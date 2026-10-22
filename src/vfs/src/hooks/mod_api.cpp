@@ -40,6 +40,15 @@ PPC_EXTERN_FUNC(rex_lhHeroStats_GetMorality);
 PPC_EXTERN_FUNC(rex_lhHeroStats_GetPurity);
 PPC_EXTERN_FUNC(rex_Village_IsLineOfSight);
 PPC_EXTERN_FUNC(rex_lhLuaScriptSystem_CreateEntityAtPosition);
+// The lock, the statuses and the hit (refii_mod_lock_target .. refii_mod_stagger). OnHit is the
+// Hit event's seam, so the name: a stated hit is a hit.
+PPC_EXTERN_FUNC(rex_CPlayer_SetLookAtButtonDown);
+PPC_EXTERN_FUNC(rex_SpellLightning_Electrify);
+PPC_EXTERN_FUNC(rex_SpellChaos_ApplyToVictim);
+PPC_EXTERN_FUNC(rex_SpellFireball_Ignite);
+PPC_EXTERN_FUNC(rex_CECHitReceiver_OnHit);
+// The opinion setter (refii_mod_modify_opinion): hooked in mod_events.cpp, so the event fires.
+PPC_EXTERN_FUNC(rex_CECOpinionReaction_ModifyAxisValue);
 
 namespace refii::vfs {
 /// The script system the startup scripts ran on (mod_lua_hooks.cpp), or 0 before a session.
@@ -79,6 +88,49 @@ constexpr uint32_t kPlacement = 0x7C;
 constexpr uint32_t kSetPositionSlot = 25;
 constexpr uint32_t kAppearanceComponent = 3;  // CECGraphicAppearance (ctor sub_82571DF8)
 constexpr uint32_t kSetTintVector = 0x82573770u;
+// The other component-3 setters (entity_appearance.cpp lists them): r3 the component, the value
+// in f1 (alpha, scale) or r4 (a byte).
+constexpr uint32_t kSetAlpha = 0x82573220u;           // disc 0x82547EC8
+constexpr uint32_t kSetScale = 0x82573078u;           // disc 0x82547D20
+constexpr uint32_t kSetSaturationMask = 0x822B8188u;  // disc 0x822B7EA8
+constexpr uint32_t kSetAsDrawable = 0x825725A8u;      // disc 0x82547250
+constexpr uint32_t kPlacementScaleSlot = 43;          // what SetScale calls on entity+0x7C (0x82573100)
+// The target lock (refii_mod.h states each): the player component and its handle's HasMode.
+constexpr uint32_t kPlayerComponent = 33;
+constexpr uint32_t kTargetingComponent = 77;
+constexpr uint32_t kPlayerHandle = 0x14;    // comp33 + 0x14, what HasPlayerMode dereferences (0x821aa5d8)
+constexpr uint32_t kForceLockByte = 0x14;   // comp77 + 0x14, SetForceTargetLock's `stb r4,0x14(r3)`
+constexpr uint32_t kTargetLockMode = 4;     // PLAYER_MODE_TARGET_LOCK
+constexpr uint32_t kHandleHasMode = 0x821E8B90u;        // disc 0x821E8870
+constexpr uint32_t kTargetingGetTargetSlot = 17;
+constexpr uint32_t kTargetingSetTargetSlot = 19;
+constexpr uint32_t kTargetingSwitchSlot = 49;
+// The statuses: components, the installers' is-creature test and the removers.
+constexpr uint32_t kStatusComponents[5] = {0u, 205u, 206u, 208u, 209u};
+constexpr uint32_t kStatusCreatureComponent = 20;  // CECCreature: the installers' is-creature flag
+constexpr uint32_t kRemoveElectrified = 0x827427B8u;  // disc 0x827178B8
+constexpr uint32_t kRemoveChaos = 0x82749F38u;        // disc 0x8271F038
+constexpr uint32_t kRemoveBurning = 0x827469A8u;      // disc 0x8271BAA8
+// The hit record: its constructor, name setter and destructor, and the fields a Force Push fills.
+constexpr uint32_t kHitReceiverComponent = 31;
+constexpr uint32_t kHitCtor = 0x825C4958u;       // disc 0x824831E8
+constexpr uint32_t kHitSetName = 0x82275438u;    // disc 0x82275368
+constexpr uint32_t kHitDtor = 0x823919C0u;       // disc 0x8237D608
+constexpr uint32_t kHitBytes = 0xE0u;            // 212 written by the constructor, rounded up
+constexpr uint32_t kHitKnockdown = 0x18;
+constexpr uint32_t kHitUnblockable = 0x19;
+constexpr uint32_t kHitDamage = 0x38;
+constexpr uint32_t kHitFlags = 0x40;
+constexpr uint32_t kHitSerial = 0x44;
+constexpr uint32_t kHitKindA = 0x50;
+constexpr uint32_t kHitSpellType = 0x54;
+constexpr uint32_t kHitKindB = 0x58;
+constexpr uint32_t kHitOrigin = 0x70;
+constexpr uint32_t kHitDirection = 0x90;
+constexpr uint32_t kHitDirectionBack = 0xA0;
+constexpr uint32_t kHitResponseName = 0xC0;
+constexpr uint32_t kForcePushFlag = 0x20000u;
+constexpr int32_t kForcePushType = 6;
 constexpr uint32_t kManagerDefinitions = 400;
 constexpr uint32_t kSpellSerial = 0x44;
 
@@ -407,13 +459,20 @@ uint32_t PostPlayFx(const char* name, const float* xyz, uint32_t handle, const r
   const refii_mod_fx_options o = options != nullptr ? *options : refii_mod_fx_default_options();
   const float origin[3] = {xyz != nullptr ? xyz[0] : 0.0f, xyz != nullptr ? xyz[1] : 0.0f, xyz != nullptr ? xyz[2] : 0.0f};
   const uint32_t id = (g_fx_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
-  char fields[512];
+  // The helper point (options->at), as a quoted field: a name never carries a quote or a comma.
+  char at[96];
+  size_t m = 0;
+  for (const char* c = o.at; c != nullptr && *c != 0 && m + 1 < sizeof(at); ++c) {
+    at[m++] = (*c == '\'' || *c == ',' || static_cast<unsigned char>(*c) < 0x20) ? '_' : *c;
+  }
+  at[m] = 0;
+  char fields[640];
   const int written = std::snprintf(
       fields, sizeof(fields),
       "op='play',id=%u,name='%s',x=%.9g,y=%.9g,z=%.9g,entity=%u,duration=%.9g,scale=%.9g,r=%.9g,g=%.9g,b=%.9g,"
-      "intensity=%.9g,loop=%d,ox=%.9g,oy=%.9g,oz=%.9g",
+      "intensity=%.9g,loop=%d,ox=%.9g,oy=%.9g,oz=%.9g,at='%s'",
       id, clean, origin[0], origin[1], origin[2], handle, o.duration, o.scale, o.tint[0], o.tint[1], o.tint[2],
-      o.intensity, o.loop != 0 ? 1 : 0, o.offset[0], o.offset[1], o.offset[2]);
+      o.intensity, o.loop != 0 ? 1 : 0, o.offset[0], o.offset[1], o.offset[2], at);
   if (written <= 0 || static_cast<size_t>(written) >= sizeof(fields)) {
     return 0;
   }
@@ -443,12 +502,86 @@ uint32_t PlayModFxOnHandle(const char* name, const float* xyz, uint32_t handle, 
 
 }  // namespace refii::vfs
 
+extern "C" uint32_t refii_mod_play_fx_at(const char* name, uint32_t entity, const char* helper,
+                                         const refii_mod_fx_options* options) {
+  refii_mod_fx_options o = options != nullptr ? *options : refii_mod_fx_default_options();
+  o.at = helper;
+  return refii_mod_play_fx_on(name, entity, &o);
+}
+
 extern "C" void refii_mod_stop_fx(uint32_t id) {
   if (id == 0) {
     return;
   }
   char fields[64];
   const int written = std::snprintf(fields, sizeof(fields), "op='stop',id=%u", id);
+  if (written > 0 && static_cast<size_t>(written) < sizeof(fields)) {
+    refii::mods::PostEvent(REFII_MOD_HOST_FX_KIND, std::string_view(fields, static_cast<size_t>(written)));
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lights: a request for Godot on the effect kind (Engine_ModLights reads op='light' / 'light_off')
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// The payload's light ids share the effects' span (1 .. 2^23-1); Godot's own count from 2^23.
+std::atomic<uint32_t> g_light_ids{0};
+
+/// The light request as the bus carries it: the entity as a handle (0 for the world point).
+uint32_t PostLight(uint32_t handle, const float* xyz, const float* rgb, float energy, float range,
+                   const refii_mod_light_options* options) {
+  if (rgb == nullptr) {
+    return 0;
+  }
+  const uint32_t id = (g_light_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
+  const float origin[3] = {xyz != nullptr ? xyz[0] : 0.0f, xyz != nullptr ? xyz[1] : 0.0f, xyz != nullptr ? xyz[2] : 0.0f};
+  const float offset[3] = {options != nullptr ? options->offset[0] : 0.0f, options != nullptr ? options->offset[1] : 0.0f,
+                           options != nullptr ? options->offset[2] : 0.0f};
+  char at[96];
+  size_t m = 0;
+  for (const char* c = options != nullptr ? options->at : nullptr; c != nullptr && *c != 0 && m + 1 < sizeof(at); ++c) {
+    at[m++] = (*c == '\'' || *c == ',' || static_cast<unsigned char>(*c) < 0x20) ? '_' : *c;
+  }
+  at[m] = 0;
+  char fields[512];
+  const int written = std::snprintf(
+      fields, sizeof(fields),
+      "op='light',id=%u,entity=%u,x=%.9g,y=%.9g,z=%.9g,r=%.9g,g=%.9g,b=%.9g,energy=%.9g,range=%.9g,ox=%.9g,oy=%.9g,oz=%.9g,"
+      "at='%s',flicker=%.9g",
+      id, handle, origin[0], origin[1], origin[2], rgb[0], rgb[1], rgb[2], energy, range, offset[0], offset[1], offset[2], at,
+      options != nullptr ? options->flicker : 0.0f);
+  if (written <= 0 || static_cast<size_t>(written) >= sizeof(fields)) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_FX_KIND, std::string_view(fields, static_cast<size_t>(written)));
+  return id;
+}
+
+}  // namespace
+
+extern "C" uint32_t refii_mod_light(uint32_t entity, const float* xyz, const float* rgb, float energy, float range,
+                                    const refii_mod_light_options* options) {
+  return PostLight(entity != 0u ? refii_mod_handle(entity) : 0u, entity != 0u ? nullptr : xyz, rgb, energy, range, options);
+}
+
+namespace refii::vfs {
+
+/// The Lua surface's form: the entity is already a handle (Refii.light).
+uint32_t PlaceModLightOnHandle(uint32_t handle, const float* xyz, const float* rgb, float energy, float range,
+                               const refii_mod_light_options* options) {
+  return PostLight(handle, handle != 0u ? nullptr : xyz, rgb, energy, range, options);
+}
+
+}  // namespace refii::vfs
+
+extern "C" void refii_mod_light_remove(uint32_t id) {
+  if (id == 0) {
+    return;
+  }
+  char fields[64];
+  const int written = std::snprintf(fields, sizeof(fields), "op='light_off',id=%u", id);
   if (written > 0 && static_cast<size_t>(written) < sizeof(fields)) {
     refii::mods::PostEvent(REFII_MOD_HOST_FX_KIND, std::string_view(fields, static_cast<size_t>(written)));
   }
@@ -543,6 +676,76 @@ extern "C" uint32_t refii_mod_menu_box(int32_t player, const char* title, const 
   }
   refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
   return id;
+}
+
+// ---------------------------------------------------------------------------------------------
+// HUD: markers, fades and meters — requests for Godot on the UI kind (Engine_UiModBoxes hands
+// them to Engine_HudModMarkers, Engine_UiModFade and Engine_HudModMeters). Never an event.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// Marker ids: the payload's 1 .. 2^23-1, Godot's from 2^23 (Engine_HudModMarkers.FirstHostId).
+std::atomic<uint32_t> g_mark_ids{0};
+
+std::string Float(float value) {
+  char text[32];
+  std::snprintf(text, sizeof(text), "%.9g", static_cast<double>(std::isfinite(value) ? value : 0.0f));
+  return text;
+}
+
+}  // namespace
+
+extern "C" uint32_t refii_mod_mark(int32_t player, uint32_t entity, const float* xyz, const char* icon,
+                                   const char* text) {
+  const std::string picture = QuotedField(icon, 160);
+  if (picture.empty()) {
+    return 0;
+  }
+  const uint32_t id = (g_mark_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
+  const uint32_t handle = entity != 0u ? refii_mod_handle(entity) : 0u;
+  const std::string fields = "op='mark',id=" + std::to_string(id) + ",player=" + std::to_string(ClampPlayer(player)) +
+                             ",entity=" + std::to_string(handle) + ",x=" + Float(xyz != nullptr ? xyz[0] : 0.0f) +
+                             ",y=" + Float(xyz != nullptr ? xyz[1] : 0.0f) + ",z=" + Float(xyz != nullptr ? xyz[2] : 0.0f) +
+                             ",icon='" + picture + "',text='" + QuotedField(text, 160) + "'";
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return id;
+}
+
+extern "C" void refii_mod_unmark(uint32_t id) {
+  if (id == 0u) {
+    return;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='unmark',id=" + std::to_string(id));
+}
+
+extern "C" int32_t refii_mod_fade(int32_t player, int32_t to_black, float seconds) {
+  const std::string fields = "op='fade',player=" + std::to_string(ClampPlayer(player)) + ",to=" +
+                             (to_black != 0 ? "1" : "0") + ",seconds=" + Float(seconds > 0.0f ? seconds : 0.0f);
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_meter(int32_t player, const char* id, const char* label, float value, float max,
+                                   const char* style) {
+  const std::string key = QuotedField(id, 96);
+  if (key.empty()) {
+    return 0;
+  }
+  const std::string fields = "op='meter',player=" + std::to_string(ClampPlayer(player)) + ",id='" + key + "',label='" +
+                             QuotedField(label, 128) + "',value=" + Float(value) + ",max=" + Float(max) + ",style='" +
+                             QuotedField(style, 32) + "'";
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_meter_remove(const char* id) {
+  const std::string key = QuotedField(id, 96);
+  if (key.empty()) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='meter_remove',id='" + key + "'");
+  return 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -746,6 +949,66 @@ extern "C" int32_t refii_mod_event_replica(void) { return refii_bridge_player_in
 
 extern "C" int32_t refii_mod_player_here(int32_t player) {
   return (player == 1 || player == 2) && ((refii_bridge_player_owned() >> (player - 1)) & 1u) != 0u ? 1 : 0;
+}
+
+// --- partner messages: the route's mod lane (core/event_relay.h, `pm:` lines) -------------------
+
+namespace {
+
+/// A partner message's name or mod: letters, digits, '_', '.', '-', 1 .. REFII_MOD_PARTNER_NAME_MAX.
+bool PartnerWord(const char* text) {
+  if (text == nullptr || text[0] == 0) {
+    return false;
+  }
+  size_t n = 0;
+  for (const char* c = text; *c != 0; ++c, ++n) {
+    const bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_' ||
+                    *c == '.' || *c == '-';
+    if (!ok || n >= REFII_MOD_PARTNER_NAME_MAX) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Standard base64 (the route line carries no ';', '|' or line break; the payload may hold any byte).
+std::string Base64(const char* bytes, size_t size) {
+  static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((size + 2) / 3 * 4);
+  for (size_t i = 0; i < size; i += 3) {
+    const uint32_t a = static_cast<uint8_t>(bytes[i]);
+    const uint32_t b = i + 1 < size ? static_cast<uint8_t>(bytes[i + 1]) : 0u;
+    const uint32_t c = i + 2 < size ? static_cast<uint8_t>(bytes[i + 2]) : 0u;
+    const uint32_t word = (a << 16) | (b << 8) | c;
+    out += kAlphabet[(word >> 18) & 63u];
+    out += kAlphabet[(word >> 12) & 63u];
+    out += i + 1 < size ? kAlphabet[(word >> 6) & 63u] : '=';
+    out += i + 2 < size ? kAlphabet[word & 63u] : '=';
+  }
+  return out;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_send_to_partner(const char* mod, const char* name, const char* payload) {
+  // Only inside an online session: outside one both players are owned here and there is no partner
+  // machine (a line posted then would wait on the route for the next peer).
+  const uint32_t owned = refii_bridge_player_owned();
+  if (owned != 1u && owned != 2u) {
+    return 0;
+  }
+  if (!PartnerWord(mod) || !PartnerWord(name)) {
+    return 0;
+  }
+  const size_t size = payload != nullptr ? std::strlen(payload) : 0u;
+  if (size > REFII_MOD_PARTNER_PAYLOAD_MAX) {
+    return 0;
+  }
+  // pm:<from>:<mod>:<name>:<base64 payload> — the lane Engine/mod_events.cpp drains on the peer.
+  const std::string line = "pm:" + std::to_string(owned) + ":" + mod + ":" + name + ":" + Base64(payload, size);
+  refii_bridge_route_post(line.c_str());
+  return 1;
 }
 
 extern "C" int32_t refii_mod_entity_alive(uint8_t* base, uint32_t entity) {
@@ -1010,6 +1273,897 @@ extern "C" int32_t refii_mod_entity_tint(PPCContext* ctx, uint8_t* base, uint32_
 
 extern "C" int32_t refii_mod_entity_untint(PPCContext* ctx, uint8_t* base, uint32_t entity) {
   return refii_mod_entity_tint(ctx, base, entity, 1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The other appearance setters (refii_mod.h states each setter's instructions).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// `setter(comp3, f1 = value)`: the alpha and scale setters take their float in f1.
+int32_t SetAppearanceFloat(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t setter, float value) {
+  if (ctx == nullptr || !std::isfinite(value)) {
+    return 0;
+  }
+  const uint32_t look = refii_mod_component(base, entity, kAppearanceComponent);
+  if (look == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = look;
+  work.f1.f64 = static_cast<double>(value);
+  return refii::mods::CallGuest(work, base, refii::guest::Address(setter)) ? 1 : 0;
+}
+
+/// `setter(comp3, r4 = byte)`: the saturation-mask and drawable setters take a byte in r4.
+int32_t SetAppearanceByte(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t setter, bool on) {
+  const uint32_t look = ctx != nullptr ? refii_mod_component(base, entity, kAppearanceComponent) : 0u;
+  if (look == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = look;
+  work.r4.u64 = on ? 1u : 0u;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(setter)) ? 1 : 0;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_entity_alpha(PPCContext* ctx, uint8_t* base, uint32_t entity, float alpha) {
+  if (!std::isfinite(alpha)) {
+    return 0;
+  }
+  return SetAppearanceFloat(ctx, base, entity, kSetAlpha, std::clamp(alpha, 0.0f, 1.0f));
+}
+
+extern "C" int32_t refii_mod_entity_scale(PPCContext* ctx, uint8_t* base, uint32_t entity, float scale) {
+  // The setter tells the placement through its vtable (`lwz r3,0x7C(r11)` 0x825730f8, no null
+  // test), so an entity without one would crash inside it.
+  if (!(scale > 0.0f) || !std::isfinite(scale) || !Plausible(entity) ||
+      !Plausible(refii::mods::LoadU32(base, entity + kPlacement))) {
+    return 0;
+  }
+  return SetAppearanceFloat(ctx, base, entity, kSetScale, scale);
+}
+
+extern "C" int32_t refii_mod_entity_saturation_mask(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t on) {
+  return SetAppearanceByte(ctx, base, entity, kSetSaturationMask, on != 0);
+}
+
+extern "C" int32_t refii_mod_entity_drawable(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t on) {
+  return SetAppearanceByte(ctx, base, entity, kSetAsDrawable, on != 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The target lock (refii_mod.h states the three switches and their instructions).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+struct LockParts {
+  uint32_t hero = 0;
+  uint32_t player = 0;     // component 33
+  uint32_t targeting = 0;  // component 77
+};
+
+LockParts PartsOf(uint8_t* base, int32_t player_index) {
+  LockParts parts;
+  parts.hero = refii_mod_player_hero(base, player_index);
+  if (parts.hero != 0) {
+    parts.player = refii_mod_component(base, parts.hero, kPlayerComponent);
+    parts.targeting = refii_mod_component(base, parts.hero, kTargetingComponent);
+  }
+  return parts;
+}
+
+/// The targeting component's own GetTarget (slot 17), 0 for none.
+uint32_t TargetOf(PPCContext& ctx, uint8_t* base, uint32_t targeting) {
+  PPCContext query = refii::mods::Frame(ctx);
+  return targeting != 0 && refii::mods::CallVirtual(query, base, targeting, kTargetingGetTargetSlot) ? query.r3.u32
+                                                                                                        : 0u;
+}
+
+/// The player's look-at flag through its own writer; false when the game has no body for it.
+bool SetLookAt(PPCContext& ctx, uint8_t* base, uint32_t player, bool on) {
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u32 = player;
+  work.r4.u64 = on ? 1u : 0u;
+  rex_CPlayer_SetLookAtButtonDown(work, base);
+  return true;
+}
+
+/// Whether the player's handle holds mode `mode`: `sub_821E8B90(*(comp33+0x14), mode)`.
+bool HasPlayerMode(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t mode) {
+  const uint32_t handle = player != 0 ? refii::mods::LoadU32(base, player + kPlayerHandle) : 0u;
+  if (!Plausible(handle)) {
+    return false;
+  }
+  PPCContext query = refii::mods::Frame(ctx);
+  query.r3.u32 = handle;
+  query.r4.u64 = mode;
+  return refii::mods::CallGuest(query, base, refii::guest::Address(kHandleHasMode)) && (query.r3.u32 & 0xFFu) != 0;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_lock_target(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t entity) {
+  const LockParts parts = ctx != nullptr ? PartsOf(base, player) : LockParts{};
+  if (parts.player == 0 || parts.targeting == 0) {
+    return 0;
+  }
+  if (entity != 0) {
+    if (!refii_mod_entity_alive(base, entity)) {
+      return 0;
+    }
+    PPCContext work = refii::mods::Frame(*ctx);
+    work.r4.u32 = entity;
+    refii::mods::CallVirtual(work, base, parts.targeting, kTargetingSetTargetSlot);
+  }
+  refii::mods::StoreU8(base, parts.targeting + kForceLockByte, 1u);
+  SetLookAt(*ctx, base, parts.player, true);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_release_lock(PPCContext* ctx, uint8_t* base, int32_t player) {
+  const LockParts parts = ctx != nullptr ? PartsOf(base, player) : LockParts{};
+  if (parts.player == 0 || parts.targeting == 0) {
+    return 0;
+  }
+  refii::mods::StoreU8(base, parts.targeting + kForceLockByte, 0u);
+  SetLookAt(*ctx, base, parts.player, false);
+  return 1;
+}
+
+extern "C" uint32_t refii_mod_switch_target(PPCContext* ctx, uint8_t* base, int32_t player, int32_t left) {
+  const LockParts parts = ctx != nullptr ? PartsOf(base, player) : LockParts{};
+  if (parts.targeting == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r4.u64 = left != 0 ? 1u : 0u;
+  if (!refii::mods::CallVirtual(work, base, parts.targeting, kTargetingSwitchSlot)) {
+    return 0;
+  }
+  return TargetOf(*ctx, base, parts.targeting);
+}
+
+extern "C" uint32_t refii_mod_locked_target(PPCContext* ctx, uint8_t* base, int32_t player) {
+  const LockParts parts = ctx != nullptr ? PartsOf(base, player) : LockParts{};
+  if (parts.player == 0 || parts.targeting == 0) {
+    return 0;
+  }
+  const bool locked = refii::mods::LoadU8(base, parts.targeting + kForceLockByte) != 0 ||
+                      HasPlayerMode(*ctx, base, parts.player, kTargetLockMode);
+  return locked ? TargetOf(*ctx, base, parts.targeting) : 0u;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Status effects (refii_mod.h states each installer's registers and the bytes it reads).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// The status component id for a kind, 0 for an unknown kind.
+uint32_t StatusComponent(int32_t kind) {
+  return kind >= 1 && kind <= 4 ? kStatusComponents[kind] : 0u;
+}
+
+constexpr int32_t kNoCastSerial = -1;
+
+}  // namespace
+
+extern "C" int32_t refii_mod_has_status(uint8_t* base, uint32_t entity, int32_t kind) {
+  const uint32_t component = StatusComponent(kind);
+  return component != 0 && refii_mod_component(base, entity, component) != 0 ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_apply_status(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t kind,
+                                          float seconds, int32_t level, uint32_t source) {
+  if (ctx == nullptr || !(seconds > 0.0f) || !std::isfinite(seconds) || !refii_mod_entity_alive(base, entity) ||
+      StatusComponent(kind) == 0 || kind == REFII_STATUS_VORTEX) {
+    return 0;
+  }
+  if (!Plausible(source) || !refii_mod_entity_alive(base, source)) {
+    source = entity;
+  }
+  level = std::clamp(level, 0, 4);
+  float xyz[3] = {0.0f, 0.0f, 0.0f};
+  refii_mod_entity_position(ctx, base, entity, xyz);
+  PPCContext work = refii::mods::Frame(*ctx, 0x200u);
+  switch (kind) {
+    case REFII_STATUS_ELECTRIFIED:
+      work.r3.u32 = source;
+      work.r4.u32 = entity;
+      work.r5.s64 = kNoCastSerial;
+      work.r6.s64 = level;
+      work.f1.f64 = static_cast<double>(seconds);  // +40 duration
+      work.f2.f64 = 0.0;                           // total damage: none
+      work.f3.f64 = 0.5;                           // first tick delay (+60); moot at 0 damage
+      work.f4.f64 = 0.5;                           // tick interval (+64)
+      work.f5.f64 = 0.0;                           // +68
+      rex_SpellLightning_Electrify(work, base);
+      return 1;
+    case REFII_STATUS_CHAOS:
+      work.r3.u32 = source;
+      work.r4.u32 = entity;
+      work.r5.s64 = kNoCastSerial;
+      work.r6.u64 = 0;
+      work.r7.u64 = refii_mod_component(base, entity, kStatusCreatureComponent) != 0 ? 1u : 0u;
+      work.r8.u64 = 0;  // not a replica: in co-op the game sends it itself
+      work.f1.f64 = static_cast<double>(seconds);
+      refii::mods::SetVector(work, 1, xyz);
+      rex_SpellChaos_ApplyToVictim(work, base);
+      return 1;
+    case REFII_STATUS_BURNING: {
+      // The three bytes the installer reads from ITS CALLER's frame (0x120+arg_6F/74/7F): the
+      // frame `work` stands on is that caller's.
+      refii::mods::StoreU8(base, work.r1.u32 + 0x6Fu, 1u);
+      refii::mods::StoreU32(base, work.r1.u32 + 0x74u, 0u);
+      refii::mods::StoreU8(base, work.r1.u32 + 0x7Fu, 1u);
+      work.r3.u32 = entity;
+      work.r4.u32 = source;
+      work.r5.s64 = kNoCastSerial;
+      work.r6.s64 = level;
+      work.f1.f64 = 1.0;                           // strength, at distance 0
+      work.f2.f64 = 0.0;                           // no falloff
+      work.f3.f64 = static_cast<double>(seconds);  // burn time
+      work.f4.f64 = 0.0;                           // burn damage: none
+      work.f5.f64 = 1.0;                           // heat
+      refii::mods::SetVector(work, 1, xyz);
+      rex_SpellFireball_Ignite(work, base);
+      return 1;
+    }
+    default:
+      return 0;
+  }
+}
+
+extern "C" int32_t refii_mod_clear_status(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t kind) {
+  if (ctx == nullptr || refii_mod_has_status(base, entity, kind) == 0) {
+    return 0;
+  }
+  uint32_t remover = 0;
+  switch (kind) {
+    case REFII_STATUS_ELECTRIFIED:
+      remover = kRemoveElectrified;
+      break;
+    case REFII_STATUS_CHAOS:
+      remover = kRemoveChaos;
+      break;
+    case REFII_STATUS_BURNING:
+      remover = kRemoveBurning;
+      break;
+    default:
+      return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = entity;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(remover)) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Knockback and stagger: one hit record, the Force Push's shape (refii_mod.h quotes the builder).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// The hit this thread is delivering through refii_mod_knockback / refii_mod_stagger, or 0.
+thread_local uint32_t g_stated_hit = 0;
+
+/// Builds the record on `frame` and delivers it; `vector` null for a stagger.
+int32_t DeliverStatedHit(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* vector) {
+  if (ctx == nullptr || !refii_mod_entity_alive(base, entity)) {
+    return 0;
+  }
+  const uint32_t receiver = refii_mod_component(base, entity, kHitReceiverComponent);
+  // The receiver's own gates (0x825c5248..0x825c5278): a hit of our kind is dropped unless both
+  // bytes stand, and a dropped hit would still have been built and destroyed — so refuse first.
+  if (receiver == 0 || refii::mods::LoadU8(base, receiver + 0x18u) == 0 ||
+      refii::mods::LoadU8(base, receiver + 0x19u) == 0) {
+    return 0;
+  }
+  float xyz[3] = {0.0f, 0.0f, 0.0f};
+  refii_mod_entity_position(ctx, base, entity, xyz);
+
+  // Scratch below the caller's frame, above the callees' own and above the register home area a
+  // callee may spill into (r1+0x54..0x94): the record, then the name.
+  PPCContext work = refii::mods::Frame(*ctx, 0x300u);
+  const uint32_t hit = work.r1.u32 + 0x100u;
+  const uint32_t name = hit + kHitBytes;
+  work.r3.u32 = hit;
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(kHitCtor))) {
+    return 0;
+  }
+  refii::mods::StoreF32(base, hit + kHitDamage, 0.0f);
+  refii::mods::StoreU32(base, hit + kHitSerial, static_cast<uint32_t>(kNoCastSerial));
+  if (vector != nullptr) {
+    refii::mods::StoreU8(base, hit + kHitKnockdown, 1u);
+    refii::mods::StoreU8(base, hit + kHitUnblockable, 1u);
+    refii::mods::StoreU32(base, hit + kHitFlags, kForcePushFlag);
+    refii::mods::StoreU32(base, hit + kHitKindA, 3u);
+    refii::mods::StoreU32(base, hit + kHitSpellType, static_cast<uint32_t>(kForcePushType));
+    refii::mods::StoreU32(base, hit + kHitKindB, 1u);
+    for (uint32_t i = 0; i < 3u; ++i) {
+      refii::mods::StoreF32(base, hit + kHitOrigin + 4u * i, xyz[i] - vector[i]);
+      refii::mods::StoreF32(base, hit + kHitDirection + 4u * i, vector[i]);
+      refii::mods::StoreF32(base, hit + kHitDirectionBack + 4u * i, -vector[i]);
+    }
+    refii::mods::StoreF32(base, hit + kHitOrigin + 12u, 0.0f);
+    refii::mods::StoreF32(base, hit + kHitDirection + 12u, 0.0f);
+    refii::mods::StoreF32(base, hit + kHitDirectionBack + 12u, 0.0f);
+    static constexpr char kResponse[] = "ResponseToKnockdownUp";
+    std::memcpy(base + name, kResponse, sizeof(kResponse));
+    PPCContext naming = work;
+    naming.r3.u32 = hit + kHitResponseName;
+    naming.r4.u32 = name;
+    refii::mods::CallGuest(naming, base, refii::guest::Address(kHitSetName));
+  }
+
+  PPCContext deliver = work;
+  deliver.r3.u32 = receiver;
+  deliver.r4.u32 = hit;
+  deliver.r5.u64 = 1;
+  g_stated_hit = hit;
+  rex_CECHitReceiver_OnHit(deliver, base);
+  g_stated_hit = 0;
+
+  PPCContext destroy = work;
+  destroy.r3.u32 = hit;
+  refii::mods::CallGuest(destroy, base, refii::guest::Address(kHitDtor));
+  return 1;
+}
+
+}  // namespace
+
+bool refii::vfs::IsModStatedHit(uint32_t hit) { return hit != 0 && hit == g_stated_hit; }
+
+extern "C" int32_t refii_mod_knockback(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* dir, float force) {
+  if (dir == nullptr || !std::isfinite(force)) {
+    return 0;
+  }
+  float vector[3];
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(dir[i])) {
+      return 0;
+    }
+    vector[i] = dir[i] * force;
+  }
+  if (vector[0] == 0.0f && vector[1] == 0.0f && vector[2] == 0.0f) {
+    return 0;
+  }
+  return DeliverStatedHit(ctx, base, entity, vector);
+}
+
+extern "C" int32_t refii_mod_stagger(PPCContext* ctx, uint8_t* base, uint32_t entity) {
+  return DeliverStatedHit(ctx, base, entity, nullptr);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sound: the game's own cue player and its music box (refii_mod.h quotes each body).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kSoundManager = 0x83496D9Cu;       // disc 0x83496BCC: the manager the natives use
+constexpr uint32_t kLhStringFromChars = 0x8222CED0u;  // (slot, chars)      disc 0x8222CF18
+constexpr uint32_t kLhStringRelease = 0x82214DD8u;    // (slot)             disc 0x82214F08
+constexpr uint32_t kCueCtor = 0x822671A8u;            // (cue, slot)        disc 0x82267168
+constexpr uint32_t kCueDtor = 0x82289A48u;            // (cue)              disc 0x82289530
+constexpr uint32_t kCueKnown = 0x82287DE0u;           // (manager+12, hash) disc 0x822878C8
+constexpr uint32_t kPlayOnComponent = 0x821D9608u;    // (out, comp135, cue, tag slot) disc 0x821D9258
+constexpr uint32_t kPlayOnEmitter = 0x821E0F48u;      // (out, emitter, cue, tag slot) disc 0x821E0B08
+constexpr uint32_t kReleaseVoice = 0x82C05EF8u;       // (out)              disc 0x822ADE08
+constexpr uint32_t kCreateEmitter = 0x829FD018u;      // (manager, v1 xyz)  disc 0x829F8250
+constexpr uint32_t kFreeEmitter = 0x829FD168u;        // (manager, emitter) disc 0x829F83A0
+constexpr uint32_t kStopTagged = 0x829FDEF0u;         // (emitter, tag slot, fade ms) disc 0x829F9128
+constexpr uint32_t kPlayMusic = 0x8255BB28u;          // (name slot)        disc 0x825204B0
+constexpr uint32_t kStopMusic = 0x8255BC20u;          // (name slot)        disc 0x825205A8
+constexpr uint32_t kSoundComponent = 135;             // what PlayEventOnHero looks up (0x823ba99c)
+constexpr uint32_t kComponentEmitter = 44;            // comp135 + 44, the emitter `sub_821D9608` makes
+constexpr uint32_t kCueHash = 8;                      // cue + 8: `sub_82265220`'s a1[2]
+constexpr uint32_t kPointEmitters = 8;
+
+// The scratch a sound call lays out above the callees' spill area (Frame(ctx, 0x300)).
+constexpr uint32_t kCueSlot = 0x100;
+constexpr uint32_t kTagSlot = 0x110;
+constexpr uint32_t kVoiceOut = 0x120;
+constexpr uint32_t kCueRecord = 0x130;  // 72 bytes (`sub_82275380` writes to +65)
+constexpr uint32_t kCueChars = 0x180;   // 128
+constexpr uint32_t kTagChars = 0x200;   // 128
+constexpr uint32_t kPointVector = 0x280;
+constexpr uint32_t kNameBytes = 128;
+
+/// A cue, tag or music name: printable ASCII without spaces, 1..127 bytes.
+bool SoundName(const char* name, bool empty_ok) {
+  if (name == nullptr) {
+    return false;
+  }
+  const size_t n = std::strlen(name);
+  if (n >= kNameBytes || (n == 0 && !empty_ok)) {
+    return false;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const unsigned char c = static_cast<unsigned char>(name[i]);
+    if (c <= 0x20 || c >= 0x7F) {
+      return false;
+    }
+  }
+  return true;
+}
+
+uint32_t SoundManager(uint8_t* base) {
+  const uint32_t manager = refii::mods::LoadU32(base, refii::guest::Address(kSoundManager));
+  return Plausible(manager) ? manager : 0u;
+}
+
+/// An LHString slot on the frame holding `text`; released by ReleaseLhString.
+bool MakeLhString(PPCContext& work, uint8_t* base, uint32_t slot, uint32_t chars, const char* text) {
+  const size_t n = std::strlen(text);
+  std::memcpy(base + chars, text, n + 1);
+  refii::mods::StoreU32(base, slot, 0u);
+  PPCContext call = work;
+  call.r3.u32 = slot;
+  call.r4.u32 = chars;
+  call.r5.u64 = 0xFFFFFFFFu;  // NUL-terminated
+  return refii::mods::CallGuest(call, base, refii::guest::Address(kLhStringFromChars));
+}
+
+void ReleaseLhString(PPCContext& work, uint8_t* base, uint32_t slot) {
+  PPCContext call = work;
+  call.r3.u32 = slot;
+  refii::mods::CallGuest(call, base, refii::guest::Address(kLhStringRelease));
+}
+
+/// The point emitters refii_mod_play_sound_at made, oldest first; a slot is reused by its index.
+uint32_t g_point_emitters[kPointEmitters] = {};
+uint32_t g_point_next = 0;
+
+/// Whether `emitter` is still in the manager's list (+4 the sentinel, nodes {next, prev, emitter}):
+/// the game frees emitters of its own accord, and a freed one must not be walked.
+bool EmitterListed(uint8_t* base, uint32_t manager, uint32_t emitter) {
+  const uint32_t sentinel = refii::mods::LoadU32(base, manager + 4u);
+  if (!Plausible(sentinel) || emitter == 0u) {
+    return false;
+  }
+  uint32_t node = refii::mods::LoadU32(base, sentinel);
+  for (uint32_t guard = 0; guard < 4096u && Plausible(node) && node != sentinel; ++guard) {
+    if (refii::mods::LoadU32(base, node + 8u) == emitter) {
+      return true;
+    }
+    node = refii::mods::LoadU32(base, node);
+  }
+  return false;
+}
+
+/// Builds the cue record and the tag on `work`'s frame and starts the voice on `target` through
+/// `player` (the component player or the emitter player); the voice released as the native does.
+bool PlayCue(PPCContext& work, uint8_t* base, uint32_t player, uint32_t target, const char* cue, const char* tag) {
+  const uint32_t frame = work.r1.u32;
+  if (!MakeLhString(work, base, frame + kCueSlot, frame + kCueChars, cue)) {
+    return false;
+  }
+  if (!MakeLhString(work, base, frame + kTagSlot, frame + kTagChars, tag)) {
+    ReleaseLhString(work, base, frame + kCueSlot);
+    return false;
+  }
+  bool started = false;
+  PPCContext call = work;
+  call.r3.u32 = frame + kCueRecord;
+  call.r4.u32 = frame + kCueSlot;
+  if (refii::mods::CallGuest(call, base, refii::guest::Address(kCueCtor))) {
+    bool known = true;
+    if (player == kPlayOnEmitter) {
+      // The component player checks the hash itself (0x821d9698); the emitter player does not.
+      PPCContext ask = work;
+      ask.r3.u32 = SoundManager(base) + 12u;
+      ask.r4.u32 = refii::mods::LoadU32(base, frame + kCueRecord + kCueHash);
+      known = refii::mods::CallGuest(ask, base, refii::guest::Address(kCueKnown)) && (ask.r3.u32 & 0xFFu) != 0;
+    }
+    if (known) {
+      refii::mods::StoreU32(base, frame + kVoiceOut, 0u);
+      refii::mods::StoreU32(base, frame + kVoiceOut + 4u, 0u);
+      PPCContext play = work;
+      play.r3.u32 = frame + kVoiceOut;
+      play.r4.u32 = target;
+      play.r5.u32 = frame + kCueRecord;
+      play.r6.u32 = frame + kTagSlot;
+      if (refii::mods::CallGuest(play, base, refii::guest::Address(player))) {
+        started = refii::mods::LoadU32(base, frame + kVoiceOut) != 0u;
+        PPCContext release = work;
+        release.r3.u32 = frame + kVoiceOut;
+        refii::mods::CallGuest(release, base, refii::guest::Address(kReleaseVoice));
+      }
+    }
+    PPCContext destroy = work;
+    destroy.r3.u32 = frame + kCueRecord;
+    refii::mods::CallGuest(destroy, base, refii::guest::Address(kCueDtor));
+  }
+  ReleaseLhString(work, base, frame + kTagSlot);
+  ReleaseLhString(work, base, frame + kCueSlot);
+  return started;
+}
+
+int32_t StopTagged(PPCContext& work, uint8_t* base, uint32_t emitter, const char* tag, int32_t fade_ms) {
+  const uint32_t frame = work.r1.u32;
+  if (!MakeLhString(work, base, frame + kTagSlot, frame + kTagChars, tag)) {
+    return 0;
+  }
+  PPCContext call = work;
+  call.r3.u32 = emitter;
+  call.r4.u32 = frame + kTagSlot;
+  call.r5.s64 = fade_ms < 0 ? 0 : fade_ms;
+  const bool ok = refii::mods::CallGuest(call, base, refii::guest::Address(kStopTagged));
+  ReleaseLhString(work, base, frame + kTagSlot);
+  return ok ? 1 : 0;
+}
+
+int32_t MusicCall(PPCContext* ctx, uint8_t* base, uint32_t function, const char* name) {
+  if (ctx == nullptr || !SoundName(name, false) || SoundManager(base) == 0u) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x300u);
+  const uint32_t frame = work.r1.u32;
+  if (!MakeLhString(work, base, frame + kCueSlot, frame + kCueChars, name)) {
+    return 0;
+  }
+  PPCContext call = work;
+  call.r3.u32 = frame + kCueSlot;
+  const bool ran = refii::mods::CallGuest(call, base, refii::guest::Address(function));
+  ReleaseLhString(work, base, frame + kCueSlot);
+  return ran && (function != kPlayMusic || call.r3.u32 != 0u) ? 1 : 0;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_play_sound_at(PPCContext* ctx, uint8_t* base, const float* xyz, const char* cue,
+                                           const char* tag) {
+  if (ctx == nullptr || xyz == nullptr || !SoundName(cue, false) || !SoundName(tag == nullptr ? "" : tag, true)) {
+    return 0;
+  }
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(xyz[i])) {
+      return 0;
+    }
+  }
+  const uint32_t manager = SoundManager(base);
+  if (manager == 0u) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x300u);
+  // The oldest of our emitters goes back to the manager before its slot is reused.
+  uint32_t& slot = g_point_emitters[g_point_next % kPointEmitters];
+  if (slot != 0u && EmitterListed(base, manager, slot)) {
+    PPCContext give = work;
+    give.r3.u32 = manager;
+    give.r4.u32 = slot;
+    refii::mods::CallGuest(give, base, refii::guest::Address(kFreeEmitter));
+  }
+  slot = 0u;
+  PPCContext create = work;
+  create.r3.u32 = manager;
+  refii::mods::SetVector(create, 1, xyz);
+  if (!refii::mods::CallGuest(create, base, refii::guest::Address(kCreateEmitter)) || !Plausible(create.r3.u32)) {
+    return 0;
+  }
+  slot = create.r3.u32;
+  g_point_next = (g_point_next + 1u) % kPointEmitters;
+  return PlayCue(work, base, kPlayOnEmitter, slot, cue, tag == nullptr ? "" : tag) ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_play_sound_on(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* cue,
+                                           const char* tag) {
+  if (ctx == nullptr || !refii_mod_entity_alive(base, entity) || !SoundName(cue, false) ||
+      !SoundName(tag == nullptr ? "" : tag, true) || SoundManager(base) == 0u) {
+    return 0;
+  }
+  const uint32_t sound = refii_mod_component(base, entity, kSoundComponent);
+  if (sound == 0u) {
+    float xyz[3] = {0.0f, 0.0f, 0.0f};
+    return refii_mod_entity_position(ctx, base, entity, xyz) != 0 ? refii_mod_play_sound_at(ctx, base, xyz, cue, tag) : 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x300u);
+  return PlayCue(work, base, kPlayOnComponent, sound, cue, tag == nullptr ? "" : tag) ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_stop_sound(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* tag,
+                                        int32_t fade_ms) {
+  if (ctx == nullptr || !SoundName(tag == nullptr ? "" : tag, true)) {
+    return 0;
+  }
+  const uint32_t manager = SoundManager(base);
+  if (manager == 0u) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x300u);
+  if (entity != 0u) {
+    const uint32_t sound = refii_mod_entity_alive(base, entity) != 0 ? refii_mod_component(base, entity, kSoundComponent) : 0u;
+    const uint32_t emitter = sound != 0u ? refii::mods::LoadU32(base, sound + kComponentEmitter) : 0u;
+    return Plausible(emitter) ? StopTagged(work, base, emitter, tag == nullptr ? "" : tag, fade_ms) : 0;
+  }
+  int32_t walked = 0;
+  for (uint32_t emitter : g_point_emitters) {
+    if (emitter != 0u && EmitterListed(base, manager, emitter)) {
+      walked |= StopTagged(work, base, emitter, tag == nullptr ? "" : tag, fade_ms);
+    }
+  }
+  return walked;
+}
+
+extern "C" int32_t refii_mod_play_music(PPCContext* ctx, uint8_t* base, const char* name) {
+  return MusicCall(ctx, base, kPlayMusic, name);
+}
+
+extern "C" int32_t refii_mod_stop_music(PPCContext* ctx, uint8_t* base, const char* name) {
+  return MusicCall(ctx, base, kStopMusic, name);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Animation: the scripted action the shipped AI plays a named animation through.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// An animation record name as the action table takes it: letters, digits and '_', 1..63 bytes.
+bool AnimationName(const char* name) {
+  if (name == nullptr || *name == 0) {
+    return false;
+  }
+  size_t n = 0;
+  for (const char* c = name; *c != 0; ++c, ++n) {
+    const bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_';
+    if (!ok || n >= 63u) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_play_animation(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* name,
+                                            int32_t loops, float blend_seconds, float speed) {
+  if (ctx == nullptr || !AnimationName(name) || !refii_mod_entity_alive(base, entity) || !std::isfinite(blend_seconds) ||
+      !std::isfinite(speed) || !(speed > 0.0f)) {
+    return 0;
+  }
+  if (blend_seconds < 0.0f) {
+    blend_seconds = 0.0f;
+  }
+  char chunk[512];
+  // BehaviourBase:PlayAnimation's table, and PlayLoopedAnimation's batch around it for loops.
+  std::snprintf(chunk, sizeof(chunk),
+                "local e = Refii.entity(%u) if e then "
+                "local a = { Type = EScriptableAction.PLAY_ANIMATION, Anim = \"%s\", OverrideLooking = true, "
+                "SpeedMultiplier = %.4f, BlendInTime = %.4f } "
+                "if %d > 1 then a = { Type = EScriptableAction.BATCH, LoopAction = a, NumLoops = %d, KillFXOnFinish = true } end "
+                "Action.SetCurrentAction(e, a) end",
+                refii_mod_handle(entity), name, static_cast<double>(speed), static_cast<double>(blend_seconds), loops, loops);
+  return refii_mod_run_game_lua(ctx, base, chunk);
+}
+
+extern "C" int32_t refii_mod_stop_animation(PPCContext* ctx, uint8_t* base, uint32_t entity) {
+  if (ctx == nullptr || !refii_mod_entity_alive(base, entity)) {
+    return 0;
+  }
+  char chunk[128];
+  std::snprintf(chunk, sizeof(chunk), "local e = Refii.entity(%u) if e then Action.FinishScriptedActions(e) end",
+                refii_mod_handle(entity));
+  return refii_mod_run_game_lua(ctx, base, chunk);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Opinion and deeds: the game's own setters, per hero (refii_mod.h quotes each).
+// ---------------------------------------------------------------------------------------------
+
+extern "C" int32_t refii_mod_opinion_enter(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero);
+extern "C" void refii_mod_opinion_leave(void);
+
+extern "C" int32_t refii_mod_modify_opinion(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero,
+                                            int32_t axis, float delta) {
+  const uint32_t opinion = ctx != nullptr && refii_mod_entity_alive(base, villager) != 0 ? refii_mod_component(base, villager, 47u) : 0u;
+  if (opinion == 0u || axis < 0 || axis > 4 || !std::isfinite(delta) || !refii_mod_entity_alive(base, hero)) {
+    return 0;
+  }
+  const bool scoped = refii_mod_opinion_enter(ctx, base, villager, hero) != 0;
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = opinion;
+  work.r4.s64 = axis;
+  work.f1.f64 = static_cast<double>(delta);
+  rex_CECOpinionReaction_ModifyAxisValue(work, base);
+  if (scoped) {
+    refii_mod_opinion_leave();
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_add_deed(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero, uint32_t deed) {
+  if (ctx == nullptr || deed == 0u || !refii_mod_entity_alive(base, villager) || !refii_mod_entity_alive(base, hero) ||
+      refii_mod_component(base, villager, 47u) == 0u) {
+    return 0;
+  }
+  // The deed record, by the hash a mod names it with; its id is the record's first word.
+  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496DA0u));
+  if (!Plausible(gdb)) {
+    return 0;
+  }
+  PPCContext lookup = refii::mods::Frame(*ctx);
+  lookup.r3.u32 = gdb;
+  lookup.r4.u32 = deed;
+  rex_GDBManager_FindEntryByHash(lookup, base);
+  if (!Plausible(lookup.r3.u32)) {
+    return 0;
+  }
+  const uint32_t id = refii::mods::LoadU32(base, lookup.r3.u32);
+  // The message system, as the game reaches it (0x823ff8f4): *(*(*(root+12)+88)+4)+16.
+  const uint32_t root = refii::mods::LoadU32(base, refii::guest::Address(kGameRoot));
+  const uint32_t game = Plausible(root) ? refii::mods::LoadU32(base, root + 12u) : 0u;
+  const uint32_t manager = Plausible(game) ? refii::mods::LoadU32(base, game + 88u) : 0u;
+  const uint32_t cell = Plausible(manager) ? refii::mods::LoadU32(base, manager + 4u) : 0u;
+  const uint32_t messages = Plausible(cell) ? refii::mods::LoadU32(base, cell + 16u) : 0u;
+  float xyz[3] = {0.0f, 0.0f, 0.0f};
+  if (!Plausible(messages) || refii_mod_entity_position(ctx, base, hero, xyz) == 0) {
+    return 0;
+  }
+  PPCContext post = refii::mods::Frame(*ctx, 0x200u);
+  const uint32_t pos = post.r1.u32 + 0x100u;
+  for (uint32_t i = 0; i < 3u; ++i) {
+    refii::mods::StoreF32(base, pos + 4u * i, xyz[i]);
+  }
+  refii::mods::StoreF32(base, pos + 12u, 0.0f);
+  post.r3.u32 = messages;
+  post.r4.u64 = 50u;  // MESSAGE_EVENT_DEED_PERSON (miscellaneous/messageeventenum.lua)
+  post.r5.u32 = pos;
+  post.r6.u32 = hero;
+  post.r7.u32 = villager;
+  post.r8.u64 = 101u;
+  post.r9.u32 = id;
+  return refii::mods::CallGuest(post, base, refii::guest::Address(0x82279B80u)) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// NPC behaviour: the quests' own orders, run in the game VM (refii_mod.h quotes each entry).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// Runs `body` with `e` = entity's game userdata and `t` = other's (nil when other is 0);
+/// refused before the VM for a dead entity or other.
+int32_t NpcChunk(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t other, const char* body) {
+  if (ctx == nullptr || !refii_mod_entity_alive(base, entity) || (other != 0u && !refii_mod_entity_alive(base, other))) {
+    return 0;
+  }
+  char chunk[768];
+  std::snprintf(chunk, sizeof(chunk),
+                "local e = Refii.entity(%u) local t = Refii.entity(%u) if e and (t or %u == 0) then %s end",
+                refii_mod_handle(entity), other != 0u ? refii_mod_handle(other) : 0u, other != 0u ? 1u : 0u, body);
+  return refii_mod_run_game_lua(ctx, base, chunk);
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_npc_follow(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t target, float radius) {
+  if (target == 0u || entity == target || !std::isfinite(radius)) {
+    return 0;
+  }
+  char body[160];
+  // qr_assassination.lua: Follow.FollowEntity(GuardA, TargetNPC, 2.0).
+  std::snprintf(body, sizeof(body), "if Follow.IsAvailable(e) then Follow.FollowEntity(e, t, %.3f) end",
+                static_cast<double>(radius > 0.0f ? radius : 2.0f));
+  return NpcChunk(ctx, base, entity, target, body);
+}
+
+extern "C" int32_t refii_mod_npc_go_to(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* xyz) {
+  if (xyz == nullptr || !std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
+    return 0;
+  }
+  char body[200];
+  // quests/miscfunctions.lua main.25, as qc080_monksquest.lua calls it (wait = false: no yield).
+  std::snprintf(body, sizeof(body),
+                "ScriptFunction.StartScriptControlledMovement(e, CVector3(%.3f, %.3f, %.3f), false)",
+                static_cast<double>(xyz[0]), static_cast<double>(xyz[1]), static_cast<double>(xyz[2]));
+  return NpcChunk(ctx, base, entity, 0u, body);
+}
+
+extern "C" int32_t refii_mod_npc_flee(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t from) {
+  if (from == 0u || entity == from) {
+    return 0;
+  }
+  // ai/aibase.lua main.41, BehaviourBase:FleeFromEntityNoWait's call.
+  return NpcChunk(ctx, base, entity, from,
+                  "if Navigation.IsAvailable(e) then Navigation.FleeFromEntity(e, t, ENavigationSpeed.NAV_SPEED_SPRINT, true) end");
+}
+
+extern "C" int32_t refii_mod_npc_attack(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t target) {
+  if (target == 0u || entity == target) {
+    return 0;
+  }
+  // ai/combatregister.lua main.19 (ignore the chase radius; drop the target once unattackable).
+  return NpcChunk(ctx, base, entity, target, "CombatRegister:SetScriptTarget(e, t, true, false)");
+}
+
+extern "C" int32_t refii_mod_npc_set_hostile(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t other, int32_t on) {
+  if (other == 0u || entity == other) {
+    return 0;
+  }
+  return NpcChunk(ctx, base, entity, other,
+                  on != 0
+                      ? "if Faction.IsAvailable(e) then Faction.AddTemporaryEntityRelationship(e, t, EFactionStatus.FACTION_STATUS_ENEMY) end"
+                      : "if Faction.IsAvailable(e) then Faction.RemoveTemporaryEntityRelationship(e, t) end");
+}
+
+extern "C" int32_t refii_mod_npc_stop(PPCContext* ctx, uint8_t* base, uint32_t entity) {
+  return NpcChunk(ctx, base, entity, 0u,
+                  "if Follow.IsAvailable(e) then Follow.StopFollowing(e) end "
+                  "ScriptFunction.StopScriptControlledMovement(e) CombatRegister:ClearScriptTarget(e)");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Time of day and weather (refii_mod.h quotes the setter and the blend).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kSetTimeOfDayAbsolute = 0x82515AA0u;  // disc 0x8249A790
+
+/// The time manager the Timing natives are bound to (0x82459000..14): the world cell's +0x14
+/// (+0x10 is the message system refii_mod_add_deed posts through).
+uint32_t TimeManager(uint8_t* base) {
+  const uint32_t root = refii::mods::LoadU32(base, refii::guest::Address(kGameRoot));
+  const uint32_t game = Plausible(root) ? refii::mods::LoadU32(base, root + 0xCu) : 0u;
+  const uint32_t world = Plausible(game) ? refii::mods::LoadU32(base, game + 0x58u) : 0u;
+  const uint32_t cell = Plausible(world) ? refii::mods::LoadU32(base, world + 4u) : 0u;
+  const uint32_t manager = Plausible(cell) ? refii::mods::LoadU32(base, cell + 0x14u) : 0u;
+  return Plausible(manager) ? manager : 0u;
+}
+
+/// An environment-theme record name: letters, digits and '_', 1..63 bytes.
+bool ThemeName(const char* name) {
+  if (name == nullptr || *name == 0) {
+    return false;
+  }
+  size_t n = 0;
+  for (const char* c = name; *c != 0; ++c, ++n) {
+    const bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_';
+    if (!ok || n >= 63u) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_set_time_of_day(PPCContext* ctx, uint8_t* base, float hours) {
+  const uint32_t manager = ctx != nullptr && std::isfinite(hours) ? TimeManager(base) : 0u;
+  if (manager == 0u) {
+    return 0;
+  }
+  float fraction = hours / 24.0f;
+  fraction = fraction < 0.0f ? 0.0f : (fraction > 1.0f ? 1.0f : fraction);
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = manager;
+  work.f1.f64 = static_cast<double>(fraction);
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kSetTimeOfDayAbsolute)) ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_time_of_day(uint8_t* base, float* hours) {
+  const uint32_t manager = TimeManager(base);
+  if (hours != nullptr) {
+    *hours = manager != 0u ? refii::mods::LoadF32(base, manager + 4u) * 24.0f : 0.0f;
+  }
+  return manager != 0u ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_set_weather(PPCContext* ctx, uint8_t* base, const char* theme, float weight, float seconds) {
+  if (ctx == nullptr || !ThemeName(theme) || !std::isfinite(weight) || !std::isfinite(seconds) || seconds < 0.0f) {
+    return 0;
+  }
+  char chunk[192];
+  // qc090_garth.lua: EnvironmentTheme.BlendToEnvironmentTheme("EnvThemeWestcliffNight", 1.0, 1.0).
+  std::snprintf(chunk, sizeof(chunk), "EnvironmentTheme.BlendToEnvironmentTheme(\"%s\", %.4f, %.4f)", theme,
+                static_cast<double>(weight < 0.0f ? 0.0f : (weight > 1.0f ? 1.0f : weight)), static_cast<double>(seconds));
+  return refii_mod_run_game_lua(ctx, base, chunk);
 }
 
 extern "C" int32_t refii_mod_modify_health(PPCContext* ctx, uint8_t* base, uint32_t entity, float delta, uint32_t attacker) {

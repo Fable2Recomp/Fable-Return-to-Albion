@@ -103,6 +103,60 @@ public partial class GameEntities : Node3D
         return GameWorld.GuestToGodot(guestAnchor);
     }
 
+    /// <summary>
+    /// A helper point of the entity's drawn model, by its gmd name
+    /// (<see cref="Refii.Entities.Engine_EntityAttachments.TryResolveHelper"/>): the skeleton the
+    /// bone belongs to when the helper hangs on a live bone (<paramref name="skeleton"/>,
+    /// <paramref name="bone"/>), else null and -1; <paramref name="mount"/> the helper relative to
+    /// that bone or, with none, in the node's own space; <paramref name="rest"/> its rest transform
+    /// in the node's space either way. False with no drawn node, or a name no part gmd has.
+    /// </summary>
+    public bool TryHelper(uint address, string helper, out Skeleton3D? skeleton, out int bone,
+        out Transform3D mount, out Transform3D rest)
+    {
+        skeleton = null;
+        bone = -1;
+        mount = Transform3D.Identity;
+        rest = Transform3D.Identity;
+        if (NodeFor(address) is not { } node)
+        {
+            return false;
+        }
+
+        _skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig);
+        if (!Refii.Entities.Engine_EntityAttachments.TryResolveHelper(helper, rig, PartPaths(node), out bone, out mount, out rest))
+        {
+            return false;
+        }
+
+        if (bone >= 0 && rig is not null && GodotObject.IsInstanceValid(rig.Node) && rig.Node.IsInsideTree())
+        {
+            skeleton = rig.Node;
+        }
+        else
+        {
+            bone = -1;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// How tall the entity is drawn, in metres, for a mark hung over it: the drawn mesh's bounds
+    /// at the node's scale (a rigged body's bind bounds). 1.8 for an entity with no drawn node.
+    /// </summary>
+    public float DrawnHeight(uint address)
+    {
+        if (NodeFor(address) is not { } node || node.Mesh is null)
+        {
+            return 1.8f;
+        }
+
+        Aabb box = node.GetAabb();
+        float top = box.End.Y * node.Scale.Y;
+        return float.IsFinite(top) ? Mathf.Clamp(top, 0.3f, 6f) : 1.8f;
+    }
+
     /// <summary>Meshes by model hash. Resolving and loading is the expensive half.</summary>
     private readonly Dictionary<uint, Mesh?> _meshes = new();
 

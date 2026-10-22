@@ -11,6 +11,24 @@
 //   give_experience E POOL AMOUNT · spend_experience E POOL AMOUNT
 //   cast_spell CASTER TYPE TARGETED TARGET LEVEL · set_position E X Y Z
 //   entity_tint E R G B A · entity_untint E   (refii_mod_entity_tint: the game's own tint setter)
+//   entity_alpha E A · entity_scale E S · entity_saturation_mask E ON · entity_drawable E ON
+//                                (the other component-3 setters, refii_mod_entity_alpha ..)
+//   lock_target P E · release_lock P · switch_target P LEFT   (refii_mod_lock_target ..: P 1 or 2,
+//                                E 0 for the game's own pick, LEFT 1 left / 0 right)
+//   apply_status E KIND SECONDS [LEVEL [SOURCE]] · clear_status E KIND   (refii_mod_apply_status:
+//                                1 electrified 2 chaos 3 burning)
+//   knockback E X Y Z [FORCE] · stagger E   (refii_mod_knockback / refii_mod_stagger)
+//   play_sound CUE E [TAG] · play_sound_at CUE X Y Z [TAG] · stop_sound E TAG [FADE_MS]
+//                                (refii_mod_play_sound_on / _at / refii_mod_stop_sound: E 0 for the
+//                                point emitters; an empty tag is "-")
+//   play_music NAME · stop_music NAME   (refii_mod_play_music / refii_mod_stop_music)
+//   play_animation E NAME [LOOPS [BLEND [SPEED]]] · stop_animation E
+//                                (refii_mod_play_animation / refii_mod_stop_animation)
+//   modify_opinion V H AXIS DELTA · add_deed V H DEED   (refii_mod_modify_opinion / refii_mod_add_deed)
+//   npc_follow E T [RADIUS] · npc_go_to E X Y Z · npc_flee E FROM · npc_attack E T
+//   npc_set_hostile E OTHER ON · npc_stop E   (refii_mod_npc_*: the quests' own orders, in the game VM)
+//   set_time_of_day HOURS · set_weather THEME [WEIGHT [SECONDS]]   (refii_mod_set_time_of_day /
+//                                refii_mod_set_weather: the clock's setter, the theme blend)
 //   save_set KEY INT · run_lua CHUNK...
 //   player_set P KEY V · player_add P KEY D [SAVED] · player_save P KEY V   (the player store
 //     Refii.player_set / _add / _save write: refii_mod_player_*)
@@ -29,6 +47,9 @@
 //   query ID ability_level E T   -> id,ok,level
 //   query ID relation A B        -> id,ok,relation
 //   query ID alive E             -> id,ok,alive
+//   query ID locked_target P     -> id,ok,target  (refii_mod_locked_target: 0 when not locked)
+//   query ID has_status E KIND   -> id,ok,has     (refii_mod_has_status)
+//   query ID time_of_day         -> id,ok,hours   (refii_mod_time_of_day: the clock, 0..24)
 //   query ID definition E        -> id,ok,definition
 //   query ID name E              -> id,ok,name='..'
 //   query ID level_name          -> id,ok,level='..'
@@ -68,6 +89,9 @@
 //   spell_pick P SLOT SPELL STORE PICK MOD
 //                        a pick on a spell slot (ui/spellwheel.json): raises SpellPick, then saves
 //                        the player value STORE unless a handler refused it (mod_abilities.cpp)
+//   partner_send MOD NAME [BASE64]
+//                        refii_mod_send_to_partner for a Godot script: the payload base64 on the
+//                        line (no spaces), raised on the other machine as PartnerMessage
 // A command that does nothing (no such entity, no component) is silent; a query always replies,
 // with ok=false when it could not be answered.
 
@@ -132,11 +156,47 @@ uint32_t U(const std::vector<std::string>& w, size_t i) {
 }
 /// An entity or object: the script holds a HANDLE (refii_mod_handle), never an address.
 uint32_t E(const std::vector<std::string>& w, size_t i) { return refii_mod_handle_address(U(w, i)); }
+
+/// Standard base64 back to text (a `partner_send` payload); false for a character outside the alphabet.
+bool UnbaseCommand(const std::string& text, std::string& out) {
+  uint32_t word = 0;
+  int bits = 0;
+  for (const char c : text) {
+    if (c == '=') {
+      break;
+    }
+    int value;
+    if (c >= 'A' && c <= 'Z') {
+      value = c - 'A';
+    } else if (c >= 'a' && c <= 'z') {
+      value = c - 'a' + 26;
+    } else if (c >= '0' && c <= '9') {
+      value = c - '0' + 52;
+    } else if (c == '+') {
+      value = 62;
+    } else if (c == '/') {
+      value = 63;
+    } else {
+      return false;
+    }
+    word = (word << 6) | static_cast<uint32_t>(value);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += static_cast<char>((word >> bits) & 0xFFu);
+    }
+  }
+  return true;
+}
 int32_t I(const std::vector<std::string>& w, size_t i) {
   return i < w.size() ? static_cast<int32_t>(std::strtol(w[i].c_str(), nullptr, 10)) : 0;
 }
 float F(const std::vector<std::string>& w, size_t i) {
   return i < w.size() ? std::strtof(w[i].c_str(), nullptr) : 0.0f;
+}
+/// A sound tag: absent or "-" is the empty tag (a line cannot carry an empty word).
+const char* Tag(const std::vector<std::string>& w, size_t i) {
+  return i < w.size() && w[i] != "-" ? w[i].c_str() : "";
 }
 
 void Reply(const std::string& id, bool ok, const char* fields) {
@@ -191,6 +251,16 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
   } else if (what == "alive") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "alive=%s", refii_mod_entity_alive(base, E(w, 3)) != 0 ? "true" : "false");
+  } else if (what == "locked_target") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "target=%u", refii_mod_handle(refii_mod_locked_target(&ctx, base, I(w, 3))));
+  } else if (what == "has_status") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "has=%s", refii_mod_has_status(base, E(w, 3), I(w, 4)) != 0 ? "true" : "false");
+  } else if (what == "time_of_day") {
+    float hours = 0.0f;
+    ok = refii_mod_time_of_day(base, &hours) != 0;
+    std::snprintf(fields, sizeof(fields), "hours=%g", static_cast<double>(hours));
   } else if (what == "definition") {
     const uint32_t definition = refii_mod_entity_definition(base, E(w, 3));
     ok = definition != 0;
@@ -895,6 +965,67 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_entity_tint(&ctx, base, E(w, 1), F(w, 2), F(w, 3), F(w, 4), w.size() >= 6 ? F(w, 5) : 1.0f);
   } else if (op == "entity_untint") {
     refii_mod_entity_untint(&ctx, base, E(w, 1));
+  } else if (op == "entity_alpha" && w.size() >= 3) {
+    refii_mod_entity_alpha(&ctx, base, E(w, 1), F(w, 2));
+  } else if (op == "entity_scale" && w.size() >= 3) {
+    refii_mod_entity_scale(&ctx, base, E(w, 1), F(w, 2));
+  } else if (op == "entity_saturation_mask" && w.size() >= 3) {
+    refii_mod_entity_saturation_mask(&ctx, base, E(w, 1), I(w, 2));
+  } else if (op == "entity_drawable" && w.size() >= 3) {
+    refii_mod_entity_drawable(&ctx, base, E(w, 1), I(w, 2));
+  } else if (op == "lock_target" && w.size() >= 2) {
+    refii_mod_lock_target(&ctx, base, I(w, 1), w.size() >= 3 ? E(w, 2) : 0u);
+  } else if (op == "release_lock" && w.size() >= 2) {
+    refii_mod_release_lock(&ctx, base, I(w, 1));
+  } else if (op == "switch_target" && w.size() >= 3) {
+    refii_mod_switch_target(&ctx, base, I(w, 1), I(w, 2));
+  } else if (op == "apply_status" && w.size() >= 4) {
+    refii_mod_apply_status(&ctx, base, E(w, 1), I(w, 2), F(w, 3), w.size() >= 5 ? I(w, 4) : 0,
+                           w.size() >= 6 ? E(w, 5) : 0u);
+  } else if (op == "clear_status" && w.size() >= 3) {
+    refii_mod_clear_status(&ctx, base, E(w, 1), I(w, 2));
+  } else if (op == "knockback" && w.size() >= 5) {
+    const float dir[3] = {F(w, 2), F(w, 3), F(w, 4)};
+    refii_mod_knockback(&ctx, base, E(w, 1), dir, w.size() >= 6 ? F(w, 5) : 1.0f);
+  } else if (op == "stagger" && w.size() >= 2) {
+    refii_mod_stagger(&ctx, base, E(w, 1));
+  } else if (op == "play_sound" && w.size() >= 3) {
+    refii_mod_play_sound_on(&ctx, base, E(w, 2), w[1].c_str(), Tag(w, 3));
+  } else if (op == "play_sound_at" && w.size() >= 5) {
+    const float xyz[3] = {F(w, 2), F(w, 3), F(w, 4)};
+    refii_mod_play_sound_at(&ctx, base, xyz, w[1].c_str(), Tag(w, 5));
+  } else if (op == "stop_sound" && w.size() >= 3) {
+    refii_mod_stop_sound(&ctx, base, E(w, 1), Tag(w, 2), w.size() >= 4 ? I(w, 3) : 0);
+  } else if (op == "play_music" && w.size() >= 2) {
+    refii_mod_play_music(&ctx, base, w[1].c_str());
+  } else if (op == "stop_music" && w.size() >= 2) {
+    refii_mod_stop_music(&ctx, base, w[1].c_str());
+  } else if (op == "play_animation" && w.size() >= 3) {
+    refii_mod_play_animation(&ctx, base, E(w, 1), w[2].c_str(), w.size() >= 4 ? I(w, 3) : 1,
+                             w.size() >= 5 ? F(w, 4) : 0.1f, w.size() >= 6 ? F(w, 5) : 1.0f);
+  } else if (op == "stop_animation" && w.size() >= 2) {
+    refii_mod_stop_animation(&ctx, base, E(w, 1));
+  } else if (op == "modify_opinion" && w.size() >= 5) {
+    refii_mod_modify_opinion(&ctx, base, E(w, 1), E(w, 2), I(w, 3), F(w, 4));
+  } else if (op == "add_deed" && w.size() >= 4) {
+    refii_mod_add_deed(&ctx, base, E(w, 1), E(w, 2), U(w, 3));
+  } else if (op == "npc_follow" && w.size() >= 3) {
+    refii_mod_npc_follow(&ctx, base, E(w, 1), E(w, 2), w.size() >= 4 ? F(w, 3) : 2.0f);
+  } else if (op == "npc_go_to" && w.size() >= 5) {
+    const float xyz[3] = {F(w, 2), F(w, 3), F(w, 4)};
+    refii_mod_npc_go_to(&ctx, base, E(w, 1), xyz);
+  } else if (op == "npc_flee" && w.size() >= 3) {
+    refii_mod_npc_flee(&ctx, base, E(w, 1), E(w, 2));
+  } else if (op == "npc_attack" && w.size() >= 3) {
+    refii_mod_npc_attack(&ctx, base, E(w, 1), E(w, 2));
+  } else if (op == "npc_set_hostile" && w.size() >= 4) {
+    refii_mod_npc_set_hostile(&ctx, base, E(w, 1), E(w, 2), I(w, 3) != 0 ? 1 : 0);
+  } else if (op == "npc_stop" && w.size() >= 2) {
+    refii_mod_npc_stop(&ctx, base, E(w, 1));
+  } else if (op == "set_time_of_day" && w.size() >= 2) {
+    refii_mod_set_time_of_day(&ctx, base, F(w, 1));
+  } else if (op == "set_weather" && w.size() >= 2) {
+    refii_mod_set_weather(&ctx, base, w[1].c_str(), w.size() >= 3 ? F(w, 2) : 1.0f, w.size() >= 4 ? F(w, 3) : 1.0f);
   } else if (op == "player_set" && w.size() >= 4) {
     refii_mod_player_set(I(w, 1), w[2].c_str(), F(w, 3));
   } else if (op == "player_add" && w.size() >= 4) {
@@ -917,6 +1048,14 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     RaiseMenuBox(ctx, base, w);
   } else if (op == "run_lua" && w.size() >= 2) {
     refii_mod_run_game_lua(&ctx, base, w[1].c_str());
+  } else if (op == "partner_send" && w.size() >= 3) {
+    // partner_send MOD NAME [BASE64]: a Godot script's refii_mod_send_to_partner; the payload crosses
+    // the command line base64 (no spaces) and is decoded here before the API encodes it for the route.
+    std::string payload;
+    if (w.size() >= 4 && !UnbaseCommand(w[3], payload)) {
+      payload.clear();
+    }
+    refii_mod_send_to_partner(w[1].c_str(), w[2].c_str(), payload.c_str());
   } else if (op == "fx_play") {
     guest_fx::Play(ctx, base, w);
   } else if (op == "fx_stop") {

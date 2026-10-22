@@ -167,13 +167,13 @@ public static class ModLua
 			MenuRowsRuntime +
 			// play_fx / play_fx_on unpack the options table for the native Refii._play_fx (the
 			// game's Lua C API here has no array reads): duration, scale, tint {r, g, b},
-			// intensity, loop (true unless false), offset {x, y, z}.
+			// intensity, loop (true unless false), offset {x, y, z}, at (a model helper name).
 			"function Refii._fx_options(o)\n" +
 			"\to = o or {}\n" +
 			"\tlocal t = o.tint or {}\n" +
 			"\tlocal f = o.offset or {}\n" +
 			"\treturn o.duration or 0, o.scale or 1, t[1] or t.r or 1, t[2] or t.g or 1, t[3] or t.b or 1,\n" +
-			"\t\to.intensity or 1, (o.loop == false) and 0 or 1, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0\n" +
+			"\t\to.intensity or 1, (o.loop == false) and 0 or 1, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or ''\n" +
 			"end\n" +
 			"function Refii.play_fx(name, x, y, z, o)\n" +
 			"\tif Refii._play_fx == nil then return nil end\n" +
@@ -182,6 +182,32 @@ public static class ModLua
 			"function Refii.play_fx_on(e, name, o)\n" +
 			"\tif Refii._play_fx == nil or e == nil or e == 0 then return nil end\n" +
 			"\treturn Refii._play_fx(name, 0, 0, 0, e, Refii._fx_options(o))\n" +
+			"end\n" +
+			// mark(target, icon, text [, p]): a HUD world marker over an entity handle or at a point
+			// {x, y, z} for player p (nil: every player played here); the id unmark takes, or nil.
+			"function Refii.mark(target, icon, text, p)\n" +
+			"\tif Refii._mark == nil or target == nil then return nil end\n" +
+			"\tif type(target) == 'table' then\n" +
+			"\t\treturn Refii._mark(0, target[1] or target.x or 0, target[2] or target.y or 0, target[3] or target.z or 0, icon or '', text or '', p or 0)\n" +
+			"\tend\n" +
+			"\tif target == 0 then return nil end\n" +
+			"\treturn Refii._mark(target, 0, 0, 0, icon or '', text or '', p or 0)\n" +
+			"end\n" +
+			// light(target, color, energy, range [, o]): a mod light on an entity handle or at a
+			// point {x, y, z}; color {r, g, b}; o = { offset = {x, y, z}, at = "helper", flicker = n }.
+			// The id light_remove takes, or nil.
+			"function Refii.light(target, color, energy, range, o)\n" +
+			"\tif Refii._light == nil or target == nil then return nil end\n" +
+			"\to = o or {}\n" +
+			"\tlocal c = color or {}\n" +
+			"\tlocal f = o.offset or {}\n" +
+			"\tlocal r, g, b = c[1] or c.r or 1, c[2] or c.g or 1, c[3] or c.b or 1\n" +
+			"\tif type(target) == 'table' then\n" +
+			"\t\treturn Refii._light(0, target[1] or target.x or 0, target[2] or target.y or 0, target[3] or target.z or 0, r, g, b,\n" +
+			"\t\t\tenergy or 1, range or 0, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or '', o.flicker or 0)\n" +
+			"\tend\n" +
+			"\tif target == 0 then return nil end\n" +
+			"\treturn Refii._light(target, 0, 0, 0, r, g, b, energy or 1, range or 0, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or '', o.flicker or 0)\n" +
 			"end\n" +
 			// message_box(title, text [, accept [, cancel [, p]]]): a question when cancel is given
 			// (nil captions keep the box's own), else a notice; the id mod_message_box carries.

@@ -131,7 +131,8 @@ public sealed partial class Engine_HudModPieces : Node3D
 		string IconElement,
 		List<string> IconTextures,
 		Dictionary<string, string> Values,
-		Dictionary<string, string> Bars);
+		Dictionary<string, string> Bars,
+		Dictionary<string, int>? Slides = null);
 
 	/// <summary>What every enabled mod's <c>ui/hud.json</c> states, composed.</summary>
 	public sealed record ModLayout(

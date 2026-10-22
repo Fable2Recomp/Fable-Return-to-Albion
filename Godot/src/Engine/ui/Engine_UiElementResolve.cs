@@ -247,6 +247,80 @@ public sealed class Engine_UiElementResolve
 		}
 	}
 
+	/// <summary>The attribute id the opacity commands carry, as the file spells it.</summary>
+	public static readonly uint OpacityAttribute = Refii.Core.Engine_GameHash.AttributeId("opacity");
+
+	/// <summary>The slide of <paramref name="owner"/> the guest numbers <paramref name="wanted"/> (from 1 past the master), or null.</summary>
+	public static BgfSlide? SlideOf(Engine_BgfDocument file, int owner, int wanted)
+	{
+		if (wanted <= 0)
+		{
+			return null;
+		}
+
+		int seen = 0;
+		foreach (BgfSlide slide in file.Slides)
+		{
+			if (slide.OwnerElement == owner && !slide.IsMaster && ++seen == wanted)
+			{
+				return slide;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// A SLIDE OUTRANKS THE STATED ATTRIBUTES: for every entry of <paramref name="slide"/>, the
+	/// element's active bit becomes the entry's, and where the slide commands an opacity — in the
+	/// entry or through an animation it starts — the guest's stated opacity is dropped so the
+	/// slide's own decides. What the HUD feed does for the root's and the host-stated slides, and
+	/// a copy does for a slide it states for itself. Returns how many stated opacities were released.
+	/// </summary>
+	public static int ReleaseSlideEntries(Engine_BgfDocument file, BgfSlide slide, bool[] active, float?[] stated)
+	{
+		int released = 0;
+		foreach (BgfSlideEntry entry in slide.Entries)
+		{
+			int ordinal = entry.ElementOrdinal;
+			if (ordinal >= 0 && ordinal < stated.Length)
+			{
+				if (ordinal < active.Length)
+				{
+					active[ordinal] = entry.Active;
+				}
+
+				foreach (BgfAttribute command in entry.Commands)
+				{
+					if (command.Id == OpacityAttribute && stated[ordinal] is not null)
+					{
+						stated[ordinal] = null;
+						++released;
+						break;
+					}
+				}
+			}
+
+			foreach (int index in entry.ActivatedAnimations ?? System.Array.Empty<int>())
+			{
+				if (index < 0 || index >= file.Animations.Length)
+				{
+					continue;
+				}
+
+				BgfAnimation track = file.Animations[index];
+				if (track.AttributeId == OpacityAttribute && track.ElementOrdinal >= 0 &&
+					track.ElementOrdinal < stated.Length && stated[track.ElementOrdinal] is not null)
+				{
+					stated[track.ElementOrdinal] = null;
+					++released;
+				}
+			}
+		}
+
+		return released;
+	}
+
 	private bool SlidesChanged(IReadOnlyList<int> slides)
 	{
 		if (_slidesShown.Length != slides.Count)

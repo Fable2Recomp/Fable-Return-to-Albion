@@ -474,6 +474,11 @@ int32_t refii_bridge_event_relay_take(char* out, uint32_t capacity);
 // kRouteLife) not at all. take: 1 and the text in `out` while one waits, 0 when none does.
 void refii_bridge_route_post(const char* text);
 int32_t refii_bridge_route_take(char* out, uint32_t capacity);
+// The route's MOD LANE: a line posted with the prefix `pm:` (a mod's partner message,
+// refii_mod_send_to_partner) is kept apart on the receiver and taken here — the mod bus drains it
+// on the guest tick (mod_events.cpp DrainPartnerMessages) and the Lua never sees it; the same
+// order and once-only as the rest of the route.
+int32_t refii_bridge_route_take_mod(char* out, uint32_t capacity);
 
 // HERO IDENTITY AND PARTNERSHIPS (src/core/hero_partners.cpp), Fable 3's player-to-player marriage
 // and business partnership: a hero's id (48 bits, kept with its save; 0 not yet known), made once by

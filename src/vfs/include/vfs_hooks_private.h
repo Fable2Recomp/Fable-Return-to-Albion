@@ -275,6 +275,11 @@ inline void NoteAppearance(uint32_t component, const uint32_t* words) {
 /// not its own.
 inline void ForgetAppearance(uint32_t component) { refii_bridge_forget_appearance(component); }
 
+/// Whether `hit` (the record the hit receiver was handed) is one the mod API built itself —
+/// refii_mod_knockback / refii_mod_stagger, in flight on this thread. The HitResponse event is
+/// not raised for those: the stagger is already the mod's decision (mod_api.cpp).
+bool IsModStatedHit(uint32_t hit);
+
 /// One part's morph targets as the guest just stated them; `pairs` per core/payload_bridge.h.
 inline void NotePartMorph(uint32_t entity, uint32_t base_model, const uint32_t* pairs,
                           uint32_t count) {

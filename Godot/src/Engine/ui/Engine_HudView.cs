@@ -225,6 +225,16 @@ public sealed partial class Engine_HudView : Node3D
     public bool[]? ElementActive { get; set; }
 
     /// <summary>
+    /// The two inputs the frame's <see cref="Resolve"/> was made from, beside it: the guest's
+    /// active bit per element and its stated opacity (null where unstated) — after the owner's
+    /// fold released what its slides command. A copy that states a slide of its own
+    /// (<see cref="Built.SlideOverrides"/>) resolves itself from these with its slide in place of
+    /// the frame's. Null (the editor, a lab): the authored state stands for them.
+    /// </summary>
+    public IReadOnlyList<bool>? ActiveInputs { get; set; }
+    public IReadOnlyList<float?>? StatedOpacity { get; set; }
+
+    /// <summary>
     /// The guest's stated slide per element — the same list the resolve folds. A group whose
     /// current slide is authored `Off` or `TurnOff…` has been switched OFF by the guest's slide
     /// toggle (`sub_823FE848` → GotoSlide), whatever the fold reads for its opacity: the fade-out
@@ -373,6 +383,49 @@ public sealed partial class Engine_HudView : Node3D
         /// </summary>
         public Dictionary<string, string>? Remap { get; set; }
 
+        /// <summary>
+        /// A COPY'S OWN SLIDES (<see cref="Engine_HudModPieces.Clone.Slides"/>): element ordinal
+        /// → the slide this copy stands on in place of the frame's — a fader the shipped game never
+        /// raises, raised for the copy alone. Null for every shipped piece and every copy that
+        /// follows its original's state.
+        /// </summary>
+        public Dictionary<int, int>? SlideOverrides { get; set; }
+
+        /// <summary>The copy's own resolve (<see cref="SlideOverrides"/>), made from the frame's inputs with its slides in place; null when it follows the frame's.</summary>
+        public Engine_UiElementResolve? OwnResolve { get; set; }
+
+        /// <summary>The slide list the copy's own resolve was last applied with (the frame's with the overrides), reused across frames.</summary>
+        public int[]? OwnSlides { get; set; }
+        public bool[]? OwnActive { get; set; }
+        public float?[]? OwnStated { get; set; }
+
+        /// <summary>The <see cref="Engine_HudModMeters.Generation"/> a meter copy was built for; -1 for a piece that is not one.</summary>
+        public int MeterGeneration { get; set; } = -1;
+
+        /// <summary>The mod meter a copy shows (<see cref="MeterGeneration"/>), for the readout.</summary>
+        public string MeterId { get; set; } = string.Empty;
+
+        /// <summary>
+        /// THE RAISE SLIDE'S END STATE OVER THE COPY'S SUBTREE: every element under an overridden
+        /// owner switched on (the resolve's "a later setActive" input), except the ones that slide
+        /// names inactive — a meter element inside the copy owns a timeline of its own whose master
+        /// marks it inactive until the guest's own scrub lights it, and here the scrub's windows gate
+        /// it instead. The subtree is listed once per copy; the flags are re-laid each resolve.
+        /// </summary>
+        public bool[]? OwnSwitched { get; set; }
+        public List<int>? OwnSubtree { get; set; }
+
+        /// <summary>
+        /// A copy placed by its ART rather than its element's origin: the shift (the node's own
+        /// units, before the canvas scale) that puts the art's top edge on the placed point and
+        /// its centre on the placed x — the crucible's bar is authored 250 units above its
+        /// container, the generic's 1 below. Zero for every other piece.
+        /// </summary>
+        public Vector3 ArtShift { get; set; }
+
+        /// <summary>The art's measured size (the node's own units), for the readout.</summary>
+        public Vector2 ArtSize { get; set; }
+
         /// <summary>A clone's own copies of its icon's materials, painted with <see cref="Icon"/>.</summary>
         public List<ShaderMaterial> IconMaterials { get; } = new();
 
@@ -404,6 +457,50 @@ public sealed partial class Engine_HudView : Node3D
     }
 
     private readonly List<Built> _built = new();
+
+    /// <summary>The mods' runtime meters (<see cref="Engine_HudModMeters"/>) as pieces of this view; built on first use.</summary>
+    private Engine_HudModPieces? _modMeters;
+
+    /// <summary>The <see cref="Engine_HudModMeters.Generation"/> the meter pieces were built from.</summary>
+    private int _modMetersGeneration = -1;
+
+    /// <summary>
+    /// The meters a call put on the HUD (<c>meter</c> on every surface), as mod pieces of this
+    /// view: rebuilt when the set changes, their values read live. A view for player two builds
+    /// player two's; a shared couch screen (one window, local co-op) both players'.
+    /// </summary>
+    private void DriveModMeters(Engine_UiSeats.Frame frame)
+    {
+        int generation = Engine_HudModMeters.Generation;
+        if (_modMeters is null)
+        {
+            if (Engine_HudModMeters.Count == 0 || Engine.IsEditorHint())
+            {
+                return;
+            }
+
+            _modMeters = new Engine_HudModPieces { Name = "ModMeters", FindPiece = FindDrawn };
+            AddChild(_modMeters);
+        }
+
+        _modMeters.Window = frame.Window;
+        if (generation == _modMetersGeneration)
+        {
+            return;
+        }
+
+        _modMetersGeneration = generation;
+        bool shared = Seat == Engine_UiSeats.Seat.Whole && !LocalPlayerTwo && Refii.Host.CoopSession.LocalCoop;
+        _modMeters.Theme = Theme;
+        _modMeters.StringBook = Values.Strings;
+        _modMeters.Sources = Sources with
+        {
+            StandIn = source => Engine_HudModMeters.Resolve(source) ?? StandIn?.Invoke(source),
+        };
+        _modMeters.ForPlayerTwo = ForPlayerTwo;
+        _modMeters.Build(Engine_HudModMeters.PiecesFor(ForPlayerTwo ? 2 : 1, shared));
+        BuildMeterCopies(shared, generation);
+    }
 
     /// <summary>One bar element of a mod clone — see <see cref="Built.Bars"/>.</summary>
     private sealed class ClonedBar
@@ -439,6 +536,8 @@ public sealed partial class Engine_HudView : Node3D
         _built.Clear();
         _builtOnce = true;
         _sources = null;
+        // The meter copies went with the pieces: built again on the next drive.
+        _modMetersGeneration = -1;
         BindCentreToggle();
 
         // What mods put on the HUD, and which shipped pieces they replace (not built).
@@ -612,7 +711,9 @@ public sealed partial class Engine_HudView : Node3D
                         return !vitals.Known || vitals.MaxHealth <= 0f ? null
                             : key == "health" ? vitals.Health : vitals.MaxHealth;
                     },
-                    StandIn = source => StandIn?.Invoke(source),
+                    // The mod meters' values (mod:meter.<id>.value / .max) first: a copy of the
+                    // game's own meter art reads its bar through them (Engine_HudModMeters).
+                    StandIn = source => Engine_HudModMeters.Resolve(source) ?? StandIn?.Invoke(source),
                     StandInText = source => StandInText?.Invoke(source),
                 };
             }
@@ -711,6 +812,311 @@ public sealed partial class Engine_HudView : Node3D
                     : candidate;
                 built.IconCandidates.Add(path.Replace('\\', '/').ToLowerInvariant());
             }
+        }
+
+        // THE COPY'S OWN SLIDES: an element of the copy (its own root, or one beneath it) stood
+        // on a slide of the copy's choosing — a fader the game never raises, raised here. The
+        // original's ordinal is not touched; the copy resolves itself (ResolvedFor).
+        if (clone.Slides is { Count: > 0 } slides && Screen is { } screen && built.Piece.ElementOrdinal >= 0)
+        {
+            built.SlideOverrides = new Dictionary<int, int>();
+            foreach ((string element, int slide) in slides)
+            {
+                int found = -1;
+                for (int i = 0; i < screen.Nodes.Length; ++i)
+                {
+                    if (screen.Nodes[i].Name == element &&
+                        (i == built.Piece.ElementOrdinal || InSubtree(screen, i, built.Piece.ElementOrdinal)))
+                    {
+                        found = i;
+                        break;
+                    }
+                }
+
+                if (found < 0)
+                {
+                    GD.PushWarning($"[hud-mods] '{clone.Id}': no element '{element}' under '{clone.Of}' to put on slide {slide}");
+                    continue;
+                }
+
+                built.SlideOverrides[found] = slide;
+            }
+        }
+    }
+
+    /// <summary>Copy art hud.bgf does not bind, warned once.</summary>
+    private readonly HashSet<string> _missingCopyArt = new(System.StringComparer.Ordinal);
+
+    /// <summary>
+    /// The merged bounds of every mesh under <paramref name="root"/>, in <paramref name="root"/>'s
+    /// own space (each mesh's AABB through the local transforms between), or null with no mesh.
+    /// </summary>
+    private static Rect2? MergedBounds(Node3D root)
+    {
+        Rect2? merged = null;
+        Walk(root, Transform3D.Identity);
+        return merged;
+
+        void Walk(Node node, Transform3D toRoot)
+        {
+            foreach (Node child in node.GetChildren())
+            {
+                if (child is not Node3D spatial)
+                {
+                    continue;
+                }
+
+                Transform3D local = toRoot * spatial.Transform;
+                if (spatial is MeshInstance3D { Mesh: not null } mesh)
+                {
+                    Aabb box = local * mesh.GetAabb();
+                    var rect = new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
+                    merged = merged is { } so ? so.Merge(rect) : rect;
+                }
+
+                Walk(spatial, local);
+            }
+        }
+    }
+
+    /// <summary>
+    /// THE MOD METERS IN THE GAME'S OWN ART (<see cref="Engine_HudModMeters.CopiesFor"/>): for
+    /// every meter of a copy style, the piece hud.bgf binds for that art — the fader element's
+    /// container, cloned WHOLE (nothing stripped: its bar is the part the copy drives) — built as
+    /// a group piece at the meter's stack place, its bar's <c>MeterName</c> remapped to the
+    /// meter's value, its fader's raise slide stated for the copy alone. Rebuilt whenever the
+    /// meters change (<paramref name="generation"/>); the earlier copies go first.
+    /// </summary>
+    private void BuildMeterCopies(bool shared, int generation)
+    {
+        for (int i = _built.Count - 1; i >= 0; --i)
+        {
+            Built old = _built[i];
+            if (old.MeterGeneration < 0)
+            {
+                continue;
+            }
+
+            if (GodotObject.IsInstanceValid(old.Node))
+            {
+                old.Node.QueueFree();
+            }
+
+            _built.RemoveAt(i);
+        }
+
+        if (Engine.IsEditorHint())
+        {
+            return;
+        }
+
+        var missing = new List<string>();
+        foreach (Engine_HudModMeters.Copy copy in Engine_HudModMeters.CopiesFor(ForPlayerTwo ? 2 : 1, shared))
+        {
+            Engine_HudLayout.Piece? original = null;
+            foreach (Engine_HudLayout.Piece candidate in Layout.Pieces)
+            {
+                if (candidate.Id == copy.Style.CloneOf)
+                {
+                    original = candidate;
+                    break;
+                }
+            }
+
+            if (original is not { } source)
+            {
+                if (_missingCopyArt.Add(copy.Style.CloneOf))
+                {
+                    GD.PushWarning($"[hud-mods] meter '{copy.Meter.Id}': hud.bgf binds no '{copy.Style.CloneOf}' to copy; " +
+                        $"nothing is drawn for style '{copy.Style.Name}'");
+                }
+
+                continue;
+            }
+
+            Engine_HudLayout.Piece piece = source with
+            {
+                Id = copy.Record.Id,
+                Anchor = Engine_HudLayout.Anchor.TopCentre,
+                Offset = copy.Offset,
+                Strip = null,
+                Depth = 0f,
+                Placed = true,
+            };
+            if (BuildPiece(piece, missing) is not { } built)
+            {
+                continue;
+            }
+
+            built.Origin = source;
+            built.MeterGeneration = generation;
+            built.MeterId = copy.Meter.Id;
+            ApplyClone(built, copy.Record);
+
+            // BY THE ART: the clone's merged bounds in the node's own units — the art's top edge
+            // goes on the stack place, its centre on the stack's x, whatever the element's origin.
+            if (MergedBounds(built.Node) is { } bounds)
+            {
+                built.ArtSize = new Vector2(bounds.Size.X, bounds.Size.Y);
+                built.ArtShift = new Vector3(-(bounds.Position.X + bounds.Size.X * 0.5f), -bounds.End.Y, 0f);
+            }
+
+            GD.Print($"[hud-mods] meter '{copy.Meter.Id}' is a copy of '{source.Id}' ({copy.Style.Name}), lit on slide " +
+                $"{copy.Style.RaiseSlide} of its own");
+        }
+
+        if (missing.Count != 0)
+        {
+            GD.PushWarning($"[hud-mods] meter copies with no art: {string.Join(", ", missing)}");
+        }
+
+        // A fresh walk places and resolves them.
+        _refreshed = false;
+    }
+
+    /// <summary>
+    /// The resolve <paramref name="built"/> reads this walk: the frame's, or — for a copy with
+    /// <see cref="Built.SlideOverrides"/> — its own, applied from the frame's inputs
+    /// (<see cref="LiveSlides"/>, <see cref="ActiveInputs"/>, <see cref="StatedOpacity"/>) with the
+    /// copy's slides in place, each slide's entries released over the stated attributes exactly as
+    /// the feed releases the slides it folds. Re-applied on the frames the feed changes
+    /// (<paramref name="read"/>); the slide pass itself runs only when a slide differs.
+    /// </summary>
+    private Engine_UiElementResolve? ResolvedFor(Built built, bool read)
+    {
+        if (built.SlideOverrides is not { Count: > 0 } overrides || Screen is not { } screen || screen.Document is not { } file)
+        {
+            return Resolve;
+        }
+
+        int count = screen.Nodes.Length;
+        bool fresh = built.OwnResolve is null || built.OwnSlides is null || built.OwnSlides.Length != count;
+        if (fresh)
+        {
+            built.OwnResolve = new Engine_UiElementResolve(screen);
+            built.OwnSlides = new int[count];
+            built.OwnActive = new bool[count];
+            built.OwnStated = new float?[count];
+            built.OwnSwitched = new bool[count];
+            built.OwnSubtree = new List<int>();
+            foreach ((int ordinal, int _) in overrides)
+            {
+                for (int i = 0; i < count; ++i)
+                {
+                    if (i == ordinal || InSubtree(screen, i, ordinal))
+                    {
+                        built.OwnSubtree.Add(i);
+                    }
+                }
+            }
+        }
+        else if (!read)
+        {
+            return built.OwnResolve;
+        }
+
+        int[] slides = built.OwnSlides!;
+        bool[] active = built.OwnActive!;
+        float?[] stated = built.OwnStated!;
+        bool[] switched = built.OwnSwitched!;
+        for (int i = 0; i < count; ++i)
+        {
+            slides[i] = LiveSlides is { } live && i < live.Count ? live[i] : 0;
+            active[i] = ActiveInputs is not { } bits || i >= bits.Count || bits[i];
+            stated[i] = StatedOpacity is { } opacity && i < opacity.Count ? opacity[i] : null;
+            switched[i] = false;
+        }
+
+        // The subtree on: the slide's end state for everything under the owner (Built.OwnSwitched).
+        foreach (int i in built.OwnSubtree!)
+        {
+            switched[i] = true;
+            active[i] = true;
+        }
+
+        foreach ((int ordinal, int slide) in overrides)
+        {
+            if (ordinal < 0 || ordinal >= count)
+            {
+                continue;
+            }
+
+            slides[ordinal] = slide;
+            if (Engine_UiElementResolve.SlideOf(file, ordinal, slide) is { } own)
+            {
+                Engine_UiElementResolve.ReleaseSlideEntries(file, own, active, stated);
+                foreach (BgfSlideEntry entry in own.Entries)
+                {
+                    if (!entry.Active && entry.ElementOrdinal >= 0 && entry.ElementOrdinal < count)
+                    {
+                        switched[entry.ElementOrdinal] = false;
+                    }
+                }
+            }
+        }
+
+        built.OwnResolve!.Apply(slides, active, StatedOpacity is null ? null : stated, switched);
+        return built.OwnResolve;
+    }
+
+    /// <summary>
+    /// The meter copies as they stand, one line each, for the debug channel and the HUD meter lab:
+    /// the copy's id and original, whether it is drawn, its own resolve's answer at its root (drawn,
+    /// opacity, why dark) against the frame's, and where it is placed.
+    /// </summary>
+    public IEnumerable<string> DescribeMeterCopies()
+    {
+        foreach (Built built in _built)
+        {
+            if (built.MeterGeneration < 0)
+            {
+                continue;
+            }
+
+            int root = built.StateOrdinal;
+            string own = built.OwnResolve is { } mine && root >= 0 && root < mine.Drawn.Length
+                ? $"own drawn={mine.Drawn[root]} opacity={mine.Opacity[root]:0.00}" + (mine.Drawn[root] ? string.Empty : $" dark: {mine.WhyDark(root)}")
+                : "own resolve: none";
+            string frame = Resolve is { } shared && root >= 0 && root < shared.Drawn.Length
+                ? $"frame drawn={shared.Drawn[root]} opacity={shared.Opacity[root]:0.00}"
+                : "frame resolve: none";
+            var overrideList = new List<string>();
+            if (built.SlideOverrides is { } o)
+            {
+                foreach ((int ordinal, int slide) in o)
+                {
+                    overrideList.Add($"{ordinal}->{slide}");
+                }
+            }
+
+            string overrides = overrideList.Count == 0 ? "none" : string.Join(",", overrideList);
+            var trackList = new List<string>();
+            foreach (BoundTrack track in built.Tracks)
+            {
+                string time = track.Value is { } handle && NestedTime(built, handle, track.Pulse) is { } tick ? tick.ToString("0", System.Globalization.CultureInfo.InvariantCulture) : "none";
+                trackList.Add($"{track.Target}@{track.Node.Name}#{built.Binding.OrdinalOf(track.Node)}(scale {track.Node.Scale.X:0.00},{track.Node.Scale.Y:0.00} visible={track.Node.Visible}) value='{track.Value?.Name}' t={time}");
+            }
+
+            var stateList = new List<string>();
+            if (built.OwnResolve is { } resolve && Screen is { } page && root >= 0)
+            {
+                for (int ordinal = root; ordinal < System.Math.Min(root + 24, page.Nodes.Length); ++ordinal)
+                {
+                    if (ordinal != root && !InSubtree(page, ordinal, root))
+                    {
+                        break;
+                    }
+
+                    stateList.Add($"{ordinal}:{page.Nodes[ordinal].Name} drawn={resolve.Drawn[ordinal]} active={resolve.Active[ordinal]} slid={resolve.Slid[ordinal]} opacity={resolve.Opacity[ordinal]:0.00}");
+                }
+            }
+
+            yield return $"  state: {string.Join("; ", stateList)}";
+
+            yield return $"  tracks: {string.Join("; ", trackList)}";
+            yield return $"copy '{built.Piece.Id}' of '{built.Origin?.Id}' meter '{built.MeterId}': visible={built.Node.Visible} " +
+                $"slides[{overrides}] {own}; {frame}; at {built.Node.Position} tracks={built.Tracks.Count} " +
+                $"art {built.ArtSize} shift {built.ArtShift}";
         }
     }
 
@@ -2191,6 +2597,8 @@ public sealed partial class Engine_HudView : Node3D
             _modPieces.Window = frame.Window;
         }
 
+        DriveModMeters(frame);
+
         if (_built.Count == 0)
         {
             return;
@@ -2279,6 +2687,12 @@ public sealed partial class Engine_HudView : Node3D
             // A keyed piece is up and down as its player-two source is.
             int state = built.StateOrdinal;
 
+            // THE RESOLVE THIS PIECE READS: the frame's, or — for a copy that states a slide of
+            // its own (a mod meter in the game's own art, its fader raised for the copy alone) —
+            // the copy's own resolve, made from the same inputs with that slide in place. The
+            // original's ordinal is never touched: it resolves dark as the file authors it.
+            Engine_UiElementResolve? stateResolve = ResolvedFor(built, read);
+
             // The slide toggle first, for a group: its authored `Off`/`TurnOff…` slide is the
             // guest's statement that the box is down, and the fold cannot say so on its own.
             // A GROUP IS DOWN WHEN ITS ROOT RESOLVES DARK, not when its slide is NAMED Off: the
@@ -2288,7 +2702,7 @@ public sealed partial class Engine_HudView : Node3D
             // slide release make the root's opacity say what the slide meant.
             if (state >= 0 &&
                 built.Piece.Id.StartsWith("group.", System.StringComparison.Ordinal) &&
-                Resolve is { } rootResolve && state < rootResolve.Opacity.Length &&
+                stateResolve is { } rootResolve && state < rootResolve.Opacity.Length &&
                 rootResolve.Opacity[state] <= 0.001f)
             {
                 built.Node.Visible = false;
@@ -2303,10 +2717,13 @@ public sealed partial class Engine_HudView : Node3D
 
             // The state gate first: the guest says whether this piece exists right now, and an
             // off piece takes no drive at all.
-            if (state >= 0 &&
-                (ElementActive is not { } active ||
-                 state >= active.Length ||
-                 !active[state]))
+            // A copy on its own slides answers from its own resolve, by the frame's own formula
+            // (drawn, and not faded out).
+            bool off = built.SlideOverrides is { Count: > 0 }
+                ? state >= 0 && (stateResolve is not { } own || state >= own.Drawn.Length ||
+                    !own.Drawn[state] || own.Opacity[state] <= 0.01f)
+                : state >= 0 && (ElementActive is not { } active || state >= active.Length || !active[state]);
+            if (off)
             {
                 built.Node.Visible = false;
                 ++_hiddenByState;
@@ -2341,7 +2758,7 @@ public sealed partial class Engine_HudView : Node3D
 
             // The piece's own parts follow the guest per element — which page of a widget is up,
             // what has been ghosted, and which picture each slot carries.
-            if (Resolve is { } resolved)
+            if (stateResolve is { } resolved)
             {
                 built.Binding.Apply(resolved, LiveTextures, LiveTransform);
             }
@@ -2418,6 +2835,13 @@ public sealed partial class Engine_HudView : Node3D
             // bar's drop). The clone binding applies stated transforms only beneath a root, so
             // the difference is added here.
             at += StatedDelta(built) * scale;
+
+            // A meter copy stands by its art, not its element's origin (Built.ArtShift).
+            if (built.ArtShift != Vector3.Zero)
+            {
+                Vector3 shift = built.Authored * built.ArtShift;
+                at += new Vector2(shift.X, shift.Y) * scale * built.ExtraScale;
+            }
 
             // `SetDPadCenter(true)` — the whole cluster under the mover shifts by the authored
             // delta; every piece cut from that subtree shifts with it. See BindCentreToggle.
@@ -2733,6 +3157,21 @@ public sealed partial class Engine_HudView : Node3D
             track.Node.Position = track.Target == Engine_UiTimeline.Target.PositionX
                 ? track.Node.Position with { X = at.X + (evaluated - track.Base) }
                 : track.Node.Position with { Y = at.Y + (evaluated - track.Base) };
+            return;
+        }
+
+        // A COPY ON ITS OWN SLIDES has no guest-stated transform re-anchoring its bar every frame
+        // (Engine_UiCloneBinding.ApplyTransform puts an element's origin at position − basis·pivot
+        // from what the guest states), so its scrubbed scale is anchored at the authored pivot
+        // here: every fill in hud.bgf pivots at its left edge (pivot.x −50), and growing about the
+        // origin instead walked the generic meter's fill 124 units out of its frame.
+        if (built.SlideOverrides is not null &&
+            track.Target is Engine_UiTimeline.Target.ScaleX or Engine_UiTimeline.Target.ScaleY &&
+            built.Binding.PivotOf(track.Node) is { } pivot && pivot != Vector3.Zero)
+        {
+            Basis before = track.Node.Basis;
+            Engine_UiTimeline.Write(track.Node, track.Target, evaluated);
+            track.Node.Position += (before * pivot) - (track.Node.Basis * pivot);
             return;
         }
 

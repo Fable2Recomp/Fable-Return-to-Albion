@@ -46,9 +46,13 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	/// A mark drawn inside the icon: the player a relationship heart is for ("1" or "2") when both
 	/// players' hearts share one screen. Empty for none.
 	/// </param>
+	/// <param name="Texture">
+	/// An icon's own texture, in place of one resolved by hash: a mod's marker
+	/// (<see cref="Engine_HudModMarkers"/>). Null for the hash's.
+	/// </param>
 	public readonly record struct Sprite(
 		uint Type, uint TextureHash, Color Colour, uint Entity, Vector3 Anchor, float Scale,
-		string Title, string Opinion, uint Object = 0, string Badge = "");
+		string Title, string Opinion, uint Object = 0, string Badge = "", Texture2D? Texture = null);
 
 	/// <summary>Where one icon falls this frame.</summary>
 	/// <param name="Canvas">HUD canvas units.</param>
@@ -76,6 +80,9 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		public string? ShownBadge { get; set; }
 		public Sprite Stated { get; set; }
 		public uint ShownTexture { get; set; }
+
+		/// <summary>The sprite's own texture put on the quad (<see cref="Sprite.Texture"/>).</summary>
+		public Texture2D? ShownOwn { get; set; }
 		public string? ShownTitle { get; set; }
 		public string? ShownOpinion { get; set; }
 		public Color ShownRgb { get; set; } = Colors.Transparent;
@@ -151,7 +158,15 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			drawn.Used = true;
 			drawn.Stated = sprite;
 
-			if (sprite.TextureHash != drawn.ShownTexture && TextureFor(sprite.TextureHash) is { } texture)
+			if (sprite.Texture is { } own)
+			{
+				if (!ReferenceEquals(own, drawn.ShownOwn))
+				{
+					drawn.ShownOwn = own;
+					drawn.IconMaterial.SetShaderParameter(Param_tex, own);
+				}
+			}
+			else if (sprite.TextureHash != drawn.ShownTexture && TextureFor(sprite.TextureHash) is { } texture)
 			{
 				drawn.ShownTexture = sprite.TextureHash;
 				drawn.IconMaterial.SetShaderParameter(Param_tex, texture);
@@ -251,6 +266,7 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			drawn.Node.Visible = true;
 			drawn.Node.Position = new Vector3(at.Canvas.X, at.Canvas.Y, 0f);
 			drawn.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
+			drawn.Icon.Visible = sprite.Texture is not null || sprite.TextureHash != 0u;
 
 			float size = Mathf.Max(IconSize * sprite.Scale, 0.001f);
 			float titleHeight = sprite.Title.Length > 0 ? TextSize : 0f;

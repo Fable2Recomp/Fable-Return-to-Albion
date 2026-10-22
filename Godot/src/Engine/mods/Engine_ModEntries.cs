@@ -50,4 +50,44 @@ public static class ModEntries
 
 		return result;
 	}
+
+	/// <summary>
+	/// One entry's bytes from the highest-priority enabled mod that ships it (a marker's PNG under
+	/// <c>art/</c>), or null when none does.
+	/// </summary>
+	public static byte[]? ReadEnabledBytes(string entryPath)
+	{
+		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+		if (string.IsNullOrEmpty(modsRoot) || !System.IO.Directory.Exists(modsRoot))
+		{
+			return null;
+		}
+
+		ModLoadOrder order = ModLoadOrder.Read(modsRoot);
+		var installs = new Dictionary<string, ModInstall>(StringComparer.OrdinalIgnoreCase);
+		foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(modsRoot))
+		{
+			installs[install.Name] = install;
+		}
+
+		for (int i = 0; i < order.Enabled.Count; i++)
+		{
+			if (!installs.TryGetValue(order.Enabled[i], out ModInstall? mod) ||
+				!F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? package, out _) ||
+				package is null)
+			{
+				continue;
+			}
+
+			using (package)
+			{
+				if (package.TryGetEntry(entryPath, out F2ModEntry? entry) && entry is not null)
+				{
+					return package.ReadEntryBytes(entry);
+				}
+			}
+		}
+
+		return null;
+	}
 }

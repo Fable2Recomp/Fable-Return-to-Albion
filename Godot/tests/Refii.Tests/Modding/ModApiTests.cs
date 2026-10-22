@@ -348,6 +348,156 @@ public class ModApiTests
     }
 
     [TestCase]
+    public void TheGuestSideAdditionsAreOnEverySurface()
+    {
+        // Part H's guest-side items: the appearance setters beside the tint (H.1), the target lock
+        // (H.3), statuses (H.7) and knockback/stagger (H.8) — native, Lua and Godot each name every
+        // call, and every guest function called by its TU1 address has its disc row.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        string[] calls =
+        {
+            "entity_alpha", "entity_scale", "entity_saturation_mask", "entity_drawable",
+            "lock_target", "release_lock", "switch_target",
+            "apply_status", "clear_status",
+            "knockback", "stagger",
+        };
+        foreach (string call in calls)
+        {
+            AssertThat(native.Contains("refii_mod_" + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(call))).OverrideFailureMessage("godot " + call).IsTrue();
+        }
+        // The reads are Lua natives and Godot queries.
+        AssertThat(lua.Contains("Refii.locked_target(p)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.has_status(e, kind)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("query locked_target P / has_status E KIND", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_locked_target(ctx, base, player)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_has_status(base, entity, kind)", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        foreach (string call in calls)
+        {
+            AssertThat(header.Contains("refii_mod_" + call + "(PPCContext* ctx, uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + call + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + call).IsTrue();
+            AssertThat(commands.Contains("op == \"" + call + "\"", StringComparison.Ordinal)).OverrideFailureMessage("command " + call).IsTrue();
+        }
+        AssertThat(commands.Contains("what == \"locked_target\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("what == \"has_status\"", StringComparison.Ordinal)).IsTrue();
+
+        // Every guest function the helpers call by TU1 address, with the disc address found by its
+        // instruction pattern (same size on both builds).
+        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string[] expected =
+        {
+            "{0x82573220u, 0x82547EC8u},",  // SetAlpha
+            "{0x82573078u, 0x82547D20u},",  // SetScale
+            "{0x822B8188u, 0x822B7EA8u},",  // SaturationMask
+            "{0x825725A8u, 0x82547250u},",  // SetAsDrawable
+            "{0x8290F078u, 0x82455F10u},",  // SetForceTargetLock (the contract; the byte is stored directly)
+            "{0x821E8B90u, 0x821E8870u},",  // the player handle's HasMode
+            "{0x825C4958u, 0x824831E8u},",  // the hit record's constructor
+            "{0x82275438u, 0x82275368u},",  // the hit's response-name setter
+            "{0x823919C0u, 0x8237D608u},",  // the hit record's destructor
+            "{0x827427B8u, 0x827178B8u},",  // remove CECElectrified
+            "{0x82749F38u, 0x8271F038u},",  // remove CECInChaos
+            "{0x827469A8u, 0x8271BAA8u},",  // remove CECOnFire
+        };
+        foreach (string row in expected)
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
+
+        // Souls Combat's lock is the API's now: no raw force-byte store of its own.
+        string lockon = File.ReadAllText(Path.Combine(root, "mods-src", "souls_combat", "native", "lockon.cpp"));
+        AssertThat(lockon.Contains("refii_mod_lock_target(", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lockon.Contains("refii_mod_release_lock(", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lockon.Contains("refii_mod_locked_target(", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lockon.Contains("kForceLock", StringComparison.Ordinal)).IsFalse();
+    }
+
+    [TestCase]
+    public void TheSoundAnimationAndOpinionSettersAreOnEverySurface()
+    {
+        // Part H's H.6 (sound through the game's own cue player and music box), H.9 (a named
+        // animation as the shipped AI's scripted action) and H.10 (opinion and deeds through the
+        // game's own setters) — native, Lua, Godot and the command lines each name every call, and
+        // every guest function called by its TU1 address has its disc row.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string[] calls =
+        {
+            "play_sound", "play_sound_at", "stop_sound", "play_music", "stop_music",
+            "play_animation", "stop_animation",
+            "modify_opinion", "add_deed",
+        };
+        foreach (string call in calls)
+        {
+            string nativeName = call == "play_sound" ? "play_sound_on" : call;
+            AssertThat(native.Contains("refii_mod_" + nativeName + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(call))).OverrideFailureMessage("godot " + call).IsTrue();
+        }
+        // Both players are principals: the opinion setters take the hero, never assume player one.
+        AssertThat(native.Contains("refii_mod_modify_opinion(ctx, base, villager, hero, axis, delta)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_add_deed(ctx, base, villager, hero, deed)", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        foreach (string call in calls)
+        {
+            string nativeName = call == "play_sound" ? "play_sound_on" : call;
+            AssertThat(header.Contains("refii_mod_" + nativeName + "(PPCContext* ctx, uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + call + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + call).IsTrue();
+            AssertThat(commands.Contains("op == \"" + call + "\"", StringComparison.Ordinal)).OverrideFailureMessage("command " + call).IsTrue();
+        }
+
+        // The opinion setter and the deed poster are the hooked names (the events fire); the sound
+        // bodies are called by TU1 address, each with its disc row (same instruction sequence,
+        // only the relocated globals differ).
+        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        AssertThat(api.Contains("rex_CECOpinionReaction_ModifyAxisValue(work, base);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("refii::guest::Address(0x82279B80u)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("Action.SetCurrentAction(e, a)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("Action.FinishScriptedActions(e)", StringComparison.Ordinal)).IsTrue();
+        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string[] expected =
+        {
+            "{0x821D9608u, 0x821D9258u},",  // the cue player on a sound component (Sound.PlayEvent's body)
+            "{0x821E0F48u, 0x821E0B08u},",  // the cue player on an emitter
+            "{0x822671A8u, 0x82267168u},",  // the cue record's constructor
+            "{0x82287DE0u, 0x822878C8u},",  // is the cue hash in a loaded bank
+            "{0x82289A48u, 0x82289530u},",  // the cue record's destructor
+            "{0x8255BB28u, 0x825204B0u},",  // SoundTools.PlayMusic
+            "{0x8255BC20u, 0x825205A8u},",  // SoundTools.StopMusic
+            "{0x829FDEF0u, 0x829F9128u},",  // stop an emitter's voices by tag
+            "{0x829FD018u, 0x829F8250u},",  // the sound manager's emitter factory
+            "{0x829FD168u, 0x829F83A0u},",  // the sound manager's emitter release
+            "{0x82C05EF8u, 0x822ADE08u},",  // the voice handle's release
+        };
+        foreach (string row in expected)
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
+    }
+
+    [TestCase]
     public void GodotDeclaresASignalPerEvent()
     {
         AssertThat(string.Join(",", RefiiHost.SignalNames)).IsEqual(string.Join(",", ModApi.Events.Select(e => e.LuaName)));
@@ -366,5 +516,219 @@ public class ModApiTests
         AssertThat(lua.StartsWith("Refii.on(\"hit\", function(e)")).IsTrue();
         AssertThat(lua.Contains("return true")).IsTrue();
         AssertThat(ModApi.LuaTemplate(ModApi.Find("Tick")!).Contains("return true")).IsFalse();
+    }
+
+    [TestCase]
+    public void TheLightAndPartnerCallsAreOnEverySurface()
+    {
+        // Part H.11, H.12: a mod-placed light and the co-op message channel — one meaning each,
+        // stated on native, Lua and Godot; the partner message is an event of the dense table.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature + " " + h.Meaning));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature + " " + h.Meaning));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature + " " + h.Meaning));
+        foreach (string surface in new[] { native, lua, godot })
+        {
+            AssertThat(surface.Contains(ModApi.LightMeaning, StringComparison.Ordinal)).IsTrue();
+            AssertThat(surface.Contains(ModApi.PartnerMeaning, StringComparison.Ordinal)).IsTrue();
+        }
+
+        AssertThat(native.Contains("refii_mod_light(entity, xyz, rgb, energy, range, options)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_send_to_partner(mod, name, payload)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.light(target, color, energy, range [, o])", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.send_to_partner(mod, name, payload)", StringComparison.Ordinal)).IsTrue();
+        foreach (string name in new[] { "light", "light_remove", "lights", "send_to_partner" })
+        {
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(name)))
+                .OverrideFailureMessage($"'{name}' is not a Godot helper of the catalog").IsTrue();
+        }
+
+        ModApiEvent partner = ModApi.Find("partner_message")!;
+        AssertThat(partner.Kind).IsEqual(93);
+        AssertThat(string.Join(",", partner.Fields.Select(f => f.Name))).IsEqual("mod,name,payload,from");
+        AssertThat(partner.Cancellable).IsFalse();
+        AssertThat(partner.IsRelayed).IsFalse();  // the route carries it; it is the receiver's own event, not a replica
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        foreach (string declared in new[]
+                 {
+                     "extern \"C\" uint32_t refii_mod_light(uint32_t entity, const float* xyz, const float* rgb, float energy, float range,",
+                     "extern \"C\" void refii_mod_light_remove(uint32_t id);",
+                     "extern \"C\" int32_t refii_mod_send_to_partner(const char* mod, const char* name, const char* payload);",
+                     "#define REFII_MOD_PARTNER_PAYLOAD_MAX 256",
+                 })
+        {
+            AssertThat(header.Contains(declared, StringComparison.Ordinal)).OverrideFailureMessage($"{declared} is not in core/refii_mod.h").IsTrue();
+        }
+
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        foreach (string row in new[] { "{\"_light\", &NativeLight, 0}", "{\"light_remove\", &NativeLightRemove, 0}", "{\"send_to_partner\", &NativeSendToPartner, 0}" })
+        {
+            AssertThat(natives.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage($"{row} is not registered").IsTrue();
+        }
+
+        string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
+        AssertThat(preamble.Contains("function Refii.light(target, color, energy, range, o)", StringComparison.Ordinal)).IsTrue();
+        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        foreach (string op in new[] { "op='light'", "op='light_off'", "\"pm:\" + std::to_string(owned)" })
+        {
+            AssertThat(api.Contains(op, StringComparison.Ordinal)).OverrideFailureMessage($"{op} is never posted").IsTrue();
+        }
+
+        // The route's mod lane: the receiver keeps pm: lines apart and the bus drains them on the tick.
+        string relay = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "core", "event_relay.cpp"));
+        AssertThat(relay.Contains("constexpr std::string_view kModLane = \"pm:\";", StringComparison.Ordinal)).IsTrue();
+        AssertThat(relay.Contains("extern \"C\" int32_t refii_bridge_route_take_mod(char* out, uint32_t capacity)", StringComparison.Ordinal)).IsTrue();
+        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        AssertThat(bus.Contains("DrainPartnerMessages(ctx, base);", StringComparison.Ordinal)).IsTrue();
+        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        AssertThat(commands.Contains("op == \"partner_send\"", StringComparison.Ordinal)).IsTrue();
+    }
+
+    [TestCase]
+    public void TheHudCallsAreOnEverySurface()
+    {
+        // Part H.2, H.4, H.5: a play at a model helper, world markers, the per-player fade and the
+        // HUD meters — one meaning each, stated on native, Lua and Godot.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature + " " + h.Meaning));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature + " " + h.Meaning));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature + " " + h.Meaning));
+        foreach (string surface in new[] { native, lua, godot })
+        {
+            AssertThat(surface.Contains("at (a model helper", StringComparison.Ordinal) || surface.Contains("at = \"Weapon.Weapon.Top\"", StringComparison.Ordinal)).IsTrue();
+            AssertThat(surface.Contains(ModApi.MarkMeaning, StringComparison.Ordinal)).IsTrue();
+            AssertThat(surface.Contains(ModApi.FadeMeaning, StringComparison.Ordinal)).IsTrue();
+            AssertThat(surface.Contains(ModApi.MeterMeaning, StringComparison.Ordinal)).IsTrue();
+        }
+
+        AssertThat(native.Contains("refii_mod_mark(player, entity, xyz, icon, text)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_fade(player, to_black, seconds)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_meter(player, id, label, value, max, style)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.mark(target, icon, text [, p])", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.fade(p, dir [, seconds])", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.meter(id, label, value, max [, p [, style]])", StringComparison.Ordinal)).IsTrue();
+        foreach (string name in new[] { "mark", "unmark", "markers", "fade", "fade_state", "meter", "meter_remove", "meters" })
+        {
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(name)))
+                .OverrideFailureMessage($"'{name}' is not a Godot helper of the catalog").IsTrue();
+        }
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        foreach (string declared in new[]
+                 {
+                     "const char* at;",
+                     "extern \"C\" uint32_t refii_mod_play_fx_at(const char* name, uint32_t entity, const char* helper,",
+                     "extern \"C\" uint32_t refii_mod_mark(int32_t player, uint32_t entity, const float* xyz, const char* icon,",
+                     "extern \"C\" void refii_mod_unmark(uint32_t id);",
+                     "extern \"C\" int32_t refii_mod_fade(int32_t player, int32_t to_black, float seconds);",
+                     "extern \"C\" int32_t refii_mod_meter(int32_t player, const char* id, const char* label, float value, float max,",
+                     "extern \"C\" int32_t refii_mod_meter_remove(const char* id);",
+                 })
+        {
+            AssertThat(header.Contains(declared, StringComparison.Ordinal)).OverrideFailureMessage($"{declared} is not in core/refii_mod.h").IsTrue();
+        }
+
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        foreach (string row in new[] { "{\"_mark\", &NativeMark, 0}", "{\"unmark\", &NativeUnmark, 0}", "{\"fade\", &NativeFade, 0}", "{\"meter\", &NativeMeter, 0}", "{\"meter_remove\", &NativeMeterRemove, 0}" })
+        {
+            AssertThat(natives.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage($"{row} is not registered").IsTrue();
+        }
+
+        // The Lua preamble unpacks `at` as the sixteenth _play_fx argument and builds mark from a handle or a point.
+        string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
+        AssertThat(preamble.Contains("f[3] or f.z or 0, o.at or ''", StringComparison.Ordinal)).IsTrue();
+        AssertThat(preamble.Contains("function Refii.mark(target, icon, text, p)", StringComparison.Ordinal)).IsTrue();
+        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        AssertThat(api.Contains(",at='%s'\"", StringComparison.Ordinal)).IsTrue();
+        foreach (string op in new[] { "op='mark'", "op='unmark'", "op='fade'", "op='meter'", "op='meter_remove'" })
+        {
+            AssertThat(api.Contains(op, StringComparison.Ordinal)).OverrideFailureMessage($"{op} is never posted").IsTrue();
+        }
+    }
+
+    [TestCase]
+    public void TheNpcTimeAndWeatherCallsAreOnEverySurface()
+    {
+        // Part H's H.13 (NPC orders through the quests' own entries in the game VM) and H.14 (the
+        // game clock's own setter, the quests' environment-theme blend) — native, Lua, Godot and
+        // the command lines each name every call, one meaning per item on every surface, the read
+        // backs as a Lua native and a Godot query, and the one guest function called by its TU1
+        // address has its disc row.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature + " " + h.Meaning));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature + " " + h.Meaning));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature + " " + h.Meaning));
+        string[] calls =
+        {
+            "npc_follow", "npc_go_to", "npc_flee", "npc_attack", "npc_set_hostile", "npc_stop",
+            "set_time_of_day", "set_weather",
+        };
+        foreach (string call in calls)
+        {
+            AssertThat(native.Contains("refii_mod_" + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(call))).OverrideFailureMessage("godot " + call).IsTrue();
+        }
+        foreach (string surface in new[] { native, lua, godot })
+        {
+            AssertThat(surface.Contains(ModApi.NpcMeaning, StringComparison.Ordinal)).IsTrue();
+            AssertThat(surface.Contains(ModApi.TimeWeatherMeaning, StringComparison.Ordinal)).IsTrue();
+        }
+        AssertThat(lua.Contains("Refii.time_of_day() -> hours", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("query time_of_day", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_time_of_day(base, hours)", StringComparison.Ordinal)).IsTrue();
+        // Both players are principals: hostility is against an entity (a hero is its own), never a player number.
+        AssertThat(native.Contains("refii_mod_npc_set_hostile(ctx, base, entity, other, on)", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        foreach (string call in calls)
+        {
+            AssertThat(header.Contains("refii_mod_" + call + "(PPCContext* ctx, uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + call + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + call).IsTrue();
+            AssertThat(commands.Contains("op == \"" + call + "\"", StringComparison.Ordinal)).OverrideFailureMessage("command " + call).IsTrue();
+        }
+        AssertThat(header.Contains("refii_mod_time_of_day(uint8_t* base, float* hours)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(Regex.IsMatch(natives, "\\{\"time_of_day\", &NativeTimeOfDay, 0\\}")).IsTrue();
+        AssertThat(commands.Contains("what == \"time_of_day\"", StringComparison.Ordinal)).IsTrue();
+
+        // The orders are the shipped scripts' own calls, run in the game VM; the clock's setter is
+        // called by TU1 address with its disc row.
+        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        foreach (string entry in new[]
+                 {
+                     "Follow.FollowEntity(e, t, %.3f)",
+                     "ScriptFunction.StartScriptControlledMovement(e, CVector3(%.3f, %.3f, %.3f), false)",
+                     "Navigation.FleeFromEntity(e, t, ENavigationSpeed.NAV_SPEED_SPRINT, true)",
+                     "CombatRegister:SetScriptTarget(e, t, true, false)",
+                     "Faction.AddTemporaryEntityRelationship(e, t, EFactionStatus.FACTION_STATUS_ENEMY)",
+                     "Faction.RemoveTemporaryEntityRelationship(e, t)",
+                     "Follow.StopFollowing(e)",
+                     "ScriptFunction.StopScriptControlledMovement(e) CombatRegister:ClearScriptTarget(e)",
+                     "EnvironmentTheme.BlendToEnvironmentTheme(\\\"%s\\\", %.4f, %.4f)",
+                     "refii::guest::Address(kSetTimeOfDayAbsolute)",
+                 })
+        {
+            AssertThat(api.Contains(entry, StringComparison.Ordinal)).OverrideFailureMessage(entry).IsTrue();
+        }
+        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        AssertThat(rows.Contains("{0x82515AA0u, 0x8249A790u},", StringComparison.Ordinal)).IsTrue();  // Timing.SetTimeOfDayAbsolute's body
     }
 }

@@ -990,6 +990,16 @@ public static class ModApi
 				F("previous", "int32_t", "the will held before, -1 none"),
 				F("player", "int32_t", "1 or 2: whose selectors"),
 			}),
+		new ModApiEvent("PartnerMessage", "partner_message", 93, "the receiving machine's guest tick, from the route's mod lane (core/event_relay.h pm: lines; mod_events.cpp DrainPartnerMessages), after the other machine's refii_mod_send_to_partner / Refii.send_to_partner / RefiiHost.send_to_partner",
+			"A mod's own message from THE OTHER MACHINE of an online session. Carried on the route — the ordered, acknowledged lane the game's own cross-machine calls take — so it arrives once, in the order sent, and waits out a load or a pause; never raised on the sender's machine, never alone or in local co-op. Not a replica: it is this machine's own handling, so player-state writes in a handler count. Godot scripts get it from the bus like any other event.",
+			string.Empty,
+			new[]
+			{
+				F("mod", "const char* / string", "the mod that sent it (its name)"),
+				F("name", "const char* / string", "the message's word, as the sender named it (letters, digits, '_', '.', '-'; at most 32)"),
+				F("payload", "const char* / string", "its text, at most 256 bytes; on the Lua and Godot surfaces a quote, backslash or line break in it arrives as '_'"),
+				F("from", "int32_t", "the player the sending machine plays: 1 the host, 2 the joiner"),
+			}),
 	};
 
 	/// <summary>The menu events' player: whose menu it is.</summary>
@@ -1010,6 +1020,60 @@ public static class ModApi
 		"linear multipliers of its lit colour, 1 untouched, above 1 brighter (the modern look caps a lane at 31.875/4); " +
 		"both looks draw it and co-op replicates it; a is stored but drawn by no shader (opacity is not the tint's); " +
 		"untint puts back the constructor's 1, 1, 1, 1 — untint only what you tinted. Guest tick";
+
+	private const string AppearanceMeaning =
+		"the other setters of the same renderable (component 3), replicated like the tint: alpha 0..1 (0 hides the body), " +
+		"a uniform scale, the saturation mask (drawn desaturated), drawable (off takes the body out of the drawn set; it keeps simulating); " +
+		"reset = the constructor's 1, 1, off, on. A value the game restates each frame (a Blades sword's scale and alpha, a death's alpha ramp) wins. Guest tick";
+
+	private const string LockMeaning =
+		"the target lock as the game's own LT states it, for player 1 or 2: lock_target sets the targeting component's SetTarget (entity 0: the game's own pick), " +
+		"the force byte and the look-at flag; release_lock clears the last two (a held LT is the trigger's); switch_target is the camera's own flick, left or right, " +
+		"and answers the target held; locked_target is the target while player mode 4 or the force byte holds, else 0. Guest tick";
+
+	private const string StatusMeaning =
+		"a status through the spell's own per-victim installer, without the spell: kind 1 electrified, 2 chaos, 3 burning (4, a vortex, is refused), " +
+		"for seconds at spell level 0..4, from source (0: the entity itself; chaos takes its direction from it), no damage; clear_status runs the game's own remover; " +
+		"has_status reads the component. The status_effect event fires either way. Guest tick";
+
+	private const string KnockbackMeaning =
+		"a hit of the game's own shape through its one receiver, no damage and no attacker: knockback is a Force Push's knockdown hit along dir scaled by force " +
+		"(whether the physics keeps the length is unproven), stagger the flinch a 0-damage melee tap plays. Hit and HitLanded fire; HitResponse is not offered. Guest tick";
+
+	private const string SoundMeaning =
+		"the game's own cue player (the body of the scripts' Sound.PlayEvent): play_sound starts a cue on an entity's sound component's emitter " +
+		"(or at its position when it has none), play_sound_at on an emitter of the API's own at a point (eight kept, the oldest freed); " +
+		"cue names are the audio banks' event names (an .adb's strings), the cue's own volume and attenuation apply, and the tag (may be empty) " +
+		"is what stop_sound matches on that entity's emitter (entity 0: the point emitters), fading over milliseconds. " +
+		"play_music / stop_music are SoundTools.PlayMusic / StopMusic's own bodies: the MUSIC_* cues, stopped with the game's 2 s fade. Guest tick";
+
+	private const string AnimationMeaning =
+		"a named animation as the shipped AI plays one: Action.SetCurrentAction with a PLAY_ANIMATION action (Anim the GDB animation record's name, " +
+		"OverrideLooking, SpeedMultiplier, BlendInTime), wrapped in a BATCH with NumLoops for loops above 1, so the game's own evaluator plays it " +
+		"and the pose feed shows it; a higher-priority action keeps the body. stop_animation is Action.FinishScriptedActions. Guest tick";
+
+	private const string OpinionSetMeaning =
+		"a villager's opinion of a hero, per hero: modify_opinion is the game's own ModifyAxisValue on axis 0 love 1 fear 2 attractiveness 3 morality 4 respect, " +
+		"clamped to [-1, 1], in player two's own block for their hero (opinion_modified fires); add_deed posts the deed message the game's debug " +
+		"post sends (MESSAGE_EVENT_DEED_PERSON from the hero to the villager at the hero's position, extra_data the Deed record's id), so the " +
+		"record's strength and kind and the villager's own rules apply (opinion_deed fires, routed to the doer's player). Guest tick";
+
+	/// <summary>NPC orders, the same on every surface (the quests' own entries, run in the game VM).</summary>
+	public const string NpcMeaning =
+		"orders a creature as the shipped quests do, through the game's own entries in its Lua VM: npc_follow is Follow.FollowEntity (the follow component, " +
+		"radius the quests' 2), npc_go_to ScriptFunction.StartScriptControlledMovement (the AI's script move-to, not waited for), npc_flee the AI's " +
+		"Navigation.FleeFromEntity at sprint, npc_attack CombatRegister:SetScriptTarget (the enemy relationship plus the combat info's ScriptTarget), " +
+		"npc_set_hostile Faction.AddTemporaryEntityRelationship FACTION_STATUS_ENEMY / RemoveTemporaryEntityRelationship against that entity — a hero is " +
+		"its own entity, so player two's hero is hostile on its own — and npc_stop ends them all (StopFollowing, StopScriptControlledMovement, ClearScriptTarget). " +
+		"The AI mind may retake the body later (combat, a cutscene), which the call cannot see. Guest tick";
+
+	/// <summary>The game clock and the environment theme, the same on every surface.</summary>
+	public const string TimeWeatherMeaning =
+		"set_time_of_day sets the game clock to hours 0..24 through Timing.SetTimeOfDayAbsolute's own body on the time manager (clamped; an online session " +
+		"tells the partner; time_of_day fires from the next clock update), time_of_day reads it back; set_weather blends the GAME's environment theme — " +
+		"its weather and sky look — as the quests do, EnvironmentTheme.BlendToEnvironmentTheme(theme, weight 0..1, seconds), so weather_theme fires and a " +
+		"handler may cancel it; theme is an EnvTheme* record name. The Dynamic Sky's own weather override (dynamic_sky_weather) is the host's switch, not this; " +
+		"in co-op the host's weather is everyone's. Guest tick";
 
 	public static readonly IReadOnlyList<ModApiHelper> Helpers = new[]
 	{
@@ -1052,6 +1116,15 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_relation(ctx, base, entity, other)", "the game's faction rule: 1 neutral, 2 ally, 4 enemy"),
 		new ModApiHelper("int32_t refii_mod_set_position(ctx, base, entity, xyz)", "moves the entity through its placement's own setter"),
 		new ModApiHelper("int32_t refii_mod_entity_tint(ctx, base, entity, r, g, b, a) / refii_mod_entity_untint(ctx, base, entity)", EntityTintMeaning),
+		new ModApiHelper("int32_t refii_mod_entity_alpha(ctx, base, entity, alpha) / refii_mod_entity_scale(ctx, base, entity, scale) / refii_mod_entity_saturation_mask(ctx, base, entity, on) / refii_mod_entity_drawable(ctx, base, entity, on)", AppearanceMeaning),
+		new ModApiHelper("int32_t refii_mod_lock_target(ctx, base, player, entity) / refii_mod_release_lock(ctx, base, player) / uint32_t refii_mod_switch_target(ctx, base, player, left) / uint32_t refii_mod_locked_target(ctx, base, player)", LockMeaning),
+		new ModApiHelper("int32_t refii_mod_apply_status(ctx, base, entity, kind, seconds, level, source) / refii_mod_clear_status(ctx, base, entity, kind) / refii_mod_has_status(base, entity, kind)", StatusMeaning),
+		new ModApiHelper("int32_t refii_mod_knockback(ctx, base, entity, dir, force) / refii_mod_stagger(ctx, base, entity)", KnockbackMeaning),
+		new ModApiHelper("int32_t refii_mod_play_sound_on(ctx, base, entity, cue, tag) / refii_mod_play_sound_at(ctx, base, xyz, cue, tag) / refii_mod_stop_sound(ctx, base, entity, tag, fade_ms) / refii_mod_play_music(ctx, base, name) / refii_mod_stop_music(ctx, base, name)", SoundMeaning),
+		new ModApiHelper("int32_t refii_mod_play_animation(ctx, base, entity, name, loops, blend_seconds, speed) / refii_mod_stop_animation(ctx, base, entity)", AnimationMeaning),
+		new ModApiHelper("int32_t refii_mod_modify_opinion(ctx, base, villager, hero, axis, delta) / refii_mod_add_deed(ctx, base, villager, hero, deed)", OpinionSetMeaning),
+		new ModApiHelper("int32_t refii_mod_npc_follow(ctx, base, entity, target, radius) / refii_mod_npc_go_to(ctx, base, entity, xyz) / refii_mod_npc_flee(ctx, base, entity, from) / refii_mod_npc_attack(ctx, base, entity, target) / refii_mod_npc_set_hostile(ctx, base, entity, other, on) / refii_mod_npc_stop(ctx, base, entity)", NpcMeaning),
+		new ModApiHelper("int32_t refii_mod_set_time_of_day(ctx, base, hours) / refii_mod_time_of_day(base, hours) / refii_mod_set_weather(ctx, base, theme, weight, seconds)", TimeWeatherMeaning),
 		new ModApiHelper("int32_t refii_mod_modify_health(ctx, base, entity, delta, attacker)", "heals or hurts through the game's own Modify (death included)"),
 		new ModApiHelper("int32_t refii_mod_level_name(base, char* out, size)", "the loaded level's name"),
 		new ModApiHelper("int32_t refii_mod_gold(base, entity, int32_t* out) / refii_mod_give_gold(ctx, base, entity, delta)", "a purse, read and changed through the game's own Modify"),
@@ -1080,8 +1153,15 @@ public static class ModApi
 		new ModApiHelper("uint32_t refii_mod_spawn(ctx, base, definition, xyz)", "an entity created through the game's own CreateEntityFromIDAtPosition"),
 		new ModApiHelper("uint32_t refii_mod_play_fx(name, xyz, options) / refii_mod_play_fx_on(name, entity, options)",
 			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity in its own frame (it turns with the entity; offset along the entity's axes); " +
-			"options (refii_mod_fx_options, null for refii_mod_fx_default_options()): duration, scale, tint, intensity, loop, offset; returns the id. Any thread"),
+			"options (refii_mod_fx_options, null for refii_mod_fx_default_options()): duration, scale, tint, intensity, loop, offset, at (a model helper: " +
+			"the effect stands at that .mdl.gmd point in its own frame, on a rigged body on its bone; refii_mod_play_fx_at(name, entity, helper, options) is the same); returns the id. Any thread"),
 		new ModApiHelper("void refii_mod_stop_fx(id)", "stops a played effect by any surface's id (native, Lua or Godot)"),
+		new ModApiHelper("uint32_t refii_mod_mark(player, entity, xyz, icon, text) / refii_mod_unmark(id)", MarkMeaning + " Any thread"),
+		new ModApiHelper("int32_t refii_mod_fade(player, to_black, seconds)", FadeMeaning + " Any thread"),
+		new ModApiHelper("int32_t refii_mod_meter(player, id, label, value, max, style) / refii_mod_meter_remove(id)", MeterMeaning + " Any thread"),
+		new ModApiHelper("uint32_t refii_mod_light(entity, xyz, rgb, energy, range, options) / refii_mod_light_remove(id)",
+			LightMeaning + " options (refii_mod_light_options, null for none): offset, at (a model helper, as play_fx_on's), flicker. Any thread"),
+		new ModApiHelper("int32_t refii_mod_send_to_partner(mod, name, payload)", PartnerMeaning + " Any thread"),
 		new ModApiHelper("int32_t refii_mod_set_menu_rows(player, menu, rows)",
 			"states a menu list's rows for player 1 or 2 (0: every player) — what a ui/templates.json menu or entry with \"source\": \"rows\" " +
 			"(or rows:<list>) shows, at once if open; rows is one text, \"name|label|command|ghosted\" split by ';' ('\\' escapes), " +
@@ -1104,6 +1184,40 @@ public static class ModApi
 			"paged past six; B closes a cancelable box; returns the id mod_menu_box carries with the option's index (-1 none). Any thread"),
 	};
 
+	/// <summary>What mark means on every surface (Engine_HudModMarkers).</summary>
+	public const string MarkMeaning =
+		"a marker on the HUD's world-icon channel over an entity or at a world point for player 1 or 2 (0: every player this machine plays): " +
+		"icon a game texture path (art/gui/.../x.tex) or an enabled mod's PNG (art/x.png), text a line under it; it rides the drawn body, is placed " +
+		"as the game's own icons are (each player's camera and half) and sized by the game's distance curve (sub_821AA758); returns the id unmark takes; " +
+		"a marker on an entity goes with the entity.";
+
+	/// <summary>What fade means on every surface (Engine_UiModFade).</summary>
+	public const string FadeMeaning =
+		"fades player 1 or 2's screen (0: every player this machine plays) to black or back over seconds (0: at once): a host-drawn layer over that " +
+		"player's half (their whole window alone or online), independent of the game's own fade, which level changes own.";
+
+	/// <summary>What meter means on every surface (Engine_HudModMeters).</summary>
+	public const string MeterMeaning =
+		"shows or restates the HUD meter id for player 1 or 2 (0: every player this machine plays): label above a bar at value of max (a timer, a boss bar) " +
+		"in style \"bar\" (the default), \"boss\" (wide, red) or \"timer\" (narrow) — the HUD's own primitives — or in the game's own meter art, " +
+		"\"generic\" (hud.bgf's GenericMeter: the ornate bar), \"crucible\" (CrucibleMeter: the plain red bar) or \"price\" (PriceWidget: the bowl, the value as a number), " +
+		"a copy lit on its own fader slide while the shipped original stays as authored; stacked under the top centre of that player's screen in the order first " +
+		"shown; the same id restates it in place; meter_remove takes it down.";
+
+	/// <summary>What light means on every surface (Engine_ModLights).</summary>
+	public const string LightMeaning =
+		"an omni light of a colour at an energy (1: a placed lamp's) over a range in metres (0: 6), on an entity in its own frame — riding the body, " +
+		"at a model helper when one is named, gone with the entity — or at a world point (guest axes); placed as play_fx_on places an effect " +
+		"(Engine_FxPlayer.Mount). Modern: a Godot light like the FX feed's own (zero decay, no shadow map); classic: a point light appended to the " +
+		"guest's light list for every draw its sphere meets; returns the id light_remove takes; everything goes when the game goes down.";
+
+	/// <summary>What send_to_partner means on every surface (the route's mod lane).</summary>
+	public const string PartnerMeaning =
+		"sends a mod's own message — name (a word of letters, digits, '_', '.', '-'; at most 32) and payload (any text, at most 256 bytes) from mod — " +
+		"to THE OTHER MACHINE of an online session, where it is raised as partner_message (mod, name, payload, from: the player the sender plays) " +
+		"once and in the order sent, on the route the game's own cross-machine calls take (core/event_relay.h pm: lines); either machine may send; " +
+		"nothing is sent alone or in local co-op (false), for a bad name, or a payload over the limit.";
+
 	/// <summary>The Lua-side calls the init chunk's preamble defines.</summary>
 	public static readonly IReadOnlyList<ModApiHelper> LuaHelpers = new[]
 	{
@@ -1114,6 +1228,15 @@ public static class ModApi
 		new ModApiHelper("Refii.health(e) -> current, max / Refii.set_health(e, v) / Refii.modify_health(e, delta, attacker)", "health, read, written, or changed through the game's own Modify (death included)"),
 		new ModApiHelper("Refii.position(e) -> x, y, z / Refii.set_position(e, x, y, z)", "a position through the entity's own placement"),
 		new ModApiHelper("Refii.entity_tint(e, r, g, b [, a]) / Refii.entity_untint(e)", EntityTintMeaning),
+		new ModApiHelper("Refii.entity_alpha(e, a) / Refii.entity_scale(e, s) / Refii.entity_saturation_mask(e, on) / Refii.entity_drawable(e, on)", AppearanceMeaning),
+		new ModApiHelper("Refii.lock_target(p [, e]) / Refii.release_lock(p) / Refii.switch_target(p, left) -> target / Refii.locked_target(p) -> target", LockMeaning),
+		new ModApiHelper("Refii.apply_status(e, kind, seconds [, level [, source]]) / Refii.clear_status(e, kind) / Refii.has_status(e, kind)", StatusMeaning),
+		new ModApiHelper("Refii.knockback(e, x, y, z [, force]) / Refii.stagger(e)", KnockbackMeaning),
+		new ModApiHelper("Refii.play_sound(cue, e [, tag]) / Refii.play_sound_at(cue, x, y, z [, tag]) / Refii.stop_sound(e, tag [, fade_ms]) / Refii.play_music(name) / Refii.stop_music(name)", SoundMeaning),
+		new ModApiHelper("Refii.play_animation(e, name [, loops [, blend_seconds [, speed]]]) / Refii.stop_animation(e)", AnimationMeaning),
+		new ModApiHelper("Refii.modify_opinion(villager, hero, axis, delta) / Refii.add_deed(villager, hero, deed)", OpinionSetMeaning + "; deed is a \"0x…\" string (Refii.hash of the Deed record's name)"),
+		new ModApiHelper("Refii.npc_follow(e, target [, radius]) / Refii.npc_go_to(e, x, y, z) / Refii.npc_flee(e, from) / Refii.npc_attack(e, target) / Refii.npc_set_hostile(e, other, on) / Refii.npc_stop(e)", NpcMeaning),
+		new ModApiHelper("Refii.set_time_of_day(hours) / Refii.time_of_day() -> hours / Refii.set_weather(theme [, weight [, seconds]])", TimeWeatherMeaning + "; weight defaults to 1, seconds to 1"),
 		new ModApiHelper("Refii.gold(e) / Refii.give_gold(e, delta)", "a purse, read and changed through the game's own Modify"),
 		new ModApiHelper("Refii.item_count(e, definition) / Refii.add_item(e, definition)", "an inventory: definitions are \"0x…\" strings (Refii.hash of the record's name)"),
 		new ModApiHelper("Refii.experience(e, pool) / Refii.give_experience(e, pool, amount) / Refii.spend_experience(e, pool, amount)", "experience: pools 0 General 1 Strength 2 Skill 3 Will"),
@@ -1146,8 +1269,15 @@ public static class ModApi
 		new ModApiHelper("Refii.entity(handle) / Refii.handle(entity)", "the game's own Entity userdata for a handle (for the shipped scripts and natives), and back"),
 		new ModApiHelper("Refii.play_fx(name, x, y, z [, options]) / Refii.play_fx_on(e, name [, options])",
 			"an effect of the particle bank or a mod's fx/effects/, drawn by Godot at a world position or riding an entity handle in its own frame (it turns with the entity; offset along the entity's axes); " +
-			"options { duration = s, scale = n, tint = {r, g, b}, intensity = n, loop = false, offset = {x, y, z} }; the id, or nil"),
+			"options { duration = s, scale = n, tint = {r, g, b}, intensity = n, loop = false, offset = {x, y, z}, at = \"Weapon.Weapon.Top\" (a model helper: " +
+			"the effect stands at that .mdl.gmd point in its own frame, on a rigged body on its bone) }; the id, or nil"),
 		new ModApiHelper("Refii.stop_fx(id)", "stops a played effect by any surface's id"),
+		new ModApiHelper("Refii.mark(target, icon, text [, p]) / Refii.unmark(id)", MarkMeaning + " target is an entity handle or {x, y, z}"),
+		new ModApiHelper("Refii.fade(p, dir [, seconds])", FadeMeaning + " dir is \"to_black\" or \"from_black\" (\"out\" / \"in\")"),
+		new ModApiHelper("Refii.meter(id, label, value, max [, p [, style]]) / Refii.meter_remove(id)", MeterMeaning),
+		new ModApiHelper("Refii.light(target, color, energy, range [, o]) / Refii.light_remove(id)",
+			LightMeaning + " target an entity handle or {x, y, z}, color {r, g, b}, o = { offset = {x, y, z}, at = \"Weapon.Weapon.Top\", flicker = n }; the id, or nil"),
+		new ModApiHelper("Refii.send_to_partner(mod, name, payload)", PartnerMeaning),
 		new ModApiHelper("Refii.set_menu_rows(menu, rows [, p])", "states a menu list's rows for player p (nil: every player): strings or { name, label, command, ghosted } — what a menu or entry with \"source\": \"rows\" shows, at once if open; {} clears; true when posted"),
 		new ModApiHelper("Refii.open_screen(id [, p])", "opens a host-owned screen (Screen:open:<id>) for player p: the game's or a screens record a mod states (id 1000+); true when posted"),
 		new ModApiHelper("Refii.open_menu(name [, p])", "opens a mod's menu (ui/templates.json) for player p (nil: the menu owner here) over the list that has the input, or on its own with none up; true when asked"),
@@ -1188,6 +1318,17 @@ public static class ModApi
 		new ModApiHelper("menu_box(title, text, options, player = 0, cancelable = true) -> id / signal menu_box_answered(id, option)", "the game's own menu box (the Golden Cock's) on the front end and in game, for player 1 or 2 (0: the menu owner here): up to 16 options, paged past six; option is the index chosen, -1 for B, a box replacing it or a player played on the other machine. The mod_menu_box event carries the same, on every surface"),
 		new ModApiHelper("give_gold / modify_health / set_health / add_item / give_experience / spend_experience / cast_spell / set_position / save_set", "helper calls, run in the guest tick with the real context; silent when there is nothing to act on"),
 		new ModApiHelper("entity_tint(handle, r, g, b, a = 1) / entity_untint(handle)", EntityTintMeaning),
+		new ModApiHelper("entity_alpha(handle, alpha) / entity_scale(handle, scale) / entity_saturation_mask(handle, on) / entity_drawable(handle, on)", AppearanceMeaning),
+		new ModApiHelper("lock_target(player, entity = 0) / release_lock(player) / switch_target(player, left)", LockMeaning + "; query locked_target P answers the target held"),
+		new ModApiHelper("apply_status(handle, kind, seconds, level = 0, source = 0) / clear_status(handle, kind)", StatusMeaning + "; query has_status E KIND asks"),
+		new ModApiHelper("knockback(handle, x, y, z, force = 1) / stagger(handle)", KnockbackMeaning),
+		new ModApiHelper("play_sound(cue, handle, tag = \"\") / play_sound_at(cue, x, y, z, tag = \"\") / stop_sound(handle, tag, fade_ms = 0) / play_music(name) / stop_music(name)", SoundMeaning),
+		new ModApiHelper("play_animation(handle, name, loops = 1, blend_seconds = 0.1, speed = 1) / stop_animation(handle)", AnimationMeaning),
+		new ModApiHelper("modify_opinion(villager, hero, axis, delta) / add_deed(villager, hero, deed)", OpinionSetMeaning + "; deed is the record's hash, a \"0x…\" string or a number"),
+		new ModApiHelper("npc_follow(entity, target, radius = 2) / npc_go_to(entity, x, y, z) / npc_flee(entity, from) / npc_attack(entity, target) / npc_set_hostile(entity, other, on) / npc_stop(entity)", NpcMeaning),
+		new ModApiHelper("set_time_of_day(hours) / set_weather(theme, weight = 1, seconds = 1)", TimeWeatherMeaning + "; query time_of_day answers hours"),
+		new ModApiHelper("query locked_target P / has_status E KIND", "target (0 when not locked) · has: refii_mod_locked_target / refii_mod_has_status"),
+		new ModApiHelper("query time_of_day", "hours (the game clock, 0..24): refii_mod_time_of_day"),
 		new ModApiHelper("query(what, args) -> id / signal reply(id, result)", "asks the guest; the answer comes on a later frame with ok and the fields below"),
 		new ModApiHelper("query health E / position E / gold E / item_count E DEF / experience E POOL / ability_level E T", "current, max · x, y, z · gold · count · amount · level"),
 		new ModApiHelper("query relation A B / alive E / definition E / name E / level_name / hero P / player_of E", "relation · alive · definition · name · level · hero · player"),
@@ -1200,8 +1341,15 @@ public static class ModApi
 		new ModApiHelper("query discovered_crime E P / perceived_renown E P · forgive_crimes E P", "discovered · renown: Refii.discovered_crime / perceived_renown for villager E and player P · the command forgives player P's crimes villager E knows of (Refii.forgive_crimes); show_to_player is Lua's — reach it with run_lua"),
 		new ModApiHelper("play_fx(name, x, y, z, options) / play_fx_on(name, handle, options)",
 			"an effect of the particle bank or a mod's fx/effects/ as a FableFx node at a world position (guest axes) or riding an entity handle in its own frame (it turns with the entity; offset along the entity's axes); " +
-			"options { duration, scale, tint (Color or [r, g, b]), intensity, loop, offset (Vector3 or [x, y, z]) }; the id, 0 for an unknown effect"),
+			"options { duration, scale, tint (Color or [r, g, b]), intensity, loop, offset (Vector3 or [x, y, z]), at (a model helper name: " +
+			"the effect stands at that .mdl.gmd point in its own frame, on a rigged body on its bone) }; the id, 0 for an unknown effect"),
 		new ModApiHelper("stop_fx(id)", "stops a played effect by any surface's id; false when none plays under it"),
+		new ModApiHelper("mark(target, icon, text = \"\", player = 0) -> id / unmark(id) / markers()", MarkMeaning + " target is an entity handle or a Vector3; markers() lists what stands"),
+		new ModApiHelper("fade(player, to_black, seconds = 0) -> bool / fade_state(player)", FadeMeaning + " fade_state answers alpha (0 clear .. 1 black), target and seconds"),
+		new ModApiHelper("meter(id, label, value, max, player = 0, style = \"\") -> bool / meter_remove(id) / meters()", MeterMeaning + " meters() lists what stands, in stack order"),
+		new ModApiHelper("light(target, color, energy, range, options = null) -> id / light_remove(id) / lights()",
+			LightMeaning + " target an entity handle or a Vector3, color a Color or [r, g, b], options { offset, at, flicker }; lights() lists what stands (id, entity, r, g, b, energy, range, x, y, z)"),
+		new ModApiHelper("send_to_partner(mod, name, payload = \"\") -> bool (the command partner_send) / signal partner_message(e)", PartnerMeaning + " The signal carries mod, name, payload, from"),
 	};
 
 	/// <summary>The RefiiHost method names one <see cref="GodotHelpers"/> signature states.</summary>

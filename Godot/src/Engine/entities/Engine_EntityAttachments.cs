@@ -561,6 +561,57 @@ public sealed class Engine_EntityAttachments
 		}
 	}
 
+	/// <summary>
+	/// A MODEL HELPER BY NAME, for anything that stands at one (a mod's play_fx_on `at`): the
+	/// first part gmd of <paramref name="parts"/> naming it wins, as the guest's comp17 walk does
+	/// (<see cref="ResolveDummy"/>). <paramref name="bone"/> is the model bone of
+	/// <paramref name="rig"/> the helper hangs from (-1 with no rig, or when its node chain reaches
+	/// no live bone) and <paramref name="mount"/> the helper's transform RELATIVE TO THAT BONE —
+	/// or, with no bone, in the model's own space (Godot Y-up) — so the node-local frame is
+	/// <c>bone global pose * mount</c>, or <c>mount</c>. <paramref name="rest"/> is the helper's
+	/// rest transform in model space either way (the classic look's point). False for a name no
+	/// part gmd has; the entity's own frame is then the caller's answer.
+	/// </summary>
+	public static bool TryResolveHelper(string helper, Engine_EntitySkeleton? rig, IReadOnlyList<string> parts,
+		out int bone, out Transform3D mount, out Transform3D rest)
+	{
+		bone = -1;
+		mount = Transform3D.Identity;
+		rest = Transform3D.Identity;
+		if (helper.Length == 0)
+		{
+			return false;
+		}
+
+		foreach (string part in parts)
+		{
+			Refii.Models.Engine_GmdSkeleton? gmd = Gmd(part);
+			if (gmd is null || !gmd.TryResolveEntry(helper, 0, out int node, out Transform3D local))
+			{
+				continue;
+			}
+
+			rest = node >= 0 && node < gmd.Names.Length ? gmd.ComposeNode(node) * local : local;
+			Transform3D chain = local;
+			for (int guard = 0; node >= 0 && node < gmd.Names.Length && guard < 64; ++guard)
+			{
+				if (rig is not null && rig.TryBone(gmd.Names[node], out int live))
+				{
+					bone = live;
+					break;
+				}
+
+				chain = gmd.Locals[node] * chain;
+				node = gmd.Parents[node];
+			}
+
+			mount = chain;
+			return true;
+		}
+
+		return false;
+	}
+
 	/// <summary>Dummies whose stated composition has been compared and logged: once per name.</summary>
 	private static readonly HashSet<string> ComparedNames = new(System.StringComparer.OrdinalIgnoreCase);
 

@@ -16,6 +16,17 @@
 //   health(e) -> cur, max · set_health(e, v) · modify_health(e, delta, attacker)
 //   position(e) -> x, y, z · set_position(e, x, y, z)
 //   entity_tint(e, r, g, b [, a]) · entity_untint(e)
+//   entity_alpha(e, a) · entity_scale(e, s) · entity_saturation_mask(e, on) · entity_drawable(e, on)
+//   lock_target(p [, e]) · release_lock(p) · switch_target(p, left) -> target · locked_target(p) -> target
+//   apply_status(e, kind, seconds [, level [, source]]) · clear_status(e, kind) · has_status(e, kind)
+//   knockback(e, x, y, z [, force]) · stagger(e)
+//   play_sound(cue, e [, tag]) · play_sound_at(cue, x, y, z [, tag]) · stop_sound(e, tag [, fade_ms])
+//   play_music(name) · stop_music(name)
+//   play_animation(e, name [, loops [, blend_seconds [, speed]]]) · stop_animation(e)
+//   modify_opinion(villager, hero, axis, delta) · add_deed(villager, hero, deed)
+//   npc_follow(e, target [, radius]) · npc_go_to(e, x, y, z) · npc_flee(e, from) · npc_attack(e, target)
+//   npc_set_hostile(e, other, on) · npc_stop(e)
+//   set_time_of_day(hours) · time_of_day() -> hours · set_weather(theme [, weight [, seconds]])
 //   gold(e) · give_gold(e, delta) · item_count(e, def) · add_item(e, def)
 //   experience(e, pool) · give_experience(e, pool, amount) · spend_experience(e, pool, amount)
 //   ability_level(e, type) · cast_spell(caster, type, targeted, target, level)
@@ -32,6 +43,10 @@
 //   open_menu(name [, p]) · _message_box(title, text, accept, cancel, question, p)
 //   (message_box is the preamble's: it fills the defaults)
 //   notice(title, text [, seconds [, p]]) · _menu_box(title, text, p, cancelable, n, o1 .. o12)
+//   _mark(e, x, y, z, icon, text, p) (mark is the preamble's) · unmark(id) · fade(p, dir [, seconds])
+//   meter(id, label, value, max [, p [, style]]) · meter_remove(id)
+//   _light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker) (light is the preamble's)
+//   light_remove(id) · send_to_partner(mod, name, payload)
 //   (menu_box is the preamble's: it unpacks the options table)
 //   _menu_rows(menu, rows, p) · open_screen(id [, p])
 //   (set_menu_rows is the preamble's: it writes the rows table as the bus text)
@@ -92,6 +107,8 @@ void NoteLuaCancelled();
 void BoxSeatEnter(uint8_t* base, int32_t player);
 void BoxSeatLeave(uint8_t* base);
 uint32_t PlayModFxOnHandle(const char* name, const float* xyz, uint32_t handle, const refii_mod_fx_options* options);
+uint32_t PlaceModLightOnHandle(uint32_t handle, const float* xyz, const float* rgb, float energy, float range,
+                               const refii_mod_light_options* options);
 }
 
 namespace {
@@ -400,6 +417,226 @@ REFII_LUA_NATIVE(NativeEntityTint) {
 
 REFII_LUA_NATIVE(NativeEntityUntint) {
   lua.PushBoolean(refii_mod_entity_untint(&lua.ctx, lua.base, lua.Entity(1)) != 0);
+  RESULTS(1);
+}
+
+// The other component-3 setters: Refii.entity_alpha(e, a) · entity_scale(e, s) ·
+// entity_saturation_mask(e, on) · entity_drawable(e, on). `on` is a Lua boolean or number.
+REFII_LUA_NATIVE(NativeEntityAlpha) {
+  lua.PushBoolean(refii_mod_entity_alpha(&lua.ctx, lua.base, lua.Entity(1), static_cast<float>(lua.Number(2))) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeEntityScale) {
+  lua.PushBoolean(refii_mod_entity_scale(&lua.ctx, lua.base, lua.Entity(1), static_cast<float>(lua.Number(2))) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeEntitySaturationMask) {
+  const bool on = lua.Type(2) == kTypeNumber ? lua.Number(2) != 0.0 : lua.Boolean(2);
+  lua.PushBoolean(refii_mod_entity_saturation_mask(&lua.ctx, lua.base, lua.Entity(1), on ? 1 : 0) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeEntityDrawable) {
+  const bool on = lua.Type(2) == kTypeNumber ? lua.Number(2) != 0.0 : lua.Boolean(2);
+  lua.PushBoolean(refii_mod_entity_drawable(&lua.ctx, lua.base, lua.Entity(1), on ? 1 : 0) != 0);
+  RESULTS(1);
+}
+
+// The target lock: Refii.lock_target(p [, e]) (e nil or 0: the game's own pick) · release_lock(p)
+// · switch_target(p, left) -> the target held afterwards · locked_target(p) -> the target or nil.
+REFII_LUA_NATIVE(NativeLockTarget) {
+  const uint32_t entity = lua.Type(2) == kTypeNumber ? lua.Entity(2) : 0u;
+  lua.PushBoolean(refii_mod_lock_target(&lua.ctx, lua.base, lua.Int(1), entity) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeReleaseLock) {
+  lua.PushBoolean(refii_mod_release_lock(&lua.ctx, lua.base, lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeSwitchTarget) {
+  const bool left = lua.Type(2) == kTypeNumber ? lua.Number(2) != 0.0 : lua.Boolean(2);
+  lua.PushHandle(refii_mod_switch_target(&lua.ctx, lua.base, lua.Int(1), left ? 1 : 0));
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeLockedTarget) {
+  lua.PushHandle(refii_mod_locked_target(&lua.ctx, lua.base, lua.Int(1)));
+  RESULTS(1);
+}
+
+// Statuses: Refii.apply_status(e, kind, seconds [, level [, source]]) · clear_status(e, kind) ·
+// has_status(e, kind); kinds 1 electrified 2 chaos 3 burning 4 vortex (the status_effect event's).
+REFII_LUA_NATIVE(NativeApplyStatus) {
+  const int32_t level = lua.Type(4) == kTypeNumber ? lua.Int(4) : 0;
+  const uint32_t source = lua.Type(5) == kTypeNumber ? lua.Entity(5) : 0u;
+  lua.PushBoolean(refii_mod_apply_status(&lua.ctx, lua.base, lua.Entity(1), lua.Int(2), static_cast<float>(lua.Number(3)),
+                                         level, source) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeClearStatus) {
+  lua.PushBoolean(refii_mod_clear_status(&lua.ctx, lua.base, lua.Entity(1), lua.Int(2)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeHasStatus) {
+  lua.PushBoolean(refii_mod_has_status(lua.base, lua.Entity(1), lua.Int(2)) != 0);
+  RESULTS(1);
+}
+
+// Knockback and stagger: Refii.knockback(e, x, y, z [, force]) (force defaults to 1) · stagger(e).
+REFII_LUA_NATIVE(NativeKnockback) {
+  const float dir[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
+                        static_cast<float>(lua.Number(4))};
+  const float force = lua.Type(5) == kTypeNumber ? static_cast<float>(lua.Number(5)) : 1.0f;
+  lua.PushBoolean(refii_mod_knockback(&lua.ctx, lua.base, lua.Entity(1), dir, force) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeStagger) {
+  lua.PushBoolean(refii_mod_stagger(&lua.ctx, lua.base, lua.Entity(1)) != 0);
+  RESULTS(1);
+}
+
+// Sound: Refii.play_sound(cue, e [, tag]) · play_sound_at(cue, x, y, z [, tag]) ·
+// stop_sound(e, tag [, fade_ms]) (e 0: the point emitters) · play_music(name) · stop_music(name).
+REFII_LUA_NATIVE(NativePlaySound) {
+  char cue[128];
+  char tag[128];
+  lua.String(1, cue, sizeof(cue));
+  lua.String(3, tag, sizeof(tag));
+  lua.PushBoolean(refii_mod_play_sound_on(&lua.ctx, lua.base, lua.Entity(2), cue, tag) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativePlaySoundAt) {
+  char cue[128];
+  char tag[128];
+  lua.String(1, cue, sizeof(cue));
+  lua.String(5, tag, sizeof(tag));
+  const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
+                        static_cast<float>(lua.Number(4))};
+  lua.PushBoolean(refii_mod_play_sound_at(&lua.ctx, lua.base, xyz, cue, tag) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeStopSound) {
+  char tag[128];
+  lua.String(2, tag, sizeof(tag));
+  const int32_t fade = lua.Type(3) == kTypeNumber ? lua.Int(3) : 0;
+  const uint32_t entity = lua.Type(1) == kTypeNumber && lua.Number(1) != 0.0 ? lua.Entity(1) : 0u;
+  lua.PushBoolean(refii_mod_stop_sound(&lua.ctx, lua.base, entity, tag, fade) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativePlayMusic) {
+  char name[128];
+  lua.String(1, name, sizeof(name));
+  lua.PushBoolean(refii_mod_play_music(&lua.ctx, lua.base, name) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeStopMusic) {
+  char name[128];
+  lua.String(1, name, sizeof(name));
+  lua.PushBoolean(refii_mod_stop_music(&lua.ctx, lua.base, name) != 0);
+  RESULTS(1);
+}
+
+// Animation: Refii.play_animation(e, name [, loops [, blend_seconds [, speed]]]) ·
+// stop_animation(e). loops defaults to 1, blend to the action's 0.1 s, speed to 1.
+REFII_LUA_NATIVE(NativePlayAnimation) {
+  char name[64];
+  lua.String(2, name, sizeof(name));
+  const int32_t loops = lua.Type(3) == kTypeNumber ? lua.Int(3) : 1;
+  const float blend = lua.Type(4) == kTypeNumber ? static_cast<float>(lua.Number(4)) : 0.1f;
+  const float speed = lua.Type(5) == kTypeNumber ? static_cast<float>(lua.Number(5)) : 1.0f;
+  lua.PushBoolean(refii_mod_play_animation(&lua.ctx, lua.base, lua.Entity(1), name, loops, blend, speed) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeStopAnimation) {
+  lua.PushBoolean(refii_mod_stop_animation(&lua.ctx, lua.base, lua.Entity(1)) != 0);
+  RESULTS(1);
+}
+
+// Opinion and deeds: Refii.modify_opinion(villager, hero, axis, delta) · add_deed(villager, hero,
+// deed) — deed a "0x…" string (Refii.hash of the Deed record's name).
+REFII_LUA_NATIVE(NativeModifyOpinion) {
+  lua.PushBoolean(refii_mod_modify_opinion(&lua.ctx, lua.base, lua.Entity(1), lua.Entity(2), lua.Int(3),
+                                           static_cast<float>(lua.Number(4))) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeAddDeed) {
+  lua.PushBoolean(refii_mod_add_deed(&lua.ctx, lua.base, lua.Entity(1), lua.Entity(2), lua.Hash(3)) != 0);
+  RESULTS(1);
+}
+
+// NPC behaviour: Refii.npc_follow(e, target [, radius]) · npc_go_to(e, x, y, z) · npc_flee(e, from)
+// · npc_attack(e, target) · npc_set_hostile(e, other, on) · npc_stop(e) — the quests' own orders
+// (refii_mod_npc_*), run in the game VM. radius defaults to the quests' 2.
+REFII_LUA_NATIVE(NativeNpcFollow) {
+  const float radius = lua.Type(3) == kTypeNumber ? static_cast<float>(lua.Number(3)) : 2.0f;
+  lua.PushBoolean(refii_mod_npc_follow(&lua.ctx, lua.base, lua.Entity(1), lua.Entity(2), radius) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeNpcGoTo) {
+  const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)), static_cast<float>(lua.Number(4))};
+  lua.PushBoolean(refii_mod_npc_go_to(&lua.ctx, lua.base, lua.Entity(1), xyz) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeNpcFlee) {
+  lua.PushBoolean(refii_mod_npc_flee(&lua.ctx, lua.base, lua.Entity(1), lua.Entity(2)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeNpcAttack) {
+  lua.PushBoolean(refii_mod_npc_attack(&lua.ctx, lua.base, lua.Entity(1), lua.Entity(2)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeNpcSetHostile) {
+  const bool on = lua.Type(3) == kTypeNumber ? lua.Number(3) != 0.0 : lua.Boolean(3);
+  lua.PushBoolean(refii_mod_npc_set_hostile(&lua.ctx, lua.base, lua.Entity(1), lua.Entity(2), on ? 1 : 0) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeNpcStop) {
+  lua.PushBoolean(refii_mod_npc_stop(&lua.ctx, lua.base, lua.Entity(1)) != 0);
+  RESULTS(1);
+}
+
+// Time and weather: Refii.set_time_of_day(hours) · time_of_day() -> hours ·
+// set_weather(theme [, weight [, seconds]]) — the game clock's own setter (refii_mod_set_time_of_day)
+// and the quests' environment-theme blend (refii_mod_set_weather); weight defaults to 1, seconds to 1.
+REFII_LUA_NATIVE(NativeSetTimeOfDay) {
+  lua.PushBoolean(refii_mod_set_time_of_day(&lua.ctx, lua.base, static_cast<float>(lua.Number(1))) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeTimeOfDay) {
+  float hours = 0.0f;
+  if (refii_mod_time_of_day(lua.base, &hours) != 0) {
+    lua.PushNumber(hours);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeSetWeather) {
+  char theme[64];
+  lua.String(1, theme, sizeof(theme));
+  const float weight = lua.Type(2) == kTypeNumber ? static_cast<float>(lua.Number(2)) : 1.0f;
+  const float seconds = lua.Type(3) == kTypeNumber ? static_cast<float>(lua.Number(3)) : 1.0f;
+  lua.PushBoolean(refii_mod_set_weather(&lua.ctx, lua.base, theme, weight, seconds) != 0);
   RESULTS(1);
 }
 
@@ -1125,8 +1362,9 @@ REFII_LUA_NATIVE(NativeSpawn) {
   RESULTS(1);
 }
 
-// Refii._play_fx(name, x, y, z, e, duration, scale, r, g, b, intensity, loop, ox, oy, oz): the
-// request Godot draws (refii_mod_play_fx); e is a handle, 0 for a world position. The id, or nil.
+// Refii._play_fx(name, x, y, z, e, duration, scale, r, g, b, intensity, loop, ox, oy, oz, at): the
+// request Godot draws (refii_mod_play_fx); e is a handle, 0 for a world position; at a model
+// helper name or "" (refii_mod_fx_options.at). The id, or nil.
 REFII_LUA_NATIVE(NativePlayFx) {
   char name[128];
   lua.String(1, name, sizeof(name));
@@ -1144,6 +1382,9 @@ REFII_LUA_NATIVE(NativePlayFx) {
   options.offset[0] = static_cast<float>(lua.Number(13));
   options.offset[1] = static_cast<float>(lua.Number(14));
   options.offset[2] = static_cast<float>(lua.Number(15));
+  char at[96];
+  lua.String(16, at, sizeof(at));
+  options.at = at[0] != 0 ? at : nullptr;
   const uint32_t id = refii::vfs::PlayModFxOnHandle(name, handle != 0 ? nullptr : xyz, handle, &options);
   if (id != 0) {
     lua.PushNumber(id);
@@ -1153,10 +1394,117 @@ REFII_LUA_NATIVE(NativePlayFx) {
   RESULTS(1);
 }
 
+// Refii._mark(e, x, y, z, icon, text, p): refii_mod_mark — a HUD world marker over handle e (0: at
+// x, y, z) for player p (0 or nil: every player played here); the preamble's Refii.mark(target,
+// icon, text [, p]) takes a handle or {x, y, z}. The id Refii.unmark takes, or nil.
+REFII_LUA_NATIVE(NativeMark) {
+  const uint32_t handle = static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0));
+  const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
+                        static_cast<float>(lua.Number(4))};
+  char icon[160];
+  char text[160];
+  lua.String(5, icon, sizeof(icon));
+  lua.String(6, text, sizeof(text));
+  const uint32_t entity = handle != 0u ? refii_mod_handle_address(handle) : 0u;
+  const uint32_t id = refii_mod_mark(lua.Int(7), entity, handle != 0u ? nullptr : xyz, icon, text);
+  if (id != 0) {
+    lua.PushNumber(id);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.unmark(id): removes a marker by any surface's id.
+REFII_LUA_NATIVE(NativeUnmark) {
+  refii_mod_unmark(static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)));
+  RESULTS(0);
+}
+
+// Refii.fade(p, dir [, seconds]): refii_mod_fade — player p's screen (0 or nil: every player
+// played here) "to_black" / "out" or "from_black" / "in" over seconds (0 or nil: at once). True
+// when posted.
+REFII_LUA_NATIVE(NativeFade) {
+  char dir[32];
+  lua.String(2, dir, sizeof(dir));
+  const bool to_black = std::strcmp(dir, "to_black") == 0 || std::strcmp(dir, "out") == 0 || std::strcmp(dir, "black") == 0;
+  lua.PushBoolean(refii_mod_fade(lua.Int(1), to_black ? 1 : 0, static_cast<float>(lua.Number(3))) != 0);
+  RESULTS(1);
+}
+
+// Refii.meter(id, label, value, max [, p [, style]]): refii_mod_meter — a HUD meter for player p
+// (0 or nil: every player played here) in style "bar" (nil), "boss" or "timer" (the HUD's own
+// primitives), or "generic", "crucible" or "price" (the game's own meter art, a lit copy). True when posted.
+REFII_LUA_NATIVE(NativeMeter) {
+  char id[96];
+  char label[128];
+  char style[32];
+  lua.String(1, id, sizeof(id));
+  lua.String(2, label, sizeof(label));
+  lua.String(6, style, sizeof(style));
+  lua.PushBoolean(refii_mod_meter(lua.Int(5), id, label, static_cast<float>(lua.Number(3)),
+                                  static_cast<float>(lua.Number(4)), style) != 0);
+  RESULTS(1);
+}
+
+// Refii.meter_remove(id): refii_mod_meter_remove. True when posted.
+REFII_LUA_NATIVE(NativeMeterRemove) {
+  char id[96];
+  lua.String(1, id, sizeof(id));
+  lua.PushBoolean(refii_mod_meter_remove(id) != 0);
+  RESULTS(1);
+}
+
 // Refii.stop_fx(id): any surface's id.
 REFII_LUA_NATIVE(NativeStopFx) {
   refii_mod_stop_fx(static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)));
   RESULTS(0);
+}
+
+// Refii._light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker): the light Godot
+// places (refii_mod_light); e is a handle, 0 for the world point x, y, z; at a model helper name or
+// "". The preamble's Refii.light(target, color, energy, range [, o]) builds it. The id, or nil.
+REFII_LUA_NATIVE(NativeLight) {
+  const uint32_t handle = static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0));
+  const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
+                        static_cast<float>(lua.Number(4))};
+  const float rgb[3] = {static_cast<float>(lua.Number(5)), static_cast<float>(lua.Number(6)),
+                        static_cast<float>(lua.Number(7))};
+  refii_mod_light_options options{};
+  options.offset[0] = static_cast<float>(lua.Number(10));
+  options.offset[1] = static_cast<float>(lua.Number(11));
+  options.offset[2] = static_cast<float>(lua.Number(12));
+  char at[96];
+  lua.String(13, at, sizeof(at));
+  options.at = at[0] != 0 ? at : nullptr;
+  options.flicker = static_cast<float>(lua.Number(14));
+  const uint32_t id = refii::vfs::PlaceModLightOnHandle(handle, xyz, rgb, static_cast<float>(lua.Number(8)),
+                                                        static_cast<float>(lua.Number(9)), &options);
+  if (id != 0) {
+    lua.PushNumber(id);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.light_remove(id): removes a mod light by any surface's id.
+REFII_LUA_NATIVE(NativeLightRemove) {
+  refii_mod_light_remove(static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)));
+  RESULTS(0);
+}
+
+// Refii.send_to_partner(mod, name, payload): refii_mod_send_to_partner — a mod's own message to
+// the other machine of an online session, raised there as partner_message. True when posted.
+REFII_LUA_NATIVE(NativeSendToPartner) {
+  char mod[64];
+  char name[64];
+  char payload[REFII_MOD_PARTNER_PAYLOAD_MAX + 2];
+  lua.String(1, mod, sizeof(mod));
+  lua.String(2, name, sizeof(name));
+  lua.String(3, payload, sizeof(payload));
+  lua.PushBoolean(refii_mod_send_to_partner(mod, name, payload) != 0);
+  RESULTS(1);
 }
 
 // Refii.open_menu(name [, p]): a mod's menu for player p (0 or nil: whoever owns the menus
@@ -1279,6 +1627,37 @@ Native g_natives[] = {
     {"set_position", &NativeSetPosition, 0},
     {"entity_tint", &NativeEntityTint, 0},
     {"entity_untint", &NativeEntityUntint, 0},
+    {"entity_alpha", &NativeEntityAlpha, 0},
+    {"entity_scale", &NativeEntityScale, 0},
+    {"entity_saturation_mask", &NativeEntitySaturationMask, 0},
+    {"entity_drawable", &NativeEntityDrawable, 0},
+    {"lock_target", &NativeLockTarget, 0},
+    {"release_lock", &NativeReleaseLock, 0},
+    {"switch_target", &NativeSwitchTarget, 0},
+    {"locked_target", &NativeLockedTarget, 0},
+    {"apply_status", &NativeApplyStatus, 0},
+    {"clear_status", &NativeClearStatus, 0},
+    {"has_status", &NativeHasStatus, 0},
+    {"knockback", &NativeKnockback, 0},
+    {"stagger", &NativeStagger, 0},
+    {"play_sound", &NativePlaySound, 0},
+    {"play_sound_at", &NativePlaySoundAt, 0},
+    {"stop_sound", &NativeStopSound, 0},
+    {"play_music", &NativePlayMusic, 0},
+    {"stop_music", &NativeStopMusic, 0},
+    {"play_animation", &NativePlayAnimation, 0},
+    {"stop_animation", &NativeStopAnimation, 0},
+    {"modify_opinion", &NativeModifyOpinion, 0},
+    {"add_deed", &NativeAddDeed, 0},
+    {"npc_follow", &NativeNpcFollow, 0},
+    {"npc_go_to", &NativeNpcGoTo, 0},
+    {"npc_flee", &NativeNpcFlee, 0},
+    {"npc_attack", &NativeNpcAttack, 0},
+    {"npc_set_hostile", &NativeNpcSetHostile, 0},
+    {"npc_stop", &NativeNpcStop, 0},
+    {"set_time_of_day", &NativeSetTimeOfDay, 0},
+    {"time_of_day", &NativeTimeOfDay, 0},
+    {"set_weather", &NativeSetWeather, 0},
     {"gold", &NativeGold, 0},
     {"give_gold", &NativeGiveGold, 0},
     {"item_count", &NativeItemCount, 0},
@@ -1357,6 +1736,14 @@ Native g_natives[] = {
     {"open_screen", &NativeOpenScreen, 0},
     {"_message_box", &NativeMessageBox, 0},
     {"notice", &NativeNotice, 0},
+    {"_mark", &NativeMark, 0},
+    {"unmark", &NativeUnmark, 0},
+    {"fade", &NativeFade, 0},
+    {"meter", &NativeMeter, 0},
+    {"meter_remove", &NativeMeterRemove, 0},
+    {"_light", &NativeLight, 0},
+    {"light_remove", &NativeLightRemove, 0},
+    {"send_to_partner", &NativeSendToPartner, 0},
     {"_menu_box", &NativeMenuBox, 0},
     {"_write", &NativeWrite, 0},
     {"_error", &NativeError, 0},

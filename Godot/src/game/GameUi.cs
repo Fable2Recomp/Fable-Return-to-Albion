@@ -3176,6 +3176,8 @@ public partial class GameUi : Node
 			_hudTwo.Resolve = _hud.Resolve;
 			_hudTwo.LiveSlides = SlidesForPlayerTwo(_hud.LiveSlides);
 			_hudTwo.ElementActive = _hud.ElementActive;
+			_hudTwo.ActiveInputs = _hud.ActiveInputs;
+			_hudTwo.StatedOpacity = _hud.StatedOpacity;
 		}
 
 		_hudTwo.LiveTextures = TexturesForPlayerTwo(_hud.LiveTextures);
@@ -3766,6 +3768,11 @@ public partial class GameUi : Node
 			{
 				_worldSpritesCleared = true;
 				_lastRawWorldSprites = null;
+				// The mods' HUD state goes with the game: markers, meters and fades are a session's.
+				Engine_HudModMarkers.Clear();
+				Engine_HudModMeters.Clear();
+				Engine_UiModFade.Clear();
+				Refii.Lighting.Engine_ModLights.Clear();
 				_worldSprites.Feed(
 					new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>());
 				if (_worldSpritesTwoFed && _worldSpritesTwo is not null &&
@@ -3924,6 +3931,22 @@ public partial class GameUi : Node
 			}
 		}
 
+		// THE MODS' MARKERS, after the game's own sprites (Engine_HudModMarkers): each view's
+		// player's, sized by that view's camera distance through the game's own curve. Fed on the
+		// same frames as the game's, through the same layers and projectors.
+		if (rebuildSprites && Engine_HudModMarkers.Count != 0)
+		{
+			Engine_HudModMarkers.LoadIcon ??= LoadMarkerIcon;
+			bool shared = !split && CoopSession.LocalCoop;
+			Engine_HudModMarkers.Compose(sprites, 1, shared, _markerDistanceOne ??= guest => MarkerDistanceSquared(_spriteViews[0], guest),
+				Godot.Time.GetTicksMsec() / 1000.0);
+			if (split)
+			{
+				Engine_HudModMarkers.Compose(spritesTwo, 2, false, _markerDistanceTwo ??= guest => MarkerDistanceSquared(_spriteViews[1], guest),
+					Godot.Time.GetTicksMsec() / 1000.0);
+			}
+		}
+
 		// PLAYER TWO'S OWN HOLD PROMPT (the guest's one hold slot is player one's): drawn by their
 		// layer's hold icon, in their half or on the shared screen.
 		if (_holdPromptTwo is { } hold &&
@@ -3965,6 +3988,37 @@ public partial class GameUi : Node
 
 	/// <summary>Whether player two's sprite layer holds this split's sprites.</summary>
 	private bool _worldSpritesTwoFed;
+
+	private System.Func<Vector3, float?>? _markerDistanceOne;
+	private System.Func<Vector3, float?>? _markerDistanceTwo;
+
+	/// <summary>A view camera's squared distance to a guest point, for a marker's size; null with no camera.</summary>
+	private static float? MarkerDistanceSquared(SpriteView view, Vector3 guest) =>
+		view.Camera is { } camera && GodotObject.IsInstanceValid(camera)
+			? camera.GlobalPosition.DistanceSquaredTo(GameWorld.GuestToGodot(guest))
+			: null;
+
+	/// <summary>
+	/// A marker's icon by what the call named: a PNG of an enabled mod (<c>art/x.png</c>, through
+	/// the mount or the package itself), else a game texture path through the presentation's loader.
+	/// </summary>
+	private Texture2D? LoadMarkerIcon(string name)
+	{
+		string path = name.Replace('\\', '/').TrimStart('/');
+		if (path.EndsWith(".png", System.StringComparison.OrdinalIgnoreCase))
+		{
+			byte[]? bytes = Refii.Textures.Engine_BnkTextureLoader.ReadBytes(path) ?? Refii.Mods.ModEntries.ReadEnabledBytes(path);
+			if (bytes is null)
+			{
+				return null;
+			}
+
+			var image = new Image();
+			return image.LoadPngFromBuffer(bytes) == Error.Ok ? ImageTexture.CreateFromImage(image) : null;
+		}
+
+		return _presentation?.LoadTexture(path);
+	}
 
 	/// <summary>The other player's prompt text per thing, and each half's titles by pool slot.</summary>
 	private readonly System.Collections.Generic.Dictionary<uint, (int Player, string Title)> _promptTitles = new();
@@ -4249,7 +4303,6 @@ public partial class GameUi : Node
 	/// <summary>The HUD's element pipeline — one resolve, shared with every owned surface.</summary>
 	private Engine_UiElementResolve? _hudResolve;
 
-	private static readonly uint HudOpacityAttr = Refii.Core.Engine_GameHash.AttributeId("opacity");
 
 	private int _hudRootSlideSaid = -1;
 
@@ -4398,46 +4451,10 @@ public partial class GameUi : Node
 		}
 	}
 
+	/// <summary>The one release of a slide's entries, shared with a copy's own slide (Engine_UiElementResolve.ReleaseSlideEntries).</summary>
 	private static int ReleaseHudSlideEntries(
-		Engine_BgfDocument file, BgfSlide slide, bool[] active, float?[] stated)
-	{
-		int released = 0;
-		foreach (BgfSlideEntry entry in slide.Entries)
-		{
-			int ordinal = entry.ElementOrdinal;
-			if (ordinal >= 0 && ordinal < stated.Length)
-			{
-				active[ordinal] = entry.Active;
-				foreach (BgfAttribute command in entry.Commands)
-				{
-					if (command.Id == HudOpacityAttr && stated[ordinal] is not null)
-					{
-						stated[ordinal] = null;
-						++released;
-						break;
-					}
-				}
-			}
-
-			foreach (int index in entry.ActivatedAnimations ?? System.Array.Empty<int>())
-			{
-				if (index < 0 || index >= file.Animations.Length)
-				{
-					continue;
-				}
-
-				BgfAnimation track = file.Animations[index];
-				if (track.AttributeId == HudOpacityAttr && track.ElementOrdinal >= 0 &&
-					track.ElementOrdinal < stated.Length && stated[track.ElementOrdinal] is not null)
-				{
-					stated[track.ElementOrdinal] = null;
-					++released;
-				}
-			}
-		}
-
-		return released;
-	}
+		Engine_BgfDocument file, BgfSlide slide, bool[] active, float?[] stated) =>
+		Engine_UiElementResolve.ReleaseSlideEntries(file, slide, active, stated);
 
 	private void ReleaseHudRootSlide(Engine_UiScreen doc, int[] slides, bool[] active, float?[] stated)
 	{
@@ -4489,7 +4506,7 @@ public partial class GameUi : Node
 				active[ordinal] = entry.Active;
 				foreach (BgfAttribute command in entry.Commands)
 				{
-					if (command.Id == HudOpacityAttr)
+					if (command.Id == Engine_UiElementResolve.OpacityAttribute)
 					{
 						stated[ordinal] = null;
 						++released;
@@ -4725,6 +4742,10 @@ public partial class GameUi : Node
 					_hudResolveTicks += System.Diagnostics.Stopwatch.GetTimestamp() - resolveBegan;
 					_hud!.Resolve = _hudResolve;
 					_hud.LiveSlides = slides;
+					// The resolve's inputs beside it: a mod copy that states a slide of its own
+					// resolves itself from these (Engine_HudView.Built.SlideOverrides).
+					_hud.ActiveInputs = active;
+					_hud.StatedOpacity = stated;
 
 					// THE ART, ON THE ICONS' CADENCE. A slot's texture changes when the player
 					// equips something, not per frame, and this is the one read here that walks a

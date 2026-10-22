@@ -226,6 +226,7 @@ bool RelayWants(int32_t kind);
 void RelayAfterDispatch(int32_t kind, void* event, bool replica);
 /// From the tick: dispatches the peer's relayed events.
 void DrainRelay(PPCContext& ctx, uint8_t* base);
+void DrainPartnerMessages(PPCContext& ctx, uint8_t* base);
 
 // ---------------------------------------------------------------------------------------------
 // Lua handlers
@@ -873,6 +874,15 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
                     e.previous, e.player);
       return;
     }
+    case REFII_EVENT_PARTNER_MESSAGE: {
+      const auto& e = *static_cast<const PartnerMessageEvent*>(event);
+      char mod[48], name[48], payload[REFII_MOD_PARTNER_PAYLOAD_MAX + 1];
+      LuaString(e.mod, mod, sizeof(mod));
+      LuaString(e.name, name, sizeof(name));
+      LuaString(e.payload, payload, sizeof(payload));
+      std::snprintf(out, size, "mod='%s',name='%s',payload='%s',from=%d", mod, name, payload, e.from);
+      return;
+    }
     case REFII_EVENT_DIALOGUE: {
       const auto& e = *static_cast<const DialogueEvent*>(event);
       std::snprintf(out, size, "speaker=%u,speaker_player=%d,text='0x%08x',listener=%u,listener_player=%d,subtitle=%s",
@@ -1444,6 +1454,7 @@ void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds) {
   RunModCommands(ctx, base);
   DispatchSpawned(ctx, base);
   DrainRelay(ctx, base);
+  DrainPartnerMessages(ctx, base);
 
   TickEvent tick{};
   PPCContext tick_ctx = ctx;
@@ -1763,9 +1774,11 @@ REX_EXTERN(rex_CECHitResponsePlayAction_OnHit) {
     const uint32_t result = ctx.r5.u32;
     const uint32_t entity = listener != 0 ? Load32(base, listener - 8u) : 0u;
     const uint32_t health = entity != 0 ? refii_mod_component(base, entity, kHealthComponent) : 0u;
+    // A hit the mod API built (refii_mod_stagger / refii_mod_knockback) is the mod's own
+    // decision already: it passes without being offered.
     const bool pass = health == 0 || hit == 0 || result == 0 || Load32(base, result) != 0 ||
                       Load8(base, hit + kHitNoResponse) != 0 || Load8(base, hit + kHitKnockdown) != 0 ||
-                      Load32(base, hit + kHitKind) == 7u;
+                      Load32(base, hit + kHitKind) == 7u || refii::vfs::IsModStatedHit(hit);
     if (!pass) {
       HitResponseEvent e{};
       PPCContext e_ctx = ctx;
@@ -6085,6 +6098,80 @@ void DrainRelay(PPCContext& ctx, uint8_t* base) {
     }
     RelayReader in{end + 1};
     kRelayed[row].replay(ctx, base, in, row);
+  }
+}
+
+/// Standard base64 back to bytes; false for a character outside the alphabet.
+bool Unbase64(const char* text, std::string& out) {
+  uint32_t word = 0;
+  int bits = 0;
+  for (const char* c = text; *c != 0 && *c != '='; ++c) {
+    int value;
+    if (*c >= 'A' && *c <= 'Z') {
+      value = *c - 'A';
+    } else if (*c >= 'a' && *c <= 'z') {
+      value = *c - 'a' + 26;
+    } else if (*c >= '0' && *c <= '9') {
+      value = *c - '0' + 52;
+    } else if (*c == '+') {
+      value = 62;
+    } else if (*c == '/') {
+      value = 63;
+    } else {
+      return false;
+    }
+    word = (word << 6) | static_cast<uint32_t>(value);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += static_cast<char>((word >> bits) & 0xFFu);
+    }
+  }
+  return true;
+}
+
+/// THE PARTNER MESSAGES: the route's mod lane (core/event_relay.h `pm:` lines, posted by the peer's
+/// refii_mod_send_to_partner), each raised here as PartnerMessage — once, in the order sent. The
+/// line is `pm:<from>:<mod>:<name>:<base64 payload>`; one that does not read is dropped.
+void DrainPartnerMessages(PPCContext& ctx, uint8_t* base) {
+  char text[768];
+  // Bounded per tick, as the relay is.
+  for (int n = 0; n < 32 && refii_bridge_route_take_mod(text, sizeof(text)) != 0; ++n) {
+    if (std::strncmp(text, "pm:", 3) != 0) {
+      continue;
+    }
+    char* cursor = text + 3;
+    char* fields[4] = {};
+    for (int f = 0; f < 4; ++f) {
+      fields[f] = cursor;
+      char* colon = f < 3 ? std::strchr(cursor, ':') : nullptr;
+      if (f < 3) {
+        if (colon == nullptr) {
+          fields[f] = nullptr;
+          break;
+        }
+        *colon = 0;
+        cursor = colon + 1;
+      }
+    }
+    if (fields[0] == nullptr || fields[1] == nullptr || fields[2] == nullptr || fields[3] == nullptr) {
+      continue;
+    }
+    const int32_t from = static_cast<int32_t>(std::strtol(fields[0], nullptr, 10));
+    std::string payload;
+    if ((from != 1 && from != 2) || fields[1][0] == 0 || fields[2][0] == 0 || !Unbase64(fields[3], payload) ||
+        payload.size() > REFII_MOD_PARTNER_PAYLOAD_MAX) {
+      continue;
+    }
+    PartnerMessageEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.mod = fields[1];
+    e.name = fields[2];
+    e.payload = payload.c_str();
+    e.from = from;
+    Dispatch(e);
   }
 }
 

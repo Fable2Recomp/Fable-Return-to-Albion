@@ -345,6 +345,22 @@ extern "C" int32_t refii_mod_player_here(int32_t player);
 /// each relayed event; a handler that makes a world or body effect skips the copy.
 extern "C" int32_t refii_mod_event_replica(void);
 
+/// The most bytes a partner message's `payload` carries; longer is refused.
+#define REFII_MOD_PARTNER_PAYLOAD_MAX 256
+/// The most characters a partner message's `name` (and the `mod` naming it) carries.
+#define REFII_MOD_PARTNER_NAME_MAX 32
+
+/// Sends a mod's own message to THE OTHER MACHINE of an online session: `name` (a word of
+/// letters, digits, '_', '.' and '-', at most REFII_MOD_PARTNER_NAME_MAX) and `payload` (any text,
+/// at most REFII_MOD_PARTNER_PAYLOAD_MAX bytes; empty is fine) from `mod` (the sending mod's name,
+/// REFII_MOD_NAME). It arrives there as the PartnerMessage event (core/refii_mod_events.h) on the
+/// guest tick, with `from` the player this machine plays — reliable, in the order sent, once: it
+/// rides the ROUTE (core/event_relay.h), the ordered, acknowledged lane the game's own cross-machine
+/// calls take, and waits out a load or a pause. Either machine may send; the host is player one's
+/// and the joiner player two's. Returns 1 when posted; 0 outside an online session (alone and in
+/// local co-op nothing is sent), for a bad name or mod, or a payload over the limit. Any thread.
+extern "C" int32_t refii_mod_send_to_partner(const char* mod, const char* name, const char* payload);
+
 /// Whether `entity` is in the world: the flag the game's own target selector tests
 /// ((entity+0x90) & 0x40). False for 0.
 extern "C" int32_t refii_mod_entity_alive(uint8_t* base, uint32_t entity);
@@ -442,6 +458,335 @@ extern "C" int32_t refii_mod_entity_tint(PPCContext* ctx, uint8_t* base, uint32_
 /// the same setter. An entity the GAME tints (a corpse's grey) is the game's to restore: untint only
 /// what you tinted. True when the entity has a renderable. Guest tick thread only.
 extern "C" int32_t refii_mod_entity_untint(PPCContext* ctx, uint8_t* base, uint32_t entity);
+
+/// THE OTHER APPEARANCE SETTERS of the same renderable (component 3), each storing its value and
+/// calling `sub_82573318`, which packs the record the entity feed draws under both looks and co-op
+/// replicates — exactly the tint's path. Reset = call with the constructor's value
+/// (`sub_82571DF8`: alpha 1, scale 1, saturation mask 0, drawable 1). A GAME-DRIVEN VALUE WINS
+/// WHERE THE GAME RESTATES IT: a Blades sword's update (`sub_825A63A8`) restates its scale and
+/// alpha every frame, and deaths 5/6/7 ramp alpha to 0 through `sub_82681868` — a value stated on
+/// such an entity holds for one frame. Guest tick thread only; true when the entity has a renderable.
+///
+/// Alpha: `sub_82573220(comp3, f1)` (disc `sub_82547EC8`): stores +112 (`stfs f31,0x70(r31)`
+/// 0x825732cc), skips an equal value (`fcmpu/beq` 0x82573244), and crossing 1e-4 either way
+/// (flt_82099A80, 0x82573254..60) re-registers the drawable (`sub_825728E8`) and flips bits
+/// 0x10/0x80 at +0x90 — so 0 hides the body and anything above 1e-4 shows it again. Takes 0..1;
+/// below 0 is 0, above 1 is 1.
+extern "C" int32_t refii_mod_entity_alpha(PPCContext* ctx, uint8_t* base, uint32_t entity, float alpha);
+
+/// Scale: `sub_82573078(comp3, f1)` (disc `sub_82547D20`): stores +108 (`stfs f1,0x6C(r31)`
+/// 0x825730c0) unless within 0.003 of the old value (flt_82099054, 0x82573094..a8), then tells the
+/// entity's placement (vtable slot 43, 0x825730f8..108: the bounds follow). Positive, finite; the
+/// renderable is scaled about its origin. Refused without a placement.
+extern "C" int32_t refii_mod_entity_scale(PPCContext* ctx, uint8_t* base, uint32_t entity, float scale);
+
+/// Saturation mask: `sub_822B8188(comp3, r4)` (disc `sub_822B7EA8`), byte +196 (`stb r4,0xC4(r31)`
+/// 0x822b81b0), the flag the title's shaders take as "draw desaturated" (Engine_EntityAppearance
+/// carries it as kAppearanceSaturation). `on` non-zero sets it; 0 is the constructor's.
+extern "C" int32_t refii_mod_entity_saturation_mask(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t on);
+
+/// Drawable: `sub_825725A8(comp3, r4)` (disc `sub_82547250`), byte +197 (`stb r4,0xC5(r31)`
+/// 0x825725cc): 0 takes the body out of the drawn set (bit 0x80 at +0x90, `sub_825728E8`
+/// 0x825725dc), 1 (the constructor's) puts it back; the entity itself keeps simulating.
+extern "C" int32_t refii_mod_entity_drawable(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t on);
+
+// ---------------------------------------------------------------------------------------------
+// The target lock: what the game's own LT does, as calls. Both players are principals.
+// ---------------------------------------------------------------------------------------------
+
+/// Locks `player`'s (1 or 2) hero on `entity`, or with 0 on the game's own pick. Three of the
+/// game's own switches, in the order the game flips them:
+///   - `entity` given: the targeting component's (77) SetTarget, vtable slot 19 (`sub_82845120`,
+///     the TargetChanged event's seam), which refuses an entity not in the world (+0x90 & 0x40,
+///     0x828451b0) and marks it targeted-by-player (`sub_82427FD0` 0x828452f4).
+///   - the FORCE byte, comp77 +0x14 — `Targeting.SetForceTargetLock`, `sub_8290F078` = `stb
+///     r4,0x14(r3); blr` (disc `sub_82455F10`): while it is set and a target exists the component's
+///     8-tick update (`sub_82181EA0`) adds player mode 4 TARGET_LOCK (0x821821dc..0x82182274),
+///     the mode that outlines the target and makes the camera's look flicks switch target; with
+///     no target it re-selects one each pass (slot 35, 0x82182070).
+///   - the look-at flag, through the player component's (33) own writer
+///     `rex_CPlayer_SetLookAtButtonDown(comp33, 1)` (`stb r29,0x20(r30)`), which every lock camera
+///     script reads and which re-picks the camera mode.
+/// A held LT states the same three. True when the hero has both components. Guest tick thread only.
+extern "C" int32_t refii_mod_lock_target(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t entity);
+
+/// Ends the lock refii_mod_lock_target stated: the force byte cleared and the look-at flag
+/// written 0. The targeting update then drops player mode 4 on its next pass (`+112 && !+20` ->
+/// `sub_82389CD0(handle, 4)`, 0x82182290..0x821822a4, within 8 ticks). It cannot end a lock the
+/// player is holding LT for — that is the trigger's. True when the hero has both components.
+extern "C" int32_t refii_mod_release_lock(PPCContext* ctx, uint8_t* base, int32_t player);
+
+/// Switches `player`'s locked target to the next one left (`left` non-zero) or right: the
+/// targeting component's slot 49 `sub_82844DF0` (what the camera's `CheckForBetterTargetInDirection`
+/// calls), which seeds the direction from the current target (0x82844e44..0x82844e9c), re-selects
+/// (slot 35), and keeps the old target when nothing better is found (0x82844f34..0x82844f74). The
+/// sign is the stick's: 0x82844eac..0x82844ebc turn `left` into -1 / +1, and the scorer favours
+/// the right for +1 (see src/vfs/src/hooks/mouse_look.cpp). Returns the target held afterwards,
+/// 0 when none. Without a current target the call picks nothing (the direction needs one).
+extern "C" uint32_t refii_mod_switch_target(PPCContext* ctx, uint8_t* base, int32_t player, int32_t left);
+
+/// The entity `player`'s hero is locked on — the targeting component's own GetTarget (slot 17)
+/// while the lock holds: player mode 4 (`sub_821E8B90(*(comp33+0x14), 4)`, disc `sub_821E8870`,
+/// the HasPlayerMode every script asks) or the force byte set. 0 otherwise, so a target merely
+/// in the reticle is not reported. Guest tick thread only.
+extern "C" uint32_t refii_mod_locked_target(PPCContext* ctx, uint8_t* base, int32_t player);
+
+// ---------------------------------------------------------------------------------------------
+// Status effects: the spells' own per-victim installers, without the spell.
+// ---------------------------------------------------------------------------------------------
+
+/// Status kinds, the StatusEffect event's numbering: 1 electrified (component 205 CECElectrified),
+/// 2 chaos (206 CECInChaos), 3 burning (208 CECOnFire), 4 in a vortex (209 CECInVortex).
+#define REFII_STATUS_ELECTRIFIED 1
+#define REFII_STATUS_CHAOS 2
+#define REFII_STATUS_BURNING 3
+#define REFII_STATUS_VORTEX 4
+
+/// Puts status `kind` on `entity` for `seconds` at `level` (0..4, the spell level the component
+/// records), as the spell's own hit would, through the installer each spell calls — each adds the
+/// component itself (`sub_8238CD68(entity, "CEC…", 0)`), each refuses an entity not in the world
+/// (+0x90 & 0x40), and the StatusEffect event fires from the add:
+///   - electrified: `rex_SpellLightning_Electrify` `sub_82742FA8` (disc `sub_827180A8`): r3 source,
+///     r4 victim, r5 serial, r6 level; f1 duration -> +40, f2 total damage -> +52 as damage/second
+///     (0 here: a status, not a hit), f3 first-tick delay -> +60, f4 tick interval -> +64, f5 -> +68
+///     (`sub_8294CE50` 0x8294ce98..0x8294cef8); gated by the world's spell-count table
+///     (`sub_8260D988(*(W+0x38), 2)` 0x82743040) like the spell.
+///   - chaos: `rex_SpellChaos_ApplyToVictim` `sub_8274A230` (disc `sub_8271F330`): r3 source, r4
+///     victim, r5 serial, r7 is-creature, r8 0 (not a replica: co-op sends it, 0x8274a494..);
+///     f1 seconds; v1 the victim's position. Its FX and a zero-damage chaos hit (flags 0x10000,
+///     0x8274a448) take their direction from the SOURCE's body, so `source` must be an entity:
+///     0 makes the victim its own source.
+///   - burning: `rex_SpellFireball_Ignite` `sub_82747260` (disc `sub_8271C360`): r3 victim, r4
+///     source, r5 serial, r6 level; f1 strength (1), f2 falloff (0: no distance loss), f3 burn
+///     time = seconds, f4 burn damage (0), f5 heat (1); v1 the victim's position; and three bytes
+///     the fireball's impact leaves in ITS caller's frame, read as 0x120+arg_6F/74/7F
+///     (0x827473d8..ec): +0x6F 1 and +0x7F 1 as `rex_TargetedFireball_Impact` stores them (`li
+///     r24,1` 0x82744254 -> var_F1/var_101), +0x74 0 (no level threshold, 0x82747654). +0x7F is
+///     what makes a creature flail (+102/+92/+84, 0x82747734..4c) and what co-op replicates.
+///   - vortex: refused (0). A vortex holds a creature by a weak reference its component inserts
+///     from its own update; there is no installer to call.
+/// `seconds` positive and finite, else refused. The serial every one records is -1, a hit's
+/// "no cast". Returns 1 when the installer ran. Guest tick thread only.
+extern "C" int32_t refii_mod_apply_status(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t kind,
+                                          float seconds, int32_t level, uint32_t source);
+
+/// Ends status `kind` on `entity` through the game's own remover — the one its expiry and a
+/// death call, which stops the component's FX and removes it (the StatusEffect ended event
+/// fires): electrified `sub_827427B8` (disc `sub_827178B8`: `sub_8294ECC8`, +12 = 0, RemoveComponent
+/// 205), chaos `sub_82749F38` (disc `sub_8271F038`: `sub_828F7CB8/AE0`, RemoveComponent 206),
+/// burning `sub_827469A8` (disc `sub_8271BAA8`: `sub_825FBF38`, RemoveComponent 208). Vortex is
+/// refused: the vortex releases what it holds. True when the status was present. Guest tick only.
+extern "C" int32_t refii_mod_clear_status(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t kind);
+
+/// Whether `entity` carries status `kind`: its component is present (the presence bits at
+/// entity+0x24). Any thread.
+extern "C" int32_t refii_mod_has_status(uint8_t* base, uint32_t entity, int32_t kind);
+
+// ---------------------------------------------------------------------------------------------
+// Knockback and stagger: a hit of the game's own shape through its one receiver.
+// ---------------------------------------------------------------------------------------------
+
+/// Knocks `entity` down and away along `dir` (xyz, the guest's axes; its length times `force` is
+/// the vector the hit carries), as a Force Push does: the hit `sub_828B4650` builds (0x828b4954..
+/// 0x828b49f4) — knockdown byte +0x18 = 1, unblockable +0x19 = 1, damage +0x38 = 0, flags +0x40 =
+/// 0x20000, kind +0x50 = 3, spell type +0x54 = 6, +0x58 = 1, origin +0x70 = the victim less the
+/// vector, +0x90 = the vector, +0xA0 = its negation, +0xC0 = "ResponseToKnockdownUp" — built by the
+/// hit's own constructor `sub_825C4958` (disc `sub_824831E8`, 212 bytes, the counter at
+/// dword_83497088), named through `sub_82275438`, given to `rex_CECHitReceiver_OnHit(comp31, hit,
+/// 1)` and destroyed by `sub_823919C0` (disc `sub_8237D608`). The victim's hit-response listener
+/// takes the knockdown (`sub_82689268`, 0x8295e7ec) unless the creature cannot be knocked down
+/// (comp36 +307, comp31 slot 41: 0x8295e34c..0x8295e384). The hit has no attacker. Hit and
+/// HitLanded fire for it; HitResponse does not (a stated knockback is already the mod's
+/// decision). Refused when the receiver drops hits (comp31 +0x18/+0x19). True when the hit was
+/// delivered. Guest tick thread only. Whether the knockdown's physics scales with the vector's
+/// length is unproven: the direction is read, the magnitude may be normalised away.
+extern "C" int32_t refii_mod_knockback(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* dir, float force);
+
+/// Staggers `entity`: the same hit with the knockdown byte clear, no flags and the constructor's
+/// melee kind, so the listener plays the flinch (`sub_828B6F38`, 0x8295e854) — the GetHit a
+/// 0-damage melee tap plays. Blockable like one (+0x19 = 0). Hit and HitLanded fire; HitResponse
+/// does not. True when delivered. Guest tick thread only.
+extern "C" int32_t refii_mod_stagger(PPCContext* ctx, uint8_t* base, uint32_t entity);
+
+// ---------------------------------------------------------------------------------------------
+// Sound: the game's own cue player and its music box.
+// ---------------------------------------------------------------------------------------------
+
+/// Plays audio cue `cue` on `entity`, as the shipped scripts' `Sound.PlayEvent(entity, cue, tag)`
+/// does: its native `sub_82431A50` builds the cue record from an LHString (`sub_822671A8`, disc
+/// `sub_82267168`: flags |= 3, the name copied, +8 = FNV-1 of its upper case `sub_8228A9D8`) and
+/// calls `sub_821D9608(out[2], comp135, cue, LHString* tag)` (disc `sub_821D9258`, the same 62
+/// instructions): the entity's sound component (135, what PlayEventOnHero `sub_823BA910` looks up
+/// at 0x823ba99c) lazily gets an emitter at +44 from `sub_829FD018(sound manager, v1 = the
+/// placement's position)` (0x821d9664), the cue's hash must be in the loaded banks
+/// (`sub_82287DE0(manager+12, hash)` 0x821d9698, else 0), and `sub_821E0F48` (disc `sub_821E0B08`)
+/// starts a voice on the emitter, recorded under `tag` in the emitter's voice list
+/// (`sub_821D53B8`). `out[0]` is the voice, released at once (`sub_82C05EF8`) as the native does.
+/// An entity without component 135 plays at its position instead (refii_mod_play_sound_at). `tag`
+/// (may be "") is what refii_mod_stop_sound matches. Cue names are the audio banks' event names
+/// (docs/mod_api.md, Sound); the cue's own volume and attenuation apply — there is no volume
+/// argument, the game's player has none. True when a voice started. Guest tick thread only.
+extern "C" int32_t refii_mod_play_sound_on(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* cue,
+                                           const char* tag);
+
+/// Plays `cue` at a world point: an emitter of our own from the game's `sub_829FD018(manager, v1 =
+/// xyz)` (disc `sub_829F8250`), the cue validated as above and started on it by `sub_821E0F48`, under
+/// `tag`. The API keeps eight such emitters: the ninth play frees the oldest through the manager's
+/// own `sub_829FD168(manager, emitter)` (disc `sub_829F83A0`: the emitter's destroy, the `bctrl`
+/// at 0x829fd208, and its list node freed), ending whatever it still played. True when a voice
+/// started.
+extern "C" int32_t refii_mod_play_sound_at(PPCContext* ctx, uint8_t* base, const float* xyz, const char* cue,
+                                           const char* tag);
+
+/// Stops the voices tagged `tag` on `entity`'s emitter (its component 135's +44), or with entity 0
+/// on every point emitter refii_mod_play_sound_at made, fading over `fade_ms` milliseconds: the
+/// body of `Sound.StopSoundCategoryPlaying(entity, tag, ms)` — `sub_829FDEF0(emitter, LHString*
+/// tag, ms)` (disc `sub_829F9128`) walks the emitter's voice list and calls slot 8 `(voice, ms, 0)`
+/// on each whose tag equals (`LHString_CBasicString_char_operator` 0x829fdf98, `lwz r10,0x20(r11)`
+/// and the `bctrl` at 0x829fdfd4). True when an emitter was walked.
+extern "C" int32_t refii_mod_stop_sound(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* tag,
+                                        int32_t fade_ms);
+
+/// Starts music cue `name` through the game's own `SoundTools.PlayMusic` body, `sub_8255BB28`
+/// (disc `sub_825204B0`, the same 61 instructions; r3 = an LHString slot): refused (0) unless
+/// the name is a known cue (`sub_82C02B40` 0x8255bb64), noted in the music box (game+140,
+/// `sub_82349A60`, 0x8255bbe8) when it is listening, and played in the manager's category 3
+/// (`sub_829FCCA0(manager, 3, name)`). What `MUSIC_*` cues the quest scripts start. True when
+/// the manager took it. Guest tick thread only.
+extern "C" int32_t refii_mod_play_music(PPCContext* ctx, uint8_t* base, const char* name);
+
+/// Stops music cue `name`: `SoundTools.StopMusic`'s body `sub_8255BC20` (disc `sub_825205A8`,
+/// 20 instructions): the music box told (`sub_82336020`) and category 3's stop with the game's
+/// 2000 ms fade (`sub_829FCD50`, 0x829fcdb4). Guest tick thread only.
+extern "C" int32_t refii_mod_stop_music(PPCContext* ctx, uint8_t* base, const char* name);
+
+// ---------------------------------------------------------------------------------------------
+// Animation: a named animation as a scripted action, the entry the shipped AI uses.
+// ---------------------------------------------------------------------------------------------
+
+/// Plays animation `name` on `entity` the way `BehaviourBase:PlayAnimation` (ai/aibase.lua) does:
+/// `Action.SetCurrentAction(entity, { Type = EScriptableAction.PLAY_ANIMATION (0), Anim = name,
+/// OverrideLooking = true, SpeedMultiplier = speed, BlendInTime = blend_seconds })`, run in the
+/// game VM — the native (`sub_82960FD8`'s binding, `sub_822BF530` → the action component's slot 33
+/// with a Lua table reference) builds the action from the table: the base parser `sub_8229DC48`
+/// reads Target, Priority, BlendInTime (0.1), BlendOutTime, OverrideLooking, IsComboBreak,
+/// IsPrelude, KillFXOnFinish, CanBeOverridenBySamePriority; the animation parser Anim and
+/// SpeedMultiplier. `loops` above 1 wraps it as `PlayLoopedAnimation` does: `{ Type = BATCH (16),
+/// LoopAction = <it>, NumLoops = loops, KillFXOnFinish = true }` (`sub_829CEDA0` reads NumLoops,
+/// IntoAction, LoopAction, OutOfAction; the two we leave out are unproven to be optional). The
+/// evaluator then plays it and the pose feed shows it. `name` is a GDB animation record name
+/// (letters, digits, '_'; docs/mod_api.md, Animation). True when the chunk ran — not whether the
+/// action was accepted (a higher-priority action keeps the body). Guest tick thread only.
+extern "C" int32_t refii_mod_play_animation(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* name,
+                                            int32_t loops, float blend_seconds, float speed);
+
+/// Ends `entity`'s scripted actions: `Action.FinishScriptedActions(entity)` (`sub_829647F0`), what
+/// the shipped behaviours call to cut a played animation. True when the chunk ran.
+extern "C" int32_t refii_mod_stop_animation(PPCContext* ctx, uint8_t* base, uint32_t entity);
+
+// ---------------------------------------------------------------------------------------------
+// Opinion and deeds: the game's own setters, per hero.
+// ---------------------------------------------------------------------------------------------
+
+/// Moves `villager`'s opinion of `hero` on `axis` (0 love, 1 fear, 2 attractiveness, 3 morality,
+/// 4 respect — EOpinionAxes) by `delta`, through the game's own `OpinionReaction.ModifyAxisValue`
+/// (`sub_827915D8`, named rex_CECOpinionReaction_ModifyAxisValue on both builds): `+24 + 4*axis
+/// += f1` then clamped to [-1, 1] (`fadds f13,f0,f1` 0x827915fc, the two `fsel` 0x8279162c/4c).
+/// For player two's hero the write lands in THEIR block (the opinion scope the co-op core keeps,
+/// refii_mod_opinion_enter); the opinion_modified event fires with that player. True when
+/// written. Guest tick thread only.
+extern "C" int32_t refii_mod_modify_opinion(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero,
+                                            int32_t axis, float delta);
+
+/// Tells `villager` that `hero` did deed `deed` (a GDB Deed record's hash, e.g. Refii.hash of
+/// "Generic_Scary"): the message `Debug.PostGenericDeed` (ai/opinionsdebug.lua) posts, through the
+/// game's own poster `sub_82279B80(messages, 50 = MESSAGE_EVENT_DEED_PERSON, &pos, from = hero,
+/// to = villager, lifespan 101, extra_data = the record's id — its first word, what
+/// RecordPtr:GetID `sub_827E60A0` answers)`, pos the hero's position. The villager's opinion
+/// component takes it in OnDeed (`sub_82786F58`: +0x20 the deed, +0x34 the kind, +0x40 the doer)
+/// — its strength, its kind and whether this villager cares are the Deed record's and the game's
+/// rules; the opinion_deed event fires, routed to the doer's player. Whether `to` narrows delivery
+/// to this villager alone is unproven (the shipped debug post names no target). Refused when the
+/// hash names no record. True when posted. Guest tick thread only.
+extern "C" int32_t refii_mod_add_deed(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero, uint32_t deed);
+
+// ---------------------------------------------------------------------------------------------
+// NPC behaviour: the entries the shipped quests and AI scripts order a creature with, run in the
+// game VM against Refii.entity(handle). Every one is the game's own Lua-side or native entry, so
+// the AI mind sees the order as a quest's; a behaviour the mind runs later (combat, a cutscene)
+// may retake the body, which the call cannot see. True when the chunk ran. Guest tick thread only.
+// ---------------------------------------------------------------------------------------------
+
+/// `entity` follows `target` at `radius` metres as a quest's `Follow.FollowEntity(e, t, 2.0)`
+/// orders it (qr_assassination.lua): the follow component's native `sub_825E33D0` (disc
+/// `sub_82456568`, 147 instructions both) — the target's weak reference into +28
+/// (`sub_82214898` / `sub_824D1EC8`), +24 = radius (`stfs` 0x825e3484), +17 = 1 "for script",
+/// +12 = 1 following, then `sub_825E42C8`; BehaviourFollow then walks it with
+/// `MoveToEntityNoWaitForFollowing`. `radius` <= 0 is the quests' 2.
+extern "C" int32_t refii_mod_npc_follow(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t target, float radius);
+
+/// `entity` walks to `xyz` as a quest's `ScriptFunction.StartScriptControlledMovement(e, pos,
+/// false)` orders it (quests/miscfunctions.lua main.25): `AIManager:SetScriptMoveToPosAndDir`
+/// (so BehaviourScriptMoveToPos owns the walk) and `Navigation.MoveToPosition(e, { position,
+/// radius = Debug.MOVE_TO_POS_BODGE_DIST, speed })` (`sub_821B9DF0`, disc `sub_821B9ED0`: the
+/// table's position / radius / speed / check_destination keys). Not waited for.
+extern "C" int32_t refii_mod_npc_go_to(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* xyz);
+
+/// `entity` runs from `from` as `BehaviourBase:FleeFromEntityNoWait` (ai/aibase.lua main.41)
+/// does: `Navigation.FleeFromEntity(e, from, ENavigationSpeed.NAV_SPEED_SPRINT, true)` — the
+/// navigation component's `sub_82663FF8` (disc `sub_82674C08`, 67 instructions both): mode +168
+/// = 3, kind +172 = 2 flee, the target's weak reference and +640 = from (0x826640e0). The AI's
+/// own BehaviourFlee repeats this call each tick while it flees; ours is one order.
+extern "C" int32_t refii_mod_npc_flee(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t from);
+
+/// `entity` attacks `target` as the quests order it: `CombatRegister:SetScriptTarget(e, t, true,
+/// false)` (ai/combatregister.lua main.19) — `Faction.AddTemporaryEntityRelationship(e, t,
+/// FACTION_STATUS_ENEMY)` then the combat info's `ScriptTarget` = t, `IgnoreChaseRadius` = true,
+/// which the combat behaviours' `FindTargetForCombatant` takes before any other target. Refused
+/// by the script (an error, false back) for a dead or non-combatant entity.
+extern "C" int32_t refii_mod_npc_attack(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t target);
+
+/// `entity` holds `other` (a hero or any entity) as an enemy (`on`) or no longer: the faction
+/// component's own `Faction.AddTemporaryEntityRelationship(e, other, EFactionStatus.FACTION_STATUS_ENEMY)`
+/// (`sub_824D2F90`, disc `sub_82540398`, 354 instructions both: status 4 moves `other` into the
+/// enemy list at comp+36 and out of the ally/neutral lists; `IsMyEnemy` 0x824d2f30 is
+/// `sub_82203F98(..) == 4`, ally 2, neutral 1) or `RemoveTemporaryEntityRelationship` (`sub_824D3518`,
+/// disc `sub_82540920`: out of all three). Per hero: player two's hero is its own `other`.
+extern "C" int32_t refii_mod_npc_set_hostile(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t other, int32_t on);
+
+/// Ends every order above: `Follow.StopFollowing(e)` (`sub_825E3660`, disc `sub_82456800`),
+/// `ScriptFunction.StopScriptControlledMovement(e)` (`AIManager:ClearScriptMoveToPos` and
+/// `Navigation.StopMoving` — `sub_821AFFB8`, disc `sub_821B01D0`: modes +168/+172 = 0, the
+/// target cleared, +608 = 3), `CombatRegister:ClearScriptTarget(e)` (the enemy relationship removed).
+/// The AI mind then picks its next behaviour itself — idle, or whatever its group mind says.
+extern "C" int32_t refii_mod_npc_stop(PPCContext* ctx, uint8_t* base, uint32_t entity);
+
+// ---------------------------------------------------------------------------------------------
+// Time of day and weather: the game clock's own setter and the environment-theme blend.
+// ---------------------------------------------------------------------------------------------
+
+/// Sets the game clock to `hours` (0..24, 13.5 = half past one) through `Timing.SetTimeOfDayAbsolute`'s
+/// body `sub_82515AA0` (disc `sub_8249A790`, 41 instructions both; r3 = the time manager, f1 = the
+/// day fraction): `stfs f1,4(r3)` then the clamp to [0, 1] (`fsel` 0x82515aec / 0x82515b0c,
+/// `stfs f7,4(r3)` 0x82515b10), and in an online session (`*(*(root+12)+0x8C)` bytes +0x34 and
+/// +0x35) `sub_82516670` tells the partner. The manager is what the Timing natives are bound to:
+/// `*(*(*(*(root+0xC)+0x58)+4)+0x14)` (the binding site 0x82459000..14, disc 0x825ad218..2c).
+/// The time_of_day event fires from the clock's next update. True when set.
+extern "C" int32_t refii_mod_set_time_of_day(PPCContext* ctx, uint8_t* base, float hours);
+
+/// The game clock in hours (0..24): the manager's day fraction at +4 (what `Timing.GetTimeOfDay`
+/// `sub_8288B918` answers) times 24. False, and 0, with no world.
+extern "C" int32_t refii_mod_time_of_day(uint8_t* base, float* hours);
+
+/// Blends the GAME's environment theme — its weather and sky look — as the quests do:
+/// `EnvironmentTheme.BlendToEnvironmentTheme(theme, weight, seconds)` (qc090_garth.lua:
+/// `("EnvThemeWestcliffNight", 1.0, 1.0)` in, `(.., 0.0, 1.0)` out), the native the mod event
+/// hooks (`sub_82549B80`, rex_lhEnvironmentThemeManager_BlendToTheme; r3 the theme manager, r4 the
+/// name, f1 weight, f2 seconds), so weather_theme fires and a handler may cancel it. `theme` is an
+/// environment-theme record's name (`EnvTheme*`; docs/mod_api.md, Time and weather). The Dynamic
+/// Sky's own weather override (`Engine_DynamicSky.WeatherKey`) is the HOST's switch, not this.
+/// True when the chunk ran. Guest tick thread only.
+extern "C" int32_t refii_mod_set_weather(PPCContext* ctx, uint8_t* base, const char* theme, float weight, float seconds);
 
 /// Changes `entity`'s health by `delta` (negative to hurt) through the game's own Modify, the
 /// function every heal and damage goes through: clamps, stats, the death at zero with
@@ -543,6 +888,14 @@ typedef struct refii_mod_fx_options {
   /// no drawn body of its own (a vortex, a fireball's shot) is followed by position only, the
   /// effect unrotated and the offset in the guest's world axes.
   float offset[3];
+  /// A HELPER POINT of the entity's model (refii_mod_play_fx_on): the name of a `.mdl.gmd`
+  /// attachment or node — a sword's "Weapon.Weapon.Top" / "Weapon.Weapon.Hold", a creature's
+  /// "Character.Carry.Hand.Right" — and the effect stands there, in the helper's own frame (its
+  /// position AND orientation when the gmd states one), `offset` along the helper's axes; on a
+  /// rigged body it hangs on the bone the helper hangs from, so it follows the pose. Null or ""
+  /// is the entity's own frame. An unknown name is warned once and the entity's frame used.
+  /// Under the classic look the helper's REST-pose point is folded into the offset.
+  const char* at;
 } refii_mod_fx_options;
 
 inline refii_mod_fx_options refii_mod_fx_default_options(void) {
@@ -568,6 +921,76 @@ extern "C" uint32_t refii_mod_play_fx_on(const char* name, uint32_t entity, cons
 
 /// Stops a played effect by the id play_fx returned — any surface's id: native, Lua or Godot.
 extern "C" void refii_mod_stop_fx(uint32_t id);
+
+/// refii_mod_play_fx_on at the model helper `helper` (options->at, see refii_mod_fx_options): the
+/// convenience form, options->at replaced by `helper`.
+extern "C" uint32_t refii_mod_play_fx_at(const char* name, uint32_t entity, const char* helper,
+                                         const refii_mod_fx_options* options);
+
+// ---------------------------------------------------------------------------------------------
+// Lights: a mod's omni light, placed as an effect is (posted as REFII_MOD_HOST_FX_KIND)
+// ---------------------------------------------------------------------------------------------
+
+/// The options of refii_mod_light. Zero-initialise and set what you need.
+typedef struct refii_mod_light_options {
+  /// From the entity, along its own axes (or the helper's when `at` names one), as
+  /// refii_mod_fx_options.offset; ignored for a world point.
+  float offset[3];
+  /// A helper point of the entity's model, as refii_mod_fx_options.at ("Weapon.Weapon.Top"): the
+  /// light stands there, on a rigged body on the helper's bone. Null or "" is the entity's frame.
+  const char* at;
+  /// 0..1: a waver of the energy (a torch, a brazier); 0 is steady.
+  float flicker;
+} refii_mod_light_options;
+
+/// Places an omni light of colour `rgb` (0..1 each) at `energy` (1 is a placed lamp's) reaching
+/// `range` metres (0: 6), on `entity` (an address; its handle crosses) in the entity's own frame
+/// — riding the body and gone with it — or, with entity 0, at the world point `xyz` (the guest's
+/// axes). Under the modern look it is a Godot light like the FX feed's own; under the classic look
+/// it joins the guest's light list for every draw its sphere meets (Engine_ModLights). Returns the
+/// id refii_mod_light_remove takes (0 for no colour). Any thread; it appears on Godot's next frame.
+extern "C" uint32_t refii_mod_light(uint32_t entity, const float* xyz, const float* rgb, float energy, float range,
+                                    const refii_mod_light_options* options);
+
+/// Removes a mod light by the id refii_mod_light returned — any surface's id.
+extern "C" void refii_mod_light_remove(uint32_t id);
+
+// ---------------------------------------------------------------------------------------------
+// HUD: a mod's world markers, screen fades and meters, drawn by Godot (posted as REFII_MOD_HOST_UI_KIND)
+// ---------------------------------------------------------------------------------------------
+
+/// Puts a marker on the HUD's world-icon channel for `player` (1 or 2; 0 for every player this
+/// machine plays) over `entity` (an address; its handle crosses) or, with entity 0, at the world
+/// point `xyz` (the guest's axes): `icon` a game texture path ("art/gui/.../x.tex") or a PNG of an
+/// enabled mod ("art/x.png"), `text` a line under it (null or "" for none). It rides the drawn
+/// body, is placed as the game's own icons are (each player's camera and half), and is sized by
+/// the game's own distance curve. Returns the id refii_mod_unmark takes (0 for no icon). A
+/// marker on an entity goes when the entity does. Any thread.
+extern "C" uint32_t refii_mod_mark(int32_t player, uint32_t entity, const float* xyz, const char* icon,
+                                   const char* text);
+
+/// Removes a marker by the id refii_mod_mark returned — any surface's id.
+extern "C" void refii_mod_unmark(uint32_t id);
+
+/// Fades `player`'s screen (1 or 2; 0 for every player this machine plays) to black
+/// (`to_black` non-zero) or back from it over `seconds` (0: at once): a host-drawn layer over that
+/// player's half (their whole window alone or online), independent of the game's own fade, which
+/// level changes own. Returns 1 when posted. Any thread.
+extern "C" int32_t refii_mod_fade(int32_t player, int32_t to_black, float seconds);
+
+/// Shows or updates the HUD meter `id` for `player` (1 or 2; 0 for every player this machine
+/// plays): `label` above a bar at `value` of `max` (a timer, a boss bar), in `style` "bar" (null
+/// or "": the HUD's gold bar), "boss" (wide, red, centred) or "timer" (narrow) — the HUD's own
+/// primitives — or in the game's own meter art, "generic" (hud.bgf's GenericMeter, the ornate bar),
+/// "crucible" (CrucibleMeter, the plain red bar) or "price" (PriceWidget, the bowl with the value as
+/// a number): a copy lit on its own fader slide, the shipped original left as authored. Meters stack
+/// under the top of the player's screen in the order first shown; the same id restates it in
+/// place. Returns 1 when posted (0 for no id). Any thread.
+extern "C" int32_t refii_mod_meter(int32_t player, const char* id, const char* label, float value, float max,
+                                   const char* style);
+
+/// Removes the meter `id` from every player's HUD. Returns 1 when posted.
+extern "C" int32_t refii_mod_meter_remove(const char* id);
 
 // ---------------------------------------------------------------------------------------------
 // The UI: a mod's menus, message boxes, notices and menu boxes, drawn by Godot (posted as REFII_MOD_HOST_UI_KIND)

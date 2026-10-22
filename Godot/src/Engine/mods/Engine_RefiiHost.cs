@@ -131,6 +131,7 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void mod_menu_boxEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void mod_abilityEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void spell_pickEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void partner_messageEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
 	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
@@ -162,6 +163,7 @@ public partial class RefiiHost : Node
 		"mod_message_box",
 		"mod_notice", "mod_menu_box",
 		"mod_ability", "spell_pick",
+		"partner_message",
 	};
 
 	public const string SingletonName = "RefiiHost";
@@ -456,6 +458,7 @@ public partial class RefiiHost : Node
 	{
 		ClearVerdicts();
 		Refii.Fx.Engine_FxPlayer.StopAll();
+		Refii.Lighting.Engine_ModLights.Clear();
 		if (_maskSent)
 		{
 			HostBridge.SetModEventMask(0);
@@ -551,6 +554,7 @@ public partial class RefiiHost : Node
 		}
 
 		Refii.Fx.Engine_FxPlayer.Pump(delta);
+		Refii.Lighting.Engine_ModLights.Pump(delta);
 	}
 
 	private void TrackHero(int kind, Godot.Collections.Dictionary e)
@@ -695,6 +699,152 @@ public partial class RefiiHost : Node
 	public void entity_untint(long entity) => Post($"entity_untint {entity}");
 
 	/// <summary>
+	/// An entity's opacity 0..1 through the game's own SetAlpha (refii_mod_entity_alpha); 1 is the
+	/// constructor's. An entity whose own update restates its alpha (a Blades sword, a dying
+	/// creature) keeps the game's value.
+	/// </summary>
+	public void entity_alpha(long entity, float alpha) => Post($"entity_alpha {entity} {Num(alpha)}");
+
+	/// <summary>An entity's uniform scale through the game's own SetScale (refii_mod_entity_scale); 1 is the constructor's.</summary>
+	public void entity_scale(long entity, float scale) => Post($"entity_scale {entity} {Num(scale)}");
+
+	/// <summary>The renderable's saturation mask (refii_mod_entity_saturation_mask): drawn desaturated while on; off is the constructor's.</summary>
+	public void entity_saturation_mask(long entity, bool on) => Post($"entity_saturation_mask {entity} {(on ? 1 : 0)}");
+
+	/// <summary>Whether the entity's body is drawn at all (refii_mod_entity_drawable); the entity keeps simulating. On is the constructor's.</summary>
+	public void entity_drawable(long entity, bool on) => Post($"entity_drawable {entity} {(on ? 1 : 0)}");
+
+	/// <summary>
+	/// Locks player 1 or 2's hero on <paramref name="entity"/>, or with 0 on the game's own pick
+	/// (refii_mod_lock_target): the game's force byte, look-at flag and SetTarget, what a held LT
+	/// states. <c>query locked_target P</c> answers the target held.
+	/// </summary>
+	public void lock_target(int player, long entity = 0) => Post($"lock_target {player} {entity}");
+
+	/// <summary>Ends the lock lock_target stated for player 1 or 2 (refii_mod_release_lock); a held LT is the trigger's.</summary>
+	public void release_lock(int player) => Post($"release_lock {player}");
+
+	/// <summary>Switches a player's locked target to the next one left or right (refii_mod_switch_target), the camera's own flick.</summary>
+	public void switch_target(int player, bool left) => Post($"switch_target {player} {(left ? 1 : 0)}");
+
+	/// <summary>
+	/// Puts a status on an entity for seconds (refii_mod_apply_status): kind 1 electrified, 2 chaos,
+	/// 3 burning (4, a vortex, is refused), at spell level 0..4, from <paramref name="source"/> (0:
+	/// the entity itself; chaos takes its direction from it). The status_effect event fires.
+	/// </summary>
+	public void apply_status(long entity, int kind, float seconds, int level = 0, long source = 0) =>
+		Post($"apply_status {entity} {kind} {Num(seconds)} {level} {source}");
+
+	/// <summary>Ends a status through the game's own remover (refii_mod_clear_status). <c>query has_status E KIND</c> asks.</summary>
+	public void clear_status(long entity, int kind) => Post($"clear_status {entity} {kind}");
+
+	/// <summary>
+	/// Knocks an entity down and away along a direction scaled by force (refii_mod_knockback): a
+	/// Force Push's own hit with no damage and no attacker through the game's one hit receiver.
+	/// </summary>
+	public void knockback(long entity, float x, float y, float z, float force = 1f) =>
+		Post($"knockback {entity} {Num(x)} {Num(y)} {Num(z)} {Num(force)}");
+
+	/// <summary>Staggers an entity: the flinch a 0-damage melee tap plays (refii_mod_stagger).</summary>
+	public void stagger(long entity) => Post($"stagger {entity}");
+
+	/// <summary>
+	/// Plays an audio cue on an entity through the game's own cue player (refii_mod_play_sound_on,
+	/// the body of the scripts' Sound.PlayEvent): the entity's sound component's emitter, or its
+	/// position when it has none. <paramref name="tag"/> is what stop_sound matches. The cue's own
+	/// volume applies; cue names are the audio banks' event names (docs/mod_api.md, Sound).
+	/// </summary>
+	public void play_sound(string cue, long entity, string tag = "") =>
+		Post($"play_sound {Word(cue)} {entity} {TagWord(tag)}");
+
+	/// <summary>Plays an audio cue at a world point on an emitter of the API's own (refii_mod_play_sound_at; eight kept, the oldest freed).</summary>
+	public void play_sound_at(string cue, float x, float y, float z, string tag = "") =>
+		Post($"play_sound_at {Word(cue)} {Num(x)} {Num(y)} {Num(z)} {TagWord(tag)}");
+
+	/// <summary>Stops the voices under a tag on an entity's emitter, or with entity 0 on the point emitters, fading over milliseconds (refii_mod_stop_sound).</summary>
+	public void stop_sound(long entity, string tag, int fade_ms = 0) =>
+		Post($"stop_sound {entity} {TagWord(tag)} {fade_ms}");
+
+	/// <summary>Starts a music cue through SoundTools.PlayMusic's own body (refii_mod_play_music): the MUSIC_* cues the quests start.</summary>
+	public void play_music(string name) => Post($"play_music {Word(name)}");
+
+	/// <summary>Stops a music cue with the game's 2 s fade (refii_mod_stop_music).</summary>
+	public void stop_music(string name) => Post($"stop_music {Word(name)}");
+
+	/// <summary>
+	/// Plays a named animation on an entity as the shipped AI does (refii_mod_play_animation):
+	/// Action.SetCurrentAction with a PLAY_ANIMATION action — Anim the GDB animation record's name,
+	/// SpeedMultiplier, BlendInTime — wrapped in a BATCH of <paramref name="loops"/> above 1. The
+	/// game's evaluator plays it and the pose feed shows it; a higher-priority action keeps the body.
+	/// </summary>
+	public void play_animation(long entity, string name, int loops = 1, float blend_seconds = 0.1f, float speed = 1f) =>
+		Post($"play_animation {entity} {Word(name)} {loops} {Num(blend_seconds)} {Num(speed)}");
+
+	/// <summary>Ends an entity's scripted actions, the played animation among them (refii_mod_stop_animation: Action.FinishScriptedActions).</summary>
+	public void stop_animation(long entity) => Post($"stop_animation {entity}");
+
+	/// <summary>
+	/// Moves a villager's opinion of a hero on an axis (0 love, 1 fear, 2 attractiveness, 3 morality,
+	/// 4 respect) by delta through the game's own ModifyAxisValue, clamped to [-1, 1]
+	/// (refii_mod_modify_opinion); player two's lands in their own opinion block; opinion_modified fires.
+	/// </summary>
+	public void modify_opinion(long villager, long hero, int axis, float delta) =>
+		Post($"modify_opinion {villager} {hero} {axis} {Num(delta)}");
+
+	/// <summary>
+	/// Tells a villager the hero did a deed (refii_mod_add_deed): the deed message the game's own
+	/// debug post sends, from the hero to the villager at the hero's position; the Deed record
+	/// (<paramref name="deed"/> its GDB hash, a "0x…" string or number) decides the strength and
+	/// kind, the villager's opinion component takes it, opinion_deed fires.
+	/// </summary>
+	public void add_deed(long villager, long hero, Variant deed) => Post($"add_deed {villager} {hero} {Arg(deed)}");
+
+	/// <summary>
+	/// An NPC follows a target as a quest's Follow.FollowEntity orders it (refii_mod_npc_follow):
+	/// the follow component's own entry, radius the quests' 2 by default; BehaviourFollow walks it.
+	/// </summary>
+	public void npc_follow(long entity, long target, float radius = 2f) => Post($"npc_follow {entity} {target} {Num(radius)}");
+
+	/// <summary>An NPC walks to a point as a quest's ScriptFunction.StartScriptControlledMovement orders it (refii_mod_npc_go_to); not waited for.</summary>
+	public void npc_go_to(long entity, float x, float y, float z) => Post($"npc_go_to {entity} {Num(x)} {Num(y)} {Num(z)}");
+
+	/// <summary>An NPC runs from an entity as the AI's BehaviourBase:FleeFromEntityNoWait does (refii_mod_npc_flee: Navigation.FleeFromEntity at sprint); one order, the AI may retake the body.</summary>
+	public void npc_flee(long entity, long from) => Post($"npc_flee {entity} {from}");
+
+	/// <summary>An NPC attacks a target as the quests order it (refii_mod_npc_attack: CombatRegister:SetScriptTarget — the enemy relationship and the combat info's ScriptTarget).</summary>
+	public void npc_attack(long entity, long target) => Post($"npc_attack {entity} {target}");
+
+	/// <summary>
+	/// An NPC holds another entity — a hero (player two's is its own) or anything — as an enemy, or no
+	/// longer (refii_mod_npc_set_hostile: Faction.AddTemporaryEntityRelationship FACTION_STATUS_ENEMY /
+	/// RemoveTemporaryEntityRelationship, the faction component's own lists).
+	/// </summary>
+	public void npc_set_hostile(long entity, long other, bool on) => Post($"npc_set_hostile {entity} {other} {(on ? 1 : 0)}");
+
+	/// <summary>Ends every order above (refii_mod_npc_stop: StopFollowing, StopScriptControlledMovement, ClearScriptTarget); the AI mind picks its next behaviour.</summary>
+	public void npc_stop(long entity) => Post($"npc_stop {entity}");
+
+	/// <summary>
+	/// Sets the game clock to hours 0..24 (refii_mod_set_time_of_day: Timing.SetTimeOfDayAbsolute's
+	/// body on the time manager, clamped, told to an online partner); <c>query time_of_day</c> reads it back.
+	/// </summary>
+	public void set_time_of_day(float hours) => Post($"set_time_of_day {Num(hours)}");
+
+	/// <summary>
+	/// Blends the GAME's environment theme — its weather and sky — as the quests do
+	/// (refii_mod_set_weather: EnvironmentTheme.BlendToEnvironmentTheme(theme, weight, seconds); the
+	/// weather_theme event fires). The Dynamic Sky's own weather override is the host's switch, not this.
+	/// </summary>
+	public void set_weather(string theme, float weight = 1f, float seconds = 1f) =>
+		Post($"set_weather {Word(theme)} {Num(weight)} {Num(seconds)}");
+
+	/// <summary>A name on a command line: no spaces (a space becomes '_'); empty is "-".</summary>
+	private static string Word(string name) =>
+		string.IsNullOrEmpty(name) ? "-" : name.Replace(' ', '_');
+
+	private static string TagWord(string tag) => Word(tag);
+
+	/// <summary>
 	/// Sets a player's SESSION value (<c>Refii.player_set</c>): the player store refii_mod_player_*
 	/// keeps, the same on both co-op machines. <paramref name="key"/> is "&lt;mod&gt;.&lt;name&gt;", no spaces.
 	/// </summary>
@@ -716,7 +866,7 @@ public partial class RefiiHost : Node
 	/// <summary>
 	/// Asks the guest a question (<c>health</c>, <c>position</c>, <c>gold</c>, <c>item_count</c>,
 	/// <c>experience</c>, <c>ability_level</c>, <c>relation</c>, <c>alive</c>, <c>definition</c>,
-	/// <c>name</c>, <c>level_name</c>, <c>hero</c>, <c>player_of</c>, <c>lua_int</c>, and the co-op
+	/// <c>name</c>, <c>level_name</c>, <c>hero</c>, <c>player_of</c>, <c>lua_int</c>, <c>time_of_day</c>, and the co-op
 	/// surface the Lua side answers: <c>player_for E</c> (who "the hero" is for E: a dog its master,
 	/// else the nearer hero), <c>world_here</c>, <c>combat_state P</c>, <c>local_hero</c>, <c>coop_mode</c>, <c>menu_player</c>,
 	/// <c>coop_state</c>, <c>player_value P KEY [FALLBACK]</c>, <c>player_here P</c>,
@@ -1095,6 +1245,258 @@ public partial class RefiiHost : Node
 	/// <summary>Stops a played effect by any surface's id (native, Lua or Godot); false when none plays under it.</summary>
 	public bool stop_fx(long id) => id > 0 && id <= uint.MaxValue && Refii.Fx.Engine_FxPlayer.Stop((uint)id);
 
+	// ---- lights: Godot draws them, the classic list takes them (Engine_ModLights) ----------------
+
+	/// <summary>
+	/// Places a mod light over <paramref name="target"/> — an entity HANDLE (int), or a Vector3 /
+	/// [x, y, z] world point in the guest's axes — in <paramref name="color"/> (Color or [r, g, b])
+	/// at <paramref name="energy"/> over <paramref name="range"/> metres. <paramref name="options"/>:
+	/// offset (Vector3 or [x, y, z], along the entity's axes), at (a model helper name: the light
+	/// stands at that .mdl.gmd point, on a rigged body on its bone — as play_fx_on's at), flicker
+	/// (0..1, a waver of the energy). Placed as play_fx_on places an effect, so it rides the body
+	/// and goes with the entity. Returns the id <see cref="light_remove"/> takes; 0 for an unknown
+	/// handle or target.
+	/// </summary>
+	public long light(Variant target, Variant color, double energy, double range, Godot.Collections.Dictionary? options = null)
+	{
+		uint handle = 0;
+		var point = Vector3.Zero;
+		switch (target.VariantType)
+		{
+			case Variant.Type.Int:
+			case Variant.Type.Float:
+			{
+				double raw = target.AsDouble();
+				if (raw is <= 0 or > uint.MaxValue)
+				{
+					return 0;
+				}
+
+				handle = (uint)raw;
+				break;
+			}
+
+			case Variant.Type.Vector3:
+				point = target.AsVector3();
+				break;
+
+			case Variant.Type.Array when target.AsGodotArray() is { Count: >= 3 } a:
+				point = new Vector3((float)a[0].AsDouble(), (float)a[1].AsDouble(), (float)a[2].AsDouble());
+				break;
+
+			default:
+				return 0;
+		}
+
+		Vector3 rgb = color.VariantType switch
+		{
+			Variant.Type.Color => new Vector3(color.AsColor().R, color.AsColor().G, color.AsColor().B),
+			Variant.Type.Vector3 => color.AsVector3(),
+			Variant.Type.Array when color.AsGodotArray() is { Count: >= 3 } c =>
+				new Vector3((float)c[0].AsDouble(), (float)c[1].AsDouble(), (float)c[2].AsDouble()),
+			_ => Vector3.One,
+		};
+		var offset = Vector3.Zero;
+		string at = string.Empty;
+		float flicker = 0f;
+		if (options is not null)
+		{
+			if (options.TryGetValue("offset", out Variant o))
+			{
+				offset = o.VariantType == Variant.Type.Vector3
+					? o.AsVector3()
+					: o.VariantType == Variant.Type.Array && o.AsGodotArray() is { Count: >= 3 } arr
+						? new Vector3((float)arr[0].AsDouble(), (float)arr[1].AsDouble(), (float)arr[2].AsDouble())
+						: Vector3.Zero;
+			}
+
+			if (options.TryGetValue("at", out Variant helper) && helper.VariantType == Variant.Type.String)
+			{
+				at = helper.AsString();
+			}
+
+			if (options.TryGetValue("flicker", out Variant waver) && waver.VariantType is Variant.Type.Float or Variant.Type.Int)
+			{
+				flicker = (float)waver.AsDouble();
+			}
+		}
+
+		return Refii.Lighting.Engine_ModLights.Place(
+			handle, point, new Color(rgb.X, rgb.Y, rgb.Z), (float)energy, (float)range, offset, at, flicker);
+	}
+
+	/// <summary>Removes a mod light by any surface's id (native, Lua or Godot); false when none stands under it.</summary>
+	public bool light_remove(long id) => id > 0 && id <= uint.MaxValue && Refii.Lighting.Engine_ModLights.Remove((uint)id);
+
+	/// <summary>
+	/// Sends <paramref name="mod"/>'s message <paramref name="name"/> with <paramref name="payload"/>
+	/// to THE OTHER MACHINE of an online session (refii_mod_send_to_partner, run on the guest tick
+	/// through <c>partner_send</c>): it arrives there as the <c>partner_message</c> event — on every
+	/// surface, Godot's signal included — once and in the order sent, with <c>from</c> the player this
+	/// machine plays. <paramref name="name"/> and <paramref name="mod"/> are words (letters, digits,
+	/// '_', '.', '-'; at most 32), the payload any text up to 256 bytes. False, and nothing sent,
+	/// outside an online session (alone or in local co-op there is no partner machine), for a bad
+	/// name, or a payload over the limit.
+	/// </summary>
+	public bool send_to_partner(string mod, string name, string payload = "")
+	{
+		if (_coopMode < 2 || string.IsNullOrEmpty(mod) || string.IsNullOrEmpty(name) ||
+			mod.Length > 32 || name.Length > 32 || mod.Contains(' ') || name.Contains(' '))
+		{
+			return false;
+		}
+
+		byte[] bytes = Encoding.UTF8.GetBytes(payload ?? string.Empty);
+		if (bytes.Length > 256)
+		{
+			return false;
+		}
+
+		return Post($"partner_send {mod} {name} {Convert.ToBase64String(bytes)}");
+	}
+
+	/// <summary>The mod lights standing: id, entity (handle, 0 for a point), r, g, b, energy, range, x, y, z (where it is now, guest axes).</summary>
+	public Godot.Collections.Array<Godot.Collections.Dictionary> lights()
+	{
+		var list = new Godot.Collections.Array<Godot.Collections.Dictionary>();
+		foreach ((uint id, uint entity, Color colour, float energy, float range, Vector3 where) in Refii.Lighting.Engine_ModLights.All())
+		{
+			list.Add(new Godot.Collections.Dictionary
+			{
+				["id"] = (long)id,
+				["entity"] = (long)entity,
+				["r"] = colour.R, ["g"] = colour.G, ["b"] = colour.B,
+				["energy"] = energy,
+				["range"] = range,
+				["x"] = where.X, ["y"] = where.Y, ["z"] = where.Z,
+			});
+		}
+
+		return list;
+	}
+
+	// ---- the HUD: markers, fades and meters (Engine_HudModMarkers, Engine_UiModFade, Engine_HudModMeters) ----
+
+	/// <summary>
+	/// Puts a marker on the HUD's world-icon channel over <paramref name="target"/> — an entity
+	/// HANDLE (int), or a Vector3 / [x, y, z] world point in the guest's axes — for
+	/// <paramref name="player"/> (1 or 2; 0, the default, every player this machine plays):
+	/// <paramref name="icon"/> a game texture path ("art/gui/…/x.tex") or an enabled mod's PNG
+	/// ("art/x.png"), <paramref name="text"/> a line under it. It rides the drawn body, is placed
+	/// as the game's own icons are (each player's camera and half) and is sized by the game's
+	/// distance curve. Returns the id <see cref="unmark"/> takes; 0 for no icon and no text, or an
+	/// unknown handle. A marker on an entity goes with the entity.
+	/// </summary>
+	public long mark(Variant target, string icon, string text = "", long player = 0)
+	{
+		uint handle = 0;
+		var point = Vector3.Zero;
+		switch (target.VariantType)
+		{
+			case Variant.Type.Int:
+			case Variant.Type.Float:
+			{
+				double raw = target.AsDouble();
+				if (raw is <= 0 or > uint.MaxValue)
+				{
+					return 0;
+				}
+
+				handle = (uint)raw;
+				break;
+			}
+
+			case Variant.Type.Vector3:
+				point = target.AsVector3();
+				break;
+
+			case Variant.Type.Array when target.AsGodotArray() is { Count: >= 3 } a:
+				point = new Vector3((float)a[0].AsDouble(), (float)a[1].AsDouble(), (float)a[2].AsDouble());
+				break;
+
+			default:
+				return 0;
+		}
+
+		return Refii.Ui.Engine_HudModMarkers.Add((int)Math.Clamp(player, 0, 2), handle, point, icon ?? string.Empty, text ?? string.Empty);
+	}
+
+	/// <summary>Removes a marker by any surface's id; false when none stands under it.</summary>
+	public bool unmark(long id) => id > 0 && id <= uint.MaxValue && Refii.Ui.Engine_HudModMarkers.Remove((uint)id);
+
+	/// <summary>The markers standing: id, player, entity (handle, 0 for a point), x, y, z, icon, text.</summary>
+	public Godot.Collections.Array<Godot.Collections.Dictionary> markers()
+	{
+		var list = new Godot.Collections.Array<Godot.Collections.Dictionary>();
+		foreach (Refii.Ui.Engine_HudModMarkers.Marker m in Refii.Ui.Engine_HudModMarkers.All)
+		{
+			list.Add(new Godot.Collections.Dictionary
+			{
+				["id"] = (long)m.Id,
+				["player"] = (long)m.Player,
+				["entity"] = (long)m.Handle,
+				["x"] = m.Point.X, ["y"] = m.Point.Y, ["z"] = m.Point.Z,
+				["icon"] = m.Icon,
+				["text"] = m.Text,
+			});
+		}
+
+		return list;
+	}
+
+	/// <summary>
+	/// Fades <paramref name="player"/>'s screen (1 or 2; 0 every player this machine plays) to
+	/// black (<paramref name="to_black"/> true) or back over <paramref name="seconds"/> (0: at
+	/// once): a host-drawn layer over that player's half (their whole window alone or online),
+	/// independent of the game's own fade, which level changes own. False for a player not played here.
+	/// </summary>
+	public bool fade(long player, bool to_black, double seconds = 0)
+	{
+		int who = (int)Math.Clamp(player, 0, 2);
+		return Refii.Ui.Engine_UiModBoxes.PlayedHere(who) &&
+			Refii.Ui.Engine_UiModFade.Request(who, to_black, double.IsFinite(seconds) ? (float)seconds : 0f);
+	}
+
+	/// <summary>A player's mod fade as it stands: alpha (0 clear .. 1 black), target, seconds of the last request.</summary>
+	public Godot.Collections.Dictionary fade_state(long player)
+	{
+		(float alpha, float target, float seconds) = Refii.Ui.Engine_UiModFade.Describe((int)Math.Clamp(player, 0, 2));
+		return new Godot.Collections.Dictionary { ["alpha"] = alpha, ["target"] = target, ["seconds"] = seconds };
+	}
+
+	/// <summary>
+	/// Shows or restates the HUD meter <paramref name="id"/> for <paramref name="player"/> (1 or
+	/// 2; 0, the default, every player this machine plays): <paramref name="label"/> above a bar at
+	/// <paramref name="value"/> of <paramref name="max"/>, in <paramref name="style"/> "bar" (the
+	/// default), "boss" (wide, red, centred) or "timer" (narrow). Meters stack under the top of the
+	/// player's screen in the order first shown; the same id restates it in place. False for no id.
+	/// </summary>
+	public bool meter(string id, string label, double value, double max, long player = 0, string style = "") =>
+		Refii.Ui.Engine_HudModMeters.Set(id, (int)Math.Clamp(player, 0, 2), label ?? string.Empty, (float)value, (float)max, style ?? string.Empty);
+
+	/// <summary>Removes the meter from every player's HUD; false when none stands under the id.</summary>
+	public bool meter_remove(string id) => Refii.Ui.Engine_HudModMeters.Remove(id ?? string.Empty);
+
+	/// <summary>The meters standing, in stack order: id, player, label, value, max, style.</summary>
+	public Godot.Collections.Array<Godot.Collections.Dictionary> meters()
+	{
+		var list = new Godot.Collections.Array<Godot.Collections.Dictionary>();
+		foreach (Refii.Ui.Engine_HudModMeters.Meter m in Refii.Ui.Engine_HudModMeters.All())
+		{
+			list.Add(new Godot.Collections.Dictionary
+			{
+				["id"] = m.Id,
+				["player"] = (long)m.Player,
+				["label"] = m.Label,
+				["value"] = m.Value,
+				["max"] = m.Max,
+				["style"] = m.Style,
+			});
+		}
+
+		return list;
+	}
+
 	private static long PlayFx(string name, Vector3 at, uint entity, Godot.Collections.Dictionary options)
 	{
 		float Number(string key, float fallback) =>
@@ -1129,7 +1531,8 @@ public partial class RefiiHost : Node
 		bool loop = !options.TryGetValue("loop", out Variant loopValue) || loopValue.AsBool();
 		return Refii.Fx.Engine_FxPlayer.Play(
 			name, at, entity, Number("duration", 0f), Number("scale", 1f), new Color(tint.X, tint.Y, tint.Z),
-			Number("intensity", 1f), loop, Triple("offset", Vector3.Zero));
+			Number("intensity", 1f), loop, Triple("offset", Vector3.Zero),
+			options.TryGetValue("at", out Variant helper) && helper.VariantType == Variant.Type.String ? helper.AsString() : string.Empty);
 	}
 
 	// ---- the field text --------------------------------------------------------------------

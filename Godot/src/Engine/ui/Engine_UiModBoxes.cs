@@ -61,6 +61,32 @@ public static class Engine_UiModBoxes
 				MenuBox(request.Id, request.Player, request.Title, request.Text, request.Options ?? Array.Empty<string>(),
 					request.Cancelable, null);
 				break;
+
+			// The HUD: markers, fades and meters are state the HUD's own layers read every frame.
+			case Engine_UiModRequest.Op.Mark:
+				Engine_HudModMarkers.Set(request.Id, request.Player, request.Entity,
+					new Godot.Vector3(request.X, request.Y, request.Z), request.Icon, request.Text);
+				break;
+
+			case Engine_UiModRequest.Op.Unmark:
+				Engine_HudModMarkers.Remove(request.Id);
+				break;
+
+			case Engine_UiModRequest.Op.Fade:
+				if (PlayedHere(request.Player))
+				{
+					Engine_UiModFade.Request(request.Player, request.ToBlack, request.Seconds);
+				}
+
+				break;
+
+			case Engine_UiModRequest.Op.Meter:
+				Engine_HudModMeters.Set(request.Name, request.Player, request.Title, request.Value, request.Max, request.Style);
+				break;
+
+			case Engine_UiModRequest.Op.MeterRemove:
+				Engine_HudModMeters.Remove(request.Name);
+				break;
 		}
 	}
 

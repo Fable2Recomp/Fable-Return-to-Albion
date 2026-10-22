@@ -109,7 +109,13 @@ struct RouteState {
   uint32_t peer_seq = 0;
   Clock::time_point heard_at{};
   std::deque<Arrived> inbox;
+  /// THE MOD LANE: the lines prefixed kModLane (a mod's partner messages, refii_mod_send_to_partner),
+  /// kept apart from the core co-op Lua's so each consumer takes only its own, in order.
+  std::deque<Arrived> mod_inbox;
 };
+
+/// The prefix of a route line the mod bus drains (refii_bridge_route_take_mod) instead of the Lua.
+constexpr std::string_view kModLane = "pm:";
 
 RouteState& Route() {
   static RouteState* const state = [] {
@@ -243,12 +249,29 @@ bool ReceiveRoute(std::string_view message) {
     if (!RouteValid(text)) {
       continue;
     }
-    if (s.inbox.size() >= kMaxRouteInbox) {
-      s.inbox.pop_front();
+    std::deque<Arrived>& lane = text.starts_with(kModLane) ? s.mod_inbox : s.inbox;
+    if (lane.size() >= kMaxRouteInbox) {
+      lane.pop_front();
     }
-    s.inbox.push_back(Arrived{std::string(text), now});
+    lane.push_back(Arrived{std::string(text), now});
   }
   return true;
+}
+
+/// One line off a route lane, the oldest first; a line older than kRouteInboxLife or over `capacity` is skipped.
+int32_t TakeRouteLine(std::deque<Arrived>& lane, char* out, uint32_t capacity) {
+  const Clock::time_point now = Clock::now();
+  while (!lane.empty()) {
+    Arrived next = std::move(lane.front());
+    lane.pop_front();
+    if (now - next.at > kRouteInboxLife || next.text.size() + 1 > capacity) {
+      continue;
+    }
+    std::memcpy(out, next.text.data(), next.text.size());
+    out[next.text.size()] = 0;
+    return 1;
+  }
+  return 0;
 }
 
 
@@ -284,18 +307,16 @@ extern "C" int32_t refii_bridge_route_take(char* out, uint32_t capacity) {
   }
   RouteState& s = Route();
   std::lock_guard lock(s.mutex);
-  const Clock::time_point now = Clock::now();
-  while (!s.inbox.empty()) {
-    Arrived next = std::move(s.inbox.front());
-    s.inbox.pop_front();
-    if (now - next.at > kRouteInboxLife || next.text.size() + 1 > capacity) {
-      continue;
-    }
-    std::memcpy(out, next.text.data(), next.text.size());
-    out[next.text.size()] = 0;
-    return 1;
+  return TakeRouteLine(s.inbox, out, capacity);
+}
+
+extern "C" int32_t refii_bridge_route_take_mod(char* out, uint32_t capacity) {
+  if (out == nullptr || capacity == 0) {
+    return 0;
   }
-  return 0;
+  RouteState& s = Route();
+  std::lock_guard lock(s.mutex);
+  return TakeRouteLine(s.mod_inbox, out, capacity);
 }
 
 extern "C" int32_t refii_bridge_event_relay_take(char* out, uint32_t capacity) {

@@ -49,6 +49,21 @@ public static class Engine_UiModRequest
 		MessageBox,
 		Notice,
 		MenuBox,
+
+		/// <summary>A world marker (<c>refii_mod_mark</c>): <see cref="Request.Entity"/> (a handle) or the point, <see cref="Request.Icon"/>, <see cref="Request.Text"/>.</summary>
+		Mark,
+
+		/// <summary>A marker removed by id.</summary>
+		Unmark,
+
+		/// <summary>A player's screen fade (<c>refii_mod_fade</c>): <see cref="Request.ToBlack"/> over <see cref="Request.Seconds"/>.</summary>
+		Fade,
+
+		/// <summary>A HUD meter (<c>refii_mod_meter</c>): <see cref="Request.Name"/> its id, <see cref="Request.Title"/> its label, <see cref="Request.Value"/> of <see cref="Request.Max"/>, <see cref="Request.Style"/>.</summary>
+		Meter,
+
+		/// <summary>A meter removed by id (<see cref="Request.Name"/>).</summary>
+		MeterRemove,
 	}
 
 	/// <summary>
@@ -58,9 +73,14 @@ public static class Engine_UiModRequest
 	/// </summary>
 	/// <para>A notice is shown for <see cref="Seconds"/> (0: the channel's own length). A menu box
 	/// offers <see cref="Options"/> and is <see cref="Cancelable"/> with B.</para>
+	/// <para>A marker, fade or meter (<see cref="Op.Mark"/> and after) uses the trailing fields:
+	/// <see cref="Entity"/> a handle, <see cref="X"/>/<see cref="Y"/>/<see cref="Z"/> a guest
+	/// point, <see cref="Icon"/>, <see cref="ToBlack"/>, <see cref="Value"/>/<see cref="Max"/>, <see cref="Style"/>.</para>
 	public readonly record struct Request(
 		Op Op, uint Id, int Player, string Name, string Title, string Text, string? Accept, string? Cancel, bool Question,
-		IReadOnlyList<string>? Options = null, float Seconds = 0f, bool Cancelable = true);
+		IReadOnlyList<string>? Options = null, float Seconds = 0f, bool Cancelable = true,
+		uint Entity = 0, float X = 0f, float Y = 0f, float Z = 0f, string Icon = "", bool ToBlack = false,
+		float Value = 0f, float Max = 0f, string Style = "");
 
 	/// <summary>The request in <paramref name="fields"/>, or null when it is not one (no op, an open with no menu, a box with no id or text).</summary>
 	public static Request? Parse(IEnumerable<KeyValuePair<string, object>> fields)
@@ -136,6 +156,56 @@ public static class Engine_UiModRequest
 
 				return new Request(Op.MenuBox, id, player, string.Empty, Text("title"), Text("text"), null, null, false,
 					Options: options, Cancelable: !values.ContainsKey("cancel") || Number("cancel") != 0);
+			}
+
+			case "mark":
+			{
+				uint id = Id(Number("id"));
+				string icon = Text("icon").Trim();
+				string text = Text("text");
+				if (id == 0 || icon.Length + text.Length == 0)
+				{
+					return null;
+				}
+
+				double entity = Number("entity");
+				return new Request(Op.Mark, id, player, string.Empty, string.Empty, text, null, null, false,
+					Entity: entity is > 0 and <= uint.MaxValue ? (uint)entity : 0u,
+					X: (float)Number("x"), Y: (float)Number("y"), Z: (float)Number("z"), Icon: icon);
+			}
+
+			case "unmark":
+			{
+				uint id = Id(Number("id"));
+				return id == 0 ? null : new Request(Op.Unmark, id, player, string.Empty, string.Empty, string.Empty, null, null, false);
+			}
+
+			case "fade":
+			{
+				double seconds = Number("seconds");
+				return new Request(Op.Fade, 0u, player, string.Empty, string.Empty, string.Empty, null, null, false,
+					Seconds: double.IsFinite(seconds) && seconds > 0 ? (float)Math.Min(seconds, 600) : 0f,
+					ToBlack: Number("to") != 0);
+			}
+
+			case "meter":
+			{
+				string name = Text("id").Trim();
+				if (name.Length == 0)
+				{
+					return null;
+				}
+
+				return new Request(Op.Meter, 0u, player, name, Text("label"), string.Empty, null, null, false,
+					Value: (float)Number("value"), Max: (float)Number("max"), Style: Text("style").Trim());
+			}
+
+			case "meter_remove":
+			{
+				string name = Text("id").Trim();
+				return name.Length == 0
+					? null
+					: new Request(Op.MeterRemove, 0u, player, name, string.Empty, string.Empty, null, null, false);
 			}
 
 			default:

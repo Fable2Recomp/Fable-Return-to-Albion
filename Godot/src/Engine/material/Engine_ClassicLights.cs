@@ -157,6 +157,10 @@ public static class Engine_ClassicLights
             GatherSecondView((int)count, stride);
         }
 
+        // The mods' lights (Engine_ModLights): point lights appended past the second view's
+        // indices, each where its node stands this frame, taken by the draws its sphere meets.
+        ModLights = Refii.Lighting.Engine_ModLights.AppendClassic(_lights, Refii.Lighting.Engine_ModLights.FirstClassicIndex);
+
         // The shared group: every directional light. The group walker takes lights from the
         // manager's mask highest index first (`sub_8223B130`), so slot 0 is the highest index.
         int slot = 0;
@@ -188,6 +192,9 @@ public static class Engine_ClassicLights
 
     /// <summary>Lights the second view's gather added on the last frame.</summary>
     public static int SecondViewLights { get; private set; }
+
+    /// <summary>Lights the mods' list added on the last frame (Engine_ModLights.AppendClassic).</summary>
+    public static int ModLights { get; private set; }
 
     /// <summary>
     /// SPLIT SCREEN: PLAYER TWO'S LIGHTS. The guest renders one view and its light manager gathers

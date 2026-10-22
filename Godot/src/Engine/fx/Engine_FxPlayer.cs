@@ -60,10 +60,16 @@ public static class Engine_FxPlayer
 	/// <summary>A one-shot (loop off, no duration) is freed once it has run out, and at the latest after this.</summary>
 	private const double OneShotLimitSeconds = 60.0;
 
-	/// <summary>One request as the bus carries it (<c>op='play',id=…,name='…',x=…</c>), in plain values.</summary>
+	/// <summary>
+	/// One request as the bus carries it (<c>op='play',id=…,name='…',x=…</c>), in plain values.
+	/// <paramref name="At"/> names a helper point of the entity's model (<c>at='…'</c>, "" for the
+	/// entity's own frame): a <c>.mdl.gmd</c> attachment or node, the effect standing in the
+	/// helper's frame with the offset along the helper's axes.
+	/// </summary>
 	public readonly record struct Request(
 		string Op, uint Id, string Name, float X, float Y, float Z, uint Entity, float Duration, float Scale,
-		float R, float G, float B, float Intensity, bool Loop, float OffsetX, float OffsetY, float OffsetZ)
+		float R, float G, float B, float Intensity, bool Loop, float OffsetX, float OffsetY, float OffsetZ,
+		string At = "")
 	{
 		public bool IsPlay => Op == "play";
 	}
@@ -105,7 +111,7 @@ public static class Engine_FxPlayer
 			entity is > 0f and <= uint.MaxValue ? (uint)entity : 0u,
 			Math.Max(0f, Number("duration", 0f)), Number("scale", 1f),
 			Number("r", 1f), Number("g", 1f), Number("b", 1f), Number("intensity", 1f), Number("loop", 1f) != 0f,
-			Number("ox", 0f), Number("oy", 0f), Number("oz", 0f));
+			Number("ox", 0f), Number("oy", 0f), Number("oz", 0f), Text("at").Trim());
 	}
 
 	private sealed class Played
@@ -124,6 +130,13 @@ public static class Engine_FxPlayer
 
 		/// <summary>Spawned in the guest (the classic look): no node, ended by <c>fx_stop</c>.</summary>
 		public bool Guest;
+
+		/// <summary>
+		/// The bone attachment the node hangs under when the request names a helper on a rigged
+		/// body (<see cref="Request.At"/>); freed with the node. Null when the node is the body's
+		/// direct child.
+		/// </summary>
+		public BoneAttachment3D? Hook;
 		public double Age;
 		public double Waited;
 	}
@@ -147,6 +160,9 @@ public static class Engine_FxPlayer
 
 	private static readonly Dictionary<uint, Played> _played = new();
 	private static readonly HashSet<string> _unknownWarned = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>Helper names warned about once: the model has no such gmd entry, the entity's own frame was used.</summary>
+	private static readonly HashSet<string> _unknownHelperWarned = new(StringComparer.OrdinalIgnoreCase);
 	private static uint _nextHostId = FirstHostId;
 	private static readonly List<uint> _done = new();
 
@@ -199,12 +215,22 @@ public static class Engine_FxPlayer
 	public static uint RideOf(uint effect) =>
 		effect != 0 && _rides.TryGetValue(effect, out (uint On, double At) ride) && _clock - ride.At <= RideSeconds ? ride.On : 0u;
 
-	/// <summary>A request from the bus (<see cref="RequestKind"/>): plays, stops, or states a spell's effect.</summary>
+	/// <summary>
+	/// A request from the bus (<see cref="RequestKind"/>): plays, stops, or states a spell's
+	/// effect — or places or removes a mod's light (<c>op='light'</c> / <c>'light_off'</c>,
+	/// <see cref="Refii.Lighting.Engine_ModLights"/>), which rides the same kind.
+	/// </summary>
 	public static void Handle(string fields)
 	{
 		if (ParseRide(fields) is { } ride)
 		{
 			_rides[ride.Fx] = (ride.On, _clock);
+			return;
+		}
+
+		if (Refii.Lighting.Engine_ModLights.IsLightRequest(fields))
+		{
+			Refii.Lighting.Engine_ModLights.Handle(fields);
 			return;
 		}
 
@@ -226,11 +252,12 @@ public static class Engine_FxPlayer
 
 	/// <summary>
 	/// Plays <paramref name="name"/> for a Godot script; the id, or 0 when the bank holds no such
-	/// effect. <paramref name="entity"/> is a handle (0 for the world position).
+	/// effect. <paramref name="entity"/> is a handle (0 for the world position);
+	/// <paramref name="at"/> a helper point of its model, or "" (<see cref="Request.At"/>).
 	/// </summary>
 	public static uint Play(
 		string name, Vector3 guestPosition, uint entity, float duration, float scale, Color tint, float intensity,
-		bool loop, Vector3 offset)
+		bool loop, Vector3 offset, string at = "")
 	{
 		if (FableFx.SharedBank() is { } bank && Engine_BnkFxLoader.Resolve(bank, name) is null)
 		{
@@ -242,7 +269,7 @@ public static class Engine_FxPlayer
 		_nextHostId = _nextHostId >= LastHostId ? FirstHostId : _nextHostId + 1;
 		Start(new Request(
 			"play", id, name, guestPosition.X, guestPosition.Y, guestPosition.Z, entity, Math.Max(0f, duration), scale,
-			tint.R, tint.G, tint.B, intensity, loop, offset.X, offset.Y, offset.Z));
+			tint.R, tint.G, tint.B, intensity, loop, offset.X, offset.Y, offset.Z, (at ?? string.Empty).Trim()));
 		return id;
 	}
 
@@ -402,13 +429,6 @@ public static class Engine_FxPlayer
 		}
 	}
 
-	private enum Placing
-	{
-		Placed,
-		Waiting,
-		Unknown,
-	}
-
 	private static Placing TryPlace(Played played)
 	{
 		Request r = played.Request;
@@ -425,66 +445,154 @@ public static class Engine_FxPlayer
 
 		if (Refii.Models.Engine_ClassicMaterial.Active)
 		{
+			// A helper under the classic look: the guest's instance takes no node, so the helper's
+			// REST point (the gmd's, in the guest's model axes) is folded into the offset — the
+			// right point, not the live pose. The model is known once the entity's node is built;
+			// a request made before that waits as a modern one does, then goes to the entity's frame.
+			if (r.At.Length != 0 && r.Entity != 0)
+			{
+				if (ClassicHelperOffset(played) is { } folded)
+				{
+					r = r with { OffsetX = folded.X, OffsetY = folded.Y, OffsetZ = folded.Z, At = string.Empty };
+				}
+				else if (Refii.Game.GameEntities.Current?.NodeFor(played.Address) is null && played.Waited < PendingSeconds)
+				{
+					return Placing.Waiting;
+				}
+			}
+
 			Refii.Host.HostBridge.PostModCommand(GuestPlayCommand(r, Engine_FxEffectJson.HashOf(r.Name)));
 			played.Guest = true;
 			return Placing.Placed;
 		}
 
+		FableFx node = Make(
+			$"ModFx_{r.Id.ToString(CultureInfo.InvariantCulture)}", r.Name, r.Scale, new Color(r.R, r.G, r.B), r.Intensity,
+			r.Loop, true, null);
+		Placing placing = Mount(node, r.Entity != 0, played.Address, new Vector3(r.X, r.Y, r.Z), r.At,
+			new Vector3(r.OffsetX, r.OffsetY, r.OffsetZ), $"ModFxHook_{r.Id.ToString(CultureInfo.InvariantCulture)}",
+			out played.Hook, out played.Follows);
+		if (placing != Placing.Placed)
+		{
+			node.QueueFree();
+			return placing;
+		}
+
+		played.Node = node;
+		return Placing.Placed;
+	}
+
+	/// <summary>How a mount went: parented, waiting for the entity's node or the effect feed, or nothing to mount on.</summary>
+	public enum Placing
+	{
+		Placed,
+		Waiting,
+		Unknown,
+	}
+
+	/// <summary>
+	/// THE ONE PLACEMENT every mod-placed node takes — an effect (<c>play_fx</c>), a light
+	/// (<see cref="Refii.Lighting.Engine_ModLights"/>): <paramref name="node"/> is parented and
+	/// given its transform, and the caller owns it from then on (freed with its parent, or through
+	/// <paramref name="hook"/> when it hangs on a bone).
+	/// <list type="bullet">
+	/// <item>A world placement (<paramref name="onEntity"/> false): under the effect feed, unrotated
+	/// at <paramref name="point"/> (guest axes).</item>
+	/// <item>An entity with a drawn body: its child in the entity's own frame
+	/// (<see cref="InEntityLocal"/>), <paramref name="offset"/> along the entity's axes — or, with
+	/// <paramref name="at"/> naming a model helper, at that gmd point's own frame
+	/// (<see cref="AtHelperLocal"/>), on a rigged body under a <see cref="BoneAttachment3D"/> on
+	/// the helper's bone. An unknown helper is warned once and the entity's frame used.</item>
+	/// <item>An entity with no drawn body (a vortex, a shot; a body not built yet): under the effect
+	/// feed at the entity's own point (<see cref="FollowPoint"/>) plus the offset in world axes,
+	/// <paramref name="follows"/> set so the caller keeps it on the point each frame.</item>
+	/// </list>
+	/// <see cref="Placing.Waiting"/> leaves the node unparented: the entity's node or the feed is
+	/// not there yet.
+	/// </summary>
+	public static Placing Mount(
+		Node3D node, bool onEntity, uint address, Vector3 point, string at, Vector3 offset, string hookName,
+		out BoneAttachment3D? hook, out bool follows)
+	{
+		hook = null;
+		follows = false;
 		Node3D? parent;
 		Transform3D world;
-		if (r.Entity != 0)
+		if (onEntity)
 		{
-			uint address = played.Address;
 			parent = address == 0 ? null : Refii.Game.GameEntities.Current?.NodeFor(address);
-			Vector3? at = parent?.GlobalPosition;
-			played.Follows = false;
-			if (parent is null && address != 0 && FollowPoint(address) is { } point)
+			Vector3? origin = parent?.GlobalPosition;
+			if (parent is null && address != 0 && FollowPoint(address) is { } followed)
 			{
-				// No drawn body: the effect stands in the effect feed and follows the entity's point.
+				// No drawn body: the node stands in the effect feed and follows the entity's point.
 				parent = Refii.Game.GameFx.Current;
-				at = point;
-				played.Follows = true;
+				origin = followed;
+				follows = true;
 			}
 
-			var offset = new Vector3(r.OffsetX, r.OffsetY, r.OffsetZ);
-			if (!played.Follows && parent is not null && GodotObject.IsInstanceValid(parent) && parent.IsInsideTree())
+			if (!follows && parent is not null && GodotObject.IsInstanceValid(parent) && parent.IsInsideTree())
 			{
-				// ON THE BODY: a constant local transform in the entity's own frame, so the effect
+				// ON THE BODY: a constant local transform in the entity's own frame, so the node
 				// takes the body's rotation AND scale as the guest restates them every frame.
-				FableFx onBody = Make(
-					$"ModFx_{r.Id.ToString(CultureInfo.InvariantCulture)}", r.Name, r.Scale, new Color(r.R, r.G, r.B),
-					r.Intensity, r.Loop, true, null);
-				parent.AddChild(onBody);
-				onBody.Transform = InEntityLocal(offset);
-				played.Node = onBody;
+				// AT A HELPER: the gmd point's own frame — on a rigged body under the bone it
+				// hangs from (a BoneAttachment3D follows the pose), else the model-space rest.
+				if (at.Length != 0 && Refii.Game.GameEntities.Current is { } entities &&
+					entities.TryHelper(address, at, out Skeleton3D? skeleton, out int bone, out Transform3D mount, out _))
+				{
+					if (skeleton is not null && bone >= 0)
+					{
+						hook = new BoneAttachment3D { Name = hookName, BoneIdx = bone };
+						skeleton.AddChild(hook);
+						hook.AddChild(node);
+					}
+					else
+					{
+						parent.AddChild(node);
+					}
+
+					node.Transform = AtHelperLocal(mount, offset);
+					return Placing.Placed;
+				}
+
+				if (at.Length != 0 && _unknownHelperWarned.Add(at))
+				{
+					GD.PushWarning($"[mods] fx: play_fx_on: no helper '{at}' on the model of entity {address:X8}; the entity's own frame is used");
+				}
+
+				parent.AddChild(node);
+				node.Transform = InEntityLocal(offset);
 				return Placing.Placed;
 			}
 
-			world = at is not { } origin
+			world = origin is not { } from
 				? default
 				: new Transform3D(
 					Refii.Game.GameFx.UnrotatedAt(Vector3.Zero).Basis,
-					origin + Refii.Game.GameFx.GuestToGodot(offset));
+					from + Refii.Game.GameFx.GuestToGodot(offset));
 		}
 		else
 		{
 			parent = Refii.Game.GameFx.Current;
-			world = Refii.Game.GameFx.UnrotatedAt(new Vector3(r.X, r.Y, r.Z));
+			world = Refii.Game.GameFx.UnrotatedAt(point);
 		}
 
 		if (parent is null || !GodotObject.IsInstanceValid(parent) || !parent.IsInsideTree())
 		{
+			follows = false;
 			return Placing.Waiting;
 		}
 
-		FableFx node = Make(
-			$"ModFx_{r.Id.ToString(CultureInfo.InvariantCulture)}", r.Name, r.Scale, new Color(r.R, r.G, r.B), r.Intensity,
-			r.Loop, true, null);
 		parent.AddChild(node);
 		node.GlobalTransform = world;
-		played.Node = node;
 		return Placing.Placed;
 	}
+
+	/// <summary>
+	/// Where an entity with no drawn body is this frame, in Godot's space — the point a
+	/// <see cref="Mount"/> that set <c>follows</c> keeps its node on — or null when the entity has
+	/// neither a live effect nor a stated position.
+	/// </summary>
+	public static Vector3? FollowedPoint(uint address) => FollowPoint(address);
 
 	/// <summary>
 	/// An effect riding an entity's drawn node, in THAT ENTITY'S OWN FRAME: the effect's axes are the
@@ -516,6 +624,54 @@ public static class Engine_FxPlayer
 	public static Transform3D InEntityLocal(Vector3 guestOffset) =>
 		new(new Basis(Vector3.Right, Vector3.Up, Vector3.Forward),
 			new Vector3(guestOffset.X, guestOffset.Z, -guestOffset.Y));
+
+	/// <summary>
+	/// The effect's transform at a model HELPER: <paramref name="mount"/> is the helper's frame in
+	/// the space of the node the effect is parented to (the model's own Godot Y-up space under the
+	/// entity node, or relative to a bone under its BoneAttachment3D —
+	/// <see cref="Refii.Entities.Engine_EntityAttachments.TryResolveHelper"/>), and the effect
+	/// stands in it exactly as it stands in the entity's frame (<see cref="InEntityLocal"/>): its
+	/// axes the helper's guest-local axes, <paramref name="guestOffset"/> along them. A helper with
+	/// an orientation (a sword's .Top, laid along the blade) turns the effect with it.
+	/// </summary>
+	public static Transform3D AtHelperLocal(Transform3D mount, Vector3 guestOffset) =>
+		mount * InEntityLocal(guestOffset);
+
+	/// <summary>
+	/// The guest offset a play at a helper takes under the classic look: the helper's REST point
+	/// in the guest's model axes, with <paramref name="guestOffset"/> laid along the helper's rest
+	/// axes — what <c>fx_play</c>'s <c>ox oy oz</c> carry so the guest's instance stands at the right
+	/// point in the entity's frame. <paramref name="rest"/> is the helper's rest transform in the
+	/// node's space (Godot Y-up), as <c>GameEntities.TryHelper</c> gives it.
+	/// </summary>
+	public static Vector3 ClassicHelperOffset(Transform3D rest, Vector3 guestOffset)
+	{
+		Transform3D guest = Refii.Models.Engine_GmdSkeleton.ToGameSpace(rest);
+		return guest.Origin + (guest.Basis * guestOffset);
+	}
+
+	/// <summary><see cref="ClassicHelperOffset(Transform3D, Vector3)"/> for a play, or null while its entity has no model or helper.</summary>
+	private static Vector3? ClassicHelperOffset(Played played)
+	{
+		Request r = played.Request;
+		Refii.Game.GameEntities? entities = Refii.Game.GameEntities.Current;
+		if (entities is null)
+		{
+			return null;
+		}
+
+		if (!entities.TryHelper(played.Address, r.At, out _, out _, out _, out Transform3D rest))
+		{
+			if (entities.NodeFor(played.Address) is not null && _unknownHelperWarned.Add(r.At))
+			{
+				GD.PushWarning($"[mods] fx: play_fx_on: no helper '{r.At}' on the model of entity {played.Address:X8}; the entity's own frame is used");
+			}
+
+			return null;
+		}
+
+		return ClassicHelperOffset(rest, new Vector3(r.OffsetX, r.OffsetY, r.OffsetZ));
+	}
 
 	/// <summary>The live effects the feed states per entity this frame (owner and attached), and the last complete frame's.</summary>
 	private static Dictionary<uint, FableFx> _ownedBuilding = new();
@@ -761,11 +917,16 @@ public static class Engine_FxPlayer
 			played.Guest = false;
 		}
 
-		if (played.Node is not null && GodotObject.IsInstanceValid(played.Node))
+		if (played.Hook is not null && GodotObject.IsInstanceValid(played.Hook))
+		{
+			played.Hook.QueueFree();
+		}
+		else if (played.Node is not null && GodotObject.IsInstanceValid(played.Node))
 		{
 			played.Node.QueueFree();
 		}
 
+		played.Hook = null;
 		played.Node = null;
 	}
 }
