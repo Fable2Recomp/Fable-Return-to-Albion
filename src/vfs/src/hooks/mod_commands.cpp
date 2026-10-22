@@ -1203,7 +1203,7 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     const int32_t word = I(w, 2);
     const uint64_t bits = std::strtoull(w[3].c_str(), nullptr, 16);
     if (w[1] == "event") {
-      refii::mods::SetHostEventMaskWord(word, bits);
+      refii_bridge_mod_set_host_event_mask_word(word, bits);
     } else if (w[1] == "verdict") {
       refii_bridge_mod_set_verdict_mask_word(word, bits);
     }
