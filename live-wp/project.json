@@ -1,0 +1,71 @@
+{
+  "description": "Fable 2: Return to Albion live wallpaper.",
+  "file": "index.html",
+  "preview": "preview.jpg",
+  "title": "Fable 2: Return to Albion",
+  "type": "web",
+  "general": {
+    "properties": {
+      "schemecolor": {
+        "order": 0,
+        "text": "ui_browse_properties_scheme_color",
+        "type": "color",
+        "value": "0 0 0"
+      },
+      "glowintensity": {
+        "order": 1,
+        "text": "Rune Glow Intensity",
+        "type": "slider",
+        "min": 0,
+        "max": 200,
+        "value": 30,
+        "editable": true
+      },
+      "pulsespeed": {
+        "order": 2,
+        "text": "Rune Pulse Speed",
+        "type": "slider",
+        "min": 5,
+        "max": 30,
+        "value": 18,
+        "editable": true
+      },
+      "smokespeed": {
+        "order": 3,
+        "text": "Smoke Flow Speed",
+        "type": "slider",
+        "min": 2,
+        "max": 50,
+        "value": 10,
+        "editable": true
+      },
+      "smokereach": {
+        "order": 4,
+        "text": "Smoke Color Reach",
+        "type": "slider",
+        "min": 50,
+        "max": 200,
+        "value": 125,
+        "editable": true
+      },
+      "smokebrightness": {
+        "order": 5,
+        "text": "Smoke Brightness",
+        "type": "slider",
+        "min": 50,
+        "max": 200,
+        "value": 100,
+        "editable": true
+      },
+      "sealscale": {
+        "order": 6,
+        "text": "Medallion Size",
+        "type": "slider",
+        "min": 40,
+        "max": 100,
+        "value": 70,
+        "editable": true
+      }
+    }
+  }
+}

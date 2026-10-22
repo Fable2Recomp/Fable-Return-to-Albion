@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Refii - Warmup Medallion</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="wallpaper-canvas"></canvas>
+
+  <script>
+    (function () {
+      const canvas = document.getElementById("wallpaper-canvas");
+      
+      const config = {
+        pulseSpeed: 1.8,
+        glowIntensity: 0.3,
+        smokeSpeed: 0.010,
+        smokeReach: 1.0,
+        smokeBrightness: 1.0,
+        sealScale: 0.76,
+        scaleMode: 1 // 1 = Contain, 0 = Cover
+      };
+
+      // Wallpaper Engine Property Listener
+      window.wallpaperPropertyListener = {
+        applyUserProperties: function (properties) {
+          if (!properties) return;
+          const glow = properties.glowintensity || properties.glow_intensity;
+          if (glow && glow.value !== undefined) {
+            config.glowIntensity = parseFloat(glow.value) / 100.0;
+          }
+          const pulse = properties.pulsespeed || properties.pulse_speed;
+          if (pulse && pulse.value !== undefined) {
+            config.pulseSpeed = parseFloat(pulse.value) / 10.0;
+          }
+          const smokeSpd = properties.smokespeed || properties.smoke_speed;
+          if (smokeSpd && smokeSpd.value !== undefined) {
+            config.smokeSpeed = parseFloat(smokeSpd.value) / 1000.0;
+          }
+          const reach = properties.smokereach || properties.smoke_reach;
+          if (reach && reach.value !== undefined) {
+            config.smokeReach = parseFloat(reach.value) / 100.0;
+          }
+          const smokeBri = properties.smokebrightness || properties.smoke_brightness;
+          if (smokeBri && smokeBri.value !== undefined) {
+            config.smokeBrightness = parseFloat(smokeBri.value) / 100.0;
+          }
+          const size = properties.sealscale || properties.seal_scale;
+          if (size && size.value !== undefined) {
+            config.sealScale = parseFloat(size.value) / 100.0;
+          }
+          const fit = properties.scalemode || properties.scale_mode;
+          if (fit && fit.value !== undefined) {
+            config.scaleMode = fit.value === "cover" ? 0 : 1;
+          }
+        }
+      };
+
+      // Lively Wallpaper Property Listener
+      window.livelyPropertyListener = function (name, val) {
+        if (name === "glow_intensity") config.glowIntensity = parseFloat(val);
+        if (name === "pulse_speed") config.pulseSpeed = parseFloat(val);
+        if (name === "smoke_speed") config.smokeSpeed = parseFloat(val);
+        if (name === "smoke_reach") config.smokeReach = parseFloat(val);
+        if (name === "smoke_brightness") config.smokeBrightness = parseFloat(val);
+        if (name === "seal_scale") config.sealScale = parseFloat(val) / 100.0;
+        if (name === "scale_mode") config.scaleMode = val === 1 || val === "contain" ? 1 : 0;
+      };
+
+      const gl = canvas.getContext("webgl", {
+        alpha: false,
+        depth: false,
+        stencil: false,
+        antialias: false,
+        preserveDrawingBuffer: false
+      }) || canvas.getContext("experimental-webgl");
+
+      if (!gl) return;
+
+      let sealW = 2000.0;
+      let sealH = 2000.0;
+
+      function resize() {
+        canvas.width = window.innerWidth || 1920;
+        canvas.height = window.innerHeight || 1080;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+      }
+      window.addEventListener("resize", resize);
+      resize();
+
+      const vsSource = `
+        attribute vec2 a_pos;
+        void main() {
+          gl_Position = vec4(a_pos, 0.0, 1.0);
+        }
+      `;
+
+      const fsSource = `
+        precision mediump float;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform vec2 u_seal_size;
+        uniform sampler2D u_seal;
+        uniform sampler2D u_noise;
+
+        uniform float u_pulse_speed;
+        uniform float u_glow_intensity;
+        uniform float u_smoke_speed;
+        uniform float u_smoke_reach;
+        uniform float u_smoke_brightness;
+        uniform float u_seal_scale;
+        uniform int u_scale_mode;
+
+        const float TILT_ANGLE_DEG = 15.0;
+
+        const vec3 BLUE_SMOKE_COLOR = vec3(0.12, 0.40, 0.85);
+        const vec3 BLUE_LIGHT_CORE  = vec3(0.40, 0.75, 1.00);
+        const vec2 BLUE_LIGHT_POS   = vec2(0.5, -0.05);
+        const float BLUE_LIGHT_RADIUS = 0.85;
+        const float BLUE_INTENSITY  = 1.35;
+
+        const vec3 RED_SMOKE_COLOR  = vec3(0.85, 0.12, 0.25);
+        const vec3 RED_LIGHT_CORE   = vec3(1.00, 0.40, 0.45);
+        const vec2 RED_LIGHT_POS    = vec2(0.5, 1.05);
+        const float RED_LIGHT_RADIUS  = 0.85;
+        const float RED_INTENSITY   = 1.35;
+
+        const vec3 VOID_COLOR       = vec3(0.0, 0.0, 0.0);
+
+        const float DISTORTION_INTENSITY = 0.5;
+        const float CENTER_CLEAR_RADIUS   = 0.30;
+        const float CENTER_CLEAR_SOFTNESS = 0.80;
+
+        const float MIN_PULSE = 0.5;
+        const float MAX_PULSE = 1.0;
+
+        const float BLUE_SENSITIVITY = 1.0;
+        const float RED_SENSITIVITY  = 1.35;
+
+        const vec3 BLUE_GLOW_TINT = vec3(0.30, 0.75, 1.0);
+        const vec3 RED_GLOW_TINT  = vec3(1.00, 0.25, 0.35);
+
+        vec2 rotate2D(vec2 coord, float angle) {
+          float s = sin(angle);
+          float c = cos(angle);
+          return vec2(coord.x * c - coord.y * s, coord.x * s + coord.y * c);
+        }
+
+        float detectBlue(vec4 c) {
+          float cyanBias = c.g - c.r;
+          float blueDom  = c.b - max(c.r, c.g);
+          float val = smoothstep(0.06, 0.35, cyanBias) *
+                      smoothstep(0.0, 0.20, blueDom) *
+                      smoothstep(0.24, 0.60, c.b);
+          return clamp(val * BLUE_SENSITIVITY, 0.0, 1.0) * step(0.05, c.a);
+        }
+
+        float detectRed(vec4 c) {
+          float redOverGreen = c.r - c.g;
+          float notGold = 1.0 - smoothstep(0.15, 0.32, c.g - c.b);
+          float notPurple = 1.0 - smoothstep(0.05, 0.25, c.b - c.r);
+          float val = smoothstep(0.10, 0.30, redOverGreen) *
+                      smoothstep(0.26, 0.58, c.r) *
+                      notGold *
+                      notPurple;
+          return clamp(val * RED_SENSITIVITY, 0.0, 1.0) * step(0.05, c.a);
+        }
+
+        void main() {
+          // Screen coordinates centered at medallion, normalized by height.
+          // 1 unit in X = 1 unit in Y = 1 screen height (completely isotropic).
+          // This keeps lighting, smoke scale, and center clearing locked across any aspect ratio.
+          vec2 centerCoord = vec2((gl_FragCoord.x - u_resolution.x * 0.5) / u_resolution.y,
+                                  (u_resolution.y * 0.5 - gl_FragCoord.y) / u_resolution.y);
+
+          // 1. SMOKE BACKGROUND PASS
+          // True rigid rotation around medallion center
+          float angleRad = radians(TILT_ANGLE_DEG);
+          vec2 tilted = rotate2D(centerCoord, angleRad);
+
+          // Isotropic base coordinate for seamless noise scrolling
+          vec2 baseUv = centerCoord + vec2(100.0);
+
+          vec2 flowA = vec2(u_time * u_smoke_speed * 0.6, u_time * u_smoke_speed * 0.4);
+          vec2 flowB = vec2(-u_time * u_smoke_speed * 0.35, u_time * u_smoke_speed * 0.55);
+          vec2 flowC = vec2(u_time * u_smoke_speed * 0.2, -u_time * u_smoke_speed * 0.3);
+
+          float warpX = texture2D(u_noise, baseUv + flowA).r;
+          float warpY = texture2D(u_noise, baseUv + flowB).r;
+          vec2 warpedUv = baseUv + vec2(warpX - 0.5, warpY - 0.5) * DISTORTION_INTENSITY;
+
+          float smoke1 = texture2D(u_noise, warpedUv + flowC).r;
+          float smoke2 = texture2D(u_noise, (warpedUv * 1.55) - flowA).r;
+          float rawDensity = (smoke1 * 0.6) + (smoke2 * 0.4);
+          float smokeDensity = smoothstep(0.26, 0.72, rawDensity);
+
+          // Directional lighting locked to medallion in height units (invariant across 16:9, 21:9, 32:9)
+          float lightRadius = BLUE_LIGHT_RADIUS * u_smoke_reach;
+          vec2 diffBlue = vec2(tilted.x * 0.65, tilted.y + 0.55);
+          float distBlue = length(diffBlue);
+          float blueFactor = smoothstep(0.0, 1.0, clamp(1.0 - (distBlue / lightRadius), 0.0, 1.0));
+          vec3 blueLit = mix(BLUE_SMOKE_COLOR, BLUE_LIGHT_CORE * u_smoke_brightness, pow(blueFactor, 1.8));
+
+          vec2 diffRed = vec2(tilted.x * 0.65, tilted.y - 0.55);
+          float distRed = length(diffRed);
+          float redFactor = smoothstep(0.0, 1.0, clamp(1.0 - (distRed / lightRadius), 0.0, 1.0));
+          vec3 redLit = mix(RED_SMOKE_COLOR, RED_LIGHT_CORE * u_smoke_brightness, pow(redFactor, 1.8));
+
+          vec3 smokeIllumination = (blueLit * (blueFactor * BLUE_INTENSITY * u_smoke_brightness)) + 
+                                   (redLit * (redFactor * RED_INTENSITY * u_smoke_brightness));
+          float totalLight = max(blueFactor * BLUE_INTENSITY, redFactor * RED_INTENSITY);
+
+          // Center clearing mask: locked to circular medallion
+          float centerDist = length(centerCoord);
+          float clearRadius = CENTER_CLEAR_RADIUS / max(0.5, u_smoke_reach);
+          float centerMask = smoothstep(clearRadius, clearRadius + CENTER_CLEAR_SOFTNESS, centerDist);
+
+          float finalAlpha = smokeDensity * clamp(totalLight, 0.0, 1.0) * centerMask;
+          vec3 bgColor = mix(VOID_COLOR, smokeIllumination, finalAlpha);
+
+          // 2. ASPECT-CORRECT MEDALLION (Fit Mode & Size Controls)
+          vec2 pixelCoord = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
+          vec2 center = u_resolution * 0.5;
+          
+          float baseScale;
+          if (u_scale_mode == 0) {
+            baseScale = max(u_resolution.x / max(1.0, u_seal_size.x), u_resolution.y / max(1.0, u_seal_size.y));
+          } else {
+            baseScale = min(u_resolution.x / max(1.0, u_seal_size.x), u_resolution.y / max(1.0, u_seal_size.y));
+          }
+
+          float scale = baseScale * u_seal_scale;
+          vec2 drawnSize = u_seal_size * scale;
+          vec2 sealUv = (pixelCoord - center) / max(vec2(1.0), drawnSize) + vec2(0.5);
+
+          float inBounds = step(0.0, sealUv.x) * step(sealUv.x, 1.0) *
+                           step(0.0, sealUv.y) * step(sealUv.y, 1.0);
+
+          vec4 base = texture2D(u_seal, clamp(sealUv, 0.0, 1.0));
+
+          // Calibrated rune pulse
+          float tBlue = u_time * u_pulse_speed;
+          float tRed  = u_time * u_pulse_speed;
+          float pBlue = (sin(tBlue) * 0.5 + 0.5) * (MAX_PULSE - MIN_PULSE) + MIN_PULSE;
+          float pRed  = (sin(tRed)  * 0.5 + 0.5) * (MAX_PULSE - MIN_PULSE) + MIN_PULSE;
+
+          float blueVal = detectBlue(base);
+          float redVal  = detectRed(base);
+
+          float activeP = blueVal > redVal ? pBlue : pRed;
+          vec3 litCore = (blueVal * BLUE_GLOW_TINT + redVal * RED_GLOW_TINT) * (0.28 * u_glow_intensity);
+          vec3 runeLit = mix(base.rgb * MIN_PULSE, base.rgb * 1.15 + litCore, activeP / MAX_PULSE);
+
+          vec3 runeColor = (blueVal + redVal) > 0.01 ? runeLit : base.rgb;
+
+          // Soft bloom kernel (8-tap)
+          vec2 px = vec2(8.0) / u_seal_size;
+          float bBloom = 0.0;
+          float rBloom = 0.0;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2( px.x,  0.0), 0.0, 1.0))) * 0.15;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2(-px.x,  0.0), 0.0, 1.0))) * 0.15;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2( 0.0,  px.y), 0.0, 1.0))) * 0.15;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2( 0.0, -px.y), 0.0, 1.0))) * 0.15;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2( px.x,  px.y) * 0.7, 0.0, 1.0))) * 0.10;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2(-px.x,  px.y) * 0.7, 0.0, 1.0))) * 0.10;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2( px.x, -px.y) * 0.7, 0.0, 1.0))) * 0.10;
+          bBloom += detectBlue(texture2D(u_seal, clamp(sealUv + vec2(-px.x, -px.y) * 0.7, 0.0, 1.0))) * 0.10;
+
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2( px.x,  0.0), 0.0, 1.0))) * 0.15;
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2(-px.x,  0.0), 0.0, 1.0))) * 0.15;
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2( 0.0,  px.y), 0.0, 1.0))) * 0.15;
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2( 0.0, -px.y), 0.0, 1.0))) * 0.15;
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2( px.x,  px.y) * 0.7, 0.0, 1.0))) * 0.10;
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2(-px.x,  px.y) * 0.7, 0.0, 1.0))) * 0.10;
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2( px.x, -px.y) * 0.7, 0.0, 1.0))) * 0.10;
+          rBloom += detectRed(texture2D(u_seal, clamp(sealUv + vec2(-px.x, -px.y) * 0.7, 0.0, 1.0))) * 0.10;
+
+          vec3 bloomAura = (bBloom * BLUE_GLOW_TINT * pBlue + rBloom * RED_GLOW_TINT * pRed) * (0.40 * u_glow_intensity);
+          vec3 finalMedallion = (runeColor + bloomAura) * base.a;
+
+          vec3 finalColor = mix(bgColor, finalMedallion, base.a * inBounds);
+          gl_FragColor = vec4(finalColor, 1.0);
+        }
+      `;
+
+      function createShader(gl, type, source) {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, source);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+          console.error(gl.getShaderInfoLog(s));
+          gl.deleteShader(s);
+          return null;
+        }
+        return s;
+      }
+
+      const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(prog));
+        return;
+      }
+
+      gl.useProgram(prog);
+
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,
+         1, -1,
+        -1,  1,
+        -1,  1,
+         1, -1,
+         1,  1
+      ]), gl.STATIC_DRAW);
+
+      const aPos = gl.getAttribLocation(prog, "a_pos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+      const uRes = gl.getUniformLocation(prog, "u_resolution");
+      const uTime = gl.getUniformLocation(prog, "u_time");
+      const uSealSize = gl.getUniformLocation(prog, "u_seal_size");
+      const uSeal = gl.getUniformLocation(prog, "u_seal");
+      const uNoise = gl.getUniformLocation(prog, "u_noise");
+
+      const uPulseSpeed = gl.getUniformLocation(prog, "u_pulse_speed");
+      const uGlowIntensity = gl.getUniformLocation(prog, "u_glow_intensity");
+      const uSmokeSpeed = gl.getUniformLocation(prog, "u_smoke_speed");
+      const uSmokeReach = gl.getUniformLocation(prog, "u_smoke_reach");
+      const uSmokeBrightness = gl.getUniformLocation(prog, "u_smoke_brightness");
+      const uSealScale = gl.getUniformLocation(prog, "u_seal_scale");
+      const uScaleMode = gl.getUniformLocation(prog, "u_scale_mode");
+
+      function createEmptyTexture() {
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+        return tex;
+      }
+
+      const sealTex = createEmptyTexture();
+      const noiseTex = createEmptyTexture();
+
+      // Load Seal PNG
+      const sealImg = new Image();
+      sealImg.onload = function () {
+        sealW = sealImg.width;
+        sealH = sealImg.height;
+        gl.bindTexture(gl.TEXTURE_2D, sealTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sealImg);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      };
+      sealImg.src = "assets/seal.png";
+
+      // Load Noise PNG
+      const noiseImg = new Image();
+      noiseImg.onload = function () {
+        gl.bindTexture(gl.TEXTURE_2D, noiseTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, noiseImg);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      };
+      noiseImg.src = "assets/smoke_noise.png";
+
+      const startTime = performance.now();
+
+      function render(now) {
+        const elapsed = (now - startTime) * 0.001;
+        gl.uniform2f(uRes, canvas.width, canvas.height);
+        gl.uniform1f(uTime, elapsed);
+        gl.uniform2f(uSealSize, sealW, sealH);
+
+        gl.uniform1f(uPulseSpeed, config.pulseSpeed);
+        gl.uniform1f(uGlowIntensity, config.glowIntensity);
+        gl.uniform1f(uSmokeSpeed, config.smokeSpeed);
+        gl.uniform1f(uSmokeReach, config.smokeReach);
+        gl.uniform1f(uSmokeBrightness, config.smokeBrightness);
+        gl.uniform1f(uSealScale, config.sealScale);
+        gl.uniform1i(uScaleMode, config.scaleMode);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sealTex);
+        gl.uniform1i(uSeal, 0);
+
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, noiseTex);
+        gl.uniform1i(uNoise, 1);
+
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        requestAnimationFrame(render);
+      }
+
+      requestAnimationFrame(render);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+{
+  "glow_intensity": {
+    "type": "slider",
+    "value": 0.3,
+    "min": 0.0,
+    "max": 2.0,
+    "step": 0.05,
+    "text": "Rune Glow Intensity"
+  },
+  "pulse_speed": {
+    "type": "slider",
+    "value": 1.8,
+    "min": 0.5,
+    "max": 3.0,
+    "step": 0.1,
+    "text": "Rune Pulse Speed"
+  },
+  "smoke_speed": {
+    "type": "slider",
+    "value": 0.01,
+    "min": 0.002,
+    "max": 0.05,
+    "step": 0.002,
+    "text": "Smoke Flow Speed"
+  },
+  "smoke_reach": {
+    "type": "slider",
+    "value": 1.25,
+    "min": 0.5,
+    "max": 2.0,
+    "step": 0.05,
+    "text": "Smoke Color Reach"
+  },
+  "smoke_brightness": {
+    "type": "slider",
+    "value": 1.0,
+    "min": 0.5,
+    "max": 2.0,
+    "step": 0.05,
+    "text": "Smoke Brightness"
+  },
+  "seal_scale": {
+    "type": "slider",
+    "value": 70,
+    "min": 40,
+    "max": 100,
+    "step": 2,
+    "text": "Medallion Size"
+  }
+}

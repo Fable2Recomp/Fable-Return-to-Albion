@@ -1,0 +1,143 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #000000;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#wallpaper-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+/* Standalone browser HUD styling */
+#hud-toggle-btn {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  background: rgba(20, 20, 25, 0.65);
+  color: #c7a159;
+  border: 1px solid rgba(199, 161, 89, 0.4);
+  border-radius: 50%;
+  font-size: 18px;
+  cursor: pointer;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity 0.3s ease, background 0.2s ease, transform 0.2s ease;
+  opacity: 0.2;
+}
+
+#hud-toggle-btn:hover {
+  opacity: 1.0;
+  background: rgba(30, 30, 40, 0.85);
+  transform: rotate(45deg);
+}
+
+#browser-hud {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  z-index: 99;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+#browser-hud.hud-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-8px);
+}
+
+.hud-panel {
+  background: rgba(12, 12, 16, 0.88);
+  border: 1px solid rgba(199, 161, 89, 0.35);
+  border-radius: 10px;
+  padding: 16px 20px;
+  width: 290px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: #e0d7c7;
+}
+
+.hud-panel h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #c7a159;
+  margin-bottom: 2px;
+  letter-spacing: 0.5px;
+}
+
+.hud-desc {
+  font-size: 11px;
+  color: #8a7c64;
+  margin-bottom: 14px;
+}
+
+.hud-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.hud-row label {
+  color: #b5aba0;
+}
+
+.hud-row input[type="range"] {
+  width: 130px;
+  accent-color: #c7a159;
+}
+
+.hud-row select {
+  background: #1e1e24;
+  color: #c7a159;
+  border: 1px solid rgba(199, 161, 89, 0.3);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  outline: none;
+}
+
+.hud-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #c7a159;
+  cursor: pointer;
+}
+
+.hud-hint {
+  font-size: 10px;
+  color: #70685e;
+  text-align: center;
+  margin-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
+}
+
+kbd {
+  background: rgba(255, 255, 255, 0.12);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #c7a159;
+}
