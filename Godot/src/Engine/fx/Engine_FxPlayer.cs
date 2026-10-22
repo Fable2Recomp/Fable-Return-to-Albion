@@ -447,13 +447,24 @@ public static class Engine_FxPlayer
 			}
 
 			var offset = new Vector3(r.OffsetX, r.OffsetY, r.OffsetZ);
+			if (!played.Follows && parent is not null && GodotObject.IsInstanceValid(parent) && parent.IsInsideTree())
+			{
+				// ON THE BODY: a constant local transform in the entity's own frame, so the effect
+				// takes the body's rotation AND scale as the guest restates them every frame.
+				FableFx onBody = Make(
+					$"ModFx_{r.Id.ToString(CultureInfo.InvariantCulture)}", r.Name, r.Scale, new Color(r.R, r.G, r.B),
+					r.Intensity, r.Loop, true, null);
+				parent.AddChild(onBody);
+				onBody.Transform = InEntityLocal(offset);
+				played.Node = onBody;
+				return Placing.Placed;
+			}
+
 			world = at is not { } origin
 				? default
-				: played.Follows || parent is null
-					? new Transform3D(
-						Refii.Game.GameFx.UnrotatedAt(Vector3.Zero).Basis,
-						origin + Refii.Game.GameFx.GuestToGodot(offset))
-					: InEntityFrame(parent.GlobalBasis, origin, offset);
+				: new Transform3D(
+					Refii.Game.GameFx.UnrotatedAt(Vector3.Zero).Basis,
+					origin + Refii.Game.GameFx.GuestToGodot(offset));
 		}
 		else
 		{
@@ -483,22 +494,28 @@ public static class Engine_FxPlayer
 	/// −N·localY (R's rows are the guest's local axes; M is the mesh's Z-up to Y-up bake). An effect
 	/// node takes guest rows as <c>(N·row0, N·row2, N·row1)</c> (<c>GameFx</c>'s placement from rows,
 	/// <c>UnrotatedAt</c> for the identity), so the effect's basis is the node's with its third column
-	/// negated; the node's scale is not the effect's (play_fx states its own). The same placement the
-	/// guest makes for its own FX entity, sub_825F8900: the placement component's position (slot
-	/// 0x40) and orientation (slot 0x44) put on the instance with sub_832325A8 and sub_83231C40.
+	/// negated. The same placement the guest makes for its own FX entity, sub_825F8900: the placement
+	/// component's position (slot 0x40) and orientation (slot 0x44) put on the instance with
+	/// sub_832325A8 and sub_83231C40.
 	/// </summary>
-	public static Transform3D InEntityFrame(Basis drawn, Vector3 origin, Vector3 guestOffset)
-	{
-		Basis axes = drawn.Orthonormalized();
-		var frame = new Basis(axes.Column0, axes.Column1, -axes.Column2);
-		if (!float.IsFinite(frame.Determinant()) || Mathf.Abs(frame.Determinant()) < 0.5f)
-		{
-			frame = Refii.Game.GameFx.UnrotatedAt(Vector3.Zero).Basis;
-		}
+	/// <remarks>
+	/// THE BODY'S SCALE IS THE EFFECT'S TOO. The guest restates an entity's appearance scale every
+	/// frame (a Blades sword grows in as it appears), and an effect authored along the model — a
+	/// blade's burn from guard to tip — lines it only at the model's own size. Set as a world
+	/// transform under a node still growing, the counter-scale was baked into the child and the burn
+	/// came out magnified and pushed past the tip; as a constant local transform it scales with the
+	/// body. play_fx's own scale multiplies on top.
+	/// </remarks>
+	public static Transform3D InEntityFrame(Basis drawn, Vector3 origin, Vector3 guestOffset) =>
+		new Transform3D(drawn, origin) * InEntityLocal(guestOffset);
 
-		// Guest-local (x, y, z) is the effect node's local (x, z, y).
-		return new Transform3D(frame, origin + (frame * new Vector3(guestOffset.X, guestOffset.Z, guestOffset.Y)));
-	}
+	/// <summary>
+	/// The effect's transform under the entity's drawn node: the third axis negated (see
+	/// <see cref="InEntityFrame"/>), the guest offset (x, y, z) at the node's local (x, z, −y).
+	/// </summary>
+	public static Transform3D InEntityLocal(Vector3 guestOffset) =>
+		new(new Basis(Vector3.Right, Vector3.Up, Vector3.Forward),
+			new Vector3(guestOffset.X, guestOffset.Z, -guestOffset.Y));
 
 	/// <summary>The live effects the feed states per entity this frame (owner and attached), and the last complete frame's.</summary>
 	private static Dictionary<uint, FableFx> _ownedBuilding = new();

@@ -77,6 +77,8 @@ constexpr uint32_t kEntityDefinition = 0x1C;
 constexpr uint32_t kEntityName = 0x80;
 constexpr uint32_t kPlacement = 0x7C;
 constexpr uint32_t kSetPositionSlot = 25;
+constexpr uint32_t kAppearanceComponent = 3;  // CECGraphicAppearance (ctor sub_82571DF8)
+constexpr uint32_t kSetTintVector = 0x82573770u;
 constexpr uint32_t kManagerDefinitions = 400;
 constexpr uint32_t kSpellSerial = 0x44;
 
@@ -974,6 +976,40 @@ extern "C" int32_t refii_mod_set_position(PPCContext* ctx, uint8_t* base, uint32
   PPCContext work = refii::mods::Frame(*ctx);
   refii::mods::SetVector(work, 1, xyz);
   return refii::mods::CallVirtual(work, base, placement, kSetPositionSlot) ? 1 : 0;
+}
+
+// THE TINT SETTER, sub_82573770(CECGraphicAppearance* r3, const float r4[4]) (disc sub_82548418,
+// the same 48 instructions): `lvx128 v0,r0,r4` (16-byte aligned {r, g, b, a}), skips when every
+// lane is within 1e-4 of +80 (`vcmpgefp.` against flt_82099A80 = 1e-4, 0x825737bc), else stores
+// +80..+95 (0x825737e0, 0x825737e8), marks the component dirty (+0x90 |= 0x200) and calls
+// sub_82573318, which packs the record the entity feed and co-op state.
+extern "C" int32_t refii_mod_entity_tint(PPCContext* ctx, uint8_t* base, uint32_t entity, float r, float g, float b,
+                                         float a) {
+  const float lanes[4] = {r, g, b, a};
+  for (const float lane : lanes) {
+    if (!std::isfinite(lane)) {
+      return 0;
+    }
+  }
+  const uint32_t look = ctx != nullptr ? refii_mod_component(base, entity, kAppearanceComponent) : 0u;
+  if (look == 0) {
+    return 0;
+  }
+  // Scratch below the caller's frame, above the setter's own.
+  const uint32_t frame = (ctx->r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t rgba = frame + 0x60u;
+  for (uint32_t i = 0; i < 4u; ++i) {
+    refii::mods::StoreF32(base, rgba + 4u * i, lanes[i] > 0.0f ? lanes[i] : 0.0f);
+  }
+  PPCContext work = *ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = look;
+  work.r4.u32 = rgba;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kSetTintVector)) ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_entity_untint(PPCContext* ctx, uint8_t* base, uint32_t entity) {
+  return refii_mod_entity_tint(ctx, base, entity, 1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 extern "C" int32_t refii_mod_modify_health(PPCContext* ctx, uint8_t* base, uint32_t entity, float delta, uint32_t attacker) {

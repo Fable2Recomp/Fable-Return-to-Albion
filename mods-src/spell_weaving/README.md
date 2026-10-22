@@ -106,6 +106,19 @@ flies Fable II's Blades sword round a pivot, tilting and rolling, with the look 
 staying on the blade as it turns). Under the classic look the vortex's look rides the vortex entity's own position, which can
 stand behind the travelling twister (an open item).
 
+**The tinted swords.** Each sword of a woven Blades cast wears its partner's colour — red for
+Fire, blue for Shock, violet for Chaos, dark slate steel for Force Push — under the woven burn
+that rides it. `native/woven.cpp` sets it through the game's own appearance tint setter
+(`refii_mod_entity_tint`, the mod API's tint: `sub_82573770` on the sword's renderable), so the
+modern and the classic look both draw it and every machine running the cast tints its own copy;
+either player's weave tints that player's swords. It is set once per sword: the sword's own update
+restates its scale and its fade every frame but never its tint, and a sword is destroyed 0.35 s
+after its stab, so nothing is put back. The tint multiplies the blade's lit colour — its glow
+included — so blue and violet need a lane above 1 to show on gold, and Force Push's dark steel is
+the gold's glow taken away. "More solid" is that: the tint's alpha is drawn by no shader, and the
+sword's opacity is its own fade, which the mod leaves alone. The four colours were tuned in the
+weave lab (`REFII_LAB_SWORD_TINT=r,g,b` draws the flown sword with that stated tint).
+
 **The partner is a position cast, as Fable III's is.** Read from Fable III's own classes: every
 weave request is cast with "shot from the caster" off, and Lightning, Fireball and Force Push
 branch on that — no projectile, no bolt from the caster, no hand effect; the spell resolves at
@@ -210,6 +223,13 @@ selectors draw a chosen partner that is not in effect at half strength.
 | `shot_delay` | 1 | Seconds between the base's hit and the partner's cast on that victim (±5 %, Fable 3's `WeaveSpellShotDelayTime` default). |
 | `shot_delay_vortex` | 0.25 | The same for a vortex base (Fable 3's vortex records). |
 | `weave_damage` | 0.7 | The share of their damage the partner's hits land at (Fable 3's general damage multiplier). |
+| `sword_tint_fire_r/_g/_b` | 1.35, 0.24, 0.1 | A Blades sword woven with Fire: a red blade. |
+| `sword_tint_shock_r/_g/_b` | 0.35, 0.75, 3.0 | Woven with Shock: a cold blue blade. |
+| `sword_tint_chaos_r/_g/_b` | 0.5, 0.22, 3.0 | Woven with Chaos: a violet blade. |
+| `sword_tint_push_r/_g/_b` | 0.28, 0.32, 0.55 | Woven with Force Push: a dark slate steel with no golden glow. |
+
+The sword tints are multipliers of the golden blade's lit colour (1 leaves a lane alone); see "The
+tinted swords" below.
 
 Each player has their own Spell Weaving level and their own partner choices. The ability row in
 the book acts for, and shows, the player whose book is open: player two's own book in local co-op,

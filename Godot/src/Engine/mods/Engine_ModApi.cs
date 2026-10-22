@@ -997,6 +997,13 @@ public static class ModApi
 		"whose menu: 2 on an online joiner, and in local co-op while player two owns the pause (the pause screen's owner) or their shop; 1 otherwise";
 
 	/// <summary>The native helpers of <c>core/refii_mod.h</c>, for the Guide and the editor API.</summary>
+	/// <summary>The tint primitive, the same on every surface.</summary>
+	private const string EntityTintMeaning =
+		"tints an entity through the game's own appearance setter (component 3, the one a corpse's grey goes through): " +
+		"linear multipliers of its lit colour, 1 untouched, above 1 brighter (the modern look caps a lane at 31.875/4); " +
+		"both looks draw it and co-op replicates it; a is stored but drawn by no shader (opacity is not the tint's); " +
+		"untint puts back the constructor's 1, 1, 1, 1 — untint only what you tinted. Guest tick";
+
 	public static readonly IReadOnlyList<ModApiHelper> Helpers = new[]
 	{
 		new ModApiHelper("uint32_t refii_mod_player_hero(base, player)", "player 1's or 2's hero entity, or 0"),
@@ -1036,6 +1043,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_entity_name(base, entity, char* out, size)", "the entity's instance name"),
 		new ModApiHelper("int32_t refii_mod_relation(ctx, base, entity, other)", "the game's faction rule: 1 neutral, 2 ally, 4 enemy"),
 		new ModApiHelper("int32_t refii_mod_set_position(ctx, base, entity, xyz)", "moves the entity through its placement's own setter"),
+		new ModApiHelper("int32_t refii_mod_entity_tint(ctx, base, entity, r, g, b, a) / refii_mod_entity_untint(ctx, base, entity)", EntityTintMeaning),
 		new ModApiHelper("int32_t refii_mod_modify_health(ctx, base, entity, delta, attacker)", "heals or hurts through the game's own Modify (death included)"),
 		new ModApiHelper("int32_t refii_mod_level_name(base, char* out, size)", "the loaded level's name"),
 		new ModApiHelper("int32_t refii_mod_gold(base, entity, int32_t* out) / refii_mod_give_gold(ctx, base, entity, delta)", "a purse, read and changed through the game's own Modify"),
@@ -1097,6 +1105,7 @@ public static class ModApi
 		new ModApiHelper("Refii.hash(name)", "the game's FNV-1 of a name as a \"0x…\" string: a GDB record's hash, a text tag's key"),
 		new ModApiHelper("Refii.health(e) -> current, max / Refii.set_health(e, v) / Refii.modify_health(e, delta, attacker)", "health, read, written, or changed through the game's own Modify (death included)"),
 		new ModApiHelper("Refii.position(e) -> x, y, z / Refii.set_position(e, x, y, z)", "a position through the entity's own placement"),
+		new ModApiHelper("Refii.entity_tint(e, r, g, b [, a]) / Refii.entity_untint(e)", EntityTintMeaning),
 		new ModApiHelper("Refii.gold(e) / Refii.give_gold(e, delta)", "a purse, read and changed through the game's own Modify"),
 		new ModApiHelper("Refii.item_count(e, definition) / Refii.add_item(e, definition)", "an inventory: definitions are \"0x…\" strings (Refii.hash of the record's name)"),
 		new ModApiHelper("Refii.experience(e, pool) / Refii.give_experience(e, pool, amount) / Refii.spend_experience(e, pool, amount)", "experience: pools 0 General 1 Strength 2 Skill 3 Will"),
@@ -1169,6 +1178,7 @@ public static class ModApi
 		new ModApiHelper("notice(title, text, seconds = 0, player = 0) -> id / signal notice_done(id, outcome)", "a notice on the channel the game's co-op notices use — in game the HUD's info box for seconds (0: its own length), on the front end its dialog — queued behind the others; outcome 0 once shown, -1 when it never showed. The mod_notice event carries the same, on every surface"),
 		new ModApiHelper("menu_box(title, text, options, player = 0, cancelable = true) -> id / signal menu_box_answered(id, option)", "the game's own menu box (the Golden Cock's) on the front end and in game, for player 1 or 2 (0: the menu owner here): up to 16 options, paged past six; option is the index chosen, -1 for B, a box replacing it or a player played on the other machine. The mod_menu_box event carries the same, on every surface"),
 		new ModApiHelper("give_gold / modify_health / set_health / add_item / give_experience / spend_experience / cast_spell / set_position / save_set", "helper calls, run in the guest tick with the real context; silent when there is nothing to act on"),
+		new ModApiHelper("entity_tint(handle, r, g, b, a = 1) / entity_untint(handle)", EntityTintMeaning),
 		new ModApiHelper("query(what, args) -> id / signal reply(id, result)", "asks the guest; the answer comes on a later frame with ok and the fields below"),
 		new ModApiHelper("query health E / position E / gold E / item_count E DEF / experience E POOL / ability_level E T", "current, max · x, y, z · gold · count · amount · level"),
 		new ModApiHelper("query relation A B / alive E / definition E / name E / level_name / hero P / player_of E", "relation · alive · definition · name · level · hero · player"),

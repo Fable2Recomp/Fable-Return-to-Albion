@@ -68,6 +68,17 @@
 //     body at +4) to the sword entity sub_825A6198 creates from the "DamoclesSword" definition,
 //     named "SpellShotDamoclesSword": the entity is *(body) while it lives, and a sword dies 0.35 s
 //     after its stab (state 8), its alive bit cleared at once (0x8238d9b8).
+//   EACH SWORD WEARS ITS PARTNER'S TINT (TintSwords), through the game's own appearance tint setter
+//     (refii_mod_entity_tint: sub_82573770 on the sword's component 3), so the entity feed draws it
+//     under both looks and every machine running the cast tints its own copy. The sword's update
+//     (sub_825A63A8) restates its SCALE (sub_825F9168 0x825a6558) and ALPHA (sub_825F8FE0
+//     0x825a65a8: the definition's +40 x the record's fade) every frame and never its tint: no
+//     function of the controller (0x825A2000..0x825A9800) calls either tint setter (sub_82573570,
+//     sub_82573770) or the entity tint helper sub_825F92E0, and the setters are reached through no
+//     pointer (their only data references are .pdata) — so the tint is set once and held. A sword dies 0.35 s after its stab (sub_825A6698 destroys it, 0x825a678c);
+//     its successor at that address is a new component whose constructor states {1, 1, 1, 1}
+//     (sub_82571DF8 0x82571f04), so nothing is put back. The colours are settings.json's
+//     spell_weaving.sword_tint_<partner>_r/g/b, multipliers of the golden blade's lit colour.
 //   THE FACTORY ALSO RESOLVES INSTANT CASTS INSIDE ITSELF: a targeted Lightning's bolt lands its
 //     hit from that same slot-1 Start (sub_827407F0 -> sub_825FA680 0x827413cc), BEFORE SpellCreated
 //     reports the object. So a base's hit may arrive with no weave yet: the armed pair binds on the
@@ -489,6 +500,62 @@ void ReadSwords(uint8_t* base, Weave& w, uint32_t controller) {
               controller);
 }
 
+/// The partner's tint for a Blades sword, {r, g, b}: the mod's settings over these defaults. The
+/// blade is gold and emissive, and the tint multiplies its albedo, emission and specular alike, so a
+/// colour reads by what it keeps of the gold — a lane above 1 is what lets blue and purple show on it.
+/// Force Push keeps no glow: a dark slate steel, about a third of the gold's light, that reads as a
+/// heavier, solid blade — the solidity the tint can give, as opacity is the sword's own fade's (the
+/// tint's alpha is drawn by no shader). Tuned in the weave lab (FxWeaveLab REFII_LAB_SWORD_TINT).
+/// False for a partner with none.
+bool SwordTint(int overlay, float* rgb) {
+  struct Default {
+    int partner;
+    const char* name;
+    float rgb[3];
+  };
+  static constexpr Default kDefaults[] = {
+      {kFireball, "fire", {1.35f, 0.24f, 0.10f}},
+      {kLightning, "shock", {0.35f, 0.75f, 3.0f}},
+      {kChaos, "chaos", {0.5f, 0.22f, 3.0f}},
+      {kForcePush, "push", {0.28f, 0.32f, 0.55f}},
+  };
+  for (const Default& d : kDefaults) {
+    if (d.partner != overlay) {
+      continue;
+    }
+    static const char kLanes[3] = {'r', 'g', 'b'};
+    for (int i = 0; i < 3; ++i) {
+      char key[64];
+      std::snprintf(key, sizeof(key), "spell_weaving.sword_tint_%s_%c", d.name, kLanes[i]);
+      rgb[i] = Knob(key, d.rgb[i]);
+    }
+    return true;
+  }
+  return false;
+}
+
+/// Tints each live sword of a Blades weave by its partner, once (see the header comment).
+void TintSwords(PPCContext* ctx, uint8_t* base, Weave& w) {
+  if (w.base != kSwords) {
+    return;
+  }
+  float rgb[3];
+  bool known = false;
+  for (int i = 0; i < 8; ++i) {
+    const uint32_t sword = w.sword_tinted[i] ? 0u : SwordOf(base, w, i);
+    if (sword == 0) {
+      continue;
+    }
+    if (!known && !SwordTint(w.overlay, rgb)) {
+      return;
+    }
+    known = true;
+    if (refii_mod_entity_tint(ctx, base, sword, rgb[0], rgb[1], rgb[2], 1.0f) != 0) {
+      w.sword_tinted[i] = true;
+    }
+  }
+}
+
 /// A victim the base hit, kept (newest over oldest) for the looks that ride on victims.
 void NoteVictim(Weave& w, uint32_t victim) {
   if (victim == 0) {
@@ -683,6 +750,7 @@ void OnSpellCreated(refii::mods::SpellCreatedEvent& e) {
     // The swords are there: the factory ran the class's Start (see the header comment).
     const uint32_t at = e.targeted ? kSpellBladesControllerTargeted : kSpellBladesControllerArea;
     ReadSwords(e.base, w, refii::mods::LoadU32(e.base, e.spell + at));
+    TintSwords(e.ctx, e.base, w);
   } else if ((w.base == kLightning || w.base == kForcePush || w.base == kChaos) && e.targeted && e.target != 0 &&
              refii_mod_world_here(e.base) == 0) {
     // Where hits are not decided (an online joiner) the victims arrive as the host's relayed hits,
@@ -731,6 +799,11 @@ void OnTick(refii::mods::TickEvent& e) {
   g_armed[0] = Armed{};
   g_armed[1] = Armed{};
 
+  for (Weave& w : g_weaves) {
+    if (w.serial != 0) {
+      TintSwords(e.ctx, e.base, w);
+    }
+  }
   UpdateLooks(e.base);
 }
 REFII_MOD_ON(Tick, OnTick);

@@ -414,6 +414,25 @@ extern "C" int32_t refii_mod_relation(PPCContext* ctx, uint8_t* base, uint32_t e
 /// game's moved event. True when done. Guest tick thread only.
 extern "C" int32_t refii_mod_set_position(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* xyz);
 
+/// Tints `entity` through the game's own appearance setter: the vector tint of its renderable
+/// (CECGraphicAppearance, component 3; `sub_82573770`, disc `sub_82548418`), the vector twin of
+/// the byte setter `sub_82573570` a death's grey goes through. Lanes are linear multipliers of the
+/// lit colour, 1 = untouched (the byte setter states its 0..255 as n/255): {1, 0.3, 0.3} reads red, {0.4,
+/// 0.4, 0.4} darker; above 1 brightens (the title's own ghosts state up to 392; the modern look
+/// caps a lane at 31.875/4, the scene target's ceiling). `a` is stored and replicated but no shader
+/// reads it: opacity is SetAlpha's, never the tint's. The setter stores +80..+95 and states the
+/// record the entity feed draws under both looks and co-op replicates; a change under 1e-4 on
+/// every lane is ignored by the game itself, so restating a tint each tick costs nothing. Negative
+/// lanes are taken as 0; a non-finite one refuses the call. True when the entity has a renderable.
+/// Guest tick thread only.
+extern "C" int32_t refii_mod_entity_tint(PPCContext* ctx, uint8_t* base, uint32_t entity, float r, float g, float b,
+                                         float a);
+
+/// Puts `entity`'s tint back to the constructor's {1, 1, 1, 1} (`sub_82571DF8` 0x82571f04) through
+/// the same setter. An entity the GAME tints (a corpse's grey) is the game's to restore: untint only
+/// what you tinted. True when the entity has a renderable. Guest tick thread only.
+extern "C" int32_t refii_mod_entity_untint(PPCContext* ctx, uint8_t* base, uint32_t entity);
+
 /// Changes `entity`'s health by `delta` (negative to hurt) through the game's own Modify, the
 /// function every heal and damage goes through: clamps, stats, the death at zero with
 /// `attacker` (or 0) as the killer, the mod's Damage/EntityDied events. True when done.

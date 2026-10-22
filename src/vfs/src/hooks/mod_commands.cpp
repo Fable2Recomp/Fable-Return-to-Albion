@@ -10,6 +10,7 @@
 //   give_gold E D · modify_health E D ATTACKER · set_health E V · add_item E DEFINITION
 //   give_experience E POOL AMOUNT · spend_experience E POOL AMOUNT
 //   cast_spell CASTER TYPE TARGETED TARGET LEVEL · set_position E X Y Z
+//   entity_tint E R G B A · entity_untint E   (refii_mod_entity_tint: the game's own tint setter)
 //   save_set KEY INT · run_lua CHUNK...
 //   player_set P KEY V · player_add P KEY D [SAVED] · player_save P KEY V   (the player store
 //     Refii.player_set / _add / _save write: refii_mod_player_*)
@@ -890,6 +891,10 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
   } else if (op == "set_position") {
     const float xyz[3] = {F(w, 2), F(w, 3), F(w, 4)};
     refii_mod_set_position(&ctx, base, E(w, 1), xyz);
+  } else if (op == "entity_tint" && w.size() >= 5) {
+    refii_mod_entity_tint(&ctx, base, E(w, 1), F(w, 2), F(w, 3), F(w, 4), w.size() >= 6 ? F(w, 5) : 1.0f);
+  } else if (op == "entity_untint") {
+    refii_mod_entity_untint(&ctx, base, E(w, 1));
   } else if (op == "player_set" && w.size() >= 4) {
     refii_mod_player_set(I(w, 1), w[2].c_str(), F(w, 3));
   } else if (op == "player_add" && w.size() >= 4) {

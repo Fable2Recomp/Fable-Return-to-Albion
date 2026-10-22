@@ -284,6 +284,45 @@ public class ModApiTests
     }
 
     [TestCase]
+    public void TheEntityTintIsOnEverySurface()
+    {
+        // One primitive, three surfaces: native, Lua and Godot all reach refii_mod_entity_tint, the
+        // game's own vector tint setter (sub_82573770), and its untint.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        AssertThat(native.Contains("refii_mod_entity_tint(ctx, base, entity, r, g, b, a)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_entity_untint(ctx, base, entity)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.entity_tint(e, r, g, b [, a])", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.entity_untint(e)", StringComparison.Ordinal)).IsTrue();
+        ModApiHelper tint = ModApi.GodotHelpers.Single(h => h.Signature.StartsWith("entity_tint(", StringComparison.Ordinal));
+        AssertThat(ModApi.GodotMethodNames(tint.Signature).ToArray()).IsEqual(new[] { "entity_tint", "entity_untint" });
+        AssertThat(tint.Meaning.Contains("opacity is not the tint's", StringComparison.Ordinal)).IsTrue();
+        AssertThat(Regex.IsMatch(godot, @"\bentity_untint\b")).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_entity_tint(PPCContext* ctx, uint8_t* base, uint32_t entity, float r, float g, float b,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_entity_untint(PPCContext* ctx, uint8_t* base, uint32_t entity);", StringComparison.Ordinal)).IsTrue();
+
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        AssertThat(natives.Contains("{\"entity_tint\", &NativeEntityTint, 0}", StringComparison.Ordinal)).IsTrue();
+        AssertThat(natives.Contains("{\"entity_untint\", &NativeEntityUntint, 0}", StringComparison.Ordinal)).IsTrue();
+
+        // The setter is called by its TU1 address, so the disc build needs its row (same 48
+        // instructions at 0x82548418).
+        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        AssertThat(rows.Contains("{0x82573770u, 0x82548418u},", StringComparison.Ordinal)).IsTrue();
+        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        AssertThat(api.Contains("kSetTintVector = 0x82573770u", StringComparison.Ordinal)).IsTrue();
+    }
+
+    [TestCase]
     public void GodotDeclaresASignalPerEvent()
     {
         AssertThat(string.Join(",", RefiiHost.SignalNames)).IsEqual(string.Join(",", ModApi.Events.Select(e => e.LuaName)));

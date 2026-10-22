@@ -72,6 +72,8 @@ struct Weave {
   uint32_t swords[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   /// The Blades' Start has stated its swords (it runs after the factory, on the cast's first update).
   bool swords_read = false;
+  /// Each sword carries its partner's tint (woven.cpp TintSwords): set once, held until it dies.
+  bool sword_tinted[8] = {false, false, false, false, false, false, false, false};
   /// Where the cast started: the fallback position of the look.
   float origin[3] = {0.0f, 0.0f, 0.0f};
   /// The victims the base hit, for a base with no thing of its own in the world (lightning,

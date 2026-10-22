@@ -684,6 +684,17 @@ public partial class RefiiHost : Node
 		Post($"set_position {entity} {Num(x)} {Num(y)} {Num(z)}");
 
 	/// <summary>
+	/// Tints an entity through the game's own appearance setter (refii_mod_entity_tint): linear
+	/// multipliers of its lit colour, 1 untouched, above 1 brighter; both looks draw it and co-op
+	/// replicates it. <paramref name="a"/> is stored, never drawn: opacity is not the tint's.
+	/// </summary>
+	public void entity_tint(long entity, float r, float g, float b, float a = 1f) =>
+		Post($"entity_tint {entity} {Num(r)} {Num(g)} {Num(b)} {Num(a)}");
+
+	/// <summary>Puts an entity's tint back to the constructor's {1, 1, 1, 1} (refii_mod_entity_untint).</summary>
+	public void entity_untint(long entity) => Post($"entity_untint {entity}");
+
+	/// <summary>
 	/// Sets a player's SESSION value (<c>Refii.player_set</c>): the player store refii_mod_player_*
 	/// keeps, the same on both co-op machines. <paramref name="key"/> is "&lt;mod&gt;.&lt;name&gt;", no spaces.
 	/// </summary>

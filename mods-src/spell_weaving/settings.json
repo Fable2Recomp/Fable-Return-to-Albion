@@ -7,6 +7,18 @@
 		"woven_cooldown_seconds": 0.5,
 		"shot_delay": 1.0,
 		"weave_damage": 0.7,
-		"shot_delay_vortex": 0.25
+		"shot_delay_vortex": 0.25,
+		"sword_tint_fire_r": 1.35,
+		"sword_tint_fire_g": 0.24,
+		"sword_tint_fire_b": 0.1,
+		"sword_tint_shock_r": 0.35,
+		"sword_tint_shock_g": 0.75,
+		"sword_tint_shock_b": 3.0,
+		"sword_tint_chaos_r": 0.5,
+		"sword_tint_chaos_g": 0.22,
+		"sword_tint_chaos_b": 3.0,
+		"sword_tint_push_r": 0.28,
+		"sword_tint_push_g": 0.32,
+		"sword_tint_push_b": 0.55
 	}
 }

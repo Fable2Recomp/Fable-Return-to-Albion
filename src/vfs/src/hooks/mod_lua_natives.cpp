@@ -15,6 +15,7 @@
 // SURFACE (all under Refii): publish(key, n) value(key) log(text) hash(name)
 //   health(e) -> cur, max · set_health(e, v) · modify_health(e, delta, attacker)
 //   position(e) -> x, y, z · set_position(e, x, y, z)
+//   entity_tint(e, r, g, b [, a]) · entity_untint(e)
 //   gold(e) · give_gold(e, delta) · item_count(e, def) · add_item(e, def)
 //   experience(e, pool) · give_experience(e, pool, amount) · spend_experience(e, pool, amount)
 //   ability_level(e, type) · cast_spell(caster, type, targeted, target, level)
@@ -386,6 +387,19 @@ REFII_LUA_NATIVE(NativeSetPosition) {
   const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
                         static_cast<float>(lua.Number(4))};
   lua.PushBoolean(refii_mod_set_position(&lua.ctx, lua.base, lua.Entity(1), xyz) != 0);
+  RESULTS(1);
+}
+
+// Refii.entity_tint(e, r, g, b [, a]): a defaults to 1.
+REFII_LUA_NATIVE(NativeEntityTint) {
+  const float a = lua.Type(5) == kTypeNumber ? static_cast<float>(lua.Number(5)) : 1.0f;
+  lua.PushBoolean(refii_mod_entity_tint(&lua.ctx, lua.base, lua.Entity(1), static_cast<float>(lua.Number(2)),
+                                        static_cast<float>(lua.Number(3)), static_cast<float>(lua.Number(4)), a) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeEntityUntint) {
+  lua.PushBoolean(refii_mod_entity_untint(&lua.ctx, lua.base, lua.Entity(1)) != 0);
   RESULTS(1);
 }
 
@@ -1256,6 +1270,8 @@ Native g_natives[] = {
     {"modify_health", &NativeModifyHealth, 0},
     {"position", &NativePosition, 0},
     {"set_position", &NativeSetPosition, 0},
+    {"entity_tint", &NativeEntityTint, 0},
+    {"entity_untint", &NativeEntityUntint, 0},
     {"gold", &NativeGold, 0},
     {"give_gold", &NativeGiveGold, 0},
     {"item_count", &NativeItemCount, 0},
