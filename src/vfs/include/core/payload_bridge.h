@@ -543,17 +543,28 @@ int32_t refii_bridge_dpad_query_two(void);
 // - take everything the host posted (degrees at the middle sensitivity; right and up positive);
 //   the state's sequence goes odd until the matching state call;
 void refii_bridge_mouse_look_take(float* out_yaw, float* out_pitch);
-// - state what became of it: the yaw taken (posted degrees), vertical held back below the
-//   camera's dead zone (returned to the pending turn), the yaw the camera turned for it in this
-//   update (its own degrees, rightward), its degrees per posted degree (0 keeps the last), and how
-//   the host draws a turn not yet taken: `mode` 0 not at all, 1 about the vertical through the
-//   focus `pivot` metres along the level line of sight, 2 about the camera's own position.
-void refii_bridge_mouse_look_state(uint32_t tick, float taken_yaw, float held_pitch,
-                                   float absorbed_yaw, float factor, float pivot, int32_t mode);
+// - state what became of it: the yaw and pitch taken (posted degrees), vertical held back below
+//   the camera's dead zone (returned to the pending turn), the turn the camera made for it in this
+//   update (its own degrees, rightward and upward), its degrees per posted degree (0 keeps the
+//   last), and how the host draws a turn not yet taken: `mode` 0 not at all, 1 about the vertical
+//   through the focus `pivot_forward` metres along the level line of sight, 2 about the camera's
+//   own position, 3 rigidly about the point (`pivot_forward`, `pivot_right`, `pivot_up`) metres
+//   along the camera's level forward, level right and world up — the yaw about its vertical, the
+//   pitch about its level right axis, elevation bounded at `pitch_limit` degrees — with the ranged
+//   aim `aim` (its reticule anchor) turning with the view.
+void refii_bridge_mouse_look_state(uint32_t tick, float taken_yaw, float taken_pitch,
+                                   float held_pitch, float absorbed_yaw, float absorbed_pitch,
+                                   float factor, float pivot_forward, float pivot_right,
+                                   float pivot_up, float pitch_limit, int32_t mode,
+                                   uint32_t aim);
 // - whether the mouse is the player's look device (the host's device switch): nonzero while the
 //   keyboard and mouse were touched last;
 int32_t refii_bridge_mouse_look_device(void);
-// - count one target switch handed to a target lock (a mouse flick), for the debug channel.
+// - take every mouse-wheel notch the host posted since the last take, rightward positive (a
+//   notch down +1, up -1);
+int32_t refii_bridge_mouse_look_take_wheel(void);
+// - count one target switch handed to a target lock (a mouse flick or a wheel notch), for the
+//   debug channel.
 void refii_bridge_mouse_look_flicked(void);
 
 #ifdef __cplusplus

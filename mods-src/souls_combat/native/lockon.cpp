@@ -32,6 +32,12 @@
 //   in world: (target + 0x90) & 0x40               selector sub_82844950 @0x82844b28 / 0x8277b488
 //   alive:    component 20 of target, byte +0x18   same selector @0x82844c44 / 0x8277b5a4
 //             (a target without component 20 is not a creature; it counts as alive)
+//
+// THE WHEEL SWITCHES TARGET. Each tick a hero's lock holds it is stated to switch by the mouse wheel
+// (refii_mod_wheel_switches_target, core/refii_mod.h): on the keyboard and mouse, moving the mouse
+// never switches target while locked, and a wheel notch is one switch through the camera's own
+// CheckForBetterTargetInDirection — up the next target left, down the next target right. A pad's
+// right-stick flick is untouched.
 
 #include "core/refii_mod.h"
 #include "souls_combat.h"
@@ -112,6 +118,7 @@ void DropLostLocks(refii::mods::TickEvent& e) {
       g_locked[i] = 0;
       continue;
     }
+    refii_mod_wheel_switches_target(e.base, hero);
     if (HasValidTarget(e.base, hero)) {
       g_without_target[i] = 0.0f;
       continue;
@@ -131,6 +138,9 @@ void OnGameAction(refii::mods::GameActionEvent& e) {
     const bool on = !IsLocked(e.hero);
     SetLocked(e.hero, on);
     Apply(*e.ctx, e.base, e.hero, on);
+    if (on) {
+      refii_mod_wheel_switches_target(e.base, e.hero);
+    }
     REXLOG_INFO("Souls Combat: lock-on {}", on ? "ON" : "OFF");
   }
   // The release (50) ends nothing while locked: the game's own case honours the force byte, and

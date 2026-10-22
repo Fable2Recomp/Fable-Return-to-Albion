@@ -21,7 +21,7 @@ namespace Refii.Game;
 /// `thread` (a name or part of one) narrows zones, find and samples to one thread. Times in the
 /// replies are milliseconds from the capture's start.
 ///
-/// Saving compresses on a worker thread, as the F4 tab does; while it runs the capture is held,
+/// Saving compresses on a worker thread, as the F6 tab does; while it runs the capture is held,
 /// so every action but status answers "saving".
 /// </remarks>
 public partial class GameDebugServer

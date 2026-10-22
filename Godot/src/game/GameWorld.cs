@@ -28,13 +28,44 @@ public partial class GameWorld : Node3D
 	/// <summary>The mouse's turn drawn ahead of the guest's camera last frame (posted, not yet taken), degrees rightward.</summary>
 	public static double MouseLookOutstanding { get; private set; }
 
-	/// <summary>How the guest's camera turns for the mouse (an Engine_MouseLook mode), and its focus distance.</summary>
+	/// <summary>The pitch drawn ahead last frame (the ranged aim only), degrees upward, after the elevation bound.</summary>
+	public static double MouseLookOutstandingPitch { get; private set; }
+
+	/// <summary>How the guest's camera turns for the mouse (an Engine_MouseLook mode), and its pivot as stated.</summary>
 	public static int MouseLookMode { get; private set; }
 
-	public static float MouseLookPivotMetres { get; private set; }
+	public static Vector3 MouseLookPivot { get; private set; }
 
-	/// <summary>Everything the guest's camera has turned for the mouse, degrees. Run total.</summary>
+	/// <summary>Everything the guest's camera has turned and pitched for the mouse, degrees. Run totals.</summary>
 	public static double MouseLookAbsorbed { get; private set; }
+
+	public static double MouseLookAbsorbedPitch { get; private set; }
+
+	/// <summary>
+	/// The ranged aim whose reticule turns with the view (the aim mode), and this frame's turn drawn
+	/// ahead of the guest's camera: its pivot (Godot space) and rotation. The reticule's anchor is
+	/// turned by it (<see cref="TurnAimAhead"/>), as the guest's next update will turn the aim.
+	/// </summary>
+	public static uint MouseLookAim { get; private set; }
+
+	/// <summary>The sequence of the mouse account the camera was last drawn from (a whole read).</summary>
+	public static uint MouseLookSequence { get; private set; }
+
+	private static Vector3 _aheadPivot;
+	private static Basis _aheadTurn = Basis.Identity;
+
+	/// <summary>A guest-space point of <see cref="MouseLookAim"/> turned by the turn drawn ahead this frame.</summary>
+	public static Vector3 TurnAimAhead(Vector3 guest)
+	{
+		if (MouseLookAim == 0u || _aheadTurn.IsEqualApprox(Basis.Identity))
+		{
+			return guest;
+		}
+
+		var godot = new Vector3(-guest.X, guest.Z, guest.Y);
+		Vector3 turned = _aheadPivot + (_aheadTurn * (godot - _aheadPivot));
+		return new Vector3(-turned.X, turned.Z, turned.Y);
+	}
 
 	/// <summary>Target switches the mouse handed to a target lock, as last read. Run total.</summary>
 	public static uint MouseLookFlicks { get; private set; }
@@ -148,7 +179,7 @@ public partial class GameWorld : Node3D
 			++MouseLookTornReads;
 			if (lookAfter is { } partial)
 			{
-				_mouseLook.ObservePosted(partial.Posted);
+				_mouseLook.ObservePosted(partial.Posted, partial.PostedPitch);
 			}
 
 			if (!_cameraLine.Empty)
@@ -242,31 +273,42 @@ public partial class GameWorld : Node3D
 	private void ObserveMouseLook(HostBridge.MouseLookState look)
 	{
 		int drawnMode = _mouseLook.Mode;
-		float drawnPivot = _mouseLook.PivotMetres;
-		double turned = _mouseLook.Observe(look.Posted, look.Taken, look.Absorbed, look.Factor,
-			look.PivotMetres, look.Mode);
-		if (turned != 0.0 && drawnMode != Refii.Core.Engine_MouseLook.ModeNone && !_cameraLine.Empty)
+		Vector3 drawnPivot = _mouseLook.PivotOffsets;
+		(double right, double up) = _mouseLook.Observe(look.Posted, look.Taken, look.Absorbed,
+			look.PostedPitch, look.TakenPitch, look.AbsorbedPitch, look.Factor, look.Pivot, look.Mode,
+			look.PitchLimit, look.Aim);
+		if ((right != 0.0 || up != 0.0) && drawnMode != Refii.Core.Engine_MouseLook.ModeNone && !_cameraLine.Empty)
 		{
-			_cameraLine.TurnAbout(Refii.Core.Engine_MouseLook.PivotFor(_lineDrawn, drawnMode, drawnPivot), turned);
+			_cameraLine.TurnAbout(Refii.Core.Engine_MouseLook.PivotFor(_lineDrawn, drawnMode, drawnPivot),
+				Refii.Core.Engine_MouseLook.Rotation(_lineDrawn, drawnMode, right, up));
 		}
 
 		MouseLookMode = _mouseLook.Mode;
-		MouseLookPivotMetres = _mouseLook.PivotMetres;
+		MouseLookPivot = _mouseLook.PivotOffsets;
 		MouseLookAbsorbed = _mouseLook.Absorbed;
+		MouseLookAbsorbedPitch = _mouseLook.AbsorbedPitch;
 		MouseLookFlicks = look.Flicks;
+		MouseLookSequence = look.Sequence;
 	}
 
 	/// <summary>
 	/// THE MOUSE'S TURN AT THE DISPLAY RATE: the camera the timeline draws, turned by the part of
 	/// the mouse's turn no guest camera update has taken yet, the way the guest's camera turns —
-	/// about its focus, or in place. Nothing is predicted: the guest turns exactly this much in
-	/// its next update, and the statement that carries it restates the history by the same.
+	/// about its focus, in place, or with the ranged aim about the hero's head. Nothing is predicted:
+	/// the guest turns exactly this much in its next update, and the statement that carries it
+	/// restates the history by the same.
 	/// </summary>
 	private Transform3D DrawMouseLook(Transform3D drawn)
 	{
-		double outstanding = _mouseLook.Outstanding;
-		MouseLookOutstanding = outstanding;
-		return Refii.Core.Engine_MouseLook.Turn(drawn, _mouseLook.Mode, _mouseLook.PivotMetres, outstanding);
+		MouseLookOutstanding = _mouseLook.Outstanding;
+		(Vector3 pivot, Basis turn) = _mouseLook.Ahead(drawn);
+		MouseLookOutstandingPitch = _mouseLook.Mode == Refii.Core.Engine_MouseLook.ModeAim
+			? Refii.Core.Engine_MouseLook.BoundPitch(drawn, _mouseLook.OutstandingPitch, _mouseLook.PitchLimit)
+			: 0.0;
+		MouseLookAim = _mouseLook.Aim;
+		_aheadPivot = pivot;
+		_aheadTurn = turn;
+		return _mouseLook.DrawAhead(drawn);
 	}
 
 	/// <summary>

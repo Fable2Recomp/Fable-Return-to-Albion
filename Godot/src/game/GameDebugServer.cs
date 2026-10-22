@@ -2775,15 +2775,25 @@ public partial class GameDebugServer : Node
 						["cameraLive"] = Refii.Game.GameWorld.LiveOnlyCameras,
 						["cameraNonFinite"] = Refii.Game.GameWorld.NonFiniteCameras,
 						// The mouse's turn posted and not yet taken by a camera update, drawn ahead of the
-						// guest's camera (degrees); how that camera turns (0 none, 1 orbit, 2 in place) and
-						// its focus distance; everything it has turned for the mouse (degrees, run total);
-						// reads that straddled a camera update (run total); whether the mouse is the look
-						// device (its camera keeps its heading); and the target switches it flicked a
-						// lock to (run total).
+						// guest's camera (degrees right; up, bounded, for the ranged aim only); how that
+						// camera turns (0 none, 1 orbit, 2 in place, 3 the ranged aim with its reticule) and
+						// its pivot (orbit: focus metres in x; aim: the head along level forward, right, up);
+						// everything it has turned and pitched for the mouse (degrees, run totals); the aim
+						// turned with the view (0 when none); reads that straddled a camera update (run
+						// total); whether the mouse is the look device (its camera keeps its heading); and
+						// the target switches it flicked a lock to (run total).
 						["mouseLookOutstanding"] = Refii.Game.GameWorld.MouseLookOutstanding,
+						["mouseLookOutstandingPitch"] = Refii.Game.GameWorld.MouseLookOutstandingPitch,
 						["mouseLookMode"] = Refii.Game.GameWorld.MouseLookMode,
-						["mouseLookPivot"] = Refii.Game.GameWorld.MouseLookPivotMetres,
+						["mouseLookPivot"] = new[]
+						{
+							Refii.Game.GameWorld.MouseLookPivot.X,
+							Refii.Game.GameWorld.MouseLookPivot.Y,
+							Refii.Game.GameWorld.MouseLookPivot.Z,
+						},
 						["mouseLookAbsorbed"] = Refii.Game.GameWorld.MouseLookAbsorbed,
+						["mouseLookAbsorbedPitch"] = Refii.Game.GameWorld.MouseLookAbsorbedPitch,
+						["mouseLookAim"] = $"0x{Refii.Game.GameWorld.MouseLookAim:X8}",
 						["mouseLookTorn"] = Refii.Game.GameWorld.MouseLookTornReads,
 						["mouseLookDevice"] = Refii.Ui.Engine_UiInputMode.KeyboardMouse,
 						["mouseLookFlicks"] = Refii.Game.GameWorld.MouseLookFlicks,

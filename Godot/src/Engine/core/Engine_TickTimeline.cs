@@ -140,29 +140,43 @@ public sealed class Engine_TickTimeline
 	/// <summary>
 	/// Restates the whole history — both stated samples, the drawn transform and its motion — as
 	/// turned rightward by <paramref name="rightDegrees"/> about the vertical through
-	/// <paramref name="pivot"/>. For a turn the newest statement carries that the history was drawn
-	/// with by other means (<see cref="Engine_MouseLook"/>): the timeline then blends only the motion
-	/// the source states of its own. The spin is held in the previous sample's own frame, so it is
-	/// unchanged by a turn of the whole.
+	/// <paramref name="pivot"/>. See <see cref="TurnAbout(Vector3, Basis)"/>.
 	/// </summary>
 	public void TurnAbout(Vector3 pivot, double rightDegrees)
 	{
-		if (!_started || rightDegrees == 0.0 || !double.IsFinite(rightDegrees) || !pivot.IsFinite())
+		if (rightDegrees == 0.0 || !double.IsFinite(rightDegrees))
 		{
 			return;
 		}
 
-		float radians = -Mathf.DegToRad((float)rightDegrees);
-		var basis = new Basis(Vector3.Up, radians);
-		var turn = new Quaternion(Vector3.Up, radians);
-		Transform3D Turned(Transform3D t) => new(basis * t.Basis, pivot + (basis * (t.Origin - pivot)));
+		TurnAbout(pivot, new Basis(Vector3.Up, -Mathf.DegToRad((float)rightDegrees)));
+	}
+
+	/// <summary>
+	/// Restates the whole history — both stated samples, the drawn transform and its motion — as
+	/// turned by <paramref name="turn"/> about <paramref name="pivot"/>. For a turn the newest
+	/// statement carries that the history was drawn with by other means
+	/// (<see cref="Engine_MouseLook"/>): the timeline then blends only the motion the source states
+	/// of its own. The spin is held in the previous sample's own frame, so it is unchanged by a turn
+	/// of the whole.
+	/// </summary>
+	public void TurnAbout(Vector3 pivot, Basis turn)
+	{
+		if (!_started || !pivot.IsFinite() || turn.IsEqualApprox(Basis.Identity) ||
+			!turn.X.IsFinite() || !turn.Y.IsFinite() || !turn.Z.IsFinite())
+		{
+			return;
+		}
+
+		Quaternion rotation = turn.GetRotationQuaternion().Normalized();
+		Transform3D Turned(Transform3D t) => new(turn * t.Basis, pivot + (turn * (t.Origin - pivot)));
 
 		_previous = Turned(_previous);
 		Newest = Turned(Newest);
-		_previousRotation = (turn * _previousRotation).Normalized();
-		_position = pivot + (basis * (_position - pivot));
-		_rotation = (turn * _rotation).Normalized();
-		_velocity = basis * _velocity;
+		_previousRotation = (rotation * _previousRotation).Normalized();
+		_position = pivot + (turn * (_position - pivot));
+		_rotation = (rotation * _rotation).Normalized();
+		_velocity = turn * _velocity;
 	}
 
 	/// <summary>

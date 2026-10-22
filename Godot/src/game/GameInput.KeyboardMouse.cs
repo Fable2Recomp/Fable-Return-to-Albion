@@ -54,7 +54,7 @@ public partial class GameInput
 		new("ranged", "R", "Ranged directly, whatever the mode (Y)."),
 		new("magic", "C", "Magic directly, whatever the mode (B)."),
 		new("target_lock", "MouseRight", "Hold to lock on to a target (left trigger); flick the " +
-			"mouse to switch target."),
+			"mouse to switch target (a mod's lock may switch by the wheel instead: up left, down right)."),
 		new("first_person", "MouseMiddle,Z", "Hold for the first-person view (left bumper)."),
 		new("spells_menu", "Ctrl", "Hold to choose a spell (right trigger)."),
 		new("expression_wheel", "Q", "Hold for the expression wheel."),
@@ -185,7 +185,7 @@ public partial class GameInput
 		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
 			HostBridge.GetPauseState() is not { ModalMode: not 1 };
 
-		// An open embedded window (the F4 dev menu, its Tracy panels) wants the cursor.
+		// An open embedded window (the F6 dev menu, its Tracy panels) wants the cursor.
 		bool windowOpen = GetTree()?.Root?.GetEmbeddedSubwindows().Count > 0;
 		bool capture = MouseInput && MouseLock && devices && Playing && !InOverlay && !windowOpen && !GameDevMenu.KeyboardCaptured;
 		Godot.Input.MouseModeEnum wanted =
@@ -313,6 +313,27 @@ public partial class GameInput
 		if (degrees != Vector2.Zero)
 		{
 			HostBridge.PostMouseLook(degrees.X, degrees.Y);
+		}
+	}
+
+	/// <summary>
+	/// The captured mouse's wheel: each notch posted to the guest, down +1 and up -1 (rightward
+	/// positive). A notch switches the target of a lock a mod states switches by the wheel
+	/// (refii_mod_wheel_switches_target), to the next target right or left (src/vfs/src/hooks/mouse_look.cpp); the
+	/// guest drops it otherwise. A free cursor's wheel is the menus' (<see cref="Engine_UiPointer"/>),
+	/// and nothing else in play reads the wheel.
+	/// </summary>
+	private static void FeedMouseWheel(InputEvent @event)
+	{
+		if (@event is InputEventMouseButton { Pressed: true } button &&
+			Godot.Input.MouseMode == Godot.Input.MouseModeEnum.Captured)
+		{
+			HostBridge.PostMouseWheel(button.ButtonIndex switch
+			{
+				MouseButton.WheelDown => 1,
+				MouseButton.WheelUp => -1,
+				_ => 0,
+			});
 		}
 	}
 

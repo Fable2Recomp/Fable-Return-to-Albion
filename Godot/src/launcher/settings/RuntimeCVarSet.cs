@@ -505,7 +505,7 @@ public static class RuntimeCVarsGodot
                 + "the same as launching with REFII_DEBUG_PORT=1. Off for players."),
             new("tracy", DeveloperCategory, RuntimeCVarType.Bool, "false",
                 "The game's own Tracy profiler: captures are started, read and saved in the dev "
-                + "menu (F4). It records the game and its threads only, inside the game: no "
+                + "menu (F6). It records the game and its threads only, inside the game: no "
                 + "network, no other programs. Off, Tracy never starts. Takes effect at the next "
                 + "launch."),
             new("tracy_advanced", DeveloperCategory, RuntimeCVarType.Bool, "false",

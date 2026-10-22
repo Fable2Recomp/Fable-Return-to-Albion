@@ -284,6 +284,31 @@ public class ModApiTests
     }
 
     [TestCase]
+    public void TheWheelSwitchedLockIsOnTheTickSurfaces()
+    {
+        // One primitive on the surfaces that run on the guest tick: a lock stated each tick to
+        // switch by the mouse wheel. Souls Combat states it for its toggled lock.
+        ModApiHelper native = ModApi.Helpers.Single(h => h.Signature.Contains("refii_mod_wheel_switches_target(base, hero)", StringComparison.Ordinal));
+        ModApiHelper lua = ModApi.LuaHelpers.Single(h => h.Signature.Contains("Refii.wheel_switches_target(e)", StringComparison.Ordinal));
+        AssertThat(native.Meaning).IsEqual(lua.Meaning);
+        AssertThat(native.Meaning.Contains("CheckForBetterTargetInDirection", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Meaning.Contains("down the next target right, up the next left", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        AssertThat(header.Contains("extern \"C\" void refii_mod_wheel_switches_target(uint8_t* base, uint32_t hero);", StringComparison.Ordinal)).IsTrue();
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        AssertThat(natives.Contains("{\"wheel_switches_target\", &NativeWheelSwitchesTarget, 0}", StringComparison.Ordinal)).IsTrue();
+        string lockon = File.ReadAllText(Path.Combine(root, "mods-src", "souls_combat", "native", "lockon.cpp"));
+        AssertThat(lockon.Contains("refii_mod_wheel_switches_target(e.base, hero);", StringComparison.Ordinal)).IsTrue();
+    }
+
+    [TestCase]
     public void TheEntityTintIsOnEverySurface()
     {
         // One primitive, three surfaces: native, Lua and Godot all reach refii_mod_entity_tint, the

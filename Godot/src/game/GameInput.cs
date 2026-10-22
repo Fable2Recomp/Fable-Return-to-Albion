@@ -108,6 +108,7 @@ public partial class GameInput : Node
 
 		Engine_UiPointer.Feed(@event);
 		FeedMouseMotion(@event);
+		FeedMouseWheel(@event);
 		DetectDevice(@event);
 	}
 

@@ -290,6 +290,16 @@ extern "C" int32_t refii_mod_opinion_scope_two(void);
 /// copy, not the host player's choice.
 extern "C" uint32_t refii_mod_focus(uint8_t* base, int32_t player);
 
+/// States that `hero`'s target lock switches target by the MOUSE WHEEL, for this game tick: call it
+/// every tick the lock holds (a statement lapses two ticks after it was made). While it holds and
+/// the hero is locked (player mode 4) under the third-person camera the keyboard and mouse drive,
+/// the mouse's movement never switches target, and each wheel notch is one switch through the
+/// camera's own `Targeting.CheckForBetterTargetInDirection` — down the next target right, up the
+/// next target left — waiting on the camera's ClearToRotate as a stick flick does (at most one
+/// notch waits). Without it a mouse flick switches. Any hero: it acts where the mouse drives that
+/// hero's camera (src/vfs/src/hooks/mouse_look.cpp); a pad is untouched.
+extern "C" void refii_mod_wheel_switches_target(uint8_t* base, uint32_t hero);
+
 // ---------------------------------------------------------------------------------------------
 // PLAYER STATE: a mod's values for one player, right on both co-op machines.
 // ---------------------------------------------------------------------------------------------

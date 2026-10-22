@@ -140,9 +140,8 @@ uint32_t PostGuestTickAction(const char* name);
 // the payload before each camera update (src/vfs/src/hooks/mouse_look.cpp).
 void MouseLookPost(float yaw_degrees, float pitch_degrees);
 void MouseLookSetDevice(bool mouse);
-uint32_t MouseLookState(uint32_t* out_tick, double* out_posted, double* out_taken,
-                        double* out_absorbed, float* out_factor, float* out_pivot,
-                        int32_t* out_mode, uint32_t* out_flicks);
+void MouseLookWheel(int32_t notches);
+uint32_t MouseLookState(double* out_values, uint32_t count);
 uint64_t NewGameTransitionResult(uint32_t* generation);
 uint32_t GuestTickPumpHeroStateApplied(uint32_t player);
 uint32_t DebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3,
@@ -2409,7 +2408,14 @@ extern "C" {
 /// 214 adds RefiiHostSetMouseLookDevice — whether the mouse is the player's look device: the camera
 ///     it drives keeps its heading as the hero moves and a target lock takes it as flicks — and
 ///     RefiiHostGetMouseLook states the flicks handed to a lock.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 214; }
+/// 215 changes RefiiHostGetMouseLook to fill an array of doubles: the account gains the pitch
+///     (posted, taken, absorbed), the AIM mode's pivot as a point in the camera's level frame and
+///     its elevation bound, and the ranged aim whose reticule turns with the view — the mouse now
+///     turns the ranged-aim camera and its aim whole in one update (src/vfs/src/hooks/mouse_look.cpp).
+/// 216 adds RefiiHostPostMouseWheel — the mouse wheel's notches in play, which switch the target of
+///     a lock a mod states switches by the wheel (refii_mod_wheel_switches_target), one switch per
+///     notch through the camera's own target switch.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 216; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -5264,20 +5270,29 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetMouseLookDevice(int32_t mouse) {
     refii::vfs::MouseLookSetDevice(mouse != 0);
 }
 
-/// The mouse's account as of the last camera update (src/vfs/src/core/mouse_look_state.cpp): the
-/// yaw posted and the yaw taken (cumulative, one origin, posted degrees), the yaw the camera turned
-/// for it (cumulative, the camera's degrees, rightward), the game tick of the last take, the
-/// camera's degrees per posted degree, and how a turn not yet taken is drawn — `mode` 0 not at
-/// all, 1 about the vertical through the focus `pivot` metres along the level line of sight, 2 in
-/// place. Returns the state's sequence — odd while an update is between taking and stating, so a
-/// read that straddles one can be told from a whole one. `out_flicks`: the target switches handed
-/// to a target lock by the mouse, a run total.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMouseLook(uint32_t* out_tick, double* out_posted,
-                                                      double* out_taken, double* out_absorbed,
-                                                      float* out_factor, float* out_pivot,
-                                                      int32_t* out_mode, uint32_t* out_flicks) {
-    return refii::vfs::MouseLookState(out_tick, out_posted, out_taken, out_absorbed, out_factor,
-                                      out_pivot, out_mode, out_flicks);
+/// Adds mouse-wheel notches made while the mouse is the camera's, rightward positive: a notch down
+/// +1, up -1. The local player's next camera update takes them; under a lock a mod states switches
+/// by the wheel each is one target switch, to the right or the left (src/vfs/src/hooks/mouse_look.cpp),
+/// and otherwise they are dropped.
+REFII_HOST_ABI_EXPORT void RefiiHostPostMouseWheel(int32_t notches) {
+    refii::vfs::MouseLookWheel(notches);
+}
+
+/// The mouse's account as of the last camera update (src/vfs/src/core/mouse_look_state.cpp), into
+/// `out_values` (up to `count`): [0] the game tick of the last take; [1] yaw posted, [2] yaw taken
+/// (cumulative, one origin, posted degrees), [3] yaw the camera turned for it (cumulative, its
+/// degrees, rightward); [4] pitch posted, [5] pitch taken, [6] pitch the camera turned for it
+/// (upward); [7] the camera's degrees per posted degree; [8..10] the pivot — for `mode` 1 the
+/// focus's distance along the level line of sight in [8], for 3 the point [8] metres along the
+/// camera's level forward, [9] along its level right, [10] up; [11] how a turn not yet taken is
+/// drawn — 0 not at all, 1 orbit about the focus, 2 in place, 3 rigidly about the pivot with the
+/// ranged aim (yaw, then pitch about the level right axis); [12] the target switches the mouse
+/// handed to a lock, by flick or wheel notch (run total); [13] for mode 3 the camera's elevation bound in degrees; [14] the
+/// ranged aim object whose reticule turns with the view (mode 3), else 0. Returns the state's
+/// sequence — odd while an update is between taking and stating, so a read that straddles one can
+/// be told from a whole one.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMouseLook(double* out_values, uint32_t count) {
+    return refii::vfs::MouseLookState(out_values, count);
 }
 
 /// The front end's own storage criteria, so a host-drawn menu gates on what the guest gates on.

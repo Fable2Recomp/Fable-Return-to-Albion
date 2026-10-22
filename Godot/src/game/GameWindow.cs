@@ -210,10 +210,10 @@ public partial class GameWindow : Node
 		_video = new GameVideo { Name = "GameVideo" };
 		AddChild(_video);
 
-		// Last, so it draws over the video too. Hidden until F3 or `perf_overlay = true`.
+		// Last, so it draws over the video too. Hidden until F5 or `perf_overlay = true`.
 		AddChild(new GamePerfOverlay { Name = "GamePerfOverlay" });
 
-		// F4: the dev menu — the full diagnostic view behind F3's spot check.
+		// F6: the dev menu — the full diagnostic view behind F5's spot check.
 		AddChild(new GameDevMenu { Name = "GameDevMenu" });
 
 		// Discord: "Playing Fable 2: Return to Albion" and the level the player is in.

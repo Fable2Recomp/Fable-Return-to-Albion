@@ -996,6 +996,13 @@ public static class ModApi
 	private const string MenuPlayerMeaning =
 		"whose menu: 2 on an online joiner, and in local co-op while player two owns the pause (the pause screen's owner) or their shop; 1 otherwise";
 
+	/// <summary>The wheel-switched lock, the same on the native and Lua surfaces.</summary>
+	private const string WheelSwitchesTargetMeaning =
+		"that hero's target lock switches by the MOUSE WHEEL this tick — state it each tick the lock holds (it lapses two ticks later): " +
+		"while it holds and the hero is locked under the third-person camera the keyboard and mouse drive, the mouse's movement never switches target " +
+		"and each wheel notch is one switch through the camera's own Targeting.CheckForBetterTargetInDirection (down the next target right, up the next left), " +
+		"waiting on the camera's ClearToRotate as a stick flick does, at most one notch waiting; without it a mouse flick switches; a pad is untouched";
+
 	/// <summary>The native helpers of <c>core/refii_mod.h</c>, for the Guide and the editor API.</summary>
 	/// <summary>The tint primitive, the same on every surface.</summary>
 	private const string EntityTintMeaning =
@@ -1016,6 +1023,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_forgive_crimes(ctx, base, villager, hero) / refii_mod_discovered_crime(ctx, base, villager, hero) / refii_mod_perceived_renown(ctx, base, villager, hero, int32_t* out)", "a villager's crimes and renown for one hero: forgives only that hero's crimes the villager knows of (how many; the other hero's stand), whether it discovered one of theirs, the renown it credits them with — the shipped Villager natives name no hero"),
 		new ModApiHelper("int32_t refii_mod_coop_mode(base)", "0 alone, 1 local co-op, 2 online hosting, 3 online joined"),
 		new ModApiHelper("uint32_t refii_mod_focus(base, player)", "the living entity that hero is focused on (their targeting), or 0; meaningful only where that hero is played (refii_mod_player_here)"),
+		new ModApiHelper("void refii_mod_wheel_switches_target(base, hero)", WheelSwitchesTargetMeaning),
 		new ModApiHelper("float refii_mod_player_value(player, key, fallback)", "a player's value, the same on both co-op machines (fallback when unset)"),
 		new ModApiHelper("int32_t refii_mod_player_get(player, key, float* out)", "whether the player has a value under key, written to out when not null"),
 		new ModApiHelper("void refii_mod_player_set(player, key, v) / refii_mod_player_add(player, key, d, saved)", "writes a player's value on either machine; the hero's owner applies it (an add merges)"),
@@ -1126,6 +1134,7 @@ public static class ModApi
 		new ModApiHelper("Refii.opinion(villager, p) -> love, fear, attractiveness, morality, respect", "how a villager feels about player p's hero (-1..1); a set per hero; nil when it holds no opinions"),
 		new ModApiHelper("Refii.uid(e)", "the entity's own 64-bit UniqueID as \"0x…\": the same on both co-op machines and across saves (a handle is neither) — a key for per-thing player values"),
 		new ModApiHelper("Refii.coop_mode()", "0 alone, 1 local co-op, 2 online and this machine hosts, 3 online and this machine joined"),
+		new ModApiHelper("Refii.wheel_switches_target(e)", WheelSwitchesTargetMeaning),
 		new ModApiHelper("Refii.focus(p) / Refii.key_taken(e, p)", "the living entity player p is focused on, or nil — meaningful only where that hero is played (Refii.player_here(p)); whether player p has taken the per-player collectable e (silver keys)"),
 		new ModApiHelper("Refii.ask_partner(asker, question) -> ticket / Refii.partner_answer(ticket) -> nil, true, false", "your own yes/no question for the other player, on their screen; nil while pending, 30 s unanswered is no; no partner answers yes"),
 		new ModApiHelper("Refii.renown(e) / Refii.morality(e) / Refii.purity(e) / Refii.age(e) / Refii.physique(e) -> fat, height", "the hero stats the game reports"),

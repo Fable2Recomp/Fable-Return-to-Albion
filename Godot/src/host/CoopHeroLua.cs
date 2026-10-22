@@ -3934,6 +3934,101 @@ public static class CoopHeroLua
 			SACCamera.CalculateXY = C.CalculateXY
 		end
 
+		-- THE MOUSE TURNS THE RANGED AIM WHOLE (src/vfs/src/hooks/mouse_look.cpp). For the update in
+		-- flight the payload publishes the aim camera as RefiiMouseLookCamera with the mouse's turn in
+		-- RefiiAimYaw (degrees, rightward) and RefiiAimTilt (degrees, upward). The camera is turned
+		-- rigidly about the hero's collision head, which GetDesiredCameraPos hangs it from: the yaw
+		-- about the vertical through it, then the tilt about its level right axis, bounded so
+		-- CurrentDirection stays inside the camera's own AngleLimit. Turned: CurrentDirection,
+		-- CurrentDesired, CurrentPosition, and the aim point GetDesiredDirection reads (from the turned
+		-- position to the point turned with it). The shipped easing then runs on geometry that is the
+		-- old geometry turned, so the camera turns by exactly the mouse plus its own motion. What was
+		-- applied is stated back for the payload, which turns the aim's own points to match.
+		if RangedCombatCamera ~= nil and RangedCombatCamera.UpdateCurrentDirection ~= nil and
+				RangedCombatCamera.UpdateCurrentDirection ~= C.AimUpdateCurrentDirection then
+			local shipped = RangedCombatCamera.UpdateCurrentDirection
+			C.AimUpdateCurrentDirection = C.Permanent(function(self, ...)
+				local yaw, tilt = self.RefiiAimYaw, self.RefiiAimTilt
+				self.RefiiAimYaw, self.RefiiAimTilt = nil, nil
+				local d = self.CurrentDirection
+				if self ~= RefiiMouseLookCamera or yaw == nil or tilt == nil or d == nil or
+						self.Player == nil or Creature == nil or Creature.GetCollisionHeadPosition == nil or
+						Targeting == nil or Targeting.GetCameraSafeTargetedPosition == nil then
+					return shipped(self, ...)
+				end
+				local pivot = Creature.GetCollisionHeadPosition(self.Player)
+				local dx, dy, dz = d:GetX(), d:GetY(), d:GetZ()
+				local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+				if pivot == nil or length < 0.0001 then
+					return shipped(self, ...)
+				end
+				local radians = math.pi / 180
+				local limit = self.AngleLimit or (math.pi / 6)
+				local elevation = math.asin(math.max(-1, math.min(1, dz / length)))
+				local t = math.max(math.min(-limit - elevation, 0),
+					math.min(math.max(limit - elevation, 0), tilt * radians))
+				local y = -yaw * radians
+				local cy, sy = math.cos(y), math.sin(y)
+				local hx, hy = dx * cy - dy * sy, dx * sy + dy * cy
+				local level = math.sqrt(hx * hx + hy * hy)
+				if level < 0.0001 then
+					t, level = 0, 1
+				end
+				local rx, ry = hy / level, -hx / level
+				local ct, st = math.cos(t), math.sin(t)
+				local px, py, pz = pivot:GetX(), pivot:GetY(), pivot:GetZ()
+				local function spin(vx, vy, vz)
+					local ax, ay, az = vx * cy - vy * sy, vx * sy + vy * cy, vz
+					local dot = ax * rx + ay * ry
+					return ax * ct + ry * az * st + rx * dot * (1 - ct),
+						ay * ct - rx * az * st + ry * dot * (1 - ct),
+						az * ct + (rx * ay - ry * ax) * st
+				end
+				local function direction(v)
+					return CVector3(spin(v:GetX(), v:GetY(), v:GetZ()))
+				end
+				local function point(v)
+					local x, y2, z = spin(v:GetX() - px, v:GetY() - py, v:GetZ() - pz)
+					return CVector3(x + px, y2 + py, z + pz)
+				end
+				self.CurrentDirection = direction(d)
+				if self.CurrentDesired ~= nil then
+					self.CurrentDesired = direction(self.CurrentDesired)
+				end
+				if self.CurrentPosition ~= nil then
+					self.CurrentPosition = point(self.CurrentPosition)
+					local target = Targeting.GetCameraSafeTargetedPosition(self.Player)
+					if target ~= nil then
+						self.RefiiAimFrom = target - (point(target) - self.CurrentPosition)
+					end
+				end
+				local ok, result = pcall(shipped, self, ...)
+				self.RefiiAimFrom = nil
+				if not ok then
+					error(result, 0)
+				end
+				self.RefiiAimPivot = pivot
+				self.RefiiAimTurned, self.RefiiAimTilted = yaw, t / radians
+				self.RefiiAimRightX, self.RefiiAimRightY = rx, ry
+				return result
+			end, "AimUpdateCurrentDirection")
+			RangedCombatCamera.UpdateCurrentDirection = C.AimUpdateCurrentDirection
+		end
+
+		-- RangedCombatCamera:GetDesiredDirection(from) reads `from or self.CurrentPosition`; while the
+		-- mouse's turn is applied the line starts where the turn put it (above).
+		if RangedCombatCamera ~= nil and RangedCombatCamera.GetDesiredDirection ~= nil and
+				RangedCombatCamera.GetDesiredDirection ~= C.AimGetDesiredDirection then
+			local shipped = RangedCombatCamera.GetDesiredDirection
+			C.AimGetDesiredDirection = C.Permanent(function(self, from, ...)
+				if from == nil and self.RefiiAimFrom ~= nil then
+					from = self.RefiiAimFrom
+				end
+				return shipped(self, from, ...)
+			end, "AimGetDesiredDirection")
+			RangedCombatCamera.GetDesiredDirection = C.AimGetDesiredDirection
+		end
+
 		-- THE ROUTE's camera calls (SACCamera.AddInterestingEntity, ...): this table is new each time
 		-- the camera scripts run.
 		if C.RouteWrapAll ~= nil then

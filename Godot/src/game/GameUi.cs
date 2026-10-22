@@ -3557,6 +3557,10 @@ public partial class GameUi : Node
 	/// hooks/reticule_hooks.cpp); 0 before any. Its `+0x90` is the aim point.</summary>
 	private readonly uint[] _reticuleObject = new uint[2];
 
+	/// <summary>Each player's reticule anchor last read whole inside one mouse account, and that account's sequence.</summary>
+	private readonly Vector3?[] _aimAnchor = new Vector3?[2];
+	private readonly uint[] _aimAnchorSequence = new uint[2];
+
 	/// <summary>
 	/// Feeds the reticule each frame: the record at `*(*(GUI+32)+72)` (+64 for player two) for
 	/// active, progress, colour, mode and the intro counter, and the stated object's `+0x90` for
@@ -3612,9 +3616,13 @@ public partial class GameUi : Node
 		for (int player = 0; player < 2; ++player)
 		{
 			int recCount = HostBridge.Peek(hud + (64u * (uint)player), record);
+			bool turnsWithView = _reticuleObject[player] != 0u &&
+				_reticuleObject[player] == Refii.Game.GameWorld.MouseLookAim;
+			uint? sequenceBefore = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
 			int ancCount = _reticuleObject[player] != 0u
 				? HostBridge.Peek(_reticuleObject[player] + 0x90u, anchor)
 				: 0;
+			uint? sequenceAfter = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
 			if (recCount != 14 || (record[0] >> 24) == 0u || ancCount != 3)
 			{
 				_reticule.Feed(player, null);
@@ -3622,8 +3630,32 @@ public partial class GameUi : Node
 				continue;
 			}
 
+			// The mouse's aim turns with the view: the anchor is turned by the turn drawn ahead of
+			// the guest's camera, as the guest's next update turns the aim (GameWorld.TurnAimAhead).
+			// The anchor must be the one stated with the account the camera was drawn from: one read
+			// across a camera update already carries a turn still drawn ahead, so the last anchor read
+			// inside that account stands in for it.
+			var stated = new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2]));
+			if (turnsWithView)
+			{
+				if (sequenceBefore is { } before && before == sequenceAfter &&
+					before == Refii.Game.GameWorld.MouseLookSequence)
+				{
+					_aimAnchor[player] = stated;
+					_aimAnchorSequence[player] = before;
+				}
+
+				if (_aimAnchor[player] is { } kept &&
+					_aimAnchorSequence[player] == Refii.Game.GameWorld.MouseLookSequence)
+				{
+					stated = kept;
+				}
+
+				stated = Refii.Game.GameWorld.TurnAimAhead(stated);
+			}
+
 			var aim = new Engine_HudReticule.Aim(
-				new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2])),
+				stated,
 				F(record[3]),
 				new Color(F(record[4]), F(record[5]), F(record[6]), F(record[7])),
 				record[8],

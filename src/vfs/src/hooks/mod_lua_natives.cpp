@@ -22,7 +22,7 @@
 //   relation(a, b) · alive(e) · definition(e) · name(e) · player_of(e) · level_name()
 //   player_hero(p) · local_hero() · menu_player() · player_value(p, key [, fallback])
 //   player_set(p, key, v) · player_add(p, key, d [, saved]) · player_save(p, key, v) · player_here(p)
-//   event_replica()
+//   event_replica() · wheel_switches_target(e)
 //   renown(e) · morality(e) · purity(e) · physique(e) -> fat, height
 //   age(e) · inventory(e) · equipped(e) -> melee, ranged · near(x, y, z, r [, creatures])
 //   line_of_sight(x1, y1, z1, x2, y2, z2) · spawn(def, x, y, z) · entity(handle) · handle(entity)
@@ -914,6 +914,13 @@ REFII_LUA_NATIVE(NativeFocus) {
   RESULTS(1);
 }
 
+// Refii.wheel_switches_target(e): e's target lock switches by the mouse wheel this tick (call it
+// each tick the lock holds; refii_mod_wheel_switches_target).
+REFII_LUA_NATIVE(NativeWheelSwitchesTarget) {
+  refii_mod_wheel_switches_target(lua.base, lua.Entity(1));
+  RESULTS(0);
+}
+
 REFII_LUA_NATIVE(NativeError) {
   char text[512];
   lua.String(1, text, sizeof(text));
@@ -1317,6 +1324,7 @@ Native g_natives[] = {
     {"key_taken", &NativeKeyTakenPublic, 0},
     {"opinion", &NativeOpinion, 0},
     {"focus", &NativeFocus, 0},
+    {"wheel_switches_target", &NativeWheelSwitchesTarget, 0},
     {"coop_mode", &NativeCoopMode, 0},
     {"world_here", &NativeWorldHere, 0},
     {"uid", &NativeUid, 0},

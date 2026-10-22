@@ -5,7 +5,7 @@ using Refii.Core;
 namespace Refii.Game;
 
 /// <summary>
-/// The dev menu, toggled with F4: the full diagnostic view beside F3's spot-check readout —
+/// The dev menu, toggled with F6: the full diagnostic view beside F5's spot-check readout —
 /// frame timings and hitches, every measured phase, the GPU passes, host and guest threads,
 /// the guest's pacing and UI state, memory, the live logs and the cvars.
 /// </summary>
@@ -30,7 +30,7 @@ public partial class GameDevMenu : CanvasLayer
 
 	/// <summary>
 	/// A real (embedded) window: dragged by its title bar, resized from any edge or corner,
-	/// closed with its button or F4. It keeps its size and place for the session.
+	/// closed with its button or F6. It keeps its size and place for the session.
 	/// </summary>
 	private Window? _window;
 
@@ -46,7 +46,7 @@ public partial class GameDevMenu : CanvasLayer
 		Vector2I screen = (Vector2I)GetViewport().GetVisibleRect().Size;
 		_window = new Window
 		{
-			Title = "Dev menu   ·   F4 close   ·   F3 spot check",
+			Title = "Dev menu   ·   F6 close   ·   F5 spot check",
 			Visible = false,
 			Unresizable = false,
 			Transient = false,
@@ -122,7 +122,7 @@ public partial class GameDevMenu : CanvasLayer
 	}
 
 	private static bool IsToggle(InputEvent @event) =>
-		@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F4 };
+		@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F6 };
 
 	private bool Open => _window is { Visible: true };
 

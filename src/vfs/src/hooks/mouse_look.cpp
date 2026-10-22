@@ -42,7 +42,7 @@
 //     ProcessGameAction. InteractiveCutSceneCamera: `ControlX/ControlY = x, y`, a held stick
 //     position its FrameUpdate adds to OverriddenData.XOffset/YOffset as a framing offset — not a
 //     turn, and a mouse's per-update delta left there would stay as an offset. None of these
-//     takes the mouse; the ranged aim turns through its own cursor below.
+//     takes the mouse through its receiver; the ranged aim takes it whole below.
 //
 // SO, before each update the payload takes everything the mouse turned since the last one and
 // hands it to the camera through the camera's own receiver — its gates, its invert, its
@@ -88,12 +88,37 @@
 // mouse's turn is collected, and only a deliberate flick — kFlickDegrees inside kFlickWindow, in
 // one direction — is handed, as ONE x of ±1 through the receiver, like a stick pushed past 0.8;
 // the push that made it hands nothing more until the mouse rests for an update or reverses. Smaller
-// motion is spent. Both locks are this lock: the shipped held trigger and Souls Combat's toggle
-// (which sets the force byte the targeting component turns into mode 4).
+// motion is spent. That is the shipped held trigger's lock, and any lock no mod states otherwise.
+//
+// OR AS WHEEL NOTCHES, for a lock a mod states switches by the wheel (refii_mod_wheel_switches_target,
+// stated each tick the lock holds — Souls Combat's toggled lock, which sets the force byte the
+// targeting component turns into mode 4). Then the mouse's movement never switches target (it is
+// spent, the lock holds still), and each wheel notch the host posts is ONE x of ±1 through the
+// receiver: down +1, the next target RIGHT; up -1, the next target LEFT. The
+// sign, from the binary (TU1): pc 140..143 pass `x < 0` as the direction flag; the targeting slot
+// 49 `sub_82844DF0` turns it into `a2 == 0 ? 1 : -1` (`subfic/subfe/clrrwi/addi r4,r11,1` at
+// 0x82844eac..0x82844ebc) and stores it at +0xD0 (slot 30 `sub_828423B8`), which the selector takes
+// as +0x44 (`sub_821A9478`, a6); the scorer `sub_821F3680` signs each candidate's angle off the
+// selector's reference direction f (+0x30) by the cross product's z, `dx*fy - dy*fx` (vpermwi128 0x87/0x63, vmulfp128,
+// vsubfp at 0x821f36d8..0x821f3700), negating it (`fmuls f1,f1,-1.0` at 0x821f3718) when that is
+// below 0, and scores `2pi - |direction * angle|` when the product is not negative (0x821f373c..
+// 0x821f3768): +1 favours a candidate to the right (`(fy, -fx)` is right of a heading `(fx, fy)`),
+// -1 to the left — the stick's own sense, right positive. The switch waits on the script's gate as
+// a stick's does: ProcessGameAction re-arms ClearToRotate (pc 115..131) when LastRotateFrame is
+// nil, or `LastRotateFrame + 1 < Timing.GetProgramFrame()` — the game object's +0xFC (the bound
+// `sub_821B5630` is `lwz r3,0xFC(r3)` on `*(0x83496AB8)+0xC`, 0x82458fa8..0x82458fb4; disc
+// `lwz r3,0xFC(r3)` at 0x825DA300 on `*(0x83496920)+0xC`), what GameTick reads — or |x| < 0.8;
+// stamps LastRotateFrame (pc 132..135); and switches only while ClearToRotate holds (pc 144..161).
+// A notch is sent only when that re-arm or the gate already lets it through, so a sent ROTATE never
+// refreshes LastRotateFrame without switching; a notch that arrives while the gate is shut waits,
+// and at most one waits (the latest), so fast scrolling still answers but never runs through
+// several targets for one notch. Without such a statement the wheel is dropped, as it always was
+// in play.
 //
 // What the camera turned is stated with how the host draws a turn not yet taken
 // (core/mouse_look_state.cpp): orbiting the focus for SAC, at the stated horizontal distance to
-// RollingFocalPos; in place for first person; not at all when the camera takes no look input.
+// RollingFocalPos; in place for first person; rigidly about the hero's head for the ranged aim;
+// not at all when the camera takes no look input.
 //
 // THE STATED CAMERA BELONGS TO THE ACCOUNT. The live camera block (manager+0x90) is a copy the
 // getter `sub_82265F90` refreshes from the camera only when KeTimeStampBundle's tick count
@@ -102,24 +127,56 @@
 // current count and the getter called, so the block the host reads beside the account is the
 // camera this update made.
 //
-// THE RANGED AIM IS NOT A CAMERA TURN. While aiming, the cursor is moved by the aim itself,
-// `sub_8287B258(aim, stick)` (rex_lhRangedAim_MoveCursor), from its smoothed right stick
-// (`ld r4, 0x18(r31)` at 0x82879964, filled by `sub_82879270`):
-//     8287b2d0  lfs f30, arg_18(r1)        ; x (r4's high word)
-//     8287b2e0  lfs f29, arg_18+4(r1)      ; y
-//     8287b2fc..8287b32c  f27 = flt_83319514 * (1 / dbl_83319660)   ; X speed per tick
-//                         f26 = flt_83319518 * (1 / dbl_83319660)   ; Y speed per tick
-//     8287b6b0  bl sub_82173E38            ; the aiming entity
-//     8287b6b4  bl sub_8219EA40            ; its weapon's record
-//     8287b6b8  lfs f0, 0x38(r3)           ; the weapon's aim speed
-//     8287b6e0  fmadds f9, f13, f27, f10 / 8287b6e4 stfs f9, 0x20(r29)   ; yaw += x*speed*X
-//     8287b6e8  fmadds f8, f12, f26, f11 / 8287b6ec stfs f8, 0x24(r29)   ; pitch += y*speed*Y
-// so the mouse's turn joins that stick as `radians / gain` after its smoothing, and the aim's
-// clamps and target snapping apply to it as to the stick. While the aim runs the camera leaves
-// the turn to it, and the host draws no turn ahead of it.
+// THE RANGED AIM TURNS WITH THE VIEW. Ranged aim (Player mode AIM_RANGED) runs the camera
+// RangedCombatCamera (CameraFunctions.IsRangedCombat; the core chunk makes IsMultiplayer false
+// while each player owns a camera). Its contract, from the binary (TU1; the disc build's aim update,
+// cursor move and aim-point functions are instruction-identical):
+//   - THE AIM IS A WORLD POINT. The aim update `sub_828793D0(aim, stick, ...)` first projects the
+//     last aim point through the live camera into the cursor — `lvx128 v1, r31, r27` (+0x80) then
+//     `sub_8287EAF0(aim+0x20)` writes `x = px / width * 2 - 1`, `y` likewise, screen fractions.
+//   - THE CURSOR MOVES BY THE STICK, `sub_8287B258` (rex_lhRangedAim_MoveCursor), from its smoothed
+//     right stick (`ld r4, 0x18(r31)` at 0x82879964, `sub_82879270`):
+//         8287b6e0  fmadds f9, f13, f27, f10 / stfs f9, 0x20(r29)   ; x += sx * aimspeed * 2.0/15
+//         8287b6e8  fmadds f8, f12, f26, f11 / stfs f8, 0x24(r29)   ; y += sy * aimspeed * 1.6/15
+//     then clamps it (8287ba04..8287ba8c: x to ±0.8 or ±1.5 as `sub_82875150` answers; y to ±0.8), and, but
+//     for a snapped target (the handle at +0x38, its entity's +0x90 bit 0x40), searches for one
+//     under the cursor (`sub_8287CE78`).
+//   - THE CURSOR BECOMES THE NEW AIM POINT, `sub_8287D140`: the cursor unprojected through the live
+//     camera (8287d36c..8287d3a8) and cast from its position (camera+0x30): the point at the
+//     weapon's range to +0x80, the hit to +0x70, the camera-safe point to +0x90 (the reticule's
+//     anchor). The aim component then states them to targeting (component 77) through its slot 25
+//     (0x82877b88: `lvx128 v2, r26, r9` = +0x90, slot 0x64), which stores *(+0xC)+0x20 (targeted)
+//     and *(+0xC)+0x30 (camera-safe) — Targeting.GetTargetedPosition / GetCameraSafeTargetedPosition.
+//   - THE CAMERA CHASES THE POINT (rangedcombatcamera.lua): GetDesiredDirection (main.8) is the line
+//     from CurrentPosition to GetCameraSafeTargetedPosition turned OffsetDegrees about Z, eased
+//     into CurrentDesired by GetRollingAverage(.., DesiredDirectionDamping 1); UpdateCurrentDirection
+//     (main.9) moves CurrentDirection toward it by min((cos - dot) / (cos + 1) * TendNess, 1) outside
+//     a cone of FOV * 0.5 * Tightness, then bounds its elevation to AngleLimit (pi/6). The camera
+//     looks along CurrentDirection from GetDesiredCameraPos (main.11): the hero's collision head
+//     plus a fixed arm, -CurrentDirection * DistBehindHero + its level right * DistSideHero.
+// So every tick the stick moves a cursor across the screen, the aim point follows the cursor and
+// the camera follows the aim point late: a turn handed to the cursor arrives in the view eased over
+// several ticks, and nothing between ticks moves.
+//
+// THE MOUSE INSTEAD TURNS THE WHOLE AIM, VIEW AND POINT TOGETHER, WHOLE, in the camera update it is
+// handed (the device being the mouse, the cursor free, no target snapped): a rigid turn about the
+// hero's collision head — the yaw about the vertical through it, then the pitch about the level
+// right axis through it — applied to the camera's state (CurrentDirection, CurrentDesired,
+// CurrentPosition, and the aim point it reads, by the core camera chunk's wrapper of
+// RangedCombatCamera.UpdateCurrentDirection, Godot/src/host/CoopHeroLua.cs) and to the aim's own
+// points (+0x70, +0x80, +0x90 and targeting's two) here after the update. The easing then acts on
+// geometry that is the old geometry turned, so it adds exactly its own motion; the cursor, the
+// projection of a point turned with the camera that projects it, stays where it was, and the
+// reticule with it. The pitch stops at the camera's own AngleLimit. Snapped to a target, the
+// mouse joins the stick as before, and the cursor's search and snap stay the stick's.
+//
+// A camera update states the turn it made, the head as a point in the camera's level frame and the
+// elevation bound (core/mouse_look_state.cpp, AIM); the host turns the drawn camera and the
+// reticule anchor about it by the turn posted and not yet taken.
 
 #include "vfs_hooks_private.h"
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -140,6 +197,7 @@ PPC_EXTERN_FUNC(rex_lua_tonumber);
 PPC_EXTERN_FUNC(rex_lua_pushnumber);
 PPC_EXTERN_FUNC(rex_lua_touserdata);
 PPC_EXTERN_FUNC(rex_lua_pushnil);
+PPC_EXTERN_FUNC(rex_lua_toboolean);
 
 namespace {
 
@@ -155,6 +213,7 @@ constexpr float kHeightDeadZone = 0.1f;
 constexpr int32_t kModeNone = 0;
 constexpr int32_t kModeOrbit = 1;
 constexpr int32_t kModeInPlace = 2;
+constexpr int32_t kModeAim = 3;
 
 constexpr int32_t kRegistryIndex = -10000;
 constexpr int32_t kGlobalsIndex = -10002;
@@ -175,7 +234,10 @@ constexpr int32_t kTypeNumber = 3;
 constexpr int32_t kTypeTable = 5;
 constexpr int32_t kTypeUserdata = 7;
 
-enum class Kind { kOther, kStringAndCage, kFirstPerson };
+enum class Kind { kOther, kStringAndCage, kFirstPerson, kRangedAim };
+
+/// The targeting component, whose `*(+0xC)` holds the stated aim points.
+constexpr uint32_t kTargetingComponent = 77u;
 
 bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
 
@@ -214,13 +276,37 @@ uint32_t ActiveCamera(uint8_t* base, uint32_t manager) {
   return Plausible(overriding) ? overriding : LoadGuestU32(base, manager + 0x2Cu);
 }
 
-/// The wrapper's player record, read as `sub_825ADB80` reads it: the hero at
-/// `**(*(wrapper+4)+0x10)`, its component 33.
-uint32_t PlayerRecord(uint8_t* base, uint32_t wrapper) {
+/// The wrapper's hero, read as `sub_825ADB80` reads it: `**(*(wrapper+4)+0x10)`.
+uint32_t HeroOf(uint8_t* base, uint32_t wrapper) {
   const uint32_t holder = Plausible(wrapper) ? LoadGuestU32(base, wrapper + 4u) : 0u;
   const uint32_t cell = Plausible(holder) ? LoadGuestU32(base, holder + 0x10u) : 0u;
   const uint32_t hero = Plausible(cell) ? LoadGuestU32(base, cell) : 0u;
+  return Plausible(hero) ? hero : 0u;
+}
+
+/// A hero's player record, component 33 (what `sub_825ADB80` gates on).
+uint32_t RecordOf(uint8_t* base, uint32_t hero) {
   return Plausible(hero) ? refii_mod_component(base, hero, 33u) : 0u;
+}
+
+/// The ranged aim's owner, `**(aim+4)` (what `sub_8287B258` hands `sub_8219EA40`).
+uint32_t AimOwner(uint8_t* base, uint32_t aim) {
+  const uint32_t cell = Plausible(aim) ? LoadGuestU32(base, aim + 4u) : 0u;
+  const uint32_t entity = Plausible(cell) ? LoadGuestU32(base, cell) : 0u;
+  return Plausible(entity) ? entity : 0u;
+}
+
+/// Whether the aim's cursor is free (`lbz r11, 0x31(r31)` gates the cursor move at 0x82879954).
+bool AimFree(uint8_t* base, uint32_t aim) {
+  return Plausible(aim) && refii::vfs::LoadGuestU8(base, aim + 0x31u) != 0u;
+}
+
+/// Whether the aim is snapped to a target: the handle at +0x38 resolves (`lwz r11, 4(r26)`, its
+/// cell) to an entity whose +0x90 has bit 0x40 (`rlwinm r10, r11, 0,25,25` at 0x8287b628).
+bool AimSnapped(uint8_t* base, uint32_t aim) {
+  const uint32_t cell = Plausible(aim) ? LoadGuestU32(base, aim + 0x3Cu) : 0u;
+  const uint32_t entity = Plausible(cell) ? LoadGuestU32(base, cell) : 0u;
+  return Plausible(entity) && (refii::vfs::LoadGuestU8(base, entity + 0x90u) & 0x40u) != 0u;
 }
 
 /// `IsTargetLocking` as the camera asks it: Player.HasPlayerMode(player, TARGET_LOCK), whose bound
@@ -319,6 +405,17 @@ class CameraScript {
     return number;
   }
 
+  /// `self[name]` as Lua truth (nil and false are false).
+  bool Truth(const char* name) {
+    GetField(-1, name);
+    PPCContext w = Work();
+    w.r4.s64 = -1;
+    rex_lua_toboolean(w, base_);
+    const bool truth = (w.r3.u32 & 0xFFu) != 0u;
+    SetTop(-2);
+    return truth;
+  }
+
   /// `self[name] or fallback`.
   double NumberOr(const char* name, double fallback) {
     double value = fallback;
@@ -329,6 +426,13 @@ class CameraScript {
     PPCContext w = Work();
     w.f1.f64 = value;
     rex_lua_pushnumber(w, base_);
+    SetField(-2, name);
+  }
+
+  /// `self[name] = nil`.
+  void SetNil(const char* name) {
+    PPCContext w = Work();
+    rex_lua_pushnil(w, base_);
     SetField(-2, name);
   }
 
@@ -455,6 +559,9 @@ Kind KindOf(CameraScript& script) {
   if (script.Number("RotateSmoothAmount", &value)) {
     return Kind::kFirstPerson;
   }
+  if (script.Number("TendnessNormal", &value)) {
+    return Kind::kRangedAim;
+  }
   return Kind::kOther;
 }
 
@@ -480,10 +587,15 @@ struct Update {
   uint32_t wrapper = 0u;
   Kind kind = Kind::kOther;
   float taken = 0.0f;
+  float taken_pitch = 0.0f;
   float held = 0.0f;
   float absorbed = 0.0f;
+  float absorbed_pitch = 0.0f;
   float factor = 0.0f;
   int32_t mode = kModeNone;
+  /// The ranged aim turned with the view, and its owner.
+  uint32_t aim = 0u;
+  uint32_t hero = 0u;
   double smooth_added = 0.0;
   double smoothed_dx = 0.0;
   double smoothed_dy = 0.0;
@@ -498,10 +610,20 @@ Update g_update;
 /// accepted (its Lua gates — GetCanRotateCamera, a target lock — are seen only on a hand-over).
 uint32_t g_refused = 0u;
 
-/// The game tick the aim last moved its cursor on; the camera leaves the turn to the aim for the
-/// tick after it too, as the two updates' order within a tick is not relied on.
-uint32_t g_aim_tick = 0u;
-bool g_aim_seen = false;
+/// A ranged aim that moved its cursor, by owner: the game tick it last did. An aim seen this tick or
+/// the one before is running — the two updates' order within a tick is not relied on.
+struct AimSeen {
+  uint32_t aim = 0u;
+  uint32_t hero = 0u;
+  uint32_t tick = 0u;
+};
+
+std::array<AimSeen, 4> g_aims{};
+
+/// The hero whose camera the mouse drives (the manager the guest updates itself), as of its last
+/// update; and that hero when its active camera is the ranged-aim camera taking the mouse whole.
+uint32_t g_mouse_hero = 0u;
+uint32_t g_rigid_hero = 0u;
 
 /// A lock's flick in the making: the turn collected in one direction since the window opened.
 struct Flick {
@@ -515,6 +637,73 @@ struct Flick {
 };
 
 Flick g_flick;
+
+/// The heroes whose lock a mod states switches by the wheel, and the game tick each was last
+/// stated on (refii_mod_wheel_switches_target).
+struct WheelStated {
+  uint32_t hero = 0u;
+  uint32_t tick = 0u;
+};
+
+std::array<WheelStated, 4> g_wheel_stated{};
+
+/// A statement holds for the tick it was made on and the two after it, so a lock stated each tick
+/// never lapses between the mod's tick and the camera's update.
+constexpr uint32_t kWheelStatementTicks = 2u;
+
+bool WheelSwitches(uint8_t* base, uint32_t hero) {
+  if (!Plausible(hero)) {
+    return false;
+  }
+  const uint32_t tick = GameTick(base);
+  for (const WheelStated& stated : g_wheel_stated) {
+    if (stated.hero == hero && tick >= stated.tick && tick - stated.tick <= kWheelStatementTicks) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// The wheel notch waiting on the lock's gate, by camera: 0 none, else its direction.
+struct WheelSwitch {
+  uint32_t wrapper = 0u;
+  int waiting = 0;
+};
+
+WheelSwitch g_wheel_switch;
+
+/// Whether a ROTATE of |x| 1 sent now would switch target: the script's re-arm (pc 115..131) or
+/// its standing gate (pc 144). See the header.
+bool ClearToSwitch(CameraScript& script, uint8_t* base) {
+  double last = 0.0;
+  if (!script.Number("LastRotateFrame", &last)) {
+    return true;
+  }
+  // The script compares Lua numbers, this VM's 32-bit floats.
+  if (static_cast<float>(last) + 1.0f < static_cast<float>(GameTick(base))) {
+    return true;
+  }
+  return script.Truth("ClearToRotate");
+}
+
+/// Under a lock a mod states switches by the wheel: this update's notches (rightward positive)
+/// become at most one target switch, and at most one notch waits for the next (see the header).
+void SwitchByWheel(CameraScript& script, uint8_t* base, uint32_t wrapper, int32_t notches) {
+  if (g_wheel_switch.wrapper != wrapper) {
+    g_wheel_switch = WheelSwitch{};
+    g_wheel_switch.wrapper = wrapper;
+  }
+  const int direction = notches > 0 ? 1 : -1;
+  int count = (notches > 0 ? notches : -notches) + (g_wheel_switch.waiting != 0 ? 1 : 0);
+  const int first = g_wheel_switch.waiting != 0 ? g_wheel_switch.waiting : direction;
+  const int latest = notches != 0 ? direction : g_wheel_switch.waiting;
+  if (count > 0 && ClearToSwitch(script, base)) {
+    script.Send(wrapper, kRotateCamera, static_cast<float>(first), 0.0f);
+    refii_bridge_mouse_look_flicked();
+    --count;
+  }
+  g_wheel_switch.waiting = count > 0 ? latest : 0;
+}
 
 /// Under a target lock: the mouse's turn becomes at most one stick flick (see the header).
 void FlickTheLock(CameraScript& script, uint32_t wrapper, float yaw) {
@@ -563,18 +752,201 @@ void FlickTheLock(CameraScript& script, uint32_t wrapper, float yaw) {
   g_flick.window = 0.0;
 }
 
-bool AimHoldsTheMouse(uint8_t* base) {
-  if (!g_aim_seen) {
-    return false;
+void NoteAim(uint32_t aim, uint32_t hero, uint32_t tick) {
+  AimSeen* slot = nullptr;
+  for (AimSeen& seen : g_aims) {
+    if (seen.hero == hero) {
+      slot = &seen;
+      break;
+    }
+    if (slot == nullptr || seen.tick < slot->tick) {
+      slot = &seen;
+    }
   }
-  const uint32_t tick = GameTick(base);
-  return tick >= g_aim_tick && tick - g_aim_tick <= 1u;
+  *slot = AimSeen{aim, hero, tick};
 }
 
-/// SAC: the rotate through the camera's receiver, made whole — or, under a target lock, a flick.
+/// The ranged aim `hero` runs, or 0 when none moved its cursor this tick or the one before.
+uint32_t AimOf(uint8_t* base, uint32_t hero) {
+  if (!Plausible(hero)) {
+    return 0u;
+  }
+  const uint32_t tick = GameTick(base);
+  for (const AimSeen& seen : g_aims) {
+    if (seen.hero == hero && tick >= seen.tick && tick - seen.tick <= 1u) {
+      return seen.aim;
+    }
+  }
+  return 0u;
+}
+
+/// THE AIM'S TURN, as the core camera chunk made it (RangedCombatCamera.UpdateCurrentDirection's
+/// wrapper): the yaw about the vertical through `pivot`, then the tilt about the level axis
+/// (rx, ry, 0) through it. The same arithmetic as that wrapper, so a point turned here and the
+/// camera turned there stay as they were to each other.
+struct AimTurn {
+  float pivot[3] = {0.0f, 0.0f, 0.0f};
+  double cy = 1.0, sy = 0.0, ct = 1.0, st = 0.0, rx = 0.0, ry = 0.0;
+
+  AimTurn(const float* at, double yaw_degrees, double tilt_degrees, double right_x, double right_y) {
+    constexpr double kRadians = 3.14159265358979323846 / 180.0;
+    for (int i = 0; i < 3; ++i) {
+      pivot[i] = at[i];
+    }
+    // Rightward is clockwise seen from above: a negative turn about +Z.
+    cy = std::cos(-yaw_degrees * kRadians);
+    sy = std::sin(-yaw_degrees * kRadians);
+    ct = std::cos(tilt_degrees * kRadians);
+    st = std::sin(tilt_degrees * kRadians);
+    rx = right_x;
+    ry = right_y;
+  }
+
+  /// The guest point at `address` (x y z floats; w untouched), turned in place.
+  void Apply(uint8_t* base, uint32_t address) const {
+    if (!Plausible(address)) {
+      return;
+    }
+    double v[3];
+    for (uint32_t i = 0; i < 3u; ++i) {
+      v[i] = refii::mods::LoadF32(base, address + i * 4u) - pivot[i];
+    }
+    if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2])) {
+      return;
+    }
+    const double ax = v[0] * cy - v[1] * sy;
+    const double ay = v[0] * sy + v[1] * cy;
+    const double az = v[2];
+    // Rodrigues about k = (rx, ry, 0): v cos t + (k x v) sin t + k (k . v)(1 - cos t).
+    const double dot = ax * rx + ay * ry;
+    const double kx = ry * az;
+    const double ky = -rx * az;
+    const double kz = rx * ay - ry * ax;
+    const double out[3] = {ax * ct + kx * st + rx * dot * (1.0 - ct),
+                           ay * ct + ky * st + ry * dot * (1.0 - ct), az * ct + kz * st};
+    for (uint32_t i = 0; i < 3u; ++i) {
+      refii::mods::StoreF32(base, address + i * 4u, static_cast<float>(out[i] + pivot[i]));
+    }
+  }
+};
+
+/// THE MOUSE'S AIM TURN, before the update of the ranged-aim camera of a hero whose aim runs:
+/// hands the camera the whole turn (the core chunk applies it; see the header) when the device is
+/// the mouse, the cursor is free and no target is snapped. Otherwise the turn stays pending for
+/// the aim's own cursor move (rex_lhRangedAim_MoveCursor below).
+void HandToTheAim(PPCContext& ctx, uint8_t* base, uint32_t wrapper, uint32_t hero, uint32_t aim,
+                  Update& update) {
+  if (refii_bridge_mouse_look_device() == 0 || !Plausible(wrapper)) {
+    return;
+  }
+  CameraScript script(ctx, base, wrapper);
+  if (!script.open() || KindOf(script) != Kind::kRangedAim) {
+    return;
+  }
+  g_rigid_hero = hero;
+  const uint32_t record = RecordOf(base, hero);
+  if (TakesInput(base, record) && (!AimFree(base, aim) || AimSnapped(base, aim))) {
+    return;
+  }
+
+  float yaw = 0.0f;
+  float pitch = 0.0f;
+  refii_bridge_mouse_look_take(&yaw, &pitch);
+  update.open = true;
+  update.taken = yaw;
+  update.taken_pitch = pitch;
+  if (!TakesInput(base, record)) {
+    // The camera takes no input now: the turn is spent, not stored up.
+    return;
+  }
+
+  update.wrapper = wrapper;
+  update.kind = Kind::kRangedAim;
+  update.hero = hero;
+  update.aim = aim;
+  update.factor = SensitivityFactor(base, record);
+  script.Publish(kDrivenCamera);
+  update.published = script.state();
+  script.SetNumber("RefiiAimYaw", static_cast<double>(yaw) * update.factor);
+  script.SetNumber("RefiiAimTilt", static_cast<double>(pitch) * update.factor);
+  update.mode = kModeAim;
+}
+
+/// After the ranged-aim camera's update: turns the aim's points as the camera's wrapper turned the
+/// camera, and states the account — the head as a point in the camera's level frame.
+void StateTheAim(PPCContext& ctx, uint8_t* base, uint32_t manager, Update& update) {
+  static const char* const kFields[] = {"RefiiAimYaw",    "RefiiAimTilt",   "RefiiAimTurned",
+                                        "RefiiAimTilted", "RefiiAimRightX", "RefiiAimRightY",
+                                        "RefiiAimPivot"};
+  const bool current = update.wrapper == ActiveCamera(base, manager);
+  float head[3] = {0.0f, 0.0f, 0.0f};
+  float pivot[3] = {0.0f, 0.0f, 0.0f};
+  float limit = 0.0f;
+  bool turned = false;
+  {
+    CameraScript script(ctx, base, current ? update.wrapper : 0u);
+    double yaw = 0.0, tilt = 0.0, rx = 0.0, ry = 0.0;
+    turned = script.open() && script.Number("RefiiAimTurned", &yaw) &&
+             script.Number("RefiiAimTilted", &tilt) && script.Number("RefiiAimRightX", &rx) &&
+             script.Number("RefiiAimRightY", &ry) && script.Vector("RefiiAimPivot", head) &&
+             std::isfinite(yaw) && std::isfinite(tilt);
+    if (script.open()) {
+      limit = static_cast<float>(script.NumberOr("AngleLimit", 0.0) * 180.0 / 3.14159265358979323846);
+      for (const char* field : kFields) {
+        script.SetNil(field);
+      }
+    }
+    if (turned) {
+      const AimTurn turn(head, yaw, tilt, rx, ry);
+      for (const uint32_t at : {0x70u, 0x80u, 0x90u}) {
+        turn.Apply(base, update.aim + at);
+      }
+      const uint32_t targeting = refii_mod_component(base, update.hero, kTargetingComponent);
+      const uint32_t stated = Plausible(targeting) ? LoadGuestU32(base, targeting + 0xCu) : 0u;
+      if (Plausible(stated)) {
+        turn.Apply(base, stated + 0x20u);
+        turn.Apply(base, stated + 0x30u);
+      }
+      update.absorbed = static_cast<float>(yaw);
+      update.absorbed_pitch = static_cast<float>(tilt);
+    }
+  }
+
+  const uint32_t live = Plausible(manager) ? RefreshLiveCamera(ctx, base, manager) : 0u;
+  if (turned && live != 0u) {
+    // The head relative to the camera this update placed, along its level forward, its level right
+    // (the heading's right, `(fy, -fx)`) and up.
+    const float fx = refii::mods::LoadF32(base, live + 0x20u);
+    const float fy = refii::mods::LoadF32(base, live + 0x24u);
+    const float level = std::sqrt(fx * fx + fy * fy);
+    const float ox = head[0] - refii::mods::LoadF32(base, live + 0u);
+    const float oy = head[1] - refii::mods::LoadF32(base, live + 4u);
+    const float oz = head[2] - refii::mods::LoadF32(base, live + 8u);
+    if (level > 1e-4f && std::isfinite(ox) && std::isfinite(oy) && std::isfinite(oz) &&
+        ox * ox + oy * oy + oz * oz < 25.0f * 25.0f) {
+      pivot[0] = (ox * fx + oy * fy) / level;
+      pivot[1] = (ox * fy - oy * fx) / level;
+      pivot[2] = oz;
+    } else {
+      turned = false;
+    }
+  }
+  if (!turned || !current || live == 0u) {
+    update.mode = kModeNone;
+  }
+
+  refii_bridge_mouse_look_state(GameTick(base), update.taken, update.taken_pitch, 0.0f,
+                                update.absorbed, update.absorbed_pitch, update.factor, pivot[0],
+                                pivot[1], pivot[2], limit, update.mode,
+                                update.mode == kModeAim ? update.aim : 0u);
+}
+
+/// SAC: the rotate through the camera's receiver, made whole — or, under a target lock, a flick or
+/// a wheel switch.
 /// Sets the update's account.
 void HandToStringAndCage(PPCContext& ctx, CameraScript& script, uint8_t* base, uint32_t wrapper,
-                         uint32_t record, float yaw, float pitch, Update& update) {
+                         uint32_t hero, uint32_t record, float yaw, float pitch, int32_t wheel,
+                         const WheelSwitch& waiting, Update& update) {
   update.factor = SensitivityFactor(base, record);
   const bool locked = TargetLocked(ctx, base, record);
   double speed = 0.0;
@@ -594,7 +966,13 @@ void HandToStringAndCage(PPCContext& ctx, CameraScript& script, uint8_t* base, u
     y = 0.0f;
   }
 
-  if (locked) {
+  if (locked && WheelSwitches(base, hero)) {
+    // The lock holds still under the mouse's movement; the wheel switches.
+    g_flick = Flick{};
+    g_wheel_switch = waiting;
+    SwitchByWheel(script, base, wrapper, wheel);
+    g_refused = wrapper;
+  } else if (locked) {
     FlickTheLock(script, wrapper, yaw);
     g_refused = wrapper;
   } else if (x != 0.0f) {
@@ -674,7 +1052,17 @@ void HandToFirstPerson(CameraScript& script, uint8_t* base, uint32_t wrapper, ui
 /// pending turn to the camera that update is about to run.
 extern "C" void RefiiMouseLookBeforeCameraUpdate(PPCContext& ctx, uint8_t* base, uint32_t manager) {
   g_update = Update{};
-  if (AimHoldsTheMouse(base)) {
+  // Every update takes the wheel, and the notch waiting on a lock's gate is kept only by an update
+  // of a wheel-switched lock (HandToStringAndCage): a notch never waits for a lock that comes later.
+  const int32_t wheel = refii_bridge_mouse_look_take_wheel();
+  const WheelSwitch waiting = g_wheel_switch;
+  g_wheel_switch = WheelSwitch{};
+  const uint32_t wrapper = ActiveCamera(base, manager);
+  const uint32_t hero = HeroOf(base, wrapper);
+  g_mouse_hero = hero;
+  g_rigid_hero = 0u;
+  if (const uint32_t aim = AimOf(base, hero); aim != 0u) {
+    HandToTheAim(ctx, base, wrapper, hero, aim, g_update);
     return;
   }
 
@@ -683,9 +1071,9 @@ extern "C" void RefiiMouseLookBeforeCameraUpdate(PPCContext& ctx, uint8_t* base,
   refii_bridge_mouse_look_take(&yaw, &pitch);
   g_update.open = true;
   g_update.taken = yaw;
+  g_update.taken_pitch = pitch;
 
-  const uint32_t wrapper = ActiveCamera(base, manager);
-  const uint32_t record = PlayerRecord(base, wrapper);
+  const uint32_t record = RecordOf(base, hero);
   if (!Plausible(wrapper) || !TakesInput(base, record)) {
     // No camera to turn, or the camera takes no input now: the turn is spent, not stored up.
     return;
@@ -707,11 +1095,13 @@ extern "C" void RefiiMouseLookBeforeCameraUpdate(PPCContext& ctx, uint8_t* base,
         script.Publish(kDrivenCamera);
         g_update.published = script.state();
       }
-      HandToStringAndCage(ctx, script, base, wrapper, record, yaw, pitch, g_update);
+      HandToStringAndCage(ctx, script, base, wrapper, hero, record, yaw, pitch, wheel, waiting,
+                          g_update);
       break;
     case Kind::kFirstPerson:
       HandToFirstPerson(script, base, wrapper, record, yaw, pitch, g_update);
       break;
+    case Kind::kRangedAim:
     case Kind::kOther:
       break;
   }
@@ -727,6 +1117,10 @@ extern "C" void RefiiMouseLookAfterCameraUpdate(PPCContext& ctx, uint8_t* base, 
   g_update = Update{};
   if (update.published != 0u) {
     ClearGlobal(ctx, base, update.published, kDrivenCamera);
+  }
+  if (update.kind == Kind::kRangedAim) {
+    StateTheAim(ctx, base, manager, update);
+    return;
   }
 
   // An override the update dropped (manager+0x3C cleared at 0x821b952c) is gone with its state.
@@ -770,30 +1164,61 @@ extern "C" void RefiiMouseLookAfterCameraUpdate(PPCContext& ctx, uint8_t* base, 
     update.mode = kModeNone;
   }
 
-  refii_bridge_mouse_look_state(GameTick(base), update.taken, update.held, update.absorbed,
-                                update.factor, pivot, update.mode);
+  refii_bridge_mouse_look_state(GameTick(base), update.taken, update.taken_pitch, update.held,
+                                update.absorbed, 0.0f, update.factor, pivot, 0.0f, 0.0f, 0.0f,
+                                update.mode, 0u);
 }
 
-// The ranged aim's cursor move (r3 the aim, r4 its stick: x in the high word, y in the low).
-// Everything the mouse turned since the last move joins the stick at the cursor's own gain; the
-// camera follows the aim its own way, so the host draws no turn ahead of it.
+/// A mod's statement that `hero`'s target lock switches by the mouse wheel for this game tick (see
+/// the header): made each tick the lock holds. Any hero; it acts only where the mouse drives that
+/// hero's camera.
+extern "C" void refii_mod_wheel_switches_target(uint8_t* base, uint32_t hero) {
+  if (!Plausible(hero)) {
+    return;
+  }
+  const uint32_t tick = GameTick(base);
+  WheelStated* slot = nullptr;
+  for (WheelStated& stated : g_wheel_stated) {
+    if (stated.hero == hero) {
+      slot = &stated;
+      break;
+    }
+    if (slot == nullptr || stated.tick < slot->tick || tick < stated.tick) {
+      slot = &stated;
+    }
+  }
+  *slot = WheelStated{hero, tick};
+}
+
+// The ranged aim's cursor move (r3 the aim, r4 its stick: x in the high word, y in the low). The
+// aim is noted for its owner's camera update. When that camera takes the mouse whole (above), the
+// turn is left to it; otherwise — a snapped target, or a camera other than the ranged-aim one —
+// everything the mouse turned since the last move joins the stick at the cursor's own gain, the
+// aim's clamps and target search apply to it as to the stick, and nothing is drawn ahead of it.
+// Only the mouse's own hero's aim takes it: a split-screen partner's aim runs here too.
 REX_EXTERN(rex_lhRangedAim_MoveCursor) {
   REX_FUNC_PROLOGUE();
   const uint32_t tick = GameTick(base);
-  g_aim_tick = tick;
-  g_aim_seen = true;
+  const uint32_t aim = ctx.r3.u32;
+  const uint32_t hero = AimOwner(base, aim);
+  if (Plausible(hero)) {
+    NoteAim(aim, hero, tick);
+  }
+  const bool mine = Plausible(hero) && hero == g_mouse_hero;
+  const bool camera_takes = hero == g_rigid_hero && AimFree(base, aim) && !AimSnapped(base, aim);
+  if (!mine || camera_takes) {
+    __imp__rex_lhRangedAim_MoveCursor(ctx, base);
+    return;
+  }
 
   float yaw = 0.0f;
   float pitch = 0.0f;
   refii_bridge_mouse_look_take(&yaw, &pitch);
-  if (yaw != 0.0f || pitch != 0.0f) {
-    const uint32_t aim = ctx.r3.u32;
-    const uint32_t cell = Plausible(aim) ? LoadGuestU32(base, aim + 4u) : 0u;
-    const uint32_t entity = Plausible(cell) ? LoadGuestU32(base, cell) : 0u;
+  if ((yaw != 0.0f || pitch != 0.0f) && TakesInput(base, RecordOf(base, hero))) {
     uint32_t record = 0u;
-    if (Plausible(entity)) {
+    {
       PPCContext work = refii::mods::Frame(ctx);
-      work.r3.u64 = entity;
+      work.r3.u64 = hero;
       if (refii::mods::CallGuest(work, base, refii::guest::Address(0x8219EA40u))) {
         record = work.r3.u32;
       }
@@ -816,6 +1241,7 @@ REX_EXTERN(rex_lhRangedAim_MoveCursor) {
     }
   }
 
-  refii_bridge_mouse_look_state(tick, yaw, 0.0f, 0.0f, 0.0f, 0.0f, kModeNone);
+  refii_bridge_mouse_look_state(tick, yaw, pitch, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                0.0f, kModeNone, 0u);
   __imp__rex_lhRangedAim_MoveCursor(ctx, base);
 }

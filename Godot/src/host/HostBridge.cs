@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 214;
+	public const int ExpectedAbiVersion = 216;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -5139,19 +5139,51 @@ public static class HostBridge
 		RefiiHostSetMouseLookDevice(mouse ? 1 : 0);
 	}
 
+	/// <summary>
+	/// Adds mouse-wheel notches made while the mouse is the camera's, rightward positive: a notch
+	/// down +1, up -1. Under a target lock a mod states switches by the wheel, each notch is one
+	/// switch to the next target that way; otherwise the guest drops them.
+	/// </summary>
+	public static void PostMouseWheel(int notches)
+	{
+		if (notches == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return;
+		}
+
+		RefiiHostPostMouseWheel(notches);
+	}
+
 	/// <summary>The mouse's account as of the guest's last camera update; see <see cref="GetMouseLook"/>.</summary>
 	/// <param name="Sequence">Odd while an update is between taking and stating.</param>
 	/// <param name="Tick">The game tick (`game+0xFC`) of the last take.</param>
 	/// <param name="Posted">Yaw posted, cumulative, in posted degrees — the same origin as <paramref name="Taken"/>.</param>
 	/// <param name="Taken">Posted yaw the camera updates have taken, cumulative.</param>
 	/// <param name="Absorbed">Yaw the camera turned for it, cumulative, in the camera's degrees, rightward.</param>
+	/// <param name="PostedPitch">Pitch posted, cumulative, posted degrees, upward.</param>
+	/// <param name="TakenPitch">Posted pitch the camera updates have taken, cumulative.</param>
+	/// <param name="AbsorbedPitch">Pitch the camera turned for it, cumulative, its degrees, upward.</param>
 	/// <param name="Factor">The camera's degrees of turn per posted degree.</param>
-	/// <param name="PivotMetres">For <see cref="Refii.Core.Engine_MouseLook.Orbit"/>: the focus's distance along the level line of sight.</param>
+	/// <param name="Pivot">
+	/// Where a turn not yet taken is drawn about: for <see cref="Refii.Core.Engine_MouseLook.ModeOrbit"/>
+	/// X is the focus's distance along the level line of sight; for
+	/// <see cref="Refii.Core.Engine_MouseLook.ModeAim"/> the point X metres along the camera's level
+	/// forward, Y along its level right, Z up.
+	/// </param>
 	/// <param name="Mode">How a turn not yet taken is drawn (<see cref="Refii.Core.Engine_MouseLook"/> modes).</param>
-	/// <param name="Flicks">Target switches the mouse handed to a target lock, run total.</param>
+	/// <param name="Flicks">Target switches the mouse handed to a target lock (flicks and wheel notches), run total.</param>
+	/// <param name="PitchLimit">For the aim mode: the camera's elevation bound, degrees.</param>
+	/// <param name="Aim">For the aim mode: the ranged aim object whose reticule turns with the view.</param>
 	public readonly record struct MouseLookState(
-		uint Sequence, uint Tick, double Posted, double Taken, double Absorbed, float Factor,
-		float PivotMetres, int Mode, uint Flicks);
+		uint Sequence, uint Tick, double Posted, double Taken, double Absorbed,
+		double PostedPitch, double TakenPitch, double AbsorbedPitch, float Factor,
+		Vector3 Pivot, int Mode, uint Flicks, float PitchLimit, uint Aim)
+	{
+		/// <summary>The focus distance along the level line of sight (the orbit mode's pivot).</summary>
+		public float PivotMetres => Pivot.X;
+	}
+
+	private const int MouseLookValues = 15;
 
 	/// <summary>The mouse's account as of the guest's last camera update, or null without a guest.</summary>
 	public static MouseLookState? GetMouseLook()
@@ -5161,9 +5193,12 @@ public static class HostBridge
 			return null;
 		}
 
-		uint sequence = RefiiHostGetMouseLook(out uint tick, out double posted, out double taken,
-			out double absorbed, out float factor, out float pivot, out int mode, out uint flicks);
-		return new MouseLookState(sequence, tick, posted, taken, absorbed, factor, pivot, mode, flicks);
+		var v = new double[MouseLookValues];
+		uint sequence = RefiiHostGetMouseLook(v, MouseLookValues);
+		return new MouseLookState(
+			sequence, (uint)v[0], v[1], v[2], v[3], v[4], v[5], v[6], (float)v[7],
+			new Vector3((float)v[8], (float)v[9], (float)v[10]), (int)v[11], (uint)v[12],
+			(float)v[13], (uint)v[14]);
 	}
 
 	/// <summary>The guest's achievement writes newer than <paramref name="afterSequence"/>, oldest first.</summary>
@@ -8958,9 +8993,10 @@ public static class HostBridge
 	private static extern void RefiiHostSetMouseLookDevice(int mouse);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetMouseLook(
-		out uint tick, out double posted, out double taken, out double absorbed, out float factor,
-		out float pivot, out int mode, out uint flicks);
+	private static extern void RefiiHostPostMouseWheel(int notches);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetMouseLook(double[] outValues, uint count);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetPlayerCamera(int player, float[] outValues);

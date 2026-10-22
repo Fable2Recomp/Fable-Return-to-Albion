@@ -6,7 +6,7 @@ using Refii.Core;
 namespace Refii.Game;
 
 /// <summary>
-/// The live performance readout, toggled with F3: frame rate, frame time, the main thread's own
+/// The live performance readout, toggled with F5: frame rate, frame time, the main thread's own
 /// work, the render thread's CPU and GPU time, draw calls, video memory, GC, and Godot's per-pass
 /// GPU split when the engine is capturing it (`gpu_profile = true`).
 /// </summary>
@@ -60,7 +60,7 @@ public partial class GamePerfOverlay : CanvasLayer
 
 	public override void _Input(InputEvent @event)
 	{
-		if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F3 })
+		if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F5 })
 		{
 			Visible = !Visible;
 			_sinceRefresh = RefreshSeconds;
