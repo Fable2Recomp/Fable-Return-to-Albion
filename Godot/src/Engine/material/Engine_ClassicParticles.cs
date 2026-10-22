@@ -76,6 +76,26 @@ public partial class Engine_ClassicParticles : Node
         public byte[] VertexBytes = Array.Empty<byte>();
         public byte[] AttributeBytes = Array.Empty<byte>();
         public bool InPlace;
+
+        /// <summary>
+        /// The group's array constants as the Variants its materials hold: each is rebuilt only
+        /// when its values move (a static-hash miss on a fixed-axis group's quaternion used to
+        /// recreate all four keyframe tables; a transform step recreates only the world).
+        /// </summary>
+        public readonly Refii.Core.Engine_ArrayParam Colours = new();
+        public readonly Refii.Core.Engine_ArrayParam Scales = new();
+        public readonly Refii.Core.Engine_ArrayParam GlobalScales = new();
+        public readonly Refii.Core.Engine_ArrayParam UvScales = new();
+        public readonly Refii.Core.Engine_ArrayParam WorldRows = new();
+
+        public void Release()
+        {
+            Colours.Dispose();
+            Scales.Dispose();
+            GlobalScales.Dispose();
+            UvScales.Dispose();
+            WorldRows.Dispose();
+        }
     }
 
     /// <summary>
@@ -382,6 +402,7 @@ public partial class Engine_ClassicParticles : Node
                 if (pair.Value.Seen != _frames)
                 {
                     pair.Value.Node.QueueFree();
+                    pair.Value.Release();
                     _gone.Add(pair.Key);
                 }
             }
@@ -907,10 +928,12 @@ public partial class Engine_ClassicParticles : Node
                     up = q * new Vector3(0f, 1f, 0f);
                     right = q * new Vector3(1f, 0f, 0f);
                 }
-                using Variant colours = Variant.CreateFrom(_colours);
-                using Variant scales = Variant.CreateFrom(_scales);
-                using Variant globalScales = Variant.CreateFrom(_globalScales);
-                using Variant uvScales = Variant.CreateFrom(_uvScales);
+                // The four tables are held per group: a hash miss that left them unchanged (the
+                // fixed-axis quaternion, the ambient) sends the held Variants, so no handle is made.
+                bool coloursMoved = group.Colours.Take(_colours) | liveChanged;
+                bool scalesMoved = group.Scales.Take(_scales) | liveChanged;
+                bool globalScalesMoved = group.GlobalScales.Take(_globalScales) | liveChanged;
+                bool uvScalesMoved = group.UvScales.Take(_uvScales) | liveChanged;
                 foreach (ShaderMaterial m in _chain)
                 {
                     m.SetShaderParameter(FixedAxesName, fixedAxes);
@@ -919,13 +942,25 @@ public partial class Engine_ClassicParticles : Node
                     m.SetShaderParameter(VsFadeInDistanceInfoName, fadeIn);
                     m.SetShaderParameter(VsFadeOutDistanceInfoName, fadeOut);
                     m.SetShaderParameter(VsGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
-                    m.SetShaderParameter(VsKeyFrameColorsName, colours);
-                    m.SetShaderParameter(VsKeyFrameScalesSelfIllumFactorStartTimesName, scales);
-                    m.SetShaderParameter(VsKeyFrameGlobalScalesName, globalScales);
+                    if (coloursMoved)
+                    {
+                        m.SetShaderParameter(VsKeyFrameColorsName, group.Colours.Value);
+                    }
+                    if (scalesMoved)
+                    {
+                        m.SetShaderParameter(VsKeyFrameScalesSelfIllumFactorStartTimesName, group.Scales.Value);
+                    }
+                    if (globalScalesMoved)
+                    {
+                        m.SetShaderParameter(VsKeyFrameGlobalScalesName, group.GlobalScales.Value);
+                    }
                     m.SetShaderParameter(PsTextureStartTimesName, starts);
                     m.SetShaderParameter(PsTextureStartTimesInvDeltaName, invDeltas);
                     m.SetShaderParameter(PsTextureNumXDivsName, divisions);
-                    m.SetShaderParameter(PsTextureUVScalesName, uvScales);
+                    if (uvScalesMoved)
+                    {
+                        m.SetShaderParameter(PsTextureUVScalesName, group.UvScales.Value);
+                    }
                     if (softDistance > 0f)
                     {
                         m.SetShaderParameter(PsDepthFadeScaleName, new Vector4(depthFade, depthFade, depthFade, depthFade));
@@ -950,10 +985,12 @@ public partial class Engine_ClassicParticles : Node
                 {
                     _world[i] = new Vector4(group.World[i], group.World[4 + i], group.World[8 + i], group.World[12 + i]);
                 }
-                using Variant world = Variant.CreateFrom(_world);
+                // One Variant per transform the sim actually moves; a new material on the same
+                // transform takes the held one.
+                group.WorldRows.Take(_world);
                 foreach (ShaderMaterial m in _chain)
                 {
-                    m.SetShaderParameter(VsMatWorldName, world);
+                    m.SetShaderParameter(VsMatWorldName, group.WorldRows.Value);
                 }
             }
         }

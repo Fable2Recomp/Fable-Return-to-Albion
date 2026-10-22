@@ -14,6 +14,15 @@ public static class Engine_Switches
     private static IReadOnlyDictionary<string, string>? _file;
     private static string _filePath = string.Empty;
 
+    /// <summary>
+    /// Each key's environment override, read once. A switch is asked every frame by the sky
+    /// and weather drivers, and the environment does not change under a running process, so
+    /// the `REFII_` name and the lookup's marshalled string are made once per key rather than
+    /// per call. Cleared with the file on <see cref="Invalidate"/>.
+    /// </summary>
+    private static readonly Dictionary<string, string?> EnvByKey =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public static int Generation { get; private set; }
 
     public static void Invalidate()
@@ -22,6 +31,7 @@ public static class Engine_Switches
         {
             _file = null;
             _filePath = string.Empty;
+            EnvByKey.Clear();
             Generation++;
         }
     }
@@ -105,9 +115,19 @@ public static class Engine_Switches
 
     private static string? Raw(string key, out string source)
     {
-        string env = "REFII_" + key.Replace('-', '_').ToUpperInvariant();
-        string fromEnv = OS.GetEnvironment(env);
-        if (fromEnv.Length != 0)
+        string? fromEnv;
+        lock (Gate)
+        {
+            if (!EnvByKey.TryGetValue(key, out fromEnv))
+            {
+                string env = "REFII_" + key.Replace('-', '_').ToUpperInvariant();
+                string value = OS.GetEnvironment(env);
+                fromEnv = value.Length != 0 ? value : null;
+                EnvByKey[key] = fromEnv;
+            }
+        }
+
+        if (fromEnv is not null)
         {
             source = "env";
             return fromEnv;

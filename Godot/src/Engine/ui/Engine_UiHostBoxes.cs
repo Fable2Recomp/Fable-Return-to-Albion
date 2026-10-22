@@ -26,6 +26,13 @@ public static class Engine_UiHostBoxes
 	/// <summary>The question's B caption, or null for the box's authored one.</summary>
 	public static string? CancelCaption { get; private set; }
 
+	/// <summary>
+	/// The question's page title when it is asked ON A PAGE (<see cref="AskPage"/>) — a body of
+	/// unbounded length, drawn in the host page book's scroll region rather than the dialog's
+	/// fixed text box, with Continue and Back as its rows. Null for a question in the dialog.
+	/// </summary>
+	public static string? PageTitle { get; private set; }
+
 	/// <summary>The notice up, or null.</summary>
 	public static string? Notice { get; private set; }
 
@@ -63,11 +70,25 @@ public static class Engine_UiHostBoxes
 		_onQuestion = null;
 		replaced?.Invoke(-1);
 		Question = body;
+		PageTitle = null;
 		AcceptCaption = accept;
 		CancelCaption = cancel;
 		_onQuestion = answered;
 		_key = key;
 		Godot.GD.Print($"[host-box] asked: {body}");
+	}
+
+	/// <summary>
+	/// Asks <paramref name="body"/> on a PAGE: <paramref name="title"/> as the page's heading and
+	/// the body in its scroll region, Continue (A, <paramref name="onYes"/>) and Back (B,
+	/// <paramref name="onNo"/>) as the rows beside it. For a body whose length is not ours to
+	/// bound — a list. The same question channel as <see cref="Ask"/>: one at a time, answered
+	/// through <see cref="Answer"/>, withdrawn by <paramref name="key"/>.
+	/// </summary>
+	public static void AskPage(string title, string body, Action onYes, Action? onNo = null, string key = "")
+	{
+		Ask(body, onYes, onNo, key);
+		PageTitle = title;
 	}
 
 	/// <summary>Whether the question up was asked under <paramref name="key"/>.</summary>
@@ -82,6 +103,7 @@ public static class Engine_UiHostBoxes
 		}
 
 		Question = null;
+		PageTitle = null;
 		AcceptCaption = null;
 		CancelCaption = null;
 		_onQuestion = null;
@@ -111,6 +133,7 @@ public static class Engine_UiHostBoxes
 	{
 		Action<int>? answered = _onQuestion;
 		Question = null;
+		PageTitle = null;
 		AcceptCaption = null;
 		CancelCaption = null;
 		_onQuestion = null;

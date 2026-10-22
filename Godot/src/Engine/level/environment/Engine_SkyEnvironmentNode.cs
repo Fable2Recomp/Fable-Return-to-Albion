@@ -15,10 +15,20 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private static readonly NodePath Path_Clouds = "Clouds";
     private static readonly NodePath Path_SunDisc = "SunDisc";
     private static readonly NodePath Path_SunGlare = "SunGlare";
+    private static readonly NodePath Path_Water = Engine_LevelScene.WaterNodeName;
+    private static readonly NodePath Path_Celestial = Engine_CelestialElements.NodeName;
+    private static readonly NodePath Path_Precipitation = Engine_DynamicPrecipitation.NodeName;
+    private static readonly NodePath Path_Weather = "Weather";
+    private static readonly NodePath Path_Sun = Engine_LevelLighting.SunNodeName;
     private static readonly StringName Param_cloud_density = "cloud_density";
     private static readonly StringName Param_element_vis = "element_vis";
     private static readonly StringName Param_sun_engine = "sun_engine";
     private static readonly StringName Param_uv_scale_offset = "uv_scale_offset";
+    private static readonly StringName Param_moon_phase = "moon_phase";
+    private static readonly StringName Param_moon_dir_world = "moon_dir_world";
+    private static readonly StringName Global_atmos_sun = "atmos_sun";
+    private static readonly StringName Global_dynamic_sun_toward = "dynamic_sun_toward";
+    private static readonly StringName Global_dynamic_sun_radiance = "dynamic_sun_radiance";
 
     private float _dayFraction = 0.5f;
     private float _guestDayFraction = 0.5f;
@@ -172,7 +182,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         Refii.Core.Engine_FramePhases.Lap("sky.gi", ref lap);
 
-        Engine_WaterMaterial.AdvancePhases(GetParent()?.GetNodeOrNull<Node3D>(Engine_LevelScene.WaterNodeName), (float)delta);
+        Engine_WaterMaterial.AdvancePhases(GetParent()?.GetNodeOrNull<Node3D>(Path_Water), (float)delta);
         if (Current == this)
         {
             Refii.Models.Engine_SceneWind.Pump();
@@ -228,8 +238,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 _dynamicThunder.Advance((float)delta, Engine_WeatherShelter.Exposure, _thunderSfx);
             }
             _dynamicSky.Tick((float)delta, dynamicMaterial,
-                GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(
-                    Engine_DynamicPrecipitation.NodeName),
+                GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(Path_Precipitation),
                 Environment);
             if (Current == this && !Engine.IsEditorHint())
             {
@@ -269,8 +278,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 if (ResolveSun() is { } weatherSun) Engine_LevelLighting.UpdateSun(weatherSun, weatherLighting);
                 Engine_LevelBakedLighting.PublishSunLighting(weatherLighting);
             }
-            RenderingServer.GlobalShaderParameterSet("dynamic_sun_toward", Engine_DynamicSkyLighting.SunToward);
-            RenderingServer.GlobalShaderParameterSet("dynamic_sun_radiance", Engine_DynamicSkyLighting.OverridesSun
+            RenderingServer.GlobalShaderParameterSet(Global_dynamic_sun_toward, Engine_DynamicSkyLighting.SunToward);
+            RenderingServer.GlobalShaderParameterSet(Global_dynamic_sun_radiance, Engine_DynamicSkyLighting.OverridesSun
                 ? Engine_DynamicSkyLighting.SunColour * Engine_DynamicSkyLighting.SunEnergy : Vector3.Zero);
         }
 
@@ -408,21 +417,21 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             material.SetShaderParameter(Param_sun_engine, dome);
         }
 
-        RenderingServer.GlobalShaderParameterSet("atmos_sun", dome);
+        RenderingServer.GlobalShaderParameterSet(Global_atmos_sun, dome);
 
         if (Engine_DynamicSky.Enabled &&
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {
             Vector3 moon = Engine_SkyFrame.ToGodot(frame.MoonDirection);
-            dynamicMaterial.SetShaderParameter("moon_phase", MoonPhaseNow / 8f);
+            dynamicMaterial.SetShaderParameter(Param_moon_phase, MoonPhaseNow / 8f);
             if (moon != _lastMoon)
             {
                 _lastMoon = moon;
-                dynamicMaterial.SetShaderParameter("moon_dir_world", moon);
+                dynamicMaterial.SetShaderParameter(Param_moon_dir_world, moon);
             }
         }
 
-        if (GetParent()?.GetNodeOrNull<Node3D>(Engine_CelestialElements.NodeName) is { } celestial)
+        if (GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial) is { } celestial)
         {
             Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
         }
@@ -530,7 +539,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         // which is the harder of the two failures to spot.
         Engine_SkyEnvironment.ApplyAtmosphereGlobals(frame, Theme, domeState, domeLut, report);
 
-        Node3D? water = GetParent()?.GetNodeOrNull<Node3D>(Engine_LevelScene.WaterNodeName);
+        Node3D? water = GetParent()?.GetNodeOrNull<Node3D>(Path_Water);
         if (water is not null)
         {
             WaterTheme waterTheme = _waterStepStart is { } waterStart
@@ -539,9 +548,10 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                     : waterStart)
                 : WaterTheme.Default;
 
-            foreach (Node child in water.GetChildren())
+            // By index: GetChildren() is a Godot Array, a finalizable handle per tick.
+            for (int i = 0, count = water.GetChildCount(); i < count; i++)
             {
-                if (child is MeshInstance3D waterMesh &&
+                if (water.GetChild(i) is MeshInstance3D waterMesh &&
                     waterMesh.MaterialOverride is ShaderMaterial waterMaterial)
                 {
                     Engine_SkyEnvironment.ApplyWaterFrame(
@@ -793,8 +803,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         _atmosphereClock = 0f;
         _msDome = SinceMs(ref mark);
 
-        Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(
-            Engine_CelestialElements.NodeName);
+        Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial);
         if (celestial is not null)
         {
             Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
@@ -807,7 +816,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {
             Engine_DynamicSky.ApplyFrame(dynamicMaterial, frame, Theme);
-            dynamicMaterial.SetShaderParameter("moon_phase", MoonPhaseNow / 8f);
+            dynamicMaterial.SetShaderParameter(Param_moon_phase, MoonPhaseNow / 8f);
             _dynamicSky ??= new Engine_DynamicSkyDriver();
             if (LightingGdbs.Count != 0 &&
                 Engine_EnvironmentTheme.TryExtractWeather(LightingGdbs, out WeatherTheme dynamicWeather))
@@ -891,8 +900,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             if (!_reportedSunAgreement && sun.IsInsideTree())
             {
                 Vector3 travel = -sun.GlobalTransform.Basis.Column2;
-                Node3D? discOwner = GetParent()?.GetNodeOrNull<Node3D>(
-                    Engine_CelestialElements.NodeName);
+                Node3D? discOwner = GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial);
                 Node3D? disc = discOwner?.GetNodeOrNull<Node3D>(Path_SunDisc);
 
                 if (disc is not null)
@@ -1004,23 +1012,23 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Node? parent = GetParent();
         if (parent is not null)
         {
-            if (parent.GetNodeOrNull<Node3D>("Clouds") is { } clouds)
+            if (parent.GetNodeOrNull<Node3D>(Path_Clouds) is { } clouds)
             {
                 clouds.Visible = !(wanted && Engine_DynamicSky.HideGameClouds);
             }
 
-            if (parent.GetNodeOrNull<Node3D>(Engine_CelestialElements.NodeName) is { } celestial)
+            if (parent.GetNodeOrNull<Node3D>(Path_Celestial) is { } celestial)
             {
                 celestial.Visible = !(wanted && Engine_DynamicSky.HideGameCelestial);
             }
 
-            if (parent.GetNodeOrNull<Node3D>("Weather") is { } weatherNode)
+            if (parent.GetNodeOrNull<Node3D>(Path_Weather) is { } weatherNode)
             {
                 weatherNode.Visible = !(wanted && Engine_DynamicSky.HideGameWeather);
             }
 
             Engine_DynamicPrecipitation? precipitation =
-                parent.GetNodeOrNull<Engine_DynamicPrecipitation>(Engine_DynamicPrecipitation.NodeName);
+                parent.GetNodeOrNull<Engine_DynamicPrecipitation>(Path_Precipitation);
             if (wanted && precipitation is null && Engine_DynamicPrecipitation.Build() is { } built)
             {
                 parent.AddChild(built);
@@ -1259,8 +1267,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         SkyFrame? frame = _frame;
-        Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(
-            Engine_CelestialElements.NodeName);
+        Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial);
         if (celestial is null || frame is null)
         {
             return;
@@ -1289,8 +1296,10 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private void AdvanceCloudLayers(Node3D clouds, CloudTheme theme, float delta)
     {
-        foreach (Node child in clouds.GetChildren())
+        // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
+        for (int i = 0, count = clouds.GetChildCount(); i < count; i++)
         {
+            Node child = clouds.GetChild(i);
             if (child is not MeshInstance3D mesh ||
                 mesh.MaterialOverride is not ShaderMaterial material)
             {
@@ -1526,8 +1535,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             return Sun;
         }
 
-        Sun = GetParent()?.GetNodeOrNull<DirectionalLight3D>(
-            Engine_LevelLighting.SunNodeName);
+        Sun = GetParent()?.GetNodeOrNull<DirectionalLight3D>(Path_Sun);
         return Sun;
     }
 }

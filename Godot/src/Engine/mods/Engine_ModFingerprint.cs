@@ -24,8 +24,13 @@ namespace Refii.Mods;
 /// </remarks>
 public sealed class ModFingerprint
 {
-	/// <summary>One enabled mod. <see cref="Name"/> is the package name, the load order's key.</summary>
-	public readonly record struct Mod(string Name, string Title, string Version, string Sha256)
+	/// <summary>
+	/// One enabled mod. <see cref="Name"/> is the package name, the load order's key.
+	/// <see cref="Size"/> is the package's byte count and <see cref="Native"/> whether it carries
+	/// native sources (a hard mod, compiled into the game at launch): what co-op mod sync needs to
+	/// know to offer a download, or to refuse one. Neither is hashed into the digest.
+	/// </summary>
+	public readonly record struct Mod(string Name, string Title, string Version, string Sha256, long Size = 0, bool Native = false)
 	{
 		/// <summary>The title and version, as a player reads them.</summary>
 		public string Label => (Display + " " + Version).Trim();
@@ -35,6 +40,12 @@ public sealed class ModFingerprint
 
 	/// <summary>The co-op channel message: <c>mods=&lt;digest&gt;/&lt;api&gt;/&lt;total&gt;:&lt;entries&gt;</c>.</summary>
 	public const string WirePrefix = "mods=";
+
+	/// <summary>Fields per wire entry: name, title, version, short SHA-256, size, native flag.</summary>
+	public const int WireFields = 6;
+
+	/// <summary>Fields per wire entry of a build before sizes were stated; still read.</summary>
+	public const int WireFieldsV1 = 4;
 
 	/// <summary>Hex characters of a package's SHA-256 carried per entry on the wire.</summary>
 	public const int WireShaChars = 12;
@@ -229,7 +240,8 @@ public sealed class ModFingerprint
 			string sha = mod.Sha256.Length > WireShaChars ? mod.Sha256[..WireShaChars] : mod.Sha256;
 			string title = string.Equals(mod.Title, mod.Name, StringComparison.Ordinal) ? string.Empty : mod.Title;
 			string entry = (first ? string.Empty : "\n") +
-				Field(mod.Name) + "\t" + Field(title) + "\t" + Field(mod.Version) + "\t" + Field(sha);
+				Field(mod.Name) + "\t" + Field(title) + "\t" + Field(mod.Version) + "\t" + Field(sha) + "\t" +
+				mod.Size.ToString(CultureInfo.InvariantCulture) + "\t" + (mod.Native ? "1" : "0");
 			int size = Encoding.UTF8.GetByteCount(entry);
 			if (used + size > budget)
 			{
@@ -275,12 +287,26 @@ public sealed class ModFingerprint
 			foreach (string line in body.Split('\n'))
 			{
 				string[] fields = line.Split('\t');
-				if (fields.Length != 4 || fields[0].Length == 0)
+				if ((fields.Length != WireFields && fields.Length != WireFieldsV1) || fields[0].Length == 0)
 				{
 					return false;
 				}
 
-				mods.Add(new Mod(fields[0], fields[1].Length == 0 ? fields[0] : fields[1], fields[2], fields[3]));
+				long size = 0;
+				bool native = false;
+				if (fields.Length == WireFields &&
+					(!long.TryParse(fields[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) ||
+					size < 0 || fields[5] is not ("0" or "1")))
+				{
+					return false;
+				}
+
+				if (fields.Length == WireFields)
+				{
+					native = fields[5] == "1";
+				}
+
+				mods.Add(new Mod(fields[0], fields[1].Length == 0 ? fields[0] : fields[1], fields[2], fields[3], size, native));
 			}
 		}
 
@@ -309,8 +335,9 @@ public sealed class ModFingerprint
 
 	/// <summary>
 	/// The set this instance runs: every enabled mod whose package is installed, in the load
-	/// order's order — the same resolution the mount and the script loader make — under
-	/// <see cref="ModApi.Version"/>.
+	/// order's order — the same resolution the mount and the script loader make
+	/// (<see cref="ModSession.Resolve"/>: the co-op session's set while one is held, else the
+	/// launcher's) — under <see cref="ModApi.Version"/>.
 	/// </summary>
 	public static ModFingerprint Current() =>
 		Current(Refii.Assets.Engine_GameAssets.ModsRoot, ModApi.Version);
@@ -318,11 +345,11 @@ public sealed class ModFingerprint
 	public static ModFingerprint Current(string modsRoot, int apiVersion)
 	{
 		var mods = new List<Mod>();
-		if (!string.IsNullOrEmpty(modsRoot) && Directory.Exists(modsRoot))
+		if (!string.IsNullOrEmpty(modsRoot) && (Directory.Exists(modsRoot) || ModSession.IsActive))
 		{
-			ModLoadOrder order = ModLoadOrder.Read(modsRoot);
+			(ModLoadOrder order, List<ModInstall> found) = ModSession.Resolve(modsRoot);
 			var installs = new Dictionary<string, ModInstall>(StringComparer.OrdinalIgnoreCase);
-			foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(modsRoot))
+			foreach (ModInstall install in found)
 			{
 				installs[install.Name] = install;
 			}
@@ -331,12 +358,76 @@ public sealed class ModFingerprint
 			{
 				if (installs.TryGetValue(name, out ModInstall? mod) && File.Exists(mod.PackagePath))
 				{
-					mods.Add(new Mod(mod.Name, mod.Metadata.Title, mod.Metadata.Version, HashPackage(mod.PackagePath)));
+					mods.Add(Describe(mod));
 				}
 			}
 		}
 
 		return From(apiVersion, mods);
+	}
+
+	/// <summary>
+	/// Every package installed under <paramref name="modsRoot"/>, enabled or not, with its full
+	/// SHA-256 and its path: what a joiner can use as-is from a host's set without a download.
+	/// </summary>
+	public static List<ModSync.Item> Installed(string modsRoot)
+	{
+		var mods = new List<ModSync.Item>();
+		if (string.IsNullOrEmpty(modsRoot) || !Directory.Exists(modsRoot))
+		{
+			return mods;
+		}
+
+		foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(modsRoot))
+		{
+			if (File.Exists(install.PackagePath))
+			{
+				mods.Add(new ModSync.Item(Describe(install), ModSync.Source.Installed, install.PackagePath));
+			}
+		}
+
+		return mods;
+	}
+
+	/// <summary>One installed package as a set entry: hashed, sized, and checked for native sources.</summary>
+	public static Mod Describe(ModInstall mod)
+	{
+		long size = 0;
+		try
+		{
+			size = new FileInfo(mod.PackagePath).Length;
+		}
+		catch (Exception)
+		{
+		}
+
+		return new Mod(mod.Name, mod.Metadata.Title, mod.Metadata.Version, HashPackage(mod.PackagePath), size, HasNative(mod.PackagePath));
+	}
+
+	/// <summary>
+	/// Whether the package carries anything under <c>native/</c> — the installer's own hard-mod
+	/// test (<see cref="ModNative.IsNativePath"/>). Such a mod is compiled into the game at
+	/// launch, so it cannot be taken on or put down for a session.
+	/// </summary>
+	public static bool HasNative(string packagePath)
+	{
+		if (!F2ModPackage.TryOpen(packagePath, out F2ModPackage? package, out _) || package is null)
+		{
+			return false;
+		}
+
+		using (package)
+		{
+			foreach (F2ModEntry entry in package.Entries)
+			{
+				if (ModNative.IsNativePath(entry.Path))
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	private static readonly object HashLock = new();

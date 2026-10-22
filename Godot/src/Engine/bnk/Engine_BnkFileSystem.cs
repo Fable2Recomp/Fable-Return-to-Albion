@@ -27,17 +27,25 @@ public sealed class BnkFileSystem : IDisposable
     private const long NestedCacheBudget = 1024L << 20;
 
     /// <summary>
-    /// What the nested-bank cache is actually doing: bytes resident, containers loaded from disk,
+    /// What the nested-bank cache is actually doing: managed bytes resident, containers loaded,
     /// and containers evicted.
     /// </summary>
     /// <remarks>
-    /// Cached containers are multi-megabyte arrays on the large-object heap, so the budget sizes
-    /// the heap the collector walks. A miss re-reads the whole container (another LOH
-    /// allocation), so a budget below the working set trades resident bytes for garbage.
-    /// Evictions near zero mean the budget can come down; evictions climbing with loads mean the
-    /// cache is thrashing and the budget should go up.
+    /// A container stored UNCOMPRESSED in a mapped outer bank — every region bank in levels.bnk
+    /// and streaming.bnk, every texture bank — is a <see cref="BnkMappedRange"/> over the outer
+    /// file: no managed copy, nothing on the large-object heap, and residency is the page
+    /// cache's. Those count in <see cref="NestedMappedBytes"/>, stay open once parsed (the parse
+    /// is a table, not the bytes) and are never evicted.
+    ///
+    /// Only a container stored compressed in its outer bank (globals_models.bnk, the script
+    /// banks) is inflated to an array, and the budget below bounds those. Each is a
+    /// multi-megabyte LOH object and a miss re-reads the whole container, so a budget under the
+    /// working set trades resident bytes for garbage.
     /// </remarks>
     public static long NestedResidentBytes;
+
+    /// <summary>Bytes of nested containers served from the outer banks' memory maps.</summary>
+    public static long NestedMappedBytes;
 
     public static long NestedLoads;
 
@@ -48,6 +56,8 @@ public sealed class BnkFileSystem : IDisposable
         public required string Key;
         public required Func<BnkEntry, byte[]> ReadOuter;
         public required BnkEntry Container;
+        /// <summary>The container's bytes in the outer bank's map; null when it must be copied.</summary>
+        public BnkMappedRange? Map;
         public readonly object LoadLock = new();
         public volatile BnkArchive? Archive;
         public long Bytes;
@@ -66,7 +76,19 @@ public sealed class BnkFileSystem : IDisposable
             lock (slot.LoadLock)
             {
                 archive = slot.Archive;
-                if (archive is null)
+                if (archive is null && slot.Map is { } map)
+                {
+                    if (!BnkArchive.TryOpenMapped(slot.Key, map, out archive, out string error) ||
+                        archive is null)
+                    {
+                        throw new InvalidDataException(error);
+                    }
+
+                    slot.Archive = archive;
+                    System.Threading.Interlocked.Increment(ref NestedLoads);
+                    System.Threading.Interlocked.Add(ref NestedMappedBytes, map.Length);
+                }
+                else if (archive is null)
                 {
                     byte[] container = slot.ReadOuter(slot.Container);
                     if (!BnkArchive.TryOpenBytes(
@@ -787,25 +809,40 @@ public sealed class BnkFileSystem : IDisposable
         string normalized,
         string sourceMod = "")
     {
-        byte[] bytes;
-        try
+        BnkArchive? nested = null;
+        BnkMappedRange? map = null;
+        if (archive.TryMapEntry(entry, out map) && map is not null)
         {
-            bytes = read(entry);
+            if (!BnkArchive.TryOpenMapped(normalized, map, out nested, out string mapError) ||
+                nested is null)
+            {
+                _failures.Add($"{normalized}: {mapError}");
+                return false;
+            }
         }
-        catch (Exception exception)
+        else
         {
-            _failures.Add($"{normalized}: {exception.Message}");
-            return false;
+            map = null;
+            byte[] bytes;
+            try
+            {
+                bytes = read(entry);
+            }
+            catch (Exception exception)
+            {
+                _failures.Add($"{normalized}: {exception.Message}");
+                return false;
+            }
+
+            if (!BnkArchive.TryOpenBytes(normalized, bytes, out nested, out string error) ||
+                nested is null)
+            {
+                _failures.Add($"{normalized}: {error}");
+                return false;
+            }
         }
 
-        if (!BnkArchive.TryOpenBytes(normalized, bytes, out BnkArchive? nested, out string error) ||
-            nested is null)
-        {
-            _failures.Add($"{normalized}: {error}");
-            return false;
-        }
-
-        var slot = new NestedSlot { Key = normalized, ReadOuter = read, Container = entry };
+        var slot = new NestedSlot { Key = normalized, ReadOuter = read, Container = entry, Map = map };
         Func<BnkEntry, byte[]> nestedRead = target => ReadNestedEntry(slot, target);
 
         using (nested)

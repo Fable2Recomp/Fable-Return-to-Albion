@@ -1102,10 +1102,27 @@ public partial class Engine_UiPresentationHost : Node3D
 			return null;
 		}
 
-		var book = new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
-		book.Catalogue(tree, name);
+		// ONE CATALOGUE PER TREE. The catalogue is a walk of every node in the template tree —
+		// four interop calls a node, 4400 nodes on the abilities book — and every owner of a
+		// screen asked for it again on every open (the book set, the list view, the info
+		// panel). The tree it indexes is itself cached and only replaced on a remount, so the
+		// catalogue is good exactly as long as the tree and the fonts it was built with are
+		// the same instances; the string book is the one input that reloads underneath, and
+		// it is restated on every hand-out.
+		if (!_patternBooks.TryGet(name, out Engine_UiTheme book, tree, Fonts))
+		{
+			book = new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
+			book.Catalogue(tree, name);
+			_patternBooks.Put(name, book, tree, Fonts);
+		}
+
+		book.Strings = Strings;
 		return book;
 	}
+
+	/// <summary>Per presentation, the catalogue of its template tree — see <see cref="PatternBookFor"/>.</summary>
+	private readonly Engine_UiIdentityCache<string, Engine_UiTheme> _patternBooks =
+		new(StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>
 	/// The parsed DOCUMENT of a screen, from the same file-only build the pattern book uses —
@@ -1309,6 +1326,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			_templateTrees.Remove(name);
 			_templateScreens.Remove(name);
 			_templateSignatures.Remove(name);
+			_patternBooks.Remove(name);
 			_bookGenerations[name] = BookGeneration(name) + 1;
 		}
 
@@ -1383,6 +1401,7 @@ public partial class Engine_UiPresentationHost : Node3D
 		_templateTrees.Clear();
 		_templateScreens.Clear();
 		_templateSignatures.Clear();
+		_patternBooks.Clear();
 		FreeRetiredTrees();
 
 		foreach (IDisposable owned in _owned)

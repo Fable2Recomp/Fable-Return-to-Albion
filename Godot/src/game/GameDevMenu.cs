@@ -24,6 +24,9 @@ public partial class GameDevMenu : CanvasLayer
 	/// </summary>
 	public static bool KeyboardCaptured { get; private set; }
 
+	/// <summary>Whether the menu's window is open — the one embedded window, which wants the cursor.</summary>
+	public static bool WindowOpen { get; private set; }
+
 	private readonly List<GameDevTab> _tabs = new();
 	private readonly Dictionary<GameDevTab, double> _sinceRefresh = new();
 	private TabContainer? _container;
@@ -134,6 +137,7 @@ public partial class GameDevMenu : CanvasLayer
 		}
 
 		_window.Hide();
+		WindowOpen = false;
 		KeyboardCaptured = false;
 	}
 
@@ -151,6 +155,7 @@ public partial class GameDevMenu : CanvasLayer
 		else
 		{
 			_window.Show();
+			WindowOpen = true;
 			foreach (GameDevTab tab in _tabs)
 			{
 				_sinceRefresh[tab] = double.MaxValue;

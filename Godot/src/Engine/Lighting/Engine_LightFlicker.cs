@@ -316,6 +316,7 @@ public partial class Engine_LightFlicker : Node
 		{
 			omniNode.OmniRange = envelope;
 			RadiusWrites++;
+			Refii.Lighting.Engine_LevelLights.BumpLightMetaGeneration();
 		}
 
 		Engine_LightTable.SetStatedRange(omniNode, reach * scale);

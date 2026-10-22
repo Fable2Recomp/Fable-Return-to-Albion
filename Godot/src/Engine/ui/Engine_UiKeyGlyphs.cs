@@ -47,6 +47,10 @@ public static class Engine_UiKeyGlyphs
 
 	private const int KeycapSize = 128;
 
+	/// <summary>Every pad button a prompt can show, in the order the redraw signature lists them.</summary>
+	private static readonly string[] Buttons =
+		{ "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Start", "Back", "DPad", "LS", "RS" };
+
 	/// <summary>The keycap a quad carries for <paramref name="button"/> — one object per button.</summary>
 	public static ImageTexture KeycapFor(string button)
 	{
@@ -61,11 +65,10 @@ public static class Engine_UiKeyGlyphs
 
 	private static Image Keycap(string button)
 	{
-		var image = Image.CreateEmpty(KeycapSize, KeycapSize, false, Image.Format.Rgba8);
-		DrawKeycap(image, new Rect2I(0, 0, KeycapSize, KeycapSize),
+		var canvas = new Canvas(KeycapSize, KeycapSize);
+		DrawKeycap(canvas, new Rect2I(0, 0, KeycapSize, KeycapSize),
 			LabelFor?.Invoke(button) ?? button, pressed: false);
-		image.GenerateMipmaps();
-		return image;
+		return canvas.ToImage(mipmaps: true);
 	}
 
 	/// <summary>
@@ -165,8 +168,7 @@ public static class Engine_UiKeyGlyphs
 		string signature = keys ? "kbm" : "pad";
 		if (keys)
 		{
-			foreach (string button in new[]
-				{ "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Start", "Back", "DPad", "LS", "RS" })
+			foreach (string button in Buttons)
 			{
 				signature += "|" + (LabelFor?.Invoke(button) ?? "?");
 			}
@@ -249,21 +251,83 @@ public static class Engine_UiKeyGlyphs
 		int height = pad.GetHeight();
 		int side = Math.Min(width, height);
 		string label = LabelFor?.Invoke(proxy.Button) ?? proxy.Button;
-		Image image = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+		var canvas = new Canvas(width, height);
 		for (int y = 0; y + side <= height; y += side)
 		{
 			for (int x = 0; x + side <= width; x += side)
 			{
-				DrawKeycap(image, new Rect2I(x, y, side, side), label, pressed: false);
+				DrawKeycap(canvas, new Rect2I(x, y, side, side), label, pressed: false);
 			}
 		}
 
-		if (pad.HasMipmaps())
+		proxy.Texture.SetImage(canvas.ToImage(pad.HasMipmaps()));
+	}
+
+	/// <summary>
+	/// An RGBA8 image drawn in memory and handed to Godot once. Each pixel is stored exactly as
+	/// <c>Image.SetPixel</c> stores it and read back exactly as <c>Image.GetPixel</c> reads it
+	/// (core/io/image.cpp <c>_set_color_at_ofs</c>/<c>_get_color_at_ofs</c>, FORMAT_RGBA8), so
+	/// the keycap is the same picture a pixel-at-a-time draw gave — without a native call per
+	/// pixel, which was tens of milliseconds for a redraw of every prompt on a device switch.
+	/// </summary>
+	private sealed class Canvas
+	{
+		public readonly int Width;
+		public readonly int Height;
+		public readonly byte[] Data;
+
+		public Canvas(int width, int height)
 		{
-			image.GenerateMipmaps();
+			Width = width;
+			Height = height;
+			Data = new byte[width * height * 4];
 		}
 
-		proxy.Texture.SetImage(image);
+		public Color Get(int x, int y)
+		{
+			int at = ((y * Width) + x) * 4;
+			return new Color(
+				(float)(Data[at] / 255.0),
+				(float)(Data[at + 1] / 255.0),
+				(float)(Data[at + 2] / 255.0),
+				(float)(Data[at + 3] / 255.0));
+		}
+
+		public void Set(int x, int y, Color colour)
+		{
+			int at = ((y * Width) + x) * 4;
+			Data[at] = Channel(colour.R);
+			Data[at + 1] = Channel(colour.G);
+			Data[at + 2] = Channel(colour.B);
+			Data[at + 3] = Channel(colour.A);
+		}
+
+		/// <summary>Clears a cell to transparent black, as <c>FillRect</c> with (0,0,0,0) does.</summary>
+		public void Clear(Rect2I cell)
+		{
+			int x0 = Math.Max(0, cell.Position.X);
+			int x1 = Math.Min(Width, cell.End.X);
+			int y0 = Math.Max(0, cell.Position.Y);
+			int y1 = Math.Min(Height, cell.End.Y);
+			for (int y = y0; y < y1; ++y)
+			{
+				Array.Clear(Data, ((y * Width) + x0) * 4, Math.Max(0, x1 - x0) * 4);
+			}
+		}
+
+		public Image ToImage(bool mipmaps)
+		{
+			Image image = Image.CreateFromData(Width, Height, false, Image.Format.Rgba8, Data);
+			if (mipmaps)
+			{
+				image.GenerateMipmaps();
+			}
+
+			return image;
+		}
+
+		/// <summary><c>uint8_t(CLAMP(c * 255.0, 0, 255))</c>: scaled in double, truncated.</summary>
+		private static byte Channel(float c) => (byte)Math.Clamp(c * 255.0, 0.0, 255.0);
 	}
 
 	private static readonly Color CapFill = new(0.10f, 0.09f, 0.07f, 0.92f);
@@ -271,9 +335,9 @@ public static class Engine_UiKeyGlyphs
 	private static readonly Color CapPressed = new(0.22f, 0.19f, 0.12f, 0.95f);
 
 	/// <summary>A rounded key with the label centred in the game's font, filling one cell.</summary>
-	private static void DrawKeycap(Image image, Rect2I cell, string label, bool pressed)
+	private static void DrawKeycap(Canvas image, Rect2I cell, string label, bool pressed)
 	{
-		image.FillRect(cell, new Color(0f, 0f, 0f, 0f));
+		image.Clear(cell);
 
 		// No key for this prompt here: the cell stays empty rather than showing a blank cap.
 		if (label.Length == 0)
@@ -298,7 +362,7 @@ public static class Engine_UiKeyGlyphs
 
 				float edge = Mathf.Clamp(0.5f - d, 0f, 1f);
 				Color colour = d > -rim ? CapRim : pressed ? CapPressed : CapFill;
-				image.SetPixel(x, y, new Color(colour.R, colour.G, colour.B, colour.A * edge));
+				image.Set(x, y, new Color(colour.R, colour.G, colour.B, colour.A * edge));
 			}
 		}
 
@@ -316,11 +380,14 @@ public static class Engine_UiKeyGlyphs
 		return outside + Math.Min(Math.Max(qx, qy), 0f) - radius;
 	}
 
-	/// <summary>The decoded font atlas as coverage, cached per font.</summary>
-	private static Image? _atlas;
+	/// <summary>The decoded font atlas as coverage, cached per font: its red channel, one byte a texel.</summary>
+	private static byte[]? _atlas;
+	private static int _atlasWidth;
+	private static int _atlasHeight;
+	private static int _atlasStride;
 	private static Engine_BitmapFont? _atlasFont;
 
-	private static void DrawLabel(Image image, Rect2I cap, string label)
+	private static void DrawLabel(Canvas image, Rect2I cap, string label)
 	{
 		if (Fonts?.For(18) is not { } selection || label.Length == 0)
 		{
@@ -331,19 +398,34 @@ public static class Engine_UiKeyGlyphs
 		if (!ReferenceEquals(_atlasFont, font))
 		{
 			_atlasFont = font;
-			_atlas = Image.CreateFromData(font.AtlasWidth, font.AtlasHeight, false,
+			_atlas = null;
+			Image decoded = Image.CreateFromData(font.AtlasWidth, font.AtlasHeight, false,
 				Image.Format.RgtcR, Engine_BitmapFontTexture.DecodeAtlasBlocks(font));
-			if (_atlas.IsEmpty())
+			if (!decoded.IsEmpty())
 			{
-				_atlas = null;
-			}
-			else
-			{
-				_atlas.Decompress();
+				decoded.Decompress();
+				int stride = decoded.GetFormat() switch
+				{
+					Image.Format.L8 or Image.Format.R8 => 1,
+					Image.Format.La8 or Image.Format.Rg8 => 2,
+					Image.Format.Rgb8 => 3,
+					Image.Format.Rgba8 => 4,
+					_ => 0,
+				};
+				if (stride == 0)
+				{
+					decoded.Convert(Image.Format.Rgba8);
+					stride = 4;
+				}
+
+				_atlas = decoded.GetData();
+				_atlasWidth = decoded.GetWidth();
+				_atlasHeight = decoded.GetHeight();
+				_atlasStride = stride;
 			}
 		}
 
-		if (_atlas is not { } atlas)
+		if (_atlas is null)
 		{
 			return;
 		}
@@ -364,20 +446,20 @@ public static class Engine_UiKeyGlyphs
 				continue;
 			}
 
-			BlitGlyph(image, atlas, g, left, top, g.DrawWidth * scale, height * scale);
+			BlitGlyph(image, g, left, top, g.DrawWidth * scale, height * scale);
 		}
 	}
 
 	/// <summary>Draws one glyph's coverage as the rim colour, sampled bilinearly.</summary>
-	private static void BlitGlyph(Image image, Image atlas, BitmapGlyph g, float left, float top,
+	private static void BlitGlyph(Canvas image, BitmapGlyph g, float left, float top,
 		float width, float height)
 	{
 		int x0 = Math.Max(0, (int)Math.Floor(left));
-		int x1 = Math.Min(image.GetWidth(), (int)Math.Ceiling(left + width));
+		int x1 = Math.Min(image.Width, (int)Math.Ceiling(left + width));
 		int y0 = Math.Max(0, (int)Math.Floor(top));
-		int y1 = Math.Min(image.GetHeight(), (int)Math.Ceiling(top + height));
-		int aw = atlas.GetWidth();
-		int ah = atlas.GetHeight();
+		int y1 = Math.Min(image.Height, (int)Math.Ceiling(top + height));
+		int aw = _atlasWidth;
+		int ah = _atlasHeight;
 
 		for (int y = y0; y < y1; ++y)
 		{
@@ -385,35 +467,36 @@ public static class Engine_UiKeyGlyphs
 			for (int x = x0; x < x1; ++x)
 			{
 				float u = Mathf.Lerp(g.U0, g.U1, (x + 0.5f - left) / width);
-				float coverage = Sample(atlas, (u * aw) - 0.5f, (v * ah) - 0.5f);
+				float coverage = Sample((u * aw) - 0.5f, (v * ah) - 0.5f);
 				if (coverage <= 0.01f)
 				{
 					continue;
 				}
 
-				Color under = image.GetPixel(x, y);
+				Color under = image.Get(x, y);
 				Color blended = under.Lerp(CapRim, coverage);
 				blended.A = Math.Max(under.A, coverage);
-				image.SetPixel(x, y, blended);
+				image.Set(x, y, blended);
 			}
 		}
 	}
 
-	private static float Sample(Image atlas, float x, float y)
+	private static float Sample(float x, float y)
 	{
 		int xi = (int)Math.Floor(x);
 		int yi = (int)Math.Floor(y);
 		float fx = x - xi;
 		float fy = y - yi;
-		float a = Texel(atlas, xi, yi);
-		float b = Texel(atlas, xi + 1, yi);
-		float c = Texel(atlas, xi, yi + 1);
-		float d = Texel(atlas, xi + 1, yi + 1);
+		float a = Texel(xi, yi);
+		float b = Texel(xi + 1, yi);
+		float c = Texel(xi, yi + 1);
+		float d = Texel(xi + 1, yi + 1);
 		return Mathf.Lerp(Mathf.Lerp(a, b, fx), Mathf.Lerp(c, d, fx), fy);
 	}
 
-	private static float Texel(Image atlas, int x, int y) =>
-		x < 0 || y < 0 || x >= atlas.GetWidth() || y >= atlas.GetHeight()
+	/// <summary>The atlas's red channel at a texel as <c>GetPixel(x, y).R</c> read it, 0 outside.</summary>
+	private static float Texel(int x, int y) =>
+		x < 0 || y < 0 || x >= _atlasWidth || y >= _atlasHeight
 			? 0f
-			: atlas.GetPixel(x, y).R;
+			: (float)(_atlas![((y * _atlasWidth) + x) * _atlasStride] / 255.0);
 }

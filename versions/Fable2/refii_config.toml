@@ -14998,6 +14998,12 @@
 0x82338248 = { name = "rex_lhGuiManager_EnterGuiModeQuiet" }
 0x82432848 = { name = "rex_CECCreature_FinishDeath" }
 0x821E3E10 = { name = "rex_GDBManager_FindEntryByHash" }
+# GDB hot reload (gdb_hot_reload.cpp): the loader, a file's own record lookup, a schema's
+# property slot, the manager map's insert.
+0x829FB280 = { name = "rex_GDBManager_LoadFile" }
+0x829FCB18 = { name = "rex_GDBFile_FindEntry" }
+0x821E5530 = { name = "rex_GDBSchema_FindPropHash" }
+0x829FAD30 = { name = "rex_GDBManager_MapInsert" }
 0x827A8120 = { name = "rex_CECVillager_OnUse" }
 0x82422FA0 = { name = "rex_lhCameraManager_ActivateCamera" }
 0x82422EB0 = { name = "rex_lhCameraManager_SpawnCameraEntities" }

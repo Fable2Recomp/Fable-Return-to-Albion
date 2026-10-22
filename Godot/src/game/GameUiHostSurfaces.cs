@@ -33,7 +33,7 @@ public partial class GameUi
 	/// boxes (Engine_UiQuerySurface / Engine_UiMessageSurface). The guest's own dialog, and a
 	/// refusal the front end raised itself, stand first; the host box waits for them.
 	/// </summary>
-	private bool DriveFrontEndHostBox()
+	private bool DriveFrontEndHostBox(double delta)
 	{
 		bool question = Engine_UiHostBoxes.Question is not null;
 		string? body = Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice;
@@ -44,6 +44,21 @@ public partial class GameUi
 		{
 			CloseFrontEndHostBox();
 			return false;
+		}
+
+		// A QUESTION ON A PAGE: the host page book instead of the dialog — the body stands in
+		// the book's scroll region, clipped and scrolled as every text page is, with Continue
+		// and Back as its rows. The load fan and the row list go under it as they do under the
+		// dialog, and come back when it is answered.
+		if (question && Engine_UiHostBoxes.PageTitle is not null)
+		{
+			return DriveFrontEndHostPage(delta, body!);
+		}
+
+		if (_hostPageBook.IsOpen)
+		{
+			// The page question was replaced by a dialog one: the book goes before the dialog stands.
+			_hostPageBook.Close();
 		}
 
 		if (_warningView is null)
@@ -111,6 +126,74 @@ public partial class GameUi
 		return true;
 	}
 
+	/// <summary>
+	/// One frame of a host question on the page book. The book is opened on the first frame the
+	/// question stands (false until its art is read — "come back next frame", as the Active Mods
+	/// book is opened); A on a row dispatches the row's command, which answers the question; B
+	/// closes the book, which is the question's no.
+	/// </summary>
+	private bool DriveFrontEndHostPage(double delta, string body)
+	{
+		string signature = $"P\u0001{Engine_UiHostBoxes.PageTitle}\u0001{body}";
+		if (!_hostPageBook.IsOpen && !_hostPageBook.Open())
+		{
+			if (signature != _hostBoxShown)
+			{
+				_hostBoxShown = signature;
+				GD.PushWarning("[game-ui] host page question on the front end — book art not read yet, waiting");
+			}
+
+			GameInput.HostUiOwnsPad = true;
+			return true;
+		}
+
+		if (signature != _hostBoxShown)
+		{
+			_hostBoxShown = signature;
+			GD.Print($"[game-ui] host question on the front end's page book — '{Engine_UiHostBoxes.PageTitle}'");
+		}
+
+		if (_menuView is { Visible: true })
+		{
+			_menuView.Visible = false;
+			_menuHiddenForHostBox = true;
+		}
+
+		if (_saveCardView is { Visible: true } && GodotObject.IsInstanceValid(_saveCardView))
+		{
+			_saveCardView.Visible = false;
+			_fanHiddenForHostBox = true;
+		}
+
+		if (_hostMenuView is { Visible: true } && GodotObject.IsInstanceValid(_hostMenuView))
+		{
+			_hostMenuView.Visible = false;
+			_hostMenuHiddenForHostBox = true;
+		}
+
+		GameInput.HostUiOwnsPad = true;
+		PointerPage(_hostPageBook.Book);
+		if (_hostPageBook.Drive(
+				GameInput.MenuDirection,
+				GameInput.MenuAcceptPressed || PointerList(_hostPageBook.View),
+				GameInput.MenuBackPressed,
+				false, delta, 0f))
+		{
+			ReportMenuView(_hostPageBook.View);
+		}
+
+		// B closed the book without a row: the question's no.
+		if (!_hostPageBook.IsOpen && Engine_UiHostBoxes.PageTitle is not null)
+		{
+			Engine_UiHostBoxes.Answer(false);
+		}
+
+		return true;
+	}
+
+	/// <summary>The load fan was hidden under a host page question; it comes back with the answer.</summary>
+	private bool _fanHiddenForHostBox;
+
 	private void CloseFrontEndHostBox()
 	{
 		if (_hostBoxShown is null)
@@ -124,12 +207,23 @@ public partial class GameUi
 			_warningView.Visible = false;
 		}
 
+		if (_hostPageBook.IsOpen)
+		{
+			_hostPageBook.Close();
+		}
+
 		if (_menuHiddenForHostBox && _menuView is not null && GodotObject.IsInstanceValid(_menuView))
 		{
 			_menuView.Visible = true;
 		}
 
 		_menuHiddenForHostBox = false;
+		if (_fanHiddenForHostBox && _saveCardView is not null && GodotObject.IsInstanceValid(_saveCardView))
+		{
+			_saveCardView.Visible = true;
+		}
+
+		_fanHiddenForHostBox = false;
 		if (_hostMenuHiddenForHostBox && _hostMenuView is not null && GodotObject.IsInstanceValid(_hostMenuView))
 		{
 			_hostMenuView.Visible = true;

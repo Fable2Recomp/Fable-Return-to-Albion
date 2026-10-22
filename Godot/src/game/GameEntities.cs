@@ -87,7 +87,8 @@ public partial class GameEntities : Node3D
     /// </summary>
     public Vector3 WorldAnchorFor(uint address, Vector3 guestAnchor)
     {
-        if (NodeFor(address) is { } node)
+        // A node already lifted out of the tree (a level going down) has no world transform.
+        if (NodeFor(address) is { } node && node.IsInsideTree())
         {
             if (TryGuestPosition(address, out Vector3 guestPos))
             {

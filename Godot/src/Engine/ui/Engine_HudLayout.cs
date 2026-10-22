@@ -290,11 +290,20 @@ public sealed class Engine_HudLayout
     /// `PlayerHealth` (orb, heart, bar and cap) and `SpellCharging2` (the henchman's column) is
     /// `SpellCharging`, each laid out for the right of the shared screen and driven from hero two.
     /// </summary>
-    private static readonly (string One, string Two)[] PlayerTwoSources =
+    private static readonly (string One, string Two, string OnePrefix, string TwoPrefix)[] PlayerTwoSources =
     {
-        ("PlayerHealth", "CoopHealth"),
-        ("SpellCharging", "SpellCharging2"),
+        ("PlayerHealth", "CoopHealth", "group.PlayerHealth.", "group.CoopHealth."),
+        ("SpellCharging", "SpellCharging2", "group.SpellCharging.", "group.SpellCharging2."),
     };
+
+    // Answered per piece per frame by the player-two view. The prefixes are built once and the
+    // answers memoised: the ids are the layout's finite set, and a string per call here was
+    // measured at 1.7 MB per 30 s of play. Concurrent because the tests run in parallel.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> PlayerTwoIds =
+        new(System.StringComparer.Ordinal);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> PlayerOneIds =
+        new(System.StringComparer.Ordinal);
 
     /// <summary>
     /// The id of the piece that states player two's version of player one's piece
@@ -303,29 +312,45 @@ public sealed class Engine_HudLayout
     /// </summary>
     public static string? PlayerTwoSourceId(string id)
     {
-        foreach ((string one, string two) in PlayerTwoSources)
+        if (PlayerTwoIds.TryGetValue(id, out string? known))
         {
-            if (id.StartsWith($"group.{one}.", System.StringComparison.Ordinal))
+            return known;
+        }
+
+        string? answer = null;
+        foreach ((string one, string two, string onePrefix, _) in PlayerTwoSources)
+        {
+            if (id.StartsWith(onePrefix, System.StringComparison.Ordinal))
             {
-                return $"group.{two}.{id[$"group.{one}.".Length..].Replace(one, two, System.StringComparison.Ordinal)}";
+                answer = $"group.{two}.{id[onePrefix.Length..].Replace(one, two, System.StringComparison.Ordinal)}";
+                break;
             }
         }
 
-        return null;
+        PlayerTwoIds[id] = answer;
+        return answer;
     }
 
     /// <summary>The id of player one's piece that player two's source <paramref name="id"/> keys, or null.</summary>
     public static string? PlayerOneIdOf(string id)
     {
-        foreach ((string one, string two) in PlayerTwoSources)
+        if (PlayerOneIds.TryGetValue(id, out string? known))
         {
-            if (id.StartsWith($"group.{two}.", System.StringComparison.Ordinal))
+            return known;
+        }
+
+        string? answer = null;
+        foreach ((string one, string two, _, string twoPrefix) in PlayerTwoSources)
+        {
+            if (id.StartsWith(twoPrefix, System.StringComparison.Ordinal))
             {
-                return $"group.{one}.{id[$"group.{two}.".Length..].Replace(two, one, System.StringComparison.Ordinal)}";
+                answer = $"group.{one}.{id[twoPrefix.Length..].Replace(two, one, System.StringComparison.Ordinal)}";
+                break;
             }
         }
 
-        return null;
+        PlayerOneIds[id] = answer;
+        return answer;
     }
 
     /// <summary>The piece <see cref="PlayerTwoSourceId"/> names, or null.</summary>

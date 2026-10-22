@@ -2415,7 +2415,13 @@ extern "C" {
 /// 216 adds RefiiHostPostMouseWheel — the mouse wheel's notches in play, which switch the target of
 ///     a lock a mod states switches by the wheel (refii_mod_wheel_switches_target), one switch per
 ///     notch through the camera's own target switch.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 216; }
+/// 217 adds RefiiNetSyncConnect / State / Send / Receive / Close — Refii's mod sync stream: the
+///     guest TCP shim's reliable, ordered rexnet stream on port 0xEF12, over which a co-op joiner
+///     downloads the host's mod packages (Godot's ModSync; the shadowed xam_net.cpp owns the port).
+/// 218 adds RefiiHostGetSaveCardNames — the load fan's save FILE names (the `szFileName` vector
+///     at the front-end screen's +84, the join `LoadSave:N` commits by), so the host reads each
+///     card's own sidecar (refii_save.json) for its mods marker and the export copy.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 218; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -14514,6 +14520,68 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveCards(uint32_t* out_cursor, uint3
     return count;
 }
 
+/// The load fan's save FILE names, in card order — the `szFileName` vector at the front-end
+/// screen's +84/+88 (stride 4, each a string handle), the same container `LoadSave:N` indexes to
+/// commit a load. NUL-separated UTF-8 into `text`; returns the count, 0 when the front end is
+/// down or the list is not up. One name per card, empty where a handle does not read, so the
+/// index stays the guest's own. ABI 218.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveCardNames(char* text, uint32_t capacity) {
+    if (text != nullptr && capacity > 0) {
+        text[0] = '\0';
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
+    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x820A924Cu)) {
+        return 0u;
+    }
+
+    const uint32_t screen = read32(gui + 184u);
+    if (!plausible(screen)) {
+        return 0u;
+    }
+
+    const uint32_t files_begin = read32(screen + refii::guest::FrontEndMenuField(84u));
+    const uint32_t files_end = read32(screen + refii::guest::FrontEndMenuField(88u));
+    if (!plausible(files_begin) || files_end < files_begin ||
+        (files_end - files_begin) >= 0x10000u) {
+        return 0u;
+    }
+
+    const uint32_t count = (files_end - files_begin) / 4u;
+    uint32_t written = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const std::string name = ReadGuestString(base, files_begin + (i * 4u));
+        if (text == nullptr || capacity == 0u) {
+            continue;
+        }
+        const uint32_t room = capacity - written;
+        if (room < 2u) {
+            break;
+        }
+        const uint32_t take = static_cast<uint32_t>(std::min<std::size_t>(name.size(), room - 1u));
+        std::memcpy(text + written, name.data(), take);
+        written += take;
+        text[written++] = '\0';
+    }
+
+    return count;
+}
+
 /// The TEXTURE each element of a presentation is currently showing, by element ordinal.
 ///
 /// WHY THIS EXISTS: the load-game cards. Their portraits are not in the file — the artist
@@ -21264,6 +21332,67 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetCoopReceive(char* out, uint32_t capacity)
     (void)out;
     (void)capacity;
     return 0;
+#endif
+}
+
+// Refii's mod sync stream (ABI 217): the guest TCP shim's reliable, ordered rexnet stream on a
+// port of our own, between the two co-op machines. Bulk bytes — a joiner downloading the host's
+// mod packages — which the datagram channel above is the wrong shape for. The framing, the
+// chunk window and the hash check are Godot's (Engine/mods/Engine_ModSync.cs); this is the pipe.
+// The port and the stream live in the shadowed XAM net layer beside the co-op channel.
+#if defined(REXGLUE_ENABLE_REXNET)
+extern "C" int RefiiSyncChannelConnect(void);
+extern "C" int RefiiSyncChannelState(void);
+extern "C" int RefiiSyncChannelSend(const uint8_t* data, uint32_t len);
+extern "C" uint32_t RefiiSyncChannelReceive(uint8_t* out, uint32_t capacity);
+extern "C" void RefiiSyncChannelClose(void);
+#endif
+
+/// Opens the stream to the co-op peer. 1 when requested (or already up), 0 when RexNet is down or
+/// no peer has been seen. Poll RefiiNetSyncState for the outcome.
+REFII_HOST_ABI_EXPORT int RefiiNetSyncConnect(void) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    return RefiiSyncChannelConnect();
+#else
+    return 0;
+#endif
+}
+
+/// 0 idle, 1 connecting, 2 open, 3 closed by the peer, 4 connect failed, 5 inbox overflowed.
+REFII_HOST_ABI_EXPORT int RefiiNetSyncState(void) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    return RefiiSyncChannelState();
+#else
+    return 0;
+#endif
+}
+
+/// Writes `len` bytes to the open stream. 0 when none is open.
+REFII_HOST_ABI_EXPORT int RefiiNetSyncSend(const uint8_t* data, uint32_t len) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    return RefiiSyncChannelSend(data, len);
+#else
+    (void)data;
+    (void)len;
+    return 0;
+#endif
+}
+
+/// Takes up to `capacity` received bytes, in order. Returns the byte count.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetSyncReceive(uint8_t* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    return RefiiSyncChannelReceive(out, capacity);
+#else
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
+/// Closes the stream if one is up; the state goes back to idle.
+REFII_HOST_ABI_EXPORT void RefiiNetSyncClose(void) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    RefiiSyncChannelClose();
 #endif
 }
 }  // extern "C"

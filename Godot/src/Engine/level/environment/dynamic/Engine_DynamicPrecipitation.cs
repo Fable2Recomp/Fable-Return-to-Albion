@@ -31,6 +31,32 @@ public struct DynamicPrecipitationLook
     };
 }
 
+/// <summary>Shader and global parameter names held once: a string literal is a fresh finalizable StringName per call.</summary>
+internal static class PrecipitationNames
+{
+    public static readonly StringName box = "box";
+    public static readonly StringName box_far = "box_far";
+    public static readonly StringName depth_fade = "depth_fade";
+    public static readonly StringName fall_speed = "fall_speed";
+    public static readonly StringName fog_tint = "fog_tint";
+    public static readonly StringName lightning_flash = "lightning_flash";
+    public static readonly StringName max_pixels = "max_pixels";
+    public static readonly StringName min_pixels = "min_pixels";
+    public static readonly StringName motion_time = "motion_time";
+    public static readonly StringName near_fraction = "near_fraction";
+    public static readonly StringName particle_colour = "particle_colour";
+    public static readonly StringName particle_size = "particle_size";
+    public static readonly StringName shelter_box = "shelter_box";
+    public static readonly StringName shelter_box_second = "shelter_box_second";
+    public static readonly StringName shelter_on = "shelter_on";
+    public static readonly StringName shelter_on_second = "shelter_on_second";
+    public static readonly StringName size_jitter = "size_jitter";
+    public static readonly StringName speed_jitter = "speed_jitter";
+    public static readonly StringName sway = "sway";
+    public static readonly StringName wind_offset = "wind_offset";
+    public static readonly StringName wind_scale = "wind_scale";
+}
+
 public partial class Engine_DynamicPrecipitation : Node3D
 {
     public const string NodeName = "DynamicPrecipitation";
@@ -184,40 +210,40 @@ public partial class Engine_DynamicPrecipitation : Node3D
     {
         if (_rain?.MaterialOverride is ShaderMaterial rain)
         {
-            rain.SetShaderParameter("particle_size", new Vector2(_look.RainWidth, _look.RainLength));
-            rain.SetShaderParameter("min_pixels", new Vector2(1f, 6f));
-            rain.SetShaderParameter("max_pixels", new Vector2(2f, 48f));
-            rain.SetShaderParameter("particle_colour",
+            rain.SetShaderParameter(PrecipitationNames.particle_size, new Vector2(_look.RainWidth, _look.RainLength));
+            rain.SetShaderParameter(PrecipitationNames.min_pixels, new Vector2(1f, 6f));
+            rain.SetShaderParameter(PrecipitationNames.max_pixels, new Vector2(2f, 48f));
+            rain.SetShaderParameter(PrecipitationNames.particle_colour,
                 new Color(0.78f, 0.82f, 0.90f, Math.Clamp(_look.RainOpacity, 0f, 1f)));
-            rain.SetShaderParameter("fall_speed", MathF.Max(_look.RainSpeed, 0.1f));
-            rain.SetShaderParameter("sway", 0f);
-            rain.SetShaderParameter("wind_scale", 1f);
-            rain.SetShaderParameter("size_jitter", 0.6f);
-            rain.SetShaderParameter("speed_jitter", 0.3f);
-            rain.SetShaderParameter("box", new Vector3(12f, 10f, 12f));
-            rain.SetShaderParameter("box_far", new Vector3(32f, 16f, 32f));
-            rain.SetShaderParameter("near_fraction", 0.45f);
-            rain.SetShaderParameter("depth_fade", 0.05f);
-            rain.SetShaderParameter("fog_tint", new Color(0.70f, 0.73f, 0.80f));
+            rain.SetShaderParameter(PrecipitationNames.fall_speed, MathF.Max(_look.RainSpeed, 0.1f));
+            rain.SetShaderParameter(PrecipitationNames.sway, 0f);
+            rain.SetShaderParameter(PrecipitationNames.wind_scale, 1f);
+            rain.SetShaderParameter(PrecipitationNames.size_jitter, 0.6f);
+            rain.SetShaderParameter(PrecipitationNames.speed_jitter, 0.3f);
+            rain.SetShaderParameter(PrecipitationNames.box, new Vector3(12f, 10f, 12f));
+            rain.SetShaderParameter(PrecipitationNames.box_far, new Vector3(32f, 16f, 32f));
+            rain.SetShaderParameter(PrecipitationNames.near_fraction, 0.45f);
+            rain.SetShaderParameter(PrecipitationNames.depth_fade, 0.05f);
+            rain.SetShaderParameter(PrecipitationNames.fog_tint, new Color(0.70f, 0.73f, 0.80f));
         }
 
         if (_snow?.MaterialOverride is ShaderMaterial snow)
         {
-            snow.SetShaderParameter("particle_size", new Vector2(_look.SnowSize, _look.SnowSize));
-            snow.SetShaderParameter("min_pixels", new Vector2(0.65f, 0.65f));
-            snow.SetShaderParameter("max_pixels", new Vector2(5f, 5f));
-            snow.SetShaderParameter("particle_colour",
+            snow.SetShaderParameter(PrecipitationNames.particle_size, new Vector2(_look.SnowSize, _look.SnowSize));
+            snow.SetShaderParameter(PrecipitationNames.min_pixels, new Vector2(0.65f, 0.65f));
+            snow.SetShaderParameter(PrecipitationNames.max_pixels, new Vector2(5f, 5f));
+            snow.SetShaderParameter(PrecipitationNames.particle_colour,
                 new Color(1f, 1f, 1f, Math.Clamp(_look.SnowOpacity, 0f, 1f)));
-            snow.SetShaderParameter("fall_speed", MathF.Max(_look.SnowSpeed, 0.05f));
-            snow.SetShaderParameter("sway", MathF.Max(_look.SnowSway, 0f));
-            snow.SetShaderParameter("wind_scale", 0.8f);
-            snow.SetShaderParameter("size_jitter", 0.8f);
-            snow.SetShaderParameter("speed_jitter", 0.6f);
-            snow.SetShaderParameter("box", new Vector3(16f, 12f, 16f));
-            snow.SetShaderParameter("box_far", new Vector3(42f, 26f, 42f));
-            snow.SetShaderParameter("near_fraction", 0.65f);
-            snow.SetShaderParameter("depth_fade", 0.035f);
-            snow.SetShaderParameter("fog_tint", new Color(0.74f, 0.76f, 0.80f));
+            snow.SetShaderParameter(PrecipitationNames.fall_speed, MathF.Max(_look.SnowSpeed, 0.05f));
+            snow.SetShaderParameter(PrecipitationNames.sway, MathF.Max(_look.SnowSway, 0f));
+            snow.SetShaderParameter(PrecipitationNames.wind_scale, 0.8f);
+            snow.SetShaderParameter(PrecipitationNames.size_jitter, 0.8f);
+            snow.SetShaderParameter(PrecipitationNames.speed_jitter, 0.6f);
+            snow.SetShaderParameter(PrecipitationNames.box, new Vector3(16f, 12f, 16f));
+            snow.SetShaderParameter(PrecipitationNames.box_far, new Vector3(42f, 26f, 42f));
+            snow.SetShaderParameter(PrecipitationNames.near_fraction, 0.65f);
+            snow.SetShaderParameter(PrecipitationNames.depth_fade, 0.035f);
+            snow.SetShaderParameter(PrecipitationNames.fog_tint, new Color(0.74f, 0.76f, 0.80f));
         }
     }
 
@@ -231,14 +257,15 @@ public partial class Engine_DynamicPrecipitation : Node3D
         }
 
         _shelterVersion = Engine_WeatherShelter.Version;
-        foreach (MeshInstance3D? layer in new[] { _rain, _snow })
+        for (int l = 0; l < 2; l++)
         {
+            MeshInstance3D? layer = l == 0 ? _rain : _snow;
             if (layer?.MaterialOverride is ShaderMaterial material)
             {
-                material.SetShaderParameter("shelter_on", Engine_WeatherShelter.HasBox ? 1f : 0f);
-                material.SetShaderParameter("shelter_box", Engine_WeatherShelter.ToBox);
-                material.SetShaderParameter("shelter_on_second", Engine_WeatherShelter.HasBoxTwo ? 1f : 0f);
-                material.SetShaderParameter("shelter_box_second", Engine_WeatherShelter.ToBoxTwo);
+                material.SetShaderParameter(PrecipitationNames.shelter_on, Engine_WeatherShelter.HasBox ? 1f : 0f);
+                material.SetShaderParameter(PrecipitationNames.shelter_box, Engine_WeatherShelter.ToBox);
+                material.SetShaderParameter(PrecipitationNames.shelter_on_second, Engine_WeatherShelter.HasBoxTwo ? 1f : 0f);
+                material.SetShaderParameter(PrecipitationNames.shelter_box_second, Engine_WeatherShelter.ToBoxTwo);
             }
         }
     }
@@ -252,14 +279,15 @@ public partial class Engine_DynamicPrecipitation : Node3D
         double gust = 1.0 + 0.35 * Math.Sin(_motionTime * 0.43) + 0.15 * Math.Sin(_motionTime * 1.13);
         _snowWindX += _wind.X * delta * gust;
         _snowWindZ += _wind.Z * delta * gust;
-        foreach (MeshInstance3D? layer in new[] { _rain, _snow })
+        for (int l = 0; l < 2; l++)
         {
+            MeshInstance3D? layer = l == 0 ? _rain : _snow;
             if (layer?.MaterialOverride is not ShaderMaterial material) continue;
-            material.SetShaderParameter("motion_time", (float)_motionTime);
-            material.SetShaderParameter("wind_offset", layer == _snow
+            material.SetShaderParameter(PrecipitationNames.motion_time, (float)_motionTime);
+            material.SetShaderParameter(PrecipitationNames.wind_offset, layer == _snow
                 ? new Vector2((float)_snowWindX, (float)_snowWindZ)
                 : new Vector2((float)_windX, (float)_windZ));
-            material.SetShaderParameter("lightning_flash", float.IsFinite(lightning) ? Math.Clamp(lightning, 0f, 2f) : 0f);
+            material.SetShaderParameter(PrecipitationNames.lightning_flash, float.IsFinite(lightning) ? Math.Clamp(lightning, 0f, 2f) : 0f);
         }
     }
 

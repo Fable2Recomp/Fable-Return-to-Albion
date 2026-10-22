@@ -17,10 +17,12 @@ namespace Refii.Ui;
 ///
 /// Two tiers of slide:
 /// <list type="bullet">
-/// <item>The PAGE's Slide1 parks all six at <c>position.y -598</c> with description and tint at
-/// opacity 0 — the closed state, 764 ms.</item>
-/// <item>The PAGE's Slide2 states the fan outright — every card's position, yaw and roll,
-/// description opacity 100, tint 50 — over 508 ms. That is <see cref="Fan"/>.</item>
+/// <item>The PAGE's Slide1 is the OPEN: its commands park all six at <c>position.y -598</c>
+/// and its tracks carry them into the fan, one card after another, over 764 ms. The guest
+/// holds the page on it while the carousel is up.</item>
+/// <item>The PAGE's Slide2 is the CLOSE: its commands state the fan and its tracks park the
+/// cards again over 508 ms. Where the tracks of the one end and the other start is
+/// <see cref="Fan"/>, inside the cards' authored parent group.</item>
 /// <item>EACH CARD's Slide1/Slide2 move its inner <c>Group</c>: Slide1 parks it at the origin
 /// and its tracks raise it 118..199 units over 250 ticks; Slide2 parks it raised and lowers it
 /// back. Durations 250-257 ms.</item>
@@ -83,10 +85,14 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	}
 
 	/// <summary>
-	/// The open fan — the <c>loadgame</c> component's Slide2, verbatim. Card 1 is not part of the
-	/// arc: it sits further out at x -335, y 0 with NO yaw, while cards 2..6 carry a constant
-	/// -0.3491 rad. Rolls are symmetric across all six. Only card 1's slide states a scale;
-	/// the rest inherit the same 0.65 — see <see cref="CardScale"/>.
+	/// The open fan, in the space of the cards' authored parent <c>loadgame.Group</c> — the
+	/// page's Slide1 is the OPEN tween (its commands park every card at y -598 and its tracks
+	/// end here, 362..764 ms), Slide2 the close (starts here, parks them). Read from the file's
+	/// tracks. Card 1 is not part of the arc: it sits further out at x -335, y 0 with NO yaw,
+	/// while cards 2..6 carry a constant -0.3491 rad. Rolls are symmetric across all six. Only
+	/// card 1's slide states a scale; the rest inherit the same 0.65 — see <see cref="CardScale"/>.
+	/// The group itself is authored at (44, -3, 0) under the page and no slide moves it; that
+	/// offset is carried by <see cref="ArcTransform"/>, not folded into this table.
 	/// </summary>
 	public static readonly Pose[] Fan =
 	{
@@ -95,8 +101,16 @@ public partial class Engine_FrontEndSaveCards : Node3D
 		new(-100f, 55f, -40f, -0.3491f, 0.0698f),
 		new(0f, 52f, -60f, -0.3491f, -0.0698f),
 		new(100f, 38f, -80f, -0.3491f, -0.2094f),
-		new(200f, 0f, -100f, -0.3491f, -0.4538f),
+		new(200f, -5f, -100f, -0.3491f, -0.4538f),
 	};
+
+	/// <summary>
+	/// The authored transform of the cards' parent group inside the page (<c>loadgame.Group</c>,
+	/// (44, -3, 0)), composed up to the page. The six card components are cloned out of that
+	/// group, so without it the whole arc stands where the page's origin is — 44 units left of
+	/// where the artist put it. Identity when the page carried no such parent.
+	/// </summary>
+	public Transform3D ArcTransform { get; set; } = Transform3D.Identity;
 
 	/// <summary>Every card's authored scale; stated on card 1's slide and inherited by the rest.</summary>
 	public const float CardScale = 0.65f;
@@ -210,6 +224,23 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	/// <summary>The card slot a save is drawn on, 0-based into <see cref="Fan"/>.</summary>
 	private int SlotOf(int save) => BaseSlot - 1 + save;
 
+	/// <summary>
+	/// How far the arc slides along x so the <paramref name="count"/> cards drawn from slot
+	/// <paramref name="first"/> are centred where all six are: the midpoint of the shown cards'
+	/// authored x brought to the midpoint of the full fan's. Zero for the full fan and for none.
+	/// </summary>
+	public static float ArcCentreOffset(int first, int count)
+	{
+		if (count <= 0 || first < 0 || first + count > MaxCards)
+		{
+			return 0f;
+		}
+
+		float full = (Fan[0].X + Fan[MaxCards - 1].X) * 0.5f;
+		float shown = (Fan[first].X + Fan[first + count - 1].X) * 0.5f;
+		return full - shown;
+	}
+
 	/// <summary>Which card is lifted. Always a real card while <see cref="Saves"/> is non-empty.</summary>
 	public int Cursor { get; private set; }
 
@@ -218,6 +249,9 @@ public partial class Engine_FrontEndSaveCards : Node3D
 
 	private readonly Node3D?[] _cards = new Node3D?[MaxCards];
 	private readonly Node3D?[] _groups = new Node3D?[MaxCards];
+
+	/// <summary>The cards' parent, standing at <see cref="ArcTransform"/> while the fan is drawn.</summary>
+	private Node3D? _arc;
 
 	/// <summary>Where each card's inner group is now, so a cursor move tweens from where it is.</summary>
 	private readonly Vector3[] _groupFrom = new Vector3[MaxCards];
@@ -273,6 +307,10 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			panel.CardTemplates[i] = Clone(page, CardName(i), keepTransform: false);
 		}
 
+		// The cards' PARENT keeps its transform: the slides state each card inside
+		// `loadgame.Group`, and that group is authored off the page's origin.
+		panel.ArcTransform = AuthoredArc(page);
+
 		// The description and the tint keep theirs: no slide touches either element's transform,
 		// only its opacity, so the authored transform IS their layout.
 		panel.DescriptionTemplate = Clone(page, DescriptionName, keepTransform: true);
@@ -293,6 +331,26 @@ public partial class Engine_FrontEndSaveCards : Node3D
 		}
 
 		return panel;
+	}
+
+	/// <summary>
+	/// The transform of card 1's authored parent chain, composed up to (not including) the page.
+	/// Identity when the card sits directly under the page or was not found.
+	/// </summary>
+	private static Transform3D AuthoredArc(Node3D? page)
+	{
+		Transform3D arc = Transform3D.Identity;
+		if (page is null || Engine_UiTheme.FindByName(page, CardName(0)) is not Node3D card)
+		{
+			return arc;
+		}
+
+		for (Node? node = card.GetParent(); node is Node3D parent && !ReferenceEquals(node, page); node = node.GetParent())
+		{
+			arc = parent.Transform * arc;
+		}
+
+		return arc;
 	}
 
 	private static Node3D? Clone(Node3D? page, string name, bool keepTransform)
@@ -327,6 +385,10 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			_background = BackgroundTemplate;
 		}
 
+		// The cards stand in their authored parent group, as the file lays them out.
+		_arc = new Node3D { Name = CardGroupName, Transform = ArcTransform };
+		AddChild(_arc);
+
 		bool shipped = true;
 		for (int i = 0; i < MaxCards; i++)
 		{
@@ -336,7 +398,7 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			// The fan pose goes on the CARD; the raise goes on the group inside it. Applied here
 			// rather than per frame because the fan never moves — only the selection does.
 			card.Transform = Fan[i].ToTransform(CardScale);
-			AddChild(card);
+			_arc.AddChild(card);
 			_cards[i] = card;
 
 			_groups[i] = Engine_UiTheme.FindByName(card, CardGroupName) as Node3D;
@@ -671,8 +733,20 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	{
 		bool switched = _laidOutPc != PcMode;
 		_laidOutPc = PcMode;
+
 		int first = BaseSlot - 1;
 		int count = Mathf.Max(1, _saves.Count);
+
+		// The fan stands where the file puts its group, slid so the cards actually shown sit
+		// where the full six would: the shipped game leaves a short fan hanging off one side
+		// (five saves draw slots 1..5, so card 1 at x -335 stands alone on the left). The PC row
+		// is laid out about the page's own origin, so the authored offset applies to the fan alone.
+		if (_arc is not null)
+		{
+			_arc.Transform = _laidOutPc
+				? Transform3D.Identity
+				: ArcTransform.TranslatedLocal(new Vector3(ArcCentreOffset(first, _saves.Count), 0f, 0f));
+		}
 		float width = CardWidth();
 		float scale = width <= 0f
 			? CardScale

@@ -16,6 +16,17 @@ public partial class Engine_UiRoundedPanel : MeshInstance3D
 
 	private readonly ShaderMaterial _material = new() { Shader = PanelShader };
 
+	// Fitted every frame: one StringName per uniform, never a literal (a literal is a fresh
+	// StringName per call, and a weak handle the next GC frees inside its pause).
+	private static readonly StringName FillName = "fill";
+	private static readonly StringName BorderName = "border";
+	private static readonly StringName BorderWidthName = "border_width";
+	private static readonly StringName RadiusName = "radius";
+	private static readonly StringName SizeName = "size";
+	private static readonly StringName OpacityName = "opacity";
+
+	private float _opacity = float.NaN;
+
 	private readonly QuadMesh _quad = new();
 
 	public Engine_UiRoundedPanel()
@@ -32,9 +43,9 @@ public partial class Engine_UiRoundedPanel : MeshInstance3D
 	/// </summary>
 	public void Style(Color fill, Color border, float borderWidth)
 	{
-		_material.SetShaderParameter("fill", fill);
-		_material.SetShaderParameter("border", border);
-		_material.SetShaderParameter("border_width", borderWidth);
+		_material.SetShaderParameter(FillName, fill);
+		_material.SetShaderParameter(BorderName, border);
+		_material.SetShaderParameter(BorderWidthName, borderWidth);
 	}
 
 	/// <summary>The corner radius the HUD's notices wear, in HUD canvas units.</summary>
@@ -45,7 +56,7 @@ public partial class Engine_UiRoundedPanel : MeshInstance3D
 	/// only right for a panel that lives in HUD canvas units; one mounted in another space (the
 	/// achievement toast works in display pixels) states its own so the corners match on screen.
 	/// </summary>
-	public void Corner(float radius) => _material.SetShaderParameter("radius", radius);
+	public void Corner(float radius) => _material.SetShaderParameter(RadiusName, radius);
 
 	/// <summary>Fits the panel to a rectangle in the HUD's canvas space at depth <paramref name="z"/>.</summary>
 	public void Fit(Rect2 rect, float z, float opacity = 1f)
@@ -54,10 +65,15 @@ public partial class Engine_UiRoundedPanel : MeshInstance3D
 		if (_quad.Size != size)
 		{
 			_quad.Size = size;
-			_material.SetShaderParameter("size", size);
+			_material.SetShaderParameter(SizeName, size);
 		}
 
-		_material.SetShaderParameter("opacity", opacity);
+		if (_opacity != opacity)
+		{
+			_opacity = opacity;
+			_material.SetShaderParameter(OpacityName, opacity);
+		}
+
 		Position = new Vector3(rect.Position.X + rect.Size.X * 0.5f, rect.Position.Y + rect.Size.Y * 0.5f, z);
 		Visible = true;
 	}

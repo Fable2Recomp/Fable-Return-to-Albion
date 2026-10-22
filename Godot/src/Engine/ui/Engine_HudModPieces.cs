@@ -286,6 +286,15 @@ public sealed partial class Engine_HudModPieces : Node3D
 		public int Shown = -2;
 		public float ChipFraction = -1f;
 		public float ChipHeld;
+
+		/// <summary>The piece's followed element names, split once.</summary>
+		public string[]? FollowNames;
+
+		/// <summary>The followed root the nodes below were resolved under.</summary>
+		public Node3D? FollowRoot;
+
+		/// <summary>The resolved element node per followed name; null where the root carries none.</summary>
+		public Node3D?[]? FollowNodes;
 	}
 
 	private readonly List<Built> _built = new();
@@ -436,7 +445,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 			{
 				// Beneath the followed element's drawn rect (canvas space, +Y up): its bottom-left
 				// corner, then the authored offset (+Y down).
-				if (FollowedRect(piece) is not { } followed)
+				if (FollowedRect(built) is not { } followed)
 				{
 					Hide(built);
 					continue;
@@ -579,37 +588,56 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 	private static void Hide(Built built)
 	{
-		foreach (Node3D? node in new Node3D?[] { built.Back, built.Chip, built.Fill, built.Picture, built.Label })
-		{
-			if (node is not null)
-			{
-				node.Visible = false;
-			}
-		}
+		// Unrolled: this runs per hidden piece per frame, and an array per call is garbage.
+		if (built.Back is { } back) back.Visible = false;
+		if (built.Chip is { } chip) chip.Visible = false;
+		if (built.Fill is { } fill) fill.Visible = false;
+		if (built.Picture is { } picture) picture.Visible = false;
+		if (built.Label is { } label) label.Visible = false;
 	}
 
 	/// <summary>
 	/// The followed element's drawn rect in this node's space — Position is its BOTTOM-left
 	/// (canvas +Y is up) — or null when the piece is not built or the element is not drawn.
 	/// </summary>
-	private Rect2? FollowedRect(Piece piece)
+	private Rect2? FollowedRect(Built built)
 	{
+		Piece piece = built.Piece;
 		if (FindPiece?.Invoke(piece.Follow) is not { } root || !root.IsVisibleInTree())
 		{
 			return null;
 		}
 
-		foreach (string name in piece.FollowElement.Split(',', System.StringSplitOptions.RemoveEmptyEntries |
-			System.StringSplitOptions.TrimEntries))
+		// The followed root is a clone the HUD builds once; the element nodes under it are
+		// resolved once per root and held, not searched for per frame. A different root (the
+		// HUD rebuilt) drops the lot; a held node that was freed or left the root is searched
+		// for again; a name the root does not carry is searched for each frame, as before.
+		string[] names = built.FollowNames ??= piece.FollowElement.Split(',',
+			System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries);
+		if (!ReferenceEquals(built.FollowRoot, root))
 		{
-			if (root.FindChild(name, recursive: true, owned: false) is Node3D element &&
-				element.IsVisibleInTree() && DrawnRect(element) is { } rect)
+			built.FollowRoot = root;
+			built.FollowNodes = new Node3D?[names.Length];
+		}
+
+		Node3D?[] nodes = built.FollowNodes!;
+		for (int i = 0; i < names.Length; ++i)
+		{
+			Node3D? element = nodes[i];
+			if (element is null || !GodotObject.IsInstanceValid(element) || !element.IsInsideTree() ||
+				!root.IsAncestorOf(element))
+			{
+				element = root.FindChild(names[i], recursive: true, owned: false) as Node3D;
+				nodes[i] = element;
+			}
+
+			if (element is not null && element.IsVisibleInTree() && DrawnRect(element) is { } rect)
 			{
 				return rect;
 			}
 		}
 
-		return piece.FollowElement.Length == 0 ? DrawnRect(root) : null;
+		return names.Length == 0 ? DrawnRect(root) : null;
 	}
 
 	/// <summary>The union of every drawn mesh under <paramref name="node"/>, in this node's space.</summary>
@@ -618,16 +646,19 @@ public sealed partial class Engine_HudModPieces : Node3D
 		Rect2? bounds = null;
 		if (node is MeshInstance3D mesh && mesh.Mesh is not null && mesh.IsVisibleInTree())
 		{
-			Aabb box = mesh.GlobalTransform * mesh.Mesh.GetAabb();
+			Aabb box = mesh.GlobalTransform * mesh.GetAabb();
 			Vector3 a = ToLocal(box.Position);
 			Vector3 b = ToLocal(box.End);
 			bounds = new Rect2(Mathf.Min(a.X, b.X), Mathf.Min(a.Y, b.Y),
 				Mathf.Abs(b.X - a.X), Mathf.Abs(b.Y - a.Y));
 		}
 
-		foreach (Node child in node.GetChildren())
+		// By index: `GetChildren()` is a Godot Array (and a weak handle) per node per call,
+		// and this walks every followed subtree every frame — it was the largest single
+		// handle source in the HUD.
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
 		{
-			if (DrawnRect(child) is { } inner)
+			if (DrawnRect(node.GetChild(i)) is { } inner)
 			{
 				bounds = bounds is { } known ? known.Merge(inner) : inner;
 			}

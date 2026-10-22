@@ -101,6 +101,21 @@ constexpr std::size_t kRefiiCoopInboxMax = 32;
 std::mutex g_refii_coop_mutex;
 std::deque<std::string> g_refii_coop_inbox;
 std::atomic<uint32_t> g_refii_coop_peer_vip{0};
+
+// Refii's mod sync stream: the guest TCP shim's reliable, ordered stream
+// (rexnet streams, §18) on a port of our own, which a co-op joiner downloads
+// the host's mod packages over (Godot's ModSync). Accepted and connected here,
+// before any guest listener or pending guest connect is consulted, so the
+// title's sockets never see it. One stream at a time; the C entry points at
+// the foot of this file drive it.
+constexpr uint16_t kRefiiSyncPort = 0xEF12;
+constexpr std::size_t kRefiiSyncInboxMax = 8u * 1024u * 1024u;
+std::mutex g_refii_sync_mutex;
+uint64_t g_refii_sync_stream = 0;
+// 0 idle, 1 connecting, 2 open, 3 closed by the peer, 4 connect failed,
+// 5 inbox overflowed (the host side stopped draining).
+int g_refii_sync_state = 0;
+std::string g_refii_sync_inbox;
 namespace kernel {
 namespace xam {
 using namespace rex::system;
@@ -366,6 +381,21 @@ void RexNetStartup() {
         // Accept: find the listening socket for this guest port.
         [](uint64_t stream_id, uint32_t peer_vip, uint16_t local_port,
            uint16_t remote_port) -> bool {
+          if (local_port == kRefiiSyncPort) {
+            // Ours: the peer's Refii fetching mods. Never offered to a guest socket.
+            std::lock_guard lock(g_refii_sync_mutex);
+            if (g_refii_sync_stream != 0 || g_refii_sync_state == 1) {
+              REXKRNL_INFO("Refii mod sync: a second stream from 10.77.{}.{} refused, one is up",
+                           (peer_vip >> 8) & 0xFF, peer_vip & 0xFF);
+              return false;
+            }
+            g_refii_sync_stream = stream_id;
+            g_refii_sync_state = 2;
+            g_refii_sync_inbox.clear();
+            REXKRNL_INFO("Refii mod sync: stream {} accepted from 10.77.{}.{}", stream_id,
+                         (peer_vip >> 8) & 0xFF, peer_vip & 0xFF);
+            return true;
+          }
           auto listener = XSocket::FindStreamListener(local_port);
           if (!listener) {
             return false;
@@ -376,16 +406,53 @@ void RexNetStartup() {
           return true;
         },
         [](uint64_t stream_id, const uint8_t* data, uint32_t len) {
+          {
+            std::lock_guard lock(g_refii_sync_mutex);
+            if (stream_id != 0 && stream_id == g_refii_sync_stream) {
+              if (g_refii_sync_inbox.size() + len > kRefiiSyncInboxMax) {
+                g_refii_sync_state = 5;
+              } else {
+                g_refii_sync_inbox.append(reinterpret_cast<const char*>(data), len);
+              }
+              return;
+            }
+          }
           if (auto socket = XSocket::FindStream(stream_id)) {
             socket->QueueStreamData(data, len);
           }
         },
         [](uint64_t stream_id) {
+          {
+            std::lock_guard lock(g_refii_sync_mutex);
+            if (stream_id != 0 && stream_id == g_refii_sync_stream) {
+              g_refii_sync_state = 3;
+              REXKRNL_INFO("Refii mod sync: stream {} closed by the peer", stream_id);
+              return;
+            }
+          }
           if (auto socket = XSocket::FindStream(stream_id)) {
             socket->OnStreamClosed();
           }
         },
         [](uint32_t peer_vip, uint16_t dst_port, uint64_t stream_id) {
+          if (dst_port == kRefiiSyncPort) {
+            // Our own connect completing (or failing: stream_id 0).
+            std::lock_guard lock(g_refii_sync_mutex);
+            if (g_refii_sync_state != 1) {
+              // Closed from our side while connecting: do not strand it on the peer.
+              if (stream_id) {
+                if (auto* rexnet = net::RexNet::shared()) {
+                  rexnet->StreamClose(stream_id);
+                }
+              }
+              return;
+            }
+            g_refii_sync_stream = stream_id;
+            g_refii_sync_state = stream_id ? 2 : 4;
+            REXKRNL_INFO("Refii mod sync: connect to 10.77.{}.{} {}", (peer_vip >> 8) & 0xFF,
+                         peer_vip & 0xFF, stream_id ? "established" : "failed");
+            return;
+          }
           // Hand the finished connect to the socket that asked for it.
           auto socket = XSocket::ClaimPendingConnect(peer_vip, dst_port);
           if (!socket) {
@@ -2131,6 +2198,92 @@ uint32_t RefiiCoopChannelTake(char* out, uint32_t capacity) {
   std::memcpy(out, message.data(), written);
   out[written] = '\0';
   return written;
+}
+
+// --- Refii mod sync stream, C entry points ------------------------------
+
+uint16_t RefiiSyncChannelPort(void) { return rex::kRefiiSyncPort; }
+
+/// Opens the stream to the co-op peer (whoever last sent us game traffic).
+/// Idempotent while connecting or open. 0 when RexNet is down or no peer has
+/// been seen; the outcome is read back through RefiiSyncChannelState.
+int RefiiSyncChannelConnect(void) {
+  auto* rexnet = rex::net::RexNet::shared();
+  const uint32_t peer = rex::g_refii_coop_peer_vip.load(std::memory_order_relaxed);
+  if (rexnet == nullptr || peer == 0) {
+    return 0;
+  }
+  {
+    std::lock_guard<std::mutex> lock(rex::g_refii_sync_mutex);
+    if (rex::g_refii_sync_state == 1 || rex::g_refii_sync_state == 2) {
+      return 1;
+    }
+    rex::g_refii_sync_stream = 0;
+    rex::g_refii_sync_state = 1;
+    rex::g_refii_sync_inbox.clear();
+  }
+  rexnet->StreamConnect(peer, rex::kRefiiSyncPort, rex::kRefiiSyncPort);
+  return 1;
+}
+
+/// 0 idle, 1 connecting, 2 open, 3 closed by the peer, 4 connect failed, 5 inbox overflowed.
+int RefiiSyncChannelState(void) {
+  std::lock_guard<std::mutex> lock(rex::g_refii_sync_mutex);
+  return rex::g_refii_sync_state;
+}
+
+/// Writes to the open stream. 0 when none is open.
+int RefiiSyncChannelSend(const uint8_t* data, uint32_t len) {
+  if (data == nullptr || len == 0) {
+    return 0;
+  }
+  uint64_t stream = 0;
+  {
+    std::lock_guard<std::mutex> lock(rex::g_refii_sync_mutex);
+    if (rex::g_refii_sync_state != 2 || rex::g_refii_sync_stream == 0) {
+      return 0;
+    }
+    stream = rex::g_refii_sync_stream;
+  }
+  auto* rexnet = rex::net::RexNet::shared();
+  if (rexnet == nullptr) {
+    return 0;
+  }
+  rexnet->StreamSend(stream, data, len);
+  return 1;
+}
+
+/// Takes up to `capacity` received bytes, in order. Returns the byte count.
+uint32_t RefiiSyncChannelReceive(uint8_t* out, uint32_t capacity) {
+  if (out == nullptr || capacity == 0) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(rex::g_refii_sync_mutex);
+  const uint32_t taken =
+      static_cast<uint32_t>(std::min<std::size_t>(rex::g_refii_sync_inbox.size(), capacity));
+  if (taken == 0) {
+    return 0;
+  }
+  std::memcpy(out, rex::g_refii_sync_inbox.data(), taken);
+  rex::g_refii_sync_inbox.erase(0, taken);
+  return taken;
+}
+
+/// Closes the stream if one is up and forgets it; the state goes back to idle.
+void RefiiSyncChannelClose(void) {
+  uint64_t stream = 0;
+  {
+    std::lock_guard<std::mutex> lock(rex::g_refii_sync_mutex);
+    stream = rex::g_refii_sync_stream;
+    rex::g_refii_sync_stream = 0;
+    rex::g_refii_sync_state = 0;
+    rex::g_refii_sync_inbox.clear();
+  }
+  if (stream != 0) {
+    if (auto* rexnet = rex::net::RexNet::shared()) {
+      rexnet->StreamClose(stream);
+    }
+  }
 }
 
 }  // extern "C"

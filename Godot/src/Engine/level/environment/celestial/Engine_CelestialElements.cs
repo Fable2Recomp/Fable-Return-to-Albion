@@ -123,7 +123,7 @@ public static class Engine_CelestialElements
         {
             return null;
         }
-        int[] index = { 65, 66, 67, 68, 69, 70, 92, 94 };
+        int[] index = LiveElementIndex;
         for (int i = 0; i < index.Length; i++)
         {
             _liveElement[i] = Refii.Models.Engine_ClassicTheme.Param(index[i]);
@@ -230,6 +230,7 @@ public static class Engine_CelestialElements
     }
 
     public const string InitializedMeta = "celestial_elements_initialized";
+    private static readonly StringName InitializedMetaName = InitializedMeta;
 
     public static void EnsureElements(
         Node3D container,
@@ -237,12 +238,12 @@ public static class Engine_CelestialElements
         Func<string, byte[]?> read,
         int moonPhase = DefaultMoonPhase)
     {
-        if (container.HasMeta(InitializedMeta))
+        if (container.HasMeta(InitializedMetaName))
         {
             return;
         }
 
-        container.SetMeta(InitializedMeta, true);
+        container.SetMeta(InitializedMetaName, true);
 
         Shader? mixShader = GD.Load<Shader>(MixShaderPath);
         Shader? additiveShader = GD.Load<Shader>(AdditiveShaderPath);
@@ -368,7 +369,7 @@ public static class Engine_CelestialElements
         Stated(ref sun, ref moon, ref sunTint);
         bool sunActive = frame.SkyParams[0] >= IntensityGate;
 
-        if (OS.GetEnvironment("REFII_CELESTIAL_DEBUG").Length != 0)
+        if (DebugEnv)
         {
             GD.Print(
                 $"[celestial-dbg] sun=({sun.X:0.00},{sun.Y:0.00},{sun.Z:0.00}) " +
@@ -382,8 +383,10 @@ public static class Engine_CelestialElements
 
         Shader? overlay = null;
 
-        foreach (Node child in container.GetChildren())
+        // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
+        for (int i = 0, count = container.GetChildCount(); i < count; i++)
         {
+            Node child = container.GetChild(i);
             if (child is not MeshInstance3D mesh ||
                 mesh.MaterialOverride is not ShaderMaterial material)
             {
@@ -437,7 +440,7 @@ public static class Engine_CelestialElements
                         sunTint[2] * element[10] * element[7], 1f);
                     material.SetShaderParameter(Param_element_colour, discColour);
                     ClassicColour(material, discColour);
-                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotSunDisc, "ps_g_SunDiscTexture");
+                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotSunDisc, PsSunDiscTextureName);
                     mesh.Visible = sunActive && element[7] >= IntensityGate;
                     break;
                 case "SunGlare":
@@ -476,7 +479,7 @@ public static class Engine_CelestialElements
                         element[4]);
                     material.SetShaderParameter(Param_element_colour, moonColour);
                     ClassicColour(material, moonColour);
-                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotMoon, "ps_g_MoonTexture");
+                    FollowSlot(material, Refii.Models.Engine_ClassicTheme.SlotMoon, PsMoonTextureName);
                     mesh.Visible = element[0] >= IntensityGate;
                     break;
                 case "MoonGlare":
@@ -526,7 +529,7 @@ public static class Engine_CelestialElements
         // already on its shader.
         if (Engine_ClassicSkyElements.Active)
         {
-            foreach (NodePath hostDrawn in new[] { Path_SunBeams, Path_SunDisc, Path_SunGlare, Path_Stars })
+            foreach (NodePath hostDrawn in HostDrawnPaths)
             {
                 if (container.GetNodeOrNull<MeshInstance3D>(hostDrawn) is { } node)
                 {
@@ -595,7 +598,13 @@ public static class Engine_CelestialElements
     /// heaviest of the slot's textures), as the guest binds it each draw. Rebound only when the
     /// hash moves; a hash that does not resolve keeps what is bound.
     /// </summary>
-    private static void FollowSlot(ShaderMaterial material, int slot, string parameter)
+    private static readonly StringName PsSunDiscTextureName = "ps_g_SunDiscTexture";
+    private static readonly StringName PsMoonTextureName = "ps_g_MoonTexture";
+    private static readonly NodePath[] HostDrawnPaths = { Path_SunBeams, Path_SunDisc, Path_SunGlare, Path_Stars };
+    private static readonly bool DebugEnv = OS.GetEnvironment("REFII_CELESTIAL_DEBUG").Length != 0;
+    private static readonly int[] LiveElementIndex = { 65, 66, 67, 68, 69, 70, 92, 94 };
+
+    private static void FollowSlot(ShaderMaterial material, int slot, StringName parameter)
     {
         if (!Refii.Models.Engine_ClassicMaterial.Active || !Refii.Models.Engine_ClassicTheme.TexturesLive ||
             !material.HasMeta(ClassicColourMeta))
@@ -681,12 +690,24 @@ public static class Engine_CelestialElements
     }
 
     /// <summary>The element colour to the title's own constant as well, when the element is on its shader.</summary>
+    /// <summary>Each classic element material's colour constant name, read from its meta once.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, StringName> ClassicColourNames = new();
+
     private static void ClassicColour(ShaderMaterial material, Vector4 colour)
     {
-        if (material.HasMeta(ClassicColourMeta))
+        if (!ClassicColourNames.TryGetValue(material, out StringName? name))
         {
-            material.SetShaderParameter(material.GetMeta(ClassicColourMeta).AsString(), colour);
+            if (!material.HasMeta(ClassicColourMeta))
+            {
+                return;
+            }
+            // Read once: GetMeta's string Variant and the StringName from it were two
+            // finalizable handles per element per frame.
+            using Variant stated = material.GetMeta(ClassicColourMeta);
+            name = new StringName(stated.AsString());
+            ClassicColourNames.Add(material, name);
         }
+        material.SetShaderParameter(name, colour);
     }
 
     private static Texture2D? Load(uint hash, Func<string, byte[]?> read, string label)

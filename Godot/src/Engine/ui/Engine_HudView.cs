@@ -344,6 +344,9 @@ public sealed partial class Engine_HudView : Node3D
 
         public Node3D?[] Pips { get; } = new Node3D?[3];
 
+        /// <summary>Each pip's authored rest position, taken the first frame it is driven.</summary>
+        public Vector3?[] PipRest { get; } = new Vector3?[3];
+
         public bool PipsResolved { get; set; }
 
         /// <summary>The band last tinted onto the bars, so an unchanged band re-tints nothing.</summary>
@@ -795,7 +798,7 @@ public sealed partial class Engine_HudView : Node3D
                 {
                     foreach (ShaderMaterial material in OwnMaterials(element))
                     {
-                        material.SetShaderParameter("hue_shift", clone.Hue);
+                        material.SetShaderParameter(HueShiftName, clone.Hue);
                     }
                 }
             }
@@ -859,9 +862,9 @@ public sealed partial class Engine_HudView : Node3D
 
         void Walk(Node node, Transform3D toRoot)
         {
-            foreach (Node child in node.GetChildren())
+            for (int i = 0, count = node.GetChildCount(); i < count; ++i)
             {
-                if (child is not Node3D spatial)
+                if (node.GetChild(i) is not Node3D spatial)
                 {
                     continue;
                 }
@@ -1178,8 +1181,8 @@ public sealed partial class Engine_HudView : Node3D
                 // replacement is one image.
                 foreach (ShaderMaterial material in built.IconMaterials)
                 {
-                    material.SetShaderParameter("uv1_offset", Vector2.Zero);
-                    material.SetShaderParameter("uv1_scale", Vector2.One);
+                    material.SetShaderParameter(Uv1OffsetName, Vector2.Zero);
+                    material.SetShaderParameter(Uv1ScaleName, Vector2.One);
                 }
 
                 GD.Print($"[hud-mods] '{built.Piece.Id}' icon: {candidate}");
@@ -1191,7 +1194,7 @@ public sealed partial class Engine_HudView : Node3D
         {
             foreach (ShaderMaterial material in built.IconMaterials)
             {
-                material.SetShaderParameter("diffuse_tex", icon);
+                material.SetShaderParameter(DiffuseTexName, icon);
             }
         }
     }
@@ -1207,9 +1210,9 @@ public sealed partial class Engine_HudView : Node3D
             owned.Add(copy);
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; ++i)
         {
-            owned.AddRange(OwnMaterials(child));
+            owned.AddRange(OwnMaterials(node.GetChild(i)));
         }
 
         return owned;
@@ -1511,7 +1514,6 @@ public sealed partial class Engine_HudView : Node3D
     public int ExpressionBand { get; set; } = -1;
 
     /// <summary>Each pip element's authored position, so the swing below is absolute rather than compounding.</summary>
-    private const string PipRestMeta = "pip_rest";
 
     /// <summary>
     /// The arc's radius, STATED BY THE GUEST: `flt_8209F790` = 0x43200000 = 160.0, loaded at
@@ -1624,10 +1626,10 @@ public sealed partial class Engine_HudView : Node3D
             }
 
             bool lit = ExpressionPip is { } state && state.Binding == binding;
-            if (!pip.HasMeta(PipRestMeta))
-            {
-                pip.SetMeta(PipRestMeta, pip.Position);
-            }
+
+            // Held on the piece, not in node metadata: a meta read is a StringName and a
+            // Variant per pip per frame, each a weak handle the next GC frees in its pause.
+            Vector3 rest = built.PipRest[index] ??= pip.Position;
 
             // The guest swings it round an arc and translates only. `sub_823D0F10` reads the
             // 0..100 position at `pip+4` (= `meter+16`, one base down — the tick is handed
@@ -1647,7 +1649,6 @@ public sealed partial class Engine_HudView : Node3D
             // So the pip is a RIGID quad on a circle of radius 160 about its authored position —
             // no rotation of the art, no scale. Lane 2 is the screen vertical in the guest's GUI
             // space: the arc's apex is 160 above the pips' authored origin.
-            var rest = (Vector3)pip.GetMeta(PipRestMeta);
             if (lit)
             {
                 float theta = Mathf.DegToRad(ExpressionPip!.Value.Degrees);
@@ -1965,6 +1966,10 @@ public sealed partial class Engine_HudView : Node3D
     }
 
     private static readonly StringName OpacityParameter = "opacity";
+    private static readonly StringName HueShiftName = "hue_shift";
+    private static readonly StringName Uv1OffsetName = "uv1_offset";
+    private static readonly StringName Uv1ScaleName = "uv1_scale";
+    private static readonly StringName DiffuseTexName = "diffuse_tex";
 
     /// <summary>A visible, non-empty label's bounds in the HUD's space, or null.</summary>
     private static Rect2? TextBounds(MeshInstance3D label)

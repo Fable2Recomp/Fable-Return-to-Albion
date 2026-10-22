@@ -18,6 +18,11 @@ namespace Refii.Ui;
 /// </summary>
 public sealed class Engine_UiTheme
 {
+	// Text re-paints carry the fade and clip band across to the fresh material on every string
+	// change: one StringName each, never a literal (a literal is a weak handle per call).
+	private static readonly StringName ClipRectName = "clip_rect";
+	private static readonly StringName OpacityName = "opacity";
+
 	/// <summary>The bitmap fonts. Without them <see cref="Label"/> produces nothing.</summary>
 	public Engine_UiFontLibrary? Fonts { get; init; }
 
@@ -224,6 +229,72 @@ public sealed class Engine_UiTheme
 		return SetMeshText(node, display);
 	}
 
+	/// <summary>
+	/// Keeps a cloned text node's AUTHORED glyphs where the string to show is the one the file
+	/// authored, replacing only the material — the part of <see cref="SetMeshText"/> that
+	/// differs from what the scene builder stamped (the builder folds the authored opacity into
+	/// the colour's alpha; the live path draws alpha 1 and lets the binding's `opacity` carry
+	/// it). The mesh is bit-identical by construction: the builder laid the same string out
+	/// through <see cref="Engine_UiTextMesh.Build"/> with the same font, size, box, wrap and
+	/// alignment the metadata here restates, and <see cref="Layout"/> only rebuilds that.
+	///
+	/// Why: an owned book's first sample re-meshed EVERY field — 94 on the world map — to show
+	/// the caption it already showed, a glyph layout and an ArrayMesh each, on the frame the
+	/// book opened.
+	///
+	/// False when identity is not guaranteed — no mesh, a string carrying tags (an inline icon
+	/// is a child quad the builder may or may not have resolved), icons already standing — and
+	/// the caller re-meshes as before.
+	/// </summary>
+	public bool KeepAuthoredText(MeshInstance3D node, string display)
+	{
+		if (node.Mesh is null || display.Length == 0 || display.IndexOf('<') >= 0)
+		{
+			return false;
+		}
+
+		foreach (Node child in node.GetChildren())
+		{
+			if (IsInlineIcon(child))
+			{
+				return false;
+			}
+		}
+
+		int size = node.HasMeta("text_size") ? (int)node.GetMeta("text_size") : 18;
+		if (Fonts?.For(size) is not { } selection)
+		{
+			return false;
+		}
+
+		Color colour = node.HasMeta("text_colour") ? (Color)node.GetMeta("text_colour") : Colors.White;
+		var opaque = new Color(colour.R, colour.G, colour.B, 1f);
+
+		Variant? clip = null;
+		Variant? opacity = null;
+		if (node.MaterialOverride is ShaderMaterial previous)
+		{
+			clip = previous.GetShaderParameter(ClipRectName);
+			opacity = previous.GetShaderParameter(OpacityName);
+		}
+
+		node.MaterialOverride = Engine_UiSceneBuilder.TextMaterial(opaque, selection.Font.Atlas);
+		if (node.MaterialOverride is ShaderMaterial fresh)
+		{
+			if (clip is { } c && c.VariantType != Variant.Type.Nil)
+			{
+				fresh.SetShaderParameter(ClipRectName, c);
+			}
+
+			if (opacity is { } o && o.VariantType != Variant.Type.Nil)
+			{
+				fresh.SetShaderParameter(OpacityName, o);
+			}
+		}
+
+		return true;
+	}
+
 	/// <summary>The node-in-hand form, for a caller that resolved the element itself —
 	/// names repeat (the query box has five elements named "Text"), so a by-name find from
 	/// the wrong root re-meshes somebody else's label.</summary>
@@ -262,8 +333,8 @@ public sealed class Engine_UiTheme
 		Variant? opacity = null;
 		if (node.MaterialOverride is ShaderMaterial previous)
 		{
-			clip = previous.GetShaderParameter("clip_rect");
-			opacity = previous.GetShaderParameter("opacity");
+			clip = previous.GetShaderParameter(ClipRectName);
+			opacity = previous.GetShaderParameter(OpacityName);
 		}
 
 		float iconAlpha = opacity is { } carried && carried.VariantType == Variant.Type.Float
@@ -297,12 +368,12 @@ public sealed class Engine_UiTheme
 		{
 			if (clip is { } c && c.VariantType != Variant.Type.Nil)
 			{
-				fresh.SetShaderParameter("clip_rect", c);
+				fresh.SetShaderParameter(ClipRectName, c);
 			}
 
 			if (opacity is { } o && o.VariantType != Variant.Type.Nil)
 			{
-				fresh.SetShaderParameter("opacity", o);
+				fresh.SetShaderParameter(OpacityName, o);
 			}
 		}
 
@@ -493,9 +564,9 @@ public sealed class Engine_UiTheme
 	/// <summary>Fades every inline-icon quad directly under a label.</summary>
 	public static void FadeInlineIcons(Node label, float alpha)
 	{
-		foreach (Node child in label.GetChildren())
+		for (int i = 0, count = label.GetChildCount(); i < count; ++i)
 		{
-			SetIconOpacity(child, alpha);
+			SetIconOpacity(label.GetChild(i), alpha);
 		}
 	}
 
@@ -605,9 +676,9 @@ public sealed class Engine_UiTheme
 			return root;
 		}
 
-		foreach (Node child in root.GetChildren())
+		for (int i = 0, count = root.GetChildCount(); i < count; ++i)
 		{
-			if (FindByName(child, name) is { } hit)
+			if (FindByName(root.GetChild(i), name) is { } hit)
 			{
 				return hit;
 			}

@@ -33,6 +33,23 @@ public class CoopHudLayoutTests
 	}
 
 	[TestCase]
+	public void TestPlayerTwoIdsAreAnsweredOnceAndHeld()
+	{
+		// Asked per piece per frame by the player-two view: the nested name is rewritten
+		// through the whole id, a non-source id answers null, and a repeat is the held string.
+		string? first = Engine_HudLayout.PlayerTwoSourceId("group.PlayerHealth.PlayerHealthBar");
+		AssertThat(first).IsEqual("group.CoopHealth.CoopHealthBar");
+		AssertThat(ReferenceEquals(first, Engine_HudLayout.PlayerTwoSourceId("group.PlayerHealth.PlayerHealthBar"))).IsTrue();
+		AssertThat(Engine_HudLayout.PlayerTwoSourceId("group.QuestBox.TopBox")).IsNull();
+		AssertThat(Engine_HudLayout.PlayerTwoSourceId("group.QuestBox.TopBox")).IsNull();
+
+		string? back = Engine_HudLayout.PlayerOneIdOf("group.SpellCharging2.SpellCharging2Bar");
+		AssertThat(back).IsEqual("group.SpellCharging.SpellChargingBar");
+		AssertThat(ReferenceEquals(back, Engine_HudLayout.PlayerOneIdOf("group.SpellCharging2.SpellCharging2Bar"))).IsTrue();
+		AssertThat(Engine_HudLayout.PlayerOneIdOf("group.PlayerHealth.PlayerHealth")).IsNull();
+	}
+
+	[TestCase]
 	public void TestSharedAndWheelPieces()
 	{
 		AssertThat(Engine_HudLayout.SharedOnSplit(Piece("group.QuestBox.TopBox", "TopBox", 0f, 0f, 0f))).IsTrue();

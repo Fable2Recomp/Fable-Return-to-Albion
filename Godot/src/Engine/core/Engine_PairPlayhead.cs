@@ -154,6 +154,103 @@ public sealed class Engine_PairPlayhead
 	public double WorstEarly { get; private set; }
 
 	/// <summary>
+	/// How far behind the anchored alpha the draw point sits, in intervals: the lateness the
+	/// arrivals have been measured to have, so a late pair is absorbed by latency rather than by
+	/// running past the newest value and catching up when it lands.
+	/// </summary>
+	/// <remarks>
+	/// MEASURED, AND SLEWED UNDER THE PLAYBACK-RATE RULE. The target is a high percentile of the
+	/// last <see cref="LatenessWindow"/> swaps' lateness (`alpha - 1` at the swap, floored at 0) —
+	/// a percentile, not the peak: one hitch must not set the operating point for seconds. The
+	/// margin moves toward it as a fraction of elapsed real time (<see cref="MarginRiseTolerance"/>
+	/// rising, <see cref="MarginFallTolerance"/> falling), never per frame or per swap, because
+	/// its rate of change is a speed error applied to everything drawn from the draw point.
+	/// </remarks>
+	public double MarginTicks { get; private set; }
+
+	/// <summary>Swaps the lateness percentile is taken over — about two seconds of game ticks.</summary>
+	private const int LatenessWindow = 32;
+
+	private const double LatenessPercentile = 0.90;
+
+	/// <summary>Lateness past this is a hitch (a load, a pause), not arrival jitter, and is not evidence.</summary>
+	private const double LatenessHitch = 0.5;
+
+	/// <summary>The most the margin may add per unit of elapsed real time: 2% transient slow motion at worst.</summary>
+	private const double MarginRiseTolerance = 0.02;
+
+	/// <summary>Removing margin buys only responsiveness, so it crawls: 0.2% of elapsed time.</summary>
+	private const double MarginFallTolerance = 0.002;
+
+	private readonly double[] _lateness = new double[LatenessWindow];
+	private readonly double[] _latenessSorted = new double[LatenessWindow];
+	private int _latenessCount;
+	private int _latenessAt;
+	private double _marginFrameUsec;
+
+	/// <summary>The lateness the margin is steered toward, in intervals; 0 until swaps have been seen.</summary>
+	public double LatenessTicks
+	{
+		get
+		{
+			if (_latenessCount == 0)
+			{
+				return 0.0;
+			}
+
+			System.Array.Copy(_lateness, _latenessSorted, _latenessCount);
+			System.Array.Sort(_latenessSorted, 0, _latenessCount);
+			return _latenessSorted[(int)(LatenessPercentile * (_latenessCount - 1))];
+		}
+	}
+
+	private void RecordLateness(double swapAlpha)
+	{
+		double late = swapAlpha - 1.0;
+		if (double.IsNaN(late) || late > LatenessHitch)
+		{
+			return;
+		}
+
+		_lateness[_latenessAt] = late < 0.0 ? 0.0 : late;
+		_latenessAt = (_latenessAt + 1) % LatenessWindow;
+		if (_latenessCount < LatenessWindow)
+		{
+			++_latenessCount;
+		}
+	}
+
+	/// <summary>
+	/// Once per frame, before anything draws: slews <see cref="MarginTicks"/> toward the measured
+	/// lateness, bounded as a fraction of the time elapsed since the last frame.
+	/// </summary>
+	public void BeginFrame(double nowUsec)
+	{
+		double last = _marginFrameUsec;
+		_marginFrameUsec = nowUsec;
+		double target = Ready ? System.Math.Min(LatenessTicks, LatenessHitch) : 0.0;
+		if (last <= 0.0 || nowUsec <= last || _nominalUsec <= 0.0)
+		{
+			return;
+		}
+
+		// Elapsed REAL time in nominal intervals: the bound is a playback-rate error, a property
+		// of real time, not of the period estimate.
+		double elapsed = (nowUsec - last) / _nominalUsec;
+		double wanted = target - MarginTicks;
+		double budget = elapsed * (wanted > 0.0 ? MarginRiseTolerance : MarginFallTolerance);
+		MarginTicks += System.Math.Clamp(wanted, -budget, budget);
+	}
+
+	/// <summary>
+	/// The draw point's alpha: <see cref="Alpha"/> less <see cref="MarginTicks"/>. Below 0 it sits on
+	/// the pair before this one, which every consumer of the draw point can represent (the
+	/// timelines run back along their segment, the pose ring locates by stamp, the clip reference
+	/// clamps at −1); above 1 it extrapolates, bounded by the ceiling.
+	/// </summary>
+	public double DrawAlpha(double nowUsec) => Alpha(nowUsec) - MarginTicks;
+
+	/// <summary>
 	/// The guest has stated a new value and how much time the pair spans. Use this wherever the
 	/// width is known rather than inferred.
 	/// </summary>
@@ -171,6 +268,7 @@ public sealed class Engine_PairPlayhead
 		if (anchored)
 		{
 			LastSwapAlpha = (nowUsec - _anchorUsec) / endedUsec;
+			RecordLateness(LastSwapAlpha);
 			double error = System.Math.Abs(LastSwapAlpha - 1.0);
 			if (error > WorstSwapError)
 			{
@@ -242,6 +340,7 @@ public sealed class Engine_PairPlayhead
 		if (_anchorUsec > 0.0 && _periodUsec > 0.0)
 		{
 			LastSwapAlpha = (nowUsec - _anchorUsec) / _periodUsec;
+			RecordLateness(LastSwapAlpha - (steps - 1));
 		}
 
 		double anchored = _anchorUsec + (_periodUsec * steps);
@@ -268,6 +367,8 @@ public sealed class Engine_PairPlayhead
 		_anchorUsec = 0.0;
 		_observedUsec = 0.0;
 		_ownPeriodUsec = _nominalUsec;
+		_latenessCount = 0;
+		_latenessAt = 0;
 	}
 
 	/// <summary>How far through the current pair this frame falls; 0 to <see cref="Ceiling"/>.</summary>

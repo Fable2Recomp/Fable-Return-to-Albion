@@ -34,6 +34,8 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     private Rid _target;
     private Vector2I _targetSize;
     private bool _ready;
+    private readonly Refii.Core.Engine_UniformSetKey _set = new(3);
+    private readonly byte[] _push = new byte[16];
 
     /// <summary>
     /// Publishes the depth capture's two globals.
@@ -187,20 +189,25 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         if (size.X <= 0 || size.Y <= 0) return;
         EnsureTarget(size);
         Rid depth = buffers.GetDepthLayer(0);
-        var depthUniform = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
-        depthUniform.AddId(_sampler);
-        depthUniform.AddId(depth);
-        var outUniform = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
-        outUniform.AddId(_target);
-        var uniforms = new Array<RDUniform> { depthUniform, outUniform };
-        Rid set = UniformSetCacheRD.GetCache(_shader, 0, uniforms);
-        var push = new byte[16];
-        BitConverter.TryWriteBytes(push.AsSpan(0), size.X);
-        BitConverter.TryWriteBytes(push.AsSpan(4), size.Y);
+        // The set is held by the resources it binds: the RDUniforms and their Array were three
+        // finalizable wrappers per frame for a set the cache already had.
+        Rid set = _set.For(_rd, stackalloc Rid[] { _sampler, depth, _target });
+        if (!set.IsValid)
+        {
+            var depthUniform = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
+            depthUniform.AddId(_sampler);
+            depthUniform.AddId(depth);
+            var outUniform = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
+            outUniform.AddId(_target);
+            var uniforms = new Array<RDUniform> { depthUniform, outUniform };
+            set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, uniforms));
+        }
+        BitConverter.TryWriteBytes(_push.AsSpan(0), size.X);
+        BitConverter.TryWriteBytes(_push.AsSpan(4), size.Y);
         long list = _rd.ComputeListBegin();
         _rd.ComputeListBindComputePipeline(list, _pipeline);
         _rd.ComputeListBindUniformSet(list, set, 0);
-        _rd.ComputeListSetPushConstant(list, push, (uint)push.Length);
+        _rd.ComputeListSetPushConstant(list, (ReadOnlySpan<byte>)_push, (uint)_push.Length);
         _rd.ComputeListDispatch(list, (uint)((size.X + 7) / 8), (uint)((size.Y + 7) / 8), 1);
         _rd.ComputeListEnd();
     }

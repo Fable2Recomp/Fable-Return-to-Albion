@@ -158,17 +158,41 @@ public static class NetBridge
 		return null;
 	}
 
+	/// <summary>
+	/// The friends list. Polled every frame for greetings, so the answer is parsed only when the
+	/// bridge's bytes differ from the last call's; an unchanged answer returns the same list, which
+	/// callers read and never alter.
+	/// </summary>
 	public static List<Friend> Friends()
 	{
-		var list = new List<Friend>();
-		foreach (string[] f in Records(RefiiNetFriends, 10))
+		lock (ReadLock)
 		{
-			list.Add(new Friend(
-				f[0], f[1], f[2] == "1", Num(f[3]), f[4], f[5] == "1", f[6], (int)Num(f[7]), f[8], Num(f[9])));
-		}
+			int written = Read(RefiiNetFriends);
+			if (written < 0)
+			{
+				return _friends;
+			}
 
-		return list;
+			if (written == _friendsBytes.Length && _readBuffer.AsSpan(0, written).SequenceEqual(_friendsBytes))
+			{
+				return _friends;
+			}
+
+			_friendsBytes = _readBuffer.AsSpan(0, written).ToArray();
+			var list = new List<Friend>();
+			foreach (string[] f in Split(written, 10))
+			{
+				list.Add(new Friend(
+					f[0], f[1], f[2] == "1", Num(f[3]), f[4], f[5] == "1", f[6], (int)Num(f[7]), f[8], Num(f[9])));
+			}
+
+			_friends = list;
+			return list;
+		}
 	}
+
+	private static List<Friend> _friends = new();
+	private static byte[] _friendsBytes = System.Array.Empty<byte>();
 
 	public static List<Request> Requests()
 	{
@@ -531,36 +555,54 @@ public static class NetBridge
 	/// </remarks>
 	private static IEnumerable<string[]> Records(Reader entry, int fields)
 	{
-		var buffer = new byte[ReadBuffer];
+		// Parsed under the lock, since the readers share one buffer: several are drained once a
+		// frame, and a 64 KB array per call was the game's largest steady allocation.
+		lock (ReadLock)
+		{
+			int written = Read(entry);
+			return written <= 0 ? System.Array.Empty<string[]>() : Split(written, fields);
+		}
+	}
+
+	private static readonly object ReadLock = new();
+	private static readonly byte[] _readBuffer = new byte[ReadBuffer];
+
+	/// <summary>Fills <see cref="_readBuffer"/> from <paramref name="entry"/>: the byte count, 0 for nothing, -1 for no bridge.</summary>
+	private static int Read(Reader entry)
+	{
 		uint written;
 		try
 		{
-			written = entry(buffer, (uint)buffer.Length);
+			written = entry(_readBuffer, (uint)_readBuffer.Length);
 		}
 		catch (DllNotFoundException)
 		{
-			yield break;
+			return -1;
 		}
 		catch (EntryPointNotFoundException)
 		{
 			// An older bridge with no RexNet exports. Not a fault: the screen says so.
-			yield break;
+			return -1;
 		}
 
-		if (written == 0 || written > buffer.Length)
-		{
-			yield break;
-		}
+		return written > _readBuffer.Length ? 0 : (int)written;
+	}
 
-		string text = Encoding.UTF8.GetString(buffer, 0, (int)written);
+	/// <summary>The buffer's first <paramref name="written"/> bytes as records of exactly <paramref name="fields"/> fields.</summary>
+	private static List<string[]> Split(int written, int fields)
+	{
+		var records = new List<string[]>();
+		string text = Encoding.UTF8.GetString(_readBuffer, 0, written);
 		foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
 		{
 			string[] parts = line.Split('\t');
 			if (parts.Length == fields)
 			{
-				yield return parts;
+				records.Add(parts);
 			}
 		}
+
+		return records;
 	}
 
 	private delegate uint Reader(byte[] outText, uint capacity);

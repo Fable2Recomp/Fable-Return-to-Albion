@@ -155,6 +155,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/player_state_hooks.cpp
     # The host's queued helper calls and queries (Godot scripts), run in the guest tick.
     ${REFII_VFS_ROOT}/src/hooks/mod_commands.cpp
+    # GDB hot reload: a remounted database read again by the guest's own loader, older copies synced.
+    ${REFII_VFS_ROOT}/src/hooks/gdb_hot_reload.cpp
     # Mod abilities' purchases and spell picks, run by the engine from what the mods declare.
     ${REFII_VFS_ROOT}/src/hooks/mod_abilities.cpp
     # The Refii.* natives registered into the game VM for mods' Lua.

@@ -2802,6 +2802,9 @@ public partial class GameDebugServer : Node
 						// `cameraBlended` near zero with `cameraLive` climbing means the camera is not blending
 						// and is stepping at the guest's rate.
 						["cameraBlended"] = Refii.Game.GameWorld.BlendedCameras,
+						// Frames the camera was drawn from its timeline alone because the guest's step was
+						// not complete at frame start (its sample is not a statement until it is).
+						["cameraCarried"] = Refii.Game.GameWorld.CarriedCameras,
 						["cameraLive"] = Refii.Game.GameWorld.LiveOnlyCameras,
 						["cameraNonFinite"] = Refii.Game.GameWorld.NonFiniteCameras,
 						// The mouse's turn posted and not yet taken by a camera update, drawn ahead of the
@@ -3181,6 +3184,11 @@ public partial class GameDebugServer : Node
 					["timelineSnaps"] = Refii.Core.Engine_TickTimeline.Snaps,
 					["timelineSaturated"] = Refii.Core.Engine_TickTimeline.Saturated,
 					["pace"] = Refii.Core.Engine_DrawAdvance.Pace,
+					// The draw point's latency margin, in ticks: the measured arrival lateness the
+					// shared playhead sits behind, and the lateness it is steered toward.
+					["marginTicks"] = Refii.Entities.Engine_DrawnFrame.Playhead.MarginTicks,
+					["latenessTicks"] = Refii.Entities.Engine_DrawnFrame.Playhead.LatenessTicks,
+					["cameraCarried"] = GameWorld.CarriedCameras,
 				});
 			}
 

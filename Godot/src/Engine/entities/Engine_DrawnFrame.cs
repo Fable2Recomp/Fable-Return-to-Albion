@@ -29,12 +29,15 @@ public static class Engine_DrawnFrame
 	/// the playhead part-way through a frame, and everything drawn after the swap belongs to the
 	/// new pair.
 	/// </summary>
-	public static float Alpha => (float)Playhead.Alpha(NowUsec);
+	public static float Alpha => (float)Playhead.DrawAlpha(NowUsec);
 
 	/// <summary>
 	/// The point on the guest's game-tick timeline this frame is drawn at: the shared pair runs
 	/// from its stated tick − 1 (alpha 0) to the stated tick (alpha 1), carrying past either end
-	/// as the playhead does. NaN before anything has been stated.
+	/// as the playhead does, less the measured arrival lateness
+	/// (<see cref="Refii.Core.Engine_PairPlayhead.MarginTicks"/>) so a late tick is absorbed by
+	/// latency rather than by extrapolating past the newest value. NaN before anything has been
+	/// stated.
 	/// </summary>
 	/// <remarks>
 	/// Everything stamped with a game tick is sampled HERE — clip times, clip weights, bone
@@ -43,7 +46,10 @@ public static class Engine_DrawnFrame
 	/// part of the segment not yet drawn, one noticed late holds. That was the limb stepping.
 	/// </remarks>
 	public static double DrawTick =>
-		_statedTick == 0u || !Playhead.Ready ? double.NaN : _statedTick - 1.0 + Playhead.Alpha(NowUsec);
+		_statedTick == 0u || !Playhead.Ready ? double.NaN : _statedTick - 1.0 + Playhead.DrawAlpha(NowUsec);
+
+	/// <summary>The tick the shared pair was last swapped on; 0 before anything has been stated.</summary>
+	public static uint StatedTick => _statedTick;
 
 	/// <summary>
 	/// The instant this frame is drawn for, latched once per frame. Every draw point (camera,
@@ -64,6 +70,7 @@ public static class Engine_DrawnFrame
 	public static void BeginFrame(ulong nowUsec)
 	{
 		_now = nowUsec;
+		Playhead.BeginFrame(nowUsec);
 	}
 
 	/// <summary>
@@ -80,6 +87,9 @@ public static class Engine_DrawnFrame
 	{
 		_now = nowUsec;
 		GuestSeconds = guestSeconds;
+
+		// The latency margin moves once a frame, before any swap or draw this frame.
+		Playhead.BeginFrame(nowUsec);
 	}
 
 	/// <summary>

@@ -447,7 +447,7 @@ public static class ModSettingsUi
 		}
 
 		var titles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(Refii.Assets.Engine_GameAssets.ModsRoot))
+		foreach (ModInstall install in ModSession.Resolve(Refii.Assets.Engine_GameAssets.ModsRoot).Installs)
 		{
 			titles[install.Name] = install.Metadata.Title.Length != 0 ? install.Metadata.Title : install.Name;
 		}

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.CompilerServices;
 
 using Refii.Core;
@@ -116,14 +115,24 @@ public static class Engine_UiFrameDriver
 		Action<UiNode, Engine_UiFrame.State>? onClone,
 		Action<UiNode, Engine_UiFrame.State, Engine_UiFrame.BorderLayout>? onPlace)
 	{
-		var frames = screen.Nodes.Where(IsFrame).ToList();
+		// Plain loops throughout: this re-runs on every text edge of an owned screen, and the
+		// LINQ form was an enumerator, a closure and a list per step of every frame.
+		var frames = new List<UiNode>();
+		foreach (UiNode node in screen.Nodes)
+		{
+			if (IsFrame(node))
+			{
+				frames.Add(node);
+			}
+		}
+
 		if (frames.Count == 0)
 		{
 			return default;
 		}
 
 		// Deepest first — see the class remarks.
-		frames.Sort((a, b) => Depth(b).CompareTo(Depth(a)));
+		frames.Sort(static (a, b) => Depth(b).CompareTo(Depth(a)));
 
 		var sizes = new Dictionary<UiNode, (float Width, float Height)>();
 		var tree = new Tree(sizes);
@@ -148,12 +157,23 @@ public static class Engine_UiFrameDriver
 			// `FrameRemoveInappropriateContents`: the list is rebuilt from scratch every pass
 			// (`frame.dis main.2 pc1..2`, NEWTABLE into `State.DisplayedContents`) and every
 			// surviving item appended in order (pc40..47).
-			var displayed = state.Contents.Cast<UiNode>().Where(Displayed).ToList();
+			var displayed = new List<UiNode>(state.Contents.Count);
+			foreach (object content in state.Contents)
+			{
+				var node = (UiNode)content;
+				if (Displayed(node))
+				{
+					displayed.Add(node);
+				}
+			}
 
-			var items = displayed.Select(n => Measure(tree, n)).ToList();
-			var alignments = displayed
-				.Select(n => (int?)tree.Attribute(n, "FrameAlignment"))
-				.ToList();
+			var items = new List<Engine_UiFrame.Item>(displayed.Count);
+			var alignments = new List<int?>(displayed.Count);
+			foreach (UiNode node in displayed)
+			{
+				items.Add(Measure(tree, node));
+				alignments.Add((int?)tree.Attribute(node, "FrameAlignment"));
+			}
 
 			Engine_UiFrame.CalcLengthAndMaxBreadth(state, items);
 			Engine_UiFrame.CalcDimensions(state);
@@ -350,9 +370,18 @@ public static class Engine_UiFrameDriver
 	}
 
 	/// <summary>A direct child by authored name, case-insensitively.</summary>
-	private static UiNode? Find(UiNode parent, string name) =>
-		parent.Children.FirstOrDefault(c =>
-			c.HasAuthoredName && string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+	private static UiNode? Find(UiNode parent, string name)
+	{
+		foreach (UiNode child in parent.Children)
+		{
+			if (child.HasAuthoredName && string.Equals(child.Name, name, StringComparison.OrdinalIgnoreCase))
+			{
+				return child;
+			}
+		}
+
+		return null;
+	}
 
 	/// <summary>
 	/// <see cref="Engine_UiFrame.IFrameTree"/> over our authored model. The type mapping is not
@@ -417,9 +446,18 @@ public static class Engine_UiFrameDriver
 		public IReadOnlyList<object> Siblings(object element)
 		{
 			var node = (UiNode)element;
-			return node.Parent is { } parent
-				? parent.Children.Cast<object>().ToList()
-				: Array.Empty<object>();
+			if (node.Parent is not { } parent)
+			{
+				return Array.Empty<object>();
+			}
+
+			var siblings = new List<object>(parent.Children.Count);
+			foreach (UiNode child in parent.Children)
+			{
+				siblings.Add(child);
+			}
+
+			return siblings;
 		}
 
 		public object? NamedObject(object element, string name)

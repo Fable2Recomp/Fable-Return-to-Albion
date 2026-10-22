@@ -241,6 +241,8 @@ public partial class RefiiHost : Node
 	/// </summary>
 	public override void _Ready()
 	{
+		// The save gate's verdict on start_game is always installed (ModSaveGate).
+		PushVerdictMask();
 		for (long player = 1; player <= 2; player++)
 		{
 			long id = query("hero", new Godot.Collections.Array { player });
@@ -329,6 +331,8 @@ public partial class RefiiHost : Node
 			}
 		}
 
+		// The engine's own verdict: the save gate refuses a start whose save needs filtering.
+		mask = mask.With(ModSaveGate.StartGameKind);
 		if (!mask.IsZero && !_verdictInstalled)
 		{
 			HostBridge.SetModVerdictHandler(VerdictCallback);
@@ -364,22 +368,33 @@ public partial class RefiiHost : Node
 			Callable[] handlers;
 			lock (VerdictLock)
 			{
-				if (!Verdicts.TryGetValue(kind, out List<Callable>? list) || list.Count == 0)
+				handlers = Verdicts.TryGetValue(kind, out List<Callable>? list) ? list.ToArray() : Array.Empty<Callable>();
+			}
+
+			string text = Marshal.PtrToStringUTF8(fields, (int)length) ?? string.Empty;
+			List<KeyValuePair<string, object>> plain = ParseFieldsPlain(text);
+			var before = new Dictionary<string, object>();
+			foreach ((string key, object value) in plain)
+			{
+				before[key] = value;
+			}
+
+			// The engine's own verdict first: the save gate (start_game), which no script sees.
+			bool cancel = ModSaveGate.Verdict(kind, plain);
+			if (handlers.Length == 0)
+			{
+				if (!cancel)
 				{
 					return 0;
 				}
 
-				handlers = list.ToArray();
+				byte[] refusal = Encoding.UTF8.GetBytes("cancel=1");
+				int m = Math.Min(refusal.Length, (int)capacity);
+				Marshal.Copy(refusal, 0, output, m);
+				return m;
 			}
 
-			string text = Marshal.PtrToStringUTF8(fields, (int)length) ?? string.Empty;
-			var before = new Dictionary<string, object>();
-			foreach ((string key, object value) in ParseFieldsPlain(text))
-			{
-				before[key] = value;
-			}
 			Godot.Collections.Dictionary e = ParseFields(text);
-			bool cancel = false;
 			foreach (Callable handler in handlers)
 			{
 				if (handler.Target is { } target && !GodotObject.IsInstanceValid(target))
@@ -495,6 +510,19 @@ public partial class RefiiHost : Node
 		List<(int Kind, string Fields)> events = HostBridge.DrainModEvents();
 		foreach ((int kind, string fields) in events)
 		{
+			// A save package the guest wrote: its sidecar is stamped with the mod set (ModSaveGate).
+			if (kind == ModSaveGate.SaveWrittenKind)
+			{
+				ModSaveGate.OnSaveWritten(fields);
+				continue;
+			}
+
+			// A save's Lua table loaded: a filtered load drops the missing mods' keys now.
+			if (kind == ModSaveGate.SaveLoadedKind)
+			{
+				ModSaveGate.OnSaveLoaded();
+			}
+
 			// An effect a native or Lua mod asked Godot to play or stop: drawn here, never an event.
 			if (kind == Refii.Fx.Engine_FxPlayer.RequestKind)
 			{
@@ -590,12 +618,15 @@ public partial class RefiiHost : Node
 	/// </summary>
 	private ModEventMask ComputeMask()
 	{
+		// The engine's own want: a filtered load drops the missing mods' RefiiModSave keys on
+		// save_loaded (ModSaveGate), scripts or none.
+		ModEventMask own = ModSaveGate.WantsSaveLoaded ? new ModEventMask().With(ModSaveGate.SaveLoadedKind) : new ModEventMask();
 		if (ScriptsRoot is null || !IsInstanceValid(ScriptsRoot) || ScriptsRoot.GetChildCount() == 0)
 		{
-			return new ModEventMask();
+			return own;
 		}
 
-		ModEventMask mask = HeroKinds;
+		ModEventMask mask = ModSaveGate.WantsSaveLoaded ? HeroKinds.With(ModSaveGate.SaveLoadedKind) : HeroKinds;
 		if (GetSignalConnectionList(SignalName.mod_event).Count != 0)
 		{
 			for (int kind = 0; kind < _nameByKind.Length; kind++)

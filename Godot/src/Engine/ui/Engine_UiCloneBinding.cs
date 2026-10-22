@@ -64,6 +64,13 @@ public sealed class Engine_UiCloneBinding
 	private readonly List<Bound> _bound = new();
 
 	/// <summary>
+	/// The FIRST bound node per element ordinal — what <see cref="NodeFor"/> answers. An index
+	/// rather than a scan of <see cref="_bound"/>: the mask passes ask it once per bound node,
+	/// every text edge and every frame, and on a 524-node book the scan was quadratic.
+	/// </summary>
+	private readonly Dictionary<int, Node3D> _firstByOrdinal = new();
+
+	/// <summary>
 	/// Where <see cref="Apply"/>'s time goes, in Stopwatch ticks, accumulated across every
 	/// binding and read back by the `hud` op.
 	/// </summary>
@@ -211,13 +218,14 @@ public sealed class Engine_UiCloneBinding
 				Pivot = new Vector3(element.PivotX, element.PivotY,
 					Engine_UiSceneBuilder.ToGodotZ(element.PivotZ)),
 			});
+			_firstByOrdinal.TryAdd(element.Ordinal, spatial);
 
 			isRoot = false;
 		}
 
-		foreach (Node child in node.GetChildren())
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
 		{
-			Bind(child, screen, suppressed, isRoot);
+			Bind(node.GetChild(i), screen, suppressed, isRoot);
 		}
 	}
 
@@ -346,13 +354,13 @@ public sealed class Engine_UiCloneBinding
 			float minY = Mathf.Min(rect.Position.Y, rect.End.Y);
 			float maxX = Mathf.Max(rect.Position.X, rect.End.X);
 			float maxY = Mathf.Max(rect.Position.Y, rect.End.Y);
-			material.SetShaderParameter("clip_rect", new Vector4(minX, minY, maxX, maxY));
+			material.SetShaderParameter(ClipRectName, new Vector4(minX, minY, maxX, maxY));
 			++applied;
 		}
 
-		foreach (Node child in node.GetChildren())
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
 		{
-			applied += Paint(child, rect);
+			applied += Paint(node.GetChild(i), rect);
 		}
 
 		return applied;
@@ -454,18 +462,8 @@ public sealed class Engine_UiCloneBinding
 		}
 	}
 
-	public Node3D? NodeFor(int ordinal)
-	{
-		foreach (Bound bound in _bound)
-		{
-			if (bound.Ordinal == ordinal)
-			{
-				return bound.Node;
-			}
-		}
-
-		return null;
-	}
+	public Node3D? NodeFor(int ordinal) =>
+		_firstByOrdinal.TryGetValue(ordinal, out Node3D? node) ? node : null;
 
 	/// <summary>Every bound node that paints text, with the element it belongs to.</summary>
 	public IEnumerable<(MeshInstance3D Node, int Ordinal)> TextNodes(Engine_UiScreen screen)
@@ -551,7 +549,7 @@ public sealed class Engine_UiCloneBinding
 			if (!Mathf.IsEqualApprox(alpha, bound.Faded))
 			{
 				bound.Faded = alpha;
-				material.SetShaderParameter("opacity", alpha);
+				material.SetShaderParameter(OpacityName, alpha);
 				Engine_UiTheme.FadeInlineIcons(mesh, alpha);
 			}
 
@@ -568,7 +566,7 @@ public sealed class Engine_UiCloneBinding
 					ResolveTexture?.Invoke(hash) is { } picture)
 				{
 					bound.Pictured = hash;
-					material.SetShaderParameter("diffuse_tex", picture);
+					material.SetShaderParameter(DiffuseTexName, picture);
 				}
 			}
 
@@ -581,6 +579,12 @@ public sealed class Engine_UiCloneBinding
 	}
 
 	private Engine_UiScreen? _maskScreen;
+
+	// Written per sample on the frame thread: one StringName each, never a literal (a literal
+	// is a fresh StringName per call and a weak handle the next GC frees inside its pause).
+	private static readonly StringName ClipRectName = "clip_rect";
+	private static readonly StringName OpacityName = "opacity";
+	private static readonly StringName DiffuseTexName = "diffuse_tex";
 
 	/// <summary>This sample's measured band per mask element.</summary>
 	private readonly Dictionary<int, Rect2> _maskRects = new();
@@ -649,7 +653,8 @@ public sealed class Engine_UiCloneBinding
 	private static Rect2? LiveClip(UiNode node, Engine_UiElementResolve resolve,
 		IReadOnlyList<float?[]?>? transform)
 	{
-		(Vector2 Position, Vector2 Scale) Live(UiNode at)
+		static (Vector2 Position, Vector2 Scale) Live(UiNode at, Engine_UiElementResolve resolve,
+			IReadOnlyList<float?[]?>? transform)
 		{
 			int ordinal = at.Ordinal;
 			Vector2 position = ordinal >= 0 && ordinal < resolve.SlidPosition.Length
@@ -673,12 +678,12 @@ public sealed class Engine_UiCloneBinding
 			return (position, scale);
 		}
 
-		(Vector2 centre, Vector2 own) = Live(node);
+		(Vector2 centre, Vector2 own) = Live(node, resolve, transform);
 		float halfW = 50f * own.X;
 		float halfH = 50f * own.Y;
 		for (UiNode? up = node.Parent; up is not null; up = up.Parent)
 		{
-			(Vector2 position, Vector2 scale) = Live(up);
+			(Vector2 position, Vector2 scale) = Live(up, resolve, transform);
 			centre = new Vector2((centre.X * scale.X) + position.X, (centre.Y * scale.Y) + position.Y);
 			halfW *= Mathf.Abs(scale.X);
 			halfH *= Mathf.Abs(scale.Y);

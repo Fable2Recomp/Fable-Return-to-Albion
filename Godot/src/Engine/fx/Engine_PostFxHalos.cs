@@ -233,7 +233,7 @@ public partial class Engine_PostFxHalos : Node
 			// +0x1C0 product — so the sprite dies with its light instead of outliving the
 			// renderer's cull. Godot's distance fade happens inside the renderer where this
 			// feed cannot see it, so the same window is applied here.
-			if (eyes > 0 && light.DistanceFadeEnabled)
+			if (eyes > 0 && light.DistanceFadeEnabled && light.IsInsideTree())
 			{
 				float end = light.DistanceFadeBegin + light.DistanceFadeLength;
 				Vector3 at = light.GlobalPosition;

@@ -103,6 +103,9 @@ public sealed partial class Engine_UiSpellAssign
 	/// <summary>Each pick's prompt words, in load order: the X row's, then the Y row's.</summary>
 	private readonly List<(Node3D Apply, Node3D Remove)> _promptWords = new();
 
+	/// <summary>The book the missing-band warning was last given for.</summary>
+	private Engine_UiOwnedBook? _promptWarnedBook;
+
 	private const string GlyphX = "icon_button_x";
 	private const string GlyphY = "icon_button_y";
 
@@ -140,7 +143,13 @@ public sealed partial class Engine_UiSpellAssign
 			Engine_UiTheme.FindByName(buttons, "icon_button_b") is not MeshInstance3D glyph ||
 			Engine_UiTheme.FindByName(buttons, "Done") is not MeshInstance3D done)
 		{
-			GD.PushWarning("[spell-wheel] the blade's prompt band is not in this book; no pick prompts");
+			// Once per book: this runs every frame the wheel is up.
+			if (!ReferenceEquals(_promptWarnedBook, book))
+			{
+				_promptWarnedBook = book;
+				GD.PushWarning("[spell-wheel] the blade's prompt band is not in this book; no pick prompts");
+			}
+
 			return;
 		}
 

@@ -73,22 +73,39 @@ public partial class GameInput : Node
 		// (`ev+40`). A START on a pad that is not player one's is the local drop-in
 		// (`sub_82402F70` 0x824031ec → `Coop_SetSharedScreenMode(game+140, 1, pad)`), and player
 		// two's handler takes only `ev.pad == Player+40` (`sub_829C1C08` 0x829c1c88).
-		ReadControlSettings(delta);
-		AdvancePointerButtons(delta);
-
-		bool devices = HasInputFocus();
-		UpdateKeyboardMouse(devices);
-		AssignPads(devices);
-		for (int pad = 0; pad < MaxControllers; ++pad)
+		// Each step under its own phase, so a slow frame here names the step on the debug channel.
+		using (Refii.Core.Engine_FramePhases.Measure("input.settings"))
 		{
-			PublishPad(pad, devices);
+			ReadControlSettings(delta);
+			AdvancePointerButtons(delta);
 		}
 
-		DriveRumble(devices);
+		bool devices = HasInputFocus();
+		using (Refii.Core.Engine_FramePhases.Measure("input.kbm"))
+		{
+			UpdateKeyboardMouse(devices);
+		}
+
+		using (Refii.Core.Engine_FramePhases.Measure("input.pads"))
+		{
+			AssignPads(devices);
+			for (int pad = 0; pad < MaxControllers; ++pad)
+			{
+				PublishPad(pad, devices);
+			}
+		}
+
+		using (Refii.Core.Engine_FramePhases.Measure("input.rumble"))
+		{
+			DriveRumble(devices);
+		}
 
 		// The mods' own actions, on the keyboard and on the pads as just assigned, under the
 		// same focus gate: edges only, posted to the mod event bus.
-		Refii.Mods.ModInput.Pump(devices);
+		using (Refii.Core.Engine_FramePhases.Measure("input.mods"))
+		{
+			Refii.Mods.ModInput.Pump(devices);
+		}
 	}
 
 	public override void _ExitTree() => SilenceRumble();
@@ -114,9 +131,14 @@ public partial class GameInput : Node
 	/// </summary>
 	/// <remarks>
 	/// <para>Change-driven through <see cref="Engine_Rumble"/>: Godot restarts the effect on every
-	/// <c>StartJoyVibration</c>, so a steady pair is told once and silence stops it once. The
-	/// effect runs until stopped (duration 0); the guest's own decay is what ends it, frame by
-	/// frame, the way it ended on the console.</para>
+	/// <c>StartJoyVibration</c>, so a steady pair is told once and silence stops it once, and the
+	/// pair is compared at the pad's own byte resolution so a decay restarts the effect only when
+	/// the motor would move. The effect runs until stopped (duration 0); the guest's own decay is
+	/// what ends it, frame by frame, the way it ended on the console.</para>
+	/// <para>None of this blocks: <c>Input::start_joy_vibration</c> takes the Input mutex and
+	/// writes a struct (core/input/input.cpp), and the device write — <c>SDL_RumbleJoystick</c>
+	/// in <c>JoypadSDL::process_events</c> — runs in <c>OS_LinuxBSD::run</c> before
+	/// <c>Main::iteration</c>, outside every node's <c>_Process</c>.</para>
 	/// <para>Under the focus rule: an unfocused window publishes a neutral pad and must not keep a
 	/// controller buzzing on the desk either, so <paramref name="devices"/> false silences every
 	/// pad, and the guest's pair is picked up again on the first focused frame.</para>

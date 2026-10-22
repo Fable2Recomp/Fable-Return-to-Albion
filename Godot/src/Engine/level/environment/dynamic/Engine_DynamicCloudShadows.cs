@@ -3,6 +3,16 @@ using Godot;
 
 namespace Refii.Level;
 
+/// <summary>Shader and global parameter names held once: a string literal is a fresh finalizable StringName per call.</summary>
+internal static class CloudShadowNames
+{
+    public static readonly StringName dynamic_cloud_mask = "dynamic_cloud_mask";
+    public static readonly StringName dynamic_cloud_projection = "dynamic_cloud_projection";
+    public static readonly StringName shadow_map_center = "shadow_map_center";
+    public static readonly StringName shadow_map_extent = "shadow_map_extent";
+    public static readonly StringName sun_engine = "sun_engine";
+}
+
 [Tool]
 public partial class Engine_DynamicCloudShadows : Node
 {
@@ -30,7 +40,7 @@ public partial class Engine_DynamicCloudShadows : Node
     public static void Sync(Node owner, ref Engine_DynamicCloudShadows? caster, ShaderMaterial? sky,
         bool enabled, Camera3D? camera, DirectionalLight3D? sun = null)
     {
-        Vector3 sunEngine = sky is not null ? sky.GetShaderParameter("sun_engine").AsVector3() : Vector3.Zero;
+        Vector3 sunEngine = sky is not null ? sky.GetShaderParameter(CloudShadowNames.sun_engine).AsVector3() : Vector3.Zero;
         if (!enabled || sky is null || sunEngine.Z <= 0.03f)
         {
             caster?.Disable();
@@ -106,14 +116,14 @@ public partial class Engine_DynamicCloudShadows : Node
         caster._source = sky;
         caster._resourcesChanged = false;
         if (!dirty) return;
-        caster._densityMaterial!.SetShaderParameter("shadow_map_center", mapCentre);
-        caster._densityMaterial.SetShaderParameter("shadow_map_extent", extent);
+        caster._densityMaterial!.SetShaderParameter(CloudShadowNames.shadow_map_center, mapCentre);
+        caster._densityMaterial.SetShaderParameter(CloudShadowNames.shadow_map_extent, extent);
         caster._densityViewport!.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
         caster.DensityUpdateCount++;
         if (!caster._published)
-            RenderingServer.GlobalShaderParameterSet("dynamic_cloud_mask", caster._densityViewport.GetTexture());
+            RenderingServer.GlobalShaderParameterSet(CloudShadowNames.dynamic_cloud_mask, caster._densityViewport.GetTexture());
         if (first || moved)
-            RenderingServer.GlobalShaderParameterSet("dynamic_cloud_projection", projection);
+            RenderingServer.GlobalShaderParameterSet(CloudShadowNames.dynamic_cloud_projection, projection);
         caster._projection = projection;
         caster._published = true;
     }
@@ -161,7 +171,7 @@ public partial class Engine_DynamicCloudShadows : Node
 
     private void Disable()
     {
-        if (_published) RenderingServer.GlobalShaderParameterSet("dynamic_cloud_projection", Vector4.Zero);
+        if (_published) RenderingServer.GlobalShaderParameterSet(CloudShadowNames.dynamic_cloud_projection, Vector4.Zero);
         _published = false;
         _lastRefresh = null;
         if (_densityViewport is not null) _densityViewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;

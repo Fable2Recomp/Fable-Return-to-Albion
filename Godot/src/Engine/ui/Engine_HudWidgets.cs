@@ -46,7 +46,11 @@ public static partial class Engine_HudWidgets
 	public const string AchievementToast = "AchievementToast";
 
 	/// <summary>Every widget, player one's before player two's.</summary>
-	public static readonly IReadOnlyList<Widget> All = new[]
+	public static IReadOnlyList<Widget> All => Table;
+
+	// An array walked by index: the interface enumerator is an allocation per lookup, and
+	// `Find` runs per widget per frame from the HUD's mount pass.
+	private static readonly Widget[] Table =
 	{
 		new Widget(Prefix + WorldIcons, WorldIcons, 1, Engine_HudLayout.Anchor.Centre, new Vector2(96f, 48f),
 			"the pooled world prompts (talk, open, pick up) and the hold meter, over their things"),
@@ -71,11 +75,25 @@ public static partial class Engine_HudWidgets
 	/// <summary>The widget an id names, or null.</summary>
 	public static Widget? Find(string id)
 	{
-		foreach (Widget widget in All)
+		for (int i = 0; i < Table.Length; ++i)
 		{
-			if (widget.Id == id)
+			if (Table[i].Id == id)
 			{
-				return widget;
+				return Table[i];
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>The widget of a reader by name for one player (0 the screen's, 1, 2), or null.</summary>
+	private static Widget? FindByPlayer(string name, int player)
+	{
+		for (int i = 0; i < Table.Length; ++i)
+		{
+			if (Table[i].Player == player && Table[i].Name == name)
+			{
+				return Table[i];
 			}
 		}
 
@@ -95,9 +113,14 @@ public static partial class Engine_HudWidgets
 	/// </summary>
 	public static string DeclaredId(string name, bool seatTwo, bool localPlayerTwo)
 	{
-		string one = Prefix + name;
-		string two = one + "2";
-		return (seatTwo || localPlayerTwo) && Find(two) is not null ? two : one;
+		// The ids are the table's own strings — per frame per widget, a concatenation here
+		// was most of the HUD mount pass's garbage.
+		if ((seatTwo || localPlayerTwo) && FindByPlayer(name, 2) is { } two)
+		{
+			return two.Id;
+		}
+
+		return (FindByPlayer(name, 1) ?? FindByPlayer(name, 0))?.Id ?? Prefix + name;
 	}
 
 	/// <summary>What the mods state about one widget, composed.</summary>

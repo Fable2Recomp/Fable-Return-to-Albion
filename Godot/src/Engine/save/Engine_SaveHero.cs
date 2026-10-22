@@ -219,146 +219,8 @@ public static class Engine_SaveHero
 
 	// --- mainsave.bin -----------------------------------------------------------------------
 
-	private sealed class Node
-	{
-		public string Name = string.Empty;
-		public Dictionary<string, object> Attributes = new();
-		public object? Text;
-		public List<Node> Children = new();
-
-		public Node? Child(string name) => Children.Find(c => c.Name == name);
-		public IEnumerable<Node> All(string name) => Children.FindAll(c => c.Name == name);
-	}
-
-	private sealed class Reader
-	{
-		private readonly byte[] _b;
-		private int _p;
-		private readonly List<string> _strings = new();
-
-		public Reader(byte[] bytes) => _b = bytes;
-		public bool AtEnd => _p >= _b.Length;
-
-		private byte U8() => _b[_p++];
-		private ushort U16() { ushort v = (ushort)((_b[_p] << 8) | _b[_p + 1]); _p += 2; return v; }
-		private uint U32() { uint v = (uint)((_b[_p] << 24) | (_b[_p + 1] << 16) | (_b[_p + 2] << 8) | _b[_p + 3]); _p += 4; return v; }
-
-		private string Name()
-		{
-			int index = U16();
-			if (index == _strings.Count)
-			{
-				int length = (int)U32();
-				if (length < 1 || length > 1024 * 1024 || length > _b.Length - _p)
-					throw new InvalidDataException("invalid save string length");
-				string text = Encoding.Latin1.GetString(_b, _p, length).TrimEnd('\0');
-				_p += length;
-				_strings.Add(text);
-			}
-
-			return _strings[index];
-		}
-
-		private object Value()
-		{
-			byte type = U8();
-			return type switch
-			{
-				1 => Name(),
-				2 => U32(),
-				3 => unchecked((int)U32()),
-				4 => BitConverter.Int32BitsToSingle(unchecked((int)U32())),
-				5 => U8() != 0,
-				_ => throw new InvalidDataException($"value type {type} at {_p - 1}"),
-			};
-		}
-
-		/// <summary>One document: a fresh string table, elements to depth zero, then `05`.</summary>
-		public Node Document()
-		{
-			_strings.Clear();
-			var stack = new Stack<Node>();
-			Node? root = null;
-			while (true)
-			{
-				byte token = U8();
-				switch (token)
-				{
-					case 0:
-					{
-						if (stack.Count >= 128) throw new InvalidDataException("save nesting limit exceeded");
-						var node = new Node { Name = Name() };
-						if (stack.Count == 0) root = node; else stack.Peek().Children.Add(node);
-						stack.Push(node);
-						break;
-					}
-					case 3:
-					{
-						string key = Name();
-						stack.Peek().Attributes[key] = Value();
-						break;
-					}
-					case 2:
-						stack.Peek().Text = Value();
-						break;
-					case 1:
-						stack.Pop();
-						if (stack.Count == 0)
-						{
-							if (U8() != 5) throw new InvalidDataException("document did not end with 05");
-							return root!;
-						}
-						break;
-					default:
-						throw new InvalidDataException($"token {token} at {_p - 1}");
-				}
-			}
-		}
-	}
-
-	private static byte[] Inflate(string path)
-	{
-		if (new FileInfo(path).Length > 64 * 1024 * 1024)
-			throw new InvalidDataException("save exceeds the supported size limit");
-		byte[] file = File.ReadAllBytes(path);
-		// The chunks are one zlib stream: strip the two length words from each and feed the
-		// payloads to a single inflater.
-		using var joined = new MemoryStream();
-		int pos = 0;
-		while (pos + 8 <= file.Length)
-		{
-			int compressed = (file[pos] << 24) | (file[pos + 1] << 16) | (file[pos + 2] << 8) | file[pos + 3];
-			pos += 8;
-			if (compressed <= 0 || compressed > file.Length - pos)
-				throw new InvalidDataException("save compression chunk is truncated");
-			joined.Write(file, pos, compressed);
-			pos += compressed;
-		}
-
-		joined.Position = 0;
-		using var inflater = new ZLibStream(joined, CompressionMode.Decompress);
-		using var output = new MemoryStream();
-
-		// THE GUEST NEVER FINISHES THE STREAM: every chunk ends on a sync flush, the last one
-		// too, so a strict inflater reports a truncated stream at the very end. Everything it
-		// produced up to then is the whole file; keep it.
-		var buffer = new byte[1 << 16];
-		try
-		{
-			int read;
-			while ((read = inflater.Read(buffer, 0, buffer.Length)) > 0)
-			{
-				output.Write(buffer, 0, read);
-				if (output.Length > 128 * 1024 * 1024)
-					throw new IOException("save exceeds the supported decompressed size limit");
-			}
-		}
-		catch (InvalidDataException) when (output.Length > 0)
-		{
-		}
-
-		return output.ToArray();
-	}
+	// The token stream and its chunks are SaveStream (Engine_SaveStream.cs): one codec for the
+	// reader here, the mod filter and the console export.
 
 	private static uint Fnv1(string text)
 	{
@@ -378,10 +240,10 @@ public static class Engine_SaveHero
 			return false;
 		}
 
-		byte[] inflated = Inflate(path);
-		var reader = new Reader(inflated);
-		Node header = reader.Document();         // Header
-		Node manager = reader.Document();        // EntityManager
+		byte[] inflated = SaveStream.Inflate(File.ReadAllBytes(path));
+		SaveStream stream = SaveStream.Parse(inflated);
+		SaveNode header = stream.Documents.Count > 0 ? stream.Documents[0] : new SaveNode("?");
+		SaveNode manager = stream.Documents.Count > 1 ? stream.Documents[1] : new SaveNode("?");
 		if (manager.Name != "EntityManager" || manager.Child("Entities") is not { } entities)
 		{
 			LastError = $"after {inflated.Length} inflated byte(s): documents '{header.Name}' then '{manager.Name}' " +
@@ -389,8 +251,8 @@ public static class Engine_SaveHero
 			return false;
 		}
 
-		Node? heroEntity = null;
-		foreach (Node entity in entities.All("Entity"))
+		SaveNode? heroEntity = null;
+		foreach (SaveNode entity in entities.All("Entity"))
 		{
 			if (entity.Child("UniqueID") is { } uid &&
 				uid.Child("UIDGameID")?.Text is uint game && game == 1u &&
@@ -406,24 +268,24 @@ public static class Engine_SaveHero
 		if (heroEntity?.Child("EntityComponents") is not { } components)
 		{
 			int total = 0;
-			foreach (Node _ in entities.All("Entity")) ++total;
+			foreach (SaveNode _ in entities.All("Entity")) ++total;
 			LastError = $"{total} entities, none with UniqueID {{1,0}} carrying EntityComponents";
 			return false;
 		}
 
-		var byHash = new Dictionary<uint, Node>();
-		foreach (Node ec in components.All("EC"))
+		var byHash = new Dictionary<uint, SaveNode>();
+		foreach (SaveNode ec in components.All("EC"))
 		{
-			if (ec.Attributes.TryGetValue("Hash", out object? hash) && hash is uint key)
+			if (ec.TryGetAttribute("Hash", out object? hash) && hash is uint key)
 			{
 				byHash[key] = ec;
 			}
 		}
 
 		// Inventory first: worn items index into it.
-		if (byHash.TryGetValue(Fnv1("InventoryComponent"), out Node? inventory))
+		if (byHash.TryGetValue(Fnv1("InventoryComponent"), out SaveNode? inventory))
 		{
-			foreach (Node item in inventory.All("InventoryItem"))
+			foreach (SaveNode item in inventory.All("InventoryItem"))
 			{
 				uint record = item.Child("RecordID")?.Text is uint r ? r : 0u;
 				int count = item.Child("Count")?.Text is int c ? c : 1;
@@ -440,9 +302,9 @@ public static class Engine_SaveHero
 			}
 		}
 
-		if (byHash.TryGetValue(Fnv1("AppearanceModifierManagerComponent"), out Node? modifiers))
+		if (byHash.TryGetValue(Fnv1("AppearanceModifierManagerComponent"), out SaveNode? modifiers))
 		{
-			foreach (Node modifier in modifiers.All("Modifier"))
+			foreach (SaveNode modifier in modifiers.All("Modifier"))
 			{
 				if (modifier.Child("InventoryIndex")?.Text is int index && ItemAtUnit(hero.Inventory, index) is uint record)
 				{
@@ -451,13 +313,13 @@ public static class Engine_SaveHero
 			}
 		}
 
-		if (byHash.TryGetValue(Fnv1("WeaponSetManagerComponent"), out Node? weapons))
+		if (byHash.TryGetValue(Fnv1("WeaponSetManagerComponent"), out SaveNode? weapons))
 		{
 			hero.Melee = weapons.Child("LastMeleeWeaponID")?.Text is uint m ? m : 0u;
 			hero.Ranged = weapons.Child("LastRangedWeaponID")?.Text is uint g ? g : 0u;
 		}
 
-		if (byHash.TryGetValue(Fnv1("StatsComponent"), out Node? stats))
+		if (byHash.TryGetValue(Fnv1("StatsComponent"), out SaveNode? stats))
 		{
 			hero.ChapterProgress = stats.Child("ChapterProgress")?.Text is float chapter ? chapter : 0f;
 			hero.Morality = stats.Child("Morality")?.Text is float mo ? mo : hero.Morality;
@@ -469,7 +331,7 @@ public static class Engine_SaveHero
 			hero.Strength = stats.Child("StrengthPercentage")?.Text is float st ? st : 0f;
 			hero.Skill = stats.Child("SkillPercentage")?.Text is float sk ? sk : 0f;
 			hero.Will = stats.Child("WillPercentage")?.Text is float wi ? wi : 0f;
-			foreach (Node ability in stats.All("HeroAbility"))
+			foreach (SaveNode ability in stats.All("HeroAbility"))
 			{
 				if (ability.Child("Index")?.Text is int index && ability.Child("Level")?.Text is int level &&
 					index >= 0 && index < hero.AbilityLevels.Length)
@@ -478,13 +340,13 @@ public static class Engine_SaveHero
 				}
 			}
 			hero.Title = stats.Child("TitleRecordID")?.Text is uint title ? title : 0u;
-			foreach (Node titleNode in stats.All("UnlockedTitleRecordName"))
+			foreach (SaveNode titleNode in stats.All("UnlockedTitleRecordName"))
 				if (titleNode.Child("Name")?.Text is string titleName) hero.UnlockedTitles.Add(titleName);
-			foreach (Node titleNode in stats.All("FreeToBuyTitleRecordName"))
+			foreach (SaveNode titleNode in stats.All("FreeToBuyTitleRecordName"))
 				if (titleNode.Child("Name")?.Text is string titleName) hero.FreeTitles.Add(titleName);
 		}
 
-		if (byHash.TryGetValue(Fnv1("ExperienceComponent"), out Node? experience))
+		if (byHash.TryGetValue(Fnv1("ExperienceComponent"), out SaveNode? experience))
 		{
 			string[] types = { "General", "Strength", "Skill", "Will" };
 			for (int i = 0; i < types.Length; i++)
@@ -494,28 +356,28 @@ public static class Engine_SaveHero
 			}
 		}
 
-		if (byHash.TryGetValue(Fnv1("ExpressionPerformerComponent"), out Node? expressions))
-			foreach (Node info in expressions.All("ExpressionInfo"))
+		if (byHash.TryGetValue(Fnv1("ExpressionPerformerComponent"), out SaveNode? expressions))
+			foreach (SaveNode info in expressions.All("ExpressionInfo"))
 				if (info.Child("Expression") is { } expression && expression.Child("Locked")?.Text is false &&
 					expression.Child("RecordId")?.Text is uint record && record != 0)
 					hero.UnlockedExpressions.Add(record);
 
-		if (byHash.TryGetValue(Fnv1("SpellManagerComponent"), out Node? spells))
+		if (byHash.TryGetValue(Fnv1("SpellManagerComponent"), out SaveNode? spells))
 			for (int direction = 0; direction < 2; direction++)
 				for (int slot = 0; slot < 5; slot++)
 					if (spells.Child($"AssignedSpells{direction}_{slot}")?.Text is int spell)
 						hero.AssignedSpells.Add((direction, slot, spell));
 
-		if (byHash.TryGetValue(Fnv1("GraphicAppearanceMorphComponent"), out Node? morph))
+		if (byHash.TryGetValue(Fnv1("GraphicAppearanceMorphComponent"), out SaveNode? morph))
 		{
 			hero.Face = morph.Child("CharacterUID")?.Text is uint face ? face : 0u;
 		}
 
-		if (byHash.TryGetValue(Fnv1("QuestTrackerComponent"), out Node? quests))
+		if (byHash.TryGetValue(Fnv1("QuestTrackerComponent"), out SaveNode? quests))
 		{
-			foreach (Node quest in quests.All("Quest"))
+			foreach (SaveNode quest in quests.All("Quest"))
 			{
-				Node? info = quest.Child("QuestInfo");
+				SaveNode? info = quest.Child("QuestInfo");
 				if (info?.Child("Completed")?.Text is true && info.Child("QuestName")?.Text is string name)
 					hero.CompletedQuests.Add(name);
 			}
@@ -529,9 +391,9 @@ public static class Engine_SaveHero
 	/// `SniffingLevel`), skipping a co-op partner's dog (`RefiiPartnerDog`). Its `RecordID` is
 	/// the definition — the breed — in the same record-id space the inventory uses.
 	/// </summary>
-	private static void ReadDog(Node entities, Hero hero)
+	private static void ReadDog(SaveNode entities, Hero hero)
 	{
-		foreach (Node entity in entities.All("Entity"))
+		foreach (SaveNode entity in entities.All("Entity"))
 		{
 			if (entity.Child("Name")?.Text is "RefiiPartnerDog" ||
 				entity.Child("EntityComponents") is not { } components)
@@ -539,8 +401,8 @@ public static class Engine_SaveHero
 				continue;
 			}
 
-			Node? dog = null;
-			foreach (Node ec in components.All("EC"))
+			SaveNode? dog = null;
+			foreach (SaveNode ec in components.All("EC"))
 			{
 				if (ec.Child("SniffingLevel") is not null)
 				{
@@ -557,7 +419,7 @@ public static class Engine_SaveHero
 			hero.DogRecord = entity.Child("RecordID")?.Text is uint record ? record : 0u;
 			hero.DogSniffing = dog.Child("SniffingLevel")?.Text is int sniffing ? sniffing : 0;
 			hero.DogCombat = dog.Child("CombatLevel")?.Text is int combat ? combat : 0;
-			foreach (Node trick in dog.All("TrickRecordID"))
+			foreach (SaveNode trick in dog.All("TrickRecordID"))
 			{
 				if (trick.Text is uint id && id != 0u)
 				{
@@ -566,14 +428,14 @@ public static class Engine_SaveHero
 			}
 
 			var inventory = new List<(uint Record, int Count)>();
-			foreach (Node ec in components.All("EC"))
+			foreach (SaveNode ec in components.All("EC"))
 			{
 				if (ec.Child("PlayerDefinedName")?.Text is string name)
 				{
 					hero.DogName = name;
 				}
 
-				foreach (Node item in ec.All("InventoryItem"))
+				foreach (SaveNode item in ec.All("InventoryItem"))
 				{
 					if (item.Child("RecordID")?.Text is uint r && r != 0u)
 					{
@@ -582,9 +444,9 @@ public static class Engine_SaveHero
 				}
 			}
 
-			foreach (Node ec in components.All("EC"))
+			foreach (SaveNode ec in components.All("EC"))
 			{
-				foreach (Node modifier in ec.All("Modifier"))
+				foreach (SaveNode modifier in ec.All("Modifier"))
 				{
 					if (modifier.Child("InventoryIndex")?.Text is int index && ItemAtUnit(inventory, index) is uint worn)
 					{
@@ -597,26 +459,26 @@ public static class Engine_SaveHero
 		}
 	}
 
-	private static InventoryInstance? ReadInventoryInstance(Node item)
+	private static InventoryInstance? ReadInventoryInstance(SaveNode item)
 	{
 		uint declared = Unsigned(item.Child("NumInstanceData"), 0);
 		var data = new InventoryInstance();
 		int found = 0;
-		foreach (Node instance in item.All("InstanceData"))
+		foreach (SaveNode instance in item.All("InstanceData"))
 		{
 			found++;
 			switch (Unsigned(instance.Child("InstanceType")))
 			{
 				case 1 when data.Augmentations is null:
 					data.Augmentations = new();
-					foreach (Node augment in instance.All("Augmentation"))
+					foreach (SaveNode augment in instance.All("Augmentation"))
 						data.Augmentations.Add(new(Unsigned(augment.Child("Primary")), Unsigned(augment.Child("Secondary"))));
 					break;
 				case 2 when data.Dyes is null:
 					data.Dyes = new Dye[2];
 					for (int i = 0; i < 2; i++)
 					{
-						Node colour = instance.Child("Colour" + (i + 1)) ?? throw new InvalidDataException("Missing item dye colour.");
+						SaveNode colour = instance.Child("Colour" + (i + 1)) ?? throw new InvalidDataException("Missing item dye colour.");
 						if (instance.Child("Brightness" + (i + 1))?.Text is not float brightness || !float.IsFinite(brightness))
 							throw new InvalidDataException("Invalid item dye brightness.");
 						data.Dyes[i] = new(checked((byte)Unsigned(colour.Child("Red"))), checked((byte)Unsigned(colour.Child("Green"))),
@@ -632,7 +494,7 @@ public static class Engine_SaveHero
 		return found == 0 ? null : data;
 	}
 
-	private static uint Unsigned(Node? node, uint? fallback = null) => node?.Text switch
+	private static uint Unsigned(SaveNode? node, uint? fallback = null) => node?.Text switch
 	{
 		uint value => value,
 		int value when value >= 0 => (uint)value,

@@ -13,12 +13,22 @@ namespace Refii.Core;
 /// <para>The motors are XInput's: the LEFT motor is the heavy low-frequency one, the RIGHT the
 /// light high-frequency one. Godot names the same pair by feel — <c>strong</c> and <c>weak</c> —
 /// so left maps to strong and right to weak. Speeds are 0..65535.</para>
+/// <para>THE PAD'S OWN STEP. The 360 pad's rumble output report carries ONE BYTE per motor;
+/// XInput scales the WORD the game states down to it (<c>speed &gt;&gt; 8</c>), so the console's
+/// motor never saw finer than 256 steps. The pair is quantised to that byte
+/// (<see cref="Quantise"/>) before it is compared, so a decaying effect restarts the joypad's
+/// effect only when the byte the pad would have received changes, and a speed under one step
+/// is the silence it was on the console. Full scale stays full: the byte is scaled back up by
+/// 0x101 so 0xFF reads 0xFFFF.</para>
 /// <para>No Godot types: the Godot calls stay in <c>GameInput</c>, and this is what the tests cover.</para>
 /// </remarks>
 public sealed class Engine_Rumble
 {
 	/// <summary>XInput's full motor speed.</summary>
 	public const uint FullScale = 0xFFFF;
+
+	/// <summary>Speeds per step of the pad's motor byte.</summary>
+	public const uint Quantum = 0x100;
 
 	/// <summary>What the host joypad must be told after an observation.</summary>
 	public enum Verdict
@@ -33,10 +43,10 @@ public sealed class Engine_Rumble
 		Stop,
 	}
 
-	/// <summary>The left motor speed last applied, 0..65535.</summary>
+	/// <summary>The left motor speed last applied, quantised, 0..65535.</summary>
 	public uint Left { get; private set; }
 
-	/// <summary>The right motor speed last applied, 0..65535.</summary>
+	/// <summary>The right motor speed last applied, quantised, 0..65535.</summary>
 	public uint Right { get; private set; }
 
 	/// <summary>Whether the joypad was last told to run.</summary>
@@ -52,13 +62,20 @@ public sealed class Engine_Rumble
 	public static float Magnitude(uint speed) => Math.Min(speed, FullScale) / (float)FullScale;
 
 	/// <summary>
+	/// A stated speed at the pad's own resolution: the byte the 360 pad's report carries, scaled
+	/// back to full range so 0xFF00..0xFFFF reads 0xFFFF and anything under 0x100 reads 0.
+	/// </summary>
+	public static uint Quantise(uint speed) => (Math.Min(speed, FullScale) / Quantum) * 0x101u;
+
+	/// <summary>
 	/// The guest's pair this frame. <see cref="Verdict.Start"/> whenever a non-silent pair differs
-	/// from the one running; <see cref="Verdict.Stop"/> on the first silent frame after a run.
+	/// from the one running at the pad's resolution; <see cref="Verdict.Stop"/> on the first silent
+	/// frame after a run.
 	/// </summary>
 	public Verdict Observe(uint left, uint right)
 	{
-		left = Math.Min(left, FullScale);
-		right = Math.Min(right, FullScale);
+		left = Quantise(left);
+		right = Quantise(right);
 		if (left == 0 && right == 0)
 		{
 			return Silence();

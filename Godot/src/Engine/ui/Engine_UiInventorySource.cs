@@ -1029,11 +1029,10 @@ public static class Engine_UiInventorySource
 	private static string LabelOf(Refii.Host.HostBridge.InventoryRecord record, string tag)
 	{
 		// Try resolving via Engine_ItemNames first (unified DRY path matching editor & item pages):
-		if (Globals is { } gdb &&
-			Engine_ItemDetails.BuildOne(gdb, record.RecordId) is { } detail)
+		if (Globals is { } gdb)
 		{
-			string displayName = Engine_ItemNames.DisplayNameOf(detail);
-			if (!string.IsNullOrEmpty(displayName) && displayName != detail.Label)
+			string displayName = DisplayNameOf(gdb, record.RecordId);
+			if (displayName.Length != 0)
 			{
 				return record.Count > 1 ? $"{displayName} x{record.Count}" : displayName;
 			}
@@ -1048,6 +1047,38 @@ public static class Engine_UiInventorySource
 
 		return record.Count > 1 && record.Category != Category.Suits ? $"{text} x{record.Count}" : text;
 	}
+
+	/// <summary>
+	/// The item's resolved display name, or empty when the item page's resolver yields nothing
+	/// usable (the caller then falls back to the Babel tag). Cached per record: `BuildOne` is a
+	/// full item read — definition, appearance, every stat component, augments — and the Items
+	/// screen asked it for every carried item in every one of its nine categories on every
+	/// open, and again on every refresh sample. The name depends only on the GDB and the text
+	/// banks it resolves through, so an entry is good while those are the same instances.
+	/// </summary>
+	private static string DisplayNameOf(GdbMulti gdb, uint recordId)
+	{
+		Refii.Text.TextBank? bank = Engine_BnkTextBankLoader.Shared;
+		if (DisplayNames.TryGet(recordId, out string? name, gdb, bank))
+		{
+			return name;
+		}
+
+		name = string.Empty;
+		if (Engine_ItemDetails.BuildOne(gdb, recordId) is { } detail)
+		{
+			string resolved = Engine_ItemNames.DisplayNameOf(detail);
+			if (!string.IsNullOrEmpty(resolved) && resolved != detail.Label)
+			{
+				name = resolved;
+			}
+		}
+
+		DisplayNames.Put(recordId, name, gdb, bank);
+		return name;
+	}
+
+	private static readonly Engine_UiIdentityCache<uint, string> DisplayNames = new();
 
 	private static string IconOf(Refii.Host.HostBridge.InventoryRecord record) =>
 		ItemString(record.RecordId, IconField);

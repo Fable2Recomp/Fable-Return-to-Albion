@@ -185,8 +185,10 @@ public partial class GameInput
 		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
 			HostBridge.GetPauseState() is not { ModalMode: not 1 };
 
-		// An open embedded window (the F6 dev menu, its Tracy panels) wants the cursor.
-		bool windowOpen = GetTree()?.Root?.GetEmbeddedSubwindows().Count > 0;
+		// The open dev menu (F6, the one embedded window; its Tracy panels are its tabs) wants
+		// the cursor. Its own flag, not `GetEmbeddedSubwindows()`: that builds a Godot Array
+		// every frame, a finalizable handle for the collector.
+		bool windowOpen = GameDevMenu.WindowOpen;
 		bool capture = MouseInput && MouseLock && devices && Playing && !InOverlay && !windowOpen && !GameDevMenu.KeyboardCaptured;
 		Godot.Input.MouseModeEnum wanted =
 			capture ? Godot.Input.MouseModeEnum.Captured : Godot.Input.MouseModeEnum.Visible;
@@ -214,7 +216,10 @@ public partial class GameInput
 		HostBridge.SetMouseLookDevice(Engine_UiInputMode.KeyboardMouse && MouseInput);
 
 		Engine_UiKeyGlyphs.LabelFor ??= KeyLabel;
-		Engine_UiKeyGlyphs.Update();
+		using (Refii.Core.Engine_FramePhases.Measure("input.glyphs"))
+		{
+			Engine_UiKeyGlyphs.Update();
+		}
 
 		if (Down("melee_mode"))
 		{

@@ -163,6 +163,11 @@ enum refii_mod_event_kind : int32_t {
 /// it): never a bus event, posted whatever the mask says.
 #define REFII_MOD_HOST_MENU_KIND 1003
 
+/// The kind a written save package crosses to Godot under (`player=N,name='X'`, posted by the
+/// player-state hooks after the guest closed the package; Engine_ModSaveGate stamps the save's
+/// sidecar with the mod set): never a bus event, posted whatever the mask says.
+#define REFII_MOD_HOST_SAVE_KIND 1004
+
 /// A subscriber: `event` is the kind's struct (below), `user` is what was registered with it.
 typedef void (*refii_mod_event_fn)(void* event, void (*user)(void));
 

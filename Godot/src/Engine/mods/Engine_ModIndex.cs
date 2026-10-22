@@ -119,11 +119,14 @@ public static class ModIndex
 		return overlays;
 	}
 
-	/// <summary>Reads the order and installs, and resolves the overlays in one step.</summary>
+	/// <summary>
+	/// Reads the order and installs (<see cref="ModSession.Resolve"/>: a co-op session's set while
+	/// one is held, else the launcher's) and resolves the overlays in one step.
+	/// </summary>
 	public static List<ModOverlay> ResolveOverlays(string modsRoot, out ModLoadOrder order)
 	{
-		order = ModLoadOrder.Read(modsRoot);
-		return ResolveOverlays(modsRoot, order, ModWorkspace.DiscoverModInstalls(modsRoot));
+		(order, List<ModInstall> installs) = ModSession.Resolve(modsRoot);
+		return ResolveOverlays(modsRoot, order, installs);
 	}
 
 	/// <summary>The overlay list in the shape <see cref="BnkFileSystem.Mount"/> takes.</summary>

@@ -250,6 +250,13 @@ public partial class GameFx : Node3D
         // A child, so its step follows this node's _Process in tree order — after the live
         // nodes are placed — and leaves with it on a level change; see Engine_FxDriver.
         AddChild(new Engine_FxDriver { Name = "FxDriver" });
+
+        // The bank's textures decoded off-thread now, so a spell or impact that first names one
+        // mid-play does not read and decode it on the frame it appears.
+        if (_draw)
+        {
+            FableFx.PrefetchTextures();
+        }
     }
 
     /// <summary>The per-frame effects list, reused.</summary>

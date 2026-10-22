@@ -296,6 +296,7 @@ public static class Engine_LevelLights
 	/// <summary>Puts every placed fixture at its authored reach times <see cref="RangeScale"/>.</summary>
 	public static void ApplyRangeScale()
 	{
+		LightMetaGeneration++;
 		lock (FxRegistry)
 		{
 			foreach (Light3D node in FxRegistry)
@@ -403,6 +404,7 @@ public static class Engine_LevelLights
 		ComputeEffectiveLightValues(node, out float baseEnergy, out float authoredRange);
 		node.SetMeta(BaseEnergyMeta, baseEnergy);
 		node.SetMeta(AuthoredRangeMeta, authoredRange);
+		LightMetaGeneration++;
 
 		float fade = Engine_LightShadowBudget.VisibilityFactorOf(node);
 		node.LightEnergy = baseEnergy * fade;
@@ -1235,6 +1237,15 @@ public static class Engine_LevelLights
 	public const uint EntityCasterLayerMask = 1u << (EntityCasterLayer - 1);
 
 	public const string BaseEnergyMeta = "base_energy";
+
+	/// <summary>
+	/// Bumped whenever a placed light's stated values change in place — its base energy, its
+	/// reach, a scale reload — so a reader caching them per light (the shadow budget) re-reads
+	/// once instead of asking every light every pass.
+	/// </summary>
+	public static int LightMetaGeneration { get; private set; }
+
+	public static void BumpLightMetaGeneration() => LightMetaGeneration++;
 
 	/// <summary>
 	/// Static architecture and rigid props (outdoor Layer 1 + indoor Layer 14), excluding lamp-host

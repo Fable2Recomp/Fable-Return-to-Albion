@@ -103,6 +103,10 @@
 //   fx_stop ID           ends it: the guest's kill (a zero-frame fade) and our reference released
 //   fx_reload            the guest's particle bank read again through its own loader after a
 //                        remount (particle_dress.cpp ReloadParticleBank)
+//   gdb_reload PATH      a remounted database (`globals/globals.gdb.tu`, `data/globals/globals.gdb`)
+//                        read again by the guest's own loader, its records mapped and every older
+//                        copy's values updated in place (gdb_hot_reload.cpp)
+//   gdb_revert PATH HASH...  rows a patch states no more, mapped back to PATH's base records
 //   frontend_lua CHUNK...  a chunk in the front end's mod Lua (mod_frontend_lua.cpp): the current
 //                        Gameface presentation's state, the mods' front-end chunk run in it first
 //   ability_clear · ability_declare … · ability_buy P NAME · ability_refund P NAME
@@ -139,6 +143,9 @@ namespace refii::vfs {
 // particle_dress.cpp
 void TintFxInstance(const PPCContext& ctx, uint8_t* base, uint32_t instance, const float* rgb);
 bool ReloadParticleBank(PPCContext& ctx, uint8_t* base);
+// gdb_hot_reload.cpp
+void GdbReload(PPCContext& ctx, uint8_t* base, const std::string& path);
+void GdbRevert(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w);
 void PumpParticleBank(PPCContext& ctx, uint8_t* base);
 // mod_frontend_lua.cpp
 bool GameLuaUp(uint8_t* base);
@@ -1196,6 +1203,10 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     guest_fx::Stop(ctx, base, U(w, 1));
   } else if (op == "fx_reload") {
     refii::vfs::ReloadParticleBank(ctx, base);
+  } else if (op == "gdb_reload" && w.size() >= 2) {
+    refii::vfs::GdbReload(ctx, base, w[1]);
+  } else if (op == "gdb_revert" && w.size() >= 3) {
+    refii::vfs::GdbRevert(ctx, base, w);
   } else if (op == "frontend_lua" && w.size() >= 2) {
     refii::vfs::RunFrontEndLua(ctx, base, w[1]);
   } else if (op == "mask_word" && w.size() >= 4) {

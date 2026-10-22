@@ -1154,8 +1154,15 @@ uint32_t g_hit_sequence = 0;
 uint32_t g_impact_serial = 0;
 int32_t g_impact_hits = 0;
 
+/// Whether Godot asked for a verdict on `kind` (RefiiHost.on_verdict, and the save gate's own on
+/// start_game): a verdict runs inside Dispatch, so it counts as a subscriber.
+bool HostVerdictWants(int32_t kind) {
+  return kind >= 0 && kind < refii::mods::kHostMaskCapacity &&
+         ((refii_bridge_mod_verdict_mask_word(kind / 64) >> (kind % 64)) & 1u) != 0u;
+}
+
 bool AnySubscriber(int32_t kind) {
-  if (LuaWants(kind) || refii::mods::HostWantsEvent(kind) || RelayWants(kind)) {
+  if (LuaWants(kind) || refii::mods::HostWantsEvent(kind) || RelayWants(kind) || HostVerdictWants(kind)) {
     return true;
   }
   for (const Subscription& s : Subscriptions()) {
@@ -5831,8 +5838,8 @@ REX_EXTERN(rex_lhGameFlowGuiMode_Remove) {
 
 // ---------------------------------------------------------------------------------------------
 // THE FRONT END STARTS A GAME (core/refii_mod_events.h StartGameEvent): r3 = the front-end
-// object, r4 = the save name LHString, r5 = the start level LHString. Before the call, read-only.
-// There is no game VM on the title: Lua hears it in the mods' front-end state (mod/frontend.lua),
+// object, r4 = the save name LHString, r5 = the start level LHString. Before the call; a cancel
+// refuses the start. There is no game VM on the title: Lua hears it in the mods' front-end state (mod/frontend.lua),
 // as the mod_menu_row / mod_message_box commands deliver theirs. TU1 0x82379838 / disc 0x8237A2D8.
 // ---------------------------------------------------------------------------------------------
 REX_EXTERN(rex_lhFrontEnd_SetStartGameTarget) {
@@ -5859,6 +5866,12 @@ REX_EXTERN(rex_lhFrontEnd_SetStartGameTarget) {
       chunk += fields;
       chunk += "}) end";
       refii::vfs::RunFrontEndLua(ctx, base, chunk);
+    }
+    // A cancel leaves the front end where it is: the host's save gate refuses a load whose
+    // save was written under mods now missing until the player answers its box, then posts the
+    // same commit again (Engine_ModSaveGate).
+    if (e.cancel) {
+      return;
     }
   }
   __imp__rex_lhFrontEnd_SetStartGameTarget(ctx, base);

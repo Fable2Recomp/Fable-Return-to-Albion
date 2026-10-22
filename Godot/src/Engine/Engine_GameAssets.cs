@@ -462,6 +462,12 @@ public partial class Engine_GameAssets : Node
 
 		// TITLE UPDATE PATCHES: Compose multi-mod GDB databases and .save layer maps in load order:
 		var composites = Refii.Gdb.GdbPatchCompositor.Apply(mounted, overlays, ModsRoot);
+		// WHAT THE GUEST WILL HAVE: at boot it loads these itself; during a run the remount's finish
+		// has its loader read the changed ones again (Engine_GdbHotReload).
+		Refii.Gdb.GdbHotReload.Observe(composites, live);
+		// THE SAVE STAMP'S RECORD SETS: what each mod adds, so a save written now can be filtered
+		// later for a mod no longer installed (Engine_ModSaveStamp / Engine_ModSaveGate).
+		Refii.Mods.ModSaveStamp.RecordsByMod = Refii.Gdb.GdbPatchCompositor.AddedRecordsByMod(mounted, overlays);
 		Refii.Gdb.SaveMapCompositor.Apply(mounted, overlays);
 		foreach (Refii.Gdb.CompositeGdbResult comp in composites)
 		{

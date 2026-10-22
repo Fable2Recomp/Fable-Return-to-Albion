@@ -124,15 +124,18 @@ public static class Engine_Clouds
         float[] lightDirection,
         float[] lightColour)
     {
-        foreach (Node child in container.GetChildren())
+        // By index, names by instance: GetChildren() and Node.Name each make a finalizable
+        // handle, and this runs at the atmosphere rate.
+        for (int i = 0, count = container.GetChildCount(); i < count; i++)
         {
+            Node child = container.GetChild(i);
             if (child is not MeshInstance3D mesh ||
                 mesh.MaterialOverride is not ShaderMaterial material)
             {
                 continue;
             }
 
-            string name = child.Name.ToString();
+            string name = Refii.Core.Engine_NodeNames.Of(child);
             if (!name.StartsWith("CloudLayer", StringComparison.Ordinal) ||
                 !int.TryParse(name.AsSpan("CloudLayer".Length), out int index) ||
                 index < 0 || index >= theme.Layers.Length)

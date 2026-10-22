@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
@@ -17,6 +18,14 @@ public sealed class BnkArchive : IDisposable
 	private readonly uint _dataBaseOffset;
 	private readonly bool _offsetsAreAbsolute;
 
+	/// <summary>
+	/// The bank's bytes as a memory map when it was opened from a file or from an uncompressed
+	/// entry of a mapped bank; null when it was opened from a managed copy. Reads through the map
+	/// take no lock and copy nothing but the entry the caller asked for.
+	/// </summary>
+	private readonly BnkMappedRange? _range;
+	private readonly bool _ownsRange;
+
 	private BnkArchive(
 		string archivePath,
 		Stream stream,
@@ -24,10 +33,14 @@ public sealed class BnkArchive : IDisposable
 		bool fileDataCompressed,
 		uint dataBaseOffset,
 		bool offsetsAreAbsolute,
-		IReadOnlyList<BnkEntry> entries)
+		IReadOnlyList<BnkEntry> entries,
+		BnkMappedRange? range,
+		bool ownsRange)
 	{
 		ArchivePath = archivePath;
 		_stream = stream;
+		_range = range;
+		_ownsRange = ownsRange;
 		FormatVersion = formatVersion;
 		FileDataCompressed = fileDataCompressed;
 		_dataBaseOffset = dataBaseOffset;
@@ -45,24 +58,73 @@ public sealed class BnkArchive : IDisposable
 
 	public IReadOnlyList<BnkEntry> Entries { get; }
 
+	/// <summary>True when entries are read out of a memory map rather than a stream or a copy.</summary>
+	public bool IsMapped => _range is not null;
+
 	public static bool TryOpen(string path, out BnkArchive? archive, out string error)
 	{
 		archive = null;
 		error = string.Empty;
 
 		FileStream? stream = null;
+		BnkMappedRange? range = null;
 		try
 		{
 			stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-			archive = Parse(path, stream);
+			BnkMappedRange.TryMapFile(stream, out range);
+			archive = Parse(path, stream, range, ownsRange: true);
 			return true;
 		}
 		catch (Exception exception)
 		{
+			range?.Dispose();
 			stream?.Dispose();
 			error = exception.Message;
 			return false;
 		}
+	}
+
+	/// <summary>
+	/// Opens a bank that lives inside a mapped range — a nested container stored uncompressed in
+	/// a mapped outer bank. The range is borrowed: the outer archive owns the map.
+	/// </summary>
+	public static bool TryOpenMapped(
+		string virtualName, BnkMappedRange range, out BnkArchive? archive, out string error)
+	{
+		archive = null;
+		error = string.Empty;
+		try
+		{
+			archive = Parse(virtualName, range.OpenStream(), range, ownsRange: false);
+			return true;
+		}
+		catch (Exception exception)
+		{
+			error = exception.Message;
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// The mapped bytes of an entry stored uncompressed in a mapped bank, as a range the caller
+	/// may open another archive over. False for a compressed entry or an unmapped bank.
+	/// </summary>
+	public bool TryMapEntry(BnkEntry entry, out BnkMappedRange? range)
+	{
+		range = null;
+		if (_range is null || entry.IsCompressed)
+		{
+			return false;
+		}
+
+		long offset = GetEntryDataOffset(entry);
+		if (offset < 0 || entry.Size > _range.Length - offset)
+		{
+			return false;
+		}
+
+		range = _range.Slice(offset, entry.Size);
+		return true;
 	}
 
 	public static bool TryOpenBytes(
@@ -82,7 +144,8 @@ public sealed class BnkArchive : IDisposable
 		}
 	}
 
-	private static BnkArchive Parse(string path, Stream stream)
+	private static BnkArchive Parse(
+		string path, Stream stream, BnkMappedRange? range = null, bool ownsRange = false)
 	{
 		long fileSize = stream.Length;
 		if (fileSize < V3HeaderSize + ChunkHeaderSize)
@@ -134,7 +197,9 @@ public sealed class BnkArchive : IDisposable
 			fileDataCompressed,
 			dataBaseOffset,
 			offsetsAreAbsolute,
-			entries);
+			entries,
+			range,
+			ownsRange);
 	}
 
 	private static byte[] ReadCompressedTableChunks(
@@ -349,6 +414,9 @@ public sealed class BnkArchive : IDisposable
 	///
 	/// Held for the I/O only. Inflation is pure CPU work on a private buffer and is the
 	/// expensive half, so it stays outside and two threads can decompress at once.
+	///
+	/// A mapped bank never takes it: every read opens its own view of the map, so the region
+	/// build's workers read the same bank at once.
 	/// </summary>
 	private readonly object _streamLock = new();
 
@@ -359,6 +427,12 @@ public sealed class BnkArchive : IDisposable
 		if (!entry.IsCompressed)
 		{
 			var raw = new byte[entry.Size];
+			if (_range is not null)
+			{
+				_range.CopyTo(dataOffset, raw);
+				return raw;
+			}
+
 			lock (_streamLock)
 			{
 				_stream.Position = dataOffset;
@@ -368,14 +442,51 @@ public sealed class BnkArchive : IDisposable
 			return raw;
 		}
 
-		var stored = new byte[entry.StoredSize];
-		lock (_streamLock)
+		var output = new byte[entry.Size];
+		int storedLength = checked((int)entry.StoredSize);
+
+		if (_range is not null)
 		{
-			_stream.Position = dataOffset;
-			ReadExact(_stream, stored);
+			// Each chunk inflates straight out of the map: no copy of the stored bytes, no lock.
+			BnkMappedRange range = _range;
+			InflateChunks(
+				entry, output, storedLength,
+				(offset, count) => range.OpenStream(dataOffset + offset, count));
+			return output;
 		}
 
-		var output = new byte[entry.Size];
+		// THE STORED BYTES ARE SCRATCH. They are read once and inflated once, so they come from
+		// the pool rather than the large-object heap, where every multi-megabyte entry read was
+		// leaving a dead array for the next gen2 to find.
+		byte[] stored = ArrayPool<byte>.Shared.Rent(storedLength);
+		try
+		{
+			lock (_streamLock)
+			{
+				_stream.Position = dataOffset;
+				ReadExact(_stream, stored.AsSpan(0, storedLength));
+			}
+
+			InflateChunks(
+				entry, output, storedLength,
+				(offset, count) => new MemoryStream(stored, offset, count, false));
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(stored);
+		}
+
+		return output;
+	}
+
+	/// <summary>
+	/// Inflates every chunk of a compressed entry into <paramref name="output"/>. Chunk i's
+	/// compressed bytes sit at <c>i * 0x8000</c> of the stored region; <paramref name="open"/>
+	/// hands back a stream over <c>(offset, count)</c> of that region.
+	/// </summary>
+	private static void InflateChunks(
+		BnkEntry entry, byte[] output, int storedLength, Func<int, int, Stream> open)
+	{
 		int chunkCount = entry.ChunkSizes.Count;
 
 		var starts = new int[chunkCount + 1];
@@ -394,14 +505,14 @@ public sealed class BnkArchive : IDisposable
 			}
 
 			int compressedOffset = i * CompressedChunkSize;
-			if (compressedOffset >= stored.Length)
+			if (compressedOffset >= storedLength)
 			{
 				throw new InvalidDataException(
 					$"invalid chunk offset in {entry.RelativePath}");
 			}
 
-			int compressedSize = Math.Min(CompressedChunkSize, stored.Length - compressedOffset);
-			if (!InflateInto(stored, compressedOffset, compressedSize, output, outOffset, outLength))
+			int compressedSize = Math.Min(CompressedChunkSize, storedLength - compressedOffset);
+			if (!InflateInto(() => open(compressedOffset, compressedSize), output, outOffset, outLength))
 			{
 				throw new InvalidDataException(
 					$"failed to inflate chunk {i} of {entry.RelativePath}");
@@ -428,20 +539,18 @@ public sealed class BnkArchive : IDisposable
 				InflateChunk(i);
 			}
 		}
-
-		return output;
 	}
 
 	private const int ParallelInflateChunks = 64;
 
 	private static bool InflateInto(
-		byte[] source, int offset, int count, byte[] output, int outOffset, int outLength)
+		Func<Stream> open, byte[] output, int outOffset, int outLength)
 	{
 		foreach (int wrapper in new[] { 0, 1, 2 })
 		{
 			try
 			{
-				using var input = new MemoryStream(source, offset, count, false);
+				using Stream input = open();
 				Stream decompressor = wrapper switch
 				{
 					0 => new ZLibStream(input, CompressionMode.Decompress, true),
@@ -494,5 +603,12 @@ public sealed class BnkArchive : IDisposable
 		}
 	}
 
-	public void Dispose() => _stream.Dispose();
+	public void Dispose()
+	{
+		_stream.Dispose();
+		if (_ownsRange)
+		{
+			_range?.Dispose();
+		}
+	}
 }

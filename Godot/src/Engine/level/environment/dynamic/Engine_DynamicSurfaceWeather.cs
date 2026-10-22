@@ -28,6 +28,16 @@ public sealed class Engine_DynamicSurfaceState
         value < target ? MathF.Min(target, value + amount) : MathF.Max(target, value - amount);
 }
 
+/// <summary>Shader and global parameter names held once: a string literal is a fresh finalizable StringName per call.</summary>
+internal static class SurfaceWeatherNames
+{
+    public static readonly StringName dynamic_roof_projection = "dynamic_roof_projection";
+    public static readonly StringName dynamic_surface_rain = "dynamic_surface_rain";
+    public static readonly StringName dynamic_surface_time = "dynamic_surface_time";
+    public static readonly StringName dynamic_surface_weather = "dynamic_surface_weather";
+    public static readonly StringName dynamic_track_projection = "dynamic_track_projection";
+}
+
 public static class Engine_DynamicSurfaceWeather
 {
     public static void EnsureGlobals()
@@ -58,17 +68,17 @@ public static class Engine_DynamicSurfaceWeather
 
     public static void Publish(Engine_DynamicSurfaceState state, float time, bool enabled, float rain = 0f)
     {
-        RenderingServer.GlobalShaderParameterSet("dynamic_surface_weather", enabled
+        RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_surface_weather, enabled
             ? new Vector4(state.Wetness, state.Snow, state.Puddles, 1f) : Vector4.Zero);
-        RenderingServer.GlobalShaderParameterSet("dynamic_surface_time", time);
-        RenderingServer.GlobalShaderParameterSet("dynamic_surface_rain", enabled ? Engine_DynamicInteractionState.Unit(rain) : 0f);
+        RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_surface_time, time);
+        RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_surface_rain, enabled ? Engine_DynamicInteractionState.Unit(rain) : 0f);
     }
 
     public static void Reset()
     {
-        RenderingServer.GlobalShaderParameterSet("dynamic_surface_weather", Vector4.Zero);
-        RenderingServer.GlobalShaderParameterSet("dynamic_surface_rain", 0f);
-        RenderingServer.GlobalShaderParameterSet("dynamic_track_projection", Vector4.Zero);
-        RenderingServer.GlobalShaderParameterSet("dynamic_roof_projection", Vector4.Zero);
+        RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_surface_weather, Vector4.Zero);
+        RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_surface_rain, 0f);
+        RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_track_projection, Vector4.Zero);
+        RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_roof_projection, Vector4.Zero);
     }
 }

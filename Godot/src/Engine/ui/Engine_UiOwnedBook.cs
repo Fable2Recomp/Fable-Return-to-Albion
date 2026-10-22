@@ -107,6 +107,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		public required string AuthoredDisplay { get; init; }
 
 		public string Shown { get; set; } = "unset";
+
+		/// <summary>Whether a sample has written this field yet — before that the node shows the file's glyphs.</summary>
+		public bool EverShown { get; set; }
 	}
 
 	/// <summary>The shared element pipeline — transform, visibility and opacity in one pass.</summary>
@@ -1813,8 +1816,19 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				continue;
 			}
 
+			// THE FIRST SAMPLE KEEPS THE AUTHORED GLYPHS. A clone arrives showing the file's own
+			// caption; when that is also what the host shows, only the material has to change
+			// hands — see Engine_UiTheme.KeepAuthoredText. Still a text edge below: the frames
+			// and masks re-measure on the first sample exactly as they did.
+			bool kept = !field.EverShown && display == field.AuthoredDisplay &&
+				Book.KeepAuthoredText(field.Node, display);
+			if (!kept)
+			{
+				Book.SetMeshText(field.Node, display);
+			}
+
 			field.Shown = display;
-			Book.SetMeshText(field.Node, display);
+			field.EverShown = true;
 			changed = true;
 		}
 

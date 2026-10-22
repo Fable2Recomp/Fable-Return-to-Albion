@@ -105,6 +105,43 @@ public struct DynamicWeatherState
     }
 }
 
+/// <summary>Shader and global parameter names held once: a string literal is a fresh finalizable StringName per call.</summary>
+internal static class DynamicSkyNames
+{
+    public static readonly StringName aurora_strength = "aurora_strength";
+    public static readonly StringName cirrus_amount = "cirrus_amount";
+    public static readonly StringName cloud_coverage = "cloud_coverage";
+    public static readonly StringName cloud_density = "cloud_density";
+    public static readonly StringName cloud_detail = "cloud_detail";
+    public static readonly StringName cloud_motion_multiplier = "cloud_motion_multiplier";
+    public static readonly StringName cloud_offset = "cloud_offset";
+    public static readonly StringName cloud_shape = "cloud_shape";
+    public static readonly StringName cloud_speed = "cloud_speed";
+    public static readonly StringName cloud_time = "cloud_time";
+    public static readonly StringName cloud_volume_detail = "cloud_volume_detail";
+    public static readonly StringName cloud_volume_shape = "cloud_volume_shape";
+    public static readonly StringName colour_horizon = "colour_horizon";
+    public static readonly StringName colour_sunset = "colour_sunset";
+    public static readonly StringName colour_zenith = "colour_zenith";
+    public static readonly StringName cubemap_fable_dome = "cubemap_fable_dome";
+    public static readonly StringName dream = "dream";
+    public static readonly StringName exposure = "exposure";
+    public static readonly StringName fog_haze = "fog_haze";
+    public static readonly StringName haze = "haze";
+    public static readonly StringName moon_texture = "moon_texture";
+    public static readonly StringName moon_use_texture = "moon_use_texture";
+    public static readonly StringName overcast = "overcast";
+    public static readonly StringName snow = "snow";
+    public static readonly StringName star_brightness = "star_brightness";
+    public static readonly StringName star_use_texture = "star_use_texture";
+    public static readonly StringName storm = "storm";
+    public static readonly StringName sun_colour = "sun_colour";
+    public static readonly StringName sun_engine = "sun_engine";
+    public static readonly StringName sun_intensity = "sun_intensity";
+    public static readonly StringName volumetric_clouds = "volumetric_clouds";
+    public static readonly StringName wind_dir = "wind_dir";
+}
+
 public static class Engine_DynamicSky
 {
     public const string ShaderPath = "res://src/Engine/level/environment/dynamic/dynamic_sky.gdshader";
@@ -142,11 +179,11 @@ public static class Engine_DynamicSky
         bool wanted = volumetricClouds ?? VolumetricClouds;
         if (wanted)
         {
-            material.SetShaderParameter("cloud_volume_shape", GD.Load<Texture3D>(CloudVolumeShapePath));
-            material.SetShaderParameter("cloud_volume_detail", GD.Load<Texture3D>(CloudVolumeDetailPath));
+            material.SetShaderParameter(DynamicSkyNames.cloud_volume_shape, GD.Load<Texture3D>(CloudVolumeShapePath));
+            material.SetShaderParameter(DynamicSkyNames.cloud_volume_detail, GD.Load<Texture3D>(CloudVolumeDetailPath));
         }
 
-        material.SetShaderParameter("volumetric_clouds", wanted);
+        material.SetShaderParameter(DynamicSkyNames.volumetric_clouds, wanted);
     }
 
     private static bool _enabled;
@@ -299,24 +336,24 @@ public static class Engine_DynamicSky
 
     public static void Configure(ShaderMaterial material, bool cubemapFableDome)
     {
-        material.SetShaderParameter("cubemap_fable_dome", cubemapFableDome);
+        material.SetShaderParameter(DynamicSkyNames.cubemap_fable_dome, cubemapFableDome);
         ApplyCloudChoice(material);
 
         var shape = GD.Load<Texture2D>(CloudShapePath);
         var detail = GD.Load<Texture2D>(CloudDetailPath);
         if (shape is not null)
         {
-            material.SetShaderParameter("cloud_shape", shape);
+            material.SetShaderParameter(DynamicSkyNames.cloud_shape, shape);
         }
 
         if (detail is not null)
         {
-            material.SetShaderParameter("cloud_detail", detail);
+            material.SetShaderParameter(DynamicSkyNames.cloud_detail, detail);
         }
 
-        material.SetShaderParameter("exposure", Exposure);
-        material.SetShaderParameter("dream", Dream);
-        material.SetShaderParameter("haze", Haze);
+        material.SetShaderParameter(DynamicSkyNames.exposure, Exposure);
+        material.SetShaderParameter(DynamicSkyNames.dream, Dream);
+        material.SetShaderParameter(DynamicSkyNames.haze, Haze);
         ApplyCelestialTextures(material);
     }
 
@@ -324,54 +361,54 @@ public static class Engine_DynamicSky
     {
         const string moon = "res://assets/dynamic_sky/lroc_color_2k.jpg";
         Texture2D? texture = ResourceLoader.Exists(moon) ? GD.Load<Texture2D>(moon) : null;
-        material.SetShaderParameter("moon_use_texture", texture is not null);
-        if (texture is not null) material.SetShaderParameter("moon_texture", texture);
-        material.SetShaderParameter("star_use_texture", false);
+        material.SetShaderParameter(DynamicSkyNames.moon_use_texture, texture is not null);
+        if (texture is not null) material.SetShaderParameter(DynamicSkyNames.moon_texture, texture);
+        material.SetShaderParameter(DynamicSkyNames.star_use_texture, false);
     }
 
     public static void ApplyFrame(ShaderMaterial material, SkyFrame frame, SkyTheme? theme)
     {
-        material.SetShaderParameter("sun_engine", Engine_SkyFrame.ToDome(frame.SunDirection));
+        material.SetShaderParameter(DynamicSkyNames.sun_engine, Engine_SkyFrame.ToDome(frame.SunDirection));
         material.SetShaderParameter(MoonDirName, Engine_SkyFrame.ToGodot(frame.MoonDirection));
-        material.SetShaderParameter("sun_intensity", MathF.Max(frame.SkyParams[0], 0.05f));
+        material.SetShaderParameter(DynamicSkyNames.sun_intensity, MathF.Max(frame.SkyParams[0], 0.05f));
 
         if (!ThemeColours)
         {
             return;
         }
 
-        material.SetShaderParameter("colour_zenith", Soft(frame.SkyTop, 0.42f, 0.56f, 0.76f));
-        material.SetShaderParameter("colour_horizon", Soft(frame.SkyBottom, 0.78f, 0.72f, 0.64f));
-        material.SetShaderParameter("colour_sunset", Soft(frame.SkySunset, 1.0f, 0.52f, 0.30f));
+        material.SetShaderParameter(DynamicSkyNames.colour_zenith, Soft(frame.SkyTop, 0.42f, 0.56f, 0.76f));
+        material.SetShaderParameter(DynamicSkyNames.colour_horizon, Soft(frame.SkyBottom, 0.78f, 0.72f, 0.64f));
+        material.SetShaderParameter(DynamicSkyNames.colour_sunset, Soft(frame.SkySunset, 1.0f, 0.52f, 0.30f));
 
         if (theme is not null && theme.HasSunDiscColour)
         {
-            material.SetShaderParameter("sun_colour", Soft(theme.SunDiscColour, 1f, 0.94f, 0.82f));
+            material.SetShaderParameter(DynamicSkyNames.sun_colour, Soft(theme.SunDiscColour, 1f, 0.94f, 0.82f));
         }
 
         if (theme is not null && theme.HasStarBrightness)
         {
-            material.SetShaderParameter("star_brightness",
+            material.SetShaderParameter(DynamicSkyNames.star_brightness,
                 Math.Clamp(theme.StarBrightness, 0f, 4f));
         }
     }
 
     public static void ApplyWeather(ShaderMaterial material, in DynamicWeatherState w)
     {
-        material.SetShaderParameter("cloud_coverage", w.Coverage);
-        material.SetShaderParameter("cloud_density", w.Density);
-        material.SetShaderParameter("overcast", w.Overcast);
-        material.SetShaderParameter("storm", w.Storm);
-        material.SetShaderParameter("snow", w.Snow);
-        material.SetShaderParameter("fog_haze", w.FogHaze);
-        material.SetShaderParameter("cloud_speed", w.WindSpeed);
-        material.SetShaderParameter("cirrus_amount", w.Cirrus);
+        material.SetShaderParameter(DynamicSkyNames.cloud_coverage, w.Coverage);
+        material.SetShaderParameter(DynamicSkyNames.cloud_density, w.Density);
+        material.SetShaderParameter(DynamicSkyNames.overcast, w.Overcast);
+        material.SetShaderParameter(DynamicSkyNames.storm, w.Storm);
+        material.SetShaderParameter(DynamicSkyNames.snow, w.Snow);
+        material.SetShaderParameter(DynamicSkyNames.fog_haze, w.FogHaze);
+        material.SetShaderParameter(DynamicSkyNames.cloud_speed, w.WindSpeed);
+        material.SetShaderParameter(DynamicSkyNames.cirrus_amount, w.Cirrus);
     }
 
     public static void ApplyClock(float skyTime, float lightning, Vector3 lightningDir,
         ShaderMaterial? material = null)
     {
-        material?.SetShaderParameter("cloud_time", skyTime);
+        material?.SetShaderParameter(DynamicSkyNames.cloud_time, skyTime);
         RenderingServer.GlobalShaderParameterSet(SkyTimeGlobal, skyTime);
         RenderingServer.GlobalShaderParameterSet(LightningGlobal,
             new Vector4(lightningDir.X, lightningDir.Y, lightningDir.Z, lightning));
@@ -386,7 +423,7 @@ public static class Engine_DynamicSky
 
     public static Vector3 HorizonColour(ShaderMaterial material)
     {
-        Variant v = material.GetShaderParameter("colour_horizon");
+        Variant v = material.GetShaderParameter(DynamicSkyNames.colour_horizon);
         return v.VariantType == Variant.Type.Vector3
             ? v.AsVector3()
             : new Vector3(0.78f, 0.72f, 0.64f);
@@ -438,7 +475,7 @@ public static class Engine_DynamicSky
             direction = new Vector2(1f, 0.25f);
         }
 
-        material.SetShaderParameter("wind_dir", direction.Normalized());
+        material.SetShaderParameter(DynamicSkyNames.wind_dir, direction.Normalized());
     }
 
     private static Vector3 Soft(float[] c, float r, float g, float b) =>
@@ -594,16 +631,16 @@ public sealed class Engine_DynamicSkyDriver
             Engine_DynamicSky.ApplyWeather(material, _now);
         }
 
-        Variant multiplier = material.GetShaderParameter("cloud_motion_multiplier");
+        Variant multiplier = material.GetShaderParameter(DynamicSkyNames.cloud_motion_multiplier);
         float motion = multiplier.VariantType == Variant.Type.Nil ? 1f : multiplier.AsSingle();
         motion = float.IsFinite(motion) ? Math.Clamp(motion, 0f, 10f) : 1f;
         double travel = delta * (previous.WindSpeed + _now.WindSpeed) * 0.5 * motion;
         _cloudX += _windDir.X * travel;
         _cloudY += _windDir.Y * travel;
-        material.SetShaderParameter("cloud_offset", new Vector2((float)_cloudX, (float)_cloudY));
+        material.SetShaderParameter(DynamicSkyNames.cloud_offset, new Vector2((float)_cloudX, (float)_cloudY));
 
         DynamicWeatherState ground = _now with { FogHaze = _now.FogHaze * _haze };
-        bool usesFableAtmosphere = material.GetShaderParameter("cubemap_fable_dome").AsBool();
+        bool usesFableAtmosphere = material.GetShaderParameter(DynamicSkyNames.cubemap_fable_dome).AsBool();
         bool fogWanted = Engine_DynamicSkyLighting.FogDensity(
             usesFableAtmosphere, ground.FogHaze, Engine_DynamicSky.FogDensityMax) > 1e-5f;
         if (_sceneDirty || (environment is not null && environment.FogEnabled != fogWanted))
@@ -624,7 +661,7 @@ public sealed class Engine_DynamicSkyDriver
         _surface.Advance(delta, _now, _day, surfaces);
         Engine_DynamicSurfaceWeather.Publish(_surface, _time, surfaces, _now.Rain);
         _aurora = Mathf.MoveToward(_aurora, _auroraWanted ? 1f : 0f, delta / 6f);
-        material.SetShaderParameter("aurora_strength", _aurora);
+        material.SetShaderParameter(DynamicSkyNames.aurora_strength, _aurora);
         precipitation?.AdvanceMotion(delta, _lightning);
         Engine_DynamicSky.ApplyClock(_time, _lightning, _strikeDir, material);
     }

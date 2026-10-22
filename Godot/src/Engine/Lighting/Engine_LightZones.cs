@@ -66,6 +66,10 @@ public static class Engine_LightZones
 
     private static readonly List<Lit> Lights = new();
     private static readonly Dictionary<Light3D, uint> LightZoneByNode = new();
+
+    /// <summary>Bumped whenever a light's zone or cull mask is stated or the set is cleared, so a
+    /// reader caching <see cref="ZoneOf"/> or <see cref="IsIndoorLight"/> per light knows to re-read.</summary>
+    public static int Generation { get; private set; }
     private static readonly Dictionary<uint, int> InteriorCountByEntity = new();
     private static readonly List<(GeometryInstance3D Node, uint Record, long Until)> Pending = new();
 
@@ -214,6 +218,7 @@ public static class Engine_LightZones
         Lights.Clear();
         LightZoneByNode.Clear();
         InteriorCountByEntity.Clear();
+        Generation++;
         Pending.Clear();
         _cursor = 0;
         _unresolvedLights = 0;
@@ -282,6 +287,7 @@ public static class Engine_LightZones
                     {
                         lit.Zone = resolved;
                         LightZoneByNode[lit.Node] = resolved;
+                        Generation++;
                     }
                 }
             }
@@ -293,6 +299,7 @@ public static class Engine_LightZones
                 {
                     lit.Node.LightCullMask = mask;
                     Engine_LevelLights.RefreshLightScales(lit.Node);
+                    Generation++;
                     anyMaskChanged = true;
                 }
             }

@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 216;
+	public const int ExpectedAbiVersion = 218;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -746,8 +746,23 @@ public static class HostBridge
 			return System.Array.Empty<GuestTextureComposite>();
 		}
 
-		return DecodeTextureLayers(words, written);
+		// The generation moves when the statement did, so the same generation at the same
+		// length is the same statement: the composites decoded for it last time are returned,
+		// not decoded again — the entity reconcile asks every few ticks and held the answer
+		// only after comparing lengths, so each ask was a fresh array per composite per entity.
+		if (_entityTextureLayers.TryGetValue(entity, out (uint Generation, uint Written, GuestTextureComposite[] Composites) held) &&
+			held.Generation == generation && held.Written == written)
+		{
+			return held.Composites;
+		}
+
+		GuestTextureComposite[] decoded = DecodeTextureLayers(words, written);
+		_entityTextureLayers[entity] = (generation, written, decoded);
+		return decoded;
 	}
+
+	private static readonly Dictionary<uint, (uint Generation, uint Written, GuestTextureComposite[] Composites)>
+		_entityTextureLayers = new();
 
 	/// <summary>
 	/// The layers the guest's own dye builder states for ONE inventory item (worn or not), by
@@ -784,18 +799,34 @@ public static class HostBridge
 			return System.Array.Empty<GuestTextureComposite>();
 		}
 
-		var composites = new List<GuestTextureComposite>();
-		int at = 0;
-		while (at + 2 <= written)
+		// Counted first, allocated once: a list grown and then copied was two arrays per decode.
+		int total = 0;
+		for (int at = 0; at + 2 <= written;)
 		{
-			uint original = words[at];
 			int count = (int)(words[at + 1] & 0xFFFF);
-			uint kind = words[at + 1] >> 16;
 			at += 2;
 			if (count <= 0 || at + count * TextureLayerWords > written)
 			{
 				break;
 			}
+
+			at += count * TextureLayerWords;
+			++total;
+		}
+
+		if (total == 0)
+		{
+			return System.Array.Empty<GuestTextureComposite>();
+		}
+
+		var composites = new GuestTextureComposite[total];
+		int filled = 0;
+		for (int at = 0; filled < total;)
+		{
+			uint original = words[at];
+			int count = (int)(words[at + 1] & 0xFFFF);
+			uint kind = words[at + 1] >> 16;
+			at += 2;
 
 			var layers = new GuestTextureLayer[count];
 			for (int i = 0; i < count; i++)
@@ -812,10 +843,10 @@ public static class HostBridge
 			}
 
 			at += count * TextureLayerWords;
-			composites.Add(new GuestTextureComposite(original, layers, kind == 1u, kind == 2u));
+			composites[filled++] = new GuestTextureComposite(original, layers, kind == 1u, kind == 2u);
 		}
 
-		return composites.ToArray();
+		return composites;
 	}
 
 	/// <summary>One bone's skeletal morph: a translation offset and a scale, guest bone index.</summary>
@@ -3817,6 +3848,128 @@ public static class HostBridge
 			: System.Text.Encoding.UTF8.GetString(CoopInbox, 0, (int)written);
 	}
 
+	/// <summary>The state of Refii's mod sync stream (ABI 217).</summary>
+	public enum SyncStreamState
+	{
+		Idle = 0,
+		Connecting = 1,
+		Open = 2,
+		ClosedByPeer = 3,
+		ConnectFailed = 4,
+		Overflowed = 5,
+	}
+
+	/// <summary>
+	/// Opens the mod sync stream to the co-op peer — the guest TCP shim's reliable, ordered
+	/// rexnet stream on Refii's own port — for bulk bytes the datagram channel is the wrong shape
+	/// for. True when requested or already up; the outcome is <see cref="SyncStreamStatus"/>.
+	/// </summary>
+	public static bool SyncStreamConnect()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiNetSyncConnect() != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	public static SyncStreamState SyncStreamStatus()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return SyncStreamState.Idle;
+		}
+
+		try
+		{
+			return (SyncStreamState)RefiiNetSyncState();
+		}
+		catch (DllNotFoundException)
+		{
+			return SyncStreamState.Idle;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return SyncStreamState.Idle;
+		}
+	}
+
+	/// <summary>Writes <paramref name="length"/> bytes of <paramref name="data"/> to the open stream.</summary>
+	public static bool SyncStreamSend(byte[] data, int length)
+	{
+		if (length <= 0 || length > data.Length || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiNetSyncSend(data, (uint)length) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Takes received bytes into <paramref name="buffer"/>, in order; the count taken.</summary>
+	public static int SyncStreamReceive(byte[] buffer)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		try
+		{
+			uint taken = RefiiNetSyncReceive(buffer, (uint)buffer.Length);
+			return taken > buffer.Length ? 0 : (int)taken;
+		}
+		catch (DllNotFoundException)
+		{
+			return 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
+	public static void SyncStreamClose()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiNetSyncClose();
+		}
+		catch (DllNotFoundException)
+		{
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
 	/// <summary>
 	/// The co-op inbox staging buffer. Must be LARGER THAN ANY MESSAGE THE KIT SENDS
 	/// (WireLimit 1100): a truncated inventory chunk is refused by the decoder.
@@ -4594,6 +4747,12 @@ public static class HostBridge
 			: Decode(text);
 	}
 
+	/// <summary>
+	/// Name scratch for the per-frame level polls below: three 128-byte names each, kept rather
+	/// than allocated per call (the trace put them near the top of the host's steady churn).
+	/// Cleared before each call so a shorter name never reads a stale tail. Main thread only,
+	/// like every other kept buffer in this file.
+	/// </summary>
 	public static LevelChange? GetLevelChange()
 	{
 		if (TryGetAbiVersion() is null)
@@ -4601,9 +4760,12 @@ public static class HostBridge
 			return null;
 		}
 
-		var world = new byte[128];
-		var level = new byte[128];
-		var entrance = new byte[128];
+		byte[] world = _levelWorld ??= new byte[128];
+		byte[] level = _levelLevel ??= new byte[128];
+		byte[] entrance = _levelEntrance ??= new byte[128];
+		System.Array.Clear(world);
+		System.Array.Clear(level);
+		System.Array.Clear(entrance);
 		if (RefiiHostGetLevelChange(world, level, entrance, (uint)level.Length,
 				out uint state, out uint travel, out uint fullLoad) == 0)
 		{
@@ -4614,6 +4776,13 @@ public static class HostBridge
 			Decode(world), Decode(level), Decode(entrance), state, travel, fullLoad != 0);
 	}
 
+	private static byte[]? _levelWorld;
+	private static byte[]? _levelLevel;
+	private static byte[]? _levelEntrance;
+	private static byte[]? _currentWorld;
+	private static byte[]? _currentLevel;
+	private static byte[]? _currentEntrance;
+
 	public static CurrentLevel? GetCurrentLevel()
 	{
 		if (TryGetAbiVersion() is null)
@@ -4621,9 +4790,12 @@ public static class HostBridge
 			return null;
 		}
 
-		var world = new byte[128];
-		var level = new byte[128];
-		var entrance = new byte[128];
+		byte[] world = _currentWorld ??= new byte[128];
+		byte[] level = _currentLevel ??= new byte[128];
+		byte[] entrance = _currentEntrance ??= new byte[128];
+		System.Array.Clear(world);
+		System.Array.Clear(level);
+		System.Array.Clear(entrance);
 		if (RefiiHostGetCurrentLevel(world, level, entrance, (uint)level.Length, out uint key) == 0)
 		{
 			return null;
@@ -4970,7 +5142,10 @@ public static class HostBridge
 	public static System.Collections.Generic.List<Engine_UiModel.UiElementChange>
 		TakeUiElementChanges()
 	{
-		var changes = new System.Collections.Generic.List<Engine_UiModel.UiElementChange>();
+		// ONE list, drained and refilled: the result is valid until the next drain, and the
+		// consumer (Engine_UiElementState.Drain) applies it in place and keeps nothing.
+		System.Collections.Generic.List<Engine_UiModel.UiElementChange> changes = _elementChanges;
+		changes.Clear();
 		if (TryGetAbiVersion() is null)
 		{
 			return changes;
@@ -4995,7 +5170,11 @@ public static class HostBridge
 		}
 
 		int usable = (int)Math.Min(count, (uint)Capacity);
-		changes.Capacity = usable;
+		if (changes.Capacity < usable)
+		{
+			changes.Capacity = usable;
+		}
+
 		for (int i = 0; i < usable; ++i)
 		{
 			changes.Add(new Engine_UiModel.UiElementChange(
@@ -5010,6 +5189,7 @@ public static class HostBridge
 	// Reused across frames: this drains every frame and the buffers are 80 KB together.
 	private static uint[]? _elementWords;
 	private static byte[]? _elementKinds;
+	private static readonly System.Collections.Generic.List<Engine_UiModel.UiElementChange> _elementChanges = new();
 
 	/// <summary>Recorded, pending and dropped element changes — ABI 83.</summary>
 	public static (ulong Recorded, uint Pending, ulong Dropped) UiElementCounters()
@@ -5105,8 +5285,63 @@ public static class HostBridge
 		}
 	}
 
-	public static uint PostFrontEndAction(string name) =>
-		RefiiHostPostFrontEndAction(name);
+	public static uint PostFrontEndAction(string name)
+	{
+		// A COMMIT is remembered so the save gate can post it again once its box is answered:
+		// the fan's `LoadSave:N`, a row's `MenuEvent:…` (the root's Continue among them) and
+		// `MenuSelect`. Cursor moves and answers are not commits.
+		if (name.StartsWith("LoadSave:", StringComparison.Ordinal) ||
+			name.StartsWith("MenuEvent:", StringComparison.Ordinal) ||
+			name == "MenuSelect")
+		{
+			LastCommitAction = name;
+		}
+
+		return RefiiHostPostFrontEndAction(name);
+	}
+
+	/// <summary>The last front-end commit posted (see <see cref="PostFrontEndAction"/>), or empty.</summary>
+	public static string LastCommitAction { get; private set; } = string.Empty;
+
+	/// <summary>
+	/// The load fan's save FILE names in card order (ABI 218): the folder names under the
+	/// content root the cards were enumerated from, so index N of <see cref="GetSaveCards"/> and of
+	/// <see cref="LoadSave"/> is the save named here at N. Empty when the fan is not up.
+	/// </summary>
+	public static List<string> GetSaveCardNames()
+	{
+		var names = new List<string>();
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return names;
+		}
+
+		byte[] buffer = new byte[4096];
+		uint count;
+		try
+		{
+			count = RefiiHostGetSaveCardNames(buffer, (uint)buffer.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return names;
+		}
+
+		int at = 0;
+		for (uint i = 0; i < count && at < buffer.Length; i++)
+		{
+			int end = Array.IndexOf(buffer, (byte)0, at);
+			if (end < 0)
+			{
+				break;
+			}
+
+			names.Add(System.Text.Encoding.UTF8.GetString(buffer, at, end - at));
+			at = end + 1;
+		}
+
+		return names;
+	}
 
 	/// <summary>
 	/// Adds the mouse's camera turn since the last post — degrees at the profile's middle camera
@@ -9096,6 +9331,9 @@ public static class HostBridge
 	private static extern uint RefiiHostGetCoopHeroSaveName(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetSaveCardNames(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetCoopPlayerEntities(out uint one, out uint two);
 
 	[DllImport(Library)]
@@ -9127,6 +9365,21 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetCoopReceive(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiNetSyncConnect();
+
+	[DllImport(Library)]
+	private static extern int RefiiNetSyncState();
+
+	[DllImport(Library)]
+	private static extern int RefiiNetSyncSend(byte[] data, uint length);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetSyncReceive(byte[] outBytes, uint capacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiNetSyncClose();
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHeroStateApplied(uint player);
@@ -10595,22 +10848,44 @@ public static class HostBridge
 
 		public static uint[]? GetUiTextureHashes(uint presentation, int elementCount)
 		{
+			ReadOnlySpan<uint> read = ReadUiTextureHashes(presentation, elementCount);
+			return read.Length == elementCount && elementCount > 0 ? read.ToArray() : null;
+		}
+
+		/// <summary>
+		/// The guest's stated texture hash per element, in a KEPT buffer: the span is valid until
+		/// the next call and must be copied to be held. Empty when the guest is down or its count
+		/// disagrees with <paramref name="elementCount"/>. Main thread only. The per-sample
+		/// readers compare against what they hold and copy only on a change.
+		/// </summary>
+		public static ReadOnlySpan<uint> ReadUiTextureHashes(uint presentation, int elementCount)
+		{
 			if (!TryGetAbiVersion().HasValue || !IsGuestUp || elementCount <= 0)
 			{
-				return null;
+				return ReadOnlySpan<uint>.Empty;
 			}
-			uint[] array = new uint[elementCount];
+
+			if (_uiTextureHashes.Length < elementCount)
+			{
+				_uiTextureHashes = new uint[Math.Max(elementCount, _uiTextureHashes.Length * 2)];
+			}
+
 			uint num;
 			try
 			{
-				num = RefiiHostGetUiTextureHashes(presentation, array, (uint)array.Length);
+				num = RefiiHostGetUiTextureHashes(presentation, _uiTextureHashes, (uint)elementCount);
 			}
 			catch (EntryPointNotFoundException)
 			{
-				return null;
+				return ReadOnlySpan<uint>.Empty;
 			}
-			return (num == (uint)elementCount) ? array : null;
+
+			return num == (uint)elementCount
+				? new ReadOnlySpan<uint>(_uiTextureHashes, 0, elementCount)
+				: ReadOnlySpan<uint>.Empty;
 		}
+
+		private static uint[] _uiTextureHashes = new uint[1024];
 
 		[DllImport("refii_hostbridge")]
 		private static extern uint RefiiHostGetEntityLocomotion(uint entity, uint[] outWords, uint wordCount, byte[] outName, uint nameCapacity);

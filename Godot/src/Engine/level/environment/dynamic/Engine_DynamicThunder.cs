@@ -13,6 +13,9 @@ public partial class Engine_DynamicThunder : Node
 {
     private readonly List<(DynamicLightningStrike Strike, float Remaining)> _pending = new();
     private readonly List<AudioStreamPlayer3D> _voices = new();
+
+    /// <summary>Each voice's last strike gain, by its index in <see cref="_voices"/>; 0 until it has played.</summary>
+    private readonly List<float> _gains = new();
     private readonly List<AudioStream> _clips = new();
     private Engine_DynamicSkyDriver? _driver;
     private int _played;
@@ -39,6 +42,7 @@ public partial class Engine_DynamicThunder : Node
             AddChild(voice);
             voice.TopLevel = true;
             _voices.Add(voice);
+            _gains.Add(0f);
         }
     }
 
@@ -62,8 +66,10 @@ public partial class Engine_DynamicThunder : Node
     {
         if (!float.IsFinite(delta) || delta <= 0f || Engine.IsEditorHint()) return;
         _sfx = float.IsFinite(sfxVolume) ? Math.Clamp(sfxVolume, 0f, 1f) : _sfx;
-        foreach (var voice in _voices)
-            if (voice.HasMeta("gain")) voice.VolumeDb = GainDb(voice.GetMeta("gain").AsSingle(), exposure);
+        // Each voice's gain is kept beside it: HasMeta/GetMeta by a string literal made two
+        // finalizable StringNames per voice per frame.
+        for (int v = 0; v < _voices.Count; v++)
+            if (_gains[v] > 0f) _voices[v].VolumeDb = GainDb(_gains[v], exposure);
         for (int i = _pending.Count - 1; i >= 0; i--)
         {
             var item = _pending[i];
@@ -71,12 +77,13 @@ public partial class Engine_DynamicThunder : Node
             if (item.Remaining > 0f) { _pending[i] = item; continue; }
             _pending.RemoveAt(i);
             if (_clips.Count == 0 || _voices.Count == 0) continue;
-            var voice = _voices[_played % _voices.Count];
+            int slot = _played % _voices.Count;
+            var voice = _voices[slot];
             voice.Stream = _clips[_played % _clips.Count];
             voice.PitchScale = 0.9f + (float)Random.Shared.NextDouble() * 0.18f;
             float gain = Math.Clamp(item.Strike.Strength, 0.15f, 1f) *
                 Mathf.Lerp(0.65f, 0.3f, Math.Clamp(item.Strike.DistanceMetres / 2500f, 0f, 1f));
-            voice.SetMeta("gain", gain);
+            _gains[slot] = gain;
             voice.VolumeDb = GainDb(gain, exposure);
             Vector3 camera = GetViewport().GetCamera3D()?.GlobalPosition ?? Vector3.Zero;
             voice.GlobalPosition = camera + item.Strike.Direction.Normalized() * item.Strike.DistanceMetres;

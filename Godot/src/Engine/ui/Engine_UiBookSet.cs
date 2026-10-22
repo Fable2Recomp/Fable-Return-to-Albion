@@ -70,12 +70,83 @@ public sealed class Engine_UiBookSet
 			book.Suppressed.Add(owned);
 		}
 
-		book.Build();
-		book.DriveFrames();
+		using (Refii.Core.Engine_FramePhases.Measure("ui.book.build"))
+		{
+			book.Build();
+			book.DriveFrames();
+		}
+
 		Host.MenuLayer.AddChild(book);
 		_made.Add((book, presentation));
 		return book;
 	}
+
+	/// <summary>
+	/// Builds ONE owned book that no screen has asked for yet, and returns whether it did —
+	/// for a caller with a frame to spare (the loading screen), so the build lands there and
+	/// not on the frame the player first opens the screen. Every template with chrome and an
+	/// in-game presentation is a candidate; each is tried once.
+	///
+	/// The book is SET ASIDE, not registered: it joins <see cref="_books"/> only when the path
+	/// that would have built it claims it (<see cref="ClaimPrebuilt"/>), so nothing about when
+	/// a book is driven, hidden or stood changes — the registry's trailing hide pass never sees
+	/// a book the player has not reached, and the pause book, which the pause view owns outside
+	/// the registry, is never in it at all.
+	/// </summary>
+	public bool PrebuildOne()
+	{
+		if (Host is null)
+		{
+			return false;
+		}
+
+		foreach (Engine_UiScreenTemplate template in Engine_UiTemplates.Screens)
+		{
+			uint screenId = template.ScreenId;
+			if (template.ChromeUnits.Count == 0 || template.Presentation.Length == 0 ||
+				Engine_UiFrontEndScreens.Is(template.Presentation) ||
+				_bookless.Contains(screenId) || !_prebuildTried.Add(screenId) ||
+				Book(screenId) is not null)
+			{
+				continue;
+			}
+
+			if (Ensure(screenId, template.Presentation) is { } made)
+			{
+				_prebuilt[screenId] = (made, template.Presentation);
+				GD.Print($"[owned-book] '{template.Name}' prebuilt for screen {screenId} " +
+					$"('{template.Presentation}') ahead of its first open");
+			}
+
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// The book <see cref="PrebuildOne"/> set aside for this screen and presentation, handed
+	/// over once; null when there is none (or it was built from another file, or a remount
+	/// retired it), and the caller builds as before.
+	/// </summary>
+	public Engine_UiOwnedBook? ClaimPrebuilt(uint screenId, string presentation)
+	{
+		if (!_prebuilt.Remove(screenId, out (Engine_UiOwnedBook Book, string Presentation) held))
+		{
+			return null;
+		}
+
+		return GodotObject.IsInstanceValid(held.Book) && !held.Book.IsQueuedForDeletion() &&
+			string.Equals(held.Presentation, presentation, System.StringComparison.OrdinalIgnoreCase)
+				? held.Book
+				: null;
+	}
+
+	/// <summary>Screens <see cref="PrebuildOne"/> has attempted, whatever the outcome.</summary>
+	private readonly System.Collections.Generic.HashSet<uint> _prebuildTried = new();
+
+	/// <summary>Books built ahead of their first open and not yet claimed — see <see cref="PrebuildOne"/>.</summary>
+	private readonly System.Collections.Generic.Dictionary<uint, (Engine_UiOwnedBook Book, string Presentation)> _prebuilt = new();
 
 	/// <summary>
 	/// Frees every book built from one of <paramref name="presentations"/> — the host retired
@@ -149,7 +220,7 @@ public sealed class Engine_UiBookSet
 			{
 				_bookless.Add(screenId);
 			}
-			else if (Ensure(screenId, drawn.Name) is { } made)
+			else if ((ClaimPrebuilt(screenId, drawn.Name) ?? Ensure(screenId, drawn.Name)) is { } made)
 			{
 				_books[screenId] = made;
 				book = made;
@@ -185,9 +256,12 @@ public sealed class Engine_UiBookSet
 		// book frame off the screen. What IS stale in it — the per-element state of fields the
 		// HOST drives — is dropped inside the book, per channel, for exactly the elements the
 		// host writes (Opaqued / Positioned).
-		book.SetLive(
-			drawn.Texts, drawn.Textures, drawn.LastTransform,
-			drawn.Visible, drawn.Opacity, drawn.Slides);
+		using (Refii.Core.Engine_FramePhases.Measure("ui.book.live"))
+		{
+			book.SetLive(
+				drawn.Texts, drawn.Textures, drawn.LastTransform,
+				drawn.Visible, drawn.Opacity, drawn.Slides);
+		}
 	}
 
 	/// <summary>

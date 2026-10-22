@@ -63,7 +63,7 @@ public static class ModGodot
 		Stop();
 
 		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
-		ModLoadOrder order = ModLoadOrder.Read(modsRoot);
+		(ModLoadOrder order, List<ModInstall> found) = ModSession.Resolve(modsRoot);
 
 		_host = new RefiiHost { Name = RefiiHost.SingletonName, EnabledMods = order.Enabled.ToArray() };
 		_root = new Node { Name = RootName };
@@ -77,7 +77,7 @@ public static class ModGodot
 		Engine.RegisterSingleton(RefiiHost.SingletonName, _host);
 
 		int loaded = 0;
-		foreach ((string mod, string file, string text) in ReadScripts(modsRoot, order))
+		foreach ((string mod, string file, string text) in ReadScripts(found, order))
 		{
 			if (Instantiate(mod, file, text) is { } node)
 			{
@@ -127,16 +127,11 @@ public static class ModGodot
 	}
 
 	/// <summary>Every <c>godot/*.gd</c> of every enabled package, lowest priority first (as ModEntries reads).</summary>
-	private static List<(string Mod, string File, string Text)> ReadScripts(string modsRoot, ModLoadOrder order)
+	private static List<(string Mod, string File, string Text)> ReadScripts(IReadOnlyList<ModInstall> found, ModLoadOrder order)
 	{
 		var result = new List<(string Mod, string File, string Text)>();
-		if (string.IsNullOrEmpty(modsRoot) || !System.IO.Directory.Exists(modsRoot))
-		{
-			return result;
-		}
-
 		var installs = new Dictionary<string, ModInstall>(StringComparer.OrdinalIgnoreCase);
-		foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(modsRoot))
+		foreach (ModInstall install in found)
 		{
 			installs[install.Name] = install;
 		}

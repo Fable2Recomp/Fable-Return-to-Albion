@@ -203,20 +203,43 @@ public partial class GameWorld : Node3D
 		// so for part of every tick both halves are equal and any alpha gives a frozen camera.
 		// The guest renders only at alpha 0.5 and 1.0, where that is harmless; we render through
 		// the window. The drawn value is still the guest's; only the history is ours.
+		//
+		// A STATEMENT ONLY ON A FRAME WHOSE STEP IS COMPLETE. The stamp (GuestGameTick) is read
+		// at frame start; this camera is read here, milliseconds later, and the guest's step runs
+		// between grants on its own thread. A step that finishes in that gap hands this frame
+		// the NEXT tick's camera under THIS tick's stamp: the timeline then takes two ticks of
+		// travel as one tick's (a frame at 2-3x speed), and on the next frame, the same camera
+		// again under its own tick, as standing still — a whole tick crawling at the correction
+		// floor, then a catch-up. That is the pad-pan judder, and the bodies never had it: the
+		// entity walk is gated on Engine_GuestFrame.Changed, the HF-pass counter the guest bumps
+		// after its step, read in the same instant as the stamp. The guest is idle until the next
+		// grant (GameSession, after every reader), so on a frame where that counter moved every
+		// read is the finished step's and the stamp is its tick. On any other frame the camera
+		// is not a statement and the timeline runs on by the motion already stated.
 		bool snap = pair is { } snapping && snapping.Live.Flag;
 		uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
+		bool stepComplete = Refii.Core.Engine_GuestFrame.Changed;
 		bool changed = _cameraLine.Empty ||
 			!stated.Origin.IsEqualApprox(_cameraLine.Newest.Origin) ||
 			!stated.Basis.IsEqualApprox(_cameraLine.Newest.Basis) ||
 			!Mathf.IsEqualApprox(fov, _cameraLine.NewestScalar);
-		if (changed)
+		if (changed && stepComplete)
 		{
 			Refii.Entities.Engine_DrawnFrame.NoteRestated();
 		}
 
 		Transform3D drawn = stated;
 		float drawnFov = fov;
-		if (snap || _cameraLine.Empty ||
+		int how;
+		if (!stepComplete && !_cameraLine.Empty)
+		{
+			drawn = _cameraLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
+				Refii.Entities.Engine_DrawnFrame.DrawTick);
+			drawnFov = _cameraLine.DrawnScalar;
+			++CarriedCameras;
+			how = CameraCarried;
+		}
+		else if (snap || _cameraLine.Empty ||
 			_cameraLine.Newest.Origin.DistanceSquaredTo(stated.Origin) >
 				Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres)
 		{
@@ -225,6 +248,7 @@ public partial class GameWorld : Node3D
 			_cameraLine.Reset(cameraTick, stated, fov);
 			++LiveOnlyCameras;
 			drawn = stated;
+			how = CameraReset;
 		}
 		else
 		{
@@ -237,12 +261,13 @@ public partial class GameWorld : Node3D
 				Refii.Entities.Engine_DrawnFrame.DrawTick);
 			drawnFov = _cameraLine.DrawnScalar;
 			++BlendedCameras;
+			how = CameraObserved;
 		}
 
 		_lineDrawn = drawn;
 		drawn = DrawMouseLook(drawn);
 		_camera.GlobalTransform = drawn;
-		SampleCameraTrace(drawn.Origin);
+		SampleCameraTrace(drawn.Origin, how, cameraTick);
 
 		if (float.IsFinite(drawnFov) && drawnFov >= 1f && drawnFov <= 179f)
 		{
@@ -533,31 +558,62 @@ public partial class GameWorld : Node3D
 	private readonly Refii.Core.Engine_TickTimeline _cameraLine = new();
 
 	private int _cameraTraceRemaining;
-	private readonly System.Collections.Generic.List<(ulong Usec, uint Tick, Vector3 Position)> _cameraTrace = new();
+
+	/// <summary>How the frame's camera was produced; `how` in the trace rows.</summary>
+	public const int CameraCarried = 0;
+
+	public const int CameraObserved = 1;
+
+	public const int CameraReset = 2;
+
+	/// <summary>Frames drawn from the timeline alone because the guest's step was not complete at frame start.</summary>
+	public static long CarriedCameras;
+
+	/// <summary>One drawn frame of the camera trace: the drawn position beside the clock terms that placed it.</summary>
+	private readonly record struct CameraTraceRow(
+		ulong Usec, ulong Now, uint Tick, uint Stamp, uint Frame, int How, double Playhead,
+		double Newest, double Alpha, double Margin);
+
+	private readonly System.Collections.Generic.List<CameraTraceRow> _cameraTrace = new();
+	private readonly System.Collections.Generic.List<Vector3> _cameraTracePositions = new();
 
 	/// <summary>Records the guest camera per frame, for the debug channel's stutter analysis.</summary>
 	public void BeginCameraTrace(int frames)
 	{
 		_cameraTraceRemaining = frames;
 		_cameraTrace.Clear();
+		_cameraTracePositions.Clear();
 	}
 
+	/// <summary>
+	/// The trace rows. `usec` is the sample's own instant, `now` the frame's draw instant every
+	/// draw point used; `tick` is `dword_83319650` beside the sample, `stamp` the game tick read at
+	/// frame start that stamped it, `frame` the guest's HF-pass counter; `how` is
+	/// <see cref="CameraCarried"/>, <see cref="CameraObserved"/> or <see cref="CameraReset"/>;
+	/// `playhead` the draw point, `newest` the camera line's newest stamp, `alpha` the shared
+	/// pair's raw alpha (past 1 extrapolating, at 1.5 held), `margin` the latency taken off it.
+	/// </summary>
 	public System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object?>> CameraTraceReport()
 	{
 		var rows = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object?>>();
-		foreach ((ulong usec, uint tick, Vector3 p) in _cameraTrace)
+		for (int i = 0; i < _cameraTrace.Count; ++i)
 		{
+			CameraTraceRow r = _cameraTrace[i];
+			Vector3 p = _cameraTracePositions[i];
 			rows.Add(new System.Collections.Generic.Dictionary<string, object?>
 			{
-				["usec"] = usec, ["tick"] = tick, ["pos"] = new[] { p.X, p.Y, p.Z },
+				["usec"] = r.Usec, ["now"] = r.Now, ["tick"] = r.Tick, ["stamp"] = r.Stamp,
+				["frame"] = r.Frame, ["how"] = r.How, ["playhead"] = r.Playhead, ["newest"] = r.Newest,
+				["alpha"] = r.Alpha, ["margin"] = r.Margin,
+				["extrapolated"] = r.Alpha > 1.0, ["held"] = r.Alpha >= Refii.Core.Engine_PairPlayhead.Ceiling,
+				["pos"] = new[] { p.X, p.Y, p.Z },
 			});
 		}
 
 		return rows;
 	}
 
-
-	private void SampleCameraTrace(Vector3 position)
+	private void SampleCameraTrace(Vector3 position, int how, uint stamp)
 	{
 		if (_cameraTraceRemaining <= 0)
 		{
@@ -565,7 +621,13 @@ public partial class GameWorld : Node3D
 		}
 
 		--_cameraTraceRemaining;
-		_cameraTrace.Add((Godot.Time.GetTicksUsec(), HostBridge.SimTick, position));
+		ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
+		Refii.Core.Engine_PairPlayhead pair = Refii.Entities.Engine_DrawnFrame.Playhead;
+		_cameraTrace.Add(new CameraTraceRow(
+			Godot.Time.GetTicksUsec(), now, HostBridge.SimTick, stamp, Refii.Core.Engine_GuestFrame.Frame, how,
+			Refii.Entities.Engine_DrawnFrame.DrawTick, _cameraLine.NewestTick,
+			pair.Ready ? pair.Alpha(now) : double.NaN, pair.MarginTicks));
+		_cameraTracePositions.Add(position);
 	}
 
 	private const double HeldStreamMsPerFrame = 100.0;

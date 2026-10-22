@@ -20,11 +20,12 @@ namespace Refii.Mods;
 /// Godot draws, Godot's database views (item, weapon, clothing and entity indexes), HUD pieces,
 /// menu and screen templates, FX recipes, the spell and ability pages, settings (pushed again, the
 /// player's choices and live overrides kept), input bindings, Godot scripts (restarted), and with
-/// <c>lua</c> the mods' Lua.</para>
+/// <c>lua</c> the mods' Lua, and the guest's databases: the changed <c>.gdb</c> / <c>.gdb.tu</c>
+/// files are read again by the guest's own loader on its tick (<see cref="Refii.Gdb.GdbHotReload"/>).</para>
 /// <para>RELAUNCH: models (a mesh already placed in the world or on a character is not rebuilt),
-/// the guest's databases (it reads <c>.gdb</c> and <c>.save</c> once, at boot — Godot's views of
-/// them refresh, gameplay does not), native code (compiled into the game module at launch), and
-/// any other file the guest has already loaded.</para>
+/// the guest's <c>.save</c> layers (read once, at boot — Godot's views of them refresh, the
+/// world does not), native code (compiled into the game module at launch), and any other file
+/// the guest has already loaded.</para>
 /// </remarks>
 public static class ModRemount
 {
@@ -270,8 +271,12 @@ public static class ModRemount
 			{
 				models.Add(path);
 			}
-			else if (lower.EndsWith(".gdb") || lower.EndsWith(".gdb.tu") ||
-				lower.EndsWith(".save") || lower.EndsWith(".save.tu"))
+			else if (lower.EndsWith(".gdb") || lower.EndsWith(".gdb.tu"))
+			{
+				// The guest's loader reads these again (GdbHotReload, below).
+				continue;
+			}
+			else if (lower.EndsWith(".save") || lower.EndsWith(".save.tu"))
 			{
 				databases.Add(path);
 			}
@@ -287,11 +292,26 @@ public static class ModRemount
 				"a mesh already placed in the world or on a character is not rebuilt; relaunch to see it", models));
 		}
 
+		// THE GUEST'S DATABASES: the changed .gdb / .gdb.tu files and the recomposited patches
+		// are read again by the guest's own loader on its tick (gdb_reload), rows a patch no
+		// longer states go back to the base (gdb_revert). Entities keep their record pointers;
+		// a row the base never had stays until a relaunch.
+		List<string> posted = Refii.Gdb.GdbHotReload.Apply(report.Changed);
+		if (posted.Count != 0)
+		{
+			int reloads = posted.Count(l => l.StartsWith(Refii.Gdb.GdbHotReload.ReloadCommand, StringComparison.Ordinal));
+			int reverts = posted.Count - reloads;
+			report.Refreshed.Add($"guest databases: {reloads} database(s) read again by the guest's own loader" +
+				(reverts != 0 ? $", {reverts} revert line(s) for rows no longer stated" : string.Empty) +
+				" — new lookups see added rows and properties, every held record takes the new values; " +
+				"a row the base never had stays until a relaunch");
+		}
+
 		if (databases.Count != 0)
 		{
-			report.Relaunch.Add(("guest databases",
-				"the guest reads its databases once, at boot: Godot's views of them (names, inventory) refresh now, " +
-				"gameplay values need a relaunch", databases));
+			report.Relaunch.Add(("save layers",
+				"the guest reads its .save layers once, at boot: Godot's views of them refresh now, " +
+				"the world's placements need a relaunch", databases));
 		}
 
 		if (other.Count != 0)

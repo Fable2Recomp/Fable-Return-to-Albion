@@ -788,6 +788,26 @@ public static class Engine_UiGameTemplates
       "rowCommand": "",
       "entries": []
     },
+    "hostbox-root": {
+      "highlight": "",
+      "title": "",
+      "source": "",
+      "rowCommand": "",
+      "entries": [
+        {
+          "name": "Continue",
+          "tag": "Continue",
+          "command": "HostBox:accept",
+          "hostOnly": true
+        },
+        {
+          "name": "Back",
+          "tag": "Back",
+          "command": "HostBox:cancel",
+          "hostOnly": true
+        }
+      ]
+    },
     "achievements-root": {
       "highlight": "Achievements",
       "title": "",
@@ -2284,6 +2304,41 @@ public static class Engine_UiGameTemplates
       "name": "mods",
       "ownsList": true,
       "provider": "multiplayer",
+      "scrollContent": "Foreground.Book.Pages.ExpressionsPage.Contents",
+      "scrollMask": "Mask",
+      "scrollBar": "Foreground.Book.Pages.ExpressionsPage.Scrollbar",
+      "presentation": "logbookscreen",
+      "pageRootUnit": "Pages",
+      "backdropUnit": "background_yellow",
+      "chrome": [
+        "Foreground"
+      ],
+      "panelSubtrees": [
+        "Foreground.Book.Pages.MoralityPage",
+        "Foreground.Book.Pages.ExpressionsPage",
+        "Foreground.Book.Pages.CompletedQuestsPage",
+        "Foreground.Book.Pages.RenownPage",
+        "Foreground.Book.Pages.AttractivenessPage",
+        "Foreground.Book.Pages.StatsPage",
+        "Foreground.Book.Pages.DogPage",
+        "Foreground.Book.Pages.HelpPage"
+      ],
+      "ownedElsewhere": [
+        "ExpandableMenu.Buttons",
+        "MenuHighlight"
+      ],
+      "wideLeft": [
+        "Foreground.ExpandableMenu"
+      ],
+      "wideRight": [
+        "Foreground.Book",
+        "Foreground.Mask"
+      ]
+    },
+    "1016": {
+      "name": "hostbox",
+      "ownsList": true,
+      "provider": "hostbox",
       "scrollContent": "Foreground.Book.Pages.ExpressionsPage.Contents",
       "scrollMask": "Mask",
       "scrollBar": "Foreground.Book.Pages.ExpressionsPage.Scrollbar",

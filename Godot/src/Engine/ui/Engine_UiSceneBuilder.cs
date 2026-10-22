@@ -198,6 +198,25 @@ public sealed class Engine_UiSceneBuilder
 	/// <summary>Static: read per animated element per frame, and a literal allocates a StringName.</summary>
 	private static readonly StringName PivotMeta = "pivot";
 
+	// Shader uniforms and metadata keys written on per-frame paths (opacity chains, tints, UV
+	// scrubs, clip bands): one StringName each, never a literal — a literal is a fresh StringName
+	// per call, and every one is a weak handle the next GC frees inside its pause.
+	private static readonly StringName OpacityName = "opacity";
+	private static readonly StringName ColourName = "colour";
+	private static readonly StringName ClipRectName = "clip_rect";
+	private static readonly StringName DiffuseTexName = "diffuse_tex";
+	private static readonly StringName TintRgbName = "tint_rgb";
+	private static readonly StringName TintAmountName = "tint_amount";
+	private static readonly StringName Uv1OffsetName = "uv1_offset";
+	private static readonly StringName Uv1ScaleName = "uv1_scale";
+	private static readonly StringName DetailMappedName = "detail_mapped";
+	private static readonly StringName AtlasName = "atlas";
+	private static readonly StringName OpacityLiveMeta = "opacity_live";
+	private static readonly StringName LiveAccumMeta = "live_accum";
+	private static readonly StringName OpacityAccumulatedMeta = "opacity_accumulated";
+	private static readonly StringName LookAtPointMeta = "lookatpoint";
+	private static readonly StringName AuthoredAlphaMetaName = AuthoredAlphaMeta;
+
 	/// <summary>
 	/// Writes a live SCALE onto a built or cloned node, keeping the position it states.
 	/// </summary>
@@ -413,15 +432,15 @@ public sealed class Engine_UiSceneBuilder
 			}
 
 			float own = Mathf.Clamp(stated / 100f, 0f, 1f);
-			float applied = node.HasMeta("opacity_live")
-				? (float)node.GetMeta("opacity_live")
-				: node.HasMeta("opacity") ? (float)node.GetMeta("opacity") : 1f;
+			float applied = node.HasMeta(OpacityLiveMeta)
+				? (float)node.GetMeta(OpacityLiveMeta)
+				: node.HasMeta(OpacityName) ? (float)node.GetMeta(OpacityName) : 1f;
 			if (Mathf.IsEqualApprox(own, applied))
 			{
 				continue;
 			}
 
-			node.SetMeta("opacity_live", own);
+			node.SetMeta(OpacityLiveMeta, own);
 			ReapplyOpacityChain(node, ParentAccumulated(node));
 			++changed;
 		}
@@ -436,28 +455,28 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public static void RestateOpacity(Node node, float own)
 	{
-		node.SetMeta("opacity_live", Mathf.Clamp(own, 0f, 1f));
+		node.SetMeta(OpacityLiveMeta, Mathf.Clamp(own, 0f, 1f));
 		ReapplyOpacityChain(node, ParentAccumulated(node));
 	}
 
 	/// <summary>The accumulated opacity ABOVE a node — live where a live value has been applied.</summary>
 	private static float ParentAccumulated(Node node) =>
 		node.GetParent() is { } parent
-			? (parent.HasMeta("live_accum")
-				? (float)parent.GetMeta("live_accum")
-				: parent.HasMeta("opacity_accumulated")
-					? (float)parent.GetMeta("opacity_accumulated")
+			? (parent.HasMeta(LiveAccumMeta)
+				? (float)parent.GetMeta(LiveAccumMeta)
+				: parent.HasMeta(OpacityAccumulatedMeta)
+					? (float)parent.GetMeta(OpacityAccumulatedMeta)
 					: 1f)
 			: 1f;
 
 	/// <summary>Recomputes one subtree's accumulated products and writes them to the materials.</summary>
 	private static void ReapplyOpacityChain(Node node, float parentAccumulated)
 	{
-		float own = node.HasMeta("opacity_live")
-			? (float)node.GetMeta("opacity_live")
-			: node.HasMeta("opacity") ? (float)node.GetMeta("opacity") : 1f;
+		float own = node.HasMeta(OpacityLiveMeta)
+			? (float)node.GetMeta(OpacityLiveMeta)
+			: node.HasMeta(OpacityName) ? (float)node.GetMeta(OpacityName) : 1f;
 		float accumulated = parentAccumulated * own;
-		node.SetMeta("live_accum", accumulated);
+		node.SetMeta(LiveAccumMeta, accumulated);
 
 		if (Engine_UiTheme.SetIconOpacity(node, accumulated))
 		{
@@ -468,19 +487,19 @@ public sealed class Engine_UiSceneBuilder
 		{
 			if (material.Shader == QuadShader)
 			{
-				material.SetShaderParameter("opacity", accumulated);
+				material.SetShaderParameter(OpacityName, accumulated);
 			}
 			else if (material.Shader == TextShader)
 			{
-				Color colour = material.GetShaderParameter("colour").AsColor();
+				Color colour = material.GetShaderParameter(ColourName).AsColor();
 				material.SetShaderParameter(
-					"colour", new Color(colour.R, colour.G, colour.B, accumulated));
+					ColourName, new Color(colour.R, colour.G, colour.B, accumulated));
 			}
 		}
 
-		foreach (Node child in node.GetChildren())
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
 		{
-			ReapplyOpacityChain(child, accumulated);
+			ReapplyOpacityChain(node.GetChild(i), accumulated);
 		}
 	}
 
@@ -579,11 +598,11 @@ public sealed class Engine_UiSceneBuilder
 			node.Visible = false;
 		}
 		if (n.Opacity < 100f)
-			node.SetMeta("opacity", n.Opacity / 100f);
+			node.SetMeta(OpacityName, n.Opacity / 100f);
 		// The accumulated value, separately: a consumer must tell "this element is transparent"
 		// from "something above it is".
 		if (_inheritedOpacity < 1f)
-			node.SetMeta("opacity_accumulated", _inheritedOpacity);
+			node.SetMeta(OpacityAccumulatedMeta, _inheritedOpacity);
 		// What was inherited FROM ABOVE — the one of the three that cannot be derived from the
 		// other two, since dividing the accumulated by the group's own value fails exactly when
 		// the group sits at zero. A host re-running a group opacity write needs it.
@@ -629,7 +648,7 @@ public sealed class Engine_UiSceneBuilder
 
 				// Cameras are aimed by an explicit look-at point, not by their own rotation.
 				if (TryReadVector(n, "lookatpoint", out Vector3 target))
-					cam.SetMeta("lookatpoint", new Vector3(target.X, target.Y, ToGodotZ(target.Z)));
+					cam.SetMeta(LookAtPointMeta, new Vector3(target.X, target.Y, ToGodotZ(target.Z)));
 
 				cam.Current = false;
 				return cam;
@@ -730,10 +749,10 @@ public sealed class Engine_UiSceneBuilder
 	public static ShaderMaterial TextMaterial(Color colour, Texture2D? atlas)
 	{
 		var material = new ShaderMaterial { Shader = TextShader };
-		material.SetShaderParameter("colour", colour);
+		material.SetShaderParameter(ColourName, colour);
 		if (atlas is not null)
 		{
-			material.SetShaderParameter("atlas", atlas);
+			material.SetShaderParameter(AtlasName, atlas);
 			material.SetShaderParameter("supersample", Engine_BitmapFontTexture.SupersampleOf(atlas));
 		}
 
@@ -749,7 +768,7 @@ public sealed class Engine_UiSceneBuilder
 
 	/// <summary>A built label's colour, or white when the node is not one.</summary>
 	public static Color TextColour(MeshInstance3D label) =>
-		LabelMaterial(label) is { } m ? m.GetShaderParameter("colour").AsColor() : Colors.White;
+		LabelMaterial(label) is { } m ? m.GetShaderParameter(ColourName).AsColor() : Colors.White;
 
 	/// <summary>Recolours a built label. Silently does nothing if it has no material.</summary>
 	public static bool SetTextColour(MeshInstance3D label, Color colour)
@@ -759,7 +778,7 @@ public sealed class Engine_UiSceneBuilder
 			return false;
 		}
 
-		m.SetShaderParameter("colour", colour);
+		m.SetShaderParameter(ColourName, colour);
 		Engine_UiTheme.FadeInlineIcons(label, colour.A);
 		return true;
 	}
@@ -778,17 +797,17 @@ public sealed class Engine_UiSceneBuilder
 		var mat = new ShaderMaterial { Shader = QuadShader };
 
 		// The accumulated alpha: BuildNode has already folded n.Opacity into _inheritedOpacity.
-		mat.SetShaderParameter("opacity", _inheritedOpacity);
+		mat.SetShaderParameter(OpacityName, _inheritedOpacity);
 		mat.SetShaderParameter("quad_base_size", QuadBaseSize);
 
 		// Colour and WEIGHT kept apart: the weight is 0 on most records, so most quads are untinted.
-		mat.SetShaderParameter("tint_rgb", new Vector3(q.R, q.G, q.B));
-		mat.SetShaderParameter("tint_amount", q.TintAmount);
+		mat.SetShaderParameter(TintRgbName, new Vector3(q.R, q.G, q.B));
+		mat.SetShaderParameter(TintAmountName, q.TintAmount);
 
 		// The atlas rectangle rides on the material rather than custom mesh UVs, so
 		// every quad can share one QuadMesh.
-		mat.SetShaderParameter("uv1_scale", new Vector2(q.UMax - q.UMin, q.VMax - q.VMin));
-		mat.SetShaderParameter("uv1_offset", new Vector2(q.UMin, q.VMin));
+		mat.SetShaderParameter(Uv1ScaleName, new Vector2(q.UMax - q.UMin, q.VMax - q.VMin));
+		mat.SetShaderParameter(Uv1OffsetName, new Vector2(q.UMin, q.VMin));
 
 		// A controller button cut from the shared atlas carries its keycap, for the keyboard.
 		if (Engine_UiKeyGlyphs.AtlasButton(q.TexturePath, n, q.UMin, q.VMax) is { } button)
@@ -805,7 +824,7 @@ public sealed class Engine_UiSceneBuilder
 			Texture2D? tex = TextureResolver?.Invoke(q.TexturePath);
 			if (tex is not null)
 			{
-				mat.SetShaderParameter("diffuse_tex", tex);
+				mat.SetShaderParameter(DiffuseTexName, tex);
 				TexturesResolved++;
 
 				// Inset half a texel off every edge. Frame art is CELLS of a shared atlas
@@ -826,8 +845,8 @@ public sealed class Engine_UiSceneBuilder
 				(float uOffset, float uScale) = InsetAxis(q.UMin, q.UMax, du);
 				(float vOffset, float vScale) = InsetAxis(q.VMin, q.VMax, dv);
 
-				mat.SetShaderParameter("uv1_offset", new Vector2(uOffset, vOffset));
-				mat.SetShaderParameter("uv1_scale", new Vector2(uScale, vScale));
+				mat.SetShaderParameter(Uv1OffsetName, new Vector2(uOffset, vOffset));
+				mat.SetShaderParameter(Uv1ScaleName, new Vector2(uScale, vScale));
 			}
 			mesh.SetMeta("texture_path", q.TexturePath);
 		}
@@ -874,7 +893,7 @@ public sealed class Engine_UiSceneBuilder
 			return false;
 		}
 
-		material.SetShaderParameter("diffuse_tex", texture);
+		material.SetShaderParameter(DiffuseTexName, texture);
 		return true;
 	}
 
@@ -896,23 +915,23 @@ public sealed class Engine_UiSceneBuilder
 	{
 		if (QuadMaterial(mesh) is { } shader)
 		{
-			float opacity = shader.GetShaderParameter("opacity").AsSingle();
-			Vector3 tint = shader.GetShaderParameter("tint_rgb").AsVector3();
+			float opacity = shader.GetShaderParameter(OpacityName).AsSingle();
+			Vector3 tint = shader.GetShaderParameter(TintRgbName).AsVector3();
 			return new QuadPaint(
 				opacity > 0.01f,
-				shader.GetShaderParameter("diffuse_tex").As<Texture2D>(),
+				shader.GetShaderParameter(DiffuseTexName).As<Texture2D>(),
 				opacity,
 				new Color(tint.X, tint.Y, tint.Z),
-				shader.GetShaderParameter("tint_amount").AsSingle(),
-				shader.GetShaderParameter("detail_mapped").AsBool());
+				shader.GetShaderParameter(TintAmountName).AsSingle(),
+				shader.GetShaderParameter(DetailMappedName).AsBool());
 		}
 
 		// A label carries its colour and coverage rather than a tint and an atlas rect.
 		if (LabelMaterial(mesh) is { } label)
 		{
-			Color c = label.GetShaderParameter("colour").AsColor();
+			Color c = label.GetShaderParameter(ColourName).AsColor();
 			return new QuadPaint(
-				c.A > 0.01f, label.GetShaderParameter("atlas").As<Texture2D>(), c.A, c, 1f, false);
+				c.A > 0.01f, label.GetShaderParameter(AtlasName).As<Texture2D>(), c.A, c, 1f, false);
 		}
 
 		// Anything a host-authored screen built with a plain material of its own.
@@ -939,12 +958,12 @@ public sealed class Engine_UiSceneBuilder
 	{
 		if (node is MeshInstance3D mesh && OwnQuadMaterial(mesh))
 		{
-			mesh.SetMeta(AuthoredAlphaMeta, QuadOpacity(mesh));
+			mesh.SetMeta(AuthoredAlphaMetaName, QuadOpacity(mesh));
 		}
 
-		foreach (Node child in node.GetChildren())
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
 		{
-			OwnSubtreeMaterials(child);
+			OwnSubtreeMaterials(node.GetChild(i));
 		}
 	}
 
@@ -952,19 +971,19 @@ public sealed class Engine_UiSceneBuilder
 	/// Meshes without the recorded alpha are skipped — they were never owned.</summary>
 	public static void FadeSubtree(Node node, float opacity)
 	{
-		if (node is MeshInstance3D mesh && mesh.HasMeta(AuthoredAlphaMeta))
+		if (node is MeshInstance3D mesh && mesh.HasMeta(AuthoredAlphaMetaName))
 		{
-			SetQuadOpacity(mesh, (float)mesh.GetMeta(AuthoredAlphaMeta) * opacity);
+			SetQuadOpacity(mesh, (float)mesh.GetMeta(AuthoredAlphaMetaName) * opacity);
 		}
 
-		foreach (Node child in node.GetChildren())
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
 		{
-			FadeSubtree(child, opacity);
+			FadeSubtree(node.GetChild(i), opacity);
 		}
 	}
 
 	public static float QuadOpacity(MeshInstance3D mesh) =>
-		QuadMaterial(mesh)?.GetShaderParameter("opacity").AsSingle() ?? 1f;
+		QuadMaterial(mesh)?.GetShaderParameter(OpacityName).AsSingle() ?? 1f;
 
 	/// <summary>
 	/// Writes a built quad's tint — the pair `SetTintingAmountAndDiffuseColour` writes. Both
@@ -977,8 +996,8 @@ public sealed class Engine_UiSceneBuilder
 			return false;
 		}
 
-		material.SetShaderParameter("tint_rgb", new Vector3(colour.R, colour.G, colour.B));
-		material.SetShaderParameter("tint_amount", amount);
+		material.SetShaderParameter(TintRgbName, new Vector3(colour.R, colour.G, colour.B));
+		material.SetShaderParameter(TintAmountName, amount);
 		return true;
 	}
 
@@ -990,7 +1009,7 @@ public sealed class Engine_UiSceneBuilder
 			return false;
 		}
 
-		material.SetShaderParameter("opacity", opacity);
+		material.SetShaderParameter(OpacityName, opacity);
 		return true;
 	}
 
@@ -1019,7 +1038,7 @@ public sealed class Engine_UiSceneBuilder
 		const int DetailMapped = 4;
 		if (q.Source.DetailMapMode != DetailMapped)
 		{
-			mat.SetShaderParameter("detail_mapped", false);
+			mat.SetShaderParameter(DetailMappedName, false);
 			return;
 		}
 
@@ -1033,12 +1052,12 @@ public sealed class Engine_UiSceneBuilder
 		if (detail is null)
 		{
 			// Without one the primary's RGB stands, which for these quads is flat magenta.
-			mat.SetShaderParameter("detail_mapped", false);
+			mat.SetShaderParameter(DetailMappedName, false);
 			++DetailMapsMissing;
 			return;
 		}
 
-		mat.SetShaderParameter("detail_mapped", true);
+		mat.SetShaderParameter(DetailMappedName, true);
 		mat.SetShaderParameter("detail_tex", detail);
 
 		// Deterministic where the guest is random (`sub_8286F830` uses two
@@ -1073,7 +1092,7 @@ public sealed class Engine_UiSceneBuilder
 			float halfW = 0.5f * QuadBaseSize * world.Basis.X.Length();
 			float halfH = 0.5f * QuadBaseSize * world.Basis.Y.Length();
 
-			material.SetShaderParameter("clip_rect", new Vector4(
+			material.SetShaderParameter(ClipRectName, new Vector4(
 				world.Origin.X - halfW, world.Origin.Y - halfH,
 				world.Origin.X + halfW, world.Origin.Y + halfH));
 		}
@@ -1119,7 +1138,7 @@ public sealed class Engine_UiSceneBuilder
 			halfH *= Mathf.Abs(up.ScaleY);
 		}
 
-		mat.SetShaderParameter("clip_rect",
+		mat.SetShaderParameter(ClipRectName,
 			new Vector4(cx - halfW, cy - halfH, cx + halfW, cy + halfH));
 
 		// Remembered so RefreshClips can recompute when the guest moves a mask: a live
@@ -1210,11 +1229,11 @@ public sealed class Engine_UiSceneBuilder
 		// Not while detached: the aim comes from GLOBAL transforms and a detached node's is the
 		// identity. `BuildDetached` calls this before attaching; the attaching caller calls it
 		// again.
-		if (root is Camera3D cam && cam.HasMeta("lookatpoint") && cam.IsInsideTree())
+		if (root is Camera3D cam && cam.HasMeta(LookAtPointMeta) && cam.IsInsideTree())
 		{
 			// The look-at point is authored in the camera's parent space, so it rides through
 			// the parent's global transform, handedness flip included.
-			var local = (Vector3)cam.GetMeta("lookatpoint");
+			var local = (Vector3)cam.GetMeta(LookAtPointMeta);
 			Vector3 target = cam.GetParent() is Node3D parent
 				? parent.GlobalTransform * local
 				: local;
@@ -1222,8 +1241,8 @@ public sealed class Engine_UiSceneBuilder
 			if (!cam.GlobalPosition.IsEqualApprox(target))
 				cam.LookAt(target, Vector3.Up);
 		}
-		foreach (Node child in root.GetChildren())
-			ApplyCameraAiming(child);
+		for (int i = 0, count = root.GetChildCount(); i < count; ++i)
+			ApplyCameraAiming(root.GetChild(i));
 	}
 
 	/// <summary>
@@ -1419,8 +1438,8 @@ public sealed class Engine_UiSceneBuilder
 				acc = seeded ? acc.Merge(world) : world;
 				seeded = true;
 			}
-			foreach (Node child in node.GetChildren())
-				Accumulate(child, ref acc, ref seeded);
+			for (int i = 0, count = node.GetChildCount(); i < count; ++i)
+				Accumulate(node.GetChild(i), ref acc, ref seeded);
 		}
 	}
 

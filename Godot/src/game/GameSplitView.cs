@@ -128,7 +128,17 @@ public partial class GameSplitView : CanvasLayer
 			Transform3D drawn = secondStated;
 			float drawnFov = horizontal;
 			float teleport = Refii.Core.Engine_TickTimeline.TeleportMetres;
-			if (stated.Flag || _secondLine.Empty ||
+			// A statement only on a frame whose guest step is complete (Engine_GuestFrame.Changed),
+			// for the reason GameWorld gives for player one's camera: read later in the frame than
+			// its stamp, a camera from a step finishing in between is the next tick's under this
+			// tick's stamp. Otherwise the timeline runs on by the motion already stated.
+			if (!Refii.Core.Engine_GuestFrame.Changed && !_secondLine.Empty)
+			{
+				drawn = _secondLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
+					Refii.Entities.Engine_DrawnFrame.DrawTick);
+				drawnFov = _secondLine.DrawnScalar;
+			}
+			else if (stated.Flag || _secondLine.Empty ||
 				_secondLine.Newest.Origin.DistanceSquaredTo(secondStated.Origin) > teleport * teleport)
 			{
 				_secondLine.Reset(tick, secondStated, horizontal);

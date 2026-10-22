@@ -255,6 +255,10 @@ public static class Engine_UiTimeline
         return false;
     }
 
+    /// <summary>The last extent written per bar material, so a still bar costs no read.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial,
+        System.Runtime.CompilerServices.StrongBox<float>> _uvExtents = new();
+
     /// <summary>Writes a scrubbed vertical UV extent onto a quad, keeping the builder's
     /// half-texel inset (Engine_UiSceneBuilder.InsetAxis) so the band's edges do not bleed.</summary>
     private static void SetUvScaleV(Node node, float extent)
@@ -263,6 +267,18 @@ public static class Engine_UiTimeline
         {
             return;
         }
+
+        // Written only when the extent moved: the read of `diffuse_tex` below is an Object
+        // Variant (a weak handle per call), and a resting meter's track evaluates to the same
+        // extent every frame. The far edge is held across writes, so a repeat is a no-op.
+        System.Runtime.CompilerServices.StrongBox<float> written =
+            _uvExtents.GetValue(material, static _ => new System.Runtime.CompilerServices.StrongBox<float>(float.NaN));
+        if (written.Value == extent)
+        {
+            return;
+        }
+
+        written.Value = extent;
 
         // The strip is ANCHORED at its far edge: the bar's authored rect is v [0.939, 0.998]
         // for `scalev` 0.063 (the atlas's bottom rows, empty), and the guest's scrub to 0.5
@@ -287,9 +303,9 @@ public static class Engine_UiTimeline
             material.SetShaderParameter(OpacityName, alpha);
         }
 
-        foreach (Node child in node.GetChildren())
+        for (int i = 0, count = node.GetChildCount(); i < count; ++i)
         {
-            SetOpacity(child, alpha);
+            SetOpacity(node.GetChild(i), alpha);
         }
     }
 }

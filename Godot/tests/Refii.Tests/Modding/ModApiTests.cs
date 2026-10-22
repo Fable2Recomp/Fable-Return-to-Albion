@@ -280,10 +280,11 @@ public class ModApiTests
         // no script calls them; notice_done and menu_box_answer likewise for a notice gone and a menu
         // box answered. fx_play and fx_stop likewise: Engine_FxPlayer posts them for a
         // play_fx under the classic look; a script calls play_fx / stop_fx.
-        // fx_reload is the remount's (Engine_ModRemount -> Engine_FxModEffects.ReloadGuestBank).
+        // fx_reload is the remount's (Engine_ModRemount -> Engine_FxModEffects.ReloadGuestBank), and
+        // so are gdb_reload and gdb_revert (Engine_ModRemount -> GdbHotReload.Apply).
         // mask_word is HostBridge.SetModEventMask / SetModVerdictMask's: the words of the host's
         // masks past the two the exports carry.
-        foreach (string verb in verbs.Where(v => v is not ("menu_row" or "box_answer" or "notice_done" or "menu_box_answer" or "fx_play" or "fx_stop" or "fx_reload" or "mask_word")))
+        foreach (string verb in verbs.Where(v => v is not ("menu_row" or "box_answer" or "notice_done" or "menu_box_answer" or "fx_play" or "fx_stop" or "fx_reload" or "gdb_reload" or "gdb_revert" or "mask_word")))
         {
             AssertThat(Regex.IsMatch(godot, @"\b" + verb + @"\b"))
                 .OverrideFailureMessage($"'{verb}' is answered by mod_commands.cpp but missing from ModApi.GodotHelpers")

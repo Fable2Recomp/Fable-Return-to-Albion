@@ -377,11 +377,13 @@ public sealed partial class Engine_AchievementToast : Node3D
 	}
 
 	/// <summary>One label's fade — the text shader's `opacity`, and its inline icons with it.</summary>
+	private static readonly StringName OpacityName = "opacity";
+
 	private static void Fade(MeshInstance3D? label, float opacity)
 	{
 		if (label?.MaterialOverride is ShaderMaterial material)
 		{
-			material.SetShaderParameter("opacity", opacity);
+			material.SetShaderParameter(OpacityName, opacity);
 			Engine_UiTheme.FadeInlineIcons(label, opacity);
 		}
 	}

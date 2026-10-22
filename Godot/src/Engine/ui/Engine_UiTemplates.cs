@@ -2052,6 +2052,25 @@ public static class Engine_UiTemplates
 			Source = Engine_UiNetworkSource.ModsSource,
 		};
 
+		// THE HOST PAGE BOOK'S LIST: a host question's two answers as rows (Engine_UiHostBoxPage).
+		menus[Engine_UiHostBoxPage.MenuName] = new Engine_UiMenuTemplate
+		{
+			Name = Engine_UiHostBoxPage.MenuName,
+			Entries =
+			{
+				new Engine_UiMenuEntry
+				{
+					Name = "Continue", Tag = "Continue", HostOnly = true,
+					Command = Engine_UiHostBoxPage.AcceptCommand,
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "Back", Tag = "Back", HostOnly = true,
+					Command = Engine_UiHostBoxPage.CancelCommand,
+				},
+			},
+		};
+
 		menus["achievements-root"] = new Engine_UiMenuTemplate
 		{
 			Name = "achievements-root",
@@ -2989,16 +3008,20 @@ public static class Engine_UiTemplates
 		// `PanelSubtrees` carries the whole page stack rather than `ExpressionsPage` alone: the
 		// provider switches seven of the eight off and the panel must know the fields it is
 		// hiding, the same statement screen 17 makes.
-		// The Active Mods book is the same screen over its own list: one page, two subjects.
-		foreach ((uint id, string name) in new[]
+		// The Active Mods book is the same screen over its own list: one page, two subjects. The
+		// host page book (Engine_UiHostBoxPage) is the same screen again: a host question's
+		// title and body on the page, Continue and Back as the rows.
+		foreach ((uint id, string name, string provider) in new[]
 		{
-			(Engine_UiMultiplayerPage.ScreenId, "multiplayer"), (Engine_UiMultiplayerPage.ModsScreenId, "mods"),
+			(Engine_UiMultiplayerPage.ScreenId, "multiplayer", Engine_UiPageProviders.Multiplayer),
+			(Engine_UiMultiplayerPage.ModsScreenId, "mods", Engine_UiPageProviders.Multiplayer),
+			(Engine_UiHostBoxPage.ScreenId, "hostbox", Engine_UiPageProviders.HostBox),
 		})
 		{
 			AddScreen(screens, new Engine_UiScreenTemplate
 			{
 				ScreenId = id, Name = name, OwnsList = true,
-				Provider = Engine_UiPageProviders.Multiplayer,
+				Provider = provider,
 				Presentation = "logbookscreen",
 				ChromeUnits = { "Foreground" },
 				OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
@@ -3204,6 +3227,7 @@ public static class Engine_UiTemplates
 			[28] = new[] { "Foreground.Book" },
 			[Engine_UiMultiplayerPage.ScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
 			[Engine_UiMultiplayerPage.ModsScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
+			[Engine_UiHostBoxPage.ScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
 			[Engine_UiAchievementPage.ScreenId] = new[] { "Foreground.Book", "Foreground.Mask" },
 		};
 

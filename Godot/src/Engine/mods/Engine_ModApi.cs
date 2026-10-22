@@ -1092,7 +1092,7 @@ public static class ModApi
 			}),
 		new ModApiEvent("StartGame", "start_game", 99, "rex_lhFrontEnd_SetStartGameTarget (r3 the front-end object, r4 the save name LHString, r5 the start level LHString), before it",
 			"The front end starts a game: New Game, Load, Continue or a co-op join stated the target the in-game state is created from. On the title there is no game VM, so Lua hears it in mod/frontend.lua; native handlers and Godot scripts as any event.",
-			string.Empty,
+			"the start is refused and the front end stays where it is (the save gate's own use, Engine_ModSaveGate: a save stamped with mods not enabled now is asked about, filtered, then started again)",
 			new[]
 			{
 				F("save", "const char* / string", "the save's name; \"\" for a new game"),

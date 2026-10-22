@@ -192,6 +192,9 @@ public static class Engine_LevelScene
 
     public const string WaterNodeName = "Water";
 
+    /// <summary>The water node's path held once; a string makes a finalizable NodePath per lookup.</summary>
+    public static readonly NodePath WaterNodePath = WaterNodeName;
+
     /// <summary>Allows testing the Editor-specific build pipeline in headless CLI runs.</summary>
     public static bool ForceEditorMode { get; set; }
 
@@ -2101,15 +2104,16 @@ public static class Engine_LevelScene
 
     private static void ApplyWaterTheme(Node3D root, WaterTheme theme)
     {
-        Node3D? water = root.GetNodeOrNull<Node3D>(WaterNodeName);
+        Node3D? water = root.GetNodeOrNull<Node3D>(WaterNodePath);
         if (water is null)
         {
             return;
         }
 
-        foreach (Node child in water.GetChildren())
+        // By index: GetChildren() is a Godot Array, a finalizable handle per atmosphere tick.
+        for (int i = 0, count = water.GetChildCount(); i < count; i++)
         {
-            if (child is MeshInstance3D mesh &&
+            if (water.GetChild(i) is MeshInstance3D mesh &&
                 mesh.MaterialOverride is ShaderMaterial material)
             {
                 if (material.HasMeta(Engine_ClassicWater.Meta))

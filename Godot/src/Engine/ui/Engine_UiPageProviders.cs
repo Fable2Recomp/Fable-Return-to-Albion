@@ -35,6 +35,9 @@ public static class Engine_UiPageProviders
 	public const string Multiplayer = "multiplayer";
 	public const string Coop = "coop";
 
+	/// <summary>The host page book (<see cref="Engine_UiHostBoxPage"/>): a host question on a page.</summary>
+	public const string HostBox = "hostbox";
+
 	/// <summary>
 	/// The DATA provider (<see cref="Engine_UiDataPage"/>): a screen record's own <c>fields</c> and
 	/// <c>switches</c>, bound to <c>mod:</c> / <c>player:</c> values, the highlighted row, Babel tags or
@@ -96,12 +99,13 @@ public static class Engine_UiPageProviders
 		[RealEstate] = new RealEstateProvider(),
 		[Multiplayer] = new MultiplayerProvider(),
 		[Coop] = new CoopProvider(),
+		[HostBox] = new HostBoxProvider(),
 		[Data] = new Engine_UiDataPage(),
 	};
 
 	/// <summary>The game's own provider names, which a registration may not replace.</summary>
 	public static readonly string[] ShippedNames =
-		{ Abilities, Logbook, Crime, WorldMap, Options, ItemBook, Achievements, RealEstate, Multiplayer, Coop, Data };
+		{ Abilities, Logbook, Crime, WorldMap, Options, ItemBook, Achievements, RealEstate, Multiplayer, Coop, HostBox, Data };
 
 	private static readonly HashSet<string> Shipped = new(ShippedNames);
 
@@ -501,6 +505,15 @@ public static class Engine_UiPageProviders
 
 		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
 			Engine_UiMultiplayerPage.Active(page.Row);
+	}
+
+	private sealed class HostBoxProvider : Engine_UiPageProvider
+	{
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
+			Engine_UiHostBoxPage.Values(page.Row);
+
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
+			Engine_UiHostBoxPage.Active(page.Row);
 	}
 
 	private sealed class AchievementsProvider : Engine_UiPageProvider

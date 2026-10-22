@@ -393,6 +393,14 @@ public partial class GameUi : Node
 			}
 			GameWhereabouts.Strings = newStrings;
 			Engine_UiInventorySource.Strings = newStrings;
+
+			// A new string book means the mount changed, which also dropped the text banks the
+			// item labels resolve through (`Engine_BnkTextBankLoader.SetGameDirectory`); read
+			// them again now rather than on the next list that needs them.
+			if (HostBridge.IsInGame)
+			{
+				WarmTextBanks();
+			}
 		};
 
 		_presentation.PatternBooksRetired += OnPatternBooksRetired;
@@ -414,6 +422,12 @@ public partial class GameUi : Node
 				}
 			};
 		}
+
+		// The host page book's two rows ARE the question's two answers.
+		_hostPageBook.Host = _presentation;
+		_hostPageBook.Books = _books;
+		_hostPageBook.Action = command =>
+			Engine_UiHostBoxes.Answer(command == Engine_UiHostBoxPage.AcceptCommand);
 		RegisterCommands();
 		_showing = Screen;
 
@@ -1386,7 +1400,8 @@ public partial class GameUi : Node
 		// On the pause ROOT it draws instead of the mirrored tree; tab screens fall back to it.
 		if (_pauseBook is null || !IsInstanceValid(_pauseBook))
 		{
-			_pauseBook = _books.Ensure(0, PausePresentation);
+			// The one the loading screen prebuilt, when it got to it; otherwise built here.
+			_pauseBook = _books.ClaimPrebuilt(0, PausePresentation) ?? _books.Ensure(0, PausePresentation);
 		}
 
 		// The banner, above the book — its own small owned tree, driven by the cycler's text.
@@ -1917,7 +1932,10 @@ public partial class GameUi : Node
 			return true;
 		}
 
-		AdoptScreenMenu(address, drawn, state.ScreenId);
+		using (Refii.Core.Engine_FramePhases.Measure("ui.list.view"))
+		{
+			AdoptScreenMenu(address, drawn, state.ScreenId);
+		}
 
 		// THE LIST FOLLOWS THE GAME'S DATA. The bridge's generation moves whenever a level,
 		// experience, an item, gold or a drawn weapon changes (mod_events.cpp's entry points);
@@ -2708,6 +2726,14 @@ public partial class GameUi : Node
 	/// <summary>The list book standing, if any; at most one is open at a time.</summary>
 	private Engine_UiListBookScreen? OpenListBook =>
 		_multiplayer.IsOpen ? _multiplayer : _modsBook.IsOpen ? _modsBook : null;
+
+	/// <summary>
+	/// The host page book — a host question asked on a page (<see cref="Engine_UiHostBoxPage"/>):
+	/// the question's title and body in the scroll region, Continue and Back as the rows. Driven
+	/// with the front end's host box (GameUiHostSurfaces), never through <see cref="OpenListBook"/>.
+	/// </summary>
+	private readonly Engine_UiListBookScreen _hostPageBook =
+		new(Engine_UiHostBoxPage.ScreenId, Engine_UiHostBoxPage.MenuName, "HostBoxMenu");
 
 	/// <summary>The rebuilt, Godot-authored HUD. There is no mirrored one.</summary>
 	private Engine_HudView? _hud;
@@ -4152,7 +4178,7 @@ public partial class GameUi : Node
 	/// </summary>
 	private Engine_HudWorldSprites.Placed? PlaceIn(SpriteView view, Vector3 guest, uint entity, bool clip)
 	{
-		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera) ||
+		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera) || !camera.IsInsideTree() ||
 			view.Viewport.X <= 0f || view.Viewport.Y <= 0f)
 		{
 			return null;
@@ -4629,7 +4655,7 @@ public partial class GameUi : Node
 		{
 			if (cadence)
 			{
-				uint[]? iconTextures = HostBridge.GetUiTextureHashes(_hudAddress, elements.Count);
+				uint[]? iconTextures = SampleHudTextures(elements.Count);
 				_worldIcons.Sample(elements, iconTextures);
 				if (_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
 				{
@@ -4736,8 +4762,7 @@ public partial class GameUi : Node
 					// can be per frame without the whole feed becoming so.
 					if (cadence || _hud.LiveTextures is null)
 					{
-						_hud.LiveTextures =
-							HostBridge.GetUiTextureHashes(_hudAddress, elements.Count);
+						_hud.LiveTextures = SampleHudTextures(elements.Count);
 					}
 
 					// AND THE TRANSFORMS. The bars are authored empty, so the binding needs the
@@ -7029,6 +7054,31 @@ public partial class GameUi : Node
 
 	public static bool WorldInteractionAllowed { get; private set; }
 
+	/// <summary>
+	/// Reads the VANILLA text bank — the one `Engine_ItemNames` asks for a curated record,
+	/// after the mounted bank — on a worker, so the first Items list does not read 2.6 MB and
+	/// inflate 5.5 MB of pages on the main thread. Only bytes, dictionaries and deflate streams
+	/// are touched; the loader prints its own line. Not awaited, and only this bank: its lazy
+	/// read is a plain `??=`, so a main-thread lookup landing mid-read sees null and reads the
+	/// bank itself, exactly as before. The MOUNTED bank is left to the level build, which
+	/// already reads it — its loader marks "tried" before "loaded", and a second reader would
+	/// open a window where a lookup answers nothing.
+	/// </summary>
+	private static void WarmTextBanks()
+	{
+		_ = System.Threading.Tasks.Task.Run(() =>
+		{
+			try
+			{
+				_ = Engine_BnkTextBankLoader.BaseBank;
+			}
+			catch (System.Exception ex)
+			{
+				GD.PushWarning($"[babel] warming the text banks failed: {ex.Message}");
+			}
+		});
+	}
+
 	private void ui_processBody(double delta)
 	{
 		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene;
@@ -7109,7 +7159,29 @@ public partial class GameUi : Node
 			LeaveGame();
 		}
 
+		// THE GAME COMING UP, on the rising edge: the text banks an item label resolves through
+		// are read now, off the main thread, rather than on the frame the first Items screen
+		// opens. The vanilla bank in particular is only ever asked for by a curated item name,
+		// so it was reached 30 minutes into a session, in the middle of building the gift list.
+		if (inGame && !_sawInGame)
+		{
+			WarmTextBanks();
+		}
+
 		_sawInGame = inGame;
+
+		// THE OWNED BOOKS, BUILT WHILE THE LOADING SCREEN IS UP. A book is 100-500 cloned
+		// nodes, their materials, bound text and nine-slice borders — 100-300 ms on the main
+		// thread, which used to land on the frame the player first opened each screen. The
+		// loading screen is a window where that frame is not seen, so one book is built per
+		// frame of it; whatever is left when it comes down is built on demand as before.
+		if (inGame && _loading is { IsShowing: true })
+		{
+			using (Refii.Core.Engine_FramePhases.Measure("ui.book.prebuild"))
+			{
+				_books.PrebuildOne();
+			}
+		}
 
 		// THE HOST'S EMBEDDED PREVIEW dies with the page that asked for it. The ask is
 		// per-frame (the abilities detail block sets the flag); a frame with no ask — the
@@ -7408,7 +7480,7 @@ public partial class GameUi : Node
 
 		// THE HOST'S OWN SURFACES with nothing of the guest's under them: a host box out of game
 		// (the front end's dialog), then a mod's menu opened with no list up. See GameUiHostSurfaces.
-		if (DriveFrontEndHostBox() || DriveHostModMenu(delta))
+		if (DriveFrontEndHostBox(delta) || DriveHostModMenu(delta))
 		{
 			return;
 		}
@@ -7821,11 +7893,16 @@ public partial class GameUi : Node
 			// two-save fan the two reset backs.
 			int firstCard = Engine_FrontEndSaveCards.BaseSlotFor(cards.Count) - 1;
 			var saves = new System.Collections.Generic.List<Engine_FrontEndSaveCards.Save>();
+			// THE FILE NAMES, the guest's own vector the index commits by (ABI 218): the export
+			// copy is named by them. A save's mods are told on the page that opens when it is
+			// picked (ModSaveGate), never on the card.
+			_saveCardNames = HostBridge.GetSaveCardNames();
 			for (int i = 0; i < cards.Count; ++i)
 			{
 				int card = firstCard + i;
 				saves.Add(new Engine_FrontEndSaveCards.Save(
-					cards[i].Description, card < portraits.Count ? portraits[card] : null));
+					cards[i].Description,
+					card < portraits.Count ? portraits[card] : null));
 			}
 
 			OpenSaveCards(saves);
@@ -7864,6 +7941,15 @@ public partial class GameUi : Node
 				_saveCardView.Select(pointed);
 				fanClicked = true;
 			}
+		}
+
+		// X on a card: "Copy for Xbox / Xenia" — the save's guest files, vanilla-only, beside the
+		// content root; the original is untouched (ModSaveGate.ExportForConsole).
+		if (GameInput.MenuEquipPressed && _saveCardView.Activate() is var exported && exported >= 0 &&
+			exported < _saveCardNames.Count)
+		{
+			Engine_UiHostBoxes.Tell(Refii.Mods.ModSaveGate.ExportForConsole(_saveCardNames[exported]));
+			return true;
 		}
 
 		if ((GameInput.MenuAcceptPressed || fanClicked) &&
@@ -8401,6 +8487,9 @@ public partial class GameUi : Node
 	private int _lastCardDirection;
 
 	private int _lastFanDirection;
+
+	/// <summary>The load fan's save file names in card order, read when it opened (ABI 218).</summary>
+	private System.Collections.Generic.List<string> _saveCardNames = new();
 
 	private void DriveCardChoice()
 	{
@@ -10016,6 +10105,69 @@ public partial class GameUi : Node
 	/// Names the input that failed a drawn screen's unchanged test, with the first differing
 	/// ordinal and both values — the one question ~844 silent pause rebuilds could not answer.
 	/// </summary>
+	// Follow's per-sample scratch (see the comment at its read). Main thread; sized to the
+	// largest presentation sampled, never shrunk.
+	private int[] _followSlides = System.Array.Empty<int>();
+	private string?[] _followTexts = System.Array.Empty<string?>();
+	private bool[] _followVisible = System.Array.Empty<bool>();
+	private float?[] _followOpacity = System.Array.Empty<float?>();
+	private Engine_UiScreen.LiveTint?[] _followTint = System.Array.Empty<Engine_UiScreen.LiveTint?>();
+
+	/// <summary>The HUD's texture hashes, one exactly-sized array refilled in place per cadence.</summary>
+	private uint[]? _hudTextures;
+
+	private static T[] Scratch<T>(ref T[] kept, int count)
+	{
+		if (kept.Length < count)
+		{
+			kept = new T[System.Math.Max(count, kept.Length * 2)];
+		}
+
+		return kept;
+	}
+
+	/// <summary>Whether the first <paramref name="count"/> of <paramref name="sample"/> equal <paramref name="held"/> whole.</summary>
+	private static bool SameLeading<T>(T[] sample, int count, T[] held)
+	{
+		if (held.Length != count)
+		{
+			return false;
+		}
+
+		var comparer = System.Collections.Generic.EqualityComparer<T>.Default;
+		for (int i = 0; i < count; ++i)
+		{
+			if (!comparer.Equals(sample[i], held[i]))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// The HUD's stated texture per element, into ONE array sized to the element count and
+	/// refilled in place: the world icons read it during their sample and the HUD view holds
+	/// it as the newest sample, which is what a fresh array per cadence gave them too.
+	/// </summary>
+	private uint[]? SampleHudTextures(int elementCount)
+	{
+		System.ReadOnlySpan<uint> read = HostBridge.ReadUiTextureHashes(_hudAddress, elementCount);
+		if (read.Length != elementCount)
+		{
+			return null;
+		}
+
+		if (_hudTextures is null || _hudTextures.Length != elementCount)
+		{
+			_hudTextures = new uint[elementCount];
+		}
+
+		read.CopyTo(_hudTextures);
+		return _hudTextures;
+	}
+
 	private static string DescribeChange(Engine_UiDrawnPresentation existing,
 		int[] slides, bool[] visible, float?[]? opacity, uint[]? textures,
 		Engine_UiScreen.LiveTint?[]? tint)
@@ -10458,9 +10610,12 @@ public partial class GameUi : Node
 			}
 		}
 
-		for (int depth = 0; depth < wanted.Count; ++depth)
+		using (Refii.Core.Engine_FramePhases.Measure("ui.follow"))
 		{
-			Follow(wanted[depth], depth);
+			for (int depth = 0; depth < wanted.Count; ++depth)
+			{
+				Follow(wanted[depth], depth);
+			}
 		}
 	}
 
@@ -10518,10 +10673,16 @@ public partial class GameUi : Node
 			return;
 		}
 
-		var slides = new int[elements.Count];
-		var texts = new string?[elements.Count];
-		var visible = new bool[elements.Count];
-		for (int i = 0; i < elements.Count; ++i)
+		// INTO SCRATCH, NOT FRESH ARRAYS. This samples every live presentation several times a
+		// second and the common verdict is "unchanged" — five arrays per element count per
+		// sample survived just long enough to be promoted and relocated by the next GC. The
+		// sample is read into kept buffers, compared in place, and copied out only on the path
+		// that stores it.
+		int n = elements.Count;
+		int[] slides = Scratch(ref _followSlides, n);
+		string?[] texts = Scratch(ref _followTexts, n);
+		bool[] visible = Scratch(ref _followVisible, n);
+		for (int i = 0; i < n; ++i)
 		{
 			slides[i] = elements[i].Slide;
 			texts[i] = elements[i].Text;
@@ -10540,15 +10701,16 @@ public partial class GameUi : Node
 		// out changes no slide and no visibility, so comparing only those would never notice.
 		float?[]? opacity = null;
 		Engine_UiScreen.LiveTint?[]? tint = null;
+		int attributeCount = 0;
 		Engine_UiModel.LiveAttribute[,]? attributes =
 			Engine_UiElementState.Current.Attributes(
 				Engine_UiLiveAttributes.OpacityIds, presentation.Address);
 		if (attributes is not null)
 		{
-			int count = System.Math.Min(attributes.GetLength(0), elements.Count);
-			opacity = new float?[count];
-			tint = new Engine_UiScreen.LiveTint?[count];
-			for (int i = 0; i < count; ++i)
+			attributeCount = System.Math.Min(attributes.GetLength(0), elements.Count);
+			opacity = Scratch(ref _followOpacity, attributeCount);
+			tint = Scratch(ref _followTint, attributeCount);
+			for (int i = 0; i < attributeCount; ++i)
 			{
 				opacity[i] = attributes[i, 0].Present ? attributes[i, 0].AsFloat : null;
 				tint[i] = ReadTint(attributes, i);
@@ -10562,33 +10724,34 @@ public partial class GameUi : Node
 		// file alone draws one wrong image in every slot of a set. Equipping an item changes
 		// the slot's texture and NOTHING else: no slide, no visibility, no opacity. Left out of
 		// the comparison the swap would be read once and then never again.
-		uint[]? textures = HostBridge.GetUiTextureHashes(presentation.Address, elements.Count);
+		System.ReadOnlySpan<uint> read = HostBridge.ReadUiTextureHashes(presentation.Address, n);
+		bool texturesRead = read.Length == n;
 
 		bool known = _drawn.TryGetValue(presentation.Address, out Engine_UiDrawnPresentation? existing);
 		bool structureSame = known && existing!.Slides is not null &&
 			existing.Visible is not null &&
-			slides.SequenceEqual(existing.Slides) && visible.SequenceEqual(existing.Visible);
+			SameLeading(slides, n, existing.Slides) && SameLeading(visible, n, existing.Visible);
 		bool opacitySame =
 			(existing?.Opacity is null && opacity is null) ||
 			(existing?.Opacity is not null && opacity is not null &&
-			 opacity.SequenceEqual(existing.Opacity));
+			 SameLeading(opacity, attributeCount, existing.Opacity));
 		// A HASH OF ZERO IS "UNSTATED", NOT A CHANGE. The guest transiently drops a stated
 		// texture to 0 mid-write, and the builder treats 0 as "use the file's" — so a flap to
 		// zero rebuilt the whole screen to show exactly what it was already showing (the real
 		// estate screen churned on precisely this). A zero that STAYS zero still matters the
 		// frame something else changes, because the rebuild reads the live array fresh.
 		bool texturesSame;
-		if (existing?.Textures is null && textures is null)
+		if (existing?.Textures is null && !texturesRead)
 		{
 			texturesSame = true;
 		}
-		else if (existing?.Textures is not null && textures is not null &&
-			textures.Length == existing.Textures.Length)
+		else if (existing?.Textures is not null && texturesRead &&
+			read.Length == existing.Textures.Length)
 		{
 			texturesSame = true;
-			for (int i = 0; i < textures.Length; ++i)
+			for (int i = 0; i < read.Length; ++i)
 			{
-				if (textures[i] != existing.Textures[i] && textures[i] != 0)
+				if (read[i] != existing.Textures[i] && read[i] != 0)
 				{
 					texturesSame = false;
 					break;
@@ -10602,12 +10765,21 @@ public partial class GameUi : Node
 		bool tintSame =
 			(existing?.Tint is null && tint is null) ||
 			(existing?.Tint is not null && tint is not null &&
-			 tint.SequenceEqual(existing.Tint));
+			 SameLeading(tint, attributeCount, existing.Tint));
 
 		if (structureSame && opacitySame && texturesSame && tintSame)
 		{
 			return;
 		}
+
+		// Something moved: the sample is stored, so it leaves the scratch here. Exactly the
+		// arrays the old per-sample allocation made, on the change path only.
+		slides = slides[..n];
+		texts = texts[..n];
+		visible = visible[..n];
+		opacity = opacity?[..attributeCount];
+		tint = tint?[..attributeCount];
+		uint[]? textures = texturesRead ? read.ToArray() : null;
 
 		// AN OPACITY CHANGE IS A MATERIAL WRITE, NOT A SCREEN. The pause glow's pulse moved one
 		// element's opacity a few points per tick, and rebuilding the 3444-element tree for it
@@ -10912,8 +11084,13 @@ public partial class GameUi : Node
 						? UpScreenId()
 						: 0u;
 
-			if (list.Rebuild(presentation.Address, screen, texts, visible, slides, transform) &&
-				ReferenceEquals(list, _screenMenu))
+			bool rebuilt;
+			using (Refii.Core.Engine_FramePhases.Measure("ui.list.rebuild"))
+			{
+				rebuilt = list.Rebuild(presentation.Address, screen, texts, visible, slides, transform);
+			}
+
+			if (rebuilt && ReferenceEquals(list, _screenMenu))
 			{
 				_screenMenuView?.Refresh();
 			}

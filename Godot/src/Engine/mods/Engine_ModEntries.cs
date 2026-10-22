@@ -18,14 +18,14 @@ public static class ModEntries
 	{
 		var result = new List<(string Mod, string Text)>();
 		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
-		if (string.IsNullOrEmpty(modsRoot) || !System.IO.Directory.Exists(modsRoot))
+		if (string.IsNullOrEmpty(modsRoot) || (!System.IO.Directory.Exists(modsRoot) && !ModSession.IsActive))
 		{
 			return result;
 		}
 
-		ModLoadOrder order = ModLoadOrder.Read(modsRoot);
+		(ModLoadOrder order, List<ModInstall> found) = ModSession.Resolve(modsRoot);
 		var installs = new Dictionary<string, ModInstall>(StringComparer.OrdinalIgnoreCase);
-		foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(modsRoot))
+		foreach (ModInstall install in found)
 		{
 			installs[install.Name] = install;
 		}
@@ -58,14 +58,14 @@ public static class ModEntries
 	public static byte[]? ReadEnabledBytes(string entryPath)
 	{
 		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
-		if (string.IsNullOrEmpty(modsRoot) || !System.IO.Directory.Exists(modsRoot))
+		if (string.IsNullOrEmpty(modsRoot) || (!System.IO.Directory.Exists(modsRoot) && !ModSession.IsActive))
 		{
 			return null;
 		}
 
-		ModLoadOrder order = ModLoadOrder.Read(modsRoot);
+		(ModLoadOrder order, List<ModInstall> found) = ModSession.Resolve(modsRoot);
 		var installs = new Dictionary<string, ModInstall>(StringComparer.OrdinalIgnoreCase);
-		foreach (ModInstall install in ModWorkspace.DiscoverModInstalls(modsRoot))
+		foreach (ModInstall install in found)
 		{
 			installs[install.Name] = install;
 		}

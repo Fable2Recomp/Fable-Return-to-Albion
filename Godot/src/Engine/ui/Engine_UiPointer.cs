@@ -167,9 +167,11 @@ public static class Engine_UiPointer
 			bounds = bounds is { } so ? so.Merge(rect) : rect;
 		}
 
-		foreach (Node child in node.GetChildren())
+		// By index: `GetChildren()` is a Godot Array per node per call, and this walks every
+		// hit-tested subtree each frame the mouse is up.
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
 		{
-			Accumulate(child, ref bounds);
+			Accumulate(node.GetChild(i), ref bounds);
 		}
 	}
 }

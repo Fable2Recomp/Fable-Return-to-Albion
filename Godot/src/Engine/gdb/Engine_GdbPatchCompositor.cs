@@ -113,6 +113,62 @@ public static class GdbPatchCompositor
     }
 
     /// <summary>
+    /// The GDB record ids each mod ADDS — entries its patches carry that the base database lacks —
+    /// by mod name. What a save's mod stamp carries so a save can be filtered for a mod that is
+    /// no longer installed (<see cref="Refii.Mods.ModSaveStamp"/>). Read from the same sources the
+    /// composite is merged from; a record two mods add is in both sets.
+    /// </summary>
+    public static Dictionary<string, IReadOnlyCollection<uint>> AddedRecordsByMod(
+        BnkFileSystem? mounted,
+        IReadOnlyList<ModOverlay> overlays)
+    {
+        var byMod = new Dictionary<string, IReadOnlyCollection<uint>>(StringComparer.OrdinalIgnoreCase);
+        var installs = new List<ModInstall>(overlays.Count);
+        foreach (ModOverlay overlay in overlays)
+        {
+            installs.Add(new ModInstall
+            {
+                Name = overlay.Name,
+                PackagePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot,
+            });
+        }
+
+        foreach (var (subPath, sources) in DiscoverTuFiles(installs))
+        {
+            GdbMulti? baseMulti = BaseFor(subPath, mounted);
+            foreach (GdbPatchSource source in sources)
+            {
+                var refused = new List<string>();
+                GdbPatchDatabase db;
+                try
+                {
+                    db = LoadTuPatch(source, subPath, baseMulti, refused);
+                }
+                catch (Exception e) when (e is IOException or InvalidDataException or ArgumentException or InvalidOperationException)
+                {
+                    continue;
+                }
+
+                if (!byMod.TryGetValue(source.ModName, out IReadOnlyCollection<uint>? held) || held is not HashSet<uint> set)
+                {
+                    set = new HashSet<uint>();
+                    byMod[source.ModName] = set;
+                }
+
+                foreach (GdbPatchEntry entry in db.Entries)
+                {
+                    if (baseMulti is null || !baseMulti.TryLookup(entry.Id, out GdbCursor at) || !at.Valid)
+                    {
+                        set.Add(entry.Id);
+                    }
+                }
+            }
+        }
+
+        return byMod;
+    }
+
+    /// <summary>
     /// Deletes any cached composite .gdb.tu files and directories.
     /// </summary>
     public static void PurgeCache(string modsRoot)

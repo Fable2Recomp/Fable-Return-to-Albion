@@ -29,8 +29,10 @@
 
 #include <rex/logging.h>
 
+#include "core/mod_values.h"
 #include "core/payload_bridge.h"
 #include "core/refii_mod.h"
+#include "core/refii_mod_events.h"
 #include "hooks/ppc_externs.h"
 #include "vfs_hooks_private.h"
 
@@ -64,6 +66,16 @@ void Written(uint8_t* base, uint32_t name_at, uint32_t player, bool ok) {
     return;
   }
   refii_bridge_player_write_saved(static_cast<int32_t>(player), name.c_str());
+  // The host stamps the package's sidecar (refii_save.json) with the mod set it was written
+  // under: REFII_MOD_HOST_SAVE_KIND crosses the event drain whatever the mask says.
+  std::string fields = "player=" + std::to_string(player) + ",name='";
+  for (const char c : name) {
+    if (c != '\'' && c != '\\' && c != '\n' && c != ',') {
+      fields += c;
+    }
+  }
+  fields += "'";
+  refii::mods::PostEvent(REFII_MOD_HOST_SAVE_KIND, fields);
 }
 
 }  // namespace

@@ -360,6 +360,14 @@ public static class CoopHeroKit
 			return null;
 		}
 
+		// A record of a mod the save was stamped with that is not enabled now never reaches the
+		// guest: the kit is filtered the way the main save is on load (ModSaveGate).
+		int filtered = Refii.Mods.ModSaveGate.FilterKit(directory!, hero);
+		if (filtered != 0)
+		{
+			Godot.GD.Print($"[coop-kit] chosen save '{name}': {filtered} entr{(filtered == 1 ? "y" : "ies")} of missing mods left out of the kit");
+		}
+
 		var kit = new Kit(
 			Known: true,
 			Female: hero.Female,

@@ -1439,13 +1439,7 @@ public partial class FableFx : Node3D
 			return null;
 		}
 
-		string leaf = name.Replace('\\', '/');
-		int slash = leaf.LastIndexOf('/');
-		if (slash >= 0)
-		{
-			leaf = leaf[(slash + 1)..];
-		}
-
+		string leaf = TextureLeaf(name);
 		if (ReferenceTextureDirectory.Length != 0)
 		{
 			string loose = System.IO.Path.Combine(ReferenceTextureDirectory, leaf.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) ? leaf : leaf + ".tex");
@@ -1455,30 +1449,135 @@ public partial class FableFx : Node3D
 			}
 		}
 
-		foreach (string candidate in new[]
-				 {
-					 TextureFolder + leaf,
-					 name.Replace('\\', '/'),
-				 })
+		// Decoded already by the level-load prefetch: the same bytes through the same decode,
+		// only the texture object is made here.
+		if (PrefetchedImages.TryTake(name, out Image prefetched))
 		{
-			byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(candidate) ??
-							Engine_BnkMeshLoader.ReadBytes("data/" + candidate);
-			if (bytes is null)
-			{
-				continue;
-			}
+			var ready = ImageTexture.CreateFromImage(prefetched);
+			SharedTextures[name] = ready;
+			return ready;
+		}
 
-			Texture2D? texture = Engine_TexImage.TryCreateTexture(bytes, out _);
-			if (texture is not null)
-			{
-				SharedTextures[name] = texture;
-				return texture;
-			}
+		Texture2D? texture = ReadTextureBytes(name, leaf) is { } bytes ? Engine_TexImage.TryCreateTexture(bytes, out _) : null;
+		PrefetchedImages.MarkLoaded(name);
+		if (texture is not null)
+		{
+			SharedTextures[name] = texture;
+			return texture;
 		}
 
 		MissingTextures.Add(name);
 		GD.Print($"[fx] texture '{name}' unresolved");
 		return null;
+	}
+
+	private static string TextureLeaf(string name)
+	{
+		string leaf = name.Replace('\\', '/');
+		int slash = leaf.LastIndexOf('/');
+		return slash >= 0 ? leaf[(slash + 1)..] : leaf;
+	}
+
+	/// <summary>A bank texture's bytes as the mount serves them, by the folder leaf first, then the stated path.</summary>
+	private static byte[]? ReadTextureBytes(string name, string leaf)
+	{
+		foreach (string candidate in new[] { TextureFolder + leaf, name.Replace('\\', '/') })
+		{
+			byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(candidate) ??
+							Engine_BnkMeshLoader.ReadBytes("data/" + candidate);
+			if (bytes is not null)
+			{
+				return bytes;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>Effect textures decoded off the main thread, waiting for their first use.</summary>
+	private static readonly Engine_FxPrefetchStore<Image> PrefetchedImages = new();
+
+	private static int _prefetchStarted;
+
+	/// <summary>
+	/// Reads and decodes every texture the bank's visuals name on a background thread, so an
+	/// effect's first build does not page the texture bank in and decode on the frame it
+	/// appears. Once per process; the first level load calls it.
+	/// </summary>
+	/// <remarks>
+	/// SAME BYTES, SAME DECODE. <see cref="LoadTexture"/> takes the decoded image and makes the
+	/// texture object from it, exactly what the synchronous path makes from the same bytes; a
+	/// name the main thread reaches first loads as before and the prefetched copy is dropped
+	/// (Engine_FxPrefetchStore). A decoded image is held only until it is taken.
+	/// </remarks>
+	public static void PrefetchTextures()
+	{
+		// The lab's loose reference textures are not what the bank names; nothing to warm.
+		if (ReferenceTextureDirectory.Length != 0 || SharedBank() is not { } bank)
+		{
+			return;
+		}
+
+		if (System.Threading.Interlocked.Exchange(ref _prefetchStarted, 1) == 1)
+		{
+			return;
+		}
+
+		List<string> names = Engine_FxTexturePrefetch.Names(bank);
+		foreach (string name in names)
+		{
+			if (SharedTextures.ContainsKey(name) || MissingTextures.Contains(name))
+			{
+				PrefetchedImages.MarkLoaded(name);
+			}
+		}
+
+		var thread = new System.Threading.Thread(() =>
+		{
+			long started = System.Diagnostics.Stopwatch.GetTimestamp();
+			int decoded = 0;
+			int missing = 0;
+			long bytesHeld = 0;
+			foreach (string name in names)
+			{
+				if (!PrefetchedImages.Wanted(name))
+				{
+					continue;
+				}
+
+				try
+				{
+					byte[]? bytes = ReadTextureBytes(name, TextureLeaf(name));
+					Image? image = bytes is null ? null : Engine_TexImage.TryCreateImage(bytes, out _);
+					if (image is null || image.IsEmpty())
+					{
+						++missing;
+						continue;
+					}
+
+					if (PrefetchedImages.Offer(name, image))
+					{
+						++decoded;
+						bytesHeld += image.GetDataSize();
+					}
+				}
+				catch (Exception e)
+				{
+					++missing;
+					GD.PushWarning($"[fx] prefetch of texture '{name}' failed: {e.Message}");
+				}
+			}
+
+			double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+			GD.Print($"[fx] prefetched {decoded} of {names.Count} effect texture(s) off-thread in {ms:0} ms, " +
+				$"{bytesHeld / 1048576.0:0.0} MB decoded and waiting, {missing} unresolved");
+		})
+		{
+			IsBackground = true,
+			Name = "refii-fx-prefetch",
+			Priority = System.Threading.ThreadPriority.BelowNormal,
+		};
+		thread.Start();
 	}
 
 	public const string MeshDispShaderPath = "res://src/Engine/fx/fx_mesh_disp.gdshader";
