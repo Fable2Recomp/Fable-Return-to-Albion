@@ -256,7 +256,7 @@ public class ModApiTests
         string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("op == \"mask_word\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("refii_bridge_mod_set_verdict_mask_word(word, bits)", StringComparison.Ordinal)).IsTrue();
-        AssertThat(commands.Contains("refii::mods::SetHostEventMaskWord(word, bits)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("refii_bridge_mod_set_host_event_mask_word(word, bits)", StringComparison.Ordinal)).IsTrue();
     }
 
     [TestCase]
