@@ -1,0 +1,159 @@
+# Events reference
+
+Every event the mod API raises. The Mod Studio's **⚡ Events & the Mod API** page lists each
+event's fields with their types and meanings, generated from the same catalog the game uses, with
+copy buttons for a native or Lua handler; `RefiiModApi.DescribeEvent(name)` returns the same.
+
+## Contents
+
+- [Reading the table](#reading-the-table)
+- [The events](#the-events)
+- [Whose menu, whose travel, whose sleep](#whose-menu-whose-travel-whose-sleep)
+- [One dynamic weather per session](#one-dynamic-weather-per-session)
+- [Where the household events fire online](#where-the-household-events-fire-online)
+
+## Reading the table
+
+| Column | Meaning |
+|---|---|
+| # | the event's kind number, stable within an API version |
+| Native / Lua | the native name (`REFII_MOD_ON(Hit, fn)`, struct `refii::mods::HitEvent`) and the Lua and Godot name (`Refii.on("hit", fn)`, signal `hit`) |
+| Fires | when it is raised, and its fields; **writable** fields change what the game gets |
+| Cancel | what `return true` (Lua), `e.cancel = true` (native, Godot verdict) does; blank: it cannot be cancelled |
+| Seam | where it comes from: a game function by its config name (`versions/*/refii_config.toml`, the same on the disc and Title Update builds) — what a native mod would hook for the same moment |
+
+Every event also carries `ctx`, `base` and `cancel` natively, and `replica` in Godot.
+**Relayed** marks an event copied to the other co-op machine (see
+[Replicas and relayed events](handles-and-players.md#replicas-and-relayed-events)).
+
+## The events
+
+| # | Native / Lua | Fires | Cancel | Seam |
+|---|---|---|---|---|
+| 0 | Tick / tick | once per game step, menus included, on every surface at once; `seconds` (that tick's, capped 0.25) | | the guest tick |
+| 1 | Hero / hero_ready | a player's hero exists (session, save, co-op join); `player`, `hero` | | derived in the tick |
+| 2 | HeroGone / hero_gone | a player's hero stopped existing | | derived in the tick |
+| 3 | Lua / lua_ready | the game's Lua was rebuilt and every init.lua ran; `generation` | | rex_lhLuaScriptSystem_LoadStartupScripts |
+| 4 | SaveLoaded / save_loaded | a save's Lua table loaded: RefiiModSave holds the save | | rex_lhLuaScriptSystem_LoadScriptSave |
+| 5 | GameAction / game_action | a button's GameAction reached a hero's receiver; `action`, `hero` | the game never sees it | rex_CPlayerActionReceiver_ProcessAction |
+| 6 | AbilityRequest / ability_request | a creature asked for an ability; `type` (16 melee press, 17 release, 18 charge) | refused | rex_CECAbilities_PerformRequest |
+| 7 | MeleeSwing / melee_swing | a strike's swing committed; `action` (the live strike action — a handle in Lua and Godot, what `current_action` answers; 0 in a relayed copy). **Relayed** (player) | | rex_CAbilityActionMelee_CommitSwing |
+| 8 | Roll / roll_can_start | the roll asks to start | not started | rex_CAbilityActionStrafeRoll_CanStart |
+| 9 | RollStarted / roll_started | a roll was queued. **Relayed** (player) | | rex_CAbilityActionStrafeRoll_Start |
+| 10 | Block / block | a block takes a hit (once per hit); `damage`, `unblockable` | the guard breaks | rex_CActionBlock_OnHitBlockPose / _OnHitBlockedResponse |
+| 11 | AnimEvent / anim_event | an animation event reached an action; `name`, `entity` (the action's owner), `action` (a handle in Lua and Godot: match a committed strike on it) | dropped | rex_CAction_OnAnimEvent |
+| 12 | Hit / hit | a hit arrives at its victim, before delivery; `damage` and `knockdown` writable, spell fields. Force push arrives here as a hit with spell type 6 and its knockdown flag set | the hit is dropped | rex_CECHitReceiver_OnHit |
+| 13 | HitLanded / hit_landed | the same hit, after delivery. **Relayed** (world: a hit with a hero in it, host to joiner) | | rex_CECHitReceiver_OnHit |
+| 14 | HitResponse / hit_response | the victim is about to flinch; `damage`, `health`, `max_health` | absorbed, no flinch | rex_CECHitResponsePlayAction_OnHit |
+| 15 | SpellCharge / spell_charge | a hero pressed B to charge | refused | rex_CAbilityActionMagicCharge_CanStart |
+| 16 | SpellChargeLevel / spell_charge_level | the charge became a top slot (the cascade launches 0..level); `level` writable. Every frame of a held charge, to every surface alike: a cap is re-evaluated each frame, a repeat charge to the same slot is reported again | | rex_CECSpellManager_ChargeLevelFromTime |
+| 17 | SpellLaunch / spell_launch | a slot is about to launch; `type` writable for this launch, `cascading` | skipped | rex_CECSpellManager_LaunchSlot |
+| 18 | SpellLaunched / spell_launched | a spell was really created for a slot | | rex_CECSpellManager_OnSpellLaunched |
+| 19 | SpellCreated / spell_created | the spell factory made a spell object; `serial` | | rex_CSpellRegistry_Create |
+| 20 | Experience / experience | experience changes; `pool`, `amount` writable, `spend`, `nested` (a Spend's payments or the co-op share: scale only when false) | untouched (not when nested) | rex_CECExperience_Modify / _Spend |
+| 21 | EntityDied / entity_died | a creature is dying, from any cause (including deaths finished without the dying step); `killer` | for a death by damage only: it keeps 1 health | rex_CECCreature_Die / rex_CECCreature_FinishDeath |
+| 22 | HeroDowned / hero_downed | a hero hit zero: knockdown, scar, revive follow | skipped, hero keeps 1 health | rex_CECHealth_OnHeroDeath |
+| 23 | Damage / damage | health is about to take a hit's final damage; `lethal` | no health removed | rex_CECHealth_OnHit |
+| 24 | LevelLoaded / level_loaded | a level is up and the heroes stand in it; `level`, `from_save` | | rex_lhLuaScriptSystem_OnLevelLoad |
+| 25 | LevelUnloading / level_unloading | the current level is about to go; `level` | | rex_lhWorld_UnloadLevel |
+| 26 | GameSaving / game_saving | a save file is about to be written; `file` | | rex_lhSaveManager_WriteSave |
+| 27 | ItemAdded / item_added | an item was added to an inventory (after the add); `definition` | | rex_CECInventory_AddOneOfRecord |
+| 28 | ItemUsed / item_used | an entity uses an item; `definition`, `count`. **Relayed** (player) | refused | rex_lhEntity_UseInventoryItem |
+| 29 | HeldItem / held_item | an item attached to or released from a holding slot; `slot`, `attached` | a release is refused (an attach cannot be) | rex_CECHeldItems_AttachItemToSlot / _ReleaseSlot |
+| 30 | WeaponEquipped / weapon_equipped | a weapon equipped into the weapon set; `definition` | | rex_CECWeaponSet_RecordDrawnItem |
+| 31 | AbilityLevel / ability_level | an ability's level is set; `type`, `level` writable, `old_level` | unchanged | rex_CECStats_SetAbilityLevel |
+| 32 | Gold / gold | a purse changes; `gold`, `delta` writable, `passive`, `share` (the game's co-op split of a change already reported: scale only when false) | unchanged (not for a share) | rex_CECMoney_Modify |
+| 33 | Relation / relation | the game asked how `entity` stands to `other`; `relation` writable (1 neutral 2 ally 4 enemy) | | rex_CECFaction_RelationTo |
+| 34 | InputAction / input_action | a mod's input.json action pressed or released; `name`, `player`, `pressed` | | the guest tick, from the host's input queue |
+| 35 | QuestStarted / quest_started | a quest is activated on a hero's tracker; `quest`, `make_primary` | stays inactive | rex_CECQuestTracker_SetAsActive |
+| 36 | QuestEnded / quest_ended | a quest completed (rewards given) or failed; `quest`, `completed`, `failed` | | rex_CECQuestTracker_OnQuestEnded |
+| 37 | QuestObjective / quest_objective | an objective tag is added to a quest; `quest`, `tag` | nothing added | rex_CECQuestTracker_SetObjectiveTagSilently |
+| 38 | Dialogue / dialogue | a creature is about to speak a line; `speaker`, `text` (the key's hash), `listener`, `subtitle` | the line is not spoken | rex_CECTalk_PlayLine |
+| 39 | EntitySpawned / entity_spawned | an entity joined the world (next tick, components built; at most 64 a tick); `entity`, `definition` | | rex_lhEntityManager_Add |
+| 40 | EntityRemoved / entity_removed | an entity is leaving the world, still whole; `entity`, `definition` | | rex_lhEntity_Destroy |
+| 41 | ExpressionStarted / expression_started | a creature starts an expression; `expression` | refused | rex_CECExpressionPerformer_StartExpression |
+| 42 | Renown / renown | renown changes; `delta` writable, `share` (the game's co-op split of a change already reported: scale only when false) | unchanged (not for a share) | rex_lhHeroStats_ModifyRenown |
+| 43 | Morality / morality | morality changes; `delta` writable | unchanged | rex_lhHeroStats_ModifyMorality |
+| 44 | Purity / purity | purity changes; `delta` writable | unchanged | rex_lhHeroStats_ModifyPurity |
+| 45 | Marriage / marriage | a hero marries; `spouse` | refused | rex_CECPlayerFamily_Marry |
+| 46 | DogTrick / dog_trick | the dog is told a trick; `dog`, `trick`, `player` (whose dog: by its master, else the players' dog records; 0 neither) | not done | rex_CECDog_PerformCommand |
+| 47 | RangedShot / ranged_shot | a ranged weapon is about to fire; `shooter` (the holder), `weapon`, `target`, `aimed`; the game may still refuse it | not fired | rex_CECFirearm_Fire |
+| 48 | StatusEffect / status_effect | electrified (1), chaos (2), burning (3), caught in a vortex (4), knocked down — every ragdoll fall (5), mauled by the dog (6), unconscious (7) or a hollow man crumbled to bones (8) started or ended; `effect`, `started` | | rex_lhEntity_AddComponent / _RemoveComponent, rex_lhRagdoll_GoFloppy / _Recover, rex_CECCreature_SetUnconscious, rex_HollowMan_SetCrumbled |
+| 49 | TargetChanged / target_changed | a player's target changed; `target` (0 cleared) | | rex_CECTargetingPlayer_SetTarget / _ClearTarget |
+| 50 | OpinionDeed / opinion_deed | a villager reacts to a deed, expression or gift; `doer`, `deed`, `kind` | ignored | rex_CECOpinionReaction_OnDeed |
+| 51 | OpinionModified / opinion_modified | a script changes an opinion axis; `axis`, `delta` writable, `player` (whose set moves: 2 inside player two's opinion scope for the villager, else 1) | unchanged | rex_CECOpinionReaction_ModifyAxisValue |
+| 52 | TimeOfDay / time_of_day | a new hour or day; `hour`, `day`, `time`, `new_day` | | rex_lhGameTimeManager_Update |
+| 53 | WeatherTheme / weather_theme | a scripted environment-theme blend; `theme`, `weight` and `seconds` writable | skipped | rex_lhEnvironmentThemeManager_BlendToTheme |
+| 54 | SleepMenu / sleep_menu | a bed's sleep menu is about to open; `player` (who is sleeping: the bed's user as the game's use routine passed it to the bed's script) | stays closed | rex_SleepMenu_Show (the user: rex_CECOnActionUse_Use) |
+| 55 | Travel / travel | a travel started; `world`, `level`, `entrance`, `type`, `full_load` (false inside the loaded level), `player` (who asked: see below) | | rex_CmdLevelChange_Start |
+| 56 | FastTravel / fast_travel | a fast-travel stop was chosen; `level`, `stop`, `paid`, `player` (the world map's owner; 0 for a script's) | stays put | rex_FastTravelManager_TravelToStop (the map's call: rex_lhGuiWorldMap_FastTravel) |
+| 57 | MenuOpened / menu_opened | the game entered menu mode (the world pauses) — real transitions only; `player` (whose menu) | | rex_lhGuiManager_EnterGuiMode / _EnterGuiModeQuiet |
+| 58 | MenuClosed / menu_closed | the game left menu mode — real transitions only; `player` | | rex_lhGuiManager_ExitScreen |
+| 59 | MenuScreen / menu_screen | a menu shows a screen; `screen` (0 pause, 2 spells, 14 abilities, 16 equipment, 17 logbook, 18 options, 22 shop, 23 world map, 24 co-op), `player` | | rex_lhGuiManager_SetScreen |
+| 60 | WeatherRegion / weather_region | the hero walked into a different painted weather region; `day_set`, `previous` (that player's), `inside`, `player` (the hero the game tested: player one's slot, once a frame — never once per split-screen view) | | rex_lhPaintMap_DaySetAt |
+| 61 | SleepChosen / sleep_chosen | the player answered a bed's sleep menu; `choice` writable (0 fast-forwards six hours, 1 twelve, 2 adds a day with the clock unchanged, 3 adds seven days), `cancelled`, `bed`, `player` (who is sleeping, as SleepMenu said); any other length: wrap the shipped `SleepFunction.Sleep` in Lua | the sleep is refused | rex_lhMenuBox_Close |
+| 62 | SlowTime / slow_time | Slow Time changed the world's time scale (every creature but the caster slows); `scale` writable, `active` | | rex_SpellSlowTime_SetWorldScale |
+| 63 | Summoned / summoned | a spell summoned a Raise Dead minion (1) or a Blades sword (2); `summoner`, `summon`, `kind` | | rex_SpellRaiseDead_BindSummoner / rex_SpellDamoclesSword_Create |
+| 64 | Crime / crime | a crime is recorded; `criminal`, `player`, `victim`, `victim_player`, `type` (2 murder, 3 assault, 6 trespass, 11 vandalism among them); a reported murder also records an assault, raised again; the co-op partner's crimes are their own | no witness record, no bounty, no guards | rex_CECCrime_Add |
+| 65 | Achievement / achievement | an achievement unlocks, for both heroes; `id` (1..50), `source`, `player` | it stays locked | rex_CECStats_UnlockAchievement |
+| 66 | CollectableTaken / collectable_taken | a player picks up a one-time collectable kept per player in co-op (a silver key); `player`, `entity`, `record`, `stays` (it stays in the world for the partner) | | rex_CECInventory_AddEntity |
+| 67 | PartnerConsent / partner_consent | a co-op script asks the other player's consent (the beds, `Refii.ask_partner`); `ticket`, `kind` (1 sleep, 2 sex, 0 a mod's question), `asker`, `detail`; `answer` writable: -1 asks the partner, 0 refuses, 1 agrees for them | | the consent ask |
+| 68 | PropertyBought / property_bought | a hero buys a building; `hero`, `player`, `building`; `price` writable (condition included) | stays unbought, gold untouched | rex_CECPlayerProperties_Buy |
+| 69 | PropertySold / property_sold | a hero sells a building (a shared one gives the partner half); `hero`, `player`, `building`; `price` writable | stays owned | rex_CECPlayerProperties_Sell |
+| 70 | RentPaid / rent_paid | rent and shop profits paid (every five real minutes, or the catch-up for time away); `hero`, `player`, `gold`, `drops`, `away` | | rex_CECPlayerProperties_PayIncome |
+| 71 | PropertyRented / property_rented | a building rented out or its tenants evicted; `hero`, `player`, `building`, `rented` | stays as it was | rex_CECPlayerProperties_SetRentedOut |
+| 72 | PropertyCondition / property_condition | Fable 3's condition changed (wear at a rent drop, or a repair); `uid`, `player`, `condition`, `previous`, `repaired` | | the condition rules |
+| 73 | Divorce / divorce | the spouse has left; `hero`, `player`, `spouse` | | rex_CECPlayerFamily_FinishDivorcing |
+| 74 | Widowed / widowed | a spouse died or was removed; `hero`, `player`, `uid` | | rex_CECPlayerFamily_Widow |
+| 75 | ChildBorn / child_born | a child born to (or adopted by) a hero and spouse; `hero`, `player`, `spouse`, `child` | | rex_CECPlayerFamily_AdoptWithSpouse |
+| 76 | GiftGiven / gift_given | a hero gives a gift (a ring among them) to their target; back in 15 s unless kept; `hero`, `player`, `target`, `item` | nothing given | rex_lhGiftComponent_GiveGift |
+| 77 | GiftAccepted / gift_accepted | a villager kept the gift (its morality applies); `hero`, `player`, `item` | | rex_CECHeroGifts_RemovePermanently |
+| 78 | Engaged / engaged | a villager engaged to a hero, or the engagement ends; `villager`, `player`, `engaged` | stays as it was | rex_CECOpinionReaction_SetEngaged |
+| 79 | Follow / follow | a creature starts or stops following; `follower`, `leader`, `player`, `following` | on a start: does not follow | rex_CECFollow_Start / rex_CECFollow_Stop |
+| 80 | FurnitureUpgraded / furniture_upgraded | furniture changes level while redecorating; `piece`, `player`, `previous`; `level` writable | keeps its level | rex_CECUpgradeableFurniture_SetLevel |
+| 81 | Redecorating / redecorating | redecorating starts or ends; `building`, `player`, `on` | | rex_CECBuilding_SetRedecorating |
+| 82 | HouseholdBudget / household_budget | a household's budget set at its home; `hero`, `player`, `building`; `gold` writable | budget stays | rex_lhGuiRealEstateScreen_SetBudget |
+| 83 | TrackedStat / tracked_stat | a tracked stat counts (ETrackedStatType: kills, sex, marriages, children…); `hero`, `player`, `stat`; `amount` writable | nothing counted | rex_CECStats_ModifyTrackedStat |
+| 84 | Partnership / partnership | Fable 3's player partnership changed; `kind` (0 none, 1 business, 2 married), `previous` | | the household tick |
+| 85 | HouseholdRestored / household_restored | player two's household and property put back on their hero in the host's world; `hero`, `player`, `spouses` | | the household tick |
+| 86 | DynamicWeather / dynamic_weather | the dynamic weather in effect changed: `level` ("<level>/<scenario>"), `weather` (a preset — Clear, PartlyCloudy, Cloudy, Overcast, Rain, Storm, Snow, Fog, LightRain, LightSnow, Blizzard — or `theme`, `interior`), `previous`, `seconds` (the blend), `from_host` (an online joiner adopting the host's statement) | | the guest tick, from Godot's `ModWeather:` pump action |
+| 87 | ModMenuRow / mod_menu_row | a row of a mod's menu was chosen (a menu a mod defines in `ui/templates.json`, a row a mod patched into a shipped menu, or any `Opens:` / `Mod:lua:` row); `menu`, `row`, `player`, `mod`. Godot scripts get it as it happens; native and Lua handlers on the next guest tick — Lua in a game (init.lua) and on the title and front end (mod/frontend.lua) | | Godot's menu lists (`Engine_UiModMenus`), then the guest command `menu_row` |
+| 88 | ModMessageBox / mod_message_box | a mod's message box was answered; `id`, `button` (0 A, 1 B, -1 replaced or played elsewhere), `player`. Lua in a game and on the front end | | Godot's host boxes, then the guest command `box_answer` |
+| 89 | ModNotice / mod_notice | a mod's notice has gone; `id`, `outcome` (0 shown, -1 never shown), `player`. Lua in a game and on the front end | | Godot's notice channel, then the guest command `notice_done` |
+| 90 | ModMenuBox / mod_menu_box | a mod's menu box was answered; `id`, `option` (-1 none), `player`. Lua in a game and on the front end | | Godot's menu box, then the guest command `menu_box_answer` |
+| 91 | ModAbility / mod_ability | a player is buying (`refund` false) or unlearning (`refund` true) a level of a mod ability (`ui/abilities.json`) — the ENGINE's purchase, raised before anything changes and only for one that can happen; `ability`, `mod`, `previous`, `level`, `experience` (the price, or what comes back), `player` | nothing spent, the level stands | the engine's purchase (`mod_abilities.cpp`), from the book's `ability_buy` / `ability_refund` |
+| 92 | SpellPick / spell_pick | a player picked (or cleared, `spell` -1) a pick on a spell slot: a mod's (`ui/spellwheel.json`; the engine saves it after the handlers) or the game's own, the slot's spell (`pick` "spell", `mod` ""; every step of the selectors' carousel, the scripts' spell-table natives, the host's assignment — not the template's defaults, the other machine's pick arriving, or a save load); `pick`, `mod`, `slot` (0..4), `spell` writable, `previous`, `player` | the slot's pick stays as it was | a mod's: the spell selectors; the game's: the slot writer `CECSpellManager::SetSpellSlot` |
+| 93 | PartnerMessage / partner_message | a mod's own message from THE OTHER MACHINE of an online session (`send_to_partner` there): `mod`, `name`, `payload` (at most 256 bytes; a quote, backslash or line break arrives as `_` on Lua and Godot), `from` (the player the sender plays: 1 host, 2 joiner). Once, in the order sent, on the route; never on the sender's machine, never alone or in local co-op; not a replica (player-state writes count) | | the receiving machine's guest tick, from the route's mod lane (`core/event_relay.h` `pm:` lines, `DrainPartnerMessages`) |
+| 94 | LookAtButton / look_at_button | a player hero's look-at flag is being written — the byte every lock camera script reads, what a held LT states — by the camera's LT-down event (1), the hero's release handler (0) or the API's own `lock_target` / `release_lock`: `hero`, `player`, `down` writable, `component` (native) | the flag stays as it was; the writer never runs | rex_CPlayer_SetLookAtButtonDown, before it |
+| 95 | VortexStarted / vortex_started | a vortex is live: its component was initialised on the vortex entity, inside the factory and BEFORE `spell_created` (the spell object finishes at once); `vortex` (native), `entity`, `caster`, `caster_player`, `target`, `serial`, `level`, `x, y, z` (the entity's position). Online the cast runs on both machines (replica on the copy) | | rex_VortexComponent_Init, after it |
+| 96 | VortexEnded / vortex_ended | the vortex shuts down, with the twister's last point: `vortex` (native), `entity`, `caster`, `caster_player`, `serial`, `x, y, z` | | rex_VortexComponent_Shutdown, before it |
+| 97 | FireballImpact / fireball_impact | a targeted fireball's impact ran: `spell` (native), `serial`, `level`, `caster`, `caster_player`, `struck` (0 for ground, wall or water), `struck_player`, `x, y, z` the impact position, `nx, ny, nz` the normal, `detonated` (the blast delivered every victim's hit inside the call; a creature the fireball passes and ignites leaves it clear), `hits` (hits taken inside the call carrying this serial: 0 on a detonation = the blast found nothing alive). Online the cast runs on both machines; hits are decided where `world_here` holds | | rex_TargetedFireball_Impact, after it |
+| 98 | Paused / paused | THE GAME'S PAUSE STATE flipped — a pause-family game-flow mode became the mode in force (both players' input held, the world paused behind it) or stopped being it: `paused`, `mode` (1 the GUI / pause — the pause menu and every screen entered from play, the partner's relayed pause, a camera mode; 2 a level change), `player` (mode 1 with a menu screen up: whose menu, 2 on an online joiner or for local player two's pause book, else 1; 0 for a pause with no screen and for mode 2), `screen` (the menu screen id: 31 none, 0 the pause root, 29 co-op; -1 when the in-game GUI is not up). Raised again when a mode above it is removed and when one is pushed over it | | rex_lhGameFlowGuiMode_Apply / rex_lhGameFlowGuiMode_Remove, after each |
+| 99 | StartGame / start_game | the front end starts a game — New Game, Load, Continue or a co-op join stated the target the in-game state is created from: `save` ("" for a new game), `level`, `new_game`, `player` (1). On the title there is no game VM: Lua hears it in `mod/frontend.lua` | the start is refused and the front end stays where it is (how the save check holds a start) | rex_lhFrontEnd_SetStartGameTarget, before it |
+| 100 | Cutscene / cutscene | a cutscene took a hero's camera and controls away from free play, or gave them back — one of the game's own three statements flipped, raised per kind on each edge before `tick` (see [Cutscenes](cutscenes.md)): `player` (1 or 2; 0 for a full cutscene, every player's), `active`, `kind` (1 full, 2 interactive, 4 look-at: `REFII_CUTSCENE_*`), `kinds` (every bit holding for the player after the edge), `hero` (0 for player 0 or once the hero is gone). Read only while someone listens: a handler subscribed mid-scene hears it start on its first tick | | polled each guest tick, no hook: `GUI.IsFullCutscenePlaying`, `Player.SetForegroundCutsceneInEffect`, the LOOK_AT scope of `Player.SetOverrideCameraMode` |
+
+## Whose menu, whose travel, whose sleep
+
+- The menu events' `player` is whose menu it is: 2 on an online joiner, and in local co-op while
+  player two owns the pause or their shop; 1 otherwise.
+- Travel names no traveller in the game — both heroes go — so its `player` is who asked: a level
+  exit's user (the player who held A on it), the player its walk-in test tested, an online
+  joiner's request (2), or the world map's owner for a fast travel; 0 for a script's travel, and on
+  a joiner for one the host started.
+- Sleep's `player` is the bed's user as the game's own use routine handed it to the bed's script.
+  Other sleep lengths than the four choices: wrap the shipped `SleepFunction.Sleep` in Lua.
+
+## One dynamic weather per session
+
+The weather is decided on the host side — Auto, or a set weather — and an online joiner adopts the
+host's statement for the level it is in; each player's own sky switch only shows or hides it.
+`dynamic_weather` fires on both machines: on the host when it decides, on the joiner when it
+adopts (`from_host = true`).
+
+## Where the household events fire online
+
+Each fires once, on the machine where it takes effect: player two's household, property and the
+economy are the host's, so 68–75, 77, 78, 80 and 82–85 fire on the host (a joiner's estate
+actions, gifts, furniture and bed are run there). A gift fires on the giver's machine, and
+redecorating on the redecorating player's machine. Player two's tracked stats from the host's
+household work are counted on the joiner, and fire there.

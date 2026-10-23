@@ -1444,6 +1444,83 @@ extern "C" uint32_t refii_mod_locked_target(PPCContext* ctx, uint8_t* base, int3
 }
 
 // ---------------------------------------------------------------------------------------------
+// Cutscenes (core/refii_mod_events.h CutsceneEvent quotes each instruction).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// comp33 +0x3B: `Player.SetForegroundCutsceneInEffect`'s `stb r4,0x3B(r3)` (0x823e72dc, disc 0x823c5d0c).
+constexpr uint32_t kForegroundCutscene = 0x3B;
+/// comp33 +0xC8: the LOOK_AT scope of `Player.SetOverrideCameraMode` (`stw r4,0xC8(r3)` 0x823e31cc /
+/// 0x823e31e0, disc 0x823c1b94 / 0x823c1ba8); 0 is CAMERA_MODE_DEFAULT.
+constexpr uint32_t kLookAtCameraMode = 0xC8;
+/// `GUI.IsFullCutscenePlaying` (disc 0x82907D08): the top game-flow state's type == 7.
+constexpr uint32_t kIsFullCutscenePlaying = 0x823060E0u;
+/// The game-flow list it reads: *(*(*(*(game+12)+128)+4)+4); the node is *(list+4).
+constexpr uint32_t kFlowChain[] = {12u, 128u, 4u, 4u};
+
+/// The game's own `GUI.IsFullCutscenePlaying`, asked only past the empty-list test it traps on
+/// (`cmplw r11,r10; bne; twui` 0x8230610c..14): false with no game, no flow list or no state.
+bool FullCutscenePlaying(PPCContext& ctx, uint8_t* base) {
+  uint32_t at = refii::mods::LoadU32(base, refii::guest::Address(kGameRoot));
+  for (const uint32_t offset : kFlowChain) {
+    if (!Plausible(at)) {
+      return false;
+    }
+    at = refii::mods::LoadU32(base, at + offset);
+  }
+  if (!Plausible(at)) {
+    return false;
+  }
+  const uint32_t node = refii::mods::LoadU32(base, at + 4u);
+  if (node == at || !Plausible(node) || !Plausible(refii::mods::LoadU32(base, node + 8u))) {
+    return false;
+  }
+  PPCContext query = refii::mods::Frame(ctx);
+  return refii::mods::CallGuest(query, base, refii::guest::Address(kIsFullCutscenePlaying)) && (query.r3.u32 & 0xFFu) != 0;
+}
+
+/// The hero's own statements (INTERACTIVE, LOOK_AT) on its player component; 0 without one.
+int32_t HeroCutsceneKinds(uint8_t* base, int32_t player) {
+  const uint32_t hero = refii_mod_player_hero(base, player);
+  const uint32_t comp = hero != 0 ? refii_mod_component(base, hero, kPlayerComponent) : 0u;
+  if (comp == 0) {
+    return 0;
+  }
+  int32_t kinds = 0;
+  if (refii::mods::LoadU8(base, comp + kForegroundCutscene) != 0) {
+    kinds |= REFII_CUTSCENE_INTERACTIVE;
+  }
+  if (refii::mods::LoadU32(base, comp + kLookAtCameraMode) != 0) {
+    kinds |= REFII_CUTSCENE_LOOK_AT;
+  }
+  return kinds;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_in_cutscene(PPCContext* ctx, uint8_t* base, int32_t player) {
+  if (ctx == nullptr || base == nullptr) {
+    return 0;
+  }
+  int32_t kinds = FullCutscenePlaying(*ctx, base) ? REFII_CUTSCENE_FULL : 0;
+  if (player == 1 || player == 2) {
+    kinds |= HeroCutsceneKinds(base, player);
+  } else if (player == 0) {
+    kinds |= HeroCutsceneKinds(base, 1) | HeroCutsceneKinds(base, 2);
+  }
+  return kinds;
+}
+
+namespace refii::vfs {
+
+/// The tick's poll (mod_events.cpp): the full cutscene, and one player's own statements.
+bool ModFullCutscenePlaying(PPCContext& ctx, uint8_t* base) { return FullCutscenePlaying(ctx, base); }
+int32_t ModHeroCutsceneKinds(uint8_t* base, int32_t player) { return HeroCutsceneKinds(base, player); }
+
+}  // namespace refii::vfs
+
+// ---------------------------------------------------------------------------------------------
 // Movement speed, actions, the living test, the slot table (refii_mod.h quotes each instruction).
 // ---------------------------------------------------------------------------------------------
 

@@ -33,6 +33,13 @@ public class ModApiTests
         return null;
     }
 
+    /// <summary>The modders' guide in the repo: <c>Godot/docs/modding</c> (the SDK's <c>docs/modding</c>).</summary>
+    private static string GuideFolder(string root) => Path.Combine(root, "Godot", ModGuide.ProjectFolder);
+
+    /// <summary>Every guide file's text, in reading order.</summary>
+    private static string GuideText(string root) =>
+        string.Join("\n", ModGuide.Files(GuideFolder(root)).Select(f => File.ReadAllText(Path.Combine(GuideFolder(root), f))));
+
     [TestCase]
     public void KindsAreDenseAndNamesUnique()
     {
@@ -784,7 +791,7 @@ public class ModApiTests
         AssertThat(impact.Kind).IsEqual(97);
         AssertThat(string.Join(",", impact.Fields.Select(f => f.Name))).IsEqual("spell,serial,level,caster,caster_player,struck,struck_player,x,y,z,nx,ny,nz,detonated,hits");
         AssertThat(impact.Cancellable).IsFalse();
-        AssertThat(ModApi.Events.Count).IsEqual(100);  // 98 paused, 99 start_game (H.16)
+        AssertThat(ModApi.Events.Count).IsEqual(101);  // 98 paused, 99 start_game (H.16), 100 cutscene
 
         string? root = RepoRoot();
         if (root == null)
@@ -1147,7 +1154,7 @@ public class ModApiTests
         AssertThat(start.Kind).IsEqual(99);
         AssertThat(start.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "save", "level", "new_game", "player" });
         AssertThat(start.SeamFunctions.Contains("rex_lhFrontEnd_SetStartGameTarget")).IsTrue();
-        AssertThat(ModApi.Events.Count).IsEqual(100);
+        AssertThat(ModApi.Events.Count).IsEqual(101);
         foreach (string name in new[] { "MeleeSwing", "AnimEvent" })
         {
             ModApiEvent e = ModApi.Events.Single(x => x.Name == name);
@@ -1166,10 +1173,12 @@ public class ModApiTests
             return;
         }
 
-        string doc = File.ReadAllText(Path.Combine(root, "docs", "mod_api.md"));
+        // The guide's UI chapter carries the table: its section runs to the next heading of its level or above.
+        string doc = File.ReadAllText(Path.Combine(GuideFolder(root), "ui-and-hud.md"));
         int table = doc.IndexOf("### The front-end surface", StringComparison.Ordinal);
         AssertThat(table >= 0).IsTrue();
-        string section = doc[table..];
+        int next = doc.IndexOf("\n## ", table, StringComparison.Ordinal);
+        string section = next < 0 ? doc[table..] : doc[table..next];
         foreach (string call in new[]
                  {
                      "`Refii.hash(name)`", "`Refii.setting(key, default)`", "`Refii.log(text)`", "`Refii.publish(key, n)`", "`Refii.value(key)`",
@@ -1180,7 +1189,7 @@ public class ModApiTests
         {
             AssertThat(section.Contains(call, StringComparison.Ordinal)).OverrideFailureMessage("front-end table: " + call).IsTrue();
         }
-        AssertThat(doc.Contains("A pause/unpause event: no single function was found", StringComparison.Ordinal)).IsFalse();
+        AssertThat(GuideText(root).Contains("A pause/unpause event: no single function was found", StringComparison.Ordinal)).IsFalse();
 
         // The seams: the three new hooks named in both builds, the type reader's row.
         foreach (string build in new[] { "Fable2", "Fable2TU1" })
@@ -1202,5 +1211,121 @@ public class ModApiTests
         {
             AssertThat(frontend.Contains("{\"" + registered + "\", &Native", StringComparison.Ordinal)).OverrideFailureMessage(registered).IsTrue();
         }
+    }
+    [TestCase]
+    public void TheCutsceneIsOnEverySurface()
+    {
+        // The game's own three statements of a cutscene (full, interactive, look-at) as one event
+        // raised per kind on each edge and one query, on every surface, both players principals.
+        ModApiEvent cutscene = ModApi.Events.Single(e => e.Name == "Cutscene");
+        AssertThat(cutscene.Kind).IsEqual(100);
+        AssertThat(cutscene.LuaName).IsEqual("cutscene");
+        AssertThat(string.Join(",", cutscene.Fields.Select(f => f.Name))).IsEqual("player,active,kind,kinds,hero");
+        AssertThat(cutscene.Cancellable).IsFalse();
+        AssertThat(cutscene.SeamFunctions.Any()).OverrideFailureMessage("polled, no hook: no codegen name").IsFalse();
+        AssertThat(ModApi.CutsceneFull).IsEqual(1);
+        AssertThat(ModApi.CutsceneInteractive).IsEqual(2);
+        AssertThat(ModApi.CutsceneLookAt).IsEqual(4);
+        AssertThat(ModApi.CutsceneAll).IsEqual(7);
+
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        AssertThat(native.Contains("int32_t refii_mod_in_cutscene(ctx, base, player)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.in_cutscene([p [, kinds]]) -> inside, kinds", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("in_cutscene(player = 0, kinds = 7) -> bool / cutscene_kinds(player = 0)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("/ in_cutscene P", StringComparison.Ordinal)).IsTrue();
+        AssertThat(typeof(RefiiHost).GetMethod("in_cutscene") is not null).IsTrue();
+        AssertThat(typeof(RefiiHost).GetMethod("cutscene_kinds") is not null).IsTrue();
+
+        if (RepoRoot() is not { } root)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+        AssertThat(header.Contains("#define REFII_CUTSCENE_FULL 1", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("#define REFII_CUTSCENE_INTERACTIVE 2", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("#define REFII_CUTSCENE_LOOK_AT 4", StringComparison.Ordinal)).IsTrue();
+        string modHeader = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        AssertThat(modHeader.Contains("extern \"C\" int32_t refii_mod_in_cutscene(PPCContext* ctx, uint8_t* base, int32_t player);", StringComparison.Ordinal)).IsTrue();
+
+        // The three reads: the game's own full-cutscene query (row for the disc build), the two
+        // fields the Player setters write (the same offsets on both builds).
+        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        AssertThat(api.Contains("constexpr uint32_t kForegroundCutscene = 0x3B;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("constexpr uint32_t kLookAtCameraMode = 0xC8;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("constexpr uint32_t kIsFullCutscenePlaying = 0x823060E0u;", StringComparison.Ordinal)).IsTrue();
+        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        AssertThat(rows.Contains("{0x823060E0u, 0x82907D08u},", StringComparison.Ordinal)).IsTrue();
+        foreach ((string build, string address) in new[] { ("Fable2TU1", "0x823060E0"), ("Fable2", "0x82907D08") })
+        {
+            string config = File.ReadAllText(Path.Combine(root, "versions", build, "refii_config.toml"));
+            AssertThat(config.Contains(address + " = { size = 0x6C }", StringComparison.Ordinal))
+                .OverrideFailureMessage($"{build}: GUI.IsFullCutscenePlaying is not a function the recompiler emits").IsTrue();
+        }
+
+        // The edges: raised from the tick before the Tick event, per kind, read only while someone listens.
+        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        int edges = bus.IndexOf("DispatchCutsceneEdges(ctx, base);", StringComparison.Ordinal);
+        int tick = bus.IndexOf("TickEvent tick{};", StringComparison.Ordinal);
+        AssertThat(edges >= 0 && tick > edges).OverrideFailureMessage("the edges are raised before the Tick event").IsTrue();
+        AssertThat(bus.Contains("if (!AnySubscriber(REFII_EVENT_CUTSCENE)) {", StringComparison.Ordinal)).IsTrue();
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        AssertThat(natives.Contains("{\"in_cutscene\", &NativeInCutscene, 0},", StringComparison.Ordinal)).IsTrue();
+        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        AssertThat(commands.Contains("what == \"in_cutscene\"", StringComparison.Ordinal)).IsTrue();
+        string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
+        AssertThat(preamble.Contains("Refii.CUTSCENE_FULL = ", StringComparison.Ordinal)).IsTrue();
+        string events = File.ReadAllText(Path.Combine(GuideFolder(root), "reference-events.md"));
+        AssertThat(events.Contains("| 100 | Cutscene / cutscene |", StringComparison.Ordinal)).IsTrue();
+        string cutscenes = File.ReadAllText(Path.Combine(GuideFolder(root), "cutscenes.md"));
+        AssertThat(cutscenes.Contains("Refii.in_cutscene(", StringComparison.Ordinal)).IsTrue();
+    }
+
+    [TestCase]
+    public void TheCutsceneStateFollowsEachStatement()
+    {
+        var state = new ModCutscene();
+        AssertThat(state.Kinds(1)).IsEqual(0);
+        AssertThat(state.In(0)).IsFalse();
+
+        // Player one's conversation camera: look-at for player one only.
+        state.Stated(1, ModApi.CutsceneLookAt);
+        AssertThat(state.Kinds(1)).IsEqual(ModApi.CutsceneLookAt);
+        AssertThat(state.Kinds(2)).IsEqual(0);
+        AssertThat(state.In(1)).IsTrue();
+        AssertThat(state.In(2)).IsFalse();
+        AssertThat(state.In(0)).IsTrue();
+        AssertThat(state.In(1, ModApi.CutsceneInteractive)).IsFalse();
+
+        // A full cutscene is every player's: player 0's edge carries only its own bit.
+        state.Stated(0, ModApi.CutsceneFull);
+        AssertThat(state.Kinds(2)).IsEqual(ModApi.CutsceneFull);
+        AssertThat(state.Kinds(1)).IsEqual(ModApi.CutsceneFull | ModApi.CutsceneLookAt);
+
+        // Player two's interactive scene starts while the full one plays: kinds carries both.
+        state.Stated(2, ModApi.CutsceneFull | ModApi.CutsceneInteractive);
+        AssertThat(state.Kinds(2)).IsEqual(ModApi.CutsceneFull | ModApi.CutsceneInteractive);
+        AssertThat(state.Kinds(0)).IsEqual(ModApi.CutsceneAll);
+
+        // The full cutscene ends; each player keeps their own.
+        state.Stated(0, 0);
+        AssertThat(state.Kinds(1)).IsEqual(ModApi.CutsceneLookAt);
+        AssertThat(state.Kinds(2)).IsEqual(ModApi.CutsceneInteractive);
+
+        // A player's edge restates the full bit too (a seed answered while a full cutscene plays).
+        state.Stated(1, ModApi.CutsceneFull);
+        AssertThat(state.Kinds(1)).IsEqual(ModApi.CutsceneFull);
+        AssertThat(state.Kinds(2)).IsEqual(ModApi.CutsceneFull | ModApi.CutsceneInteractive);
+
+        // Everything ends; an out-of-range player is ignored.
+        state.Stated(1, 0);
+        state.Stated(2, 0);
+        state.Stated(3, ModApi.CutsceneAll);
+        state.Stated(-1, ModApi.CutsceneAll);
+        AssertThat(state.Kinds(0)).IsEqual(0);
+        AssertThat(state.In(1)).IsFalse();
+        AssertThat(state.In(2)).IsFalse();
     }
 }

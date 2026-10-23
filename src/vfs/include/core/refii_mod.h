@@ -553,6 +553,18 @@ extern "C" uint32_t refii_mod_switch_target(PPCContext* ctx, uint8_t* base, int3
 extern "C" uint32_t refii_mod_locked_target(PPCContext* ctx, uint8_t* base, int32_t player);
 
 // ---------------------------------------------------------------------------------------------
+// Cutscenes: what took a hero's camera and controls away from free play. Both players are principals.
+// ---------------------------------------------------------------------------------------------
+
+/// The statements holding NOW for `player` (1 or 2), as REFII_CUTSCENE_* bits, 0 for none: FULL
+/// (the game's own `GUI.IsFullCutscenePlaying`, every player's), INTERACTIVE (the player
+/// component's +0x3B, `Player.SetForegroundCutsceneInEffect`) and LOOK_AT (its +0xC8, the LOOK_AT
+/// scope of `Player.SetOverrideCameraMode` — held LT frames what the game chose). Player 0 answers
+/// the union over both players. core/refii_mod_events.h CutsceneEvent quotes each instruction; the
+/// event is the same three, raised on each edge. Guest tick thread only.
+extern "C" int32_t refii_mod_in_cutscene(PPCContext* ctx, uint8_t* base, int32_t player);
+
+// ---------------------------------------------------------------------------------------------
 // Movement speed: the player component's own override, what the scripts' Player.* calls state.
 // Both players are principals.
 // ---------------------------------------------------------------------------------------------
@@ -811,7 +823,7 @@ extern "C" int32_t refii_mod_stagger(PPCContext* ctx, uint8_t* base, uint32_t en
 /// (`sub_821D53B8`). `out[0]` is the voice, released at once (`sub_82C05EF8`) as the native does.
 /// An entity without component 135 plays at its position instead (refii_mod_play_sound_at). `tag`
 /// (may be "") is what refii_mod_stop_sound matches. Cue names are the audio banks' event names
-/// (docs/mod_api.md, Sound); the cue's own volume and attenuation apply — there is no volume
+/// (Godot/docs/modding/gameplay.md, Sound); the cue's own volume and attenuation apply — there is no volume
 /// argument, the game's player has none. True when a voice started. Guest tick thread only.
 extern "C" int32_t refii_mod_play_sound_on(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* cue,
                                            const char* tag);
@@ -862,7 +874,7 @@ extern "C" int32_t refii_mod_stop_music(PPCContext* ctx, uint8_t* base, const ch
 /// LoopAction = <it>, NumLoops = loops, KillFXOnFinish = true }` (`sub_829CEDA0` reads NumLoops,
 /// IntoAction, LoopAction, OutOfAction; the two we leave out are unproven to be optional). The
 /// evaluator then plays it and the pose feed shows it. `name` is a GDB animation record name
-/// (letters, digits, '_'; docs/mod_api.md, Animation). True when the chunk ran — not whether the
+/// (letters, digits, '_'; Godot/docs/modding/gameplay.md, Animation). True when the chunk ran — not whether the
 /// action was accepted (a higher-priority action keeps the body). Guest tick thread only.
 extern "C" int32_t refii_mod_play_animation(PPCContext* ctx, uint8_t* base, uint32_t entity, const char* name,
                                             int32_t loops, float blend_seconds, float speed);
@@ -970,7 +982,7 @@ extern "C" int32_t refii_mod_time_of_day(uint8_t* base, float* hours);
 /// `("EnvThemeWestcliffNight", 1.0, 1.0)` in, `(.., 0.0, 1.0)` out), the native the mod event
 /// hooks (`sub_82549B80`, rex_lhEnvironmentThemeManager_BlendToTheme; r3 the theme manager, r4 the
 /// name, f1 weight, f2 seconds), so weather_theme fires and a handler may cancel it. `theme` is an
-/// environment-theme record's name (`EnvTheme*`; docs/mod_api.md, Time and weather). The Dynamic
+/// environment-theme record's name (`EnvTheme*`; Godot/docs/modding/gameplay.md, Time and weather). The Dynamic
 /// Sky's own weather override (`Engine_DynamicSky.WeatherKey`) is the HOST's switch, not this.
 /// True when the chunk ran. Guest tick thread only.
 extern "C" int32_t refii_mod_set_weather(PPCContext* ctx, uint8_t* base, const char* theme, float weight, float seconds);

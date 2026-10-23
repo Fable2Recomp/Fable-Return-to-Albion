@@ -138,6 +138,7 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void fireball_impactEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void pausedEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void start_gameEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void cutsceneEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
 	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
@@ -172,13 +173,26 @@ public partial class RefiiHost : Node
 		"partner_message",
 		"look_at_button", "vortex_started", "vortex_ended", "fireball_impact",
 		"paused", "start_game",
+		"cutscene",
 	};
 
 	public const string SingletonName = "RefiiHost";
 	public const string ModEventSignal = "mod_event";
 
-	/// <summary>The kinds the host keeps in the mask while any script is loaded: hero_ready and hero_gone feed <see cref="hero"/>.</summary>
-	private static readonly ModEventMask HeroKinds = new ModEventMask().With(1).With(2);
+	/// <summary>The cutscene event's kind: the host hears it while any script is loaded, for <see cref="in_cutscene"/>.</summary>
+	private const int CutsceneKind = 100;
+
+	/// <summary>
+	/// The kinds the host keeps in the mask while any script is loaded: hero_ready and hero_gone feed
+	/// <see cref="hero"/>, cutscene feeds <see cref="in_cutscene"/>.
+	/// </summary>
+	private static readonly ModEventMask HeroKinds = new ModEventMask().With(1).With(2).With(CutsceneKind);
+
+	/// <summary>The cutscene statements as the bus last stated them (the cutscene event, seeded by the <c>in_cutscene</c> queries a new host sends).</summary>
+	private readonly ModCutscene _cutscene = new();
+
+	/// <summary>Ids of the two <c>in_cutscene</c> queries a new host sends, answered into <see cref="_cutscene"/>.</summary>
+	private readonly Dictionary<long, long> _cutsceneSeedQueries = new();
 
 	/// <summary>The kind a query's reply arrives under (REFII_MOD_HOST_REPLY_KIND); never an event.</summary>
 	public const int ReplyKind = 1000;
@@ -249,6 +263,13 @@ public partial class RefiiHost : Node
 			if (id != 0)
 			{
 				_heroSeedQueries[id] = player;
+			}
+
+			// A scene already playing when this host was made raised its edge before the host heard.
+			long cutscene = query("in_cutscene", new Godot.Collections.Array { player });
+			if (cutscene != 0)
+			{
+				_cutsceneSeedQueries[cutscene] = player;
 			}
 		}
 	}
@@ -559,6 +580,12 @@ public partial class RefiiHost : Node
 					continue;
 				}
 
+				if (_cutsceneSeedQueries.Remove(id, out long cutscenePlayer))
+				{
+					_cutscene.Stated(cutscenePlayer, result.TryGetValue("kinds", out Variant kinds) ? kinds.AsInt32() : 0);
+					continue;
+				}
+
 				if (_heroSeedQueries.Remove(id, out long seededPlayer))
 				{
 					long seeded = result.TryGetValue("hero", out Variant heroValue) ? heroValue.AsInt64() : 0;
@@ -581,6 +608,7 @@ public partial class RefiiHost : Node
 
 			Godot.Collections.Dictionary e = ParseFields(fields);
 			TrackHero(kind, e);
+			TrackCutscene(kind, e);
 			if (_signalByKind[kind] is { } signal)
 			{
 				EmitSignal(signal, e);
@@ -609,6 +637,16 @@ public partial class RefiiHost : Node
 		else if (_hero.TryGetValue(player, out long current) && current == hero)
 		{
 			_hero.Remove(player);
+		}
+	}
+
+	/// <summary>The cutscene event into <see cref="_cutscene"/>: kinds is every statement holding after the edge.</summary>
+	private void TrackCutscene(int kind, Godot.Collections.Dictionary e)
+	{
+		if (kind == CutsceneKind)
+		{
+			_cutscene.Stated(e.TryGetValue("player", out Variant p) ? p.AsInt64() : -1,
+				e.TryGetValue("kinds", out Variant k) ? k.AsInt32() : 0);
 		}
 	}
 
@@ -831,7 +869,7 @@ public partial class RefiiHost : Node
 	/// Plays an audio cue on an entity through the game's own cue player (refii_mod_play_sound_on,
 	/// the body of the scripts' Sound.PlayEvent): the entity's sound component's emitter, or its
 	/// position when it has none. <paramref name="tag"/> is what stop_sound matches. The cue's own
-	/// volume applies; cue names are the audio banks' event names (docs/mod_api.md, Sound).
+	/// volume applies; cue names are the audio banks' event names (docs/modding/gameplay.md, Sound).
 	/// </summary>
 	public void play_sound(string cue, long entity, string tag = "") =>
 		Post($"play_sound {Word(cue)} {entity} {TagWord(tag)}");
@@ -1003,6 +1041,17 @@ public partial class RefiiHost : Node
 	/// open menus. Name a player with <see cref="hero"/> when it must not follow the menus.
 	/// </summary>
 	public long local_hero() => _localHero;
+
+	/// <summary>
+	/// The cutscene statements holding for player 1 or 2 (0: either player) as the bus last stated
+	/// them, as bits: <see cref="ModApi.CutsceneFull"/> 1 (every player's), <see cref="ModApi.CutsceneInteractive"/>
+	/// 2, <see cref="ModApi.CutsceneLookAt"/> 4 (the game gave that player's held LT a camera). One
+	/// guest tick behind, like every signal; <c>query in_cutscene P</c> asks the guest now.
+	/// </summary>
+	public int cutscene_kinds(int player = 0) => _cutscene.Kinds(player);
+
+	/// <summary>Whether any of <paramref name="kinds"/> (bits; all three by default) holds for player 1 or 2 (0: either): <see cref="cutscene_kinds"/>.</summary>
+	public bool in_cutscene(int player = 0, int kinds = ModApi.CutsceneAll) => _cutscene.In(player, kinds);
 
 	/// <summary>Refii.coop_mode as the guest last answered: 0 alone, 1 local co-op, 2 online hosting, 3 online joined.</summary>
 	public int coop_mode() => _coopMode;

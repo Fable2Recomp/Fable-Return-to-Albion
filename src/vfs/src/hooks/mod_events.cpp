@@ -971,6 +971,12 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       std::snprintf(out, size, "save='%s',level='%s',new_game=%s,player=%d", save, level, e.new_game ? "true" : "false", e.player);
       return;
     }
+    case REFII_EVENT_CUTSCENE: {
+      const auto& e = *static_cast<const CutsceneEvent*>(event);
+      std::snprintf(out, size, "player=%d,active=%s,kind=%d,kinds=%d,hero=%u", e.player, e.active ? "true" : "false", e.kind,
+                    e.kinds, H(e.hero));
+      return;
+    }
     case REFII_EVENT_DIALOGUE: {
       const auto& e = *static_cast<const DialogueEvent*>(event);
       std::snprintf(out, size, "speaker=%u,speaker_player=%d,text='0x%08x',listener=%u,listener_player=%d,subtitle=%s",
@@ -1557,6 +1563,52 @@ void ForgetDownStates(uint32_t entity);
 void RunModCommands(PPCContext& ctx, uint8_t* base);
 /// The entities the manager took since the last tick (EntitySpawned), below.
 void DispatchSpawned(PPCContext& ctx, uint8_t* base);
+/// mod_api.cpp: the full cutscene (the game's own GUI.IsFullCutscenePlaying) and one hero's own
+/// INTERACTIVE / LOOK_AT statements (core/refii_mod_events.h CutsceneEvent).
+bool ModFullCutscenePlaying(PPCContext& ctx, uint8_t* base);
+int32_t ModHeroCutsceneKinds(uint8_t* base, int32_t player);
+
+namespace {
+
+/// The statements the last tick saw: [0] the full cutscene's (every player's), [1] and [2] each
+/// hero's own.
+int32_t g_cutscene_kinds[3] = {0, 0, 0};
+
+/// THE CUTSCENE EDGES (CutsceneEvent): each statement compared with the last tick's, one event per
+/// kind that flipped, before the Tick event so a tick handler already sees the new state. Read only
+/// while someone listens; with no listener the baseline is none, so a handler subscribed mid-scene
+/// hears the scene start on its first tick (refii_mod_in_cutscene answers the live state any time).
+void DispatchCutsceneEdges(PPCContext& ctx, uint8_t* base) {
+  if (!AnySubscriber(REFII_EVENT_CUTSCENE)) {
+    g_cutscene_kinds[0] = g_cutscene_kinds[1] = g_cutscene_kinds[2] = 0;
+    return;
+  }
+  int32_t now[3];
+  now[0] = ModFullCutscenePlaying(ctx, base) ? REFII_CUTSCENE_FULL : 0;
+  now[1] = ModHeroCutsceneKinds(base, 1);
+  now[2] = ModHeroCutsceneKinds(base, 2);
+  for (int32_t p = 0; p <= 2; ++p) {
+    const int32_t changed = now[p] ^ g_cutscene_kinds[p];
+    g_cutscene_kinds[p] = now[p];
+    for (const int32_t kind : {REFII_CUTSCENE_FULL, REFII_CUTSCENE_INTERACTIVE, REFII_CUTSCENE_LOOK_AT}) {
+      if ((changed & kind) == 0) {
+        continue;
+      }
+      CutsceneEvent e{};
+      PPCContext e_ctx = ctx;
+      e.ctx = &e_ctx;
+      e.base = base;
+      e.player = p;
+      e.active = (now[p] & kind) != 0;
+      e.kind = kind;
+      e.kinds = p == 0 ? now[0] : now[0] | now[p];
+      e.hero = p == 0 ? 0u : refii_mod_player_hero(base, p);
+      Dispatch(e);
+    }
+  }
+}
+
+}  // namespace
 
 /// From RunModTicks, after the registered tick callbacks: the Tick event, the hero events,
 /// and the Lua mask upkeep.
@@ -1619,6 +1671,7 @@ void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds) {
   DispatchSpawned(ctx, base);
   DrainRelay(ctx, base);
   DrainPartnerMessages(ctx, base);
+  DispatchCutsceneEdges(ctx, base);
 
   TickEvent tick{};
   PPCContext tick_ctx = ctx;

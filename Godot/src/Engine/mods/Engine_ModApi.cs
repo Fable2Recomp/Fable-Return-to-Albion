@@ -1100,7 +1100,35 @@ public static class ModApi
 				F("new_game", "bool", "no save: a new game"),
 				F("player", "int32_t", "the signed-in pad's player: 1"),
 			}),
+		new ModApiEvent("Cutscene", "cutscene", 100, "polled each guest tick before tick (no hook): GUI.IsFullCutscenePlaying (sub_823060E0 / disc sub_82907D08); the player component's +0x3B (Player.SetForegroundCutsceneInEffect sub_823E72B8 / sub_823C5CE8) and +0xC8 (Player.SetOverrideCameraMode's LOOK_AT scope, sub_823E31B8 / sub_823C1B80)",
+			"A cutscene took a hero's camera and controls away from free play, or gave them back — one of the game's own three statements flipped, raised per kind on each edge: " + CutsceneKindsMeaning +
+			". Raised before the tick event, so a tick handler already sees the new state; in_cutscene answers the same live at any moment. With no listener nothing is read, so a handler subscribed mid-scene hears the scene start on its first tick.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2; 0 for a full cutscene (every player's)"),
+				F("active", "bool", "true on the rising edge, false on the falling one"),
+				F("kind", "int32_t", "the statement that flipped: 1 full, 2 interactive, 4 look-at (REFII_CUTSCENE_*)"),
+				F("kinds", "int32_t", "every statement holding for the player after this edge, as those bits (for player 0 the full cutscene's)"),
+				F("hero", "uint32_t", "the player's hero (0 for player 0, or once the hero is gone)"),
+			}),
 	};
+
+	/// <summary>REFII_CUTSCENE_* (core/refii_mod_events.h): the cutscene event's kinds and in_cutscene's bits.</summary>
+	public const int CutsceneFull = 1;
+	public const int CutsceneInteractive = 2;
+	public const int CutsceneLookAt = 4;
+	public const int CutsceneAll = CutsceneFull | CutsceneInteractive | CutsceneLookAt;
+
+	/// <summary>The three statements a cutscene is, the same on every surface.</summary>
+	public const string CutsceneKindsMeaning =
+		"1 FULL, a full cutscene is the top game-flow state (GUI.PlayFullCutscene queued it; the game's own GUI.IsFullCutscenePlaying answers it) — every player's; " +
+		"2 INTERACTIVE, a foreground interactive cutscene holds the hero (Player.SetForegroundCutsceneInEffect, which the shipped scenes set with the vignette and the cutscene microphone); " +
+		"4 LOOK_AT, the game has given that hero's held LT a camera (Player.SetOverrideCameraMode with the LOOK_AT scope: a conversation's talking camera on the speaker, a quest's look-at, a scene's own camera) — while it holds, what a held LT frames is the game's choice, not a target lock";
+
+	private const string InCutsceneMeaning =
+		"the cutscene statements holding NOW for player 1 or 2 (0: either player), as bits — " + CutsceneKindsMeaning +
+		"; 0 for none. The cutscene event is the same three, on each edge. Both players are principals: on an online joiner it answers what that machine's guest states";
 
 	/// <summary>The menu events' player: whose menu it is.</summary>
 	private const string MenuPlayerMeaning =
@@ -1253,6 +1281,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_entity_tint(ctx, base, entity, r, g, b, a) / refii_mod_entity_untint(ctx, base, entity)", EntityTintMeaning),
 		new ModApiHelper("int32_t refii_mod_entity_alpha(ctx, base, entity, alpha) / refii_mod_entity_scale(ctx, base, entity, scale) / refii_mod_entity_saturation_mask(ctx, base, entity, on) / refii_mod_entity_drawable(ctx, base, entity, on)", AppearanceMeaning),
 		new ModApiHelper("int32_t refii_mod_lock_target(ctx, base, player, entity) / refii_mod_release_lock(ctx, base, player) / uint32_t refii_mod_switch_target(ctx, base, player, left) / uint32_t refii_mod_locked_target(ctx, base, player)", LockMeaning),
+		new ModApiHelper("int32_t refii_mod_in_cutscene(ctx, base, player)", InCutsceneMeaning + ". Guest tick"),
 		new ModApiHelper("int32_t refii_mod_apply_status(ctx, base, entity, kind, seconds, level, source) / refii_mod_clear_status(ctx, base, entity, kind) / refii_mod_has_status(base, entity, kind)", StatusMeaning),
 		new ModApiHelper("int32_t refii_mod_knockback(ctx, base, entity, dir, force) / refii_mod_stagger(ctx, base, entity)", KnockbackMeaning),
 		new ModApiHelper("int32_t refii_mod_set_speed_multiplier(base, player, factor) / refii_mod_clear_speed_multiplier(base, player) / refii_mod_speed_multiplier(base, player, float* out)", SpeedMeaning),
@@ -1375,6 +1404,7 @@ public static class ModApi
 		new ModApiHelper("Refii.entity_tint(e, r, g, b [, a]) / Refii.entity_untint(e)", EntityTintMeaning),
 		new ModApiHelper("Refii.entity_alpha(e, a) / Refii.entity_scale(e, s) / Refii.entity_saturation_mask(e, on) / Refii.entity_drawable(e, on)", AppearanceMeaning),
 		new ModApiHelper("Refii.lock_target(p [, e]) / Refii.release_lock(p) / Refii.switch_target(p, left) -> target / Refii.locked_target(p) -> target", LockMeaning),
+		new ModApiHelper("Refii.in_cutscene([p [, kinds]]) -> inside, kinds", "whether any of kinds (bits; nil: all three) holds, and every bit holding — " + InCutsceneMeaning + ". Refii.CUTSCENE_FULL / _INTERACTIVE / _LOOK_AT name the bits"),
 		new ModApiHelper("Refii.apply_status(e, kind, seconds [, level [, source]]) / Refii.clear_status(e, kind) / Refii.has_status(e, kind)", StatusMeaning),
 		new ModApiHelper("Refii.knockback(e, x, y, z [, force]) / Refii.stagger(e)", KnockbackMeaning),
 		new ModApiHelper("Refii.set_speed_multiplier(p, factor) / Refii.clear_speed_multiplier(p) / Refii.speed_multiplier(p) -> overridden, factor", SpeedMeaning),
@@ -1434,7 +1464,7 @@ public static class ModApi
 		new ModApiHelper("Refii.open_menu(name [, p])", "opens a mod's menu (ui/templates.json) for player p (nil: the menu owner here) over the list that has the input, or on its own with none up; true when asked"),
 		new ModApiHelper("Refii.message_box(title, text [, accept [, cancel [, p]]])", "the game's own box for player p: a question when cancel is given (nil captions keep the box's own), else a notice; the id mod_message_box carries"),
 		new ModApiHelper("Refii.notice(title, text [, seconds [, p]])", "a notice on the notice channel for player p (nil: the menu owner here): the HUD's info box in game, queued behind the others; the id mod_notice carries (0 shown, -1 never)"),
-		new ModApiHelper("Refii.signed_in() -> user / Refii.save_count() -> n / Refii.screen() -> name", "FRONT END ONLY (mod/frontend.lua): " + FrontEndMeaning + "; nil for none. With Refii.hash, setting, log, publish / value, notice, message_box, menu_box, open_menu, menu_player and Refii.on for start_game, mod_menu_row, mod_message_box, mod_notice, mod_menu_box — the whole front-end surface (docs/mod_api.md, the front-end table)"),
+		new ModApiHelper("Refii.signed_in() -> user / Refii.save_count() -> n / Refii.screen() -> name", "FRONT END ONLY (mod/frontend.lua): " + FrontEndMeaning + "; nil for none. With Refii.hash, setting, log, publish / value, notice, message_box, menu_box, open_menu, menu_player and Refii.on for start_game, mod_menu_row, mod_message_box, mod_notice, mod_menu_box — the whole front-end surface (docs/modding/ui-and-hud.md, The front-end surface)"),
 		new ModApiHelper("Refii.menu_box(title, text, options [, p [, cancelable]])", "the game's own menu box for player p: up to 12 options from the table, paged past six; B closes it unless cancelable is false; the id mod_menu_box carries with the option's index (-1 none)"),
 		new ModApiHelper("Refii.setting(key, default)", "a settings.json value with the player's choice over it, read at the call: RefiiSettings, composed in at session start and kept current — a live change (the Options › Mods page, a script's set_setting, the Studio's live tune) reaches the running VM at the next guest tick, no reload"),
 		new ModApiHelper("require(name)", "a mod's own module: mod/<name>.lua of the same mod (the path under mod/ without .lua; . or / between folders), composed into the init chunk and run once on the first require, its return value cached (nil as true); an error names a missing file. Only the three entry points (init.lua, camera.lua, frontend.lua) run on their own"),
@@ -1483,7 +1513,8 @@ public static class ModApi
 		new ModApiHelper("modify_opinion(villager, hero, axis, delta) / add_deed(villager, hero, deed)", OpinionSetMeaning + "; deed is the record's hash, a \"0x…\" string or a number"),
 		new ModApiHelper("npc_follow(entity, target, radius = 2) / npc_go_to(entity, x, y, z) / npc_flee(entity, from) / npc_attack(entity, target) / npc_set_hostile(entity, other, on) / npc_stop(entity)", NpcMeaning),
 		new ModApiHelper("set_time_of_day(hours) / set_weather(theme, weight = 1, seconds = 1)", TimeWeatherMeaning + "; query time_of_day answers hours"),
-		new ModApiHelper("query locked_target P / has_status E KIND", "target (0 when not locked) · has: refii_mod_locked_target / refii_mod_has_status"),
+		new ModApiHelper("in_cutscene(player = 0, kinds = 7) -> bool / cutscene_kinds(player = 0)", "the cutscene event as this host last heard it (always heard while a script is loaded; seeded by a query when the host is made): whether any of kinds holds for player 1 or 2 (0: either), and the bits — " + InCutsceneMeaning + "; query in_cutscene P asks the guest now"),
+		new ModApiHelper("query locked_target P / has_status E KIND / in_cutscene P", "target (0 when not locked) · has · kinds (the REFII_CUTSCENE_* bits, 0 none): refii_mod_locked_target / refii_mod_has_status / refii_mod_in_cutscene"),
 		new ModApiHelper("query speed_multiplier P / current_action E", "overridden, factor · action (0 for none), elapsed, interruptible: refii_mod_speed_multiplier / refii_mod_current_action, _action_elapsed, _action_interruptible"),
 		new ModApiHelper("query action A / frontend", "type, name (ok false for an unknown action) · signed_in, saves, screen (ok false with no front end up): " + ActionKindMeaning + " / " + FrontEndMeaning),
 		new ModApiHelper("query living E / spell_in_slot P SLOT", "living · type (-1 none): " + LivingMeaning + " / " + SlotMeaning),

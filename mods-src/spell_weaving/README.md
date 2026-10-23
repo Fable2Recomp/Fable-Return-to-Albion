@@ -2,7 +2,7 @@
 
 Fable 3's spell weaving brought to Fable 2: a second spell, the **partner**, is cast together with
 the spell on the charged slot, at the same power, at the same target, from the same release. A
-hard mod with NO native code: everything it does is Lua on the mod API (`docs/mod_api.md`), one
+hard mod with NO native code: everything it does is Lua on the mod API (`Godot/docs/modding/`), one
 file, `mod/init.lua`. The design and the binary evidence are in `docs/hard_mods_plan.md` (Part D,
 Part H.15) and the memory notes behind it.
 
@@ -18,10 +18,10 @@ nothing by name and reads no guest memory; a soft mod, it needs no rebuild of th
 
 | Piece | File | What it does |
 |---|---|---|
-| The picker | `ui/spellwheel.json`, `language/en-uk/text/book.babel.csv` | The partner is a spell slot PICK the engine runs (`docs/mod_api.md`, "Spell slot picks"): X on a highlighted spell in either selector makes it the highlighted slot's partner; Y removes the partner. The engine raises `spell_pick` and saves the pick as the selectors' player's `spell_weaving.partner_<slot>`; `mod/init.lua` only refuses Slow Time and Raise Dead on that event. Its icon sits small under that slot's icon, and goes with it on Y. Once Spell Weaving is learned (`unlocked`: `player:spell_weaving.ability`), the spell selection page shows two prompts beside its own, X "Set Partner" and Y "Remove Partner" (`SPELL_WEAVING_SET_PARTNER`, `SPELL_WEAVING_REMOVE_PARTNER`). Another enabled mod's picks are drawn beside the partner under each slot; X and Y act on one pick at a time, drawn larger (a press with nothing to do, or LB/RB on the spell page, steps to the next). |
+| The picker | `ui/spellwheel.json`, `language/en-uk/text/book.babel.csv` | The partner is a spell slot PICK the engine runs (`Godot/docs/modding/ui-and-hud.md`, "Spell slot picks"): X on a highlighted spell in either selector makes it the highlighted slot's partner; Y removes the partner. The engine raises `spell_pick` and saves the pick as the selectors' player's `spell_weaving.partner_<slot>`; `mod/init.lua` only refuses Slow Time and Raise Dead on that event. Its icon sits small under that slot's icon, and goes with it on Y. Once Spell Weaving is learned (`unlocked`: `player:spell_weaving.ability`), the spell selection page shows two prompts beside its own, X "Set Partner" and Y "Remove Partner" (`SPELL_WEAVING_SET_PARTNER`, `SPELL_WEAVING_REMOVE_PARTNER`). Another enabled mod's picks are drawn beside the partner under each slot; X and Y act on one pick at a time, drawn larger (a press with nothing to do, or LB/RB on the spell page, steps to the next). |
 | The pair | `mod/init.lua` | One combined cast, as Fable 3 has it. Of the slot's spell and the partner, the higher in the hierarchy below is the base and is the one spell launched, through the game's own launch with the base's type in the slot for the length of the call (`spell_launch`, `e.type`). The lower spell, the overlay, is never launched by the player: at the base's own moment — every victim it hits (for the Vortex, every creature its shudder hits reach); for a Fireball that strikes nothing alive, the impact point itself — a real Targeted cast of the overlay is made `shot_delay` seconds later (0.25 for a vortex, 1 otherwise, ±5 %) by the game's own spell factory with the hero as caster (`Refii.cast_spell`), as Fable III's primary casts its partner. The partner's hits land at `weave_damage` (0.7) of their damage (`hit`, `e.damage`). One partner cast per victim per base cast; a weave-side spell never casts a partner of its own. The partner must be a spell the hero has learned (`Refii.ability_level`). Slow Time and Raise Dead are never partners. |
 | Fable 3 pacing | `mod/init.lua` | By default only the charged slot casts. Fable 2's cascade, which fires slots 1, 2, 3 in turn up to the charge, is skipped slot by slot (`spell_launch` with `cascading` cancelled); `top_only = 0` restores it, pair included. |
-| The Hybrid tree | `ui/abilities.json`, `ui/templates.json`, `language/en-uk/text/book.babel.csv` | A fourth page on the abilities screen, **Hybrid**, holding the Spell Weaving ability: five levels, level N weaves casts up to power N. DECLARED and run by the engine (`docs/mod_api.md`, "Mod abilities"): priced like a spell (`costLike` 8, Fireball's experience table, or the one the setting `cost_like` names) and **paid half from Will, half from Skill** (`disciplines`), General filling each half's gap as Fable 2 fills one pool's. The page lights both orbs and shows their combined total. Y unlearns a level through the game's own confirm, refunding half the level's cost to General (`"refund": "half"`). The level is a saved player value (`spell_weaving.ability`) that goes home with the hero's own save (see below); the mod only reads it (`Refii.player_value`). |
+| The Hybrid tree | `ui/abilities.json`, `ui/templates.json`, `language/en-uk/text/book.babel.csv` | A fourth page on the abilities screen, **Hybrid**, holding the Spell Weaving ability: five levels, level N weaves casts up to power N. DECLARED and run by the engine (`Godot/docs/modding/ui-and-hud.md`, "Mod abilities"): priced like a spell (`costLike` 8, Fireball's experience table, or the one the setting `cost_like` names) and **paid half from Will, half from Skill** (`disciplines`), General filling each half's gap as Fable 2 fills one pool's. The page lights both orbs and shows their combined total. Y unlearns a level through the game's own confirm, refunding half the level's cost to General (`"refund": "half"`). The level is a saved player value (`spell_weaving.ability`) that goes home with the hero's own save (see below); the mod only reads it (`Refii.player_value`). |
 | The HUD glyph | `ui/hud.json`, `mod/init.lua` | While a hero charges, the partner the charged slot would weave is drawn beside the charge meter: the Lua states `spell_weaving.hud_partner` in that player's store from the charge level (`spell_charge_level`; a launch, `spell_launched`, ends it), -1 when the slot has no partner in effect or nothing is charging, and the HUD picture piece shows the matching will icon from the list in `ui/hud.json` (`textures` chosen by `index`: `player:spell_weaving.hud_partner`). ONE piece serves both players: a piece that follows player one's charge meter and reads a `player:` value also follows player two's (`SpellCharging2`), reading player two's. |
 | Ability card, slot frame | `art/gui/abilitytarot/spell_weaving.tex.png`, `art/gui/hud/spell_weaving_slot.tex.png` | The still the abilities book shows for Spell Weaving, and the partner slot's empty frame on the selectors (`tools/spell_weaving_icons.py`, our own art). |
 | Woven effects | `mod/init.lua` | When a hit from the base lands on a victim (`hit_landed`), a Targeted cast of the overlay is queued on that victim — the game's own spell factory, the hero as caster, the victim as target, `shot_delay` later at the base's power. The partner spell then does what it always does: burns, shocks, shoves, turns, or sends blades. Its hits are scaled by `weave_damage`. The one place every hit arrives is the event; the attacker, the victim, the serial, the level, the spell type and the damage are its fields. |
@@ -66,7 +66,7 @@ One spell of the pair is the **base** and the other's look is applied onto it, b
 
 Each pair's look is an EFFECT of the mod's own, `fx/effects/spell_weaving_<base>_<overlay>.json`,
 in the particle bank's own model and made of the bank's own entities, so the guest's bank carries
-it and BOTH looks draw it (`docs/mod_api.md`, "Mod effects"). `mod/init.lua` plays it per cast
+it and BOTH looks draw it (`Godot/docs/modding/effects.md`, "Mod effects"). `mod/init.lua` plays it per cast
 with `Refii.play_fx_on` on each thing the cast rides — the vortex entity, the fireball's shot,
 each hovering Blades sword, each victim of a bolt, shove or chaos for its hold — and
 `Refii.stop_fx` ends each play when that thing is gone (the vortex's shutdown, the fireball's
@@ -156,7 +156,7 @@ running game takes it with `refii_action fx-recipes-reload`, and in a dev tree i
 folder's `fx/recipes.json` directly, so an edit here needs no repack. The same preview runs from a
 shell as `res://debug/fx_weave_lab.tscn` (`Godot/src/tools/FxWeaveLab.cs`), which draws a base
 plain, dressed and an optional reference effect side by side and writes PNGs at chosen frames.
-The Lua itself reloads live with the Studio's **↻ Reload mods + Lua** (`docs/mod_api.md`, "Live
+The Lua itself reloads live with the Studio's **↻ Reload mods + Lua** (`Godot/docs/modding/live-iteration.md`, "Live
 iteration"): the handlers are dropped and `mod/init.lua` runs again over the live state.
 
 ## How Fable III builds a weave (from its binary; `/home/loreaxe/Fable 2/Fable 3/README.md`)
@@ -251,7 +251,7 @@ the book acts for, and shows, the player whose book is open: player two's own bo
 the joiner's book on the joiner's machine; the engine's purchase spends that player's experience.
 The selectors pick for their own player, and the partner picker's prompts unlock from that same
 player's level. The level and the choices are SAVED player values
-in Refii's player store (`Refii.player_*`, `docs/mod_api.md`): the same on both machines of an
+in Refii's player store (`Refii.player_*`, `Godot/docs/modding/handles-and-players.md`): the same on both machines of an
 online session, written beside the save the game writes that hero into (`refii_player.txt`) —
 player one's main save, a local player two's own save, an online joiner's own save on the
 joiner's machine — and read back when the game loads that hero. So player two keeps their level

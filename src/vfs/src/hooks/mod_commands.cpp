@@ -58,6 +58,8 @@
 //   query ID relation A B        -> id,ok,relation
 //   query ID alive E             -> id,ok,alive
 //   query ID locked_target P     -> id,ok,target  (refii_mod_locked_target: 0 when not locked)
+//   query ID in_cutscene P       -> id,ok,kinds   (refii_mod_in_cutscene: REFII_CUTSCENE_* bits, 0 none;
+//                                   P 0 either player)
 //   query ID has_status E KIND   -> id,ok,has     (refii_mod_has_status)
 //   query ID speed_multiplier P  -> id,ok,overridden,factor  (refii_mod_speed_multiplier)
 //   query ID current_action E    -> id,ok,action,elapsed,interruptible  (refii_mod_current_action,
@@ -284,6 +286,9 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
   } else if (what == "locked_target") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "target=%u", refii_mod_handle(refii_mod_locked_target(&ctx, base, I(w, 3))));
+  } else if (what == "in_cutscene") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "kinds=%d", refii_mod_in_cutscene(&ctx, base, I(w, 3)));
   } else if (what == "has_status") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "has=%s", refii_mod_has_status(base, E(w, 3), I(w, 4)) != 0 ? "true" : "false");

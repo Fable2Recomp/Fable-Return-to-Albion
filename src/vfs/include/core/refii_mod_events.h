@@ -143,8 +143,20 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_FIREBALL_IMPACT = 97,
   REFII_EVENT_PAUSED = 98,
   REFII_EVENT_START_GAME = 99,
-  REFII_EVENT_COUNT = 100,
+  REFII_EVENT_CUTSCENE = 100,
+  REFII_EVENT_COUNT = 101,
 };
+
+/// What took a hero's camera and controls away from free play (CutsceneEvent's `kind`, and the
+/// bits refii_mod_in_cutscene answers): each is one statement of the game's own, read as stated.
+///   FULL        a full cutscene is the top game-flow state: `GUI.PlayFullCutscene` queued it,
+///               `GUI.IsFullCutscenePlaying` answers it. Every player's at once.
+///   INTERACTIVE a foreground interactive cutscene holds the hero: `Player.SetForegroundCutsceneInEffect`.
+///   LOOK_AT     the game has given that hero's held LT a camera: `Player.SetOverrideCameraMode` with
+///               the LOOK_AT scope (or ALWAYS) — a conversation's talking camera, a quest's look-at.
+#define REFII_CUTSCENE_FULL 1
+#define REFII_CUTSCENE_INTERACTIVE 2
+#define REFII_CUTSCENE_LOOK_AT 4
 
 /// The kind the host's query replies arrive under (RefiiHost in Godot): never a bus event.
 #define REFII_MOD_HOST_REPLY_KIND 1000
@@ -1510,6 +1522,47 @@ struct StartGameEvent : Event {
   bool new_game;
   /// The signed-in pad's player: 1.
   int32_t player;
+};
+
+/// A CUTSCENE took a hero's camera and controls away from free play, or gave them back: one of the
+/// three statements below flipped (raised per kind, on each edge, from the guest tick before the
+/// Tick event; refii_mod_in_cutscene answers the same three live at any moment). All three are the
+/// game's own and are read where its setter writes them — the same field offsets on both builds:
+///   FULL (1): the top game-flow state's type is 7. `GUI.PlayFullCutscene` (`sub_82305FE8`) builds
+///     that state (vtable `off_820AED30`, slot 1 `li r3,7`) and queues it (GameFlow_QueueCommand);
+///     the game's own query `GUI.IsFullCutscenePlaying` (`sub_823060E0`, disc `sub_82907D08`: list
+///     `*(*(*(*(*(0x83496AB8)+12)+128)+4)+4)`, node `*(list+4)`, `(*state->vtable+4)(state) == 7`,
+///     `addi r9,r3,-7; cntlzw; extrwi` 0x82306130..38) is asked, after the empty-list test it traps on
+///     (`cmplw r11,r10; bne; twui` 0x8230610C..14). Every player's: `player` 0.
+///   INTERACTIVE (2): a foreground interactive cutscene holds the hero. The player component's
+///     (33) +0x3B, written only by `Player.SetForegroundCutsceneInEffect` (`sub_823E72B8` / disc
+///     `sub_823C5CE8`: `stb r4,0x3B(r3)` 0x823e72dc / 0x823c5d0c), which the shipped
+///     InteractiveCutsceneGroupMind calls true when a non-background scene starts (with the
+///     vignette, the cutscene microphone and EXPRESSION_CHOICES_ONLY) and false when the last one ends.
+///   LOOK_AT (4): the game has given that hero's held LT a camera. The player component's +0xC8,
+///     written by `Player.SetOverrideCameraMode(comp, mode, scope)` (`sub_823E31B8` / disc
+///     `sub_823C1B80`: scope 2 LOOK_AT `stw r4,0xC8(r3)` 0x823e31cc, scope 0 ALWAYS both +0xC4 and
+///     +0xC8 0x823e31dc..e0) — the native under CameraManager.SetCameraOverride — and read back by
+///     `Player.GetOverrideCameraMode` (`sub_823E31E8`), which itself returns +0xC8 instead of +0xC4
+///     while the look-at flag (+0x20) is down (`lbz r11,0x20(r3)` 0x823e31fc .. `lwz r3,0xC8(r3)` 0x823e3244). Set by a conversation's talking
+///     camera (InteractiveCutsceneGroupMind:SetTalkingLookAtCamera: CAMERA_MODE_GAME on the speaker
+///     with TargetLockInterestingPoint), a quest's QuestThreadBase:SetLookAtCamera and a scene's
+///     own camera records; 0 is CAMERA_MODE_DEFAULT, none. While it holds, a held LT frames what the
+///     game chose (CameraManager.GetActiveOverriddenData returns the LookAt data while
+///     GetSafeLookAtButtonDown) — what LT does is the game's, not a lock's.
+/// `player` is 1 or 2 (0 for FULL); both players are principals. Read-only.
+struct CutsceneEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CUTSCENE;
+  /// 1 or 2; 0 for a full cutscene (every player's).
+  int32_t player;
+  /// True on the rising edge, false on the falling one.
+  bool active;
+  /// The statement that flipped: REFII_CUTSCENE_FULL, _INTERACTIVE or _LOOK_AT.
+  int32_t kind;
+  /// Every statement holding for the player after this edge (for player 0, the full cutscene's).
+  int32_t kinds;
+  /// The player's hero (0 for player 0, or once the hero is gone).
+  uint32_t hero;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

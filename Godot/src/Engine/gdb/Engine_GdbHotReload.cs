@@ -23,7 +23,7 @@ namespace Refii.Gdb;
 /// (<see cref="Apply"/>), the one path the Studio's reload, "Reload mods" and the co-op mod sync
 /// share (<c>ModRemount</c>).
 ///
-/// What a reload cannot do, stated in docs/mod_api.md: a row the base never had and a patch
+/// What a reload cannot do, stated in docs/modding/gdb-and-text.md: a row the base never had and a patch
 /// states no more stays until a relaunch (the guest's map has no tombstones), and a property
 /// ADDED to a record is seen by holders of the record's older copy only when they look it up
 /// again.

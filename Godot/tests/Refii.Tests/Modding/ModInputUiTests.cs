@@ -198,8 +198,10 @@ public class ModInputUiTests
         AssertThat(input.Contains("Refii.Mods.ModInput.ReadBindings(values);", StringComparison.Ordinal)).IsTrue();
         string ui = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModInputUi.cs"));
         AssertThat(ui.Contains("Engine_UiScreenActions.WriteSettings(write, remove)", StringComparison.Ordinal)).IsTrue();
-        // The limit is gone from the docs.
-        string docs = File.ReadAllText(Path.Combine(root, "docs", "mod_api.md"));
+        // The limit is gone from the guide, and the guide says how to rebind.
+        string folder = Path.Combine(root, "Godot", Refii.Mods.ModGuide.ProjectFolder);
+        string docs = string.Join("\n", Refii.Mods.ModGuide.Files(folder).Select(f => File.ReadAllText(Path.Combine(folder, f))));
+        AssertThat(File.ReadAllText(Path.Combine(folder, "settings-and-input.md")).Contains("### Rebinding", StringComparison.Ordinal)).IsTrue();
         AssertThat(docs.Contains("Rebinding a mod's input actions in the options menu.", StringComparison.Ordinal)).IsFalse();
         AssertThat(docs.Contains("A rebinding UI is not here yet", StringComparison.Ordinal)).IsFalse();
     }

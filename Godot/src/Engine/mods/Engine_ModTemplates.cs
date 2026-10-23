@@ -195,7 +195,8 @@ public static class ModTemplates
 		"-- {title}: a combat tweak.\n" +
 		"--\n" +
 		"-- Runs once per session, after the game's own scripts. Refii.on subscribes to an event the\n" +
-		"-- game raises (docs/mod_api.md lists them all); e is a table of that event's fields.\n" +
+		"-- game raises (the Mod API Guide lists them all: docs/modding/reference-events.md in the SDK);\n" +
+		"-- e is a table of that event's fields.\n" +
 		"\n" +
 		"-- The multiplier lives in settings.json as \"{mod}.hero_damage\", so a player can tune it.\n" +
 		"local multiplier = Refii.setting(\"{mod}.hero_damage\", 1.5)\n" +
@@ -514,6 +515,6 @@ public static class ModTemplates
 		"handler, and `e.damage` is writable. A guest function no event covers is hooked by its config\n" +
 		"name with `REX_EXTERN(name) { ... }` and `REFII_MOD_ORIGINAL(name)`.\n" +
 		"\n" +
-		"The Mod Studio's Guide (Script API & Hard Mods) and `docs/mod_api.md` describe every event and\n" +
+		"The Mod Studio's Guide (Script API & Hard Mods) and the Mod API Guide (`docs/modding/` in the SDK) describe every event and\n" +
 		"helper; `RefiiModApi.NewNativeHandler(event, file)` writes a skeleton for any of them.\n";
 }

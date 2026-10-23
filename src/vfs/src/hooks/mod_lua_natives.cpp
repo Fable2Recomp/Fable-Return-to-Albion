@@ -18,6 +18,7 @@
 //   entity_tint(e, r, g, b [, a]) · entity_untint(e)
 //   entity_alpha(e, a) · entity_scale(e, s) · entity_saturation_mask(e, on) · entity_drawable(e, on)
 //   lock_target(p [, e]) · release_lock(p) · switch_target(p, left) -> target · locked_target(p) -> target
+//   in_cutscene([p [, kinds]]) -> inside, kinds   (refii_mod_in_cutscene: 1 full, 2 interactive, 4 look-at)
 //   apply_status(e, kind, seconds [, level [, source]]) · clear_status(e, kind) · has_status(e, kind)
 //   set_speed_multiplier(p, factor) · clear_speed_multiplier(p) · speed_multiplier(p) -> overridden, factor
 //   current_action(e) -> action · action_elapsed(a) -> seconds · action_interruptible(a) · allow_action_interrupt(a)
@@ -472,6 +473,19 @@ REFII_LUA_NATIVE(NativeSwitchTarget) {
 REFII_LUA_NATIVE(NativeLockedTarget) {
   lua.PushHandle(refii_mod_locked_target(&lua.ctx, lua.base, lua.Int(1)));
   RESULTS(1);
+}
+
+// Cutscenes: Refii.in_cutscene([p [, kinds]]) -> inside, kinds — whether any of `kinds` (the
+// REFII_CUTSCENE_* bits, all three when nil) holds for player p (nil or 0: either player), and
+// every bit holding (refii_mod_in_cutscene).
+REFII_LUA_NATIVE(NativeInCutscene) {
+  const int32_t player = lua.Type(1) == kTypeNumber ? lua.Int(1) : 0;
+  const int32_t wanted = lua.Type(2) == kTypeNumber ? lua.Int(2)
+                                                     : REFII_CUTSCENE_FULL | REFII_CUTSCENE_INTERACTIVE | REFII_CUTSCENE_LOOK_AT;
+  const int32_t kinds = refii_mod_in_cutscene(&lua.ctx, lua.base, player);
+  lua.PushBoolean((kinds & wanted) != 0);
+  lua.PushNumber(kinds);
+  RESULTS(2);
 }
 
 // Movement speed: Refii.set_speed_multiplier(p, factor) · clear_speed_multiplier(p) ·
@@ -1813,6 +1827,7 @@ Native g_natives[] = {
     {"release_lock", &NativeReleaseLock, 0},
     {"switch_target", &NativeSwitchTarget, 0},
     {"locked_target", &NativeLockedTarget, 0},
+    {"in_cutscene", &NativeInCutscene, 0},
     {"set_speed_multiplier", &NativeSetSpeedMultiplier, 0},
     {"clear_speed_multiplier", &NativeClearSpeedMultiplier, 0},
     {"speed_multiplier", &NativeSpeedMultiplier, 0},

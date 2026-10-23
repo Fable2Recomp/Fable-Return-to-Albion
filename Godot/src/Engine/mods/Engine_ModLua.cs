@@ -133,6 +133,10 @@ public static class ModLua
 		text.Append("Refii._masks = Refii._masks or {}\n");
 		text.Append("Refii._dirty = false\n");
 		text.Append("Refii._hero = Refii._hero or {}\n");
+		// The cutscene statements' bits (REFII_CUTSCENE_*): the cutscene event's kind and in_cutscene's.
+		text.Append("Refii.CUTSCENE_FULL = ").Append(ModApi.CutsceneFull)
+			.Append(" Refii.CUTSCENE_INTERACTIVE = ").Append(ModApi.CutsceneInteractive)
+			.Append(" Refii.CUTSCENE_LOOK_AT = ").Append(ModApi.CutsceneLookAt).Append('\n');
 		text.Append("Refii._kinds = {");
 		foreach (ModApiEvent e in ModApi.Events)
 		{

@@ -29,6 +29,13 @@ local Setting, IsPlayer = C.Setting, C.IsPlayer
 --     the wheel switches target (up the next left, down the next right) and moving the mouse never
 --     does; a pad's right-stick flick is untouched. The statement holds for the guest tick it is
 --     made on and the two after, and this tick runs every guest tick, so it never lapses.
+--
+-- IN A CUTSCENE LT IS THE GAME'S. A full cutscene, a foreground interactive cutscene, or a camera
+-- the game gave held LT (a conversation's talking camera on the speaker, a quest's look-at) is
+-- what Refii.in_cutscene states for that hero; while it holds, held LT frames what the game chose.
+-- So for that hero: the press toggles nothing, the look-at flag passes through as the game writes
+-- it, and the cutscene event's rising edge releases any lock, leaving the camera to the game. The
+-- lock stays released afterwards; LT toggles again once the cutscene has ended.
 ----------------------------------------------------------------------------------------------------
 
 local kTargetLockSet = 49
@@ -38,6 +45,12 @@ S.Locked = {}
 
 local function IsLocked(hero)
 	return hero ~= nil and S.Locked[hero] ~= nil
+end
+
+-- Whether the game holds this hero's LT for a cutscene: nil and 0 heroes are never in one.
+local function InCutscene(hero)
+	local p = hero ~= nil and Refii.player_of(hero) or 0
+	return IsPlayer(p) and Refii.in_cutscene(p) == true
 end
 
 -- The game's own test for "a target worth locking": held by the lock, in the world, not killed.
@@ -84,7 +97,7 @@ Refii.on("tick", function(e)
 end)
 
 Refii.on("game_action", function(e)
-	if e.action ~= kTargetLockSet then
+	if e.action ~= kTargetLockSet or InCutscene(e.hero) then
 		return
 	end
 	local on = not IsLocked(e.hero)
@@ -102,7 +115,26 @@ Refii.on("game_action", function(e)
 	-- the look-at flag is held by the handler below.
 end)
 
--- The flag is the lock, whoever asks — the camera's press event included.
+-- The flag is the lock, whoever asks — the camera's press event included. In a cutscene the flag
+-- is the game's: a held LT looks where the game chose.
 Refii.on("look_at_button", function(e)
+	if InCutscene(e.hero) then
+		return
+	end
 	e.down = IsLocked(e.hero)
+end)
+
+-- A cutscene starting ends the lock of the hero it holds (player 0, a full cutscene: both heroes),
+-- so the camera is the game's for the whole scene.
+Refii.on("cutscene", function(e)
+	if not e.active then
+		return
+	end
+	for hero in pairs(S.Locked) do
+		if e.player == 0 or Refii.player_of(hero) == e.player then
+			S.Locked[hero] = nil
+			ApplyLock(hero, false)
+			Refii.log("Souls Combat: lock-on OFF (cutscene)")
+		end
+	end
 end)

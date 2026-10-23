@@ -146,7 +146,7 @@ public class SoulsCombatLuaTests
                  {
                      "on", "setting", "log", "publish",
                      "player_value", "player_set", "player_add", "player_here", "player_hero", "player_of", "event_replica", "coop_mode",
-                     "lock_target", "release_lock", "locked_target", "living", "wheel_switches_target",
+                     "lock_target", "release_lock", "locked_target", "living", "wheel_switches_target", "in_cutscene",
                      "set_speed_multiplier", "clear_speed_multiplier", "speed_multiplier",
                      "current_action", "action_elapsed", "allow_action_interrupt",
                      "ability_level",
@@ -180,7 +180,7 @@ public class SoulsCombatLuaTests
                  {
                      "tick", "ability_request", "melee_swing", "roll_can_start", "roll_started", "block",
                      "spell_charge", "spell_charge_level", "spell_launch", "spell_launched",
-                     "hit_response", "entity_died", "anim_event", "game_action", "look_at_button",
+                     "hit_response", "entity_died", "anim_event", "game_action", "look_at_button", "cutscene",
                  })
         {
             AssertThat(subscribed.Contains(name)).OverrideFailureMessage("the port never subscribes " + name).IsTrue();
@@ -204,6 +204,7 @@ public class SoulsCombatLuaTests
                      ("anim_event", new[] { "name", "player", "entity" }),
                      ("game_action", new[] { "action", "hero" }),
                      ("look_at_button", new[] { "hero", "down" }),
+                     ("cutscene", new[] { "active", "player" }),
                  })
         {
             var known = new HashSet<string>(events[name].Fields.Select(f => f.Name), StringComparer.Ordinal);

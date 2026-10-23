@@ -1,5 +1,5 @@
 -- Spell Weaving — two spells from one release, Fable 3's gauntlets in Fable 2. Pure Lua on the
--- mod API (docs/mod_api.md): no native code, no raw guest read, no hook of its own.
+-- mod API (Godot/docs/modding/): no native code, no raw guest read, no hook of its own.
 --
 -- THE PAIR. Of the slot's spell and its partner, the higher in the hierarchy is the BASE and is
 -- the one spell launched: `spell_launch` carries the slot's type writable for that launch, and
