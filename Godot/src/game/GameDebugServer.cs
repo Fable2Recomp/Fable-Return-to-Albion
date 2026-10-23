@@ -3850,6 +3850,14 @@ public partial class GameDebugServer : Node
 
 		System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
 		Image image = window.GetTexture().GetImage();
+		if (!window.UseHdr2D || window.GetOutputMaxLinearValue() <= 1.001f)
+		{
+			if (image.GetFormat() is Image.Format.Rgbah or Image.Format.Rgbaf or Image.Format.Rgba8)
+			{
+				image.LinearToSrgb();
+			}
+		}
+
 		Error error = image.SavePng(path);
 		return new Dictionary<string, object?>
 		{

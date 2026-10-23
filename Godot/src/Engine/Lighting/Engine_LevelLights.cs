@@ -1316,6 +1316,18 @@ public static class Engine_LevelLights
 
 	public static float PlacedShadowNormalBias = 0.8f;
 
+	/// <summary>
+	/// Placed lights MUST use <see cref="Light3D.BakeMode.Dynamic"/>, never <see cref="Light3D.BakeMode.Static"/>.
+	/// In Godot 4's SDFGI, scrolling a cascade shifts surviving voxels' <c>process_voxels.data[i].light</c>
+	/// via <c>PRE_PROCESS_SCROLL</c> and then dispatches <c>DIRECT_LIGHT_MODE_STATIC</c> across ALL solid
+	/// voxels in the cascade whenever any static light intersects the newly exposed scroll slab, adding
+	/// static light energy into <c>process_voxels.data[i].light</c> repeatedly on every scroll and causing
+	/// walls to glow progressively brighter as the player moves back and forth. Dynamic mode keeps
+	/// <c>process_voxels</c> read-only and evaluates live light energy (including flicker and zone fades)
+	/// directly into <c>light_tex</c> without accumulation.
+	/// </summary>
+	public const Light3D.BakeMode PlacedLightBakeMode = Light3D.BakeMode.Dynamic;
+
 	private static void ApplyShadowTuning(Light3D node)
 	{
 		node.ShadowBlur = PlacedShadowBlur;
@@ -1414,9 +1426,10 @@ public static class Engine_LevelLights
 			includeStaticWorld: Refii.Models.Engine_ClassicMaterial.Active);
 		ApplyShadowTuning(node);
 
-		// A fixture never moves: the GI bakes it into a cascade when the cascade refreshes, where a
-		// dynamic light is re-injected on every GI update. See ConfigureGlobalIllumination.
-		node.LightBakeMode = Light3D.BakeMode.Static;
+		// Dynamic GI injection avoids Godot 4's SDFGI static-light scroll accumulation bug
+		// (where MODE_PROCESS_STATIC additively overwrites process_voxels[].light on every cascade
+		// scroll) and ensures flicker, time-of-day, and zone fades update GI live.
+		node.LightBakeMode = PlacedLightBakeMode;
 		node.Transform = at;
 
 		// Registered in the light table, so the shader measures the distance and takes the shadow

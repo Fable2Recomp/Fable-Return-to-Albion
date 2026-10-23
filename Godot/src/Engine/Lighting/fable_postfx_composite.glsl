@@ -41,10 +41,16 @@ layout(push_constant, std430) uniform Params {
 	vec4 depth;
 } push;
 
+const int S_PREV = 2;
+const int S_SM_BLACK = 3;
+const int S_SM_MID = 4;
+const int S_SM_WHITE = 5;
+const int S_SM_P99 = 6;
 const int S_APPLIED_FRAME = 16;
 const int S_CURVE_SCALE = 29;
 const int S_INV_WHITE_SQ = 30;
 const int S_LUT = 544;
+const int S_CDF = 1056;
 const int LUT_SIZE = 512;
 
 /// The title's tone map texture T(L)/L (`sub_8217E428`, 512 x 1, built into the state by the
@@ -91,23 +97,63 @@ float fable_reinhard(float x, float inv_white_sq) {
 	return ((x * inv_white_sq) + 1.0) * x / (x + 1.0);
 }
 
-const float REINHARD_KNEE = 0.5;
+const float SDR_KNEE_Y = 0.58;
+const float HDR_KNEE_Y = 0.80;
 
-/// The extended Reinhard curve for HDR output. Past the knee it becomes an exponential approach
-/// to the display headroom that meets the curve's value and slope at the knee, allowing outdoor
-/// highlights (sun, sky, water glints) to reach display peak without crushing shadows.
-float fable_reinhard_hdr(float x, float inv_white_sq, float headroom) {
-	if (x <= REINHARD_KNEE) {
-		return fable_reinhard(x, inv_white_sq);
+/// Unified C1 exponential highlight shoulder applied in curve output space (`curved > knee`)
+/// for both SDR (`headroom == 1.0`, `knee = 0.58`) and HDR (`headroom > 1.0`, `knee = 0.80`).
+/// Because it operates on the combined curve output (after blending Extended Reinhard with the
+/// CDF `pw`), its knee value and unit slope (`1.0`) are invariant to white-point adaptation and
+/// never invert or subtract an uncompressed curve.
+float fable_shoulder(float curved, float headroom) {
+	float knee = headroom > 1.001 ? HDR_KNEE_Y : SDR_KNEE_Y;
+	if (curved <= knee) {
+		return curved;
 	}
-	float at = fable_reinhard(REINHARD_KNEE, inv_white_sq);
-	float slope = (fable_reinhard(REINHARD_KNEE + 1e-3, inv_white_sq) - at) / 1e-3;
-	float room = max(headroom - at, 1e-4);
-	return at + room * (1.0 - exp(-(x - REINHARD_KNEE) * slope / room));
+	float room = max(headroom - knee, 1e-4);
+	return knee + room * (1.0 - exp(-(curved - knee) / room));
 }
 
-/// Gradually desaturates highlights above paper white (1.0) towards luminance as they approach
-/// peak display brightness, creating a natural incandescent 'filament effect' without hue shift.
+/// Evaluates `sub_8217E428`'s parabolic-band-clamped CDF power curve `pw = eq^2` directly from
+/// the smoothed cumulative histogram `state.v[S_CDF]` at exposed luminance `l_exp`. At `l_exp = 0`
+/// (`t = 0`), `dev = 0` and `eq = 0`, so `pw(0) = 0` cleanly without dark-bin quantisation.
+/// `p99` is floored by the effective white-point luminance (`white_lum`) so looking away from the
+/// sun toward a uniform diffuse ground does not collapse `p99_bins` and stretch ground midtones
+/// to paper white.
+float fable_cdf_pw(float l_exp) {
+	float norm = clamp(l_exp * params.misc.w, 0.0, 1.0);
+	float pos = norm * float(LUT_SIZE - 1);
+	int i0 = clamp(int(floor(pos)), 0, LUT_SIZE - 2);
+	float f = pos - float(i0);
+	float cdf = mix(state.v[S_CDF + i0], state.v[S_CDF + i0 + 1], f);
+	float knee_n = params.pct.w / max(state.v[S_SM_MID] - state.v[S_SM_BLACK], 1e-4);
+	float white_lum = max(state.v[S_SM_WHITE], 2.0 / max(knee_n, 1e-4));
+	float p99 = max(state.v[S_SM_P99], white_lum);
+	float p99_bins = max(float(LUT_SIZE) * params.misc.w * p99 * max(state.v[S_PREV], 1e-4), 256.0);
+	float dev_scale = (max(p99, 0.2) * params.contrast.z) / p99_bins;
+	float t = clamp(pos / p99_bins, 0.0, 1.0);
+	float dev = (1.0 - t) * t * dev_scale;
+	float eq = clamp(cdf, t - dev, t + dev);
+	return abs(params.contrast.y - 2.0) < 0.003 ? eq * eq : pow(max(eq, 0.0), params.contrast.y);
+}
+
+/// Applies a piecewise-sRGB-to-gamma-2.2 shadow toe on [0, 1] (where sRGB's linear 12.92x segment
+/// raised to 2.2 creates a smooth O(c^2.2) black-point toe that deepens shadow blacks without
+/// shifting mid-grey or paper white), while passing HDR radiance above paper white (1.0) linearly
+/// up to `headroom`.
+vec3 fable_gamma_toe_hdr(vec3 col, float gamma_ratio, float headroom) {
+	float g = gamma_ratio > 0.0 ? gamma_ratio : 1.0;
+	vec3 sdr = clamp(col, 0.0, 1.0);
+	vec3 srgb = mix(
+		sdr * 12.92,
+		1.055 * pow(max(sdr, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055,
+		step(vec3(0.0031308), sdr));
+	vec3 curved = pow(max(srgb, vec3(0.0)), vec3(2.2 * g));
+	return min(curved + max(col - 1.0, 0.0), vec3(headroom));
+}
+
+/// Gradually desaturates HDR highlights above paper white (1.0) towards luminance as they
+/// approach `headroom`, creating a natural incandescent 'filament effect' without hue shift.
 vec3 fable_highlight_desaturate(vec3 color, float lum, float headroom) {
 	if (headroom <= 1.001 || lum <= 1.0) {
 		return color;
@@ -117,8 +163,9 @@ vec3 fable_highlight_desaturate(vec3 color, float lum, float headroom) {
 	return mix(color, vec3(lum), desat);
 }
 
-/// Pulls a colour over the display ceiling towards its own luminance until the
-/// brightest channel fits, so saturation desaturates gracefully to white without rotating hue.
+/// Fits a colour over the display ceiling without hue rotation by blending ratio-preserving
+/// chromatic scaling (`color * (ceiling / peak)`) for mild/moderate SDR highlight overages with
+/// luminance-preserving desaturation (`mix(color, vec3(l), t)`) for intense emissive cores.
 vec3 fable_fit_ceiling(vec3 color, float ceiling) {
 	float peak = max(max(color.r, color.g), color.b);
 	if (peak <= ceiling) {
@@ -128,8 +175,12 @@ vec3 fable_fit_ceiling(vec3 color, float ceiling) {
 	if (peak <= l + 1e-5) {
 		return vec3(ceiling);
 	}
+	vec3 scaled = color * (ceiling / max(peak, 1e-6));
 	float t = clamp((peak - ceiling) / (peak - l), 0.0, 1.0);
-	return mix(color, vec3(l), t);
+	vec3 lum_fit = mix(color, vec3(l), t);
+	float excess = clamp((peak - ceiling) / max(ceiling * 1.5, 1e-6), 0.0, 1.0);
+	float desat = excess * excess * 0.5;
+	return mix(scaled, lum_fit, desat);
 }
 
 void main() {
@@ -139,21 +190,14 @@ void main() {
 	}
 
 	vec4 texel = imageLoad(color_image, coord);
-	// THE EXPOSURE IS A BRIGHTNESS AFTER THE CURVE, NOT A SCALE BEFORE IT.
-	//
-	// The curve entry is built as `curve(L*key/prevExposure)`, so feeding it an already-exposed
-	// luminance cancels that divide and rolls the shoulder off `exposure` times earlier in
-	// luminance — highlights clip, mids compress, and the frame reads flat and milky. Applying
-	// the scalar after the curve restores the headroom, which is what the pre-rewrite
-	// `fable_exposure_apply` did as `texel.rgb * gain * state.v[7]`.
-	// The classic look's scene was exposed by its materials (c20.w = E), as the title's was.
+	// In the modern pipeline, the scene colour buffer is unexposed physical radiance (`[0, inf)`),
+	// whereas the classic look's materials already multiplied `E` in (`c20.w = E`).
 	bool classic = params.reserved1.z > 0.5;
 	float applied = classic ? 1.0 : max(state.v[S_APPLIED_FRAME], 1e-4);
 	vec3 c = texel.rgb;
 	vec2 uv = (vec2(coord) + 0.5) / vec2(push.size);
-	// THE CEILING IS THE DISPLAY'S (params.reserved0.z): 1 in SDR, where everything below is
-	// exactly the SDR path; peak / reference white with HDR output, where what SDR clips at
-	// white is shown up to the display's peak instead.
+	// THE CEILING IS THE DISPLAY'S (params.reserved0.z): 1 in SDR, peak / reference white with HDR
+	// output, where highlights above paper white roll off up to the display's peak.
 	float headroom = max(params.reserved0.z, 1.0);
 	bool hdr = headroom > 1.001;
 
@@ -202,28 +246,44 @@ void main() {
 		imageStore(color_image, coord, vec4(clamp(col, 0.0, 1.0), texel.a));
 		return;
 	}
+	bool fable_style = params.reserved0.w > 0.5;
 	if (params.bits.x > 0.5) {
 		float l = dot(c, LUMINANCE_WEIGHTS);
-		float x = l * state.v[S_CURVE_SCALE];
+		float peak_c = max(max(c.r, c.g), c.b);
+		// Blend luminance with peak channel (35%) when evaluating the Fable tone curve so strongly
+		// colored lights (warm tavern firelight on skin, golden sunlight) compress according to their
+		// dominant channel energy instead of driving Red above 1.0 while luminance is still mid-range.
+		float l_tone = fable_style ? mix(l, peak_c, 0.35) : l;
+		// `S_CURVE_SCALE` in `fable_postfx_reduce.glsl` is `raw_gain * knee_n / prev_exp` because
+		// the 512-entry histogram/CDF table is indexed by EXPOSED luminance `l_exp = l * applied`.
+		// Evaluating `x = l_tone_exp * S_CURVE_SCALE` matches `sub_8217E428`'s bin coordinate `i * s_scalar[0]`,
+		// and blending `base_r` with `fable_cdf_pw(l_tone_exp)` BEFORE the highlight shoulder preserves
+		// Fable 2's CDF local contrast and midtone lift without ever subtracting an uncompressed curve.
+		float l_exp = l * applied;
+		float l_tone_exp = l_tone * applied;
+		float x = l_tone_exp * state.v[S_CURVE_SCALE];
 		float mapped;
-		if (hdr) {
-			mapped = params.reserved0.y > 0.5
-				? fable_filmic_hdr(x * 0.6, headroom)
-				: fable_reinhard_hdr(x, state.v[S_INV_WHITE_SQ], headroom);
+		if (params.reserved0.y > 0.5) {
+			mapped = hdr ? fable_filmic_hdr(x * 0.6, headroom) : fable_filmic(x * 0.6);
 		} else {
-			mapped = params.reserved0.y > 0.5
-				? fable_filmic(x * 0.6)
-				: fable_reinhard(x, state.v[S_INV_WHITE_SQ]);
+			float base_r = fable_reinhard(x, state.v[S_INV_WHITE_SQ]);
+			// Matches `0x8217e734`: CDF contrast weight tapers to 0 as `base_r` approaches 1.0.
+			float cdf_w = (fable_style && params.contrast.x > 0.0)
+				? params.contrast.x * clamp(1.0 - base_r, 0.0, 1.0)
+				: 0.0;
+			float curved = cdf_w > 0.0 ? mix(base_r, fable_cdf_pw(l_tone_exp), cdf_w) : base_r;
+			mapped = fable_shoulder(curved, headroom);
 		}
-		float gain = l > 1e-6 ? mapped / l : 1.0;
+		float gain = l_tone > 1e-6 ? mapped / l_tone : applied * state.v[S_CURVE_SCALE];
 		// AGAINST DISPLAY LUMINANCE, NOT SCENE LUMINANCE. ColourSensitivityThreshold is 0.15 —
 		// a display-space number, like the 0.1/0.3/0.6 bounds and a middle grey of 0.36 — and
 		// the shader keeps chroma in proportion to saturate(L/threshold). Measuring a
 		// scene-referred L against it strips most of the colour out of the whole frame, since
 		// a lit exterior meters around 0.02 before the exposure scalar is applied.
-		float s = clamp(l * applied * params.misc.x, 0.0, 1.0);
+		float s = clamp(l_exp * params.misc.x, 0.0, 1.0);
 		col = vec3(l) + s * (c - vec3(l));
-		col = clamp(gain * brightness * applied * col, 0.0, headroom);
+		col = fable_fit_ceiling(max(gain * brightness * col, vec3(0.0)), headroom);
+		col = clamp(col, 0.0, headroom);
 		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, headroom);
 		col = col + bloom * max(headroom - col, 0.0) / headroom;
 	} else {
@@ -242,7 +302,9 @@ void main() {
 	}
 	col = fable_fit_ceiling(col, headroom);
 	col = clamp(col, 0.0, headroom);
-	if (params.misc.y > 0.0) {
+	if (fable_style) {
+		col = fable_gamma_toe_hdr(col, params.misc.y, headroom);
+	} else if (params.misc.y > 0.0) {
 		if (hdr) {
 			vec3 sdr_part = clamp(col, 0.0, 1.0);
 			vec3 sdr_curved = pow(max(sdr_part, vec3(1e-6)), vec3(params.misc.y));

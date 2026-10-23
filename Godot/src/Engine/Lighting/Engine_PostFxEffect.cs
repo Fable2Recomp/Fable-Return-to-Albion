@@ -1109,7 +1109,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Set(p, 3, d.ContrastEnhancement, d.ContrastExponent, d.ContrastMaxDeviation, d.WhiteFactor);
         Set(p, 4,
             d.BloomThresholdAvg,
-            d.BloomFactor * Engine_PostFxParams.BloomGain,
+            d.BloomFactor,
             raysOn ? 6.0f * d.RadialFactor * Engine_PostFxParams.RayGain : 0.0f,
             d.TonemapEnabled ? 1.0f : 0.0f);
         TrySunScreenUv(sunDirection, camBasis, camProjection, out Vector2 sunUv);
@@ -1122,9 +1122,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
         // The classic look is the title's chain: its own operator (PSHADER_POSTPROCESSINGMATERIAL
         // _TONEMAP1) on a scene the materials already exposed, and none of the remaster's lift.
         bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+        bool fableStyle = !classic && Engine_PostFxParams.FableStyleTonemap;
         Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, classic ? 1.0f : Engine_PostFxParams.DarkLift);
         Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f,
-            Engine_PostFxParams.OutputHeadroom, 0.0f);
+            Engine_PostFxParams.OutputHeadroom, fableStyle ? 1.0f : 0.0f);
         Set(p, 14, (float)_frameIndex, _trapRatio, classic ? 1.0f : 0.0f, _maskWanted ? 1.0f : 0.0f);
         Set(p, 8, d.Saturation, d.Brightness + 1.0f, d.SaturationMasked, d.BrightnessMasked);
 
@@ -1143,9 +1144,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Projection inverse = camProjection.Inverse();
         Set(p, 11, inverse.Z.Z, inverse.W.Z, inverse.Z.W, inverse.W.W);
         // c31.x for the title's operator is 2 x TONE_MAPPING_BLOOM_FACTOR (`Render_LitMaterialSubmit_INFERRED`
-        // 0x821E5FC0: lfs P+0x4C; fmuls by 2.0); the modern composite keeps its own gain.
+        // 0x821E5FC0: lfs P+0x4C; fmuls by 2.0) to undo the 0.5 = 1/g_BloomRescaleFactor in brightcut;
+        // the modern composite applies the same 2x rescale scaled by BloomGain (`bloom_scale`).
+        float bloomScale = classic
+            ? 2.0f * d.BloomFactor
+            : 2.0f * d.BloomFactor * Engine_PostFxParams.BloomGain;
         Set(p, 12,
-            classic ? 2.0f * d.BloomFactor : d.BloomFactor * Engine_PostFxParams.BloomGain,
+            bloomScale,
             d.RadialFactor,
             Engine_PostFxParams.MaterialExposureFollowsApplied ? 1.0f : 0.0f,
             Engine_PostFxParams.BloomThresholdScale);

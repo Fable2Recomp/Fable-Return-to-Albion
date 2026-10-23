@@ -7,7 +7,9 @@
 // volumetric fog, which integrates and lights it.
 shader_type fog;
 
-uniform vec3 albedo : source_color = vec3(1.0);
+uniform vec3 albedo = vec3(1.0);
+// Self-emission floor so shadowed/night mist keeps a faint atmospheric glow like classic MIST1.
+uniform float emission_energy = 0.25;
 // The guest's density times its strength factor ((strength - 1) * weight + 1).
 uniform float extinction = 0.0;
 // World (guest x, y) to density uv: scale.xy, offset.zw (V+352).
@@ -43,4 +45,5 @@ void fog() {
 	texel = flatten + (1.0 - flatten) * clamp(texel, 0.0, 1.0);
 	DENSITY = extinction * texel;
 	ALBEDO = albedo;
+	EMISSION = albedo * emission_energy;
 }

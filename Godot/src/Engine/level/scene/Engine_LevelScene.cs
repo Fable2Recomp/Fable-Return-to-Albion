@@ -2184,7 +2184,13 @@ public static class Engine_LevelScene
 
                 var material = new FogMaterial();
                 material.Density = vol.Density;
-                material.Albedo = new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]);
+                var linearCol = new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]);
+                material.Albedo = linearCol.LinearToSrgb();
+                material.Emission = (linearCol * 0.25f).LinearToSrgb();
+                if (vol.Falloff > 0f)
+                {
+                    material.HeightFalloff = vol.Falloff;
+                }
 
                 var fog = new FogVolume
                 {

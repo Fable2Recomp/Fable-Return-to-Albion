@@ -429,12 +429,17 @@ public static class RuntimeCVarsGodot
                 "2048|2048 (Default),4096|4096 (High),8192|8192 (Ultra)"),
             new("lighting_model", LightingCategory, RuntimeCVarType.String, "modern",
                 "How the world is lit. 'modern' is the remaster: Godot's lighting, with the "
-                + "ambient derived live from the sky dome so every surface breathes with the "
-                + "visible sky. 'classic' is the original: the game's own shaders, translated "
-                + "and drawn with the constants the game states each frame — built by Compile "
-                + "Shaders on the Reinstall tab, or ticked during install — and, where a shader "
-                + "has not been built, the authored day-set ambient exactly as the 360 read it.",
+                + "ambient derived live from the sky dome blended with the region's authored "
+                + "palette so every surface breathes with the visible sky. 'classic' is the "
+                + "original: the game's own shaders, translated and drawn with the constants the "
+                + "game states each frame — built by Compile Shaders on the Reinstall tab, or "
+                + "ticked during install — and, where a shader has not been built, the authored "
+                + "day-set ambient exactly as the 360 read it.",
                 "modern|Modern,classic|Classic"),
+            new("bloom_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on bloom, sun god-ray, and halo glow intensity in the modern "
+                + "compositor. 1.0 matches the original Fable 2 rescale factor; 0.0 disables "
+                + "bloom intensity; higher values increase the dreamy glow."),
             new("ambient_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "The one fill dial. In the modern model it scales both halves of the fill: the flat "
                 + "floor every surface keeps in shadow, and the sky light Godot's global illumination "
@@ -449,22 +454,22 @@ public static class RuntimeCVarsGodot
                 "How far the interior ambient lift is pulled toward neutral. The cave themes "
                 + "state a saturated orange ambient; lifted as-is it paints every surface "
                 + "orange. 0 keeps the theme's colour, 1 lifts with white."),
-            new("modern_tone_curve", LightingCategory, RuntimeCVarType.String, "filmic",
-                "The tone curve in the modern model. 'filmic' is a curve with a toe and a "
-                + "shoulder, applied where there is no sky (caves, rooms) so the interior lift "
-                + "keeps its blacks; 'all' applies it outdoors too; 'fable' is the original's "
-                + "curve everywhere. The original's exposure, key and floors are kept either way."),
+            new("modern_tone_curve", LightingCategory, RuntimeCVarType.String, "fable",
+                "The tone curve in the modern model. 'fable' (the default) uses the original's "
+                + "Extended Reinhard + smoothed CDF local contrast + HDR/SDR highlight shoulder "
+                + "+ shadow toe everywhere; 'filmic' applies an ACES curve where there is no sky "
+                + "(caves, rooms); 'all' applies the ACES curve outdoors too. The original's "
+                + "exposure, key and floors are kept either way."),
             new("modern_depth_of_field", LightingCategory, RuntimeCVarType.Bool, "false",
                 "Whether the modern model applies the original's depth of field. The "
                 + "themes blur everything past their far plane, twenty metres in a cave, "
                 + "which reads as a soft picture on a modern display. The fable model "
                 + "always applies it."),
-            new("interior_dark_lift", LightingCategory, RuntimeCVarType.Double, "16.0",
+            new("interior_dark_lift", LightingCategory, RuntimeCVarType.Double, "1.5",
                 "The cap on the exposure gain in levels with no sky: the frame is lifted by "
-                + "the tone floor (0.15) over its raw mean, up to this value. 16 is the "
-                + "original's own exposure clamp, and the gain lifts the whole frame so the "
-                + "authored balance between ambient, bake and torches is kept. Outdoors uses "
-                + "modern_dark_lift. Modern model only."),
+                + "the tone floor (0.15) over its raw mean, up to this value. 1.5 compensates "
+                + "for the unoccluded floor share in enclosed caves so their brightness matches "
+                + "the classic model. Outdoors uses modern_dark_lift. Modern model only."),
             new("interior_fog_scale", LightingCategory, RuntimeCVarType.Double, "0.2",
                 "How much of the authored fog a level with no sky keeps. The cave records "
                 + "state a fog that walls off everything past ten metres; the 360 reference "

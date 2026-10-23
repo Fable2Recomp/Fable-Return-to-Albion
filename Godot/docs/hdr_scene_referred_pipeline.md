@@ -23,8 +23,18 @@ Refii follows a modern **physically-based, scene-referred rendering model**:
 
 ### 1.2. Centralized Presentation Tonemapper
 The presentation composite shader ([`fable_postfx_composite.glsl`](file:///f:/Documents/programming/refii/Godot/src/Engine/Lighting/fable_postfx_composite.glsl)) is the **sole authority** that compresses unbounded scene radiance to fit the physical capabilities of the display:
-- **SDR Mode** (`headroom = 1.0`): Compresses $[0, \infty)$ into standard dynamic range $[0, 1.0]$.
-- **HDR Mode** (`headroom > 1.0`): Preserves linear fidelity in shadows and midtones while rolling off specular highlights, sun glints, and magic emissions into available display headroom via a $C^1$-continuous shoulder curve, path-to-white highlight desaturation, and ceiling fitting.
+- **Fable 2 Histogram CDF (`fable_cdf_pw`, `sub_8217E428`)**:
+  - In [`fable_postfx_reduce.glsl`](file:///f:/Documents/programming/refii/Godot/src/Engine/Lighting/fable_postfx_reduce.glsl), the histogram percentiles (`S_SM_BLACK`, `S_SM_MID`, `S_SM_WHITE`, `S_SM_P99`) and the 256-bin CDF (`S_CDF`) adapt in lockstep with `S_EXPOSURE` (`max(params.bounds.x, EXPOSURE_BLEND)` = `0.05` in modern mode) so the histogram never drifts after exposure has settled.
+  - In [`fable_postfx_composite.glsl`](file:///f:/Documents/programming/refii/Godot/src/Engine/Lighting/fable_postfx_composite.glsl), `fable_cdf_pw(l_exp)` evaluates Fable 2's parabolic band-clamped histogram CDF (`eq = clamp(cdf, t - dev, t + dev)`, `pw = eq^2`) directly from `state.v[S_CDF]` at pre-exposed luminance $l_{\text{exp}} = l \cdot E$.
+  - `base_r = fable_reinhard(x, inv_white_sq)` (where $x = l_{\text{exp}} \cdot \text{S\_CURVE\_SCALE}$) is blended with `pw` via `cdf_w = params.contrast.x * (1.0 - smoothstep(0.85, 1.25, base_r))` **before** any HDR shoulder compression (`curved = mix(base_r, pw, cdf_w)`). This preserves Fable 2's dark-interior midtone lift and S-curve contrast in caves and the Guild Hall while tapering smoothly into the analytical Reinhard highlight shoulder.
+- **Output-Space HDR Shoulder (`fable_hdr_shoulder`) & SDR Highlight Ceiling Fit (`fable_fit_ceiling`)**:
+  - In HDR (`headroom > 1.0`), `fable_hdr_shoulder(curved, headroom)` applies a $C^1$ exponential roll-off on output values above `HDR_KNEE_Y = 0.80` toward `headroom`, leaving shadows and midtones ($\le 0.80$) bit-identical while compressing specular glints, sun/sky, torches, and spells smoothly into $[0.80, \text{headroom}]$.
+  - Before clamping to `headroom`, `fable_fit_ceiling(max(gain * brightness * col, vec3(0.0)), headroom)` desaturates any pixel whose peak channel exceeds `headroom` along a constant-luminance line toward `vec3(l)`. In SDR (`headroom = 1.0`), bright sky, water reflections, and sun-ward fog (`curved >= 1.0`) map cleanly to pure `(1, 1, 1)` white, while sub-white warm highlights (`curved < 1.0`, `R > 1.0`) desaturate gracefully without per-channel hue shifts.
+- **Shadow Black-Point Toe (`fable_gamma_toe_hdr`)**:
+  - Applies a piecewise-sRGB-to-$\gamma=2.2$ toe on $[0, 1]$ ($O(c^{2.2})$ near black to give Fable 2's rich, grounded shadow blacks without shifting mid-grey or Paper White), while passing HDR highlights $(1.0, \text{headroom}]$ linearly 1:1 up to `headroom`.
+- **Bloom Rescale (`bloom_scale`), Saturation Ordering, & Highlight Desaturation**:
+  - Bright-cut extraction ([`fable_postfx_brightcut.glsl`](file:///f:/Documents/programming/refii/Godot/src/Engine/Lighting/fable_postfx_brightcut.glsl)) computes `cut = max(l * inv_exposure - threshold, 0.0)` in unexposed space, soft-compresses extreme spikes above $4.0\times$ with a $C^1$ exponential shoulder, and multiplies the unit chromaticity vector `c / max(l, 1e-5)` by `cut` (`bright = c * (cut / max(l, 1e-5))`, matching Xbox 360 blob `0163`) before writing `o * 0.5` (`1 / g_BloomRescaleFactor`).
+  - The composite restores the guest's `2.0x` rescale multiplied by `bloom_scale` (`Engine_PostFxParams.BloomGain`, default `1.0`, hot-reloadable via `Engine_RefiiConfig.PollReload()`), blends bloom via `col + bloom * max(headroom - col, 0.0) / headroom`, applies theme saturation **after** bloom so bloom halos pick up Fable's warm chroma boost, and runs `fable_highlight_desaturate` (in HDR) followed by `fable_fit_ceiling`.
 
 ---
 
@@ -138,6 +148,10 @@ When authoring or editing intermediate compute passes (e.g. `fable_postfx_addlay
    ```
 2. **No Early Tonemapping**: Never apply Reinhard, Filmic, or display curves inside intermediate passes. Allow bloom extractors, halos, and flares to accumulate true high dynamic range values.
 3. **No Early Gamma/sRGB Encoding**: Keep intermediate buffers strictly linear. Display transfer curves belong only in the final composite presentation pass.
+
+### Rule 5: Volumetric Mist & Fog Shaders (`modern_mist.gdshader`)
+1. **Linear Albedo Uniforms**: Guest mist colors (`Engine_ClassicMist.Volume.Colour`) are already in linear space. Declare `uniform vec3 albedo = vec3(1.0);` **without** `: source_color` so Godot does not apply an extra sRGB-to-linear ($\gamma = 2.2$) crush.
+2. **Self-Emission Floor**: Set `EMISSION = albedo * emission_energy;` (default `0.25`) alongside `ALBEDO = albedo;` so mist volumes in shadowed valleys or night scenes retain Fable 2's signature self-luminous atmospheric glow while still taking volumetric in-scatter from nearby directional and point lights.
 
 ---
 

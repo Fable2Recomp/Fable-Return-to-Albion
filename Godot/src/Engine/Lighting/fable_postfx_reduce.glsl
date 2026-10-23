@@ -89,7 +89,8 @@ void main() {
 	uint tid = gl_LocalInvocationID.x;
 
 	if (tid == 0u) {
-		float speed = clamp(params.bounds.x, 0.0, 1.0);
+		bool classic = params.reserved1.z > 0.5;
+		float speed = clamp(classic ? params.bounds.x : max(params.bounds.x, EXPOSURE_BLEND), 0.0, 1.0);
 		float fade = (params.frame.y > 0.5 || state.v[S_HAS_HISTORY] < 0.5)
 			? 1.0
 			: 1.0 - pow(1.0 - speed, max(params.frame.x, 0.0) * 30.0);
@@ -147,7 +148,7 @@ void main() {
 			state.v[S_SM_BLACK] += (black - state.v[S_SM_BLACK]) * fade;
 			state.v[S_SM_MID] += (mid - state.v[S_SM_MID]) * fade;
 			state.v[S_SM_WHITE] += (white - state.v[S_SM_WHITE]) * fade;
-			state.v[S_SM_P99] += (max_pct * gain - state.v[S_SM_P99]) * fade;
+			state.v[S_SM_P99] += (max_pct - state.v[S_SM_P99]) * fade;
 			state.v[S_RAW_GAIN] = gain;
 			state.v[S_RAW_BLACK] = min_pct;
 			state.v[S_RAW_MEAN] = mean;
@@ -201,12 +202,21 @@ void main() {
 		// the 512-entry table: the table spans [0, 4] and a scene-referred frame lives in its
 		// first handful of bins, where entry 0 is a hard zero and the quantisation posterises
 		// every dark surface.
+		// In `sub_8217E428`, the Extended Reinhard input `x` is normalized by `knee_n = MiddleGray / (SmMid - SmBlack)`.
+		// For `x * (1 + x / W_x^2) / (1 + x)` to reach 1.0 at the white point `l = wb` (where `x = wb * knee_n`),
+		// the white point in curve space must be `W_x = max(wb * knee_n, 2.0)` so `1 / W_x^2 <= 0.25` is never super-linear.
+		float white_x = max(wb * knee_n, 2.0);
+		float inv_white_sq = 1.0 / (white_x * white_x);
 		state.v[S_CURVE_SCALE] = raw_gain * knee_n / prev_exp;
-		state.v[S_INV_WHITE_SQ] = 1.0 / (wb * wb);
+		state.v[S_INV_WHITE_SQ] = inv_white_sq;
 		s_scalar[0] = bin_to_lum * knee_n;
-		s_scalar[1] = max(state.v[S_SM_P99], 0.2) * params.contrast.z;
-		s_scalar[2] = max((float(CURVE_SIZE) / RANGE) * state.v[S_SM_P99] * prev_exp, 256.0);
-		s_scalar[3] = 1.0 / (wb * wb);
+		float white_lum = max(state.v[S_SM_WHITE], 2.0 / max(knee_n, 1e-4));
+		float eff_p99 = max(state.v[S_SM_P99], white_lum);
+		// `sub_8217E428`: `maxDeviation` is stated in histogram bin units (e.g. 32 of 512 bins),
+		// so dividing by `s_scalar[2]` (`p99_bins`) converts the parabolic band half-width into `[0, 1]` CDF space.
+		s_scalar[2] = max((float(CURVE_SIZE) / RANGE) * eff_p99 * prev_exp, 256.0);
+		s_scalar[1] = (max(eff_p99, 0.2) * params.contrast.z) / s_scalar[2];
+		s_scalar[3] = inv_white_sq;
 		s_scalar[4] = state.v[S_CURVE_VALID] > 0.5 ? fade : 1.0;
 		s_scalar[5] = state.v[S_CURVE_VALID];
 		s_scalar[6] = params.frame.z > 0.5 ? 1.0 : 0.0;

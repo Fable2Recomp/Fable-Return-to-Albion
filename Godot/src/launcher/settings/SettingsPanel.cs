@@ -115,22 +115,30 @@ public partial class SettingsPanel : VBoxContainer
 		Label lookLabel = MakeLabel("Look");
 		lookLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
 		lookLabel.TooltipText =
-			"Modern is the remaster: Godot's lighting and the modernized materials. Classic is the " +
-			"original: the game's own lighting and shaders (built on the Install tab) over its " +
-			"shipped textures.";
+			"Modern (Fable) is the remaster with Fable 2's stylized tonemapper and CDF local contrast. " +
+			"Modern (Filmic) uses the ACES filmic curve with modern lighting and materials. " +
+			"Classic is the original: the game's own lighting and shaders over its shipped textures.";
 		lookRow.AddChild(lookLabel);
 		_lookOption = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		Apply(_lookOption);
-		_lookOption.AddItem("Modern (remaster)", 0);
-		_lookOption.AddItem("Classic (original)", 1);
-		_lookOption.AddItem("Custom", 2);
+		_lookOption.AddItem("Modern (Fable)", 0);
+		_lookOption.AddItem("Modern (Filmic)", 1);
+		_lookOption.AddItem("Classic (original)", 2);
+		_lookOption.AddItem("Custom", 3);
 		_lookOption.ItemSelected += index =>
 		{
-			if (index == 2)
+			string? chosen = index switch
+			{
+				0 => "modern_fable",
+				1 => "modern_filmic",
+				2 => "classic",
+				_ => null,
+			};
+			if (chosen is null)
 			{
 				return;
 			}
-			_model.ApplyLook(index == 1 ? "classic" : "modern");
+			_model.ApplyLook(chosen);
 			Rebuild();
 		};
 		lookRow.AddChild(_lookOption);
@@ -245,7 +253,7 @@ public partial class SettingsPanel : VBoxContainer
 		}
 	}
 
-	/// <summary>The Look dropdown follows the two switches; "Custom" shows only while they disagree.</summary>
+	/// <summary>The Look dropdown follows the switches; "Custom" shows only while they disagree.</summary>
 	private void RefreshLook()
 	{
 		if (_lookOption is null)
@@ -253,8 +261,14 @@ public partial class SettingsPanel : VBoxContainer
 			return;
 		}
 		string look = _model.CurrentLook();
-		int index = look == "modern" ? 0 : look == "classic" ? 1 : 2;
-		_lookOption.SetItemDisabled(2, look != "custom");
+		int index = look switch
+		{
+			"modern_fable" or "modern" => 0,
+			"modern_filmic" => 1,
+			"classic" => 2,
+			_ => 3,
+		};
+		_lookOption.SetItemDisabled(3, look != "custom");
 		_lookOption.Selected = index;
 	}
 
@@ -351,11 +365,12 @@ public partial class SettingsPanel : VBoxContainer
 
 			case RuntimeCVarType.Double:
 			{
+				bool isBloomScale = definition.Name == "bloom_scale";
 				var spin = new SpinBox
 				{
-					MinValue = double.MinValue,
-					MaxValue = double.MaxValue,
-					Step = 0.1,
+					MinValue = isBloomScale ? 0.0 : double.MinValue,
+					MaxValue = isBloomScale ? 4.0 : double.MaxValue,
+					Step = isBloomScale ? 0.05 : 0.1,
 					Value = RuntimeSettingsModel.ParseDouble(current, definition.DefaultValue),
 				};
 				Apply(spin);
@@ -512,19 +527,7 @@ public partial class SettingsPanel : VBoxContainer
 			var dialog = new LightingSettingsDialog(_model, _style, _font, _fontSize, () =>
 			{
 				_statusLabel.Text = _model.StatusMessage;
-				string updatedPreset = _model.CurrentLightingPreset();
-				for (int i = 0; i < options.Count; i++)
-				{
-					if (options[i].Value == updatedPreset)
-					{
-						optionBtn.Selected = i;
-						break;
-					}
-				}
-				if (customIndex >= 0)
-				{
-					optionBtn.SetItemDisabled(customIndex, updatedPreset != "custom");
-				}
+				Rebuild();
 			});
 			Node top = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
 			top.AddChild(dialog);

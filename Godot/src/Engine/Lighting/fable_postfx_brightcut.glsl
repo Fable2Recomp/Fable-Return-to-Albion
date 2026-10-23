@@ -55,6 +55,9 @@ void main() {
 	// exposure scalar, and threshold is min(white*f, mid*f) mirrored to post+208.
 	float inv_exposure = 1.0 / max(state.v[S_EXPOSURE_FRAME], 1e-4);
 	float cut = max(l * inv_exposure - state.v[S_THRESHOLD], 0.0);
+	// Soft-compress extreme scene-referred HDR spikes (> 4x exposed white) with a C1 shoulder so a
+	// single specular glint does not dominate the 1/16th-res blur kernel, while keeping [0, 4] linear.
+	cut = cut <= 4.0 ? cut : 4.0 + 4.0 * (1.0 - exp(-(cut - 4.0) * 0.25));
 	vec3 bright = c * (cut / max(l, 1e-5));
 	vec3 rays = imageLoad(rays_image, coord).rgb;
 	vec3 occl = imageLoad(occl_image, coord).rgb;

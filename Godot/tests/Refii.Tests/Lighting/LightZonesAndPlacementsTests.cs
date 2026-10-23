@@ -489,10 +489,22 @@ public class LightZonesAndPlacementsTests
         Engine_RefiiConfig.TrySetGodotCvar("unattached_light_scale", "0.35");
 
         // 3. fable_ambient_scale per-instance decoupling check
+        Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "fable");
         AssertThat(Mathf.IsEqualApprox(Engine_LevelBakedLighting.BuildingInteriorAmbientScale, 0.25f, 0.001f)).IsTrue();
+        Engine_RefiiConfig.TrySetGodotCvar("building_interior_ambient_scale", "0.5");
         bool outdoorIsIndoor = (1u & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
         AssertThat(outdoorIsIndoor).IsFalse();
         bool indoorIsIndoor = (Engine_LightZones.IndoorMask & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
         AssertThat(indoorIsIndoor).IsTrue();
+    }
+
+    [TestCase]
+    public void TestPlacedLightBakeMode_IsDynamicToPreventSdfgiScrollAccumulation()
+    {
+        // Placed level lights must use Light3D.BakeMode.Dynamic (not Static) so Godot 4's SDFGI
+        // does not additively re-accumulate static light energy into process_voxels[].light
+        // every time a cascade scrolls as the player moves back and forth.
+        AssertThat(Engine_LevelLights.PlacedLightBakeMode).IsEqual(Light3D.BakeMode.Dynamic);
+        AssertThat(Engine_LevelLights.PlacedLightBakeMode).IsNotEqual(Light3D.BakeMode.Static);
     }
 }

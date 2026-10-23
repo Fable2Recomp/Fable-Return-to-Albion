@@ -41,7 +41,25 @@ public static class Engine_PostFxParams
 
     public static bool Dof { get; set; } = true;
 
+    private static int _checkedGen = -1;
     private static bool? _modernDof;
+    private static string? _toneCurve;
+    private static float? _darkLift;
+    private static float? _bloomGain;
+
+    private static void CheckGeneration()
+    {
+        Refii.Core.Engine_RefiiConfig.PollReload();
+        int gen = Refii.Core.Engine_Switches.Generation;
+        if (gen != _checkedGen)
+        {
+            _checkedGen = gen;
+            _modernDof = null;
+            _toneCurve = null;
+            _darkLift = null;
+            _bloomGain = null;
+        }
+    }
 
     /// <summary>The depth of field as the frame may apply it: the fable model's always, the
     /// modern model's only when `modern_depth_of_field` asks for it.</summary>
@@ -54,19 +72,17 @@ public static class Engine_PostFxParams
                 return Dof;
             }
 
+            CheckGeneration();
             _modernDof ??= ReadBool("modern_depth_of_field", false);
             return _modernDof.Value;
         }
     }
 
-    private static string? _toneCurve;
-
     /// <summary>
     /// Whether the modern model's filmic curve replaces the original's Reinhard for THIS frame.
-    /// `modern_tone_curve`: "filmic" applies it where there is no sky — caves and rooms, where
-    /// the interior gain lifts the scene and the toe gives the lift its blacks back; "all" applies
-    /// it outdoors too, which crushes a dusk exterior where nothing lifts the low range; "fable"
-    /// never applies it.
+    /// `modern_tone_curve`: "fable" (the default) uses the Extended Reinhard + smoothed CDF local
+    /// contrast + HDR/SDR shoulder + shadow toe curve everywhere; "filmic" applies the ACES curve
+    /// where there is no sky (caves and rooms); "all" applies the ACES curve outdoors too.
     /// </summary>
     public static bool FilmicCurve
     {
@@ -77,15 +93,41 @@ public static class Engine_PostFxParams
                 return false;
             }
 
-            _toneCurve ??= ReadString("modern_tone_curve", "filmic").ToLowerInvariant();
+            CheckGeneration();
+            _toneCurve ??= ReadString("modern_tone_curve", "fable").ToLowerInvariant();
             return _toneCurve switch
             {
                 "all" => true,
-                "fable" => false,
-                _ => Engine_LightingFrame.CurrentInterior,
+                "filmic" => Engine_LightZones.IsViewerIndoors,
+                _ => false,
             };
         }
     }
+
+    /// <summary>
+    /// True when the modern scene-referred pipeline uses the Filmic (ACES) tone curve inside
+    /// town buildings ("filmic" or "all").
+    /// </summary>
+    public static bool FilmicBuildingInterior
+    {
+        get
+        {
+            if (!Engine_LightingFrame.ModernModel)
+            {
+                return false;
+            }
+
+            CheckGeneration();
+            _toneCurve ??= ReadString("modern_tone_curve", "fable").ToLowerInvariant();
+            return _toneCurve is "all" or "filmic";
+        }
+    }
+
+    /// <summary>
+    /// True when the modern scene-referred pipeline uses the Fable tonemapper
+    /// (Extended Reinhard + smoothed CDF local contrast + HDR/SDR shoulder + shadow black toe).
+    /// </summary>
+    public static bool FableStyleTonemap => Engine_LightingFrame.ModernModel && !FilmicCurve;
 
     private static bool ReadBool(string name, bool fallback)
     {
@@ -129,7 +171,37 @@ public static class Engine_PostFxParams
 
     public static float RayGain { get; set; } = 1.0f;
 
-    public static float BloomGain { get; set; } = 1.0f;
+    /// <summary>
+    /// Multiplier on bloom intensity in the modern composite (`bloom_scale` in config, default 1.0).
+    /// </summary>
+    public static float BloomGain
+    {
+        get
+        {
+            CheckGeneration();
+            if (_bloomGain is null)
+            {
+                float value = 1.0f;
+                try
+                {
+                    value = Refii.Core.Engine_RefiiConfig.Float(
+                        Refii.Core.Engine_RefiiConfig.Read(out _), "bloom_scale", 1.0f);
+                }
+                catch (System.Exception)
+                {
+                }
+
+                _bloomGain = System.Math.Clamp(value, 0.0f, 4.0f);
+            }
+
+            return _bloomGain.Value;
+        }
+        set
+        {
+            CheckGeneration();
+            _bloomGain = System.Math.Clamp(value, 0.0f, 4.0f);
+        }
+    }
 
     /// <summary>
     /// Where bloom cuts in, as a multiple of white in EXPOSED space. 1.0 is white — what the
@@ -140,11 +212,24 @@ public static class Engine_PostFxParams
 
     public static bool MaterialExposureFollowsApplied { get; set; } = true;
 
-    private static float? _darkLift;
-
     /// <summary>How many times darker than its floor a frame's mean must be before the lift
     /// begins; the lift then grows until it reaches <see cref="DarkLift"/>.</summary>
     public const float DarkLiftOnset = 10.0f;
+
+    /// <summary>
+    /// Built-in interior dark-lift multiplier when the Filmic (ACES) tone curve is active in
+    /// sky-less interiors (`2.5 / 1.5 = 1.6667x`). Fable tonemapping includes the cumulative
+    /// histogram (`fable_cdf_pw`) midtone lift so `interior_dark_lift = 1.5` suffices, whereas
+    /// Filmic evaluates ACES directly without the CDF lift and needs ~2.5x in interiors.
+    /// </summary>
+    public const float FilmicInteriorLiftScale = 2.5f / 1.5f;
+
+    /// <summary>
+    /// Built-in town building interior ambient multiplier when the Filmic (ACES) tone curve is
+    /// active (`2.5 / 0.5 = 5.0x`), scaling the default `building_interior_ambient_scale = 0.5`
+    /// up to `2.5` inside enclosed town buildings in outdoor levels.
+    /// </summary>
+    public const float FilmicBuildingInteriorAmbientScale = 2.5f / 0.5f;
 
     /// <summary>
     /// THE REMASTER'S ONE EXPOSURE LEVER. The guest's tone curve normalises a frame by its
@@ -168,9 +253,16 @@ public static class Engine_PostFxParams
             // No sky: the interior lift, live. Outdoors keeps the launcher's modern_dark_lift.
             if (Engine_LightingFrame.CurrentInterior)
             {
-                return Engine_LightingFrame.InteriorDarkLift;
+                float lift = Engine_LightingFrame.InteriorDarkLift;
+                if (FilmicCurve)
+                {
+                    lift = System.Math.Clamp(lift * FilmicInteriorLiftScale, 1.0f, 16.0f);
+                }
+
+                return lift;
             }
 
+            CheckGeneration();
             if (_darkLift is null)
             {
                 float value = 1.0f;
@@ -183,7 +275,7 @@ public static class Engine_PostFxParams
                 {
                 }
 
-                if (float.TryParse(OS.GetEnvironment("REFII_DARK_LIFT"),
+                if (float.TryParse(System.Environment.GetEnvironmentVariable("REFII_DARK_LIFT") ?? string.Empty,
                         System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out float forced))
                 {
@@ -206,16 +298,9 @@ public static class Engine_PostFxParams
     public static float DarkLiftOnsetNow =>
         Engine_LightingFrame.CurrentInterior ? 1.0f : DarkLiftOnset;
 
-    /// <summary>
-    /// How much brighter a frame of this mean is treated as having been lit: up to
-    /// <see cref="DarkLift"/>, and only until its mean reaches floor / onset.
-    /// </summary>
-    public static float RawGain(float mean, float floor) =>
-        System.Math.Clamp((floor / DarkLiftOnsetNow) / System.Math.Max(mean, 1e-6f), 1.0f, DarkLift);
-
     public const string ModeEnvironment = "REFII_POSTFX";
 
-    public static string Mode => OS.GetEnvironment(ModeEnvironment).ToLowerInvariant();
+    public static string Mode => (System.Environment.GetEnvironmentVariable(ModeEnvironment) ?? string.Empty).ToLowerInvariant();
 
     public static bool ChainRequested => Mode != "off";
 

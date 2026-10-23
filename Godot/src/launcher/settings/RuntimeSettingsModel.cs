@@ -39,7 +39,7 @@ public sealed class RuntimeSettingsModel
     public static bool IsAdvanced(RuntimeCVarDefinition definition)
     {
         if (definition.Name is "lighting_model" or "materials_modernized" or "texture_upscaling_enabled"
-            or "lighting_preset" or "hdr_output")
+            or "lighting_preset" or "hdr_output" or "bloom_scale")
         {
             return false;
         }
@@ -69,7 +69,9 @@ public sealed class RuntimeSettingsModel
             && definition.Category != "RexNet";
     }
 
-    /// <summary>The look the four switches add up to: "modern", "classic", or "custom" when mixed.</summary>
+    /// <summary>
+    /// The look the switches add up to: "modern_fable", "modern_filmic", "classic", or "custom" when mixed.
+    /// </summary>
     public string CurrentLook()
     {
         string lighting = Values.TryGetValue("lighting_model", out string? model) ? model.Trim().Trim('"') : "modern";
@@ -79,7 +81,15 @@ public sealed class RuntimeSettingsModel
             || RuntimeConfig.NormalizeBoolValue(materials) == "true";
         if (!classicLighting && modernized)
         {
-            return "modern";
+            string curve = Values.TryGetValue("modern_tone_curve", out string? tc)
+                ? tc.Trim().Trim('"').ToLowerInvariant()
+                : "fable";
+            return curve switch
+            {
+                "" or "fable" => "modern_fable",
+                "filmic" or "all" => "modern_filmic",
+                _ => "custom",
+            };
         }
         if (classicLighting && !modernized)
         {
@@ -89,15 +99,18 @@ public sealed class RuntimeSettingsModel
     }
 
     /// <summary>
-    /// Sets the look as one decision: the lighting model and the materials switch together,
-    /// since "the original game" means both and the dials under them follow the materials
-    /// switch by default.
+    /// Sets the look as one decision: the lighting model, materials switch, and modern tone curve
+    /// together, since "the original game" or a modern tonemapper choice is a single top-level preset.
     /// </summary>
     public void ApplyLook(string look)
     {
         bool classic = look == "classic";
         Values["lighting_model"] = classic ? "classic" : "modern";
         Values["materials_modernized"] = classic ? "false" : "true";
+        if (!classic)
+        {
+            Values["modern_tone_curve"] = look == "modern_filmic" ? "all" : "fable";
+        }
         Save();
     }
 
@@ -226,7 +239,7 @@ public sealed class RuntimeSettingsModel
             // All advanced lighting settings live in the LightingSettingsDialog
             // accessed via the "Advanced..." button under Lighting Preset.
             if (definition.Category == RuntimeCVarsGodot.LightingCategory &&
-                definition.Name != "lighting_preset" && definition.Name != "hdr_output")
+                definition.Name is not ("lighting_preset" or "hdr_output" or "bloom_scale"))
             {
                 continue;
             }

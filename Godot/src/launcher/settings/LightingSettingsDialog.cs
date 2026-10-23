@@ -337,6 +337,12 @@ public partial class LightingSettingsDialog : Control
 			0.2, 3.0, 0.1));
 
 		contentCol.AddChild(BuildSliderSpinRow(
+			"bloom_scale",
+			"Bloom Intensity Scale",
+			"Multiplier on bloom, god-ray, and halo glow strength in the modern compositor (default: 1.0x).",
+			0.0, 2.0, 0.05));
+
+		contentCol.AddChild(BuildSliderSpinRow(
 			"modern_dark_lift",
 			"Exterior Dark Frame Lift",
 			"Exposure compensation cap for very dark outdoor night scenes (default: 1.0).",
@@ -345,9 +351,9 @@ public partial class LightingSettingsDialog : Control
 		contentCol.AddChild(BuildOptionRow(
 			"modern_tone_curve",
 			"Tone Mapping Curve",
-			"Color tone curve mapping scene radiance to display output (default: filmic).",
-			new[] { "filmic", "all", "fable" },
-			new[] { "Filmic (Natural high dynamic range)", "All (Broad gamut)", "Fable (Stylised high contrast)" }));
+			"Color tone curve mapping scene radiance to display output (default: fable).",
+			new[] { "fable", "filmic", "all" },
+			new[] { "Fable (Stylised HDR + CDF contrast)", "Filmic (Interiors only)", "All (Filmic everywhere)" }));
 
 		contentCol.AddChild(BuildCheckBoxRow(
 			"modern_depth_of_field",
@@ -369,8 +375,8 @@ public partial class LightingSettingsDialog : Control
 		contentCol.AddChild(BuildSliderSpinRow(
 			"interior_dark_lift",
 			"Interior Dark Frame Lift",
-			"Exposure compensation cap for pitch-dark caves and interior chambers (default: 16.0).",
-			1.0, 16.0, 0.5));
+			"Exposure compensation cap for pitch-dark caves and interior chambers (default: 1.5).",
+			1.0, 16.0, 0.25));
 
 		contentCol.AddChild(BuildSliderSpinRow(
 			"interior_fog_scale",
@@ -775,6 +781,7 @@ public partial class LightingSettingsDialog : Control
 			"static_shadow_resolution",
 			"gi_half_resolution",
 			"ambient_light_scale",
+			"bloom_scale",
 			"modern_dark_lift",
 			"modern_tone_curve",
 			"modern_depth_of_field",

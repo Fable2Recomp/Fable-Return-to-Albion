@@ -482,6 +482,14 @@ public partial class GameWindow : Node
 		// The ROOT viewport's texture. This used to be a separate Window with a viewport of its
 		// own; the game now occupies the main window, so the root is what the player sees.
 		Image image = GetViewport().GetTexture().GetImage();
+		if (GetWindow() is not { } win || !win.UseHdr2D || win.GetOutputMaxLinearValue() <= 1.001f)
+		{
+			if (image.GetFormat() is Image.Format.Rgbah or Image.Format.Rgbaf or Image.Format.Rgba8)
+			{
+				image.LinearToSrgb();
+			}
+		}
+
 		string path = $"{_shotDirectory}/shot_{_shotFrames:D6}.png";
 		GD.Print(image.SavePng(path) == Error.Ok
 			? $"[game-shot] {path} (frontEnd={HostBridge.FrontEndGuiIsUp} inGame={HostBridge.IsInGame})"

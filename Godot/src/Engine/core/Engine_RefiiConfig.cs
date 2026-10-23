@@ -145,13 +145,33 @@ public static class Engine_RefiiConfig
             _cachedStamp = stamp;
         }
 
+        Engine_Switches.Invalidate();
         return ApplyOverrides(values);
+    }
+
+    /// <summary>
+    /// Throttled check (at most once per 500 ms) that reloads <c>refii.toml</c> and invalidates
+    /// <see cref="Engine_Switches.Generation"/> if the file was modified on disk (for example, by
+    /// the launcher's lighting settings dialog while the game is running).
+    /// </summary>
+    public static void PollReload()
+    {
+        long now = System.Environment.TickCount64;
+        long last = System.Threading.Interlocked.Read(ref _lastPollTick);
+        if (now - last < 500)
+        {
+            return;
+        }
+
+        System.Threading.Interlocked.Exchange(ref _lastPollTick, now);
+        _ = Read(out _);
     }
 
     private static readonly object _cacheGate = new();
     private static IReadOnlyDictionary<string, string>? _cached;
     private static string _cachedPath = string.Empty;
     private static DateTime _cachedStamp;
+    private static long _lastPollTick = long.MinValue;
     private static readonly SortedDictionary<string, string> _overrides = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -237,6 +257,7 @@ public static class Engine_RefiiConfig
             _overrides[def.Name] = trimmed;
         }
 
+        Engine_Switches.Invalidate();
         OnConfigChanged?.Invoke(def.Name, trimmed);
         return true;
     }

@@ -208,10 +208,32 @@ public static class Engine_LevelBakedLighting
 
 	private static float? _buildingInteriorAmbientScale;
 
+	private static int _checkedGen = -1;
+
+	private static void CheckGeneration()
+	{
+		Refii.Core.Engine_RefiiConfig.PollReload();
+		int gen = Refii.Core.Engine_Switches.Generation;
+		if (gen != _checkedGen)
+		{
+			_checkedGen = gen;
+			_ambientScale = null;
+			_buildingInteriorAmbientScale = null;
+			if (!Refii.Core.Engine_AppRoot.IsTestHost &&
+				Refii.Level.Engine_SkyEnvironmentNode.Current is { } sky &&
+				sky.Lighting is not null &&
+				sky.GetParent() is { } regionRoot)
+			{
+				QueueRefreshInstanceLighting(regionRoot, sky.Lighting);
+			}
+		}
+	}
+
 	public static void ReloadConfig()
 	{
 		_ambientScale = null;
 		_buildingInteriorAmbientScale = null;
+		_checkedGen = Refii.Core.Engine_Switches.Generation;
 		if (!Refii.Core.Engine_AppRoot.IsTestHost &&
 			Refii.Level.Engine_SkyEnvironmentNode.Current is { } sky &&
 			sky.Lighting is not null &&
@@ -224,11 +246,14 @@ public static class Engine_LevelBakedLighting
 	/// <summary>
 	/// `building_interior_ambient_scale`: scales down the outdoor sky/theme ambient when the viewer
 	/// is inside an enclosed building in an outdoor level (caves and sky-less levels are unaffected).
+	/// When the Filmic (ACES) tone curve is active, applies <see cref="Engine_PostFxParams.FilmicBuildingInteriorAmbientScale"/>
+	/// (`5.0x`) so the default `0.5` scales to `2.5` automatically.
 	/// </summary>
 	public static float BuildingInteriorAmbientScale
 	{
 		get
 		{
+			CheckGeneration();
 			if (_buildingInteriorAmbientScale is null)
 			{
 				try
@@ -236,16 +261,24 @@ public static class Engine_LevelBakedLighting
 					_buildingInteriorAmbientScale = System.Math.Clamp(
 						Refii.Core.Engine_RefiiConfig.Float(
 							Refii.Core.Engine_RefiiConfig.Read(out _),
-							"building_interior_ambient_scale", 0.25f),
+							"building_interior_ambient_scale", 0.5f),
 						0.0f, 4.0f);
 				}
 				catch (System.Exception)
 				{
-					_buildingInteriorAmbientScale = 0.25f;
+					_buildingInteriorAmbientScale = 0.5f;
 				}
 			}
 
-			return _buildingInteriorAmbientScale.Value;
+			float scale = _buildingInteriorAmbientScale.Value;
+			if (Engine_PostFxParams.FilmicBuildingInterior)
+			{
+				scale = System.Math.Clamp(
+					scale * Engine_PostFxParams.FilmicBuildingInteriorAmbientScale,
+					0.0f, 8.0f);
+			}
+
+			return scale;
 		}
 	}
 

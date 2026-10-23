@@ -34,7 +34,7 @@ public partial class Engine_ModernMist : Node3D
         public bool Visible;
         public Vector3 Size;
         public Vector3 Position;
-        public Color Albedo;
+        public Vector3 Albedo;
         public float Extinction;
         public Vector4 Remap;
         public Vector3 Motion;
@@ -169,7 +169,7 @@ public partial class Engine_ModernMist : Node3D
             entry.Position = pos;
         }
 
-        var albedo = new Color(v.Colour.X, v.Colour.Y, v.Colour.Z);
+        Vector3 albedo = v.Colour;
         float factor = (strength - 1f) * v.Weight + 1f;
         float extinction = v.Density * Mathf.Max(factor, 0f);
         var motion = new Vector3(v.TilingX, v.TilingY, v.Speed);

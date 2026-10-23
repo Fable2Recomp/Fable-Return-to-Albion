@@ -171,10 +171,12 @@ public static class Engine_LightingFrame
 	/// THE INTERIOR DARK LIFT (`interior_dark_lift`): the tone floor divisor in levels with no
 	/// sky. The guest clamps the histogram average to 0.15 raw before forming the curve's key,
 	/// so a room whose raw mean sits far under that is rendered dark by design; a lift of N lets
-	/// the floor fall to 0.15/N for such a frame. Outdoors keeps `modern_dark_lift`.
+	/// the floor fall to 0.15/N for such a frame. 1.5 compensates for the unoccluded floor share
+	/// in enclosed sky-less levels so caves match the classic model's exposure. Outdoors keeps
+	/// `modern_dark_lift`.
 	/// </summary>
 	public static float InteriorDarkLift =>
-		InteriorCvar("interior_dark_lift", "REFII_INTERIOR_DARK_LIFT", 16f, 1f, 16f);
+		InteriorCvar("interior_dark_lift", "REFII_INTERIOR_DARK_LIFT", 1.5f, 1f, 16f);
 
 	/// <summary>How far the interior ambient lift is pulled toward neutral (0 = theme chroma).</summary>
 	public static float InteriorAmbientNeutral =>
@@ -207,21 +209,38 @@ public static class Engine_LightingFrame
 	/// <summary>
 	/// How far every exterior bake (probes, vertex bakes, the terrain lightmap) is pulled
 	/// toward the live sky ambient in the modern model (`fable_sky_ambient.w`). Bakes keep
-	/// 1-this of their authored locality while the sky sets the level and the tint. 0.6 is
-	/// measured: at midday in chapter2posh the theme's LightmapColour factor is (4.6, 5.1, 7.1),
-	/// and below 0.6 the terrain's ambient blue sits above the sun's, so no shadow can show in
-	/// that channel.
+	/// 1-this of their authored locality while the sky sets the level and the tint.
 	/// </summary>
-	public const float ModernProbeSkyBlend = 0.6f;
-
-	private static bool? _modernAmbient;
+	public const float ModernProbeSkyBlend = 0.45f;
 
 	/// <summary>
-	/// The `lighting_model` switch: "modern" derives ambient from the live sky dome (the
-	/// remaster default); "classic" (written "fable" by older configs) reads the theme's
-	/// authored day-set ambient exactly, and is also the switch that draws the title's own
-	/// translated shaders when they are built (<c>Engine_ClassicMaterial.Active</c>). Public
-	/// because the model is one decision, not one file's — the light fade reach follows it too.
+	/// Minimum share of the theme's authored <c>AmbientColour</c> blended into the live
+	/// sky-derived ambient in the modern model so outdoor regions retain their distinct
+	/// painterly palette while still breathing with the sky dome.
+	/// </summary>
+	public const float ModernAuthoredAmbientBlend = 0.40f;
+
+	private static int _switchesGen = -1;
+	private static bool? _modernAmbient;
+
+	private static void CheckGeneration()
+	{
+		Refii.Core.Engine_RefiiConfig.PollReload();
+		int gen = Refii.Core.Engine_Switches.Generation;
+		if (gen != _switchesGen)
+		{
+			_switchesGen = gen;
+			_modernAmbient = null;
+			_sunShadows = null;
+		}
+	}
+
+	/// <summary>
+	/// The `lighting_model` switch: "modern" derives ambient from the live sky dome blended with
+	/// the region's authored palette (the remaster default); "classic" (written "fable" by older
+	/// configs) reads the theme's authored day-set ambient exactly, and is also the switch that
+	/// draws the title's own translated shaders when they are built (<c>Engine_ClassicMaterial.Active</c>).
+	/// Public because the model is one decision, not one file's — the light fade reach follows it too.
 	/// </summary>
 	/// <summary>Whether a `lighting_model` value names the classic model ("fable" is the older spelling).</summary>
 	public static bool IsClassic(string value)
@@ -241,6 +260,7 @@ public static class Engine_LightingFrame
 				return !IsClassic(forced);
 			}
 
+			CheckGeneration();
 			if (_modernAmbient is null)
 			{
 				try
@@ -266,6 +286,7 @@ public static class Engine_LightingFrame
 	{
 		get
 		{
+			CheckGeneration();
 			if (_sunShadows is null)
 			{
 				try
@@ -443,18 +464,21 @@ public static class Engine_LightingFrame
 			// A PAINTED DAY SET DESCRIBES WHERE THE HERO STANDS, and the sky does not: a tavern
 			// or a cave is painted precisely because its ambient is not the sky's. Its authored
 			// ambient takes over by the painted weight, so the fade the guest runs is the fade
-			// the room lights up with.
-			if (lighting.PaintedWeight > 0f && lighting.HasAmbientColour)
+			// the room lights up with. Exterior scenes also retain a share of the theme's authored
+			// ambient palette alongside the live sky-dome hemisphere so regions keep their identity.
+			float authoredBlend = MathF.Max(
+				ModernAuthoredAmbientBlend,
+				MathF.Min(lighting.PaintedWeight, 1f));
+			if (authoredBlend > 0f && lighting.HasAmbientColour)
 			{
 				var authored = new float[3];
 				Split(lighting.AmbientColour, authored, out float authoredEnergy);
-				float w = MathF.Min(lighting.PaintedWeight, 1f);
 				for (int i = 0; i < 3; i++)
 				{
-					result.AmbientColour[i] += (authored[i] - result.AmbientColour[i]) * w;
+					result.AmbientColour[i] += (authored[i] - result.AmbientColour[i]) * authoredBlend;
 				}
 
-				result.AmbientEnergy += (authoredEnergy - result.AmbientEnergy) * w;
+				result.AmbientEnergy += (authoredEnergy - result.AmbientEnergy) * authoredBlend;
 				result.HasAmbient = result.AmbientEnergy > 0f;
 			}
 		}

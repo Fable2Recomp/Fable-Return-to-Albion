@@ -85,41 +85,4 @@ public static class Engine_PostFxState
         Buffer.BlockCopy(seed, 0, bytes, 0, Bytes);
         return bytes;
     }
-
-    public static void Fill(Engine_PostFxModel.State model, float[] lut, float[] into)
-    {
-        Array.Clear(into, 0, Math.Min(into.Length, Floats));
-        into[Exposure] = model.Exposure;
-        into[Applied] = model.Applied;
-        into[Prev] = model.Prev;
-        into[SmBlack] = model.SmBlack;
-        into[SmMid] = model.SmMid;
-        into[SmWhite] = model.SmWhite;
-        into[SmP99] = model.SmP99;
-        into[RawBlack] = model.RawBlack;
-        into[RawMean] = model.RawMean;
-        into[RawWhite] = model.RawWhite;
-        into[RawExp] = model.RawExp;
-        into[RawGain] = model.RawGain;
-        into[FadeK] = model.FadeK;
-        into[HasHistory] = model.HasHistory ? 1.0f : 0.0f;
-        into[CurveValid] = model.CurveValid ? 1.0f : 0.0f;
-        into[Threshold] = model.Threshold;
-        into[ExposureFrame] = model.Exposure;
-        into[AppliedFrame] = model.Applied;
-        into[HistMinPct] = model.Hist.MinPct;
-        into[HistMean] = model.Hist.Mean;
-        into[HistMaxPct] = model.Hist.MaxPct;
-        into[HistExposureUsed] = model.Hist.ExposureUsed;
-        into[HistTotal] = model.Hist.Total;
-        into[HistIdxMin] = model.Hist.IdxMin;
-        into[HistIdxAvg] = model.Hist.IdxAvg;
-        into[HistIdxMax] = model.Hist.IdxMax;
-        into[HistIdxLast] = model.Hist.IdxLast;
-        into[HistAvgPct] = model.Hist.AvgPct;
-        into[HistLast] = model.Hist.Last;
-        into[MaterialExposure] = 1.0f;
-        Array.Copy(model.Curve, 0, into, Curve, Engine_PostFxModel.CurveSize);
-        Array.Copy(lut, 0, into, Lut, Engine_PostFxModel.CurveSize);
-    }
 }
