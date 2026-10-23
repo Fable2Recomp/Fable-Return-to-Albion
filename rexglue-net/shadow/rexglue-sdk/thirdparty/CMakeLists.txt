@@ -483,6 +483,7 @@ if(REXGLUE_ENABLE_TRACY)
     target_compile_definitions(TracyClient
         PRIVATE
             TRACY_EXPORTS
+            NDEBUG
         PUBLIC
             TRACY_IMPORTS
             TRACY_ENABLE

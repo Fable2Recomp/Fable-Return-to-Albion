@@ -35,8 +35,36 @@ FARPROC WINAPI TracyAbsentHook(unsigned notify, PDelayLoadInfo info) {
     switch (notify) {
         // Stand in a module that exports none of Tracy's names, so every lookup fails into the
         // case below rather than the helper raising an exception.
-        case dliFailLoadLib:
+        case dliFailLoadLib: {
+            // First try loading the DLL beside this module before treating it as absent.
+            // When hosted by an executable in a parent directory, the default DLL search path
+            // might not include the module's own directory (e.g. bin/).
+            HMODULE thisModule = nullptr;
+            if (GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(&TracyAbsentHook),
+                    &thisModule)) {
+                wchar_t path[MAX_PATH];
+                DWORD len = GetModuleFileNameW(thisModule, path, MAX_PATH);
+                if (len > 0 && len < MAX_PATH) {
+                    wchar_t* lastSlash = wcsrchr(path, L'\\');
+                    if (!lastSlash) lastSlash = wcsrchr(path, L'/');
+                    if (lastSlash) {
+                        *(lastSlash + 1) = L'\0';
+                        wchar_t dllNameW[MAX_PATH];
+                        if (MultiByteToWideChar(CP_UTF8, 0, info->szDll, -1, dllNameW, MAX_PATH) > 0) {
+                            if (wcscat_s(path, MAX_PATH, dllNameW) == 0) {
+                                HMODULE hTracy = LoadLibraryW(path);
+                                if (hTracy != nullptr) {
+                                    return reinterpret_cast<FARPROC>(hTracy);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             return reinterpret_cast<FARPROC>(GetModuleHandleW(nullptr));
+        }
         case dliFailGetProc:
             return reinterpret_cast<FARPROC>(&RefiiTracyAbsent);
         default:

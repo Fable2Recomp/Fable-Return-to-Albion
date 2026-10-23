@@ -849,4 +849,82 @@ public class HdrTonemapTests
     {
         return isPbr ? texel : (texel * texel * Math.Max(emissionBoost, 1.0f));
     }
+
+    [TestCase]
+    public void TestHaloDistanceFadeCalculations()
+    {
+        // 1. Close-up fixture (d <= 6m) -> 100% full halo size (1.0x):
+        AssertThat(CalculateHaloDistanceScale(viewDist: 2.0f, fadeEnabled: true)).IsEqual(1.0f);
+        AssertThat(CalculateHaloDistanceScale(viewDist: 6.0f, fadeEnabled: true)).IsEqual(1.0f);
+
+        // 2. Mid-distance fixture (d = 20.5m) -> smooth hermite interpolation:
+        // t = (20.5 - 6) / 29 = 0.5; smoothstep = 0.5 * 0.5 * (3 - 2 * 0.5) = 0.5
+        // mix(1.0, 0.15, 0.5) = 0.575
+        AssertThat(CalculateHaloDistanceScale(viewDist: 20.5f, fadeEnabled: true)).IsEqualApprox(0.575f, 1e-4f);
+
+        // 3. Far fixture (d >= 35m) -> shrinks to 15% extent (0.15x):
+        AssertThat(CalculateHaloDistanceScale(viewDist: 35.0f, fadeEnabled: true)).IsEqualApprox(0.15f, 1e-4f);
+        AssertThat(CalculateHaloDistanceScale(viewDist: 75.0f, fadeEnabled: true)).IsEqualApprox(0.15f, 1e-4f);
+
+        // 4. Sky halos (d >= 250m, e.g. MoonGlare at 1000m) -> strictly exempt, 100% full extent:
+        AssertThat(CalculateHaloDistanceScale(viewDist: 250.0f, fadeEnabled: true)).IsEqual(1.0f);
+        AssertThat(CalculateHaloDistanceScale(viewDist: 1000.0f, fadeEnabled: true)).IsEqual(1.0f);
+
+        // 5. When fade is disabled -> always 1.0 regardless of distance:
+        AssertThat(CalculateHaloDistanceScale(viewDist: 50.0f, fadeEnabled: false)).IsEqual(1.0f);
+    }
+
+    [TestCase]
+    public void TestFxParticleDistanceFadeCalculations()
+    {
+        // Close range (d <= 12m) -> 1.0
+        AssertThat(CalculateFxParticleDistanceFade(viewDist: 5.0f)).IsEqual(1.0f);
+        AssertThat(CalculateFxParticleDistanceFade(viewDist: 12.0f)).IsEqual(1.0f);
+
+        // Far range (d >= 45m) -> 0.35
+        AssertThat(CalculateFxParticleDistanceFade(viewDist: 45.0f)).IsEqualApprox(0.35f, 1e-4f);
+        AssertThat(CalculateFxParticleDistanceFade(viewDist: 80.0f)).IsEqualApprox(0.35f, 1e-4f);
+
+        // Mid range (d = 28.5m) -> smoothstep(0.5) = 0.5, mix(1.0, 0.35, 0.5) = 0.675
+        AssertThat(CalculateFxParticleDistanceFade(viewDist: 28.5f)).IsEqualApprox(0.675f, 1e-4f);
+    }
+
+    [TestCase]
+    public void TestHaloDistanceFadeCvarHotReload()
+    {
+        try
+        {
+            AssertThat(Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("halo_distance_fade", "false")).IsTrue();
+            AssertThat(Refii.Lighting.Engine_PostFxParams.HaloDistanceFade).IsFalse();
+
+            AssertThat(Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("halo_distance_fade", "true")).IsTrue();
+            AssertThat(Refii.Lighting.Engine_PostFxParams.HaloDistanceFade).IsTrue();
+        }
+        finally
+        {
+            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("halo_distance_fade", "true");
+        }
+    }
+
+    private static float CalculateHaloDistanceScale(float viewDist, bool fadeEnabled)
+    {
+        float sizeScale = 1.0f;
+        if (fadeEnabled && viewDist < 250.0f)
+        {
+            float t = Math.Clamp((viewDist - 6.0f) / 29.0f, 0.0f, 1.0f);
+            sizeScale = 1.0f + (0.15f - 1.0f) * (t * t * (3.0f - 2.0f * t));
+        }
+        return sizeScale;
+    }
+
+    private static float CalculateFxParticleDistanceFade(float viewDist)
+    {
+        float distFade = 1.0f;
+        if (viewDist > 12.0f)
+        {
+            float t = Math.Clamp((viewDist - 12.0f) / 33.0f, 0.0f, 1.0f);
+            distFade = 1.0f + (0.35f - 1.0f) * (t * t * (3.0f - 2.0f * t));
+        }
+        return distFade;
+    }
 }

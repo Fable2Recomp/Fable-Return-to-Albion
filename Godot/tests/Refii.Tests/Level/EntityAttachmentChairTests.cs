@@ -35,25 +35,52 @@ public class EntityAttachmentChairTests
     }
 
     [TestCase]
-    public void TestIsFurnitureModelPathIdentifiesChairsTablesAndBenches()
+    public void TestIsHandDummyAllowsGrippableItemsWithIdentityGrip()
     {
-        // Ultra-worn tavern chair observed in The Golden Cock
-        AssertBool(GameEntities.IsFurnitureModelPath("Art/Environment/Furniture/Chairs/dotXSI/ESA_F_Chair_Wooden_UltraWorn/ESA_F_Chair_Wooden_UltraWorn.mdl")).IsTrue();
-        AssertBool(GameEntities.IsFurnitureModelPath("ESA_F_Chair_Wooden_UltraWorn.mdl")).IsTrue();
+        // Handheld items often have identity grip matrices in Fable 2 because the skeleton dummy
+        // already defines the natural hand grasp position. When child model path is known and is not
+        // furniture (or isFurniture is explicitly false), items must return false (allowed to attach to hand bone).
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "ESA_Mug_V2.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "Art/Environment/Shared assets/Props/dotXSI/ESA_Mug_V2/ESA_Mug_V2.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "Tankard.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "OB_SpiritBottle.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Left", Transform3D.Identity, "ESA_Bowl.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "Tool_Shovel.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "Torch.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "Food_Apple.mdl")).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "SH_LongSword_Spartan.mdl")).IsFalse();
 
-        // Other furniture variants
+        // When isFurniture is explicitly provided:
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, null, isFurniture: false)).IsFalse();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, null, isFurniture: true)).IsTrue();
+
+        // Furniture on hands must return true (grounded on floor, rejected from hand bone)
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "ESA_F_Chair_Wooden_UltraWorn.mdl")).IsTrue();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Left", Transform3D.Identity, "Bench_Park.mdl")).IsTrue();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "Pub_Table_Round.mdl")).IsTrue();
+        AssertBool(Engine_EntityAttachments.IsHandDummyWithoutGrip("Character.Carry.Hand.Right", Transform3D.Identity, "ESA_F_Stool_Wooden.mdl")).IsTrue();
+    }
+
+    [TestCase]
+    public void TestIsFurnitureModelPathIdentifiesFurnitureCorrectly()
+    {
+        // Furniture paths and prefixes
         AssertBool(GameEntities.IsFurnitureModelPath("Art/Environment/Furniture/Chairs/ESA_F_Chair_Normal.mdl")).IsTrue();
-        AssertBool(GameEntities.IsFurnitureModelPath("Art/Environment/Furniture/Stools/ESA_F_Stool_Wooden.mdl")).IsTrue();
-        AssertBool(GameEntities.IsFurnitureModelPath("Art/Environment/Furniture/Tables/Pub_Table_Round.mdl")).IsTrue();
-        AssertBool(GameEntities.IsFurnitureModelPath("Art/Environment/Furniture/Benches/Bench_Park.mdl")).IsTrue();
+        AssertBool(GameEntities.IsFurnitureModelPath("Art/Environment/Shared assets/Furniture/dotXSI/ESA_F_Cupboard_UltraDecorative/ESA_F_Cupboard_UltraDecorative.mdl")).IsTrue();
+        AssertBool(GameEntities.IsFurnitureModelPath("ESA_F_Chair_Wooden_UltraWorn.mdl")).IsTrue();
+        AssertBool(GameEntities.IsFurnitureModelPath("ESA_F_Stool_Wooden.mdl")).IsTrue();
+        AssertBool(GameEntities.IsFurnitureModelPath("Pub_Table_Round.mdl")).IsTrue();
+        AssertBool(GameEntities.IsFurnitureModelPath("Bench_Park.mdl")).IsTrue();
         AssertBool(GameEntities.IsFurnitureModelPath("ESA_F_Bookcase_Normal.mdl")).IsTrue();
 
-        // Non-furniture items must never match
+        // Non-furniture items must NEVER match furniture
         AssertBool(GameEntities.IsFurnitureModelPath("Art/Weapons/Swords/SH_LongSword_Spartan.mdl")).IsFalse();
         AssertBool(GameEntities.IsFurnitureModelPath("Crossbow_Light_Rusty.mdl")).IsFalse();
         AssertBool(GameEntities.IsFurnitureModelPath("Art/Items/Food/Food_Apple.mdl")).IsFalse();
         AssertBool(GameEntities.IsFurnitureModelPath("Art/Items/Dishes/ESA_Mug.mdl")).IsFalse();
         AssertBool(GameEntities.IsFurnitureModelPath("Tool_Shovel.mdl")).IsFalse();
+        AssertBool(GameEntities.IsFurnitureModelPath("Food_Vegetable.mdl")).IsFalse();
+        AssertBool(GameEntities.IsFurnitureModelPath("Stable_Door.mdl")).IsFalse();
         AssertBool(GameEntities.IsFurnitureModelPath(string.Empty)).IsFalse();
     }
 }

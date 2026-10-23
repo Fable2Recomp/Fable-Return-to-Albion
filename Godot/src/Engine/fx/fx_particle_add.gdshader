@@ -36,8 +36,18 @@ void fragment() {
 		discard;
 	}
 	float fade = fx_soft_fade(texel.a * COLOR.a, VERTEX, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
-	vec3 tex_rgb = is_pbr ? texel.rgb : (texel.rgb * texel.rgb * max(fable_emission_boost, 1.0));
-	vec3 rgb = max(COLOR.a * COLOR.rgb * tex_rgb, vec3(0.0));
+
+	// Attenuate extreme unshaded HDR radiance on distant additive particles
+	// so distant torches/lantern flames don't stay at peak emissive brightness
+	float dist = length(VERTEX);
+	float dist_fade = 1.0;
+	if (dist > 12.0) {
+		float t = clamp((dist - 12.0) / 33.0, 0.0, 1.0);
+		dist_fade = mix(1.0, 0.35, t * t * (3.0 - 2.0 * t));
+	}
+
+	vec3 tex_rgb = is_pbr ? texel.rgb : (texel.rgb * texel.rgb * mix(1.0, max(fable_emission_boost, 1.0), dist_fade));
+	vec3 rgb = max(COLOR.a * COLOR.rgb * tex_rgb * dist_fade, vec3(0.0));
 	ALBEDO = rgb * fade;
 	ALPHA = mix(1.0, texel.a * COLOR.a * fade, fx_src_alpha);
 }

@@ -54,6 +54,15 @@ void fragment() {
 	float fade = fx_scene_depth_valid > 0.5
 		? soft_fade(texel.a * COLOR.a, VERTEX, SCREEN_UV, scene_z, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX)
 		: 1.0;
-	ALBEDO = COLOR.a * COLOR.rgb * texel.rgb * texel.rgb * fade;
+
+	// Attenuate extreme unshaded HDR radiance on distant additive layer particles
+	float dist = length(VERTEX);
+	float dist_fade = 1.0;
+	if (dist > 12.0) {
+		float t = clamp((dist - 12.0) / 33.0, 0.0, 1.0);
+		dist_fade = mix(1.0, 0.35, t * t * (3.0 - 2.0 * t));
+	}
+
+	ALBEDO = COLOR.a * COLOR.rgb * texel.rgb * texel.rgb * (fade * dist_fade);
 	ALPHA = 1.0;
 }

@@ -440,6 +440,10 @@ public static class RuntimeCVarsGodot
                 "Multiplier on bloom, sun god-ray, and halo glow intensity in the modern "
                 + "compositor. 1.0 matches the original Fable 2 rescale factor; 0.0 disables "
                 + "bloom intensity; higher values increase the dreamy glow."),
+            new("halo_distance_fade", LightingCategory, RuntimeCVarType.Bool, "true",
+                "Gradually attenuate the bloom halos of distant point light fixtures (street lamps, "
+                + "market stalls, torches) so they do not produce oversized screen halos at long distance. "
+                + "Sun and moon glare remain unaffected. Default is on."),
             new("ambient_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "The one fill dial. In the modern model it scales both halves of the fill: the flat "
                 + "floor every surface keeps in shadow, and the sky light Godot's global illumination "

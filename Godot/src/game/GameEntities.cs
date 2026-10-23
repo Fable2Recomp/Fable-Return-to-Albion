@@ -1825,12 +1825,13 @@ public partial class GameEntities : Node3D
             // an unresolved child exactly there.
             uint parent = _attachments.ParentOf(child);
             Transform3D placed = stated;
+            string? childModel = ChildModelPathOf(node);
             bool isFurniture = IsFurnitureEntity(node);
             bool onBone = !isFurniture &&
                 _nodes.TryGetValue(parent, out MeshInstance3D? parentNode) &&
                 _skeletons.TryGetValue(parent, out Refii.Entities.Engine_EntitySkeleton? rig) &&
                 _attachments.TryPlace(child, stated, StatedOf(parent, parentNode.Transform),
-                    parentNode.Transform, rig, PartPaths(parentNode), out placed);
+                    parentNode.Transform, rig, PartPaths(parentNode), out placed, isFurniture, childModel);
             if (!onBone)
             {
                 ++AttachedOnStated;
@@ -1931,34 +1932,56 @@ public partial class GameEntities : Node3D
     private static string[] PartPathsOf(Mesh mesh) =>
         Refii.Models.Engine_MdlComposite.ModelPathsOf(mesh);
 
-    private static bool IsFurnitureEntity(MeshInstance3D node)
+    private static string? ChildModelPathOf(MeshInstance3D node)
     {
         if (node.HasMeta(MetaEntityModel))
         {
             uint modelHash = (uint)node.GetMeta(MetaEntityModel).AsInt64();
             string? path = Refii.Level.Engine_PropModelIndex.Resolve(modelHash, System.Array.Empty<string>());
-            if (path is not null && IsFurnitureModelPath(path))
+            if (!string.IsNullOrEmpty(path))
+            {
+                return path;
+            }
+        }
+
+        string[] parts = PartPaths(node);
+        if (parts.Length > 0 && !string.IsNullOrEmpty(parts[0]))
+        {
+            return parts[0];
+        }
+
+        if (node.Mesh is not null)
+        {
+            if (!string.IsNullOrEmpty(node.Mesh.ResourcePath))
+            {
+                return node.Mesh.ResourcePath;
+            }
+            if (!string.IsNullOrEmpty(node.Mesh.ResourceName))
+            {
+                return node.Mesh.ResourceName;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsFurnitureEntity(MeshInstance3D node)
+    {
+        if (node.HasMeta(MetaEntityRecord))
+        {
+            uint recordHash = (uint)node.GetMeta(MetaEntityRecord).AsInt64();
+            if (recordHash == Refii.Equipment.Engine_RecordNameCatalog.FurnitureBaseHash)
             {
                 return true;
             }
         }
-        return false;
+
+        string? path = ChildModelPathOf(node);
+        return path is not null && IsFurnitureModelPath(path);
     }
 
-    public static bool IsFurnitureModelPath(string path)
-    {
-        if (string.IsNullOrEmpty(path))
-        {
-            return false;
-        }
-
-        return path.Contains("Furniture", System.StringComparison.OrdinalIgnoreCase) ||
-               path.Contains("_F_", System.StringComparison.OrdinalIgnoreCase) ||
-               path.Contains("Chair", System.StringComparison.OrdinalIgnoreCase) ||
-               path.Contains("Stool", System.StringComparison.OrdinalIgnoreCase) ||
-               path.Contains("Bench", System.StringComparison.OrdinalIgnoreCase) ||
-               path.Contains("Table", System.StringComparison.OrdinalIgnoreCase);
-    }
+    public static bool IsFurnitureModelPath(string path) =>
+        Refii.Entities.Engine_EntityAttachments.IsFurnitureModelPath(path);
 
     /// <summary>
     /// A composite's displacement-only parts (GDB DisplacementMeshes,

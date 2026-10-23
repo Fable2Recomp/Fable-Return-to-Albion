@@ -1584,8 +1584,19 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
             float x = ((offset.Dot(right) * px / facing) + 1.0f) * 0.5f;
             float y = (1.0f - (offset.Dot(up) * py / facing)) * 0.5f;
-            float hx = halo.WorldHalf / facing * px * 0.5f;
-            float hy = halo.WorldHalf / facing * py * 0.5f;
+
+            // Smoothly shrink local fixture halos with view distance so distant lanterns/torches
+            // do not maintain oversized halos on screen. Sky halos (facing >= 250m) keep 100% full extent.
+            float sizeScale = 1.0f;
+            if (Engine_PostFxParams.HaloDistanceFade && facing < 250.0f)
+            {
+                float t = Math.Clamp((facing - 6.0f) / 29.0f, 0.0f, 1.0f);
+                sizeScale = 1.0f + (0.15f - 1.0f) * (t * t * (3.0f - 2.0f * t));
+            }
+
+            float halfExtent = halo.WorldHalf * sizeScale;
+            float hx = halfExtent / facing * px * 0.5f;
+            float hy = halfExtent / facing * py * 0.5f;
             if (!float.IsFinite(x) || !float.IsFinite(y) ||
                 x + hx < 0.0f || x - hx > 1.0f || y + hy < 0.0f || y - hy > 1.0f)
             {

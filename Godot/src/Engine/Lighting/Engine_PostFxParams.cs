@@ -46,6 +46,7 @@ public static class Engine_PostFxParams
     private static string? _toneCurve;
     private static float? _darkLift;
     private static float? _bloomGain;
+    private static bool? _haloDistanceFade;
 
     private static void CheckGeneration()
     {
@@ -58,6 +59,7 @@ public static class Engine_PostFxParams
             _toneCurve = null;
             _darkLift = null;
             _bloomGain = null;
+            _haloDistanceFade = null;
         }
     }
 
@@ -200,6 +202,25 @@ public static class Engine_PostFxParams
         {
             CheckGeneration();
             _bloomGain = System.Math.Clamp(value, 0.0f, 4.0f);
+        }
+    }
+
+    /// <summary>
+    /// Whether bloom halos from distant point light fixtures are smoothly attenuated with distance
+    /// (`halo_distance_fade` in config, default true).
+    /// </summary>
+    public static bool HaloDistanceFade
+    {
+        get
+        {
+            CheckGeneration();
+            _haloDistanceFade ??= ReadBool("halo_distance_fade", true);
+            return _haloDistanceFade.Value;
+        }
+        set
+        {
+            CheckGeneration();
+            _haloDistanceFade = value;
         }
     }
 

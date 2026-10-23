@@ -122,6 +122,15 @@ public static class GameChildProcess
 			GD.Print("[launch] " + renderDocNote);
 		}
 
+		// Ensure the bin directory is in PATH so child processes and their delay-loaded libraries
+		// (such as TracyClient.dll) can be located by the operating system loader.
+		string binDir = Refii.Core.Engine_AppRoot.BinDirectory;
+		if (System.IO.Directory.Exists(binDir))
+		{
+			string currentPath = System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+			environment["PATH"] = binDir + System.IO.Path.PathSeparator + currentPath;
+		}
+
 		GD.Print($"[launch] {OS.GetExecutablePath()} {string.Join(' ', arguments)} env " +
 			string.Join(' ', environment.Select(kv => kv.Key + "=" + kv.Value)) +
 			(elevated ? " (as Administrator)" : string.Empty));

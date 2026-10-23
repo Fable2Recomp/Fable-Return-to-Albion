@@ -68,8 +68,25 @@ public static class Engine_NativeLibraries
 
 			_installed = true;
 			NativeLibrary.SetDllImportResolver(typeof(Engine_NativeLibraries).Assembly, Resolve);
+
+			if (OperatingSystem.IsWindows())
+			{
+				try
+				{
+					string bin = Engine_AppRoot.BinDirectory;
+					if (Directory.Exists(bin))
+						SetDllDirectory(bin);
+				}
+				catch
+				{
+				}
+			}
 		}
 	}
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static extern bool SetDllDirectory(string? lpPathName);
 
 	/// <summary>
 	/// Adds a directory to search. Deduplicating, so republishing the project's paths
@@ -185,6 +202,18 @@ public static class Engine_NativeLibraries
 			// The app root's bin/ first — the one location that is the same in a dev tree
 			// and an export, and the only one an installed player has.
 			AddSearchPath(Engine_AppRoot.BinDirectory);
+			if (OperatingSystem.IsWindows())
+			{
+				try
+				{
+					string bin = Engine_AppRoot.BinDirectory;
+					if (Directory.Exists(bin))
+						SetDllDirectory(bin);
+				}
+				catch
+				{
+				}
+			}
 
 			AddSearchPath(StagedBinDirectory(projectDir));
 			AddSearchPath(System.IO.Path.Combine(projectDir, "build", ArchFolder));

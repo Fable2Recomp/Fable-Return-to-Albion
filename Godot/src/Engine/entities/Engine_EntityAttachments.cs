@@ -295,7 +295,7 @@ public sealed class Engine_EntityAttachments
 	/// </param>
 	public bool TryPlace(uint child, Transform3D childStated, Transform3D parentStated,
 		Transform3D parentPlacement, Engine_EntitySkeleton parentRig, string[] parentParts,
-		out Transform3D placed)
+		out Transform3D placed, bool isFurniture = false, string? childModelPath = null)
 	{
 		placed = childStated;
 		if (!_byChild.TryGetValue(child, out Record? record))
@@ -330,12 +330,10 @@ public sealed class Engine_EntityAttachments
 				ResolveDummy(use, parentRig, parentParts);
 			}
 
-			// Objects without a hand grip dummy (record.Grip == Identity) attached to a hand
-			// (Character.Carry.Hand.*) are world props/furniture being dragged or interacted with
-			// in an animation (such as a chair pulled out to sit down), not held weapons or mugs.
-			// In the guest engine, Havok physics keeps them grounded on the floor (stated); mounting
-			// their floor origin into the hand palm hoists the entire prop into the air.
-			if (IsHandDummyWithoutGrip(use.Dummy, use.Grip))
+			// Objects classified as furniture (chairs, benches, stools) being dragged on the floor
+			// must remain grounded (stated). Handheld props (mugs, weapons, bowls, tools, food)
+			// mount cleanly to the character's hand bone dummy (Carry_Hand_DummyObject1).
+			if (IsHandDummyWithoutGrip(use.Dummy, use.Grip, childModelPath, isFurniture))
 			{
 				return false;
 			}
@@ -521,13 +519,88 @@ public sealed class Engine_EntityAttachments
 	}
 
 	/// <summary>
-	/// Tests whether a dummy is a hand attachment whose child has no hand grip dummy (identity grip),
-	/// indicating a world object/furniture being manipulated on the floor rather than a handheld item.
+	/// Tests whether a dummy is a hand attachment whose child is world furniture or a static prop
+	/// being manipulated on the floor rather than a handheld item.
+	/// Handheld items (mugs, weapons, tools, food) mount directly to the character's hand bone dummy
+	/// (Carry_Hand_DummyObject1), while world furniture remains grounded on the floor (stated).
 	/// </summary>
-	public static bool IsHandDummyWithoutGrip(string dummy, Transform3D grip)
+	public static bool IsHandDummyWithoutGrip(string dummy, Transform3D grip, string? childModelPath = null, bool? isFurniture = null)
 	{
-		return dummy.StartsWith("Character.Carry.Hand", System.StringComparison.OrdinalIgnoreCase) &&
-			grip.IsEqualApprox(Transform3D.Identity);
+		if (!dummy.StartsWith("Character.Carry.Hand", System.StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		if (isFurniture.HasValue)
+		{
+			return isFurniture.Value;
+		}
+
+		if (!string.IsNullOrEmpty(childModelPath))
+		{
+			return IsFurnitureModelPath(childModelPath);
+		}
+
+		return grip.IsEqualApprox(Transform3D.Identity);
+	}
+
+	/// <summary>
+	/// Tests whether a model path represents furniture, seating, or static fixtures that must
+	/// remain grounded on the floor (stated) rather than following animated character hand bones.
+	/// In Fable 2, all furniture models reside in the Furniture folder or have the '_F_' prefix.
+	/// </summary>
+	public static bool IsFurnitureModelPath(string path)
+	{
+		if (string.IsNullOrEmpty(path))
+		{
+			return false;
+		}
+
+		// Furniture folder or prefix
+		if (path.Contains("Furniture", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("_F_", System.StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		// Specific furniture types
+		if (path.Contains("Chair", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Stool", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Bench", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Armchair", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Throne", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Sofa", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Couch", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Seat", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Desk", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Counter", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Bed", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("BabyCot", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Cot_", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("_Cot", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Cupboard", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Wardrobe", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Dresser", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Drawers", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Cabinet", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Bookcase", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Shelf", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Shelves", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Stove", System.StringComparison.OrdinalIgnoreCase) ||
+			path.Contains("Fireplace", System.StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		// Table (excluding Vegetable and Stable)
+		if (path.Contains("Table", System.StringComparison.OrdinalIgnoreCase) &&
+			!path.Contains("Vegetable", System.StringComparison.OrdinalIgnoreCase) &&
+			!path.Contains("Stable", System.StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		return false;
 	}
 
 	/// <summary>
