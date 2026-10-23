@@ -209,15 +209,10 @@ public sealed class Engine_UiListBookScreen(uint screenId, string menuName, stri
 			return false;
 		}
 
-		_book ??= Books.Ensure(screenId, Presentation);
+		_book ??= Books.ClaimPrebuilt(screenId, Presentation) ?? Books.Ensure(screenId, Presentation);
 		if (_book is null)
 		{
 			return false;
-		}
-
-		if (_view is not null)
-		{
-			_view.Book = _book;
 		}
 
 		if (_drawn is null)
@@ -277,7 +272,6 @@ public sealed class Engine_UiListBookScreen(uint screenId, string menuName, stri
 		};
 
 		Host.MenuLayer.AddChild(_view);
-		_view.Book = _book;
 		_view.Bind(_menu);
 		_view.ClipRect = Engine_UiButtonPool.ListClip(Host.DocumentFor(Presentation));
 

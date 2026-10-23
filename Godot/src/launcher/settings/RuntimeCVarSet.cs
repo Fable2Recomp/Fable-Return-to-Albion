@@ -210,8 +210,9 @@ public static class RuntimeCVarsGodot
                 + "at any distance."),
             new("prop_cull_distance_scale", DisplayCategory, RuntimeCVarType.Double, "1",
                 "Scale factor for distance culling of non-building props and dressing by size "
-                + "(<0.5m: 10m, <1m: 20m, <1.5m: 30m, <2.5m: 40m). Buildings and large objects >=2.5m "
-                + "are excluded. 1 is default scale; higher values push culling further away; 0 disables size culling."),
+                + "(<0.5m: 45m, <1m: 60m, <1.5m: 90m, <2.5m: 120m, never past the range the game states). "
+                + "Buildings and large objects >=2.5m are excluded. 1 is default scale; higher values push "
+                + "culling further away; 0 disables size culling."),
 
             new("render_scale_percent", DisplayCategory, RuntimeCVarType.Int, "100",
                 "Renders the 3D world at this percentage of the window and scales it up, "

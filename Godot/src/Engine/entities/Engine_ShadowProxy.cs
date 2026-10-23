@@ -406,6 +406,8 @@ public static class Engine_ShadowProxy
 		proxy.VisibilityRangeEnd = body.VisibilityRangeEnd;
 		proxy.VisibilityRangeEndMargin = body.VisibilityRangeEndMargin;
 		proxy.VisibilityRangeFadeMode = body.VisibilityRangeFadeMode;
+		// And its dither band, where a tier-culled prop has one: the shadow fades with the body.
+		Refii.Level.Engine_PropFade.Copy(body, proxy);
 
 		// Same mesh space as the body (a sibling placed with its transform, or a child at
 		// identity), so the body's stated box bounds the caster; an unset box copies as none.

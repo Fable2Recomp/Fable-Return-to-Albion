@@ -306,6 +306,12 @@ public partial class GameInput : Node
 
 	/// <summary>Wheel notches still to be played out as D-pad steps, signed (negative up).</summary>
 	private static int _wheelPending;
+
+	/// <summary>
+	/// Steps a list's scroll bar asked of a cursor that is the guest's, played out exactly as the
+	/// wheel's notches are but uncapped: a bar names how far the cursor must go.
+	/// </summary>
+	private static int _stepsPending;
 	private static double _wheelClock;
 	private static uint _wheelBit;
 
@@ -326,6 +332,12 @@ public partial class GameInput : Node
 		_wheelPending = System.Math.Clamp(_wheelPending + wheel, -8, 8);
 	}
 
+	/// <summary>Queues signed highlight steps (negative up) to be played out as D-pad presses.</summary>
+	public static void QueuePointerSteps(int steps) => _stepsPending += steps;
+
+	/// <summary>Drops the scroll bar's steps not yet played out: a new grab counts from scratch.</summary>
+	public static void ClearPointerSteps() => _stepsPending = 0;
+
 	private static void AdvancePointerButtons(double delta)
 	{
 		_pointerB = System.Math.Max(0.0, _pointerB - delta);
@@ -344,6 +356,12 @@ public partial class GameInput : Node
 			{
 				_wheelBit = _wheelPending < 0 ? DpadUp : DpadDown;
 				_wheelPending -= System.Math.Sign(_wheelPending);
+				_wheelClock = PointerHold;
+			}
+			else if (_stepsPending != 0)
+			{
+				_wheelBit = _stepsPending < 0 ? DpadUp : DpadDown;
+				_stepsPending -= System.Math.Sign(_stepsPending);
 				_wheelClock = PointerHold;
 			}
 		}

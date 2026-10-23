@@ -77,6 +77,12 @@ public partial class GameUi
 		if (signature != _hostBoxShown)
 		{
 			_hostBoxShown = signature;
+			if (_warningView.Paper is { BarArt: null } paper)
+			{
+				// The paper's scroll bar: the received-item card's `Scrollbar`, a box's own.
+				paper.BarArt = _presentation!.PatternBookFor(Engine_UiReceiveItems.Presentation);
+			}
+
 			_warningView.Show(_presentation!.Theme, body!, accept ?? "GUI_OK", twoButton: question, cancelTag: cancel);
 			_warningView.AcceptOpens = null;
 			GD.Print($"[game-ui] host {(question ? "question" : "notice")} on the front end — '{body}' — " +
@@ -97,6 +103,11 @@ public partial class GameUi
 		}
 
 		GameInput.HostUiOwnsPad = true;
+
+		// A body taller than the paper's window scrolls: the right stick and the d-pad at the
+		// page rate, the wheel and the bar through the pointer — before the click is read, so a
+		// drag on the bar is never an answer.
+		_warningView.Scroll(GameInput.RightStickY, GameInput.MenuDirection, delta);
 		int clicked = _warningView.Click();
 		if (GameInput.MenuAcceptPressed || clicked > 0)
 		{
@@ -205,6 +216,7 @@ public partial class GameUi
 		if (_warningView is not null && GodotObject.IsInstanceValid(_warningView))
 		{
 			_warningView.Visible = false;
+			_warningView.Release();
 		}
 
 		if (_hostPageBook.IsOpen)

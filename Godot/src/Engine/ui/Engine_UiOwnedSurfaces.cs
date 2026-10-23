@@ -187,10 +187,7 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	/// <summary>The router box's dismiss code, null when the table states none.</summary>
 	private uint? _dismiss;
 
-	protected override bool TakesInput => _display != 0 || _dismiss is not null || _host;
-
-	/// <summary>The box up is a HOST notice (<see cref="Engine_UiHostBoxes.Notice"/>).</summary>
-	private bool _host;
+	protected override bool TakesInput => _display != 0 || _dismiss is not null;
 
 	private uint _modalId;
 
@@ -248,7 +245,6 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 	{
 		// DRAWN WHETHER OR NOT ITS CODE IS KNOWN: an unlisted box keeps the guest's own input
 		// (see Engine_UiModals), not the guest's hidden tree.
-		_host = false;
 		if (pause is { MessageBoxUp: true } state)
 		{
 			_dismiss = Engine_UiTemplates.Modal(state.ModalId, state.ScreenId, dismissal: true)
@@ -259,34 +255,10 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 			return true;
 		}
 
-		// A host notice is the game's message box in game; out of it, the front end's own dialog
-		// draws it (GameUi.DriveFrontEndHostBox).
+		// A HOST notice is not this box's: it stands on the query box's paper, which is sized to
+		// its text (Engine_UiQuerySurface), as the front end's dialog is (GameUi.DriveFrontEndHostBox).
 		_display = StatedDisplayBox;
-		if (_display == 0 && Engine_UiHostBoxes.Notice is not null && Refii.Host.HostBridge.IsInGame)
-		{
-			_host = true;
-			return true;
-		}
-
 		return _display != 0;
-	}
-
-	protected override bool ApplyHost()
-	{
-		if (!_host || Engine_UiHostBoxes.Notice is not { } notice)
-		{
-			return false;
-		}
-
-		// The guest's fitter chooses the paper by the text; ours by its length the same way.
-		int fitted = notice.Length < 80 ? 0 : notice.Length < 160 ? 1 : 2;
-		if (Changed($"host:{notice}"))
-		{
-			View!.ShowStated(notice, fitted, SizeSlide(fitted));
-			GD.Print($"[game-ui] host message box up — {View.LastReport}");
-		}
-
-		return true;
 	}
 
 	protected override void Apply(
@@ -344,13 +316,6 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 			return;
 		}
 
-		if (_host)
-		{
-			Engine_UiHostBoxes.Dismiss();
-			GD.Print("[game-ui] host message box dismissed");
-			return;
-		}
-
 		if (_display != 0)
 		{
 			Engine_UiSource.Current.PostFrontEndAction(
@@ -401,8 +366,15 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 	protected override bool TakesInput => _display || _codes is not null || _host;
 
-	/// <summary>The box up is a HOST question (<see cref="Engine_UiHostBoxes.Question"/>).</summary>
+	/// <summary>
+	/// The box up is the HOST's — a question (<see cref="Engine_UiHostBoxes.Question"/>), or a
+	/// notice (<see cref="Engine_UiHostBoxes.Notice"/>) when no question is up: one paper for both
+	/// in game, sized to the text, the notice with its first choice alone.
+	/// </summary>
 	private bool _host;
+
+	/// <summary>The host box up is a notice: one answer, A or B dismiss it.</summary>
+	private bool _notice;
 
 	protected override bool Joined => _joins is not null;
 
@@ -411,6 +383,17 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 	protected override void Join(Engine_UiScreen document) =>
 		_joins = Engine_UiQueryBox.Resolve(document);
+
+	/// <summary>The paper's scroll bar: the received-item card's `Scrollbar`, a box's own.</summary>
+	protected override void Dress(Engine_UiPresentationHost host)
+	{
+		if (View?.Paper is { } paper)
+		{
+			paper.BarArt = host.PatternBookFor(Engine_UiReceiveItems.Presentation);
+		}
+	}
+
+	protected override void Released() => View?.Release();
 
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
@@ -429,28 +412,30 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 		_codes = null;
 		_display = Engine_UiSource.Current.DisplayQueryUp();
-		// A host question needs the box's join to be shown; without one it must not hold the frame.
+		// A host box needs the box's join to be shown; without one it must not hold the frame.
 		// In game only: out of it the front end's own dialog draws it (GameUi.DriveFrontEndHostBox).
-		_host = !_display && Engine_UiHostBoxes.Question is not null && Refii.Host.HostBridge.IsInGame &&
-			(View is null || _joins is not null);
+		// A question stands before a notice, as on the front end.
+		_notice = Engine_UiHostBoxes.Question is null;
+		_host = !_display && (Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice) is not null &&
+			Refii.Host.HostBridge.IsInGame && (View is null || _joins is not null);
 		return _display || _host;
 	}
 
 	protected override bool ApplyHost()
 	{
-		if (!_host || Engine_UiHostBoxes.Question is not { } question || _joins is null)
+		if (!_host || (Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice) is not { } body || _joins is null)
 		{
 			return false;
 		}
 
 		// The default A/B row; its captions the question's own where it states them, else the
-		// authored ones.
-		string? accept = Engine_UiHostBoxes.AcceptCaption;
-		string? cancel = Engine_UiHostBoxes.CancelCaption;
-		if (Changed($"host:{question}\u0001{accept}\u0001{cancel}"))
+		// authored ones. A notice stands its A alone, captioned as the message box's dismiss.
+		string? accept = _notice ? View?.Theme?.Resolve("GUI_CONTINUE") : Engine_UiHostBoxes.AcceptCaption;
+		string? cancel = _notice ? null : Engine_UiHostBoxes.CancelCaption;
+		if (Changed($"host:{(_notice ? "N" : "Q")}\u0001{body}\u0001{accept}\u0001{cancel}"))
 		{
-			View!.ShowStated(question, _joins.Rows[0].Name, accept, cancel);
-			GD.Print($"[game-ui] host query up — {View.LastReport}");
+			View!.ShowStated(body, _joins.Rows[0].Name, accept, cancel, single: _notice);
+			GD.Print($"[game-ui] host {(_notice ? "notice" : "query")} up — {View.LastReport}");
 		}
 
 		return true;
@@ -485,20 +470,33 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 			$"({row.Name}) — {View.LastReport}");
 	}
 
-	/// <summary>A click on the A choice confirms, on the B choice cancels; elsewhere nothing.</summary>
+	/// <summary>A click on the A choice confirms, on the B choice cancels, on the scroll bar
+	/// drags it; elsewhere nothing.</summary>
 	protected override Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at) =>
-		View?.AnswerAt(at) switch
-		{
-			1 => input with { Accept = true },
-			-1 => input with { Back = true },
-			_ => input,
-		};
+		View is not null && View.PressBar(at)
+			? input
+			: View?.AnswerAt(at) switch
+			{
+				1 => input with { Accept = true },
+				-1 => input with { Back = true },
+				_ => input,
+			};
 
 	protected override void Route(Engine_UiSurfaceInput input)
 	{
+		// The body's scroll, for a text taller than the paper's window: the right stick and the
+		// d-pad at the page rate, the wheel and the bar through the pointer.
+		View?.Scroll(input.Scroll, input.Direction, input.Delta);
+
 		if (_host)
 		{
-			if (input.Accept || input.Back)
+			if (_notice && (input.Accept || input.Back))
+			{
+				// One answer: B clears a notice as A does — a box only one key could close is a deadlock.
+				GD.Print("[game-ui] host notice dismissed");
+				Engine_UiHostBoxes.Dismiss();
+			}
+			else if (input.Accept || input.Back)
 			{
 				GD.Print($"[game-ui] host query {(input.Accept ? "CONFIRMED" : "cancelled")}");
 				Engine_UiHostBoxes.Answer(input.Accept);

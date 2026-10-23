@@ -65,7 +65,9 @@ public static class ModSaveGate
 	private static readonly object Lock = new();
 
 	// What the verdict refused and the box is asking about.
-	private sealed record Pending(string Save, string Directory, ModSaveStamp.Diff Diff, string Commit);
+	private sealed record Pending(
+		string Save, string Directory, ModSaveStamp.Diff Diff, string Commit,
+		SaveSidecar.ArchonLayer? Archon, ArchonToolbox.Diff? ArchonDiff);
 
 	private static Pending? _pending;
 	private static string _allowedOnce = string.Empty;
@@ -127,11 +129,13 @@ public static class ModSaveGate
 		}
 
 		SaveSidecar sidecar = SaveSidecar.Read(directory);
-		if (!sidecar.Modded || sidecar.Mods is not { } stamp)
+		if (!sidecar.Modded)
 		{
 			return false;
 		}
 
+		// A save made under Archon's Toolbox alone has no mods layer; the page still names its mods.
+		SaveSidecar.ModsLayer stamp = sidecar.Mods ?? new SaveSidecar.ModsLayer();
 		ModFingerprint current;
 		try
 		{
@@ -164,7 +168,12 @@ public static class ModSaveGate
 			}
 		}
 
-		if (own == 0)
+		// ARCHON'S TOOLBOX MODS are the save's own too (the sidecar's archon layer): compared with
+		// the install now, never filtered — their state is inside the save's Lua blob.
+		SaveSidecar.ArchonLayer? archon = sidecar.Archon;
+		ArchonToolbox.Diff? archonDiff = archon is null ? null : ArchonToolbox.Compare(archon, ArchonToolbox.Detect());
+		int archonOwn = archon?.Mods.Count ?? 0;
+		if (own == 0 && archonOwn == 0)
 		{
 			return false;
 		}
@@ -177,13 +186,15 @@ public static class ModSaveGate
 		// EVERY STAMPED SAVE IS TOLD ABOUT: the player sees which mods it was made with before it
 		// loads, and which of them are not enabled now. Refused once, asked on the page book, and
 		// let through on Continue.
-		var pending = new Pending(save, directory, diff, HostBridge.LastCommitAction);
+		var pending = new Pending(save, directory, diff, HostBridge.LastCommitAction, archon, archonDiff);
 		lock (Lock)
 		{
 			_pending = pending;
 		}
 
-		GD.Print($"[mod-save] '{save}' was saved under {own} mod(s), {diff.Missing.Count} not enabled now — refused, asking (commit '{pending.Commit}')");
+		GD.Print($"[mod-save] '{save}' was saved under {own} mod(s), {diff.Missing.Count} not enabled now" +
+			(archonOwn == 0 ? string.Empty : $"; {archonOwn} Archon's Toolbox mod(s), {archonDiff!.Missing.Count} not running now{(archonDiff.Present ? string.Empty : " (toolbox not applied)")}") +
+			$" — refused, asking (commit '{pending.Commit}')");
 		Callable.From(() => ShowNotice(stamp)).CallDeferred();
 		return true;
 	}
@@ -201,7 +212,7 @@ public static class ModSaveGate
 			return;
 		}
 
-		Engine_UiHostBoxes.AskPage(ModSaveStamp.NoticeTitle, ModSaveStamp.NoticeText(stamp, pending.Diff),
+		Engine_UiHostBoxes.AskPage(ModSaveStamp.NoticeTitle, ModSaveStamp.NoticeText(stamp, pending.Diff, pending.Archon, pending.ArchonDiff),
 			onYes: () => Continue(pending), onNo: () => Cancel(pending), key: "mod-save");
 	}
 
@@ -488,6 +499,8 @@ public static class ModSaveGate
 		};
 		SaveSidecar.ModsLayer current = ModSaveStamp.Restamp(sidecar.Mods, ModSaveStamp.Current());
 		sidecar.Mods = current.Set.Count != 0 || current.Held.Count != 0 ? current : null;
+		// Archon's Toolbox, as applied to the install now: present or not, re-stamped every save.
+		sidecar.Archon = ArchonToolbox.Stamp(ArchonToolbox.Detect());
 		sidecar.Write(directory);
 
 		// The guest wrote a new main save: the unfiltered copy of the old one is stale.

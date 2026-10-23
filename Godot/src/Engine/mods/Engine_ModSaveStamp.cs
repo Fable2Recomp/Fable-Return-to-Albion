@@ -175,8 +175,20 @@ public static class ModSaveStamp
 	/// nothing; a weapon id wields a component-less entity — TU1 `sub_82763F2C`, `sub_824C0678`,
 	/// `sub_824AC94C`), so the filter is what keeps those from ever reaching the guest, and the
 	/// notice says what is left out rather than threatening a crash.
+	///
+	/// ARCHON'S TOOLBOX MODS (<paramref name="archon"/>, the sidecar's own layer) follow under
+	/// their own heading (<see cref="ArchonToolbox.NoticeText"/>) and are NOT filtered: their
+	/// state is the toolbox runner's script table inside the save's Lua blob — one Pluto object
+	/// graph (TU1 `pluto_persist` 0x82BFAC78: every new object is numbered by the running counter
+	/// `++a1[1]` at 0x82BFAD20 and written as `[1][ref][type]…`, a repeat as `[0][ref]`; a table is
+	/// its metatable then key/value pairs to a nil, 0x82BFA290; a function is bytecode and
+	/// upvalues, 0x82BFA4D0) in which the runner's mod tables hold closures and are referenced from
+	/// the hook chains. Cutting one entry out renumbers every object after it and leaves every
+	/// back-reference into it dangling, so the blob is kept verbatim (<see cref="SaveStream.Tail"/>)
+	/// and the notice states that their state stays in the save.
 	/// </summary>
-	public static string NoticeText(SaveSidecar.ModsLayer stamp, Diff diff)
+	public static string NoticeText(
+		SaveSidecar.ModsLayer stamp, Diff diff, SaveSidecar.ArchonLayer? archon = null, ArchonToolbox.Diff? archonDiff = null)
 	{
 		var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		foreach (SaveSidecar.ModEntry mod in diff.Missing)
@@ -184,8 +196,21 @@ public static class ModSaveStamp
 			missing.Add(mod.Name);
 		}
 
+		int own = 0;
+		foreach (SaveSidecar.ModEntry mod in stamp.Set)
+		{
+			if (!mod.Session)
+			{
+				++own;
+			}
+		}
+
 		var text = new StringBuilder();
-		text.Append("This save was made with these mods:\n");
+		if (own != 0)
+		{
+			text.Append("This save was made with these mods:\n");
+		}
+
 		foreach (SaveSidecar.ModEntry mod in stamp.Set)
 		{
 			if (mod.Session)
@@ -205,6 +230,16 @@ public static class ModSaveStamp
 		if (missing.Count != 0)
 		{
 			text.Append("\nWhat a mod not enabled left in the save is kept with it and comes back when that mod is enabled again.\n");
+		}
+
+		if (archon is not null && archonDiff is not null)
+		{
+			if (text.Length != 0)
+			{
+				text.Append('\n');
+			}
+
+			text.Append(ArchonToolbox.NoticeText(archon, archonDiff));
 		}
 
 		return text.ToString();

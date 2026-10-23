@@ -138,7 +138,7 @@ public partial class GameUi
 	/// <summary>The own set once hashed, or null while it is still being hashed.</summary>
 	private ModFingerprint? CoopModsOwn()
 	{
-		_coopModsOwn ??= Task.Run(() => ModFingerprint.Current());
+		_coopModsOwn ??= Task.Run(() => ModFingerprint.CurrentForCoop());
 		if (_coopModsOwn.IsFaulted && !_coopModsFaultSaid)
 		{
 			// Said, not hidden: with no set to state, every peer refuses this one.

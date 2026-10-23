@@ -138,11 +138,18 @@ public abstract class Engine_UiSurface<TView>
 			}
 		}
 
+		Dress(host);
 		GD.Print($"[ui-surface] Godot owns the {Label} — art {View.LastReport}, join " +
 			(Joined
 				? "resolved"
 				: "NOT resolved — the authored structure is not what this surface expects") +
 			(framed == 0 ? string.Empty : $", {framed} border piece(s) framed"));
+	}
+
+	/// <summary>Art a fresh view takes from OTHER presentations' pattern books — once per build,
+	/// after the view stands and its join is resolved.</summary>
+	protected virtual void Dress(Engine_UiPresentationHost host)
+	{
 	}
 
 	/// <summary>

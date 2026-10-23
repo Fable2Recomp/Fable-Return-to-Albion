@@ -1330,12 +1330,11 @@ public partial class GameUi : Node
 		Node3D? group = theme.ArtSourceNode(Engine_FrontEndWarning.GroupName);
 		Node3D? pattern = _presentation?.Templates?.ArtSourceNode(Engine_FrontEndWarning.GroupName);
 
-		// Off the main menu — the title, where a host box can be raised too — neither the live
-		// tree nor the shown screen's catalogue carries the page: the front end's own pattern
-		// book does, at the place the file authors it.
-		pattern ??= group is null
-			? _presentation?.PatternBookFor(FrontEndMenuPresentation)?.ArtSourceNode(Engine_FrontEndWarning.GroupName)
-			: null;
+		// Off the main menu — the title, where a host box can be raised too — the shown screen's
+		// catalogue does not carry the page: the front end's own pattern book does, at the place
+		// the file authors it. A catalogue build, not the live tree, so the paper's parked middle
+		// column is there to grow a long host box (Engine_UiPaperBox).
+		pattern ??= _presentation?.PatternBookFor(FrontEndMenuPresentation)?.ArtSourceNode(Engine_FrontEndWarning.GroupName);
 
 		if (_warningView is null)
 		{
@@ -2190,6 +2189,10 @@ public partial class GameUi : Node
 		GameInput.ScreenMenuHoldsFlip = _screenMenu.HighlightedIsModAbility;
 		Engine_UiModMenus.Focus(_screenMenuView, _screenMenu.PopulationScript, Engine_UiCommandList.Screen);
 
+		// Whose cursor the pointer steers: the guest's while its rows are on screen (the stick
+		// goes to its latch below), ours inside a host-only level or a mod's menu.
+		_screenMenuView.GuestCursor = _screenMenuView.OpenedDepth == 0 && !_screenMenu.HostExpanded;
+
 		// A MOD'S MENU opened over this list is the host's alone: the guest's pool does not carry
 		// its rows, so the view is navigated directly and B returns to the screen's own list.
 		if (_screenMenuView.OpenedDepth > 0)
@@ -2299,12 +2302,6 @@ public partial class GameUi : Node
 			GD.Print($"[game-ui] screen {state.ScreenId}: {(next ? "RB" : "LB")} forwarded as " +
 				$"ScreenAction({code}) — queue depth {depth}; the guest also saw the shoulder");
 			return true;
-		}
-
-		// The PC list stops above the footer (Back, the gold), never under it.
-		if (_screenMenuView is not null)
-		{
-			_screenMenuView.Book = _books.Book(state.ScreenId);
 		}
 
 		// The right-hand page first: the wheel over it scrolls it, its bar drags it. The list
@@ -2682,7 +2679,6 @@ public partial class GameUi : Node
 			// The star and pip states, read out of THIS screen's document — every screen
 			// authors its own button pool, so the slides differ per file.
 			Ratings = Engine_UiRowRating.Resolve(drawn.Screen),
-			Book = _books.Book(screenId),
 			Visible = false,
 		};
 
@@ -5380,7 +5376,6 @@ public partial class GameUi : Node
 
 		// The slide sound every in-game screen's own 140/141 arm plays on the in-game GUI
 		// (`sub_826A26E8` 0x826A2734/0x826A2760 on the pause root), for a move that happened.
-		_pauseView.Book = _pauseBook;
 		if (_pauseView.Navigate(GameInput.MenuDirection, delta))
 		{
 			Cue(frontEnd: false, GameInput.MenuDirection < 0 ? "slideup" : "slidedown");
@@ -6824,25 +6819,38 @@ public partial class GameUi : Node
 	private double _heroSuffixClock;
 
 	/// <summary>
-	/// The mouse on a list, as a PC menu: the row under the pointer is highlighted where it
-	/// stands, the wheel scrolls the column, the scroll bar drags it, and a click on a row is the
-	/// A press. True when a click landed on the row that is now highlighted — the caller treats
-	/// that as accept.
+	/// The mouse on a list — the controller's carousel, driven by the mouse. Pointer MOVEMENT does
+	/// nothing to it. A wheel notch over the list's column is a D-pad step. The scroll bar walks
+	/// the highlight to the row it names. A click on a drawn row moves the highlight there and is
+	/// the A press, once the carousel has let A through (`WaitForInput`). True on the frame that
+	/// press is due — the caller treats it as accept.
 	/// </summary>
 	private static bool PointerList(Engine_FrontEndMenuView? view)
 	{
-		if (view is null || Engine_UiPointer.Canvas is not { } at)
+		if (view is null)
 		{
 			return false;
 		}
 
-		// THE SCROLL BAR: a press on it grabs the thumb (jumping there), and the drag follows the
-		// pointer for as long as the button is held, wherever the pointer wanders.
+		if (Engine_UiPointer.Canvas is not { } at)
+		{
+			// The pad took over: a click still waiting is dropped, never answered later.
+			if (ReferenceEquals(_clickView, view))
+			{
+				_clickView = null;
+				_clickItem = null;
+			}
+
+			return false;
+		}
+
+		// THE SCROLL BAR: a press on it sends the highlight to the row under the pointer, and the
+		// drag keeps sending it for as long as the button is held, wherever the pointer wanders.
 		if (ReferenceEquals(_barDrag, view))
 		{
 			if (Input.IsMouseButtonPressed(MouseButton.Left))
 			{
-				view.ScrollTo(view.ScrollBarPositionAt(at.Y));
+				BarTo(view, view.ScrollBarPositionAt(at), grab: false);
 				return false;
 			}
 
@@ -6854,14 +6862,12 @@ public partial class GameUi : Node
 			if (Engine_UiPointer.TakeLeft())
 			{
 				_barDrag = view;
-				view.ScrollTo(barPosition);
+				_clickView = null;
+				_clickItem = null;
+				BarTo(view, barPosition, grab: true);
 			}
 
-			if (Engine_UiPointer.WheelSteps != 0)
-			{
-				view.Scroll(Engine_UiPointer.TakeWheel());
-			}
-
+			WheelToPad();
 			return false;
 		}
 
@@ -6869,50 +6875,143 @@ public partial class GameUi : Node
 		// the detail page's, to scroll and to turn the preview.
 		if (view.GlobalPosition.X < 0f && at.X >= 0f)
 		{
-			return false;
+			return ClickDue(view);
 		}
 
 		Engine_UiExpandableMenu.Item? item = view.EntryAt(at);
 
-		// The wheel scrolls the list under the pointer, if the pointer is on it.
-		if (item is not null && Engine_UiPointer.WheelSteps != 0)
+		// The wheel over the list's column — on a row or between them — is the pad's D-pad step,
+		// handed to it here so nothing else this frame claims a notch that landed on the list.
+		// The pad clamps at the ends exactly as it does for the stick.
+		if (item is not null || view.ColumnHas(at))
 		{
-			view.Scroll(Engine_UiPointer.TakeWheel());
-			_pointerScrolled = view;
+			WheelToPad();
 		}
 
-		if (item is null)
+		if (item is not null && Engine_UiPointer.TakeLeft())
 		{
-			return false;
+			_clickView = view;
+			_clickItem = item;
+			_clickPointed = false;
+			_clickAt = Time.GetTicksMsec();
 		}
 
-		// THE POINTER PICKS A ROW ONLY WHEN IT ACTS: on a real movement, or once rows the mouse's own
-		// wheel scrolled have settled under it. Picking on every frame held the highlight under a
-		// resting cursor and undid each pad or key step on the next frame — the two fought.
-		if (!view.Sliding && (Engine_UiPointer.Moved || ReferenceEquals(_pointerScrolled, view)))
-		{
-			view.PointAt(item);
-			_pointerScrolled = null;
-		}
-
-		if (!Engine_UiPointer.LeftPressed)
-		{
-			return false;
-		}
-
-		Engine_UiPointer.TakeLeft();
-		view.PointAt(item);
-		return ReferenceEquals(view.Menu?.Highlighted, item);
+		return ClickDue(view);
 	}
+
+	/// <summary>Hands this frame's wheel notches to the pad as D-pad steps.</summary>
+	private static void WheelToPad()
+	{
+		if (Engine_UiPointer.WheelSteps != 0)
+		{
+			GameInput.QueuePointerButtons(false, Engine_UiPointer.TakeWheel());
+		}
+	}
+
+	/// <summary>
+	/// The highlight to the row a 0..1 place on the bar names. Our cursor walks there a step a
+	/// frame (<see cref="Engine_FrontEndMenuView.SeekTo"/>); the guest's is sent the D-pad steps
+	/// that take it there, counted from where the grab found it.
+	/// </summary>
+	private static void BarTo(Engine_FrontEndMenuView view, float position, bool grab)
+	{
+		if (view.Menu is null)
+		{
+			return;
+		}
+
+		if (!view.GuestCursor)
+		{
+			view.ScrollTo(position);
+			return;
+		}
+
+		if (grab)
+		{
+			GameInput.ClearPointerSteps();
+			_barStart = view.Menu.Model.CurrentHighlightIdx;
+			_barSent = 0;
+		}
+
+		int send = Engine_UiCarouselBar.StepsToSend(_barStart, view.RowAtBar(position), _barSent);
+		if (send != 0)
+		{
+			GameInput.QueuePointerSteps(send);
+			_barSent += send;
+		}
+	}
+
+	/// <summary>
+	/// Whether a click on <paramref name="view"/>'s row is due as A this frame. The click first
+	/// moves the highlight onto its row; the press follows once the carousel's press gate is down,
+	/// since A mid-cascade is swallowed whole. Dropped when its row is gone, when something else
+	/// moved the highlight off it, or after <see cref="ClickPatienceMs"/>.
+	/// </summary>
+	private static bool ClickDue(Engine_FrontEndMenuView view)
+	{
+		if (!ReferenceEquals(_clickView, view) || _clickItem is not { } item)
+		{
+			return false;
+		}
+
+		if (view.Menu is null || view.Menu.Model.VisibleIndexOf(item) == 0 ||
+			Time.GetTicksMsec() - _clickAt > ClickPatienceMs)
+		{
+			_clickView = null;
+			_clickItem = null;
+			return false;
+		}
+
+		if (view.PressGated)
+		{
+			return false;
+		}
+
+		if (!ReferenceEquals(view.Menu.Highlighted, item))
+		{
+			if (_clickPointed)
+			{
+				_clickView = null;
+				_clickItem = null;
+				return false;
+			}
+
+			view.PointAt(item);
+			_clickPointed = true;
+			if (view.PressGated || !ReferenceEquals(view.Menu.Highlighted, item))
+			{
+				return false;
+			}
+		}
+
+		_clickView = null;
+		_clickItem = null;
+		return true;
+	}
+
+	/// <summary>The list a click is waiting on, and the row it landed on.</summary>
+	private static Engine_FrontEndMenuView? _clickView;
+
+	private static Engine_UiExpandableMenu.Item? _clickItem;
+
+	/// <summary>The waiting click has already moved the highlight onto its row.</summary>
+	private static bool _clickPointed;
+
+	private static ulong _clickAt;
+
+	/// <summary>How long a click waits on the carousel before it is dropped.</summary>
+	private const ulong ClickPatienceMs = 1500;
+
+	/// <summary>Where the bar's grab found the guest's cursor, and the steps sent since.</summary>
+	private static int _barStart;
+
+	private static int _barSent;
 
 	/// <summary>The left button went down on the expression wheel and has not come up.</summary>
 	private bool _wheelMouseDown;
 
 	/// <summary>The list whose scroll bar the left button is dragging, or null.</summary>
 	private static Engine_FrontEndMenuView? _barDrag;
-
-	/// <summary>The list the mouse wheel scrolled, until its rows settle and the row under the pointer is picked.</summary>
-	private static Engine_FrontEndMenuView? _pointerScrolled;
 
 	/// <summary>
 	/// The mouse on a book's right-hand page: the wheel over its scroll region scrolls it, and its
@@ -7079,6 +7178,27 @@ public partial class GameUi : Node
 		});
 	}
 
+	/// <summary>
+	/// The language the guest runs in, followed. The title's Language entry switches the guest's
+	/// own book and fonts (`sub_82382C68` -> `sub_823835F8`) and writes the choice to the profile;
+	/// every string and glyph on screen is ours, so without this the switch changed nothing the
+	/// player could see. Read on the same half-second clock as the hero suffix: a switch is a
+	/// title-screen event, and the guest takes a second to reload behind its own banner anyway.
+	/// </summary>
+	private void FollowGuestCulture()
+	{
+		if (!Refii.Text.Engine_GameCulture.Set(HostBridge.GetCurrentCulture()))
+		{
+			return;
+		}
+
+		string culture = Refii.Text.Engine_GameCulture.Current;
+		GD.Print($"[game-ui] the guest's language is now '{culture}' — reading its text and fonts");
+		Engine_BnkTextBankLoader.InvalidateCulture();
+		_presentation?.ReloadForCulture(culture);
+		_menuView?.Refresh();
+	}
+
 	private void ui_processBody(double delta)
 	{
 		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene;
@@ -7121,6 +7241,7 @@ public partial class GameUi : Node
 		{
 			_heroSuffixClock = 0.5;
 			Refii.Text.Engine_BabelDatabase.HeroTextSuffix = HostBridge.HeroTextSuffix();
+			FollowGuestCulture();
 		}
 
 		// OUR MULTIPLAYER SCREEN COMES DOWN WHEN THE GAME STARTS, AND IT HAS TO BE CHECKED HERE.

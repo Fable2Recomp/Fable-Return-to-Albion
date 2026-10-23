@@ -154,6 +154,8 @@ public static class Engine_PropShadow
 			VisibilityRangeFadeMode = batch.VisibilityRangeFadeMode,
 		};
 		batch.AddChild(twin);
+		// And the batch's dither band: the shadow fades with the copy, not at the cell's cut.
+		Engine_PropFade.Copy(batch, twin);
 
 		Twins.AddOrUpdate(source, shadow);
 		Pairs.Add((batch, twin));

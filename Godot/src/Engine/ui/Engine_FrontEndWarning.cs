@@ -64,6 +64,12 @@ public partial class Engine_FrontEndWarning : Node3D
 			return 0;
 		}
 
+		// A click on the paper's scroll bar is the bar's, never an answer.
+		if (Paper is not null && Paper.Press(at))
+		{
+			return 0;
+		}
+
 		if (On(ButtonName, at))
 		{
 			return 1;
@@ -130,10 +136,40 @@ public partial class Engine_FrontEndWarning : Node3D
 			clone.Visible = true;
 			panel.AddChild(clone);
 			panel.HasShippedArt = true;
+
+			// The same `paperbox` nine-slice the in-game boxes draw, sized to the body by the
+			// same rule; the buttons and their glyphs ride its bottom edge.
+			panel.Paper = Engine_UiPaperBox.For(panel, clone,
+				Engine_UiTheme.FindByName(clone, ButtonName) as Node3D,
+				Engine_UiTheme.FindByName(clone, "icon_button_a") as Node3D,
+				Engine_UiTheme.FindByName(clone, CancelName) as Node3D,
+				Engine_UiTheme.FindByName(clone, IconName) as Node3D);
 		}
 
 		return panel;
 	}
+
+	/// <summary>
+	/// The paper sized to the body (<see cref="Engine_UiPaperBox"/>), shared with the in-game
+	/// boxes: grown for a body longer than the authored window, scrolled past the window's
+	/// maximum. Null without the shipped art.
+	/// </summary>
+	public Engine_UiPaperBox? Paper { get; private set; }
+
+	/// <summary>One frame of the body's scroll: the stick, the d-pad, and the pointer's drag or wheel.</summary>
+	public void Scroll(float stick, int direction, double delta)
+	{
+		if (Paper is null || !Visible)
+		{
+			return;
+		}
+
+		Paper.Pointer();
+		Paper.Scroll(stick, direction, delta);
+	}
+
+	/// <summary>The box closed: the next body starts at the top of an authored-size paper.</summary>
+	public void Release() => Paper?.Release();
 
 	/// <summary>
 	/// Puts the box up with the guest's own two strings.
@@ -157,7 +193,15 @@ public partial class Engine_FrontEndWarning : Node3D
 	{
 		Node3D? group = GetNodeOrNull<Node3D>("Group");
 
-		string body = SetText(theme, group, BodyName, theme?.Resolve(bodyTag) ?? bodyTag);
+		string display = theme?.Resolve(bodyTag) ?? bodyTag;
+		string body = SetText(theme, group, BodyName, display);
+		if (Paper is not null && group is not null &&
+			Engine_UiTheme.FindByName(group, BodyName) is MeshInstance3D bodyNode)
+		{
+			Paper.Layout(bodyNode, display);
+			body += ", " + Paper.Report;
+		}
+
 		string button = SetText(theme, group, ButtonName, theme?.Resolve(buttonTag) ?? buttonTag);
 		if (cancelTag is not null)
 		{

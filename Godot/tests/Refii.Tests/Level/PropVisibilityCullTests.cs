@@ -42,21 +42,21 @@ public class PropVisibilityCullTests
     public void TestSmallPropTieredDistanceCullingCalculation()
     {
         // Default scale = 1.0
-        // Extent < 0.5m -> 15m
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.2f, 1.0f)).IsEqual(15.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.49f, 1.0f)).IsEqual(15.0f);
+        // Extent < 0.5m -> 45m
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.2f, 1.0f)).IsEqual(45.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.49f, 1.0f)).IsEqual(45.0f);
 
-        // Extent < 1.0m -> 20m
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.5f, 1.0f)).IsEqual(20.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.8f, 1.0f)).IsEqual(20.0f);
+        // Extent < 1.0m -> 60m
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.5f, 1.0f)).IsEqual(60.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.8f, 1.0f)).IsEqual(60.0f);
 
-        // Extent < 1.5m -> 30m
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.0f, 1.0f)).IsEqual(30.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.2f, 1.0f)).IsEqual(30.0f);
+        // Extent < 1.5m -> 90m
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.0f, 1.0f)).IsEqual(90.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.2f, 1.0f)).IsEqual(90.0f);
 
-        // Extent < 2.5m -> 40m
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.5f, 1.0f)).IsEqual(40.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(2.0f, 1.0f)).IsEqual(40.0f);
+        // Extent < 2.5m -> 120m
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.5f, 1.0f)).IsEqual(120.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(2.0f, 1.0f)).IsEqual(120.0f);
 
         // Extent >= 2.5m (market stalls, large wagons) -> 0 (no size clamp)
         AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(2.5f, 1.0f)).IsEqual(0.0f);
@@ -67,16 +67,16 @@ public class PropVisibilityCullTests
     public void TestSmallPropTieredDistanceCullingScalesDynamically()
     {
         // Scale = 1.5
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.3f, 1.5f)).IsEqual(22.5f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.8f, 1.5f)).IsEqual(30.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.2f, 1.5f)).IsEqual(45.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(2.0f, 1.5f)).IsEqual(60.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.3f, 1.5f)).IsEqual(67.5f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.8f, 1.5f)).IsEqual(90.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.2f, 1.5f)).IsEqual(135.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(2.0f, 1.5f)).IsEqual(180.0f);
 
         // Scale = 2.0
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.3f, 2.0f)).IsEqual(30.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.8f, 2.0f)).IsEqual(40.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.2f, 2.0f)).IsEqual(60.0f);
-        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(2.0f, 2.0f)).IsEqual(80.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.3f, 2.0f)).IsEqual(90.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.8f, 2.0f)).IsEqual(120.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(1.2f, 2.0f)).IsEqual(180.0f);
+        AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(2.0f, 2.0f)).IsEqual(240.0f);
 
         // Scale <= 0 disables size culling
         AssertThat(Engine_PropStreamer.CalculateTieredCullDistance(0.3f, 0.0f)).IsEqual(0.0f);

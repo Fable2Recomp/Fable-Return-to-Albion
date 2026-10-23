@@ -347,12 +347,16 @@ public partial class Engine_PropStreamer : Node3D
             return 0f;
         }
 
+        // Three times the tiers the cull shipped with (15/20/30/40 m): the stated range still
+        // caps each prop, so this restores the guest's own distance for most foliage and the
+        // per-copy dither (Engine_PropFade) takes the edge; the tiers only trim what the guest
+        // states far beyond what a prop of that size can show.
         return extent switch
         {
-            < 0.5f => 15f * cullScale,
-            < 1.0f => 20f * cullScale,
-            < 1.5f => 30f * cullScale,
-            < 2.5f => 40f * cullScale,
+            < 0.5f => 45f * cullScale,
+            < 1.0f => 60f * cullScale,
+            < 1.5f => 90f * cullScale,
+            < 2.5f => 120f * cullScale,
             _ => 0f
         };
     }
@@ -363,8 +367,24 @@ public partial class Engine_PropStreamer : Node3D
     /// <c>prop_cull_distance_scale</c>:
     /// &lt;0.5m: 15m * scale, &lt;1.0m: 20m * scale, &lt;1.5m: 30m * scale, &lt;2.5m: 40m * scale.
     /// Buildings and objects &gt;=2.5m keep their stated distances.
+    ///
+    /// The tiered cull is one test per node, so its edge is dithered per copy by
+    /// <see cref="Engine_PropFade"/> at the same radius; a tree keeps its own stated band.
     /// </summary>
     public static void ApplyVisibilityRange(GeometryInstance3D instance, Mesh mesh)
+    {
+        float radius = ApplyRange(instance, mesh);
+        if (!instance.HasMeta(Engine_PropDrawRange.TreeBandMeta))
+        {
+            Engine_PropFade.SetRadius(instance, mesh, radius);
+        }
+    }
+
+    /// <summary>
+    /// The range above; returns the radius each copy is drawn to under the tiered cull (the node's
+    /// end less the batch's spread), or zero when the node is not tier-culled.
+    /// </summary>
+    private static float ApplyRange(GeometryInstance3D instance, Mesh mesh)
     {
         // First apply what the guest states (draw range, tree instance uniforms, billboard meta)
         bool hasStated = Engine_PropDrawRange.Apply(instance, mesh);
@@ -375,13 +395,13 @@ public partial class Engine_PropStreamer : Node3D
         extent *= MathF.Max(MathF.Abs(scale.X), MathF.Max(MathF.Abs(scale.Y), MathF.Abs(scale.Z)));
         if (!float.IsFinite(extent) || extent <= 0f)
         {
-            return;
+            return 0f;
         }
 
         // Buildings are exempt from size-based distance culling
         if (IsBuilding(instance, null, extent))
         {
-            return;
+            return 0f;
         }
 
         float spread = 0f;
@@ -389,7 +409,7 @@ public partial class Engine_PropStreamer : Node3D
         {
             if (batch.Multimesh is not { } mm)
             {
-                return;
+                return 0f;
             }
 
             if (batch.HasMeta(BatchBoundsMeta))
@@ -433,25 +453,27 @@ public partial class Engine_PropStreamer : Node3D
             instance.VisibilityRangeEnd = end;
             instance.VisibilityRangeEndMargin = 0f;
             instance.VisibilityRangeFadeMode = GeometryInstance3D.VisibilityRangeFadeModeEnum.Disabled;
-            return;
+            // The node cuts at end = radius + spread; each copy dithers to the radius itself.
+            return MathF.Max(end - spread, 0f);
         }
 
         // For non-buildings with extent >= 2.5m (or when cullScale <= 0):
         // If it already had a stated range from the guest, keep that stated range!
         if (hasStated || CullMinPixels <= 0f)
         {
-            return;
+            return 0f;
         }
 
         float legacyEnd = extent * PixelsPerMetreAtOneMetre / CullMinPixels;
         if (legacyEnd >= CullFarthestMetres)
         {
-            return;
+            return 0f;
         }
 
         instance.VisibilityRangeEnd = legacyEnd;
         instance.VisibilityRangeEndMargin = 0f;
         instance.VisibilityRangeFadeMode = GeometryInstance3D.VisibilityRangeFadeModeEnum.Disabled;
+        return 0f;
     }
 
     /// <summary>
@@ -495,6 +517,7 @@ public partial class Engine_PropStreamer : Node3D
                         gi.VisibilityRangeEnd = multi.VisibilityRangeEnd;
                         gi.VisibilityRangeEndMargin = multi.VisibilityRangeEndMargin;
                         gi.VisibilityRangeFadeMode = multi.VisibilityRangeFadeMode;
+                        Engine_PropFade.Copy(multi, gi);
                     }
                 }
             }
@@ -655,6 +678,8 @@ public partial class Engine_PropStreamer : Node3D
             return;
         }
 
+        Engine_PropFade.Tick();
+
         long drainFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         DrainVertexBakes();
         Refii.Core.Engine_FramePhases.Record("props.drain",
@@ -772,8 +797,9 @@ public partial class Engine_PropStreamer : Node3D
 
         // Keep processing until every bake has drained and every ambient variant is bound: the
         // applied/ambient/misfit counts are incremented in the drain, so reporting earlier
-        // undercounts, and a retry left queued would keep its prop on the base for good.
-        if (_bakesInFlight != 0 || _ambientRetries.Count != 0)
+        // undercounts, and a retry left queued would keep its prop on the base for good. And
+        // until the last arrival has dithered in, or it would stand half-drawn for good.
+        if (_bakesInFlight != 0 || _ambientRetries.Count != 0 || Engine_PropFade.Fading)
         {
             return;
         }
@@ -1417,6 +1443,10 @@ public partial class Engine_PropStreamer : Node3D
                 instance, RegionLighting(), staticProp: true);
             _stepLightMs = Ms(t4);
             Refii.Lighting.Engine_GiRefresh.StaticGeometryArrived(instance);
+
+            // It stood this frame, wherever the eye is: a copy delivered inside its radius has no
+            // edge to cross, so it dithers in from now. After the hand-off, so its caster goes too.
+            Engine_PropFade.BeginArrival(instance);
 
             _loaded++;
         }

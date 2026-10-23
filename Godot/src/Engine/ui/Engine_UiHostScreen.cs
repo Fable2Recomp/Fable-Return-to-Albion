@@ -182,7 +182,11 @@ public sealed class Engine_UiHostScreen
 		_book.HostTextures = Engine_UiDetailPages.Textures(ScreenId, row);
 		_book.HostActive = Engine_UiDetailPages.Active(ScreenId, row);
 
-		System.Collections.Generic.IReadOnlyDictionary<string, int> slides = Engine_UiDetailPages.Slides(ScreenId, row, default, hostRows: true);
+		// The provider's own slides only. The book's leaf/folder page rule (`hostRows`) is for a
+		// host row inside a guest-driven book; this screen draws the whole book itself and its
+		// pages always stand. Naming `Foreground.Book` builds the whole slide array, every other
+		// element at 0 — logbookscreen's master — and took the achievements book to 0/677 drawn.
+		System.Collections.Generic.IReadOnlyDictionary<string, int> slides = Engine_UiDetailPages.Slides(ScreenId, row, default, hostRows: false);
 		_book.HostSlides = slides.Count == 0 ? null : slides;
 
 		// THE DRAW GATE THE GUEST WOULD HAVE STATED, sized to the document once; the provider's
@@ -210,15 +214,10 @@ public sealed class Engine_UiHostScreen
 		}
 
 		string presentation = record.Presentation;
-		_book ??= Books.Ensure(ScreenId, presentation);
+		_book ??= Books.ClaimPrebuilt(ScreenId, presentation) ?? Books.Ensure(ScreenId, presentation);
 		if (_book is null)
 		{
 			return false;
-		}
-
-		if (_view is not null)
-		{
-			_view.Book = _book;
 		}
 
 		if (_drawn is null)
@@ -280,7 +279,6 @@ public sealed class Engine_UiHostScreen
 		};
 
 		Host.MenuLayer.AddChild(_view);
-		_view.Book = _book;
 		_view.Bind(_menu);
 		_view.ClipRect = Engine_UiButtonPool.ListClip(Host.DocumentFor(presentation));
 

@@ -45,6 +45,18 @@ public static class Engine_FramePhases
 	/// <summary>Closes what <see cref="ZoneBegin"/> opened.</summary>
 	public static System.Action<ulong>? ZoneEnd;
 
+	/// <summary>
+	/// The phase just entered, for the hang watchdog: installed by the game like the zone hooks,
+	/// so a report can say which phase the main thread stopped in. Same reason it is a hook.
+	/// </summary>
+	public static System.Action<string>? PhaseEnter;
+
+	/// <summary>
+	/// The main thread's frame stamp, called at frame start and end with the frame index; the
+	/// watchdog behind it fires when the stamp stops moving.
+	/// </summary>
+	public static System.Action<long>? FrameAlive;
+
 	public readonly struct Scope : System.IDisposable
 	{
 		private readonly string _name;
@@ -58,6 +70,7 @@ public static class Engine_FramePhases
 			_start = Stopwatch.GetTimestamp();
 			_allocStart = System.GC.GetAllocatedBytesForCurrentThread();
 			_zone = ZoneBegin is { } begin ? begin(name) : 0UL;
+			PhaseEnter?.Invoke(name);
 		}
 
 		public void Dispose()
@@ -338,6 +351,7 @@ public static class Engine_FramePhases
 
 		_markCount = 0;
 		++_frameIndex;
+		FrameAlive?.Invoke(_frameIndex);
 		SampleSteadyGc(now);
 
 		// Everything between the renderer finishing and the next frame's first callback:
@@ -433,6 +447,8 @@ public static class Engine_FramePhases
 		{
 			Record("process_total", (_processEnd - _frameStart) * 1000.0 / Stopwatch.Frequency);
 		}
+
+		FrameAlive?.Invoke(_frameIndex);
 	}
 
 	/// <summary>RenderingServer.FramePostDraw: the renderer has submitted the frame.</summary>

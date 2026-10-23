@@ -38,6 +38,17 @@ public static class Engine_BnkTextBankLoader
         _tried = false;
     }
 
+    /// <summary>
+    /// The guest changed language: both banks are read again, in the new culture, on next access.
+    /// The vanilla bank too — it is the same book without the mods' rows, and an item named from
+    /// it in the old language beside one from the mounted bank in the new would be a mixed list.
+    /// </summary>
+    public static void InvalidateCulture()
+    {
+        _baseBank = null;
+        Invalidate();
+    }
+
     /// <summary>The active text bank (mounted with mod overlays if available, otherwise disk fallback).</summary>
     public static TextBank? Shared
     {
@@ -75,16 +86,11 @@ public static class Engine_BnkTextBankLoader
     private static TextBank? LoadBank()
     {
         // 1. Try reading from the mounted filesystem via the resolver:
+        // The culture the guest runs in first (Engine_GameCulture), then en-uk, then the
+        // locale-less spelling the mount aliases to its own culture.
         if (_resolver is not null)
         {
-            string[] probePaths = {
-                "language/en-uk/text/book.babel",
-                "data/language/en-uk/text/book.babel",
-                "language/text/book.babel",
-                "data/language/text/book.babel",
-            };
-
-            foreach (string path in probePaths)
+            foreach (string path in Engine_GameCulture.MountCandidates(Engine_GameCulture.Current, "text/book.babel"))
             {
                 byte[]? blob = _resolver(path);
                 if (blob is not null && blob.Length > 0)
@@ -123,6 +129,8 @@ public static class Engine_BnkTextBankLoader
             return null;
         }
 
+        // The culture in force first, then en-uk, then whatever else ships a book.
+        IReadOnlyList<string> order = Engine_GameCulture.SearchOrder(Engine_GameCulture.Current);
         var candidates = new List<string>();
         try
         {
@@ -140,16 +148,24 @@ public static class Engine_BnkTextBankLoader
             return null;
         }
 
-        candidates.Sort((a, b) =>
+        int Rank(string path)
         {
-            bool englishA = a.Contains("en-", StringComparison.OrdinalIgnoreCase);
-            bool englishB = b.Contains("en-", StringComparison.OrdinalIgnoreCase);
-            if (englishA != englishB)
+            string culture = Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(path))) ?? string.Empty;
+            for (int i = 0; i < order.Count; ++i)
             {
-                return englishA ? -1 : 1;
+                if (string.Equals(culture, order[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    return i;
+                }
             }
 
-            return string.CompareOrdinal(a, b);
+            return order.Count;
+        }
+
+        candidates.Sort((a, b) =>
+        {
+            int byCulture = Rank(a).CompareTo(Rank(b));
+            return byCulture != 0 ? byCulture : string.CompareOrdinal(a, b);
         });
 
         foreach (string path in candidates)

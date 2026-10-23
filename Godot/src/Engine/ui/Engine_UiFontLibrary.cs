@@ -68,34 +68,76 @@ public sealed class Engine_UiFontLibrary
 	{
 		var library = new Engine_UiFontLibrary();
 
-		string directory = FontDirectory(gameDataRoot, culture)
-			?? FontDirectory(gameDataRoot, DefaultCulture)
-			?? string.Empty;
-
+		string directory = DirectoryFor(gameDataRoot, culture);
 		if (directory.Length == 0)
 		{
 			library.Failures.Add($"no fonts directory under {gameDataRoot}/language");
 			return library;
 		}
 
-		library.Directory = directory;
+		library.LoadFrom(directory);
+		return library;
+	}
+
+	/// <summary>
+	/// Reads the buckets again for another culture, IN PLACE, so everything holding this library
+	/// draws the new glyphs. True when the folder changed and was read; false when the culture
+	/// resolves to the folder already loaded (hu-hu, cs-cz, pl-pl and sk-sk ship no fonts and use
+	/// en-uk's, as the guest does) or to none, which keeps what is loaded.
+	/// </summary>
+	public bool Reload(string gameDataRoot, string culture)
+	{
+		string directory = DirectoryFor(gameDataRoot, culture);
+		if (directory.Length == 0 || string.Equals(directory, Directory, StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		_fonts.Clear();
+		Failures.Clear();
+		LoadFrom(directory);
+		return true;
+	}
+
+	/// <summary>The culture's own fonts folder, else the default culture's; empty when neither exists.</summary>
+	private static string DirectoryFor(string gameDataRoot, string culture) =>
+		FontDirectory(gameDataRoot, culture)
+			?? FontDirectory(gameDataRoot, DefaultCulture)
+			?? string.Empty;
+
+	private void LoadFrom(string directory)
+	{
+		Directory = directory;
+
+		// By name, ignoring case: zh-cht ships `GUI_Large.bft`, the others `gui_large.bft`, and
+		// the 360's file system never told them apart.
+		string[] present;
+		try
+		{
+			present = System.IO.Directory.GetFiles(directory);
+		}
+		catch (Exception exception)
+		{
+			Failures.Add($"{directory}: {exception.Message}");
+			return;
+		}
 
 		foreach ((UiFontBucket bucket, string name) in FileNames)
 		{
-			string path = Path.Combine(directory, name);
+			string path = Array.Find(present, file =>
+				string.Equals(Path.GetFileName(file), name, StringComparison.OrdinalIgnoreCase))
+				?? Path.Combine(directory, name);
 			try
 			{
 				Engine_BitmapFont font = Engine_BitmapFont.Load(path);
-				library._fonts[bucket] = new UiFont(font,
+				_fonts[bucket] = new UiFont(font,
 					Engine_BitmapFontTexture.CreateAtlasTextureDecompressed(font));
 			}
 			catch (Exception exception)
 			{
-				library.Failures.Add($"{name}: {exception.Message}");
+				Failures.Add($"{name}: {exception.Message}");
 			}
 		}
-
-		return library;
 	}
 
 	private static readonly (UiFontBucket, string)[] FileNames =

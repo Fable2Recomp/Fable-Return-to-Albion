@@ -490,14 +490,31 @@ public partial class Engine_FrontEndMenuView : Node3D
 		set
 		{
 			_cursorShown = value;
-			if (_cursor is not null && GodotObject.IsInstanceValid(_cursor))
-			{
-				_cursor.Visible = value;
-			}
+			ApplyCursorVisibility();
 		}
 	}
 
 	private bool _cursorShown = true;
+
+	/// <summary>Whether the last layout had a list to put the cursor on.</summary>
+	private bool _cursorPlaced;
+
+	/// <summary>
+	/// The cursor is the pad's: under keyboard and mouse the menu shows no cursor at all — the
+	/// highlighted row still stands in the highlight slot. Re-applied every frame, so a device
+	/// switch shows or hides it at once.
+	/// </summary>
+	private void ApplyCursorVisibility()
+	{
+		if (_cursor is not null && GodotObject.IsInstanceValid(_cursor))
+		{
+			bool show = _cursorShown && _cursorPlaced && !Engine_UiInputMode.KeyboardMouse;
+			if (_cursor.Visible != show)
+			{
+				_cursor.Visible = show;
+			}
+		}
+	}
 
 	private Node3D? _cursor;
 
@@ -536,7 +553,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 		}
 
 		_cursor = null;
-		_ringLocal = null;
+		_cursorLeft = null;
 		_cursorRest = Transform3D.Identity;
 		System.Array.Clear(_rowItem);
 		System.Array.Clear(_rowFaced);
@@ -568,7 +585,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 	private void ShowModel(Engine_FrontEndMenu menu)
 	{
 		Menu = menu;
-		_pcCentre = PcMinCentre;
+		_seek = null;
 		if (_rows[0] is not null)
 		{
 			Refresh();
@@ -678,8 +695,11 @@ public partial class Engine_FrontEndMenuView : Node3D
 		return dispatch;
 	}
 
-	/// <summary>Whether the column is mid-slide — a pointer resting on it must not re-pick.</summary>
-	public bool Sliding => _sliding;
+	/// <summary>
+	/// The press gate is up: a fold is cascading and A would be swallowed (`WaitForInput`). A
+	/// click waits for it to drop before it acts.
+	/// </summary>
+	public bool PressGated => _animating;
 
 	/// <summary>
 	/// The entry drawn under a canvas point (the UI camera is orthographic, so global X/Y are
@@ -710,6 +730,28 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>
+	/// Whether <paramref name="canvas"/> lies on the list's column: the span of its shown rows, gaps
+	/// between them included, widened by half a row above and below — where a wheel notch belongs
+	/// to this list even when the pointer is not on a row.
+	/// </summary>
+	public bool ColumnHas(Vector2 canvas)
+	{
+		Rect2? column = null;
+		for (int r = 0; r < _rows.Length; ++r)
+		{
+			if (_rows[r] is not { } row || !row.IsVisibleInTree() || _rowItem[r] is null || _to[r].Opacity <= 0f ||
+				Engine_UiPointer.CanvasBounds(row) is not { } bounds)
+			{
+				continue;
+			}
+
+			column = column is { } held ? held.Merge(bounds) : bounds;
+		}
+
+		return column is { } span && span.Grow(RowPitch * 0.5f).HasPoint(canvas);
+	}
+
+	/// <summary>
 	/// Moves the highlight onto <paramref name="item"/>, as a press of the stick would. True when
 	/// it moved. Ignored mid-slide, like the stick: the guest's `WaitForInput` gate.
 	/// </summary>
@@ -732,67 +774,47 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	// ---------------------------------------------------------------------------------------
-	// THE PC LIST — keyboard and mouse
+	// THE MOUSE ON THE CAROUSEL — keyboard and mouse
 	// ---------------------------------------------------------------------------------------
 	//
-	// With the keyboard and mouse active the column is a plain PC list: ten rows straight down
-	// at full size, the highlight moving over them, and the list scrolling only when the
-	// highlight would leave it (or by the wheel and the scroll bar). The console carousel —
-	// highlight pinned to slot 4, the column bowing and fading at its ends — comes back the
-	// moment the controller is touched. Both lay out through the same slots and `Window`: the
-	// PC list is `Window(centre)` with the centre held between PcMinCentre and count − 7, which
-	// puts the first row in slot 2 and the tenth in slot 11.
-
-	/// <summary>The centre that puts row 1 in slot 2: `Window(3, n)` is rows 1..10.</summary>
-	private const int PcMinCentre = 3;
+	// Under the keyboard and mouse the list IS the controller's carousel — the highlight pinned
+	// to slot 4, the column bowing and fading at its ends, the ring cursor with its keycap — laid
+	// out exactly as for the pad. The mouse drives it and never moves it by itself: pointer
+	// movement does nothing, a wheel notch is a D-pad step (`GameUi.PointerList`), a click picks
+	// the row it lands on, and the scroll bar below walks the highlight to the row it names.
 
 	/// <summary>
-	/// The book this list stands in, or null for a list with none (the title). Its footer —
-	/// `ExpandableMenu.Money`, the Back prompt and the gold, the same group in every book —
-	/// frames the PC column: rows stop above it, and the column's top margin mirrors the
-	/// footer's bottom one. Every list frames itself this one way.
+	/// The cursor is the GUEST's: the stick goes to its latch and this list's highlight only
+	/// follows it, so a pointer that wants the highlight elsewhere sends pad steps rather than
+	/// moving it here. Stated by the drive that routes the stick.
 	/// </summary>
-	public Engine_UiOwnedBook? Book { get; set; }
+	public bool GuestCursor { get; set; }
 
-	/// <summary>The footer's canvas rectangle as of this frame, or null when none is drawn.</summary>
-	private Rect2? _footer;
-
-	private void MeasureFooter() =>
-		_footer = Book is { } book && IsInstanceValid(book) &&
-			book.NodeFor("ExpandableMenu.Money") is { } money
-				? Engine_UiPointer.CanvasBounds(money)
-				: null;
-
-	/// <summary>The top of the footer in canvas units, or null: no row is drawn under it.</summary>
-	private float? FooterTop => _footer?.End.Y;
-
-	/// <summary>The bottom of the footer in canvas units, or null.</summary>
-	private float? FooterBottom => _footer?.Position.Y;
+	/// <summary>The row the scroll bar sent the highlight to, 1-based; it walks there a step a frame.</summary>
+	private int? _seek;
 
 	/// <summary>
-	/// How far the PC column stands below the slot table: enough that the first row's top is as
-	/// far under the screen's top edge as the footer's bottom is over its bottom edge, so the
-	/// list is framed the same at both ends. Zero without a footer.
+	/// Walks the highlight to a 1-based row, one ordinary step per frame, so the carousel slides
+	/// as it does for the stick. For a list whose cursor is ours; a guest's takes pad steps.
 	/// </summary>
-	private float PcDrop
+	public void SeekTo(int index) => _seek = index;
+
+	/// <summary>One frame of the walk <see cref="SeekTo"/> started. It ends on the row, or where the model refuses a step.</summary>
+	private void Seek()
 	{
-		get
+		if (_seek is not { } target || Menu is null)
 		{
-			if (FooterBottom is not { } bottom || Engine_UiPointer.VisibleCanvas is not { } canvas)
-			{
-				return 0f;
-			}
-
-			float margin = bottom - canvas.Position.Y;
-			float firstTop = LayoutOrigin.Y + Slots[HighlightSlot - 1].Y -
-				((2 - HighlightSlot) * RowPitch) + (RowPitch * 0.5f);
-			return Mathf.Max(0f, firstTop - (canvas.End.Y - margin));
+			return;
 		}
-	}
 
-	/// <summary>The canvas y of a PC slot's row origin.</summary>
-	private float PcSlotY(int slot) =>
-		LayoutOrigin.Y + Slots[HighlightSlot - 1].Y - ((slot - HighlightSlot) * RowPitch) - PcDrop;
+		if (!Engine_UiCarouselBar.StepToward(Menu.Model, target))
+		{
+			_seek = null;
+			return;
+		}
+
+		Refresh();
+	}
 
 	/// <summary>
 	/// This view's origin in the laid-out canvas — its global origin with any menu seat taken
@@ -805,115 +827,46 @@ public partial class Engine_FrontEndMenuView : Node3D
 	private Vector3 LayoutToGlobal(Vector3 laidOut) =>
 		GlobalTransform * Engine_UiSeats.LayoutTransform(this).AffineInverse() * laidOut;
 
-	/// <summary>Rows the PC list shows at once: slots 2 on, as many as clear the footer.</summary>
-	public int PcRows
-	{
-		get
-		{
-			int rows = 0;
-			for (int slot = 2; slot <= 1 + WindowSize; ++slot)
-			{
-				if (FooterTop is { } top && PcSlotY(slot) - (RowPitch * 0.5f) < top)
-				{
-					break;
-				}
+	/// <summary>
+	/// Whether the scroll bar is up: the mouse is the device and the list has more rows than the
+	/// carousel draws at once (<see cref="Engine_UiCarouselBar.Shown"/>).
+	/// </summary>
+	public bool Scrollable =>
+		Engine_UiInputMode.KeyboardMouse && Menu is not null &&
+		Engine_UiCarouselBar.Shown(Menu.Visible.Count, Engine_UiCarouselBar.Capacity(FadesTopEnd, FadesBottomEnd));
 
-				++rows;
-			}
+	/// <summary>The 1-based row a 0..1 place on the bar names.</summary>
+	public int RowAtBar(float position) => Engine_UiCarouselBar.IndexAt(position, Menu?.Visible.Count ?? 0);
 
-			return Math.Max(1, rows);
-		}
-	}
+	/// <summary>A press or drag on the bar, for a list whose cursor is ours: the highlight walks to the row it names.</summary>
+	public void ScrollTo(float position) => SeekTo(RowAtBar(position));
 
-	/// <summary>Rows below the centre the PC window reaches.</summary>
-	private int PcBelowCentre => PcRows - (HighlightSlot - 2) - 1;
-
-	/// <summary>The PC list's scroll position, as the centre <see cref="Window"/> is built on.</summary>
-	private int _pcCentre = PcMinCentre;
-
-	/// <summary>Which mode the rows were last laid out for.</summary>
-	private bool _laidOutPc;
-
-	/// <summary>The <see cref="PcDrop"/> the rows were last laid out with.</summary>
-	private float _laidOutDrop;
-
-	private static bool PcMode => Engine_UiInputMode.KeyboardMouse;
-
-	private int PcMaxCentre => System.Math.Max(PcMinCentre, (Menu?.Visible.Count ?? 0) - PcBelowCentre);
-
-	/// <summary>Scrolls the PC list by wheel notches, leaving the highlight where it is.</summary>
-	public bool Scroll(int steps)
-	{
-		if (Menu is null || steps == 0 || !PcMode)
-		{
-			return false;
-		}
-
-		int to = System.Math.Clamp(_pcCentre + steps, PcMinCentre, PcMaxCentre);
-		if (to == _pcCentre)
-		{
-			return false;
-		}
-
-		_pcCentre = to;
-		Refresh();
-		return true;
-	}
-
-	/// <summary>Whether the PC list has more rows than it shows — the scroll bar's condition.</summary>
-	public bool Scrollable => PcMode && Menu is not null && Menu.Visible.Count > PcRows;
-
-	/// <summary>The scroll position as 0..1 and the shown fraction, for the scroll bar.</summary>
-	public (float Position, float Shown) ScrollState()
-	{
-		int count = Menu?.Visible.Count ?? 0;
-		if (count <= PcRows)
-		{
-			return (0f, 1f);
-		}
-
-		float span = PcMaxCentre - PcMinCentre;
-		return (span <= 0f ? 0f : (_pcCentre - PcMinCentre) / span, PcRows / (float)count);
-	}
-
-	/// <summary>Scrolls the PC list to a 0..1 position — the scroll bar's drag.</summary>
-	public void ScrollTo(float position)
-	{
-		int to = PcMinCentre + Mathf.RoundToInt(Mathf.Clamp(position, 0f, 1f) * (PcMaxCentre - PcMinCentre));
-		if (to != _pcCentre)
-		{
-			_pcCentre = to;
-			Refresh();
-		}
-	}
-
-	// THE SCROLL BAR rides the book's curved left edge, where the console's A cursor sits: a
-	// bronze line through the ring's place at every shown row — bowed as the console column is
-	// bowed (`g_MenuPositionSlots` x 0, 22, 42, 56 … 56, 50, 42, 22, 0), the curve its rows hug —
-	// and a bronze ring for a thumb. The cursor itself is put away in the PC list.
+	// THE SCROLL BAR stands OUTSIDE the ring cursor, down the book's left margin: a bronze line
+	// bowed as the console column is bowed (`g_MenuPositionSlots` x 0, 22, 42, 56 … 56, 50, 42,
+	// 22, 0) — the curve its rows hug — running past the left edge of the cursor art by a gap and
+	// half a thumb, so the ring and its keycap are never under it. It spans the slots the
+	// carousel draws, and its thumb, a bronze ring, stands at highlight over count.
 
 	private MeshInstance3D? _barTrack;
 	private MeshInstance3D? _barThumb;
 
-	/// <summary>The track's points in canvas units, top to bottom; empty while hidden.</summary>
+	/// <summary>The track's points in laid-out canvas units, top to bottom; empty while hidden.</summary>
 	private readonly List<Vector2> _barPoints = new();
 
 	private float _thumbSize;
 
 	private const float TrackWidth = 5f;
 
+	/// <summary>Canvas units between the cursor art's outer edge and the thumb's.</summary>
+	private const float BarGap = 10f;
+
+	/// <summary>The cursor art's left edge at rest, laid-out canvas x; held while the art is not drawn.</summary>
+	private float? _cursorLeft;
+
 	private void UpdateScrollBar()
 	{
-		// The ring's centre, from the green glyph's own quad — its transform, not its drawn
-		// bounds, so it measures while the PC list has the cursor put away.
-		if (_ringLocal is null && _cursor is not null &&
-			Engine_UiTheme.FindByName(_cursor, "green_top") is MeshInstance3D { Mesh: not null } glyph)
-		{
-			_ringLocal = _cursor.ToLocal(glyph.GlobalTransform * glyph.GetAabb().GetCenter());
-		}
-
 		_barPoints.Clear();
-		if (!Scrollable || !IsVisibleInTree() || RingAtRest() is not { } ring)
+		if (!Scrollable || !IsVisibleInTree() || CursorLeft() is not { } left)
 		{
 			if (_barTrack is not null)
 			{
@@ -924,38 +877,54 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return;
 		}
 
-		// The ring's place at each shown slot: its rest x plus the console bow for that slot.
-		float restSlotY = Slots[HighlightSlot - 1].Y;
-		for (int slot = 2; slot <= 1 + PcRows; ++slot)
+		// The track at each drawn slot: clear of the cursor at the highlight slot, plus the
+		// console bow for that slot. A slot the screen fades to nothing is not on it.
+		_thumbSize = RowPitch * 0.62f;
+		float x = left - BarGap - (_thumbSize * 0.5f);
+		float restX = Slots[HighlightSlot - 1].X;
+		int top = FadesTopEnd ? 3 : 2;
+		int bottom = FadesBottomEnd ? Slots.Length - 2 : Slots.Length - 1;
+		for (int slot = top; slot <= bottom; ++slot)
 		{
-			float bow = Slots[slot - 1].X - Slots[HighlightSlot - 1].X;
-			float y = ring.Y + (PcSlotY(slot) - (LayoutOrigin.Y + restSlotY));
-			_barPoints.Add(new Vector2(ring.X + bow, y));
+			_barPoints.Add(new Vector2(x + (Slots[slot - 1].X - restX), LayoutOrigin.Y + Slots[slot - 1].Y));
 		}
 
 		EnsureScrollBar();
-		_thumbSize = RowPitch * 0.62f;
 		DrawTrack();
-		(float position, _) = ScrollState();
-		Vector2 at = PointAlong(position);
+		Vector2 at = PointAlong(Engine_UiCarouselBar.Position(Menu!.Model.CurrentHighlightIdx, Menu.Visible.Count));
 		_barThumb!.Visible = true;
 		((QuadMesh)_barThumb.Mesh).Size = new Vector2(_thumbSize, _thumbSize);
 		_barThumb.GlobalPosition = LayoutToGlobal(new Vector3(at.X, at.Y, LayoutOrigin.Z + 6f));
 	}
 
-	/// <summary>The cursor ring's centre in the cursor's own units, measured once.</summary>
-	private Vector3? _ringLocal;
-
-	/// <summary>The cursor ring's centre at its rest slot, in canvas units.</summary>
-	private Vector2? RingAtRest()
+	/// <summary>
+	/// The left edge of the cursor art as drawn — the carousel's cursor never leaves the
+	/// highlight slot — in laid-out canvas x. Measured while it is drawn and held after.
+	/// </summary>
+	private float? CursorLeft()
 	{
-		if (_ringLocal is not { } local)
+		if (_cursor is not null && GodotObject.IsInstanceValid(_cursor) && _cursor.IsInsideTree())
 		{
-			return null;
+			// Hidden under keyboard and mouse: shown for the measure and hidden again in the same
+			// frame, so it is never drawn.
+			bool hidden = !_cursor.Visible;
+			if (hidden && _cursorLeft is null)
+			{
+				_cursor.Visible = true;
+			}
+
+			if (_cursor.Visible && Engine_UiPointer.CanvasBounds(_cursor) is { } drawn)
+			{
+				_cursorLeft = Engine_UiSeats.PointToLayout(this, drawn.Position).X;
+			}
+
+			if (hidden)
+			{
+				_cursor.Visible = false;
+			}
 		}
 
-		Vector3 atRest = Engine_UiSeats.LayoutTransform(this) * (_cursorRest * local);
-		return new Vector2(atRest.X, atRest.Y);
+		return _cursorLeft;
 	}
 
 	/// <summary>The point a 0..1 position stands for, along the track between its ends.</summary>
@@ -1070,24 +1039,25 @@ public partial class Engine_FrontEndMenuView : Node3D
 	}
 
 	/// <summary>
-	/// The 0..1 position a canvas height stands for on the track, clamped to its ends — a drag
-	/// keeps tracking the pointer's height after it strays off the bar.
+	/// The 0..1 position a pointer's height stands for on the track, clamped to its ends — a drag
+	/// keeps tracking the pointer after it strays off the bar.
 	/// </summary>
-	public float ScrollBarPositionAt(float y)
+	public float ScrollBarPositionAt(Vector2 at)
 	{
 		if (_barPoints.Count < 2)
 		{
 			return 0f;
 		}
 
+		float y = Engine_UiSeats.PointToLayout(this, at).Y;
 		float top = _barPoints[0].Y;
 		float bottom = _barPoints[^1].Y;
 		return top == bottom ? 0f : Mathf.Clamp((top - y) / (top - bottom), 0f, 1f);
 	}
 
 	/// <summary>
-	/// Where on the scroll bar a canvas point is, as a 0..1 position; null off it. Near the
-	/// curve, within the thumb's reach either side, as a PC bar's hit area is wider than it looks.
+	/// Where on the scroll bar a pointer is, as a 0..1 position; null off it. Near the curve,
+	/// within the thumb's reach either side, as a PC bar's hit area is wider than it looks.
 	/// </summary>
 	public float? ScrollBarAt(Vector2 at)
 	{
@@ -1096,39 +1066,21 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return null;
 		}
 
+		Vector2 laid = Engine_UiSeats.PointToLayout(this, at);
 		float reach = Math.Max(_thumbSize * 0.6f, 14f);
 		for (int i = 0; i + 1 < _barPoints.Count; ++i)
 		{
 			Vector2 a = _barPoints[i];
 			Vector2 b = _barPoints[i + 1];
 			Vector2 ab = b - a;
-			float t = ab.LengthSquared() <= 0f ? 0f : Mathf.Clamp((at - a).Dot(ab) / ab.LengthSquared(), 0f, 1f);
-			if ((a + (ab * t)).DistanceTo(at) <= reach)
+			float t = ab.LengthSquared() <= 0f ? 0f : Mathf.Clamp((laid - a).Dot(ab) / ab.LengthSquared(), 0f, 1f);
+			if ((a + (ab * t)).DistanceTo(laid) <= reach)
 			{
-				return ScrollBarPositionAt(at.Y);
+				return ScrollBarPositionAt(at);
 			}
 		}
 
 		return null;
-	}
-
-	/// <summary>
-	/// The PC list's centre for this layout: held where it was, moved just enough to keep the
-	/// highlight on screen when the keys or the guest move it past an edge.
-	/// </summary>
-	private int PcCentre(int highlight)
-	{
-		if (highlight < _pcCentre - (HighlightSlot - 2))
-		{
-			_pcCentre = highlight + (HighlightSlot - 2);
-		}
-		else if (highlight > _pcCentre + PcBelowCentre)
-		{
-			_pcCentre = highlight - PcBelowCentre;
-		}
-
-		_pcCentre = System.Math.Clamp(_pcCentre, PcMinCentre, PcMaxCentre);
-		return _pcCentre;
 	}
 
 	/// <summary>The screen the last <see cref="Activate"/> asked for, cleared by reading it.</summary>
@@ -1475,9 +1427,8 @@ public partial class Engine_FrontEndMenuView : Node3D
 	private Transform3D _cursorRest = Transform3D.Identity;
 
 	/// <summary>
-	/// Puts the cursor on the highlighted row's slot. With the list anchored under the pointer
-	/// the highlight need not be in slot 4: the art moves to the row and takes that slot's
-	/// scale, about the row's own origin, as the row itself does.
+	/// Puts the cursor on the highlighted row's slot — slot 4, the carousel's centre being the
+	/// highlight — taking that slot's scale about the row's own origin, as the row itself does.
 	/// </summary>
 	private void PlaceCursor(int highlight, int centre)
 	{
@@ -1525,25 +1476,17 @@ public partial class Engine_FrontEndMenuView : Node3D
 			System.Array.Clear(_rowItem);
 			System.Array.Clear(_rowFaced);
 
-			if (_cursor is not null)
-			{
-				_cursor.Visible = false;
-			}
+			_cursorPlaced = false;
+			ApplyCursorVisibility();
 			return;
 		}
 
-		// The PC list draws no cursor: the console's ring is A over B (`green_top` over
-		// `rim_and_red`), a pad prompt the mouse has no use for. The highlighted label lights
-		// instead, and the scroll bar takes the ring's place.
-		if (_cursor is not null)
-		{
-			_cursor.Visible = !PcMode;
-		}
+		_cursorPlaced = true;
+		ApplyCursorVisibility();
 
+		// The carousel: the window is centred on the highlight, which stands in slot 4.
 		int highlight = Menu.HighlightIndex + 1;
-		_laidOutPc = PcMode;
-		_laidOutDrop = PcMode ? PcDrop : 0f;
-		int centre = _laidOutPc ? PcCentre(highlight) : highlight;
+		int centre = highlight;
 		(int first, int last) = Window(centre, Menu.Visible.Count);
 		PlaceCursor(highlight, centre);
 
@@ -1558,7 +1501,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 		{
 			// `Engine_UiMenuFormatter.SlotFor` is the one statement of `forceReset`'s arithmetic.
 			int slot = Engine_UiMenuFormatter.SlotFor(display, centre);
-			if (slot < 1 || slot > Slots.Length || (_laidOutPc && slot > 1 + PcRows))
+			if (slot < 1 || slot > Slots.Length)
 			{
 				// Skipping rather than clamping keeps an off-by-one visible as a missing row
 				// instead of two entries stacked in one slot.
@@ -1793,16 +1736,8 @@ public partial class Engine_FrontEndMenuView : Node3D
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("frontendmenuview");
 
-		MeasureFooter();
-
-		// The device changed, or the footer the PC column is framed against: lay the rows out
-		// again now, not at the next press.
-		if (Menu is not null && (_laidOutPc != PcMode ||
-			(PcMode && Mathf.Abs(PcDrop - _laidOutDrop) > 0.5f)))
-		{
-			Refresh();
-		}
-
+		ApplyCursorVisibility();
+		Seek();
 		UpdateScrollBar();
 		if (!_sliding)
 		{
@@ -1899,17 +1834,6 @@ public partial class Engine_FrontEndMenuView : Node3D
 		Slot placement = Slots[slot - 1];
 		Style style = Styles[placement.StyleIndex - 1];
 
-		// The PC list: one straight column at the full row's x and pitch, every shown row at full
-		// size and opacity; the two gutter slots stay empty.
-		if (PcMode)
-		{
-			placement = new Slot(
-				Slots[HighlightSlot - 1].X,
-				Slots[HighlightSlot - 1].Y - ((slot - HighlightSlot) * RowPitch) - PcDrop,
-				slot is 1 or 12 ? 1 : HighlightSlot);
-			style = Styles[placement.StyleIndex - 1];
-		}
-
 		// The end-slot fade, from `expandablemenuformatting.lua`:
 		//
 		//   main.0 FadeOutTopItemEarly()    g_MenuPositionSlots[2].opacity_scale_index  = 5
@@ -1918,7 +1842,7 @@ public partial class Engine_FrontEndMenuView : Node3D
 		// Style 5 is the zero-opacity one. Both are called from a screen's POPULATE, so they are a
 		// standing property of the laid-out column, not a per-scroll condition. The list edge is an
 		// opacity treatment; the pools have no mask.
-		if (!PcMode && ((slot == 2 && FadesTopEnd) || (slot == 11 && FadesBottomEnd)))
+		if ((slot == 2 && FadesTopEnd) || (slot == 11 && FadesBottomEnd))
 		{
 			style = Styles[4];
 		}
@@ -1935,12 +1859,9 @@ public partial class Engine_FrontEndMenuView : Node3D
 		// be entered.
 		return new RowPose(placement.X + tab, placement.Y, scale, style.Opacity)
 		{
-			// The PC list has no A cursor; the highlighted row's label lights instead.
 			LabelColour = item.IsGhosted && !heading
 				? Engine_UiMenuConstants.GhostedChildColour
-				: PcMode && ReferenceEquals(item, Menu?.Highlighted)
-					? Colors.White
-					: Engine_UiMenuConstants.LiveTextColour,
+				: Engine_UiMenuConstants.LiveTextColour,
 			LabelOpacity = item.IsGhosted
 				? heading
 					? Engine_UiMenuConstants.GhostedHeadingOpacity

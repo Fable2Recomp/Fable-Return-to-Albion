@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 218;
+	public const int ExpectedAbiVersion = 220;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -6113,6 +6113,126 @@ public static class HostBridge
 	public static ulong TraceZoneBegin(string name) =>
 		TryGetAbiVersion() is not null ? RefiiHostTraceZoneBegin(name) : 0UL;
 
+	// ---- hang watchdog ----
+	//
+	// The bridge's watchdog thread watches the MAIN thread's frame stamp and, when it stops for
+	// 8 s, writes exe_dir/logs/refii_hang_<utc>.txt: the main thread's native backtrace, every
+	// thread's /proc state, the guest thread table, the frame phase, the last host log lines and
+	// the memory numbers — without ptrace, without the debug channel (which that thread serves)
+	// and without Godot's logger (whose mutex it may hold). The feeds below are the stamps.
+
+	/// <summary>
+	/// False once a watchdog export proved missing from the loaded bridge: the feeds go quiet for
+	/// the rest of the run instead of throwing every frame. A diagnostic never takes the game down.
+	/// </summary>
+	private static bool _watchdogUsable = true;
+
+	private static bool WatchdogReady => _watchdogUsable && TryGetAbiVersion() is not null;
+
+	private static void WatchdogMissing(EntryPointNotFoundException e)
+	{
+		_watchdogUsable = false;
+		GD.PushWarning($"[hang-watchdog] off for this run: the bridge lacks its exports ({e.Message})");
+	}
+
+	/// <summary>The main thread's per-frame stamp; the first call starts the watchdog.</summary>
+	public static void FrameAlive(long frame)
+	{
+		if (!WatchdogReady)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostFrameAlive((ulong)frame);
+		}
+		catch (EntryPointNotFoundException e)
+		{
+			WatchdogMissing(e);
+		}
+	}
+
+	/// <summary>Registers a frame-phase name; its index (1-based), or 0 when the table is full or the bridge is down.</summary>
+	public static uint RegisterFramePhase(string name)
+	{
+		if (!WatchdogReady)
+		{
+			return 0u;
+		}
+
+		try
+		{
+			return RefiiHostRegisterFramePhase(name);
+		}
+		catch (EntryPointNotFoundException e)
+		{
+			WatchdogMissing(e);
+			return 0u;
+		}
+	}
+
+	/// <summary>The main thread entered the phase with this registered index.</summary>
+	public static void SetFramePhase(uint index)
+	{
+		if (index == 0u || !WatchdogReady)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetFramePhase(index);
+		}
+		catch (EntryPointNotFoundException e)
+		{
+			WatchdogMissing(e);
+		}
+	}
+
+	/// <summary>
+	/// The host's log file, stated once so a hang report can name it. The watchdog never takes
+	/// a per-print feed: Godot's logger chain dispatches into a managed Logger through the C#
+	/// glue, which looks StringNames up — a hang vector on the StringName mutex.
+	/// </summary>
+	public static void SetHostLogPath(string path)
+	{
+		if (!WatchdogReady)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetHostLogPath(path);
+		}
+		catch (EntryPointNotFoundException e)
+		{
+			WatchdogMissing(e);
+		}
+	}
+
+	/// <summary>What the watchdog has written this run, or null when the bridge is down.</summary>
+	public static (uint Reports, string LastPath, double LastStallSeconds, bool Stalled)? HangReport()
+	{
+		if (!WatchdogReady)
+		{
+			return null;
+		}
+
+		var path = new byte[4096];
+		try
+		{
+			uint reports = RefiiHostHangReport(path, (uint)path.Length, out double seconds, out int stalled);
+			return (reports, Decode(path), seconds, stalled != 0);
+		}
+		catch (EntryPointNotFoundException e)
+		{
+			WatchdogMissing(e);
+			return null;
+		}
+	}
+
 	public static void TraceZoneEnd(ulong zone)
 	{
 		if (zone != 0UL)
@@ -8797,6 +8917,35 @@ public static class HostBridge
 	}
 
 	/// <summary>
+	/// The locale code of the language the guest is running in ("en-uk", "hu-hu", ...): the
+	/// current row of its installed-language table, the code it hands XLip when it switches.
+	/// Null when no guest is up, the table is not built yet, or the native library predates it —
+	/// the caller keeps the culture it has rather than guessing one.
+	/// </summary>
+	public static string? GetCurrentCulture()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		var code = new byte[32];
+		uint length;
+		try
+		{
+			length = RefiiHostGetCurrentCulture(code, (uint)code.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		return length == 0 || length >= code.Length
+			? null
+			: System.Text.Encoding.ASCII.GetString(code, 0, (int)length);
+	}
+
+	/// <summary>
 	/// Pump health. Three numbers because they fail differently: zero ticks is a hook that
 	/// never landed, ticks climbing with a non-empty queue is the guest not yet ready, and
 	/// ticks climbing with nothing drained is nobody posting.
@@ -9621,6 +9770,24 @@ public static class HostBridge
 	private static extern void RefiiHostTraceGpuPasses(
 		byte[] names, uint nameStride, long[] cpuUs, long[] gpuUs, uint count);
 
+	// ---- hang watchdog (hang_watchdog.cpp) ----
+
+	[DllImport(Library)]
+	private static extern void RefiiHostFrameAlive(ulong frame);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostRegisterFramePhase([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetFramePhase(uint index);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetHostLogPath([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostHangReport(
+		[Out] byte[] outPath, uint pathCapacity, out double lastStallSeconds, out int stalled);
+
 	[DllImport(Library)]
 	private static extern uint RefiiHostHeapLookup(
 		uint addr, out uint heapBase, out uint heapSize, out uint pageSize, out uint protect);
@@ -10041,6 +10208,9 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetLanguages(
 		out uint current, byte[] names, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCurrentCulture(byte[] code, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetLoadingScreenArt(

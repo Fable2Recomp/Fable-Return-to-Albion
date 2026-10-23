@@ -152,10 +152,15 @@ varying vec4 v_transfer;
 /// A TREE'S PER-PLACEMENT FADE (`sub_8220AF90`; Engine_PropDrawRange.TreeBand stamps the band):
 /// (start, 1/length, power) in and (end, 1/length, power) out, measured from the main camera to
 /// this copy's own box centre — per copy, so a batch fades tree by tree as the title's does.
-/// End 0 is no tree band.
+/// End 0 is no tree band. A TIER-CULLED PROP carries the same out band at its cull radius
+/// (Engine_PropFade.SetRadius, centre = its origin in a batch), so a cell's undergrowth dithers in
+/// copy by copy as each crosses into range instead of appearing with the cell.
 instance uniform vec4 xr_tree_fade_in = vec4(0.0);
 instance uniform vec4 xr_tree_fade_out = vec4(0.0);
 instance uniform vec3 xr_tree_centre = vec3(0.0);
+/// A PROP'S ARRIVAL: 0 the frame its mesh stood, 1 after Engine_PropFade.ArrivalSeconds, so a copy
+/// the streamer delivers inside its radius dithers in instead of popping. 1 is standing.
+instance uniform float xr_fade_alpha = 1.0;
 varying float v_tree_fade;
 
 void vertex() {
@@ -175,15 +180,17 @@ void vertex() {
     }
     v_tree_fade = 1.0;
     // FABLE_SOLID never carries a band: a tree is .mdl byte 77 == 2, which hands every one of
-    // its surfaces, LOD1 included, to the two-sided or wind shader (Engine_MdlMaterial).
+    // its surfaces, LOD1 included, to the two-sided or wind shader (Engine_MdlMaterial), and a
+    // solid prop's dither would cost Godot's shared depth-only shadow material (it discards).
 #ifndef FABLE_SOLID
+    v_tree_fade = xr_fade_alpha;
     if (xr_tree_fade_out.x > 0.0) {
         float d = distance(MAIN_CAM_INV_VIEW_MATRIX[3].xyz, (MODEL_MATRIX * vec4(xr_tree_centre, 1.0)).xyz);
         float fade_in = xr_tree_fade_in.y > 0.0
             ? pow(clamp((d - xr_tree_fade_in.x) * xr_tree_fade_in.y, 0.0, 1.0), xr_tree_fade_in.z)
             : 1.0;
         float fade_out = pow(clamp((xr_tree_fade_out.x - d) * xr_tree_fade_out.y, 0.0, 1.0), xr_tree_fade_out.z);
-        v_tree_fade = fade_in * fade_out;
+        v_tree_fade *= fade_in * fade_out;
     }
 #endif
     // GUARDED BY AN `if`, NOT AN EARLY `return`. Godot rejects the latter outright — "Using

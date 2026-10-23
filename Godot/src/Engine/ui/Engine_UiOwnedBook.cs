@@ -2347,22 +2347,13 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// <summary>Seconds since the last sample, for the page scroll (`SCROLL_SPEED` is per second: page.dis main.1 pc15..27).</summary>
 	public double ScrollDelta { get; set; } = 1.0 / 30.0;
 
-	/// <summary>Canvas units the scroll region's content is slid up from authored; 0 at the top.</summary>
-	private float _scrollOffset;
-
-	/// <summary>Canvas units of scrollable overflow the last frame measured; 0 = fits.</summary>
-	private float _scrollRange;
-
-	// THE MOUSE ON THE PAGE. The wheel and the scroll bar reach the region the way the stick
-	// does, but in steps and in absolute positions; both are held until the next sample, which
-	// is the only place the offset is applied (it runs on the guest's frames).
-
-	/// <summary>Canvas units one wheel notch scrolls.</summary>
-	private const float WheelUnitsPerNotch = 45f;
-
-	private float _wheelUnits;
-
-	private float? _scrollTo;
+	/// <summary>
+	/// The region's offset, overflow and held inputs — the one scroll state every text region
+	/// shares (<see cref="Engine_UiScrollRegion"/>). The wheel and the scroll bar reach it the way
+	/// the stick does, in steps and absolute positions, held until the next sample, the only place
+	/// the offset is applied (it runs on the guest's frames).
+	/// </summary>
+	private readonly Engine_UiScrollRegion _scroll = new();
 
 	/// <summary>The scroll region's window on screen, in canvas units; null when nothing scrolls.</summary>
 	public Rect2? ScrollRegionRect { get; private set; }
@@ -2371,7 +2362,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	private (float Top, float Bottom, float X)? _scrollBarSpan;
 
 	/// <summary>Wheel notches over the page: positive scrolls down.</summary>
-	public void AddScrollWheel(int notches) => _wheelUnits += notches * WheelUnitsPerNotch;
+	public void AddScrollWheel(int notches) => _scroll.AddWheel(notches);
 
 	/// <summary>
 	/// The 0..1 scroll position a canvas point on the authored scroll bar stands for — top arrow
@@ -2391,7 +2382,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	/// <summary>Scrolls the region to a 0..1 position — the scroll bar's drag.</summary>
-	public void ScrollRegionTo(float fraction) => _scrollTo = Mathf.Clamp(fraction, 0f, 1f);
+	public void ScrollRegionTo(float fraction) => _scroll.ScrollTo(fraction);
 
 	private string _scrollReport = string.Empty;
 
@@ -2407,7 +2398,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			if (_scrollKey != value)
 			{
 				_scrollKey = value;
-				_scrollOffset = 0f;
+				_scroll.Rewind();
 			}
 		}
 	}
@@ -2490,10 +2481,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 	}
 
-	/// <summary>The guest's scroll rate — `sub_828C30A8` feeds ~3 canvas units per 30 Hz tick at
-	/// full stick through the deadzone scale, ~100/s; a little faster reads better at 60.</summary>
-	private const float ScrollUnitsPerSecond = 150f;
-
 	/// <summary>
 	/// THE SCROLL REGION — `sub_828C3250`/`sub_829ED788`. The right stick slides the content
 	/// group inside the mask's band; the clip is the mask's and already painted on the content
@@ -2528,7 +2515,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				if (_scrollContentPath != contents[i])
 				{
 					_scrollContentPath = contents[i];
-					_scrollOffset = 0f;
+					_scroll.Rewind();
 				}
 				break;
 			}
@@ -2537,9 +2524,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		if (content is null)
 		{
 			// Off screen: the next showing starts at the top.
-			_scrollOffset = 0f;
-			_wheelUnits = 0f;
-			_scrollTo = null;
+			_scroll.Reset();
 			ScrollRegionRect = null;
 			_scrollBarSpan = null;
 			return;
@@ -2589,18 +2574,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			range = Mathf.Max(0f, (highest - lowest) - (100f * Mathf.Abs(mask.ScaleY)));
 		}
 
-		_scrollRange = range;
-		float stick = Refii.Game.GameInput.RightStickY;
-		if (_scrollTo is { } to)
-		{
-			_scrollOffset = to * range;
-			_scrollTo = null;
-		}
-
-		_scrollOffset = Mathf.Clamp(
-			_scrollOffset - (stick * ScrollUnitsPerSecond * (float)ScrollDelta) + _wheelUnits,
-			0f, range);
-		_wheelUnits = 0f;
+		// The guest's rate (`sub_828C30A8`, ~3 units a 30 Hz tick at full stick) is the region's.
+		float offset = _scroll.Step(Refii.Game.GameInput.RightStickY, ScrollDelta, range);
 
 		// Where the page sits on screen, for the pointer: the painted clip, which carries the
 		// wide-layout shift the document's mask does not.
@@ -2610,9 +2585,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			: null;
 		_scrollBarSpan = null;
 
-		if (_scrollOffset != 0f)
+		if (offset != 0f)
 		{
-			SetStatedYOf(content, StatedYOf(content) + _scrollOffset);
+			SetStatedYOf(content, StatedYOf(content) + offset);
 		}
 
 		if (barPath.Length != 0 && NodeByPath(barPath) is { } bar)
@@ -2626,7 +2601,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				// what the mirror carries, so the whole bar comes back to its authored alpha
 				// here before the arrows dim at their limits.
 				Engine_UiSceneBuilder.FadeSubtree(bar, 1f);
-				float fraction = _scrollOffset / range;
+				float fraction = _scroll.Fraction;
 				var up = Engine_UiTheme.FindByName(bar, "UpArrow") as Node3D;
 				var down = Engine_UiTheme.FindByName(bar, "DownArrow") as Node3D;
 				var icon = Engine_UiTheme.FindByName(bar, "Icon") as Node3D;
@@ -2652,7 +2627,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			}
 		}
 
-		string report = $"range {range:0} offset {_scrollOffset:0}";
+		string report = $"range {range:0} offset {offset:0}";
 		if (report != _scrollReport)
 		{
 			_scrollReport = report;

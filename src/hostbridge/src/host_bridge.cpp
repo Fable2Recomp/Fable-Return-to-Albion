@@ -101,6 +101,7 @@ void FlushLogging();
 
 #include "host_abi.h"
 #include "host_tracy.h"
+#include "hang_watchdog.h"
 #include "core/traced_mutex.h"
 
 // Included rather than redeclared like the Bink entries below: the audio exports marshal
@@ -1206,11 +1207,60 @@ LONG WINAPI SaveTracyOnUnhandled(PEXCEPTION_POINTERS info) {
 }
 #endif
 
+#ifndef _WIN32
+/// The guest's kernel thread table for a hang report: tid, flags (g guest-created, m main,
+/// r running), name, r1, lr and the back-chain frames (the walk RefiiHostGuestBacktrace documents),
+/// one line per thread, write(2) only. Called from the watchdog thread, LAST in a report: the
+/// object table takes its lock, and the kernel state may not exist yet.
+void WriteGuestThreadTableForHangReport(int fd) {
+    rex::system::KernelState* state = rex::system::kernel_state();
+    rex::memory::Memory* memory = SafeKernelMemory();
+    if (state == nullptr || memory == nullptr || memory->virtual_membase() == nullptr) {
+        crash::Append(fd, "  (no kernel state: the guest is not up)\n");
+        return;
+    }
+    const uint8_t* base = memory->virtual_membase();
+    auto threads = state->object_table()->GetObjectsByType<rex::system::XThread>();
+    char line[640];
+    for (const auto& thread : threads) {
+        PPCContext* context =
+            thread->thread_state() != nullptr ? thread->thread_state()->context() : nullptr;
+        const uint32_t r1 = context != nullptr ? context->r1.u32 : 0u;
+        const uint32_t lr = context != nullptr ? static_cast<uint32_t>(context->lr) : 0u;
+        int n = std::snprintf(line, sizeof(line), "  tid=%u %c%c%c %-24s r1=%08X lr=%08X frames:",
+                              thread->thread_id(), thread->is_guest_thread() ? 'g' : '-',
+                              thread->main_thread() ? 'm' : '-', thread->is_running() ? 'r' : '-',
+                              thread->thread() != nullptr ? thread->thread()->name().c_str() : "",
+                              r1, lr);
+        uint32_t sp = r1;
+        for (int frame = 0; frame < 24 && n > 0 && static_cast<size_t>(n) + 12 < sizeof(line) &&
+                            sp >= 0x10000u && sp < 0xC0000000u;
+             ++frame) {
+            const uint32_t back = GuestWordAt(base, sp);
+            if (back == 0u || back <= sp || back >= 0xC0000000u) break;
+            const uint32_t saved = GuestWordAt(base, back - 8u);
+            if (saved == 0u) break;
+            n += std::snprintf(line + n, sizeof(line) - static_cast<size_t>(n), " %08X", saved);
+            sp = back;
+        }
+        if (n > 0) {
+            crash::Append(fd, line);
+            crash::Append(fd, "\n");
+        }
+    }
+    std::snprintf(line, sizeof(line), "  %zu threads\n", threads.size());
+    crash::Append(fd, line);
+}
+#endif
+
 void InstallEmbeddedFailureHandlers() {
     static bool installed = false;
     if (installed) {
         return;
     }
+#ifndef _WIN32
+    refii_hang_watchdog::SetGuestTableWriter(WriteGuestThreadTableForHangReport);
+#endif
     installed = true;
 
 #ifndef _WIN32
@@ -2421,7 +2471,18 @@ extern "C" {
 /// 218 adds RefiiHostGetSaveCardNames — the load fan's save FILE names (the `szFileName` vector
 ///     at the front-end screen's +84, the join `LoadSave:N` commits by), so the host reads each
 ///     card's own sidecar (refii_save.json) for its mods marker and the export copy.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 218; }
+/// 219 adds the hang watchdog (hang_watchdog.cpp): RefiiHostFrameAlive (the main thread's
+///     per-frame stamp; the first call starts the watchdog), RefiiHostRegisterFramePhase /
+///     RefiiHostSetFramePhase (the frame phase the main thread is in, by registered index),
+///     RefiiHostSetHostLogPath (Godot's log file, stated once so a report names it — never a
+///     per-print feed: a managed Logger is a StringName-mutex hang vector) and
+///     RefiiHostHangReport (what was written: stall count, last report path, last stall
+///     length). A main thread that has not stamped for 8 s gets its native backtrace, every
+///     thread's /proc state, the guest thread table and the memory numbers written to
+///     exe_dir/logs/refii_hang_<utc>.txt.
+/// 220 adds RefiiHostGetCurrentCulture — the locale code of the guest's current language row, so
+///     the host's text book and fonts follow a language the player picks at the title.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 220; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -5482,6 +5543,79 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLanguages(uint32_t* out_current, char
     }
 
     return reported;
+}
+
+/// The locale code of the language the guest runs in: `+0` of the CURRENT row of the
+/// installed-language table (base `dword_83319930`, stride 96, current `dword_83319938`).
+///
+/// That code is what the guest switches by — `sub_82382C68` copies `96 * index + table` into
+/// the settings block it hands XLip (`strcpy_s` at 0x82382CC8, then `sub_82BF6F18`) — so it
+/// names the culture the guest's language roots (text, fonts, speechdoc) resolve under.
+///
+/// A switch frees and rebuilds the table on the tick thread (`sub_823826D8`: free at
+/// 0x8238276C, reallocation at 0x82382810, rows filled after), so the read is taken twice and
+/// kept only when both agree. Writes a NUL-terminated ASCII code and returns its length; 0
+/// when the table is not up or the code is not a plain culture name.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentCulture(char* out, uint32_t capacity) {
+    if (out == nullptr || capacity == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const uint32_t kLanguageTable = refii::guest::Address(0x83319930u);
+    const uint32_t kLanguageCount = refii::guest::Address(0x83319934u);
+    const uint32_t kLanguageCurrent = refii::guest::Address(0x83319938u);
+    constexpr uint32_t kLanguageStride = 96u;
+    constexpr uint32_t kCodeCapacity = 16u;
+
+    auto read_code = [&](char (&code)[kCodeCapacity + 1]) -> uint32_t {
+        const uint32_t table = GuestWordAt(base, kLanguageTable);
+        const uint32_t count = GuestWordAt(base, kLanguageCount);
+        const uint32_t current = GuestWordAt(base, kLanguageCurrent);
+        if (table < 0x10000u || table >= 0xC0000000u || count == 0 || count > 64u ||
+            current >= count) {
+            return 0;
+        }
+
+        const uint32_t row = table + (current * kLanguageStride);
+        for (uint32_t i = 0; i < kCodeCapacity; ++i) {
+            const char c = static_cast<char>(GuestByteAt(base, row + i));
+            if (c == '\0') {
+                code[i] = '\0';
+                return i;
+            }
+
+            const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                               (c >= '0' && c <= '9') || c == '-';
+            if (!plain) {
+                return 0;
+            }
+            code[i] = c;
+        }
+        return 0;
+    };
+
+    char first[kCodeCapacity + 1] = {};
+    char second[kCodeCapacity + 1] = {};
+    const uint32_t length = read_code(first);
+    if (length == 0 || read_code(second) != length ||
+        std::memcmp(first, second, length) != 0 || length + 1u > capacity) {
+        return 0;
+    }
+
+    std::memcpy(out, first, length);
+    out[length] = '\0';
+    return length;
 }
 
 /// Pump health: ticks observed, actions run, actions still queued.

@@ -342,6 +342,29 @@ public sealed class ModFingerprint
 	public static ModFingerprint Current() =>
 		Current(Refii.Assets.Engine_GameAssets.ModsRoot, ModApi.Version);
 
+	/// <summary>
+	/// The set two co-op players compare: <see cref="Current()"/> with the mods running under
+	/// Archon's Toolbox appended (<see cref="ArchonToolbox.FingerprintEntries"/>) — data-only
+	/// entries that count in the digest and the diff but are never synced. The save stamp
+	/// (<see cref="ModSaveStamp.Current"/>) keeps to <see cref="Current()"/>: the toolbox has its
+	/// own layer there.
+	/// </summary>
+	public static ModFingerprint CurrentForCoop() =>
+		WithArchon(Current(), ArchonToolbox.FingerprintEntries(ArchonToolbox.Detect()));
+
+	/// <summary><paramref name="set"/> with <paramref name="archon"/>'s entries after its own mods.</summary>
+	public static ModFingerprint WithArchon(ModFingerprint set, IReadOnlyList<Mod> archon)
+	{
+		if (archon.Count == 0)
+		{
+			return set;
+		}
+
+		var mods = new List<Mod>(set.Mods);
+		mods.AddRange(archon);
+		return From(set.ApiVersion, mods);
+	}
+
 	public static ModFingerprint Current(string modsRoot, int apiVersion)
 	{
 		var mods = new List<Mod>();

@@ -3,12 +3,13 @@ using System;
 namespace Refii.Ui;
 
 /// <summary>
-/// Questions and notices the HOST raises in the game's own boxes — in game the query box and the
-/// message box the guest's boxes are drawn with, owned by <see cref="Engine_UiQuerySurface"/> and
-/// <see cref="Engine_UiMessageSurface"/>; out of game the front end's own dialog
+/// Questions and notices the HOST raises in the game's own boxes — in game the query box the
+/// guest's questions are drawn with, owned by <see cref="Engine_UiQuerySurface"/> (a notice stands
+/// its first choice alone); out of game the front end's own dialog
 /// (<see cref="Engine_FrontEndWarning"/>, stood by GameUi) — for a flow that is ours rather than the
 /// guest's, such as unlearning a mod's ability or a mod's message box (<see cref="Engine_UiModBoxes"/>).
-/// The answer runs host code; nothing is posted to the guest.
+/// Both draw the same `paperbox` paper, sized to the text and scrolled past the window
+/// (<see cref="Engine_UiPaperBox"/>). The answer runs host code; nothing is posted to the guest.
 /// </summary>
 /// <remarks>
 /// One of each at a time: a host question raised while another is up replaces it, as a second

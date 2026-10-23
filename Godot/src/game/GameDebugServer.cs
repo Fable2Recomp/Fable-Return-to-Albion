@@ -552,6 +552,41 @@ public partial class GameDebugServer : Node
 				return Ok(pong);
 			}
 
+			case "hang":
+			{
+				// What the bridge's hang watchdog wrote this run. Answerable only once the main
+				// thread is back (this op is served by it); the report itself was written while
+				// it was not. `summary` is the report's headline lines; the file has the rest.
+				var reply = new Dictionary<string, object?>();
+				if (Refii.Host.HostBridge.HangReport() is not { } hang)
+				{
+					reply["bridge"] = "down";
+					return Ok(reply);
+				}
+
+				reply["reports"] = hang.Reports;
+				reply["stalled"] = hang.Stalled;
+				reply["lastStallSeconds"] = hang.LastStallSeconds;
+				reply["lastPath"] = hang.LastPath;
+				if (hang.Reports > 0 && hang.LastPath.Length != 0 && System.IO.File.Exists(hang.LastPath))
+				{
+					var summary = new List<string>();
+					foreach (string line in System.IO.File.ReadLines(hang.LastPath))
+					{
+						if (line.StartsWith("=== ") || line.StartsWith("stall:") ||
+							line.StartsWith("in phase") || line.StartsWith("memory:") ||
+							line.StartsWith("time base:") || line.StartsWith("--- main thread"))
+						{
+							summary.Add(line);
+						}
+					}
+
+					reply["summary"] = summary;
+				}
+
+				return Ok(reply);
+			}
+
 			case "state":
 				return Ok(State());
 
@@ -3312,7 +3347,7 @@ public partial class GameDebugServer : Node
 						"menu", "action", "call", "lua", "call-result", "poke", "heap",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
 						"wait", "log", "shot", "flicker", "press", "gdb", "achievements",
-						"gpuprofile", "capture", "goldencock",
+						"gpuprofile", "capture", "goldencock", "hang",
 					},
 				};
 		}

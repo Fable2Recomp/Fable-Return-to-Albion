@@ -615,6 +615,7 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 		}
 
 		int cloned = 0;
+		Node3D? paper = null;
 		foreach (string piece in new[] { BoxName, DimName, PaperName })
 		{
 			Node3D? source = book.ArtSourceNode(piece);
@@ -633,6 +634,10 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 			{
 				panel._box = clone;
 			}
+			else if (piece == PaperName)
+			{
+				paper = clone;
+			}
 
 			++cloned;
 		}
@@ -646,15 +651,47 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 		panel.SetRow(P("XAChoices"), false);
 		panel.SetRow(P("ReloadChoices"), false);
 
+		// The paper sized to the text, the choice rows riding its bottom edge.
+		panel.Paper = Engine_UiPaperBox.For(panel, paper,
+			panel._box?.GetNodeOrNull<Node3D>(P("Choices")),
+			panel._box?.GetNodeOrNull<Node3D>(P("XAChoices")),
+			panel._box?.GetNodeOrNull<Node3D>(P("ReloadChoices")));
+
 		return panel;
 	}
 
 	/// <summary>
+	/// The paper sized to the body (<see cref="Engine_UiPaperBox"/>, the front end's dialog's too):
+	/// grown for a body longer than the authored window, scrolled past the window's maximum. Null
+	/// without the shipped nine-slice, when the box keeps its authored size.
+	/// </summary>
+	public Engine_UiPaperBox? Paper { get; private set; }
+
+	/// <summary>One frame of the body's scroll: the stick, the d-pad, and the pointer's drag or wheel.</summary>
+	public void Scroll(float stick, int direction, double delta)
+	{
+		if (Paper is null)
+		{
+			return;
+		}
+
+		Paper.Pointer();
+		Paper.Scroll(stick, direction, delta);
+	}
+
+	/// <summary>A click (already taken) on the scroll bar starts a drag; false leaves it for the answers.</summary>
+	public bool PressBar(Vector2 at) => Paper?.Press(at) ?? false;
+
+	/// <summary>The box closed: the next body starts at the top of an authored-size paper.</summary>
+	public void Release() => Paper?.Release();
+
+	/// <summary>
 	/// Puts the guest's stated strings on the authored elements and stands the row the guest chose.
 	/// Empty label strings keep the authored tags, which the book's Babel strings already resolved
-	/// at build time.
+	/// at build time. <paramref name="single"/> stands the row's first choice alone — a host notice,
+	/// which has one answer.
 	/// </summary>
-	public void ShowStated(string body, string activeRow, string? first, string? second)
+	public void ShowStated(string body, string activeRow, string? first, string? second, bool single = false)
 	{
 		if (_box is null || Theme is null)
 		{
@@ -668,6 +705,11 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 		// (`querybox.dis main.1 pc32..53`). The colour must lead here, since the re-mesh reads it.
 		string report = SetMeshTextSafe(
 			BodyNode(), body, Engine_UiBoxConstants.NormalText);
+		if (Paper is not null && BodyNode() is { } bodyNode)
+		{
+			Paper.Layout(bodyNode, body);
+			report += ", " + Paper.Report;
+		}
 
 		(string Row, string First, string Second) descriptor = ChoiceRows[0];
 		foreach ((string Row, string First, string Second) candidate in ChoiceRows)
@@ -687,6 +729,11 @@ public partial class Engine_UiQueryBox : Node3D, IUiSurfaceView
 		if (!string.IsNullOrEmpty(second))
 		{
 			SetMeshTextSafe(LabelNode(descriptor.Row, descriptor.Second), second);
+		}
+
+		if (_box?.GetNodeOrNull<Node3D>($"{descriptor.Row}/{descriptor.Second}") is { } secondChoice)
+		{
+			secondChoice.Visible = !single;
 		}
 
 		LastReport = report;

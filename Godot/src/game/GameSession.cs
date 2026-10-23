@@ -82,6 +82,10 @@ public partial class GameSession : Node
 		AddChild(new Refii.Core.Engine_FrameStartNode { Name = "FrameStart" });
 		AddChild(new Refii.Core.Engine_FrameEndNode { Name = "FrameEnd" });
 
+		// The hang watchdog's feed, before anything slow: the bridge's own thread writes a
+		// report when the frame stamp above stops for 8 s (GameHangWatchdog, hang_watchdog.cpp).
+		GameHangWatchdog.Install();
+
 		// THE GRANT GOES LAST IN THE FRAME, after every reader. A granted step starts on the
 		// guest's own thread at once, so granted at the top of the frame it ran under the camera
 		// read, the walk and the rig reads, and a read could take the next step's state under

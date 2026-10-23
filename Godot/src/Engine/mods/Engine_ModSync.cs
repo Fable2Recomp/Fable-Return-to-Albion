@@ -178,6 +178,19 @@ public static class ModSync
 		{
 			hostNames.Add(theirs.Name);
 			bool enabledHere = ownByName.TryGetValue(theirs.Name, out ModFingerprint.Mod mine) && SameBytes(mine.Sha256, theirs.Sha256);
+			if (ArchonToolbox.IsFingerprintEntry(theirs))
+			{
+				// Loose files and a patched bank in the game data: nothing to download, mount or put
+				// down. The same mod against the same bank here is simply agreed on (it is never a
+				// session entry); anything else blocks the join.
+				if (!enabledHere)
+				{
+					blocked.Add(ArchonToolbox.BlockedText(theirs, ownByName.ContainsKey(theirs.Name)));
+				}
+
+				continue;
+			}
+
 			if (theirs.Native)
 			{
 				// Compiled into the game at launch: only a joiner that launched with the same one can play.
@@ -217,7 +230,11 @@ public static class ModSync
 		{
 			if (!hostNames.Contains(mine.Name))
 			{
-				if (mine.Native)
+				if (ArchonToolbox.IsFingerprintEntry(mine))
+				{
+					blocked.Add(ArchonToolbox.OwnBlockedText(mine));
+				}
+				else if (mine.Native)
 				{
 					blocked.Add($"your hard mod {mine.Label} is compiled into your game and the host does not run it; disable it and relaunch to join");
 				}

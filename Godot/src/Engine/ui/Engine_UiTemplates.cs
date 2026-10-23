@@ -3062,6 +3062,12 @@ public static class Engine_UiTemplates
 			// at the pool's authored spot.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_yellow",
+
+			// THE PAGE IS BOXED AND SCROLLS, as its siblings on this book: an achievement's
+			// description runs as long as it is written.
+			ScrollContent = "Foreground.Book.Pages.ExpressionsPage.Contents",
+			ScrollMask = "Mask",
+			ScrollBar = "Foreground.Book.Pages.ExpressionsPage.Scrollbar",
 			PanelSubtrees =
 			{
 				"Foreground.Book.Pages.MoralityPage",

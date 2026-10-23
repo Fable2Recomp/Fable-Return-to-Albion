@@ -388,7 +388,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			return null;
 
 		Engine_TextureNameTable names = Engine_TextureNameTable.FromPaths(texturePaths, new[] { ".tex" });
-		Engine_UiFontLibrary fonts = Engine_UiFontLibrary.Load(data);
+		Engine_UiFontLibrary fonts = Engine_UiFontLibrary.Load(data, Engine_GameCulture.Current);
 		Engine_BabelDatabase? strings = ReadStrings(data, diskFallback: true, out string source);
 		return new BankIndex(banks, owns, data, byName, names, fonts, strings, source);
 	}
@@ -679,6 +679,27 @@ public partial class Engine_UiPresentationHost : Node3D
 	}
 
 	/// <summary>
+	/// The guest changed language: the fonts are read again from the new culture's folder (en-uk's
+	/// when it ships none — only ko-kr and zh-cht do), IN PLACE, so every theme, pattern book and
+	/// resolver holding this library draws the new glyphs; then the string book. False when no
+	/// fonts had been loaded yet — the first load reads the culture itself.
+	/// </summary>
+	public bool ReloadForCulture(string culture)
+	{
+		string dataRoot = ResolveGameDataRoot();
+		bool fontsChanged = Fonts is not null && dataRoot.Length != 0 && Fonts.Reload(dataRoot, culture);
+		if (fontsChanged)
+		{
+			foreach (string failure in Fonts!.Failures)
+				GD.PushWarning($"[ui] font: {failure}");
+			GD.Print($"[ui] fonts for '{culture}' from {Fonts.Directory}");
+		}
+
+		ReloadStrings(dataRoot);
+		return Fonts is not null;
+	}
+
+	/// <summary>
 	/// Reloads the localised string database. Tries Godot's mounted asset filesystem first (which
 	/// includes mod row overlays, such as custom item names and descriptions from book.babel.csv)
 	/// before falling back to raw disk.
@@ -714,17 +735,11 @@ public partial class Engine_UiPresentationHost : Node3D
 		source = string.Empty;
 		byte[]? mountBytes = null;
 		string mountedPathUsed = string.Empty;
+		// The culture the guest runs in (Engine_GameCulture), then en-uk.
+		string culture = Engine_GameCulture.Current;
 		if (Refii.Assets.Engine_GameAssets.Instance is { } assets)
 		{
-			string culture = Engine_UiFontLibrary.DefaultCulture;
-			string[] candidates = {
-				$"language/{culture}/text/book.babel",
-				$"data/language/{culture}/text/book.babel",
-				"language/text/book.babel",
-				"data/language/text/book.babel",
-			};
-
-			foreach (string candidate in candidates)
+			foreach (string candidate in Engine_GameCulture.MountCandidates(culture, "text/book.babel"))
 			{
 				mountBytes = assets.ReadAllBytes(candidate);
 				if (mountBytes is { Length: > 0 })
@@ -754,8 +769,16 @@ public partial class Engine_UiPresentationHost : Node3D
 			return null;
 		}
 
-		string? textDir = Engine_UiFontLibrary.LanguageSubdirectory(
-			dataRoot, Engine_UiFontLibrary.DefaultCulture, "text");
+		string? textDir = null;
+		foreach (string folder in Engine_GameCulture.SearchOrder(culture))
+		{
+			textDir = Engine_UiFontLibrary.LanguageSubdirectory(dataRoot, folder, "text");
+			if (textDir is not null && File.Exists(Path.Combine(textDir, "book.babel")))
+			{
+				break;
+			}
+		}
+
 		string babel = textDir is null ? string.Empty : Path.Combine(textDir, "book.babel");
 		if (babel.Length == 0 || !File.Exists(babel))
 		{
