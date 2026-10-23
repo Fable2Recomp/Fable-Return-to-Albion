@@ -1113,16 +1113,17 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			{
 				isBetter = true;
 			}
-			else if (c.Seen && !topSeen)
+			else if (c.Leaf.IsWinner != top!.Leaf.IsWinner)
+			{
+				isBetter = c.Leaf.IsWinner;
+			}
+			else if (c.Seen != topSeen)
+			{
+				isBetter = c.Seen;
+			}
+			else if (c.Leaf.Priority > topPriority || (c.Leaf.Priority == topPriority && c.Order > topOrder))
 			{
 				isBetter = true;
-			}
-			else if (c.Seen == topSeen)
-			{
-				if (c.Leaf.Priority > topPriority || (c.Leaf.Priority == topPriority && c.Order > topOrder))
-				{
-					isBetter = true;
-				}
 			}
 
 			if (isBetter)
@@ -1138,25 +1139,42 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		int Order(uint uid) => _recordOrder.GetValueOrDefault(uid, int.MaxValue);
 
-		// The runner is picked deterministically: `_recordWeight` is a Dictionary with unstable
-		// enumeration order, and the runner sets `topShare`, the crossfade ratio.
+		// The runner is picked deterministically: if an explicit guest IsRunner leaf exists, elect it;
+		// otherwise select by weight and list order.
 		//
 		// Ties go to the oldest record — the guest's rule, the opposite of the winner's.
 		// `sub_82237F90` scans the list head to tail with a strict `>` (0x8223803C), so among
 		// equal weights the record nearest the head survives; the winner scan runs backward.
 		uint runnerUid = 0;
 		float runnerWeight = 0f;
-		foreach ((uint uid, float w) in _recordWeight)
+		foreach (Channel c in _channels.Values)
 		{
-			if (uid == topUid)
+			if (c.Leaf.Uid == topUid || c.Leaf.Additive || c.Leaf.Overlay)
 			{
 				continue;
 			}
-
-			if (w > runnerWeight || (w == runnerWeight && runnerUid != 0u && Order(uid) < Order(runnerUid)))
+			if (c.Leaf.IsRunner && c.Weight > 1e-4f)
 			{
-				runnerUid = uid;
-				runnerWeight = w;
+				runnerUid = c.Leaf.Uid;
+				runnerWeight = _recordWeight.GetValueOrDefault(runnerUid);
+				break;
+			}
+		}
+
+		if (runnerUid == 0)
+		{
+			foreach ((uint uid, float w) in _recordWeight)
+			{
+				if (uid == topUid)
+				{
+					continue;
+				}
+
+				if (w > runnerWeight || (w == runnerWeight && runnerUid != 0u && Order(uid) < Order(runnerUid)))
+				{
+					runnerUid = uid;
+					runnerWeight = w;
+				}
 			}
 		}
 
@@ -1169,11 +1187,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		_lastRunnerUid = runnerUid;
 		LastTopUid = topUid;
 
-		// Normalized crossfade ratio between runnerUid and topUid.
-		// Handled continuously across all ramp combinations:
-		// - Ramp-out only (winner at full weight, runner ramping out 1 -> 0): topShare = 1 - runnerWeight
-		// - Ramp-in only (runner at full weight, winner ramping in 0 -> 1): topShare = topWeight
-		// - Simultaneous ramp: normalized ratio topWeight / (topWeight + runnerWeight)
+		// Normalized crossfade ratio between runnerUid and topUid:
+		// Evaluated continuously as topWeight / (topWeight + runnerWeight), matching `sub_82232BF8`.
 		float topWeight = 0f;
 		if (haveTop && top is not null)
 		{
@@ -1183,19 +1198,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		topShare = 1f;
 		if (runnerWeight > 1e-4f)
 		{
-			if (topWeight >= 1f - 1e-4f)
-			{
-				topShare = Mathf.Clamp(1f - runnerWeight, 0f, 1f);
-			}
-			else if (runnerWeight >= 1f - 1e-4f)
-			{
-				topShare = Mathf.Clamp(topWeight, 0f, 1f);
-			}
-			else
-			{
-				float sum = topWeight + runnerWeight;
-				topShare = sum > 1e-4f ? Mathf.Clamp(topWeight / sum, 0f, 1f) : 1f;
-			}
+			float sum = topWeight + runnerWeight;
+			topShare = sum > 1e-4f ? Mathf.Clamp(topWeight / sum, 0f, 1f) : 1f;
 		}
 		else
 		{
@@ -1234,17 +1238,15 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		float topRecordWeight = _recordWeight.GetValueOrDefault(topUid);
 		float runnerRecordWeight = runnerWeight;
 
-		// Active priority of the dominant visual pose:
-		// When incoming topShare is near-zero (< 0.05f), the visual pose is still dominated by the runner.
-		// Use the runner's priority for overlay masking so overlays do not flash on during the opening tick.
-		int activePriority = topPriority;
-		if (runnerUid != 0 && topShare < 0.05f)
+		// Active priorities for primary and runner to drive continuous overlay masking:
+		int runnerPriority = int.MinValue;
+		if (runnerUid != 0)
 		{
 			foreach (Channel c in _channels.Values)
 			{
 				if (c.Leaf.Uid == runnerUid && !c.Leaf.Overlay && !c.Leaf.Additive)
 				{
-					activePriority = c.Leaf.Priority;
+					runnerPriority = c.Leaf.Priority;
 					break;
 				}
 			}
@@ -1252,8 +1254,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		// SAME-CLIP RE-QUEUE SMOOTHING:
 		// If top and runner have the identical clip key (e.g. companion dog idle re-queueing Pose),
-		// synchronize their playheads so there is zero phase difference and no periodic hitch.
-		if (runnerUid != 0 && haveTop && top is not null)
+		// synchronize their playheads ONLY when the clip is static or near zero length.
+		// For animated cyclical loops (such as bar drinking/idle loops), allowing the crossfade
+		// to blend loop-end into loop-start is required to prevent visual snapping.
+		if (runnerUid != 0 && haveTop && top is not null && (top.Built.IsStatic || top.Built.Length <= 0.05f))
 		{
 			foreach (Channel c in _channels.Values)
 			{
@@ -1273,13 +1277,26 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			HostBridge.GuestAnimLeaf leaf = c.Leaf;
 			if (leaf.Overlay)
 			{
-				bool matchesActive = haveTop && (leaf.PriorityMask & (uint)activePriority) != 0;
 				bool matchesTop = haveTop && (leaf.PriorityMask & (uint)topPriority) != 0;
-				if (c.Weight > 1e-4f && (matchesActive || matchesTop))
+				bool matchesRunner = runnerUid != 0 && runnerPriority != int.MinValue && (leaf.PriorityMask & (uint)runnerPriority) != 0;
+				if (c.Weight > 1e-4f && (matchesTop || matchesRunner))
 				{
-					// If the overlay matches topPriority but did not match the active runner priority,
-					// smoothly fade it in with topShare rather than snapping to full weight on frame 0.
-					c.OverlayFade = !matchesActive && topShare < 1f ? topShare : 1f;
+					// Smooth, continuous crossfade for overlays between runner and winner:
+					// Persistent overlays (matching both) stay at full weight; incoming overlays fade in with topShare;
+					// outgoing overlays fade out with (1 - topShare).
+					if (matchesTop && matchesRunner)
+					{
+						c.OverlayFade = 1f;
+					}
+					else if (matchesTop)
+					{
+						c.OverlayFade = topShare;
+					}
+					else
+					{
+						c.OverlayFade = 1f - topShare;
+					}
+
 					if (c.OverlayFade > 1e-4f)
 					{
 						_overlays.Add(c);
@@ -1339,14 +1356,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 					continue;
 				}
 
-				Quaternion topQ = hasTop ? _rotation[b].Normalized() : _restRotation[b];
-				Quaternion partQ = hasPartner ? _layerRotation[b].Normalized() : _restRotation[b];
+				Quaternion topQ = hasTop ? _rotation[b].Normalized() : (hasPartner ? _layerRotation[b].Normalized() : _restRotation[b]);
+				Quaternion partQ = hasPartner ? _layerRotation[b].Normalized() : (hasTop ? _rotation[b].Normalized() : _restRotation[b]);
 				_rotation[b] = partQ.Slerp(topQ, topShare);
 				_rotationWeight[b] = 1f;
 				if (_parents![b] >= 0)
 				{
-					Vector3 topP = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
-					Vector3 partP = _layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : _restPosition[b];
+					Vector3 topP = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : (_layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : _restPosition[b]);
+					Vector3 partP = _layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : (_positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b]);
 					_position[b] = partP.Lerp(topP, topShare);
 					_positionWeight[b] = 1f;
 				}

@@ -330,6 +330,16 @@ public sealed class Engine_EntityAttachments
 				ResolveDummy(use, parentRig, parentParts);
 			}
 
+			// Objects without a hand grip dummy (record.Grip == Identity) attached to a hand
+			// (Character.Carry.Hand.*) are world props/furniture being dragged or interacted with
+			// in an animation (such as a chair pulled out to sit down), not held weapons or mugs.
+			// In the guest engine, Havok physics keeps them grounded on the floor (stated); mounting
+			// their floor origin into the hand palm hoists the entire prop into the air.
+			if (IsHandDummyWithoutGrip(use.Dummy, use.Grip))
+			{
+				return false;
+			}
+
 			Transform3D mount = use.Bone >= 0 && use.Bone < parentRig.BoneCount
 				? parentRig.Node.GetBoneGlobalPose(use.Bone) * use.Mount
 				: use.Mount;
@@ -508,6 +518,16 @@ public sealed class Engine_EntityAttachments
 		}
 
 		return false;
+	}
+
+	/// <summary>
+	/// Tests whether a dummy is a hand attachment whose child has no hand grip dummy (identity grip),
+	/// indicating a world object/furniture being manipulated on the floor rather than a handheld item.
+	/// </summary>
+	public static bool IsHandDummyWithoutGrip(string dummy, Transform3D grip)
+	{
+		return dummy.StartsWith("Character.Carry.Hand", System.StringComparison.OrdinalIgnoreCase) &&
+			grip.IsEqualApprox(Transform3D.Identity);
 	}
 
 	/// <summary>

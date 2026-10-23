@@ -9454,7 +9454,8 @@ static uint32_t EntityLinkedAnimLeaf(const uint8_t* base, uint32_t entity, uint3
     out[3] = one_bits;
     // Looping (`stb 1` into the stack node's +36), and flagged as a network extrapolation when the
     // time ran on from a receipt, so the host does not read a stalled pair as a cut.
-    out[4] = 1u | (from_tree ? 8u : 0u);
+    // Flag 16 marks this as the sole winner leaf.
+    out[4] = 1u | (from_tree ? 8u : 0u) | 16u;
     // The leaf's identity: the linked component, never a record uid of the rig.
     out[5] = linked;
     out[6] = 0u;
@@ -9632,7 +9633,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     // A looping pair that wrapped (`+32 < +28`) keeps the guest's own step, 1/15 s.
     bool net_extrapolate = false;
     float net_alpha = 0.0f;
-    const auto flatten = [&](uint32_t root, float weight, uint32_t priority, uint32_t track, uint32_t uid) {
+    const auto flatten = [&](uint32_t root, float weight, uint32_t priority, uint32_t track, uint32_t uid,
+                             bool is_winner = false, bool is_runner = false) {
         int depth = 0;
         stack[depth++] = Frame{root, weight, false, 0u};
         int steps = 0;
@@ -9674,8 +9676,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     // continuity tick to tick is NOT stated (the receipt is an arrival time, and
                     // this read lands anywhere in the frame); the animator keeps its own timeline
                     // for such a clip and converges on these values.
+                    // Bits 4 & 5 (16 & 32): explicit winner and runner flags from the guest's pick.
                     out[4] = (read8(frame.node + 36u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) |
                              (overlay_list ? 4u : 0u) | (net_extrapolate ? 8u : 0u) |
+                             (is_winner ? 16u : 0u) | (is_runner ? 32u : 0u) |
                              ((priority & 0xFFu) << 8) | ((track & 0xFFu) << 16);
                     out[5] = uid;
                     out[6] = ramp_in_bits;
@@ -9833,15 +9837,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             overlay_list = overlay;
             priority_mask = read32(record + 16u);
 
-            uint32_t exported_prio = read32(record + 8u);
-            if (!overlay && record == runner_up && winner != 0u) {
-                // Ensure runner_up priority never exceeds winner's priority, so the host Fold()
-                // always elects winner as topUid and runner_up as runnerUid.
-                if (exported_prio >= static_cast<uint32_t>(winner_priority) && winner_priority > 0) {
-                    exported_prio = static_cast<uint32_t>(winner_priority - 1);
-                }
-            }
-            flatten(read32(record + 36u), weight <= 1e-4f ? 1e-4f : weight, exported_prio, read32(record + 12u), read32(record + 32u));
+            const uint32_t exported_prio = read32(record + 8u);
+            const bool is_winner = !overlay && record == winner;
+            const bool is_runner = !overlay && record == runner_up;
+            flatten(read32(record + 36u), weight <= 1e-4f ? 1e-4f : weight, exported_prio, read32(record + 12u), read32(record + 32u),
+                    is_winner, is_runner);
         }
     };
 
@@ -9891,7 +9891,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     net_alpha = static_cast<float>(alpha);
                 }
             }
-            flatten(read32(controller + 156u), 1.0f, 0u, 0u, 0u);
+            flatten(read32(controller + 156u), 1.0f, 0u, 0u, 0u, true, false);
             if (readf(controller + 164u) == receipt) {
                 break;
             }

@@ -332,7 +332,8 @@ public static class HostBridge
 		uint Key, float Time, float PreviousTime, float Weight, bool Loop, bool Additive,
 		int Priority, int Track, uint Uid, float BlendIn, float BlendOut,
 		bool Overlay, uint Mask, uint PriorityMask,
-		float RecordPrevious, float RecordCurrent, bool Network = false);
+		float RecordPrevious, float RecordCurrent, bool Network = false,
+		bool IsWinner = false, bool IsRunner = false);
 
 	private const int AnimLeafWords = 12;
 
@@ -1114,7 +1115,9 @@ public static class HostBridge
 				_animWords[at + 9],
 				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 10]),
 				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 11]),
-				(f & 8) != 0));
+				(f & 8) != 0,
+				(f & 16) != 0,
+				(f & 32) != 0));
 		}
 
 		return (int)leaves;

@@ -1469,6 +1469,75 @@ public static class CoopHeroLua
 			BehaviourDogPerformTrick.PrepareToRun = C.DogTrickPrepare
 		end
 
+		-- THE DOG WAITING OUTSIDE BUILDINGS. Shipped, when the hero enters a building with a
+		-- Type 45 "Dog Outside" marker (e.g. the Cow & Corset Tavern in Bowerstone Market),
+		-- BehaviourDogLyingDownBase:IsStillRunnable checked `spot:GetZ() < landZ + waterDepth`.
+		-- In towns and paved streets, the entryway static mesh is below the natural terrain
+		-- heightfield (landZ), so the check rejected the outside marker as "submerged" and
+		-- the dog followed the hero inside where cramped quarters caused rapid animation cycling.
+		-- Furthermore, IsAtDestination hardcoded a 10cm tolerance which caused the dog to circle
+		-- endlessly and stand right back up, and the engine's offscreen auto-teleport (sub_822AEAC0)
+		-- teleports the dog inside unless AIManager:GetMustStayType returns a stay mode (3 = LIE).
+		if BehaviourDogLyingDownBase ~= nil and BehaviourDogLyingDownBase.IsStillRunnable ~= C.DogLyingDownBaseRunnable then
+			C.DogLyingDownBaseRunnable = C.Permanent(function(self)
+				local spot = self:GetSleepSpot()
+				if spot == nil then
+					return false
+				end
+				if Dog ~= nil and Dog.IsMasterInsideBuilding ~= nil and Dog.IsMasterInsideBuilding(self.Entity) then
+					return true
+				end
+				local waterDepth = GetWaterDepthAt(spot)
+				if waterDepth and waterDepth > 0.1 then
+					local landZ = GetLandscapeHeightAt(spot)
+					if spot:GetZ() < landZ + waterDepth then
+						return false
+					end
+				end
+				return true
+			end, "DogLyingDownBaseRunnable")
+			BehaviourDogLyingDownBase.IsStillRunnable = C.DogLyingDownBaseRunnable
+
+			C.DogLyingDownBaseAtDestination = C.Permanent(function(self)
+				local spot = self:GetSleepSpot()
+				if spot == nil then
+					return false
+				end
+				local isLying = self.IsLying or (ModeManager ~= nil and ModeManager.HasMode(self.Entity, EEntityModeType.EM_DOG_LYING))
+				local tolerance = isLying and 2.5 or 2.0
+				return self:IsCloseToPosition(spot, tolerance)
+			end, "DogLyingDownBaseAtDestination")
+			BehaviourDogLyingDownBase.IsAtDestination = C.DogLyingDownBaseAtDestination
+		end
+
+		if AIManager ~= nil and AIManager.GetMustStayType ~= nil and AIManager.GetMustStayType ~= C.DogGetMustStayType then
+			local original_GetMustStayType = AIManager.GetMustStayType
+			C.DogGetMustStayType = C.Permanent(function(self, entity)
+				local stay = original_GetMustStayType(self, entity)
+				if stay and stay ~= EDogStayType.DOG_STAY_TYPE_NONE then
+					return stay
+				end
+				if entity and Dog ~= nil and Dog.IsMasterInsideBuilding ~= nil and Dog.IsMasterInsideBuilding(entity) then
+					return EDogStayType.DOG_STAY_TYPE_LIE
+				end
+				return EDogStayType.DOG_STAY_TYPE_NONE
+			end, "DogGetMustStayType")
+			AIManager.GetMustStayType = C.DogGetMustStayType
+
+			local original_GetMustStayPosition = AIManager.GetMustStayPosition
+			C.DogGetMustStayPosition = C.Permanent(function(self, entity)
+				local pos = original_GetMustStayPosition(self, entity)
+				if pos ~= nil then
+					return pos
+				end
+				if entity and Dog ~= nil and Dog.IsMasterInsideBuilding ~= nil and Dog.IsMasterInsideBuilding(entity) then
+					return Dog.GetWaitOutsideBuildingPosition(entity)
+				end
+				return nil
+			end, "DogGetMustStayPosition")
+			AIManager.GetMustStayPosition = C.DogGetMustStayPosition
+		end
+
 		-- ITEMS AND PLACES PLAYER TWO USES AS THEMSELVES. Each script reads "the hero" from
 		-- GetPlayerHero(); run as the user, it is the user's.
 		--   beds (onactionusebed.lua:39 refused player two outright; sleep, sex, rent, trespass);

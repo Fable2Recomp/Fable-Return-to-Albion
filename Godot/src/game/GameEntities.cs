@@ -448,7 +448,8 @@ public partial class GameEntities : Node3D
             // exactly as on the full path, or the reconcile reads the record as undrawn and
             // stands the region's copy back up inside it.
             bool adoptedStill = _adoptions.ContainsKey(entity.Address);
-            if (!entity.Changed && !Due(entity.Address, ReconcileTicks) &&
+            if (!_justDetached.Contains(entity.Address) &&
+                !entity.Changed && !Due(entity.Address, ReconcileTicks) &&
                 (adoptedStill || (_batches?.Contains(entity.Address) ?? false)))
             {
                 if (!adoptedStill)
@@ -498,7 +499,8 @@ public partial class GameEntities : Node3D
 
                 _seen.Add(entity.Address);
                 ++_withModel;
-                if (!_skeletons.ContainsKey(entity.Address) &&
+                if (!_justDetached.Contains(entity.Address) &&
+                    !_skeletons.ContainsKey(entity.Address) &&
                     !_movers.Contains(entity.Address) &&
                     _attachments.ParentOf(entity.Address) == 0u)
                 {
@@ -920,7 +922,8 @@ public partial class GameEntities : Node3D
             // walk compared the stated words itself.
             prologueTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
 
-            if (!entity.Changed && !created && !Due(entity.Address, ReconcileTicks) &&
+            if (!_justDetached.Contains(entity.Address) &&
+                !entity.Changed && !created && !Due(entity.Address, ReconcileTicks) &&
                 entity.Appearance.IsConstructed &&
                 !_skeletons.ContainsKey(entity.Address) &&
                 !_movers.Contains(entity.Address) &&
@@ -937,7 +940,8 @@ public partial class GameEntities : Node3D
             if (entity.Changed || created || entity.Highlighted ||
                 !entity.Appearance.IsConstructed ||
                 _skeletons.ContainsKey(entity.Address) || _movers.Contains(entity.Address) ||
-                _attachments.ParentOf(entity.Address) != 0u)
+                _attachments.ParentOf(entity.Address) != 0u ||
+                _justDetached.Contains(entity.Address))
             {
                 Unbatch(entity.Address, node!);
             }
@@ -978,7 +982,8 @@ public partial class GameEntities : Node3D
 
                 // Static objects and stationary entities whose placement and appearance have not changed
                 // and whose timeline is settled already have their node transform set.
-                moved = entity.Changed || created || _movers.Contains(entity.Address) || !_written.ContainsKey(entity.Address);
+                bool justDetached = _justDetached.Remove(entity.Address);
+                moved = entity.Changed || created || justDetached || _movers.Contains(entity.Address) || !_written.ContainsKey(entity.Address);
                 Transform3D stated = default;
                 if (moved || attachedChild)
                 {
@@ -1820,7 +1825,9 @@ public partial class GameEntities : Node3D
             // an unresolved child exactly there.
             uint parent = _attachments.ParentOf(child);
             Transform3D placed = stated;
-            bool onBone = _nodes.TryGetValue(parent, out MeshInstance3D? parentNode) &&
+            bool isFurniture = IsFurnitureEntity(node);
+            bool onBone = !isFurniture &&
+                _nodes.TryGetValue(parent, out MeshInstance3D? parentNode) &&
                 _skeletons.TryGetValue(parent, out Refii.Entities.Engine_EntitySkeleton? rig) &&
                 _attachments.TryPlace(child, stated, StatedOf(parent, parentNode.Transform),
                     parentNode.Transform, rig, PartPaths(parentNode), out placed);
@@ -1873,6 +1880,8 @@ public partial class GameEntities : Node3D
         foreach (uint child in _unfollowed)
         {
             _followers.Remove(child);
+            _written.Remove(child);
+            _justDetached.Add(child);
         }
 
         _unfollowed.Clear();
@@ -1880,6 +1889,9 @@ public partial class GameEntities : Node3D
 
     /// <summary>Attached children whose shadow casts through a following proxy, by address.</summary>
     private readonly Dictionary<uint, MeshInstance3D> _followers = new();
+
+    /// <summary>Entities that detached from their parent this tick and must not be skipped by prologue checks.</summary>
+    private readonly HashSet<uint> _justDetached = new();
 
     private readonly List<uint> _unfollowed = new();
 
@@ -1918,6 +1930,35 @@ public partial class GameEntities : Node3D
 
     private static string[] PartPathsOf(Mesh mesh) =>
         Refii.Models.Engine_MdlComposite.ModelPathsOf(mesh);
+
+    private static bool IsFurnitureEntity(MeshInstance3D node)
+    {
+        if (node.HasMeta(MetaEntityModel))
+        {
+            uint modelHash = (uint)node.GetMeta(MetaEntityModel).AsInt64();
+            string? path = Refii.Level.Engine_PropModelIndex.Resolve(modelHash, System.Array.Empty<string>());
+            if (path is not null && IsFurnitureModelPath(path))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool IsFurnitureModelPath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return false;
+        }
+
+        return path.Contains("Furniture", System.StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("_F_", System.StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("Chair", System.StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("Stool", System.StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("Bench", System.StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("Table", System.StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// A composite's displacement-only parts (GDB DisplacementMeshes,
@@ -2880,6 +2921,8 @@ public partial class GameEntities : Node3D
             _nodeMesh.Remove(address);
             _relit.Remove(address);
             _attachments.Forget(address);
+            _followers.Remove(address);
+            _justDetached.Remove(address);
 
             // And the retry, which would otherwise keep asking the guest about an entity it
             // no longer has — an address the guest has reused answers for something else.
