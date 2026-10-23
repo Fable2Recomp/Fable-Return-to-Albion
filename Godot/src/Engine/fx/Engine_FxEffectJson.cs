@@ -226,7 +226,7 @@ public static class Engine_FxEffectJson
 			WriteEffect(w, d);
 		}
 
-		return Encoding.UTF8.GetString(buffer.WrittenSpan) + "\n";
+		return Encoding.UTF8.GetString(buffer.WrittenSpan).Replace("\r\n", "\n") + "\n";
 	}
 
 	/// <summary>Several effects as one <c>{ "effects": [...] }</c> file.</summary>
@@ -247,7 +247,7 @@ public static class Engine_FxEffectJson
 			w.WriteEndObject();
 		}
 
-		return Encoding.UTF8.GetString(buffer.WrittenSpan) + "\n";
+		return Encoding.UTF8.GetString(buffer.WrittenSpan).Replace("\r\n", "\n") + "\n";
 	}
 
 	private static void WriteEffect(Utf8JsonWriter w, Definition d)

@@ -55,7 +55,7 @@ public class ModUiDispatchTests
             .IsTrue();
 
         // And the file is what the generator writes now — nothing stale left in it.
-        AssertThat(Engine_UiGameTemplates.Text.Trim() == Engine_UiTemplates.GameTemplatesText().Trim()).IsTrue();
+        AssertThat(Engine_UiGameTemplates.Text.Trim().Replace("\r\n", "\n") == Engine_UiTemplates.GameTemplatesText().Trim().Replace("\r\n", "\n")).IsTrue();
     }
 
     [TestCase]

@@ -180,11 +180,12 @@ public class SpellWeavingFxTests
 				}
 			}
 
-			string back = Engine_FxEffectJson.Serialize(read);
-			string[] want = text.Split('\n'), got = back.Split('\n');
+			string back = Engine_FxEffectJson.Serialize(read).Replace("\r\n", "\n");
+			string cleanText = text.Replace("\r\n", "\n");
+			string[] want = cleanText.Split('\n'), got = back.Split('\n');
 			int first = Enumerable.Range(0, Math.Min(want.Length, got.Length)).FirstOrDefault(i => want[i] != got[i], -1);
 			string where = first < 0 ? "(lengths differ)" : $"line {first + 1}: '{got[first].Trim()}' for '{want[first].Trim()}'";
-			AssertThat(back).OverrideFailureMessage($"{effect.Name}: the guest's bank reads it back differently, {where}").IsEqual(text);
+			AssertThat(back).OverrideFailureMessage($"{effect.Name}: the guest's bank reads it back differently, {where}").IsEqual(cleanText);
 		}
 	}
 

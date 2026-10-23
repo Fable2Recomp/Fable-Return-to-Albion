@@ -54,7 +54,7 @@ public static class Engine_UiTemplateJson
 		}
 	}
 
-	public static string Write(JsonNode node) => node.ToJsonString(WriteOptions);
+	public static string Write(JsonNode node) => node.ToJsonString(WriteOptions).Replace("\r\n", "\n");
 
 	// ---- loose values ----------------------------------------------------------------------
 
