@@ -23,17 +23,21 @@ public sealed class Engine_UiVibrationOptions : Engine_UiHostOptionsPage
 	public const string OpenCommand = "options:vibration";
 	public const string PageTitle = "Controller Vibration";
 
-	/// <summary>The guest's rumble switch, <c>byte_8331924F</c>.</summary>
-	public const uint RumbleEnabledByte = 0x8331924F;
+	/// <summary>
+	/// The guest's rumble switch: TU1 <c>byte_8331924F</c>, unpatched <c>byte_833191E2</c> (its one
+	/// writer, the `SetRumbleEnabled` native, at 0x823A548C; its one reader, the dispatcher's
+	/// `lbz` at 0x823C949C; 1 in .data on both).
+	/// </summary>
+	public static uint RumbleEnabledByte => Refii.Host.HostBridge.PickByBuild(0x8331924Fu, 0x833191E2u);
 
-	/// <summary>The word holding it; big-endian, so the byte at +3 is the word's low lane.</summary>
-	private const uint RumbleEnabledWord = RumbleEnabledByte & ~3u;
+	/// <summary>The word holding it; big-endian, so the byte's lane in the word is 3 minus its offset.</summary>
+	private static uint RumbleEnabledWord => RumbleEnabledByte & ~3u;
 
-	private const int LaneShift = 8 * (3 - (int)(RumbleEnabledByte & 3u));
+	private static int LaneShift => 8 * (3 - (int)(RumbleEnabledByte & 3u));
 
-	private const uint ByteLane = 0xFFu << LaneShift;
+	private static uint ByteLane => 0xFFu << LaneShift;
 
-	private const uint On = 1u << LaneShift;
+	private static uint On => 1u << LaneShift;
 
 	public static readonly Engine_UiVibrationOptions Page = new();
 

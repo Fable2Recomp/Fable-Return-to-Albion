@@ -289,6 +289,16 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 
 		Ensure(host);
 
+		// THE ADDRESS IS RE-FOUND WHENEVER IT STOPS ANSWERING. The guest can drop a box's
+		// presentation and build a new one while the box stays up — the received-item card does
+		// between items of one chest — and a latched address then reads nothing forever: the
+		// card is never drawn again while the guest waits on it (a chest of four items stood the
+		// game still on the fourth, 2026-10-23).
+		if (Address != 0 && Elements(Address) is null)
+		{
+			Address = 0;
+		}
+
 		if (Address == 0)
 		{
 			Address = AddressOf($"{Presentation}.bgf");

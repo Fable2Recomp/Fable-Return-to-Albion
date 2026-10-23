@@ -8,6 +8,7 @@
 #include "core/guest_state.h"
 #include "hooks/ppc_externs.h"
 #include "core/guest_build.h"
+#include "core/refii_mod.h"
 
 // Raise Dead's creation effect is never killed by the guest and cannot end itself. This is a
 // Fable 2 defect; the lifetime below is host policy, since the guest states no kill.
@@ -108,6 +109,7 @@ using Clock = std::chrono::steady_clock;
 struct Pending {
   uint32_t entity;
   uint32_t instance;
+  uint32_t world;  // refii_mod_world when spawned: a world change frees the entity unseen
   Clock::time_point fade_at;
   Clock::time_point destroy_at;
   bool faded;
@@ -151,6 +153,22 @@ void NoteSpellFxInstance(uint32_t instance) {
   }
 }
 
+void ForgetSpellFxEntity(uint32_t entity) {
+  if (entity == 0u) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> held(g_lock);
+  size_t kept = 0;
+  for (size_t i = 0; i < g_pending_count; ++i) {
+    if (g_pending[i].entity != entity) {
+      g_pending[kept++] = g_pending[i];
+    }
+  }
+
+  g_pending_count = kept;
+}
+
 void SweepOrphanSpellFx(PPCContext& ctx, uint8_t* base) {
   struct Due {
     bool destroy;
@@ -167,9 +185,18 @@ void SweepOrphanSpellFx(PPCContext& ctx, uint8_t* base) {
     }
 
     const Clock::time_point now = Clock::now();
+    const uint32_t world = refii_mod_world(base);
     size_t kept = 0;
     for (size_t i = 0; i < g_pending_count; ++i) {
       Pending entry = g_pending[i];
+
+      // THE ENTITY MUST STILL BE THE GUEST'S. Its own destroy drops the entry
+      // (ForgetSpellFxEntity); a world change (a level load, a reload) frees every entity
+      // without that call reaching here, so an entry from another world is dropped untouched.
+      if (entry.world != world) {
+        continue;
+      }
+
       if (entry.faded && now >= entry.destroy_at) {
         // Dropped from the table: the entity is about to stop existing.
         due[due_count++] = Due{true, entry.entity, entry.instance};
@@ -233,6 +260,6 @@ REX_EXTERN(rex_lhFx_SpawnFromDefProperty) {
 
   std::lock_guard<std::mutex> held(g_lock);
   if (g_pending_count < kMaxPending) {
-    g_pending[g_pending_count++] = Pending{entity, instance, fade_at, destroy_at, false};
+    g_pending[g_pending_count++] = Pending{entity, instance, refii_mod_world(base), fade_at, destroy_at, false};
   }
 }

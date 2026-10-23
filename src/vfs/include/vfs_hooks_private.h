@@ -241,6 +241,9 @@ inline void EnsureAlternateSignalStack() {
 /// and then destroys what is due.
 void NoteSpellFxInstance(uint32_t instance);
 void SweepOrphanSpellFx(PPCContext& ctx, uint8_t* base);
+/// The guest destroyed `entity` (rex_lhEntity_Destroy): a pending effect on it is dropped, never
+/// faded or destroyed again through a pointer the guest has freed.
+void ForgetSpellFxEntity(uint32_t entity);
 
 // The effect transforms and the targeting highlight the guest states — defined in
 // src/core/stated_fx_state.cpp and src/core/target_highlight_state.cpp, which link into
