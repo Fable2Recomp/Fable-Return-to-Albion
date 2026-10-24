@@ -230,6 +230,7 @@ public abstract class Engine_UiHostOptionsPage
 		Register(Engine_UiWeatherOptions.OpenCommand, _ => Engine_UiWeatherOptions.Page);
 		Register(Engine_UiVibrationOptions.OpenCommand, _ => Engine_UiVibrationOptions.Page);
 		Register(Engine_UiCharacterOptions.OpenCommand, _ => Engine_UiCharacterOptions.Page);
+		Register(Engine_UiQuickSlotOptions.Prefix, Refii.Game.GameQuickSlots.PageFor);
 		Register(Refii.Mods.ModSettingsUi.OpenCommandPrefix, Refii.Mods.ModSettingsUi.PageFor);
 		Register(Refii.Mods.ModInputUi.OpenCommandPrefix, Refii.Mods.ModInputUi.PageFor);
 	}

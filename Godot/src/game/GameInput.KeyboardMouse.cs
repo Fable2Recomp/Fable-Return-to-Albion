@@ -179,7 +179,7 @@ public partial class GameInput
 	/// </summary>
 	private void UpdateKeyboardMouse(bool devices)
 	{
-		bool menuOwns = GameGoldenCock.OwnsInput || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
+		bool menuOwns = GameGoldenCock.OwnsInput || GameQuickSlots.Assigning || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
 			ModalBoxOwnsInput || MenuBoxOwnsInput ||
 			ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp;
 		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
@@ -252,7 +252,7 @@ public partial class GameInput
 		"RT" => Shown("spells_menu"),
 		"Start" => Shown("pause"),
 		"Back" => Shown("expression_wheel"),
-		"DPad" => Playing ? "F1-F4" : "Arrows",
+		"DPad" => Playing || GameQuickSlots.Assigning ? "F1-F4" : "Arrows",
 		// In a menu the stick prompt sits beside arrows the mouse clicks: no key to show.
 		"LS" => Playing ? "WASD" : string.Empty,
 		"RS" => Playing ? "Mouse" : "Wheel",

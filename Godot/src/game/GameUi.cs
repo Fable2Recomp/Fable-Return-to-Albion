@@ -2221,6 +2221,8 @@ public partial class GameUi : Node
 			HoldScreenStick(GameInput.MenuDirection);
 		}
 
+		if (DriveQuickSlotBookAssignment(state.ScreenId)) return true;
+
 		// Y on the abilities screen is UNLEARN: `sub_826C2958` code 39 clears `+198`
 		// (0x826c2b2c) and raises `OnPressA` through Lua, whose push is deferred here and never
 		// lands, so the identity commit is that push taken directly. `sub_826C2D40` @0x826c2d78
@@ -2777,10 +2779,10 @@ public partial class GameUi : Node
 			Screen = screen,
 			Art = new Engine_HudArt { Shipped = _presentation.PatternBookFor(HudPresentation) },
 			ResolveTexture = hash =>
-				_presentation.TextureNames is { } names &&
+				Engine_UiHostTextures.TryGet(hash) ?? (_presentation.TextureNames is { } names &&
 				names.TryResolve(hash, out string path)
 					? _presentation.LoadTexture(path)
-					: null,
+					: null),
 			Layout = Engine_HudLayout.FromBindings(
 				screen, bindings,
 				HostAppliesWidescreen ? Engine_UiWidescreen.Read(screen.Document) : null),
@@ -3140,6 +3142,8 @@ public partial class GameUi : Node
 	/// </summary>
 	private int StatedMenuOwner()
 	{
+		if (GameQuickSlots.Assigning) return GameQuickSlots.Assignment!.Player;
+
 		// A consent question is the partner's to answer, on their pad and in their half.
 		if (_consentOwner != 0)
 		{
@@ -4645,7 +4649,7 @@ public partial class GameUi : Node
 		// number a second rather than noise.
 		bool hudValid = _hud is not null && GodotObject.IsInstanceValid(_hud);
 		bool needHudFeed = guestFrame || cadence || GameInput.QuickWheelHeld ||
-			GameInput.SpellsMenuHeld || (hudValid && _hud!.ElementActive is null);
+			GameInput.SpellsMenuHeld || _quickslotHudGeneration != GameQuickSlots.Generation || (hudValid && _hud!.ElementActive is null);
 		long began = System.Diagnostics.Stopwatch.GetTimestamp();
 		if (needHudFeed && Engine_UiElementState.Current.Elements(_hudAddress) is { Count: > 0 } elements)
 		{
@@ -4731,6 +4735,7 @@ public partial class GameUi : Node
 					// folded here as the slides those registries would play: toggle true → 2,
 					// false → 1 (`sub_823FE848`); fader index as stated, plus one on the second channel.
 					FoldStatedHudSlides(doc, slides, active, stated);
+					ApplyQuickSlotSlides(slides);
 
 					ReleaseHudRootSlide(doc, slides, active, stated);
 
@@ -4741,6 +4746,7 @@ public partial class GameUi : Node
 					// band across the top of every region. Slide 0 is the master, never played,
 					// and its elements keep their stated values.
 					ReleaseHudPlayedSlides(doc, slides, active, stated);
+					KeepQuickSlotHudVisible(doc, slides, active, stated);
 
 					long resolveBegan = System.Diagnostics.Stopwatch.GetTimestamp();
 					_hudResolve.Apply(slides, active, stated);
@@ -4756,7 +4762,7 @@ public partial class GameUi : Node
 					// equips something, not per frame, and this is the one read here that walks a
 					// hash per element. Held across frames rather than re-read, so the gate above
 					// can be per frame without the whole feed becoming so.
-					if (cadence || _hud.LiveTextures is null)
+					if (cadence || _hud.LiveTextures is null || _quickslotHudGeneration != GameQuickSlots.Generation)
 					{
 						_hud.LiveTextures = SampleHudTextures(elements.Count);
 					}
@@ -4766,6 +4772,8 @@ public partial class GameUi : Node
 					long transformBegan = System.Diagnostics.Stopwatch.GetTimestamp();
 					_hud.LiveTransform =
 						Engine_UiLiveAttributes.Transform(_hudAddress, elements.Count);
+					if (QuickSlotHudVisible && _quickslotHud is not null)
+						_hud.LiveTransform = _quickslotHud.Transforms(_hud.LiveTransform);
 					_hudTransformTicks += System.Diagnostics.Stopwatch.GetTimestamp() - transformBegan;
 
 					// AND THE ELEMENT TEXT, for the expression wheel's titles — the guest writes
@@ -4820,6 +4828,9 @@ public partial class GameUi : Node
 
 		if (hudValid && _hudScreen is not null)
 		{
+			DriveQuickSlotExpressionAssignment();
+			if (GameQuickSlots.Assigning) return;
+
 			// THE EXPRESSION WHEEL, through the guest's own open/close/select — the
 			// GameAction chain that would run them from the pad does not fire here.
 			// Hold to open, release to close (the shipped default; the toggle option
@@ -7201,7 +7212,10 @@ public partial class GameUi : Node
 
 	private void ui_processBody(double delta)
 	{
-		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene;
+		ResetQuickSlotPrompt();
+		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene && !GameQuickSlots.Assigning;
+		if (GameQuickSlots.Assigning) SeatPlayerUi(GetViewport().GetVisibleRect().Size);
+		if (DriveQuickSlotPicker(delta)) return;
 		if (DriveGoldenCockMenu(delta)) return;
 		// THE QUIT LATCH. The guest is still running its confirmation, save and teardown; the
 		// front end coming up is it reporting all three done, and the only point at which
@@ -7575,6 +7589,7 @@ public partial class GameUi : Node
 		// runs.
 		GameInput.ModalBoxOwnsInput = false;
 		GameInput.ScreenMenuHoldsFlip = false;
+		GameInput.ScreenMenuHoldsEquip = false;
 		GameInput.HostUiOwnsPad = false;
 
 		// THE GUEST'S STICK LATCH IS RELEASED BY DEFAULT. Every drive below can take the frame
@@ -10286,6 +10301,7 @@ public partial class GameUi : Node
 		}
 
 		read.CopyTo(_hudTextures);
+		ApplyQuickSlotTextures(_hudTextures);
 		return _hudTextures;
 	}
 

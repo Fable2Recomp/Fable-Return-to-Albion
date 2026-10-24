@@ -106,6 +106,7 @@ public partial class GameUi
 		Engine_UiRowConditions.Register(Engine_UiRowConditions.CoopOnline, () => CoopSession.PeerStanding && !CoopSession.LocalCoop);
 		Engine_UiRowConditions.Register(Engine_UiRowConditions.CoopClient, () => CoopSession.IsClient);
 		Engine_UiRowConditions.Register(Engine_UiRowConditions.InGame, () => HostBridge.IsInGame);
+		Engine_UiRowConditions.Register(Engine_UiRowConditions.Hotkeys, () => GameQuickSlots.Enabled);
 	}
 
 	/// <summary>

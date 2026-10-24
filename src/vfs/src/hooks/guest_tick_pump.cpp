@@ -8434,6 +8434,98 @@ void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
               actions.empty() ? " (none)" : actions.c_str());
 }
 
+PPC_EXTERN_FUNC(rex_CECExpressionPerformer_StartExpression);
+
+bool DispatchQuickslot(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  unsigned player = 0, kind = 0, record = 0;
+  char extra = 0;
+  if (std::sscanf(body.c_str(), "%u:%u:%u%c", &player, &kind, &record, &extra) != 3 ||
+      player < 1 || player > 2 || kind < 1 || kind > 4 ||
+      (kind == 4 ? record >= 8 : record == 0)) return true;
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t hero = refii_mod_player_hero(base, player);
+  const uint32_t owner = PlayerWithId(base, player);
+  const uint32_t gui = LoadGuestU32(base, kGuiObject);
+  const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
+  const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
+  const uint32_t dpad = plausible(hud) ? LoadGuestU32(base, hud + 56u) : 0u;
+  if (!plausible(hero) || !plausible(owner) || !plausible(quick) || !plausible(dpad) ||
+      (LoadGuestU8(base, hero + 144u) & 0x40u) == 0u || LoadGuestU8(base, dpad + 32u) == 0u) return true;
+  const PPCContext saved = ctx;
+  ctx.r3.u32 = quick;
+  ctx.r4.u32 = owner;
+  rex_lhGuiManager_CanPlayerOpenQuickMenu(ctx, base);
+  const bool allowed = (ctx.r3.u32 & 0xFFu) != 0u;
+  ctx = saved;
+  if (!allowed) return true;
+  const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
+  if (kind == 4) {
+    const uint32_t manager = EntityComponent(base, hero, 56u);
+    if (plausible(manager)) {
+      for (uint32_t tier = 0; tier < 5; ++tier) {
+        const uint32_t index = 5u * record + tier;
+        if (LoadGuestU8(base, manager + 156u + index) && LoadGuestU8(base, manager + 196u + index))
+          DispatchSpellAssign(ctx, base, tier, record, player);
+      }
+    }
+  } else if (kind == 2) {
+    const uint32_t performer = EntityComponent(base, hero, 154u);
+    if (!plausible(performer) || LoadGuestU8(base, performer + 20u) != 0u) return true;
+    const uint32_t begin = LoadGuestU32(base, performer + 0x88u);
+    const uint32_t end = LoadGuestU32(base, performer + 0x8Cu);
+    if (!plausible(begin) || end < begin || end - begin > 20u * 512u || (end - begin) % 20u != 0u) return true;
+    for (uint32_t at = begin; at < end; at += 20u) {
+      if (LoadGuestU32(base, at) != record) continue;
+      const uint32_t pair = frame + 0x60u;
+      StoreGuestU32(base, pair, record);
+      StoreGuestU32(base, pair + 4u, LoadGuestU32(base, at + 4u));
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = performer;
+      ctx.r4.u32 = pair;
+      ctx.r5.u32 = 0u;
+      rex_CECExpressionPerformer_StartExpression(ctx, base);
+      ctx = saved;
+      break;
+    }
+  } else {
+    const uint32_t inventory = EntityComponent(base, hero, 13u);
+    if (!plausible(inventory)) return true;
+    const uint32_t handle = frame + 0x60u;
+    for (uint32_t word = 0; word < 4; ++word) StoreGuestU32(base, handle + word * 4u, 0u);
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x824F1C90u), handle, inventory, record);
+    const uint32_t item = LoadGuestU32(base, handle);
+    if (!plausible(item)) return true;
+    if (kind == 3) {
+      const uint32_t weapons = EntityComponent(base, hero, 28u);
+      if (plausible(weapons) && !IsCoopJoiner(base) && HeldItemWithRecord(base, hero, record) == 0u) {
+        ctx.r1.u32 = frame;
+        ctx.r3.u32 = weapons;
+        ctx.r4.u32 = record;
+        ctx.r5.u32 = 0u;
+        rex_CECWeaponSet_EquipWeaponByRecord(ctx, base);
+      }
+      ctx = saved;
+    } else {
+      const uint32_t text = frame + 0x80u;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = text;
+      ctx.r4.u32 = PlaceGuestString(base, frame + 0xA0u, "");
+      ctx.r5.s32 = -1;
+      rex_lhCharString_CtorFromCStr(ctx, base);
+      CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x823E0FF8u), hero, handle, text);
+      ctx = saved;
+      ctx.r1.u32 = frame;
+      ctx.r3.u32 = text;
+      rex_lhCharString_Dtor(ctx, base);
+      ctx = saved;
+    }
+    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82764DC0u), LoadGuestU32(base, handle), handle);
+    refii_bridge_ui_data_changed();
+  }
+  ctx = saved;
+  return true;
+}
+
 void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
   const uint32_t taken = GuestTickPumpBeginDrain();
   if (taken == 0) {
@@ -8812,6 +8904,8 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
     } else if (name.rfind(kActionCoopHeroBodyPrefix, 0) == 0) {
       ran = DispatchCoopHeroBody(ctx, base,
                                  name.substr(std::strlen(kActionCoopHeroBodyPrefix)));
+    } else if (name.rfind("Quickslot:", 0) == 0) {
+      ran = DispatchQuickslot(ctx, base, name.substr(10));
     } else if (name.rfind(kActionQuickWheelPrefix, 0) == 0) {
       ran = DispatchQuickWheel(ctx, base, name.substr(std::strlen(kActionQuickWheelPrefix)));
     } else if (name.rfind(kActionSpellBladePrefix, 0) == 0) {

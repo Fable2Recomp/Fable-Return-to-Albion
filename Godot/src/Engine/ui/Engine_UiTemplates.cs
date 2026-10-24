@@ -1554,6 +1554,16 @@ public static class Engine_UiTemplates
 						Counted = false,
 						Command = Engine_UiVibrationOptions.OpenCommand,
 					},
+					new Engine_UiMenuEntry
+					{
+						Name = "Quickslots", Tag = "Quickslots", Icon = controls.Icon, HostOnly = true, Counted = false, When = Engine_UiRowConditions.InGame + "," + Engine_UiRowConditions.Hotkeys,
+						Children =
+						{
+							new Engine_UiMenuEntry { Name = "QuickslotsBase", Tag = "D-pad", HostOnly = true, Counted = false, Command = Engine_UiQuickSlotOptions.Prefix + "0" },
+							new Engine_UiMenuEntry { Name = "QuickslotsLT", Tag = "LT + D-pad", HostOnly = true, Counted = false, Command = Engine_UiQuickSlotOptions.Prefix + "1" },
+							new Engine_UiMenuEntry { Name = "QuickslotsRT", Tag = "RT + D-pad", HostOnly = true, Counted = false, Command = Engine_UiQuickSlotOptions.Prefix + "2" },
+						},
+					},
 				},
 				Source = Refii.Mods.ModInputUi.SourceName,
 			};
