@@ -436,10 +436,10 @@ public static class RuntimeCVarsGodot
                 + "ticked during install — and, where a shader has not been built, the authored "
                 + "day-set ambient exactly as the 360 read it.",
                 "modern|Modern,classic|Classic"),
-            new("bloom_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
-                "Multiplier on bloom, sun god-ray, and halo glow intensity in the modern "
-                + "compositor. 1.0 matches the original Fable 2 rescale factor; 0.0 disables "
-                + "bloom intensity; higher values increase the dreamy glow."),
+            new("bloom_scale", LightingCategory, RuntimeCVarType.Double, "0.0",
+                "Multiplier on the scene's bloom in the modern compositor. 0.0, the default, "
+                + "draws no bloom; 1.0 matches the original Fable 2 amount; higher values "
+                + "increase the dreamy glow. The sun, the moon and lamp halos glow regardless."),
             new("halo_distance_fade", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Gradually attenuate the bloom halos of distant point light fixtures (street lamps, "
                 + "market stalls, torches) so they do not produce oversized screen halos at long distance. "

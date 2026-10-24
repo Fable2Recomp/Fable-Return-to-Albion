@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 220;
+	public const int ExpectedAbiVersion = 221;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -1353,6 +1353,9 @@ public static class HostBridge
 	private static extern uint RefiiHostAudioFloatsPerFrame();
 
 	[DllImport(Library)]
+	private static extern float RefiiHostAudioFrontGain();
+
+	[DllImport(Library)]
 	private static extern void RefiiHostAudioStats(
 		out uint outQueuedFrames, out ulong outPushed, out ulong outPopped,
 		out ulong outDropped, out int outDriverInstalled);
@@ -1390,6 +1393,12 @@ public static class HostBridge
 
 	/// <summary>Floats in one frame, i.e. samples times channels.</summary>
 	public static uint AudioFloatsPerFrame() => RefiiHostAudioFloatsPerFrame();
+
+	/// <summary>
+	/// The linear weight the 5.1 fold gives the guest's front channels. Sound the host decodes
+	/// itself is scaled by this so it sits at the level of the guest's mix.
+	/// </summary>
+	public static float AudioFrontGain() => RefiiHostAudioFrontGain();
 
 	/// <summary>
 	/// Audio health. <paramref name="pushed"/> settles at 187.5/s when the clock is right;

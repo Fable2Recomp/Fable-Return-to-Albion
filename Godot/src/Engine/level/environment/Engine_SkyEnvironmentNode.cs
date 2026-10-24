@@ -15,6 +15,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private static readonly NodePath Path_Clouds = "Clouds";
     private static readonly NodePath Path_SunDisc = "SunDisc";
     private static readonly NodePath Path_SunGlare = "SunGlare";
+    private static readonly NodePath Path_MoonGlare = "MoonGlare";
     private static readonly NodePath Path_Water = Engine_LevelScene.WaterNodeName;
     private static readonly NodePath Path_Celestial = Engine_CelestialElements.NodeName;
     private static readonly NodePath Path_Precipitation = Engine_DynamicPrecipitation.NodeName;
@@ -1278,11 +1279,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Vector3 right = camera?.GlobalTransform.Basis.X ?? Vector3.Right;
         Vector3 up = camera?.GlobalTransform.Basis.Y ?? Vector3.Up;
 
+        if (celestial.GetNodeOrNull<MeshInstance3D>(Path_MoonGlare) is
+                { MaterialOverride: ShaderMaterial moonGlare })
         {
-            // The moon glare lives in the halo layer now; its cloud term rides along.
+            // The moon glare is a scene draw (celestial_overlay); the cloud term is its vis.
             Vector3 moonDir = Engine_SkyFrame.ToGodot(frame.MoonDirection);
             float vis = CloudVisibility(clouds, cloudTheme, moonDir, right, up);
-            Refii.Fx.Engine_PostFxHalos.SetSkyVisibility("MoonGlare", vis);
+            moonGlare.SetShaderParameter(Param_element_vis, vis);
         }
 
         if (celestial.GetNodeOrNull<MeshInstance3D>(Path_SunGlare) is

@@ -1107,9 +1107,16 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Set(p, 1, d.ExposureSpeed, d.BlackMin, d.MidMin, d.WhiteMin);
         Set(p, 2, d.Pct[0], d.Pct[1], d.Pct[2], d.Knee);
         Set(p, 3, d.ContrastEnhancement, d.ContrastExponent, d.ContrastMaxDeviation, d.WhiteFactor);
+        // The classic look is the title's chain: its own operator (PSHADER_POSTPROCESSINGMATERIAL
+        // _TONEMAP1) on a scene the materials already exposed, and none of the remaster's lift.
+        bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+        // `bloom_scale` (BloomGain) rides the BRIGHT term alone, here in bloom.y, not the bloom
+        // buffer in the composite: the glow layer (sun and moon discs, fixture halos) joins that
+        // same buffer unscaled in brightcut, so at 0 the scene's bloom is gone and the sun still
+        // glows. The composite's 2x is the title's rescale and nothing else.
         Set(p, 4,
             d.BloomThresholdAvg,
-            d.BloomFactor,
+            classic ? d.BloomFactor : d.BloomFactor * Engine_PostFxParams.BloomGain,
             raysOn ? 6.0f * d.RadialFactor * Engine_PostFxParams.RayGain : 0.0f,
             d.TonemapEnabled ? 1.0f : 0.0f);
         TrySunScreenUv(sunDirection, camBasis, camProjection, out Vector2 sunUv);
@@ -1119,9 +1126,6 @@ public partial class Engine_PostFxEffect : CompositorEffect
             d.DofNearFocal,
             d.DofFarFocal,
             1.0f / MathF.Max(d.DofFarPlane - d.DofFarFocal, 1e-4f));
-        // The classic look is the title's chain: its own operator (PSHADER_POSTPROCESSINGMATERIAL
-        // _TONEMAP1) on a scene the materials already exposed, and none of the remaster's lift.
-        bool classic = Refii.Models.Engine_ClassicMaterial.Active;
         bool fableStyle = !classic && Engine_PostFxParams.FableStyleTonemap;
         Set(p, 7, d.DofFarBlur, d.DofNearBlur, dofOn ? 1.0f : 0.0f, classic ? 1.0f : Engine_PostFxParams.DarkLift);
         Set(p, 13, Engine_PostFxParams.DarkLiftOnsetNow, Engine_PostFxParams.FilmicCurve ? 1.0f : 0.0f,
@@ -1144,11 +1148,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Projection inverse = camProjection.Inverse();
         Set(p, 11, inverse.Z.Z, inverse.W.Z, inverse.Z.W, inverse.W.W);
         // c31.x for the title's operator is 2 x TONE_MAPPING_BLOOM_FACTOR (`Render_LitMaterialSubmit_INFERRED`
-        // 0x821E5FC0: lfs P+0x4C; fmuls by 2.0) to undo the 0.5 = 1/g_BloomRescaleFactor in brightcut;
-        // the modern composite applies the same 2x rescale scaled by BloomGain (`bloom_scale`).
-        float bloomScale = classic
-            ? 2.0f * d.BloomFactor
-            : 2.0f * d.BloomFactor * Engine_PostFxParams.BloomGain;
+        // 0x821E5FC0: lfs P+0x4C; fmuls by 2.0) to undo the 0.5 = 1/g_BloomRescaleFactor in brightcut.
+        // Both looks: `bloom_scale` is already in the bright term (slot 4.y above).
+        float bloomScale = 2.0f * d.BloomFactor;
         Set(p, 12,
             bloomScale,
             d.RadialFactor,

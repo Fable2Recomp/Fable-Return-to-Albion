@@ -152,37 +152,10 @@ vec3 fable_gamma_toe_hdr(vec3 col, float gamma_ratio, float headroom) {
 	return min(curved + max(col - 1.0, 0.0), vec3(headroom));
 }
 
-/// Gradually desaturates HDR highlights above paper white (1.0) towards luminance as they
-/// approach `headroom`, creating a natural incandescent 'filament effect' without hue shift.
-vec3 fable_highlight_desaturate(vec3 color, float lum, float headroom) {
-	if (headroom <= 1.001 || lum <= 1.0) {
-		return color;
-	}
-	float t = clamp((lum - 1.0) / max(headroom - 1.0, 1e-4), 0.0, 1.0);
-	float desat = pow(t, 1.5) * 0.70;
-	return mix(color, vec3(lum), desat);
-}
-
-/// Fits a colour over the display ceiling without hue rotation by blending ratio-preserving
-/// chromatic scaling (`color * (ceiling / peak)`) for mild/moderate SDR highlight overages with
-/// luminance-preserving desaturation (`mix(color, vec3(l), t)`) for intense emissive cores.
-vec3 fable_fit_ceiling(vec3 color, float ceiling) {
-	float peak = max(max(color.r, color.g), color.b);
-	if (peak <= ceiling) {
-		return color;
-	}
-	float l = dot(color, LUMINANCE_WEIGHTS);
-	if (peak <= l + 1e-5) {
-		return vec3(ceiling);
-	}
-	vec3 scaled = color * (ceiling / max(peak, 1e-6));
-	float t = clamp((peak - ceiling) / (peak - l), 0.0, 1.0);
-	vec3 lum_fit = mix(color, vec3(l), t);
-	float excess = clamp((peak - ceiling) / max(ceiling * 1.5, 1e-6), 0.0, 1.0);
-	float desat = excess * excess * 0.5;
-	return mix(scaled, lum_fit, desat);
-}
-
+// A COLOUR OVER THE CEILING CLIPS PER CHANNEL. The title's tonemap (shader 0509) ends in
+// `saturate`, channel by channel: an orange flame core (3, 1, 0.3) shows as (1, 1, 0.3), yellow-
+// white. A fit that pulled an over-bright pixel toward its luminance instead showed every torch
+// and candle core as pink pastel (measured (249, 213, 193) where the title gives (255, 255, 149)).
 void main() {
 	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
 	if (coord.x >= push.size.x || coord.y >= push.size.y) {
@@ -282,8 +255,7 @@ void main() {
 		// a lit exterior meters around 0.02 before the exposure scalar is applied.
 		float s = clamp(l_exp * params.misc.x, 0.0, 1.0);
 		col = vec3(l) + s * (c - vec3(l));
-		col = fable_fit_ceiling(max(gain * brightness * col, vec3(0.0)), headroom);
-		col = clamp(col, 0.0, headroom);
+		col = clamp(gain * brightness * col, 0.0, headroom);
 		vec3 bloom = clamp(texture(bloom_tex, uv).rgb * params.composite.x, 0.0, headroom);
 		col = col + bloom * max(headroom - col, 0.0) / headroom;
 	} else {
@@ -296,11 +268,9 @@ void main() {
 	}
 
 	col *= params.misc.z;
-	if (hdr) {
-		float l_post = dot(col, LUMINANCE_WEIGHTS);
-		col = fable_highlight_desaturate(col, l_post, headroom);
-	}
-	col = fable_fit_ceiling(col, headroom);
+	// SDR and HDR alike: the shoulder above has already rolled luminance off toward the
+	// display's ceiling; what is still over it clips per channel, hue kept. An HDR-only pull
+	// toward luminance here (up to 70% at the peak) greyed the same flame cores the SDR fit did.
 	col = clamp(col, 0.0, headroom);
 	if (fable_style) {
 		col = fable_gamma_toe_hdr(col, params.misc.y, headroom);

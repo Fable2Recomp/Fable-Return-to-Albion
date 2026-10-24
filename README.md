@@ -13,17 +13,18 @@ interface, the menus, audio and input.
 Return To Albion ships no game data. You need your own copy of Fable 2. The launcher recompiles
 the game code from it on your machine, and reads the game's asset banks in place.
 
-This remake is currently based on [Fable 2](https://en.wikipedia.org/wiki/Fable_II) GOTY TU1:
+This remake is currently based on [Fable 2](https://en.wikipedia.org/wiki/Fable_II) GOTY, title
+ID `4D5307F1`, in these pressings:
 
-| | |
-|---|---|
-| Title ID | `4D5307F1` |
-| Media ID | `716F0A0D` |
-| Title update | `TU_16L61VH_0000038000000.000000000008Q` |
+| Pressing | Media ID | Title update |
+|---|---|---|
+| USA / Europe | `716F0A0D` | `TU_16L61VH_0000038000000.000000000008Q` or none |
+| Russia | `05FBECEA` | `TU_16L61VH_0000044000000.0000000000091` or none |
+| France | `1358B1A4` | none yet |
 
 Other Fable 2 pressings have different media IDs, and each has its own title update. The launcher
 checks both files before it copies anything and refuses any disc or title update other than the
-pair above. This restriction will be eased as we eventually support more versions closer to
+pairs above. This restriction will be eased as we eventually support more versions closer to
 release.
 
 ## Features

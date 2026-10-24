@@ -55,14 +55,21 @@ public partial class Engine_PostFxHalos : Node
 	public readonly record struct WorldHalo(Vector3 Position, Vector3 Colour, float WorldHalf, float Layer);
 
 	/// <summary>
-	/// A halo pinned to a SKY DIRECTION rather than a light: the moon's glare. The guest draws
-	/// MOONBLOOM (PS 144) into the same transient half-res target as the light halos
-	/// (`sub_82277380`), DOWNSCALE2'd into off_8331A9CC — bloom only, never the scene; its
-	/// constant 244 is <c>0.025 × MOON_GLARE_INTENSITY × fade²</c> with fade the moon's
-	/// occlusion-query fraction. The per-pixel depth test here stands in for the query and
-	/// <see cref="SetSkyVisibility"/> carries the cloud term.
+	/// A halo pinned to a SKY DIRECTION rather than a light. The guest's glow-layer pass
+	/// (`sub_82277380`, Z on, ZWrite off) draws, after the light halos, the MOON — theme texture
+	/// slot 6 at <c>moonDir × 4000</c>, half-size <c>MOON_SIZE × 400</c>, alpha-blended, PS
+	/// binding 144 (MOONBLOOM, <c>texel × 0.2 × alpha</c>), `0x82279410` — and the SUN DISC —
+	/// slot 3 at <c>sunDir × 1900</c>, half-size <c>SUN_DISC_SIZE × 300</c>, constant 245 =
+	/// <c>sunColour × SUN_DISC_COLOUR × SUN_DISC_INTENSITY</c>, `0x821D8658`. That layer is the
+	/// bright pass's post-threshold input and nothing else, so these are the sun's bloom and the
+	/// moon's faint one. Each draw is its own occlusion query, so neither carries a visibility
+	/// term; the per-pixel depth test here is the query. <paramref name="SpriteU0"/>..
+	/// <paramref name="SpriteU1"/> is the sprite's horizontal window (the moon texture holds its
+	/// eight phases side by side). The MOON GLARE is a scene draw, not a halo.
 	/// </summary>
-	public readonly record struct SkyHalo(Vector3 Direction, float Distance, float WorldHalf, Vector3 Colour, Texture2D? Sprite, bool Active);
+	public readonly record struct SkyHalo(
+		Vector3 Direction, float Distance, float WorldHalf, Vector3 Colour, Texture2D? Sprite, bool Active,
+		float SpriteU0 = 0f, float SpriteU1 = 1f);
 
 	private static readonly Refii.Core.Engine_TracedLock Gate = new("post-FX halos");
 	private static readonly List<Halo> Entries = new();
@@ -148,7 +155,7 @@ public partial class Engine_PostFxHalos : Node
 	private readonly List<Halo> _live = new();
 	private readonly List<WorldHalo> _build = new();
 	private readonly List<(SkyHalo Halo, float Visibility)> _sky = new();
-	private readonly Dictionary<ulong, float> _spriteLayers = new();
+	private readonly Dictionary<(ulong Id, float U0, float U1), float> _spriteLayers = new();
 
 	/// <summary>Every view's eye this frame (Engine_Views.Cameras), the window's first.</summary>
 	private readonly Vector3[] _eyes = new Vector3[2];
@@ -299,7 +306,7 @@ public partial class Engine_PostFxHalos : Node
 
 			_build.Add(new WorldHalo(
 				eye + (direction.Normalized() * halo.Distance), colour, halo.WorldHalf,
-				LayerForSprite(halo.Sprite)));
+				LayerForSprite(halo.Sprite, halo.SpriteU0, halo.SpriteU1)));
 		}
 
 		using (Gate.Hold())
@@ -310,16 +317,17 @@ public partial class Engine_PostFxHalos : Node
 		}
 	}
 
-	/// <summary>The array layer for an already-loaded sprite (the celestial textures), −1 for
-	/// none or one that will not decode.</summary>
-	private float LayerForSprite(Texture2D? sprite)
+	/// <summary>The array layer for an already-loaded sprite (the celestial textures), cropped
+	/// to its horizontal window <paramref name="u0"/>..<paramref name="u1"/> first; −1 for none
+	/// or one that will not decode.</summary>
+	private float LayerForSprite(Texture2D? sprite, float u0, float u1)
 	{
 		if (sprite is null || !GodotObject.IsInstanceValid(sprite))
 		{
 			return -1f;
 		}
 
-		ulong id = sprite.GetInstanceId();
+		(ulong, float, float) id = (sprite.GetInstanceId(), u0, u1);
 		if (_spriteLayers.TryGetValue(id, out float known))
 		{
 			return known;
@@ -335,6 +343,13 @@ public partial class Engine_PostFxHalos : Node
 			}
 
 			image.Convert(Image.Format.Rgba8);
+			if (u0 > 0f || u1 < 1f)
+			{
+				int x0 = Math.Clamp((int)MathF.Floor(u0 * image.GetWidth()), 0, image.GetWidth() - 1);
+				int x1 = Math.Clamp((int)MathF.Ceiling(u1 * image.GetWidth()), x0 + 1, image.GetWidth());
+				image = image.GetRegion(new Rect2I(x0, 0, x1 - x0, image.GetHeight()));
+			}
+
 			image.Resize(SpriteSize, SpriteSize, Image.Interpolation.Lanczos);
 			if (image.HasMipmaps())
 			{

@@ -45,6 +45,12 @@ public static class Engine_PostFxParams
     private static bool? _modernDof;
     private static string? _toneCurve;
     private static float? _darkLift;
+    /// <summary>What `bloom_scale` is when the config does not state it (RuntimeCVarSet agrees):
+    /// 0, no scene bloom. The dial scales the bright pass alone; the glow layer (sun, moon,
+    /// fixture halos) joins the bloom buffer unscaled, so the sun glows at 0. 1.0 is the
+    /// title's own amount.</summary>
+    public const float BloomGainDefault = 0.0f;
+
     private static float? _bloomGain;
     private static bool? _haloDistanceFade;
 
@@ -174,7 +180,8 @@ public static class Engine_PostFxParams
     public static float RayGain { get; set; } = 1.0f;
 
     /// <summary>
-    /// Multiplier on bloom intensity in the modern composite (`bloom_scale` in config, default 1.0).
+    /// Multiplier on bloom intensity in the modern composite (`bloom_scale` in config, default
+    /// <see cref="BloomGainDefault"/>).
     /// </summary>
     public static float BloomGain
     {
@@ -183,11 +190,11 @@ public static class Engine_PostFxParams
             CheckGeneration();
             if (_bloomGain is null)
             {
-                float value = 1.0f;
+                float value = BloomGainDefault;
                 try
                 {
                     value = Refii.Core.Engine_RefiiConfig.Float(
-                        Refii.Core.Engine_RefiiConfig.Read(out _), "bloom_scale", 1.0f);
+                        Refii.Core.Engine_RefiiConfig.Read(out _), "bloom_scale", BloomGainDefault);
                 }
                 catch (System.Exception)
                 {

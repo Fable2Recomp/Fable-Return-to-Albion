@@ -724,8 +724,21 @@ public class HdrTonemapTests
         }
         finally
         {
-            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("bloom_scale", "1.0");
+            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(
+                "bloom_scale", Refii.Lighting.Engine_PostFxParams.BloomGainDefault.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
+    }
+
+    /// <summary>Scene bloom ships OFF: the runtime default and the launcher's cvar default are one number, 0.</summary>
+    [TestCase]
+    public void TestBloomScaleDefaultIsZeroEverywhere()
+    {
+        AssertThat(Refii.Lighting.Engine_PostFxParams.BloomGainDefault).IsEqual(0.0f);
+        var bloomDef = System.Linq.Enumerable.First(
+            Refii.Launcher.Core.RuntimeCVarSet.All,
+            d => d.Name == "bloom_scale");
+        AssertThat(float.Parse(bloomDef.DefaultValue, System.Globalization.CultureInfo.InvariantCulture))
+            .IsEqualApprox(Refii.Lighting.Engine_PostFxParams.BloomGainDefault, 1e-6f);
     }
 
     [TestCase]

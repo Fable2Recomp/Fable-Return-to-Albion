@@ -65,6 +65,36 @@ public class CoopLuaSaveSafeTests
 		("local results = { C.RunAs(C.ShippedGetPlayerHero(), shipped, self, partner, ...) }", "BehaviourVillagerChat predicate"),
 	};
 
+	/// <summary>
+	/// The save-compat stub (Engine_SaveCompatLua) is what an unknown permanent resolves to, and a
+	/// saved frame resumes INTO it at its saved pc: every instruction but the last must be a MOVE
+	/// between its two locals, the last a RETURN, and it takes no upvalues.
+	/// </summary>
+	[TestCase]
+	public void TheSaveCompatStubIsMovesThenReturn()
+	{
+		string text = Refii.Save.Engine_SaveCompatLua.Source;
+		byte[]? bytes = Compile(text, "@refii/save-compat", out string why);
+		if (bytes == null && why.Length == 0)
+		{
+			return;  // no game compiler beside the test host (a packaged run)
+		}
+
+		AssertThat(bytes != null).OverrideFailureMessage($"save-compat does not compile: {why}").IsTrue();
+		LuaProto main = LuaChunk.Parse(bytes!);
+		LuaProto? stub = LuaChunk.All(main).FirstOrDefault(p => p.Code.Length >= Refii.Save.Engine_SaveCompatLua.StubMoves);
+		AssertThat(stub != null).OverrideFailureMessage("the stub function was not found").IsTrue();
+		// `local a, b` at pc 0 emits no LOADNIL (registers are nil at entry), so the body is the
+		// MOVEs and the RETURN alone.
+		uint[] code = stub!.Code;
+		const uint OpMove = 0, OpReturn = 30;
+		AssertThat(code[^1] & 0x3F).IsEqual(OpReturn);
+		int moves = code.Take(code.Length - 1).Count(i => (i & 0x3F) == OpMove);
+		AssertThat(moves).IsEqual(code.Length - 1);
+		AssertThat(moves).IsEqual(Refii.Save.Engine_SaveCompatLua.StubMoves);
+		AssertThat(stub.Nups).IsEqual(0);
+	}
+
 	private static string? RepoRoot()
 	{
 		string? at = AppContext.BaseDirectory;

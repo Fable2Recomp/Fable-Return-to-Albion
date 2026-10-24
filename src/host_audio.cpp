@@ -1,9 +1,9 @@
 #include "host_audio.h"
 
-#include <bit>
-#include <cstring>
 #include <vector>
 
+#include <rex/audio/conversion.h>
+#include <rex/audio/downmix.h>
 #include <rex/logging.h>
 
 #include "core/audio_state.h"
@@ -37,38 +37,22 @@ constexpr uint32_t kConsumerTimeoutMs = 250;
 /// there too rather than only to a console that scrolls away.
 constexpr uint64_t kHealthReportFrames = 1875;
 
-/// One big-endian float out of the guest's frame.
-float SwapGuestFloat(const float* planar, size_t index) {
-    uint32_t bits = 0;
-    std::memcpy(&bits, planar + index, sizeof(bits));
-    bits = __builtin_bswap32(bits);
-    return std::bit_cast<float>(bits);
-}
-
 /// Folds the guest's planar big-endian 5.1 frame down to interleaved stereo.
 ///
-/// Written here rather than calling rex::audio::conversion because that header's fast path
-/// is SSSE3 and refii_host is not built with that target feature. Widening the ISA baseline
-/// of a whole library for one 256-sample loop is the wrong trade — this runs 187 times a
-/// second over 1536 floats and does not need vectorising.
-///
-/// The channel order is XAudio's documented 5.1 layout: front left, front right, centre,
-/// LFE, back left, back right. Centre is split evenly across both sides, LFE is discarded,
-/// and the sum is scaled by 1/2.5 so a fully-loaded matrix cannot clip. Note that the SDK's
-/// own scalar fallback reads back-left and back-right the other way round from its SSE
-/// path; this follows the SSE path, which matches the documented order.
+/// The SDK's fold, with the SDK's weights: it is the one place the output level of every
+/// sound in the game is set, so it must not have a second implementation here. The title
+/// always mixes to 5.1 — it never reads the speaker configuration (no XAudioGetSpeakerConfig
+/// or XGetAudioFlags import), X3DAudioInitialize is given mask 0x3F at 0x82c5abe0 so a 3D
+/// sound dead ahead lands in the centre channel, and 2D sources route identity L->FL, R->FR
+/// (CRouterEffect::Process, 0x82cdf9d4). The kernel's fold was the console's; this is ours,
+/// and it follows ITU-R BS.775: centre and surrounds at -3 dB, LFE dropped, front weight
+/// `fold.scale * gain` (0.586 by default). Movie sound decoded on the host is given the same
+/// front weight (RefiiHostAudioFrontGain), since on the console it went through the same
+/// mastering voice. The guest's own master-bus limiter (-3 dBFS ceiling) runs before this.
 void FoldGuestFrameToStereo(const float* planar, uint32_t samples_per_channel, float* out) {
-    for (uint32_t i = 0; i < samples_per_channel; i++) {
-        const float fl = SwapGuestFloat(planar, (0 * samples_per_channel) + i);
-        const float fr = SwapGuestFloat(planar, (1 * samples_per_channel) + i);
-        const float fc = SwapGuestFloat(planar, (2 * samples_per_channel) + i);
-        const float bl = SwapGuestFloat(planar, (4 * samples_per_channel) + i);
-        const float br = SwapGuestFloat(planar, (5 * samples_per_channel) + i);
-
-        const float centre_halved = fc * 0.5f;
-        out[(i * 2) + 0] = (fl + bl + centre_halved) * (1.0f / 2.5f);
-        out[(i * 2) + 1] = (fr + br + centre_halved) * (1.0f / 2.5f);
-    }
+    rex::audio::conversion::sequential_6_BE_to_interleaved_2_LE(
+        out, planar, samples_per_channel, rex::audio::GetStereoFold(),
+        rex::audio::GetOutputGain());
 }
 
 }  // namespace
@@ -92,11 +76,14 @@ bool HostAudioDriver::Initialize() {
     }
 
     refii::vfs::SetHostAudioDriverInstalled(true);
+    const rex::audio::StereoFold fold = rex::audio::GetStereoFold();
     REXLOG_INFO(
         "refii audio: host driver installed; guest output is {} Hz {} ch, {} samples per "
-        "frame, folded to stereo for Godot",
+        "frame, folded to stereo for Godot (front {:.3f}, centre {:.3f}, surround {:.3f}, "
+        "lfe {:.3f}, gain {:.3f})",
         refii::vfs::kGuestAudioSampleRate, refii::vfs::kGuestAudioChannels,
-        refii::vfs::kGuestAudioSamplesPerFrame);
+        refii::vfs::kGuestAudioSamplesPerFrame, fold.scale, fold.center * fold.scale,
+        fold.surround * fold.scale, fold.lfe * fold.scale, rex::audio::GetOutputGain());
     return true;
 }
 

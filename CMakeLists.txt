@@ -736,6 +736,11 @@ add_library(refii_host STATIC
     # bridge and this driver must see one ring, not one each.
     src/host_audio.cpp
 )
+# host_audio.cpp calls the SDK's 5.1 fold, whose x86-64 path is SSSE3 — the same flag the
+# SDK's own audio objects get above.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    target_compile_options(refii_host PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-mssse3>)
+endif()
 set_target_properties(refii_host PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     # Linked into refii_hostbridge, which is SHARED so Godot can P/Invoke it. Without
@@ -755,6 +760,22 @@ target_include_directories(refii_host
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/achievement/include"
 )
+# THE BUILD THE CRASH RECORD CAME FROM. A record without one has twice been read as the current
+# release and triaged as a live fault when it was a beta behind (crash records are append-only
+# and survive an in-place upgrade). Stamped at build time, not configure time, so the header
+# names the commit the binary was actually built from; rewritten only when it changes.
+set(REFII_BUILD_ID_DIR "${CMAKE_BINARY_DIR}/refii_build_id")
+add_custom_target(refii_build_id
+    COMMAND "${CMAKE_COMMAND}"
+        "-DREFII_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DREFII_OUTPUT=${REFII_BUILD_ID_DIR}/refii_build_id.h"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/refii_build_id.cmake"
+    BYPRODUCTS "${REFII_BUILD_ID_DIR}/refii_build_id.h"
+    COMMENT "Stamping the build id for the crash record"
+    VERBATIM
+)
+add_dependencies(refii_host refii_build_id)
+target_include_directories(refii_host PRIVATE "${REFII_BUILD_ID_DIR}")
 target_compile_definitions(refii_host
     PUBLIC
         REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>

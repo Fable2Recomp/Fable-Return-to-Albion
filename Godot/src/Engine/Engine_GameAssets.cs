@@ -167,6 +167,7 @@ public partial class Engine_GameAssets : Node
 				updateRoot: Refii.Core.Engine_GameData.UpdateRootFor(GameDirectory));
 			ApplyModOrder(mounted, overlays, order, live);
 			Refii.Host.CoopHeroLua.Attach(mounted);
+			Refii.Save.Engine_SaveCompatLua.Attach(mounted);
 			Refii.Host.CoopText.Attach(mounted);
 			try { Refii.Save.Engine_GoldenCockRuntime.Attach(mounted, Refii.Save.Engine_GoldenCockPlacements.Load()); }
 			catch (Exception exception) { GD.PushError("[golden-cock] " + exception.Message); }

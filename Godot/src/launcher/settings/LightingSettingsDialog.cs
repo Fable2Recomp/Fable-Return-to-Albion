@@ -339,7 +339,7 @@ public partial class LightingSettingsDialog : Control
 		contentCol.AddChild(BuildSliderSpinRow(
 			"bloom_scale",
 			"Bloom Intensity Scale",
-			"Multiplier on bloom, god-ray, and halo glow strength in the modern compositor (default: 1.0x).",
+			"Multiplier on the scene's bloom in the modern compositor (default: 0, off; 1.0x is the original's). The sun, moon and lamp halos glow regardless.",
 			0.0, 2.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(

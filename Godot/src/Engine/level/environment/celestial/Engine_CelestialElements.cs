@@ -50,6 +50,13 @@ public static class Engine_CelestialElements
 
     public const float MoonPhaseUStep = 0.125f;
 
+    /// <summary>The glow-layer moon (`0x82279410`): the moon texture at <c>moonDir × 4000</c>,
+    /// half-size <c>MOON_SIZE × 400</c> (constant at 0x822799f8 / 0x82279a5c), PS binding 144
+    /// whose body is <c>texel.rgb × 0.2 × texel.a</c> — a third larger than the disc and a fifth
+    /// as bright, and the only moon the bright pass sees.</summary>
+    public const float MoonBloomSizeScale = 400.0f;
+    public const float MoonBloomShaderScale = 0.2f;
+
     public const float MoonGlareDistance = 1000.0f;
 
     public const float MoonGlareSizeScale = 300.0f;
@@ -325,14 +332,24 @@ public static class Engine_CelestialElements
             }
         }
 
-        // The moon glare is not a scene draw. The guest renders MOONBLOOM (PS 144) into the
-        // transient half-res target that `sub_82277380` DOWNSCALE2s into off_8331A9CC — the
-        // glow layer the bright pass sums after its threshold — so the glare blooms but never
-        // brightens the sky it sits on. It is published to the halo layer from Update; a
-        // billboard left by an older build is freed.
-        if (container.GetNodeOrNull<MeshInstance3D>(Path_MoonGlare) is { } staleGlare)
+        // THE MOON GLARE IS A SCENE DRAW, like the sun's: main-scene list 14 (slot 18, after
+        // the world, Z off, ONE/ONE), `0x821D57E0`, theme texture slot 7 at moonDir × 1000,
+        // half-size MOON_GLARE_SIZE × 300, constant 244 = 0.025 × MOON_GLARE_INTENSITY × fade².
+        // Published to the glow layer instead, it went through the bloom's screen blend with
+        // no exposure or tone curve on it and showed as a white ball across a quarter of the
+        // sky (Bower Lake, 2026-10-25). What the glow layer holds of the moon is MOONBLOOM,
+        // published from Update.
+        if (theme.HasMoonGlareTexture &&
+            container.GetNodeOrNull<MeshInstance3D>(Path_MoonGlare) is null)
         {
-            staleGlare.QueueFree();
+            Texture2D? moonGlare = Load(theme.MoonGlareTextureHash, read, "moon glare");
+            if (moonGlare is not null)
+            {
+                container.AddChild(Billboard(
+                    "MoonGlare", overlayShader, moonGlare, Vector3.Up, MoonGlareDistance,
+                    element[3] * MoonGlareSizeScale, element[3] * MoonGlareSizeScale,
+                    Vector3.Zero, 1f, 0f, 0f, 1f, priority++));
+            }
         }
 
         if (container.GetNodeOrNull<MeshInstance3D>(Path_Stars) is null)
@@ -483,11 +500,6 @@ public static class Engine_CelestialElements
                     mesh.Visible = element[0] >= IntensityGate;
                     break;
                 case "MoonGlare":
-                    // Stale billboard from an older build; the glare is a halo now.
-                    mesh.Visible = false;
-                    break;
-
-                case "MoonGlareUnused":
                     material.SetShaderParameter(Param_element_dir, moon);
                     material.SetShaderParameter(Param_element_half, new Vector2(
                         element[3] * MoonGlareSizeScale,
@@ -536,47 +548,76 @@ public static class Engine_CelestialElements
                     node.Visible = false;
                 }
             }
-            Refii.Fx.Engine_PostFxHalos.PublishSky("MoonGlare", default);
+            Refii.Fx.Engine_PostFxHalos.PublishSky("SunDisc", default);
+            Refii.Fx.Engine_PostFxHalos.PublishSky("MoonBloom", default);
             Engine_ClassicSkyElements.Update(container, container.GetViewport()?.GetCamera3D());
             return;
         }
 
-        PublishMoonGlare(container, theme, element, moon, read ?? Refii.Models.Engine_BnkMeshLoader.ReadBytes);
+        PublishGlowLayer(
+            container, theme, element, sun, moon, sunTint, sunActive, moonPhase,
+            read ?? Refii.Models.Engine_BnkMeshLoader.ReadBytes);
     }
 
     private static readonly Dictionary<uint, Texture2D?> GlareTextures = new();
 
     /// <summary>
-    /// The moon's glare as a sky halo: direction, the guest's distance and size
-    /// (MoonGlareSize × 300 at 1000), colour <c>0.025 × MoonGlareIntensity</c> (constant 244,
-    /// `Render_LitDecalDraw_INFERRED` 0x821d5e3c..0x821d5e7c; the fade² term is the halo
-    /// node's visibility), premultiplied by the sprite's alpha in the halo shader.
+    /// What the guest's glow layer holds of the sky (`sub_82277380`, after the light halos),
+    /// published as sky halos so the bright pass sums them after its threshold exactly as the
+    /// title's does — the sun's bloom and the moon's faint one, independent of the scene's
+    /// bloom and its dial:
+    /// <list type="bullet">
+    /// <item>SUN DISC (`0x821D8658`): slot 3 at sunDir × 1900, half-size SUN_DISC_SIZE × 300,
+    ///   constant 245 = sunColour × SUN_DISC_COLOUR × SUN_DISC_INTENSITY — the same numbers the
+    ///   scene disc takes, so the bloom is the disc's colour. Gate SUN_INTENSITY ≥ 1e-4.</item>
+    /// <item>MOON (`0x82279410`): slot 6 at moonDir × 4000, half-size MOON_SIZE × 400, the
+    ///   current phase's eighth of the texture, PS 144 = texel × 0.2 × alpha. Gate
+    ///   MOON_INTENSITY ≥ 1e-4.</item>
+    /// </list>
+    /// Each guest draw is its own occlusion query, so neither takes a visibility factor; the
+    /// halo shader's per-pixel depth test is the query.
     /// </summary>
-    private static void PublishMoonGlare(
-        Node3D container, SkyTheme theme, float[] element, Vector3 moon, Func<string, byte[]?> read)
+    private static void PublishGlowLayer(
+        Node3D container, SkyTheme theme, float[] element, Vector3 sun, Vector3 moon, float[] sunTint,
+        bool sunActive, int moonPhase, Func<string, byte[]?> read)
     {
-        if (!theme.HasMoonGlareTexture)
-        {
-            Refii.Fx.Engine_PostFxHalos.PublishSky("MoonGlare", default);
-            return;
-        }
+        bool any = false;
 
-        if (!GlareTextures.TryGetValue(theme.MoonGlareTextureHash, out Texture2D? sprite))
-        {
-            sprite = Load(theme.MoonGlareTextureHash, read, "moon glare");
-            GlareTextures[theme.MoonGlareTextureHash] = sprite;
-        }
+        Texture2D? disc = theme.HasSunDiscTexture ? CachedTexture(theme.SunDiscTextureHash, read, "sun disc") : null;
+        bool sunOn = disc is not null && sunActive && element[7] >= IntensityGate && sun.LengthSquared() > 1e-12f;
+        Refii.Fx.Engine_PostFxHalos.PublishSky("SunDisc", new Refii.Fx.Engine_PostFxHalos.SkyHalo(
+            sun, SunDiscDistance, element[6] * SunDiscSizeScale,
+            new Vector3(
+                sunTint[0] * element[8] * element[7],
+                sunTint[1] * element[9] * element[7],
+                sunTint[2] * element[10] * element[7]),
+            disc, sunOn));
+        any |= sunOn;
 
-        float glareScale = MoonGlareCpuScale * element[2];
-        bool active = sprite is not null &&
-            element[0] >= IntensityGate && element[2] >= IntensityGate && moon.LengthSquared() > 1e-12f;
-        Refii.Fx.Engine_PostFxHalos.PublishSky("MoonGlare", new Refii.Fx.Engine_PostFxHalos.SkyHalo(
-            moon, MoonGlareDistance, element[3] * MoonGlareSizeScale,
-            new Vector3(glareScale, glareScale, glareScale), sprite, active));
-        if (active)
+        Texture2D? moonTex = theme.HasMoonTexture ? CachedTexture(theme.MoonTextureHash, read, "moon") : null;
+        bool moonOn = moonTex is not null && element[0] >= IntensityGate && moon.LengthSquared() > 1e-12f;
+        int phase = Math.Clamp(moonPhase, 0, 7);
+        Refii.Fx.Engine_PostFxHalos.PublishSky("MoonBloom", new Refii.Fx.Engine_PostFxHalos.SkyHalo(
+            moon, MoonBillboardDistance, element[1] * MoonBloomSizeScale,
+            new Vector3(MoonBloomShaderScale, MoonBloomShaderScale, MoonBloomShaderScale),
+            moonTex, moonOn, phase * MoonPhaseUStep, (phase + 1) * MoonPhaseUStep));
+        any |= moonOn;
+
+        if (any)
         {
             Refii.Fx.Engine_PostFxHalos.Ensure(container);
         }
+    }
+
+    private static Texture2D? CachedTexture(uint hash, Func<string, byte[]?> read, string label)
+    {
+        if (!GlareTextures.TryGetValue(hash, out Texture2D? texture))
+        {
+            texture = Load(hash, read, label);
+            GlareTextures[hash] = texture;
+        }
+
+        return texture;
     }
 
     /// <summary>
@@ -600,7 +641,7 @@ public static class Engine_CelestialElements
     /// </summary>
     private static readonly StringName PsSunDiscTextureName = "ps_g_SunDiscTexture";
     private static readonly StringName PsMoonTextureName = "ps_g_MoonTexture";
-    private static readonly NodePath[] HostDrawnPaths = { Path_SunBeams, Path_SunDisc, Path_SunGlare, Path_Stars };
+    private static readonly NodePath[] HostDrawnPaths = { Path_SunBeams, Path_SunDisc, Path_SunGlare, Path_MoonGlare, Path_Stars };
     private static readonly bool DebugEnv = OS.GetEnvironment("REFII_CELESTIAL_DEBUG").Length != 0;
     private static readonly int[] LiveElementIndex = { 65, 66, 67, 68, 69, 70, 92, 94 };
 

@@ -54,17 +54,24 @@ void main() {
 	// uploads the pair as one float2 in `sub_821B6730` — scale is literally 1/post+0x41A8, the
 	// exposure scalar, and threshold is min(white*f, mid*f) mirrored to post+208.
 	float inv_exposure = 1.0 / max(state.v[S_EXPOSURE_FRAME], 1e-4);
-	float cut = max(l * inv_exposure - state.v[S_THRESHOLD], 0.0);
-	// Soft-compress extreme scene-referred HDR spikes (> 4x exposed white) with a C1 shoulder so a
-	// single specular glint does not dominate the 1/16th-res blur kernel, while keeping [0, 4] linear.
-	cut = cut <= 4.0 ? cut : 4.0 + 4.0 * (1.0 - exp(-(cut - 4.0) * 0.25));
+	// SATURATED, as 0163 states it: `r1.w = saturate(lum * c77.y - c77.x)`. The cut never exceeds
+	// 1, so a surface brighter than threshold + 1 blooms with at most 1/lum of its colour and the
+	// hottest texel beside a candle feeds the blur no more than the original's did. A soft shoulder
+	// that let the cut run to 8 fed lamp-lit walls up to eight times that energy.
+	float cut = clamp(l * inv_exposure - state.v[S_THRESHOLD], 0.0, 1.0);
 	vec3 bright = c * (cut / max(l, 1e-5));
 	vec3 rays = imageLoad(rays_image, coord).rgb;
 	vec3 occl = imageLoad(occl_image, coord).rgb;
 	// The rays ride at 6.0 * RadialBlurFactor (0163: c255.w = 6.0 multiplies the radial tap
 	// before the factor) — the 6 lives in bloom.z. The guest's radial source is the RAW scene
 	// where our quarter is exposure-scaled, so the term unexposes to match its space.
+	// bloom.y is BloomStrength x `bloom_scale`: the player's dial scales the scene's bright
+	// pass only. The glow layer (`occl`: sun and moon discs, fixture halos) joins at full, so a
+	// scale of 0 leaves the sun glowing.
 	vec3 o = bright * params.bloom.y + rays * inv_exposure * params.bloom.z + occl;
-	// 0.5 = 1/g_BloomRescaleFactor; the guest uploads 2.0 (flt_8209B480) to const 21.
-	imageStore(dst_image, coord, vec4(o * 0.5, 1.0));
+	// 0.5 = 1/g_BloomRescaleFactor; the guest uploads 2.0 (flt_8209B480) to const 21. The target
+	// is A2B10G10R10 UNORM in the title, so the ROP clamps every texel to [0, 1] BEFORE the
+	// gaussian reads it; this buffer is FP16, so the clamp is written here. The clamp is
+	// load-bearing: filtering an unclamped hot spot spreads its excess into the surrounding wash.
+	imageStore(dst_image, coord, vec4(clamp(o * 0.5, 0.0, 1.0), 1.0));
 }

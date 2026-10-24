@@ -5321,7 +5321,7 @@ public partial class GameEntities : Node3D
                 continue;
             }
 
-            Color c = light.LightColor;
+            Color c = Refii.Lighting.Engine_LightColour.Linear(light);
             reaching.Add((distance,
                 $"{light.Name} {light.GetType().Name} d={distance:0.0} range={range:0.0} " +
                 $"energy={light.LightEnergy:0.00} colour=({c.R:0.00},{c.G:0.00},{c.B:0.00}) " +

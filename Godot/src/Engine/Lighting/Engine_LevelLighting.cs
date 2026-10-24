@@ -129,8 +129,8 @@ public static class Engine_LevelLighting
 		if (Refii.Level.Engine_DynamicSkyLighting.OverridesSun)
 		{
 			Vector3 colour = Refii.Level.Engine_DynamicSkyLighting.SunColour;
-			var tint = new Color(colour.X, colour.Y, colour.Z);
-			if (light.LightColor != tint) light.LightColor = tint;
+			var linear = new Color(colour.X, colour.Y, colour.Z);
+			if (light.LightColor != Engine_LightColour.ForGodot(linear)) Engine_LightColour.Apply(light, linear);
 		}
 	}
 
@@ -174,8 +174,10 @@ public static class Engine_LevelLighting
 	{
 		if (!Refii.Level.Engine_DynamicSkyLighting.OverridesSun)
 		{
-			var tint = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
-			if (light.LightColor != tint) light.LightColor = tint;
+			// Linear (the theme's value through ToLinearInput), so it goes in encoded like every
+			// other guest light colour: Godot decodes LightColor before it shades.
+			var linear = new Color(frame.SunColour[0], frame.SunColour[1], frame.SunColour[2]);
+			if (light.LightColor != Engine_LightColour.ForGodot(linear)) Engine_LightColour.Apply(light, linear);
 		}
 		ApplyWeatherSun(light, frame);
 		bool shadows = SunCasts(frame.SunShadow);
