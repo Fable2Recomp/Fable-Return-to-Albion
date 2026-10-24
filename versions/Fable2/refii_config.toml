@@ -11133,6 +11133,7 @@
 0x821C6868 = { name = "rex_lhWideString_Dtor" }
 0x821C7D88 = { name = "rex_lhHeroStats_GetRenown" }
 0x8220DFC0 = { name = "rex_lhGraphicAppearanceMorph_ApplyTextureLayers" }
+0x822DA728 = { name = "rex_CECMorph_GetWeight" }
 0x8222AB20 = { name = "rex_lhRenderCommandStream_PostModelCommand" }
 0x82A3A820 = { name = "rex_lhDecal_ExecuteRenderCommand" }
 0x82A3A8F8 = { name = "rex_lhDecal_ExecuteClearCommand" }

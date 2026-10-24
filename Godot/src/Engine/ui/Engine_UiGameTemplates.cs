@@ -34,6 +34,23 @@ public static class Engine_UiGameTemplates
           "eventType": 70
         },
         {
+          "name": "CharacterSettings",
+          "tag": "Character",
+          "hostOnly": true,
+          "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+          "counted": false,
+          "children": [
+            {
+              "name": "CharacterMorphs",
+              "tag": "Morphs",
+              "command": "options:character:morphs",
+              "hostOnly": true,
+              "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+              "counted": false
+            }
+          ]
+        },
+        {
           "name": "VideoSettings",
           "tag": "GUI_SCREEN_OPTIONS_VIDEO",
           "hostOnly": true,

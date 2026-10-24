@@ -164,7 +164,7 @@ public static class Engine_UiOptionsPending
 				Row = Math.Max(0, Row - 1);
 				break;
 			case Engine_UiScreenInput.Down:
-				Row = Math.Min(_index.Length - 1, Row + 1);
+				Row = Math.Min((host?.Count ?? _index.Length) - 1, Row + 1);
 				break;
 			case Engine_UiScreenInput.Left:
 				if (Row < _index.Length && _index[Row] > 0)

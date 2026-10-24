@@ -1506,6 +1506,26 @@ public static class Engine_UiTemplates
 			});
 		}
 
+		if (options is not null)
+		{
+			options.Entries.Insert(1, new Engine_UiMenuEntry
+			{
+				Name = "CharacterSettings", Tag = "Character",
+				Icon = @"Art\GUI\WheelIcons\Abilities\icon_logbook.tga",
+				HostOnly = true, Counted = false,
+				Children =
+				{
+					new Engine_UiMenuEntry
+					{
+						Name = "CharacterMorphs", Tag = "Morphs",
+						Icon = @"Art\GUI\WheelIcons\Abilities\icon_logbook.tga",
+						HostOnly = true, Counted = false,
+						Command = Engine_UiCharacterOptions.OpenCommand,
+					},
+				},
+			});
+		}
+
 		// CONTROLS: the game's own Controls page folded with the game's rumble switch
 		// (Engine_UiVibrationOptions — the guest's byte, which shipped with no page behind it)
 		// and one row per enabled mod that declares rebindable input actions (input.json), each

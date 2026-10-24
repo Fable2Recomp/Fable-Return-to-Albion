@@ -116,7 +116,7 @@ public abstract class Engine_UiHostOptionsPage
 			return;
 		}
 
-		int[] committed = page.Read();
+		int[] committed = open ? Array.Empty<int>() : page.Read();
 		int Index(int at) => open
 			? Engine_UiOptionsPending.IndexOf(at)
 			: at < committed.Length ? committed[at] : 0;
@@ -229,6 +229,7 @@ public abstract class Engine_UiHostOptionsPage
 	{
 		Register(Engine_UiWeatherOptions.OpenCommand, _ => Engine_UiWeatherOptions.Page);
 		Register(Engine_UiVibrationOptions.OpenCommand, _ => Engine_UiVibrationOptions.Page);
+		Register(Engine_UiCharacterOptions.OpenCommand, _ => Engine_UiCharacterOptions.Page);
 		Register(Refii.Mods.ModSettingsUi.OpenCommandPrefix, Refii.Mods.ModSettingsUi.PageFor);
 		Register(Refii.Mods.ModInputUi.OpenCommandPrefix, Refii.Mods.ModInputUi.PageFor);
 	}
