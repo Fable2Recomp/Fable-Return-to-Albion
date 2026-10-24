@@ -122,7 +122,6 @@ public static class Engine_ClassicRoofs
         queryMin -= new Vector3(Widen, Widen, Widen);
         queryMax += new Vector3(Widen, Widen, Widen);
         Gone.Clear();
-        ReadOnlySpan<int> order = stackalloc int[] { 0, 1, 3, 2 };
         foreach ((uint entity, Building building) in Buildings)
         {
             if (!GodotObject.IsInstanceValid(building.Node) || !building.Node.IsInsideTree())
@@ -130,65 +129,7 @@ public static class Engine_ClassicRoofs
                 Gone.Add(entity);
                 continue;
             }
-            // Godot model (x, y, z) is the file's (x, -z, y); Godot world is the guest's (-x, z, y).
-            Transform3D world = building.Node.GlobalTransform;
-            if (!building.HasCachedWorld || !building.CachedWorld.IsEqualApprox(world))
-            {
-                building.CachedWorld = world;
-                building.HasCachedWorld = true;
-                building.CachedRoofs.Clear();
-                ++Version;
-                foreach ((Vector3 min, Vector3 max) in building.Boxes)
-                {
-                    Vector3 d = max - min;
-                    if (d.X < MinSide || d.Y < MinSide || d.Z < MinSide || d.X > MaxSide || d.Y > MaxSide || d.Z > MaxSide)
-                    {
-                        continue;
-                    }
-                    // The world box, for the overlap: the model box's eight corners.
-                    Vector3 wMin = new(float.MaxValue, float.MaxValue, float.MaxValue), wMax = new(float.MinValue, float.MinValue, float.MinValue);
-                    for (int k = 0; k < 8; k++)
-                    {
-                        var file = new Vector3((k & 1) != 0 ? max.X : min.X, (k & 2) != 0 ? max.Y : min.Y, (k & 4) != 0 ? max.Z : min.Z);
-                        Vector3 g = ToGuest(world * FileToModel(file));
-                        wMin = wMin.Min(g);
-                        wMax = wMax.Max(g);
-                    }
-                    var roof = new Roof { Top = 0f };
-                    // dword_832D5F58 = {0, 1, 3, 2}: bit 0 takes min.x, bit 1 min.y.
-                    for (int k = 0; k < 4; k++)
-                    {
-                        int flag = order[k];
-                        var file = new Vector3((flag & 1) != 0 ? min.X : max.X, (flag & 2) != 0 ? min.Y : max.Y, max.Z);
-                        Vector3 g = ToGuest(world * FileToModel(file));
-                        var xy = new Vector2(g.X, g.Y);
-                        switch (k)
-                        {
-                            case 0: roof.C0 = xy; break;
-                            case 1: roof.C1 = xy; break;
-                            case 2: roof.C2 = xy; break;
-                            default: roof.C3 = xy; break;
-                        }
-                        if (roof.Top < g.Z)
-                        {
-                            roof.Top = g.Z;
-                        }
-                        // The xy box: corner 0 the whole point, the rest folded with z = 0 (0x82A78908..4C).
-                        if (k == 0)
-                        {
-                            roof.Min = g;
-                            roof.Max = g;
-                        }
-                        else
-                        {
-                            var p = new Vector3(g.X, g.Y, 0f);
-                            roof.Min = roof.Min.Min(p);
-                            roof.Max = roof.Max.Max(p);
-                        }
-                    }
-                    building.CachedRoofs.Add((wMin, wMax, roof));
-                }
-            }
+            EnsureCachedWorld(building);
             for (int r = 0; r < building.CachedRoofs.Count; r++)
             {
                 if (Roofs.Count >= MaxRoofs)
@@ -237,6 +178,95 @@ public static class Engine_ClassicRoofs
             }
         }
         return true;
+    }
+
+    /// <summary>
+    /// Collects all cached roofs whose bounding box overlaps the given query box (guest axes).
+    /// Used by Engine_DynamicRoofMap for area-wide sheltering without frustum/slot-count limits.
+    /// </summary>
+    public static void CollectRoofsInBox(Vector3 queryMin, Vector3 queryMax, List<Roof> destination)
+    {
+        destination.Clear();
+        foreach ((_, Building building) in Buildings)
+        {
+            if (!GodotObject.IsInstanceValid(building.Node) || !building.Node.IsInsideTree())
+            {
+                continue;
+            }
+            EnsureCachedWorld(building);
+            for (int r = 0; r < building.CachedRoofs.Count; r++)
+            {
+                (Vector3 wMin, Vector3 wMax, Roof roof) = building.CachedRoofs[r];
+                if (wMax.X < queryMin.X || wMin.X > queryMax.X ||
+                    wMax.Y < queryMin.Y || wMin.Y > queryMax.Y ||
+                    wMax.Z < queryMin.Z || wMin.Z > queryMax.Z)
+                {
+                    continue;
+                }
+                destination.Add(roof);
+            }
+        }
+    }
+
+    private static void EnsureCachedWorld(Building building)
+    {
+        if (building.HasCachedWorld)
+        {
+            return;
+        }
+        Transform3D world = building.Node.GlobalTransform;
+        building.CachedWorld = world;
+        building.HasCachedWorld = true;
+        building.CachedRoofs.Clear();
+        ++Version;
+        ReadOnlySpan<int> order = stackalloc int[] { 0, 1, 3, 2 };
+        foreach ((Vector3 min, Vector3 max) in building.Boxes)
+        {
+            Vector3 d = max - min;
+            if (d.X < MinSide || d.Y < MinSide || d.Z < MinSide || d.X > MaxSide || d.Y > MaxSide || d.Z > MaxSide)
+            {
+                continue;
+            }
+            Vector3 wMin = new(float.MaxValue, float.MaxValue, float.MaxValue), wMax = new(float.MinValue, float.MinValue, float.MinValue);
+            for (int k = 0; k < 8; k++)
+            {
+                var file = new Vector3((k & 1) != 0 ? max.X : min.X, (k & 2) != 0 ? max.Y : min.Y, (k & 4) != 0 ? max.Z : min.Z);
+                Vector3 g = ToGuest(world * FileToModel(file));
+                wMin = wMin.Min(g);
+                wMax = wMax.Max(g);
+            }
+            var roof = new Roof { Top = 0f };
+            for (int k = 0; k < 4; k++)
+            {
+                int flag = order[k];
+                var file = new Vector3((flag & 1) != 0 ? min.X : max.X, (flag & 2) != 0 ? min.Y : max.Y, max.Z);
+                Vector3 g = ToGuest(world * FileToModel(file));
+                var xy = new Vector2(g.X, g.Y);
+                switch (k)
+                {
+                    case 0: roof.C0 = xy; break;
+                    case 1: roof.C1 = xy; break;
+                    case 2: roof.C2 = xy; break;
+                    default: roof.C3 = xy; break;
+                }
+                if (roof.Top < g.Z)
+                {
+                    roof.Top = g.Z;
+                }
+                if (k == 0)
+                {
+                    roof.Min = g;
+                    roof.Max = g;
+                }
+                else
+                {
+                    var p = new Vector3(g.X, g.Y, 0f);
+                    roof.Min = roof.Min.Min(p);
+                    roof.Max = roof.Max.Max(p);
+                }
+            }
+            building.CachedRoofs.Add((wMin, wMax, roof));
+        }
     }
 
     private static Vector3 FileToModel(Vector3 file) => new(file.X, file.Z, -file.Y);

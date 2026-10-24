@@ -8,32 +8,45 @@ public sealed class Engine_DynamicRoofMap
 {
     public const int Size = 256;
     public const float Extent = 160f;
-    private readonly record struct RoofKey(Vector2 C0, Vector2 C1, Vector2 C2, Vector2 C3, float Top)
-    {
-        public RoofKey(Engine_ClassicRoofs.Roof roof) : this(roof.C0, roof.C1, roof.C2, roof.C3, roof.Top) { }
-    }
-    private readonly HashSet<RoofKey> _roofs = new();
-    private readonly HashSet<RoofKey> _incoming = new();
+    private readonly List<Engine_ClassicRoofs.Roof> _scratchRoofs = new();
     private bool _initialized;
+    private int _lastRoofsVersion = -1;
 
     public float[] Pixels { get; } = new float[Size * Size * 2];
     public Vector2 Centre { get; private set; }
     public int Revision { get; private set; }
     public bool HasRoofs { get; private set; }
 
-    public bool Update(IReadOnlyList<Engine_ClassicRoofs.Roof> roofs, Vector2 eye)
+    public bool Update(Vector2 eye) => Update(null, eye);
+
+    public bool Update(IReadOnlyList<Engine_ClassicRoofs.Roof>? externalRoofs, Vector2 eye)
     {
         if (!eye.IsFinite()) return false;
         Vector2 centre = _initialized && (eye - Centre).Abs().X <= 24f && (eye - Centre).Abs().Y <= 24f
             ? Centre : (eye / 16f).Round() * 16f;
-        _incoming.Clear();
-        foreach (var roof in roofs) _incoming.Add(new RoofKey(roof));
-        bool changed = !_initialized || centre != Centre || !_incoming.SetEquals(_roofs);
-        if (!changed) return false;
+
+        bool moved = !_initialized || centre != Centre;
+        bool versionChanged = _lastRoofsVersion != Engine_ClassicRoofs.Version;
+        if (!moved && !versionChanged) return false;
+
         _initialized = true;
         Centre = centre;
-        _roofs.Clear();
-        foreach (var roof in roofs) _roofs.Add(new RoofKey(roof));
+        _lastRoofsVersion = Engine_ClassicRoofs.Version;
+
+        IReadOnlyList<Engine_ClassicRoofs.Roof> roofs;
+        if (externalRoofs is not null)
+        {
+            roofs = externalRoofs;
+        }
+        else
+        {
+            float half = Extent * 0.5f;
+            Vector3 qMin = new(-centre.X - half - 10f, centre.Y - half - 10f, -1000f);
+            Vector3 qMax = new(-centre.X + half + 10f, centre.Y + half + 10f, 1000f);
+            Engine_ClassicRoofs.CollectRoofsInBox(qMin, qMax, _scratchRoofs);
+            roofs = _scratchRoofs;
+        }
+
         Array.Clear(Pixels);
         HasRoofs = false;
         float cell = Extent / Size;

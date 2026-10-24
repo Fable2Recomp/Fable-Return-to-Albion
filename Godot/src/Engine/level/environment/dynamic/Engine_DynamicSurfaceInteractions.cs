@@ -80,7 +80,8 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
         if (!enabled || !eye.IsFinite()) { Disable(); return; }
         if (!float.IsFinite(delta) || delta <= 0f) return;
         _enabled = true;
-        PublishRoofs(new Vector2(eye.X, eye.Z));
+        Vector3 centre = actor is { } hero && hero.IsFinite() ? hero : eye;
+        PublishRoofs(new Vector2(centre.X, centre.Z));
         _time += delta;
         _state.Fade(delta, weather.SnowFall, surface.Snow);
         if (surface.Snow > 0.08f && _trackViewport is null) BuildTrackMap();
@@ -123,7 +124,6 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
                 _state.Move(actor, grounded, _distanceStep ??= DistanceStep);
             }
         }
-        Vector3 centre = actor is { } hero && hero.IsFinite() ? hero : eye;
         int count = _state.RainCount(delta, weather.Rain, true);
         for (int i = 0; i < count; i++)
         {
@@ -301,10 +301,10 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
 
     private void PublishRoofs(Vector2 centre)
     {
-        bool changed = _roofMap.Update(Engine_ClassicRoofs.Roofs, centre);
+        bool changed = _roofMap.Update(centre);
         if (!_roofMap.HasRoofs)
         {
-            if (_roofPublished) RenderingServer.GlobalShaderParameterSet("dynamic_roof_projection", Vector4.Zero);
+            if (_roofPublished) RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_roof_projection, Vector4.Zero);
             _roofPublished = false;
             return;
         }
@@ -325,12 +325,15 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
                 _roofTexture!.Update(_roofImage);
             }
         }
-        if (changed || !_roofPublished)
+        if (!_roofPublished)
         {
             RenderingServer.GlobalShaderParameterSet("dynamic_roof_map", _roofTexture!);
-            RenderingServer.GlobalShaderParameterSet("dynamic_roof_projection",
-                new Vector4(_roofMap.Centre.X, _roofMap.Centre.Y, Engine_DynamicRoofMap.Extent, 1f));
             _roofPublished = true;
+        }
+        if (changed)
+        {
+            RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_roof_projection,
+                new Vector4(_roofMap.Centre.X, _roofMap.Centre.Y, Engine_DynamicRoofMap.Extent, 1f));
         }
     }
 
@@ -457,9 +460,9 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
             _impacts.Visible = false;
             _impacts.Multimesh.VisibleInstanceCount = 0;
         }
-        if (_mapPublished) RenderingServer.GlobalShaderParameterSet("dynamic_track_projection", Vector4.Zero);
+        if (_mapPublished) RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_track_projection, Vector4.Zero);
         _mapPublished = false;
-        if (_roofPublished) RenderingServer.GlobalShaderParameterSet("dynamic_roof_projection", Vector4.Zero);
+        if (_roofPublished) RenderingServer.GlobalShaderParameterSet(SurfaceWeatherNames.dynamic_roof_projection, Vector4.Zero);
         _roofPublished = false;
     }
 
