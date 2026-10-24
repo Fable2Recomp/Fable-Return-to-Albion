@@ -59,6 +59,7 @@
 #include <achievement/achievement_runtime.h>
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
+#include <rex/audio/downmix.h>
 #include <rex/logging.h>
 
 namespace rex {
@@ -2482,7 +2483,10 @@ extern "C" {
 ///     exe_dir/logs/refii_hang_<utc>.txt.
 /// 220 adds RefiiHostGetCurrentCulture — the locale code of the guest's current language row, so
 ///     the host's text book and fonts follow a language the player picks at the title.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 220; }
+/// 221 adds RefiiHostAudioFrontGain — the linear weight the host's 5.1 fold gives the front
+///     channels, so sound the host decodes itself (movies) sits at the same level as the guest's
+///     mix, which on the console went through the same mastering voice.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 221; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -4964,6 +4968,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioSamplesPerFrame(void) {
     return refii::vfs::kGuestAudioSamplesPerFrame;
 }
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioFloatsPerFrame(void) { return refii::vfs::kHostAudioFloatsPerFrame; }
+
+/// The linear weight the 5.1 fold gives a front channel (`StereoFold::scale` times the output
+/// gain). Sound the host decodes itself is scaled by this so it matches the guest's mix: on
+/// the console both went through the same mastering voice and the same fold.
+REFII_HOST_ABI_EXPORT float RefiiHostAudioFrontGain(void) {
+    return rex::audio::GetStereoFold().scale * rex::audio::GetOutputGain();
+}
 
 /// Health. `pushed` settles at 187.5/s (48000/256) once the guest is producing; `dropped`
 /// climbing means nothing is draining.

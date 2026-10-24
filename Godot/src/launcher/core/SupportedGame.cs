@@ -13,7 +13,9 @@ namespace Refii.Launcher.Core;
 /// disc re-signed: same PE payload, same file key, same section digest; only the signature,
 /// media id, version stamp, ratings and LAN key differ, so it runs on the disc config. Its
 /// title update (0.0.0.33 to 0.0.1.33) carries the same 48 image-delta blocks as the USA/Europe
-/// one, so a patched Russian image is the TU1 program and runs on the TU1 config.
+/// one, so a patched Russian image is the TU1 program and runs on the TU1 config. The French
+/// GOTY disc is the same re-signing again (318 header bytes differ, the payload is identical);
+/// its title update has not been found, so it installs without one and runs on the disc config.
 ///
 /// All of it is read from the XEX headers: title id and version from the execution info,
 /// the 16-byte media id from the security block, the versions a patch joins from its delta
@@ -87,7 +89,18 @@ public static class SupportedGame
 		UpdatedVersion = 0x00000121,
 	};
 
-	public static readonly Pressing[] Pressings = { UsaEurope, Russia };
+	public static readonly Pressing France = new()
+	{
+		Name = "France",
+		MediaId = new byte[]
+		{
+			0x62, 0xDA, 0x71, 0x80, 0x13, 0xD0, 0x5A, 0x4C,
+			0x9F, 0x4E, 0xD3, 0x92, 0x13, 0x58, 0xB1, 0xA4,
+		},
+		BaseVersion = 0x0000001B,
+	};
+
+	public static readonly Pressing[] Pressings = { UsaEurope, Russia, France };
 
 	public static string TitleIdText => TitleId.ToString("X8");
 

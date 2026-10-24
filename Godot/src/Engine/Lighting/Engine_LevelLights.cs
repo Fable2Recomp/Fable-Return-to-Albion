@@ -505,7 +505,7 @@ public static class Engine_LevelLights
 					continue;
 				}
 
-				Color c = node.LightColor;
+				Color c = Engine_LightColour.Linear(node);
 				float e = node.LightEnergy * atten;
 				lit[0] += c.R * e;
 				lit[1] += c.G * e;
@@ -1357,6 +1357,9 @@ public static class Engine_LevelLights
 		// one and the scalar to the other reproduces the same product. `fable_direct` then divides
 		// LIGHT_COLOR by PI to undo Godot's own multiply, exactly as it already does for the sun,
 		// so a placed light and the main light travel identical arithmetic from here.
+		// THE TINT GOES IN ENCODED (Engine_LightColour): LightColor is nonlinear sRGB to Godot and
+		// the renderer decodes it. Assigned raw, a warm lamp (1, 0.47, 0.06) shaded as
+		// (1, 0.19, 0.005) — every candle-lit wall deep red, and bright enough to bloom.
 		var colour = new Color(light.ColourLinear.X, light.ColourLinear.Y, light.ColourLinear.Z);
 
 		// THE TWO ATTENUATION EXPONENTS BELOW ARE LOAD-BEARING, not tidying. `fable_attenuation`
@@ -1407,7 +1410,7 @@ public static class Engine_LevelLights
 		Refii.Models.Engine_ClassicPlacedLights.Stamp(node, light.ColourLinear, light.Intensity, light.Range,
 			light.Type == LightTypeSpot, light.HalfAngleRadians, light.FadeDistance, light.FadeRange,
 			light.FlickerBrightnessRange, light.FlickerRadiusRange, light.FlickerRate, light.CastShadows);
-		node.LightColor = colour;
+		Engine_LightColour.Apply(node, colour);
 
 		// The remaster's `placed_light_scale` (and `unattached_light_scale` / `building_interior_light_scale`).
 		node.LightEnergy = initialEnergy;

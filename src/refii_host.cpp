@@ -3,6 +3,7 @@
 // Shared host entry points for standalone and embedded launches.
 
 #include "refii_host.h"
+#include "refii_build_id.h"
 
 #include "refii_app.h"
 
@@ -475,6 +476,9 @@ void WriteWindowsCrashRecord(const char* source,
 
     std::fprintf(crashLog, "=== refii unhandled exception ===\n");
     std::fprintf(crashLog, "source\t%s\n", source != nullptr ? source : "unknown");
+    // Which build wrote this. The record file is append-only and lives beside the exe, so it
+    // carries records across upgrades; without this line a beta-5 fault reads as a beta-6 one.
+    std::fprintf(crashLog, "build\t%s\n", REFII_BUILD_ID);
     std::fprintf(crashLog, "process_id\t%lu\n",
                  static_cast<unsigned long>(GetCurrentProcessId()));
     std::fprintf(crashLog, "thread_id\t%lu\n",
