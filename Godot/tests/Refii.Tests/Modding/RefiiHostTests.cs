@@ -70,4 +70,26 @@ public class RefiiHostTests
         AssertThat(ModGodot.IsGodotScriptPath("mod/init.lua")).IsFalse();
         AssertThat(ModGodot.IsGodotScriptPath("hud.gd")).IsFalse();
     }
+
+    // use_item posts the Items page's own action, by the record's hash in decimal (the pump's
+    // DispatchInventoryAction reads it with strtoul base 10).
+    [TestCase]
+    public void UseItemPostsTheInventoryUseAction()
+    {
+        AssertThat(RefiiHost.UseItemAction("0xCE6B8E0F")).IsEqual("Inventory:use:3463155215");
+        AssertThat(RefiiHost.UseItemAction("0xce6b8e0f")).IsEqual("Inventory:use:3463155215");
+        AssertThat(RefiiHost.UseItemAction("3463155215")).IsEqual("Inventory:use:3463155215");
+        AssertThat(RefiiHost.UseItemAction(" 0x1 ")).IsEqual("Inventory:use:1");
+    }
+
+    [TestCase]
+    public void UseItemRefusesWhatIsNotARecord()
+    {
+        AssertThat(RefiiHost.UseItemAction(string.Empty)).IsNull();
+        AssertThat(RefiiHost.UseItemAction("0x0")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("0")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("potion")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("0x1FFFFFFFF")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("-5")).IsNull();
+    }
 }

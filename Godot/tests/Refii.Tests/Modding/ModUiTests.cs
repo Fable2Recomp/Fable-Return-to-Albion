@@ -377,9 +377,12 @@ public class ModUiTests
         {
             foreach (string name in ModApi.GodotMethodNames(helper.Signature))
             {
-                AssertThat(typeof(RefiiHost).GetMethod(name, BindingFlags.Public | BindingFlags.Instance))
+                // By name, not GetMethod: a name may carry overloads of different arity
+                // (use_item(definition) and use_item(player, definition)), which Godot's
+                // bindings tell apart by argument count and GetMethod calls ambiguous.
+                AssertThat(typeof(RefiiHost).GetMethods(BindingFlags.Public | BindingFlags.Instance).Any(m => m.Name == name))
                     .OverrideFailureMessage($"RefiiHost has no public method '{name}' ({helper.Signature})")
-                    .IsNotNull();
+                    .IsTrue();
             }
         }
     }

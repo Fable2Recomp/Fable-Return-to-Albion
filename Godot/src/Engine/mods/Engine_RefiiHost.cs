@@ -778,6 +778,29 @@ public partial class RefiiHost : Node
 	/// <summary>Adds one of an item definition (its GDB record hash: the "0x…" string the events carry, or a number) to an entity's inventory.</summary>
 	public void add_item(long entity, Variant definition) => Post($"add_item {entity} {Arg(definition)}");
 
+	/// <summary>
+	/// Uses one of an item definition (the "0x…" string the events carry, or a number) from this
+	/// machine's hero's inventory, as the Items page's Use does — the guest's own use, with no menu
+	/// open: a potion drinks, food is eaten, an `item_used` event fires. Nothing happens when the
+	/// hero carries none or the item states no use. False when the definition does not parse.
+	/// </summary>
+	public bool use_item(Variant definition) =>
+		UseItemAction(Arg(definition)) is { } action && HostBridge.PostFrontEndAction(action) != 0;
+
+	/// <summary>
+	/// The tick pump's action <see cref="use_item"/> posts for a definition ("0x…" or decimal):
+	/// <c>Inventory:use:&lt;record, decimal&gt;</c>, the Items page's own; null when it does not parse.
+	/// </summary>
+	public static string? UseItemAction(string definition)
+	{
+		string text = definition.Trim();
+		bool hex = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+		return uint.TryParse(hex ? text[2..] : text, hex ? NumberStyles.HexNumber : NumberStyles.Integer,
+				CultureInfo.InvariantCulture, out uint record) && record != 0u
+			? $"{Refii.Ui.Engine_UiInventorySource.InventoryAction}use:{record}"
+			: null;
+	}
+
 	/// <summary>Gives experience to one of an entity's pools.</summary>
 	public void give_experience(long entity, int pool, float amount) =>
 		Post($"give_experience {entity} {pool} {Num(amount)}");

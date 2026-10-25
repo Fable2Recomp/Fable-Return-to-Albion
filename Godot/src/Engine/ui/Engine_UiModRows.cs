@@ -92,18 +92,28 @@ public static class Engine_UiModRows
 		}
 	}
 
-	/// <summary>The <c>rows</c> source: the stated rows as menu rows.</summary>
+	/// <summary>The <c>rows</c> source: the stated rows as menu rows, each label through the string book.</summary>
 	public static IReadOnlyList<Engine_UiMenuSources.Row> Rows(string list) =>
-		ToRows(For(list, Engine_UiModMenus.MenuPlayer));
+		ToRows(For(list, Engine_UiModMenus.MenuPlayer), BookLabel);
 
-	public static List<Engine_UiMenuSources.Row> ToRows(IReadOnlyList<Stated> stated)
+	/// <summary>
+	/// A stated label as the row draws it: a Babel tag's string (the tag as given, then with
+	/// <c>TEXT_</c>, as <see cref="Engine_UiGuiText"/> resolves the game's), else the literal. The
+	/// list takes a sourced row's label as its text, so the tag is resolved here.
+	/// </summary>
+	public static string BookLabel(string label) =>
+		Engine_UiGuiText.Resolve(label, Engine_UiInventorySource.Strings);
+
+	/// <summary>The stated rows as menu rows; <paramref name="label"/> turns a stated label into the row's text (as stated when null).</summary>
+	public static List<Engine_UiMenuSources.Row> ToRows(IReadOnlyList<Stated> stated, Func<string, string>? label = null)
 	{
 		var rows = new List<Engine_UiMenuSources.Row>(stated.Count);
 		foreach (Stated row in stated)
 		{
+			string text = row.Label.Length != 0 ? row.Label : row.Name;
 			rows.Add(new Engine_UiMenuSources.Row(
 				Name: row.Name,
-				Label: row.Label.Length != 0 ? row.Label : row.Name,
+				Label: label is null ? text : label(text),
 				Icon: string.Empty,
 				EventType: 0,
 				Id: 0u,

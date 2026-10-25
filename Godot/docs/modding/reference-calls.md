@@ -277,6 +277,7 @@ later on `reply(id, result)`; every verb is in [Commands and queries](reference-
 | `modify_health(entity, delta, attacker)` | changes health, attributed to `attacker` (0 for none) |
 | `set_health(entity, value)` | sets current health |
 | `add_item(entity, definition)` | one of an item definition (its GDB record hash) into the inventory |
+| `use_item(definition) -> bool` | uses one of an item definition (`"0x…"` or a number) from this machine's hero's inventory, as the Items page's Use does, with no menu open: a potion drinks, food is eaten, `item_used` fires. Nothing happens when the hero carries none or the item states no use; false when the definition does not parse |
 | `give_experience(entity, pool, amount)` / `spend_experience(...)` | one experience pool |
 | `cast_spell(caster, type, targeted, target, level)` · `cast_spell_at(caster, type, targeted, target, level, pos, dir)` | a cast as `caster`; `target` 0 for none, level 0..4; `cast_spell_at` starts it at `pos` (Vector3, guest axes) facing `dir`, as `refii_mod_cast_spell`'s pos / dir (the line: `cast_spell C T TARGETED TARGET LEVEL [X Y Z [DX DY DZ]]`) |
 | `set_position(entity, x, y, z)` | moves an entity |
