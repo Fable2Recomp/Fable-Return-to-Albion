@@ -246,6 +246,7 @@ public partial class GameSession : Node
 
 		// Input starts only once the guest is running.
 		AddChild(new GameInput { Name = "GameInput" });
+		AddChild(new GamePhotoMode { Name = "PhotoMode" });
 		AddChild(new GameCharacterMorphs { Name = "CharacterMorphs" });
 		AddChild(new GameGoldenCock { Name = "GoldenCockInteraction" });
 		AddChild(new GameGoldenCockCollision { Name = "GoldenCockCollision" });

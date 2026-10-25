@@ -110,6 +110,17 @@ public partial class GameInput : Node
 
 	public override void _ExitTree() => SilenceRumble();
 
+	public static void ReleaseForPhotoMode()
+	{
+		SilenceRumble();
+		PlayButtons.ReleaseAll();
+		for (int pad = 0; pad < MaxControllers; pad++)
+		{
+			_heldAcrossUnmask[pad] = uint.MaxValue;
+			HostBridge.SetControllerState(pad, pad == 0 || _padDevice[pad] >= 0 || GameDebugServer.PadConnected(pad), 0, 0, 0, 0, 0, 0, 0);
+		}
+	}
+
 	/// <summary>Each guest pad's rumble as last applied to its joypad.</summary>
 	private static readonly Engine_Rumble[] _rumble =
 	{

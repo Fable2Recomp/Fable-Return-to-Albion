@@ -59,6 +59,7 @@ public partial class GameInput
 		new("spells_menu", "Ctrl", "Hold to choose a spell (right trigger)."),
 		new("expression_wheel", "Q", "Hold for the expression wheel."),
 		new("camera_mode", "V", "Toggle the camera mode (right stick click)."),
+		new("photo_mode", "F11", "Open or close Photo Mode (L3 + R3 on controller)."),
 		new("pause", "Escape,Tab", "Pause and open the book (Start). Escape is back in menus."),
 		new("back", "Escape,Backspace", "Back out of a menu (B). Only in menus."),
 		new("item_up", "F1,Up", "Item slot up / menu up (D-pad up)."),
@@ -166,6 +167,8 @@ public partial class GameInput
 		return false;
 	}
 
+	public static bool PhotoModeKeyHeld => Down("photo_mode");
+
 	/// <summary>
 	/// The expression wheel and the spell blade are pointed at: the cursor is free while one
 	/// is held, and the camera stands still under it.
@@ -240,7 +243,7 @@ public partial class GameInput
 	/// the action that presses that button, in the context that has the input — B is magic in
 	/// the world and back in a menu.
 	/// </summary>
-	public static string? KeyLabel(string button) => button switch
+	public static string? KeyLabel(string button) => GamePhotoMode.Active ? GamePhotoMode.KeyLabel(button) : button switch
 	{
 		"A" => Shown("interact"),
 		"B" => Shown(Playing ? "magic" : "back"),

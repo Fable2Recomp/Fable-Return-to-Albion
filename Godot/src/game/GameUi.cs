@@ -310,6 +310,8 @@ public partial class GameUi : Node
 	/// <summary>Whether the screen stood up at all.</summary>
 	public bool IsBuilt => _presentation is not null;
 
+	public Engine_UiTheme? PhotoModeTheme => _presentation?.PatternBookFor(Engine_UiMenuBox.Presentation);
+
 	public override void _Ready()
 	{
 		string dataRoot = Engine_GameData.Resolve();
