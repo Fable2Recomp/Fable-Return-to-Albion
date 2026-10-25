@@ -2030,6 +2030,12 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		}
 	}
 
+	public void InvalidateMorph()
+	{
+		_morphReadAt = double.NegativeInfinity;
+		_scaleDirty = true;
+	}
+
 	private void ApplyMorph(int bones)
 	{
 		if (!_hasMorph)

@@ -1,3 +1,4 @@
+using System;
 using Godot;
 
 namespace Refii.Models;
@@ -17,6 +18,14 @@ namespace Refii.Models;
 /// </summary>
 public readonly record struct Engine_MdlRig(string[] Names, int[] Parents, float[] Rest)
 {
+	public bool HasSameBinding(in Engine_MdlRig other) =>
+		Names is { Length: > 0 } && Parents is not null && Rest is not null &&
+		other.Names is not null && other.Parents is not null && other.Rest is not null &&
+		Parents.Length == Names.Length && Rest.Length == Names.Length * Engine_MdlMesh.BoneRestStride &&
+		Names.AsSpan().SequenceEqual(other.Names) &&
+		Parents.AsSpan().SequenceEqual(other.Parents) &&
+		Rest.AsSpan().SequenceEqual(other.Rest);
+
 	/// <summary>How many bones the model declares.</summary>
 	public int BoneCount => Names.Length;
 

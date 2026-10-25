@@ -10,6 +10,7 @@
 #include "core/refii_mod.h"
 
 extern "C" REX_FUNC(__imp__rex_CECMorph_GetWeight);
+extern "C" REX_FUNC(rex_CECStats_FlushAppearance);
 
 namespace {
 
@@ -20,6 +21,12 @@ float g_generation = -1;
 
 void Refresh(PPCContext* ctx, uint8_t* base, uint32_t hero) {
   if (hero == 0 || refii_mod_entity_alive(base, hero) == 0) return;
+  const uint32_t stats = refii_mod_component(base, hero, 57u);
+  if (stats != 0u) {
+    PPCContext work = refii::mods::Frame(*ctx);
+    work.r3.u64 = stats;
+    rex_CECStats_FlushAppearance(work, base);
+  }
   const char* source = hero == refii_mod_player_hero(base, 2)
       ? "local h=GetPlayerHenchman(); if h and h:IsAlive() and GraphicAppearanceMorph.IsAvailable(h) then GraphicAppearanceMorph.UpdateTextureMorphs(h) end"
       : "local h=GetPlayerHero(); if h and h:IsAlive() and GraphicAppearanceMorph.IsAvailable(h) then GraphicAppearanceMorph.UpdateTextureMorphs(h) end";

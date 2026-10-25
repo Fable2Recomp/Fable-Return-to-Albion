@@ -645,7 +645,8 @@ public static class HostBridge
 	/// The entity's morphed parts as the guest stated them to <c>sub_82A48B90</c>; a part not
 	/// listed draws as its own model. <paramref name="generation"/> moves when the statement did.
 	/// </summary>
-	public static GuestPartMorph[] GetEntityPartMorphs(uint entity, out uint generation)
+	public static GuestPartMorph[] GetEntityPartMorphs(uint entity, out uint generation,
+		uint? knownGeneration = null, GuestPartMorph[]? knownParts = null)
 	{
 		generation = 0;
 		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
@@ -665,6 +666,11 @@ public static class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			return System.Array.Empty<GuestPartMorph>();
+		}
+
+		if (knownParts is not null && knownGeneration == generation)
+		{
+			return knownParts;
 		}
 
 		if (written == 0)

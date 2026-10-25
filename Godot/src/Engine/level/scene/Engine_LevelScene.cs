@@ -1312,6 +1312,7 @@ public static class Engine_LevelScene
         Mark("terrain-join");
 
         Refii.Save.Engine_GoldenCockPlacements.AddToLevel(root, level);
+        Refii.Hero.Engine_MorphMirrorPlacements.AddToLevel(root, level);
 
         GD.Print($"[level-build] {level}: {clock.ElapsedMilliseconds} ms of construction — " +
             string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")));

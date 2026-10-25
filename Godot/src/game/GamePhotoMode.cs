@@ -75,7 +75,7 @@ public partial class GamePhotoMode : Node
         {
             if (toggle && GameInput.Playing && GameUi.WorldInteractionAllowed &&
                 !GameDevMenu.WindowOpen && !GameDevMenu.KeyboardCaptured &&
-                !GameGoldenCock.OwnsInput &&
+                !GameGoldenCock.OwnsInput && !GameMorphMirror.OwnsInput &&
                 GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop))
                 Open();
             return;

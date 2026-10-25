@@ -121,7 +121,8 @@ public class CoopLuaSaveSafeTests
 		string core = ConstText("Source");
 		string camera = ConstText("CameraSource");
 		string cock = Refii.Save.Engine_GoldenCockRuntime.ScriptFor("bowerstone_north", "CVector3(1,2,3)");
-		var chunks = new[] { ("@refii/core_init.lua", core), ("@refii/core_camera.lua", camera), ("@refii/golden-cock", cock) };
+		string mirror = Refii.Hero.Engine_MorphMirrorRuntime.ScriptFor("caves/bowerlake/thagscave", "CVector3(1,2,3)", "CVector3(4,5,6)", "CVector3(0,1,0)");
+		var chunks = new[] { ("@refii/core_init.lua", core), ("@refii/core_camera.lua", camera), ("@refii/golden-cock", cock), ("@refii/morph-mirror", mirror) };
 
 		var compiled = new List<(string Name, string Text, LuaProto Main)>();
 		foreach ((string name, string text) in chunks)

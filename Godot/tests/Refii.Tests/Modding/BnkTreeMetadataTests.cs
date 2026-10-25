@@ -9,6 +9,27 @@ using Refii.Assets;
 public class BnkTreeMetadataTests
 {
     [TestCase]
+    public void VirtualModelDragsKeepTheirOriginalPaths()
+    {
+        const string mirror = "game://art/props/bs_murgo_mirror.mdl";
+        const string candle = "game://art/props/candle.mdl";
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { mirror })).ContainsExactly(mirror);
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { mirror, candle, mirror })).ContainsExactly(mirror, candle);
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { mirror, "res://prop.tscn" })).ContainsExactly(mirror, "res://prop.tscn");
+    }
+
+    [TestCase]
+    public void OrdinaryFileAndFolderDragsAreNotReplaced()
+    {
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { "res://main.tscn" }).Length).IsEqual(0);
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { "res://" }).Length).IsEqual(0);
+        AssertThat(BnkMountPlugin.AssetDragPaths(Array.Empty<string>()).Length).IsEqual(0);
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { "__bnk_levels_root__" }).Length).IsEqual(0);
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { "game://art/mirror.mdl", "bnk:art/props" }).Length).IsEqual(0);
+        AssertThat(BnkMountPlugin.AssetDragPaths(new[] { "game://art/" }).Length).IsEqual(0);
+    }
+
+    [TestCase]
     public void TestBnkMetaKeyConstant()
     {
         // The metadata key used to store Game:// custom metadata on Godot Object instances

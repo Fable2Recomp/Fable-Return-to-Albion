@@ -130,6 +130,7 @@ public partial class GameWorld : Node3D
 		FollowGuestIntoTheWorld();
 		ReleaseWhenPropsHaveStreamed();
 		TraceEntities();
+		if (GameMorphMirror.ApplyCamera(_camera)) return;
 
 		// Photo mode owns the camera: it places it first each frame and restores the guest's
 		// transform when it closes, so the statement below is read again from then on.

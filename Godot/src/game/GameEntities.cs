@@ -380,6 +380,12 @@ public partial class GameEntities : Node3D
 
         Transform3D toWorld = GlobalTransform;
         uint heroAddress = HostBridge.HeroEntityAddress();
+        if (_morphPreviewGeneration != GameCharacterMorphs.PreviewGeneration)
+        {
+            _morphPreviewGeneration = GameCharacterMorphs.PreviewGeneration;
+            _morphPreviewUntilTick = _ticks + ReconcileTicks * 2;
+        }
+        _morphPreviewHero = GameMorphMirror.OwnsInput || _ticks < _morphPreviewUntilTick ? heroAddress : 0u;
         (uint playerOne, uint playerTwo) = HostBridge.CoopPlayerEntities();
         uint dogAddress = HostBridge.DogEntityAddress();
         _principals = (heroAddress, playerOne, playerTwo, dogAddress);
@@ -399,6 +405,7 @@ public partial class GameEntities : Node3D
         foreach (HostBridge.GuestEntity entity in entities)
         {
             if (GameGoldenCock.ObserveGuest(entity)) continue;
+            if (GameMorphMirror.ObserveGuest(entity)) continue;
             long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             if (entity.Address == heroAddress && heroAddress != 0u && IsUsablePlacement(entity.Position))
             {
@@ -475,7 +482,7 @@ public partial class GameEntities : Node3D
             MeshInstance3D node = null!;
             bool adopted = adoptedStill;
             bool created = false;
-            if (!entity.Changed && !Due(entity.Address, ReconcileTicks) &&
+            if (entity.Address != _morphPreviewHero && !entity.Changed && !Due(entity.Address, ReconcileTicks) &&
                 entity.Appearance.IsConstructed && !entity.Highlighted &&
                 (_reports >= 10 || entity.ModelHash != 0u) &&
                 _nodes.TryGetValue(entity.Address, out MeshInstance3D? fastNode) &&
@@ -840,7 +847,9 @@ public partial class GameEntities : Node3D
                     // The rig is the mesh's: a composite's bone table is the union of its parts, and
                     // the skeleton and skin are built from it, so a new mesh needs a new rig or its
                     // vertices address the wrong bones (a body that dresses after it was rigged).
-                    if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? stale))
+                    bool sameBinding = Refii.Models.Engine_MdlRig.TryFrom(drawnMesh) is { } previousRig &&
+                        Refii.Models.Engine_MdlRig.TryFrom(mesh) is { } nextRig && previousRig.HasSameBinding(nextRig);
+                    if (!sameBinding && _skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? stale))
                     {
                         node.Skeleton = new NodePath();
                         node.Skin = null;
@@ -1764,6 +1773,7 @@ public partial class GameEntities : Node3D
 
         animator.Rig = rig;
         animator.Address = address;
+        if (address == _morphPreviewHero) animator.InvalidateMorph();
         return animator;
     }
 
@@ -3117,7 +3127,8 @@ public partial class GameEntities : Node3D
 
         hasParts = true;
         _builtParts += built;
-        return ComposeParts(parts, TextureLayersOf(address), PartMorphsOf(address));
+        return ComposeParts(parts, TextureLayersOf(address), PartMorphsOf(address)) ??
+            _nodeMesh.GetValueOrDefault(address);
     }
 
     /// <summary>
@@ -3126,13 +3137,15 @@ public partial class GameEntities : Node3D
     /// </summary>
     private HostBridge.GuestPartMorph[] PartMorphsOf(uint address)
     {
-        if (!Due(address, ReconcileTicks) &&
+        if (address != _morphPreviewHero && !Due(address, ReconcileTicks) &&
             _partMorphs.TryGetValue(address, out (uint Generation, HostBridge.GuestPartMorph[] Parts) known))
         {
             return known.Parts;
         }
 
-        HostBridge.GuestPartMorph[] parts = HostBridge.GetEntityPartMorphs(address, out uint generation);
+        bool cached = _partMorphs.TryGetValue(address, out known);
+        HostBridge.GuestPartMorph[] parts = HostBridge.GetEntityPartMorphs(address, out uint generation,
+            cached ? known.Generation : null, cached ? known.Parts : null);
         if (_partMorphs.TryGetValue(address, out known) && known.Generation == generation &&
             known.Parts.Length == parts.Length)
         {
@@ -3145,13 +3158,17 @@ public partial class GameEntities : Node3D
 
     private readonly Dictionary<uint, (uint Generation, HostBridge.GuestPartMorph[] Parts)> _partMorphs = new();
 
+    private uint _morphPreviewHero;
+    private int _morphPreviewGeneration;
+    private int _morphPreviewUntilTick;
+
     /// <summary>
     /// The texture composites the guest states for the entity (<c>sub_825B38B0</c>), re-read on
     /// the reconcile cadence; the same array is handed back until the statement moves.
     /// </summary>
     private HostBridge.GuestTextureComposite[] TextureLayersOf(uint address)
     {
-        if (!Due(address, ReconcileTicks) &&
+        if (address != _morphPreviewHero && !Due(address, ReconcileTicks) &&
             _textureLayers.TryGetValue(address, out (uint Generation, HostBridge.GuestTextureComposite[] Composites) known))
         {
             return known.Composites;

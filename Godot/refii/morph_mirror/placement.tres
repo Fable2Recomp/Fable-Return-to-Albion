@@ -1,0 +1,18 @@
+[gd_resource type="Resource" format=3 uid="uid://dcyl33ciavp15"]
+
+[ext_resource type="Script" uid="uid://chntspdeckxna" path="res://src/Engine/hero/morph/Engine_MorphMirrorPlacement.cs" id="1_emtk7"]
+
+[resource]
+script = ExtResource("1_emtk7")
+SourceScene = "res://levels/albion/caves/bowerlake/thagscave.tscn"
+InstancePath = "MorphMirrorSet/MorphMirror"
+Models = Array[String](["Art/environment/regions/bowerstone/props/dotXSI/BS_Murgo_Mirror/BS_Murgo_Mirror.mdl", "Art/environment/shared assets/Clutter/dotXSI/ESA_Slums_Clutter_V2/ESA_Slums_Clutter_V2.mdl", "Art/environment/shared assets/Cobwebs/dotXSI/Cobweb_01/Cobweb_01.mdl", "Art/Environment/Shared assets/Furniture/dotXSI/ESA_F_Table_Dining_Worn/ESA_F_Table_Dining_Worn.mdl", "Art/Environment/Shared assets/Furniture/dotXSI/ESA_F_Chair_Wooden_Worn/ESA_F_Chair_Wooden_Worn.mdl", "Art/Environment/Shared assets/Furniture/dotXSI/ESA_F_Chair_Wooden_Worn/ESA_F_Chair_Wooden_Worn.mdl"])
+Poses = Array[Transform3D]([Transform3D(-1.3095684, -0.14392641, -0.71715814, -0.021519741, 1.4776199, -0.2572472, -0.73114115, 0.21429984, 1.2920946, 285.57062, 98.936325, 90.51775), Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, 1, 292.36862, 98.853226, 89.50811), Transform3D(-1, 0, 0, 0, 0.86301893, 0.5051716, 0, -0.5051716, 0.86301893, 284.30988, 101.732635, 90.030785), Transform3D(0.99938506, 0.006431898, 0.034470916, -0.004858064, 0.9989504, -0.04554746, 0.034727573, -0.045351982, -0.9983672, 288.77603, 98.96747, 91.32367), Transform3D(-0.6412554, -4.747755e-07, 0.7673275, -3.51713e-07, 1, 3.2481267e-07, 0.7673275, 6.159118e-08, 0.6412554, 290.2755, 98.93566, 90.03911), Transform3D(0.43656427, 4.4577047e-07, -0.89967304, -3.5171297e-07, 1, 3.2481265e-07, -0.89967304, -1.7462509e-07, -0.43656427, 287.5768, 98.93566, 90.82241)])
+HeroPose = Transform3D(-0.8709269, 0, 0.4914126, 0, 1, 0, -0.4914126, 0, -0.8709269, 286.92944, 98.94005, 88.06957)
+CameraPosition = Vector3(285.62756, 100.256615, 90.376884)
+CameraFov = 60.0
+LevelPath = "caves/bowerlake/thagscave"
+LevelName = "thagscave"
+Scenario = "DefaultScenario"
+Pose = Transform3D(-1.3095684, -0.14392641, -0.71715814, -0.021519741, 1.4776199, -0.2572472, -0.73114115, 0.21429984, 1.2920946, 285.57062, 98.936325, 90.51775)
+Enabled = true

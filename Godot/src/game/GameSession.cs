@@ -248,6 +248,7 @@ public partial class GameSession : Node
 		AddChild(new GameInput { Name = "GameInput" });
 		AddChild(new GamePhotoMode { Name = "PhotoMode" });
 		AddChild(new GameCharacterMorphs { Name = "CharacterMorphs" });
+		AddChild(new GameMorphMirror { Name = "MorphMirrorInteraction" });
 		AddChild(new GameGoldenCock { Name = "GoldenCockInteraction" });
 		AddChild(new GameGoldenCockCollision { Name = "GoldenCockCollision" });
 

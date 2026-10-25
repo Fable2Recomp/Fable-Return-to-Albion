@@ -411,6 +411,7 @@ public static partial class Engine_LevelProps
         var saveMap = new List<KeyValuePair<uint, string>>(saveEntities.Count);
         foreach (SaveEntity entity in saveEntities)
         {
+            if (entity.Record == Refii.Hero.Engine_MorphMirrorRuntime.Record) continue;
             saveMap.Add(new KeyValuePair<uint, string>(entity.Record, entity.Name));
         }
 

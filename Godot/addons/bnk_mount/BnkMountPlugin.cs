@@ -12,7 +12,7 @@ using Refii.Mods;
 namespace Refii.Assets;
 
 [Tool]
-public partial class BnkMountPlugin : EditorPlugin
+public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
 {
     private const string RootLabel = "Game://";
     private const string PlaceholderMeta = "__bnk_placeholder__";
@@ -83,7 +83,7 @@ public partial class BnkMountPlugin : EditorPlugin
     private Tree? _tree;
     private TreeItem? _gameRoot;
     private bool _mounting;
-    private bool _collapsedHooked;
+    private int _mountVersion;
     private readonly List<TreeItem> _pending = new();
 
     private Label? _streamingLabel;
@@ -112,6 +112,8 @@ public partial class BnkMountPlugin : EditorPlugin
     {
         SetProcess(false);
         Instance = this;
+        var saved = new Callable(this, MethodName.OnEditorSceneSaved);
+        if (!IsConnected(SignalName.SceneSaved, saved)) Connect(SignalName.SceneSaved, saved);
         // BEFORE THE MOUNT, ON THIS THREAD, AND BOTH HALVES MATTER. Godot restores the last-open
         // scene the moment the editor comes up, and res://levels/pubgames/*.tscn is nothing but
         // game:// references. The rest of the loaders are registered by Inject() once the
@@ -154,6 +156,11 @@ public partial class BnkMountPlugin : EditorPlugin
 
     public override void _ExitTree()
     {
+        var saved = new Callable(this, MethodName.OnEditorSceneSaved);
+        if (IsConnected(SignalName.SceneSaved, saved)) Disconnect(SignalName.SceneSaved, saved);
+        System.Threading.Interlocked.Increment(ref _mountVersion);
+        _mounting = false;
+        _pending.Clear();
         _extensionScan.Cancel();
         SetProcess(false);
         if (_entityInspector is not null)
@@ -197,14 +204,68 @@ public partial class BnkMountPlugin : EditorPlugin
             _bridge = null;
         }
 
-        if (_tree is not null && GodotObject.IsInstanceValid(_tree) && _collapsedHooked)
+        if (_tree is not null && GodotObject.IsInstanceValid(_tree))
         {
-            _tree.ItemCollapsed -= OnItemCollapsed;
-            _collapsedHooked = false;
+            var collapsed = new Callable(this, MethodName.OnItemCollapsed);
+            if (_tree.IsConnected(Tree.SignalName.ItemCollapsed, collapsed))
+                _tree.Disconnect(Tree.SignalName.ItemCollapsed, collapsed);
         }
 
         _filesystem?.Dispose();
         _filesystem = null;
+        _tree = null;
+        _levels = null;
+        _injectRetryPending = false;
+    }
+
+    public void OnBeforeSerialize()
+    {
+        if (IsInsideTree()) _ExitTree();
+    }
+
+    public void OnAfterDeserialize() => CallDeferred(MethodName.RestoreAfterReload);
+
+    private void RestoreAfterReload()
+    {
+        if (IsInsideTree() && Instance != this) _EnterTree();
+    }
+
+    public override void _Notification(int what)
+    {
+        if (what != NotificationDragBegin || !IsInstanceValid(_tree)) return;
+        Variant payload = _tree!.GetViewport().GuiGetDragData();
+        if (payload.VariantType != Variant.Type.Dictionary) return;
+        if (RemapAssetDrag(_tree, payload.AsGodotDictionary()))
+            _tree.SetDragPreview(new Label { Text = GetItemMeta(_tree.GetSelected()).GetFile() });
+    }
+
+    public static bool RemapAssetDrag(Tree tree, Godot.Collections.Dictionary data)
+    {
+        if (!data.TryGetValue("from", out Variant source) || source.VariantType != Variant.Type.Object || source.AsGodotObject() != tree ||
+            !data.TryGetValue("type", out Variant type) || type.AsString() is not ("files" or "files_and_dirs")) return false;
+        var paths = new List<string>();
+        for (TreeItem? item = tree.GetNextSelected(null); item is not null; item = tree.GetNextSelected(item))
+        {
+            if (!item.IsVisibleInTree()) continue;
+            paths.Add(GetItemMeta(item));
+        }
+        string[] files = AssetDragPaths(paths);
+        if (files.Length == 0) return false;
+        data["type"] = "files";
+        data["files"] = files;
+        data.Remove("favorite");
+        return true;
+    }
+
+    public static string[] AssetDragPaths(IReadOnlyList<string> paths)
+    {
+        bool virtualAsset = false;
+        foreach (string path in paths)
+        {
+            if (path.StartsWith(FilePrefix, StringComparison.OrdinalIgnoreCase) && !path.EndsWith('/')) virtualAsset = true;
+            else if (!path.StartsWith("res://", StringComparison.Ordinal) || path.EndsWith('/')) return Array.Empty<string>();
+        }
+        return virtualAsset ? paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray() : Array.Empty<string>();
     }
 
     private void OnStreamingProgress(int done, int total)
@@ -403,6 +464,7 @@ public partial class BnkMountPlugin : EditorPlugin
         }
 
         _mounting = true;
+        int version = System.Threading.Interlocked.Increment(ref _mountVersion);
         string gameDirectory = ResolveGameDirectory();
         Refii.Gdb.Engine_BnkTextBankLoader.SetGameDirectory(gameDirectory);
 
@@ -466,6 +528,11 @@ public partial class BnkMountPlugin : EditorPlugin
                 GD.PushWarning($"[bnk_mount] {exception.Message}");
             }
 
+            if (version != System.Threading.Volatile.Read(ref _mountVersion))
+            {
+                mounted?.Dispose();
+                return;
+            }
             _filesystem = mounted;
             Refii.Gdb.Engine_GameGdb.Invalidate();
             Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
@@ -962,12 +1029,11 @@ public partial class BnkMountPlugin : EditorPlugin
             return;
         }
 
-        if (!_collapsedHooked)
-        {
-            _collapsedHooked = true;
-            tree.ItemCollapsed += OnItemCollapsed;
+        var collapsed = new Callable(this, MethodName.OnItemCollapsed);
+        if (!tree.IsConnected(Tree.SignalName.ItemCollapsed, collapsed))
+            tree.Connect(Tree.SignalName.ItemCollapsed, collapsed);
+        if (_bridge is null || !IsInstanceValid(_bridge))
             InterceptDockSignals(tree);
-        }
 
         RemoveGameRoot();
 
@@ -1111,9 +1177,9 @@ public partial class BnkMountPlugin : EditorPlugin
         _bridge.Call(
             "install",
             tree,
-            Callable.From<TreeItem, bool>(IsOurs),
-            Callable.From<TreeItem>(ActivateBnkItem),
-            Callable.From<TreeItem, Vector2>(OnItemRmb));
+            new Callable(this, MethodName.IsOurs),
+            new Callable(this, MethodName.ActivateBnkItem),
+            new Callable(this, MethodName.OnItemRmb));
 
         Node? dock = FindByClass(GetTree().Root, "FileSystemDock", 0);
         if (dock is not null)
@@ -1463,7 +1529,6 @@ public partial class BnkMountPlugin : EditorPlugin
             _levelToolbar = new Refii.Assets.UI.LevelPerspectiveToolbar();
             AddControlToContainer(CustomControlContainer.SpatialEditorMenu, _levelToolbar);
             SceneChanged += OnEditorSceneChanged;
-            SceneSaved += OnEditorSceneSaved;
 
             // Subscribe after initial panel construction so startup does not trigger premature filesystem scans
             EditorModExporter.ActiveModChanged += OnActiveModChanged;
@@ -1506,7 +1571,6 @@ public partial class BnkMountPlugin : EditorPlugin
         EditorModExporter.ActiveModChanged -= OnActiveModChanged;
         EditorModExporter.ModContentChanged -= OnModContentChangedFor3DPreview;
         SceneChanged -= OnEditorSceneChanged;
-        SceneSaved -= OnEditorSceneSaved;
 
         if (_levelToolbar is not null && GodotObject.IsInstanceValid(_levelToolbar))
         {
@@ -1553,6 +1617,8 @@ public partial class BnkMountPlugin : EditorPlugin
 
             if (Refii.Save.Engine_GoldenCockPlacements.Capture(levelRoot))
                 GD.Print("[golden-cock] Saved level placement for the installed game.");
+            if (Refii.Hero.Engine_MorphMirrorPlacements.Capture(levelRoot))
+                GD.Print("[morph-mirror] Saved the marked mirror and its set for the installed game.");
 
             string activeMod = EditorModExporter.ActiveModName;
             if (string.IsNullOrWhiteSpace(activeMod))

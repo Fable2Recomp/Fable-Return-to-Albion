@@ -171,6 +171,8 @@ public partial class Engine_GameAssets : Node
 			Refii.Host.CoopText.Attach(mounted);
 			try { Refii.Save.Engine_GoldenCockRuntime.Attach(mounted, Refii.Save.Engine_GoldenCockPlacements.Load()); }
 			catch (Exception exception) { GD.PushError("[golden-cock] " + exception.Message); }
+			try { Refii.Hero.Engine_MorphMirrorRuntime.Attach(mounted, Refii.Hero.Engine_MorphMirrorPlacements.Load()); }
+			catch (Exception exception) { GD.PushError("[morph-mirror] " + exception.Message); }
 			Refii.Save.Engine_NewGameRuntime.Attach(mounted);
 		}
 		catch (Exception exception)

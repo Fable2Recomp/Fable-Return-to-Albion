@@ -16,8 +16,15 @@ public static class Engine_GoldenCockRuntime
     public static readonly uint Record = Engine_GameHash.Fnv1(EntityName);
     public const uint TemplateRecord = 0x3E58634F;
 
-    public static byte[] BuildDatabase(byte[] source, byte[]? update = null)
+    public static byte[] BuildDatabase(byte[] source, byte[]? update = null,
+        string entityName = EntityName, string actionName = ActionName,
+        float interactionDistance = 2.75f, float targetRadius = 0.8f, float worldIconRadius = 2f,
+        string modelPath = "")
     {
+        if (!float.IsFinite(interactionDistance) || interactionDistance <= 0 ||
+            !float.IsFinite(targetRadius) || targetRadius <= 0 ||
+            !float.IsFinite(worldIconRadius) || worldIconRadius <= 0)
+            throw new ArgumentOutOfRangeException(nameof(interactionDistance));
         var multi = GdbMulti.Build(new[] { source, update });
         if (!multi.TryLookup(TemplateRecord, out var template))
             throw new InvalidOperationException("The installed game has no supported readable-object template.");
@@ -44,10 +51,10 @@ public static class Engine_GoldenCockRuntime
             entry.Properties.Add(new GdbPatchProperty(hash, type, value));
             patch.Names[hash] = name;
         }
-        var entity = Copy(template, EntityName);
+        var entity = Copy(template, entityName);
         if (!multi.TryLookup(Engine_GameHash.Fnv1("PhysicsSimpleComponent"), out var placement))
             throw new InvalidOperationException("The installed game has no simple placement component.");
-        var physics = Copy(placement, EntityName + "PhysicsSimpleComponent");
+        var physics = Copy(placement, entityName + "PhysicsSimpleComponent");
         entity.Properties.RemoveAll(p => p.NameHash == Engine_GameHash.Fnv1("PhysicsSimulationStaticComponent"));
         Set(entity, "PhysicsSimpleComponent", GdbFieldType.Reference, physics.Id);
         GdbPatchEntry Component(string name)
@@ -56,20 +63,32 @@ public static class Engine_GoldenCockRuntime
             var field = entity.Properties.Single(p => p.NameHash == hash);
             if (!multi.TryLookup(field.Value, out var original))
                 throw new InvalidOperationException("The Golden Cock template is missing " + name);
-            var copy = Copy(original, EntityName + name);
+            var copy = Copy(original, entityName + name);
             field.Value = copy.Id;
             return copy;
         }
         var action = Component("OnActionUseComponent");
-        uint script = Engine_GameHash.Fnv1(ActionName);
-        patch.Names[script] = ActionName;
+        uint script = Engine_GameHash.Fnv1(actionName);
+        patch.Names[script] = actionName;
         Set(action, "ScriptToRun", GdbFieldType.String, script);
         Set(action, "DestroyAfterUse", GdbFieldType.Bool, 0);
         Set(action, "HighlightWhenTargeted", GdbFieldType.Bool, 1);
+        Set(action, "WorldIconRadius", GdbFieldType.Float, BitConverter.SingleToUInt32Bits(worldIconRadius));
         var target = Component("TargetedComponent");
-        Set(target, "InteractionDistance", GdbFieldType.Float, BitConverter.SingleToUInt32Bits(2.75f));
-        Set(target, "TargetRadius", GdbFieldType.Float, BitConverter.SingleToUInt32Bits(0.8f));
+        Set(target, "InteractionDistance", GdbFieldType.Float, BitConverter.SingleToUInt32Bits(interactionDistance));
+        Set(target, "TargetRadius", GdbFieldType.Float, BitConverter.SingleToUInt32Bits(targetRadius));
         Set(target, "TargetableByDefault", GdbFieldType.Bool, 1);
+        if (modelPath.Length > 0)
+        {
+            string model = modelPath.Replace('/', '\\').ToLowerInvariant();
+            if (model.StartsWith("game:\\\\", StringComparison.Ordinal)) model = model[7..];
+            if (!model.EndsWith(".mdl", StringComparison.Ordinal) || model.Contains("..", StringComparison.Ordinal))
+                throw new ArgumentException("The entity needs an installed model path.", nameof(modelPath));
+            var mesh = Component("GraphicAppearanceStaticMeshComponent");
+            uint modelHash = Engine_GameHash.ResourcePath(model);
+            patch.Names[modelHash] = model;
+            Set(mesh, "ModelFile", GdbFieldType.String, modelHash);
+        }
         return GdbPatchBuilder.ApplyOverlayToBaseGdb(update ?? GdbWriter.Serialize(new GdbPatchDatabase()), GdbWriter.Serialize(patch));
     }
 

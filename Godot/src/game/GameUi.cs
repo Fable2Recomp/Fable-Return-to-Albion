@@ -7255,7 +7255,7 @@ public partial class GameUi : Node
 	private void ui_processBody(double delta)
 	{
 		ResetRowActionPrompt();
-		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene;
+		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene && !GameMorphMirror.OwnsInput;
 		if (DriveGoldenCockMenu(delta)) return;
 		// THE QUIT LATCH. The guest is still running its confirmation, save and teardown; the
 		// front end coming up is it reporting all three done, and the only point at which

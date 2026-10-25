@@ -370,6 +370,9 @@ public static class LevelRecordMetadata
             }
         }
 
+        if (node is MeshInstance3D mesh && Refii.Models.Engine_BnkMeshLoader.Recognises(mesh.Mesh?.ResourcePath ?? string.Empty))
+            return mesh.Mesh!.ResourcePath[Refii.Models.Engine_BnkMeshLoader.PathPrefix.Length..];
+
         int count = node.GetChildCount();
         for (int i = 0; i < count; i++)
         {
@@ -382,6 +385,8 @@ public static class LevelRecordMetadata
                     return p;
                 }
             }
+            if (child is MeshInstance3D childMesh && Refii.Models.Engine_BnkMeshLoader.Recognises(childMesh.Mesh?.ResourcePath ?? string.Empty))
+                return childMesh.Mesh!.ResourcePath[Refii.Models.Engine_BnkMeshLoader.PathPrefix.Length..];
         }
 
         return string.Empty;
